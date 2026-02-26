@@ -15,6 +15,8 @@ setjmp_address = 0x83006C90
 0x82C06200 = { parent = 0x82C03AC0, size = 8 }
 0x82C06208 = { size = 8 }
 0x82C06210 = { size = 8 }
+0x8291F170 = { size = 0x10 }
+0x8291F180 = { size = 8 }
 0x82C06218 = { size = 8 }
 0x82C06220 = { parent = 0x82C03B18, size = 8 }
 0x82C11BE0 = { size = 8 }
