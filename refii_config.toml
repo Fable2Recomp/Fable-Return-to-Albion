@@ -151,6 +151,7 @@ setjmp_address = 0x83006C90
 0x82C5BA78 = { size = 0x3C }
 0x82C5BAB8 = { size = 0x3C }
 0x82214198 = { size = 0x0C }
+0x82452ec0 = {}
 #================================
 0x82170000 = { name = "rex_RtlOutputDebugString", size = 0xC }
 0x82170010 = { name = "rex_OutputDebugStringA", size = 0x40 }

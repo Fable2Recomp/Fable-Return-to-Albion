@@ -18,12 +18,10 @@
 
 #include "generated/refii_init.h"
 
-#include <rex/runtime/guest/function.h>
-#include <rex/kernel/kernel_state.h>
-#include <rex/kernel/xmemory.h>
+#include <rex/ppc.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xmemory.h>
 #include <rex/logging.h>
-
-using namespace rex::runtime::guest;
 
 namespace {
 
@@ -48,7 +46,7 @@ inline bool InArena(uint32_t guest_addr) {
 
 // lhHeapRealloc replacement — unified alloc/realloc/free (Lua allocator protocol)
 //   r3 = heap (ignored), r4 = old_ptr, r5 = old_size, r6 = new_size
-dword_result_t lhHeapRealloc_entry(dword_t heap, dword_t old_ptr, dword_t old_size, dword_t new_size) {
+ppc_u32_result_t lhHeapRealloc_entry(ppc_u32_t heap, ppc_u32_t old_ptr, ppc_u32_t old_size, ppc_u32_t new_size) {
     uint32_t optr = static_cast<uint32_t>(old_ptr);
     uint32_t osize = static_cast<uint32_t>(old_size);
     uint32_t nsize = static_cast<uint32_t>(new_size);
@@ -94,7 +92,7 @@ dword_result_t lhHeapRealloc_entry(dword_t heap, dword_t old_ptr, dword_t old_si
 
 // lh_PhysicalAllocCached replacement — redirects physical memory allocations
 // to our native heap with proper alignment. 
-dword_result_t PhysicalAllocCached_entry(dword_t size, dword_t alignment) {
+ppc_u32_result_t PhysicalAllocCached_entry(ppc_u32_t size, ppc_u32_t alignment) {
     uint32_t sz = static_cast<uint32_t>(size);
     uint32_t align = static_cast<uint32_t>(alignment);
     if (align < 16) align = 16;
@@ -110,13 +108,13 @@ dword_result_t PhysicalAllocCached_entry(dword_t size, dword_t alignment) {
 
 }  // namespace
 
-GUEST_FUNCTION_HOOK(rex_lhHeapRealloc, lhHeapRealloc_entry)
-GUEST_FUNCTION_HOOK(sub_82B53420, PhysicalAllocCached_entry)
+PPC_HOOK(rex_lhHeapRealloc, lhHeapRealloc_entry)
+PPC_HOOK(sub_82B53420, PhysicalAllocCached_entry)
 
 namespace lh {
 
 bool InitNativeHeap() {
-    auto* mem = rex::kernel::kernel_memory();
+    auto* mem = rex::system::kernel_memory();
     if (!mem) {
         REXLOG_ERROR("InitNativeHeap: kernel_memory() is null");
         return false;
