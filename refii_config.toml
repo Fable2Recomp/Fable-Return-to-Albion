@@ -9,6 +9,46 @@ out_directory_path = "generated"
 longjmp_address = 0x82CAFA30
 setjmp_address = 0x83006C90
 
+[rexcrt]
+#CreateFileA        = 0x82CC3490
+#ReadFile           = 0x82CC3688
+#WriteFile          = 0x82CC6FB8
+#SetFilePointer     = 0x82CC7938
+#GetFileSize        = 0x82CC6E10
+#GetFileSizeEx      = 0x82CC7CB8
+#SetEndOfFile       = 0x82CC7D28
+#FlushFileBuffers   = 0x82CC7AA8
+#DeleteFileA        = 0x82CC7760
+#CloseHandle        = 0x82CC27B0
+#FindFirstFileA     = 0x82CC7468
+#FindNextFileA      = 0x82CC7410
+#CreateDirectoryA   = 0x82CC7630
+#MoveFileA          = 0x8300BA00
+
+# Heap
+RtlAllocateHeap    = 0x822387B8
+RtlFreeHeap        = 0x82239490
+RtlSizeHeap        = 0x82239808
+RtlReAllocateHeap  = 0x82CC62E0
+
+# Memory
+memcpy             = 0x82CA9480
+memmove            = 0x82CB0B30
+memset             = 0x82CA99B0
+memchr             = 0x82CABF80
+XMemCpy            = 0x82208498
+memcpy_s           = 0x82CA9F50
+memmove_s          = 0x82CAA028
+
+# String
+strncmp            = 0x82CAA0F0
+strncpy            = 0x822CD0A8
+strchr             = 0x82CAA210
+strrchr            = 0x82CAD890
+_stricmp           = 0x82CACB50
+strcpy_s           = 0x82170CC8
+lstrcmpiA          = 0x8300BAD0
+
 
 [functions]
 0x82C061F0 = { parent = 0x82C03A58, size = 8 }
