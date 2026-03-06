@@ -117,6 +117,22 @@ ppc_u32_result_t lhHeap_Init_entry() {
     return 0;
 }
 
+// XPhysicalAlloc -- redirect all physical memory allocations to the rexcrt
+// o1heap. MmAllocatePhysicalMemoryEx fails due to Xenia physical heap
+// exhaustion; lhHeightfield_CreateBuffers falls back through lhMemAlloc ->
+// XMemAlloc -> XPhysicalAlloc, which we intercept here.
+// Original signature: XPhysicalAlloc(size, max_addr, alignment, protect)
+ppc_u32_result_t XPhysicalAlloc_entry(ppc_u32_t size, ppc_u32_t max_addr,
+    ppc_u32_t alignment, ppc_u32_t protect) {
+    auto& heap = rex::kernel::crt::GetHeap();
+    uint32_t addr = heap.Alloc(static_cast<uint32_t>(size), /*zero=*/true);
+    if (!addr) {
+        REXLOG_ERROR("XPhysicalAlloc hook: o1heap alloc({}) failed",
+                     static_cast<uint32_t>(size));
+    }
+    return addr;
+}
+
 }  // namespace
 
 PPC_HOOK(rex_GetFileSectorInfo, GetFileSectorInfo_entry)
@@ -130,4 +146,5 @@ PPC_HOOK(rex_lh_lua_allocator, lh_lua_allocator_entry)
 PPC_HOOK(rex_lhHeap_Alloc, lhHeap_Alloc_entry)
 PPC_HOOK(rex_lhHeap_Free, lhHeap_Free_entry)
 PPC_HOOK(rex_lhHeap_Init, lhHeap_Init_entry)
+PPC_HOOK(rex_XPhysicalAlloc, XPhysicalAlloc_entry)
 
