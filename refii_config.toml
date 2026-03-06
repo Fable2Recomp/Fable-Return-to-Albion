@@ -10,20 +10,21 @@ longjmp_address = 0x82CAFA30
 setjmp_address = 0x83006C90
 
 [rexcrt]
-#CreateFileA        = 0x82CC3490
-#ReadFile           = 0x82CC3688
-#WriteFile          = 0x82CC6FB8
-#SetFilePointer     = 0x82CC7938
-#GetFileSize        = 0x82CC6E10
-#GetFileSizeEx      = 0x82CC7CB8
-#SetEndOfFile       = 0x82CC7D28
-#FlushFileBuffers   = 0x82CC7AA8
-#DeleteFileA        = 0x82CC7760
-#CloseHandle        = 0x82CC27B0
-#FindFirstFileA     = 0x82CC7468
-#FindNextFileA      = 0x82CC7410
-#CreateDirectoryA   = 0x82CC7630
-#MoveFileA          = 0x8300BA00
+# File I/O
+CreateFileA        = 0x82CC3490
+ReadFile           = 0x82CC3688
+WriteFile          = 0x82CC6FB8
+SetFilePointer     = 0x82CC7938
+GetFileSize        = 0x82CC6E10
+GetFileSizeEx      = 0x82CC7CB8
+SetEndOfFile       = 0x82CC7D28
+FlushFileBuffers   = 0x82CC7AA8
+DeleteFileA        = 0x82CC7760
+CloseHandle        = 0x82CC27B0
+FindFirstFileA     = 0x82CC7468
+FindNextFileA      = 0x82CC7410
+CreateDirectoryA   = 0x82CC7630
+MoveFileA          = 0x8300BA00
 
 # Heap
 RtlAllocateHeap    = 0x822387B8
@@ -192,6 +193,7 @@ lstrcmpiA          = 0x8300BAD0
 0x82C5BAB8 = { size = 0x3C }
 0x82214198 = { size = 0x0C }
 0x82452ec0 = {}
+0x826DA518 = { name = "rex_lh_lua_allocator", size = 0x124 }
 #================================
 0x82170000 = { name = "rex_RtlOutputDebugString", size = 0xC }
 0x82170010 = { name = "rex_OutputDebugStringA", size = 0x40 }
@@ -782,9 +784,9 @@ lstrcmpiA          = 0x8300BAD0
 0x83202AE0 = { name = "rex_r400ZconstFromFloat", size = 0x9C }
 0x83202B80 = { name = "rex_r400FloatToColorInt", size = 0x4E0 }
 0x83217F68 = { name = "rex_GetFileTime", size = 0x8C }
-0x83236F00 = { name = "rex_HeapPoolAlloc", size = 0xF4 }
-0x83237618 = { name = "rex_HeapPageAlloc", size = 0x14C }
-0x83237E08 = { name = "rex_HeapLargeAlloc", size = 0x15C }
+0x83236F00 = { name = "rex_lhHeapPool_Alloc", size = 0xF4 }
+0x83237618 = { name = "rex_lhHeapLarge_PageAlloc", size = 0x14C }
+0x83237E08 = { name = "rex_lhHeapLarge_Alloc", size = 0x15C }
 0x8323CCF8 = { name = "rex_HeapPoolInit", size = 0xC4 }
 0x832AB688 = { name = "rex__initp_eh_hooks_0", size = 0x14 }
 0x832AB6B8 = { name = "rex__initp_eh_hooks_1", size = 0x14 }
@@ -984,7 +986,7 @@ lstrcmpiA          = 0x8300BAD0
 0x8220AE98 = { name = "rex_luaopen_debug", size = 0x38 }
 0x8221BD38 = { name = "rex_lh_free", size = 0x4 }
 0x8221F258 = { name = "rex_lh_malloc", size = 0x5C }
-0x8221F2C0 = { name = "rex_lh_malloc_aligned", size = 0x4 }
+0x8221F2C0 = { name = "rex_lh_malloc_impl", size = 0x4 }
 0x822397D0 = { name = "rex_LocalFree_0", size = 0x38 }
 0x822A26B8 = { name = "rex_lhRenderLayer_SetSortConfig", size = 0x170 }
 0x822AB508 = { name = "rex_lhRenderLayer_Construct", size = 0x98 }
@@ -1549,3 +1551,64 @@ lstrcmpiA          = 0x8300BAD0
 0x83251290 = { name = "rex_lhDefaultFont_StaticInit", size = 0xC0 }
 0x83251350 = { name = "rex_lhDefaultFontAlt_StaticInit", size = 0xC0 }
 0x83298E80 = { name = "rex_lhResourceManager_StaticInit", size = 0x38 }
+
+0x82173E38 = { name = "rex_lhSmartPtr_Deref", size = 0x50 }
+0x82176248 = { name = "rex_lhHeightfieldManager_ResetGrid", size = 0x78 }
+0x821762C0 = { name = "rex_lhCamera_Update", size = 0x218 }
+0x82183680 = { name = "rex_lhEntity_SetVisible", size = 0xB40 }
+0x821C8FB0 = { name = "rex_lhEngine_FrameUpdate", size = 0xF4 }
+0x821EEE48 = { name = "rex_lhTerrainSector_GetHeight", size = 0x1E4 }
+0x821F4EB8 = { name = "rex_lhMemAlloc_Thunk", size = 0x4 }
+0x821F4EC0 = { name = "rex_lhTexture_Create", size = 0x164 }
+0x821F6048 = { name = "rex_lhMemFree_Thunk", size = 0x4 }
+0x821F65C0 = { name = "rex_lhMemFree_Typed", size = 0x22C }
+0x822022A8 = { name = "rex_lhMem_QuerySizeOrFree", size = 0x10 }
+0x822022B8 = { name = "rex_lhMemFree", size = 0x1EC }
+0x82204E08 = { name = "rex_lhEntity_UpdateTerrainPlacement", size = 0x19C }
+0x8222C1B8 = { name = "rex_lhEntity_GetModel", size = 0x54 }
+0x8222C9D0 = { name = "rex_lhMemAlloc", size = 0x234 }
+0x82232880 = { name = "rex_lhHeightfield_InterpolateHeight", size = 0x18C }
+0x82235658 = { name = "rex_lhHeightfield_WorldToGrid", size = 0x134 }
+0x82235790 = { name = "rex_lhHeightfield_CalcBoundsGrid", size = 0xD8 }
+0x82235868 = { name = "rex_lhHeightfield_PlaceEntity", size = 0x21C }
+0x82235A88 = { name = "rex_lhHeightfield_LinkEntity", size = 0x200 }
+0x822397C0 = { name = "rex_GetProcessHeap", size = 0xC }
+0x82276D10 = { name = "rex_lhGameLoop_Tick", size = 0x66C }
+0x822D7268 = { name = "rex_lhTerrain_CheckBounds", size = 0x60 }
+0x822F4CE8 = { name = "rex_lhGameThread_RunStates", size = 0x15C }
+0x82314D30 = { name = "rex_lhScene_AddNode", size = 0xA4 }
+0x82314DD8 = { name = "rex_lhScene_GetDefaultCamera", size = 0x258 }
+0x82316700 = { name = "rex_lhScene_FindNode", size = 0x68 }
+0x823168D8 = { name = "rex_lhScene_UpdateNodes", size = 0x640 }
+0x82316F18 = { name = "rex_lhScene_CreateNode", size = 0xC4 }
+0x82316FE0 = { name = "rex_lhScene_ProcessEntities", size = 0xE4 }
+0x823170C8 = { name = "rex_lhScene_TraverseNodes", size = 0x600 }
+0x82371948 = { name = "rex_lhScene_UpdateHeightfield", size = 0x158 }
+0x82389768 = { name = "rex_lhSceneNode_GetWorldBounds", size = 0x1CC }
+0x82389938 = { name = "rex_lhSceneNode_Create", size = 0x1C0 }
+0x82389D60 = { name = "rex_lhSceneNode_SetupCamera", size = 0x258 }
+0x8238A7D8 = { name = "rex_lhSceneNode_UpdateTerrain", size = 0x65C }
+0x8238B198 = { name = "rex_lhSceneNode_CheckFrustum", size = 0x60 }
+0x823D5AA8 = { name = "rex_lhWorld_Update", size = 0xCAC }
+0x82481328 = { name = "rex_lhCameraManager_Create", size = 0x348 }
+0x82482EB0 = { name = "rex_lhEntity_UpdateTransform", size = 0x420 }
+0x825E46D0 = { name = "rex_lhEntityBehavior_UpdateTerrain", size = 0x40C }
+0x825E6518 = { name = "rex_lhEntityBehavior_PlaceOnTerrain", size = 0x278 }
+0x826EBF68 = { name = "rex_lhEntity_UpdatePlacement", size = 0xC0 }
+0x826ECB90 = { name = "rex_lhComponent_UpdateTerrainPlacement", size = 0x400 }
+0x8280B510 = { name = "rex_lhPhysics_PlaceOnTerrain", size = 0x3F8 }
+0x828E5A78 = { name = "rex_lhEntity_GetRenderObject", size = 0x54 }
+0x82B3D7C8 = { name = "rex_lh_PhysicalFree", size = 0xE4 }
+0x82BAB210 = { name = "rex_lhHeightfield_CreateBuffers", size = 0xC8C }
+0x82CC6BC0 = { name = "rex_HeapCreate", size = 0x80 }
+0x83236B98 = { name = "rex_lhHeapPool_FreeToSlab", size = 0x170 }
+0x83236D60 = { name = "rex_lhHeapPool_Free", size = 0x80 }
+0x83236DE0 = { name = "rex_lhHeapPool_ExpandSlab", size = 0x11C }
+0x832370C0 = { name = "rex_lhHeapVirtual_Free", size = 0xB8 }
+0x83237178 = { name = "rex_lhHeapVirtual_Alloc", size = 0xA8 }
+0x832378D0 = { name = "rex_lhHeapLarge_TryAlloc", size = 0x1E4 }
+0x83237D90 = { name = "rex_lhHeapLarge_Free", size = 0x78 }
+0x832383D8 = { name = "rex_lhHeap_Init", size = 0x88 }
+0x83238460 = { name = "rex_lhHeap_Free", size = 0x134 }
+0x83238598 = { name = "rex_lhHeap_Alloc", size = 0x164 }
+0x8323CAA8 = { name = "rex_lhHeapPool_AllocSlab", size = 0x10C }
