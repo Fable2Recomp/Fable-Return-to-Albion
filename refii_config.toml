@@ -52,6 +52,7 @@ lstrcmpiA          = 0x8300BAD0
 
 
 [functions]
+0x82b5c110 = { size = 0x38 }
 0x82C061F0 = { parent = 0x82C03A58, size = 8 }
 0x82C06200 = { parent = 0x82C03AC0, size = 8 }
 0x82C06208 = { size = 8 }
@@ -69,6 +70,19 @@ lstrcmpiA          = 0x8300BAD0
 0x82CE9BD0 = { parent = 0x82CE7CB0, size = 8 }
 0x82E84C68 = { size = 0x10 }
 0x82A373A8 = { size = 0x0934 }
+0x82967520 = { size = 0x10 }
+0x82967530 = { size = 0x10 }
+0x82967540 = { size = 0x10 }
+0x82967550 = { size = 0x10 }
+0x82967560 = { size = 0x10 }
+0x82967570 = { size = 0x10 }
+0x82967580 = { size = 0x10 }
+0x82967590 = { size = 0x10 }
+0x829675A0 = { size = 0x10 }
+0x829675B0 = { size = 0x10 }
+0x829675C0 = { size = 0x10 }
+0x829675D0 = { size = 0x10 }
+0x829675E0 = { size = 0x10 }
 0x82CEC580 = { size = 0x48 }
 0X82C1BDA8 = { size = 0x10 }
 0x82C1BDB8 = { size = 0x10 }
@@ -1612,3 +1626,16 @@ lstrcmpiA          = 0x8300BAD0
 0x83238460 = { name = "rex_lhHeap_Free", size = 0x134 }
 0x83238598 = { name = "rex_lhHeap_Alloc", size = 0x164 }
 0x8323CAA8 = { name = "rex_lhHeapPool_AllocSlab", size = 0x10C }
+
+0x821C5768 = { name = "rex_lhHeightfield_ResourceTypeCheck", size = 0x448 }
+0x822D6C88 = { name = "rex_lhSpinLock_Acquire", size = 0x98 }
+0x822F3FF8 = { name = "rex_lhGameData_Init", size = 0x218 }
+0x82BABF58 = { name = "rex_lhHeightfield_InitStreaming", size = 0x370 }
+0x82BAC2C8 = { name = "rex_lhHeightfield_CleanupStreaming", size = 0x44C }
+0x82BAD028 = { name = "rex_lhHeightfield_StreamingUpdate", size = 0xEC }
+0x82BF1170 = { name = "rex_lhHeap_Realloc_Direct", size = 0xB4 }
+0x82CC3F38 = { name = "rex_lhXam_GetProcAddress", size = 0x74 }
+0x82CC4138 = { name = "rex_lhXam_XamContentCreateInternal", size = 0x144 }
+0x82CC4280 = { name = "rex_lhXam_XamContentDeleteInternal", size = 0x114 }
+0x82CC4398 = { name = "rex_lhXam_XamContentAggregateCreateEnumerator", size = 0xCC }
+0x83237490 = { name = "rex_lhHeapLarge_AllocFreeSlot", size = 0x70 }

@@ -20,8 +20,11 @@
 namespace {
 
 // GetFileSectorInfo — the game queries disc sector positions to optimize read
-// ordering. return 0 (no sector info).
+// ordering.  NtQueryInformationFile(FileSectorInformation) always fails on
+// recompiled builds.  Stub it to return 0 (no sector info) and log the call.
 ppc_u32_result_t GetFileSectorInfo_entry(ppc_u32_t handle) {
+    REXLOG_WARN("GetFileSectorInfo(handle={:#x}) -> 0 (stubbed)",
+                static_cast<uint32_t>(handle));
     return 0;
 }
 
@@ -117,21 +120,6 @@ ppc_u32_result_t lhHeap_Init_entry() {
     return 0;
 }
 
-// XPhysicalAlloc -- redirect all physical memory allocations to the rexcrt
-// o1heap. MmAllocatePhysicalMemoryEx fails due to Xenia physical heap
-// exhaustion; lhHeightfield_CreateBuffers falls back through lhMemAlloc ->
-// XMemAlloc -> XPhysicalAlloc, which we intercept here.
-// Original signature: XPhysicalAlloc(size, max_addr, alignment, protect)
-ppc_u32_result_t XPhysicalAlloc_entry(ppc_u32_t size, ppc_u32_t max_addr,
-    ppc_u32_t alignment, ppc_u32_t protect) {
-    auto& heap = rex::kernel::crt::GetHeap();
-    uint32_t addr = heap.Alloc(static_cast<uint32_t>(size), /*zero=*/true);
-    if (!addr) {
-        REXLOG_ERROR("XPhysicalAlloc hook: o1heap alloc({}) failed",
-                     static_cast<uint32_t>(size));
-    }
-    return addr;
-}
 
 }  // namespace
 
@@ -146,5 +134,124 @@ PPC_HOOK(rex_lh_lua_allocator, lh_lua_allocator_entry)
 PPC_HOOK(rex_lhHeap_Alloc, lhHeap_Alloc_entry)
 PPC_HOOK(rex_lhHeap_Free, lhHeap_Free_entry)
 PPC_HOOK(rex_lhHeap_Init, lhHeap_Init_entry)
-PPC_HOOK(rex_XPhysicalAlloc, XPhysicalAlloc_entry)
+
+// ---------------------------------------------------------------------------
+// Diagnostic helpers
+// ---------------------------------------------------------------------------
+
+// Extract bank name (wchar_t big-endian in guest memory) as ASCII.
+// Bank wstring: +12 = data/inline, +28 = length, +32 = capacity.
+// Inline if capacity < 8, otherwise +12 is a pointer.
+static void get_bank_name(uint8_t* base, uint32_t bank, char* out, size_t out_size) {
+    uint32_t capacity = PPC_LOAD_U32(bank + 32);
+    uint32_t wstr_addr = (capacity < 8) ? (bank + 12) : PPC_LOAD_U32(bank + 12);
+    size_t i = 0;
+    for (; i < out_size - 1; ++i) {
+        uint16_t wc = PPC_LOAD_U16(wstr_addr + i * 2);
+        if (!wc) break;
+        out[i] = (wc < 128) ? static_cast<char>(wc) : '?';
+    }
+    out[i] = '\0';
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic wrapper hooks for heightfield resource loading investigation
+// ---------------------------------------------------------------------------
+
+//// lhHeightfield_ResourceTypeCheck — log entry to confirm heightfield resource
+//// processing callback is invoked.
+//PPC_EXTERN_FUNC(__imp__rex_lhHeightfield_ResourceTypeCheck);
+//extern "C" PPC_FUNC(rex_lhHeightfield_ResourceTypeCheck) {
+//    REXLOG_WARN("lhHeightfield_ResourceTypeCheck called (r3={:#x})", ctx.r3.u32);
+//    __imp__rex_lhHeightfield_ResourceTypeCheck(ctx, base);
+//}
+//
+//// lhFile_Read — log file reads with filename extracted from lhFile struct.
+//// lhFile layout: +0 vtable, +4 string_ref (-> lhString), +8 handle, +12 stream
+//// lhString layout: +0 char* data pointer
+//PPC_EXTERN_FUNC(__imp__rex_lhFile_Read);
+//extern "C" PPC_FUNC(rex_lhFile_Read) {
+//    static int call_count = 0;
+//    ++call_count;
+//    {
+//        const char* filename = "<unknown>";
+//        uint32_t str_ref = PPC_LOAD_U32(ctx.r3.u32 + 4);
+//        if (str_ref) {
+//            uint32_t str_data = PPC_LOAD_U32(str_ref);
+//            if (str_data)
+//                filename = reinterpret_cast<const char*>(PPC_RAW_ADDR(str_data));
+//        }
+//        REXLOG_WARN("lhFile_Read #{} file=\"{}\" (buf={:#x}, size={:#x})",
+//                    call_count, filename, ctx.r4.u32, ctx.r5.u32);
+//    }
+//    __imp__rex_lhFile_Read(ctx, base);
+//}
+//
+//// lhResource_LoaderThread — log thread start/exit to confirm the background
+//// resource loader thread is running.
+//PPC_EXTERN_FUNC(__imp__rex_lhResource_LoaderThread);
+//extern "C" PPC_FUNC(rex_lhResource_LoaderThread) {
+//    REXLOG_WARN("lhResource_LoaderThread STARTED");
+//    __imp__rex_lhResource_LoaderThread(ctx, base);
+//    REXLOG_WARN("lhResource_LoaderThread EXITED");
+//}
+//
+//// ---------------------------------------------------------------------------
+//// Level loading diagnostic hooks
+//// ---------------------------------------------------------------------------
+//
+//// lhBank_OpenStreamByIndex — log bank stream opens.
+//// PPC args: r3=result_ptr, r4=bank, r5=index, r6=flag
+//PPC_EXTERN_FUNC(__imp__rex_lhBank_OpenStreamByIndex);
+//extern "C" PPC_FUNC(rex_lhBank_OpenStreamByIndex) {
+//    char name[128];
+//    get_bank_name(base, ctx.r4.u32, name, sizeof(name));
+//    uint32_t index = ctx.r5.u32;
+//
+//    __imp__rex_lhBank_OpenStreamByIndex(ctx, base);
+//
+//    uint32_t result = PPC_LOAD_U32(ctx.r3.u32);
+//    REXLOG_WARN("lhBank_OpenStreamByIndex bank=\"{}\" index={} -> {}",
+//                name, index, result ? "OK" : "NULL");
+//}
+//
+//// lhBank_OpenStreamByName — log named bank lookups.
+//// PPC args: r3=result_ptr, r4=bank, r5=name_struct, r6=flag
+//// name_struct+28 = pre-computed hash
+//PPC_EXTERN_FUNC(__imp__rex_lhBank_OpenStreamByName);
+//extern "C" PPC_FUNC(rex_lhBank_OpenStreamByName) {
+//    char name[128];
+//    get_bank_name(base, ctx.r4.u32, name, sizeof(name));
+//    uint32_t name_hash = ctx.r5.u32 ? PPC_LOAD_U32(ctx.r5.u32 + 28) : 0;
+//
+//    __imp__rex_lhBank_OpenStreamByName(ctx, base);
+//
+//    uint32_t result = PPC_LOAD_U32(ctx.r3.u32);
+//    REXLOG_WARN("lhBank_OpenStreamByName bank=\"{}\" hash={:#010x} -> {}",
+//                name, name_hash, result ? "OK" : "NULL");
+//}
+//
+//// lhResourceManager_Open — log resource manager opens to see if the loader
+//// thread actually processes resource requests during level loading.
+//// PPC args: r3=name/param, r4=result_ptr, r5=offset, r6=size, r7=flag1, r8=flag2
+//PPC_EXTERN_FUNC(__imp__rex_lhResourceManager_Open);
+//extern "C" PPC_FUNC(rex_lhResourceManager_Open) {
+//    uint32_t r3 = ctx.r3.u32, r5 = ctx.r5.u32, r6 = ctx.r6.u32;
+//
+//    __imp__rex_lhResourceManager_Open(ctx, base);
+//
+//    REXLOG_WARN("lhResourceManager_Open (r3={:#x}, offset={:#x}, size={:#x}) -> {}",
+//                r3, r5, r6, ctx.r3.u32 ? "OK" : "FAIL");
+//}
+//
+//// lhWorld_Update — log once to confirm the game transitions to gameplay.
+//PPC_EXTERN_FUNC(__imp__rex_lhWorld_Update);
+//extern "C" PPC_FUNC(rex_lhWorld_Update) {
+//    static bool logged = false;
+//    if (!logged) {
+//        REXLOG_WARN("lhWorld_Update called — game world is ticking");
+//        logged = true;
+//    }
+//    __imp__rex_lhWorld_Update(ctx, base);
+//}
 
