@@ -1549,6 +1549,8 @@ lstrcmpiA          = 0x8300BAD0
 0x82CC7630 = { name = "rex_CreateDirectoryA", size = 0x90 }
 0x82CC7818 = { name = "rex_GetFileInformation", size = 0x120 }
 0x82CC7BB8 = { name = "rex_GetFileSectorInfo", size = 0x58 }
+0x82CC7DD0 = { name = "rex_NtReadFileApc", size = 0x98 }
+0x82CD0760 = { name = "rex_ApcShim", size = 0x58 }
 0x82CC8DC0 = { name = "rex_MountDevice", size = 0x354 }
 0x82CDE910 = { name = "rex_lh_XAudioDriver_Init", size = 0x20 }
 0x82CDE930 = { name = "rex_lh_XAudioDriver_RegisterClient", size = 0x68 }
