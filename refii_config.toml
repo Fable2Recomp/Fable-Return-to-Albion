@@ -262,9 +262,9 @@ setjmp_address = 0x83006C90
 0x82237D60 = { size = 0x22C }
 0x822386D0 = { name = "rex_XMemAlloc", size = 0x94 }
 0x82238768 = { name = "rex_LocalAlloc", size = 0x44 }
-0x822387B8 = { name = "rex_RtlAllocateHeap", size = 0x87C }
+0x822387B8 = { name = "rex_RtlAllocateHeap", size = 0x8C4 }
 0x82239080 = { name = "rex_RtlpCoalesceFreeBlocks", size = 0x404 }
-0x82239490 = { name = "rex_RtlFreeHeap", size = 0x2A0 }
+0x82239490 = { name = "rex_RtlFreeHeap", size = 0x2E8 }
 0x82239778 = { name = "rex_LocalFree", size = 0x48 }
 0x822397C0 = { name = "rex_GetProcessHeap", size = 0xC }
 0x822397D0 = { name = "rex_LocalFree_0", size = 0x38 }
@@ -5866,22 +5866,22 @@ setjmp_address = 0x83006C90
 0x82CAA600 = { name = "rex__fpclass", size = 0xD4 }
 0x82CAA6D8 = { name = "rex__snprintf_0", size = 0x110 }
 0x82CAA7E8 = { name = "rex_strcpy_s_0", size = 0xE0 }
-0x82CAA910 = { name = "rex__fsopen", size = 0x154 }
+0x82CAA910 = { name = "rex__fsopen", size = 0x18C }
 0x82CAAAA0 = { name = "rex_fopen", size = 0x8 }
 0x82CAAAA8 = { name = "rex_fopen_s", size = 0x88 }
 0x82CAAB30 = { name = "rex__fclose_nolock", size = 0xB0 }
-0x82CAABE8 = { name = "rex_fclose", size = 0xE0 }
+0x82CAABE8 = { name = "rex_fclose", size = 0x118 }
 0x82CAAD00 = { name = "rex__fwrite_nolock", size = 0x264 }
-0x82CAAF70 = { name = "rex_fwrite", size = 0xD0 }
+0x82CAAF70 = { name = "rex_fwrite", size = 0x108 }
 0x82CAB078 = { name = "rex__flush", size = 0x94 }
 0x82CAB110 = { name = "rex__fflush_nolock", size = 0x78 }
-0x82CAB190 = { name = "rex_flsall", size = 0x174 }
-0x82CAB370 = { name = "rex_fflush", size = 0xBC }
+0x82CAB190 = { name = "rex_flsall", size = 0x1D8 }
+0x82CAB370 = { name = "rex_fflush", size = 0xF4 }
 0x82CAB468 = { name = "rex__flushall", size = 0x8 }
 0x82CAB470 = { name = "rex__setvbuf_nolock", size = 0xCC }
-0x82CAB548 = { name = "rex_setvbuf", size = 0xD0 }
+0x82CAB548 = { name = "rex_setvbuf", size = 0x108 }
 0x82CAB650 = { name = "rex_ftell", size = 0x224 }
-0x82CAB880 = { name = "rex_fflush_0", size = 0xC0 }
+0x82CAB880 = { name = "rex_fflush_0", size = 0xF8 }
 0x82CABA70 = { name = "rex__tolower_l", size = 0x44 }
 0x82CABAB8 = { name = "rex__atof_l", size = 0xF8 }
 0x82CABBB0 = { name = "rex_atof", size = 0x8 }
@@ -5950,7 +5950,7 @@ setjmp_address = 0x83006C90
 0x82CAEF60 = { name = "rex__unlock_file", size = 0x40 }
 0x82CAEFA0 = { name = "rex__unlock_file2", size = 0x24 }
 0x82CAEFC8 = { name = "rex_realloc", size = 0xF0 }
-0x82CAF170 = { name = "rex_fputs", size = 0x1F0 }
+0x82CAF170 = { name = "rex_fputs", size = 0x228 }
 0x82CAF398 = { name = "rex_strpbrk", size = 0x8C }
 0x82CAF428 = { name = "rex_modf", size = 0x130 }
 0x82CAF558 = { name = "rex_tanh", size = 0x100 }
@@ -5960,7 +5960,7 @@ setjmp_address = 0x83006C90
 0x82CAFD98 = { name = "rex__lockexit", size = 0x8 }
 0x82CAFDA0 = { name = "rex__unlockexit", size = 0x8 }
 0x82CAFDA8 = { name = "rex__initterm", size = 0x58 }
-0x82CAFE08 = { name = "rex_doexit", size = 0x120 }
+0x82CAFE08 = { name = "rex_doexit", size = 0x160 }
 0x82CAFF68 = { name = "rex_exit_0", size = 0xC }
 0x82CAFF78 = { name = "rex__exit_0", size = 0xC }
 0x82CAFF88 = { name = "rex__cexit", size = 0x10 }
@@ -6000,7 +6000,7 @@ setjmp_address = 0x83006C90
 0x82CB16D0 = { name = "rex_strcmp", size = 0x88 }
 0x82CB1768 = { name = "rex__wcsicmp", size = 0x68 }
 0x82CB17D8 = { name = "rex_fread_s_nolock", size = 0x28C }
-0x82CB1A70 = { name = "rex_fread_s", size = 0xE8 }
+0x82CB1A70 = { name = "rex_fread_s", size = 0x120 }
 0x82CB1B90 = { name = "rex_fread", size = 0x14 }
 0x82CB1C20 = { name = "rex___ascii_strnicmp", size = 0x68 }
 0x82CB1C88 = { name = "rex__strnicmp", size = 0xA4 }
@@ -6058,25 +6058,25 @@ setjmp_address = 0x83006C90
 0x82CB4EC8 = { name = "rex__getstream", size = 0x1B0 }
 0x82CB5080 = { name = "rex_longjmp_0", size = 0x28 }
 0x82CB50A8 = { name = "rex__close_nolock", size = 0xD8 }
-0x82CB5188 = { name = "rex__close", size = 0x138 }
+0x82CB5188 = { name = "rex__close", size = 0x170 }
 0x82CB52F8 = { name = "rex__fileno", size = 0x54 }
 0x82CB5350 = { name = "rex__freebuf", size = 0x68 }
 0x82CB53B8 = { name = "rex__write_nolock", size = 0x24C }
-0x82CB5610 = { name = "rex__write", size = 0x154 }
-0x82CB57A8 = { name = "rex__commit", size = 0x148 }
+0x82CB5610 = { name = "rex__write", size = 0x18C }
+0x82CB57A8 = { name = "rex__commit", size = 0x180 }
 0x82CB5928 = { name = "rex__mtinitlocks", size = 0x80 }
 0x82CB59A8 = { name = "rex__mtdeletelocks", size = 0x6C }
 0x82CB5A18 = { name = "rex__unlock", size = 0x14 }
-0x82CB5A38 = { name = "rex__mtinitlocknum", size = 0x110 }
+0x82CB5A38 = { name = "rex__mtinitlocknum", size = 0x13C }
 0x82CB5B78 = { name = "rex__lock", size = 0x60 }
 0x82CB5BD8 = { name = "rex__lseek", size = 0xB4 }
-0x82CB5C98 = { name = "rex__write_0", size = 0x154 }
+0x82CB5C98 = { name = "rex__write_0", size = 0x18C }
 0x82CB5E28 = { name = "rex__ioinit", size = 0xC4 }
 0x82CB5EF0 = { name = "rex__ioterm", size = 0x60 }
 0x82CB5F50 = { name = "rex__fltin2", size = 0xB4 }
 0x82CB6008 = { name = "rex__isctype_l", size = 0x34 }
 0x82CB6060 = { name = "rex___strgtold12_l", size = 0x988 }
-0x82CB6A00 = { name = "rex_raise", size = 0x2C0 }
+0x82CB6A00 = { name = "rex_raise", size = 0x300 }
 0x82CB6D00 = { name = "rex__frnd", size = 0x44 }
 0x82CB6D48 = { name = "rex_write_string", size = 0x98 }
 0x82CB6DE0 = { name = "rex__output_s_l", size = 0xB8C }
@@ -6107,12 +6107,12 @@ setjmp_address = 0x83006C90
 0x82CBC660 = { name = "rex_mktime", size = 0x2A4 }
 0x82CBC958 = { name = "rex__stricmp_0", size = 0x60 }
 0x82CBC9B8 = { name = "rex__read_nolock", size = 0x638 }
-0x82CBCFF8 = { name = "rex__read", size = 0x184 }
+0x82CBCFF8 = { name = "rex__read", size = 0x1BC }
 0x82CBD1B8 = { name = "rex__wctomb_s_l", size = 0x11C }
 0x82CBD2D8 = { name = "rex_wctomb_s", size = 0x8 }
 0x82CBD2E0 = { name = "rex___crt_debugger_hook", size = 0x10 }
 0x82CBD2F0 = { name = "rex__lseeki64_nolock", size = 0xC4 }
-0x82CBD3C0 = { name = "rex__lseeki64", size = 0x158 }
+0x82CBD3C0 = { name = "rex__lseeki64", size = 0x190 }
 0x82CBD550 = { name = "rex__getbuf", size = 0x88 }
 0x82CBD728 = { name = "rex__fptrap", size = 0x8 }
 0x82CBD730 = { name = "rex___initmbctable", size = 0x2C }
@@ -6137,7 +6137,7 @@ setjmp_address = 0x83006C90
 0x82CBFFE0 = { name = "rex__ld12tof", size = 0x6F8 }
 0x82CC06D8 = { name = "rex___mtold12", size = 0x294 }
 0x82CC0970 = { name = "rex__ungetc_nolock", size = 0x1D0 }
-0x82CC0B48 = { name = "rex_ungetc", size = 0xB0 }
+0x82CC0B48 = { name = "rex_ungetc", size = 0xE8 }
 0x82CC0C30 = { name = "rex__CallSettingFrame", size = 0x5C }
 0x82CC0C8C = { name = "rex__JumpToContinuation", size = 0xC0 }
 0x82CC0D70 = { name = "rex__UnwindNestedFrames", size = 0xA4 }
@@ -6166,7 +6166,7 @@ setjmp_address = 0x83006C90
 0x82CC2D80 = { name = "rex_XGetOverlappedResult", size = 0x98 }
 0x82CC2E80 = { name = "rex_Sleep", size = 0x8 }
 0x82CC2EC0 = { name = "rex_XShaderPDBBuilder_AddVariableDebugInfo", size = 0x28 }
-0x82CC2F10 = { name = "rex_lhVFS_CheckUpdatePath", size = 0x304 }
+0x82CC2F10 = { name = "rex_lhVFS_CheckUpdatePath", size = 0x36C }
 0x82CC3490 = { name = "rex_CreateFileA", size = 0x1F4 }
 0x82CC3688 = { name = "rex_ReadFile", size = 0x184 }
 0x82CC3858 = { name = "rex_XLaunchNewImage", size = 0x8C }
@@ -6188,7 +6188,7 @@ setjmp_address = 0x83006C90
 0x82CC5790 = { name = "rex_RtlpExtendHeap", size = 0x23C }
 0x82CC59D0 = { name = "rex_RtlpDeCommitFreeBlock", size = 0x360 }
 0x82CC5D38 = { name = "rex_RtlCreateHeap", size = 0x5A0 }
-0x82CC62E0 = { name = "rex_RtlReAllocateHeap", size = 0x868 }
+0x82CC62E0 = { name = "rex_RtlReAllocateHeap", size = 0x8AC }
 0x82CC6BC0 = { name = "rex_HeapCreate", size = 0x80 }
 0x82CC6D18 = { name = "rex_XMemSet128", size = 0xF8 }
 0x82CC6E10 = { name = "rex_GetFileSize", size = 0x68 }
@@ -6658,36 +6658,68 @@ setjmp_address = 0x83006C90
 0x82DDFCE8 = { size = 0x4C }
 0x82DDFD38 = { size = 0x50 }
 0x82DDFD88 = { size = 0xE8 }
+0x82DE2BA8 = { size = 0x1C }
+0x82DE2BC8 = { size = 0x18 }
+0x82DE2BE0 = { size = 0x1C }
+0x82DE2C00 = { size = 0x1C }
+0x82DE2C20 = { size = 0x1C }
 0x82DE2C40 = { size = 0xB4 }
 0x82DE2CF8 = { size = 0x50 }
 0x82DF9720 = { name = "rex___iob_func_255", size = 0xC }
 0x82DF9810 = { name = "rex___iob_func_256", size = 0xC }
+0x82DF99D0 = { size = 0x1C }
+0x82DF99F0 = { size = 0x94 }
 0x82DFB820 = { size = 0x124 }
 0x82E08260 = { size = 0x60 }
+0x82E082C0 = { size = 0xC }
+0x82E082D0 = { size = 0xC }
 0x82E082E0 = { size = 0x68 }
 0x82E08770 = { size = 0x1A8 }
+0x82E08A30 = { size = 0xC }
 0x82E08A40 = { size = 0x60 }
+0x82E08AA0 = { size = 0xC }
+0x82E08AB0 = { size = 0xC }
 0x82E08AC0 = { size = 0x68 }
 0x82E08B28 = { size = 0x190 }
 0x82E08CB8 = { size = 0x50 }
 0x82E08E30 = { size = 0x70 }
+0x82E08EA0 = { size = 0x20 }
+0x82E08EC8 = { size = 0x1C }
 0x82E08EE8 = { size = 0x3C }
+0x82E08F28 = { size = 0x24 }
+0x82E08F50 = { size = 0x4 }
+0x82E08F58 = { size = 0x14 }
+0x82E08F70 = { size = 0x14 }
+0x82E08F88 = { size = 0x14 }
 0x82E08FA0 = { size = 0x78 }
+0x82E09018 = { size = 0x34 }
 0x82E09050 = { size = 0x44C }
+0x82E09710 = { size = 0x3C }
+0x82E09750 = { size = 0x34 }
+0x82E09788 = { size = 0x4 }
 0x82E09790 = { size = 0x6C }
+0x82E09870 = { size = 0x4 }
 0x82E09878 = { size = 0x1F8 }
 0x82E09A70 = { size = 0x3D0 }
 0x82E09EE8 = { size = 0x84 }
+0x82E09F70 = { size = 0x44 }
+0x82E09FB8 = { size = 0x4 }
 0x82E09FC0 = { size = 0x3C }
+0x82E0A080 = { size = 0x4 }
 0x82E0A088 = { size = 0x23C }
 0x82E0A660 = { size = 0x80 }
 0x82E0A8B8 = { size = 0x940 }
 0x82E0BC30 = { size = 0x84 }
 0x82E0BCB8 = { size = 0x60 }
+0x82E0BD18 = { size = 0xC }
+0x82E0BD28 = { size = 0xC }
 0x82E0C688 = { size = 0xC28 }
 0x82E123B0 = { size = 0x170 }
 0x82E12530 = { size = 0x1B8 }
+0x82E29440 = { name = "rex_XGComparePixelShaders_50", size = 0x8 }
+0x82E2D5F0 = { size = 0x8 }
 0x82E2D5F8 = { name = "rex___iob_func_257", size = 0xC }
+0x82E3B7A8 = { size = 0x28 }
 0x82E3B998 = { size = 0x60 }
 0x82E3CD18 = { size = 0x60 }
 0x82E3D118 = { size = 0x50 }
@@ -6695,8 +6727,11 @@ setjmp_address = 0x83006C90
 0x82E4A270 = { name = "rex___iob_func_259", size = 0xC }
 0x82E4A388 = { name = "rex___iob_func_260", size = 0xC }
 0x82E4A458 = { name = "rex___iob_func_261", size = 0xC }
+0x82E4A5C8 = { size = 0x14 }
 0x82E4A5E0 = { size = 0x5C }
 0x82E4A750 = { name = "rex___iob_func_262", size = 0xC }
+0x82E4A968 = { size = 0x14 }
+0x82E4A9A0 = { size = 0x2C }
 0x82E4AAB0 = { name = "rex___iob_func_263", size = 0xC }
 0x82E4AB60 = { name = "rex___iob_func_264", size = 0xC }
 0x82E4ABA8 = { name = "rex___iob_func_265", size = 0xC }
@@ -6802,6 +6837,7 @@ setjmp_address = 0x83006C90
 0x82E833B0 = { name = "rex___iob_func_309", size = 0xC }
 0x82E833C0 = { size = 0xA8 }
 0x82E84C68 = { size = 0x10 }
+0x82E87380 = { size = 0x44 }
 0x82E873C8 = { size = 0x6C }
 0x82E88608 = { size = 0x38 }
 0x82E8A2C0 = { name = "rex___iob_func_310", size = 0xC }
@@ -6814,6 +6850,7 @@ setjmp_address = 0x83006C90
 0x82E8BC90 = { size = 0x48 }
 0x82E8D820 = { size = 0x38 }
 0x82E8E010 = {}
+0x82E8E028 = { size = 0x44 }
 0x82E8EFE0 = { name = "rex___iob_func_314", size = 0xC }
 0x82E8EFF0 = { name = "rex___iob_func_315", size = 0xC }
 0x82E8F040 = { name = "rex___iob_func_316", size = 0xC }
@@ -6829,6 +6866,9 @@ setjmp_address = 0x83006C90
 0x82E8FDB0 = { size = 0x38 }
 0x82E90198 = { size = 0x38 }
 0x82E960C0 = { name = "rex___iob_func_320", size = 0xC }
+0x82E96550 = { size = 0xA8 }
+0x82E965F8 = { size = 0xA8 }
+0x82E966A0 = { size = 0xA8 }
 0x82E96E58 = { size = 0x80 }
 0x82E97D40 = { size = 0x8C }
 0x82E97DD0 = { size = 0x8C }
@@ -6854,6 +6894,8 @@ setjmp_address = 0x83006C90
 0x82E9C0C8 = { name = "rex___iob_func_328", size = 0xC }
 0x82E9C380 = { size = 0x64 }
 0x82E9C5A8 = { name = "rex___iob_func_329", size = 0xC }
+0x82E9CD40 = { size = 0x44 }
+0x82E9CD88 = { size = 0x3C }
 0x82E9D650 = { name = "rex___iob_func_330", size = 0xC }
 0x82E9DB00 = { size = 0x68 }
 0x82E9DBE0 = { name = "rex___iob_func_331", size = 0xC }
@@ -6871,6 +6913,11 @@ setjmp_address = 0x83006C90
 0x82EB1130 = {}
 0x82EB1190 = { size = 0x3F4 }
 0x82EB1588 = { size = 0x48 }
+0x82EB4268 = { size = 0x8 }
+0x82EB4270 = { size = 0x70 }
+0x82EB42E0 = { size = 0x1C }
+0x82EB4300 = { size = 0x38 }
+0x82EB4338 = { size = 0x38 }
 0x82EB4530 = { size = 0x670 }
 0x82EB4D30 = { size = 0x6C }
 0x82EB4DF0 = { size = 0x58 }
@@ -6886,6 +6933,7 @@ setjmp_address = 0x83006C90
 0x82EB56E8 = { name = "rex___iob_func_343", size = 0xC }
 0x82EB57E8 = { name = "rex___iob_func_344", size = 0xC }
 0x82EB57F8 = { name = "rex___iob_func_345", size = 0xC }
+0x82EB5818 = { size = 0x18 }
 0x82EB9FF0 = { name = "rex___iob_func_346", size = 0xC }
 0x82EBBF80 = { size = 0x48 }
 0x82EBDCB0 = { size = 0x54 }
@@ -6950,6 +6998,7 @@ setjmp_address = 0x83006C90
 0x82ECC5A0 = { size = 0x64 }
 0x82ED04E8 = { name = "rex___iob_func_371", size = 0xC }
 0x82ED0BA0 = { size = 0x38 }
+0x82ED36B8 = { size = 0x2C }
 0x82ED5A20 = { name = "rex__exit_1", size = 0xC }
 0x82ED9A08 = { name = "rex___iob_func_372", size = 0xC }
 0x82EDB1F8 = { size = 0x58 }
@@ -7283,6 +7332,8 @@ setjmp_address = 0x83006C90
 0x82FEC470 = { size = 0x464 }
 0x82FEC8D8 = { size = 0x3B8 }
 0x82FECC90 = { size = 0x440 }
+0x830049A0 = { size = 0x1B8 }
+0x83006078 = { size = 0x1BC }
 0x830065D0 = { name = "rex___u64tod", size = 0x28 }
 0x83006C90 = { name = "rex_setjmp", size = 0x2CC }
 0x83007E80 = { name = "rex__fileno_1", size = 0x58 }
@@ -7294,7 +7345,7 @@ setjmp_address = 0x83006C90
 0x8300A0F0 = { name = "rex___iob_func_381", size = 0xC }
 0x8300A180 = { name = "rex__fltin2_0", size = 0xB8 }
 0x8300A4D0 = { name = "rex___strgtold12_l_0", size = 0x98C }
-0x8300B0D8 = { name = "rex_fflush_1", size = 0xC0 }
+0x8300B0D8 = { name = "rex_fflush_1", size = 0xF8 }
 0x8300B398 = { name = "rex_PIXAddCounter", size = 0x68 }
 0x8300B520 = { name = "rex_PIXSubmitDrPixCounters", size = 0x11C }
 0x8300B640 = { name = "rex_PIXGetCaptureState", size = 0x30 }

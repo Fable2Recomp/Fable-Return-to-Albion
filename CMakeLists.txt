@@ -9,12 +9,14 @@ project(refii LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+#set(REXSDK_VERSION "0.3.0" CACHE STRING "Override SDK version" FORCE)
+
 include(generated/rexglue.cmake)
 
 # Sources
 set(REFII_SOURCES
     src/main.cpp
-    src/hooks.cpp
+    #src/hooks.cpp
 )
 
 if(WIN32)
