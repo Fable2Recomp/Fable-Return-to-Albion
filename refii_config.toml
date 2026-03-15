@@ -27,27 +27,27 @@ setjmp_address = 0x83006C90
 # MoveFileA          = 0x8300BA00
 
 # Heap
-# RtlAllocateHeap    = 0x822387B8
-# RtlFreeHeap        = 0x82239490
-# RtlSizeHeap        = 0x82239808
-# RtlReAllocateHeap  = 0x82CC62E0
+ RtlAllocateHeap    = 0x822387B8
+ RtlFreeHeap        = 0x82239490
+ RtlSizeHeap        = 0x82239808
+ RtlReAllocateHeap  = 0x82CC62E0
 
 # Memory
-# memcpy             = 0x82CA9480
-# memmove            = 0x82CB0B30
-# memset             = 0x82CA99B0
-# memchr             = 0x82CABF80
-# memcpy_s           = 0x82CA9F50
-# memmove_s          = 0x82CAA028
+ memcpy             = 0x82CA9480
+ memmove            = 0x82CB0B30
+ memset             = 0x82CA99B0
+ memchr             = 0x82CABF80
+ memcpy_s           = 0x82CA9F50
+ memmove_s          = 0x82CAA028
 
 # String
-# strncmp            = 0x82CAA0F0
-# strncpy            = 0x822CD0A8
-# strchr             = 0x82CAA210
-# strrchr            = 0x82CAD890
-# _stricmp           = 0x82CACB50
-# strcpy_s           = 0x82170CC8
-# lstrcmpiA          = 0x8300BAD0
+ strncmp            = 0x82CAA0F0
+ strncpy            = 0x822CD0A8
+ strchr             = 0x82CAA210
+ strrchr            = 0x82CAD890
+ _stricmp           = 0x82CACB50
+ strcpy_s           = 0x82170CC8
+ lstrcmpiA          = 0x8300BAD0
 
 
 [functions]

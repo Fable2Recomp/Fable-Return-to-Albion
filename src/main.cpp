@@ -2,9 +2,8 @@
 //
 // This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 
-#include "generated/refii_config.h"
-#include "generated/refii_init.h"
+#include "refii_host.h"
 
-#include "refii_app.h"
+#include <rex/ui/windowed_app.h>
 
-REX_DEFINE_APP(refii, RefiiApp::Create)
+REX_DEFINE_APP(refii, CreateRefiiApp)
