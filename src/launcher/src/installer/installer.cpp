@@ -6,9 +6,14 @@
 #include "platform.h"
 #include "versionmanager.h"
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <ostream>
+#include <sstream>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -54,6 +59,99 @@ std::string GetGameMarkerRelativePath() {
     return INI::GetString("GameMarkerFile", "game/default.xexp", "Game");
 }
 
+std::string Trim(std::string value) {
+    const auto isWhitespace = [](unsigned char character) {
+        return std::isspace(character) != 0;
+    };
+
+    value.erase(
+        value.begin(),
+        std::find_if(value.begin(), value.end(), [&](unsigned char character) {
+            return !isWhitespace(character);
+        }));
+    value.erase(
+        std::find_if(value.rbegin(), value.rend(), [&](unsigned char character) {
+            return !isWhitespace(character);
+        }).base(),
+        value.end());
+    return value;
+}
+
+std::vector<std::string> SplitList(const std::string& value, char delimiter) {
+    std::vector<std::string> entries;
+    std::stringstream stream(value);
+    std::string entry;
+    while (std::getline(stream, entry, delimiter)) {
+        entry = Trim(entry);
+        if (!entry.empty()) {
+            entries.push_back(entry);
+        }
+    }
+    return entries;
+}
+
+std::string GetManagedFilesConfigValue() {
+    const std::string configuredValue =
+        GetPlatformAwareString("ManagedFiles", "", "Github");
+    if (!configuredValue.empty()) {
+        return configuredValue;
+    }
+
+    return GetPlatformAwareString("ExeRelativePath", "", "Github");
+}
+
+ManagedDownloadFile ParseManagedDownloadFile(const std::string& entry) {
+    ManagedDownloadFile file;
+
+    const std::size_t separatorPos = entry.find('|');
+    if (separatorPos == std::string::npos) {
+        file.repositoryRelativePath = Trim(entry);
+        file.localRelativePath =
+            std::filesystem::path(file.repositoryRelativePath).filename();
+    } else {
+        file.repositoryRelativePath = Trim(entry.substr(0, separatorPos));
+        file.localRelativePath = Trim(entry.substr(separatorPos + 1));
+    }
+
+    file.versionKey = file.localRelativePath.generic_string();
+    return file;
+}
+
+std::string BuildRawDownloadUrl(const std::string& repositoryRelativePath) {
+    return "https://github.com/" + GetRepositoryName() + "/raw/" +
+           GetRepositoryBranch() + "/" + repositoryRelativePath;
+}
+
+bool ReplaceDownloadedFile(
+    const std::filesystem::path& temporaryPath,
+    const std::filesystem::path& destinationPath,
+    std::string* error) {
+    try {
+        std::filesystem::create_directories(destinationPath.parent_path());
+
+        if (std::filesystem::exists(destinationPath)) {
+            std::filesystem::remove(destinationPath);
+        }
+
+        std::filesystem::rename(temporaryPath, destinationPath);
+        return true;
+    } catch (const std::exception&) {
+        try {
+            std::filesystem::copy_file(
+                temporaryPath,
+                destinationPath,
+                std::filesystem::copy_options::overwrite_existing);
+            std::filesystem::remove(temporaryPath);
+            return true;
+        } catch (const std::exception& exception) {
+            if (error) {
+                *error = exception.what();
+            }
+            return false;
+        }
+    }
+}
+
 }  // namespace
 
 namespace Installer {
@@ -88,16 +186,40 @@ std::string GetDownloadUrl() {
         return "";
     }
 
-    return "https://github.com/" + GetRepositoryName() + "/raw/" +
-           GetRepositoryBranch() + "/" + executableRelativePath;
+    return BuildRawDownloadUrl(executableRelativePath);
+}
+
+std::string GetDownloadUrlForRelativePath(const std::string& repositoryRelativePath) {
+    if (repositoryRelativePath.empty()) {
+        return "";
+    }
+
+    return BuildRawDownloadUrl(repositoryRelativePath);
+}
+
+std::vector<ManagedDownloadFile> GetManagedDownloadFiles() {
+    const std::string managedFilesValue = GetManagedFilesConfigValue();
+    if (managedFilesValue.empty()) {
+        return {};
+    }
+
+    std::vector<ManagedDownloadFile> files;
+    for (const std::string& entry : SplitList(managedFilesValue, ';')) {
+        ManagedDownloadFile file = ParseManagedDownloadFile(entry);
+        if (!file.repositoryRelativePath.empty() && !file.localRelativePath.empty()) {
+            files.push_back(std::move(file));
+        }
+    }
+
+    return files;
 }
 
 bool HasDownloadSource() {
-    return !GetDownloadUrl().empty();
+    return !GetManagedDownloadFiles().empty();
 }
 
 bool CanCheckForUpdates() {
-    return !GetConfiguredExecutableRelativePath().empty();
+    return !GetManagedDownloadFiles().empty();
 }
 
 std::filesystem::path GetInstallBasePath() {
@@ -107,6 +229,10 @@ std::filesystem::path GetInstallBasePath() {
 
 std::filesystem::path GetInstalledExecutablePath() {
     return Platform::GetExecutableDirectory() / GetExecutableName();
+}
+
+std::filesystem::path GetInstalledManagedFilePath(const ManagedDownloadFile& file) {
+    return Platform::GetExecutableDirectory() / file.localRelativePath;
 }
 
 std::filesystem::path GetGameDataDirectoryPath() {
@@ -121,6 +247,21 @@ std::filesystem::path GetGameMarkerPath() {
     return GetInstallBasePath() / GetGameMarkerRelativePath();
 }
 
+bool HasInstalledBuild() {
+    const std::vector<ManagedDownloadFile> files = GetManagedDownloadFiles();
+    if (files.empty()) {
+        return std::filesystem::exists(GetInstalledExecutablePath());
+    }
+
+    for (const ManagedDownloadFile& file : files) {
+        if (!std::filesystem::exists(GetInstalledManagedFilePath(file))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool HasExtractedAssets(
     const std::filesystem::path& gameDataDirectory,
     const std::filesystem::path& markerPath) {
@@ -131,6 +272,32 @@ bool UninstallManagedFiles(std::ostream& log) {
     const std::filesystem::path gameDataPath = GetGameDataDirectoryPath();
     const std::filesystem::path updateDataPath = GetUpdateDirectoryPath();
     bool hasRemovedFiles = false;
+
+    for (const ManagedDownloadFile& file : GetManagedDownloadFiles()) {
+        const std::filesystem::path installedPath = GetInstalledManagedFilePath(file);
+        if (!std::filesystem::exists(installedPath)) {
+            continue;
+        }
+
+        try {
+            std::filesystem::remove(installedPath);
+            hasRemovedFiles = true;
+            log << "Removed managed runtime file: " << installedPath.string() << std::endl;
+        } catch (const std::exception& exception) {
+            log << "Error removing managed runtime file " << installedPath.string()
+                << ": " << exception.what() << std::endl;
+        }
+    }
+
+    if (VersionManager::VersionFileExists()) {
+        try {
+            VersionManager::RemoveVersionFile();
+            hasRemovedFiles = true;
+            log << "Removed version file." << std::endl;
+        } catch (const std::exception& exception) {
+            log << "Error removing version file: " << exception.what() << std::endl;
+        }
+    }
 
     if (std::filesystem::exists(gameDataPath)) {
         try {
@@ -268,6 +435,77 @@ void InstallGameAsync(
         } else {
             progress->hasError = true;
             progress->errorMessage = installError.empty() ? "Game installation failed" : installError;
+        }
+    }).detach();
+}
+
+void DownloadManagedFilesAsync(
+    const std::vector<ManagedDownloadFile>& files,
+    std::shared_ptr<ManagedDownloadProgress> progress,
+    std::function<void()> onSuccessCallback) {
+    std::thread([files, progress, onSuccessCallback]() {
+        progress->isComplete = false;
+        progress->hasError = false;
+        progress->bytesDownloaded = 0;
+        progress->totalBytes = 0;
+        progress->currentFileIndex = 0;
+        progress->totalFiles = static_cast<int>(files.size());
+        progress->SetCurrentFileName("");
+        {
+            std::lock_guard<std::mutex> lock(progress->mutex);
+            progress->errorMessage.clear();
+        }
+
+        for (std::size_t index = 0; index < files.size(); ++index) {
+            const ManagedDownloadFile& file = files[index];
+            progress->currentFileIndex = static_cast<int>(index + 1);
+            progress->bytesDownloaded = 0;
+            progress->totalBytes = 0;
+            progress->SetCurrentFileName(file.localRelativePath.filename().string());
+
+            const std::filesystem::path destinationPath = GetInstalledManagedFilePath(file);
+            const std::filesystem::path temporaryPath =
+                destinationPath.string() + ".download";
+
+            std::string error;
+            const bool downloadSucceeded = Platform::DownloadFile(
+                GetDownloadUrlForRelativePath(file.repositoryRelativePath),
+                temporaryPath,
+                [progress](std::size_t downloaded, std::size_t total) {
+                    progress->bytesDownloaded = downloaded;
+                    progress->totalBytes = total;
+                },
+                &error);
+            if (!downloadSucceeded) {
+                std::error_code ignoredError;
+                std::filesystem::remove(temporaryPath, ignoredError);
+                progress->hasError = true;
+                {
+                    std::lock_guard<std::mutex> lock(progress->mutex);
+                    progress->errorMessage =
+                        error.empty() ? "Download failed" : error;
+                }
+                progress->isComplete = true;
+                return;
+            }
+
+            if (!ReplaceDownloadedFile(temporaryPath, destinationPath, &error)) {
+                std::error_code ignoredError;
+                std::filesystem::remove(temporaryPath, ignoredError);
+                progress->hasError = true;
+                {
+                    std::lock_guard<std::mutex> lock(progress->mutex);
+                    progress->errorMessage =
+                        error.empty() ? "Failed to replace file" : error;
+                }
+                progress->isComplete = true;
+                return;
+            }
+        }
+
+        progress->isComplete = true;
+        if (onSuccessCallback) {
+            onSuccessCallback();
         }
     }).detach();
 }

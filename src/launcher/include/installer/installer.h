@@ -2,10 +2,12 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <iosfwd>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 struct IsoExtractionProgress {
     std::atomic<bool> isExtracting{false};
@@ -24,6 +26,52 @@ struct IsoExtractionProgress {
     }
 };
 
+struct ManagedDownloadFile {
+    std::string repositoryRelativePath;
+    std::filesystem::path localRelativePath;
+    std::string versionKey;
+};
+
+struct ManagedDownloadProgress {
+    std::atomic<size_t> bytesDownloaded{0};
+    std::atomic<size_t> totalBytes{0};
+    std::atomic<int> currentFileIndex{0};
+    std::atomic<int> totalFiles{0};
+    std::atomic<bool> isComplete{false};
+    std::atomic<bool> hasError{false};
+    std::string currentFileName;
+    std::string errorMessage;
+    mutable std::mutex mutex;
+
+    float GetPercentage() const {
+        if (totalBytes.load() == 0) {
+            return 0.0f;
+        }
+        return static_cast<float>(bytesDownloaded.load()) /
+               static_cast<float>(totalBytes.load()) * 100.0f;
+    }
+
+    void SetCurrentFileName(const std::string& fileName) {
+        std::lock_guard<std::mutex> lock(mutex);
+        currentFileName = fileName;
+    }
+
+    std::string GetCurrentFileName() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return currentFileName;
+    }
+
+    void SetErrorMessage(const std::string& message) {
+        std::lock_guard<std::mutex> lock(mutex);
+        errorMessage = message;
+    }
+
+    std::string GetErrorMessage() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return errorMessage;
+    }
+};
+
 namespace Installer {
 
 std::string EnsureTrailingSeparator(std::string path);
@@ -32,16 +80,20 @@ std::string GetGameTitle();
 std::string GetExecutableName();
 std::string GetConfiguredExecutableRelativePath();
 std::string GetDownloadUrl();
+std::string GetDownloadUrlForRelativePath(const std::string& repositoryRelativePath);
+std::vector<ManagedDownloadFile> GetManagedDownloadFiles();
 
 bool HasDownloadSource();
 bool CanCheckForUpdates();
 
 std::filesystem::path GetInstallBasePath();
 std::filesystem::path GetInstalledExecutablePath();
+std::filesystem::path GetInstalledManagedFilePath(const ManagedDownloadFile& file);
 std::filesystem::path GetGameDataDirectoryPath();
 std::filesystem::path GetUpdateDirectoryPath();
 std::filesystem::path GetGameMarkerPath();
 
+bool HasInstalledBuild();
 bool HasExtractedAssets(
     const std::filesystem::path& gameDataDirectory,
     const std::filesystem::path& markerPath);
@@ -68,5 +120,9 @@ void InstallGameAsync(
     const std::string& isoPath,
     const std::string& xexpPath,
     std::shared_ptr<IsoExtractionProgress> progress);
+void DownloadManagedFilesAsync(
+    const std::vector<ManagedDownloadFile>& files,
+    std::shared_ptr<ManagedDownloadProgress> progress,
+    std::function<void()> onSuccessCallback = nullptr);
 
 }  // namespace Installer

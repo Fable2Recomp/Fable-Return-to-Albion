@@ -5,7 +5,6 @@
 #include "refii_host.h"
 
 #include "generated/refii_config.h"
-#include "generated/refii_init.h"
 #include "refii_app.h"
 
 #include <algorithm>

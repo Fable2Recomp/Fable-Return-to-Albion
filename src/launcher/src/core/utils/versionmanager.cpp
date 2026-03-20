@@ -1,51 +1,106 @@
 #include "versionmanager.h"
 #include "inimanager.h"
 #include "launcherpaths.h"
-#include <fstream>
+
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <map>
+
+namespace {
+
+std::string TrimTrailingCarriageReturn(std::string value) {
+    while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) {
+        value.pop_back();
+    }
+    return value;
+}
+
+}  // namespace
 
 void VersionManager::SaveCurrentVersion(const std::string& commitSha) {
+    SaveCurrentVersions({ {"", commitSha} });
+}
+
+void VersionManager::SaveCurrentVersions(const std::map<std::string, std::string>& versions) {
     try {
-        std::string versionFilePath = GetVersionFilePath();
-        
+        const std::string versionFilePath = GetVersionFilePath();
+
         std::filesystem::path filePath(versionFilePath);
         std::filesystem::create_directories(filePath.parent_path());
-        
+
         std::ofstream file(versionFilePath);
-        if (file.is_open()) {
-            file << commitSha;
-            file.close();
-        } else {
+        if (!file.is_open()) {
             std::cout << "Failed to save version file: " << versionFilePath << std::endl;
+            return;
         }
-    }
-    catch (const std::exception& e) {
+
+        for (const auto& [key, value] : versions) {
+            if (value.empty()) {
+                continue;
+            }
+
+            if (key.empty()) {
+                file << value << '\n';
+            } else {
+                file << key << '=' << value << '\n';
+            }
+        }
+    } catch (const std::exception& e) {
         std::cout << "Error saving version: " << e.what() << std::endl;
     }
 }
 
 std::string VersionManager::LoadSavedVersion() {
+    const std::map<std::string, std::string> versions = LoadSavedVersions();
+    const auto legacyIt = versions.find("");
+    if (legacyIt != versions.end()) {
+        return legacyIt->second;
+    }
+
+    if (!versions.empty()) {
+        return versions.begin()->second;
+    }
+
+    return "";
+}
+
+std::map<std::string, std::string> VersionManager::LoadSavedVersions() {
+    std::map<std::string, std::string> versions;
+
     try {
-        std::string versionFilePath = GetVersionFilePath();
-        
+        const std::string versionFilePath = GetVersionFilePath();
         if (!std::filesystem::exists(versionFilePath)) {
-            return "";
+            return versions;
         }
-        
+
         std::ifstream file(versionFilePath);
         if (file.is_open()) {
-            std::string version;
-            std::getline(file, version);
-            file.close();
-            return version;
+            std::string line;
+            while (std::getline(file, line)) {
+                line = TrimTrailingCarriageReturn(line);
+                if (line.empty()) {
+                    continue;
+                }
+
+                const std::size_t separatorPos = line.find('=');
+                if (separatorPos == std::string::npos) {
+                    versions[""] = line;
+                    continue;
+                }
+
+                const std::string key = line.substr(0, separatorPos);
+                const std::string value = line.substr(separatorPos + 1);
+                if (!key.empty() && !value.empty()) {
+                    versions[key] = value;
+                }
+            }
         }
-    }
-    catch (const std::exception& e) {
+    } catch (const std::exception& e) {
         std::cout << "Error loading version: " << e.what() << std::endl;
     }
-    
-    return "";
+
+    return versions;
 }
 
 bool VersionManager::VersionFileExists() {
@@ -70,7 +125,7 @@ void VersionManager::RemoveVersionFile() {
 }
 
 const std::string VersionManager::GetVersionFilePath() {
-    const std::filesystem::path basePath = LauncherPaths::ResolveFromLauncherDirectory(
-        INI::GetString("GamePath", "assets/", "Game"));
-    return (basePath / INI::GetString("VersionFile", "version.txt", "Game")).string();
+    return LauncherPaths::ResolveFromLauncherDirectory(
+        INI::GetString("VersionFile", "version.txt", "Game"))
+        .string();
 }

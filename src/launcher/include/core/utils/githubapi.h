@@ -36,15 +36,15 @@ public:
         const std::string& branch,
         const std::string& filePath,
         std::function<void(std::string)> callback);
-
-private:
-    static std::vector<GitCommit> FetchCommits(const std::string& repo, const std::string& branch);
-    static std::vector<GitContributor> FetchContributors(const std::string& repo);
     static std::string FetchLatestCommitSha(const std::string& repo, const std::string& branch);
     static std::string FetchLatestCommitShaForFile(
         const std::string& repo,
         const std::string& branch,
         const std::string& filePath);
+
+private:
+    static std::vector<GitCommit> FetchCommits(const std::string& repo, const std::string& branch);
+    static std::vector<GitContributor> FetchContributors(const std::string& repo);
     static std::vector<GitCommit> ParseCommitsJson(const std::string& json);
     static std::vector<GitContributor> ParseContributorsJson(const std::string& json);
     static std::string ExtractJsonString(const std::string& json, const std::string& key, size_t startPos);

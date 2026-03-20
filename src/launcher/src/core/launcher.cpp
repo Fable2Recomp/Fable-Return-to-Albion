@@ -7,18 +7,21 @@
 #include "platform.h"
 #include "smartstyles.h"
 #include "window.h"
-#include "utils/filedownloader.h"
 #include "utils/githubapi.h"
 #include "utils/inimanager.h"
 #include "utils/logsystem.h"
 #include "utils/versionmanager.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -87,13 +90,16 @@ int main(int argc, char** argv) {
     BackgroundManager backgroundManager;
     ChangeLog changeLog;
     Credits credits;
-    std::shared_ptr<DownloadProgress> downloadProgress = nullptr;
+    std::shared_ptr<ManagedDownloadProgress> downloadProgress = nullptr;
     std::shared_ptr<IsoExtractionProgress> isoProgress = nullptr;
 
-    std::string latestCommitSha;
-    std::string savedCommitSha;
-    bool isCheckingForUpdates = false;
-    bool updateAvailable = false;
+    std::map<std::string, std::string> savedVersions =
+        VersionManager::LoadSavedVersions();
+    std::map<std::string, std::string> latestVersions;
+    std::vector<ManagedDownloadFile> pendingUpdateFiles;
+    std::mutex updateStateMutex;
+    std::atomic<bool> isCheckingForUpdates{false};
+    std::atomic<bool> updateAvailable{false};
     bool gameIsRunning = false;
     Platform::ProcessHandle gameProcessHandle;
 
@@ -106,34 +112,77 @@ int main(int argc, char** argv) {
     changeLog.Initialize(GetRepositoryName(), GetRepositoryBranch());
     credits.Initialize(GetRepositoryName());
 
-    savedCommitSha = VersionManager::LoadSavedVersion();
-
     auto startUpdateCheck = [&](const char* logPrefix) {
-        if (isCheckingForUpdates || !Installer::CanCheckForUpdates() ||
+        if (isCheckingForUpdates.load() || !Installer::CanCheckForUpdates() ||
             !Installer::HasDownloadSource()) {
             return;
         }
 
         isCheckingForUpdates = true;
-        GitHubAPI::FetchLatestCommitShaForFileAsync(
-            GetRepositoryName(),
-            GetRepositoryBranch(),
-            Installer::GetConfiguredExecutableRelativePath(),
-            [&](const std::string& sha) {
-                latestCommitSha = sha;
-                isCheckingForUpdates = false;
 
-                if (!savedCommitSha.empty() && !latestCommitSha.empty() &&
-                    savedCommitSha != latestCommitSha) {
-                    updateAvailable = true;
-                    std::cout << logPrefix << "Executable update available! Current: "
-                              << savedCommitSha << " Latest: " << latestCommitSha << std::endl;
-                } else if (!savedCommitSha.empty() && savedCommitSha == latestCommitSha) {
-                    updateAvailable = false;
-                    std::cout << logPrefix << "Executable up to date! Version: "
-                              << savedCommitSha << std::endl;
+        const std::string repositoryName = GetRepositoryName();
+        const std::string repositoryBranch = GetRepositoryBranch();
+        const std::string logPrefixString = logPrefix;
+        const std::vector<ManagedDownloadFile> managedFiles =
+            Installer::GetManagedDownloadFiles();
+
+        std::thread([&,
+                     repositoryName,
+                     repositoryBranch,
+                     logPrefixString,
+                     managedFiles]() {
+            std::map<std::string, std::string> fetchedVersions;
+            std::vector<ManagedDownloadFile> updatedFiles;
+            std::map<std::string, std::string> savedVersionsSnapshot;
+
+            for (const ManagedDownloadFile& file : managedFiles) {
+                const std::string sha = GitHubAPI::FetchLatestCommitShaForFile(
+                    repositoryName,
+                    repositoryBranch,
+                    file.repositoryRelativePath);
+                if (!sha.empty()) {
+                    fetchedVersions[file.versionKey] = sha;
                 }
-            });
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(updateStateMutex);
+                latestVersions = fetchedVersions;
+                savedVersionsSnapshot = savedVersions;
+            }
+
+            for (const ManagedDownloadFile& file : managedFiles) {
+                const bool localFileExists =
+                    std::filesystem::exists(Installer::GetInstalledManagedFilePath(file));
+                const auto fetchedVersionIt = fetchedVersions.find(file.versionKey);
+                const std::string fetchedVersion =
+                    fetchedVersionIt != fetchedVersions.end() ? fetchedVersionIt->second : "";
+                const auto savedVersionIt = savedVersionsSnapshot.find(file.versionKey);
+                const std::string savedVersion =
+                    savedVersionIt != savedVersionsSnapshot.end() ? savedVersionIt->second : "";
+
+                if (!localFileExists ||
+                    (!fetchedVersion.empty() && fetchedVersion != savedVersion)) {
+                    updatedFiles.push_back(file);
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(updateStateMutex);
+                pendingUpdateFiles = updatedFiles;
+            }
+
+            updateAvailable = !updatedFiles.empty();
+            isCheckingForUpdates = false;
+
+            if (!updatedFiles.empty()) {
+                std::cout << logPrefixString << "Runtime update available for "
+                          << updatedFiles.size() << " file(s)." << std::endl;
+            } else if (!fetchedVersions.empty()) {
+                std::cout << logPrefixString << "Runtime files are up to date."
+                          << std::endl;
+            }
+        }).detach();
     };
 
     auto startInstallFlow = [&]() {
@@ -149,6 +198,56 @@ int main(int argc, char** argv) {
 
         isoProgress = std::make_shared<IsoExtractionProgress>();
         Installer::InstallGameAsync(isoPath, xexpPath, isoProgress);
+    };
+
+    auto startBuildDownload = [&]() {
+        std::vector<ManagedDownloadFile> filesToDownload;
+        std::map<std::string, std::string> latestVersionsSnapshot;
+
+        {
+            std::lock_guard<std::mutex> lock(updateStateMutex);
+            filesToDownload = pendingUpdateFiles;
+            latestVersionsSnapshot = latestVersions;
+        }
+
+        if (filesToDownload.empty()) {
+            filesToDownload = Installer::GetManagedDownloadFiles();
+        }
+
+        if (filesToDownload.empty()) {
+            return;
+        }
+
+        downloadProgress = std::make_shared<ManagedDownloadProgress>();
+        Installer::DownloadManagedFilesAsync(
+            filesToDownload,
+            downloadProgress,
+            [&, filesToDownload, latestVersionsSnapshot]() {
+                bool savedAnyVersion = false;
+                {
+                    std::lock_guard<std::mutex> lock(updateStateMutex);
+                    for (const ManagedDownloadFile& file : filesToDownload) {
+                        const auto versionIt = latestVersionsSnapshot.find(file.versionKey);
+                        if (versionIt != latestVersionsSnapshot.end() &&
+                            !versionIt->second.empty()) {
+                            savedVersions[file.versionKey] = versionIt->second;
+                            savedAnyVersion = true;
+                        }
+                    }
+
+                    if (savedAnyVersion) {
+                        VersionManager::SaveCurrentVersions(savedVersions);
+                    }
+
+                    pendingUpdateFiles.clear();
+                }
+
+                updateAvailable = false;
+
+                if (!savedAnyVersion) {
+                    startUpdateCheck("Post-download check: ");
+                }
+            });
     };
 
     startUpdateCheck("");
@@ -177,7 +276,8 @@ int main(int argc, char** argv) {
             std::cout << "Game process has ended." << std::endl;
         }
 
-        if (currentTime - lastUpdateCheck >= updateCheckInterval && !isCheckingForUpdates) {
+        if (currentTime - lastUpdateCheck >= updateCheckInterval &&
+            !isCheckingForUpdates.load()) {
             lastUpdateCheck = currentTime;
             startUpdateCheck("Update check: ");
         }
@@ -202,7 +302,15 @@ int main(int argc, char** argv) {
                     if (Platform::SelectDirectory("Select Install Folder", gamePath, &error)) {
                         gamePath = Installer::EnsureTrailingSeparator(gamePath);
                         INI::SetString("GamePath", gamePath, "Game");
+                        {
+                            std::lock_guard<std::mutex> lock(updateStateMutex);
+                            savedVersions = VersionManager::LoadSavedVersions();
+                            latestVersions.clear();
+                            pendingUpdateFiles.clear();
+                        }
+                        updateAvailable = false;
                         std::cout << "Install path set to: " << gamePath << std::endl;
+                        startUpdateCheck("Install path check: ");
                     } else if (!error.empty()) {
                         std::cout << error << std::endl;
                     }
@@ -210,6 +318,13 @@ int main(int argc, char** argv) {
 
                 if (ImGui::MenuItem("Uninstall")) {
                     if (Installer::UninstallManagedFiles(std::cout)) {
+                        {
+                            std::lock_guard<std::mutex> lock(updateStateMutex);
+                            savedVersions.clear();
+                            latestVersions.clear();
+                            pendingUpdateFiles.clear();
+                        }
+                        updateAvailable = false;
                         std::cout << Installer::GetGameTitle()
                                   << " install removed successfully." << std::endl;
                     } else {
@@ -277,7 +392,7 @@ int main(int argc, char** argv) {
             const std::filesystem::path executablePath = Installer::GetInstalledExecutablePath();
             const std::filesystem::path gameDataPath = Installer::GetGameDataDirectoryPath();
             const std::filesystem::path markerPath = Installer::GetGameMarkerPath();
-            const bool bundledExecutableExists = std::filesystem::exists(executablePath);
+            const bool installedBuildExists = Installer::HasInstalledBuild();
 
             if (isoProgress && isoProgress->isExtracting.load()) {
                 ImGui::Text("Installing %s...", Installer::GetGameTitle().c_str());
@@ -296,10 +411,14 @@ int main(int argc, char** argv) {
                     }
                 }
             } else if (downloadProgress && !downloadProgress->isComplete.load()) {
-                const std::string downloadLabel = GetPlatformAwareString(
+                std::string downloadLabel = GetPlatformAwareString(
                     "DownloadingText",
-                    "Downloading " + Installer::GetExecutableName() + "...",
+                    "Downloading runtime files...",
                     "Game");
+                const std::string currentFileName = downloadProgress->GetCurrentFileName();
+                if (!currentFileName.empty()) {
+                    downloadLabel += " (" + currentFileName + ")";
+                }
                 ImGui::Text("%s", downloadLabel.c_str());
 
                 float progress = downloadProgress->GetPercentage() / 100.0f;
@@ -319,27 +438,21 @@ int main(int argc, char** argv) {
                 }
 
                 ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), progressText);
+                if (downloadProgress->totalFiles.load() > 1) {
+                    ImGui::Text(
+                        "File %d of %d",
+                        downloadProgress->currentFileIndex.load(),
+                        downloadProgress->totalFiles.load());
+                }
 
                 if (downloadProgress->hasError.load()) {
+                    const std::string errorMessage = downloadProgress->GetErrorMessage();
                     ImGui::TextColored(
                         ImVec4(1.0f, 0.2f, 0.2f, 1.0f),
                         "Error: %s",
-                        downloadProgress->errorMessage.c_str());
+                        errorMessage.c_str());
                     if (ImGui::Button("Retry", ImVec2(-1.0f, 30.0f))) {
-                        downloadProgress = std::make_shared<DownloadProgress>();
-                        FileDownloader::DownloadFileAsync(
-                            Installer::GetDownloadUrl(),
-                            executablePath.string(),
-                            downloadProgress,
-                            [&]() {
-                                if (!latestCommitSha.empty()) {
-                                    VersionManager::SaveCurrentVersion(latestCommitSha);
-                                    savedCommitSha = latestCommitSha;
-                                    updateAvailable = false;
-                                    std::cout << "Version saved after retry download: "
-                                              << latestCommitSha << std::endl;
-                                }
-                            });
+                        startBuildDownload();
                     }
                 }
             } else {
@@ -363,11 +476,11 @@ int main(int argc, char** argv) {
                     buttonEnabled = false;
                 } else if (!assetsExist) {
                     buttonText = "Install " + Installer::GetGameTitle();
-                } else if (!bundledExecutableExists && canDownloadBuild) {
+                } else if (!installedBuildExists && canDownloadBuild) {
                     buttonText = "Download " + Installer::GetExecutableName();
-                } else if (!bundledExecutableExists) {
-                    buttonText = "Missing " + Installer::GetExecutableName();
-                } else if (canDownloadBuild && updateAvailable) {
+                } else if (!installedBuildExists) {
+                    buttonText = "Missing Runtime Files";
+                } else if (canDownloadBuild && updateAvailable.load()) {
                     buttonText = "Update Available";
                 }
 
@@ -380,32 +493,13 @@ int main(int argc, char** argv) {
                 if (ImGui::Button(buttonText.c_str(), ImVec2(-1.0f, 75.0f)) && buttonEnabled) {
                     if (!assetsExist) {
                         startInstallFlow();
-                    } else if (canDownloadBuild && (!bundledExecutableExists || updateAvailable)) {
-                        if (updateAvailable && bundledExecutableExists) {
-                            try {
-                                std::filesystem::remove(executablePath);
-                                VersionManager::RemoveVersionFile();
-                            } catch (const std::exception& exception) {
-                                std::cout << "Error when removing old exe: "
-                                          << exception.what() << std::endl;
-                            }
-                        }
-
-                        downloadProgress = std::make_shared<DownloadProgress>();
-                        FileDownloader::DownloadFileAsync(
-                            Installer::GetDownloadUrl(),
-                            executablePath.string(),
-                            downloadProgress,
-                            [&]() {
-                                if (!latestCommitSha.empty()) {
-                                    VersionManager::SaveCurrentVersion(latestCommitSha);
-                                    savedCommitSha = latestCommitSha;
-                                    updateAvailable = false;
-                                }
-                            });
-                    } else if (!bundledExecutableExists) {
-                        std::cout << "Bundled executable is missing: "
-                                  << executablePath.string() << std::endl;
+                    } else if (canDownloadBuild &&
+                               (!installedBuildExists || updateAvailable.load())) {
+                        startBuildDownload();
+                    } else if (!installedBuildExists) {
+                        std::cout << "Runtime files are missing from: "
+                                  << Platform::GetExecutableDirectory().string()
+                                  << std::endl;
                     } else {
                         std::string error;
                         if (Platform::LaunchProcess(
