@@ -71,6 +71,85 @@ void TryOpenUrl(const std::string& url) {
     }
 }
 
+std::string NormalizeButtonStatus(std::string value, std::size_t maxLength = 64) {
+    for (char& character : value) {
+        if (character == '\n' || character == '\r' || character == '\t') {
+            character = ' ';
+        }
+    }
+
+    const std::size_t detailPos = value.find(" (");
+    if (detailPos != std::string::npos) {
+        value.erase(detailPos);
+    }
+
+    std::string compact;
+    compact.reserve(value.size());
+    bool previousWasSpace = false;
+    for (const char character : value) {
+        if (character == ' ') {
+            if (!previousWasSpace) {
+                compact.push_back(character);
+            }
+            previousWasSpace = true;
+            continue;
+        }
+
+        compact.push_back(character);
+        previousWasSpace = false;
+    }
+
+    while (!compact.empty() && compact.front() == ' ') {
+        compact.erase(compact.begin());
+    }
+    while (!compact.empty() && compact.back() == ' ') {
+        compact.pop_back();
+    }
+
+    if (compact.size() > maxLength && maxLength > 3) {
+        compact.resize(maxLength - 3);
+        compact += "...";
+    }
+
+    return compact;
+}
+
+std::string BuildIsoProgressButtonLabel(const IsoExtractionProgress& progress) {
+    std::string operationLabel = NormalizeButtonStatus(progress.GetOperationLabel(), 40);
+    if (operationLabel.empty()) {
+        operationLabel = "Working";
+    }
+
+    std::string statusMessage = NormalizeButtonStatus(progress.GetStatusMessage());
+    if (statusMessage.empty()) {
+        return operationLabel + "...";
+    }
+
+    return operationLabel + "...\n" + statusMessage;
+}
+
+std::string BuildDownloadProgressButtonLabel(const ManagedDownloadProgress& progress) {
+    char progressSummary[96] = {};
+    if (progress.totalBytes.load() > 0) {
+        std::snprintf(
+            progressSummary,
+            sizeof(progressSummary),
+            "%.1f%% downloaded",
+            progress.GetPercentage());
+    } else if (progress.totalFiles.load() > 1) {
+        std::snprintf(
+            progressSummary,
+            sizeof(progressSummary),
+            "File %d of %d",
+            progress.currentFileIndex.load(),
+            progress.totalFiles.load());
+    } else {
+        std::snprintf(progressSummary, sizeof(progressSummary), "%s", "Connecting...");
+    }
+
+    return std::string("Downloading Runtime Files...\n") + progressSummary;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -198,6 +277,11 @@ int main(int argc, char** argv) {
 
         isoProgress = std::make_shared<IsoExtractionProgress>();
         Installer::InstallGameAsync(isoPath, xexpPath, isoProgress);
+    };
+
+    auto startLuaWorkspaceRebuild = [&]() {
+        isoProgress = std::make_shared<IsoExtractionProgress>();
+        Installer::RebuildLuaWorkspaceAsync(isoProgress);
     };
 
     auto startBuildDownload = [&]() {
@@ -385,7 +469,6 @@ int main(int argc, char** argv) {
             INI::GetImColor("LaunchButton_background", ImColor(0.20f, 0.80f, 0.40f), "Theme"));
         {
             ImGui::Begin("Launch Button");
-            ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 85.0f);
             ImGui::PopFont();
             ImGui::PushFont(BasicTitleFont);
 
@@ -393,132 +476,115 @@ int main(int argc, char** argv) {
             const std::filesystem::path gameDataPath = Installer::GetGameDataDirectoryPath();
             const std::filesystem::path markerPath = Installer::GetGameMarkerPath();
             const bool installedBuildExists = Installer::HasInstalledBuild();
+            constexpr float kPrimaryButtonHeight = 88.0f;
+            constexpr float kSecondaryButtonHeight = 36.0f;
+            constexpr float kButtonSpacing = 8.0f;
+            constexpr float kBottomPadding = 10.0f;
 
-            if (isoProgress && isoProgress->isExtracting.load()) {
-                ImGui::Text("Installing %s...", Installer::GetGameTitle().c_str());
-                ImGui::ProgressBar(
-                    -1.0f * static_cast<float>(ImGui::GetTime()),
-                    ImVec2(-1.0f, 0.0f),
-                    "Extracting ISO and copying XEXP...");
+            if (downloadProgress && downloadProgress->isComplete.load() &&
+                !downloadProgress->hasError.load()) {
+                downloadProgress.reset();
+            }
 
-                if (isoProgress->hasError.load()) {
-                    ImGui::TextColored(
-                        ImVec4(1.0f, 0.2f, 0.2f, 1.0f),
-                        "Error: %s",
-                        isoProgress->errorMessage.c_str());
-                    if (ImGui::Button("Retry", ImVec2(-1.0f, 30.0f))) {
-                        startInstallFlow();
-                    }
+            if (isoProgress && isoProgress->isComplete.load() && !isoProgress->hasError.load()) {
+                isoProgress.reset();
+            }
+
+            const bool isoInProgress = isoProgress && isoProgress->isExtracting.load();
+            const bool downloadInProgress =
+                downloadProgress && !downloadProgress->isComplete.load();
+            const bool canDownloadBuild = Installer::HasDownloadSource();
+            const bool assetsExist = Installer::HasExtractedAssets(gameDataPath, markerPath);
+
+            std::string primaryButtonText = "Play " + Installer::GetGameTitle();
+            bool primaryButtonEnabled = true;
+            bool useCompactProgressFont = false;
+
+            if (isoInProgress) {
+                primaryButtonText = BuildIsoProgressButtonLabel(*isoProgress);
+                primaryButtonEnabled = false;
+                useCompactProgressFont = true;
+            } else if (downloadInProgress) {
+                primaryButtonText = BuildDownloadProgressButtonLabel(*downloadProgress);
+                primaryButtonEnabled = false;
+                useCompactProgressFont = true;
+            } else if (gameIsRunning) {
+                primaryButtonText = Installer::GetGameTitle() + " Running";
+                primaryButtonEnabled = false;
+            } else if (!assetsExist) {
+                primaryButtonText = "Install " + Installer::GetGameTitle();
+            } else if (!installedBuildExists && canDownloadBuild) {
+                primaryButtonText = "Download " + Installer::GetExecutableName();
+            } else if (!installedBuildExists) {
+                primaryButtonText = "Missing Runtime Files";
+            } else if (canDownloadBuild && updateAvailable.load()) {
+                primaryButtonText = "Update Available";
+            }
+
+            const bool canRebuildLuaWorkspace =
+                !isoInProgress && !downloadInProgress && assetsExist && !gameIsRunning &&
+                (!downloadProgress || downloadProgress->isComplete.load());
+
+            const float primaryButtonY =
+                ImGui::GetWindowHeight() - kBottomPadding - kPrimaryButtonHeight;
+            const float secondaryButtonY =
+                primaryButtonY - kButtonSpacing - kSecondaryButtonHeight;
+
+            if (canRebuildLuaWorkspace) {
+                ImGui::SetCursorPosY(secondaryButtonY);
+                    if (ImGui::Button(
+                        "Rebuild Lua Workspace",
+                        ImVec2(-1.0f, kSecondaryButtonHeight))) {
+                    startLuaWorkspaceRebuild();
                 }
-            } else if (downloadProgress && !downloadProgress->isComplete.load()) {
-                std::string downloadLabel = GetPlatformAwareString(
-                    "DownloadingText",
-                    "Downloading runtime files...",
-                    "Game");
-                const std::string currentFileName = downloadProgress->GetCurrentFileName();
-                if (!currentFileName.empty()) {
-                    downloadLabel += " (" + currentFileName + ")";
-                }
-                ImGui::Text("%s", downloadLabel.c_str());
+            }
 
-                float progress = downloadProgress->GetPercentage() / 100.0f;
-                char progressText[64] = {};
+            ImGui::SetCursorPosY(primaryButtonY);
+            if (!primaryButtonEnabled) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+            }
 
-                if (downloadProgress->totalBytes.load() > 0) {
-                    std::snprintf(
-                        progressText,
-                        sizeof(progressText),
-                        "%.1f%% (%.2f MB / %.2f MB)",
-                        downloadProgress->GetPercentage(),
-                        downloadProgress->bytesDownloaded.load() / (1024.0f * 1024.0f),
-                        downloadProgress->totalBytes.load() / (1024.0f * 1024.0f));
-                } else {
-                    std::snprintf(progressText, sizeof(progressText), "%s", "Connecting...");
-                    progress = 0.0f;
-                }
+            if (useCompactProgressFont) {
+                ImGui::PopFont();
+                ImGui::PushFont(BasicTextFont);
+            }
 
-                ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), progressText);
-                if (downloadProgress->totalFiles.load() > 1) {
-                    ImGui::Text(
-                        "File %d of %d",
-                        downloadProgress->currentFileIndex.load(),
-                        downloadProgress->totalFiles.load());
-                }
-
-                if (downloadProgress->hasError.load()) {
-                    const std::string errorMessage = downloadProgress->GetErrorMessage();
-                    ImGui::TextColored(
-                        ImVec4(1.0f, 0.2f, 0.2f, 1.0f),
-                        "Error: %s",
-                        errorMessage.c_str());
-                    if (ImGui::Button("Retry", ImVec2(-1.0f, 30.0f))) {
-                        startBuildDownload();
-                    }
-                }
-            } else {
-                if (downloadProgress && downloadProgress->isComplete.load() &&
-                    !downloadProgress->hasError.load()) {
-                    downloadProgress.reset();
-                }
-
-                if (isoProgress && isoProgress->isComplete.load() && !isoProgress->hasError.load()) {
-                    isoProgress.reset();
-                }
-
-                const bool canDownloadBuild = Installer::HasDownloadSource();
-                const bool assetsExist = Installer::HasExtractedAssets(gameDataPath, markerPath);
-
-                std::string buttonText = "Play " + Installer::GetGameTitle();
-                bool buttonEnabled = true;
-
-                if (gameIsRunning) {
-                    buttonText = Installer::GetGameTitle() + " Running";
-                    buttonEnabled = false;
-                } else if (!assetsExist) {
-                    buttonText = "Install " + Installer::GetGameTitle();
-                } else if (!installedBuildExists && canDownloadBuild) {
-                    buttonText = "Download " + Installer::GetExecutableName();
+            if (ImGui::Button(primaryButtonText.c_str(), ImVec2(-1.0f, kPrimaryButtonHeight)) &&
+                primaryButtonEnabled) {
+                if (!assetsExist) {
+                    startInstallFlow();
+                } else if (canDownloadBuild &&
+                           (!installedBuildExists || updateAvailable.load())) {
+                    startBuildDownload();
                 } else if (!installedBuildExists) {
-                    buttonText = "Missing Runtime Files";
-                } else if (canDownloadBuild && updateAvailable.load()) {
-                    buttonText = "Update Available";
-                }
-
-                if (!buttonEnabled) {
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                }
-
-                if (ImGui::Button(buttonText.c_str(), ImVec2(-1.0f, 75.0f)) && buttonEnabled) {
-                    if (!assetsExist) {
-                        startInstallFlow();
-                    } else if (canDownloadBuild &&
-                               (!installedBuildExists || updateAvailable.load())) {
-                        startBuildDownload();
-                    } else if (!installedBuildExists) {
-                        std::cout << "Runtime files are missing from: "
-                                  << Platform::GetExecutableDirectory().string()
-                                  << std::endl;
+                    std::cout << "Runtime files are missing from: "
+                              << Platform::GetExecutableDirectory().string()
+                              << std::endl;
+                } else {
+                    std::string error;
+                    if (Platform::LaunchProcess(
+                            Installer::GetInstallBasePath(),
+                            executablePath,
+                            patchesWindow.GetPatchLaunchArguments(),
+                            gameProcessHandle,
+                            &error)) {
+                        gameIsRunning = true;
+                        std::cout << "Game launched successfully." << std::endl;
                     } else {
-                        std::string error;
-                        if (Platform::LaunchProcess(
-                                Installer::GetInstallBasePath(),
-                                executablePath,
-                                patchesWindow.GetPatchLaunchArguments(),
-                                gameProcessHandle,
-                                &error)) {
-                            gameIsRunning = true;
-                            std::cout << "Game launched successfully." << std::endl;
-                        } else {
-                            std::cout << "Failed to launch game. " << error << std::endl;
-                        }
+                        std::cout << "Failed to launch game. " << error << std::endl;
                     }
                 }
+            }
 
-                if (!buttonEnabled) {
-                    ImGui::PopStyleColor(3);
-                }
+            if (useCompactProgressFont) {
+                ImGui::PopFont();
+                ImGui::PushFont(BasicTitleFont);
+            }
+
+            if (!primaryButtonEnabled) {
+                ImGui::PopStyleColor(3);
             }
 
             ImGui::End();

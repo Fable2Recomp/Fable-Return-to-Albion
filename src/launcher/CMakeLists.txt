@@ -25,6 +25,7 @@ add_subdirectory(vendors/glfw EXCLUDE_FROM_ALL)
 
 set(LAUNCHER_SOURCES
     src/installer/installer.cpp
+    src/installer/script_bank_extractor.cpp
     src/installer/xiso_extractor.cpp
     src/core/background.cpp
     src/core/changelog.cpp
@@ -82,6 +83,13 @@ target_link_libraries(${LAUNCHER_TARGET} PRIVATE
     glfw
 )
 
+if(TARGET refii_lua_decompiler_workspace)
+    target_link_libraries(${LAUNCHER_TARGET} PRIVATE refii_lua_decompiler_workspace)
+endif()
+if(WIN32 AND TARGET refii-lua-decompiler-single)
+    add_dependencies(${LAUNCHER_TARGET} refii-lua-decompiler-single)
+endif()
+
 if(WIN32)
     target_link_libraries(${LAUNCHER_TARGET} PRIVATE
         opengl32.lib
@@ -96,12 +104,19 @@ else()
     find_package(OpenGL REQUIRED)
     find_package(CURL REQUIRED)
     find_package(X11 REQUIRED)
+    find_package(ZLIB REQUIRED)
 
     target_link_libraries(${LAUNCHER_TARGET} PRIVATE
         CURL::libcurl
         OpenGL::GL
         X11::X11
+        ZLIB::ZLIB
     )
+endif()
+
+if(WIN32)
+    find_package(ZLIB REQUIRED)
+    target_link_libraries(${LAUNCHER_TARGET} PRIVATE ZLIB::ZLIB)
 endif()
 
 add_custom_command(TARGET ${LAUNCHER_TARGET} POST_BUILD

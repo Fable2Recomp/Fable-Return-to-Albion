@@ -14,15 +14,50 @@ struct IsoExtractionProgress {
     std::atomic<bool> isComplete{false};
     std::atomic<bool> hasError{false};
     std::string errorMessage;
+    std::string operationLabel = "Installing";
     std::string lastConsoleOutput;
-    std::mutex outputMutex;
+    std::string statusHistory;
+    mutable std::mutex outputMutex;
+
+    void SetOperationLabel(const std::string& label) {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        operationLabel = label;
+    }
+
+    std::string GetOperationLabel() const {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        return operationLabel;
+    }
+
+    void SetStatusMessage(const std::string& message, bool appendToHistory = true) {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        if (appendToHistory && !message.empty() && lastConsoleOutput != message) {
+            if (!statusHistory.empty()) {
+                statusHistory += '\n';
+            }
+            statusHistory += message;
+        }
+        lastConsoleOutput = message;
+    }
+
+    std::string GetStatusMessage() const {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        return lastConsoleOutput;
+    }
+
+    std::string GetStatusHistory() const {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        return statusHistory;
+    }
 
     void Reset() {
         isExtracting = false;
         isComplete = false;
         hasError = false;
         errorMessage.clear();
+        operationLabel = "Installing";
         lastConsoleOutput.clear();
+        statusHistory.clear();
     }
 };
 
@@ -90,8 +125,10 @@ std::filesystem::path GetInstallBasePath();
 std::filesystem::path GetInstalledExecutablePath();
 std::filesystem::path GetInstalledManagedFilePath(const ManagedDownloadFile& file);
 std::filesystem::path GetGameDataDirectoryPath();
+std::filesystem::path GetGameContentDirectoryPath();
 std::filesystem::path GetUpdateDirectoryPath();
 std::filesystem::path GetGameMarkerPath();
+std::filesystem::path GetLuaWorkspacePath();
 
 bool HasInstalledBuild();
 bool HasExtractedAssets(
@@ -105,6 +142,7 @@ bool InstallGame(
     const std::filesystem::path& isoPath,
     const std::filesystem::path& xexpPath,
     std::string* error = nullptr);
+bool RebuildLuaWorkspace(std::string* error = nullptr);
 bool ExtractIso(
     const std::filesystem::path& isoPath,
     const std::filesystem::path& destinationDirectory,
@@ -120,6 +158,7 @@ void InstallGameAsync(
     const std::string& isoPath,
     const std::string& xexpPath,
     std::shared_ptr<IsoExtractionProgress> progress);
+void RebuildLuaWorkspaceAsync(std::shared_ptr<IsoExtractionProgress> progress);
 void DownloadManagedFilesAsync(
     const std::vector<ManagedDownloadFile>& files,
     std::shared_ptr<ManagedDownloadProgress> progress,

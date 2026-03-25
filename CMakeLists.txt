@@ -15,6 +15,15 @@ include(generated/rexglue.cmake)
 
 option(REFII_BUILD_STANDALONE "Build the standalone refii executable" ON)
 option(REFII_BUILD_LAUNCHER "Build the launcher executable" ON)
+option(REFII_BUILD_NATIVE_LUA "Build native Lua hook sources into refii_generated" ON)
+
+set(REFII_LUA_HOOK_OBJECTS)
+set(REFII_LUA_LIBRARIES)
+
+if(REFII_BUILD_NATIVE_LUA)
+    enable_language(C)
+    add_subdirectory(src/Lua)
+endif()
 
 set(REFII_CORE_SOURCES
     ${REXGLUE_SHARE_DIR}/rex_app.cpp
@@ -22,11 +31,15 @@ set(REFII_CORE_SOURCES
 
 set(REFII_GENERATED_SOURCES
     ${GENERATED_SOURCES}
-    #src/hooks.cpp
+    ${REFII_LUA_HOOK_OBJECTS}
 )
 
 # refii_core is the RexGlue runtime layer.
 add_library(refii_core SHARED ${REFII_CORE_SOURCES})
+target_compile_definitions(refii_core
+    PRIVATE
+        REXGLUE_BUILD_CONFIG="$<CONFIG>"
+)
 target_include_directories(refii_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -61,9 +74,13 @@ target_include_directories(refii_generated
 target_link_libraries(refii_generated
     PUBLIC
         refii_core
+    PRIVATE
+        ${REFII_LUA_LIBRARIES}
 )
 set_target_properties(refii_generated PROPERTIES
     OUTPUT_NAME refii_generated
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN"
 )
 if(WIN32)
     set_target_properties(refii_generated PROPERTIES
