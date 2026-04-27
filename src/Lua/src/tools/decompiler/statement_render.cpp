@@ -71,6 +71,7 @@ LuaStatementRenderResult TryRenderLuaStraightLineStatement(
         .resolve_setlist_block = context.resolve_setlist_block,
         .trace_render = context.trace_render,
         .trace = context.trace,
+        .allow_opaque_nested_closure_fallback = true,
     };
 
     if (current < 1 || static_cast<std::size_t>(current) > instructions.size()) {

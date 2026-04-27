@@ -1,5 +1,6 @@
 #pragma once
 
+#include "tools/decompiler/condition_render.h"
 #include "tools/decompiler/conditional_block_render.h"
 #include "tools/decompiler/jump_render.h"
 
@@ -16,6 +17,7 @@ struct LuaStructuredConditionalBranchContext {
     std::vector<bool>* declared = nullptr;
     const RegisterDeclarations& declarations;
     const Lua51Function& function;
+    const LuaConditionalRootCommitPacket* precomputed_root_packet = nullptr;
     int register_count = 0;
     LuaRangeRenderer render_range;
     LuaConditionalWrittenRegisterCollector collect_written_registers_in_range;

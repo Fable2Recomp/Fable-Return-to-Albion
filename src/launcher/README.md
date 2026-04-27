@@ -96,19 +96,33 @@ That runtime config enables Lua mod overrides by default while keeping the
 toggle user-editable for parity checks.
 
 If you already have extracted assets under `assets/game`, the launcher now also
-offers a `Rebuild Lua Workspace` action so you can refresh `lua/`
+offers `Rebuild Lua Workspace`, `Verify Lua Workspace`, `Reset All Lua Files`,
+and `Reset Lua File...` actions so you can refresh, audit, or restore `lua/`
 without running a full reinstall.
 
 To build or refresh that readable mirror manually, use:
 
 ```bash
 cmake --build --preset linux-amd64-debug --target refii-lua-decompiler
-./out/build/linux-amd64-debug/tools/refii-lua-decompiler assets/game/lua
+./out/build/linux-amd64-debug/tools/refii-lua-decompiler build assets/game --workers 0
+```
+
+`--workers 0` means auto and uses the library-owned bounded worker pool.
+
+To verify or reset the public plaintext workspace without regenerating it, use:
+
+```bash
+./out/build/linux-amd64-debug/tools/refii-lua-decompiler verify assets/game/lua
+./out/build/linux-amd64-debug/tools/refii-lua-decompiler reset-file assets/game/lua gamescripts/scripts/quests/feats.lua
+./out/build/linux-amd64-debug/tools/refii-lua-decompiler reset-all assets/game/lua
 ```
 
 The emitted `_manifest.tsv` records which files were decompiled, aliased from
 their debug counterpart, copied as plaintext, or written as `_disasm/`
-fallbacks.
+fallbacks. The launcher also maintains `lua/.baseline/_hashes.tsv` plus
+`lua/.baseline/files/` so public plaintext Lua can be verified and reset after
+modding. Full reset restores baseline-tracked files and removes extra public
+`.lua` files that were added later.
 
 Linux and Windows now use the same bundled XISO extractor derived from `extract-xiso`, so no separate ISO extraction tool is required at runtime.
 

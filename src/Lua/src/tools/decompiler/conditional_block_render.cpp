@@ -1,6 +1,9 @@
 #include "tools/decompiler/conditional_block_render.h"
 
+#include "tools/decompiler/preview_join_render.h"
 #include "tools/decompiler/rendered_lua_text.h"
+
+#include <cctype>
 
 namespace refii::lua {
 namespace {
@@ -24,6 +27,79 @@ LuaJumpRenderResult ReturnResult() {
         .disposition = LuaJumpRenderDisposition::kReturn,
         .next_current = -1,
     };
+}
+
+bool TryExtractIfThenCondition(std::string_view line, std::string* condition_out) {
+    if (condition_out == nullptr) {
+        return false;
+    }
+
+    const std::string_view trimmed = TrimLuaWhitespace(StripLuaLineComment(line));
+    if (!trimmed.starts_with("if ") || !trimmed.ends_with(" then") || trimmed.size() <= 8) {
+        return false;
+    }
+
+    *condition_out = std::string(TrimLuaWhitespace(trimmed.substr(3, trimmed.size() - 8)));
+    return !condition_out->empty();
+}
+
+std::string ExtractLineIndent(std::string_view line) {
+    std::size_t index = 0;
+    while (index < line.size() &&
+           std::isspace(static_cast<unsigned char>(line[index])) != 0) {
+        ++index;
+    }
+    return std::string(line.substr(0, index));
+}
+
+bool TryFoldElseIntoElseIfChain(std::vector<std::string>* lines,
+                                std::size_t else_header_line,
+                                std::size_t else_body_start,
+                                std::size_t else_body_end_exclusive) {
+    if (lines == nullptr || else_header_line >= lines->size() ||
+        else_body_start >= else_body_end_exclusive ||
+        else_body_end_exclusive > lines->size()) {
+        return false;
+    }
+
+    std::size_t first_nonempty = lines->size();
+    for (std::size_t index = else_body_start; index < else_body_end_exclusive; ++index) {
+        if (!TrimLuaWhitespace(StripLuaLineComment((*lines)[index])).empty()) {
+            first_nonempty = index;
+            break;
+        }
+    }
+    if (first_nonempty != else_body_start || first_nonempty >= lines->size()) {
+        return false;
+    }
+
+    std::size_t last_nonempty = lines->size();
+    for (std::size_t index = else_body_end_exclusive; index > else_body_start;) {
+        --index;
+        if (!TrimLuaWhitespace(StripLuaLineComment((*lines)[index])).empty()) {
+            last_nonempty = index;
+            break;
+        }
+    }
+    if (last_nonempty == lines->size() || last_nonempty <= first_nonempty) {
+        return false;
+    }
+
+    const std::string_view trailing = TrimLuaWhitespace(StripLuaLineComment((*lines)[last_nonempty]));
+    if (trailing != "end") {
+        return false;
+    }
+
+    std::string condition;
+    if (!TryExtractIfThenCondition((*lines)[first_nonempty], &condition)) {
+        return false;
+    }
+
+    const std::string branch_indent = ExtractLineIndent((*lines)[else_header_line]);
+    (*lines)[first_nonempty] = branch_indent + "elseif " + condition + " then";
+    lines->erase(lines->begin() + static_cast<std::ptrdiff_t>(last_nonempty));
+    lines->erase(lines->begin() + static_cast<std::ptrdiff_t>(else_header_line));
+    return true;
 }
 
 }  // namespace
@@ -143,6 +219,11 @@ LuaJumpRenderResult TryRenderLuaConditionalBlock(
         values = state.values;
         declared = state.declared;
     };
+    const auto has_meaningful_name = [&](int reg, int line) {
+        const std::string name =
+            GetStraightLineRegisterName(context.declarations, context.function, reg, line);
+        return !name.empty() && !IsRenderTemporaryName(name);
+    };
 
     AppendIndentedStatement(&lines, "  ", "if " + std::string(condition) + " then");
     const int nested_then_continue_target =
@@ -163,8 +244,44 @@ LuaJumpRenderResult TryRenderLuaConditionalBlock(
         AppendIndentedStatement(&lines, "  ", "break");
     }
 
+    if (!block.has_else && lines.size() == then_lines_start) {
+        const std::vector<bool> then_written_registers =
+            context.collect_written_registers_in_range(block.then_start, block.then_end);
+        const std::vector<bool> else_written_registers(static_cast<std::size_t>(
+            context.register_count), false);
+        int changed_register = -1;
+        StraightLineValue merged_value;
+        if (TryBuildLuaPreviewSingleRegisterJoinExpression(condition,
+                                                           then_end_values,
+                                                           then_end_declared,
+                                                           then_written_registers,
+                                                           saved_state.values,
+                                                           saved_state.declared,
+                                                           else_written_registers,
+                                                           context.declarations,
+                                                           context.function,
+                                                           block.after_line,
+                                                           context.register_count,
+                                                           &changed_register,
+                                                           &merged_value) &&
+            changed_register >= 0 &&
+            !has_meaningful_name(changed_register, block.after_line)) {
+            lines.pop_back();
+            restore_state(saved_state);
+            values[static_cast<std::size_t>(changed_register)] = std::move(merged_value);
+            declared[static_cast<std::size_t>(changed_register)] =
+                then_end_declared[static_cast<std::size_t>(changed_register)];
+            if (context.finalize_pending_jump(loop_continue_target, loop_exit_target)) {
+                return ReturnResult();
+            }
+            return ContinueResult(block.after_line);
+        }
+    }
+
     if (block.has_else) {
+        const std::size_t else_header_line = lines.size();
         AppendIndentedStatement(&lines, "  ", "else");
+        const std::size_t else_body_start = lines.size();
         const int nested_else_continue_target =
             block.shared_continue_target != -1 ? block.shared_continue_target
                                                : loop_continue_target;
@@ -174,6 +291,13 @@ LuaJumpRenderResult TryRenderLuaConditionalBlock(
             !context.render_range(
                 block.else_start, block.else_end, nested_else_continue_target, nested_else_exit_target)) {
             return ErrorResult(error, error == nullptr ? std::string() : *error);
+        }
+        const std::size_t else_body_end_exclusive = lines.size();
+        if (block.prefer_elseif_chain) {
+            TryFoldElseIntoElseIfChain(&lines,
+                                       else_header_line,
+                                       else_body_start,
+                                       else_body_end_exclusive);
         }
         const std::vector<StraightLineValue> else_end_values = values;
         const std::vector<bool> else_end_declared = declared;

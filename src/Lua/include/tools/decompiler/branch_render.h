@@ -23,6 +23,7 @@ struct LuaBranchRenderContext {
     const RegisterDeclarations& declarations;
     const Lua51Function& function;
     int register_count = 0;
+    int range_start_line = 1;
     std::vector<std::string>* lines = nullptr;
     std::vector<StraightLineValue>* values = nullptr;
     std::vector<bool>* declared = nullptr;

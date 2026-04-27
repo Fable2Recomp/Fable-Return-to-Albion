@@ -25,14 +25,12 @@ add_subdirectory(vendors/glfw EXCLUDE_FROM_ALL)
 
 set(LAUNCHER_SOURCES
     src/installer/installer.cpp
-    src/installer/script_bank_extractor.cpp
     src/installer/xiso_extractor.cpp
     src/core/background.cpp
     src/core/changelog.cpp
     src/core/credits.cpp
     src/core/launcher.cpp
     src/core/patches.cpp
-    src/core/utils/crypto/sha256.cpp
     src/core/utils/filedownloader.cpp
     src/core/utils/githubapi.cpp
     src/core/utils/logsystem.cpp
@@ -85,9 +83,6 @@ target_link_libraries(${LAUNCHER_TARGET} PRIVATE
 
 if(TARGET refii_lua_decompiler_workspace)
     target_link_libraries(${LAUNCHER_TARGET} PRIVATE refii_lua_decompiler_workspace)
-endif()
-if(WIN32 AND TARGET refii-lua-decompiler-single)
-    add_dependencies(${LAUNCHER_TARGET} refii-lua-decompiler-single)
 endif()
 
 if(WIN32)

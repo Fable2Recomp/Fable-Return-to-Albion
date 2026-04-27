@@ -416,3 +416,6 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Refii shader pipeline shared artifacts
+src/Shader/processed/

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tools/decompiler/jump_render.h"
+#include "tools/decompiler/statement_render.h"
 
 #include <functional>
 #include <string>
@@ -30,6 +31,10 @@ struct LuaLoopRenderContext {
     std::vector<StraightLineValue>* values = nullptr;
     std::vector<bool>* declared = nullptr;
     LuaPreviewCallArgumentsRenderer call_arguments_for;
+    LuaStatementReturnValuesRenderer return_values_for;
+    LuaStatementSetListValuesRenderer setlist_values_for;
+    LuaStatementChildRenderer render_child;
+    LuaStatementSetListBlockResolver resolve_setlist_block;
     LuaInlineRangeEvaluator evaluate_inline_range;
     LuaConditionRenderer render_condition;
     LuaRangeRenderer render_range;

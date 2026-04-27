@@ -9,10 +9,13 @@
 #include "window.h"
 #include "utils/githubapi.h"
 #include "utils/inimanager.h"
+#include "utils/launcherpaths.h"
 #include "utils/logsystem.h"
 #include "utils/versionmanager.h"
 
 #include <atomic>
+#include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -150,14 +153,34 @@ std::string BuildDownloadProgressButtonLabel(const ManagedDownloadProgress& prog
     return std::string("Downloading Runtime Files...\n") + progressSummary;
 }
 
+std::string ToLowerAscii(std::string value) {
+    for (char& character : value) {
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    }
+    return value;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
 
-    LogStreambuf logBuffer(std::cout.rdbuf());
-    std::cout.rdbuf(&logBuffer);
+    std::string launcherLogError;
+    if (!LogSystem::GetInstance().InitializePersistentLog(LauncherPaths::GetLauncherLogPath(),
+                                                          &launcherLogError) &&
+        !launcherLogError.empty()) {
+        std::fprintf(stderr, "%s\n", launcherLogError.c_str());
+    }
+
+    LogStreambuf stdoutLogBuffer(std::cout.rdbuf());
+    LogStreambuf stderrLogBuffer(std::cerr.rdbuf());
+    std::cout.rdbuf(&stdoutLogBuffer);
+    std::cerr.rdbuf(&stderrLogBuffer);
+    if (!LogSystem::GetInstance().GetPersistentLogPath().empty()) {
+        std::cout << "Launcher log file: "
+                  << LogSystem::GetInstance().GetPersistentLogPath().string() << std::endl;
+    }
 
     INI::EnsureINIFileExists();
 
@@ -171,6 +194,9 @@ int main(int argc, char** argv) {
     Credits credits;
     std::shared_ptr<ManagedDownloadProgress> downloadProgress = nullptr;
     std::shared_ptr<IsoExtractionProgress> isoProgress = nullptr;
+    refii::lua::LuaWorkspaceVerifySummary luaWorkspaceVerifySummary;
+    std::string luaWorkspaceVerifyError;
+    std::array<char, 256> luaResetFileFilter{};
 
     std::map<std::string, std::string> savedVersions =
         VersionManager::LoadSavedVersions();
@@ -284,6 +310,21 @@ int main(int argc, char** argv) {
         Installer::RebuildLuaWorkspaceAsync(isoProgress);
     };
 
+    auto startLuaWorkspaceVerify = [&]() {
+        isoProgress = std::make_shared<IsoExtractionProgress>();
+        Installer::VerifyLuaWorkspaceAsync(isoProgress);
+    };
+
+    auto startLuaWorkspaceResetAll = [&]() {
+        isoProgress = std::make_shared<IsoExtractionProgress>();
+        Installer::ResetLuaWorkspaceAsync(isoProgress);
+    };
+
+    auto startLuaWorkspaceResetFile = [&](const std::filesystem::path& relativePath) {
+        isoProgress = std::make_shared<IsoExtractionProgress>();
+        Installer::ResetLuaWorkspaceFileAsync(relativePath, isoProgress);
+    };
+
     auto startBuildDownload = [&]() {
         std::vector<ManagedDownloadFile> filesToDownload;
         std::map<std::string, std::string> latestVersionsSnapshot;
@@ -375,6 +416,15 @@ int main(int argc, char** argv) {
 
         ImGui::PushFont(BasicTextFont);
 
+        const bool menuIsoInProgress = isoProgress && isoProgress->isExtracting.load();
+        const bool menuDownloadInProgress =
+            downloadProgress && !downloadProgress->isComplete.load();
+        const bool menuAssetsExist =
+            Installer::HasExtractedAssets(Installer::GetGameDataDirectoryPath(),
+                                          Installer::GetGameMarkerPath());
+        const bool canRunLuaWorkspaceAction =
+            !menuIsoInProgress && !menuDownloadInProgress && menuAssetsExist && !gameIsRunning;
+
         PushSmartStyle(
             INI::GetImColor("MenuBar_forground", ImColor(0.02f, 0.10f, 0.20f), "Theme"),
             INI::GetImColor("MenuBar_background", ImColor(0.20f, 0.80f, 0.40f), "Theme"));
@@ -414,6 +464,34 @@ int main(int argc, char** argv) {
                     } else {
                         std::cout << "No " << Installer::GetGameTitle()
                                   << " launcher-managed files to uninstall." << std::endl;
+                    }
+                }
+
+                ImGui::Separator();
+
+                if (ImGui::MenuItem("Verify Lua Workspace", nullptr, false, canRunLuaWorkspaceAction)) {
+                    startLuaWorkspaceVerify();
+                }
+
+                if (ImGui::MenuItem("Reset All Lua Files", nullptr, false, canRunLuaWorkspaceAction)) {
+                    startLuaWorkspaceResetAll();
+                }
+
+                if (ImGui::MenuItem("Reset Lua File...", nullptr, false, canRunLuaWorkspaceAction)) {
+                    luaWorkspaceVerifySummary = {};
+                    luaWorkspaceVerifyError.clear();
+                    if (Installer::VerifyLuaWorkspace(&luaWorkspaceVerifySummary,
+                                                      &luaWorkspaceVerifyError)) {
+                        luaResetFileFilter.fill('\0');
+                        if (luaWorkspaceVerifySummary.baseline_missing != 0 ||
+                            luaWorkspaceVerifySummary.baseline_corrupt != 0) {
+                            std::cout << "Lua baseline is not ready for per-file reset."
+                                      << std::endl;
+                        } else {
+                            ImGui::OpenPopup("Reset Lua File");
+                        }
+                    } else if (!luaWorkspaceVerifyError.empty()) {
+                        std::cout << luaWorkspaceVerifyError << std::endl;
                     }
                 }
 
@@ -592,6 +670,47 @@ int main(int argc, char** argv) {
             ImGui::PushFont(BasicTextFont);
         }
         PopSmartStyle();
+
+        if (ImGui::BeginPopupModal("Reset Lua File", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped("%zu tracked Lua files", luaWorkspaceVerifySummary.entries.size());
+            ImGui::InputText("Filter", luaResetFileFilter.data(), luaResetFileFilter.size());
+
+            const std::string filter = ToLowerAscii(std::string(luaResetFileFilter.data()));
+            ImGui::BeginChild("LuaResetFileList", ImVec2(700.0f, 380.0f), true);
+            for (const refii::lua::LuaWorkspaceVerifyEntry& entry : luaWorkspaceVerifySummary.entries) {
+                if (entry.status == refii::lua::LuaWorkspaceVerifyStatus::kBaselineMissing ||
+                    entry.status == refii::lua::LuaWorkspaceVerifyStatus::kBaselineCorrupt ||
+                    entry.relative_path.empty()) {
+                    continue;
+                }
+
+                const std::string relativeText = entry.relative_path.generic_string();
+                const std::string statusText =
+                    refii::lua::DescribeLuaWorkspaceVerifyStatus(entry.status);
+                const std::string haystack =
+                    ToLowerAscii(relativeText + " " + statusText);
+                if (!filter.empty() && haystack.find(filter) == std::string::npos) {
+                    continue;
+                }
+
+                ImGui::PushID(relativeText.c_str());
+                if (ImGui::Button("Reset")) {
+                    ImGui::CloseCurrentPopup();
+                    startLuaWorkspaceResetFile(entry.relative_path);
+                    ImGui::PopID();
+                    break;
+                }
+                ImGui::SameLine();
+                ImGui::TextWrapped("[%s] %s", statusText.c_str(), relativeText.c_str());
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+
+            if (ImGui::Button("Close")) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
 
         PushSmartStyle(
             INI::GetImColor("ChangeLog_forground", ImColor(0.02f, 0.10f, 0.20f), "Theme"),

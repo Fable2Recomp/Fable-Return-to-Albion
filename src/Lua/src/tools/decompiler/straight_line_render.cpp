@@ -6,10 +6,51 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
+#include <unordered_map>
 #include <utility>
 
 namespace refii::lua {
 namespace {
+
+const std::vector<std::string>& CollectUsefulFunctionParameterNames(
+    const Lua51Function& function) {
+    thread_local std::unordered_map<const Lua51Function*, std::vector<std::string>>
+        cached_parameter_names;
+
+    if (const auto it = cached_parameter_names.find(&function);
+        it != cached_parameter_names.end()) {
+        return it->second;
+    }
+
+    std::vector<std::string> names;
+    names.reserve(function.parameter_count);
+    if (function.parameter_count != 0) {
+        for (const Lua51Local& local : function.locals) {
+            if (local.start_pc != 0) {
+                continue;
+            }
+
+            if (!IsValidLuaIdentifier(local.name) || IsRenderTemporaryName(local.name)) {
+                names.clear();
+                break;
+            }
+
+            names.push_back(local.name);
+            if (names.size() == function.parameter_count) {
+                break;
+            }
+        }
+    }
+
+    if (names.size() != function.parameter_count) {
+        names.clear();
+    }
+
+    return cached_parameter_names
+        .emplace(&function, std::move(names))
+        .first
+        ->second;
+}
 
 std::string_view TrimLuaJoinOuterParens(std::string_view expression) {
     std::string_view trimmed = TrimLuaWhitespace(expression);
@@ -198,6 +239,16 @@ bool TrySplitRenderedMethodCallee(std::string_view callee,
                 *method = std::string(key);
                 return !receiver->empty();
             }
+        }
+    }
+
+    const std::size_t colon = trimmed.rfind(':');
+    if (colon != std::string_view::npos && colon != 0 && colon + 1 < trimmed.size()) {
+        const std::string_view candidate_method = trimmed.substr(colon + 1);
+        if (IsValidLuaIdentifier(candidate_method)) {
+            *receiver = std::string(TrimLuaWhitespace(trimmed.substr(0, colon)));
+            *method = std::string(candidate_method);
+            return !receiver->empty();
         }
     }
 
@@ -466,9 +517,25 @@ std::string GetStraightLineRegisterName(const RegisterDeclarations& declarations
         return declaration->name;
     }
     if (reg < function.parameter_count) {
+        const std::vector<std::string>& parameter_names =
+            CollectUsefulFunctionParameterNames(function);
+        if (static_cast<std::size_t>(reg) < parameter_names.size()) {
+            return parameter_names[static_cast<std::size_t>(reg)];
+        }
         return "arg" + std::to_string(reg);
     }
     return "r" + std::to_string(reg);
+}
+
+std::string GetStraightLineAssignmentRegisterName(const RegisterDeclarations& declarations,
+                                                  const Lua51Function& function,
+                                                  int reg,
+                                                  int line) {
+    if (declarations.Get(reg, std::max(1, line)) == nullptr &&
+        declarations.IsNewLocal(reg, line + 1)) {
+        return GetStraightLineRegisterName(declarations, function, reg, line + 1);
+    }
+    return GetStraightLineRegisterName(declarations, function, reg, line);
 }
 
 StraightLineValue GetRegisterValue(const std::vector<StraightLineValue>& values,
@@ -560,19 +627,134 @@ std::string RenderUpvalueExpression(const Lua51Function& function, int index) {
     return RenderLuaUpvalue(function, index);
 }
 
-std::string RenderLuaCallExpression(std::string_view callee,
-                                    const std::vector<StraightLineValue>& arguments) {
-    std::string receiver;
-    std::string method;
-    if (!arguments.empty() && TrySplitRenderedMethodCallee(callee, &receiver, &method)) {
-        const std::string first_argument =
-            std::string(TrimLuaWhitespace(arguments.front().text));
-        if (first_argument == receiver) {
-            return receiver + ":" + method + "(" + JoinExpressions(arguments, 1) + ")";
-        }
+namespace {
+std::string RenderLuaPlainCallExpression(std::string_view callee,
+                                         const std::vector<StraightLineValue>& arguments) {
+    return RenderCallableExpression(callee) + "(" + JoinExpressions(arguments) + ")";
+}
+
+}  // namespace
+
+bool TryCanonicalizeLuaCallExpressionWithIdentity(
+    std::string_view callee,
+    const std::vector<std::string>& arguments,
+    std::string* rewritten_out,
+    const RegisterDeclarations* declarations,
+    const Lua51Function* function,
+    int line,
+    int register_count) {
+    if (rewritten_out == nullptr || arguments.empty()) {
+        return false;
     }
 
-    return RenderCallableExpression(callee) + "(" + JoinExpressions(arguments) + ")";
+    if (TryCanonicalizeRenderedExplicitSelfMethodCall(callee, arguments, rewritten_out)) {
+        return true;
+    }
+
+    std::string receiver;
+    std::string method;
+    if (!TrySplitRenderedMethodCallee(callee, &receiver, &method)) {
+        return false;
+    }
+
+    const std::string normalized_receiver = std::string(TrimLuaJoinOuterParens(receiver));
+    const std::string normalized_first_argument =
+        std::string(TrimLuaJoinOuterParens(arguments.front()));
+    if (normalized_receiver.empty() || normalized_first_argument.empty() ||
+        !IsSafeLuaJoinPreservation(normalized_receiver) ||
+        !IsSafeLuaJoinPreservation(normalized_first_argument)) {
+        return false;
+    }
+
+    bool identity_match = false;
+    if (declarations != nullptr && function != nullptr && register_count > 0) {
+        const int safe_line = std::max(1, line);
+        const int receiver_identity = ResolveLuaJoinIdentityRegister(normalized_receiver,
+                                                                     *declarations,
+                                                                     *function,
+                                                                     safe_line,
+                                                                     register_count);
+        const int first_arg_identity = ResolveLuaJoinIdentityRegister(normalized_first_argument,
+                                                                      *declarations,
+                                                                      *function,
+                                                                      safe_line,
+                                                                      register_count);
+        identity_match =
+            receiver_identity >= 0 && receiver_identity == first_arg_identity;
+        if (!identity_match) {
+            const std::string receiver_identity_expression =
+                NormalizeLuaJoinIdentityExpression(normalized_receiver,
+                                                   *declarations,
+                                                   *function,
+                                                   safe_line,
+                                                   register_count);
+            const std::string first_arg_identity_expression =
+                NormalizeLuaJoinIdentityExpression(normalized_first_argument,
+                                                   *declarations,
+                                                   *function,
+                                                   safe_line,
+                                                   register_count);
+            identity_match = !receiver_identity_expression.empty() &&
+                             receiver_identity_expression ==
+                                 first_arg_identity_expression;
+        }
+    } else {
+        // Cleanup/non-bytecode contexts do not have declaration identity tables.
+        // Fall back to structural prefix-expression identity normalization.
+        const std::string receiver_identity_expression =
+            NormalizeLuaJoinReferenceExpression(normalized_receiver);
+        const std::string first_arg_identity_expression =
+            NormalizeLuaJoinReferenceExpression(normalized_first_argument);
+        identity_match = !receiver_identity_expression.empty() &&
+                         receiver_identity_expression == first_arg_identity_expression;
+    }
+    if (!identity_match) {
+        return false;
+    }
+
+    std::vector<std::string> rewritten_arguments = arguments;
+    rewritten_arguments.front() = normalized_receiver;
+    return TryCanonicalizeRenderedExplicitSelfMethodCall(
+        callee, rewritten_arguments, rewritten_out);
+}
+
+std::string RenderLuaCallExpression(std::string_view callee,
+                                    const std::vector<StraightLineValue>& arguments) {
+    std::vector<std::string> argument_texts;
+    argument_texts.reserve(arguments.size());
+    for (const StraightLineValue& argument : arguments) {
+        argument_texts.push_back(argument.text);
+    }
+    std::string canonicalized;
+    if (TryCanonicalizeLuaCallExpressionWithIdentity(
+            callee, argument_texts, &canonicalized)) {
+        return canonicalized;
+    }
+    return RenderLuaPlainCallExpression(callee, arguments);
+}
+
+std::string RenderLuaCallExpression(std::string_view callee,
+                                    const std::vector<StraightLineValue>& arguments,
+                                    const RegisterDeclarations& declarations,
+                                    const Lua51Function& function,
+                                    int line,
+                                    int register_count) {
+    std::vector<std::string> argument_texts;
+    argument_texts.reserve(arguments.size());
+    for (const StraightLineValue& argument : arguments) {
+        argument_texts.push_back(argument.text);
+    }
+    std::string canonicalized;
+    if (TryCanonicalizeLuaCallExpressionWithIdentity(callee,
+                                                     argument_texts,
+                                                     &canonicalized,
+                                                     &declarations,
+                                                     &function,
+                                                     line,
+                                                     register_count)) {
+        return canonicalized;
+    }
+    return RenderLuaPlainCallExpression(callee, arguments);
 }
 
 std::string RenderCallableExpression(std::string_view callee) {
@@ -605,6 +787,20 @@ std::string RenderLuaTableAccessExpression(std::string_view table_expression,
 std::string RenderCallExpression(const StraightLineValue& callee,
                                  const std::vector<StraightLineValue>& arguments) {
     return RenderLuaCallExpression(callee.text, arguments);
+}
+
+std::string RenderCallExpression(const StraightLineValue& callee,
+                                 const std::vector<StraightLineValue>& arguments,
+                                 const RegisterDeclarations& declarations,
+                                 const Lua51Function& function,
+                                 int line,
+                                 int register_count) {
+    return RenderLuaCallExpression(callee.text,
+                                   arguments,
+                                   declarations,
+                                   function,
+                                   line,
+                                   register_count);
 }
 
 std::string RenderTableAccessValueExpression(const StraightLineValue& table,
@@ -950,22 +1146,24 @@ void AssignRegister(std::vector<std::string>* lines,
     if (reg < 0 || static_cast<std::size_t>(reg) >= values->size()) {
         return;
     }
-    const std::string name = GetStraightLineRegisterName(declarations, function, reg, line);
-    const std::string stored_expression = expression;
     const bool has_declaration = declarations.Get(reg, line) != nullptr;
+    const bool pending_new_local = !has_declaration && declarations.IsNewLocal(reg, line + 1);
+    const std::string name =
+        GetStraightLineAssignmentRegisterName(declarations, function, reg, line);
+    const std::string stored_expression = expression;
     const std::string_view trimmed_expression = TrimLuaWhitespace(stored_expression);
     const bool is_table_literal_expression =
         !trimmed_expression.empty() && trimmed_expression.front() == '{';
     if (!multiple_results && trimmed_expression == name &&
         ((*declared)[static_cast<std::size_t>(reg)] || reg < function.parameter_count ||
-         has_declaration)) {
+         has_declaration || pending_new_local)) {
         (*values)[static_cast<std::size_t>(reg)] =
             StraightLineValue{name, true, false};
         return;
     }
     const bool prefer_expression =
         !multiple_results && !is_table_literal_expression &&
-        reg >= function.parameter_count && !has_declaration &&
+        reg >= function.parameter_count && !has_declaration && !pending_new_local &&
         IsSafeStraightLinePropagation(stored_expression);
     if (prefer_expression) {
         (*values)[static_cast<std::size_t>(reg)] =
@@ -1005,7 +1203,8 @@ void AssignRegisters(std::vector<std::string>* lines,
         if (reg < 0 || static_cast<std::size_t>(reg) >= values->size()) {
             return;
         }
-        names.push_back(GetStraightLineRegisterName(declarations, function, reg, line));
+        names.push_back(GetStraightLineAssignmentRegisterName(
+            declarations, function, reg, line));
         if ((*declared)[static_cast<std::size_t>(reg)] || reg < function.parameter_count) {
             use_local = false;
         }

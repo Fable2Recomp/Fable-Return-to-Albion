@@ -97,6 +97,10 @@ std::string GetStraightLineRegisterName(const RegisterDeclarations& declarations
                                         const Lua51Function& function,
                                         int reg,
                                         int line);
+std::string GetStraightLineAssignmentRegisterName(const RegisterDeclarations& declarations,
+                                                  const Lua51Function& function,
+                                                  int reg,
+                                                  int line);
 StraightLineValue GetRegisterValue(const std::vector<StraightLineValue>& values,
                                    const RegisterDeclarations& declarations,
                                    const Lua51Function& function,
@@ -117,11 +121,31 @@ std::string RenderGlobalExpression(std::string_view name);
 std::string RenderUpvalueExpression(const Lua51Function& function, int index);
 std::string RenderLuaCallExpression(std::string_view callee,
                                     const std::vector<StraightLineValue>& arguments);
+std::string RenderLuaCallExpression(std::string_view callee,
+                                    const std::vector<StraightLineValue>& arguments,
+                                    const RegisterDeclarations& declarations,
+                                    const Lua51Function& function,
+                                    int line,
+                                    int register_count);
+bool TryCanonicalizeLuaCallExpressionWithIdentity(
+    std::string_view callee,
+    const std::vector<std::string>& arguments,
+    std::string* rewritten_out,
+    const RegisterDeclarations* declarations = nullptr,
+    const Lua51Function* function = nullptr,
+    int line = 0,
+    int register_count = 0);
 std::string RenderCallableExpression(std::string_view callee);
 std::string RenderLuaTableAccessExpression(std::string_view table_expression,
                                            std::string_view key_expression);
 std::string RenderCallExpression(const StraightLineValue& callee,
                                  const std::vector<StraightLineValue>& arguments);
+std::string RenderCallExpression(const StraightLineValue& callee,
+                                 const std::vector<StraightLineValue>& arguments,
+                                 const RegisterDeclarations& declarations,
+                                 const Lua51Function& function,
+                                 int line,
+                                 int register_count);
 std::string RenderTableAccessValueExpression(const StraightLineValue& table,
                                              const StraightLineValue& key);
 bool IsSimpleAssignableLuaExpression(std::string_view expression);

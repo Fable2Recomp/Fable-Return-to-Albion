@@ -410,13 +410,23 @@ Lua51ControlFlowGraph BuildLua51ControlFlowGraph(
 bool HasIncomingEdgeIntoRange(const Lua51ControlFlowGraph& graph,
                               int target_start,
                               int target_end,
-                              int ignore_source_line) {
+                              int ignore_source_line_begin,
+                              int ignore_source_line_end) {
     if (target_start > target_end) {
         return false;
     }
 
+    if (ignore_source_line_end < ignore_source_line_begin) {
+        ignore_source_line_end = ignore_source_line_begin;
+    }
+
     for (const Lua51ControlFlowEdge& edge : graph.edges) {
-        if (edge.source_line == ignore_source_line) {
+        if (edge.source_line >= ignore_source_line_begin &&
+            edge.source_line <= ignore_source_line_end) {
+            continue;
+        }
+        if (edge.source_block < 0 ||
+            static_cast<std::size_t>(edge.source_block) >= graph.blocks.size()) {
             continue;
         }
         if (edge.target_block < 0 ||
@@ -424,8 +434,13 @@ bool HasIncomingEdgeIntoRange(const Lua51ControlFlowGraph& graph,
             continue;
         }
 
+        const Lua51BasicBlock& source_block =
+            graph.blocks[static_cast<std::size_t>(edge.source_block)];
         const Lua51BasicBlock& target_block =
             graph.blocks[static_cast<std::size_t>(edge.target_block)];
+        if (source_block.start_line >= target_start && source_block.start_line <= target_end) {
+            continue;
+        }
         if (target_block.start_line >= target_start && target_block.start_line <= target_end) {
             return true;
         }
@@ -545,6 +560,37 @@ std::vector<int> CollectSharedJoinCandidateLines(const Lua51ControlFlowGraph& gr
     }
 
     return candidate_lines;
+}
+
+int FindSharedJoinLine(const Lua51ControlFlowGraph& graph,
+                       int then_start_line,
+                       int else_start_line,
+                       int min_join_line,
+                       int max_join_line) {
+    if (min_join_line > max_join_line) {
+        return -1;
+    }
+
+    const std::vector<int> candidates =
+        CollectSharedJoinCandidateLines(graph,
+                                        then_start_line,
+                                        else_start_line,
+                                        min_join_line,
+                                        max_join_line);
+    if (candidates.empty()) {
+        return -1;
+    }
+
+    int join_line = -1;
+    for (int line : candidates) {
+        if (line < min_join_line || line > max_join_line) {
+            continue;
+        }
+        if (join_line == -1 || line < join_line) {
+            join_line = line;
+        }
+    }
+    return join_line;
 }
 
 }  // namespace refii::lua::decompiler

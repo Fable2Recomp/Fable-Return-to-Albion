@@ -4,6 +4,7 @@
 #include "tools/decompiler/conditional_block_render.h"
 #include "tools/decompiler/straight_line_render.h"
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -16,10 +17,12 @@ struct LuaPreviewRenderContext;
 using LuaBranchPreviewSideEffectFreeChecker = std::function<bool(int, int)>;
 
 struct LuaBranchPreviewFallbackContext {
+    const decompiler::Lua51ControlFlowGraph* control_flow_graph = nullptr;
     const RegisterDeclarations& declarations;
     const Lua51Function& function;
     int register_count = 0;
     const LuaPreviewRenderContext* preview_context = nullptr;
+    const LuaConditionalRootCommitPacket* precomputed_root_packet = nullptr;
     LuaInlineRangeEvaluator evaluate_inline_range;
     LuaBranchPreviewSideEffectFreeChecker preview_range_is_side_effect_free;
 };
@@ -47,6 +50,7 @@ struct LuaBranchPreviewShortcutContext {
     const decompiler::Lua51ControlFlowGraph& control_flow_graph;
     const std::vector<Lua51Instruction>& instructions;
     const LuaPreviewRenderContext* preview_context = nullptr;
+    const LuaConditionalRootCommitPacket* precomputed_root_packet = nullptr;
     const RegisterDeclarations& declarations;
     const Lua51Function& function;
     int register_count = 0;
@@ -66,8 +70,9 @@ bool TryApplyLuaConditionalPreviewFallback(const LuaBranchPreviewFallbackContext
                                            int end_line,
                                            int instruction_count,
                                            int line,
+                                           std::vector<std::string>* lines,
                                            std::vector<StraightLineValue>* values,
-                                           const std::vector<bool>* declared,
+                                           std::vector<bool>* declared,
                                            int* next_current);
 
 LuaJumpRenderResult TryRenderLuaSharedTailPreviewConditional(
@@ -98,5 +103,9 @@ LuaJumpRenderResult TryApplyLuaConditionalPreviewShortcuts(
     int loop_continue_target,
     int loop_exit_target,
     std::string* error);
+
+void ResetLuaNativeStatementTempCommitCounter();
+std::size_t ConsumeLuaNativeStatementTempCommitCounter();
+std::size_t ConsumeLuaNativeCallValueOwnershipCommitCounter();
 
 }  // namespace refii::lua

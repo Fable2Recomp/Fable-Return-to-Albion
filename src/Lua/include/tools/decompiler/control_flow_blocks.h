@@ -15,6 +15,20 @@ struct LuaConditionalBlock {
     int shared_continue_target = -1;
     bool has_else = false;
     bool then_exits_loop = false;
+    bool prefer_elseif_chain = false;
+};
+
+struct LuaConditionalOwnership {
+    bool classified = false;
+    bool unambiguous = false;
+    bool early_bailout = false;
+    bool has_foreign_incoming_edge = false;
+    bool has_unowned_loopback = false;
+    bool allow_else = true;
+    bool allow_elseif = false;
+    int effective_join_line = -1;
+    int region_start = -1;
+    int region_end = -1;
 };
 
 struct LuaSharedTailConditionalBlock {
@@ -112,13 +126,38 @@ bool TryBuildLuaConditionalBlock(const Lua51ControlFlowGraph& graph,
                                  int then_start,
                                  int branch_target,
                                  int end_line,
+                                 int loop_continue_target,
                                  int loop_exit_target,
                                  LuaConditionalBlock* block);
+
+bool TryClassifyLuaConditionalOwnership(const Lua51ControlFlowGraph& graph,
+                                        const std::vector<Lua51Instruction>& instructions,
+                                        int conditional_line,
+                                        int then_start,
+                                        int branch_target,
+                                        int end_line,
+                                        int loop_continue_target,
+                                        int loop_exit_target,
+                                        LuaConditionalOwnership* ownership);
+
+bool TryClassifyLuaConditionalOwnershipForConsumedSpan(
+    const Lua51ControlFlowGraph& graph,
+    const std::vector<Lua51Instruction>& instructions,
+    int conditional_line,
+    int then_start,
+    int branch_target,
+    int end_line,
+    int loop_continue_target,
+    int loop_exit_target,
+    int consumed_span_start,
+    int consumed_span_end,
+    LuaConditionalOwnership* ownership);
 
 bool TryBuildLuaSharedTailConditionalBlock(const std::vector<Lua51Instruction>& instructions,
                                            int branch_target,
                                            int combined_then_start,
                                            int end_line,
+                                           int loop_continue_target,
                                            LuaSharedTailConditionalBlock* block);
 
 bool TryBuildLuaBackJumpLoopBlock(const std::vector<Lua51Instruction>& instructions,

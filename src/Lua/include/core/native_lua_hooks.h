@@ -12,8 +12,9 @@ namespace refii::lua {
 
 struct NativeScriptRequest {
   uint32_t lua_state_guest = 0;
-  uint32_t script_size = 0;
+  // sub_82451F18 receives r4=script_buffer_guest and r5=script_size.
   uint32_t script_buffer_guest = 0;
+  uint32_t script_size = 0;
   uint32_t source_guest = 0;
   uint32_t chunk_name_guest = 0;
 };

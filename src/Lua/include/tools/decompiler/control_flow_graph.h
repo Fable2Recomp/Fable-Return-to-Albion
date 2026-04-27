@@ -42,7 +42,8 @@ Lua51ControlFlowGraph BuildLua51ControlFlowGraph(
 bool HasIncomingEdgeIntoRange(const Lua51ControlFlowGraph& graph,
                               int target_start,
                               int target_end,
-                              int ignore_source_line);
+                              int ignore_source_line_begin,
+                              int ignore_source_line_end = -1);
 
 bool CanReachTargetLine(const Lua51ControlFlowGraph& graph,
                         int start_line,
@@ -58,5 +59,11 @@ std::vector<int> CollectSharedJoinCandidateLines(const Lua51ControlFlowGraph& gr
                                                  int else_start_line,
                                                  int min_join_line,
                                                  int max_join_line);
+
+int FindSharedJoinLine(const Lua51ControlFlowGraph& graph,
+                       int then_start_line,
+                       int else_start_line,
+                       int min_join_line,
+                       int max_join_line);
 
 }  // namespace refii::lua::decompiler

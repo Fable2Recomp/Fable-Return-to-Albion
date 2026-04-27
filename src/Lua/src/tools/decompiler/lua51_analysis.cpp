@@ -590,9 +590,24 @@ std::vector<Lua51Declaration> InferLua51Declarations(const Lua51Function& functi
                 }
                 break;
             case Lua51Opcode::kClosure:
-                for (const Lua51Function& child : function.child_functions) {
-                    for (const std::string& upvalue_name : child.upvalue_names) {
-                        (void)upvalue_name;
+                if (instruction.bx >= 0 &&
+                    static_cast<std::size_t>(instruction.bx) < function.child_functions.size()) {
+                    const Lua51Function& child =
+                        function.child_functions[static_cast<std::size_t>(instruction.bx)];
+                    for (uint8_t upvalue_index = 0; upvalue_index < child.upvalue_count; ++upvalue_index) {
+                        const int next_line = line + 1 + static_cast<int>(upvalue_index);
+                        if (next_line > lines) {
+                            break;
+                        }
+
+                        const Lua51Instruction& upvalue_instruction =
+                            instructions[static_cast<std::size_t>(next_line - 1)];
+                        if (upvalue_instruction.opcode == Lua51Opcode::kMove &&
+                            upvalue_instruction.b >= 0 &&
+                            upvalue_instruction.b < registers) {
+                            states.SetLocal(upvalue_instruction.b, line);
+                        }
+                        skip[static_cast<std::size_t>(next_line - 1)] = true;
                     }
                 }
                 break;
@@ -646,6 +661,8 @@ std::vector<Lua51Declaration> InferLua51Declarations(const Lua51Function& functi
         bool temporary = false;
         int read_count = 0;
         int write_count = 0;
+        int first_use_line = -1;
+        int last_use_line = -1;
 
         if (!local) {
             for (int line = 1; line <= lines; ++line) {
@@ -654,6 +671,12 @@ std::vector<Lua51Declaration> InferLua51Declarations(const Lua51Function& functi
                 temporary = temporary || state.temporary;
                 read_count += state.read ? 1 : 0;
                 write_count += state.written ? 1 : 0;
+                if (state.read || state.written) {
+                    if (first_use_line == -1) {
+                        first_use_line = line;
+                    }
+                    last_use_line = line;
+                }
             }
         }
 
@@ -665,12 +688,18 @@ std::vector<Lua51Declaration> InferLua51Declarations(const Lua51Function& functi
             continue;
         }
 
+        const int begin_line = first_use_line == -1 ? 1 : first_use_line;
+        const int end_line = last_use_line == -1 ? lines : last_use_line;
+        if (begin_line <= 0 || end_line <= 0 || begin_line > end_line) {
+            continue;
+        }
+
         Lua51Declaration declaration;
         declaration.name = MakeDeclarationName(reg < function.parameter_count ? 'A' : 'L',
                                               static_cast<uint32_t>(reg),
                                               synthetic_index++);
-        declaration.begin = 0;
-        declaration.end = static_cast<uint32_t>(function.code.size());
+        declaration.begin = static_cast<uint32_t>(begin_line);
+        declaration.end = static_cast<uint32_t>(end_line);
         declaration.reg = static_cast<uint32_t>(reg);
         declaration.guessed = true;
         declaration.temporary = temporary;

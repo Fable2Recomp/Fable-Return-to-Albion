@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "tools/native_lua_decompiler.h"
+
 struct IsoExtractionProgress {
     std::atomic<bool> isExtracting{false};
     std::atomic<bool> isComplete{false};
@@ -143,6 +145,11 @@ bool InstallGame(
     const std::filesystem::path& xexpPath,
     std::string* error = nullptr);
 bool RebuildLuaWorkspace(std::string* error = nullptr);
+bool VerifyLuaWorkspace(refii::lua::LuaWorkspaceVerifySummary* summary = nullptr,
+                        std::string* error = nullptr);
+bool ResetLuaWorkspace(std::string* error = nullptr);
+bool ResetLuaWorkspaceFile(const std::filesystem::path& relativePath,
+                           std::string* error = nullptr);
 bool ExtractIso(
     const std::filesystem::path& isoPath,
     const std::filesystem::path& destinationDirectory,
@@ -159,6 +166,10 @@ void InstallGameAsync(
     const std::string& xexpPath,
     std::shared_ptr<IsoExtractionProgress> progress);
 void RebuildLuaWorkspaceAsync(std::shared_ptr<IsoExtractionProgress> progress);
+void VerifyLuaWorkspaceAsync(std::shared_ptr<IsoExtractionProgress> progress);
+void ResetLuaWorkspaceAsync(std::shared_ptr<IsoExtractionProgress> progress);
+void ResetLuaWorkspaceFileAsync(const std::filesystem::path& relativePath,
+                                std::shared_ptr<IsoExtractionProgress> progress);
 void DownloadManagedFilesAsync(
     const std::vector<ManagedDownloadFile>& files,
     std::shared_ptr<ManagedDownloadProgress> progress,

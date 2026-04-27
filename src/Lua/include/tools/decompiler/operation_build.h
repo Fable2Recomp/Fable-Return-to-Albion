@@ -3,6 +3,7 @@
 #include "tools/decompiler/operation_render.h"
 #include "tools/decompiler/statement_render.h"
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -45,6 +46,8 @@ struct LuaOperationBuildContext {
     bool trace_render = false;
     LuaOperationTrace trace;
     bool allow_opaque_preview_closures = false;
+    bool allow_cross_line_shortcuts = true;
+    bool allow_opaque_nested_closure_fallback = false;
 };
 
 bool TryBuildLuaNewTableShortcutOperation(const LuaOperationBuildContext& context,
@@ -114,5 +117,10 @@ bool TryBuildLuaBuiltOperation(const LuaOperationBuildContext& context,
                                int line,
                                std::string* error,
                                LuaBuiltOperation* operation);
+
+void ResetLuaNativeTableConstructorCounters();
+std::size_t ConsumeLuaNativeTableConstructorCommitCounter();
+std::size_t ConsumeLuaNativeSetListConstructorLinkCounter();
+std::size_t ConsumeLuaNativeTableConstructorFallbackCounter();
 
 }  // namespace refii::lua

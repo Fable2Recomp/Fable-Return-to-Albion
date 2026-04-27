@@ -217,18 +217,43 @@ LuaJumpRenderResult TryRenderLuaJumpControlFlow(const LuaJumpRenderContext& cont
             instructions[static_cast<std::size_t>(jump_target)];
         const int body_start = current + 1;
         const int loop_exit = jump_target + 2;
-        if (previous_instruction.opcode == Lua51Opcode::kCall &&
-            previous_instruction.c == 4 &&
-            tfor.opcode == Lua51Opcode::kTForLoop &&
-            tfor.a == previous_instruction.a &&
+        if (tfor.opcode == Lua51Opcode::kTForLoop &&
             loop_back.opcode == Lua51Opcode::kJmp &&
             compute_jump_target(jump_target + 1, loop_back.sbx) == body_start) {
             const int call_render_line = static_cast<int>(
                 previous_instruction.line == 0 ? current - 1 : previous_instruction.line);
             std::string iterator_expression;
             bool recovered_iterator_expression = false;
+            const auto try_recover_direct_iterator_tuple = [&]() {
+                const StraightLineValue iterator_function = GetRegisterValue(values,
+                                                                            declaration_map,
+                                                                            function,
+                                                                            tfor.a,
+                                                                            line);
+                const StraightLineValue iterator_state = GetRegisterValue(values,
+                                                                         declaration_map,
+                                                                         function,
+                                                                         tfor.a + 1,
+                                                                         line);
+                const StraightLineValue iterator_control = GetRegisterValue(values,
+                                                                           declaration_map,
+                                                                           function,
+                                                                           tfor.a + 2,
+                                                                           line);
+                if (!iterator_function.valid || !iterator_state.valid ||
+                    !iterator_control.valid) {
+                    return false;
+                }
 
-            {
+                iterator_expression = iterator_function.text + ", " +
+                                      iterator_state.text + ", " +
+                                      iterator_control.text;
+                return true;
+            };
+
+            if (previous_instruction.opcode == Lua51Opcode::kCall &&
+                previous_instruction.c == 4 &&
+                tfor.a == previous_instruction.a) {
                 std::vector<StraightLineValue> preview_values(
                     static_cast<std::size_t>(register_count));
                 const int preview_seed_line = std::max(1, current - 3);
@@ -261,7 +286,12 @@ LuaJumpRenderResult TryRenderLuaJumpControlFlow(const LuaJumpRenderContext& cont
                                                    previous_instruction.b,
                                                    call_render_line);
                     if (callee.valid) {
-                        iterator_expression = RenderCallExpression(callee, arguments);
+                        iterator_expression = RenderCallExpression(callee,
+                                                                   arguments,
+                                                                   declaration_map,
+                                                                   function,
+                                                                   call_render_line,
+                                                                   register_count);
                         recovered_iterator_expression = true;
                     }
                 }
@@ -293,6 +323,10 @@ LuaJumpRenderResult TryRenderLuaJumpControlFlow(const LuaJumpRenderContext& cont
                         lines.pop_back();
                     }
                 }
+            }
+
+            if (!recovered_iterator_expression) {
+                recovered_iterator_expression = try_recover_direct_iterator_tuple();
             }
 
             if (recovered_iterator_expression) {

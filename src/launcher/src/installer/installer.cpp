@@ -1,6 +1,5 @@
 #include "installer/installer.h"
 
-#include "installer/script_bank_extractor.h"
 #include "installer/xiso_extractor.h"
 #include "inimanager.h"
 #include "launcherpaths.h"
@@ -130,14 +129,6 @@ std::string BuildRawDownloadUrl(const std::string& repositoryRelativePath) {
            GetRepositoryBranch() + "/" + repositoryRelativePath;
 }
 
-std::filesystem::path GetNativeLuaDecompilerSingleToolPath() {
-#if defined(_WIN32)
-    return Platform::GetExecutableDirectory() / "tools" / "refii-lua-decompiler-single.exe";
-#else
-    return {};
-#endif
-}
-
 std::filesystem::path GetRuntimeConfigPath() {
     return Platform::GetExecutableDirectory() / "refii.toml";
 }
@@ -176,7 +167,8 @@ bool EnsureRuntimeConfigFile(std::string* error) {
     }
 }
 
-std::string BuildLuaDecompileProgressMessage(const refii::lua::LuaWorkspaceDecompileProgress& progress) {
+std::string BuildLuaWorkspaceProgressMessage(
+    const refii::lua::LuaWorkspaceDecompileProgress& progress) {
     auto summarize_path = [](const std::filesystem::path& path) {
         if (path.empty()) {
             return std::string();
@@ -199,7 +191,19 @@ std::string BuildLuaDecompileProgressMessage(const refii::lua::LuaWorkspaceDecom
     };
 
     std::ostringstream stream;
-    if (progress.phase == "disassembling_fallback") {
+    if (progress.phase == "exporting_workspace") {
+        stream << "Exporting Lua sources...";
+    } else if (progress.phase == "finalizing_manifest") {
+        stream << "Finalizing Lua manifest...";
+    } else if (progress.phase == "writing_timing_report") {
+        stream << "Writing Lua timing report...";
+    } else if (progress.phase == "snapshotting_baseline") {
+        stream << "Snapshotting Lua baseline...";
+    } else if (progress.phase == "verifying_workspace") {
+        stream << "Verifying Lua workspace...";
+    } else if (progress.phase == "resetting_workspace") {
+        stream << "Resetting Lua workspace...";
+    } else if (progress.phase == "disassembling_fallback") {
         stream << "Disassembling Lua fallback...";
     } else {
         stream << "Decompiling Lua scripts...";
@@ -216,31 +220,56 @@ std::string BuildLuaDecompileProgressMessage(const refii::lua::LuaWorkspaceDecom
     return stream.str();
 }
 
-bool DecompileLuaWorkspace(const std::filesystem::path& workspacePath,
-                           std::string* error,
-                           const TransientStatusCallback& transientStatusCallback) {
-    refii::lua::LuaWorkspaceDecompileOptions options;
-    options.workspace_root = workspacePath;
-    options.output_root = refii::lua::GetDefaultLuaDecompiledOutputRoot(workspacePath);
-    options.single_tool_path = GetNativeLuaDecompilerSingleToolPath();
+bool BuildLuaWorkspace(const std::filesystem::path& gameInstallRoot,
+                       std::string* error,
+                       const TransientStatusCallback& transientStatusCallback) {
+    refii::lua::LuaWorkspaceBuildOptions options;
+    options.game_install_root = gameInstallRoot;
+    options.workspace_root = refii::lua::GetLuaWorkspacePath(gameInstallRoot);
+    options.worker_count = 0;
     options.progress_update_stride = 1;
     if (transientStatusCallback) {
         options.progress_callback =
             [transientStatusCallback](const refii::lua::LuaWorkspaceDecompileProgress& progress) {
-                transientStatusCallback(BuildLuaDecompileProgressMessage(progress));
+                transientStatusCallback(BuildLuaWorkspaceProgressMessage(progress));
             };
     }
 
-    refii::lua::LuaWorkspaceDecompileSummary summary;
-    if (!refii::lua::DecompileLuaWorkspace(options, &summary, error)) {
+    refii::lua::LuaWorkspaceBuildSummary summary;
+    if (!refii::lua::BuildLuaWorkspace(options, &summary, error)) {
         return false;
     }
 
-    std::cerr << "Lua workspace decompiled to " << summary.output_root << " ("
-              << summary.decompiled << " decompiled, " << summary.aliased << " aliased, "
-              << summary.disassembled << " disassembled, " << summary.copied << " copied, "
-              << summary.skipped << " skipped)\n";
+    std::cerr << "Lua workspace built at " << summary.output_root << " ("
+              << summary.decompile_summary.decompiled << " decompiled, "
+              << summary.decompile_summary.aliased << " aliased, "
+              << summary.decompile_summary.nonexact << " nonexact, "
+              << summary.decompile_summary.aliased_nonexact << " aliased_nonexact, "
+              << summary.decompile_summary.disassembled << " disassembled, "
+              << summary.decompile_summary.invalid << " invalid, "
+              << summary.decompile_summary.budget_exceeded << " budget_exceeded, "
+              << summary.decompile_summary.copied << " copied, "
+              << summary.decompile_summary.skipped << " skipped, "
+              << summary.baseline_files << " baseline file(s))\n";
     return true;
+}
+
+void LogLuaWorkspaceVerifySummary(const refii::lua::LuaWorkspaceVerifySummary& summary) {
+    std::cerr << "Lua workspace verify: " << summary.ok << " ok, "
+              << summary.modified << " modified, " << summary.missing << " missing, "
+              << summary.extra << " extra, " << summary.baseline_missing
+              << " baseline_missing, " << summary.baseline_corrupt
+              << " baseline_corrupt\n";
+    for (const refii::lua::LuaWorkspaceVerifyEntry& entry : summary.entries) {
+        if (entry.status == refii::lua::LuaWorkspaceVerifyStatus::kOk) {
+            continue;
+        }
+        std::cerr << "  " << refii::lua::DescribeLuaWorkspaceVerifyStatus(entry.status);
+        if (!entry.relative_path.empty()) {
+            std::cerr << ": " << entry.relative_path.generic_string();
+        }
+        std::cerr << "\n";
+    }
 }
 
 void ReportInstallStage(const InstallStageCallback& callback, const std::string& message) {
@@ -260,17 +289,19 @@ bool RebuildLuaWorkspaceInternal(
     }
 
     ReportInstallStage(stageCallback, "Preparing Lua workspace...");
-    if (!Installer::ScriptBankExtractor::ExportLuaWorkspace(
-            Installer::GetGameDataDirectoryPath(), nullptr, nullptr, error)) {
-        return false;
-    }
-
-    ReportInstallStage(stageCallback, "Decompiling Lua scripts...");
     std::string decompileError;
-    if (!DecompileLuaWorkspace(
-            Installer::GetLuaWorkspacePath(), &decompileError, transientStatusCallback)) {
-        std::cerr << "warning: failed to build clear-text Lua workspace: " << decompileError
+    if (!BuildLuaWorkspace(
+            Installer::GetGameDataDirectoryPath(), &decompileError, transientStatusCallback)) {
+        const std::string resolved_error =
+            decompileError.empty() ? "failed to build clear-text Lua workspace"
+                                   : decompileError;
+        std::cerr << "warning: failed to build clear-text Lua workspace: " << resolved_error
                   << "\n";
+        if (error != nullptr) {
+            *error = resolved_error;
+        }
+        ReportInstallStage(stageCallback, "Lua workspace rebuild failed.");
+        return false;
     }
 
     ReportInstallStage(stageCallback, "Lua workspace ready.");
@@ -419,7 +450,7 @@ std::filesystem::path GetGameDataDirectoryPath() {
 }
 
 std::filesystem::path GetGameContentDirectoryPath() {
-    return ScriptBankExtractor::GetGameContentDirectoryPath(GetGameDataDirectoryPath());
+    return GetGameDataDirectoryPath() / "data";
 }
 
 std::filesystem::path GetUpdateDirectoryPath() {
@@ -431,7 +462,7 @@ std::filesystem::path GetGameMarkerPath() {
 }
 
 std::filesystem::path GetLuaWorkspacePath() {
-    return ScriptBankExtractor::GetLuaWorkspacePath(GetGameDataDirectoryPath());
+    return refii::lua::GetLuaWorkspacePath(GetGameDataDirectoryPath());
 }
 
 bool HasInstalledBuild() {
@@ -581,6 +612,46 @@ bool RebuildLuaWorkspace(std::string* error) {
     return RebuildLuaWorkspaceInternal(error, {}, {});
 }
 
+bool VerifyLuaWorkspace(refii::lua::LuaWorkspaceVerifySummary* summary, std::string* error) {
+    refii::lua::LuaWorkspaceVerifyOptions options;
+    options.workspace_root = GetLuaWorkspacePath();
+    options.include_ok_entries = true;
+    const bool success = refii::lua::VerifyLuaWorkspace(options, summary, error);
+    if (success && summary != nullptr) {
+        LogLuaWorkspaceVerifySummary(*summary);
+    }
+    return success;
+}
+
+bool ResetLuaWorkspace(std::string* error) {
+    refii::lua::LuaWorkspaceResetOptions options;
+    options.workspace_root = GetLuaWorkspacePath();
+    options.reset_all = true;
+
+    refii::lua::LuaWorkspaceResetSummary summary;
+    const bool success = refii::lua::ResetLuaWorkspace(options, &summary, error);
+    if (success) {
+        std::cerr << "Lua workspace reset: " << summary.restored << " restored, "
+                  << summary.removed << " removed, " << summary.failed << " failed\n";
+    }
+    return success;
+}
+
+bool ResetLuaWorkspaceFile(const std::filesystem::path& relativePath, std::string* error) {
+    refii::lua::LuaWorkspaceResetOptions options;
+    options.workspace_root = GetLuaWorkspacePath();
+    options.relative_path = relativePath;
+    options.reset_all = false;
+
+    refii::lua::LuaWorkspaceResetSummary summary;
+    const bool success = refii::lua::ResetLuaWorkspace(options, &summary, error);
+    if (success) {
+        std::cerr << "Lua workspace file reset: " << relativePath.generic_string() << " ("
+                  << summary.restored << " restored, " << summary.removed << " removed)\n";
+    }
+    return success;
+}
+
 void ExtractIsoAsync(
     const std::string& isoPath,
     std::shared_ptr<IsoExtractionProgress> progress) {
@@ -657,6 +728,112 @@ void RebuildLuaWorkspaceAsync(std::shared_ptr<IsoExtractionProgress> progress) {
             progress->hasError = true;
             progress->errorMessage =
                 rebuildError.empty() ? "Lua workspace rebuild failed" : rebuildError;
+        }
+    }).detach();
+}
+
+void VerifyLuaWorkspaceAsync(std::shared_ptr<IsoExtractionProgress> progress) {
+    std::thread([progress]() {
+        progress->isExtracting = true;
+        progress->isComplete = false;
+        progress->hasError = false;
+        progress->errorMessage.clear();
+        progress->SetOperationLabel("Verifying Lua Workspace");
+        progress->SetStatusMessage("Verifying Lua workspace...");
+
+        refii::lua::LuaWorkspaceVerifySummary summary;
+        refii::lua::LuaWorkspaceVerifyOptions verifyOptions;
+        verifyOptions.workspace_root = GetLuaWorkspacePath();
+        verifyOptions.include_ok_entries = true;
+        verifyOptions.progress_callback =
+            [progress](const refii::lua::LuaWorkspaceDecompileProgress& update) {
+                progress->SetStatusMessage(BuildLuaWorkspaceProgressMessage(update), false);
+            };
+        std::string verifyError;
+        const bool success =
+            refii::lua::VerifyLuaWorkspace(verifyOptions, &summary, &verifyError);
+
+        progress->isExtracting = false;
+        if (success) {
+            LogLuaWorkspaceVerifySummary(summary);
+            progress->SetStatusMessage("Lua workspace verify complete.");
+            progress->isComplete = true;
+        } else {
+            progress->hasError = true;
+            progress->errorMessage =
+                verifyError.empty() ? "Lua workspace verify failed" : verifyError;
+        }
+    }).detach();
+}
+
+void ResetLuaWorkspaceAsync(std::shared_ptr<IsoExtractionProgress> progress) {
+    std::thread([progress]() {
+        progress->isExtracting = true;
+        progress->isComplete = false;
+        progress->hasError = false;
+        progress->errorMessage.clear();
+        progress->SetOperationLabel("Resetting Lua Workspace");
+        progress->SetStatusMessage("Resetting Lua workspace...");
+
+        refii::lua::LuaWorkspaceResetSummary summary;
+        refii::lua::LuaWorkspaceResetOptions resetOptions;
+        resetOptions.workspace_root = GetLuaWorkspacePath();
+        resetOptions.reset_all = true;
+        resetOptions.progress_callback =
+            [progress](const refii::lua::LuaWorkspaceDecompileProgress& update) {
+                progress->SetStatusMessage(BuildLuaWorkspaceProgressMessage(update), false);
+            };
+        std::string resetError;
+        const bool success =
+            refii::lua::ResetLuaWorkspace(resetOptions, &summary, &resetError);
+
+        progress->isExtracting = false;
+        if (success) {
+            std::cerr << "Lua workspace reset: " << summary.restored << " restored, "
+                      << summary.removed << " removed, " << summary.failed << " failed\n";
+            progress->SetStatusMessage("Lua workspace reset complete.");
+            progress->isComplete = true;
+        } else {
+            progress->hasError = true;
+            progress->errorMessage =
+                resetError.empty() ? "Lua workspace reset failed" : resetError;
+        }
+    }).detach();
+}
+
+void ResetLuaWorkspaceFileAsync(const std::filesystem::path& relativePath,
+                                std::shared_ptr<IsoExtractionProgress> progress) {
+    std::thread([relativePath, progress]() {
+        progress->isExtracting = true;
+        progress->isComplete = false;
+        progress->hasError = false;
+        progress->errorMessage.clear();
+        progress->SetOperationLabel("Resetting Lua File");
+        progress->SetStatusMessage("Resetting Lua file...");
+
+        refii::lua::LuaWorkspaceResetSummary summary;
+        refii::lua::LuaWorkspaceResetOptions resetOptions;
+        resetOptions.workspace_root = GetLuaWorkspacePath();
+        resetOptions.relative_path = relativePath;
+        resetOptions.reset_all = false;
+        resetOptions.progress_callback =
+            [progress](const refii::lua::LuaWorkspaceDecompileProgress& update) {
+                progress->SetStatusMessage(BuildLuaWorkspaceProgressMessage(update), false);
+            };
+        std::string resetError;
+        const bool success =
+            refii::lua::ResetLuaWorkspace(resetOptions, &summary, &resetError);
+
+        progress->isExtracting = false;
+        if (success) {
+            std::cerr << "Lua workspace file reset: " << relativePath.generic_string() << " ("
+                      << summary.restored << " restored, " << summary.removed << " removed)\n";
+            progress->SetStatusMessage("Lua file reset complete.");
+            progress->isComplete = true;
+        } else {
+            progress->hasError = true;
+            progress->errorMessage =
+                resetError.empty() ? "Lua file reset failed" : resetError;
         }
     }).detach();
 }

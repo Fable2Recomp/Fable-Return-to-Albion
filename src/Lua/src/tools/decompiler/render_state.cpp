@@ -7,6 +7,19 @@
 namespace refii::lua {
 namespace {
 
+struct LuaSingleLineWriteCache {
+    const Lua51Instruction* instructions_data = nullptr;
+    std::size_t instruction_count = 0;
+    int register_count = 0;
+    std::vector<std::vector<bool>> written_by_line;
+    std::vector<bool> ready_by_line;
+};
+
+LuaSingleLineWriteCache& GetLuaSingleLineWriteCache() {
+    static thread_local LuaSingleLineWriteCache cache;
+    return cache;
+}
+
 bool GetLuaJoinDeclaredState(const std::vector<bool>* declared, std::size_t register_index) {
     return declared != nullptr && register_index < declared->size() && (*declared)[register_index];
 }
@@ -420,10 +433,37 @@ std::vector<bool> CollectWrittenLuaRegistersInRange(const std::vector<Lua51Instr
                                                     int register_count,
                                                     int start_line,
                                                     int end_line) {
-    std::vector<bool> written(static_cast<std::size_t>(register_count), false);
     if (start_line > end_line) {
-        return written;
+        return std::vector<bool>(static_cast<std::size_t>(register_count), false);
     }
+
+    if (start_line == end_line &&
+        start_line >= 1 &&
+        static_cast<std::size_t>(start_line) <= instructions.size()) {
+        LuaSingleLineWriteCache& cache = GetLuaSingleLineWriteCache();
+        if (cache.instructions_data != instructions.data() ||
+            cache.instruction_count != instructions.size() ||
+            cache.register_count != register_count) {
+            cache.instructions_data = instructions.data();
+            cache.instruction_count = instructions.size();
+            cache.register_count = register_count;
+            cache.written_by_line.clear();
+            cache.ready_by_line.clear();
+        }
+
+        const std::size_t cache_index = static_cast<std::size_t>(start_line);
+        if (cache.ready_by_line.size() <= cache_index) {
+            cache.ready_by_line.resize(cache_index + 1, false);
+        }
+        if (cache.written_by_line.size() <= cache_index) {
+            cache.written_by_line.resize(cache_index + 1);
+        }
+        if (cache.ready_by_line[cache_index]) {
+            return cache.written_by_line[cache_index];
+        }
+    }
+
+    std::vector<bool> written(static_cast<std::size_t>(register_count), false);
 
     const auto mark = [&](int reg) {
         if (reg >= 0 && reg < register_count) {
@@ -493,6 +533,21 @@ std::vector<bool> CollectWrittenLuaRegistersInRange(const std::vector<Lua51Instr
             default:
                 break;
         }
+    }
+
+    if (start_line == end_line &&
+        start_line >= 1 &&
+        static_cast<std::size_t>(start_line) <= instructions.size()) {
+        LuaSingleLineWriteCache& cache = GetLuaSingleLineWriteCache();
+        const std::size_t cache_index = static_cast<std::size_t>(start_line);
+        if (cache.ready_by_line.size() <= cache_index) {
+            cache.ready_by_line.resize(cache_index + 1, false);
+        }
+        if (cache.written_by_line.size() <= cache_index) {
+            cache.written_by_line.resize(cache_index + 1);
+        }
+        cache.written_by_line[cache_index] = written;
+        cache.ready_by_line[cache_index] = true;
     }
 
     return written;
@@ -746,6 +801,45 @@ void CanonicalizeLuaJoinCandidateValues(std::vector<StraightLineValue>* values,
     }
 }
 
+void DropLuaJoinDeadBranchLocals(std::vector<StraightLineValue>* values,
+                                 std::vector<bool>* declared,
+                                 const std::vector<StraightLineValue>& saved_values,
+                                 const std::vector<bool>& saved_declared,
+                                 const std::vector<bool>& written_registers,
+                                 const RegisterDeclarations& declarations,
+                                 const Lua51Function& function,
+                                 int line,
+                                 int register_count) {
+    if (values == nullptr || declared == nullptr) {
+        return;
+    }
+
+    const int lookup_line = std::max(1, line);
+    const std::size_t register_limit = std::min<std::size_t>(
+        static_cast<std::size_t>(register_count),
+        std::min(values->size(),
+                 std::min(declared->size(),
+                          std::min(saved_values.size(),
+                                   std::min(saved_declared.size(), written_registers.size())))));
+    for (std::size_t register_index = 0; register_index < register_limit; ++register_index) {
+        const int reg = static_cast<int>(register_index);
+        if (reg < function.parameter_count || !written_registers[register_index] ||
+            saved_declared[register_index] ||
+            declarations.Get(reg, lookup_line) != nullptr) {
+            continue;
+        }
+
+        (*declared)[register_index] = false;
+        if (!saved_values[register_index].valid) {
+            (*values)[register_index].valid = false;
+            (*values)[register_index].multiple_results = false;
+            (*values)[register_index].text.clear();
+        } else {
+            (*values)[register_index] = saved_values[register_index];
+        }
+    }
+}
+
 void FinalizeLuaJoinCandidateState(std::vector<StraightLineValue>* values,
                                    std::vector<bool>* declared,
                                    const std::vector<StraightLineValue>& saved_values,
@@ -781,6 +875,15 @@ void FinalizeLuaJoinCandidateState(std::vector<StraightLineValue>* values,
                                        function,
                                        line,
                                        register_count);
+    DropLuaJoinDeadBranchLocals(values,
+                                declared,
+                                saved_values,
+                                saved_declared,
+                                written_registers,
+                                declarations,
+                                function,
+                                line,
+                                register_count);
 }
 
 void RestoreLuaJoinRegisterIdentities(std::vector<StraightLineValue>* values,

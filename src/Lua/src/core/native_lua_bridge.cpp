@@ -1,6 +1,7 @@
 #include "core/native_lua_bridge.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 #include <rex/logging.h>
@@ -21,6 +22,63 @@ namespace {
 constexpr uint32_t kGuestFrameSize = 0x1000;
 constexpr uint32_t kScratchStartOffset = 0x100;
 constexpr uint32_t kScratchEndPadding = 0x40;
+
+constexpr int kLuaTNone = -1;
+constexpr int kLuaTNil = 0;
+constexpr int kLuaTBoolean = 1;
+constexpr int kLuaTLightUserdata = 2;
+constexpr int kLuaTNumber = 3;
+constexpr int kLuaTString = 4;
+constexpr int kLuaTTable = 5;
+constexpr int kLuaTFunction = 6;
+constexpr int kLuaTUserdata = 7;
+constexpr int kLuaTThread = 8;
+constexpr int kLuaRegistryIndex = -10000;
+
+std::string_view LuaTypeName(int type) {
+  switch (type) {
+    case kLuaTNone:
+      return "no value";
+    case kLuaTNil:
+      return "nil";
+    case kLuaTBoolean:
+      return "boolean";
+    case kLuaTLightUserdata:
+      return "lightuserdata";
+    case kLuaTNumber:
+      return "number";
+    case kLuaTString:
+      return "string";
+    case kLuaTTable:
+      return "table";
+    case kLuaTFunction:
+      return "function";
+    case kLuaTUserdata:
+      return "userdata";
+    case kLuaTThread:
+      return "thread";
+    default:
+      return "unknown";
+  }
+}
+
+bool IsAddressableStackIndex(int top, int index) {
+  if (index == 0) {
+    return false;
+  }
+  if (index > 0) {
+    return index <= top;
+  }
+  return -index <= top;
+}
+
+void SanitizeLuaLogText(std::string& value) {
+  for (char& ch : value) {
+    if (ch == '\r' || ch == '\n' || ch == '\t') {
+      ch = ' ';
+    }
+  }
+}
 
 }  // namespace
 
@@ -142,6 +200,87 @@ bool GuestLuaBridge::ReadBoolean(int index, bool& out) const {
 
   out = true;
   return true;
+}
+
+bool GuestLuaBridge::ReadValueType(int index, int& out) const {
+  if (index > kLuaRegistryIndex && !IsAddressableStackIndex(GetTop(), index)) {
+    out = kLuaTNone;
+    return true;
+  }
+
+  const uint32_t value_address = IndexToAddress(index);
+  if (value_address == 0) {
+    return false;
+  }
+
+  uint8_t* base = base_;
+  out = static_cast<int>(PPC_LOAD_U32(value_address + 4));
+  return true;
+}
+
+bool GuestLuaBridge::DescribeValue(int index, std::string& out) const {
+  int type = kLuaTNone;
+  if (!ReadValueType(index, type)) {
+    return false;
+  }
+
+  const uint32_t value_address = IndexToAddress(index);
+  if (value_address == 0) {
+    return false;
+  }
+
+  uint8_t* base = base_;
+  const uint32_t raw_value = PPC_LOAD_U32(value_address);
+
+  out.clear();
+
+  switch (type) {
+    case kLuaTNone:
+      out = "no value";
+      return true;
+
+    case kLuaTNil:
+      out = "nil";
+      return true;
+
+    case kLuaTBoolean:
+      out = raw_value != 0 ? "boolean true" : "boolean false";
+      return true;
+
+    case kLuaTString:
+    case kLuaTNumber: {
+      std::string text;
+      if (ReadString(index, text) && !text.empty()) {
+        SanitizeLuaLogText(text);
+        out = std::string(LuaTypeName(type));
+        out += ": ";
+        out += text;
+        return true;
+      }
+      out = std::string(LuaTypeName(type));
+      return true;
+    }
+
+    case kLuaTLightUserdata:
+    case kLuaTTable:
+    case kLuaTFunction:
+    case kLuaTUserdata:
+    case kLuaTThread: {
+      char buffer[64];
+      std::snprintf(buffer, sizeof(buffer), "%.*s@0x%08X",
+                    static_cast<int>(LuaTypeName(type).size()), LuaTypeName(type).data(),
+                    raw_value);
+      out = buffer;
+      return true;
+    }
+
+    default: {
+      char buffer[64];
+      std::snprintf(buffer, sizeof(buffer), "unknown(type=%d,value=0x%08X)", type, raw_value);
+      out = buffer;
+      return true;
+    }
+  }
 }
 
 uint32_t GuestLuaBridge::AllocateScratch(size_t size, size_t alignment) {

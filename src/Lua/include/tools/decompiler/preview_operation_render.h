@@ -28,7 +28,9 @@ struct LuaPreviewOperationContext {
     std::vector<StraightLineValue>* values = nullptr;
     std::vector<bool>* declared = nullptr;
     LuaOperationCallArgumentsRenderer call_arguments_for;
+    LuaOperationSetListValuesRenderer setlist_values_for;
     LuaOperationChildRenderer render_child;
+    LuaOperationSetListBlockResolver resolve_setlist_block;
 };
 
 bool TryApplyLuaPreviewOperation(const LuaPreviewOperationContext& context,

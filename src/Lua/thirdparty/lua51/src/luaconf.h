@@ -333,7 +333,7 @@
 ** CHANGE it to undefined as soon as your programs use only '...' to
 ** access vararg parameters (instead of the old 'arg' table).
 */
-#define LUA_COMPAT_VARARG
+#undef LUA_COMPAT_VARARG
 
 /*
 @@ LUA_COMPAT_MOD controls compatibility with old math.mod function.
@@ -760,4 +760,3 @@ union luai_Cast { double l_d; long l_l; };
 
 
 #endif
-

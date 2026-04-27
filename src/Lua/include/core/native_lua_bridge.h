@@ -28,6 +28,8 @@ class GuestLuaBridge {
 
   bool ReadString(int index, std::string& out) const;
   bool ReadBoolean(int index, bool& out) const;
+  bool ReadValueType(int index, int& out) const;
+  bool DescribeValue(int index, std::string& out) const;
 
  private:
   uint32_t AllocateScratch(size_t size, size_t alignment = 4);

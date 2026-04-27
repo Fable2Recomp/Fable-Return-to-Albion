@@ -42,4 +42,8 @@ inline std::filesystem::path GetImGuiIniPath() {
     return GetLauncherDataDirectory() / "imgui.cfg";
 }
 
+inline std::filesystem::path GetLauncherLogPath() {
+    return GetLauncherDirectory() / "refii-launcher.log";
+}
+
 }  // namespace LauncherPaths

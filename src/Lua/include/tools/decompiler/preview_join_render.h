@@ -57,6 +57,21 @@ LuaJumpRenderResult TryBuildAndEmitLuaPreviewStatementJoinToLine(
     int invalidate_line,
     int next_current);
 
+bool TryBuildLuaPreviewSingleRegisterJoinExpression(
+    std::string_view condition,
+    const std::vector<StraightLineValue>& then_values,
+    const std::vector<bool>& then_declared,
+    const std::vector<bool>& then_written_registers,
+    const std::vector<StraightLineValue>& else_values,
+    const std::vector<bool>& else_declared,
+    const std::vector<bool>& else_written_registers,
+    const RegisterDeclarations& declarations,
+    const Lua51Function& function,
+    int line,
+    int register_count,
+    int* changed_register,
+    StraightLineValue* merged_value);
+
 LuaJumpRenderResult TryApplyLuaPreviewConditionalJoinShortcuts(
     std::vector<std::string>* lines,
     const decompiler::Lua51ControlFlowGraph& control_flow_graph,
@@ -65,7 +80,7 @@ LuaJumpRenderResult TryApplyLuaPreviewConditionalJoinShortcuts(
     std::vector<StraightLineValue>* values,
     std::vector<bool>* declared,
     std::string_view condition,
-    int current,
+    int then_start_line,
     int branch_target,
     int end_line,
     int instruction_count,
@@ -74,6 +89,20 @@ LuaJumpRenderResult TryApplyLuaPreviewConditionalJoinShortcuts(
     const LuaInvalidateValuesRenderer& invalidate_values,
     int invalidate_line);
 
+LuaJumpRenderResult TryApplyLuaPreviewRegisterStateJoinShortcut(
+    const decompiler::Lua51ControlFlowGraph& control_flow_graph,
+    const std::vector<Lua51Instruction>& instructions,
+    const LuaPreviewRenderContext& preview_context,
+    std::vector<StraightLineValue>* values,
+    std::vector<bool>* declared,
+    std::string_view condition,
+    int then_start_line,
+    int branch_target,
+    int end_line,
+    int instruction_count,
+    int register_count,
+    const LuaPreviewJoinSideEffectFreeChecker& preview_range_is_side_effect_free);
+
 LuaJumpRenderResult TryApplyLuaPreviewCallJoinShortcut(
     std::vector<std::string>* lines,
     const std::vector<Lua51Instruction>& instructions,
@@ -81,7 +110,7 @@ LuaJumpRenderResult TryApplyLuaPreviewCallJoinShortcut(
     std::vector<StraightLineValue>* values,
     std::vector<bool>* declared,
     std::string_view condition,
-    int current,
+    int then_start_line,
     int branch_target,
     int end_line,
     int instruction_count,

@@ -74,6 +74,7 @@ struct LuaSetListOperation {
     int base_index = 1;
     std::vector<StraightLineValue> entries;
     bool try_inline_initializer = false;
+    int target_reg = -1;
 };
 
 enum class LuaCallResultMode {

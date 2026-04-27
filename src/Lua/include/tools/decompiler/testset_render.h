@@ -23,13 +23,21 @@ bool TryMergeLuaTestSetFallbackValues(const LuaTestSetFallbackContext& context,
                                       const std::vector<StraightLineValue>& values,
                                       StraightLineValue* merged_value);
 
+bool TryMergeLuaTestSetBranchPathFallbackValues(
+    const LuaTestSetFallbackContext& context,
+    const decompiler::LuaTestSetLoopControlBlock& block,
+    int line,
+    const std::vector<StraightLineValue>& values,
+    StraightLineValue* merged_value);
+
 void AssignLuaTestSetTarget(std::vector<std::string>* lines,
                             std::vector<StraightLineValue>* values,
                             std::vector<bool>* declared,
                             const LuaTestSetFallbackContext& context,
                             const decompiler::LuaTestSetLoopControlBlock& block,
                             int line,
-                            const StraightLineValue& initial_value);
+                            const StraightLineValue& initial_value,
+                            bool force_materialize = false);
 
 std::string BuildLuaTestSetFallbackCondition(const RegisterDeclarations& declarations,
                                              const Lua51Function& function,

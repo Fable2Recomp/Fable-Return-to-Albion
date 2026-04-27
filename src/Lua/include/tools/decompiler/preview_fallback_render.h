@@ -10,6 +10,7 @@ namespace refii::lua {
 struct LuaPreviewRenderContext;
 
 struct LuaPreviewFallbackContext {
+    const decompiler::Lua51ControlFlowGraph* control_flow_graph = nullptr;
     const RegisterDeclarations& declarations;
     const Lua51Function& function;
     int register_count = 0;
@@ -27,5 +28,24 @@ bool TryMergeLuaPreviewRangeFallback(const LuaPreviewFallbackContext& context,
                                      bool require_temporary_declaration,
                                      StraightLineValue* merged_value,
                                      const StraightLineValue* initial_target_value = nullptr);
+
+bool TryMergeLuaPreviewBranchPathFallback(const LuaPreviewFallbackContext& context,
+                                          int fallback_start,
+                                          int join_line,
+                                          int line,
+                                          const std::vector<StraightLineValue>& values,
+                                          int preferred_reg,
+                                          bool require_temporary_declaration,
+                                          StraightLineValue* merged_value,
+                                          const StraightLineValue* initial_target_value = nullptr);
+
+bool TryEvaluateLuaPreviewBranchPathValue(const LuaPreviewFallbackContext& context,
+                                          int start_line,
+                                          int join_line,
+                                          int line,
+                                          const std::vector<StraightLineValue>& values,
+                                          int target_reg,
+                                          StraightLineValue* value,
+                                          const StraightLineValue* initial_target_value = nullptr);
 
 }  // namespace refii::lua

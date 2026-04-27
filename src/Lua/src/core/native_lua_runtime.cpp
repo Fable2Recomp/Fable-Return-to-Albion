@@ -1,4 +1,5 @@
 #include "core/native_lua_hooks.h"
+#include "lua_script_paths.h"
 
 #include <algorithm>
 #include <cctype>
@@ -93,6 +94,28 @@ bool LooksLikeReadableGuestString(std::string_view value) {
   }
 
   return true;
+}
+
+int ScoreReadableGuestString(std::string_view value) {
+  if (!LooksLikeReadableGuestString(value)) {
+    return 0;
+  }
+
+  int score = 1;
+  if (value.find(".lua") != std::string_view::npos) {
+    score += 4;
+  }
+  if (value.find("scripts") != std::string_view::npos ||
+      value.find("game:\\") != std::string_view::npos ||
+      value.find("data\\") != std::string_view::npos ||
+      value.find('\\') != std::string_view::npos ||
+      value.find('/') != std::string_view::npos) {
+    score += 2;
+  }
+  if (value.size() >= 16) {
+    score += 1;
+  }
+  return score;
 }
 
 bool LooksLikeLuaScriptKey(std::string_view key) {
@@ -218,6 +241,29 @@ std::string ReadGuestStringObject(uint8_t* base, uint32_t object_guest, size_t m
   return ReadGuestSizedString(base, data_guest, length, max_bytes);
 }
 
+std::string ReadGuestLua51TStringObject(uint8_t* base, uint32_t object_guest, size_t max_bytes) {
+  if (base == nullptr || object_guest == 0) {
+    return {};
+  }
+
+  // Guest stack string values point at a real Lua 5.1 TString object:
+  // CommonHeader (next, tt, marked), reserved, hash, len, then inline chars.
+  constexpr uint32_t kLua51StringTagOffset = 4;
+  constexpr uint32_t kLua51StringLengthOffset = 12;
+  constexpr uint32_t kLua51StringCharsOffset = 16;
+  constexpr uint8_t kLuaTString = 4;
+
+  if (PPC_LOAD_U8(object_guest + kLua51StringTagOffset) != kLuaTString) {
+    return {};
+  }
+
+  const uint32_t length = PPC_LOAD_U32(object_guest + kLua51StringLengthOffset);
+  return ReadGuestSizedString(base,
+                              object_guest + kLua51StringCharsOffset,
+                              length,
+                              max_bytes);
+}
+
 std::string ReadGuestWrappedString(uint8_t* base, uint32_t wrapper_guest, size_t max_bytes) {
   if (wrapper_guest == 0) {
     return {};
@@ -320,19 +366,15 @@ std::string MakeWorkspaceScriptKey(const std::filesystem::path& workspace_root,
     return {};
   }
 
-  const std::string relative = NormalizeLuaScriptKey(relative_path.generic_string());
+  const std::string relative = NormalizeLuaScriptKey(
+      refii::lua::CanonicalizeRetailLuaRelativeString(relative_path.generic_string()));
   constexpr std::string_view kGameScriptsPrefix = "gamescripts/scripts/";
-  constexpr std::string_view kGameScriptsRetailPrefix = "gamescripts_r/scripts/";
   constexpr std::string_view kGuiScriptsPrefix = "guiscripts/scripts/";
   constexpr std::string_view kGuiArtPrefix = "guiscripts/art/";
   constexpr std::string_view kLooseScriptsPrefix = "scripts/";
-  constexpr std::string_view kLooseScriptsRetailPrefix = "scripts_r/";
 
   if (StartsWith(relative, kGameScriptsPrefix)) {
     return "scripts/" + relative.substr(kGameScriptsPrefix.size());
-  }
-  if (StartsWith(relative, kGameScriptsRetailPrefix)) {
-    return "scripts/" + relative.substr(kGameScriptsRetailPrefix.size());
   }
   if (StartsWith(relative, kGuiScriptsPrefix)) {
     return "scripts/" + relative.substr(kGuiScriptsPrefix.size());
@@ -342,9 +384,6 @@ std::string MakeWorkspaceScriptKey(const std::filesystem::path& workspace_root,
   }
   if (StartsWith(relative, kLooseScriptsPrefix)) {
     return "data/scripts/" + relative.substr(kLooseScriptsPrefix.size());
-  }
-  if (StartsWith(relative, kLooseScriptsRetailPrefix)) {
-    return "data/scripts_r/" + relative.substr(kLooseScriptsRetailPrefix.size());
   }
 
   return {};
@@ -421,70 +460,147 @@ std::string LookupLuaWorkspaceScriptKeyByHash(uint8_t* base, const NativeScriptR
 }
 
 std::vector<std::string> BuildLuaModOverrideCandidates(std::string_view script_key) {
+  const auto append_canonical = [](std::vector<std::string>& values, std::string value) {
+    AppendUnique(values, refii::lua::CanonicalizeRetailLuaRelativeString(value));
+  };
+
   std::vector<std::string> relatives;
-  AppendUnique(relatives, std::string(script_key));
+  append_canonical(relatives, std::string(script_key));
 
   if (StartsWith(script_key, "data/")) {
-    AppendUnique(relatives, std::string(script_key.substr(5)));
+    append_canonical(relatives, std::string(script_key.substr(5)));
   }
 
   if (StartsWith(script_key, "data/scripts/")) {
-    AppendUnique(relatives, "scripts/" + std::string(script_key.substr(sizeof("data/scripts/") - 1)));
+    append_canonical(
+        relatives, "scripts/" + std::string(script_key.substr(sizeof("data/scripts/") - 1)));
   }
 
   if (StartsWith(script_key, "data/scripts_r/")) {
     const std::string tail = std::string(script_key.substr(sizeof("data/scripts_r/") - 1));
-    AppendUnique(relatives, "scripts_r/" + tail);
-    AppendUnique(relatives, "scripts/" + tail);
+    append_canonical(relatives, "scripts_r/" + tail);
+    append_canonical(relatives, "scripts/" + tail);
   }
 
   std::vector<std::string> candidates;
   for (const std::string& relative : relatives) {
-    AppendUnique(candidates, "override/" + relative);
-    AppendUnique(candidates, relative);
+    append_canonical(candidates, "override/" + relative);
+    append_canonical(candidates, relative);
 
     if (StartsWith(relative, "scripts/")) {
-      AppendUnique(candidates, "gamescripts/" + relative);
-      AppendUnique(candidates, "gamescripts_r/" + relative);
-      AppendUnique(candidates, "guiscripts/" + relative);
+      append_canonical(candidates, "gamescripts/" + relative);
+      append_canonical(candidates, "gamescripts_r/" + relative);
+      append_canonical(candidates, "guiscripts/" + relative);
       continue;
     }
 
     if (StartsWith(relative, "scripts_r/")) {
       const std::string tail =
           std::string(std::string_view(relative).substr(sizeof("scripts_r/") - 1));
-      AppendUnique(candidates, "gamescripts_r/scripts/" + tail);
-      AppendUnique(candidates, "gamescripts/scripts/" + tail);
+      append_canonical(candidates, "gamescripts_r/scripts/" + tail);
+      append_canonical(candidates, "gamescripts/scripts/" + tail);
       continue;
     }
 
     if (StartsWith(relative, "art/")) {
-      AppendUnique(candidates, "guiscripts/" + relative);
+      append_canonical(candidates, "guiscripts/" + relative);
     }
   }
 
   return candidates;
 }
 
+std::string CanonicalizeLuaScriptKeyCandidate(std::string key) {
+  key = NormalizeLuaScriptKey(
+      refii::lua::CanonicalizeRetailLuaRelativeString(std::move(key)));
+
+  constexpr std::string_view kOverridePrefix = "override/";
+  constexpr std::string_view kGameScriptsPrefix = "gamescripts/scripts/";
+  constexpr std::string_view kGuiScriptsPrefix = "guiscripts/scripts/";
+  constexpr std::string_view kGuiArtPrefix = "guiscripts/art/";
+
+  if (StartsWith(key, kOverridePrefix)) {
+    key = key.substr(kOverridePrefix.size());
+  }
+
+  if (StartsWith(key, kGameScriptsPrefix)) {
+    return "scripts/" + key.substr(kGameScriptsPrefix.size());
+  }
+  if (StartsWith(key, kGuiScriptsPrefix)) {
+    return "scripts/" + key.substr(kGuiScriptsPrefix.size());
+  }
+  if (StartsWith(key, kGuiArtPrefix)) {
+    return "art/" + key.substr(kGuiArtPrefix.size());
+  }
+
+  return key;
+}
+
+std::string ExtractEmbeddedLuaScriptKey(std::string_view value) {
+  if (value.empty()) {
+    return {};
+  }
+
+  const std::string normalized = NormalizeLuaScriptKey(std::string(value));
+  if (normalized.empty()) {
+    return {};
+  }
+
+  const std::string canonical = CanonicalizeLuaScriptKeyCandidate(normalized);
+  if (LooksLikeLuaScriptKey(canonical)) {
+    return canonical;
+  }
+
+  constexpr std::string_view kCandidatePrefixes[] = {
+      "data/scripts/",      "data/scripts_r/",      "scripts/",        "scripts_r/",
+      "gamescripts/scripts/", "gamescripts_r/scripts/", "guiscripts/scripts/",
+      "guiscripts/art/",    "art/"};
+
+  for (const std::string_view prefix : kCandidatePrefixes) {
+    size_t search_from = 0;
+    while (true) {
+      const size_t start = normalized.find(prefix, search_from);
+      if (start == std::string::npos) {
+        break;
+      }
+
+      const size_t lua_suffix = normalized.find(".lua", start);
+      if (lua_suffix != std::string::npos) {
+        std::string candidate = CanonicalizeLuaScriptKeyCandidate(
+            normalized.substr(start, lua_suffix + 4 - start));
+        if (LooksLikeLuaScriptKey(candidate)) {
+          return candidate;
+        }
+      }
+
+      search_from = start + 1;
+    }
+  }
+
+  return {};
+}
+
 std::string ReadValidatedLuaScriptKey(uint8_t* base, const NativeScriptRequest& request) {
-  const std::string source =
-      NormalizeLuaScriptKey(ReadGuestLuaStringLike(base, request.source_guest));
+  const std::string source = ExtractEmbeddedLuaScriptKey(
+      ReadGuestLuaStringLike(base, request.source_guest));
   if (LooksLikeLuaScriptKey(source)) {
     return source;
   }
 
-  const std::string chunk_name =
-      NormalizeLuaScriptKey(ReadGuestLuaStringLike(base, request.chunk_name_guest));
+  const std::string chunk_name = ExtractEmbeddedLuaScriptKey(
+      ReadGuestLuaStringLike(base, request.chunk_name_guest));
   if (LooksLikeLuaScriptKey(chunk_name)) {
     return chunk_name;
   }
 
-  const std::string bytecode_source = ReadLuaBytecodeSourcePath(base, request);
+  const std::string bytecode_source =
+      CanonicalizeLuaScriptKeyCandidate(ReadLuaBytecodeSourcePath(base, request));
   if (LooksLikeLuaScriptKey(bytecode_source)) {
     return bytecode_source;
   }
 
-  const std::string workspace_match = LookupLuaWorkspaceScriptKeyByHash(base, request);
+  const std::string workspace_match =
+      CanonicalizeLuaScriptKeyCandidate(LookupLuaWorkspaceScriptKeyByHash(base, request));
   if (LooksLikeLuaScriptKey(workspace_match)) {
     return workspace_match;
   }
@@ -513,18 +629,30 @@ std::string ReadGuestCString(uint8_t* base, uint32_t guest_ptr, size_t max_bytes
 
 std::string ReadGuestLuaStringLike(uint8_t* base, uint32_t guest_ptr, size_t max_bytes) {
   const std::string direct = ReadGuestCString(base, guest_ptr, max_bytes);
-  if (LooksLikeReadableGuestString(direct)) {
-    return direct;
-  }
+  const std::string wrapped = ReadGuestWrappedString(base, guest_ptr, max_bytes);
+  const std::string object = ReadGuestStringObject(base, guest_ptr, max_bytes);
+  const std::string lua51_object = ReadGuestLua51TStringObject(base, guest_ptr, max_bytes);
 
-  if (const std::string wrapped = ReadGuestWrappedString(base, guest_ptr, max_bytes);
-      LooksLikeReadableGuestString(wrapped)) {
-    return wrapped;
-  }
+  const std::string* best = nullptr;
+  int best_score = 0;
+  auto consider = [&](const std::string& candidate) {
+    const int score = ScoreReadableGuestString(candidate);
+    if (score == 0) {
+      return;
+    }
+    if (best == nullptr || score > best_score ||
+        (score == best_score && candidate.size() > best->size())) {
+      best = &candidate;
+      best_score = score;
+    }
+  };
 
-  if (const std::string object = ReadGuestStringObject(base, guest_ptr, max_bytes);
-      LooksLikeReadableGuestString(object)) {
-    return object;
+  consider(direct);
+  consider(wrapped);
+  consider(object);
+  consider(lua51_object);
+  if (best != nullptr) {
+    return *best;
   }
 
   return direct;

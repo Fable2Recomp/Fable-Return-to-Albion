@@ -60,7 +60,7 @@ constexpr std::array kAudioBanks{
 
 bool LogCallFailure(GuestLuaBridge& lua, std::string_view call_name) {
   std::string error;
-  if (lua.ReadString(-1, error) && !error.empty()) {
+  if (lua.DescribeValue(-1, error) && !error.empty()) {
     REXLOG_WARN("Native Lua call {} failed: {}", call_name, error);
   } else {
     REXLOG_WARN("Native Lua call {} failed", call_name);

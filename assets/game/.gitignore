@@ -1,2 +1,8 @@
 *
 !.gitignore
+!data/
+data/*
+!data/Shaders/
+data/Shaders/*
+!data/Shaders/Shaders.sbk
+!data/Shaders/ShadersRelease.sbk
