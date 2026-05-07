@@ -27,6 +27,11 @@ option(REFII_BUILD_TOOLS
     ON
 )
 
+option(REFII_BUILD_EXTRACTOR
+    "Build the XISO extractor shared library (and tool dependencies)"
+    ON
+)
+
 set(REFII_SHADER_SBK_INPUT_DIR
     "${CMAKE_SOURCE_DIR}/assets/game/data/Shaders"
     CACHE PATH

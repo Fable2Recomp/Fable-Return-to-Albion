@@ -8,3 +8,7 @@
 [submodule "src/launcher/vendors/stb"]
 	path = src/launcher/vendors/stb
 	url = https://github.com/nothings/stb.git
+
+[submodule "src/extractor/thirdparty/zlib"]
+	path = src/extractor/thirdparty/zlib
+	url = https://github.com/madler/zlib.git
