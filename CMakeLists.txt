@@ -8,6 +8,9 @@ project(refii LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
 #set(REXSDK_VERSION "0.3.0" CACHE STRING "Override SDK version" FORCE)
 
@@ -15,8 +18,14 @@ include(generated/rexglue.cmake)
 
 option(REFII_BUILD_STANDALONE "Build the standalone refii executable" ON)
 option(REFII_BUILD_LAUNCHER "Build the launcher executable" ON)
-option(REFII_BUILD_NATIVE_LUA "Build native Lua hook sources into refii_generated" ON)
+option(REFII_BUILD_NATIVE_LUA "Build the native Lua runtime and Lua tools" ON)
+option(REFII_BUILD_NATIVE_HOOKS "Build native hook sources into refii_generated" ON)
+option(REFII_BUILD_VFS_HOOKS "Build the native VFS runtime and hook sources" ON)
 option(REFII_BUILD_SHADER_PIPELINE "Build shader SBK extraction/translation pipeline tooling" ON)
+option(REFII_BUILD_TOOLS
+    "Build optional lightweight test tool executables (bnk extractor, decompiler, shader utilities)"
+    ON
+)
 
 set(REFII_SHADER_SBK_INPUT_DIR
     "${CMAKE_SOURCE_DIR}/assets/game/data/Shaders"
@@ -39,7 +48,7 @@ set(REFII_SHADER_OUTPUT_DIR
     "Private output directory for extracted shader blobs and translation artifacts"
 )
 set(REFII_SHADER_SHARED_OUTPUT_DIR
-    "${CMAKE_SOURCE_DIR}/src/Shader/processed"
+    "${CMAKE_SOURCE_DIR}/src/shader/processed"
     CACHE PATH
     "Config-independent shader artifact mirror under source tree for unified lookup"
 )
@@ -47,6 +56,11 @@ set(REFII_SHADER_MIRROR_TO_SHARED_OUTPUT_DIR
     ON
     CACHE BOOL
     "When ON, mirror shader pipeline artifacts into REFII_SHADER_SHARED_OUTPUT_DIR"
+)
+set(REFII_TOOL_OUTPUT_DIR
+    "${CMAKE_BINARY_DIR}/tools"
+    CACHE PATH
+    "Output directory for optional lightweight tool executables"
 )
 set(_REFII_SHADER_LEGACY_TOOL_OUTPUT_DIR "${CMAKE_BINARY_DIR}/tools")
 if(REFII_SHADER_TOOL_OUTPUT_DIR STREQUAL "${_REFII_SHADER_LEGACY_TOOL_OUTPUT_DIR}")
@@ -106,16 +120,27 @@ set(REFII_SHADER_VALIDATION_TARGETS
 )
 unset(REFII_SHADER_DEFAULT_VALIDATION_TARGETS)
 
-set(REFII_LUA_HOOK_OBJECTS)
 set(REFII_LUA_LIBRARIES)
+set(REFII_VFS_LIBRARIES)
+set(REFII_HOOK_OBJECTS)
+
+add_subdirectory(src/extractor)
 
 if(REFII_BUILD_NATIVE_LUA)
     enable_language(C)
-    add_subdirectory(src/Lua)
+    add_subdirectory(src/lua)
+endif()
+
+if(REFII_BUILD_VFS_HOOKS)
+    add_subdirectory(src/vfs)
+endif()
+
+if(REFII_BUILD_NATIVE_HOOKS)
+    add_subdirectory(src/hooks)
 endif()
 
 if(REFII_BUILD_SHADER_PIPELINE)
-    add_subdirectory(src/Shader)
+    add_subdirectory(src/shader)
 endif()
 
 set(REFII_CORE_SOURCES
@@ -124,7 +149,7 @@ set(REFII_CORE_SOURCES
 
 set(REFII_GENERATED_SOURCES
     ${GENERATED_SOURCES}
-    ${REFII_LUA_HOOK_OBJECTS}
+    ${REFII_HOOK_OBJECTS}
 )
 
 # refii_core is the RexGlue runtime layer.
@@ -149,6 +174,8 @@ target_link_libraries(refii_core
 )
 set_target_properties(refii_core PROPERTIES
     OUTPUT_NAME refii_core
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )
 if(WIN32)
     set_target_properties(refii_core PROPERTIES
@@ -169,9 +196,12 @@ target_link_libraries(refii_generated
         refii_core
     PRIVATE
         ${REFII_LUA_LIBRARIES}
+        ${REFII_VFS_LIBRARIES}
 )
 set_target_properties(refii_generated PROPERTIES
     OUTPUT_NAME refii_generated
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
 )
@@ -183,6 +213,9 @@ endif()
 
 add_library(refii_host STATIC
     src/refii_host.cpp
+)
+set_target_properties(refii_host PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )
 target_include_directories(refii_host
     PUBLIC
@@ -234,6 +267,7 @@ if(REFII_BUILD_STANDALONE)
 
     target_link_libraries(refii PRIVATE refii_host)
     set_target_properties(refii PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
         BUILD_RPATH "$ORIGIN"
         INSTALL_RPATH "$ORIGIN"
     )
@@ -243,148 +277,6 @@ if(REFII_BUILD_STANDALONE)
             COMMAND "$<$<BOOL:$<TARGET_RUNTIME_DLLS:refii>>:${CMAKE_COMMAND};-E;copy_if_different;$<TARGET_RUNTIME_DLLS:refii>;$<TARGET_FILE_DIR:refii>>"
             COMMAND_EXPAND_LISTS
         )
-    endif()
-endif()
-
-if(REFII_BUILD_SHADER_PIPELINE)
-    set(REFII_SHADER_EXTRACT_OUT_DIR "${REFII_SHADER_OUTPUT_DIR}/extracted")
-    set(REFII_SHADER_TRANSLATE_OUT_DIR "${REFII_SHADER_OUTPUT_DIR}/translated")
-    set(REFII_SHADER_EXTRACT_MANIFEST "${REFII_SHADER_OUTPUT_DIR}/extract_manifest.tsv")
-    set(REFII_SHADER_TRANSLATION_REPORT "${REFII_SHADER_OUTPUT_DIR}/translation_report.tsv")
-    set(REFII_SHADER_PIPELINE_STAMP "${REFII_SHADER_OUTPUT_DIR}/pipeline.stamp")
-    set(REFII_SHADER_SHARED_PIPELINE_STAMP "${REFII_SHADER_SHARED_OUTPUT_DIR}/pipeline_mirror.stamp")
-    set(REFII_SHADER_VALIDATION_OUTPUT_DIR "${REFII_SHADER_OUTPUT_DIR}/validation_all_targets")
-    set(REFII_SHADER_VALIDATION_EXTRACT_OUT_DIR "${REFII_SHADER_VALIDATION_OUTPUT_DIR}/extracted")
-    set(REFII_SHADER_VALIDATION_TRANSLATE_OUT_DIR "${REFII_SHADER_VALIDATION_OUTPUT_DIR}/translated")
-    set(REFII_SHADER_VALIDATION_EXTRACT_MANIFEST "${REFII_SHADER_VALIDATION_OUTPUT_DIR}/extract_manifest.tsv")
-    set(REFII_SHADER_VALIDATION_TRANSLATION_REPORT "${REFII_SHADER_VALIDATION_OUTPUT_DIR}/translation_report.tsv")
-    set(REFII_SHADER_VALIDATION_PIPELINE_STAMP "${REFII_SHADER_VALIDATION_OUTPUT_DIR}/pipeline.stamp")
-
-    set(REFII_SHADER_PIPELINE_TRANSLATOR_DEPENDS)
-    set(REFII_SHADER_PIPELINE_TRANSLATOR_ARG)
-    if(REFII_SHADER_TRANSLATOR_CMD)
-        set(REFII_SHADER_PIPELINE_TRANSLATOR_ARG "${REFII_SHADER_TRANSLATOR_CMD}")
-    elseif(REFII_SHADER_USE_XENOS_TRANSLATOR)
-        list(APPEND REFII_SHADER_PIPELINE_TRANSLATOR_DEPENDS refii-shader-xenos-translator)
-        set(REFII_SHADER_PIPELINE_TRANSLATOR_ARG "$<TARGET_FILE:refii-shader-xenos-translator>")
-    endif()
-
-    if(REFII_SHADER_DEDUPE_IDENTICAL_BLOBS)
-        set(REFII_SHADER_DEDUPE_IDENTICAL_BLOBS_ARG "on")
-    else()
-        set(REFII_SHADER_DEDUPE_IDENTICAL_BLOBS_ARG "off")
-    endif()
-
-    set(REFII_SHADER_PIPELINE_COMMAND
-        $<TARGET_FILE:refii-shader-sbk>
-        build
-        --input-dir
-        "${REFII_SHADER_SBK_INPUT_DIR}"
-        --extract-out
-        "${REFII_SHADER_EXTRACT_OUT_DIR}"
-        --manifest
-        "${REFII_SHADER_EXTRACT_MANIFEST}"
-        --translate-out
-        "${REFII_SHADER_TRANSLATE_OUT_DIR}"
-        --report
-        "${REFII_SHADER_TRANSLATION_REPORT}"
-        --targets
-        "${REFII_SHADER_TRANSLATION_TARGETS}"
-        --dedupe-identical-blobs
-        "${REFII_SHADER_DEDUPE_IDENTICAL_BLOBS_ARG}"
-        --translator-timeout-ms
-        "${REFII_SHADER_TRANSLATOR_TIMEOUT_MS}"
-    )
-    if(REFII_SHADER_PIPELINE_TRANSLATOR_ARG)
-        list(APPEND REFII_SHADER_PIPELINE_COMMAND
-            --translator
-            "${REFII_SHADER_PIPELINE_TRANSLATOR_ARG}"
-        )
-    endif()
-
-    add_custom_command(
-        OUTPUT "${REFII_SHADER_PIPELINE_STAMP}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_SHADER_OUTPUT_DIR}"
-        COMMAND ${REFII_SHADER_PIPELINE_COMMAND}
-        COMMAND ${CMAKE_COMMAND} -E touch "${REFII_SHADER_PIPELINE_STAMP}"
-        DEPENDS
-            refii-shader-sbk
-            ${REFII_SHADER_PIPELINE_TRANSLATOR_DEPENDS}
-            "${REFII_SHADER_SBK_INPUT_DIR}/Shaders.sbk"
-            "${REFII_SHADER_SBK_INPUT_DIR}/ShadersRelease.sbk"
-        VERBATIM
-        COMMAND_EXPAND_LISTS
-    )
-
-    add_custom_target(refii_shader_pipeline
-        DEPENDS "${REFII_SHADER_PIPELINE_STAMP}"
-    )
-
-    if(REFII_SHADER_MIRROR_TO_SHARED_OUTPUT_DIR)
-        add_custom_command(
-            OUTPUT "${REFII_SHADER_SHARED_PIPELINE_STAMP}"
-            COMMAND ${CMAKE_COMMAND} -E remove_directory "${REFII_SHADER_SHARED_OUTPUT_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_SHADER_SHARED_OUTPUT_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory "${REFII_SHADER_OUTPUT_DIR}" "${REFII_SHADER_SHARED_OUTPUT_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E touch "${REFII_SHADER_SHARED_PIPELINE_STAMP}"
-            DEPENDS "${REFII_SHADER_PIPELINE_STAMP}"
-            VERBATIM
-        )
-
-        add_custom_target(refii_shader_pipeline_shared_output
-            DEPENDS "${REFII_SHADER_SHARED_PIPELINE_STAMP}"
-        )
-        add_dependencies(refii_shader_pipeline refii_shader_pipeline_shared_output)
-    endif()
-
-    set(REFII_SHADER_VALIDATION_COMMAND
-        $<TARGET_FILE:refii-shader-sbk>
-        build
-        --input-dir
-        "${REFII_SHADER_SBK_INPUT_DIR}"
-        --extract-out
-        "${REFII_SHADER_VALIDATION_EXTRACT_OUT_DIR}"
-        --manifest
-        "${REFII_SHADER_VALIDATION_EXTRACT_MANIFEST}"
-        --translate-out
-        "${REFII_SHADER_VALIDATION_TRANSLATE_OUT_DIR}"
-        --report
-        "${REFII_SHADER_VALIDATION_TRANSLATION_REPORT}"
-        --targets
-        "${REFII_SHADER_VALIDATION_TARGETS}"
-        --dedupe-identical-blobs
-        "${REFII_SHADER_DEDUPE_IDENTICAL_BLOBS_ARG}"
-        --translator-timeout-ms
-        "${REFII_SHADER_TRANSLATOR_TIMEOUT_MS}"
-    )
-    if(REFII_SHADER_PIPELINE_TRANSLATOR_ARG)
-        list(APPEND REFII_SHADER_VALIDATION_COMMAND
-            --translator
-            "${REFII_SHADER_PIPELINE_TRANSLATOR_ARG}"
-        )
-    endif()
-
-    add_custom_command(
-        OUTPUT "${REFII_SHADER_VALIDATION_PIPELINE_STAMP}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_SHADER_VALIDATION_OUTPUT_DIR}"
-        COMMAND ${REFII_SHADER_VALIDATION_COMMAND}
-        COMMAND ${CMAKE_COMMAND} -E touch "${REFII_SHADER_VALIDATION_PIPELINE_STAMP}"
-        DEPENDS
-            refii-shader-sbk
-            ${REFII_SHADER_PIPELINE_TRANSLATOR_DEPENDS}
-            "${REFII_SHADER_SBK_INPUT_DIR}/Shaders.sbk"
-            "${REFII_SHADER_SBK_INPUT_DIR}/ShadersRelease.sbk"
-        VERBATIM
-        COMMAND_EXPAND_LISTS
-    )
-
-    add_custom_target(refii_shader_pipeline_validate_all_targets
-        DEPENDS "${REFII_SHADER_VALIDATION_PIPELINE_STAMP}"
-    )
-
-    add_dependencies(refii_generated refii_shader_pipeline)
-    if(TARGET refii)
-        add_dependencies(refii refii_shader_pipeline)
     endif()
 endif()
 

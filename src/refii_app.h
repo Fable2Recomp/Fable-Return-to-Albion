@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "generated/refii_init.h"
+
 #include <rex/rex_app.h>
 
 class RefiiApp : public rex::ReXApp {

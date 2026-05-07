@@ -30,7 +30,12 @@ void Credits::OnContributorsLoaded(std::vector<GitContributor> contributors) {
 
 void Credits::Render() {
     ImGui::Begin("Credits");
-    ImGui::BeginChild("CreditsChild", ImVec2(0, ImGui::GetWindowHeight() - 40), true);
+    RenderContents();
+    ImGui::End();
+}
+
+void Credits::RenderContents() {
+    ImGui::BeginChild("CreditsChild", ImVec2(0, 0), true);
 
     if (contributorsLoading) {
         ImGui::Text("Loading contributors from GitHub...");
@@ -70,5 +75,4 @@ void Credits::Render() {
     }
 
     ImGui::EndChild();
-    ImGui::End();
 }

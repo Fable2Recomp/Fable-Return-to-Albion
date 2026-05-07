@@ -1,14 +1,18 @@
 #include "installer/installer.h"
 
 #include "installer/xiso_extractor.h"
+#include "extractor/bnk_extractor.h"
 #include "inimanager.h"
 #include "launcherpaths.h"
 #include "platform.h"
-#include "tools/native_lua_decompiler.h"
+#include "runtime_settings.h"
+#include "tools/native/native_lua_decompiler.h"
+#include "shader/shader_sbk_pipeline.h"
 #include "versionmanager.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +20,7 @@
 #include <iostream>
 #include <ostream>
 #include <sstream>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -98,6 +103,10 @@ std::vector<std::string> SplitList(const std::string& value, char delimiter) {
 }
 
 std::string GetManagedFilesConfigValue() {
+    if (!INI::GetBool("EnableDownload", "Github", false)) {
+        return "";
+    }
+
     const std::string configuredValue =
         GetPlatformAwareString("ManagedFiles", "", "Github");
     if (!configuredValue.empty()) {
@@ -105,6 +114,292 @@ std::string GetManagedFilesConfigValue() {
     }
 
     return GetPlatformAwareString("ExeRelativePath", "", "Github");
+}
+
+std::string LowercasePathString(const std::filesystem::path& path) {
+    std::string value = path.generic_string();
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+
+std::string LowercaseAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+
+bool IsWindowsReservedName(std::string_view name) {
+    if (name.empty()) {
+        return false;
+    }
+    if (name == "con" || name == "prn" || name == "aux" || name == "nul" ||
+        name == "clock$") {
+        return true;
+    }
+    if ((name.size() == 4 && name[0] == 'c' && name[1] == 'o' && name[2] == 'm' &&
+         std::isdigit(static_cast<unsigned char>(name[3]))) ||
+        (name.size() == 4 && name[0] == 'l' && name[1] == 'p' && name[2] == 't' &&
+         std::isdigit(static_cast<unsigned char>(name[3])))) {
+        return true;
+    }
+    return false;
+}
+
+bool IsWindowsCompatibleFilename(std::string_view filename) {
+    if (filename.empty()) {
+        return false;
+    }
+
+    for (unsigned char ch : filename) {
+        if (ch <= 0x1F || ch == '<' || ch == '>' || ch == ':' || ch == '"' || ch == '/' ||
+            ch == '\\' || ch == '|' || ch == '?' || ch == '*') {
+            return false;
+        }
+    }
+    if (filename.back() == ' ' || filename.back() == '.') {
+        return false;
+    }
+    return !IsWindowsReservedName(LowercaseAscii(std::string(filename)));
+}
+
+bool IsSafeRelativePath(const std::filesystem::path& path, std::string* error) {
+    const std::filesystem::path candidate = path.relative_path().lexically_normal();
+    if (candidate.empty()) {
+        if (error != nullptr) {
+            *error = "invalid output path: empty";
+        }
+        return false;
+    }
+    for (const auto& component : candidate) {
+        const std::string part = component.generic_string();
+        if (part.empty() || part == "." || part == "..") {
+            if (error != nullptr) {
+                *error = "invalid output path component: " + part;
+            }
+            return false;
+        }
+        if (!IsWindowsCompatibleFilename(part)) {
+            if (error != nullptr) {
+                *error = "output path component not compatible with Windows: " + part;
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+bool HasExtension(const std::filesystem::path& path, const std::string& extension) {
+    std::string pathExtension = path.extension().generic_string();
+    std::transform(pathExtension.begin(), pathExtension.end(), pathExtension.begin(),
+                   [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                   });
+    return pathExtension == extension;
+}
+
+bool IsLuaBankRelativePath(const std::filesystem::path& relativePath) {
+    const std::string normalized = LowercasePathString(relativePath.lexically_normal());
+    return normalized == "gamescripts.bnk" || normalized == "gamescripts_r.bnk" ||
+           normalized == "guiscripts.bnk";
+}
+
+bool IsLuaLooseRelativePath(const std::filesystem::path& relativePath) {
+    const std::string normalized = LowercasePathString(relativePath.lexically_normal());
+    return normalized == "scripts" || normalized == "scripts_r" ||
+           normalized.rfind("scripts/", 0) == 0 ||
+           normalized.rfind("scripts_r/", 0) == 0;
+}
+
+bool IsDirectLooseVfsRelativePath(const std::filesystem::path& relativePath) {
+    const std::string normalized = LowercasePathString(relativePath.lexically_normal());
+    if (normalized.empty() || IsLuaLooseRelativePath(relativePath)) {
+        return false;
+    }
+
+    if (normalized == "dir.manifest" || normalized == "startup.vfsconfig" ||
+        normalized == "fable2_anims.animation_toc" ||
+        normalized == "fable2_anims.animation_data" ||
+        normalized == "scenarios.list") {
+        return true;
+    }
+
+    const std::filesystem::path normalizedPath(normalized);
+    const std::string extension = normalizedPath.extension().generic_string();
+    return extension == ".adb" || extension == ".amp" ||
+           extension == ".babel" || extension == ".bft" ||
+           extension == ".bik" || extension == ".bnk" ||
+           extension == ".csv" ||
+           extension == ".dds" || extension == ".gdb" ||
+           extension == ".ini" || extension == ".list" ||
+           extension == ".loco" || extension == ".manifest" ||
+           extension == ".sbk" || extension == ".swf" ||
+           extension == ".vfsconfig" || extension == ".xml";
+}
+
+std::uint32_t ReadBigEndianU32(const unsigned char* bytes) {
+    return (static_cast<std::uint32_t>(bytes[0]) << 24) |
+           (static_cast<std::uint32_t>(bytes[1]) << 16) |
+           (static_cast<std::uint32_t>(bytes[2]) << 8) |
+           static_cast<std::uint32_t>(bytes[3]);
+}
+
+bool IsExtractableGameBank(const std::filesystem::path& bankPath) {
+    std::ifstream stream(bankPath, std::ios::binary);
+    if (!stream) {
+        return false;
+    }
+
+    unsigned char header[8]{};
+    stream.read(reinterpret_cast<char*>(header), sizeof(header));
+    if (stream.gcount() != static_cast<std::streamsize>(sizeof(header))) {
+        return false;
+    }
+
+    std::error_code error;
+    const std::uintmax_t fileSize = std::filesystem::file_size(bankPath, error);
+    if (error) {
+        return false;
+    }
+
+    const std::uint32_t headerPointer = ReadBigEndianU32(header);
+    const std::uint32_t formatWord = ReadBigEndianU32(header + 4);
+    return (formatWord == 2 || formatWord == 3) && headerPointer <= fileSize;
+}
+
+std::vector<std::filesystem::path> CollectGameBankRelativePaths(
+    const std::filesystem::path& gameContentRoot) {
+    std::vector<std::filesystem::path> banks;
+    std::error_code error;
+    constexpr auto options = std::filesystem::directory_options::skip_permission_denied;
+    for (std::filesystem::recursive_directory_iterator it(gameContentRoot, options, error), end;
+         it != end; it.increment(error)) {
+        if (error) {
+            error.clear();
+            continue;
+        }
+        if (!it->is_regular_file(error) || !HasExtension(it->path(), ".bnk")) {
+            error.clear();
+            continue;
+        }
+
+        std::filesystem::path relativePath = it->path().lexically_relative(gameContentRoot);
+        if (relativePath.empty() || IsLuaBankRelativePath(relativePath) ||
+            !IsExtractableGameBank(it->path())) {
+            continue;
+        }
+        banks.push_back(relativePath.lexically_normal());
+    }
+
+    std::sort(banks.begin(), banks.end(), [](const auto& lhs, const auto& rhs) {
+        return LowercasePathString(lhs) < LowercasePathString(rhs);
+    });
+    return banks;
+}
+
+bool CopyLooseGameContentFiles(const std::filesystem::path& gameContentRoot,
+                               const std::filesystem::path& outputRoot,
+                               std::size_t* copiedFiles,
+                               std::string* error) {
+    if (copiedFiles != nullptr) {
+        *copiedFiles = 0;
+    }
+
+    std::error_code iteratorError;
+    constexpr auto options = std::filesystem::directory_options::skip_permission_denied;
+    for (std::filesystem::recursive_directory_iterator it(gameContentRoot, options, iteratorError),
+         end;
+         it != end; it.increment(iteratorError)) {
+        if (iteratorError) {
+            iteratorError.clear();
+            continue;
+        }
+        if (!it->is_regular_file(iteratorError)) {
+            iteratorError.clear();
+            continue;
+        }
+
+        const std::filesystem::path relativePath =
+            it->path().lexically_relative(gameContentRoot).lexically_normal();
+        if (relativePath.empty()) {
+            continue;
+        }
+        if (!IsSafeRelativePath(relativePath, error)) {
+            return false;
+        }
+        if (HasExtension(it->path(), ".bnk") &&
+            (IsLuaBankRelativePath(relativePath) || IsExtractableGameBank(it->path()))) {
+            continue;
+        }
+        if (!IsDirectLooseVfsRelativePath(relativePath)) {
+            continue;
+        }
+
+        const std::filesystem::path destination = outputRoot / relativePath;
+        try {
+            std::filesystem::create_directories(destination.parent_path());
+            std::filesystem::copy_file(
+                it->path(), destination, std::filesystem::copy_options::overwrite_existing);
+        } catch (const std::exception& exception) {
+            if (error != nullptr) {
+                *error = "failed to copy loose game file " + relativePath.generic_string() +
+                         ": " + exception.what();
+            }
+            return false;
+        }
+
+        if (copiedFiles != nullptr) {
+            ++*copiedFiles;
+        }
+    }
+
+    return true;
+}
+
+bool RemoveStaleUnpackedBankFiles(const std::filesystem::path& outputRoot,
+                                  std::size_t* removedFiles,
+                                  std::string* error) {
+    if (removedFiles != nullptr) {
+        *removedFiles = 0;
+    }
+
+    std::error_code existsError;
+    if (!std::filesystem::exists(outputRoot, existsError)) {
+        return true;
+    }
+
+    std::error_code iteratorError;
+    constexpr auto options = std::filesystem::directory_options::skip_permission_denied;
+    for (std::filesystem::recursive_directory_iterator it(outputRoot, options, iteratorError),
+         end;
+         it != end; it.increment(iteratorError)) {
+        if (iteratorError) {
+            iteratorError.clear();
+            continue;
+        }
+        if (!it->is_regular_file(iteratorError) || !HasExtension(it->path(), ".bnk")) {
+            iteratorError.clear();
+            continue;
+        }
+
+        std::error_code removeError;
+        std::filesystem::remove(it->path(), removeError);
+        if (removeError) {
+            if (error != nullptr) {
+                *error = "failed to remove stale unpacked bank " + it->path().string() +
+                         ": " + removeError.message();
+            }
+            return false;
+        }
+
+        if (removedFiles != nullptr) {
+            ++*removedFiles;
+        }
+    }
+
+    return true;
 }
 
 ManagedDownloadFile ParseManagedDownloadFile(const std::string& entry) {
@@ -129,42 +424,147 @@ std::string BuildRawDownloadUrl(const std::string& repositoryRelativePath) {
            GetRepositoryBranch() + "/" + repositoryRelativePath;
 }
 
-std::filesystem::path GetRuntimeConfigPath() {
-    return Platform::GetExecutableDirectory() / "refii.toml";
+std::vector<std::string> GetShaderTranslationTargets() {
+    std::vector<std::string> targets;
+    targets.push_back("vulkan");
+#if defined(_WIN32)
+    targets.push_back("d3d12");
+#endif
+    return targets;
 }
 
-bool EnsureRuntimeConfigFile(std::string* error) {
-    const std::filesystem::path configPath = GetRuntimeConfigPath();
-    if (std::filesystem::exists(configPath)) {
-        return true;
+std::string ResolveShaderTargetLabel(const std::string& target) {
+    if (target == "d3d12") {
+        return "D3D12";
+    }
+    return "Vulkan";
+}
+
+std::filesystem::path GetTranslatorExecutablePath(std::string* error) {
+    std::filesystem::path executableDirectory = Platform::GetExecutableDirectory();
+
+#ifdef REFII_SHADER_XENOS_TRANSLATOR_PATH
+    {
+        const std::filesystem::path configuredPath(
+            std::string(REFII_SHADER_XENOS_TRANSLATOR_PATH));
+        if (!configuredPath.empty() && std::filesystem::exists(configuredPath)) {
+            return configuredPath;
+        }
+    }
+#endif
+
+    const std::string executableFileName =
+#ifdef _WIN32
+        "refii-shader-xenos-translator.exe";
+#else
+        "refii-shader-xenos-translator";
+#endif
+
+    const std::filesystem::path preferredPath =
+        executableDirectory / executableFileName;
+    if (std::filesystem::exists(preferredPath)) {
+        return preferredPath;
     }
 
-    try {
-        std::filesystem::create_directories(configPath.parent_path());
-        std::ofstream stream(configPath, std::ios::binary | std::ios::trunc);
-        if (!stream) {
-            if (error) {
-                *error = "failed to open " + configPath.string() + " for writing";
+    const std::filesystem::path packagedPath =
+        executableDirectory / "pipeline" / "shader_private" / "tools" / executableFileName;
+    if (std::filesystem::exists(packagedPath)) {
+        return packagedPath;
+    }
+
+    const std::filesystem::path packagedLibPath =
+        executableDirectory / "pipeline" / "shader_private" / "tools" / "lib" /
+        executableFileName;
+    if (std::filesystem::exists(packagedLibPath)) {
+        return packagedLibPath;
+    }
+
+    const std::filesystem::path parentPackagedPath =
+        executableDirectory / ".." / "pipeline" / "shader_private" / "tools" / executableFileName;
+    if (std::filesystem::exists(parentPackagedPath)) {
+        return parentPackagedPath;
+    }
+
+    const std::filesystem::path parentPackagedLibPath =
+        executableDirectory / ".." / "pipeline" / "shader_private" / "tools" / "lib" /
+        executableFileName;
+    if (std::filesystem::exists(parentPackagedLibPath)) {
+        return parentPackagedLibPath;
+    }
+
+    if (error != nullptr) {
+        *error = "Unable to locate refii-shader-xenos-translator";
+    }
+    return {};
+}
+
+bool EnsureDirectoryRemovedIfExists(const std::filesystem::path& path, std::string* error) {
+    std::error_code errorCode;
+    if (!std::filesystem::exists(path, errorCode)) {
+        if (errorCode) {
+            if (error != nullptr) {
+                *error = "Unable to query shader workspace path " + path.string() + ": " +
+                         errorCode.message();
             }
             return false;
         }
+        return true;
+    }
 
-        stream << "# Runtime config generated by the launcher.\n"
-               << "# Edit these values to compare Lua workspace parity without recompiling.\n\n"
-               << "[lua]\n"
-               << "use_mod_overrides = true\n"
-               << "use_native_handlers = false\n"
-               << "force_loose_banks = false\n"
-               << "trace_script_loads = false\n"
-               << "trace_mod_overrides = false\n"
-               << "trace_native_handlers = false\n";
-        return stream.good();
-    } catch (const std::exception& exception) {
-        if (error) {
-            *error = exception.what();
+    std::error_code removeError;
+    std::filesystem::remove_all(path, removeError);
+    if (removeError) {
+        if (error != nullptr) {
+            *error = "Failed to remove shader workspace path " + path.string() + ": " +
+                     removeError.message();
         }
         return false;
     }
+    return true;
+}
+
+bool PromoteShaderTranslationTarget(std::string_view target,
+                                   const std::filesystem::path& translatedRoot,
+                                   const std::filesystem::path& outputRoot,
+                                   std::string* error) {
+    const std::filesystem::path sourceRoot = translatedRoot / std::string(target);
+    const std::filesystem::path destinationRoot =
+        outputRoot / ResolveShaderTargetLabel(std::string(target));
+
+    std::error_code existsError;
+    if (!std::filesystem::exists(sourceRoot, existsError)) {
+        if (!existsError) {
+            if (error != nullptr) {
+                *error = "No translated output for target " + std::string(target) + " was produced";
+            }
+            return false;
+        }
+        if (error != nullptr) {
+            *error = "Failed to check translated output for target " + std::string(target) + ": " +
+                     existsError.message();
+        }
+        return false;
+    }
+
+    if (!EnsureDirectoryRemovedIfExists(destinationRoot, error)) {
+        return false;
+    }
+
+    std::error_code moveError;
+    std::filesystem::rename(sourceRoot, destinationRoot, moveError);
+    if (moveError) {
+        if (error != nullptr) {
+            *error = "Failed to promote translated shaders for " + std::string(target) +
+                     ": " + moveError.message();
+        }
+        return false;
+    }
+
+    return true;
+}
+
+std::filesystem::path GetRuntimeConfigPathInternal() {
+    return Platform::GetExecutableDirectory() / "refii.toml";
 }
 
 std::string BuildLuaWorkspaceProgressMessage(
@@ -203,6 +603,10 @@ std::string BuildLuaWorkspaceProgressMessage(
         stream << "Verifying Lua workspace...";
     } else if (progress.phase == "resetting_workspace") {
         stream << "Resetting Lua workspace...";
+    } else if (progress.phase == "extracting_banks") {
+        stream << "Unpacking game banks...";
+    } else if (progress.phase == "building_vfs_database") {
+        stream << "Building VFS database...";
     } else if (progress.phase == "disassembling_fallback") {
         stream << "Disassembling Lua fallback...";
     } else {
@@ -217,6 +621,46 @@ std::string BuildLuaWorkspaceProgressMessage(
         stream << " (" << summarize_path(progress.current_input) << ")";
     }
 
+    return stream.str();
+}
+
+std::string BuildShaderSbkProgressMessage(const refii::shader::ShaderSbkProgress& progress) {
+    auto summarize_path = [](const std::filesystem::path& path) {
+        if (path.empty()) {
+            return std::string();
+        }
+        const std::string filename = path.filename().generic_string();
+        if (!filename.empty()) {
+            return filename;
+        }
+        return path.generic_string();
+    };
+
+    std::ostringstream stream;
+    if (progress.phase == "extracting_bank") {
+        stream << "Parsing shader bank ";
+        stream << progress.bank_name;
+        if (progress.total_banks != 0) {
+            stream << " (" << progress.bank_index << '/' << progress.total_banks << ')';
+        }
+    } else if (progress.phase == "bank_ready") {
+        stream << "Extracted " << progress.bank_name << " bank blobs";
+    } else if (progress.phase == "extracting_blobs") {
+        stream << "Extracting shader blobs from " << progress.bank_name;
+    } else if (progress.phase == "translating_shader") {
+        stream << "Translating " << summarize_path(progress.current_input) << " ["
+               << progress.target << "]";
+        if (progress.stage != "unknown") {
+            stream << " (" << progress.stage << ')';
+        }
+        if (progress.total_items != 0) {
+            stream << " (" << (progress.completed_items + 1) << '/' << progress.total_items << ')';
+        }
+    } else if (progress.phase == "translation_complete") {
+        stream << "Shader translation complete";
+    } else {
+        stream << "Retranslating shaders...";
+    }
     return stream.str();
 }
 
@@ -284,7 +728,7 @@ bool RebuildLuaWorkspaceInternal(
     const InstallStageCallback& stageCallback,
     const TransientStatusCallback& transientStatusCallback) {
     std::string configError;
-    if (!EnsureRuntimeConfigFile(&configError)) {
+    if (!Installer::EnsureRuntimeConfigFile(&configError)) {
         std::cerr << "warning: failed to write default runtime config: " << configError << "\n";
     }
 
@@ -308,12 +752,87 @@ bool RebuildLuaWorkspaceInternal(
     return true;
 }
 
+bool ExtractGeneralGameBanksInternal(
+    std::string* error,
+    const InstallStageCallback& stageCallback,
+    const TransientStatusCallback& transientStatusCallback) {
+    ReportInstallStage(stageCallback, "Preparing game bank extraction...");
+
+    const std::filesystem::path gameContentRoot = Installer::GetGameContentDirectoryPath();
+    const std::filesystem::path outputRoot = Installer::GetLuaWorkspacePath();
+
+    ReportInstallStage(stageCallback, "Cleaning stale bank archives...");
+    std::size_t removedBankFiles = 0;
+    if (!RemoveStaleUnpackedBankFiles(outputRoot, &removedBankFiles, error)) {
+        ReportInstallStage(stageCallback, "Bank archive cleanup failed.");
+        return false;
+    }
+
+    ReportInstallStage(stageCallback, "Copying loose game files...");
+    std::size_t copiedFiles = 0;
+    if (!CopyLooseGameContentFiles(gameContentRoot, outputRoot, &copiedFiles, error)) {
+        ReportInstallStage(stageCallback, "Loose game file copy failed.");
+        return false;
+    }
+
+    std::vector<std::filesystem::path> bankRelativePaths =
+        CollectGameBankRelativePaths(gameContentRoot);
+    if (bankRelativePaths.empty()) {
+        if (error != nullptr) {
+            *error = "no game banks were found under " + gameContentRoot.string();
+        }
+        ReportInstallStage(stageCallback, "Game bank extraction failed.");
+        return false;
+    }
+
+    refii::bnk::BankExtractionOptions options;
+    options.game_content_root = gameContentRoot;
+    options.output_root = outputRoot;
+    options.bank_relative_paths = std::move(bankRelativePaths);
+    options.clean_output = true;
+    if (transientStatusCallback) {
+        options.progress_callback =
+            [transientStatusCallback](const refii::bnk::BankExtractionProgress& progress) {
+                refii::lua::LuaWorkspaceDecompileProgress lua_progress;
+                lua_progress.phase = progress.phase;
+                lua_progress.completed_files = progress.completed_banks;
+                lua_progress.total_files = progress.total_banks;
+                lua_progress.current_input = progress.current_bank;
+                transientStatusCallback(BuildLuaWorkspaceProgressMessage(lua_progress));
+            };
+    }
+
+    refii::bnk::BankExtractionSummary summary;
+    std::string extractionError;
+    if (!refii::bnk::ExtractBanks(options, &summary, &extractionError)) {
+        const std::string resolved_error =
+            extractionError.empty() ? "failed to unpack game banks" : extractionError;
+        if (error != nullptr) {
+            *error = resolved_error;
+        }
+        ReportInstallStage(stageCallback, "Game bank extraction failed.");
+        return false;
+    }
+
+    std::cerr << "Game banks unpacked at " << summary.output_root << " ("
+              << summary.extracted_banks << " bank(s), " << summary.extracted_files
+              << " extracted file(s), " << copiedFiles << " loose file(s) copied, "
+              << removedBankFiles << " stale bank archive(s) removed, "
+              << summary.vfs_database_entries << " VFS database row(s), "
+              << summary.duplicate_conflicts
+              << " differing duplicate conflict(s) routed)\n";
+    ReportInstallStage(stageCallback, "Game banks unpacked.");
+    return true;
+}
+
 bool InstallGameInternal(
     const std::filesystem::path& isoPath,
     const std::filesystem::path& xexpPath,
     std::string* error,
     const InstallStageCallback& stageCallback,
     const TransientStatusCallback& transientStatusCallback) {
+    (void)transientStatusCallback;
+
     ReportInstallStage(stageCallback, "Extracting ISO...");
     if (!Installer::ExtractIso(isoPath, Installer::GetGameDataDirectoryPath(), error)) {
         return false;
@@ -321,10 +840,6 @@ bool InstallGameInternal(
 
     ReportInstallStage(stageCallback, "Copying XEXP...");
     if (!Installer::CopyGameExecutable(xexpPath, Installer::GetGameMarkerPath(), error)) {
-        return false;
-    }
-
-    if (!RebuildLuaWorkspaceInternal(error, stageCallback, transientStatusCallback)) {
         return false;
     }
 
@@ -336,6 +851,13 @@ bool ReplaceDownloadedFile(
     const std::filesystem::path& temporaryPath,
     const std::filesystem::path& destinationPath,
     std::string* error) {
+    std::string path_error;
+    if (!IsSafeRelativePath(destinationPath, &path_error)) {
+        if (error != nullptr) {
+            *error = path_error;
+        }
+        return false;
+    }
     try {
         std::filesystem::create_directories(destinationPath.parent_path());
 
@@ -465,6 +987,14 @@ std::filesystem::path GetLuaWorkspacePath() {
     return refii::lua::GetLuaWorkspacePath(GetGameDataDirectoryPath());
 }
 
+std::filesystem::path GetRuntimeConfigPath() {
+    return GetRuntimeConfigPathInternal();
+}
+
+bool EnsureRuntimeConfigFile(std::string* error) {
+    return EnsureRuntimeConfigDefaults(GetRuntimeConfigPath(), error);
+}
+
 bool HasInstalledBuild() {
     const std::vector<ManagedDownloadFile> files = GetManagedDownloadFiles();
     if (files.empty()) {
@@ -579,6 +1109,13 @@ bool CopyGameExecutable(
     const std::filesystem::path& sourcePath,
     const std::filesystem::path& destinationPath,
     std::string* error) {
+    std::string path_error;
+    if (!IsSafeRelativePath(destinationPath, &path_error)) {
+        if (error != nullptr) {
+            *error = path_error;
+        }
+        return false;
+    }
     try {
         if (!std::filesystem::exists(sourcePath)) {
             if (error) {
@@ -608,8 +1145,121 @@ bool InstallGame(
     return InstallGameInternal(isoPath, xexpPath, error, {}, {});
 }
 
+bool ExtractGameShadersInternal(
+    std::string* error,
+    const InstallStageCallback& stageCallback,
+    const TransientStatusCallback& transientStatusCallback) {
+    const std::vector<std::string> targets = GetShaderTranslationTargets();
+    const std::filesystem::path gameDataPath = GetGameDataDirectoryPath();
+    const std::filesystem::path shaderInputRoot = gameDataPath / "data" / "Shaders";
+    const std::filesystem::path shaderOutputRoot = GetLuaWorkspacePath() / "Shaders";
+    const std::filesystem::path extractionRoot = shaderOutputRoot / ".extracted";
+    const std::filesystem::path translationRoot = shaderOutputRoot / ".translated";
+    const std::filesystem::path manifestPath = extractionRoot / "extract_manifest.tsv";
+    const std::filesystem::path reportPath =
+        shaderOutputRoot / "translation_report.tsv";
+
+    if (!std::filesystem::exists(shaderInputRoot)) {
+        if (error != nullptr) {
+            *error = "Shader input directory not found: " + shaderInputRoot.string();
+        }
+    ReportInstallStage(stageCallback, "Shader retranslation failed.");
+        return false;
+    }
+
+    const bool hasShadersSbk =
+        std::filesystem::exists(shaderInputRoot / "Shaders.sbk") ||
+        std::filesystem::exists(shaderInputRoot / "ShadersRelease.sbk");
+    if (!hasShadersSbk) {
+        if (error != nullptr) {
+            *error = "No .sbk files found in " + shaderInputRoot.string();
+        }
+        ReportInstallStage(stageCallback, "Shader retranslation failed.");
+        return false;
+    }
+
+    if (!EnsureDirectoryRemovedIfExists(extractionRoot, error)) {
+        ReportInstallStage(stageCallback, "Shader retranslation failed.");
+        return false;
+    }
+    if (!EnsureDirectoryRemovedIfExists(translationRoot, error)) {
+        ReportInstallStage(stageCallback, "Shader retranslation failed.");
+        return false;
+    }
+
+    const std::filesystem::path translatorPath = GetTranslatorExecutablePath(error);
+    if (translatorPath.empty()) {
+        ReportInstallStage(stageCallback, "Shader retranslation failed.");
+        return false;
+    }
+
+    std::string requestedTargets;
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        if (i > 0) {
+            requestedTargets.push_back(',');
+        }
+        requestedTargets += targets[i];
+    }
+
+    ReportInstallStage(stageCallback, "Preparing shader retranslations...");
+    refii::shader::ShaderSbkBuildOptions buildOptions;
+    buildOptions.extract.input_dir = shaderInputRoot;
+    buildOptions.extract.extract_out_dir = extractionRoot;
+    buildOptions.extract.manifest_path = manifestPath;
+    buildOptions.translate.extract_manifest_path = manifestPath;
+    buildOptions.translate.translate_out_dir = translationRoot;
+    buildOptions.translate.report_path = reportPath;
+    buildOptions.translate.translator_path = translatorPath;
+    buildOptions.translate.targets = requestedTargets;
+
+    refii::shader::ShaderSbkBuildSummary summary;
+    const auto progressCallback = [&](const refii::shader::ShaderSbkProgress& progress) {
+        if (transientStatusCallback) {
+            transientStatusCallback(BuildShaderSbkProgressMessage(progress));
+        }
+    };
+
+    if (!refii::shader::BuildShaderSbkWorkspace(
+            buildOptions, &summary, error, progressCallback)) {
+        ReportInstallStage(stageCallback, "Shader translation failed.");
+        return false;
+    }
+
+    ReportInstallStage(stageCallback, "Promoting translated shader outputs...");
+    for (const std::string& target : targets) {
+        if (!PromoteShaderTranslationTarget(target, translationRoot, shaderOutputRoot, error)) {
+        ReportInstallStage(stageCallback, "Shader promotion failed.");
+            return false;
+        }
+    }
+
+    if (summary.translate.failed > 0) {
+        std::cerr << "Warning: " << summary.translate.failed
+                  << " shader translation entries failed. See " << reportPath.string() << "\n";
+    }
+    if (!EnsureDirectoryRemovedIfExists(extractionRoot, error)) {
+        ReportInstallStage(stageCallback, "Shader cleanup failed.");
+        return false;
+    }
+    if (!EnsureDirectoryRemovedIfExists(translationRoot, error)) {
+        ReportInstallStage(stageCallback, "Shader cleanup failed.");
+        return false;
+    }
+
+    ReportInstallStage(stageCallback, "Shader retranslation complete.");
+    return true;
+}
+
 bool RebuildLuaWorkspace(std::string* error) {
     return RebuildLuaWorkspaceInternal(error, {}, {});
+}
+
+bool ExtractGeneralGameBanks(std::string* error) {
+    return ExtractGeneralGameBanksInternal(error, {}, {});
+}
+
+bool ExtractGameShaders(std::string* error) {
+    return ExtractGameShadersInternal(error, {}, {});
 }
 
 bool VerifyLuaWorkspace(refii::lua::LuaWorkspaceVerifySummary* summary, std::string* error) {
@@ -728,6 +1378,59 @@ void RebuildLuaWorkspaceAsync(std::shared_ptr<IsoExtractionProgress> progress) {
             progress->hasError = true;
             progress->errorMessage =
                 rebuildError.empty() ? "Lua workspace rebuild failed" : rebuildError;
+        }
+    }).detach();
+}
+
+void ExtractGeneralGameBanksAsync(std::shared_ptr<IsoExtractionProgress> progress) {
+    std::thread([progress]() {
+        progress->isExtracting = true;
+        progress->isComplete = false;
+        progress->hasError = false;
+        progress->errorMessage.clear();
+        progress->SetOperationLabel("Unpacking Game Banks");
+        progress->SetStatusMessage("Preparing game bank extraction...");
+
+        std::string extractionError;
+        const bool success = ExtractGeneralGameBanksInternal(
+            &extractionError,
+            [progress](const std::string& message) { progress->SetStatusMessage(message); },
+            [progress](const std::string& message) { progress->SetStatusMessage(message, false); });
+
+        progress->isExtracting = false;
+        if (success) {
+            progress->isComplete = true;
+        } else {
+            progress->hasError = true;
+            progress->errorMessage =
+                extractionError.empty() ? "Game bank extraction failed" : extractionError;
+        }
+    }).detach();
+}
+
+void ExtractGameShadersAsync(std::shared_ptr<IsoExtractionProgress> progress) {
+    std::thread([progress]() {
+        progress->isExtracting = true;
+        progress->isComplete = false;
+        progress->hasError = false;
+        progress->errorMessage.clear();
+        progress->SetOperationLabel("Retranslating Game Shaders");
+        progress->SetStatusMessage("Preparing shader retranslations...");
+
+        std::string extractionError;
+        const bool success = ExtractGameShadersInternal(
+            &extractionError,
+            [progress](const std::string& message) { progress->SetStatusMessage(message); },
+            [progress](const std::string& message) { progress->SetStatusMessage(message, false); });
+
+        progress->isExtracting = false;
+        if (success) {
+            progress->SetStatusMessage("Shader retranslation complete.");
+            progress->isComplete = true;
+        } else {
+            progress->hasError = true;
+            progress->errorMessage =
+                extractionError.empty() ? "Shader retranslation failed" : extractionError;
         }
     }).detach();
 }

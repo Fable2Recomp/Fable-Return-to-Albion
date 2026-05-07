@@ -59,14 +59,45 @@ std::size_t AlignToSector(std::size_t value) {
 }
 
 std::string PathString(const std::filesystem::path& path) {
-    return path.u8string();
+    const std::u8string utf8Path = path.u8string();
+    std::string result;
+    result.reserve(utf8Path.size());
+    for (char8_t byte : utf8Path) {
+        result.push_back(static_cast<char>(byte));
+    }
+    return result;
 }
 
 bool HasInvalidFilename(std::string_view filename) {
-    return filename.empty() || filename == "." || filename == ".." ||
-           filename.find('/') != std::string_view::npos ||
-           filename.find('\\') != std::string_view::npos ||
-           filename.find('\0') != std::string_view::npos;
+    auto to_lower = [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    };
+
+    if (filename.empty() || filename == "." || filename == ".." ||
+        filename.find('\0') != std::string_view::npos) {
+        return true;
+    }
+    if (filename.back() == ' ' || filename.back() == '.') {
+        return true;
+    }
+
+    for (unsigned char ch : filename) {
+        if (ch <= 0x1F || ch == '<' || ch == '>' || ch == ':' || ch == '"' || ch == '/' ||
+            ch == '\\' || ch == '|' || ch == '?' || ch == '*') {
+            return true;
+        }
+    }
+
+    std::string lowered = std::string(filename);
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), to_lower);
+    const std::string base_name = lowered.substr(0, lowered.find('.'));
+    return lowered.empty() || base_name.empty() ||
+           base_name == "con" || base_name == "prn" || base_name == "aux" ||
+           base_name == "nul" || base_name == "clock$" ||
+           ((base_name.size() == 4 && base_name[0] == 'c' && base_name[1] == 'o' &&
+             base_name[2] == 'm' && std::isdigit(static_cast<unsigned char>(base_name[3]))) ||
+            (base_name.size() == 4 && base_name[0] == 'l' && base_name[1] == 'p' &&
+             base_name[2] == 't' && std::isdigit(static_cast<unsigned char>(base_name[3]))));
 }
 
 struct DirectoryEntry {
@@ -327,8 +358,7 @@ private:
             return false;
         }
 
-        const std::filesystem::path entryPath =
-            outputPath / std::filesystem::u8path(entry.filename);
+        const std::filesystem::path entryPath = outputPath / entry.filename;
         if (entry.isDirectory) {
             try {
                 std::filesystem::create_directories(entryPath);

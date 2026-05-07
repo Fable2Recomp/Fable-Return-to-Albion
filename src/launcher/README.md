@@ -67,38 +67,45 @@ Linux dependencies:
 
 ## Lua workspace
 
-After the installer extracts game data, it now also builds a mod-ready Lua tree
-at `assets/game/lua`.
+After the installer extracts game data, the Modding tab can build a mod-ready
+Lua tree at `assets/unpacked`.
 
 That workspace preserves the original data-relative paths, but rooted at
-`lua/` instead of `data/`. For example:
+`unpacked/` instead of `data/`. For example:
 
 - `data/gamescripts/scripts/Quests/QC030_BeetleHunter.lua`
-- `lua/gamescripts/scripts/Quests/QC030_BeetleHunter.lua`
+- `unpacked/gamescripts/scripts/Quests/QC030_BeetleHunter.lua`
 
-The installer keeps a hidden extraction cache at `assets/game/lua/.source`
+The launcher keeps a hidden extraction cache at `assets/unpacked/luasource`
 so it can preserve the original bytecode while writing mod-ready files into the
-public `lua/` tree.
+public `unpacked/` tree.
 
 The debug-rich `gamescripts/` bank is the best source for readable Lua workspace
 output. `gamescripts_r/` contains the retail chunks the game actually runs, but
 those scripts have much of their debug naming stripped.
 
-The launcher now decompiles into that `lua/` tree during install by calling
-the native Lua decompiler library directly after ISO extraction. That pass is
+The launcher decompiles into that `unpacked/` tree from the Modding tab by calling
+the native Lua decompiler library after installation. That pass is
 best-effort: known-good debug chunks are decompiled natively, retail aliases
 are reused where possible, and bytecode that still defeats the source
-decompiler is written as readable fallback disassembly under `lua/_disasm/`
-instead of stalling or failing the install.
+decompiler is written as readable fallback disassembly under `unpacked/_disasm/`
+instead of blocking installation.
 
 The installer also creates `refii.toml` beside the executable if it is missing.
 That runtime config enables Lua mod overrides by default while keeping the
 toggle user-editable for parity checks.
 
 If you already have extracted assets under `assets/game`, the launcher now also
-offers `Rebuild Lua Workspace`, `Verify Lua Workspace`, `Reset All Lua Files`,
-and `Reset Lua File...` actions so you can refresh, audit, or restore `lua/`
+offers `Unpack and Decompile Lua` and `Unpack Game Banks` in the Modding tab,
+plus `Verify Lua Workspace`, `Reset All Lua Files`, and `Reset Lua File...`
+actions so you can refresh, audit, or restore `unpacked/`
 without running a full reinstall.
+`Unpack Game Banks` mirrors non-BNK installed data files into `unpacked/` and
+extracts all non-Lua BNKs that use the standard V2/V3 archive layout. Archive
+files themselves are not kept in `unpacked/`; the originals remain under
+`game/data`, and stale copied BNKs are removed on the next unpack. The Lua banks
+stay owned by the Lua decompile action so the readable script workspace is not
+overwritten.
 
 To build or refresh that readable mirror manually, use:
 
@@ -112,15 +119,15 @@ cmake --build --preset linux-amd64-debug --target refii-lua-decompiler
 To verify or reset the public plaintext workspace without regenerating it, use:
 
 ```bash
-./out/build/linux-amd64-debug/tools/refii-lua-decompiler verify assets/game/lua
-./out/build/linux-amd64-debug/tools/refii-lua-decompiler reset-file assets/game/lua gamescripts/scripts/quests/feats.lua
-./out/build/linux-amd64-debug/tools/refii-lua-decompiler reset-all assets/game/lua
+./out/build/linux-amd64-debug/tools/refii-lua-decompiler verify assets/unpacked
+./out/build/linux-amd64-debug/tools/refii-lua-decompiler reset-file assets/unpacked gamescripts/scripts/quests/feats.lua
+./out/build/linux-amd64-debug/tools/refii-lua-decompiler reset-all assets/unpacked
 ```
 
 The emitted `_manifest.tsv` records which files were decompiled, aliased from
 their debug counterpart, copied as plaintext, or written as `_disasm/`
-fallbacks. The launcher also maintains `lua/.baseline/_hashes.tsv` plus
-`lua/.baseline/files/` so public plaintext Lua can be verified and reset after
+fallbacks. The launcher also maintains `unpacked/.baseline/_hashes.tsv` plus
+`unpacked/.baseline/files/` so public plaintext Lua can be verified and reset after
 modding. Full reset restores baseline-tracked files and removes extra public
 `.lua` files that were added later.
 

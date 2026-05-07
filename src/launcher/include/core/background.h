@@ -9,6 +9,9 @@
 #include <random>
 #include <chrono>
 #include <iostream>
+#include <cstdint>
+#include <vector>
+#include <filesystem>
 #include <imgui.h>
 #include "utils/inimanager.h"
 
@@ -22,9 +25,9 @@ struct PendingTexture {
 
 class BackgroundManager {
 private:
-    static const int numberOfBackgrounds = 16;
-    GLuint backgroundTextures[numberOfBackgrounds];
-    std::atomic<bool> backgroundsLoaded[numberOfBackgrounds];
+    std::vector<std::filesystem::path> backgroundPaths;
+    std::vector<GLuint> backgroundTextures;
+    std::vector<uint8_t> backgroundsLoaded;
     std::atomic<bool> allBackgroundsLoaded{ false };
     std::mutex textureMutex;
     std::queue<PendingTexture> pendingTextures;
@@ -68,4 +71,5 @@ private:
     void ProcessPendingTextures();
     void UpdateBackgroundTransition(float deltaTime);
     void LoadTitleTexture();
+    void DiscoverBackgroundFiles();
 };

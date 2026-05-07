@@ -11,6 +11,7 @@ public:
     void Initialize(const std::string& repoName, const std::string& branchName);
     
     void Render();
+    void RenderContents();
     
     bool IsLoading() const { return commitsLoading; }
     

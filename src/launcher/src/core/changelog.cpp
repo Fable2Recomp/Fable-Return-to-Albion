@@ -31,7 +31,12 @@ void ChangeLog::OnCommitsLoaded(std::vector<GitCommit> commits) {
 
 void ChangeLog::Render() {
     ImGui::Begin("Change Log");
-    ImGui::BeginChild("ChangeLogChild", ImVec2(0, ImGui::GetWindowHeight() - 40), true);
+    RenderContents();
+    ImGui::End();
+}
+
+void ChangeLog::RenderContents() {
+    ImGui::BeginChild("ChangeLogChild", ImVec2(0, 0), true);
 
     if (commitsLoading) {
         ImGui::Text("Loading commits from GitHub...");
@@ -64,5 +69,4 @@ void ChangeLog::Render() {
     }
 
     ImGui::EndChild();
-    ImGui::End();
 }

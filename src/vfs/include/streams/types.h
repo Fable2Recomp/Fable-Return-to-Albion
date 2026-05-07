@@ -1,0 +1,60 @@
+#pragma once
+
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <future>
+#include <mutex>
+#include <string>
+
+namespace refii::vfs {
+
+struct LooseStreamRecord {
+  std::string path;
+  std::string provider_root;
+  std::string provider_name;
+  uint64_t expected_size = 0;
+};
+
+struct RefiiHostStreamRecord {
+  std::filesystem::path path;
+  uint64_t size = 0;
+  uint64_t position = 0;
+  uint32_t open_mode = 1;
+  uint32_t materialized_buffer_guest = 0;
+  uint32_t materialized_bytes = 0;
+  uint64_t read_calls = 0;
+  uint64_t read_bytes = 0;
+  std::ifstream file;
+  std::mutex mutex;
+};
+
+struct RefiiResourceWrapperView {
+  uint32_t buffer_guest = 0;
+  uint32_t size = 0;
+  uint32_t view_offset = 0;
+  uint32_t inner_guest = 0;
+  uint32_t source_stream_guest = 0;
+  std::string provider_key;
+};
+
+struct RefiiReadRequestRecord {
+  uint32_t request_guest = 0;
+  uint32_t stream_guest = 0;
+  uint32_t buffer_guest = 0;
+  uint64_t offset = 0;
+  uint32_t requested_bytes = 0;
+  uint32_t bytes_read = 0;
+  bool uses_stream_destination = false;
+  bool completed = false;
+  bool attempted = false;
+  bool completion_counted = false;
+  std::chrono::steady_clock::time_point queued_at{};
+  std::chrono::steady_clock::time_point started_at{};
+  std::chrono::steady_clock::time_point completed_at{};
+  std::shared_future<void> async_read;
+  std::mutex mutex;
+};
+
+}  // namespace refii::vfs

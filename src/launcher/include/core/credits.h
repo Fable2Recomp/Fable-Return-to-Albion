@@ -11,6 +11,7 @@ public:
     void Initialize(const std::string& repoName);
     
     void Render();
+    void RenderContents();
     
     bool IsLoading() const { return contributorsLoading; }
     

@@ -4,7 +4,7 @@ project(refii_launcher LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -31,6 +31,7 @@ set(LAUNCHER_SOURCES
     src/core/credits.cpp
     src/core/launcher.cpp
     src/core/patches.cpp
+    src/core/runtime_settings.cpp
     src/core/utils/filedownloader.cpp
     src/core/utils/githubapi.cpp
     src/core/utils/logsystem.cpp
@@ -79,10 +80,21 @@ target_include_directories(${LAUNCHER_TARGET} PRIVATE
 
 target_link_libraries(${LAUNCHER_TARGET} PRIVATE
     glfw
+    refii_bnk_extractor
 )
 
 if(TARGET refii_lua_decompiler_workspace)
     target_link_libraries(${LAUNCHER_TARGET} PRIVATE refii_lua_decompiler_workspace)
+endif()
+if(TARGET refii_shader_sbk_workspace)
+    target_link_libraries(${LAUNCHER_TARGET} PRIVATE refii_shader_sbk_workspace)
+endif()
+if(TARGET refii-shader-xenos-translator)
+    target_compile_definitions(
+        ${LAUNCHER_TARGET}
+        PRIVATE
+            "REFII_SHADER_XENOS_TRANSLATOR_PATH=\"$<TARGET_FILE:refii-shader-xenos-translator>\""
+    )
 endif()
 
 if(WIN32)
@@ -99,19 +111,12 @@ else()
     find_package(OpenGL REQUIRED)
     find_package(CURL REQUIRED)
     find_package(X11 REQUIRED)
-    find_package(ZLIB REQUIRED)
 
     target_link_libraries(${LAUNCHER_TARGET} PRIVATE
         CURL::libcurl
         OpenGL::GL
         X11::X11
-        ZLIB::ZLIB
     )
-endif()
-
-if(WIN32)
-    find_package(ZLIB REQUIRED)
-    target_link_libraries(${LAUNCHER_TARGET} PRIVATE ZLIB::ZLIB)
 endif()
 
 add_custom_command(TARGET ${LAUNCHER_TARGET} POST_BUILD

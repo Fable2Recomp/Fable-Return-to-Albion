@@ -5,6 +5,7 @@
 #include "installer/installer.h"
 #include "patches.h"
 #include "platform.h"
+#include "runtime_settings.h"
 #include "smartstyles.h"
 #include "window.h"
 #include "utils/githubapi.h"
@@ -13,6 +14,7 @@
 #include "utils/logsystem.h"
 #include "utils/versionmanager.h"
 
+#include <algorithm>
 #include <atomic>
 #include <array>
 #include <cctype>
@@ -160,6 +162,48 @@ std::string ToLowerAscii(std::string value) {
     return value;
 }
 
+float ClampFloat(float value, float minimum, float maximum) {
+    return std::max(minimum, std::min(value, maximum));
+}
+
+struct LauncherLayout {
+    ImVec2 infoPos;
+    ImVec2 infoSize;
+    ImVec2 warningPos;
+    ImVec2 warningSize;
+    ImVec2 actionPos;
+    ImVec2 actionSize;
+};
+
+LauncherLayout BuildLauncherLayout(const ImGuiViewport& viewport, float menuBarHeight) {
+    const float contentTop = viewport.Pos.y + std::max(menuBarHeight, 0.0f);
+    const float contentHeight = std::max(1.0f, viewport.Size.y - menuBarHeight);
+
+    float infoWidth = ClampFloat(viewport.Size.x * 0.265f, 440.0f, 560.0f);
+    if (viewport.Size.x - infoWidth < 640.0f) {
+        infoWidth = std::max(320.0f, viewport.Size.x - 640.0f);
+    }
+    if (viewport.Size.x < 900.0f) {
+        infoWidth = ClampFloat(viewport.Size.x * 0.42f, 300.0f, viewport.Size.x * 0.5f);
+    }
+
+    const float leftWidth = std::max(1.0f, viewport.Size.x - infoWidth);
+    const float warningHeight = viewport.Size.y < 720.0f ? 36.0f : 44.0f;
+    const float actionHeight =
+        ClampFloat(viewport.Size.y * 0.11f, viewport.Size.y < 720.0f ? 88.0f : 96.0f, 120.0f);
+    const float bottomPanelHeight = warningHeight + actionHeight;
+    const float bottomTop = contentTop + std::max(0.0f, contentHeight - bottomPanelHeight);
+
+    return {
+        ImVec2(viewport.Pos.x + leftWidth, contentTop),
+        ImVec2(infoWidth, contentHeight),
+        ImVec2(viewport.Pos.x, bottomTop),
+        ImVec2(leftWidth, warningHeight),
+        ImVec2(viewport.Pos.x, bottomTop + warningHeight),
+        ImVec2(leftWidth, actionHeight),
+    };
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -192,6 +236,7 @@ int main(int argc, char** argv) {
     BackgroundManager backgroundManager;
     ChangeLog changeLog;
     Credits credits;
+    RuntimeSettingsPanel runtimeSettings;
     std::shared_ptr<ManagedDownloadProgress> downloadProgress = nullptr;
     std::shared_ptr<IsoExtractionProgress> isoProgress = nullptr;
     refii::lua::LuaWorkspaceVerifySummary luaWorkspaceVerifySummary;
@@ -216,6 +261,7 @@ int main(int argc, char** argv) {
     backgroundManager.Initialize();
     changeLog.Initialize(GetRepositoryName(), GetRepositoryBranch());
     credits.Initialize(GetRepositoryName());
+    runtimeSettings.Initialize();
 
     auto startUpdateCheck = [&](const char* logPrefix) {
         if (isCheckingForUpdates.load() || !Installer::CanCheckForUpdates() ||
@@ -308,6 +354,16 @@ int main(int argc, char** argv) {
     auto startLuaWorkspaceRebuild = [&]() {
         isoProgress = std::make_shared<IsoExtractionProgress>();
         Installer::RebuildLuaWorkspaceAsync(isoProgress);
+    };
+
+    auto startGeneralBankExtraction = [&]() {
+        isoProgress = std::make_shared<IsoExtractionProgress>();
+        Installer::ExtractGeneralGameBanksAsync(isoProgress);
+    };
+
+    auto startShaderExtraction = [&]() {
+        isoProgress = std::make_shared<IsoExtractionProgress>();
+        Installer::ExtractGameShadersAsync(isoProgress);
     };
 
     auto startLuaWorkspaceVerify = [&]() {
@@ -428,7 +484,9 @@ int main(int argc, char** argv) {
         PushSmartStyle(
             INI::GetImColor("MenuBar_forground", ImColor(0.02f, 0.10f, 0.20f), "Theme"),
             INI::GetImColor("MenuBar_background", ImColor(0.20f, 0.80f, 0.40f), "Theme"));
+        float mainMenuBarHeight = ImGui::GetFrameHeight();
         if (ImGui::BeginMainMenuBar()) {
+            mainMenuBarHeight = ImGui::GetWindowHeight();
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Set Install Folder")) {
                     std::string gamePath;
@@ -523,14 +581,24 @@ int main(int argc, char** argv) {
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
         ImGuiViewport* viewport = ImGui::GetMainViewport();
+        const LauncherLayout layout = BuildLauncherLayout(*viewport, mainMenuBarHeight);
         backgroundManager.Render(viewport);
         ImGui::PopStyleColor(2);
+
+        const ImGuiWindowFlags pinnedWindowFlags =
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
+            ImGuiWindowFlags_NoSavedSettings;
 
         PushSmartStyle(
             INI::GetImColor("Warning_forground", ImColor(1.0f, 0.0f, 0.0f), "Theme"),
             INI::GetImColor("Warning_background", ImColor(1.0f, 0.0f, 0.0f), "Theme"));
         {
-            ImGui::Begin("NotPlayableYetWarning");
+            ImGui::SetNextWindowPos(layout.warningPos, ImGuiCond_Always);
+            ImGui::SetNextWindowSize(layout.warningSize, ImGuiCond_Always);
+            ImGui::Begin("NotPlayableYetWarning",
+                         nullptr,
+                         pinnedWindowFlags | ImGuiWindowFlags_NoTitleBar);
             ImGui::TextWrapped(
                 "%s",
                 INI::GetString(
@@ -546,7 +614,11 @@ int main(int argc, char** argv) {
             INI::GetImColor("LaunchButton_forground", ImColor(0.02f, 0.10f, 0.20f), "Theme"),
             INI::GetImColor("LaunchButton_background", ImColor(0.20f, 0.80f, 0.40f), "Theme"));
         {
-            ImGui::Begin("Launch Button");
+            ImGui::SetNextWindowPos(layout.actionPos, ImGuiCond_Always);
+            ImGui::SetNextWindowSize(layout.actionSize, ImGuiCond_Always);
+            ImGui::Begin("Launch Button",
+                         nullptr,
+                         pinnedWindowFlags | ImGuiWindowFlags_NoTitleBar);
             ImGui::PopFont();
             ImGui::PushFont(BasicTitleFont);
 
@@ -555,8 +627,6 @@ int main(int argc, char** argv) {
             const std::filesystem::path markerPath = Installer::GetGameMarkerPath();
             const bool installedBuildExists = Installer::HasInstalledBuild();
             constexpr float kPrimaryButtonHeight = 88.0f;
-            constexpr float kSecondaryButtonHeight = 36.0f;
-            constexpr float kButtonSpacing = 8.0f;
             constexpr float kBottomPadding = 10.0f;
 
             if (downloadProgress && downloadProgress->isComplete.load() &&
@@ -599,23 +669,8 @@ int main(int argc, char** argv) {
                 primaryButtonText = "Update Available";
             }
 
-            const bool canRebuildLuaWorkspace =
-                !isoInProgress && !downloadInProgress && assetsExist && !gameIsRunning &&
-                (!downloadProgress || downloadProgress->isComplete.load());
-
             const float primaryButtonY =
                 ImGui::GetWindowHeight() - kBottomPadding - kPrimaryButtonHeight;
-            const float secondaryButtonY =
-                primaryButtonY - kButtonSpacing - kSecondaryButtonHeight;
-
-            if (canRebuildLuaWorkspace) {
-                ImGui::SetCursorPosY(secondaryButtonY);
-                    if (ImGui::Button(
-                        "Rebuild Lua Workspace",
-                        ImVec2(-1.0f, kSecondaryButtonHeight))) {
-                    startLuaWorkspaceRebuild();
-                }
-            }
 
             ImGui::SetCursorPosY(primaryButtonY);
             if (!primaryButtonEnabled) {
@@ -715,13 +770,114 @@ int main(int argc, char** argv) {
         PushSmartStyle(
             INI::GetImColor("ChangeLog_forground", ImColor(0.02f, 0.10f, 0.20f), "Theme"),
             INI::GetImColor("ChangeLog_background", ImColor(0.20f, 0.80f, 0.40f), "Theme"));
-        changeLog.Render();
-        PopSmartStyle();
+        {
+            ImGui::SetNextWindowPos(layout.infoPos, ImGuiCond_Always);
+            ImGui::SetNextWindowSize(layout.infoSize, ImGuiCond_Always);
+            ImGui::Begin("Launcher Info", nullptr, pinnedWindowFlags);
+            if (ImGui::BeginTabBar("LauncherInfoTabs")) {
+                if (ImGui::BeginTabItem("Change Log")) {
+                    changeLog.RenderContents();
+                    ImGui::EndTabItem();
+                }
+                if (ImGui::BeginTabItem("Credits")) {
+                    credits.RenderContents();
+                    ImGui::EndTabItem();
+                }
+                if (ImGui::BeginTabItem("Reinstall")) {
+                    const std::filesystem::path workspacePath = Installer::GetLuaWorkspacePath();
+                    ImGui::TextWrapped("Target: %s", workspacePath.string().c_str());
 
-        PushSmartStyle(
-            INI::GetImColor("Credits_forground", ImColor(0.02f, 0.10f, 0.20f), "Theme"),
-            INI::GetImColor("Credits_background", ImColor(0.20f, 0.80f, 0.40f), "Theme"));
-        credits.Render();
+                    const bool moddingActionEnabled = canRunLuaWorkspaceAction;
+                    const bool reinstallActionEnabled =
+                        !menuIsoInProgress && !menuDownloadInProgress && !gameIsRunning;
+                    const float buttonWidth = std::max(150.0f, ImGui::GetContentRegionAvail().x);
+
+                    if (!reinstallActionEnabled) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                              ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                                              ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                    }
+                    if (ImGui::Button("Reinstall Fable 2", ImVec2(buttonWidth, 36.0f)) &&
+                        reinstallActionEnabled) {
+                        startInstallFlow();
+                    }
+                    if (!reinstallActionEnabled) {
+                        ImGui::PopStyleColor(3);
+                    }
+                    ImGui::Spacing();
+                    if (!moddingActionEnabled) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                              ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                                              ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                    }
+                    if (ImGui::Button("Unpack Game Banks", ImVec2(buttonWidth, 36.0f)) &&
+                        moddingActionEnabled) {
+                        startGeneralBankExtraction();
+                    }
+                    if (!moddingActionEnabled) {
+                        ImGui::PopStyleColor(3);
+                    }
+                    ImGui::Spacing();
+                    if (!moddingActionEnabled) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                              ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                                              ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                    }
+                    if (ImGui::Button("Unpack and Decompile Lua", ImVec2(buttonWidth, 36.0f)) &&
+                        moddingActionEnabled) {
+                        startLuaWorkspaceRebuild();
+                    }
+                    if (!moddingActionEnabled) {
+                        ImGui::PopStyleColor(3);
+                    }
+                    ImGui::Spacing();
+                    if (!moddingActionEnabled) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                              ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                                              ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                    }
+                    if (ImGui::Button("Retranslate Shaders", ImVec2(buttonWidth, 36.0f)) &&
+                        moddingActionEnabled) {
+                        startShaderExtraction();
+                    }
+
+                    if (!moddingActionEnabled) {
+                        ImGui::PopStyleColor(3);
+                    }
+
+                    if (isoProgress != nullptr) {
+                        const std::string operationLabel = isoProgress->GetOperationLabel();
+                        const std::string statusMessage = isoProgress->GetStatusMessage();
+                        if (!operationLabel.empty() || !statusMessage.empty()) {
+                            ImGui::Separator();
+                            ImGui::TextWrapped("%s", operationLabel.c_str());
+                            if (!statusMessage.empty()) {
+                                ImGui::TextWrapped("%s", statusMessage.c_str());
+                            }
+                        }
+                        if (isoProgress->hasError.load() && !isoProgress->errorMessage.empty()) {
+                            ImGui::TextWrapped("Error: %s", isoProgress->errorMessage.c_str());
+                        }
+                    }
+
+                    ImGui::EndTabItem();
+                }
+                if (ImGui::BeginTabItem("Settings")) {
+                    runtimeSettings.Render();
+                    ImGui::EndTabItem();
+                }
+                ImGui::EndTabBar();
+            }
+            ImGui::End();
+        }
         PopSmartStyle();
 
         PushSmartStyle(
