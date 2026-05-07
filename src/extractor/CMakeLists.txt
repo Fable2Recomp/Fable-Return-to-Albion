@@ -4,33 +4,35 @@ set(REFII_EXTRACTOR_THIRDPARTY_ROOT "${REFII_EXTRACTOR_ROOT}/thirdparty")
 set(REFII_EXTRACTOR_ZLIB_ROOT "${REFII_EXTRACTOR_THIRDPARTY_ROOT}/zlib")
 set(REFII_EXTRACTOR_ZLIB_TARGET)
 
-if(NOT EXISTS "${REFII_EXTRACTOR_ZLIB_ROOT}/CMakeLists.txt")
+if(TARGET ZLIB::ZLIB)
+    set(REFII_EXTRACTOR_ZLIB_TARGET ZLIB::ZLIB)
+elseif(EXISTS "${REFII_EXTRACTOR_ZLIB_ROOT}/CMakeLists.txt")
+    set(ZLIB_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    add_subdirectory(
+        "${REFII_EXTRACTOR_ZLIB_ROOT}"
+        "${CMAKE_CURRENT_BINARY_DIR}/thirdparty/zlib"
+        EXCLUDE_FROM_ALL
+    )
+
+    if(TARGET ZLIB::ZLIB)
+        set(REFII_EXTRACTOR_ZLIB_TARGET ZLIB::ZLIB)
+    elseif(TARGET zlibstatic)
+        add_library(ZLIB::ZLIB ALIAS zlibstatic)
+        set(REFII_EXTRACTOR_ZLIB_TARGET ZLIB::ZLIB)
+    elseif(TARGET zlib)
+        add_library(ZLIB::ZLIB ALIAS zlib)
+        set(REFII_EXTRACTOR_ZLIB_TARGET ZLIB::ZLIB)
+    else()
+        message(FATAL_ERROR
+            "Vendored zlib was found at ${REFII_EXTRACTOR_ZLIB_ROOT} "
+            "but no zlib CMake target is available.")
+    endif()
+else()
     message(FATAL_ERROR
         "Missing vendored zlib at ${REFII_EXTRACTOR_ZLIB_ROOT}; "
         "the extractor now requires the in-repo copy.")
-endif()
-
-set(ZLIB_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
-add_subdirectory(
-    "${REFII_EXTRACTOR_ZLIB_ROOT}"
-    "${CMAKE_CURRENT_BINARY_DIR}/thirdparty/zlib"
-    EXCLUDE_FROM_ALL
-)
-
-if(TARGET ZLIB::ZLIB)
-    set(REFII_EXTRACTOR_ZLIB_TARGET ZLIB::ZLIB)
-elseif(TARGET zlibstatic)
-    add_library(ZLIB::ZLIB ALIAS zlibstatic)
-    set(REFII_EXTRACTOR_ZLIB_TARGET ZLIB::ZLIB)
-elseif(TARGET zlib)
-    add_library(ZLIB::ZLIB ALIAS zlib)
-    set(REFII_EXTRACTOR_ZLIB_TARGET ZLIB::ZLIB)
-else()
-    message(FATAL_ERROR
-        "Vendored zlib was found at ${REFII_EXTRACTOR_ZLIB_ROOT} "
-        "but no zlib CMake target is available.")
 endif()
 
 add_library(refii_bnk_extractor SHARED

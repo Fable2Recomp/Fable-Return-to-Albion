@@ -342,43 +342,50 @@ else()
     target_link_libraries(refii_lua51 PUBLIC ${CMAKE_DL_LIBS} m)
 endif()
 
-add_library(refii_lua_decompiler_workspace STATIC
-    ${REFII_LUA_DECOMPILER_WORKSPACE_SOURCES}
-    ${REFII_LUA_DECOMPILER_PUBLIC_HEADERS}
-    ${REFII_LUA_DECOMPILER_PRIVATE_PARTS}
-)
-target_include_directories(refii_lua_decompiler_workspace
-    PUBLIC
-        ${REFII_LUA_ROOT}/include
-    PRIVATE
-        ${REFII_LUA51_INCLUDE_DIRS}
-)
-target_link_libraries(refii_lua_decompiler_workspace
-    PUBLIC
-        refii_bnk_extractor
-        refii_lua51
-)
-set_target_properties(refii_lua_decompiler_workspace PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-)
-
-if(REFII_BUILD_TOOLS)
-    add_executable(refii-lua-decompiler
-        ${REFII_LUA_ROOT}/src/tools/refii_lua_decompiler_cli_main.cpp
+if(TARGET refii_bnk_extractor)
+    add_library(refii_lua_decompiler_workspace STATIC
+        ${REFII_LUA_DECOMPILER_WORKSPACE_SOURCES}
+        ${REFII_LUA_DECOMPILER_PUBLIC_HEADERS}
+        ${REFII_LUA_DECOMPILER_PRIVATE_PARTS}
     )
-    target_link_libraries(refii-lua-decompiler
+    target_include_directories(refii_lua_decompiler_workspace
+        PUBLIC
+            ${REFII_LUA_ROOT}/include
         PRIVATE
-            refii_lua_decompiler_workspace
+            ${REFII_LUA51_INCLUDE_DIRS}
     )
-    set_target_properties(refii-lua-decompiler PROPERTIES
-        OUTPUT_NAME refii-lua-decompiler
+    target_link_libraries(refii_lua_decompiler_workspace
+        PUBLIC
+            refii_bnk_extractor
+            refii_lua51
+    )
+    set_target_properties(refii_lua_decompiler_workspace PROPERTIES
         CXX_STANDARD 23
         CXX_STANDARD_REQUIRED ON
-        RUNTIME_OUTPUT_DIRECTORY "${REFII_TOOL_OUTPUT_DIR}"
-        BUILD_RPATH "$ORIGIN/../lib"
-        INSTALL_RPATH "$ORIGIN/../lib"
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    )
+
+    if(REFII_BUILD_TOOLS)
+        add_executable(refii-lua-decompiler
+            ${REFII_LUA_ROOT}/src/tools/refii_lua_decompiler_cli_main.cpp
+        )
+        target_link_libraries(refii-lua-decompiler
+            PRIVATE
+                refii_lua_decompiler_workspace
+        )
+        set_target_properties(refii-lua-decompiler PROPERTIES
+            OUTPUT_NAME refii-lua-decompiler
+            CXX_STANDARD 23
+            CXX_STANDARD_REQUIRED ON
+            RUNTIME_OUTPUT_DIRECTORY "${REFII_TOOL_OUTPUT_DIR}"
+            BUILD_RPATH "$ORIGIN/../lib"
+            INSTALL_RPATH "$ORIGIN/../lib"
+        )
+    endif()
+else()
+    message(STATUS
+        "Skipping Lua decompiler workspace/tool because refii_bnk_extractor is not available. "
+        "Enable REFII_BUILD_EXTRACTOR if you need refii-lua-decompiler."
     )
 endif()
 

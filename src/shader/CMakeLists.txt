@@ -8,7 +8,40 @@ set(REFII_SHADER_WORKSPACE_SOURCES
     ${REFII_SHADER_ROOT}/src/shader_sbk_pipeline.cpp
 )
 
-find_package(ZLIB REQUIRED)
+set(REFII_SHADER_EXTRACTOR_ZLIB_ROOT "${REFII_SHADER_ROOT}/../extractor/thirdparty/zlib")
+
+if(NOT TARGET ZLIB::ZLIB)
+    if(EXISTS "${REFII_SHADER_EXTRACTOR_ZLIB_ROOT}/CMakeLists.txt")
+        set(ZLIB_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+        add_subdirectory(
+            "${REFII_SHADER_EXTRACTOR_ZLIB_ROOT}"
+            "${CMAKE_CURRENT_BINARY_DIR}/thirdparty/zlib"
+            EXCLUDE_FROM_ALL
+        )
+        if(TARGET ZLIB::ZLIB)
+            # keep as-is
+        elseif(TARGET zlibstatic)
+            add_library(ZLIB::ZLIB ALIAS zlibstatic)
+        elseif(TARGET zlib)
+            add_library(ZLIB::ZLIB ALIAS zlib)
+        else()
+            message(FATAL_ERROR
+                "Found vendored zlib at ${REFII_SHADER_EXTRACTOR_ZLIB_ROOT} "
+                "but no zlib CMake target was created.")
+        endif()
+    else()
+        find_package(ZLIB REQUIRED)
+    endif()
+endif()
+
+if(NOT TARGET ZLIB::ZLIB)
+    message(FATAL_ERROR
+        "Could not resolve a zlib target for shader module; "
+        "expected either vendored zlib at ${REFII_SHADER_EXTRACTOR_ZLIB_ROOT} "
+        "or a system zlib install.")
+endif()
 
 add_library(refii-shader-sbk SHARED
     ${REFII_SHADER_WORKSPACE_SOURCES}
