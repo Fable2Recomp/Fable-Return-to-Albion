@@ -3,6 +3,8 @@
 PPC_FUNC_IMPL(rex_lhResource_InitModelHeaders) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_InitModelHeaders);
+
   const PPCContext original_ctx = ctx;
   const bool log_trace =
       refii::vfs::kTraceMeshModelAudioDiagnostics &&
@@ -35,6 +37,8 @@ PPC_FUNC_IMPL(rex_lhResource_InitModelHeaders) {
 PPC_FUNC_IMPL(rex_lhScopedLock_Acquire) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhScopedLock_Acquire);
+
   refii::vfs::SanitizeCriticalSectionBeforeEnter(base, ctx.r4.u32, ctx.lr);
   __imp__rex_lhScopedLock_Acquire(ctx, base);
 }
@@ -42,12 +46,16 @@ PPC_FUNC_IMPL(rex_lhScopedLock_Acquire) {
 PPC_FUNC_IMPL(sub_8218FA68) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8218FA68);
+
   const std::lock_guard lock(refii::vfs::RenderSharedStateMutex());
   __imp__sub_8218FA68(ctx, base);
 }
 
 PPC_FUNC_IMPL(sub_82B75328) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B75328);
 
   const PPCContext original_ctx = ctx;
   const bool log_trace =
@@ -71,6 +79,8 @@ PPC_FUNC_IMPL(sub_82B75328) {
 
 PPC_FUNC_IMPL(sub_82B75D18) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B75D18);
 
   const PPCContext original_ctx = ctx;
   const bool log_trace =
@@ -96,6 +106,8 @@ PPC_FUNC_IMPL(sub_82B75D18) {
 
 PPC_FUNC_IMPL(sub_82286D78) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82286D78);
 
   const PPCContext original_ctx = ctx;
   const bool log_trace =
@@ -127,6 +139,8 @@ PPC_FUNC_IMPL(sub_82286D78) {
 PPC_FUNC_IMPL(sub_8220B470) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8220B470);
+
   const PPCContext original_ctx = ctx;
   const bool log_trace =
       refii::vfs::kTraceMeshModelAudioDiagnostics &&
@@ -157,6 +171,8 @@ PPC_FUNC_IMPL(sub_8220B470) {
 PPC_FUNC_IMPL(sub_82237338) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82237338);
+
   const PPCContext original_ctx = ctx;
   const bool log_trace =
       refii::vfs::kTraceMeshModelAudioDiagnostics &&
@@ -182,6 +198,8 @@ PPC_FUNC_IMPL(sub_82237338) {
 PPC_FUNC_IMPL(sub_82B86B40) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B86B40);
+
   const PPCContext original_ctx = ctx;
   const bool log_trace =
       refii::vfs::kTraceMeshModelAudioDiagnostics &&
@@ -205,6 +223,8 @@ PPC_FUNC_IMPL(sub_82B86B40) {
 PPC_FUNC_IMPL(rex_lhResource_CreateModelCache) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_CreateModelCache);
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceNonVfsBootFrameProbes &&
       refii::vfs::VfsTracingEnabled()) {
@@ -227,6 +247,8 @@ PPC_FUNC_IMPL(rex_lhResource_CreateModelCache) {
 
 PPC_FUNC_IMPL(rex_lhResource_SetupModelCache) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_SetupModelCache);
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceNonVfsBootFrameProbes &&
@@ -252,6 +274,8 @@ PPC_FUNC_IMPL(rex_lhResource_SetupModelCache) {
 
 PPC_FUNC_IMPL(rex_lhResource_SetLoadMode) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_SetLoadMode);
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
@@ -289,6 +313,8 @@ PPC_FUNC_IMPL(rex_lhResource_SetLoadMode) {
 PPC_FUNC_IMPL(rex_lhResource_InitSystem) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_InitSystem);
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
       refii::vfs::VfsTracingEnabled()) {
@@ -310,6 +336,8 @@ PPC_FUNC_IMPL(rex_lhResource_InitSystem) {
 PPC_FUNC_IMPL(rex_lhResource_InitLoader) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_InitLoader);
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
       refii::vfs::VfsTracingEnabled()) {
@@ -330,6 +358,8 @@ PPC_FUNC_IMPL(rex_lhResource_InitLoader) {
 
 PPC_FUNC_IMPL(rex_lhRenderer_Construct) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_Construct);
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
@@ -353,6 +383,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_Construct) {
 
 PPC_FUNC_IMPL(rex_lhRenderer_Setup) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_Setup);
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
@@ -378,6 +410,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_Setup) {
 
 PPC_FUNC_IMPL(sub_82389210) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82389210);
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
@@ -508,6 +542,8 @@ PPC_FUNC_IMPL(sub_82389210) {
 PPC_FUNC_IMPL(sub_823781E0) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_823781E0);
+
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
   const bool trace =
@@ -624,6 +660,8 @@ PPC_FUNC_IMPL(sub_823781E0) {
 PPC_FUNC_IMPL(sub_823889A8) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_823889A8);
+
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
   const uint32_t owner_guest = original_ctx.r3.u32;
@@ -712,6 +750,8 @@ PPC_FUNC_IMPL(sub_823889A8) {
 
 PPC_FUNC_IMPL(sub_82388A88) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82388A88);
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
@@ -811,6 +851,8 @@ PPC_FUNC_IMPL(sub_82388A88) {
 PPC_FUNC_IMPL(sub_823865F8) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_823865F8);
+
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
   const bool trace =
@@ -877,6 +919,8 @@ PPC_FUNC_IMPL(sub_823865F8) {
 PPC_FUNC_IMPL(sub_82361128) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82361128);
+
   const PPCContext original_ctx = ctx;
   const uint32_t ready_object = original_ctx.r3.u32;
   const uint32_t ready_payload =
@@ -928,6 +972,8 @@ PPC_FUNC_IMPL(sub_82361128) {
 PPC_FUNC_IMPL(sub_82361200) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82361200);
+
   const PPCContext original_ctx = ctx;
   const uint32_t ready_object = original_ctx.r3.u32;
   const uint32_t before_payload =
@@ -966,6 +1012,8 @@ PPC_FUNC_IMPL(sub_82361200) {
 
 PPC_FUNC_IMPL(sub_82388B48) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82388B48);
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
@@ -1037,6 +1085,8 @@ PPC_FUNC_IMPL(sub_82388B48) {
 PPC_FUNC_IMPL(sub_82388040) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82388040);
+
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
   const uint32_t handoff_guest = original_ctx.r3.u32;
@@ -1093,6 +1143,8 @@ PPC_FUNC_IMPL(sub_82388040) {
 
 PPC_FUNC_IMPL(sub_82A415C0) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82A415C0);
 
   const PPCContext original_ctx = ctx;
   const uint32_t descriptor_guest = original_ctx.r3.u32;
@@ -1228,6 +1280,8 @@ PPC_FUNC_IMPL(sub_82A415C0) {
 PPC_FUNC_IMPL(sub_82A41758) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82A41758);
+
   const PPCContext original_ctx = ctx;
   const uint32_t table_guest = original_ctx.r3.u32;
   const uint32_t descriptor_guest = original_ctx.r4.u32;
@@ -1322,6 +1376,8 @@ PPC_FUNC_IMPL(sub_82A41758) {
 
 PPC_FUNC_IMPL(sub_82A41B48) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82A41B48);
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
@@ -1444,6 +1500,8 @@ PPC_FUNC_IMPL(sub_82A41B48) {
 PPC_FUNC_IMPL(sub_82389040) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82389040);
+
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
   const bool trace =
@@ -1522,6 +1580,8 @@ PPC_FUNC_IMPL(sub_82389040) {
 
 PPC_FUNC_IMPL(rex_lhRenderer_BeginScene) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_BeginScene);
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
@@ -1817,6 +1877,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_BeginScene) {
 PPC_FUNC_IMPL(rex_lhMeshResource_Deserialize) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhMeshResource_Deserialize);
+
   const PPCContext original_ctx = ctx;
   const uint32_t descriptor_guest = original_ctx.r5.u32;
   const uint32_t resource_hash =
@@ -1886,6 +1948,8 @@ PPC_FUNC_IMPL(rex_lhMeshResource_Deserialize) {
 PPC_FUNC_IMPL(rex_lhMeshResource_Load) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhMeshResource_Load);
+
   const PPCContext original_ctx = ctx;
   const uint32_t descriptor_guest = original_ctx.r5.u32;
   const uint32_t resource_hash =
@@ -1942,6 +2006,8 @@ PPC_FUNC_IMPL(rex_lhMeshResource_Load) {
 PPC_FUNC_IMPL(sub_8286FDB0) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8286FDB0);
+
   const PPCContext original_ctx = ctx;
   const bool trace =
       refii::vfs::VfsTracingEnabled() &&
@@ -1994,6 +2060,8 @@ PPC_FUNC_IMPL(sub_8286FDB0) {
 
 PPC_FUNC_IMPL(sub_8218DFB8) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8218DFB8);
 
   const PPCContext original_ctx = ctx;
   const bool trace =
@@ -2053,6 +2121,8 @@ PPC_FUNC_IMPL(sub_8218DFB8) {
 PPC_FUNC_IMPL(sub_82231CB8) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82231CB8);
+
   const PPCContext original_ctx = ctx;
   const bool trace =
       refii::vfs::VfsTracingEnabled() &&
@@ -2104,6 +2174,8 @@ PPC_FUNC_IMPL(sub_82231CB8) {
 PPC_FUNC_IMPL(rex_lhMeshResource_Validate) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhMeshResource_Validate);
+
   const PPCContext original_ctx = ctx;
   const bool trace =
       refii::vfs::kTraceMeshModelAudioDiagnostics &&
@@ -2149,6 +2221,8 @@ PPC_FUNC_IMPL(rex_lhMeshResource_Validate) {
 PPC_FUNC_IMPL(sub_82B70868) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B70868);
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceMeshModelAudioDiagnostics &&
       refii::vfs::VfsTracingEnabled()) {
@@ -2179,6 +2253,8 @@ PPC_FUNC_IMPL(sub_82B70868) {
 PPC_FUNC_IMPL(rex_lhRenderer_StartThread) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_StartThread);
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
       refii::vfs::VfsTracingEnabled()) {
@@ -2201,6 +2277,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_StartThread) {
 
 PPC_FUNC_IMPL(rex_lhGameInit_SetupUI) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhGameInit_SetupUI);
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&

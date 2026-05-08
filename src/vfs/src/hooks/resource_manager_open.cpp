@@ -3,6 +3,8 @@
 PPC_FUNC_IMPL(rex_lhResourceManager_Open) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_Open);
+
   const PPCContext original_ctx = ctx;
   refii::vfs::RecordFrontendTextureConsumerResourceBoundary(
       "ResourceManager_Open", original_ctx.r3.u32, 0);
@@ -89,6 +91,8 @@ PPC_FUNC_IMPL(rex_lhResourceManager_Open) {
 
 PPC_FUNC_IMPL(sub_82B6DB20) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B6DB20);
 
   const PPCContext original_ctx = ctx;
   const uint32_t texture_guest = original_ctx.r3.u32;
@@ -246,6 +250,8 @@ PPC_FUNC_IMPL(sub_82B6DB20) {
 PPC_FUNC_IMPL(rex_lhResourceManager_OpenInternal) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_OpenInternal);
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::ShouldLogVfsTraceOperation(
           "ResourceManager_OpenInternal")) {
@@ -282,6 +288,8 @@ PPC_FUNC_IMPL(rex_lhResourceManager_OpenInternal) {
 
 PPC_FUNC_IMPL(sub_82426470) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82426470);
 
   const PPCContext original_ctx = ctx;
   std::string command =
@@ -367,6 +375,8 @@ PPC_FUNC_IMPL(sub_82426470) {
 
 PPC_FUNC_IMPL(sub_82372500) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82372500);
 
   const PPCContext original_ctx = ctx;
   const std::string command =

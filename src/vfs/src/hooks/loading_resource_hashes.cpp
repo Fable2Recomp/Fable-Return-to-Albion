@@ -29,6 +29,8 @@ std::string RefiiBootLocaleBankAliasForRequested(std::string_view requested_key)
 PPC_FUNC_IMPL(sub_8237AC80) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8237AC80);
+
   const PPCContext original_ctx = ctx;
   const bool trace =
       RefiiShouldTraceLoadingResourceLookup(original_ctx.lr) &&
@@ -65,6 +67,8 @@ PPC_FUNC_IMPL(sub_8237AC80) {
 
 PPC_FUNC_IMPL(sub_8237AA98) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8237AA98);
 
   const PPCContext original_ctx = ctx;
   const bool trace =
@@ -121,6 +125,8 @@ PPC_FUNC_IMPL(sub_8237AA98) {
 PPC_FUNC_IMPL(sub_822B88A8) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_822B88A8);
+
   const PPCContext original_ctx = ctx;
   const bool trace =
       RefiiShouldTraceLoadingResourceLookup(original_ctx.lr) &&
@@ -159,6 +165,7 @@ PPC_FUNC_IMPL(sub_822B88A8) {
 #define REFII_LOADING_SCREEN_OWNER_WRAPPER(function_name, trace_name, limit)  \
   PPC_FUNC_IMPL(function_name) {                                             \
     PPC_FUNC_PROLOGUE();                                                     \
+    REFII_VFS_NATIVE_PASSTHROUGH(function_name);                             \
                                                                               \
     const PPCContext original_ctx = ctx;                                      \
     const uint32_t loading_owner = original_ctx.r3.u32;                       \
@@ -430,6 +437,8 @@ REFII_LOADING_SCREEN_OWNER_WRAPPER(sub_82360968,
 PPC_FUNC_IMPL(sub_8235E5A0) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8235E5A0);
+
   const PPCContext original_ctx = ctx;
   const uint32_t loading_owner = original_ctx.r3.u32;
   bool refii_finish_gate_armed = false;
@@ -552,6 +561,8 @@ PPC_FUNC_IMPL(sub_8235E5A0) {
 PPC_FUNC_IMPL(sub_82361AF8) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82361AF8);
+
   const PPCContext original_ctx = ctx;
   const uint32_t holder = original_ctx.r3.u32;
   uint32_t owner_before = 0;
@@ -638,6 +649,8 @@ PPC_FUNC_IMPL(sub_82361AF8) {
 PPC_FUNC_IMPL(sub_82180418) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82180418);
+
   const PPCContext original_ctx = ctx;
   const bool trace = refii::vfs::VfsTracingEnabled() &&
                      refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&
@@ -665,6 +678,8 @@ PPC_FUNC_IMPL(sub_82180418) {
 
 PPC_FUNC_IMPL(sub_82467B08) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82467B08);
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted()) {
@@ -853,6 +868,8 @@ PPC_FUNC_IMPL(sub_82467B08) {
 PPC_FUNC_IMPL(sub_822C6C68) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_822C6C68);
+
   const PPCContext original_ctx = ctx;
   const bool trace = refii::vfs::VfsTracingEnabled() &&
                      refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&
@@ -931,6 +948,8 @@ PPC_FUNC_IMPL(sub_822C6C68) {
 
 PPC_FUNC_IMPL(sub_823C1658) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_823C1658);
 
   const PPCContext original_ctx = ctx;
   const bool trace = refii::vfs::VfsTracingEnabled() &&
@@ -1029,6 +1048,8 @@ PPC_FUNC_IMPL(sub_823C1658) {
 
 PPC_FUNC_IMPL(sub_82360300) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82360300);
 
   const PPCContext original_ctx = ctx;
   const uint32_t loading_owner = original_ctx.r3.u32;
@@ -1170,6 +1191,8 @@ PPC_FUNC_IMPL(sub_82360300) {
 PPC_FUNC_IMPL(rex_lhResourceName_ComputeHash) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceName_ComputeHash);
+
   const PPCContext original_ctx = ctx;
   const uint32_t resource_name_guest = original_ctx.r3.u32;
   std::string name;
@@ -1226,6 +1249,8 @@ PPC_FUNC_IMPL(rex_lhResourceName_ComputeHash) {
 
 PPC_FUNC_IMPL(rex_lhResourceName_ComputeHashFromName) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceName_ComputeHashFromName);
 
   const PPCContext original_ctx = ctx;
   const uint32_t name_guest = original_ctx.r3.u32;
@@ -1285,6 +1310,8 @@ PPC_FUNC_IMPL(rex_lhResourceName_ComputeHashFromName) {
 
 PPC_FUNC_IMPL(sub_82374728) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82374728);
 
   const PPCContext original_ctx = ctx;
   const uint32_t owner_guest = original_ctx.r3.u32;
@@ -1762,6 +1789,8 @@ PPC_FUNC_IMPL(sub_82374728) {
 
 PPC_FUNC_IMPL(sub_82B54E58) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B54E58);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;

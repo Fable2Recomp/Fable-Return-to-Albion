@@ -3,6 +3,8 @@
 PPC_FUNC_IMPL(rex_lhBank_Open) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_Open);
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t provider_guest = ctx.r4.u32;
@@ -99,6 +101,8 @@ PPC_FUNC_IMPL(rex_lhBank_Open) {
 PPC_FUNC_IMPL(rex_lhBank_OpenWithManifest) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_OpenWithManifest);
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t provider_guest = ctx.r4.u32;
@@ -165,6 +169,8 @@ PPC_FUNC_IMPL(rex_lhBank_OpenWithManifest) {
 
 PPC_FUNC_IMPL(rex_lhBank_ParseHeader) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_ParseHeader);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
@@ -259,6 +265,8 @@ PPC_FUNC_IMPL(rex_lhBank_ParseHeader) {
 PPC_FUNC_IMPL(rex_lhBank_DirectoryIterator_Ctor) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirectoryIterator_Ctor);
+
   const PPCContext original_ctx = ctx;
   const uint32_t iterator_guest = ctx.r3.u32;
   const uint32_t bank_guest = ctx.r4.u32;
@@ -304,6 +312,8 @@ PPC_FUNC_IMPL(rex_lhBank_DirectoryIterator_Ctor) {
 
 PPC_FUNC_IMPL(rex_lhBank_DirIter_FindStreamNext) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirIter_FindStreamNext);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
@@ -426,6 +436,8 @@ PPC_FUNC_IMPL(rex_lhBank_DirIter_FindStreamNext) {
 PPC_FUNC_IMPL(rex_lhBank_DirIter_GetName) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirIter_GetName);
+
   const PPCContext original_ctx = ctx;
   __imp__rex_lhBank_DirIter_GetName(ctx, base);
   if (refii::vfs::VfsTracingEnabled() &&
@@ -442,6 +454,8 @@ PPC_FUNC_IMPL(rex_lhBank_DirIter_GetName) {
 
 PPC_FUNC_IMPL(rex_lhBank_OpenStreamByIndex) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_OpenStreamByIndex);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
@@ -603,6 +617,8 @@ PPC_FUNC_IMPL(rex_lhBank_OpenStreamByIndex) {
 
 PPC_FUNC_IMPL(rex_lhBank_DirIter_FindStreamByIndex) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirIter_FindStreamByIndex);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;

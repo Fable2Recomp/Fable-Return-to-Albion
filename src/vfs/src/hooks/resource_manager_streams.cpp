@@ -3,6 +3,8 @@
 PPC_FUNC_IMPL(rex_lhResourceManager_FindAndCreateStream) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_FindAndCreateStream);
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t resource_manager_guest = ctx.r4.u32;
@@ -128,6 +130,8 @@ PPC_FUNC_IMPL(rex_lhResourceManager_FindAndCreateStream) {
 
 PPC_FUNC_IMPL(rex_lhResourceManager_GetCached) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_GetCached);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
@@ -294,6 +298,8 @@ PPC_FUNC_IMPL(rex_lhResourceManager_GetCached) {
 
 PPC_FUNC_IMPL(rex_lhResourceManager_vtbl_FindStream) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_vtbl_FindStream);
 
   const PPCContext original_ctx = ctx;
   const uint32_t resource_manager_guest = ctx.r3.u32;

@@ -3,6 +3,8 @@
 PPC_FUNC_IMPL(sub_82C6E8F0) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6E8F0);
+
   const PPCContext original_ctx = ctx;
   const uint32_t object_guest = original_ctx.r3.u32;
   const uint32_t dst_guest = original_ctx.r4.u32;
@@ -60,6 +62,8 @@ PPC_FUNC_IMPL(sub_82C6E8F0) {
 
 PPC_FUNC_IMPL(sub_82C6EAD8) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6EAD8);
 
   const PPCContext original_ctx = ctx;
   const uint32_t object_guest = original_ctx.r3.u32;
@@ -134,6 +138,8 @@ PPC_FUNC_IMPL(sub_82C6EAD8) {
 PPC_FUNC_IMPL(sub_82C6EA48) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6EA48);
+
   const PPCContext original_ctx = ctx;
   const uint32_t object_guest = original_ctx.r3.u32;
   const uint32_t stream_guest =
@@ -176,6 +182,8 @@ PPC_FUNC_IMPL(sub_82C6EA48) {
 PPC_FUNC_IMPL(sub_82C6EA80) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6EA80);
+
   const PPCContext original_ctx = ctx;
   const uint32_t object_guest = original_ctx.r3.u32;
   const uint32_t stream_guest =
@@ -213,6 +221,8 @@ PPC_FUNC_IMPL(sub_82C6EA80) {
 
 PPC_FUNC_IMPL(sub_82C8C718) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C8C718);
 
   const PPCContext original_ctx = ctx;
   const uint32_t parser_guest = original_ctx.r3.u32;
@@ -257,6 +267,8 @@ PPC_FUNC_IMPL(sub_82C8C718) {
 PPC_FUNC_IMPL(rex_lhGameInit_SetupAudio) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhGameInit_SetupAudio);
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
       refii::vfs::VfsTracingEnabled()) {
@@ -297,6 +309,8 @@ PPC_FUNC_IMPL(rex_lhGameInit_SetupAudio) {
 PPC_FUNC_IMPL(rex_lhRefCounted_ReturnMinusOne) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRefCounted_ReturnMinusOne);
+
   const uint32_t object_guest = ctx.r3.u32;
   refii::vfs::LooseStreamRecord record;
   std::string match;
@@ -328,6 +342,8 @@ PPC_FUNC_IMPL(rex_lhRefCounted_ReturnMinusOne) {
 PPC_FUNC_IMPL(sub_82A20EE8) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82A20EE8);
+
   const PPCContext original_ctx = ctx;
   const bool mesh_reader_trace =
       refii::vfs::kTraceMeshModelAudioDiagnostics &&
@@ -358,6 +374,8 @@ PPC_FUNC_IMPL(sub_82A20EE8) {
 PPC_FUNC_IMPL(rex_lhRefCounted_Release) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRefCounted_Release);
+
   const uint32_t object_guest = ctx.r3.u32;
   __imp__rex_lhRefCounted_Release(ctx, base);
   if (ctx.r3.u32 == 0) {
@@ -372,6 +390,8 @@ PPC_FUNC_IMPL(rex_lhRefCounted_Release) {
 
 PPC_FUNC_IMPL(sub_822C72E8) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_822C72E8);
 
   const uint32_t object_guest = ctx.r3.u32;
   if (refii::vfs::TryHandleRefiiReadRequestRelease(
@@ -393,6 +413,8 @@ PPC_FUNC_IMPL(sub_822C72E8) {
 PPC_FUNC_IMPL(sub_822CBB98) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_822CBB98);
+
   if (refii::vfs::TryHandleRefiiReadRequestAddRef(
           ctx, base, ctx.r3.u32)) {
     return;
@@ -403,6 +425,8 @@ PPC_FUNC_IMPL(sub_822CBB98) {
 
 PPC_FUNC_IMPL(sub_8290DD10) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8290DD10);
 
   if (refii::vfs::TryHandleRefiiReadRequestGetStatus(
           ctx, base, ctx.r3.u32, "ReadRequest_GetStatus")) {
@@ -415,6 +439,8 @@ PPC_FUNC_IMPL(sub_8290DD10) {
 PPC_FUNC_IMPL(sub_82B54D28) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B54D28);
+
   if (refii::vfs::TryHandleRefiiResourceWrapperDtor(
           ctx, base, ctx.r3.u32, ctx.r4.u32)) {
     return;
@@ -426,6 +452,8 @@ PPC_FUNC_IMPL(sub_82B54D28) {
 PPC_FUNC_IMPL(sub_82B54250) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B54250);
+
   if (refii::vfs::TryHandleRefiiResourceWrapperWait(
           ctx, base, ctx.r3.u32, "ResourceWrapper_Wait")) {
     return;
@@ -436,6 +464,8 @@ PPC_FUNC_IMPL(sub_82B54250) {
 
 PPC_FUNC_IMPL(sub_82B54268) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B54268);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = original_ctx.r3.u32;
@@ -481,6 +511,8 @@ PPC_FUNC_IMPL(sub_82B54268) {
 PPC_FUNC_IMPL(sub_82B542D8) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B542D8);
+
   const PPCContext original_ctx = ctx;
   const uint32_t wrapper_guest = original_ctx.r3.u32;
 
@@ -517,6 +549,8 @@ PPC_FUNC_IMPL(sub_82B542D8) {
 PPC_FUNC_IMPL(sub_82B542F0) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B542F0);
+
   if (refii::vfs::TryHandleRefiiResourceWrapperSlot36(
           ctx, base, ctx.r3.u32, ctx.r4.u32)) {
     return;
@@ -527,6 +561,8 @@ PPC_FUNC_IMPL(sub_82B542F0) {
 
 PPC_FUNC_IMPL(sub_82C0EE10) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C0EE10);
 
   const PPCContext original_ctx = ctx;
   const uint32_t wrapper_guest = original_ctx.r3.u32;
@@ -564,6 +600,8 @@ PPC_FUNC_IMPL(sub_82C0EE10) {
 PPC_FUNC_IMPL(sub_82B5BFF8) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5BFF8);
+
   if (refii::vfs::TryHandleRefiiReadRequestWait(
           ctx, base, ctx.r3.u32, "ReadRequest_Wait")) {
     return;
@@ -574,6 +612,8 @@ PPC_FUNC_IMPL(sub_82B5BFF8) {
 
 PPC_FUNC_IMPL(sub_82B5C0C0) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C0C0);
 
   if (refii::vfs::TryHandleRefiiReadRequestGetBytes(
           ctx, base, ctx.r3.u32, ctx.r4.u32)) {
@@ -586,6 +626,8 @@ PPC_FUNC_IMPL(sub_82B5C0C0) {
 PPC_FUNC_IMPL(sub_82B5C0D8) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C0D8);
+
   if (refii::vfs::TryHandleRefiiReadRequestGetOffset(ctx, ctx.r3.u32)) {
     return;
   }
@@ -595,6 +637,8 @@ PPC_FUNC_IMPL(sub_82B5C0D8) {
 
 PPC_FUNC_IMPL(sub_82B5C0E0) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C0E0);
 
   if (refii::vfs::TryHandleRefiiReadRequestReturnSuccess(
           ctx, base, ctx.r3.u32, "ReadRequest_Notify")) {
@@ -607,6 +651,8 @@ PPC_FUNC_IMPL(sub_82B5C0E0) {
 PPC_FUNC_IMPL(sub_82B5C110) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C110);
+
   if (refii::vfs::TryHandleRefiiReadRequestReturnSuccess(
           ctx, base, ctx.r3.u32, "ReadRequest_SetCallback")) {
     return;
@@ -618,17 +664,23 @@ PPC_FUNC_IMPL(sub_82B5C110) {
 PPC_FUNC_IMPL(sub_82B5C148) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C148);
+
   __imp__sub_82B5C148(ctx, base);
 }
 
 PPC_FUNC_IMPL(sub_82B5C160) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C160);
+
   __imp__sub_82B5C160(ctx, base);
 }
 
 PPC_FUNC_IMPL(sub_8252AA18) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8252AA18);
 
   if (refii::vfs::TryHandleRefiiReadRequestSmartPtrAssign(
           ctx, base, ctx.r3.u32, ctx.r4.u32)) {
@@ -641,6 +693,8 @@ PPC_FUNC_IMPL(sub_8252AA18) {
 PPC_FUNC_IMPL(sub_82B4EC30) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4EC30);
+
   if (refii::vfs::TryHandleRefiiStreamReaderFlush(
           ctx, base, ctx.r3.u32, "StreamReader_FlushPage")) {
     return;
@@ -651,6 +705,8 @@ PPC_FUNC_IMPL(sub_82B4EC30) {
 
 PPC_FUNC_IMPL(sub_82B4E6D0) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4E6D0);
 
   const PPCContext original_ctx = ctx;
   const uint32_t reader_guest = original_ctx.r3.u32;
@@ -703,6 +759,8 @@ PPC_FUNC_IMPL(sub_82B4E6D0) {
 PPC_FUNC_IMPL(sub_82B4E8E0) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4E8E0);
+
   const PPCContext original_ctx = ctx;
   const uint32_t reader_guest = original_ctx.r3.u32;
   const uint32_t destination_guest = original_ctx.r4.u32;
@@ -753,6 +811,8 @@ PPC_FUNC_IMPL(sub_82B4E8E0) {
 
 PPC_FUNC_IMPL(sub_82B4ED70) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4ED70);
 
   if (refii::vfs::TryHandleRefiiStreamReaderRefill(
           ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u64)) {
@@ -811,6 +871,8 @@ PPC_FUNC_IMPL(sub_82B4ED70) {
 PPC_FUNC_IMPL(sub_82190728) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82190728);
+
   const PPCContext original_ctx = ctx;
   static std::atomic<uint32_t> job_pump_trace_count{0};
   const uint32_t trace_count =
@@ -846,6 +908,8 @@ PPC_FUNC_IMPL(sub_82190728) {
 PPC_FUNC_IMPL(sub_82C51CA0) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C51CA0);
+
   const PPCContext original_ctx = ctx;
   const bool interesting =
       refii::vfs::kTraceMeshModelAudioDiagnostics &&
@@ -877,6 +941,8 @@ PPC_FUNC_IMPL(sub_82C51CA0) {
 
 PPC_FUNC_IMPL(sub_82C51EC0) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C51EC0);
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceMeshModelAudioDiagnostics &&

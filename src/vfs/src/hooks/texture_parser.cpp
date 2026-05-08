@@ -13,6 +13,8 @@ PPC_FUNC_IMPL(sub_82B53438) {
 PPC_FUNC_IMPL(sub_82B6C340) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B6C340);
+
   const PPCContext original_ctx = ctx;
   const uint32_t texture_guest = original_ctx.r3.u32;
   uint32_t wrapper_guest = 0;
@@ -135,6 +137,8 @@ PPC_FUNC_IMPL(sub_82B6C340) {
 PPC_FUNC_IMPL(sub_82B8BA38) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8BA38);
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = original_ctx.r3.u32;
   const uint32_t descriptor_guest = original_ctx.r4.u32;
@@ -184,6 +188,8 @@ PPC_FUNC_IMPL(sub_82B8BA38) {
 
 PPC_FUNC_IMPL(sub_82B8C158) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8C158);
 
   const PPCContext original_ctx = ctx;
   const uint32_t target_guest = original_ctx.r3.u32;
@@ -240,6 +246,8 @@ PPC_FUNC_IMPL(sub_82B8C158) {
 
 PPC_FUNC_IMPL(sub_82B8C5F0) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8C5F0);
 
   const PPCContext original_ctx = ctx;
   const uint32_t target_guest = original_ctx.r3.u32;
@@ -307,6 +315,8 @@ PPC_FUNC_IMPL(sub_82B8C5F0) {
 PPC_FUNC_IMPL(sub_82B8CAC0) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8CAC0);
+
   const PPCContext original_ctx = ctx;
   const bool trace_texture_parser =
       refii::vfs::ShouldTraceTextureParserProbeCall(base, original_ctx);
@@ -350,6 +360,8 @@ PPC_FUNC_IMPL(sub_82B8CAC0) {
 
 PPC_FUNC_IMPL(sub_82176018) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82176018);
 
   const PPCContext original_ctx = ctx;
   const bool trace_texture_parser =
@@ -406,6 +418,8 @@ PPC_FUNC_IMPL(sub_82176018) {
 
 PPC_FUNC_IMPL(sub_82B8CDF8) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8CDF8);
 
   const PPCContext original_ctx = ctx;
   const uint32_t target_guest = original_ctx.r3.u32;
@@ -513,6 +527,8 @@ PPC_FUNC_IMPL(sub_82B8CDF8) {
 PPC_FUNC_IMPL(sub_82B8CEE0) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8CEE0);
+
   const PPCContext original_ctx = ctx;
   const bool trace_texture_parser =
       refii::vfs::ShouldTraceTextureParserProbeCall(base, original_ctx);
@@ -567,6 +583,8 @@ PPC_FUNC_IMPL(sub_82B8CEE0) {
 
 PPC_FUNC_IMPL(sub_82B8D028) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8D028);
 
   const PPCContext original_ctx = ctx;
   const uint32_t descriptor_guest = original_ctx.r5.u32;
@@ -629,6 +647,8 @@ PPC_FUNC_IMPL(sub_82B8D028) {
 PPC_FUNC_IMPL(sub_82B8D170) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8D170);
+
   const PPCContext original_ctx = ctx;
   const uint32_t descriptor_guest = original_ctx.r4.u32;
   const bool trace_texture_parser =
@@ -687,6 +707,8 @@ PPC_FUNC_IMPL(sub_82B8D170) {
 
 PPC_FUNC_IMPL(sub_82B96220) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B96220);
 
   const PPCContext original_ctx = ctx;
   const bool trace_texture_parser =
@@ -772,6 +794,7 @@ PPC_FUNC_IMPL(sub_82B96220) {
 #define REFII_TEXTURE_PARSER_PROBE_HOOK(function_name, imp_name, label_name) \
   PPC_FUNC_IMPL(function_name) {                                             \
     PPC_FUNC_PROLOGUE();                                                     \
+    REFII_VFS_NATIVE_PASSTHROUGH(function_name);                             \
                                                                              \
     const PPCContext original_ctx = ctx;                                      \
     const bool trace_texture_parser =                                         \
@@ -810,6 +833,8 @@ REFII_TEXTURE_PARSER_PROBE_HOOK(sub_82B8DFA0, __imp__sub_82B8DFA0, "DFA0")
 
 PPC_FUNC_IMPL(sub_82B504D8) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B504D8);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;

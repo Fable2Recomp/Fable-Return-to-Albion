@@ -53,6 +53,10 @@ void RecordRefiiVfsOpenDecisionAudit(
     const RefiiVfsOwnershipDecision& ownership,
     std::string_view candidate,
     std::string_view provider_relative) {
+  if (!RefiiLooseAssetBackendEnabled()) {
+    return;
+  }
+
   static std::mutex audit_mutex;
   static std::unordered_map<std::string, uint64_t> decision_counts;
   static std::unordered_set<std::string> unresolved_once;
@@ -345,6 +349,10 @@ RefiiVfsOpenDisposition TryOpenRefiiVfsAsset(
     return disposition;
   };
 
+  if (!RefiiLooseAssetBackendEnabled()) {
+    return finish(RefiiVfsOpenDisposition::Miss);
+  }
+
   if (shape == RefiiVfsOpenShape::SyntheticBank) {
     const std::string bank_name(request.request_name);
     const std::string api_name =
@@ -356,10 +364,6 @@ RefiiVfsOpenDisposition TryOpenRefiiVfsAsset(
         opened ? TryReadOutputPointer(base, request.out_guest) : 0;
     return finish(opened ? RefiiVfsOpenDisposition::Opened
                          : RefiiVfsOpenDisposition::Miss);
-  }
-
-  if (!RefiiLooseAssetBackendEnabled()) {
-    return finish(RefiiVfsOpenDisposition::Miss);
   }
 
   const uint64_t lookups =

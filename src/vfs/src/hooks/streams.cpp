@@ -3,6 +3,8 @@
 PPC_FUNC_IMPL(rex_lhStream_Buffered_GetSize) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_Buffered_GetSize);
+
   const PPCContext original_ctx = ctx;
   const uint32_t stream_guest = ctx.r3.u32;
   const bool trace_size =
@@ -38,6 +40,8 @@ PPC_FUNC_IMPL(rex_lhStream_Buffered_GetSize) {
 PPC_FUNC_IMPL(sub_828D4110) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_828D4110);
+
   const PPCContext original_ctx = ctx;
   const uint32_t stream_guest = ctx.r3.u32;
   const bool trace_size =
@@ -71,6 +75,8 @@ PPC_FUNC_IMPL(sub_828D4110) {
 PPC_FUNC_IMPL(rex_lhStream_DiskStream_GetSize) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_DiskStream_GetSize);
+
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t stream_guest = ctx.r4.u32;
   if (refii::vfs::TryHandleRefiiHostDiskStreamGetSize(
@@ -88,6 +94,8 @@ PPC_FUNC_IMPL(rex_lhStream_DiskStream_GetSize) {
 PPC_FUNC_IMPL(rex_lhStream_GetInnerSize) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_GetInnerSize);
+
   const uint32_t stream_guest = ctx.r3.u32;
   __imp__rex_lhStream_GetInnerSize(ctx, base);
   refii::vfs::LogLooseStreamSizeResult(
@@ -96,6 +104,8 @@ PPC_FUNC_IMPL(rex_lhStream_GetInnerSize) {
 
 PPC_FUNC_IMPL(rex_lhStream_GetPosition) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_GetPosition);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
@@ -214,6 +224,8 @@ PPC_FUNC_IMPL(rex_lhStream_GetPosition) {
 PPC_FUNC_IMPL(rex_lhResourceManager_vtbl_GetStreamSize) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_vtbl_GetStreamSize);
+
   const PPCContext original_ctx = ctx;
   const uint32_t request_guest = original_ctx.r3.u32;
   if (refii::vfs::IsNativeVfsScheduledRequest(base, request_guest)) {
@@ -282,6 +294,8 @@ PPC_FUNC_IMPL(rex_lhResourceManager_vtbl_GetStreamSize) {
 PPC_FUNC_IMPL(rex_lhStream_Buffered_Read) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_Buffered_Read);
+
   const PPCContext original_ctx = ctx;
   const uint32_t stream_guest = ctx.r3.u32;
   const uint32_t arg4 = ctx.r4.u32;
@@ -325,6 +339,8 @@ PPC_FUNC_IMPL(rex_lhStream_Buffered_Read) {
 PPC_FUNC_IMPL(sub_82B5AD98) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5AD98);
+
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t stream_guest = ctx.r4.u32;
   const uint32_t buffer_guest = ctx.r5.u32;
@@ -347,6 +363,8 @@ PPC_FUNC_IMPL(sub_82B5AD98) {
 PPC_FUNC_IMPL(sub_83032078) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_83032078);
+
   if (refii::vfs::TryHandleRefiiHostDiskStreamNoopSuccess(
           ctx, base, ctx.r3.u32, "CompositeStream_UnsupportedNoop")) {
     return;
@@ -358,6 +376,8 @@ PPC_FUNC_IMPL(sub_83032078) {
 PPC_FUNC_IMPL(sub_83032088) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_83032088);
+
   if (refii::vfs::TryHandleRefiiHostDiskStreamNoopSuccess(
           ctx, base, ctx.r3.u32, "DiskStream_UnsupportedNoop")) {
     return;
@@ -368,6 +388,8 @@ PPC_FUNC_IMPL(sub_83032088) {
 
 PPC_FUNC_IMPL(sub_82C72E60) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C72E60);
 
   const uint32_t stream_guest = ctx.r3.u32;
   const uint32_t buffer_guest = ctx.r4.u32;
@@ -401,6 +423,8 @@ PPC_FUNC_IMPL(sub_82C72E60) {
 PPC_FUNC_IMPL(sub_82C73028) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C73028);
+
   const uint32_t stream_guest = ctx.r3.u32;
   if (refii::vfs::IsRefiiHostDiskStream(base, stream_guest)) {
     const auto record = refii::vfs::FindRefiiHostStreamRecord(stream_guest);
@@ -428,6 +452,8 @@ PPC_FUNC_IMPL(sub_82C73028) {
 
 PPC_FUNC_IMPL(rex_lhStream_DecompressStream_Read) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_DecompressStream_Read);
 
   const uint32_t stream_guest = ctx.r3.u32;
   const uint32_t buffer_guest = ctx.r4.u32;
@@ -461,6 +487,8 @@ PPC_FUNC_IMPL(rex_lhStream_DecompressStream_Read) {
 PPC_FUNC_IMPL(rex_lhStream_DiskStream_Read) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_DiskStream_Read);
+
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t stream_guest = ctx.r4.u32;
   const uint32_t arg4 = ctx.r4.u32;
@@ -483,6 +511,8 @@ PPC_FUNC_IMPL(rex_lhStream_DiskStream_Read) {
 PPC_FUNC_IMPL(rex_lhStream_DiskStream_Dtor) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_DiskStream_Dtor);
+
   const uint32_t stream_guest = ctx.r3.u32;
   if (refii::vfs::IsRefiiHostDiskStream(base, stream_guest)) {
     refii::vfs::EraseRefiiHostStreamRecord(stream_guest);
@@ -496,6 +526,8 @@ PPC_FUNC_IMPL(rex_lhStream_DiskStream_Dtor) {
 PPC_FUNC_IMPL(rex_lhStream_Reader_Read) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_Reader_Read);
+
   const uint32_t stream_guest = ctx.r3.u32;
   const uint32_t arg4 = ctx.r4.u32;
   const uint32_t arg5 = ctx.r5.u32;
@@ -508,6 +540,8 @@ PPC_FUNC_IMPL(rex_lhStream_Reader_Read) {
 PPC_FUNC_IMPL(rex_lhStream_ReadUInt32) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_ReadUInt32);
+
   const uint32_t stream_guest = ctx.r3.u32;
   const uint32_t arg4 = ctx.r4.u32;
   const uint32_t arg5 = ctx.r5.u32;
@@ -519,6 +553,8 @@ PPC_FUNC_IMPL(rex_lhStream_ReadUInt32) {
 
 PPC_FUNC_IMPL(rex_lhStream_Buffered_Init) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_Buffered_Init);
 
   const PPCContext original_ctx = ctx;
   const uint32_t buffered_guest = ctx.r3.u32;
@@ -574,6 +610,8 @@ PPC_FUNC_IMPL(rex_lhStream_Buffered_Init) {
 PPC_FUNC_IMPL(rex_lhStream_CreateBuffered) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_CreateBuffered);
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t source_stream_guest = ctx.r4.u32;
@@ -599,6 +637,8 @@ PPC_FUNC_IMPL(rex_lhStream_CreateBuffered) {
 PPC_FUNC_IMPL(rex_lhStream_CreateFromPosition) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_CreateFromPosition);
+
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t source_stream_guest = ctx.r4.u32;
   refii::vfs::LogLooseStreamWrapperCall(
@@ -615,6 +655,8 @@ PPC_FUNC_IMPL(rex_lhStream_CreateFromPosition) {
 
 PPC_FUNC_IMPL(rex_lhStream_CreateReadStream) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_CreateReadStream);
 
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t source_stream_guest = ctx.r4.u32;
@@ -633,6 +675,8 @@ PPC_FUNC_IMPL(rex_lhStream_CreateReadStream) {
 PPC_FUNC_IMPL(rex_lhStream_CreateSubStream) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_CreateSubStream);
+
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t source_stream_guest = ctx.r4.u32;
   refii::vfs::LogLooseStreamWrapperCall(
@@ -650,6 +694,8 @@ PPC_FUNC_IMPL(rex_lhStream_CreateSubStream) {
 PPC_FUNC_IMPL(rex_lhStream_CreateReader) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_CreateReader);
+
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t source_stream_guest = ctx.r4.u32;
   refii::vfs::LogLooseStreamWrapperCall(
@@ -666,6 +712,8 @@ PPC_FUNC_IMPL(rex_lhStream_CreateReader) {
 
 PPC_FUNC_IMPL(rex_lhStream_Reader_Ctor) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_Reader_Ctor);
 
   const uint32_t reader_guest = ctx.r3.u32;
   const uint32_t source_stream_guest = ctx.r4.u32;

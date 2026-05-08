@@ -52,6 +52,8 @@ bool IsKnownRequestManagerGuest(uint32_t manager_guest) {
 PPC_FUNC_IMPL(rex_lhVFS_RequestManager_FindStream) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_RequestManager_FindStream);
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t manager_guest = ctx.r4.u32;
@@ -195,6 +197,8 @@ PPC_FUNC_IMPL(rex_lhVFS_RequestManager_FindStream) {
 PPC_FUNC_IMPL(rex_lhVFS_RequestManager_BuildHashTable) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_RequestManager_BuildHashTable);
+
   const PPCContext original_ctx = ctx;
   const uint32_t manager_guest = original_ctx.r3.u32;
 
@@ -235,6 +239,8 @@ PPC_FUNC_IMPL(rex_lhVFS_RequestManager_BuildHashTable) {
 
 PPC_FUNC_IMPL(sub_82B45F70) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B45F70);
 
   const PPCContext original_ctx = ctx;
   const uint32_t manager_guest = original_ctx.r3.u32;
@@ -291,6 +297,8 @@ PPC_FUNC_IMPL(sub_82B45F70) {
 
 PPC_FUNC_IMPL(sub_82B456D8) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B456D8);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = original_ctx.r3.u32;
@@ -467,6 +475,8 @@ PPC_FUNC_IMPL(sub_82B456D8) {
 PPC_FUNC_IMPL(rex_lhVFS_Provider_FindStreamByHash) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_Provider_FindStreamByHash);
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t provider_guest = ctx.r4.u32;
@@ -609,6 +619,8 @@ PPC_FUNC_IMPL(rex_lhVFS_Provider_FindStreamByHash) {
 
 PPC_FUNC_IMPL(rex_lhVFS_Provider_OpenStream) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_Provider_OpenStream);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
@@ -774,6 +786,8 @@ PPC_FUNC_IMPL(rex_lhVFS_Provider_OpenStream) {
 
 PPC_FUNC_IMPL(rex_lhBank_OpenStreamByName) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_OpenStreamByName);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;

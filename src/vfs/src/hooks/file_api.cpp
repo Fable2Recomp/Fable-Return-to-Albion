@@ -3,6 +3,8 @@
 PPC_FUNC_IMPL(rex_CreateFileA) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_CreateFileA);
+
   const PPCContext original_ctx = ctx;
   const std::string path =
       refii::vfs::FormatGuestAsciiBytes(base, ctx.r3.u32, 4096);
@@ -86,6 +88,8 @@ PPC_FUNC_IMPL(rex_CreateFileA) {
 PPC_FUNC_IMPL(rex_ReadFile) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_ReadFile);
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32) &&
       refii::vfs::TryReadRefiiPrivateFileHandle(ctx,
@@ -117,6 +121,8 @@ PPC_FUNC_IMPL(rex_ReadFile) {
 
 PPC_FUNC_IMPL(rex_ReadFileAsync) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_ReadFileAsync);
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32) &&
@@ -150,6 +156,8 @@ PPC_FUNC_IMPL(rex_ReadFileAsync) {
 PPC_FUNC_IMPL(rex_GetFileSizeEx) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileSizeEx);
+
   const PPCContext original_ctx = ctx;
   uint64_t size = 0;
   if (refii::vfs::TryGetRefiiPrivateFileSize(original_ctx.r3.u32, &size)) {
@@ -175,6 +183,8 @@ PPC_FUNC_IMPL(rex_GetFileSizeEx) {
 
 PPC_FUNC_IMPL(rex_GetFileSize) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileSize);
 
   const PPCContext original_ctx = ctx;
   uint64_t size = 0;
@@ -202,6 +212,8 @@ PPC_FUNC_IMPL(rex_GetFileSize) {
 
 PPC_FUNC_IMPL(rex_SetFilePointer) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_SetFilePointer);
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::TrySetRefiiPrivateFilePointer(ctx,
@@ -232,6 +244,8 @@ PPC_FUNC_IMPL(rex_SetFilePointer) {
 PPC_FUNC_IMPL(rex_CloseHandle) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_CloseHandle);
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32)) {
     const bool closed =
@@ -260,6 +274,8 @@ PPC_FUNC_IMPL(rex_CloseHandle) {
 
 PPC_FUNC_IMPL(rex_GetFileAttributesA) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileAttributesA);
 
   const PPCContext original_ctx = ctx;
   const std::string path =
@@ -306,6 +322,8 @@ PPC_FUNC_IMPL(rex_GetFileAttributesA) {
 PPC_FUNC_IMPL(rex_FindNextFileA) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_FindNextFileA);
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::VfsTracingEnabled() &&
       refii::vfs::ShouldLogRepeatedVfsTraceOperation("FindNextFileA", 16)) {
@@ -346,6 +364,8 @@ PPC_FUNC_IMPL(rex_FindNextFileA) {
 
 PPC_FUNC_IMPL(rex_FindFirstFileA) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_FindFirstFileA);
 
   const PPCContext original_ctx = ctx;
   const std::string path =
@@ -391,6 +411,8 @@ PPC_FUNC_IMPL(rex_FindFirstFileA) {
 
 PPC_FUNC_IMPL(rex_lh_OpenDiscFile) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lh_OpenDiscFile);
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
@@ -525,6 +547,8 @@ PPC_FUNC_IMPL(rex_lh_OpenDiscFile) {
 PPC_FUNC_IMPL(rex_lhFile_IsOpen) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_IsOpen);
+
   const uint32_t file_guest = ctx.r3.u32;
   if (refii::vfs::IsRefiiOwnedLhFileStream(base, file_guest, 8) ||
       refii::vfs::IsRefiiOwnedLhFileStream(base, file_guest, 12)) {
@@ -547,6 +571,8 @@ PPC_FUNC_IMPL(rex_lhFile_IsOpen) {
 
 PPC_FUNC_IMPL(rex_lhFile_GetSize) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_GetSize);
 
   const uint32_t file_guest = ctx.r3.u32;
   uint32_t size = 0;
@@ -574,6 +600,8 @@ PPC_FUNC_IMPL(rex_lhFile_GetSize) {
 PPC_FUNC_IMPL(rex_lhFile_GetTotalSize) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_GetTotalSize);
+
   const uint32_t file_guest = ctx.r3.u32;
   uint32_t size = 0;
   if (refii::vfs::TryGetRefiiOwnedLhFileStreamSize(base,
@@ -599,6 +627,8 @@ PPC_FUNC_IMPL(rex_lhFile_GetTotalSize) {
 
 PPC_FUNC_IMPL(rex_lhFile_ResolveAndOpen) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_ResolveAndOpen);
 
   const PPCContext original_ctx = ctx;
   const uint32_t file_guest = ctx.r3.u32;

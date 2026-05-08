@@ -66,3 +66,11 @@
 #if !defined(PPC_FUNC_PROLOGUE)
 #define PPC_FUNC_PROLOGUE() ((void)0)
 #endif
+
+#define REFII_VFS_NATIVE_PASSTHROUGH(function_name) \
+  do {                                              \
+    if (!refii::vfs::RefiiLooseAssetBackendEnabled()) { \
+      __imp__##function_name(ctx, base);            \
+      return;                                       \
+    }                                               \
+  } while (false)

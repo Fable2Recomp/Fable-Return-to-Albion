@@ -8,7 +8,7 @@ namespace refii::vfs {
 
 enum class LooseAssetBackend {
   kRefii,
-  kDisabled,
+  kNative,
 };
 
 bool LooseAssetOverridesEnabled();

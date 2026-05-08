@@ -48,8 +48,9 @@ REXCVAR_DEFINE_INT32(vfs_startup_video_minimum_playback_ms, 0, "VFS",
                      "observed. 0 disables the fallback.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(vfs_loose_asset_backend, "disabled", "VFS",
-                      "Loose asset stream backend: refii or disabled.")
+REXCVAR_DEFINE_STRING(vfs_loose_asset_backend, "native", "VFS",
+                      "VFS backend: refii for loose asset overrides, native "
+                      "for the original Fable 2 VFS.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(vfs_loose_asset_root, "", "VFS",
@@ -62,25 +63,34 @@ REXCVAR_DEFINE_STRING(vfs_loose_asset_root, "", "VFS",
 bool LooseAssetOverridesEnabled() { return REXCVAR_GET(vfs_use_loose_assets); }
 
 bool LooseAssetOverrideTracingEnabled() {
-  return REXCVAR_GET(vfs_trace_loose_assets);
+  return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_trace_loose_assets);
 }
 
-bool VfsTracingEnabled() { return REXCVAR_GET(vfs_trace_vfs); }
+bool VfsTracingEnabled() {
+  return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_trace_vfs);
+}
 
 bool VfsVerboseIoTracingEnabled() {
-  return REXCVAR_GET(vfs_trace_vfs_verbose_io);
+  return RefiiLooseAssetBackendEnabled() &&
+         REXCVAR_GET(vfs_trace_vfs_verbose_io);
 }
 
 bool LooseGameFaceBinaryOverridesEnabled() {
-  return REXCVAR_GET(vfs_use_loose_gameface_binaries);
+  return LooseAssetOverridesEnabled() &&
+         GetLooseAssetBackend() == LooseAssetBackend::kRefii &&
+         REXCVAR_GET(vfs_use_loose_gameface_binaries);
 }
 
 bool LooseBankEntryOverridesEnabled() {
-  return REXCVAR_GET(vfs_use_loose_bank_entries);
+  return LooseAssetOverridesEnabled() &&
+         GetLooseAssetBackend() == LooseAssetBackend::kRefii &&
+         REXCVAR_GET(vfs_use_loose_bank_entries);
 }
 
 bool SkipStartupVideosEnabled() {
-  return LooseAssetOverridesEnabled() && REXCVAR_GET(vfs_skip_startup_videos) &&
+  return LooseAssetOverridesEnabled() &&
+         GetLooseAssetBackend() == LooseAssetBackend::kRefii &&
+         REXCVAR_GET(vfs_skip_startup_videos) &&
          !REXCVAR_GET(vfs_force_startup_video_sequence);
 }
 
@@ -94,11 +104,11 @@ LooseAssetBackend GetLooseAssetBackend() {
     return static_cast<char>(std::tolower(ch));
   });
 
-  if (backend == "refii" || backend.empty()) {
+  if (backend == "refii") {
     return LooseAssetBackend::kRefii;
   }
 
-  return LooseAssetBackend::kDisabled;
+  return LooseAssetBackend::kNative;
 }
 
 bool RefiiLooseAssetBackendEnabled() {

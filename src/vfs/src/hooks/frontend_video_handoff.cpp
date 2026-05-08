@@ -3,6 +3,8 @@
 PPC_FUNC_IMPL(sub_82377A00) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82377A00);
+
   const PPCContext original_ctx = ctx;
   const bool trace = refii::vfs::ShouldTraceStartupVideoLoopProbe(
       "StartupVideoUpdate_82377A00", original_ctx.lr, 24);
@@ -63,6 +65,8 @@ PPC_FUNC_IMPL(sub_82377A00) {
 
 PPC_FUNC_IMPL(sub_82377980) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82377980);
 
   const PPCContext original_ctx = ctx;
   const bool trace =
@@ -414,6 +418,7 @@ PPC_FUNC_IMPL(sub_82377980) {
                                                 label, log_after_state)       \
   PPC_FUNC_IMPL(function_name) {                                              \
     PPC_FUNC_PROLOGUE();                                                      \
+    REFII_VFS_NATIVE_PASSTHROUGH(function_name);                              \
                                                                                \
     const PPCContext original_ctx = ctx;                                       \
     const uint32_t request_guest = original_ctx.r3.u32;                        \
@@ -503,6 +508,7 @@ REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_8231AAD0,
 #define REFII_PRIMARY_FRONTEND_OWNER_TRACE(function_name, imp_name, label)    \
   PPC_FUNC_IMPL(function_name) {                                              \
     PPC_FUNC_PROLOGUE();                                                      \
+    REFII_VFS_NATIVE_PASSTHROUGH(function_name);                              \
                                                                               \
     const PPCContext original_ctx = ctx;                                      \
     const uint32_t owner_guest = original_ctx.r3.u32;                         \
@@ -581,6 +587,7 @@ REFII_PRIMARY_FRONTEND_OWNER_TRACE(sub_82313278,
 #define REFII_NATIVE_VFS_SHARED_REQUEST_TRACE(function_name, imp_name, label) \
   PPC_FUNC_IMPL(function_name) {                                              \
     PPC_FUNC_PROLOGUE();                                                      \
+    REFII_VFS_NATIVE_PASSTHROUGH(function_name);                              \
                                                                               \
     const PPCContext original_ctx = ctx;                                      \
     const uint32_t request_guest = original_ctx.r3.u32;                       \
@@ -640,6 +647,8 @@ REFII_NATIVE_VFS_SHARED_REQUEST_TRACE(sub_8231A368,
 
 PPC_FUNC_IMPL(sub_82378618) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82378618);
 
   const PPCContext original_ctx = ctx;
   const bool context_active =
@@ -1004,6 +1013,8 @@ PPC_FUNC_IMPL(sub_82378618) {
 PPC_FUNC_IMPL(sub_82379088) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82379088);
+
   const PPCContext original_ctx = ctx;
   const uint32_t owner_guest = original_ctx.r3.u32;
   const bool active = refii::vfs::FrontendTextureConsumerTraceActive();
@@ -1027,6 +1038,8 @@ PPC_FUNC_IMPL(sub_82379088) {
 
 PPC_FUNC_IMPL(sub_826DB598) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_826DB598);
 
   const PPCContext original_ctx = ctx;
   const bool active = refii::vfs::FrontendTextureConsumerTraceActive();
@@ -1172,6 +1185,8 @@ PPC_FUNC_IMPL(sub_826DB598) {
 PPC_FUNC_IMPL(sub_826D5E48) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_826D5E48);
+
   const PPCContext original_ctx = ctx;
   const bool active = refii::vfs::FrontendTextureConsumerTraceActive();
   const bool trace =
@@ -1233,6 +1248,8 @@ PPC_FUNC_IMPL(sub_826D5E48) {
 
 PPC_FUNC_IMPL(sub_821DE2E8) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_821DE2E8);
 
   const PPCContext original_ctx = ctx;
   const uint32_t descriptor_guest = original_ctx.r3.u32;
@@ -1588,6 +1605,8 @@ PPC_FUNC_IMPL(sub_821DE2E8) {
 PPC_FUNC_IMPL(sub_82379D78) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82379D78);
+
   const PPCContext original_ctx = ctx;
   const bool active = refii::vfs::FrontendTextureConsumerTraceActive();
   const bool verbose =
@@ -1633,6 +1652,8 @@ PPC_FUNC_IMPL(sub_82379D78) {
 
 PPC_FUNC_IMPL(sub_82378F00) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82378F00);
 
   const PPCContext original_ctx = ctx;
   const bool active = refii::vfs::FrontendTextureConsumerTraceActive();
@@ -1682,6 +1703,8 @@ PPC_FUNC_IMPL(sub_82378F00) {
 PPC_FUNC_IMPL(sub_82CC38E8) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82CC38E8);
+
   const PPCContext original_ctx = ctx;
   const bool trace = refii::vfs::ShouldTraceStartupVideoLoopProbe(
       "StartupVideoLoop_Pump_82CC38E8", original_ctx.lr, 12);
@@ -1718,6 +1741,8 @@ PPC_FUNC_IMPL(sub_82CC38E8) {
 
 PPC_FUNC_IMPL(sub_822F3B20) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_822F3B20);
 
   const PPCContext original_ctx = ctx;
   const bool trace = refii::vfs::ShouldTraceStartupVideoLoopProbe(
@@ -1836,6 +1861,8 @@ PPC_FUNC_IMPL(sub_822F3B20) {
 PPC_FUNC_IMPL(rex_Sleep) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_Sleep);
+
   const PPCContext original_ctx = ctx;
   const bool trace = refii::vfs::ShouldTraceStartupVideoLoopProbe(
       "StartupVideoLoop_Sleep", original_ctx.lr, 1);
@@ -1874,6 +1901,8 @@ PPC_FUNC_IMPL(rex_Sleep) {
 
 PPC_FUNC_IMPL(sub_821E2C08) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_821E2C08);
 
   const PPCContext original_ctx = ctx;
   const bool trace =
@@ -1917,6 +1946,8 @@ PPC_FUNC_IMPL(sub_821E2C08) {
 
 PPC_FUNC_IMPL(sub_82A41F10) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82A41F10);
 
   const PPCContext original_ctx = ctx;
   const bool trace =
@@ -1966,6 +1997,8 @@ PPC_FUNC_IMPL(sub_82A41F10) {
 
 PPC_FUNC_IMPL(sub_82377DC8) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82377DC8);
 
   const PPCContext original_ctx = ctx;
   const uint32_t callback_guest = original_ctx.r4.u32;
@@ -2026,6 +2059,7 @@ PPC_FUNC_IMPL(sub_82377DC8) {
 #define REFII_BIK_OBJECT_METHOD_TRACE(function_name, imp_name, label)        \
   PPC_FUNC_IMPL(function_name) {                                             \
     PPC_FUNC_PROLOGUE();                                                     \
+    REFII_VFS_NATIVE_PASSTHROUGH(function_name);                             \
                                                                              \
     const PPCContext original_ctx = ctx;                                     \
     const uint32_t object_guest = original_ctx.r3.u32;                       \
@@ -2095,6 +2129,8 @@ REFII_BIK_OBJECT_METHOD_TRACE(sub_82C6EA28,
 
 PPC_FUNC_IMPL(sub_82C6F2A8) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6F2A8);
 
   const PPCContext original_ctx = ctx;
   const uint32_t object_guest = original_ctx.r3.u32;
@@ -2169,6 +2205,8 @@ PPC_FUNC_IMPL(sub_82C6F2A8) {
 PPC_FUNC_IMPL(sub_82C6EF70) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6EF70);
+
   const PPCContext original_ctx = ctx;
   const uint32_t object_guest = original_ctx.r3.u32;
   const bool trace = refii::vfs::ShouldTraceBikObjectVirtualProbe(
@@ -2208,6 +2246,8 @@ PPC_FUNC_IMPL(sub_82C6EF70) {
 
 PPC_FUNC_IMPL(sub_82B49028) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B49028);
 
   const PPCContext original_ctx = ctx;
   const uint32_t queue_guest = original_ctx.r3.u32;
@@ -2252,6 +2292,8 @@ PPC_FUNC_IMPL(sub_82B49028) {
 PPC_FUNC_IMPL(sub_82B49220) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B49220);
+
   const PPCContext original_ctx = ctx;
   const uint32_t queue_guest = original_ctx.r3.u32;
   const bool trace =
@@ -2280,6 +2322,8 @@ PPC_FUNC_IMPL(sub_82B49220) {
 
 PPC_FUNC_IMPL(sub_8244B978) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8244B978);
 
   const PPCContext original_ctx = ctx;
   const uint32_t scheduler_guest = original_ctx.r3.u32;
@@ -2348,6 +2392,8 @@ PPC_FUNC_IMPL(sub_8244B978) {
 PPC_FUNC_IMPL(sub_8244BA28) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8244BA28);
+
   const PPCContext original_ctx = ctx;
   const uint32_t scheduler_guest = original_ctx.r3.u32;
   const uint32_t request_guest = original_ctx.r4.u32;
@@ -2387,6 +2433,8 @@ PPC_FUNC_IMPL(sub_8244BA28) {
 
 PPC_FUNC_IMPL(sub_8244BAD8) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8244BAD8);
 
   const PPCContext original_ctx = ctx;
   const uint32_t scheduler_guest = original_ctx.r3.u32;
@@ -2429,6 +2477,8 @@ PPC_FUNC_IMPL(sub_8244BAD8) {
 
 PPC_FUNC_IMPL(sub_8244BED0) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8244BED0);
 
   const PPCContext original_ctx = ctx;
   const uint32_t scheduler_guest = original_ctx.r3.u32;
@@ -2480,6 +2530,8 @@ PPC_FUNC_IMPL(sub_8244BED0) {
 
 PPC_FUNC_IMPL(sub_82B49D80) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B49D80);
 
   const PPCContext original_ctx = ctx;
   const uint32_t list_guest = original_ctx.r3.u32;
@@ -2556,6 +2608,8 @@ PPC_FUNC_IMPL(sub_82B49D80) {
 PPC_FUNC_IMPL(sub_822C9388) {
   PPC_FUNC_PROLOGUE();
 
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_822C9388);
+
   const PPCContext original_ctx = ctx;
   const uint32_t event_handle_guest = original_ctx.r3.u32;
   const bool trace =
@@ -2591,6 +2645,8 @@ PPC_FUNC_IMPL(sub_822C9388) {
 
 PPC_FUNC_IMPL(sub_82B4F400) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4F400);
 
   const PPCContext original_ctx = ctx;
   const uint32_t wait_object_guest = original_ctx.r3.u32;
@@ -2730,6 +2786,8 @@ PPC_FUNC_IMPL(sub_82B4F400) {
 
 PPC_FUNC_IMPL(sub_82388A18) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82388A18);
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
@@ -2946,6 +3004,8 @@ PPC_FUNC_IMPL(sub_82388A18) {
 
 PPC_FUNC_IMPL(sub_82A41B00) {
   PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82A41B00);
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
