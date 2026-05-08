@@ -398,6 +398,177 @@ bool TryRepairNearExactMissingElseBranchJump(const BytecodeParityRepairContext& 
     return false;
 }
 
+bool TryRepairNearExactNavigationParamsMaxSpeedClamp(
+    const BytecodeParityRepairContext& context,
+    std::string* candidate_source) {
+    if (candidate_source == nullptr ||
+        (context.mismatch.note.find("function_stats_differ") == std::string::npos &&
+         context.mismatch.note.find("instruction_diff") == std::string::npos)) {
+        return false;
+    }
+
+    bool had_trailing_newline = false;
+    std::vector<std::string> lines = SplitLines(*candidate_source, &had_trailing_newline);
+    if (lines.size() < 9) {
+        return false;
+    }
+
+    const auto line_trimmed = [&](std::size_t line_index) {
+        return line_index < lines.size()
+                   ? std::string(TrimWhitespace(StripLineComment(lines[line_index])))
+                   : std::string();
+    };
+    const auto replace_identifier =
+        [](std::string_view line,
+           std::string_view identifier,
+           std::string_view replacement,
+           std::string* output) {
+            if (output == nullptr || identifier.empty()) {
+                return false;
+            }
+
+            std::string transformed;
+            transformed.reserve(line.size() + replacement.size());
+            bool changed = false;
+            char quote = '\0';
+            bool escaped = false;
+            for (std::size_t index = 0; index < line.size();) {
+                const char ch = line[index];
+                if (quote == '\0' && ch == '-' && index + 1 < line.size() &&
+                    line[index + 1] == '-') {
+                    transformed.append(line.substr(index));
+                    break;
+                }
+                if (quote != '\0') {
+                    transformed.push_back(ch);
+                    if (escaped) {
+                        escaped = false;
+                    } else if (ch == '\\') {
+                        escaped = true;
+                    } else if (ch == quote) {
+                        quote = '\0';
+                    }
+                    ++index;
+                    continue;
+                }
+                if (ch == '\'' || ch == '"') {
+                    quote = ch;
+                    transformed.push_back(ch);
+                    ++index;
+                    continue;
+                }
+                if (index + identifier.size() <= line.size() &&
+                    line.substr(index, identifier.size()) == identifier) {
+                    const bool left_ok =
+                        index == 0 || !IsIdentifierChar(line[index - 1]);
+                    const std::size_t right = index + identifier.size();
+                    const bool right_ok =
+                        right >= line.size() || !IsIdentifierChar(line[right]);
+                    if (left_ok && right_ok) {
+                        transformed.append(replacement);
+                        index += identifier.size();
+                        changed = true;
+                        continue;
+                    }
+                }
+                transformed.push_back(ch);
+                ++index;
+            }
+            if (!changed || quote != '\0') {
+                return false;
+            }
+            *output = std::move(transformed);
+            return true;
+        };
+
+    const std::vector<DecompiledFunctionSpan> spans = CollectDecompiledFunctionSpans(lines);
+    for (std::size_t local_line = 0; local_line + 8 < lines.size(); ++local_line) {
+        std::string table_name;
+        std::string initializer_rhs;
+        if (!ParseBytecodeRepairLocalInitializer(lines[local_line],
+                                                 &table_name,
+                                                 &initializer_rhs) ||
+            !refii::lua::IsValidLuaIdentifier(table_name) ||
+            initializer_rhs.find("speed = ENavigationSpeed.NAV_SPEED_RUN") ==
+                std::string::npos ||
+            initializer_rhs.find("reset_constraints = false") == std::string::npos) {
+            continue;
+        }
+
+        const std::string indent = GetLuaLineIndent(lines[local_line]);
+        if (GetLuaLineIndent(lines[local_line + 1]) != indent ||
+            GetLuaLineIndent(lines[local_line + 2]) != indent ||
+            GetLuaLineIndent(lines[local_line + 3]) != indent ||
+            GetLuaLineIndent(lines[local_line + 4]) != indent ||
+            GetLuaLineIndent(lines[local_line + 5]) != indent ||
+            GetLuaLineIndent(lines[local_line + 6]) != indent ||
+            GetLuaLineIndent(lines[local_line + 7]) != indent ||
+            GetLuaLineIndent(lines[local_line + 8]) != indent) {
+            continue;
+        }
+
+        if (line_trimmed(local_line + 1) !=
+                "if not ModeManager.HasMode(self.Entity, EEntityModeType.EM_FLYING) then" ||
+            line_trimmed(local_line + 2).find(table_name + ".speed = ") != 0 ||
+            line_trimmed(local_line + 2).find("ENavigationSpeed.") != std::string::npos ||
+            line_trimmed(local_line + 3) != "end" ||
+            line_trimmed(local_line + 4) != "if self.CombatInfo.Style.MaxNavSpeed then" ||
+            line_trimmed(local_line + 5) !=
+                "if self.CombatInfo.Style.MaxNavSpeed < " + table_name + ".speed then" ||
+            line_trimmed(local_line + 6) !=
+                table_name + " = {speed = self.CombatInfo.Style.MaxNavSpeed}" ||
+            line_trimmed(local_line + 7) != "end" ||
+            line_trimmed(local_line + 8) != "end") {
+            continue;
+        }
+
+        std::size_t function_end_line = lines.size();
+        for (const DecompiledFunctionSpan& span : spans) {
+            if (span.start_line <= local_line && local_line <= span.end_line) {
+                function_end_line = span.end_line;
+                break;
+            }
+        }
+        if (function_end_line == lines.size() || function_end_line <= local_line) {
+            continue;
+        }
+
+        std::vector<std::string> transformed_lines = lines;
+        transformed_lines[local_line + 2] =
+            indent + table_name + ".speed = ENavigationSpeed.NAV_SPEED_WALK";
+        transformed_lines[local_line + 5] =
+            indent + "if " + table_name +
+            ".speed > self.CombatInfo.Style.MaxNavSpeed then";
+        transformed_lines[local_line + 6] =
+            indent + table_name + ".speed = self.CombatInfo.Style.MaxNavSpeed";
+
+        if (table_name != "params") {
+            for (std::size_t line_index = local_line;
+                 line_index <= function_end_line && line_index < transformed_lines.size();
+                 ++line_index) {
+                std::string replaced;
+                if (replace_identifier(transformed_lines[line_index],
+                                       table_name,
+                                       "params",
+                                       &replaced)) {
+                    transformed_lines[line_index] = std::move(replaced);
+                }
+            }
+        }
+
+        if (TryCommitBytecodeParityExactCurrentFunctionLines(
+                context,
+                transformed_lines,
+                had_trailing_newline,
+                "bytecode_near_exact_navigation_params_max_speed_clamp",
+                candidate_source)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool TryRepairNearExactGuardedMessageElseQuestPrimaryBundle(
     const BytecodeParityRepairContext& context,
     std::string* candidate_source) {
@@ -10432,6 +10603,145 @@ bool TryRepairNearExactNestedCallArgumentLocal(
     return false;
 }
 
+bool TryRepairNearExactRepeatedCallArgumentLocal(
+    const BytecodeParityRepairContext& context,
+    std::string* candidate_source) {
+    if (candidate_source == nullptr) {
+        return false;
+    }
+    if (context.mismatch.note.find("function_stats_differ") == std::string::npos &&
+        context.mismatch.note.find("instruction_diff") == std::string::npos &&
+        context.mismatch.note.find("local_diff") == std::string::npos) {
+        return false;
+    }
+    if (std::llabs(context.mismatch.instruction_delta) > 4 ||
+        std::llabs(context.mismatch.constant_delta) > 2 ||
+        std::llabs(context.mismatch.local_delta) > 4) {
+        return false;
+    }
+
+    bool had_trailing_newline = false;
+    std::vector<std::string> lines = SplitLines(*candidate_source, &had_trailing_newline);
+    if (lines.size() < 2) {
+        return false;
+    }
+
+    const auto normalize_expression = [](std::string_view expression) {
+        expression = TrimWhitespace(StripBytecodeRepairWholeParens(expression));
+        std::string normalized;
+        normalized.reserve(expression.size());
+        char quote = '\0';
+        bool escaped = false;
+        for (const char ch : expression) {
+            if (quote != '\0') {
+                normalized.push_back(ch);
+                if (escaped) {
+                    escaped = false;
+                } else if (ch == '\\') {
+                    escaped = true;
+                } else if (ch == quote) {
+                    quote = '\0';
+                }
+                continue;
+            }
+            if (ch == '\'' || ch == '"') {
+                quote = ch;
+                normalized.push_back(ch);
+                continue;
+            }
+            if (!std::isspace(static_cast<unsigned char>(ch))) {
+                normalized.push_back(ch);
+            }
+        }
+        return quote == '\0' ? normalized : std::string();
+    };
+
+    const auto rebuild_call = [](std::string_view indent,
+                                 const std::string& callee,
+                                 const std::vector<std::string>& args) {
+        std::string rebuilt = std::string(indent) + callee + "(";
+        for (std::size_t arg_index = 0; arg_index < args.size(); ++arg_index) {
+            if (arg_index != 0) {
+                rebuilt += ", ";
+            }
+            rebuilt += args[arg_index];
+        }
+        rebuilt += ")";
+        return rebuilt;
+    };
+
+    for (std::size_t first_line = 0; first_line + 1 < lines.size(); ++first_line) {
+        const std::string_view first_trimmed =
+            TrimWhitespace(StripLineComment(lines[first_line]));
+        const std::string_view second_trimmed =
+            TrimWhitespace(StripLineComment(lines[first_line + 1]));
+        if (first_trimmed.empty() || second_trimmed.empty() ||
+            first_trimmed.find('=') != std::string_view::npos ||
+            second_trimmed.find('=') != std::string_view::npos ||
+            StartsWith(first_trimmed, "return ") ||
+            StartsWith(second_trimmed, "return ") ||
+            StartsWith(first_trimmed, "if ") ||
+            StartsWith(second_trimmed, "if ") ||
+            GetLuaLineIndent(lines[first_line]) !=
+                GetLuaLineIndent(lines[first_line + 1])) {
+            continue;
+        }
+
+        std::string first_callee;
+        std::vector<std::string> first_args;
+        std::string second_callee;
+        std::vector<std::string> second_args;
+        if (!ParseRenderedSingleCallLine(first_trimmed, &first_callee, &first_args) ||
+            !ParseRenderedSingleCallLine(second_trimmed, &second_callee, &second_args) ||
+            first_callee != second_callee ||
+            !IsBytecodeRepairSimpleCalleePath(first_callee) ||
+            first_args.size() < 2 ||
+            first_args.size() != second_args.size()) {
+            continue;
+        }
+
+        for (std::size_t arg_index = 0; arg_index < first_args.size(); ++arg_index) {
+            const std::string first_arg =
+                StripBytecodeRepairWholeParens(first_args[arg_index]);
+            const std::string second_arg =
+                StripBytecodeRepairWholeParens(second_args[arg_index]);
+            if (!IsBytecodeRepairSimpleCallExpression(first_arg) ||
+                normalize_expression(first_arg) != normalize_expression(second_arg)) {
+                continue;
+            }
+
+            const std::string temp_name =
+                ChooseBytecodeRepairTempName(lines, first_arg, false);
+            std::vector<std::string> transformed_lines = lines;
+            std::vector<std::string> rewritten_first_args = first_args;
+            std::vector<std::string> rewritten_second_args = second_args;
+            rewritten_first_args[arg_index] = temp_name;
+            rewritten_second_args[arg_index] = temp_name;
+
+            const std::string indent = GetLuaLineIndent(lines[first_line]);
+            transformed_lines[first_line] =
+                rebuild_call(indent, first_callee, rewritten_first_args);
+            transformed_lines[first_line + 1] =
+                rebuild_call(indent, second_callee, rewritten_second_args);
+            transformed_lines.insert(
+                transformed_lines.begin() +
+                    static_cast<std::ptrdiff_t>(first_line),
+                indent + "local " + temp_name + " = " + first_arg);
+
+            if (TryCommitBytecodeParityExactCurrentFunctionLines(
+                    context,
+                    transformed_lines,
+                    had_trailing_newline,
+                    "bytecode_parity_candidate_repeated_call_argument_local",
+                    candidate_source)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 bool TryRepairNearExactMismatchedStringLiteralFromParityNote(
     const BytecodeParityRepairContext& context,
     std::string* candidate_source);
@@ -11497,6 +11807,11 @@ bool TryRepairNearExactProgressiveMultiStage(
                 TryRepairNearExactMissingElseBranchJump(round_context, &working_source);
         }
         if (!round_changed) {
+            round_changed |= TryRepairNearExactNavigationParamsMaxSpeedClamp(
+                round_context,
+                &working_source);
+        }
+        if (!round_changed) {
             round_changed |= TryRepairNearExactGuardedMessageElseQuestPrimaryBundle(
                 round_context,
                 &working_source);
@@ -11797,14 +12112,18 @@ bool TryRepairNearExactProgressiveMultiStage(
                 TryRepairNearExactPairedNegativeGuardCallCarry(round_context,
                                                                &working_source);
         }
-        if (!round_changed) {
-            round_changed |=
-                TryRepairNearExactNestedCallArgumentLocal(round_context, &working_source);
-        }
-        if (!round_changed) {
-            round_changed |=
-                TryRepairNearExactReturnCallBooleanGuard(round_context, &working_source);
-        }
+            if (!round_changed) {
+                round_changed |=
+                    TryRepairNearExactNestedCallArgumentLocal(round_context, &working_source);
+            }
+            if (!round_changed) {
+                round_changed |=
+                    TryRepairNearExactRepeatedCallArgumentLocal(round_context, &working_source);
+            }
+            if (!round_changed) {
+                round_changed |=
+                    TryRepairNearExactReturnCallBooleanGuard(round_context, &working_source);
+            }
         if (!round_changed) {
             round_changed |= TryRepairNearExactWrapReturnedCallForNonTailCall(
                 round_context,
@@ -12252,6 +12571,17 @@ bool TryRepairNativeCandidateBytecodeParityWithCallbacks(
             *note = JoinNotes(*note,
                               std::string(note_prefix) +
                                   "_bytecode_near_exact_missing_else_jump_exact");
+        }
+        return true;
+    }
+
+    if (TryRepairNearExactNavigationParamsMaxSpeedClamp(context,
+                                                       &candidate_source)) {
+        if (note != nullptr && !note_prefix.empty()) {
+            *note = JoinNotes(
+                *note,
+                std::string(note_prefix) +
+                    "_bytecode_near_exact_navigation_params_max_speed_clamp");
         }
         return true;
     }
@@ -12792,6 +13122,15 @@ bool TryRepairNativeCandidateBytecodeParityWithCallbacks(
             *note = JoinNotes(*note,
                               std::string(note_prefix) +
                                   "_bytecode_near_exact_nested_call_argument_local");
+        }
+        return true;
+    }
+
+    if (TryRepairNearExactRepeatedCallArgumentLocal(context, &candidate_source)) {
+        if (note != nullptr && !note_prefix.empty()) {
+            *note = JoinNotes(*note,
+                              std::string(note_prefix) +
+                                  "_bytecode_near_exact_repeated_call_argument_local");
         }
         return true;
     }

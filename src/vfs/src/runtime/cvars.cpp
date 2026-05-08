@@ -9,7 +9,7 @@
 namespace refii::vfs {
 namespace {
 
-REXCVAR_DEFINE_BOOL(vfs_use_loose_assets, true, "VFS",
+REXCVAR_DEFINE_BOOL(vfs_use_loose_assets, false, "VFS",
                     "Prefer loose files from the unpacked mod workspace before banked assets.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -29,7 +29,7 @@ REXCVAR_DEFINE_BOOL(vfs_use_loose_gameface_binaries, false, "VFS",
                     "Allow loose Anark/GameFace binary assets (.bgf/.bsg/.fac).")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(vfs_use_loose_bank_entries, true, "VFS",
+REXCVAR_DEFINE_BOOL(vfs_use_loose_bank_entries, false, "VFS",
                     "Prefer loose files for entries opened from Fable 2 BNK banks.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -37,17 +37,18 @@ REXCVAR_DEFINE_BOOL(vfs_skip_startup_videos, false, "VFS",
                     "Skip the non-interactive startup videos while using the Refii VFS.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(vfs_force_startup_video_sequence, true, "VFS",
+REXCVAR_DEFINE_BOOL(vfs_force_startup_video_sequence, false, "VFS",
                     "Require the native startup videos to play in sequence before Refii VFS "
                     "post-video handoff patches may run.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_INT32(vfs_startup_video_minimum_playback_ms, 18000, "VFS",
-                     "Minimum wall-clock startup-video playback time before Refii VFS "
-                     "post-video handoff may continue if native finalizers are not observed.")
+REXCVAR_DEFINE_INT32(vfs_startup_video_minimum_playback_ms, 0, "VFS",
+                     "Optional wall-clock startup-video fallback before Refii VFS "
+                     "post-video handoff may continue if native finalizers are not "
+                     "observed. 0 disables the fallback.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(vfs_loose_asset_backend, "refii", "VFS",
+REXCVAR_DEFINE_STRING(vfs_loose_asset_backend, "disabled", "VFS",
                       "Loose asset stream backend: refii or disabled.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 

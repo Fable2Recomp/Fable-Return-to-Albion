@@ -446,6 +446,14 @@ bool RefiiStartupVideosMinimumCursorQuietAgeReachedLocked(
 bool RefiiStartupVideosTimedPlaybackCompleteForHandoffLocked(
     const RefiiPostVideoHandoffTrace& trace,
     int64_t* ready_age_ms_out = nullptr) {
+  const int64_t configured_minimum_playback_ms =
+      StartupVideoMinimumPlaybackMs();
+  if (configured_minimum_playback_ms <= 0) {
+    if (ready_age_ms_out != nullptr) {
+      *ready_age_ms_out = -1;
+    }
+    return false;
+  }
   if (!RefiiStartupVideoSlotReady(trace.microsoft) ||
       !RefiiStartupVideoSlotReady(trace.lionhead)) {
     if (ready_age_ms_out != nullptr) {
@@ -455,7 +463,7 @@ bool RefiiStartupVideosTimedPlaybackCompleteForHandoffLocked(
   }
   const int64_t minimum_playback_ms =
       std::max<int64_t>(kRefiiStartupVideoMinimumReadyAgeMs,
-                        StartupVideoMinimumPlaybackMs());
+                        configured_minimum_playback_ms);
   const bool using_synthetic_finalizer =
       trace.microsoft.finalizer_synthetic || trace.lionhead.finalizer_synthetic;
   if (using_synthetic_finalizer) {

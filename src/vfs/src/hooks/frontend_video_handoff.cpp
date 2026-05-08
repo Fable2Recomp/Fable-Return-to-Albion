@@ -144,8 +144,7 @@ PPC_FUNC_IMPL(sub_82377980) {
       REXLOG_INFO("Refii VFS startup-video ready completion delayed "
                   "sub_82377980 lr=0x{:08X} update=0x{:08X} "
                   "videos_settled=false update_after=[{}] handoff=[{}] "
-                  "main_menu=[{}] next=startup_video_loop_until_real_finalizer_"
-                  "or_minimum_playback",
+                  "main_menu=[{}] next=startup_video_loop_until_native_finalizer",
                   original_ctx.lr,
                   original_ctx.r3.u32,
                   refii::vfs::FormatStartupVideoUpdateTimingState(

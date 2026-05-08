@@ -7,7 +7,8 @@ set(REFII_EXTRACTOR_ZLIB_TARGET)
 if(TARGET ZLIB::ZLIB)
     set(REFII_EXTRACTOR_ZLIB_TARGET ZLIB::ZLIB)
 elseif(EXISTS "${REFII_EXTRACTOR_ZLIB_ROOT}/CMakeLists.txt")
-    set(ZLIB_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZLIB_BUILD_STATIC ON CACHE BOOL "" FORCE)
     set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
     add_subdirectory(
@@ -28,6 +29,12 @@ elseif(EXISTS "${REFII_EXTRACTOR_ZLIB_ROOT}/CMakeLists.txt")
         message(FATAL_ERROR
             "Vendored zlib was found at ${REFII_EXTRACTOR_ZLIB_ROOT} "
             "but no zlib CMake target is available.")
+    endif()
+    if(TARGET zlibstatic)
+        set_target_properties(zlibstatic PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    endif()
+    if(TARGET zlib)
+        set_target_properties(zlib PROPERTIES POSITION_INDEPENDENT_CODE ON)
     endif()
 else()
     message(FATAL_ERROR
