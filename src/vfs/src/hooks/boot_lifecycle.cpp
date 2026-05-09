@@ -287,8 +287,8 @@ bool TryRunRefiiDlcStartupContentFind(PPCContext& ctx,
 
 } // namespace
 
-PPC_FUNC_IMPL(rex_lhResource_InitModelHeaders) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResource_InitModelHeaders) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_InitModelHeaders);
 
@@ -321,8 +321,8 @@ PPC_FUNC_IMPL(rex_lhResource_InitModelHeaders) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhScopedLock_Acquire) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhScopedLock_Acquire) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhScopedLock_Acquire);
 
@@ -330,8 +330,8 @@ PPC_FUNC_IMPL(rex_lhScopedLock_Acquire) {
   __imp__rex_lhScopedLock_Acquire(ctx, base);
 }
 
-PPC_FUNC_IMPL(sub_8218FA68) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_8218FA68) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8218FA68);
 
@@ -339,8 +339,8 @@ PPC_FUNC_IMPL(sub_8218FA68) {
   __imp__sub_8218FA68(ctx, base);
 }
 
-PPC_FUNC_IMPL(sub_82B75328) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B75328) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B75328);
 
@@ -364,8 +364,8 @@ PPC_FUNC_IMPL(sub_82B75328) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B75D18) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B75D18) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B75D18);
 
@@ -391,8 +391,8 @@ PPC_FUNC_IMPL(sub_82B75D18) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82286D78) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82286D78) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82286D78);
 
@@ -423,8 +423,8 @@ PPC_FUNC_IMPL(sub_82286D78) {
   }
 }
 
-PPC_FUNC_IMPL(sub_8220B470) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_8220B470) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8220B470);
 
@@ -455,8 +455,8 @@ PPC_FUNC_IMPL(sub_8220B470) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82237338) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82237338) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82237338);
 
@@ -482,8 +482,8 @@ PPC_FUNC_IMPL(sub_82237338) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B86B40) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B86B40) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B86B40);
 
@@ -507,8 +507,8 @@ PPC_FUNC_IMPL(sub_82B86B40) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhResource_CreateModelCache) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResource_CreateModelCache) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_CreateModelCache);
 
@@ -532,8 +532,8 @@ PPC_FUNC_IMPL(rex_lhResource_CreateModelCache) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhResource_SetupModelCache) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResource_SetupModelCache) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_SetupModelCache);
 
@@ -559,8 +559,8 @@ PPC_FUNC_IMPL(rex_lhResource_SetupModelCache) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhResource_SetLoadMode) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResource_SetLoadMode) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_SetLoadMode);
 
@@ -599,8 +599,8 @@ PPC_FUNC_IMPL(rex_lhResource_SetLoadMode) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhResource_InitSystem) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResource_InitSystem) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_InitSystem);
 
@@ -623,8 +623,8 @@ PPC_FUNC_IMPL(rex_lhResource_InitSystem) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhResource_InitLoader) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResource_InitLoader) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResource_InitLoader);
 
@@ -647,8 +647,8 @@ PPC_FUNC_IMPL(rex_lhResource_InitLoader) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhRenderer_Construct) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhRenderer_Construct) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_Construct);
 
@@ -673,8 +673,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_Construct) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhRenderer_Setup) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhRenderer_Setup) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_Setup);
 
@@ -700,8 +700,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_Setup) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82389210) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82389210) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82389210);
 
@@ -912,8 +912,8 @@ PPC_FUNC_IMPL(sub_82389210) {
   }
 }
 
-PPC_FUNC_IMPL(sub_823781E0) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_823781E0) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_823781E0);
 
@@ -1030,8 +1030,8 @@ PPC_FUNC_IMPL(sub_823781E0) {
       original_ctx.lr, "PostVideoFrame_823781E0", base);
 }
 
-PPC_FUNC_IMPL(sub_823889A8) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_823889A8) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_823889A8);
 
@@ -1121,8 +1121,8 @@ PPC_FUNC_IMPL(sub_823889A8) {
       original_ctx.lr, "StartupVideoFrame_823889A8", base);
 }
 
-PPC_FUNC_IMPL(sub_82388A88) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82388A88) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82388A88);
 
@@ -1221,8 +1221,8 @@ PPC_FUNC_IMPL(sub_82388A88) {
       original_ctx.lr, "RenderProducerSchedule_82388A88", base);
 }
 
-PPC_FUNC_IMPL(sub_823865F8) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_823865F8) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_823865F8);
 
@@ -1289,8 +1289,8 @@ PPC_FUNC_IMPL(sub_823865F8) {
       original_ctx.lr, "FrontendReadyTail_823865F8", base);
 }
 
-PPC_FUNC_IMPL(sub_82361128) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82361128) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82361128);
 
@@ -1342,8 +1342,8 @@ PPC_FUNC_IMPL(sub_82361128) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82361200) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82361200) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82361200);
 
@@ -1383,8 +1383,8 @@ PPC_FUNC_IMPL(sub_82361200) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82388B48) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82388B48) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82388B48);
 
@@ -1455,8 +1455,8 @@ PPC_FUNC_IMPL(sub_82388B48) {
       original_ctx.lr, "RenderProducerFadeSchedule_82388B48", base);
 }
 
-PPC_FUNC_IMPL(sub_82388040) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82388040) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82388040);
 
@@ -1514,8 +1514,8 @@ PPC_FUNC_IMPL(sub_82388040) {
       original_ctx.lr, "RenderProducer_82388040", base);
 }
 
-PPC_FUNC_IMPL(sub_82A415C0) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82A415C0) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82A415C0);
 
@@ -1653,8 +1653,8 @@ PPC_FUNC_IMPL(sub_82A415C0) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82A41758) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82A41758) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82A41758);
 
@@ -1750,8 +1750,8 @@ PPC_FUNC_IMPL(sub_82A41758) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82A41B48) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82A41B48) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82A41B48);
 
@@ -1873,8 +1873,8 @@ PPC_FUNC_IMPL(sub_82A41B48) {
       original_ctx.lr, "StartupVideoFrame_82A41B48", base);
 }
 
-PPC_FUNC_IMPL(sub_82389040) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82389040) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82389040);
 
@@ -1981,8 +1981,8 @@ PPC_FUNC_IMPL(sub_82389040) {
       original_ctx.lr, "StartupVideoFrame_82389040", base);
 }
 
-PPC_FUNC_IMPL(rex_lhRenderer_BeginScene) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhRenderer_BeginScene) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_BeginScene);
 
@@ -2277,8 +2277,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_BeginScene) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhMeshResource_Deserialize) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhMeshResource_Deserialize) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhMeshResource_Deserialize);
 
@@ -2349,8 +2349,8 @@ PPC_FUNC_IMPL(rex_lhMeshResource_Deserialize) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhMeshResource_Load) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhMeshResource_Load) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhMeshResource_Load);
 
@@ -2408,8 +2408,8 @@ PPC_FUNC_IMPL(rex_lhMeshResource_Load) {
   }
 }
 
-PPC_FUNC_IMPL(sub_8286FDB0) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_8286FDB0) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8286FDB0);
 
@@ -2465,8 +2465,8 @@ PPC_FUNC_IMPL(sub_8286FDB0) {
   }
 }
 
-PPC_FUNC_IMPL(sub_8218DFB8) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_8218DFB8) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8218DFB8);
 
@@ -2527,8 +2527,8 @@ PPC_FUNC_IMPL(sub_8218DFB8) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82231CB8) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82231CB8) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82231CB8);
 
@@ -2582,8 +2582,8 @@ PPC_FUNC_IMPL(sub_82231CB8) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhMeshResource_Validate) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhMeshResource_Validate) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhMeshResource_Validate);
 
@@ -2629,8 +2629,8 @@ PPC_FUNC_IMPL(rex_lhMeshResource_Validate) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B70868) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B70868) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B70868);
 
@@ -2661,8 +2661,8 @@ PPC_FUNC_IMPL(sub_82B70868) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhRenderer_StartThread) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhRenderer_StartThread) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_StartThread);
 
@@ -2688,8 +2688,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_StartThread) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhGameInit_SetupUI) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhGameInit_SetupUI) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhGameInit_SetupUI);
 
@@ -2747,8 +2747,8 @@ PPC_FUNC_IMPL(rex_lhGameInit_SetupUI) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhGame_UpdateThread) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhGame_UpdateThread) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhGame_UpdateThread);
 
@@ -2770,8 +2770,8 @@ PPC_FUNC_IMPL(rex_lhGame_UpdateThread) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhGameData_Init) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhGameData_Init) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhGameData_Init);
 
@@ -2793,8 +2793,8 @@ PPC_FUNC_IMPL(rex_lhGameData_Init) {
   }
 }
 
-PPC_FUNC_IMPL(sub_822F3D90) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_822F3D90) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_822F3D90);
 
@@ -2817,8 +2817,8 @@ PPC_FUNC_IMPL(sub_822F3D90) {
   }
 }
 
-PPC_FUNC_IMPL(sub_8237FE30) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_8237FE30) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8237FE30);
 
@@ -2850,8 +2850,8 @@ PPC_FUNC_IMPL(sub_8237FE30) {
   }
 }
 
-PPC_FUNC_IMPL(sub_8237FD60) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_8237FD60) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8237FD60);
 
@@ -2875,8 +2875,8 @@ PPC_FUNC_IMPL(sub_8237FD60) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhRenderer_BeginGPUFrame) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhRenderer_BeginGPUFrame) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_BeginGPUFrame);
 
@@ -2897,8 +2897,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_BeginGPUFrame) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhRenderer_EndGPUFrame) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhRenderer_EndGPUFrame) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_EndGPUFrame);
 
@@ -2919,8 +2919,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_EndGPUFrame) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82A4E998) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82A4E998) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82A4E998);
 
@@ -2944,8 +2944,8 @@ PPC_FUNC_IMPL(sub_82A4E998) {
   }
 }
 
-PPC_FUNC_IMPL(sub_822F4948) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_822F4948) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_822F4948);
 
@@ -2970,8 +2970,8 @@ PPC_FUNC_IMPL(sub_822F4948) {
   }
 }
 
-PPC_FUNC_IMPL(sub_822F4210) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_822F4210) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_822F4210);
 
@@ -2994,8 +2994,8 @@ PPC_FUNC_IMPL(sub_822F4210) {
   }
 }
 
-PPC_FUNC_IMPL(sub_822F4750) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_822F4750) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_822F4750);
 
@@ -3024,8 +3024,8 @@ PPC_FUNC_IMPL(sub_822F4750) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhFile_CloseAndRelease) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhFile_CloseAndRelease) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_CloseAndRelease);
 

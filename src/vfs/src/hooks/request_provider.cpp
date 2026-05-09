@@ -49,8 +49,8 @@ bool IsKnownRequestManagerGuest(uint32_t manager_guest) {
 
 }  // namespace
 
-PPC_FUNC_IMPL(rex_lhVFS_RequestManager_FindStream) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhVFS_RequestManager_FindStream) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_RequestManager_FindStream);
 
@@ -194,8 +194,8 @@ PPC_FUNC_IMPL(rex_lhVFS_RequestManager_FindStream) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhVFS_RequestManager_BuildHashTable) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhVFS_RequestManager_BuildHashTable) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_RequestManager_BuildHashTable);
 
@@ -237,8 +237,8 @@ PPC_FUNC_IMPL(rex_lhVFS_RequestManager_BuildHashTable) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B45F70) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B45F70) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B45F70);
 
@@ -295,8 +295,8 @@ PPC_FUNC_IMPL(sub_82B45F70) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B456D8) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B456D8) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B456D8);
 
@@ -472,8 +472,8 @@ PPC_FUNC_IMPL(sub_82B456D8) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhVFS_Provider_FindStreamByHash) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhVFS_Provider_FindStreamByHash) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_Provider_FindStreamByHash);
 
@@ -617,8 +617,8 @@ PPC_FUNC_IMPL(rex_lhVFS_Provider_FindStreamByHash) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhVFS_Provider_OpenStream) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhVFS_Provider_OpenStream) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_Provider_OpenStream);
 
@@ -784,8 +784,8 @@ PPC_FUNC_IMPL(rex_lhVFS_Provider_OpenStream) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhBank_OpenStreamByName) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhBank_OpenStreamByName) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_OpenStreamByName);
 

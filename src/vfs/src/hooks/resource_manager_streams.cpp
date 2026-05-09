@@ -1,7 +1,7 @@
 #include "vfs_hooks_private.h"
 
-PPC_FUNC_IMPL(rex_lhResourceManager_FindAndCreateStream) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResourceManager_FindAndCreateStream) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_FindAndCreateStream);
 
@@ -128,8 +128,8 @@ PPC_FUNC_IMPL(rex_lhResourceManager_FindAndCreateStream) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhResourceManager_GetCached) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResourceManager_GetCached) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_GetCached);
 
@@ -317,8 +317,8 @@ PPC_FUNC_IMPL(rex_lhResourceManager_GetCached) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhResourceManager_vtbl_FindStream) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResourceManager_vtbl_FindStream) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_vtbl_FindStream);
 

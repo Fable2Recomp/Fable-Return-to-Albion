@@ -63,8 +63,8 @@
 #include <rex/system/xtypes.h>
 #include <tracy/Tracy.hpp>
 
-#if !defined(PPC_FUNC_PROLOGUE)
-#define PPC_FUNC_PROLOGUE() ((void)0)
+#if !defined(REX_FUNC_PROLOGUE)
+#define REX_FUNC_PROLOGUE() ((void)0)
 #endif
 
 #define REFII_VFS_NATIVE_PASSTHROUGH(function_name) \

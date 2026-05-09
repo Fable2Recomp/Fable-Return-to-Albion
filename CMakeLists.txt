@@ -6,13 +6,15 @@
 cmake_minimum_required(VERSION 3.25)
 project(refii LANGUAGES CXX)
 
+if(POLICY CMP0144)
+  cmake_policy(SET CMP0144 NEW)
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
-
-#set(REXSDK_VERSION "0.3.0" CACHE STRING "Override SDK version" FORCE)
 
 include(generated/rexglue.cmake)
 
@@ -171,11 +173,7 @@ target_include_directories(refii_core
 )
 target_link_libraries(refii_core
     PUBLIC
-        rex::core
-        rex::system
-        rex::kernel
-        rex::graphics
-        rex::ui
+        rex::runtime
 )
 set_target_properties(refii_core PROPERTIES
     OUTPUT_NAME refii_core
@@ -244,7 +242,7 @@ if(UNIX AND NOT APPLE)
     target_link_options(refii_core
         PRIVATE
             -Wl,--whole-archive
-            $<TARGET_FILE:rex::kernel>
+            $<TARGET_FILE:rex::runtime>
             -Wl,--no-whole-archive
             -Wl,--no-relax
     )

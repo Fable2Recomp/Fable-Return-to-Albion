@@ -35,8 +35,7 @@ if(REFII_HOOK_SOURCES)
     target_link_libraries(refii_hooks
         PRIVATE
             ${REFII_HOOK_LIBRARIES}
-            rex::core
-            rex::system
+            rex::runtime
     )
 
     set(REFII_HOOK_OBJECTS

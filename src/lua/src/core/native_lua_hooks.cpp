@@ -648,8 +648,8 @@ void TouchNativeLuaHooks() {}
 
 }  // namespace refii::lua
 
-PPC_FUNC_IMPL(rex_lua_load_internal) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lua_load_internal) {
+  REX_FUNC_PROLOGUE();
 
   if (!refii::lua::HasActiveRuntimeOverrideTrace()) {
     __imp__rex_lua_load_internal(ctx, base);
@@ -697,8 +697,8 @@ PPC_FUNC_IMPL(rex_lua_load_internal) {
               ctx.r3.s64);
 }
 
-PPC_FUNC_IMPL(rex_lua_cpcall) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lua_cpcall) {
+  REX_FUNC_PROLOGUE();
 
   if (!refii::lua::HasActiveRuntimeOverrideTrace()) {
     __imp__rex_lua_cpcall(ctx, base);
@@ -759,8 +759,8 @@ PPC_FUNC_IMPL(rex_lua_cpcall) {
               ctx.r3.s64);
 }
 
-PPC_FUNC_IMPL(sub_82451E40) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82451E40) {
+  REX_FUNC_PROLOGUE();
 
   const refii::lua::NativeScriptRequest request{
       .lua_state_guest = ctx.r3.u32,
@@ -786,8 +786,8 @@ PPC_FUNC_IMPL(sub_82451E40) {
   __imp__sub_82451E40(ctx, base);
 }
 
-PPC_FUNC_IMPL(sub_82451F18) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82451F18) {
+  REX_FUNC_PROLOGUE();
 
   const refii::lua::NativeScriptRequest request{
       .lua_state_guest = ctx.r3.u32,

@@ -33,8 +33,8 @@ bool ShouldUseNativeConcreteBankContainer(std::string_view bank_name,
 
 }  // namespace
 
-PPC_FUNC_IMPL(rex_lhBank_Open) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhBank_Open) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_Open);
 
@@ -144,8 +144,8 @@ PPC_FUNC_IMPL(rex_lhBank_Open) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhBank_OpenWithManifest) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhBank_OpenWithManifest) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_OpenWithManifest);
 
@@ -227,8 +227,8 @@ PPC_FUNC_IMPL(rex_lhBank_OpenWithManifest) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhBank_ParseHeader) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhBank_ParseHeader) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_ParseHeader);
 
@@ -338,8 +338,8 @@ PPC_FUNC_IMPL(rex_lhBank_ParseHeader) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhBank_DirectoryIterator_Ctor) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhBank_DirectoryIterator_Ctor) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirectoryIterator_Ctor);
 
@@ -386,8 +386,8 @@ PPC_FUNC_IMPL(rex_lhBank_DirectoryIterator_Ctor) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhBank_DirIter_FindStreamNext) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhBank_DirIter_FindStreamNext) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirIter_FindStreamNext);
 
@@ -509,8 +509,8 @@ PPC_FUNC_IMPL(rex_lhBank_DirIter_FindStreamNext) {
   __imp__rex_lhBank_DirIter_FindStreamNext(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_lhBank_DirIter_GetName) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhBank_DirIter_GetName) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirIter_GetName);
 
@@ -528,8 +528,8 @@ PPC_FUNC_IMPL(rex_lhBank_DirIter_GetName) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhBank_OpenStreamByIndex) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhBank_OpenStreamByIndex) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_OpenStreamByIndex);
 
@@ -691,8 +691,8 @@ PPC_FUNC_IMPL(rex_lhBank_OpenStreamByIndex) {
   __imp__rex_lhBank_OpenStreamByIndex(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_lhBank_DirIter_FindStreamByIndex) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhBank_DirIter_FindStreamByIndex) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirIter_FindStreamByIndex);
 

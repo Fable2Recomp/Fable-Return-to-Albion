@@ -1,7 +1,7 @@
 #include "vfs_hooks_private.h"
 
-PPC_FUNC_IMPL(sub_82B53438) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B53438) {
+  REX_FUNC_PROLOGUE();
 
   if (refii::vfs::TrySilentLargePageReserve(ctx, base)) {
     return;
@@ -10,8 +10,8 @@ PPC_FUNC_IMPL(sub_82B53438) {
   __imp__sub_82B53438(ctx, base);
 }
 
-PPC_FUNC_IMPL(sub_82B6C340) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B6C340) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B6C340);
 
@@ -134,8 +134,8 @@ PPC_FUNC_IMPL(sub_82B6C340) {
 	  }
 }
 
-PPC_FUNC_IMPL(sub_82B8BA38) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B8BA38) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8BA38);
 
@@ -186,8 +186,8 @@ PPC_FUNC_IMPL(sub_82B8BA38) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B8C158) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B8C158) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8C158);
 
@@ -244,8 +244,8 @@ PPC_FUNC_IMPL(sub_82B8C158) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B8C5F0) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B8C5F0) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8C5F0);
 
@@ -312,8 +312,8 @@ PPC_FUNC_IMPL(sub_82B8C5F0) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B8CAC0) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B8CAC0) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8CAC0);
 
@@ -358,8 +358,8 @@ PPC_FUNC_IMPL(sub_82B8CAC0) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82176018) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82176018) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82176018);
 
@@ -416,8 +416,8 @@ PPC_FUNC_IMPL(sub_82176018) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B8CDF8) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B8CDF8) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8CDF8);
 
@@ -524,8 +524,8 @@ PPC_FUNC_IMPL(sub_82B8CDF8) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B8CEE0) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B8CEE0) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8CEE0);
 
@@ -581,8 +581,8 @@ PPC_FUNC_IMPL(sub_82B8CEE0) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B8D028) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B8D028) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8D028);
 
@@ -644,8 +644,8 @@ PPC_FUNC_IMPL(sub_82B8D028) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B8D170) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B8D170) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8D170);
 
@@ -705,8 +705,8 @@ PPC_FUNC_IMPL(sub_82B8D170) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B96220) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B96220) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B96220);
 
@@ -792,8 +792,8 @@ PPC_FUNC_IMPL(sub_82B96220) {
 }
 
 #define REFII_TEXTURE_PARSER_PROBE_HOOK(function_name, imp_name, label_name) \
-  PPC_FUNC_IMPL(function_name) {                                             \
-    PPC_FUNC_PROLOGUE();                                                     \
+  REX_EXTERN(function_name) {                                             \
+    REX_FUNC_PROLOGUE();                                                     \
     REFII_VFS_NATIVE_PASSTHROUGH(function_name);                             \
                                                                              \
     const PPCContext original_ctx = ctx;                                      \
@@ -831,8 +831,8 @@ REFII_TEXTURE_PARSER_PROBE_HOOK(sub_82B8DFA0, __imp__sub_82B8DFA0, "DFA0")
 
 #undef REFII_TEXTURE_PARSER_PROBE_HOOK
 
-PPC_FUNC_IMPL(sub_82B504D8) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B504D8) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B504D8);
 

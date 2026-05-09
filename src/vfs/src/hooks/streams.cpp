@@ -1,7 +1,7 @@
 #include "vfs_hooks_private.h"
 
-PPC_FUNC_IMPL(rex_lhStream_Buffered_GetSize) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_Buffered_GetSize) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_Buffered_GetSize);
 
@@ -37,8 +37,8 @@ PPC_FUNC_IMPL(rex_lhStream_Buffered_GetSize) {
   }
 }
 
-PPC_FUNC_IMPL(sub_828D4110) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_828D4110) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_828D4110);
 
@@ -72,8 +72,8 @@ PPC_FUNC_IMPL(sub_828D4110) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhStream_DiskStream_GetSize) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_DiskStream_GetSize) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_DiskStream_GetSize);
 
@@ -91,8 +91,8 @@ PPC_FUNC_IMPL(rex_lhStream_DiskStream_GetSize) {
       "DiskStream_GetSize", base, stream_guest, ctx);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_GetInnerSize) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_GetInnerSize) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_GetInnerSize);
 
@@ -102,8 +102,8 @@ PPC_FUNC_IMPL(rex_lhStream_GetInnerSize) {
       "GetInnerSize", base, stream_guest, ctx);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_GetPosition) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_GetPosition) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_GetPosition);
 
@@ -291,8 +291,8 @@ PPC_FUNC_IMPL(rex_lhStream_GetPosition) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhResourceManager_vtbl_GetStreamSize) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResourceManager_vtbl_GetStreamSize) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_vtbl_GetStreamSize);
 
@@ -361,8 +361,8 @@ PPC_FUNC_IMPL(rex_lhResourceManager_vtbl_GetStreamSize) {
       "ResourceManager_GetStreamSize", base, stream_guest, ctx);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_Buffered_Read) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_Buffered_Read) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_Buffered_Read);
 
@@ -406,8 +406,8 @@ PPC_FUNC_IMPL(rex_lhStream_Buffered_Read) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B5AD98) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B5AD98) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5AD98);
 
@@ -430,8 +430,8 @@ PPC_FUNC_IMPL(sub_82B5AD98) {
   __imp__sub_82B5AD98(ctx, base);
 }
 
-PPC_FUNC_IMPL(sub_83032078) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_83032078) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_83032078);
 
@@ -443,8 +443,8 @@ PPC_FUNC_IMPL(sub_83032078) {
   __imp__sub_83032078(ctx, base);
 }
 
-PPC_FUNC_IMPL(sub_83032088) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_83032088) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_83032088);
 
@@ -456,8 +456,8 @@ PPC_FUNC_IMPL(sub_83032088) {
   __imp__sub_83032088(ctx, base);
 }
 
-PPC_FUNC_IMPL(sub_82C72E60) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82C72E60) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82C72E60);
 
@@ -490,8 +490,8 @@ PPC_FUNC_IMPL(sub_82C72E60) {
       ctx);
 }
 
-PPC_FUNC_IMPL(sub_82C73028) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82C73028) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82C73028);
 
@@ -520,8 +520,8 @@ PPC_FUNC_IMPL(sub_82C73028) {
   __imp__sub_82C73028(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_DecompressStream_Read) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_DecompressStream_Read) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_DecompressStream_Read);
 
@@ -554,8 +554,8 @@ PPC_FUNC_IMPL(rex_lhStream_DecompressStream_Read) {
       ctx);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_DiskStream_Read) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_DiskStream_Read) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_DiskStream_Read);
 
@@ -578,8 +578,8 @@ PPC_FUNC_IMPL(rex_lhStream_DiskStream_Read) {
       "DiskStream_Read", base, stream_guest, arg4, arg5, arg6, ctx);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_DiskStream_Dtor) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_DiskStream_Dtor) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_DiskStream_Dtor);
 
@@ -593,8 +593,8 @@ PPC_FUNC_IMPL(rex_lhStream_DiskStream_Dtor) {
   __imp__rex_lhStream_DiskStream_Dtor(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_Reader_Read) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_Reader_Read) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_Reader_Read);
 
@@ -607,8 +607,8 @@ PPC_FUNC_IMPL(rex_lhStream_Reader_Read) {
       "Reader_Read", base, stream_guest, arg4, arg5, arg6, ctx);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_ReadUInt32) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_ReadUInt32) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_ReadUInt32);
 
@@ -621,8 +621,8 @@ PPC_FUNC_IMPL(rex_lhStream_ReadUInt32) {
       "ReadUInt32", base, stream_guest, arg4, arg5, arg6, ctx);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_Buffered_Init) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_Buffered_Init) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_Buffered_Init);
 
@@ -677,8 +677,8 @@ PPC_FUNC_IMPL(rex_lhStream_Buffered_Init) {
       base, "Buffered_Init/source", buffered_guest, source_stream_guest);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_CreateBuffered) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_CreateBuffered) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_CreateBuffered);
 
@@ -704,8 +704,8 @@ PPC_FUNC_IMPL(rex_lhStream_CreateBuffered) {
       base, "CreateBuffered/r3ret", ctx.r3.u32, source_stream_guest);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_CreateFromPosition) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_CreateFromPosition) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_CreateFromPosition);
 
@@ -723,8 +723,8 @@ PPC_FUNC_IMPL(rex_lhStream_CreateFromPosition) {
       base, "CreateFromPosition/r3ret", ctx.r3.u32, source_stream_guest);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_CreateReadStream) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_CreateReadStream) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_CreateReadStream);
 
@@ -742,8 +742,8 @@ PPC_FUNC_IMPL(rex_lhStream_CreateReadStream) {
       base, "CreateReadStream/r3ret", ctx.r3.u32, source_stream_guest);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_CreateSubStream) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_CreateSubStream) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_CreateSubStream);
 
@@ -761,8 +761,8 @@ PPC_FUNC_IMPL(rex_lhStream_CreateSubStream) {
       base, "CreateSubStream/r3ret", ctx.r3.u32, source_stream_guest);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_CreateReader) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_CreateReader) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_CreateReader);
 
@@ -780,8 +780,8 @@ PPC_FUNC_IMPL(rex_lhStream_CreateReader) {
       base, "CreateReader/r3ret", ctx.r3.u32, source_stream_guest);
 }
 
-PPC_FUNC_IMPL(rex_lhStream_Reader_Ctor) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhStream_Reader_Ctor) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhStream_Reader_Ctor);
 

@@ -124,8 +124,7 @@ target_include_directories(refii_vfs
 )
 target_link_libraries(refii_vfs
     PUBLIC
-        rex::core
-        rex::system
+        rex::runtime
 )
 set_target_properties(refii_vfs PROPERTIES
     POSITION_INDEPENDENT_CODE ON

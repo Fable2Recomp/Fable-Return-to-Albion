@@ -139,6 +139,42 @@ std::string NormalizeBoolValue(std::string value) {
     return value == "true" ? "true" : "false";
 }
 
+std::string NormalizeGameDataRootValue(
+    const std::string& value,
+    const std::filesystem::path& configPath) {
+    if (value.empty()) {
+        return "assets";
+    }
+
+    std::filesystem::path path(value);
+    if (path.filename() == "game") {
+        path = path.parent_path();
+    }
+    path = path.lexically_normal();
+
+    if (!path.is_absolute()) {
+        if (std::filesystem::exists(path)) {
+            return path.lexically_normal().generic_string();
+        }
+
+        std::filesystem::path searchBase = configPath.parent_path();
+        for (std::size_t i = 0; i < 8 && !searchBase.empty(); ++i) {
+            const std::filesystem::path candidate = searchBase / path;
+            if (std::filesystem::exists(candidate)) {
+                return candidate.lexically_normal().generic_string();
+            }
+            const std::filesystem::path parent = searchBase.parent_path();
+            if (parent == searchBase) {
+                break;
+            }
+            searchBase = parent;
+        }
+        return path.lexically_normal().generic_string();
+    }
+
+    return path.lexically_normal().generic_string();
+}
+
 std::string_view TrimView(std::string_view value) {
     const auto isWhitespace = [](unsigned char ch) {
         return std::isspace(ch) != 0;
@@ -337,7 +373,7 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"log_max_file_size_mb", "Log", RuntimeCVarType::Int, "5", "Maximum log file size before rotation."},
         {"log_max_files", "Log", RuntimeCVarType::Int, "20", "Maximum rotated log files to keep."},
 
-        {"game_data_root", "Runtime", RuntimeCVarType::String, "", "Override game data path."},
+        {"game_data_root", "Runtime", RuntimeCVarType::String, "assets", "Override game data path."},
         {"user_data_root", "Runtime", RuntimeCVarType::String, "assets/save", "Override user data path."},
         {"update_data_root", "Runtime", RuntimeCVarType::String, "", "Override update data path."},
         {"cache_path", "Runtime", RuntimeCVarType::String, "", "Override shader cache path."},
@@ -584,7 +620,12 @@ std::map<std::string, std::string> ReadRuntimeConfigValues(
         if (!section.empty()) {
             key = section + "_" + key;
         }
-        values[key] = UnquoteTomlString(value);
+        const std::string unquoted = UnquoteTomlString(value);
+        if (key == "game_data_root") {
+            values[key] = NormalizeGameDataRootValue(unquoted, configPath);
+        } else {
+            values[key] = unquoted;
+        }
     }
 
     return values;

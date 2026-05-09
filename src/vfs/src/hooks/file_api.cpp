@@ -1,7 +1,7 @@
 #include "vfs_hooks_private.h"
 
-PPC_FUNC_IMPL(rex_CreateFileA) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_CreateFileA) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_CreateFileA);
 
@@ -85,8 +85,8 @@ PPC_FUNC_IMPL(rex_CreateFileA) {
   }
 }
 
-PPC_FUNC_IMPL(rex_ReadFile) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_ReadFile) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_ReadFile);
 
@@ -119,8 +119,8 @@ PPC_FUNC_IMPL(rex_ReadFile) {
   __imp__rex_ReadFile(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_ReadFileAsync) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_ReadFileAsync) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_ReadFileAsync);
 
@@ -153,8 +153,8 @@ PPC_FUNC_IMPL(rex_ReadFileAsync) {
   __imp__rex_ReadFileAsync(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_GetFileSizeEx) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_GetFileSizeEx) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileSizeEx);
 
@@ -181,8 +181,8 @@ PPC_FUNC_IMPL(rex_GetFileSizeEx) {
   __imp__rex_GetFileSizeEx(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_GetFileSize) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_GetFileSize) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileSize);
 
@@ -210,8 +210,8 @@ PPC_FUNC_IMPL(rex_GetFileSize) {
   __imp__rex_GetFileSize(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_SetFilePointer) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_SetFilePointer) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_SetFilePointer);
 
@@ -241,8 +241,8 @@ PPC_FUNC_IMPL(rex_SetFilePointer) {
   __imp__rex_SetFilePointer(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_CloseHandle) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_CloseHandle) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_CloseHandle);
 
@@ -272,8 +272,8 @@ PPC_FUNC_IMPL(rex_CloseHandle) {
   __imp__rex_CloseHandle(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_GetFileAttributesA) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_GetFileAttributesA) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileAttributesA);
 
@@ -319,8 +319,8 @@ PPC_FUNC_IMPL(rex_GetFileAttributesA) {
   }
 }
 
-PPC_FUNC_IMPL(rex_FindNextFileA) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_FindNextFileA) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_FindNextFileA);
 
@@ -362,8 +362,8 @@ PPC_FUNC_IMPL(rex_FindNextFileA) {
   }
 }
 
-PPC_FUNC_IMPL(rex_FindFirstFileA) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_FindFirstFileA) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_FindFirstFileA);
 
@@ -409,8 +409,8 @@ PPC_FUNC_IMPL(rex_FindFirstFileA) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lh_OpenDiscFile) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lh_OpenDiscFile) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lh_OpenDiscFile);
 
@@ -544,8 +544,8 @@ PPC_FUNC_IMPL(rex_lh_OpenDiscFile) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhFile_IsOpen) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhFile_IsOpen) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_IsOpen);
 
@@ -569,8 +569,8 @@ PPC_FUNC_IMPL(rex_lhFile_IsOpen) {
   __imp__rex_lhFile_IsOpen(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_lhFile_GetSize) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhFile_GetSize) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_GetSize);
 
@@ -597,8 +597,8 @@ PPC_FUNC_IMPL(rex_lhFile_GetSize) {
   __imp__rex_lhFile_GetSize(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_lhFile_GetTotalSize) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhFile_GetTotalSize) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_GetTotalSize);
 
@@ -625,8 +625,8 @@ PPC_FUNC_IMPL(rex_lhFile_GetTotalSize) {
   __imp__rex_lhFile_GetTotalSize(ctx, base);
 }
 
-PPC_FUNC_IMPL(rex_lhFile_ResolveAndOpen) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhFile_ResolveAndOpen) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_ResolveAndOpen);
 

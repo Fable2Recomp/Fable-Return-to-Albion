@@ -1,7 +1,7 @@
 #include "vfs_hooks_private.h"
 
-PPC_FUNC_IMPL(rex_lhResourceManager_Open) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResourceManager_Open) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_Open);
 
@@ -89,8 +89,8 @@ PPC_FUNC_IMPL(rex_lhResourceManager_Open) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B6DB20) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B6DB20) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B6DB20);
 
@@ -247,8 +247,8 @@ PPC_FUNC_IMPL(sub_82B6DB20) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhResourceManager_OpenInternal) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResourceManager_OpenInternal) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_OpenInternal);
 
@@ -286,8 +286,8 @@ PPC_FUNC_IMPL(rex_lhResourceManager_OpenInternal) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82426470) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82426470) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82426470);
 
@@ -373,8 +373,8 @@ PPC_FUNC_IMPL(sub_82426470) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82372500) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82372500) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82372500);
 

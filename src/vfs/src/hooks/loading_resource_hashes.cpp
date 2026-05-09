@@ -26,8 +26,8 @@ std::string RefiiBootLocaleBankAliasForRequested(std::string_view requested_key)
   return {};
 }
 
-PPC_FUNC_IMPL(sub_8237AC80) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_8237AC80) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8237AC80);
 
@@ -65,8 +65,8 @@ PPC_FUNC_IMPL(sub_8237AC80) {
   }
 }
 
-PPC_FUNC_IMPL(sub_8237AA98) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_8237AA98) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8237AA98);
 
@@ -122,8 +122,8 @@ PPC_FUNC_IMPL(sub_8237AA98) {
   }
 }
 
-PPC_FUNC_IMPL(sub_822B88A8) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_822B88A8) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_822B88A8);
 
@@ -163,8 +163,8 @@ PPC_FUNC_IMPL(sub_822B88A8) {
 }
 
 #define REFII_LOADING_SCREEN_OWNER_WRAPPER(function_name, trace_name, limit)  \
-  PPC_FUNC_IMPL(function_name) {                                             \
-    PPC_FUNC_PROLOGUE();                                                     \
+  REX_EXTERN(function_name) {                                             \
+    REX_FUNC_PROLOGUE();                                                     \
     REFII_VFS_NATIVE_PASSTHROUGH(function_name);                             \
                                                                               \
     const PPCContext original_ctx = ctx;                                      \
@@ -470,8 +470,8 @@ REFII_LOADING_SCREEN_OWNER_WRAPPER(sub_82360968,
 
 #undef REFII_LOADING_SCREEN_OWNER_WRAPPER
 
-PPC_FUNC_IMPL(sub_8235E5A0) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_8235E5A0) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8235E5A0);
 
@@ -594,8 +594,8 @@ PPC_FUNC_IMPL(sub_8235E5A0) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82361AF8) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82361AF8) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82361AF8);
 
@@ -683,8 +683,8 @@ PPC_FUNC_IMPL(sub_82361AF8) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82180418) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82180418) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82180418);
 
@@ -713,8 +713,8 @@ PPC_FUNC_IMPL(sub_82180418) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82467B08) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82467B08) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82467B08);
 
@@ -917,8 +917,8 @@ PPC_FUNC_IMPL(sub_82467B08) {
   }
 }
 
-PPC_FUNC_IMPL(sub_822C6C68) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_822C6C68) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_822C6C68);
 
@@ -1053,8 +1053,8 @@ PPC_FUNC_IMPL(sub_822C6C68) {
   }
 }
 
-PPC_FUNC_IMPL(sub_823C1658) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_823C1658) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_823C1658);
 
@@ -1282,8 +1282,8 @@ PPC_FUNC_IMPL(sub_823C1658) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82360300) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82360300) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82360300);
 
@@ -1424,8 +1424,8 @@ PPC_FUNC_IMPL(sub_82360300) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhResourceName_ComputeHash) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResourceName_ComputeHash) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceName_ComputeHash);
 
@@ -1483,8 +1483,8 @@ PPC_FUNC_IMPL(rex_lhResourceName_ComputeHash) {
   }
 }
 
-PPC_FUNC_IMPL(rex_lhResourceName_ComputeHashFromName) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(rex_lhResourceName_ComputeHashFromName) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceName_ComputeHashFromName);
 
@@ -1544,8 +1544,8 @@ PPC_FUNC_IMPL(rex_lhResourceName_ComputeHashFromName) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82374728) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82374728) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82374728);
 
@@ -2022,8 +2022,8 @@ PPC_FUNC_IMPL(sub_82374728) {
   }
 }
 
-PPC_FUNC_IMPL(sub_82B54E58) {
-  PPC_FUNC_PROLOGUE();
+REX_EXTERN(sub_82B54E58) {
+  REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B54E58);
 

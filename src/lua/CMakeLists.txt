@@ -300,8 +300,7 @@ target_include_directories(refii_lua
 )
 target_link_libraries(refii_lua
     PUBLIC
-        rex::core
-        rex::system
+        rex::runtime
 )
 set_target_properties(refii_lua PROPERTIES
     CXX_STANDARD 23

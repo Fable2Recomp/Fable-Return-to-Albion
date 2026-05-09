@@ -1,6 +1,17 @@
 #pragma once
 
 #include "../vfs_hooks_private.h"
+#include <rex/ppc/context.h>
+
+#if !defined(PPC_EXTERN_FUNC)
+#if defined(REX_EXTERN)
+#define PPC_EXTERN_FUNC(symbol) REX_EXTERN(symbol)
+#elif defined(REX_FUNC)
+#define PPC_EXTERN_FUNC(symbol) extern "C" REX_FUNC(symbol)
+#else
+#define PPC_EXTERN_FUNC(symbol) extern "C" void symbol([[maybe_unused]] PPCContext& __restrict ctx, uint8_t* base)
+#endif
+#endif
 
 PPC_EXTERN_FUNC(__imp__sub_82B53438);
 PPC_EXTERN_FUNC(__imp__sub_82B504D8);
