@@ -3,6 +3,8 @@
 namespace refii::vfs {
 inline namespace detail {
 
+uint32_t ResolveRefiiPostFrontendLoadingOwnerCandidate(uint8_t* base);
+
 bool TryResolveRefiiLoadingAnimationSequenceHandle(PPCContext& source_ctx,
                                                    uint8_t* base,
                                                    std::string_view source_api,
@@ -153,6 +155,37 @@ bool TryResolveRefiiLoadingAnimationSequenceHandle(PPCContext& source_ctx,
                                            kResolverLr,
                                            kFrontendResolverTableIndex);
   RecordRefiiLoadingSequenceHandle(resolver_result);
+  uint32_t completed_owner_guest = 0;
+  bool loading_owner_marked_complete = false;
+  bool completed_owner_render_retry = false;
+  bool completed_owner_generated_state_released = false;
+  if (RefiiPostVfsChainReadyForLoadingOwnerRelease() &&
+      RefiiPostGameFacePackageHandoffSignalEmitted() &&
+      RefiiPostVideoFrontendChainConsumed()) {
+    completed_owner_guest = ResolveRefiiPostFrontendLoadingOwnerCandidate(base);
+    if (LooksLikeGuestPointer(completed_owner_guest)) {
+      RefiiRememberedLoadingScreenOwner().store(
+          completed_owner_guest, std::memory_order_relaxed);
+      RefiiCompletedLoadingScreenOwner().store(
+          completed_owner_guest, std::memory_order_relaxed);
+      loading_owner_marked_complete = true;
+
+      PPCContext retry_ctx = source_ctx;
+      retry_ctx.lr = 0x82B48B08u;
+      completed_owner_render_retry =
+          TryRunRefiiPostLoadingFrontendRenderRequestNativeFromTrace(
+              retry_ctx, base, "completed_owner_wait_release");
+      if (completed_owner_render_retry) {
+        completed_owner_generated_state_released =
+            TryFinalizeRefiiPostLoadingFrontendGeneratedState(
+                retry_ctx,
+                base,
+                "completed_owner_wait_release",
+                true,
+                true);
+      }
+    }
+  }
   static std::atomic<bool> loading_animation_prime_attempted{false};
   bool loading_animation_primed = false;
   if (!loading_animation_prime_attempted.exchange(true,
@@ -182,7 +215,9 @@ bool TryResolveRefiiLoadingAnimationSequenceHandle(PPCContext& source_ctx,
     REXLOG_INFO("Refii VFS loading sequence handle bootstrap resolved "
                 "source={} handle=0x{:08X} descriptor=0x{:08X} "
                 "ref_object=0x{:08X} table_object=0x{:08X} candidate={} "
-                "provider={} texture_primed={}",
+                "provider={} texture_primed={} owner=0x{:08X} "
+                "owner_marked_complete={} completed_owner_retry={} "
+                "completed_owner_generated_state_released={}",
                 source_api,
                 resolver_result,
                 descriptor_guest,
@@ -190,7 +225,11 @@ bool TryResolveRefiiLoadingAnimationSequenceHandle(PPCContext& source_ctx,
                 table_object,
                 selected_candidate,
                 NormalizeLooseAssetKey(selected_resolution.provider_relative_path),
-                loading_animation_primed ? "true" : "false");
+                loading_animation_primed ? "true" : "false",
+                completed_owner_guest,
+                loading_owner_marked_complete ? "true" : "false",
+                completed_owner_render_retry ? "true" : "false",
+                completed_owner_generated_state_released ? "true" : "false");
   }
   return true;
 }
@@ -465,6 +504,62 @@ bool RefiiLoadingScreenSequenceReady(uint8_t* base,
   return true;
 }
 
+bool RefiiPostVideoInitialLoadingOwnerReleaseReady();
+
+uint32_t ResolveRefiiPostFrontendLoadingOwnerCandidate(uint8_t* base) {
+  uint32_t candidates[6]{};
+  uint32_t count = 0;
+  auto append_candidate = [&](uint32_t candidate) {
+    if (!LooksLikeGuestPointer(candidate)) {
+      return;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      if (candidates[i] == candidate) {
+        return;
+      }
+    }
+    if (count < std::size(candidates)) {
+      candidates[count++] = candidate;
+    }
+  };
+
+  append_candidate(
+      RefiiRememberedLoadingScreenOwner().load(std::memory_order_relaxed));
+  {
+    std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
+    const auto& trace = RefiiPostVideoHandoffTraceState();
+    append_candidate(trace.last_nonidle_render_schedule_owner);
+    append_candidate(trace.last_render_schedule_owner);
+    append_candidate(trace.last_wait_owner);
+  }
+  if (base != nullptr) {
+    constexpr uint32_t kLoadingGlobalBase = 0x83490000u;
+    append_candidate(LoadGuestU32(base, kLoadingGlobalBase + 27320u));
+    append_candidate(LoadGuestU32(base, kLoadingGlobalBase + 27328u));
+  }
+
+  constexpr uint32_t kLoadingGlobalBase = 0x83490000u;
+  const uint32_t primary_owner =
+      base != nullptr ? LoadGuestU32(base, kLoadingGlobalBase + 27320u) : 0;
+  const uint32_t secondary_owner =
+      base != nullptr ? LoadGuestU32(base, kLoadingGlobalBase + 27328u) : 0;
+  const uint32_t sequence_root =
+      base != nullptr ? LoadGuestU32(base, kLoadingGlobalBase + 30144u) : 0;
+  const uint32_t active_table = FindRefiiLoadingScreenActiveResourceTable(base);
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t candidate = candidates[i];
+    const bool native_loading_global =
+        (candidate == primary_owner || candidate == secondary_owner) &&
+        (LooksLikeGuestPointer(sequence_root) ||
+         LooksLikeGuestDataPointer(active_table));
+    if (LooksLikeRefiiLoadingScreenSequenceOwner(base, candidate) ||
+        native_loading_global) {
+      return candidate;
+    }
+  }
+  return 0;
+}
+
 bool TryFinishRefiiLoadingScreenOwnerFromCollapsedPipeline(
     const PPCContext& original_ctx,
     uint8_t* base,
@@ -485,7 +580,14 @@ bool TryFinishRefiiLoadingScreenOwnerFromCollapsedPipeline(
       (source_api == "completed_owner_wait_release" &&
        original_ctx.lr == 0x82B48B08u) ||
       (source_api == "Renderer_BeginScene_PostReady" &&
-       original_ctx.lr == 0x823892F0u);
+       (original_ctx.lr == 0x823892F0u ||
+        original_ctx.lr == 0x82388648u ||
+        original_ctx.lr == 0x82388660u ||
+        original_ctx.lr == 0x8238866Cu ||
+        IsPostVideoGeneratedWaitLr(static_cast<uint32_t>(original_ctx.lr))));
+
+  const bool initial_owner_release_ready =
+      RefiiPostVideoInitialLoadingOwnerReleaseReady();
 
   auto log_skip = [&](std::string_view reason) {
     if (VfsTracingEnabled() ||
@@ -495,6 +597,7 @@ bool TryFinishRefiiLoadingScreenOwnerFromCollapsedPipeline(
                   "lr=0x{:08X} supported={} sequence_ready={} "
                   "sequence_handle=0x{:08X} backend={} videos_ready={} "
                   "gameface_signal={} frontend_consumed={} "
+                  "initial_owner_release={} "
                   "owner_state=[{}] globals=[{}] handoff=[{}] "
                   "main_menu=[{}]",
                   reason,
@@ -510,6 +613,7 @@ bool TryFinishRefiiLoadingScreenOwnerFromCollapsedPipeline(
                   RefiiPostGameFacePackageHandoffSignalEmitted() ? "true"
                                                                  : "false",
                   RefiiPostVideoFrontendChainConsumed() ? "true" : "false",
+                  initial_owner_release_ready ? "true" : "false",
                   FormatRefiiLoadingScreenOwnerState(base, owner_guest),
                   FormatRefiiLoadingScreenSequenceGlobals(base),
                   FormatRefiiPostVideoHandoffTraceForLog(),
@@ -541,11 +645,12 @@ bool TryFinishRefiiLoadingScreenOwnerFromCollapsedPipeline(
     log_skip("startup_videos_not_ready");
     return false;
   }
-  if (!RefiiPostGameFacePackageHandoffSignalEmitted()) {
+  if (!RefiiPostGameFacePackageHandoffSignalEmitted() &&
+      !initial_owner_release_ready) {
     log_skip("gameface_signal_missing");
     return false;
   }
-  if (!RefiiPostVideoFrontendChainConsumed()) {
+  if (!RefiiPostVideoFrontendChainConsumed() && !initial_owner_release_ready) {
     log_skip("frontend_chain_not_consumed");
     return false;
   }
@@ -564,9 +669,60 @@ bool TryFinishRefiiLoadingScreenOwnerFromCollapsedPipeline(
   }
 
   const uint8_t done177_gate_before = LoadGuestU8(base, owner_guest + 177);
+  static thread_local bool finalizing_completed_owner = false;
   if (done177_gate_before != 0 &&
       RefiiCompletedLoadingScreenOwner().load(std::memory_order_relaxed) ==
           owner_guest) {
+    const bool can_finalize_completed_owner =
+        source_api == "Renderer_BeginScene_PostReady" &&
+        !finalizing_completed_owner && RefiiPostGameFacePackageHandoffSignalEmitted() &&
+        RefiiPostVideoFrontendChainConsumed();
+    if (can_finalize_completed_owner) {
+      finalizing_completed_owner = true;
+      PPCContext post_finish_ctx = original_ctx;
+      post_finish_ctx.lr = 0x823892F0u;
+      const bool post_finish_native_run =
+          TryRunRefiiPostLoadingFrontendRenderRequestNativeFromTrace(
+              post_finish_ctx, base, "completed_loading_owner_renderer_reentry");
+      const bool post_finish_generated_state_released =
+          TryFinalizeRefiiPostLoadingFrontendGeneratedState(
+              post_finish_ctx,
+              base,
+              "completed_loading_owner_renderer_reentry",
+              true,
+              true);
+      finalizing_completed_owner = false;
+      RecordRefiiMainMenuBlockerEvent(
+          "loading_owner_already_completed_renderer_finalize",
+          fmt::format("source={} owner=0x{:08X} lr=0x{:08X} "
+                      "post_finish_native_run={} "
+                      "post_finish_generated_state_released={}",
+                      source_api,
+                      owner_guest,
+                      static_cast<uint32_t>(original_ctx.lr),
+                      post_finish_native_run ? "true" : "false",
+                      post_finish_generated_state_released ? "true" : "false"));
+      if (post_finish_native_run || post_finish_generated_state_released) {
+        if (VfsTracingEnabled() ||
+            ShouldLogRepeatedVfsTraceOperation(
+                "LoadingOwnerAlreadyCompletedRendererFinalize", 8)) {
+          REXLOG_INFO("Refii VFS loading owner already completed renderer "
+                      "finalize source={} owner=0x{:08X} lr=0x{:08X} "
+                      "post_finish_native_run={} "
+                      "post_finish_generated_state_released={} globals=[{}] "
+                      "handoff=[{}] main_menu=[{}]",
+                      source_api,
+                      owner_guest,
+                      static_cast<uint32_t>(original_ctx.lr),
+                      post_finish_native_run ? "true" : "false",
+                      post_finish_generated_state_released ? "true" : "false",
+                      FormatRefiiLoadingScreenSequenceGlobals(base),
+                      FormatRefiiPostVideoHandoffTraceForLog(),
+                      FormatRefiiMainMenuBlockerTraceForLog());
+        }
+        return true;
+      }
+    }
     log_skip("already_completed_owner");
     return false;
   }
@@ -708,11 +864,13 @@ bool TryFinishRememberedRefiiLoadingOwnerFromPostFrontendSignal(
     uint8_t* base,
     std::string_view source_api) {
   const uint32_t owner_guest =
-      RefiiRememberedLoadingScreenOwner().load(std::memory_order_relaxed);
+      ResolveRefiiPostFrontendLoadingOwnerCandidate(base);
   if (base == nullptr || !LooksLikeGuestPointer(owner_guest) ||
       !RefiiPostVfsChainReadyForLoadingOwnerRelease()) {
     return false;
   }
+  RefiiRememberedLoadingScreenOwner().store(owner_guest,
+                                            std::memory_order_relaxed);
   if (LoadGuestU8(base, owner_guest + 177) != 0 &&
       RefiiCompletedLoadingScreenOwner().load(std::memory_order_relaxed) ==
           owner_guest) {
@@ -952,6 +1110,18 @@ bool RefiiPostVideoFrontendChainConsumed() {
           (RefiiCompletedPostGameFacePackageMaskLocked(trace) & 0x7u) == 0x7u);
 }
 
+bool RefiiPostVideoInitialLoadingOwnerReleaseReady() {
+  // The first loading-owner release is the handoff that lets the native
+  // frontend/GameFace follow-on work begin. Requiring that follow-on work to
+  // have already signalled creates a circular wait in the Refii VFS path.
+  return RefiiLooseAssetBackendEnabled() &&
+         RefiiStartupVideosReadyForMenuHandoff() &&
+         RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload() &&
+         !RefiiMainMenuTraceNeedsTexturePrime() &&
+         !RefiiPostGameFacePackageHandoffSignalEmitted() &&
+         !RefiiPostVideoFrontendChainConsumed();
+}
+
 bool RefiiPostFrontendConsumerHandoffSignalEmitted() {
   std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
   const auto& trace = RefiiPostVideoHandoffTraceState();
@@ -1005,10 +1175,9 @@ bool RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload() {
 }
 
 bool RefiiCollapsedLoadingSequenceReadyForOwnerRelease() {
-  return RefiiStartupVideosReadyForMenuHandoff() &&
-         RefiiPostGameFacePackageComplete() &&
-         RefiiPostVideoFrontendChainConsumed() &&
-         !RefiiMainMenuTraceNeedsTexturePrime();
+  return (RefiiPostVfsChainReadyForLoadingOwnerRelease() &&
+          !RefiiMainMenuTraceNeedsTexturePrime()) ||
+         RefiiPostVideoInitialLoadingOwnerReleaseReady();
 }
 
 bool IsGeneratedPostVideoRenderReadyPollLr(uint32_t lr) {

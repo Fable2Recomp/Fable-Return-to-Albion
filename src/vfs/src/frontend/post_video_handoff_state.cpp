@@ -8,10 +8,12 @@ bool RefiiMainMenuTraceIsTextureOwnedButNotOpened();
 bool RefiiMainMenuTraceNeedsTexturePrime();
 bool RefiiMainMenuTraceNeedsFrontendHandoff();
 bool RefiiPostVideoFrontendChainConsumed();
+bool RefiiPostVideoInitialLoadingOwnerReleaseReady();
 bool RefiiPostFrontendConsumerHandoffSignalEmitted();
 bool RefiiPostFrontendDeferredHashWakeSignalEmitted();
 bool RefiiPostGameFacePackageHandoffSignalEmitted();
 bool RefiiPostLoadingFrontendFinalHandoffWakeEmitted();
+uint32_t ResolveRefiiPostFrontendLoadingOwnerCandidate(uint8_t* base);
 
 std::string FormatRefiiPostVideoHandoffTraceForLog() {
   std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
@@ -24,12 +26,15 @@ std::string FormatRefiiPostVideoHandoffTraceForLog() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(now - timestamp)
         .count();
   };
-  const bool videos_loaded = RefiiStartupVideoSlotReady(trace.microsoft) &&
+  const bool middleware_required = !trace.middleware.provider.empty();
+  const bool videos_loaded = (!middleware_required ||
+                              RefiiStartupVideoSlotReady(trace.middleware)) &&
+                             RefiiStartupVideoSlotReady(trace.microsoft) &&
                              RefiiStartupVideoSlotReady(trace.lionhead);
   const bool videos_handoff_ready =
       RefiiStartupVideosSettledForPostVideoHandoffLocked(trace, nullptr);
   return fmt::format("boot_ms={} videos_loaded={} videos_handoff_ready={} "
-                     "microsoft=[{}] lionhead=[{}] "
+                     "middleware=[{}] microsoft=[{}] lionhead=[{}] "
                      "last_bik={} object=0x{:08X} stream=0x{:08X} age_ms={} "
                      "last_ui={} lr=0x{:08X} result=0x{:08X} "
                      "args=0x{:08X}/0x{:08X}/0x{:08X} age_ms={} "
@@ -89,6 +94,7 @@ std::string FormatRefiiPostVideoHandoffTraceForLog() {
                      RefiiBootTraceAgeMs(),
                      videos_loaded,
                      videos_handoff_ready,
+                     FormatRefiiStartupVideoSlotTrace(trace.middleware, now),
                      FormatRefiiStartupVideoSlotTrace(trace.microsoft, now),
                      FormatRefiiStartupVideoSlotTrace(trace.lionhead, now),
                      trace.last_bik_provider,
@@ -211,7 +217,8 @@ bool RefiiIsTrackedStartupVideoObject(uint32_t object_guest) {
 
   std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
   const auto& trace = RefiiPostVideoHandoffTraceState();
-  return trace.microsoft.object_guest == object_guest ||
+  return trace.middleware.object_guest == object_guest ||
+         trace.microsoft.object_guest == object_guest ||
          trace.lionhead.object_guest == object_guest;
 }
 
@@ -251,6 +258,110 @@ std::atomic<uint32_t>& RefiiRememberedLoadingScreenOwner();
 std::atomic<uint32_t>& RefiiCompletedLoadingScreenOwner();
 bool RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
 bool RefiiPostVfsChainReadyForLoadingOwnerRelease();
+
+struct RefiiFrontEndAudioLoadingTrace {
+  uint32_t late_bind_count = 0;
+  uint32_t last_lr = 0;
+  bool terminal_bank_seen = false;
+  std::string last_bank;
+  std::chrono::steady_clock::time_point last_bank_at{};
+  std::chrono::steady_clock::time_point terminal_bank_at{};
+};
+
+std::mutex& RefiiFrontEndAudioLoadingTraceMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+RefiiFrontEndAudioLoadingTrace& RefiiFrontEndAudioLoadingTraceState() {
+  static RefiiFrontEndAudioLoadingTrace trace;
+  return trace;
+}
+
+int64_t RefiiAudioTraceAgeMs(
+    std::chrono::steady_clock::time_point timestamp) {
+  if (timestamp.time_since_epoch().count() == 0) {
+    return -1;
+  }
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now() - timestamp)
+      .count();
+}
+
+std::string NormalizeFrontEndAudioBankName(std::string_view bank_name) {
+  std::string normalized;
+  normalized.reserve(bank_name.size());
+  for (const char ch : bank_name) {
+    normalized.push_back(ch == '\\' ? '/' : static_cast<char>(
+                                         std::tolower(
+                                             static_cast<unsigned char>(ch))));
+  }
+  return normalized;
+}
+
+bool FrontEndAudioStringStartsWith(std::string_view value,
+                                   std::string_view prefix) {
+  return value.size() >= prefix.size() &&
+         value.substr(0, prefix.size()) == prefix;
+}
+
+bool FrontEndAudioStringEndsWith(std::string_view value,
+                                 std::string_view suffix) {
+  return value.size() >= suffix.size() &&
+         value.substr(value.size() - suffix.size()) == suffix;
+}
+
+bool IsRefiiFrontEndAudioTerminalBank(std::string_view bank_name) {
+  return bank_name == "audio/bandit_vocalisations.bnk" ||
+         bank_name == "audio\\bandit_vocalisations.bnk";
+}
+
+void RecordRefiiFrontEndAudioBankLateBind(std::string_view bank_name,
+                                          uint32_t lr) {
+  if (bank_name.empty() || !RefiiLooseAssetBackendEnabled()) {
+    return;
+  }
+  const std::string normalized = NormalizeFrontEndAudioBankName(bank_name);
+  if (!FrontEndAudioStringStartsWith(normalized, "audio/") ||
+      !FrontEndAudioStringEndsWith(normalized, ".bnk")) {
+    return;
+  }
+
+  uint32_t count = 0;
+  bool terminal = false;
+  {
+    std::lock_guard<std::mutex> lock(RefiiFrontEndAudioLoadingTraceMutex());
+    auto& trace = RefiiFrontEndAudioLoadingTraceState();
+    trace.last_bank = normalized;
+    trace.last_lr = lr;
+    trace.last_bank_at = std::chrono::steady_clock::now();
+    count = ++trace.late_bind_count;
+    if (IsRefiiFrontEndAudioTerminalBank(normalized)) {
+      trace.terminal_bank_seen = true;
+      trace.terminal_bank_at = trace.last_bank_at;
+      terminal = true;
+    }
+  }
+
+  if (terminal || (VfsTracingEnabled() &&
+                   ShouldLogRepeatedVfsTraceOperation(
+                       "FrontEndAudioBankLateBind", 12))) {
+    RecordRefiiMainMenuBlockerEvent(
+        "front_end_audio_bank_late_bind",
+        fmt::format("bank={} lr=0x{:08X} count={} terminal={}",
+                    normalized,
+                    lr,
+                    count,
+                    terminal ? "true" : "false"));
+    if (VfsTracingEnabled() && terminal) {
+      REXLOG_INFO("Refii VFS front-end audio terminal bank reached "
+                  "bank={} lr=0x{:08X} count={}",
+                  normalized,
+                  lr,
+                  count);
+    }
+  }
+}
 bool RefiiOwnerlessPostVideoVfsChainReadyForAfterHolder();
 std::atomic<uint32_t>& RefiiPostLoadingAfterHolderMode5CleanedHolder();
 bool RefiiOwnerlessPostVideoAfterHolderCleaned();
@@ -317,7 +428,7 @@ bool TrySignalRefiiCompletedNativeVfsWorkerWait(
     bool trace) {
   const bool post_loading_final_handoff_ready =
       RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
-      RefiiPostGameFacePackageComplete() &&
+      RefiiPostGameFacePackageHandoffSignalEmitted() &&
       RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
   if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
       (!RefiiPostVfsChainReadyForLoadingOwnerRelease() &&
@@ -462,7 +573,7 @@ bool TryReleaseRefiiCompletedNativeVfsFinalizerExit(
           ? LoadGuestU8(base, finalizer_worker_guest + 152)
           : 0;
   if (wait_handle_guest == 0 || !LooksLikeGuestPointer(finalizer_worker_guest) ||
-      queued_work != 0 || exit152_before != 0) {
+      queued_work != 0) {
     if (trace || ShouldLogRepeatedVfsTraceOperation(
                      "CompletedNativeVfsFinalizerExitReleaseSkipped", 8)) {
       REXLOG_INFO("Refii VFS completed native VFS finalizer exit release "
@@ -480,7 +591,32 @@ bool TryReleaseRefiiCompletedNativeVfsFinalizerExit(
     return false;
   }
 
-  StoreGuestU8(base, finalizer_worker_guest + 152, 1);
+  if (exit152_before == 0) {
+    StoreGuestU8(base, finalizer_worker_guest + 152, 1);
+  }
+  const uint8_t exit152_after = LoadGuestU8(base, finalizer_worker_guest + 152);
+  const bool signal_already_emitted =
+      RefiiNativeVfsWorkerWaitSignalEmitted().exchange(
+          wait_handle_guest, std::memory_order_relaxed) == wait_handle_guest;
+  if (signal_already_emitted) {
+    if (trace || ShouldLogRepeatedVfsTraceOperation(
+                     "CompletedNativeVfsFinalizerExitAlreadyReleased", 8)) {
+      REXLOG_INFO("Refii VFS completed native VFS finalizer exit already "
+                  "released source={} wait_object=0x{:08X} "
+                  "wait_handle=0x{:08X} worker=0x{:08X} queue=0x{:08X} "
+                  "queued={} exit152=0x{:02X}->0x{:02X}",
+                  source_api,
+                  wait_object_guest,
+                  wait_handle_guest,
+                  finalizer_worker_guest,
+                  finalizer_queue_guest,
+                  queued_work,
+                  exit152_before,
+                  exit152_after);
+    }
+    return false;
+  }
+
   PPCContext signal_ctx = source_ctx;
   signal_ctx.r3.u32 = wait_handle_guest;
   ::__imp__sub_822C9388(signal_ctx, base);
@@ -496,7 +632,7 @@ bool TryReleaseRefiiCompletedNativeVfsFinalizerExit(
                   finalizer_queue_guest,
                   queued_work,
                   exit152_before,
-                  LoadGuestU8(base, finalizer_worker_guest + 152),
+                  exit152_after,
                   signal_ctx.r3.u32));
   if (trace || ShouldLogRepeatedVfsTraceOperation(
                    "CompletedNativeVfsFinalizerExitReleased", 8)) {
@@ -512,7 +648,7 @@ bool TryReleaseRefiiCompletedNativeVfsFinalizerExit(
                 finalizer_queue_guest,
                 queued_work,
                 exit152_before,
-                LoadGuestU8(base, finalizer_worker_guest + 152),
+                exit152_after,
                 signal_ctx.r3.u32,
                 FormatRefiiPostVideoHandoffTraceForLog(),
                 FormatRefiiMainMenuBlockerTraceForLog());
@@ -546,16 +682,10 @@ bool MaybeSignalRefiiPostVideoGeneratedWaitBeforeNative(
   auto looks_like_private_event_handle = [](uint32_t handle) {
     return (handle & 0xFF000000u) == 0xF8000000u;
   };
-  auto usable_generated_event_handle = [&](uint32_t handle) {
-    return handle != 0 &&
-           (looks_like_private_event_handle(handle) ||
-            LooksLikeGuestPointer(handle));
-  };
   {
     std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
     auto& trace = RefiiPostVideoHandoffTraceState();
-    if (trace.post_video_generated_wait_signal_emitted &&
-        trace.post_video_generated_wait_signal_lr == lr) {
+    if (trace.post_video_generated_wait_signal_emitted) {
       return false;
     }
 
@@ -615,9 +745,15 @@ bool MaybeSignalRefiiPostVideoGeneratedWaitBeforeNative(
                  LooksLikeGuestPointer(wait_object_guest - 4)) {
         const uint32_t derived_signal_handle =
             LoadGuestU32(base, wait_object_guest - 4);
-        if (usable_generated_event_handle(derived_signal_handle)) {
+        if (looks_like_private_event_handle(derived_signal_handle)) {
           signal_handle_guest = derived_signal_handle;
         }
+      }
+      if (!looks_like_private_event_handle(signal_handle_guest)) {
+        signal_handle_guest = 0;
+      }
+      if (!looks_like_private_event_handle(wait_signal_handle_guest)) {
+        wait_signal_handle_guest = 0;
       }
       if (signal_handle_guest == 0) {
         signal_handle_guest = wait_signal_handle_guest;
@@ -638,7 +774,10 @@ bool MaybeSignalRefiiPostVideoGeneratedWaitBeforeNative(
   }
 
   if (!should_signal) {
-    if (VfsTracingEnabled() && !skip_reason.empty() &&
+    const bool defer_logging_until_post_startup =
+        skip_reason == "startup_videos_not_settled";
+    if (VfsTracingEnabled() && !defer_logging_until_post_startup &&
+        !RefiiStartupVideosPlaybackCriticalActive() && !skip_reason.empty() &&
         ShouldLogRepeatedVfsTraceOperation(
             "GeneratedEvent_Wait_PreSignalSkipped", 6)) {
       REXLOG_INFO("Refii VFS generated event wait pre-signal skipped "
@@ -885,6 +1024,8 @@ bool TrySignalRefiiCompletedPostGameFacePackageHandoffFromTrace(
   uint32_t package_mask = 0;
   std::string asset;
   const char* signal_source = "completed_package_retry";
+  const bool parsed_texture_ready =
+      RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
   {
     std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
     auto& handoff_trace = RefiiPostVideoHandoffTraceState();
@@ -892,8 +1033,11 @@ bool TrySignalRefiiCompletedPostGameFacePackageHandoffFromTrace(
       return true;
     }
     package_mask = RefiiCompletedPostGameFacePackageMaskLocked(handoff_trace);
+    const bool package_ready_after_frontend_consumer =
+        handoff_trace.frontend_consumer_seen && parsed_texture_ready;
     if ((package_mask & 0x7u) != 0x7u ||
-        !handoff_trace.post_frontend_consumer_request_seen) {
+        (!handoff_trace.post_frontend_consumer_request_seen &&
+         !package_ready_after_frontend_consumer)) {
       return false;
     }
 
@@ -1065,14 +1209,18 @@ bool TryCollapseRefiiCompletedLoadingOwnerWorkerWait(
     uint32_t wait_object_guest,
     uint32_t wait_handle_guest,
     bool trace) {
+  const bool initial_owner_release_ready =
+      RefiiPostVideoInitialLoadingOwnerReleaseReady();
   if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
       original_ctx.lr != 0x82B48B08u || original_ctx.r4.u32 != 0x1F4u ||
       original_ctx.r5.u32 != 1u || wait_object_guest == 0 ||
       !RefiiStartupVideosReadyForMenuHandoff() ||
-      !RefiiPostVideoFrontendChainConsumed()) {
+      (!RefiiPostVideoFrontendChainConsumed() &&
+       !initial_owner_release_ready)) {
     return false;
   }
   if (!RefiiPostGameFacePackageHandoffSignalEmitted() &&
+      !initial_owner_release_ready &&
       !TrySignalRefiiCompletedPostGameFacePackageHandoffFromTrace(
           original_ctx, base, wait_object_guest, wait_handle_guest, trace)) {
     return false;
@@ -1088,6 +1236,46 @@ bool TryCollapseRefiiCompletedLoadingOwnerWorkerWait(
       RefiiCompletedLoadingScreenOwner().load(std::memory_order_relaxed);
   uint32_t finish_repair_owner =
       RefiiRememberedLoadingScreenOwner().load(std::memory_order_relaxed);
+  const uint32_t remembered_finish_repair_owner = finish_repair_owner;
+  if (initial_owner_release_ready &&
+      !LooksLikeRefiiLoadingScreenSequenceOwner(base, finish_repair_owner)) {
+    const uint32_t resolved_owner =
+        ResolveRefiiPostFrontendLoadingOwnerCandidate(base);
+    if (LooksLikeRefiiLoadingScreenSequenceOwner(base, resolved_owner)) {
+      finish_repair_owner = resolved_owner;
+      RefiiRememberedLoadingScreenOwner().store(
+          finish_repair_owner, std::memory_order_relaxed);
+    } else {
+      finish_repair_owner = 0;
+    }
+    if (remembered_finish_repair_owner != 0 &&
+        remembered_finish_repair_owner != finish_repair_owner) {
+      RecordRefiiMainMenuBlockerEvent(
+          "generated_wait_stale_loading_owner_rejected",
+          fmt::format("lr=0x{:08X} wait_object=0x{:08X} "
+                      "remembered=0x{:08X} resolved=0x{:08X} "
+                      "initial_owner_release_ready=true main_menu=[{}]",
+                      static_cast<uint32_t>(original_ctx.lr),
+                      wait_object_guest,
+                      remembered_finish_repair_owner,
+                      finish_repair_owner,
+                      FormatRefiiMainMenuBlockerTraceForLog()));
+      if (trace || ShouldLogRepeatedVfsTraceOperation(
+                       "GeneratedWaitStaleLoadingOwnerRejected", 8)) {
+        REXLOG_INFO("Refii VFS generated wait stale loading owner rejected "
+                    "lr=0x{:08X} wait_object=0x{:08X} "
+                    "remembered=0x{:08X} resolved=0x{:08X} "
+                    "state=[{}] handoff=[{}] main_menu=[{}]",
+                    static_cast<uint32_t>(original_ctx.lr),
+                    wait_object_guest,
+                    remembered_finish_repair_owner,
+                    finish_repair_owner,
+                    FormatGeneratedEventWaitState(base, wait_object_guest),
+                    FormatRefiiPostVideoHandoffTraceForLog(),
+                    FormatRefiiMainMenuBlockerTraceForLog());
+      }
+    }
+  }
   const bool ownerless_after_holder_cleaned =
       RefiiOwnerlessPostVideoAfterHolderCleaned();
   const bool ownerless_vfs_chain_ready =
@@ -1104,12 +1292,15 @@ bool TryCollapseRefiiCompletedLoadingOwnerWorkerWait(
       post_gameface_primary_ready != 0;
   const bool post_loading_final_handoff_ready =
       RefiiPostLoadingFrontendFinalHandoffWakeEmitted();
-  if (!LooksLikeGuestPointer(finish_repair_owner) ||
-      LoadGuestU32(base, finish_repair_owner + 388) == 0) {
-    finish_repair_owner = completed_owner;
+  if (!LooksLikeRefiiLoadingScreenSequenceOwner(base, finish_repair_owner)) {
+    finish_repair_owner =
+        LooksLikeRefiiLoadingScreenSequenceOwner(base, completed_owner)
+            ? completed_owner
+            : 0;
   }
   if (completed_owner == 0 && !LooksLikeGuestPointer(finish_repair_owner) &&
-      !ownerless_after_holder_cleaned && !ownerless_vfs_chain_ready) {
+      !ownerless_after_holder_cleaned && !ownerless_vfs_chain_ready &&
+      !initial_owner_release_ready) {
     return false;
   }
   const uint32_t release_key =
@@ -1143,7 +1334,15 @@ bool TryCollapseRefiiCompletedLoadingOwnerWorkerWait(
       ownerless_vfs_chain_ready &&
       RefiiPostGameFacePackageHandoffSignalEmitted() &&
       RefiiPostVideoFrontendChainConsumed();
-  if (release_count > 1 && !allow_ownerless_vfs_retry &&
+  const bool allow_initial_ownerless_release =
+      initial_owner_release_ready && completed_owner == 0 &&
+      !LooksLikeGuestPointer(finish_repair_owner) &&
+      !ownerless_after_holder_cleaned &&
+      RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
+  const bool allow_initial_ownerless_release_burst =
+      allow_initial_ownerless_release && release_count <= 6;
+  if (release_count > 1 && !allow_initial_ownerless_release_burst &&
+      !allow_ownerless_vfs_retry &&
       !allow_completed_owner_vfs_release) {
     if (trace || ShouldLogRepeatedVfsTraceOperation(
                      "GeneratedEventWaitCompletedOwnerNativePaced", 8)) {
@@ -1152,6 +1351,7 @@ bool TryCollapseRefiiCompletedLoadingOwnerWorkerWait(
                   "timeout=0x{:08X} completed_owner=0x{:08X} "
                   "worker_owner=0x{:08X} release_count={} "
                   "shutdown172=0x{:02X} post_gameface_primary=0x{:08X}/{} "
+                  "initial_owner_release={} initial_owner_burst={} "
                   "final_handoff_ready={} "
                   "completed_owner_release={} "
                   "state=[{}] handoff=[{}] main_menu=[{}]",
@@ -1165,6 +1365,8 @@ bool TryCollapseRefiiCompletedLoadingOwnerWorkerWait(
                   shutdown172_before,
                   post_gameface_primary_owner,
                   post_gameface_primary_ready,
+                  allow_initial_ownerless_release ? "true" : "false",
+                  allow_initial_ownerless_release_burst ? "true" : "false",
                   post_loading_final_handoff_ready ? "true" : "false",
                   allow_completed_owner_vfs_release ? "true" : "false",
                   FormatGeneratedEventWaitState(base, wait_object_guest),
@@ -1242,7 +1444,8 @@ bool TryCollapseRefiiCompletedLoadingOwnerWorkerWait(
       post_loading_native_run &&
       RefiiStartupVideosReadyForMenuHandoff() &&
       RefiiPostGameFacePackageHandoffSignalEmitted() &&
-      RefiiPostGameFacePackageComplete() &&
+      (RefiiPostGameFacePackageComplete() ||
+       RefiiPostGameFacePackageNativeFallbackReady()) &&
       RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
   if (post_loading_finalizer_exit_ready_before_handoff &&
       LooksLikeGuestPointer(finalizer_worker_guest) &&
@@ -1480,7 +1683,8 @@ bool TryCollapseRefiiCompletedLoadingOwnerWorkerWait(
   }
   const bool post_loading_finalizer_exit_ready =
       RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
-      RefiiPostGameFacePackageComplete() &&
+      (RefiiPostGameFacePackageComplete() ||
+       RefiiPostGameFacePackageNativeFallbackReady()) &&
       RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
   if (!finalizer_shutdown_released && post_loading_finalizer_exit_ready &&
       LooksLikeGuestPointer(finalizer_worker_guest) &&
@@ -1647,6 +1851,119 @@ bool TryCollapseRefiiCompletedLoadingOwnerWorkerWait(
                           "completed_owner_nonblocking",
                           "Opened",
                           "native_worker_continue");
+  return true;
+}
+
+bool TryCollapseRefiiCompletedFrontEndAudioSyncWait(
+    PPCContext& ctx,
+    const PPCContext& original_ctx,
+    uint8_t* base,
+    uint32_t wait_object_guest,
+    uint32_t wait_handle_guest,
+    bool trace) {
+  const uint32_t lr = static_cast<uint32_t>(original_ctx.lr);
+  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+      lr != 0x82A3ECB0u || original_ctx.r4.u32 != 1000u ||
+      original_ctx.r5.u32 != 0u || wait_object_guest == 0 ||
+      !RefiiStartupVideosSettledForMenuHandoff() ||
+      !RefiiPostVideoFrontendChainConsumed() ||
+      !RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload()) {
+    return false;
+  }
+
+  std::string last_bank;
+  uint32_t late_bind_count = 0;
+  uint32_t last_lr = 0;
+  bool terminal_bank_seen = false;
+  int64_t terminal_age_ms = -1;
+  {
+    std::lock_guard<std::mutex> lock(RefiiFrontEndAudioLoadingTraceMutex());
+    const auto& audio_trace = RefiiFrontEndAudioLoadingTraceState();
+    last_bank = audio_trace.last_bank;
+    late_bind_count = audio_trace.late_bind_count;
+    last_lr = audio_trace.last_lr;
+    terminal_bank_seen = audio_trace.terminal_bank_seen;
+    terminal_age_ms = RefiiAudioTraceAgeMs(audio_trace.terminal_bank_at);
+  }
+
+  // Generated sub_82319268 marks the audio-loading thread complete after
+  // sub_823191F8 finishes the flagged audio-bank list. With Refii synthetic
+  // banks the file work is complete by the final late-bind, but the generated
+  // wait can remain asleep on the host thread object. Let the native thread
+  // have one normal polling interval after the terminal bank before mirroring
+  // the completed wait shape that rex_lhRenderer_SyncThread expects.
+  constexpr int64_t kTerminalSettleMs = 1200;
+  if (!terminal_bank_seen || terminal_age_ms < kTerminalSettleMs) {
+    return false;
+  }
+
+  static std::mutex collapse_mutex;
+  static std::unordered_set<uint32_t> collapsed_waits;
+  bool first_for_wait = false;
+  {
+    std::lock_guard<std::mutex> lock(collapse_mutex);
+    first_for_wait = collapsed_waits.insert(wait_object_guest).second;
+  }
+
+  uint32_t signal_result = 0;
+  if (wait_handle_guest != 0) {
+    PPCContext signal_ctx = original_ctx;
+    signal_ctx.r3.u32 = wait_handle_guest;
+    ::__imp__sub_822C9388(signal_ctx, base);
+    signal_result = signal_ctx.r3.u32;
+  }
+
+  ctx.r3.u32 = 2;
+  RecordRefiiPostVideoWaitResult(lr,
+                                 ctx.r3.u32,
+                                 0,
+                                 wait_object_guest,
+                                 wait_handle_guest);
+  RecordRefiiMainMenuBlockerEvent(
+      "front_end_audio_sync_wait_completed",
+      fmt::format("lr=0x{:08X} wait_object=0x{:08X} "
+                  "wait_handle=0x{:08X} result=0x{:08X} "
+                  "signal_result=0x{:08X} bank={} bank_lr=0x{:08X} "
+                  "count={} terminal_age_ms={} first_for_wait={}",
+                  lr,
+                  wait_object_guest,
+                  wait_handle_guest,
+                  ctx.r3.u32,
+                  signal_result,
+                  last_bank,
+                  last_lr,
+                  late_bind_count,
+                  terminal_age_ms,
+                  first_for_wait ? "true" : "false"));
+  if (trace || first_for_wait ||
+      ShouldLogRepeatedVfsTraceOperation("FrontEndAudioSyncWaitCompleted", 8)) {
+    REXLOG_INFO("Refii VFS front-end audio sync wait completed "
+                "lr=0x{:08X} wait_object=0x{:08X} wait_handle=0x{:08X} "
+                "result=0x{:08X} signal_result=0x{:08X} bank={} "
+                "bank_lr=0x{:08X} count={} terminal_age_ms={} "
+                "handoff=[{}] main_menu=[{}]",
+                lr,
+                wait_object_guest,
+                wait_handle_guest,
+                ctx.r3.u32,
+                signal_result,
+                last_bank,
+                last_lr,
+                late_bind_count,
+                terminal_age_ms,
+                FormatRefiiPostVideoHandoffTraceForLog(),
+                FormatRefiiMainMenuBlockerTraceForLog());
+  }
+
+  LogRefiiVfsChainVerdict("frontend_audio",
+                          lr,
+                          last_bank,
+                          "",
+                          last_bank,
+                          "native_generated_event_wait",
+                          "front_end_audio_sync_wait_completed",
+                          "Opened",
+                          "frontend_post_audio_handoff");
   return true;
 }
 
@@ -1867,9 +2184,16 @@ bool TryCollapseRefiiCompletedNativeVfsWorkerWait(PPCContext& ctx,
   const uint8_t exit_flag_before =
       LooksLikeGuestPointer(worker_guest) ? LoadGuestU8(base, worker_guest + 152)
                                           : 0;
+  if (!RefiiPostGameFacePackageHandoffSignalEmitted() &&
+      RefiiPostVideoFrontendChainConsumed() &&
+      RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload()) {
+    PPCContext signal_ctx = original_ctx;
+    TrySignalRefiiCompletedPostGameFacePackageHandoffFromTrace(
+        signal_ctx, base, wait_object_guest, wait_handle_guest, trace);
+  }
   const bool post_loading_final_handoff_ready =
       RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
-      RefiiPostGameFacePackageComplete() &&
+      RefiiPostGameFacePackageHandoffSignalEmitted() &&
       RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
   const bool vfs_chain_ready =
       RefiiPostVfsChainReadyForLoadingOwnerRelease() ||
@@ -1910,8 +2234,14 @@ bool TryCollapseRefiiCompletedNativeVfsWorkerWait(PPCContext& ctx,
                                                             : "false",
                     RefiiPostVideoVfsHandoffTraceActive() ? "true"
                                                           : "false"));
-    if (trace || ShouldLogRepeatedVfsTraceOperation(
-                     "NativeVfsWorkerWaitPolling", 8)) {
+    const bool startup_playback_critical =
+        RefiiStartupVideosPlaybackCriticalActive();
+    const bool log_worker_poll =
+        !startup_playback_critical &&
+        (trace ||
+         (RefiiStartupVideosReadyForMenuHandoff() &&
+          ShouldLogRepeatedVfsTraceOperation("NativeVfsWorkerWaitPolling", 8)));
+    if (log_worker_poll) {
       REXLOG_INFO("Refii VFS native worker wait polling "
                   "lr=0x{:08X} wait_object=0x{:08X} wait_handle=0x{:08X} "
                   "timeout=0x{:08X} result=0x{:08X} worker=0x{:08X} "
@@ -1939,6 +2269,7 @@ bool TryCollapseRefiiCompletedNativeVfsWorkerWait(PPCContext& ctx,
   // not accidentally skip queued native VFS completions.
   const bool post_gameface_assets_ready =
       RefiiPostGameFacePackageComplete() ||
+      RefiiPostGameFacePackageNativeFallbackReady() ||
       RefiiPostVfsChainReadyForLoadingOwnerRelease() ||
       RefiiOwnerlessPostVideoVfsChainReadyForAfterHolder();
   const bool finalizer_release_ready =
@@ -2254,6 +2585,7 @@ bool ShouldTraceStartupVideoLoopProbe(std::string_view operation,
                                       uint32_t lr,
                                       int interval = 24) {
   if (!kTraceFrontendHandoffDiagnostics || !VfsTracingEnabled() ||
+      !VfsVerboseIoTracingEnabled() ||
       RefiiStartupVideosPlaybackCriticalActive() ||
       (!RefiiStartupVideosReadyForMenuHandoff() &&
        !RefiiMainMenuTraceIsHashOnly() &&

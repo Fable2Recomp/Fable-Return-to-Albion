@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -44,14 +45,6 @@ struct CompressedChunk {
     std::vector<std::uint8_t> bytes;
 };
 
-struct ExtractionContext {
-    std::filesystem::path output_root;
-    std::filesystem::path conflict_report_path;
-    bool extract_payloads = true;
-    bool extract_nested_banks = true;
-    BankExtractionSummary* summary = nullptr;
-};
-
 struct VfsDatabaseRow {
     std::uint32_t hash = 0;
     std::string alias;
@@ -68,6 +61,37 @@ struct VfsLuaRecord {
     std::string alias;
     std::string candidate;
     std::string kind;
+};
+
+struct VfsDatabaseBuildState {
+    std::filesystem::path unpacked_root;
+    std::filesystem::path database_path;
+    std::filesystem::path runtime_index_root;
+    bool write_legacy_database = false;
+    std::vector<VfsDatabaseRow> rows;
+    std::vector<VfsBankRecord> bank_records;
+    std::vector<VfsLuaRecord> lua_records;
+    std::unordered_set<std::string> row_keys;
+    std::unordered_set<std::string> bank_record_keys;
+    std::unordered_set<std::string> lua_record_keys;
+    std::unordered_map<std::string, std::vector<std::string>> basename_candidates;
+    std::unordered_set<std::string> manifest_covered_candidates;
+    std::vector<std::string> file_candidates;
+    std::vector<std::filesystem::path> manifest_paths;
+    std::vector<std::filesystem::path> filehash_paths;
+    std::unordered_set<std::string> extracted_bank_roots;
+    std::size_t indexed_files = 0;
+    std::size_t indexed_manifests = 0;
+    std::size_t indexed_filehash_tables = 0;
+};
+
+struct ExtractionContext {
+    std::filesystem::path output_root;
+    std::filesystem::path conflict_report_path;
+    bool extract_payloads = true;
+    bool extract_nested_banks = true;
+    BankExtractionSummary* summary = nullptr;
+    VfsDatabaseBuildState* vfs_database = nullptr;
 };
 
 struct PlannedBankEntry {
@@ -793,12 +817,24 @@ bool IsLuaSourceRoot(std::string_view normalized) {
     return StartsWith(normalized, "luasource/") || StartsWith(normalized, "luasource");
 }
 
+bool IsGameFaceBinaryAssetKey(std::string_view normalized) {
+    return EndsWith(normalized, ".bgf") || EndsWith(normalized, ".bsg") ||
+           EndsWith(normalized, ".fac");
+}
+
+bool IsLuaSourceGameFaceCarrier(std::string_view normalized) {
+    const std::string key = NormalizeVfsKey(normalized);
+    return StartsWith(key, "luasource/guiscripts/art/gui/gameface/") &&
+           IsGameFaceBinaryAssetKey(key);
+}
+
 bool ShouldIndexVfsCandidate(std::string_view value) {
     const std::string normalized = NormalizeVfsKey(value);
     if (normalized.empty() || normalized == "_refii_vfs.tsv") {
         return false;
     }
-    return !IsLuaSourceRoot(normalized) && !StartsWith(normalized, ".baseline/") &&
+    return (IsLuaSourceGameFaceCarrier(normalized) || !IsLuaSourceRoot(normalized)) &&
+           !StartsWith(normalized, ".baseline/") &&
            !StartsWith(normalized, ".cache/") && !StartsWith(normalized, "_disasm/") &&
            !StartsWith(normalized, "refii_vfs/") &&
            !StartsWith(normalized, "_case_conflicts/") &&
@@ -1027,7 +1063,8 @@ bool IsDirectLooseVfsFile(std::string_view candidate) {
     }
     const std::string_view extension = std::string_view(normalized).substr(dot);
     return extension == ".bik" || extension == ".bft" || extension == ".babel" ||
-           extension == ".adb" || extension == ".gdb" || extension == ".ini";
+           extension == ".adb" || extension == ".gdb" || extension == ".ini" ||
+           extension == ".bgf" || extension == ".bsg" || extension == ".fac";
 }
 
 bool IsDirectGlobalsMirrorFile(const std::filesystem::path& source_path) {
@@ -1051,6 +1088,37 @@ bool IsDirectGlobalsMirrorFile(const std::filesystem::path& source_path) {
     return IsDirectLooseVfsFile("globals/" + filename);
 }
 
+void RemoveEmptyDirectoriesUnder(const std::filesystem::path& root) {
+    std::vector<std::filesystem::path> directories;
+    std::error_code iterator_error;
+    constexpr auto options = std::filesystem::directory_options::skip_permission_denied;
+    for (std::filesystem::recursive_directory_iterator it(root, options, iterator_error), end;
+         it != end; it.increment(iterator_error)) {
+        if (iterator_error) {
+            iterator_error.clear();
+            continue;
+        }
+
+        std::error_code status_error;
+        if (it->is_directory(status_error)) {
+            directories.push_back(it->path());
+        }
+        status_error.clear();
+    }
+
+    std::sort(directories.begin(), directories.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.generic_string().size() > rhs.generic_string().size();
+    });
+
+    for (const auto& directory : directories) {
+        std::error_code remove_error;
+        std::filesystem::remove(directory, remove_error);
+    }
+
+    std::error_code remove_root_error;
+    std::filesystem::remove(root, remove_root_error);
+}
+
 bool PublishDirectGlobalsFilesForVfsIndex(const std::filesystem::path& unpacked_root,
                                           std::string* error) {
     const std::filesystem::path source_root = unpacked_root / "Globals";
@@ -1072,7 +1140,8 @@ bool PublishDirectGlobalsFilesForVfsIndex(const std::filesystem::path& unpacked_
     }
 
     std::error_code iterator_error;
-    for (std::filesystem::directory_iterator it(source_root, iterator_error), end;
+    constexpr auto options = std::filesystem::directory_options::skip_permission_denied;
+    for (std::filesystem::recursive_directory_iterator it(source_root, options, iterator_error), end;
          it != end; it.increment(iterator_error)) {
         if (iterator_error) {
             iterator_error.clear();
@@ -1086,8 +1155,21 @@ bool PublishDirectGlobalsFilesForVfsIndex(const std::filesystem::path& unpacked_
             continue;
         }
 
+        const std::filesystem::path relative_path =
+            LowercaseRelativePath(it->path().lexically_relative(source_root).lexically_normal());
         const std::filesystem::path destination_path =
-            destination_root / it->path().filename();
+            destination_root / relative_path;
+        std::error_code create_parent_error;
+        std::filesystem::create_directories(destination_path.parent_path(), create_parent_error);
+        if (create_parent_error) {
+            if (error != nullptr) {
+                *error = "failed to create canonical globals file directory: " +
+                         destination_path.parent_path().string() + ": " +
+                         create_parent_error.message();
+            }
+            return false;
+        }
+
         std::error_code copy_error;
         std::filesystem::copy_file(it->path(),
                                    destination_path,
@@ -1095,14 +1177,26 @@ bool PublishDirectGlobalsFilesForVfsIndex(const std::filesystem::path& unpacked_
                                    copy_error);
         if (copy_error) {
             if (error != nullptr) {
-                *error = "failed to mirror Globals file to lowercase globals: " +
+                *error = "failed to canonicalize Globals file to lowercase globals: " +
                          it->path().string() + " -> " + destination_path.string() +
                          ": " + copy_error.message();
             }
             return false;
         }
+
+        std::error_code remove_error;
+        std::filesystem::remove(it->path(), remove_error);
+        if (remove_error) {
+            if (error != nullptr) {
+                *error = "failed to remove duplicate uppercase Globals file after "
+                         "canonicalization: " +
+                         it->path().string() + ": " + remove_error.message();
+            }
+            return false;
+        }
     }
 
+    RemoveEmptyDirectoriesUnder(source_root);
     return true;
 }
 
@@ -1349,7 +1443,14 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
     }
     bank_output << "# refii_vfs_banks_v1\n";
     bank_output << "# alias\tcandidate\tmanifest_root\n";
-    for (const VfsBankRecord& record : bank_records) {
+    std::vector<VfsBankRecord> sorted_bank_records = bank_records;
+    std::sort(sorted_bank_records.begin(),
+              sorted_bank_records.end(),
+              [](const VfsBankRecord& lhs, const VfsBankRecord& rhs) {
+                  return std::tie(lhs.alias, lhs.candidate, lhs.manifest_root) <
+                         std::tie(rhs.alias, rhs.candidate, rhs.manifest_root);
+              });
+    for (const VfsBankRecord& record : sorted_bank_records) {
         bank_output << record.alias << '\t' << record.candidate << '\t'
                     << record.manifest_root << '\n';
     }
@@ -1364,7 +1465,14 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
     }
     lua_output << "# refii_vfs_lua_v1\n";
     lua_output << "# alias\tcandidate\tkind\n";
-    for (const VfsLuaRecord& record : lua_records) {
+    std::vector<VfsLuaRecord> sorted_lua_records = lua_records;
+    std::sort(sorted_lua_records.begin(),
+              sorted_lua_records.end(),
+              [](const VfsLuaRecord& lhs, const VfsLuaRecord& rhs) {
+                  return std::tie(lhs.alias, lhs.candidate, lhs.kind) <
+                         std::tie(rhs.alias, rhs.candidate, rhs.kind);
+              });
+    for (const VfsLuaRecord& record : sorted_lua_records) {
         lua_output << record.alias << '\t' << record.candidate << '\t'
                    << record.kind << '\n';
     }
@@ -1465,6 +1573,86 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
         summary->runtime_alias_entries = alias_entry_count;
         summary->runtime_hash_entries = hash_entry_count;
         summary->runtime_directories = sorted_directories.size();
+        summary->runtime_candidates = candidates.size();
+    }
+    return true;
+}
+
+bool IsAuditableVfsFileCandidate(std::string_view candidate) {
+    const std::string normalized = NormalizeVfsKey(candidate);
+    if (!ShouldIndexVfsCandidate(normalized)) {
+        return false;
+    }
+    const std::string filename =
+        NormalizeVfsKey(std::filesystem::path(normalized).filename().generic_string());
+    return filename != "filehash.csv";
+}
+
+std::vector<std::string> CollectUnindexedVfsFileCandidates(
+    const std::vector<std::string>& file_candidates,
+    const std::vector<VfsDatabaseRow>& rows) {
+    std::unordered_set<std::string> indexed_candidates;
+    indexed_candidates.reserve(rows.size());
+    for (const VfsDatabaseRow& row : rows) {
+        const std::string candidate = NormalizeVfsKey(row.candidate);
+        if (!candidate.empty()) {
+            indexed_candidates.insert(candidate);
+        }
+    }
+
+    std::vector<std::string> missing;
+    std::unordered_set<std::string> seen_missing;
+    seen_missing.reserve(file_candidates.size());
+    for (const std::string& candidate : file_candidates) {
+        const std::string normalized = NormalizeVfsKey(candidate);
+        if (!IsAuditableVfsFileCandidate(normalized)) {
+            continue;
+        }
+        if (indexed_candidates.find(normalized) != indexed_candidates.end()) {
+            continue;
+        }
+        if (seen_missing.insert(normalized).second) {
+            missing.push_back(normalized);
+        }
+    }
+    std::sort(missing.begin(), missing.end());
+    return missing;
+}
+
+bool WriteUnindexedVfsCandidateAudit(
+    const std::filesystem::path& runtime_index_root,
+    const std::vector<std::string>& missing_candidates,
+    std::string* error) {
+    const std::filesystem::path audit_path =
+        runtime_index_root / "unindexed_candidates.tsv";
+    if (missing_candidates.empty()) {
+        std::error_code remove_error;
+        std::filesystem::remove(audit_path, remove_error);
+        return true;
+    }
+
+    try {
+        std::filesystem::create_directories(runtime_index_root);
+    } catch (const std::exception& exception) {
+        if (error != nullptr) {
+            *error = exception.what();
+        }
+        return false;
+    }
+
+    std::ofstream audit(audit_path, std::ios::trunc);
+    if (!audit) {
+        if (error != nullptr) {
+            *error = "failed to open VFS unindexed candidate audit for writing: " +
+                     audit_path.string();
+        }
+        return false;
+    }
+
+    audit << "# refii_vfs_unindexed_candidates_v1\n";
+    audit << "# candidate\n";
+    for (const std::string& candidate : missing_candidates) {
+        audit << candidate << '\n';
     }
     return true;
 }
@@ -1485,6 +1673,117 @@ void AddVfsBasenameCandidate(
     AddUniqueString(&(*basename_candidates)[basename], normalized);
 }
 
+bool IsPathInsideIndexedBankRoot(const VfsDatabaseBuildState& state,
+                                 std::string_view normalized_path) {
+    const std::string normalized = NormalizeVfsKey(normalized_path);
+    for (const std::string& root : state.extracted_bank_roots) {
+        if (normalized == root || StartsWith(normalized, root + "/")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void AddVfsSyntheticBankRows(VfsDatabaseBuildState* state,
+                             std::string_view normalized_root) {
+    if (state == nullptr) {
+        return;
+    }
+
+    const std::string root = NormalizeVfsKey(normalized_root);
+    if (root.empty() || IsLuaSourceRoot(root) || StartsWith(root, ".baseline/") ||
+        StartsWith(root, ".cache/") || StartsWith(root, "_disasm/")) {
+        return;
+    }
+
+    const std::string synthetic_bank_candidate = root + ".bnk";
+    if (!ShouldIndexVfsCandidate(synthetic_bank_candidate)) {
+        return;
+    }
+
+    AddVfsDatabasePathAliases(
+        &state->rows, &state->row_keys, synthetic_bank_candidate, synthetic_bank_candidate);
+    AddVfsBankRecord(&state->bank_records,
+                     &state->bank_record_keys,
+                     synthetic_bank_candidate,
+                     synthetic_bank_candidate,
+                     root);
+    if (root == "globals/1024mip0_textures") {
+        AddVfsBankRecord(&state->bank_records,
+                         &state->bank_record_keys,
+                         "globals/1024mip0_texture_headers.bnk",
+                         synthetic_bank_candidate,
+                         root);
+    }
+
+    constexpr std::string_view kLanguagePrefix = "language/";
+    if (!StartsWith(root, kLanguagePrefix)) {
+        return;
+    }
+
+    const std::string_view language_tail =
+        std::string_view(root).substr(kLanguagePrefix.size());
+    const size_t locale_end = language_tail.find('/');
+    if (locale_end == std::string_view::npos || locale_end + 1 >= language_tail.size()) {
+        return;
+    }
+
+    const std::string alias =
+        std::string(kLanguagePrefix) + std::string(language_tail.substr(locale_end + 1)) +
+        ".bnk";
+    AddVfsDatabaseAlias(&state->rows, &state->row_keys, alias, synthetic_bank_candidate);
+    std::string backslash_alias = alias;
+    std::replace(backslash_alias.begin(), backslash_alias.end(), '/', '\\');
+    AddVfsDatabaseAlias(&state->rows, &state->row_keys, backslash_alias, synthetic_bank_candidate);
+    AddVfsBankRecord(&state->bank_records,
+                     &state->bank_record_keys,
+                     alias,
+                     synthetic_bank_candidate,
+                     root);
+    AddVfsBankRecord(&state->bank_records,
+                     &state->bank_record_keys,
+                     backslash_alias,
+                     synthetic_bank_candidate,
+                     root);
+}
+
+void AddVfsExtractedCandidate(VfsDatabaseBuildState* state,
+                              const std::filesystem::path& candidate_path,
+                              std::string_view entry_path,
+                              bool manifest_covered) {
+    if (state == nullptr) {
+        return;
+    }
+
+    const std::string candidate = NormalizeVfsKey(candidate_path.generic_string());
+    if (!ShouldIndexVfsCandidate(candidate)) {
+        return;
+    }
+
+    if (manifest_covered) {
+        state->manifest_covered_candidates.insert(candidate);
+    }
+    AddVfsDatabasePathAliases(&state->rows, &state->row_keys, candidate, entry_path);
+    AddVfsBasenameCandidate(&state->basename_candidates, candidate);
+    if (!IsLuaSourceRoot(candidate) && EndsWith(candidate, ".lua")) {
+        AddVfsLuaRecord(&state->lua_records,
+                        &state->lua_record_keys,
+                        candidate,
+                        candidate,
+                        "override");
+    }
+
+    const std::string filename =
+        NormalizeVfsKey(std::filesystem::path(candidate).filename().generic_string());
+    if (filename == "filehash.csv") {
+        state->filehash_paths.push_back(state->unpacked_root / candidate_path);
+    }
+    if (IsDirectLooseVfsFile(candidate)) {
+        AddVfsDatabasePathAliases(&state->rows, &state->row_keys, candidate, candidate);
+    }
+    ++state->indexed_files;
+}
+
 std::vector<std::string_view> SplitTabs(std::string_view line) {
     std::vector<std::string_view> columns;
     size_t start = 0;
@@ -1499,6 +1798,317 @@ std::vector<std::string_view> SplitTabs(std::string_view line) {
         start = tab + 1;
     }
     return columns;
+}
+
+void CollectSupplementalVfsFile(VfsDatabaseBuildState* state,
+                                const std::filesystem::path& absolute_path,
+                                const std::filesystem::path& relative_path) {
+    if (state == nullptr) {
+        return;
+    }
+
+    const std::string relative_key = relative_path.generic_string();
+    const std::string normalized_key = NormalizeVfsKey(relative_key);
+    if (normalized_key.empty()) {
+        return;
+    }
+
+    if (IsLuaSourceRoot(normalized_key)) {
+        if (EndsWith(normalized_key, ".lua")) {
+            const std::string_view prefix =
+                StartsWith(normalized_key, "luasource/")
+                    ? std::string_view("luasource/")
+                    : std::string_view("luasource");
+            AddVfsLuaRecord(&state->lua_records,
+                            &state->lua_record_keys,
+                            normalized_key,
+                            normalized_key,
+                            "carrier");
+            AddVfsLuaRecord(&state->lua_records,
+                            &state->lua_record_keys,
+                            std::string_view(normalized_key).substr(prefix.size()),
+                            normalized_key,
+                            "carrier");
+        } else if (IsLuaSourceGameFaceCarrier(normalized_key)) {
+            constexpr std::string_view kLuaSourcePrefix = "luasource/";
+            constexpr std::string_view kGuiScriptsPrefix = "luasource/guiscripts/";
+            AddVfsDatabasePathAliases(&state->rows,
+                                      &state->row_keys,
+                                      normalized_key,
+                                      std::string_view(normalized_key)
+                                          .substr(kLuaSourcePrefix.size()));
+            AddVfsDatabasePathAliases(&state->rows,
+                                      &state->row_keys,
+                                      normalized_key,
+                                      std::string_view(normalized_key)
+                                          .substr(kGuiScriptsPrefix.size()));
+            AddVfsBasenameCandidate(&state->basename_candidates, normalized_key);
+            ++state->indexed_files;
+        }
+        return;
+    }
+
+    if (StartsWith(normalized_key, ".baseline/") ||
+        StartsWith(normalized_key, ".cache/") ||
+        StartsWith(normalized_key, "refii_vfs/") ||
+        StartsWith(normalized_key, "_disasm/")) {
+        return;
+    }
+
+    const std::string filename = NormalizeVfsKey(absolute_path.filename().generic_string());
+    if (filename == "_manifest.tsv") {
+        state->manifest_paths.push_back(absolute_path);
+        return;
+    }
+    if (filename == "filehash.csv") {
+        state->filehash_paths.push_back(absolute_path);
+    }
+
+    if (EndsWith(normalized_key, ".lua")) {
+        AddVfsLuaRecord(&state->lua_records,
+                        &state->lua_record_keys,
+                        normalized_key,
+                        normalized_key,
+                        "override");
+    }
+
+    state->file_candidates.push_back(normalized_key);
+    AddVfsBasenameCandidate(&state->basename_candidates, normalized_key);
+    ++state->indexed_files;
+}
+
+bool CollectSupplementalVfsFiles(VfsDatabaseBuildState* state, std::string* error) {
+    if (state == nullptr) {
+        return true;
+    }
+
+    std::error_code iterator_error;
+    std::error_code status_error;
+    constexpr auto iterator_options =
+        std::filesystem::directory_options::skip_permission_denied;
+    for (std::filesystem::recursive_directory_iterator it(
+             state->unpacked_root, iterator_options, iterator_error),
+         end;
+         it != end; it.increment(iterator_error)) {
+        if (iterator_error) {
+            iterator_error.clear();
+            continue;
+        }
+
+        const std::filesystem::path relative_path =
+            it->path().lexically_relative(state->unpacked_root).lexically_normal();
+        const std::string normalized_key = NormalizeVfsKey(relative_path.generic_string());
+        if (it->is_directory(status_error)) {
+            if (IsPathInsideIndexedBankRoot(*state, normalized_key)) {
+                it.disable_recursion_pending();
+            }
+            status_error.clear();
+            continue;
+        }
+        if (!it->is_regular_file(status_error)) {
+            status_error.clear();
+            continue;
+        }
+        if (IsPathInsideIndexedBankRoot(*state, normalized_key)) {
+            continue;
+        }
+
+        CollectSupplementalVfsFile(state, it->path(), relative_path);
+    }
+
+    for (const std::filesystem::path& manifest_path : state->manifest_paths) {
+        std::ifstream manifest(manifest_path);
+        if (!manifest) {
+            continue;
+        }
+
+        const std::filesystem::path manifest_root =
+            manifest_path.parent_path().lexically_relative(state->unpacked_root);
+        const std::string manifest_root_key = manifest_root.generic_string();
+        const std::string normalized_root = NormalizeVfsKey(manifest_root_key);
+        if (normalized_root.empty() || IsLuaSourceRoot(normalized_root) ||
+            StartsWith(normalized_root, ".baseline/") ||
+            StartsWith(normalized_root, ".cache/") ||
+            StartsWith(normalized_root, "_disasm/")) {
+            continue;
+        }
+
+        AddVfsSyntheticBankRows(state, normalized_root);
+
+        std::string line;
+        std::getline(manifest, line);
+        while (std::getline(manifest, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            if (line.empty()) {
+                continue;
+            }
+
+            const std::vector<std::string_view> columns = SplitTabs(line);
+            if (columns.empty() || columns[0].empty()) {
+                continue;
+            }
+
+            const std::string entry_path = std::string(columns[0]);
+            const std::filesystem::path rooted_candidate =
+                manifest_root / NormalizeRelativePath(entry_path);
+            AddVfsExtractedCandidate(state, rooted_candidate, entry_path, true);
+        }
+        ++state->indexed_manifests;
+    }
+
+    for (const std::string& candidate : state->file_candidates) {
+        if (state->manifest_covered_candidates.find(candidate) !=
+                state->manifest_covered_candidates.end() &&
+            !IsDirectLooseVfsFile(candidate)) {
+            continue;
+        }
+        AddVfsDatabasePathAliases(&state->rows, &state->row_keys, candidate, candidate);
+    }
+
+    return true;
+}
+
+void ApplyFilehashTablesToVfsState(VfsDatabaseBuildState* state) {
+    if (state == nullptr) {
+        return;
+    }
+
+    for (const std::filesystem::path& filehash_path : state->filehash_paths) {
+        std::ifstream csv(filehash_path);
+        if (!csv) {
+            continue;
+        }
+
+        const std::filesystem::path csv_relative =
+            filehash_path.lexically_relative(state->unpacked_root);
+        const std::string csv_parent =
+            NormalizeVfsKey(csv_relative.parent_path().generic_string());
+        const std::string csv_prefix =
+            csv_parent.empty() ? std::string() : csv_parent + "/";
+
+        std::string line;
+        while (std::getline(csv, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            const size_t comma = line.find(',');
+            if (comma == std::string::npos || comma == 0 || comma + 1 >= line.size()) {
+                continue;
+            }
+
+            std::uint64_t parsed_hash = 0;
+            try {
+                parsed_hash = std::stoull(line.substr(0, comma), nullptr, 10);
+            } catch (const std::exception&) {
+                continue;
+            }
+            if (parsed_hash == 0 || parsed_hash > std::numeric_limits<std::uint32_t>::max()) {
+                continue;
+            }
+
+            const std::string basename = NormalizeVfsKey(line.substr(comma + 1));
+            const auto match = state->basename_candidates.find(basename);
+            if (match == state->basename_candidates.end()) {
+                continue;
+            }
+
+            bool added_scoped_candidate = false;
+            for (const std::string& candidate : match->second) {
+                if (!csv_prefix.empty() && !StartsWith(candidate, csv_prefix)) {
+                    continue;
+                }
+                AddVfsDatabaseExplicitHash(&state->rows,
+                                           &state->row_keys,
+                                           static_cast<std::uint32_t>(parsed_hash),
+                                           basename,
+                                           candidate);
+                added_scoped_candidate = true;
+            }
+            if (added_scoped_candidate) {
+                continue;
+            }
+            for (const std::string& candidate : match->second) {
+                AddVfsDatabaseExplicitHash(&state->rows,
+                                           &state->row_keys,
+                                           static_cast<std::uint32_t>(parsed_hash),
+                                           basename,
+                                           candidate);
+            }
+        }
+        ++state->indexed_filehash_tables;
+    }
+}
+
+bool WriteVfsDatabaseState(VfsDatabaseBuildState* state,
+                           VfsDatabaseBuildSummary* summary,
+                           std::string* error) {
+    if (state == nullptr) {
+        return false;
+    }
+
+    ApplyFilehashTablesToVfsState(state);
+
+    VfsDatabaseBuildSummary local_summary;
+    VfsDatabaseBuildSummary* const active_summary =
+        summary != nullptr ? summary : &local_summary;
+    active_summary->database_path = state->database_path;
+    active_summary->runtime_index_root = state->runtime_index_root;
+    active_summary->entries = state->rows.size();
+    active_summary->indexed_files = state->indexed_files;
+    active_summary->indexed_manifests = state->indexed_manifests;
+    active_summary->indexed_filehash_tables = state->indexed_filehash_tables;
+    const std::vector<std::string> unindexed_candidates =
+        CollectUnindexedVfsFileCandidates(state->file_candidates, state->rows);
+    active_summary->unindexed_files = unindexed_candidates.size();
+
+    if (state->write_legacy_database) {
+        try {
+            std::filesystem::create_directories(state->database_path.parent_path());
+        } catch (const std::exception& exception) {
+            if (error != nullptr) {
+                *error = exception.what();
+            }
+            return false;
+        }
+
+        std::ofstream database(state->database_path, std::ios::trunc);
+        if (!database) {
+            if (error != nullptr) {
+                *error = "failed to open VFS database for writing: " +
+                         state->database_path.string();
+            }
+            return false;
+        }
+
+        database << "# refii_vfs_database_v2\n";
+        database << "# hash_hex\talias\tcandidate\n";
+        for (const VfsDatabaseRow& row : state->rows) {
+            const bool alias_matches_candidate = row.alias == row.candidate;
+            database << std::hex << std::setw(8) << std::setfill('0') << row.hash
+                     << std::dec << '\t';
+            if (!alias_matches_candidate) {
+                database << row.alias;
+            }
+            database << '\t' << row.candidate << '\n';
+        }
+    } else {
+        std::error_code remove_error;
+        std::filesystem::remove(state->unpacked_root / "_refii_vfs.tsv", remove_error);
+    }
+
+    if (!WriteRuntimeVfsIndex(state->runtime_index_root,
+                              state->rows,
+                              state->bank_records,
+                              state->lua_records,
+                              active_summary,
+                              error)) {
+        return false;
+    }
+
+    return WriteUnindexedVfsCandidateAudit(
+        state->runtime_index_root, unindexed_candidates, error);
 }
 
 bool WriteManifest(const std::filesystem::path& bank_root,
@@ -1970,6 +2580,27 @@ bool ExtractOneBank(const std::filesystem::path& bank_path,
     if (!WriteManifest(bank_root, table, planned_entries, error)) {
         return false;
     }
+    if (context != nullptr && context->vfs_database != nullptr) {
+        const std::filesystem::path manifest_root_path =
+            bank_root.lexically_relative(context->vfs_database->unpacked_root).lexically_normal();
+        const std::string manifest_root = NormalizeVfsKey(manifest_root_path.generic_string());
+        if (!manifest_root.empty()) {
+            context->vfs_database->extracted_bank_roots.insert(manifest_root);
+            AddVfsSyntheticBankRows(context->vfs_database, manifest_root);
+            for (const PlannedBankEntry& planned_entry : planned_entries) {
+                if (planned_entry.skip_duplicate) {
+                    continue;
+                }
+                const std::filesystem::path candidate_path =
+                    (manifest_root_path / planned_entry.relative_path).lexically_normal();
+                AddVfsExtractedCandidate(context->vfs_database,
+                                         candidate_path,
+                                         planned_entry.relative_path.generic_string(),
+                                         true);
+            }
+            ++context->vfs_database->indexed_manifests;
+        }
+    }
 
     for (const PlannedBankEntry& planned_entry : planned_entries) {
         if (planned_entry.skip_duplicate) {
@@ -1983,6 +2614,10 @@ bool ExtractOneBank(const std::filesystem::path& bank_path,
         }
         const BankEntry& entry = table.entries[planned_entry.entry_index];
         const std::filesystem::path& relative_path = planned_entry.relative_path;
+        const std::filesystem::path& host_relative_path =
+            planned_entry.host_relative_path.empty()
+                ? planned_entry.relative_path
+                : planned_entry.host_relative_path;
 
         const std::uint64_t data_offset = EntryDataOffset(table, entry);
         const std::uint64_t stored_size = entry.stored_size;
@@ -1991,7 +2626,7 @@ bool ExtractOneBank(const std::filesystem::path& bank_path,
             continue;
         }
 
-        const std::filesystem::path output_path = bank_root / relative_path;
+        const std::filesystem::path output_path = bank_root / host_relative_path;
         if (entry.is_compressed) {
             if (!ExtractCompressedEntry(file, data_offset, entry, output_path, error)) {
                 if (error != nullptr && !error->empty()) {
@@ -2161,6 +2796,21 @@ bool BuildVfsDatabase(const VfsDatabaseBuildOptions& options,
                                 std::string_view(normalized_key).substr(prefix.size()),
                                 normalized_key,
                                 "carrier");
+            } else if (IsLuaSourceGameFaceCarrier(normalized_key)) {
+                constexpr std::string_view kLuaSourcePrefix = "luasource/";
+                constexpr std::string_view kGuiScriptsPrefix = "luasource/guiscripts/";
+                AddVfsDatabasePathAliases(&rows,
+                                          &row_keys,
+                                          normalized_key,
+                                          std::string_view(normalized_key)
+                                              .substr(kLuaSourcePrefix.size()));
+                AddVfsDatabasePathAliases(&rows,
+                                          &row_keys,
+                                          normalized_key,
+                                          std::string_view(normalized_key)
+                                              .substr(kGuiScriptsPrefix.size()));
+                AddVfsBasenameCandidate(&basename_candidates, normalized_key);
+                ++active_summary->indexed_files;
             }
             continue;
         }
@@ -2357,6 +3007,10 @@ bool BuildVfsDatabase(const VfsDatabaseBuildOptions& options,
         ++active_summary->indexed_filehash_tables;
     }
 
+    const std::vector<std::string> unindexed_candidates =
+        CollectUnindexedVfsFileCandidates(file_candidates, rows);
+    active_summary->unindexed_files = unindexed_candidates.size();
+
     active_summary->entries = rows.size();
     if (write_legacy_database) {
         try {
@@ -2402,7 +3056,8 @@ bool BuildVfsDatabase(const VfsDatabaseBuildOptions& options,
         return false;
     }
 
-    return true;
+    return WriteUnindexedVfsCandidateAudit(
+        active_summary->runtime_index_root, unindexed_candidates, error);
 }
 
 bool ExtractBanks(const BankExtractionOptions& options,
@@ -2458,6 +3113,13 @@ bool ExtractBanks(const BankExtractionOptions& options,
             }
             return false;
         }
+    }
+
+    VfsDatabaseBuildState database_state;
+    if (options.build_vfs_database) {
+        database_state.unpacked_root = active_summary->output_root;
+        database_state.runtime_index_root = active_summary->output_root / "refii_vfs";
+        database_state.write_legacy_database = false;
     }
 
     const std::size_t total_banks = options.bank_relative_paths.size();
@@ -2526,6 +3188,7 @@ bool ExtractBanks(const BankExtractionOptions& options,
         context.extract_payloads = options.extract_payloads;
         context.extract_nested_banks = options.extract_nested_banks;
         context.summary = active_summary;
+        context.vfs_database = options.build_vfs_database ? &database_state : nullptr;
         if (!ExtractOneBank(bank_path, bank_output_root, &context, error)) {
             return false;
         }
@@ -2537,13 +3200,18 @@ bool ExtractBanks(const BankExtractionOptions& options,
                      "building_vfs_database",
                      total_banks,
                      total_banks);
-        VfsDatabaseBuildOptions database_options;
-        database_options.unpacked_root = active_summary->output_root;
         VfsDatabaseBuildSummary database_summary;
-        if (!BuildVfsDatabase(database_options, &database_summary, error)) {
+        if (!PublishDirectGlobalsFilesForVfsIndex(active_summary->output_root, error)) {
+            return false;
+        }
+        if (!CollectSupplementalVfsFiles(&database_state, error)) {
+            return false;
+        }
+        if (!WriteVfsDatabaseState(&database_state, &database_summary, error)) {
             return false;
         }
         active_summary->vfs_database_entries = database_summary.entries;
+        active_summary->vfs_unindexed_files = database_summary.unindexed_files;
     }
     return true;
 }

@@ -19,8 +19,10 @@ std::string FormatGuestObjectVTableSlots(uint8_t* base,
 bool IsBikLooseStreamTraceAsset(const LooseStreamRecord& record) {
   const std::string provider = NormalizeLooseAssetKey(record.provider_name);
   const std::string path = NormalizeLooseAssetKey(record.path);
-  return provider.find("art/videos/microsoft_logo.bik") != std::string::npos ||
+  return provider.find("art/videos/middlewarelogos.bik") != std::string::npos ||
+         provider.find("art/videos/microsoft_logo.bik") != std::string::npos ||
          provider.find("art/videos/lionhead_logo.bik") != std::string::npos ||
+         path.find("art/videos/middlewarelogos.bik") != std::string::npos ||
          path.find("art/videos/microsoft_logo.bik") != std::string::npos ||
          path.find("art/videos/lionhead_logo.bik") != std::string::npos;
 }
@@ -78,6 +80,9 @@ bool ShouldTraceBikPpcShape(uint8_t* base,
   (void)native_limit;
   if (!(kTraceBikCallbackDiagnostics || kTraceBikConsumerHandoffDiagnostics) ||
       !VfsTracingEnabled()) {
+    return false;
+  }
+  if (!VfsVerboseIoTracingEnabled()) {
     return false;
   }
   if (RefiiStartupVideosPlaybackCriticalActive()) {
@@ -228,6 +233,9 @@ RefiiStartupVideoItemTrace* SelectStartupVideoTraceSlot(
     RefiiPostVideoHandoffTrace& trace,
     std::string_view provider) {
   const std::string normalized = NormalizeLooseAssetKey(provider);
+  if (normalized.find("middlewarelogos.bik") != std::string::npos) {
+    return &trace.middleware;
+  }
   if (normalized.find("microsoft_logo.bik") != std::string::npos) {
     return &trace.microsoft;
   }
@@ -239,8 +247,10 @@ RefiiStartupVideoItemTrace* SelectStartupVideoTraceSlot(
 
 bool IsStartupBikAssetName(std::string_view name) {
   const std::string normalized = NormalizeLooseAssetKey(name);
-  return normalized.find("art/videos/microsoft_logo.bik") != std::string::npos ||
+  return normalized.find("art/videos/middlewarelogos.bik") != std::string::npos ||
+         normalized.find("art/videos/microsoft_logo.bik") != std::string::npos ||
          normalized.find("art/videos/lionhead_logo.bik") != std::string::npos ||
+         normalized.find("middlewarelogos.bik") != std::string::npos ||
          normalized.find("microsoft_logo.bik") != std::string::npos ||
          normalized.find("lionhead_logo.bik") != std::string::npos;
 }
@@ -256,6 +266,10 @@ RefiiStartupVideoItemTrace* SelectStartupVideoTraceSlotByStreamLocked(
   (void)base;
   if (stream_guest == 0) {
     return nullptr;
+  }
+  if (trace.middleware.source_stream_guest == stream_guest ||
+      trace.middleware.wrapped_stream_guest == stream_guest) {
+    return &trace.middleware;
   }
   if (trace.microsoft.source_stream_guest == stream_guest ||
       trace.microsoft.wrapped_stream_guest == stream_guest) {
@@ -274,6 +288,9 @@ RefiiStartupVideoItemTrace* SelectStartupVideoTraceSlotByObjectOrStreamLocked(
     uint32_t object_guest,
     uint32_t stream_guest) {
   if (object_guest != 0) {
+    if (trace.middleware.object_guest == object_guest) {
+      return &trace.middleware;
+    }
     if (trace.microsoft.object_guest == object_guest) {
       return &trace.microsoft;
     }
@@ -804,8 +821,6 @@ bool TryRepairRefiiStartupBikBufferedPosition(uint8_t* base,
 
   StoreGuestU32(base, out_guest + 0, 0);
   StoreGuestU32(base, out_guest + 4, 0);
-  StoreGuestU32(base, stream_guest + 12, 0);
-  StoreGuestU32(base, stream_guest + 16, 0);
   *repaired_low = 0;
   *repaired_high = 0;
 
@@ -838,6 +853,47 @@ bool TryRepairRefiiStartupBikBufferedPosition(uint8_t* base,
                             "BIK_finalizer_or_startup_update");
   }
 
+  return true;
+}
+
+bool TryGetRefiiStartupBikCompletedReadBuffer(uint8_t* base,
+                                              uint32_t stream_guest,
+                                              uint32_t* buffer_guest,
+                                              uint32_t* bytes_read) {
+  if (base == nullptr || stream_guest == 0 || buffer_guest == nullptr ||
+      bytes_read == nullptr) {
+    return false;
+  }
+
+  LooseStreamRecord record;
+  if (!GetBikLooseStreamRecord(base, stream_guest, &record)) {
+    return false;
+  }
+
+  uint32_t request_guest = 0;
+  {
+    std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
+    auto& trace = RefiiPostVideoHandoffTraceState();
+    RefiiStartupVideoItemTrace* slot =
+        SelectStartupVideoTraceSlotByStreamLocked(trace, base, stream_guest);
+    if (slot == nullptr) {
+      slot = SelectStartupVideoTraceSlot(trace, record.provider_name);
+    }
+    if (slot == nullptr || !slot->read_complete ||
+        slot->last_read_request == 0) {
+      return false;
+    }
+    request_guest = slot->last_read_request;
+  }
+
+  const auto request = FindRefiiReadRequestRecord(request_guest);
+  if (!request || !request->completed || request->buffer_guest == 0 ||
+      request->bytes_read == 0) {
+    return false;
+  }
+
+  *buffer_guest = request->buffer_guest;
+  *bytes_read = request->bytes_read;
   return true;
 }
 
@@ -877,13 +933,29 @@ void RecordRefiiStartupVideoFinalizer(uint8_t* base,
   std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
   auto& trace = RefiiPostVideoHandoffTraceState();
   RefiiStartupVideoItemTrace* slot = nullptr;
-  if (trace.microsoft.object_guest == object_guest) {
+  if (trace.middleware.object_guest == object_guest) {
+    slot = &trace.middleware;
+  } else if (trace.microsoft.object_guest == object_guest) {
     slot = &trace.microsoft;
   } else if (trace.lionhead.object_guest == object_guest) {
     slot = &trace.lionhead;
   }
   if (slot == nullptr) {
     return;
+  }
+  const uint32_t stream_after =
+      base != nullptr && object_guest != 0
+          ? LoadGuestU32(base, object_guest + 8)
+          : 0;
+  if (slot->object_guest == object_guest && slot->object_stream_attached_seen) {
+    slot->last_object_stream_before = slot->last_object_stream_after;
+    slot->last_object_stream_after = stream_after;
+    if (stream_after == 0) {
+      slot->object_stream_cleared_seen = true;
+    }
+  } else if (stream_after != 0) {
+    slot->last_object_stream_after = stream_after;
+    slot->object_stream_attached_seen = true;
   }
   slot->finalizer_seen = true;
   slot->finalizer_synthetic = false;
@@ -996,23 +1068,25 @@ void RecordRefiiStartupVideoObjectHandoff(uint8_t* base,
     return;
   }
 
-  REXLOG_INFO("Refii VFS BIK consumer handoff verdict provider={} method={} "
-              "lr=0x{:08X} object=0x{:08X} stream_before=0x{:08X} "
-              "stream_after=0x{:08X} result=0x{:08X} requested={} "
-              "object_state=[{}] stream_before_shape=[{}] "
-              "stream_after_shape=[{}] next={}",
-              provider,
-              method,
-              lr,
-              object_guest,
-              stream_before,
-              stream_after,
-              result,
-              requested_name.empty() ? "unknown" : requested_name,
-              FormatBikObjectVirtualProbe(base, object_guest),
-              FormatBikPpcStreamSummary(base, stream_before),
-              FormatBikBufferedNativeShape(base, stream_after),
-              next);
+  if (VfsVerboseIoTracingEnabled()) {
+    REXLOG_INFO("Refii VFS BIK consumer handoff verdict provider={} method={} "
+                "lr=0x{:08X} object=0x{:08X} stream_before=0x{:08X} "
+                "stream_after=0x{:08X} result=0x{:08X} requested={} "
+                "object_state=[{}] stream_before_shape=[{}] "
+                "stream_after_shape=[{}] next={}",
+                provider,
+                method,
+                lr,
+                object_guest,
+                stream_before,
+                stream_after,
+                result,
+                requested_name.empty() ? "unknown" : requested_name,
+                FormatBikObjectVirtualProbe(base, object_guest),
+                FormatBikPpcStreamSummary(base, stream_before),
+                FormatBikBufferedNativeShape(base, stream_after),
+                next);
+  }
   LogRefiiVfsChainVerdict("native_shaped_stream",
                           lr,
                           provider,
@@ -1048,35 +1122,28 @@ void MaybeLogStartupLuaGetCachedShapeVerdict(uint8_t* base,
     }
   }
 
-  uint64_t read_calls = 0;
-  uint64_t read_bytes = 0;
-  uint64_t size = 0;
-  uint64_t position = 0;
   std::filesystem::path path;
   if (const auto record = FindRefiiHostStreamRecord(stream_guest)) {
     std::lock_guard<std::mutex> lock(record->mutex);
-    read_calls = record->read_calls;
-    read_bytes = record->read_bytes;
-    size = record->size;
-    position = record->position;
     path = record->path;
+    if (VfsVerboseIoTracingEnabled()) {
+      REXLOG_INFO("Refii VFS startup Lua GetCached shape verdict name={} "
+                  "lr=0x{:08X} stream=0x{:08X} native_shape_repaired={} "
+                  "reason={} size={} position={} read_calls={} read_bytes={} "
+                  "host={} stream_shape=[{}] next=lua_read_or_close",
+                  normalized,
+                  lr,
+                  stream_guest,
+                  native_shape_repaired,
+                  reason.empty() ? "none" : reason,
+                  record->size,
+                  record->position,
+                  record->read_calls,
+                  record->read_bytes,
+                  path.string(),
+                  FormatBikPpcStreamSummary(base, stream_guest));
+    }
   }
-
-  REXLOG_INFO("Refii VFS startup Lua GetCached shape verdict name={} "
-              "lr=0x{:08X} stream=0x{:08X} native_shape_repaired={} "
-              "reason={} size={} position={} read_calls={} read_bytes={} "
-              "host={} stream_shape=[{}] next=lua_read_or_close",
-              normalized,
-              lr,
-              stream_guest,
-              native_shape_repaired,
-              reason.empty() ? "none" : reason,
-              size,
-              position,
-              read_calls,
-              read_bytes,
-              path.string(),
-              FormatBikPpcStreamSummary(base, stream_guest));
   LogRefiiVfsChainVerdict("lua",
                           lr,
                           normalized,
@@ -1092,7 +1159,8 @@ void MaybeLogStartupLuaGetCachedShapeVerdict(uint8_t* base,
 void MaybeLogStartupLuaStreamCloseVerdict(uint32_t stream_guest,
                                           const RefiiHostStreamRecord* record,
                                           size_t active_after) {
-  if (!VfsTracingEnabled() || record == nullptr) {
+  if (!VfsTracingEnabled() || !VfsVerboseIoTracingEnabled() ||
+      record == nullptr) {
     return;
   }
   const std::string normalized_path = NormalizeLooseAssetKey(record->path.string());

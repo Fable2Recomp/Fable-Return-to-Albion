@@ -567,7 +567,7 @@ std::pair<uint32_t, uint32_t> EnsureRefiiResourceWrapperVTables(
   g_refii_resource_wrapper_vtable = primary;
   g_refii_resource_wrapper_interface_vtable = interface;
 
-  if (VfsTracingEnabled()) {
+  if (VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("Refii resource wrapper private vtables primary=0x{:08X} "
                 "interface=0x{:08X} slots=[dtor=0x{:08X} status=0x{:08X} "
                 "wait=0x{:08X} bytes=0x{:08X} size=0x{:08X} slot36=0x{:08X}]",
@@ -819,37 +819,82 @@ std::string ReadGuestWideStringObject(uint8_t* base,
     return {};
   }
 
+  auto read_wide = [&](uint32_t data_guest, uint32_t length) -> std::string {
+    if (data_guest == 0 || length == 0 || length > max_chars ||
+        length > 0x100000) {
+      return {};
+    }
+
+    std::string value;
+    value.reserve(length);
+    for (uint32_t index = 0; index < length; ++index) {
+      const uint16_t code_unit = LoadGuestU16(
+          base, data_guest + static_cast<uint32_t>(index * 2));
+      if (code_unit == 0) {
+        break;
+      }
+      if (code_unit > 0x7F) {
+        return {};
+      }
+      const char ch = static_cast<char>(code_unit);
+      if (!IsReadableAssetChar(ch)) {
+        return {};
+      }
+      value.push_back(ch);
+    }
+    return value;
+  };
+
+  auto read_wide_cstr = [&](uint32_t data_guest) -> std::string {
+    if (data_guest == 0) {
+      return {};
+    }
+
+    std::string value;
+    value.reserve(std::min<size_t>(max_chars, 256));
+    for (size_t index = 0; index < max_chars; ++index) {
+      const uint16_t code_unit = LoadGuestU16(
+          base, data_guest + static_cast<uint32_t>(index * 2));
+      if (code_unit == 0) {
+        break;
+      }
+      if (code_unit > 0x7F) {
+        return {};
+      }
+      const char ch = static_cast<char>(code_unit);
+      if (!IsReadableAssetChar(ch)) {
+        return {};
+      }
+      value.push_back(ch);
+    }
+    return value;
+  };
+
   const uint32_t ref_string_guest = LoadGuestU32(base, object_guest);
   if (ref_string_guest >= 0x10000 && ref_string_guest < 0x90000000) {
     const uint32_t data_guest = LoadGuestU32(base, ref_string_guest);
     const uint32_t length = LoadGuestU32(base, ref_string_guest + 4);
-    if (data_guest != 0 && length != 0 && length <= max_chars &&
-        length <= 0x100000) {
-      std::string value;
-      value.reserve(length);
-      for (uint32_t index = 0; index < length; ++index) {
-        const uint16_t code_unit = LoadGuestU16(
-            base, data_guest + static_cast<uint32_t>(index * 2));
-        if (code_unit == 0) {
-          break;
-        }
-        if (code_unit > 0x7F) {
-          return {};
-        }
-        const char ch = static_cast<char>(code_unit);
-        if (!IsReadableAssetChar(ch)) {
-          return {};
-        }
-        value.push_back(ch);
-      }
+    std::string value = read_wide(data_guest, length);
+    if (!value.empty()) {
       return value;
     }
+
+    value = read_wide_cstr(ref_string_guest);
+    if (!value.empty()) {
+      return value;
+    }
+  }
+
+  std::string value =
+      read_wide(LoadGuestU32(base, object_guest), LoadGuestU32(base, object_guest + 4));
+  if (!value.empty()) {
+    return value;
   }
 
   const uint32_t length = LoadGuestU32(base, object_guest + 20);
   const uint32_t capacity = LoadGuestU32(base, object_guest + 24);
   if (length == 0 || length > max_chars || capacity > 0x100000) {
-    return {};
+    return read_wide_cstr(object_guest);
   }
 
   const uint32_t data_guest =
@@ -858,25 +903,7 @@ std::string ReadGuestWideStringObject(uint8_t* base,
     return {};
   }
 
-  std::string value;
-  value.reserve(length);
-  for (uint32_t index = 0; index < length; ++index) {
-    const uint16_t code_unit =
-        LoadGuestU16(base, data_guest + static_cast<uint32_t>(index * 2));
-    if (code_unit == 0) {
-      break;
-    }
-    if (code_unit > 0x7F) {
-      return {};
-    }
-    const char ch = static_cast<char>(code_unit);
-    if (!IsReadableAssetChar(ch)) {
-      return {};
-    }
-    value.push_back(ch);
-  }
-
-  return value;
+  return read_wide(data_guest, length);
 }
 
 std::string ReadGuestAsciiStringObject(uint8_t* base,

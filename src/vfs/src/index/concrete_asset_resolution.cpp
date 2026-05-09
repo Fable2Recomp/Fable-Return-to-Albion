@@ -86,6 +86,70 @@ bool IsKnownFullResourceTextureCandidate(std::string_view candidate) {
          normalized.find("/1024mip0_textures/") != std::string::npos;
 }
 
+void AddUniqueCandidate(std::vector<std::string>* candidates,
+                        std::string candidate) {
+  if (candidates == nullptr || candidate.empty() ||
+      std::find(candidates->begin(), candidates->end(), candidate) !=
+          candidates->end()) {
+    return;
+  }
+  candidates->push_back(std::move(candidate));
+}
+
+std::optional<std::string> ReplaceFirst(std::string value,
+                                        std::string_view from,
+                                        std::string_view to) {
+  const size_t position = value.find(from);
+  if (position == std::string::npos) {
+    return std::nullopt;
+  }
+  value.replace(position, from.size(), to);
+  return value;
+}
+
+std::vector<std::string> BuildExtractedTextureLayoutRepairCandidates(
+    std::string_view candidate) {
+  const std::string normalized = NormalizeLooseAssetKey(candidate);
+  std::vector<std::string> repaired;
+  if (normalized.empty() || !EndsWith(normalized, ".tex")) {
+    return repaired;
+  }
+
+  auto add_texture_bank_layouts = [&](std::string logical_path) {
+    logical_path = NormalizeLooseAssetKey(logical_path);
+    if (logical_path.empty()) {
+      return;
+    }
+    AddUniqueCandidate(&repaired, logical_path);
+    if (StartsWith(logical_path, "art/fx/")) {
+      AddUniqueCandidate(&repaired,
+                         "globals/globals_texture_headers/" + logical_path);
+      AddUniqueCandidate(&repaired,
+                         "globals/globals_textures/" + logical_path);
+    } else if (StartsWith(logical_path, "art/gui/")) {
+      AddUniqueCandidate(&repaired,
+                         "art/gui/gui_texture_headers/" + logical_path);
+      AddUniqueCandidate(&repaired, "art/gui/gui_textures/" + logical_path);
+      AddUniqueCandidate(&repaired, "globals/1024mip0_textures/" + logical_path);
+    }
+  };
+
+  if (const auto pfx_header =
+          ReplaceFirst(normalized, "pfx_texture_headers/", "pfx_textures/")) {
+    add_texture_bank_layouts(*pfx_header);
+  }
+  if (const auto header_dir =
+          ReplaceFirst(normalized, "/texture_headers/", "/textures/")) {
+    add_texture_bank_layouts(*header_dir);
+  }
+  if (const auto header_root =
+          ReplaceFirst(normalized, "_texture_headers/", "_textures/")) {
+    add_texture_bank_layouts(*header_root);
+  }
+
+  return repaired;
+}
+
 std::optional<std::string> DerivePairedTextureHeaderCandidate(
     std::string_view candidate) {
   std::string normalized = NormalizeLooseAssetKey(candidate);
@@ -290,19 +354,43 @@ RefiiVfsDatabaseCandidateResolutionCacheEntry ResolveVfsDatabaseCandidateHostPat
   resolved.candidate = candidate_key;
   resolved.provider_relative_path = candidate_key;
 
-  const std::filesystem::path direct_path = loose_root / candidate_key;
-  if (IsRegularHostFile(direct_path)) {
-    resolved.found = true;
-    resolved.host_path = direct_path.lexically_normal();
-    resolved.repair_source = "direct";
-  } else if (!ResolveBankRootedVfsDatabaseCandidate(
-                 loose_root, candidate_key, &resolved)) {
+  std::vector<std::string> candidates;
+  AddUniqueCandidate(&candidates, candidate_key);
+  for (std::string repaired :
+       BuildExtractedTextureLayoutRepairCandidates(candidate_key)) {
+    AddUniqueCandidate(&candidates, std::move(repaired));
+  }
+
+  for (const std::string& candidate : candidates) {
+    const std::filesystem::path direct_path = loose_root / candidate;
+    if (IsRegularHostFile(direct_path)) {
+      resolved.found = true;
+      resolved.candidate = candidate;
+      resolved.provider_relative_path = candidate;
+      resolved.host_path = direct_path.lexically_normal();
+      resolved.repair_source =
+          candidate == candidate_key ? "direct" : "extracted_texture_layout";
+      break;
+    }
+    if (ResolveBankRootedVfsDatabaseCandidate(
+            loose_root, candidate, &resolved)) {
+      if (candidate != candidate_key) {
+        resolved.repair_source =
+            std::string("extracted_texture_layout;") + resolved.repair_source;
+      }
+      break;
+    }
     const std::filesystem::path case_path =
-        ResolveCaseInsensitiveExistingPath(loose_root, candidate_key);
+        ResolveCaseInsensitiveExistingPath(loose_root, candidate);
     if (IsRegularHostFile(case_path)) {
       resolved.found = true;
+      resolved.candidate = candidate;
+      resolved.provider_relative_path = candidate;
       resolved.host_path = case_path.lexically_normal();
-      resolved.repair_source = "case_insensitive";
+      resolved.repair_source = candidate == candidate_key
+                                   ? "case_insensitive"
+                                   : "extracted_texture_layout_case";
+      break;
     }
   }
 
@@ -1001,8 +1089,11 @@ bool SelectResolvedVfsHashCandidate(
         });
 
     if (VfsTracingEnabled() &&
-        (IsTraceInterestingAsset(selected->candidate) ||
-         ShouldLogRepeatedVfsTraceOperation("ResourceTextureCandidateShape", 96))) {
+        ShouldLogRepeatedVfsTraceOperation(
+            fmt::format("ResourceTextureCandidateShape:{:08X}:{}",
+                        resource_hash,
+                        NormalizeLooseAssetKey(selected->candidate)),
+            IsTraceInterestingAsset(selected->candidate) ? 32 : 96)) {
       std::vector<std::string> candidate_names;
       candidate_names.reserve(resolved_candidates->size());
       for (const ResolvedVfsHashCandidate& candidate : *resolved_candidates) {
@@ -1028,8 +1119,11 @@ bool SelectResolvedVfsHashCandidate(
   }
 
   if (VfsTracingEnabled() &&
-      (IsTraceInterestingAsset(selected->candidate) ||
-       ShouldLogRepeatedVfsTraceOperation("ResourceHashDatabaseHit", 64))) {
+      ShouldLogRepeatedVfsTraceOperation(
+          fmt::format("ResourceHashDatabaseHit:{:08X}:{}",
+                      resource_hash,
+                      NormalizeLooseAssetKey(selected->candidate)),
+          IsTraceInterestingAsset(selected->candidate) ? 32 : 64)) {
     REXLOG_INFO("Refii VFS resource hash database hit hash=0x{:08X} "
                 "candidate={} provider_relative={} host={} mode=lazy_hash",
                 resource_hash,

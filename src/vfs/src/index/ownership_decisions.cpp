@@ -81,19 +81,12 @@ RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForName(
     claim("gameface_carrier", std::move(resolution), std::move(candidate));
     return decision;
   }
-
-  if (ResolveOriginalGameDataAsset(decision.normalized, &resolution, &candidate)) {
-    claim("original_game_data", std::move(resolution), std::move(candidate));
-    return decision;
-  }
-
-  if (IsCachedOptionalSyntheticVfsMiss(decision.normalized) ||
-      IsOptionalSyntheticVfsProbe(decision.normalized) ||
-      IsKnownAbsentBootProbe(decision.normalized)) {
-    decision.kind = RefiiVfsOwnershipKind::OptionalMiss;
-    decision.reason = decision.reason.empty() ? "known_optional_probe"
+  if (IsGameFaceBinaryAssetKey(decision.normalized)) {
+    decision.kind = RefiiVfsOwnershipKind::NativeOnly;
+    decision.reason = decision.reason.empty() ? "gameface_binary_native_cache"
                                              : decision.reason;
-    LooseStats().refii_optional_misses.fetch_add(1, std::memory_order_relaxed);
+    LooseStats().refii_native_fallbacks.fetch_add(
+        1, std::memory_order_relaxed);
     return decision;
   }
 
@@ -169,6 +162,21 @@ RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForName(
     return decision;
   }
 
+  if (ResolveOriginalGameDataAsset(decision.normalized, &resolution, &candidate)) {
+    claim("original_game_data", std::move(resolution), std::move(candidate));
+    return decision;
+  }
+
+  if (IsCachedOptionalSyntheticVfsMiss(decision.normalized) ||
+      IsOptionalSyntheticVfsProbe(decision.normalized) ||
+      IsKnownAbsentBootProbe(decision.normalized)) {
+    decision.kind = RefiiVfsOwnershipKind::OptionalMiss;
+    decision.reason = decision.reason.empty() ? "known_optional_probe"
+                                             : decision.reason;
+    LooseStats().refii_optional_misses.fetch_add(1, std::memory_order_relaxed);
+    return decision;
+  }
+
   decision.kind = RefiiVfsOwnershipKind::Unresolved;
   decision.reason = decision.reason.empty() ? "not_owned" : decision.reason;
   return decision;
@@ -222,11 +230,43 @@ void LogRefiiVfsOwnershipDecision(std::string_view api,
     return;
   }
 
-  const bool should_log =
+  const std::string normalized_request = NormalizeLooseAssetKey(request);
+  const std::string normalized_candidate =
+      NormalizeLooseAssetKey(decision.candidate);
+  const bool interesting =
+      IsTraceInterestingAsset(normalized_request) ||
+      IsTraceInterestingAsset(normalized_candidate);
+  const bool owned_or_native =
       decision.kind == RefiiVfsOwnershipKind::RefiiOwned ||
-      decision.kind == RefiiVfsOwnershipKind::NativeOnly ||
-      IsTraceInterestingAsset(request) ||
-      IsTraceInterestingAsset(decision.candidate) ||
+      decision.kind == RefiiVfsOwnershipKind::NativeOnly;
+  if (owned_or_native) {
+    const std::string key = fmt::format("RefiiVfsOwnership:{}:{}:{}",
+                                        api,
+                                        normalized_request,
+                                        normalized_candidate);
+    static std::mutex logged_mutex;
+    static std::unordered_set<std::string> logged_keys;
+    bool first_log = false;
+    {
+      std::lock_guard<std::mutex> lock(logged_mutex);
+      first_log = logged_keys.insert(key).second;
+      constexpr size_t kMaxLoggedOwnershipKeys = 4096;
+      if (logged_keys.size() > kMaxLoggedOwnershipKeys) {
+        logged_keys.clear();
+        logged_keys.insert(key);
+        first_log = true;
+      }
+    }
+
+    if (!first_log &&
+        !ShouldLogRepeatedVfsTraceOperation(key, interesting ? 32 : 128)) {
+      return;
+    }
+  }
+
+  const bool should_log =
+      owned_or_native ||
+      interesting ||
       ShouldLogRepeatedVfsTraceOperation("RefiiVfsOwnership", 96);
   if (!should_log) {
     return;
@@ -237,10 +277,10 @@ void LogRefiiVfsOwnershipDecision(std::string_view api,
               "native_shaped={} reason={}",
               api,
               lr,
-              NormalizeLooseAssetKey(request),
+              normalized_request,
               ToString(decision.kind),
               decision.source,
-              decision.candidate,
+              normalized_candidate,
               decision.has_resolution
                   ? decision.resolution.provider_relative_path
                   : std::string{},
@@ -557,8 +597,12 @@ void LogRefiiOwnedTextureResolution(std::string_view api,
     }
   }
 
-  if (!first_log && !main_menu_texture &&
-      !ShouldLogRepeatedVfsTraceOperation("RefiiTextureOwnership", 48)) {
+  if (!first_log &&
+      !ShouldLogRepeatedVfsTraceOperation(
+          fmt::format("RefiiTextureOwnership:{:08X}:{}",
+                      resource_hash,
+                      normalized_request),
+          main_menu_texture ? 32 : 48)) {
     return;
   }
 

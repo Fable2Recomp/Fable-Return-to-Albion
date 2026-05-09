@@ -18,6 +18,7 @@ struct SyntheticVfsEntry {
 struct SyntheticVfsEntryIndex {
   std::string root_key;
   size_t template_count = 0;
+  size_t runtime_bank_record_count = 0;
   std::unordered_map<std::string, SyntheticVfsEntry> by_normalized_path;
   size_t manifest_entries = 0;
   size_t manifest_tables = 0;

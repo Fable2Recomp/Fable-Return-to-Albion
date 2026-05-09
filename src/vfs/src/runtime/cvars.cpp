@@ -43,9 +43,10 @@ REXCVAR_DEFINE_BOOL(vfs_force_startup_video_sequence, false, "VFS",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(vfs_startup_video_minimum_playback_ms, 0, "VFS",
-                     "Optional wall-clock startup-video fallback before Refii VFS "
-                     "post-video handoff may continue if native finalizers are not "
-                     "observed. 0 disables the fallback.")
+                     "Optional extra wall-clock startup-video playback floor "
+                     "before Refii VFS post-video handoff may continue when "
+                     "native finalizers are not observed. 0 uses the built-in "
+                     "observed playback gate.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(vfs_loose_asset_backend, "native", "VFS",

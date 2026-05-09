@@ -9,6 +9,100 @@ void MarkRefiiPostFrontendConsumerAssetRequest(std::string_view api,
                                                uint32_t lr);
 uint32_t GetNativeResourceManagerForVfsPackagePrime(uint8_t* base);
 
+uint32_t RefiiGameFacePackageBitForAssetKey(std::string_view normalized_asset) {
+  if (EndsWith(normalized_asset, ".bgf")) {
+    return 0x1u;
+  }
+  if (EndsWith(normalized_asset, ".bsg")) {
+    return 0x2u;
+  }
+  if (EndsWith(normalized_asset, ".fac")) {
+    return 0x4u;
+  }
+  return 0;
+}
+
+std::string RefiiGameFacePackageKeyForAssetKey(
+    std::string_view normalized_asset) {
+  const uint32_t bit = RefiiGameFacePackageBitForAssetKey(normalized_asset);
+  if (bit == 0 || normalized_asset.size() <= 4) {
+    return {};
+  }
+  return std::string(normalized_asset.substr(0, normalized_asset.size() - 4));
+}
+
+bool MaybeRecordRefiiPostGameFacePackageOptionalMiss(
+    const PPCContext& source_ctx,
+    uint8_t* base,
+    std::string_view asset_path,
+    std::string_view api) {
+  const std::string normalized_asset = NormalizeLooseAssetKey(asset_path);
+  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+      !IsGameFaceBinaryAssetKey(normalized_asset)) {
+    return false;
+  }
+
+  const uint32_t package_bit =
+      RefiiGameFacePackageBitForAssetKey(normalized_asset);
+  const std::string package_key =
+      RefiiGameFacePackageKeyForAssetKey(normalized_asset);
+  if (package_bit == 0 || package_key.empty()) {
+    return false;
+  }
+
+  MarkRefiiPostFrontendConsumerAssetRequest(
+      api, normalized_asset, 0, static_cast<uint32_t>(source_ctx.lr));
+
+  uint32_t package_mask_after = 0;
+  bool package_complete_after_update = false;
+  {
+    std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
+    auto& trace = RefiiPostVideoHandoffTraceState();
+    if (trace.post_gameface_package_tracking_key != package_key) {
+      trace.post_gameface_package_tracking_key = package_key;
+      trace.post_gameface_package_extension_mask = 0;
+    }
+    trace.post_gameface_package_extension_mask |= package_bit;
+    package_mask_after = trace.post_gameface_package_extension_mask;
+    package_complete_after_update = (package_mask_after & 0x7u) == 0x7u;
+    if (package_complete_after_update) {
+      trace.post_gameface_completed_package_key = package_key;
+      trace.post_gameface_completed_package_extension_mask = package_mask_after;
+    }
+  }
+
+  RecordRefiiMainMenuBlockerEvent(
+      "gameface_package_optional_miss",
+      fmt::format("api={} asset={} package={} bit=0x{:02X} mask=0x{:02X} "
+                  "complete={}",
+                  api,
+                  normalized_asset,
+                  package_key,
+                  package_bit,
+                  package_mask_after,
+                  package_complete_after_update ? "true" : "false"));
+  if (VfsTracingEnabled()) {
+    REXLOG_INFO("Refii VFS GameFace package optional miss api={} asset={} "
+                "package={} bit=0x{:02X} mask=0x{:02X} complete={} "
+                "handoff=[{}] main_menu=[{}]",
+                api,
+                normalized_asset,
+                package_key,
+                package_bit,
+                package_mask_after,
+                package_complete_after_update ? "true" : "false",
+                FormatRefiiPostVideoHandoffTraceForLog(),
+                FormatRefiiMainMenuBlockerTraceForLog());
+  }
+
+  if (package_complete_after_update) {
+    PPCContext signal_ctx = source_ctx;
+    return TrySignalRefiiCompletedPostGameFacePackageHandoffFromTrace(
+        signal_ctx, base, 0, 0, VfsTracingEnabled());
+  }
+  return true;
+}
+
 bool MaybeSignalRefiiPostGameFacePackageHandoff(
     const PPCContext& source_ctx,
     uint8_t* base,
@@ -18,27 +112,10 @@ bool MaybeSignalRefiiPostGameFacePackageHandoff(
   const std::string normalized_asset = NormalizeLooseAssetKey(asset_path);
   const bool font_boundary =
       StartsWith(normalized_asset, "post_video_font:");
-  auto gameface_package_bit = [&]() -> uint32_t {
-    if (EndsWith(normalized_asset, ".bgf")) {
-      return 0x1u;
-    }
-    if (EndsWith(normalized_asset, ".bsg")) {
-      return 0x2u;
-    }
-    if (EndsWith(normalized_asset, ".fac")) {
-      return 0x4u;
-    }
-    return 0;
-  };
-  auto gameface_package_key = [&]() -> std::string {
-    const uint32_t bit = gameface_package_bit();
-    if (bit == 0 || normalized_asset.size() <= 4) {
-      return {};
-    }
-    return normalized_asset.substr(0, normalized_asset.size() - 4);
-  };
-  const uint32_t package_bit = gameface_package_bit();
-  const std::string package_key = gameface_package_key();
+  const uint32_t package_bit =
+      RefiiGameFacePackageBitForAssetKey(normalized_asset);
+  const std::string package_key =
+      RefiiGameFacePackageKeyForAssetKey(normalized_asset);
   uint32_t package_mask_after = 0;
   bool package_complete_after_update = false;
   if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
@@ -140,15 +217,17 @@ bool MaybeSignalRefiiPostGameFacePackageHandoff(
             asset,
             sibling_stream_guest,
             member.bit == 0x4u);
-      } else if (disposition == RefiiVfsOpenDisposition::Miss ||
-                 disposition == RefiiVfsOpenDisposition::OptionalNull) {
+      } else if (disposition == RefiiVfsOpenDisposition::OptionalNull) {
         missing_mask |= member.bit;
+        MaybeRecordRefiiPostGameFacePackageOptionalMiss(
+            open_ctx, base, asset, "GameFacePackageSiblingPrime");
       } else {
         failed_mask |= member.bit;
       }
     }
 
-    const bool completed = ((package_mask_after | opened_mask) & 0x7u) == 0x7u;
+    const bool completed =
+        ((package_mask_after | opened_mask | missing_mask) & 0x7u) == 0x7u;
     RecordRefiiMainMenuBlockerEvent(
         "gameface_package_sibling_prime",
         fmt::format("package={} existing_mask=0x{:02X} opened_mask=0x{:02X} "
@@ -737,21 +816,59 @@ bool ShouldPrimeRefiiPostFrontendGameFacePackage(
   const bool ownerless_parsed_texture =
       mode == "ownerless_post_video_texture_parser" &&
       RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
+  auto log_skip = [&](std::string_view reason,
+                      bool attempted,
+                      bool request_seen,
+                      uint32_t extension_mask) {
+    if (!VfsTracingEnabled() ||
+        !ShouldLogRepeatedVfsTraceOperation("PostFrontendGameFacePrimeSkip",
+                                            12)) {
+      return;
+    }
+    REXLOG_INFO("Refii VFS post-frontend GameFace package prime skipped "
+                "mode={} reason={} collapsed={} ownerless_parsed={} "
+                "startup_settled={} skip_videos={} attempted={} "
+                "request_seen={} extension_mask=0x{:02X} handoff=[{}] "
+                "main_menu=[{}]",
+                mode,
+                reason,
+                collapsed_frontend_consumer ? "true" : "false",
+                ownerless_parsed_texture ? "true" : "false",
+                RefiiStartupVideosSettledForMenuHandoff() ? "true" : "false",
+                SkipStartupVideosEnabled() ? "true" : "false",
+                attempted ? "true" : "false",
+                request_seen ? "true" : "false",
+                extension_mask,
+                FormatRefiiPostVideoHandoffTraceForLog(),
+                FormatRefiiMainMenuBlockerTraceForLog());
+  };
   if (!RefiiLooseAssetBackendEnabled() ||
       (!collapsed_frontend_consumer && !ownerless_parsed_texture) ||
       (!RefiiStartupVideosSettledForMenuHandoff() &&
        !SkipStartupVideosEnabled())) {
+    log_skip("gate_not_ready", false, false, 0);
     return false;
   }
 
-  std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
-  auto& trace = RefiiPostVideoHandoffTraceState();
-  if (trace.post_frontend_gameface_prime_attempted ||
-      trace.post_frontend_consumer_request_seen ||
-      trace.post_gameface_package_extension_mask != 0) {
+  bool attempted = false;
+  bool request_seen = false;
+  uint32_t extension_mask = 0;
+  bool already_started = false;
+  {
+    std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
+    auto& trace = RefiiPostVideoHandoffTraceState();
+    attempted = trace.post_frontend_gameface_prime_attempted;
+    request_seen = trace.post_frontend_consumer_request_seen;
+    extension_mask = trace.post_gameface_package_extension_mask;
+    already_started = attempted || request_seen || extension_mask != 0;
+    if (!already_started) {
+      trace.post_frontend_gameface_prime_attempted = true;
+    }
+  }
+  if (already_started) {
+    log_skip("already_started", attempted, request_seen, extension_mask);
     return false;
   }
-  trace.post_frontend_gameface_prime_attempted = true;
   return true;
 }
 
@@ -832,9 +949,10 @@ bool TryPrimeRefiiPostFrontendGameFacePackage(
           asset,
           stream_guest,
           index + 1 == kGameFacePackageAssets.size());
-    } else if (disposition == RefiiVfsOpenDisposition::Miss ||
-               disposition == RefiiVfsOpenDisposition::OptionalNull) {
+    } else if (disposition == RefiiVfsOpenDisposition::OptionalNull) {
       missing_mask |= (1u << index);
+      MaybeRecordRefiiPostGameFacePackageOptionalMiss(
+          open_ctx, base, asset, "PostFrontendGameFacePackagePrime");
     } else {
       failed_mask |= (1u << index);
     }
@@ -852,6 +970,11 @@ bool TryPrimeRefiiPostFrontendGameFacePackage(
                   manager_guest,
                   last_stream_guest,
                   FormatFrontendTextureConsumerTraceForLog(consumer_trace)));
+  if (opened_mask == 0 && failed_mask != 0) {
+    std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
+    auto& trace = RefiiPostVideoHandoffTraceState();
+    trace.post_gameface_package_native_fallback_required = true;
+  }
   if (VfsTracingEnabled()) {
     REXLOG_INFO("Refii VFS post-frontend GameFace package prime mode={} "
                 "opened_mask=0x{:02X} missing_mask=0x{:02X} "
@@ -899,12 +1022,18 @@ bool MaybeSignalRefiiFrontendDeferredHashWakeHandoff(
   {
     std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
     auto& trace = RefiiPostVideoHandoffTraceState();
+    const bool native_fallback_package_ready =
+        trace.post_gameface_package_native_fallback_required &&
+        trace.post_frontend_consumer_handoff_signal_emitted &&
+        trace.frontend_consumer_seen;
     const bool ownerless_parsed_chain_ready =
         trace.post_frontend_consumer_request_seen &&
-        trace.post_gameface_package_handoff_signal_emitted &&
+        (trace.post_gameface_package_handoff_signal_emitted ||
+         native_fallback_package_ready) &&
         RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload() &&
         !trace.frontend_consumer_seen;
-    if ((RefiiCompletedPostGameFacePackageMaskLocked(trace) & 0x7u) != 0x7u) {
+    if (!native_fallback_package_ready &&
+        (RefiiCompletedPostGameFacePackageMaskLocked(trace) & 0x7u) != 0x7u) {
       skip_reason = "gameface_package_incomplete";
     } else if (!trace.post_frontend_consumer_request_seen) {
       skip_reason = "frontend_request_not_seen";

@@ -109,6 +109,10 @@ bool TryRepairRefiiStartupBikBufferedPosition(uint8_t* base,
                                               uint32_t lr,
                                               uint32_t* repaired_low,
                                               uint32_t* repaired_high);
+bool TryGetRefiiStartupBikCompletedReadBuffer(uint8_t* base,
+                                              uint32_t stream_guest,
+                                              uint32_t* buffer_guest,
+                                              uint32_t* bytes_read);
 void RecordRefiiStartupVideoBufferedSize(uint8_t* base,
                                          uint32_t stream_guest,
                                          uint32_t result);

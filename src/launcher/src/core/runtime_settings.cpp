@@ -358,7 +358,7 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"vfs_use_loose_bank_entries", "VFS", RuntimeCVarType::Bool, "false", "Prefer loose files for assets opened from Fable 2 BNK banks."},
         {"vfs_skip_startup_videos", "VFS", RuntimeCVarType::Bool, "false", "Skip the non-interactive startup videos while using the Refii VFS."},
         {"vfs_force_startup_video_sequence", "VFS", RuntimeCVarType::Bool, "false", "Require the native startup videos to play in sequence before Refii VFS post-video handoff patches may run."},
-        {"vfs_startup_video_minimum_playback_ms", "VFS", RuntimeCVarType::Int, "0", "Optional wall-clock startup-video fallback before Refii VFS post-video handoff may continue if native finalizers are not observed. 0 disables the fallback."},
+        {"vfs_startup_video_minimum_playback_ms", "VFS", RuntimeCVarType::Int, "0", "Optional extra startup-video playback floor before Refii VFS post-video handoff may continue when native finalizers are not observed. 0 uses the built-in observed playback gate."},
         {"vfs_loose_asset_backend", "VFS", RuntimeCVarType::String, "native", "VFS backend: refii for loose asset overrides, native for the original Fable 2 VFS.", "native,refii,disabled"},
         {"vfs_loose_asset_root", "VFS", RuntimeCVarType::String, "", "Optional host loose asset root; empty defaults to <assets_root>/unpacked."},
 

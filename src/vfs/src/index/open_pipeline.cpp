@@ -395,6 +395,7 @@ RefiiVfsOpenDisposition TryOpenRefiiVfsAsset(
 
   if (!request.request_name.empty() &&
       shape != RefiiVfsOpenShape::NativeGenerated &&
+      !LookupRefiiVfsTypedBankManifest(request.request_name, nullptr, nullptr) &&
       ShouldDeferLooseBankContainer(request.request_name)) {
     StoreGuestU32(base, request.out_guest, 0);
     ctx.r3.u32 = request.out_guest;
@@ -434,9 +435,9 @@ RefiiVfsOpenDisposition TryOpenRefiiVfsAsset(
 
   const bool optional_null_asset =
       !request.request_name.empty() &&
-      (IsGameFaceBinaryAssetKey(request.request_name) ||
-       IsKnownAbsentBootProbe(request.request_name) ||
-       IsOptionalSyntheticVfsProbe(request.request_name));
+      (IsKnownAbsentBootProbe(request.request_name) ||
+       IsOptionalSyntheticVfsProbe(request.request_name) ||
+       IsOptionalGameFaceBinaryMiss(request.request_name));
   if (request.allow_optional_null_miss &&
       result.ownership.kind != RefiiVfsOwnershipKind::RefiiOwned &&
       optional_null_asset) {
@@ -1118,10 +1119,17 @@ bool TryResolveRefiiFrontendTextureDescriptor(
     *out_resolver_result = resolver_result;
   }
 
-  if (VfsTracingEnabled() || LooseAssetOverrideTracingEnabled() ||
-      IsMainMenuTextureHashTraceAsset(name) ||
-      IsMainMenuTextureHashTraceAsset(candidate) ||
-      IsMainMenuTextureHashTraceAsset(resolution.provider_relative_path)) {
+  const bool trace_descriptor_fallback =
+      (VfsTracingEnabled() || LooseAssetOverrideTracingEnabled() ||
+       IsMainMenuTextureHashTraceAsset(name) ||
+       IsMainMenuTextureHashTraceAsset(candidate) ||
+       IsMainMenuTextureHashTraceAsset(resolution.provider_relative_path)) &&
+      ShouldLogRepeatedVfsTraceOperation(
+          fmt::format("FrontendTextureDescriptorFallback:{:08X}:{}",
+                      resource_hash,
+                      table_index),
+          32);
+  if (trace_descriptor_fallback) {
     REXLOG_INFO("Refii VFS frontend texture descriptor table fallback "
                 "lr=0x{:08X} hash=0x{:08X} descriptor=0x{:08X} "
                 "name={} candidate={} source={} provider_relative={} "
@@ -1723,7 +1731,7 @@ bool TrySetRefiiPrivateFilePointer(PPCContext& ctx,
 }
 
 bool MatchesFindPattern(std::string_view name, std::string_view pattern) {
-  if (pattern.empty() || pattern == "*") {
+  if (pattern.empty() || pattern == "*" || pattern == "*.*") {
     return true;
   }
   size_t name_index = 0;
@@ -1899,11 +1907,13 @@ std::shared_ptr<const RefiiFindDirectoryIndex> GetRefiiFindDirectoryIndex(
     AddRefiiDirectoryIndexEntry(built.get(), &seen, candidate, false);
   }
 
-  if (const auto synthetic_index = GetSyntheticVfsEntryIndex();
-      synthetic_index != nullptr) {
-    for (const auto& [alias, entry] : synthetic_index->by_normalized_path) {
-      (void)entry;
-      AddRefiiDirectoryIndexEntry(built.get(), &seen, alias, false);
+  if (!RefiiVfsDatabaseExists(loose_root)) {
+    const auto synthetic_index = GetSyntheticVfsEntryIndex();
+    if (synthetic_index != nullptr) {
+      for (const auto& [alias, entry] : synthetic_index->by_normalized_path) {
+        (void)entry;
+        AddRefiiDirectoryIndexEntry(built.get(), &seen, alias, false);
+      }
     }
   }
 
@@ -1944,7 +1954,7 @@ std::vector<RefiiPrivateFindEntry> GetRefiiDirectoryEntriesForParentFromDatabase
     std::string_view parent) {
   const std::string root_key = loose_root.lexically_normal().string();
   const std::string stripped_parent = StripRefiiDataPrefix(parent);
-  if (root_key.empty() || stripped_parent.empty()) {
+  if (root_key.empty()) {
     return {};
   }
 
@@ -2029,11 +2039,13 @@ std::vector<RefiiPrivateFindEntry> GetRefiiDirectoryEntriesForParentFromDatabase
     }
   }
 
-  if (const auto synthetic_index = GetSyntheticVfsEntryIndex();
-      synthetic_index != nullptr) {
-    for (const auto& [alias, entry] : synthetic_index->by_normalized_path) {
-      (void)entry;
-      add_path(alias, false);
+  if (!RefiiVfsDatabaseExists(loose_root)) {
+    const auto synthetic_index = GetSyntheticVfsEntryIndex();
+    if (synthetic_index != nullptr) {
+      for (const auto& [alias, entry] : synthetic_index->by_normalized_path) {
+        (void)entry;
+        add_path(alias, false);
+      }
     }
   }
 
@@ -2586,9 +2598,7 @@ bool TryFindFirstRefiiPrivate(PPCContext& ctx,
   }
   LogRefiiVfsRuntimePolicyOnce();
   const std::string normalized = NormalizeLooseAssetKey(path);
-  if (normalized.find(':') != std::string::npos ||
-      (normalized.find('*') == std::string::npos &&
-       normalized.find('?') == std::string::npos)) {
+  if (normalized.find(':') != std::string::npos) {
     return false;
   }
 

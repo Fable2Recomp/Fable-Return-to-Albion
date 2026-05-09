@@ -38,6 +38,11 @@ bool RefiiPostLoadingFrontendFinalHandoffWakeEmitted() {
       std::memory_order_relaxed);
 }
 
+bool RefiiPostGameFacePackageReadyForGeneratedRelease() {
+  return RefiiPostGameFacePackageComplete() ||
+         RefiiPostGameFacePackageNativeFallbackReady();
+}
+
 bool RefiiPostGameFacePrimaryOwnerReady(uint8_t* base) {
   if (base == nullptr) {
     return false;
@@ -94,8 +99,13 @@ uint32_t ResolveRefiiPostGameFacePrimaryOwnerSlotObject(
   if (!IsNativeFrontendRenderRequest(base, request_guest)) {
     return 0;
   }
-  if (LooksLikeGuestPointer(secondary_owner) &&
-      LoadGuestU32(base, secondary_owner + 12) == request_guest) {
+  auto is_frontend_render_slot = [&](uint32_t slot_guest) {
+    return LooksLikeGuestPointer(slot_guest) &&
+           LoadGuestU32(base, slot_guest) ==
+               kNativeFrontendRenderRequestSlotVTable &&
+           LoadGuestU32(base, slot_guest + 12) == request_guest;
+  };
+  if (is_frontend_render_slot(secondary_owner)) {
     return secondary_owner;
   }
 
@@ -103,14 +113,12 @@ uint32_t ResolveRefiiPostGameFacePrimaryOwnerSlotObject(
     std::lock_guard<std::mutex> lock(RefiiPostGameFacePrimaryOwnerMutex());
     const auto it = RefiiPostGameFacePrimaryOwnerSlots().find(request_guest);
     if (it != RefiiPostGameFacePrimaryOwnerSlots().end() &&
-        LooksLikeGuestPointer(it->second) &&
-        LoadGuestU32(base, it->second + 12) == request_guest) {
+        is_frontend_render_slot(it->second)) {
       return it->second;
     }
   }
 
-  if (LooksLikeGuestPointer(request_guest) &&
-      LoadGuestU32(base, request_guest + 12) == request_guest) {
+  if (is_frontend_render_slot(request_guest)) {
     return request_guest;
   }
 
@@ -154,7 +162,11 @@ bool TryPublishRefiiPostGameFacePrimaryOwner(
   if (!RefiiLooseAssetBackendEnabled()) {
     return false;
   }
-  if ((package_mask & 0x7u) != 0x7u) {
+  const bool native_fallback_package =
+      (package_mask & 0x7u) != 0x7u &&
+      RefiiPostGameFacePackageNativeFallbackReady() &&
+      EndsWith(normalized_asset, "frontendstartupscreen.fac");
+  if ((package_mask & 0x7u) != 0x7u && !native_fallback_package) {
     log_skip("package_incomplete");
     return false;
   }
@@ -311,8 +323,10 @@ bool TryPublishRefiiPostGameFacePrimaryOwner(
       if (LooksLikeGuestPointer(secondary_owner)) {
         RefiiPostGameFacePrimaryOwnerSlots()[request_guest] = secondary_owner;
       }
-      log_skip("request_already_published", secondary_owner, request_guest);
-      return false;
+      if (LooksLikeGuestPointer(primary_before) && primary_ready_before != 0) {
+        log_skip("request_already_published", secondary_owner, request_guest);
+        return false;
+      }
     }
     if (LooksLikeGuestPointer(secondary_owner)) {
       RefiiPostGameFacePrimaryOwnerSlots()[request_guest] = secondary_owner;
@@ -470,16 +484,27 @@ bool TryPublishRefiiPostGameFacePrimaryOwnerFromTrace(PPCContext& source_ctx,
                                                       std::string_view source_api) {
   std::string asset;
   uint32_t package_mask = 0;
+  bool native_fallback_package = false;
   {
     std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
     const auto& trace = RefiiPostVideoHandoffTraceState();
     package_mask = RefiiCompletedPostGameFacePackageMaskLocked(trace);
-    if (!trace.post_gameface_package_handoff_signal_emitted ||
-        ((package_mask & 0x7u) != 0x7u &&
-         !EndsWith(trace.post_gameface_package_handoff_asset, ".fac"))) {
+    native_fallback_package =
+        trace.post_gameface_package_native_fallback_required &&
+        trace.post_frontend_consumer_handoff_signal_emitted &&
+        trace.frontend_consumer_seen;
+    if (!trace.post_gameface_package_handoff_signal_emitted &&
+        !native_fallback_package) {
+      return false;
+    }
+    if (!native_fallback_package && (package_mask & 0x7u) != 0x7u &&
+        !EndsWith(trace.post_gameface_package_handoff_asset, ".fac")) {
       return false;
     }
     asset = trace.post_gameface_package_handoff_asset;
+    if (asset.empty() && native_fallback_package) {
+      asset = "art/gui/gameface/frontendstartupscreen.fac";
+    }
     if (!EndsWith(asset, ".fac")) {
       if (!trace.post_gameface_completed_package_key.empty()) {
         asset = trace.post_gameface_completed_package_key + ".fac";
@@ -649,6 +674,13 @@ bool TryRunRefiiPostGameFaceFrontendRenderRequestFromTrace(
         request_guest = published_request;
         break;
       }
+    }
+  }
+  if (!IsNativeFrontendRenderRequest(base, request_guest)) {
+    const uint32_t remembered_request =
+        RefiiPostGameFacePrimaryOwnerRequest().load(std::memory_order_relaxed);
+    if (IsNativeFrontendRenderRequest(base, remembered_request)) {
+      request_guest = remembered_request;
     }
   }
   if (!LooksLikeGuestPointer(primary_owner) ||
@@ -1156,11 +1188,38 @@ bool TryAttachRefiiPostGameFaceRenderHandoffToActiveFrame(
           (source_api == "NativeVfsRetryInsert" ||
            source_api == "NativeVfsSchedulerInsertPending") &&
           RefiiPostVfsChainReadyForLoadingOwnerRelease();
+      const bool post_gameface_completed_request_repair =
+          (source_api ==
+               "post_loading_frontend_render_handoff_completed_primary_attach" ||
+           source_api ==
+               "completed_loading_owner_renderer_reentry_completed_primary_attach" ||
+           source_api ==
+               "sub_8235D5E8_sequence_bridge_completed_primary_attach" ||
+           source_api ==
+               "sub_8235D5E8_sequence_ready_completed_primary_attach" ||
+           source_api ==
+               "sub_8235E1E0_sequence_bridge_completed_primary_attach" ||
+           source_api ==
+               "sub_8235E1E0_sequence_ready_completed_primary_attach" ||
+           source_api ==
+               "sub_82360418_sequence_bridge_completed_primary_attach" ||
+           source_api ==
+               "sub_82360418_sequence_ready_completed_primary_attach" ||
+           source_api ==
+               "sub_82360618_sequence_bridge_completed_primary_attach" ||
+           source_api ==
+               "sub_82360618_sequence_ready_completed_primary_attach" ||
+           source_api ==
+               "sub_82360968_sequence_bridge_completed_primary_attach" ||
+           source_api ==
+               "sub_82360968_sequence_ready_completed_primary_attach") &&
+          RefiiPostVfsChainReadyForLoadingOwnerRelease();
       const bool can_replace_stale_inline_handoff =
           call_owner_matches_request &&
           (source_api == "PostVideoFrame_82389210_PreNative" ||
            post_gameface_renderer_repair || post_gameface_package_repair ||
-           post_gameface_followup_repair || post_gameface_scheduler_repair) &&
+           post_gameface_followup_repair || post_gameface_scheduler_repair ||
+           post_gameface_completed_request_repair) &&
           LooksLikeGuestPointer(request_handoff);
       if (!can_replace_stale_inline_handoff) {
         log_skip("frame_handoff_busy");
@@ -1696,8 +1755,13 @@ bool TryFinalizeRefiiPostLoadingFrontendGeneratedState(
   }
   const uint32_t remembered_post_gameface_request =
       RefiiPostGameFacePrimaryOwnerRequest().load(std::memory_order_relaxed);
+  const bool final_post_gameface_release_ready =
+      explicit_post_gameface_release_source &&
+      RefiiPostGameFacePackageReadyForGeneratedRelease() &&
+      RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
   const bool preserve_post_gameface_primary =
       preserve_post_gameface_primary_allowed &&
+      !final_post_gameface_release_ready &&
       request_guest == remembered_post_gameface_request &&
       LooksLikeGuestPointer(primary_owner_global_before) &&
       request_owner_before == primary_owner_global_before;
@@ -1802,7 +1866,7 @@ bool TryFinalizeRefiiPostLoadingFrontendGeneratedState(
   };
   if (clear_render_handoff &&
       (loading_globals_released || render_owner_handoff_cleared)) {
-    if (RefiiPostGameFacePackageComplete() &&
+    if (RefiiPostGameFacePackageReadyForGeneratedRelease() &&
         RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload()) {
       TryReleaseRefiiCompletedNativeVfsFinalizerExit(
           source_ctx, base, source_api, VfsTracingEnabled());
@@ -1900,6 +1964,7 @@ bool TryFinalizeRefiiPostLoadingFrontendGeneratedState(
   bool post_loading_after_holder_returned = false;
   bool post_loading_after_holder_armed = false;
   bool post_loading_after_holder_mode2_collapsed = false;
+  bool post_loading_after_holder_native_tick = false;
   if (clear_render_handoff && secondary_loading_global_released &&
       preserve_post_gameface_primary &&
       RefiiPostVfsChainReadyForLoadingOwnerRelease()) {
@@ -1926,6 +1991,43 @@ bool TryFinalizeRefiiPostLoadingFrontendGeneratedState(
                 base,
                 post_loading_after_holder_guest,
                 "post_loading_generated_state_finalize");
+        const bool defer_after_holder_native_tick_for_final_handoff =
+            RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
+            RefiiPostGameFacePackageReadyForGeneratedRelease() &&
+            RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
+        if (!post_loading_after_holder_mode2_collapsed &&
+            !RefiiPostLoadingMiddlewareVideoReadComplete() &&
+            !defer_after_holder_native_tick_for_final_handoff) {
+          PPCContext native_after_holder_ctx = after_holder_ctx;
+          native_after_holder_ctx.r3.u32 = post_loading_after_holder_guest;
+          native_after_holder_ctx.r4.u32 = render_owner;
+          native_after_holder_ctx.lr = static_cast<uint32_t>(source_ctx.lr);
+          __imp__sub_82467B08(native_after_holder_ctx, base);
+          post_loading_after_holder_native_tick = true;
+          RecordRefiiMainMenuBlockerEvent(
+              "post_loading_after_holder_native_mode2_tick",
+              fmt::format("source={} holder=0x{:08X} result=0x{:08X} "
+                          "state=[{}]",
+                          source_api,
+                          post_loading_after_holder_guest,
+                          native_after_holder_ctx.r3.u32,
+                          FormatRefiiPostLoadingAfterHolderState(
+                              base, post_loading_after_holder_guest)));
+          if (VfsTracingEnabled() ||
+              ShouldLogRepeatedVfsTraceOperation(
+                  "PostLoadingAfterHolderNativeMode2Tick", 8)) {
+            REXLOG_INFO("Refii VFS post-loading after-holder native mode2 "
+                        "tick source={} holder=0x{:08X} result=0x{:08X} "
+                        "state=[{}] handoff=[{}] main_menu=[{}]",
+                        source_api,
+                        post_loading_after_holder_guest,
+                        native_after_holder_ctx.r3.u32,
+                        FormatRefiiPostLoadingAfterHolderState(
+                            base, post_loading_after_holder_guest),
+                        FormatRefiiPostVideoHandoffTraceForLog(),
+                        FormatRefiiMainMenuBlockerTraceForLog());
+          }
+        }
       }
     }
   }
@@ -1952,6 +2054,7 @@ bool TryFinalizeRefiiPostLoadingFrontendGeneratedState(
                   "post_gameface_primary_preserved={} "
                   "after_holder=0x{:08X} after_holder_returned={} "
                   "after_holder_armed={} after_holder_mode2_collapsed={} "
+                  "after_holder_native_tick={} "
                   "globals=[{}]",
                   source_api,
                   request_guest,
@@ -2005,6 +2108,7 @@ bool TryFinalizeRefiiPostLoadingFrontendGeneratedState(
                   post_loading_after_holder_returned ? "true" : "false",
                   post_loading_after_holder_armed ? "true" : "false",
                   post_loading_after_holder_mode2_collapsed ? "true" : "false",
+                  post_loading_after_holder_native_tick ? "true" : "false",
                   FormatRefiiLoadingScreenSequenceGlobals(base)));
 
   if (VfsTracingEnabled() ||
@@ -2030,6 +2134,7 @@ bool TryFinalizeRefiiPostLoadingFrontendGeneratedState(
                 "post_gameface_primary_preserved={} "
                 "after_holder=0x{:08X} after_holder_returned={} "
                 "after_holder_armed={} after_holder_mode2_collapsed={} "
+                "after_holder_native_tick={} "
                 "globals=[{}] handoff=[{}] main_menu=[{}]",
                 source_api,
                 request_guest,
@@ -2079,6 +2184,7 @@ bool TryFinalizeRefiiPostLoadingFrontendGeneratedState(
                 post_loading_after_holder_returned ? "true" : "false",
                 post_loading_after_holder_armed ? "true" : "false",
                 post_loading_after_holder_mode2_collapsed ? "true" : "false",
+                post_loading_after_holder_native_tick ? "true" : "false",
                 FormatRefiiLoadingScreenSequenceGlobals(base),
                 FormatRefiiPostVideoHandoffTraceForLog(),
                 FormatRefiiMainMenuBlockerTraceForLog());
@@ -2177,6 +2283,16 @@ bool TryRunRefiiPostLoadingFrontendRenderRequestNativeFromTrace(
       ResolveRefiiPostGameFacePrimaryOwnerSlotObject(base,
                                                      request_guest,
                                                      secondary_owner);
+  if (source_api == "completed_owner_wait_release" &&
+      RefiiCompletedLoadingScreenOwner().load(std::memory_order_relaxed) == 0) {
+    log_skip("loading_owner_not_completed",
+             primary_owner,
+             primary_ready,
+             secondary_owner,
+             request_guest,
+             slot_object_guest);
+    return false;
+  }
   const bool can_repair_primary_ready =
       primary_ready == 0 && secondary_ready != 0 &&
       LooksLikeGuestPointer(primary_owner) &&
@@ -2507,7 +2623,13 @@ bool TryRunRefiiPostLoadingFrontendRenderRequestNativeFromTrace(
         RefiiPostLoadingNativeFrontendRenderRuns().insert(request_guest).second;
     const bool commit_inserted =
         RefiiPostLoadingFrontendRenderCommitRuns().insert(request_guest).second;
-    if (!post_loading_inserted && !commit_inserted) {
+    const bool completed_renderer_reentry_inserted =
+        source_api == "completed_loading_owner_renderer_reentry" &&
+        RefiiPostLoadingCompletedRendererReentryRuns()
+            .insert(request_guest)
+            .second;
+    if (!post_loading_inserted && !commit_inserted &&
+        !completed_renderer_reentry_inserted) {
       log_skip("already_completed",
                primary_owner,
                primary_ready,

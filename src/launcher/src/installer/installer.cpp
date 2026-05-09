@@ -131,6 +131,10 @@ std::string LowercaseAscii(std::string value) {
     return value;
 }
 
+std::filesystem::path LowercaseRelativePath(const std::filesystem::path& path) {
+    return std::filesystem::path(LowercasePathString(path));
+}
+
 bool IsWindowsReservedName(std::string_view name) {
     if (name.empty()) {
         return false;
@@ -206,6 +210,21 @@ bool IsLuaBankRelativePath(const std::filesystem::path& relativePath) {
            normalized == "guiscripts.bnk";
 }
 
+std::vector<std::filesystem::path> GetLuaBankRelativePaths() {
+    return {
+        std::filesystem::path("gamescripts.bnk"),
+        std::filesystem::path("gamescripts_r.bnk"),
+        std::filesystem::path("guiscripts.bnk"),
+    };
+}
+
+std::vector<std::filesystem::path> GetLuaLooseDirectoryPaths() {
+    return {
+        std::filesystem::path("scripts"),
+        std::filesystem::path("scripts_r"),
+    };
+}
+
 bool IsLuaLooseRelativePath(const std::filesystem::path& relativePath) {
     const std::string normalized = LowercasePathString(relativePath.lexically_normal());
     return normalized == "scripts" || normalized == "scripts_r" ||
@@ -230,9 +249,11 @@ bool IsDirectLooseVfsRelativePath(const std::filesystem::path& relativePath) {
     const std::string extension = normalizedPath.extension().generic_string();
     return extension == ".adb" || extension == ".amp" ||
            extension == ".babel" || extension == ".bft" ||
-           extension == ".bik" || extension == ".bnk" ||
+           extension == ".bgf" || extension == ".bik" ||
+           extension == ".bnk" || extension == ".bsg" ||
            extension == ".csv" ||
-           extension == ".dds" || extension == ".gdb" ||
+           extension == ".dds" || extension == ".fac" ||
+           extension == ".gdb" ||
            extension == ".ini" || extension == ".list" ||
            extension == ".loco" || extension == ".manifest" ||
            extension == ".sbk" || extension == ".swf" ||
@@ -337,7 +358,7 @@ bool CopyLooseGameContentFiles(const std::filesystem::path& gameContentRoot,
             continue;
         }
 
-        const std::filesystem::path destination = outputRoot / relativePath;
+        const std::filesystem::path destination = outputRoot / LowercaseRelativePath(relativePath);
         try {
             std::filesystem::create_directories(destination.parent_path());
             std::filesystem::copy_file(
@@ -396,6 +417,46 @@ bool RemoveStaleUnpackedBankFiles(const std::filesystem::path& outputRoot,
 
         if (removedFiles != nullptr) {
             ++*removedFiles;
+        }
+    }
+
+    return true;
+}
+
+bool RemoveStaleScriptBankRootDirectories(const std::filesystem::path& outputRoot,
+                                          std::size_t* removedDirectories,
+                                          std::string* error) {
+    if (removedDirectories != nullptr) {
+        *removedDirectories = 0;
+    }
+
+    for (const std::filesystem::path& luaBank : GetLuaBankRelativePaths()) {
+        const std::filesystem::path staleRoot =
+            refii::bnk::GetBankOutputRoot(outputRoot, luaBank);
+        std::error_code existsError;
+        if (!std::filesystem::exists(staleRoot, existsError)) {
+            continue;
+        }
+        if (existsError) {
+            if (error != nullptr) {
+                *error = "failed to inspect stale script-bank directory " +
+                         staleRoot.string() + ": " + existsError.message();
+            }
+            return false;
+        }
+
+        std::error_code removeError;
+        std::filesystem::remove_all(staleRoot, removeError);
+        if (removeError) {
+            if (error != nullptr) {
+                *error = "failed to remove stale script-bank directory " +
+                         staleRoot.string() + ": " + removeError.message();
+            }
+            return false;
+        }
+
+        if (removedDirectories != nullptr) {
+            ++*removedDirectories;
         }
     }
 
@@ -752,6 +813,110 @@ bool RebuildLuaWorkspaceInternal(
     return true;
 }
 
+bool CopyLuaLooseScriptsForVfs(const std::filesystem::path& gameContentRoot,
+                               const std::filesystem::path& outputRoot,
+                               std::size_t* copiedFiles,
+                               std::string* error) {
+    if (copiedFiles != nullptr) {
+        *copiedFiles = 0;
+    }
+
+    for (const std::filesystem::path& looseDirectory : GetLuaLooseDirectoryPaths()) {
+        const std::filesystem::path sourceRoot = gameContentRoot / looseDirectory;
+        std::error_code statusError;
+        if (!std::filesystem::is_directory(sourceRoot, statusError)) {
+            continue;
+        }
+
+        std::error_code iteratorError;
+        constexpr auto options = std::filesystem::directory_options::skip_permission_denied;
+        for (std::filesystem::recursive_directory_iterator it(sourceRoot, options, iteratorError),
+             end;
+             it != end; it.increment(iteratorError)) {
+            if (iteratorError) {
+                iteratorError.clear();
+                continue;
+            }
+            if (!it->is_regular_file(iteratorError)) {
+                iteratorError.clear();
+                continue;
+            }
+
+            const std::filesystem::path sourceRelative =
+                it->path().lexically_relative(sourceRoot).lexically_normal();
+            const std::filesystem::path looseRelative =
+                (looseDirectory / sourceRelative).lexically_normal();
+            if (!IsSafeRelativePath(looseRelative, error)) {
+                return false;
+            }
+
+            const std::filesystem::path destination =
+                outputRoot / "luasource" / looseRelative;
+            try {
+                std::filesystem::create_directories(destination.parent_path());
+                std::filesystem::copy_file(
+                    it->path(), destination, std::filesystem::copy_options::overwrite_existing);
+            } catch (const std::exception& exception) {
+                if (error != nullptr) {
+                    *error = "failed to copy loose Lua source " +
+                             looseRelative.generic_string() + ": " + exception.what();
+                }
+                return false;
+            }
+
+            if (copiedFiles != nullptr) {
+                ++*copiedFiles;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool ExtractLuaSourceBanksForVfs(const std::filesystem::path& gameContentRoot,
+                                 const std::filesystem::path& outputRoot,
+                                 std::size_t* extractedFiles,
+                                 std::string* error,
+                                 const TransientStatusCallback& transientStatusCallback) {
+    if (extractedFiles != nullptr) {
+        *extractedFiles = 0;
+    }
+
+    refii::bnk::BankExtractionOptions options;
+    options.game_content_root = gameContentRoot;
+    options.output_root = outputRoot / "luasource";
+    options.bank_relative_paths = GetLuaBankRelativePaths();
+    options.clean_output = true;
+    options.build_vfs_database = false;
+    if (transientStatusCallback) {
+        options.progress_callback =
+            [transientStatusCallback](const refii::bnk::BankExtractionProgress& progress) {
+                refii::lua::LuaWorkspaceDecompileProgress lua_progress;
+                lua_progress.phase = progress.phase;
+                lua_progress.completed_files = progress.completed_banks;
+                lua_progress.total_files = progress.total_banks;
+                lua_progress.current_input = progress.current_bank;
+                transientStatusCallback(BuildLuaWorkspaceProgressMessage(lua_progress));
+            };
+    }
+
+    refii::bnk::BankExtractionSummary summary;
+    std::string extractionError;
+    if (!refii::bnk::ExtractBanks(options, &summary, &extractionError)) {
+        if (error != nullptr) {
+            *error = extractionError.empty()
+                         ? "failed to unpack script banks into lua source"
+                         : extractionError;
+        }
+        return false;
+    }
+
+    if (extractedFiles != nullptr) {
+        *extractedFiles = summary.extracted_files;
+    }
+    return true;
+}
+
 bool ExtractGeneralGameBanksInternal(
     std::string* error,
     const InstallStageCallback& stageCallback,
@@ -767,11 +932,34 @@ bool ExtractGeneralGameBanksInternal(
         ReportInstallStage(stageCallback, "Bank archive cleanup failed.");
         return false;
     }
+    std::size_t removedScriptBankDirectories = 0;
+    if (!RemoveStaleScriptBankRootDirectories(
+            outputRoot, &removedScriptBankDirectories, error)) {
+        ReportInstallStage(stageCallback, "Script-bank root cleanup failed.");
+        return false;
+    }
 
     ReportInstallStage(stageCallback, "Copying loose game files...");
     std::size_t copiedFiles = 0;
     if (!CopyLooseGameContentFiles(gameContentRoot, outputRoot, &copiedFiles, error)) {
         ReportInstallStage(stageCallback, "Loose game file copy failed.");
+        return false;
+    }
+
+    ReportInstallStage(stageCallback, "Extracting script-bank lua source...");
+    std::size_t extractedLuaSourceFiles = 0;
+    if (!ExtractLuaSourceBanksForVfs(gameContentRoot,
+                                     outputRoot,
+                                     &extractedLuaSourceFiles,
+                                     error,
+                                     transientStatusCallback)) {
+        ReportInstallStage(stageCallback, "Script-bank lua source extraction failed.");
+        return false;
+    }
+    std::size_t copiedLuaSourceFiles = 0;
+    if (!CopyLuaLooseScriptsForVfs(
+            gameContentRoot, outputRoot, &copiedLuaSourceFiles, error)) {
+        ReportInstallStage(stageCallback, "Loose lua source copy failed.");
         return false;
     }
 
@@ -817,8 +1005,13 @@ bool ExtractGeneralGameBanksInternal(
     std::cerr << "Game banks unpacked at " << summary.output_root << " ("
               << summary.extracted_banks << " bank(s), " << summary.extracted_files
               << " extracted file(s), " << copiedFiles << " loose file(s) copied, "
+              << extractedLuaSourceFiles << " lua source file(s), "
+              << copiedLuaSourceFiles << " loose lua source file(s), "
               << removedBankFiles << " stale bank archive(s) removed, "
+              << removedScriptBankDirectories
+              << " stale script-bank root(s) removed, "
               << summary.vfs_database_entries << " VFS database row(s), "
+              << summary.vfs_unindexed_files << " unindexed VFS file candidate(s), "
               << summary.duplicate_conflicts
               << " differing duplicate conflict(s) routed)\n";
     ReportInstallStage(stageCallback, "Game banks unpacked.");

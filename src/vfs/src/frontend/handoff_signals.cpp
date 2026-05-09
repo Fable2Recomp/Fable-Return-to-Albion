@@ -438,8 +438,12 @@ bool MaybeSignalRefiiPostFrontendConsumerHandoff(
               trace.last_nonidle_render_schedule_at)
               .count();
     }
+    const bool native_fallback_package_ready =
+        trace.post_gameface_package_native_fallback_required &&
+        trace.frontend_consumer_seen;
     gameface_package_complete =
-        (RefiiCompletedPostGameFacePackageMaskLocked(trace) & 0x7u) == 0x7u;
+        (RefiiCompletedPostGameFacePackageMaskLocked(trace) & 0x7u) == 0x7u ||
+        native_fallback_package_ready;
     // Only replay a render schedule while it is still the live handoff. The
     // native producer owns the BeginScene/dynamic-slot/free sequence; this
     // bridge only republishes the producer's source/result fields after Refii

@@ -395,6 +395,11 @@ uint32_t FindRefiiLoadingScreenActiveResourceTable(uint8_t* base) {
 bool RefiiPostGameFacePackageHandoffSignalEmitted() {
   std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
   const auto& trace = RefiiPostVideoHandoffTraceState();
+  if (trace.post_gameface_package_native_fallback_required &&
+      trace.post_frontend_consumer_handoff_signal_emitted &&
+      trace.frontend_consumer_seen) {
+    return true;
+  }
   return trace.post_gameface_package_handoff_signal_emitted &&
          (EndsWith(trace.post_gameface_package_handoff_asset, ".fac") ||
           (RefiiCompletedPostGameFacePackageMaskLocked(trace) & 0x7u) == 0x7u);
@@ -407,6 +412,14 @@ bool RefiiPostGameFacePackageComplete() {
          (RefiiCompletedPostGameFacePackageMaskLocked(trace) & 0x7u) == 0x7u;
 }
 
+bool RefiiPostGameFacePackageNativeFallbackReady() {
+  std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
+  const auto& trace = RefiiPostVideoHandoffTraceState();
+  return trace.post_gameface_package_native_fallback_required &&
+         trace.post_frontend_consumer_handoff_signal_emitted &&
+         trace.frontend_consumer_seen;
+}
+
 bool RefiiPostFrontendDeferredHashWakeSignalEmitted() {
   std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
   const auto& trace = RefiiPostVideoHandoffTraceState();
@@ -414,15 +427,37 @@ bool RefiiPostFrontendDeferredHashWakeSignalEmitted() {
 }
 
 bool RefiiPostVfsChainReadyForLoadingOwnerRelease() {
-  return RefiiStartupVideosReadyForMenuHandoff() &&
-         RefiiPostGameFacePackageComplete() &&
-         RefiiPostVideoFrontendChainConsumed() &&
+  bool frontend_consumed = false;
+  bool gameface_package_ready = false;
+  {
+    std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
+    const auto& trace = RefiiPostVideoHandoffTraceState();
+    frontend_consumed =
+        trace.frontend_consumer_seen ||
+        (trace.post_frontend_consumer_request_seen &&
+         trace.post_gameface_package_handoff_signal_emitted &&
+         (RefiiCompletedPostGameFacePackageMaskLocked(trace) & 0x7u) == 0x7u);
+    const bool package_mask_complete =
+        (RefiiCompletedPostGameFacePackageMaskLocked(trace) & 0x7u) == 0x7u;
+    gameface_package_ready =
+        package_mask_complete &&
+        (trace.post_gameface_package_handoff_signal_emitted ||
+         trace.frontend_consumer_seen);
+    if (!gameface_package_ready &&
+        trace.post_gameface_package_native_fallback_required &&
+        trace.post_frontend_consumer_handoff_signal_emitted &&
+        trace.frontend_consumer_seen) {
+      gameface_package_ready = true;
+    }
+  }
+  return RefiiStartupVideosReadyForMenuHandoff() && gameface_package_ready &&
+         frontend_consumed &&
          RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
 }
 
 bool RefiiOwnerlessPostVideoVfsChainReadyForAfterHolder() {
   return RefiiStartupVideosReadyForMenuHandoff() &&
-         RefiiPostGameFacePackageComplete() &&
+         RefiiPostVfsChainReadyForLoadingOwnerRelease() &&
          RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload() &&
          !RefiiMainMenuTraceNeedsTexturePrime();
 }

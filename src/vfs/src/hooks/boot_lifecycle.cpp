@@ -1,5 +1,292 @@
 #include "vfs_hooks_private.h"
 
+namespace {
+
+bool ShouldLogNativeStartupPlaybackAudit(std::string_view key,
+                                         uint32_t first_count,
+                                         uint32_t interval) {
+  if (!refii::vfs::kTraceFrontendHandoffDiagnostics ||
+      !refii::vfs::VfsTracingEnabled() ||
+      !refii::vfs::VfsVerboseIoTracingEnabled() ||
+      !refii::vfs::RefiiLooseAssetBackendEnabled()) {
+    return false;
+  }
+  if (refii::vfs::RefiiStartupVideosPlaybackCriticalActive()) {
+    return false;
+  }
+
+  static std::mutex mutex;
+  static std::unordered_map<std::string, uint32_t> counts;
+
+  std::lock_guard<std::mutex> lock(mutex);
+  const uint32_t next_count = ++counts[std::string(key)];
+  return next_count <= first_count ||
+         (interval != 0 && (next_count % interval) == 0);
+}
+
+bool ShouldLogNativeStartupFrameProgress() {
+  if (!refii::vfs::kTraceFrontendHandoffDiagnostics ||
+      !refii::vfs::VfsTracingEnabled() ||
+      !refii::vfs::VfsVerboseIoTracingEnabled() ||
+      !refii::vfs::RefiiLooseAssetBackendEnabled()) {
+    return false;
+  }
+
+  static std::mutex mutex;
+  static uint32_t count = 0;
+
+  std::lock_guard<std::mutex> lock(mutex);
+  ++count;
+  return count <= 8 || (count % 20) == 0;
+}
+
+double RefiiStartupVideoFrameDelta(double native_delta,
+                                   bool startup_playback_critical) {
+  static std::mutex mutex;
+  static std::chrono::steady_clock::time_point last_frame_at;
+
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!startup_playback_critical) {
+    last_frame_at = {};
+    return native_delta;
+  }
+
+  // Keep startup playback timing native. Refii owns the streams, not the movie
+  // player's frame clock; feeding larger deltas here makes the generated BIK
+  // holder do non-native catch-up work and can stall visible playback.
+  last_frame_at = std::chrono::steady_clock::now();
+  return native_delta;
+}
+
+bool MaybeApplyNativeStartupVideoDurationCompletion(uint8_t* base,
+                                                    uint32_t owner_guest,
+                                                    uint32_t lr) {
+  if (base == nullptr || !refii::vfs::LooksLikeGuestPointer(owner_guest)) {
+    return false;
+  }
+
+  const uint32_t handoff_guest =
+      refii::vfs::LoadGuestU32(base, owner_guest + 4);
+  if (!refii::vfs::LooksLikeGuestPointer(handoff_guest)) {
+    return false;
+  }
+
+  const uint8_t flag_233 = refii::vfs::LoadGuestU8(base, handoff_guest + 233);
+  const uint8_t flag_244 = refii::vfs::LoadGuestU8(base, handoff_guest + 244);
+  if (flag_233 != 0 || flag_244 != 0) {
+    return false;
+  }
+
+  const float duration =
+      refii::vfs::RefiiGuestF32FromWord(
+          refii::vfs::LoadGuestU32(base, handoff_guest + 4));
+  const float elapsed =
+      refii::vfs::RefiiGuestF32FromWord(
+          refii::vfs::LoadGuestU32(base, handoff_guest + 8));
+  if (duration <= 0.0f || elapsed <= duration) {
+    return false;
+  }
+
+  // Generated sub_82377DC8 performs this same elapsed > duration check and
+  // marks byte 244. If that callback is starved while Refii owns the startup
+  // BIK streams, mirror the native gate so the startup vector can advance
+  // without inventing a different player ABI.
+  refii::vfs::StoreGuestU8(base, handoff_guest + 244, 1);
+  if (refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+          "StartupVideoDurationCompletionFallback", 8)) {
+    REXLOG_INFO("Refii VFS native startup duration completion fallback "
+                "lr=0x{:08X} owner=0x{:08X} handoff=0x{:08X} "
+                "elapsed={} duration={} generated_equivalent=sub_82377DC8",
+                lr,
+                owner_guest,
+                handoff_guest,
+                elapsed,
+                duration);
+  }
+  return true;
+}
+
+std::string ReadGameDataAudioLateBindName(uint8_t* base, uint32_t entry_guest) {
+  if (base == nullptr || !refii::vfs::LooksLikeGuestPointer(entry_guest)) {
+    return {};
+  }
+  const uint32_t string_holder =
+      refii::vfs::LoadGuestU32(base, entry_guest + 0);
+  if (!refii::vfs::LooksLikeGuestPointer(string_holder)) {
+    return {};
+  }
+  const uint32_t string_guest =
+      refii::vfs::LoadGuestU32(base, string_holder + 0);
+  if (!refii::vfs::LooksLikeGuestPointer(string_guest)) {
+    return {};
+  }
+  return refii::vfs::ReadBestEffortGuestString(base, string_guest, 512);
+}
+
+bool ShouldTraceGameDataBootBoundary(uint32_t lr) {
+  if (!refii::vfs::kTraceFrontendHandoffDiagnostics ||
+      !refii::vfs::VfsTracingEnabled() ||
+      !refii::vfs::RefiiLooseAssetBackendEnabled()) {
+    return false;
+  }
+
+  switch (lr) {
+    case 0x822F4094:
+    case 0x822F40CC:
+    case 0x822F4124:
+    case 0x822F413C:
+    case 0x822F4140:
+    case 0x822F4170:
+    case 0x822F41B0:
+    case 0x822F41F0:
+    case 0x822F4208:
+    case 0x822F443C:
+    case 0x822F49E8:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::string FormatContentManagerIteratorState(uint8_t* base,
+                                              uint32_t manager_guest) {
+  if (base == nullptr || !refii::vfs::LooksLikeGuestPointer(manager_guest)) {
+    return fmt::format("manager=0x{:08X}", manager_guest);
+  }
+
+  const uint32_t begin = refii::vfs::LoadGuestU32(base, manager_guest + 40);
+  const uint32_t end = refii::vfs::LoadGuestU32(base, manager_guest + 44);
+  const uint32_t capacity = refii::vfs::LoadGuestU32(base, manager_guest + 48);
+  const uint32_t count =
+      end >= begin && ((end - begin) % sizeof(uint32_t)) == 0
+          ? (end - begin) / sizeof(uint32_t)
+          : 0xFFFFFFFFu;
+  uint32_t first_object = 0;
+  uint32_t first_vtable = 0;
+  uint32_t first_add_ref = 0;
+  uint32_t first_release = 0;
+  if (count != 0 && count != 0xFFFFFFFFu &&
+      refii::vfs::LooksLikeGuestPointer(begin)) {
+    first_object = refii::vfs::LoadGuestU32(base, begin);
+    if (refii::vfs::LooksLikeGuestPointer(first_object)) {
+      first_vtable = refii::vfs::LoadGuestU32(base, first_object);
+      if (refii::vfs::LooksLikeGuestPointer(first_vtable)) {
+        first_add_ref = refii::vfs::LoadGuestU32(base, first_vtable + 4);
+        first_release = refii::vfs::LoadGuestU32(base, first_vtable + 8);
+      }
+    }
+  }
+
+  return fmt::format("manager=0x{:08X} list=[0x{:08X},0x{:08X},0x{:08X}] "
+                     "count={} first=0x{:08X} vtable=0x{:08X} "
+                     "add_ref=0x{:08X} release=0x{:08X}",
+                     manager_guest,
+                     begin,
+                     end,
+                     capacity,
+                     count == 0xFFFFFFFFu ? std::string("invalid")
+                                           : fmt::format("{}", count),
+                     first_object,
+                     first_vtable,
+                     first_add_ref,
+                     first_release);
+}
+
+std::string FormatGuestOutSlot(uint8_t* base, uint32_t out_guest) {
+  if (base == nullptr || !refii::vfs::LooksLikeGuestPointer(out_guest)) {
+    return fmt::format("out=0x{:08X}", out_guest);
+  }
+  return fmt::format("out=0x{:08X}->0x{:08X}",
+                     out_guest,
+                     refii::vfs::LoadGuestU32(base, out_guest));
+}
+
+std::string_view ContentIteratorCallbackName(uint32_t callback_guest) {
+  switch (callback_guest) {
+    case 0x822F3D90:
+      return "DLCStartup";
+    case 0x822F3B20:
+      return "BootPackageCollect";
+    case 0x822F6698:
+      return "ResourceStringMatch";
+    default:
+      return "unknown";
+  }
+}
+
+uint32_t ContentManagerIteratorFirstObject(uint8_t* base,
+                                           uint32_t manager_guest) {
+  if (base == nullptr || !refii::vfs::LooksLikeGuestPointer(manager_guest)) {
+    return 0;
+  }
+
+  const uint32_t begin = refii::vfs::LoadGuestU32(base, manager_guest + 40);
+  const uint32_t end = refii::vfs::LoadGuestU32(base, manager_guest + 44);
+  if (!refii::vfs::LooksLikeGuestPointer(begin) || end < begin ||
+      ((end - begin) % sizeof(uint32_t)) != 0 || begin == end) {
+    return 0;
+  }
+
+  return refii::vfs::LoadGuestU32(base, begin);
+}
+
+bool TryRunRefiiDlcStartupContentFind(PPCContext& ctx,
+                                      uint8_t* base,
+                                      const PPCContext& original_ctx) {
+  if (!refii::vfs::RefiiLooseAssetBackendEnabled() ||
+      original_ctx.lr != 0x822F4094 || original_ctx.r5.u32 != 0x822F3D90 ||
+      !refii::vfs::LooksLikeGuestPointer(original_ctx.r3.u32)) {
+    return false;
+  }
+
+  const uint32_t first_object =
+      ContentManagerIteratorFirstObject(base, original_ctx.r4.u32);
+  if (!refii::vfs::LooksLikeGuestPointer(first_object)) {
+    return false;
+  }
+
+  PPCContext callback_ctx = original_ctx;
+  callback_ctx.r3.u32 = first_object;
+  callback_ctx.r4.u32 = original_ctx.r6.u32;
+  callback_ctx.lr = 0x8237FEC8;
+
+  if (refii::vfs::VfsTracingEnabled()) {
+    REXLOG_INFO("Refii VFS collapsed DLCStartup content find enter "
+                "lr=0x{:08X} out=0x{:08X} request_manager=0x{:08X} "
+                "arg=0x{:08X}",
+                original_ctx.lr,
+                original_ctx.r3.u32,
+                first_object,
+                original_ctx.r6.u32);
+  }
+
+  __imp__sub_822F3D90(callback_ctx, base);
+
+  const bool keep_scanning = (callback_ctx.r3.u32 & 0xFF) != 0;
+  if (keep_scanning) {
+    refii::vfs::StoreGuestU32(base, original_ctx.r3.u32, 0);
+  } else {
+    refii::vfs::StoreGuestU32(base, original_ctx.r3.u32, first_object);
+  }
+  ctx = original_ctx;
+  ctx.r3.u32 = original_ctx.r3.u32;
+
+  if (refii::vfs::VfsTracingEnabled()) {
+    REXLOG_INFO("Refii VFS collapsed DLCStartup content find exit "
+                "lr=0x{:08X} callback_result=0x{:08X} "
+                "keep_scanning={} out=0x{:08X}->0x{:08X}",
+                original_ctx.lr,
+                callback_ctx.r3.u32,
+                keep_scanning ? "true" : "false",
+                original_ctx.r3.u32,
+                refii::vfs::LoadGuestU32(base, original_ctx.r3.u32));
+  }
+  return true;
+}
+
+} // namespace
+
 PPC_FUNC_IMPL(rex_lhResource_InitModelHeaders) {
   PPC_FUNC_PROLOGUE();
 
@@ -279,7 +566,8 @@ PPC_FUNC_IMPL(rex_lhResource_SetLoadMode) {
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
-      refii::vfs::VfsTracingEnabled()) {
+      refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("VFS trace Boot phase enter SetLoadMode lr=0x{:08X} "
                 "this=0x{:08X} mode_a=0x{:08X} mode_b=0x{:08X} "
                 "handoff=[{}] main_menu=[{}]",
@@ -300,7 +588,8 @@ PPC_FUNC_IMPL(rex_lhResource_SetLoadMode) {
                                               original_ctx.r5.u32);
 
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
-      refii::vfs::VfsTracingEnabled()) {
+      refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("VFS trace Boot phase exit SetLoadMode lr=0x{:08X} "
                 "result=0x{:08X} handoff=[{}] main_menu=[{}]",
                 original_ctx.lr,
@@ -317,7 +606,8 @@ PPC_FUNC_IMPL(rex_lhResource_InitSystem) {
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
-      refii::vfs::VfsTracingEnabled()) {
+      refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("VFS trace Boot phase enter InitSystem lr=0x{:08X}",
                 original_ctx.lr);
   }
@@ -340,7 +630,8 @@ PPC_FUNC_IMPL(rex_lhResource_InitLoader) {
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
-      refii::vfs::VfsTracingEnabled()) {
+      refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("VFS trace Boot phase enter InitLoader lr=0x{:08X}",
                 original_ctx.lr);
   }
@@ -363,7 +654,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_Construct) {
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
-      refii::vfs::VfsTracingEnabled()) {
+      refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("VFS trace Boot phase enter Renderer_Construct lr=0x{:08X} "
                 "this=0x{:08X}",
                 original_ctx.lr,
@@ -415,13 +707,57 @@ PPC_FUNC_IMPL(sub_82389210) {
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
-  if (refii::vfs::RefiiPostVideoVfsHandoffTraceActive()) {
+  const bool native_startup_frame = original_ctx.lr == 0x82377BCCu;
+  const bool startup_playback_critical =
+      native_startup_frame &&
+      refii::vfs::RefiiStartupVideosPlaybackCriticalActive();
+  const double native_frame_delta = original_ctx.f1.f64;
+  const double corrected_startup_frame_delta =
+      RefiiStartupVideoFrameDelta(native_frame_delta, startup_playback_critical);
+  const bool startup_frame_delta_corrected =
+      startup_playback_critical &&
+      corrected_startup_frame_delta > native_frame_delta;
+  if (startup_frame_delta_corrected) {
+    ctx.f1.f64 = corrected_startup_frame_delta;
+  }
+  const bool startup_frame_progress =
+      startup_playback_critical && ShouldLogNativeStartupFrameProgress();
+  const bool native_startup_audit =
+      native_startup_frame &&
+      ShouldLogNativeStartupPlaybackAudit("NativeStartupFrame_82389210", 3,
+                                          300);
+  if (!startup_playback_critical &&
+      refii::vfs::RefiiPostVideoVfsHandoffTraceActive()) {
     refii::vfs::BeginRefiiPostVideoFrameStageTiming();
   }
   const bool trace =
+      !startup_playback_critical &&
       refii::vfs::ShouldTracePostVideoBoundaryProbe("PostVideoFrame_82389210");
-  refii::vfs::RecordRefiiPostVideoFrameHandoffSnapshot(
-      base, original_ctx.r3.u32, original_ctx.lr);
+  if (!startup_playback_critical) {
+    refii::vfs::RecordRefiiPostVideoFrameHandoffSnapshot(
+        base, original_ctx.r3.u32, original_ctx.lr);
+  }
+  if (startup_frame_progress) {
+    REXLOG_INFO("Refii VFS native startup frame progress enter "
+                "lr=0x{:08X} owner=0x{:08X} delta={} native_delta={} "
+                "corrected={} timing=[{}]",
+                original_ctx.lr,
+                original_ctx.r3.u32,
+                ctx.f1.f64,
+                native_frame_delta,
+                startup_frame_delta_corrected ? "true" : "false",
+                refii::vfs::FormatPostVideoFrameTimingState(
+                    base, original_ctx.r3.u32, ctx.f1.f64));
+  }
+  if (native_startup_audit) {
+    REXLOG_INFO("Refii VFS native startup frame enter sub_82389210 "
+                "lr=0x{:08X} owner=0x{:08X} delta={} timing=[{}]",
+                original_ctx.lr,
+                original_ctx.r3.u32,
+                original_ctx.f1.f64,
+                refii::vfs::FormatPostVideoFrameTimingState(
+                    base, original_ctx.r3.u32, original_ctx.f1.f64));
+  }
   if (trace) {
     REXLOG_INFO("VFS trace post-video frame update enter sub_82389210 "
                 "lr=0x{:08X} delta={} timing=[{}] args=[{}] chain=[{}] "
@@ -438,7 +774,7 @@ PPC_FUNC_IMPL(sub_82389210) {
   }
 
   bool pre_native_post_gameface_frame_handoff = false;
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
+  if (!startup_playback_critical && refii::vfs::RefiiLooseAssetBackendEnabled() &&
       refii::vfs::RefiiStartupVideosReadyForMenuHandoff()) {
     pre_native_post_gameface_frame_handoff =
         refii::vfs::TryAttachRefiiPostGameFaceRenderHandoffToActiveFrame(
@@ -463,7 +799,13 @@ PPC_FUNC_IMPL(sub_82389210) {
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - begin)
           .count();
+  const bool startup_duration_completion_applied =
+      startup_playback_critical &&
+      MaybeApplyNativeStartupVideoDurationCompletion(base,
+                                                     original_ctx.r3.u32,
+                                                     original_ctx.lr);
   if (refii::vfs::VfsTracingEnabled() &&
+      !startup_playback_critical &&
       (refii::vfs::RefiiStartupVideosReadyForMenuHandoff() ||
        refii::vfs::RefiiMainMenuTraceIsHashOnly() ||
        refii::vfs::RefiiMainMenuTraceNeedsFrontendHandoff())) {
@@ -474,14 +816,16 @@ PPC_FUNC_IMPL(sub_82389210) {
                                                 original_ctx.r4.u32,
                                                 original_ctx.r5.u32);
   }
-  refii::vfs::MaybeApplyRefiiVfsPostVideoHandoffTimerPatch(
-      base, original_ctx.lr, original_ctx.r3.u32, "PostVideoFrame_82389210");
-  PPCContext post_video_synthetic_ctx = original_ctx;
-  refii::vfs::TryRunPostVideoFrontendSyntheticHandoff(
-      post_video_synthetic_ctx,
-      base,
-      original_ctx.r3.u32,
-      "PostVideoFrame_82389210");
+  if (!startup_playback_critical) {
+    refii::vfs::MaybeApplyRefiiVfsPostVideoHandoffTimerPatch(
+        base, original_ctx.lr, original_ctx.r3.u32, "PostVideoFrame_82389210");
+    PPCContext post_video_synthetic_ctx = original_ctx;
+    refii::vfs::TryRunPostVideoFrontendSyntheticHandoff(
+        post_video_synthetic_ctx,
+        base,
+        original_ctx.r3.u32,
+        "PostVideoFrame_82389210");
+  }
 
   if (trace) {
     REXLOG_INFO("VFS trace post-video frame update exit sub_82389210 "
@@ -504,7 +848,34 @@ PPC_FUNC_IMPL(sub_82389210) {
                 refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
                 refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
   }
-  if (elapsed_ms >= 250 &&
+  if (native_startup_audit && !trace) {
+    REXLOG_INFO("Refii VFS native startup frame exit sub_82389210 "
+                "lr=0x{:08X} result=0x{:08X} elapsed_ms={} delta={} "
+                "native_delta={} corrected={} duration_complete={} "
+                "timing_after=[{}]",
+                original_ctx.lr,
+                ctx.r3.u32,
+                elapsed_ms,
+                ctx.f1.f64,
+                native_frame_delta,
+                startup_frame_delta_corrected ? "true" : "false",
+                startup_duration_completion_applied ? "true" : "false",
+                refii::vfs::FormatPostVideoFrameTimingState(
+                    base, original_ctx.r3.u32, ctx.f1.f64));
+  }
+  if (startup_frame_progress) {
+    REXLOG_INFO("Refii VFS native startup frame progress exit "
+                "lr=0x{:08X} result=0x{:08X} elapsed_ms={} delta={} "
+                "duration_complete={} timing_after=[{}]",
+                original_ctx.lr,
+                ctx.r3.u32,
+                elapsed_ms,
+                original_ctx.f1.f64,
+                startup_duration_completion_applied ? "true" : "false",
+                refii::vfs::FormatPostVideoFrameTimingState(
+                    base, original_ctx.r3.u32, original_ctx.f1.f64));
+  }
+  if (!startup_playback_critical && elapsed_ms >= 250 &&
       refii::vfs::RefiiPostVideoVfsHandoffTraceActive() &&
       refii::vfs::ShouldLogRepeatedVfsTraceOperation(
           "PostVideoFrameSlowBoundary", 8)) {
@@ -533,10 +904,12 @@ PPC_FUNC_IMPL(sub_82389210) {
         "TraceOnce",
         next_boundary);
   }
-  refii::vfs::MaybeLogRefiiPostVideoHashOnlyBlocker(
-      original_ctx.lr, "PostVideoFrame_82389210", base);
-  refii::vfs::MaybeLogRefiiStartupReadyGateTextureOpenVerdict(
-      original_ctx.lr, "PostVideoFrame_82389210", base);
+  if (!startup_playback_critical) {
+    refii::vfs::MaybeLogRefiiPostVideoHashOnlyBlocker(
+        original_ctx.lr, "PostVideoFrame_82389210", base);
+    refii::vfs::MaybeLogRefiiStartupReadyGateTextureOpenVerdict(
+        original_ctx.lr, "PostVideoFrame_82389210", base);
+  }
 }
 
 PPC_FUNC_IMPL(sub_823781E0) {
@@ -1175,9 +1548,12 @@ PPC_FUNC_IMPL(sub_82A415C0) {
       refii_owned_texture &&
       (refii::vfs::VfsTracingEnabled() ||
        refii::vfs::LooseAssetOverrideTracingEnabled() ||
-       main_menu_texture ||
-       refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-           "TextureDescriptorConstruct", 64));
+       main_menu_texture) &&
+      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+          fmt::format("TextureDescriptorConstruct:{:08X}:{}",
+                      resource_hash,
+                      refii::vfs::NormalizeLooseAssetKey(name)),
+          main_menu_texture ? 32 : 64);
 
   if (trace) {
     REXLOG_INFO("Refii VFS texture descriptor ctor enter lr=0x{:08X} "
@@ -1504,14 +1880,29 @@ PPC_FUNC_IMPL(sub_82389040) {
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
+  const bool native_startup_audit =
+      original_ctx.lr == 0x82377CD4 &&
+      ShouldLogNativeStartupPlaybackAudit("NativeStartupFrame_82389040", 4,
+                                          1);
   const bool trace =
       refii::vfs::ShouldTracePostVideoTextureOwnedHandoffProbe(
           "StartupVideoFrame_82389040") ||
       (refii::vfs::kTraceNonVfsBootFrameProbes &&
        refii::vfs::VfsTracingEnabled() &&
-       (original_ctx.lr == 0x82377CD4 ||
-        refii::vfs::ShouldTracePostVideoBoundaryProbe(
-            "PostVideoFrame_82389040")));
+       original_ctx.lr != 0x82377CD4 &&
+       refii::vfs::ShouldTracePostVideoBoundaryProbe(
+           "PostVideoFrame_82389040"));
+  if (native_startup_audit && !trace) {
+    REXLOG_INFO("Refii VFS native startup frame construct enter sub_82389040 "
+                "lr=0x{:08X} frame_object=0x{:08X} render_resource=0x{:08X} "
+                "frame_source=0x{:08X} source_words={}",
+                original_ctx.lr,
+                original_ctx.r3.u32,
+                original_ctx.r4.u32,
+                original_ctx.r5.u32,
+                refii::vfs::FormatGuestWordsIfPointer(
+                    base, original_ctx.r5.u32, 4));
+  }
   if (trace) {
     REXLOG_INFO("VFS trace startup-video frame object construct enter "
                 "sub_82389040 lr=0x{:08X} args=[{}] frame_object=0x{:08X} "
@@ -1542,13 +1933,25 @@ PPC_FUNC_IMPL(sub_82389040) {
                                                     elapsed_ms);
   }
 
-  if (trace) {
+  if (trace || (native_startup_audit && !trace)) {
     refii::vfs::RecordRefiiPostVideoUiEvent("StartupVideoFrame_82389040",
                                                 original_ctx.lr,
                                                 ctx.r3.u32,
                                                 original_ctx.r3.u32,
                                                 original_ctx.r4.u32,
                                                 original_ctx.r5.u32);
+  }
+  if (native_startup_audit && !trace) {
+    REXLOG_INFO("Refii VFS native startup frame construct exit sub_82389040 "
+                "lr=0x{:08X} result=0x{:08X} elapsed_ms={} "
+                "frame_object_after={}",
+                original_ctx.lr,
+                ctx.r3.u32,
+                elapsed_ms,
+                refii::vfs::FormatGuestWordsIfPointer(
+                    base, original_ctx.r3.u32, 8));
+  }
+  if (trace) {
     REXLOG_INFO("VFS trace startup-video frame object construct exit "
                 "sub_82389040 lr=0x{:08X} result=0x{:08X} elapsed_ms={} "
                 "frame_object_after={} post_video=[{}] main_menu=[{}]",
@@ -1885,6 +2288,7 @@ PPC_FUNC_IMPL(rex_lhMeshResource_Deserialize) {
       descriptor_guest != 0 ? refii::vfs::LoadGuestU32(base, descriptor_guest) : 0;
   const bool trace_deserialize =
       refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::VfsVerboseIoTracingEnabled() &&
       (refii::vfs::kTraceMeshModelAudioDiagnostics ||
        refii::vfs::IsBootFontResourceHash(resource_hash) ||
        (refii::vfs::RefiiPostVideoVfsHandoffTraceActive() &&
@@ -1956,6 +2360,7 @@ PPC_FUNC_IMPL(rex_lhMeshResource_Load) {
       descriptor_guest != 0 ? refii::vfs::LoadGuestU32(base, descriptor_guest) : 0;
   const bool trace_load =
       refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::VfsVerboseIoTracingEnabled() &&
       (refii::vfs::kTraceMeshModelAudioDiagnostics ||
        refii::vfs::IsBootFontResourceHash(resource_hash) ||
        (refii::vfs::RefiiPostVideoVfsHandoffTraceActive() &&
@@ -2011,7 +2416,9 @@ PPC_FUNC_IMPL(sub_8286FDB0) {
   const PPCContext original_ctx = ctx;
   const bool trace =
       refii::vfs::VfsTracingEnabled() &&
-      refii::vfs::ShouldTracePostVideoFontCaller(original_ctx.lr);
+      refii::vfs::ShouldTracePostVideoFontCaller(original_ctx.lr) &&
+      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+          fmt::format("PostVideoFontSelect:{:08X}", original_ctx.lr), 16);
   if (trace) {
     REXLOG_INFO("VFS trace PostVideoFontSelect enter lr=0x{:08X} "
                 "out=0x{:08X} selector=0x{:08X} out_before={} "
@@ -2066,7 +2473,9 @@ PPC_FUNC_IMPL(sub_8218DFB8) {
   const PPCContext original_ctx = ctx;
   const bool trace =
       refii::vfs::VfsTracingEnabled() &&
-      refii::vfs::ShouldTracePostVideoFontCaller(original_ctx.lr);
+      refii::vfs::ShouldTracePostVideoFontCaller(original_ctx.lr) &&
+      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+          fmt::format("PostVideoFontAssign:{:08X}", original_ctx.lr), 16);
   if (trace) {
     REXLOG_INFO("VFS trace PostVideoFontAssign enter lr=0x{:08X} "
                 "target=0x{:08X} source=0x{:08X} target_before={} "
@@ -2126,7 +2535,9 @@ PPC_FUNC_IMPL(sub_82231CB8) {
   const PPCContext original_ctx = ctx;
   const bool trace =
       refii::vfs::VfsTracingEnabled() &&
-      refii::vfs::ShouldTracePostVideoFontCaller(original_ctx.lr);
+      refii::vfs::ShouldTracePostVideoFontCaller(original_ctx.lr) &&
+      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+          fmt::format("PostVideoFontTempRelease:{:08X}", original_ctx.lr), 16);
   if (trace) {
     REXLOG_INFO("VFS trace PostVideoFontTempRelease enter lr=0x{:08X} "
                 "object=0x{:08X} object_words={} handoff=[{}] main_menu=[{}]",
@@ -2257,7 +2668,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_StartThread) {
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
-      refii::vfs::VfsTracingEnabled()) {
+      refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("VFS trace Boot phase enter Renderer_StartThread lr=0x{:08X} "
                 "renderer=0x{:08X}",
                 original_ctx.lr,
@@ -2267,7 +2679,8 @@ PPC_FUNC_IMPL(rex_lhRenderer_StartThread) {
   __imp__rex_lhRenderer_StartThread(ctx, base);
 
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
-      refii::vfs::VfsTracingEnabled()) {
+      refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("VFS trace Boot phase exit Renderer_StartThread lr=0x{:08X} "
                 "result=0x{:08X}",
                 original_ctx.lr,
@@ -2282,7 +2695,8 @@ PPC_FUNC_IMPL(rex_lhGameInit_SetupUI) {
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
-      refii::vfs::VfsTracingEnabled()) {
+      refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("VFS trace Boot phase enter SetupUI lr=0x{:08X} game=0x{:08X} "
                 "handoff=[{}] main_menu=[{}]",
                 original_ctx.lr,
@@ -2301,7 +2715,8 @@ PPC_FUNC_IMPL(rex_lhGameInit_SetupUI) {
                                                 original_ctx.r4.u32,
                                                 original_ctx.r5.u32);
     if ((refii::vfs::kTraceFrontendHandoffDiagnostics &&
-         refii::vfs::VfsTracingEnabled()) ||
+         refii::vfs::VfsTracingEnabled() &&
+         refii::vfs::VfsVerboseIoTracingEnabled()) ||
         refii::vfs::LooseAssetOverrideTracingEnabled()) {
       REXLOG_INFO("VFS trace Boot phase skip SetupUI startup videos "
                   "lr=0x{:08X} game=0x{:08X} handoff=[{}]",
@@ -2321,12 +2736,364 @@ PPC_FUNC_IMPL(rex_lhGameInit_SetupUI) {
                                               original_ctx.r5.u32);
 
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
-      refii::vfs::VfsTracingEnabled()) {
+      refii::vfs::VfsTracingEnabled() &&
+      refii::vfs::VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("VFS trace Boot phase exit SetupUI lr=0x{:08X} result=0x{:08X} "
                 "handoff=[{}] main_menu=[{}]",
                 original_ctx.lr,
                 ctx.r3.u32,
                 refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
                 refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
+  }
+}
+
+PPC_FUNC_IMPL(rex_lhGame_UpdateThread) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhGame_UpdateThread);
+
+  const PPCContext original_ctx = ctx;
+  if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
+      refii::vfs::VfsTracingEnabled()) {
+    REXLOG_INFO("VFS trace Game_UpdateThread enter lr=0x{:08X} game=0x{:08X}",
+                original_ctx.lr,
+                original_ctx.r3.u32);
+  }
+
+  __imp__rex_lhGame_UpdateThread(ctx, base);
+
+  if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
+      refii::vfs::VfsTracingEnabled()) {
+    REXLOG_INFO("VFS trace Game_UpdateThread exit lr=0x{:08X} result=0x{:08X}",
+                original_ctx.lr,
+                ctx.r3.u32);
+  }
+}
+
+PPC_FUNC_IMPL(rex_lhGameData_Init) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhGameData_Init);
+
+  const PPCContext original_ctx = ctx;
+  if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
+      refii::vfs::VfsTracingEnabled()) {
+    REXLOG_INFO("VFS trace GameData_Init enter lr=0x{:08X} game=0x{:08X}",
+                original_ctx.lr,
+                original_ctx.r3.u32);
+  }
+
+  __imp__rex_lhGameData_Init(ctx, base);
+
+  if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
+      refii::vfs::VfsTracingEnabled()) {
+    REXLOG_INFO("VFS trace GameData_Init exit lr=0x{:08X} result=0x{:08X}",
+                original_ctx.lr,
+                ctx.r3.u32);
+  }
+}
+
+PPC_FUNC_IMPL(sub_822F3D90) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_822F3D90);
+
+  const PPCContext original_ctx = ctx;
+  if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
+      refii::vfs::VfsTracingEnabled()) {
+    REXLOG_INFO("VFS trace DLCStartup runner enter lr=0x{:08X} "
+                "request_manager=0x{:08X}",
+                original_ctx.lr,
+                original_ctx.r3.u32);
+  }
+
+  __imp__sub_822F3D90(ctx, base);
+
+  if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
+      refii::vfs::VfsTracingEnabled()) {
+    REXLOG_INFO("VFS trace DLCStartup runner exit lr=0x{:08X} result=0x{:08X}",
+                original_ctx.lr,
+                ctx.r3.u32);
+  }
+}
+
+PPC_FUNC_IMPL(sub_8237FE30) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8237FE30);
+
+  const PPCContext original_ctx = ctx;
+  const bool trace = ShouldTraceGameDataBootBoundary(original_ctx.lr);
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData content find enter lr=0x{:08X} "
+                "{} callback=0x{:08X}/{} arg=0x{:08X} {}",
+                original_ctx.lr,
+                FormatGuestOutSlot(base, original_ctx.r3.u32),
+                original_ctx.r5.u32,
+                ContentIteratorCallbackName(original_ctx.r5.u32),
+                original_ctx.r6.u32,
+                FormatContentManagerIteratorState(base, original_ctx.r4.u32));
+  }
+
+  if (TryRunRefiiDlcStartupContentFind(ctx, base, original_ctx)) {
+    return;
+  }
+
+  __imp__sub_8237FE30(ctx, base);
+
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData content find exit lr=0x{:08X} "
+                "result=0x{:08X} {}",
+                original_ctx.lr,
+                ctx.r3.u32,
+                FormatGuestOutSlot(base, original_ctx.r3.u32));
+  }
+}
+
+PPC_FUNC_IMPL(sub_8237FD60) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8237FD60);
+
+  const PPCContext original_ctx = ctx;
+  const bool trace = ShouldTraceGameDataBootBoundary(original_ctx.lr);
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData content for-each enter lr=0x{:08X} "
+                "arg=0x{:08X} {}",
+                original_ctx.lr,
+                original_ctx.r4.u32,
+                FormatContentManagerIteratorState(base, original_ctx.r3.u32));
+  }
+
+  __imp__sub_8237FD60(ctx, base);
+
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData content for-each exit lr=0x{:08X} "
+                "result=0x{:08X}",
+                original_ctx.lr,
+                ctx.r3.u32);
+  }
+}
+
+PPC_FUNC_IMPL(rex_lhRenderer_BeginGPUFrame) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_BeginGPUFrame);
+
+  const PPCContext original_ctx = ctx;
+  const bool trace = ShouldTraceGameDataBootBoundary(original_ctx.lr);
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData GPU frame begin enter lr=0x{:08X}",
+                original_ctx.lr);
+  }
+
+  __imp__rex_lhRenderer_BeginGPUFrame(ctx, base);
+
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData GPU frame begin exit lr=0x{:08X} "
+                "result=0x{:08X}",
+                original_ctx.lr,
+                ctx.r3.u32);
+  }
+}
+
+PPC_FUNC_IMPL(rex_lhRenderer_EndGPUFrame) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderer_EndGPUFrame);
+
+  const PPCContext original_ctx = ctx;
+  const bool trace = ShouldTraceGameDataBootBoundary(original_ctx.lr);
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData GPU frame end enter lr=0x{:08X}",
+                original_ctx.lr);
+  }
+
+  __imp__rex_lhRenderer_EndGPUFrame(ctx, base);
+
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData GPU frame end exit lr=0x{:08X} "
+                "result=0x{:08X}",
+                original_ctx.lr,
+                ctx.r3.u32);
+  }
+}
+
+PPC_FUNC_IMPL(sub_82A4E998) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82A4E998);
+
+  const PPCContext original_ctx = ctx;
+  const bool trace = ShouldTraceGameDataBootBoundary(original_ctx.lr);
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData renderer resource pair enter lr=0x{:08X} "
+                "left='{}' right='{}'",
+                original_ctx.lr,
+                refii::vfs::ReadMaybeGuestString(base, original_ctx.r3.u32),
+                refii::vfs::ReadMaybeGuestString(base, original_ctx.r4.u32));
+  }
+
+  __imp__sub_82A4E998(ctx, base);
+
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData renderer resource pair exit lr=0x{:08X} "
+                "result=0x{:08X}",
+                original_ctx.lr,
+                ctx.r3.u32);
+  }
+}
+
+PPC_FUNC_IMPL(sub_822F4948) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_822F4948);
+
+  const PPCContext original_ctx = ctx;
+  const bool trace = ShouldTraceGameDataBootBoundary(original_ctx.lr);
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData resource register enter lr=0x{:08X} "
+                "game=0x{:08X} name='{}' flag=0x{:08X}",
+                original_ctx.lr,
+                original_ctx.r3.u32,
+                refii::vfs::ReadMaybeGuestString(base, original_ctx.r4.u32),
+                original_ctx.r5.u32);
+  }
+
+  __imp__sub_822F4948(ctx, base);
+
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData resource register exit lr=0x{:08X} "
+                "result=0x{:08X}",
+                original_ctx.lr,
+                ctx.r3.u32);
+  }
+}
+
+PPC_FUNC_IMPL(sub_822F4210) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_822F4210);
+
+  const PPCContext original_ctx = ctx;
+  const bool trace = ShouldTraceGameDataBootBoundary(original_ctx.lr);
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData resource setup enter lr=0x{:08X} "
+                "entry=0x{:08X}",
+                original_ctx.lr,
+                original_ctx.r3.u32);
+  }
+
+  __imp__sub_822F4210(ctx, base);
+
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData resource setup exit lr=0x{:08X} "
+                "result=0x{:08X}",
+                original_ctx.lr,
+                ctx.r3.u32);
+  }
+}
+
+PPC_FUNC_IMPL(sub_822F4750) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_822F4750);
+
+  const PPCContext original_ctx = ctx;
+  const bool trace = ShouldTraceGameDataBootBoundary(original_ctx.lr);
+  if (original_ctx.lr == 0x82319244u) {
+    refii::vfs::RecordRefiiFrontEndAudioBankLateBind(
+        ReadGameDataAudioLateBindName(base, original_ctx.r4.u32),
+        original_ctx.lr);
+  }
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData resource late-bind enter lr=0x{:08X} "
+                "game=0x{:08X} entry=0x{:08X}",
+                original_ctx.lr,
+                original_ctx.r3.u32,
+                original_ctx.r4.u32);
+  }
+
+  __imp__sub_822F4750(ctx, base);
+
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData resource late-bind exit lr=0x{:08X} "
+                "result=0x{:08X}",
+                original_ctx.lr,
+                ctx.r3.u32);
+  }
+}
+
+PPC_FUNC_IMPL(rex_lhFile_CloseAndRelease) {
+  PPC_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_CloseAndRelease);
+
+  const PPCContext original_ctx = ctx;
+  const bool trace = ShouldTraceGameDataBootBoundary(original_ctx.lr);
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData file close/release enter lr=0x{:08X} "
+                "file=0x{:08X} words=0x{:08X} 0x{:08X} 0x{:08X} 0x{:08X}",
+                original_ctx.lr,
+                original_ctx.r3.u32,
+                refii::vfs::LooksLikeGuestPointer(original_ctx.r3.u32)
+                    ? refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 0)
+                    : 0,
+                refii::vfs::LooksLikeGuestPointer(original_ctx.r3.u32)
+                    ? refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 4)
+                    : 0,
+                refii::vfs::LooksLikeGuestPointer(original_ctx.r3.u32)
+                    ? refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 8)
+                    : 0,
+                refii::vfs::LooksLikeGuestPointer(original_ctx.r3.u32)
+                    ? refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 12)
+                    : 0);
+  }
+
+  if (original_ctx.lr == 0x822F4208 &&
+      refii::vfs::LooksLikeGuestPointer(original_ctx.r3.u32)) {
+    const uint32_t vtable =
+        refii::vfs::LoadGuestU32(base, original_ctx.r3.u32);
+    const uint32_t total_stream =
+        refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 8);
+    const uint32_t read_stream =
+        refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 12);
+    const bool has_refii_stream =
+        refii::vfs::IsRefiiHostDiskStream(base, total_stream) ||
+        refii::vfs::IsRefiiHostDiskStream(base, read_stream);
+    const bool known_lh_file_vtable =
+        vtable == 0x8200DF08 || vtable == 0x820A4928;
+    if (!known_lh_file_vtable) {
+      PPCContext release_ctx = original_ctx;
+      if (refii::vfs::IsRefiiHostDiskStream(base, total_stream)) {
+        refii::vfs::ReleaseGuestObject(release_ctx, base, total_stream);
+      }
+      if (read_stream != total_stream &&
+          refii::vfs::IsRefiiHostDiskStream(base, read_stream)) {
+        refii::vfs::ReleaseGuestObject(release_ctx, base, read_stream);
+      }
+      if (trace || refii::vfs::VfsTracingEnabled()) {
+        REXLOG_WARN("Refii VFS skipped invalid GameData lhFile final close "
+                    "lr=0x{:08X} file=0x{:08X} vtable=0x{:08X} "
+                    "total=0x{:08X} read=0x{:08X} released_refii={}",
+                    original_ctx.lr,
+                    original_ctx.r3.u32,
+                    vtable,
+                    total_stream,
+                    read_stream,
+                    has_refii_stream);
+      }
+      ctx.r3.u32 = original_ctx.r3.u32;
+      return;
+    }
+  }
+
+  __imp__rex_lhFile_CloseAndRelease(ctx, base);
+
+  if (trace) {
+    REXLOG_INFO("VFS trace GameData file close/release exit lr=0x{:08X} "
+                "result=0x{:08X}",
+                original_ctx.lr,
+                ctx.r3.u32);
   }
 }

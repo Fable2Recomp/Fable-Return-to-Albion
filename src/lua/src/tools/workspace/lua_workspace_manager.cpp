@@ -23,6 +23,7 @@ struct ExtractionSummary {
     std::size_t bank_count = 0;
     std::size_t extracted_file_count = 0;
     std::size_t copied_loose_file_count = 0;
+    bool reused_source_cache = false;
 };
 
 struct BaselineEntry {
@@ -251,6 +252,24 @@ bool CopyDirectoryTree(const std::filesystem::path& source_directory,
     return true;
 }
 
+bool ScriptBankSourceCacheReady(const std::filesystem::path& source_root) {
+    std::error_code status_error;
+    for (const std::string_view bank_name : kScriptBankNames) {
+        const std::filesystem::path bank_root =
+            refii::bnk::GetBankOutputRoot(source_root, std::filesystem::path(bank_name));
+        if (!std::filesystem::is_directory(bank_root, status_error)) {
+            return false;
+        }
+        status_error.clear();
+
+        if (!std::filesystem::is_regular_file(bank_root / "_manifest.tsv", status_error)) {
+            return false;
+        }
+        status_error.clear();
+    }
+    return true;
+}
+
 bool WriteWorkspaceReadme(const std::filesystem::path& workspace_root, std::string* error) {
     const std::filesystem::path readme_path = workspace_root / "README.txt";
     std::ostringstream readme;
@@ -289,6 +308,18 @@ bool ExportLuaWorkspaceSources(const std::filesystem::path& game_install_root,
             *error = exception.what();
         }
         return false;
+    }
+
+    if (ScriptBankSourceCacheReady(source_root)) {
+        active_summary->reused_source_cache = true;
+        if (!WriteWorkspaceReadme(workspace_root, error)) {
+            return false;
+        }
+        if (log != nullptr) {
+            *log << "Lua workspace ready at " << workspace_root.string()
+                 << " using existing luasource script-bank cache\n";
+        }
+        return true;
     }
 
     refii::bnk::BankExtractionOptions bank_options;

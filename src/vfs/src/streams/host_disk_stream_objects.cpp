@@ -297,10 +297,11 @@ bool TryOpenLooseAssetResourceWrapper(
   ReleaseGuestObject(ctx, base, stream_guest);
   ctx.r3.u32 = out_guest;
 
-  if (LooseAssetOverrideTracingEnabled() ||
-      ShouldLogLooseStreamOperation("RefiiResourceStream_Open",
-                                    wrapper_guest,
-                                    16)) {
+  if (VfsVerboseIoTracingEnabled() &&
+      (LooseAssetOverrideTracingEnabled() ||
+       ShouldLogLooseStreamOperation("RefiiResourceStream_Open",
+                                     wrapper_guest,
+                                     16))) {
     REXLOG_INFO("Refii ResourceManager stream wrapper opened wrapper=0x{:08X} "
                 "stream=0x{:08X} request=0x{:08X} buffer=0x{:08X} "
                 "offset={} bytes={} pending=1 flags=0x{:02X} path={} "
@@ -719,6 +720,15 @@ void CompleteRefiiReadRequest(uint8_t* base,
   StoreGuestU32(base, record_guest + 176, bytes_read);
 
   if (completed) {
+    if (record->offset == 0 && record->buffer_guest != 0) {
+      if (const auto stream_record =
+              FindRefiiHostStreamRecord(record->stream_guest)) {
+        std::lock_guard<std::mutex> stream_lock(stream_record->mutex);
+        stream_record->materialized_buffer_guest = record->buffer_guest;
+        stream_record->materialized_bytes = bytes_read;
+      }
+    }
+
     const auto zero = std::chrono::steady_clock::time_point{};
     const int64_t queue_wait_ms =
         queued_at == zero || started_at == zero

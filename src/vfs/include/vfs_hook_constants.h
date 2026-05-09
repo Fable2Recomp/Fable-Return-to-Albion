@@ -35,6 +35,7 @@ constexpr uint32_t kRefiiPrivateHandleInvalid = 0xFFFFFFFF;
 constexpr uint32_t kTextureParserSingletonObjectGlobal = 0x83497138;
 constexpr uint32_t kNativeStartupReadyRequestVTable = 0x820A8FA8;
 constexpr uint32_t kNativeFrontendRenderRequestVTable = 0x820A48F0;
+constexpr uint32_t kNativeFrontendRenderRequestSlotVTable = 0x820A4910;
 constexpr bool kDirectResourceManagerOpenOverride = true;
 constexpr bool kDirectResourceManagerWrapperOverride = true;
 constexpr bool kDirectTextureCallerOverride = true;

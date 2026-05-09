@@ -71,10 +71,53 @@ void AddGlobalTextureCandidates(std::vector<std::string>& candidates,
     return;
   }
 
-  AddUnique(candidates, "Globals/1024mip0_textures/" + std::string(relative));
-  AddUnique(candidates, "Globals/globals_textures/" + std::string(relative));
+  AddUnique(candidates, "globals/1024mip0_textures/" + std::string(relative));
+  AddUnique(candidates, "globals/globals_textures/" + std::string(relative));
   AddUnique(candidates,
-            "Globals/globals_texture_headers/" + std::string(relative));
+            "globals/globals_texture_headers/" + std::string(relative));
+
+  std::string extracted_layout(relative);
+  const auto replace_first = [](std::string* value,
+                                std::string_view from,
+                                std::string_view to) {
+    const size_t position = value->find(from);
+    if (position == std::string::npos) {
+      return false;
+    }
+    value->replace(position, from.size(), to);
+    return true;
+  };
+  const bool repaired =
+      replace_first(&extracted_layout, "pfx_texture_headers/", "pfx_textures/") ||
+      replace_first(&extracted_layout, "/texture_headers/", "/textures/") ||
+      replace_first(&extracted_layout, "_texture_headers/", "_textures/");
+  if (!repaired || extracted_layout == relative) {
+    return;
+  }
+
+  AddUnique(candidates, extracted_layout);
+  if (StartsWith(extracted_layout, "art/fx/")) {
+    AddUnique(candidates,
+              "globals/globals_texture_headers/" + extracted_layout);
+    AddUnique(candidates, "globals/globals_textures/" + extracted_layout);
+  } else if (StartsWith(extracted_layout, "art/gui/")) {
+    AddUnique(candidates,
+              "art/gui/gui_texture_headers/" + extracted_layout);
+    AddUnique(candidates, "art/gui/gui_textures/" + extracted_layout);
+    AddUnique(candidates, "globals/1024mip0_textures/" + extracted_layout);
+  }
+}
+
+void AddTitleUpdateDatabaseCandidates(std::vector<std::string>& candidates,
+                                      std::string_view relative) {
+  constexpr std::string_view kTitleUpdateSuffix = ".gdb.tu";
+  if (!EndsWith(relative, kTitleUpdateSuffix)) {
+    return;
+  }
+
+  std::string base_database(relative);
+  base_database.erase(base_database.size() - 3);
+  AddUnique(candidates, std::move(base_database));
 }
 
 void AddLocalizedAssetCandidates(std::vector<std::string>& candidates,
@@ -156,6 +199,7 @@ std::vector<std::string> BuildLooseAssetCandidates(std::string_view normalized) 
       continue;
     }
     AddUnique(candidates, relative);
+    AddTitleUpdateDatabaseCandidates(candidates, relative);
     AddGeneratedBankRootCandidates(candidates, relative);
     AddGlobalTextureCandidates(candidates, relative);
     AddLocalizedAssetCandidates(candidates, relative);

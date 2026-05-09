@@ -101,7 +101,8 @@ bool TryHandleRefiiResourceWrapperWait(PPCContext& ctx,
   const bool trace_parser_boundary =
       VfsTracingEnabled() && IsParserBoundaryTextureWrapperCaller(ctx.lr) &&
       owner_texture != 0;
-  if (log_wait || trace_menu_texture || trace_parser_boundary) {
+  if ((log_wait && VfsVerboseIoTracingEnabled()) || trace_menu_texture ||
+      trace_parser_boundary) {
     REXLOG_INFO("Refii resource wrapper {} lr=0x{:08X} ctr=0x{:08X} "
                 "r3=0x{:08X} r4=0x{:08X} wrapper=0x{:08X} result=0x{:08X} "
                 "status_word=0x{:08X} inner=0x{:08X} source_stream=0x{:08X} "
@@ -234,30 +235,32 @@ bool TryHandleRefiiResourceWrapperGetBytes(PPCContext& ctx,
                       FormatGuestWords(base, wrapper_guest, 12),
                       FormatTextureOwnerWords(base, owner_texture)));
     }
-    REXLOG_INFO("Refii resource wrapper ResourceWrapper_GetBytes "
-                "lr=0x{:08X} ctr=0x{:08X} r3=0x{:08X} r4=0x{:08X} "
-                "wrapper=0x{:08X} out=0x{:08X} out_before={} out_after={} "
-                "inner=0x{:08X} source_stream=0x{:08X} "
-                "buffer=0x{:08X} view_size={} view_offset={} provider={} "
-                "owner=0x{:08X} first_words={} wrapper_words={} owner_words={}",
-                ctx.lr,
-                ctx.ctr.u32,
-                original_r3,
-                original_r4,
-                wrapper_guest,
-                out_guest,
-                out_before,
-                out_after,
-                view.inner_guest,
-                view.source_stream_guest,
-                buffer_guest,
-                view.size,
-                view.view_offset,
-                view.provider_key,
-                owner_texture,
-                FormatGuestWords(base, buffer_guest, 4),
-                FormatGuestWords(base, wrapper_guest, 12),
-                FormatTextureOwnerWords(base, owner_texture));
+    if (VfsVerboseIoTracingEnabled()) {
+      REXLOG_INFO("Refii resource wrapper ResourceWrapper_GetBytes "
+                  "lr=0x{:08X} ctr=0x{:08X} r3=0x{:08X} r4=0x{:08X} "
+                  "wrapper=0x{:08X} out=0x{:08X} out_before={} out_after={} "
+                  "inner=0x{:08X} source_stream=0x{:08X} "
+                  "buffer=0x{:08X} view_size={} view_offset={} provider={} "
+                  "owner=0x{:08X} first_words={} wrapper_words={} owner_words={}",
+                  ctx.lr,
+                  ctx.ctr.u32,
+                  original_r3,
+                  original_r4,
+                  wrapper_guest,
+                  out_guest,
+                  out_before,
+                  out_after,
+                  view.inner_guest,
+                  view.source_stream_guest,
+                  buffer_guest,
+                  view.size,
+                  view.view_offset,
+                  view.provider_key,
+                  owner_texture,
+                  FormatGuestWords(base, buffer_guest, 4),
+                  FormatGuestWords(base, wrapper_guest, 12),
+                  FormatTextureOwnerWords(base, owner_texture));
+    }
   }
   return true;
 }
@@ -330,25 +333,27 @@ bool TryHandleRefiiResourceWrapperGetSize(PPCContext& ctx,
                       owner_texture,
                       FormatTextureOwnerWords(base, owner_texture)));
     }
-    REXLOG_INFO("Refii resource wrapper ResourceWrapper_GetSize "
-                "lr=0x{:08X} ctr=0x{:08X} r3=0x{:08X} r4=0x{:08X} "
-                "wrapper=0x{:08X} inner=0x{:08X} source_stream=0x{:08X} size={} "
-                "view_offset={} provider={} owner=0x{:08X} first_words={} "
-                "wrapper_words={} owner_words={}",
-                ctx.lr,
-                ctx.ctr.u32,
-                original_r3,
-                original_r4,
-                wrapper_guest,
-                view.inner_guest,
-                view.source_stream_guest,
-                ctx.r3.u32,
-                view.view_offset,
-                view.provider_key,
-                owner_texture,
-                FormatGuestWords(base, view.buffer_guest, 4),
-                FormatGuestWords(base, wrapper_guest, 12),
-                FormatTextureOwnerWords(base, owner_texture));
+    if (VfsVerboseIoTracingEnabled()) {
+      REXLOG_INFO("Refii resource wrapper ResourceWrapper_GetSize "
+                  "lr=0x{:08X} ctr=0x{:08X} r3=0x{:08X} r4=0x{:08X} "
+                  "wrapper=0x{:08X} inner=0x{:08X} source_stream=0x{:08X} "
+                  "size={} view_offset={} provider={} owner=0x{:08X} "
+                  "first_words={} wrapper_words={} owner_words={}",
+                  ctx.lr,
+                  ctx.ctr.u32,
+                  original_r3,
+                  original_r4,
+                  wrapper_guest,
+                  view.inner_guest,
+                  view.source_stream_guest,
+                  ctx.r3.u32,
+                  view.view_offset,
+                  view.provider_key,
+                  owner_texture,
+                  FormatGuestWords(base, view.buffer_guest, 4),
+                  FormatGuestWords(base, wrapper_guest, 12),
+                  FormatTextureOwnerWords(base, owner_texture));
+    }
   }
   return true;
 }
@@ -997,10 +1002,11 @@ bool TryHandleRefiiResourceWrapperAddRef(PPCContext& ctx,
   const uint32_t inner_guest = LoadGuestU32(base, wrapper_guest + 16);
   const std::string provider_key =
       GetRefiiResourceWrapperProviderKey(base, wrapper_guest, inner_guest);
-  if (VfsTracingEnabled() ||
-      ShouldLogLooseStreamOperation("ResourceWrapper_AddRef",
-                                    wrapper_guest,
-                                    16)) {
+  if (VfsVerboseIoTracingEnabled() &&
+      (VfsTracingEnabled() ||
+       ShouldLogLooseStreamOperation("ResourceWrapper_AddRef",
+                                     wrapper_guest,
+                                     16))) {
     REXLOG_INFO("Refii resource wrapper addref api={} wrapper=0x{:08X} "
                 "refs={} inner=0x{:08X} provider={} wrapper_words={}",
                 api,
@@ -1034,10 +1040,11 @@ bool TryHandleRefiiResourceWrapperRelease(PPCContext& ctx,
   const std::string provider_key =
       GetRefiiResourceWrapperProviderKey(base, wrapper_guest, inner_for_log);
   if (next_wrapper_refs != 0) {
-    if (VfsTracingEnabled() ||
-        ShouldLogLooseStreamOperation("ResourceWrapper_Release",
-                                      wrapper_guest,
-                                      16)) {
+    if (VfsVerboseIoTracingEnabled() &&
+        (VfsTracingEnabled() ||
+         ShouldLogLooseStreamOperation("ResourceWrapper_Release",
+                                       wrapper_guest,
+                                       16))) {
       REXLOG_INFO("Refii resource wrapper release api={} wrapper=0x{:08X} "
                   "old_refs={} refs={} flags=0x{:08X} inner=0x{:08X} "
                   "provider={} wrapper_words={}",
@@ -1092,7 +1099,7 @@ bool TryHandleRefiiResourceWrapperRelease(PPCContext& ctx,
   CallLhFree(ctx, base, wrapper_guest);
 
   ctx.r3.u32 = 0;
-  if (VfsTracingEnabled()) {
+  if (VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("Refii resource wrapper destroyed api={} wrapper=0x{:08X} "
                 "old_wrapper_refs={} flags=0x{:08X} provider={} "
                 "request=0x{:08X} record=0x{:08X} old_request_refs={} "

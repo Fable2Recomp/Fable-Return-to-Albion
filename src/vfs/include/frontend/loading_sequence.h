@@ -39,6 +39,7 @@ void RecordRefiiLoadingScreenOwner(uint8_t* base,
                                    std::string_view api);
 bool RefiiPostGameFacePackageHandoffSignalEmitted();
 bool RefiiPostGameFacePackageComplete();
+bool RefiiPostGameFacePackageNativeFallbackReady();
 bool RefiiPostFrontendDeferredHashWakeSignalEmitted();
 bool RefiiPostVfsChainReadyForLoadingOwnerRelease();
 bool RefiiOwnerlessPostVideoVfsChainReadyForAfterHolder();
@@ -63,6 +64,8 @@ inline bool TryRefreshRememberedLoadingScreenSequenceBridge(
 bool RefiiLoadingScreenSequenceReady(uint8_t* base,
                                      uint32_t owner_guest,
                                      uint32_t* out_handle);
+bool LooksLikeRefiiLoadingScreenSequenceOwner(uint8_t* base,
+                                              uint32_t owner_guest);
 inline bool RefiiLoadingScreenSequenceReady(uint8_t* base) {
   return RefiiLoadingScreenSequenceReady(base, 0, nullptr);
 }

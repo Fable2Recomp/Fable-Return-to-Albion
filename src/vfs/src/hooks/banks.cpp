@@ -1,5 +1,38 @@
 #include "vfs_hooks_private.h"
 
+namespace {
+
+bool ShouldUseNativeConcreteBankContainer(std::string_view bank_name,
+                                          std::string* out_candidate) {
+  const std::string normalized = refii::vfs::NormalizeLooseAssetKey(bank_name);
+  if (normalized.empty() || !refii::vfs::EndsWith(normalized, ".bnk")) {
+    return false;
+  }
+
+  if (refii::vfs::ResolveExactTypedBankManifestLooseAsset(
+          normalized, nullptr, nullptr) ||
+      refii::vfs::ResolveSyntheticBankManifestLooseAsset(
+          normalized, nullptr, nullptr) ||
+      refii::vfs::ShouldDeferLooseBankContainer(normalized)) {
+    return false;
+  }
+
+  refii::vfs::LooseAssetResolution resolution;
+  std::string candidate;
+  if (!refii::vfs::ResolveOriginalGameDataAsset(
+          normalized, &resolution, &candidate)) {
+    return false;
+  }
+
+  if (out_candidate != nullptr) {
+    *out_candidate = candidate.empty() ? resolution.provider_relative_path
+                                       : candidate;
+  }
+  return true;
+}
+
+}  // namespace
+
 PPC_FUNC_IMPL(rex_lhBank_Open) {
   PPC_FUNC_PROLOGUE();
 
@@ -57,6 +90,19 @@ PPC_FUNC_IMPL(rex_lhBank_Open) {
                   refii::vfs::SyntheticBankRecordCount(),
                   refii::vfs::RefiiPrivateHandleCount());
     }
+    return;
+  }
+  std::string concrete_bank_candidate;
+  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
+      ShouldUseNativeConcreteBankContainer(bank_name, &concrete_bank_candidate)) {
+    if (refii::vfs::ShouldLogVfsTraceOperation("Bank_Open")) {
+      REXLOG_INFO("Refii VFS native concrete bank api=Bank_Open name={} "
+                  "candidate={} out=0x{:08X}; using generated bank parser",
+                  bank_name,
+                  concrete_bank_candidate,
+                  out_guest);
+    }
+    __imp__rex_lhBank_Open(ctx, base);
     return;
   }
   if (refii::vfs::TryOpenRefiiVfsAsset(
@@ -121,6 +167,20 @@ PPC_FUNC_IMPL(rex_lhBank_OpenWithManifest) {
       refii::vfs::ReadMaybeGuestString(base, name_guest);
   const std::string normalized_bank_name =
       refii::vfs::NormalizeLooseAssetKey(bank_name);
+  std::string concrete_bank_candidate;
+  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
+      ShouldUseNativeConcreteBankContainer(bank_name, &concrete_bank_candidate)) {
+    if (refii::vfs::ShouldLogVfsTraceOperation("Bank_OpenWithManifest")) {
+      REXLOG_INFO("Refii VFS native concrete bank api=Bank_OpenWithManifest "
+                  "name={} candidate={} out=0x{:08X}; using generated bank "
+                  "parser",
+                  bank_name,
+                  concrete_bank_candidate,
+                  out_guest);
+    }
+    __imp__rex_lhBank_OpenWithManifest(ctx, base);
+    return;
+  }
   const refii::vfs::RefiiVfsOpenShape open_shape =
       normalized_bank_name == "dir.manifest"
           ? refii::vfs::RefiiVfsOpenShape::NativeGenerated
@@ -196,6 +256,22 @@ PPC_FUNC_IMPL(rex_lhBank_ParseHeader) {
     synthetic_bank_name =
         refii::vfs::InferSyntheticBankNameFromStream(base, stream_guest);
     synthetic_bank_source = "stream_provider";
+  }
+  std::string concrete_bank_candidate;
+  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
+      ShouldUseNativeConcreteBankContainer(synthetic_bank_name,
+                                           &concrete_bank_candidate)) {
+    if (refii::vfs::ShouldLogVfsTraceOperation("Bank_ParseHeader")) {
+      REXLOG_INFO("Refii VFS native concrete bank api=Bank_ParseHeader "
+                  "name={} source={} candidate={} out=0x{:08X}; using "
+                  "generated bank parser",
+                  synthetic_bank_name,
+                  synthetic_bank_source,
+                  concrete_bank_candidate,
+                  out_guest);
+    }
+    __imp__rex_lhBank_ParseHeader(ctx, base);
+    return;
   }
   if (refii::vfs::TryOpenRefiiVfsAsset(
           ctx,

@@ -39,6 +39,7 @@ struct BankExtractionSummary {
     std::size_t extracted_files = 0;
     std::size_t duplicate_conflicts = 0;
     std::size_t vfs_database_entries = 0;
+    std::size_t vfs_unindexed_files = 0;
 };
 
 struct VfsDatabaseBuildOptions {
@@ -55,6 +56,8 @@ struct VfsDatabaseBuildSummary {
     std::size_t runtime_alias_entries = 0;
     std::size_t runtime_hash_entries = 0;
     std::size_t runtime_directories = 0;
+    std::size_t runtime_candidates = 0;
+    std::size_t unindexed_files = 0;
     std::size_t indexed_files = 0;
     std::size_t indexed_manifests = 0;
     std::size_t indexed_filehash_tables = 0;

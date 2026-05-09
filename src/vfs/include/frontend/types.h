@@ -70,6 +70,7 @@ struct RefiiStartupVideoItemTrace {
 };
 
 struct RefiiPostVideoHandoffTrace {
+  RefiiStartupVideoItemTrace middleware;
   RefiiStartupVideoItemTrace microsoft;
   RefiiStartupVideoItemTrace lionhead;
   std::string last_bik_provider;
@@ -158,6 +159,7 @@ struct RefiiPostVideoHandoffTrace {
   bool post_frontend_consumer_handoff_signal_emitted = false;
   bool post_frontend_deferred_hash_wake_signal_emitted = false;
   bool post_frontend_gameface_prime_attempted = false;
+  bool post_gameface_package_native_fallback_required = false;
   bool post_video_generated_ready_payload_seeded = false;
   bool post_video_generated_wait_signal_emitted = false;
   bool post_gameface_package_handoff_signal_emitted = false;

@@ -36,6 +36,8 @@ std::mutex& RefiiInlineFrontendRenderRequestMutex();
 std::unordered_set<uint32_t>& RefiiPostLoadingNativeFrontendRenderRuns();
 std::unordered_set<uint32_t>& RefiiPostLoadingFrontendRenderCommitRuns();
 std::unordered_set<uint32_t>&
+RefiiPostLoadingCompletedRendererReentryRuns();
+std::unordered_set<uint32_t>&
 RefiiPostLoadingFrontendRenderProducerCompletions();
 std::unordered_set<uint32_t>& RefiiPostLoadingFrontendCompletionPublishes();
 std::unordered_set<uint32_t>& RefiiPostLoadingFrontendGeneratedRuns();
@@ -96,6 +98,8 @@ bool TryFinalizeRefiiOwnerlessPostLoadingAfterHolderState(
     uint8_t* base,
     uint32_t holder_guest,
     std::string_view source_api);
+bool RefiiPostLoadingAfterHolderAlreadyConsumed(uint8_t* base,
+                                                uint32_t holder_guest);
 std::atomic<uint32_t>& RefiiPostLoadingAfterHolderMode5CleanedHolder();
 uint32_t& RefiiPostLoadingAfterHolderRenderOwnerScratch();
 

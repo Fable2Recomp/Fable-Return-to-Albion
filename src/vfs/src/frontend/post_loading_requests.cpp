@@ -17,11 +17,16 @@ void SetRefiiPostLoadingAfterHolderMode(const PPCContext& source_ctx,
                                         uint32_t holder_guest,
                                         uint32_t mode,
                                         uint32_t lr) {
-  PPCContext mode_ctx = source_ctx;
-  mode_ctx.r3.u32 = holder_guest;
-  mode_ctx.r4.u32 = mode;
-  mode_ctx.lr = lr;
-  ::sub_82467E40(mode_ctx, base);
+  (void)source_ctx;
+  (void)lr;
+  if (base == nullptr || !LooksLikeGuestPointer(holder_guest)) {
+    return;
+  }
+
+  // Generated sub_82467E40 only takes the holder lock and stores this mode.
+  // The Refii VFS path owns these synthetic transitions, so mirror the state
+  // write directly and avoid re-entering the native lock/wait path.
+  StoreGuestU32(base, holder_guest + kAfterHolderModeOffset, mode);
 }
 
 std::mutex& RefiiInlineFrontendRenderRequestMutex() {
@@ -49,6 +54,12 @@ std::unordered_set<uint32_t>& RefiiPostLoadingFrontendRenderCommitRuns() {
   return requests;
 }
 
+std::unordered_set<uint32_t>&
+RefiiPostLoadingCompletedRendererReentryRuns() {
+  static std::unordered_set<uint32_t> requests;
+  return requests;
+}
+
 std::unordered_set<uint32_t>& RefiiPostLoadingFrontendRenderProducerCompletions() {
   static std::unordered_set<uint32_t> handoffs;
   return handoffs;
@@ -65,6 +76,12 @@ std::unordered_set<uint32_t>& RefiiPostLoadingFrontendGeneratedRuns() {
 }
 
 std::unordered_set<uint32_t>& RefiiPostLoadingFrontendStateFinalizes() {
+  static std::unordered_set<uint32_t> requests;
+  return requests;
+}
+
+std::unordered_set<uint32_t>&
+RefiiPostLoadingCompletedFrontendPrimaryAttaches() {
   static std::unordered_set<uint32_t> requests;
   return requests;
 }
@@ -87,14 +104,75 @@ bool IsRefiiNativeSchedulerInlineSource(std::string_view source_api) {
          source_api == "NativeVfsSchedulerInsertPending";
 }
 
+bool IsRefiiFrontendRenderSlotObject(uint8_t* base,
+                                     uint32_t slot_guest,
+                                     uint32_t request_guest) {
+  return LooksLikeGuestPointer(slot_guest) &&
+         LoadGuestU32(base, slot_guest) ==
+             kNativeFrontendRenderRequestSlotVTable &&
+         LoadGuestU32(base, slot_guest + 12) == request_guest;
+}
+
+uint32_t CreateRefiiFrontendRenderSlotObject(const PPCContext& source_ctx,
+                                             uint8_t* base,
+                                             uint32_t request_guest,
+                                             std::string_view source_api) {
+  if (!IsNativeFrontendRenderRequest(base, request_guest)) {
+    return 0;
+  }
+
+  PPCContext alloc_ctx = source_ctx;
+  const uint32_t slot_guest = CallLhMalloc(alloc_ctx, base, 16);
+  if (!LooksLikeGuestPointer(slot_guest)) {
+    return 0;
+  }
+
+  StoreGuestU32(base, slot_guest + 0, kNativeFrontendRenderRequestSlotVTable);
+  StoreGuestU8(base, slot_guest + 4, 0);
+  StoreGuestU8(base, slot_guest + 5, 0);
+  StoreGuestU16(base, slot_guest + 6, 0);
+  StoreGuestU32(base, slot_guest + 8, LoadGuestU32(base, request_guest + 20));
+  StoreGuestU32(base, slot_guest + 12, request_guest);
+
+  {
+    std::lock_guard<std::mutex> lock(RefiiPostGameFacePrimaryOwnerMutex());
+    RefiiPostGameFacePrimaryOwnerSlots()[request_guest] = slot_guest;
+  }
+  RefiiPostGameFacePrimaryOwnerRequest().store(request_guest,
+                                               std::memory_order_relaxed);
+
+  RecordRefiiMainMenuBlockerEvent(
+      "frontend_render_request_slot_reconstructed",
+      fmt::format("source={} request=0x{:08X} slot_object=0x{:08X} "
+                  "state=[{}]",
+                  source_api,
+                  request_guest,
+                  slot_guest,
+                  FormatNativeVfsAsyncRequestState(base, request_guest)));
+  if (VfsTracingEnabled() ||
+      ShouldLogRepeatedVfsTraceOperation(
+          "FrontendRenderRequestSlotReconstructed", 8)) {
+    REXLOG_INFO("Refii VFS frontend render request slot reconstructed "
+                "source={} request=0x{:08X} slot_object=0x{:08X} "
+                "state=[{}] globals=[{}] handoff=[{}] main_menu=[{}]",
+                source_api,
+                request_guest,
+                slot_guest,
+                FormatNativeVfsAsyncRequestState(base, request_guest),
+                FormatRefiiLoadingScreenSequenceGlobals(base),
+                FormatRefiiPostVideoHandoffTraceForLog(),
+                FormatRefiiMainMenuBlockerTraceForLog());
+  }
+  return slot_guest;
+}
+
 uint32_t ResolveRefiiFrontendRenderSlotObject(uint8_t* base,
                                               uint32_t request_guest,
                                               uint32_t secondary_owner) {
   if (!IsNativeFrontendRenderRequest(base, request_guest)) {
     return 0;
   }
-  if (LooksLikeGuestPointer(secondary_owner) &&
-      LoadGuestU32(base, secondary_owner + 12) == request_guest) {
+  if (IsRefiiFrontendRenderSlotObject(base, secondary_owner, request_guest)) {
     return secondary_owner;
   }
 
@@ -102,14 +180,12 @@ uint32_t ResolveRefiiFrontendRenderSlotObject(uint8_t* base,
     std::lock_guard<std::mutex> lock(RefiiPostGameFacePrimaryOwnerMutex());
     const auto it = RefiiPostGameFacePrimaryOwnerSlots().find(request_guest);
     if (it != RefiiPostGameFacePrimaryOwnerSlots().end() &&
-        LooksLikeGuestPointer(it->second) &&
-        LoadGuestU32(base, it->second + 12) == request_guest) {
+        IsRefiiFrontendRenderSlotObject(base, it->second, request_guest)) {
       return it->second;
     }
   }
 
-  if (LooksLikeGuestPointer(request_guest) &&
-      LoadGuestU32(base, request_guest + 12) == request_guest) {
+  if (IsRefiiFrontendRenderSlotObject(base, request_guest, request_guest)) {
     return request_guest;
   }
 
@@ -120,6 +196,162 @@ bool IsRefiiPostGameFaceInlineCompletionSource(std::string_view source_api) {
   return IsRefiiNativeSchedulerInlineSource(source_api) ||
          source_api == "post_gameface_package_handoff_signal" ||
          source_api == "post_gameface_followup_boundary";
+}
+
+bool IsRefiiPostPrimaryCompletedInlineAttachSource(
+    std::string_view source_api) {
+  return source_api == "post_loading_frontend_render_handoff" ||
+         source_api == "completed_loading_owner_renderer_reentry" ||
+         source_api == "sub_8235D5E8_sequence_bridge" ||
+         source_api == "sub_8235D5E8_sequence_ready" ||
+         source_api == "sub_8235E1E0_sequence_bridge" ||
+         source_api == "sub_8235E1E0_sequence_ready" ||
+         source_api == "sub_82360418_sequence_bridge" ||
+         source_api == "sub_82360418_sequence_ready" ||
+         source_api == "sub_82360618_sequence_bridge" ||
+         source_api == "sub_82360618_sequence_ready" ||
+         source_api == "sub_82360968_sequence_bridge" ||
+         source_api == "sub_82360968_sequence_ready";
+}
+
+bool TryAttachCompletedRefiiFrontendRenderRequestToPrimaryOwner(
+    const PPCContext& source_ctx,
+    uint8_t* base,
+    uint32_t request_guest,
+    uint32_t slot_object_guest,
+    std::string_view source_api) {
+  if (!IsRefiiPostPrimaryCompletedInlineAttachSource(source_api) ||
+      !RefiiPostGameFacePackageHandoffSignalEmitted() ||
+      !RefiiPostGameFacePrimaryOwnerReady(base) ||
+      !RefiiPostVideoFrontendChainConsumed() ||
+      !RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload()) {
+    return false;
+  }
+
+  uint32_t primary_request = 0;
+  uint32_t render_owner = 0;
+  uint32_t render_handoff = 0;
+  if (!TryGetRefiiPostGameFacePrimaryRenderRequest(
+          base, &primary_request, &render_owner, &render_handoff) ||
+      primary_request != request_guest || !LooksLikeGuestPointer(render_owner) ||
+      !LooksLikeGuestPointer(render_handoff)) {
+    return false;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(RefiiInlineFrontendRenderRequestMutex());
+    if (RefiiPostLoadingCompletedFrontendPrimaryAttaches().contains(
+            request_guest)) {
+      return false;
+    }
+  }
+
+  constexpr uint32_t kLoadingGlobalBase = 0x83490000u;
+  constexpr uint32_t kPrimaryOwnerGlobal = kLoadingGlobalBase + 27320u;
+  const uint32_t published_owner = LoadGuestU32(base, kPrimaryOwnerGlobal);
+  const uint8_t request_done_before = LoadGuestU8(base, request_guest + 92);
+  const uint32_t request_owner_before = LoadGuestU32(base, request_guest + 132);
+  const uint32_t render_owner_handoff_before =
+      LoadGuestU32(base, render_owner + 4);
+  const uint8_t handoff_complete_before =
+      LoadGuestU8(base, render_handoff + 168);
+  const uint8_t handoff_flag_before = LoadGuestU8(base, render_handoff + 244);
+
+  PPCContext attach_ctx = source_ctx;
+  attach_ctx.r3.u32 = render_owner;
+  const bool attached =
+      TryAttachRefiiPostGameFaceRenderHandoffToActiveFrame(
+          attach_ctx,
+          base,
+          fmt::format("{}_completed_primary_attach", source_api));
+  if (!attached) {
+    return false;
+  }
+
+  if (request_done_before == 0) {
+    StoreGuestU8(base, request_guest + 92, 1);
+  }
+  if (!LooksLikeGuestPointer(request_owner_before) &&
+      LooksLikeGuestPointer(published_owner)) {
+    StoreGuestU32(base, request_guest + 132, published_owner);
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(RefiiInlineFrontendRenderRequestMutex());
+    RefiiPostLoadingCompletedFrontendPrimaryAttaches().insert(request_guest);
+    RefiiCompletedInlineFrontendRenderRequests().insert(request_guest);
+  }
+
+  RecordRefiiMainMenuBlockerEvent(
+      "frontend_render_request_completed_primary_attach",
+      fmt::format("source={} request=0x{:08X} slot_object=0x{:08X} "
+                  "render_owner=0x{:08X} handoff=0x{:08X} "
+                  "render_owner_handoff=0x{:08X}->0x{:08X} "
+                  "request_done=0x{:02X}->0x{:02X} "
+                  "request_owner=0x{:08X}->0x{:08X} "
+                  "handoff_complete=0x{:02X}->0x{:02X} "
+                  "handoff_flag244=0x{:02X}->0x{:02X} state=[{}] "
+                  "globals=[{}]",
+                  source_api,
+                  request_guest,
+                  slot_object_guest,
+                  render_owner,
+                  render_handoff,
+                  render_owner_handoff_before,
+                  LoadGuestU32(base, render_owner + 4),
+                  request_done_before,
+                  LoadGuestU8(base, request_guest + 92),
+                  request_owner_before,
+                  LoadGuestU32(base, request_guest + 132),
+                  handoff_complete_before,
+                  LoadGuestU8(base, render_handoff + 168),
+                  handoff_flag_before,
+                  LoadGuestU8(base, render_handoff + 244),
+                  FormatNativeVfsAsyncRequestState(base, request_guest),
+                  FormatRefiiLoadingScreenSequenceGlobals(base)));
+
+  if (VfsTracingEnabled() ||
+      ShouldLogRepeatedVfsTraceOperation(
+          "FrontendRenderRequestCompletedPrimaryAttach", 8)) {
+    REXLOG_INFO("Refii VFS frontend render request completed primary attach "
+                "source={} request=0x{:08X} slot_object=0x{:08X} "
+                "render_owner=0x{:08X} handoff=0x{:08X} "
+                "render_owner_handoff=0x{:08X}->0x{:08X} "
+                "request_done=0x{:02X}->0x{:02X} "
+                "request_owner=0x{:08X}->0x{:08X} "
+                "handoff_complete=0x{:02X}->0x{:02X} "
+                "handoff_flag244=0x{:02X}->0x{:02X} state=[{}] "
+                "handoff_trace=[{}] main_menu=[{}]",
+                source_api,
+                request_guest,
+                slot_object_guest,
+                render_owner,
+                render_handoff,
+                render_owner_handoff_before,
+                LoadGuestU32(base, render_owner + 4),
+                request_done_before,
+                LoadGuestU8(base, request_guest + 92),
+                request_owner_before,
+                LoadGuestU32(base, request_guest + 132),
+                handoff_complete_before,
+                LoadGuestU8(base, render_handoff + 168),
+                handoff_flag_before,
+                LoadGuestU8(base, render_handoff + 244),
+                FormatNativeVfsAsyncRequestState(base, request_guest),
+                FormatRefiiPostVideoHandoffTraceForLog(),
+                FormatRefiiMainMenuBlockerTraceForLog());
+  }
+
+  LogRefiiVfsChainVerdict("frontend_post_video",
+                          static_cast<uint32_t>(source_ctx.lr),
+                          "frontend_render_request",
+                          "",
+                          "",
+                          "post_gameface_primary_owner",
+                          std::string(source_api),
+                          "Opened",
+                          "completed_request_attached_primary_handoff");
+  return true;
 }
 
 bool TryCompleteRefiiInFlightFrontendRenderRequestFromNativeScheduler(
@@ -270,10 +502,17 @@ bool TryRunRefiiFrontendRenderRequestInline(PPCContext& source_ctx,
   }
 
   const uint32_t secondary_owner = LoadGuestU32(base, kSecondaryOwnerGlobal);
-  const uint32_t slot_object_guest =
+  uint32_t slot_object_guest =
       ResolveRefiiFrontendRenderSlotObject(base, request_guest, secondary_owner);
-  if (!LooksLikeGuestPointer(slot_object_guest) ||
-      LoadGuestU32(base, slot_object_guest + 12) != request_guest) {
+  if (!IsRefiiFrontendRenderSlotObject(base, slot_object_guest, request_guest) &&
+      allow_ready_primary && skip_ready_probe &&
+      RefiiOwnerlessPostVideoAfterHolderCleaned() &&
+      RefiiPostVideoFrontendChainConsumed() &&
+      RefiiPostGameFacePackageHandoffSignalEmitted()) {
+    slot_object_guest = CreateRefiiFrontendRenderSlotObject(
+        source_ctx, base, request_guest, source_api);
+  }
+  if (!IsRefiiFrontendRenderSlotObject(base, slot_object_guest, request_guest)) {
     if (VfsTracingEnabled() &&
         ShouldLogRepeatedVfsTraceOperation(
             "FrontendRenderRequestInlineBadSlotObject", 8)) {
@@ -329,12 +568,33 @@ bool TryRunRefiiFrontendRenderRequestInline(PPCContext& source_ctx,
                   FormatRefiiPostVideoHandoffTraceForLog(),
                   FormatRefiiMainMenuBlockerTraceForLog());
     }
+
+    if (RefiiCompletedLoadingScreenOwner().load(std::memory_order_relaxed) ==
+        0) {
+      if (VfsTracingEnabled() ||
+          ShouldLogRepeatedVfsTraceOperation(
+              "FrontendRenderRequestInlineSchedulerDeferred", 8)) {
+        REXLOG_INFO("Refii VFS frontend render request scheduler deferred "
+                    "source={} request=0x{:08X} slot_object=0x{:08X} "
+                    "reason=loading_owner_not_completed state=[{}] "
+                    "globals=[{}] handoff=[{}] main_menu=[{}]",
+                    source_api,
+                    request_guest,
+                    slot_object_guest,
+                    FormatNativeVfsAsyncRequestState(base, request_guest),
+                    FormatRefiiLoadingScreenSequenceGlobals(base),
+                    FormatRefiiPostVideoHandoffTraceForLog(),
+                    FormatRefiiMainMenuBlockerTraceForLog());
+      }
+      return false;
+    }
   }
 
   bool repeated_attempt = false;
   {
     std::lock_guard<std::mutex> lock(RefiiInlineFrontendRenderRequestMutex());
     if (RefiiCompletedInlineFrontendRenderRequests().contains(request_guest)) {
+      repeated_attempt = true;
       if (VfsTracingEnabled() &&
           ShouldLogRepeatedVfsTraceOperation(
               "FrontendRenderRequestInlineAlreadyCompleted", 8)) {
@@ -351,18 +611,74 @@ bool TryRunRefiiFrontendRenderRequestInline(PPCContext& source_ctx,
                     FormatRefiiPostVideoHandoffTraceForLog(),
                     FormatRefiiMainMenuBlockerTraceForLog());
       }
-      return true;
-    }
-    repeated_attempt =
-        !RefiiInlineFrontendRenderRequests().insert(request_guest).second;
-    if (repeated_attempt) {
-      // The generated post-GameFace render run can re-enter the native VFS
-      // scheduler while the outer inline request is still active. At that
-      // point the scheduler has the exact request/handoff object we need, so
-      // complete that VFS-owned handoff instead of leaving it to retry forever.
+    } else {
+      repeated_attempt =
+          !RefiiInlineFrontendRenderRequests().insert(request_guest).second;
+      if (repeated_attempt) {
+        // The generated post-GameFace render run can re-enter the native VFS
+        // scheduler while the outer inline request is still active. At that
+        // point the scheduler has the exact request/handoff object we need, so
+        // complete that VFS-owned handoff instead of leaving it to retry
+        // forever.
+      }
     }
   }
   if (repeated_attempt) {
+    if (TryAttachCompletedRefiiFrontendRenderRequestToPrimaryOwner(
+            source_ctx, base, request_guest, slot_object_guest, source_api)) {
+      return true;
+    }
+    if (RefiiFrontendRenderRequestInlineAlreadyCompleted(request_guest)) {
+      return true;
+    }
+    const bool after_holder_completion_source =
+        skip_ready_probe && source_api == "post_loading_after_holder_823C1658";
+    if (after_holder_completion_source &&
+        LoadGuestU8(base, request_guest + 92) != 0) {
+      const uint8_t secondary_ready_before =
+          LoadGuestU8(base, kSecondaryReadyGlobal);
+      if (IsRefiiFrontendRenderSlotObject(base, secondary_owner, request_guest)) {
+        StoreGuestU8(base, kSecondaryReadyGlobal, 1);
+      }
+      {
+        std::lock_guard<std::mutex> lock(
+            RefiiInlineFrontendRenderRequestMutex());
+        RefiiInlineFrontendRenderRequests().erase(request_guest);
+        RefiiCompletedInlineFrontendRenderRequests().insert(request_guest);
+      }
+      RecordRefiiMainMenuBlockerEvent(
+          "frontend_render_request_after_holder_native_complete",
+          fmt::format("source={} request=0x{:08X} slot_object=0x{:08X} "
+                      "secondary=0x{:08X} secondary_ready=0x{:02X}->0x{:02X} "
+                      "state=[{}] globals=[{}]",
+                      source_api,
+                      request_guest,
+                      slot_object_guest,
+                      secondary_owner,
+                      secondary_ready_before,
+                      LoadGuestU8(base, kSecondaryReadyGlobal),
+                      FormatNativeVfsAsyncRequestState(base, request_guest),
+                      FormatRefiiLoadingScreenSequenceGlobals(base)));
+      if (VfsTracingEnabled() ||
+          ShouldLogRepeatedVfsTraceOperation(
+              "FrontendRenderRequestAfterHolderNativeComplete", 8)) {
+        REXLOG_INFO("Refii VFS frontend render request after-holder accepted "
+                    "native-complete request source={} request=0x{:08X} "
+                    "slot_object=0x{:08X} secondary=0x{:08X} "
+                    "secondary_ready=0x{:02X}->0x{:02X} state=[{}] "
+                    "handoff=[{}] main_menu=[{}]",
+                    source_api,
+                    request_guest,
+                    slot_object_guest,
+                    secondary_owner,
+                    secondary_ready_before,
+                    LoadGuestU8(base, kSecondaryReadyGlobal),
+                    FormatNativeVfsAsyncRequestState(base, request_guest),
+                    FormatRefiiPostVideoHandoffTraceForLog(),
+                    FormatRefiiMainMenuBlockerTraceForLog());
+      }
+      return true;
+    }
     if (TryCompleteRefiiInFlightFrontendRenderRequestFromNativeScheduler(
             source_ctx, base, request_guest, source_api)) {
       return true;
@@ -457,6 +773,50 @@ bool TryRunRefiiFrontendRenderRequestInline(PPCContext& source_ctx,
         source_api == "post_gameface_package_handoff_signal" ||
         source_api == "post_gameface_followup_boundary" ||
         source_api == "post_loading_frontend_render_handoff";
+    const bool post_loading_handoff_before_owner_complete =
+        source_api == "post_loading_frontend_render_handoff" &&
+        RefiiCompletedLoadingScreenOwner().load(std::memory_order_relaxed) ==
+            0;
+    if (post_loading_handoff_before_owner_complete) {
+      {
+        std::lock_guard<std::mutex> lock(
+            RefiiInlineFrontendRenderRequestMutex());
+        RefiiInlineFrontendRenderRequests().erase(request_guest);
+      }
+      RecordRefiiMainMenuBlockerEvent(
+          "frontend_render_request_post_loading_deferred",
+          fmt::format("source={} request=0x{:08X} slot_object=0x{:08X} "
+                      "reason=loading_owner_not_completed "
+                      "request_done=0x{:02X} request_owner=0x{:08X} "
+                      "primary=0x{:08X}/{} secondary=0x{:08X}/{} "
+                      "globals=[{}]",
+                      source_api,
+                      request_guest,
+                      slot_object_guest,
+                      request_done_before,
+                      request_owner_before,
+                      primary_before,
+                      primary_ready_before,
+                      secondary_owner_before,
+                      secondary_ready_before,
+                      FormatRefiiLoadingScreenSequenceGlobals(base)));
+      if (VfsTracingEnabled() ||
+          ShouldLogRepeatedVfsTraceOperation(
+              "FrontendRenderRequestPostLoadingDeferred", 8)) {
+        REXLOG_INFO("Refii VFS frontend render request post-loading deferred "
+                    "source={} request=0x{:08X} slot_object=0x{:08X} "
+                    "reason=loading_owner_not_completed state=[{}] "
+                    "globals=[{}] handoff=[{}] main_menu=[{}]",
+                    source_api,
+                    request_guest,
+                    slot_object_guest,
+                    FormatNativeVfsAsyncRequestState(base, request_guest),
+                    FormatRefiiLoadingScreenSequenceGlobals(base),
+                    FormatRefiiPostVideoHandoffTraceForLog(),
+                    FormatRefiiMainMenuBlockerTraceForLog());
+      }
+      return false;
+    }
     const bool can_run_generated_completion =
         generated_completion_source &&
         RefiiPostGameFacePackageHandoffSignalEmitted() &&
@@ -745,7 +1105,12 @@ bool TryRunRefiiDeferredPostLoadingFrontendRequestOnRenderThread(
       }
       request_guest = candidate;
       request_completed =
-          RefiiCompletedInlineFrontendRenderRequests().contains(candidate);
+          RefiiCompletedInlineFrontendRenderRequests().contains(candidate) ||
+          LoadGuestU8(base, candidate + 92) != 0;
+      if (request_completed) {
+        RefiiInlineFrontendRenderRequests().erase(candidate);
+        RefiiCompletedInlineFrontendRenderRequests().insert(candidate);
+      }
       break;
     }
   }
@@ -761,8 +1126,7 @@ bool TryRunRefiiDeferredPostLoadingFrontendRequestOnRenderThread(
     const uint8_t secondary_ready_before =
         LoadGuestU8(base, kSecondaryReadyGlobal);
     const bool secondary_matches_request =
-        LooksLikeGuestPointer(secondary_owner) &&
-        LoadGuestU32(base, secondary_owner + 12) == request_guest;
+        IsRefiiFrontendRenderSlotObject(base, secondary_owner, request_guest);
     if (secondary_matches_request) {
       StoreGuestU8(base, request_guest + 92, 1);
       StoreGuestU8(base, kSecondaryReadyGlobal, 1);
@@ -793,19 +1157,18 @@ bool TryRunRefiiDeferredPostLoadingFrontendRequestOnRenderThread(
     return true;
   }
 
-	  const std::string before_state =
-	      FormatNativeVfsAsyncRequestState(base, request_guest);
-	  const auto run_begin = std::chrono::steady_clock::now();
-	  const bool use_completion_shim =
-	      RefiiOwnerlessPostVideoAfterHolderCleaned() ||
-	      source_api == "post_loading_after_holder_823C1658";
-	  const bool ran =
-	      TryRunRefiiFrontendRenderRequestInline(source_ctx,
-	                                             base,
-	                                             request_guest,
-	                                             source_api,
-	                                             true,
-	                                             use_completion_shim);
+  const std::string before_state =
+      FormatNativeVfsAsyncRequestState(base, request_guest);
+  const auto run_begin = std::chrono::steady_clock::now();
+  const bool use_completion_shim =
+      RefiiOwnerlessPostVideoAfterHolderCleaned() ||
+      source_api == "post_loading_after_holder_823C1658";
+  const bool ran = TryRunRefiiFrontendRenderRequestInline(source_ctx,
+                                                          base,
+                                                          request_guest,
+                                                          source_api,
+                                                          true,
+                                                          use_completion_shim);
   const int64_t run_ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - run_begin)
@@ -867,9 +1230,9 @@ std::string FormatRefiiPostLoadingAfterHolderState(uint8_t* base,
                              FormatGuestWordsIfPointer(base, path_object, 8));
   }
   const uint32_t child = LoadGuestU32(base, holder_guest + kAfterHolderChildOffset);
+  const uint32_t mode = LoadRefiiPostLoadingAfterHolderMode(base, holder_guest);
   const uint32_t field44 =
       LoadGuestU32(base, holder_guest + kAfterHolderField44Offset);
-  const uint32_t mode = LoadRefiiPostLoadingAfterHolderMode(base, holder_guest);
   const uint32_t list_head = LoadGuestU32(base, holder_guest + 100);
   const uint32_t active_count = LoadGuestU32(base, holder_guest + 104);
   const uint32_t tick = LoadGuestU32(base, holder_guest + 108);
@@ -892,7 +1255,8 @@ std::string FormatRefiiPostLoadingAfterHolderState(uint8_t* base,
   }
   return fmt::format(
       "holder=0x{:08X} mode={} child=0x{:08X} list=0x{:08X} active={} "
-      "tick=0x{:08X} field44=0x{:08X} fields112_116=0x{:08X}/0x{:08X} "
+      "tick=0x{:08X} field44=0x{:08X} "
+      "fields112_116=0x{:08X}/0x{:08X} "
       "flag120=0x{:02X} {} {} words=[{}]",
       holder_guest,
       mode,
@@ -1032,11 +1396,20 @@ bool TryReturnRefiiPostLoadingAfterHolderSingletonForCompletedVfsChain(
   constexpr uint32_t kAfterHolderSingleton = 0x834C20B8u;
   constexpr uint32_t kAfterHolderInitFlag = 0x834C3824u;
   const uint32_t init_flags = LoadGuestU32(base, kAfterHolderInitFlag);
+  const bool final_handoff_ready =
+      RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
+      (RefiiPostGameFacePackageComplete() ||
+       RefiiPostGameFacePackageNativeFallbackReady()) &&
+      RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
   PPCContext singleton_ctx = source_ctx;
-  ::__imp__sub_82180418(singleton_ctx, base);
+  if (final_handoff_ready) {
+    singleton_ctx.r3.u32 = kAfterHolderSingleton;
+  } else {
+    ::__imp__sub_82180418(singleton_ctx, base);
+  }
   const bool native_singleton_returned =
       singleton_ctx.r3.u32 == kAfterHolderSingleton;
-  if (!native_singleton_returned) {
+  if (!native_singleton_returned && !final_handoff_ready) {
     return false;
   }
   const bool already_initialized = (init_flags & 1u) != 0;
@@ -1044,6 +1417,39 @@ bool TryReturnRefiiPostLoadingAfterHolderSingletonForCompletedVfsChain(
       LoadRefiiPostLoadingAfterHolderMode(base, kAfterHolderSingleton);
   const uint32_t child =
       LoadGuestU32(base, kAfterHolderSingleton + kAfterHolderChildOffset);
+  if (RefiiPostLoadingAfterHolderAlreadyConsumed(base,
+                                                 kAfterHolderSingleton)) {
+    RecordRefiiMainMenuBlockerEvent(
+        "post_loading_after_holder_terminal_singleton_consumed",
+        fmt::format("source={} holder=0x{:08X} init_flags=0x{:08X} "
+                    "native_result=0x{:08X} final_handoff_ready={} "
+                    "state=[{}]",
+                    source_api,
+                    kAfterHolderSingleton,
+                    init_flags,
+                    singleton_ctx.r3.u32,
+                    final_handoff_ready ? "true" : "false",
+                    FormatRefiiPostLoadingAfterHolderState(
+                        base, kAfterHolderSingleton)));
+    if (VfsTracingEnabled() ||
+        ShouldLogRepeatedVfsTraceOperation(
+            "PostLoadingAfterHolderTerminalSingletonConsumed", 8)) {
+      REXLOG_INFO("Refii VFS post-loading after-holder terminal singleton "
+                  "consumed source={} holder=0x{:08X} init_flags=0x{:08X} "
+                  "native_result=0x{:08X} final_handoff_ready={} "
+                  "handoff=[{}] main_menu=[{}] state=[{}]",
+                  source_api,
+                  kAfterHolderSingleton,
+                  init_flags,
+                  singleton_ctx.r3.u32,
+                  final_handoff_ready ? "true" : "false",
+                  FormatRefiiPostVideoHandoffTraceForLog(),
+                  FormatRefiiMainMenuBlockerTraceForLog(),
+                  FormatRefiiPostLoadingAfterHolderState(
+                      base, kAfterHolderSingleton));
+    }
+    return false;
+  }
   if (already_initialized && mode == 0 && child == 0) {
     const bool path_initialized =
         TryInitializeRefiiPostLoadingAfterHolderResourcePath(
@@ -1059,11 +1465,13 @@ bool TryReturnRefiiPostLoadingAfterHolderSingletonForCompletedVfsChain(
             ? "post_loading_after_holder_terminal_singleton_seeded"
             : "post_loading_after_holder_terminal_singleton_reused",
         fmt::format("source={} holder=0x{:08X} init_flags=0x{:08X} "
-                    "native_result=0x{:08X} path_initialized={} state=[{}]",
+                    "native_result=0x{:08X} final_handoff_ready={} "
+                    "path_initialized={} state=[{}]",
                     source_api,
                     kAfterHolderSingleton,
                     init_flags,
                     singleton_ctx.r3.u32,
+                    final_handoff_ready ? "true" : "false",
                     path_initialized ? "true" : "false",
                     FormatRefiiPostLoadingAfterHolderState(
                         base, kAfterHolderSingleton)));
@@ -1072,13 +1480,14 @@ bool TryReturnRefiiPostLoadingAfterHolderSingletonForCompletedVfsChain(
             "PostLoadingAfterHolderTerminalSingletonReused", 8)) {
       REXLOG_INFO("Refii VFS post-loading after-holder terminal singleton {} "
                   "source={} holder=0x{:08X} init_flags=0x{:08X} "
-                  "native_result=0x{:08X} path_initialized={} handoff=[{}] "
-                  "main_menu=[{}] state=[{}]",
+                  "native_result=0x{:08X} final_handoff_ready={} "
+                  "path_initialized={} handoff=[{}] main_menu=[{}] state=[{}]",
                   path_initialized ? "seeded" : "reused",
                   source_api,
                   kAfterHolderSingleton,
                   init_flags,
                   singleton_ctx.r3.u32,
+                  final_handoff_ready ? "true" : "false",
                   path_initialized ? "true" : "false",
                   FormatRefiiPostVideoHandoffTraceForLog(),
                   FormatRefiiMainMenuBlockerTraceForLog(),
@@ -1107,11 +1516,12 @@ bool TryReturnRefiiPostLoadingAfterHolderSingletonForCompletedVfsChain(
       already_initialized ? "post_loading_after_holder_singleton_reused"
                           : "post_loading_after_holder_singleton_seeded",
       fmt::format("source={} holder=0x{:08X} init_flags=0x{:08X} "
-                  "native_result=0x{:08X} state=[{}]",
+                  "native_result=0x{:08X} final_handoff_ready={} state=[{}]",
                   source_api,
                   kAfterHolderSingleton,
                   init_flags,
                   singleton_ctx.r3.u32,
+                  final_handoff_ready ? "true" : "false",
                   FormatRefiiPostLoadingAfterHolderState(
                       base, kAfterHolderSingleton)));
   if (VfsTracingEnabled() ||
@@ -1119,13 +1529,15 @@ bool TryReturnRefiiPostLoadingAfterHolderSingletonForCompletedVfsChain(
                                          8)) {
     REXLOG_INFO("Refii VFS post-loading after-holder singleton {} "
                 "source={} holder=0x{:08X} init_flags=0x{:08X}->0x{:08X} "
-                "native_result=0x{:08X} handoff=[{}] main_menu=[{}] state=[{}]",
+                "native_result=0x{:08X} final_handoff_ready={} "
+                "handoff=[{}] main_menu=[{}] state=[{}]",
                 already_initialized ? "reused" : "seeded",
                 source_api,
                 kAfterHolderSingleton,
                 init_flags,
                 LoadGuestU32(base, kAfterHolderInitFlag),
                 singleton_ctx.r3.u32,
+                final_handoff_ready ? "true" : "false",
                 FormatRefiiPostVideoHandoffTraceForLog(),
                 FormatRefiiMainMenuBlockerTraceForLog(),
                 FormatRefiiPostLoadingAfterHolderState(
@@ -1161,6 +1573,83 @@ bool RefiiPostLoadingMiddlewareVideoReadComplete() {
       std::memory_order_relaxed);
 }
 
+bool IsRefiiPostLoadingMiddlewareVideoHolder(uint8_t* base,
+                                             uint32_t holder_guest) {
+  constexpr uint32_t kAfterHolderSingleton = 0x834C20B8u;
+  if (holder_guest == kAfterHolderSingleton) {
+    return true;
+  }
+  if (base == nullptr || !LooksLikeGuestPointer(holder_guest)) {
+    return false;
+  }
+  const uint32_t path_object = LoadGuestU32(base, holder_guest + 8);
+  if (!LooksLikeGuestPointer(path_object)) {
+    return false;
+  }
+  return IsRefiiPostLoadingMiddlewareVideoPath(
+      ReadMaybeGuestString(base, path_object, 512));
+}
+
+bool TryTickRefiiPostLoadingMiddlewareAfterHolderNativeMode2(
+    const PPCContext& source_ctx,
+    uint8_t* base,
+    uint32_t holder_guest,
+    std::string_view source_api) {
+  constexpr uint32_t kAfterHolderSingleton = 0x834C20B8u;
+  if (base == nullptr || holder_guest != kAfterHolderSingleton ||
+      !LooksLikeGuestPointer(holder_guest) ||
+      RefiiPostLoadingMiddlewareVideoReadComplete() ||
+      LoadRefiiPostLoadingAfterHolderMode(base, holder_guest) != 2 ||
+      LoadGuestU32(base, holder_guest + kAfterHolderChildOffset) != 0) {
+    return false;
+  }
+
+  const std::string before_state =
+      FormatRefiiPostLoadingAfterHolderState(base, holder_guest);
+  PPCContext native_ctx = source_ctx;
+  native_ctx.r3.u32 = holder_guest;
+  native_ctx.lr = static_cast<uint32_t>(source_ctx.lr);
+  __imp__sub_82467B08(native_ctx, base);
+
+  const std::string after_state =
+      FormatRefiiPostLoadingAfterHolderState(base, holder_guest);
+  RecordRefiiMainMenuBlockerEvent(
+      "post_loading_after_holder_native_mode2_tick",
+      fmt::format("source={} holder=0x{:08X} arg=0x{:08X} result=0x{:08X} "
+                  "before=[{}] after=[{}]",
+                  source_api,
+                  holder_guest,
+                  source_ctx.r4.u32,
+                  native_ctx.r3.u32,
+                  before_state,
+                  after_state));
+  if (VfsTracingEnabled() ||
+      ShouldLogRepeatedVfsTraceOperation(
+          "PostLoadingAfterHolderNativeMode2Tick", 16)) {
+    REXLOG_INFO("Refii VFS post-loading after-holder native mode2 tick "
+                "source={} holder=0x{:08X} arg=0x{:08X} result=0x{:08X} "
+                "before=[{}] after=[{}] handoff=[{}] main_menu=[{}]",
+                source_api,
+                holder_guest,
+                source_ctx.r4.u32,
+                native_ctx.r3.u32,
+                before_state,
+                after_state,
+                FormatRefiiPostVideoHandoffTraceForLog(),
+                FormatRefiiMainMenuBlockerTraceForLog());
+  }
+  LogRefiiVfsChainVerdict("frontend_post_video",
+                          static_cast<uint32_t>(source_ctx.lr),
+                          "data/art/videos/middlewarelogos.bik",
+                          "",
+                          "",
+                          "native_after_holder",
+                          "post_loading_after_holder_native_mode2_tick",
+                          "Opened",
+                          "native_mode2_started_middleware_video");
+  return true;
+}
+
 std::atomic<uint32_t>& RefiiPostLoadingAfterHolderMode5CleanedHolder() {
   static std::atomic<uint32_t> holder{0};
   return holder;
@@ -1173,6 +1662,19 @@ bool RefiiOwnerlessPostVideoAfterHolderCleaned() {
          RefiiOwnerlessPostVideoVfsChainReadyForAfterHolder() &&
          RefiiPostLoadingMiddlewareVideoReadComplete() &&
          RefiiPostFrontendDeferredHashWakeSignalEmitted();
+}
+
+bool RefiiPostLoadingAfterHolderAlreadyConsumed(uint8_t* base,
+                                                uint32_t holder_guest) {
+  return base != nullptr && LooksLikeGuestPointer(holder_guest) &&
+         RefiiPostLoadingAfterHolderMode5CleanedHolder().load(
+             std::memory_order_relaxed) == holder_guest &&
+         LoadRefiiPostLoadingAfterHolderMode(base, holder_guest) == 0 &&
+         LoadGuestU32(base, holder_guest + kAfterHolderChildOffset) == 0 &&
+         (RefiiPostGameFacePackageComplete() ||
+          RefiiPostGameFacePackageNativeFallbackReady()) &&
+         RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
+         RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
 }
 
 bool TryFinalizeRefiiOwnerlessPostLoadingAfterHolderState(
@@ -1874,19 +2376,98 @@ bool TryCollapseRefiiPostLoadingAfterHolderMode2(
   const uint32_t mode = LoadRefiiPostLoadingAfterHolderMode(base, holder_guest);
   const uint32_t child =
       LoadGuestU32(base, holder_guest + kAfterHolderChildOffset);
-  if (mode != 2 || child != 0) {
+  const bool middleware_holder =
+      IsRefiiPostLoadingMiddlewareVideoHolder(base, holder_guest);
+  const bool final_handoff_ready_without_middleware =
+      RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
+      (RefiiPostGameFacePackageComplete() ||
+       RefiiPostGameFacePackageNativeFallbackReady()) &&
+      RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
+  const bool completed_owner_release_ready =
+      LooksLikeGuestPointer(
+          RefiiCompletedLoadingScreenOwner().load(std::memory_order_relaxed)) &&
+      RefiiPostVideoFrontendChainConsumed() &&
+      RefiiPostVfsChainReadyForLoadingOwnerRelease() &&
+      RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
+  const bool stale_native_child =
+      middleware_holder && child != 0 && !LooksLikeGuestPointer(child) &&
+      (final_handoff_ready_without_middleware || completed_owner_release_ready);
+  if (mode != 2 || (child != 0 && !stale_native_child)) {
+    return false;
+  }
+
+  if (middleware_holder && !stale_native_child &&
+      !final_handoff_ready_without_middleware &&
+      !RefiiPostLoadingMiddlewareVideoReadComplete()) {
+    const bool native_tick_started =
+        TryTickRefiiPostLoadingMiddlewareAfterHolderNativeMode2(
+            source_ctx, base, holder_guest, source_api);
+    RecordRefiiMainMenuBlockerEvent(
+        "post_loading_after_holder_mode2_deferred",
+        fmt::format("source={} holder=0x{:08X} reason=middleware_bik_pending "
+                    "native_tick_started={} state=[{}]",
+                    source_api,
+                    holder_guest,
+                    native_tick_started ? "true" : "false",
+                    FormatRefiiPostLoadingAfterHolderState(base,
+                                                           holder_guest)));
+    if (VfsTracingEnabled() ||
+        ShouldLogRepeatedVfsTraceOperation(
+            "PostLoadingAfterHolderMode2Deferred", 8)) {
+      REXLOG_INFO("Refii VFS post-loading after-holder mode2 deferred "
+                  "source={} holder=0x{:08X} reason=middleware_bik_pending "
+                  "native_tick_started={} handoff=[{}] main_menu=[{}] "
+                  "state=[{}]",
+                  source_api,
+                  holder_guest,
+                  native_tick_started ? "true" : "false",
+                  FormatRefiiPostVideoHandoffTraceForLog(),
+                  FormatRefiiMainMenuBlockerTraceForLog(),
+                  FormatRefiiPostLoadingAfterHolderState(base, holder_guest));
+    }
+    LogRefiiVfsChainVerdict("frontend_post_video",
+                            static_cast<uint32_t>(source_ctx.lr),
+                            "data/art/videos/middlewarelogos.bik",
+                            "",
+                            "",
+                            "native_after_holder",
+                            "post_loading_after_holder_mode2_deferred",
+                            "TraceOnce",
+                            native_tick_started
+                                ? "native_mode2_tick_started"
+                                : "wait_for_native_middleware_video_read");
     return false;
   }
 
   static std::atomic<uint32_t> last_mode2_holder{0};
-  if (last_mode2_holder.exchange(holder_guest, std::memory_order_relaxed) ==
-      holder_guest) {
-    return false;
+  static std::atomic<uint32_t> last_mode2_recollapse_holder{0};
+  const bool already_collapsed =
+      last_mode2_holder.exchange(holder_guest, std::memory_order_relaxed) ==
+      holder_guest;
+  if (already_collapsed) {
+    const bool native_rearm_still_mode2 =
+        RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
+        (RefiiPostGameFacePackageComplete() ||
+         RefiiPostGameFacePackageNativeFallbackReady()) &&
+        RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload() &&
+        RefiiPostVideoFrontendChainConsumed();
+    const bool completed_owner_rearm_still_mode2 =
+        completed_owner_release_ready && stale_native_child;
+    if ((!native_rearm_still_mode2 && !completed_owner_rearm_still_mode2) ||
+        (!completed_owner_rearm_still_mode2 &&
+         last_mode2_recollapse_holder.exchange(
+             holder_guest, std::memory_order_relaxed) == holder_guest)) {
+      return false;
+    }
   }
 
   const std::string before_state =
       FormatRefiiPostLoadingAfterHolderState(base, holder_guest);
 
+  if (stale_native_child) {
+    StoreGuestU32(base, holder_guest + kAfterHolderChildOffset, 0);
+    StoreGuestU32(base, holder_guest + kAfterHolderField44Offset, 0);
+  }
   SetRefiiPostLoadingAfterHolderMode(
       source_ctx, base, holder_guest, 0, 0x82467CB8u);
 
@@ -1918,22 +2499,33 @@ bool TryCollapseRefiiPostLoadingAfterHolderMode2(
       collapsed ? "post_loading_after_holder_mode2_collapsed"
                 : "post_loading_after_holder_mode2_collapse_failed",
       fmt::format("source={} holder=0x{:08X} "
-                  "released_post_loading_globals={} before=[{}] after=[{}]",
+                  "released_post_loading_globals={} stale_native_child={} "
+                  "final_handoff_ready_without_middleware={} "
+                  "completed_owner_release_ready={} "
+                  "before=[{}] after=[{}]",
                   source_api,
                   holder_guest,
                   released_post_loading_globals ? "true" : "false",
+                  stale_native_child ? "true" : "false",
+                  final_handoff_ready_without_middleware ? "true" : "false",
+                  completed_owner_release_ready ? "true" : "false",
                   before_state,
                   FormatRefiiPostLoadingAfterHolderState(base, holder_guest)));
   if (VfsTracingEnabled() ||
       ShouldLogRepeatedVfsTraceOperation("PostLoadingAfterHolderMode2", 8)) {
     REXLOG_INFO("Refii VFS post-loading after-holder mode2 {} "
                 "source={} holder=0x{:08X} "
-                "released_post_loading_globals={} before=[{}] after=[{}] "
-                "handoff=[{}] main_menu=[{}]",
+                "released_post_loading_globals={} stale_native_child={} "
+                "final_handoff_ready_without_middleware={} "
+                "completed_owner_release_ready={} "
+                "before=[{}] after=[{}] handoff=[{}] main_menu=[{}]",
                 collapsed ? "collapsed" : "collapse_failed",
                 source_api,
                 holder_guest,
                 released_post_loading_globals ? "true" : "false",
+                stale_native_child ? "true" : "false",
+                final_handoff_ready_without_middleware ? "true" : "false",
+                completed_owner_release_ready ? "true" : "false",
                 before_state,
                 FormatRefiiPostLoadingAfterHolderState(base, holder_guest),
                 FormatRefiiPostVideoHandoffTraceForLog(),
@@ -2113,10 +2705,22 @@ bool TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
   }
 
   static std::atomic<uint32_t> last_armed_holder{0};
-  if (last_armed_holder.exchange(holder_guest, std::memory_order_relaxed) ==
-      holder_guest) {
-    log_arm_skip("already_armed");
-    return false;
+  static std::atomic<uint32_t> last_rearmed_after_reset_holder{0};
+  const bool already_armed =
+      last_armed_holder.exchange(holder_guest, std::memory_order_relaxed) ==
+      holder_guest;
+  if (already_armed) {
+    const bool native_reset_back_to_idle =
+        (mode == 0 || path_already_initialized) && child == 0 &&
+        (ownerless_after_holder_ready || generated_finalize_ready) &&
+        RefiiPostVideoFrontendChainConsumed() &&
+        RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
+    if (!native_reset_back_to_idle ||
+        last_rearmed_after_reset_holder.exchange(
+            holder_guest, std::memory_order_relaxed) == holder_guest) {
+      log_arm_skip("already_armed");
+      return false;
+    }
   }
 
   const std::string before_state =
@@ -2128,6 +2732,18 @@ bool TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
   }
   SetRefiiPostLoadingAfterHolderMode(
       source_ctx, base, holder_guest, 2, 0x82306558u);
+  const bool defer_native_tick_for_final_handoff =
+      source_api == "post_loading_generated_state_finalize" &&
+      RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
+      (RefiiPostGameFacePackageComplete() ||
+       RefiiPostGameFacePackageNativeFallbackReady()) &&
+      RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
+  const bool native_tick_started =
+      IsRefiiPostLoadingMiddlewareVideoHolder(base, holder_guest) &&
+      !defer_native_tick_for_final_handoff &&
+      !RefiiPostLoadingMiddlewareVideoReadComplete() &&
+      TryTickRefiiPostLoadingMiddlewareAfterHolderNativeMode2(
+          source_ctx, base, holder_guest, source_api);
 
   RecordRefiiMainMenuBlockerEvent(
       "post_loading_after_holder_armed",
@@ -2135,6 +2751,7 @@ bool TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
                   "primary=0x{:08X} render_owner=0x{:08X} "
                   "render_handoff=0x{:08X}->0x{:08X} "
                   "completed_owner=0x{:08X} path_already_initialized={} "
+                  "native_tick_started={} native_tick_deferred={} "
                   "before=[{}] after=[{}]",
                   source_api,
                   holder_guest,
@@ -2145,6 +2762,8 @@ bool TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
                   render_handoff,
                   completed_loading_owner,
                   path_already_initialized ? "true" : "false",
+                  native_tick_started ? "true" : "false",
+                  defer_native_tick_for_final_handoff ? "true" : "false",
                   before_state,
                   FormatRefiiPostLoadingAfterHolderState(base, holder_guest)));
   if (VfsTracingEnabled() ||
@@ -2154,7 +2773,9 @@ bool TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
                 "primary=0x{:08X} render_owner=0x{:08X} "
                 "render_handoff=0x{:08X}->0x{:08X} "
                 "completed_owner=0x{:08X} path_already_initialized={} "
-                "before=[{}] after=[{}] handoff=[{}] main_menu=[{}]",
+                "native_tick_started={} native_tick_deferred={} "
+                "before=[{}] after=[{}] "
+                "handoff=[{}] main_menu=[{}]",
                 source_api,
                 holder_guest,
                 request_guest,
@@ -2164,6 +2785,8 @@ bool TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
                 render_handoff,
                 completed_loading_owner,
                 path_already_initialized ? "true" : "false",
+                native_tick_started ? "true" : "false",
+                defer_native_tick_for_final_handoff ? "true" : "false",
                 before_state,
                 FormatRefiiPostLoadingAfterHolderState(base, holder_guest),
                 FormatRefiiPostVideoHandoffTraceForLog(),

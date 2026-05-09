@@ -363,10 +363,36 @@ constexpr int64_t kRefiiStartupReadyGateFalseDelayMs = 1000;
 constexpr int64_t kRefiiStartupVideoMinimumReadyAgeMs = 4500;
 constexpr int64_t kRefiiStartupVideoPostFinalizerHandoffDelayMs = 2000;
 
+bool RefiiStartupVideoObservedSlotReady(
+    const RefiiStartupVideoItemTrace& slot) {
+  return slot.provider.empty() || RefiiStartupVideoSlotReady(slot);
+}
+
+bool RefiiStartupVideoObservedSlotSyntheticFinalized(
+    const RefiiStartupVideoItemTrace& slot) {
+  return slot.provider.empty() ||
+         (slot.finalizer_seen && slot.finalizer_synthetic);
+}
+
+bool RefiiRequiredStartupVideosReadyLocked(
+    const RefiiPostVideoHandoffTrace& trace) {
+  return RefiiStartupVideoObservedSlotReady(trace.middleware) &&
+         RefiiStartupVideoSlotReady(trace.microsoft) &&
+         RefiiStartupVideoSlotReady(trace.lionhead);
+}
+
+std::chrono::steady_clock::time_point RefiiStartupVideosLatestReadyAtLocked(
+    const RefiiPostVideoHandoffTrace& trace) {
+  auto ready_at = std::max(trace.microsoft.size_at, trace.lionhead.size_at);
+  if (!trace.middleware.provider.empty()) {
+    ready_at = std::max(ready_at, trace.middleware.size_at);
+  }
+  return ready_at;
+}
+
 int64_t RefiiStartupVideoReadyAgeMsLocked(
     const RefiiPostVideoHandoffTrace& trace) {
-  const auto ready_at =
-      std::max(trace.microsoft.size_at, trace.lionhead.size_at);
+  const auto ready_at = RefiiStartupVideosLatestReadyAtLocked(trace);
   if (ready_at.time_since_epoch().count() == 0) {
     return -1;
   }
@@ -411,14 +437,21 @@ bool RefiiStartupVideosMinimumPlaybackAgeReachedLocked(
     const RefiiPostVideoHandoffTrace& trace,
     int64_t minimum_per_video_ms,
     int64_t* playback_age_ms_out) {
+  const int64_t middleware_playback_age_ms =
+      trace.middleware.provider.empty()
+          ? minimum_per_video_ms
+          : RefiiStartupVideoPlaybackAgeMsLocked(trace.middleware);
   const int64_t microsoft_playback_age_ms =
       RefiiStartupVideoPlaybackAgeMsLocked(trace.microsoft);
   const int64_t lionhead_playback_age_ms =
       RefiiStartupVideoPlaybackAgeMsLocked(trace.lionhead);
   const int64_t playback_age_ms =
-      microsoft_playback_age_ms < 0 || lionhead_playback_age_ms < 0
+      middleware_playback_age_ms < 0 || microsoft_playback_age_ms < 0 ||
+              lionhead_playback_age_ms < 0
           ? -1
-          : std::min(microsoft_playback_age_ms, lionhead_playback_age_ms);
+          : std::min(
+                std::min(middleware_playback_age_ms, microsoft_playback_age_ms),
+                lionhead_playback_age_ms);
   if (playback_age_ms_out != nullptr) {
     *playback_age_ms_out = playback_age_ms;
   }
@@ -429,14 +462,20 @@ bool RefiiStartupVideosMinimumCursorQuietAgeReachedLocked(
     const RefiiPostVideoHandoffTrace& trace,
     int64_t minimum_quiet_ms,
     int64_t* quiet_age_ms_out) {
+  const int64_t middleware_quiet_age_ms =
+      trace.middleware.provider.empty()
+          ? minimum_quiet_ms
+          : RefiiStartupVideoCursorQuietAgeMsLocked(trace.middleware);
   const int64_t microsoft_quiet_age_ms =
       RefiiStartupVideoCursorQuietAgeMsLocked(trace.microsoft);
   const int64_t lionhead_quiet_age_ms =
       RefiiStartupVideoCursorQuietAgeMsLocked(trace.lionhead);
   const int64_t quiet_age_ms =
-      microsoft_quiet_age_ms < 0 || lionhead_quiet_age_ms < 0
+      middleware_quiet_age_ms < 0 || microsoft_quiet_age_ms < 0 ||
+              lionhead_quiet_age_ms < 0
           ? -1
-          : std::min(microsoft_quiet_age_ms, lionhead_quiet_age_ms);
+          : std::min(std::min(middleware_quiet_age_ms, microsoft_quiet_age_ms),
+                     lionhead_quiet_age_ms);
   if (quiet_age_ms_out != nullptr) {
     *quiet_age_ms_out = quiet_age_ms;
   }
@@ -448,23 +487,28 @@ bool RefiiStartupVideosTimedPlaybackCompleteForHandoffLocked(
     int64_t* ready_age_ms_out = nullptr) {
   const int64_t configured_minimum_playback_ms =
       StartupVideoMinimumPlaybackMs();
-  if (configured_minimum_playback_ms <= 0) {
+  if (!RefiiRequiredStartupVideosReadyLocked(trace)) {
     if (ready_age_ms_out != nullptr) {
       *ready_age_ms_out = -1;
     }
     return false;
   }
-  if (!RefiiStartupVideoSlotReady(trace.microsoft) ||
-      !RefiiStartupVideoSlotReady(trace.lionhead)) {
+  if (trace.last_bik_provider != trace.lionhead.provider) {
     if (ready_age_ms_out != nullptr) {
       *ready_age_ms_out = -1;
     }
     return false;
   }
+  // Refii-backed startup BIK objects do not always reach the native BIK
+  // finalizer hook. Treat repeated cursor activity followed by a quiet window
+  // as the VFS-facing equivalent of native playback settling; the cvar only
+  // raises that observed-playback floor for debugging.
   const int64_t minimum_playback_ms =
       std::max<int64_t>(kRefiiStartupVideoMinimumReadyAgeMs,
                         configured_minimum_playback_ms);
   const bool using_synthetic_finalizer =
+      (!trace.middleware.provider.empty() &&
+       trace.middleware.finalizer_synthetic) ||
       trace.microsoft.finalizer_synthetic || trace.lionhead.finalizer_synthetic;
   if (using_synthetic_finalizer) {
     const bool native_update_complete =
@@ -506,6 +550,19 @@ bool RefiiStartupVideosTimedPlaybackCompleteForHandoffLocked(
   if (ready_age_ms_out != nullptr && quiet_age_ms >= 0) {
     *ready_age_ms_out = std::min(*ready_age_ms_out, quiet_age_ms);
   }
+  auto native_bik_object_pending = [](const RefiiStartupVideoItemTrace& slot) {
+    return slot.object_guest != 0 && slot.object_stream_attached_seen &&
+           !slot.object_stream_cleared_seen && slot.last_object_stream_after != 0 &&
+           !slot.finalizer_synthetic;
+  };
+  if (native_bik_object_pending(trace.middleware) ||
+      native_bik_object_pending(trace.microsoft) ||
+      native_bik_object_pending(trace.lionhead)) {
+    if (ready_age_ms_out != nullptr) {
+      *ready_age_ms_out = -1;
+    }
+    return false;
+  }
   return ready_age_reached && both_videos_played && both_videos_quiet &&
          RefiiBootTraceAgeMs() >= minimum_sequence_ms;
 }
@@ -535,8 +592,8 @@ bool RefiiStartupNativeReadyPollStillBlocksHandoffLocked(
   if (trace.last_ready_poll_at.time_since_epoch().count() != 0) {
     return trace.last_ready_poll_result == 0;
   }
-  if (RefiiStartupVideoSlotReady(trace.microsoft) &&
-      RefiiStartupVideoSlotReady(trace.lionhead) &&
+  if (RefiiRequiredStartupVideosReadyLocked(trace) &&
+      RefiiStartupVideoObservedSlotSyntheticFinalized(trace.middleware) &&
       trace.microsoft.finalizer_seen && trace.lionhead.finalizer_seen &&
       trace.microsoft.finalizer_synthetic &&
       trace.lionhead.finalizer_synthetic) {
@@ -552,8 +609,11 @@ int64_t RefiiStartupVideoFinalizerAgeMsLocked(
   if (!RefiiStartupVideosNativeObjectsRetiredLocked(trace)) {
     return -1;
   }
-  const auto finalized_at =
+  auto finalized_at =
       std::max(trace.microsoft.finalizer_at, trace.lionhead.finalizer_at);
+  if (!trace.middleware.provider.empty()) {
+    finalized_at = std::max(finalized_at, trace.middleware.finalizer_at);
+  }
   if (finalized_at.time_since_epoch().count() == 0) {
     return -1;
   }
@@ -614,12 +674,17 @@ bool RefiiStartupVideosPlaybackCriticalActive() {
   std::unique_lock<std::mutex> lock(RefiiPostVideoHandoffTraceMutex(),
                                    std::try_to_lock);
   if (!lock.owns_lock()) {
-    return false;
+    // This predicate is used by trace/log throttles on hot video paths. If the
+    // trace mutex is already busy, assume playback is still critical so logging
+    // fails closed instead of formatting large state snapshots inside the BIK
+    // frame loop.
+    return true;
   }
 
   const auto& trace = RefiiPostVideoHandoffTraceState();
   const bool startup_seen =
-      !trace.microsoft.provider.empty() || !trace.lionhead.provider.empty() ||
+      !trace.middleware.provider.empty() || !trace.microsoft.provider.empty() ||
+      !trace.lionhead.provider.empty() ||
       trace.last_bik_at.time_since_epoch().count() != 0 ||
       trace.last_startup_update_guest != 0;
   if (!startup_seen) {
@@ -776,6 +841,11 @@ bool MaybeApplyRefiiVfsPostVideoHandoffTimerPatch(uint8_t* base,
                                                   uint32_t lr,
                                                   uint32_t owner_guest,
                                                   std::string_view context) {
+  if (context == "PostVideoFrame_82389210" &&
+      !RefiiStartupVideosReadyForMenuHandoff()) {
+    return false;
+  }
+
   int64_t finalizer_age_ms = -1;
   if (!RefiiStartupHandoffTimerLongEnoughForVfsAccelerator(&finalizer_age_ms,
                                                            false)) {

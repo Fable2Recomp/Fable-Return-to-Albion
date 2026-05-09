@@ -48,11 +48,21 @@ int main(int argc, char** argv) {
         }
         std::cout << "Wrote " << summary.runtime_alias_entries
                   << " alias index row(s) and " << summary.runtime_hash_entries
-                  << " hash index row(s), plus "
+                  << " hash index row(s), " << summary.runtime_candidates
+                  << " candidate(s), plus "
                   << summary.runtime_directories << " virtual director"
                   << (summary.runtime_directories == 1 ? "y" : "ies")
                   << " to "
                   << summary.runtime_index_root.generic_string() << '\n';
+        if (summary.unindexed_files != 0) {
+            std::cout << "VFS audit found " << summary.unindexed_files
+                      << " unindexed loose file candidate"
+                      << (summary.unindexed_files == 1 ? "" : "s")
+                      << " in "
+                      << (summary.runtime_index_root / "unindexed_candidates.tsv")
+                             .generic_string()
+                      << '\n';
+        }
         return 0;
     }
 

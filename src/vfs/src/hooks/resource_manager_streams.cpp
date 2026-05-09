@@ -172,12 +172,24 @@ PPC_FUNC_IMPL(rex_lhResourceManager_GetCached) {
 
   if (refii::vfs::RefiiLooseAssetBackendEnabled() && !name.empty()) {
     refii::vfs::RefiiVfsOpenResult open_result;
+    const bool bik_object_open_stream =
+        original_ctx.lr == 0x82C6F534u &&
+        refii::vfs::IsStartupBikAssetName(name);
     const refii::vfs::RefiiVfsOpenShape shape =
-        refii::vfs::IsLuaScriptAssetKey(name)
+        bik_object_open_stream ? refii::vfs::RefiiVfsOpenShape::RawStream
+        : refii::vfs::IsLuaScriptAssetKey(name)
             ? refii::vfs::RefiiVfsOpenShape::NativeGenerated
         : !direct_bypass_reason.empty()
             ? refii::vfs::RefiiVfsOpenShape::NativeGenerated
             : refii::vfs::RefiiVfsOpenShape::RawStream;
+    if (bik_object_open_stream &&
+        refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+            "StartupBikGetCachedRawStreamShape", 8)) {
+      REXLOG_INFO("Refii VFS startup BIK GetCached raw-stream shape "
+                  "lr=0x{:08X} name={} reason=native_constructor_buffers_after_open",
+                  original_ctx.lr,
+                  name);
+    }
     refii::vfs::TryOpenRefiiVfsAsset(
         ctx,
         base,
@@ -225,6 +237,12 @@ PPC_FUNC_IMPL(rex_lhResourceManager_GetCached) {
     if (refii::vfs::IsHandledRefiiVfsOpenDisposition(
             open_result.disposition)) {
       refii::vfs::RecordRefiiGetCachedHandoffEvent(name, original_ctx.lr, 0);
+      if (open_result.disposition ==
+              refii::vfs::RefiiVfsOpenDisposition::OptionalNull &&
+          refii::vfs::IsGameFaceBinaryAssetKey(name)) {
+        refii::vfs::MaybeRecordRefiiPostGameFacePackageOptionalMiss(
+            original_ctx, base, name, "ResourceManager_GetCached");
+      }
       return;
     }
     if (open_result.disposition ==
@@ -262,8 +280,7 @@ PPC_FUNC_IMPL(rex_lhResourceManager_GetCached) {
         original_ctx, base, name, stream_guest);
   }
 
-  if (trace || (!direct_bypass_reason.empty() &&
-                refii::vfs::VfsTracingEnabled())) {
+  if (refii::vfs::VfsTracingEnabled() && !direct_bypass_reason.empty()) {
     refii::vfs::MaybeLogStartupLuaGetCachedShapeVerdict(
         base,
         name,
@@ -271,6 +288,10 @@ PPC_FUNC_IMPL(rex_lhResourceManager_GetCached) {
         stream_guest,
         repaired_native_shape,
         direct_bypass_reason);
+  }
+  if (refii::vfs::VfsVerboseIoTracingEnabled() &&
+      (trace || (!direct_bypass_reason.empty() &&
+                 refii::vfs::VfsTracingEnabled()))) {
     REXLOG_INFO("ResourceManager GetCached exit caller_lr=0x{:08X} "
                 "result=0x{:08X} out=0x{:08X} out_stream=0x{:08X} "
                 "bypass_reason={} native_shape_repaired={} stream_words={} {}",

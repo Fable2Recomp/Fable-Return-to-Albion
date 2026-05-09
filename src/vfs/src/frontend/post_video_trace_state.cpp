@@ -3,6 +3,11 @@
 namespace refii::vfs {
 inline namespace detail {
 
+bool RefiiOptionalStartupVideoSlotReady(
+    const RefiiStartupVideoItemTrace& slot);
+bool RefiiOptionalStartupVideoSlotFinalized(
+    const RefiiStartupVideoItemTrace& slot);
+
 void RecordRefiiPostVideoUiEvent(std::string_view event,
                                  uint32_t lr,
                                  uint32_t result,
@@ -438,25 +443,6 @@ void RecordRefiiPostVideoFrameHandoffSnapshot(uint8_t* base,
   trace.last_frame_flag233 = LoadGuestU8(base, handoff_guest + 233);
   trace.last_frame_flag244 = LoadGuestU8(base, handoff_guest + 244);
   trace.last_frame_at = std::chrono::steady_clock::now();
-
-  // Some generated paths never call the BIK object finalizer hook before the
-  // frontend frame handoff exists. Treat that as a diagnostic hint only; it is
-  // not a real BIK finalizer and must not unlock the menu handoff by itself.
-  if (RefiiStartupVideoSlotReady(trace.microsoft) &&
-      RefiiStartupVideoSlotReady(trace.lionhead)) {
-    if (!trace.microsoft.finalizer_seen) {
-      trace.microsoft.finalizer_seen = true;
-      trace.microsoft.finalizer_synthetic = true;
-      trace.microsoft.last_finalizer_result = 0;
-      trace.microsoft.finalizer_at = trace.last_frame_at;
-    }
-    if (!trace.lionhead.finalizer_seen) {
-      trace.lionhead.finalizer_seen = true;
-      trace.lionhead.finalizer_synthetic = true;
-      trace.lionhead.last_finalizer_result = 0;
-      trace.lionhead.finalizer_at = trace.last_frame_at;
-    }
-  }
 }
 
 void RecordRefiiRenderProducerScheduleSnapshot(uint8_t* base,
@@ -515,6 +501,23 @@ bool RefiiStartupVideoSlotReady(const RefiiStartupVideoItemTrace& slot) {
   return slot.read_complete && slot.cursor_seen && slot.size_seen && size_matches;
 }
 
+bool RefiiOptionalStartupVideoSlotReady(
+    const RefiiStartupVideoItemTrace& slot) {
+  return slot.provider.empty() || RefiiStartupVideoSlotReady(slot);
+}
+
+bool RefiiOptionalStartupVideoSlotFinalized(
+    const RefiiStartupVideoItemTrace& slot) {
+  return slot.provider.empty() || slot.finalizer_seen;
+}
+
+bool RefiiOptionalStartupVideoSlotRealFinalized(
+    const RefiiStartupVideoItemTrace& slot) {
+  return slot.provider.empty() ||
+         (RefiiStartupVideoSlotReady(slot) && slot.finalizer_seen &&
+          !slot.finalizer_synthetic);
+}
+
 bool RefiiStartupVideosRealFinalizersSeenLocked(
     const RefiiPostVideoHandoffTrace& trace);
 bool RefiiStartupVideosHaveAttachedUnretiredNativeObjectLocked(
@@ -528,7 +531,8 @@ bool RefiiStartupVideosFinalizedForPostVideoHandoffLocked(
 
 bool RefiiStartupVideosRealFinalizersSeenLocked(
     const RefiiPostVideoHandoffTrace& trace) {
-  return RefiiStartupVideoSlotReady(trace.microsoft) &&
+  return RefiiOptionalStartupVideoSlotRealFinalized(trace.middleware) &&
+         RefiiStartupVideoSlotReady(trace.microsoft) &&
          RefiiStartupVideoSlotReady(trace.lionhead) &&
          trace.microsoft.finalizer_seen && trace.lionhead.finalizer_seen &&
          !trace.microsoft.finalizer_synthetic &&
@@ -556,7 +560,9 @@ bool RefiiStartupVideoNativeObjectRetiredLocked(
 
 bool RefiiStartupVideosNativeObjectsRetiredLocked(
     const RefiiPostVideoHandoffTrace& trace) {
-  return RefiiStartupVideoNativeObjectRetiredLocked(trace.microsoft) &&
+  return (trace.middleware.provider.empty() ||
+          RefiiStartupVideoNativeObjectRetiredLocked(trace.middleware)) &&
+         RefiiStartupVideoNativeObjectRetiredLocked(trace.microsoft) &&
          RefiiStartupVideoNativeObjectRetiredLocked(trace.lionhead);
 }
 
@@ -566,7 +572,8 @@ bool RefiiStartupVideosHaveAttachedUnretiredNativeObjectLocked(
     return slot.object_guest != 0 && slot.object_stream_attached_seen &&
            !slot.object_stream_cleared_seen && slot.last_object_stream_after != 0;
   };
-  return unretired(trace.microsoft) || unretired(trace.lionhead);
+  return unretired(trace.middleware) || unretired(trace.microsoft) ||
+         unretired(trace.lionhead);
 }
 
 bool RefiiStartupVideosReadyForMenuHandoff();
@@ -685,15 +692,19 @@ std::vector<ActiveRefiiStreamSnapshot> SnapshotActiveRefiiHostStreams(
     }
   }
 
+  uint32_t middleware_source = 0;
   uint32_t microsoft_source = 0;
   uint32_t lionhead_source = 0;
+  uint32_t middleware_wrapped = 0;
   uint32_t microsoft_wrapped = 0;
   uint32_t lionhead_wrapped = 0;
   {
     std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
     const auto& trace = RefiiPostVideoHandoffTraceState();
+    middleware_source = trace.middleware.source_stream_guest;
     microsoft_source = trace.microsoft.source_stream_guest;
     lionhead_source = trace.lionhead.source_stream_guest;
+    middleware_wrapped = trace.middleware.wrapped_stream_guest;
     microsoft_wrapped = trace.microsoft.wrapped_stream_guest;
     lionhead_wrapped = trace.lionhead.wrapped_stream_guest;
   }
@@ -726,11 +737,14 @@ std::vector<ActiveRefiiStreamSnapshot> SnapshotActiveRefiiHostStreams(
       snapshot.provider = NormalizeLooseAssetKey(snapshot.path);
     }
 
-    if (guest == microsoft_source) {
+    if (guest == middleware_source) {
+      snapshot.owner = "startup_bik_raw_source:middlewarelogos";
+    } else if (guest == microsoft_source) {
       snapshot.owner = "startup_bik_raw_source:microsoft_logo";
     } else if (guest == lionhead_source) {
       snapshot.owner = "startup_bik_raw_source:lionhead_logo";
-    } else if (guest == microsoft_wrapped || guest == lionhead_wrapped) {
+    } else if (guest == middleware_wrapped || guest == microsoft_wrapped ||
+               guest == lionhead_wrapped) {
       snapshot.owner = "startup_bik_buffered_alias";
     } else if (IsStartupLuaHostPath(snapshot.path) ||
                IsStartupLuaAssetName(snapshot.provider)) {
@@ -991,6 +1005,7 @@ void MaybeLogRefiiVideosReadyTextureOpenGap(uint32_t lr,
     std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
     auto& trace = RefiiPostVideoHandoffTraceState();
     if (trace.videos_ready_texture_open_gap_emitted ||
+        !RefiiOptionalStartupVideoSlotReady(trace.middleware) ||
         !RefiiStartupVideoSlotReady(trace.microsoft) ||
         !RefiiStartupVideoSlotReady(trace.lionhead)) {
       return;
@@ -1030,7 +1045,8 @@ void MaybeLogRefiiStartupVideoReadyNoFinalizerBlocker(
     uint32_t lr,
     std::string_view context,
     uint8_t* base) {
-  if (!kTraceFrontendHandoffDiagnostics || !VfsTracingEnabled()) {
+  if (!kTraceFrontendHandoffDiagnostics || !VfsTracingEnabled() ||
+      RefiiStartupVideosPlaybackCriticalActive()) {
     return;
   }
 
@@ -1040,15 +1056,19 @@ void MaybeLogRefiiStartupVideoReadyNoFinalizerBlocker(
     std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
     auto& trace = RefiiPostVideoHandoffTraceState();
     if (trace.ready_no_finalizer_verdict_emitted ||
+        !RefiiOptionalStartupVideoSlotReady(trace.middleware) ||
         !RefiiStartupVideoSlotReady(trace.microsoft) ||
         !RefiiStartupVideoSlotReady(trace.lionhead) ||
-        (trace.microsoft.finalizer_seen && trace.lionhead.finalizer_seen)) {
+        (RefiiOptionalStartupVideoSlotFinalized(trace.middleware) &&
+         trace.microsoft.finalizer_seen && trace.lionhead.finalizer_seen)) {
       return;
     }
 
     const auto now = std::chrono::steady_clock::now();
-    const auto ready_at =
-        std::max(trace.microsoft.size_at, trace.lionhead.size_at);
+    auto ready_at = std::max(trace.microsoft.size_at, trace.lionhead.size_at);
+    if (!trace.middleware.provider.empty()) {
+      ready_at = std::max(ready_at, trace.middleware.size_at);
+    }
     if (ready_at.time_since_epoch().count() != 0) {
       ready_age_ms =
           std::chrono::duration_cast<std::chrono::milliseconds>(now - ready_at)

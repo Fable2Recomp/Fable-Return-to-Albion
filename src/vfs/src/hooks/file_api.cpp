@@ -645,6 +645,7 @@ PPC_FUNC_IMPL(rex_lhFile_ResolveAndOpen) {
         refii::vfs::ReadGuestWideStringObject(base, file_guest + 4, 4096);
   }
   const bool trace =
+      refii::vfs::VfsVerboseIoTracingEnabled() &&
       refii::vfs::ShouldLogFileApiPath("lhFile_ResolveAndOpen", path);
   if (trace) {
     REXLOG_INFO("VFS trace lhFile_ResolveAndOpen enter lr=0x{:08X} "

@@ -254,6 +254,23 @@ bool IsGameFaceBinaryAssetKey(std::string_view asset_path) {
          EndsWith(normalized, ".fac");
 }
 
+bool IsOptionalGameFaceBinaryMiss(std::string_view asset_path) {
+  const std::string normalized = NormalizeLooseAssetKey(asset_path);
+  if (!IsGameFaceBinaryAssetKey(normalized)) {
+    return false;
+  }
+
+  // The startup package drives the post-video frontend handoff. If the loose
+  // VFS has no override for it, native fallback must get a chance to provide
+  // the generated/cache shape instead of us completing the package as absent.
+  return normalized == "art/gui/gameface/scrollingbackground.bgf" ||
+         normalized == "art/gui/gameface/scrollingbackground.bsg" ||
+         normalized == "art/gui/gameface/scrollingbackground.fac" ||
+         normalized == "data/art/gui/gameface/scrollingbackground.bgf" ||
+         normalized == "data/art/gui/gameface/scrollingbackground.bsg" ||
+         normalized == "data/art/gui/gameface/scrollingbackground.fac";
+}
+
 bool ResolveExactGameFaceBinaryCarrierLooseAsset(
     std::string_view asset_path,
     LooseAssetResolution* out_resolution,
@@ -354,6 +371,7 @@ bool ResolveExactGameFaceBinaryCarrierLooseAsset(
         relatives.push_back(std::move(relative));
       }
     };
+    add_relative(std::filesystem::path(candidate));
     add_relative(std::filesystem::path("luasource") / candidate);
     if (!StartsWith(candidate, "guiscripts/")) {
       add_relative(std::filesystem::path("luasource") / "guiscripts" / candidate);
@@ -556,10 +574,6 @@ bool IsOptionalSyntheticVfsProbe(std::string_view asset_path) {
   if (StartsWith(normalized, "language_dlc/")) {
     return true;
   }
-  if (IsGameFaceBinaryAssetKey(normalized)) {
-    return true;
-  }
-
   constexpr std::string_view kLanguagePrefix = "language/";
   const std::string language_probe =
       StartsWith(normalized, "data/language/") ? normalized.substr(5)
@@ -586,9 +600,6 @@ bool IsOptionalSyntheticVfsProbe(std::string_view asset_path) {
 
 bool IsKnownAbsentBootProbe(std::string_view asset_path) {
   const std::string normalized = NormalizeLooseAssetKey(asset_path);
-  if (IsGameFaceBinaryAssetKey(normalized)) {
-    return true;
-  }
   constexpr std::string_view kLanguagePrefix = "language/";
   const std::string language_probe =
       StartsWith(normalized, "data/language/") ? normalized.substr(5)

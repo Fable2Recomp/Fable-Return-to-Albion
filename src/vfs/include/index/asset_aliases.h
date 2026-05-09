@@ -28,6 +28,7 @@ bool ResolveOriginalGameDataAsset(std::string_view asset_path,
                                   LooseAssetResolution* out_resolution,
                                   std::string* out_candidate);
 bool IsGameFaceBinaryAssetKey(std::string_view asset_path);
+bool IsOptionalGameFaceBinaryMiss(std::string_view asset_path);
 bool ResolveExactGameFaceBinaryCarrierLooseAsset(
     std::string_view asset_path,
     LooseAssetResolution* out_resolution,

@@ -230,11 +230,31 @@ PPC_FUNC_IMPL(sub_822B88A8) {
         refii_sequence_bridge_handle == 0) {                                  \
       refii_sequence_bridge_handle = refii_sequence_ready_for_skip_handle;    \
     }                                                                         \
+    const bool refii_post_gameface_primary_ready_for_native_stage =           \
+        refii::vfs::RefiiPostGameFacePrimaryOwnerReady(base) &&          \
+        refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&    \
+        refii::vfs::RefiiPostVideoFrontendChainConsumed();               \
     const bool refii_loading_render_collapsed =                               \
         refii_sequence_ready_for_skip &&                                      \
         refii_function_name == "sub_82360968" &&                             \
         refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&    \
-        refii::vfs::RefiiPostVideoFrontendChainConsumed();               \
+        refii::vfs::RefiiPostVideoFrontendChainConsumed() &&              \
+        !refii_post_gameface_primary_ready_for_native_stage;                  \
+    const bool refii_loading_setup_collapsed =                                \
+        refii_sequence_ready_for_skip &&                                      \
+        refii_function_name == "sub_8235E1E0" &&                             \
+        refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&    \
+        refii::vfs::RefiiPostVideoFrontendChainConsumed() &&              \
+        refii::vfs::RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload() &&\
+        !refii_post_gameface_primary_ready_for_native_stage;                  \
+    const bool refii_loading_sequence_collapsed =                             \
+        refii_sequence_ready_for_skip &&                                      \
+        refii_function_name == "sub_8235E420" &&                             \
+        refii::vfs::RefiiPostGameFacePrimaryOwnerReady(base) &&          \
+        refii::vfs::RefiiPostVfsChainReadyForLoadingOwnerRelease() &&     \
+        refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&     \
+        refii::vfs::RefiiPostVideoFrontendChainConsumed() &&              \
+        refii::vfs::RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();\
     const bool refii_loading_owner_completed =                                \
         base != nullptr &&                                                    \
         refii::vfs::LooksLikeGuestPointer(loading_owner) &&              \
@@ -254,10 +274,14 @@ PPC_FUNC_IMPL(sub_822B88A8) {
     const bool refii_loading_stage_already_finished =                         \
         refii_loading_owner_done &&                                           \
         (refii_function_name == "sub_82360418" ||                            \
-         refii_function_name == "sub_82360618" ||                            \
-         refii_function_name == "sub_82360968");                             \
+         ((refii_function_name == "sub_82360618" ||                          \
+           refii_function_name == "sub_82360968") &&                         \
+          (refii_loading_owner_completed ||                                   \
+           !refii_post_gameface_primary_ready_for_native_stage)));            \
     const bool refii_loading_fx_collapsed = false;                            \
     const bool refii_sequence_native_skipped =                                \
+        refii_loading_setup_collapsed ||                                      \
+        refii_loading_sequence_collapsed ||                                   \
         refii_loading_render_collapsed ||                                     \
         refii_loading_owner_already_finished ||                               \
         refii_loading_stage_already_finished;                                 \
@@ -272,6 +296,10 @@ PPC_FUNC_IMPL(sub_822B88A8) {
     } else {                                                                  \
       if (refii_loading_fx_collapsed || refii_loading_render_collapsed) {     \
         ctx.r3.u32 = 1;                                                       \
+      } else if (refii_loading_setup_collapsed) {                             \
+        ctx.r3.u32 = loading_owner;                                           \
+      } else if (refii_loading_sequence_collapsed) {                          \
+        ctx.r3.u32 = loading_owner;                                           \
       } else if (refii_loading_owner_already_finished) {                      \
         ctx.r3.u32 = loading_owner;                                           \
       } else if (refii_loading_stage_already_finished) {                      \
@@ -280,15 +308,23 @@ PPC_FUNC_IMPL(sub_822B88A8) {
       if (trace) {                                                            \
         REXLOG_INFO("VFS trace loading-screen pipeline collapsed native "     \
                     #function_name " owner=0x{:08X} sequence_handle=0x{:08X} "\
-                    "fx_collapsed={} render_collapsed={} owner_finished={} "  \
-                    "stage_finished={} owner_completed={}",                   \
+                    "fx_collapsed={} setup_collapsed={} render_collapsed={} " \
+                    "sequence_collapsed={} "                                 \
+                    "owner_finished={} "                                     \
+                    "stage_finished={} owner_completed={} "                   \
+                    "post_gameface_primary_native_stage={}",                 \
                     loading_owner,                                            \
                     refii_sequence_bridge_handle,                             \
                     refii_loading_fx_collapsed ? "true" : "false",          \
+                    refii_loading_setup_collapsed ? "true" : "false",       \
                     refii_loading_render_collapsed ? "true" : "false",      \
+                    refii_loading_sequence_collapsed ? "true" : "false",    \
                     refii_loading_owner_already_finished ? "true" : "false", \
                     refii_loading_stage_already_finished ? "true" : "false", \
-                    refii_loading_owner_completed ? "true" : "false");       \
+                    refii_loading_owner_completed ? "true" : "false",       \
+                    refii_post_gameface_primary_ready_for_native_stage        \
+                        ? "true"                                             \
+                        : "false");                                          \
       }                                                                       \
     }                                                                         \
     uint32_t refii_sequence_ready_handle = refii_sequence_bridge_handle;       \
@@ -605,6 +641,7 @@ PPC_FUNC_IMPL(sub_82361AF8) {
             original_ctx,
             base,
             "loading_owner_holder_collapsed",
+            true,
             true);
   }
 
@@ -708,7 +745,12 @@ PPC_FUNC_IMPL(sub_82467B08) {
   bool after_holder_completed_owner_collapsed = false;
   bool after_holder_mode2_collapsed = false;
   bool after_holder_terminal_collapsed = false;
-  if (refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted()) {
+  const bool prefer_native_after_holder =
+      refii::vfs::RefiiPostGameFacePrimaryOwnerReady(base) &&
+      refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&
+      refii::vfs::RefiiPostVideoFrontendChainConsumed();
+  if (refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&
+      !prefer_native_after_holder) {
     PPCContext holder_ctx = original_ctx;
     holder_ctx.r3.u32 = kAfterHolderSingleton;
     holder_ctx.r4.u32 = original_ctx.r4.u32;
@@ -722,21 +764,28 @@ PPC_FUNC_IMPL(sub_82467B08) {
             : 0;
     const bool post_loading_final_handoff_ready =
         refii::vfs::RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
-        refii::vfs::RefiiPostGameFacePackageComplete() &&
+        refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&
         refii::vfs::
             RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
     const bool after_holder_release_ready =
         refii::vfs::RefiiPostVfsChainReadyForLoadingOwnerRelease() ||
         refii::vfs::RefiiOwnerlessPostVideoVfsChainReadyForAfterHolder() ||
         post_loading_final_handoff_ready;
+    const bool after_holder_idle_terminal =
+        original_ctx.r3.u32 == kAfterHolderSingleton &&
+        (after_holder_mode == 0 ||
+         (after_holder_mode == 1 && post_loading_final_handoff_ready)) &&
+        after_holder_child == 0;
     after_holder_terminal_collapsed =
         refii::vfs::RefiiStartupVideosReadyForMenuHandoff() &&
+        !refii::vfs::RefiiPostGameFacePrimaryOwnerReady(base) &&
         (refii::vfs::RefiiPostVideoFrontendChainConsumed() ||
-         refii::vfs::
-             RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload()) &&
+        refii::vfs::
+            RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload()) &&
         after_holder_release_ready &&
-        original_ctx.r3.u32 == kAfterHolderSingleton &&
-        after_holder_mode == 0 && after_holder_child == 0;
+        (refii::vfs::RefiiPostLoadingMiddlewareVideoReadComplete() ||
+         after_holder_idle_terminal) &&
+        after_holder_idle_terminal;
     if (after_holder_terminal_collapsed) {
       refii::vfs::RecordRefiiMainMenuBlockerEvent(
           "post_loading_after_holder_terminal_collapsed",
@@ -807,7 +856,8 @@ PPC_FUNC_IMPL(sub_82467B08) {
   } else {
     __imp__sub_82467B08(ctx, base);
 
-    if (refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted()) {
+    if (refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&
+        !prefer_native_after_holder) {
       PPCContext holder_ctx = original_ctx;
       holder_ctx.r3.u32 = kAfterHolderSingleton;
       holder_ctx.r4.u32 = original_ctx.r4.u32;
@@ -847,7 +897,8 @@ PPC_FUNC_IMPL(sub_82467B08) {
                 "lr=0x{:08X} result=0x{:08X} "
                 "terminal_collapsed={} armed={} mode2_collapsed={} "
                 "ready_marked={} advanced={} "
-                "completed_owner_collapsed={} native_skipped={} holder=[{}] "
+                "completed_owner_collapsed={} native_skipped={} "
+                "prefer_native_after_holder={} holder=[{}] "
                 "handoff=[{}] main_menu=[{}]",
                 original_ctx.lr,
                 ctx.r3.u32,
@@ -858,6 +909,7 @@ PPC_FUNC_IMPL(sub_82467B08) {
                 after_holder_advanced ? "true" : "false",
                 after_holder_completed_owner_collapsed ? "true" : "false",
                 skip_native_after_holder ? "true" : "false",
+                prefer_native_after_holder ? "true" : "false",
                 refii::vfs::FormatRefiiPostLoadingAfterHolderState(
                     base, 0x834C20B8u),
                 refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
@@ -891,20 +943,69 @@ PPC_FUNC_IMPL(sub_822C6C68) {
               base,
               &refii_holder_guest,
               "sub_822C6C68_pre_native_singleton");
-  if (refii_singleton_returned) {
-    ctx.r3.u32 = refii_holder_guest;
-  } else {
-    __imp__sub_822C6C68(ctx, base);
-  }
+  __imp__sub_822C6C68(ctx, base);
 
   bool early_armed = false;
   bool early_mode2_collapsed = false;
   bool early_ready_marked = false;
-  if (refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted()) {
+  constexpr uint32_t kAfterHolderSingleton = 0x834C20B8u;
+  const uint32_t native_after_holder_result = ctx.r3.u32;
+  bool selected_refii_singleton = false;
+  if (refii_singleton_returned &&
+      refii_holder_guest == kAfterHolderSingleton &&
+      native_after_holder_result != kAfterHolderSingleton &&
+      !refii::vfs::RefiiPostLoadingAfterHolderAlreadyConsumed(
+          base, kAfterHolderSingleton)) {
+    ctx.r3.u32 = kAfterHolderSingleton;
+    selected_refii_singleton = true;
+    refii::vfs::RecordRefiiMainMenuBlockerEvent(
+        "post_loading_after_holder_singleton_selected",
+        fmt::format("source=sub_822C6C68 native_result=0x{:08X} "
+                    "selected=0x{:08X} handoff=[{}] main_menu=[{}]",
+                    native_after_holder_result,
+                    kAfterHolderSingleton,
+                    refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
+                    refii::vfs::FormatRefiiMainMenuBlockerTraceForLog()));
+    if (refii::vfs::VfsTracingEnabled() ||
+        refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+            "PostLoadingAfterHolderSingletonSelected", 8)) {
+      REXLOG_INFO("Refii VFS post-loading after-holder selected VFS "
+                  "singleton source=sub_822C6C68 native_result=0x{:08X} "
+                  "selected=0x{:08X} holder=[{}] handoff=[{}] "
+                  "main_menu=[{}]",
+                  native_after_holder_result,
+                  kAfterHolderSingleton,
+                  refii::vfs::FormatRefiiPostLoadingAfterHolderState(
+                      base, kAfterHolderSingleton),
+                  refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
+                  refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
+    }
+    refii::vfs::LogRefiiVfsChainVerdict(
+        "frontend_post_video",
+        static_cast<uint32_t>(original_ctx.lr),
+        "post_loading_after_holder",
+        "",
+        "",
+        "native_after_holder",
+        "post_loading_after_holder_singleton_selected",
+        "Opened",
+        "vfs_ready_singleton_replaces_idle_native_holder");
+  }
+  const bool returned_refii_singleton = ctx.r3.u32 == kAfterHolderSingleton;
+  const bool refii_after_holder_consumed =
+      refii::vfs::RefiiPostLoadingAfterHolderAlreadyConsumed(base, ctx.r3.u32);
+  if (refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&
+      returned_refii_singleton && !refii_after_holder_consumed) {
     PPCContext holder_ctx = original_ctx;
     holder_ctx.r3.u32 = ctx.r3.u32;
     holder_ctx.r4.u32 =
         refii::vfs::SelectRefiiPostLoadingAfterHolderRenderOwner();
+    const bool native_mode2_holder_ready =
+        refii::vfs::RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
+        (refii::vfs::RefiiPostGameFacePackageComplete() ||
+         refii::vfs::RefiiPostGameFacePackageNativeFallbackReady()) &&
+        refii::vfs::
+            RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
     early_armed =
         refii::vfs::TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
             holder_ctx,
@@ -912,7 +1013,7 @@ PPC_FUNC_IMPL(sub_822C6C68) {
             ctx.r3.u32,
             "sub_822C6C68_exit_before_823C1658");
     early_mode2_collapsed =
-        early_armed &&
+        early_armed && !native_mode2_holder_ready &&
         refii::vfs::TryCollapseRefiiPostLoadingAfterHolderMode2(
             holder_ctx,
             base,
@@ -931,7 +1032,9 @@ PPC_FUNC_IMPL(sub_822C6C68) {
     REXLOG_INFO("VFS trace post-loading after-holder exit sub_822C6C68 "
                 "lr=0x{:08X} result=0x{:08X} early_armed={} "
                 "early_mode2_collapsed={} early_ready_marked={} "
-                "refii_singleton_returned={} "
+                "refii_singleton_ready={} returned_refii_singleton={} "
+                "selected_refii_singleton={} native_result=0x{:08X} "
+                "consumed={} "
                 "holder=[{}] handoff=[{}] main_menu=[{}]",
                 original_ctx.lr,
                 ctx.r3.u32,
@@ -939,6 +1042,10 @@ PPC_FUNC_IMPL(sub_822C6C68) {
                 early_mode2_collapsed ? "true" : "false",
                 early_ready_marked ? "true" : "false",
                 refii_singleton_returned ? "true" : "false",
+                returned_refii_singleton ? "true" : "false",
+                selected_refii_singleton ? "true" : "false",
+                native_after_holder_result,
+                refii_after_holder_consumed ? "true" : "false",
                 refii::vfs::FormatRefiiPostLoadingAfterHolderState(
                     base, ctx.r3.u32),
                 refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
@@ -962,24 +1069,96 @@ PPC_FUNC_IMPL(sub_823C1658) {
         refii::vfs::FormatRefiiPostLoadingAfterHolderState(
             base, original_ctx.r3.u32);
   }
+  const bool prefer_native_after_holder =
+      refii::vfs::RefiiPostGameFacePrimaryOwnerReady(base) &&
+      refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&
+      refii::vfs::RefiiPostVideoFrontendChainConsumed();
   bool after_holder_armed =
+      !prefer_native_after_holder &&
       refii::vfs::TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
           original_ctx, base, original_ctx.r3.u32, "sub_823C1658_enter");
+  const bool native_mode2_holder_ready =
+      refii::vfs::RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
+      (refii::vfs::RefiiPostGameFacePackageComplete() ||
+       refii::vfs::RefiiPostGameFacePackageNativeFallbackReady()) &&
+      refii::vfs::
+          RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload() &&
+      refii::vfs::LooksLikeGuestPointer(original_ctx.r3.u32) &&
+      refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 8) != 0 &&
+      refii::vfs::LoadGuestU32(
+          base,
+          original_ctx.r3.u32 +
+              (original_ctx.r3.u32 == 0x834C20B8u ? 52u : 44u)) == 2;
   bool after_holder_mode2_collapsed =
+      !prefer_native_after_holder &&
+      !native_mode2_holder_ready &&
       refii::vfs::TryCollapseRefiiPostLoadingAfterHolderMode2(
           original_ctx, base, original_ctx.r3.u32, "sub_823C1658_enter");
   bool after_holder_ready_marked =
+      !prefer_native_after_holder &&
       !after_holder_mode2_collapsed &&
       refii::vfs::TryMarkRefiiPostLoadingAfterHolderReady(
           original_ctx, base, original_ctx.r3.u32, "sub_823C1658_enter");
   bool after_holder_advanced =
+      !prefer_native_after_holder &&
       !after_holder_mode2_collapsed && !after_holder_ready_marked &&
       refii::vfs::TryAdvanceRefiiPostLoadingAfterHolderMode4(
           original_ctx, base, original_ctx.r3.u32, "sub_823C1658_enter");
+  const bool is_refii_82467_singleton = original_ctx.r3.u32 == 0x834C20B8u;
+  const uint32_t refii_82467_singleton_mode =
+      is_refii_82467_singleton
+          ? refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 52)
+          : 0xFFFFFFFFu;
+  const uint32_t refii_82467_singleton_child =
+      is_refii_82467_singleton
+          ? refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 40)
+          : 0;
+  const bool refii_singleton_completed_owner_mode2_stalled =
+      is_refii_82467_singleton && prefer_native_after_holder &&
+      refii::vfs::RefiiPostVfsChainReadyForLoadingOwnerRelease() &&
+      refii::vfs::RefiiPostVideoFrontendChainConsumed() &&
+      refii::vfs::
+          RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload() &&
+      refii::vfs::LooksLikeGuestPointer(
+          refii::vfs::RefiiCompletedLoadingScreenOwner().load(
+              std::memory_order_relaxed)) &&
+      refii_82467_singleton_mode == 2 &&
+      refii_82467_singleton_child != 0 &&
+      !refii::vfs::LooksLikeGuestPointer(refii_82467_singleton_child);
+  const bool refii_82467_singleton_terminal_ready =
+      is_refii_82467_singleton &&
+      (refii::vfs::RefiiPostGameFacePackageComplete() ||
+       refii::vfs::RefiiPostGameFacePackageNativeFallbackReady()) &&
+      refii::vfs::
+          RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload() &&
+      (refii_82467_singleton_mode == 0 ||
+       refii_82467_singleton_mode == 1) &&
+      refii_82467_singleton_child == 0;
+  const bool refii_regular_terminal_ready =
+      !is_refii_82467_singleton &&
+      refii::vfs::LooksLikeGuestPointer(original_ctx.r3.u32) &&
+      refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 44) == 0 &&
+      refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 40) == 0;
+  const bool refii_after_holder_consumed =
+      refii::vfs::RefiiPostLoadingAfterHolderAlreadyConsumed(
+          base, original_ctx.r3.u32);
+  const bool after_holder_terminal_collapsed =
+      !refii_after_holder_consumed &&
+      refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&
+      refii::vfs::RefiiStartupVideosReadyForMenuHandoff() &&
+      refii::vfs::RefiiPostVideoFrontendChainConsumed() &&
+      ((refii::vfs::RefiiPostVfsChainReadyForLoadingOwnerRelease() ||
+        refii::vfs::RefiiOwnerlessPostVideoVfsChainReadyForAfterHolder()) &&
+           refii::vfs::RefiiPostLoadingMiddlewareVideoReadComplete() ||
+       refii_82467_singleton_terminal_ready) &&
+      (refii_regular_terminal_ready || refii_82467_singleton_terminal_ready);
   if (trace) {
     REXLOG_INFO("VFS trace post-loading after-holder enter sub_823C1658 "
                 "lr=0x{:08X} object=0x{:08X} arg=0x{:08X} delta={} "
                 "armed={} mode2_collapsed={} ready_marked={} advanced={} "
+                "terminal_collapsed={} native_mode2_holder_ready={} "
+                "prefer_native_after_holder={} singleton_mode2_stalled={} "
+                "consumed={} "
                 "holder=[{}] "
                 "handoff=[{}] main_menu=[{}]",
                 original_ctx.lr,
@@ -990,25 +1169,71 @@ PPC_FUNC_IMPL(sub_823C1658) {
                 after_holder_mode2_collapsed ? "true" : "false",
                 after_holder_ready_marked ? "true" : "false",
                 after_holder_advanced ? "true" : "false",
+                after_holder_terminal_collapsed ? "true" : "false",
+                native_mode2_holder_ready ? "true" : "false",
+                prefer_native_after_holder ? "true" : "false",
+                refii_singleton_completed_owner_mode2_stalled ? "true"
+                                                               : "false",
+                refii_after_holder_consumed ? "true" : "false",
                 before_holder_state,
                 refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
                 refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
   }
 
-  if (after_holder_mode2_collapsed) {
+  if (after_holder_mode2_collapsed || after_holder_terminal_collapsed) {
     ctx.r3.u32 = original_ctx.r3.u32 + 48;
   } else {
     __imp__sub_823C1658(ctx, base);
   }
 
+  if (prefer_native_after_holder &&
+      (native_mode2_holder_ready ||
+       refii_singleton_completed_owner_mode2_stalled) &&
+      refii::vfs::LooksLikeGuestPointer(original_ctx.r3.u32) &&
+      refii::vfs::LoadGuestU32(
+          base,
+          original_ctx.r3.u32 +
+              (original_ctx.r3.u32 == 0x834C20B8u ? 52u : 44u)) == 2 &&
+      (refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 40) == 0 ||
+       refii_singleton_completed_owner_mode2_stalled)) {
+    after_holder_mode2_collapsed =
+        refii::vfs::TryCollapseRefiiPostLoadingAfterHolderMode2(
+            original_ctx,
+            base,
+            original_ctx.r3.u32,
+            refii_singleton_completed_owner_mode2_stalled
+                ? "sub_823C1658_exit_completed_owner_mode2_stalled"
+                : "sub_823C1658_exit_native_mode2_stalled");
+    if (after_holder_mode2_collapsed) {
+      ctx.r3.u32 = original_ctx.r3.u32 + 48;
+    }
+  }
+
   bool deferred_generated_run = false;
-  if (refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted()) {
+  bool terminal_generated_state_released = false;
+  if (refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&
+      (!prefer_native_after_holder || after_holder_terminal_collapsed)) {
     PPCContext render_thread_ctx = original_ctx;
-    deferred_generated_run =
-        refii::vfs::TryRunRefiiDeferredPostLoadingFrontendRequestOnRenderThread(
-            render_thread_ctx, base, "post_loading_after_holder_823C1658");
+    if (!prefer_native_after_holder) {
+      deferred_generated_run =
+          refii::vfs::TryRunRefiiDeferredPostLoadingFrontendRequestOnRenderThread(
+              render_thread_ctx, base, "post_loading_after_holder_823C1658");
+    }
+    if (after_holder_terminal_collapsed) {
+      terminal_generated_state_released =
+          refii::vfs::TryFinalizeRefiiPostLoadingFrontendGeneratedState(
+              original_ctx,
+              base,
+              "post_loading_after_holder_terminal_collapsed",
+              true,
+              false);
+      if (terminal_generated_state_released) {
+        refii::vfs::RefiiPostLoadingAfterHolderMode5CleanedHolder().store(
+            original_ctx.r3.u32, std::memory_order_relaxed);
+      }
+    }
     if (!after_holder_mode2_collapsed && !after_holder_ready_marked &&
-        !after_holder_advanced) {
+        !after_holder_advanced && !after_holder_terminal_collapsed) {
       after_holder_ready_marked =
           refii::vfs::TryMarkRefiiPostLoadingAfterHolderReady(
               original_ctx,
@@ -1030,7 +1255,11 @@ PPC_FUNC_IMPL(sub_823C1658) {
     REXLOG_INFO("VFS trace post-loading after-holder exit sub_823C1658 "
                 "lr=0x{:08X} result=0x{:08X} armed={} "
                 "mode2_collapsed={} ready_marked={} advanced={} "
-                "deferred_generated_run={} holder=[{}] "
+                "terminal_collapsed={} native_mode2_holder_ready={} "
+                "prefer_native_after_holder={} singleton_mode2_stalled={} "
+                "deferred_generated_run={} "
+                "terminal_generated_state_released={} consumed={} "
+                "holder=[{}] "
                 "handoff=[{}] main_menu=[{}]",
                 original_ctx.lr,
                 ctx.r3.u32,
@@ -1038,7 +1267,14 @@ PPC_FUNC_IMPL(sub_823C1658) {
                 after_holder_mode2_collapsed ? "true" : "false",
                 after_holder_ready_marked ? "true" : "false",
                 after_holder_advanced ? "true" : "false",
+                after_holder_terminal_collapsed ? "true" : "false",
+                native_mode2_holder_ready ? "true" : "false",
+                prefer_native_after_holder ? "true" : "false",
+                refii_singleton_completed_owner_mode2_stalled ? "true"
+                                                               : "false",
                 deferred_generated_run ? "true" : "false",
+                terminal_generated_state_released ? "true" : "false",
+                refii_after_holder_consumed ? "true" : "false",
                 refii::vfs::FormatRefiiPostLoadingAfterHolderState(
                     base, original_ctx.r3.u32),
                 refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
@@ -1343,12 +1579,20 @@ PPC_FUNC_IMPL(sub_82374728) {
     refii::vfs::RecordRuntimeResourceHashName(resolved_hash,
                                                   resolved_name);
   }
+  const bool trace_log_allowed =
+      !refii::vfs::RefiiStartupVideosPlaybackCriticalActive();
   const bool interesting =
+      trace_log_allowed &&
       refii::vfs::VfsTracingEnabled() &&
       !localized_video_alias &&
       (refii::vfs::IsTraceInterestingAsset(requested_name) ||
        refii::vfs::IsTraceInterestingAsset(resolved_name) ||
        refii::vfs::ShouldLogVfsTraceOperation("ResourceAliasResolver"));
+  auto should_log_alias_trace = [&](std::string_view key, uint32_t limit) {
+    return trace_log_allowed &&
+           (refii::vfs::LooseAssetOverrideTracingEnabled() ||
+            refii::vfs::ShouldLogRepeatedVfsTraceOperation(key, limit));
+  };
 
   if (interesting) {
     const uint32_t primary_resource = owner_guest == 0
@@ -1451,9 +1695,7 @@ PPC_FUNC_IMPL(sub_82374728) {
           primary_resource,
           "localized_video");
       const bool log_localized_video_hit =
-          refii::vfs::LooseAssetOverrideTracingEnabled() ||
-          refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-              "ResourceAliasResolver_LocalizedVideoHit", 8);
+          should_log_alias_trace("ResourceAliasResolver_LocalizedVideoHit", 8);
       if (log_localized_video_hit) {
         REXLOG_INFO("VFS trace ResourceAliasResolver resolved localized "
                     "video alias requested={} resolved={} hash=0x{:08X} "
@@ -1487,9 +1729,7 @@ PPC_FUNC_IMPL(sub_82374728) {
     ctx.r3.u32 = owner_guest;
     refii::vfs::IsCachedOptionalSyntheticVfsMiss(resolved_key);
     const bool log_localized_video_miss =
-        refii::vfs::LooseAssetOverrideTracingEnabled() ||
-        refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-            "ResourceAliasResolver_LocalizedVideoMiss", 8);
+        should_log_alias_trace("ResourceAliasResolver_LocalizedVideoMiss", 8);
     if (log_localized_video_miss) {
       REXLOG_INFO("VFS trace ResourceAliasResolver skipped missing localized "
                   "video alias requested={} resolved={} hash=0x{:08X}",
@@ -1508,9 +1748,8 @@ PPC_FUNC_IMPL(sub_82374728) {
         refii::vfs::IsCachedOptionalSyntheticVfsMiss(requested_key);
     if (resolved_optional_miss || requested_optional_miss) {
       ctx.r3.u32 = owner_guest;
-      if (interesting || refii::vfs::LooseAssetOverrideTracingEnabled() ||
-          refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-              "ResourceAliasResolverOptionalBankMiss", 16)) {
+      if (interesting || should_log_alias_trace(
+                             "ResourceAliasResolverOptionalBankMiss", 16)) {
         REXLOG_INFO("VFS trace ResourceAliasResolver skipped optional "
                     "synthetic bank alias requested={} resolved={} "
                     "requested_hash=0x{:08X} resolved_hash=0x{:08X} "
@@ -1576,9 +1815,8 @@ PPC_FUNC_IMPL(sub_82374728) {
                 requested_boot_locale_bank_alias),
             primary_resource,
             "requested_boot_locale_bank");
-        if (interesting || refii::vfs::LooseAssetOverrideTracingEnabled() ||
-            refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-                "ResourceAliasResolverBootLocaleBank", 16)) {
+        if (interesting || should_log_alias_trace(
+                               "ResourceAliasResolverBootLocaleBank", 16)) {
           REXLOG_INFO("VFS trace ResourceAliasResolver claimed boot locale "
                       "bank alias requested={} requested_hash=0x{:08X} "
                       "target={} candidate={} provider_relative={} "
@@ -1622,9 +1860,8 @@ PPC_FUNC_IMPL(sub_82374728) {
           resolved_key.ends_with(".bnk");
       if (requested_exact_bank && resolved_missing_language_bank) {
         ctx.r3.u32 = owner_guest;
-        if (interesting || refii::vfs::LooseAssetOverrideTracingEnabled() ||
-            refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-                "ResourceAliasResolverRequestedBankSkip", 16)) {
+        if (interesting || should_log_alias_trace(
+                               "ResourceAliasResolverRequestedBankSkip", 16)) {
           REXLOG_INFO("VFS trace ResourceAliasResolver skipped requested-only "
                       "synthetic bank alias requested={} resolved={} "
                       "requested_hash=0x{:08X} resolved_hash=0x{:08X} "
@@ -1723,9 +1960,8 @@ PPC_FUNC_IMPL(sub_82374728) {
           primary_resource,
           ownership);
 
-      if (interesting || refii::vfs::LooseAssetOverrideTracingEnabled() ||
-          refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-              "ResourceAliasResolverSyntheticBank", 16)) {
+      if (interesting || should_log_alias_trace(
+                             "ResourceAliasResolverSyntheticBank", 16)) {
         REXLOG_INFO("VFS trace ResourceAliasResolver claimed Refii "
                     "alias requested={} resolved={} requested_hash=0x{:08X} "
                     "resolved_hash=0x{:08X} name={} attach={} "
@@ -1757,9 +1993,8 @@ PPC_FUNC_IMPL(sub_82374728) {
 
     if (!resolved_key.empty() && !resolved_key.ends_with(".bnk") &&
         refii::vfs::ShouldQueryVfsDatabaseAlias(resolved_key) &&
-        (interesting || refii::vfs::LooseAssetOverrideTracingEnabled() ||
-         refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-             "ResourceAliasResolverAliasFallthrough", 16))) {
+        (interesting ||
+         should_log_alias_trace("ResourceAliasResolverAliasFallthrough", 16))) {
       REXLOG_INFO("VFS trace ResourceAliasResolver alias fallthrough "
                   "requested={} resolved={} requested_hash=0x{:08X} "
                   "resolved_hash=0x{:08X} ownership=unclaimed_alias",

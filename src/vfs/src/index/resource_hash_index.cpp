@@ -324,12 +324,15 @@ std::shared_ptr<const SyntheticVfsEntryIndex> GetSyntheticVfsEntryIndex() {
       GetSyntheticBankTemplateSnapshot();
   const std::filesystem::path loose_root = GetLooseAssetRoot();
   const std::string root_key = loose_root.lexically_normal().string();
+  const std::vector<RefiiVfsRuntimeBankRecord> runtime_bank_records =
+      GetRefiiVfsRuntimeBankRecordsCached(loose_root);
 
   {
     std::lock_guard<std::mutex> lock(SyntheticVfsEntryIndexMutex());
     const auto& cached = CachedSyntheticVfsEntryIndex();
     if (cached != nullptr && cached->root_key == root_key &&
-        cached->template_count == templates.size()) {
+        cached->template_count == templates.size() &&
+        cached->runtime_bank_record_count == runtime_bank_records.size()) {
       return cached;
     }
   }
@@ -337,30 +340,54 @@ std::shared_ptr<const SyntheticVfsEntryIndex> GetSyntheticVfsEntryIndex() {
   auto index = std::make_shared<SyntheticVfsEntryIndex>();
   index->root_key = root_key;
   index->template_count = templates.size();
+  index->runtime_bank_record_count = runtime_bank_records.size();
+  std::unordered_set<std::string> indexed_manifest_roots;
+
+  const auto index_manifest = [&](const std::filesystem::path& manifest_root,
+                                  const std::filesystem::path& manifest_path) {
+    const std::string normalized_root =
+        NormalizeLooseAssetKey(manifest_root.generic_string());
+    if (normalized_root.empty() ||
+        !indexed_manifest_roots.insert(normalized_root).second) {
+      return;
+    }
+    IndexSyntheticManifestEntries(*index, manifest_root, manifest_path);
+  };
 
   for (const auto& bank_template : templates) {
     if (bank_template == nullptr) {
       continue;
     }
 
-    IndexSyntheticManifestEntries(
-        *index, bank_template->manifest_root, bank_template->manifest_path);
+    index_manifest(bank_template->manifest_root, bank_template->manifest_path);
+  }
+
+  for (const RefiiVfsRuntimeBankRecord& record : runtime_bank_records) {
+    const std::filesystem::path manifest_root(record.manifest_root);
+    const std::filesystem::path manifest_path =
+        loose_root / manifest_root / "_manifest.tsv";
+    index_manifest(manifest_root, manifest_path);
   }
 
   {
     std::lock_guard<std::mutex> lock(SyntheticVfsEntryIndexMutex());
     auto& cached = CachedSyntheticVfsEntryIndex();
     if (cached != nullptr && cached->root_key == root_key &&
-        cached->template_count == templates.size()) {
+        cached->template_count == templates.size() &&
+        cached->runtime_bank_record_count == runtime_bank_records.size()) {
       return cached;
     }
     cached = index;
   }
 
-  if (VfsTracingEnabled() || ShouldLogLooseStatsMilestone(templates.size())) {
+  if (VfsTracingEnabled() ||
+      ShouldLogLooseStatsMilestone(indexed_manifest_roots.size())) {
     REXLOG_INFO("Refii synthetic VFS entry index rebuilt templates={} "
-                "indexed_paths={} manifest_entries={} manifest_tables={}",
+                "runtime_banks={} indexed_manifests={} indexed_paths={} "
+                "manifest_entries={} manifest_tables={}",
                 templates.size(),
+                runtime_bank_records.size(),
+                indexed_manifest_roots.size(),
                 index->by_normalized_path.size(),
                 index->manifest_entries,
                 index->manifest_tables);

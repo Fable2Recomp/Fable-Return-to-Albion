@@ -118,9 +118,16 @@ bool MaybeUpgradeResourceManagerTextureResolution(
   const bool changed = selected_key != original_candidate ||
                        selected_resolution.host_path != inout_resolution->host_path;
   if (VfsTracingEnabled() &&
-      (changed || IsTraceInterestingAsset(normalized_request) ||
-       IsTraceInterestingAsset(original_candidate) ||
-       ShouldLogRepeatedVfsTraceOperation("ResourceTextureFinalShape", 96))) {
+      (changed ||
+       ShouldLogRepeatedVfsTraceOperation(
+           fmt::format("ResourceTextureFinalShape:{:08X}:{}:{}",
+                       resource_hash,
+                       normalized_request,
+                       selected_key),
+           (IsTraceInterestingAsset(normalized_request) ||
+            IsTraceInterestingAsset(original_candidate))
+               ? 32
+               : 96))) {
     const std::array<uint32_t, 4> original_words =
         ReadHostFileFirstWords(inout_resolution->host_path);
     const std::array<uint32_t, 4> selected_words =

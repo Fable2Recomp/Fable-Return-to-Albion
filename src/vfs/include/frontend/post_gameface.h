@@ -73,6 +73,11 @@ bool MaybeSignalRefiiPostGameFacePackageHandoff(
     std::string_view asset_path,
     uint32_t stream_guest,
     bool allow_generated_frame_completion);
+bool MaybeRecordRefiiPostGameFacePackageOptionalMiss(
+    const PPCContext& source_ctx,
+    uint8_t* base,
+    std::string_view asset_path,
+    std::string_view api);
 inline bool MaybeSignalRefiiPostGameFacePackageHandoff(
     const PPCContext& source_ctx,
     uint8_t* base,

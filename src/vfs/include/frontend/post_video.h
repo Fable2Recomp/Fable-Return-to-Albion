@@ -175,15 +175,26 @@ inline bool TryFinishRefiiLoadingScreenOwnerFromCollapsedPipeline(
       source_ctx, base, owner_guest, api, 1, false, 0);
 }
 bool TrySignalRefiiCompletedPostGameFacePackageHandoffFromTrace(
-    PPCContext& source_ctx,
+    const PPCContext& original_ctx,
     uint8_t* base,
-    std::string_view api);
+    uint32_t wait_object_guest,
+    uint32_t wait_handle_guest,
+    bool trace);
 bool TryCollapseRefiiCompletedLoadingOwnerWorkerWait(PPCContext& ctx,
                                                      const PPCContext& original_ctx,
                                                      uint8_t* base,
                                                      uint32_t wait_object_guest,
                                                      uint32_t wait_handle_guest,
                                                      bool trace);
+void RecordRefiiFrontEndAudioBankLateBind(std::string_view bank_name,
+                                          uint32_t lr);
+bool TryCollapseRefiiCompletedFrontEndAudioSyncWait(
+    PPCContext& ctx,
+    const PPCContext& original_ctx,
+    uint8_t* base,
+    uint32_t wait_object_guest,
+    uint32_t wait_handle_guest,
+    bool trace);
 bool TryCollapseRefiiPostVideoRendererSyncWait(PPCContext& ctx,
                                                const PPCContext& original_ctx,
                                                uint8_t* base,

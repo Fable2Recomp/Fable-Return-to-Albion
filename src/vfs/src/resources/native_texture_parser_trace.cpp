@@ -302,6 +302,9 @@ bool ShouldTraceBikConsumerHandoffProbe(uint8_t* base,
   if (!kTraceBikConsumerHandoffDiagnostics || !VfsTracingEnabled()) {
     return false;
   }
+  if (!VfsVerboseIoTracingEnabled()) {
+    return false;
+  }
   if (IsStartupBikAssetName(requested_name) ||
       IsBikLooseStreamTraceAsset(base, stream_guest) ||
       RefiiIsTrackedStartupVideoObject(object_guest)) {

@@ -117,6 +117,10 @@ PPC_FUNC_IMPL(rex_lhStream_GetPosition) {
       trace_position
           ? refii::vfs::FormatGuestWordsIfPointer(base, out_guest, 2)
           : std::string{};
+  constexpr uint32_t kBikBufferedPointerGetPositionLr = 0x82C6EAF8u;
+  const bool startup_bik_pointer_probe =
+      original_ctx.lr == kBikBufferedPointerGetPositionLr &&
+      refii::vfs::IsBikLooseStreamTraceAsset(base, stream_guest);
   if (trace_position) {
     REXLOG_INFO("VFS trace BIK stream GetPosition enter lr=0x{:08X} "
                 "ctr=0x{:08X} out=0x{:08X} stream=0x{:08X} "
@@ -135,14 +139,33 @@ PPC_FUNC_IMPL(rex_lhStream_GetPosition) {
   bool handled = false;
   if (const auto host_record =
           refii::vfs::FindRefiiHostStreamRecord(stream_guest)) {
-    {
+    uint32_t bik_buffer_guest = 0;
+    uint32_t bik_bytes_read = 0;
+    if (original_ctx.lr == kBikBufferedPointerGetPositionLr &&
+        refii::vfs::TryGetRefiiStartupBikCompletedReadBuffer(
+            base, stream_guest, &bik_buffer_guest, &bik_bytes_read)) {
+      out_word0 = bik_buffer_guest;
+      out_word1 = 0;
+      handled = true;
+      match = "startup_bik_buffer";
+      position = bik_buffer_guest;
+    } else {
       std::lock_guard<std::mutex> lock(host_record->mutex);
-      position = host_record->position;
+      if (original_ctx.lr == kBikBufferedPointerGetPositionLr &&
+          host_record->materialized_buffer_guest != 0 &&
+          host_record->materialized_bytes != 0) {
+        out_word0 = host_record->materialized_buffer_guest;
+        out_word1 = 0;
+        position = out_word0;
+        match = "startup_bik_materialized_buffer";
+      } else {
+        position = host_record->position;
+        out_word0 = static_cast<uint32_t>(position);
+        out_word1 = static_cast<uint32_t>(position >> 32);
+        match = "host";
+      }
+      handled = true;
     }
-    out_word0 = static_cast<uint32_t>(position);
-    out_word1 = static_cast<uint32_t>(position >> 32);
-    handled = true;
-    match = "host";
   }
   if (handled) {
     if (out_guest != 0) {
@@ -152,6 +175,30 @@ PPC_FUNC_IMPL(rex_lhStream_GetPosition) {
     ctx.r3.u32 = out_guest;
     refii::vfs::RecordRefiiStartupVideoPosition(
         base, stream_guest, out_guest, out_word0, out_word1);
+    if (startup_bik_pointer_probe &&
+        refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+            "StartupBikBufferedPointerGetPosition", 12)) {
+      uint32_t materialized_buffer_guest = 0;
+      uint32_t materialized_bytes = 0;
+      if (const auto host_record =
+              refii::vfs::FindRefiiHostStreamRecord(stream_guest)) {
+        std::lock_guard<std::mutex> lock(host_record->mutex);
+        materialized_buffer_guest = host_record->materialized_buffer_guest;
+        materialized_bytes = host_record->materialized_bytes;
+      }
+      REXLOG_INFO("Refii VFS startup BIK buffered pointer GetPosition "
+                  "lr=0x{:08X} stream=0x{:08X} out=0x{:08X} match={} "
+                  "value=0x{:08X}:0x{:08X} materialized=0x{:08X} "
+                  "materialized_bytes={} handled=refii",
+                  original_ctx.lr,
+                  stream_guest,
+                  out_guest,
+                  match,
+                  out_word1,
+                  out_word0,
+                  materialized_buffer_guest,
+                  materialized_bytes);
+    }
     if (refii::vfs::ShouldLogLooseStreamOperation(
             "Stream_GetPosition/refii", stream_guest, 8)) {
       REXLOG_INFO("Loose stream position Stream_GetPosition/refii "
@@ -197,11 +244,34 @@ PPC_FUNC_IMPL(rex_lhStream_GetPosition) {
                                                                original_ctx.lr,
                                                                &after_low,
                                                                &after_high);
+  const bool log_repaired_position =
+      repaired_bik_position &&
+      !refii::vfs::RefiiStartupVideosPlaybackCriticalActive() &&
+      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+          "BIKStream_GetPositionRepaired", 4);
   if (trace_position || repaired_bik_position) {
     refii::vfs::RecordRefiiStartupVideoPosition(
         base, stream_guest, out_guest, after_low, after_high);
     refii::vfs::MaybeReleaseCompletedStartupBikSource(
         ctx, base, stream_guest, "Stream_GetPosition");
+  }
+  if (startup_bik_pointer_probe &&
+      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+          "StartupBikBufferedPointerGetPositionNative", 12)) {
+    REXLOG_INFO("Refii VFS startup BIK buffered pointer GetPosition "
+                "lr=0x{:08X} stream=0x{:08X} out=0x{:08X} "
+                "native=0x{:08X}:0x{:08X} after=0x{:08X}:0x{:08X} "
+                "repaired={} handled=native",
+                original_ctx.lr,
+                stream_guest,
+                out_guest,
+                native_high,
+                native_low,
+                after_high,
+                after_low,
+                repaired_bik_position);
+  }
+  if (trace_position || log_repaired_position) {
     REXLOG_INFO("VFS trace BIK stream GetPosition exit lr=0x{:08X} "
                 "stream=0x{:08X} handled=native_buffered result=0x{:08X} "
                 "native_position=0x{:08X}:0x{:08X} "
