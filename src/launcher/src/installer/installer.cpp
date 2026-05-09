@@ -625,7 +625,7 @@ bool PromoteShaderTranslationTarget(std::string_view target,
 }
 
 std::filesystem::path GetRuntimeConfigPathInternal() {
-    return Platform::GetExecutableDirectory() / "refii.toml";
+    return LauncherPaths::ResolveFromLauncherDirectory("refii.toml");
 }
 
 std::string BuildLuaWorkspaceProgressMessage(

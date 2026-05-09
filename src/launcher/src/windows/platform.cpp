@@ -540,6 +540,13 @@ bool LaunchProcess(
     const std::vector<std::string>& arguments,
     ProcessHandle& outHandle,
     std::string* error) {
+    outHandle.nativeHandle = nullptr;
+    outHandle.processId = 0;
+    outHandle.hasExitStatus = false;
+    outHandle.exitCode = 0;
+    outHandle.termSignal = 0;
+    outHandle.errorMessage.clear();
+
     STARTUPINFOA startupInfo = {};
     startupInfo.cb = sizeof(startupInfo);
 
@@ -586,11 +593,20 @@ bool IsProcessRunning(ProcessHandle& handle) {
 
     DWORD exitCode = 0;
     if (!GetExitCodeProcess(static_cast<HANDLE>(handle.nativeHandle), &exitCode)) {
+        handle.hasExitStatus = true;
+        handle.exitCode = 0;
+        handle.termSignal = 0;
+        handle.errorMessage =
+            "GetExitCodeProcess failed with error " + std::to_string(GetLastError()) + ".";
         CloseProcessHandle(handle);
         return false;
     }
 
     if (exitCode != STILL_ACTIVE) {
+        handle.hasExitStatus = true;
+        handle.exitCode = static_cast<int>(exitCode);
+        handle.termSignal = 0;
+        handle.errorMessage.clear();
         CloseProcessHandle(handle);
         return false;
     }

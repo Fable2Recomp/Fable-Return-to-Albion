@@ -2,6 +2,7 @@
 
 #include <curl/curl.h>
 
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -430,8 +431,30 @@ bool LaunchProcess(
     const std::vector<std::string>& arguments,
     ProcessHandle& outHandle,
     std::string* error) {
+    outHandle.nativeHandle = nullptr;
+    outHandle.processId = 0;
+    outHandle.hasExitStatus = false;
+    outHandle.exitCode = 0;
+    outHandle.termSignal = 0;
+    outHandle.errorMessage.clear();
+
+    int errorPipe[2] = {-1, -1};
+    if (pipe(errorPipe) != 0) {
+        if (error) {
+            *error = std::strerror(errno);
+        }
+        return false;
+    }
+
+    const int pipeFlags = fcntl(errorPipe[1], F_GETFD);
+    if (pipeFlags != -1) {
+        fcntl(errorPipe[1], F_SETFD, pipeFlags | FD_CLOEXEC);
+    }
+
     const pid_t processId = fork();
     if (processId == -1) {
+        close(errorPipe[0]);
+        close(errorPipe[1]);
         if (error) {
             *error = std::strerror(errno);
         }
@@ -439,8 +462,14 @@ bool LaunchProcess(
     }
 
     if (processId == 0) {
+        close(errorPipe[0]);
+
         if (!workingDirectory.empty()) {
-            chdir(workingDirectory.c_str());
+            if (chdir(workingDirectory.c_str()) != 0) {
+                const int childError = errno;
+                write(errorPipe[1], &childError, sizeof(childError));
+                _exit(127);
+            }
         }
 
         std::vector<std::string> argvStorage;
@@ -456,7 +485,25 @@ bool LaunchProcess(
         argv.push_back(nullptr);
 
         execv(executablePath.c_str(), argv.data());
+        const int childError = errno;
+        write(errorPipe[1], &childError, sizeof(childError));
         _exit(127);
+    }
+
+    close(errorPipe[1]);
+
+    int childError = 0;
+    const ssize_t bytesRead = read(errorPipe[0], &childError, sizeof(childError));
+    close(errorPipe[0]);
+    if (bytesRead > 0) {
+        int status = 0;
+        waitpid(processId, &status, 0);
+        const std::string childMessage = std::strerror(childError);
+        outHandle.errorMessage = childMessage;
+        if (error) {
+            *error = childMessage;
+        }
+        return false;
     }
 
     outHandle.processId = static_cast<std::uint64_t>(processId);
@@ -473,6 +520,18 @@ bool IsProcessRunning(ProcessHandle& handle) {
     const pid_t result = waitpid(static_cast<pid_t>(handle.processId), &status, WNOHANG);
     if (result == 0) {
         return true;
+    }
+
+    handle.hasExitStatus = true;
+    handle.exitCode = 0;
+    handle.termSignal = 0;
+    handle.errorMessage.clear();
+    if (result == -1) {
+        handle.errorMessage = std::strerror(errno);
+    } else if (WIFEXITED(status)) {
+        handle.exitCode = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        handle.termSignal = WTERMSIG(status);
     }
 
     handle.processId = 0;

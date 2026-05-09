@@ -13,6 +13,10 @@ namespace Platform {
 struct ProcessHandle {
     void* nativeHandle = nullptr;
     std::uint64_t processId = 0;
+    bool hasExitStatus = false;
+    int exitCode = 0;
+    int termSignal = 0;
+    std::string errorMessage;
 };
 
 std::string GetConfigSuffix();

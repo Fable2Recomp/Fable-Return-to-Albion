@@ -453,8 +453,20 @@ int main(int argc, char** argv) {
 
         if (gameIsRunning && !Platform::IsProcessRunning(gameProcessHandle)) {
             gameIsRunning = false;
+            std::string processEndedMessage = "Game process has ended.";
+            if (!gameProcessHandle.errorMessage.empty()) {
+                processEndedMessage += " Error: " + gameProcessHandle.errorMessage;
+            } else if (gameProcessHandle.hasExitStatus) {
+                if (gameProcessHandle.termSignal != 0) {
+                    processEndedMessage +=
+                        " Signal: " + std::to_string(gameProcessHandle.termSignal) + ".";
+                } else {
+                    processEndedMessage +=
+                        " Exit code: " + std::to_string(gameProcessHandle.exitCode) + ".";
+                }
+            }
             Platform::CloseProcessHandle(gameProcessHandle);
-            std::cout << "Game process has ended." << std::endl;
+            std::cout << processEndedMessage << std::endl;
         }
 
         if (currentTime - lastUpdateCheck >= updateCheckInterval &&
@@ -697,16 +709,20 @@ int main(int argc, char** argv) {
                               << std::endl;
                 } else {
                     std::string error;
-                    if (Platform::LaunchProcess(
-                            Installer::GetInstallBasePath(),
-                            executablePath,
-                            patchesWindow.GetPatchLaunchArguments(),
-                            gameProcessHandle,
-                            &error)) {
-                        gameIsRunning = true;
-                        std::cout << "Game launched successfully." << std::endl;
+                    if (!Installer::EnsureRuntimeConfigFile(&error)) {
+                        std::cout << "Failed to prepare runtime config. " << error << std::endl;
                     } else {
-                        std::cout << "Failed to launch game. " << error << std::endl;
+                        if (Platform::LaunchProcess(
+                                Installer::GetInstallBasePath(),
+                                executablePath,
+                                patchesWindow.GetPatchLaunchArguments(),
+                                gameProcessHandle,
+                                &error)) {
+                            gameIsRunning = true;
+                            std::cout << "Game launched successfully." << std::endl;
+                        } else {
+                            std::cout << "Failed to launch game. " << error << std::endl;
+                        }
                     }
                 }
             }

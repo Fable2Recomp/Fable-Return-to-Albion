@@ -24,6 +24,27 @@ void InitializeX11Threading() {
 }
 #endif
 
+void ApplyWindowIcon(GLFWwindow* window) {
+    const std::string iconPath = LauncherPaths::GetLauncherAssetPath("icon.png").string();
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char* pixels = stbi_load(iconPath.c_str(), &width, &height, &channels, 4);
+    if (pixels == nullptr || width <= 0 || height <= 0) {
+        if (pixels != nullptr) {
+            stbi_image_free(pixels);
+        }
+        return;
+    }
+
+    GLFWimage image = {};
+    image.width = width;
+    image.height = height;
+    image.pixels = pixels;
+    glfwSetWindowIcon(window, 1, &image);
+    stbi_image_free(pixels);
+}
+
 }  // namespace
 
 VinceWindow::VinceWindow(int widthIn, int heightIn, const char* titleIn)
@@ -46,6 +67,10 @@ void VinceWindow::init() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
+#if defined(__linux__)
+    glfwWindowHintString(GLFW_X11_CLASS_NAME, "refii");
+    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "refii");
+#endif
 
     window = std::unique_ptr<GLFWwindow, decltype(&glfwDestroyWindow)>(
         glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr),
@@ -53,6 +78,7 @@ void VinceWindow::init() {
     if (!window) {
         assert(false && "Failed to create GLFW window");
     }
+    ApplyWindowIcon(window.get());
 
     int bufferWidth = 0;
     int bufferHeight = 0;

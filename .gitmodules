@@ -12,3 +12,7 @@
 [submodule "src/extractor/thirdparty/zlib"]
 	path = src/extractor/thirdparty/zlib
 	url = https://github.com/madler/zlib.git
+[submodule "ReXGlue"]
+	path = ReXGlue
+	url = https://github.com/rexglue/rexglue-sdk.git
+	branch = release/v0.8.0

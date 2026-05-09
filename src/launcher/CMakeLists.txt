@@ -137,4 +137,7 @@ add_custom_command(TARGET ${LAUNCHER_TARGET} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_CURRENT_SOURCE_DIR}/imgui.cfg
         ${LAUNCHER_DATA_DIR}/imgui.cfg
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${REFII_PACKAGE_ICON_SOURCE}
+        ${LAUNCHER_DATA_DIR}/assets/icon.png
 )

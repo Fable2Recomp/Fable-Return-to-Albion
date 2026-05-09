@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Refii
+Comment=Fable II launcher
+Exec=refii-launcher
+Icon=refii
+StartupWMClass=refii
+Terminal=false
+Categories=Game;

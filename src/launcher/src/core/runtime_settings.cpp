@@ -2,6 +2,7 @@
 
 #include "installer/installer.h"
 #include "imgui.h"
+#include "launcherpaths.h"
 
 #include <algorithm>
 #include <cctype>
@@ -173,6 +174,98 @@ std::string NormalizeGameDataRootValue(
     }
 
     return path.lexically_normal().generic_string();
+}
+
+bool ShouldUsePackagedRuntimeDefaults() {
+    return LauncherPaths::UseLinuxUserDataRoot();
+}
+
+std::string GetDefaultRuntimeGameDataRoot() {
+    return Installer::GetInstallBasePath().lexically_normal().generic_string();
+}
+
+std::string GetDefaultRuntimeUserDataRoot() {
+    return LauncherPaths::GetRuntimeDataRootDirectory().lexically_normal().generic_string();
+}
+
+std::string GetDefaultRuntimeUpdateDataRoot() {
+    return (Installer::GetUpdateDirectoryPath()).lexically_normal().generic_string();
+}
+
+std::string GetDefaultRuntimeCacheRoot() {
+    return (LauncherPaths::GetRuntimeDataRootDirectory() / "cache")
+        .lexically_normal()
+        .generic_string();
+}
+
+std::string GetDefaultRuntimeLogFilePath() {
+    return (LauncherPaths::GetRuntimeDataRootDirectory() / "logs" / "refii.log")
+        .lexically_normal()
+        .generic_string();
+}
+
+std::filesystem::path DeriveUpdateDataRootPath(const std::string& gameDataRoot,
+                                               const std::string& updateDataRoot) {
+    if (!updateDataRoot.empty()) {
+        return std::filesystem::path(updateDataRoot).lexically_normal();
+    }
+
+    std::filesystem::path base(gameDataRoot.empty() ? "assets" : gameDataRoot);
+    if (base.filename() == "game") {
+        base = base.parent_path();
+    }
+    return (base / "update").lexically_normal();
+}
+
+bool MatchesLegacyUserDataRootValue(const std::string& value) {
+    if (value.empty() || value == "assets/save") {
+        return true;
+    }
+
+    const std::filesystem::path legacyAbsolute =
+        (Installer::GetInstallBasePath() / "save").lexically_normal();
+    return std::filesystem::path(value).lexically_normal() == legacyAbsolute;
+}
+
+void EnsureDirectoryExists(const std::filesystem::path& path) {
+    if (path.empty()) {
+        return;
+    }
+
+    std::error_code error;
+    std::filesystem::create_directories(path, error);
+}
+
+void EnsurePackagedRuntimeDirectories(const std::map<std::string, std::string>& values,
+                                      const std::filesystem::path& configPath) {
+    const auto gameDataIt = values.find("game_data_root");
+    const auto userDataIt = values.find("user_data_root");
+    const auto updateDataIt = values.find("update_data_root");
+    const auto cacheIt = values.find("cache_path");
+
+    const std::filesystem::path gameDataRoot =
+        std::filesystem::path(gameDataIt != values.end() ? gameDataIt->second : "assets")
+            .lexically_normal();
+    const std::filesystem::path userDataRoot =
+        std::filesystem::path(userDataIt != values.end() ? userDataIt->second : "")
+            .lexically_normal();
+    const std::filesystem::path updateDataRoot = DeriveUpdateDataRootPath(
+        gameDataIt != values.end() ? gameDataIt->second : "assets",
+        updateDataIt != values.end() ? updateDataIt->second : "");
+    const std::filesystem::path cacheRoot =
+        std::filesystem::path(cacheIt != values.end() ? cacheIt->second : "")
+            .lexically_normal();
+    const auto logFileIt = values.find("log_file");
+    const std::filesystem::path logFilePath =
+        std::filesystem::path(logFileIt != values.end() ? logFileIt->second : "")
+            .lexically_normal();
+
+    EnsureDirectoryExists(configPath.parent_path());
+    EnsureDirectoryExists(gameDataRoot);
+    EnsureDirectoryExists(userDataRoot);
+    EnsureDirectoryExists(updateDataRoot);
+    EnsureDirectoryExists(cacheRoot);
+    EnsureDirectoryExists(logFilePath.parent_path());
 }
 
 std::string_view TrimView(std::string_view value) {
@@ -679,11 +772,51 @@ bool EnsureRuntimeConfigDefaults(
     std::string* error) {
     std::map<std::string, std::string> values = ReadRuntimeConfigValues(configPath);
     bool changed = !std::filesystem::exists(configPath);
+
+    if (ShouldUsePackagedRuntimeDefaults()) {
+        const std::string packagedGameDataRoot = GetDefaultRuntimeGameDataRoot();
+        const std::string packagedUserDataRoot = GetDefaultRuntimeUserDataRoot();
+        const std::string packagedUpdateDataRoot = GetDefaultRuntimeUpdateDataRoot();
+        const std::string packagedCacheRoot = GetDefaultRuntimeCacheRoot();
+        const std::string packagedLogFilePath = GetDefaultRuntimeLogFilePath();
+
+        auto updateDefaultPath = [&](const char* key,
+                                     const char* legacyDefault,
+                                     const std::string& packagedValue) {
+            const auto valueIt = values.find(key);
+            if (valueIt == values.end() || valueIt->second.empty() ||
+                valueIt->second == legacyDefault) {
+                if (valueIt == values.end() || valueIt->second != packagedValue) {
+                    values[key] = packagedValue;
+                    changed = true;
+                }
+            }
+        };
+
+        updateDefaultPath("game_data_root", "assets", packagedGameDataRoot);
+        const auto userDataIt = values.find("user_data_root");
+        if (userDataIt == values.end() ||
+            MatchesLegacyUserDataRootValue(userDataIt->second)) {
+            if (userDataIt == values.end() ||
+                userDataIt->second != packagedUserDataRoot) {
+                values["user_data_root"] = packagedUserDataRoot;
+                changed = true;
+            }
+        }
+        updateDefaultPath("update_data_root", "", packagedUpdateDataRoot);
+        updateDefaultPath("cache_path", "", packagedCacheRoot);
+        updateDefaultPath("log_file", "", packagedLogFilePath);
+    }
+
     for (const RuntimeCVarDefinition& definition : GetRuntimeCVarDefinitions()) {
         if (values.find(definition.name) == values.end()) {
             values[definition.name] = definition.defaultValue;
             changed = true;
         }
+    }
+
+    if (ShouldUsePackagedRuntimeDefaults()) {
+        EnsurePackagedRuntimeDirectories(values, configPath);
     }
     return changed ? WriteRuntimeConfigValues(configPath, values, error) : true;
 }
