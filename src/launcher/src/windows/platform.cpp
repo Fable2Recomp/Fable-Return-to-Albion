@@ -11,6 +11,8 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
+#include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <sstream>

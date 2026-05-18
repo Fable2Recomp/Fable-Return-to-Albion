@@ -62,7 +62,8 @@ Linux dependencies:
 
 - `libcurl`
 - OpenGL development headers
-- X11 development headers/libraries
+- Wayland development headers/libraries, `wayland-scanner`, and `xkbcommon`
+- X11 development headers/libraries when `REFII_LAUNCHER_ENABLE_X11=ON`
 - `zlib` development headers/libraries
 
 ## Lua workspace

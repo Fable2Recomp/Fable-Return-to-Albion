@@ -706,6 +706,32 @@ bool MaybeSignalRefiiPostFrontendConsumerHandoff(
   uint8_t generated_frame_flag244_after = 0;
   std::string wait_producer_log_state;
   std::string frame_producer_log_state;
+  if (run_generated_frame_completion && LooksLikeGuestPointer(handoff_guest)) {
+    const uint32_t dynamic_object = LoadGuestU32(base, handoff_guest + 240);
+    const uint32_t dynamic_vtable =
+        LooksLikeGuestPointer(dynamic_object) ? LoadGuestU32(base, dynamic_object)
+                                              : 0;
+    const uint32_t dynamic_slot =
+        LooksLikeGuestPointer(dynamic_vtable) ? LoadGuestU32(base, dynamic_vtable + 16)
+                                              : 0;
+    if (FindGuestFunction(dynamic_slot) == nullptr) {
+      run_generated_frame_completion = false;
+      RecordRefiiMainMenuBlockerEvent(
+          "frontend_consumer_generated_frame_completion_tail_skipped",
+          fmt::format("mode={} source={} owner=0x{:08X} handoff=0x{:08X} "
+                      "dynamic_object=0x{:08X} dynamic_vtable=0x{:08X} "
+                      "dynamic_slot=0x{:08X} reason=unregistered_dynamic_slot "
+                      "main_menu=[{}]",
+                      mode,
+                      signal_source,
+                      owner_guest,
+                      handoff_guest,
+                      dynamic_object,
+                      dynamic_vtable,
+                      dynamic_slot,
+                      FormatRefiiMainMenuBlockerTraceForLog()));
+    }
+  }
   if (run_generated_frame_completion && LooksLikeGuestPointer(owner_guest) &&
       LooksLikeGuestPointer(handoff_guest) &&
       LoadGuestU32(base, owner_guest + 4) == handoff_guest) {

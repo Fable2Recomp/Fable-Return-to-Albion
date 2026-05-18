@@ -204,13 +204,31 @@ std::filesystem::path ResolveCaseInsensitiveExistingPath(
 std::filesystem::path ResolveBankManifestPath(
     const std::filesystem::path& manifest_root) {
   const std::filesystem::path relative_path = manifest_root / "_manifest.tsv";
-  const std::filesystem::path direct_path = GetLooseAssetRoot() / relative_path;
-  std::error_code error;
-  if (std::filesystem::is_regular_file(direct_path, error)) {
-    return direct_path;
+  const std::vector<std::filesystem::path> roots = GetLooseAssetSearchRoots();
+  for (const std::filesystem::path& root : roots) {
+    if (root.empty()) {
+      continue;
+    }
+    const std::filesystem::path direct_path = root / relative_path;
+    std::error_code error;
+    if (std::filesystem::is_regular_file(direct_path, error)) {
+      return direct_path;
+    }
   }
 
-  return ResolveCaseInsensitiveExistingPath(GetLooseAssetRoot(), relative_path);
+  for (const std::filesystem::path& root : roots) {
+    if (root.empty()) {
+      continue;
+    }
+    const std::filesystem::path insensitive_path =
+        ResolveCaseInsensitiveExistingPath(root, relative_path);
+    std::error_code error;
+    if (std::filesystem::is_regular_file(insensitive_path, error)) {
+      return insensitive_path;
+    }
+  }
+
+  return GetLooseAssetRoot() / relative_path;
 }
 
 std::shared_ptr<const BankManifestIndex> LoadCachedBankManifestIndex(
@@ -329,10 +347,14 @@ std::vector<std::filesystem::path> BuildBankManifestRootCandidates(
   };
 
   add_unique(bank_root);
+  add_unique(std::filesystem::path("refii_vfs") / "banks" /
+             std::filesystem::path(bank_root));
   const std::string mip0_redirect =
       CanonicalizeMip0TextureHeaderRedirect(bank_root);
   if (!mip0_redirect.empty()) {
     add_unique(mip0_redirect);
+    add_unique(std::filesystem::path("refii_vfs") / "banks" /
+               std::filesystem::path(mip0_redirect));
   }
 
   constexpr std::string_view kLanguagePrefix = "language/";

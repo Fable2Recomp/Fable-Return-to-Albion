@@ -167,6 +167,10 @@ std::filesystem::path RefiiVfsRuntimeCandidateTablePath(
     const std::filesystem::path& loose_root);
 std::filesystem::path RefiiVfsRuntimeDirectoryTablePath(
     const std::filesystem::path& loose_root);
+std::filesystem::path RefiiVfsRuntimeDirectoryEntryTablePath(
+    const std::filesystem::path& loose_root);
+std::filesystem::path RefiiVfsRuntimeDirectoryEntryBinaryPath(
+    const std::filesystem::path& loose_root);
 std::filesystem::path RefiiVfsRuntimeBankTablePath(
     const std::filesystem::path& loose_root);
 std::filesystem::path RefiiVfsRuntimeLuaTablePath(

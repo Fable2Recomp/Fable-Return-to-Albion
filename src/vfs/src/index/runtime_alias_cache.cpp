@@ -1,5 +1,7 @@
 #include "vfs_hooks_private.h"
 
+#include <iterator>
+
 namespace refii::vfs {
 inline namespace detail {
 
@@ -142,6 +144,30 @@ std::vector<RefiiVfsRuntimeLuaRecord> LoadRefiiVfsRuntimeLuaRecords(
   return records;
 }
 
+std::vector<RefiiVfsRuntimeLuaRecord> LoadRefiiVfsRuntimeLuaRecordsForSearchRoots(
+    const std::filesystem::path& loose_root) {
+  std::vector<RefiiVfsRuntimeLuaRecord> records;
+  std::vector<std::filesystem::path> roots;
+  if (loose_root.lexically_normal() == GetLooseAssetRoot().lexically_normal()) {
+    roots = GetLooseAssetSearchRoots();
+  }
+  if (roots.empty()) {
+    roots.push_back(loose_root);
+  }
+
+  for (const std::filesystem::path& root : roots) {
+    if (root.empty()) {
+      continue;
+    }
+    std::vector<RefiiVfsRuntimeLuaRecord> root_records =
+        LoadRefiiVfsRuntimeLuaRecords(root);
+    records.insert(records.end(),
+                   std::make_move_iterator(root_records.begin()),
+                   std::make_move_iterator(root_records.end()));
+  }
+  return records;
+}
+
 bool ResolveTypedLuaVfsAsset(std::string_view asset_path,
                              bool carrier,
                              LooseAssetResolution* out_resolution,
@@ -187,31 +213,44 @@ bool ResolveTypedLuaVfsAsset(std::string_view asset_path,
         const std::filesystem::path direct_relative = record.candidate;
         const std::string normalized_candidate =
             NormalizeLooseAssetKey(record.candidate);
-        const std::filesystem::path source_relative =
-            StartsWith(normalized_candidate, "luasource/")
-                ? direct_relative
-                : std::filesystem::path("luasource") / direct_relative;
-
         std::error_code error;
-        if (carrier || extracted_override_record) {
-          const std::filesystem::path source_host =
-              loose_root / source_relative;
-          if (!std::filesystem::is_regular_file(source_host, error)) {
-            return false;
+        auto resolve_relative = [&](const std::filesystem::path& relative) {
+          std::vector<std::filesystem::path> roots;
+          if (loose_root.lexically_normal() ==
+              GetLooseAssetRoot().lexically_normal()) {
+            roots = GetLooseAssetSearchRoots();
           }
-          *out_host_path = source_host;
-          *out_provider_relative = source_relative.generic_string();
-          return true;
+          if (roots.empty()) {
+            roots.push_back(loose_root);
+          }
+          for (const std::filesystem::path& root : roots) {
+            if (root.empty()) {
+              continue;
+            }
+            error.clear();
+            const std::filesystem::path host = root / relative;
+            if (!std::filesystem::is_regular_file(host, error)) {
+              continue;
+            }
+            *out_host_path = host;
+            *out_provider_relative = relative.generic_string();
+            return true;
+          }
+          return false;
+        };
+
+        if (carrier || extracted_override_record) {
+          if (resolve_relative(direct_relative)) {
+            return true;
+          }
+          if (!StartsWith(normalized_candidate, "luasource/")) {
+            return resolve_relative(std::filesystem::path("luasource") /
+                                    direct_relative);
+          }
+          return false;
         }
 
-        const std::filesystem::path direct_host = loose_root / direct_relative;
-        if (std::filesystem::is_regular_file(direct_host, error)) {
-          *out_host_path = direct_host;
-          *out_provider_relative = record.candidate;
-          return true;
-        }
-
-        return false;
+        return resolve_relative(direct_relative);
   };
 
   {
@@ -240,7 +279,7 @@ bool ResolveTypedLuaVfsAsset(std::string_view asset_path,
   }
 
   std::vector<RefiiVfsRuntimeLuaRecord> loaded_records =
-      LoadRefiiVfsRuntimeLuaRecords(loose_root);
+      LoadRefiiVfsRuntimeLuaRecordsForSearchRoots(loose_root);
   {
     std::lock_guard<std::mutex> lock(RefiiVfsRuntimeLuaTableCacheMutex());
     auto& cache = RefiiVfsRuntimeLuaTableCacheInstance();
@@ -395,6 +434,89 @@ std::vector<std::string> LookupRefiiVfsRuntimeHashShardCandidates(
   return candidates;
 }
 
+std::vector<std::filesystem::path> GetRefiiVfsMetadataSearchRoots(
+    const std::filesystem::path& loose_root) {
+  std::vector<std::filesystem::path> roots;
+  if (loose_root.lexically_normal() == GetLooseAssetRoot().lexically_normal()) {
+    roots = GetLooseAssetSearchRoots();
+  }
+  if (roots.empty()) {
+    roots.push_back(loose_root);
+  }
+  roots.erase(std::remove_if(roots.begin(),
+                             roots.end(),
+                             [](const std::filesystem::path& root) {
+                               return root.empty();
+                             }),
+              roots.end());
+  return roots;
+}
+
+bool AnyRefiiVfsRuntimeAliasIndexExists(
+    const std::filesystem::path& loose_root) {
+  for (const std::filesystem::path& root :
+       GetRefiiVfsMetadataSearchRoots(loose_root)) {
+    if (RefiiVfsRuntimeAliasIndexExists(root)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool AnyRefiiVfsDatabaseExists(const std::filesystem::path& loose_root) {
+  for (const std::filesystem::path& root :
+       GetRefiiVfsMetadataSearchRoots(loose_root)) {
+    if (RefiiVfsDatabaseExists(root)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool AnyRefiiVfsLegacyDatabaseExists(
+    const std::filesystem::path& loose_root) {
+  for (const std::filesystem::path& root :
+       GetRefiiVfsMetadataSearchRoots(loose_root)) {
+    if (RefiiVfsLegacyDatabaseExists(root)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool AnyRefiiVfsRuntimeHashIndexExists(
+    const std::filesystem::path& loose_root) {
+  for (const std::filesystem::path& root :
+       GetRefiiVfsMetadataSearchRoots(loose_root)) {
+    if (RefiiVfsRuntimeHashIndexExists(root)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::unordered_map<std::string, std::vector<std::string>>
+LoadRefiiVfsRuntimeAliasShardForSearchRoots(
+    const std::filesystem::path& loose_root,
+    uint16_t shard) {
+  std::unordered_map<std::string, std::vector<std::string>> loaded_aliases;
+  for (const std::filesystem::path& root :
+       GetRefiiVfsMetadataSearchRoots(loose_root)) {
+    if (!RefiiVfsRuntimeAliasIndexExists(root)) {
+      continue;
+    }
+    std::unordered_map<std::string, std::vector<std::string>> root_aliases =
+        LoadRefiiVfsRuntimeAliasShard(root, shard);
+    for (auto& [alias, candidates] : root_aliases) {
+      auto& merged_candidates = loaded_aliases[alias];
+      for (std::string& candidate : candidates) {
+        AddUnique(merged_candidates, std::move(candidate));
+      }
+    }
+  }
+  return loaded_aliases;
+}
+
 struct RefiiVfsDatabaseAliasLoadSummary {
   bool loaded_now = false;
   size_t rows = 0;
@@ -419,50 +541,56 @@ RefiiVfsDatabaseAliasLoadSummary EnsureRefiiVfsDatabaseAliasRowsLoaded(
   std::vector<RefiiVfsDatabaseAliasRow> loaded_rows;
   loaded_rows.reserve(600000);
 
-  std::ifstream database(RefiiVfsDatabasePath(loose_root));
   std::string line;
-  while (std::getline(database, line)) {
-    if (!line.empty() && line.back() == '\r') {
-      line.pop_back();
-    }
-    if (line.empty() || line[0] == '#') {
+  for (const std::filesystem::path& root :
+       GetRefiiVfsMetadataSearchRoots(loose_root)) {
+    if (!RefiiVfsLegacyDatabaseExists(root)) {
       continue;
     }
+    std::ifstream database(RefiiVfsDatabasePath(root));
+    while (std::getline(database, line)) {
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+      }
+      if (line.empty() || line[0] == '#') {
+        continue;
+      }
 
-    const size_t first_tab = line.find('\t');
-    if (first_tab == std::string::npos) {
-      continue;
-    }
-    const size_t second_tab = line.find('\t', first_tab + 1);
-    if (second_tab == std::string::npos) {
-      continue;
-    }
+      const size_t first_tab = line.find('\t');
+      if (first_tab == std::string::npos) {
+        continue;
+      }
+      const size_t second_tab = line.find('\t', first_tab + 1);
+      if (second_tab == std::string::npos) {
+        continue;
+      }
 
-    const size_t third_tab = line.find('\t', second_tab + 1);
-    const std::string_view row_alias =
-        std::string_view(line).substr(first_tab + 1,
-                                      second_tab - first_tab - 1);
-    const std::string_view candidate =
-        std::string_view(line).substr(second_tab + 1,
-                                      third_tab == std::string::npos
-                                          ? std::string::npos
-                                          : third_tab - second_tab - 1);
+      const size_t third_tab = line.find('\t', second_tab + 1);
+      const std::string_view row_alias =
+          std::string_view(line).substr(first_tab + 1,
+                                        second_tab - first_tab - 1);
+      const std::string_view candidate =
+          std::string_view(line).substr(second_tab + 1,
+                                        third_tab == std::string::npos
+                                            ? std::string::npos
+                                            : third_tab - second_tab - 1);
 
-    if (!StartsWith(candidate, "language/") &&
-        !StartsWith(candidate, "language\\")) {
-      continue;
-    }
-    if (!ShouldIndexRefiiResourceHashCandidate(candidate)) {
-      continue;
-    }
+      if (!StartsWith(candidate, "language/") &&
+          !StartsWith(candidate, "language\\")) {
+        continue;
+      }
+      if (!ShouldIndexRefiiResourceHashCandidate(candidate)) {
+        continue;
+      }
 
-    const std::string normalized_candidate = NormalizeLooseAssetKey(candidate);
-    if (normalized_candidate.empty()) {
-      continue;
+      const std::string normalized_candidate = NormalizeLooseAssetKey(candidate);
+      if (normalized_candidate.empty()) {
+        continue;
+      }
+      loaded_rows.push_back({NormalizeLooseAssetKey(row_alias),
+                             normalized_candidate,
+                             StartsWith(normalized_candidate, "language/")});
     }
-    loaded_rows.push_back({NormalizeLooseAssetKey(row_alias),
-                           normalized_candidate,
-                           StartsWith(normalized_candidate, "language/")});
   }
 
   std::lock_guard<std::mutex> lock(RefiiVfsDatabaseAliasCandidateCacheMutex());
@@ -486,7 +614,7 @@ RefiiVfsDatabaseAliasLoadSummary EnsureRefiiVfsDatabaseAliasRowsLoaded(
 bool PrimeRefiiVfsRuntimeAliasCandidates(
     const std::filesystem::path& loose_root,
     const std::vector<std::string>& aliases) {
-  if (aliases.empty() || !RefiiVfsRuntimeAliasIndexExists(loose_root)) {
+  if (aliases.empty() || !AnyRefiiVfsRuntimeAliasIndexExists(loose_root)) {
     return false;
   }
 
@@ -579,7 +707,7 @@ bool PrimeRefiiVfsRuntimeAliasCandidates(
 
   for (const uint16_t shard : shards_to_load) {
     std::unordered_map<std::string, std::vector<std::string>> loaded_shard =
-        LoadRefiiVfsRuntimeAliasShard(loose_root, shard);
+        LoadRefiiVfsRuntimeAliasShardForSearchRoots(loose_root, shard);
     ++scanned_shards;
 
     std::lock_guard<std::mutex> lock(RefiiVfsRuntimeAliasShardCacheMutex());
@@ -660,7 +788,7 @@ bool PrimeRefiiVfsRuntimeAliasCandidates(
 bool PrimeRefiiVfsRuntimeExactAliasCandidate(
     const std::filesystem::path& loose_root,
     std::string_view alias) {
-  if (!RefiiVfsRuntimeAliasIndexExists(loose_root)) {
+  if (!AnyRefiiVfsRuntimeAliasIndexExists(loose_root)) {
     return false;
   }
 
@@ -701,7 +829,7 @@ bool PrimeRefiiVfsRuntimeExactAliasCandidate(
 
   if (loaded_shard_now) {
     std::unordered_map<std::string, std::vector<std::string>> loaded_shard =
-        LoadRefiiVfsRuntimeAliasShard(loose_root, shard);
+        LoadRefiiVfsRuntimeAliasShardForSearchRoots(loose_root, shard);
 
     std::lock_guard<std::mutex> lock(RefiiVfsRuntimeAliasShardCacheMutex());
     auto& shard_cache = RefiiVfsRuntimeAliasShardCacheInstance();
@@ -774,7 +902,7 @@ void PrimeRefiiVfsDatabaseAliasCandidates(
   if (PrimeRefiiVfsRuntimeAliasCandidates(loose_root, aliases)) {
     return;
   }
-  if (!RefiiVfsLegacyDatabaseExists(loose_root)) {
+  if (!AnyRefiiVfsLegacyDatabaseExists(loose_root)) {
     return;
   }
 
@@ -924,44 +1052,50 @@ void PrimeRefiiVfsDatabaseAliasCandidates(
       }
     }
   } else {
-    std::ifstream database(RefiiVfsDatabasePath(loose_root));
-    std::string line;
-    while (std::getline(database, line)) {
-      if (!line.empty() && line.back() == '\r') {
-        line.pop_back();
-      }
-      if (line.empty() || line[0] == '#') {
+    for (const std::filesystem::path& root :
+         GetRefiiVfsMetadataSearchRoots(loose_root)) {
+      if (!RefiiVfsLegacyDatabaseExists(root)) {
         continue;
       }
+      std::ifstream database(RefiiVfsDatabasePath(root));
+      std::string line;
+      while (std::getline(database, line)) {
+        if (!line.empty() && line.back() == '\r') {
+          line.pop_back();
+        }
+        if (line.empty() || line[0] == '#') {
+          continue;
+        }
 
-      const size_t first_tab = line.find('\t');
-      if (first_tab == std::string::npos) {
-        continue;
-      }
-      const size_t second_tab = line.find('\t', first_tab + 1);
-      if (second_tab == std::string::npos) {
-        continue;
-      }
+        const size_t first_tab = line.find('\t');
+        if (first_tab == std::string::npos) {
+          continue;
+        }
+        const size_t second_tab = line.find('\t', first_tab + 1);
+        if (second_tab == std::string::npos) {
+          continue;
+        }
 
-      const size_t third_tab = line.find('\t', second_tab + 1);
-      const std::string_view row_alias =
-          std::string_view(line).substr(first_tab + 1,
-                                        second_tab - first_tab - 1);
-      if (row_alias.empty()) {
-        continue;
-      }
-      const std::string normalized_alias = NormalizeLooseAssetKey(row_alias);
-      if (alias_set.find(normalized_alias) == alias_set.end()) {
-        continue;
-      }
+        const size_t third_tab = line.find('\t', second_tab + 1);
+        const std::string_view row_alias =
+            std::string_view(line).substr(first_tab + 1,
+                                          second_tab - first_tab - 1);
+        if (row_alias.empty()) {
+          continue;
+        }
+        const std::string normalized_alias = NormalizeLooseAssetKey(row_alias);
+        if (alias_set.find(normalized_alias) == alias_set.end()) {
+          continue;
+        }
 
-      const std::string_view candidate =
-          std::string_view(line).substr(second_tab + 1,
-                                        third_tab == std::string::npos
-                                            ? std::string::npos
-                                            : third_tab - second_tab - 1);
-      AppendUniqueDatabaseCandidate(&loaded_candidates[normalized_alias],
-                                    candidate);
+        const std::string_view candidate =
+            std::string_view(line).substr(second_tab + 1,
+                                          third_tab == std::string::npos
+                                              ? std::string::npos
+                                              : third_tab - second_tab - 1);
+        AppendUniqueDatabaseCandidate(&loaded_candidates[normalized_alias],
+                                      candidate);
+      }
     }
   }
 
@@ -1012,7 +1146,7 @@ void PrimeRefiiVfsDatabaseAliasCandidates(
 std::vector<std::string> LookupRefiiVfsDatabaseHashCandidates(
     uint32_t resource_hash,
     const std::filesystem::path& loose_root) {
-  if (resource_hash == 0 || !RefiiVfsDatabaseExists(loose_root)) {
+  if (resource_hash == 0 || !AnyRefiiVfsDatabaseExists(loose_root)) {
     return {};
   }
 
@@ -1037,43 +1171,57 @@ std::vector<std::string> LookupRefiiVfsDatabaseHashCandidates(
   }
 
   std::vector<std::string> candidates;
-  if (RefiiVfsRuntimeHashIndexExists(loose_root)) {
+  if (AnyRefiiVfsRuntimeHashIndexExists(loose_root)) {
     const uint8_t shard = RefiiVfsRuntimeShardForHash(resource_hash);
-    candidates =
-        LookupRefiiVfsRuntimeHashShardCandidates(loose_root, shard, resource_hash);
+    for (const std::filesystem::path& root :
+         GetRefiiVfsMetadataSearchRoots(loose_root)) {
+      if (!RefiiVfsRuntimeHashIndexExists(root)) {
+        continue;
+      }
+      for (std::string& candidate :
+           LookupRefiiVfsRuntimeHashShardCandidates(root, shard, resource_hash)) {
+        AddUnique(candidates, std::move(candidate));
+      }
+    }
   } else {
-    std::ifstream database(RefiiVfsDatabasePath(loose_root));
-    std::string line;
-    while (std::getline(database, line)) {
-      if (!line.empty() && line.back() == '\r') {
-        line.pop_back();
-      }
-      if (line.empty() || line[0] == '#') {
+    for (const std::filesystem::path& root :
+         GetRefiiVfsMetadataSearchRoots(loose_root)) {
+      if (!RefiiVfsLegacyDatabaseExists(root)) {
         continue;
       }
+      std::ifstream database(RefiiVfsDatabasePath(root));
+      std::string line;
+      while (std::getline(database, line)) {
+        if (!line.empty() && line.back() == '\r') {
+          line.pop_back();
+        }
+        if (line.empty() || line[0] == '#') {
+          continue;
+        }
 
-      const size_t first_tab = line.find('\t');
-      if (first_tab == std::string::npos || first_tab == 0) {
-        continue;
+        const size_t first_tab = line.find('\t');
+        if (first_tab == std::string::npos || first_tab == 0) {
+          continue;
+        }
+
+        uint32_t parsed_hash = 0;
+        if (!ParseHexUint32(std::string_view(line).substr(0, first_tab),
+                            &parsed_hash) ||
+            parsed_hash != resource_hash) {
+          continue;
+        }
+
+        const size_t second_tab = line.find('\t', first_tab + 1);
+        const size_t candidate_start =
+            second_tab == std::string::npos ? first_tab + 1 : second_tab + 1;
+        const size_t third_tab = line.find('\t', candidate_start);
+        const std::string_view candidate =
+            std::string_view(line).substr(candidate_start,
+                                          third_tab == std::string::npos
+                                              ? std::string::npos
+                                              : third_tab - candidate_start);
+        AppendUniqueDatabaseCandidate(&candidates, candidate);
       }
-
-      uint32_t parsed_hash = 0;
-      if (!ParseHexUint32(std::string_view(line).substr(0, first_tab),
-                          &parsed_hash) ||
-          parsed_hash != resource_hash) {
-        continue;
-      }
-
-      const size_t second_tab = line.find('\t', first_tab + 1);
-      const size_t candidate_start =
-          second_tab == std::string::npos ? first_tab + 1 : second_tab + 1;
-      const size_t third_tab = line.find('\t', candidate_start);
-      const std::string_view candidate =
-          std::string_view(line).substr(candidate_start,
-                                        third_tab == std::string::npos
-                                            ? std::string::npos
-                                            : third_tab - candidate_start);
-      AppendUniqueDatabaseCandidate(&candidates, candidate);
     }
   }
 
@@ -1124,6 +1272,32 @@ bool LoadRefiiVfsRuntimeHashOwnershipTable(
   return true;
 }
 
+bool LoadRefiiVfsRuntimeHashOwnershipTableForSearchRoots(
+    const std::filesystem::path& loose_root,
+    std::unordered_set<uint32_t>* out_owned_hashes) {
+  if (out_owned_hashes == nullptr) {
+    return false;
+  }
+
+  bool loaded_any = false;
+  std::unordered_set<uint32_t> owned_hashes;
+  for (const std::filesystem::path& root :
+       GetRefiiVfsMetadataSearchRoots(loose_root)) {
+    std::unordered_set<uint32_t> root_hashes;
+    if (!LoadRefiiVfsRuntimeHashOwnershipTable(root, &root_hashes)) {
+      continue;
+    }
+    loaded_any = true;
+    owned_hashes.insert(root_hashes.begin(), root_hashes.end());
+  }
+  if (!loaded_any) {
+    return false;
+  }
+
+  *out_owned_hashes = std::move(owned_hashes);
+  return true;
+}
+
 const std::unordered_set<uint32_t>* GetRefiiVfsRuntimeOwnedHashes(
     const std::filesystem::path& loose_root) {
   const std::string root_key = loose_root.lexically_normal().string();
@@ -1138,8 +1312,8 @@ const std::unordered_set<uint32_t>* GetRefiiVfsRuntimeOwnedHashes(
     cache.root_key = root_key;
   }
   if (!cache.loaded) {
-    cache.exists =
-        LoadRefiiVfsRuntimeHashOwnershipTable(loose_root, &cache.owned_hashes);
+    cache.exists = LoadRefiiVfsRuntimeHashOwnershipTableForSearchRoots(
+        loose_root, &cache.owned_hashes);
     cache.loaded = true;
     if (cache.exists && VfsTracingEnabled()) {
       REXLOG_INFO("Refii VFS hash ownership table loaded root={} hashes={}",
@@ -1153,7 +1327,7 @@ const std::unordered_set<uint32_t>* GetRefiiVfsRuntimeOwnedHashes(
 std::vector<std::string> LookupRefiiVfsDatabaseAliasCandidates(
     std::string_view asset_path,
     const std::filesystem::path& loose_root) {
-  if (asset_path.empty() || !RefiiVfsDatabaseExists(loose_root)) {
+  if (asset_path.empty() || !AnyRefiiVfsDatabaseExists(loose_root)) {
     return {};
   }
 

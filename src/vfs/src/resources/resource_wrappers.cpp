@@ -618,10 +618,15 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
 
   LooseAssetResolution payload_resolution;
   std::string payload_candidate;
-  const bool need_payload_file = view_is_header;
-  if (need_payload_file &&
-      !ResolvePairedTexturePayloadForHeader(
-          view->provider_key, &payload_resolution, &payload_candidate)) {
+  bool use_payload_file = view_is_header;
+  auto resolve_payload_file = [&]() {
+    if (!payload_candidate.empty()) {
+      return true;
+    }
+    return ResolvePairedTexturePayloadForHeader(
+        view->provider_key, &payload_resolution, &payload_candidate);
+  };
+  if (use_payload_file && !resolve_payload_file()) {
     if (VfsTracingEnabled() &&
         ShouldLogRepeatedVfsTraceOperation("SplitTexturePayloadMissing", 32)) {
       REXLOG_WARN("Refii VFS split texture wrapper payload missing "
@@ -636,8 +641,14 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
     return false;
   }
 
+  const uint32_t old_view_size = view->size;
   uint32_t payload_size = view->size;
-  if (need_payload_file) {
+  if (!use_payload_file && payload_size != expected_payload_size &&
+      resolve_payload_file()) {
+    use_payload_file = true;
+  }
+
+  if (use_payload_file) {
     std::error_code file_size_error;
     const uint64_t payload_size64 =
         std::filesystem::file_size(payload_resolution.host_path, file_size_error);
@@ -689,9 +700,13 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
   }
 
   auto* combined = rex::memory::GuestPtr<uint8_t*>(base, combined_guest);
-  if (view_is_header) {
+  if (use_payload_file) {
     auto* header = rex::memory::GuestPtr<uint8_t*>(base, old_buffer_guest);
-    std::memcpy(combined, header, header_size);
+    if (view_is_header) {
+      std::memcpy(combined, header, header_size);
+    } else {
+      std::memcpy(combined, header_bytes.data(), header_size);
+    }
 
     std::ifstream payload_file(payload_resolution.host_path, std::ios::binary);
     if (!payload_file) {
@@ -728,7 +743,7 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
     std::memcpy(combined + header_size, payload, payload_size);
   }
 
-  const uint32_t expected_old_size = view_is_header ? header_size : payload_size;
+  const uint32_t expected_old_size = old_view_size;
   if (const auto request = FindRefiiReadRequestRecord(view->inner_guest)) {
     std::lock_guard<std::mutex> lock(request->mutex);
     if (request->buffer_guest != old_buffer_guest ||
@@ -784,8 +799,8 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
                 wrapper_guest,
                 owner_texture,
                 NormalizeLooseAssetKey(view->provider_key),
-                need_payload_file ? payload_candidate : "<payload-window>",
-                need_payload_file ? payload_resolution.host_path.string()
+                use_payload_file ? payload_candidate : "<payload-window>",
+                use_payload_file ? payload_resolution.host_path.string()
                                   : "<materialized>",
                 old_buffer_guest,
                 combined_guest,
@@ -802,7 +817,7 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
                     wrapper_guest,
                     owner_texture,
                     NormalizeLooseAssetKey(view->provider_key),
-                    need_payload_file ? payload_candidate : "<payload-window>",
+                    use_payload_file ? payload_candidate : "<payload-window>",
                     header_size,
                     payload_size,
                     combined_guest));

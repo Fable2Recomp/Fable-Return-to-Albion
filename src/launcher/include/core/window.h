@@ -20,6 +20,7 @@ public:
     void SetupImGuiIO();
     void NewFrame();
     void EndFrame();
+    void Destroy();
 
     GLFWwindow* getWindow() const {
         return window.get();
@@ -31,7 +32,7 @@ public:
 private:
     void init();
 
-    const char* glsl_version = "#version 330";
+    const char* glsl_version = "#version 130";
     std::string title;
     std::unique_ptr<GLFWwindow, void(*)(GLFWwindow*)> window;
 };

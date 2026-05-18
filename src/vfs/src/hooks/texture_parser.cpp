@@ -358,7 +358,7 @@ REX_EXTERN(sub_82B8CAC0) {
   }
 }
 
-REX_EXTERN(sub_82176018) {
+REX_EXTERN(sub_82176018) { // Lumen: LHFile::CDataInputStream::SetPosition(uint)
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82176018);

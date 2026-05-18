@@ -15,9 +15,12 @@ namespace refii::vfs {
 struct RefiiPrivateFileHandleRecord {
   std::filesystem::path path;
   std::string virtual_path;
-  std::ifstream file;
+  std::fstream file;
   uint64_t position = 0;
   uint64_t size = 0;
+  uint32_t desired_access = 0;
+  bool readable = true;
+  bool writable = false;
   uint64_t max_read_end = 0;
   bool fully_read_reported = false;
   std::mutex mutex;

@@ -2,16 +2,14 @@
 #include "runtime/cvars.h"
 
 #include <algorithm>
+#include <cctype>
 #include <string>
+#include <string_view>
 
 #include <rex/cvar.h>
 
 namespace refii::vfs {
 namespace {
-
-REXCVAR_DEFINE_BOOL(vfs_use_loose_assets, false, "VFS",
-                    "Prefer loose files from the unpacked mod workspace before banked assets.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(vfs_trace_loose_assets, false, "VFS",
                     "Log loose asset override lookups and matches.")
@@ -23,14 +21,6 @@ REXCVAR_DEFINE_BOOL(vfs_trace_vfs, false, "VFS",
 
 REXCVAR_DEFINE_BOOL(vfs_trace_vfs_verbose_io, false, "VFS",
                     "Log high-volume Refii VFS stream read/page operations.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(vfs_use_loose_gameface_binaries, false, "VFS",
-                    "Allow loose Anark/GameFace binary assets (.bgf/.bsg/.fac).")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(vfs_use_loose_bank_entries, false, "VFS",
-                    "Prefer loose files for entries opened from Fable 2 BNK banks.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(vfs_skip_startup_videos, false, "VFS",
@@ -59,9 +49,30 @@ REXCVAR_DEFINE_STRING(vfs_loose_asset_root, "", "VFS",
                       "<assets_root>/unpacked.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_STRING(vfs_mod_roots, "", "VFS",
+                      "Optional semicolon-separated mod asset roots. Each root "
+                      "uses the same game-relative layout as unpacked.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+bool EqualsAsciiCaseInsensitive(std::string_view left, std::string_view right) {
+  if (left.size() != right.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < left.size(); ++i) {
+    const auto lhs = static_cast<unsigned char>(left[i]);
+    const auto rhs = static_cast<unsigned char>(right[i]);
+    if (std::tolower(lhs) != std::tolower(rhs)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
-bool LooseAssetOverridesEnabled() { return REXCVAR_GET(vfs_use_loose_assets); }
+bool LooseAssetOverridesEnabled() {
+  return GetLooseAssetBackend() == LooseAssetBackend::kRefii;
+}
 
 bool LooseAssetOverrideTracingEnabled() {
   return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_trace_loose_assets);
@@ -77,15 +88,11 @@ bool VfsVerboseIoTracingEnabled() {
 }
 
 bool LooseGameFaceBinaryOverridesEnabled() {
-  return LooseAssetOverridesEnabled() &&
-         GetLooseAssetBackend() == LooseAssetBackend::kRefii &&
-         REXCVAR_GET(vfs_use_loose_gameface_binaries);
+  return RefiiLooseAssetBackendEnabled();
 }
 
 bool LooseBankEntryOverridesEnabled() {
-  return LooseAssetOverridesEnabled() &&
-         GetLooseAssetBackend() == LooseAssetBackend::kRefii &&
-         REXCVAR_GET(vfs_use_loose_bank_entries);
+  return RefiiLooseAssetBackendEnabled();
 }
 
 bool SkipStartupVideosEnabled() {
@@ -101,11 +108,7 @@ int StartupVideoMinimumPlaybackMs() {
 
 LooseAssetBackend GetLooseAssetBackend() {
   std::string backend = REXCVAR_GET(vfs_loose_asset_backend);
-  std::ranges::transform(backend, backend.begin(), [](unsigned char ch) {
-    return static_cast<char>(std::tolower(ch));
-  });
-
-  if (backend == "refii") {
+  if (EqualsAsciiCaseInsensitive(backend, "refii")) {
     return LooseAssetBackend::kRefii;
   }
 
@@ -113,14 +116,17 @@ LooseAssetBackend GetLooseAssetBackend() {
 }
 
 bool RefiiLooseAssetBackendEnabled() {
-  return LooseAssetOverridesEnabled() &&
-         GetLooseAssetBackend() == LooseAssetBackend::kRefii;
+  return LooseAssetOverridesEnabled();
 }
 
 inline namespace detail {
 
 std::string ConfiguredLooseAssetRoot() {
   return REXCVAR_GET(vfs_loose_asset_root);
+}
+
+std::string ConfiguredModAssetRoots() {
+  return REXCVAR_GET(vfs_mod_roots);
 }
 
 }  // namespace detail

@@ -7,13 +7,23 @@
 
 #include "generated/refii_init.h"
 
+#include <rex/cvar.h>
 #include <rex/filesystem.h>
+#include <rex/logging.h>
 #include <rex/rex_app.h>
+
+#if REFII_HAS_RENDERER_RUNTIME
+#include "renderer_runtime.h"
+#include "runtime/plume_backend.h"
+#include "runtime/plume_graphics_system.h"
+#include "runtime/plume_imgui_overlay.h"
+#endif
 
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -194,6 +204,19 @@ inline std::vector<char> RefiiLoadWindowIconBytes() {
   return bytes;
 }
 
+inline std::string RefiiGetLowerRuntimeCVar(std::string_view name) {
+  std::string value = rex::cvar::GetFlagByName(name);
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
+}
+
+inline bool RefiiShouldSuppressReXGlueRenderer() {
+  const std::string backend = RefiiGetLowerRuntimeCVar("renderer_backend");
+  return backend == "plume";
+}
+
 }  // namespace
 
 class RefiiApp : public rex::ReXApp {
@@ -206,6 +229,30 @@ class RefiiApp : public rex::ReXApp {
         PPCImageConfig));
   }
 
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+    if (!RefiiShouldSuppressReXGlueRenderer()) {
+      return;
+    }
+
+#if REFII_HAS_RENDERER_RUNTIME
+    config.graphics = std::make_unique<refii::renderer::PlumeGraphicsSystem>();
+    REXLOG_INFO(
+        "Refii renderer backend is {}; installing the Plume guest GPU frontend "
+        "shim without a ReXGlue renderer presenter",
+        RefiiGetLowerRuntimeCVar("renderer_backend"));
+#else
+    config.graphics.reset();
+    REXLOG_INFO(
+        "Refii renderer backend is {}; suppressing the ReXGlue graphics "
+        "system so renderer hooks can own output",
+        RefiiGetLowerRuntimeCVar("renderer_backend"));
+#endif
+  }
+
+  bool OnNeedsImGuiDrawerWithoutPresenter() const override {
+    return RefiiShouldSuppressReXGlueRenderer();
+  }
+
   void OnPostSetup() override {
 #if defined(__linux__)
     if (window() != nullptr) {
@@ -214,6 +261,20 @@ class RefiiApp : public rex::ReXApp {
         window()->SetIcon(icon_bytes.data(), icon_bytes.size());
       }
     }
+#endif
+#if REFII_HAS_RENDERER_RUNTIME
+    if (RefiiShouldSuppressReXGlueRenderer()) {
+      refii::renderer::AttachPlumeImGuiToReXGlue(window(), imgui_drawer());
+    }
+#endif
+  }
+
+  void OnShutdown() override {
+#if REFII_HAS_RENDERER_RUNTIME
+    refii::renderer::ShutdownRendererPresentPump();
+    refii::renderer::DetachPlumeImGuiFromReXGlue();
+    refii::renderer::ShutdownPlumeImGuiOverlay();
+    refii::renderer::ShutdownPlumeBackend();
 #endif
   }
 

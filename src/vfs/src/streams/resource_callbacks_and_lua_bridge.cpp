@@ -190,7 +190,7 @@ std::string DescribeResourceCallbackTarget(uint32_t target) {
     case 0x8220B470:
       return "sub_8220B470:state10568[2:0]";
     case 0x8226B058:
-      return "sub_8226B058:state10548[0:1]";
+      return "sub_8226B058:state10548[2]";
     case 0x82286D78:
       return "sub_82286D78:state10548[1]+11876";
     default:

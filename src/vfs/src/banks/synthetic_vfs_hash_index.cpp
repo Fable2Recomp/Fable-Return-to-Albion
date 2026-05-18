@@ -333,7 +333,9 @@ void IndexSyntheticManifestEntries(SyntheticVfsEntryIndex& index,
                                    const std::filesystem::path& manifest_path) {
   const std::string normalized_root =
       NormalizeLooseAssetKey(manifest_root.generic_string());
-  if (normalized_root.empty() || IsInternalLooseAssetKey(normalized_root)) {
+  if (normalized_root.empty() ||
+      (IsInternalLooseAssetKey(normalized_root) &&
+       !StartsWith(normalized_root, "refii_vfs/banks/"))) {
     return;
   }
 
@@ -369,7 +371,8 @@ void IndexSyntheticManifestEntries(SyntheticVfsEntryIndex& index,
     const std::string rooted_entry =
         (manifest_root / ManifestPathToGenericPath(entry.relative_path))
             .generic_string();
-    if (!IsInternalLooseAssetKey(rooted_entry)) {
+    if (!StartsWith(normalized_root, "refii_vfs/banks/") &&
+        !IsInternalLooseAssetKey(rooted_entry)) {
       AddSyntheticVfsEntryAlias(index, rooted_entry, vfs_entry);
       AddSyntheticVfsEntryAlias(index, "data/" + rooted_entry, vfs_entry);
     }

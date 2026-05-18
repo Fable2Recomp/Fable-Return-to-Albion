@@ -227,6 +227,14 @@ bool ResolveRefiiVirtualFileSystemProbe(std::string_view asset_path,
                                         bool* out_is_directory,
                                         LooseAssetResolution* out_resolution,
                                         std::string* out_candidate);
+inline constexpr uint32_t kRefiiWin32ErrorSuccess = 0x00000000u;
+inline constexpr uint32_t kRefiiWin32ErrorFileNotFound = 0x00000002u;
+inline constexpr uint32_t kRefiiWin32ErrorPathNotFound = 0x00000003u;
+inline constexpr uint32_t kRefiiWin32ErrorAccessDenied = 0x00000005u;
+inline constexpr uint32_t kRefiiWin32ErrorNoMoreFiles = 0x00000012u;
+inline constexpr uint32_t kRefiiWin32ErrorInvalidParameter = 0x00000057u;
+inline constexpr uint32_t kRefiiWin32ErrorAlreadyExists = 0x000000B7u;
+void SetRefiiWin32LastError(uint32_t error_code);
 bool IsRefiiPrivateHandle(uint32_t handle);
 bool CloseRefiiPrivateHandle(uint32_t handle);
 bool TryCreateRefiiPrivateFileHandle(std::string_view path,
@@ -234,7 +242,13 @@ bool TryCreateRefiiPrivateFileHandle(std::string_view path,
                                      uint32_t creation_disposition,
                                      uint32_t* out_handle,
                                      LooseAssetResolution* out_resolution,
-                                     std::string* out_candidate);
+                                     std::string* out_candidate,
+                                     bool* out_replacement_claimed = nullptr);
+bool TryCreateRefiiPrivateDirectoryHandle(std::string_view path,
+                                          uint32_t desired_access,
+                                          uint32_t creation_disposition,
+                                          uint32_t* out_handle,
+                                          std::string* out_candidate);
 bool TryReadRefiiPrivateFileHandle(PPCContext& ctx,
                                    uint8_t* base,
                                    uint32_t handle,
@@ -242,13 +256,35 @@ bool TryReadRefiiPrivateFileHandle(PPCContext& ctx,
                                    uint32_t requested_bytes,
                                    uint32_t bytes_read_guest,
                                    uint32_t overlapped_guest);
+bool TryWriteRefiiPrivateFileHandle(PPCContext& ctx,
+                                    uint8_t* base,
+                                    uint32_t handle,
+                                    uint32_t buffer_guest,
+                                    uint32_t requested_bytes,
+                                    uint32_t bytes_written_guest,
+                                    uint32_t overlapped_guest);
 bool TryGetRefiiPrivateFileSize(uint32_t handle, uint64_t* out_size);
+bool TryGetRefiiPrivateFileInformation(uint8_t* base,
+                                       uint32_t handle,
+                                       uint32_t information_guest);
+bool TryGetRefiiPrivateFileSectorInfo(uint32_t handle, uint32_t* out_sector_size);
+bool TryGetRefiiPrivateFileTimes(uint8_t* base,
+                                 uint32_t handle,
+                                 uint32_t creation_time_guest,
+                                 uint32_t last_access_time_guest,
+                                 uint32_t last_write_time_guest);
 bool TrySetRefiiPrivateFilePointer(PPCContext& ctx,
                                    uint8_t* base,
                                    uint32_t handle,
                                    int32_t distance_low,
                                    uint32_t distance_high_guest,
                                    uint32_t move_method);
+bool TryFlushRefiiPrivateFileHandle(PPCContext& ctx, uint32_t handle);
+bool TrySetEndOfRefiiPrivateFile(PPCContext& ctx, uint32_t handle);
+bool TryDeleteRefiiPrivateFile(PPCContext& ctx,
+                               std::string_view path,
+                               LooseAssetResolution* out_resolution,
+                               std::string* out_candidate);
 bool TryFindFirstRefiiPrivate(PPCContext& ctx,
                               uint8_t* base,
                               std::string_view path,

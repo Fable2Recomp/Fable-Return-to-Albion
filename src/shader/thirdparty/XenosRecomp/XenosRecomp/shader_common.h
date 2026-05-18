@@ -30,10 +30,21 @@ struct PushConstants
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
 
-#define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
-#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
-#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 264)
-#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 272)
+#define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 512)
+#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 516)
+#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 520)
+#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 528)
+#define g_VertexIntegerConstantValidMask vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 536)
+#define g_PixelIntegerConstantValidMask vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 540)
+#define REFII_VERTEX_INTEGER_CONSTANT_BYTE_BASE 576
+#define REFII_PIXEL_INTEGER_CONSTANT_BYTE_BASE 1088
+#define REFII_LOAD_INTEGER_CONSTANT(BASE, INDEX) int4( \
+    asint(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + (BASE) + (INDEX) * 16 + 0)), \
+    asint(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + (BASE) + (INDEX) * 16 + 4)), \
+    asint(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + (BASE) + (INDEX) * 16 + 8)), \
+    asint(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + (BASE) + (INDEX) * 16 + 12)))
+#define g_VertexIntegerConstant(INDEX) REFII_LOAD_INTEGER_CONSTANT(REFII_VERTEX_INTEGER_CONSTANT_BYTE_BASE, INDEX)
+#define g_PixelIntegerConstant(INDEX) REFII_LOAD_INTEGER_CONSTANT(REFII_PIXEL_INTEGER_CONSTANT_BYTE_BASE, INDEX)
 
 [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
 
@@ -42,12 +53,20 @@ struct PushConstants
 #else
 
 #define DEFINE_SHARED_CONSTANTS() \
-    uint g_Booleans : packoffset(c16.x); \
-    uint g_SwappedTexcoords : packoffset(c16.y); \
-    float2 g_HalfPixelOffset : packoffset(c16.z); \
-    float g_AlphaThreshold : packoffset(c17.x);
+    uint g_Booleans : packoffset(c32.x); \
+    uint g_SwappedTexcoords : packoffset(c32.y); \
+    float2 g_HalfPixelOffset : packoffset(c32.z); \
+    float g_AlphaThreshold : packoffset(c33.x); \
+    uint g_VertexIntegerConstantValidMask : packoffset(c33.y); \
+    uint g_PixelIntegerConstantValidMask : packoffset(c33.z); \
+    int4 g_VertexIntegerConstants[32] : packoffset(c36); \
+    int4 g_PixelIntegerConstants[32] : packoffset(c68);
 
-uint g_SpecConstants();
+#define g_VertexIntegerConstant(INDEX) g_VertexIntegerConstants[INDEX]
+#define g_PixelIntegerConstant(INDEX) g_PixelIntegerConstants[INDEX]
+
+static const uint g_SpecConstants_Value = 0;
+#define g_SpecConstants() g_SpecConstants_Value
 
 #endif
 

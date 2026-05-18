@@ -6,21 +6,153 @@
 #include "utils/launcherpaths.h"
 #include "utils/opengl_stuff.h"
 
+#include <algorithm>
 #include <cassert>
-
-#if defined(__linux__)
-#include <X11/Xlib.h>
-#include <mutex>
-#endif
+#include <cstdio>
+#include <cstdlib>
 
 namespace {
 
 #if defined(__linux__)
-void InitializeX11Threading() {
-    static std::once_flag x11ThreadInitFlag;
-    std::call_once(x11ThreadInitFlag, []() {
-        XInitThreads();
+#ifndef REFII_LAUNCHER_HAS_WAYLAND
+#define REFII_LAUNCHER_HAS_WAYLAND 0
+#endif
+#ifndef REFII_LAUNCHER_HAS_X11
+#define REFII_LAUNCHER_HAS_X11 0
+#endif
+
+bool HasEnvironmentValue(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0';
+}
+
+std::string LowercaseAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+        if (character >= 'A' && character <= 'Z') {
+            return static_cast<char>(character - 'A' + 'a');
+        }
+        return static_cast<char>(character);
     });
+    return value;
+}
+
+const char* GLFWPlatformName(int platform) {
+    switch (platform) {
+        case GLFW_PLATFORM_WAYLAND:
+            return "Wayland";
+        case GLFW_PLATFORM_X11:
+            return "X11";
+        case GLFW_ANY_PLATFORM:
+            return "auto";
+        default:
+            return "unknown";
+    }
+}
+
+int FirstAvailablePlatform() {
+#if REFII_LAUNCHER_HAS_WAYLAND && REFII_LAUNCHER_HAS_X11
+    return GLFW_ANY_PLATFORM;
+#elif REFII_LAUNCHER_HAS_WAYLAND
+    return GLFW_PLATFORM_WAYLAND;
+#elif REFII_LAUNCHER_HAS_X11
+    return GLFW_PLATFORM_X11;
+#else
+    return GLFW_ANY_PLATFORM;
+#endif
+}
+
+bool IsPlatformAvailable(int platform) {
+    switch (platform) {
+        case GLFW_PLATFORM_WAYLAND:
+            return REFII_LAUNCHER_HAS_WAYLAND != 0;
+        case GLFW_PLATFORM_X11:
+            return REFII_LAUNCHER_HAS_X11 != 0;
+        case GLFW_ANY_PLATFORM:
+            return true;
+        default:
+            return false;
+    }
+}
+
+int SelectAvailablePlatform(int platform) {
+    if (IsPlatformAvailable(platform)) {
+        return platform;
+    }
+
+    std::fprintf(
+        stderr,
+        "Requested GLFW platform %s is not built into this launcher; falling back to %s.\n",
+        GLFWPlatformName(platform),
+        GLFWPlatformName(FirstAvailablePlatform()));
+    return FirstAvailablePlatform();
+}
+
+int ReadLauncherPlatformOverride() {
+    const char* value = std::getenv("REFII_LAUNCHER_GLFW_PLATFORM");
+    if (value == nullptr || value[0] == '\0') {
+        return GLFW_ANY_PLATFORM;
+    }
+
+    const std::string platform = LowercaseAscii(value);
+    if (platform == "wayland") {
+        return GLFW_PLATFORM_WAYLAND;
+    }
+    if (platform == "x11") {
+        return GLFW_PLATFORM_X11;
+    }
+    if (platform == "auto" || platform == "any") {
+        return GLFW_ANY_PLATFORM;
+    }
+
+    std::fprintf(
+        stderr,
+        "Unknown REFII_LAUNCHER_GLFW_PLATFORM value '%s'; using automatic platform selection.\n",
+        value);
+    return GLFW_ANY_PLATFORM;
+}
+
+int ChooseGLFWPlatform() {
+    const int overridePlatform = ReadLauncherPlatformOverride();
+    if (overridePlatform != GLFW_ANY_PLATFORM) {
+        return SelectAvailablePlatform(overridePlatform);
+    }
+
+#if REFII_LAUNCHER_HAS_WAYLAND
+    if (HasEnvironmentValue("WAYLAND_DISPLAY")) {
+        return GLFW_PLATFORM_WAYLAND;
+    }
+#endif
+
+#if REFII_LAUNCHER_HAS_X11
+    if (HasEnvironmentValue("DISPLAY")) {
+        return GLFW_PLATFORM_X11;
+    }
+#endif
+
+    return FirstAvailablePlatform();
+}
+
+void ConfigureGLFWPlatform() {
+    const int selectedPlatform = ChooseGLFWPlatform();
+    glfwInitHint(GLFW_PLATFORM, selectedPlatform);
+#if REFII_LAUNCHER_HAS_WAYLAND
+    glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_PREFER_LIBDECOR);
+#endif
+    std::fprintf(stderr, "Refii launcher GLFW platform: %s\n", GLFWPlatformName(selectedPlatform));
+}
+
+void ApplyPlatformWindowHints() {
+    const int platform = glfwGetPlatform();
+    if (platform == GLFW_PLATFORM_WAYLAND) {
+        glfwWindowHintString(GLFW_WAYLAND_APP_ID, "com.refii.refii");
+    } else if (platform == GLFW_PLATFORM_X11) {
+        glfwWindowHintString(GLFW_X11_CLASS_NAME, "refii");
+        glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "refii");
+    }
+}
+
+bool ShouldApplyWindowIcon() {
+    return glfwGetPlatform() != GLFW_PLATFORM_WAYLAND;
 }
 #endif
 
@@ -58,7 +190,7 @@ VinceWindow::VinceWindow(int widthIn, int heightIn, const char* titleIn)
 void VinceWindow::init() {
     glfwSetErrorCallback(glfw_error_callback);
 #if defined(__linux__)
-    InitializeX11Threading();
+    ConfigureGLFWPlatform();
 #endif
     if (!glfwInit()) {
         assert(false && "Failed to initialize GLFW");
@@ -68,8 +200,7 @@ void VinceWindow::init() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
 #if defined(__linux__)
-    glfwWindowHintString(GLFW_X11_CLASS_NAME, "refii");
-    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "refii");
+    ApplyPlatformWindowHints();
 #endif
 
     window = std::unique_ptr<GLFWwindow, decltype(&glfwDestroyWindow)>(
@@ -78,7 +209,13 @@ void VinceWindow::init() {
     if (!window) {
         assert(false && "Failed to create GLFW window");
     }
+#if defined(__linux__)
+    if (ShouldApplyWindowIcon()) {
+        ApplyWindowIcon(window.get());
+    }
+#else
     ApplyWindowIcon(window.get());
+#endif
 
     int bufferWidth = 0;
     int bufferHeight = 0;
@@ -193,4 +330,8 @@ void VinceWindow::NewFrame() {
 void VinceWindow::EndFrame() {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     glfwSwapBuffers(window.get());
+}
+
+void VinceWindow::Destroy() {
+    window.reset();
 }

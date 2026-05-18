@@ -1,4 +1,5 @@
 #include "vfs_hooks_private.h"
+#include "runtime/replacement_paths.h"
 
 REX_EXTERN(rex_CreateFileA) {
   REX_FUNC_PROLOGUE();
@@ -37,14 +38,34 @@ REX_EXTERN(rex_CreateFileA) {
   }
 
   uint32_t refii_handle = refii::vfs::kRefiiPrivateHandleInvalid;
+  std::string directory_candidate;
+  if (refii::vfs::TryCreateRefiiPrivateDirectoryHandle(path,
+                                                       original_ctx.r4.u32,
+                                                       original_ctx.r7.u32,
+                                                       &refii_handle,
+                                                       &directory_candidate)) {
+    ctx.r3.u32 = refii_handle;
+    if (trace || refii::vfs::VfsTracingEnabled()) {
+      REXLOG_INFO("Refii VFS CreateFileA private directory handle lr=0x{:08X} "
+                  "path={} handle=0x{:08X} candidate={}",
+                  original_ctx.lr,
+                  path,
+                  refii_handle,
+                  directory_candidate);
+    }
+    return;
+  }
+
   refii::vfs::LooseAssetResolution resolution;
   std::string candidate;
+  bool replacement_claimed = false;
   if (refii::vfs::TryCreateRefiiPrivateFileHandle(path,
                                                        original_ctx.r4.u32,
                                                        original_ctx.r7.u32,
                                                        &refii_handle,
                                                        &resolution,
-                                                       &candidate)) {
+                                                       &candidate,
+                                                       &replacement_claimed)) {
     ctx.r3.u32 = refii_handle;
     if (trace || refii::vfs::VfsTracingEnabled()) {
       REXLOG_INFO("Refii VFS CreateFileA private handle lr=0x{:08X} path={} "
@@ -58,9 +79,26 @@ REX_EXTERN(rex_CreateFileA) {
     }
     return;
   }
+  if (replacement_claimed) {
+    ctx.r3.u32 = refii::vfs::kRefiiPrivateHandleInvalid;
+    if (trace || refii::vfs::VfsTracingEnabled()) {
+      REXLOG_INFO("Refii VFS CreateFileA replacement miss lr=0x{:08X} path={} "
+                  "access=0x{:08X} disposition={} handle=0x{:08X}",
+                  original_ctx.lr,
+                  path,
+                  original_ctx.r4.u32,
+                  original_ctx.r7.u32,
+                  ctx.r3.u32);
+    }
+    return;
+  }
 
   if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      refii::vfs::IsCachedOptionalSyntheticVfsMiss(path)) {
+      (refii::vfs::IsCachedOptionalSyntheticVfsMiss(path) ||
+       refii::vfs::IsOptionalSyntheticVfsProbe(path) ||
+       refii::vfs::IsKnownAbsentBootProbe(path))) {
+    refii::vfs::SetRefiiWin32LastError(
+        refii::vfs::kRefiiWin32ErrorFileNotFound);
     ctx.r3.u32 = refii::vfs::kRefiiPrivateHandleInvalid;
     if (trace || (refii::vfs::VfsTracingEnabled() &&
                   refii::vfs::ShouldLogRepeatedVfsTraceOperation(
@@ -153,6 +191,43 @@ REX_EXTERN(rex_ReadFileAsync) {
   __imp__rex_ReadFileAsync(ctx, base);
 }
 
+REX_EXTERN(rex_WriteFile) {
+  REX_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_WriteFile);
+
+  const PPCContext original_ctx = ctx;
+  if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32)) {
+    if (refii::vfs::TryWriteRefiiPrivateFileHandle(ctx,
+                                                   base,
+                                                   original_ctx.r3.u32,
+                                                   original_ctx.r4.u32,
+                                                   original_ctx.r5.u32,
+                                                   original_ctx.r6.u32,
+                                                   original_ctx.r7.u32)) {
+      if (refii::vfs::VfsTracingEnabled() &&
+          refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+              "WriteFileRefiiPrivate", 64)) {
+        REXLOG_INFO("Refii VFS WriteFile private handle lr=0x{:08X} "
+                    "handle=0x{:08X} buffer=0x{:08X} requested={} "
+                    "bytes_out=0x{:08X} overlapped=0x{:08X} result={}",
+                    original_ctx.lr,
+                    original_ctx.r3.u32,
+                    original_ctx.r4.u32,
+                    original_ctx.r5.u32,
+                    original_ctx.r6.u32,
+                    original_ctx.r7.u32,
+                    ctx.r3.u32);
+      }
+      return;
+    }
+    ctx.r3.u32 = 0;
+    return;
+  }
+
+  __imp__rex_WriteFile(ctx, base);
+}
+
 REX_EXTERN(rex_GetFileSizeEx) {
   REX_FUNC_PROLOGUE();
 
@@ -210,6 +285,92 @@ REX_EXTERN(rex_GetFileSize) {
   __imp__rex_GetFileSize(ctx, base);
 }
 
+REX_EXTERN(rex_GetFileInformation) {
+  REX_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileInformation);
+
+  const PPCContext original_ctx = ctx;
+  if (refii::vfs::TryGetRefiiPrivateFileInformation(
+          base, original_ctx.r3.u32, original_ctx.r4.u32)) {
+    refii::vfs::SetRefiiWin32LastError(
+        refii::vfs::kRefiiWin32ErrorSuccess);
+    ctx.r3.u32 = 1;
+    if (refii::vfs::VfsTracingEnabled() &&
+        refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+            "GetFileInformationRefiiPrivate", 64)) {
+      REXLOG_INFO("Refii VFS GetFileInformation private handle lr=0x{:08X} "
+                  "handle=0x{:08X} out=0x{:08X} words={}",
+                  original_ctx.lr,
+                  original_ctx.r3.u32,
+                  original_ctx.r4.u32,
+                  refii::vfs::FormatGuestWords(base, original_ctx.r4.u32, 13));
+    }
+    return;
+  }
+
+  __imp__rex_GetFileInformation(ctx, base);
+}
+
+REX_EXTERN(rex_GetFileSectorInfo) {
+  REX_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileSectorInfo);
+
+  const PPCContext original_ctx = ctx;
+  uint32_t sector_size = 0;
+  if (refii::vfs::TryGetRefiiPrivateFileSectorInfo(original_ctx.r3.u32,
+                                                   &sector_size)) {
+    refii::vfs::SetRefiiWin32LastError(
+        refii::vfs::kRefiiWin32ErrorSuccess);
+    ctx.r3.u32 = sector_size;
+    if (refii::vfs::VfsTracingEnabled() &&
+        refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+            "GetFileSectorInfoRefiiPrivate", 64)) {
+      REXLOG_INFO("Refii VFS GetFileSectorInfo private handle lr=0x{:08X} "
+                  "handle=0x{:08X} sector_size={}",
+                  original_ctx.lr,
+                  original_ctx.r3.u32,
+                  sector_size);
+    }
+    return;
+  }
+
+  __imp__rex_GetFileSectorInfo(ctx, base);
+}
+
+REX_EXTERN(rex_GetFileTime) {
+  REX_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileTime);
+
+  const PPCContext original_ctx = ctx;
+  if (refii::vfs::TryGetRefiiPrivateFileTimes(base,
+                                              original_ctx.r3.u32,
+                                              original_ctx.r4.u32,
+                                              original_ctx.r5.u32,
+                                              original_ctx.r6.u32)) {
+    refii::vfs::SetRefiiWin32LastError(
+        refii::vfs::kRefiiWin32ErrorSuccess);
+    ctx.r3.u32 = 1;
+    if (refii::vfs::VfsTracingEnabled() &&
+        refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+            "GetFileTimeRefiiPrivate", 64)) {
+      REXLOG_INFO("Refii VFS GetFileTime private handle lr=0x{:08X} "
+                  "handle=0x{:08X} creation=0x{:08X} access=0x{:08X} "
+                  "write=0x{:08X}",
+                  original_ctx.lr,
+                  original_ctx.r3.u32,
+                  original_ctx.r4.u32,
+                  original_ctx.r5.u32,
+                  original_ctx.r6.u32);
+    }
+    return;
+  }
+
+  __imp__rex_GetFileTime(ctx, base);
+}
+
 REX_EXTERN(rex_SetFilePointer) {
   REX_FUNC_PROLOGUE();
 
@@ -239,6 +400,58 @@ REX_EXTERN(rex_SetFilePointer) {
   }
 
   __imp__rex_SetFilePointer(ctx, base);
+}
+
+REX_EXTERN(rex_SetEndOfFile) {
+  REX_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_SetEndOfFile);
+
+  const PPCContext original_ctx = ctx;
+  if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32)) {
+    if (refii::vfs::TrySetEndOfRefiiPrivateFile(ctx, original_ctx.r3.u32)) {
+      if (refii::vfs::VfsTracingEnabled() &&
+          refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+              "SetEndOfFileRefiiPrivate", 64)) {
+        REXLOG_INFO("Refii VFS SetEndOfFile private handle lr=0x{:08X} "
+                    "handle=0x{:08X} result={}",
+                    original_ctx.lr,
+                    original_ctx.r3.u32,
+                    ctx.r3.u32);
+      }
+      return;
+    }
+    ctx.r3.u32 = 0;
+    return;
+  }
+
+  __imp__rex_SetEndOfFile(ctx, base);
+}
+
+REX_EXTERN(rex_FlushFileBuffers) {
+  REX_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_FlushFileBuffers);
+
+  const PPCContext original_ctx = ctx;
+  if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32)) {
+    if (refii::vfs::TryFlushRefiiPrivateFileHandle(ctx, original_ctx.r3.u32)) {
+      if (refii::vfs::VfsTracingEnabled() &&
+          refii::vfs::ShouldLogRepeatedVfsTraceOperation(
+              "FlushFileBuffersRefiiPrivate", 64)) {
+        REXLOG_INFO("Refii VFS FlushFileBuffers private handle lr=0x{:08X} "
+                    "handle=0x{:08X} result={}",
+                    original_ctx.lr,
+                    original_ctx.r3.u32,
+                    ctx.r3.u32);
+      }
+      return;
+    }
+    ctx.r3.u32 = 0;
+    return;
+  }
+
+  __imp__rex_FlushFileBuffers(ctx, base);
 }
 
 REX_EXTERN(rex_CloseHandle) {
@@ -272,6 +485,49 @@ REX_EXTERN(rex_CloseHandle) {
   __imp__rex_CloseHandle(ctx, base);
 }
 
+REX_EXTERN(rex_DeleteFileA) {
+  REX_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_DeleteFileA);
+
+  const PPCContext original_ctx = ctx;
+  const std::string path =
+      refii::vfs::FormatGuestAsciiBytes(base, ctx.r3.u32, 4096);
+  const bool trace =
+      refii::vfs::ShouldLogFileApiPath("DeleteFileA", path);
+  refii::vfs::LooseAssetResolution resolution;
+  std::string candidate;
+  if (refii::vfs::TryDeleteRefiiPrivateFile(
+          ctx, path, &resolution, &candidate)) {
+    if (trace || refii::vfs::VfsTracingEnabled()) {
+      REXLOG_INFO("Refii VFS DeleteFileA private path lr=0x{:08X} path={} "
+                  "candidate={} provider_relative={} host={} result={}",
+                  original_ctx.lr,
+                  path,
+                  candidate,
+                  resolution.provider_relative_path,
+                  resolution.host_path.string(),
+                  ctx.r3.u32);
+    }
+    return;
+  }
+
+  if (trace) {
+    REXLOG_INFO("VFS trace DeleteFileA enter lr=0x{:08X} path={}",
+                original_ctx.lr,
+                path);
+  }
+
+  __imp__rex_DeleteFileA(ctx, base);
+
+  if (trace) {
+    REXLOG_INFO("VFS trace DeleteFileA exit lr=0x{:08X} path={} result={}",
+                original_ctx.lr,
+                path,
+                ctx.r3.u32);
+  }
+}
+
 REX_EXTERN(rex_GetFileAttributesA) {
   REX_FUNC_PROLOGUE();
 
@@ -288,6 +544,8 @@ REX_EXTERN(rex_GetFileAttributesA) {
   std::string candidate;
   if (refii::vfs::ResolveRefiiVirtualFileSystemProbe(
           path, &is_directory, &resolution, &candidate)) {
+    refii::vfs::SetRefiiWin32LastError(
+        refii::vfs::kRefiiWin32ErrorSuccess);
     ctx.r3.u64 = is_directory ? 0x00000010u : 0x00000081u;
     if (trace) {
       REXLOG_INFO("Refii VFS GetFileAttributesA hit lr=0x{:08X} path={} "
@@ -298,6 +556,22 @@ REX_EXTERN(rex_GetFileAttributesA) {
                   is_directory ? "directory" : "file",
                   ctx.r3.u32,
                   is_directory ? "" : resolution.host_path.string());
+    }
+    return;
+  }
+
+  refii::vfs::RefiiReplacementPathResolution replacement;
+  if (refii::vfs::ResolveRefiiReplacementPath(path, &replacement)) {
+    refii::vfs::SetRefiiWin32LastError(
+        refii::vfs::kRefiiWin32ErrorFileNotFound);
+    ctx.r3.u32 = 0xFFFFFFFFu;
+    if (trace || refii::vfs::VfsTracingEnabled()) {
+      REXLOG_INFO("Refii VFS GetFileAttributesA replacement miss lr=0x{:08X} "
+                  "path={} candidate={} host={}",
+                  original_ctx.lr,
+                  path,
+                  replacement.resolution.provider_relative_path,
+                  replacement.resolution.host_path.string());
     }
     return;
   }

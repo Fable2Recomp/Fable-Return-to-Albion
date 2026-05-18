@@ -485,20 +485,13 @@ std::string BuildRawDownloadUrl(const std::string& repositoryRelativePath) {
            GetRepositoryBranch() + "/" + repositoryRelativePath;
 }
 
-std::vector<std::string> GetShaderTranslationTargets() {
+std::vector<std::string> GetShaderCompileTargets() {
     std::vector<std::string> targets;
     targets.push_back("vulkan");
 #if defined(_WIN32)
     targets.push_back("d3d12");
 #endif
     return targets;
-}
-
-std::string ResolveShaderTargetLabel(const std::string& target) {
-    if (target == "d3d12") {
-        return "D3D12";
-    }
-    return "Vulkan";
 }
 
 std::filesystem::path GetTranslatorExecutablePath(std::string* error) {
@@ -581,46 +574,6 @@ bool EnsureDirectoryRemovedIfExists(const std::filesystem::path& path, std::stri
         }
         return false;
     }
-    return true;
-}
-
-bool PromoteShaderTranslationTarget(std::string_view target,
-                                   const std::filesystem::path& translatedRoot,
-                                   const std::filesystem::path& outputRoot,
-                                   std::string* error) {
-    const std::filesystem::path sourceRoot = translatedRoot / std::string(target);
-    const std::filesystem::path destinationRoot =
-        outputRoot / ResolveShaderTargetLabel(std::string(target));
-
-    std::error_code existsError;
-    if (!std::filesystem::exists(sourceRoot, existsError)) {
-        if (!existsError) {
-            if (error != nullptr) {
-                *error = "No translated output for target " + std::string(target) + " was produced";
-            }
-            return false;
-        }
-        if (error != nullptr) {
-            *error = "Failed to check translated output for target " + std::string(target) + ": " +
-                     existsError.message();
-        }
-        return false;
-    }
-
-    if (!EnsureDirectoryRemovedIfExists(destinationRoot, error)) {
-        return false;
-    }
-
-    std::error_code moveError;
-    std::filesystem::rename(sourceRoot, destinationRoot, moveError);
-    if (moveError) {
-        if (error != nullptr) {
-            *error = "Failed to promote translated shaders for " + std::string(target) +
-                     ": " + moveError.message();
-        }
-        return false;
-    }
-
     return true;
 }
 
@@ -708,8 +661,8 @@ std::string BuildShaderSbkProgressMessage(const refii::shader::ShaderSbkProgress
         stream << "Extracted " << progress.bank_name << " bank blobs";
     } else if (progress.phase == "extracting_blobs") {
         stream << "Extracting shader blobs from " << progress.bank_name;
-    } else if (progress.phase == "translating_shader") {
-        stream << "Translating " << summarize_path(progress.current_input) << " ["
+    } else if (progress.phase == "compiling_shader" || progress.phase == "translating_shader") {
+        stream << "Compiling " << summarize_path(progress.current_input) << " ["
                << progress.target << "]";
         if (progress.stage != "unknown") {
             stream << " (" << progress.stage << ')';
@@ -717,10 +670,10 @@ std::string BuildShaderSbkProgressMessage(const refii::shader::ShaderSbkProgress
         if (progress.total_items != 0) {
             stream << " (" << (progress.completed_items + 1) << '/' << progress.total_items << ')';
         }
-    } else if (progress.phase == "translation_complete") {
-        stream << "Shader translation complete";
+    } else if (progress.phase == "compile_complete" || progress.phase == "translation_complete") {
+        stream << "Shader compile complete";
     } else {
-        stream << "Retranslating shaders...";
+        stream << "Compiling shaders...";
     }
     return stream.str();
 }
@@ -1265,17 +1218,15 @@ bool UninstallManagedFiles(std::ostream& log) {
     return hasRemovedFiles;
 }
 
-std::string OpenIsoFileDialog() {
+std::string OpenIsoFileDialog(std::string* error) {
     std::string result;
-    std::string ignoredError;
-    Platform::SelectIsoFile(result, &ignoredError);
+    Platform::SelectIsoFile(result, error);
     return result;
 }
 
-std::string OpenXexpFileDialog() {
+std::string OpenXexpFileDialog(std::string* error) {
     std::string result;
-    std::string ignoredError;
-    Platform::SelectXexpFile(result, &ignoredError);
+    Platform::SelectXexpFile(result, error);
     return result;
 }
 
@@ -1342,21 +1293,18 @@ bool ExtractGameShadersInternal(
     std::string* error,
     const InstallStageCallback& stageCallback,
     const TransientStatusCallback& transientStatusCallback) {
-    const std::vector<std::string> targets = GetShaderTranslationTargets();
+    const std::vector<std::string> targets = GetShaderCompileTargets();
     const std::filesystem::path gameDataPath = GetGameDataDirectoryPath();
     const std::filesystem::path shaderInputRoot = gameDataPath / "data" / "Shaders";
-    const std::filesystem::path shaderOutputRoot = GetLuaWorkspacePath() / "Shaders";
-    const std::filesystem::path extractionRoot = shaderOutputRoot / ".extracted";
-    const std::filesystem::path translationRoot = shaderOutputRoot / ".translated";
-    const std::filesystem::path manifestPath = extractionRoot / "extract_manifest.tsv";
-    const std::filesystem::path reportPath =
-        shaderOutputRoot / "translation_report.tsv";
+    const std::filesystem::path shaderOutputRoot = GetLuaWorkspacePath() / "shaders";
+    const std::filesystem::path manifestPath = shaderOutputRoot / "extract_manifest.tsv";
+    const std::filesystem::path reportPath = shaderOutputRoot / "compile_report.tsv";
 
     if (!std::filesystem::exists(shaderInputRoot)) {
         if (error != nullptr) {
             *error = "Shader input directory not found: " + shaderInputRoot.string();
         }
-    ReportInstallStage(stageCallback, "Shader retranslation failed.");
+        ReportInstallStage(stageCallback, "Shader compile failed.");
         return false;
     }
 
@@ -1367,22 +1315,44 @@ bool ExtractGameShadersInternal(
         if (error != nullptr) {
             *error = "No .sbk files found in " + shaderInputRoot.string();
         }
-        ReportInstallStage(stageCallback, "Shader retranslation failed.");
+        ReportInstallStage(stageCallback, "Shader compile failed.");
         return false;
     }
 
-    if (!EnsureDirectoryRemovedIfExists(extractionRoot, error)) {
-        ReportInstallStage(stageCallback, "Shader retranslation failed.");
+    if (!EnsureDirectoryRemovedIfExists(shaderOutputRoot / "blobs", error)) {
+        ReportInstallStage(stageCallback, "Shader compile failed.");
         return false;
     }
-    if (!EnsureDirectoryRemovedIfExists(translationRoot, error)) {
-        ReportInstallStage(stageCallback, "Shader retranslation failed.");
+    if (!EnsureDirectoryRemovedIfExists(shaderOutputRoot / "logs", error)) {
+        ReportInstallStage(stageCallback, "Shader compile failed.");
+        return false;
+    }
+    const std::vector<std::string> targetOutputDirectories = {
+        "vulkan",
+        "Vulkan",
+        "D3D12",
+        "d3d12",
+    };
+    for (const std::string& directoryName : targetOutputDirectories) {
+        if (!EnsureDirectoryRemovedIfExists(shaderOutputRoot / directoryName, error)) {
+            ReportInstallStage(stageCallback, "Shader compile failed.");
+            return false;
+        }
+    }
+    std::error_code createError;
+    std::filesystem::create_directories(shaderOutputRoot, createError);
+    if (createError) {
+        if (error != nullptr) {
+            *error = "Failed to create shader output directory " + shaderOutputRoot.string() +
+                     ": " + createError.message();
+        }
+        ReportInstallStage(stageCallback, "Shader compile failed.");
         return false;
     }
 
     const std::filesystem::path translatorPath = GetTranslatorExecutablePath(error);
     if (translatorPath.empty()) {
-        ReportInstallStage(stageCallback, "Shader retranslation failed.");
+        ReportInstallStage(stageCallback, "Shader compile failed.");
         return false;
     }
 
@@ -1394,13 +1364,13 @@ bool ExtractGameShadersInternal(
         requestedTargets += targets[i];
     }
 
-    ReportInstallStage(stageCallback, "Preparing shader retranslations...");
+    ReportInstallStage(stageCallback, "Preparing shader compile...");
     refii::shader::ShaderSbkBuildOptions buildOptions;
     buildOptions.extract.input_dir = shaderInputRoot;
-    buildOptions.extract.extract_out_dir = extractionRoot;
+    buildOptions.extract.extract_out_dir = shaderOutputRoot;
     buildOptions.extract.manifest_path = manifestPath;
     buildOptions.translate.extract_manifest_path = manifestPath;
-    buildOptions.translate.translate_out_dir = translationRoot;
+    buildOptions.translate.translate_out_dir = shaderOutputRoot;
     buildOptions.translate.report_path = reportPath;
     buildOptions.translate.translator_path = translatorPath;
     buildOptions.translate.targets = requestedTargets;
@@ -1414,32 +1384,16 @@ bool ExtractGameShadersInternal(
 
     if (!refii::shader::BuildShaderSbkWorkspace(
             buildOptions, &summary, error, progressCallback)) {
-        ReportInstallStage(stageCallback, "Shader translation failed.");
+        ReportInstallStage(stageCallback, "Shader compile failed.");
         return false;
-    }
-
-    ReportInstallStage(stageCallback, "Promoting translated shader outputs...");
-    for (const std::string& target : targets) {
-        if (!PromoteShaderTranslationTarget(target, translationRoot, shaderOutputRoot, error)) {
-        ReportInstallStage(stageCallback, "Shader promotion failed.");
-            return false;
-        }
     }
 
     if (summary.translate.failed > 0) {
         std::cerr << "Warning: " << summary.translate.failed
-                  << " shader translation entries failed. See " << reportPath.string() << "\n";
-    }
-    if (!EnsureDirectoryRemovedIfExists(extractionRoot, error)) {
-        ReportInstallStage(stageCallback, "Shader cleanup failed.");
-        return false;
-    }
-    if (!EnsureDirectoryRemovedIfExists(translationRoot, error)) {
-        ReportInstallStage(stageCallback, "Shader cleanup failed.");
-        return false;
+                  << " shader compile entries failed. See " << reportPath.string() << "\n";
     }
 
-    ReportInstallStage(stageCallback, "Shader retranslation complete.");
+    ReportInstallStage(stageCallback, "Shader compile complete.");
     return true;
 }
 
@@ -1607,8 +1561,8 @@ void ExtractGameShadersAsync(std::shared_ptr<IsoExtractionProgress> progress) {
         progress->isComplete = false;
         progress->hasError = false;
         progress->errorMessage.clear();
-        progress->SetOperationLabel("Retranslating Game Shaders");
-        progress->SetStatusMessage("Preparing shader retranslations...");
+        progress->SetOperationLabel("Compiling Game Shaders");
+        progress->SetStatusMessage("Preparing shader compile...");
 
         std::string extractionError;
         const bool success = ExtractGameShadersInternal(
@@ -1618,12 +1572,12 @@ void ExtractGameShadersAsync(std::shared_ptr<IsoExtractionProgress> progress) {
 
         progress->isExtracting = false;
         if (success) {
-            progress->SetStatusMessage("Shader retranslation complete.");
+            progress->SetStatusMessage("Shader compile complete.");
             progress->isComplete = true;
         } else {
             progress->hasError = true;
             progress->errorMessage =
-                extractionError.empty() ? "Shader retranslation failed" : extractionError;
+                extractionError.empty() ? "Shader compile failed" : extractionError;
         }
     }).detach();
 }

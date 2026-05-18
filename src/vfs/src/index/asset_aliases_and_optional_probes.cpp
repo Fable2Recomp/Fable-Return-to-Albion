@@ -43,6 +43,42 @@ std::vector<std::string> BuildLuaVfsCarrierCandidates(
   return candidates;
 }
 
+bool IsDefaultExecutablePatchProbe(std::string_view normalized) {
+  return normalized == "default.xexpp" ||
+         normalized == "data/default.xexpp" ||
+         normalized == "device/harddisk0/partition1/default.xexpp" ||
+         EndsWith(normalized, "/default.xexpp");
+}
+
+bool IsOptionalLocalizedDirectoryProbe(std::string_view normalized) {
+  constexpr std::string_view kLanguagePrefix = "language/";
+  const std::string language_probe =
+      StartsWith(normalized, "data/language/") ? std::string(normalized.substr(5))
+                                               : std::string(normalized);
+  if (!StartsWith(language_probe, kLanguagePrefix)) {
+    return false;
+  }
+
+  const std::string_view after_language =
+      std::string_view(language_probe).substr(kLanguagePrefix.size());
+  const size_t locale_separator = after_language.find('/');
+  if (locale_separator == std::string_view::npos ||
+      locale_separator + 1 >= after_language.size()) {
+    return false;
+  }
+
+  const std::string_view locale = after_language.substr(0, locale_separator);
+  const std::string_view locale_tail =
+      after_language.substr(locale_separator + 1);
+  if (locale == "en-uk") {
+    return false;
+  }
+  return locale_tail == "fonts" ||
+         locale_tail == "speech" ||
+         locale_tail == "lipsync" ||
+         locale_tail == "videos";
+}
+
 bool ResolveGameFaceLuaCarrierAsset(std::string_view asset_path,
                                     LooseAssetResolution* out_resolution,
                                     std::string* out_candidate) {
@@ -410,6 +446,7 @@ bool IsNativeBootStreamAssetKey(std::string_view asset_path) {
 bool IsInternalLooseAssetKey(std::string_view asset_path) {
   const std::string normalized = NormalizeLooseAssetKey(asset_path);
   return StartsWith(normalized, "luasource/") ||
+         StartsWith(normalized, "refii_vfs/") ||
          StartsWith(normalized, ".baseline/") ||
          StartsWith(normalized, ".cache/") ||
          StartsWith(normalized, "_disasm/");
@@ -517,6 +554,9 @@ bool IsOptionalSyntheticVfsProbe(std::string_view asset_path) {
     return false;
   }
 
+  if (IsDefaultExecutablePatchProbe(normalized)) {
+    return true;
+  }
   if (StartsWith(normalized, "update:/") || StartsWith(normalized, "update/")) {
     return true;
   }
@@ -574,6 +614,9 @@ bool IsOptionalSyntheticVfsProbe(std::string_view asset_path) {
   if (StartsWith(normalized, "language_dlc/")) {
     return true;
   }
+  if (IsOptionalLocalizedDirectoryProbe(normalized)) {
+    return true;
+  }
   constexpr std::string_view kLanguagePrefix = "language/";
   const std::string language_probe =
       StartsWith(normalized, "data/language/") ? normalized.substr(5)
@@ -600,6 +643,13 @@ bool IsOptionalSyntheticVfsProbe(std::string_view asset_path) {
 
 bool IsKnownAbsentBootProbe(std::string_view asset_path) {
   const std::string normalized = NormalizeLooseAssetKey(asset_path);
+  if (IsDefaultExecutablePatchProbe(normalized)) {
+    return true;
+  }
+  if (IsOptionalLocalizedDirectoryProbe(normalized)) {
+    return true;
+  }
+
   constexpr std::string_view kLanguagePrefix = "language/";
   const std::string language_probe =
       StartsWith(normalized, "data/language/") ? normalized.substr(5)

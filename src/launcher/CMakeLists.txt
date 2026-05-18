@@ -9,16 +9,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(LAUNCHER_TARGET refii-launcher)
-set(LAUNCHER_OUTPUT_DIR ${CMAKE_BINARY_DIR})
-set(LAUNCHER_DATA_DIR ${CMAKE_BINARY_DIR}/assets/launcher)
+if(NOT DEFINED REFII_RUNTIME_OUTPUT_DIR OR REFII_RUNTIME_OUTPUT_DIR STREQUAL "")
+    set(REFII_RUNTIME_OUTPUT_DIR "${CMAKE_BINARY_DIR}/bin")
+endif()
+if(NOT DEFINED REFII_RUNTIME_DATA_DIR OR REFII_RUNTIME_DATA_DIR STREQUAL "")
+    set(REFII_RUNTIME_DATA_DIR "${REFII_RUNTIME_OUTPUT_DIR}/assets")
+endif()
+set(LAUNCHER_OUTPUT_DIR ${REFII_RUNTIME_OUTPUT_DIR})
+set(LAUNCHER_DATA_DIR ${REFII_RUNTIME_DATA_DIR}/launcher)
 
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+set(GLFW_LIBRARY_TYPE STATIC CACHE STRING "" FORCE)
 if(UNIX AND NOT APPLE)
-    set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
-    set(GLFW_BUILD_X11 ON CACHE BOOL "" FORCE)
+    option(REFII_LAUNCHER_ENABLE_WAYLAND "Build native Wayland support for the launcher" ON)
+    option(REFII_LAUNCHER_ENABLE_X11 "Build X11 fallback support for the launcher" ON)
+    if(NOT REFII_LAUNCHER_ENABLE_WAYLAND AND NOT REFII_LAUNCHER_ENABLE_X11)
+        message(FATAL_ERROR "At least one Linux launcher window backend must be enabled.")
+    endif()
+    set(GLFW_BUILD_WAYLAND ${REFII_LAUNCHER_ENABLE_WAYLAND} CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_X11 ${REFII_LAUNCHER_ENABLE_X11} CACHE BOOL "" FORCE)
 endif()
 
 add_subdirectory(vendors/glfw EXCLUDE_FROM_ALL)
@@ -83,6 +95,15 @@ target_link_libraries(${LAUNCHER_TARGET} PRIVATE
     refii_bnk_extractor
 )
 
+if(UNIX AND NOT APPLE)
+    target_compile_definitions(${LAUNCHER_TARGET} PRIVATE
+        REFII_LAUNCHER_HAS_WAYLAND=$<BOOL:${REFII_LAUNCHER_ENABLE_WAYLAND}>
+        REFII_LAUNCHER_HAS_X11=$<BOOL:${REFII_LAUNCHER_ENABLE_X11}>
+        $<$<NOT:$<BOOL:${REFII_LAUNCHER_ENABLE_WAYLAND}>>:IMGUI_IMPL_GLFW_DISABLE_WAYLAND>
+        $<$<NOT:$<BOOL:${REFII_LAUNCHER_ENABLE_X11}>>:IMGUI_IMPL_GLFW_DISABLE_X11>
+    )
+endif()
+
 if(TARGET refii_lua_decompiler_workspace)
     target_link_libraries(${LAUNCHER_TARGET} PRIVATE refii_lua_decompiler_workspace)
 endif()
@@ -110,12 +131,15 @@ if(WIN32)
 else()
     find_package(OpenGL REQUIRED)
     find_package(CURL REQUIRED)
-    find_package(X11 REQUIRED)
+    if(TARGET OpenGL::OpenGL)
+        set(REFII_LAUNCHER_OPENGL_TARGET OpenGL::OpenGL)
+    else()
+        set(REFII_LAUNCHER_OPENGL_TARGET OpenGL::GL)
+    endif()
 
     target_link_libraries(${LAUNCHER_TARGET} PRIVATE
         CURL::libcurl
-        OpenGL::GL
-        X11::X11
+        ${REFII_LAUNCHER_OPENGL_TARGET}
     )
 endif()
 
@@ -123,11 +147,11 @@ add_custom_command(TARGET ${LAUNCHER_TARGET} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
         ${LAUNCHER_DATA_DIR}
     COMMAND ${CMAKE_COMMAND} -E make_directory
-        ${CMAKE_BINARY_DIR}/assets/game
+        ${REFII_RUNTIME_DATA_DIR}/game
     COMMAND ${CMAKE_COMMAND} -E make_directory
-        ${CMAKE_BINARY_DIR}/assets/save
+        ${REFII_RUNTIME_DATA_DIR}/save
     COMMAND ${CMAKE_COMMAND} -E make_directory
-        ${CMAKE_BINARY_DIR}/assets/update
+        ${REFII_RUNTIME_DATA_DIR}/update
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_CURRENT_SOURCE_DIR}/assets
         ${LAUNCHER_DATA_DIR}/assets

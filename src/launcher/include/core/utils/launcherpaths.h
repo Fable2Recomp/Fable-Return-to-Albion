@@ -98,11 +98,7 @@ inline std::filesystem::path GetImGuiIniPath() {
 }
 
 inline std::filesystem::path GetLauncherLogPath() {
-    if (UseLinuxUserDataRoot()) {
-        return GetRuntimeDataRootDirectory() / "refii-launcher.log";
-    }
-
-    return GetLauncherDirectory() / "refii-launcher.log";
+    return GetRuntimeDataRootDirectory() / "logs" / "refii-launcher.log";
 }
 
 }  // namespace LauncherPaths

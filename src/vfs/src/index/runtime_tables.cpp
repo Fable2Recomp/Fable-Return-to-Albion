@@ -297,6 +297,16 @@ std::filesystem::path RefiiVfsRuntimeDirectoryTablePath(
   return RefiiVfsRuntimeIndexDirectory(loose_root) / "directories.tsv";
 }
 
+std::filesystem::path RefiiVfsRuntimeDirectoryEntryTablePath(
+    const std::filesystem::path& loose_root) {
+  return RefiiVfsRuntimeIndexDirectory(loose_root) / "directory_entries.tsv";
+}
+
+std::filesystem::path RefiiVfsRuntimeDirectoryEntryBinaryPath(
+    const std::filesystem::path& loose_root) {
+  return RefiiVfsRuntimeIndexDirectory(loose_root) / "directory_entries.bin";
+}
+
 std::filesystem::path RefiiVfsRuntimeBankTablePath(
     const std::filesystem::path& loose_root) {
   return RefiiVfsRuntimeIndexDirectory(loose_root) / "banks.tsv";

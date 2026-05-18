@@ -13,9 +13,9 @@ PPC_EXTERN_FUNC(rex_lua_index2adr);
 PPC_EXTERN_FUNC(rex_lua_pushinteger);
 PPC_EXTERN_FUNC(rex_lua_pushlstring);
 PPC_EXTERN_FUNC(sub_8219A908);
-PPC_EXTERN_FUNC(sub_82227A50);
-PPC_EXTERN_FUNC(sub_822D7888);
-PPC_EXTERN_FUNC(sub_82BCBD08);
+PPC_EXTERN_FUNC(sub_82227A50); // Lumen: lua_pushboolean
+PPC_EXTERN_FUNC(sub_822D7888); // Lumen: lua_objlen
+PPC_EXTERN_FUNC(sub_82BCBD08); // Lumen: lua_settop
 
 namespace refii::lua {
 namespace {

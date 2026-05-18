@@ -68,7 +68,7 @@ int main(int argc, char** argv) {
             options.output,
             options.log_path,
             &error)) {
-        std::cerr << "translation failed: " << error << '\n';
+        std::cerr << "compile failed: " << error << '\n';
         return 1;
     }
 

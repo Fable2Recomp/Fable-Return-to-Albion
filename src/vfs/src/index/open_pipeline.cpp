@@ -1,4 +1,7 @@
 #include "vfs_hooks_private.h"
+#include "runtime/replacement_paths.h"
+
+#include <rex/system/xthread.h>
 
 namespace refii::vfs {
 inline namespace detail {
@@ -60,19 +63,34 @@ void RecordRefiiVfsOpenDecisionAudit(
   static std::mutex audit_mutex;
   static std::unordered_map<std::string, uint64_t> decision_counts;
   static std::unordered_set<std::string> unresolved_once;
+  static std::unordered_set<std::string> unique_open_misses;
+  static uint64_t unique_open_miss_logs = 0;
+  static bool unique_open_miss_cap_logged = false;
 
   const std::string api_key =
       api.empty() ? std::string("RefiiVfsOpen") : std::string(api);
   const std::string decision_key =
       fmt::format("{}|{}|{}", api_key, ToString(shape), ToString(disposition));
+  const std::string normalized_request = NormalizeLooseAssetKey(request_name);
+  const std::string normalized_candidate = NormalizeLooseAssetKey(candidate);
+  const std::string normalized_provider = NormalizeLooseAssetKey(provider_relative);
+  const bool unresolved_disposition =
+      disposition == RefiiVfsOpenDisposition::Miss ||
+      disposition == RefiiVfsOpenDisposition::OpenFailed;
+  const bool optional_probe =
+      IsCachedOptionalSyntheticVfsMiss(normalized_request) ||
+      IsOptionalSyntheticVfsProbe(normalized_request);
+  const bool known_absent_probe = IsKnownAbsentBootProbe(normalized_request);
   uint64_t decision_count = 0;
   bool log_unresolved = false;
+  bool log_open_miss = false;
+  bool log_open_miss_cap = false;
+  uint64_t open_miss_log_index = 0;
   std::string unresolved_key;
   {
     std::lock_guard<std::mutex> lock(audit_mutex);
     decision_count = ++decision_counts[decision_key];
-    if ((disposition == RefiiVfsOpenDisposition::Miss ||
-         disposition == RefiiVfsOpenDisposition::OpenFailed) &&
+    if (unresolved_disposition &&
         (ownership.kind == RefiiVfsOwnershipKind::RefiiOwned ||
          IsTraceInterestingAsset(request_name) ||
          IsTraceInterestingAsset(candidate) ||
@@ -80,10 +98,56 @@ void RecordRefiiVfsOpenDecisionAudit(
       unresolved_key = fmt::format("{}|0x{:08X}|{}|{}",
                                    api_key,
                                    resource_hash,
-                                   NormalizeLooseAssetKey(request_name),
-                                   NormalizeLooseAssetKey(candidate));
+                                   normalized_request,
+                                   normalized_candidate);
       log_unresolved = unresolved_once.insert(unresolved_key).second;
     }
+
+    if (unresolved_disposition && !normalized_request.empty()) {
+      const std::string open_miss_key =
+          fmt::format("{}|{}|{}|0x{:08X}|{}|{}|{}|{}",
+                      api_key,
+                      ToString(shape),
+                      ToString(disposition),
+                      resource_hash,
+                      normalized_request,
+                      normalized_candidate,
+                      normalized_provider,
+                      ToString(ownership.kind));
+      if (unique_open_misses.insert(open_miss_key).second) {
+        constexpr uint64_t kMaxUniqueOpenMissLogs = 96;
+        if (unique_open_miss_logs < kMaxUniqueOpenMissLogs) {
+          open_miss_log_index = ++unique_open_miss_logs;
+          log_open_miss = true;
+        } else if (!unique_open_miss_cap_logged) {
+          unique_open_miss_cap_logged = true;
+          log_open_miss_cap = true;
+        }
+      }
+    }
+  }
+
+  if (log_open_miss) {
+    REXLOG_INFO("Refii VFS open miss #{:03} api={} shape={} disposition={} "
+                "lr=0x{:08X} hash=0x{:08X} request={} candidate={} "
+                "provider={} ownership={} optional={} known_absent={} reason={}",
+                open_miss_log_index,
+                api_key,
+                ToString(shape),
+                ToString(disposition),
+                caller_lr,
+                resource_hash,
+                normalized_request,
+                normalized_candidate,
+                normalized_provider,
+                ToString(ownership.kind),
+                optional_probe,
+                known_absent_probe,
+                ownership.reason);
+  } else if (log_open_miss_cap) {
+    REXLOG_INFO("Refii VFS open miss audit suppressed after first {} unique "
+                "unresolved opens",
+                unique_open_miss_logs);
   }
 
   if (!VfsTracingEnabled()) {
@@ -109,9 +173,9 @@ void RecordRefiiVfsOpenDecisionAudit(
                 ToString(disposition),
                 caller_lr,
                 resource_hash,
-                NormalizeLooseAssetKey(request_name),
-                NormalizeLooseAssetKey(candidate),
-                NormalizeLooseAssetKey(provider_relative),
+                normalized_request,
+                normalized_candidate,
+                normalized_provider,
                 ToString(ownership.kind),
                 ownership.reason);
   }
@@ -1073,7 +1137,9 @@ bool TryResolveRefiiFrontendTextureDescriptor(
   const uint32_t descriptor_slot16 =
       descriptor_vtable == 0 ? 0 : LoadGuestU32(base, descriptor_vtable + 16);
   bool packed_descriptor = false;
-  if (descriptor_vtable == 0x820F4540u && descriptor_slot12 == 0x82A41748u &&
+  constexpr bool kUseDirectTextureDescriptorConstantTablePack = false;
+  if (kUseDirectTextureDescriptorConstantTablePack &&
+      descriptor_vtable == 0x820F4540u && descriptor_slot12 == 0x82A41748u &&
       descriptor_slot16 == 0x82EA63A8u) {
     std::string pack_failure;
     table_ctx = caller_ctx;
@@ -1177,10 +1243,17 @@ bool TryResolveRefiiFrontendTextureDescriptor(
 }
 
 bool IsGameFaceVirtualDirectory(std::string_view path);
+bool ResolveGameFaceLuaSourceDirectory(
+    std::string_view path,
+    const std::filesystem::path& loose_root,
+    std::filesystem::path* out_host_path,
+    std::string* out_provider_relative);
 std::string StripRefiiDataPrefix(std::string_view value);
 std::shared_ptr<const RefiiFindDirectoryIndex> GetRefiiFindDirectoryIndex(
     const std::filesystem::path& loose_root);
-std::vector<RefiiPrivateFindEntry> GetRefiiDirectoryEntriesForParentFromDatabase(
+const std::vector<RefiiPrivateFindEntry>*
+FindRefiiDirectoryEntriesForParentFromIndex(
+    const RefiiFindDirectoryIndex& index,
     const std::filesystem::path& loose_root,
     std::string_view parent);
 std::vector<std::string> BuildRefiiDirectoryAliasParents(std::string_view parent);
@@ -1196,9 +1269,25 @@ bool ResolveRefiiVirtualFileSystemProbe(std::string_view asset_path,
   const std::string normalized = NormalizeLooseAssetKey(asset_path);
   if (normalized.empty() || normalized.find('*') != std::string::npos ||
       normalized.find('?') != std::string::npos ||
-      normalized.find(':') != std::string::npos ||
       IsCachedOptionalSyntheticVfsMiss(normalized)) {
     return false;
+  }
+  if (normalized.find(':') != std::string::npos) {
+    RefiiReplacementPathResolution replacement;
+    if (!ResolveRefiiReplacementPath(asset_path, &replacement) ||
+        !replacement.exists) {
+      return false;
+    }
+    if (out_is_directory != nullptr) {
+      *out_is_directory = replacement.is_directory;
+    }
+    if (out_resolution != nullptr) {
+      *out_resolution = replacement.resolution;
+    }
+    if (out_candidate != nullptr) {
+      *out_candidate = replacement.resolution.provider_relative_path;
+    }
+    return true;
   }
 
   LooseAssetResolution resolution;
@@ -1208,11 +1297,27 @@ bool ResolveRefiiVirtualFileSystemProbe(std::string_view asset_path,
       LooksLikeConcreteVfsFilePath(normalized);
   if (!should_probe_file_aliases && IsGameFaceBoundaryPath(normalized) &&
       IsGameFaceVirtualDirectory(normalized)) {
+    std::filesystem::path host_directory;
+    std::string provider_relative;
+    bool source_directory = false;
+    for (const std::filesystem::path& loose_root : GetLooseAssetSearchRoots()) {
+      if (ResolveGameFaceLuaSourceDirectory(
+              normalized, loose_root, &host_directory, &provider_relative)) {
+        source_directory = true;
+        break;
+      }
+    }
     if (out_is_directory != nullptr) {
       *out_is_directory = true;
     }
+    if (source_directory && out_resolution != nullptr) {
+      out_resolution->host_path = host_directory;
+      out_resolution->normalized_key = normalized;
+      out_resolution->provider_relative_path = provider_relative;
+    }
     if (out_candidate != nullptr) {
-      *out_candidate = StripTrailingSlashes(normalized);
+      *out_candidate = source_directory ? provider_relative
+                                        : StripTrailingSlashes(normalized);
     }
     return true;
   }
@@ -1272,18 +1377,21 @@ bool ResolveRefiiVirtualFileSystemProbe(std::string_view asset_path,
   }
 
   if (!should_probe_file_aliases) {
-    const std::filesystem::path loose_root = GetLooseAssetRoot();
-    if (!loose_root.empty()) {
-      std::string directory_candidate = normalized;
-      if (StartsWith(directory_candidate, "data/")) {
-        directory_candidate.erase(0, 5);
+    std::string directory_candidate = normalized;
+    if (StartsWith(directory_candidate, "data/")) {
+      directory_candidate.erase(0, 5);
+    }
+    const std::string stripped_directory =
+        StripRefiiDataPrefix(directory_candidate);
+    for (const std::filesystem::path& loose_root : GetLooseAssetSearchRoots()) {
+      if (loose_root.empty()) {
+        continue;
       }
-      const std::string stripped_directory =
-          StripRefiiDataPrefix(directory_candidate);
       if (RefiiVfsDatabaseExists(loose_root)) {
-        if (!GetRefiiDirectoryEntriesForParentFromDatabase(
-                 loose_root, stripped_directory)
-                 .empty()) {
+        const auto index = GetRefiiFindDirectoryIndex(loose_root);
+        if (index != nullptr &&
+            FindRefiiDirectoryEntriesForParentFromIndex(
+                *index, loose_root, stripped_directory) != nullptr) {
           if (out_is_directory != nullptr) {
             *out_is_directory = true;
           }
@@ -1294,9 +1402,9 @@ bool ResolveRefiiVirtualFileSystemProbe(std::string_view asset_path,
         }
         for (const std::string& alias_parent :
              BuildRefiiDirectoryAliasParents(stripped_directory)) {
-          if (GetRefiiDirectoryEntriesForParentFromDatabase(
-                  loose_root, alias_parent)
-                  .empty()) {
+          if (index == nullptr ||
+              FindRefiiDirectoryEntriesForParentFromIndex(
+                  *index, loose_root, alias_parent) == nullptr) {
             continue;
           }
           if (out_is_directory != nullptr) {
@@ -1307,7 +1415,7 @@ bool ResolveRefiiVirtualFileSystemProbe(std::string_view asset_path,
           }
           return true;
         }
-        return false;
+        continue;
       }
       if (const auto index = GetRefiiFindDirectoryIndex(loose_root);
           index != nullptr &&
@@ -1334,6 +1442,21 @@ bool ResolveRefiiVirtualFileSystemProbe(std::string_view asset_path,
         return true;
       }
     }
+  }
+
+  RefiiReplacementPathResolution replacement;
+  if (ResolveRefiiReplacementPath(normalized, &replacement) &&
+      replacement.exists) {
+    if (out_is_directory != nullptr) {
+      *out_is_directory = replacement.is_directory;
+    }
+    if (out_resolution != nullptr) {
+      *out_resolution = replacement.resolution;
+    }
+    if (out_candidate != nullptr) {
+      *out_candidate = replacement.resolution.provider_relative_path;
+    }
+    return true;
   }
 
   return false;
@@ -1447,48 +1570,134 @@ size_t RefiiPrivateHandleCount() {
 
 void LogRefiiVfsRuntimePolicyOnce();
 
+void SetRefiiWin32LastError(uint32_t error_code) {
+  rex::system::XThread::SetLastError(error_code);
+}
+
+bool RefiiDesiredAccessCanRead(uint32_t desired_access) {
+  constexpr uint32_t kGenericRead = 0x80000000u;
+  constexpr uint32_t kGenericAll = 0x10000000u;
+  constexpr uint32_t kFileReadData = 0x00000001u;
+  return desired_access == 0 ||
+         (desired_access & (kGenericRead | kGenericAll | kFileReadData)) != 0;
+}
+
+bool RefiiDesiredAccessCanWrite(uint32_t desired_access) {
+  constexpr uint32_t kGenericWrite = 0x40000000u;
+  constexpr uint32_t kGenericAll = 0x10000000u;
+  constexpr uint32_t kFileWriteData = 0x00000002u;
+  constexpr uint32_t kFileAppendData = 0x00000004u;
+  return (desired_access &
+          (kGenericWrite | kGenericAll | kFileWriteData | kFileAppendData)) != 0;
+}
+
 bool TryCreateRefiiPrivateFileHandle(std::string_view path,
                                      uint32_t desired_access,
                                      uint32_t creation_disposition,
                                      uint32_t* out_handle,
                                      LooseAssetResolution* out_resolution,
-                                     std::string* out_candidate) {
+                                     std::string* out_candidate,
+                                     bool* out_replacement_claimed) {
+  if (out_replacement_claimed != nullptr) {
+    *out_replacement_claimed = false;
+  }
   if (out_handle == nullptr || !RefiiLooseAssetBackendEnabled()) {
     return false;
   }
   LogRefiiVfsRuntimePolicyOnce();
 
-  constexpr uint32_t kGenericWrite = 0x40000000u;
+  constexpr uint32_t kCreateNew = 1;
   constexpr uint32_t kCreateAlways = 2;
   constexpr uint32_t kOpenExisting = 3;
   constexpr uint32_t kOpenAlways = 4;
-  if ((desired_access & kGenericWrite) != 0 ||
-      (creation_disposition != 0 &&
-       creation_disposition != kOpenExisting &&
-       creation_disposition != kOpenAlways &&
-       creation_disposition != kCreateAlways)) {
+  constexpr uint32_t kTruncateExisting = 5;
+
+  RefiiReplacementPathResolution replacement;
+  if (!ResolveRefiiReplacementPath(path, &replacement)) {
+    return false;
+  }
+  if (out_replacement_claimed != nullptr) {
+    *out_replacement_claimed = true;
+  }
+  if (creation_disposition != 0 && creation_disposition != kCreateNew &&
+      creation_disposition != kCreateAlways &&
+      creation_disposition != kOpenExisting &&
+      creation_disposition != kOpenAlways &&
+      creation_disposition != kTruncateExisting) {
+    SetRefiiWin32LastError(kRefiiWin32ErrorInvalidParameter);
     return false;
   }
 
-  bool is_directory = false;
-  LooseAssetResolution resolution;
-  std::string candidate;
-  if (!ResolveRefiiVirtualFileSystemProbe(
-          path, &is_directory, &resolution, &candidate) ||
-      is_directory) {
+  LooseAssetResolution resolution = replacement.resolution;
+  std::string candidate = resolution.provider_relative_path;
+  if (replacement.is_directory) {
+    SetRefiiWin32LastError(kRefiiWin32ErrorAccessDenied);
     return false;
+  }
+  const bool writable = RefiiDesiredAccessCanWrite(desired_access);
+  const bool readable = RefiiDesiredAccessCanRead(desired_access);
+  const bool create_missing =
+      creation_disposition == kCreateNew ||
+      creation_disposition == kCreateAlways ||
+      creation_disposition == kOpenAlways;
+  if (creation_disposition == kCreateNew && replacement.exists) {
+    SetRefiiWin32LastError(kRefiiWin32ErrorAlreadyExists);
+    return false;
+  }
+  if ((creation_disposition == kOpenExisting ||
+       creation_disposition == kTruncateExisting ||
+       creation_disposition == 0) &&
+      !replacement.exists) {
+    SetRefiiWin32LastError(kRefiiWin32ErrorFileNotFound);
+    return false;
+  }
+  if ((create_missing || creation_disposition == kTruncateExisting) &&
+      !writable) {
+    SetRefiiWin32LastError(kRefiiWin32ErrorAccessDenied);
+    return false;
+  }
+  if (!replacement.exists && create_missing) {
+    std::error_code create_error;
+    const std::filesystem::path parent = resolution.host_path.parent_path();
+    if (!parent.empty()) {
+      std::filesystem::create_directories(parent, create_error);
+      if (create_error) {
+        SetRefiiWin32LastError(kRefiiWin32ErrorPathNotFound);
+        return false;
+      }
+    }
+    std::ofstream created(resolution.host_path, std::ios::binary);
+    if (!created) {
+      SetRefiiWin32LastError(kRefiiWin32ErrorAccessDenied);
+      return false;
+    }
+    created.close();
+    replacement.exists = true;
   }
 
   auto record = std::make_shared<RefiiPrivateFileHandleRecord>();
   record->path = resolution.host_path.lexically_normal();
   record->virtual_path = resolution.provider_relative_path;
+  record->desired_access = desired_access;
+  record->readable = readable;
+  record->writable = writable;
+  std::ios::openmode mode = std::ios::binary | std::ios::in;
+  if (writable) {
+    mode |= std::ios::out;
+    if (creation_disposition == kCreateAlways ||
+        creation_disposition == kTruncateExisting) {
+      mode |= std::ios::trunc;
+    }
+  }
+  record->file.open(record->path, mode);
+  if (!record->file) {
+    SetRefiiWin32LastError(kRefiiWin32ErrorAccessDenied);
+    return false;
+  }
   std::error_code error;
   record->size = std::filesystem::file_size(record->path, error);
   if (error) {
-    return false;
-  }
-  record->file.open(record->path, std::ios::binary);
-  if (!record->file) {
+    SetRefiiWin32LastError(kRefiiWin32ErrorFileNotFound);
     return false;
   }
 
@@ -1500,6 +1709,54 @@ bool TryCreateRefiiPrivateFileHandle(std::string_view path,
     *out_candidate = std::move(candidate);
   }
   return *out_handle != kRefiiPrivateHandleInvalid;
+}
+
+bool TryCreateRefiiPrivateDirectoryHandle(std::string_view path,
+                                          uint32_t desired_access,
+                                          uint32_t creation_disposition,
+                                          uint32_t* out_handle,
+                                          std::string* out_candidate) {
+  if (out_handle == nullptr || !RefiiLooseAssetBackendEnabled()) {
+    return false;
+  }
+  LogRefiiVfsRuntimePolicyOnce();
+
+  constexpr uint32_t kCreateAlways = 2;
+  constexpr uint32_t kOpenExisting = 3;
+  constexpr uint32_t kOpenAlways = 4;
+  if (creation_disposition != 0 && creation_disposition != kCreateAlways &&
+      creation_disposition != kOpenExisting &&
+      creation_disposition != kOpenAlways) {
+    return false;
+  }
+
+  bool is_directory = false;
+  LooseAssetResolution resolution;
+  std::string candidate;
+  if (!ResolveRefiiVirtualFileSystemProbe(
+          path, &is_directory, &resolution, &candidate) ||
+      !is_directory) {
+    return false;
+  }
+
+  auto record = std::make_shared<RefiiPrivateFileHandleRecord>();
+  record->path = resolution.host_path.lexically_normal();
+  record->virtual_path =
+      candidate.empty() ? NormalizeLooseAssetKey(path) : NormalizeLooseAssetKey(candidate);
+  record->desired_access = desired_access;
+  record->readable = false;
+  record->writable = false;
+  record->size = 0;
+
+  *out_handle = RegisterRefiiPrivateFileHandle(record);
+  if (*out_handle == kRefiiPrivateHandleInvalid) {
+    return false;
+  }
+  if (out_candidate != nullptr) {
+    *out_candidate = record->virtual_path;
+  }
+  SetRefiiWin32LastError(kRefiiWin32ErrorSuccess);
+  return true;
 }
 
 uint64_t GetOverlappedOffset(uint8_t* base, uint32_t overlapped_guest) {
@@ -1598,6 +1855,17 @@ bool TryReadRefiiPrivateFileHandle(PPCContext& ctx,
   if (record == nullptr) {
     return false;
   }
+  if (!record->readable) {
+    if (bytes_read_guest != 0) {
+      StoreGuestU32(base, bytes_read_guest, 0);
+    }
+    if (overlapped_guest != 0) {
+      StoreGuestU32(base, overlapped_guest + 0, 0);
+      StoreGuestU32(base, overlapped_guest + 4, 0);
+    }
+    ctx.r3.u32 = 0;
+    return true;
+  }
   const bool was_post_loading_middleware_complete =
       RefiiPostLoadingMiddlewareVideoReadComplete();
   if (bytes_read_guest != 0) {
@@ -1659,6 +1927,89 @@ bool TryReadRefiiPrivateFileHandle(PPCContext& ctx,
   return true;
 }
 
+bool TryWriteRefiiPrivateFileHandle(PPCContext& ctx,
+                                    uint8_t* base,
+                                    uint32_t handle,
+                                    uint32_t buffer_guest,
+                                    uint32_t requested_bytes,
+                                    uint32_t bytes_written_guest,
+                                    uint32_t overlapped_guest) {
+  ZoneScopedN("RefiiVFS/WritePrivateFileHandle");
+  ConfigureRefiiVfsTracyPlots();
+  TracyPlot("Refii VFS Write Request Bytes",
+            static_cast<int64_t>(requested_bytes));
+  const auto record = FindRefiiPrivateFileHandle(handle);
+  if (record == nullptr) {
+    return false;
+  }
+  if (bytes_written_guest != 0) {
+    StoreGuestU32(base, bytes_written_guest, 0);
+  }
+  if (!record->writable || base == nullptr ||
+      (buffer_guest == 0 && requested_bytes != 0)) {
+    if (overlapped_guest != 0) {
+      StoreGuestU32(base, overlapped_guest + 0, 0);
+      StoreGuestU32(base, overlapped_guest + 4, 0);
+    }
+    ctx.r3.u32 = 0;
+    return true;
+  }
+
+  std::lock_guard<std::mutex> lock(record->mutex);
+  const uint64_t offset =
+      overlapped_guest == 0 ? record->position
+                            : GetOverlappedOffset(base, overlapped_guest);
+  record->file.clear();
+  record->file.seekp(static_cast<std::streamoff>(offset), std::ios::beg);
+  if (!record->file) {
+    ctx.r3.u32 = 0;
+    return true;
+  }
+
+  uint32_t total_written = 0;
+  std::array<uint8_t, 64 * 1024> scratch{};
+  while (total_written < requested_bytes) {
+    const uint32_t remaining = requested_bytes - total_written;
+    const uint32_t chunk_size =
+        std::min<uint32_t>(remaining, static_cast<uint32_t>(scratch.size()));
+    uint32_t copied = 0;
+    while (copied < chunk_size) {
+      const uint32_t guest = buffer_guest + total_written + copied;
+      const uint32_t page_remaining = 0x1000u - (guest & 0x0FFFu);
+      const uint32_t copy_size =
+          std::min<uint32_t>(chunk_size - copied, page_remaining);
+      std::memcpy(scratch.data() + copied,
+                  rex::memory::GuestPtr<uint8_t*>(base, guest),
+                  copy_size);
+      copied += copy_size;
+    }
+
+    record->file.write(reinterpret_cast<const char*>(scratch.data()),
+                       static_cast<std::streamsize>(chunk_size));
+    if (!record->file) {
+      record->file.clear();
+      break;
+    }
+    total_written += chunk_size;
+  }
+
+  if (overlapped_guest == 0) {
+    record->position = offset + total_written;
+  }
+  record->size = std::max<uint64_t>(record->size, offset + total_written);
+  if (bytes_written_guest != 0) {
+    StoreGuestU32(base, bytes_written_guest, total_written);
+  }
+  if (overlapped_guest != 0) {
+    StoreGuestU32(base, overlapped_guest + 0, 0);
+    StoreGuestU32(base, overlapped_guest + 4, total_written);
+  }
+  TracyPlot("Refii VFS Write Completed Bytes",
+            static_cast<int64_t>(total_written));
+  ctx.r3.u32 = total_written == requested_bytes ? 1 : 0;
+  return true;
+}
+
 bool TryGetRefiiPrivateFileSize(uint32_t handle, uint64_t* out_size) {
   if (out_size == nullptr) {
     return false;
@@ -1669,6 +2020,105 @@ bool TryGetRefiiPrivateFileSize(uint32_t handle, uint64_t* out_size) {
   }
   std::lock_guard<std::mutex> lock(record->mutex);
   *out_size = record->size;
+  return true;
+}
+
+uint64_t RefiiHostFileTimeToWindowsFileTime(
+    const std::filesystem::path& host_path) {
+  std::error_code error;
+  const std::filesystem::file_time_type file_time =
+      std::filesystem::last_write_time(host_path, error);
+  if (error) {
+    return 0;
+  }
+
+  using namespace std::chrono;
+  const auto system_time = time_point_cast<system_clock::duration>(
+      system_clock::now() +
+      (file_time - std::filesystem::file_time_type::clock::now()));
+  const int64_t unix_100ns =
+      duration_cast<duration<int64_t, std::ratio<1, 10000000>>>(
+          system_time.time_since_epoch())
+          .count();
+  constexpr uint64_t kWindowsFileTimeUnixEpoch = 116444736000000000ull;
+  if (unix_100ns < 0 &&
+      static_cast<uint64_t>(-unix_100ns) > kWindowsFileTimeUnixEpoch) {
+    return 0;
+  }
+  return kWindowsFileTimeUnixEpoch + unix_100ns;
+}
+
+bool TryGetRefiiPrivateFileInformation(uint8_t* base,
+                                       uint32_t handle,
+                                       uint32_t information_guest) {
+  if (base == nullptr || information_guest == 0) {
+    return false;
+  }
+  const auto record = FindRefiiPrivateFileHandle(handle);
+  if (record == nullptr) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(record->mutex);
+  std::error_code error;
+  const bool is_directory = std::filesystem::is_directory(record->path, error);
+  const uint32_t attributes = is_directory ? 0x00000010u : 0x00000080u;
+
+  // Fable's wrapper copies a 52-byte BY_HANDLE_FILE_INFORMATION-like shape:
+  // attributes, three FILETIME values, volume serial, size high/low, links,
+  // and file index high/low. The native wrapper also leaves links as zero.
+  std::memset(rex::memory::GuestPtr<uint8_t*>(base, information_guest), 0, 52);
+  StoreGuestU32(base, information_guest + 0, attributes);
+  StoreGuestU32(base,
+                information_guest + 32,
+                static_cast<uint32_t>(record->size >> 32));
+  StoreGuestU32(base,
+                information_guest + 36,
+                static_cast<uint32_t>(record->size));
+  const uint64_t file_time = RefiiHostFileTimeToWindowsFileTime(record->path);
+  StoreGuestU64(base, information_guest + 4, file_time);
+  StoreGuestU64(base, information_guest + 12, file_time);
+  StoreGuestU64(base, information_guest + 20, file_time);
+  return true;
+}
+
+bool TryGetRefiiPrivateFileSectorInfo(uint32_t handle,
+                                      uint32_t* out_sector_size) {
+  if (out_sector_size == nullptr) {
+    return false;
+  }
+  const auto record = FindRefiiPrivateFileHandle(handle);
+  if (record == nullptr) {
+    return false;
+  }
+  *out_sector_size = 2048;
+  return true;
+}
+
+bool TryGetRefiiPrivateFileTimes(uint8_t* base,
+                                 uint32_t handle,
+                                 uint32_t creation_time_guest,
+                                 uint32_t last_access_time_guest,
+                                 uint32_t last_write_time_guest) {
+  if (base == nullptr) {
+    return false;
+  }
+  const auto record = FindRefiiPrivateFileHandle(handle);
+  if (record == nullptr) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(record->mutex);
+  const uint64_t file_time = RefiiHostFileTimeToWindowsFileTime(record->path);
+  if (creation_time_guest != 0) {
+    StoreGuestU64(base, creation_time_guest, file_time);
+  }
+  if (last_access_time_guest != 0) {
+    StoreGuestU64(base, last_access_time_guest, file_time);
+  }
+  if (last_write_time_guest != 0) {
+    StoreGuestU64(base, last_write_time_guest, file_time);
+  }
   return true;
 }
 
@@ -1727,6 +2177,91 @@ bool TrySetRefiiPrivateFilePointer(PPCContext& ctx,
                   static_cast<uint32_t>(record->position >> 32));
   }
   ctx.r3.u32 = static_cast<uint32_t>(record->position);
+  return true;
+}
+
+bool TryFlushRefiiPrivateFileHandle(PPCContext& ctx, uint32_t handle) {
+  const auto record = FindRefiiPrivateFileHandle(handle);
+  if (record == nullptr) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(record->mutex);
+  record->file.clear();
+  if (record->writable) {
+    record->file.flush();
+  }
+  ctx.r3.u32 = record->file ? 1 : 0;
+  return true;
+}
+
+bool TrySetEndOfRefiiPrivateFile(PPCContext& ctx, uint32_t handle) {
+  const auto record = FindRefiiPrivateFileHandle(handle);
+  if (record == nullptr) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(record->mutex);
+  if (!record->writable) {
+    ctx.r3.u32 = 0;
+    return true;
+  }
+
+  record->file.clear();
+  record->file.flush();
+  std::error_code error;
+  std::filesystem::resize_file(record->path, record->position, error);
+  if (error) {
+    ctx.r3.u32 = 0;
+    return true;
+  }
+  record->size = record->position;
+  record->file.clear();
+  record->file.seekg(static_cast<std::streamoff>(
+                         std::min<uint64_t>(record->position, record->size)),
+                     std::ios::beg);
+  record->file.seekp(static_cast<std::streamoff>(record->position),
+                     std::ios::beg);
+  ctx.r3.u32 = 1;
+  return true;
+}
+
+bool TryDeleteRefiiPrivateFile(PPCContext& ctx,
+                               std::string_view path,
+                               LooseAssetResolution* out_resolution,
+                               std::string* out_candidate) {
+  if (!RefiiLooseAssetBackendEnabled()) {
+    return false;
+  }
+  RefiiReplacementPathResolution replacement;
+  if (!ResolveRefiiReplacementPath(path, &replacement)) {
+    return false;
+  }
+  LooseAssetResolution resolution = replacement.resolution;
+  std::string candidate = resolution.provider_relative_path;
+  if (replacement.is_directory) {
+    SetRefiiWin32LastError(kRefiiWin32ErrorAccessDenied);
+    ctx.r3.u32 = 0;
+    if (out_resolution != nullptr) {
+      *out_resolution = std::move(resolution);
+    }
+    if (out_candidate != nullptr) {
+      *out_candidate = std::move(candidate);
+    }
+    return true;
+  }
+
+  std::error_code error;
+  const bool removed = std::filesystem::remove(resolution.host_path, error);
+  ctx.r3.u32 = (!error && removed) ? 1 : 0;
+  if (ctx.r3.u32 == 0) {
+    SetRefiiWin32LastError(error ? kRefiiWin32ErrorAccessDenied
+                                 : kRefiiWin32ErrorFileNotFound);
+  }
+  if (out_resolution != nullptr) {
+    *out_resolution = std::move(resolution);
+  }
+  if (out_candidate != nullptr) {
+    *out_candidate = std::move(candidate);
+  }
   return true;
 }
 
@@ -1832,16 +2367,15 @@ void AddRefiiFindEntry(std::vector<RefiiPrivateFindEntry>* entries,
                        std::string_view pattern);
 std::shared_ptr<const SyntheticVfsEntryIndex> GetSyntheticVfsEntryIndex();
 
-void AddRefiiDirectoryIndexEntry(
+void AddRefiiDirectoryIndexDirectEntry(
     RefiiFindDirectoryIndex* index,
     std::unordered_map<std::string, std::unordered_set<std::string>>* seen,
-    std::string_view path,
+    std::string_view stripped,
     bool directory) {
   if (index == nullptr || seen == nullptr) {
     return;
   }
 
-  const std::string stripped = StripRefiiDataPrefix(path);
   if (stripped.empty() || IsInternalLooseAssetKey(stripped)) {
     return;
   }
@@ -1870,6 +2404,299 @@ void AddRefiiDirectoryIndexEntry(
   }
 }
 
+void AddRefiiDirectoryIndexParsedEntry(
+    RefiiFindDirectoryIndex* index,
+    std::unordered_map<std::string, std::unordered_set<std::string>>* seen,
+    std::string_view parent,
+    std::string_view name,
+    bool directory) {
+  if (index == nullptr || seen == nullptr || name.empty()) {
+    return;
+  }
+
+  const std::string stripped_parent = StripRefiiDataPrefix(parent);
+  if (IsInternalLooseAssetKey(stripped_parent) ||
+      IsInternalLooseAssetKey(name)) {
+    return;
+  }
+
+  std::string normalized_name(name);
+  std::ranges::transform(normalized_name, normalized_name.begin(),
+                         [](unsigned char ch) {
+                           return static_cast<char>(std::tolower(ch));
+                         });
+  auto& parent_seen = (*seen)[stripped_parent];
+  if (!parent_seen.insert(normalized_name).second) {
+    return;
+  }
+
+  index->entries_by_parent[stripped_parent].push_back(
+      {std::string(name), directory, 0});
+  if (directory) {
+    ++index->directory_count;
+  } else {
+    ++index->file_count;
+  }
+}
+
+void AddRefiiDirectoryIndexLeafEntry(
+    RefiiFindDirectoryIndex* index,
+    std::unordered_map<std::string, std::unordered_set<std::string>>* seen,
+    std::string_view path,
+    bool directory) {
+  if (index == nullptr || seen == nullptr) {
+    return;
+  }
+
+  const std::string stripped = StripRefiiDataPrefix(path);
+  AddRefiiDirectoryIndexDirectEntry(index, seen, stripped, directory);
+}
+
+void AddRefiiDirectoryIndexEntry(
+    RefiiFindDirectoryIndex* index,
+    std::unordered_map<std::string, std::unordered_set<std::string>>* seen,
+    std::string_view path,
+    bool directory) {
+  if (index == nullptr || seen == nullptr) {
+    return;
+  }
+
+  const std::string stripped = StripRefiiDataPrefix(path);
+  if (stripped.empty() || IsInternalLooseAssetKey(stripped)) {
+    return;
+  }
+
+  AddRefiiDirectoryIndexDirectEntry(index, seen, stripped, directory);
+  for (size_t slash = stripped.find('/'); slash != std::string::npos;
+       slash = stripped.find('/', slash + 1)) {
+    AddRefiiDirectoryIndexDirectEntry(
+        index, seen, std::string_view(stripped).substr(0, slash), true);
+  }
+}
+
+bool ReadRefiiLittleEndianU32FromCursor(const char** cursor,
+                                        const char* end,
+                                        uint32_t* out_value) {
+  if (cursor == nullptr || *cursor == nullptr || out_value == nullptr ||
+      end == nullptr || end - *cursor < 4) {
+    return false;
+  }
+
+  const auto* bytes = reinterpret_cast<const unsigned char*>(*cursor);
+  *out_value = static_cast<uint32_t>(bytes[0]) |
+               (static_cast<uint32_t>(bytes[1]) << 8) |
+               (static_cast<uint32_t>(bytes[2]) << 16) |
+               (static_cast<uint32_t>(bytes[3]) << 24);
+  *cursor += 4;
+  return true;
+}
+
+bool ReadRefiiDirectoryEntryBinaryStringFromCursor(const char** cursor,
+                                                   const char* end,
+                                                   std::string_view* out_value) {
+  if (cursor == nullptr || *cursor == nullptr || out_value == nullptr ||
+      end == nullptr) {
+    return false;
+  }
+
+  uint32_t size = 0;
+  if (!ReadRefiiLittleEndianU32FromCursor(cursor, end, &size)) {
+    return false;
+  }
+  constexpr uint32_t kMaxDirectoryEntryStringSize = 4096;
+  if (size > kMaxDirectoryEntryStringSize ||
+      static_cast<size_t>(end - *cursor) < size) {
+    return false;
+  }
+
+  *out_value = std::string_view(*cursor, size);
+  *cursor += size;
+  return true;
+}
+
+bool LoadRefiiDirectoryEntryBinaryIndex(
+    RefiiFindDirectoryIndex* index,
+    std::unordered_map<std::string, std::unordered_set<std::string>>* seen,
+    const std::filesystem::path& loose_root,
+    bool* out_presorted) {
+  if (index == nullptr || seen == nullptr) {
+    return false;
+  }
+  if (out_presorted != nullptr) {
+    *out_presorted = false;
+  }
+
+  std::error_code error;
+  const std::filesystem::path table_path =
+      RefiiVfsRuntimeDirectoryEntryBinaryPath(loose_root);
+  if (!std::filesystem::is_regular_file(table_path, error)) {
+    return false;
+  }
+
+  const auto file_size = std::filesystem::file_size(table_path, error);
+  if (error || file_size < 12 || file_size > (512ull * 1024ull * 1024ull)) {
+    return false;
+  }
+
+  std::vector<char> bytes(static_cast<size_t>(file_size));
+  std::ifstream input(table_path, std::ios::binary);
+  if (!input ||
+      !input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) {
+    return false;
+  }
+
+  const char* cursor = bytes.data();
+  const char* end = bytes.data() + bytes.size();
+  const std::string_view magic(cursor, 8);
+  cursor += 8;
+  const bool trusted_presorted = magic == "RFDIREN2";
+  if (!trusted_presorted && magic != "RFDIREN1") {
+    return false;
+  }
+
+  uint32_t group_count = 0;
+  if (!ReadRefiiLittleEndianU32FromCursor(&cursor, end, &group_count)) {
+    return false;
+  }
+  constexpr uint32_t kMaxDirectoryEntryGroups = 4 * 1024 * 1024;
+  constexpr uint32_t kMaxEntriesPerDirectoryGroup = 1024 * 1024;
+  if (group_count > kMaxDirectoryEntryGroups) {
+    return false;
+  }
+  index->entries_by_parent.reserve(group_count);
+
+  size_t rows = 0;
+  for (uint32_t group_index = 0; group_index < group_count; ++group_index) {
+    std::string_view parent_view;
+    uint32_t entry_count = 0;
+    if (!ReadRefiiDirectoryEntryBinaryStringFromCursor(
+            &cursor, end, &parent_view) ||
+        !ReadRefiiLittleEndianU32FromCursor(&cursor, end, &entry_count) ||
+        entry_count > kMaxEntriesPerDirectoryGroup) {
+      return false;
+    }
+
+    const std::string parent = StripRefiiDataPrefix(parent_view);
+    std::vector<RefiiPrivateFindEntry>* parent_entries = nullptr;
+    if (trusted_presorted && !IsInternalLooseAssetKey(parent)) {
+      parent_entries = &index->entries_by_parent[parent];
+      parent_entries->reserve(parent_entries->size() + entry_count);
+    }
+
+    for (uint32_t entry_index = 0; entry_index < entry_count; ++entry_index) {
+      char type = 0;
+      std::string_view name;
+      if (cursor == end) {
+        return false;
+      }
+      type = *cursor++;
+      if (!ReadRefiiDirectoryEntryBinaryStringFromCursor(&cursor, end, &name)) {
+        return false;
+      }
+      if (type != 'd' && type != 'f') {
+        return false;
+      }
+      const bool directory = type == 'd';
+      if (trusted_presorted) {
+        if (parent_entries != nullptr && !name.empty() &&
+            !IsInternalLooseAssetKey(name)) {
+          parent_entries->push_back({std::string(name), directory, 0});
+          if (directory) {
+            ++index->directory_count;
+          } else {
+            ++index->file_count;
+          }
+        }
+      } else {
+        AddRefiiDirectoryIndexParsedEntry(
+            index, seen, parent_view, name, directory);
+      }
+      ++rows;
+    }
+  }
+
+  if (cursor != end) {
+    return false;
+  }
+  if (out_presorted != nullptr) {
+    *out_presorted = trusted_presorted;
+  }
+
+  if ((VfsTracingEnabled() || LooseAssetOverrideTracingEnabled()) &&
+      ShouldLogRepeatedVfsTraceOperation(
+          "FindFirstFileADirectoryEntriesBinary", 8)) {
+    REXLOG_INFO("Refii VFS FindFirstFileA binary directory entry table loaded "
+                "rows={} groups={} parents={} format={} root={}",
+                rows,
+                group_count,
+                index->entries_by_parent.size(),
+                trusted_presorted ? "RFDIREN2" : "RFDIREN1",
+                loose_root.string());
+  }
+  return rows > 0;
+}
+
+bool LoadRefiiDirectoryEntryIndex(
+    RefiiFindDirectoryIndex* index,
+    std::unordered_map<std::string, std::unordered_set<std::string>>* seen,
+    const std::filesystem::path& loose_root) {
+  if (index == nullptr || seen == nullptr) {
+    return false;
+  }
+
+  std::error_code error;
+  const std::filesystem::path table_path =
+      RefiiVfsRuntimeDirectoryEntryTablePath(loose_root);
+  if (!std::filesystem::is_regular_file(table_path, error)) {
+    return false;
+  }
+
+  std::ifstream input(table_path);
+  if (!input) {
+    return false;
+  }
+
+  std::string line;
+  size_t rows = 0;
+  while (std::getline(input, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+
+    const size_t first_tab = line.find('\t');
+    if (first_tab == std::string::npos) {
+      continue;
+    }
+    const size_t second_tab = line.find('\t', first_tab + 1);
+    if (second_tab == std::string::npos || second_tab + 1 >= line.size()) {
+      continue;
+    }
+    const std::string_view parent(line.data(), first_tab);
+    const std::string_view name(line.data() + first_tab + 1,
+                                second_tab - first_tab - 1);
+    const char type = line[second_tab + 1];
+    if (type != 'd' && type != 'f') {
+      continue;
+    }
+    AddRefiiDirectoryIndexParsedEntry(
+        index, seen, parent, name, type == 'd');
+    ++rows;
+  }
+
+  if ((VfsTracingEnabled() || LooseAssetOverrideTracingEnabled()) &&
+      ShouldLogRepeatedVfsTraceOperation("FindFirstFileADirectoryEntries", 8)) {
+    REXLOG_INFO("Refii VFS FindFirstFileA directory entry table loaded "
+                "rows={} parents={} root={}",
+                rows,
+                index->entries_by_parent.size(),
+                loose_root.string());
+  }
+  return rows > 0;
+}
+
 std::shared_ptr<const RefiiFindDirectoryIndex> GetRefiiFindDirectoryIndex(
     const std::filesystem::path& loose_root) {
   const std::string root_key = loose_root.lexically_normal().string();
@@ -1889,22 +2716,40 @@ std::shared_ptr<const RefiiFindDirectoryIndex> GetRefiiFindDirectoryIndex(
   auto built = std::make_shared<RefiiFindDirectoryIndex>();
   built->root_key = root_key;
   std::unordered_map<std::string, std::unordered_set<std::string>> seen;
+  bool directory_entries_presorted = false;
+  bool needs_sort = true;
 
-  std::ifstream directories(RefiiVfsRuntimeDirectoryTablePath(loose_root));
-  std::string line;
-  while (std::getline(directories, line)) {
-    if (!line.empty() && line.back() == '\r') {
-      line.pop_back();
+  const bool loaded_directory_entries =
+      LoadRefiiDirectoryEntryBinaryIndex(
+          built.get(), &seen, loose_root, &directory_entries_presorted) ||
+      LoadRefiiDirectoryEntryIndex(built.get(), &seen, loose_root);
+  needs_sort = !directory_entries_presorted;
+  if (!loaded_directory_entries) {
+    std::ifstream directories(RefiiVfsRuntimeDirectoryTablePath(loose_root));
+    std::string line;
+    while (std::getline(directories, line)) {
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+      }
+      if (line.empty() || line[0] == '#') {
+        continue;
+      }
+      AddRefiiDirectoryIndexLeafEntry(built.get(), &seen, line, true);
     }
-    if (line.empty() || line[0] == '#') {
-      continue;
-    }
-    AddRefiiDirectoryIndexEntry(built.get(), &seen, line, true);
-  }
 
-  for (const std::string& candidate :
-       GetRefiiVfsRuntimeCandidatesCached(loose_root)) {
-    AddRefiiDirectoryIndexEntry(built.get(), &seen, candidate, false);
+    for (const std::string& candidate :
+         GetRefiiVfsRuntimeCandidatesCached(loose_root)) {
+      AddRefiiDirectoryIndexLeafEntry(built.get(), &seen, candidate, false);
+    }
+
+    for (const RefiiVfsRuntimeLuaRecord& record :
+         GetRefiiVfsRuntimeLuaRecordsCached(loose_root)) {
+      AddRefiiDirectoryIndexEntry(built.get(), &seen, record.alias, false);
+      if (record.candidate != record.alias) {
+        AddRefiiDirectoryIndexEntry(
+            built.get(), &seen, record.candidate, false);
+      }
+    }
   }
 
   if (!RefiiVfsDatabaseExists(loose_root)) {
@@ -1914,18 +2759,21 @@ std::shared_ptr<const RefiiFindDirectoryIndex> GetRefiiFindDirectoryIndex(
         (void)entry;
         AddRefiiDirectoryIndexEntry(built.get(), &seen, alias, false);
       }
+      needs_sort = true;
     }
   }
 
-  for (auto& [parent, entries] : built->entries_by_parent) {
-    (void)parent;
-    std::sort(entries.begin(), entries.end(),
-              [](const auto& left, const auto& right) {
-                if (left.directory != right.directory) {
-                  return left.directory && !right.directory;
-                }
-                return left.name < right.name;
-              });
+  if (needs_sort) {
+    for (auto& [parent, entries] : built->entries_by_parent) {
+      (void)parent;
+      std::sort(entries.begin(), entries.end(),
+                [](const auto& left, const auto& right) {
+                  if (left.directory != right.directory) {
+                    return left.directory && !right.directory;
+                  }
+                  return left.name < right.name;
+                });
+    }
   }
   built->loaded = true;
 
@@ -1949,135 +2797,68 @@ std::shared_ptr<const RefiiFindDirectoryIndex> GetRefiiFindDirectoryIndex(
   }
 }
 
-std::vector<RefiiPrivateFindEntry> GetRefiiDirectoryEntriesForParentFromDatabase(
+const std::vector<RefiiPrivateFindEntry>*
+FindRefiiDirectoryEntriesForParentFromIndex(
+    const RefiiFindDirectoryIndex& index,
     const std::filesystem::path& loose_root,
     std::string_view parent) {
-  const std::string root_key = loose_root.lexically_normal().string();
   const std::string stripped_parent = StripRefiiDataPrefix(parent);
-  if (root_key.empty()) {
-    return {};
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(RefiiFindDirectoryParentCacheMutex());
-    auto& cache = RefiiFindDirectoryParentCacheInstance();
-    if (cache.root_key != root_key) {
-      cache = RefiiFindDirectoryParentCache{};
-      cache.root_key = root_key;
-    }
-    if (cache.loaded_parents.contains(stripped_parent)) {
-      const auto match = cache.entries_by_parent.find(stripped_parent);
-      return match == cache.entries_by_parent.end()
-                 ? std::vector<RefiiPrivateFindEntry>{}
-                 : match->second;
-    }
-  }
-
-  std::vector<RefiiPrivateFindEntry> entries;
-  std::unordered_set<std::string> seen;
-  auto add_path = [&](std::string_view path, bool directory) {
-    const std::string stripped = StripRefiiDataPrefix(path);
-    if (stripped.empty() || IsInternalLooseAssetKey(stripped)) {
-      return;
-    }
-
-    std::string name;
-    const std::string entry_parent = RefiiFindParent(stripped, &name);
-    bool entry_directory = directory;
-    if (entry_parent != stripped_parent) {
-      const std::string parent_prefix = stripped_parent + "/";
-      if (!StartsWith(stripped, parent_prefix)) {
-        return;
-      }
-      std::string_view tail(stripped);
-      tail.remove_prefix(parent_prefix.size());
-      const size_t separator = tail.find('/');
-      if (separator == std::string_view::npos || separator == 0) {
-        return;
-      }
-      name = std::string(tail.substr(0, separator));
-      entry_directory = true;
-    }
-    if (name.empty()) {
-      return;
-    }
-
-    std::string normalized_name(name);
-    std::ranges::transform(normalized_name,
-                           normalized_name.begin(),
-                           [](unsigned char ch) {
-                             return static_cast<char>(std::tolower(ch));
-                           });
-    if (!seen.insert(normalized_name).second) {
-      return;
-    }
-    entries.push_back({std::move(name), entry_directory, 0});
-  };
-
-  std::ifstream directories(RefiiVfsRuntimeDirectoryTablePath(loose_root));
-  std::string line;
-  while (std::getline(directories, line)) {
-    if (!line.empty() && line.back() == '\r') {
-      line.pop_back();
-    }
-    if (line.empty() || line[0] == '#') {
-      continue;
-    }
-    add_path(line, true);
-  }
-
-  for (const std::string& candidate :
-       GetRefiiVfsRuntimeCandidatesCached(loose_root)) {
-    add_path(candidate, false);
-  }
-
-  for (const RefiiVfsRuntimeLuaRecord& record :
-       GetRefiiVfsRuntimeLuaRecordsCached(loose_root)) {
-    add_path(record.alias, false);
-    if (record.candidate != record.alias) {
-      add_path(record.candidate, false);
-    }
-  }
-
-  if (!RefiiVfsDatabaseExists(loose_root)) {
-    const auto synthetic_index = GetSyntheticVfsEntryIndex();
-    if (synthetic_index != nullptr) {
-      for (const auto& [alias, entry] : synthetic_index->by_normalized_path) {
-        (void)entry;
-        add_path(alias, false);
-      }
-    }
-  }
-
-  std::sort(entries.begin(), entries.end(),
-            [](const auto& left, const auto& right) {
-              if (left.directory != right.directory) {
-                return left.directory && !right.directory;
-              }
-              return left.name < right.name;
-            });
-
-  {
-    std::lock_guard<std::mutex> lock(RefiiFindDirectoryParentCacheMutex());
-    auto& cache = RefiiFindDirectoryParentCacheInstance();
-    if (cache.root_key != root_key) {
-      cache = RefiiFindDirectoryParentCache{};
-      cache.root_key = root_key;
-    }
-    cache.loaded_parents.insert(stripped_parent);
-    cache.entries_by_parent[stripped_parent] = entries;
+  const auto match = index.entries_by_parent.find(stripped_parent);
+  if (match == index.entries_by_parent.end()) {
+    return nullptr;
   }
 
   if ((VfsTracingEnabled() || LooseAssetOverrideTracingEnabled()) &&
       ShouldLogRepeatedVfsTraceOperation("FindFirstFileADatabaseParent", 32)) {
-    REXLOG_INFO("Refii VFS FindFirstFileA database parent loaded parent={} "
+    REXLOG_INFO("Refii VFS FindFirstFileA database parent cache hit parent={} "
                 "entries={} root={}",
                 stripped_parent,
-                entries.size(),
+                match->second.size(),
                 loose_root.string());
   }
 
-  return entries;
+  return &match->second;
+}
+
+uint64_t ResolveRefiiIndexedFindEntrySize(
+    const std::filesystem::path& loose_root,
+    std::string_view parent,
+    const RefiiPrivateFindEntry& entry) {
+  if (entry.directory || entry.size != 0 || loose_root.empty()) {
+    return entry.size;
+  }
+
+  std::filesystem::path host_path = loose_root;
+  const std::string stripped_parent = StripRefiiDataPrefix(parent);
+  if (!stripped_parent.empty()) {
+    host_path /= std::filesystem::path(stripped_parent);
+  }
+  host_path /= std::filesystem::path(entry.name);
+
+  std::error_code error;
+  if (!std::filesystem::is_regular_file(host_path, error)) {
+    return 0;
+  }
+  const uint64_t size = std::filesystem::file_size(host_path, error);
+  return error ? 0 : size;
+}
+
+void AddRefiiIndexedFindEntry(
+    std::vector<RefiiPrivateFindEntry>* entries,
+    std::unordered_set<std::string>* seen,
+    const std::filesystem::path& loose_root,
+    std::string_view parent,
+    const RefiiPrivateFindEntry& entry,
+    std::string_view pattern) {
+  if (!MatchesFindPattern(entry.name, pattern)) {
+    return;
+  }
+  AddRefiiFindEntry(entries,
+                    seen,
+                    entry.name,
+                    entry.directory,
+                    ResolveRefiiIndexedFindEntrySize(loose_root, parent, entry),
+                    pattern);
 }
 
 void AddRefiiIndexedDirectoryEntries(
@@ -2092,12 +2873,17 @@ void AddRefiiIndexedDirectoryEntries(
 
   const std::string stripped_parent = StripRefiiDataPrefix(parent);
   if (RefiiVfsDatabaseExists(loose_root)) {
-    const std::vector<RefiiPrivateFindEntry> parent_entries =
-        GetRefiiDirectoryEntriesForParentFromDatabase(
-            loose_root, stripped_parent);
-    for (const RefiiPrivateFindEntry& entry : parent_entries) {
-      AddRefiiFindEntry(
-          entries, seen, entry.name, entry.directory, entry.size, pattern);
+    const auto index = GetRefiiFindDirectoryIndex(loose_root);
+    if (index != nullptr) {
+      const std::vector<RefiiPrivateFindEntry>* parent_entries =
+          FindRefiiDirectoryEntriesForParentFromIndex(
+              *index, loose_root, stripped_parent);
+      if (parent_entries != nullptr) {
+        for (const RefiiPrivateFindEntry& entry : *parent_entries) {
+          AddRefiiIndexedFindEntry(
+              entries, seen, loose_root, stripped_parent, entry, pattern);
+        }
+      }
     }
     return;
   }
@@ -2107,8 +2893,8 @@ void AddRefiiIndexedDirectoryEntries(
     const auto match = index->entries_by_parent.find(stripped_parent);
     if (match != index->entries_by_parent.end()) {
       for (const RefiiPrivateFindEntry& entry : match->second) {
-        AddRefiiFindEntry(
-            entries, seen, entry.name, entry.directory, entry.size, pattern);
+        AddRefiiIndexedFindEntry(
+            entries, seen, loose_root, stripped_parent, entry, pattern);
       }
       return;
     }
@@ -2220,21 +3006,75 @@ bool IsRefiiFindAllowedFileParent(std::string_view parent) {
 }
 
 bool IsGameFaceVirtualDirectory(std::string_view path) {
-  const std::filesystem::path loose_root = GetLooseAssetRoot();
+  const std::vector<std::filesystem::path> loose_roots =
+      GetLooseAssetSearchRoots();
+  if (loose_roots.empty()) {
+    return false;
+  }
+
+  for (const std::string& mapped_parent :
+       BuildGameFaceRedirectCandidates(StripRefiiDataPrefix(path))) {
+    const std::string stripped_parent = StripTrailingSlashes(mapped_parent);
+    if (stripped_parent.empty() || !IsGameFaceBoundaryPath(stripped_parent)) {
+      continue;
+    }
+    for (const std::filesystem::path& loose_root : loose_roots) {
+      std::error_code error;
+      if (std::filesystem::is_directory(
+              loose_root / "luasource" / std::filesystem::path(stripped_parent),
+              error)) {
+        return true;
+      }
+    }
+  }
+
+  for (const std::string& mapped_parent :
+       BuildGameFaceRedirectCandidates(StripRefiiDataPrefix(path))) {
+    const std::string prefix = StripTrailingSlashes(mapped_parent) + "/";
+    for (const std::filesystem::path& loose_root : loose_roots) {
+      for (const RefiiVfsRuntimeLuaRecord& record :
+           GetRefiiVfsRuntimeLuaRecordsCached(loose_root)) {
+        if (StartsWith(record.alias, prefix)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+bool ResolveGameFaceLuaSourceDirectory(
+    std::string_view path,
+    const std::filesystem::path& loose_root,
+    std::filesystem::path* out_host_path,
+    std::string* out_provider_relative) {
   if (loose_root.empty()) {
     return false;
   }
 
   for (const std::string& mapped_parent :
        BuildGameFaceRedirectCandidates(StripRefiiDataPrefix(path))) {
-    const std::string prefix = StripTrailingSlashes(mapped_parent) + "/";
-    for (const RefiiVfsRuntimeLuaRecord& record :
-         GetRefiiVfsRuntimeLuaRecordsCached(loose_root)) {
-      if (StartsWith(record.alias, prefix)) {
-        return true;
-      }
+    const std::string stripped_parent = StripTrailingSlashes(mapped_parent);
+    if (stripped_parent.empty() || !IsGameFaceBoundaryPath(stripped_parent)) {
+      continue;
     }
+
+    const std::filesystem::path provider_relative =
+        std::filesystem::path("luasource") / std::filesystem::path(stripped_parent);
+    const std::filesystem::path host_path = loose_root / provider_relative;
+    std::error_code error;
+    if (!std::filesystem::is_directory(host_path, error)) {
+      continue;
+    }
+    if (out_host_path != nullptr) {
+      *out_host_path = host_path.lexically_normal();
+    }
+    if (out_provider_relative != nullptr) {
+      *out_provider_relative = provider_relative.generic_string();
+    }
+    return true;
   }
+
   return false;
 }
 
@@ -2333,6 +3173,42 @@ void AddRefiiGameFaceLuaEntries(std::vector<RefiiPrivateFindEntry>* entries,
                                 std::string_view pattern) {
   if (entries == nullptr || seen == nullptr || loose_root.empty()) {
     return;
+  }
+
+  for (const std::string& mapped_parent :
+       BuildGameFaceRedirectCandidates(StripRefiiDataPrefix(parent))) {
+    const std::string stripped_parent = StripTrailingSlashes(mapped_parent);
+    if (stripped_parent.empty() || !IsGameFaceBoundaryPath(stripped_parent)) {
+      continue;
+    }
+    const std::filesystem::path directory =
+        loose_root / "luasource" / std::filesystem::path(stripped_parent);
+    std::error_code error;
+    if (!std::filesystem::is_directory(directory, error)) {
+      continue;
+    }
+
+    for (std::filesystem::directory_iterator it(directory, error), end;
+         it != end; it.increment(error)) {
+      if (error) {
+        error.clear();
+        continue;
+      }
+      const std::string name = it->path().filename().generic_string();
+      if (it->is_directory(error)) {
+        AddRefiiFindEntry(entries, seen, name, true, 0, pattern);
+        error.clear();
+        continue;
+      }
+      error.clear();
+      if (!it->is_regular_file(error)) {
+        error.clear();
+        continue;
+      }
+      const uint64_t size = it->file_size(error);
+      AddRefiiFindEntry(entries, seen, name, false, error ? 0 : size, pattern);
+      error.clear();
+    }
   }
 
   for (const std::string& mapped_parent :
@@ -2487,9 +3363,10 @@ void AddRefiiStartupDeferredLocaleRootEntries(
 
 std::vector<RefiiPrivateFindEntry> BuildRefiiFindEntries(std::string_view path) {
   std::vector<RefiiPrivateFindEntry> entries;
-  const std::filesystem::path loose_root = GetLooseAssetRoot();
   const std::string normalized = NormalizeLooseAssetKey(path);
-  if (loose_root.empty() || normalized.empty()) {
+  const std::vector<std::filesystem::path> loose_roots =
+      GetLooseAssetSearchRoots();
+  if (loose_roots.empty() || normalized.empty()) {
     return entries;
   }
 
@@ -2500,42 +3377,53 @@ std::vector<RefiiPrivateFindEntry> BuildRefiiFindEntries(std::string_view path) 
   const bool playback_critical = RefiiStartupVideosPlaybackCriticalActive();
   const bool defer_language_boot_scan =
       RefiiStartupLanguageEnumerationDeferralActive();
-  const bool directory_index_authoritative =
-      RefiiVfsDatabaseExists(loose_root);
-  const bool host_directory_first =
-      IsRefiiFindAllowedFileParent(stripped_parent);
-  const auto add_host_then_indexed = [&](std::string_view entry_parent,
+  const bool any_directory_index_authoritative =
+      std::any_of(loose_roots.begin(),
+                  loose_roots.end(),
+                  [](const std::filesystem::path& root) {
+                    return RefiiVfsDatabaseExists(root);
+                  });
+  const auto add_host_then_indexed = [&](const std::filesystem::path& root,
+                                         std::string_view entry_parent,
                                          bool include_aliases) {
+    const bool directory_index_authoritative = RefiiVfsDatabaseExists(root);
+    const bool host_directory_first =
+        !directory_index_authoritative &&
+        IsRefiiFindAllowedFileParent(entry_parent);
     if (host_directory_first) {
       if (include_aliases) {
         AddRefiiFindHostFilesWithAliases(
-            &entries, &seen, loose_root, entry_parent, pattern);
+            &entries, &seen, root, entry_parent, pattern);
       } else {
-        AddRefiiFindHostFiles(&entries, &seen, loose_root, entry_parent, pattern);
-      }
-      if (!entries.empty()) {
-        return;
+        AddRefiiFindHostFiles(&entries, &seen, root, entry_parent, pattern);
       }
     }
+    const size_t indexed_entry_count_before = entries.size();
     if (include_aliases) {
       AddRefiiIndexedDirectoryEntriesWithAliases(
-          &entries, &seen, loose_root, entry_parent, pattern);
+          &entries, &seen, root, entry_parent, pattern);
     } else {
       AddRefiiIndexedDirectoryEntries(
-          &entries, &seen, loose_root, entry_parent, pattern);
+          &entries, &seen, root, entry_parent, pattern);
     }
     if (!playback_critical && !directory_index_authoritative &&
-        entries.empty()) {
+        entries.size() == indexed_entry_count_before) {
       if (include_aliases) {
         AddRefiiFindHostFilesWithAliases(
-            &entries, &seen, loose_root, entry_parent, pattern);
+            &entries, &seen, root, entry_parent, pattern);
       } else {
-        AddRefiiFindHostFiles(&entries, &seen, loose_root, entry_parent, pattern);
+        AddRefiiFindHostFiles(&entries, &seen, root, entry_parent, pattern);
       }
     }
   };
+  const auto add_host_then_indexed_for_roots = [&](std::string_view entry_parent,
+                                                  bool include_aliases) {
+    for (const std::filesystem::path& root : loose_roots) {
+      add_host_then_indexed(root, entry_parent, include_aliases);
+    }
+  };
   const auto add_indexed_then_host = [&](std::string_view entry_parent) {
-    add_host_then_indexed(entry_parent, true);
+    add_host_then_indexed_for_roots(entry_parent, true);
   };
 
   const bool is_language_parent =
@@ -2563,23 +3451,124 @@ std::vector<RefiiPrivateFindEntry> BuildRefiiFindEntries(std::string_view path) 
   } else if (defer_language_boot_scan && stripped_parent == "language/en-uk") {
     AddRefiiStartupDeferredLocaleRootEntries(&entries, &seen, pattern);
   } else if (stripped_parent == "language/en-uk") {
-    AddRefiiLocaleRootEntries(&entries, &seen, stripped_parent, pattern);
-    add_host_then_indexed(stripped_parent, true);
+    add_host_then_indexed_for_roots(stripped_parent, true);
+    if (!any_directory_index_authoritative && entries.empty()) {
+      AddRefiiLocaleRootEntries(&entries, &seen, stripped_parent, pattern);
+    }
   } else if (IsRefiiLanguageCulturePath(stripped_parent)) {
     add_indexed_then_host(stripped_parent);
   } else if (IsGameFaceBoundaryPath(stripped_parent)) {
-    AddRefiiGameFaceLuaEntries(
-        &entries, &seen, loose_root, stripped_parent, pattern);
-    AddRefiiIndexedDirectoryEntriesWithAliases(
-        &entries, &seen, loose_root, stripped_parent, pattern);
+    for (const std::filesystem::path& root : loose_roots) {
+      AddRefiiGameFaceLuaEntries(
+          &entries, &seen, root, stripped_parent, pattern);
+      AddRefiiIndexedDirectoryEntriesWithAliases(
+          &entries, &seen, root, stripped_parent, pattern);
+    }
   } else {
-    AddRefiiIndexedDirectoryEntriesWithAliases(
-        &entries, &seen, loose_root, stripped_parent, pattern);
-    if (!directory_index_authoritative && entries.empty()) {
-      AddRefiiFindHostFiles(&entries, &seen, loose_root, stripped_parent, pattern);
+    for (const std::filesystem::path& root : loose_roots) {
+      AddRefiiIndexedDirectoryEntriesWithAliases(
+          &entries, &seen, root, stripped_parent, pattern);
+    }
+    if (!any_directory_index_authoritative && entries.empty()) {
+      for (const std::filesystem::path& root : loose_roots) {
+        AddRefiiFindHostFiles(&entries, &seen, root, stripped_parent, pattern);
+      }
     }
   }
 
+  std::sort(entries.begin(), entries.end(), [](const auto& left, const auto& right) {
+    if (left.directory != right.directory) {
+      return left.directory && !right.directory;
+    }
+    return left.name < right.name;
+  });
+  return entries;
+}
+
+std::string NormalizeRefiiFindPathText(std::string_view path) {
+  std::string normalized(path);
+  std::replace(normalized.begin(), normalized.end(), '\\', '/');
+  while (!normalized.empty() && normalized.back() == '\0') {
+    normalized.pop_back();
+  }
+  std::ranges::transform(normalized, normalized.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return normalized;
+}
+
+std::string RefiiReplacementFindParent(std::string_view path,
+                                       std::string* out_pattern) {
+  std::string normalized = NormalizeRefiiFindPathText(path);
+  const size_t slash = normalized.find_last_of('/');
+  const size_t colon = normalized.find(':');
+  if (slash == std::string::npos ||
+      (colon != std::string::npos && slash < colon)) {
+    if (colon != std::string::npos) {
+      if (out_pattern != nullptr) {
+        *out_pattern = normalized.substr(colon + 1);
+        while (!out_pattern->empty() && out_pattern->front() == '/') {
+          out_pattern->erase(out_pattern->begin());
+        }
+      }
+      return normalized.substr(0, colon + 1);
+    }
+    if (out_pattern != nullptr) {
+      *out_pattern = std::move(normalized);
+    }
+    return {};
+  }
+  if (out_pattern != nullptr) {
+    *out_pattern = normalized.substr(slash + 1);
+  }
+  return normalized.substr(0, slash);
+}
+
+std::vector<RefiiPrivateFindEntry> BuildRefiiReplacementHostFindEntries(
+    std::string_view path,
+    bool* out_managed) {
+  if (out_managed != nullptr) {
+    *out_managed = false;
+  }
+  std::string pattern;
+  const std::string parent = RefiiReplacementFindParent(path, &pattern);
+  RefiiReplacementPathResolution replacement;
+  if (!ResolveRefiiReplacementPath(parent, &replacement)) {
+    return {};
+  }
+  if (out_managed != nullptr) {
+    *out_managed = true;
+  }
+  if (!replacement.exists || !replacement.is_directory) {
+    return {};
+  }
+
+  std::vector<RefiiPrivateFindEntry> entries;
+  std::unordered_set<std::string> seen;
+  std::error_code error;
+  for (std::filesystem::directory_iterator it(replacement.resolution.host_path, error),
+       end;
+       it != end; it.increment(error)) {
+    if (error) {
+      error.clear();
+      continue;
+    }
+    const std::string name = it->path().filename().generic_string();
+    bool is_directory = it->is_directory(error);
+    if (error) {
+      error.clear();
+      is_directory = false;
+    }
+    uint64_t size = 0;
+    if (!is_directory && it->is_regular_file(error)) {
+      size = it->file_size(error);
+      if (error) {
+        size = 0;
+      }
+    }
+    error.clear();
+    AddRefiiFindEntry(&entries, &seen, name, is_directory, size, pattern);
+  }
   std::sort(entries.begin(), entries.end(), [](const auto& left, const auto& right) {
     if (left.directory != right.directory) {
       return left.directory && !right.directory;
@@ -2598,14 +3587,19 @@ bool TryFindFirstRefiiPrivate(PPCContext& ctx,
   }
   LogRefiiVfsRuntimePolicyOnce();
   const std::string normalized = NormalizeLooseAssetKey(path);
-  if (normalized.find(':') != std::string::npos) {
-    return false;
-  }
 
-  std::vector<RefiiPrivateFindEntry> entries = BuildRefiiFindEntries(path);
+  std::vector<RefiiPrivateFindEntry> entries;
+  if (normalized.find(':') == std::string::npos) {
+    entries = BuildRefiiFindEntries(path);
+  }
+  bool replacement_managed = false;
   if (entries.empty()) {
-    if (IsRefiiFindClaimedPrefix(normalized)) {
+    entries = BuildRefiiReplacementHostFindEntries(path, &replacement_managed);
+  }
+  if (entries.empty()) {
+    if (replacement_managed || IsRefiiFindClaimedPrefix(normalized)) {
       ClearRefiiFindData(base, find_data_guest);
+      SetRefiiWin32LastError(kRefiiWin32ErrorFileNotFound);
       ctx.r3.u32 = kRefiiPrivateHandleInvalid;
       if (VfsTracingEnabled() &&
           ShouldLogRepeatedVfsTraceOperation("FindFirstFileARefiiRejected", 64)) {
@@ -2618,6 +3612,7 @@ bool TryFindFirstRefiiPrivate(PPCContext& ctx,
   }
 
   WriteRefiiFindData(base, find_data_guest, entries.front());
+  SetRefiiWin32LastError(kRefiiWin32ErrorSuccess);
   auto record = std::make_shared<RefiiPrivateFindHandleRecord>();
   record->pattern = normalized;
   record->entries = std::move(entries);
@@ -2637,6 +3632,7 @@ bool TryFindNextRefiiPrivate(PPCContext& ctx,
   std::lock_guard<std::mutex> lock(record->mutex);
   if (record->next_index >= record->entries.size()) {
     record->exhausted = true;
+    SetRefiiWin32LastError(kRefiiWin32ErrorNoMoreFiles);
     ctx.r3.u32 = 0;
     if (VfsTracingEnabled() &&
         ShouldLogRepeatedVfsTraceOperation("LastVfsOperationBeforeTrap", 16)) {
@@ -2651,6 +3647,7 @@ bool TryFindNextRefiiPrivate(PPCContext& ctx,
     return true;
   }
   WriteRefiiFindData(base, find_data_guest, record->entries[record->next_index++]);
+  SetRefiiWin32LastError(kRefiiWin32ErrorSuccess);
   ctx.r3.u32 = 1;
   return true;
 }

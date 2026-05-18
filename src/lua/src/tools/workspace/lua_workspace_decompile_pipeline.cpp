@@ -19938,7 +19938,8 @@ bool WorkspaceHasMaterializedLuaOutputs(const std::filesystem::path& output_root
 
         const std::string normalized = internal::NormalizePathString(
             std::filesystem::relative(it->path(), output_root).generic_string());
-            if (internal::StartsWith(normalized, "luasource/") ||
+        if (internal::StartsWith(normalized, "luasource/") ||
+            internal::StartsWith(normalized, "refii_vfs/") ||
             internal::StartsWith(normalized, ".cache/") ||
             internal::StartsWith(normalized, "_failed/") ||
             internal::StartsWith(normalized, "_disasm/")) {
@@ -23561,6 +23562,9 @@ bool RunLuaWorkspaceDecompilePipeline(const LuaWorkspaceDecompileOptions& raw_op
                 continue;
             }
             if (internal::StartsWith(normalized, "_disasm/")) {
+                continue;
+            }
+            if (internal::StartsWith(normalized, "refii_vfs/")) {
                 continue;
             }
             if (internal::StartsWith(normalized, ".cache/")) {

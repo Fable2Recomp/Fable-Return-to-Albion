@@ -1336,6 +1336,166 @@ void AddRuntimeParentDirectories(std::unordered_set<std::string>* directories,
     }
 }
 
+std::string StripRuntimeDataPrefix(std::string value) {
+    if (StartsWith(value, "data/")) {
+        value.erase(0, 5);
+    }
+    while (!value.empty() && value.back() == '/') {
+        value.pop_back();
+    }
+    return value;
+}
+
+struct RuntimeDirectoryEntry {
+    std::string parent;
+    std::string name;
+    bool directory = false;
+};
+
+void AddRuntimeDirectoryEntry(std::vector<RuntimeDirectoryEntry>* entries,
+                              std::unordered_set<std::string>* keys,
+                              std::string_view path,
+                              bool directory) {
+    if (entries == nullptr || keys == nullptr) {
+        return;
+    }
+
+    std::string normalized = StripRuntimeDataPrefix(NormalizeVfsKey(path));
+    if (normalized.empty() || !ShouldIndexVfsCandidate(normalized)) {
+        return;
+    }
+
+    const size_t separator = normalized.find_last_of('/');
+    std::string parent;
+    std::string name;
+    if (separator == std::string::npos) {
+        name = std::move(normalized);
+    } else {
+        parent = normalized.substr(0, separator);
+        name = normalized.substr(separator + 1);
+    }
+    if (name.empty()) {
+        return;
+    }
+
+    const std::string key = parent + '\t' + name;
+    if (!keys->insert(key).second) {
+        return;
+    }
+
+    entries->push_back(RuntimeDirectoryEntry{
+        .parent = std::move(parent),
+        .name = std::move(name),
+        .directory = directory,
+    });
+}
+
+std::vector<RuntimeDirectoryEntry> BuildRuntimeDirectoryEntries(
+    const std::vector<std::string>& candidates,
+    const std::unordered_set<std::string>& directories,
+    const std::vector<VfsLuaRecord>& lua_records) {
+    std::vector<RuntimeDirectoryEntry> entries;
+    entries.reserve(directories.size() + candidates.size() + lua_records.size() * 2);
+    std::unordered_set<std::string> keys;
+    keys.reserve(entries.capacity());
+
+    for (const std::string& directory : directories) {
+        AddRuntimeDirectoryEntry(&entries, &keys, directory, true);
+    }
+    for (const std::string& candidate : candidates) {
+        AddRuntimeDirectoryEntry(&entries, &keys, candidate, false);
+    }
+    for (const VfsLuaRecord& record : lua_records) {
+        AddRuntimeDirectoryEntry(&entries, &keys, record.alias, false);
+        if (record.candidate != record.alias) {
+            AddRuntimeDirectoryEntry(&entries, &keys, record.candidate, false);
+        }
+    }
+
+    std::sort(entries.begin(),
+              entries.end(),
+              [](const RuntimeDirectoryEntry& lhs, const RuntimeDirectoryEntry& rhs) {
+                  if (lhs.parent != rhs.parent) {
+                      return lhs.parent < rhs.parent;
+                  }
+                  if (lhs.directory != rhs.directory) {
+                      return lhs.directory && !rhs.directory;
+                  }
+                  return lhs.name < rhs.name;
+              });
+    return entries;
+}
+
+void WriteLittleEndianU32(std::ostream* output, std::uint32_t value) {
+    const std::array<char, 4> bytes{
+        static_cast<char>(value & 0xFFu),
+        static_cast<char>((value >> 8) & 0xFFu),
+        static_cast<char>((value >> 16) & 0xFFu),
+        static_cast<char>((value >> 24) & 0xFFu),
+    };
+    output->write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+void WriteRuntimeDirectoryEntryString(std::ostream* output,
+                                      std::string_view value) {
+    WriteLittleEndianU32(output, static_cast<std::uint32_t>(value.size()));
+    output->write(value.data(), static_cast<std::streamsize>(value.size()));
+}
+
+bool WriteRuntimeDirectoryEntriesBinary(
+    const std::filesystem::path& path,
+    const std::vector<RuntimeDirectoryEntry>& entries,
+    std::string* error) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        if (error != nullptr) {
+            *error = "failed to open binary VFS directory entry table for writing: " +
+                     path.string();
+        }
+        return false;
+    }
+
+    std::uint32_t group_count = 0;
+    std::string_view previous_parent;
+    for (const RuntimeDirectoryEntry& entry : entries) {
+        if (group_count == 0 || entry.parent != previous_parent) {
+            ++group_count;
+            previous_parent = entry.parent;
+        }
+    }
+
+    output.write("RFDIREN2", 8);
+    WriteLittleEndianU32(&output, group_count);
+
+    size_t index = 0;
+    while (index < entries.size()) {
+        const std::string_view parent = entries[index].parent;
+        size_t end = index + 1;
+        while (end < entries.size() && entries[end].parent == parent) {
+            ++end;
+        }
+
+        WriteRuntimeDirectoryEntryString(&output, parent);
+        WriteLittleEndianU32(
+            &output, static_cast<std::uint32_t>(end - index));
+        for (size_t entry_index = index; entry_index < end; ++entry_index) {
+            const char type = entries[entry_index].directory ? 'd' : 'f';
+            output.write(&type, 1);
+            WriteRuntimeDirectoryEntryString(&output, entries[entry_index].name);
+        }
+        index = end;
+    }
+
+    if (!output) {
+        if (error != nullptr) {
+            *error = "failed to write binary VFS directory entry table: " +
+                     path.string();
+        }
+        return false;
+    }
+    return true;
+}
+
 bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
                           const std::vector<VfsDatabaseRow>& rows,
                           const std::vector<VfsBankRecord>& bank_records,
@@ -1389,7 +1549,20 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
     const std::filesystem::path alias_root = runtime_index_root / "aliases";
     const std::filesystem::path hash_root = runtime_index_root / "hashes";
     try {
-        std::filesystem::remove_all(runtime_index_root);
+        std::filesystem::create_directories(runtime_index_root);
+        std::filesystem::remove_all(alias_root);
+        std::filesystem::remove_all(hash_root);
+        for (const char* filename : {"candidates.tsv",
+                                     "directories.tsv",
+                                     "directory_entries.tsv",
+                                     "directory_entries.bin",
+                                     "banks.tsv",
+                                     "lua.tsv",
+                                     "hash_ownership.tsv",
+                                     "meta.tsv",
+                                     "unindexed_candidates.tsv"}) {
+            std::filesystem::remove(runtime_index_root / filename);
+        }
         std::filesystem::create_directories(alias_root);
         std::filesystem::create_directories(hash_root);
     } catch (const std::exception& exception) {
@@ -1433,6 +1606,32 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
         directory_output << directory << '\n';
     }
 
+    const std::vector<RuntimeDirectoryEntry> directory_entries =
+        BuildRuntimeDirectoryEntries(candidates, directories, lua_records);
+    const std::filesystem::path directory_entries_path =
+        runtime_index_root / "directory_entries.tsv";
+    std::ofstream directory_entries_output(directory_entries_path, std::ios::trunc);
+    if (!directory_entries_output) {
+        if (error != nullptr) {
+            *error = "failed to open VFS directory entry table for writing: " +
+                     directory_entries_path.string();
+        }
+        return false;
+    }
+    directory_entries_output << "# refii_vfs_directory_entries_v1\n";
+    directory_entries_output << "# parent\tname\ttype\n";
+    for (const RuntimeDirectoryEntry& entry : directory_entries) {
+        directory_entries_output << entry.parent << '\t' << entry.name << '\t'
+                                 << (entry.directory ? 'd' : 'f') << '\n';
+    }
+
+    const std::filesystem::path directory_entries_bin_path =
+        runtime_index_root / "directory_entries.bin";
+    if (!WriteRuntimeDirectoryEntriesBinary(
+            directory_entries_bin_path, directory_entries, error)) {
+        return false;
+    }
+
     const std::filesystem::path banks_path = runtime_index_root / "banks.tsv";
     std::ofstream bank_output(banks_path, std::ios::trunc);
     if (!bank_output) {
@@ -1472,7 +1671,18 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
                   return std::tie(lhs.alias, lhs.candidate, lhs.kind) <
                          std::tie(rhs.alias, rhs.candidate, rhs.kind);
               });
+    std::unordered_set<std::string> carrier_lua_keys;
     for (const VfsLuaRecord& record : sorted_lua_records) {
+        if (record.kind == "carrier") {
+            carrier_lua_keys.insert(record.alias + '\t' + record.candidate);
+        }
+    }
+    for (const VfsLuaRecord& record : sorted_lua_records) {
+        if (record.kind == "override" &&
+            carrier_lua_keys.find(record.alias + '\t' + record.candidate) !=
+                carrier_lua_keys.end()) {
+            continue;
+        }
         lua_output << record.alias << '\t' << record.candidate << '\t'
                    << record.kind << '\n';
     }
@@ -1565,6 +1775,7 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
     metadata << "hash_entries\t" << hash_entry_count << '\n';
     metadata << "owned_hashes\t" << sorted_owned_hashes.size() << '\n';
     metadata << "directories\t" << sorted_directories.size() << '\n';
+    metadata << "directory_entries\t" << directory_entries.size() << '\n';
     metadata << "bank_records\t" << bank_records.size() << '\n';
     metadata << "lua_records\t" << lua_records.size() << '\n';
 
@@ -1684,15 +1895,18 @@ bool IsPathInsideIndexedBankRoot(const VfsDatabaseBuildState& state,
     return false;
 }
 
-void AddVfsSyntheticBankRows(VfsDatabaseBuildState* state,
-                             std::string_view normalized_root) {
+void AddVfsSyntheticBankRowsForManifest(VfsDatabaseBuildState* state,
+                                        std::string_view logical_root,
+                                        std::string_view manifest_root) {
     if (state == nullptr) {
         return;
     }
 
-    const std::string root = NormalizeVfsKey(normalized_root);
-    if (root.empty() || IsLuaSourceRoot(root) || StartsWith(root, ".baseline/") ||
-        StartsWith(root, ".cache/") || StartsWith(root, "_disasm/")) {
+    const std::string root = NormalizeVfsKey(logical_root);
+    const std::string manifest = NormalizeVfsKey(manifest_root);
+    if (root.empty() || manifest.empty() || IsLuaSourceRoot(root) ||
+        StartsWith(root, ".baseline/") || StartsWith(root, ".cache/") ||
+        StartsWith(root, "_disasm/") || StartsWith(root, "refii_vfs/")) {
         return;
     }
 
@@ -1707,13 +1921,13 @@ void AddVfsSyntheticBankRows(VfsDatabaseBuildState* state,
                      &state->bank_record_keys,
                      synthetic_bank_candidate,
                      synthetic_bank_candidate,
-                     root);
+                     manifest);
     if (root == "globals/1024mip0_textures") {
         AddVfsBankRecord(&state->bank_records,
                          &state->bank_record_keys,
                          "globals/1024mip0_texture_headers.bnk",
                          synthetic_bank_candidate,
-                         root);
+                         manifest);
     }
 
     constexpr std::string_view kLanguagePrefix = "language/";
@@ -1739,12 +1953,26 @@ void AddVfsSyntheticBankRows(VfsDatabaseBuildState* state,
                      &state->bank_record_keys,
                      alias,
                      synthetic_bank_candidate,
-                     root);
+                     manifest);
     AddVfsBankRecord(&state->bank_records,
                      &state->bank_record_keys,
                      backslash_alias,
                      synthetic_bank_candidate,
-                     root);
+                     manifest);
+}
+
+void AddVfsSyntheticBankRows(VfsDatabaseBuildState* state,
+                             std::string_view normalized_root) {
+    AddVfsSyntheticBankRowsForManifest(state, normalized_root, normalized_root);
+}
+
+std::string LogicalBankRootFromManifestRoot(std::string_view manifest_root) {
+    std::string normalized = NormalizeVfsKey(manifest_root);
+    constexpr std::string_view kBankMetadataPrefix = "refii_vfs/banks/";
+    if (StartsWith(normalized, kBankMetadataPrefix)) {
+        normalized.erase(0, kBankMetadataPrefix.size());
+    }
+    return normalized;
 }
 
 void AddVfsExtractedCandidate(VfsDatabaseBuildState* state,
@@ -1756,6 +1984,28 @@ void AddVfsExtractedCandidate(VfsDatabaseBuildState* state,
     }
 
     const std::string candidate = NormalizeVfsKey(candidate_path.generic_string());
+    const std::string normalized_entry = NormalizeVfsKey(entry_path);
+    if (manifest_covered && EndsWith(normalized_entry, ".lua")) {
+        AddVfsLuaRecord(&state->lua_records,
+                        &state->lua_record_keys,
+                        normalized_entry,
+                        candidate,
+                        "carrier");
+        if (StartsWith(normalized_entry, "data/")) {
+            AddVfsLuaRecord(&state->lua_records,
+                            &state->lua_record_keys,
+                            std::string_view(normalized_entry).substr(5),
+                            candidate,
+                            "carrier");
+        } else {
+            AddVfsLuaRecord(&state->lua_records,
+                            &state->lua_record_keys,
+                            "data/" + normalized_entry,
+                            candidate,
+                                    "carrier");
+        }
+    }
+
     if (!ShouldIndexVfsCandidate(candidate)) {
         return;
     }
@@ -1765,7 +2015,7 @@ void AddVfsExtractedCandidate(VfsDatabaseBuildState* state,
     }
     AddVfsDatabasePathAliases(&state->rows, &state->row_keys, candidate, entry_path);
     AddVfsBasenameCandidate(&state->basename_candidates, candidate);
-    if (!IsLuaSourceRoot(candidate) && EndsWith(candidate, ".lua")) {
+    if (!manifest_covered && !IsLuaSourceRoot(candidate) && EndsWith(candidate, ".lua")) {
         AddVfsLuaRecord(&state->lua_records,
                         &state->lua_record_keys,
                         candidate,
@@ -1848,13 +2098,6 @@ void CollectSupplementalVfsFile(VfsDatabaseBuildState* state,
         return;
     }
 
-    if (StartsWith(normalized_key, ".baseline/") ||
-        StartsWith(normalized_key, ".cache/") ||
-        StartsWith(normalized_key, "refii_vfs/") ||
-        StartsWith(normalized_key, "_disasm/")) {
-        return;
-    }
-
     const std::string filename = NormalizeVfsKey(absolute_path.filename().generic_string());
     if (filename == "_manifest.tsv") {
         state->manifest_paths.push_back(absolute_path);
@@ -1862,6 +2105,13 @@ void CollectSupplementalVfsFile(VfsDatabaseBuildState* state,
     }
     if (filename == "filehash.csv") {
         state->filehash_paths.push_back(absolute_path);
+    }
+
+    if (StartsWith(normalized_key, ".baseline/") ||
+        StartsWith(normalized_key, ".cache/") ||
+        StartsWith(normalized_key, "refii_vfs/") ||
+        StartsWith(normalized_key, "_disasm/")) {
+        return;
     }
 
     if (EndsWith(normalized_key, ".lua")) {
@@ -1925,7 +2175,9 @@ bool CollectSupplementalVfsFiles(VfsDatabaseBuildState* state, std::string* erro
         const std::filesystem::path manifest_root =
             manifest_path.parent_path().lexically_relative(state->unpacked_root);
         const std::string manifest_root_key = manifest_root.generic_string();
-        const std::string normalized_root = NormalizeVfsKey(manifest_root_key);
+        const std::string normalized_manifest_root = NormalizeVfsKey(manifest_root_key);
+        const std::string normalized_root =
+            LogicalBankRootFromManifestRoot(normalized_manifest_root);
         if (normalized_root.empty() || IsLuaSourceRoot(normalized_root) ||
             StartsWith(normalized_root, ".baseline/") ||
             StartsWith(normalized_root, ".cache/") ||
@@ -1933,7 +2185,8 @@ bool CollectSupplementalVfsFiles(VfsDatabaseBuildState* state, std::string* erro
             continue;
         }
 
-        AddVfsSyntheticBankRows(state, normalized_root);
+        AddVfsSyntheticBankRowsForManifest(
+            state, normalized_root, normalized_manifest_root);
 
         std::string line;
         std::getline(manifest, line);
@@ -1951,9 +2204,16 @@ bool CollectSupplementalVfsFiles(VfsDatabaseBuildState* state, std::string* erro
             }
 
             const std::string entry_path = std::string(columns[0]);
-            const std::filesystem::path rooted_candidate =
-                manifest_root / NormalizeRelativePath(entry_path);
-            AddVfsExtractedCandidate(state, rooted_candidate, entry_path, true);
+            std::filesystem::path candidate_path;
+            if (columns.size() > 7 && !columns[7].empty()) {
+                candidate_path = NormalizeRelativePath(std::string(columns[7]));
+            } else {
+                candidate_path = NormalizeRelativePath(entry_path);
+                if (!StartsWith(normalized_manifest_root, "refii_vfs/banks/")) {
+                    candidate_path = manifest_root / candidate_path;
+                }
+            }
+            AddVfsExtractedCandidate(state, candidate_path, entry_path, true);
         }
         ++state->indexed_manifests;
     }
@@ -2586,13 +2846,18 @@ bool ExtractOneBank(const std::filesystem::path& bank_path,
         const std::string manifest_root = NormalizeVfsKey(manifest_root_path.generic_string());
         if (!manifest_root.empty()) {
             context->vfs_database->extracted_bank_roots.insert(manifest_root);
-            AddVfsSyntheticBankRows(context->vfs_database, manifest_root);
+            const std::string logical_bank_root =
+                LogicalBankRootFromManifestRoot(manifest_root);
+            AddVfsSyntheticBankRowsForManifest(
+                context->vfs_database, logical_bank_root, manifest_root);
             for (const PlannedBankEntry& planned_entry : planned_entries) {
                 if (planned_entry.skip_duplicate) {
                     continue;
                 }
                 const std::filesystem::path candidate_path =
-                    (manifest_root_path / planned_entry.relative_path).lexically_normal();
+                    planned_entry.host_relative_path.empty()
+                        ? planned_entry.relative_path
+                        : planned_entry.host_relative_path;
                 AddVfsExtractedCandidate(context->vfs_database,
                                          candidate_path,
                                          planned_entry.relative_path.generic_string(),
@@ -2626,7 +2891,8 @@ bool ExtractOneBank(const std::filesystem::path& bank_path,
             continue;
         }
 
-        const std::filesystem::path output_path = bank_root / host_relative_path;
+        const std::filesystem::path output_path =
+            (context->output_root / host_relative_path).lexically_normal();
         if (entry.is_compressed) {
             if (!ExtractCompressedEntry(file, data_offset, entry, output_path, error)) {
                 if (error != nullptr && !error->empty()) {
@@ -2705,7 +2971,8 @@ void EmitProgress(const std::function<void(const BankExtractionProgress&)>& call
 
 std::filesystem::path GetBankOutputRoot(const std::filesystem::path& output_root,
                                         const std::filesystem::path& bank_relative_path) {
-    return (output_root / LowercaseRelativePath(bank_relative_path.parent_path()) /
+    return (output_root / "refii_vfs" / "banks" /
+            LowercaseRelativePath(bank_relative_path.parent_path()) /
             LowercaseAscii(bank_relative_path.stem().generic_string()))
         .lexically_normal();
 }
@@ -2814,20 +3081,22 @@ bool BuildVfsDatabase(const VfsDatabaseBuildOptions& options,
             }
             continue;
         }
-        if (StartsWith(normalized_key, ".baseline/") ||
-            StartsWith(normalized_key, ".cache/") ||
-            StartsWith(normalized_key, "refii_vfs/") ||
-            StartsWith(normalized_key, "_disasm/")) {
-            continue;
-        }
-
         const std::string filename = NormalizeVfsKey(it->path().filename().generic_string());
-        if (filename == "_manifest.tsv") {
+        if (filename == "_manifest.tsv" &&
+            (StartsWith(normalized_key, "refii_vfs/banks/") ||
+             !StartsWith(normalized_key, "refii_vfs/"))) {
             manifest_paths.push_back(it->path());
             continue;
         }
         if (filename == "filehash.csv") {
             filehash_paths.push_back(it->path());
+        }
+
+        if (StartsWith(normalized_key, ".baseline/") ||
+            StartsWith(normalized_key, ".cache/") ||
+            StartsWith(normalized_key, "refii_vfs/") ||
+            StartsWith(normalized_key, "_disasm/")) {
+            continue;
         }
 
         if (EndsWith(normalized_key, ".lua")) {
@@ -2849,7 +3118,9 @@ bool BuildVfsDatabase(const VfsDatabaseBuildOptions& options,
         const std::filesystem::path manifest_root =
             manifest_path.parent_path().lexically_relative(unpacked_root);
         const std::string manifest_root_key = manifest_root.generic_string();
-        const std::string normalized_root = NormalizeVfsKey(manifest_root_key);
+        const std::string normalized_manifest_root = NormalizeVfsKey(manifest_root_key);
+        const std::string normalized_root =
+            LogicalBankRootFromManifestRoot(normalized_manifest_root);
         if (normalized_root.empty() || IsLuaSourceRoot(normalized_root) ||
             StartsWith(normalized_root, ".baseline/") ||
             StartsWith(normalized_root, ".cache/") ||
@@ -2865,13 +3136,13 @@ bool BuildVfsDatabase(const VfsDatabaseBuildOptions& options,
                              &bank_record_keys,
                              synthetic_bank_candidate,
                              synthetic_bank_candidate,
-                             normalized_root);
+                             normalized_manifest_root);
             if (normalized_root == "globals/1024mip0_textures") {
                 AddVfsBankRecord(&bank_records,
                                  &bank_record_keys,
                                  "globals/1024mip0_texture_headers.bnk",
                                  synthetic_bank_candidate,
-                                 normalized_root);
+                                 normalized_manifest_root);
             }
 
             constexpr std::string_view kLanguagePrefix = "language/";
@@ -2894,12 +3165,12 @@ bool BuildVfsDatabase(const VfsDatabaseBuildOptions& options,
                                      &bank_record_keys,
                                      alias,
                                      synthetic_bank_candidate,
-                                     normalized_root);
+                                     normalized_manifest_root);
                     AddVfsBankRecord(&bank_records,
                                      &bank_record_keys,
                                      backslash_alias,
                                      synthetic_bank_candidate,
-                                     normalized_root);
+                                     normalized_manifest_root);
                 }
             }
         }
@@ -2920,9 +3191,28 @@ bool BuildVfsDatabase(const VfsDatabaseBuildOptions& options,
             }
 
             const std::string entry_path = std::string(columns[0]);
-            const std::filesystem::path rooted_candidate =
-                manifest_root / NormalizeRelativePath(entry_path);
-            const std::string candidate = rooted_candidate.generic_string();
+            std::string candidate = NormalizeVfsKey(entry_path);
+            if (columns.size() >= 8 && !columns[7].empty()) {
+                candidate = NormalizeVfsKey(columns[7]);
+            }
+            if (EndsWith(NormalizeVfsKey(entry_path), ".lua")) {
+                const std::string original = NormalizeVfsKey(entry_path);
+                AddVfsLuaRecord(
+                    &lua_records, &lua_record_keys, original, candidate, "carrier");
+                if (StartsWith(original, "data/")) {
+                    AddVfsLuaRecord(&lua_records,
+                                    &lua_record_keys,
+                                    std::string_view(original).substr(5),
+                                    candidate,
+                                    "carrier");
+                } else {
+                    AddVfsLuaRecord(&lua_records,
+                                    &lua_record_keys,
+                                    "data/" + original,
+                                    candidate,
+                                    "carrier");
+                }
+            }
             if (!ShouldIndexVfsCandidate(candidate)) {
                 continue;
             }

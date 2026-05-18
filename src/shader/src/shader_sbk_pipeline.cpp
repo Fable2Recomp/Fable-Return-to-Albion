@@ -205,7 +205,7 @@ bool ResolveTranslateTargets(std::string_view requested_targets,
 
         if (part != "vulkan" && part != "d3d12") {
             if (error != nullptr) {
-                *error = "Unsupported translation target: " + part +
+                *error = "Unsupported compile target: " + part +
                          " (allowed: vulkan, d3d12, auto)";
             }
             return false;
@@ -219,7 +219,7 @@ bool ResolveTranslateTargets(std::string_view requested_targets,
 
     if (resolved_targets->empty()) {
         if (error != nullptr) {
-            *error = "No valid translation targets selected";
+            *error = "No valid compile targets selected";
         }
         return false;
     }
@@ -245,6 +245,23 @@ std::string SanitizeNameForFile(std::string_view name, std::size_t max_length = 
         output = "unnamed";
     }
     return output;
+}
+
+std::string BuildBankOutputStem(std::string_view bank_name) {
+    const std::string stem =
+        ToLowerAscii(std::filesystem::path(std::string(bank_name)).stem().string());
+    if (stem == "shadersrelease") {
+        return "shaders";
+    }
+    return stem;
+}
+
+std::string BuildCompileTargetOutputStem(std::string_view target) {
+    const std::string normalized = ToLowerAscii(std::string(target));
+    if (normalized == "d3d12") {
+        return "D3D12";
+    }
+    return normalized;
 }
 
 std::string FormatHex32(std::uint32_t value) {
@@ -1088,28 +1105,29 @@ std::string BuildEntryNameHint(const ParsedEntry& entry) {
 std::filesystem::path BuildBlobOutputPath(const std::filesystem::path& extract_root,
                                           std::string_view bank_name,
                                           std::size_t blob_index,
-                                          std::uint32_t source_offset,
-                                          std::uint32_t source_size,
                                           std::string_view name_hint) {
-    const std::string bank_stem = std::filesystem::path(bank_name).stem().string();
+    const std::string bank_stem = BuildBankOutputStem(bank_name);
+    const std::string clean_name = ToLowerAscii(SanitizeNameForFile(name_hint, 120));
     std::ostringstream filename;
-    filename << "blob_" << std::setfill('0') << std::setw(4) << blob_index << "_"
-             << std::hex << std::nouppercase << std::setfill('0') << std::setw(6)
-             << source_offset << "_" << std::setw(6)
-             << static_cast<std::uint32_t>(source_offset + source_size) << "_"
-             << SanitizeNameForFile(name_hint) << ".bin";
-    return extract_root / bank_stem / "blobs" / filename.str();
+    filename << std::setfill('0') << std::setw(4) << blob_index << "_"
+             << clean_name << ".bin";
+    return extract_root / "blobs" / bank_stem / filename.str();
 }
 
 bool ExtractBankBlobs(const ParsedBank& bank,
                       const std::filesystem::path& extract_root,
                       std::vector<ShaderSbkBlobMetadata>* blobs,
+                      std::unordered_set<std::string>* seen_blob_hashes,
+                      bool* wrote_blob,
                       std::string* error) {
     if (blobs == nullptr) {
         if (error != nullptr) {
             *error = "blob metadata output missing";
         }
         return false;
+    }
+    if (wrote_blob != nullptr) {
+        *wrote_blob = false;
     }
 
     std::size_t compressed_data_base = 0;
@@ -1153,6 +1171,7 @@ bool ExtractBankBlobs(const ParsedBank& bank,
     std::size_t pixel_name_index = 0;
     std::size_t unknown_name_index = 0;
 
+    std::size_t decoded_count = 0;
     std::size_t extracted_count = 0;
     for (const CompressedChunkHeader& chunk : chunk_headers) {
         const std::size_t absolute_start = compressed_data_base + chunk.offset + 4;
@@ -1213,13 +1232,22 @@ bool ExtractBankBlobs(const ParsedBank& bank,
                 chunk.offset + local_offset);
             const std::uint32_t source_size =
                 static_cast<std::uint32_t>(container_size);
+            ++decoded_count;
+            const std::string sha256 = refii::shader::crypto::ComputeSha256Hex(
+                decompressed.data() +
+                    static_cast<std::ptrdiff_t>(local_offset),
+                container_size);
+
+            if (seen_blob_hashes != nullptr &&
+                !seen_blob_hashes->insert(sha256).second) {
+                local_offset += container_size - 4;
+                continue;
+            }
 
             const std::filesystem::path output_path = BuildBlobOutputPath(
                 extract_root,
                 bank.bank_name,
                 blobs->size(),
-                source_offset,
-                source_size,
                 name_hint);
 
             if (!WriteBinaryFile(output_path,
@@ -1242,18 +1270,18 @@ bool ExtractBankBlobs(const ParsedBank& bank,
             metadata.stage = container_stage;
             metadata.name_hint = name_hint;
             metadata.output_path = output_path;
-            metadata.sha256 = refii::shader::crypto::ComputeSha256Hex(
-                decompressed.data() +
-                    static_cast<std::ptrdiff_t>(local_offset),
-                container_size);
+            metadata.sha256 = sha256;
             blobs->push_back(std::move(metadata));
 
             ++extracted_count;
+            if (wrote_blob != nullptr) {
+                *wrote_blob = true;
+            }
             local_offset += container_size - 4;
         }
     }
 
-    if (extracted_count == 0) {
+    if (decoded_count == 0) {
         if (error != nullptr) {
             *error = "Decoded zero Xenos shader containers from " + bank.bank_name;
         }
@@ -1266,6 +1294,7 @@ bool ExtractBankBlobs(const ParsedBank& bank,
 bool WriteExtractManifest(const std::filesystem::path& manifest_path,
                           const std::vector<ParsedBank>& banks,
                           const std::vector<ShaderSbkBlobMetadata>& blobs,
+                          const std::unordered_set<std::string>& banks_with_blobs,
                           std::string* error) {
     std::ostringstream manifest;
     manifest
@@ -1273,6 +1302,9 @@ bool WriteExtractManifest(const std::filesystem::path& manifest_path,
            "\tentry_name\tsource_offset\tsource_size\toutput_path\tsha256\n";
 
     for (const ParsedBank& bank : banks) {
+        if (!banks_with_blobs.contains(bank.bank_name)) {
+            continue;
+        }
         for (const ParsedEntry& entry : bank.entries) {
             manifest << "entry"
                      << '\t' << EscapeTsv(bank.bank_name)
@@ -1457,8 +1489,8 @@ std::filesystem::path BuildTranslatorLogPath(const std::filesystem::path& transl
                                              std::string_view output_stem) {
     return translate_root /
            "logs" /
-           std::string(target) /
-           std::string(bank_name) /
+           BuildCompileTargetOutputStem(target) /
+           BuildBankOutputStem(bank_name) /
            (std::string(output_stem) + ".stderr.log");
 }
 
@@ -1683,10 +1715,26 @@ bool ExtractShaderSbkWorkspace(const ShaderSbkExtractOptions& options,
     active_summary->manifest_path = manifest_path;
 
     try {
+        const std::array<std::string_view, 4> legacy_blob_stems = {
+            "shaders",
+            "shadersrelease",
+            "Shaders",
+            "ShadersRelease",
+        };
+        for (const std::string_view blob_stem : legacy_blob_stems) {
+            std::filesystem::remove_all(extract_out_dir / "blobs" / blob_stem);
+        }
         for (const std::string_view bank_file : kExpectedBankFiles) {
-            const std::filesystem::path bank_stem =
-                std::filesystem::path(bank_file).stem();
-            std::filesystem::remove_all(extract_out_dir / bank_stem);
+            const std::string normalized_bank_stem = BuildBankOutputStem(bank_file);
+            std::filesystem::remove_all(
+                extract_out_dir / "blobs" / normalized_bank_stem);
+
+            const std::string legacy_bank_stem =
+                std::filesystem::path(bank_file).stem().string();
+            if (legacy_bank_stem != normalized_bank_stem) {
+                std::filesystem::remove_all(extract_out_dir / legacy_bank_stem);
+            }
+            std::filesystem::remove_all(extract_out_dir / normalized_bank_stem);
         }
     } catch (const std::exception& exception) {
         if (error != nullptr) {
@@ -1749,11 +1797,18 @@ bool ExtractShaderSbkWorkspace(const ShaderSbkExtractOptions& options,
     CrossFillEntryNamesAndHashes(&banks);
 
     std::vector<ShaderSbkBlobMetadata> blobs;
+    std::unordered_set<std::string> seen_blob_hashes;
+    std::unordered_set<std::string> banks_with_blobs;
     for (const ParsedBank& bank : banks) {
-        if (!ExtractBankBlobs(bank, extract_out_dir, &blobs, error)) {
+        bool wrote_blob = false;
+        if (!ExtractBankBlobs(
+                bank, extract_out_dir, &blobs, &seen_blob_hashes, &wrote_blob, error)) {
             return false;
         }
-        active_summary->entry_count += bank.entries.size();
+        if (wrote_blob) {
+            banks_with_blobs.insert(bank.bank_name);
+            active_summary->entry_count += bank.entries.size();
+        }
 
         if (progress_callback) {
             progress_callback(ShaderSbkProgress{
@@ -1771,11 +1826,11 @@ bool ExtractShaderSbkWorkspace(const ShaderSbkExtractOptions& options,
         }
     }
 
-    if (!WriteExtractManifest(manifest_path, banks, blobs, error)) {
+    if (!WriteExtractManifest(manifest_path, banks, blobs, banks_with_blobs, error)) {
         return false;
     }
 
-    active_summary->bank_count = banks.size();
+    active_summary->bank_count = banks_with_blobs.size();
     active_summary->blob_count = blobs.size();
     return true;
 }
@@ -1810,6 +1865,33 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
     const std::size_t total_items = blobs.size() * targets.size();
     std::size_t completed_items = 0;
 
+    std::unordered_set<std::string> bank_output_stems = {
+        "shaders",
+        "shadersrelease",
+        "Shaders",
+        "ShadersRelease",
+    };
+    for (const TranslateBlobRecord& blob : blobs) {
+        bank_output_stems.insert(BuildBankOutputStem(blob.bank_name));
+    }
+    try {
+        for (const std::string& target : targets) {
+            const std::string target_stem = BuildCompileTargetOutputStem(target);
+            for (const std::string& bank_stem : bank_output_stems) {
+                std::filesystem::remove_all(
+                    active_summary->translate_out_dir / target_stem / bank_stem);
+                std::filesystem::remove_all(
+                    active_summary->translate_out_dir / "logs" / target_stem / bank_stem);
+            }
+        }
+    } catch (const std::exception& exception) {
+        if (error != nullptr) {
+            *error = "Failed to prepare compile output directories: " +
+                     std::string(exception.what());
+        }
+        return false;
+    }
+
     const bool translator_available = !options.translator_path.empty();
 
     struct CachedTranslateResult {
@@ -1834,7 +1916,7 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
         for (const std::string& target : targets) {
             if (progress_callback) {
                 progress_callback(ShaderSbkProgress{
-                    "translating_shader",
+                    "compiling_shader",
                     blob.bank_name,
                     0,
                     0,
@@ -1850,8 +1932,8 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
             const std::string output_stem = blob.input_path.stem().string() + "." + target;
             const std::filesystem::path output_path =
                 active_summary->translate_out_dir /
-                target /
-                blob.bank_name /
+                BuildCompileTargetOutputStem(target) /
+                BuildBankOutputStem(blob.bank_name) /
                 (output_stem + ".bin");
             const std::filesystem::path hlsl_path = BuildTranslatedHlslPath(output_path);
             const std::filesystem::path stderr_path = BuildTranslatorLogPath(
@@ -1984,7 +2066,7 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
 
     if (progress_callback) {
         progress_callback(ShaderSbkProgress{
-            "translation_complete",
+            "compile_complete",
             {},
             0,
             0,

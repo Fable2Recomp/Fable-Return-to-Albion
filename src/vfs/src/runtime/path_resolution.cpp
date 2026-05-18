@@ -335,14 +335,24 @@ bool HasExtractedBankMirror(const std::filesystem::path& root,
 
   normalized.erase(normalized.size() - 4);
   std::error_code error;
-  const std::filesystem::path manifest_path =
+  const std::filesystem::path direct_manifest_path =
       root / std::filesystem::path(normalized) / "_manifest.tsv";
-  if (std::filesystem::is_regular_file(manifest_path, error)) {
+  if (std::filesystem::is_regular_file(direct_manifest_path, error)) {
+    return true;
+  }
+  error.clear();
+
+  const std::filesystem::path metadata_manifest_path =
+      root / "refii_vfs" / "banks" / std::filesystem::path(normalized) /
+      "_manifest.tsv";
+  if (std::filesystem::is_regular_file(metadata_manifest_path, error)) {
     return true;
   }
 
   CachedLooseAsset manifest;
-  return TryResolveCachedLooseAsset(root, normalized + "/_manifest.tsv", &manifest);
+  return TryResolveCachedLooseAsset(root, normalized + "/_manifest.tsv", &manifest) ||
+         TryResolveCachedLooseAsset(
+             root, "refii_vfs/banks/" + normalized + "/_manifest.tsv", &manifest);
 }
 
 std::filesystem::path ResolveCaseInsensitivePath(const std::filesystem::path& root,
@@ -471,19 +481,75 @@ std::filesystem::path GetDefaultGameRoot() {
   return root;
 }
 
+std::filesystem::path ResolveConfiguredAssetRoot(std::string_view configured_root,
+                                                 const std::filesystem::path& game_root) {
+  if (configured_root.empty()) {
+    return {};
+  }
+
+  std::filesystem::path root{std::string(configured_root)};
+  if (root.is_relative()) {
+    if (game_root.empty()) {
+      return {};
+    }
+    root = game_root / root;
+  }
+  return NormalizeLooseAssetPath(std::move(root));
+}
+
+void AddUniqueRoot(std::vector<std::filesystem::path>* roots,
+                   std::filesystem::path root) {
+  if (roots == nullptr || root.empty()) {
+    return;
+  }
+  root = NormalizeLooseAssetPath(std::move(root));
+  if (std::find(roots->begin(), roots->end(), root) == roots->end()) {
+    roots->push_back(std::move(root));
+  }
+}
+
+std::vector<std::filesystem::path> GetLooseAssetModRoots(
+    const std::filesystem::path& game_root) {
+  std::vector<std::filesystem::path> roots;
+  const std::string configured_roots = ConfiguredModAssetRoots();
+  size_t start = 0;
+  while (start <= configured_roots.size()) {
+    const size_t separator = configured_roots.find(';', start);
+    std::string_view token(configured_roots.data() + start,
+                           separator == std::string::npos
+                               ? configured_roots.size() - start
+                               : separator - start);
+    while (!token.empty() &&
+           std::isspace(static_cast<unsigned char>(token.front())) != 0) {
+      token.remove_prefix(1);
+    }
+    while (!token.empty() &&
+           std::isspace(static_cast<unsigned char>(token.back())) != 0) {
+      token.remove_suffix(1);
+    }
+    AddUniqueRoot(&roots, ResolveConfiguredAssetRoot(token, game_root));
+    if (separator == std::string::npos) {
+      break;
+    }
+    start = separator + 1;
+  }
+  return roots;
+}
+
+std::vector<std::filesystem::path> BuildLooseAssetSearchRoots() {
+  const std::filesystem::path game_root = GetDefaultGameRoot();
+  std::vector<std::filesystem::path> roots = GetLooseAssetModRoots(game_root);
+  AddUniqueRoot(&roots, GetLooseAssetRoot());
+  return roots;
+}
+
 }  // namespace
 
 std::filesystem::path GetLooseAssetRoot() {
   std::filesystem::path root;
   const std::string configured_root = ConfiguredLooseAssetRoot();
   if (!configured_root.empty()) {
-    root = std::filesystem::path(configured_root);
-    if (root.is_relative()) {
-      const std::filesystem::path game_root = GetDefaultGameRoot();
-      if (!game_root.empty()) {
-        root = game_root / root;
-      }
-    }
+    root = ResolveConfiguredAssetRoot(configured_root, GetDefaultGameRoot());
   } else {
     const std::filesystem::path game_root = GetDefaultGameRoot();
     if (!game_root.empty()) {
@@ -492,6 +558,10 @@ std::filesystem::path GetLooseAssetRoot() {
   }
 
   return NormalizeLooseAssetPath(std::move(root));
+}
+
+std::vector<std::filesystem::path> GetLooseAssetSearchRoots() {
+  return BuildLooseAssetSearchRoots();
 }
 
 std::string BuildLooseAssetOpenPath(const std::filesystem::path& loose_path) {
@@ -552,8 +622,8 @@ std::filesystem::path ResolveLooseAssetOverridePath(std::string_view asset_path)
 
 bool ResolveLooseAssetOverride(std::string_view asset_path,
                                LooseAssetResolution* out_resolution) {
-  const std::filesystem::path root = GetLooseAssetRoot();
-  if (root.empty()) {
+  const std::vector<std::filesystem::path> roots = GetLooseAssetSearchRoots();
+  if (roots.empty()) {
     return false;
   }
 
@@ -564,30 +634,35 @@ bool ResolveLooseAssetOverride(std::string_view asset_path,
 
   const std::vector<std::string> candidates = BuildLooseAssetCandidates(normalized);
 
-  for (const std::string& candidate : candidates) {
-    if (IsNativeLooseAssetExcludedCandidate(candidate)) {
+  for (const std::filesystem::path& root : roots) {
+    if (root.empty()) {
       continue;
     }
-    CachedLooseAsset asset;
-    if (!TryResolveCachedLooseAsset(root, candidate, &asset) ||
-        HasExtractedBankMirror(root, asset.relative_path)) {
-      continue;
-    }
+    for (const std::string& candidate : candidates) {
+      if (IsNativeLooseAssetExcludedCandidate(candidate)) {
+        continue;
+      }
+      CachedLooseAsset asset;
+      if (!TryResolveCachedLooseAsset(root, candidate, &asset) ||
+          HasExtractedBankMirror(root, asset.relative_path)) {
+        continue;
+      }
 
-    if (out_resolution != nullptr) {
-      out_resolution->host_path = asset.host_path;
-      out_resolution->normalized_key = normalized;
-      out_resolution->provider_relative_path = asset.relative_path;
+      if (out_resolution != nullptr) {
+        out_resolution->host_path = asset.host_path;
+        out_resolution->normalized_key = normalized;
+        out_resolution->provider_relative_path = asset.relative_path;
+      }
+      return true;
     }
-    return true;
   }
 
   return false;
 }
 
 bool ShouldDeferLooseBankContainer(std::string_view asset_path) {
-  const std::filesystem::path root = GetLooseAssetRoot();
-  if (root.empty()) {
+  const std::vector<std::filesystem::path> roots = GetLooseAssetSearchRoots();
+  if (roots.empty()) {
     return false;
   }
 
@@ -597,14 +672,19 @@ bool ShouldDeferLooseBankContainer(std::string_view asset_path) {
   }
 
   const std::vector<std::string> candidates = BuildLooseAssetCandidates(normalized);
-  for (const std::string& candidate : candidates) {
-    if (HasExtractedBankMirror(root, candidate)) {
-      return true;
+  for (const std::filesystem::path& root : roots) {
+    if (root.empty()) {
+      continue;
     }
-    CachedLooseAsset asset;
-    if (TryResolveCachedLooseAsset(root, candidate, &asset) &&
-        HasExtractedBankMirror(root, asset.relative_path)) {
-      return true;
+    for (const std::string& candidate : candidates) {
+      if (HasExtractedBankMirror(root, candidate)) {
+        return true;
+      }
+      CachedLooseAsset asset;
+      if (TryResolveCachedLooseAsset(root, candidate, &asset) &&
+          HasExtractedBankMirror(root, asset.relative_path)) {
+        return true;
+      }
     }
   }
   return false;

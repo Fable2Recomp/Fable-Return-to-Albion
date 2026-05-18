@@ -140,8 +140,8 @@ bool HasExtractedAssets(
     const std::filesystem::path& markerPath);
 bool UninstallManagedFiles(std::ostream& log);
 
-std::string OpenIsoFileDialog();
-std::string OpenXexpFileDialog();
+std::string OpenIsoFileDialog(std::string* error = nullptr);
+std::string OpenXexpFileDialog(std::string* error = nullptr);
 bool InstallGame(
     const std::filesystem::path& isoPath,
     const std::filesystem::path& xexpPath,

@@ -55,7 +55,8 @@ bool ParseCommonBuildFlags(int argc, char** argv, int start_index, Options* opti
             options->manifest = std::filesystem::path(argv[++i]);
         } else if (argument == "--extract-manifest" && i + 1 < argc) {
             options->extract_manifest = std::filesystem::path(argv[++i]);
-        } else if (argument == "--translate-out" && i + 1 < argc) {
+        } else if ((argument == "--translate-out" || argument == "--compile-out") &&
+                   i + 1 < argc) {
             options->translate_out = std::filesystem::path(argv[++i]);
         } else if (argument == "--report" && i + 1 < argc) {
             options->report = std::filesystem::path(argv[++i]);
@@ -90,6 +91,7 @@ bool ParseArguments(int argc, char** argv, Options* options) {
 
     options->command = argv[1];
     if (options->command != "extract" && options->command != "translate" &&
+        options->command != "compile" &&
         options->command != "build" && options->command != "probe-xenos") {
         return false;
     }
@@ -107,7 +109,7 @@ bool ParseArguments(int argc, char** argv, Options* options) {
                !options->manifest.empty();
     }
 
-    if (options->command == "translate") {
+    if (options->command == "translate" || options->command == "compile") {
         return !options->extract_manifest.empty() && !options->translate_out.empty() &&
                !options->report.empty();
     }
@@ -126,12 +128,12 @@ bool ParseArguments(int argc, char** argv, Options* options) {
 void PrintUsage() {
     std::cerr
         << "usage: refii-shader-sbk extract --input-dir <dir> --extract-out <dir> --manifest <path>\n"
-        << "       refii-shader-sbk translate --extract-manifest <path> --translate-out <dir> --report <path>\n"
+        << "       refii-shader-sbk compile --extract-manifest <path> --compile-out <dir> --report <path>\n"
         << "                          [--translator <exe>] [--translator-timeout-ms <ms>]\n"
         << "                          [--targets <vulkan|d3d12|vulkan,d3d12|auto>]\n"
         << "                          [--dedupe-identical-blobs <on|off>]\n"
         << "       refii-shader-sbk build --input-dir <dir> --extract-out <dir> --manifest <path>\n"
-        << "                          --translate-out <dir> --report <path>\n"
+        << "                          --compile-out <dir> --report <path>\n"
         << "                          [--extract-manifest <path>]\n"
         << "                          [--translator <exe>] [--translator-timeout-ms <ms>]\n"
         << "                          [--targets <vulkan|d3d12|vulkan,d3d12|auto>]\n"
@@ -140,9 +142,10 @@ void PrintUsage() {
         << "                          (or --report <path>)\n"
         << "\n"
         << "notes:\n"
-        << "- `translate` requires --extract-manifest (or --manifest alias).\n"
+        << "- `compile` requires --extract-manifest (or --manifest alias).\n"
+        << "- `translate` and --translate-out are accepted as legacy aliases.\n"
         << "- `build` defaults --extract-manifest to --manifest when omitted.\n"
-        << "- build fails on extraction errors and always writes a translation report.\n";
+        << "- build fails on extraction errors and always writes a compile report.\n";
 }
 
 }  // namespace
@@ -176,7 +179,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    if (options.command == "translate") {
+    if (options.command == "translate" || options.command == "compile") {
         refii::shader::ShaderSbkTranslateOptions translate_options;
         translate_options.extract_manifest_path = options.extract_manifest;
         translate_options.translate_out_dir = options.translate_out;
@@ -194,7 +197,7 @@ int main(int argc, char** argv) {
         }
 
         std::cout << "Manifest: " << summary.extract_manifest_path << "\n";
-        std::cout << "Translate:" << summary.translate_out_dir << "\n";
+        std::cout << "Compile:  " << summary.translate_out_dir << "\n";
         std::cout << "Report:   " << summary.report_path << "\n";
         std::cout << "Targets:  " << summary.resolved_targets << "\n";
         std::cout << "Blobs:    " << summary.blob_count << "\n";
@@ -253,7 +256,7 @@ int main(int argc, char** argv) {
     std::cout << "Extract:  " << summary.extract.extract_out_dir << "\n";
     std::cout << "Manifest: " << summary.extract.manifest_path << "\n";
     std::cout << "Blobs:    " << summary.extract.blob_count << "\n";
-    std::cout << "Translate:" << summary.translate.translate_out_dir << "\n";
+    std::cout << "Compile:  " << summary.translate.translate_out_dir << "\n";
     std::cout << "Report:   " << summary.translate.report_path << "\n";
     std::cout << "Targets:  " << summary.translate.resolved_targets << "\n";
     std::cout << "Attempted:" << summary.translate.attempted << "\n";

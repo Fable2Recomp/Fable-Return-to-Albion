@@ -589,7 +589,13 @@ std::vector<std::string> MakeBankLooseCandidates(std::string_view bank_name,
 
 std::string MakeBankLooseResolutionCacheKey(std::string_view bank_name,
                                             std::string_view entry_name) {
-  std::string key = GetLooseAssetRoot().lexically_normal().string();
+  std::string key;
+  for (const std::filesystem::path& root : GetLooseAssetSearchRoots()) {
+    if (!key.empty()) {
+      key += ';';
+    }
+    key += root.lexically_normal().generic_string();
+  }
   key += '\n';
   key += NormalizeLooseAssetKey(bank_name);
   key += '\n';
@@ -610,23 +616,33 @@ bool ResolveManifestEntryLooseAsset(const std::filesystem::path& manifest_root,
     return false;
   }
 
-  const std::filesystem::path relative_path =
-      manifest_root / ManifestPathToGenericPath(
-                          std::string(host_entry_name.empty() ? entry_name
-                                                              : host_entry_name));
-  std::filesystem::path host_path = GetLooseAssetRoot() / relative_path;
-  const std::filesystem::path provider_relative =
-      manifest_root / ManifestPathToGenericPath(std::string(entry_name));
+  const bool has_host_entry = !host_entry_name.empty();
+  std::filesystem::path relative_path;
+  if (has_host_entry) {
+    relative_path = ManifestPathToGenericPath(std::string(host_entry_name));
+  } else {
+    relative_path = manifest_root / ManifestPathToGenericPath(std::string(entry_name));
+  }
+  std::filesystem::path provider_relative;
+  if (has_host_entry) {
+    provider_relative = ManifestPathToGenericPath(std::string(host_entry_name));
+  } else {
+    provider_relative =
+        manifest_root / ManifestPathToGenericPath(std::string(entry_name));
+  }
   std::string provider_relative_path = provider_relative.generic_string();
-  std::error_code error;
-  if (!std::filesystem::is_regular_file(host_path, error)) {
-    LooseAssetResolution manifest_resolution;
-    if (!ResolveLooseAssetOverride(relative_path.generic_string(),
-                                   &manifest_resolution)) {
-      return false;
-    }
+  std::filesystem::path host_path;
+  LooseAssetResolution manifest_resolution;
+  if (ResolveLooseAssetOverride(relative_path.generic_string(),
+                                &manifest_resolution)) {
     host_path = manifest_resolution.host_path;
     provider_relative_path = manifest_resolution.provider_relative_path;
+  } else {
+    host_path = GetLooseAssetRoot() / relative_path;
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(host_path, error)) {
+      return false;
+    }
   }
 
   if (out_resolution != nullptr) {

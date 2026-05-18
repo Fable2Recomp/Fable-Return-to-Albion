@@ -600,7 +600,7 @@ REX_EXTERN(sub_82B542D8) {
   }
 }
 
-REX_EXTERN(sub_82B542F0) {
+REX_EXTERN(sub_82B542F0) { // Lumen: LHVFS::CBasicBufferedRequest::GetDevice(void)
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B542F0);
@@ -723,7 +723,7 @@ REX_EXTERN(sub_82B5C148) {
   __imp__sub_82B5C148(ctx, base);
 }
 
-REX_EXTERN(sub_82B5C160) {
+REX_EXTERN(sub_82B5C160) { // Lumen: LHVFS::CWin32Request::GetDevice(void)
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C160);

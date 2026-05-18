@@ -140,6 +140,13 @@ std::string NormalizeBoolValue(std::string value) {
     return value == "true" ? "true" : "false";
 }
 
+std::string ToLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
 std::string NormalizeGameDataRootValue(
     const std::string& value,
     const std::filesystem::path& configPath) {
@@ -342,11 +349,30 @@ std::string FormatDisplayName(const RuntimeCVarDefinition& definition) {
         name = StripPrefix(name, "hid");
         name = StripPrefix(name, "guide");
     } else if (category == "VFS") {
+        if (name == "vfs_loose_asset_backend") {
+            return "Backend";
+        }
         name = StripPrefix(name, "vfs");
+    } else if (category == "Renderer") {
+        name = StripPrefix(name, "renderer");
+    } else if (category == "Renderer/Vulkan") {
+        name = StripPrefix(name, "renderer");
+        name = StripPrefix(name, "vulkan");
+    } else if (category == "Renderer/D3D12") {
+        name = StripPrefix(name, "renderer");
+        name = StripPrefix(name, "d3d12");
+    } else if (category == "Renderer/RenderDoc") {
+        name = StripPrefix(name, "renderer");
+        name = StripPrefix(name, "renderdoc");
+    } else if (category == "Renderer/ImGui") {
+        name = StripPrefix(name, "renderer");
+        name = StripPrefix(name, "imgui");
     } else if (category == "Log") {
         name = StripPrefix(name, "log");
     } else if (category == "Lua") {
         name = StripPrefix(name, "lua");
+    } else if (category == "UI/Vulkan") {
+        name = StripPrefix(name, "vulkan");
     } else if (category == "UI/D3D12") {
         name = StripPrefix(name, "d3d12");
     } else if (category == "Kernel") {
@@ -430,6 +456,107 @@ bool MatchesFilter(const RuntimeCVarDefinition& definition, const std::string& f
     return haystack.find(filter) != std::string::npos;
 }
 
+std::string GetRuntimeSettingValue(const std::map<std::string, std::string>& values,
+                                   std::string_view name,
+                                   std::string_view fallback) {
+    const auto it = values.find(std::string(name));
+    if (it == values.end() || it->second.empty()) {
+        return std::string(fallback);
+    }
+    return it->second;
+}
+
+bool IsNativeRendererCVarCategory(std::string_view category) {
+    return category == "GPU" ||
+           category == "GPU/Shader" ||
+           category == "GPU/Vulkan" ||
+           category == "GPU/D3D12" ||
+           category == "UI/Vulkan" ||
+           category == "UI/D3D12";
+}
+
+bool IsSharedRendererResolutionCVar(std::string_view name) {
+    return name == "resolution" ||
+           name == "video_mode_width" ||
+           name == "video_mode_height";
+}
+
+bool RuntimeSettingsUsePlumeRenderer(
+    const std::map<std::string, std::string>& values);
+
+std::string RuntimeCVarDisplayCategory(
+    const RuntimeCVarDefinition& definition,
+    const std::map<std::string, std::string>& values) {
+    if (RuntimeSettingsUsePlumeRenderer(values) &&
+        std::string_view(definition.category) == "GPU" &&
+        IsSharedRendererResolutionCVar(definition.name)) {
+        return "Renderer";
+    }
+    return definition.category;
+}
+
+bool ShouldShowRuntimeCVar(const RuntimeCVarDefinition& definition,
+                           const std::map<std::string, std::string>& values) {
+    const std::string_view category(definition.category);
+    const std::string_view name(definition.name);
+    const std::string rendererBackend = ToLowerAscii(
+        GetRuntimeSettingValue(values, "renderer_backend", "xenia"));
+    const std::string plumeApi = ToLowerAscii(
+        GetRuntimeSettingValue(values, "renderer_plume_api", "vulkan"));
+    const std::string vfsBackend = ToLowerAscii(
+        GetRuntimeSettingValue(values, "vfs_loose_asset_backend", "native"));
+    const bool isNativeBackend =
+        rendererBackend == "native" || rendererBackend == "xenia";
+    const bool isPlumeBackend = rendererBackend == "plume";
+    const bool isRefiiVfsBackend = vfsBackend == "refii";
+
+    if (category == "VFS") {
+        if (name == "vfs_loose_asset_backend") {
+            return true;
+        }
+        return isRefiiVfsBackend;
+    }
+
+    if (category == "Renderer") {
+        if (name == "renderer_backend") {
+            return true;
+        }
+        return isPlumeBackend;
+    }
+
+    if (category == "Renderer/Vulkan") {
+        return isPlumeBackend && plumeApi == "vulkan";
+    }
+
+    if (category == "Renderer/D3D12") {
+        return isPlumeBackend && plumeApi == "d3d12";
+    }
+
+    if (category == "Renderer/RenderDoc") {
+        return isPlumeBackend;
+    }
+
+    if (category == "Renderer/ImGui") {
+        return isPlumeBackend;
+    }
+
+    if (isPlumeBackend && category == "GPU" &&
+        IsSharedRendererResolutionCVar(name)) {
+        return true;
+    }
+
+    if (IsNativeRendererCVarCategory(category)) {
+        return isNativeBackend;
+    }
+
+    return true;
+}
+
+bool ShouldWriteRuntimeCVar(const RuntimeCVarDefinition& definition,
+                            const std::map<std::string, std::string>& values) {
+    return ShouldShowRuntimeCVar(definition, values);
+}
+
 int ParseIntValue(const std::string& value, const char* fallback) {
     int parsed = 0;
     const std::string source = value.empty() ? fallback : value;
@@ -447,6 +574,160 @@ double ParseDoubleValue(const std::string& value, const char* fallback) {
     } catch (const std::exception&) {
         return std::atof(fallback);
     }
+}
+
+bool TryParsePositiveRuntimeInt(std::string_view value, int& output) {
+    if (value.empty()) {
+        return false;
+    }
+
+    int parsed = 0;
+    const auto begin = value.data();
+    const auto end = begin + value.size();
+    if (std::from_chars(begin, end, parsed).ec != std::errc() ||
+        parsed <= 0) {
+        return false;
+    }
+    output = parsed;
+    return true;
+}
+
+bool TryGetResolutionPresetSize(std::string_view value, int& width, int& height) {
+    std::string normalized;
+    normalized.reserve(value.size());
+    for (char ch : value) {
+        const unsigned char unsignedCh = static_cast<unsigned char>(ch);
+        if (std::isspace(unsignedCh) || ch == '_' || ch == '-') {
+            continue;
+        }
+        normalized.push_back(static_cast<char>(std::tolower(unsignedCh)));
+    }
+
+    const std::size_t xPosition = normalized.find('x');
+    if (xPosition != std::string::npos && xPosition > 0 &&
+        xPosition + 1 < normalized.size()) {
+        int parsedWidth = 0;
+        int parsedHeight = 0;
+        if (TryParsePositiveRuntimeInt(
+                std::string_view(normalized).substr(0, xPosition),
+                parsedWidth) &&
+            TryParsePositiveRuntimeInt(
+                std::string_view(normalized).substr(xPosition + 1),
+                parsedHeight)) {
+            width = parsedWidth;
+            height = parsedHeight;
+            return true;
+        }
+    }
+
+    if (normalized == "480p") {
+        width = 640;
+        height = 480;
+        return true;
+    }
+    if (normalized == "540p") {
+        width = 960;
+        height = 540;
+        return true;
+    }
+    if (normalized == "720p") {
+        width = 1280;
+        height = 720;
+        return true;
+    }
+    if (normalized == "900p") {
+        width = 1600;
+        height = 900;
+        return true;
+    }
+    if (normalized == "1080p") {
+        width = 1920;
+        height = 1080;
+        return true;
+    }
+    if (normalized == "1440p") {
+        width = 2560;
+        height = 1440;
+        return true;
+    }
+    if (normalized == "1800p") {
+        width = 3200;
+        height = 1800;
+        return true;
+    }
+    if (normalized == "2160p" || normalized == "4k") {
+        width = 3840;
+        height = 2160;
+        return true;
+    }
+    return false;
+}
+
+bool RuntimeSettingsUsePlumeRenderer(
+    const std::map<std::string, std::string>& values) {
+    return ToLowerAscii(GetRuntimeSettingValue(values, "renderer_backend",
+                                               "xenia")) == "plume";
+}
+
+int RuntimeSettingInt(const std::map<std::string, std::string>& values,
+                      const char* name,
+                      const char* fallback) {
+    const auto it = values.find(name);
+    if (it == values.end()) {
+        return ParseIntValue("", fallback);
+    }
+    return ParseIntValue(it->second, fallback);
+}
+
+void SetRuntimeSetting(std::map<std::string, std::string>& values,
+                       const char* name,
+                       int value) {
+    values[name] = std::to_string(std::max(1, value));
+}
+
+void LinkPlumeResolutionSettings(
+    const RuntimeCVarDefinition& changedDefinition,
+    std::map<std::string, std::string>& values) {
+    const std::string_view name(changedDefinition.name);
+
+    int presetWidth = 0;
+    int presetHeight = 0;
+    if (name == "resolution" &&
+        TryGetResolutionPresetSize(values["resolution"], presetWidth,
+                                   presetHeight)) {
+        SetRuntimeSetting(values, "video_mode_width", presetWidth);
+        SetRuntimeSetting(values, "video_mode_height", presetHeight);
+        SetRuntimeSetting(values, "window_width", presetWidth);
+        SetRuntimeSetting(values, "window_height", presetHeight);
+        return;
+    }
+
+    if (!RuntimeSettingsUsePlumeRenderer(values)) {
+        return;
+    }
+
+    const bool changedVideoSize =
+        name == "video_mode_width" || name == "video_mode_height";
+    const bool changedWindowSize =
+        name == "window_width" || name == "window_height";
+    if (!changedVideoSize && !changedWindowSize) {
+        return;
+    }
+
+    const char* widthName = "video_mode_width";
+    const char* heightName = "video_mode_height";
+    if (changedWindowSize) {
+        widthName = "window_width";
+        heightName = "window_height";
+    }
+
+    const int width = RuntimeSettingInt(values, widthName, "1280");
+    const int height = RuntimeSettingInt(values, heightName, "720");
+    values["resolution"].clear();
+    SetRuntimeSetting(values, "video_mode_width", width);
+    SetRuntimeSetting(values, "video_mode_height", height);
+    SetRuntimeSetting(values, "window_width", width);
+    SetRuntimeSetting(values, "window_height", height);
 }
 
 void CopyToBuffer(std::array<char, 512>& buffer, const std::string& value) {
@@ -479,17 +760,42 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"lua_trace_native_handlers", "Lua", RuntimeCVarType::Bool, "false", "Log native Lua dispatch matches and fallbacks."},
         {"lua_mod_workspace_root", "Lua", RuntimeCVarType::String, "", "Optional host Lua mod workspace root."},
 
-        {"vfs_use_loose_assets", "VFS", RuntimeCVarType::Bool, "false", "Prefer loose files from the unpacked mod workspace."},
+        {"vfs_loose_asset_backend", "VFS", RuntimeCVarType::String, "native", "VFS backend: refii for loose asset overrides, native for the original Fable 2 VFS.", "native,refii"},
         {"vfs_trace_loose_assets", "VFS", RuntimeCVarType::Bool, "false", "Log loose asset override matches and fallbacks."},
         {"vfs_trace_vfs", "VFS", RuntimeCVarType::Bool, "false", "Log Fable 2 VFS/resource manager/bank stream flow."},
         {"vfs_trace_vfs_verbose_io", "VFS", RuntimeCVarType::Bool, "false", "Log high-volume Refii VFS stream read/page operations."},
-        {"vfs_use_loose_gameface_binaries", "VFS", RuntimeCVarType::Bool, "false", "Allow loose Anark/GameFace binary assets (.bgf/.bsg/.fac)."},
-        {"vfs_use_loose_bank_entries", "VFS", RuntimeCVarType::Bool, "false", "Prefer loose files for assets opened from Fable 2 BNK banks."},
         {"vfs_skip_startup_videos", "VFS", RuntimeCVarType::Bool, "false", "Skip the non-interactive startup videos while using the Refii VFS."},
         {"vfs_force_startup_video_sequence", "VFS", RuntimeCVarType::Bool, "false", "Require the native startup videos to play in sequence before Refii VFS post-video handoff patches may run."},
         {"vfs_startup_video_minimum_playback_ms", "VFS", RuntimeCVarType::Int, "0", "Optional extra startup-video playback floor before Refii VFS post-video handoff may continue when native finalizers are not observed. 0 uses the built-in observed playback gate."},
-        {"vfs_loose_asset_backend", "VFS", RuntimeCVarType::String, "native", "VFS backend: refii for loose asset overrides, native for the original Fable 2 VFS.", "native,refii,disabled"},
         {"vfs_loose_asset_root", "VFS", RuntimeCVarType::String, "", "Optional host loose asset root; empty defaults to <assets_root>/unpacked."},
+        {"vfs_mod_roots", "VFS", RuntimeCVarType::String, "", "Optional semicolon-separated mod roots using the same layout as unpacked."},
+
+        {"renderer_backend", "Renderer", RuntimeCVarType::String, "xenia", "Renderer backend: plume for the Refii RHI path, xenia for the original Fable 2 renderer.", "xenia,plume,disabled"},
+        {"renderer_plume_api", "Renderer", RuntimeCVarType::String, "vulkan", "Plume graphics API: vulkan or d3d12.", "vulkan,d3d12"},
+        {"renderer_trace_hooks", "Renderer", RuntimeCVarType::Bool, "false", "Log renderer hook dispatch and fallback decisions."},
+        {"renderer_trace_resources", "Renderer", RuntimeCVarType::Bool, "false", "Log renderer resource create/lock/unlock/destroy flow."},
+        {"renderer_trace_draws", "Renderer", RuntimeCVarType::Bool, "false", "Log draw, state, and presentation calls."},
+        {"renderer_trace_verbose", "Renderer", RuntimeCVarType::Bool, "false", "Log high-volume renderer details while hook tracing is enabled."},
+        {"renderer_allow_native_fallback", "Renderer", RuntimeCVarType::Bool, "false", "Allow the original Fable 2 draw/state/present path to run while the Plume renderer backend is selected."},
+
+        {"renderer_imgui_enable", "Renderer/ImGui", RuntimeCVarType::Bool, "true", "Enable the Plume-native ImGui renderer overlay."},
+        {"renderer_imgui_show_stats", "Renderer/ImGui", RuntimeCVarType::Bool, "true", "Show the Plume renderer status window when ImGui is enabled."},
+        {"renderer_imgui_dim_fable", "Renderer/ImGui", RuntimeCVarType::Bool, "true", "Draw a dimmer between Fable 2 and the Plume ImGui overlay."},
+        {"renderer_imgui_dim_alpha", "Renderer/ImGui", RuntimeCVarType::Double, "0.55", "Opacity for the Plume ImGui dimmer over Fable 2."},
+
+        {"renderer_debug_test_triangle", "Renderer/Debug", RuntimeCVarType::Bool, "false", "Draw a Plume-native diagnostic triangle over the game output to validate swapchain and pipeline rendering."},
+
+        {"renderer_vulkan_shader_root", "Renderer/Vulkan", RuntimeCVarType::String, "assets/unpacked/shaders/vulkan", "Directory containing compiled Vulkan shader artifacts."},
+        {"renderer_vulkan_validation", "Renderer/Vulkan", RuntimeCVarType::Bool, "false", "Enable Vulkan validation for the Plume renderer backend."},
+
+        {"renderer_d3d12_shader_root", "Renderer/D3D12", RuntimeCVarType::String, "assets/unpacked/shaders/D3D12", "Directory containing compiled DirectX 12 shader artifacts."},
+        {"renderer_d3d12_debug_layer", "Renderer/D3D12", RuntimeCVarType::Bool, "false", "Enable the DirectX 12 debug layer for the Plume renderer backend."},
+
+        {"renderer_renderdoc_enable", "Renderer/RenderDoc", RuntimeCVarType::Bool, "false", "Enable RenderDoc in-application capture integration for the Refii renderer."},
+        {"renderer_renderdoc_capture_next_frame", "Renderer/RenderDoc", RuntimeCVarType::Bool, "false", "Capture the next Plume-rendered frame with RenderDoc."},
+        {"renderer_renderdoc_overlay", "Renderer/RenderDoc", RuntimeCVarType::Bool, "true", "Show RenderDoc's capture overlay when the RenderDoc API is available."},
+        {"renderer_renderdoc_launch_replay", "Renderer/RenderDoc", RuntimeCVarType::Bool, "false", "Ask RenderDoc to launch or focus its replay UI when a capture is triggered from Refii."},
+        {"renderer_renderdoc_runtime_path", "Renderer/RenderDoc", RuntimeCVarType::String, "", "Optional RenderDoc runtime library path. Empty searches common system and local librenderdoc locations."},
 
         {"window_width", "UI/Window", RuntimeCVarType::Int, "0", "Initial window width; 0 means default."},
         {"window_height", "UI/Window", RuntimeCVarType::Int, "0", "Initial window height; 0 means default."},
@@ -505,10 +811,12 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
 #else
          "bilinear"},
 #endif
+#if defined(REX_HAS_FIDELITYFX_SDK) && REX_HAS_FIDELITYFX_SDK
         {"present_cas_additional_sharpness", "UI/Presenter", RuntimeCVarType::Double, "0.0", "Additional CAS sharpening amount."},
         {"present_fsr_max_upsampling_passes", "UI/Presenter", RuntimeCVarType::Int, "4", "Maximum FSR upsampling passes."},
         {"present_fsr_sharpness_reduction", "UI/Presenter", RuntimeCVarType::Double, "0.2", "FSR sharpness reduction amount."},
         {"present_fsr_quality_mode", "UI/Presenter", RuntimeCVarType::String, "auto", "FSR quality mode.", "auto,nativeaa,quality,balanced,performance,ultra_performance"},
+#endif
         {"present_dither", "UI/Presenter", RuntimeCVarType::Bool, "false", "Enable present dithering."},
         {"present_allow_overscan_cutoff", "UI/Presenter", RuntimeCVarType::Bool, "false", "Allow overscan cutoff."},
         {"present_render_pass_clear", "UI/Presenter", RuntimeCVarType::Bool, "true", "Clear the present render pass."},
@@ -518,10 +826,12 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
          "custom,480p,540p,720p,900p,1080p,1440p,1800p,2160p,4k"},
         {"video_mode_width", "GPU", RuntimeCVarType::Int, "1280", "Guest video mode width."},
         {"video_mode_height", "GPU", RuntimeCVarType::Int, "720", "Guest video mode height."},
+        {"renderer_scaling", "Renderer", RuntimeCVarType::String, "1x", "Fable 2 internal viewport supersampling scale.", "1x,2x,3x,4x"},
+        {"renderer_plume_present_fps", "Renderer", RuntimeCVarType::Int, "60", "Target FPS for the Plume renderer present pump."},
         {"video_mode_refresh_rate", "GPU", RuntimeCVarType::Double, "60.0", "Guest video mode refresh rate."},
         {"vsync", "GPU", RuntimeCVarType::Bool, "true", "Enable vertical sync."},
         {"async_shader_compilation", "GPU", RuntimeCVarType::Bool, "true", "Compile shaders asynchronously."},
-        {"store_shaders", "GPU", RuntimeCVarType::Bool, "true", "Store translated shaders in cache."},
+        {"store_shaders", "GPU", RuntimeCVarType::Bool, "true", "Store compiled shaders in cache."},
         {"swap_post_effect", "GPU", RuntimeCVarType::String, "none", "Swap post effect.", "none,fxaa,fxaa_extreme"},
         {"trace_gpu_prefix", "GPU", RuntimeCVarType::String, "", "GPU trace file prefix."},
         {"trace_gpu_stream", "GPU", RuntimeCVarType::Bool, "false", "Enable GPU trace streaming."},
@@ -606,7 +916,6 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"log_high_frequency_kernel_calls", "Kernel", RuntimeCVarType::Bool, "false", "Log high-frequency kernel calls."},
         {"kernel_debug_monitor", "Kernel", RuntimeCVarType::Bool, "false", "Enable debug monitor."},
         {"kernel_cert_monitor", "Kernel", RuntimeCVarType::Bool, "false", "Enable cert monitor."},
-        {"kernel_pix", "Kernel", RuntimeCVarType::Bool, "false", "Enable PIX debugging support."},
         {"ignore_thread_priorities", "Kernel", RuntimeCVarType::Bool, "true", "Ignore guest thread priorities."},
         {"ignore_thread_affinities", "Kernel", RuntimeCVarType::Bool, "true", "Ignore guest thread affinities."},
         {"license_mask", "Kernel", RuntimeCVarType::Int, "0", "Activated content license mask."},
@@ -619,8 +928,6 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"scribble_heap", "Memory", RuntimeCVarType::Bool, "false", "Scribble allocated heap memory."},
         {"writable_executable_memory", "Memory", RuntimeCVarType::Bool, "true", "Allow writable executable memory."},
         {"allow_game_relative_writes", "Filesystem", RuntimeCVarType::Bool, "false", "Allow game-relative file writes."},
-        {"dump_source", "Filesystem", RuntimeCVarType::String, "", "Source file to dump from VFS."},
-        {"dump_path", "Filesystem", RuntimeCVarType::String, "", "Directory to dump VFS files to."},
         {"clock_no_scaling", "Clock", RuntimeCVarType::Bool, "false", "Disable clock scaling."},
         {"clock_source_raw", "Clock", RuntimeCVarType::Bool, "false", "Use raw clock source."},
         {"perf_log_csv", "Perf", RuntimeCVarType::String, "", "Performance counter CSV path."},
@@ -739,10 +1046,14 @@ bool WriteRuntimeConfigValues(
         }
 
         stream << "# Runtime config generated by the launcher.\n"
-               << "# Values are written explicitly so the Settings tab and RexGlue see the same defaults.\n\n";
+               << "# Values are written explicitly for the active runtime backend.\n\n";
 
         std::string currentCategory;
         for (const RuntimeCVarDefinition& definition : GetRuntimeCVarDefinitions()) {
+            if (!ShouldWriteRuntimeCVar(definition, values)) {
+                continue;
+            }
+
             const std::string name = definition.name;
             if (definition.category != currentCategory) {
                 stream << "\n# " << definition.category << "\n";
@@ -812,6 +1123,16 @@ bool EnsureRuntimeConfigDefaults(
         if (values.find(definition.name) == values.end()) {
             values[definition.name] = definition.defaultValue;
             changed = true;
+        }
+    }
+
+    for (auto valueIt = values.begin(); valueIt != values.end();) {
+        const RuntimeCVarDefinition* definition = FindDefinition(valueIt->first);
+        if (definition && !ShouldWriteRuntimeCVar(*definition, values)) {
+            valueIt = values.erase(valueIt);
+            changed = true;
+        } else {
+            ++valueIt;
         }
     }
 
@@ -898,178 +1219,192 @@ void RuntimeSettingsPanel::Render() {
     });
 
     ImGui::BeginChild("RuntimeSettingsChild", ImVec2(0, 0), true);
-    std::string currentCategory;
-    bool categoryOpen = false;
-
+    std::vector<std::string> categoryOrder;
+    std::unordered_map<std::string, std::vector<const RuntimeCVarDefinition*>>
+        definitionsByCategory;
     for (const RuntimeCVarDefinition& definition : GetRuntimeCVarDefinitions()) {
-        if (!MatchesFilter(definition, filterText)) {
+        if (!ShouldShowRuntimeCVar(definition, values) ||
+            !MatchesFilter(definition, filterText)) {
             continue;
         }
 
-        if (definition.category != currentCategory) {
-            if (categoryOpen) {
-                ImGui::EndTable();
-                ImGui::TreePop();
-            }
-            currentCategory = definition.category;
-            categoryOpen = ImGui::CollapsingHeader(
-                currentCategory.c_str(),
-                ImGuiTreeNodeFlags_DefaultOpen);
-            if (categoryOpen) {
-                ImGui::TreePush(currentCategory.c_str());
-                ImGui::BeginTable(
-                    (std::string("RuntimeSettingsTable_") + currentCategory).c_str(),
-                    3,
-                    ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
-                        ImGuiTableFlags_NoHostExtendX);
-                ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthFixed, 220.0f);
-                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
-                ImGui::TableSetupColumn("Default", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-            }
+        const std::string displayCategory =
+            RuntimeCVarDisplayCategory(definition, values);
+        if (definitionsByCategory.find(displayCategory) ==
+            definitionsByCategory.end()) {
+            categoryOrder.push_back(displayCategory);
         }
+        definitionsByCategory[displayCategory].push_back(&definition);
+    }
+
+    for (const std::string& currentCategory : categoryOrder) {
+        const bool categoryOpen = ImGui::CollapsingHeader(
+            currentCategory.c_str(),
+            ImGuiTreeNodeFlags_DefaultOpen);
 
         if (!categoryOpen) {
             continue;
         }
 
-        std::string& value = values[definition.name];
-        if (value.empty() && definition.type != RuntimeCVarType::String) {
-            value = definition.defaultValue;
-        }
+        ImGui::TreePush(currentCategory.c_str());
+        ImGui::BeginTable(
+            (std::string("RuntimeSettingsTable_") + currentCategory).c_str(),
+            3,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+                ImGuiTableFlags_NoHostExtendX);
+        ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthFixed,
+                                220.0f);
+        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Default", ImGuiTableColumnFlags_WidthFixed,
+                                80.0f);
 
-        ImGui::PushID(definition.name);
-        bool changed = false;
-        bool isVideoModeSetting = false;
-        const std::string_view definitionName(definition.name);
-        const bool isResolutionCustom = [&]() {
-            const auto resolutionIt = values.find("resolution");
-            if (resolutionIt == values.end()) {
-                return false;
+        for (const RuntimeCVarDefinition* definitionPtr :
+             definitionsByCategory[currentCategory]) {
+            const RuntimeCVarDefinition& definition = *definitionPtr;
+            std::string& value = values[definition.name];
+            if (value.empty() && definition.type != RuntimeCVarType::String) {
+                value = definition.defaultValue;
             }
-            const std::string& resolutionValue = resolutionIt->second;
-            return resolutionValue.empty() || resolutionValue == "custom";
-        }();
-        if (definitionName.rfind("video_mode_", 0) == 0 &&
-            definitionName != "video_mode_refresh_rate") {
-            isVideoModeSetting = true;
-            if (!isResolutionCustom) {
-                ImGui::BeginDisabled();
-            }
-        }
 
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        const std::string displayName = FormatDisplayName(definition);
-        ImGui::TextUnformatted(displayName.c_str());
-        if (definition.description && definition.description[0] != '\0' &&
-            ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("%s", definition.description);
-        }
-
-        ImGui::TableSetColumnIndex(1);
-        const float valueWidth = ImGui::GetContentRegionAvail().x;
-        ImGui::SetNextItemWidth(valueWidth);
-
-        if (definition.type == RuntimeCVarType::Bool) {
-            bool boolValue = NormalizeBoolValue(value) == "true";
-            if (ImGui::Checkbox("##value", &boolValue)) {
-                value = boolValue ? "true" : "false";
-                changed = true;
-            }
-        } else if (definition.type == RuntimeCVarType::Int) {
-            int intValue = ParseIntValue(value, definition.defaultValue);
-            if (ImGui::InputInt("##value", &intValue)) {
-                value = std::to_string(intValue);
-                changed = true;
-            }
-        } else if (definition.type == RuntimeCVarType::Double) {
-            double doubleValue = ParseDoubleValue(value, definition.defaultValue);
-            if (ImGui::InputDouble("##value", &doubleValue, 0.1, 1.0, "%.3f")) {
-                std::ostringstream stream;
-                stream << doubleValue;
-                value = stream.str();
-                changed = true;
-            }
-        } else if (definition.type == RuntimeCVarType::String &&
-                   definition.allowedValues != nullptr &&
-                   definition.allowedValues[0] != '\0') {
-            const auto options = ParseAllowedValues(definition.allowedValues);
-            int selectedIndex = -1;
-            std::string displayValue = value.empty() ? definition.defaultValue : value;
-            if (definitionName == "resolution" && displayValue.empty()) {
-                displayValue = "custom";
-            }
-            for (std::size_t i = 0; i < options.size(); ++i) {
-                if (options[i] == displayValue) {
-                    selectedIndex = static_cast<int>(i);
-                    break;
+            ImGui::PushID(definition.name);
+            bool changed = false;
+            bool isVideoModeSetting = false;
+            const std::string_view definitionName(definition.name);
+            const bool isResolutionCustom = [&]() {
+                const auto resolutionIt = values.find("resolution");
+                if (resolutionIt == values.end()) {
+                    return false;
+                }
+                const std::string& resolutionValue = resolutionIt->second;
+                return resolutionValue.empty() || resolutionValue == "custom";
+            }();
+            if (definitionName.rfind("video_mode_", 0) == 0 &&
+                definitionName != "video_mode_refresh_rate") {
+                isVideoModeSetting = true;
+                if (!isResolutionCustom) {
+                    ImGui::BeginDisabled();
                 }
             }
-            if (definitionName == "resolution" && selectedIndex == -1) {
-                const auto customIt = std::find(options.begin(), options.end(), std::string_view{"custom"});
-                if (customIt != options.end()) {
-                    selectedIndex = 0;
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            const std::string displayName = FormatDisplayName(definition);
+            ImGui::TextUnformatted(displayName.c_str());
+            if (definition.description && definition.description[0] != '\0' &&
+                ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", definition.description);
+            }
+
+            ImGui::TableSetColumnIndex(1);
+            const float valueWidth = ImGui::GetContentRegionAvail().x;
+            ImGui::SetNextItemWidth(valueWidth);
+
+            if (definition.type == RuntimeCVarType::Bool) {
+                bool boolValue = NormalizeBoolValue(value) == "true";
+                if (ImGui::Checkbox("##value", &boolValue)) {
+                    value = boolValue ? "true" : "false";
+                    changed = true;
+                }
+            } else if (definition.type == RuntimeCVarType::Int) {
+                int intValue = ParseIntValue(value, definition.defaultValue);
+                if (ImGui::InputInt("##value", &intValue)) {
+                    value = std::to_string(intValue);
+                    changed = true;
+                }
+            } else if (definition.type == RuntimeCVarType::Double) {
+                double doubleValue = ParseDoubleValue(value, definition.defaultValue);
+                if (ImGui::InputDouble("##value", &doubleValue, 0.1, 1.0, "%.3f")) {
+                    std::ostringstream stream;
+                    stream << doubleValue;
+                    value = stream.str();
+                    changed = true;
+                }
+            } else if (definition.type == RuntimeCVarType::String &&
+                       definition.allowedValues != nullptr &&
+                       definition.allowedValues[0] != '\0') {
+                const auto options = ParseAllowedValues(definition.allowedValues);
+                int selectedIndex = -1;
+                std::string displayValue = value.empty() ? definition.defaultValue : value;
+                if (definitionName == "renderer_backend" && displayValue == "native") {
+                    displayValue = "xenia";
+                }
+                if (definitionName == "resolution" && displayValue.empty()) {
                     displayValue = "custom";
                 }
-            }
-
-            if (ImGui::BeginCombo("##value", displayValue.c_str())) {
                 for (std::size_t i = 0; i < options.size(); ++i) {
-                    const std::string option(options[i]);
-                    const bool isSelected = static_cast<int>(i) == selectedIndex;
-                    if (ImGui::Selectable(option.c_str(), isSelected)) {
-                        std::string selectedValue = option;
-                        if (definitionName == "resolution" && option == "custom") {
-                            selectedValue.clear();
-                        }
-
-                        if (value != selectedValue) {
-                            value = std::move(selectedValue);
-                            selectedIndex = static_cast<int>(i);
-                            displayValue = option;
-                            changed = true;
-                        }
-                    }
-                    if (isSelected) {
-                        ImGui::SetItemDefaultFocus();
+                    if (options[i] == displayValue) {
+                        selectedIndex = static_cast<int>(i);
+                        break;
                     }
                 }
-                ImGui::EndCombo();
+                if (definitionName == "resolution" && selectedIndex == -1) {
+                    const auto customIt = std::find(
+                        options.begin(), options.end(), std::string_view{"custom"});
+                    if (customIt != options.end()) {
+                        selectedIndex = 0;
+                        displayValue = "custom";
+                    }
+                }
+
+                if (ImGui::BeginCombo("##value", displayValue.c_str())) {
+                    for (std::size_t i = 0; i < options.size(); ++i) {
+                        const std::string option(options[i]);
+                        const bool isSelected =
+                            static_cast<int>(i) == selectedIndex;
+                        if (ImGui::Selectable(option.c_str(), isSelected)) {
+                            std::string selectedValue = option;
+                            if (definitionName == "resolution" &&
+                                option == "custom") {
+                                selectedValue.clear();
+                            }
+
+                            if (value != selectedValue) {
+                                value = std::move(selectedValue);
+                                selectedIndex = static_cast<int>(i);
+                                displayValue = option;
+                                changed = true;
+                            }
+                        }
+                        if (isSelected) {
+                            ImGui::SetItemDefaultFocus();
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+            } else {
+                auto& buffer = textBuffers[definition.name];
+                if (ImGui::InputText("##value", buffer.data(), buffer.size(),
+                                     ImGuiInputTextFlags_EnterReturnsTrue)) {
+                    value = buffer.data();
+                    changed = true;
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    value = buffer.data();
+                    changed = true;
+                }
             }
-        } else {
-            auto& buffer = textBuffers[definition.name];
-            if (ImGui::InputText("##value", buffer.data(), buffer.size(),
-                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
-                value = buffer.data();
+
+
+            if (isVideoModeSetting && !isResolutionCustom) {
+                ImGui::EndDisabled();
+            }
+
+            ImGui::TableSetColumnIndex(2);
+            if (ImGui::SmallButton("Default")) {
+                value = definition.defaultValue;
+                if (definition.type == RuntimeCVarType::String) {
+                    CopyToBuffer(textBuffers[definition.name], value);
+                }
                 changed = true;
             }
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                value = buffer.data();
-                changed = true;
+
+            if (changed) {
+                LinkPlumeResolutionSettings(definition, values);
+                Save();
             }
+            ImGui::PopID();
         }
 
-
-        if (isVideoModeSetting && !isResolutionCustom) {
-            ImGui::EndDisabled();
-        }
-
-        ImGui::TableSetColumnIndex(2);
-        if (ImGui::SmallButton("Default")) {
-            value = definition.defaultValue;
-            if (definition.type == RuntimeCVarType::String) {
-                CopyToBuffer(textBuffers[definition.name], value);
-            }
-            changed = true;
-        }
-
-        if (changed) {
-            Save();
-        }
-        ImGui::PopID();
-    }
-
-    if (categoryOpen) {
         ImGui::EndTable();
         ImGui::TreePop();
     }

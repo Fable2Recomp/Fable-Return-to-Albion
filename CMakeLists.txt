@@ -15,26 +15,53 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+set(REFII_RUNTIME_OUTPUT_DIR
+    "${CMAKE_BINARY_DIR}/bin"
+    CACHE PATH
+    "Directory where runnable refii development executables are emitted"
+)
+set(REFII_RUNTIME_DATA_DIR "${REFII_RUNTIME_OUTPUT_DIR}/assets")
+set(REFII_PACKAGE_GENERATED_DIR "${CMAKE_BINARY_DIR}/package/generated")
+set(REFII_PACKAGE_STAMP_DIR "${CMAKE_BINARY_DIR}/package/stamps")
 
-set(_REFII_REXGLUE_FALLBACK_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ReXGlue")
-if((NOT DEFINED REXSDK_DIR OR NOT REXSDK_DIR) AND EXISTS "${_REFII_REXGLUE_FALLBACK_SOURCE_DIR}/CMakeLists.txt")
-    if(DEFINED REXSDK_VERSION AND REXSDK_VERSION)
-        find_package(rexglue ${REXSDK_VERSION} EXACT QUIET CONFIG)
-    else()
-        find_package(rexglue 0.8.0.32 QUIET CONFIG)
-    endif()
-
-    if(NOT rexglue_FOUND)
-        set(REXSDK_DIR "${_REFII_REXGLUE_FALLBACK_SOURCE_DIR}" CACHE PATH "Path to rexglue-sdk source tree" FORCE)
-        message(STATUS "Using ReXGlue fallback submodule source tree: ${REXSDK_DIR}")
-    endif()
+include(CMakeDependentOption)
+set(REFII_RENDERER_PLUME_SDL_WINDOW_SUPPORTED OFF)
+if((UNIX AND NOT APPLE) OR WIN32)
+    set(REFII_RENDERER_PLUME_SDL_WINDOW_SUPPORTED ON)
 endif()
-unset(_REFII_REXGLUE_FALLBACK_SOURCE_DIR)
+cmake_dependent_option(
+    REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED
+    "Use SDL3 for the ReXGlue app window when the renderer integration is enabled"
+    OFF
+    "REFII_RENDERER_PLUME_SDL_WINDOW_SUPPORTED"
+    OFF
+)
+cmake_dependent_option(
+    REFII_RENDERER_PLUME_D3D12_AGILITY_SDK_ENABLED
+    "Build Plume with the D3D12 Agility SDK"
+    OFF
+    WIN32
+    OFF
+)
 
+include(cmake/refii_rexglue.cmake)
+refii_rexglue_configure_sdk()
 include(generated/rexglue.cmake)
+refii_rexglue_apply_shadow_overrides()
+refii_define_rexglue_build_target()
+refii_define_rexglue_codegen_bootstrap_target()
 
 if(TARGET TracyClient AND NOT TARGET rex::TracyClient)
     add_library(rex::TracyClient ALIAS TracyClient)
+endif()
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    foreach(_refii_rex_simd_target IN ITEMS rexcore rexaudio rexgraphics)
+        if(TARGET "${_refii_rex_simd_target}")
+            target_compile_options("${_refii_rex_simd_target}" PRIVATE -mssse3)
+        endif()
+    endforeach()
+    unset(_refii_rex_simd_target)
 endif()
 
 if(TARGET SPIRV-Tools-static AND NOT TARGET rex::SPIRV-Tools-static)
@@ -43,13 +70,21 @@ endif()
 
 function(refii_apply_origin_rpath target_name)
     if(UNIX AND NOT APPLE AND TARGET "${target_name}")
+        get_target_property(_refii_rpath_target_type "${target_name}" TYPE)
+        if(_refii_rpath_target_type STREQUAL "EXECUTABLE")
+            set(_refii_rpath "\$ORIGIN;\$ORIGIN/../lib;\$ORIGIN/lib")
+        else()
+            set(_refii_rpath "\$ORIGIN;\$ORIGIN/lib")
+        endif()
         set_target_properties("${target_name}" PROPERTIES
-            BUILD_RPATH "\$ORIGIN;\$ORIGIN/lib"
-            INSTALL_RPATH "\$ORIGIN;\$ORIGIN/lib"
+            BUILD_RPATH "${_refii_rpath}"
+            INSTALL_RPATH "${_refii_rpath}"
             BUILD_RPATH_USE_ORIGIN ON
             BUILD_WITH_INSTALL_RPATH ON
             INSTALL_RPATH_USE_LINK_PATH OFF
         )
+        unset(_refii_rpath)
+        unset(_refii_rpath_target_type)
     endif()
 endfunction()
 
@@ -92,6 +127,41 @@ function(refii_append_stage_library_command out_var target_name destination_dir)
     endif()
 endfunction()
 
+set(REFII_TARGET_SUPPORTS_SSE41 OFF)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$")
+    set(REFII_TARGET_SUPPORTS_SSE41 ON)
+endif()
+
+function(refii_apply_recompiled_module_compile_options target_name)
+    if(NOT TARGET "${target_name}")
+        return()
+    endif()
+
+    target_compile_options("${target_name}"
+        PRIVATE
+            $<$<CXX_COMPILER_ID:MSVC>:/EHa>
+    )
+
+    if(REFII_TARGET_SUPPORTS_SSE41)
+        target_compile_options("${target_name}"
+            PRIVATE
+                $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-msse4.1>
+        )
+    endif()
+endfunction()
+
+function(refii_apply_generated_payload_compile_options target_name)
+    if(NOT TARGET "${target_name}")
+        return()
+    endif()
+
+    refii_apply_recompiled_module_compile_options("${target_name}")
+
+    if(UNIX AND NOT APPLE)
+        target_compile_options("${target_name}" PRIVATE -mcmodel=large)
+    endif()
+endfunction()
+
 set(REFII_PACKAGE_EXTERNAL_LIB_TARGETS
     rex::runtime
     rex::TracyClient
@@ -100,7 +170,7 @@ set(REFII_PACKAGE_EXTERNAL_LIB_TARGETS
     SDL3::SDL3-static
     volk::volk
     rex::SPIRV-Tools-static
-    # Despite the name, this is also used for Linux Vulkan/SPIR-V shader translation today.
+    # Despite the name, this is also used for Linux Vulkan/SPIR-V shader compilation today.
     Microsoft::DirectXShaderCompiler
     Microsoft::DXIL
 )
@@ -110,7 +180,8 @@ option(REFII_BUILD_LAUNCHER "Build the launcher executable" ON)
 option(REFII_BUILD_NATIVE_LUA "Build the native Lua runtime and Lua tools" ON)
 option(REFII_BUILD_NATIVE_HOOKS "Build native hook sources into refii_generated" ON)
 option(REFII_BUILD_VFS_HOOKS "Build the native VFS runtime and hook sources" ON)
-option(REFII_BUILD_SHADER_PIPELINE "Build shader SBK extraction/translation pipeline tooling" ON)
+option(REFII_BUILD_RENDERER_HOOKS "Build the native renderer runtime and hook sources" ON)
+option(REFII_BUILD_SHADER_PIPELINE "Build shader SBK extraction/compilation pipeline tooling" ON)
 option(REFII_BUILD_TOOLS
     "Build optional lightweight test tool executables (bnk extractor, decompiler, shader utilities)"
     ON
@@ -119,6 +190,11 @@ option(REFII_BUILD_TOOLS
 option(REFII_BUILD_EXTRACTOR
     "Build the XISO extractor shared library (and tool dependencies)"
     ON
+)
+
+option(REFII_BUILD_PACKAGES_IN_ALL
+    "Include Linux package targets in the default all target"
+    OFF
 )
 
 set(REFII_CAN_BUILD_LINUX_PACKAGES OFF)
@@ -246,9 +322,9 @@ set(REFII_SHADER_TOOL_OUTPUT_DIR
     "Output directory for shader pipeline helper binaries"
 )
 set(REFII_SHADER_OUTPUT_DIR
-    "${REFII_SHADER_PIPELINE_ROOT_DIR}/artifacts"
+    "${CMAKE_SOURCE_DIR}/assets/unpacked/shaders"
     CACHE PATH
-    "Private output directory for extracted shader blobs and translation artifacts"
+    "Output directory for extracted shader blobs and compiled runtime shader artifacts"
 )
 set(REFII_SHADER_SHARED_OUTPUT_DIR
     "${CMAKE_SOURCE_DIR}/src/shader/processed"
@@ -277,24 +353,27 @@ endif()
 unset(_REFII_SHADER_LEGACY_TOOL_OUTPUT_DIR)
 
 set(_REFII_SHADER_LEGACY_OUTPUT_DIR "${CMAKE_BINARY_DIR}/generated/shaders")
-if(REFII_SHADER_OUTPUT_DIR STREQUAL "${_REFII_SHADER_LEGACY_OUTPUT_DIR}")
+set(_REFII_SHADER_PRIVATE_OUTPUT_DIR "${REFII_SHADER_PIPELINE_ROOT_DIR}/artifacts")
+if(REFII_SHADER_OUTPUT_DIR STREQUAL "${_REFII_SHADER_LEGACY_OUTPUT_DIR}" OR
+   REFII_SHADER_OUTPUT_DIR STREQUAL "${_REFII_SHADER_PRIVATE_OUTPUT_DIR}")
     set(REFII_SHADER_OUTPUT_DIR
-        "${REFII_SHADER_PIPELINE_ROOT_DIR}/artifacts"
+        "${CMAKE_SOURCE_DIR}/assets/unpacked/shaders"
         CACHE PATH
-        "Private output directory for extracted shader blobs and translation artifacts"
+        "Output directory for extracted shader blobs and compiled runtime shader artifacts"
         FORCE
     )
 endif()
 unset(_REFII_SHADER_LEGACY_OUTPUT_DIR)
+unset(_REFII_SHADER_PRIVATE_OUTPUT_DIR)
 set(REFII_SHADER_TRANSLATOR_CMD
     ""
     CACHE FILEPATH
-    "Optional translator executable path used by refii-shader-sbk translate/build"
+    "Optional compiler executable path used by refii-shader-sbk compile/build"
 )
 set(REFII_SHADER_TRANSLATION_TARGETS
     "auto"
     CACHE STRING
-    "Translation targets for shader pipeline: auto, vulkan, d3d12, or vulkan,d3d12"
+    "Compile targets for shader pipeline: auto, vulkan, d3d12, or vulkan,d3d12"
 )
 set(REFII_SHADER_USE_XENOS_TRANSLATOR
     ON
@@ -309,7 +388,7 @@ set(REFII_SHADER_TRANSLATOR_TIMEOUT_MS
 set(REFII_SHADER_DEDUPE_IDENTICAL_BLOBS
     ON
     CACHE BOOL
-    "When ON, deduplicate translation work across identical shader payload hashes"
+    "When ON, deduplicate compile work across identical shader payload hashes"
 )
 if(WIN32)
     set(REFII_SHADER_DEFAULT_VALIDATION_TARGETS "vulkan,d3d12")
@@ -325,6 +404,7 @@ unset(REFII_SHADER_DEFAULT_VALIDATION_TARGETS)
 
 set(REFII_LUA_LIBRARIES)
 set(REFII_VFS_LIBRARIES)
+set(REFII_RENDERER_LIBRARIES)
 set(REFII_HOOK_OBJECTS)
 
 add_subdirectory(src/extractor)
@@ -338,6 +418,25 @@ if(REFII_BUILD_VFS_HOOKS)
     add_subdirectory(src/vfs)
 endif()
 
+if(REFII_BUILD_RENDERER_HOOKS)
+    add_subdirectory(src/renderer)
+endif()
+
+if(TARGET refii_vfs AND TARGET refii_renderer)
+    target_include_directories(refii_vfs
+        PRIVATE
+            ${REFII_RENDERER_INCLUDE_DIRS}
+    )
+    target_link_libraries(refii_vfs
+        PRIVATE
+            refii_renderer
+    )
+    target_compile_definitions(refii_vfs
+        PRIVATE
+            REFII_VFS_HAS_RENDERER_RUNTIME=1
+    )
+endif()
+
 if(REFII_BUILD_NATIVE_HOOKS)
     add_subdirectory(src/hooks)
 endif()
@@ -346,8 +445,12 @@ if(REFII_BUILD_SHADER_PIPELINE)
     add_subdirectory(src/shader)
 endif()
 
+refii_rexglue_shadow_source(
+    REFII_REX_APP_SOURCE
+    "src/ui/rex_app.cpp"
+)
 set(REFII_CORE_SOURCES
-    ${REXGLUE_SHARE_DIR}/rex_app.cpp
+    ${REFII_REX_APP_SOURCE}
 )
 
 set(REFII_GENERATED_SOURCES
@@ -367,6 +470,16 @@ target_include_directories(refii_core
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/generated
 )
+if(EXISTS "${REFII_REXGLUE_SHADOW_DIR}/include")
+    target_include_directories(refii_core BEFORE PUBLIC "${REFII_REXGLUE_SHADOW_DIR}/include")
+endif()
+if(REXSDK_DIR AND EXISTS "${REXSDK_DIR}/thirdparty/imgui/imgui.h")
+    target_include_directories(refii_core
+        PRIVATE
+            "${REXSDK_DIR}/thirdparty/imgui"
+            "${CMAKE_BINARY_DIR}/rexglue-sdk/include"
+    )
+endif()
 target_link_libraries(refii_core
     PUBLIC
         rex::runtime
@@ -390,12 +503,16 @@ target_include_directories(refii_generated
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/generated
 )
+if(EXISTS "${REFII_REXGLUE_SHADOW_DIR}/include")
+    target_include_directories(refii_generated BEFORE PUBLIC "${REFII_REXGLUE_SHADOW_DIR}/include")
+endif()
 target_link_libraries(refii_generated
     PUBLIC
         refii_core
     PRIVATE
         ${REFII_LUA_LIBRARIES}
         ${REFII_VFS_LIBRARIES}
+        ${REFII_RENDERER_LIBRARIES}
 )
 set_target_properties(refii_generated PROPERTIES
     OUTPUT_NAME refii_generated
@@ -421,11 +538,25 @@ target_include_directories(refii_host
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/generated
+        ${REFII_RENDERER_INCLUDE_DIRS}
+)
+if(EXISTS "${REFII_REXGLUE_SHADOW_DIR}/include")
+    target_include_directories(refii_host PUBLIC "${REFII_REXGLUE_SHADOW_DIR}/include")
+endif()
+if(REFII_RENDERER_LIBRARIES)
+    target_compile_definitions(refii_host PUBLIC REFII_HAS_RENDERER_RUNTIME=1)
+else()
+    target_compile_definitions(refii_host PUBLIC REFII_HAS_RENDERER_RUNTIME=0)
+endif()
+target_compile_definitions(refii_host
+    PUBLIC
+        REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED=$<BOOL:${REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED}>
 )
 target_link_libraries(refii_host
     PUBLIC
         refii_core
         refii_generated
+        ${REFII_RENDERER_LIBRARIES}
 )
 
 if(UNIX AND NOT APPLE)
@@ -442,34 +573,58 @@ if(UNIX AND NOT APPLE)
             -Wl,--no-whole-archive
             -Wl,--no-relax
     )
-    target_compile_options(refii_generated PRIVATE -mcmodel=large)
 endif()
 
-if(MSVC)
-    target_compile_options(refii_core PRIVATE /EHa)
-    target_compile_options(refii_generated PRIVATE /EHa)
-else()
-    target_compile_options(refii_core PRIVATE -msse4.1)
-    target_compile_options(refii_generated PRIVATE -msse4.1)
-endif()
+refii_apply_recompiled_module_compile_options(refii_core)
+refii_apply_generated_payload_compile_options(refii_generated)
+refii_apply_generated_payload_compile_options(refii_hooks)
 
 if(REFII_BUILD_STANDALONE)
     set(REFII_SOURCES src/main.cpp)
 
     if(WIN32)
-        list(APPEND REFII_SOURCES ${REXGLUE_SHARE_DIR}/windowed_app_main_win.cpp)
+        refii_rexglue_shadow_source(
+            REFII_WINDOWED_APP_MAIN_SOURCE
+            "src/ui/windowed_app_main_win.cpp"
+        )
+        list(APPEND REFII_SOURCES ${REFII_WINDOWED_APP_MAIN_SOURCE})
         add_executable(refii WIN32 ${REFII_SOURCES})
     else()
-        list(APPEND REFII_SOURCES ${REXGLUE_SHARE_DIR}/windowed_app_main_posix.cpp)
+        refii_rexglue_shadow_source(
+            REFII_WINDOWED_APP_MAIN_SOURCE
+            "src/ui/windowed_app_main_posix.cpp"
+        )
+        list(APPEND REFII_SOURCES ${REFII_WINDOWED_APP_MAIN_SOURCE})
         add_executable(refii ${REFII_SOURCES})
     endif()
 
     target_link_libraries(refii PRIVATE refii_host)
-    set_target_properties(refii PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-        BUILD_RPATH "$ORIGIN"
-        INSTALL_RPATH "$ORIGIN"
+    if(EXISTS "${REFII_REXGLUE_SHADOW_DIR}/include")
+        target_include_directories(refii PRIVATE "${REFII_REXGLUE_SHADOW_DIR}/include")
+    endif()
+    target_compile_definitions(refii
+        PRIVATE
+            REX_UI_HAS_SDL_WINDOW=$<BOOL:${REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED}>
+            REX_UI_HAS_WAYLAND_WINDOW=$<BOOL:${REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED}>
     )
+    set_target_properties(refii PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${REFII_RUNTIME_OUTPUT_DIR}"
+        BUILD_RPATH "$ORIGIN/../lib"
+        INSTALL_RPATH "$ORIGIN/../lib"
+    )
+
+    if(EXISTS "${REFII_SHADER_OUTPUT_DIR}")
+        add_custom_target(refii_stage_runtime_shaders
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "${REFII_RUNTIME_DATA_DIR}/unpacked"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${REFII_SHADER_OUTPUT_DIR}"
+                "${REFII_RUNTIME_DATA_DIR}/unpacked/shaders"
+            COMMENT "Staging unpacked shader artifacts"
+            VERBATIM
+        )
+        add_dependencies(refii refii_stage_runtime_shaders)
+    endif()
 
     if(WIN32)
         add_custom_command(TARGET refii POST_BUILD
@@ -477,9 +632,10 @@ if(REFII_BUILD_STANDALONE)
             COMMAND_EXPAND_LISTS
         )
     else()
-        set(REFII_STAGE_EXTERNAL_LIBS_STAMP "${CMAKE_BINARY_DIR}/.refii_stage_external_libs.stamp")
+        set(REFII_STAGE_EXTERNAL_LIBS_STAMP "${REFII_PACKAGE_STAMP_DIR}/refii_stage_external_libs.stamp")
         set(_refii_stage_external_lib_commands
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/lib"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_PACKAGE_STAMP_DIR}"
         )
         set(_refii_stage_external_lib_dependencies)
         foreach(_refii_external_lib_target IN LISTS REFII_PACKAGE_EXTERNAL_LIB_TARGETS)
@@ -527,6 +683,7 @@ foreach(_refii_origin_rpath_target
     refii_bnk_extractor
     refii_lua
     refii_vfs
+    refii_renderer
     refii-shader-sbk
     refii-shader-xenos-translator
     glfw
@@ -545,7 +702,8 @@ if(UNIX AND NOT APPLE)
         DOC "Path to ldd."
     )
 endif()
-set(REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/refii_stage_runtime_deps.cmake")
+file(MAKE_DIRECTORY "${REFII_PACKAGE_GENERATED_DIR}")
+set(REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT "${REFII_PACKAGE_GENERATED_DIR}/refii_stage_runtime_deps.cmake")
 set(REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT [=[
 if(POLICY CMP0057)
   cmake_policy(SET CMP0057 NEW)
@@ -732,7 +890,7 @@ if(REFII_BUILD_APPIMAGE)
 
     set(REFII_APPIMAGE_APPRUN_SOURCE "${CMAKE_SOURCE_DIR}/packaging/appimage/AppRun")
     if(NOT EXISTS "${REFII_APPIMAGE_APPRUN_SOURCE}")
-        set(REFII_APPIMAGE_APPRUN_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/refii_appimage_AppRun")
+        set(REFII_APPIMAGE_APPRUN_SOURCE "${REFII_PACKAGE_GENERATED_DIR}/refii_appimage_AppRun")
         file(
             WRITE "${REFII_APPIMAGE_APPRUN_SOURCE}"
             "#!/usr/bin/env sh\n"
@@ -748,7 +906,7 @@ if(REFII_BUILD_APPIMAGE)
 
     set(REFII_APPIMAGE_DESKTOP_SOURCE "${CMAKE_SOURCE_DIR}/packaging/appimage/refii.desktop")
     if(NOT EXISTS "${REFII_APPIMAGE_DESKTOP_SOURCE}")
-        set(REFII_APPIMAGE_DESKTOP_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/refii_appimage.desktop")
+        set(REFII_APPIMAGE_DESKTOP_SOURCE "${REFII_PACKAGE_GENERATED_DIR}/refii_appimage.desktop")
         file(
             WRITE "${REFII_APPIMAGE_DESKTOP_SOURCE}"
             "[Desktop Entry]\n"
@@ -834,7 +992,7 @@ if(REFII_BUILD_APPIMAGE)
             "-DREFII_RUNTIME_EXCLUDE_REGEXES=${REFII_APPIMAGE_RUNTIME_EXCLUDE_REGEXES}"
             -P "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT}"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_BINARY_DIR}/assets/launcher/assets"
+            "${REFII_RUNTIME_DATA_DIR}/launcher/assets"
             "${REFII_APPIMAGE_APPDIR}/usr/bin/assets/launcher/assets"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${REFII_APPIMAGE_APPRUN_SOURCE}"
@@ -934,7 +1092,7 @@ if(REFII_BUILD_FLATPAK)
 
     set(REFII_FLATPAK_DESKTOP_SOURCE "${CMAKE_SOURCE_DIR}/packaging/appimage/refii.desktop")
     if(NOT EXISTS "${REFII_FLATPAK_DESKTOP_SOURCE}")
-        set(REFII_FLATPAK_DESKTOP_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/refii_flatpak.desktop")
+        set(REFII_FLATPAK_DESKTOP_SOURCE "${REFII_PACKAGE_GENERATED_DIR}/refii_flatpak.desktop")
         file(
             WRITE "${REFII_FLATPAK_DESKTOP_SOURCE}"
             "[Desktop Entry]\n"
@@ -948,7 +1106,7 @@ if(REFII_BUILD_FLATPAK)
         )
     endif()
 
-    set(REFII_FLATPAK_LAUNCHER_WRAPPER_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/refii_flatpak_launcher")
+    set(REFII_FLATPAK_LAUNCHER_WRAPPER_SOURCE "${REFII_PACKAGE_GENERATED_DIR}/refii_flatpak_launcher")
     file(
         WRITE "${REFII_FLATPAK_LAUNCHER_WRAPPER_SOURCE}"
         "#!/usr/bin/env sh\n"
@@ -960,7 +1118,7 @@ if(REFII_BUILD_FLATPAK)
 
     set(REFII_FLATPAK_MANIFEST_SOURCE "${CMAKE_SOURCE_DIR}/packaging/flatpak/refii.json")
     if(NOT EXISTS "${REFII_FLATPAK_MANIFEST_SOURCE}")
-        set(REFII_FLATPAK_MANIFEST_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/refii_flatpak_refii.json")
+        set(REFII_FLATPAK_MANIFEST_SOURCE "${REFII_PACKAGE_GENERATED_DIR}/refii_flatpak_refii.json")
         file(
             WRITE "${REFII_FLATPAK_MANIFEST_SOURCE}"
             "{\n"
@@ -970,8 +1128,8 @@ if(REFII_BUILD_FLATPAK)
             "  \"sdk\": \"${REFII_FLATPAK_SDK}\",\n"
             "  \"command\": \"refii-launcher\",\n"
             "  \"finish-args\": [\n"
-            "    \"--socket=x11\",\n"
             "    \"--socket=wayland\",\n"
+            "    \"--socket=fallback-x11\",\n"
             "    \"--share=network\",\n"
             "    \"--share=ipc\",\n"
             "    \"--device=dri\"\n"
@@ -1044,7 +1202,7 @@ if(REFII_BUILD_FLATPAK)
             "-DREFII_RUNTIME_EXCLUDE_REGEXES=${REFII_FLATPAK_RUNTIME_EXCLUDE_REGEXES}"
             -P "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT}"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_BINARY_DIR}/assets/launcher/assets"
+            "${REFII_RUNTIME_DATA_DIR}/launcher/assets"
             "${REFII_FLATPAK_PAYLOAD_DIR}/bin/assets/launcher/assets"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${REFII_FLATPAK_DESKTOP_SOURCE}"
@@ -1056,6 +1214,7 @@ if(REFII_BUILD_FLATPAK)
             "${REFII_FLATPAK_MANIFEST_SOURCE}"
             "${REFII_FLATPAK_MANIFEST_PATH}"
         COMMAND ${FLATPAK_BUILDER_EXECUTABLE}
+            --state-dir=${REFII_FLATPAK_STAGING_DIR}/state
             --force-clean
             --disable-rofiles-fuse
             --arch=${REFII_FLATPAK_ARCH}
@@ -1087,5 +1246,9 @@ if(REFII_BUILD_FLATPAK)
 endif()
 
 if(REFII_PACKAGE_TARGETS)
-    add_custom_target(refii-packages ALL DEPENDS ${REFII_PACKAGE_TARGETS})
+    if(REFII_BUILD_PACKAGES_IN_ALL)
+        add_custom_target(refii-packages ALL DEPENDS ${REFII_PACKAGE_TARGETS})
+    else()
+        add_custom_target(refii-packages DEPENDS ${REFII_PACKAGE_TARGETS})
+    endif()
 endif()

@@ -380,7 +380,8 @@ bool IsTrackedPublicLuaFile(const std::filesystem::path& workspace_root,
     }
 
     const std::string first_component = first_component_it->generic_string();
-    if (first_component.empty() || first_component[0] == '.' || first_component == "_disasm") {
+    if (first_component.empty() || first_component[0] == '.' || first_component == "_disasm" ||
+        first_component == "luasource" || first_component == "refii_vfs") {
         return false;
     }
 

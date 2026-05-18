@@ -255,6 +255,9 @@ std::filesystem::path ManifestEntryHostRelativePath(
                                         ? entry.relative_path
                                         : entry.host_relative_path;
   std::replace(relative_entry_path.begin(), relative_entry_path.end(), '\\', '/');
+  if (!entry.host_relative_path.empty()) {
+    return std::filesystem::path(relative_entry_path);
+  }
   return entry.manifest_root / std::filesystem::path(relative_entry_path);
 }
 
@@ -268,6 +271,14 @@ bool ResolveBankRootedVfsDatabaseCandidate(
 
   std::vector<RefiiVfsRuntimeBankRecord> bank_records =
       GetRefiiVfsRuntimeBankRecordsCached(loose_root);
+  const std::filesystem::path base_root = GetLooseAssetRoot().lexically_normal();
+  if (loose_root.lexically_normal() != base_root) {
+    const std::vector<RefiiVfsRuntimeBankRecord> base_bank_records =
+        GetRefiiVfsRuntimeBankRecordsCached(base_root);
+    bank_records.insert(bank_records.end(),
+                        base_bank_records.begin(),
+                        base_bank_records.end());
+  }
   if (bank_records.empty()) {
     return false;
   }
@@ -528,7 +539,7 @@ bool ResolveRefiiLuaScriptAsset(std::string_view asset_path,
   return false;
 }
 
-bool MakeVfsDatabaseCandidateResolution(
+bool MakeVfsDatabaseCandidateResolutionAtRoot(
     const std::filesystem::path& loose_root,
     std::string_view candidate,
     LooseAssetResolution* out_resolution,
@@ -589,6 +600,34 @@ bool MakeVfsDatabaseCandidateResolution(
                                                 : resolved.candidate;
   }
   return true;
+}
+
+bool MakeVfsDatabaseCandidateResolution(
+    const std::filesystem::path& loose_root,
+    std::string_view candidate,
+    LooseAssetResolution* out_resolution,
+    std::string* out_candidate) {
+  if (loose_root.empty()) {
+    return false;
+  }
+
+  const std::filesystem::path base_root = GetLooseAssetRoot().lexically_normal();
+  const std::filesystem::path requested_root = loose_root.lexically_normal();
+  if (requested_root != base_root) {
+    return MakeVfsDatabaseCandidateResolutionAtRoot(
+        loose_root, candidate, out_resolution, out_candidate);
+  }
+
+  for (const std::filesystem::path& root : GetLooseAssetSearchRoots()) {
+    if (root.empty()) {
+      continue;
+    }
+    if (MakeVfsDatabaseCandidateResolutionAtRoot(
+            root, candidate, out_resolution, out_candidate)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool ResolvePairedTexturePayloadForHeader(std::string_view header_key,
@@ -965,6 +1004,34 @@ bool ResolveVfsDatabaseExactAliasLooseAsset(std::string_view asset_path,
   if (alias_key.empty()) {
     return false;
   }
+  const std::string root_key = loose_root.lexically_normal().string();
+
+  struct ExactAliasResolutionCache {
+    std::string root_key;
+    std::unordered_map<std::string, CachedBankLooseAssetResolution> by_alias;
+  };
+  static std::mutex exact_alias_resolution_mutex;
+  static ExactAliasResolutionCache exact_alias_resolution_cache;
+
+  {
+    std::lock_guard<std::mutex> lock(exact_alias_resolution_mutex);
+    if (exact_alias_resolution_cache.root_key != root_key) {
+      exact_alias_resolution_cache = ExactAliasResolutionCache{};
+      exact_alias_resolution_cache.root_key = root_key;
+    }
+    const auto cached = exact_alias_resolution_cache.by_alias.find(alias_key);
+    if (cached != exact_alias_resolution_cache.by_alias.end()) {
+      if (cached->second.found) {
+        if (out_resolution != nullptr) {
+          *out_resolution = cached->second.resolution;
+        }
+        if (out_candidate != nullptr) {
+          *out_candidate = cached->second.candidate;
+        }
+      }
+      return cached->second.found;
+    }
+  }
 
   if (!PrimeRefiiVfsRuntimeExactAliasCandidate(loose_root, alias_key)) {
     PrimeRefiiVfsDatabaseAliasCandidates(
@@ -976,7 +1043,7 @@ bool ResolveVfsDatabaseExactAliasLooseAsset(std::string_view asset_path,
     std::lock_guard<std::mutex> lock(
         RefiiVfsDatabaseAliasCandidateCacheMutex());
     const auto& cache = RefiiVfsDatabaseAliasCandidateCacheInstance();
-    if (cache.root_key != loose_root.lexically_normal().string()) {
+    if (cache.root_key != root_key) {
       return false;
     }
     const auto match = cache.candidates_by_alias.find(alias_key);
@@ -1008,6 +1075,11 @@ bool ResolveVfsDatabaseExactAliasLooseAsset(std::string_view asset_path,
       continue;
     }
 
+    CachedBankLooseAssetResolution cached_resolution;
+    cached_resolution.found = true;
+    cached_resolution.resolution = resolution;
+    cached_resolution.candidate = normalized_candidate;
+
     if (VfsTracingEnabled() &&
         (IsTraceInterestingAsset(asset_path) ||
          ShouldLogRepeatedVfsTraceOperation("VfsDatabaseExactAlias", 64))) {
@@ -1025,9 +1097,37 @@ bool ResolveVfsDatabaseExactAliasLooseAsset(std::string_view asset_path,
     if (out_candidate != nullptr) {
       *out_candidate = std::move(normalized_candidate);
     }
+    {
+      std::lock_guard<std::mutex> lock(exact_alias_resolution_mutex);
+      if (exact_alias_resolution_cache.root_key != root_key) {
+        exact_alias_resolution_cache = ExactAliasResolutionCache{};
+        exact_alias_resolution_cache.root_key = root_key;
+      }
+      constexpr size_t kMaxExactAliasResolutionCacheEntries = 65536;
+      if (exact_alias_resolution_cache.by_alias.size() >
+          kMaxExactAliasResolutionCacheEntries) {
+        exact_alias_resolution_cache.by_alias.clear();
+      }
+      exact_alias_resolution_cache.by_alias.emplace(
+          alias_key, std::move(cached_resolution));
+    }
     return true;
   }
 
+  {
+    std::lock_guard<std::mutex> lock(exact_alias_resolution_mutex);
+    if (exact_alias_resolution_cache.root_key != root_key) {
+      exact_alias_resolution_cache = ExactAliasResolutionCache{};
+      exact_alias_resolution_cache.root_key = root_key;
+    }
+    constexpr size_t kMaxExactAliasResolutionCacheEntries = 65536;
+    if (exact_alias_resolution_cache.by_alias.size() >
+        kMaxExactAliasResolutionCacheEntries) {
+      exact_alias_resolution_cache.by_alias.clear();
+    }
+    exact_alias_resolution_cache.by_alias.emplace(alias_key,
+                                                  CachedBankLooseAssetResolution{});
+  }
   return false;
 }
 

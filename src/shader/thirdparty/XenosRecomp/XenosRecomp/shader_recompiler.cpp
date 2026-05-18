@@ -125,6 +125,10 @@ static constexpr std::string_view TEXTURE_DIMENSIONS[] =
     "Cube" 
 };
 
+static constexpr uint32_t TEXTURE_DESCRIPTOR_SLOTS = 32;
+static constexpr uint32_t TEXTURE_DESCRIPTOR_BYTES =
+    TEXTURE_DESCRIPTOR_SLOTS * sizeof(uint32_t);
+
 static FetchDestinationSwizzle getDestSwizzle(uint32_t dstSwizzle, uint32_t index)
 {
     return FetchDestinationSwizzle((dstSwizzle >> (index * 3)) & 0x7);
@@ -1194,13 +1198,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
             {
                 println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
-                    constantName, TEXTURE_DIMENSIONS[j], j * 64 + constantInfo->registerIndex * 4);
+                    constantName, TEXTURE_DIMENSIONS[j],
+                    j * TEXTURE_DESCRIPTOR_BYTES + constantInfo->registerIndex * sizeof(uint32_t));
             }
             println("#define {}_Texture1DDescriptorIndex {}_Texture2DDescriptorIndex",
                 constantName, constantName);
 
             println("#define {}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
-                constantName, std::size(TEXTURE_DIMENSIONS) * 64 + constantInfo->registerIndex * 4);
+                constantName,
+                std::size(TEXTURE_DIMENSIONS) * TEXTURE_DESCRIPTOR_BYTES +
+                    constantInfo->registerIndex * sizeof(uint32_t));
 
             samplers.emplace(constantInfo->registerIndex, constantName);
             break;
@@ -1216,13 +1223,15 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
                 registerIndex,
                 TEXTURE_DIMENSIONS[dimensionIndex],
-                dimensionIndex * 64 + registerIndex * 4);
+                dimensionIndex * TEXTURE_DESCRIPTOR_BYTES +
+                    registerIndex * sizeof(uint32_t));
         }
         println("#define s{}_Texture1DDescriptorIndex s{}_Texture2DDescriptorIndex",
             registerIndex, registerIndex);
         println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
             registerIndex,
-            std::size(TEXTURE_DIMENSIONS) * 64 + registerIndex * 4);
+            std::size(TEXTURE_DIMENSIONS) * TEXTURE_DESCRIPTOR_BYTES +
+                registerIndex * sizeof(uint32_t));
     }
 
     out += "\n#else\n\n";
@@ -1259,6 +1268,33 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     out += "cbuffer SharedConstants : register(b2, space4)\n";
     out += "{\n";
 
+    for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+    {
+        println("\tuint4 g_Texture{}DescriptorIndexRows[8] : packoffset(c{});",
+            TEXTURE_DIMENSIONS[j], j * 8);
+    }
+    println("\tuint4 g_SamplerDescriptorIndexRows[8] : packoffset(c{});",
+        8 * std::size(TEXTURE_DIMENSIONS));
+
+    for (uint32_t registerIndex = 0; registerIndex < 32; ++registerIndex)
+    {
+        for (size_t dimensionIndex = 0; dimensionIndex < std::size(TEXTURE_DIMENSIONS); ++dimensionIndex)
+        {
+            println("#define s{}_Texture{}DescriptorIndex g_Texture{}DescriptorIndexRows[{}].{}",
+                registerIndex,
+                TEXTURE_DIMENSIONS[dimensionIndex],
+                TEXTURE_DIMENSIONS[dimensionIndex],
+                registerIndex / 4,
+                SWIZZLES[registerIndex % 4]);
+        }
+        println("#define s{}_Texture1DDescriptorIndex s{}_Texture2DDescriptorIndex",
+            registerIndex, registerIndex);
+        println("#define s{}_SamplerDescriptorIndex g_SamplerDescriptorIndexRows[{}].{}",
+            registerIndex,
+            registerIndex / 4,
+            SWIZZLES[registerIndex % 4]);
+    }
+
     for (uint32_t i = 0; i < constantTableContainer->constantTable.constants; i++)
     {
         const auto constantInfo = reinterpret_cast<const ConstantInfo*>(
@@ -1270,14 +1306,15 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
             {
-                println("\tuint {}_Texture{}DescriptorIndex : packoffset(c{}.{});",
-                    constantName, TEXTURE_DIMENSIONS[j], j * 4 + constantInfo->registerIndex / 4, SWIZZLES[constantInfo->registerIndex % 4]);
+                println("#define {}_Texture{}DescriptorIndex s{}_Texture{}DescriptorIndex",
+                    constantName, TEXTURE_DIMENSIONS[j],
+                    constantInfo->registerIndex.get(), TEXTURE_DIMENSIONS[j]);
             }
             println("#define {}_Texture1DDescriptorIndex {}_Texture2DDescriptorIndex",
                 constantName, constantName);
 
-            println("\tuint {}_SamplerDescriptorIndex : packoffset(c{}.{});",
-                constantName, 4 * std::size(TEXTURE_DIMENSIONS) + constantInfo->registerIndex / 4, SWIZZLES[constantInfo->registerIndex % 4]);
+            println("#define {}_SamplerDescriptorIndex s{}_SamplerDescriptorIndex",
+                constantName, constantInfo->registerIndex.get());
         }
     }
 
@@ -1485,6 +1522,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 #endif
 
     bool declaredIntConstants[32]{};
+    int32_t intConstantDefaults[32][4]{};
     if (shaderContainer->definitionTableOffset != NULL)
     {
         auto definitionTable = reinterpret_cast<const DefinitionTable*>(shaderData + shaderContainer->definitionTableOffset);
@@ -1523,12 +1561,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 value = definition->values[i].get();
 
                 const int32_t intRegister = static_cast<int32_t>((definition->registerIndex - 8992) / 4 + i);
-                println("\tint4 i{} = int4({}, {}, {}, {});",
-                    intRegister, x, y, z, w);
                 if (intRegister >= 0 &&
                     intRegister < static_cast<int32_t>(32))
                 {
                     declaredIntConstants[intRegister] = true;
+                    intConstantDefaults[intRegister][0] = x;
+                    intConstantDefaults[intRegister][1] = y;
+                    intConstantDefaults[intRegister][2] = z;
+                    intConstantDefaults[intRegister][3] = w;
                 }
             }
             definitions += 2;
@@ -1540,9 +1580,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     for (uint32_t i = 0; i < 32; ++i)
     {
-        if (!declaredIntConstants[i])
+        const char* shaderName = isPixelShader ? "g_Pixel" : "g_Vertex";
+        if (declaredIntConstants[i])
         {
-            println("\tint4 i{} = int4(0, 0, 0, 0);", i);
+            println("\tint4 i{} = (({}IntegerConstantValidMask & (1u << {})) != 0u) ? {}IntegerConstant({}) : int4({}, {}, {}, {});",
+                i, shaderName, i, shaderName, i,
+                intConstantDefaults[i][0], intConstantDefaults[i][1],
+                intConstantDefaults[i][2], intConstantDefaults[i][3]);
+        }
+        else
+        {
+            println("\tint4 i{} = {}IntegerConstant({});", i, shaderName, i);
         }
     }
 

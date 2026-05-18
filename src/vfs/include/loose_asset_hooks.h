@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace refii::vfs {
 
@@ -29,6 +30,7 @@ struct LooseAssetResolution {
 };
 
 std::filesystem::path GetLooseAssetRoot();
+std::vector<std::filesystem::path> GetLooseAssetSearchRoots();
 bool ResolveLooseAssetOverride(std::string_view asset_path,
                                LooseAssetResolution* out_resolution);
 bool ShouldDeferLooseBankContainer(std::string_view asset_path);

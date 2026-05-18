@@ -119,6 +119,10 @@ std::string NormalizeButtonStatus(std::string value, std::size_t maxLength = 64)
     return compact;
 }
 
+void CopyStringToBuffer(const std::string& value, std::array<char, 4096>& buffer) {
+    std::snprintf(buffer.data(), buffer.size(), "%s", value.c_str());
+}
+
 std::string BuildIsoProgressButtonLabel(const IsoExtractionProgress& progress) {
     std::string operationLabel = NormalizeButtonStatus(progress.GetOperationLabel(), 40);
     if (operationLabel.empty()) {
@@ -242,6 +246,10 @@ int main(int argc, char** argv) {
     refii::lua::LuaWorkspaceVerifySummary luaWorkspaceVerifySummary;
     std::string luaWorkspaceVerifyError;
     std::array<char, 256> luaResetFileFilter{};
+    std::array<char, 4096> installIsoPathBuffer{};
+    std::array<char, 4096> installXexpPathBuffer{};
+    std::string installDialogError;
+    bool requestInstallPopup = false;
 
     std::map<std::string, std::string> savedVersions =
         VersionManager::LoadSavedVersions();
@@ -337,18 +345,10 @@ int main(int argc, char** argv) {
     };
 
     auto startInstallFlow = [&]() {
-        const std::string isoPath = Installer::OpenIsoFileDialog();
-        if (isoPath.empty()) {
-            return;
-        }
-
-        const std::string xexpPath = Installer::OpenXexpFileDialog();
-        if (xexpPath.empty()) {
-            return;
-        }
-
-        isoProgress = std::make_shared<IsoExtractionProgress>();
-        Installer::InstallGameAsync(isoPath, xexpPath, isoProgress);
+        installDialogError.clear();
+        installIsoPathBuffer[0] = '\0';
+        installXexpPathBuffer[0] = '\0';
+        requestInstallPopup = true;
     };
 
     auto startLuaWorkspaceRebuild = [&]() {
@@ -783,6 +783,95 @@ int main(int argc, char** argv) {
             ImGui::EndPopup();
         }
 
+        if (requestInstallPopup) {
+            ImGui::OpenPopup("Install Fable 2");
+            requestInstallPopup = false;
+        }
+
+        ImGui::SetNextWindowSize(ImVec2(700.0f, 0.0f), ImGuiCond_Appearing);
+        if (ImGui::BeginPopupModal("Install Fable 2",
+                                   nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped(
+                "Select the Fable 2 ISO and the extracted game executable marker (.xexp).");
+            ImGui::Spacing();
+
+            ImGui::TextUnformatted("Game ISO");
+            ImGui::SetNextItemWidth(-120.0f);
+            ImGui::InputText(
+                "##InstallIsoPath",
+                installIsoPathBuffer.data(),
+                installIsoPathBuffer.size());
+            ImGui::SameLine();
+            if (ImGui::Button("Browse##Iso")) {
+                std::string pickerError;
+                const std::string isoPath = Installer::OpenIsoFileDialog(&pickerError);
+                if (!isoPath.empty()) {
+                    CopyStringToBuffer(isoPath, installIsoPathBuffer);
+                    installDialogError.clear();
+                } else if (!pickerError.empty()) {
+                    installDialogError = pickerError;
+                }
+            }
+
+            ImGui::TextUnformatted("Game XEXP");
+            ImGui::SetNextItemWidth(-120.0f);
+            ImGui::InputText(
+                "##InstallXexpPath",
+                installXexpPathBuffer.data(),
+                installXexpPathBuffer.size());
+            ImGui::SameLine();
+            if (ImGui::Button("Browse##Xexp")) {
+                std::string pickerError;
+                const std::string xexpPath = Installer::OpenXexpFileDialog(&pickerError);
+                if (!xexpPath.empty()) {
+                    CopyStringToBuffer(xexpPath, installXexpPathBuffer);
+                    installDialogError.clear();
+                } else if (!pickerError.empty()) {
+                    installDialogError = pickerError;
+                }
+            }
+
+            if (!installDialogError.empty()) {
+                ImGui::Spacing();
+                ImGui::TextWrapped("Picker error: %s", installDialogError.c_str());
+                ImGui::TextWrapped("You can still paste the paths manually and continue.");
+            }
+
+            const std::string isoPath = installIsoPathBuffer.data();
+            const std::string xexpPath = installXexpPathBuffer.data();
+            const bool canStartInstall = !isoPath.empty() && !xexpPath.empty();
+
+            ImGui::Spacing();
+            if (!canStartInstall) {
+                ImGui::BeginDisabled();
+            }
+            if (ImGui::Button("Start Install", ImVec2(160.0f, 0.0f)) && canStartInstall) {
+                installDialogError.clear();
+
+                if (!std::filesystem::exists(std::filesystem::path(isoPath))) {
+                    installDialogError = "The selected ISO path does not exist.";
+                } else if (!std::filesystem::exists(std::filesystem::path(xexpPath))) {
+                    installDialogError = "The selected XEXP path does not exist.";
+                } else {
+                    isoProgress = std::make_shared<IsoExtractionProgress>();
+                    Installer::InstallGameAsync(isoPath, xexpPath, isoProgress);
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            if (!canStartInstall) {
+                ImGui::EndDisabled();
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) {
+                installDialogError.clear();
+                ImGui::CloseCurrentPopup();
+            }
+
+            ImGui::EndPopup();
+        }
+
         PushSmartStyle(
             INI::GetImColor("ChangeLog_forground", ImColor(0.02f, 0.10f, 0.20f), "Theme"),
             INI::GetImColor("ChangeLog_background", ImColor(0.20f, 0.80f, 0.40f), "Theme"));
@@ -860,7 +949,7 @@ int main(int argc, char** argv) {
                         ImGui::PushStyleColor(ImGuiCol_ButtonActive,
                                               ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
                     }
-                    if (ImGui::Button("Retranslate Shaders", ImVec2(buttonWidth, 36.0f)) &&
+                    if (ImGui::Button("Compile Shaders", ImVec2(buttonWidth, 36.0f)) &&
                         moddingActionEnabled) {
                         startShaderExtraction();
                     }
@@ -919,7 +1008,7 @@ int main(int argc, char** argv) {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
-    glfwDestroyWindow(window.getWindow());
+    window.Destroy();
     glfwTerminate();
 
     return 0;

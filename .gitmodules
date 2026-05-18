@@ -12,7 +12,22 @@
 [submodule "src/extractor/thirdparty/zlib"]
 	path = src/extractor/thirdparty/zlib
 	url = https://github.com/madler/zlib.git
-[submodule "ReXGlue"]
-	path = ReXGlue
+[submodule "rexglue/rexglue-sdk"]
+	path = rexglue/rexglue-sdk
 	url = https://github.com/rexglue/rexglue-sdk.git
 	branch = release/v0.8.0
+[submodule "src/renderer/thirdparty/renderdoc"]
+	path = src/renderer/thirdparty/renderdoc
+	url = https://github.com/baldurk/renderdoc
+[submodule "src/renderer/thirdparty/plume/contrib/volk"]
+	path = src/renderer/thirdparty/plume/contrib/volk
+	url = https://github.com/zeux/volk
+[submodule "src/renderer/thirdparty/plume/contrib/VulkanMemoryAllocator"]
+	path = src/renderer/thirdparty/plume/contrib/VulkanMemoryAllocator
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+[submodule "src/renderer/thirdparty/plume/contrib/Vulkan-Headers"]
+	path = src/renderer/thirdparty/plume/contrib/Vulkan-Headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers
+[submodule "src/renderer/thirdparty/plume/contrib/D3D12MemoryAllocator"]
+	path = src/renderer/thirdparty/plume/contrib/D3D12MemoryAllocator
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator

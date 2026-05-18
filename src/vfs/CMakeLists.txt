@@ -14,6 +14,7 @@ set(REFII_VFS_RUNTIME_SOURCES
     ${REFII_VFS_ROOT}/src/loose_asset_runtime.cpp
     ${REFII_VFS_ROOT}/src/runtime/cvars.cpp
     ${REFII_VFS_ROOT}/src/runtime/path_resolution.cpp
+    ${REFII_VFS_ROOT}/src/runtime/replacement_paths.cpp
 )
 
 set(REFII_VFS_HOOK_INTERNAL_SOURCES
@@ -93,6 +94,7 @@ set(REFII_VFS_HOOK_PARTS
     ${REFII_VFS_ROOT}/include/index/runtime_tables.h
     ${REFII_VFS_ROOT}/include/index/types.h
     ${REFII_VFS_ROOT}/include/loose_asset_runtime_stats.h
+    ${REFII_VFS_ROOT}/include/runtime/replacement_paths.h
     ${REFII_VFS_ROOT}/include/resources/resource_wrappers.h
     ${REFII_VFS_ROOT}/include/resources/native_texture_parser_trace.h
     ${REFII_VFS_ROOT}/include/runtime/cvars.h
