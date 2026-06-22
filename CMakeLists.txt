@@ -235,7 +235,7 @@ if(REFII_CAN_BUILD_LINUX_PACKAGES)
 
     option(REFII_BUILD_FLATPAK
         "Enable Linux Flatpak packaging targets"
-        ON
+        OFF
     )
 else()
     set(
@@ -293,6 +293,12 @@ set(
     CACHE FILEPATH
     "PNG icon used for AppImage and Flatpak packaging"
 )
+set(
+    REFII_DEFAULT_XEX_SOURCE
+    "${CMAKE_SOURCE_DIR}/assets/game/default.xex"
+    CACHE FILEPATH
+    "default.xex used to generate launcher and package icons"
+)
 if("${REFII_PACKAGE_ICON_SOURCE}" STREQUAL "${_REFII_PACKAGE_ICON_SOURCE_LEGACY_DEFAULT}")
     set(
         REFII_PACKAGE_ICON_SOURCE
@@ -302,6 +308,11 @@ if("${REFII_PACKAGE_ICON_SOURCE}" STREQUAL "${_REFII_PACKAGE_ICON_SOURCE_LEGACY_
         FORCE
     )
 endif()
+set(REFII_PACKAGE_ICON_AVAILABLE OFF)
+if(EXISTS "${REFII_PACKAGE_ICON_SOURCE}")
+    set(REFII_PACKAGE_ICON_AVAILABLE ON)
+endif()
+set(REFII_PACKAGE_ICON_TARGET)
 
 set(
     REFII_APPIMAGE_ARCH
@@ -452,6 +463,29 @@ set(REFII_RENDERER_LIBRARIES)
 set(REFII_HOOK_OBJECTS)
 
 add_subdirectory(src/extractor)
+
+if(TARGET refii-default-xex-icon-extractor
+        AND EXISTS "${REFII_DEFAULT_XEX_SOURCE}"
+        AND "${REFII_PACKAGE_ICON_SOURCE}" STREQUAL "${_REFII_PACKAGE_ICON_SOURCE_DEFAULT}")
+    add_custom_command(
+        OUTPUT "${REFII_PACKAGE_ICON_SOURCE}"
+        COMMAND "$<TARGET_FILE:refii-default-xex-icon-extractor>"
+            "${REFII_DEFAULT_XEX_SOURCE}"
+        DEPENDS
+            refii-default-xex-icon-extractor
+            "${REFII_DEFAULT_XEX_SOURCE}"
+        BYPRODUCTS
+            "${CMAKE_SOURCE_DIR}/assets/game/default.xex.icons/manifest.tsv"
+        COMMENT "Extracting default.xex icons"
+        VERBATIM
+    )
+    add_custom_target(refii-extract-default-xex-icons
+        DEPENDS "${REFII_PACKAGE_ICON_SOURCE}"
+    )
+    set(REFII_PACKAGE_ICON_AVAILABLE ON)
+    set(REFII_PACKAGE_ICON_TARGET refii-extract-default-xex-icons)
+endif()
+
 add_subdirectory(src/modding)
 
 if(REFII_BUILD_NATIVE_LUA)
@@ -657,14 +691,19 @@ if(REFII_BUILD_STANDALONE)
         BUILD_RPATH "$ORIGIN/../lib"
         INSTALL_RPATH "$ORIGIN/../lib"
     )
-    add_custom_command(TARGET refii POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:refii>/assets/launcher/assets"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_PACKAGE_ICON_SOURCE}"
-            "$<TARGET_FILE_DIR:refii>/assets/launcher/assets/icon.png"
-        VERBATIM
-    )
+    if(REFII_PACKAGE_ICON_AVAILABLE)
+        if(REFII_PACKAGE_ICON_TARGET)
+            add_dependencies(refii "${REFII_PACKAGE_ICON_TARGET}")
+        endif()
+        add_custom_command(TARGET refii POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:refii>/assets/launcher/assets"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${REFII_PACKAGE_ICON_SOURCE}"
+                "$<TARGET_FILE_DIR:refii>/assets/launcher/assets/icon.png"
+            VERBATIM
+        )
+    endif()
 
     if(EXISTS "${REFII_SHADER_OUTPUT_DIR}")
         add_custom_target(refii_stage_runtime_shaders
@@ -904,7 +943,7 @@ if(REFII_BUILD_APPIMAGE)
     if(NOT UNIX OR APPLE)
         message(FATAL_ERROR "REFII_BUILD_APPIMAGE currently supports Linux builds only.")
     endif()
-    if(NOT EXISTS "${REFII_PACKAGE_ICON_SOURCE}")
+    if(NOT EXISTS "${REFII_PACKAGE_ICON_SOURCE}" AND NOT TARGET "${REFII_PACKAGE_ICON_TARGET}")
         message(FATAL_ERROR "REFII_BUILD_APPIMAGE requires REFII_PACKAGE_ICON_SOURCE to point to an existing PNG file.")
     endif()
     if(NOT REFII_BUILD_LAUNCHER)
@@ -1083,6 +1122,7 @@ if(REFII_BUILD_APPIMAGE)
             refii
             refii_core
             refii_generated
+            ${REFII_PACKAGE_ICON_TARGET}
             "${APPIMAGETOOL_EXECUTABLE}"
             "${REFII_APPIMAGE_APPRUN_SOURCE}"
             "${REFII_APPIMAGE_DESKTOP_SOURCE}"
@@ -1111,7 +1151,7 @@ if(REFII_BUILD_FLATPAK)
     if(NOT UNIX OR APPLE)
         message(FATAL_ERROR "REFII_BUILD_FLATPAK currently supports Linux builds only.")
     endif()
-    if(NOT EXISTS "${REFII_PACKAGE_ICON_SOURCE}")
+    if(NOT EXISTS "${REFII_PACKAGE_ICON_SOURCE}" AND NOT TARGET "${REFII_PACKAGE_ICON_TARGET}")
         message(FATAL_ERROR "REFII_BUILD_FLATPAK requires REFII_PACKAGE_ICON_SOURCE to point to an existing PNG file.")
     endif()
     if(NOT REFII_BUILD_LAUNCHER)
@@ -1288,6 +1328,7 @@ if(REFII_BUILD_FLATPAK)
             refii
             refii_core
             refii_generated
+            ${REFII_PACKAGE_ICON_TARGET}
             "${REFII_FLATPAK_LAUNCHER_WRAPPER_SOURCE}"
             "${REFII_FLATPAK_DESKTOP_SOURCE}"
             "${REFII_FLATPAK_MANIFEST_SOURCE}"

@@ -142,7 +142,7 @@ set(REFII_RENDERER_RENDERDOC_API_HEADER
 )
 option(REFII_RENDERER_BUILD_RENDERDOC_RUNTIME
     "Build the vendored RenderDoc capture runtime for the Refii renderer"
-    ON
+    OFF
 )
 set(REFII_RENDERER_RENDERDOC_BUILD_TYPE
     "RelWithDebInfo"

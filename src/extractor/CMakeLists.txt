@@ -44,6 +44,7 @@ endif()
 
 add_library(refii_bnk_extractor SHARED
     ${REFII_EXTRACTOR_ROOT}/src/bnk_extractor.cpp
+    ${REFII_EXTRACTOR_ROOT}/src/default_xex_icon_extractor.cpp
 )
 
 target_include_directories(refii_bnk_extractor
@@ -74,6 +75,22 @@ if(WIN32)
         WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
 endif()
+
+add_executable(refii-default-xex-icon-extractor
+    ${REFII_EXTRACTOR_ROOT}/src/default_xex_icon_extractor_main.cpp
+)
+target_link_libraries(refii-default-xex-icon-extractor
+    PRIVATE
+        refii_bnk_extractor
+)
+set_target_properties(refii-default-xex-icon-extractor PROPERTIES
+    OUTPUT_NAME refii-default-xex-icon-extractor
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_TOOL_OUTPUT_DIR}"
+    BUILD_RPATH "$ORIGIN/../lib"
+    INSTALL_RPATH "$ORIGIN/../lib"
+)
 
 if(REFII_BUILD_TOOLS)
     add_executable(refii-bnk-extractor
