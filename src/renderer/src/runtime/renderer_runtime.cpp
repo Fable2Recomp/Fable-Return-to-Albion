@@ -17,18 +17,31 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <fstream>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace refii::renderer {
 namespace {
@@ -224,7 +237,139 @@ uint32_t GuestPhysicalHostOffset(uint32_t guest_address) {
 #endif
 }
 
+bool IsPlausibleGuestByteRange(uint32_t guest_address, uint32_t byte_size) {
+  if (guest_address == 0 || byte_size == 0 ||
+      guest_address > UINT32_MAX - (byte_size - 1u)) {
+    return false;
+  }
+
+  const uint32_t end_address = guest_address + byte_size - 1u;
+  if (guest_address >= 0x1000u && end_address < 0x80000000u) {
+    return true;
+  }
+
+  return guest_address >= 0x80000000u && byte_size <= 64u * 1024u * 1024u;
+}
+
+bool IsReadableHostByteRange(const uint8_t *data, size_t size) {
+  if (!data || size == 0) {
+    return false;
+  }
+
+  const uintptr_t begin = reinterpret_cast<uintptr_t>(data);
+  if (begin > std::numeric_limits<uintptr_t>::max() - size) {
+    return false;
+  }
+
+  const uintptr_t end = begin + size;
+  uintptr_t current = begin;
+#if defined(_WIN32)
+  while (current < end) {
+    MEMORY_BASIC_INFORMATION info = {};
+    if (VirtualQuery(reinterpret_cast<const void *>(current), &info,
+                     sizeof(info)) == 0) {
+      return false;
+    }
+
+    const DWORD protect = info.Protect & 0xFFu;
+    const bool readable =
+        protect == PAGE_READONLY || protect == PAGE_READWRITE ||
+        protect == PAGE_WRITECOPY || protect == PAGE_EXECUTE_READ ||
+        protect == PAGE_EXECUTE_READWRITE ||
+        protect == PAGE_EXECUTE_WRITECOPY;
+    if (info.State != MEM_COMMIT || (info.Protect & PAGE_GUARD) != 0 ||
+        !readable) {
+      return false;
+    }
+
+    const uintptr_t region_begin =
+        reinterpret_cast<uintptr_t>(info.BaseAddress);
+    if (region_begin > std::numeric_limits<uintptr_t>::max() -
+                           static_cast<uintptr_t>(info.RegionSize)) {
+      return false;
+    }
+    const uintptr_t region_end =
+        region_begin + static_cast<uintptr_t>(info.RegionSize);
+    if (region_end <= current) {
+      return false;
+    }
+    current = std::min(region_end, end);
+  }
+#elif defined(__linux__)
+  thread_local uintptr_t cached_readable_begin = 0;
+  thread_local uintptr_t cached_readable_end = 0;
+  if (begin >= cached_readable_begin && end <= cached_readable_end) {
+    return true;
+  }
+
+  std::ifstream maps("/proc/self/maps");
+  if (!maps) {
+    return false;
+  }
+
+  std::string line;
+  while (current < end && std::getline(maps, line)) {
+    const char *text = line.c_str();
+    char *after_begin = nullptr;
+    errno = 0;
+    const unsigned long long region_begin_value =
+        std::strtoull(text, &after_begin, 16);
+    if (errno != 0 || after_begin == text || *after_begin != '-') {
+      continue;
+    }
+
+    char *after_end = nullptr;
+    errno = 0;
+    const unsigned long long region_end_value =
+        std::strtoull(after_begin + 1, &after_end, 16);
+    if (errno != 0 || after_end == after_begin + 1 || *after_end != ' ') {
+      continue;
+    }
+    while (*after_end == ' ') {
+      ++after_end;
+    }
+
+    const uintptr_t region_begin =
+        static_cast<uintptr_t>(region_begin_value);
+    const uintptr_t region_end = static_cast<uintptr_t>(region_end_value);
+    if (region_end <= current) {
+      continue;
+    }
+    if (region_begin > current || after_end[0] != 'r') {
+      return false;
+    }
+    if (current == begin && region_end >= end) {
+      cached_readable_begin = region_begin;
+      cached_readable_end = region_end;
+      return true;
+    }
+    current = std::min(region_end, end);
+  }
+
+  if (current < end) {
+    return false;
+  }
+#endif
+
+  return true;
+}
+
+bool IsReadableGuestByteRange(uint8_t *base, uint32_t guest_address,
+                              uint32_t byte_size) {
+  if (!base || !IsPlausibleGuestByteRange(guest_address, byte_size)) {
+    return false;
+  }
+
+  const uint8_t *data =
+      base + guest_address + GuestPhysicalHostOffset(guest_address);
+  return IsReadableHostByteRange(data, byte_size);
+}
+
 uint32_t LoadGuestU32(uint8_t *base, uint32_t guest_address) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint32_t))) {
+    return 0;
+  }
+
   uint32_t raw = 0;
   std::memcpy(&raw,
               base + guest_address + GuestPhysicalHostOffset(guest_address),
@@ -233,6 +378,10 @@ uint32_t LoadGuestU32(uint8_t *base, uint32_t guest_address) {
 }
 
 void StoreGuestU32(uint8_t *base, uint32_t guest_address, uint32_t value) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint32_t))) {
+    return;
+  }
+
   const uint32_t raw = __builtin_bswap32(value);
   std::memcpy(base + guest_address + GuestPhysicalHostOffset(guest_address),
               &raw, sizeof(raw));
@@ -252,14 +401,26 @@ void StoreGuestF32(uint8_t *base, uint32_t guest_address, float value) {
 }
 
 uint8_t LoadGuestU8(uint8_t *base, uint32_t guest_address) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint8_t))) {
+    return 0;
+  }
+
   return *(base + guest_address + GuestPhysicalHostOffset(guest_address));
 }
 
 void StoreGuestU8(uint8_t *base, uint32_t guest_address, uint8_t value) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint8_t))) {
+    return;
+  }
+
   *(base + guest_address + GuestPhysicalHostOffset(guest_address)) = value;
 }
 
 uint16_t LoadGuestU16(uint8_t *base, uint32_t guest_address) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint16_t))) {
+    return 0;
+  }
+
   uint16_t raw = 0;
   std::memcpy(&raw,
               base + guest_address + GuestPhysicalHostOffset(guest_address),
@@ -802,8 +963,36 @@ void ZeroGuestDwords(uint8_t *base, uint32_t guest_address,
 
 void CopyGuestBytes(uint8_t *base, uint32_t destination, uint32_t source,
                     uint32_t byte_size) {
+  if (!IsReadableGuestByteRange(base, destination, byte_size) ||
+      !IsReadableGuestByteRange(base, source, byte_size)) {
+    return;
+  }
+
   std::memcpy(base + destination + GuestPhysicalHostOffset(destination),
               base + source + GuestPhysicalHostOffset(source), byte_size);
+}
+
+bool MoveGuestBytes(uint8_t *base, uint32_t destination, uint32_t source,
+                    uint32_t byte_size) {
+  if (!IsReadableGuestByteRange(base, destination, byte_size) ||
+      !IsReadableGuestByteRange(base, source, byte_size)) {
+    return false;
+  }
+
+  std::memmove(base + destination + GuestPhysicalHostOffset(destination),
+               base + source + GuestPhysicalHostOffset(source), byte_size);
+  return true;
+}
+
+bool SetGuestBytes(uint8_t *base, uint32_t destination, int value,
+                   uint32_t byte_size) {
+  if (!IsReadableGuestByteRange(base, destination, byte_size)) {
+    return false;
+  }
+
+  std::memset(base + destination + GuestPhysicalHostOffset(destination), value,
+              byte_size);
+  return true;
 }
 
 FableNativeResourceEmulation EmulateFableVertexBufferHeader(
@@ -1903,8 +2092,10 @@ FableNativeResourceEmulation EmulateFableBinkVideoPlaneSetup(
     return emulation;
   }
 
-  std::memset(base + plane_memory + GuestPhysicalHostOffset(plane_memory), 0,
-              aligned_plane_bytes);
+  if (IsReadableGuestByteRange(base, plane_memory, aligned_plane_bytes)) {
+    std::memset(base + plane_memory + GuestPhysicalHostOffset(plane_memory), 0,
+                aligned_plane_bytes);
+  }
   const uint32_t fetch_base = LoadGuestU32(base, texture + 32u);
   StoreGuestU32(base, texture + 32u,
                 ((fetch_base & 0xFFFFF000u) + plane_memory) |
@@ -2257,9 +2448,24 @@ FableNativeResourceEmulation EmulateFableSurfaceCopy(
       base + shape.destination.bits +
       GuestPhysicalHostOffset(shape.destination.bits);
   for (uint32_t row = 0; row < rows; ++row) {
-    std::memmove(destination_base + uint64_t(row) * shape.destination.pitch_bytes,
-                 source_base + uint64_t(row) * shape.source.pitch_bytes,
-                 row_bytes);
+    const uint64_t source_offset = uint64_t(row) * shape.source.pitch_bytes;
+    const uint64_t destination_offset =
+        uint64_t(row) * shape.destination.pitch_bytes;
+    if (source_offset > UINT32_MAX - shape.source.bits ||
+        destination_offset > UINT32_MAX - shape.destination.bits ||
+        !IsReadableGuestByteRange(
+            base, shape.source.bits + static_cast<uint32_t>(source_offset),
+            row_bytes) ||
+        !IsReadableGuestByteRange(
+            base,
+            shape.destination.bits +
+                static_cast<uint32_t>(destination_offset),
+            row_bytes)) {
+      return emulation;
+    }
+
+    std::memmove(destination_base + destination_offset,
+                 source_base + source_offset, row_bytes);
   }
 
   const uint32_t dirty_size =
@@ -2306,6 +2512,10 @@ bool GuestRowRangeHasNonZero(uint8_t *base, uint32_t bits,
       return false;
     }
     const uint32_t row_bits = bits + static_cast<uint32_t>(row_offset);
+    if (!IsReadableGuestByteRange(base, row_bits, row_bytes)) {
+      return false;
+    }
+
     const uint8_t *const row_base =
         base + row_bits + GuestPhysicalHostOffset(row_bits);
     const uint32_t scan_bytes =
@@ -2343,10 +2553,24 @@ bool CopyFableSurfaceMemoryRowsIfDestinationIsBlank(
       base + shape.destination.bits +
       GuestPhysicalHostOffset(shape.destination.bits);
   for (uint32_t row = 0; row < rows; ++row) {
-    std::memmove(destination_base + uint64_t(row) *
-                                        shape.destination.pitch_bytes,
-                 source_base + uint64_t(row) * shape.source_pitch_bytes,
-                 row_bytes);
+    const uint64_t source_offset = uint64_t(row) * shape.source_pitch_bytes;
+    const uint64_t destination_offset =
+        uint64_t(row) * shape.destination.pitch_bytes;
+    if (source_offset > UINT32_MAX - shape.source_bits ||
+        destination_offset > UINT32_MAX - shape.destination.bits ||
+        !IsReadableGuestByteRange(
+            base, shape.source_bits + static_cast<uint32_t>(source_offset),
+            row_bytes) ||
+        !IsReadableGuestByteRange(
+            base,
+            shape.destination.bits +
+                static_cast<uint32_t>(destination_offset),
+            row_bytes)) {
+      return false;
+    }
+
+    std::memmove(destination_base + destination_offset,
+                 source_base + source_offset, row_bytes);
   }
   return true;
 }
@@ -2563,6 +2787,10 @@ FableNativeResourceEmulation EmulateFableTextureFill(
   const auto fetch = LoadFableTextureFetch(base, args.r3);
   const uint32_t base_address = fetch.base_address << 12u;
   const uint32_t fill_bytes = FableTextureFillBlockBytes(fetch.format);
+  if (!IsReadableGuestByteRange(base, base_address, fill_bytes)) {
+    return emulation;
+  }
+
   uint8_t *const destination =
       base + base_address + GuestPhysicalHostOffset(base_address);
   std::memset(destination, 0xFF, fill_bytes);
@@ -3051,6 +3279,10 @@ uint32_t FindFirstNonZeroGuestByte(uint8_t *base, uint32_t guest_address,
   }
 
   const uint32_t scan_size = std::min(size, max_scan);
+  if (!IsReadableGuestByteRange(base, guest_address, scan_size)) {
+    return UINT32_MAX;
+  }
+
   const uint8_t *data =
       base + guest_address + GuestPhysicalHostOffset(guest_address);
   for (uint32_t i = 0; i < scan_size; ++i) {
@@ -3235,7 +3467,10 @@ bool TryFastTileFable2DTextureLevel(uint8_t *base, uint32_t destination,
   if (tiled_bytes == 0 || tiled_bytes > kMaxFastTileBytes ||
       source_bytes64 == 0 || source_bytes64 > kMaxFastTileBytes ||
       !IsLikelyGuestMemoryRange(source, static_cast<uint32_t>(source_bytes64)) ||
-      !IsLikelyGuestMemoryRange(destination, tiled_bytes)) {
+      !IsLikelyGuestMemoryRange(destination, tiled_bytes) ||
+      !IsReadableGuestByteRange(base, source,
+                                static_cast<uint32_t>(source_bytes64)) ||
+      !IsReadableGuestByteRange(base, destination, tiled_bytes)) {
     return false;
   }
   if (!FableCpuLayoutSourceHasNonZeroData(
@@ -3341,8 +3576,10 @@ bool TryFastEmulateFableCpuTextureLayoutHelper(std::string_view symbol,
     return false;
   }
 
-  std::memmove(base + destination + GuestPhysicalHostOffset(destination),
-               base + source + GuestPhysicalHostOffset(source), copy_size);
+  if (!MoveGuestBytes(base, destination, source, copy_size)) {
+    return false;
+  }
+
   ctx.r3.u64 = 0;
   if (!g_logged_fable_cpu_texture_layout_fast_emulation) {
     REXLOG_INFO(
@@ -6821,8 +7058,7 @@ FableNativeCommandSubmitEmulation EmulateFableShaderConstantState(
         device + (symbol == "sub_8221A880" ? kVertexFloatConstantBaseOffset
                                            : kPixelFloatConstantBaseOffset) +
         first_register * 16u;
-    std::memcpy(base + destination_base + GuestPhysicalHostOffset(destination_base),
-                base + source + GuestPhysicalHostOffset(source), count * 16u);
+    CopyGuestBytes(base, destination_base, source, count * 16u);
     OrFableGuestQwordLow(
         base,
         device + (symbol == "sub_8221A880" ? kVertexFloatDirtyQwordOffset
@@ -7635,13 +7871,13 @@ FableNativeCommandSubmitEmulation EmulateFableDrawVerticesUpSubmission(
     return {.handled = true, .result = 0};
   }
 
-  std::memcpy(base + vertex_buffer + GuestPhysicalHostOffset(vertex_buffer),
-              base + args.r6 + GuestPhysicalHostOffset(args.r6), byte_count);
+  if (!MoveGuestBytes(base, vertex_buffer, args.r6, byte_count)) {
+    return {.handled = true, .result = 0};
+  }
   const uint32_t padded_bytes = word_count * sizeof(uint32_t);
-  if (padded_bytes > byte_count) {
-    std::memset(base + vertex_buffer + GuestPhysicalHostOffset(vertex_buffer) +
-                    byte_count,
-                0, padded_bytes - byte_count);
+  if (padded_bytes > byte_count && byte_count <= UINT32_MAX - vertex_buffer) {
+    SetGuestBytes(base, vertex_buffer + byte_count, 0,
+                  padded_bytes - byte_count);
   }
 
   uint32_t command_pointer = LoadGuestU32(base, device + kCommandPointerOffset);
@@ -7804,12 +8040,10 @@ FableNativeCommandSubmitEmulation EmulateFableBeginIndexedVerticesSubmission(
   }
 
   if (vertex_buffer != 0) {
-    std::memset(base + vertex_buffer + GuestPhysicalHostOffset(vertex_buffer),
-                0, vertex_words * sizeof(uint32_t));
+    SetGuestBytes(base, vertex_buffer, 0, vertex_words * sizeof(uint32_t));
   }
   if (index_buffer != 0) {
-    std::memset(base + index_buffer + GuestPhysicalHostOffset(index_buffer), 0,
-                index_words * sizeof(uint32_t));
+    SetGuestBytes(base, index_buffer, 0, index_words * sizeof(uint32_t));
   }
 
   StoreGuestU32(base, vertex_out_slot_pointer, vertex_buffer);
@@ -7975,8 +8209,7 @@ FableNativeCommandSubmitEmulation EmulateFableBeginVerticesSubmission(
     return emulation;
   }
 
-  std::memset(base + vertex_buffer + GuestPhysicalHostOffset(vertex_buffer), 0,
-              vertex_words * sizeof(uint32_t));
+  SetGuestBytes(base, vertex_buffer, 0, vertex_words * sizeof(uint32_t));
 
   uint32_t command_pointer = LoadGuestU32(base, device + kCommandPointerOffset);
   const uint32_t command_limit = LoadGuestU32(base, device + kCommandLimitOffset);

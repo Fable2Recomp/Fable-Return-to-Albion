@@ -14,6 +14,12 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #endif
 
 #include "shader/refii_shader_xenos_translator.h"
@@ -72,8 +78,11 @@ std::optional<std::string> ResolveDxcProfile(std::string_view stage);
 bool WriteTextFile(const std::filesystem::path& path,
                   std::string_view text,
                   std::string* error);
+std::string QuoteProcessArgument(const std::string& argument);
+void WriteTranslatorLog(const std::filesystem::path& log_path, const std::string& message);
 bool RunProcess(const std::vector<std::string>& args,
                 const std::vector<std::pair<std::string, std::string>>& env_overrides,
+                const std::filesystem::path& log_path,
                 int* exit_code,
                 std::string* error);
 std::vector<std::pair<std::string, std::string>> BuildDxcEnvironment();
@@ -152,6 +161,7 @@ bool TranslateXenosShaderBlobImpl(const Options& options,
     }
 
     const char* xenos_error = nullptr;
+    WriteTranslatorLog(log_path, "phase: xenos_translate_start");
     if (!XenosRecompTranslateToHlsl(input_path.string().c_str(),
                                     hlsl_output_path.string().c_str(),
                                     REFII_XENOSRECOMP_SHADER_COMMON_PATH,
@@ -160,6 +170,7 @@ bool TranslateXenosShaderBlobImpl(const Options& options,
                   (xenos_error != nullptr ? xenos_error : "failed to run"));
         return false;
     }
+    WriteTranslatorLog(log_path, "phase: xenos_translate_complete");
     if (!std::filesystem::exists(hlsl_output_path)) {
         set_error("XenosRecomp did not write HLSL output: " + hlsl_output_path.string());
         return false;
@@ -174,6 +185,7 @@ bool TranslateXenosShaderBlobImpl(const Options& options,
     dxc_args.push_back("-HV");
     dxc_args.push_back("2021");
     dxc_args.push_back("-all-resources-bound");
+    dxc_args.push_back("-Wno-conversion");
     if (options.target == "vulkan") {
         dxc_args.push_back("-spirv");
         dxc_args.push_back("-fvk-use-dx-layout");
@@ -191,10 +203,12 @@ bool TranslateXenosShaderBlobImpl(const Options& options,
 
     int dxc_exit_code = 0;
     std::string dxc_error;
-    if (!RunProcess(dxc_args, BuildDxcEnvironment(), &dxc_exit_code, &dxc_error)) {
+    WriteTranslatorLog(log_path, "phase: dxc_start");
+    if (!RunProcess(dxc_args, BuildDxcEnvironment(), log_path, &dxc_exit_code, &dxc_error)) {
         set_error("unable to launch DXC: " + dxc_error);
         return false;
     }
+    WriteTranslatorLog(log_path, "phase: dxc_exit_code " + std::to_string(dxc_exit_code));
     if (dxc_exit_code != 0) {
         set_error("DXC exited with code " + std::to_string(dxc_exit_code) + " for target " +
                   options.target);
@@ -230,6 +244,7 @@ bool TranslateXenosShaderBlob(const std::filesystem::path& input,
 
 bool RunProcess(const std::vector<std::string>& args,
                 const std::vector<std::pair<std::string, std::string>>& env_overrides,
+                const std::filesystem::path& log_path,
                 int* exit_code,
                 std::string* error) {
     if (args.empty()) {
@@ -282,25 +297,84 @@ bool RunProcess(const std::vector<std::string>& args,
         }
     }
     return true;
-#else
-    for (const auto& [key, value] : env_overrides) {
-        _putenv_s(key.c_str(), value.c_str());
-    }
+#elif defined(_WIN32)
+    (void)env_overrides;
+    WriteTranslatorLog(log_path, "phase: process_set_environment_skipped_windows");
 
     std::string command;
     for (std::size_t index = 0; index < args.size(); ++index) {
         if (index != 0) {
             command.push_back(' ');
         }
-        command.push_back('"');
-        for (const char character : args[index]) {
-            if (character == '\"' || character == '\\') {
-                command.push_back('\\');
-            }
-            command.push_back(character);
-        }
-        command.push_back('"');
+        command += QuoteProcessArgument(args[index]);
     }
+    WriteTranslatorLog(log_path, "phase: process_command " + command);
+
+    STARTUPINFOA startup_info = {};
+    startup_info.cb = sizeof(startup_info);
+    PROCESS_INFORMATION process_info = {};
+    std::string mutable_command = command;
+    const std::filesystem::path application_path(args[0]);
+    const std::string application = application_path.string();
+    const std::filesystem::path working_directory = application_path.parent_path();
+    const std::string working_directory_string = working_directory.string();
+    WriteTranslatorLog(log_path, "phase: create_process_start");
+    const BOOL created = CreateProcessA(
+        application.c_str(),
+        mutable_command.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        0,
+        nullptr,
+        working_directory_string.empty() ? nullptr : working_directory_string.c_str(),
+        &startup_info,
+        &process_info);
+    WriteTranslatorLog(log_path, "phase: create_process_return");
+    if (!created) {
+        if (error != nullptr) {
+            *error = "CreateProcess failed with error " +
+                     std::to_string(GetLastError()) + ": " + command;
+        }
+        return false;
+    }
+
+    WriteTranslatorLog(log_path, "phase: wait_process_start");
+    WaitForSingleObject(process_info.hProcess, INFINITE);
+    WriteTranslatorLog(log_path, "phase: wait_process_complete");
+    DWORD process_exit_code = 1;
+    if (!GetExitCodeProcess(process_info.hProcess, &process_exit_code)) {
+        if (error != nullptr) {
+            *error = "GetExitCodeProcess failed with error " +
+                     std::to_string(GetLastError()) + ": " + command;
+        }
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+        return false;
+    }
+    WriteTranslatorLog(log_path, "phase: get_exit_code " + std::to_string(process_exit_code));
+
+    CloseHandle(process_info.hThread);
+    CloseHandle(process_info.hProcess);
+    if (exit_code != nullptr) {
+        *exit_code = static_cast<int>(process_exit_code);
+    }
+    return true;
+#else
+    WriteTranslatorLog(log_path, "phase: process_set_environment_start");
+    for (const auto& [key, value] : env_overrides) {
+        _putenv_s(key.c_str(), value.c_str());
+    }
+    WriteTranslatorLog(log_path, "phase: process_set_environment_complete");
+
+    std::string command;
+    for (std::size_t index = 0; index < args.size(); ++index) {
+        if (index != 0) {
+            command.push_back(' ');
+        }
+        command += QuoteProcessArgument(args[index]);
+    }
+    WriteTranslatorLog(log_path, "phase: process_command " + command);
 
     const int code = std::system(command.c_str());
     if (exit_code != nullptr) {
@@ -308,6 +382,38 @@ bool RunProcess(const std::vector<std::string>& args,
     }
     return true;
 #endif
+}
+
+std::string QuoteProcessArgument(const std::string& argument) {
+    if (argument.empty()) {
+        return "\"\"";
+    }
+
+    if (argument.find_first_of(" \t\"") == std::string::npos) {
+        return argument;
+    }
+
+    std::string quoted = "\"";
+    std::size_t backslash_count = 0;
+    for (const char character : argument) {
+        if (character == '\\') {
+            ++backslash_count;
+            continue;
+        }
+
+        if (character == '"') {
+            quoted.append(backslash_count * 2 + 1, '\\');
+            quoted.push_back('"');
+        } else {
+            quoted.append(backslash_count, '\\');
+            quoted.push_back(character);
+        }
+        backslash_count = 0;
+    }
+
+    quoted.append(backslash_count * 2, '\\');
+    quoted.push_back('"');
+    return quoted;
 }
 
 std::vector<std::pair<std::string, std::string>> BuildDxcEnvironment() {
@@ -323,6 +429,9 @@ std::vector<std::pair<std::string, std::string>> BuildDxcEnvironment() {
 #elif defined(__unix__)
     const char* variable_name = "LD_LIBRARY_PATH";
     const char separator = ':';
+#elif defined(_WIN32)
+    const char* variable_name = "PATH";
+    const char separator = ';';
 #else
     return environment;
 #endif

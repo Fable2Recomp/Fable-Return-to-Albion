@@ -264,7 +264,7 @@ uint32_t FindOrSetFableTextureDescriptorLocked(
 
 bool SetFableSamplerDescriptorAtIndexLocked(uint32_t descriptor_index,
                                             plume::RenderSampler* sampler) {
-  if (descriptor_index >= kFableDescriptorCount ||
+  if (descriptor_index >= kFableSamplerDescriptorCount ||
       !g_plume_resources.sampler_descriptor_set || !sampler) {
     return false;
   }
@@ -292,7 +292,7 @@ uint32_t FindOrSetFableSamplerDescriptorLocked(plume::RenderSampler* sampler) {
 
   const uint32_t next_descriptor =
       std::min<uint32_t>(g_plume_resources.next_sampler_descriptor_index,
-                         kFableDescriptorCount);
+                         kFableSamplerDescriptorCount);
   const auto descriptor_it =
       g_plume_resources.sampler_descriptor_lookup.find(sampler);
   if (descriptor_it != g_plume_resources.sampler_descriptor_lookup.end() &&
@@ -301,7 +301,7 @@ uint32_t FindOrSetFableSamplerDescriptorLocked(plume::RenderSampler* sampler) {
     return descriptor_it->second;
   }
 
-  if (next_descriptor >= kFableDescriptorCount) {
+  if (next_descriptor >= kFableSamplerDescriptorCount) {
     return 0;
   }
 

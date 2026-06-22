@@ -13,18 +13,32 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include <rex/logging.h>
 #include <rex/graphics/pipeline/texture/info.h>
@@ -221,6 +235,15 @@ struct PrivateTextureRectangleWrapperMissStats {
   uint64_t last_context_key = 0;
 };
 
+struct GuestPointerTableScan {
+  uint32_t nonzero_count = 0;
+  uint32_t plausible_object_count = 0;
+  uint32_t first_nonzero_index = UINT32_MAX;
+  uint32_t first_nonzero_value = 0;
+  uint32_t first_plausible_object_index = UINT32_MAX;
+  uint32_t first_plausible_object = 0;
+};
+
 struct PendingSurfaceViewTextureLink {
   uint64_t call_serial = 0;
   uint64_t key = 0;
@@ -325,6 +348,14 @@ struct RendererHookObserverState {
   uint64_t last_frame_director_gate_key[2] = {UINT64_MAX, UINT64_MAX};
   uint64_t render_frame_owner_observations = 0;
   uint64_t last_render_frame_owner_key[2] = {UINT64_MAX, UINT64_MAX};
+  uint32_t last_render_frame_current_index = UINT32_MAX;
+  uint32_t last_render_frame_previous_index = UINT32_MAX;
+  uint32_t last_render_frame_next_index = UINT32_MAX;
+  uint32_t last_render_frame_pending_index = UINT32_MAX;
+  uint32_t last_render_frame_current_scene = 0;
+  uint32_t last_render_frame_previous_scene = 0;
+  uint32_t last_render_frame_next_scene = 0;
+  uint32_t last_render_frame_pending_scene = 0;
   uint64_t renderer_time_delta_observations = 0;
   uint64_t last_renderer_time_delta_key = UINT64_MAX;
   std::unordered_map<uint32_t, uint32_t> assigned_scene_objects;
@@ -701,7 +732,14 @@ uint32_t GuestPhysicalHostOffset(uint32_t guest_address) {
 #endif
 }
 
+bool IsReadableGuestByteRange(uint8_t* base, uint32_t guest_address,
+                              uint32_t size);
+
 uint32_t LoadGuestU32(uint8_t* base, uint32_t guest_address) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint32_t))) {
+    return 0;
+  }
+
   uint32_t raw = 0;
   std::memcpy(&raw,
               base + guest_address + GuestPhysicalHostOffset(guest_address),
@@ -710,6 +748,10 @@ uint32_t LoadGuestU32(uint8_t* base, uint32_t guest_address) {
 }
 
 void StoreGuestU32(uint8_t* base, uint32_t guest_address, uint32_t value) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint32_t))) {
+    return;
+  }
+
   const uint32_t raw = __builtin_bswap32(value);
   std::memcpy(base + guest_address + GuestPhysicalHostOffset(guest_address),
               &raw, sizeof(raw));
@@ -728,10 +770,18 @@ void StoreGuestF32(uint8_t* base, uint32_t guest_address, float value) {
 }
 
 void StoreGuestU8(uint8_t* base, uint32_t guest_address, uint8_t value) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint8_t))) {
+    return;
+  }
+
   *(base + guest_address + GuestPhysicalHostOffset(guest_address)) = value;
 }
 
 uint16_t LoadGuestU16(uint8_t* base, uint32_t guest_address) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint16_t))) {
+    return 0;
+  }
+
   uint16_t raw = 0;
   std::memcpy(&raw,
               base + guest_address + GuestPhysicalHostOffset(guest_address),
@@ -740,6 +790,10 @@ uint16_t LoadGuestU16(uint8_t* base, uint32_t guest_address) {
 }
 
 uint16_t LoadGuestGpuU16(uint8_t* base, uint32_t guest_address) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint16_t))) {
+    return 0;
+  }
+
   uint16_t value = 0;
   std::memcpy(&value,
               base + guest_address + GuestPhysicalHostOffset(guest_address),
@@ -748,6 +802,10 @@ uint16_t LoadGuestGpuU16(uint8_t* base, uint32_t guest_address) {
 }
 
 uint32_t LoadGuestGpuU32(uint8_t* base, uint32_t guest_address) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint32_t))) {
+    return 0;
+  }
+
   uint32_t value = 0;
   std::memcpy(&value,
               base + guest_address + GuestPhysicalHostOffset(guest_address),
@@ -779,6 +837,10 @@ uint64_t LoadGuestU64(uint8_t* base, uint32_t guest_address) {
 }
 
 uint8_t LoadGuestU8(uint8_t* base, uint32_t guest_address) {
+  if (!IsReadableGuestByteRange(base, guest_address, sizeof(uint8_t))) {
+    return 0;
+  }
+
   return *(base + guest_address + GuestPhysicalHostOffset(guest_address));
 }
 
@@ -1120,9 +1182,138 @@ bool IsLikelyBindableBufferAddress(uint32_t guest_address) {
          IsLikelyHighScratchByteBufferRange(guest_address, 1);
 }
 
+bool IsLikelyGuestByteRange(uint32_t guest_address, uint32_t size) {
+  if (guest_address == 0 || size == 0 ||
+      guest_address > UINT32_MAX - (size - 1u)) {
+    return false;
+  }
+
+  const uint32_t end_address = guest_address + size - 1u;
+  if (guest_address >= 0x1000u && end_address < kFableObjectAddressMax) {
+    return true;
+  }
+
+  return guest_address >= 0x80000000u &&
+         size <= kMaxScratchUploadSnapshotSize;
+}
+
+bool IsReadableHostByteRange(const uint8_t* data, size_t size) {
+  if (!data || size == 0) {
+    return false;
+  }
+
+  const uintptr_t begin = reinterpret_cast<uintptr_t>(data);
+  if (begin > std::numeric_limits<uintptr_t>::max() - size) {
+    return false;
+  }
+
+  const uintptr_t end = begin + size;
+  uintptr_t current = begin;
+#if defined(_WIN32)
+  while (current < end) {
+    MEMORY_BASIC_INFORMATION info = {};
+    if (VirtualQuery(reinterpret_cast<const void*>(current), &info,
+                     sizeof(info)) == 0) {
+      return false;
+    }
+
+    const DWORD protect = info.Protect & 0xFFu;
+    const bool readable =
+        protect == PAGE_READONLY || protect == PAGE_READWRITE ||
+        protect == PAGE_WRITECOPY || protect == PAGE_EXECUTE_READ ||
+        protect == PAGE_EXECUTE_READWRITE ||
+        protect == PAGE_EXECUTE_WRITECOPY;
+    if (info.State != MEM_COMMIT || (info.Protect & PAGE_GUARD) != 0 ||
+        !readable) {
+      return false;
+    }
+
+    const uintptr_t region_begin =
+        reinterpret_cast<uintptr_t>(info.BaseAddress);
+    if (region_begin > std::numeric_limits<uintptr_t>::max() -
+                           static_cast<uintptr_t>(info.RegionSize)) {
+      return false;
+    }
+    const uintptr_t region_end =
+        region_begin + static_cast<uintptr_t>(info.RegionSize);
+    if (region_end <= current) {
+      return false;
+    }
+    current = std::min(region_end, end);
+  }
+#elif defined(__linux__)
+  thread_local uintptr_t cached_readable_begin = 0;
+  thread_local uintptr_t cached_readable_end = 0;
+  if (begin >= cached_readable_begin && end <= cached_readable_end) {
+    return true;
+  }
+
+  std::ifstream maps("/proc/self/maps");
+  if (!maps) {
+    return false;
+  }
+
+  std::string line;
+  while (current < end && std::getline(maps, line)) {
+    const char* text = line.c_str();
+    char* after_begin = nullptr;
+    errno = 0;
+    const unsigned long long region_begin_value =
+        std::strtoull(text, &after_begin, 16);
+    if (errno != 0 || after_begin == text || *after_begin != '-') {
+      continue;
+    }
+
+    char* after_end = nullptr;
+    errno = 0;
+    const unsigned long long region_end_value =
+        std::strtoull(after_begin + 1, &after_end, 16);
+    if (errno != 0 || after_end == after_begin + 1 || *after_end != ' ') {
+      continue;
+    }
+    while (*after_end == ' ') {
+      ++after_end;
+    }
+
+    const uintptr_t region_begin =
+        static_cast<uintptr_t>(region_begin_value);
+    const uintptr_t region_end = static_cast<uintptr_t>(region_end_value);
+    if (region_end <= current) {
+      continue;
+    }
+    if (region_begin > current || after_end[0] != 'r') {
+      return false;
+    }
+    if (current == begin && region_end >= end) {
+      cached_readable_begin = region_begin;
+      cached_readable_end = region_end;
+      return true;
+    }
+    current = std::min(region_end, end);
+  }
+
+  if (current < end) {
+    return false;
+  }
+#endif
+
+  return true;
+}
+
+bool IsReadableGuestByteRange(uint8_t* base, uint32_t guest_address,
+                              uint32_t size) {
+  if (!base || !IsLikelyGuestByteRange(guest_address, size)) {
+    return false;
+  }
+
+  const uint8_t* data =
+      base + guest_address + GuestPhysicalHostOffset(guest_address);
+  return IsReadableHostByteRange(data, size);
+}
+
 uint64_t HashGuestBytesFnv1a64(uint8_t* base, uint32_t guest_address,
                                uint32_t size) {
-  if (!base || guest_address == 0 || size == 0) {
+  if (!IsReadableGuestByteRange(base, guest_address, size)) {
     return 0;
   }
 
@@ -1137,7 +1328,7 @@ uint64_t HashGuestBytesFnv1a64(uint8_t* base, uint32_t guest_address,
 }
 
 uint64_t HashBytesFnv1a64(const uint8_t* data, size_t size) {
-  if (!data || size == 0) {
+  if (!IsReadableHostByteRange(data, size)) {
     return 0;
   }
 
@@ -1180,6 +1371,10 @@ uint32_t FindFirstNonZeroGuestByte(uint8_t* base, uint32_t guest_address,
   }
 
   const uint32_t scan_size = std::min(size, max_scan);
+  if (!IsReadableGuestByteRange(base, guest_address, scan_size)) {
+    return UINT32_MAX;
+  }
+
   const uint8_t* data =
       base + guest_address + GuestPhysicalHostOffset(guest_address);
   for (uint32_t i = 0; i < scan_size; ++i) {
@@ -1820,12 +2015,17 @@ void LogFableTitleTextureUploadProbeLocked(
   const uint32_t hash_size = std::min<uint32_t>(info.size, 64u * 1024u);
   const uint64_t hash =
       HashGuestBytesFnv1a64(base, info.base_address, hash_size);
-  const uint8_t* bytes =
-      base + info.base_address + GuestPhysicalHostOffset(info.base_address);
-  const uint32_t b0 = info.size > 0 ? bytes[0] : 0;
-  const uint32_t b1 = info.size > 1 ? bytes[1] : 0;
-  const uint32_t b2 = info.size > 2 ? bytes[2] : 0;
-  const uint32_t b3 = info.size > 3 ? bytes[3] : 0;
+  std::array<uint8_t, 4> first4 = {};
+  if (IsReadableGuestByteRange(base, info.base_address,
+                               std::min<uint32_t>(
+                                   info.size,
+                                   static_cast<uint32_t>(first4.size())))) {
+    const uint8_t* bytes =
+        base + info.base_address + GuestPhysicalHostOffset(info.base_address);
+    for (uint32_t i = 0; i < first4.size() && i < info.size; ++i) {
+      first4[i] = bytes[i];
+    }
+  }
   REXLOG_INFO(
       "Refii renderer title texture upload probe #{} source={} "
       "guest=0x{:08X} base=0x{:08X} size={} {}x{} fmt={} "
@@ -1836,7 +2036,7 @@ void LogFableTitleTextureUploadProbeLocked(
       info.format, static_cast<unsigned long long>(record.upload_generation),
       record.upload_data.size(),
       first_nonzero == UINT32_MAX ? -1 : static_cast<int>(first_nonzero),
-      hash, b0, b1, b2, b3);
+      hash, first4[0], first4[1], first4[2], first4[3]);
   ++g_observer.logged_title_texture_upload_probes;
 }
 
@@ -2581,7 +2781,8 @@ bool CaptureTextureUploadFromFetchDwords(RendererResourceRecord& record,
   const bool source_range_valid =
       info.base_address >= kMinTextureUploadSnapshotAddress &&
       info.size <= kMaxTextureUploadSnapshotSize &&
-      info.base_address <= UINT32_MAX - info.size;
+      info.base_address <= UINT32_MAX - info.size &&
+      IsReadableGuestByteRange(base, info.base_address, info.size);
   if (info.base_address == 0 || info.size == 0 || !source_range_valid) {
     if (RendererResourceTracingEnabled() &&
         g_observer.logged_texture_capture_failures < 8) {
@@ -2591,7 +2792,7 @@ bool CaptureTextureUploadFromFetchDwords(RendererResourceRecord& record,
           "{:08X} {:08X} {:08X} {:08X}",
           info.failure_reason ? info.failure_reason
                               : (source_range_valid ? "unknown"
-                                                    : "unsafe_range"),
+                                                    : "unsafe_or_unmapped_range"),
           GuestObjectAddress(record), info.base_address, info.size, dwords[0],
           dwords[1], dwords[2], dwords[3], dwords[4], dwords[5]);
       ++g_observer.logged_texture_capture_failures;
@@ -2674,6 +2875,9 @@ bool CaptureTextureUploadFromFetchDwords(RendererResourceRecord& record,
       }
       return false;
     }
+  }
+  if (!IsReadableGuestByteRange(base, source_address, info.size)) {
+    return false;
   }
   if (record.upload_data.size() == info.size &&
       std::memcmp(record.upload_data.data(), source, info.size) == 0) {
@@ -2902,6 +3106,9 @@ bool CopyGuestBufferUploadData(RendererResourceRecord& record, uint8_t* base,
       IsImageResourceKind(kind) ? kMaxTextureUploadSnapshotSize
                                 : kMaxScratchUploadSnapshotSize;
   if (copy_size == 0 || copy_size > max_upload_size) {
+    return false;
+  }
+  if (!IsReadableGuestByteRange(base, guest_address, copy_size)) {
     return false;
   }
 
@@ -4277,7 +4484,7 @@ void CaptureLockedBufferUpload(RendererResourceRecord& record, uint8_t* base,
   if (!record.scratch && IsImageResourceKind(kind)) {
     const uint32_t raw_nonzero = first_nonzero(primary_locked_address);
     const uint32_t decoded_nonzero = first_nonzero(decoded_address);
-    if (IsLikelyGpuByteBufferRange(decoded_address, upload_size)) {
+    if (decoded_nonzero != UINT32_MAX) {
       upload_address = decoded_address;
     }
     if (raw_nonzero != UINT32_MAX && decoded_nonzero == UINT32_MAX) {
@@ -5456,6 +5663,9 @@ bool PopulateVertexDeclarationRecordFromObject(RendererResourceRecord& record,
   declaration.elements_hash =
       HashGuestBytesFnv1a64(base, elements_address, element_bytes);
   ApplyGuestVertexDeclarationRecord(record, declaration);
+  if (!IsReadableGuestByteRange(base, elements_address, element_bytes)) {
+    return false;
+  }
   record.upload_data.resize(element_bytes);
   std::memcpy(record.upload_data.data(),
               base + elements_address + GuestPhysicalHostOffset(elements_address),
@@ -12174,6 +12384,50 @@ void PatchActiveWrappedDrawEventStateLocked() {
   }
 }
 
+void ResetActiveWrappedDrawStateLocked() {
+  g_observer.active_wrapped_draw_serial = 0;
+  g_observer.active_wrapped_draw_device = 0;
+  g_observer.active_wrapped_draw_args = {};
+  g_observer.active_wrapped_draw_source = RendererDrawEventSource::kUnknown;
+  g_observer.active_wrapped_draw_draw = {};
+  g_observer.active_wrapped_draw_indexed_scratch = false;
+  g_observer.active_wrapped_draw_scratch_captured = false;
+  g_observer.active_wrapped_draw_pending_materialization = false;
+  g_observer.active_wrapped_draw_call_serial = 0;
+  g_observer.active_wrapped_draw_context_key = 0;
+  g_observer.active_wrapped_draw_symbol_address = 0;
+}
+
+void RetireActiveWrappedDrawAfterSyntheticReplacementLocked(
+    std::string_view reason) {
+  const uint64_t replaced_serial = g_observer.active_wrapped_draw_serial;
+  const uint64_t replaced_call_serial =
+      g_observer.active_wrapped_draw_call_serial;
+  const uint64_t replaced_context_key =
+      g_observer.active_wrapped_draw_context_key;
+  const uint32_t device = g_observer.active_wrapped_draw_device;
+  const bool pending_materialization =
+      g_observer.active_wrapped_draw_pending_materialization;
+  if (replaced_serial != 0) {
+    FableDirectRemoveDrawEvent(replaced_serial);
+  }
+
+  static uint32_t logged_synthetic_replacements = 0;
+  if (logged_synthetic_replacements < 32u) {
+    REXLOG_INFO(
+        "Refii renderer retired wrapped draw after synthetic replacement #{} "
+        "reason={} serial={} call={} context=0x{:016X} dev=0x{:08X} "
+        "pending_materialization={}",
+        ++logged_synthetic_replacements, reason,
+        static_cast<unsigned long long>(replaced_serial),
+        static_cast<unsigned long long>(replaced_call_serial),
+        static_cast<unsigned long long>(replaced_context_key), device,
+        pending_materialization ? 1u : 0u);
+  }
+
+  ResetActiveWrappedDrawStateLocked();
+}
+
 void BeginWrappedDrawStatePatchLocked(uint64_t draw_serial,
                                       uint32_t device_pointer,
                                       const RendererHookArgs& args,
@@ -15394,35 +15648,6 @@ bool CaptureScratchDrawBuffersLocked(std::string_view symbol,
       }
       return false;
     }
-    if (g_observer.active_wrapped_draw_indexed_scratch) {
-      // BeginIndexedVertices only allocates transient scratch storage for the
-      // wrapper; the caller writes the real vertex/index payload immediately
-      // after this function returns. Do not publish the destination contents
-      // here, because they may still contain stale stack/descriptor data from
-      // the previous scratch user.
-      PatchDrawEventScratchBuffersLocked(g_observer.active_wrapped_draw_serial,
-                                         vertex_buffer, vertex_stride,
-                                         index_buffer);
-      UpsertScratchBufferResourceLocked(RendererResourceKind::kVertexBuffer,
-                                        vertex_buffer, vertex_size,
-                                        vertex_stride, args.r3, vertex_buffer,
-                                        false);
-      UpsertScratchBufferResourceLocked(RendererResourceKind::kIndexBuffer,
-                                        index_buffer, index_size, index_stride,
-                                        args.r3, index_buffer, false);
-      if ((RendererDrawTracingEnabled() ||
-           g_observer.logged_indexed_scratch_captures < 8) &&
-          g_observer.logged_indexed_scratch_captures < 8) {
-        REXLOG_INFO(
-	            "Refii renderer exact indexed scratch allocator awaiting wrapper "
-	            "dev=0x{:08X} prim={} base={} vtx_count={} idx_count={} "
-	            "stride={} captured=0x{:08X}/{} 0x{:08X}/{}",
-            args.r3, args.r4, args.r5, args.r6, args.r7, args.r9,
-            vertex_buffer, vertex_size, index_buffer, index_size);
-        ++g_observer.logged_indexed_scratch_captures;
-      }
-      return false;
-    }
     const uint32_t vertex_probe_size =
         std::min<uint32_t>(vertex_size, 64u * 1024u);
     const uint32_t index_probe_size =
@@ -15527,16 +15752,62 @@ bool CaptureScratchDrawBuffersLocked(std::string_view symbol,
           index_buffer, index_size, index_range_uses_swapped_bytes ? 1 : 0);
       ++g_observer.logged_indexed_scratch_captures;
     }
-    UpsertScratchBufferResourceLocked(RendererResourceKind::kVertexBuffer,
-                                      vertex_buffer, vertex_size,
-                                      vertex_stride,
-                                      args.r3, vertex_buffer);
-    UpsertScratchBufferResourceLocked(RendererResourceKind::kIndexBuffer,
-                                      index_buffer, index_size, index_stride,
-                                      args.r3, index_buffer);
+    const uint32_t direct_vertex_size =
+        static_cast<uint32_t>(std::min<uint64_t>(
+            vertex_size, required_vertex_size != 0 ? required_vertex_size
+                                                   : vertex_size));
+    const uint32_t direct_index_size =
+        static_cast<uint32_t>(std::min<uint64_t>(
+            index_size, required_index_size != 0 ? required_index_size
+                                                 : index_size));
+    std::vector<uint8_t> vertex_data;
+    if (direct_vertex_size != 0) {
+      vertex_data = CopyGuestScratchUploadForDirectInline(
+          base, vertex_buffer, direct_vertex_size,
+          RendererResourceKind::kVertexBuffer, vertex_stride);
+    }
+    std::vector<uint8_t> index_data;
+    if (direct_index_size != 0) {
+      index_data = CopyGuestScratchUploadForDirectInline(
+          base, index_buffer, direct_index_size,
+          RendererResourceKind::kIndexBuffer, index_stride);
+    }
+    if (!vertex_data.empty()) {
+      UpsertSyntheticScratchBufferResourceLocked(
+          RendererResourceKind::kVertexBuffer, vertex_buffer,
+          vertex_data.data(), static_cast<uint32_t>(vertex_data.size()),
+          vertex_stride, args.r3);
+    } else {
+      UpsertScratchBufferResourceLocked(RendererResourceKind::kVertexBuffer,
+                                        vertex_buffer, vertex_size,
+                                        vertex_stride, args.r3, vertex_buffer);
+    }
+    if (!index_data.empty()) {
+      UpsertSyntheticScratchBufferResourceLocked(
+          RendererResourceKind::kIndexBuffer, index_buffer, index_data.data(),
+          static_cast<uint32_t>(index_data.size()), index_stride, args.r3);
+    } else {
+      UpsertScratchBufferResourceLocked(RendererResourceKind::kIndexBuffer,
+                                        index_buffer, index_size, index_stride,
+                                        args.r3, index_buffer);
+    }
+    MaterializePendingIndexedWrapperDrawLocked(vertex_buffer, vertex_stride,
+                                               index_buffer, symbol);
     PatchDrawEventScratchBuffersLocked(g_observer.active_wrapped_draw_serial,
                                        vertex_buffer, vertex_stride,
                                        index_buffer);
+    if (!vertex_data.empty()) {
+      FableDirectAttachDrawScratchBuffer(
+          g_observer.active_wrapped_draw_serial, false, vertex_buffer,
+          vertex_stride, vertex_data.data(), vertex_data.size());
+    }
+    if (!index_data.empty()) {
+      FableDirectAttachDrawScratchBuffer(
+          g_observer.active_wrapped_draw_serial, true, index_buffer,
+          index_stride, index_data.data(), index_data.size());
+    }
+    FableDirectCaptureExactNonVideoRenderCommands(
+        g_observer.active_wrapped_draw_serial);
     TrimScratchBufferResourcesLocked();
     return true;
   }
@@ -16541,6 +16812,10 @@ GuestByteProbeSummary ProbeGuestBytes(uint8_t* base, uint32_t guest_address,
 
   const uint32_t probe_size =
       std::min<uint32_t>(requested_size, 64u * 1024u);
+  if (!IsReadableGuestByteRange(base, guest_address, probe_size)) {
+    return summary;
+  }
+
   const uint8_t* bytes =
       base + guest_address + GuestPhysicalHostOffset(guest_address);
   summary.valid = true;
@@ -17113,6 +17388,11 @@ bool IsRenderableFableSceneObject(uint8_t* base, uint32_t scene) {
   return LoadGuestU8(base, scene + 72u) != 0;
 }
 
+bool IsBridgeableFableSceneObject(uint8_t* base, uint32_t index,
+                                  uint32_t scene) {
+  return IsLiveFableAssignedSceneObject(base, index, scene);
+}
+
 bool IsSubmittableFableSceneObject(uint8_t* base, uint32_t index,
                                    uint32_t scene) {
   // IDA: sub_821C3858 reaches sub_821C3C60 for type-1 scenes, but
@@ -17450,6 +17730,14 @@ void ObserveFableRenderFrameOwnerLocked(const RendererHookArgs& args,
   const SceneSlotInfo previous_slot = read_slot(previous_index);
   const SceneSlotInfo next_slot = read_slot(next_index);
   const SceneSlotInfo pending_slot = read_slot(pending_index);
+  g_observer.last_render_frame_current_index = current_index;
+  g_observer.last_render_frame_previous_index = previous_index;
+  g_observer.last_render_frame_next_index = next_index;
+  g_observer.last_render_frame_pending_index = pending_index;
+  g_observer.last_render_frame_current_scene = current_slot.scene;
+  g_observer.last_render_frame_previous_scene = previous_slot.scene;
+  g_observer.last_render_frame_next_scene = next_slot.scene;
+  g_observer.last_render_frame_pending_scene = pending_slot.scene;
 
   ++g_observer.render_frame_owner_observations;
   const uint32_t phase_index = phase == "exit" ? 1u : 0u;
@@ -17940,6 +18228,49 @@ void ObserveFableSceneStreamCallLocked(std::string_view symbol,
   }
 }
 
+GuestPointerTableScan ScanGuestPointerTable(uint8_t* base, uint32_t begin,
+                                            uint32_t count,
+                                            uint32_t max_entries = 256u) {
+  GuestPointerTableScan scan;
+  if (base == nullptr || count == 0 ||
+      !IsReadableGuestByteRange(base, begin, sizeof(uint32_t))) {
+    return scan;
+  }
+
+  const uint32_t scanned_entries = std::min(count, max_entries);
+  for (uint32_t index = 0; index < scanned_entries; ++index) {
+    if (index > (UINT32_MAX - begin) / sizeof(uint32_t)) {
+      break;
+    }
+
+    const uint32_t slot = begin + index * sizeof(uint32_t);
+    if (!IsReadableGuestByteRange(base, slot, sizeof(uint32_t))) {
+      break;
+    }
+
+    const uint32_t value = LoadGuestU32(base, slot);
+    if (value == 0) {
+      continue;
+    }
+
+    if (scan.first_nonzero_index == UINT32_MAX) {
+      scan.first_nonzero_index = index;
+      scan.first_nonzero_value = value;
+    }
+    ++scan.nonzero_count;
+
+    if (IsLikelyFableObjectAddress(value)) {
+      if (scan.first_plausible_object_index == UINT32_MAX) {
+        scan.first_plausible_object_index = index;
+        scan.first_plausible_object = value;
+      }
+      ++scan.plausible_object_count;
+    }
+  }
+
+  return scan;
+}
+
 void ObserveFableSceneFactoryCallLocked(std::string_view symbol,
                                         const RendererHookArgs& args,
                                         uint32_t result, uint8_t* base,
@@ -17986,14 +18317,10 @@ void ObserveFableSceneFactoryCallLocked(std::string_view symbol,
       factory_table_capacity_end >= factory_table_begin
           ? (factory_table_capacity_end - factory_table_begin) / 4u
           : 0u;
-  const uint32_t first_scene =
-      table_count != 0 && IsLikelyGuestDwordAddress(table_begin)
-          ? LoadGuestU32(base, table_begin)
-          : 0u;
-  const uint32_t first_factory =
-      factory_table_count != 0 && IsLikelyGuestDwordAddress(factory_table_begin)
-          ? LoadGuestU32(base, factory_table_begin)
-          : 0u;
+  const GuestPointerTableScan scene_table_scan =
+      ScanGuestPointerTable(base, table_begin, table_count);
+  const GuestPointerTableScan factory_table_scan =
+      ScanGuestPointerTable(base, factory_table_begin, factory_table_count);
   uint32_t observed_object = args.r3;
   uint32_t scheduler_owner = 0;
   uint32_t scheduler_lock = 0;
@@ -18055,27 +18382,31 @@ void ObserveFableSceneFactoryCallLocked(std::string_view symbol,
       }
     }
   }
-  const bool object_readable = IsLikelyFableObjectAddress(observed_object);
+  const bool object_readable =
+      IsLikelyFableObjectAddress(observed_object) &&
+      IsReadableGuestByteRange(base, observed_object, 324u);
   const uint32_t object_word0 =
       object_readable ? LoadGuestU32(base, observed_object) : 0u;
+  const bool scene_like_object =
+      object_readable && object_word0 != scheduler_stream_base;
   const uint8_t close_pending =
-      object_readable ? LoadGuestU8(base, observed_object + 176u) : 0u;
+      scene_like_object ? LoadGuestU8(base, observed_object + 176u) : 0u;
   const uint8_t closed =
-      object_readable ? LoadGuestU8(base, observed_object + 177u) : 0u;
+      scene_like_object ? LoadGuestU8(base, observed_object + 177u) : 0u;
   const uint8_t init_done =
-      object_readable ? LoadGuestU8(base, observed_object + 320u) : 0u;
+      scene_like_object ? LoadGuestU8(base, observed_object + 320u) : 0u;
   const uint8_t factory_pending =
-      object_readable ? LoadGuestU8(base, observed_object + 321u) : 0u;
+      scene_like_object ? LoadGuestU8(base, observed_object + 321u) : 0u;
   const uint8_t owner_field_322 =
-      object_readable ? LoadGuestU8(base, observed_object + 322u) : 0u;
+      scene_like_object ? LoadGuestU8(base, observed_object + 322u) : 0u;
   const uint8_t primary_enabled =
-      object_readable ? LoadGuestU8(base, observed_object + 313u) : 0u;
+      scene_like_object ? LoadGuestU8(base, observed_object + 313u) : 0u;
   const uint8_t primary_ready =
-      object_readable ? LoadGuestU8(base, observed_object + 308u) : 0u;
+      scene_like_object ? LoadGuestU8(base, observed_object + 308u) : 0u;
   const uint8_t secondary_enabled =
-      object_readable ? LoadGuestU8(base, observed_object + 314u) : 0u;
+      scene_like_object ? LoadGuestU8(base, observed_object + 314u) : 0u;
   const uint8_t secondary_ready =
-      object_readable ? LoadGuestU8(base, observed_object + 309u) : 0u;
+      scene_like_object ? LoadGuestU8(base, observed_object + 309u) : 0u;
 
   static std::array<std::array<uint64_t, 2>, 30> observations = {};
   static std::array<std::array<uint64_t, 2>, 30> last_keys = [] {
@@ -18124,8 +18455,11 @@ void ObserveFableSceneFactoryCallLocked(std::string_view symbol,
         "object_word0=0x{:08X} flags closed={}/{} init_done={} "
         "factory_pending={} field322={} primary={}/{} secondary={}/{} "
         "table=0x{:08X}-0x{:08X}/0x{:08X} count={} "
-        "capacity={} first_scene=0x{:08X} factory_table=0x{:08X}-0x{:08X}/"
-        "0x{:08X} factory_count={} factory_capacity={} first_factory=0x{:08X} "
+        "capacity={} scene_nonzero={} scene_objects={} first_scene={}:0x{:08X} "
+        "first_scene_object={}:0x{:08X} factory_table=0x{:08X}-0x{:08X}/"
+        "0x{:08X} factory_count={} factory_capacity={} factory_nonzero={} "
+        "factory_objects={} first_factory={}:0x{:08X} "
+        "first_factory_object={}:0x{:08X} "
         "lr=0x{:08X}",
         phase, FableHookName(symbol) ? FableHookName(symbol) : symbol.data(),
         count, args.r3, args.r4, args.r5, result, observed_object,
@@ -18140,9 +18474,19 @@ void ObserveFableSceneFactoryCallLocked(std::string_view symbol,
         init_done, factory_pending, owner_field_322, primary_enabled,
         primary_ready, secondary_enabled, secondary_ready,
         table_begin, table_end, table_capacity_end, table_count, table_capacity,
-        first_scene, factory_table_begin, factory_table_end,
+        scene_table_scan.nonzero_count, scene_table_scan.plausible_object_count,
+        scene_table_scan.first_nonzero_index,
+        scene_table_scan.first_nonzero_value,
+        scene_table_scan.first_plausible_object_index,
+        scene_table_scan.first_plausible_object,
+        factory_table_begin, factory_table_end,
         factory_table_capacity_end, factory_table_count, factory_table_capacity,
-        first_factory, args.lr);
+        factory_table_scan.nonzero_count,
+        factory_table_scan.plausible_object_count,
+        factory_table_scan.first_nonzero_index,
+        factory_table_scan.first_nonzero_value,
+        factory_table_scan.first_plausible_object_index,
+        factory_table_scan.first_plausible_object, args.lr);
     last_key = key;
   }
 }
@@ -18315,13 +18659,53 @@ uint32_t FindFableFrameDirectorRenderableSceneIndex(
 
   uint32_t selected_index = UINT32_MAX;
   uint32_t selected_scene = 0;
+  bool selected_scene_enabled = false;
+  const auto select_scene = [&](uint32_t index, uint32_t scene) {
+    selected_index = index;
+    selected_scene = scene;
+    selected_scene_enabled = IsRenderableFableSceneObject(base, scene);
+  };
+
+  const std::array<std::pair<uint32_t, uint32_t>, 4> owner_candidates = {{
+      {g_observer.last_render_frame_current_index,
+       g_observer.last_render_frame_current_scene},
+      {g_observer.last_render_frame_next_index,
+       g_observer.last_render_frame_next_scene},
+      {g_observer.last_render_frame_pending_index,
+       g_observer.last_render_frame_pending_scene},
+      {g_observer.last_render_frame_previous_index,
+       g_observer.last_render_frame_previous_scene},
+  }};
+  const auto select_owner_candidate = [&](bool require_enabled) {
+    for (const auto& [index, scene] : owner_candidates) {
+      if (!IsBridgeableFableSceneObject(base, index, scene)) {
+        continue;
+      }
+      if (require_enabled && !IsRenderableFableSceneObject(base, scene)) {
+        continue;
+      }
+      select_scene(index, scene);
+      return true;
+    }
+    return false;
+  };
+
+  bool selected_from_owner = select_owner_candidate(true);
+  if (!selected_from_owner) {
+    selected_from_owner = select_owner_candidate(false);
+  }
+
   for (const auto& [index, scene] : g_observer.assigned_scene_objects) {
-    if (!IsSubmittableFableSceneObject(base, index, scene)) {
+    if (!IsBridgeableFableSceneObject(base, index, scene)) {
       continue;
     }
-    if (selected_index == UINT32_MAX || index > selected_index) {
-      selected_index = index;
-      selected_scene = scene;
+    const bool scene_enabled = IsRenderableFableSceneObject(base, scene);
+    if (selected_index == UINT32_MAX ||
+        (scene_enabled && !selected_scene_enabled) ||
+        (!selected_from_owner && scene_enabled == selected_scene_enabled &&
+         index > selected_index)) {
+      select_scene(index, scene);
+      selected_from_owner = false;
     }
   }
 
@@ -18335,11 +18719,15 @@ uint32_t FindFableFrameDirectorRenderableSceneIndex(
       const uint32_t capped_count = std::min<uint32_t>(table_count, 4096u);
       for (uint32_t index = 0; index < capped_count; ++index) {
         const uint32_t scene = LoadGuestU32(base, table_begin + index * 4u);
-        if (!IsSubmittableFableSceneObject(base, index, scene)) {
+        if (!IsBridgeableFableSceneObject(base, index, scene)) {
           continue;
         }
-        selected_index = index;
-        selected_scene = scene;
+        const bool scene_enabled = IsRenderableFableSceneObject(base, scene);
+        if (selected_index != UINT32_MAX &&
+            !scene_enabled && selected_scene_enabled) {
+          continue;
+        }
+        select_scene(index, scene);
       }
     }
   }
@@ -18355,9 +18743,19 @@ uint32_t FindFableFrameDirectorRenderableSceneIndex(
     REXLOG_INFO(
         "Refii renderer Fable frame director exact scene bridge candidate "
         "index={} scene=0x{:08X} enabled={} assigned_count={} lr=0x{:08X} "
-        "count={}",
+        "owner_current={}:0x{:08X} owner_next={}:0x{:08X} "
+        "owner_pending={}:0x{:08X} owner_previous={}:0x{:08X} "
+        "count={} relaxed_enabled_gate=1",
         selected_index, selected_scene, scene_enabled,
         g_observer.assigned_scene_objects.size(), args.lr,
+        g_observer.last_render_frame_current_index,
+        g_observer.last_render_frame_current_scene,
+        g_observer.last_render_frame_next_index,
+        g_observer.last_render_frame_next_scene,
+        g_observer.last_render_frame_pending_index,
+        g_observer.last_render_frame_pending_scene,
+        g_observer.last_render_frame_previous_index,
+        g_observer.last_render_frame_previous_scene,
         logged_bridge_candidates + 1u);
     ++logged_bridge_candidates;
   }
@@ -18725,10 +19123,8 @@ void ObserveRendererHookExit(const char* symbol, RendererHookKind kind,
       if (CurrentDirectPixelShaderIsBinkMovieLocked() &&
           QueueBinkDecodedPlaneVideoDrawEventLocked(
               g_observer.active_wrapped_draw_args, base)) {
-        const uint64_t replaced_serial =
-            g_observer.active_wrapped_draw_serial;
-        FableDirectRemoveDrawEvent(replaced_serial);
-        g_observer.active_wrapped_draw_scratch_captured = true;
+        RetireActiveWrappedDrawAfterSyntheticReplacementLocked(
+            "bink-video-delayed-capture");
       }
     }
     if (IsFableBeginVerticesWrapperSymbol(symbol_view) &&
@@ -18744,10 +19140,8 @@ void ObserveRendererHookExit(const char* symbol, RendererHookKind kind,
           CurrentDirectPixelShaderIsBinkMovieLocked() &&
           QueueBinkDecodedPlaneVideoDrawEventLocked(
               g_observer.active_wrapped_draw_args, base)) {
-        const uint64_t replaced_serial =
-            g_observer.active_wrapped_draw_serial;
-        FableDirectRemoveDrawEvent(replaced_serial);
-        g_observer.active_wrapped_draw_scratch_captured = true;
+        RetireActiveWrappedDrawAfterSyntheticReplacementLocked(
+            "bink-video-pm4-capture");
       }
     }
     if (IsFableCommandWriteHook(symbol_view)) {

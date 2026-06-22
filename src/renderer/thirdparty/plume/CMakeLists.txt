@@ -121,7 +121,13 @@ endif()
 if(WIN32 AND PLUME_D3D12_AGILITY_SDK_ENABLED)
     target_compile_definitions(plume PUBLIC PLUME_D3D12_AGILITY_SDK_ENABLED)
     target_compile_definitions(plume PRIVATE D3D12MA_USING_DIRECTX_HEADERS)
-    target_link_libraries(plume PRIVATE Microsoft::DirectX-Headers Microsoft::DirectX-Guids Microsoft::DirectX12-Agility)
+    target_link_libraries(plume
+        PUBLIC
+            Microsoft::DirectX-Headers
+            Microsoft::DirectX-Guids
+        PRIVATE
+            Microsoft::DirectX12-Agility
+    )
 endif()
 
 # Platform-specific includes and shader compilation

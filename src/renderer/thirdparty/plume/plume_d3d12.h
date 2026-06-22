@@ -87,6 +87,7 @@ namespace plume {
         std::vector<RenderDescriptorRangeType> descriptorTypes;
         std::vector<uint32_t> descriptorHeapIndices;
         uint32_t descriptorTypeMaxIndex = 0;
+        bool valid = false;
 
         D3D12DescriptorSet(D3D12Device *device, const RenderDescriptorSetDesc &desc);
         ~D3D12DescriptorSet() override;

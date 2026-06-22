@@ -295,7 +295,12 @@ source_group(TREE ${REFII_LUA_ROOT} FILES
     ${REFII_LUA_DECOMPILER_WORKSPACE_SOURCES}
 )
 
-add_library(refii_lua SHARED
+set(REFII_LUA_LIBRARY_TYPE SHARED)
+if(WIN32)
+    set(REFII_LUA_LIBRARY_TYPE STATIC)
+endif()
+
+add_library(refii_lua ${REFII_LUA_LIBRARY_TYPE}
     ${REFII_LUA_RUNTIME_SOURCES}
     ${REFII_LUA_RUNTIME_PARTS}
 )
@@ -312,13 +317,14 @@ set_target_properties(refii_lua PROPERTIES
     CXX_STANDARD_REQUIRED ON
     POSITION_INDEPENDENT_CODE ON
     OUTPUT_NAME refii_lua
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
 )
 
-if(WIN32)
+if(WIN32 AND NOT REFII_LUA_LIBRARY_TYPE STREQUAL "STATIC")
     set_target_properties(refii_lua PROPERTIES
         WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
@@ -335,7 +341,7 @@ set_target_properties(refii_lua51 PROPERTIES
     C_STANDARD 99
     C_STANDARD_REQUIRED ON
     POSITION_INDEPENDENT_CODE ON
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
 )
 if(WIN32)
     target_compile_definitions(refii_lua51 PUBLIC LUA_USE_WINDOWS)
@@ -366,7 +372,7 @@ if(TARGET refii_bnk_extractor)
     set_target_properties(refii_lua_decompiler_workspace PROPERTIES
         CXX_STANDARD 23
         CXX_STANDARD_REQUIRED ON
-        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+        ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
     )
 
     if(REFII_BUILD_TOOLS)
@@ -385,6 +391,7 @@ if(TARGET refii_bnk_extractor)
             BUILD_RPATH "$ORIGIN/../lib"
             INSTALL_RPATH "$ORIGIN/../lib"
         )
+        refii_stage_windows_runtime_dlls(refii-lua-decompiler)
     endif()
 else()
     message(STATUS

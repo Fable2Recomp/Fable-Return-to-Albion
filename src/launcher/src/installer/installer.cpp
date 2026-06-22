@@ -197,6 +197,38 @@ bool IsSafeRelativePath(const std::filesystem::path& path, std::string* error) {
     return true;
 }
 
+bool IsSafeDestinationUnderBase(const std::filesystem::path& destinationPath,
+                                const std::filesystem::path& basePath,
+                                std::string* error) {
+    const std::filesystem::path normalizedBase =
+        std::filesystem::absolute(basePath).lexically_normal();
+    const std::filesystem::path normalizedDestination =
+        std::filesystem::absolute(destinationPath).lexically_normal();
+    const std::filesystem::path relativeDestination =
+        normalizedDestination.lexically_relative(normalizedBase).lexically_normal();
+
+    if (relativeDestination.empty()) {
+        if (error != nullptr) {
+            *error = "destination path is outside the install root: " +
+                     normalizedDestination.string();
+        }
+        return false;
+    }
+
+    for (const auto& component : relativeDestination) {
+        const std::string part = component.generic_string();
+        if (part == "..") {
+            if (error != nullptr) {
+                *error = "destination path is outside the install root: " +
+                         normalizedDestination.string();
+            }
+            return false;
+        }
+    }
+
+    return IsSafeRelativePath(relativeDestination, error);
+}
+
 bool HasExtension(const std::filesystem::path& path, const std::string& extension) {
     std::string pathExtension = path.extension().generic_string();
     std::transform(pathExtension.begin(), pathExtension.end(), pathExtension.begin(),
@@ -494,64 +526,6 @@ std::vector<std::string> GetShaderCompileTargets() {
     targets.push_back("d3d12");
 #endif
     return targets;
-}
-
-std::filesystem::path GetTranslatorExecutablePath(std::string* error) {
-    std::filesystem::path executableDirectory = Platform::GetExecutableDirectory();
-
-#ifdef REFII_SHADER_XENOS_TRANSLATOR_PATH
-    {
-        const std::filesystem::path configuredPath(
-            std::string(REFII_SHADER_XENOS_TRANSLATOR_PATH));
-        if (!configuredPath.empty() && std::filesystem::exists(configuredPath)) {
-            return configuredPath;
-        }
-    }
-#endif
-
-    const std::string executableFileName =
-#ifdef _WIN32
-        "refii-shader-xenos-translator.exe";
-#else
-        "refii-shader-xenos-translator";
-#endif
-
-    const std::filesystem::path preferredPath =
-        executableDirectory / executableFileName;
-    if (std::filesystem::exists(preferredPath)) {
-        return preferredPath;
-    }
-
-    const std::filesystem::path packagedPath =
-        executableDirectory / "pipeline" / "shader_private" / "tools" / executableFileName;
-    if (std::filesystem::exists(packagedPath)) {
-        return packagedPath;
-    }
-
-    const std::filesystem::path packagedLibPath =
-        executableDirectory / "pipeline" / "shader_private" / "tools" / "lib" /
-        executableFileName;
-    if (std::filesystem::exists(packagedLibPath)) {
-        return packagedLibPath;
-    }
-
-    const std::filesystem::path parentPackagedPath =
-        executableDirectory / ".." / "pipeline" / "shader_private" / "tools" / executableFileName;
-    if (std::filesystem::exists(parentPackagedPath)) {
-        return parentPackagedPath;
-    }
-
-    const std::filesystem::path parentPackagedLibPath =
-        executableDirectory / ".." / "pipeline" / "shader_private" / "tools" / "lib" /
-        executableFileName;
-    if (std::filesystem::exists(parentPackagedLibPath)) {
-        return parentPackagedLibPath;
-    }
-
-    if (error != nullptr) {
-        *error = "Unable to locate refii-shader-xenos-translator";
-    }
-    return {};
 }
 
 bool EnsureDirectoryRemovedIfExists(const std::filesystem::path& path, std::string* error) {
@@ -1000,7 +974,8 @@ bool ReplaceDownloadedFile(
     const std::filesystem::path& destinationPath,
     std::string* error) {
     std::string path_error;
-    if (!IsSafeRelativePath(destinationPath, &path_error)) {
+    if (!IsSafeDestinationUnderBase(
+            destinationPath, Platform::GetExecutableDirectory(), &path_error)) {
         if (error != nullptr) {
             *error = path_error;
         }
@@ -1266,7 +1241,7 @@ bool CopyGameExecutable(
     const std::filesystem::path& destinationPath,
     std::string* error) {
     std::string path_error;
-    if (!IsSafeRelativePath(destinationPath, &path_error)) {
+    if (!IsSafeDestinationUnderBase(destinationPath, GetInstallBasePath(), &path_error)) {
         if (error != nullptr) {
             *error = path_error;
         }
@@ -1362,12 +1337,6 @@ bool ExtractGameShadersInternal(
         return false;
     }
 
-    const std::filesystem::path translatorPath = GetTranslatorExecutablePath(error);
-    if (translatorPath.empty()) {
-        ReportInstallStage(stageCallback, "Shader compile failed.");
-        return false;
-    }
-
     std::string requestedTargets;
     for (std::size_t i = 0; i < targets.size(); ++i) {
         if (i > 0) {
@@ -1384,7 +1353,6 @@ bool ExtractGameShadersInternal(
     buildOptions.translate.extract_manifest_path = manifestPath;
     buildOptions.translate.translate_out_dir = shaderOutputRoot;
     buildOptions.translate.report_path = reportPath;
-    buildOptions.translate.translator_path = translatorPath;
     buildOptions.translate.targets = requestedTargets;
 
     refii::shader::ShaderSbkBuildSummary summary;
@@ -1394,8 +1362,23 @@ bool ExtractGameShadersInternal(
         }
     };
 
-    if (!refii::shader::BuildShaderSbkWorkspace(
-            buildOptions, &summary, error, progressCallback)) {
+    bool shaderBuildSucceeded = false;
+    try {
+        shaderBuildSucceeded = refii::shader::BuildShaderSbkWorkspace(
+            buildOptions, &summary, error, progressCallback);
+    } catch (const std::exception& exception) {
+        if (error != nullptr) {
+            *error = "Shader compile crashed with exception: " + std::string(exception.what());
+        }
+        shaderBuildSucceeded = false;
+    } catch (...) {
+        if (error != nullptr) {
+            *error = "Shader compile crashed with an unknown exception.";
+        }
+        shaderBuildSucceeded = false;
+    }
+
+    if (!shaderBuildSucceeded) {
         ReportInstallStage(stageCallback, "Shader compile failed.");
         return false;
     }

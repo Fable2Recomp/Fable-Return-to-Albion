@@ -45,7 +45,7 @@ extern "C" {
 
 namespace plume {
     static const uint32_t ShaderDescriptorHeapSize = 65536;
-    static const uint32_t SamplerDescriptorHeapSize = 1024;
+    static const uint32_t SamplerDescriptorHeapSize = 2048;
     static const uint32_t TargetDescriptorHeapSize = 16384;
 
     // Common functions.
@@ -939,7 +939,7 @@ namespace plume {
         if (viewDescriptorCount > 0) {
             viewAllocation.offset = device->viewHeapAllocator->allocate(viewDescriptorCount);
             if (viewAllocation.offset == D3D12DescriptorHeapAllocator::INVALID_OFFSET) {
-                fprintf(stderr, "Allocator was unable to find free space for the set.");
+                fprintf(stderr, "Allocator was unable to find free space for the view descriptor set.");
                 return;
             }
 
@@ -949,12 +949,14 @@ namespace plume {
         if (samplerDescriptorCount > 0) {
             samplerAllocation.offset = device->samplerHeapAllocator->allocate(samplerDescriptorCount);
             if (samplerAllocation.offset == D3D12DescriptorHeapAllocator::INVALID_OFFSET) {
-                fprintf(stderr, "Allocator was unable to find free space for the set.");
+                fprintf(stderr, "Allocator was unable to find free space for the sampler descriptor set.");
                 return;
             }
 
             samplerAllocation.count = samplerDescriptorCount;
         }
+
+        valid = true;
     }
 
     D3D12DescriptorSet::~D3D12DescriptorSet() {
@@ -3954,7 +3956,12 @@ namespace plume {
     }
 
     std::unique_ptr<RenderDescriptorSet> D3D12Device::createDescriptorSet(const RenderDescriptorSetDesc &desc) {
-        return std::make_unique<D3D12DescriptorSet>(this, desc);
+        std::unique_ptr<D3D12DescriptorSet> descriptorSet = std::make_unique<D3D12DescriptorSet>(this, desc);
+        if (!descriptorSet->valid) {
+            return nullptr;
+        }
+
+        return std::move(descriptorSet);
     }
 
     std::unique_ptr<RenderShader> D3D12Device::createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) {

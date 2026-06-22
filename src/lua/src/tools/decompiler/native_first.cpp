@@ -28,6 +28,7 @@ extern "C" {
 #endif
 
 #include <algorithm>
+#include <array>
 namespace refii::lua::decompiler {
 namespace {
 

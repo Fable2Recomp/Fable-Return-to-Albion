@@ -14,6 +14,7 @@
 #include <rex/assert.h>
 #include <rex/ui/window_sdl.h>
 
+#define SDL_MAIN_HANDLED
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_timer.h>

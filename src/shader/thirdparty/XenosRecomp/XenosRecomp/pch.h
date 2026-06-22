@@ -2,6 +2,8 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+#include <Unknwn.h>
+#include <Objidl.h>
 #endif
 
 #include <dxcapi.h>

@@ -5,11 +5,18 @@
         {
             "name": "windows-base",
             "hidden": true,
-            "generator": "Ninja",
+            "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "clang",
-                "CMAKE_CXX_COMPILER": "clang++"
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_C_FLAGS": "-march=x86-64-v3",
+                "CMAKE_CXX_FLAGS": "-march=x86-64-v3",
+                "CMAKE_CONFIGURATION_TYPES": "Debug;Release;RelWithDebInfo",
+                "CMAKE_CROSS_CONFIGS": "all",
+                "CMAKE_DEFAULT_BUILD_TYPE": "Debug",
+                "CMAKE_DEFAULT_CONFIGS": "all",
+                "REFII_RENDERER_PLUME_D3D12_AGILITY_SDK_ENABLED": "ON"
             },
             "condition": {
                 "type": "equals",
@@ -45,14 +52,12 @@
         {
             "name": "win-amd64-debug",
             "displayName": "Windows AMD64 Debug",
-            "inherits": "windows-base",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+            "inherits": "windows-base"
         },
         {
             "name": "win-amd64-release",
             "displayName": "Windows AMD64 Release",
-            "inherits": "windows-base",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+            "inherits": "windows-base"
         },
         {
             "name": "linux-amd64-debug",
@@ -69,8 +74,7 @@
         {
             "name": "win-amd64-relwithdebinfo",
             "displayName": "Windows AMD64 RelWithDebInfo",
-            "inherits": "windows-base",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+            "inherits": "windows-base"
         },
         {
             "name": "linux-amd64-relwithdebinfo",
@@ -98,9 +102,9 @@
         }
     ],
     "buildPresets": [
-        { "name": "win-amd64-debug", "configurePreset": "win-amd64-debug" },
-        { "name": "win-amd64-release", "configurePreset": "win-amd64-release" },
-        { "name": "win-amd64-relwithdebinfo", "configurePreset": "win-amd64-relwithdebinfo" },
+        { "name": "win-amd64-debug", "configurePreset": "win-amd64-debug", "configuration": "Debug" },
+        { "name": "win-amd64-release", "configurePreset": "win-amd64-release", "configuration": "Release" },
+        { "name": "win-amd64-relwithdebinfo", "configurePreset": "win-amd64-relwithdebinfo", "configuration": "RelWithDebInfo" },
         { "name": "linux-amd64-debug", "configurePreset": "linux-amd64-debug" },
         { "name": "linux-amd64-release", "configurePreset": "linux-amd64-release" },
         { "name": "linux-amd64-relwithdebinfo", "configurePreset": "linux-amd64-relwithdebinfo" },

@@ -21,7 +21,12 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <csignal>
+#include <cstdint>
+#include <cstdlib>
+#include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -29,6 +34,14 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -76,6 +89,113 @@ void TryOpenUrl(const std::string& url) {
         std::cout << error << std::endl;
     }
 }
+
+#if defined(_WIN32)
+bool IsFatalLauncherExceptionCode(DWORD exceptionCode) {
+    switch (exceptionCode) {
+    case EXCEPTION_ACCESS_VIOLATION:
+    case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
+    case EXCEPTION_DATATYPE_MISALIGNMENT:
+    case EXCEPTION_FLT_DENORMAL_OPERAND:
+    case EXCEPTION_FLT_DIVIDE_BY_ZERO:
+    case EXCEPTION_FLT_INEXACT_RESULT:
+    case EXCEPTION_FLT_INVALID_OPERATION:
+    case EXCEPTION_FLT_OVERFLOW:
+    case EXCEPTION_FLT_STACK_CHECK:
+    case EXCEPTION_FLT_UNDERFLOW:
+    case EXCEPTION_ILLEGAL_INSTRUCTION:
+    case EXCEPTION_IN_PAGE_ERROR:
+    case EXCEPTION_INT_DIVIDE_BY_ZERO:
+    case EXCEPTION_INT_OVERFLOW:
+    case EXCEPTION_INVALID_DISPOSITION:
+    case EXCEPTION_NONCONTINUABLE_EXCEPTION:
+    case EXCEPTION_PRIV_INSTRUCTION:
+    case EXCEPTION_STACK_OVERFLOW:
+        return true;
+    default:
+        return false;
+    }
+}
+
+void WriteLauncherCrashLog(const char* source,
+                           EXCEPTION_POINTERS* exceptionPointers,
+                           int signalNumber = 0) {
+    const std::filesystem::path crashLogPath =
+        LauncherPaths::GetRuntimeDataRootDirectory() / "logs" / "refii-launcher-crash.log";
+    const std::filesystem::path shaderBreadcrumbPath =
+        LauncherPaths::GetRuntimeDataRootDirectory() / "assets" / "unpacked" /
+        "shaders" / "compile_crash_breadcrumb.txt";
+
+    std::error_code createError;
+    std::filesystem::create_directories(crashLogPath.parent_path(), createError);
+
+    std::ofstream crashLog(crashLogPath, std::ios::binary | std::ios::app);
+    if (crashLog) {
+        crashLog << "=== unhandled launcher exception ===\n";
+        crashLog << "source\t" << (source != nullptr ? source : "unknown") << '\n';
+        if (signalNumber != 0) {
+            crashLog << "signal\t" << signalNumber << '\n';
+        }
+        if (exceptionPointers != nullptr && exceptionPointers->ExceptionRecord != nullptr) {
+            crashLog << "code\t0x" << std::hex
+                     << exceptionPointers->ExceptionRecord->ExceptionCode << std::dec << '\n';
+            crashLog << "address\t"
+                     << exceptionPointers->ExceptionRecord->ExceptionAddress << '\n';
+        } else {
+            crashLog << "code\tunknown\n";
+            crashLog << "address\tunknown\n";
+        }
+
+        if (std::filesystem::exists(shaderBreadcrumbPath)) {
+            crashLog << "shader_breadcrumb_path\t"
+                     << shaderBreadcrumbPath.generic_string() << '\n';
+            crashLog << "--- shader breadcrumb ---\n";
+            std::ifstream breadcrumb(shaderBreadcrumbPath, std::ios::binary);
+            crashLog << breadcrumb.rdbuf();
+            crashLog << "\n--- end shader breadcrumb ---\n";
+        }
+        crashLog << '\n';
+    }
+}
+
+LONG WINAPI LauncherVectoredExceptionHandler(EXCEPTION_POINTERS* exceptionPointers) {
+    if (exceptionPointers != nullptr && exceptionPointers->ExceptionRecord != nullptr &&
+        IsFatalLauncherExceptionCode(exceptionPointers->ExceptionRecord->ExceptionCode)) {
+        WriteLauncherCrashLog("vectored_exception", exceptionPointers);
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+LONG WINAPI LauncherUnhandledExceptionFilter(EXCEPTION_POINTERS* exceptionPointers) {
+    WriteLauncherCrashLog("unhandled_exception_filter", exceptionPointers);
+
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+void LauncherTerminateHandler() {
+    WriteLauncherCrashLog("std_terminate", nullptr);
+    std::abort();
+}
+
+void LauncherSignalHandler(int signalNumber) {
+    WriteLauncherCrashLog("signal", nullptr, signalNumber);
+    std::_Exit(128 + signalNumber);
+}
+
+void LauncherInvalidParameterHandler(const wchar_t* expression,
+                                     const wchar_t* function,
+                                     const wchar_t* file,
+                                     unsigned int line,
+                                     uintptr_t reserved) {
+    (void)expression;
+    (void)function;
+    (void)file;
+    (void)line;
+    (void)reserved;
+    WriteLauncherCrashLog("invalid_parameter", nullptr);
+}
+#endif
 
 std::string NormalizeButtonStatus(std::string value, std::size_t maxLength = 64) {
     for (char& character : value) {
@@ -352,6 +472,16 @@ int main(int argc, char** argv) {
         !launcherLogError.empty()) {
         std::fprintf(stderr, "%s\n", launcherLogError.c_str());
     }
+#if defined(_WIN32)
+    AddVectoredExceptionHandler(1, LauncherVectoredExceptionHandler);
+    SetUnhandledExceptionFilter(LauncherUnhandledExceptionFilter);
+    _set_invalid_parameter_handler(LauncherInvalidParameterHandler);
+    std::set_terminate(LauncherTerminateHandler);
+    std::signal(SIGABRT, LauncherSignalHandler);
+    std::signal(SIGFPE, LauncherSignalHandler);
+    std::signal(SIGILL, LauncherSignalHandler);
+    std::signal(SIGSEGV, LauncherSignalHandler);
+#endif
 
     LogStreambuf stdoutLogBuffer(std::cout.rdbuf());
     LogStreambuf stderrLogBuffer(std::cerr.rdbuf());
@@ -400,8 +530,10 @@ int main(int argc, char** argv) {
     patchesWindow.Init();
 
     backgroundManager.Initialize();
-    changeLog.Initialize(GetRepositoryName(), GetRepositoryBranch());
-    credits.Initialize(GetRepositoryName());
+    if (INI::GetBool("EnableOnlineMetadata", "Github", false)) {
+        changeLog.Initialize(GetRepositoryName(), GetRepositoryBranch());
+        credits.Initialize(GetRepositoryName());
+    }
     runtimeSettings.Initialize();
 
     auto startUpdateCheck = [&](const char* logPrefix) {

@@ -16,7 +16,6 @@ if(NOT DEFINED REFII_RUNTIME_DATA_DIR OR REFII_RUNTIME_DATA_DIR STREQUAL "")
     set(REFII_RUNTIME_DATA_DIR "${REFII_RUNTIME_OUTPUT_DIR}/assets")
 endif()
 set(LAUNCHER_OUTPUT_DIR ${REFII_RUNTIME_OUTPUT_DIR})
-set(LAUNCHER_DATA_DIR ${REFII_RUNTIME_DATA_DIR}/launcher)
 
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -61,7 +60,7 @@ set(LAUNCHER_SOURCES
 
 if(WIN32)
     list(APPEND LAUNCHER_SOURCES src/windows/platform.cpp)
-    add_executable(${LAUNCHER_TARGET} WIN32 ${LAUNCHER_SOURCES})
+    add_executable(${LAUNCHER_TARGET} ${LAUNCHER_SOURCES})
 else()
     list(APPEND LAUNCHER_SOURCES src/linux/platform.cpp)
     add_executable(${LAUNCHER_TARGET} ${LAUNCHER_SOURCES})
@@ -70,15 +69,6 @@ endif()
 set_target_properties(${LAUNCHER_TARGET} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${LAUNCHER_OUTPUT_DIR}"
 )
-
-if(CMAKE_CONFIGURATION_TYPES)
-    foreach(config ${CMAKE_CONFIGURATION_TYPES})
-        string(TOUPPER "${config}" config_upper)
-        set_target_properties(${LAUNCHER_TARGET} PROPERTIES
-            "RUNTIME_OUTPUT_DIRECTORY_${config_upper}" "${LAUNCHER_OUTPUT_DIR}"
-        )
-    endforeach()
-endif()
 
 target_include_directories(${LAUNCHER_TARGET} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/generated/glad/include
@@ -111,14 +101,6 @@ endif()
 if(TARGET refii_shader_sbk_workspace)
     target_link_libraries(${LAUNCHER_TARGET} PRIVATE refii_shader_sbk_workspace)
 endif()
-if(TARGET refii-shader-xenos-translator)
-    target_compile_definitions(
-        ${LAUNCHER_TARGET}
-        PRIVATE
-            "REFII_SHADER_XENOS_TRANSLATOR_PATH=\"$<TARGET_FILE:refii-shader-xenos-translator>\""
-    )
-endif()
-
 if(WIN32)
     target_link_libraries(${LAUNCHER_TARGET} PRIVATE
         opengl32.lib
@@ -144,24 +126,28 @@ else()
     )
 endif()
 
+set(LAUNCHER_RUNTIME_DATA_DIR "$<TARGET_FILE_DIR:${LAUNCHER_TARGET}>/assets")
+set(LAUNCHER_DATA_DIR "${LAUNCHER_RUNTIME_DATA_DIR}/launcher")
+
 add_custom_command(TARGET ${LAUNCHER_TARGET} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
-        ${LAUNCHER_DATA_DIR}
+        "${LAUNCHER_DATA_DIR}"
     COMMAND ${CMAKE_COMMAND} -E make_directory
-        ${REFII_RUNTIME_DATA_DIR}/game
+        "${LAUNCHER_RUNTIME_DATA_DIR}/game"
     COMMAND ${CMAKE_COMMAND} -E make_directory
-        ${REFII_RUNTIME_DATA_DIR}/save
+        "${LAUNCHER_RUNTIME_DATA_DIR}/save"
     COMMAND ${CMAKE_COMMAND} -E make_directory
-        ${REFII_RUNTIME_DATA_DIR}/update
+        "${LAUNCHER_RUNTIME_DATA_DIR}/update"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_CURRENT_SOURCE_DIR}/assets
-        ${LAUNCHER_DATA_DIR}/assets
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+        "${LAUNCHER_DATA_DIR}/assets"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_CURRENT_SOURCE_DIR}/config.cfg
-        ${LAUNCHER_DATA_DIR}/config.cfg
+        "${CMAKE_CURRENT_SOURCE_DIR}/config.cfg"
+        "${LAUNCHER_DATA_DIR}/config.cfg"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_CURRENT_SOURCE_DIR}/imgui.cfg
-        ${LAUNCHER_DATA_DIR}/imgui.cfg
+        "${CMAKE_CURRENT_SOURCE_DIR}/imgui.cfg"
+        "${LAUNCHER_DATA_DIR}/imgui.cfg"
+    VERBATIM
 )
 
 if(REFII_PACKAGE_ICON_AVAILABLE)
@@ -170,7 +156,13 @@ if(REFII_PACKAGE_ICON_AVAILABLE)
     endif()
     add_custom_command(TARGET ${LAUNCHER_TARGET} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${REFII_PACKAGE_ICON_SOURCE}
-            ${LAUNCHER_DATA_DIR}/assets/icon.png
+            "${REFII_PACKAGE_ICON_SOURCE}"
+            "${LAUNCHER_DATA_DIR}/assets/icon.png"
+        VERBATIM
     )
+endif()
+
+if(WIN32)
+    refii_stage_windows_runtime_dlls(${LAUNCHER_TARGET})
+    refii_stage_d3d12_agility_runtime(${LAUNCHER_TARGET})
 endif()

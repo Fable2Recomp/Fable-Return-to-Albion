@@ -122,17 +122,19 @@ void Patches::Init() {
     patches.clear();
 
     bool onlineSuccess = false;
-    std::string error;
-    const std::string responseData = Platform::HttpGet(
-        INI::GetString(
-            "PatchesLocation",
-            "https://raw.githubusercontent.com/Fable2Recomp/refii/master/src/hooks.cpp",
-            "Github"),
-        &error);
-    if (!responseData.empty()) {
-        LoadPatchesFromResponse(responseData, onlineSuccess);
-    } else if (!error.empty()) {
-        std::cout << "Patch fetch failed: " << error << std::endl;
+    if (INI::GetBool("EnableOnlineMetadata", "Github", false)) {
+        std::string error;
+        const std::string responseData = Platform::HttpGet(
+            INI::GetString(
+                "PatchesLocation",
+                "https://raw.githubusercontent.com/Fable2Recomp/refii/master/src/hooks.cpp",
+                "Github"),
+            &error);
+        if (!responseData.empty()) {
+            LoadPatchesFromResponse(responseData, onlineSuccess);
+        } else if (!error.empty()) {
+            std::cout << "Patch fetch failed: " << error << std::endl;
+        }
     }
 
     if (!onlineSuccess) {

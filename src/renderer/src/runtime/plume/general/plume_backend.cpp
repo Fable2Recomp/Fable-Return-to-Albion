@@ -1662,11 +1662,12 @@ void NotifyPlumeBackendHook(const char* symbol, RendererHookKind kind) {
     const char* hook_class = kind == RendererHookKind::kDraw ? "draw/state" :
                              kind == RendererHookKind::kResource ? "resource" :
                              "general";
+    const RendererGraphicsApi api = GetRendererGraphicsApi();
     REXLOG_INFO(
         "Refii plume/{} hook observer is active; {} ({}) is feeding the "
         "static Plume replacement path while native presentation and mirrored "
         "command submission stay suppressed",
-        PlumeApiBridgeName(g_plume_backend.api), symbol, hook_class);
+        PlumeApiBridgeName(api), symbol, hook_class);
     g_plume_backend.logged_hook_observer = true;
   }
 }

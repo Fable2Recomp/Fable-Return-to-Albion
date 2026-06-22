@@ -69,9 +69,9 @@ set_target_properties(refii-shader-sbk PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
 )
 
 if(WIN32)
@@ -110,9 +110,9 @@ add_subdirectory(
 
 set_target_properties(XenosRecomp PROPERTIES
     OUTPUT_NAME XenosRecomp
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
 )
@@ -165,9 +165,9 @@ target_compile_definitions(refii-shader-xenos-translator
 )
 set_target_properties(refii-shader-xenos-translator PROPERTIES
     OUTPUT_NAME refii-shader-xenos-translator
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
 )
@@ -198,6 +198,7 @@ if(REFII_BUILD_TOOLS)
         BUILD_RPATH "$ORIGIN/../lib"
         INSTALL_RPATH "$ORIGIN/../lib"
     )
+    refii_stage_windows_runtime_dlls(refii-shader-sbk-tool)
 
     add_executable(refii-shader-xenos-translator-tool
         ${REFII_SHADER_ROOT}/src/refii_shader_xenos_translator_cli_main.cpp
@@ -214,4 +215,5 @@ if(REFII_BUILD_TOOLS)
         BUILD_RPATH "$ORIGIN/../lib"
         INSTALL_RPATH "$ORIGIN/../lib"
     )
+    refii_stage_windows_runtime_dlls(refii-shader-xenos-translator-tool)
 endif()

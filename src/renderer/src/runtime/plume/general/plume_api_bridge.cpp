@@ -57,7 +57,11 @@ std::unique_ptr<plume::RenderInterface> CreatePlumeApiInterface(
     case RendererGraphicsApi::kD3D12:
       return CreatePlumeD3D12Interface();
     case RendererGraphicsApi::kMetal:
+#if defined(__APPLE__)
       return CreatePlumeMetalInterface();
+#else
+      return nullptr;
+#endif
   }
 
   return nullptr;

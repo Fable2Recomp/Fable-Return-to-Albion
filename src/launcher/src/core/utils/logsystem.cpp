@@ -9,6 +9,8 @@
 
 namespace {
 
+std::mutex gLogStreamMutex;
+
 std::string BuildLogTimestamp() {
     const auto now = std::chrono::system_clock::now();
     const auto time_t = std::chrono::system_clock::to_time_t(now);
@@ -157,6 +159,7 @@ LogStreambuf::~LogStreambuf() {
 }
 
 int LogStreambuf::overflow(int c) {
+    std::lock_guard<std::mutex> lock(gLogStreamMutex);
     if (c != EOF) {
         buffer << static_cast<char>(c);
         if (originalBuffer) {
@@ -167,6 +170,7 @@ int LogStreambuf::overflow(int c) {
 }
 
 int LogStreambuf::sync() {
+    std::lock_guard<std::mutex> lock(gLogStreamMutex);
     std::string line = buffer.str();
     if (!line.empty()) {
         while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {

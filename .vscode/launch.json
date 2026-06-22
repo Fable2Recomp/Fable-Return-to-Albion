@@ -1,0 +1,37 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug refii.exe",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/out/build/win-amd64-debug/Debug/bin/refii.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}/out/build/win-amd64-debug/Debug/bin",
+            "environment": [
+                {
+                    "name": "PATH",
+                    "value": "${workspaceFolder}/out/build/win-amd64-debug/Debug/bin;${workspaceFolder}/out/build/win-amd64-debug/Debug/lib;${env:PATH}"
+                }
+            ],
+            "console": "integratedTerminal",
+            "stopAtEntry": false
+        },
+        {
+            "name": "Debug refii-launcher.exe",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/out/build/win-amd64-debug/Debug/bin/refii-launcher.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}/out/build/win-amd64-debug/Debug/bin",
+            "environment": [
+                {
+                    "name": "PATH",
+                    "value": "${workspaceFolder}/out/build/win-amd64-debug/Debug/bin;${workspaceFolder}/out/build/win-amd64-debug/Debug/lib;${env:PATH}"
+                }
+            ],
+            "console": "integratedTerminal",
+            "stopAtEntry": false
+        }
+    ]
+}

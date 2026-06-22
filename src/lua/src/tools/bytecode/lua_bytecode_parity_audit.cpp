@@ -188,7 +188,7 @@ std::string SafeRelativePathString(const std::filesystem::path& path,
                                    const std::filesystem::path& root) {
     std::error_code error;
     const std::filesystem::path relative = std::filesystem::relative(path, root, error);
-    if (!error && !relative.empty() && relative.native() != ".") {
+    if (!error && !relative.empty() && relative != std::filesystem::path(".")) {
         return relative.generic_string();
     }
     return path.generic_string();

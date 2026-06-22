@@ -35,6 +35,7 @@
 #endif
 #include <windows.h>
 #include <objbase.h>
+#include <processthreadsapi.h>
 #else
 #include <cerrno>
 #include <fcntl.h>
@@ -280,6 +281,87 @@ std::atomic<int> PosixTerminationSignalBridge::signalWriteFd_{-1};
 #endif
 
 #if defined(_WIN32)
+void WriteWindowsCrashRecord(const char* source,
+                             EXCEPTION_POINTERS* exceptionPointers) {
+    char modulePath[MAX_PATH] = {};
+    const DWORD modulePathLength =
+        GetModuleFileNameA(nullptr, modulePath, static_cast<DWORD>(sizeof(modulePath)));
+    if (modulePathLength == 0 || modulePathLength >= sizeof(modulePath)) {
+        return;
+    }
+
+    char* lastSlash = std::max(std::strrchr(modulePath, '\\'),
+                               std::strrchr(modulePath, '/'));
+    if (lastSlash == nullptr) {
+        return;
+    }
+    *lastSlash = '\0';
+
+    std::string logsDirectory = std::string(modulePath) + "\\logs";
+    CreateDirectoryA(logsDirectory.c_str(), nullptr);
+
+    const std::string crashLogPath = logsDirectory + "\\refii-crash.log";
+    FILE* crashLog = nullptr;
+    if (fopen_s(&crashLog, crashLogPath.c_str(), "ab") != 0 || crashLog == nullptr) {
+        return;
+    }
+
+    DWORD exceptionCode = 0;
+    void* exceptionAddress = nullptr;
+    void* instructionPointer = nullptr;
+    if (exceptionPointers != nullptr) {
+        if (exceptionPointers->ExceptionRecord != nullptr) {
+            exceptionCode = exceptionPointers->ExceptionRecord->ExceptionCode;
+            exceptionAddress = exceptionPointers->ExceptionRecord->ExceptionAddress;
+        }
+        if (exceptionPointers->ContextRecord != nullptr) {
+#if defined(_M_X64) || defined(__x86_64__)
+            instructionPointer =
+                reinterpret_cast<void*>(exceptionPointers->ContextRecord->Rip);
+#elif defined(_M_IX86) || defined(__i386__)
+            instructionPointer =
+                reinterpret_cast<void*>(exceptionPointers->ContextRecord->Eip);
+#endif
+        }
+    }
+
+    std::fprintf(crashLog, "=== refii unhandled exception ===\n");
+    std::fprintf(crashLog, "source\t%s\n", source != nullptr ? source : "unknown");
+    std::fprintf(crashLog, "process_id\t%lu\n",
+                 static_cast<unsigned long>(GetCurrentProcessId()));
+    std::fprintf(crashLog, "thread_id\t%lu\n",
+                 static_cast<unsigned long>(GetCurrentThreadId()));
+    std::fprintf(crashLog, "code\t0x%08lX\n", static_cast<unsigned long>(exceptionCode));
+    std::fprintf(crashLog, "exception_address\t%p\n", exceptionAddress);
+    std::fprintf(crashLog, "instruction_pointer\t%p\n", instructionPointer);
+    std::fprintf(crashLog, "\n");
+    std::fclose(crashLog);
+}
+
+LONG WINAPI RefiiWindowsUnhandledExceptionFilter(
+    EXCEPTION_POINTERS* exceptionPointers) {
+    WriteWindowsCrashRecord("unhandled_exception_filter", exceptionPointers);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+LONG WINAPI RefiiWindowsVectoredExceptionHandler(
+    EXCEPTION_POINTERS* exceptionPointers) {
+    if (exceptionPointers != nullptr &&
+        exceptionPointers->ExceptionRecord != nullptr &&
+        exceptionPointers->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+        WriteWindowsCrashRecord("vectored_exception_handler", exceptionPointers);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void InstallWindowsCrashRecorder() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        AddVectoredExceptionHandler(1, RefiiWindowsVectoredExceptionHandler);
+        SetUnhandledExceptionFilter(RefiiWindowsUnhandledExceptionFilter);
+    });
+}
+
 class WindowsConsoleControlBridge {
 public:
     WindowsConsoleControlBridge(
@@ -354,6 +436,8 @@ rex::ui::WindowedAppContext* WindowsConsoleControlBridge::activeContext_ = nullp
 std::function<void()>* WindowsConsoleControlBridge::activeShutdownCallback_ = nullptr;
 
 int RunEmbeddedOnWindows(std::vector<std::string> ownedArguments) {
+    InstallWindowsCrashRecorder();
+
     std::vector<char*> argvPointers = BuildArgvPointers(ownedArguments);
     auto remaining = rex::cvar::Init(static_cast<int>(argvPointers.size()), argvPointers.data());
     rex::cvar::ApplyEnvironment();

@@ -14,7 +14,7 @@ else()
     if(REXSDK_VERSION)
         find_package(rexglue ${REXSDK_VERSION} EXACT QUIET CONFIG)
     else()
-        find_package(rexglue 0.8.0.32 QUIET CONFIG)
+        find_package(rexglue 0.8.0 QUIET CONFIG)
     endif()
     if(NOT rexglue_FOUND)
         message(FATAL_ERROR
@@ -61,7 +61,7 @@ endif()
 # Codegen target - run 'cmake --build . --target refii_codegen'
 # Uses the manifest to drive codegen for all modules (entrypoint + DLLs).
 add_custom_target(refii_codegen
-    COMMAND $<TARGET_FILE:rex::rexglue> codegen ${CMAKE_CURRENT_SOURCE_DIR}/refii_manifest.toml
+    COMMAND $<TARGET_FILE:rex::rexglue> --force codegen ${CMAKE_CURRENT_SOURCE_DIR}/refii_manifest.toml
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Generating recompiled code for refii"
     VERBATIM

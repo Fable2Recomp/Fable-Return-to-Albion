@@ -14,6 +14,7 @@
 #include "tools/decompiler/repair/lua_tiny_main_repairs.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>

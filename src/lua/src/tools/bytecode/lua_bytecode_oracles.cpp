@@ -12,6 +12,10 @@
 #include <optional>
 #include <sstream>
 
+#if defined(_WIN32)
+#include <process.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

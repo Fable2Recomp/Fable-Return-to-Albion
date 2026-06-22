@@ -63,9 +63,9 @@ set_target_properties(refii_bnk_extractor PROPERTIES
     CXX_EXTENSIONS OFF
     POSITION_INDEPENDENT_CODE ON
     OUTPUT_NAME refii_bnk_extractor
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
 )
@@ -92,6 +92,10 @@ set_target_properties(refii-default-xex-icon-extractor PROPERTIES
     INSTALL_RPATH "$ORIGIN/../lib"
 )
 
+if(WIN32)
+    refii_stage_windows_runtime_dlls(refii-default-xex-icon-extractor)
+endif()
+
 if(REFII_BUILD_TOOLS)
     add_executable(refii-bnk-extractor
         ${REFII_EXTRACTOR_ROOT}/src/bnk_extractor_main.cpp
@@ -108,4 +112,8 @@ if(REFII_BUILD_TOOLS)
         BUILD_RPATH "$ORIGIN/../lib"
         INSTALL_RPATH "$ORIGIN/../lib"
     )
+
+    if(WIN32)
+        refii_stage_windows_runtime_dlls(refii-bnk-extractor)
+    endif()
 endif()

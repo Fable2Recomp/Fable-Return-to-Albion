@@ -1762,7 +1762,7 @@ bool ExtractShaderSbkWorkspace(const ShaderSbkExtractOptions& options,
         if (progress_callback) {
             progress_callback(ShaderSbkProgress{
                 "extracting_bank",
-                std::string(std::filesystem::path(bank_file).stem()),
+                std::filesystem::path(bank_file).stem().generic_string(),
                 bankIndex + 1,
                 kExpectedBankFiles.size(),
                 0,
@@ -1783,7 +1783,7 @@ bool ExtractShaderSbkWorkspace(const ShaderSbkExtractOptions& options,
         if (progress_callback) {
             progress_callback(ShaderSbkProgress{
                 "bank_ready",
-                std::string(std::filesystem::path(bank_file).stem()),
+                std::filesystem::path(bank_file).stem().generic_string(),
                 bankIndex + 1,
                 kExpectedBankFiles.size(),
                 0,
@@ -1894,7 +1894,7 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
         return false;
     }
 
-    const bool translator_available = !options.translator_path.empty();
+    const bool translator_available = true;
 
     struct CachedTranslateResult {
         std::string status;
@@ -1940,6 +1940,8 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
             const std::filesystem::path hlsl_path = BuildTranslatedHlslPath(output_path);
             const std::filesystem::path stderr_path = BuildTranslatorLogPath(
                 active_summary->translate_out_dir, target, blob.bank_name, output_stem);
+            const std::filesystem::path crash_breadcrumb_path =
+                active_summary->translate_out_dir / "compile_crash_breadcrumb.txt";
 
             std::string status;
             std::string note;
@@ -1984,6 +1986,24 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
                 if (!used_alias) {
                     ++active_summary->dedupe_executed;
                     std::string run_error;
+                    {
+                        std::ostringstream breadcrumb;
+                        breadcrumb << "phase\tcompiling_shader\n"
+                                   << "completed_items\t" << completed_items << '\n'
+                                   << "total_items\t" << total_items << '\n'
+                                   << "bank\t" << blob.bank_name << '\n'
+                                   << "blob_index\t" << blob.blob_index << '\n'
+                                   << "target\t" << target << '\n'
+                                   << "stage\t" << DescribeShaderStage(blob.stage) << '\n'
+                                   << "name\t" << blob.name_hint << '\n'
+                                   << "input_path\t" << blob.input_path.generic_string() << '\n'
+                                   << "output_path\t" << output_path.generic_string() << '\n'
+                                   << "hlsl_path\t" << hlsl_path.generic_string() << '\n'
+                                   << "stderr_path\t" << stderr_path.generic_string() << '\n';
+                        std::string breadcrumb_error;
+                        (void)WriteTextFile(
+                            crash_breadcrumb_path, breadcrumb.str(), &breadcrumb_error);
+                    }
                     const bool translated = TranslateShaderBlobWithXenos(
                         blob,
                         target,
@@ -2000,6 +2020,27 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
                     } else {
                         status = "ok";
                         note = "ok";
+                    }
+                    {
+                        std::ostringstream breadcrumb;
+                        breadcrumb << "phase\tcompiled_shader\n"
+                                   << "status\t" << status << '\n'
+                                   << "note\t" << note << '\n'
+                                   << "exit_code\t" << exit_code << '\n'
+                                   << "completed_items\t" << completed_items << '\n'
+                                   << "total_items\t" << total_items << '\n'
+                                   << "bank\t" << blob.bank_name << '\n'
+                                   << "blob_index\t" << blob.blob_index << '\n'
+                                   << "target\t" << target << '\n'
+                                   << "stage\t" << DescribeShaderStage(blob.stage) << '\n'
+                                   << "name\t" << blob.name_hint << '\n'
+                                   << "input_path\t" << blob.input_path.generic_string() << '\n'
+                                   << "output_path\t" << output_path.generic_string() << '\n'
+                                   << "hlsl_path\t" << hlsl_path.generic_string() << '\n'
+                                   << "stderr_path\t" << stderr_path.generic_string() << '\n';
+                        std::string breadcrumb_error;
+                        (void)WriteTextFile(
+                            crash_breadcrumb_path, breadcrumb.str(), &breadcrumb_error);
                     }
 
                     if (timed_out) {
@@ -2064,6 +2105,20 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
 
     if (!WriteTextFile(active_summary->report_path, report.str(), error)) {
         return false;
+    }
+
+    {
+        const std::filesystem::path crash_breadcrumb_path =
+            active_summary->translate_out_dir / "compile_crash_breadcrumb.txt";
+        std::ostringstream breadcrumb;
+        breadcrumb << "phase\tcompile_complete\n"
+                   << "total_items\t" << total_items << '\n'
+                   << "succeeded\t" << active_summary->succeeded << '\n'
+                   << "failed\t" << active_summary->failed << '\n'
+                   << "timed_out\t" << active_summary->timed_out << '\n'
+                   << "report_path\t" << active_summary->report_path.generic_string() << '\n';
+        std::string breadcrumb_error;
+        (void)WriteTextFile(crash_breadcrumb_path, breadcrumb.str(), &breadcrumb_error);
     }
 
     if (progress_callback) {

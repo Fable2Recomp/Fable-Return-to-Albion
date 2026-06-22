@@ -23,6 +23,10 @@
 #include <rex/ui/windowed_app.h>
 #include <rex/ui/windowed_app_context_sdl.h>
 
+#include <Objbase.h>
+#include <Shellapi.h>
+#include <Windows.h>
+
 namespace {
 
 // Convert wide argv from CommandLineToArgvW to UTF-8 argc/argv for cvar::Init

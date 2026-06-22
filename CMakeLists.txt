@@ -10,17 +10,41 @@ if(POLICY CMP0144)
   cmake_policy(SET CMP0144 NEW)
 endif()
 
+if(WIN32)
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+
+if(CMAKE_CONFIGURATION_TYPES)
+    set(_REFII_DEFAULT_PACKAGE_OUTPUT_DIR "${CMAKE_BINARY_DIR}/$<CONFIG>")
+else()
+    set(_REFII_DEFAULT_PACKAGE_OUTPUT_DIR "${CMAKE_BINARY_DIR}")
+endif()
+set(REFII_PACKAGE_OUTPUT_DIR
+    "${_REFII_DEFAULT_PACKAGE_OUTPUT_DIR}"
+    CACHE STRING
+    "Directory containing sibling bin and lib folders for runnable Refii outputs"
+    FORCE
+)
 set(REFII_RUNTIME_OUTPUT_DIR
-    "${CMAKE_BINARY_DIR}/bin"
-    CACHE PATH
+    "${REFII_PACKAGE_OUTPUT_DIR}/bin"
+    CACHE STRING
     "Directory where runnable refii development executables are emitted"
+    FORCE
+)
+set(REFII_LIBRARY_OUTPUT_DIR
+    "${REFII_PACKAGE_OUTPUT_DIR}/lib"
+    CACHE STRING
+    "Directory where Refii runtime libraries and import/static libraries are emitted"
+    FORCE
 )
 set(REFII_RUNTIME_DATA_DIR "${REFII_RUNTIME_OUTPUT_DIR}/assets")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}")
+unset(_REFII_DEFAULT_PACKAGE_OUTPUT_DIR)
 set(REFII_PACKAGE_GENERATED_DIR "${CMAKE_BINARY_DIR}/package/generated")
 set(REFII_PACKAGE_STAMP_DIR "${CMAKE_BINARY_DIR}/package/stamps")
 
@@ -65,13 +89,25 @@ cmake_dependent_option(
 )
 
 include(cmake/refii_rexglue.cmake)
+include(cmake/refii_vcpkg.cmake)
 refii_rexglue_configure_sdk()
+refii_rexglue_generate_sources_if_missing()
 include(generated/rexglue.cmake)
 add_subdirectory(src/achievement)
 refii_rexglue_apply_shadow_overrides()
 refii_define_rexglue_build_target()
 refii_define_rexglue_codegen_bootstrap_target()
-
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/generated/sources.cmake"
+)
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/sources.cmake")
+    message(STATUS
+        "generated/sources.cmake is missing; configuring bootstrap build. "
+        "Build once to build ReXGlue and generate sources, then CMake can "
+        "regenerate with the full Refii source list."
+    )
+    return()
+endif()
 if(TARGET TracyClient AND NOT TARGET rex::TracyClient)
     add_library(rex::TracyClient ALIAS TracyClient)
 endif()
@@ -146,6 +182,51 @@ function(refii_append_stage_library_command out_var target_name destination_dir)
         )
         set(${out_var} "${${out_var}}" PARENT_SCOPE)
     endif()
+endfunction()
+
+function(refii_stage_d3d12_agility_runtime target_name)
+    if(NOT WIN32 OR NOT TARGET "${target_name}")
+        return()
+    endif()
+
+    if(NOT REFII_RENDERER_PLUME_D3D12_AGILITY_SDK_ENABLED)
+        return()
+    endif()
+
+    if(NOT EXISTS "${REFII_D3D12_AGILITY_CORE_DLL}" OR
+       NOT EXISTS "${REFII_D3D12_AGILITY_CORE_DEBUG_DLL}" OR
+       NOT EXISTS "${REFII_D3D12_AGILITY_LAYERS_DLL}")
+        message(FATAL_ERROR
+            "D3D12 Agility SDK runtime DLLs are missing. Expected:\n"
+            "  ${REFII_D3D12_AGILITY_CORE_DLL}\n"
+            "  ${REFII_D3D12_AGILITY_CORE_DEBUG_DLL}\n"
+            "  ${REFII_D3D12_AGILITY_LAYERS_DLL}"
+        )
+    endif()
+
+    add_custom_command(TARGET "${target_name}" POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:${target_name}>/D3D12"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<IF:$<CONFIG:Debug>,${REFII_D3D12_AGILITY_CORE_DEBUG_DLL},${REFII_D3D12_AGILITY_CORE_DLL}>"
+            "$<TARGET_FILE_DIR:${target_name}>/D3D12/D3D12Core.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${REFII_D3D12_AGILITY_LAYERS_DLL}"
+            "$<TARGET_FILE_DIR:${target_name}>/D3D12/d3d12SDKLayers.dll"
+        VERBATIM
+    )
+endfunction()
+
+function(refii_stage_windows_runtime_dlls target_name)
+    if(NOT WIN32 OR NOT TARGET "${target_name}")
+        return()
+    endif()
+
+    add_custom_command(TARGET "${target_name}" POST_BUILD
+        COMMAND "$<$<BOOL:$<TARGET_RUNTIME_DLLS:${target_name}>>:${CMAKE_COMMAND};-E;copy_if_different;$<TARGET_RUNTIME_DLLS:${target_name}>;$<TARGET_FILE_DIR:${target_name}>>"
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+    )
 endfunction()
 
 set(REFII_TARGET_SUPPORTS_SSE41 OFF)
@@ -390,9 +471,10 @@ set(REFII_SHADER_MIRROR_TO_SHARED_OUTPUT_DIR
     "When ON, mirror shader pipeline artifacts into REFII_SHADER_SHARED_OUTPUT_DIR"
 )
 set(REFII_TOOL_OUTPUT_DIR
-    "${CMAKE_BINARY_DIR}/tools"
-    CACHE PATH
+    "${REFII_PACKAGE_OUTPUT_DIR}/tools"
+    CACHE STRING
     "Output directory for optional lightweight tool executables"
+    FORCE
 )
 set(_REFII_SHADER_LEGACY_TOOL_OUTPUT_DIR "${CMAKE_BINARY_DIR}/tools")
 if(REFII_SHADER_TOOL_OUTPUT_DIR STREQUAL "${_REFII_SHADER_LEGACY_TOOL_OUTPUT_DIR}")
@@ -498,6 +580,7 @@ if(REFII_BUILD_VFS_HOOKS)
 endif()
 
 if(REFII_BUILD_RENDERER_HOOKS)
+    refii_ensure_windows_vcpkg_packages()
     add_subdirectory(src/renderer)
 endif()
 
@@ -565,8 +648,8 @@ target_link_libraries(refii_core
 )
 set_target_properties(refii_core PROPERTIES
     OUTPUT_NAME refii_core
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
 )
 if(WIN32)
     set_target_properties(refii_core PROPERTIES
@@ -574,8 +657,14 @@ if(WIN32)
     )
 endif()
 
-# refii_generated is the replaceable recomp/codegen payload.
-add_library(refii_generated SHARED ${REFII_GENERATED_SOURCES})
+# refii_generated is the replaceable recomp/codegen payload. Linux keeps it
+# shared for the replaceable payload flow; Windows links it statically to avoid
+# exporting tens of thousands of generated PPC symbols through an import lib.
+set(REFII_GENERATED_LIBRARY_TYPE SHARED)
+if(WIN32)
+    set(REFII_GENERATED_LIBRARY_TYPE STATIC)
+endif()
+add_library(refii_generated ${REFII_GENERATED_LIBRARY_TYPE} ${REFII_GENERATED_SOURCES})
 target_include_directories(refii_generated
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -595,22 +684,18 @@ target_link_libraries(refii_generated
 )
 set_target_properties(refii_generated PROPERTIES
     OUTPUT_NAME refii_generated
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
 )
-if(WIN32)
-    set_target_properties(refii_generated PROPERTIES
-        WINDOWS_EXPORT_ALL_SYMBOLS ON
-    )
-endif()
-
+unset(REFII_GENERATED_LIBRARY_TYPE)
 add_library(refii_host STATIC
     src/refii_host.cpp
 )
 set_target_properties(refii_host PROPERTIES
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
 )
 target_include_directories(refii_host
     PUBLIC
@@ -708,10 +793,10 @@ if(REFII_BUILD_STANDALONE)
     if(EXISTS "${REFII_SHADER_OUTPUT_DIR}")
         add_custom_target(refii_stage_runtime_shaders
             COMMAND ${CMAKE_COMMAND} -E make_directory
-                "${REFII_RUNTIME_DATA_DIR}/unpacked"
+                "$<TARGET_FILE_DIR:refii>/assets/unpacked"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${REFII_SHADER_OUTPUT_DIR}"
-                "${REFII_RUNTIME_DATA_DIR}/unpacked/shaders"
+                "$<TARGET_FILE_DIR:refii>/assets/unpacked/shaders"
             COMMENT "Staging unpacked shader artifacts"
             VERBATIM
         )
@@ -719,14 +804,12 @@ if(REFII_BUILD_STANDALONE)
     endif()
 
     if(WIN32)
-        add_custom_command(TARGET refii POST_BUILD
-            COMMAND "$<$<BOOL:$<TARGET_RUNTIME_DLLS:refii>>:${CMAKE_COMMAND};-E;copy_if_different;$<TARGET_RUNTIME_DLLS:refii>;$<TARGET_FILE_DIR:refii>>"
-            COMMAND_EXPAND_LISTS
-        )
+        refii_stage_windows_runtime_dlls(refii)
+        refii_stage_d3d12_agility_runtime(refii)
     else()
         set(REFII_STAGE_EXTERNAL_LIBS_STAMP "${REFII_PACKAGE_STAMP_DIR}/refii_stage_external_libs.stamp")
         set(_refii_stage_external_lib_commands
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/lib"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_LIBRARY_OUTPUT_DIR}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_PACKAGE_STAMP_DIR}"
         )
         set(_refii_stage_external_lib_dependencies)
@@ -737,7 +820,7 @@ if(REFII_BUILD_STANDALONE)
             refii_append_stage_library_command(
                 _refii_stage_external_lib_commands
                 "${_refii_external_lib_target}"
-                "${CMAKE_BINARY_DIR}/lib/"
+                "${REFII_LIBRARY_OUTPUT_DIR}/"
             )
         endforeach()
         list(APPEND _refii_stage_external_lib_commands
@@ -911,7 +994,7 @@ string(CONFIGURE "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT}" REFII_PACK
 file(WRITE "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT}" "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT}")
 unset(REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT)
 set(REFII_PACKAGE_RUNTIME_SEARCH_DIRS
-    "${CMAKE_BINARY_DIR}/lib"
+    "${REFII_LIBRARY_OUTPUT_DIR}"
     "$<TARGET_FILE_DIR:rex::runtime>"
     "$<TARGET_FILE_DIR:rex::TracyClient>"
     "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/lib/x64"
@@ -1075,7 +1158,7 @@ if(REFII_BUILD_APPIMAGE)
             "$<TARGET_FILE:refii>"
             "${REFII_APPIMAGE_APPDIR}/usr/bin/"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_BINARY_DIR}/lib"
+            "${REFII_LIBRARY_OUTPUT_DIR}"
             "${REFII_APPIMAGE_APPDIR}/usr/lib"
         COMMAND ${CMAKE_COMMAND}
             "-DREFII_PACKAGE_EXECUTABLE_DIR=${REFII_APPIMAGE_APPDIR}/usr/bin"
@@ -1290,7 +1373,7 @@ if(REFII_BUILD_FLATPAK)
             "$<TARGET_FILE:refii>"
             "${REFII_FLATPAK_PAYLOAD_DIR}/bin/refii"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_BINARY_DIR}/lib"
+            "${REFII_LIBRARY_OUTPUT_DIR}"
             "${REFII_FLATPAK_PAYLOAD_DIR}/lib"
         COMMAND ${CMAKE_COMMAND}
             "-DREFII_PACKAGE_EXECUTABLE_DIR=${REFII_FLATPAK_PAYLOAD_DIR}/bin"

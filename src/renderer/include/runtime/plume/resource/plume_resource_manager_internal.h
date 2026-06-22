@@ -684,6 +684,11 @@ constexpr size_t kMaxRetiredPlumeResources = 4096;
 constexpr uint32_t kMaxFableTextureSlots = 32;
 constexpr uint32_t kMaxFableRenderTargets = 4;
 constexpr uint32_t kFableDescriptorCount = 4096;
+#if defined(_WIN32)
+constexpr uint32_t kFableSamplerDescriptorCount = 1024;
+#else
+constexpr uint32_t kFableSamplerDescriptorCount = kFableDescriptorCount;
+#endif
 constexpr uint32_t kPresentBlitDescriptorSetRingSize = 8;
 constexpr uint32_t kFableClearColorTargetMask = 0xFu;
 constexpr uint32_t kFableClearDepth = 0x10u;
@@ -1173,7 +1178,7 @@ struct PlumeResourceManagerState {
       texture_descriptor_lookup;
   std::array<uint32_t, 3> next_texture_descriptor_indices = {1u, 1u, 1u};
   uint64_t texture_descriptor_epoch = 0;
-  std::array<plume::RenderSampler*, kFableDescriptorCount>
+  std::array<plume::RenderSampler*, kFableSamplerDescriptorCount>
       cached_sampler_descriptors = {};
   std::unordered_map<plume::RenderSampler*, uint32_t>
       sampler_descriptor_lookup;

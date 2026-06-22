@@ -1761,8 +1761,8 @@ bool EnsureDirectDrawResourcesLocked(plume::RenderDevice* device,
 
   plume::RenderDescriptorSetBuilder sampler_set_builder;
   sampler_set_builder.begin();
-  sampler_set_builder.addSampler(0, kFableDescriptorCount);
-  sampler_set_builder.end(true, kFableDescriptorCount);
+  sampler_set_builder.addSampler(0, kFableSamplerDescriptorCount);
+  sampler_set_builder.end(true, kFableSamplerDescriptorCount);
   g_plume_resources.sampler_descriptor_set =
       sampler_set_builder.create(device);
   if (!g_plume_resources.sampler_descriptor_set) {
@@ -3568,6 +3568,17 @@ bool EnsurePresentBlitResourcesLocked(
   if (!device) {
     return false;
   }
+  auto fail = [&](const char* step) {
+    static uint32_t logged_present_blit_resource_failures = 0;
+    if (logged_present_blit_resource_failures < 32u) {
+      REXLOG_WARN(
+          "Refii plume direct renderer could not create present blit "
+          "resources step={} shader_format={}",
+          step, static_cast<uint32_t>(shader_format));
+      ++logged_present_blit_resource_failures;
+    }
+    return false;
+  };
   if (g_plume_resources.present_blit_pipeline &&
       g_plume_resources.present_blit_pipeline_layout &&
       g_plume_resources.present_blit_sampler_set &&
@@ -3612,14 +3623,14 @@ bool EnsurePresentBlitResourcesLocked(
   g_plume_resources.present_blit_pipeline_layout =
       layout_builder.create(device);
   if (!g_plume_resources.present_blit_pipeline_layout) {
-    return false;
+    return fail("pipeline_layout");
   }
 
   for (uint32_t i = 0; i < kPresentBlitDescriptorSetRingSize; ++i) {
     std::unique_ptr<plume::RenderDescriptorSet> descriptor_set =
         texture_set_builder.create(device);
     if (!descriptor_set) {
-      return false;
+      return fail("texture_descriptor_set");
     }
     g_plume_resources.present_blit_texture_sets.emplace_back(
         std::move(descriptor_set));
@@ -3630,7 +3641,7 @@ bool EnsurePresentBlitResourcesLocked(
       device->createSampler(plume::RenderSamplerDesc());
   if (!g_plume_resources.present_blit_sampler_set ||
       !g_plume_resources.present_blit_sampler) {
-    return false;
+    return fail("sampler_descriptor_set");
   }
   g_plume_resources.present_blit_sampler_set->setSampler(
       0, g_plume_resources.present_blit_sampler.get());
@@ -3641,7 +3652,7 @@ bool EnsurePresentBlitResourcesLocked(
                                         vertex_shader) ||
       !CreatePresentBlitShaderForFormat(device, shader_format, false,
                                         pixel_shader)) {
-    return false;
+    return fail("shader");
   }
 
   plume::RenderGraphicsPipelineDesc desc;
@@ -3656,7 +3667,7 @@ bool EnsurePresentBlitResourcesLocked(
   g_plume_resources.present_blit_pipeline =
       device->createGraphicsPipeline(desc);
   if (!g_plume_resources.present_blit_pipeline) {
-    return false;
+    return fail("pipeline");
   }
   g_plume_resources.present_blit_pipeline->setName(
       "Refii Fable direct present blit");
@@ -4108,6 +4119,18 @@ DirectPresentSource PresentSourceFromResolveAliasLocked(uint32_t base) {
 DirectPresentSource ResolveDirectPresentSourceLocked(
     const FableDirectStateSnapshot& frame_snapshot) {
   DirectPresentSource source;
+  auto use_resource = [&](uint32_t address, const char* reason) -> bool {
+    if (address == 0) {
+      return false;
+    }
+    source = PresentSourceFromResourceLocked(address);
+    if (!source.texture || !source.view) {
+      return false;
+    }
+    source.reason = reason;
+    return true;
+  };
+
   const FableDirectPresentSnapshot present =
       GetFableDirectPresentSnapshot();
   if (present.display_surface_object != 0) {
@@ -4156,7 +4179,23 @@ DirectPresentSource ResolveDirectPresentSourceLocked(
       return source;
     }
   }
-  (void)frame_snapshot;
+  for (uint32_t target : frame_snapshot.targets.color) {
+    if (use_resource(target, "frame_color_target")) {
+      return source;
+    }
+  }
+  if (use_resource(g_direct_renderer.stats.last_present_target,
+                   "stats_present_target")) {
+    return source;
+  }
+  source = RememberedScenePresentSourceLocked();
+  if (source.texture && source.view) {
+    return source;
+  }
+  if (use_resource(g_direct_renderer.native_scene_target,
+                   "native_scene_target")) {
+    return source;
+  }
   return {};
 }
 
@@ -5891,6 +5930,15 @@ uint32_t DirectCommandPixelTextureSlotMaskLocked(
   return std::numeric_limits<uint32_t>::max();
 }
 
+bool DirectCommandSlotUsesReadyInlinePixVideoPlaneLocked(
+    const FableDirectRenderCommand& command, uint32_t slot,
+    uint32_t texture_guest) {
+  return command.draw.source == RendererDrawEventSource::kPixVideo &&
+         slot < command.pix_video_planes.size() &&
+         command.pix_video_planes[slot].ready() &&
+         command.pix_video_planes[slot].address == texture_guest;
+}
+
 void AddDirectCommandResourceInterest(
     const FableDirectRenderCommand& command,
     std::unordered_set<uint32_t>& resource_filter,
@@ -5966,12 +6014,8 @@ void AddDirectCommandResourceInterest(
           continue;
         }
         const uint32_t texture = command.resources.textures[slot];
-        const bool inline_pix_video_plane =
-            command.draw.source == RendererDrawEventSource::kPixVideo &&
-            slot < command.pix_video_planes.size() &&
-            command.pix_video_planes[slot].ready() &&
-            command.pix_video_planes[slot].address == texture;
-        if (inline_pix_video_plane) {
+        if (DirectCommandSlotUsesReadyInlinePixVideoPlaneLocked(
+                command, slot, texture)) {
           continue;
         }
         PlumeTrackedResource* direct_texture = FindDirectResourceLocked(texture);
@@ -6034,16 +6078,39 @@ void RecordDirectPresentBlitLocked(
     plume::RenderFramebuffer* present_framebuffer,
     plume::RenderShaderFormat shader_format,
     const FableDirectStateSnapshot& frame_snapshot) {
-  if (!device || !command_list || !output_texture || !present_framebuffer ||
-      !EnsurePresentBlitResourcesLocked(device, shader_format)) {
+  if (!device || !command_list || !output_texture || !present_framebuffer) {
+    static uint32_t logged_missing_present_blit_inputs = 0;
+    if (logged_missing_present_blit_inputs < 16u) {
+      REXLOG_WARN(
+          "Refii plume direct renderer cannot present blit; missing input "
+          "device={} command_list={} output_texture={} framebuffer={}",
+          device != nullptr, command_list != nullptr, output_texture != nullptr,
+          present_framebuffer != nullptr);
+      ++logged_missing_present_blit_inputs;
+    }
+    return;
+  }
+  if (!EnsurePresentBlitResourcesLocked(device, shader_format)) {
     return;
   }
   DirectPresentSource source = ResolveDirectPresentSourceLocked(frame_snapshot);
   if (!source.texture || !source.view) {
     if (!g_direct_renderer.logged_missing_present_source) {
+      const FableDirectPresentSnapshot present =
+          GetFableDirectPresentSnapshot();
       REXLOG_WARN(
           "Refii plume direct renderer has no live Fable present source; "
-          "current swapchain image will not be updated");
+          "current swapchain image will not be updated display_surface=0x{:08X} "
+          "display_texture=0x{:08X} frame_targets=0x{:08X}/0x{:08X}/"
+          "0x{:08X}/0x{:08X} stats_target=0x{:08X} scene=0x{:08X} "
+          "submitted=0x{:08X} native=0x{:08X}",
+          present.display_surface_object, present.display_texture_base,
+          frame_snapshot.targets.color[0], frame_snapshot.targets.color[1],
+          frame_snapshot.targets.color[2], frame_snapshot.targets.color[3],
+          g_direct_renderer.stats.last_present_target,
+          g_direct_renderer.last_scene_target,
+          g_direct_renderer.last_submitted_scene_target,
+          g_direct_renderer.native_scene_target);
       g_direct_renderer.logged_missing_present_source = true;
     }
     return;
@@ -47517,6 +47584,10 @@ DirectCommandInputWaitReason FindDirectCommandInputWaitReasonLocked(
     if (texture_guest == 0 && !command_tiny_title_fetch_identity) {
       continue;
     }
+    if (DirectCommandSlotUsesReadyInlinePixVideoPlaneLocked(command, slot,
+                                                           texture_guest)) {
+      continue;
+    }
     PlumeTrackedResource* direct_texture = FindDirectResourceLocked(texture_guest);
     reason.slot = slot;
     reason.guest = texture_guest;
@@ -47761,6 +47832,10 @@ bool DirectCommandInputsReadyWithoutMissingInterestLocked(
             command_fetch_info.base_address, command_fetch_info.width,
             command_fetch_info.height);
     if (texture_guest == 0 && !command_tiny_title_fetch_identity) {
+      continue;
+    }
+    if (DirectCommandSlotUsesReadyInlinePixVideoPlaneLocked(command, slot,
+                                                           texture_guest)) {
       continue;
     }
     if (IsFableTitleBillboardAtlasCommandSlotLocked(command, slot) &&

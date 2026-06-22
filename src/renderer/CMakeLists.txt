@@ -75,8 +75,12 @@ set_source_files_properties(${REFII_RENDERER_HOOK_PARTS}
     PROPERTIES HEADER_FILE_ONLY TRUE
 )
 
+set(REFII_RENDERER_ENABLE_PLUME_SDL_VULKAN OFF)
+if(UNIX AND NOT APPLE AND REFII_SDL3_WINDOW_ENABLED)
+    set(REFII_RENDERER_ENABLE_PLUME_SDL_VULKAN ON)
+endif()
 set(PLUME_SDL_VULKAN_ENABLED
-    "${REFII_SDL3_WINDOW_ENABLED}"
+    "${REFII_RENDERER_ENABLE_PLUME_SDL_VULKAN}"
     CACHE BOOL
     "Enable Plume's internal SDL Vulkan integration through the Refii SDL3 window"
     FORCE
@@ -155,9 +159,10 @@ set(REFII_RENDERER_RENDERDOC_BUILD_DIR
     "Build directory for the vendored RenderDoc capture runtime"
 )
 set(REFII_RENDERER_RENDERDOC_RUNTIME_DIR
-    "${CMAKE_BINARY_DIR}/lib"
-    CACHE PATH
+    "${REFII_LIBRARY_OUTPUT_DIR}"
+    CACHE STRING
     "Directory where the vendored RenderDoc runtime is copied for Refii"
+    FORCE
 )
 
 if(EXISTS "${REFII_RENDERER_RENDERDOC_API_HEADER}" AND
@@ -259,17 +264,20 @@ endif()
 
 set(REFII_RENDERER_DXC_DEFAULT "")
 set(REFII_RENDERER_DXC_LIB_DEFAULT "")
-if(EXISTS "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc-linux")
+if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe")
+    set(REFII_RENDERER_DXC_DEFAULT
+        "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe"
+    )
+elseif(UNIX AND NOT APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc-linux")
     set(REFII_RENDERER_DXC_DEFAULT
         "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc-linux"
     )
     set(REFII_RENDERER_DXC_LIB_DEFAULT
         "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/lib/x64"
     )
-elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe")
-    set(REFII_RENDERER_DXC_DEFAULT
-        "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe"
-    )
+endif()
+if(WIN32 AND REFII_RENDERER_DXC_EXECUTABLE MATCHES "dxc-linux$")
+    unset(REFII_RENDERER_DXC_EXECUTABLE CACHE)
 endif()
 set(REFII_RENDERER_DXC_EXECUTABLE
     "${REFII_RENDERER_DXC_DEFAULT}"
@@ -284,7 +292,12 @@ set(REFII_RENDERER_DXC_LIB_DIR
 unset(REFII_RENDERER_DXC_DEFAULT)
 unset(REFII_RENDERER_DXC_LIB_DEFAULT)
 
-add_library(refii_renderer SHARED
+set(REFII_RENDERER_LIBRARY_TYPE SHARED)
+if(WIN32)
+    set(REFII_RENDERER_LIBRARY_TYPE STATIC)
+endif()
+
+add_library(refii_renderer ${REFII_RENDERER_LIBRARY_TYPE}
     ${REFII_RENDERER_RUNTIME_SOURCES}
 )
 target_include_directories(refii_renderer
@@ -464,13 +477,14 @@ endif()
 set_target_properties(refii_renderer PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     OUTPUT_NAME refii_renderer
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
 )
 
-if(WIN32)
+if(WIN32 AND NOT REFII_RENDERER_LIBRARY_TYPE STREQUAL "STATIC")
     set_target_properties(refii_renderer PROPERTIES
         WINDOWS_EXPORT_ALL_SYMBOLS ON
     )

@@ -721,7 +721,7 @@ bool FindFableInlineShaderAliasLocked(uint64_t guest_bytecode_hash,
   // binding shape.
   constexpr InlineShaderAlias kFableInlineShaderAliases[] = {
       {0x4724831317AA37A8ull, 152u},  // D3D::PixRenderVideoFrame VS
-      {0x69E9772C76BD6253ull, 171u},  // D3D::PixRenderVideoFrame PS
+      {0x69E9772C76BD6253ull, 180u},  // D3D::PixRenderVideoFrame PS
       {0x9CEFC0421AC2A68Cull, 137u},  // D3D::PrivateTextureRectangleDraw PS
   };
 
