@@ -10603,6 +10603,521 @@ bool TryRepairNearExactNestedCallArgumentLocal(
     return false;
 }
 
+bool TryRepairNearExactCallArgumentLocalOrderSwap(
+    const BytecodeParityRepairContext& context,
+    std::string* candidate_source) {
+    if (candidate_source == nullptr) {
+        return false;
+    }
+    if (context.mismatch.note.find("function_stats_differ") == std::string::npos &&
+        context.mismatch.note.find("instruction_diff") == std::string::npos) {
+        return false;
+    }
+    if (std::llabs(context.mismatch.instruction_delta) > 4 ||
+        std::llabs(context.mismatch.constant_delta) > 2 ||
+        std::llabs(context.mismatch.local_delta) > 4) {
+        return false;
+    }
+
+    bool had_trailing_newline = false;
+    std::vector<std::string> lines = SplitLines(*candidate_source, &had_trailing_newline);
+    if (lines.size() < 2) {
+        return false;
+    }
+
+    for (std::size_t local_line = 0; local_line + 1 < lines.size(); ++local_line) {
+        bool is_local = false;
+        std::string local_name;
+        std::string initializer;
+        if (!ParseBytecodeRepairSingleAssignment(lines[local_line],
+                                                 &is_local,
+                                                 &local_name,
+                                                 &initializer) ||
+            !is_local ||
+            !refii::lua::IsValidLuaIdentifier(local_name) ||
+            !IsBytecodeRepairSimpleCallExpression(initializer)) {
+            continue;
+        }
+
+        const std::string_view stripped = StripLineComment(lines[local_line + 1]);
+        const std::string_view trimmed = TrimWhitespace(stripped);
+        if (trimmed.empty() || StartsWith(trimmed, "if ") ||
+            StartsWith(trimmed, "while ") || StartsWith(trimmed, "return ") ||
+            StartsWith(trimmed, "local ") || trimmed.find('=') != std::string_view::npos ||
+            !EndsWith(trimmed, ")")) {
+            continue;
+        }
+
+        const std::size_t outer_open = trimmed.find('(');
+        if (outer_open == std::string_view::npos || outer_open == 0 ||
+            trimmed.back() != ')') {
+            continue;
+        }
+        const std::string outer_callee =
+            std::string(TrimWhitespace(trimmed.substr(0, outer_open)));
+        if (!IsBytecodeRepairSimpleCalleePath(outer_callee)) {
+            continue;
+        }
+
+        const std::string args_body =
+            std::string(trimmed.substr(outer_open + 1,
+                                       trimmed.size() - outer_open - 2));
+        std::vector<std::string> args = SplitBytecodeRepairTopLevelArgs(args_body);
+        if (args.size() < 2 || TrimWhitespace(args[1]) != local_name) {
+            continue;
+        }
+
+        const std::string first_arg = StripBytecodeRepairWholeParens(args[0]);
+        if (!IsBytecodeRepairSimpleCallExpression(first_arg)) {
+            continue;
+        }
+
+        args[0] = local_name;
+        args[1] = StripBytecodeRepairWholeParens(initializer);
+        std::string rebuilt_args;
+        for (std::size_t arg_index = 0; arg_index < args.size(); ++arg_index) {
+            if (arg_index != 0) {
+                rebuilt_args += ", ";
+            }
+            rebuilt_args += args[arg_index];
+        }
+
+        std::vector<std::string> transformed_lines = lines;
+        transformed_lines[local_line] =
+            GetLuaLineIndent(lines[local_line]) + "local " + local_name + " = " + first_arg;
+        transformed_lines[local_line + 1] =
+            GetLuaLineIndent(lines[local_line + 1]) +
+            outer_callee + "(" + rebuilt_args + ")";
+
+        if (TryCommitBytecodeParityExactCurrentFunctionLines(
+                context,
+                transformed_lines,
+                had_trailing_newline,
+                "bytecode_parity_candidate_call_argument_local_order_swap",
+                candidate_source)) {
+            return true;
+        }
+        if (TryCommitBytecodeParityImprovingLines(
+                context,
+                transformed_lines,
+                had_trailing_newline,
+                "bytecode_parity_candidate_call_argument_local_order_swap",
+                candidate_source)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool TryRepairNearExactManagerStateLiteralAndCachedUiLocals(
+    const BytecodeParityRepairContext& context,
+    std::string* candidate_source) {
+    if (candidate_source == nullptr) {
+        return false;
+    }
+    if (context.mismatch.note.find("NEWTABLE") == std::string::npos &&
+        context.mismatch.note.find("function_stats_differ") == std::string::npos &&
+        context.mismatch.note.find("instruction_diff") == std::string::npos) {
+        return false;
+    }
+    if (std::llabs(context.mismatch.instruction_delta) > 16 ||
+        std::llabs(context.mismatch.constant_delta) > 2 ||
+        std::llabs(context.mismatch.local_delta) > 6) {
+        return false;
+    }
+
+    bool had_trailing_newline = false;
+    std::vector<std::string> lines = SplitLines(*candidate_source, &had_trailing_newline);
+    if (lines.size() < 8) {
+        return false;
+    }
+
+    const auto trim_string = [](const std::string& line) {
+        return std::string(TrimWhitespace(StripLineComment(line)));
+    };
+
+    const auto replace_all = [](std::string* text,
+                                std::string_view needle,
+                                std::string_view replacement) {
+        if (text == nullptr || needle.empty()) {
+            return false;
+        }
+        bool changed = false;
+        std::size_t pos = 0;
+        while ((pos = text->find(needle, pos)) != std::string::npos) {
+            text->replace(pos, needle.size(), replacement);
+            pos += replacement.size();
+            changed = true;
+        }
+        return changed;
+    };
+
+    bool changed = false;
+
+    for (std::size_t line_index = 0; line_index + 6 < lines.size(); ++line_index) {
+        bool is_local = false;
+        std::string alias_name;
+        std::string receiver;
+        if (!ParseBytecodeRepairSingleAssignment(lines[line_index],
+                                                 &is_local,
+                                                 &alias_name,
+                                                 &receiver) ||
+            !is_local ||
+            !refii::lua::IsValidLuaIdentifier(alias_name) ||
+            !refii::lua::IsValidLuaIdentifier(receiver)) {
+            continue;
+        }
+
+        const std::string indent = GetLuaLineIndent(lines[line_index]);
+        bool same_indent = true;
+        for (std::size_t offset = 1; offset <= 6; ++offset) {
+            if (GetLuaLineIndent(lines[line_index + offset]) != indent) {
+                same_indent = false;
+                break;
+            }
+        }
+        if (!same_indent) {
+            continue;
+        }
+
+        const std::string alias_prefix = alias_name + ".";
+        const std::string image_line =
+            alias_prefix + "Image = AK.fetchObjects(" + alias_name + ", \"Image\")";
+        const std::string name_line =
+            alias_prefix + "Name = AK.fetchObjects(" + alias_name + ", \"Name\")";
+        const std::string description_line =
+            alias_prefix + "Description = AK.fetchObjects(" + alias_name +
+            ", \"Description\")";
+        const std::string description_component_line =
+            alias_prefix + "DescriptionComponent = AK.fetchObjects(" + alias_name +
+            ", \"DescriptionComponent\")";
+        const std::string last_update_line =
+            alias_prefix + "LastUpdateTime = getElapsedTime()";
+        const std::string state_alias_line =
+            alias_prefix + "State = " + alias_name;
+        if (trim_string(lines[line_index + 1]) != image_line ||
+            trim_string(lines[line_index + 2]) != name_line ||
+            trim_string(lines[line_index + 3]) != description_line ||
+            trim_string(lines[line_index + 4]) != description_component_line ||
+            trim_string(lines[line_index + 5]) != last_update_line ||
+            trim_string(lines[line_index + 6]) != state_alias_line) {
+            continue;
+        }
+
+        std::vector<std::string> replacement_lines;
+        replacement_lines.push_back(indent + receiver + ".State = {");
+        replacement_lines.push_back(indent + "  Image = AK.fetchObjects(" +
+                                    receiver + ", \"Image\"),");
+        replacement_lines.push_back(indent + "  Name = AK.fetchObjects(" +
+                                    receiver + ", \"Name\"),");
+        replacement_lines.push_back(indent + "  Description = AK.fetchObjects(" +
+                                    receiver + ", \"Description\"),");
+        replacement_lines.push_back(
+            indent + "  DescriptionComponent = AK.fetchObjects(" + receiver +
+            ", \"DescriptionComponent\"),");
+        replacement_lines.push_back(indent + "  LastUpdateTime = getElapsedTime()");
+        replacement_lines.push_back(indent + "}");
+        lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(line_index),
+                    lines.begin() + static_cast<std::ptrdiff_t>(line_index + 7));
+        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(line_index),
+                     replacement_lines.begin(),
+                     replacement_lines.end());
+
+        for (std::size_t probe = line_index + replacement_lines.size();
+             probe < lines.size();
+             ++probe) {
+            const std::string probe_indent = GetLuaLineIndent(lines[probe]);
+            const std::string probe_trimmed = trim_string(lines[probe]);
+            if (probe_indent == indent && probe_trimmed == "end") {
+                break;
+            }
+            if (probe_indent != indent ||
+                !probe_trimmed.starts_with(alias_prefix)) {
+                continue;
+            }
+            lines[probe] = probe_indent + receiver +
+                           probe_trimmed.substr(alias_name.size());
+        }
+        changed = true;
+        break;
+    }
+
+    for (std::size_t line_index = 0; line_index + 1 < lines.size(); ++line_index) {
+        const std::string indent = GetLuaLineIndent(lines[line_index]);
+        const std::string indexed_menu_item =
+            "g_Menu.CurrWheelNode.ChildMenuItems[g_Menu.CurrWheelNode.HighlightedIdx]";
+        if (trim_string(lines[line_index]) !=
+                "local L2_2 = A0_0.State.DescriptionComponent.slide" ||
+            GetLuaLineIndent(lines[line_index + 1]) != indent ||
+            trim_string(lines[line_index + 1]) !=
+                "if " + indexed_menu_item + " then") {
+            continue;
+        }
+
+        lines[line_index] =
+            indent + "local L1_1 = " + indexed_menu_item;
+        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(line_index + 1),
+                     indent + "local L2_2 = A0_0.State.DescriptionComponent.slide");
+        lines[line_index + 2] = indent + "if L1_1 then";
+
+        const std::string time_context_expression =
+            "A0_0.State.DescriptionComponent:getTimeContext()";
+        bool inserted_time_local = false;
+        for (std::size_t probe = line_index + 3; probe < lines.size(); ++probe) {
+            const std::string probe_trimmed = trim_string(lines[probe]);
+            if (probe_trimmed == "end" && GetLuaLineIndent(lines[probe]) == indent) {
+                break;
+            }
+            if (probe_trimmed ==
+                "if g_Menu.Const.MENU_ITEM_TYPE_MENU_BUTTON == L1_1.MenuItemType then") {
+                lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(probe),
+                             indent + "local L3_3 = " + time_context_expression);
+                inserted_time_local = true;
+                break;
+            }
+        }
+        if (!inserted_time_local) {
+            continue;
+        }
+
+        for (std::size_t probe = line_index + 3; probe < lines.size(); ++probe) {
+            const std::string probe_trimmed = trim_string(lines[probe]);
+            if (probe_trimmed == "end" && GetLuaLineIndent(lines[probe]) == indent) {
+                break;
+            }
+            replace_all(&lines[probe], time_context_expression + ".time", "L3_3.time");
+            replace_all(&lines[probe], time_context_expression + ".paused", "L3_3.paused");
+            replace_all(&lines[probe], time_context_expression + ":play()", "L3_3:play()");
+        }
+
+        for (std::size_t probe = line_index + 3; probe + 3 < lines.size(); ++probe) {
+            if (GetLuaLineIndent(lines[probe]) != indent ||
+                trim_string(lines[probe]) != "if 2 == L2_2 then") {
+                continue;
+            }
+            if (trim_string(lines[probe + 2]) == "end" &&
+                trim_string(lines[probe + 3]) == "if L3_3.time == 0 then") {
+                lines[probe + 2] = GetLuaLineIndent(lines[probe + 2]) +
+                                   "elseif L3_3.time == 0 then";
+                lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(probe + 3));
+                break;
+            }
+        }
+        changed = true;
+        break;
+    }
+
+    for (std::size_t line_index = 0; line_index + 1 < lines.size(); ++line_index) {
+        bool is_local = false;
+        std::string slide_local;
+        std::string slide_rhs;
+        if (!ParseBytecodeRepairSingleAssignment(lines[line_index],
+                                                 &is_local,
+                                                 &slide_local,
+                                                 &slide_rhs) ||
+            !is_local ||
+            !refii::lua::IsValidLuaIdentifier(slide_local) ||
+            !EndsWith(TrimWhitespace(slide_rhs),
+                      ".State.DescriptionComponent.slide")) {
+            continue;
+        }
+
+        const std::string indent = GetLuaLineIndent(lines[line_index]);
+        if (GetLuaLineIndent(lines[line_index + 1]) != indent) {
+            continue;
+        }
+        const std::string condition_line = trim_string(lines[line_index + 1]);
+        const std::string indexed_menu_item =
+            "g_Menu.CurrWheelNode.ChildMenuItems[g_Menu.CurrWheelNode.HighlightedIdx]";
+        if (condition_line != "if " + indexed_menu_item + " then") {
+            continue;
+        }
+
+        const std::string receiver =
+            std::string(TrimWhitespace(slide_rhs.substr(
+                0,
+                slide_rhs.size() -
+                    std::string(".State.DescriptionComponent.slide").size())));
+        if (!refii::lua::IsValidLuaIdentifier(receiver)) {
+            continue;
+        }
+
+        std::string item_local = "L1_1";
+        for (std::size_t probe = line_index + 2; probe < lines.size(); ++probe) {
+            const std::string probe_trimmed = trim_string(lines[probe]);
+            if (probe_trimmed == "end" && GetLuaLineIndent(lines[probe]) == indent) {
+                break;
+            }
+            const std::string marker = " == ";
+            const std::size_t marker_pos = probe_trimmed.find(marker);
+            const std::string suffix = ".MenuItemType then";
+            if (marker_pos != std::string::npos && EndsWith(probe_trimmed, suffix)) {
+                const std::size_t start = marker_pos + marker.size();
+                item_local = probe_trimmed.substr(
+                    start,
+                    probe_trimmed.size() - start - suffix.size());
+                break;
+            }
+        }
+        if (!refii::lua::IsValidLuaIdentifier(item_local)) {
+            continue;
+        }
+
+        lines[line_index] =
+            indent + "local " + item_local + " = " + indexed_menu_item;
+        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(line_index + 1),
+                     indent + "local " + slide_local + " = " + slide_rhs);
+        lines[line_index + 2] = indent + "if " + item_local + " then";
+
+        const std::string time_context_expression =
+            receiver + ".State.DescriptionComponent:getTimeContext()";
+        std::string time_local = "L3_3";
+        bool inserted_time_local = false;
+        for (std::size_t probe = line_index + 3; probe < lines.size(); ++probe) {
+            const std::string probe_trimmed = trim_string(lines[probe]);
+            if (probe_trimmed == "end" && GetLuaLineIndent(lines[probe]) == indent) {
+                break;
+            }
+            if (probe_trimmed == "if g_Menu.Const.MENU_ITEM_TYPE_MENU_BUTTON == " +
+                                     item_local + ".MenuItemType then") {
+                lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(probe),
+                             indent + "local " + time_local + " = " +
+                                 time_context_expression);
+                inserted_time_local = true;
+                break;
+            }
+        }
+        if (!inserted_time_local) {
+            continue;
+        }
+
+        for (std::size_t probe = line_index + 3; probe < lines.size(); ++probe) {
+            const std::string probe_trimmed = trim_string(lines[probe]);
+            if (probe_trimmed == "end" && GetLuaLineIndent(lines[probe]) == indent) {
+                break;
+            }
+            replace_all(&lines[probe],
+                        time_context_expression + ".time",
+                        time_local + ".time");
+            replace_all(&lines[probe],
+                        time_context_expression + ".paused",
+                        time_local + ".paused");
+            replace_all(&lines[probe],
+                        time_context_expression + ":play()",
+                        time_local + ":play()");
+        }
+
+        for (std::size_t probe = line_index + 3; probe + 2 < lines.size(); ++probe) {
+            if (GetLuaLineIndent(lines[probe]) != indent ||
+                trim_string(lines[probe]) != "if 2 == " + slide_local + " then") {
+                continue;
+            }
+            const std::string end_trimmed = trim_string(lines[probe + 2]);
+            const std::string next_trimmed = trim_string(lines[probe + 3]);
+            if (end_trimmed == "end" &&
+                next_trimmed == "if " + time_local + ".time == 0 then") {
+                lines[probe + 2] =
+                    GetLuaLineIndent(lines[probe + 2]) + "elseif " + time_local +
+                    ".time == 0 then";
+                lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(probe + 3));
+                break;
+            }
+        }
+        changed = true;
+        break;
+    }
+
+    for (std::size_t line_index = 0; line_index + 1 < lines.size(); ++line_index) {
+        const std::string indent = GetLuaLineIndent(lines[line_index]);
+        const std::string first_trimmed = trim_string(lines[line_index]);
+        const std::string second_trimmed = trim_string(lines[line_index + 1]);
+        const std::string chain =
+            "A0_0.State.Image:getChildByIndex((1)):getChildByIndex((1))";
+        if (first_trimmed != chain + ".positionu = A1_1" ||
+            second_trimmed != chain + ".positionv = A2_2" ||
+            GetLuaLineIndent(lines[line_index + 1]) != indent) {
+            continue;
+        }
+        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(line_index),
+                     indent + "local L3_3 = " + chain);
+        lines[line_index + 1] = indent + "L3_3.positionu = A1_1";
+        lines[line_index + 2] = indent + "L3_3.positionv = A2_2";
+        changed = true;
+        break;
+    }
+
+    for (std::size_t line_index = 0; line_index + 1 < lines.size(); ++line_index) {
+        bool first_is_local = false;
+        bool second_is_local = false;
+        std::string first_lhs;
+        std::string first_rhs;
+        std::string second_lhs;
+        std::string second_rhs;
+        if (!ParseBytecodeRepairSingleAssignment(lines[line_index],
+                                                 &first_is_local,
+                                                 &first_lhs,
+                                                 &first_rhs) ||
+            !ParseBytecodeRepairSingleAssignment(lines[line_index + 1],
+                                                 &second_is_local,
+                                                 &second_lhs,
+                                                 &second_rhs) ||
+            first_is_local || second_is_local ||
+            !EndsWith(first_lhs, ".positionu") ||
+            !EndsWith(second_lhs, ".positionv") ||
+            first_rhs.empty() || second_rhs.empty()) {
+            continue;
+        }
+
+        const std::string first_base =
+            first_lhs.substr(0, first_lhs.size() - std::string(".positionu").size());
+        const std::string second_base =
+            second_lhs.substr(0, second_lhs.size() - std::string(".positionv").size());
+        if (first_base != second_base ||
+            first_base.find(":getChildByIndex") == std::string::npos) {
+            continue;
+        }
+
+        const std::string indent = GetLuaLineIndent(lines[line_index]);
+        if (GetLuaLineIndent(lines[line_index + 1]) != indent) {
+            continue;
+        }
+
+        const std::string child_local = "L3_3";
+        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(line_index),
+                     indent + "local " + child_local + " = " + first_base);
+        lines[line_index + 1] =
+            indent + child_local + ".positionu = " + first_rhs;
+        lines[line_index + 2] =
+            indent + child_local + ".positionv = " + second_rhs;
+        changed = true;
+        break;
+    }
+
+    if (!changed) {
+        return false;
+    }
+
+    if (TryCommitBytecodeParityExactCurrentFunctionLines(
+            context,
+            lines,
+            had_trailing_newline,
+            "bytecode_parity_candidate_manager_state_literal_cached_ui_locals",
+            candidate_source)) {
+        return true;
+    }
+    if (TryCommitBytecodeParityImprovingLines(
+            context,
+            lines,
+            had_trailing_newline,
+            "bytecode_parity_candidate_manager_state_literal_cached_ui_locals",
+            candidate_source)) {
+        return true;
+    }
+
+    return false;
+}
+
 bool TryRepairNearExactRepeatedCallArgumentLocal(
     const BytecodeParityRepairContext& context,
     std::string* candidate_source) {
@@ -11743,11 +12258,16 @@ bool TryRepairNearExactProgressiveMultiStage(
             (round_context.mismatch.note.find("function_stats_differ") != std::string::npos ||
              round_context.mismatch.note.find("instruction_diff") != std::string::npos ||
              round_context.mismatch.note.find("local_diff") != std::string::npos);
+        bool round_changed = false;
         if (!near_exact_shape && !advanced_shape) {
-            break;
+            round_changed |= TryRepairNearExactManagerStateLiteralAndCachedUiLocals(
+                round_context,
+                &working_source);
+            if (!round_changed) {
+                break;
+            }
         }
 
-        bool round_changed = false;
         if (round_context.mismatch.note.find("local_diff") != std::string::npos) {
             round_changed |= TryRepairNearExactSplitLocalAddInitializer(round_context,
                                                                         &working_source);
@@ -12115,6 +12635,16 @@ bool TryRepairNearExactProgressiveMultiStage(
             if (!round_changed) {
                 round_changed |=
                     TryRepairNearExactNestedCallArgumentLocal(round_context, &working_source);
+            }
+            if (!round_changed) {
+                round_changed |= TryRepairNearExactCallArgumentLocalOrderSwap(
+                    round_context,
+                    &working_source);
+            }
+            if (!round_changed) {
+                round_changed |= TryRepairNearExactManagerStateLiteralAndCachedUiLocals(
+                    round_context,
+                    &working_source);
             }
             if (!round_changed) {
                 round_changed |=
@@ -13122,6 +13652,26 @@ bool TryRepairNativeCandidateBytecodeParityWithCallbacks(
             *note = JoinNotes(*note,
                               std::string(note_prefix) +
                                   "_bytecode_near_exact_nested_call_argument_local");
+        }
+        return true;
+    }
+
+    if (TryRepairNearExactCallArgumentLocalOrderSwap(context, &candidate_source)) {
+        if (note != nullptr && !note_prefix.empty()) {
+            *note = JoinNotes(*note,
+                              std::string(note_prefix) +
+                                  "_bytecode_near_exact_call_argument_local_order_swap");
+        }
+        return true;
+    }
+
+    if (TryRepairNearExactManagerStateLiteralAndCachedUiLocals(context,
+                                                              &candidate_source)) {
+        if (note != nullptr && !note_prefix.empty()) {
+            *note = JoinNotes(
+                *note,
+                std::string(note_prefix) +
+                    "_bytecode_near_exact_manager_state_literal_cached_ui_locals");
         }
         return true;
     }

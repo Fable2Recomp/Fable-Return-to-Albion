@@ -3,6 +3,7 @@
 #include "installer/installer.h"
 #include "imgui.h"
 #include "launcherpaths.h"
+#include "modding/runtime_settings.h"
 
 #include <algorithm>
 #include <cctype>
@@ -735,10 +736,83 @@ void CopyToBuffer(std::array<char, 512>& buffer, const std::string& value) {
     std::strncpy(buffer.data(), value.c_str(), buffer.size() - 1);
 }
 
+RuntimeCVarType ToRuntimeCVarType(refii::modding::RuntimeSettingType type) {
+    switch (type) {
+        case refii::modding::RuntimeSettingType::Bool:
+            return RuntimeCVarType::Bool;
+        case refii::modding::RuntimeSettingType::Int:
+            return RuntimeCVarType::Int;
+        case refii::modding::RuntimeSettingType::Double:
+            return RuntimeCVarType::Double;
+        case refii::modding::RuntimeSettingType::String:
+            return RuntimeCVarType::String;
+    }
+    return RuntimeCVarType::String;
+}
+
+void AppendModdingRuntimeCVarDefinitions(
+    std::vector<RuntimeCVarDefinition>& definitions) {
+    for (const refii::modding::RuntimeSettingDefinition& definition :
+         refii::modding::GetRuntimeSettingDefinitions()) {
+        const auto existing = std::find_if(
+            definitions.begin(),
+            definitions.end(),
+            [&](const RuntimeCVarDefinition& existingDefinition) {
+                return std::string_view(existingDefinition.name) ==
+                       definition.name;
+            });
+        if (existing != definitions.end()) {
+            continue;
+        }
+        definitions.push_back(RuntimeCVarDefinition{
+            definition.name,
+            definition.category,
+            ToRuntimeCVarType(definition.type),
+            definition.default_value,
+            definition.description,
+            definition.allowed_values});
+    }
+}
+
+bool CategoryMatchesPrefix(std::string_view category,
+                           std::string_view prefix) {
+    return prefix.empty() ||
+           category == prefix ||
+           (category.size() > prefix.size() &&
+            category.compare(0, prefix.size(), prefix) == 0 &&
+            category[prefix.size()] == '/');
+}
+
+bool IsPrimaryBackendSelector(const RuntimeCVarDefinition& definition) {
+    const std::string_view name(definition.name);
+    return name == "renderer_backend" || name == "vfs_loose_asset_backend";
+}
+
+void MoveCategoryBefore(std::vector<std::string>& categoryOrder,
+                        std::string_view category,
+                        std::string_view beforeCategory) {
+    auto categoryIt = std::find(categoryOrder.begin(), categoryOrder.end(), category);
+    auto beforeIt = std::find(categoryOrder.begin(), categoryOrder.end(), beforeCategory);
+    if (categoryIt == categoryOrder.end() || beforeIt == categoryOrder.end() ||
+        categoryIt < beforeIt) {
+        return;
+    }
+
+    std::string value = std::move(*categoryIt);
+    categoryOrder.erase(categoryIt);
+    beforeIt = std::find(categoryOrder.begin(), categoryOrder.end(), beforeCategory);
+    categoryOrder.insert(beforeIt, std::move(value));
+}
+
+void ApplyRuntimeSettingsCategoryOrder(std::vector<std::string>& categoryOrder) {
+    MoveCategoryBefore(categoryOrder, "VFS", "Renderer");
+}
+
 }  // namespace
 
 const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
-    static const std::vector<RuntimeCVarDefinition> definitions = {
+    static const std::vector<RuntimeCVarDefinition> definitions = [] {
+    std::vector<RuntimeCVarDefinition> definitions = {
         {"log_level", "Log", RuntimeCVarType::String, "info", "Logging level.", "trace,debug,info,warn,error,critical,off"},
         {"log_file", "Log", RuntimeCVarType::String, "", "Log file path; empty uses automatic logs."},
         {"log_verbose", "Log", RuntimeCVarType::Bool, "false", "Enable verbose trace logging."},
@@ -752,15 +826,13 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"update_data_root", "Runtime", RuntimeCVarType::String, "", "Override update data path."},
         {"cache_path", "Runtime", RuntimeCVarType::String, "", "Override shader cache path."},
 
-        {"lua_use_mod_overrides", "Lua", RuntimeCVarType::Bool, "false", "Prefer decompiled loose Lua files from the mod workspace."},
         {"lua_use_native_handlers", "Lua", RuntimeCVarType::Bool, "false", "Enable native Lua handler overrides."},
         {"lua_force_loose_banks", "Lua", RuntimeCVarType::Bool, "false", "Force loose-script mode for Lua workspace iteration."},
         {"lua_trace_script_loads", "Lua", RuntimeCVarType::Bool, "false", "Log script source paths at load time."},
-        {"lua_trace_mod_overrides", "Lua", RuntimeCVarType::Bool, "false", "Log Lua workspace override matches and fallbacks."},
         {"lua_trace_native_handlers", "Lua", RuntimeCVarType::Bool, "false", "Log native Lua dispatch matches and fallbacks."},
-        {"lua_mod_workspace_root", "Lua", RuntimeCVarType::String, "", "Optional host Lua mod workspace root."},
 
         {"vfs_loose_asset_backend", "VFS", RuntimeCVarType::String, "native", "VFS backend: refii for loose asset overrides, native for the original Fable 2 VFS.", "native,refii"},
+        {"vfs_log_folder", "VFS", RuntimeCVarType::String, "refii_vfs", "When the Refii VFS backend is selected, route run logs to this automatic log subfolder. Empty disables the VFS-specific log folder."},
         {"vfs_trace_loose_assets", "VFS", RuntimeCVarType::Bool, "false", "Log loose asset override matches and fallbacks."},
         {"vfs_trace_vfs", "VFS", RuntimeCVarType::Bool, "false", "Log Fable 2 VFS/resource manager/bank stream flow."},
         {"vfs_trace_vfs_verbose_io", "VFS", RuntimeCVarType::Bool, "false", "Log high-volume Refii VFS stream read/page operations."},
@@ -768,7 +840,7 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"vfs_force_startup_video_sequence", "VFS", RuntimeCVarType::Bool, "false", "Require the native startup videos to play in sequence before Refii VFS post-video handoff patches may run."},
         {"vfs_startup_video_minimum_playback_ms", "VFS", RuntimeCVarType::Int, "0", "Optional extra startup-video playback floor before Refii VFS post-video handoff may continue when native finalizers are not observed. 0 uses the built-in observed playback gate."},
         {"vfs_loose_asset_root", "VFS", RuntimeCVarType::String, "", "Optional host loose asset root; empty defaults to <assets_root>/unpacked."},
-        {"vfs_mod_roots", "VFS", RuntimeCVarType::String, "", "Optional semicolon-separated mod roots using the same layout as unpacked."},
+        {"vfs_auto_augment_request_manager_hashes", "VFS", RuntimeCVarType::Bool, "true", "Add Refii-owned runtime resource hashes to the native request-manager hash table."},
 
         {"renderer_backend", "Renderer", RuntimeCVarType::String, "xenia", "Renderer backend: plume for the Refii RHI path, xenia for the original Fable 2 renderer.", "xenia,plume,disabled"},
         {"renderer_plume_api", "Renderer", RuntimeCVarType::String, "vulkan", "Plume graphics API: vulkan or d3d12.", "vulkan,d3d12"},
@@ -776,11 +848,10 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"renderer_trace_resources", "Renderer", RuntimeCVarType::Bool, "false", "Log renderer resource create/lock/unlock/destroy flow."},
         {"renderer_trace_draws", "Renderer", RuntimeCVarType::Bool, "false", "Log draw, state, and presentation calls."},
         {"renderer_trace_verbose", "Renderer", RuntimeCVarType::Bool, "false", "Log high-volume renderer details while hook tracing is enabled."},
-        {"renderer_allow_native_fallback", "Renderer", RuntimeCVarType::Bool, "false", "Allow the original Fable 2 draw/state/present path to run while the Plume renderer backend is selected."},
 
-        {"renderer_imgui_enable", "Renderer/ImGui", RuntimeCVarType::Bool, "true", "Enable the Plume-native ImGui renderer overlay."},
-        {"renderer_imgui_show_stats", "Renderer/ImGui", RuntimeCVarType::Bool, "true", "Show the Plume renderer status window when ImGui is enabled."},
-        {"renderer_imgui_dim_fable", "Renderer/ImGui", RuntimeCVarType::Bool, "true", "Draw a dimmer between Fable 2 and the Plume ImGui overlay."},
+        {"renderer_imgui_enable", "Renderer/ImGui", RuntimeCVarType::Bool, "false", "Enable the ReXGlue ImGui interface on the Plume renderer path."},
+        {"renderer_imgui_show_stats", "Renderer/ImGui", RuntimeCVarType::Bool, "false", "Show Refii renderer stats windows when ImGui is enabled."},
+        {"renderer_imgui_dim_fable", "Renderer/ImGui", RuntimeCVarType::Bool, "false", "Draw a dimmer between Fable 2 and the Plume ImGui overlay."},
         {"renderer_imgui_dim_alpha", "Renderer/ImGui", RuntimeCVarType::Double, "0.55", "Opacity for the Plume ImGui dimmer over Fable 2."},
 
         {"renderer_debug_test_triangle", "Renderer/Debug", RuntimeCVarType::Bool, "false", "Draw a Plume-native diagnostic triangle over the game output to validate swapchain and pipeline rendering."},
@@ -793,9 +864,12 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
 
         {"renderer_renderdoc_enable", "Renderer/RenderDoc", RuntimeCVarType::Bool, "false", "Enable RenderDoc in-application capture integration for the Refii renderer."},
         {"renderer_renderdoc_capture_next_frame", "Renderer/RenderDoc", RuntimeCVarType::Bool, "false", "Capture the next Plume-rendered frame with RenderDoc."},
+        {"renderer_renderdoc_capture_frame", "Renderer/RenderDoc", RuntimeCVarType::Int, "0", "Capture a specific Plume frame with RenderDoc. 0 disables frame-index capture."},
+        {"renderer_renderdoc_capture_draw_target", "Renderer/RenderDoc", RuntimeCVarType::String, "", "Capture the first Plume frame whose queued direct draw matches this target. Supported values: treebillboard, particlematerial, overdrawvisualise, postprocessingdownscale4, postprocessinggaussblur, screenfacingsprite, decal, texturedquadpreservestencil.", "treebillboard"},
         {"renderer_renderdoc_overlay", "Renderer/RenderDoc", RuntimeCVarType::Bool, "true", "Show RenderDoc's capture overlay when the RenderDoc API is available."},
         {"renderer_renderdoc_launch_replay", "Renderer/RenderDoc", RuntimeCVarType::Bool, "false", "Ask RenderDoc to launch or focus its replay UI when a capture is triggered from Refii."},
         {"renderer_renderdoc_runtime_path", "Renderer/RenderDoc", RuntimeCVarType::String, "", "Optional RenderDoc runtime library path. Empty searches common system and local librenderdoc locations."},
+        {"renderer_renderdoc_capture_path", "Renderer/RenderDoc", RuntimeCVarType::String, "renderdoc/captures", "Directory for RenderDoc captures. Relative paths resolve beside refii."},
 
         {"window_width", "UI/Window", RuntimeCVarType::Int, "0", "Initial window width; 0 means default."},
         {"window_height", "UI/Window", RuntimeCVarType::Int, "0", "Initial window height; 0 means default."},
@@ -981,6 +1055,9 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"vulkan_force_convert_quad_lists_to_triangle_lists", "GPU/Vulkan", RuntimeCVarType::Bool, "false", "Force Vulkan quad lists to triangle lists."},
 #endif
     };
+    AppendModdingRuntimeCVarDefinitions(definitions);
+    return definitions;
+    }();
     return definitions;
 }
 
@@ -1195,7 +1272,7 @@ void RuntimeSettingsPanel::SyncTextBuffers() {
     }
 }
 
-void RuntimeSettingsPanel::Render() {
+void RuntimeSettingsPanel::Render(std::string_view categoryPrefix) {
     Initialize();
 
     ImGui::TextWrapped("Editing: %s", configPath.string().c_str());
@@ -1230,12 +1307,22 @@ void RuntimeSettingsPanel::Render() {
 
         const std::string displayCategory =
             RuntimeCVarDisplayCategory(definition, values);
+        if (!CategoryMatchesPrefix(displayCategory, categoryPrefix)) {
+            continue;
+        }
         if (definitionsByCategory.find(displayCategory) ==
             definitionsByCategory.end()) {
             categoryOrder.push_back(displayCategory);
         }
-        definitionsByCategory[displayCategory].push_back(&definition);
+        std::vector<const RuntimeCVarDefinition*>& categoryDefinitions =
+            definitionsByCategory[displayCategory];
+        if (IsPrimaryBackendSelector(definition)) {
+            categoryDefinitions.insert(categoryDefinitions.begin(), &definition);
+        } else {
+            categoryDefinitions.push_back(&definition);
+        }
     }
+    ApplyRuntimeSettingsCategoryOrder(categoryOrder);
 
     for (const std::string& currentCategory : categoryOrder) {
         const bool categoryOpen = ImGui::CollapsingHeader(

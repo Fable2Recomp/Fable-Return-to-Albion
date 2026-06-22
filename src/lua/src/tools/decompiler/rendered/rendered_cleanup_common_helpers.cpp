@@ -1592,4 +1592,51 @@ std::size_t FindEnclosingRenderedFunctionBlockEnd(const std::vector<std::string>
     return best_end;
 }
 
+bool IsRenderedAssignmentUsedAfterContainingControlBlock(
+    const std::vector<std::string>& lines,
+    std::size_t assignment_line,
+    std::string_view identifier) {
+    if (assignment_line >= lines.size() || identifier.empty()) {
+        return false;
+    }
+
+    std::size_t control_end = lines.size();
+    for (std::size_t probe = 0; probe < assignment_line; ++probe) {
+        const std::string_view trimmed =
+            TrimLuaWhitespace(StripLuaLineComment(lines[probe]));
+        const bool control_header =
+            (trimmed.starts_with("if ") && trimmed.ends_with(" then")) ||
+            (trimmed.starts_with("elseif ") && trimmed.ends_with(" then")) ||
+            (trimmed.starts_with("while ") && trimmed.ends_with(" do")) ||
+            trimmed == "do";
+        if (!control_header) {
+            continue;
+        }
+
+        const std::size_t block_end = FindRenderedFunctionBlockEnd(lines, probe);
+        if (block_end > assignment_line && block_end < lines.size()) {
+            control_end = block_end;
+        }
+    }
+    if (control_end + 1 >= lines.size()) {
+        return false;
+    }
+
+    const std::size_t outer_end =
+        FindEnclosingRenderedFunctionBlockEnd(lines, assignment_line);
+    const std::size_t probe_limit =
+        outer_end < lines.size() ? outer_end + 1 : lines.size();
+    for (std::size_t probe = control_end + 1; probe < probe_limit; ++probe) {
+        if (IsRenderedShadowingLocalDeclaration(lines[probe], identifier) ||
+            IsAssignmentToIdentifier(lines[probe], identifier)) {
+            break;
+        }
+        if (CountIdentifierUses(lines[probe], identifier) != 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 }  // namespace refii::lua

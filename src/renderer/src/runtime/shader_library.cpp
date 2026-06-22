@@ -10,6 +10,8 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <rex/logging.h>
@@ -32,6 +34,8 @@ const char* RendererGraphicsApiName(RendererGraphicsApi api) {
       return "vulkan";
     case RendererGraphicsApi::kD3D12:
       return "d3d12";
+    case RendererGraphicsApi::kMetal:
+      return "metal";
   }
 
   return "unknown";
@@ -43,6 +47,8 @@ std::string ShaderRootForApi(RendererGraphicsApi api) {
       return ConfiguredRendererVulkanShaderRoot();
     case RendererGraphicsApi::kD3D12:
       return ConfiguredRendererD3D12ShaderRoot();
+    case RendererGraphicsApi::kMetal:
+      return ConfiguredRendererMetalShaderRoot();
   }
 
   return {};
@@ -66,10 +72,18 @@ std::string RemoveSuffix(const std::string& value, const std::string& suffix) {
 }
 
 std::string NormalizeShaderArtifactKey(std::string filename) {
-  filename = RemoveSuffix(filename, ".hlsl");
-  filename = RemoveSuffix(filename, ".bin");
-  filename = RemoveSuffix(filename, ".vulkan");
-  filename = RemoveSuffix(filename, ".d3d12");
+  bool changed = false;
+  do {
+    changed = false;
+    const std::string before = filename;
+    filename = RemoveSuffix(filename, ".hlsl");
+    filename = RemoveSuffix(filename, ".bin");
+    filename = RemoveSuffix(filename, ".metallib");
+    filename = RemoveSuffix(filename, ".metal");
+    filename = RemoveSuffix(filename, ".vulkan");
+    filename = RemoveSuffix(filename, ".d3d12");
+    changed = filename != before;
+  } while (changed);
   return filename;
 }
 
@@ -136,6 +150,263 @@ bool ReadFileBytes(const std::filesystem::path& path,
     return false;
   }
   return true;
+}
+
+bool ReadFileText(const std::filesystem::path& path, std::string& text) {
+  std::vector<uint8_t> bytes;
+  if (!ReadFileBytes(path, bytes)) {
+    text.clear();
+    return false;
+  }
+  text.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  return true;
+}
+
+std::string_view TrimAscii(std::string_view value) {
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.front()))) {
+    value.remove_prefix(1);
+  }
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.back()))) {
+    value.remove_suffix(1);
+  }
+  return value;
+}
+
+std::string_view FirstToken(std::string_view value) {
+  value = TrimAscii(value);
+  size_t token_end = 0;
+  while (token_end < value.size() &&
+         !std::isspace(static_cast<unsigned char>(value[token_end]))) {
+    ++token_end;
+  }
+  return value.substr(0, token_end);
+}
+
+bool IsDescriptorIndexSymbol(std::string_view symbol) {
+  return symbol.find("DescriptorIndex") != std::string_view::npos &&
+         (symbol.find("_Texture") != std::string_view::npos ||
+          symbol.find("_Sampler") != std::string_view::npos);
+}
+
+std::optional<uint32_t> ParseDirectSlotPrefix(std::string_view symbol) {
+  if (symbol.size() < 3u || symbol[0] != 's' ||
+      !std::isdigit(static_cast<unsigned char>(symbol[1]))) {
+    return std::nullopt;
+  }
+  uint32_t slot = 0;
+  size_t cursor = 1u;
+  while (cursor < symbol.size() &&
+         std::isdigit(static_cast<unsigned char>(symbol[cursor]))) {
+    slot = slot * 10u + static_cast<uint32_t>(symbol[cursor] - '0');
+    ++cursor;
+  }
+  if (slot >= 32u || cursor >= symbol.size() || symbol[cursor] != '_') {
+    return std::nullopt;
+  }
+  return slot;
+}
+
+std::vector<std::string_view> ExtractCallArguments(std::string_view text,
+                                                   size_t open_paren) {
+  std::vector<std::string_view> arguments;
+  if (open_paren >= text.size() || text[open_paren] != '(') {
+    return arguments;
+  }
+
+  size_t argument_begin = open_paren + 1u;
+  uint32_t depth = 0;
+  for (size_t cursor = open_paren + 1u; cursor < text.size(); ++cursor) {
+    const char ch = text[cursor];
+    if (ch == '(') {
+      ++depth;
+    } else if (ch == ')') {
+      if (depth == 0) {
+        arguments.push_back(
+            TrimAscii(text.substr(argument_begin, cursor - argument_begin)));
+        return arguments;
+      }
+      --depth;
+    } else if (ch == ',' && depth == 0) {
+      arguments.push_back(
+          TrimAscii(text.substr(argument_begin, cursor - argument_begin)));
+      argument_begin = cursor + 1u;
+    }
+  }
+  return arguments;
+}
+
+void AddDescriptorSymbolsFromCalls(std::string_view text,
+                                   std::string_view function_name,
+                                   std::unordered_set<std::string>& symbols) {
+  size_t cursor = 0;
+  while ((cursor = text.find(function_name, cursor)) != std::string_view::npos) {
+    const size_t name_end = cursor + function_name.size();
+    if (cursor > 0 &&
+        (std::isalnum(static_cast<unsigned char>(text[cursor - 1u])) ||
+         text[cursor - 1u] == '_')) {
+      cursor = name_end;
+      continue;
+    }
+    if (name_end < text.size() &&
+        (std::isalnum(static_cast<unsigned char>(text[name_end])) ||
+         text[name_end] == '_')) {
+      cursor = name_end;
+      continue;
+    }
+
+    size_t open_paren = name_end;
+    while (open_paren < text.size() &&
+           std::isspace(static_cast<unsigned char>(text[open_paren]))) {
+      ++open_paren;
+    }
+    const std::vector<std::string_view> arguments =
+        ExtractCallArguments(text, open_paren);
+    const size_t descriptor_argument_count =
+        function_name == "getPixelCoord" ? 1u : 2u;
+    for (size_t i = 0;
+         i < std::min(arguments.size(), descriptor_argument_count); ++i) {
+      const std::string_view symbol = FirstToken(arguments[i]);
+      if (IsDescriptorIndexSymbol(symbol)) {
+        symbols.insert(std::string(symbol));
+      }
+    }
+    cursor = name_end;
+  }
+}
+
+std::unordered_set<std::string> CollectUsedDescriptorIndexSymbols(
+    const std::string& text) {
+  std::unordered_set<std::string> symbols;
+  AddDescriptorSymbolsFromCalls(text, "tfetch1D", symbols);
+  AddDescriptorSymbolsFromCalls(text, "tfetch2D", symbols);
+  AddDescriptorSymbolsFromCalls(text, "tfetch2DBicubic", symbols);
+  AddDescriptorSymbolsFromCalls(text, "tfetch3D", symbols);
+  AddDescriptorSymbolsFromCalls(text, "tfetchCube", symbols);
+  AddDescriptorSymbolsFromCalls(text, "getWeights2D", symbols);
+  AddDescriptorSymbolsFromCalls(text, "getPixelCoord", symbols);
+  return symbols;
+}
+
+std::optional<uint32_t> ParseSharedConstantOffset(const std::string& line) {
+  constexpr const char* kNeedle = "SharedConstants + ";
+  const size_t offset_begin = line.find(kNeedle);
+  if (offset_begin == std::string::npos) {
+    return std::nullopt;
+  }
+  size_t cursor = offset_begin + std::char_traits<char>::length(kNeedle);
+  while (cursor < line.size() &&
+         std::isspace(static_cast<unsigned char>(line[cursor]))) {
+    ++cursor;
+  }
+  uint32_t value = 0;
+  bool parsed_digit = false;
+  while (cursor < line.size() &&
+         std::isdigit(static_cast<unsigned char>(line[cursor]))) {
+    parsed_digit = true;
+    value = value * 10u + static_cast<uint32_t>(line[cursor] - '0');
+    ++cursor;
+  }
+  if (!parsed_digit) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+uint32_t ParseHlslTextureSlotMask(const std::filesystem::path& path) {
+  std::string text;
+  if (!ReadFileText(path, text)) {
+    return 0;
+  }
+
+  std::unordered_map<std::string, uint32_t> symbol_slots;
+  std::vector<std::pair<std::string, std::string>> aliases;
+  size_t line_begin = 0;
+  while (line_begin < text.size()) {
+    const size_t line_end = text.find('\n', line_begin);
+    const size_t line_size =
+        (line_end == std::string::npos ? text.size() : line_end) - line_begin;
+    const std::string line = text.substr(line_begin, line_size);
+    line_begin =
+        line_end == std::string::npos ? text.size() : line_end + 1u;
+
+    constexpr const char* kDefine = "#define ";
+    if (line.rfind(kDefine, 0) != 0 ||
+        line.find("DescriptorIndex") == std::string::npos) {
+      continue;
+    }
+
+    size_t symbol_begin = std::char_traits<char>::length(kDefine);
+    while (symbol_begin < line.size() &&
+           std::isspace(static_cast<unsigned char>(line[symbol_begin]))) {
+      ++symbol_begin;
+    }
+    size_t symbol_end = symbol_begin;
+    while (symbol_end < line.size() &&
+           !std::isspace(static_cast<unsigned char>(line[symbol_end]))) {
+      ++symbol_end;
+    }
+    if (symbol_end <= symbol_begin) {
+      continue;
+    }
+
+    const std::string symbol =
+        line.substr(symbol_begin, symbol_end - symbol_begin);
+    if (!IsDescriptorIndexSymbol(symbol)) {
+      continue;
+    }
+
+    if (const std::optional<uint32_t> direct_slot =
+            ParseDirectSlotPrefix(symbol)) {
+      symbol_slots[symbol] = *direct_slot;
+    }
+
+    const std::string_view replacement = TrimAscii(std::string_view(line).substr(
+        symbol_end));
+    if (line.find("RawBufferLoad<uint>") != std::string::npos) {
+      const std::optional<uint32_t> offset = ParseSharedConstantOffset(line);
+      if (!offset) {
+        continue;
+      }
+      const uint32_t slot = (*offset % 128u) / 4u;
+      if (slot >= 32u || (*offset % 4u) != 0u) {
+        continue;
+      }
+      symbol_slots[symbol] = slot;
+    } else {
+      const std::string_view aliased_symbol = FirstToken(replacement);
+      if (IsDescriptorIndexSymbol(aliased_symbol)) {
+        aliases.emplace_back(symbol, std::string(aliased_symbol));
+      }
+    }
+  }
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const auto& [symbol, aliased_symbol] : aliases) {
+      if (symbol_slots.find(symbol) != symbol_slots.end()) {
+        continue;
+      }
+      const auto aliased_it = symbol_slots.find(aliased_symbol);
+      if (aliased_it == symbol_slots.end()) {
+        continue;
+      }
+      symbol_slots[symbol] = aliased_it->second;
+      changed = true;
+    }
+  }
+
+  const std::unordered_set<std::string> used_symbols =
+      CollectUsedDescriptorIndexSymbols(text);
+  uint32_t mask = 0;
+  for (const auto& [symbol, slot] : symbol_slots) {
+    if (used_symbols.find(symbol) != used_symbols.end()) {
+      mask |= 1u << slot;
+    }
+  }
+  return mask;
 }
 
 std::optional<uint32_t> ParseShaderId(const std::string& filename) {
@@ -227,7 +498,7 @@ RendererShaderLibrarySnapshot ScanShaderRoot(
     const std::filesystem::path& path = it->path();
     const std::string filename = path.filename().string();
     const std::string extension = path.extension().string();
-    if (extension == ".bin") {
+    if (extension == ".bin" || extension == ".metallib") {
       ++snapshot.compiled_binary_count;
       const std::string key = NormalizeShaderArtifactKey(filename);
       auto& mutable_entry = grouped_entries[key];
@@ -238,13 +509,18 @@ RendererShaderLibrarySnapshot ScanShaderRoot(
         mutable_entry.entry.id = *id;
       }
       mutable_entry.entry.stage = ClassifyShaderStage(filename);
-    } else if (extension == ".hlsl") {
+    } else if (extension == ".hlsl" || extension == ".metal") {
       ++snapshot.hlsl_source_count;
       const std::string key = NormalizeShaderArtifactKey(filename);
       auto& mutable_entry = grouped_entries[key];
       mutable_entry.has_hlsl = true;
       mutable_entry.entry.hlsl_path = path.string();
       mutable_entry.entry.name = key;
+      if (extension == ".hlsl") {
+        const uint32_t texture_slot_mask = ParseHlslTextureSlotMask(path);
+        mutable_entry.entry.texture_slot_mask = texture_slot_mask;
+        mutable_entry.entry.texture_slot_mask_valid = texture_slot_mask != 0;
+      }
       if (const std::optional<uint32_t> id = ParseShaderId(filename)) {
         mutable_entry.entry.id = *id;
       }
@@ -446,6 +722,7 @@ bool FindFableInlineShaderAliasLocked(uint64_t guest_bytecode_hash,
   constexpr InlineShaderAlias kFableInlineShaderAliases[] = {
       {0x4724831317AA37A8ull, 152u},  // D3D::PixRenderVideoFrame VS
       {0x69E9772C76BD6253ull, 171u},  // D3D::PixRenderVideoFrame PS
+      {0x9CEFC0421AC2A68Cull, 137u},  // D3D::PrivateTextureRectangleDraw PS
   };
 
   const auto alias_it = std::find_if(

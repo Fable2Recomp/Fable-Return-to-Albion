@@ -149,6 +149,18 @@ bool LuaInstructionClobbersTrackedRegister(const Lua51Instruction& instruction,
     }
 }
 
+const Lua51Constant* GetLuaOperationRKConstant(const Lua51Function& function, int rk) {
+    if (!IsConstantReference(rk)) {
+        return nullptr;
+    }
+    const int constant_index = rk & 0xFF;
+    if (constant_index < 0 ||
+        static_cast<std::size_t>(constant_index) >= function.constants.size()) {
+        return nullptr;
+    }
+    return &function.constants[static_cast<std::size_t>(constant_index)];
+}
+
 bool IsLuaOwnershipControlFlowBarrier(const Lua51Instruction& instruction) {
     if (instruction.opcode == Lua51Opcode::kJmp ||
         instruction.opcode == Lua51Opcode::kForPrep ||
@@ -2691,21 +2703,54 @@ bool TryBuildLuaCallOperation(const LuaOperationBuildContext& context,
     }
     const StraightLineValue callee =
         GetRegisterValue(*context.values, context.declarations, context.function, instruction.a, line);
-    const std::vector<StraightLineValue> arguments =
+    std::vector<StraightLineValue> arguments =
         context.call_arguments_for(*context.values, instruction.a, instruction.b, line);
     LuaCallResultMode result_mode = LuaCallResultMode::kDiscard;
     int fixed_result_count = 0;
     ComputeLuaCallResultMode(instruction, &result_mode, &fixed_result_count);
+    std::string expression = RenderCallExpression(callee,
+                                                  arguments,
+                                                  context.declarations,
+                                                  context.function,
+                                                  line,
+                                                  context.register_count);
+    if (current > 1 && instruction.b >= 2) {
+        const Lua51Instruction& previous_instruction =
+            context.instructions[static_cast<std::size_t>(current - 2)];
+        if (previous_instruction.opcode == Lua51Opcode::kSelf &&
+            previous_instruction.a == instruction.a) {
+            const StraightLineValue receiver =
+                GetRegisterValue(*context.values,
+                                 context.declarations,
+                                 context.function,
+                                 previous_instruction.b,
+                                 line);
+            const Lua51Constant* method_constant =
+                GetLuaOperationRKConstant(context.function, previous_instruction.c);
+            if (method_constant != nullptr &&
+                method_constant->type == Lua51ConstantType::kString &&
+                IsValidLuaIdentifier(method_constant->string_value) &&
+                !receiver.text.empty()) {
+                if (!arguments.empty()) {
+                    const std::string normalized_receiver =
+                        std::string(TrimLuaWhitespace(receiver.text));
+                    const std::string normalized_first_argument =
+                        std::string(TrimLuaWhitespace(arguments.front().text));
+                    if (!normalized_receiver.empty() &&
+                        normalized_receiver == normalized_first_argument) {
+                        arguments.erase(arguments.begin());
+                    }
+                }
+                expression = receiver.text + ":" + method_constant->string_value +
+                             "(" + JoinExpressions(arguments) + ")";
+            }
+        }
+    }
     *call_operation = LuaCallOperation{
         .target_reg = instruction.a,
         .fixed_result_count = fixed_result_count,
         .line = line,
-        .expression = RenderCallExpression(callee,
-                                           arguments,
-                                           context.declarations,
-                                           context.function,
-                                           line,
-                                           context.register_count),
+        .expression = std::move(expression),
         .result_mode = result_mode,
         .tail_return = instruction.opcode == Lua51Opcode::kTailCall,
     };

@@ -1,11 +1,13 @@
-#include "runtime/plume_imgui_overlay.h"
+#include "runtime/plume/general/plume_imgui_overlay.h"
 
 #include "renderdoc_debugger.h"
 #include "renderer_runtime.h"
 #include "runtime/cvars.h"
 #include "runtime/hook_observer.h"
-#include "runtime/plume_backend.h"
-#include "runtime/plume_resource_manager.h"
+#include "runtime/plume/direct/fable_direct_renderer.h"
+#include "runtime/plume/direct/fable_direct_state.h"
+#include "runtime/plume/general/plume_backend.h"
+#include "runtime/replacement_health.h"
 #include "runtime/shader_library.h"
 
 #include <algorithm>
@@ -14,6 +16,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 #include <rex/logging.h>
 
@@ -45,6 +48,7 @@ uint64_t g_last_frame_time_ticks = 0;
 rex::ui::Window* g_imgui_window = nullptr;
 rex::ui::ImGuiDrawer* g_rexglue_imgui_drawer = nullptr;
 bool g_plume_imgui_draw_data_ready = false;
+bool g_plume_imgui_building_frame = false;
 uint64_t g_rejected_imgui_draw_data = 0;
 
 bool EnsureImGuiContext();
@@ -109,7 +113,19 @@ struct ImGuiPushConstants {
   float display_size[2] = {};
 };
 
+struct PlumeImGuiTexture {
+  std::unique_ptr<plume::RenderTexture> texture;
+  std::unique_ptr<plume::RenderTextureView> texture_view;
+  std::unique_ptr<plume::RenderDescriptorSet> descriptor_set;
+  std::unique_ptr<plume::RenderBuffer> upload_buffer;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t row_pitch = 0;
+  bool upload_pending = false;
+};
+
 struct PlumeImGuiRendererState {
+  plume::RenderDevice* device = nullptr;
   plume::RenderShaderFormat shader_format = plume::RenderShaderFormat::UNKNOWN;
   std::unique_ptr<plume::RenderTexture> font_texture;
   std::unique_ptr<plume::RenderTextureView> font_texture_view;
@@ -122,6 +138,7 @@ struct PlumeImGuiRendererState {
   std::unique_ptr<plume::RenderBuffer> vertex_buffer;
   std::unique_ptr<plume::RenderBuffer> index_buffer;
   std::vector<std::unique_ptr<plume::RenderBuffer>> retired_buffers;
+  std::unordered_map<uint64_t, PlumeImGuiTexture> external_textures;
   uint32_t vertex_buffer_size = 0;
   uint32_t index_buffer_size = 0;
   uint32_t font_width = 0;
@@ -138,6 +155,94 @@ std::vector<PlumeImGuiRendererState> g_retired_plume_imgui_states;
 
 uint32_t AlignUp(uint32_t value, uint32_t alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
+}
+
+bool CreatePlumeImGuiExternalTexture(plume::RenderDevice* device,
+                                     const uint64_t texture_id,
+                                     const uint32_t width,
+                                     const uint32_t height,
+                                     const uint8_t* rgba_pixels,
+                                     PlumeImGuiTexture& texture) {
+  if (!device || texture_id == 0 || width == 0 || height == 0 ||
+      rgba_pixels == nullptr) {
+    return false;
+  }
+
+  plume::RenderTextureDesc texture_desc = plume::RenderTextureDesc::Texture2D(
+      width, height, 1, plume::RenderFormat::R8G8B8A8_UNORM);
+  std::unique_ptr<plume::RenderTexture> new_texture =
+      device->createTexture(texture_desc);
+  if (!new_texture) {
+    return false;
+  }
+  new_texture->setName("Refii Plume ImGui External Texture");
+
+  const uint32_t row_pitch = AlignUp(width * 4, kPitchAlignment);
+  const uint32_t slice_pitch = AlignUp(row_pitch * height, kPlacementAlignment);
+  std::unique_ptr<plume::RenderBuffer> upload_buffer =
+      device->createBuffer(plume::RenderBufferDesc::UploadBuffer(slice_pitch));
+  if (!upload_buffer) {
+    return false;
+  }
+
+  auto* dst = static_cast<uint8_t*>(upload_buffer->map());
+  if (!dst) {
+    return false;
+  }
+  for (uint32_t y = 0; y < height; ++y) {
+    std::memcpy(dst + row_pitch * y,
+                rgba_pixels + static_cast<size_t>(width) * 4U * y,
+                width * 4U);
+  }
+  upload_buffer->unmap();
+
+  std::unique_ptr<plume::RenderTextureView> texture_view =
+      new_texture->createTextureView(
+          plume::RenderTextureViewDesc::Texture2D(
+              plume::RenderFormat::R8G8B8A8_UNORM));
+  if (!texture_view) {
+    return false;
+  }
+
+  plume::RenderDescriptorRange texture_range(
+      plume::RenderDescriptorRangeType::TEXTURE, 0, 1);
+  std::unique_ptr<plume::RenderDescriptorSet> descriptor_set =
+      device->createDescriptorSet(
+          plume::RenderDescriptorSetDesc(&texture_range, 1));
+  if (!descriptor_set) {
+    return false;
+  }
+  descriptor_set->setTexture(0, new_texture.get(),
+                             plume::RenderTextureLayout::SHADER_READ,
+                             texture_view.get());
+
+  texture.texture = std::move(new_texture);
+  texture.texture_view = std::move(texture_view);
+  texture.descriptor_set = std::move(descriptor_set);
+  texture.upload_buffer = std::move(upload_buffer);
+  texture.width = width;
+  texture.height = height;
+  texture.row_pitch = row_pitch;
+  texture.upload_pending = true;
+  return true;
+}
+
+plume::RenderDescriptorSet* PlumeImGuiDescriptorSetForTexture(
+    const ImTextureID texture_id) {
+  if (texture_id == 0 ||
+      texture_id == reinterpret_cast<ImTextureID>(
+                        g_plume_imgui.font_texture_view.get())) {
+    return g_plume_imgui.texture_descriptor_set.get();
+  }
+
+  const auto texture_it =
+      g_plume_imgui.external_textures.find(static_cast<uint64_t>(texture_id));
+  if (texture_it == g_plume_imgui.external_textures.end() ||
+      texture_it->second.upload_pending ||
+      texture_it->second.descriptor_set == nullptr) {
+    return g_plume_imgui.texture_descriptor_set.get();
+  }
+  return texture_it->second.descriptor_set.get();
 }
 
 bool CreateShaderForFormat(plume::RenderDevice* device,
@@ -313,10 +418,11 @@ bool HasPlumeImGuiGpuResources(const PlumeImGuiRendererState& state) {
          state.texture_descriptor_set || state.sampler_descriptor_set ||
          state.pipeline_layout || state.pipeline || state.font_upload_buffer ||
          state.vertex_buffer || state.index_buffer ||
-         !state.retired_buffers.empty();
+         !state.retired_buffers.empty() || !state.external_textures.empty();
 }
 
 void ClearPlumeImGuiGpuState(PlumeImGuiRendererState& state) {
+  state.external_textures.clear();
   state.retired_buffers.clear();
   state.index_buffer.reset();
   state.vertex_buffer.reset();
@@ -329,6 +435,7 @@ void ClearPlumeImGuiGpuState(PlumeImGuiRendererState& state) {
   state.font_texture_view.reset();
   state.font_texture.reset();
 
+  state.device = nullptr;
   state.shader_format = plume::RenderShaderFormat::UNKNOWN;
   state.vertex_buffer_size = 0;
   state.index_buffer_size = 0;
@@ -570,9 +677,13 @@ void DrawPlumeImGuiOverlay(uint32_t width, uint32_t height,
         GetRendererHookTimingSnapshot();
     const RendererShaderLibrarySnapshot shader_snapshot =
         GetRendererShaderLibrarySnapshot();
-    const PlumeDrawReplayStats draw_replay_stats =
-        GetLastPlumeDrawReplayStats();
+    const FableDirectRendererStats direct_stats =
+        GetFableDirectRendererStats();
+    const RendererReplacementHealthSnapshot replacement_health =
+        GetRendererReplacementHealthSnapshot();
     const PlumeOutputSnapshot plume_output = GetPlumeOutputSnapshot();
+    const FableDirectStateSnapshot direct_snapshot =
+        GetFableDirectStateSnapshot();
     const bool renderdoc_enabled = RenderDocDebuggerEnabled();
     const bool renderdoc_available = RenderDocDebuggerAvailable();
 
@@ -599,6 +710,34 @@ void DrawPlumeImGuiOverlay(uint32_t width, uint32_t height,
                   shader_snapshot.unique_shader_count,
                   shader_snapshot.compiled_binary_count,
                   shader_snapshot.hlsl_source_count);
+      ImGui::Text("Replacement: res %s state %s commands %s present %s",
+                  replacement_health.replace_resources ? "on" : "off",
+                  replacement_health.replace_state ? "on" : "off",
+                  replacement_health.replace_draws ? "on" : "off",
+                  replacement_health.replace_present ? "on" : "off");
+      ImGui::Text("Strict shaders: %s",
+                  replacement_health.shader_require_precompiled ? "on" : "off");
+      ImGui::Text("Last blocker: %s",
+                  RendererReplacementHealthFailureName(replacement_health));
+      ImGui::Text("Direct draws: %u indexed %u events %u",
+                  direct_stats.draw_count,
+                  direct_stats.indexed_draw_count,
+                  direct_stats.last_draw_events);
+      ImGui::Text("Direct resources: create %u destroy %u upload %u",
+                  direct_stats.resource_creations,
+                  direct_stats.resource_destroys,
+                  direct_stats.resource_uploads);
+      ImGui::Text("Direct live: res %u tex %u surf %u vb %u ib %u sh %u",
+                  direct_stats.live_resources,
+                  direct_stats.live_textures,
+                  direct_stats.live_surfaces,
+                  direct_stats.live_vertex_buffers,
+                  direct_stats.live_index_buffers,
+                  direct_stats.live_shaders);
+      ImGui::Text("Direct present: 0x%08X %ux%u",
+                  direct_stats.last_present_target,
+                  direct_stats.last_present_width,
+                  direct_stats.last_present_height);
     }
     ImGui::End();
 
@@ -639,7 +778,7 @@ void DrawPlumeImGuiOverlay(uint32_t width, uint32_t height,
         {"acquire", plume_output.last_acquire_texture_us},
         {"setup", plume_output.last_setup_us},
         {"imgui build", plume_output.last_imgui_build_us},
-        {"fable replay", plume_output.last_replay_us},
+        {"fable direct", plume_output.last_direct_us},
         {"imgui render", plume_output.last_imgui_render_us},
         {"cmd record", plume_output.last_command_record_us},
         {"submit", plume_output.last_submit_us},
@@ -689,216 +828,157 @@ void DrawPlumeImGuiOverlay(uint32_t width, uint32_t height,
         ImGui::ProgressBar(ratio, ImVec2(0.0f, 0.0f), "");
       }
       ImGui::Separator();
-      ImGui::Text("Ready/recorded/total: %u / %u / %u",
-                  draw_replay_stats.resource_ready_draws,
-                  draw_replay_stats.recorded_draws,
-                  draw_replay_stats.total_draws);
-      ImGui::Text("Missing resources/pipelines/filtered: %u / %u / %u",
-                  draw_replay_stats.missing_vertex_buffer +
-                      draw_replay_stats.missing_index_buffer +
-                      draw_replay_stats.missing_vertex_declaration +
-                      draw_replay_stats.missing_vertex_shader +
-                      draw_replay_stats.missing_pixel_shader,
-                  draw_replay_stats.missing_pipeline,
-                  draw_replay_stats.target_filtered_draws);
-      ImGui::Text("Uploads frame/pending: %u / %u",
-                  draw_replay_stats.texture_uploads_this_frame,
-                  draw_replay_stats.pending_texture_uploads);
-      ImGui::Text("Pix video events: %llu  tex 0x%08X",
-                  static_cast<unsigned long long>(
-                      hook_snapshot.pix_render_events),
-                  hook_snapshot.last_pix_texture);
+      ImGui::Text("Direct draws/events/commands: %u / %u / %u",
+                  direct_stats.draw_count,
+                  direct_stats.last_draw_events,
+                  direct_stats.last_render_commands);
+      ImGui::Text("Indexed/resources/uploads: %u / %u / %u",
+                  direct_stats.indexed_draw_count,
+                  direct_stats.resource_creations,
+                  direct_stats.resource_uploads);
+      ImGui::Text("Live resources tex/surf/vb/ib/sh: %u / %u / %u / %u / %u",
+                  direct_stats.live_textures,
+                  direct_stats.live_surfaces,
+                  direct_stats.live_vertex_buffers,
+                  direct_stats.live_index_buffers,
+                  direct_stats.live_shaders);
+      ImGui::Text("Pipeline hits/misses: %u / %u",
+                  direct_stats.pipeline_cache_hits,
+                  direct_stats.pipeline_cache_misses);
     }
     ImGui::End();
 
     ImGui::SetNextWindowPos(ImVec2(12.0f, 292.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(460.0f, 380.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(560.0f, 260.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Renderer Hook State", nullptr,
                      ImGuiWindowFlags_NoCollapse |
                          ImGuiWindowFlags_NoSavedSettings)) {
-      ImGui::Text("Fable present hooks: %llu  Draws: %llu  Indexed: %llu",
+      ImGui::Text("Hooks present/draw/indexed: %llu / %llu / %llu",
                   static_cast<unsigned long long>(hook_snapshot.presents),
                   static_cast<unsigned long long>(hook_snapshot.draws),
                   static_cast<unsigned long long>(
                       hook_snapshot.indexed_draws));
-      ImGui::Text("Queued draws: %llu  Dropped: %llu",
+      ImGui::Text("Direct draws/indexed/events: %u / %u / %u  source: %s",
+                  direct_stats.draw_count,
+                  direct_stats.indexed_draw_count,
+                  direct_stats.last_draw_events,
+                  PlumeFableCommandSourceName(
+                      plume_output.last_fable_direct_source));
+      ImGui::Text("Direct cmds pending/submitted: %llu / %llu",
                   static_cast<unsigned long long>(
-                      hook_snapshot.pending_draw_events),
+                      direct_snapshot.render_command_count),
                   static_cast<unsigned long long>(
-                      hook_snapshot.dropped_draw_events));
-      ImGui::Text("Replay: %u / %u ready, %u submitted",
-                  draw_replay_stats.resource_ready_draws,
-                  draw_replay_stats.total_draws,
-                  draw_replay_stats.recorded_draws);
-      ImGui::Text("Hook gaps ms all/draw/display/present: %.3f / %.3f / %.3f / %.3f",
-                  static_cast<double>(timing_snapshot.last_hook_gap_us) /
-                      1000.0,
-                  static_cast<double>(timing_snapshot.last_draw_hook_gap_us) /
-                      1000.0,
-                  static_cast<double>(
-                      timing_snapshot.last_display_present_gap_us) /
-                      1000.0,
-                  static_cast<double>(
-                      timing_snapshot.last_plume_present_request_gap_us) /
-                      1000.0);
-      ImGui::Text("Plume pump: %s %u FPS  frames: %u  requests: %llu  gap: %.3f ms",
-                  timing_snapshot.plume_present_pump_enabled ? "on" : "off",
-                  timing_snapshot.plume_present_pump_target_fps,
-                  plume_output.present_count,
+                      direct_snapshot.submitted_render_command_count));
+      ImGui::Text("Submit batch cmds/draws: %llu / %llu  submitted draws: %llu",
                   static_cast<unsigned long long>(
-                      timing_snapshot.plume_present_pump_requests),
-                  static_cast<double>(
-                      timing_snapshot.last_plume_present_pump_gap_us) /
-                      1000.0);
-      ImGui::Text("Plume ms total/marshal/acquire/present/context: %.3f / %.3f / %.3f / %.3f / %.3f",
-                  static_cast<double>(plume_output.last_frame_total_us) /
-                      1000.0,
-                  static_cast<double>(plume_output.last_marshal_us) / 1000.0,
-                  static_cast<double>(plume_output.last_acquire_us) / 1000.0,
-                  static_cast<double>(plume_output.last_present_us) / 1000.0,
-                  static_cast<double>(plume_output.last_fence_wait_us) /
-                      1000.0);
-      ImGui::Text("Plume Fable draws: %u  retained: %u  source: %s",
-                  plume_output.last_fable_draw_events,
-                  plume_output.retained_fable_draw_events,
-                  plume_output.last_fable_draw_events_fresh ? "fresh"
-                                                            : "retained");
-      ImGui::Text("Hook counts all/draw/display/present: %llu / %llu / %llu / %llu",
+                      direct_snapshot.last_command_boundary_pending_commands),
                   static_cast<unsigned long long>(
-                      timing_snapshot.hook_enters),
+                      direct_snapshot.last_command_boundary_pending_draws),
                   static_cast<unsigned long long>(
-                      timing_snapshot.draw_hook_enters),
-                  static_cast<unsigned long long>(
-                      timing_snapshot.display_present_hooks),
-                  static_cast<unsigned long long>(
-                      timing_snapshot.plume_present_requests));
-      ImGui::Text("Display swap: %s  Native skips: %llu",
-                  timing_snapshot.seen_display_swap_hook ? "seen" : "waiting",
-                  static_cast<unsigned long long>(
-                      timing_snapshot.native_skipped_hooks));
-      ImGui::Text("Fable present dev 0x%08X submitted/completed/cb/pending: %u / %u / %u / %u",
-                  timing_snapshot.fable_device,
-                  timing_snapshot.fable_present_submitted,
-                  timing_snapshot.fable_present_completed,
-                  timing_snapshot.fable_swap_callbacks,
-                  timing_snapshot.fable_present_pending);
-      ImGui::Text("Fable present pump advances: %llu",
-                  static_cast<unsigned long long>(
-                      timing_snapshot.plume_present_pump_fable_advances));
-      ImGui::Text("Last hook: %s", TextOrDash(timing_snapshot.last_hook_symbol));
-      ImGui::Text("Last display: %s  Plume: %s/%s",
-                  TextOrDash(timing_snapshot.last_display_present_symbol),
-                  TextOrDash(timing_snapshot.last_plume_present_symbol),
-                  TextOrDash(timing_snapshot.last_plume_present_reason));
-      ImGui::Text("Last skipped native: %s",
+                      direct_snapshot.last_submitted_draw_event_count));
+      ImGui::Text("Pipeline hits/misses failed hooks: %u / %u / %u",
+                  direct_stats.pipeline_cache_hits,
+                  direct_stats.pipeline_cache_misses,
+                  direct_stats.failed_hooks);
+      ImGui::Text("Resource sync failures: %u  last 0x%08X bytes %u",
+                  direct_stats.failed_resource_syncs,
+                  direct_stats.last_resource_address,
+                  direct_stats.last_resource_size);
+      ImGui::Text("Direct target: 0x%08X %ux%u",
+                  direct_stats.last_present_target,
+                  direct_stats.last_present_width,
+                  direct_stats.last_present_height);
+      ImGui::Text("Last hook: %s  skipped: %s",
+                  TextOrDash(timing_snapshot.last_hook_symbol),
                   TextOrDash(timing_snapshot.last_native_skipped_symbol));
       ImGui::Separator();
-      ImGui::Text("Declarations ready: %u",
-                  draw_replay_stats.declaration_ready_draws);
-      ImGui::Text("Missing VB/IB/Decl/VS/PS: %u / %u / %u / %u / %u",
-                  draw_replay_stats.missing_vertex_buffer,
-                  draw_replay_stats.missing_index_buffer,
-                  draw_replay_stats.missing_vertex_declaration,
-                  draw_replay_stats.missing_vertex_shader,
-                  draw_replay_stats.missing_pixel_shader);
-      ImGui::Text("Pipeline pending: %u", draw_replay_stats.missing_pipeline);
-      ImGui::Text("Textures object/fetch/missing: %u / %u / %u",
-                  draw_replay_stats.texture_object_bindings,
-                  draw_replay_stats.texture_fetch_bindings,
-                  draw_replay_stats.missing_texture_bindings);
-      ImGui::Text("Texture uploads frame/pending/total: %u / %u / %llu",
-                  draw_replay_stats.texture_uploads_this_frame,
-                  draw_replay_stats.pending_texture_uploads,
-                  static_cast<unsigned long long>(
-                      draw_replay_stats.texture_uploads_total));
-      ImGui::Text("Texture uploads decoded/raw/placeholder: %u / %u / %u",
-                  draw_replay_stats.decoded_texture_uploads_this_frame,
-                  draw_replay_stats.raw_texture_uploads_this_frame,
-                  draw_replay_stats.placeholder_texture_uploads_this_frame);
-      ImGui::Text("Pix video decode/pending/render/events/uv/capture: %llu / %llu / %llu / %llu / %llu / %llu",
-                  static_cast<unsigned long long>(
-                      hook_snapshot.pix_decode_frames),
-                  static_cast<unsigned long long>(
-                      hook_snapshot.pix_decode_pending_frames),
-                  static_cast<unsigned long long>(
-                      hook_snapshot.pix_render_hooks),
-                  static_cast<unsigned long long>(
-                      hook_snapshot.pix_render_events),
-                  static_cast<unsigned long long>(
-                      hook_snapshot.pix_render_uv_overrides),
-                  static_cast<unsigned long long>(
-                      hook_snapshot.pix_capture_hooks));
-      ImGui::Text("Pix video tex 0x%08X pkt 0x%08X out %.1fx%.1f dec %.1fx%.1f uv %.3f %.3f",
-                  hook_snapshot.last_pix_texture,
-                  hook_snapshot.last_pix_packet,
-                  hook_snapshot.last_pix_output_width,
-                  hook_snapshot.last_pix_output_height,
-                  hook_snapshot.last_pix_decoded_width,
-                  hook_snapshot.last_pix_decoded_height,
-                  hook_snapshot.last_pix_u1,
-                  hook_snapshot.last_pix_v1);
-      ImGui::Text("Pix video decode base/size fetch base/size/fmt bad packet/verts: 0x%08X / %ux%u  0x%08X / %u / %u  %llu / %llu",
-                  hook_snapshot.last_pix_decode_base,
-                  hook_snapshot.last_pix_decode_width,
-                  hook_snapshot.last_pix_decode_height,
-                  hook_snapshot.last_pix_fetch_base,
-                  hook_snapshot.last_pix_fetch_size,
-                  hook_snapshot.last_pix_fetch_format,
-                  static_cast<unsigned long long>(
-                      hook_snapshot.pix_render_bad_packets),
-                  static_cast<unsigned long long>(
-                      hook_snapshot.pix_render_bad_vertices));
-      ImGui::Text("Depth bound/tracked/only/enabled/write: %u / %u / %u / %u / %u",
-                  draw_replay_stats.depth_bound_draws,
-                  draw_replay_stats.depth_tracked_draws,
-                  draw_replay_stats.depth_only_draws,
-                  draw_replay_stats.depth_enabled_draws,
-                  draw_replay_stats.depth_write_draws);
-      ImGui::Text("Depth sample shader/source/active/alias/copy/slots/missing: %u / %u / %u / %u / %u / %u / %u",
-                  draw_replay_stats.depth_sample_shader_draws,
-                  draw_replay_stats.depth_sample_source_draws,
-                  draw_replay_stats.depth_sample_active_depth_fallback_draws,
-                  draw_replay_stats.depth_sample_alias_draws,
-                  draw_replay_stats.depth_sample_copy_draws,
-                  draw_replay_stats.depth_sample_copy_slots,
-                  draw_replay_stats.depth_sample_unavailable_draws);
-      ImGui::Text("Stencil enabled/clear req/clear: %u / %u / %u",
-                  draw_replay_stats.stencil_enabled_draws,
-                  draw_replay_stats.stencil_clear_requests,
-                  draw_replay_stats.stencil_clears);
-      ImGui::Text("Target feedback copies/slots: %u / %u",
-                  draw_replay_stats.target_feedback_copy_draws,
-                  draw_replay_stats.target_feedback_copy_slots);
-      ImGui::Text("Resolve copies/color/depth/hits: %u / %u / %u / %u",
-                  draw_replay_stats.resolve_copy_draws,
-                  draw_replay_stats.resolve_color_aliases,
-                  draw_replay_stats.resolve_depth_aliases,
-                  draw_replay_stats.resolve_texture_alias_hits);
-      ImGui::Text("Alpha test draws: %u", draw_replay_stats.alpha_test_draws);
-      ImGui::Text("Quad lists: %u  direct: %u  split: %s",
-                  draw_replay_stats.quad_list_draws,
-                  draw_replay_stats.quad_list_direct_draws,
-                  RendererQuadListStrip0132Order() ? "strip0132"
-                                                   : "sequential0123");
-      ImGui::Text("Replay target: 0x%08X %ux%u  unique RTs: %u",
-                  draw_replay_stats.present_render_target,
-                  draw_replay_stats.present_render_target_width,
-                  draw_replay_stats.present_render_target_height,
-                  draw_replay_stats.unique_render_targets);
-      ImGui::Text("MRT draws: %u  sparse: %u  max RTs/draw: %u",
-                  draw_replay_stats.multi_render_target_draws,
-                  draw_replay_stats.sparse_render_target_draws,
-                  draw_replay_stats.max_render_targets_per_draw);
-      ImGui::Text("Present in side slot: %u",
-                  draw_replay_stats.present_target_nonzero_slot_draws);
-      ImGui::Text("Target draws: %u  offscreen: %u  filtered: %u",
-                  draw_replay_stats.present_target_draws,
-                  draw_replay_stats.offscreen_target_draws,
-                  draw_replay_stats.target_filtered_draws);
-      ImGui::Text("FB switches: %u  RT copies: %u  missing RT: %u",
-                  draw_replay_stats.framebuffer_switches,
-                  draw_replay_stats.present_target_copies,
-                  draw_replay_stats.missing_render_targets);
+      if (ImGui::TreeNode("Advanced Hook Details")) {
+        ImGui::Text("Fable present hooks: %llu  Draws: %llu  Indexed: %llu",
+                    static_cast<unsigned long long>(hook_snapshot.presents),
+                    static_cast<unsigned long long>(hook_snapshot.draws),
+                    static_cast<unsigned long long>(
+                        hook_snapshot.indexed_draws));
+        ImGui::Text("Direct frames: begun %llu ended %llu presented %llu",
+                    static_cast<unsigned long long>(
+                        direct_stats.frames_begun),
+                    static_cast<unsigned long long>(
+                        direct_stats.frames_ended),
+                    static_cast<unsigned long long>(direct_stats.presents));
+        ImGui::Text("Direct state events/device: %llu / 0x%08X",
+                    static_cast<unsigned long long>(
+                        direct_snapshot.draw_event_count),
+                    direct_snapshot.last_device);
+        ImGui::Text("Direct state draws/indexed/flushes: %llu / %llu / %llu",
+                    static_cast<unsigned long long>(direct_snapshot.draw_count),
+                    static_cast<unsigned long long>(
+                        direct_snapshot.indexed_draw_count),
+                    static_cast<unsigned long long>(
+                        direct_snapshot.state_flush_count));
+        ImGui::Text("Direct commands pending/submitted/dropped: %llu / %llu / %llu",
+                    static_cast<unsigned long long>(
+                        direct_snapshot.render_command_count),
+                    static_cast<unsigned long long>(
+                        direct_snapshot.submitted_render_command_count),
+                    static_cast<unsigned long long>(
+                        direct_snapshot.dropped_render_commands));
+        ImGui::Text("Hook gaps ms all/draw/display/present: %.3f / %.3f / %.3f / %.3f",
+                    static_cast<double>(timing_snapshot.last_hook_gap_us) /
+                        1000.0,
+                    static_cast<double>(timing_snapshot.last_draw_hook_gap_us) /
+                        1000.0,
+                    static_cast<double>(
+                        timing_snapshot.last_display_present_gap_us) /
+                        1000.0,
+                    static_cast<double>(
+                        timing_snapshot.last_plume_present_request_gap_us) /
+                        1000.0);
+        ImGui::Text("Plume pump: %s %u FPS  frames: %u  requests: %llu  gap: %.3f ms",
+                    timing_snapshot.plume_present_pump_enabled ? "on" : "off",
+                    timing_snapshot.plume_present_pump_target_fps,
+                    plume_output.present_count,
+                    static_cast<unsigned long long>(
+                        timing_snapshot.plume_present_pump_requests),
+                    static_cast<double>(
+                        timing_snapshot.last_plume_present_pump_gap_us) /
+                        1000.0);
+        ImGui::Text("Plume ms total/marshal/acquire/present/context: %.3f / %.3f / %.3f / %.3f / %.3f",
+                    static_cast<double>(plume_output.last_frame_total_us) /
+                        1000.0,
+                    static_cast<double>(plume_output.last_marshal_us) / 1000.0,
+                    static_cast<double>(plume_output.last_acquire_us) / 1000.0,
+                    static_cast<double>(plume_output.last_present_us) / 1000.0,
+                    static_cast<double>(plume_output.last_fence_wait_us) /
+                        1000.0);
+        ImGui::Text("Fable direct commands: %u  source: %s",
+                    plume_output.last_fable_render_commands,
+                    PlumeFableCommandSourceName(
+                        plume_output.last_fable_direct_source));
+        ImGui::Text("Hook counts all/draw/display/present: %llu / %llu / %llu / %llu",
+                    static_cast<unsigned long long>(timing_snapshot.hook_enters),
+                    static_cast<unsigned long long>(
+                        timing_snapshot.draw_hook_enters),
+                    static_cast<unsigned long long>(
+                        timing_snapshot.display_present_hooks),
+                    static_cast<unsigned long long>(
+                        timing_snapshot.plume_present_requests));
+        ImGui::Text("Renderer setup: %llu  renderer/owner/game: 0x%08X / 0x%08X / 0x%08X",
+                    static_cast<unsigned long long>(
+                        timing_snapshot.renderer_setup_hooks),
+                    timing_snapshot.fable_renderer,
+                    timing_snapshot.fable_renderer_owner,
+                    timing_snapshot.fable_game);
+        ImGui::Text("Display swap: %s  Native skips: %llu",
+                    timing_snapshot.seen_display_swap_hook ? "seen" : "waiting",
+                    static_cast<unsigned long long>(
+                        timing_snapshot.native_skipped_hooks));
+        ImGui::Text("Last hook: %s", TextOrDash(timing_snapshot.last_hook_symbol));
+        ImGui::Text("Last display: %s  Plume: %s/%s",
+                    TextOrDash(timing_snapshot.last_display_present_symbol),
+                    TextOrDash(timing_snapshot.last_plume_present_symbol),
+                    TextOrDash(timing_snapshot.last_plume_present_reason));
+        ImGui::Text("Last skipped native: %s",
+                    TextOrDash(timing_snapshot.last_native_skipped_symbol));
+        ImGui::Separator();
       ImGui::Text("Passes: %llu  State flushes: %llu",
                   static_cast<unsigned long long>(
                       hook_snapshot.render_passes),
@@ -1045,13 +1125,17 @@ void DrawPlumeImGuiOverlay(uint32_t width, uint32_t height,
                   hook_snapshot.last_draw.base_vertex,
                   hook_snapshot.last_draw.start,
                   hook_snapshot.last_draw.primitive_count);
+      ImGui::TreePop();
+      }
     }
     ImGui::End();
   };
 
+  g_plume_imgui_building_frame = true;
   const ImDrawData* draw_data =
       g_rexglue_imgui_drawer->DrawForExternalRenderer(
           display_width, display_height, io.DeltaTime, draw_stats_windows);
+  g_plume_imgui_building_frame = false;
 #if REFII_RENDERER_HAS_PLUME
   uint32_t vertex_bytes = 0;
   uint32_t index_bytes = 0;
@@ -1097,11 +1181,13 @@ bool EnsurePlumeImGuiRenderer(plume::RenderDevice* device,
 
   if (g_plume_imgui.pipeline &&
       g_plume_imgui.shader_format == shader_format) {
+    g_plume_imgui.device = device;
     return true;
   }
 
   RetirePlumeImGuiGpuState();
   g_plume_imgui.shader_format = shader_format;
+  g_plume_imgui.device = device;
   if (!CreateFontTextureUpload(device) ||
       !CreatePipeline(device, shader_format)) {
     REXLOG_WARN("Refii Plume ImGui renderer could not initialize GPU resources");
@@ -1147,32 +1233,99 @@ bool EnsurePlumeImGuiRenderer(plume::RenderDevice* device,
 #endif
 }
 
+uint64_t RegisterPlumeImGuiRgbaTexture(const void* key, const uint32_t width,
+                                       const uint32_t height,
+                                       const uint8_t* rgba_pixels) {
+#if REFII_RENDERER_HAS_IMGUI
+  if (key == nullptr || width == 0 || height == 0 || rgba_pixels == nullptr ||
+      !g_plume_imgui_building_frame ||
+      g_plume_imgui.device == nullptr || g_plume_imgui.pipeline == nullptr ||
+      g_plume_imgui.font_sampler == nullptr) {
+    return 0;
+  }
+
+  const uint64_t texture_id =
+      static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(key));
+  PlumeImGuiTexture& texture = g_plume_imgui.external_textures[texture_id];
+  if (texture.texture != nullptr && texture.texture_view != nullptr &&
+      texture.descriptor_set != nullptr && texture.width == width &&
+      texture.height == height) {
+    return texture.upload_pending ? 0 : texture_id;
+  }
+
+  if (!CreatePlumeImGuiExternalTexture(g_plume_imgui.device, texture_id, width,
+                                       height, rgba_pixels, texture)) {
+    g_plume_imgui.external_textures.erase(texture_id);
+    return 0;
+  }
+  return 0;
+#else
+  (void)key;
+  (void)width;
+  (void)height;
+  (void)rgba_pixels;
+  return 0;
+#endif
+}
+
 void RecordPlumeImGuiUploads(plume::RenderCommandList* command_list) {
 #if REFII_RENDERER_HAS_IMGUI
-  if (!command_list || !g_plume_imgui.font_upload_pending ||
-      !g_plume_imgui.font_texture || !g_plume_imgui.font_upload_buffer) {
+  if (!command_list) {
     return;
   }
 
-  command_list->barriers(
-      plume::RenderBarrierStage::COPY,
-      plume::RenderTextureBarrier(g_plume_imgui.font_texture.get(),
-                                  plume::RenderTextureLayout::COPY_DEST));
-  command_list->copyTextureRegion(
-      plume::RenderTextureCopyLocation::Subresource(
-          g_plume_imgui.font_texture.get(), 0),
-      plume::RenderTextureCopyLocation::PlacedFootprint(
-          g_plume_imgui.font_upload_buffer.get(),
-          plume::RenderFormat::R8G8B8A8_UNORM, g_plume_imgui.font_width,
-          g_plume_imgui.font_height, 1, g_plume_imgui.font_row_pitch / 4));
-  command_list->barriers(
-      plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COPY,
-      plume::RenderTextureBarrier(g_plume_imgui.font_texture.get(),
-                                  plume::RenderTextureLayout::SHADER_READ));
-  g_plume_imgui.font_upload_pending = false;
+  bool recorded_upload = false;
+
+  if (g_plume_imgui.font_upload_pending && g_plume_imgui.font_texture &&
+      g_plume_imgui.font_upload_buffer) {
+    command_list->barriers(
+        plume::RenderBarrierStage::COPY,
+        plume::RenderTextureBarrier(g_plume_imgui.font_texture.get(),
+                                    plume::RenderTextureLayout::COPY_DEST));
+    command_list->copyTextureRegion(
+        plume::RenderTextureCopyLocation::Subresource(
+            g_plume_imgui.font_texture.get(), 0),
+        plume::RenderTextureCopyLocation::PlacedFootprint(
+            g_plume_imgui.font_upload_buffer.get(),
+            plume::RenderFormat::R8G8B8A8_UNORM, g_plume_imgui.font_width,
+            g_plume_imgui.font_height, 1, g_plume_imgui.font_row_pitch / 4));
+    command_list->barriers(
+        plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COPY,
+        plume::RenderTextureBarrier(g_plume_imgui.font_texture.get(),
+                                    plume::RenderTextureLayout::SHADER_READ));
+    g_plume_imgui.font_upload_pending = false;
+    recorded_upload = true;
+  }
+
+  for (auto& texture_pair : g_plume_imgui.external_textures) {
+    PlumeImGuiTexture& texture = texture_pair.second;
+    if (!texture.upload_pending || !texture.texture || !texture.upload_buffer) {
+      continue;
+    }
+
+    command_list->barriers(
+        plume::RenderBarrierStage::COPY,
+        plume::RenderTextureBarrier(texture.texture.get(),
+                                    plume::RenderTextureLayout::COPY_DEST));
+    command_list->copyTextureRegion(
+        plume::RenderTextureCopyLocation::Subresource(texture.texture.get(), 0),
+        plume::RenderTextureCopyLocation::PlacedFootprint(
+            texture.upload_buffer.get(), plume::RenderFormat::R8G8B8A8_UNORM,
+            texture.width, texture.height, 1, texture.row_pitch / 4));
+    command_list->barriers(
+        plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COPY,
+        plume::RenderTextureBarrier(texture.texture.get(),
+                                    plume::RenderTextureLayout::SHADER_READ));
+    texture.upload_pending = false;
+    recorded_upload = true;
+  }
+
+  if (!recorded_upload) {
+    return;
+  }
 
   if (!g_plume_imgui.logged_font_upload_recorded) {
-    REXLOG_INFO("Refii Plume ImGui font upload recorded into frame command list");
+    REXLOG_INFO("Refii Plume ImGui texture upload recorded into frame command list");
     g_plume_imgui.logged_font_upload_recorded = true;
   }
 #else
@@ -1274,8 +1427,9 @@ void RenderPlumeImGuiOverlay(plume::RenderDevice* device,
 
   command_list->setGraphicsPipelineLayout(g_plume_imgui.pipeline_layout.get());
   command_list->setPipeline(g_plume_imgui.pipeline.get());
-  command_list->setGraphicsDescriptorSet(
-      g_plume_imgui.texture_descriptor_set.get(), 0);
+  plume::RenderDescriptorSet* current_texture_descriptor_set =
+      g_plume_imgui.texture_descriptor_set.get();
+  command_list->setGraphicsDescriptorSet(current_texture_descriptor_set, 0);
   command_list->setGraphicsDescriptorSet(
       g_plume_imgui.sampler_descriptor_set.get(), 1);
 
@@ -1340,6 +1494,12 @@ void RenderPlumeImGuiOverlay(plume::RenderDevice* device,
           std::min(fb_height, static_cast<int>(clip_max.y)));
       if (scissor.right <= scissor.left || scissor.bottom <= scissor.top) {
         continue;
+      }
+      plume::RenderDescriptorSet* texture_descriptor_set =
+          PlumeImGuiDescriptorSetForTexture(draw_cmd.GetTexID());
+      if (texture_descriptor_set != current_texture_descriptor_set) {
+        command_list->setGraphicsDescriptorSet(texture_descriptor_set, 0);
+        current_texture_descriptor_set = texture_descriptor_set;
       }
       command_list->setScissors(scissor);
       command_list->drawIndexedInstanced(

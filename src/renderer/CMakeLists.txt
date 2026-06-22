@@ -8,15 +8,33 @@ set(REFII_RENDERER_RUNTIME_SOURCES
     ${REFII_RENDERER_ROOT}/src/imgui/plume_imgui_overlay.cpp
     ${REFII_RENDERER_ROOT}/src/runtime/cvars.cpp
     ${REFII_RENDERER_ROOT}/src/runtime/hook_observer.cpp
-    ${REFII_RENDERER_ROOT}/src/runtime/plume_api_bridge.cpp
-    ${REFII_RENDERER_ROOT}/src/runtime/plume_backend.cpp
-    ${REFII_RENDERER_ROOT}/src/runtime/plume_diagnostics.cpp
-    ${REFII_RENDERER_ROOT}/src/runtime/plume_graphics_system.cpp
-    ${REFII_RENDERER_ROOT}/src/runtime/plume_resource_manager.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/draw/plume_draw_state.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/direct/fable_hook_symbols.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/direct/fable_direct_present_state.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/direct/fable_direct_renderer.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/direct/fable_direct_state.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/direct/fable_guest_resource_registry.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/general/plume_api_bridge.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/general/plume_backend.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/general/plume_diagnostics.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/general/plume_fable_addressing.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/general/plume_graphics_system.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/resource/plume_resource_lifetime.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/resource/plume_resource_state.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/resource/plume_resource_types.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/resource/plume_surface_shape.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/resource/plume_texture_formats.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/resource/plume_texture_lookup.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/resource/plume_texture_metadata.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/resource/plume_texture_upload.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/resource/plume_texture_views.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/plume/resource/plume_vertex_declaration.cpp
     ${REFII_RENDERER_ROOT}/src/runtime/renderdoc_debugger.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/replacement_health.cpp
     ${REFII_RENDERER_ROOT}/src/runtime/renderer_runtime.cpp
     ${REFII_RENDERER_ROOT}/src/runtime/shader_library.cpp
     ${REFII_RENDERER_ROOT}/src/runtime/d3d12/plume_d3d12_bridge.cpp
+    ${REFII_RENDERER_ROOT}/src/runtime/metal/plume_metal_bridge.cpp
     ${REFII_RENDERER_ROOT}/src/runtime/vulkan/plume_vulkan_bridge.cpp
 )
 
@@ -32,13 +50,24 @@ set(REFII_RENDERER_HOOK_PARTS
     ${REFII_RENDERER_ROOT}/include/renderdoc_debugger.h
     ${REFII_RENDERER_ROOT}/include/runtime/cvars.h
     ${REFII_RENDERER_ROOT}/include/runtime/hook_observer.h
-    ${REFII_RENDERER_ROOT}/include/runtime/plume_api_bridge.h
-    ${REFII_RENDERER_ROOT}/include/runtime/plume_api_bridge_private.h
-    ${REFII_RENDERER_ROOT}/include/runtime/plume_backend.h
-    ${REFII_RENDERER_ROOT}/include/runtime/plume_diagnostics.h
-    ${REFII_RENDERER_ROOT}/include/runtime/plume_graphics_system.h
-    ${REFII_RENDERER_ROOT}/include/runtime/plume_imgui_overlay.h
-    ${REFII_RENDERER_ROOT}/include/runtime/plume_resource_manager.h
+    ${REFII_RENDERER_ROOT}/include/runtime/replacement_health.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/draw/plume_draw_state.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/direct/fable_direct_present_state.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/direct/fable_direct_renderer.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/direct/fable_direct_state.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/direct/fable_guest_resource_registry.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/direct/fable_hook_symbols.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/direct/fable_observer_resources.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/direct/fable_synthetic_draws.inl
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/direct/fable_video_uploads.inl
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/general/plume_api_bridge.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/general/plume_api_bridge_private.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/general/plume_backend.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/general/plume_diagnostics.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/general/plume_graphics_system.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/general/plume_imgui_overlay.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/resource/plume_resource_manager_internal.h
+    ${REFII_RENDERER_ROOT}/include/runtime/plume/resource/plume_vertex_declaration.h
     ${REFII_RENDERER_ROOT}/include/runtime/shader_library.h
     ${REFII_RENDERER_ROOT}/include/hooks/ppc_externs.h
 )
@@ -47,9 +76,9 @@ set_source_files_properties(${REFII_RENDERER_HOOK_PARTS}
 )
 
 set(PLUME_SDL_VULKAN_ENABLED
-    "${REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED}"
+    "${REFII_SDL3_WINDOW_ENABLED}"
     CACHE BOOL
-    "Enable Plume's internal SDL Vulkan integration through the Refii/ReXGlue SDL window"
+    "Enable Plume's internal SDL Vulkan integration through the Refii SDL3 window"
     FORCE
 )
 set(REFII_RENDERER_ENABLE_PLUME_D3D12_AGILITY_SDK OFF)
@@ -287,7 +316,7 @@ target_link_libraries(refii_renderer
 target_compile_definitions(refii_renderer
     PUBLIC
         REFII_RENDERER_HAS_IMGUI=${REFII_RENDERER_HAS_IMGUI}
-        REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED=$<BOOL:${REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED}>
+        REFII_SDL3_WINDOW_ENABLED=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>
 )
 if(EXISTS "${REFII_RENDERER_RENDERDOC_API_HEADER}")
     target_include_directories(refii_renderer
@@ -328,6 +357,16 @@ if(TARGET plume)
         PUBLIC
             REFII_RENDERER_HAS_PLUME=1
     )
+    if(APPLE)
+        target_link_libraries(refii_renderer
+            PRIVATE
+                "-framework Metal"
+                "-framework QuartzCore"
+                "-framework CoreGraphics"
+                "-framework Foundation"
+                "-framework IOKit"
+        )
+    endif()
     if(REFII_RENDERER_DXC_EXECUTABLE)
         set(PLUME_DXC_EXECUTABLE "${REFII_RENDERER_DXC_EXECUTABLE}" CACHE INTERNAL "")
     endif()
@@ -378,13 +417,6 @@ if(TARGET plume)
         refii_renderer
         "${REFII_RENDERER_ROOT}/src/runtime/shaders/plume_present_blit_ps.hlsl"
         plume_present_blit_ps
-        PSMain
-        OUTPUT_DIR "${REFII_RENDERER_SHADER_OUTPUT_DIR}"
-    )
-    plume_compile_pixel_shader(
-        refii_renderer
-        "${REFII_RENDERER_ROOT}/src/runtime/shaders/plume_private_texture_copy_ps.hlsl"
-        plume_private_texture_copy_ps
         PSMain
         OUTPUT_DIR "${REFII_RENDERER_SHADER_OUTPUT_DIR}"
     )

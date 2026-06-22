@@ -30,10 +30,12 @@
 #include <rex/ui/windowed_app_context_sdl.h>
 
 #include <SDL3/SDL_error.h>
+#include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_properties.h>
+#include <SDL3/SDL_surface.h>
 
 #if defined(__linux__)
 #include <X11/Xlib-xcb.h>
@@ -42,6 +44,44 @@
 namespace {
 
 using rex::ui::VirtualKey;
+
+uint32_t ResolveWindowWidth(uint32_t requested_width) {
+  if (REXCVAR_GET(window_width) > 0) {
+    return uint32_t(REXCVAR_GET(window_width));
+  }
+  if (!rex::cvar::HasNonDefaultValue("window_width")) {
+    if (rex::cvar::HasNonDefaultValue("video_mode_width") &&
+        REXCVAR_GET(video_mode_width) > 0) {
+      return uint32_t(std::clamp(REXCVAR_GET(video_mode_width), 1, 8192));
+    }
+    int32_t preset_width = 0;
+    int32_t preset_height = 0;
+    if (rex::graphics::video_mode_util::TryGetResolutionPresetFromCVar(
+            preset_width, preset_height)) {
+      return uint32_t(std::clamp(preset_width, 1, 8192));
+    }
+  }
+  return requested_width;
+}
+
+uint32_t ResolveWindowHeight(uint32_t requested_height) {
+  if (REXCVAR_GET(window_height) > 0) {
+    return uint32_t(REXCVAR_GET(window_height));
+  }
+  if (!rex::cvar::HasNonDefaultValue("window_height")) {
+    if (rex::cvar::HasNonDefaultValue("video_mode_height") &&
+        REXCVAR_GET(video_mode_height) > 0) {
+      return uint32_t(std::clamp(REXCVAR_GET(video_mode_height), 1, 8192));
+    }
+    int32_t preset_width = 0;
+    int32_t preset_height = 0;
+    if (rex::graphics::video_mode_util::TryGetResolutionPresetFromCVar(
+            preset_width, preset_height)) {
+      return uint32_t(std::clamp(preset_height, 1, 8192));
+    }
+  }
+  return requested_height;
+}
 
 VirtualKey TranslateSDLKeycodeToVirtualKey(SDL_Keycode keycode) {
   if (keycode >= SDLK_A && keycode <= SDLK_Z) {
@@ -194,6 +234,15 @@ rex::ui::MouseEvent::Button TranslateSDLMouseButton(uint8_t button) {
 namespace rex {
 namespace ui {
 
+std::unique_ptr<Window> Window::Create(WindowedAppContext& app_context,
+                                       std::string_view title,
+                                       uint32_t desired_logical_width,
+                                       uint32_t desired_logical_height) {
+  return std::make_unique<SDLWindow>(
+      app_context, title, ResolveWindowWidth(desired_logical_width),
+      ResolveWindowHeight(desired_logical_height));
+}
+
 SDLWindow::SDLWindow(WindowedAppContext& app_context, const std::string_view title,
                      uint32_t desired_logical_width, uint32_t desired_logical_height)
     : Window(app_context, title, desired_logical_width, desired_logical_height) {}
@@ -314,6 +363,30 @@ void SDLWindow::ApplyNewFullscreen() {
 
 void SDLWindow::ApplyNewTitle() {
   SDL_SetWindowTitle(window_, GetTitle().c_str());
+}
+
+void SDLWindow::LoadAndApplyIcon(const void* buffer, size_t size,
+                                 bool can_apply_state_in_current_phase) {
+  if (!can_apply_state_in_current_phase || !window_ || !buffer || size == 0) {
+    return;
+  }
+
+  SDL_IOStream* stream = SDL_IOFromConstMem(buffer, size);
+  if (!stream) {
+    REXLOG_WARN("SDLWindow: failed to open window icon data: {}", SDL_GetError());
+    return;
+  }
+
+  SDL_Surface* icon = SDL_LoadPNG_IO(stream, true);
+  if (!icon) {
+    REXLOG_WARN("SDLWindow: failed to decode window icon PNG: {}", SDL_GetError());
+    return;
+  }
+
+  if (!SDL_SetWindowIcon(window_, icon)) {
+    REXLOG_WARN("SDLWindow: SDL_SetWindowIcon failed: {}", SDL_GetError());
+  }
+  SDL_DestroySurface(icon);
 }
 
 void SDLWindow::ApplyNewMouseCapture() {

@@ -218,6 +218,7 @@ LuaJumpRenderResult TryRenderLuaStructuredConditionalBranch(
         .lines = context.lines,
         .values = context.values,
         .declared = context.declared,
+        .instructions = context.instructions,
         .declarations = context.declarations,
         .function = context.function,
         .register_count = context.register_count,

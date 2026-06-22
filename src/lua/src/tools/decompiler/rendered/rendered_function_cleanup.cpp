@@ -887,6 +887,24 @@ bool SimplifyRenderedLuaInvalidNumericForLoopHeads(std::vector<std::string>* lin
     for (std::size_t line_index = 0; line_index < lines->size(); ++line_index) {
         const std::string_view trimmed =
             TrimLuaWhitespace(StripLuaLineComment((*lines)[line_index]));
+        if (trimmed.starts_with("for ") && trimmed.ends_with(" do)")) {
+            const std::size_t equal = trimmed.find('=');
+            const std::size_t do_pos = trimmed.rfind(" do)");
+            if (equal != std::string_view::npos && do_pos != std::string_view::npos &&
+                equal > 4 && equal < do_pos) {
+                const std::string_view lhs =
+                    TrimLuaWhitespace(trimmed.substr(4, equal - 4));
+                const std::string_view rhs =
+                    TrimLuaWhitespace(trimmed.substr(equal + 1, do_pos - equal - 1));
+                if (IsValidLuaIdentifier(lhs) && rhs.starts_with("((")) {
+                    const std::string indent(GetRenderedLuaIndent((*lines)[line_index]));
+                    (*lines)[line_index] = indent + "for " + std::string(lhs) + " = " +
+                                           std::string(rhs.substr(1)) + " do";
+                    changed = true;
+                    continue;
+                }
+            }
+        }
         if (!trimmed.starts_with("for ") || !trimmed.ends_with(" do")) {
             continue;
         }

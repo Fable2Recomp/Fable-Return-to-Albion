@@ -117,6 +117,91 @@ bool IsLuaFallbackFunctionBoundaryConditionalReturnShape(
            IsLuaFallbackFunctionBoundaryReturnLine(instructions, join_line + 1, target_register);
 }
 
+bool DoesLuaFallbackInstructionReadRegister(const Lua51Instruction& instruction, int reg) {
+    switch (instruction.opcode) {
+        case Lua51Opcode::kMove:
+        case Lua51Opcode::kUnm:
+        case Lua51Opcode::kNot:
+        case Lua51Opcode::kLen:
+        case Lua51Opcode::kSetGlobal:
+        case Lua51Opcode::kSetUpval:
+        case Lua51Opcode::kTest:
+            return instruction.a == reg || instruction.b == reg;
+        case Lua51Opcode::kGetTable:
+        case Lua51Opcode::kSelf:
+        case Lua51Opcode::kAdd:
+        case Lua51Opcode::kSub:
+        case Lua51Opcode::kMul:
+        case Lua51Opcode::kDiv:
+        case Lua51Opcode::kMod:
+        case Lua51Opcode::kPow:
+        case Lua51Opcode::kEq:
+        case Lua51Opcode::kLt:
+        case Lua51Opcode::kLe:
+            return instruction.b == reg || instruction.c == reg;
+        case Lua51Opcode::kSetTable:
+            return instruction.a == reg || instruction.b == reg || instruction.c == reg;
+        case Lua51Opcode::kConcat:
+            return reg >= instruction.b && reg <= instruction.c;
+        case Lua51Opcode::kTestSet:
+            return instruction.b == reg;
+        case Lua51Opcode::kCall:
+        case Lua51Opcode::kTailCall:
+            if (reg < instruction.a) {
+                return false;
+            }
+            if (instruction.b == 0) {
+                return true;
+            }
+            return reg < instruction.a + instruction.b;
+        case Lua51Opcode::kReturn:
+            if (reg < instruction.a) {
+                return false;
+            }
+            if (instruction.b == 0) {
+                return true;
+            }
+            return reg < instruction.a + instruction.b - 1;
+        case Lua51Opcode::kSetList:
+            if (instruction.a == reg) {
+                return true;
+            }
+            if (instruction.b == 0) {
+                return reg > instruction.a;
+            }
+            return reg > instruction.a && reg <= instruction.a + instruction.b;
+        default:
+            return false;
+    }
+}
+
+bool IsLuaFallbackRegisterReadBeforeWrite(
+    const LuaPreviewFallbackContext& context,
+    int reg,
+    int start_line) {
+    if (context.preview_context == nullptr || reg < 0 || start_line < 1) {
+        return false;
+    }
+
+    const std::vector<Lua51Instruction>& instructions =
+        context.preview_context->instructions;
+    const int instruction_count = static_cast<int>(instructions.size());
+    for (int line = start_line; line <= instruction_count; ++line) {
+        const Lua51Instruction& instruction =
+            instructions[static_cast<std::size_t>(line - 1)];
+        if (DoesLuaFallbackInstructionReadRegister(instruction, reg)) {
+            return true;
+        }
+        const std::vector<bool> written_registers =
+            GetLuaPreviewWrittenRegistersForLine(*context.preview_context, line);
+        if (static_cast<std::size_t>(reg) < written_registers.size() &&
+            written_registers[static_cast<std::size_t>(reg)]) {
+            return false;
+        }
+    }
+    return false;
+}
+
 bool EvaluateLuaPreviewBranchFallbackPath(const LuaPreviewFallbackContext& context,
                                           int start_line,
                                           int join_line,
@@ -347,6 +432,13 @@ bool EvaluateLuaPreviewBranchFallbackPath(const LuaPreviewFallbackContext& conte
                                                                context.register_count,
                                                                &changed_register,
                                                                &merged_value)) {
+                if (IsLuaFallbackRegisterReadBeforeWrite(
+                        context, changed_register, join_line)) {
+                    if (preview_error != nullptr) {
+                        *preview_error = "fallback_join_register_later_read";
+                    }
+                    return false;
+                }
                 *preview_values = fallthrough_state.values;
                 *preview_declared = fallthrough_state.declared;
                 (*preview_values)[static_cast<std::size_t>(changed_register)] =

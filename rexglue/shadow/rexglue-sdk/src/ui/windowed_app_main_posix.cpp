@@ -28,13 +28,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/ui/windowed_app.h>
-#include <rex/ui/windowed_app_context_gtk.h>
-
-#if REX_UI_HAS_SDL_WINDOW
 #include <rex/ui/windowed_app_context_sdl.h>
-#endif
-
-#include <gtk/gtk.h>
 
 namespace {
 
@@ -89,18 +83,6 @@ void ReinstateExternalShutdownTerminateHandler() {
 void MarkExternalShutdownInProgress() {
   g_external_shutdown_requested.store(true, std::memory_order_release);
   ReinstateExternalShutdownTerminateHandler();
-}
-
-bool ShouldUseSDLWindow(int argc, char** argv) {
-#if REX_UI_HAS_SDL_WINDOW
-  (void)argc;
-  (void)argv;
-  return true;
-#else
-  (void)argc;
-  (void)argv;
-  return false;
-#endif
 }
 
 void ApplyPositionalArguments(rex::ui::WindowedApp& app,
@@ -275,78 +257,27 @@ int main(int argc_pre_gtk, char** argv_pre_gtk) {
   InstallExternalShutdownTerminateHandler();
   PosixTerminationSignalBridge termination_signal_bridge;
 
-#if REX_UI_HAS_SDL_WINDOW
-  if (ShouldUseSDLWindow(argc_pre_gtk, argv_pre_gtk)) {
-    auto remaining = rex::cvar::Init(argc_pre_gtk, argv_pre_gtk);
-    rex::cvar::ApplyEnvironment();
-    rex::InitLoggingEarly();
-
-    int result = EXIT_FAILURE;
-    {
-      rex::ui::SDLWindowedAppContext app_context;
-      if (!app_context.Initialize()) {
-        std::fputs("Failed to initialize SDL3 video\n", stderr);
-        rex::ShutdownLogging();
-        return EXIT_FAILURE;
-      }
-      std::unique_ptr<rex::ui::WindowedApp> app =
-          rex::ui::GetWindowedAppCreator()(app_context);
-      ApplyPositionalArguments(*app, remaining);
-      termination_signal_bridge.Start(app_context, MakeShutdownCallback(*app));
-
-      if (app->OnInitialize()) {
-        termination_signal_bridge.RefreshHandlers();
-        app_context.RunMainSDLLoop();
-        MarkExternalShutdownInProgress();
-        result = EXIT_SUCCESS;
-      }
-
-      termination_signal_bridge.Stop();
-      app->InvokeOnDestroy();
-    }
-
-    rex::ShutdownLogging();
-    return result;
-  }
-#endif
-
-  // Before touching anything GTK+, make sure that when running on Wayland,
-  // we'll still get an X11 (Xwayland) window
-  setenv("GDK_BACKEND", "x11", 1);
-
-  // Initialize GTK+, which will handle and remove its own arguments from argv.
-  // Both GTK+ and Xenia use --option=value argument format (see man
-  // gtk-options), however, it's meaningless to try to parse the same argument
-  // both as a GTK+ one and as a cvar. Make GTK+ options take precedence in case
-  // of a name collision, as there's an alternative way of setting Xenia options
-  // (the config).
-  int argc_post_gtk = argc_pre_gtk;
-  char** argv_post_gtk = argv_pre_gtk;
-  if (!gtk_init_check(&argc_post_gtk, &argv_post_gtk)) {
-    // Logging has not been initialized yet.
-    std::fputs("Failed to initialize GTK+\n", stderr);
-    return EXIT_FAILURE;
-  }
-
-  auto remaining = rex::cvar::Init(argc_post_gtk, argv_post_gtk);
+  auto remaining = rex::cvar::Init(argc_pre_gtk, argv_pre_gtk);
   rex::cvar::ApplyEnvironment();
   rex::InitLoggingEarly();
 
-  int result;
-
+  int result = EXIT_FAILURE;
   {
-    rex::ui::GTKWindowedAppContext app_context;
+    rex::ui::SDLWindowedAppContext app_context;
+    if (!app_context.Initialize()) {
+      std::fputs("Failed to initialize SDL3 video\n", stderr);
+      rex::ShutdownLogging();
+      return EXIT_FAILURE;
+    }
     std::unique_ptr<rex::ui::WindowedApp> app = rex::ui::GetWindowedAppCreator()(app_context);
     ApplyPositionalArguments(*app, remaining);
     termination_signal_bridge.Start(app_context, MakeShutdownCallback(*app));
 
     if (app->OnInitialize()) {
       termination_signal_bridge.RefreshHandlers();
-      app_context.RunMainGTKLoop();
+      app_context.RunMainSDLLoop();
       MarkExternalShutdownInProgress();
       result = EXIT_SUCCESS;
-    } else {
-      result = EXIT_FAILURE;
     }
 
     termination_signal_bridge.Stop();

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 enum class RuntimeCVarType {
@@ -25,7 +26,7 @@ struct RuntimeCVarDefinition {
 class RuntimeSettingsPanel {
 public:
     void Initialize();
-    void Render();
+    void Render(std::string_view categoryPrefix = {});
 
 private:
     void Reload();

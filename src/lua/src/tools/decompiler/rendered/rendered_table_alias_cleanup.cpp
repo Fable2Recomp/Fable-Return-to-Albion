@@ -508,6 +508,48 @@ bool SimplifyRenderedLuaTopLevelMemberAliases(std::vector<std::string>* lines) {
         return false;
     };
 
+    const auto control_block_assigns_target = [&](std::size_t control_line,
+                                                  std::string_view target) {
+        if (control_line >= lines->size() || target.empty()) {
+            return false;
+        }
+
+        const std::string_view trimmed =
+            TrimLuaWhitespace(StripLuaLineComment((*lines)[control_line]));
+        const bool control_header =
+            (trimmed.starts_with("if ") && trimmed.ends_with(" then")) ||
+            (trimmed.starts_with("elseif ") && trimmed.ends_with(" then")) ||
+            (trimmed.starts_with("while ") && trimmed.ends_with(" do"));
+        if (!control_header || CountIdentifierUses(trimmed, target) == 0) {
+            return false;
+        }
+
+        const std::size_t block_end = FindRenderedFunctionBlockEnd(*lines, control_line);
+        if (block_end >= lines->size() || block_end <= control_line) {
+            return false;
+        }
+
+        for (std::size_t probe = control_line + 1; probe < block_end; ++probe) {
+            if (IsRenderedShadowingLocalDeclaration((*lines)[probe], target)) {
+                return false;
+            }
+
+            bool assign_is_local = false;
+            std::string lhs;
+            std::string rhs;
+            if (ParseRenderedSingleAssignmentLine((*lines)[probe],
+                                                  &assign_is_local,
+                                                  &lhs,
+                                                  &rhs) &&
+                !assign_is_local &&
+                lhs == target) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
     return RunTableAliasCleanupPassLoop(32, [&]() {
         std::vector<std::vector<std::size_t>> scope_paths;
         ComputeRenderedScopePaths(*lines, &scope_paths);
@@ -580,7 +622,16 @@ bool SimplifyRenderedLuaTopLevelMemberAliases(std::vector<std::string>* lines) {
 
                 const std::size_t use_count = CountIdentifierUses((*lines)[probe], lhs_expression);
                 if (use_count == 0) {
+                    if (!TrimLuaWhitespace(StripLuaLineComment((*lines)[probe])).empty()) {
+                        failed = true;
+                        break;
+                    }
                     continue;
+                }
+
+                if (control_block_assigns_target(probe, lhs_expression)) {
+                    failed = true;
+                    break;
                 }
 
                 std::string rewritten;
@@ -683,6 +734,38 @@ bool SimplifyRenderedLuaDeadTemporaryAliasAssignments(std::vector<std::string>* 
         return prefix.size() <= candidate.size() &&
                std::equal(prefix.begin(), prefix.end(), candidate.begin());
     };
+    const auto line_calls_alias_as_callee = [](std::string_view line,
+                                               std::string_view alias_name) {
+        if (alias_name.empty()) {
+            return false;
+        }
+
+        std::string_view statement = TrimLuaWhitespace(StripLuaLineComment(line));
+        if (statement.starts_with("local ")) {
+            statement = TrimLuaWhitespace(statement.substr(6));
+        }
+
+        const std::size_t equal = statement.find('=');
+        if (equal != std::string_view::npos) {
+            statement = TrimLuaWhitespace(statement.substr(equal + 1));
+        }
+
+        return statement.starts_with(alias_name) &&
+               statement.size() > alias_name.size() &&
+               statement[alias_name.size()] == '(';
+    };
+    const auto has_immediate_alias_call_use = [&](std::size_t assignment_line,
+                                                  std::string_view alias_name) {
+        for (std::size_t probe = assignment_line + 1; probe < lines->size(); ++probe) {
+            const std::string_view trimmed =
+                TrimLuaWhitespace(StripLuaLineComment((*lines)[probe]));
+            if (trimmed.empty()) {
+                continue;
+            }
+            return line_calls_alias_as_callee(trimmed, alias_name);
+        }
+        return false;
+    };
 
     return RunTableAliasCleanupPassLoop(32, [&]() {
         std::vector<std::vector<std::size_t>> scope_paths;
@@ -711,6 +794,11 @@ bool SimplifyRenderedLuaDeadTemporaryAliasAssignments(std::vector<std::string>* 
                 IsRenderTemporaryName(target_expression) ||
                 !IsRenderedSafePrefixExpression(target_expression)) {
                 continue;
+            }
+            if (CountIdentifierUses(target_expression, alias_name) != 0) {
+                if (has_immediate_alias_call_use(line_index, alias_name)) {
+                    continue;
+                }
             }
 
             const std::vector<std::size_t>& declaration_scope = scope_paths[line_index];
@@ -744,6 +832,10 @@ bool SimplifyRenderedLuaDeadTemporaryAliasAssignments(std::vector<std::string>* 
                                                      &probe_rhs) &&
                     StripRenderedWholeParentheses(TrimLuaWhitespace(probe_lhs), nullptr) ==
                         alias_name) {
+                    if (CountIdentifierUses(probe_rhs, alias_name) != 0 &&
+                        has_immediate_alias_call_use(probe, alias_name)) {
+                        alias_used = true;
+                    }
                     break;
                 }
 
@@ -754,6 +846,10 @@ bool SimplifyRenderedLuaDeadTemporaryAliasAssignments(std::vector<std::string>* 
             }
 
             if (alias_used) {
+                continue;
+            }
+            if (IsRenderedAssignmentUsedAfterContainingControlBlock(
+                    *lines, line_index, alias_name)) {
                 continue;
             }
 

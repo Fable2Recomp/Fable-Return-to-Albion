@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <unordered_map>
 
 #if DLSS_ENABLED
@@ -986,6 +987,43 @@ namespace plume {
         return data;
     }
 
+    static void WriteVulkanPipelineCacheData(VkDevice device, VkPipelineCache pipelineCache, bool force) {
+        if (device == VK_NULL_HANDLE || pipelineCache == VK_NULL_HANDLE) {
+            return;
+        }
+
+        static std::mutex s_pipelineCacheWriteMutex;
+        static uint32_t s_pipelineCreationsSinceWrite = 0;
+        static bool s_pipelineCacheWrittenOnce = false;
+
+        std::lock_guard lock(s_pipelineCacheWriteMutex);
+        ++s_pipelineCreationsSinceWrite;
+        if (!force && s_pipelineCacheWrittenOnce && s_pipelineCreationsSinceWrite < 8) {
+            return;
+        }
+
+        size_t pipelineCacheSize = 0;
+        if (vkGetPipelineCacheData(device, pipelineCache, &pipelineCacheSize, nullptr) != VK_SUCCESS ||
+            pipelineCacheSize == 0) {
+            return;
+        }
+
+        std::vector<uint8_t> pipelineCacheData(pipelineCacheSize);
+        if (vkGetPipelineCacheData(device, pipelineCache, &pipelineCacheSize, pipelineCacheData.data()) != VK_SUCCESS) {
+            return;
+        }
+
+        FILE *file = std::fopen(GetVulkanPipelineCachePath(), "wb");
+        if (file == nullptr) {
+            return;
+        }
+
+        std::fwrite(pipelineCacheData.data(), 1, pipelineCacheSize, file);
+        std::fclose(file);
+        s_pipelineCacheWrittenOnce = true;
+        s_pipelineCreationsSinceWrite = 0;
+    }
+
     void VulkanBuffer::unmap(uint32_t subresource, const RenderRange *writtenRange) {
         vmaUnmapMemory(device->allocator, allocation);
     }
@@ -1725,9 +1763,29 @@ namespace plume {
 
         VkResult res = vkCreateGraphicsPipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
-            fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
+            fprintf(stderr,
+                    "vkCreateGraphicsPipelines failed with error code 0x%X "
+                    "(stages=%u topology=%u rt_count=%u rt0=%u depth=%u "
+                    "depth_enabled=%u depth_write=%u stencil=%u inputs=%u/%u "
+                    "layout=%p vs=%p gs=%p ps=%p).\n",
+                    res, pipelineInfo.stageCount,
+                    static_cast<uint32_t>(desc.primitiveTopology),
+                    desc.renderTargetCount,
+                    desc.renderTargetCount != 0
+                        ? static_cast<uint32_t>(desc.renderTargetFormat[0])
+                        : 0u,
+                    static_cast<uint32_t>(desc.depthTargetFormat),
+                    desc.depthEnabled ? 1u : 0u,
+                    desc.depthWriteEnabled ? 1u : 0u,
+                    desc.stencilEnabled ? 1u : 0u,
+                    desc.inputSlotsCount, desc.inputElementsCount,
+                    static_cast<const void *>(desc.pipelineLayout),
+                    static_cast<const void *>(desc.vertexShader),
+                    static_cast<const void *>(desc.geometryShader),
+                    static_cast<const void *>(desc.pixelShader));
             return;
         }
+        WriteVulkanPipelineCacheData(device->vk, device->pipelineCache, false);
     }
 
     VulkanGraphicsPipeline::~VulkanGraphicsPipeline() {
@@ -3793,6 +3851,28 @@ namespace plume {
         return true;
     }
 
+    bool VulkanCommandQueue::waitIdle() {
+        if (device->deviceLost.load(std::memory_order_acquire)) {
+            return false;
+        }
+
+        VkResult res;
+        {
+            const std::scoped_lock queueLock(*queue->mutex);
+            res = vkQueueWaitIdle(queue->vk);
+        }
+
+        if (res != VK_SUCCESS) {
+            MarkVulkanDeviceLost(device, res, "vkQueueWaitIdle");
+            if (!VulkanResultIsDeviceLost(res)) {
+                fprintf(stderr, "vkQueueWaitIdle failed with error code 0x%X.\n", res);
+            }
+            return false;
+        }
+
+        return true;
+    }
+
     // VulkanPool
 
     VulkanPool::VulkanPool(VulkanDevice *device, const RenderPoolDesc &desc) {
@@ -4342,7 +4422,11 @@ namespace plume {
     }
 
     std::unique_ptr<RenderPipeline> VulkanDevice::createGraphicsPipeline(const RenderGraphicsPipelineDesc &desc) {
-        return std::make_unique<VulkanGraphicsPipeline>(this, desc);
+        auto pipeline = std::make_unique<VulkanGraphicsPipeline>(this, desc);
+        if (pipeline->vk == VK_NULL_HANDLE) {
+            return nullptr;
+        }
+        return pipeline;
     }
 
     std::unique_ptr<RenderPipeline> VulkanDevice::createRaytracingPipeline(const RenderRaytracingPipelineDesc &desc, const RenderPipeline *previousPipeline) {
@@ -4598,17 +4682,7 @@ namespace plume {
         nullBuffer = nullptr; // force destruction before destroying allocator
 
         if (pipelineCache != VK_NULL_HANDLE) {
-            size_t pipelineCacheSize = 0;
-            if (vkGetPipelineCacheData(vk, pipelineCache, &pipelineCacheSize, nullptr) == VK_SUCCESS && pipelineCacheSize > 0) {
-                std::vector<uint8_t> pipelineCacheData(pipelineCacheSize);
-                if (vkGetPipelineCacheData(vk, pipelineCache, &pipelineCacheSize, pipelineCacheData.data()) == VK_SUCCESS) {
-                    FILE *file = std::fopen(GetVulkanPipelineCachePath(), "wb");
-                    if (file != nullptr) {
-                        std::fwrite(pipelineCacheData.data(), 1, pipelineCacheSize, file);
-                        std::fclose(file);
-                    }
-                }
-            }
+            WriteVulkanPipelineCacheData(vk, pipelineCache, true);
             vkDestroyPipelineCache(vk, pipelineCache, nullptr);
             pipelineCache = VK_NULL_HANDLE;
         }

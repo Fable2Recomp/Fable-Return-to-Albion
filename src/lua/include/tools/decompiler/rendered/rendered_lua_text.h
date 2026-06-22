@@ -301,6 +301,7 @@ bool RemoveRenderedLuaSubsumedTailBreakGuardsForExactParity(
 bool SimplifyRenderedLuaImmediateAssignedConditionExpressionUses(
     std::vector<std::string>* lines);
 bool SimplifyRenderedLuaImmediateSingleUseGuardTemps(std::vector<std::string>* lines);
+bool RepairRenderedLuaSourceGuardedTemporaryFallbacks(std::vector<std::string>* lines);
 bool SimplifyRenderedLuaImmediateRedundantConditionTemps(std::vector<std::string>* lines);
 bool SimplifyRenderedLuaImmediateAssignedCallGuards(std::vector<std::string>* lines);
 bool SimplifyRenderedLuaImmediateAssignedMethodCallGuards(std::vector<std::string>* lines);

@@ -1163,6 +1163,27 @@ void AppendInstructionDumpForFunction(const refii::lua::Lua51Function& function,
     if (text == nullptr) {
         return;
     }
+    const auto constant_label = [&](int index) -> std::string {
+        if (index < 0 || static_cast<std::size_t>(index) >= function.constants.size()) {
+            return {};
+        }
+        return refii::lua::RenderLuaConstant(function.constants[static_cast<std::size_t>(index)]);
+    };
+    const auto rk_label = [&](int rk) -> std::string {
+        constexpr int kLua51ConstantBit = 256;
+        if (rk < kLua51ConstantBit) {
+            return {};
+        }
+        return constant_label(rk - kLua51ConstantBit);
+    };
+    const auto append_rk = [&](std::ostringstream& out,
+                               std::string_view name,
+                               int rk) {
+        const std::string label = rk_label(rk);
+        if (!label.empty()) {
+            out << " " << name << "=" << label;
+        }
+    };
     std::ostringstream stream;
     stream << "function " << function_index << " depth=" << depth << " line_defined="
            << function.line_defined << " last_line=" << function.last_line_defined << "\n";
@@ -1174,7 +1195,41 @@ void AppendInstructionDumpForFunction(const refii::lua::Lua51Function& function,
                << "A=" << instruction.a << " B=" << instruction.b << " C=" << instruction.c
                << " BX=" << instruction.bx << " SBX=" << instruction.sbx << " RAW=0x"
                << std::hex << std::setw(8) << std::setfill('0') << instruction.raw
-               << std::dec << std::setfill(' ') << "\n";
+               << std::dec << std::setfill(' ');
+        switch (instruction.opcode) {
+            case refii::lua::Lua51Opcode::kLoadK:
+            case refii::lua::Lua51Opcode::kGetGlobal:
+            case refii::lua::Lua51Opcode::kSetGlobal: {
+                const std::string label = constant_label(instruction.bx);
+                if (!label.empty()) {
+                    stream << " K=" << label;
+                }
+                break;
+            }
+            case refii::lua::Lua51Opcode::kGetTable:
+            case refii::lua::Lua51Opcode::kSelf:
+                append_rk(stream, "rkC", instruction.c);
+                break;
+            case refii::lua::Lua51Opcode::kSetTable:
+                append_rk(stream, "rkB", instruction.b);
+                append_rk(stream, "rkC", instruction.c);
+                break;
+            case refii::lua::Lua51Opcode::kAdd:
+            case refii::lua::Lua51Opcode::kSub:
+            case refii::lua::Lua51Opcode::kMul:
+            case refii::lua::Lua51Opcode::kDiv:
+            case refii::lua::Lua51Opcode::kMod:
+            case refii::lua::Lua51Opcode::kPow:
+            case refii::lua::Lua51Opcode::kEq:
+            case refii::lua::Lua51Opcode::kLt:
+            case refii::lua::Lua51Opcode::kLe:
+                append_rk(stream, "rkB", instruction.b);
+                append_rk(stream, "rkC", instruction.c);
+                break;
+            default:
+                break;
+        }
+        stream << "\n";
     }
     stream << "\n";
     *text += stream.str();

@@ -24,13 +24,9 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/ui/windowed_app.h>
+#include <rex/ui/windowed_app_context_sdl.h>
 
 #if defined(_WIN32)
-#include <rex/ui/windowed_app_context_win.h>
-#if REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED
-#include <rex/ui/windowed_app_context_sdl.h>
-#endif
-
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -44,12 +40,6 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <unistd.h>
-#include <X11/Xlib.h>
-#include <gtk/gtk.h>
-#include <rex/ui/windowed_app_context_gtk.h>
-#if REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED
-#include <rex/ui/windowed_app_context_sdl.h>
-#endif
 #endif
 
 namespace {
@@ -130,16 +120,6 @@ void ApplyPositionalArguments(
     app.SetParsedArguments(std::move(parsedArguments));
 }
 
-bool ShouldUseSDLWindow(const std::vector<char*>& argvPointers) {
-#if REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED
-    (void)argvPointers;
-    return true;
-#else
-    (void)argvPointers;
-    return false;
-#endif
-}
-
 std::function<void()> MakeShutdownCallback(rex::ui::WindowedApp& app) {
     return [&app]() {
 #if REFII_HAS_RENDERER_RUNTIME
@@ -151,13 +131,6 @@ std::function<void()> MakeShutdownCallback(rex::ui::WindowedApp& app) {
 }
 
 #if !defined(_WIN32)
-void InitializeX11Threading() {
-    static std::once_flag x11ThreadInitFlag;
-    std::call_once(x11ThreadInitFlag, []() {
-        XInitThreads();
-    });
-}
-
 class PosixTerminationSignalBridge {
 public:
     PosixTerminationSignalBridge() {
@@ -385,31 +358,7 @@ int RunEmbeddedOnWindows(std::vector<std::string> ownedArguments) {
     auto remaining = rex::cvar::Init(static_cast<int>(argvPointers.size()), argvPointers.data());
     rex::cvar::ApplyEnvironment();
 
-#if REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED
-    if (ShouldUseSDLWindow(argvPointers)) {
-        rex::ui::SDLWindowedAppContext appContext;
-        if (!appContext.Initialize()) {
-            return EXIT_FAILURE;
-        }
-        std::unique_ptr<rex::ui::WindowedApp> app = CreateRefiiApp(appContext);
-        ApplyPositionalArguments(*app, remaining);
-        WindowsConsoleControlBridge consoleControlBridge(appContext, MakeShutdownCallback(*app));
-
-        const HRESULT coInitializeResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-        if (FAILED(coInitializeResult)) {
-            return EXIT_FAILURE;
-        }
-
-        const int result = app->OnInitialize() ? appContext.RunMainSDLLoop() : EXIT_FAILURE;
-
-        app->InvokeOnDestroy();
-        rex::ShutdownLogging();
-        CoUninitialize();
-        return result;
-    }
-#endif
-
-    rex::ui::Win32WindowedAppContext appContext(GetModuleHandleW(nullptr), SW_SHOWDEFAULT);
+    rex::ui::SDLWindowedAppContext appContext;
     if (!appContext.Initialize()) {
         return EXIT_FAILURE;
     }
@@ -422,7 +371,7 @@ int RunEmbeddedOnWindows(std::vector<std::string> ownedArguments) {
         return EXIT_FAILURE;
     }
 
-    const int result = app->OnInitialize() ? appContext.RunMainMessageLoop() : EXIT_FAILURE;
+    const int result = app->OnInitialize() ? appContext.RunMainSDLLoop() : EXIT_FAILURE;
 
     app->InvokeOnDestroy();
     rex::ShutdownLogging();
@@ -432,54 +381,20 @@ int RunEmbeddedOnWindows(std::vector<std::string> ownedArguments) {
 #else
 int RunEmbeddedOnPosix(std::vector<std::string> ownedArguments) {
     InstallPosixExternalShutdownTerminateHandler();
-    InitializeX11Threading();
 
     std::vector<char*> argvPointers = BuildArgvPointers(ownedArguments);
     PosixTerminationSignalBridge signalBridge;
 
-#if REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED
-    if (ShouldUseSDLWindow(argvPointers)) {
-        auto remaining = rex::cvar::Init(
-            static_cast<int>(argvPointers.size()),
-            argvPointers.data());
-        rex::cvar::ApplyEnvironment();
-
-        rex::ui::SDLWindowedAppContext appContext;
-        if (!appContext.Initialize()) {
-            std::fputs("Failed to initialize SDL3 video\n", stderr);
-            return EXIT_FAILURE;
-        }
-        std::unique_ptr<rex::ui::WindowedApp> app = CreateRefiiApp(appContext);
-        ApplyPositionalArguments(*app, remaining);
-        signalBridge.Start(appContext, MakeShutdownCallback(*app));
-
-        int result = EXIT_FAILURE;
-        if (app->OnInitialize()) {
-            signalBridge.RefreshHandlers();
-            appContext.RunMainSDLLoop();
-            MarkPosixExternalShutdownInProgress();
-            result = EXIT_SUCCESS;
-        }
-
-        signalBridge.Stop();
-        app->InvokeOnDestroy();
-        rex::ShutdownLogging();
-        return result;
-    }
-#endif
-
-    setenv("GDK_BACKEND", "x11", 1);
-    int argcAfterGtk = static_cast<int>(argvPointers.size());
-    char** argvAfterGtk = argvPointers.data();
-    if (!gtk_init_check(&argcAfterGtk, &argvAfterGtk)) {
-        std::fputs("Failed to initialize GTK+\n", stderr);
-        return EXIT_FAILURE;
-    }
-
-    auto remaining = rex::cvar::Init(argcAfterGtk, argvAfterGtk);
+    auto remaining = rex::cvar::Init(
+        static_cast<int>(argvPointers.size()),
+        argvPointers.data());
     rex::cvar::ApplyEnvironment();
 
-    rex::ui::GTKWindowedAppContext appContext;
+    rex::ui::SDLWindowedAppContext appContext;
+    if (!appContext.Initialize()) {
+        std::fputs("Failed to initialize SDL3 video\n", stderr);
+        return EXIT_FAILURE;
+    }
     std::unique_ptr<rex::ui::WindowedApp> app = CreateRefiiApp(appContext);
     ApplyPositionalArguments(*app, remaining);
     signalBridge.Start(appContext, MakeShutdownCallback(*app));
@@ -487,7 +402,7 @@ int RunEmbeddedOnPosix(std::vector<std::string> ownedArguments) {
     int result = EXIT_FAILURE;
     if (app->OnInitialize()) {
         signalBridge.RefreshHandlers();
-        appContext.RunMainGTKLoop();
+        appContext.RunMainSDLLoop();
         MarkPosixExternalShutdownInProgress();
         result = EXIT_SUCCESS;
     }

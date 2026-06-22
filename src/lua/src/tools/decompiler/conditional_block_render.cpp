@@ -102,6 +102,88 @@ bool TryFoldElseIntoElseIfChain(std::vector<std::string>* lines,
     return true;
 }
 
+bool DoesLuaConditionalInstructionReadRegister(const Lua51Instruction& instruction, int reg) {
+    switch (instruction.opcode) {
+        case Lua51Opcode::kMove:
+        case Lua51Opcode::kUnm:
+        case Lua51Opcode::kNot:
+        case Lua51Opcode::kLen:
+        case Lua51Opcode::kSetGlobal:
+        case Lua51Opcode::kSetUpval:
+        case Lua51Opcode::kTest:
+            return instruction.a == reg || instruction.b == reg;
+        case Lua51Opcode::kGetTable:
+        case Lua51Opcode::kSelf:
+        case Lua51Opcode::kAdd:
+        case Lua51Opcode::kSub:
+        case Lua51Opcode::kMul:
+        case Lua51Opcode::kDiv:
+        case Lua51Opcode::kMod:
+        case Lua51Opcode::kPow:
+        case Lua51Opcode::kEq:
+        case Lua51Opcode::kLt:
+        case Lua51Opcode::kLe:
+            return instruction.b == reg || instruction.c == reg;
+        case Lua51Opcode::kSetTable:
+            return instruction.a == reg || instruction.b == reg || instruction.c == reg;
+        case Lua51Opcode::kConcat:
+            return reg >= instruction.b && reg <= instruction.c;
+        case Lua51Opcode::kTestSet:
+            return instruction.b == reg;
+        case Lua51Opcode::kCall:
+        case Lua51Opcode::kTailCall:
+            if (reg < instruction.a) {
+                return false;
+            }
+            if (instruction.b == 0) {
+                return true;
+            }
+            return reg < instruction.a + instruction.b;
+        case Lua51Opcode::kReturn:
+            if (reg < instruction.a) {
+                return false;
+            }
+            if (instruction.b == 0) {
+                return true;
+            }
+            return reg < instruction.a + instruction.b - 1;
+        case Lua51Opcode::kSetList:
+            if (instruction.a == reg) {
+                return true;
+            }
+            if (instruction.b == 0) {
+                return reg > instruction.a;
+            }
+            return reg > instruction.a && reg <= instruction.a + instruction.b;
+        default:
+            return false;
+    }
+}
+
+bool IsLuaConditionalRegisterReadBeforeWrite(
+    const LuaConditionalBlockRenderContext& context,
+    int reg,
+    int start_line) {
+    if (reg < 0 || start_line < 1) {
+        return false;
+    }
+    const int instruction_count = static_cast<int>(context.instructions.size());
+    for (int line = start_line; line <= instruction_count; ++line) {
+        const Lua51Instruction& instruction =
+            context.instructions[static_cast<std::size_t>(line - 1)];
+        if (DoesLuaConditionalInstructionReadRegister(instruction, reg)) {
+            return true;
+        }
+        const std::vector<bool> written_registers =
+            context.collect_written_registers_in_range(line, line);
+        if (static_cast<std::size_t>(reg) < written_registers.size() &&
+            written_registers[static_cast<std::size_t>(reg)]) {
+            return false;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 LuaJumpRenderResult TryRenderLuaSharedTailConditionalBlock(
@@ -242,6 +324,49 @@ LuaJumpRenderResult TryRenderLuaConditionalBlock(
     restore_state(saved_state);
     if (block.then_exits_loop && !context.last_appended_statement_is_terminal(then_lines_start)) {
         AppendIndentedStatement(&lines, "  ", "break");
+    }
+
+    if (!block.has_else && lines.size() == then_lines_start) {
+        const std::vector<bool> then_written_registers =
+            context.collect_written_registers_in_range(block.then_start, block.then_end);
+        const std::vector<bool> else_written_registers(static_cast<std::size_t>(
+            context.register_count), false);
+        int changed_register = -1;
+        StraightLineValue merged_value;
+        if (TryBuildLuaPreviewSingleRegisterJoinExpression(condition,
+                                                           then_end_values,
+                                                           then_end_declared,
+                                                           then_written_registers,
+                                                           saved_state.values,
+                                                           saved_state.declared,
+                                                           else_written_registers,
+                                                           context.declarations,
+                                                           context.function,
+                                                           block.after_line,
+                                                           context.register_count,
+                                                           &changed_register,
+                                                           &merged_value) &&
+            changed_register >= 0 &&
+            !has_meaningful_name(changed_register, block.after_line)) {
+            if (IsLuaConditionalRegisterReadBeforeWrite(context,
+                                                        changed_register,
+                                                        block.after_line)) {
+                const std::string register_name =
+                    GetStraightLineRegisterName(context.declarations,
+                                                context.function,
+                                                changed_register,
+                                                block.after_line);
+                const StraightLineValue& then_value =
+                    then_end_values[static_cast<std::size_t>(changed_register)];
+                if (!register_name.empty() && then_value.valid &&
+                    !then_value.multiple_results) {
+                    AppendIndentedStatement(
+                        &lines,
+                        "  ",
+                        register_name + " = " + then_value.text);
+                }
+            }
+        }
     }
 
     if (!block.has_else && lines.size() == then_lines_start) {

@@ -40,6 +40,10 @@ bool LooksLikeRenderedNumericLiteral(std::string_view value);
 bool FindRenderedMatchingParen(std::string_view text,
                                std::size_t open_index,
                                std::size_t* close_index);
+bool IsRenderedAssignmentUsedAfterContainingControlBlock(
+    const std::vector<std::string>& lines,
+    std::size_t assignment_line,
+    std::string_view identifier);
 std::string StripRenderedWholeParentheses(std::string_view value, bool* changed);
 bool SplitRenderedTopLevelBooleanChain(std::string_view value,
                                        std::string_view keyword,

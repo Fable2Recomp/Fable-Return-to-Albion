@@ -1,5 +1,53 @@
 #include "vfs_hooks_private.h"
 
+#if REFII_VFS_HAS_RENDERER_RUNTIME
+#include "renderer_runtime.h"
+#endif
+
+#if REFII_VFS_HAS_RENDERER_RUNTIME
+#define REFII_RENDERER_OBSERVER_ENTER(function_name)                         \
+  const refii::renderer::RendererHookArgs renderer_args =                    \
+      refii::renderer::CaptureRendererHookArgs(ctx);                         \
+  refii::renderer::OnRendererGuestHookEnter(                                 \
+      #function_name, refii::renderer::RendererHookKind::kGeneral,           \
+      renderer_args, base)
+
+#define REFII_RENDERER_OBSERVER_DISABLED_NATIVE_RETURN(function_name)         \
+  do {                                                                       \
+    if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {                      \
+      if (refii::renderer::ShouldRunNativeRendererHook(                      \
+              #function_name, refii::renderer::RendererHookKind::kGeneral,   \
+              renderer_args, base)) {                                        \
+        __imp__##function_name(ctx, base);                                   \
+        refii::renderer::OnRendererGuestHookExit(                            \
+            #function_name, refii::renderer::RendererHookKind::kGeneral,     \
+            renderer_args, ctx, base);                                       \
+      } else {                                                               \
+        refii::renderer::OnRendererGuestHookNativeSkipped(                   \
+            #function_name, refii::renderer::RendererHookKind::kGeneral,     \
+            renderer_args, ctx, base);                                       \
+      }                                                                      \
+      return;                                                                \
+    }                                                                        \
+  } while (false)
+
+#define REFII_RENDERER_OBSERVER_EXIT(function_name)                          \
+  refii::renderer::OnRendererGuestHookExit(                                  \
+      #function_name, refii::renderer::RendererHookKind::kGeneral,           \
+      renderer_args, ctx, base)
+
+#define REFII_RENDERER_OBSERVER_NATIVE_SKIPPED(function_name)                 \
+  refii::renderer::OnRendererGuestHookNativeSkipped(                         \
+      #function_name, refii::renderer::RendererHookKind::kGeneral,           \
+      renderer_args, ctx, base)
+#else
+#define REFII_RENDERER_OBSERVER_ENTER(function_name) ((void)0)
+#define REFII_RENDERER_OBSERVER_DISABLED_NATIVE_RETURN(function_name)         \
+  REFII_VFS_NATIVE_PASSTHROUGH(function_name)
+#define REFII_RENDERER_OBSERVER_EXIT(function_name) ((void)0)
+#define REFII_RENDERER_OBSERVER_NATIVE_SKIPPED(function_name) ((void)0)
+#endif
+
 bool RefiiShouldTraceLoadingResourceLookup(uint32_t lr) {
   switch (lr) {
   case 0x8235E51Cu:
@@ -473,7 +521,8 @@ REFII_LOADING_SCREEN_OWNER_WRAPPER(sub_82360968,
 REX_EXTERN(sub_8235E5A0) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_8235E5A0);
+  REFII_RENDERER_OBSERVER_ENTER(sub_8235E5A0);
+  REFII_RENDERER_OBSERVER_DISABLED_NATIVE_RETURN(sub_8235E5A0);
 
   const PPCContext original_ctx = ctx;
   const uint32_t loading_owner = original_ctx.r3.u32;
@@ -525,6 +574,7 @@ REX_EXTERN(sub_8235E5A0) {
   }
 
   __imp__sub_8235E5A0(ctx, base);
+  REFII_RENDERER_OBSERVER_EXIT(sub_8235E5A0);
 
   bool refii_completed_finish =
       refii_finish_gate_armed && base != nullptr &&
@@ -597,7 +647,8 @@ REX_EXTERN(sub_8235E5A0) {
 REX_EXTERN(sub_82361AF8) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82361AF8);
+  REFII_RENDERER_OBSERVER_ENTER(sub_82361AF8);
+  REFII_RENDERER_OBSERVER_DISABLED_NATIVE_RETURN(sub_82361AF8);
 
   const PPCContext original_ctx = ctx;
   const uint32_t holder = original_ctx.r3.u32;
@@ -607,6 +658,7 @@ REX_EXTERN(sub_82361AF8) {
   }
 
   __imp__sub_82361AF8(ctx, base);
+  REFII_RENDERER_OBSERVER_EXIT(sub_82361AF8);
 
   if (base == nullptr || !refii::vfs::LooksLikeGuestPointer(holder) ||
       !refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted()) {
@@ -1056,7 +1108,8 @@ REX_EXTERN(sub_822C6C68) {
 REX_EXTERN(sub_823C1658) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_823C1658);
+  REFII_RENDERER_OBSERVER_ENTER(sub_823C1658);
+  REFII_RENDERER_OBSERVER_DISABLED_NATIVE_RETURN(sub_823C1658);
 
   const PPCContext original_ctx = ctx;
   const bool trace = refii::vfs::VfsTracingEnabled() &&
@@ -1180,10 +1233,17 @@ REX_EXTERN(sub_823C1658) {
                 refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
   }
 
+  bool native_823c1658_ran = false;
   if (after_holder_mode2_collapsed || after_holder_terminal_collapsed) {
     ctx.r3.u32 = original_ctx.r3.u32 + 48;
   } else {
     __imp__sub_823C1658(ctx, base);
+    native_823c1658_ran = true;
+  }
+  if (native_823c1658_ran) {
+    REFII_RENDERER_OBSERVER_EXIT(sub_823C1658);
+  } else {
+    REFII_RENDERER_OBSERVER_NATIVE_SKIPPED(sub_823C1658);
   }
 
   if (prefer_native_after_holder &&

@@ -157,7 +157,8 @@ bool IsBehaviorTag2Path(std::string_view normalized) {
 }
 
 bool IsCameraScriptPath(std::string_view normalized) {
-    return Contains(normalized, "gamescripts/scripts/camera/");
+    return Contains(normalized, "gamescripts/scripts/camera/") ||
+           Contains(normalized, "scripts/camera/");
 }
 
 bool IsEntityModeScriptPath(std::string_view normalized) {
@@ -182,6 +183,7 @@ bool IsRawInvalidRecoveryPriorityPath(std::string_view normalized) {
 
 bool IsDisassemblyRecoveryPriorityPath(std::string_view normalized) {
     return IsRawInvalidRecoveryPriorityPath(normalized) ||
+           IsCameraScriptPath(normalized) ||
            Contains(normalized, "qo225_toldonations.lua") ||
            Contains(normalized, "qo880_vision.lua") ||
            Contains(normalized, "behaviourhare.lua") ||

@@ -26,6 +26,8 @@ struct RendererShaderLibraryEntry {
   uint64_t guest_bytecode_hash = 0;
   uint32_t guest_payload_size = 0;
   uint64_t guest_payload_hash = 0;
+  bool texture_slot_mask_valid = false;
+  uint32_t texture_slot_mask = 0;
 };
 
 struct RendererShaderLibrarySnapshot {

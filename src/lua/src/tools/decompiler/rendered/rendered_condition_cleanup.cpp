@@ -1860,6 +1860,38 @@ bool SimplifyRenderedLuaImmediateRedundantConditionTemps(std::vector<std::string
         return true;
     };
 
+    const auto guarded_block_assigns_target = [&](std::size_t guard_line,
+                                                  std::string_view target) {
+        if (guard_line >= lines->size() || target.empty()) {
+            return false;
+        }
+
+        const std::size_t block_end = FindRenderedFunctionBlockEnd(*lines, guard_line);
+        if (block_end >= lines->size() || block_end <= guard_line) {
+            return false;
+        }
+
+        for (std::size_t probe = guard_line + 1; probe < block_end; ++probe) {
+            if (IsRenderedShadowingLocalDeclaration((*lines)[probe], target)) {
+                return false;
+            }
+
+            bool assign_is_local = false;
+            std::string lhs;
+            std::string rhs;
+            if (ParseRenderedSingleAssignmentLine((*lines)[probe],
+                                                  &assign_is_local,
+                                                  &lhs,
+                                                  &rhs) &&
+                !assign_is_local &&
+                lhs == target) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
     bool changed = false;
     for (std::size_t line_index = 0; line_index + 1 < lines->size(); ++line_index) {
         bool assign_is_local = false;
@@ -1883,6 +1915,10 @@ bool SimplifyRenderedLuaImmediateRedundantConditionTemps(std::vector<std::string
         bool negated = false;
         if (!parse_guard_header((*lines)[line_index + 1], &guard_condition, &negated) ||
             guard_condition != normalized_rhs) {
+            continue;
+        }
+
+        if (guarded_block_assigns_target(line_index + 1, assign_lhs)) {
             continue;
         }
 

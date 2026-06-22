@@ -1070,6 +1070,114 @@ bool IsAssignmentToTemporary(std::string_view line, std::string_view identifier)
     return IsTemporaryAssignmentLine(line, &name, nullptr) && name == identifier;
 }
 
+bool HasRenderedLuaInterveningStatement(const std::vector<std::string>& lines,
+                                        std::size_t first,
+                                        std::size_t last) {
+    if (first >= last || last > lines.size()) {
+        return false;
+    }
+
+    for (std::size_t index = first; index < last; ++index) {
+        const std::string_view trimmed =
+            TrimLuaWhitespace(StripLuaLineComment(lines[index]));
+        if (!trimmed.empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsRenderedLuaGuardedTemporaryFallbackUse(const std::vector<std::string>& lines,
+                                              std::size_t use_line,
+                                              std::string_view temporary_name) {
+    if (use_line >= lines.size() || temporary_name.empty()) {
+        return false;
+    }
+
+    const std::string_view trimmed_if =
+        TrimLuaWhitespace(StripLuaLineComment(lines[use_line]));
+    if (!trimmed_if.starts_with("if not ") || !trimmed_if.ends_with(" then")) {
+        return false;
+    }
+
+    const std::string condition = StripRenderedWholeParentheses(
+        TrimLuaWhitespace(trimmed_if.substr(7, trimmed_if.size() - 7 - 5)),
+        nullptr);
+    if (condition != temporary_name) {
+        return false;
+    }
+
+    const std::size_t block_end = FindRenderedFunctionBlockEnd(lines, use_line);
+    if (block_end >= lines.size() || block_end <= use_line) {
+        return false;
+    }
+
+    for (std::size_t probe = use_line + 1; probe < block_end; ++probe) {
+        if (IsRenderedShadowingLocalDeclaration(lines[probe], temporary_name)) {
+            return false;
+        }
+
+        bool assign_is_local = false;
+        std::string assign_lhs;
+        std::string assign_rhs;
+        if (ParseRenderedSingleAssignmentLine(lines[probe],
+                                              &assign_is_local,
+                                              &assign_lhs,
+                                              &assign_rhs) &&
+            !assign_is_local &&
+            assign_lhs == temporary_name) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool IsRenderedLuaControlBlockTemporaryAssignmentUse(
+    const std::vector<std::string>& lines,
+    std::size_t use_line,
+    std::string_view temporary_name) {
+    if (use_line >= lines.size() || temporary_name.empty()) {
+        return false;
+    }
+
+    const std::string_view trimmed =
+        TrimLuaWhitespace(StripLuaLineComment(lines[use_line]));
+    const bool control_header =
+        (trimmed.starts_with("if ") && trimmed.ends_with(" then")) ||
+        (trimmed.starts_with("elseif ") && trimmed.ends_with(" then")) ||
+        (trimmed.starts_with("while ") && trimmed.ends_with(" do"));
+    if (!control_header ||
+        CountIdentifierUses(trimmed, temporary_name) == 0) {
+        return false;
+    }
+
+    const std::size_t block_end = FindRenderedFunctionBlockEnd(lines, use_line);
+    if (block_end >= lines.size() || block_end <= use_line) {
+        return false;
+    }
+
+    for (std::size_t probe = use_line + 1; probe < block_end; ++probe) {
+        if (IsRenderedShadowingLocalDeclaration(lines[probe], temporary_name)) {
+            return false;
+        }
+
+        bool assign_is_local = false;
+        std::string assign_lhs;
+        std::string assign_rhs;
+        if (ParseRenderedSingleAssignmentLine(lines[probe],
+                                              &assign_is_local,
+                                              &assign_lhs,
+                                              &assign_rhs) &&
+            !assign_is_local &&
+            assign_lhs == temporary_name) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool LocalizeRenderedLuaFirstAssignments(std::vector<std::string>* lines) {
     if (lines == nullptr) {
         return false;
@@ -1727,6 +1835,8 @@ bool TryCanonicalizeRenderedExplicitSelfMethodCall(
     if (!split_method_callee(callee, &receiver, &method)) {
         return false;
     }
+    const bool callee_uses_colon =
+        TrimLuaWhitespace(callee).find(':') != std::string_view::npos;
 
     const std::string normalized_receiver = normalize_expression(receiver);
     const std::string normalized_first_argument =
@@ -1738,18 +1848,42 @@ bool TryCanonicalizeRenderedExplicitSelfMethodCall(
         !IsRenderedSafePrefixExpression(normalized_first_argument)) {
         return false;
     }
+    std::string rewritten_receiver(receiver);
     if (normalized_first_argument != normalized_receiver) {
         const std::string canonical_receiver =
             normalize_identity_expression(normalized_receiver);
         const std::string canonical_first_argument =
             normalize_identity_expression(normalized_first_argument);
-        if (canonical_receiver.empty() ||
-            canonical_receiver != canonical_first_argument) {
+        bool matched_receiver_base = false;
+        const std::size_t receiver_field_dot = normalized_receiver.rfind('.');
+        if (callee_uses_colon &&
+            receiver_field_dot != std::string::npos &&
+            receiver_field_dot + 1 < normalized_receiver.size()) {
+            const std::string receiver_base =
+                StripRenderedWholeParentheses(
+                    TrimLuaWhitespace(
+                        std::string_view(normalized_receiver).substr(0, receiver_field_dot)),
+                    nullptr);
+            const std::string receiver_field =
+                std::string(TrimLuaWhitespace(
+                    std::string_view(normalized_receiver).substr(receiver_field_dot + 1)));
+            const std::string canonical_receiver_base =
+                normalize_identity_expression(receiver_base);
+            if (receiver_field == method &&
+                !canonical_receiver_base.empty() &&
+                canonical_receiver_base == canonical_first_argument) {
+                rewritten_receiver = receiver_base;
+                matched_receiver_base = true;
+            }
+        }
+        if (!matched_receiver_base &&
+            (canonical_receiver.empty() ||
+             canonical_receiver != canonical_first_argument)) {
             return false;
         }
     }
 
-    std::string rebuilt = std::string(receiver) + ":" + std::string(method) + "(";
+    std::string rebuilt = rewritten_receiver + ":" + std::string(method) + "(";
     for (std::size_t index = 1; index < arguments.size(); ++index) {
         if (index != 1) {
             rebuilt += ", ";
@@ -2084,12 +2218,29 @@ bool SimplifyRenderedLuaTemporaries(std::vector<std::string>* lines) {
                 if (blocked_by_reassignment) {
                     continue;
                 }
+                if (IsRenderedAssignmentUsedAfterContainingControlBlock(
+                        *lines, line_index, temporary_name)) {
+                    continue;
+                }
                 lines->erase(lines->begin() + static_cast<std::ptrdiff_t>(line_index));
                 pass_changed = true;
                 break;
             }
 
             if (use_count != 1 || use_line >= lines->size()) {
+                continue;
+            }
+
+            if (IsRenderedLuaGuardedTemporaryFallbackUse(
+                    *lines, use_line, temporary_name)) {
+                continue;
+            }
+            if (IsRenderedLuaControlBlockTemporaryAssignmentUse(
+                    *lines, use_line, temporary_name)) {
+                continue;
+            }
+
+            if (HasRenderedLuaInterveningStatement(*lines, line_index + 1, use_line)) {
                 continue;
             }
 
@@ -2203,6 +2354,10 @@ bool SimplifyRenderedLuaReturnTemporaries(std::vector<std::string>* lines) {
             }
 
             if (use_count != 1 || use_line >= lines->size()) {
+                continue;
+            }
+
+            if (HasRenderedLuaInterveningStatement(*lines, line_index + 1, use_line)) {
                 continue;
             }
 
@@ -6935,6 +7090,964 @@ std::size_t FindRenderedLastNonEmptyLine(const std::vector<std::string>& lines,
     return lines.size();
 }
 
+bool RepairRenderedLuaSourceGuardedTemporaryFallbacks(std::vector<std::string>* lines) {
+    if (lines == nullptr) {
+        return false;
+    }
+
+    const auto has_prior_definition = [&](std::size_t before_line,
+                                          std::string_view name) {
+        for (std::size_t probe = 0; probe < before_line && probe < lines->size(); ++probe) {
+            if (IsRenderedShadowingLocalDeclaration((*lines)[probe], name) ||
+                IsAssignmentToIdentifier((*lines)[probe], name)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto split_trailing_member_chain = [](std::string_view expression,
+                                                std::vector<std::string>* parts) {
+        if (parts == nullptr) {
+            return false;
+        }
+        parts->clear();
+        const std::string normalized =
+            StripRenderedWholeParentheses(TrimLuaWhitespace(expression), nullptr);
+        if (normalized.empty()) {
+            return false;
+        }
+
+        bool in_single_quote = false;
+        bool in_double_quote = false;
+        int paren_depth = 0;
+        int bracket_depth = 0;
+        int brace_depth = 0;
+        std::vector<std::size_t> dots;
+        for (std::size_t index = 0; index < normalized.size(); ++index) {
+            const char ch = normalized[index];
+            if (in_single_quote) {
+                if (ch == '\\' && index + 1 < normalized.size()) {
+                    ++index;
+                } else if (ch == '\'') {
+                    in_single_quote = false;
+                }
+                continue;
+            }
+            if (in_double_quote) {
+                if (ch == '\\' && index + 1 < normalized.size()) {
+                    ++index;
+                } else if (ch == '"') {
+                    in_double_quote = false;
+                }
+                continue;
+            }
+            if (ch == '\'') {
+                in_single_quote = true;
+                continue;
+            }
+            if (ch == '"') {
+                in_double_quote = true;
+                continue;
+            }
+            if (ch == '(') {
+                ++paren_depth;
+                continue;
+            }
+            if (ch == ')') {
+                paren_depth = std::max(0, paren_depth - 1);
+                continue;
+            }
+            if (ch == '[') {
+                ++bracket_depth;
+                continue;
+            }
+            if (ch == ']') {
+                bracket_depth = std::max(0, bracket_depth - 1);
+                continue;
+            }
+            if (ch == '{') {
+                ++brace_depth;
+                continue;
+            }
+            if (ch == '}') {
+                brace_depth = std::max(0, brace_depth - 1);
+                continue;
+            }
+            if (ch == '.' && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
+                dots.push_back(index);
+            }
+        }
+        if (dots.empty()) {
+            return false;
+        }
+
+        std::size_t start = 0;
+        for (const std::size_t dot : dots) {
+            const std::string_view part =
+                TrimLuaWhitespace(std::string_view(normalized).substr(start, dot - start));
+            if (parts->empty()) {
+                if (!IsRenderedSafePrefixExpression(part)) {
+                    parts->clear();
+                    return false;
+                }
+            } else if (!IsValidLuaIdentifier(part)) {
+                parts->clear();
+                return false;
+            }
+            parts->emplace_back(part);
+            start = dot + 1;
+        }
+        const std::string_view final_part =
+            TrimLuaWhitespace(std::string_view(normalized).substr(start));
+        if (!IsValidLuaIdentifier(final_part)) {
+            parts->clear();
+            return false;
+        }
+        parts->emplace_back(final_part);
+        return parts->size() >= 2;
+    };
+    const auto temporary_used_after = [&](std::size_t after_line,
+                                          std::string_view name) {
+        const std::size_t scope_end =
+            FindEnclosingRenderedFunctionBlockEnd(*lines, after_line);
+        const std::size_t probe_limit =
+            scope_end < lines->size() ? scope_end + 1 : lines->size();
+        for (std::size_t probe = after_line + 1; probe < probe_limit; ++probe) {
+            if (IsRenderedShadowingLocalDeclaration((*lines)[probe], name) ||
+                IsAssignmentToIdentifier((*lines)[probe], name)) {
+                break;
+            }
+            if (CountIdentifierUses((*lines)[probe], name) != 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    bool changed = false;
+    for (std::size_t line_index = 0; line_index + 2 < lines->size(); ++line_index) {
+        const std::string_view trimmed_if =
+            TrimLuaWhitespace(StripLuaLineComment((*lines)[line_index]));
+        if (!trimmed_if.starts_with("if not ") || !trimmed_if.ends_with(" then") ||
+            TrimLuaWhitespace(StripLuaLineComment((*lines)[line_index + 2])) != "end") {
+            continue;
+        }
+
+        const std::string condition = StripRenderedWholeParentheses(
+            TrimLuaWhitespace(trimmed_if.substr(7, trimmed_if.size() - 7 - 5)),
+            nullptr);
+        bool assign_is_local = false;
+        std::string assign_lhs;
+        std::string assign_rhs;
+        std::vector<std::string> chain_parts;
+        if (condition.empty() ||
+            !ParseRenderedSingleAssignmentLine((*lines)[line_index + 1],
+                                               &assign_is_local,
+                                               &assign_lhs,
+                                               &assign_rhs) ||
+            assign_is_local ||
+            assign_lhs != condition ||
+            !IsRenderTemporaryName(assign_lhs) ||
+            CountIdentifierUses(assign_rhs, assign_lhs) != 0 ||
+            !temporary_used_after(line_index + 2, assign_lhs) ||
+            !split_trailing_member_chain(assign_rhs, &chain_parts)) {
+            continue;
+        }
+
+        const std::string indent(GetRenderedLuaIndent((*lines)[line_index + 1]));
+        std::vector<std::string> expanded;
+        expanded.reserve(chain_parts.size());
+        expanded.push_back(indent + assign_lhs + " = " + chain_parts.front());
+        for (std::size_t part_index = 1; part_index < chain_parts.size(); ++part_index) {
+            expanded.push_back(indent + assign_lhs + " = " + assign_lhs + "." +
+                               chain_parts[part_index]);
+        }
+        lines->erase(lines->begin() + static_cast<std::ptrdiff_t>(line_index + 1));
+        lines->insert(lines->begin() + static_cast<std::ptrdiff_t>(line_index + 1),
+                      expanded.begin(),
+                      expanded.end());
+        changed = true;
+        line_index += expanded.size();
+    }
+
+    for (std::size_t line_index = 0; line_index + 2 < lines->size(); ++line_index) {
+        const std::string_view trimmed_if =
+            TrimLuaWhitespace(StripLuaLineComment((*lines)[line_index]));
+        if (!trimmed_if.starts_with("if not ") || !trimmed_if.ends_with(" then") ||
+            TrimLuaWhitespace(StripLuaLineComment((*lines)[line_index + 2])) != "end") {
+            continue;
+        }
+
+        const std::string source_expression = StripRenderedWholeParentheses(
+            TrimLuaWhitespace(trimmed_if.substr(7, trimmed_if.size() - 7 - 5)),
+            nullptr);
+        if (source_expression.empty() ||
+            !IsRenderedSafePrefixExpression(source_expression)) {
+            continue;
+        }
+
+        bool assign_is_local = false;
+        std::string assign_lhs;
+        std::string assign_rhs;
+        if (!ParseRenderedSingleAssignmentLine((*lines)[line_index + 1],
+                                               &assign_is_local,
+                                               &assign_lhs,
+                                               &assign_rhs) ||
+            assign_is_local ||
+            !IsRenderTemporaryName(assign_lhs) ||
+            CountIdentifierUses(source_expression, assign_lhs) != 0 ||
+            CountIdentifierUses(assign_rhs, assign_lhs) != 0 ||
+            has_prior_definition(line_index, assign_lhs)) {
+            continue;
+        }
+
+        const std::size_t scope_end =
+            FindEnclosingRenderedFunctionBlockEnd(*lines, line_index);
+        const std::size_t probe_limit =
+            scope_end < lines->size() ? scope_end + 1 : lines->size();
+        bool used_after = false;
+        for (std::size_t probe = line_index + 3; probe < probe_limit; ++probe) {
+            if (IsRenderedShadowingLocalDeclaration((*lines)[probe], assign_lhs) ||
+                IsAssignmentToIdentifier((*lines)[probe], assign_lhs)) {
+                break;
+            }
+            if (CountIdentifierUses((*lines)[probe], assign_lhs) != 0) {
+                used_after = true;
+                break;
+            }
+        }
+        if (!used_after) {
+            continue;
+        }
+
+        const std::string indent(GetRenderedLuaIndent((*lines)[line_index]));
+        lines->insert(lines->begin() + static_cast<std::ptrdiff_t>(line_index),
+                      indent + "local " + assign_lhs + " = " + source_expression);
+        (*lines)[line_index + 1] = indent + "if not " + assign_lhs + " then";
+        changed = true;
+        ++line_index;
+    }
+
+    const auto split_comparison = [](std::string_view condition,
+                                     std::string* left,
+                                     std::string* right) {
+        if (left == nullptr || right == nullptr) {
+            return false;
+        }
+        bool in_single_quote = false;
+        bool in_double_quote = false;
+        int paren_depth = 0;
+        int bracket_depth = 0;
+        int brace_depth = 0;
+        for (std::size_t index = 0; index < condition.size(); ++index) {
+            const char ch = condition[index];
+            if (in_single_quote) {
+                if (ch == '\\' && index + 1 < condition.size()) {
+                    ++index;
+                } else if (ch == '\'') {
+                    in_single_quote = false;
+                }
+                continue;
+            }
+            if (in_double_quote) {
+                if (ch == '\\' && index + 1 < condition.size()) {
+                    ++index;
+                } else if (ch == '"') {
+                    in_double_quote = false;
+                }
+                continue;
+            }
+            if (ch == '\'') {
+                in_single_quote = true;
+                continue;
+            }
+            if (ch == '"') {
+                in_double_quote = true;
+                continue;
+            }
+            if (ch == '(') {
+                ++paren_depth;
+                continue;
+            }
+            if (ch == ')') {
+                paren_depth = std::max(0, paren_depth - 1);
+                continue;
+            }
+            if (ch == '[') {
+                ++bracket_depth;
+                continue;
+            }
+            if (ch == ']') {
+                bracket_depth = std::max(0, bracket_depth - 1);
+                continue;
+            }
+            if (ch == '{') {
+                ++brace_depth;
+                continue;
+            }
+            if (ch == '}') {
+                brace_depth = std::max(0, brace_depth - 1);
+                continue;
+            }
+            if (paren_depth != 0 || bracket_depth != 0 || brace_depth != 0) {
+                continue;
+            }
+
+            for (std::string_view op : {"<=", ">=", "==", "~=", "<", ">"}) {
+                if (condition.substr(index, op.size()) != op) {
+                    continue;
+                }
+                *left = StripRenderedWholeParentheses(
+                    TrimLuaWhitespace(condition.substr(0, index)), nullptr);
+                *right = StripRenderedWholeParentheses(
+                    TrimLuaWhitespace(condition.substr(index + op.size())), nullptr);
+                return !left->empty() && !right->empty();
+            }
+        }
+        return false;
+    };
+    const auto has_arithmetic_operator = [](std::string_view expression) {
+        bool in_single_quote = false;
+        bool in_double_quote = false;
+        for (std::size_t index = 0; index < expression.size(); ++index) {
+            const char ch = expression[index];
+            if (in_single_quote) {
+                if (ch == '\\' && index + 1 < expression.size()) {
+                    ++index;
+                } else if (ch == '\'') {
+                    in_single_quote = false;
+                }
+                continue;
+            }
+            if (in_double_quote) {
+                if (ch == '\\' && index + 1 < expression.size()) {
+                    ++index;
+                } else if (ch == '"') {
+                    in_double_quote = false;
+                }
+                continue;
+            }
+            if (ch == '\'') {
+                in_single_quote = true;
+                continue;
+            }
+            if (ch == '"') {
+                in_double_quote = true;
+                continue;
+            }
+            if (ch == '+' || ch == '-' || ch == '*' || ch == '/' ||
+                ch == '%' || ch == '^') {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (std::size_t line_index = 0; line_index + 1 < lines->size(); ++line_index) {
+        std::string condition;
+        if (!TryExtractRenderedIfCondition((*lines)[line_index], &condition)) {
+            continue;
+        }
+
+        std::string left;
+        std::string right;
+        if (!split_comparison(condition, &left, &right)) {
+            continue;
+        }
+
+        const std::string seed_expression =
+            has_arithmetic_operator(right)
+                ? right
+                : (has_arithmetic_operator(left) ? left : std::string());
+        if (seed_expression.empty()) {
+            continue;
+        }
+
+        const std::size_t block_end = FindRenderedFunctionBlockEnd(*lines, line_index);
+        if (block_end >= lines->size() || block_end <= line_index) {
+            continue;
+        }
+
+        std::string temp_name;
+        for (std::size_t probe = line_index + 1; probe < block_end && temp_name.empty(); ++probe) {
+            bool assign_is_local = false;
+            std::string lhs;
+            std::string rhs;
+            if (!ParseRenderedSingleAssignmentLine((*lines)[probe],
+                                                   &assign_is_local,
+                                                   &lhs,
+                                                   &rhs) ||
+                assign_is_local ||
+                !IsRenderTemporaryName(lhs) ||
+                CountIdentifierUses(condition, lhs) != 0 ||
+                CountIdentifierUses(rhs, lhs) != 0) {
+                continue;
+            }
+            for (std::size_t use_probe = probe + 1; use_probe < block_end; ++use_probe) {
+                if (IsRenderedShadowingLocalDeclaration((*lines)[use_probe], lhs) ||
+                    IsAssignmentToIdentifier((*lines)[use_probe], lhs)) {
+                    break;
+                }
+                if (CountIdentifierUses((*lines)[use_probe], lhs) != 0) {
+                    temp_name = lhs;
+                    break;
+                }
+            }
+        }
+        if (temp_name.empty()) {
+            std::vector<std::string> block_temporaries;
+            std::unordered_set<std::string> seen_temporaries;
+            for (std::size_t probe = line_index + 1; probe < block_end; ++probe) {
+                std::unordered_set<std::string> line_temporaries;
+                CollectRenderedTemporaryNames((*lines)[probe], &line_temporaries);
+                for (const std::string& candidate : line_temporaries) {
+                    if (seen_temporaries.insert(candidate).second) {
+                        block_temporaries.push_back(candidate);
+                    }
+                }
+            }
+            std::sort(block_temporaries.begin(),
+                      block_temporaries.end(),
+                      [](const std::string& lhs, const std::string& rhs) {
+                          const std::size_t lhs_length = lhs.size();
+                          const std::size_t rhs_length = rhs.size();
+                          if (lhs_length != rhs_length) {
+                              return lhs_length < rhs_length;
+                          }
+                          return lhs < rhs;
+                      });
+            for (const std::string& candidate : block_temporaries) {
+                if (CountIdentifierUses(condition, candidate) != 0 ||
+                    has_prior_definition(line_index, candidate)) {
+                    continue;
+                }
+
+                bool declared_in_block = false;
+                for (std::size_t probe = line_index + 1; probe < block_end; ++probe) {
+                    if (IsRenderedShadowingLocalDeclaration((*lines)[probe], candidate)) {
+                        declared_in_block = true;
+                        break;
+                    }
+                }
+                if (!declared_in_block) {
+                    temp_name = candidate;
+                    break;
+                }
+            }
+        }
+        if (temp_name.empty() || has_prior_definition(line_index, temp_name)) {
+            continue;
+        }
+
+        std::string rewritten_condition = condition;
+        const std::size_t found = rewritten_condition.find(seed_expression);
+        if (found == std::string::npos) {
+            continue;
+        }
+        rewritten_condition.replace(found, seed_expression.size(), temp_name);
+
+        const std::string indent(GetRenderedLuaIndent((*lines)[line_index]));
+        lines->insert(lines->begin() + static_cast<std::ptrdiff_t>(line_index),
+                      indent + "local " + temp_name + " = " + seed_expression);
+        (*lines)[line_index + 1] = indent + "if " + rewritten_condition + " then";
+        changed = true;
+        ++line_index;
+    }
+
+    const auto extract_one_minus_expression = [](std::string_view rhs,
+                                                 std::string* expression) {
+        if (expression == nullptr) {
+            return false;
+        }
+        std::string normalized =
+            StripRenderedWholeParentheses(TrimLuaWhitespace(rhs), nullptr);
+        std::size_t minus = std::string::npos;
+        bool in_single_quote = false;
+        bool in_double_quote = false;
+        int paren_depth = 0;
+        int bracket_depth = 0;
+        int brace_depth = 0;
+        for (std::size_t index = 0; index < normalized.size(); ++index) {
+            const char ch = normalized[index];
+            if (in_single_quote) {
+                if (ch == '\\' && index + 1 < normalized.size()) {
+                    ++index;
+                } else if (ch == '\'') {
+                    in_single_quote = false;
+                }
+                continue;
+            }
+            if (in_double_quote) {
+                if (ch == '\\' && index + 1 < normalized.size()) {
+                    ++index;
+                } else if (ch == '"') {
+                    in_double_quote = false;
+                }
+                continue;
+            }
+            if (ch == '\'') {
+                in_single_quote = true;
+                continue;
+            }
+            if (ch == '"') {
+                in_double_quote = true;
+                continue;
+            }
+            if (ch == '(') {
+                ++paren_depth;
+                continue;
+            }
+            if (ch == ')') {
+                paren_depth = std::max(0, paren_depth - 1);
+                continue;
+            }
+            if (ch == '[') {
+                ++bracket_depth;
+                continue;
+            }
+            if (ch == ']') {
+                bracket_depth = std::max(0, bracket_depth - 1);
+                continue;
+            }
+            if (ch == '{') {
+                ++brace_depth;
+                continue;
+            }
+            if (ch == '}') {
+                brace_depth = std::max(0, brace_depth - 1);
+                continue;
+            }
+            if (ch == '-' && index != 0 &&
+                paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
+                minus = index;
+                break;
+            }
+        }
+        if (minus == std::string::npos) {
+            return false;
+        }
+        const std::string left =
+            StripRenderedWholeParentheses(TrimLuaWhitespace(std::string_view(normalized).substr(0, minus)), nullptr);
+        const std::string right =
+            StripRenderedWholeParentheses(TrimLuaWhitespace(std::string_view(normalized).substr(minus + 1)), nullptr);
+        if (left != "1" || right.empty()) {
+            return false;
+        }
+        *expression = right;
+        return true;
+    };
+
+    for (std::size_t line_index = 1; line_index + 1 < lines->size(); ++line_index) {
+        std::string condition;
+        if (!TryExtractRenderedIfCondition((*lines)[line_index], &condition)) {
+            continue;
+        }
+
+        bool seed_is_local = false;
+        std::string seed_lhs;
+        std::string seed_rhs;
+        if (!ParseRenderedSingleAssignmentLine((*lines)[line_index - 1],
+                                               &seed_is_local,
+                                               &seed_lhs,
+                                               &seed_rhs) ||
+            !seed_is_local ||
+            !IsRenderTemporaryName(seed_lhs) ||
+            CountIdentifierUses(condition, seed_lhs) == 0) {
+            continue;
+        }
+
+        const std::size_t block_end = FindRenderedFunctionBlockEnd(*lines, line_index);
+        if (block_end >= lines->size() || block_end <= line_index) {
+            continue;
+        }
+
+        for (std::size_t probe = line_index + 1; probe < block_end; ++probe) {
+            bool local_is_local = false;
+            std::string local_lhs;
+            std::string local_rhs;
+            if (!ParseRenderedSingleAssignmentLine((*lines)[probe],
+                                                   &local_is_local,
+                                                   &local_lhs,
+                                                   &local_rhs) ||
+                !local_is_local ||
+                !IsRenderTemporaryName(local_lhs)) {
+                continue;
+            }
+
+            std::string fallback_expression;
+            int paren_balance = 0;
+            int brace_balance = 0;
+            if (!extract_one_minus_expression(local_rhs, &fallback_expression) ||
+                CountIdentifierUses(fallback_expression, seed_lhs) != 0 ||
+                fallback_expression.find('\n') != std::string::npos ||
+                fallback_expression.find("function(") != std::string::npos ||
+                HasPositiveLuaExpressionBalance(fallback_expression,
+                                                &paren_balance,
+                                                &brace_balance)) {
+                continue;
+            }
+
+            bool seed_used_later = false;
+            for (std::size_t use_probe = probe + 1; use_probe < block_end; ++use_probe) {
+                if (IsRenderedShadowingLocalDeclaration((*lines)[use_probe], seed_lhs) ||
+                    IsAssignmentToIdentifier((*lines)[use_probe], seed_lhs)) {
+                    break;
+                }
+                if (CountIdentifierUses((*lines)[use_probe], seed_lhs) != 0) {
+                    seed_used_later = true;
+                    break;
+                }
+            }
+            if (!seed_used_later) {
+                continue;
+            }
+
+            const std::string indent(GetRenderedLuaIndent((*lines)[probe]));
+            lines->insert(lines->begin() + static_cast<std::ptrdiff_t>(probe),
+                          indent + seed_lhs + " = " + fallback_expression);
+            (*lines)[probe + 1] =
+                indent + "local " + local_lhs + " = ((1) - " + seed_lhs + ")";
+            changed = true;
+            ++line_index;
+            break;
+        }
+    }
+
+    const auto split_top_level_binary = [](std::string_view expression,
+                                           char op,
+                                           std::string* left,
+                                           std::string* right) {
+        if (left == nullptr || right == nullptr) {
+            return false;
+        }
+        const std::string normalized =
+            StripRenderedWholeParentheses(TrimLuaWhitespace(expression), nullptr);
+        bool in_single_quote = false;
+        bool in_double_quote = false;
+        int paren_depth = 0;
+        int bracket_depth = 0;
+        int brace_depth = 0;
+        std::size_t split = std::string::npos;
+        for (std::size_t index = 0; index < normalized.size(); ++index) {
+            const char ch = normalized[index];
+            if (in_single_quote) {
+                if (ch == '\\' && index + 1 < normalized.size()) {
+                    ++index;
+                } else if (ch == '\'') {
+                    in_single_quote = false;
+                }
+                continue;
+            }
+            if (in_double_quote) {
+                if (ch == '\\' && index + 1 < normalized.size()) {
+                    ++index;
+                } else if (ch == '"') {
+                    in_double_quote = false;
+                }
+                continue;
+            }
+            if (ch == '\'') {
+                in_single_quote = true;
+                continue;
+            }
+            if (ch == '"') {
+                in_double_quote = true;
+                continue;
+            }
+            if (ch == '(') {
+                ++paren_depth;
+                continue;
+            }
+            if (ch == ')') {
+                paren_depth = std::max(0, paren_depth - 1);
+                continue;
+            }
+            if (ch == '[') {
+                ++bracket_depth;
+                continue;
+            }
+            if (ch == ']') {
+                bracket_depth = std::max(0, bracket_depth - 1);
+                continue;
+            }
+            if (ch == '{') {
+                ++brace_depth;
+                continue;
+            }
+            if (ch == '}') {
+                brace_depth = std::max(0, brace_depth - 1);
+                continue;
+            }
+            if (ch != op || paren_depth != 0 || bracket_depth != 0 || brace_depth != 0) {
+                continue;
+            }
+            if (op == '-') {
+                std::size_t previous = index;
+                while (previous > 0 &&
+                       std::isspace(static_cast<unsigned char>(normalized[previous - 1])) != 0) {
+                    --previous;
+                }
+                if (previous == 0) {
+                    continue;
+                }
+                const char previous_ch = normalized[previous - 1];
+                if (previous_ch == '(' || previous_ch == '[' || previous_ch == '{' ||
+                    previous_ch == ',' || previous_ch == '+' || previous_ch == '-' ||
+                    previous_ch == '*' || previous_ch == '/' || previous_ch == '%' ||
+                    previous_ch == '^' || previous_ch == '<' || previous_ch == '>' ||
+                    previous_ch == '=') {
+                    continue;
+                }
+            }
+            split = index;
+        }
+        if (split == std::string::npos) {
+            return false;
+        }
+        *left = StripRenderedWholeParentheses(
+            TrimLuaWhitespace(std::string_view(normalized).substr(0, split)), nullptr);
+        *right = StripRenderedWholeParentheses(
+            TrimLuaWhitespace(std::string_view(normalized).substr(split + 1)), nullptr);
+        return !left->empty() && !right->empty();
+    };
+
+    const auto extract_math_exp_argument = [](std::string_view expression,
+                                              std::string* argument) {
+        if (argument == nullptr) {
+            return false;
+        }
+        const std::string normalized =
+            StripRenderedWholeParentheses(TrimLuaWhitespace(expression), nullptr);
+        constexpr std::string_view prefix = "math.exp(";
+        if (!normalized.starts_with(prefix) || !normalized.ends_with(')')) {
+            return false;
+        }
+        *argument = StripRenderedWholeParentheses(
+            TrimLuaWhitespace(std::string_view(normalized).substr(
+                prefix.size(), normalized.size() - prefix.size() - 1)),
+            nullptr);
+        return !argument->empty();
+    };
+
+    const auto parse_render_r_index = [](std::string_view name, int* index_out) {
+        if (index_out == nullptr || name.size() < 2 || name.front() != 'r') {
+            return false;
+        }
+        int value = 0;
+        for (std::size_t index = 1; index < name.size(); ++index) {
+            const unsigned char ch = static_cast<unsigned char>(name[index]);
+            if (std::isdigit(ch) == 0) {
+                return false;
+            }
+            value = value * 10 + static_cast<int>(ch - '0');
+        }
+        *index_out = value;
+        return true;
+    };
+
+    const auto try_expand_logistic_update = [&](std::string_view target,
+                                                std::string_view rhs,
+                                                std::string* scale,
+                                                std::string* offset) {
+        if (scale == nullptr || offset == nullptr) {
+            return false;
+        }
+
+        std::string add_left;
+        std::string add_right;
+        if (!split_top_level_binary(rhs, '+', &add_left, &add_right)) {
+            return false;
+        }
+        *offset = add_right;
+
+        std::string outer_mul_left;
+        std::string outer_mul_right;
+        if (!split_top_level_binary(add_left, '*', &outer_mul_left, &outer_mul_right)) {
+            return false;
+        }
+        *scale = outer_mul_right;
+
+        std::string double_mul_left;
+        std::string double_mul_right;
+        if (!split_top_level_binary(outer_mul_left, '*', &double_mul_left, &double_mul_right) ||
+            StripRenderedWholeParentheses(TrimLuaWhitespace(double_mul_right), nullptr) != "2") {
+            return false;
+        }
+
+        std::string minus_left;
+        std::string minus_right;
+        if (!split_top_level_binary(double_mul_left, '-', &minus_left, &minus_right) ||
+            StripRenderedWholeParentheses(TrimLuaWhitespace(minus_right), nullptr) != "0.5") {
+            return false;
+        }
+
+        std::string reciprocal_left;
+        std::string reciprocal_right;
+        if (!split_top_level_binary(minus_left, '/', &reciprocal_left, &reciprocal_right) ||
+            StripRenderedWholeParentheses(TrimLuaWhitespace(reciprocal_left), nullptr) != "1") {
+            return false;
+        }
+
+        std::string denom_left;
+        std::string denom_right;
+        if (!split_top_level_binary(reciprocal_right, '+', &denom_left, &denom_right) ||
+            StripRenderedWholeParentheses(TrimLuaWhitespace(denom_left), nullptr) != "1") {
+            return false;
+        }
+
+        std::string exp_argument;
+        if (!extract_math_exp_argument(denom_right, &exp_argument) ||
+            !exp_argument.starts_with('-')) {
+            return false;
+        }
+
+        const std::string negated_argument = StripRenderedWholeParentheses(
+            TrimLuaWhitespace(std::string_view(exp_argument).substr(1)), nullptr);
+        std::string quotient_left;
+        std::string quotient_right;
+        if (!split_top_level_binary(negated_argument, '/', &quotient_left, &quotient_right) ||
+            quotient_right != *scale) {
+            return false;
+        }
+
+        std::string delta_left;
+        std::string delta_right;
+        if (!split_top_level_binary(quotient_left, '-', &delta_left, &delta_right) ||
+            StripRenderedWholeParentheses(TrimLuaWhitespace(delta_left), nullptr) !=
+                StripRenderedWholeParentheses(TrimLuaWhitespace(target), nullptr) ||
+            delta_right != *offset) {
+            return false;
+        }
+
+        return true;
+    };
+
+    for (std::size_t line_index = 0; line_index < lines->size(); ++line_index) {
+        bool assign_is_local = false;
+        std::string assign_lhs;
+        std::string assign_rhs;
+        if (!ParseRenderedSingleAssignmentLine((*lines)[line_index],
+                                               &assign_is_local,
+                                               &assign_lhs,
+                                               &assign_rhs) ||
+            assign_is_local) {
+            continue;
+        }
+
+        std::string scale;
+        std::string offset;
+        if (!try_expand_logistic_update(assign_lhs, assign_rhs, &scale, &offset)) {
+            continue;
+        }
+
+        int max_r_index = -1;
+        std::unordered_set<std::string> temporaries;
+        CollectRenderedTemporaryNames(assign_rhs, &temporaries);
+        temporaries.insert(scale);
+        temporaries.insert(offset);
+        for (const std::string& temporary : temporaries) {
+            int index = -1;
+            if (parse_render_r_index(temporary, &index)) {
+                max_r_index = std::max(max_r_index, index);
+            }
+        }
+        if (max_r_index < 0) {
+            continue;
+        }
+
+        const std::string exp_result = "r" + std::to_string(max_r_index + 1);
+        const std::string indent(GetRenderedLuaIndent((*lines)[line_index]));
+        std::vector<std::string> replacement = {
+            indent + assign_lhs + " = " + assign_lhs + " - " + offset,
+            indent + assign_lhs + " = " + assign_lhs + " / " + scale,
+            indent + "local " + exp_result + " = math.exp(-" + assign_lhs + ")",
+            indent + exp_result + " = (1) + " + exp_result,
+            indent + assign_lhs + " = (1) / " + exp_result,
+            indent + exp_result + " = " + assign_lhs + " - (0.5)",
+            indent + assign_lhs + " = " + exp_result + " * (2)",
+            indent + assign_lhs + " = " + assign_lhs + " * " + scale,
+            indent + assign_lhs + " = " + assign_lhs + " + " + offset,
+        };
+        lines->erase(lines->begin() + static_cast<std::ptrdiff_t>(line_index));
+        lines->insert(lines->begin() + static_cast<std::ptrdiff_t>(line_index),
+                      replacement.begin(),
+                      replacement.end());
+        changed = true;
+        line_index += replacement.size() - 1;
+    }
+
+    for (std::size_t line_index = 0; line_index + 1 < lines->size(); ++line_index) {
+        bool seed_is_local = false;
+        std::string seed_lhs;
+        std::string seed_rhs;
+        if (!ParseRenderedSingleAssignmentLine((*lines)[line_index],
+                                               &seed_is_local,
+                                               &seed_lhs,
+                                               &seed_rhs) ||
+            !seed_is_local ||
+            !IsRenderTemporaryName(seed_lhs) ||
+            (line_index > 0 &&
+             TrimLuaWhitespace(StripLuaLineComment((*lines)[line_index - 1])) == "do")) {
+            continue;
+        }
+
+        std::string condition;
+        if (!TryExtractRenderedIfCondition((*lines)[line_index + 1], &condition) ||
+            CountIdentifierUses(condition, seed_lhs) == 0) {
+            continue;
+        }
+
+        const std::size_t block_end =
+            FindRenderedFunctionBlockEnd(*lines, line_index + 1);
+        if (block_end >= lines->size() || block_end <= line_index + 1) {
+            continue;
+        }
+
+        bool has_expanded_logistic_update = false;
+        for (std::size_t probe = line_index + 2; probe < block_end; ++probe) {
+            const std::string_view trimmed =
+                TrimLuaWhitespace(StripLuaLineComment((*lines)[probe]));
+            if (trimmed.starts_with("local r") &&
+                trimmed.find(" = math.exp(-") != std::string_view::npos) {
+                has_expanded_logistic_update = true;
+                break;
+            }
+        }
+        if (!has_expanded_logistic_update) {
+            continue;
+        }
+
+        const std::size_t scope_end =
+            FindEnclosingRenderedFunctionBlockEnd(*lines, line_index);
+        const std::size_t probe_limit =
+            scope_end < lines->size() ? scope_end + 1 : lines->size();
+        bool used_after_block = false;
+        for (std::size_t probe = block_end + 1; probe < probe_limit; ++probe) {
+            if (IsRenderedShadowingLocalDeclaration((*lines)[probe], seed_lhs) ||
+                IsAssignmentToIdentifier((*lines)[probe], seed_lhs)) {
+                break;
+            }
+            if (CountIdentifierUses((*lines)[probe], seed_lhs) != 0) {
+                used_after_block = true;
+                break;
+            }
+        }
+        if (used_after_block) {
+            continue;
+        }
+
+        const std::string indent(GetRenderedLuaIndent((*lines)[line_index]));
+        lines->insert(lines->begin() + static_cast<std::ptrdiff_t>(line_index),
+                      indent + "do");
+        lines->insert(lines->begin() + static_cast<std::ptrdiff_t>(block_end + 2),
+                      indent + "end");
+        changed = true;
+        line_index = block_end + 2;
+    }
+
+    return changed;
+}
+
 bool SimplifyRenderedLuaImmediateSingleUseGuardTemps(std::vector<std::string>* lines) {
     if (lines == nullptr) {
         return false;
@@ -6959,6 +8072,38 @@ bool SimplifyRenderedLuaImmediateSingleUseGuardTemps(std::vector<std::string>* l
             *suffix = " do";
             return true;
         }
+        return false;
+    };
+
+    const auto guarded_block_assigns_target = [&](std::size_t guard_line,
+                                                  std::string_view target) {
+        if (guard_line >= lines->size() || target.empty()) {
+            return false;
+        }
+
+        const std::size_t block_end = FindRenderedFunctionBlockEnd(*lines, guard_line);
+        if (block_end >= lines->size() || block_end <= guard_line) {
+            return false;
+        }
+
+        for (std::size_t probe = guard_line + 1; probe < block_end; ++probe) {
+            if (IsRenderedShadowingLocalDeclaration((*lines)[probe], target)) {
+                return false;
+            }
+
+            bool assign_is_local = false;
+            std::string lhs;
+            std::string rhs;
+            if (ParseRenderedSingleAssignmentLine((*lines)[probe],
+                                                  &assign_is_local,
+                                                  &lhs,
+                                                  &rhs) &&
+                !assign_is_local &&
+                lhs == target) {
+                return true;
+            }
+        }
+
         return false;
     };
 
@@ -7003,6 +8148,10 @@ bool SimplifyRenderedLuaImmediateSingleUseGuardTemps(std::vector<std::string>* l
                 nullptr);
         }
         if (normalized_condition != assign_lhs) {
+            continue;
+        }
+
+        if (guarded_block_assigns_target(line_index + 1, assign_lhs)) {
             continue;
         }
 

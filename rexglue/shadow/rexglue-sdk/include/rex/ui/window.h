@@ -281,7 +281,8 @@ class Window {
 
   // Desired state stored in a platform-dependent way in the implementation,
   // externally modifiable, read-only by the implementation unless from the
-  // LoadAndApplyIcon implementation. The icon is in Windows .ico format.
+  // LoadAndApplyIcon implementation. The icon format is implementation-defined;
+  // Refii's SDL window implementation expects PNG bytes.
   // Provide null buffer and / or zero size to reset the icon.
   void SetIcon(const void* buffer, size_t size);
   void ResetIcon() { SetIcon(nullptr, 0); }
@@ -513,9 +514,9 @@ class Window {
   // the desired icon (since it's stored in the implementation) - the
   // implementation may, however, ignore it and use a more granular check of the
   // existence of the native window and the safety of updating the icon for
-  // better internal state consistency. The icon is in Windows .ico format. If
-  // the buffer is null or the size is 0, the icon should be reset to the
-  // default one. Returns whether the icon has been updated successfully.
+  // better internal state consistency. If the buffer is null or the size is 0,
+  // the icon should be reset to the default one. Returns whether the icon has
+  // been updated successfully.
   virtual void LoadAndApplyIcon(const void* buffer, size_t size,
                                 bool can_apply_state_in_current_phase) {
     (void)buffer;

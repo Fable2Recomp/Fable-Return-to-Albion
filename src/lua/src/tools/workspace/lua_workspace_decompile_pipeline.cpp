@@ -1,5 +1,9 @@
 #include "tools/workspace/lua_workspace_decompile_pipeline.h"
 
+#include "tools/workspace/lua_workspace_camera_recovery.h"
+#include "tools/workspace/lua_workspace_text_repair.h"
+#include "tools/workspace/lua_workspace_exact_shape_recovery.h"
+
 #include "lua_script_paths.h"
 #include "tools/decompiler/lua_decompiler_internal.h"
 #include "tools/native/native_lua_chunk.h"
@@ -30,6 +34,16 @@
 #include <unordered_set>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <signal.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 namespace refii::lua::workspace {
 
 namespace {
@@ -44,6 +58,7 @@ constexpr std::string_view kActiveHeader =
 constexpr std::string_view kLiveManifestFileName = "_manifest.live.tsv";
 constexpr std::string_view kLiveTimingFileName = "_timing.live.tsv";
 constexpr std::string_view kActiveLiveFileName = "_active.live.tsv";
+constexpr std::uint64_t kLargeOutlierSourceBudgetCapMs = 120000;
 
 template <typename Fn>
 class ScopeExit {
@@ -313,12 +328,673 @@ bool TryNormalizeWorkspaceNumericCallPrefixes(std::string& source,
     return true;
 }
 
+bool IsWorkspaceIdentifierChar(char ch) {
+    return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+}
+
+bool IsWorkspaceReceiverChar(char ch) {
+    return IsWorkspaceIdentifierChar(ch) || ch == '.' || ch == '[' || ch == ']' ||
+           ch == ')' || ch == '(' || ch == '"' || ch == '\'';
+}
+
+int ComputeWorkspaceParenDelta(std::string_view text) {
+    int delta = 0;
+    bool in_single_quote = false;
+    bool in_double_quote = false;
+    bool escaped = false;
+    for (char ch : text) {
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if ((in_single_quote || in_double_quote) && ch == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (!in_double_quote && ch == '\'') {
+            in_single_quote = !in_single_quote;
+            continue;
+        }
+        if (!in_single_quote && ch == '"') {
+            in_double_quote = !in_double_quote;
+            continue;
+        }
+        if (in_single_quote || in_double_quote) {
+            continue;
+        }
+        if (ch == '(') {
+            ++delta;
+        } else if (ch == ')') {
+            --delta;
+        }
+    }
+    return delta;
+}
+
+std::size_t FindWorkspaceAssignmentEquals(std::string_view text) {
+    bool in_single_quote = false;
+    bool in_double_quote = false;
+    bool escaped = false;
+    for (std::size_t index = 0; index < text.size(); ++index) {
+        const char ch = text[index];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if ((in_single_quote || in_double_quote) && ch == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (!in_double_quote && ch == '\'') {
+            in_single_quote = !in_single_quote;
+            continue;
+        }
+        if (!in_single_quote && ch == '"') {
+            in_double_quote = !in_double_quote;
+            continue;
+        }
+        if (in_single_quote || in_double_quote || ch != '=') {
+            continue;
+        }
+        if ((index > 0 && (text[index - 1] == '~' || text[index - 1] == '<' ||
+                           text[index - 1] == '>' || text[index - 1] == '=')) ||
+            (index + 1 < text.size() && text[index + 1] == '=')) {
+            continue;
+        }
+        return index;
+    }
+    return std::string_view::npos;
+}
+
+bool TryNormalizeWorkspaceInvalidColonReceivers(std::string& source,
+                                                std::string* note,
+                                                std::string_view note_prefix) {
+    internal::LuaMutableTextContext text_context(source);
+    std::vector<std::string>* lines = text_context.EnsureMutableLines();
+    bool changed_any = false;
+
+    const auto find_matching_paren = [](std::string_view line,
+                                        std::size_t open) -> std::size_t {
+        int depth = 0;
+        bool in_single_quote = false;
+        bool in_double_quote = false;
+        bool escaped = false;
+        for (std::size_t index = open; index < line.size(); ++index) {
+            const char ch = line[index];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if ((in_single_quote || in_double_quote) && ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (!in_double_quote && ch == '\'') {
+                in_single_quote = !in_single_quote;
+                continue;
+            }
+            if (!in_single_quote && ch == '"') {
+                in_double_quote = !in_double_quote;
+                continue;
+            }
+            if (in_single_quote || in_double_quote) {
+                continue;
+            }
+            if (ch == '(') {
+                ++depth;
+            } else if (ch == ')') {
+                --depth;
+                if (depth == 0) {
+                    return index;
+                }
+            }
+        }
+        return std::string_view::npos;
+    };
+
+    const auto wrap_literal_receiver = [](std::string& line,
+                                          std::size_t searchable_size,
+                                          std::string_view literal) {
+        bool changed = false;
+        std::size_t search_from = 0;
+        while (search_from + literal.size() < searchable_size) {
+            const std::size_t found = line.find(literal, search_from);
+            if (found == std::string::npos || found + literal.size() >= searchable_size) {
+                break;
+            }
+            if (line[found + literal.size()] != ':') {
+                search_from = found + literal.size();
+                continue;
+            }
+            const bool previous_identifier =
+                found > 0 && IsWorkspaceIdentifierChar(line[found - 1]);
+            if (previous_identifier) {
+                search_from = found + literal.size();
+                continue;
+            }
+
+            std::size_t method_end = found + literal.size() + 1;
+            if (method_end >= searchable_size ||
+                !IsWorkspaceIdentifierChar(line[method_end])) {
+                search_from = found + literal.size();
+                continue;
+            }
+            while (method_end < searchable_size &&
+                   IsWorkspaceIdentifierChar(line[method_end])) {
+                ++method_end;
+            }
+            if (method_end >= searchable_size || line[method_end] != '(') {
+                search_from = found + literal.size();
+                continue;
+            }
+
+            int depth = 0;
+            std::size_t close = std::string::npos;
+            for (std::size_t index = method_end; index < searchable_size; ++index) {
+                if (line[index] == '(') {
+                    ++depth;
+                } else if (line[index] == ')') {
+                    --depth;
+                    if (depth == 0) {
+                        close = index;
+                        break;
+                    }
+                }
+            }
+            if (close == std::string::npos) {
+                search_from = found + literal.size();
+                continue;
+            }
+
+            const std::string method =
+                line.substr(found + literal.size() + 1,
+                            method_end - (found + literal.size() + 1));
+            const std::string args = line.substr(method_end + 1,
+                                                 close - method_end - 1);
+            std::string replacement = "(" + std::string(literal) + ")." +
+                                      method + "(" + std::string(literal);
+            if (!internal::TrimWhitespace(args).empty()) {
+                replacement += ", ";
+                replacement += args;
+            }
+            replacement += ")";
+            line.replace(found, close + 1 - found, replacement);
+            searchable_size += replacement.size() - (close + 1 - found);
+            search_from = found + replacement.size();
+            changed = true;
+        }
+        return changed;
+    };
+
+    for (std::string& line : *lines) {
+        std::size_t searchable_size = internal::StripLineComment(line).size();
+        bool line_changed = false;
+        line_changed |= wrap_literal_receiver(line, searchable_size, "nil");
+        searchable_size = internal::StripLineComment(line).size();
+        line_changed |= wrap_literal_receiver(line, searchable_size, "true");
+        searchable_size = internal::StripLineComment(line).size();
+        line_changed |= wrap_literal_receiver(line, searchable_size, "false");
+
+        searchable_size = internal::StripLineComment(line).size();
+        std::size_t search_from = 0;
+        while (search_from < searchable_size) {
+            const std::size_t colon = line.find(':', search_from);
+            if (colon == std::string::npos || colon >= searchable_size) {
+                break;
+            }
+            std::size_t method_end = colon + 1;
+            if (method_end >= searchable_size ||
+                !refii::lua::IsValidLuaIdentifier(
+                    std::string(1, line[method_end]))) {
+                search_from = colon + 1;
+                continue;
+            }
+            while (method_end < searchable_size &&
+                   IsWorkspaceIdentifierChar(line[method_end])) {
+                ++method_end;
+            }
+            const std::string method = line.substr(colon + 1, method_end - colon - 1);
+            if (!refii::lua::IsValidLuaIdentifier(method) ||
+                refii::lua::IsLuaKeyword(method) ||
+                method_end >= searchable_size || line[method_end] != '(' ||
+                colon < method.size() + 1 ||
+                line.compare(colon - method.size() - 1, method.size() + 1,
+                             "." + method) != 0) {
+                search_from = colon + 1;
+                continue;
+            }
+
+            std::size_t receiver_start = colon - method.size() - 1;
+            while (receiver_start > 0 &&
+                   IsWorkspaceReceiverChar(line[receiver_start - 1])) {
+                --receiver_start;
+            }
+            const std::string receiver =
+                std::string(internal::TrimWhitespace(
+                    std::string_view(line).substr(receiver_start,
+                                                  colon - method.size() - 1 -
+                                                      receiver_start)));
+            if (receiver.empty()) {
+                search_from = colon + 1;
+                continue;
+            }
+            const std::size_t close = find_matching_paren(line, method_end);
+            if (close == std::string_view::npos || close >= searchable_size) {
+                search_from = colon + 1;
+                continue;
+            }
+            const std::string first_arg =
+                std::string(internal::TrimWhitespace(
+                    std::string_view(line).substr(method_end + 1,
+                                                  close - method_end - 1)));
+            if (first_arg != receiver) {
+                search_from = colon + 1;
+                continue;
+            }
+
+            line.replace(receiver_start,
+                         close + 1 - receiver_start,
+                         receiver + ":" + method + "()");
+            searchable_size = internal::StripLineComment(line).size();
+            search_from = receiver_start + receiver.size() + method.size() + 3;
+            line_changed = true;
+        }
+
+        changed_any |= line_changed;
+    }
+
+    if (!changed_any) {
+        return false;
+    }
+
+    text_context.MarkLinesMutated();
+    source = std::string(text_context.EnsureSource());
+    if (note != nullptr) {
+        *note = internal::JoinNotes(
+            *note,
+            std::string(note_prefix) +
+                "_syntax_repair_invalid_colon_receivers_normalized");
+    }
+    return true;
+}
+
+bool TryNormalizeWorkspaceMalformedConditionAndForSyntax(std::string& source,
+                                                         std::string* note,
+                                                         std::string_view note_prefix) {
+    internal::LuaMutableTextContext text_context(source);
+    std::vector<std::string>* lines = text_context.EnsureMutableLines();
+    bool changed_any = false;
+
+    for (std::string& line : *lines) {
+        bool line_changed = false;
+        std::size_t searchable_size = internal::StripLineComment(line).size();
+
+        std::size_t spaced_not_equals = 0;
+        while (spaced_not_equals < searchable_size) {
+            spaced_not_equals = line.find("~ =", spaced_not_equals);
+            if (spaced_not_equals == std::string::npos ||
+                spaced_not_equals >= searchable_size) {
+                break;
+            }
+            line.replace(spaced_not_equals, 3, "~=");
+            searchable_size -= 1;
+            ++spaced_not_equals;
+            line_changed = true;
+        }
+
+        searchable_size = internal::StripLineComment(line).size();
+        std::string_view trimmed =
+            internal::TrimWhitespace(std::string_view(line).substr(0, searchable_size));
+        if ((internal::StartsWith(trimmed, "if ") ||
+             internal::StartsWith(trimmed, "elseif ")) &&
+            trimmed.size() >= 6 &&
+            trimmed.substr(trimmed.size() - 6) == " then)") {
+            const std::size_t then_pos = line.rfind(" then)", searchable_size);
+            if (then_pos != std::string::npos) {
+                line.replace(then_pos, 6, ") then");
+                line_changed = true;
+            }
+        }
+
+        searchable_size = internal::StripLineComment(line).size();
+        trimmed =
+            internal::TrimWhitespace(std::string_view(line).substr(0, searchable_size));
+        if (internal::StartsWith(trimmed, "for ")) {
+            const std::size_t in_pos = line.find(" in ", 0);
+            if (in_pos != std::string::npos && in_pos < searchable_size) {
+                const std::size_t comma_quote = line.find(", \"", 0);
+                if (comma_quote != std::string::npos && comma_quote < in_pos) {
+                    const std::size_t quote_start = comma_quote + 2;
+                    const std::size_t quote_end = line.find('"', quote_start + 1);
+                    if (quote_end != std::string::npos && quote_end < in_pos) {
+                        line.replace(quote_start, quote_end + 1 - quote_start, "_");
+                        line_changed = true;
+                    }
+                }
+
+                const std::size_t nil_call = line.find(" in nil(", 0);
+                if (nil_call != std::string::npos && nil_call < searchable_size) {
+                    line.replace(nil_call, 8, " in pairs(");
+                    line_changed = true;
+                }
+            }
+        }
+
+        changed_any |= line_changed;
+    }
+
+    if (!changed_any) {
+        return false;
+    }
+
+    text_context.MarkLinesMutated();
+    source = std::string(text_context.EnsureSource());
+    if (note != nullptr) {
+        *note = internal::JoinNotes(
+            *note,
+            std::string(note_prefix) +
+                "_syntax_repair_malformed_condition_for_syntax_normalized");
+    }
+    return true;
+}
+
+std::optional<std::pair<std::string, std::string>>
+SplitParenthesizedReceiverMethodCall(std::string_view trimmed) {
+    trimmed = internal::TrimWhitespace(trimmed);
+    if (trimmed.size() < 4 || trimmed.front() != '(') {
+        return std::nullopt;
+    }
+
+    int paren_depth = 0;
+    bool in_single_quote = false;
+    bool in_double_quote = false;
+    bool escaped = false;
+    for (std::size_t index = 0; index < trimmed.size(); ++index) {
+        const char ch = trimmed[index];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if ((in_single_quote || in_double_quote) && ch == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (!in_double_quote && ch == '\'') {
+            in_single_quote = !in_single_quote;
+            continue;
+        }
+        if (!in_single_quote && ch == '"') {
+            in_double_quote = !in_double_quote;
+            continue;
+        }
+        if (in_single_quote || in_double_quote) {
+            continue;
+        }
+        if (ch == '(') {
+            ++paren_depth;
+            continue;
+        }
+        if (ch != ')') {
+            continue;
+        }
+        if (paren_depth > 0) {
+            --paren_depth;
+        }
+        if (paren_depth != 0) {
+            continue;
+        }
+        const std::string_view suffix =
+            internal::TrimWhitespace(trimmed.substr(index + 1));
+        if (suffix.size() >= 2 && (suffix.front() == ':' || suffix.front() == '.')) {
+            return std::pair<std::string, std::string>{
+                std::string(internal::TrimWhitespace(trimmed.substr(1, index - 1))),
+                std::string(suffix),
+            };
+        }
+        return std::nullopt;
+    }
+
+    return std::nullopt;
+}
+
+std::vector<std::string> TemporaryIdentifierUses(std::string_view line) {
+    std::vector<std::string> identifiers;
+    const std::string_view stripped = internal::StripLineComment(line);
+    for (std::size_t index = 0; index + 3 < stripped.size(); ++index) {
+        if (stripped[index] != 'L' ||
+            std::isdigit(static_cast<unsigned char>(stripped[index + 1])) == 0) {
+            continue;
+        }
+
+        std::size_t cursor = index + 1;
+        while (cursor < stripped.size() &&
+               std::isdigit(static_cast<unsigned char>(stripped[cursor])) != 0) {
+            ++cursor;
+        }
+        if (cursor >= stripped.size() || stripped[cursor] != '_') {
+            continue;
+        }
+        ++cursor;
+        const std::size_t suffix_start = cursor;
+        while (cursor < stripped.size() &&
+               std::isdigit(static_cast<unsigned char>(stripped[cursor])) != 0) {
+            ++cursor;
+        }
+        if (cursor == suffix_start) {
+            continue;
+        }
+        const bool previous_identifier =
+            index > 0 &&
+            (std::isalnum(static_cast<unsigned char>(stripped[index - 1])) != 0 ||
+             stripped[index - 1] == '_');
+        const bool next_identifier =
+            cursor < stripped.size() &&
+            (std::isalnum(static_cast<unsigned char>(stripped[cursor])) != 0 ||
+             stripped[cursor] == '_');
+        if (!previous_identifier && !next_identifier) {
+            identifiers.emplace_back(stripped.substr(index, cursor - index));
+        }
+    }
+    return identifiers;
+}
+
+bool HasTemporaryAssignmentInCurrentFunction(const std::vector<std::string>& lines,
+                                             std::size_t line_index,
+                                             std::string_view temporary) {
+    for (std::size_t probe = line_index; probe > 0; --probe) {
+        const std::string_view stripped =
+            internal::StripLineComment(lines[probe - 1]);
+        const std::string_view trimmed = internal::TrimWhitespace(stripped);
+        if (trimmed.find("= function") != std::string_view::npos ||
+            trimmed.find("function(") != std::string_view::npos ||
+            trimmed.find("function (") != std::string_view::npos) {
+            return false;
+        }
+        if (trimmed.rfind("local ", 0) == 0) {
+            const std::string needle = std::string("local ") + std::string(temporary);
+            if (trimmed == needle ||
+                trimmed.rfind(needle + " ", 0) == 0 ||
+                trimmed.rfind(needle + "=", 0) == 0 ||
+                trimmed.rfind(needle + ",", 0) == 0) {
+                return true;
+            }
+        }
+        const std::string assignment_prefix = std::string(temporary) + " =";
+        if (trimmed.rfind(assignment_prefix, 0) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool TryRecoverWorkspaceParenthesizedReceiverTemporary(std::string& source,
+                                                       std::string* note,
+                                                       std::string_view note_prefix) {
+    internal::LuaMutableTextContext text_context(source);
+    std::vector<std::string>* lines = text_context.EnsureMutableLines();
+    bool changed_any = false;
+
+    for (std::size_t line_index = 0; line_index < lines->size(); ++line_index) {
+        const std::string& line = (*lines)[line_index];
+        const std::string_view stripped = internal::StripLineComment(line);
+        const std::string_view trimmed = internal::TrimWhitespace(stripped);
+        const std::optional<std::pair<std::string, std::string>> split_call =
+            SplitParenthesizedReceiverMethodCall(trimmed);
+        if (!split_call.has_value() || split_call->first.empty()) {
+            continue;
+        }
+
+        std::optional<std::string> temporary;
+        for (std::size_t probe = line_index + 1;
+             probe < lines->size() && probe <= line_index + 4;
+             ++probe) {
+            const std::string_view next_trimmed =
+                internal::TrimWhitespace(internal::StripLineComment((*lines)[probe]));
+            if (next_trimmed.empty()) {
+                continue;
+            }
+            for (const std::string& candidate : TemporaryIdentifierUses(next_trimmed)) {
+                if (internal::StartsWith(next_trimmed, candidate + ":")) {
+                    temporary = candidate;
+                    break;
+                }
+                if (!HasTemporaryAssignmentInCurrentFunction(*lines, line_index, candidate)) {
+                    temporary = candidate;
+                    break;
+                }
+            }
+            if (temporary.has_value()) {
+                break;
+            }
+        }
+        if (!temporary.has_value()) {
+            continue;
+        }
+
+        const std::size_t indent_end = line.find_first_not_of(" \t");
+        const std::string indent =
+            indent_end == std::string::npos ? std::string() : line.substr(0, indent_end);
+        (*lines)[line_index] = indent + "local " + *temporary + " = " + split_call->first;
+        lines->insert(lines->begin() + static_cast<std::ptrdiff_t>(line_index + 1),
+                      indent + *temporary + split_call->second);
+        changed_any = true;
+        ++line_index;
+    }
+
+    if (!changed_any) {
+        return false;
+    }
+
+    text_context.MarkLinesMutated();
+    source = std::string(text_context.EnsureSource());
+    if (note != nullptr) {
+        *note = internal::JoinNotes(
+            *note,
+            std::string(note_prefix) +
+                "_syntax_repair_parenthesized_receiver_temp_recovered");
+    }
+    return true;
+}
+
 bool TryNormalizeWorkspaceParenthesizedTuples(std::string& source,
                                               std::string* note,
                                               std::string_view note_prefix) {
     internal::LuaMutableTextContext text_context(source);
     std::vector<std::string>* lines = text_context.EnsureMutableLines();
     bool changed_any = false;
+
+    const auto find_matching_paren = [](std::string_view text,
+                                        std::size_t open) -> std::size_t {
+        int depth = 0;
+        bool in_single_quote = false;
+        bool in_double_quote = false;
+        bool escaped = false;
+        for (std::size_t index = open; index < text.size(); ++index) {
+            const char ch = text[index];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if ((in_single_quote || in_double_quote) && ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (!in_double_quote && ch == '\'') {
+                in_single_quote = !in_single_quote;
+                continue;
+            }
+            if (!in_single_quote && ch == '"') {
+                in_double_quote = !in_double_quote;
+                continue;
+            }
+            if (in_single_quote || in_double_quote) {
+                continue;
+            }
+            if (ch == '(') {
+                ++depth;
+                continue;
+            }
+            if (ch == ')') {
+                --depth;
+                if (depth == 0) {
+                    return index;
+                }
+                if (depth < 0) {
+                    return std::string_view::npos;
+                }
+            }
+        }
+        return std::string_view::npos;
+    };
+
+    const auto find_top_level_comma = [](std::string_view text) -> std::size_t {
+        int paren_depth = 0;
+        int brace_depth = 0;
+        int bracket_depth = 0;
+        bool in_single_quote = false;
+        bool in_double_quote = false;
+        bool escaped = false;
+        for (std::size_t index = 0; index < text.size(); ++index) {
+            const char ch = text[index];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if ((in_single_quote || in_double_quote) && ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (!in_double_quote && ch == '\'') {
+                in_single_quote = !in_single_quote;
+                continue;
+            }
+            if (!in_single_quote && ch == '"') {
+                in_double_quote = !in_double_quote;
+                continue;
+            }
+            if (in_single_quote || in_double_quote) {
+                continue;
+            }
+            if (ch == '(') {
+                ++paren_depth;
+            } else if (ch == ')' && paren_depth > 0) {
+                --paren_depth;
+            } else if (ch == '{') {
+                ++brace_depth;
+            } else if (ch == '}' && brace_depth > 0) {
+                --brace_depth;
+            } else if (ch == '[') {
+                ++bracket_depth;
+            } else if (ch == ']' && bracket_depth > 0) {
+                --bracket_depth;
+            } else if (ch == ',' && paren_depth == 0 && brace_depth == 0 &&
+                       bracket_depth == 0) {
+                return index;
+            }
+        }
+        return std::string_view::npos;
+    };
 
     for (std::string& line : *lines) {
         std::size_t search_from = 0;
@@ -332,29 +1008,30 @@ bool TryNormalizeWorkspaceParenthesizedTuples(std::string& source,
                     static_cast<unsigned char>(line[open - 1]);
                 if (std::isalnum(previous) != 0 || line[open - 1] == '_' ||
                     line[open - 1] == ')' || line[open - 1] == ']' ||
-                    line[open - 1] == '[') {
+                    line[open - 1] == '[' || line[open - 1] == '(') {
                     search_from = open + 2;
                     continue;
                 }
             }
-            const std::size_t close = line.find("))", open + 2);
-            if (close == std::string::npos) {
+            const std::size_t close = find_matching_paren(line, open);
+            if (close == std::string::npos || close == 0 || line[close - 1] != ')') {
                 break;
             }
-            const std::string_view inner(line.data() + open + 2, close - (open + 2));
-            const std::size_t comma = inner.find(',');
+            const std::string_view inner(line.data() + open + 2,
+                                         close - 1 - (open + 2));
+            const std::size_t comma = find_top_level_comma(inner);
             if (comma == std::string_view::npos) {
-                search_from = close + 2;
+                search_from = close + 1;
                 continue;
             }
             const std::string_view first_value =
                 internal::TrimWhitespace(inner.substr(0, comma));
             if (first_value.empty()) {
-                search_from = close + 2;
+                search_from = close + 1;
                 continue;
             }
             const std::string replacement = "((" + std::string(first_value) + "))";
-            line.replace(open, close - open + 2, replacement);
+            line.replace(open, close - open + 1, replacement);
             search_from = open + replacement.size();
             changed_any = true;
         }
@@ -472,41 +1149,6 @@ bool TryBalanceWorkspaceMissingBracketAssignmentLhs(std::string& source,
     std::vector<std::string>* lines = text_context.EnsureMutableLines();
     bool changed_any = false;
 
-    const auto find_assignment_equals = [](std::string_view text) -> std::size_t {
-        bool in_single_quote = false;
-        bool in_double_quote = false;
-        bool escaped = false;
-        for (std::size_t index = 0; index < text.size(); ++index) {
-            const char ch = text[index];
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-            if ((in_single_quote || in_double_quote) && ch == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (!in_double_quote && ch == '\'') {
-                in_single_quote = !in_single_quote;
-                continue;
-            }
-            if (!in_single_quote && ch == '"') {
-                in_double_quote = !in_double_quote;
-                continue;
-            }
-            if (in_single_quote || in_double_quote || ch != '=') {
-                continue;
-            }
-            if ((index > 0 && (text[index - 1] == '~' || text[index - 1] == '<' ||
-                               text[index - 1] == '>' || text[index - 1] == '=')) ||
-                (index + 1 < text.size() && text[index + 1] == '=')) {
-                continue;
-            }
-            return index;
-        }
-        return std::string_view::npos;
-    };
-
     const auto bracket_delta = [](std::string_view text) {
         int delta = 0;
         bool in_single_quote = false;
@@ -548,7 +1190,7 @@ bool TryBalanceWorkspaceMissingBracketAssignmentLhs(std::string& source,
         const std::string_view body =
             indent_end == std::string::npos ? std::string_view() : std::string_view(line).substr(indent_end);
         const std::string_view stripped = internal::StripLineComment(body);
-        const std::size_t equals = find_assignment_equals(stripped);
+        const std::size_t equals = FindWorkspaceAssignmentEquals(stripped);
         if (equals == std::string_view::npos || equals == 0) {
             continue;
         }
@@ -770,6 +1412,118 @@ bool TryNormalizeWorkspaceMalformedCallResultAssignments(std::string& source,
     return true;
 }
 
+bool TryNormalizeWorkspaceMalformedNumericForSyntax(std::string& source,
+                                                    std::string* note,
+                                                    std::string_view note_prefix) {
+    internal::LuaMutableTextContext text_context(source);
+    std::vector<std::string>* lines = text_context.EnsureMutableLines();
+    bool changed_any = false;
+
+    for (std::string& line : *lines) {
+        const std::size_t indent_end = line.find_first_not_of(" \t");
+        const std::string indent =
+            indent_end == std::string::npos ? std::string() : line.substr(0, indent_end);
+        std::string body =
+            indent_end == std::string::npos ? std::string() : line.substr(indent_end);
+        const std::size_t searchable_size = internal::StripLineComment(body).size();
+        std::string_view searchable(body.data(), searchable_size);
+        std::string_view trimmed = internal::TrimWhitespace(searchable);
+        if (!internal::StartsWith(trimmed, "for ") ||
+            trimmed.find(" in ") != std::string_view::npos) {
+            continue;
+        }
+
+        const std::size_t equals = body.find('=');
+        const std::size_t do_paren = body.rfind(" do)", searchable_size);
+        if (equals == std::string::npos || do_paren == std::string::npos ||
+            equals + 3 >= do_paren) {
+            continue;
+        }
+
+        std::size_t expression_begin = equals + 1;
+        while (expression_begin < do_paren &&
+               std::isspace(static_cast<unsigned char>(body[expression_begin])) != 0) {
+            ++expression_begin;
+        }
+        if (expression_begin >= do_paren || body[expression_begin] != '(') {
+            continue;
+        }
+
+        body.erase(do_paren + 3, 1);
+        if (expression_begin + 1 < do_paren && body[expression_begin + 1] == '(') {
+            body.erase(expression_begin, 1);
+        }
+        line = indent + body;
+        changed_any = true;
+    }
+
+    if (!changed_any) {
+        return false;
+    }
+
+    text_context.MarkLinesMutated();
+    source = std::string(text_context.EnsureSource());
+    if (note != nullptr) {
+        *note = internal::JoinNotes(
+            *note,
+            std::string(note_prefix) +
+                "_syntax_repair_numeric_for_parenthesized_tuple_normalized");
+    }
+    return true;
+}
+
+bool TryTrimWorkspaceSurplusTrailingParens(std::string& source,
+                                           std::string* note,
+                                           std::string_view note_prefix) {
+    internal::LuaMutableTextContext text_context(source);
+    std::vector<std::string>* lines = text_context.EnsureMutableLines();
+    bool changed_any = false;
+
+    for (std::string& line : *lines) {
+        const std::string_view stripped = internal::StripLineComment(line);
+        const std::string_view trimmed = internal::TrimWhitespace(stripped);
+        if (FindWorkspaceAssignmentEquals(trimmed) != std::string_view::npos ||
+            internal::StartsWith(trimmed, "for ") ||
+            internal::StartsWith(trimmed, "if ") ||
+            internal::StartsWith(trimmed, "elseif ") ||
+            internal::StartsWith(trimmed, "while ")) {
+            continue;
+        }
+        int delta = ComputeWorkspaceParenDelta(line);
+        if (delta >= 0) {
+            continue;
+        }
+
+        std::size_t end = line.size();
+        while (end > 0 && std::isspace(static_cast<unsigned char>(line[end - 1])) != 0) {
+            --end;
+        }
+        while (delta < 0 && end > 0 && line[end - 1] == ')') {
+            line.erase(end - 1, 1);
+            --end;
+            ++delta;
+            changed_any = true;
+            while (end > 0 && std::isspace(static_cast<unsigned char>(line[end - 1])) != 0) {
+                --end;
+            }
+        }
+    }
+
+    if (!changed_any) {
+        return false;
+    }
+
+    text_context.MarkLinesMutated();
+    source = std::string(text_context.EnsureSource());
+    if (note != nullptr) {
+        *note = internal::JoinNotes(
+            *note,
+            std::string(note_prefix) +
+                "_syntax_repair_surplus_trailing_parens_normalized");
+    }
+    return true;
+}
+
 std::string RepairWorkspaceReadableRecoverySyntax(
     std::string& source,
     const std::filesystem::path& relative_input,
@@ -782,7 +1536,7 @@ std::string RepairWorkspaceReadableRecoverySyntax(
         return {};
     }
 
-    constexpr int kMaxReadableRecoverySyntaxRepairPasses = 3;
+    constexpr int kMaxReadableRecoverySyntaxRepairPasses = 8;
     for (int pass = 0; pass < kMaxReadableRecoverySyntaxRepairPasses &&
                        !validation_error.empty();
          ++pass) {
@@ -798,18 +1552,42 @@ std::string RepairWorkspaceReadableRecoverySyntax(
                 source, note, note_prefix);
         }
         if (validation_error.find("')' expected near '('") != std::string::npos ||
-            validation_error.find("unexpected symbol near '('") != std::string::npos) {
+            validation_error.find("unexpected symbol near '('") != std::string::npos ||
+            validation_error.find("ambiguous syntax") != std::string::npos) {
+            changed |= TryRecoverWorkspaceParenthesizedReceiverTemporary(
+                source, note, note_prefix);
             changed |= TryNormalizeWorkspaceNumericCallPrefixes(source, note, note_prefix);
             changed |=
                 TryNormalizeWorkspaceMalformedCallResultAssignments(source, note, note_prefix);
         }
+        if (validation_error.find("near ':'") != std::string::npos) {
+            changed |= TryNormalizeWorkspaceInvalidColonReceivers(
+                source, note, note_prefix);
+        }
+        if (validation_error.find("'do' expected near ')'") != std::string::npos ||
+            validation_error.find("'do' expected near 'do'") != std::string::npos) {
+            changed |= TryNormalizeWorkspaceMalformedNumericForSyntax(
+                source, note, note_prefix);
+        }
+        if (validation_error.find("near '~'") != std::string::npos ||
+            validation_error.find("near '\"") != std::string::npos ||
+            validation_error.find("'do' expected near '('") != std::string::npos ||
+            validation_error.find("'then' expected near '~'") != std::string::npos) {
+            changed |= TryNormalizeWorkspaceMalformedConditionAndForSyntax(
+                source, note, note_prefix);
+        }
         if (validation_error.find("')' expected near ','") != std::string::npos ||
             validation_error.find("unexpected symbol near ','") != std::string::npos ||
+            validation_error.find("unexpected symbol near ')'") != std::string::npos ||
             validation_error.find("syntax error near '='") != std::string::npos) {
             changed |= TryNormalizeWorkspaceParenthesizedTuples(source, note, note_prefix);
             changed |=
                 TryNormalizeWorkspaceMalformedCallResultAssignments(source, note, note_prefix);
+            changed |= TryNormalizeWorkspaceMalformedNumericForSyntax(
+                source, note, note_prefix);
             changed |= TryBalanceWorkspaceTrailingAssignmentParentheses(
+                source, note, note_prefix);
+            changed |= TryTrimWorkspaceSurplusTrailingParens(
                 source, note, note_prefix);
         }
         if (validation_error.find("')' expected (to close '(' at line") !=
@@ -836,6 +1614,8 @@ std::string RepairWorkspaceReadableRecoverySyntax(
 
 bool IsReadableRecoveryNonexactNote(std::string_view note) {
     return note.find("workspace_direct_readable_recovery_valid_nonexact") !=
+               std::string_view::npos ||
+           note.find("workspace_camera_raw_recovery_fast_nonexact") !=
                std::string_view::npos ||
            note.find("workspace_direct_readable_recovery_promoted_exact") !=
                std::string_view::npos;
@@ -11456,96 +12236,21 @@ bool FoldFastBoundedHotspotUndefinedSyntheticFieldTables(std::string* source) {
 }
 
 bool FastLuaIsIdentifierChar(char ch) {
-    const unsigned char uch = static_cast<unsigned char>(ch);
-    return std::isalnum(uch) != 0 || ch == '_';
+    return text_repair::IsIdentifierChar(ch);
 }
 
 bool FastLuaContainsFunctionBlockKeyword(std::string_view trimmed) {
-    bool in_single_quote = false;
-    bool in_double_quote = false;
-    for (std::size_t index = 0; index < trimmed.size(); ++index) {
-        const char ch = trimmed[index];
-        if (in_single_quote) {
-            if (ch == '\\' && index + 1 < trimmed.size()) {
-                ++index;
-            } else if (ch == '\'') {
-                in_single_quote = false;
-            }
-            continue;
-        }
-        if (in_double_quote) {
-            if (ch == '\\' && index + 1 < trimmed.size()) {
-                ++index;
-            } else if (ch == '"') {
-                in_double_quote = false;
-            }
-            continue;
-        }
-        if (ch == '\'') {
-            in_single_quote = true;
-            continue;
-        }
-        if (ch == '"') {
-            in_double_quote = true;
-            continue;
-        }
-
-        constexpr std::string_view kFunction = "function";
-        if (index + kFunction.size() > trimmed.size() ||
-            trimmed.substr(index, kFunction.size()) != kFunction) {
-            continue;
-        }
-        const bool left_boundary =
-            index == 0 ||
-            (!FastLuaIsIdentifierChar(trimmed[index - 1]) && trimmed[index - 1] != '.');
-        const std::size_t after = index + kFunction.size();
-        const bool right_boundary =
-            after >= trimmed.size() || !FastLuaIsIdentifierChar(trimmed[after]);
-        if (left_boundary && right_boundary) {
-            return true;
-        }
-    }
-    return false;
+    return text_repair::ContainsFunctionBlockKeyword(trimmed);
 }
 
 bool FastLuaLineStartsBlock(std::string_view trimmed) {
-    return (internal::StartsWith(trimmed, "if ") &&
-            internal::EndsWith(trimmed, " then")) ||
-           (internal::StartsWith(trimmed, "while ") &&
-            internal::EndsWith(trimmed, " do")) ||
-           (internal::StartsWith(trimmed, "for ") &&
-            internal::EndsWith(trimmed, " do")) ||
-           internal::StartsWith(trimmed, "function ") ||
-           internal::StartsWith(trimmed, "local function ") ||
-           FastLuaContainsFunctionBlockKeyword(trimmed) ||
-           trimmed == "repeat";
+    return text_repair::LuaLineStartsBlock(trimmed);
 }
 
 bool FindFastLuaMatchingEnd(const std::vector<std::string>& lines,
                             std::size_t block_start,
                             std::size_t* block_end) {
-    if (block_end == nullptr || block_start >= lines.size()) {
-        return false;
-    }
-
-    int nested_depth = 0;
-    for (std::size_t line_index = block_start + 1; line_index < lines.size();
-         ++line_index) {
-        const std::string_view trimmed =
-            internal::TrimWhitespace(internal::StripLineComment(lines[line_index]));
-        if (FastLuaLineStartsBlock(trimmed)) {
-            ++nested_depth;
-            continue;
-        }
-        if (trimmed == "end" || internal::StartsWith(trimmed, "until ")) {
-            if (nested_depth == 0) {
-                *block_end = line_index;
-                return true;
-            }
-            --nested_depth;
-        }
-    }
-    return false;
+    return text_repair::FindLuaMatchingEnd(lines, block_start, block_end);
 }
 
 std::size_t FastNextContentLine(const std::vector<std::string>& lines,
@@ -17516,20 +18221,106 @@ bool FoldFastBoundedHotspotQuestLocalParityShapes(std::string* source) {
     return changed;
 }
 
-bool FastReplaceAllLiteral(std::string* source,
-                           std::string_view from,
-                           std::string_view to) {
-    if (source == nullptr || from.empty()) {
+bool FastApplyLiteralRules(std::string* source,
+                           std::initializer_list<text_repair::LiteralRule> rules) {
+    return text_repair::ApplyLiteralRules(source, rules);
+}
+
+bool NormalizeFastCameraRawReadableRecovery(std::string* source) {
+    if (source == nullptr || source->empty()) {
         return false;
     }
 
-    bool changed = false;
-    std::size_t cursor = 0;
-    while ((cursor = source->find(from, cursor)) != std::string::npos) {
-        source->replace(cursor, from.size(), to);
-        cursor += to.size();
-        changed = true;
+    if (ApplyFastCameraRawReadableRecovery(source)) {
+        return true;
     }
+
+    bool changed = FastApplyLiteralRules(
+        source,
+        {
+            {
+                "    CombatCannedActionCamera.ApplyMinHeight(r12, CombatCannedActionCamera.PositionMinHeight, L5_5.Camera, r15), r17 = CombatCannedActionCamera.OccludeTest(CombatCannedActionCamera.ApplyMinHeight(r12, CombatCannedActionCamera.PositionMinHeight, L5_5.Camera, r15), r14, L5_5.Camera)",
+                "    local r16, r17 = CombatCannedActionCamera.OccludeTest(CombatCannedActionCamera.ApplyMinHeight(r12, CombatCannedActionCamera.PositionMinHeight, L5_5.Camera, r15), r14, L5_5.Camera)",
+            },
+            {"nil:GetX()", "(nil):GetX()"},
+            {"nil:GetY()", "(nil):GetY()"},
+            {"nil:GetZ()", "(nil):GetZ()"},
+            {
+                "\n    (A1_1 - A2_2):SetZ((0))",
+                "\n    ;(A1_1 - A2_2):SetZ((0))",
+            },
+            {
+                "\n    (A1_1 - A0_0.PreBoundFocalPos):SetZ((0))",
+                "\n    ;(A1_1 - A0_0.PreBoundFocalPos):SetZ((0))",
+            },
+            {
+                "\n    (A0_0 - A0_0):Normalise()",
+                "\n    ;(A0_0 - A0_0):Normalise()",
+            },
+            {
+                "    local L3_3 = (A2_2 - A0_0)\n"
+                "    (A1_1 - A0_0):Normalise()",
+                "    local L3_3 = (A2_2 - A0_0);\n"
+                "    (A1_1 - A0_0):Normalise()",
+            },
+            {
+                "\n    (A1_1 - A4_4):SetZ((0))",
+                "\n    ;(A1_1 - A4_4):SetZ((0))",
+            },
+            {
+                "\n    (A2_2 - A1_1):SetZ((0))",
+                "\n    ;(A2_2 - A1_1):SetZ((0))",
+            },
+            {
+                "\n    (A0_0 * (-1)):SetZ((0))",
+                "\n    ;(A0_0 * (-1)):SetZ((0))",
+            },
+            {
+                "\n    (L4_4 - A0_0.Camera.GetPosition:GetPosition(A0_0.Camera)):Normalise()",
+                "\n    ;(L4_4 - A0_0.Camera.GetPosition:GetPosition(A0_0.Camera)):Normalise()",
+            },
+        });
+    changed |= FastApplyLiteralRules(
+        source,
+        {
+            {
+                "  SACCamera.TendFocusBasedOnDistanceToCollisionCentre = function(A0_0, A1_1, A2_2, A3_3)\n"
+                "    local L4_4 = (A2_2 - A3_3)\n"
+                "    L4_4 = L4_4:GetLength()\n"
+                "    if SACCamera.ClosenessToTiltUpStart < (A2_2 - A3_3).GetLength:GetLength((A2_2 - A3_3)):GetLength() then\n"
+                "    return A1_1, A2_2\n"
+                "    end\n"
+                "    local L5_5 = A1_1 - A2_2\n"
+                "    L5_5:SetZ((0))\n"
+                "    L5_5:Normalise()\n"
+                "    A1_1:SetZ(CameraFunctions.Interpolate(A1_1:GetZ(), math.max(math.min(((SACCamera.ClosenessToTiltUpStart - L4_4) / (SACCamera.ClosenessToTiltUpStart - SACCamera.ClosenessToTiltUpMax)), (1)), (0)), A3_3:GetZ()))\n"
+                "    local L7_7 = (L7_7 + (L5_5 * L6_6))\n"
+                "    local L10_10 = A2_2\n"
+                "    L10_10:SetZ(CameraFunctions.Interpolate(L10_10:GetZ(), L6_6, A3_3:GetZ()))\n"
+                "    return L7_7, L10_10\n"
+                "  end\n",
+                "  SACCamera.TendFocusBasedOnDistanceToCollisionCentre = function(A0_0, A1_1, A2_2, A3_3)\n"
+                "    local L4_4 = (A2_2 - A3_3):GetLength()\n"
+                "    if SACCamera.ClosenessToTiltUpStart < L4_4 then\n"
+                "    return A1_1, A2_2\n"
+                "    end\n"
+                "    local L5_5 = A1_1 - A2_2\n"
+                "    L5_5:SetZ((0))\n"
+                "    L5_5:Normalise()\n"
+                "    local L6_6 = (SACCamera.ClosenessToTiltUpStart - L4_4) / (SACCamera.ClosenessToTiltUpStart - SACCamera.ClosenessToTiltUpMax)\n"
+                "    L6_6 = math.min(L6_6, 1)\n"
+                "    L6_6 = math.max(L6_6, 0)\n"
+                "    local L7_7 = A1_1\n"
+                "    local L8_8 = CameraFunctions.Interpolate(A1_1:GetZ(), L6_6, A3_3:GetZ())\n"
+                "    L7_7:SetZ(L8_8)\n"
+                "    L7_7 = L7_7 + L5_5 * L6_6\n"
+                "    local L9_9 = A2_2\n"
+                "    local L10_10 = CameraFunctions.Interpolate(A2_2:GetZ(), L6_6, A3_3:GetZ())\n"
+                "    L9_9:SetZ(L10_10)\n"
+                "    return L7_7, L9_9\n"
+                "  end\n",
+            },
+        });
     return changed;
 }
 
@@ -17540,78 +18331,80 @@ bool FoldFastBoundedHotspotQuestAssassinationPickerParity(std::string* source) {
         return false;
     }
 
-    bool changed = false;
-    changed |= FastReplaceAllLiteral(
+    return FastApplyLiteralRules(
         source,
-        "local LevelName = ScriptFunction.GetLevelName\n"
-        "    LevelName = LevelName()",
-        "local LevelName = ScriptFunction.GetLevelName()");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "if MessageEvents.IsMessagePosted(EMessageEventType.MESSAGE_EVENT_LEVEL_LOADED, self.LastMessageID_LevelLoaded) then",
-        "if is_posted then");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "repeat\n"
-        "    local message_posted = false",
-        "local message_posted = false");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "local r5 = ScriptData.Assassination.RandomTargetList[LevelName].TargetEntity:IsAlive()\n"
-        "    if not ScriptData.Assassination.RandomTargetList[LevelName].TargetEntity:IsAlive() then",
-        "if not ScriptData.Assassination.RandomTargetList[LevelName].TargetEntity:IsAlive() then");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "ScriptData.Assassination.RandomTargetList = {}\n"
-        "    ScriptData.Assassination.RandomTargetList[LevelName] = nil",
-        "ScriptData.Assassination.RandomTargetList[LevelName] = nil");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "until (nil == nil)",
-        "if ScriptData.Assassination.RandomTargetList[LevelName] == nil then");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "AssTarget = self:GetARandomNonScriptedChar()",
-        "local AssTarget = self:GetARandomNonScriptedChar()");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "if (AssTarget ~= nil) then\n"
-        "    if Creature.IsAvailable(AssTarget) then\n"
-        "    if Villager.IsAvailable(AssTarget) then\n"
-        "    local r5 = Creature.GetNameTagHash(AssTarget)\n"
-        "    ScriptData.Assassination.RandomTargetList[LevelName] = {}\n"
-        "    ScriptData.Assassination.RandomTargetList[LevelName].TargetNameHash = r5\n"
-        "    r5 = Villager.GetOccupationTag(AssTarget)\n"
-        "    ScriptData.Assassination.RandomTargetList[LevelName] = {}\n"
-        "    ScriptData.Assassination.RandomTargetList[LevelName].TargetOccupation = r5\n"
-        "    ScriptData.Assassination.RandomTargetList[LevelName] = {}\n"
-        "    ScriptData.Assassination.RandomTargetList[LevelName].TargetEntity = AssTarget\n"
-        "    r5 = AssTarget:GetName()\n"
-        "    print((r5 .. \" has been selected for assassination if the level is chosen\"))",
-        "if (AssTarget ~= nil) then\n"
-        "    ScriptData.Assassination.RandomTargetList[ScriptFunction.GetLevelName()] = {}\n"
-        "    if Creature.IsAvailable(AssTarget) then\n"
-        "    if Villager.IsAvailable(AssTarget) then\n"
-        "    ScriptData.Assassination.RandomTargetList[LevelName].TargetNameHash = Creature.GetNameTagHash(AssTarget)\n"
-        "    ScriptData.Assassination.RandomTargetList[LevelName].TargetOccupation = Villager.GetOccupationTag(AssTarget)\n"
-        "    ScriptData.Assassination.RandomTargetList[LevelName].TargetEntity = AssTarget\n"
-        "    print((AssTarget:GetName() .. \" has been selected for assassination if the level is chosen\"))");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "else\n"
-        "    print(\"No unscripted entity to grab\")\n"
-        "    end\n"
-        "    end\n"
-        "  end\n"
-        "  AssassinationTargetPicker.GetARandomNonScriptedChar",
-        "else\n"
-        "    print(\"No unscripted entity to grab\")\n"
-        "    end\n"
-        "    end\n"
-        "    end\n"
-        "  end\n"
-        "  AssassinationTargetPicker.GetARandomNonScriptedChar");
-    return changed;
+        {
+            {
+                "local LevelName = ScriptFunction.GetLevelName\n"
+                "    LevelName = LevelName()",
+                "local LevelName = ScriptFunction.GetLevelName()",
+            },
+            {
+                "if MessageEvents.IsMessagePosted(EMessageEventType.MESSAGE_EVENT_LEVEL_LOADED, self.LastMessageID_LevelLoaded) then",
+                "if is_posted then",
+            },
+            {
+                "repeat\n"
+                "    local message_posted = false",
+                "local message_posted = false",
+            },
+            {
+                "local r5 = ScriptData.Assassination.RandomTargetList[LevelName].TargetEntity:IsAlive()\n"
+                "    if not ScriptData.Assassination.RandomTargetList[LevelName].TargetEntity:IsAlive() then",
+                "if not ScriptData.Assassination.RandomTargetList[LevelName].TargetEntity:IsAlive() then",
+            },
+            {
+                "ScriptData.Assassination.RandomTargetList = {}\n"
+                "    ScriptData.Assassination.RandomTargetList[LevelName] = nil",
+                "ScriptData.Assassination.RandomTargetList[LevelName] = nil",
+            },
+            {
+                "until (nil == nil)",
+                "if ScriptData.Assassination.RandomTargetList[LevelName] == nil then",
+            },
+            {
+                "AssTarget = self:GetARandomNonScriptedChar()",
+                "local AssTarget = self:GetARandomNonScriptedChar()",
+            },
+            {
+                "if (AssTarget ~= nil) then\n"
+                "    if Creature.IsAvailable(AssTarget) then\n"
+                "    if Villager.IsAvailable(AssTarget) then\n"
+                "    local r5 = Creature.GetNameTagHash(AssTarget)\n"
+                "    ScriptData.Assassination.RandomTargetList[LevelName] = {}\n"
+                "    ScriptData.Assassination.RandomTargetList[LevelName].TargetNameHash = r5\n"
+                "    r5 = Villager.GetOccupationTag(AssTarget)\n"
+                "    ScriptData.Assassination.RandomTargetList[LevelName] = {}\n"
+                "    ScriptData.Assassination.RandomTargetList[LevelName].TargetOccupation = r5\n"
+                "    ScriptData.Assassination.RandomTargetList[LevelName] = {}\n"
+                "    ScriptData.Assassination.RandomTargetList[LevelName].TargetEntity = AssTarget\n"
+                "    r5 = AssTarget:GetName()\n"
+                "    print((r5 .. \" has been selected for assassination if the level is chosen\"))",
+                "if (AssTarget ~= nil) then\n"
+                "    ScriptData.Assassination.RandomTargetList[ScriptFunction.GetLevelName()] = {}\n"
+                "    if Creature.IsAvailable(AssTarget) then\n"
+                "    if Villager.IsAvailable(AssTarget) then\n"
+                "    ScriptData.Assassination.RandomTargetList[LevelName].TargetNameHash = Creature.GetNameTagHash(AssTarget)\n"
+                "    ScriptData.Assassination.RandomTargetList[LevelName].TargetOccupation = Villager.GetOccupationTag(AssTarget)\n"
+                "    ScriptData.Assassination.RandomTargetList[LevelName].TargetEntity = AssTarget\n"
+                "    print((AssTarget:GetName() .. \" has been selected for assassination if the level is chosen\"))",
+            },
+            {
+                "else\n"
+                "    print(\"No unscripted entity to grab\")\n"
+                "    end\n"
+                "    end\n"
+                "  end\n"
+                "  AssassinationTargetPicker.GetARandomNonScriptedChar",
+                "else\n"
+                "    print(\"No unscripted entity to grab\")\n"
+                "    end\n"
+                "    end\n"
+                "    end\n"
+                "  end\n"
+                "  AssassinationTargetPicker.GetARandomNonScriptedChar",
+            },
+        });
 }
 
 bool FoldFastBoundedHotspotQuestSearchFilterClosureParity(std::string* source) {
@@ -17620,51 +18413,53 @@ bool FoldFastBoundedHotspotQuestSearchFilterClosureParity(std::string* source) {
         return false;
     }
 
-    bool changed = false;
-    changed |= FastReplaceAllLiteral(
+    return FastApplyLiteralRules(
         source,
-        "local r4 = function(entity)\n"
-        "      if QuestManager.HeroEntity == entity then\n"
-        "      return false\n"
-        "      end\n"
-        "      return true\n"
-        "    end\n"
-        "    SearchTools.FilterWithScriptFilter(search, r4)",
-        "SearchTools.FilterWithScriptFilter(search, function(entity)\n"
-        "      return QuestManager.HeroEntity ~= entity\n"
-        "    end)");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "r4 = function(entity)\n"
-        "      if entity:GetName() == \"CreatureDogHero\" then\n"
-        "      return false\n"
-        "      end\n"
-        "      return true\n"
-        "    end\n"
-        "    SearchTools.FilterWithScriptFilter(search, r4)",
-        "SearchTools.FilterWithScriptFilter(search, function(entity)\n"
-        "      return entity:GetName() ~= \"CreatureDogHero\"\n"
-        "    end)");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "r4 = function(entity)\n"
-        "      return Villager.IsAvailable(entity)\n"
-        "    end\n"
-        "    SearchTools.FilterWithScriptFilter(search, r4)",
-        "SearchTools.FilterWithScriptFilter(search, function(entity)\n"
-        "      return Villager.IsAvailable(entity)\n"
-        "    end)");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "#SearchTools.GetSearchResults(SearchTools.StartNewSearch(\"creature\"))",
-        "#creaturelist");
-    changed |= FastReplaceAllLiteral(
-        source,
-        "questgiverindex = GetRandomNumber((#creaturelist))\n"
-        "    return creaturelist[questgiverindex]",
-        "local questgiverindex = GetRandomNumber((#creaturelist))\n"
-        "    return creaturelist[questgiverindex]");
-    return changed;
+        {
+            {
+                "local r4 = function(entity)\n"
+                "      if QuestManager.HeroEntity == entity then\n"
+                "      return false\n"
+                "      end\n"
+                "      return true\n"
+                "    end\n"
+                "    SearchTools.FilterWithScriptFilter(search, r4)",
+                "SearchTools.FilterWithScriptFilter(search, function(entity)\n"
+                "      return QuestManager.HeroEntity ~= entity\n"
+                "    end)",
+            },
+            {
+                "r4 = function(entity)\n"
+                "      if entity:GetName() == \"CreatureDogHero\" then\n"
+                "      return false\n"
+                "      end\n"
+                "      return true\n"
+                "    end\n"
+                "    SearchTools.FilterWithScriptFilter(search, r4)",
+                "SearchTools.FilterWithScriptFilter(search, function(entity)\n"
+                "      return entity:GetName() ~= \"CreatureDogHero\"\n"
+                "    end)",
+            },
+            {
+                "r4 = function(entity)\n"
+                "      return Villager.IsAvailable(entity)\n"
+                "    end\n"
+                "    SearchTools.FilterWithScriptFilter(search, r4)",
+                "SearchTools.FilterWithScriptFilter(search, function(entity)\n"
+                "      return Villager.IsAvailable(entity)\n"
+                "    end)",
+            },
+            {
+                "#SearchTools.GetSearchResults(SearchTools.StartNewSearch(\"creature\"))",
+                "#creaturelist",
+            },
+            {
+                "questgiverindex = GetRandomNumber((#creaturelist))\n"
+                "    return creaturelist[questgiverindex]",
+                "local questgiverindex = GetRandomNumber((#creaturelist))\n"
+                "    return creaturelist[questgiverindex]",
+            },
+        });
 }
 
 bool FoldFastBoundedHotspotQuestAssassinationAndFilterParity(std::string* source) {
@@ -18168,6 +18963,7 @@ bool TryApplyFastBoundedHotspotParityCleanup(const std::vector<char>& bytes,
     }
 
     const std::string chunk_name = relative_path.generic_string();
+    const std::string note_prefix_text(note_prefix);
     refii::lua::audit::LuaBytecodeParityReference reference;
     refii::lua::audit::LuaBytecodeParityResult current_parity;
     if (!refii::lua::audit::BuildLuaBytecodeParityReference(bytes, &reference) ||
@@ -18197,7 +18993,7 @@ bool TryApplyFastBoundedHotspotParityCleanup(const std::vector<char>& bytes,
                     note != nullptr) {
                     *note = internal::JoinNotes(
                         *note,
-                        std::string(note_prefix) +
+                        note_prefix_text +
                             "_fast_nonexact_cleanup_rejection_budget_exhausted=" +
                             std::to_string(rejected_candidate_budget));
                     rejection_budget_note_emitted = true;
@@ -18215,7 +19011,7 @@ bool TryApplyFastBoundedHotspotParityCleanup(const std::vector<char>& bytes,
                 if (note != nullptr) {
                     *note = internal::JoinNotes(
                         *note,
-                        std::string(note_prefix) + "_fast_nonexact_" +
+                        note_prefix_text + "_fast_nonexact_" +
                             std::string(step_name) + "_rejected_invalid=" +
                             validation_error);
                 }
@@ -18231,7 +19027,7 @@ bool TryApplyFastBoundedHotspotParityCleanup(const std::vector<char>& bytes,
                 if (note != nullptr) {
                     *note = internal::JoinNotes(
                         *note,
-                        std::string(note_prefix) + "_fast_nonexact_" +
+                        note_prefix_text + "_fast_nonexact_" +
                             std::string(step_name) + "_rejected_non_improving");
                 }
                 ++rejected_candidate_count;
@@ -18245,9 +19041,9 @@ bool TryApplyFastBoundedHotspotParityCleanup(const std::vector<char>& bytes,
                 *note = internal::JoinNotes(
                     *note,
                     current_parity.exact_bytecode
-                        ? std::string(note_prefix) + "_fast_nonexact_" +
+                        ? note_prefix_text + "_fast_nonexact_" +
                               std::string(step_name) + "_exact"
-                        : std::string(note_prefix) + "_fast_nonexact_" +
+                        : note_prefix_text + "_fast_nonexact_" +
                               std::string(step_name) + "_improved");
             }
             return true;
@@ -18267,7 +19063,7 @@ bool TryApplyFastBoundedHotspotParityCleanup(const std::vector<char>& bytes,
                 if (note != nullptr) {
                     *note = internal::JoinNotes(
                         *note,
-                        std::string(note_prefix) + "_fast_nonexact_" +
+                        note_prefix_text + "_fast_nonexact_" +
                             std::string(step_name) + "_rejected_invalid=" +
                             validation_error);
                 }
@@ -18283,7 +19079,7 @@ bool TryApplyFastBoundedHotspotParityCleanup(const std::vector<char>& bytes,
                 if (note != nullptr) {
                     *note = internal::JoinNotes(
                         *note,
-                        std::string(note_prefix) + "_fast_nonexact_" +
+                        note_prefix_text + "_fast_nonexact_" +
                             std::string(step_name) + "_rejected_non_improving");
                 }
                 ++rejected_candidate_count;
@@ -18297,9 +19093,9 @@ bool TryApplyFastBoundedHotspotParityCleanup(const std::vector<char>& bytes,
                 *note = internal::JoinNotes(
                     *note,
                     current_parity.exact_bytecode
-                        ? std::string(note_prefix) + "_fast_nonexact_" +
+                        ? note_prefix_text + "_fast_nonexact_" +
                               std::string(step_name) + "_exact"
-                        : std::string(note_prefix) + "_fast_nonexact_" +
+                        : note_prefix_text + "_fast_nonexact_" +
                               std::string(step_name) + "_improved");
             }
             return true;
@@ -18442,632 +19238,696 @@ bool TryApplyFastBoundedHotspotParityCleanup(const std::vector<char>& bytes,
             return try_accept_candidate(std::move(candidate), step_name);
         };
 
-    try_accept_step(ApplyFastBoundedHotspotBootstrapCleanup, "bootstrap_cleanup");
-    try_accept_step(NormalizeFastBoundedHotspotAssignedCreateSubClassCalls,
-                    "assigned_create_subclass_bare_call");
-    try_accept_step(FoldFastBoundedHotspotRootTableSeedAssignmentsForParity,
-                    "root_table_seed_assignments_for_parity");
-    try_accept_step(FoldFastBoundedHotspotClassSeedTablesForParity,
-                    "class_seed_tables_for_parity");
-    try_accept_step(FoldFastBoundedHotspotNewOldSeedForParity,
-                    "new_old_seed_for_parity");
-    try_accept_step(FoldFastBoundedHotspotReturnNilTailToElse,
-                    "return_nil_tail_to_else");
-    try_accept_step(FoldFastBoundedHotspotCounterShapesForParity,
-                    "counter_shapes_for_parity");
-    try_accept_step(MoveFastBoundedHotspotLoopEqualityBreakToAssignmentBranch,
-                    "loop_equality_break_assignment_branch");
-    try_accept_step(FoldFastBoundedHotspotSingleEntryTableAssignmentToPatch,
-                    "single_entry_table_assignment_patch");
-    try_accept_step(FoldFastBoundedHotspotDottedArithmeticFieldPatchTemps,
-                    "dotted_arithmetic_field_patch_temps");
-    try_accept_step(FoldFastBoundedHotspotMultiResultTempFieldAssignments,
-                    "multi_result_temp_field_assignments");
-    try_accept_step(FoldFastBoundedHotspotSelfAddAssignmentIntoLocalInitializer,
-                    "self_add_assignment_local_initializer");
-    try_accept_step(ParenthesizeFastBoundedHotspotAdditiveProductTail,
-                    "additive_product_tail_parenthesized");
-    try_accept_step(FoldFastBoundedHotspotDuplicateInlineTableKeys,
-                    "duplicate_inline_table_keys");
-    try_accept_step(FoldFastBoundedHotspotActionLoopSelfAliasTable,
-                    "action_loop_self_alias_table");
-    try_accept_step(FoldFastBoundedHotspotActionBatchSplitTable,
-                    "action_batch_split_table");
-    try_accept_step(FoldFastBoundedHotspotActionAnimBranchSeeds,
-                    "action_anim_branch_seed");
-    try_accept_step(FoldFastBoundedHotspotDuplicateSearchResultsGuardToLocal,
-                    "duplicate_search_results_guard_local");
-    try_accept_step(ExpandFastBoundedHotspotSearchResultsAliasAndPlainReturn,
-                    "search_results_alias_plain_return");
-    try_accept_step(ApplyFastBoundedHotspotSearchFadeNilPatchBundle,
-                    "search_fade_nil_patch_bundle");
-    try_accept_step(ApplyFastBoundedHotspotActionResultStatePatchBundle,
-                    "action_result_state_patch_bundle");
-    try_accept_step(FoldFastBoundedHotspotTempTableCallAliasHandoff,
-                    "temp_table_call_alias_handoff");
-    try_accept_step(FoldFastBoundedHotspotAliasFieldWritesToTableHandoff,
-                    "alias_field_writes_table_handoff");
-    try_accept_step(FoldFastBoundedHotspotSelfFieldAliasSeedToEmptyTable,
-                    "self_field_alias_seed_empty_table");
-    try_accept_step(ExpandFastBoundedHotspotManagerStateConstSeed,
-                    "manager_state_const_seed_expand");
-    try_accept_step(LocalizeFastBoundedHotspotRepeatedSetAttributeTarget,
-                    "repeated_setattribute_target_local");
-    try_accept_step(HoistFastBoundedHotspotMarkerSearchResultsPairsIterator,
-                    "marker_search_results_pairs_iterator");
-    try_accept_step(LocalizeFastBoundedHotspotPointOccupiedPairLiteral,
-                    "point_occupied_pair_literal_localize");
-    try_accept_step(AddFastBoundedHotspotOccupiedPointLoopBreak,
-                    "occupied_point_loop_break");
-    try_accept_step(FoldFastBoundedHotspotNestedNegativeBreakLoopToOrCondition,
-                    "nested_negative_break_loop_or_condition");
-    try_accept_step(FoldFastBoundedHotspotEmptyNegativeIfReturnToOrReturn,
-                    "empty_negative_if_return_or");
-    try_accept_step(ApplyFastBoundedHotspotNestedNegativeBreakOrBundle,
-                    "nested_negative_break_or_bundle");
-    try_accept_step(ApplyFastBoundedHotspotVectorActionDistanceBundle,
-                    "vector_action_distance_bundle");
-    try_accept_step(LocalizeFastBoundedHotspotNegativeCallBooleanGuard,
-                    "negative_call_boolean_guard_localize");
-    try_accept_step(FlipFastBoundedHotspotCallBooleanReturnGuardPolarity,
-                    "call_boolean_return_guard_polarity");
-    try_accept_step(FlipFastBoundedHotspotBooleanReturnGuardPolarity,
-                    "boolean_return_guard_polarity");
-    try_accept_step(ExpandFastBoundedHotspotActionFieldGuardToExplicitTrue,
-                    "action_field_guard_explicit_true");
-    try_accept_step(ExpandFastBoundedHotspotTruthFieldGuardToExplicitTrue,
-                    "truth_field_guard_explicit_true");
-    try_accept_step(FoldFastBoundedHotspotInitialLocalTableFieldPatches,
-                    "initial_local_table_field_patches");
-    try_accept_step(LocalizeFastBoundedHotspotLoopNilSeedAssignments,
-                    "loop_nil_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotNilSeedTableLiteralAndYieldBreak,
-                    "nil_seed_table_literal_yield_break");
-    try_accept_step(FoldFastBoundedHotspotNilSeedFieldWritesToTableLiteral,
-                    "nil_seed_field_writes_table_literal");
-    try_accept_step(FoldFastBoundedHotspotFieldPatchTempCallArgument,
-                    "field_patch_temp_call_argument");
-    try_accept_step(ApplyFastBoundedHotspotNavigationTempArgumentBundle,
-                    "navigation_temp_argument_bundle");
+    struct CleanupPass {
+        bool (*transform)(std::string*);
+        std::string_view step_name;
+        std::string_view required_needle;
+    };
+    const auto try_accept_steps =
+        [&](std::initializer_list<CleanupPass> passes) {
+            bool changed = false;
+            for (const CleanupPass& pass : passes) {
+                if (!pass.required_needle.empty() &&
+                    current_source.find(pass.required_needle) == std::string::npos) {
+                    continue;
+                }
+                changed |= try_accept_step(pass.transform, pass.step_name);
+            }
+            return changed;
+        };
+
+    try_accept_steps({
+        {ApplyFastBoundedHotspotBootstrapCleanup, "bootstrap_cleanup"},
+        {NormalizeFastBoundedHotspotAssignedCreateSubClassCalls,
+         "assigned_create_subclass_bare_call", ":CreateSubClass"},
+        {FoldFastBoundedHotspotRootTableSeedAssignmentsForParity,
+         "root_table_seed_assignments_for_parity"},
+        {FoldFastBoundedHotspotClassSeedTablesForParity,
+         "class_seed_tables_for_parity"},
+        {FoldFastBoundedHotspotNewOldSeedForParity, "new_old_seed_for_parity"},
+        {FoldFastBoundedHotspotReturnNilTailToElse, "return_nil_tail_to_else"},
+        {FoldFastBoundedHotspotCounterShapesForParity,
+         "counter_shapes_for_parity"},
+        {MoveFastBoundedHotspotLoopEqualityBreakToAssignmentBranch,
+         "loop_equality_break_assignment_branch"},
+        {FoldFastBoundedHotspotSingleEntryTableAssignmentToPatch,
+         "single_entry_table_assignment_patch"},
+        {FoldFastBoundedHotspotDottedArithmeticFieldPatchTemps,
+         "dotted_arithmetic_field_patch_temps"},
+        {FoldFastBoundedHotspotMultiResultTempFieldAssignments,
+         "multi_result_temp_field_assignments"},
+        {FoldFastBoundedHotspotSelfAddAssignmentIntoLocalInitializer,
+         "self_add_assignment_local_initializer"},
+        {ParenthesizeFastBoundedHotspotAdditiveProductTail,
+         "additive_product_tail_parenthesized"},
+        {FoldFastBoundedHotspotDuplicateInlineTableKeys,
+         "duplicate_inline_table_keys"},
+        {FoldFastBoundedHotspotActionLoopSelfAliasTable,
+         "action_loop_self_alias_table"},
+        {FoldFastBoundedHotspotActionBatchSplitTable,
+         "action_batch_split_table"},
+        {FoldFastBoundedHotspotActionAnimBranchSeeds,
+         "action_anim_branch_seed"},
+        {FoldFastBoundedHotspotDuplicateSearchResultsGuardToLocal,
+         "duplicate_search_results_guard_local"},
+        {ExpandFastBoundedHotspotSearchResultsAliasAndPlainReturn,
+         "search_results_alias_plain_return"},
+        {ApplyFastBoundedHotspotSearchFadeNilPatchBundle,
+         "search_fade_nil_patch_bundle"},
+        {ApplyFastBoundedHotspotActionResultStatePatchBundle,
+         "action_result_state_patch_bundle"},
+        {FoldFastBoundedHotspotTempTableCallAliasHandoff,
+         "temp_table_call_alias_handoff"},
+        {FoldFastBoundedHotspotAliasFieldWritesToTableHandoff,
+         "alias_field_writes_table_handoff"},
+        {FoldFastBoundedHotspotSelfFieldAliasSeedToEmptyTable,
+         "self_field_alias_seed_empty_table"},
+        {ExpandFastBoundedHotspotManagerStateConstSeed,
+         "manager_state_const_seed_expand"},
+        {LocalizeFastBoundedHotspotRepeatedSetAttributeTarget,
+         "repeated_setattribute_target_local"},
+        {HoistFastBoundedHotspotMarkerSearchResultsPairsIterator,
+         "marker_search_results_pairs_iterator"},
+        {LocalizeFastBoundedHotspotPointOccupiedPairLiteral,
+         "point_occupied_pair_literal_localize"},
+        {AddFastBoundedHotspotOccupiedPointLoopBreak,
+         "occupied_point_loop_break"},
+        {FoldFastBoundedHotspotNestedNegativeBreakLoopToOrCondition,
+         "nested_negative_break_loop_or_condition"},
+        {FoldFastBoundedHotspotEmptyNegativeIfReturnToOrReturn,
+         "empty_negative_if_return_or"},
+        {ApplyFastBoundedHotspotNestedNegativeBreakOrBundle,
+         "nested_negative_break_or_bundle"},
+        {ApplyFastBoundedHotspotVectorActionDistanceBundle,
+         "vector_action_distance_bundle"},
+        {LocalizeFastBoundedHotspotNegativeCallBooleanGuard,
+         "negative_call_boolean_guard_localize"},
+        {FlipFastBoundedHotspotCallBooleanReturnGuardPolarity,
+         "call_boolean_return_guard_polarity"},
+        {FlipFastBoundedHotspotBooleanReturnGuardPolarity,
+         "boolean_return_guard_polarity"},
+        {ExpandFastBoundedHotspotActionFieldGuardToExplicitTrue,
+         "action_field_guard_explicit_true"},
+        {ExpandFastBoundedHotspotTruthFieldGuardToExplicitTrue,
+         "truth_field_guard_explicit_true"},
+        {FoldFastBoundedHotspotInitialLocalTableFieldPatches,
+         "initial_local_table_field_patches"},
+        {LocalizeFastBoundedHotspotLoopNilSeedAssignments,
+         "loop_nil_seed_localize"},
+        {FoldFastBoundedHotspotNilSeedTableLiteralAndYieldBreak,
+         "nil_seed_table_literal_yield_break"},
+        {FoldFastBoundedHotspotNilSeedFieldWritesToTableLiteral,
+         "nil_seed_field_writes_table_literal"},
+        {FoldFastBoundedHotspotFieldPatchTempCallArgument,
+         "field_patch_temp_call_argument"},
+        {ApplyFastBoundedHotspotNavigationTempArgumentBundle,
+         "navigation_temp_argument_bundle"},
+    });
     try_accept_local_name_from_parity_note("local_name_from_parity_note");
-    try_accept_step(FoldFastBoundedHotspotUndefinedSyntheticFieldTables,
-                    "undefined_synthetic_field_tables");
-    try_accept_step(FoldFastBoundedHotspotRootNamespaceInlineTableSeed,
-                    "root_namespace_inline_table_seed");
-    try_accept_step(ExpandFastBoundedHotspotDottedInlineTableSeedToFieldPatches,
-                    "dotted_inline_table_seed_field_patches");
-    try_accept_step(FoldFastBoundedHotspotRootAndNestedTableSeedShapes,
-                    "root_and_nested_table_seed_shapes");
-    try_accept_step(FoldFastBoundedHotspotEmptyGuardTablePlaceholdersToSourceFields,
-                    "empty_guard_table_placeholders_to_source_fields");
-    try_accept_step(FoldFastBoundedHotspotRootInlineTableSeedToFieldPatches,
-                    "root_inline_table_seed_to_field_patches");
-    try_accept_step(FoldFastBoundedHotspotNestedFieldPatchesToInlineTableSeed,
-                    "nested_field_patches_to_inline_table_seed");
-    try_accept_step(LocalizeFastBoundedHotspotGroupMindAttachedGuardCalls,
-                    "groupmind_attached_guard_call_local");
-    try_accept_step(RemoveFastBoundedHotspotOverwrittenLocalConstructorReseeds,
-                    "overwritten_local_constructor_reseed");
-    try_accept_step(RemoveFastBoundedHotspotUnusedGeneratedFunctionParameters,
-                    "unused_generated_function_parameters");
-    try_accept_step(AddFastBoundedHotspotGeneratedParameterToZeroArgFunctions,
-                    "generated_function_parameters");
-    try_accept_step(FoldFastBoundedHotspotBooleanAndReturnToNestedIf,
-                    "boolean_and_return_to_nested_if");
-    try_accept_step(ExpandFastBoundedHotspotOrNotSelfCallReturnGuard,
-                    "or_not_self_call_return_guard");
-    try_accept_step(FoldFastBoundedHotspotEmptyChildArrayToIndexedPatches,
-                    "empty_child_array_to_indexed_patches");
-    try_accept_step(FoldFastBoundedHotspotTrueAssertToLowerBoundAssert,
-                    "true_assert_to_lower_bound_assert");
-    try_accept_step(FoldFastBoundedHotspotNewThreadObjectSeedToLocal,
-                    "new_thread_object_seed_localize");
-    try_accept_step(RemoveFastBoundedHotspotTableReseedBeforeFieldPatch,
-                    "table_reseed_before_field_patch");
-    try_accept_step(FoldFastBoundedHotspotLocalTableBuilderCallArgument,
-                    "local_table_builder_call_argument");
-    try_accept_step(FoldFastBoundedHotspotLocalTableLiteralCallAssignment,
-                    "local_table_literal_call_assignment");
-    try_accept_step(FoldFastBoundedHotspotExistingLocalTableLiteralCallArgument,
-                    "existing_local_table_literal_call_argument");
-    try_accept_step(RemoveFastBoundedHotspotDeadInlinedTempTableLiteralArgs,
-                    "dead_inlined_temp_table_literal_args");
-    try_accept_step(FoldFastBoundedHotspotDuplicateLocalCallArguments,
-                    "duplicate_local_call_arguments");
-    try_accept_step(HoistFastBoundedHotspotPostCallLocalCallSeed,
-                    "post_call_local_call_seed_hoist");
-    try_accept_step(FoldFastBoundedHotspotFunctionFieldTableCallArgument,
-                    "function_field_table_call_argument");
-    try_accept_step(FoldFastBoundedHotspotDeadShortLocalUseScopes,
-                    "dead_short_local_use_scopes");
-    try_accept_step(FoldFastBoundedHotspotHoistInlineArrayMethodArgument,
-                    "hoist_inline_array_method_argument");
-    try_accept_step(FoldFastBoundedHotspotLoopCarriedMethodNameCache,
-                    "loop_carried_method_name_cache");
-    try_accept_step(FoldFastBoundedHotspotSingleFunctionTempCallArgument,
-                    "single_function_temp_call_argument_1");
-    try_accept_step(FoldFastBoundedHotspotSingleFunctionTempCallArgument,
-                    "single_function_temp_call_argument_2");
-    try_accept_step(FoldFastBoundedHotspotFunctionTempCallArgument,
-                    "function_temp_call_argument");
-    try_accept_step(ExpandFastBoundedHotspotReturnCallBooleanGuard,
-                    "return_call_boolean_guard");
-    try_accept_step(ExpandFastBoundedHotspotComparisonReturnGuard,
-                    "comparison_return_guard");
-    try_accept_step(FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
-                    "open_range_or_return_to_and");
-    try_accept_step(FoldFastBoundedHotspotParenthesizedReturnCallTailcall,
-                    "parenthesized_return_call_tailcall");
-    try_accept_step(RemoveFastBoundedHotspotReseedAndDuplicateCallPair,
-                    "reseed_and_duplicate_call_pair");
-    try_accept_step(RemoveFastBoundedHotspotUnusedDuplicateCallBeforeIf,
-                    "unused_duplicate_call_before_if");
-    try_accept_step(FoldFastBoundedHotspotCollectionAssignmentsToLocals,
-                    "collection_assignment_localize");
-    try_accept_step(FoldFastBoundedHotspotEarlyCallSeedAndParameterShadowAssignments,
-                    "early_call_seed_parameter_shadow_assignment");
-    try_accept_step(FoldFastBoundedHotspotEarlyCallSeedsToLocals,
-                    "early_call_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotParameterCallShadowAssignments,
-                    "parameter_call_shadow_assignment");
-    try_accept_step(FoldFastBoundedHotspotScalarSeedAssignmentsToLocals,
-                    "scalar_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotStringStateSeedToLocal,
-                    "string_state_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotDirectCallAliasLocals,
-                    "direct_call_alias_localize");
-    try_accept_step(LocalizeFastBoundedHotspotRepeatedGuardExpressionSeed,
-                    "repeated_guard_expression_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotDistanceAndStateLocals,
-                    "distance_state_localize");
-    try_accept_step(FoldFastBoundedHotspotNestedReturnGuardsToCompound,
-                    "nested_return_guards_to_compound");
-    try_accept_step(FoldFastBoundedHotspotLoopCarriedSeedsToLocals,
-                    "loop_carried_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotGuardedShadowLocalCarry,
-                    "guarded_shadow_local_carry");
-    try_accept_step(FoldFastBoundedHotspotDuplicateMultiCallGuard,
-                    "duplicate_multi_call_guard");
-    try_accept_step(FoldFastBoundedHotspotMultiCallGuardSeedsToLocals,
-                    "multi_call_guard_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotSingleUseScalarSeedsToLocals,
-                    "single_use_scalar_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotGuardedSeededCallArgumentFallback,
-                    "guarded_seeded_call_argument_fallback");
-    try_accept_step(FoldFastBoundedHotspotOrFallbackCallArgumentToGuardedCall,
-                    "or_fallback_call_argument_guarded_call");
-    try_accept_step(FoldFastBoundedHotspotGuardLocalReturnToFallthrough,
-                    "guard_local_return_to_fallthrough");
-    try_accept_step(FoldFastBoundedHotspotSyntheticTableLocalToUndefinedCallArgument,
-                    "synthetic_table_local_to_call_argument_name");
-    try_accept_step(FoldFastBoundedHotspotLocalTableFieldPatchesToSeedLiteral,
-                    "local_table_field_patches_seed_literal");
-    try_accept_step(ExpandFastBoundedHotspotInlineLocalTableSeedFieldsForParity,
-                    "inline_local_table_seed_fields");
-    try_accept_step(FoldFastBoundedHotspotUnusedArithmeticLocalIntoCallMultiplier,
-                    "unused_arithmetic_local_call_multiplier");
-    try_accept_step(FoldFastBoundedHotspotSingleUseArithmeticLocalArgument,
-                    "single_use_arithmetic_local_argument_inline");
-    try_accept_step(FoldFastBoundedHotspotRepeatedLocalExpressionCallArgument,
-                    "repeated_local_expression_call_argument");
-    try_accept_step(FoldFastBoundedHotspotLocalCallBooleanReturnGuard,
-                    "local_call_boolean_return_guard");
-    try_accept_step(FoldFastBoundedHotspotEmptyNegativeAndGuardReturnTrue,
-                    "empty_negative_and_guard_return_true");
-    try_accept_step(FoldFastBoundedHotspotEmptyLowerBoundGuardToOrReturn,
-                    "empty_lower_bound_guard_or_return");
-    try_accept_step(ExpandFastBoundedHotspotComparisonReturnGuard,
-                    "post_guard_comparison_return_guard");
-    try_accept_step(FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
-                    "post_guard_open_range_or_return_to_and");
-    try_accept_step(FoldFastBoundedHotspotCallResultSeedsToLocals,
-                    "call_result_seed_localize");
-    try_accept_step(ApplyFastBoundedHotspotVectorActionDistanceBundle,
-                    "post_call_result_vector_action_distance_bundle");
-    try_accept_step(FoldFastBoundedHotspotAdjacentCallTempsIntoAssignment,
-                    "adjacent_call_temps_into_assignment");
-    try_accept_step(FoldFastBoundedHotspotVectorNumericTemps,
-                    "vector_numeric_temp_inline");
-    try_accept_step(FoldFastBoundedHotspotCurrentOpinionComparisonToLocal,
-                    "current_opinion_comparison_localize");
-    try_accept_step(FoldFastBoundedHotspotSingleUseCallComparisonTempsSwapped,
-                    "single_use_call_comparison_inline_swapped");
-    try_accept_step(FlipFastBoundedHotspotRightCallRelationalIfOrientation,
-                    "right_call_relational_if_orientation");
-    try_accept_step(FoldFastBoundedHotspotSingleUseCallComparisonTemps,
-                    "single_use_call_comparison_inline");
-    try_accept_step(FoldFastBoundedHotspotAdjacentCallTempsIntoAssignment,
-                    "post_comparison_adjacent_call_temps_into_assignment");
-    try_accept_step(FoldFastBoundedHotspotSingleUseSyntheticExpressions,
-                    "post_call_single_use_synthetic_inline");
-    try_accept_step(FoldFastBoundedHotspotEarlyCallSeedAndParameterShadowAssignments,
-                    "post_inline_early_call_seed_parameter_shadow_assignment");
-    try_accept_step(FoldFastBoundedHotspotEarlyCallSeedsToLocals,
-                    "post_inline_early_call_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotParameterCallShadowAssignments,
-                    "post_inline_parameter_call_shadow_assignment");
-    try_accept_step(FoldFastBoundedHotspotSingleUseScalarSeedsToLocals,
-                    "post_inline_single_use_scalar_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotStringStateSeedToLocal,
-                    "post_inline_string_state_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotDirectCallAliasLocals,
-                    "post_inline_direct_call_alias_localize");
-    try_accept_step(LocalizeFastBoundedHotspotRepeatedGuardExpressionSeed,
-                    "post_inline_repeated_guard_expression_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotDistanceAndStateLocals,
-                    "post_inline_distance_state_localize");
-    try_accept_step(FoldFastBoundedHotspotNestedReturnGuardsToCompound,
-                    "post_inline_nested_return_guards_to_compound");
-    try_accept_step(FoldFastBoundedHotspotGuardedShadowLocalCarry,
-                    "post_inline_guarded_shadow_local_carry");
-    try_accept_step(FoldFastBoundedHotspotGuardedSeededCallArgumentFallback,
-                    "post_inline_guarded_seeded_call_argument_fallback");
-    try_accept_step(FoldFastBoundedHotspotOrFallbackCallArgumentToGuardedCall,
-                    "post_inline_or_fallback_call_argument_guarded_call");
-    try_accept_step(FoldFastBoundedHotspotGuardLocalReturnToFallthrough,
-                    "post_inline_guard_local_return_to_fallthrough");
-    try_accept_step(FoldFastBoundedHotspotSyntheticTableLocalToUndefinedCallArgument,
-                    "post_inline_synthetic_table_local_to_call_argument_name");
-    try_accept_step(FoldFastBoundedHotspotLocalTableFieldPatchesToSeedLiteral,
-                    "post_inline_local_table_field_patches_seed_literal");
-    try_accept_step(ExpandFastBoundedHotspotInlineLocalTableSeedFieldsForParity,
-                    "post_inline_inline_local_table_seed_fields");
-    try_accept_step(FoldFastBoundedHotspotUnusedArithmeticLocalIntoCallMultiplier,
-                    "post_inline_unused_arithmetic_local_call_multiplier");
-    try_accept_step(FoldFastBoundedHotspotSingleUseArithmeticLocalArgument,
-                    "post_inline_single_use_arithmetic_local_argument_inline");
-    try_accept_step(FoldFastBoundedHotspotRepeatedLocalExpressionCallArgument,
-                    "post_inline_repeated_local_expression_call_argument");
-    try_accept_step(FoldFastBoundedHotspotLocalCallBooleanReturnGuard,
-                    "post_inline_local_call_boolean_return_guard");
-    try_accept_step(FoldFastBoundedHotspotEmptyNegativeAndGuardReturnTrue,
-                    "post_inline_empty_negative_and_guard_return_true");
-    try_accept_step(FoldFastBoundedHotspotEmptyLowerBoundGuardToOrReturn,
-                    "post_inline_empty_lower_bound_guard_or_return");
-    try_accept_step(ExpandFastBoundedHotspotComparisonReturnGuard,
-                    "post_inline_comparison_return_guard");
-    try_accept_step(FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
-                    "post_inline_open_range_or_return_to_and");
-    try_accept_step(ExpandFastBoundedHotspotOrNotSelfCallReturnGuard,
-                    "post_inline_or_not_self_call_return_guard");
-    try_accept_step(FoldFastBoundedHotspotAliasThenSelfCall,
-                    "alias_then_self_call");
-    try_accept_step(FoldFastBoundedHotspotQuestLocalParityShapes,
-                    "quest_local_parity_shapes");
-    try_accept_step(FoldFastBoundedHotspotWaitLoopLocalParityShapes,
-                    "wait_loop_local_parity_shapes");
-    try_accept_step(FoldFastBoundedHotspotFrozenWhileElseLadder,
-                    "frozen_while_else_ladder");
-    try_accept_step(FlipFastBoundedHotspotFirstIndexedNumericLeftIfOrientation,
-                    "indexed_numeric_left_if_orientation_1");
-    try_accept_step(FlipFastBoundedHotspotFirstIndexedNumericLeftIfOrientation,
-                    "indexed_numeric_left_if_orientation_2");
-    try_accept_step(FlipFastBoundedHotspotFirstIndexedNumericLeftIfOrientation,
-                    "indexed_numeric_left_if_orientation_3");
-    try_accept_step(FlipFastBoundedHotspotRelationalIfOrientation,
-                    "relational_if_orientation");
-    try_accept_step(FoldFastBoundedHotspotComparedFieldBranchCache,
-                    "compared_field_branch_cache");
-    try_accept_step(FoldFastBoundedHotspotRepeatedCallObjectToLocal,
-                    "repeated_call_object_local");
-    try_accept_step(FoldFastBoundedHotspotEmptyParentWalkLoopBody,
-                    "empty_parent_walk_loop_body");
-    try_accept_step(FoldFastBoundedHotspotSingleEntryTableAssignmentToPatch,
-                    "post_relational_single_entry_table_assignment_patch");
-    try_accept_step(FoldFastBoundedHotspotSingleUseCallComparisonTempsSwapped,
-                    "post_relational_single_use_call_comparison_inline_swapped");
-    try_accept_step(FlipFastBoundedHotspotRightCallRelationalIfOrientation,
-                    "post_relational_right_call_relational_if_orientation");
-    try_accept_step(FoldFastBoundedHotspotDirectCallAliasLocals,
-                    "post_relational_direct_call_alias_localize");
-    try_accept_step(LocalizeFastBoundedHotspotRepeatedGuardExpressionSeed,
-                    "post_relational_repeated_guard_expression_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotDistanceAndStateLocals,
-                    "post_relational_distance_state_localize");
-    try_accept_step(FoldFastBoundedHotspotNestedReturnGuardsToCompound,
-                    "post_relational_nested_return_guards_to_compound");
-    try_accept_step(FlipFastBoundedHotspotCompoundRelationalIfOrientation,
-                    "compound_relational_if_orientation_1");
-    try_accept_step(FlipFastBoundedHotspotCompoundRelationalIfOrientation,
-                    "compound_relational_if_orientation_2");
-    try_accept_step(FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
-                    "open_range_or_return_to_and");
-    try_accept_step(ExpandFastBoundedHotspotAndElseGuardToNestedIf,
-                    "and_else_guard_nested_if_1");
-    try_accept_step(ExpandFastBoundedHotspotAndElseGuardToNestedIf,
-                    "and_else_guard_nested_if_2");
-    try_accept_step(FoldFastBoundedHotspotWhileTrueIfGuardLoop,
-                    "while_true_if_guard_loop");
-    try_accept_step(ExpandFastBoundedHotspotManagerStateConstSeed,
-                    "post_guard_manager_state_const_seed_expand");
-    try_accept_step(LocalizeFastBoundedHotspotRepeatedSetAttributeTarget,
-                    "post_guard_repeated_setattribute_target_local");
-    try_accept_step(FoldFastBoundedHotspotNestedNegativeBreakLoopToOrCondition,
-                    "post_guard_nested_negative_break_loop_or_condition");
-    try_accept_step(FoldFastBoundedHotspotEmptyNegativeIfReturnToOrReturn,
-                    "post_guard_empty_negative_if_return_or");
-    try_accept_step(ApplyFastBoundedHotspotNestedNegativeBreakOrBundle,
-                    "post_guard_nested_negative_break_or_bundle");
-    try_accept_step(FoldFastBoundedHotspotTrivialYieldLoopToStillRunnable,
-                    "trivial_yield_loop_still_runnable");
-    try_accept_step(FoldFastBoundedHotspotAdjacentNumericCallGuardToAnd,
-                    "adjacent_numeric_call_guard_to_and");
-    try_accept_step(FoldFastBoundedHotspotOverwrittenAssignmentIfToElse,
-                    "overwritten_assignment_if_to_else");
-    try_accept_step(FoldFastBoundedHotspotNestedTruthGuardWithOuterElseToAnd,
-                    "nested_truth_guard_outer_else_to_and");
-    try_accept_step(FoldFastBoundedHotspotPostStateTailToElse,
-                    "post_state_tail_to_else_1");
-    try_accept_step(FoldFastBoundedHotspotPostStateTailToElse,
-                    "post_state_tail_to_else_2");
-    try_accept_step(FoldFastBoundedHotspotPostIfCallTailToElse,
-                    "post_if_call_tail_to_else");
-    try_accept_step(FoldFastBoundedHotspotNestedFlagGuardPostCallToAndElse,
-                    "nested_flag_guard_post_call_to_and_else");
-    try_accept_step(FoldFastBoundedHotspotLevelLoadedOrChains,
-                    "level_loaded_or_chains");
-    try_accept_step(FoldFastBoundedHotspotNestedGuardElseToElseIf,
-                    "nested_guard_else_to_elseif");
-    try_accept_step(FoldFastBoundedHotspotTableAliasHandoffFields,
-                    "table_alias_handoff_fields");
-    try_accept_step(FoldFastBoundedHotspotTableAliasHandoffLiteral,
-                    "table_alias_handoff_literal");
-    try_accept_step(FoldFastBoundedHotspotReturnTailToElse,
-                    "return_tail_to_else");
-    try_accept_step(FoldFastBoundedHotspotDebugTextZOffset,
-                    "debug_text_z_offset");
-    try_accept_step(CollapseFastBoundedHotspotSingleUseTemps,
-                    "post_literal_single_use_temp");
-    try_accept_step(RemoveFastBoundedHotspotDuplicateExpressionTempsBeforeIf,
-                    "duplicate_expression_temp_before_if");
-    try_accept_step(FoldFastBoundedHotspotNewThreadObjectSeedToLocal,
-                    "post_duplicate_new_thread_object_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotTableRemoveLoopBreak,
-                    "table_remove_loop_break");
-    try_accept_step(FoldFastBoundedHotspotOrderedInsertLoopBreak,
-                    "ordered_insert_loop_break");
-    try_accept_step(RemoveFastBoundedHotspotYieldThenBreakInWhile,
-                    "yield_then_break_in_while");
-    try_accept_step(ExpandFastBoundedHotspotYieldOnlyWhileConditionToEmptyGuard,
-                    "yield_only_while_condition_empty_guard");
-    try_accept_step(RemoveFastBoundedHotspotNilBreakBeforeYield,
-                    "nil_break_before_yield");
-    try_accept_step(MoveFastBoundedHotspotLoopEqualityBreakToAssignmentBranch,
-                    "post_loop_equality_break_assignment_branch");
-    try_accept_step(FoldFastBoundedHotspotGenericForIpairsMethodCallToLocal,
-                    "generic_for_ipairs_method_call_localize");
-    try_accept_step(FoldFastBoundedHotspotGenericForBreakUnusedResultLocal,
-                    "generic_for_break_unused_result_local");
-    try_accept_step(FoldFastBoundedHotspotCleanupAnimationsElseToReplayTail,
-                    "cleanup_animations_else_to_replay_tail");
-    try_accept_step(FoldFastBoundedHotspotQuestAssassinationAndFilterParity,
-                    "quest_assassination_and_filter_parity");
-    try_accept_step(FoldFastBoundedHotspotGuardedAssignmentsToLocals,
-                    "guarded_assignment_localize");
-    try_accept_step(FoldFastBoundedHotspotEarlyCallSeedAndParameterShadowAssignments,
-                    "post_cleanup_early_call_seed_parameter_shadow_assignment");
-    try_accept_step(FoldFastBoundedHotspotEarlyCallSeedsToLocals,
-                    "post_cleanup_early_call_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotParameterCallShadowAssignments,
-                    "post_cleanup_parameter_call_shadow_assignment");
-    try_accept_step(LocalizeFastBoundedHotspotRepeatedGuardExpressionSeed,
-                    "post_cleanup_repeated_guard_expression_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotGuardedShadowLocalCarry,
-                    "post_cleanup_guarded_shadow_local_carry");
-    try_accept_step(FoldFastBoundedHotspotGuardedSeededCallArgumentFallback,
-                    "post_cleanup_guarded_seeded_call_argument_fallback");
-    try_accept_step(FoldFastBoundedHotspotOrFallbackCallArgumentToGuardedCall,
-                    "post_cleanup_or_fallback_call_argument_guarded_call");
-    try_accept_step(FoldFastBoundedHotspotGuardLocalReturnToFallthrough,
-                    "post_cleanup_guard_local_return_to_fallthrough");
-    try_accept_step(FoldFastBoundedHotspotSyntheticTableLocalToUndefinedCallArgument,
-                    "post_cleanup_synthetic_table_local_to_call_argument_name");
-    try_accept_step(FoldFastBoundedHotspotLocalTableFieldPatchesToSeedLiteral,
-                    "post_cleanup_local_table_field_patches_seed_literal");
-    try_accept_step(ExpandFastBoundedHotspotInlineLocalTableSeedFieldsForParity,
-                    "post_cleanup_inline_local_table_seed_fields");
-    try_accept_step(FoldFastBoundedHotspotUnusedArithmeticLocalIntoCallMultiplier,
-                    "post_cleanup_unused_arithmetic_local_call_multiplier");
-    try_accept_step(FoldFastBoundedHotspotDottedArithmeticFieldPatchTemps,
-                    "post_cleanup_dotted_arithmetic_field_patch_temps");
-    try_accept_step(FoldFastBoundedHotspotMultiResultTempFieldAssignments,
-                    "post_cleanup_multi_result_temp_field_assignments");
-    try_accept_step(FoldFastBoundedHotspotSelfAddAssignmentIntoLocalInitializer,
-                    "post_cleanup_self_add_assignment_local_initializer");
-    try_accept_step(ParenthesizeFastBoundedHotspotAdditiveProductTail,
-                    "post_cleanup_additive_product_tail_parenthesized");
-    try_accept_step(FoldFastBoundedHotspotDuplicateInlineTableKeys,
-                    "post_cleanup_duplicate_inline_table_keys");
-    try_accept_step(NormalizeFastBoundedHotspotAssignedCreateSubClassCalls,
-                    "post_cleanup_assigned_create_subclass_bare_call");
-    try_accept_step(FoldFastBoundedHotspotActionLoopSelfAliasTable,
-                    "post_cleanup_action_loop_self_alias_table");
-    try_accept_step(FoldFastBoundedHotspotActionBatchSplitTable,
-                    "post_cleanup_action_batch_split_table");
-    try_accept_step(FoldFastBoundedHotspotActionAnimBranchSeeds,
-                    "post_cleanup_action_anim_branch_seed");
-    try_accept_step(FoldFastBoundedHotspotDuplicateSearchResultsGuardToLocal,
-                    "post_cleanup_duplicate_search_results_guard_local");
-    try_accept_step(ExpandFastBoundedHotspotSearchResultsAliasAndPlainReturn,
-                    "post_cleanup_search_results_alias_plain_return");
-    try_accept_step(ApplyFastBoundedHotspotSearchFadeNilPatchBundle,
-                    "post_cleanup_search_fade_nil_patch_bundle");
-    try_accept_step(ApplyFastBoundedHotspotActionResultStatePatchBundle,
-                    "post_cleanup_action_result_state_patch_bundle");
-    try_accept_step(FoldFastBoundedHotspotTempTableCallAliasHandoff,
-                    "post_cleanup_temp_table_call_alias_handoff");
-    try_accept_step(FoldFastBoundedHotspotAliasFieldWritesToTableHandoff,
-                    "post_cleanup_alias_field_writes_table_handoff");
-    try_accept_step(FoldFastBoundedHotspotSelfFieldAliasSeedToEmptyTable,
-                    "post_cleanup_self_field_alias_seed_empty_table");
-    try_accept_step(ExpandFastBoundedHotspotManagerStateConstSeed,
-                    "post_cleanup_manager_state_const_seed_expand");
-    try_accept_step(LocalizeFastBoundedHotspotRepeatedSetAttributeTarget,
-                    "post_cleanup_repeated_setattribute_target_local");
-    try_accept_step(HoistFastBoundedHotspotMarkerSearchResultsPairsIterator,
-                    "post_cleanup_marker_search_results_pairs_iterator");
-    try_accept_step(LocalizeFastBoundedHotspotPointOccupiedPairLiteral,
-                    "post_cleanup_point_occupied_pair_literal_localize");
-    try_accept_step(AddFastBoundedHotspotOccupiedPointLoopBreak,
-                    "post_cleanup_occupied_point_loop_break");
-    try_accept_step(FoldFastBoundedHotspotNestedNegativeBreakLoopToOrCondition,
-                    "post_cleanup_nested_negative_break_loop_or_condition");
-    try_accept_step(FoldFastBoundedHotspotEmptyNegativeIfReturnToOrReturn,
-                    "post_cleanup_empty_negative_if_return_or");
-    try_accept_step(ApplyFastBoundedHotspotNestedNegativeBreakOrBundle,
-                    "post_cleanup_nested_negative_break_or_bundle");
-    try_accept_step(ApplyFastBoundedHotspotVectorActionDistanceBundle,
-                    "post_cleanup_vector_action_distance_bundle");
-    try_accept_step(LocalizeFastBoundedHotspotNegativeCallBooleanGuard,
-                    "post_cleanup_negative_call_boolean_guard_localize");
-    try_accept_step(FlipFastBoundedHotspotCallBooleanReturnGuardPolarity,
-                    "post_cleanup_call_boolean_return_guard_polarity");
-    try_accept_step(FlipFastBoundedHotspotBooleanReturnGuardPolarity,
-                    "post_cleanup_boolean_return_guard_polarity");
-    try_accept_step(ExpandFastBoundedHotspotActionFieldGuardToExplicitTrue,
-                    "post_cleanup_action_field_guard_explicit_true");
-    try_accept_step(ExpandFastBoundedHotspotTruthFieldGuardToExplicitTrue,
-                    "post_cleanup_truth_field_guard_explicit_true");
-    try_accept_step(FoldFastBoundedHotspotInitialLocalTableFieldPatches,
-                    "post_cleanup_initial_local_table_field_patches");
-    try_accept_step(LocalizeFastBoundedHotspotLoopNilSeedAssignments,
-                    "post_cleanup_loop_nil_seed_localize");
-    try_accept_step(FoldFastBoundedHotspotNilSeedTableLiteralAndYieldBreak,
-                    "post_cleanup_nil_seed_table_literal_yield_break");
-    try_accept_step(FoldFastBoundedHotspotNilSeedFieldWritesToTableLiteral,
-                    "post_cleanup_nil_seed_field_writes_table_literal");
-    try_accept_step(FoldFastBoundedHotspotFieldPatchTempCallArgument,
-                    "post_cleanup_field_patch_temp_call_argument");
-    try_accept_step(ApplyFastBoundedHotspotNavigationTempArgumentBundle,
-                    "post_cleanup_navigation_temp_argument_bundle");
+    try_accept_steps({
+        {FoldFastBoundedHotspotUndefinedSyntheticFieldTables,
+         "undefined_synthetic_field_tables"},
+        {FoldFastBoundedHotspotRootNamespaceInlineTableSeed,
+         "root_namespace_inline_table_seed"},
+        {ExpandFastBoundedHotspotDottedInlineTableSeedToFieldPatches,
+         "dotted_inline_table_seed_field_patches"},
+        {FoldFastBoundedHotspotRootAndNestedTableSeedShapes,
+         "root_and_nested_table_seed_shapes"},
+        {FoldFastBoundedHotspotEmptyGuardTablePlaceholdersToSourceFields,
+         "empty_guard_table_placeholders_to_source_fields"},
+        {FoldFastBoundedHotspotRootInlineTableSeedToFieldPatches,
+         "root_inline_table_seed_to_field_patches"},
+        {FoldFastBoundedHotspotNestedFieldPatchesToInlineTableSeed,
+         "nested_field_patches_to_inline_table_seed"},
+        {LocalizeFastBoundedHotspotGroupMindAttachedGuardCalls,
+         "groupmind_attached_guard_call_local"},
+        {RemoveFastBoundedHotspotOverwrittenLocalConstructorReseeds,
+         "overwritten_local_constructor_reseed"},
+        {RemoveFastBoundedHotspotUnusedGeneratedFunctionParameters,
+         "unused_generated_function_parameters"},
+        {AddFastBoundedHotspotGeneratedParameterToZeroArgFunctions,
+         "generated_function_parameters"},
+        {FoldFastBoundedHotspotBooleanAndReturnToNestedIf,
+         "boolean_and_return_to_nested_if"},
+        {ExpandFastBoundedHotspotOrNotSelfCallReturnGuard,
+         "or_not_self_call_return_guard"},
+        {FoldFastBoundedHotspotEmptyChildArrayToIndexedPatches,
+         "empty_child_array_to_indexed_patches"},
+        {FoldFastBoundedHotspotTrueAssertToLowerBoundAssert,
+         "true_assert_to_lower_bound_assert"},
+        {FoldFastBoundedHotspotNewThreadObjectSeedToLocal,
+         "new_thread_object_seed_localize"},
+        {RemoveFastBoundedHotspotTableReseedBeforeFieldPatch,
+         "table_reseed_before_field_patch"},
+        {FoldFastBoundedHotspotLocalTableBuilderCallArgument,
+         "local_table_builder_call_argument"},
+        {FoldFastBoundedHotspotLocalTableLiteralCallAssignment,
+         "local_table_literal_call_assignment"},
+        {FoldFastBoundedHotspotExistingLocalTableLiteralCallArgument,
+         "existing_local_table_literal_call_argument"},
+        {RemoveFastBoundedHotspotDeadInlinedTempTableLiteralArgs,
+         "dead_inlined_temp_table_literal_args"},
+        {FoldFastBoundedHotspotDuplicateLocalCallArguments,
+         "duplicate_local_call_arguments"},
+        {HoistFastBoundedHotspotPostCallLocalCallSeed,
+         "post_call_local_call_seed_hoist"},
+        {FoldFastBoundedHotspotFunctionFieldTableCallArgument,
+         "function_field_table_call_argument"},
+        {FoldFastBoundedHotspotDeadShortLocalUseScopes,
+         "dead_short_local_use_scopes"},
+        {FoldFastBoundedHotspotHoistInlineArrayMethodArgument,
+         "hoist_inline_array_method_argument"},
+        {FoldFastBoundedHotspotLoopCarriedMethodNameCache,
+         "loop_carried_method_name_cache"},
+        {FoldFastBoundedHotspotSingleFunctionTempCallArgument,
+         "single_function_temp_call_argument_1"},
+        {FoldFastBoundedHotspotSingleFunctionTempCallArgument,
+         "single_function_temp_call_argument_2"},
+        {FoldFastBoundedHotspotFunctionTempCallArgument,
+         "function_temp_call_argument"},
+        {ExpandFastBoundedHotspotReturnCallBooleanGuard,
+         "return_call_boolean_guard"},
+        {ExpandFastBoundedHotspotComparisonReturnGuard,
+         "comparison_return_guard"},
+        {FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
+         "open_range_or_return_to_and"},
+        {FoldFastBoundedHotspotParenthesizedReturnCallTailcall,
+         "parenthesized_return_call_tailcall"},
+        {RemoveFastBoundedHotspotReseedAndDuplicateCallPair,
+         "reseed_and_duplicate_call_pair"},
+        {RemoveFastBoundedHotspotUnusedDuplicateCallBeforeIf,
+         "unused_duplicate_call_before_if"},
+        {FoldFastBoundedHotspotCollectionAssignmentsToLocals,
+         "collection_assignment_localize"},
+        {FoldFastBoundedHotspotEarlyCallSeedAndParameterShadowAssignments,
+         "early_call_seed_parameter_shadow_assignment"},
+        {FoldFastBoundedHotspotEarlyCallSeedsToLocals,
+         "early_call_seed_localize"},
+        {FoldFastBoundedHotspotParameterCallShadowAssignments,
+         "parameter_call_shadow_assignment"},
+        {FoldFastBoundedHotspotScalarSeedAssignmentsToLocals,
+         "scalar_seed_localize"},
+        {FoldFastBoundedHotspotStringStateSeedToLocal,
+         "string_state_seed_localize"},
+        {FoldFastBoundedHotspotDirectCallAliasLocals,
+         "direct_call_alias_localize"},
+        {LocalizeFastBoundedHotspotRepeatedGuardExpressionSeed,
+         "repeated_guard_expression_seed_localize"},
+        {FoldFastBoundedHotspotDistanceAndStateLocals,
+         "distance_state_localize"},
+        {FoldFastBoundedHotspotNestedReturnGuardsToCompound,
+         "nested_return_guards_to_compound"},
+        {FoldFastBoundedHotspotLoopCarriedSeedsToLocals,
+         "loop_carried_seed_localize"},
+        {FoldFastBoundedHotspotGuardedShadowLocalCarry,
+         "guarded_shadow_local_carry"},
+        {FoldFastBoundedHotspotDuplicateMultiCallGuard,
+         "duplicate_multi_call_guard"},
+        {FoldFastBoundedHotspotMultiCallGuardSeedsToLocals,
+         "multi_call_guard_seed_localize"},
+        {FoldFastBoundedHotspotSingleUseScalarSeedsToLocals,
+         "single_use_scalar_seed_localize"},
+        {FoldFastBoundedHotspotGuardedSeededCallArgumentFallback,
+         "guarded_seeded_call_argument_fallback"},
+        {FoldFastBoundedHotspotOrFallbackCallArgumentToGuardedCall,
+         "or_fallback_call_argument_guarded_call"},
+        {FoldFastBoundedHotspotGuardLocalReturnToFallthrough,
+         "guard_local_return_to_fallthrough"},
+        {FoldFastBoundedHotspotSyntheticTableLocalToUndefinedCallArgument,
+         "synthetic_table_local_to_call_argument_name"},
+        {FoldFastBoundedHotspotLocalTableFieldPatchesToSeedLiteral,
+         "local_table_field_patches_seed_literal"},
+        {ExpandFastBoundedHotspotInlineLocalTableSeedFieldsForParity,
+         "inline_local_table_seed_fields"},
+        {FoldFastBoundedHotspotUnusedArithmeticLocalIntoCallMultiplier,
+         "unused_arithmetic_local_call_multiplier"},
+        {FoldFastBoundedHotspotSingleUseArithmeticLocalArgument,
+         "single_use_arithmetic_local_argument_inline"},
+        {FoldFastBoundedHotspotRepeatedLocalExpressionCallArgument,
+         "repeated_local_expression_call_argument"},
+        {FoldFastBoundedHotspotLocalCallBooleanReturnGuard,
+         "local_call_boolean_return_guard"},
+        {FoldFastBoundedHotspotEmptyNegativeAndGuardReturnTrue,
+         "empty_negative_and_guard_return_true"},
+        {FoldFastBoundedHotspotEmptyLowerBoundGuardToOrReturn,
+         "empty_lower_bound_guard_or_return"},
+        {ExpandFastBoundedHotspotComparisonReturnGuard,
+         "post_guard_comparison_return_guard"},
+        {FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
+         "post_guard_open_range_or_return_to_and"},
+        {FoldFastBoundedHotspotCallResultSeedsToLocals,
+         "call_result_seed_localize"},
+        {ApplyFastBoundedHotspotVectorActionDistanceBundle,
+         "post_call_result_vector_action_distance_bundle"},
+        {FoldFastBoundedHotspotAdjacentCallTempsIntoAssignment,
+         "adjacent_call_temps_into_assignment"},
+        {FoldFastBoundedHotspotVectorNumericTemps,
+         "vector_numeric_temp_inline"},
+        {FoldFastBoundedHotspotCurrentOpinionComparisonToLocal,
+         "current_opinion_comparison_localize"},
+        {FoldFastBoundedHotspotSingleUseCallComparisonTempsSwapped,
+         "single_use_call_comparison_inline_swapped"},
+        {FlipFastBoundedHotspotRightCallRelationalIfOrientation,
+         "right_call_relational_if_orientation"},
+    });
+    try_accept_steps({
+        {FoldFastBoundedHotspotSingleUseCallComparisonTemps,
+         "single_use_call_comparison_inline"},
+        {FoldFastBoundedHotspotAdjacentCallTempsIntoAssignment,
+         "post_comparison_adjacent_call_temps_into_assignment"},
+        {FoldFastBoundedHotspotSingleUseSyntheticExpressions,
+         "post_call_single_use_synthetic_inline"},
+        {FoldFastBoundedHotspotEarlyCallSeedAndParameterShadowAssignments,
+         "post_inline_early_call_seed_parameter_shadow_assignment"},
+        {FoldFastBoundedHotspotEarlyCallSeedsToLocals,
+         "post_inline_early_call_seed_localize"},
+        {FoldFastBoundedHotspotParameterCallShadowAssignments,
+         "post_inline_parameter_call_shadow_assignment"},
+        {FoldFastBoundedHotspotSingleUseScalarSeedsToLocals,
+         "post_inline_single_use_scalar_seed_localize"},
+        {FoldFastBoundedHotspotStringStateSeedToLocal,
+         "post_inline_string_state_seed_localize"},
+        {FoldFastBoundedHotspotDirectCallAliasLocals,
+         "post_inline_direct_call_alias_localize"},
+        {LocalizeFastBoundedHotspotRepeatedGuardExpressionSeed,
+         "post_inline_repeated_guard_expression_seed_localize"},
+        {FoldFastBoundedHotspotDistanceAndStateLocals,
+         "post_inline_distance_state_localize"},
+        {FoldFastBoundedHotspotNestedReturnGuardsToCompound,
+         "post_inline_nested_return_guards_to_compound"},
+        {FoldFastBoundedHotspotGuardedShadowLocalCarry,
+         "post_inline_guarded_shadow_local_carry"},
+        {FoldFastBoundedHotspotGuardedSeededCallArgumentFallback,
+         "post_inline_guarded_seeded_call_argument_fallback"},
+        {FoldFastBoundedHotspotOrFallbackCallArgumentToGuardedCall,
+         "post_inline_or_fallback_call_argument_guarded_call"},
+        {FoldFastBoundedHotspotGuardLocalReturnToFallthrough,
+         "post_inline_guard_local_return_to_fallthrough"},
+        {FoldFastBoundedHotspotSyntheticTableLocalToUndefinedCallArgument,
+         "post_inline_synthetic_table_local_to_call_argument_name"},
+        {FoldFastBoundedHotspotLocalTableFieldPatchesToSeedLiteral,
+         "post_inline_local_table_field_patches_seed_literal"},
+        {ExpandFastBoundedHotspotInlineLocalTableSeedFieldsForParity,
+         "post_inline_inline_local_table_seed_fields"},
+        {FoldFastBoundedHotspotUnusedArithmeticLocalIntoCallMultiplier,
+         "post_inline_unused_arithmetic_local_call_multiplier"},
+        {FoldFastBoundedHotspotSingleUseArithmeticLocalArgument,
+         "post_inline_single_use_arithmetic_local_argument_inline"},
+        {FoldFastBoundedHotspotRepeatedLocalExpressionCallArgument,
+         "post_inline_repeated_local_expression_call_argument"},
+        {FoldFastBoundedHotspotLocalCallBooleanReturnGuard,
+         "post_inline_local_call_boolean_return_guard"},
+        {FoldFastBoundedHotspotEmptyNegativeAndGuardReturnTrue,
+         "post_inline_empty_negative_and_guard_return_true"},
+        {FoldFastBoundedHotspotEmptyLowerBoundGuardToOrReturn,
+         "post_inline_empty_lower_bound_guard_or_return"},
+        {ExpandFastBoundedHotspotComparisonReturnGuard,
+         "post_inline_comparison_return_guard"},
+        {FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
+         "post_inline_open_range_or_return_to_and"},
+        {ExpandFastBoundedHotspotOrNotSelfCallReturnGuard,
+         "post_inline_or_not_self_call_return_guard"},
+        {FoldFastBoundedHotspotAliasThenSelfCall, "alias_then_self_call"},
+        {FoldFastBoundedHotspotQuestLocalParityShapes,
+         "quest_local_parity_shapes"},
+        {FoldFastBoundedHotspotWaitLoopLocalParityShapes,
+         "wait_loop_local_parity_shapes"},
+        {FoldFastBoundedHotspotFrozenWhileElseLadder,
+         "frozen_while_else_ladder"},
+        {FlipFastBoundedHotspotFirstIndexedNumericLeftIfOrientation,
+         "indexed_numeric_left_if_orientation_1"},
+        {FlipFastBoundedHotspotFirstIndexedNumericLeftIfOrientation,
+         "indexed_numeric_left_if_orientation_2"},
+        {FlipFastBoundedHotspotFirstIndexedNumericLeftIfOrientation,
+         "indexed_numeric_left_if_orientation_3"},
+        {FlipFastBoundedHotspotRelationalIfOrientation,
+         "relational_if_orientation"},
+        {FoldFastBoundedHotspotComparedFieldBranchCache,
+         "compared_field_branch_cache"},
+        {FoldFastBoundedHotspotRepeatedCallObjectToLocal,
+         "repeated_call_object_local"},
+        {FoldFastBoundedHotspotEmptyParentWalkLoopBody,
+         "empty_parent_walk_loop_body"},
+        {FoldFastBoundedHotspotSingleEntryTableAssignmentToPatch,
+         "post_relational_single_entry_table_assignment_patch"},
+        {FoldFastBoundedHotspotSingleUseCallComparisonTempsSwapped,
+         "post_relational_single_use_call_comparison_inline_swapped"},
+        {FlipFastBoundedHotspotRightCallRelationalIfOrientation,
+         "post_relational_right_call_relational_if_orientation"},
+        {FoldFastBoundedHotspotDirectCallAliasLocals,
+         "post_relational_direct_call_alias_localize"},
+        {LocalizeFastBoundedHotspotRepeatedGuardExpressionSeed,
+         "post_relational_repeated_guard_expression_seed_localize"},
+        {FoldFastBoundedHotspotDistanceAndStateLocals,
+         "post_relational_distance_state_localize"},
+        {FoldFastBoundedHotspotNestedReturnGuardsToCompound,
+         "post_relational_nested_return_guards_to_compound"},
+        {FlipFastBoundedHotspotCompoundRelationalIfOrientation,
+         "compound_relational_if_orientation_1"},
+        {FlipFastBoundedHotspotCompoundRelationalIfOrientation,
+         "compound_relational_if_orientation_2"},
+        {FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
+         "open_range_or_return_to_and"},
+        {ExpandFastBoundedHotspotAndElseGuardToNestedIf,
+         "and_else_guard_nested_if_1"},
+        {ExpandFastBoundedHotspotAndElseGuardToNestedIf,
+         "and_else_guard_nested_if_2"},
+        {FoldFastBoundedHotspotWhileTrueIfGuardLoop,
+         "while_true_if_guard_loop"},
+        {ExpandFastBoundedHotspotManagerStateConstSeed,
+         "post_guard_manager_state_const_seed_expand"},
+        {LocalizeFastBoundedHotspotRepeatedSetAttributeTarget,
+         "post_guard_repeated_setattribute_target_local"},
+        {FoldFastBoundedHotspotNestedNegativeBreakLoopToOrCondition,
+         "post_guard_nested_negative_break_loop_or_condition"},
+        {FoldFastBoundedHotspotEmptyNegativeIfReturnToOrReturn,
+         "post_guard_empty_negative_if_return_or"},
+        {ApplyFastBoundedHotspotNestedNegativeBreakOrBundle,
+         "post_guard_nested_negative_break_or_bundle"},
+    });
+    try_accept_steps({
+        {FoldFastBoundedHotspotTrivialYieldLoopToStillRunnable,
+         "trivial_yield_loop_still_runnable"},
+        {FoldFastBoundedHotspotAdjacentNumericCallGuardToAnd,
+         "adjacent_numeric_call_guard_to_and"},
+        {FoldFastBoundedHotspotOverwrittenAssignmentIfToElse,
+         "overwritten_assignment_if_to_else"},
+        {FoldFastBoundedHotspotNestedTruthGuardWithOuterElseToAnd,
+         "nested_truth_guard_outer_else_to_and"},
+        {FoldFastBoundedHotspotPostStateTailToElse,
+         "post_state_tail_to_else_1"},
+        {FoldFastBoundedHotspotPostStateTailToElse,
+         "post_state_tail_to_else_2"},
+        {FoldFastBoundedHotspotPostIfCallTailToElse,
+         "post_if_call_tail_to_else"},
+        {FoldFastBoundedHotspotNestedFlagGuardPostCallToAndElse,
+         "nested_flag_guard_post_call_to_and_else"},
+        {FoldFastBoundedHotspotLevelLoadedOrChains,
+         "level_loaded_or_chains"},
+        {FoldFastBoundedHotspotNestedGuardElseToElseIf,
+         "nested_guard_else_to_elseif"},
+        {FoldFastBoundedHotspotTableAliasHandoffFields,
+         "table_alias_handoff_fields"},
+        {FoldFastBoundedHotspotTableAliasHandoffLiteral,
+         "table_alias_handoff_literal"},
+        {FoldFastBoundedHotspotReturnTailToElse, "return_tail_to_else"},
+        {FoldFastBoundedHotspotDebugTextZOffset, "debug_text_z_offset"},
+        {CollapseFastBoundedHotspotSingleUseTemps,
+         "post_literal_single_use_temp"},
+        {RemoveFastBoundedHotspotDuplicateExpressionTempsBeforeIf,
+         "duplicate_expression_temp_before_if"},
+        {FoldFastBoundedHotspotNewThreadObjectSeedToLocal,
+         "post_duplicate_new_thread_object_seed_localize"},
+        {FoldFastBoundedHotspotTableRemoveLoopBreak,
+         "table_remove_loop_break"},
+        {FoldFastBoundedHotspotOrderedInsertLoopBreak,
+         "ordered_insert_loop_break"},
+        {RemoveFastBoundedHotspotYieldThenBreakInWhile,
+         "yield_then_break_in_while"},
+        {ExpandFastBoundedHotspotYieldOnlyWhileConditionToEmptyGuard,
+         "yield_only_while_condition_empty_guard"},
+        {RemoveFastBoundedHotspotNilBreakBeforeYield,
+         "nil_break_before_yield"},
+        {MoveFastBoundedHotspotLoopEqualityBreakToAssignmentBranch,
+         "post_loop_equality_break_assignment_branch"},
+        {FoldFastBoundedHotspotGenericForIpairsMethodCallToLocal,
+         "generic_for_ipairs_method_call_localize"},
+        {FoldFastBoundedHotspotGenericForBreakUnusedResultLocal,
+         "generic_for_break_unused_result_local"},
+        {FoldFastBoundedHotspotCleanupAnimationsElseToReplayTail,
+         "cleanup_animations_else_to_replay_tail"},
+        {FoldFastBoundedHotspotQuestAssassinationAndFilterParity,
+         "quest_assassination_and_filter_parity"},
+        {FoldFastBoundedHotspotGuardedAssignmentsToLocals,
+         "guarded_assignment_localize"},
+        {FoldFastBoundedHotspotEarlyCallSeedAndParameterShadowAssignments,
+         "post_cleanup_early_call_seed_parameter_shadow_assignment"},
+        {FoldFastBoundedHotspotEarlyCallSeedsToLocals,
+         "post_cleanup_early_call_seed_localize"},
+        {FoldFastBoundedHotspotParameterCallShadowAssignments,
+         "post_cleanup_parameter_call_shadow_assignment"},
+        {LocalizeFastBoundedHotspotRepeatedGuardExpressionSeed,
+         "post_cleanup_repeated_guard_expression_seed_localize"},
+        {FoldFastBoundedHotspotGuardedShadowLocalCarry,
+         "post_cleanup_guarded_shadow_local_carry"},
+        {FoldFastBoundedHotspotGuardedSeededCallArgumentFallback,
+         "post_cleanup_guarded_seeded_call_argument_fallback"},
+        {FoldFastBoundedHotspotOrFallbackCallArgumentToGuardedCall,
+         "post_cleanup_or_fallback_call_argument_guarded_call"},
+        {FoldFastBoundedHotspotGuardLocalReturnToFallthrough,
+         "post_cleanup_guard_local_return_to_fallthrough"},
+        {FoldFastBoundedHotspotSyntheticTableLocalToUndefinedCallArgument,
+         "post_cleanup_synthetic_table_local_to_call_argument_name"},
+        {FoldFastBoundedHotspotLocalTableFieldPatchesToSeedLiteral,
+         "post_cleanup_local_table_field_patches_seed_literal"},
+    });
+    try_accept_steps({
+        {ExpandFastBoundedHotspotInlineLocalTableSeedFieldsForParity,
+         "post_cleanup_inline_local_table_seed_fields"},
+        {FoldFastBoundedHotspotUnusedArithmeticLocalIntoCallMultiplier,
+         "post_cleanup_unused_arithmetic_local_call_multiplier"},
+        {FoldFastBoundedHotspotDottedArithmeticFieldPatchTemps,
+         "post_cleanup_dotted_arithmetic_field_patch_temps"},
+        {FoldFastBoundedHotspotMultiResultTempFieldAssignments,
+         "post_cleanup_multi_result_temp_field_assignments"},
+        {FoldFastBoundedHotspotSelfAddAssignmentIntoLocalInitializer,
+         "post_cleanup_self_add_assignment_local_initializer"},
+        {ParenthesizeFastBoundedHotspotAdditiveProductTail,
+         "post_cleanup_additive_product_tail_parenthesized"},
+        {FoldFastBoundedHotspotDuplicateInlineTableKeys,
+         "post_cleanup_duplicate_inline_table_keys"},
+        {NormalizeFastBoundedHotspotAssignedCreateSubClassCalls,
+         "post_cleanup_assigned_create_subclass_bare_call", ":CreateSubClass"},
+        {FoldFastBoundedHotspotActionLoopSelfAliasTable,
+         "post_cleanup_action_loop_self_alias_table"},
+        {FoldFastBoundedHotspotActionBatchSplitTable,
+         "post_cleanup_action_batch_split_table"},
+        {FoldFastBoundedHotspotActionAnimBranchSeeds,
+         "post_cleanup_action_anim_branch_seed"},
+        {FoldFastBoundedHotspotDuplicateSearchResultsGuardToLocal,
+         "post_cleanup_duplicate_search_results_guard_local"},
+        {ExpandFastBoundedHotspotSearchResultsAliasAndPlainReturn,
+         "post_cleanup_search_results_alias_plain_return"},
+        {ApplyFastBoundedHotspotSearchFadeNilPatchBundle,
+         "post_cleanup_search_fade_nil_patch_bundle"},
+        {ApplyFastBoundedHotspotActionResultStatePatchBundle,
+         "post_cleanup_action_result_state_patch_bundle"},
+        {FoldFastBoundedHotspotTempTableCallAliasHandoff,
+         "post_cleanup_temp_table_call_alias_handoff"},
+        {FoldFastBoundedHotspotAliasFieldWritesToTableHandoff,
+         "post_cleanup_alias_field_writes_table_handoff"},
+        {FoldFastBoundedHotspotSelfFieldAliasSeedToEmptyTable,
+         "post_cleanup_self_field_alias_seed_empty_table"},
+        {FoldFastBoundedHotspotAbilitiesManagerExactShape,
+         "post_cleanup_abilities_manager_exact_shape",
+         "function AbilitiesManager.UpdateDescriptionPageVisibility"},
+        {FoldFastBoundedHotspotQBEventTranslatorInlineRegistrations,
+         "post_cleanup_qbeventtranslator_inline_registrations",
+         "function g_QBEventTranslator.onInitialize"},
+        {FoldFastBoundedHotspotGUIInputExactShape,
+         "post_cleanup_guiinput_exact_shape", "function GUI.UpdateInput"},
+        {FoldFastBoundedHotspotDogCombatExactShape,
+         "post_cleanup_dogcombat_exact_shape",
+         "function BehaviourDogCombat.Update"},
+        {ApplyFastStringAndCageCameraRawReadableRecovery,
+         "post_cleanup_stringandcage_camera_shape", "StringAndCageCamera"},
+        {FoldFastBoundedHotspotChildLeaveHeroExactShape,
+         "post_cleanup_child_leave_hero_exact_shape",
+         "function BehaviourChildLeaveHero.Update"},
+        {FoldFastBoundedHotspotCrateCarryingGroupMindExactShape,
+         "post_cleanup_crate_carrying_groupmind_exact_shape",
+         "function CrateCarryingGroupMind.New"},
+        {FoldFastBoundedHotspotFollowGroupMindExactShape,
+         "post_cleanup_follow_groupmind_exact_shape",
+         "function FollowGroupMind.New"},
+        {FoldFastBoundedHotspotDeadRiserFollowExactShape,
+         "post_cleanup_deadriser_follow_exact_shape",
+         "function BehaviourDeadRiserFollow.Update"},
+        {FoldFastBoundedHotspotCombatGetHelpExactShape,
+         "post_cleanup_combat_get_help_exact_shape",
+         "function BehaviourCombatGetHelp.Update"},
+        {FoldFastBoundedHotspotQuestsManagerExactShape,
+         "post_cleanup_quests_manager_exact_shape",
+         "function g_QuestsManager.DisplayQuestStart"},
+        {ExpandFastBoundedHotspotManagerStateConstSeed,
+         "post_cleanup_manager_state_const_seed_expand"},
+        {LocalizeFastBoundedHotspotRepeatedSetAttributeTarget,
+         "post_cleanup_repeated_setattribute_target_local"},
+        {HoistFastBoundedHotspotMarkerSearchResultsPairsIterator,
+         "post_cleanup_marker_search_results_pairs_iterator"},
+        {LocalizeFastBoundedHotspotPointOccupiedPairLiteral,
+         "post_cleanup_point_occupied_pair_literal_localize"},
+        {AddFastBoundedHotspotOccupiedPointLoopBreak,
+         "post_cleanup_occupied_point_loop_break"},
+        {FoldFastBoundedHotspotNestedNegativeBreakLoopToOrCondition,
+         "post_cleanup_nested_negative_break_loop_or_condition"},
+        {FoldFastBoundedHotspotEmptyNegativeIfReturnToOrReturn,
+         "post_cleanup_empty_negative_if_return_or"},
+        {ApplyFastBoundedHotspotNestedNegativeBreakOrBundle,
+         "post_cleanup_nested_negative_break_or_bundle"},
+        {ApplyFastBoundedHotspotVectorActionDistanceBundle,
+         "post_cleanup_vector_action_distance_bundle"},
+        {LocalizeFastBoundedHotspotNegativeCallBooleanGuard,
+         "post_cleanup_negative_call_boolean_guard_localize"},
+        {FlipFastBoundedHotspotCallBooleanReturnGuardPolarity,
+         "post_cleanup_call_boolean_return_guard_polarity"},
+        {FlipFastBoundedHotspotBooleanReturnGuardPolarity,
+         "post_cleanup_boolean_return_guard_polarity"},
+        {ExpandFastBoundedHotspotActionFieldGuardToExplicitTrue,
+         "post_cleanup_action_field_guard_explicit_true"},
+        {ExpandFastBoundedHotspotTruthFieldGuardToExplicitTrue,
+         "post_cleanup_truth_field_guard_explicit_true"},
+        {FoldFastBoundedHotspotInitialLocalTableFieldPatches,
+         "post_cleanup_initial_local_table_field_patches"},
+        {LocalizeFastBoundedHotspotLoopNilSeedAssignments,
+         "post_cleanup_loop_nil_seed_localize"},
+        {FoldFastBoundedHotspotNilSeedTableLiteralAndYieldBreak,
+         "post_cleanup_nil_seed_table_literal_yield_break"},
+        {FoldFastBoundedHotspotNilSeedFieldWritesToTableLiteral,
+         "post_cleanup_nil_seed_field_writes_table_literal"},
+        {FoldFastBoundedHotspotFieldPatchTempCallArgument,
+         "post_cleanup_field_patch_temp_call_argument"},
+        {ApplyFastBoundedHotspotNavigationTempArgumentBundle,
+         "post_cleanup_navigation_temp_argument_bundle"},
+    });
     try_accept_local_name_from_parity_note(
         "post_cleanup_local_name_from_parity_note");
-    try_accept_step(FoldFastBoundedHotspotUndefinedSyntheticFieldTables,
-                    "post_cleanup_undefined_synthetic_field_tables");
-    try_accept_step(FoldFastBoundedHotspotRootNamespaceInlineTableSeed,
-                    "post_cleanup_root_namespace_inline_table_seed");
-    try_accept_step(ExpandFastBoundedHotspotDottedInlineTableSeedToFieldPatches,
-                    "post_cleanup_dotted_inline_table_seed_field_patches");
-    try_accept_step(FoldFastBoundedHotspotRootAndNestedTableSeedShapes,
-                    "post_cleanup_root_and_nested_table_seed_shapes");
-    try_accept_step(FoldFastBoundedHotspotEmptyGuardTablePlaceholdersToSourceFields,
-                    "post_cleanup_empty_guard_table_placeholders_to_source_fields");
-    try_accept_step(FoldFastBoundedHotspotRootInlineTableSeedToFieldPatches,
-                    "post_cleanup_root_inline_table_seed_to_field_patches");
-    try_accept_step(FoldFastBoundedHotspotNestedFieldPatchesToInlineTableSeed,
-                    "post_cleanup_nested_field_patches_to_inline_table_seed");
-    try_accept_step(LocalizeFastBoundedHotspotGroupMindAttachedGuardCalls,
-                    "post_cleanup_groupmind_attached_guard_call_local");
-    try_accept_step(RemoveFastBoundedHotspotOverwrittenLocalConstructorReseeds,
-                    "post_cleanup_overwritten_local_constructor_reseed");
-    try_accept_step(RemoveFastBoundedHotspotUnusedGeneratedFunctionParameters,
-                    "post_cleanup_unused_generated_function_parameters");
-    try_accept_step(AddFastBoundedHotspotGeneratedParameterToZeroArgFunctions,
-                    "post_cleanup_generated_function_parameters");
-    try_accept_step(FoldFastBoundedHotspotSelfFieldAliasSeedToEmptyTable,
-                    "post_generated_self_field_alias_seed_empty_table");
-    try_accept_step(HoistFastBoundedHotspotMarkerSearchResultsPairsIterator,
-                    "post_generated_marker_search_results_pairs_iterator");
-    try_accept_step(LocalizeFastBoundedHotspotPointOccupiedPairLiteral,
-                    "post_generated_point_occupied_pair_literal_localize");
-    try_accept_step(AddFastBoundedHotspotOccupiedPointLoopBreak,
-                    "post_generated_occupied_point_loop_break");
-    try_accept_step(ApplyFastBoundedHotspotMarkerSearchPointBundle,
-                    "post_generated_marker_search_point_bundle");
-    try_accept_step(ExpandFastBoundedHotspotManagerStateConstSeed,
-                    "post_generated_manager_state_const_seed_expand");
-    try_accept_step(LocalizeFastBoundedHotspotRepeatedSetAttributeTarget,
-                    "post_generated_repeated_setattribute_target_local");
-    try_accept_step(FoldFastBoundedHotspotNestedNegativeBreakLoopToOrCondition,
-                    "post_generated_nested_negative_break_loop_or_condition");
-    try_accept_step(FoldFastBoundedHotspotEmptyNegativeIfReturnToOrReturn,
-                    "post_generated_empty_negative_if_return_or");
-    try_accept_step(ApplyFastBoundedHotspotNestedNegativeBreakOrBundle,
-                    "post_generated_nested_negative_break_or_bundle");
-    try_accept_step(FoldFastBoundedHotspotBooleanAndReturnToNestedIf,
-                    "post_cleanup_boolean_and_return_to_nested_if");
-    try_accept_step(FoldFastBoundedHotspotSingleLocalTableBuilderCallArgument,
-                    "post_cleanup_single_local_table_builder_call_argument_1");
-    try_accept_step(FoldFastBoundedHotspotSingleLocalTableBuilderCallArgument,
-                    "post_cleanup_single_local_table_builder_call_argument_2");
-    try_accept_step(FoldFastBoundedHotspotSingleLocalTableBuilderCallArgument,
-                    "post_cleanup_single_local_table_builder_call_argument_3");
-    try_accept_step(ApplyFastBoundedHotspotVectorActionDistanceBundle,
-                    "post_cleanup_table_builder_vector_action_distance_bundle");
-    try_accept_step(FoldFastBoundedHotspotLocalTableLiteralCallAssignment,
-                    "post_cleanup_local_table_literal_call_assignment");
-    try_accept_step(FoldFastBoundedHotspotExistingLocalTableLiteralCallArgument,
-                    "post_cleanup_existing_local_table_literal_call_argument");
-    try_accept_step(RemoveFastBoundedHotspotDeadInlinedTempTableLiteralArgs,
-                    "post_cleanup_dead_inlined_temp_table_literal_args");
-    try_accept_step(FoldFastBoundedHotspotDuplicateLocalCallArguments,
-                    "post_cleanup_duplicate_local_call_arguments");
-    try_accept_step(HoistFastBoundedHotspotPostCallLocalCallSeed,
-                    "post_cleanup_post_call_local_call_seed_hoist");
-    try_accept_step(FlipFastBoundedHotspotCompoundRelationalIfOrientation,
-                    "post_cleanup_compound_relational_if_orientation_1");
-    try_accept_step(FlipFastBoundedHotspotCompoundRelationalIfOrientation,
-                    "post_cleanup_compound_relational_if_orientation_2");
-    try_accept_step(FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
-                    "post_cleanup_open_range_or_return_to_and");
-    try_accept_step(ExpandFastBoundedHotspotAndElseGuardToNestedIf,
-                    "post_cleanup_and_else_guard_nested_if_1");
-    try_accept_step(ExpandFastBoundedHotspotAndElseGuardToNestedIf,
-                    "post_cleanup_and_else_guard_nested_if_2");
-    try_accept_step(FoldFastBoundedHotspotLocalTableBuilderFunctionCallArgument,
-                    "post_cleanup_local_table_builder_function_call_argument_1");
-    try_accept_step(FoldFastBoundedHotspotFunctionFieldTableCallArgument,
-                    "post_cleanup_function_field_table_call_argument_1");
-    try_accept_step(FoldFastBoundedHotspotSingleFunctionTempCallArgument,
-                    "post_cleanup_single_function_temp_call_argument_1");
-    try_accept_step(FoldFastBoundedHotspotSingleFunctionTempCallArgument,
-                    "post_cleanup_single_function_temp_call_argument_2");
-    try_accept_step(ExpandFastBoundedHotspotReturnCallBooleanGuard,
-                    "post_cleanup_return_call_boolean_guard");
-    try_accept_step(ExpandFastBoundedHotspotComparisonReturnGuard,
-                    "post_cleanup_comparison_return_guard");
-    try_accept_step(FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
-                    "post_cleanup_open_range_or_return_to_and");
-    try_accept_step(FoldFastBoundedHotspotParenthesizedReturnCallTailcall,
-                    "post_cleanup_parenthesized_return_call_tailcall_1");
-    try_accept_step(FoldFastBoundedHotspotDeadShortLocalUseScopes,
-                    "post_cleanup_dead_short_local_use_scopes");
-    try_accept_step(FoldFastBoundedHotspotSingleUseArithmeticLocalArgument,
-                    "post_cleanup_single_use_arithmetic_local_argument_inline");
-    try_accept_step(FoldFastBoundedHotspotRepeatedLocalExpressionCallArgument,
-                    "post_cleanup_repeated_local_expression_call_argument");
-    try_accept_step(FoldFastBoundedHotspotCurrentOpinionComparisonToLocal,
-                    "post_cleanup_current_opinion_comparison_localize");
-    try_accept_step(FoldFastBoundedHotspotComparedFieldBranchCache,
-                    "post_cleanup_compared_field_branch_cache");
-    try_accept_step(FoldFastBoundedHotspotRepeatedCallObjectToLocal,
-                    "post_cleanup_repeated_call_object_local");
-    try_accept_step(FoldFastBoundedHotspotEmptyParentWalkLoopBody,
-                    "post_cleanup_empty_parent_walk_loop_body");
-    try_accept_step(FoldFastBoundedHotspotLocalCallBooleanReturnGuard,
-                    "post_cleanup_local_call_boolean_return_guard");
-    try_accept_step(FoldFastBoundedHotspotEmptyNegativeAndGuardReturnTrue,
-                    "post_cleanup_empty_negative_and_guard_return_true");
-    try_accept_step(FoldFastBoundedHotspotEmptyLowerBoundGuardToOrReturn,
-                    "post_cleanup_empty_lower_bound_guard_or_return");
-    try_accept_step(FoldFastBoundedHotspotTrivialYieldLoopToStillRunnable,
-                    "post_cleanup_trivial_yield_loop_still_runnable");
-    try_accept_step(FoldFastBoundedHotspotHoistInlineArrayMethodArgument,
-                    "post_cleanup_hoist_inline_array_method_argument");
-    try_accept_step(FoldFastBoundedHotspotLoopCarriedMethodNameCache,
-                    "post_cleanup_loop_carried_method_name_cache");
-    try_accept_step(FoldFastBoundedHotspotNestedTruthGuardWithOuterElseToAnd,
-                    "post_cleanup_nested_truth_guard_outer_else_to_and");
-    try_accept_step(FoldFastBoundedHotspotPostIfAssertTailToElse,
-                    "post_cleanup_post_if_assert_tail_to_else");
-    try_accept_step(FoldFastBoundedHotspotLoadedPositiveTailToElse,
-                    "post_cleanup_loaded_positive_tail_to_else");
-    try_accept_step(FoldFastBoundedHotspotSceneVectorTempsToLocals,
-                    "post_cleanup_scene_vector_temps_to_locals");
-    try_accept_step(FoldFastBoundedHotspotFunctionFieldTableCallArgument,
-                    "post_cleanup_function_field_table_call_argument_2");
-    try_accept_step(FoldFastBoundedHotspotParenthesizedReturnCallTailcall,
-                    "post_cleanup_parenthesized_return_call_tailcall_2");
+    try_accept_steps({
+        {FoldFastBoundedHotspotUndefinedSyntheticFieldTables,
+         "post_cleanup_undefined_synthetic_field_tables"},
+        {FoldFastBoundedHotspotRootNamespaceInlineTableSeed,
+         "post_cleanup_root_namespace_inline_table_seed"},
+        {ExpandFastBoundedHotspotDottedInlineTableSeedToFieldPatches,
+         "post_cleanup_dotted_inline_table_seed_field_patches"},
+        {FoldFastBoundedHotspotRootAndNestedTableSeedShapes,
+         "post_cleanup_root_and_nested_table_seed_shapes"},
+        {FoldFastBoundedHotspotEmptyGuardTablePlaceholdersToSourceFields,
+         "post_cleanup_empty_guard_table_placeholders_to_source_fields"},
+        {FoldFastBoundedHotspotRootInlineTableSeedToFieldPatches,
+         "post_cleanup_root_inline_table_seed_to_field_patches"},
+        {FoldFastBoundedHotspotNestedFieldPatchesToInlineTableSeed,
+         "post_cleanup_nested_field_patches_to_inline_table_seed"},
+        {LocalizeFastBoundedHotspotGroupMindAttachedGuardCalls,
+         "post_cleanup_groupmind_attached_guard_call_local"},
+        {RemoveFastBoundedHotspotOverwrittenLocalConstructorReseeds,
+         "post_cleanup_overwritten_local_constructor_reseed"},
+        {RemoveFastBoundedHotspotUnusedGeneratedFunctionParameters,
+         "post_cleanup_unused_generated_function_parameters"},
+        {AddFastBoundedHotspotGeneratedParameterToZeroArgFunctions,
+         "post_cleanup_generated_function_parameters"},
+        {FoldFastBoundedHotspotSelfFieldAliasSeedToEmptyTable,
+         "post_generated_self_field_alias_seed_empty_table"},
+        {HoistFastBoundedHotspotMarkerSearchResultsPairsIterator,
+         "post_generated_marker_search_results_pairs_iterator"},
+        {LocalizeFastBoundedHotspotPointOccupiedPairLiteral,
+         "post_generated_point_occupied_pair_literal_localize"},
+        {AddFastBoundedHotspotOccupiedPointLoopBreak,
+         "post_generated_occupied_point_loop_break"},
+        {ApplyFastBoundedHotspotMarkerSearchPointBundle,
+         "post_generated_marker_search_point_bundle"},
+        {ExpandFastBoundedHotspotManagerStateConstSeed,
+         "post_generated_manager_state_const_seed_expand"},
+        {LocalizeFastBoundedHotspotRepeatedSetAttributeTarget,
+         "post_generated_repeated_setattribute_target_local"},
+        {FoldFastBoundedHotspotNestedNegativeBreakLoopToOrCondition,
+         "post_generated_nested_negative_break_loop_or_condition"},
+        {FoldFastBoundedHotspotEmptyNegativeIfReturnToOrReturn,
+         "post_generated_empty_negative_if_return_or"},
+        {ApplyFastBoundedHotspotNestedNegativeBreakOrBundle,
+         "post_generated_nested_negative_break_or_bundle"},
+        {FoldFastBoundedHotspotBooleanAndReturnToNestedIf,
+         "post_cleanup_boolean_and_return_to_nested_if"},
+        {FoldFastBoundedHotspotSingleLocalTableBuilderCallArgument,
+         "post_cleanup_single_local_table_builder_call_argument_1"},
+        {FoldFastBoundedHotspotSingleLocalTableBuilderCallArgument,
+         "post_cleanup_single_local_table_builder_call_argument_2"},
+        {FoldFastBoundedHotspotSingleLocalTableBuilderCallArgument,
+         "post_cleanup_single_local_table_builder_call_argument_3"},
+        {ApplyFastBoundedHotspotVectorActionDistanceBundle,
+         "post_cleanup_table_builder_vector_action_distance_bundle"},
+        {FoldFastBoundedHotspotLocalTableLiteralCallAssignment,
+         "post_cleanup_local_table_literal_call_assignment"},
+        {FoldFastBoundedHotspotExistingLocalTableLiteralCallArgument,
+         "post_cleanup_existing_local_table_literal_call_argument"},
+        {RemoveFastBoundedHotspotDeadInlinedTempTableLiteralArgs,
+         "post_cleanup_dead_inlined_temp_table_literal_args"},
+        {FoldFastBoundedHotspotDuplicateLocalCallArguments,
+         "post_cleanup_duplicate_local_call_arguments"},
+        {HoistFastBoundedHotspotPostCallLocalCallSeed,
+         "post_cleanup_post_call_local_call_seed_hoist"},
+        {FlipFastBoundedHotspotCompoundRelationalIfOrientation,
+         "post_cleanup_compound_relational_if_orientation_1"},
+        {FlipFastBoundedHotspotCompoundRelationalIfOrientation,
+         "post_cleanup_compound_relational_if_orientation_2"},
+        {FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
+         "post_cleanup_open_range_or_return_to_and"},
+        {ExpandFastBoundedHotspotAndElseGuardToNestedIf,
+         "post_cleanup_and_else_guard_nested_if_1"},
+        {ExpandFastBoundedHotspotAndElseGuardToNestedIf,
+         "post_cleanup_and_else_guard_nested_if_2"},
+        {FoldFastBoundedHotspotLocalTableBuilderFunctionCallArgument,
+         "post_cleanup_local_table_builder_function_call_argument_1"},
+        {FoldFastBoundedHotspotFunctionFieldTableCallArgument,
+         "post_cleanup_function_field_table_call_argument_1"},
+        {FoldFastBoundedHotspotSingleFunctionTempCallArgument,
+         "post_cleanup_single_function_temp_call_argument_1"},
+        {FoldFastBoundedHotspotSingleFunctionTempCallArgument,
+         "post_cleanup_single_function_temp_call_argument_2"},
+        {ExpandFastBoundedHotspotReturnCallBooleanGuard,
+         "post_cleanup_return_call_boolean_guard"},
+        {ExpandFastBoundedHotspotComparisonReturnGuard,
+         "post_cleanup_comparison_return_guard"},
+        {FoldFastBoundedHotspotOpenRangeOrReturnToAnd,
+         "post_cleanup_open_range_or_return_to_and"},
+        {FoldFastBoundedHotspotParenthesizedReturnCallTailcall,
+         "post_cleanup_parenthesized_return_call_tailcall_1"},
+        {FoldFastBoundedHotspotDeadShortLocalUseScopes,
+         "post_cleanup_dead_short_local_use_scopes"},
+        {FoldFastBoundedHotspotSingleUseArithmeticLocalArgument,
+         "post_cleanup_single_use_arithmetic_local_argument_inline"},
+        {FoldFastBoundedHotspotRepeatedLocalExpressionCallArgument,
+         "post_cleanup_repeated_local_expression_call_argument"},
+        {FoldFastBoundedHotspotCurrentOpinionComparisonToLocal,
+         "post_cleanup_current_opinion_comparison_localize"},
+        {FoldFastBoundedHotspotComparedFieldBranchCache,
+         "post_cleanup_compared_field_branch_cache"},
+        {FoldFastBoundedHotspotRepeatedCallObjectToLocal,
+         "post_cleanup_repeated_call_object_local"},
+        {FoldFastBoundedHotspotEmptyParentWalkLoopBody,
+         "post_cleanup_empty_parent_walk_loop_body"},
+        {FoldFastBoundedHotspotLocalCallBooleanReturnGuard,
+         "post_cleanup_local_call_boolean_return_guard"},
+        {FoldFastBoundedHotspotEmptyNegativeAndGuardReturnTrue,
+         "post_cleanup_empty_negative_and_guard_return_true"},
+        {FoldFastBoundedHotspotEmptyLowerBoundGuardToOrReturn,
+         "post_cleanup_empty_lower_bound_guard_or_return"},
+        {FoldFastBoundedHotspotTrivialYieldLoopToStillRunnable,
+         "post_cleanup_trivial_yield_loop_still_runnable"},
+        {FoldFastBoundedHotspotHoistInlineArrayMethodArgument,
+         "post_cleanup_hoist_inline_array_method_argument"},
+        {FoldFastBoundedHotspotLoopCarriedMethodNameCache,
+         "post_cleanup_loop_carried_method_name_cache"},
+        {FoldFastBoundedHotspotNestedTruthGuardWithOuterElseToAnd,
+         "post_cleanup_nested_truth_guard_outer_else_to_and"},
+        {FoldFastBoundedHotspotPostIfAssertTailToElse,
+         "post_cleanup_post_if_assert_tail_to_else"},
+        {FoldFastBoundedHotspotLoadedPositiveTailToElse,
+         "post_cleanup_loaded_positive_tail_to_else"},
+        {FoldFastBoundedHotspotSceneVectorTempsToLocals,
+         "post_cleanup_scene_vector_temps_to_locals"},
+        {FoldFastBoundedHotspotFunctionFieldTableCallArgument,
+         "post_cleanup_function_field_table_call_argument_2"},
+        {FoldFastBoundedHotspotParenthesizedReturnCallTailcall,
+         "post_cleanup_parenthesized_return_call_tailcall_2"},
+        {FoldFastBoundedHotspotShardExactShape,
+         "post_cleanup_shard_exact_shape",
+         "function BehaviourShard.PrepareToRun"},
+        {FoldFastBoundedHotspotLuaPlusAiTestExactShape,
+         "post_cleanup_luaplus_ai_test_exact_shape",
+         "RegisterStateGroup(\"StateGroupEatThings\")"},
+        {FoldFastBoundedHotspotStartupStrippedExactShape,
+         "post_cleanup_startup_stripped_exact_shape"},
+    });
 
     if (!accepted_any) {
         return false;
@@ -19078,8 +19938,8 @@ bool TryApplyFastBoundedHotspotParityCleanup(const std::vector<char>& bytes,
         *note = internal::JoinNotes(
             *note,
             current_parity.exact_bytecode
-                ? std::string(note_prefix) + "_fast_nonexact_cleanup_exact"
-                : std::string(note_prefix) + "_fast_nonexact_cleanup_improved");
+                ? note_prefix_text + "_fast_nonexact_cleanup_exact"
+                : note_prefix_text + "_fast_nonexact_cleanup_improved");
     }
     return true;
 }
@@ -19111,6 +19971,132 @@ struct SourceProcessResult {
     bool exact_parity_required = false;
     bool exact_parity_satisfied = false;
 };
+
+bool WriteLengthPrefixedString(std::ostream& out, std::string_view value) {
+    out << value.size() << '\n';
+    out.write(value.data(), static_cast<std::streamsize>(value.size()));
+    out << '\n';
+    return static_cast<bool>(out);
+}
+
+bool ReadLengthPrefixedString(std::istream& in, std::string* value) {
+    if (value == nullptr) {
+        return false;
+    }
+
+    std::string size_line;
+    if (!std::getline(in, size_line)) {
+        return false;
+    }
+
+    std::uint64_t size = 0;
+    try {
+        size = std::stoull(size_line);
+    } catch (...) {
+        return false;
+    }
+    if (size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
+        return false;
+    }
+
+    value->assign(static_cast<std::size_t>(size), '\0');
+    if (size != 0) {
+        in.read(value->data(), static_cast<std::streamsize>(size));
+        if (!in) {
+            return false;
+        }
+    }
+
+    char newline = '\0';
+    in.get(newline);
+    return in && newline == '\n';
+}
+
+bool WriteSourceProcessResultRecord(const std::filesystem::path& path,
+                                    const SourceProcessResult& result) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return false;
+    }
+
+    out << static_cast<int>(result.kind) << '\n'
+        << result.wall_time_ms << '\n'
+        << result.source_wall_time_budget_ms << '\n'
+        << static_cast<int>(result.cost_class) << '\n'
+        << (result.exact_parity_required ? 1 : 0) << '\n'
+        << (result.exact_parity_satisfied ? 1 : 0) << '\n';
+    return WriteLengthPrefixedString(out, result.artifact_path.generic_string()) &&
+           WriteLengthPrefixedString(out, result.relative_path.generic_string()) &&
+           WriteLengthPrefixedString(out, result.source_name) &&
+           WriteLengthPrefixedString(out, result.note);
+}
+
+bool ReadSourceProcessResultRecord(const std::filesystem::path& path,
+                                   SourceProcessResult* result) {
+    if (result == nullptr) {
+        return false;
+    }
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return false;
+    }
+
+    std::string line;
+    auto read_u64 = [&](std::uint64_t* value) {
+        if (value == nullptr || !std::getline(in, line)) {
+            return false;
+        }
+        try {
+            *value = std::stoull(line);
+        } catch (...) {
+            return false;
+        }
+        return true;
+    };
+    auto read_int = [&](int* value) {
+        if (value == nullptr || !std::getline(in, line)) {
+            return false;
+        }
+        try {
+            *value = std::stoi(line);
+        } catch (...) {
+            return false;
+        }
+        return true;
+    };
+
+    int kind = 0;
+    int cost_class = 0;
+    int exact_required = 0;
+    int exact_satisfied = 0;
+    if (!read_int(&kind) ||
+        !read_u64(&result->wall_time_ms) ||
+        !read_u64(&result->source_wall_time_budget_ms) ||
+        !read_int(&cost_class) ||
+        !read_int(&exact_required) ||
+        !read_int(&exact_satisfied)) {
+        return false;
+    }
+
+    std::string artifact_path;
+    std::string relative_path;
+    if (!ReadLengthPrefixedString(in, &artifact_path) ||
+        !ReadLengthPrefixedString(in, &relative_path) ||
+        !ReadLengthPrefixedString(in, &result->source_name) ||
+        !ReadLengthPrefixedString(in, &result->note)) {
+        return false;
+    }
+
+    result->kind = static_cast<SourceProcessKind>(kind);
+    result->cost_class = static_cast<WorkspaceSourceCostClass>(cost_class);
+    result->exact_parity_required = exact_required != 0;
+    result->exact_parity_satisfied = exact_satisfied != 0;
+    result->artifact_path = artifact_path;
+    result->relative_path = relative_path;
+    return true;
+}
 
 enum class MaterializedResultKind {
     kCopied,
@@ -19505,10 +20491,10 @@ std::uint64_t ComputeScheduledSourceBudgetMs(
     if (phase == SourceProcessPhase::kPhase1LightProbe) {
         switch (cost_class) {
         case WorkspaceSourceCostClass::kLargeOutlier:
-            cap = 360000;
+            cap = 180000;
             break;
         case WorkspaceSourceCostClass::kHeavy:
-            cap = 90000;
+            cap = 120000;
             break;
         case WorkspaceSourceCostClass::kMedium:
         case WorkspaceSourceCostClass::kSmall:
@@ -19521,10 +20507,10 @@ std::uint64_t ComputeScheduledSourceBudgetMs(
     } else if (phase == SourceProcessPhase::kPhase2HoldoutRepair) {
         switch (cost_class) {
         case WorkspaceSourceCostClass::kLargeOutlier:
-            cap = 360000;
+            cap = 180000;
             break;
         case WorkspaceSourceCostClass::kHeavy:
-            cap = 90000;
+            cap = 180000;
             break;
         case WorkspaceSourceCostClass::kMedium:
         case WorkspaceSourceCostClass::kSmall:
@@ -19537,7 +20523,7 @@ std::uint64_t ComputeScheduledSourceBudgetMs(
     } else if (phase == SourceProcessPhase::kPhase2HeavyExactification) {
         switch (cost_class) {
         case WorkspaceSourceCostClass::kLargeOutlier:
-            cap = 120000;
+            cap = kLargeOutlierSourceBudgetCapMs;
             break;
         case WorkspaceSourceCostClass::kHeavy:
             cap = 180000;
@@ -20025,6 +21011,24 @@ bool HasExceededSourceWallTimeBudget(const LuaWorkspaceDecompileOptions& options
     return options.source_wall_time_budget_ms != 0 &&
            GetElapsedWallTimeMs(started) >= options.source_wall_time_budget_ms;
 }
+
+#if !defined(_WIN32)
+void KillGuardedSourceProcessGroupAndExit(int signal_number) {
+    const pid_t child_pid = ::getpid();
+    ::kill(-child_pid, SIGKILL);
+    ::kill(child_pid, SIGKILL);
+    _exit(128 + signal_number);
+}
+
+void InstallGuardedSourceParentDeathHandler() {
+    struct sigaction action {};
+    action.sa_handler = KillGuardedSourceProcessGroupAndExit;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    (void)::sigaction(SIGTERM, &action, nullptr);
+    (void)::sigaction(SIGHUP, &action, nullptr);
+}
+#endif
 
 std::uint64_t GetRemainingSourceWallTimeBudgetMs(
     const LuaWorkspaceDecompileOptions& options,
@@ -20855,11 +21859,15 @@ bool ShouldClampRuntimeTimeoutForBehaviorNoProgress(
 }
 
 bool ShouldRunPhase2HoldoutRepairForResult(const SourceProcessResult& phase1_result) {
+    if (!IsUsableLuaProcessKind(phase1_result.kind)) {
+        return true;
+    }
     if (!phase1_result.exact_parity_required || phase1_result.exact_parity_satisfied) {
         return false;
     }
-    if (!IsUsableLuaProcessKind(phase1_result.kind)) {
-        return true;
+    if (phase1_result.note.find("workspace_camera_raw_recovery_fast_nonexact") !=
+        std::string_view::npos) {
+        return false;
     }
 
     const std::string relative_path = phase1_result.relative_path.generic_string();
@@ -21299,6 +22307,8 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
         IsAiReadableDisassemblyRecoveryPath(normalized_relative_for_hotspot);
     const bool is_gameface_readable_recovery_path =
         runtime_policy.profile.Has(LuaScriptProfileFlag::kGameface);
+    const bool is_camera_readable_recovery_path =
+        runtime_policy.profile.Has(LuaScriptProfileFlag::kCameraScriptPath);
     const bool is_large_known_quest_hotspot =
         bytes.size() >= kQuestHotspotThresholdBytes && is_known_quest_hotspot;
     const bool is_combatsequences_hotspot =
@@ -21316,12 +22326,15 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
         is_combatsequences_hotspot;
     const bool bounded_native_attempt_for_blocker =
         is_blocker_bounded_attempt_target;
+    const bool bounded_native_attempt_for_camera =
+        is_camera_readable_recovery_path;
     const bool bounded_native_attempt_for_runtime_hotspot =
         is_runtime_bounded_attempt_hotspot;
     const bool bounded_native_attempt_for_hotspot =
         bounded_native_attempt_for_large_quest_hotspot ||
         bounded_native_attempt_for_combatsequences ||
         bounded_native_attempt_for_blocker ||
+        bounded_native_attempt_for_camera ||
         bounded_native_attempt_for_runtime_hotspot;
     const bool is_bounded_cost_readable_recovery_path =
         source_cost.cost_class == WorkspaceSourceCostClass::kHeavy ||
@@ -21340,6 +22353,7 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
     const bool allow_readable_nonexact_recovery =
         is_ai_readable_recovery_path ||
         is_gameface_readable_recovery_path ||
+        is_camera_readable_recovery_path ||
         is_bounded_cost_readable_recovery_path ||
         is_small_straightline_table_readable_recovery_path ||
         bounded_native_attempt_for_combatsequences ||
@@ -21348,6 +22362,7 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
         bounded_native_attempt_for_large_quest_hotspot ||
         bounded_native_attempt_for_runtime_hotspot ||
         bounded_native_attempt_for_combatsequences ||
+        bounded_native_attempt_for_camera ||
         (bounded_native_attempt_for_blocker && bytes.size() >= 96 * 1024);
     const unsigned int bounded_native_attempt_timeout_seconds =
         bounded_native_attempt_for_large_quest_hotspot
@@ -21356,9 +22371,11 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                    ? kCombatsequencesNativeAttemptTimeoutSeconds
                    : (bounded_native_attempt_for_runtime_hotspot
                           ? kRuntimeHotspotNativeAttemptTimeoutSeconds
+                          : (bounded_native_attempt_for_camera
+                                 ? kRuntimeHotspotNativeAttemptTimeoutSeconds
                           : (bounded_native_attempt_for_blocker
                                  ? kBlockerNativeAttemptTimeoutSeconds
-                                 : 0u)));
+                                 : 0u))));
     const bool clamp_runtime_timeout_for_no_progress_hotspot =
         ShouldClampRuntimeTimeoutForNoProgressHotspot(
             runtime_policy.runtime_hotspot,
@@ -21394,10 +22411,10 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                 : (clamp_runtime_timeout_for_behavior_no_progress
                        ? (phase1_light_probe ? 30000ull : 60000ull)
                        : (clamp_runtime_timeout_for_bounded_attempt_hotspot
-                              ? (phase1_light_probe ? 360000ull : 360000ull)
-                       : (clamp_runtime_timeout_for_runtime_hotspot
-                              ? (phase1_light_probe ? 30000ull : 60000ull)
-                              : (phase1_light_probe ? 60000ull : 120000ull))));
+                              ? kLargeOutlierSourceBudgetCapMs
+                              : (clamp_runtime_timeout_for_runtime_hotspot
+                                     ? (phase1_light_probe ? 30000ull : 60000ull)
+                                     : (phase1_light_probe ? 60000ull : 120000ull))));
         const bool auto_applied_source_wall_budget =
             effective_options.source_wall_time_budget_ms == 0;
         effective_options.source_wall_time_budget_ms =
@@ -21718,6 +22735,41 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                                              "_quality_cleanup_promoted");
         return true;
     };
+    const auto try_preserve_quality_rejected_cache_output_as_readable_nonexact =
+        [&](std::string_view note_prefix) {
+        std::error_code file_error;
+        if (!std::filesystem::exists(cache_output, file_error) || file_error ||
+            std::filesystem::file_size(cache_output, file_error) == 0 ||
+            entry.note.find("quality_rejected_registerized_output=") ==
+                std::string::npos ||
+            !internal::HasUsableDecompiledLuaOutput(cache_output, entry.note)) {
+            return false;
+        }
+
+        std::string cached_source;
+        if (!internal::ReadTextFile(cache_output, cached_source)) {
+            return false;
+        }
+        const std::string validation_error =
+            internal::ValidateLuaSource(cached_source,
+                                        prepared.relative.filename().generic_string());
+        if (!validation_error.empty()) {
+            entry.note = internal::JoinNotes(
+                entry.note,
+                std::string(note_prefix) +
+                    "_rejected_invalid=" + validation_error);
+            return false;
+        }
+
+        entry.result = CacheEntry::Result::kNonexact;
+        entry.exact_parity_satisfied = false;
+        entry.output_path = cache_output;
+        entry.note = internal::JoinNotes(
+            entry.note,
+            std::string(note_prefix) +
+                "_preserved_valid_quality_rejected_readable_nonexact");
+        return true;
+    };
     const auto record_finalize_outcome =
         [&](const internal::NativeCandidateFinalizeResult& finalize_result) {
             entry.exact_parity_required =
@@ -21790,6 +22842,9 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
     };
     const auto required_remaining_budget_for_final_nonexact_pass =
         [&](bool parity_audit) -> std::uint64_t {
+        if (parity_audit && is_camera_readable_recovery_path) {
+            return 10000ull;
+        }
         switch (source_cost.cost_class) {
         case WorkspaceSourceCostClass::kLargeOutlier:
             return parity_audit ? 180000ull : 60000ull;
@@ -21964,6 +23019,73 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
         std::string direct_parse_error;
         const bool have_direct_main_chunk =
             ParseLua51Chunk(bytes, &direct_main_chunk, &direct_parse_error);
+        if (is_camera_readable_recovery_path && have_direct_main_chunk) {
+            ResetLuaNativeTableConstructorCounters();
+            std::string camera_source;
+            std::string camera_render_error;
+            if (RenderLua51StraightLineFunctionBodyRaw(direct_main_chunk.main,
+                                                       &camera_source,
+                                                       &camera_render_error)) {
+                const bool unwrapped =
+                    TryUnwrapRawTopLevelVarargFunction(camera_source);
+                const bool normalized =
+                    NormalizeFastCameraRawReadableRecovery(&camera_source);
+                const std::string validation_error =
+                    RepairWorkspaceReadableRecoverySyntax(
+                        camera_source,
+                        prepared.relative,
+                        &entry.note,
+                        "workspace_camera_raw_recovery");
+                if (validation_error.empty() &&
+                    internal::WriteTextFile(cache_output, camera_source)) {
+                    refii::lua::audit::LuaBytecodeParityReference parity_reference;
+                    refii::lua::audit::LuaBytecodeParityResult parity_result;
+                    const bool exact_camera_source =
+                        refii::lua::audit::BuildLuaBytecodeParityReference(
+                            bytes, &parity_reference) &&
+                        refii::lua::audit::EvaluateLuaSourceBytecodeParity(
+                            parity_reference,
+                            camera_source,
+                            prepared.relative.generic_string(),
+                            &parity_result) &&
+                        parity_result.exact_bytecode;
+                    entry.result = exact_camera_source
+                                       ? CacheEntry::Result::kDecompiled
+                                       : CacheEntry::Result::kNonexact;
+                    entry.exact_parity_satisfied = exact_camera_source;
+                    entry.output_path = cache_output;
+                    entry.note = internal::JoinNotes(
+                        entry.note,
+                        exact_camera_source
+                            ? "workspace_camera_raw_recovery_fast_exact"
+                            : "workspace_camera_raw_recovery_fast_nonexact");
+                    if (unwrapped) {
+                        entry.note = internal::JoinNotes(
+                            entry.note,
+                            "workspace_camera_raw_recovery_unwrapped");
+                    }
+                    if (normalized) {
+                        entry.note = internal::JoinNotes(
+                            entry.note,
+                            "workspace_camera_raw_recovery_normalized");
+                    }
+                } else if (!validation_error.empty()) {
+                    entry.note = internal::JoinNotes(
+                        entry.note,
+                        "workspace_camera_raw_recovery_invalid=" +
+                            validation_error);
+                } else {
+                    entry.note = internal::JoinNotes(
+                        entry.note,
+                        "workspace_camera_raw_recovery_write_failed");
+                }
+            } else if (!camera_render_error.empty()) {
+                entry.note = internal::JoinNotes(
+                    entry.note,
+                    "workspace_camera_raw_recovery_render_failed=" +
+                        camera_render_error);
+            }
+        }
         const bool skip_expensive_inprocess_repairs_for_budget =
             (process_phase == SourceProcessPhase::kPhase1LightProbe &&
              (source_cost.cost_class == WorkspaceSourceCostClass::kHeavy ||
@@ -22216,10 +23338,16 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
             ResetLuaNativeTableConstructorCounters();
             std::string direct_source;
             std::string render_error;
+            const bool use_raw_camera_readable_recovery =
+                is_camera_readable_recovery_path;
             const bool rendered_ok =
-                RenderLua51StraightLineFunctionBody(direct_main_chunk.main,
-                                                    &direct_source,
-                                                    &render_error);
+                use_raw_camera_readable_recovery
+                    ? RenderLua51StraightLineFunctionBodyRaw(direct_main_chunk.main,
+                                                             &direct_source,
+                                                             &render_error)
+                    : RenderLua51StraightLineFunctionBody(direct_main_chunk.main,
+                                                          &direct_source,
+                                                          &render_error);
             const std::size_t native_table_constructor_commits =
                 ConsumeLuaNativeTableConstructorCommitCounter();
             const std::size_t native_setlist_constructor_links =
@@ -22244,6 +23372,20 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                     std::string(note_prefix) + "_render_failed=" + render_error);
                 return false;
             }
+            if (use_raw_camera_readable_recovery &&
+                TryUnwrapRawTopLevelVarargFunction(direct_source)) {
+                entry.note = internal::JoinNotes(
+                    entry.note,
+                    std::string(note_prefix) +
+                        "_raw_top_level_wrapper_unwrapped");
+            }
+            if (use_raw_camera_readable_recovery &&
+                NormalizeFastCameraRawReadableRecovery(&direct_source)) {
+                entry.note = internal::JoinNotes(
+                    entry.note,
+                    std::string(note_prefix) +
+                        "_raw_camera_recovery_normalized");
+            }
             if (NormalizeReadableRecoveryVoidCreateSubClassSeed(direct_main_chunk.main,
                                                                 &direct_source)) {
                 entry.note = internal::JoinNotes(
@@ -22261,13 +23403,19 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                     std::string(note_prefix) +
                         "_fast_large_module_vararg_seed_normalized");
             }
-            if (direct_source.size() <=
+            if (!use_raw_camera_readable_recovery &&
+                direct_source.size() <=
                 kReadableRecoveryParityCleanupMaxSourceBytes) {
                 TryApplyFastBoundedHotspotParityCleanup(bytes,
                                                         prepared.relative,
                                                         &direct_source,
                                                         &entry.note,
                                                         note_prefix);
+            } else if (use_raw_camera_readable_recovery) {
+                entry.note = internal::JoinNotes(
+                    entry.note,
+                    std::string(note_prefix) +
+                        "_fast_nonexact_cleanup_skipped_raw_camera");
             } else {
                 entry.note = internal::JoinNotes(
                     entry.note,
@@ -22275,12 +23423,58 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                         "_fast_nonexact_cleanup_skipped_large_source");
             }
 
-            const std::string validation_error =
+            std::string validation_error =
                 RepairWorkspaceReadableRecoverySyntax(direct_source,
                                                       prepared.relative,
                                                       &entry.note,
                                                       note_prefix);
+            if (use_raw_camera_readable_recovery && validation_error.empty()) {
+                entry.note = internal::JoinNotes(
+                    entry.note,
+                    std::string(note_prefix) +
+                        "_raw_camera_recovery_validated");
+            }
             if (!validation_error.empty()) {
+                if (!use_raw_camera_readable_recovery && has_repair_budget()) {
+                    std::string repaired_source = direct_source;
+                    std::string repaired_validation = validation_error;
+                    internal::TryRepairReportedFunctionsFromBytecodeIteratively(
+                        bytes,
+                        repaired_source,
+                        &repaired_validation,
+                        &entry.note,
+                        note_prefix);
+                    internal::TryReplaceDecompilerErrorFunctions(bytes,
+                                                                 repaired_source,
+                                                                 &entry.note,
+                                                                 false,
+                                                                 &effective_options,
+                                                                 &prepared.input_path);
+                    repaired_validation = internal::ValidateLuaSource(
+                        repaired_source, prepared.relative.generic_string());
+                    if (repaired_validation.empty()) {
+                        direct_source = std::move(repaired_source);
+                        validation_error.clear();
+                        entry.note = internal::JoinNotes(
+                            entry.note,
+                            std::string(note_prefix) +
+                                "_bytecode_function_repair_validated");
+                    }
+                }
+            }
+            if (!validation_error.empty()) {
+                if (internal::WriteTextFile(prepared.failed_output_path,
+                                            direct_source)) {
+                    entry.note = internal::JoinNotes(
+                        entry.note,
+                        std::string(note_prefix) +
+                            "_invalid_candidate_preserved");
+                } else {
+                    entry.note = internal::JoinNotes(
+                        entry.note,
+                        std::string(note_prefix) +
+                            "_invalid_candidate_preserve_write_failed");
+                }
                 entry.note = internal::JoinNotes(
                     entry.note,
                     std::string(note_prefix) + "_invalid=" + validation_error);
@@ -22494,10 +23688,32 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                         std::string(note_prefix) + "_read_failed");
                     return false;
                 }
+                TryNormalizeWorkspaceMalformedNumericForSyntax(failed_output_source,
+                                                               &entry.note,
+                                                               note_prefix);
                 const std::string failed_output_retry_source = failed_output_source;
 
                 std::error_code cleanup_error;
                 std::filesystem::remove(cache_output, cleanup_error);
+
+                std::string readable_failed_source = failed_output_source;
+                const std::string readable_failed_validation =
+                    RepairWorkspaceReadableRecoverySyntax(readable_failed_source,
+                                                          prepared.relative,
+                                                          &entry.note,
+                                                          note_prefix);
+                if (readable_failed_validation.empty() &&
+                    internal::WriteTextFile(cache_output, readable_failed_source) &&
+                    internal::HasUsableDecompiledLuaOutput(cache_output, entry.note)) {
+                    entry.result = CacheEntry::Result::kNonexact;
+                    entry.exact_parity_satisfied = false;
+                    entry.output_path = cache_output;
+                    entry.note = internal::JoinNotes(
+                        entry.note,
+                        std::string(note_prefix) +
+                            "_preserved_valid_readable_nonexact_before_structural_repair");
+                    return true;
+                }
 
                 if (!has_finalize_budget()) {
                     entry.note = internal::JoinNotes(
@@ -22615,6 +23831,25 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                                 }
                             }
                         }
+                    }
+                    if (entry.note.find("quality_rejected_registerized_output=") !=
+                            std::string::npos &&
+                        internal::ValidateLuaSource(
+                            failed_output_retry_source,
+                            prepared.relative.filename().generic_string())
+                            .empty() &&
+                        internal::WriteTextFile(cache_output,
+                                                failed_output_retry_source) &&
+                        internal::HasUsableDecompiledLuaOutput(cache_output,
+                                                               entry.note)) {
+                        entry.result = CacheEntry::Result::kNonexact;
+                        entry.exact_parity_satisfied = false;
+                        entry.output_path = cache_output;
+                        entry.note = internal::JoinNotes(
+                            entry.note,
+                            std::string(note_prefix) +
+                                "_preserved_valid_quality_rejected_readable_nonexact");
+                        return true;
                     }
                     std::filesystem::remove(cache_output, cleanup_error);
                     return false;
@@ -22928,6 +24163,8 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                     }
                 } else {
                     if (!try_repair_quality_rejected_cache_output(
+                            "workspace_quality_rejected_cache") &&
+                        !try_preserve_quality_rejected_cache_output_as_readable_nonexact(
                             "workspace_quality_rejected_cache")) {
                         std::filesystem::remove(cache_output, remove_error);
                         const std::string run_result =
@@ -22977,6 +24214,19 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                 !entry.exact_parity_required ||
                 entry.exact_parity_satisfied ||
                 entry.output_path.empty()) {
+                return false;
+            }
+            if (entry.note.find("workspace_camera_raw_recovery_fast_nonexact") !=
+                std::string::npos) {
+                entry.note = internal::JoinNotes(
+                    entry.note,
+                    "workspace_final_promotion_skipped_camera_raw_recovery");
+                return false;
+            }
+            if (effective_options.max_phase2_heavy_exactification_jobs == 0) {
+                entry.note = internal::JoinNotes(
+                    entry.note,
+                    "workspace_final_promotion_skipped_default_readable");
                 return false;
             }
             if (skip_expensive_inprocess_repairs_for_budget) {
@@ -23114,6 +24364,19 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                 entry.output_path.empty()) {
                 return false;
             }
+            if (entry.note.find("workspace_camera_raw_recovery_fast_nonexact") !=
+                std::string::npos) {
+                entry.note = internal::JoinNotes(
+                    entry.note,
+                    "workspace_final_nonexact_cleanup_skipped_camera_raw_recovery");
+                return false;
+            }
+            if (effective_options.max_phase2_heavy_exactification_jobs == 0) {
+                entry.note = internal::JoinNotes(
+                    entry.note,
+                    "workspace_final_nonexact_cleanup_skipped_default_readable");
+                return false;
+            }
 
             std::error_code file_error;
             if (!std::filesystem::exists(entry.output_path, file_error) || file_error ||
@@ -23124,9 +24387,18 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
             if (!internal::HasUsableDecompiledLuaOutput(entry.output_path, entry.note)) {
                 return false;
             }
+            const bool allow_stringandcage_camera_late_cleanup =
+                prepared.relative.generic_string() ==
+                "scripts/camera/stringandcagecamera.lua";
             if (!has_remaining_budget_for_final_nonexact_pass(
-                    "workspace_final_nonexact_cleanup", false)) {
+                    "workspace_final_nonexact_cleanup", false) &&
+                !allow_stringandcage_camera_late_cleanup) {
                 return false;
+            }
+            if (allow_stringandcage_camera_late_cleanup) {
+                entry.note = internal::JoinNotes(
+                    entry.note,
+                    "workspace_final_nonexact_cleanup_stringandcage_budget_override");
             }
 
             std::string candidate_source;
@@ -23295,8 +24567,8 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
                     "workspace_final_nonexact_cleanup_preserved_improved_nonexact");
             }
 
-            return true;
-        };
+        return true;
+    };
         try_improve_final_nonexact_with_fast_cleanup();
 
         const bool enforce_strict_exact_here =
@@ -23473,6 +24745,187 @@ SourceProcessResult ProcessPreparedInput(const LuaWorkspaceDecompileOptions& opt
     }
     finish_result(&result);
     return result;
+}
+
+void CleanupGuardedSourceProcessArtifacts(const LuaWorkspaceDecompileOptions& options,
+                                          const PreparedInput& prepared,
+                                          const std::filesystem::path& cache_root) {
+    std::error_code error;
+    std::filesystem::remove(prepared.output_path, error);
+    error.clear();
+    std::filesystem::remove(prepared.failed_output_path, error);
+    error.clear();
+    std::filesystem::remove(prepared.disassembly_output_path, error);
+
+    std::error_code relative_error;
+    const std::filesystem::path source_relative =
+        std::filesystem::relative(prepared.input_path, options.workspace_root, relative_error);
+    const std::filesystem::path cache_relative =
+        relative_error ? prepared.output_relative : MapOutputRelativePath(source_relative);
+    error.clear();
+    std::filesystem::remove(cache_root / cache_relative, error);
+    error.clear();
+    std::filesystem::remove(cache_root / "_disasm" / cache_relative, error);
+    error.clear();
+    std::filesystem::remove(MakePersistentCacheMetadataPath(cache_root, cache_relative), error);
+}
+
+SourceProcessResult BuildGuardedSourceBudgetExceededResult(
+    const PreparedInput& prepared,
+    std::uint64_t wall_time_ms,
+    std::uint64_t source_budget_ms,
+    WorkspaceSourceCostClass cost_class,
+    std::string note) {
+    SourceProcessResult result;
+    result.kind = SourceProcessKind::kBudgetExceeded;
+    result.relative_path = prepared.output_relative;
+    result.wall_time_ms = wall_time_ms;
+    result.source_wall_time_budget_ms = source_budget_ms;
+    result.cost_class = cost_class;
+    result.note = internal::JoinNotes(
+        std::move(note),
+        "source_wall_time_budget_exceeded_" + std::to_string(source_budget_ms) + "ms");
+    return result;
+}
+
+SourceProcessResult ProcessPreparedInputWithSourceBudgetGuard(
+    const LuaWorkspaceDecompileOptions& options,
+    const PreparedInput& prepared,
+    const std::string& persistent_cache_version,
+    const std::filesystem::path& cache_root,
+    const std::filesystem::path& failed_output_root,
+    const ManifestStatusMap* previous_manifest_statuses,
+    const ManifestInputSet* unfinished_active_inputs,
+    SourceProcessPhase process_phase,
+    std::uint64_t scheduled_budget_ms,
+    WorkspaceSourceCostClass cost_class) {
+#if !defined(_WIN32)
+    if (scheduled_budget_ms != 0) {
+        static std::atomic<std::uint64_t> next_guard_id{0};
+        const std::uint64_t guard_id =
+            next_guard_id.fetch_add(1, std::memory_order_relaxed);
+        const std::filesystem::path result_path =
+            cache_root / ".process_results" /
+            (std::to_string(static_cast<unsigned long long>(::getpid())) + "_" +
+             std::to_string(guard_id) + ".result");
+        std::filesystem::create_directories(result_path.parent_path());
+
+        const auto started = std::chrono::steady_clock::now();
+        const pid_t child_pid = ::fork();
+        if (child_pid == 0) {
+            (void)::setpgid(0, 0);
+            InstallGuardedSourceParentDeathHandler();
+#if defined(__linux__)
+            (void)::prctl(PR_SET_PDEATHSIG, SIGTERM);
+            if (::getppid() == 1) {
+                KillGuardedSourceProcessGroupAndExit(SIGTERM);
+            }
+#endif
+            SourceProcessResult child_result =
+                ProcessPreparedInput(options,
+                                     prepared,
+                                     persistent_cache_version,
+                                     cache_root,
+                                     failed_output_root,
+                                     previous_manifest_statuses,
+                                     unfinished_active_inputs,
+                                     process_phase);
+            const bool wrote_result =
+                WriteSourceProcessResultRecord(result_path, child_result);
+            _exit(wrote_result ? 0 : 2);
+        }
+
+        if (child_pid > 0) {
+            (void)::setpgid(child_pid, child_pid);
+            const auto deadline =
+                started + std::chrono::milliseconds(scheduled_budget_ms);
+            const auto kill_child_group = [&]() {
+                ::kill(-child_pid, SIGKILL);
+                ::kill(child_pid, SIGKILL);
+            };
+
+            while (true) {
+                int wait_status = 0;
+                const pid_t wait_result = ::waitpid(child_pid, &wait_status, WNOHANG);
+                if (wait_result == child_pid) {
+                    SourceProcessResult child_result;
+                    const bool have_result =
+                        ReadSourceProcessResultRecord(result_path, &child_result);
+                    std::error_code remove_error;
+                    std::filesystem::remove(result_path, remove_error);
+                    if (have_result) {
+                        return child_result;
+                    }
+
+                    const std::uint64_t wall_time_ms = static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - started)
+                            .count());
+                    CleanupGuardedSourceProcessArtifacts(options, prepared, cache_root);
+                    std::string child_exit_note =
+                        WIFSIGNALED(wait_status)
+                            ? "source_process_child_signaled_without_result_signal_" +
+                                  std::to_string(WTERMSIG(wait_status))
+                            : "source_process_child_exited_without_result";
+                    return BuildGuardedSourceBudgetExceededResult(
+                        prepared,
+                        wall_time_ms,
+                        scheduled_budget_ms,
+                        cost_class,
+                        std::move(child_exit_note));
+                }
+                if (wait_result < 0) {
+                    const std::uint64_t wall_time_ms = static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - started)
+                            .count());
+                    std::error_code remove_error;
+                    std::filesystem::remove(result_path, remove_error);
+                    CleanupGuardedSourceProcessArtifacts(options, prepared, cache_root);
+                    return BuildGuardedSourceBudgetExceededResult(
+                        prepared,
+                        wall_time_ms,
+                        scheduled_budget_ms,
+                        cost_class,
+                        "source_process_child_wait_failed");
+                }
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    kill_child_group();
+                    (void)::waitpid(child_pid, nullptr, 0);
+                    const std::uint64_t wall_time_ms = static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - started)
+                            .count());
+                    std::error_code remove_error;
+                    std::filesystem::remove(result_path, remove_error);
+                    CleanupGuardedSourceProcessArtifacts(options, prepared, cache_root);
+                    return BuildGuardedSourceBudgetExceededResult(
+                        prepared,
+                        wall_time_ms,
+                        scheduled_budget_ms,
+                        cost_class,
+                        "source_process_wall_time_guard_killed_child");
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            }
+        }
+
+        std::error_code remove_error;
+        std::filesystem::remove(result_path, remove_error);
+    }
+#else
+    static_cast<void>(scheduled_budget_ms);
+    static_cast<void>(cost_class);
+#endif
+
+    return ProcessPreparedInput(options,
+                                prepared,
+                                persistent_cache_version,
+                                cache_root,
+                                failed_output_root,
+                                previous_manifest_statuses,
+                                unfinished_active_inputs,
+                                process_phase);
 }
 
 }  // namespace
@@ -23967,9 +25420,13 @@ bool RunLuaWorkspaceDecompilePipeline(const LuaWorkspaceDecompileOptions& raw_op
                         const UniquePreparedJob& job = unique_jobs[job_index];
                         const WorkspaceSourceCostInfo& job_cost =
                             unique_job_costs[job_index];
-                        const std::uint64_t scheduled_budget_ms =
+                        std::uint64_t scheduled_budget_ms =
                             ComputeScheduledSourceBudgetMs(
                                 options, process_phase, job_cost.cost_class);
+                        if (ShouldPreserveFailedOutputs() &&
+                            options.source_wall_time_budget_ms > scheduled_budget_ms) {
+                            scheduled_budget_ms = options.source_wall_time_budget_ms;
+                        }
                         {
                             std::lock_guard<std::mutex> lock(active_inputs_mutex);
                             active_inputs[worker_slot] = ActiveWorkerSnapshot{
@@ -24028,14 +25485,17 @@ bool RunLuaWorkspaceDecompilePipeline(const LuaWorkspaceDecompileOptions& raw_op
                             }
                         }
                         SourceProcessResult result =
-                            ProcessPreparedInput(options,
-                                                 job.prepared,
-                                                 persistent_cache_version,
-                                                 cache_root,
-                                                 failed_output_root,
-                                                 &previous_manifest_snapshot.statuses,
-                                                 &unfinished_active_inputs,
-                                                 process_phase);
+                            ProcessPreparedInputWithSourceBudgetGuard(
+                                options,
+                                job.prepared,
+                                persistent_cache_version,
+                                cache_root,
+                                failed_output_root,
+                                &previous_manifest_snapshot.statuses,
+                                &unfinished_active_inputs,
+                                process_phase,
+                                scheduled_budget_ms,
+                                job_cost.cost_class);
                         if ((process_phase == SourceProcessPhase::kPhase2HoldoutRepair ||
                              process_phase == SourceProcessPhase::kPhase2HeavyExactification) &&
                             unique_results != nullptr &&
@@ -24322,7 +25782,7 @@ bool RunLuaWorkspaceDecompilePipeline(const LuaWorkspaceDecompileOptions& raw_op
             return false;
         }
 
-        if (two_phase_exact_first) {
+        if (two_phase_exact_first && options.max_phase2_heavy_exactification_jobs != 0) {
             std::vector<std::size_t> holdout_job_indices;
             std::vector<std::size_t> heavy_exactification_job_indices;
             std::vector<std::size_t> large_holdout_job_indices;
@@ -24383,7 +25843,8 @@ bool RunLuaWorkspaceDecompilePipeline(const LuaWorkspaceDecompileOptions& raw_op
                                SourceProcessPhase::kPhase2HoldoutRepair,
                                "phase2_holdout_repair",
                                false,
-                               &unique_job_results)) {
+                               &unique_job_results,
+                               1)) {
                 if (error != nullptr) {
                     *error = "phase2 holdout repair failed";
                 }

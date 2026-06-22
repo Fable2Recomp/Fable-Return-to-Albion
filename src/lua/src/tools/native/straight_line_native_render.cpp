@@ -1101,12 +1101,15 @@ bool RenderLua51StraightLineFunctionImpl(const Lua51Function& function,
             disable_simplify
                 ? internal::RenderedLuaCleanupProfile::kValidatedOutput
                 : internal::RenderedLuaCleanupProfile::kAggressiveCandidateRefinement);
+        changed |= RepairRenderedLuaSourceGuardedTemporaryFallbacks(&lines);
         changed |= NormalizeRenderedLuaWhitespace(&lines);
         if (!changed) {
             return false;
         }
         return true;
     });
+    RepairRenderedLuaSourceGuardedTemporaryFallbacks(&lines);
+    NormalizeRenderedLuaWhitespace(&lines);
     if (pre_cleanup_balance_valid && !HasValidRenderedLuaBlockBalance(lines)) {
         if (trace_render) {
             trace("cleanup_invalid_block_balance_reverted_to_pre_cleanup");

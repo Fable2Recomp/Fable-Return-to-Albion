@@ -25,17 +25,37 @@ set(REFII_PACKAGE_GENERATED_DIR "${CMAKE_BINARY_DIR}/package/generated")
 set(REFII_PACKAGE_STAMP_DIR "${CMAKE_BINARY_DIR}/package/stamps")
 
 include(CMakeDependentOption)
-set(REFII_RENDERER_PLUME_SDL_WINDOW_SUPPORTED OFF)
+set(REFII_SDL3_WINDOW_SUPPORTED OFF)
 if((UNIX AND NOT APPLE) OR WIN32)
-    set(REFII_RENDERER_PLUME_SDL_WINDOW_SUPPORTED ON)
+    set(REFII_SDL3_WINDOW_SUPPORTED ON)
 endif()
-cmake_dependent_option(
-    REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED
-    "Use SDL3 for the ReXGlue app window when the renderer integration is enabled"
-    OFF
-    "REFII_RENDERER_PLUME_SDL_WINDOW_SUPPORTED"
-    OFF
+if(NOT REFII_SDL3_WINDOW_SUPPORTED)
+    message(FATAL_ERROR "Refii now requires SDL3 window support on this platform")
+endif()
+if(DEFINED REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED AND
+   NOT DEFINED REFII_SDL3_WINDOW_ENABLED)
+    set(REFII_SDL3_WINDOW_ENABLED
+        "${REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED}"
+        CACHE BOOL
+        "Use SDL3 for the ReXGlue app window"
+        FORCE
+    )
+endif()
+option(
+    REFII_SDL3_WINDOW_ENABLED
+    "Use SDL3 for the ReXGlue app window"
+    ON
 )
+if(NOT REFII_SDL3_WINDOW_ENABLED)
+    message(FATAL_ERROR "Refii now requires REFII_SDL3_WINDOW_ENABLED=ON")
+endif()
+set(REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED
+    "${REFII_SDL3_WINDOW_ENABLED}"
+    CACHE BOOL
+    "Deprecated compatibility alias for REFII_SDL3_WINDOW_ENABLED"
+    FORCE
+)
+mark_as_advanced(REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED)
 cmake_dependent_option(
     REFII_RENDERER_PLUME_D3D12_AGILITY_SDK_ENABLED
     "Build Plume with the D3D12 Agility SDK"
@@ -47,6 +67,7 @@ cmake_dependent_option(
 include(cmake/refii_rexglue.cmake)
 refii_rexglue_configure_sdk()
 include(generated/rexglue.cmake)
+add_subdirectory(src/achievement)
 refii_rexglue_apply_shadow_overrides()
 refii_define_rexglue_build_target()
 refii_define_rexglue_codegen_bootstrap_target()
@@ -196,6 +217,10 @@ option(REFII_BUILD_PACKAGES_IN_ALL
     "Include Linux package targets in the default all target"
     OFF
 )
+option(REFII_BUILD_APPIMAGE_IN_ALL
+    "Include the Linux AppImage target in the default all target"
+    ON
+)
 
 set(REFII_CAN_BUILD_LINUX_PACKAGES OFF)
 if(UNIX AND NOT APPLE)
@@ -255,11 +280,28 @@ set(
 )
 
 set(
-    REFII_PACKAGE_ICON_SOURCE
+    _REFII_PACKAGE_ICON_SOURCE_DEFAULT
+    "${CMAKE_SOURCE_DIR}/assets/game/default.xex.icons/067_X_IMAGEID_GAME.png"
+)
+set(
+    _REFII_PACKAGE_ICON_SOURCE_LEGACY_DEFAULT
     "${CMAKE_SOURCE_DIR}/assets/game/default.xex.icons/001_Icon_black_knight.png"
+)
+set(
+    REFII_PACKAGE_ICON_SOURCE
+    "${_REFII_PACKAGE_ICON_SOURCE_DEFAULT}"
     CACHE FILEPATH
     "PNG icon used for AppImage and Flatpak packaging"
 )
+if("${REFII_PACKAGE_ICON_SOURCE}" STREQUAL "${_REFII_PACKAGE_ICON_SOURCE_LEGACY_DEFAULT}")
+    set(
+        REFII_PACKAGE_ICON_SOURCE
+        "${_REFII_PACKAGE_ICON_SOURCE_DEFAULT}"
+        CACHE FILEPATH
+        "PNG icon used for AppImage and Flatpak packaging"
+        FORCE
+    )
+endif()
 
 set(
     REFII_APPIMAGE_ARCH
@@ -373,7 +415,7 @@ set(REFII_SHADER_TRANSLATOR_CMD
 set(REFII_SHADER_TRANSLATION_TARGETS
     "auto"
     CACHE STRING
-    "Compile targets for shader pipeline: auto, vulkan, d3d12, or vulkan,d3d12"
+    "Compile targets for shader pipeline: auto, vulkan, d3d12, metal, or comma-separated combinations"
 )
 set(REFII_SHADER_USE_XENOS_TRANSLATOR
     ON
@@ -390,7 +432,9 @@ set(REFII_SHADER_DEDUPE_IDENTICAL_BLOBS
     CACHE BOOL
     "When ON, deduplicate compile work across identical shader payload hashes"
 )
-if(WIN32)
+if(APPLE)
+    set(REFII_SHADER_DEFAULT_VALIDATION_TARGETS "vulkan,metal")
+elseif(WIN32)
     set(REFII_SHADER_DEFAULT_VALIDATION_TARGETS "vulkan,d3d12")
 else()
     set(REFII_SHADER_DEFAULT_VALIDATION_TARGETS "vulkan")
@@ -398,7 +442,7 @@ endif()
 set(REFII_SHADER_VALIDATION_TARGETS
     "${REFII_SHADER_DEFAULT_VALIDATION_TARGETS}"
     CACHE STRING
-    "Targets used by refii_shader_pipeline_validate_all_targets (e.g. vulkan or vulkan,d3d12)"
+    "Targets used by refii_shader_pipeline_validate_all_targets (e.g. vulkan, vulkan,d3d12, or vulkan,metal)"
 )
 unset(REFII_SHADER_DEFAULT_VALIDATION_TARGETS)
 
@@ -408,6 +452,7 @@ set(REFII_RENDERER_LIBRARIES)
 set(REFII_HOOK_OBJECTS)
 
 add_subdirectory(src/extractor)
+add_subdirectory(src/modding)
 
 if(REFII_BUILD_NATIVE_LUA)
     enable_language(C)
@@ -543,6 +588,10 @@ target_include_directories(refii_host
 if(EXISTS "${REFII_REXGLUE_SHADOW_DIR}/include")
     target_include_directories(refii_host PUBLIC "${REFII_REXGLUE_SHADOW_DIR}/include")
 endif()
+target_include_directories(refii_host
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/achievement/include"
+)
 if(REFII_RENDERER_LIBRARIES)
     target_compile_definitions(refii_host PUBLIC REFII_HAS_RENDERER_RUNTIME=1)
 else()
@@ -550,22 +599,18 @@ else()
 endif()
 target_compile_definitions(refii_host
     PUBLIC
-        REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED=$<BOOL:${REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED}>
+        REFII_SDL3_WINDOW_ENABLED=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>
 )
 target_link_libraries(refii_host
     PUBLIC
         refii_core
         refii_generated
         ${REFII_RENDERER_LIBRARIES}
+    PRIVATE
+        refii_achievement_ui
 )
 
 if(UNIX AND NOT APPLE)
-    find_package(PkgConfig REQUIRED)
-    find_package(X11 REQUIRED)
-    pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
-    target_include_directories(refii_host PUBLIC ${GTK3_INCLUDE_DIRS})
-    target_link_libraries(refii_host PUBLIC ${GTK3_LIBRARIES})
-    target_link_libraries(refii_host PUBLIC X11::X11)
     target_link_options(refii_core
         PRIVATE
             -Wl,--whole-archive
@@ -604,13 +649,21 @@ if(REFII_BUILD_STANDALONE)
     endif()
     target_compile_definitions(refii
         PRIVATE
-            REX_UI_HAS_SDL_WINDOW=$<BOOL:${REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED}>
-            REX_UI_HAS_WAYLAND_WINDOW=$<BOOL:${REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED}>
+            REX_UI_HAS_SDL_WINDOW=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>
+            REX_UI_HAS_WAYLAND_WINDOW=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>
     )
     set_target_properties(refii PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${REFII_RUNTIME_OUTPUT_DIR}"
         BUILD_RPATH "$ORIGIN/../lib"
         INSTALL_RPATH "$ORIGIN/../lib"
+    )
+    add_custom_command(TARGET refii POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:refii>/assets/launcher/assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${REFII_PACKAGE_ICON_SOURCE}"
+            "$<TARGET_FILE_DIR:refii>/assets/launcher/assets/icon.png"
+        VERBATIM
     )
 
     if(EXISTS "${REFII_SHADER_OUTPUT_DIR}")
@@ -1039,7 +1092,11 @@ if(REFII_BUILD_APPIMAGE)
         VERBATIM
     )
 
-    add_custom_target(refii-appimage DEPENDS "${REFII_APPIMAGE_OUTPUT}")
+    if(REFII_BUILD_APPIMAGE_IN_ALL OR REFII_BUILD_PACKAGES_IN_ALL)
+        add_custom_target(refii-appimage ALL DEPENDS "${REFII_APPIMAGE_OUTPUT}")
+    else()
+        add_custom_target(refii-appimage DEPENDS "${REFII_APPIMAGE_OUTPUT}")
+    endif()
     list(APPEND REFII_PACKAGE_TARGETS refii-appimage)
 
     unset(_REFII_APPIMAGE_TOOL_ARCH)

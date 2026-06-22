@@ -21,6 +21,24 @@ struct RendererHookArgs {
   uint32_t r8 = 0;
   uint32_t r9 = 0;
   uint32_t r10 = 0;
+  uint32_t r14 = 0;
+  uint32_t r15 = 0;
+  uint32_t r16 = 0;
+  uint32_t r17 = 0;
+  uint32_t r18 = 0;
+  uint32_t r19 = 0;
+  uint32_t r20 = 0;
+  uint32_t r21 = 0;
+  uint32_t r22 = 0;
+  uint32_t r23 = 0;
+  uint32_t r24 = 0;
+  uint32_t r25 = 0;
+  uint32_t r26 = 0;
+  uint32_t r27 = 0;
+  uint32_t r28 = 0;
+  uint32_t r29 = 0;
+  uint32_t r30 = 0;
+  uint32_t r31 = 0;
   uint32_t r1 = 0;
   uint32_t lr = 0;
   uint64_t r3_u64 = 0;
@@ -37,6 +55,7 @@ struct RendererHookArgs {
 
 struct RendererHookTimingSnapshot {
   uint64_t hook_enters = 0;
+  uint64_t renderer_setup_hooks = 0;
   uint64_t draw_hook_enters = 0;
   uint64_t display_present_hooks = 0;
   uint64_t plume_present_requests = 0;
@@ -48,6 +67,9 @@ struct RendererHookTimingSnapshot {
   int64_t last_display_present_gap_us = 0;
   int64_t last_plume_present_request_gap_us = 0;
   int64_t last_plume_present_pump_gap_us = 0;
+  uint32_t fable_renderer = 0;
+  uint32_t fable_renderer_owner = 0;
+  uint32_t fable_game = 0;
   uint32_t fable_device = 0;
   uint32_t fable_present_submitted = 0;
   uint32_t fable_present_completed = 0;
@@ -56,6 +78,7 @@ struct RendererHookTimingSnapshot {
   uint32_t plume_present_pump_target_fps = 0;
   bool seen_display_swap_hook = false;
   bool plume_present_pump_enabled = false;
+  char last_renderer_setup_symbol[64] = {};
   char last_hook_symbol[64] = {};
   char last_display_present_symbol[64] = {};
   char last_plume_present_symbol[64] = {};
@@ -68,6 +91,7 @@ void ShutdownRendererPresentPump();
 RendererHookTimingSnapshot GetRendererHookTimingSnapshot();
 void OnRendererGuestHook(const char* symbol, RendererHookKind kind);
 RendererHookArgs CaptureRendererHookArgs(const PPCContext& ctx);
+void OnRendererSetupHook(const RendererHookArgs& args, uint8_t* base);
 void OnRendererGuestHookEnter(const char* symbol, RendererHookKind kind,
                               const RendererHookArgs& args,
                               uint8_t* base = nullptr);
@@ -78,8 +102,13 @@ void OnRendererGuestHookExit(const char* symbol, RendererHookKind kind,
                              const RendererHookArgs& args,
                              const PPCContext& ctx, uint8_t* base);
 bool ShouldRunNativeRendererHook(const char* symbol, RendererHookKind kind);
+bool ShouldRunNativeRendererHook(const char* symbol, RendererHookKind kind,
+                                 const RendererHookArgs& args,
+                                 uint8_t* base);
 void OnRendererGuestHookNativeSkipped(const char* symbol, RendererHookKind kind,
                                       const RendererHookArgs& args,
                                       PPCContext& ctx, uint8_t* base);
+void RepairFableRendererGetTimeDeltaResult(const RendererHookArgs& args,
+                                           PPCContext& ctx, uint8_t* base);
 
 }  // namespace refii::renderer

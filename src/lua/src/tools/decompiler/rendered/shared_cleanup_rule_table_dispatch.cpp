@@ -454,7 +454,7 @@ void ApplySharedCleanupRuleTableSteps(
     const SharedCleanupRuleTableCallbacks* previous_callbacks = g_active_callbacks;
     g_active_callbacks = &callbacks;
     struct CallbackScope {
-        const SharedCleanupRuleTableCallbacks* previous = nullptr;
+const SharedCleanupRuleTableCallbacks* previous = nullptr;
         ~CallbackScope() {
             g_active_callbacks = previous;
         }

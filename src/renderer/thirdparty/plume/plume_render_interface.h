@@ -203,6 +203,7 @@ namespace plume {
         virtual std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) = 0;
         virtual bool executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores = nullptr, uint32_t waitSemaphoreCount = 0, RenderCommandSemaphore **signalSemaphores = nullptr, uint32_t signalSemaphoreCount = 0, RenderCommandFence *signalFence = nullptr) = 0;
         virtual bool waitForCommandFence(RenderCommandFence *fence) = 0;
+        virtual bool waitIdle() { return true; }
 
         // Concrete implementation shortcuts.
         inline bool executeCommandLists(const RenderCommandList *commandList, RenderCommandFence *signalFence = nullptr) {

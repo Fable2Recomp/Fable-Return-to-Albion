@@ -160,7 +160,9 @@ std::vector<std::string> SplitCommaList(std::string_view text) {
 }
 
 std::vector<std::string> BuildDefaultTranslateTargets() {
-#if defined(_WIN32)
+#if defined(__APPLE__)
+    return {"vulkan", "metal"};
+#elif defined(_WIN32)
     return {"vulkan", "d3d12"};
 #else
     return {"vulkan"};
@@ -203,10 +205,10 @@ bool ResolveTranslateTargets(std::string_view requested_targets,
             continue;
         }
 
-        if (part != "vulkan" && part != "d3d12") {
+        if (part != "vulkan" && part != "d3d12" && part != "metal") {
             if (error != nullptr) {
                 *error = "Unsupported compile target: " + part +
-                         " (allowed: vulkan, d3d12, auto)";
+                         " (allowed: vulkan, d3d12, metal, auto)";
             }
             return false;
         }

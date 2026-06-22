@@ -25,6 +25,7 @@ struct BankExtractionOptions {
     std::filesystem::path game_content_root;
     std::filesystem::path output_root;
     std::vector<std::filesystem::path> bank_relative_paths;
+    std::size_t payload_worker_count = 0;
     bool clean_output = true;
     bool extract_payloads = true;
     bool extract_nested_banks = true;

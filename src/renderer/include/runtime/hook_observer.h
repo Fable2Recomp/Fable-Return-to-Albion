@@ -1,200 +1,16 @@
 #pragma once
 
 #include "renderer_runtime.h"
+#include "runtime/plume/direct/fable_render_types.h"
+#include "runtime/plume/direct/fable_resource_snapshots.h"
 
 #include <array>
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace refii::renderer {
-
-constexpr uint32_t kRendererShaderFloatConstantDwords = 256u * 4u;
-constexpr uint32_t kRendererShaderIntConstantDwords = 32u * 4u;
-constexpr uint32_t kRendererShaderBoolConstantDwords = 8u;
-constexpr uint32_t kRendererFetchConstantDwords = 192u;
-constexpr uint32_t kRendererD3DRenderStateSlots = 32u;
-constexpr uint32_t kRendererD3DSamplerStateSlots = 32u;
-constexpr uint32_t kRendererSurfaceCopyAliasSlots = 64u;
-
-struct RendererStreamBindingSnapshot {
-  uint32_t buffer = 0;
-  uint32_t offset = 0;
-  uint32_t stride = 0;
-};
-
-struct RendererLastDrawSnapshot {
-  bool indexed = false;
-  uint32_t primitive_type = 0;
-  uint32_t base_vertex = 0;
-  uint32_t start = 0;
-  uint32_t primitive_count = 0;
-};
-
-struct RendererViewportSnapshot {
-  float x = 0.0f;
-  float y = 0.0f;
-  float width = 1280.0f;
-  float height = 720.0f;
-  float min_depth = 0.0f;
-  float max_depth = 1.0f;
-  bool valid = false;
-};
-
-struct RendererScissorSnapshot {
-  int32_t left = 0;
-  int32_t top = 0;
-  int32_t right = 1280;
-  int32_t bottom = 720;
-  bool valid = false;
-};
-
-struct RendererScalerSnapshot {
-  uint32_t parameter_pointer = 0;
-  uint32_t source_left = 0;
-  uint32_t source_top = 0;
-  uint32_t source_right = 0;
-  uint32_t source_bottom = 0;
-  uint32_t output_width = 0;
-  uint32_t output_height = 0;
-  std::array<uint32_t, 14> raw_dwords = {};
-  bool valid = false;
-};
-
-enum class RendererTrackedResourceKind {
-  kUnknown,
-  kTexture,
-  kSurface,
-  kDepthSurface,
-  kVertexBuffer,
-  kIndexBuffer,
-  kVertexDeclaration,
-  kVertexShader,
-  kPixelShader,
-};
-
-struct RendererTrackedResourceSnapshot {
-  RendererTrackedResourceKind kind = RendererTrackedResourceKind::kUnknown;
-  uint32_t guest_address = 0;
-  uint32_t parent_address = 0;
-  uint32_t size = 0;
-  uint32_t stride_or_format = 0;
-  uint32_t buffer_object = 0;
-  uint32_t raw_flags = 0;
-  uint32_t raw_packed28 = 0;
-  uint32_t raw_packed32 = 0;
-  uint32_t raw_packed36 = 0;
-  uint32_t raw_packed40 = 0;
-  uint32_t raw_packed44 = 0;
-  uint32_t raw_packed48 = 0;
-  std::array<uint32_t, 6> normalized_fetch_dwords = {};
-  uint64_t guest_bytecode_hash = 0;
-  uint64_t upload_generation = 0;
-  std::vector<uint8_t> upload_data;
-  uint64_t serial = 0;
-  bool scratch = false;
-};
-
-struct RendererTrackedResourceUploadCacheEntry {
-  RendererTrackedResourceKind kind = RendererTrackedResourceKind::kUnknown;
-  uint64_t upload_generation = 0;
-  uint64_t serial = 0;
-};
-
-struct RendererTrackedResourceVersion {
-  uint64_t serial = 0;
-  uint64_t resource_creates = 0;
-  uint64_t resource_destroys = 0;
-  uint64_t resource_unlocks = 0;
-};
-
-struct RendererDrawEventSnapshot {
-  uint64_t serial = 0;
-  uint64_t resource_serial = 0;
-  bool clear = false;
-  uint32_t clear_flags = 0;
-  float clear_color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-  float clear_depth = 1.0f;
-  uint32_t clear_stencil = 0;
-  RendererScissorSnapshot clear_rect;
-  RendererLastDrawSnapshot draw;
-  bool draw_vertices_up = false;
-  bool private_texture_rectangle = false;
-  uint32_t private_texture_slot = 0;
-  uint32_t private_texture_source_x = 0;
-  uint32_t private_texture_source_y = 0;
-  bool private_texture_corners_valid = false;
-  std::array<float, 6> private_texture_corners = {};
-  bool private_texture_uv_override = false;
-  float private_texture_u0 = 0.0f;
-  float private_texture_v0 = 0.0f;
-  float private_texture_u1 = 1.0f;
-  float private_texture_v1 = 1.0f;
-  uint32_t render_targets[4] = {};
-  uint32_t depth_stencil = 0;
-  uint32_t vertex_declaration = 0;
-  uint32_t vertex_shader = 0;
-  uint32_t pixel_shader = 0;
-  uint32_t index_buffer = 0;
-  uint32_t textures[16] = {};
-  bool pm4_registers_valid = false;
-  bool device_registers_valid = false;
-  uint32_t rb_surface_info = 0;
-  uint32_t rb_color_info[4] = {};
-  uint32_t rb_depth_info = 0;
-  uint32_t rb_copy_control = 0;
-  uint32_t rb_copy_dest_base = 0;
-  uint32_t rb_copy_dest_pitch = 0;
-  uint32_t rb_copy_dest_info = 0;
-  uint32_t rb_copy_func = 0;
-  uint32_t rb_copy_ref = 0;
-  uint32_t rb_copy_mask = 0;
-  uint32_t rb_copy_surface_slice = 0;
-  uint32_t rb_modecontrol = 4u;
-  uint32_t rb_depthcontrol = 0;
-  uint32_t rb_color_mask = 0xFFFFu;
-  uint32_t rb_blendcontrol[4] = {0x00010001u, 0x00010001u, 0x00010001u,
-                                 0x00010001u};
-  uint32_t rb_colorcontrol = 0;
-  uint32_t rb_alpha_ref = 0;
-  uint32_t rb_stencilrefmask = 0x00FFFF00u;
-  uint32_t rb_stencilrefmask_bf = 0x00FFFF00u;
-  uint32_t pa_su_sc_mode_cntl = 0;
-  uint8_t rb_stencil_ref = 0;
-  uint8_t rb_stencil_read_mask = 0xFF;
-  uint8_t rb_stencil_write_mask = 0xFF;
-  std::array<uint32_t, kRendererD3DRenderStateSlots> render_states = {};
-  std::array<uint32_t, kRendererD3DSamplerStateSlots> sampler_states = {};
-  std::array<uint32_t, kRendererFetchConstantDwords> fetch_constants = {};
-  RendererStreamBindingSnapshot streams[16] = {};
-  std::array<uint32_t, kRendererShaderFloatConstantDwords>
-      vertex_shader_constants = {};
-  std::array<uint32_t, kRendererShaderFloatConstantDwords>
-      pixel_shader_constants = {};
-  std::array<uint32_t, kRendererShaderIntConstantDwords>
-      vertex_shader_int_constants = {};
-  std::array<uint32_t, kRendererShaderIntConstantDwords>
-      pixel_shader_int_constants = {};
-  uint32_t vertex_shader_int_constant_valid_mask = 0;
-  uint32_t pixel_shader_int_constant_valid_mask = 0;
-  std::array<uint32_t, kRendererShaderBoolConstantDwords>
-      vertex_shader_bool_constants = {};
-  std::array<uint32_t, kRendererShaderBoolConstantDwords>
-      pixel_shader_bool_constants = {};
-  uint32_t viewport_pointer = 0;
-  uint32_t scissor_pointer = 0;
-  RendererViewportSnapshot viewport;
-  RendererScissorSnapshot scissor;
-  RendererScalerSnapshot scaler;
-  uint32_t state_flush_lr = 0;
-};
-
-struct RendererSurfaceCopyAliasSnapshot {
-  uint32_t source_surface = 0;
-  uint32_t destination_surface = 0;
-  uint32_t hook_address = 0;
-  uint64_t serial = 0;
-};
 
 struct RendererHookObserverSnapshot {
   uint64_t live_resources = 0;
@@ -209,6 +25,23 @@ struct RendererHookObserverSnapshot {
   uint64_t resource_unlocks = 0;
   uint64_t draws = 0;
   uint64_t indexed_draws = 0;
+  uint64_t scene_walker_calls = 0;
+  uint64_t scene_walker_flush_calls = 0;
+  uint64_t scene_walker_nonempty_calls = 0;
+  uint64_t scene_walker_object_slots_total = 0;
+  uint64_t scene_draw_filter_calls = 0;
+  uint64_t scene_batch_traversal_calls = 0;
+  uint64_t scene_batch_bridge_calls = 0;
+  uint64_t scene_batch_bridge_rejected_calls = 0;
+  uint64_t scene_batch_bridge_queued_draws = 0;
+  uint64_t scene_inline_vertex_draws = 0;
+  uint32_t last_scene_walker_list = 0;
+  uint32_t last_scene_walker_begin = 0;
+  uint32_t last_scene_walker_end = 0;
+  uint32_t last_scene_walker_count = 0;
+  uint32_t last_scene_walker_first = 0;
+  uint32_t last_scene_walker_result = 0;
+  uint32_t last_scene_walker_lr = 0;
   uint64_t pending_draw_events = 0;
   uint64_t dropped_draw_events = 0;
   uint64_t render_passes = 0;
@@ -279,6 +112,9 @@ struct RendererHookObserverSnapshot {
   uint32_t surface_copy_alias_count = 0;
   std::array<RendererSurfaceCopyAliasSnapshot, kRendererSurfaceCopyAliasSlots>
       surface_copy_aliases = {};
+  uint64_t get_render_target_calls = 0;
+  uint32_t last_get_render_target_slot = 0;
+  uint32_t last_get_render_target_surface = 0;
   uint64_t state_changes = 0;
   uint32_t render_targets[4] = {};
   uint32_t depth_stencil = 0;
@@ -286,7 +122,7 @@ struct RendererHookObserverSnapshot {
   uint32_t vertex_shader = 0;
   uint32_t pixel_shader = 0;
   uint32_t index_buffer = 0;
-  uint32_t textures[16] = {};
+  uint32_t textures[kRendererD3DTextureSlots] = {};
   std::array<uint32_t, kRendererD3DRenderStateSlots> render_states = {};
   std::array<uint32_t, kRendererD3DSamplerStateSlots> sampler_states = {};
   RendererStreamBindingSnapshot streams[16] = {};
@@ -318,17 +154,14 @@ void ObserveRendererStateDispatch(const RendererHookArgs& args, uint8_t* base);
 void ObserveRendererPassQueue(const RendererHookArgs& args, uint8_t* base);
 void ObserveRendererHookExit(const char* symbol, RendererHookKind kind,
                              const RendererHookArgs& args, uint32_t result,
-                             uint8_t* base);
+                             uint8_t* base,
+                             const RendererHookArgs* exit_args = nullptr);
+void ObserveRendererGuestMemoryCopy(uint32_t dst, uint32_t src, uint32_t size,
+                                    uint8_t* base);
+uint32_t FindFableFrameDirectorRenderableSceneIndex(
+    const RendererHookArgs& args, uint8_t* base);
 RendererHookObserverSnapshot GetRendererHookObserverSnapshot();
-std::vector<RendererTrackedResourceSnapshot>
-GetRendererTrackedResourceSnapshots(
-    const std::unordered_map<uint32_t,
-                             RendererTrackedResourceUploadCacheEntry>*
-        known_resources = nullptr);
-RendererTrackedResourceVersion GetRendererTrackedResourceVersion();
 std::vector<uint32_t> GetRendererGuestWords(uint32_t guest_address,
                                             uint32_t word_count);
-std::vector<RendererDrawEventSnapshot> ConsumeRendererDrawEvents();
-std::vector<RendererDrawEventSnapshot> ConsumeRendererPresentedDrawEvents();
 
 }  // namespace refii::renderer

@@ -46,7 +46,7 @@ bool ParseArguments(int argc, char** argv, Options& options) {
 
 void PrintUsage() {
     std::cerr
-        << "usage: refii-shader-xenos-translator --input <blob> --target <vulkan|d3d12> "
+        << "usage: refii-shader-xenos-translator --input <blob> --target <vulkan|d3d12|metal> "
            "--stage <vertex|pixel> --name <entry> --output <file>\n";
 }
 

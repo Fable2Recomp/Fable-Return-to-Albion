@@ -266,6 +266,7 @@ namespace plume {
         std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override;
         bool executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         bool waitForCommandFence(RenderCommandFence *fence) override;
+        bool waitIdle() override;
     };
 
     struct D3D12Buffer : RenderBuffer {

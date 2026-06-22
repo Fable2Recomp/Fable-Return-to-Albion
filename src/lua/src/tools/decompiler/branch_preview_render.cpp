@@ -317,6 +317,36 @@ bool DoesLuaInstructionReadRegister(const Lua51Instruction& instruction, int reg
     }
 }
 
+bool IsLuaPreviewRegisterReadBeforeWrite(
+    const LuaPreviewRenderContext& preview_context,
+    int target_reg,
+    int start_line,
+    int register_count) {
+    if (target_reg < 0 || start_line < 1) {
+        return false;
+    }
+
+    const int instruction_count =
+        static_cast<int>(preview_context.instructions.size());
+    for (int line = start_line; line <= instruction_count; ++line) {
+        const Lua51Instruction& instruction =
+            preview_context.instructions[static_cast<std::size_t>(line - 1)];
+        if (DoesLuaInstructionReadRegister(instruction, target_reg)) {
+            return true;
+        }
+        const std::vector<bool> written_registers =
+            CollectWrittenLuaRegistersInRange(preview_context.instructions,
+                                              register_count,
+                                              line,
+                                              line);
+        if (static_cast<std::size_t>(target_reg) < written_registers.size() &&
+            written_registers[static_cast<std::size_t>(target_reg)]) {
+            return false;
+        }
+    }
+    return false;
+}
+
 bool CanCarryLuaTestFallbackPreviewTemporary(const std::vector<Lua51Instruction>& instructions,
                                              const LuaPreviewRenderContext& preview_context,
                                              int branch_target,
@@ -874,6 +904,13 @@ bool TryApplyLuaConditionalPreviewFallback(const LuaBranchPreviewFallbackContext
              !commit_decision.can_carry_temporary)) {
             return false;
         }
+        if (!commit_decision.materialize_local &&
+            IsLuaPreviewRegisterReadBeforeWrite(*context.preview_context,
+                                                instruction.a,
+                                                join_line,
+                                                context.register_count)) {
+            return false;
+        }
         const LuaPreviewFallbackContext preview_fallback_context{
             .control_flow_graph = context.control_flow_graph,
             .declarations = context.declarations,
@@ -1009,6 +1046,13 @@ bool TryApplyLuaConditionalPreviewFallback(const LuaBranchPreviewFallbackContext
                                                 precomputed_root_commit,
                                                 false);
         if (!commit_decision.ownership_proven) {
+            return false;
+        }
+        if (!commit_decision.materialize_local &&
+            IsLuaPreviewRegisterReadBeforeWrite(*context.preview_context,
+                                                instruction.a,
+                                                root_chain_join_line,
+                                                context.register_count)) {
             return false;
         }
         StraightLineValue merged_value;
@@ -1173,6 +1217,7 @@ LuaJumpRenderResult TryRenderLuaSharedTailPreviewConditional(
         .lines = context.lines,
         .values = context.values,
         .declared = context.declared,
+        .instructions = context.instructions,
         .declarations = context.declarations,
         .function = context.function,
         .register_count = context.register_count,

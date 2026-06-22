@@ -30,6 +30,7 @@ SDLWindowedAppContext::~SDLWindowedAppContext() {
 
 bool SDLWindowedAppContext::Initialize() {
   SDL_SetMainReady();
+  SDL_SetAppMetadata("Fable II Recompiled", nullptr, "com.refii.refii");
   if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
     return false;
   }

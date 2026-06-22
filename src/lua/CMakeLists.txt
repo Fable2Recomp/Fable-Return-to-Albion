@@ -200,6 +200,8 @@ set(REFII_LUA_DECOMPILER_WORKSPACE_SOURCES
     ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_wait_repair.cpp
     ${REFII_LUA_ROOT}/src/tools/decompiler/syntax/lua_syntax_repair_pipeline.cpp
     ${REFII_LUA_ROOT}/src/tools/workspace/lua_workspace_manager.cpp
+    ${REFII_LUA_ROOT}/src/tools/workspace/lua_workspace_camera_recovery.cpp
+    ${REFII_LUA_ROOT}/src/tools/workspace/lua_workspace_exact_shape_recovery.cpp
     ${REFII_LUA_ROOT}/src/tools/workspace/lua_workspace_decompile_pipeline.cpp
     ${REFII_LUA_ROOT}/src/tools/native/native_lua_chunk.cpp
     ${REFII_LUA_ROOT}/src/tools/native/straight_line_native_render.cpp
@@ -263,7 +265,10 @@ set(REFII_LUA_DECOMPILER_PUBLIC_HEADERS
     ${REFII_LUA_ROOT}/include/tools/bytecode/lua_bytecode_oracles.h
     ${REFII_LUA_ROOT}/include/tools/bytecode/lua_bytecode_parity_audit.h
     ${REFII_LUA_ROOT}/include/tools/decompiler/lua_decompiler_internal.h
+    ${REFII_LUA_ROOT}/include/tools/workspace/lua_workspace_camera_recovery.h
     ${REFII_LUA_ROOT}/include/tools/workspace/lua_workspace_decompile_pipeline.h
+    ${REFII_LUA_ROOT}/include/tools/workspace/lua_workspace_exact_shape_recovery.h
+    ${REFII_LUA_ROOT}/include/tools/workspace/lua_workspace_text_repair.h
     ${REFII_LUA_ROOT}/include/tools/native/native_lua_chunk.h
     ${REFII_LUA_ROOT}/include/tools/native/native_lua_decompiler.h
     ${REFII_LUA_ROOT}/include/tools/decompiler/repair/lua_tiny_main_repairs.h

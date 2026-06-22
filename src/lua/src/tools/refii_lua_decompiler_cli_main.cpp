@@ -23,7 +23,7 @@ struct Options {
     std::filesystem::path oracle_unluac;
     std::filesystem::path debug_input;
     std::size_t worker_count = 0;
-    std::uint64_t source_wall_time_budget_ms = 600000;
+    std::uint64_t source_wall_time_budget_ms = 60000;
     std::size_t max_phase2_heavy_exactification_jobs = 0;
     int debug_function_index = 0;
     bool audit_bytecode = false;
@@ -215,7 +215,7 @@ int main(int argc, char** argv) {
             << "       [--workers <n>] [--source-wall-time-budget-ms <ms>]\n"
             << "       [--max-heavy-exactification-jobs <n>]\n"
             << "       (--workers omitted or 0 uses a responsive automatic default)\n"
-            << "       (default decompile mode: two-phase exact-first, strict exact outputs)\n"
+            << "       (default decompile mode: readable validated Lua, phase-2 exactification skipped)\n"
             << "       refii-lua-decompiler <workspace> --audit-bytecode "
                "[--generated-root <dir>] [--report-root <dir>] [--oracle-unluac <path>]\n"
             << "       refii-lua-decompiler build <game-root> [--workers <n>]\n"
@@ -615,8 +615,8 @@ int main(int argc, char** argv) {
     decompile_options.pipeline_mode =
         refii::lua::LuaWorkspacePipelineMode::kTwoPhaseExactFirst;
     decompile_options.exact_parity_policy =
-        refii::lua::LuaExactParityPolicy::kAlwaysForBytecode;
-    decompile_options.strict_exact_outputs = true;
+        refii::lua::LuaExactParityPolicy::kCanonicalOnly;
+    decompile_options.strict_exact_outputs = false;
     decompile_options.progress_callback = MakeProgressCallback();
 
     refii::lua::LuaWorkspaceDecompileSummary summary;

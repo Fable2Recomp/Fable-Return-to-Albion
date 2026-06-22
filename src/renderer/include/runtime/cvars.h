@@ -14,6 +14,7 @@ enum class RendererBackend {
 enum class RendererGraphicsApi {
   kVulkan,
   kD3D12,
+  kMetal,
 };
 
 bool RendererHooksEnabled();
@@ -21,28 +22,36 @@ bool RendererHookTracingEnabled();
 bool RendererResourceTracingEnabled();
 bool RendererDrawTracingEnabled();
 bool RendererVerboseTracingEnabled();
-bool RendererNativeFallbackAllowed();
+bool RendererReplaceResourcesEnabled();
+bool RendererReplaceStateEnabled();
+bool RendererReplaceDrawsEnabled();
+bool RendererReplacePresentEnabled();
+bool RendererSuppressNativeCommandSubmissionEnabled();
+bool RendererShaderRequirePrecompiled();
 bool RendererImGuiEnabled();
 bool RendererImGuiStatsVisible();
 bool RendererImGuiDimFableEnabled();
 float RendererImGuiDimFableAlpha();
 bool RendererDebugTestTriangleEnabled();
-bool RendererQuadListStrip0132Order();
 bool RendererPlumeVsyncEnabled();
 uint32_t RendererPlumeSwapchainImageCount();
 bool RendererPlumePresentPumpEnabled();
+bool RendererPlumePresentPumpFableBookkeepingEnabled();
 uint32_t RendererPlumePresentTargetFps();
 bool RenderDocDebuggerEnabled();
 bool RenderDocOverlayEnabled();
 bool RenderDocReplayLaunchEnabled();
 bool RequestRenderDocFrameCapture();
 bool ConsumeRenderDocCaptureRequest();
+uint32_t RenderDocCaptureFrameIndex();
+std::string RenderDocCaptureDrawTarget();
 
 RendererBackend GetRendererBackend();
 RendererGraphicsApi GetRendererGraphicsApi();
 bool PlumeRendererBackendEnabled();
 bool PlumeVulkanBackendEnabled();
 bool PlumeD3D12BackendEnabled();
+bool PlumeMetalBackendEnabled();
 bool RendererVulkanValidationEnabled();
 bool RendererD3D12DebugLayerEnabled();
 int RendererGuestVideoWidth();
@@ -57,7 +66,9 @@ std::string ConfiguredRendererBackend();
 std::string ConfiguredRendererGraphicsApi();
 std::string ConfiguredRendererVulkanShaderRoot();
 std::string ConfiguredRendererD3D12ShaderRoot();
+std::string ConfiguredRendererMetalShaderRoot();
 std::string ConfiguredRendererRenderDocRuntimePath();
+std::string ConfiguredRendererRenderDocCapturePath();
 
-}  // namespace detail
-}  // namespace refii::renderer
+} // namespace detail
+} // namespace refii::renderer

@@ -1193,6 +1193,41 @@ bool SimplifyRenderedLuaStraightLineSingleUseTemps(std::vector<std::string>* lin
 
         return is_self_compare(condition);
     };
+    const auto reassignment_is_control_condition_temp = [&](std::size_t assignment_line,
+                                                           std::string_view temporary_name) {
+        if (assignment_line >= lines->size() || temporary_name.empty()) {
+            return false;
+        }
+
+        for (std::size_t probe = 0; probe < assignment_line; ++probe) {
+            std::string condition;
+            if (!extract_guard_condition((*lines)[probe], &condition) ||
+                CountIdentifierUses(condition, temporary_name) == 0) {
+                continue;
+            }
+
+            const std::size_t block_end = FindRenderedFunctionBlockEnd(*lines, probe);
+            if (block_end <= assignment_line || block_end >= lines->size()) {
+                continue;
+            }
+
+            bool shadowed_before_assignment = false;
+            for (std::size_t shadow_probe = probe + 1;
+                 shadow_probe < assignment_line;
+                 ++shadow_probe) {
+                if (IsRenderedShadowingLocalDeclaration((*lines)[shadow_probe],
+                                                        temporary_name)) {
+                    shadowed_before_assignment = true;
+                    break;
+                }
+            }
+            if (!shadowed_before_assignment) {
+                return true;
+            }
+        }
+
+        return false;
+    };
 
     bool changed = false;
     RunRenderedLuaCleanupPassLoop("SimplifyRenderedLuaStraightLineSingleUseTemps", 64, [&]() {
@@ -1207,6 +1242,9 @@ bool SimplifyRenderedLuaStraightLineSingleUseTemps(std::vector<std::string>* lin
                                                    &temporary_expression) ||
                 !IsRenderTemporaryName(temporary_name) ||
                 !is_eligible_temporary_rhs(temporary_expression, temporary_name)) {
+                continue;
+            }
+            if (reassignment_is_control_condition_temp(line_index, temporary_name)) {
                 continue;
             }
 

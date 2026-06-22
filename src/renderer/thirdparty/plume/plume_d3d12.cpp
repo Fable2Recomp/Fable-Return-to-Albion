@@ -2740,6 +2740,43 @@ namespace plume {
         return WaitForSingleObjectEx(interfaceFence->fenceEvent, INFINITE, FALSE) == WAIT_OBJECT_0;
     }
 
+    bool D3D12CommandQueue::waitIdle() {
+        if (d3d == nullptr || device == nullptr || device->d3d == nullptr) {
+            return false;
+        }
+
+        ID3D12Fence *fence = nullptr;
+        HRESULT res = device->d3d->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+        if (FAILED(res)) {
+            fprintf(stderr, "CreateFence failed with error code 0x%lX.\n", res);
+            return false;
+        }
+
+        HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (fenceEvent == nullptr) {
+            fence->Release();
+            return false;
+        }
+
+        constexpr UINT64 fenceValue = 1;
+        res = d3d->Signal(fence, fenceValue);
+        if (SUCCEEDED(res)) {
+            res = fence->SetEventOnCompletion(fenceValue, fenceEvent);
+        }
+
+        bool completed = false;
+        if (SUCCEEDED(res)) {
+            completed = WaitForSingleObjectEx(fenceEvent, INFINITE, FALSE) == WAIT_OBJECT_0;
+        }
+        else {
+            fprintf(stderr, "D3D12CommandQueue::waitIdle failed with error code 0x%lX.\n", res);
+        }
+
+        CloseHandle(fenceEvent);
+        fence->Release();
+        return completed;
+    }
+
     // D3D12Buffer
 
     D3D12Buffer::D3D12Buffer(D3D12Device *device, D3D12Pool *pool, const RenderBufferDesc &desc) {

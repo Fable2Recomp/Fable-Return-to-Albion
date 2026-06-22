@@ -326,6 +326,7 @@ bool ExportLuaWorkspaceSources(const std::filesystem::path& game_install_root,
     bank_options.game_content_root = game_content_directory;
     bank_options.output_root = source_root;
     bank_options.clean_output = true;
+    bank_options.build_vfs_database = false;
     for (const std::string_view bank_name : kScriptBankNames) {
         bank_options.bank_relative_paths.emplace_back(std::string(bank_name));
     }
@@ -718,6 +719,9 @@ bool BuildLuaWorkspace(const LuaWorkspaceBuildOptions& options,
     decompile_options.max_phase2_heavy_exactification_jobs =
         options.max_phase2_heavy_exactification_jobs;
     decompile_options.write_disassembly_fallback = options.write_disassembly_fallback;
+    decompile_options.pipeline_mode = LuaWorkspacePipelineMode::kTwoPhaseExactFirst;
+    decompile_options.exact_parity_policy = LuaExactParityPolicy::kCanonicalOnly;
+    decompile_options.strict_exact_outputs = false;
     decompile_options.progress_callback = options.progress_callback;
 
     if (!DecompileLuaWorkspace(decompile_options, &active_summary->decompile_summary, error)) {

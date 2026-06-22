@@ -44,14 +44,14 @@ struct LuaWorkspaceDecompileOptions {
     std::size_t progress_update_stride = 1;
     unsigned int child_timeout_seconds = 2;
     unsigned int native_render_timeout_seconds = 8;
-    std::uint64_t source_wall_time_budget_ms = 600000;
-    // Broad workspace runs default to materializing all phase-1/cheap-lane
-    // outputs without spending hours in the single-worker heavy exactifier.
-    // Set this above 0 for focused heavy exactification passes.
+    std::uint64_t source_wall_time_budget_ms = 60000;
+    // Broad workspace runs default to materializing readable validated Lua
+    // without spending hours in the single-worker heavy exactifier.
+    // Set this above 0 only for focused heavy exactification passes.
     std::size_t max_phase2_heavy_exactification_jobs = 0;
     bool force_external_single_tool = false;
     bool write_disassembly_fallback = true;
-    LuaWorkspacePipelineMode pipeline_mode = LuaWorkspacePipelineMode::kLegacySinglePass;
+    LuaWorkspacePipelineMode pipeline_mode = LuaWorkspacePipelineMode::kTwoPhaseExactFirst;
     LuaExactParityPolicy exact_parity_policy = LuaExactParityPolicy::kCanonicalOnly;
     bool strict_exact_outputs = false;
     std::function<void(const LuaWorkspaceDecompileProgress&)> progress_callback;
@@ -81,7 +81,7 @@ struct LuaWorkspaceBuildOptions {
     std::size_t progress_update_stride = 1;
     unsigned int child_timeout_seconds = 2;
     unsigned int native_render_timeout_seconds = 8;
-    std::uint64_t source_wall_time_budget_ms = 600000;
+    std::uint64_t source_wall_time_budget_ms = 60000;
     std::size_t max_phase2_heavy_exactification_jobs = 0;
     bool write_disassembly_fallback = true;
     std::function<void(const LuaWorkspaceDecompileProgress&)> progress_callback;

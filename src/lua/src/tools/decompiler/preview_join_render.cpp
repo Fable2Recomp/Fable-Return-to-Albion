@@ -128,6 +128,89 @@ bool LooksLikePreviewJoinArithmeticExpression(std::string_view value) {
     return false;
 }
 
+bool DoesPreviewJoinInstructionReadRegister(const Lua51Instruction& instruction, int reg) {
+    switch (instruction.opcode) {
+        case Lua51Opcode::kMove:
+        case Lua51Opcode::kUnm:
+        case Lua51Opcode::kNot:
+        case Lua51Opcode::kLen:
+        case Lua51Opcode::kSetGlobal:
+        case Lua51Opcode::kSetUpval:
+        case Lua51Opcode::kTest:
+            return instruction.a == reg || instruction.b == reg;
+        case Lua51Opcode::kGetTable:
+        case Lua51Opcode::kSelf:
+        case Lua51Opcode::kAdd:
+        case Lua51Opcode::kSub:
+        case Lua51Opcode::kMul:
+        case Lua51Opcode::kDiv:
+        case Lua51Opcode::kMod:
+        case Lua51Opcode::kPow:
+        case Lua51Opcode::kEq:
+        case Lua51Opcode::kLt:
+        case Lua51Opcode::kLe:
+            return instruction.b == reg || instruction.c == reg;
+        case Lua51Opcode::kSetTable:
+            return instruction.a == reg || instruction.b == reg || instruction.c == reg;
+        case Lua51Opcode::kConcat:
+            return reg >= instruction.b && reg <= instruction.c;
+        case Lua51Opcode::kTestSet:
+            return instruction.b == reg;
+        case Lua51Opcode::kCall:
+        case Lua51Opcode::kTailCall:
+            if (reg < instruction.a) {
+                return false;
+            }
+            if (instruction.b == 0) {
+                return true;
+            }
+            return reg < instruction.a + instruction.b;
+        case Lua51Opcode::kReturn:
+            if (reg < instruction.a) {
+                return false;
+            }
+            if (instruction.b == 0) {
+                return true;
+            }
+            return reg < instruction.a + instruction.b - 1;
+        case Lua51Opcode::kSetList:
+            if (instruction.a == reg) {
+                return true;
+            }
+            if (instruction.b == 0) {
+                return reg > instruction.a;
+            }
+            return reg > instruction.a && reg <= instruction.a + instruction.b;
+        default:
+            return false;
+    }
+}
+
+bool IsPreviewJoinRegisterReadBeforeWrite(const LuaPreviewRenderContext& preview_context,
+                                          int reg,
+                                          int start_line) {
+    if (reg < 0 || start_line < 1) {
+        return false;
+    }
+
+    const int instruction_count =
+        static_cast<int>(preview_context.instructions.size());
+    for (int line = start_line; line <= instruction_count; ++line) {
+        const Lua51Instruction& instruction =
+            preview_context.instructions[static_cast<std::size_t>(line - 1)];
+        if (DoesPreviewJoinInstructionReadRegister(instruction, reg)) {
+            return true;
+        }
+        const std::vector<bool> written_registers =
+            GetLuaPreviewWrittenRegistersForLine(preview_context, line);
+        if (static_cast<std::size_t>(reg) < written_registers.size() &&
+            written_registers[static_cast<std::size_t>(reg)]) {
+            return false;
+        }
+    }
+    return false;
+}
+
 std::string StripPreviewJoinWholeParentheses(std::string_view value) {
     value = TrimLuaWhitespace(value);
     bool changed = true;
@@ -1246,6 +1329,11 @@ LuaJumpRenderResult TryApplyLuaPreviewRegisterStateJoinShortcut(
                                                   preview_context.function,
                                                   changed_register,
                                                   join_line)) {
+            continue;
+        }
+        if (IsPreviewJoinRegisterReadBeforeWrite(preview_context,
+                                                 changed_register,
+                                                 join_line)) {
             continue;
         }
 

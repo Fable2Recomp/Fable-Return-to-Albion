@@ -1,5 +1,6 @@
 #include "extractor/bnk_extractor.h"
 
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -9,7 +10,8 @@ namespace {
 
 void PrintUsage(const char* executable_name) {
     std::cerr << "Usage: " << executable_name
-              << " [--manifest-only] <game-content-root> <output-root> <bank> [bank ...]\n";
+              << " [--manifest-only] [--workers N] <game-content-root> <output-root> "
+                 "<bank> [bank ...]\n";
     std::cerr << "       " << executable_name
               << " --build-vfs-database <unpacked-root> [database-path]\n";
 }
@@ -19,6 +21,7 @@ void PrintUsage(const char* executable_name) {
 int main(int argc, char** argv) {
     int first_positional = 1;
     bool manifest_only = false;
+    std::size_t payload_worker_count = 0;
     if (argc > 1 && std::string(argv[1]) == "--build-vfs-database") {
         if (argc < 3 || argc > 4) {
             PrintUsage(argv[0]);
@@ -66,9 +69,29 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    if (argc > 1 && std::string(argv[1]) == "--manifest-only") {
-        manifest_only = true;
-        first_positional = 2;
+    while (first_positional < argc) {
+        const std::string argument(argv[first_positional]);
+        if (argument == "--manifest-only") {
+            manifest_only = true;
+            ++first_positional;
+            continue;
+        }
+        if (argument == "--workers") {
+            if (first_positional + 1 >= argc) {
+                PrintUsage(argv[0]);
+                return 2;
+            }
+            try {
+                payload_worker_count =
+                    static_cast<std::size_t>(std::stoull(argv[first_positional + 1]));
+            } catch (const std::exception&) {
+                std::cerr << "--workers requires a non-negative integer\n";
+                return 2;
+            }
+            first_positional += 2;
+            continue;
+        }
+        break;
     }
 
     if (argc - first_positional < 3) {
@@ -81,6 +104,7 @@ int main(int argc, char** argv) {
     options.output_root = std::filesystem::path(argv[first_positional + 1]);
     options.clean_output = true;
     options.extract_payloads = !manifest_only;
+    options.payload_worker_count = payload_worker_count;
     for (int index = first_positional + 2; index < argc; ++index) {
         options.bank_relative_paths.emplace_back(argv[index]);
     }

@@ -339,6 +339,7 @@ bool TryApplyPostRestorationCleanup(std::string_view chunk_name,
     // empty `if ... then end` and `else` lanes that late cleanup would otherwise erase
     // again before the final candidate is chosen.
     bool changed = false;
+    changed |= SimplifyRenderedLuaInvalidNumericForLoopHeads(&lines);
     changed |= SimplifyRenderedLuaExplicitSelfMethodArguments(&lines);
     changed |= SimplifyRenderedLuaRedundantColonSelfArguments(&lines);
     changed |= SimplifyRenderedLuaMethodArg0SelfParameters(&lines);
@@ -353,6 +354,142 @@ bool TryApplyPostRestorationCleanup(std::string_view chunk_name,
     }
 
     *source = std::move(candidate_source);
+    return true;
+}
+
+bool TryNormalizeNativeLiteralMethodReceivers(std::vector<std::string>* lines) {
+    if (lines == nullptr) {
+        return false;
+    }
+
+    const auto is_identifier_char = [](char ch) {
+        return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+    };
+    const auto find_matching_paren = [](std::string_view line,
+                                        std::size_t open) -> std::size_t {
+        int depth = 0;
+        bool in_single_quote = false;
+        bool in_double_quote = false;
+        bool escaped = false;
+        for (std::size_t index = open; index < line.size(); ++index) {
+            const char ch = line[index];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if ((in_single_quote || in_double_quote) && ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (!in_double_quote && ch == '\'') {
+                in_single_quote = !in_single_quote;
+                continue;
+            }
+            if (!in_single_quote && ch == '"') {
+                in_double_quote = !in_double_quote;
+                continue;
+            }
+            if (in_single_quote || in_double_quote) {
+                continue;
+            }
+            if (ch == '(') {
+                ++depth;
+            } else if (ch == ')') {
+                --depth;
+                if (depth == 0) {
+                    return index;
+                }
+            }
+        }
+        return std::string_view::npos;
+    };
+
+    const auto normalize_literal = [&](std::string& line,
+                                       std::string_view literal) {
+        bool changed = false;
+        std::size_t search_from = 0;
+        while (search_from + literal.size() + 1 < line.size()) {
+            const std::size_t found = line.find(literal, search_from);
+            if (found == std::string::npos ||
+                found + literal.size() + 1 >= line.size()) {
+                break;
+            }
+            if (line[found + literal.size()] != ':' ||
+                (found > 0 && is_identifier_char(line[found - 1]))) {
+                search_from = found + literal.size();
+                continue;
+            }
+
+            std::size_t method_begin = found + literal.size() + 1;
+            std::size_t method_end = method_begin;
+            while (method_end < line.size() && is_identifier_char(line[method_end])) {
+                ++method_end;
+            }
+            const std::string method =
+                line.substr(method_begin, method_end - method_begin);
+            if (!IsValidLuaIdentifier(method) || method_end >= line.size() ||
+                line[method_end] != '(') {
+                search_from = method_end;
+                continue;
+            }
+            const std::size_t close = find_matching_paren(line, method_end);
+            if (close == std::string_view::npos) {
+                search_from = method_end + 1;
+                continue;
+            }
+
+            const std::string args =
+                std::string(TrimLuaWhitespace(
+                    std::string_view(line).substr(method_end + 1,
+                                                  close - method_end - 1)));
+            std::string replacement = "(" + std::string(literal) + ")." + method +
+                                      "(" + std::string(literal);
+            if (!args.empty()) {
+                replacement += ", ";
+                replacement += args;
+            }
+            replacement += ")";
+            line.replace(found, close + 1 - found, replacement);
+            search_from = found + replacement.size();
+            changed = true;
+        }
+        return changed;
+    };
+
+    bool changed = false;
+    for (std::string& line : *lines) {
+        changed |= normalize_literal(line, "nil");
+        changed |= normalize_literal(line, "true");
+        changed |= normalize_literal(line, "false");
+    }
+    return changed;
+}
+
+bool TryApplyNativePreValidationSyntaxCleanup(std::string_view chunk_name,
+                                              std::string* source,
+                                              std::string* note,
+                                              std::string_view note_prefix) {
+    if (source == nullptr || source->empty()) {
+        return false;
+    }
+
+    std::vector<std::string> lines = SplitRenderedLines(*source);
+    bool changed = false;
+    changed |= SimplifyRenderedLuaInvalidNumericForLoopHeads(&lines);
+    changed |= TryNormalizeNativeLiteralMethodReceivers(&lines);
+    if (!changed) {
+        return false;
+    }
+
+    std::string candidate_source = JoinRenderedLines(lines);
+    if (!ValidateLuaSource(candidate_source, chunk_name).empty()) {
+        return false;
+    }
+
+    *source = std::move(candidate_source);
+    if (note != nullptr) {
+        AppendCandidateNote(note, note_prefix, "prevalidation_syntax_cleanup_validated");
+    }
     return true;
 }
 
@@ -1059,6 +1196,7 @@ bool TryApplyFunctionBoundaryParityNormalization(std::string_view chunk_name,
         pass_changed |= SimplifyRenderedLuaBooleanCoercionReturns(&lines);
         pass_changed |= UnwrapRenderedLuaReturnedCallsForExactParity(&lines);
         pass_changed |= SimplifyRenderedLuaAssignedFunctionDeclarations(&lines);
+        pass_changed |= SimplifyRenderedLuaInvalidNumericForLoopHeads(&lines);
         pass_changed |= SimplifyRenderedLuaExplicitSelfMethodArguments(&lines);
         pass_changed |= SimplifyRenderedLuaRedundantColonSelfArguments(&lines);
         pass_changed |= SimplifyRenderedLuaMethodArg0SelfParameters(&lines);
@@ -2950,8 +3088,7 @@ std::optional<std::string> TryRenderLua51TrackedSelfMethodCallExpression(
         DecodeLua51Instruction(function.code[instruction_index - 1],
                                static_cast<uint32_t>(instruction_index));
     if (self_instruction.opcode != Lua51Opcode::kSelf ||
-        self_instruction.a != call_instruction.a ||
-        self_instruction.b != call_instruction.a + 1) {
+        self_instruction.a != call_instruction.a) {
         return std::nullopt;
     }
 
@@ -18081,10 +18218,17 @@ bool TryRenderCandidate(const Lua51Function& function,
         native_setlist_constructor_links_from_render;
     std::size_t native_table_constructor_fallbacks =
         native_table_constructor_fallbacks_from_render;
-    TryApplyQuestStructuralCleanupBeforeValidation(chunk_name,
-                                                   &candidate_source,
-                                                   &candidate->note,
-                                                   note_prefix);
+    const bool prevalidation_syntax_cleanup_valid =
+        TryApplyNativePreValidationSyntaxCleanup(chunk_name,
+                                                 &candidate_source,
+                                                 &candidate->note,
+                                                 note_prefix);
+    if (!prevalidation_syntax_cleanup_valid) {
+        TryApplyQuestStructuralCleanupBeforeValidation(chunk_name,
+                                                       &candidate_source,
+                                                       &candidate->note,
+                                                       note_prefix);
+    }
 
     std::string validation_error = ValidateLuaSource(candidate_source, chunk_name);
     if (!validation_error.empty() &&

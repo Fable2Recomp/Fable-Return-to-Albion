@@ -38,6 +38,66 @@ function(refii_rexglue_prepare_shadow_sdk out_var)
     file(COPY "${REFII_REXGLUE_SHADOW_DIR}/"
          DESTINATION "${REFII_REXGLUE_SHADOW_BUILD_DIR}")
 
+    if(REFII_SDL3_WINDOW_ENABLED)
+        set(_refii_rexglue_removed_native_window_files
+            include/rex/ui/window_gtk.h
+            include/rex/ui/window_win.h
+            include/rex/ui/windowed_app_context_gtk.h
+            include/rex/ui/windowed_app_context_win.h
+            src/ui/window_gtk.cpp
+            src/ui/window_win.cpp
+            src/ui/windowed_app_context_gtk.cpp
+            src/ui/windowed_app_context_win.cpp
+        )
+        foreach(_refii_rexglue_removed_native_window_file
+                IN LISTS _refii_rexglue_removed_native_window_files)
+            file(REMOVE
+                "${REFII_REXGLUE_SHADOW_BUILD_DIR}/${_refii_rexglue_removed_native_window_file}"
+            )
+        endforeach()
+
+        set(_refii_rexglue_presenter_cpp
+            "${REFII_REXGLUE_SHADOW_BUILD_DIR}/src/ui/presenter.cpp"
+        )
+        if(EXISTS "${_refii_rexglue_presenter_cpp}")
+            file(READ "${_refii_rexglue_presenter_cpp}" _refii_rexglue_presenter_source)
+            string(REPLACE
+                "#include <rex/ui/window_win.h>"
+                "#include <rex/ui/window_sdl.h>"
+                _refii_rexglue_presenter_source
+                "${_refii_rexglue_presenter_source}"
+            )
+            string(REPLACE
+                "HWND hwnd = static_cast<const Win32Window*>(window_)->hwnd();"
+                "HWND hwnd = static_cast<HWND>(static_cast<const SDLWindow*>(window_)->GetNativeWindowHandle());"
+                _refii_rexglue_presenter_source
+                "${_refii_rexglue_presenter_source}"
+            )
+            file(WRITE "${_refii_rexglue_presenter_cpp}" "${_refii_rexglue_presenter_source}")
+            unset(_refii_rexglue_presenter_source)
+        endif()
+        unset(_refii_rexglue_presenter_cpp)
+
+        set(_refii_rexglue_presenter_h
+            "${REFII_REXGLUE_SHADOW_BUILD_DIR}/include/rex/ui/presenter.h"
+        )
+        if(EXISTS "${_refii_rexglue_presenter_h}")
+            file(READ "${_refii_rexglue_presenter_h}" _refii_rexglue_presenter_header)
+            string(REPLACE
+                "class Win32Window;"
+                "class SDLWindow;"
+                _refii_rexglue_presenter_header
+                "${_refii_rexglue_presenter_header}"
+            )
+            file(WRITE "${_refii_rexglue_presenter_h}" "${_refii_rexglue_presenter_header}")
+            unset(_refii_rexglue_presenter_header)
+        endif()
+        unset(_refii_rexglue_presenter_h)
+
+        unset(_refii_rexglue_removed_native_window_file)
+        unset(_refii_rexglue_removed_native_window_files)
+    endif()
+
     set(_refii_rexglue_submodule_marker_dirs
         thirdparty/FFmpeg
         thirdparty/catch2
@@ -157,6 +217,18 @@ function(refii_rexglue_apply_shadow_overrides)
         return()
     endif()
 
+    if(TARGET rexruntime)
+        target_include_directories(rexruntime BEFORE PUBLIC
+            "${REFII_REXGLUE_SHADOW_DIR}/include"
+        )
+
+        if(TARGET refii_achievement)
+            target_link_libraries(rexruntime PRIVATE refii_achievement)
+        endif()
+
+        refii_rexglue_replace_target_source(rexruntime "src/kernel/xam/xam_user.cpp")
+    endif()
+
     if(TARGET rexui)
         target_include_directories(rexui BEFORE PUBLIC
             "${REFII_REXGLUE_SHADOW_DIR}/include"
@@ -165,37 +237,9 @@ function(refii_rexglue_apply_shadow_overrides)
         refii_rexglue_replace_target_source(rexui "src/ui/surface_gnulinux.cpp")
         refii_rexglue_replace_target_source(rexui "src/ui/vulkan/vulkan_instance.cpp")
         refii_rexglue_replace_target_source(rexui "src/ui/vulkan/vulkan_presenter.cpp")
-        refii_rexglue_replace_target_source(rexui "src/ui/window_gtk.cpp")
-        refii_rexglue_replace_target_source(rexui "src/ui/window_win.cpp")
 
-        if(REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED)
-            refii_rexglue_add_shadow_source(rexui "src/ui/window_sdl.cpp")
-            refii_rexglue_add_shadow_source(rexui "src/ui/windowed_app_context_sdl.cpp")
-            target_compile_definitions(rexui PUBLIC REX_UI_HAS_SDL_WINDOW=1)
-            if(TARGET SDL3::SDL3)
-                target_link_libraries(rexui PUBLIC SDL3::SDL3)
-            endif()
-        else()
-            target_compile_definitions(rexui PUBLIC REX_UI_HAS_SDL_WINDOW=0)
-        endif()
-
-        if(UNIX AND NOT APPLE)
-            find_package(PkgConfig REQUIRED)
-            pkg_check_modules(REFII_REXGLUE_WAYLAND_CLIENT wayland-client)
-            if(REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED AND
-               REFII_REXGLUE_WAYLAND_CLIENT_FOUND)
-                target_compile_definitions(rexui PUBLIC REX_UI_HAS_WAYLAND_WINDOW=1)
-                target_include_directories(rexui PRIVATE
-                    ${REFII_REXGLUE_WAYLAND_CLIENT_INCLUDE_DIRS}
-                )
-                target_link_libraries(rexui PUBLIC
-                    ${REFII_REXGLUE_WAYLAND_CLIENT_LIBRARIES}
-                )
-            else()
-                target_compile_definitions(rexui PUBLIC REX_UI_HAS_WAYLAND_WINDOW=0)
-            endif()
-        else()
-            target_compile_definitions(rexui PUBLIC REX_UI_HAS_WAYLAND_WINDOW=0)
+        if(REFII_SDL3_WINDOW_ENABLED AND TARGET SDL3::SDL3)
+            target_link_libraries(rexui PUBLIC SDL3::SDL3)
         endif()
     endif()
 endfunction()

@@ -1,4 +1,4 @@
-#include "runtime/plume_api_bridge_private.h"
+#include "runtime/plume/general/plume_api_bridge_private.h"
 
 #include "renderdoc_debugger.h"
 

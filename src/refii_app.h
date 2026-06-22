@@ -7,16 +7,20 @@
 
 #include "generated/refii_init.h"
 
+#include <achievement/achievement_imgui.h>
+#include <achievement/achievement_xdbf.h>
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/rex_app.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/util/xdbf_utils.h>
 
 #if REFII_HAS_RENDERER_RUNTIME
 #include "renderer_runtime.h"
-#include "runtime/plume_backend.h"
-#include "runtime/plume_graphics_system.h"
-#include "runtime/plume_imgui_overlay.h"
+#include "runtime/plume/general/plume_backend.h"
+#include "runtime/plume/general/plume_graphics_system.h"
+#include "runtime/plume/general/plume_imgui_overlay.h"
 #endif
 
 #include <algorithm>
@@ -31,17 +35,17 @@ namespace {
 
 inline bool RefiiUsePackagedLinuxPaths() {
 #if defined(__linux__)
-  const char* appImagePath = std::getenv("APPIMAGE");
+  const char *appImagePath = std::getenv("APPIMAGE");
   if (appImagePath != nullptr && appImagePath[0] != '\0') {
     return true;
   }
 
-  const char* appDirPath = std::getenv("APPDIR");
+  const char *appDirPath = std::getenv("APPDIR");
   if (appDirPath != nullptr && appDirPath[0] != '\0') {
     return true;
   }
 
-  const char* flatpakId = std::getenv("FLATPAK_ID");
+  const char *flatpakId = std::getenv("FLATPAK_ID");
   if (flatpakId != nullptr && flatpakId[0] != '\0') {
     return true;
   }
@@ -55,12 +59,12 @@ inline std::filesystem::path RefiiGetPackagedLinuxRuntimeRoot() {
     return {};
   }
 
-  const char* xdgDataHome = std::getenv("XDG_DATA_HOME");
+  const char *xdgDataHome = std::getenv("XDG_DATA_HOME");
   if (xdgDataHome != nullptr && xdgDataHome[0] != '\0') {
     return (std::filesystem::path(xdgDataHome) / "refii").lexically_normal();
   }
 
-  const char* homeDirectory = std::getenv("HOME");
+  const char *homeDirectory = std::getenv("HOME");
   if (homeDirectory != nullptr && homeDirectory[0] != '\0') {
     return (std::filesystem::path(homeDirectory) / ".local" / "share" / "refii")
         .lexically_normal();
@@ -74,12 +78,14 @@ inline std::string RefiiTrim(std::string value) {
     return std::isspace(ch) != 0;
   };
 
-  value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](unsigned char ch) {
-    return !isWhitespace(ch);
-  }));
-  value.erase(std::find_if(value.rbegin(), value.rend(), [&](unsigned char ch) {
-    return !isWhitespace(ch);
-  }).base(), value.end());
+  value.erase(value.begin(),
+              std::find_if(value.begin(), value.end(), [&](unsigned char ch) {
+                return !isWhitespace(ch);
+              }));
+  value.erase(std::find_if(value.rbegin(), value.rend(),
+                           [&](unsigned char ch) { return !isWhitespace(ch); })
+                  .base(),
+              value.end());
   return value;
 }
 
@@ -96,18 +102,18 @@ inline std::string RefiiUnquoteToml(std::string value) {
     const char ch = value[i];
     if (escaped) {
       switch (ch) {
-        case 'n':
-          result.push_back('\n');
-          break;
-        case 'r':
-          result.push_back('\r');
-          break;
-        case 't':
-          result.push_back('\t');
-          break;
-        default:
-          result.push_back(ch);
-          break;
+      case 'n':
+        result.push_back('\n');
+        break;
+      case 'r':
+        result.push_back('\r');
+        break;
+      case 't':
+        result.push_back('\t');
+        break;
+      default:
+        result.push_back(ch);
+        break;
       }
       escaped = false;
       continue;
@@ -121,9 +127,9 @@ inline std::string RefiiUnquoteToml(std::string value) {
   return result;
 }
 
-inline void RefiiApplyPackagedRuntimeOverrides(
-    const std::filesystem::path& configPath,
-    rex::PathConfig& paths) {
+inline void
+RefiiApplyPackagedRuntimeOverrides(const std::filesystem::path &configPath,
+                                   rex::PathConfig &paths) {
   std::ifstream stream(configPath);
   if (!stream.is_open()) {
     return;
@@ -159,7 +165,7 @@ inline void RefiiApplyPackagedRuntimeOverrides(
   }
 }
 
-inline void RefiiEnsureDirectoryExists(const std::filesystem::path& path) {
+inline void RefiiEnsureDirectoryExists(const std::filesystem::path &path) {
   if (path.empty()) {
     return;
   }
@@ -168,7 +174,8 @@ inline void RefiiEnsureDirectoryExists(const std::filesystem::path& path) {
   std::filesystem::create_directories(path, error);
 }
 
-inline void RefiiEnsurePackagedRuntimeDirectories(const rex::PathConfig& paths) {
+inline void
+RefiiEnsurePackagedRuntimeDirectories(const rex::PathConfig &paths) {
   RefiiEnsureDirectoryExists(paths.config_path.parent_path());
 
   std::filesystem::path gameBase = paths.game_data_root;
@@ -184,7 +191,8 @@ inline void RefiiEnsurePackagedRuntimeDirectories(const rex::PathConfig& paths) 
 
 inline std::vector<char> RefiiLoadWindowIconBytes() {
   const std::filesystem::path icon_path =
-      rex::filesystem::GetExecutableFolder() / "assets" / "launcher" / "assets" / "icon.png";
+      rex::filesystem::GetExecutableFolder() / "assets" / "launcher" /
+      "assets" / "icon.png";
   std::ifstream stream(icon_path, std::ios::binary);
   if (!stream.is_open()) {
     return {};
@@ -206,9 +214,9 @@ inline std::vector<char> RefiiLoadWindowIconBytes() {
 
 inline std::string RefiiGetLowerRuntimeCVar(std::string_view name) {
   std::string value = rex::cvar::GetFlagByName(name);
-  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-    return static_cast<char>(std::tolower(ch));
-  });
+  std::transform(
+      value.begin(), value.end(), value.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   return value;
 }
 
@@ -217,19 +225,54 @@ inline bool RefiiShouldSuppressReXGlueRenderer() {
   return backend == "plume";
 }
 
-}  // namespace
+inline void RefiiLogRuntimeBackendSplit() {
+  static bool logged = false;
+  if (logged) {
+    return;
+  }
+  logged = true;
 
-class RefiiApp : public rex::ReXApp {
- public:
-  using rex::ReXApp::ReXApp;
+  const std::string renderer_backend =
+      RefiiGetLowerRuntimeCVar("renderer_backend");
+  const std::string vfs_backend =
+      RefiiGetLowerRuntimeCVar("vfs_loose_asset_backend");
+  REXLOG_INFO(
+      "Refii runtime backend split: renderer_backend={} plume_renderer={} "
+      "vfs_loose_asset_backend={} refii_vfs={}",
+      renderer_backend, renderer_backend == "plume" ? "true" : "false",
+      vfs_backend, vfs_backend == "refii" ? "true" : "false");
+}
 
-  static std::unique_ptr<rex::ui::WindowedApp> Create(
-      rex::ui::WindowedAppContext& ctx) {
-    return std::unique_ptr<RefiiApp>(new RefiiApp(ctx, "refii",
-        PPCImageConfig));
+inline void
+RefiiCacheAchievementMetadata(rex::system::KernelState *kernel_state) {
+  if (kernel_state == nullptr) {
+    return;
   }
 
-  void OnPreSetup(rex::RuntimeConfig& config) override {
+  const rex::system::util::XdbfGameData db = kernel_state->title_xdbf();
+  if (!db.is_valid()) {
+    return;
+  }
+
+  refii::achievement::CacheAchievementsFromXdbf(
+      db, rex::system::util::XdbfSection::kImage, db.default_language());
+}
+
+} // namespace
+
+class RefiiApp : public rex::ReXApp {
+public:
+  using rex::ReXApp::ReXApp;
+
+  static std::unique_ptr<rex::ui::WindowedApp>
+  Create(rex::ui::WindowedAppContext &ctx) {
+    return std::unique_ptr<RefiiApp>(
+        new RefiiApp(ctx, "refii", PPCImageConfig));
+  }
+
+  void OnPreSetup(rex::RuntimeConfig &config) override {
+    RefiiLogRuntimeBackendSplit();
+
     if (!RefiiShouldSuppressReXGlueRenderer()) {
       return;
     }
@@ -254,14 +297,12 @@ class RefiiApp : public rex::ReXApp {
   }
 
   void OnPostSetup() override {
-#if defined(__linux__)
     if (window() != nullptr) {
       const std::vector<char> icon_bytes = RefiiLoadWindowIconBytes();
       if (!icon_bytes.empty()) {
         window()->SetIcon(icon_bytes.data(), icon_bytes.size());
       }
     }
-#endif
 #if REFII_HAS_RENDERER_RUNTIME
     if (RefiiShouldSuppressReXGlueRenderer()) {
       refii::renderer::AttachPlumeImGuiToReXGlue(window(), imgui_drawer());
@@ -269,7 +310,23 @@ class RefiiApp : public rex::ReXApp {
 #endif
   }
 
+  void OnConfigureFonts(ImFontAtlas *atlas) override {
+    refii::achievement::ConfigureAchievementFonts(atlas);
+  }
+
+  void OnCreateDialogs(rex::ui::ImGuiDrawer *drawer) override {
+    refii::achievement::RegisterAchievementImGui(drawer, immediate_drawer());
+  }
+
+  void OnPostLaunchModule(rex::system::XThread *thread) override {
+    (void)thread;
+    if (runtime() != nullptr) {
+      RefiiCacheAchievementMetadata(runtime()->kernel_state());
+    }
+  }
+
   void OnShutdown() override {
+    refii::achievement::UnregisterAchievementImGui();
 #if REFII_HAS_RENDERER_RUNTIME
     refii::renderer::ShutdownRendererPresentPump();
     refii::renderer::DetachPlumeImGuiFromReXGlue();
@@ -280,8 +337,9 @@ class RefiiApp : public rex::ReXApp {
 
   // Set game and update paths relative to game_directory.
   // The assets layout is: game_directory/game/ and game_directory/update/.
-  // Accept both `<game_root>/` and `<game_root>/game` to keep launch args forgiving.
-  void OnConfigurePaths(rex::PathConfig& paths) override {
+  // Accept both `<game_root>/` and `<game_root>/game` to keep launch args
+  // forgiving.
+  void OnConfigurePaths(rex::PathConfig &paths) override {
     if (const std::filesystem::path runtimeRoot =
             RefiiGetPackagedLinuxRuntimeRoot();
         !runtimeRoot.empty()) {

@@ -20,7 +20,7 @@ REXCVAR_DEFINE_STRING(renderer_backend, "xenia", "Renderer",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(renderer_plume_api, "vulkan", "Renderer",
-                      "Plume graphics API: vulkan or d3d12.")
+                      "Plume graphics API: vulkan, d3d12, or metal.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(renderer_scaling, "1x", "Renderer",
@@ -29,7 +29,7 @@ REXCVAR_DEFINE_STRING(renderer_scaling, "1x", "Renderer",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(renderer_trace_hooks, false, "Renderer",
-                    "Log renderer hook dispatch and fallback decisions.")
+                    "Log renderer hook dispatch and suppression decisions.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(renderer_trace_resources, false, "Renderer",
@@ -40,25 +40,58 @@ REXCVAR_DEFINE_BOOL(renderer_trace_draws, false, "Renderer",
                     "Log draw, state, and presentation calls.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(renderer_trace_verbose, false, "Renderer",
-                    "Log high-volume renderer details while hook tracing is enabled.")
+REXCVAR_DEFINE_BOOL(
+    renderer_trace_verbose, false, "Renderer",
+    "Log high-volume renderer details while tracing is enabled.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(renderer_allow_native_fallback, false, "Renderer",
-                    "Allow the original Fable 2 draw/state/present path to run "
-                    "while the Plume renderer backend is selected.")
+REXCVAR_DEFINE_BOOL(
+    renderer_replace_resources, true, "Renderer/Replacement",
+    "Enable Plume-backed resource creation, upload, and lifetime "
+    "replacement while the Plume backend is selected.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(renderer_imgui_enable, true, "Renderer/ImGui",
-                    "Enable the Plume-native ImGui renderer overlay.")
+REXCVAR_DEFINE_BOOL(
+    renderer_replace_state, true, "Renderer/Replacement",
+    "Enable Plume-owned Fable render-state replacement while the "
+    "Plume backend is selected.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(renderer_imgui_show_stats, true, "Renderer/ImGui",
-                    "Show the Plume renderer status window when ImGui is enabled.")
+REXCVAR_DEFINE_BOOL(renderer_replace_draws, true, "Renderer/Replacement",
+                    "Enable Plume-backed Fable draw command execution while "
+                    "the Plume backend is selected.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(renderer_imgui_dim_fable, true, "Renderer/ImGui",
-                    "Draw a dimmer between Fable 2 and the Plume ImGui overlay.")
+REXCVAR_DEFINE_BOOL(renderer_replace_present, true, "Renderer/Replacement",
+                    "Enable Plume-backed Fable present/backbuffer replacement "
+                    "while the Plume backend is selected.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(renderer_suppress_native_command_submission, true,
+                    "Renderer/Replacement",
+                    "Suppress Fable's native indirect command-buffer "
+                    "submission hooks after Plume advances their guest-visible "
+                    "bookkeeping.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    renderer_shader_require_precompiled, true, "Renderer/Replacement",
+    "Require a precompiled shader artifact before a Fable shader "
+    "can participate in Plume draw replacement.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(renderer_imgui_enable, false, "Renderer/ImGui",
+                    "Enable the ReXGlue ImGui interface on the Plume renderer path.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    renderer_imgui_show_stats, false, "Renderer/ImGui",
+    "Show Refii renderer stats windows when ImGui is enabled.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    renderer_imgui_dim_fable, false, "Renderer/ImGui",
+    "Draw a dimmer between Fable 2 and the Plume ImGui overlay.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(renderer_imgui_dim_alpha, 0.55, "Renderer/ImGui",
@@ -69,13 +102,6 @@ REXCVAR_DEFINE_DOUBLE(renderer_imgui_dim_alpha, 0.55, "Renderer/ImGui",
 REXCVAR_DEFINE_BOOL(renderer_debug_test_triangle, false, "Renderer/Debug",
                     "Draw a Plume-native diagnostic triangle over the game "
                     "output to validate swapchain and pipeline rendering.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(
-    renderer_plume_quad_list_split, "sequential0123", "Renderer/Debug",
-    "Plume direct quad-list split order: sequential0123 for D3D/Xenos "
-    "quad lists 0,1,2 / 0,2,3 or strip0132 for the old diagnostic split "
-    "0,1,3 / 1,2,3.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(renderer_plume_vsync, false, "Renderer/Plume",
@@ -96,6 +122,13 @@ REXCVAR_DEFINE_BOOL(renderer_plume_present_pump, true, "Renderer/Plume",
                     "hook cadence.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(
+    renderer_plume_present_pump_fable_bookkeeping, true, "Renderer/Plume",
+    "Let the Plume present pump advance Fable's guest-visible display "
+    "submitted/completed counters when suppressed display-swap hooks stop "
+    "arriving.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_UINT32(renderer_plume_present_fps, 60, "Renderer/Plume",
                       "Target frame rate for the Plume present pump.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -109,31 +142,56 @@ REXCVAR_DEFINE_BOOL(renderer_vulkan_validation, false, "Renderer/Vulkan",
                     "Enable Vulkan validation for the Plume renderer backend.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(renderer_d3d12_shader_root,
-                      "assets/unpacked/shaders/D3D12", "Renderer/D3D12",
-                      "Directory containing compiled DirectX 12 shader artifacts.")
+REXCVAR_DEFINE_STRING(
+    renderer_d3d12_shader_root, "assets/unpacked/shaders/D3D12",
+    "Renderer/D3D12",
+    "Directory containing compiled DirectX 12 shader artifacts.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(renderer_d3d12_debug_layer, false, "Renderer/D3D12",
-                    "Enable the DirectX 12 debug layer for the Plume renderer backend.")
+REXCVAR_DEFINE_BOOL(
+    renderer_d3d12_debug_layer, false, "Renderer/D3D12",
+    "Enable the DirectX 12 debug layer for the Plume renderer backend.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(renderer_renderdoc_enable, false, "Renderer/RenderDoc",
-                    "Enable RenderDoc in-application capture integration for the "
-                    "Refii renderer.")
+REXCVAR_DEFINE_STRING(renderer_metal_shader_root,
+                      "assets/unpacked/shaders/metal", "Renderer/Metal",
+                      "Directory containing compiled Metal shader artifacts.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(renderer_renderdoc_capture_next_frame, false, "Renderer/RenderDoc",
+REXCVAR_DEFINE_BOOL(
+    renderer_renderdoc_enable, false, "Renderer/RenderDoc",
+    "Enable RenderDoc in-application capture integration for the "
+    "Refii renderer.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(renderer_renderdoc_capture_next_frame, false,
+                    "Renderer/RenderDoc",
                     "Capture the next Plume-rendered frame with RenderDoc.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(renderer_renderdoc_overlay, true, "Renderer/RenderDoc",
-                    "Show RenderDoc's capture overlay when the RenderDoc API is available.")
+REXCVAR_DEFINE_UINT32(
+    renderer_renderdoc_capture_frame, 0, "Renderer/RenderDoc",
+    "Capture a specific Plume frame with RenderDoc. 0 disables frame-index "
+    "capture.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(renderer_renderdoc_launch_replay, false, "Renderer/RenderDoc",
-                    "Ask RenderDoc to launch or focus its replay UI when a capture "
-                    "is triggered from Refii.")
+REXCVAR_DEFINE_STRING(
+    renderer_renderdoc_capture_draw_target, "", "Renderer/RenderDoc",
+    "Capture the first Plume frame whose queued direct draw matches this "
+    "target. Supported values: treebillboard, particlematerial, "
+    "overdrawvisualise, postprocessingdownscale4, postprocessinggaussblur, "
+    "screenfacingsprite, decal, texturedquadpreservestencil.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    renderer_renderdoc_overlay, true, "Renderer/RenderDoc",
+    "Show RenderDoc's capture overlay when the RenderDoc API is available.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    renderer_renderdoc_launch_replay, false, "Renderer/RenderDoc",
+    "Ask RenderDoc to launch or focus its replay UI when a capture "
+    "is triggered from Refii.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(renderer_renderdoc_runtime_path, "", "Renderer/RenderDoc",
@@ -141,12 +199,17 @@ REXCVAR_DEFINE_STRING(renderer_renderdoc_runtime_path, "", "Renderer/RenderDoc",
                       "common system and local librenderdoc locations.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_STRING(
+    renderer_renderdoc_capture_path, "renderdoc/captures",
+    "Renderer/RenderDoc",
+    "Directory for RenderDoc captures. Relative paths resolve beside refii.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 std::string NormalizedRendererBackend() {
   std::string backend = REXCVAR_GET(renderer_backend);
-  std::transform(backend.begin(), backend.end(), backend.begin(),
-                 [](unsigned char ch) {
-                   return static_cast<char>(std::tolower(ch));
-                 });
+  std::transform(
+      backend.begin(), backend.end(), backend.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   return backend;
 }
 
@@ -160,34 +223,17 @@ std::string NormalizedRendererGraphicsApi() {
 
 std::string NormalizedRendererScaling() {
   std::string scaling = REXCVAR_GET(renderer_scaling);
-  scaling.erase(std::remove_if(scaling.begin(), scaling.end(),
-                               [](unsigned char ch) {
-                                 return std::isspace(ch) != 0;
-                               }),
-                scaling.end());
-  std::transform(scaling.begin(), scaling.end(), scaling.begin(),
-                 [](unsigned char ch) {
-                   return static_cast<char>(std::tolower(ch));
-                 });
+  scaling.erase(
+      std::remove_if(scaling.begin(), scaling.end(),
+                     [](unsigned char ch) { return std::isspace(ch) != 0; }),
+      scaling.end());
+  std::transform(
+      scaling.begin(), scaling.end(), scaling.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   return scaling;
 }
 
-std::string NormalizedRendererQuadListSplit() {
-  std::string split = REXCVAR_GET(renderer_plume_quad_list_split);
-  split.erase(std::remove_if(split.begin(), split.end(),
-                             [](unsigned char ch) {
-                               return std::isspace(ch) != 0 ||
-                                      ch == '_' || ch == '-';
-                             }),
-              split.end());
-  std::transform(split.begin(), split.end(), split.begin(),
-                 [](unsigned char ch) {
-                   return static_cast<char>(std::tolower(ch));
-                 });
-  return split;
-}
-
-}  // namespace
+} // namespace
 
 bool RendererHooksEnabled() {
   return GetRendererBackend() == RendererBackend::kPlume;
@@ -206,11 +252,34 @@ bool RendererDrawTracingEnabled() {
 }
 
 bool RendererVerboseTracingEnabled() {
-  return RendererHookTracingEnabled() && REXCVAR_GET(renderer_trace_verbose);
+  return RendererHooksEnabled() && REXCVAR_GET(renderer_trace_verbose);
 }
 
-bool RendererNativeFallbackAllowed() {
-  return REXCVAR_GET(renderer_allow_native_fallback);
+bool RendererReplaceResourcesEnabled() {
+  return PlumeRendererBackendEnabled() &&
+         REXCVAR_GET(renderer_replace_resources);
+}
+
+bool RendererReplaceStateEnabled() {
+  return PlumeRendererBackendEnabled() && REXCVAR_GET(renderer_replace_state);
+}
+
+bool RendererReplaceDrawsEnabled() {
+  return PlumeRendererBackendEnabled() && REXCVAR_GET(renderer_replace_draws);
+}
+
+bool RendererReplacePresentEnabled() {
+  return PlumeRendererBackendEnabled() && REXCVAR_GET(renderer_replace_present);
+}
+
+bool RendererSuppressNativeCommandSubmissionEnabled() {
+  return RendererReplaceDrawsEnabled() &&
+         REXCVAR_GET(renderer_suppress_native_command_submission);
+}
+
+bool RendererShaderRequirePrecompiled() {
+  return PlumeRendererBackendEnabled() &&
+         REXCVAR_GET(renderer_shader_require_precompiled);
 }
 
 bool RendererImGuiEnabled() {
@@ -231,12 +300,8 @@ float RendererImGuiDimFableAlpha() {
 }
 
 bool RendererDebugTestTriangleEnabled() {
-  return PlumeRendererBackendEnabled() && REXCVAR_GET(renderer_debug_test_triangle);
-}
-
-bool RendererQuadListStrip0132Order() {
-  const std::string split = NormalizedRendererQuadListSplit();
-  return split == "strip0132" || split == "0132";
+  return PlumeRendererBackendEnabled() &&
+         REXCVAR_GET(renderer_debug_test_triangle);
 }
 
 bool RendererPlumeVsyncEnabled() {
@@ -244,8 +309,8 @@ bool RendererPlumeVsyncEnabled() {
 }
 
 uint32_t RendererPlumeSwapchainImageCount() {
-  return std::clamp<uint32_t>(REXCVAR_GET(renderer_plume_swapchain_images),
-                              2, 4);
+  return std::clamp<uint32_t>(REXCVAR_GET(renderer_plume_swapchain_images), 2,
+                              4);
 }
 
 bool RendererPlumePresentPumpEnabled() {
@@ -253,12 +318,18 @@ bool RendererPlumePresentPumpEnabled() {
          REXCVAR_GET(renderer_plume_present_pump);
 }
 
+bool RendererPlumePresentPumpFableBookkeepingEnabled() {
+  return RendererPlumePresentPumpEnabled() &&
+         REXCVAR_GET(renderer_plume_present_pump_fable_bookkeeping);
+}
+
 uint32_t RendererPlumePresentTargetFps() {
   return std::clamp<uint32_t>(REXCVAR_GET(renderer_plume_present_fps), 1, 240);
 }
 
 bool RenderDocDebuggerEnabled() {
-  return PlumeRendererBackendEnabled() && REXCVAR_GET(renderer_renderdoc_enable);
+  return PlumeRendererBackendEnabled() &&
+         REXCVAR_GET(renderer_renderdoc_enable);
 }
 
 bool RenderDocOverlayEnabled() {
@@ -266,7 +337,8 @@ bool RenderDocOverlayEnabled() {
 }
 
 bool RenderDocReplayLaunchEnabled() {
-  return RenderDocDebuggerEnabled() && REXCVAR_GET(renderer_renderdoc_launch_replay);
+  return RenderDocDebuggerEnabled() &&
+         REXCVAR_GET(renderer_renderdoc_launch_replay);
 }
 
 bool RequestRenderDocFrameCapture() {
@@ -288,6 +360,28 @@ bool ConsumeRenderDocCaptureRequest() {
   return true;
 }
 
+uint32_t RenderDocCaptureFrameIndex() {
+  return RenderDocDebuggerEnabled()
+             ? REXCVAR_GET(renderer_renderdoc_capture_frame)
+             : 0u;
+}
+
+std::string RenderDocCaptureDrawTarget() {
+  if (!RenderDocDebuggerEnabled()) {
+    return {};
+  }
+
+  std::string target = REXCVAR_GET(renderer_renderdoc_capture_draw_target);
+  target.erase(
+      std::remove_if(target.begin(), target.end(),
+                     [](unsigned char ch) { return std::isspace(ch) != 0; }),
+      target.end());
+  std::transform(
+      target.begin(), target.end(), target.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return target;
+}
+
 RendererBackend GetRendererBackend() {
   const std::string backend = NormalizedRendererBackend();
   if (backend == "plume") {
@@ -307,12 +401,15 @@ RendererGraphicsApi GetRendererGraphicsApi() {
   if (api == "d3d12" || api == "directx12" || api == "directx 12") {
     return RendererGraphicsApi::kD3D12;
   }
+  if (api == "metal" || api == "mtl") {
+    return RendererGraphicsApi::kMetal;
+  }
   return RendererGraphicsApi::kVulkan;
 }
 
 bool PlumeRendererBackendEnabled() {
-  return RendererHooksEnabled() && GetRendererBackend() == RendererBackend::kPlume &&
-         PlumeAvailable();
+  return RendererHooksEnabled() &&
+         GetRendererBackend() == RendererBackend::kPlume && PlumeAvailable();
 }
 
 bool PlumeVulkanBackendEnabled() {
@@ -323,6 +420,11 @@ bool PlumeVulkanBackendEnabled() {
 bool PlumeD3D12BackendEnabled() {
   return PlumeRendererBackendEnabled() &&
          GetRendererGraphicsApi() == RendererGraphicsApi::kD3D12;
+}
+
+bool PlumeMetalBackendEnabled() {
+  return PlumeRendererBackendEnabled() &&
+         GetRendererGraphicsApi() == RendererGraphicsApi::kMetal;
 }
 
 bool RendererVulkanValidationEnabled() {
@@ -353,13 +455,9 @@ int RendererGuestVideoHeight() {
   return std::max(1, REXCVAR_GET(video_mode_height));
 }
 
-int RendererOutputWidth() {
-  return RendererGuestVideoWidth();
-}
+int RendererOutputWidth() { return RendererGuestVideoWidth(); }
 
-int RendererOutputHeight() {
-  return RendererGuestVideoHeight();
-}
+int RendererOutputHeight() { return RendererGuestVideoHeight(); }
 
 int RendererInternalScale() {
   const std::string scaling = NormalizedRendererScaling();
@@ -393,9 +491,17 @@ std::string ConfiguredRendererD3D12ShaderRoot() {
   return REXCVAR_GET(renderer_d3d12_shader_root);
 }
 
+std::string ConfiguredRendererMetalShaderRoot() {
+  return REXCVAR_GET(renderer_metal_shader_root);
+}
+
 std::string ConfiguredRendererRenderDocRuntimePath() {
   return REXCVAR_GET(renderer_renderdoc_runtime_path);
 }
 
-}  // namespace detail
-}  // namespace refii::renderer
+std::string ConfiguredRendererRenderDocCapturePath() {
+  return REXCVAR_GET(renderer_renderdoc_capture_path);
+}
+
+} // namespace detail
+} // namespace refii::renderer

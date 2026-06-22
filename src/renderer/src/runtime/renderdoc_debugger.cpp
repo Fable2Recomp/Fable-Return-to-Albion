@@ -60,14 +60,32 @@ void ConfigureRenderDocCapturePath(RENDERDOC_API_1_7_0* api) {
     return;
   }
 
-  const char* current_template = api->GetCaptureFilePathTemplate();
-  if (current_template != nullptr && current_template[0] != '\0') {
+  std::filesystem::path capture_dir =
+      ConfiguredRendererRenderDocCapturePath();
+  if (capture_dir.empty()) {
+    const char* current_template = api->GetCaptureFilePathTemplate();
+    if (current_template != nullptr && current_template[0] != '\0') {
+      REXLOG_INFO(
+          "RenderDoc captures for Refii renderer are using existing template {}",
+          current_template);
+      g_renderdoc_capture_path_configured = true;
+      return;
+    }
+    capture_dir = "renderdoc/captures";
+  }
+
+  if (capture_dir.is_relative()) {
+    const std::filesystem::path executable_dir = CurrentExecutableDir();
+    if (!executable_dir.empty()) {
+      capture_dir = executable_dir / capture_dir;
+    }
+  }
+
+  if (capture_dir.empty()) {
     g_renderdoc_capture_path_configured = true;
     return;
   }
 
-  const std::filesystem::path capture_dir =
-      CurrentExecutableDir() / "renderdoc";
   std::error_code ec;
   std::filesystem::create_directories(capture_dir, ec);
   if (ec) {
@@ -419,7 +437,7 @@ void PrepareRenderDocVulkanLayer() {
       << "    \"name\": \"VK_LAYER_RENDERDOC_Capture\",\n"
       << "    \"type\": \"GLOBAL\",\n"
       << "    \"library_path\": \"" << renderdoc_library.string() << "\",\n"
-      << "    \"api_version\": \"1.4.324\",\n"
+      << "    \"api_version\": \"1.3.0\",\n"
       << "    \"implementation_version\": \"45\",\n"
       << "    \"description\": \"Debugging capture layer for RenderDoc\",\n"
       << "    \"functions\": {\n"
@@ -487,13 +505,10 @@ void TriggerRenderDocCapture() {
 #endif
 }
 
-bool BeginRenderDocFrameCapture(const char* title) {
+bool StartRenderDocFrameCaptureNow(const char* title) {
 #if REFII_RENDERER_HAS_RENDERDOC
   RENDERDOC_API_1_7_0* api = GetRenderDocApi();
   if (api == nullptr) {
-    return false;
-  }
-  if (!ConsumeRenderDocCaptureRequest()) {
     return false;
   }
   if (api->IsFrameCapturing()) {
@@ -520,6 +535,17 @@ bool BeginRenderDocFrameCapture(const char* title) {
   (void)title;
   return false;
 #endif
+}
+
+bool BeginRenderDocImmediateFrameCapture(const char* title) {
+  return StartRenderDocFrameCaptureNow(title);
+}
+
+bool BeginRenderDocFrameCapture(const char* title, bool ready_to_capture) {
+  if (!ready_to_capture || !ConsumeRenderDocCaptureRequest()) {
+    return false;
+  }
+  return StartRenderDocFrameCaptureNow(title);
 }
 
 void SetRenderDocFrameCaptureTitle(const char* title) {

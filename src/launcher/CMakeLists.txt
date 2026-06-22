@@ -92,6 +92,7 @@ target_include_directories(${LAUNCHER_TARGET} PRIVATE
 
 target_link_libraries(${LAUNCHER_TARGET} PRIVATE
     glfw
+    refii_modding
     refii_bnk_extractor
 )
 

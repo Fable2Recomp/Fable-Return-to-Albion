@@ -64,7 +64,7 @@ std::string TrimAscii(std::string value) {
 
 void PrintUsage() {
     std::cerr
-        << "usage: refii-shader-xenos-translator --input <blob> --target <vulkan|d3d12> "
+        << "usage: refii-shader-xenos-translator --input <blob> --target <vulkan|d3d12|metal> "
            "--stage <vertex|pixel> --name <entry> --output <file>\n";
 }
 
@@ -120,8 +120,15 @@ bool TranslateXenosShaderBlobImpl(const Options& options,
         return false;
     }
 
-    if (options.target != "vulkan" && options.target != "d3d12") {
+    if (options.target != "vulkan" && options.target != "d3d12" &&
+        options.target != "metal") {
         set_error("unsupported target '" + options.target + "'");
+        return false;
+    }
+    if (options.target == "metal") {
+        set_error(
+            "metal target selected, but XenosRecomp Metal artifact generation "
+            "requires the SPIR-V to MSL/metallib conversion step");
         return false;
     }
 

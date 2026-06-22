@@ -21,11 +21,7 @@
 #include <rex/logging.h>
 #include <rex/platform.h>
 #include <rex/ui/windowed_app.h>
-#include <rex/ui/windowed_app_context_win.h>
-
-#if REX_UI_HAS_SDL_WINDOW
 #include <rex/ui/windowed_app_context_sdl.h>
-#endif
 
 namespace {
 
@@ -47,16 +43,6 @@ std::vector<std::string> WideArgsToUtf8(int argc, wchar_t** wargv) {
     args.push_back(std::move(utf8));
   }
   return args;
-}
-
-bool ShouldUseSDLWindow(const std::vector<char*>& argv_ptrs) {
-#if REX_UI_HAS_SDL_WINDOW
-  (void)argv_ptrs;
-  return true;
-#else
-  (void)argv_ptrs;
-  return false;
-#endif
 }
 
 void ApplyPositionalArguments(rex::ui::WindowedApp& app,
@@ -174,33 +160,9 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
   int result;
 
   {
-#if REX_UI_HAS_SDL_WINDOW
-    if (ShouldUseSDLWindow(argv_ptrs)) {
-      rex::ui::SDLWindowedAppContext app_context;
-      if (!app_context.Initialize()) {
-        rex::ShutdownLogging();
-        return EXIT_FAILURE;
-      }
-      std::unique_ptr<rex::ui::WindowedApp> app = rex::ui::GetWindowedAppCreator()(app_context);
-      ApplyPositionalArguments(*app, remaining);
-      ConsoleControlBridge console_control_bridge(app_context, MakeShutdownCallback(*app));
-
-      if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
-        rex::ShutdownLogging();
-        return EXIT_FAILURE;
-      }
-
-      result = app->OnInitialize() ? app_context.RunMainSDLLoop() : EXIT_FAILURE;
-      app->InvokeOnDestroy();
-      CoUninitialize();
-      rex::ShutdownLogging();
-      return result;
-    }
-#endif
-
-    rex::ui::Win32WindowedAppContext app_context(hinstance, show_cmd);
-    // TODO(Triang3l): Initialize creates a window. Set DPI awareness via the
-    // manifest.
+    (void)hinstance;
+    (void)show_cmd;
+    rex::ui::SDLWindowedAppContext app_context;
     if (!app_context.Initialize()) {
       rex::ShutdownLogging();
       return EXIT_FAILURE;
@@ -216,18 +178,12 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
       return EXIT_FAILURE;
     }
 
-    // TODO: Port InitializeWin32App from Xenia
-    // rex::InitializeWin32App(app->GetName());
-
-    result = app->OnInitialize() ? app_context.RunMainMessageLoop() : EXIT_FAILURE;
+    result = app->OnInitialize() ? app_context.RunMainSDLLoop() : EXIT_FAILURE;
 
     app->InvokeOnDestroy();
   }
 
-  // TODO: Port ShutdownWin32App from Xenia
   // Logging may still be needed in the destructors.
-  // rex::ShutdownWin32App();
-
   CoUninitialize();
   rex::ShutdownLogging();
 

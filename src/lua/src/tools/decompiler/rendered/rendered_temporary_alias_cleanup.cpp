@@ -663,6 +663,47 @@ bool SimplifyRenderedLuaImmediateTemporaryStatementUses(std::vector<std::string>
         }
         return index;
     };
+    const auto control_block_assigns_target = [&](std::size_t control_line,
+                                                  std::string_view target) {
+        if (control_line >= lines->size() || target.empty()) {
+            return false;
+        }
+
+        const std::string_view trimmed =
+            TrimLuaWhitespace(StripLuaLineComment((*lines)[control_line]));
+        const bool control_header =
+            (trimmed.starts_with("if ") && trimmed.ends_with(" then")) ||
+            (trimmed.starts_with("elseif ") && trimmed.ends_with(" then")) ||
+            (trimmed.starts_with("while ") && trimmed.ends_with(" do"));
+        if (!control_header || CountIdentifierUses(trimmed, target) == 0) {
+            return false;
+        }
+
+        const std::size_t block_end = FindRenderedFunctionBlockEnd(*lines, control_line);
+        if (block_end >= lines->size() || block_end <= control_line) {
+            return false;
+        }
+
+        for (std::size_t probe = control_line + 1; probe < block_end; ++probe) {
+            bool assign_is_local = false;
+            std::string lhs;
+            std::string rhs;
+            if (ParseRenderedSingleAssignmentLine((*lines)[probe],
+                                                  &assign_is_local,
+                                                  &lhs,
+                                                  &rhs) &&
+                !assign_is_local &&
+                lhs == target) {
+                return true;
+            }
+
+            if (IsRenderedShadowingLocalDeclaration((*lines)[probe], target)) {
+                return false;
+            }
+        }
+
+        return false;
+    };
 
     return RunRenderedLuaCleanupPassLoop(__func__, 32, [&]() {
         std::vector<std::vector<std::size_t>> scope_paths;
@@ -699,6 +740,9 @@ bool SimplifyRenderedLuaImmediateTemporaryStatementUses(std::vector<std::string>
             if (use_index >= lines->size() || use_index >= scope_paths.size() ||
                 scope_paths[use_index] != scope_paths[line_index] ||
                 CountIdentifierUses((*lines)[use_index], temp_lhs) != 1) {
+                continue;
+            }
+            if (control_block_assigns_target(use_index, temp_lhs)) {
                 continue;
             }
 

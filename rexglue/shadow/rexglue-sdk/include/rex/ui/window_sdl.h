@@ -52,6 +52,8 @@ class SDLWindow : public Window {
 
   void ApplyNewFullscreen() override;
   void ApplyNewTitle() override;
+  void LoadAndApplyIcon(const void* buffer, size_t size,
+                        bool can_apply_state_in_current_phase) override;
   void ApplyNewMouseCapture() override;
   void ApplyNewMouseRelease() override;
   void ApplyNewCursorVisibility(CursorVisibility old_cursor_visibility) override;

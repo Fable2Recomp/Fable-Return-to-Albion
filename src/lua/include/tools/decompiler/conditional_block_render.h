@@ -19,6 +19,7 @@ struct LuaConditionalBlockRenderContext {
     std::vector<std::string>* lines = nullptr;
     std::vector<StraightLineValue>* values = nullptr;
     std::vector<bool>* declared = nullptr;
+    const std::vector<Lua51Instruction>& instructions;
     const RegisterDeclarations& declarations;
     const Lua51Function& function;
     int register_count = 0;

@@ -1,4 +1,4 @@
-#include "runtime/plume_api_bridge_private.h"
+#include "runtime/plume/general/plume_api_bridge_private.h"
 
 #if REFII_RENDERER_HAS_PLUME && defined(_WIN64)
 #include <plume_d3d12.h>

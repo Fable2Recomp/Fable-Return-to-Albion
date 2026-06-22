@@ -3,6 +3,7 @@
 #include "credits.h"
 #include "fonts.h"
 #include "installer/installer.h"
+#include "modding/mod_workspace.h"
 #include "patches.h"
 #include "platform.h"
 #include "runtime_settings.h"
@@ -166,6 +167,137 @@ std::string ToLowerAscii(std::string value) {
     return value;
 }
 
+std::filesystem::path ResolveLauncherRelativePath(const std::string& value) {
+    if (value.empty()) {
+        return {};
+    }
+
+    std::filesystem::path path(value);
+    if (path.is_absolute()) {
+        return path.lexically_normal();
+    }
+    return LauncherPaths::ResolveFromLauncherDirectory(path);
+}
+
+std::filesystem::path NormalizeAssetsRoot(std::filesystem::path path) {
+    path = path.lexically_normal();
+    std::string filename = path.filename().generic_string();
+    std::transform(filename.begin(), filename.end(), filename.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (filename == "data" || filename == "game") {
+        path = path.parent_path();
+    }
+    return path.lexically_normal();
+}
+
+std::filesystem::path ResolveModdingAssetsRoot(
+    const std::map<std::string, std::string>& runtimeValues) {
+    const auto gameDataIt = runtimeValues.find("game_data_root");
+    if (gameDataIt != runtimeValues.end() && !gameDataIt->second.empty()) {
+        return NormalizeAssetsRoot(ResolveLauncherRelativePath(gameDataIt->second));
+    }
+    return Installer::GetInstallBasePath().lexically_normal();
+}
+
+std::filesystem::path ResolveConfiguredModsRoot(
+    const std::map<std::string, std::string>& runtimeValues) {
+    const std::filesystem::path assetsRoot = ResolveModdingAssetsRoot(runtimeValues);
+    const auto modsRootIt = runtimeValues.find("vfs_mods_root");
+    if (modsRootIt != runtimeValues.end() && !modsRootIt->second.empty()) {
+        std::filesystem::path root(modsRootIt->second);
+        if (root.is_relative()) {
+            root = assetsRoot / root;
+        }
+        return root.lexically_normal();
+    }
+    return refii::modding::GetDefaultModsRoot(assetsRoot);
+}
+
+void RenderModdingTab(std::string& moddingStatusMessage) {
+    const std::filesystem::path runtimeConfigPath = Installer::GetRuntimeConfigPath();
+    std::map<std::string, std::string> runtimeValues =
+        ReadRuntimeConfigValues(runtimeConfigPath);
+    const std::filesystem::path modsRoot =
+        ResolveConfiguredModsRoot(runtimeValues);
+
+    ImGui::TextWrapped("Mod folder: %s", modsRoot.generic_string().c_str());
+    ImGui::TextWrapped("Install loose-file mods as folders here. A mod can place files directly in its folder, or under a files folder.");
+
+    if (ImGui::Button("Create Folder")) {
+        std::error_code error;
+        std::filesystem::create_directories(modsRoot, error);
+        moddingStatusMessage = error ? ("Failed to create mod folder: " + error.message())
+                                     : "Mod folder is ready.";
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh")) {
+        moddingStatusMessage.clear();
+    }
+
+    if (!moddingStatusMessage.empty()) {
+        ImGui::TextWrapped("%s", moddingStatusMessage.c_str());
+    }
+
+    std::vector<refii::modding::ModInstall> mods =
+        refii::modding::DiscoverModInstalls(modsRoot);
+    std::vector<std::string> enabledMods =
+        refii::modding::ReadEnabledModNames(modsRoot);
+
+    ImGui::Separator();
+    if (mods.empty()) {
+        ImGui::TextWrapped("No mods found.");
+        return;
+    }
+
+    ImGui::BeginTable("ModdingModsTable", 3,
+                      ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+                          ImGuiTableFlags_NoHostExtendX);
+    ImGui::TableSetupColumn("Enabled", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("Mod", ImGuiTableColumnFlags_WidthFixed, 220.0f);
+    ImGui::TableSetupColumn("Path", ImGuiTableColumnFlags_WidthStretch);
+
+    for (const refii::modding::ModInstall& mod : mods) {
+        const bool wasEnabled =
+            std::find(enabledMods.begin(), enabledMods.end(), mod.name) !=
+            enabledMods.end();
+        bool enabled = wasEnabled;
+
+        ImGui::PushID(mod.name.c_str());
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        if (ImGui::Checkbox("##enabled", &enabled) && enabled != wasEnabled) {
+            if (enabled) {
+                enabledMods.push_back(mod.name);
+            } else {
+                enabledMods.erase(
+                    std::remove(enabledMods.begin(), enabledMods.end(), mod.name),
+                    enabledMods.end());
+            }
+
+            std::string error;
+            if (refii::modding::WriteEnabledModNames(modsRoot, enabledMods,
+                                                     &error)) {
+                moddingStatusMessage = "Updated enabled mods.";
+            } else {
+                moddingStatusMessage = "Failed to update enabled mods: " + error;
+            }
+        }
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextUnformatted(mod.name.c_str());
+        if (mod.has_files_folder && ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Uses the files folder as its asset root.");
+        }
+
+        ImGui::TableSetColumnIndex(2);
+        const std::string path = mod.root.generic_string();
+        ImGui::TextUnformatted(path.c_str());
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+}
+
 float ClampFloat(float value, float minimum, float maximum) {
     return std::max(minimum, std::min(value, maximum));
 }
@@ -241,6 +373,7 @@ int main(int argc, char** argv) {
     ChangeLog changeLog;
     Credits credits;
     RuntimeSettingsPanel runtimeSettings;
+    std::string moddingStatusMessage;
     std::shared_ptr<ManagedDownloadProgress> downloadProgress = nullptr;
     std::shared_ptr<IsoExtractionProgress> isoProgress = nullptr;
     refii::lua::LuaWorkspaceVerifySummary luaWorkspaceVerifySummary;
@@ -973,6 +1106,10 @@ int main(int argc, char** argv) {
                         }
                     }
 
+                    ImGui::EndTabItem();
+                }
+                if (ImGui::BeginTabItem("Modding")) {
+                    RenderModdingTab(moddingStatusMessage);
                     ImGui::EndTabItem();
                 }
                 if (ImGui::BeginTabItem("Settings")) {
