@@ -1276,7 +1276,8 @@ REX_EXTERN(sub_821FC8D8) { // IDA: Fable surface allocation wrapper
     // just >720p); the 5-slot per-tile array overflow above 1440p; and the
     // silent MSAA downgrade the old coarsening solver used to buy slots back.
     // MSAA is now left exactly as the guest asked for it.
-    if (width != 0 && height != 0 && msaa_index <= 2u && tile_count > 1u) {
+    if (refii::renderer::PlumeRendererBackendEnabled() && width != 0 &&
+        height != 0 && msaa_index <= 2u && tile_count > 1u) {
       const uint32_t aligned_width = AlignUpU32(width, 32u);
       FableWriteEdramTileSplit(base, entry, aligned_width, height, /*tiles=*/1u,
                                /*slice=*/height);

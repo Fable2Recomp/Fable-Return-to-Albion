@@ -11,7 +11,8 @@ function(refii_ensure_windows_vcpkg_packages)
 
     set(_refii_vcpkg_local_root "${CMAKE_SOURCE_DIR}/tools/vcpkg")
     if(EXISTS "${_refii_vcpkg_local_root}/vcpkg.exe" OR
-       NOT (DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/vcpkg.exe"))
+       NOT (DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/vcpkg.exe"
+            AND IS_DIRECTORY "$ENV{VCPKG_ROOT}/ports"))
         set(_refii_vcpkg_default_root "${_refii_vcpkg_local_root}")
     else()
         set(_refii_vcpkg_default_root "$ENV{VCPKG_ROOT}")
@@ -24,6 +25,15 @@ function(refii_ensure_windows_vcpkg_packages)
     )
     if(NOT EXISTS "${REFII_VCPKG_ROOT}/vcpkg.exe" AND
        EXISTS "${_refii_vcpkg_local_root}/vcpkg.exe")
+        set(REFII_VCPKG_ROOT
+            "${_refii_vcpkg_local_root}"
+            CACHE PATH
+            "Path to vcpkg for Windows-only third-party packages"
+            FORCE
+        )
+    endif()
+    if(EXISTS "${REFII_VCPKG_ROOT}/vcpkg.exe" AND
+       NOT IS_DIRECTORY "${REFII_VCPKG_ROOT}/ports")
         set(REFII_VCPKG_ROOT
             "${_refii_vcpkg_local_root}"
             CACHE PATH

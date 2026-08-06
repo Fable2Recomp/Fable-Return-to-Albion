@@ -487,18 +487,26 @@ public:
     }
 
     if (base.is_relative() && !std::filesystem::exists(base)) {
-      std::filesystem::path probe = std::filesystem::current_path();
-      for (int i = 0; i < 8 && !probe.empty(); ++i) {
-        const std::filesystem::path candidate = probe / base;
-        if (std::filesystem::exists(candidate)) {
-          base = candidate;
+      for (std::filesystem::path probe :
+           {std::filesystem::current_path(),
+            rex::filesystem::GetExecutableFolder()}) {
+        bool resolved = false;
+        for (int i = 0; i < 8 && !probe.empty(); ++i) {
+          const std::filesystem::path candidate = probe / base;
+          if (std::filesystem::exists(candidate)) {
+            base = candidate;
+            resolved = true;
+            break;
+          }
+          const std::filesystem::path parent = probe.parent_path();
+          if (parent == probe) {
+            break;
+          }
+          probe = parent;
+        }
+        if (resolved) {
           break;
         }
-        const std::filesystem::path parent = probe.parent_path();
-        if (parent == probe) {
-          break;
-        }
-        probe = parent;
       }
     }
 

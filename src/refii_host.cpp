@@ -319,10 +319,21 @@ void WriteWindowsCrashRecord(const char* source,
     DWORD exceptionCode = 0;
     void* exceptionAddress = nullptr;
     void* instructionPointer = nullptr;
+    bool haveAccessInfo = false;
+    ULONG_PTR accessKind = 0;
+    ULONG_PTR accessAddress = 0;
     if (exceptionPointers != nullptr) {
         if (exceptionPointers->ExceptionRecord != nullptr) {
             exceptionCode = exceptionPointers->ExceptionRecord->ExceptionCode;
             exceptionAddress = exceptionPointers->ExceptionRecord->ExceptionAddress;
+            if (exceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+                exceptionPointers->ExceptionRecord->NumberParameters >= 2) {
+                haveAccessInfo = true;
+                accessKind =
+                    exceptionPointers->ExceptionRecord->ExceptionInformation[0];
+                accessAddress =
+                    exceptionPointers->ExceptionRecord->ExceptionInformation[1];
+            }
         }
         if (exceptionPointers->ContextRecord != nullptr) {
 #if defined(_M_X64) || defined(__x86_64__)
@@ -344,6 +355,24 @@ void WriteWindowsCrashRecord(const char* source,
     std::fprintf(crashLog, "code\t0x%08lX\n", static_cast<unsigned long>(exceptionCode));
     std::fprintf(crashLog, "exception_address\t%p\n", exceptionAddress);
     std::fprintf(crashLog, "instruction_pointer\t%p\n", instructionPointer);
+    const uintptr_t moduleBase =
+        reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    std::fprintf(crashLog, "module_base\t%p\n",
+                 reinterpret_cast<void*>(moduleBase));
+    if (instructionPointer != nullptr && moduleBase != 0) {
+        std::fprintf(crashLog, "fault_rva\t0x%llX\n",
+                     static_cast<unsigned long long>(
+                         reinterpret_cast<uintptr_t>(instructionPointer) - moduleBase));
+    }
+    if (haveAccessInfo) {
+        const char* kindText = accessKind == 0   ? "read"
+                               : accessKind == 1 ? "write"
+                               : accessKind == 8 ? "execute"
+                                                 : "unknown";
+        std::fprintf(crashLog, "access_kind\t%s\n", kindText);
+        std::fprintf(crashLog, "access_address\t0x%llX\n",
+                     static_cast<unsigned long long>(accessAddress));
+    }
     std::fprintf(crashLog, "\n");
     std::fclose(crashLog);
 }
@@ -511,6 +540,9 @@ int RunEmbeddedOnPosix(std::vector<std::string> ownedArguments) {
 }  // namespace
 
 std::unique_ptr<rex::ui::WindowedApp> CreateRefiiApp(rex::ui::WindowedAppContext& app_context) {
+#if defined(_WIN32)
+    InstallWindowsCrashRecorder();
+#endif
     return RefiiApp::Create(app_context);
 }
 

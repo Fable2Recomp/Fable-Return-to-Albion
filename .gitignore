@@ -424,3 +424,8 @@ FodyWeavers.xsd
 
 # Refii shader pipeline shared artifacts
 src/Shader/processed/
+/assets/save/cache/shaders/shareable
+/assets/save
+/assets/game/data
+/assets/game/data
+/assets/game/data

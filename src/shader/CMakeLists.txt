@@ -137,6 +137,45 @@ else()
     set(REFII_SHADER_DXC_LIB_DIR "${REFII_SHADER_DXC_ROOT}/lib/x64")
 endif()
 
+set(REFII_SHADER_DXC_UPSTREAM_URL
+    "https://github.com/renderbag/dxc-bin.git"
+    CACHE STRING
+    "Upstream repository supplying the vendored DXC binaries"
+)
+
+if(NOT EXISTS "${REFII_SHADER_DXC_TOOL}")
+    set(REFII_SHADER_DXC_UPSTREAM_DIR "${CMAKE_BINARY_DIR}/dxc-bin-upstream")
+    if(NOT EXISTS "${REFII_SHADER_DXC_UPSTREAM_DIR}/.git")
+        find_package(Git REQUIRED)
+        message(STATUS "Fetching vendored DXC binaries from ${REFII_SHADER_DXC_UPSTREAM_URL}")
+        file(REMOVE_RECURSE "${REFII_SHADER_DXC_UPSTREAM_DIR}")
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" clone --depth 1
+                    "${REFII_SHADER_DXC_UPSTREAM_URL}"
+                    "${REFII_SHADER_DXC_UPSTREAM_DIR}"
+            RESULT_VARIABLE REFII_SHADER_DXC_CLONE_RESULT
+        )
+        if(NOT REFII_SHADER_DXC_CLONE_RESULT EQUAL 0)
+            message(FATAL_ERROR
+                "Failed to clone DXC binaries from ${REFII_SHADER_DXC_UPSTREAM_URL}"
+            )
+        endif()
+    endif()
+    file(COPY
+        "${REFII_SHADER_DXC_UPSTREAM_DIR}/bin"
+        "${REFII_SHADER_DXC_UPSTREAM_DIR}/lib"
+        DESTINATION "${REFII_SHADER_DXC_ROOT}"
+    )
+    if(NOT WIN32 AND EXISTS "${REFII_SHADER_DXC_TOOL}")
+        file(CHMOD "${REFII_SHADER_DXC_TOOL}"
+            PERMISSIONS
+                OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                GROUP_READ GROUP_EXECUTE
+                WORLD_READ WORLD_EXECUTE
+        )
+    endif()
+endif()
+
 if(NOT EXISTS "${REFII_SHADER_DXC_TOOL}")
     message(FATAL_ERROR "Missing vendored DXC tool at ${REFII_SHADER_DXC_TOOL}")
 endif()

@@ -1,7 +1,12 @@
 #include "vfs_hooks_private.h"
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <sys/uio.h>
 #include <unistd.h>
+#endif
 #include <array>
+#include <cstddef>
 
 namespace refii::vfs {
 inline namespace detail {
@@ -504,6 +509,30 @@ bool TrySilentLargePageReserve(PPCContext& ctx, uint8_t* base) {
 
 uint8_t LoadGuestU8(uint8_t* base, uint32_t guest_address) {
   return *rex::memory::GuestPtr<uint8_t*>(base, guest_address);
+}
+
+size_t TryCopyGuestBytes(uint8_t* base, uint32_t guest_address, void* dst,
+                         size_t length) {
+  if (base == nullptr || dst == nullptr || length == 0) {
+    return 0;
+  }
+  auto* const remote_base = rex::memory::GuestPtr<uint8_t*>(base, guest_address);
+#if defined(_WIN32)
+  SIZE_T read_bytes = 0;
+  const BOOL read_ok =
+      ReadProcessMemory(GetCurrentProcess(), remote_base, dst, length, &read_bytes);
+  return (read_ok || read_bytes != 0) ? static_cast<size_t>(read_bytes) : 0;
+#else
+  struct iovec local {
+    dst, length
+  };
+  struct iovec remote {
+    remote_base, length
+  };
+  const std::ptrdiff_t copied =
+      process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+  return copied < 0 ? 0 : static_cast<size_t>(copied);
+#endif
 }
 
 uint16_t LoadGuestU16(uint8_t* base, uint32_t guest_address) {
@@ -1039,11 +1068,13 @@ std::string ReadGuestAsciiStringObject(uint8_t* base,
 
     const size_t bounded_chars =
         std::min<size_t>(max_chars, kGuestStringDataCeiling - data_guest);
+    std::vector<char> scratch(std::min<size_t>(bounded_chars, 4096));
+    const size_t readable =
+        TryCopyGuestBytes(base, data_guest, scratch.data(), scratch.size());
     std::string value;
-    value.reserve(std::min<size_t>(bounded_chars, 256));
-    for (size_t index = 0; index < bounded_chars; ++index) {
-      const char ch =
-          static_cast<char>(LoadGuestU8(base, data_guest + index));
+    value.reserve(std::min<size_t>(readable, 256));
+    for (size_t index = 0; index < readable; ++index) {
+      const char ch = scratch[index];
       if (ch == '\0') {
         break;
       }
@@ -1160,14 +1191,25 @@ std::string FormatGuestWords(uint8_t* base, uint32_t guest, uint32_t word_count)
   // faulting.
   std::array<uint32_t, 64> words{};
   const uint32_t clamped = std::min<uint32_t>(word_count, words.size());
+  const size_t want = clamped * sizeof(uint32_t);
+  auto* const remote_base = rex::memory::GuestPtr<uint8_t*>(base, guest);
+#if defined(_WIN32)
+  SIZE_T read_bytes = 0;
+  const BOOL read_ok = ReadProcessMemory(GetCurrentProcess(), remote_base,
+                                         words.data(), want, &read_bytes);
+  const std::ptrdiff_t copied = (read_ok || read_bytes != 0)
+                                    ? static_cast<std::ptrdiff_t>(read_bytes)
+                                    : -1;
+#else
   struct iovec local {
-    words.data(), clamped * sizeof(uint32_t)
+    words.data(), want
   };
   struct iovec remote {
-    rex::memory::GuestPtr<uint8_t*>(base, guest), clamped * sizeof(uint32_t)
+    remote_base, want
   };
-  const ssize_t copied =
+  const std::ptrdiff_t copied =
       process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+#endif
   if (copied < 0) {
     return fmt::format("<unmapped:0x{:08X}>", guest);
   }
