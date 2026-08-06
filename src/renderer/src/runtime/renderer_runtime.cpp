@@ -738,6 +738,7 @@ bool IsReadableHostByteRange(const uint8_t *data, size_t size) {
     }
     current = std::min(region_end, end);
   }
+  return true;
 #elif defined(__linux__)
   // Same per-thread readable-region snapshot as the observer's copy in
   // hook_observer.cpp: the guest heap spans several distinct mappings, so a
@@ -2176,7 +2177,8 @@ FableGuestResourceEmulation EmulateFableTextureCreate(
   constexpr uint32_t kMaxOwnedTextureBytes = 64u * 1024u * 1024u;
   const uint32_t object = AllocateFableGuestMemory(
       ctx, base, kTextureObjectBytes, kTextureObjectAllocFlags);
-  if (!IsLikelyFableObjectRange(object, kTextureObjectBytes)) {
+  if (!IsLikelyFableObjectRange(object, kTextureObjectBytes) ||
+      !IsReadableGuestByteRange(base, object, kTextureObjectBytes)) {
     emulation.handled = true;
     emulation.result = 0;
     return emulation;
