@@ -37,7 +37,8 @@ std::once_flag g_terminate_handler_once;
 std::terminate_handler g_previous_terminate_handler = nullptr;
 
 void ExternalShutdownTerminateHandler() {
-  if (g_external_shutdown_requested.load(std::memory_order_acquire)) {
+  if (g_external_shutdown_requested.load(std::memory_order_acquire) ||
+      rex::ui::AppTeardownStarted()) {
     try {
       std::exception_ptr exception = std::current_exception();
       if (exception) {

@@ -7,7 +7,6 @@
 #include "utils/opengl_stuff.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 
@@ -25,6 +24,18 @@ bool HasEnvironmentValue(const char* name) {
     const char* value = std::getenv(name);
     return value != nullptr && value[0] != '\0';
 }
+#endif
+
+// These failures used to be plain asserts, which NDEBUG strips out of release
+// builds: startup carried on with an uninitialized GLFW and a null window and
+// the process died with nothing printed. Report and stop instead.
+[[noreturn]] void FailWindowStartup(const char* message) {
+    std::fprintf(stderr, "Refii launcher: %s\n", message);
+    std::fflush(stderr);
+    std::exit(EXIT_FAILURE);
+}
+
+#if defined(__linux__)
 
 std::string LowercaseAscii(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
@@ -111,34 +122,74 @@ int ReadLauncherPlatformOverride() {
     return GLFW_ANY_PLATFORM;
 }
 
-int ChooseGLFWPlatform() {
+struct PlatformChoice {
+    int platform = GLFW_ANY_PLATFORM;
+    // An explicit request is honoured as-is; only auto-detection falls back.
+    bool explicitly_requested = false;
+};
+
+PlatformChoice ChooseGLFWPlatform() {
     const int overridePlatform = ReadLauncherPlatformOverride();
     if (overridePlatform != GLFW_ANY_PLATFORM) {
-        return SelectAvailablePlatform(overridePlatform);
+        return {SelectAvailablePlatform(overridePlatform), true};
     }
 
 #if REFII_LAUNCHER_HAS_WAYLAND
     if (HasEnvironmentValue("WAYLAND_DISPLAY")) {
-        return GLFW_PLATFORM_WAYLAND;
+        return {GLFW_PLATFORM_WAYLAND, false};
     }
 #endif
 
 #if REFII_LAUNCHER_HAS_X11
     if (HasEnvironmentValue("DISPLAY")) {
-        return GLFW_PLATFORM_X11;
+        return {GLFW_PLATFORM_X11, false};
     }
 #endif
 
-    return FirstAvailablePlatform();
+    return {FirstAvailablePlatform(), false};
 }
 
-void ConfigureGLFWPlatform() {
-    const int selectedPlatform = ChooseGLFWPlatform();
-    glfwInitHint(GLFW_PLATFORM, selectedPlatform);
+bool TryInitGLFWPlatform(int platform) {
+    glfwInitHint(GLFW_PLATFORM, platform);
 #if REFII_LAUNCHER_HAS_WAYLAND
     glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_PREFER_LIBDECOR);
 #endif
-    std::fprintf(stderr, "Refii launcher GLFW platform: %s\n", GLFWPlatformName(selectedPlatform));
+    if (glfwInit()) {
+        std::fprintf(stderr, "Refii launcher GLFW platform: %s\n", GLFWPlatformName(platform));
+        return true;
+    }
+    return false;
+}
+
+// Pinning GLFW_PLATFORM means a failed init is final, so a Wayland session
+// whose client libraries do not line up would otherwise take the launcher down
+// with it. Fall back to X11, which on such a session means XWayland.
+bool InitializeGLFW() {
+    const PlatformChoice choice = ChooseGLFWPlatform();
+    if (TryInitGLFWPlatform(choice.platform)) {
+        return true;
+    }
+
+    if (choice.explicitly_requested) {
+        std::fprintf(stderr,
+                     "Refii launcher could not initialize the requested GLFW platform (%s).\n",
+                     GLFWPlatformName(choice.platform));
+        return false;
+    }
+
+    for (const int fallback : {GLFW_PLATFORM_WAYLAND, GLFW_PLATFORM_X11}) {
+        if (fallback == choice.platform || !IsPlatformAvailable(fallback)) {
+            continue;
+        }
+        std::fprintf(stderr,
+                     "Refii launcher could not initialize GLFW on %s; trying %s.\n",
+                     GLFWPlatformName(choice.platform),
+                     GLFWPlatformName(fallback));
+        if (TryInitGLFWPlatform(fallback)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void ApplyPlatformWindowHints() {
@@ -190,11 +241,17 @@ VinceWindow::VinceWindow(int widthIn, int heightIn, const char* titleIn)
 void VinceWindow::init() {
     glfwSetErrorCallback(glfw_error_callback);
 #if defined(__linux__)
-    ConfigureGLFWPlatform();
-#endif
-    if (!glfwInit()) {
-        assert(false && "Failed to initialize GLFW");
+    if (!InitializeGLFW()) {
+        FailWindowStartup(
+            "Failed to initialize GLFW: no usable window system.\n"
+            "On a Wayland session you can force the X11/XWayland path with\n"
+            "  REFII_LAUNCHER_GLFW_PLATFORM=x11");
     }
+#else
+    if (!glfwInit()) {
+        FailWindowStartup("Failed to initialize GLFW.");
+    }
+#endif
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
@@ -207,7 +264,7 @@ void VinceWindow::init() {
         glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr),
         &glfwDestroyWindow);
     if (!window) {
-        assert(false && "Failed to create GLFW window");
+        FailWindowStartup("Failed to create the launcher window.");
     }
 #if defined(__linux__)
     if (ShouldApplyWindowIcon()) {
@@ -223,7 +280,7 @@ void VinceWindow::init() {
     glfwMakeContextCurrent(window.get());
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        assert(false && "Failed to initialize OpenGL context");
+        FailWindowStartup("Failed to initialize the OpenGL context.");
     }
 
     glViewport(0, 0, bufferWidth, bufferHeight);

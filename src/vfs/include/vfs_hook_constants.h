@@ -21,14 +21,16 @@ constexpr uint32_t kNativeReadRequestSize = 344;
 constexpr uint32_t kResourceStreamWrapperVTable = 0x820F9DA8;
 constexpr uint32_t kResourceStreamWrapperInterfaceVTable = 0x820F9DD8;
 constexpr uint32_t kResourceStreamWrapperSize = 0x40;
-constexpr uint32_t kResourceWrapperDtorFunc = 0x82B54D28;
-constexpr uint32_t kResourceWrapperStatusFunc = 0x82B542D8;
-constexpr uint32_t kResourceWrapperWaitFunc = 0x82B54250;
-constexpr uint32_t kResourceWrapperGetBytesFunc = 0x82B54268;
-constexpr uint32_t kResourceWrapperGetSizeFunc = 0x82C0EE10;
-constexpr uint32_t kResourceWrapperSlot36Func = 0x82B542F0;
 constexpr uint32_t kResourceWrapperVTableCopySize = 0x40;
-constexpr uint32_t kRefiiRequestManagerProviderIndex = 0x7FEE0001;
+// Refii-appended request-manager hash entries carry the real root provider
+// index: native FindStream (0x82B453F8 @ 0x82b45604) and BuildProviderHash
+// (0x82B45F70 @ 0x82b461dc) bounds-check the index against the provider array
+// and __trap() on anything out of range. Identity is carried by the entry key
+// alone; a native fallthrough on a refii entry degrades to a graceful
+// root-provider key miss while the FindStreamByHashEntry hook services the
+// hash first. Native entries are never rewritten -- their own provider is the
+// correct fallback when a refii open misses.
+constexpr uint32_t kRefiiRequestManagerGuestProviderIndex = 0;
 constexpr uint32_t kRefiiRequestManagerEntryKey = 0x52464949;
 constexpr uint32_t kRefiiPrivateHandleBase = 0xF9000000;
 constexpr uint32_t kRefiiPrivateHandleInvalid = 0xFFFFFFFF;

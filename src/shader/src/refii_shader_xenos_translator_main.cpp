@@ -1,4 +1,5 @@
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -44,6 +45,9 @@ struct Options {
     std::string stage;
     std::string name;
     std::filesystem::path output;
+    // Vertex stage only: second dxc pass over the same HLSL with
+    // -D REFII_TESSELLATION_VARIANT=1 (the hardware-tessellation variant).
+    std::filesystem::path tess_output;
 };
 
 std::string ToLowerAscii(std::string value) {
@@ -78,6 +82,9 @@ std::optional<std::string> ResolveDxcProfile(std::string_view stage);
 bool WriteTextFile(const std::filesystem::path& path,
                   std::string_view text,
                   std::string* error);
+bool ReadBinaryFile(const std::filesystem::path& path,
+                   std::vector<std::uint8_t>* bytes,
+                   std::string* error);
 std::string QuoteProcessArgument(const std::string& argument);
 void WriteTranslatorLog(const std::filesystem::path& log_path, const std::string& message);
 bool RunProcess(const std::vector<std::string>& args,
@@ -86,6 +93,11 @@ bool RunProcess(const std::vector<std::string>& args,
                 int* exit_code,
                 std::string* error);
 std::vector<std::pair<std::string, std::string>> BuildDxcEnvironment();
+bool TryWriteFablePixRenderVideoFramePixelShader(
+    const Options& options,
+    const std::filesystem::path& input_path,
+    const std::filesystem::path& hlsl_output_path,
+    std::string* error);
 
 void WriteTranslatorLog(const std::filesystem::path& log_path, const std::string& message) {
     if (log_path.empty()) {
@@ -106,7 +118,8 @@ void WriteTranslatorLog(const std::filesystem::path& log_path, const std::string
 
 bool TranslateXenosShaderBlobImpl(const Options& options,
                                  const std::filesystem::path& log_path,
-                                 std::string* error) {
+                                 std::string* error,
+                                 refii::shader::XenosMemoryExportStats* memexport_stats) {
     const std::filesystem::path input_path = std::filesystem::absolute(options.input);
     const std::filesystem::path output_path = std::filesystem::absolute(options.output);
     const std::filesystem::path hlsl_output_path(output_path.string() + ".hlsl");
@@ -160,63 +173,133 @@ bool TranslateXenosShaderBlobImpl(const Options& options,
         return false;
     }
 
-    const char* xenos_error = nullptr;
-    WriteTranslatorLog(log_path, "phase: xenos_translate_start");
-    if (!XenosRecompTranslateToHlsl(input_path.string().c_str(),
-                                    hlsl_output_path.string().c_str(),
-                                    REFII_XENOSRECOMP_SHADER_COMMON_PATH,
-                                    &xenos_error)) {
-        set_error(std::string("XenosRecomp failed: ") +
-                  (xenos_error != nullptr ? xenos_error : "failed to run"));
+    std::string fable_inline_error;
+    const bool wrote_fable_inline_shader =
+        TryWriteFablePixRenderVideoFramePixelShader(
+            options, input_path, hlsl_output_path, &fable_inline_error);
+    if (!fable_inline_error.empty()) {
+        set_error(fable_inline_error);
         return false;
     }
-    WriteTranslatorLog(log_path, "phase: xenos_translate_complete");
+
+    if (wrote_fable_inline_shader) {
+        WriteTranslatorLog(log_path, "phase: fable_pixrender_video_hlsl_complete");
+    } else {
+        const char* xenos_error = nullptr;
+        XenosRecompTranslationStats xenos_stats{};
+        WriteTranslatorLog(log_path, "phase: xenos_translate_start");
+        if (!XenosRecompTranslateToHlslEx(input_path.string().c_str(),
+                                          hlsl_output_path.string().c_str(),
+                                          REFII_XENOSRECOMP_SHADER_COMMON_PATH,
+                                          &xenos_stats,
+                                          &xenos_error)) {
+            set_error(std::string("XenosRecomp failed: ") +
+                      (xenos_error != nullptr ? xenos_error : "failed to run"));
+            return false;
+        }
+        if (memexport_stats != nullptr) {
+            memexport_stats->reported = true;
+            memexport_stats->enabled = xenos_stats.memexportEnabled != 0;
+            memexport_stats->streams = xenos_stats.memexportStreams;
+            memexport_stats->data_register_mask = xenos_stats.memexportDataRegisterMask;
+            memexport_stats->unresolved_address_writes =
+                xenos_stats.memexportUnresolvedAddressWrites;
+        }
+        // Memexport is rare enough that every occurrence belongs in the log.
+        if (xenos_stats.memexportEnabled != 0 ||
+            xenos_stats.memexportUnresolvedAddressWrites != 0) {
+            WriteTranslatorLog(
+                log_path,
+                "phase: xenos_memexport streams=" +
+                    std::to_string(xenos_stats.memexportStreams) +
+                    " eM_mask=" + std::to_string(xenos_stats.memexportDataRegisterMask) +
+                    " unresolved_eA=" +
+                    std::to_string(xenos_stats.memexportUnresolvedAddressWrites));
+        }
+        WriteTranslatorLog(log_path, "phase: xenos_translate_complete");
+    }
     if (!std::filesystem::exists(hlsl_output_path)) {
         set_error("XenosRecomp did not write HLSL output: " + hlsl_output_path.string());
         return false;
     }
 
-    std::vector<std::string> dxc_args;
-    dxc_args.push_back(REFII_XENOS_DXC_TOOL_PATH);
-    dxc_args.push_back("-T");
-    dxc_args.push_back(*dxc_profile);
-    dxc_args.push_back("-E");
-    dxc_args.push_back("main");
-    dxc_args.push_back("-HV");
-    dxc_args.push_back("2021");
-    dxc_args.push_back("-all-resources-bound");
-    dxc_args.push_back("-Wno-conversion");
-    if (options.target == "vulkan") {
-        dxc_args.push_back("-spirv");
-        dxc_args.push_back("-fvk-use-dx-layout");
-        if (options.stage == "vertex") {
-            dxc_args.push_back("-fvk-invert-y");
+    const auto run_dxc = [&](const std::filesystem::path& artifact_path,
+                             bool tess_variant) -> bool {
+        std::vector<std::string> dxc_args;
+        dxc_args.push_back(REFII_XENOS_DXC_TOOL_PATH);
+        dxc_args.push_back("-T");
+        dxc_args.push_back(*dxc_profile);
+        dxc_args.push_back("-E");
+        dxc_args.push_back("main");
+        dxc_args.push_back("-HV");
+        dxc_args.push_back("2021");
+        dxc_args.push_back("-all-resources-bound");
+        dxc_args.push_back("-Wno-conversion");
+        if (tess_variant) {
+            // Same HLSL, second artifact: the tessellation entry seeding is
+            // compiled in (see REFII_TESSELLATION_VARIANT in shader_common.h).
+            dxc_args.push_back("-D");
+            dxc_args.push_back("REFII_TESSELLATION_VARIANT=1");
         }
-    } else {
-        dxc_args.push_back("-Wno-ignored-attributes");
-        dxc_args.push_back("-Qstrip_reflect");
-    }
-    dxc_args.push_back("-Qstrip_debug");
-    dxc_args.push_back("-Fo");
-    dxc_args.push_back(output_path.string());
-    dxc_args.push_back(hlsl_output_path.string());
+        if (options.target == "vulkan") {
+            dxc_args.push_back("-spirv");
+            dxc_args.push_back("-fvk-use-dx-layout");
+            if (options.stage == "vertex") {
+                dxc_args.push_back("-fvk-invert-y");
+            }
+        } else {
+            dxc_args.push_back("-Wno-ignored-attributes");
+            dxc_args.push_back("-Qstrip_reflect");
+        }
+        dxc_args.push_back("-Qstrip_debug");
+        dxc_args.push_back("-Fo");
+        dxc_args.push_back(artifact_path.string());
+        dxc_args.push_back(hlsl_output_path.string());
 
-    int dxc_exit_code = 0;
-    std::string dxc_error;
-    WriteTranslatorLog(log_path, "phase: dxc_start");
-    if (!RunProcess(dxc_args, BuildDxcEnvironment(), log_path, &dxc_exit_code, &dxc_error)) {
-        set_error("unable to launch DXC: " + dxc_error);
+        const char* phase_tag = tess_variant ? "dxc_tess" : "dxc";
+        int dxc_exit_code = 0;
+        std::string dxc_error;
+        WriteTranslatorLog(log_path, std::string("phase: ") + phase_tag + "_start");
+        if (!RunProcess(dxc_args, BuildDxcEnvironment(), log_path, &dxc_exit_code,
+                        &dxc_error)) {
+            set_error("unable to launch DXC: " + dxc_error);
+            return false;
+        }
+        WriteTranslatorLog(log_path, std::string("phase: ") + phase_tag +
+                                         "_exit_code " + std::to_string(dxc_exit_code));
+        if (dxc_exit_code != 0) {
+            set_error("DXC exited with code " + std::to_string(dxc_exit_code) +
+                      " for target " + options.target +
+                      (tess_variant ? " (tessellation variant)" : ""));
+            return false;
+        }
+        if (!std::filesystem::exists(artifact_path)) {
+            set_error("DXC did not write output: " + artifact_path.string());
+            return false;
+        }
+        return true;
+    };
+
+    if (!run_dxc(output_path, false)) {
         return false;
     }
-    WriteTranslatorLog(log_path, "phase: dxc_exit_code " + std::to_string(dxc_exit_code));
-    if (dxc_exit_code != 0) {
-        set_error("DXC exited with code " + std::to_string(dxc_exit_code) + " for target " +
-                  options.target);
-        return false;
-    }
-    if (!std::filesystem::exists(output_path)) {
-        set_error("DXC did not write output: " + output_path.string());
-        return false;
+
+    // Hardware-tessellation variant: vertex shaders only (no whitelist — every
+    // vertex blob gets one). The inline Fable Bink shaders are pixel-stage and
+    // never reach here with a tess_output.
+    if (!options.tess_output.empty() && options.stage == "vertex") {
+        const std::filesystem::path tess_output_path =
+            std::filesystem::absolute(options.tess_output);
+        try {
+            std::filesystem::create_directories(tess_output_path.parent_path());
+        } catch (const std::exception& exception) {
+            set_error("unable to create tess output directory: " +
+                      std::string(exception.what()));
+            return false;
+        }
+        if (!run_dxc(tess_output_path, true)) {
+            return false;
+        }
     }
 
     return true;
@@ -230,14 +313,43 @@ bool TranslateXenosShaderBlob(const std::filesystem::path& input,
                              const std::string& name,
                              const std::filesystem::path& output,
                              const std::filesystem::path& log_path,
-                             std::string* error) {
+                             std::string* error,
+                             XenosMemoryExportStats* memexport_stats,
+                             const std::filesystem::path& tess_output) {
     Options options;
     options.input = input;
     options.target = ToLowerAscii(TrimAscii(target));
     options.stage = ToLowerAscii(TrimAscii(stage));
     options.name = name;
     options.output = output;
-    return TranslateXenosShaderBlobImpl(options, log_path, error);
+    options.tess_output = tess_output;
+    if (memexport_stats != nullptr) {
+        *memexport_stats = XenosMemoryExportStats{};
+    }
+    return TranslateXenosShaderBlobImpl(options, log_path, error, memexport_stats);
+}
+
+std::string DescribeXenosMemoryExportStats(const XenosMemoryExportStats& stats) {
+    if (!stats.reported) {
+        return "none";
+    }
+    if (!stats.enabled && stats.unresolved_address_writes == 0) {
+        return "streams=0";
+    }
+
+    std::string description = "streams=" + std::to_string(stats.streams);
+    description += ",eM=0x";
+    const char* digits = "0123456789ABCDEF";
+    description.push_back(digits[(stats.data_register_mask >> 4) & 0xFu]);
+    description.push_back(digits[stats.data_register_mask & 0xFu]);
+    if (stats.unresolved_address_writes != 0) {
+        description += ",unresolved_eA=" + std::to_string(stats.unresolved_address_writes);
+    }
+    if (!stats.enabled) {
+        // eA written but no eM# - nothing reaches memory. Worth shouting about.
+        description += ",no_data_registers";
+    }
+    return description;
 }
 
 }  // namespace refii::shader
@@ -471,6 +583,202 @@ bool WriteTextFile(const std::filesystem::path& path,
         if (error != nullptr) {
             *error = "failed to write " + path.string();
         }
+        return false;
+    }
+    return true;
+}
+
+bool ReadBinaryFile(const std::filesystem::path& path,
+                   std::vector<std::uint8_t>* bytes,
+                   std::string* error) {
+    if (bytes == nullptr) {
+        if (error != nullptr) {
+            *error = "missing byte output";
+        }
+        return false;
+    }
+
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec) {
+        if (error != nullptr) {
+            *error = "failed to stat " + path.string() + ": " + ec.message();
+        }
+        return false;
+    }
+
+    bytes->assign(static_cast<std::size_t>(size), 0);
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        if (error != nullptr) {
+            *error = "failed to open " + path.string();
+        }
+        bytes->clear();
+        return false;
+    }
+    file.read(reinterpret_cast<char*>(bytes->data()),
+              static_cast<std::streamsize>(bytes->size()));
+    if (!file && !file.eof()) {
+        if (error != nullptr) {
+            *error = "failed to read " + path.string();
+        }
+        bytes->clear();
+        return false;
+    }
+    return true;
+}
+
+bool TryWriteFablePixRenderVideoFramePixelShader(
+    const Options& options,
+    const std::filesystem::path& input_path,
+    const std::filesystem::path& hlsl_output_path,
+    std::string* error) {
+    constexpr std::uint8_t kExpectedPayload[] = {
+        0x00, 0x00, 0x00, 0x00, 0x10, 0x01, 0xc4, 0x00, 0x22, 0x00, 0x00, 0x00,
+        0xc8, 0x0f, 0x80, 0x00, 0x02, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    const bool is_pix_render_video =
+        options.name == "PSHADER_FABLE_PIXRENDER_VIDEO";
+    const bool is_bink_movie = options.name == "SHADER_BINK_MOVIE";
+    const bool is_bink_movie_with_alpha =
+        options.name == "SHADER_BINK_MOVIE_WITH_ALPHA";
+    if (!is_pix_render_video && !is_bink_movie && !is_bink_movie_with_alpha) {
+        return false;
+    }
+    if (options.stage != "pixel") {
+        if (error != nullptr) {
+            *error = "Fable Bink movie shader must be pixel stage";
+        }
+        return false;
+    }
+
+    if (is_pix_render_video) {
+        std::vector<std::uint8_t> bytes;
+        std::string read_error;
+        if (!ReadBinaryFile(input_path, &bytes, &read_error)) {
+            if (error != nullptr) {
+                *error = read_error;
+            }
+            return false;
+        }
+        if (bytes.size() != sizeof(kExpectedPayload) ||
+            !std::equal(bytes.begin(), bytes.end(), std::begin(kExpectedPayload))) {
+            if (error != nullptr) {
+                *error = "Fable PixRenderVideoFrame inline shader payload mismatch";
+            }
+            return false;
+        }
+    }
+
+    constexpr std::string_view kHlsl = R"(#define REFII_SHADER_STAGE_PIXEL 1
+#define REFII_BINK_ALPHA 0
+
+#ifdef __spirv__
+struct PushConstants {
+  uint64_t VertexShaderConstants;
+  uint64_t PixelShaderConstants;
+  uint64_t SharedConstants;
+};
+[[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
+#define s0_Texture2DDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 0)
+#define s1_Texture2DDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 4)
+#define s2_Texture2DDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 8)
+#define s3_Texture2DDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 12)
+#define s0_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 384)
+#define s1_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 388)
+#define s2_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 392)
+#define s3_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 396)
+#else
+cbuffer SharedConstants : register(b2, space4) {
+  uint4 g_Texture2DDescriptorIndexRows[8] : packoffset(c0);
+  uint4 g_Texture3DDescriptorIndexRows[8] : packoffset(c8);
+  uint4 g_TextureCubeDescriptorIndexRows[8] : packoffset(c16);
+  uint4 g_SamplerDescriptorIndexRows[8] : packoffset(c24);
+};
+#define s0_Texture2DDescriptorIndex g_Texture2DDescriptorIndexRows[0].x
+#define s1_Texture2DDescriptorIndex g_Texture2DDescriptorIndexRows[0].y
+#define s2_Texture2DDescriptorIndex g_Texture2DDescriptorIndexRows[0].z
+#define s3_Texture2DDescriptorIndex g_Texture2DDescriptorIndexRows[0].w
+#define s0_SamplerDescriptorIndex g_SamplerDescriptorIndexRows[0].x
+#define s1_SamplerDescriptorIndex g_SamplerDescriptorIndexRows[0].y
+#define s2_SamplerDescriptorIndex g_SamplerDescriptorIndexRows[0].z
+#define s3_SamplerDescriptorIndex g_SamplerDescriptorIndexRows[0].w
+#endif
+
+Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);
+Texture3D<float4> g_Texture3DDescriptorHeap[] : register(t0, space1);
+TextureCube<float4> g_TextureCubeDescriptorHeap[] : register(t0, space2);
+SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);
+
+float SamplePlane(uint texture_index, uint sampler_index, float2 uv) {
+  Texture2D<float4> texture = g_Texture2DDescriptorHeap[texture_index];
+#if REFII_SHADER_STAGE_PIXEL
+  return texture.Sample(g_SamplerDescriptorHeap[sampler_index], uv).r;
+#else
+  return texture.SampleLevel(g_SamplerDescriptorHeap[sampler_index], uv, 0.0f).r;
+#endif
+}
+
+#ifndef __spirv__
+[shader("pixel")]
+#endif
+void main(in float4 iPos : SV_Position,
+          in float4 iTexCoord0 : TEXCOORD0,
+          in float4 iTexCoord1 : TEXCOORD1,
+          in float4 iTexCoord2 : TEXCOORD2,
+          in float4 iTexCoord3 : TEXCOORD3,
+          in float4 iTexCoord4 : TEXCOORD4,
+          in float4 iTexCoord5 : TEXCOORD5,
+          in float4 iTexCoord6 : TEXCOORD6,
+          in float4 iTexCoord7 : TEXCOORD7,
+          in float4 iTexCoord8 : TEXCOORD8,
+          in float4 iTexCoord9 : TEXCOORD9,
+          in float4 iTexCoord10 : TEXCOORD10,
+          in float4 iTexCoord11 : TEXCOORD11,
+          in float4 iTexCoord12 : TEXCOORD12,
+          in float4 iTexCoord13 : TEXCOORD13,
+          in float4 iTexCoord14 : TEXCOORD14,
+          in float4 iTexCoord15 : TEXCOORD15,
+          in float4 iColor0 : COLOR0,
+          in float4 iColor1 : COLOR1,
+#ifdef __spirv__
+          in bool iFace : SV_IsFrontFace,
+#else
+          in uint iFace : SV_IsFrontFace,
+#endif
+          out float4 oC0 : SV_Target0) {
+  const float2 uv = iTexCoord0.xy;
+  const float cb = SamplePlane(s2_Texture2DDescriptorIndex,
+                               s2_SamplerDescriptorIndex, uv);
+  const float y = SamplePlane(s0_Texture2DDescriptorIndex,
+                              s0_SamplerDescriptorIndex, uv);
+  const float cr = SamplePlane(s1_Texture2DDescriptorIndex,
+                               s1_SamplerDescriptorIndex, uv);
+
+  float4 color;
+  color.r = y * 1.1641235f + cr * 1.5957947f - 0.8706551f;
+  const float green_base = y * 1.1641235f + cr * -0.81347656f;
+  color.g = green_base + cb * -0.3914490f + 0.5297050f;
+  color.b = y * 1.1641235f + cb * 2.0178223f - 1.081669f;
+  color.a = 1.0f;
+#if REFII_BINK_ALPHA
+  color.a = SamplePlane(s3_Texture2DDescriptorIndex,
+                        s3_SamplerDescriptorIndex, uv);
+#endif
+  oC0 = color;
+}
+)";
+    std::string hlsl(kHlsl);
+    if (is_bink_movie_with_alpha) {
+        constexpr std::string_view kAlphaOff = "#define REFII_BINK_ALPHA 0";
+        constexpr std::string_view kAlphaOn = "#define REFII_BINK_ALPHA 1";
+        const std::size_t alpha_define = hlsl.find(kAlphaOff);
+        if (alpha_define != std::string::npos) {
+            hlsl.replace(alpha_define, kAlphaOff.size(), kAlphaOn);
+        }
+    }
+    if (!WriteTextFile(hlsl_output_path, hlsl, error)) {
         return false;
     }
     return true;

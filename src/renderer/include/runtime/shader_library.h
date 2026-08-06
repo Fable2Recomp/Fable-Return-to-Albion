@@ -22,6 +22,12 @@ struct RendererShaderLibraryEntry {
   std::string binary_path;
   std::string hlsl_path;
   std::string guest_blob_path;
+  std::string vulkan_binary_path;
+  std::string vulkan_hlsl_path;
+  std::string d3d12_binary_path;
+  std::string d3d12_hlsl_path;
+  std::string metal_binary_path;
+  std::string metal_source_path;
   uint32_t guest_bytecode_size = 0;
   uint64_t guest_bytecode_hash = 0;
   uint32_t guest_payload_size = 0;
@@ -47,10 +53,20 @@ struct RendererShaderLibrarySnapshot {
 
 void RefreshRendererShaderLibrary();
 RendererShaderLibrarySnapshot GetRendererShaderLibrarySnapshot();
-std::vector<RendererShaderLibraryEntry> GetRendererShaderLibraryEntries();
 bool FindRendererShaderLibraryEntryById(uint32_t id,
                                         RendererShaderLibraryEntry& entry);
 bool FindRendererShaderLibraryEntryByGuestHash(
     uint64_t guest_bytecode_hash, RendererShaderLibraryEntry& entry);
+// Content-hash translation cache for in-place VS microcode patching
+// (D3D_PatchVertexShaderToMatchVertexDeclaration @0x821D3570 rewrites vfetch /
+// export instruction dwords inside the SAME allocation, then reloads it via
+// IM_LOAD 0xC0012B00). A post-patch guest hash matches no extraction-time
+// entry; the observer proves the variant equal-modulo-patch-slots via a
+// normalized (patch-slots-masked) hash and registers the association here so
+// every later FindRendererShaderLibraryEntryByGuestHash on the patched hash
+// resolves to the canonical translation. Survives RefreshRendererShaderLibrary
+// (keys are content hashes, not entry indices).
+void RegisterRendererShaderGuestHashAlias(uint64_t guest_bytecode_hash,
+                                          uint64_t canonical_guest_hash);
 
 }  // namespace refii::renderer

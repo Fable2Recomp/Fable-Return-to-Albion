@@ -1,5 +1,27 @@
 #include "vfs_hooks_private.h"
 
+namespace {
+
+bool IsNativeStartupBikCursorCaller(uint32_t link_register) {
+  return link_register == 0x82377C98u || link_register == 0x822F4FC8u;
+}
+
+bool ShouldLogNativeStartupVideoNativeMiscAudit(std::string_view key,
+                                                uint32_t limit) {
+  if (refii::vfs::RefiiLooseAssetBackendEnabled()) {
+    return false;
+  }
+
+  static std::mutex mutex;
+  static std::unordered_map<std::string, uint32_t> counts;
+
+  std::lock_guard<std::mutex> lock(mutex);
+  const uint32_t next_count = ++counts[std::string(key)];
+  return next_count <= limit;
+}
+
+} // namespace
+
 REX_EXTERN(sub_82C6E8F0) {
   REX_FUNC_PROLOGUE();
 
@@ -63,13 +85,53 @@ REX_EXTERN(sub_82C6E8F0) {
 REX_EXTERN(sub_82C6EAD8) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6EAD8);
-
   const PPCContext original_ctx = ctx;
   const uint32_t object_guest = original_ctx.r3.u32;
   const uint32_t stream_guest =
       object_guest != 0 ? refii::vfs::LoadGuestU32(base, object_guest + 8)
                         : 0;
+  if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {
+    const bool startup_loop_cursor =
+        IsNativeStartupBikCursorCaller(original_ctx.lr);
+    const bool audit =
+        startup_loop_cursor ||
+        ShouldLogNativeStartupVideoNativeMiscAudit("NativeBikCursorAny", 8);
+    if (audit) {
+      REXLOG_INFO("Refii VFS native BIK cursor enter "
+                  "lr=0x{:08X} object=0x{:08X} stream=0x{:08X} "
+                  "startup_loop={} object_words={} stream_words={} {}",
+                  original_ctx.lr,
+                  object_guest,
+                  stream_guest,
+                  startup_loop_cursor,
+                  refii::vfs::FormatGuestWordsIfPointer(base, object_guest, 8),
+                  refii::vfs::FormatGuestWords(base, stream_guest, 12),
+                  refii::vfs::FormatGuestObjectVTable(
+                      base, stream_guest, 12));
+    }
+    const auto cursor_started_at = std::chrono::steady_clock::now();
+    __imp__sub_82C6EAD8(ctx, base);
+    const auto cursor_elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - cursor_started_at)
+            .count();
+    if (startup_loop_cursor) {
+      refii::vfs::RecordRefiiStartupVideoCursor(
+          base, object_guest, stream_guest, ctx.r3.u32);
+    }
+    if (audit) {
+      REXLOG_INFO("Refii VFS native BIK cursor exit "
+                  "lr=0x{:08X} object=0x{:08X} stream=0x{:08X} "
+                  "result=0x{:08X} elapsed_ms={} startup_loop={}",
+                  original_ctx.lr,
+                  object_guest,
+                  stream_guest,
+                  ctx.r3.u32,
+                  cursor_elapsed_ms,
+                  startup_loop_cursor);
+    }
+    return;
+  }
 
   const bool trace_cursor =
       refii::vfs::ShouldTraceBikPpcShape(
@@ -121,7 +183,7 @@ REX_EXTERN(sub_82C6EAD8) {
                 ctx.r3.u32,
                 cursor_elapsed_ms);
   }
-  if (original_ctx.lr == 0x82377C98) {
+  if (IsNativeStartupBikCursorCaller(original_ctx.lr)) {
     const bool trace_loop =
         refii::vfs::ShouldTraceStartupVideoLoopProbe(
             "StartupVideoLoop_CursorPoll", original_ctx.lr, 12);

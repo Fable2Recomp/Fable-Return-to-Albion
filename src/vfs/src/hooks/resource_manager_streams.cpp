@@ -1,5 +1,22 @@
 #include "vfs_hooks_private.h"
 
+namespace {
+
+bool ShouldLogNativeResourceBikAudit(std::string_view key, uint32_t limit) {
+  if (refii::vfs::RefiiLooseAssetBackendEnabled()) {
+    return false;
+  }
+
+  static std::mutex mutex;
+  static std::unordered_map<std::string, uint32_t> counts;
+
+  std::lock_guard<std::mutex> lock(mutex);
+  const uint32_t next_count = ++counts[std::string(key)];
+  return next_count <= limit;
+}
+
+} // namespace
+
 REX_EXTERN(rex_lhResourceManager_FindAndCreateStream) {
   REX_FUNC_PROLOGUE();
 
@@ -80,7 +97,9 @@ REX_EXTERN(rex_lhResourceManager_FindAndCreateStream) {
               .resource_hash = resource_hash,
               .out_guest = out_guest,
               .manager_guest = resource_manager_guest,
-              .mode = arg7 == 0 ? 1 : arg7,
+              // Mode is r6, not r7: OpenInternal (0x82C68CD0) default-resolves
+              // it from -1 via manager vtbl[+24] before passing it here as a4.
+              .mode = arg6,
               .resource_flags = arg9,
               .caller_lr = static_cast<uint32_t>(original_ctx.lr),
               .prefer_resource_manager_texture_shape =
@@ -131,8 +150,6 @@ REX_EXTERN(rex_lhResourceManager_FindAndCreateStream) {
 REX_EXTERN(rex_lhResourceManager_GetCached) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_GetCached);
-
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t resource_manager_guest = ctx.r4.u32;
@@ -140,6 +157,46 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
   const uint32_t mode = ctx.r6.u32;
   const std::string name =
       refii::vfs::ReadBestEffortGuestString(base, name_guest, 4096);
+  if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {
+    const bool startup_bik = refii::vfs::IsStartupBikAssetName(name);
+    const bool audit =
+        startup_bik || (!name.empty() && name.find(".bik") != std::string::npos &&
+                        ShouldLogNativeResourceBikAudit(
+                            "NativeGetCachedBikAny", 16));
+    if (audit) {
+      REXLOG_INFO("Refii VFS native GetCached enter "
+                  "lr=0x{:08X} ctr=0x{:08X} out=0x{:08X} "
+                  "manager=0x{:08X} name_obj=0x{:08X} name={} "
+                  "mode=0x{:08X} startup_bik={}",
+                  original_ctx.lr,
+                  original_ctx.ctr.u32,
+                  out_guest,
+                  resource_manager_guest,
+                  name_guest,
+                  name.empty() ? "unknown" : name,
+                  original_ctx.r6.u32,
+                  startup_bik);
+    }
+    __imp__rex_lhResourceManager_GetCached(ctx, base);
+    const uint32_t stream_guest =
+        out_guest != 0 ? refii::vfs::TryReadOutputPointer(base, out_guest) : 0;
+    if (audit) {
+      REXLOG_INFO("Refii VFS native GetCached exit "
+                  "lr=0x{:08X} result=0x{:08X} name={} out=0x{:08X} "
+                  "out_stream=0x{:08X} startup_bik={} stream_words={} {}",
+                  original_ctx.lr,
+                  ctx.r3.u32,
+                  name.empty() ? "unknown" : name,
+                  out_guest,
+                  stream_guest,
+                  startup_bik,
+                  refii::vfs::FormatGuestWords(base, stream_guest, 12),
+                  refii::vfs::FormatGuestObjectVTable(
+                      base, stream_guest, 12));
+    }
+    return;
+  }
+
   uint32_t caller_resource_hash = 0;
   if ((original_ctx.lr == 0x82C68EB0 || original_ctx.lr == 0x82C68DD8) &&
       original_ctx.r1.u32 != 0) {

@@ -291,6 +291,8 @@
 0x8229F010 = { size = 0x94 }
 0x822A12B0 = { size = 0x24 }
 0x822A26B8 = { name = "rex_lhRenderLayer_SetSortConfig", size = 0x170 }
+0x822A2D34 = { size = 0x28 } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
+0x822A2D5C = { size = 0x28 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x822A49F0 = { size = 0xC }
 0x822A94F0 = { size = 0x8 }
 0x822AA340 = { size = 0xD8 }
@@ -1510,6 +1512,8 @@
 0x82451A10 = { size = 0x124 }
 0x82451B38 = { name = "rex_lhCreateLuaState", size = 0x23C }
 0x82451D78 = { name = "rex_lhDestroyLuaHeap", size = 0xC0 }
+0x82451E38 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x82451EF8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82452278 = { size = 0xC }
 0x82452288 = { size = 0xC }
 0x82452298 = { size = 0x18 }
@@ -1970,6 +1974,7 @@
 0x824EE790 = { size = 0xA8 }
 0x824EE838 = { size = 0x98 }
 0x824EE8D0 = { size = 0x9C }
+0x824EEDA0 = { size = 0x8 } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
 0x824F0180 = { size = 0x174 }
 0x824F1098 = { size = 0x8 }
 0x824F13D0 = { size = 0x8 }
@@ -2577,6 +2582,7 @@
 0x825E1E30 = { size = 0x18C }
 0x825E2570 = { size = 0x38 }
 0x825E25A8 = { size = 0x38 }
+0x825E28B0 = { size = 0x10 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x825E2DD8 = { size = 0x8 }
 0x825E3620 = { size = 0x3C }
 0x825E3CF8 = { size = 0x164 }
@@ -2622,6 +2628,10 @@
 0x825F4D48 = { size = 0x40 }
 0x825F4D88 = { size = 0x178 }
 0x825F4F00 = { size = 0x160 }
+0x825F7C90 = { size = 0xC } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
+0x825F7C9C = { size = 0x8 } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
+0x825F7CA4 = { size = 0x8 } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
+0x825F7CAC = { size = 0xC } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
 0x825FCD88 = { name = "rex_XPhysicalFree", size = 0x50 }
 0x82604D88 = { size = 0x20 }
 0x82604DA8 = { size = 0xD8 }
@@ -3934,6 +3944,7 @@
 0x8284AE90 = { size = 0x8 }
 0x8284C280 = { size = 0x8 }
 0x828545D8 = { size = 0x8 }
+0x82854C78 = { size = 0x4 } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
 0x82855B50 = { size = 0x8 }
 0x82855B58 = { size = 0x8 }
 0x8285A310 = { size = 0x8 }
@@ -4601,6 +4612,7 @@
 0x82964800 = { size = 0x10 }
 0x82964810 = { size = 0x10 }
 0x82964820 = { size = 0x10 }
+0x82964830 = { size = 0x14 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82964A28 = { size = 0x8 }
 0x82964AA0 = { size = 0x10 }
 0x82966D40 = { size = 0x40 }
@@ -4764,6 +4776,7 @@
 0x829EA9E8 = { size = 0x78 }
 0x82A015C8 = { size = 0x18 }
 0X82A015E0 = { size = 0x18 }
+0x82A01B38 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82A1B418 = { name = "rex_lhRenderer_CreateModule", size = 0x148 }
 0x82A1E230 = { size = 0xA4 }
 0x82A1FD00 = { size = 0x1D8 }
@@ -5107,6 +5120,7 @@
 0x82B3D8B0 = { name = "rex_lhCriticalSection_Init", size = 0x30 }
 0x82B3D8E8 = { size = 0x50 }
 0x82B3DA08 = { name = "rex_lhVFS_CheckPlatformFileSupport", size = 0xD8 }
+0x82B3DAE0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82B3DAE8 = { name = "rex_lhThread_SetName", size = 0x7C }
 0x82B3DCE8 = { name = "rex_lhVFS_SetAsyncProvider", size = 0x80 }
 0x82B3F968 = { name = "rex_lhRenderer_CreateParams", size = 0xB4 }
@@ -5183,6 +5197,20 @@
 0x82B6ED10 = { name = "rex_lhRenderer_PrepareFrame", size = 0x78 }
 0x82B6EDE0 = { name = "rex_lhRenderer_SetupFrame", size = 0xE8 }
 0x82B6F1D0 = { name = "rex_lhRenderer_EndScene", size = 0x2EC }
+# Split out 2026-07-29 during the native-resolution investigation. The guest-side
+# patch was REVERTED (see d3d_pass_through.cpp) -- resolution is owned host-side.
+# Boundary kept because the analysis below is the reference for this function:
+# is the ONLY choke point that feeds all three consumers of the render size --
+# it loads width/height from desc+8/+0xC into callee-saved r24/r23
+# (0x82B6F79C/0x82B6F7A4), then writes them to the D3DPRESENT_PARAMETERS it
+# builds (0x82B6F7B4/B8), to the saved template dword_83360368 via memcpy
+# (0x82B6F8F8), and to the global qword_834A5FE8 (0x82B6F9A0/A4) that EVERY
+# scene render-target allocation reads (Render_AllocateSceneRenderTargetSet
+# 0x82A4E6D0 via sub_82A4CCD8 and Render_SubPassOrchestrator).
+# Patching D3D_InitializePresentationParameters instead does NOT work: its three
+# creation branches are all skipped on Fable's paths, and the global is written
+# from registers loaded BEFORE that call.
+0x82B6F6C0 = { size = 0x30C }
 0x82B6FCE8 = { name = "rex_lhRenderer_GetTimeDelta", size = 0x78 }
 0x82B707D0 = { name = "rex_lhMeshResourceContainer_Init", size = 0x98 }
 0x82B70908 = { name = "rex_lhMeshResource_Deserialize", size = 0xB98 }
@@ -5313,6 +5341,7 @@
 0x82BC2010 = { size = 0x1A8 }
 0x82BC2720 = { size = 0x84 }
 0x82BC2C88 = { size = 0x114 }
+0x82BC2FF8 = { size = 0x20 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82BC5B50 = { size = 0xE8 }
 0x82BC5C38 = { size = 0x16C }
 0x82BC5EF8 = { size = 0x200 }
@@ -5360,6 +5389,7 @@
 0x82BFF070 = { size = 0x18 }
 0x82BFF598 = { name = "rex_XGComparePixelShaders_16", size = 0x8 }
 0x82C00458 = { size = 0x20 }
+0x82C00A98 = { size = 0x10 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82C01F98 = { size = 0xD0 }
 0x82C02C30 = { name = "rex___iob_func_100", size = 0xC }
 0x82C02F08 = { name = "rex_lh_ResourceSystemInit", size = 0xC4 }
@@ -5433,6 +5463,7 @@
 0x82C33F20 = { name = "rex___iob_func_139", size = 0xC }
 0x82C35790 = { name = "rex___iob_func_140", size = 0xC }
 0x82C35D40 = { size = 0xC }
+0x82C35EA0 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82C36620 = { name = "rex___iob_func_141", size = 0xC }
 0x82C36F60 = { name = "rex___iob_func_142", size = 0xC }
 0x82C36F78 = { name = "rex___iob_func_143", size = 0xC }
@@ -5568,8 +5599,11 @@
 0x82C5BDA8 = { size = 0x58 }
 0x82C5BE00 = { size = 0x60 }
 0x82C5C010 = { size = 0x50 }
+0x82C5FA48 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82C5FB28 = { size = 0x40 }
 0x82C5FB68 = { size = 0x68 }
+0x82C5FC20 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x82C60FD0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82C61220 = { size = 0xE8 }
 0x82C61308 = { size = 0x48 }
 0x82C61350 = { size = 0x48 }
@@ -5584,6 +5618,7 @@
 0x82C615D8 = { size = 0x34 }
 0x82C61610 = { size = 0x24 }
 0x82C61638 = { size = 0x24 }
+0x82C61B20 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82C620E8 = { size = 0x84 }
 0x82C62170 = { size = 0x64 }
 0x82C621E0 = { size = 0x8C }
@@ -5597,11 +5632,16 @@
 0x82C626F8 = { size = 0x70 }
 0x82C627D0 = { size = 0x8C }
 0x82C62868 = { size = 0xE8 }
+0x82C62978 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82C62980 = { size = 0xE0 }
+0x82C62A88 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82C62A90 = { size = 0x90 }
 0x82C62B48 = { size = 0x18 }
 0x82C63280 = { size = 0x48 }
+0x82C63440 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82C63768 = { size = 0x10 }
+0x82C63DF0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x82C645F8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82C68C28 = { name = "rex_lhResourceManager_GetGlobal", size = 0x50 }
 0x82C68CD0 = { name = "rex_lhResourceManager_OpenInternal", size = 0xB4 }
 0x82C68E50 = { name = "rex_lhResourceManager_Open", size = 0xE0 }
@@ -5789,6 +5829,7 @@
 0x82CA9A50 = { name = "rex_sprintf_s", size = 0x48 }
 0x82CA9A98 = { name = "rex__cfltcvt_init", size = 0x94 }
 0x82CA9B38 = { name = "rex__mtxthreadnotification", size = 0x68 }
+0x82CA9BA0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CA9BA8 = { name = "rex__endthreadex", size = 0xA4 }
 0x82CA9C50 = { name = "rex__threadstartex", size = 0x68 }
 0x82CA9CD0 = { name = "rex__beginthreadex", size = 0xE8 }
@@ -5814,16 +5855,20 @@
 0x82CAA600 = { name = "rex__fpclass", size = 0xD4 }
 0x82CAA6D8 = { name = "rex__snprintf_0", size = 0x110 }
 0x82CAA7E8 = { name = "rex_strcpy_s_0", size = 0xE0 }
+0x82CAA908 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CAA910 = { name = "rex__fsopen", size = 0x18C }
 0x82CAAAA0 = { name = "rex_fopen", size = 0x8 }
 0x82CAAAA8 = { name = "rex_fopen_s", size = 0x88 }
 0x82CAAB30 = { name = "rex__fclose_nolock", size = 0xB0 }
+0x82CAABE0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CAABE8 = { name = "rex_fclose", size = 0x118 }
 0x82CAAD00 = { name = "rex__fwrite_nolock", size = 0x264 }
 0x82CAAF70 = { name = "rex_fwrite", size = 0x108 }
 0x82CAB078 = { name = "rex__flush", size = 0x94 }
 0x82CAB110 = { name = "rex__fflush_nolock", size = 0x78 }
+0x82CAB188 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CAB190 = { name = "rex_flsall", size = 0x1D8 }
+0x82CAB368 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CAB370 = { name = "rex_fflush", size = 0xF4 }
 0x82CAB468 = { name = "rex__flushall", size = 0x8 }
 0x82CAB470 = { name = "rex__setvbuf_nolock", size = 0xCC }
@@ -5877,6 +5922,7 @@
 0x82CAD7D0 = { name = "rex__vswprintf_s_l", size = 0xAC }
 0x82CAD880 = { name = "rex_vswprintf_s", size = 0xC }
 0x82CAD890 = { name = "rex_strrchr", size = 0x58 }
+0x82CAD8E8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CAD8F0 = { name = "rex_fprintf", size = 0x228 }
 0x82CADB18 = { name = "rex__snscanf_helper", size = 0xC0 }
 0x82CADBD8 = { name = "rex__snprintf_s", size = 0x5C }
@@ -5891,6 +5937,8 @@
 0x82CAE618 = { name = "rex__CreateFrameInfo", size = 0xB4 }
 0x82CAE6D0 = { name = "rex__IsExceptionObjectToBeDestroyed", size = 0x58 }
 0x82CAE728 = { name = "rex__FindAndUnlinkFrame", size = 0xAC }
+0x82CAE8B0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x82CAE9D8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CAED40 = { name = "rex___initstdio", size = 0x120 }
 0x82CAEE60 = { name = "rex___endstdio", size = 0x40 }
 0x82CAEEA0 = { name = "rex__lock_file", size = 0x6C }
@@ -5902,12 +5950,14 @@
 0x82CAF398 = { name = "rex_strpbrk", size = 0x8C }
 0x82CAF428 = { name = "rex_modf", size = 0x130 }
 0x82CAF558 = { name = "rex_tanh", size = 0x100 }
+0x82CAF780 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CAFA30 = { name = "rex_longjmp", size = 0x314 }
 0x82CAFD48 = { name = "rex___crtExitProcess", size = 0x8 }
 0x82CAFD50 = { name = "rex__amsg_exit", size = 0x48 }
 0x82CAFD98 = { name = "rex__lockexit", size = 0x8 }
 0x82CAFDA0 = { name = "rex__unlockexit", size = 0x8 }
 0x82CAFDA8 = { name = "rex__initterm", size = 0x58 }
+0x82CAFE00 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CAFE08 = { name = "rex_doexit", size = 0x160 }
 0x82CAFF68 = { name = "rex_exit_0", size = 0xC }
 0x82CAFF78 = { name = "rex__exit_0", size = 0xC }
@@ -6003,9 +6053,11 @@
 0x82CB4C44 = { name = "rex__set_fsr", size = 0x10 }
 0x82CB4C54 = { name = "rex__get_fsr_0", size = 0x10 }
 0x82CB4C68 = { name = "rex__openfile", size = 0x258 }
+0x82CB4EC0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CB4EC8 = { name = "rex__getstream", size = 0x1B0 }
 0x82CB5080 = { name = "rex_longjmp_0", size = 0x28 }
 0x82CB50A8 = { name = "rex__close_nolock", size = 0xD8 }
+0x82CB5180 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CB5188 = { name = "rex__close", size = 0x170 }
 0x82CB52F8 = { name = "rex__fileno", size = 0x54 }
 0x82CB5350 = { name = "rex__freebuf", size = 0x68 }
@@ -6030,6 +6082,7 @@
 0x82CB6DE0 = { name = "rex__output_s_l", size = 0xB8C }
 0x82CB7B30 = { name = "rex__isctype_w", size = 0x44 }
 0x82CB7B78 = { name = "rex__isctype", size = 0x38 }
+0x82CB7BB0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CB7C88 = { name = "rex__woutput_s_l", size = 0xB60 }
 0x82CB8888 = { size = 0x1228 }
 0x82CB9AB0 = { size = 0x13F0 }
@@ -6040,11 +6093,13 @@
 0x82CBB318 = { name = "rex___DestructExceptionObject", size = 0xAC }
 0x82CBB3C8 = { name = "rex_CallCatchBlock", size = 0xC4 }
 0x82CBB498 = { name = "rex___BuildCatchObjectHelper", size = 0x288 }
+0x82CBB720 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CBB728 = { name = "rex___BuildCatchObject", size = 0x12C }
 0x82CBB858 = { name = "rex_CatchIt", size = 0x144 }
 0x82CBB9A0 = { name = "rex_FindHandlerForForeignException", size = 0x16C }
 0x82CBBB10 = { name = "rex_FindHandler", size = 0x2B4 }
 0x82CBBDD0 = { name = "rex___InternalCxxFrameHandler", size = 0x214 }
+0x82CBC048 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CBC0A0 = { name = "rex__initp_eh_hooks", size = 0x14 }
 0x82CBC0C0 = { name = "rex__fcloseall", size = 0xE4 }
 0x82CBC1A8 = { name = "rex__filbuf", size = 0x1BC }
@@ -6055,6 +6110,7 @@
 0x82CBC660 = { name = "rex_mktime", size = 0x2A4 }
 0x82CBC958 = { name = "rex__stricmp_0", size = 0x60 }
 0x82CBC9B8 = { name = "rex__read_nolock", size = 0x638 }
+0x82CBCFF0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CBCFF8 = { name = "rex__read", size = 0x1BC }
 0x82CBD1B8 = { name = "rex__wctomb_s_l", size = 0x11C }
 0x82CBD2D8 = { name = "rex_wctomb_s", size = 0x8 }
@@ -6076,6 +6132,7 @@
 0x82CBEAE0 = { name = "rex__controlfp", size = 0x164 }
 0x82CBEC48 = { name = "rex__clrfp", size = 0x30 }
 0x82CBEC78 = { name = "rex__sopen_helper", size = 0x510 }
+0x82CBF188 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CBF3E0 = { name = "rex__free_osfhnd", size = 0x94 }
 0x82CBF478 = { name = "rex__get_osfhandle", size = 0xC4 }
 0x82CBF548 = { name = "rex___lock_fhandle", size = 0xF4 }
@@ -6085,6 +6142,7 @@
 0x82CBFFE0 = { name = "rex__ld12tof", size = 0x6F8 }
 0x82CC06D8 = { name = "rex___mtold12", size = 0x294 }
 0x82CC0970 = { name = "rex__ungetc_nolock", size = 0x1D0 }
+0x82CC0B40 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CC0B48 = { name = "rex_ungetc", size = 0xE8 }
 0x82CC0C30 = { name = "rex__CallSettingFrame", size = 0x5C }
 0x82CC0C8C = { name = "rex__JumpToContinuation", size = 0xC0 }
@@ -6092,7 +6150,9 @@
 0x82CC0E1C = { name = "rex__CallCatchBlock", size = 0x24 }
 0x82CC0E40 = { name = "rex__SkipUnwoundFrames", size = 0x28 }
 0x82CC0F18 = { name = "rex__fileno_0", size = 0x68 }
+0x82CC0F88 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CC0F90 = { name = "rex__tzset", size = 0x1C8 }
+0x82CC1720 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CC18E0 = { name = "rex___iob_func_178", size = 0xC }
 0x82CC18F0 = { name = "rex___iob_func_179", size = 0xC }
 0x82CC1900 = { name = "rex___iob_func_180", size = 0xC }
@@ -6105,6 +6165,9 @@
 0x82CC1E98 = { name = "rex_XapiShowErrorAndWait", size = 0xB8 }
 0x82CC1F50 = { name = "rex_XapiLookupString", size = 0x84 }
 0x82CC1FD8 = { name = "rex_XapiPAL50Incompatible", size = 0x1E0 }
+0x82CC21B8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x82CC2364 = { size = 0x10 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x82CC2374 = { size = 0xC } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82CC2580 = { size = 0x10 }
 0x82CC2658 = { name = "rex_SetUnhandledExceptionFilter", size = 0x14 }
 0x82CC2670 = { name = "rex_XSetThreadProcessor", size = 0xB0 }
@@ -6135,7 +6198,9 @@
 0x82CC5628 = { name = "rex_RtlpInitializeHeapSegment", size = 0x168 }
 0x82CC5790 = { name = "rex_RtlpExtendHeap", size = 0x23C }
 0x82CC59D0 = { name = "rex_RtlpDeCommitFreeBlock", size = 0x360 }
+0x82CC5D30 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CC5D38 = { name = "rex_RtlCreateHeap", size = 0x5A0 }
+0x82CC62D8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CC62E0 = { name = "rex_RtlReAllocateHeap", size = 0x8AC }
 0x82CC6BC0 = { name = "rex_HeapCreate", size = 0x80 }
 0x82CC6D18 = { name = "rex_XMemSet128", size = 0xF8 }
@@ -6182,11 +6247,14 @@
 0x82CD0C60 = { name = "rex_XapiThreadStartup", size = 0x80 }
 0x82CD0CE0 = { size = 0x16C }
 0x82CD7864 = { name = "rex___iob_func_183", size = 0xC }
+0x82CD7C4C = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CD7F08 = { size = 0x4C }
 0x82CD8080 = { size = 0x5C }
+0x82CDE1A0 = { size = 0x8 } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
 0x82CDE910 = { name = "rex_lh_XAudioDriver_Init", size = 0x20 }
 0x82CDE930 = { name = "rex_lh_XAudioDriver_RegisterClient", size = 0x68 }
 0x82CDEA58 = { name = "rex_lh_XAudioDriver_Destroy", size = 0xA0 }
+0x82CDEB80 = { size = 0x10 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82CDEBC0 = { name = "rex_lh_XAudioDriver_Ctor", size = 0x48 }
 0x82CDEC08 = { name = "rex_lh_XAudioDriver_Create", size = 0xE0 }
 0x82CDF778 = { parent = 0x82CDEE78, size = 0x2C }
@@ -6195,8 +6263,17 @@
 0x82CE1B60 = { size = 0xAC }
 0x82CE2330 = { size = 0x18 }
 0x82CE9BD0 = { parent = 0x82CE7CB0, size = 8 }
+0x82CE9F80 = { size = 0x8 } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
+0x82CE9F90 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82CE9F98 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82CE9FA0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82CE9FA8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82CE9FD0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82CE9FD8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82CE9FE0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82CEAD70 = { size = 0xC }
 0x82CEC580 = { size = 0x48 }
+0x82CEC5C8 = { size = 0x1C } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82CFF6F8 = { size = 0x10 }
 0x82D03100 = { size = 0x14 }
 0x82D03BE0 = { size = 0x14 }
@@ -6387,7 +6464,11 @@
 0x82D63368 = { name = "rex___iob_func_190", size = 0xC }
 0x82D63418 = { name = "rex___iob_func_191", size = 0xC }
 0x82D634C0 = { name = "rex___iob_func_192", size = 0xC }
+0x82D679B8 = { size = 0x2C } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x82D6A110 = { size = 0x2C } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82D74168 = { name = "rex___iob_func_193", size = 0xC }
+0x82D777A8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x82D777D8 = { size = 0x14 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82D78470 = { name = "rex_hkpWorld__stepBeginSt", size = 0xF4 }
 0x82D78568 = { name = "rex_hkpWorld__stepProcessMt", size = 0xF4 }
 0x82D78660 = { name = "rex_hkpWorld__stepEndSt", size = 0xD8 }
@@ -6460,18 +6541,23 @@
 0x82D82C40 = { size = 0x14 }
 0x82D83BB8 = { size = 0x10 }
 0x82D83BD0 = { size = 0x14 }
+0x82D83EE8 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x82D83F18 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82D86AD8 = { name = "rex_XInputGetState_0", size = 0xC }
 0x82D8C248 = { size = 0x5C }
 0x82D8D8C8 = { size = 0xC }
 0x82D8E4F8 = { size = 0xEC }
+0x82D8F7B8 = { size = 0x10 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82D8FDB0 = { size = 0x104 }
 0x82D902B0 = { size = 0x2C }
+0x82D91DC8 = { size = 0x14 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82D954E8 = { size = 0x54 }
 0x82D9C698 = { name = "rex_XGComparePixelShaders_43", size = 0x8 }
 0x82D9E590 = { size = 0x10 }
 0x82DA41C8 = { name = "rex_XGComparePixelShaders_44", size = 0x8 }
 0x82DAC748 = { size = 0x31C }
 0x82DACE68 = { size = 0x728 }
+0x82DAEE50 = { size = 0x4 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82DB1B30 = { name = "rex___iob_func_227", size = 0xC }
 0x82DB1C58 = { name = "rex___iob_func_228", size = 0xC }
 0x82DB1E78 = { name = "rex___iob_func_229", size = 0xC }
@@ -6606,6 +6692,7 @@
 0x82DDFCE8 = { size = 0x4C }
 0x82DDFD38 = { size = 0x50 }
 0x82DDFD88 = { size = 0xE8 }
+0x82DE2B80 = { size = 0x28 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82DE2BA8 = { size = 0x1C }
 0x82DE2BC8 = { size = 0x18 }
 0x82DE2BE0 = { size = 0x1C }
@@ -6657,6 +6744,7 @@
 0x82E0A088 = { size = 0x23C }
 0x82E0A660 = { size = 0x80 }
 0x82E0A8B8 = { size = 0x940 }
+0x82E0BB18 = { size = 0x6C } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82E0BC30 = { size = 0x84 }
 0x82E0BCB8 = { size = 0x60 }
 0x82E0BD18 = { size = 0xC }
@@ -6664,6 +6752,7 @@
 0x82E0C688 = { size = 0xC28 }
 0x82E123B0 = { size = 0x170 }
 0x82E12530 = { size = 0x1B8 }
+0x82E1E090 = { size = 0x24 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82E29440 = { name = "rex_XGComparePixelShaders_50", size = 0x8 }
 0x82E2D5F0 = { size = 0x8 }
 0x82E2D5F8 = { name = "rex___iob_func_257", size = 0xC }
@@ -6695,6 +6784,7 @@
 0x82E5A2A0 = { size = 0x60 }
 0x82E5AF58 = { size = 0x60 }
 0x82E5BBE0 = { size = 0x60 }
+0x82E5C628 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82E5CC50 = { size = 0x60 }
 0x82E5DEE8 = { size = 0x60 }
 0x82E5E7C0 = { size = 0x60 }
@@ -6930,6 +7020,7 @@
 0x82ECA100 = { size = 0x5C }
 0x82ECA400 = { name = "rex___iob_func_363", size = 0xC }
 0x82ECA410 = { size = 0x5C }
+0x82ECA998 = { size = 0x10 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82ECADD8 = { name = "rex___iob_func_364", size = 0xC }
 0x82ECADE8 = { size = 0x74 }
 0x82ECB100 = { name = "rex___iob_func_365", size = 0xC }
@@ -7002,6 +7093,8 @@
 0x82EFA718 = { name = "rex_default_002b", size = 0x13C }
 0x82EFA858 = { name = "rex_default_0088", size = 0x70 }
 0x82EFA928 = { name = "rex_default_0029", size = 0x38 }
+0x82EFA978 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82EFA990 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82EFAAC8 = { name = "rex_default_0008", size = 0x8C }
 0x82EFAB58 = { name = "rex_default_0074", size = 0x8 }
 0x82EFAB60 = { name = "rex_default_00a9", size = 0x8 }
@@ -7043,6 +7136,8 @@
 0x82EFDA18 = { name = "rex_default_001a", size = 0x38 }
 0x82EFDA58 = { name = "rex_default_0091", size = 0x44 }
 0x82EFF598 = { name = "rex_default_0028", size = 0x8 }
+0x82EFF688 = { size = 0x10 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82EFF698 = { size = 0x14 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82F03140 = { name = "rex_default_006e", size = 0x30 }
 0x82F03490 = { name = "rex_default_003e", size = 0xA8 }
 0x82F03538 = { name = "rex_default_0055", size = 0x60 }
@@ -7075,7 +7170,11 @@
 0x82F05F48 = { name = "rex_default_0005", size = 0xC4 }
 0x82F06010 = { name = "rex_default_0017", size = 0x6C }
 0x82F06C88 = { name = "rex_default_0006", size = 0x6C }
+0x82F0AFE8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F0B060 = { size = 0xC } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82F12800 = { name = "rex___iob_func_376", size = 0xC }
+0x82F12838 = { size = 0x8 } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
+0x82F12848 = { size = 0x8 } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
 0x82F13A68 = { name = "rex_exit_2", size = 0xC }
 0x82F17628 = { size = 0x98 }
 0x82F183B8 = { size = 0x50 }
@@ -7114,6 +7213,14 @@
 0x82F1E390 = { size = 0x9C }
 0x82F21D30 = { size = 0xD4 }
 0x82F21E08 = { size = 0xD4 }
+0x82F24458 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F24470 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F24488 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F244A0 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F244B8 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F244D0 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F244E8 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F24500 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82F2F598 = { name = "rex_default_006c", size = 0x14 }
 0x82F2F5B0 = { name = "rex_default_0099", size = 0x18 }
 0x82F2F5C8 = { name = "rex_default_0072", size = 0x30 }
@@ -7128,12 +7235,17 @@
 0x82F2FDA8 = { name = "rex_default_0086", size = 0xA0 }
 0x82F2FE48 = { name = "rex_default_003b", size = 0x8C }
 0x82F2FED8 = { name = "rex_default_001e", size = 0x6C }
+0x82F330F0 = { size = 0x14 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F331B0 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F331C8 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82F33E20 = { name = "rex_XapiFormatObjectAttributes_1", size = 0x60 }
 0x82F33E80 = { name = "rex_XapiFormatObjectAttributes_2", size = 0x60 }
 0x82F44A00 = { size = 0x40 }
 0x82F44C50 = { size = 0x60 }
+0x82F4A430 = { size = 0x24 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82F54858 = { size = 0xB0 }
 0x82F5B5A0 = { size = 0x494 }
+0x82F5D7E0 = { size = 0x8 } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
 0x82F5DD18 = { size = 0x98 }
 0x82F617D8 = { size = 0x98 }
 0x82F6C8E0 = { name = "rex_default_006a", size = 0x98 }
@@ -7156,6 +7268,9 @@
 0x82F6CDD0 = { name = "rex_default_009b", size = 0xA0 }
 0x82F6CE70 = { name = "rex_default_005c", size = 0x34 }
 0x82F6CFB0 = { name = "rex_default_0042", size = 0x1B4 }
+0x82F6E7B0 = { size = 0x14 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F6E7D8 = { size = 0x14 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82F6E800 = { size = 0x14 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82F6FDC0 = { name = "rex_default_00a8", size = 0x8 }
 0x82F70CC0 = { size = 0x98 }
 0x82F77C78 = { name = "rex_XapiFormatObjectAttributes_3", size = 0x74 }
@@ -7211,6 +7326,7 @@
 0x82FB9DB8 = { name = "rex_default_0057", size = 0xE0 }
 0x82FB9E98 = { name = "rex_default_008a", size = 0x78 }
 0x82FB9F10 = { name = "rex_default_0056", size = 0x70 }
+0x82FBDF38 = { size = 0x10 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x82FDF7F0 = { size = 0x34 }
 0x82FDF828 = { size = 0x60 }
 0x82FDF888 = { size = 0x7C }
@@ -7280,15 +7396,23 @@
 0x82FEC470 = { size = 0x464 }
 0x82FEC8D8 = { size = 0x3B8 }
 0x82FECC90 = { size = 0x440 }
+0x82FEE980 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x82FEE988 = { size = 0xC } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
+0x83003248 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x830038B0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x830049A0 = { size = 0x1B8 }
+0x830051D8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x83006078 = { size = 0x1BC }
 0x830065D0 = { name = "rex___u64tod", size = 0x28 }
 0x83006C90 = { name = "rex_setjmp", size = 0x2CC }
+0x83007270 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x83007E80 = { name = "rex__fileno_1", size = 0x58 }
 0x83007ED8 = { name = "rex__fileno_2", size = 0x58 }
+0x83007F30 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x83009058 = { name = "rex_strtol_1", size = 0x20 }
 0x83009078 = { name = "rex_strtoul_2", size = 0x20 }
 0x83009468 = { size = 0x8C }
+0x83009DF0 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x8300A0E0 = { name = "rex___iob_func_380", size = 0xC }
 0x8300A0F0 = { name = "rex___iob_func_381", size = 0xC }
 0x8300A180 = { name = "rex__fltin2_0", size = 0xB8 }
@@ -7313,6 +7437,7 @@
 0x8300DEB8 = { size = 0x48 }
 0x8300DF00 = { size = 0x4C }
 0x8300DF50 = { size = 0x4 }
+0x8300DF68 = { size = 0x10 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x8300E068 = { size = 0x98 }
 0x8300E100 = { size = 0x98 }
 0x8300E978 = { size = 0x54 }
@@ -7331,6 +7456,7 @@
 0x8302F380 = { size = 0x4 }
 0x830344A8 = { size = 0x10 }
 0x830344B8 = { size = 0x4 }
+0x830470B8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x83048898 = { size = 0x28 }
 0x830488C0 = { size = 0x5C }
 0x83048920 = { size = 0x68 }
@@ -7352,15 +7478,25 @@
 0x83048EF8 = { size = 0x8C }
 0x83048F88 = { size = 0x7C }
 0x83049008 = { size = 0x48 }
+0x8305D4C0 = { size = 0x10 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x8305D5A0 = { size = 0x28 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x8305D5C8 = { size = 0x28 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x8305D5F0 = { size = 0x28 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
+0x8305D618 = { size = 0x28 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x8305DA34 = { name = "rex_XInputGetState_1", size = 0x14 }
+0x8305DA48 = { size = 0x20 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x83081EE0 = { size = 0x32C }
 0x83085F00 = { size = 0x84 }
+0x8309C624 = { size = 0x20 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x830ABDD0 = { size = 0x44 }
 0x830C9E10 = { name = "rex___iob_func_382", size = 0xC }
+0x830CDED8 = { size = 0x14 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x830EF608 = { name = "rex___iob_func_383", size = 0xC }
 0x830EF7D8 = { size = 0x48 }
 0x830F6EF8 = { name = "rex_xtoa", size = 0x8C }
 0x830F6F88 = { name = "rex__ultoa", size = 0x2C }
+0x830F7150 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x830F7A30 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x830F8348 = { name = "rex_XShaderPDBBuilder_Release_8", size = 0x10 }
 0x830F8358 = { name = "rex_XShaderPDBBuilder_Finish", size = 0x20 }
 0x830F8378 = { name = "rex_XShaderPDBBuilder_BeginPass_4", size = 0x10 }
@@ -7375,11 +7511,14 @@
 0x830FE288 = { size = 0x128 }
 0x830FF368 = { size = 0x190 }
 0x83100018 = { size = 0x50 }
+0x83101CB8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x83101DC0 = { name = "rex_XConvertShaderToMicrocode", size = 0x1C0 }
 0x83103190 = { size = 0x138 }
 0x831037B8 = { size = 0x5C }
 0x83103C28 = { size = 0x5C }
 0x83104038 = { name = "rex_fflush_2", size = 0xEC }
+0x83104588 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
+0x831049E8 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x83105020 = { size = 0x54 }
 0x83105078 = { size = 0xB0 }
 0x83105BA8 = { size = 0x48C }
@@ -7403,6 +7542,7 @@
 0x831129B8 = { size = 0x12C }
 0x831158E0 = { size = 0x630 }
 0x83116148 = { name = "rex_XGEstimateIdealShaderCost", size = 0x12C }
+0x8311659C = { size = 0xC } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x8311B978 = { name = "rex_AddTodo", size = 0x110 }
 0x8311BA88 = { name = "rex_AddTodo_Push", size = 0xDC }
 0x8311BB68 = { name = "rex_AddTodo_Change", size = 0x144 }
@@ -7437,11 +7577,13 @@
 0x8311E8E0 = { name = "rex_XGValidateVertexShaderMicrocodeLite", size = 0x8 }
 0x8311E8E8 = { name = "rex_XGValidatePixelShaderMicrocodeLite", size = 0x8 }
 0x83148548 = { size = 0x8 }
+0x8314CFD0 = { size = 0x88 }
 0x8314F110 = { size = 0x70 }
 0x831A1A00 = { size = 0x1FC }
 0x831BA458 = { size = 0x1D8 }
 0x831BA630 = { size = 0x1DC }
 0x831BA810 = { size = 0x3DC }
+0x831CC5C0 = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (address-taken uncovered)
 0x831CCC70 = { size = 0x48 }
 0x831FAB58 = { size = 0x88 }
 0x831FF6E0 = { name = "rex___iob_func_384", size = 0xC }
@@ -7456,6 +7598,7 @@
 0x83202A18 = { name = "rex_r400AbgrToColorArray", size = 0x68 }
 0x83202AE0 = { name = "rex_r400ZconstFromFloat", size = 0x9C }
 0x83202B80 = { name = "rex_r400FloatToColorInt", size = 0x4E0 }
+0x83206320 = { size = 0x2C } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
 0x83206940 = { name = "rex___iob_func_386", size = 0xC }
 0x832069C0 = { name = "rex___iob_func_387", size = 0xC }
 0x83206A28 = { name = "rex___iob_func_388", size = 0xC }
@@ -7499,6 +7642,7 @@
 0x83236F00 = { name = "rex_lhHeapPool_Alloc", size = 0xF4 }
 0x832370C0 = { name = "rex_lhHeapVirtual_Free", size = 0xB8 }
 0x83237178 = { name = "rex_lhHeapVirtual_Alloc", size = 0xA8 }
+0x83237220 = { size = 0x8 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x83237490 = { name = "rex_lhHeapLarge_AllocFreeSlot", size = 0x70 }
 0x83237618 = { name = "rex_lhHeapLarge_PageAlloc", size = 0x14C }
 0x832378D0 = { name = "rex_lhHeapLarge_TryAlloc", size = 0x1E4 }
@@ -7511,6 +7655,7 @@
 0x8323CCF8 = { name = "rex_HeapPoolInit", size = 0xC4 }
 0x83251290 = { name = "rex_lhDefaultFont_StaticInit", size = 0xC0 }
 0x83251350 = { name = "rex_lhDefaultFontAlt_StaticInit", size = 0xC0 }
+0x83290000 = { size = 0x3C } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
 0x83298E80 = { name = "rex_lhResourceManager_StaticInit", size = 0x38 }
 0x832A71C0 = { size = 0xC }
 0x832A71D0 = { size = 0xC }

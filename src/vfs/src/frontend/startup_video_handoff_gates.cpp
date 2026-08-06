@@ -401,16 +401,6 @@ int64_t RefiiStartupVideoReadyAgeMsLocked(
       .count();
 }
 
-bool RefiiStartupVideoMinimumReadyAgeReachedLocked(
-    const RefiiPostVideoHandoffTrace& trace,
-    int64_t* ready_age_ms_out) {
-  const int64_t ready_age_ms = RefiiStartupVideoReadyAgeMsLocked(trace);
-  if (ready_age_ms_out != nullptr) {
-    *ready_age_ms_out = ready_age_ms;
-  }
-  return ready_age_ms >= kRefiiStartupVideoMinimumReadyAgeMs;
-}
-
 int64_t RefiiStartupVideoPlaybackAgeMsLocked(
     const RefiiStartupVideoItemTrace& slot) {
   if (slot.provider.empty() ||
@@ -656,14 +646,6 @@ bool RefiiStartupVideosSettledForPostVideoHandoffLocked(
     *settled_age_ms_out = ready_age_ms;
   }
   return timed_complete;
-}
-
-bool RefiiStartupReadyCompletionSeenForPostVideoHandoffLocked(
-    const RefiiPostVideoHandoffTrace& trace) {
-  return trace.last_ui_event ==
-             "StartupVideoReadyCompletion_82377980_guarded_generated" ||
-         trace.last_ui_event ==
-             "StartupVideoReadyCompletion_82377980_collapsed_noalloc";
 }
 
 bool RefiiStartupVideosPlaybackCriticalActive() {

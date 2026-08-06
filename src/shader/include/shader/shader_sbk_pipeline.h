@@ -27,13 +27,21 @@ struct ShaderSbkEntryMetadata {
 
 struct ShaderSbkBlobMetadata {
     std::string bank_name;
+    // Payload id: the selector stored on every shader entry that uses this
+    // microcode. Resolves to (chunk = id / 4, slot = id % 4) inside the bank.
     std::size_t blob_index = 0;
+    // Byte offset and length of the microcode inside the inflated chunk.
     std::uint32_t source_offset = 0;
     std::uint32_t source_size = 0;
     ShaderStage stage = ShaderStage::kUnknown;
     std::string name_hint;
     std::filesystem::path output_path;
     std::string sha256;
+    std::uint32_t chunk_index = 0;
+    // Number of shader entries that select this payload. Values above one are
+    // normal: Fable II folds shader permutations into boolean-constant
+    // branches, so many named bindings share one microcode blob.
+    std::uint32_t alias_count = 0;
 };
 
 struct ShaderSbkExtractOptions {
@@ -104,6 +112,42 @@ struct ShaderSbkProgress {
 
 using ShaderSbkProgressCallback = std::function<void(const ShaderSbkProgress&)>;
 
+// Post-translation acceptance gate.  Mirrors
+// tools/check_refii_shader_translation_coverage.py so that every driver of the
+// pipeline (the refii-shader-sbk CLI, the launcher's "Compile Shaders" flow and
+// the build) enforces the identical bar.  Without this the loss is silent: a
+// blob with no usable artifact is only visible at runtime as a dropped draw
+// ("shader has no generated artifact").
+struct ShaderSbkCoverageOptions {
+    // Root holding blobs/, <target>/ and the reports.  Equivalent to the
+    // translate_out_dir used for the run being verified.
+    std::filesystem::path shader_root;
+    // Defaults to <shader_root>/extract_manifest.tsv when empty.
+    std::filesystem::path extract_manifest_path;
+    // Defaults to <shader_root>/compile_report.tsv when empty.
+    std::filesystem::path report_path;
+    // Same syntax as ShaderSbkTranslateOptions::targets ("auto" resolves to the
+    // host's default backend set).
+    std::string targets = "auto";
+};
+
+struct ShaderSbkCoverageTargetSummary {
+    std::string target;
+    std::size_t covered = 0;
+};
+
+struct ShaderSbkCoverageSummary {
+    std::filesystem::path shader_root;
+    std::filesystem::path extract_manifest_path;
+    std::filesystem::path report_path;
+    std::string resolved_targets;
+    std::size_t blob_count = 0;
+    std::size_t report_row_count = 0;
+    std::vector<ShaderSbkCoverageTargetSummary> per_target;
+    // Every individual defect found, in discovery order.
+    std::vector<std::string> failures;
+};
+
 struct ShaderSbkXenosProbeOptions {
     std::filesystem::path extract_manifest_path;
     std::filesystem::path report_path;
@@ -137,5 +181,16 @@ bool BuildShaderSbkWorkspace(const ShaderSbkBuildOptions& options,
 bool ProbeExtractedShaderSbkForXenos(const ShaderSbkXenosProbeOptions& options,
                                      ShaderSbkXenosProbeSummary* summary = nullptr,
                                      std::string* error = nullptr);
+
+// Returns true only when every extracted blob has a usable translated artifact
+// for every requested target.  `error` receives a single-line verdict plus the
+// leading failures so callers can surface it verbatim.
+bool VerifyTranslatedShaderCoverage(const ShaderSbkCoverageOptions& options,
+                                    ShaderSbkCoverageSummary* summary = nullptr,
+                                    std::string* error = nullptr);
+
+// "vulkan=589/589 d3d12=589/589" - shared by the CLI and the launcher so both
+// report coverage the same way.
+std::string DescribeShaderCoverageSummary(const ShaderSbkCoverageSummary& summary);
 
 }  // namespace refii::shader

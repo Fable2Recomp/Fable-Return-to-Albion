@@ -1,6 +1,6 @@
 #pragma once
 
-#include "runtime/plume/direct/fable_render_types.h"
+#include "runtime/refii_renderer/plume/fable/packets/fable_render_types.h"
 
 #include <cstdint>
 #include <string>
@@ -54,25 +54,26 @@ bool FableAlphaTestEnabled(const RendererDrawEventSnapshot& draw_event);
 bool FableViewportUsesReverseZ(const RendererDrawEventSnapshot& draw_event);
 uint32_t FableAlphaThresholdBits(
     const RendererDrawEventSnapshot& draw_event);
+// Scalar cores of the alpha-test helpers; the snapshot overloads above
+// forward here. The per-draw submit path (FillDirectSharedConstants) used to
+// default-construct a full RendererDrawEventSnapshot — ~13 KB of zero-init,
+// two float banks included — per recorded draw just to reach the four alpha
+// fields these take directly.
+uint32_t FableAlphaFunc(bool pm4_registers_valid, uint32_t rb_colorcontrol,
+                        uint32_t rs_alpha_func);
+bool FableAlphaTestEnabled(bool pm4_registers_valid, uint32_t rb_colorcontrol,
+                           uint32_t rs_alpha_test_enable,
+                           uint32_t rs_alpha_func);
+uint32_t FableAlphaThresholdBits(bool pm4_registers_valid,
+                                 uint32_t rb_colorcontrol,
+                                 uint32_t rb_alpha_ref,
+                                 uint32_t rs_alpha_test_enable,
+                                 uint32_t rs_alpha_func,
+                                 uint32_t rs_alpha_ref);
 plume::RenderPrimitiveTopology ConvertPrimitiveTopology(
     uint32_t primitive_type);
 uint32_t DrawVertexOrIndexCount(uint32_t primitive_type,
                                 uint32_t captured_count);
-bool IsFablePrimitivePolygonal(uint32_t primitive_type);
-bool IsFableRasterizationPotentiallyDone(
-    const RendererDrawEventSnapshot& draw_event);
-uint32_t CountBoundRenderTargets(const RendererDrawEventSnapshot& draw_event);
-bool DrawHasSparseRenderTargetSlots(
-    const RendererDrawEventSnapshot& draw_event);
-bool DrawHasAnyRenderTarget(const RendererDrawEventSnapshot& draw_event);
-bool DrawTargetsContainRenderTarget(
-    const RendererDrawEventSnapshot& draw_event, uint32_t render_target);
-bool ShouldDirectDrawToCurrentOutput(
-    const RendererDrawEventSnapshot& draw_event,
-    uint32_t present_render_target);
-bool DrawTargetsSelectedPresentTarget(
-    const RendererDrawEventSnapshot& draw_event,
-    uint32_t present_render_target);
 bool HasInputLocation(
     const std::vector<plume::RenderInputElement>& input_elements,
     uint32_t location);
@@ -82,13 +83,8 @@ plume::RenderFormat DefaultInputFormatForUsage(uint8_t usage);
 uint32_t InputFormatByteSize(plume::RenderFormat format);
 uint32_t InputLayoutSlotMaxElementEnd(
     const std::vector<plume::RenderInputElement>& elements, uint32_t slot);
-std::string FormatInputLayoutSummary(
-    const std::vector<plume::RenderInputSlot>& slots,
-    const std::vector<plume::RenderInputElement>& elements);
 std::vector<plume::RenderInputElement> ParseShaderInputSignature(
     const std::string& hlsl_path);
-plume::RenderFormat HeuristicShaderInputFormat(
-    const plume::RenderInputElement& shader_input);
 void FilterInputElementsToShaderInputs(
     std::vector<plume::RenderInputElement>& input_elements,
     const std::vector<plume::RenderInputElement>& shader_inputs);
@@ -109,13 +105,13 @@ void TrimInputSlotsToElements(
     std::vector<plume::RenderInputSlot>& input_slots,
     const std::vector<plume::RenderInputElement>& input_elements);
 plume::RenderBlend ConvertFableBlend(uint32_t blend,
-                                     plume::RenderBlend fallback);
+                                     plume::RenderBlend default_value);
 plume::RenderBlend ConvertFableAlphaBlend(uint32_t blend,
-                                          plume::RenderBlend fallback);
+                                          plume::RenderBlend default_value);
 plume::RenderBlendOperation ConvertFableBlendOp(
-    uint32_t blend_op, plume::RenderBlendOperation fallback);
+    uint32_t blend_op, plume::RenderBlendOperation default_value);
 plume::RenderComparisonFunction ConvertFableCompare(
-    uint32_t compare, plume::RenderComparisonFunction fallback);
+    uint32_t compare, plume::RenderComparisonFunction default_value);
 plume::RenderCullMode ConvertFableCullMode(uint32_t cull_mode);
 plume::RenderFrontFace ConvertFableFrontFace(uint32_t cull_mode);
 plume::RenderStencilOp ConvertFableStencilOp(uint32_t op);

@@ -58,11 +58,11 @@ REX_EXTERN(sub_82B6C340) {
                 refii::vfs::FormatGuestWords(base, wrapper_guest, 12));
   }
 
-  if (refii::vfs::TryHandleRefiiTextureParserC340NativeHandoff(
-          ctx, base, "TextureParser_C340_hook")) {
-  } else {
-    __imp__sub_82B6C340(ctx, base);
-  }
+  // The C340 shim replaced the native parse for main-menu texture hashes --
+  // synthetic-era machinery. With the boot flow now natural, let the native
+  // texture parser handle every texture; the shim left menu textures with
+  // bound-but-empty content (bindings flowed, no texel upload ever ran).
+  __imp__sub_82B6C340(ctx, base);
 
   if (trace_texture_parser) {
     const uint32_t bytes_pair_guest = frame_guest + 80;

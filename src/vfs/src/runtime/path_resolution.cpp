@@ -1,9 +1,12 @@
 #include "loose_asset_hooks.h"
+#include "gdb/gdb_csv_override.h"
+#include "babel/babel_csv_override.h"
 #include "runtime/cvars.h"
 
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -11,6 +14,8 @@
 #include <vector>
 
 #include <rex/runtime.h>
+
+#include "modding/mod_workspace.h"
 
 namespace refii::vfs {
 namespace {
@@ -130,6 +135,7 @@ void AddLocalizedAssetCandidates(std::vector<std::string>& candidates,
   constexpr std::string_view kVideos = "/videos/";
   constexpr std::string_view kFonts = "/fonts/";
   constexpr std::string_view kText = "/text/";
+  constexpr std::string_view kPatchText = "/patch_text/";
   constexpr std::string_view kSpeechDoc = "/speechdoc/";
   const size_t videos = relative.find(kVideos);
   if (videos != std::string_view::npos && EndsWith(relative, ".bik")) {
@@ -151,6 +157,14 @@ void AddLocalizedAssetCandidates(std::vector<std::string>& candidates,
   const size_t text = relative.find(kText);
   if (text != std::string_view::npos && EndsWith(relative, ".babel")) {
     const std::string tail = std::string(relative.substr(text + kText.size()));
+    AddUnique(candidates, "language/en-uk/text/" + tail);
+    return;
+  }
+
+  const size_t patch_text = relative.find(kPatchText);
+  if (patch_text != std::string_view::npos && EndsWith(relative, ".babel")) {
+    const std::string tail =
+        std::string(relative.substr(patch_text + kPatchText.size()));
     AddUnique(candidates, "language/en-uk/text/" + tail);
     return;
   }
@@ -536,9 +550,129 @@ std::vector<std::filesystem::path> GetLooseAssetModRoots(
   return roots;
 }
 
+std::filesystem::path ResolveModsRoot(const std::filesystem::path& game_root) {
+  const std::string configured = ConfiguredModsRootSetting();
+  if (!configured.empty()) {
+    return ResolveConfiguredAssetRoot(configured, game_root);
+  }
+  if (game_root.empty()) {
+    return {};
+  }
+  return NormalizeLooseAssetPath(
+      refii::modding::GetDefaultModsRoot(game_root));
+}
+
+std::vector<std::string> SplitEnabledModSetting(std::string_view setting) {
+  std::vector<std::string> names;
+  size_t start = 0;
+  while (start <= setting.size()) {
+    const size_t separator = setting.find(';', start);
+    std::string_view token = setting.substr(
+        start,
+        separator == std::string_view::npos ? std::string_view::npos
+                                            : separator - start);
+    while (!token.empty() &&
+           std::isspace(static_cast<unsigned char>(token.front())) != 0) {
+      token.remove_prefix(1);
+    }
+    while (!token.empty() &&
+           std::isspace(static_cast<unsigned char>(token.back())) != 0) {
+      token.remove_suffix(1);
+    }
+    if (!token.empty()) {
+      names.emplace_back(token);
+    }
+    if (separator == std::string_view::npos) {
+      break;
+    }
+    start = separator + 1;
+  }
+  return names;
+}
+
+// Enabled mod folders under the mods root, resolved to asset roots in search
+// order (list order is priority; a mod's files/ folder wins over its root).
+// The launcher owns enabled.txt, so the result is cached against that file's
+// identity plus the cvar values and refreshed when either changes.
+std::vector<std::filesystem::path> GetEnabledModAssetRoots(
+    const std::filesystem::path& game_root) {
+  const std::filesystem::path mods_root = ResolveModsRoot(game_root);
+  if (mods_root.empty()) {
+    return {};
+  }
+
+  const std::string enabled_setting = ConfiguredEnabledModsSetting();
+  const std::filesystem::path enabled_file =
+      mods_root / refii::modding::kEnabledModsFilename;
+  std::error_code stat_error;
+  const std::filesystem::file_time_type enabled_time =
+      std::filesystem::last_write_time(enabled_file, stat_error);
+
+  struct Cache {
+    std::string mods_root_key;
+    std::string enabled_setting;
+    std::filesystem::file_time_type enabled_time{};
+    bool enabled_file_exists = false;
+    std::vector<std::filesystem::path> roots;
+    bool loaded = false;
+  };
+  static std::mutex mutex;
+  static Cache cache;
+
+  const std::string mods_root_key = mods_root.generic_string();
+  const bool enabled_file_exists = !stat_error;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (cache.loaded && cache.mods_root_key == mods_root_key &&
+        cache.enabled_setting == enabled_setting &&
+        cache.enabled_file_exists == enabled_file_exists &&
+        cache.enabled_time == enabled_time) {
+      return cache.roots;
+    }
+  }
+
+  std::vector<std::string> names = SplitEnabledModSetting(enabled_setting);
+  for (std::string& name : refii::modding::ReadEnabledModNames(mods_root)) {
+    if (std::find(names.begin(), names.end(), name) == names.end()) {
+      names.push_back(std::move(name));
+    }
+  }
+
+  std::vector<std::filesystem::path> roots;
+  for (const std::string& name : names) {
+    if (!refii::modding::IsSafeModFolderName(name)) {
+      continue;
+    }
+    const std::filesystem::path mod_root = mods_root / name;
+    std::error_code error;
+    if (!std::filesystem::is_directory(mod_root, error)) {
+      continue;
+    }
+    const std::filesystem::path files_root =
+        mod_root / refii::modding::kModFilesFolderName;
+    error.clear();
+    AddUniqueRoot(&roots,
+                  std::filesystem::is_directory(files_root, error)
+                      ? files_root
+                      : mod_root);
+  }
+
+  std::lock_guard<std::mutex> lock(mutex);
+  cache.mods_root_key = mods_root_key;
+  cache.enabled_setting = enabled_setting;
+  cache.enabled_time = enabled_time;
+  cache.enabled_file_exists = enabled_file_exists;
+  cache.roots = roots;
+  cache.loaded = true;
+  return roots;
+}
+
 std::vector<std::filesystem::path> BuildLooseAssetSearchRoots() {
   const std::filesystem::path game_root = GetDefaultGameRoot();
   std::vector<std::filesystem::path> roots = GetLooseAssetModRoots(game_root);
+  for (std::filesystem::path& mod_root : GetEnabledModAssetRoots(game_root)) {
+    AddUniqueRoot(&roots, std::move(mod_root));
+  }
   AddUniqueRoot(&roots, GetLooseAssetRoot());
   return roots;
 }
@@ -561,7 +695,24 @@ std::filesystem::path GetLooseAssetRoot() {
 }
 
 std::vector<std::filesystem::path> GetLooseAssetSearchRoots() {
-  return BuildLooseAssetSearchRoots();
+  // Rebuilding the root list reads several cvars, stats enabled.txt, and
+  // allocates a handful of paths -- and resolve paths call this for every
+  // lookup. Cache with a short TTL so launcher-side mod toggles and cvar
+  // hot-reloads still land within half a second.
+  constexpr auto kRootsTtl = std::chrono::milliseconds(500);
+  static std::mutex mutex;
+  static std::vector<std::filesystem::path> cached_roots;
+  static std::chrono::steady_clock::time_point built_at{};
+  static bool built = false;
+
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!built || now - built_at >= kRootsTtl) {
+    cached_roots = BuildLooseAssetSearchRoots();
+    built_at = now;
+    built = true;
+  }
+  return cached_roots;
 }
 
 std::string BuildLooseAssetOpenPath(const std::filesystem::path& loose_path) {
@@ -641,6 +792,38 @@ bool ResolveLooseAssetOverride(std::string_view asset_path,
     for (const std::string& candidate : candidates) {
       if (IsNativeLooseAssetExcludedCandidate(candidate)) {
         continue;
+      }
+      // A CSV-authored game database beats the binary .gdb in the same root;
+      // it is compiled on demand into the .cache area and served from there.
+      if (GdbCsvOverridesEnabled() && EndsWith(candidate, ".gdb")) {
+        CachedLooseAsset csv_asset;
+        std::filesystem::path compiled;
+        if (TryResolveCachedLooseAsset(root, candidate + ".csv", &csv_asset) &&
+            TryCompileGdbCsvOverride(csv_asset.host_path, candidate,
+                                     &compiled)) {
+          if (out_resolution != nullptr) {
+            out_resolution->host_path = compiled;
+            out_resolution->normalized_key = normalized;
+            out_resolution->provider_relative_path = candidate;
+          }
+          return true;
+        }
+      }
+      // A CSV-authored localized-text database likewise beats the binary
+      // .babel; it is compiled on demand and served from the cache.
+      if (BabelCsvOverridesEnabled() && EndsWith(candidate, ".babel")) {
+        CachedLooseAsset csv_asset;
+        std::filesystem::path compiled;
+        if (TryResolveCachedLooseAsset(root, candidate + ".csv", &csv_asset) &&
+            TryCompileBabelCsvOverride(csv_asset.host_path, candidate,
+                                       &compiled)) {
+          if (out_resolution != nullptr) {
+            out_resolution->host_path = compiled;
+            out_resolution->normalized_key = normalized;
+            out_resolution->provider_relative_path = candidate;
+          }
+          return true;
+        }
       }
       CachedLooseAsset asset;
       if (!TryResolveCachedLooseAsset(root, candidate, &asset) ||

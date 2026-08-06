@@ -511,34 +511,6 @@ bool RefiiOptionalStartupVideoSlotFinalized(
   return slot.provider.empty() || slot.finalizer_seen;
 }
 
-bool RefiiOptionalStartupVideoSlotRealFinalized(
-    const RefiiStartupVideoItemTrace& slot) {
-  return slot.provider.empty() ||
-         (RefiiStartupVideoSlotReady(slot) && slot.finalizer_seen &&
-          !slot.finalizer_synthetic);
-}
-
-bool RefiiStartupVideosRealFinalizersSeenLocked(
-    const RefiiPostVideoHandoffTrace& trace);
-bool RefiiStartupVideosHaveAttachedUnretiredNativeObjectLocked(
-    const RefiiPostVideoHandoffTrace& trace);
-
-bool RefiiStartupVideosFinalizedForPostVideoHandoffLocked(
-    const RefiiPostVideoHandoffTrace& trace) {
-  return RefiiStartupVideosRealFinalizersSeenLocked(trace) &&
-         !RefiiStartupVideosHaveAttachedUnretiredNativeObjectLocked(trace);
-}
-
-bool RefiiStartupVideosRealFinalizersSeenLocked(
-    const RefiiPostVideoHandoffTrace& trace) {
-  return RefiiOptionalStartupVideoSlotRealFinalized(trace.middleware) &&
-         RefiiStartupVideoSlotReady(trace.microsoft) &&
-         RefiiStartupVideoSlotReady(trace.lionhead) &&
-         trace.microsoft.finalizer_seen && trace.lionhead.finalizer_seen &&
-         !trace.microsoft.finalizer_synthetic &&
-         !trace.lionhead.finalizer_synthetic;
-}
-
 bool RefiiStartupVideoNativeObjectRetiredLocked(
     const RefiiStartupVideoItemTrace& slot) {
   if (!RefiiStartupVideoSlotReady(slot) || !slot.finalizer_seen ||
@@ -566,18 +538,7 @@ bool RefiiStartupVideosNativeObjectsRetiredLocked(
          RefiiStartupVideoNativeObjectRetiredLocked(trace.lionhead);
 }
 
-bool RefiiStartupVideosHaveAttachedUnretiredNativeObjectLocked(
-    const RefiiPostVideoHandoffTrace& trace) {
-  auto unretired = [](const RefiiStartupVideoItemTrace& slot) {
-    return slot.object_guest != 0 && slot.object_stream_attached_seen &&
-           !slot.object_stream_cleared_seen && slot.last_object_stream_after != 0;
-  };
-  return unretired(trace.middleware) || unretired(trace.microsoft) ||
-         unretired(trace.lionhead);
-}
-
 bool RefiiStartupVideosReadyForMenuHandoff();
-bool RefiiStartupVideosFinalizedForMenuHandoff();
 bool RefiiStartupVideosSettledForMenuHandoff();
 bool RefiiStartupVideosSettledForPostVideoHandoffLocked(
     const RefiiPostVideoHandoffTrace& trace,
@@ -648,23 +609,10 @@ bool RefiiStartupVideosReadyForMenuHandoff() {
   return RefiiStartupVideosSettledForPostVideoHandoffLocked(trace, nullptr);
 }
 
-bool RefiiStartupVideosFinalizedForMenuHandoff() {
-  std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
-  const auto& trace = RefiiPostVideoHandoffTraceState();
-  return RefiiStartupVideosFinalizedForPostVideoHandoffLocked(trace);
-}
-
 bool RefiiStartupVideosSettledForMenuHandoff() {
   std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
   const auto& trace = RefiiPostVideoHandoffTraceState();
   return RefiiStartupVideosSettledForPostVideoHandoffLocked(trace, nullptr);
-}
-
-bool IsStartupLuaHostPath(std::string_view path) {
-  const std::string normalized = NormalizeLooseAssetKey(path);
-  return normalized.find("luasource/scripts/startup/") != std::string::npos &&
-         normalized.size() >= 4 &&
-         normalized.substr(normalized.size() - 4) == ".lua";
 }
 
 struct ActiveRefiiStreamSnapshot {
@@ -746,7 +694,7 @@ std::vector<ActiveRefiiStreamSnapshot> SnapshotActiveRefiiHostStreams(
     } else if (guest == middleware_wrapped || guest == microsoft_wrapped ||
                guest == lionhead_wrapped) {
       snapshot.owner = "startup_bik_buffered_alias";
-    } else if (IsStartupLuaHostPath(snapshot.path) ||
+    } else if (IsStartupLuaAssetName(snapshot.path) ||
                IsStartupLuaAssetName(snapshot.provider)) {
       snapshot.owner = "startup_lua";
     } else {

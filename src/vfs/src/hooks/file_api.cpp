@@ -1,4 +1,5 @@
 #include "vfs_hooks_private.h"
+#include <rex/system/xthread.h>
 #include "runtime/replacement_paths.h"
 
 REX_EXTERN(rex_CreateFileA) {
@@ -157,6 +158,16 @@ REX_EXTERN(rex_ReadFile) {
   __imp__rex_ReadFile(ctx, base);
 }
 
+// The native rex_ReadFileAsync (sub_82CC7DD0) is a thin NtReadFile wrapper:
+// it reads the byte offset from the IOSB extension (+8/+12), passes r7 as the
+// ApcContext, and registers sub_82CD0760 as the IO-completion APC. The game's
+// async read objects are completed BY THAT APC, so serving the read without
+// queueing it leaves the async consumer waiting forever (observed: Bink video
+// streaming stalls after the initial buffer -- first logo plays, the second
+// movie hangs). Mirror the kernel semantics from rexglue NtReadFile_entry:
+// complete synchronously, then EnqueueApc(routine & ~1, ctx, iosb, 0).
+constexpr uint32_t kReadFileAsyncCompletionApc = 0x82CD0760u;
+
 REX_EXTERN(rex_ReadFileAsync) {
   REX_FUNC_PROLOGUE();
 
@@ -171,6 +182,14 @@ REX_EXTERN(rex_ReadFileAsync) {
                                                     original_ctx.r5.u32,
                                                     0,
                                                     original_ctx.r6.u32)) {
+    if (original_ctx.r7.u32 != 0) {
+      if (auto* thread = rex::system::XThread::GetCurrentThread()) {
+        thread->EnqueueApc(kReadFileAsyncCompletionApc,
+                           original_ctx.r7.u32,
+                           original_ctx.r6.u32,
+                           0);
+      }
+    }
     if (refii::vfs::VfsTracingEnabled() &&
         refii::vfs::ShouldLogRepeatedVfsTraceOperation(
             "ReadFileAsyncRefiiPrivate", 64)) {

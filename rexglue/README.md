@@ -14,3 +14,7 @@ that copy. The SDK's compiled binaries are emitted under
 upstream SDK checkout stays clean.
 
 Provide an explicit `REXSDK_DIR` if you need to build against another SDK tree.
+
+`-DREFII_REXGLUE_NETPLAY=ON` switches the whole pipeline to the experimental
+netplay tree in `rexglue-net/` (same layout, RexNet online-play module); this
+tree stays the stable default.

@@ -90,6 +90,9 @@ cmake_dependent_option(
 
 include(cmake/refii_rexglue.cmake)
 include(cmake/refii_vcpkg.cmake)
+# Visible to every refii target (renderer, host, ...) so sources can adapt to
+# the API differences between the stable and netplay SDK trees.
+add_compile_definitions(REFII_REXGLUE_NETPLAY=$<BOOL:${REFII_REXGLUE_NETPLAY}>)
 refii_rexglue_configure_sdk()
 refii_rexglue_generate_sources_if_missing()
 include(generated/rexglue.cmake)
@@ -97,6 +100,20 @@ add_subdirectory(src/achievement)
 refii_rexglue_apply_shadow_overrides()
 refii_define_rexglue_build_target()
 refii_define_rexglue_codegen_bootstrap_target()
+
+# Must stay above the bootstrap return() below: rexcore's memory.cpp uses
+# SSSE3 intrinsics unconditionally, so the bootstrap build (which compiles
+# the SDK to produce the rexglue codegen tool) needs these flags too.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    # rexgraphics is the stable-tree target; the netplay SDK names it rexgpu-xenos.
+    foreach(_refii_rex_simd_target IN ITEMS rexcore rexaudio rexgraphics rexgpu-xenos)
+        if(TARGET "${_refii_rex_simd_target}")
+            target_compile_options("${_refii_rex_simd_target}" PRIVATE -mssse3)
+        endif()
+    endforeach()
+    unset(_refii_rex_simd_target)
+endif()
+
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/generated/sources.cmake"
 )
@@ -112,13 +129,14 @@ if(TARGET TracyClient AND NOT TARGET rex::TracyClient)
     add_library(rex::TracyClient ALIAS TracyClient)
 endif()
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
-    foreach(_refii_rex_simd_target IN ITEMS rexcore rexaudio rexgraphics)
-        if(TARGET "${_refii_rex_simd_target}")
-            target_compile_options("${_refii_rex_simd_target}" PRIVATE -mssse3)
-        endif()
-    endforeach()
-    unset(_refii_rex_simd_target)
+if(TARGET rexgpu-xenos)
+    # The netplay SDK builds the Xenos GPU plugin with hidden visibility,
+    # exporting only its plugin interface. Refii's Plume frontend subclasses
+    # GraphicsSystem/CommandProcessor directly, so it needs the full surface.
+    set_target_properties(rexgpu-xenos PROPERTIES
+        CXX_VISIBILITY_PRESET default
+        VISIBILITY_INLINES_HIDDEN OFF
+    )
 endif()
 
 if(TARGET SPIRV-Tools-static AND NOT TARGET rex::SPIRV-Tools-static)
@@ -266,6 +284,8 @@ endfunction()
 
 set(REFII_PACKAGE_EXTERNAL_LIB_TARGETS
     rex::runtime
+    # Netplay-tree GPU plugin; skipped via the TARGET checks on the stable tree.
+    rex::gpu-xenos
     rex::TracyClient
     fmt::fmt
     spdlog::spdlog
@@ -440,104 +460,52 @@ set(
 set_property(CACHE REFII_FLATPAK_ARCH PROPERTY STRINGS x86_64 aarch64)
 unset(_REFII_FLATPAK_ARCH_GUESS)
 
-set(REFII_SHADER_SBK_INPUT_DIR
-    "${CMAKE_SOURCE_DIR}/assets/game/data/Shaders"
-    CACHE PATH
-    "Directory containing tracked Shaders.sbk and ShadersRelease.sbk inputs"
-)
-set(REFII_SHADER_PIPELINE_ROOT_DIR
-    "${CMAKE_BINARY_DIR}/pipeline/shader_private"
-    CACHE PATH
-    "Private shader pipeline workspace root (kept separate from release/runtime outputs)"
-)
-set(REFII_SHADER_TOOL_OUTPUT_DIR
-    "${REFII_SHADER_PIPELINE_ROOT_DIR}/tools"
-    CACHE PATH
-    "Output directory for shader pipeline helper binaries"
-)
-set(REFII_SHADER_OUTPUT_DIR
-    "${CMAKE_SOURCE_DIR}/assets/unpacked/shaders"
-    CACHE PATH
-    "Output directory for extracted shader blobs and compiled runtime shader artifacts"
-)
-set(REFII_SHADER_SHARED_OUTPUT_DIR
-    "${CMAKE_SOURCE_DIR}/src/shader/processed"
-    CACHE PATH
-    "Config-independent shader artifact mirror under source tree for unified lookup"
-)
-set(REFII_SHADER_MIRROR_TO_SHARED_OUTPUT_DIR
-    ON
-    CACHE BOOL
-    "When ON, mirror shader pipeline artifacts into REFII_SHADER_SHARED_OUTPUT_DIR"
-)
+# The shader pipeline's input/output/workspace/translator cache knobs used to
+# live here, from when CMake drove extraction and translation.  It no longer
+# does -- the LAUNCHER owns that pipeline end to end (see the note below) -- so
+# every one of them had lost its consumer and they are gone.  The build's only
+# remaining shader jobs are compiling the tools and seeding the launcher's
+# default target list.
+
 set(REFII_TOOL_OUTPUT_DIR
     "${REFII_PACKAGE_OUTPUT_DIR}/tools"
     CACHE STRING
     "Output directory for optional lightweight tool executables"
     FORCE
 )
-set(_REFII_SHADER_LEGACY_TOOL_OUTPUT_DIR "${CMAKE_BINARY_DIR}/tools")
-if(REFII_SHADER_TOOL_OUTPUT_DIR STREQUAL "${_REFII_SHADER_LEGACY_TOOL_OUTPUT_DIR}")
-    set(REFII_SHADER_TOOL_OUTPUT_DIR
-        "${REFII_SHADER_PIPELINE_ROOT_DIR}/tools"
-        CACHE PATH
-        "Output directory for shader pipeline helper binaries"
-        FORCE
-    )
-endif()
-unset(_REFII_SHADER_LEGACY_TOOL_OUTPUT_DIR)
-
-set(_REFII_SHADER_LEGACY_OUTPUT_DIR "${CMAKE_BINARY_DIR}/generated/shaders")
-set(_REFII_SHADER_PRIVATE_OUTPUT_DIR "${REFII_SHADER_PIPELINE_ROOT_DIR}/artifacts")
-if(REFII_SHADER_OUTPUT_DIR STREQUAL "${_REFII_SHADER_LEGACY_OUTPUT_DIR}" OR
-   REFII_SHADER_OUTPUT_DIR STREQUAL "${_REFII_SHADER_PRIVATE_OUTPUT_DIR}")
-    set(REFII_SHADER_OUTPUT_DIR
-        "${CMAKE_SOURCE_DIR}/assets/unpacked/shaders"
-        CACHE PATH
-        "Output directory for extracted shader blobs and compiled runtime shader artifacts"
-        FORCE
-    )
-endif()
-unset(_REFII_SHADER_LEGACY_OUTPUT_DIR)
-unset(_REFII_SHADER_PRIVATE_OUTPUT_DIR)
-set(REFII_SHADER_TRANSLATOR_CMD
-    ""
-    CACHE FILEPATH
-    "Optional compiler executable path used by refii-shader-sbk compile/build"
-)
-set(REFII_SHADER_TRANSLATION_TARGETS
-    "auto"
-    CACHE STRING
-    "Compile targets for shader pipeline: auto, vulkan, d3d12, metal, or comma-separated combinations"
-)
-set(REFII_SHADER_USE_XENOS_TRANSLATOR
-    ON
-    CACHE BOOL
-    "When ON and REFII_SHADER_TRANSLATOR_CMD is empty, use the built refii-shader-xenos-translator"
-)
-set(REFII_SHADER_TRANSLATOR_TIMEOUT_MS
-    "60000"
-    CACHE STRING
-    "Timeout in milliseconds for each translator invocation"
-)
-set(REFII_SHADER_DEDUPE_IDENTICAL_BLOBS
-    ON
-    CACHE BOOL
-    "When ON, deduplicate compile work across identical shader payload hashes"
-)
 if(APPLE)
     set(REFII_SHADER_DEFAULT_VALIDATION_TARGETS "vulkan,metal")
 elseif(WIN32)
     set(REFII_SHADER_DEFAULT_VALIDATION_TARGETS "vulkan,d3d12")
 else()
+    # BY DESIGN (project owner, 2026-07-26): Linux is Vulkan-only — there is no
+    # D3D12 backend to load a DXIL artifact — so the coverage bar must not
+    # demand one.  Holding Linux to a d3d12 target would fail the build over a
+    # missing artifact this platform is never meant to produce.
+    #
+    # This mirrors BuildDefaultTranslateTargets() in
+    # src/shader/src/shader_sbk_pipeline.cpp; the two must agree, or the
+    # producer and the gate disagree about what "complete" means.
     set(REFII_SHADER_DEFAULT_VALIDATION_TARGETS "vulkan")
 endif()
 set(REFII_SHADER_VALIDATION_TARGETS
     "${REFII_SHADER_DEFAULT_VALIDATION_TARGETS}"
     CACHE STRING
-    "Targets used by refii_shader_pipeline_validate_all_targets (e.g. vulkan, vulkan,d3d12, or vulkan,metal)"
+    "Backend targets whose translated shader set must fully cover the extracted blobs (e.g. vulkan, vulkan,d3d12, or vulkan,metal)"
 )
 unset(REFII_SHADER_DEFAULT_VALIDATION_TARGETS)
+# NOTE (project owner, 2026-07-26): there is deliberately no build-time shader
+# coverage gate here.  Shader generation is the LAUNCHER's job -- CMake builds
+# the tools, it does not produce shader artifacts and must never fail a
+# compile over their state.  The equivalent check is native and runs where the
+# artifacts are actually owned:
+#   * refii::shader::VerifyTranslatedShaderCoverage()
+#     (src/shader/src/shader_sbk_pipeline.cpp)
+#   * launcher install path      -> src/launcher/src/installer/installer.cpp
+#   * refii-shader-sbk CLI       -> src/shader/src/refii_shader_sbk_cli_main.cpp
+# REFII_SHADER_VALIDATION_TARGETS above survives because it seeds the
+# launcher's compile-time default target list (src/launcher/CMakeLists.txt),
+# not because anything in the build validates against it.
 
 set(REFII_LUA_LIBRARIES)
 set(REFII_VFS_LIBRARIES)
@@ -690,6 +658,36 @@ set_target_properties(refii_generated PROPERTIES
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
 )
+# The recompiled guest payload is the ONE target where optimisation actually
+# decides framerate. Measured 2026-07-28: with the observer removed from the hook
+# path (per-call cost now microseconds), the present pump body down to 0.04ms and
+# the compose on its own thread, the pump spends ~231ms per frame purely BLOCKED
+# on the guest -- i.e. the guest thread executing this library is 100% of the
+# frame. It is ~150k recompiled PPC functions, and at Debug's -O0 that is
+# unoptimised throughout.
+#
+# This is scoped to refii_generated ALONE and deliberately does NOT change the
+# build type: every hand-written target (renderer, host, vfs, lua) stays at -O0
+# and fully debuggable, and there is no second build tree, so no extra disk
+# space. -g is kept so the generated frames still resolve in backtraces and
+# core dumps, which is how this project debugs hangs.
+#
+# COST: a full rebuild of this target at -O2 is SLOW (150k functions). It only
+# pays that when the generated sources change, which is rare. Set
+# REFII_OPTIMIZE_GENERATED=OFF to fall back to -O0 if a codegen bug needs
+# line-exact stepping through guest code.
+option(REFII_OPTIMIZE_GENERATED
+       "Compile the recompiled guest payload with optimisation even in Debug builds"
+       ON)
+if(REFII_OPTIMIZE_GENERATED)
+    if(MSVC)
+        target_compile_options(refii_generated PRIVATE $<$<CONFIG:Debug>:/O2>)
+    else()
+        target_compile_options(refii_generated PRIVATE $<$<CONFIG:Debug>:-O2 -g>)
+    endif()
+    message(STATUS "refii_generated: optimised (-O2) even in Debug; set REFII_OPTIMIZE_GENERATED=OFF to disable")
+endif()
+
 unset(REFII_GENERATED_LIBRARY_TYPE)
 add_library(refii_host STATIC
     src/refii_host.cpp
@@ -719,6 +717,7 @@ endif()
 target_compile_definitions(refii_host
     PUBLIC
         REFII_SDL3_WINDOW_ENABLED=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>
+        REFII_REXGLUE_NETPLAY=$<BOOL:${REFII_REXGLUE_NETPLAY}>
 )
 target_link_libraries(refii_host
     PUBLIC
@@ -746,19 +745,34 @@ refii_apply_generated_payload_compile_options(refii_hooks)
 if(REFII_BUILD_STANDALONE)
     set(REFII_SOURCES src/main.cpp)
 
-    if(WIN32)
+    # The netplay SDK replaced the per-platform entry points with a single
+    # SDL3 one; the stable tree still uses windowed_app_main_win/posix.
+    if(REFII_REXGLUE_NETPLAY)
+        refii_rexglue_shadow_source(
+            REFII_WINDOWED_APP_MAIN_SOURCE
+            "src/ui/windowed_app_main_sdl.cpp"
+        )
+    elseif(WIN32)
         refii_rexglue_shadow_source(
             REFII_WINDOWED_APP_MAIN_SOURCE
             "src/ui/windowed_app_main_win.cpp"
         )
-        list(APPEND REFII_SOURCES ${REFII_WINDOWED_APP_MAIN_SOURCE})
-        add_executable(refii WIN32 ${REFII_SOURCES})
     else()
         refii_rexglue_shadow_source(
             REFII_WINDOWED_APP_MAIN_SOURCE
             "src/ui/windowed_app_main_posix.cpp"
         )
-        list(APPEND REFII_SOURCES ${REFII_WINDOWED_APP_MAIN_SOURCE})
+    endif()
+    list(APPEND REFII_SOURCES ${REFII_WINDOWED_APP_MAIN_SOURCE})
+    if(WIN32)
+        # Opt in to Win32 long paths; extracted asset paths reach ~194 chars
+        # below the install root. MSVC embeds .manifest sources via mt.exe.
+        if(MSVC)
+            list(APPEND REFII_SOURCES
+                "${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/refii_long_paths.manifest")
+        endif()
+        add_executable(refii WIN32 ${REFII_SOURCES})
+    else()
         add_executable(refii ${REFII_SOURCES})
     endif()
 
@@ -790,27 +804,37 @@ if(REFII_BUILD_STANDALONE)
         )
     endif()
 
-    if(EXISTS "${REFII_SHADER_OUTPUT_DIR}")
-        add_custom_target(refii_stage_runtime_shaders
-            COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:refii>/assets/unpacked"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${REFII_SHADER_OUTPUT_DIR}"
-                "$<TARGET_FILE_DIR:refii>/assets/unpacked/shaders"
-            COMMENT "Staging unpacked shader artifacts"
-            VERBATIM
-        )
-        add_dependencies(refii refii_stage_runtime_shaders)
-    endif()
+    # NOTE: the build deliberately stages no shader workspace.  Shader
+    # extraction and translation are the LAUNCHER's job, and the launcher writes
+    # its workspace directly to <launcher exe dir>/assets/unpacked/shaders
+    # (Installer::GetLuaWorkspacePath()) -- the runtime directory.  A build-time
+    # copy from the source tree into that same directory could only overwrite the
+    # authoritative output, so there is none.
 
     if(WIN32)
         refii_stage_windows_runtime_dlls(refii)
         refii_stage_d3d12_agility_runtime(refii)
+        if(TARGET rex::gpu-xenos)
+            # Netplay SDK GPU plugin: the loader dlopens it from the exe folder.
+            add_custom_command(TARGET refii POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:rex::gpu-xenos>"
+                    "$<TARGET_FILE_DIR:refii>"
+                VERBATIM
+            )
+        endif()
     else()
         set(REFII_STAGE_EXTERNAL_LIBS_STAMP "${REFII_PACKAGE_STAMP_DIR}/refii_stage_external_libs.stamp")
         set(_refii_stage_external_lib_commands
             COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_LIBRARY_OUTPUT_DIR}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_PACKAGE_STAMP_DIR}"
+        )
+        # The netplay SDK's GPU plugin loader dlopens the plugin from the
+        # executable's own folder, so stage it into bin/ as well as lib/.
+        refii_append_stage_library_command(
+            _refii_stage_external_lib_commands
+            rex::gpu-xenos
+            "${REFII_RUNTIME_OUTPUT_DIR}/"
         )
         set(_refii_stage_external_lib_dependencies)
         foreach(_refii_external_lib_target IN LISTS REFII_PACKAGE_EXTERNAL_LIB_TARGETS)
@@ -1020,6 +1044,40 @@ set(REFII_APPIMAGE_RUNTIME_EXCLUDE_REGEXES
     ".*/libutil\\.so\\..*$"
     ".*/libresolv\\.so\\..*$"
     ".*/ld-linux[^/]*\\.so.*$"
+
+    # The display and graphics client libraries must come from the host, never
+    # from the build machine. AppRun puts the bundled lib directory first on
+    # LD_LIBRARY_PATH, so anything shipped here also shadows the host copy for
+    # libraries the host loads later. That breaks Wayland in particular: GLFW
+    # dlopens libwayland-cursor/libwayland-egl/libxkbcommon and the GL vendor
+    # loads libEGL from the host, and those all bind back to whichever
+    # libwayland-client/libGLdispatch is visible. Bundling half of a set that
+    # has to match exactly leaves the other half mismatched. X11 tends to
+    # survive it because it goes through GLX instead of EGL, which is why this
+    # only showed up on a Wayland session.
+    ".*/libwayland-[^/]*\\.so\\..*$"
+    ".*/libxkbcommon[^/]*\\.so\\..*$"
+    ".*/libdecor-[^/]*\\.so\\..*$"
+    ".*/libX11[^/]*\\.so\\..*$"
+    ".*/libxcb[^/]*\\.so\\..*$"
+    ".*/libXau\\.so\\..*$"
+    ".*/libXdmcp\\.so\\..*$"
+    ".*/libXext\\.so\\..*$"
+    ".*/libXi\\.so\\..*$"
+    ".*/libXfixes\\.so\\..*$"
+    ".*/libXrender\\.so\\..*$"
+    ".*/libXrandr\\.so\\..*$"
+    ".*/libXcursor\\.so\\..*$"
+    ".*/libXinerama\\.so\\..*$"
+    ".*/libGL\\.so\\..*$"
+    ".*/libGLX[^/]*\\.so\\..*$"
+    ".*/libGLdispatch\\.so\\..*$"
+    ".*/libOpenGL\\.so\\..*$"
+    ".*/libEGL[^/]*\\.so\\..*$"
+    ".*/libGLESv[0-9][^/]*\\.so\\..*$"
+    ".*/libgbm\\.so\\..*$"
+    ".*/libdrm[^/]*\\.so\\..*$"
+    ".*/libvulkan\\.so\\..*$"
 )
 
 if(REFII_BUILD_APPIMAGE)
@@ -1071,6 +1129,12 @@ if(REFII_BUILD_APPIMAGE)
             "#!/usr/bin/env sh\n"
             "SELF=\"$(readlink -f \"$0\")\"\n"
             "APPDIR=\"$(dirname \"$SELF\")\"\n"
+            "# Stash the host's own search paths before they get bundled ones\n"
+            "# prepended. Helper programs we spawn (zenity, kdialog, xdg-open)\n"
+            "# are host binaries and must not load our bundled libraries.\n"
+            "export REFII_HOST_ENV_SAVED=1\n"
+            "export REFII_HOST_PATH=\"\${PATH-}\"\n"
+            "export REFII_HOST_LD_LIBRARY_PATH=\"\${LD_LIBRARY_PATH-}\"\n"
             "export PATH=\"$APPDIR/usr/bin\${PATH:+:$PATH}\"\n"
             "export LD_LIBRARY_PATH=\"$APPDIR/usr/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"\n"
             "LAUNCHER=\"$APPDIR/usr/bin/refii-launcher\"\n"
@@ -1169,6 +1233,13 @@ if(REFII_BUILD_APPIMAGE)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${REFII_RUNTIME_DATA_DIR}/launcher/assets"
             "${REFII_APPIMAGE_APPDIR}/usr/bin/assets/launcher/assets"
+        # Per-title metadata. The seeding in refii_app.h reads
+        # <exe>/assets/metadata and returns silently when it is absent, so a
+        # package that omits this runs with shard opt-in, advertised_title_id
+        # and presence mappings all inactive.
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/assets/metadata"
+            "${REFII_APPIMAGE_APPDIR}/usr/bin/assets/metadata"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${REFII_APPIMAGE_APPRUN_SOURCE}"
             "${REFII_APPIMAGE_APPDIR}/AppRun"
@@ -1384,6 +1455,10 @@ if(REFII_BUILD_FLATPAK)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${REFII_RUNTIME_DATA_DIR}/launcher/assets"
             "${REFII_FLATPAK_PAYLOAD_DIR}/bin/assets/launcher/assets"
+        # Per-title metadata; see the AppImage staging above.
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/assets/metadata"
+            "${REFII_FLATPAK_PAYLOAD_DIR}/bin/assets/metadata"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${REFII_FLATPAK_DESKTOP_SOURCE}"
             "${REFII_FLATPAK_PAYLOAD_DIR}/share/applications/com.refii.refii.desktop"

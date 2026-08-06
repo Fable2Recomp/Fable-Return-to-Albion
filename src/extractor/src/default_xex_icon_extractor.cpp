@@ -1,5 +1,7 @@
 #include "extractor/default_xex_icon_extractor.h"
 
+#include "extractor/xex_decryptor.h"
+
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -157,6 +159,20 @@ bool ExtractDefaultXexIcons(
 
     std::vector<char> bytes((std::istreambuf_iterator<char>(stream)),
                             std::istreambuf_iterator<char>());
+    stream.close();
+
+    // A XEX straight off the disc is AES encrypted, so the icon table is not
+    // readable until it is decrypted. Do that on this copy only: the on-disc
+    // file is what the runtime loads and patches from default.xexp at boot,
+    // and it has to stay byte for byte as the disc wrote it.
+    std::string decryption_error;
+    if (!DecryptXexImage(bytes, nullptr, &decryption_error)) {
+        if (error != nullptr) {
+            *error = "failed to decrypt default.xex for icon extraction: " + decryption_error;
+        }
+        return false;
+    }
+
     const std::vector<std::size_t> png_starts = FindPngStarts(bytes);
     if (png_starts.size() < kDefaultXexIconFilenames.size()) {
         if (error != nullptr) {

@@ -23,6 +23,11 @@ struct RendererShaderLibraryState {
   std::mutex mutex;
   RendererShaderLibrarySnapshot snapshot;
   std::vector<RendererShaderLibraryEntry> entries;
+  // Post-patch guest hash -> canonical guest hash, registered by the hook
+  // observer when a normalized (patch-slots-masked) hash proves an in-place
+  // patched VS is the same program as an extraction-time entry. Keyed by
+  // content hash, so it deliberately survives RefreshRendererShaderLibrary.
+  std::unordered_map<uint64_t, uint64_t> guest_hash_aliases;
   bool logged = false;
 };
 
@@ -57,6 +62,47 @@ std::string ShaderRootForApi(RendererGraphicsApi api) {
 std::filesystem::path GuestShaderBlobRootForShaderRoot(
     const std::filesystem::path& shader_root) {
   return shader_root.parent_path() / "blobs" / "shaders";
+}
+
+std::filesystem::path ShaderArtifactRootForApi(RendererGraphicsApi api) {
+  const std::string root = ShaderRootForApi(api);
+  if (root.empty()) {
+    return {};
+  }
+  return std::filesystem::path(root) / "shaders";
+}
+
+std::string ExistingPathString(const std::filesystem::path& path) {
+  std::error_code ec;
+  return !path.empty() && std::filesystem::is_regular_file(path, ec) && !ec
+             ? path.string()
+             : std::string();
+}
+
+void PopulateShaderBackendArtifactPaths(RendererShaderLibraryEntry& entry) {
+  if (entry.name.empty()) {
+    return;
+  }
+
+  const std::filesystem::path vulkan_root =
+      ShaderArtifactRootForApi(RendererGraphicsApi::kVulkan);
+  const std::filesystem::path d3d12_root =
+      ShaderArtifactRootForApi(RendererGraphicsApi::kD3D12);
+  const std::filesystem::path metal_root =
+      ShaderArtifactRootForApi(RendererGraphicsApi::kMetal);
+
+  entry.vulkan_binary_path =
+      ExistingPathString(vulkan_root / (entry.name + ".vulkan.bin"));
+  entry.vulkan_hlsl_path =
+      ExistingPathString(vulkan_root / (entry.name + ".vulkan.bin.hlsl"));
+  entry.d3d12_binary_path =
+      ExistingPathString(d3d12_root / (entry.name + ".d3d12.bin"));
+  entry.d3d12_hlsl_path =
+      ExistingPathString(d3d12_root / (entry.name + ".d3d12.bin.hlsl"));
+  entry.metal_binary_path =
+      ExistingPathString(metal_root / (entry.name + ".metallib"));
+  entry.metal_source_path =
+      ExistingPathString(metal_root / (entry.name + ".metal"));
 }
 
 bool EndsWith(const std::string& value, const std::string& suffix) {
@@ -442,22 +488,6 @@ RendererShaderStage ClassifyShaderStage(const std::string& filename) {
   }
   return RendererShaderStage::kUnknown;
 }
-
-const char* RendererShaderStageName(RendererShaderStage stage) {
-  switch (stage) {
-    case RendererShaderStage::kUnknown:
-      return "unknown";
-    case RendererShaderStage::kVertex:
-      return "vertex";
-    case RendererShaderStage::kPixel:
-      return "pixel";
-    case RendererShaderStage::kCombined:
-      return "combined";
-  }
-
-  return "unknown";
-}
-
 struct MutableShaderEntry {
   RendererShaderLibraryEntry entry;
   bool has_binary = false;
@@ -594,6 +624,7 @@ RendererShaderLibrarySnapshot ScanShaderRoot(
         mutable_entry.entry.name.rfind("0000_", 0) != 0) {
       continue;
     }
+    PopulateShaderBackendArtifactPaths(mutable_entry.entry);
     switch (mutable_entry.entry.stage) {
       case RendererShaderStage::kVertex:
         ++snapshot.vertex_shader_count;
@@ -671,10 +702,6 @@ RendererShaderLibrarySnapshot GetRendererShaderLibrarySnapshot() {
   return g_shader_library.snapshot;
 }
 
-std::vector<RendererShaderLibraryEntry> GetRendererShaderLibraryEntries() {
-  std::lock_guard<std::mutex> lock(g_shader_library.mutex);
-  return g_shader_library.entries;
-}
 
 bool FindRendererShaderLibraryEntryById(uint32_t id,
                                         RendererShaderLibraryEntry& entry) {
@@ -717,11 +744,36 @@ bool FindFableInlineShaderAliasLocked(uint64_t guest_bytecode_hash,
   // Fable's PixRenderVideoFrame submits these shaders as inline PM4 payloads
   // from the executable instead of through Shaders.sbk. Keep the renderer
   // bound to generated XenosRecomp output by aliasing the exact payload hashes
-  // to the extracted shader entries whose translated HLSL matches the observed
-  // binding shape.
+  // to generated shader entries built from the same inline executable payload.
   constexpr InlineShaderAlias kFableInlineShaderAliases[] = {
       {0x4724831317AA37A8ull, 152u},  // D3D::PixRenderVideoFrame VS
-      {0x69E9772C76BD6253ull, 180u},  // D3D::PixRenderVideoFrame PS
+      {0x69E9772C76BD6253ull, 9000u}, // D3D::PixRenderVideoFrame PS
+      {0x85922739383C71C8ull, 87u},   // D3D::BinkMovie textured quad VS
+      // D3D::BinkMovie PS. Targets the 9000 pseudo-entry, NOT a blob index.
+      //
+      // This was `180u` and broke video on 2026-07-26. Blob 180 used to be
+      // named SHADER_BINK_MOVIE, and the translator installs a hand-written YUV
+      // composer for it via an exact NAME LITERAL comparison
+      // (refii_shader_xenos_translator_main.cpp:602/604,
+      // `options.name == "SHADER_BINK_MOVIE"`). When the SBK extractor's naming
+      // was corrected — 563 of 588 blob names had been wrong, bound positionally
+      // instead of by payloadId — blob 180 became
+      // PSHADER_LANDSCAPEMATERIAL_BLT7_GLT1_MIST0 and the Bink names moved to
+      // 171/172. The name literal then matched nothing, so 180 fell through to a
+      // plain XenosRecomp translation (2788 -> 30404 bytes, no YUV matrix) and
+      // every Bink compose draw ran a landscape material shader.
+      //
+      // 9000 is a purpose-built pseudo-entry for an inline PM4 payload that has
+      // no sbk entry of its own, so it is immune to blob renumbering and
+      // renaming. Verified equivalent: 9000_pshader_fable_pixrender_video.vulkan.bin
+      // is md5-identical to the known-good 0180_shader_bink_movie.vulkan.bin.
+      // The sibling alias above was already moved here for the same reason.
+      //
+      // The name-literal gate in the translator is still fragile and should be
+      // keyed on payload content/hash rather than a name — but fixing it alone
+      // would place the composer at 171/172 while this alias pointed at 180, so
+      // the two must be changed together if that is ever done.
+      {0x5DBB593C197FF7EEull, 9000u}, // D3D::BinkMovie PS
       {0x9CEFC0421AC2A68Cull, 137u},  // D3D::PrivateTextureRectangleDraw PS
   };
 
@@ -739,13 +791,12 @@ bool FindFableInlineShaderAliasLocked(uint64_t guest_bytecode_hash,
       alias_it->generated_shader_id, entry);
 }
 
-bool FindRendererShaderLibraryEntryByGuestHash(
+bool FindRendererShaderLibraryEntryByGuestHashLocked(
     uint64_t guest_bytecode_hash, RendererShaderLibraryEntry& entry) {
-  if (guest_bytecode_hash == 0) {
-    return false;
+  if (FindFableInlineShaderAliasLocked(guest_bytecode_hash, entry)) {
+    return true;
   }
 
-  std::lock_guard<std::mutex> lock(g_shader_library.mutex);
   const auto it = std::find_if(
       g_shader_library.entries.begin(), g_shader_library.entries.end(),
       [guest_bytecode_hash](const RendererShaderLibraryEntry& candidate) {
@@ -754,11 +805,42 @@ bool FindRendererShaderLibraryEntryByGuestHash(
                !candidate.binary_path.empty();
       });
   if (it == g_shader_library.entries.end()) {
-    return FindFableInlineShaderAliasLocked(guest_bytecode_hash, entry);
+    return false;
   }
 
   entry = *it;
   return true;
+}
+
+bool FindRendererShaderLibraryEntryByGuestHash(
+    uint64_t guest_bytecode_hash, RendererShaderLibraryEntry& entry) {
+  if (guest_bytecode_hash == 0) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(g_shader_library.mutex);
+  if (FindRendererShaderLibraryEntryByGuestHashLocked(guest_bytecode_hash,
+                                                      entry)) {
+    return true;
+  }
+
+  const auto alias_it =
+      g_shader_library.guest_hash_aliases.find(guest_bytecode_hash);
+  return alias_it != g_shader_library.guest_hash_aliases.end() &&
+         FindRendererShaderLibraryEntryByGuestHashLocked(alias_it->second,
+                                                         entry);
+}
+
+void RegisterRendererShaderGuestHashAlias(uint64_t guest_bytecode_hash,
+                                          uint64_t canonical_guest_hash) {
+  if (guest_bytecode_hash == 0 || canonical_guest_hash == 0 ||
+      guest_bytecode_hash == canonical_guest_hash) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(g_shader_library.mutex);
+  g_shader_library.guest_hash_aliases.emplace(guest_bytecode_hash,
+                                              canonical_guest_hash);
 }
 
 }  // namespace refii::renderer

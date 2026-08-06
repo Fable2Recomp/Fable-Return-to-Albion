@@ -20,44 +20,6 @@ void InvalidateFableDescriptorCacheLocked() {
   g_plume_resources.sampler_descriptor_lookup.clear();
 }
 
-void BeginFableFrameLookupCacheLocked() {
-  g_plume_resources.texture_fetch_frame_misses.clear();
-  g_plume_resources.render_target_resolve_aliases.clear();
-
-  if (g_plume_resources.resource_lookup_cache.size() > 16384u) {
-    g_plume_resources.resource_lookup_cache.clear();
-  }
-  if (g_plume_resources.texture_fetch_lookup_cache.size() > 8192u) {
-    g_plume_resources.texture_fetch_lookup_cache.clear();
-  }
-  if (g_plume_resources.texture_fetch_serial_lookup_cache.size() > 32768u) {
-    g_plume_resources.texture_fetch_serial_lookup_cache.clear();
-  }
-  if (g_plume_resources.texture_pointer_lookup_cache.size() > 4096u) {
-    g_plume_resources.texture_pointer_lookup_cache.clear();
-  }
-  if (g_plume_resources.texture_alias_lookup_cache.size() > 8192u) {
-    g_plume_resources.texture_alias_lookup_cache.clear();
-  }
-  if (g_plume_resources.live_render_target_alias_cache.size() > 8192u) {
-    g_plume_resources.live_render_target_alias_cache.clear();
-  }
-  if (g_plume_resources.sampled_object_lookup_cache.size() > 8192u) {
-    g_plume_resources.sampled_object_lookup_cache.clear();
-  }
-  if (g_plume_resources.sampled_texture_lookup_cache.size() > 32768u) {
-    g_plume_resources.sampled_texture_lookup_cache.clear();
-  }
-  if (g_plume_resources.draw_texture_descriptor_cache.size() > 32768u) {
-    g_plume_resources.draw_texture_descriptor_cache.clear();
-  }
-  if (g_plume_resources.draw_texture_binding_cache.size() > 32768u) {
-    g_plume_resources.draw_texture_binding_cache.clear();
-  }
-  if (g_plume_resources.surface_alias_copy_cache.size() > 8192u) {
-    g_plume_resources.surface_alias_copy_cache.clear();
-  }
-}
 
 void ClearFableFrameLookupCacheLocked() {
   g_plume_resources.resource_lookup_cache.clear();

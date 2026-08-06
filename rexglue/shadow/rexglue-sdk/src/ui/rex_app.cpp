@@ -123,6 +123,31 @@ void ApplyEarlyLogCvars(const std::filesystem::path& config_path) {
   }
 }
 
+void ApplyEarlyPathCvars(const std::filesystem::path& config_path) {
+  if (!std::filesystem::exists(config_path)) {
+    return;
+  }
+
+  try {
+    const auto config = toml::parse_file(config_path.string());
+
+    ApplyEarlyLogCvarValue(config, "game_data_root", "game_data_root");
+    ApplyEarlyLogCvarValue(config, "user_data_root", "user_data_root");
+    ApplyEarlyLogCvarValue(config, "update_data_root", "update_data_root");
+    ApplyEarlyLogCvarValue(config, "cache_path", "cache_path");
+
+    if (const auto* runtime_table = config["runtime"].as_table()) {
+      ApplyEarlyLogCvarValue(*runtime_table, "game_data_root", "game_data_root");
+      ApplyEarlyLogCvarValue(*runtime_table, "user_data_root", "user_data_root");
+      ApplyEarlyLogCvarValue(*runtime_table, "update_data_root", "update_data_root");
+      ApplyEarlyLogCvarValue(*runtime_table, "cache_path", "cache_path");
+    }
+  } catch (const toml::parse_error&) {
+    // The normal config load below will report the parse failure once logging
+    // has been initialized with the best available defaults.
+  }
+}
+
 }  // namespace
 
 // --- ReXApp ---
@@ -171,6 +196,9 @@ bool ReXApp::OnInitialize() {
 
 bool ReXApp::SetupEnvironment() {
   auto exe_dir = rex::filesystem::GetExecutableFolder();
+  auto default_config_path = exe_dir / (std::string(GetName()) + ".toml");
+
+  ApplyEarlyPathCvars(default_config_path);
 
   std::filesystem::path game_dir;
   std::string game_data_cvar = REXCVAR_GET(game_data_root);
@@ -203,8 +231,7 @@ bool ReXApp::SetupEnvironment() {
     cache_dir = user_dir / "cache";
   }
 
-  PathConfig path_config{game_dir, user_dir, update_dir, cache_dir,
-                         exe_dir / (std::string(GetName()) + ".toml")};
+  PathConfig path_config{game_dir, user_dir, update_dir, cache_dir, default_config_path};
   OnConfigurePaths(path_config);
   game_data_root_ = path_config.game_data_root;
   user_data_root_ = path_config.user_data_root;
@@ -258,6 +285,11 @@ bool ReXApp::SetupEnvironment() {
 }
 
 bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+  game_data_root_ = paths.game_data_root;
+  user_data_root_ = paths.user_data_root;
+  update_data_root_ = paths.update_data_root;
+  cache_root_ = paths.cache_root;
+
   if (paths.game_data_root.empty()) {
     auto msg = std::string("--game_data_root was not provided.");
     REXLOG_ERROR("{}", msg);
@@ -532,8 +564,17 @@ void ReXApp::RequestShutdown() {
   app_context().QuitFromUIThread();
 }
 
+namespace {
+std::atomic_bool g_app_teardown_started{false};
+}  // namespace
+
+bool ui::AppTeardownStarted() {
+  return g_app_teardown_started.load(std::memory_order_acquire);
+}
+
 void ReXApp::RequestExternalShutdown() {
   std::fputs("ReXApp external shutdown requested; terminating title\n", stderr);
+  g_app_teardown_started.store(true, std::memory_order_release);
   external_shutdown_requested_.store(true, std::memory_order_release);
   shutting_down_.store(true, std::memory_order_release);
   StartExternalShutdownWatchdog();
@@ -607,6 +648,7 @@ void ReXApp::OnDestroy() {
     return;
   }
 
+  g_app_teardown_started.store(true, std::memory_order_release);
   shutting_down_.store(true, std::memory_order_release);
   StartTitleTermination();
 

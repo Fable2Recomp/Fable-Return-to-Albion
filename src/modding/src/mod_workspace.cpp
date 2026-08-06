@@ -147,7 +147,8 @@ std::vector<ModInstall> DiscoverModInstalls(
     mods.push_back(ModInstall{
         name,
         entry.path().lexically_normal(),
-        std::filesystem::is_directory(files_root, error)});
+        std::filesystem::is_directory(files_root, error),
+        ReadModMetadata(entry.path())});
   }
 
   std::sort(mods.begin(), mods.end(), [](const ModInstall& left,
@@ -155,6 +156,115 @@ std::vector<ModInstall> DiscoverModInstalls(
     return left.name < right.name;
   });
   return mods;
+}
+
+std::filesystem::path GetModAssetRoot(const ModInstall& mod) {
+  if (mod.has_files_folder) {
+    return mod.root / std::string(kModFilesFolderName);
+  }
+  return mod.root;
+}
+
+ModMetadata ReadModMetadata(const std::filesystem::path& mod_root) {
+  ModMetadata metadata;
+  if (mod_root.empty()) {
+    return metadata;
+  }
+
+  std::ifstream stream(mod_root / std::string(kModMetadataFilename));
+  if (!stream) {
+    return metadata;
+  }
+
+  // Minimal key = "value" parser: top-level assignments only, sections and
+  // comments are skipped. Enough for mod.toml identity fields without a
+  // full TOML dependency in this small policy library.
+  std::string line;
+  while (std::getline(stream, line)) {
+    std::string trimmed = TrimAsciiWhitespace(line);
+    if (trimmed.empty() || trimmed.front() == '#' || trimmed.front() == '[') {
+      continue;
+    }
+    const std::size_t equals = trimmed.find('=');
+    if (equals == std::string::npos) {
+      continue;
+    }
+    std::string key = TrimAsciiWhitespace(
+        std::string_view(trimmed).substr(0, equals));
+    std::string value = TrimAsciiWhitespace(
+        std::string_view(trimmed).substr(equals + 1));
+    if (value.size() >= 2 &&
+        ((value.front() == '"' && value.back() == '"') ||
+         (value.front() == '\'' && value.back() == '\''))) {
+      value = value.substr(1, value.size() - 2);
+    }
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    if (key == "name" || key == "title") {
+      metadata.title = value;
+    } else if (key == "version") {
+      metadata.version = value;
+    } else if (key == "author") {
+      metadata.author = value;
+    } else if (key == "description") {
+      metadata.description = value;
+    }
+  }
+  return metadata;
+}
+
+ModAssetSummary SummarizeModAssets(const std::filesystem::path& asset_root,
+                                   std::size_t max_files) {
+  ModAssetSummary summary;
+  if (asset_root.empty()) {
+    return summary;
+  }
+
+  std::error_code error;
+  if (!std::filesystem::is_directory(asset_root, error)) {
+    return summary;
+  }
+
+  constexpr std::string_view kBankManifestFilename = "_manifest.tsv";
+  std::error_code iterator_error;
+  for (std::filesystem::recursive_directory_iterator
+           it(asset_root,
+              std::filesystem::directory_options::skip_permission_denied,
+              iterator_error),
+       end;
+       it != end; it.increment(iterator_error)) {
+    if (iterator_error) {
+      iterator_error.clear();
+      continue;
+    }
+    std::error_code status_error;
+    if (!it->is_regular_file(status_error)) {
+      continue;
+    }
+
+    const std::filesystem::path relative =
+        it->path().lexically_relative(asset_root);
+    std::string key = relative.generic_string();
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    if (key == std::string(kModMetadataFilename)) {
+      continue;
+    }
+    if (key.size() >= kBankManifestFilename.size() &&
+        key.compare(key.size() - kBankManifestFilename.size(),
+                    kBankManifestFilename.size(),
+                    kBankManifestFilename) == 0) {
+      summary.has_bank_manifests = true;
+    }
+
+    ++summary.file_count;
+    if (summary.normalized_paths.size() < max_files) {
+      summary.normalized_paths.push_back(std::move(key));
+    }
+  }
+  return summary;
 }
 
 }  // namespace refii::modding

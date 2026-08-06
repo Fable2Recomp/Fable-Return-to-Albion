@@ -1,6 +1,6 @@
 #pragma once
 
-#include "runtime/plume/direct/fable_resource_snapshots.h"
+#include "runtime/refii_renderer/plume/fable/resource/fable_resource_snapshots.h"
 
 #include <cstdint>
 

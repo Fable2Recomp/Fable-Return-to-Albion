@@ -17,7 +17,11 @@
 #include <fstream>
 #include <limits.h>
 #include <sstream>
+#include <string>
+#include <string_view>
 #include <vector>
+
+extern char** environ;
 
 namespace {
 
@@ -32,6 +36,58 @@ struct CurlGlobalInit {
 };
 
 CurlGlobalInit curlGlobalInit;
+
+// Helper programs like zenity and kdialog belong to the host, but under an
+// AppImage we run with the bundled lib directory first on LD_LIBRARY_PATH, so
+// a spawned helper would load our libraries instead of its own and die on the
+// first symbol it could not find. AppRun stashes the host's original search
+// paths for us; hand those to children instead of our own.
+//
+// The block is built here in the parent on purpose. The launcher has worker
+// threads, and allocating between fork() and exec() can deadlock on a malloc
+// lock another thread held at the moment of the fork.
+std::vector<std::string> BuildHostChildEnvironment() {
+    std::vector<std::string> environment;
+    const bool underAppRun = std::getenv("REFII_HOST_ENV_SAVED") != nullptr;
+
+    for (char** entry = environ; entry != nullptr && *entry != nullptr; ++entry) {
+        const std::string_view variable(*entry);
+        if (variable.starts_with("REFII_HOST_ENV_SAVED=") ||
+            variable.starts_with("REFII_HOST_PATH=") ||
+            variable.starts_with("REFII_HOST_LD_LIBRARY_PATH=")) {
+            continue;
+        }
+        if (underAppRun &&
+            (variable.starts_with("PATH=") || variable.starts_with("LD_LIBRARY_PATH="))) {
+            continue;
+        }
+        environment.emplace_back(variable);
+    }
+
+    if (underAppRun) {
+        // An empty saved value means the host had it unset, so leave it out.
+        const char* hostPath = std::getenv("REFII_HOST_PATH");
+        if (hostPath != nullptr && hostPath[0] != '\0') {
+            environment.emplace_back(std::string("PATH=") + hostPath);
+        }
+        const char* hostLibraryPath = std::getenv("REFII_HOST_LD_LIBRARY_PATH");
+        if (hostLibraryPath != nullptr && hostLibraryPath[0] != '\0') {
+            environment.emplace_back(std::string("LD_LIBRARY_PATH=") + hostLibraryPath);
+        }
+    }
+
+    return environment;
+}
+
+std::vector<char*> MakeEnvironmentPointers(std::vector<std::string>& environment) {
+    std::vector<char*> pointers;
+    pointers.reserve(environment.size() + 1);
+    for (std::string& variable : environment) {
+        pointers.push_back(variable.data());
+    }
+    pointers.push_back(nullptr);
+    return pointers;
+}
 
 std::string TrimTrailingNewlines(std::string value) {
     while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) {
@@ -83,6 +139,16 @@ int RunProcessAndCaptureOutput(
         return -1;
     }
 
+    std::vector<std::string> childEnvironment = BuildHostChildEnvironment();
+    std::vector<char*> childEnvironmentPointers = MakeEnvironmentPointers(childEnvironment);
+
+    std::vector<char*> argv;
+    argv.reserve(arguments.size() + 1);
+    for (const std::string& argument : arguments) {
+        argv.push_back(const_cast<char*>(argument.c_str()));
+    }
+    argv.push_back(nullptr);
+
     const pid_t processId = fork();
     if (processId == -1) {
         close(pipeFileDescriptors[0]);
@@ -100,14 +166,7 @@ int RunProcessAndCaptureOutput(
         close(pipeFileDescriptors[0]);
         close(pipeFileDescriptors[1]);
 
-        std::vector<char*> argv;
-        argv.reserve(arguments.size() + 1);
-        for (const std::string& argument : arguments) {
-            argv.push_back(const_cast<char*>(argument.c_str()));
-        }
-        argv.push_back(nullptr);
-
-        execvp(argv[0], argv.data());
+        execvpe(argv[0], argv.data(), childEnvironmentPointers.data());
         _exit(127);
     }
 

@@ -409,8 +409,7 @@ REX_EXTERN(sub_82B456D8) {
                     open_result.candidate,
                     open_result.resolution.host_path.string());
       }
-      if (provider_index == refii::vfs::kRefiiRequestManagerProviderIndex &&
-          provider_entry_key == refii::vfs::kRefiiRequestManagerEntryKey) {
+      if (provider_entry_key == refii::vfs::kRefiiRequestManagerEntryKey) {
         if (out_guest != 0) {
           refii::vfs::StoreGuestU32(base, out_guest, 0);
         }
@@ -433,8 +432,7 @@ REX_EXTERN(sub_82B456D8) {
     }
   }
 
-  if (provider_index == refii::vfs::kRefiiRequestManagerProviderIndex &&
-      provider_entry_key == refii::vfs::kRefiiRequestManagerEntryKey) {
+  if (provider_entry_key == refii::vfs::kRefiiRequestManagerEntryKey) {
     if (out_guest != 0) {
       refii::vfs::StoreGuestU32(base, out_guest, 0);
     }

@@ -4,8 +4,9 @@
 #include "renderer_runtime.h"
 #include "runtime/cvars.h"
 #include "runtime/hook_observer.h"
-#include "runtime/plume/direct/fable_direct_renderer.h"
-#include "runtime/plume/direct/fable_direct_state.h"
+#include "runtime/refii_renderer/plume/fable/direct/fable_direct_renderer.h"
+#include "runtime/refii_renderer/plume/fable/direct/fable_direct_state.h"
+#include "runtime/plume/general/plume_api_bridge.h"
 #include "runtime/plume/general/plume_backend.h"
 #include "runtime/replacement_health.h"
 #include "runtime/shader_library.h"
@@ -84,8 +85,80 @@ const char* TextOrDash(const char* value) {
   return value != nullptr && value[0] != '\0' ? value : "-";
 }
 
+const char* FableResourceKindName(FableGuestResourceKind kind) {
+  switch (kind) {
+    case FableGuestResourceKind::kUnknown:
+      return "unknown";
+    case FableGuestResourceKind::kTexture:
+      return "texture";
+    case FableGuestResourceKind::kSurface:
+      return "surface";
+    case FableGuestResourceKind::kDepthSurface:
+      return "depth";
+    case FableGuestResourceKind::kVertexBuffer:
+      return "vb";
+    case FableGuestResourceKind::kIndexBuffer:
+      return "ib";
+    case FableGuestResourceKind::kVertexDeclaration:
+      return "decl";
+    case FableGuestResourceKind::kVertexShader:
+      return "vs";
+    case FableGuestResourceKind::kPixelShader:
+      return "ps";
+  }
+  return "unknown";
+}
+
+const char* RendererHookConfidenceName(RendererHookConfidence confidence) {
+  switch (confidence) {
+  case RendererHookConfidence::High:
+    return "High";
+  case RendererHookConfidence::Tentative:
+    return "Tentative";
+  case RendererHookConfidence::Unresolved:
+    return "Unresolved";
+  }
+  return "Unknown";
+}
+
+const char* RendererHookReplacementName(RendererHookReplacement replacement) {
+  switch (replacement) {
+  case RendererHookReplacement::FullReplacement:
+    return "Full";
+  case RendererHookReplacement::FableAdapter:
+    return "Adapter";
+  case RendererHookReplacement::SideEffectOnly:
+    return "SideEffect";
+  case RendererHookReplacement::Unresolved:
+    return "Unresolved";
+  }
+  return "Unknown";
+}
+
+const char* RendererHookSurfaceName(RendererHookSurface surface) {
+  switch (surface) {
+  case RendererHookSurface::RequiredRoot:
+    return "Required";
+  case RendererHookSurface::MigrationSupport:
+    return "Migration";
+  case RendererHookSurface::DebugSupport:
+    return "Debug";
+  case RendererHookSurface::Unresolved:
+    return "Unresolved";
+  }
+  return "Unknown";
+}
+
+bool ShouldSuppressFableDimmerForRenderDocCapture() {
+  return RenderDocFrameCaptureActive() &&
+         RenderDocCaptureDrawTarget() == "binkvideo";
+}
+
 void DrawFableDimmerBehindImGui(float display_width, float display_height) {
   if (!RendererImGuiDimFableEnabled()) {
+    return;
+  }
+  if (ShouldSuppressFableDimmerForRenderDocCapture()) {
     return;
   }
 
@@ -675,32 +748,89 @@ void DrawPlumeImGuiOverlay(uint32_t width, uint32_t height,
         GetRendererHookObserverSnapshot();
     const RendererHookTimingSnapshot timing_snapshot =
         GetRendererHookTimingSnapshot();
+    const RendererHookStatsSnapshots hook_stats_snapshots =
+        GetRendererHookStatsSnapshots();
     const RendererShaderLibrarySnapshot shader_snapshot =
         GetRendererShaderLibrarySnapshot();
     const FableDirectRendererStats direct_stats =
         GetFableDirectRendererStats();
+    const RefiiFramePacketDump refii_packets = GetRefiiFramePacketDump();
+    const RefiiFramePacketQueueSnapshot refii_packet_queue =
+        GetRefiiFramePacketQueueSnapshot();
+    const FableDirectRenderGraphSnapshot render_graph =
+        GetFableDirectRenderGraphSnapshot();
+    const FableDirectResourceDebugSnapshot resource_debug =
+        GetFableDirectResourceDebugSnapshot();
     const RendererReplacementHealthSnapshot replacement_health =
         GetRendererReplacementHealthSnapshot();
+    const PlumeBackendDebugSnapshot plume_backend =
+        GetPlumeBackendDebugSnapshot();
     const PlumeOutputSnapshot plume_output = GetPlumeOutputSnapshot();
     const FableDirectStateSnapshot direct_snapshot =
         GetFableDirectStateSnapshot();
-    const bool renderdoc_enabled = RenderDocDebuggerEnabled();
-    const bool renderdoc_available = RenderDocDebuggerAvailable();
+    const PlumeFrameHistorySnapshot frame_history =
+        GetPlumeFrameHistorySnapshot();
+    const RenderDocDebuggerStatus renderdoc_status =
+        GetRenderDocDebuggerStatus();
 
     ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(360.0f, 164.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 278.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Refii Plume Renderer")) {
-      ImGui::Text("Backend: Plume");
+      ImGui::Text("Backend: Plume/%s %s",
+                  PlumeApiBridgeName(plume_backend.api),
+                  PlumeBackendStatusName(plume_backend.status));
+      ImGui::Text("Backend probe: %s",
+                  plume_backend.attempted ? "attempted" : "waiting");
+      if (plume_backend.device_name[0] != '\0') {
+        ImGui::Text("Device: %s (%llu MiB)",
+                    plume_backend.device_name.data(),
+                    static_cast<unsigned long long>(
+                        plume_backend.dedicated_video_memory /
+                        (1024ull * 1024ull)));
+      } else {
+        ImGui::Text("Device: waiting");
+      }
+      ImGui::Text("Queues: direct %s copy %s frame_ctx %u next %u",
+                  plume_backend.direct_queue_ready ? "ready" : "waiting",
+                  plume_backend.copy_queue_ready ? "ready" : "direct",
+                  plume_backend.frame_context_count,
+                  plume_backend.next_frame_context);
       ImGui::Text("Plume frame: %u", plume_output.present_count);
       ImGui::Text("Output: %ux%u", width, height);
-      ImGui::Text("Swapchain: %s vsync %s images %u/%u",
-                  plume_output.ready ? "ready" : "waiting",
+      ImGui::Text("Swapchain: %s vsync %s wait %s images %u/%u",
+                  plume_backend.swapchain_ready ? "ready" : "waiting",
                   plume_output.vsync_enabled ? "on" : "off",
+                  plume_backend.swapchain_present_wait_enabled ? "on" : "off",
                   plume_output.texture_count,
                   plume_output.configured_texture_count);
-      ImGui::Text("RenderDoc: %s / %s",
-                  renderdoc_enabled ? "enabled" : "disabled",
-                  renderdoc_available ? "available" : "not attached");
+      ImGui::Text("Framebuffers: color %u depth %u release_sems %u",
+                  plume_backend.framebuffer_count,
+                  plume_backend.depth_framebuffer_count,
+                  plume_backend.release_semaphore_count);
+      ImGui::Text("RenderDoc: %s %s %s",
+                  renderdoc_status.enabled ? "enabled" : "disabled",
+                  renderdoc_status.available ? "attached" : "unavailable",
+                  renderdoc_status.capturing ? "capturing" : "idle");
+      if (renderdoc_status.available) {
+        ImGui::Text("RenderDoc API: %d.%d.%d captures %u",
+                    renderdoc_status.api_major,
+                    renderdoc_status.api_minor,
+                    renderdoc_status.api_patch,
+                    renderdoc_status.capture_count);
+      } else if (!renderdoc_status.last_error.empty()) {
+        ImGui::TextWrapped("RenderDoc status: %s",
+                           renderdoc_status.last_error.c_str());
+      }
+      ImGui::Text("Capture request: %s replay %s",
+                  renderdoc_status.capture_request_pending ? "pending" : "none",
+                  renderdoc_status.replay_launch_enabled ? "on" : "off");
+      if (!renderdoc_status.capture_template.empty()) {
+        ImGui::TextWrapped("Capture path: %s",
+                           renderdoc_status.capture_template.c_str());
+      } else if (!renderdoc_status.loaded_path.empty()) {
+        ImGui::TextWrapped("RenderDoc runtime: %s",
+                           renderdoc_status.loaded_path.c_str());
+      }
       if (ImGui::Button("Capture next Plume frame")) {
         if (!RequestRenderDocFrameCapture()) {
           TriggerRenderDocCapture();
@@ -832,6 +962,30 @@ void DrawPlumeImGuiOverlay(uint32_t width, uint32_t height,
                   direct_stats.draw_count,
                   direct_stats.last_draw_events,
                   direct_stats.last_render_commands);
+      ImGui::Text("Refii packets: frame %llu draws %zu actions %zu omitted %u/%u",
+                  static_cast<unsigned long long>(refii_packets.frame_id),
+                  refii_packets.packets.size(),
+                  refii_packets.actions.size(),
+                  refii_packets.omitted_packets,
+                  refii_packets.omitted_actions);
+      ImGui::Text("Packet queue: gen %llu draws %zu actions %zu replay %s%s",
+                  static_cast<unsigned long long>(
+                      refii_packet_queue.generation),
+                  refii_packet_queue.packets.size(),
+                  refii_packet_queue.actions.size(),
+                  refii_packet_queue.replay_ready ? "ready" : "empty",
+                  direct_stats.packet_queue_replay_enabled ? " active" : "");
+      ImGui::Text("Replay plan: actions %u draws %u clears %u resolves %u copies %u presents %u unsupported %u",
+                  refii_packet_queue.replay.planned_action_packets,
+                  refii_packet_queue.replay.planned_draw_packets,
+                  refii_packet_queue.replay.planned_clear_packets,
+                  refii_packet_queue.replay.planned_resolve_packets,
+                  refii_packet_queue.replay.planned_copy_packets,
+                  refii_packet_queue.replay.planned_present_packets,
+                  refii_packet_queue.replay.unsupported_packets);
+      ImGui::Text("Replay detail: indexed %u unsupported sources %u",
+                  refii_packet_queue.replay.indexed_packets,
+                  refii_packet_queue.replay.unsupported_source_packets);
       ImGui::Text("Indexed/resources/uploads: %u / %u / %u",
                   direct_stats.indexed_draw_count,
                   direct_stats.resource_creations,
@@ -845,6 +999,217 @@ void DrawPlumeImGuiOverlay(uint32_t width, uint32_t height,
       ImGui::Text("Pipeline hits/misses: %u / %u",
                   direct_stats.pipeline_cache_hits,
                   direct_stats.pipeline_cache_misses);
+      ImGui::Separator();
+      if (ImGui::TreeNode("Render Graph")) {
+        ImGui::Text("Frame %u draws %u/%u cmds %u/%u refs %u",
+                    render_graph.frame_index,
+                    render_graph.draw_packet_count,
+                    render_graph.omitted_draw_packets,
+                    render_graph.command_packet_count,
+                    render_graph.omitted_command_packets,
+                    render_graph.resource_reference_count);
+        ImGui::Text("Passes: %u shown, %u omitted",
+                    render_graph.pass_count, render_graph.omitted_passes);
+        if (ImGui::BeginTable(
+                "RefiiRenderGraphPasses", 11,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                    ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY,
+                ImVec2(0.0f, 160.0f))) {
+          ImGui::TableSetupColumn("Pass", ImGuiTableColumnFlags_WidthFixed,
+                                  118.0f);
+          ImGui::TableSetupColumn("First", ImGuiTableColumnFlags_WidthFixed,
+                                  54.0f);
+          ImGui::TableSetupColumn("Cmd", ImGuiTableColumnFlags_WidthFixed,
+                                  44.0f);
+          ImGui::TableSetupColumn("C/R", ImGuiTableColumnFlags_WidthFixed,
+                                  48.0f);
+          ImGui::TableSetupColumn("Draw", ImGuiTableColumnFlags_WidthFixed,
+                                  48.0f);
+          ImGui::TableSetupColumn("Idx", ImGuiTableColumnFlags_WidthFixed,
+                                  40.0f);
+          ImGui::TableSetupColumn("Roots", ImGuiTableColumnFlags_WidthFixed,
+                                  48.0f);
+          ImGui::TableSetupColumn("Shader", ImGuiTableColumnFlags_WidthFixed,
+                                  54.0f);
+          ImGui::TableSetupColumn("RT/DS", ImGuiTableColumnFlags_WidthFixed,
+                                  56.0f);
+          ImGui::TableSetupColumn("Tex", ImGuiTableColumnFlags_WidthFixed,
+                                  42.0f);
+          ImGui::TableSetupColumn("VB",
+                                  ImGuiTableColumnFlags_WidthStretch);
+          ImGui::TableHeadersRow();
+          for (uint32_t index = 0; index < render_graph.pass_count; ++index) {
+            const FableDirectRenderGraphPassEntry& pass =
+                render_graph.passes[index];
+            if (!pass.valid) {
+              continue;
+            }
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(TextOrDash(pass.pass_name.data()));
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%llu",
+                        static_cast<unsigned long long>(
+                            pass.first_packet_id));
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%u", pass.command_packets);
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%u/%u", pass.clear_packets, pass.resolve_packets);
+            ImGui::TableSetColumnIndex(4);
+            ImGui::Text("%u", pass.draw_packets);
+            ImGui::TableSetColumnIndex(5);
+            ImGui::Text("%u", pass.indexed_draw_packets);
+            ImGui::TableSetColumnIndex(6);
+            ImGui::Text("%u", pass.rooted_packets);
+            ImGui::TableSetColumnIndex(7);
+            ImGui::Text("%u", pass.fully_shader_rooted_packets);
+            ImGui::TableSetColumnIndex(8);
+            ImGui::Text("%u/%u", pass.render_target_count,
+                        pass.depth_target_count);
+            ImGui::TableSetColumnIndex(9);
+            ImGui::Text("%u", pass.texture_count);
+            ImGui::TableSetColumnIndex(10);
+            ImGui::Text("%u", pass.vertex_buffer_count);
+          }
+          ImGui::EndTable();
+        }
+        ImGui::TreePop();
+      }
+      ImGui::Separator();
+      if (ImGui::TreeNode("RenderDoc Resources")) {
+        ImGui::Text("Rows: %u shown, %u omitted",
+                    resource_debug.count, resource_debug.omitted);
+        if (ImGui::BeginTable(
+                "RefiiRenderDocResources", 9,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                    ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY,
+                ImVec2(0.0f, 190.0f))) {
+          ImGui::TableSetupColumn("Guest", ImGuiTableColumnFlags_WidthFixed,
+                                  82.0f);
+          ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed,
+                                  48.0f);
+          ImGui::TableSetupColumn("OK", ImGuiTableColumnFlags_WidthFixed,
+                                  34.0f);
+          ImGui::TableSetupColumn("Base/GPU", ImGuiTableColumnFlags_WidthFixed,
+                                  82.0f);
+          ImGui::TableSetupColumn("Bytes", ImGuiTableColumnFlags_WidthFixed,
+                                  66.0f);
+          ImGui::TableSetupColumn("Shape", ImGuiTableColumnFlags_WidthFixed,
+                                  82.0f);
+          ImGui::TableSetupColumn("Fmt", ImGuiTableColumnFlags_WidthFixed,
+                                  46.0f);
+          ImGui::TableSetupColumn("Serial", ImGuiTableColumnFlags_WidthFixed,
+                                  66.0f);
+          ImGui::TableSetupColumn("RenderDoc Name",
+                                  ImGuiTableColumnFlags_WidthStretch);
+          ImGui::TableHeadersRow();
+          for (uint32_t index = 0; index < resource_debug.count; ++index) {
+            const FableDirectResourceDebugEntry& resource =
+                resource_debug.entries[index];
+            if (!resource.valid) {
+              continue;
+            }
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("0x%08X", resource.guest_address);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(FableResourceKindName(resource.kind));
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(resource.ready ? "yes" : "no");
+            ImGui::TableSetColumnIndex(3);
+            if (resource.base_or_gpu_address != 0) {
+              ImGui::Text("0x%08X", resource.base_or_gpu_address);
+            } else {
+              ImGui::TextUnformatted("-");
+            }
+            ImGui::TableSetColumnIndex(4);
+            ImGui::Text("%u", resource.byte_size);
+            ImGui::TableSetColumnIndex(5);
+            if (resource.width != 0 || resource.height != 0) {
+              ImGui::Text("%ux%ux%u", resource.width, resource.height,
+                          std::max<uint32_t>(resource.depth, 1u));
+            } else {
+              ImGui::TextUnformatted("-");
+            }
+            ImGui::TableSetColumnIndex(6);
+            ImGui::Text("%u", resource.format_or_stride);
+            ImGui::TableSetColumnIndex(7);
+            ImGui::Text("%llu",
+                        static_cast<unsigned long long>(
+                            std::max(resource.content_serial,
+                                     resource.serial)));
+            ImGui::TableSetColumnIndex(8);
+            ImGui::TextWrapped("%s",
+                               resource.renderdoc_annotated
+                                   ? resource.annotation.data()
+                                   : "-");
+          }
+          ImGui::EndTable();
+        }
+        ImGui::TreePop();
+      }
+      ImGui::Separator();
+      if (ImGui::TreeNode("Recent Frames")) {
+        if (ImGui::BeginTable(
+                "PlumeRecentFrameHistory", 10,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                    ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY,
+                ImVec2(0.0f, 170.0f))) {
+          ImGui::TableSetupColumn("Frame", ImGuiTableColumnFlags_WidthFixed,
+                                  54.0f);
+          ImGui::TableSetupColumn("OK", ImGuiTableColumnFlags_WidthFixed,
+                                  34.0f);
+          ImGui::TableSetupColumn("ms", ImGuiTableColumnFlags_WidthFixed,
+                                  58.0f);
+          ImGui::TableSetupColumn("direct", ImGuiTableColumnFlags_WidthFixed,
+                                  58.0f);
+          ImGui::TableSetupColumn("submit", ImGuiTableColumnFlags_WidthFixed,
+                                  58.0f);
+          ImGui::TableSetupColumn("present", ImGuiTableColumnFlags_WidthFixed,
+                                  58.0f);
+          ImGui::TableSetupColumn("draws", ImGuiTableColumnFlags_WidthFixed,
+                                  50.0f);
+          ImGui::TableSetupColumn("cmds", ImGuiTableColumnFlags_WidthFixed,
+                                  50.0f);
+          ImGui::TableSetupColumn("target", ImGuiTableColumnFlags_WidthFixed,
+                                  82.0f);
+          ImGui::TableSetupColumn("rdoc", ImGuiTableColumnFlags_WidthStretch);
+          ImGui::TableHeadersRow();
+          for (uint32_t index = 0; index < frame_history.count; ++index) {
+            const PlumeFrameHistoryEntry& frame =
+                frame_history.entries[index];
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%u", frame.frame_index);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(frame.presented ? "yes" : "no");
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%.2f", us_to_ms(frame.frame_total_us));
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%.2f", us_to_ms(frame.direct_us));
+            ImGui::TableSetColumnIndex(4);
+            ImGui::Text("%.2f", us_to_ms(frame.submit_us));
+            ImGui::TableSetColumnIndex(5);
+            ImGui::Text("%.2f", us_to_ms(frame.present_us));
+            ImGui::TableSetColumnIndex(6);
+            ImGui::Text("%u/%u", frame.draw_count,
+                        frame.indexed_draw_count);
+            ImGui::TableSetColumnIndex(7);
+            ImGui::Text("%u", frame.render_command_count);
+            ImGui::TableSetColumnIndex(8);
+            if (frame.present_target != 0) {
+              ImGui::Text("0x%08X", frame.present_target);
+            } else {
+              ImGui::TextUnformatted("-");
+            }
+            ImGui::TableSetColumnIndex(9);
+            ImGui::TextUnformatted(
+                frame.renderdoc_capture_active ? "capture" : "-");
+          }
+          ImGui::EndTable();
+        }
+        ImGui::TreePop();
+      }
     }
     ImGui::End();
 
@@ -864,16 +1229,16 @@ void DrawPlumeImGuiOverlay(uint32_t width, uint32_t height,
                   direct_stats.last_draw_events,
                   PlumeFableCommandSourceName(
                       plume_output.last_fable_direct_source));
-      ImGui::Text("Direct cmds pending/submitted: %llu / %llu",
+      ImGui::Text("Direct cmds staged/submitted: %llu / %llu",
                   static_cast<unsigned long long>(
                       direct_snapshot.render_command_count),
                   static_cast<unsigned long long>(
                       direct_snapshot.submitted_render_command_count));
       ImGui::Text("Submit batch cmds/draws: %llu / %llu  submitted draws: %llu",
                   static_cast<unsigned long long>(
-                      direct_snapshot.last_command_boundary_pending_commands),
+                      direct_snapshot.last_command_boundary_staged_commands),
                   static_cast<unsigned long long>(
-                      direct_snapshot.last_command_boundary_pending_draws),
+                      direct_snapshot.last_command_boundary_staged_draws),
                   static_cast<unsigned long long>(
                       direct_snapshot.last_submitted_draw_event_count));
       ImGui::Text("Pipeline hits/misses failed hooks: %u / %u / %u",
@@ -888,9 +1253,9 @@ void DrawPlumeImGuiOverlay(uint32_t width, uint32_t height,
                   direct_stats.last_present_target,
                   direct_stats.last_present_width,
                   direct_stats.last_present_height);
-      ImGui::Text("Last hook: %s  skipped: %s",
+      ImGui::Text("Last hook: %s  suppressed: %s",
                   TextOrDash(timing_snapshot.last_hook_symbol),
-                  TextOrDash(timing_snapshot.last_native_skipped_symbol));
+                  TextOrDash(timing_snapshot.last_guest_suppressed_symbol));
       ImGui::Separator();
       if (ImGui::TreeNode("Advanced Hook Details")) {
         ImGui::Text("Fable present hooks: %llu  Draws: %llu  Indexed: %llu",
@@ -967,17 +1332,127 @@ void DrawPlumeImGuiOverlay(uint32_t width, uint32_t height,
                     timing_snapshot.fable_renderer,
                     timing_snapshot.fable_renderer_owner,
                     timing_snapshot.fable_game);
-        ImGui::Text("Display swap: %s  Native skips: %llu",
+        ImGui::Text("Display swap: %s  Guest suppressed: %llu",
                     timing_snapshot.seen_display_swap_hook ? "seen" : "waiting",
                     static_cast<unsigned long long>(
-                        timing_snapshot.native_skipped_hooks));
+                        timing_snapshot.guest_suppressed_hooks));
         ImGui::Text("Last hook: %s", TextOrDash(timing_snapshot.last_hook_symbol));
         ImGui::Text("Last display: %s  Plume: %s/%s",
                     TextOrDash(timing_snapshot.last_display_present_symbol),
                     TextOrDash(timing_snapshot.last_plume_present_symbol),
                     TextOrDash(timing_snapshot.last_plume_present_reason));
-        ImGui::Text("Last skipped native: %s",
-                    TextOrDash(timing_snapshot.last_native_skipped_symbol));
+        ImGui::Text("Last suppressed guest: %s",
+                    TextOrDash(timing_snapshot.last_guest_suppressed_symbol));
+        ImGui::Separator();
+        uint64_t stable_hook_hits = 0;
+        uint64_t stable_hook_guest_passthroughs = 0;
+        uint32_t active_hook_targets = 0;
+        for (const RendererHookStatsSnapshot& hook_stats :
+             hook_stats_snapshots) {
+          stable_hook_hits += hook_stats.hit_count;
+          stable_hook_guest_passthroughs +=
+              hook_stats.guest_passthrough_count;
+          if (hook_stats.hit_count != 0 ||
+              hook_stats.guest_passthrough_count != 0) {
+            ++active_hook_targets;
+          }
+        }
+        ImGui::Text("Stable hook targets active/total: %u / %u",
+                    active_hook_targets,
+                    static_cast<uint32_t>(hook_stats_snapshots.size()));
+        ImGui::Text("Stable hook hits/guest: %llu / %llu",
+                    static_cast<unsigned long long>(stable_hook_hits),
+                    static_cast<unsigned long long>(
+                        stable_hook_guest_passthroughs));
+        static bool show_inactive_hook_targets = false;
+        ImGui::Checkbox("Show inactive hook targets",
+                        &show_inactive_hook_targets);
+        if (ImGui::BeginTable(
+                "RendererHookTargetStats", 10,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                    ImGuiTableFlags_Resizable |
+                    ImGuiTableFlags_ScrollY,
+                ImVec2(0.0f, 220.0f))) {
+          ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed,
+                                  36.0f);
+          ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed,
+                                  172.0f);
+          ImGui::TableSetupColumn("Fable", ImGuiTableColumnFlags_WidthFixed,
+                                  82.0f);
+          ImGui::TableSetupColumn("Sonic", ImGuiTableColumnFlags_WidthFixed,
+                                  82.0f);
+          ImGui::TableSetupColumn("Conf", ImGuiTableColumnFlags_WidthFixed,
+                                  74.0f);
+          ImGui::TableSetupColumn("Mode", ImGuiTableColumnFlags_WidthFixed,
+                                  76.0f);
+          ImGui::TableSetupColumn("Surface", ImGuiTableColumnFlags_WidthFixed,
+                                  82.0f);
+          ImGui::TableSetupColumn("Hits", ImGuiTableColumnFlags_WidthFixed,
+                                  64.0f);
+          ImGui::TableSetupColumn("Guest", ImGuiTableColumnFlags_WidthFixed,
+                                  64.0f);
+          ImGui::TableSetupColumn("Frames", ImGuiTableColumnFlags_WidthStretch);
+          ImGui::TableHeadersRow();
+          for (const RendererHookStatsSnapshot& hook_stats :
+               hook_stats_snapshots) {
+            if (!show_inactive_hook_targets && hook_stats.hit_count == 0 &&
+                hook_stats.guest_passthrough_count == 0) {
+              continue;
+            }
+            const RendererHookTarget* target =
+                RendererHookTargetById(hook_stats.id);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%u", static_cast<uint32_t>(hook_stats.id));
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(TextOrDash(hook_stats.name));
+            ImGui::TableSetColumnIndex(2);
+            if (hook_stats.fable_address != 0) {
+              ImGui::Text("0x%08X", hook_stats.fable_address);
+            } else {
+              ImGui::TextUnformatted("-");
+            }
+            ImGui::TableSetColumnIndex(3);
+            if (hook_stats.sonic_address != 0) {
+              ImGui::Text("0x%08X", hook_stats.sonic_address);
+            } else {
+              ImGui::TextUnformatted("-");
+            }
+            ImGui::TableSetColumnIndex(4);
+            ImGui::TextUnformatted(
+                target != nullptr
+                    ? RendererHookConfidenceName(target->confidence)
+                    : "-");
+            ImGui::TableSetColumnIndex(5);
+            ImGui::TextUnformatted(
+                target != nullptr
+                    ? RendererHookReplacementName(target->replacement)
+                    : "-");
+            ImGui::TableSetColumnIndex(6);
+            ImGui::TextUnformatted(
+                target != nullptr ? RendererHookSurfaceName(target->surface)
+                                  : "-");
+            ImGui::TableSetColumnIndex(7);
+            ImGui::Text("%llu",
+                        static_cast<unsigned long long>(
+                            hook_stats.hit_count));
+            ImGui::TableSetColumnIndex(8);
+            ImGui::Text("%llu",
+                        static_cast<unsigned long long>(
+                            hook_stats.guest_passthrough_count));
+            ImGui::TableSetColumnIndex(9);
+            if (hook_stats.hit_count != 0) {
+              ImGui::Text("%llu-%llu",
+                          static_cast<unsigned long long>(
+                              hook_stats.first_frame_seen),
+                          static_cast<unsigned long long>(
+                              hook_stats.last_frame_seen));
+            } else {
+              ImGui::TextUnformatted("-");
+            }
+          }
+          ImGui::EndTable();
+        }
         ImGui::Separator();
       ImGui::Text("Passes: %llu  State flushes: %llu",
                   static_cast<unsigned long long>(

@@ -41,50 +41,9 @@ bool TryCommitRefiiFrontendTextureWrapper(PPCContext& source_ctx,
                                           std::string_view source,
                                           uint32_t caller_lr,
                                           std::string_view api);
-bool TryPrimeRefiiFrontendTextureResource(PPCContext& source_ctx,
-                                          uint8_t* base,
-                                          uint32_t resource_hash,
-                                          std::string_view api);
-bool TrySynthesizeFrontendTextureDescriptorSlot(PPCContext& source_ctx,
-                                                uint8_t* base,
-                                                uint32_t owner_guest,
-                                                uint32_t resource_hash,
-                                                uint32_t ctor_lr,
-                                                uint32_t resolver_lr,
-                                                uint32_t pair_store_lr,
-                                                uint32_t slot_store_lr,
-                                                uint32_t slot_offset,
-                                                uint32_t ref_object_guest,
-                                                uint32_t* out_ref_object_guest,
-                                                uint32_t* out_resolver_result,
-                                                uint32_t* out_pair_guest);
-bool TrySynthesizeFrontendTextureStaticTablePhase(PPCContext& source_ctx,
-                                                  uint8_t* base,
-                                                  uint32_t owner_guest);
-bool TrySynthesizeFrontendTextureFinalDirectPhase(PPCContext& source_ctx,
-                                                  uint8_t* base,
-                                                  uint32_t owner_guest,
-                                                  bool* out_wrapper_committed);
-bool TrySynthesizeFrontendTextureFollowonFramePhase(PPCContext& source_ctx,
-                                                    uint8_t* base,
-                                                    uint32_t owner_guest);
 
 bool FrontendTextureConsumerTraceActive();
 bool FrontendTextureConsumerVerboseTraceActive();
-bool LooksLikeFrontendTextureConsumerObject(uint8_t* base,
-                                            uint32_t object_guest);
-uint32_t FindPostVideoFrontendTextureConsumerOwner(uint8_t* base,
-                                                   uint32_t root_guest,
-                                                   std::string* source_out);
-inline uint32_t FindPostVideoFrontendTextureConsumerOwner(uint8_t* base) {
-  return FindPostVideoFrontendTextureConsumerOwner(base, 0, nullptr);
-}
-uint32_t TryGetCollapsibleRefiiFrontendTextureBundle(uint8_t* base,
-                                                     const PPCContext& ctx);
-inline uint32_t TryGetCollapsibleRefiiFrontendTextureBundle(uint8_t* base) {
-  PPCContext ctx{};
-  return TryGetCollapsibleRefiiFrontendTextureBundle(base, ctx);
-}
 std::string FormatFrontendTextureConsumerOwnerSlots(uint8_t* base,
                                                     uint32_t owner_guest);
 std::string_view LabelFrontendTextureConsumerGeneratedCallSite(uint32_t lr);
@@ -127,31 +86,9 @@ void RecordFrontendTextureConsumerStore(uint8_t* base,
                                         uint32_t value_guest);
 void RecordFrontendTextureConsumerOwnerSlotSnapshot(uint8_t* base,
                                                     uint32_t owner_guest);
-void RecordFrontendTextureConsumerStaticTableListCommit();
-void RecordFrontendTextureConsumerFollowonFrameListCommit();
 void RecordFrontendTextureConsumerResourceBoundary(std::string_view api,
                                                    uint32_t resource_hash,
                                                    uint32_t result_guest);
-
-bool TrySynthesizeFrontendTextureDescriptorPhase(PPCContext& source_ctx,
-                                                 uint8_t* base,
-                                                 uint32_t owner_guest,
-                                                 bool allow_followon_frame,
-                                                bool allow_native_list200);
-bool TryRunFrontendTextureConsumerNativeUpdateForPendingVfsDirect(
-    PPCContext& source_ctx,
-    uint8_t* base,
-    uint32_t owner_guest,
-    std::string_view source_api);
-bool TryCollapseFrontendTextureGeneratedHandoff(PPCContext& ctx,
-                                                uint8_t* base,
-                                                bool synthesize_missing_followon,
-                                                std::string_view source_api);
-bool TryRunActiveFrontendTextureConsumerSyntheticPhase(
-    PPCContext& source_ctx,
-    uint8_t* base,
-    uint32_t* out_owner_guest,
-    bool* out_opened_any);
 
 }  // namespace detail
 }  // namespace refii::vfs

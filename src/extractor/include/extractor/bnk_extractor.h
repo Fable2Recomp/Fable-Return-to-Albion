@@ -30,6 +30,9 @@ struct BankExtractionOptions {
     bool extract_payloads = true;
     bool extract_nested_banks = true;
     bool build_vfs_database = true;
+    // Replace extracted .gdb / .babel databases with editable .csv twins.
+    bool convert_gdb_databases = true;
+    bool convert_babel_databases = true;
     std::function<void(const BankExtractionProgress&)> progress_callback;
 };
 
@@ -41,6 +44,7 @@ struct BankExtractionSummary {
     std::size_t duplicate_conflicts = 0;
     std::size_t vfs_database_entries = 0;
     std::size_t vfs_unindexed_files = 0;
+    std::size_t database_csv_converted = 0;
 };
 
 struct VfsDatabaseBuildOptions {
@@ -48,6 +52,10 @@ struct VfsDatabaseBuildOptions {
     std::filesystem::path database_path;
     std::filesystem::path runtime_index_root;
     bool write_legacy_database = false;
+    // Replace .gdb / .babel databases in the unpacked tree with editable .csv
+    // twins.
+    bool convert_gdb_databases = true;
+    bool convert_babel_databases = true;
 };
 
 struct VfsDatabaseBuildSummary {
@@ -62,6 +70,7 @@ struct VfsDatabaseBuildSummary {
     std::size_t indexed_files = 0;
     std::size_t indexed_manifests = 0;
     std::size_t indexed_filehash_tables = 0;
+    std::size_t database_csv_emitted = 0;
 };
 
 std::filesystem::path GetBankOutputRoot(const std::filesystem::path& output_root,

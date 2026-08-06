@@ -1,5 +1,8 @@
 #include "extractor/bnk_extractor.h"
 
+#include "gdb/gdb_database.h"
+#include "babel/babel_database.h"
+
 #include <zlib.h>
 
 #include <algorithm>
@@ -139,16 +142,46 @@ void ReserveVfsDatabaseStateForEntries(VfsDatabaseBuildState* state,
     ReserveSetAtLeast(&state->manifest_covered_candidates, candidate_hint);
 }
 
+inline std::uint64_t Fnv1aFingerprint(const std::vector<std::uint8_t>& bytes) {
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const std::uint8_t byte : bytes) {
+        hash ^= byte;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+struct LoosePathOwner {
+    std::size_t owner_ordinal = 0;
+    std::uint64_t size = 0;
+    std::uint64_t fingerprint = 0;
+    bool multi_bank = false;
+    bool fingerprint_valid = false;
+};
+
 struct ExtractionContext {
     std::filesystem::path output_root;
     std::filesystem::path conflict_report_path;
     bool extract_payloads = true;
     bool extract_nested_banks = true;
+    bool convert_gdb_databases = false;
+    bool convert_babel_databases = false;
     std::size_t payload_worker_count = 0;
     BankExtractionSummary* summary = nullptr;
     VfsDatabaseBuildState* vfs_database = nullptr;
     std::unordered_set<std::string> created_directories;
     std::mutex created_directories_mutex;
+    // Loose-path owner per relative path across every bank in this run
+    // (pre-pass): the LAST bank in extraction order to carry a name owns the
+    // shared loose file (the historical overwrite behavior the rest of the
+    // pipeline was validated against). Same-name entries are routed to
+    // bank-scoped entries/ files via the manifest host_path column when their
+    // bytes differ from the owner's: always when the size differs (texture /
+    // model headers, mip variants), and for same-size entries when the
+    // content fingerprint differs (world streaming variants).
+    const std::unordered_map<std::string, LoosePathOwner>* loose_path_owners =
+        nullptr;
+    std::size_t bank_ordinal = 0;
 };
 
 struct PlannedBankEntry {
@@ -156,6 +189,10 @@ struct PlannedBankEntry {
     std::filesystem::path relative_path;
     std::filesystem::path host_relative_path;
     bool skip_duplicate = false;
+    // Entry bytes routed to a bank-scoped file (cross-bank size conflict);
+    // reachable only through this bank's manifest, so it must not register
+    // as a global loose-alias candidate.
+    bool bank_scoped = false;
 };
 
 struct BankDuplicateConflict {
@@ -1183,6 +1220,58 @@ bool SplitLocalizedLanguagePath(std::string_view normalized,
     return true;
 }
 
+bool IsKnownLanguageLocaleComponent(std::string_view value) {
+    for (const std::string_view locale : kKnownLanguageLocales) {
+        if (value == locale) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string CanonicalizeRuntimeAliasKey(std::string_view normalized_key) {
+    // Canonical database alias spelling shared with the runtime lookup
+    // (CanonicalizeRefiiVfsDatabaseAliasKey): requests reachable by mechanical
+    // rewrites collapse onto one stored row, so those spellings are not
+    // materialized.
+    std::string_view key = normalized_key;
+    if (StartsWith(key, "data/")) {
+        key.remove_prefix(5);
+    }
+
+    constexpr std::string_view kLanguagePrefix = "language/";
+    constexpr std::string_view kLanguageDlcPrefix = "language_dlc/";
+    std::string_view root;
+    std::string_view tail;
+    if (StartsWith(key, kLanguagePrefix)) {
+        root = key.substr(0, kLanguagePrefix.size() - 1);
+        tail = key.substr(kLanguagePrefix.size());
+    } else if (StartsWith(key, kLanguageDlcPrefix)) {
+        root = key.substr(0, kLanguageDlcPrefix.size() - 1);
+        tail = key.substr(kLanguageDlcPrefix.size());
+    } else {
+        return std::string(key);
+    }
+
+    const size_t first_separator = tail.find('/');
+    if (first_separator != std::string_view::npos &&
+        first_separator + 1 < tail.size() &&
+        IsKnownLanguageLocaleComponent(tail.substr(0, first_separator))) {
+        tail = tail.substr(first_separator + 1);
+    }
+
+    std::string canonical(root);
+    canonical += '/';
+    constexpr std::string_view kPatchTextPrefix = "patch_text/";
+    if (StartsWith(tail, kPatchTextPrefix)) {
+        canonical += "text/";
+        canonical += tail.substr(kPatchTextPrefix.size());
+    } else {
+        canonical += tail;
+    }
+    return canonical;
+}
+
 std::string BuildLanguageRootTailRedirectAlias(std::string_view candidate) {
     const std::string normalized = NormalizeVfsKey(candidate);
     std::string_view language_root;
@@ -1318,6 +1407,12 @@ bool IsDirectLooseVfsFile(std::string_view candidate) {
         return true;
     }
 
+    // Extracted .gdb / .babel databases are stored as editable .csv; the
+    // runtime compiles them back on demand.
+    if (EndsWith(normalized, ".gdb.csv") || EndsWith(normalized, ".babel.csv")) {
+        return true;
+    }
+
     const size_t dot = normalized.find_last_of('.');
     if (dot == std::string::npos) {
         return false;
@@ -1431,6 +1526,22 @@ bool PublishDirectGlobalsFilesForVfsIndex(const std::filesystem::path& unpacked_
             return false;
         }
 
+        // Editable database .csv twins only propagate when the source is
+        // newer, so user edits on either side of the mirror survive rebuilds.
+        const std::string mirror_name =
+            NormalizeVfsKey(destination_path.filename().generic_string());
+        if (EndsWith(mirror_name, ".gdb.csv") ||
+            EndsWith(mirror_name, ".babel.csv")) {
+            std::error_code time_error;
+            const auto destination_time =
+                std::filesystem::last_write_time(destination_path, time_error);
+            if (!time_error &&
+                destination_time >=
+                    std::filesystem::last_write_time(it->path(), time_error)) {
+                continue;
+            }
+        }
+
         std::error_code copy_error;
         std::filesystem::copy_file(it->path(),
                                    destination_path,
@@ -1501,7 +1612,16 @@ void AddRuntimeIndexAliasNormalized(
         return;
     }
 
-    std::string key(normalized_alias);
+    // Only the canonical spelling is stored; the runtime rewrites requests to
+    // the same canonical form. An alias equal to its candidate is resolved at
+    // runtime through the candidate table, not a materialized row.
+    const std::string canonical_alias =
+        CanonicalizeRuntimeAliasKey(normalized_alias);
+    if (canonical_alias.empty() || canonical_alias == normalized_candidate) {
+        return;
+    }
+
+    std::string key(canonical_alias);
     key += '\t';
     key += std::to_string(candidate_id);
     if (!keys->insert(key).second) {
@@ -1509,8 +1629,8 @@ void AddRuntimeIndexAliasNormalized(
     }
 
     const std::uint16_t shard =
-        RuntimeAliasShardForHash(ComputeResourceNameHash(normalized_alias));
-    (*shards)[shard].emplace_back(std::string(normalized_alias), candidate_id);
+        RuntimeAliasShardForHash(ComputeResourceNameHash(canonical_alias));
+    (*shards)[shard].emplace_back(canonical_alias, candidate_id);
 }
 
 void AddRuntimeIndexAlias(
@@ -1524,64 +1644,6 @@ void AddRuntimeIndexAlias(
     const std::string normalized_candidate = NormalizeVfsKey(candidate);
     AddRuntimeIndexAliasNormalized(
         shards, keys, candidate_ids, candidates, normalized_alias, normalized_candidate);
-}
-
-void AddRuntimeLanguageAliases(
-    std::array<std::vector<std::pair<std::string, std::uint32_t>>, 4096>* shards,
-    std::unordered_set<std::string>* keys,
-    std::unordered_map<std::string, std::uint32_t>* candidate_ids,
-    std::vector<std::string>* candidates,
-    std::string_view candidate) {
-    const std::string normalized_candidate = NormalizeVfsKey(candidate);
-    std::string_view language_root;
-    std::string_view asset_tail_view;
-    if (!SplitLocalizedLanguagePath(
-            normalized_candidate, &language_root, nullptr, &asset_tail_view)) {
-        return;
-    }
-
-    const std::string asset_tail(asset_tail_view);
-    auto add_tail_for_known_locales = [&](std::string_view tail) {
-        AddRuntimeIndexAlias(shards,
-                             keys,
-                             candidate_ids,
-                             candidates,
-                             std::string(language_root) + "/" + std::string(tail),
-                             normalized_candidate);
-        for (const std::string_view locale : kKnownLanguageLocales) {
-            AddRuntimeIndexAlias(shards,
-                                 keys,
-                                 candidate_ids,
-                                 candidates,
-                                 std::string(language_root) + "/" +
-                                     std::string(locale) +
-                                     "/" + std::string(tail),
-                                 normalized_candidate);
-        }
-    };
-
-    if (StartsWith(asset_tail, "videos/") && EndsWith(asset_tail, ".bik")) {
-        AddRuntimeIndexAlias(shards,
-                             keys,
-                             candidate_ids,
-                             candidates,
-                             asset_tail,
-                             normalized_candidate);
-    }
-
-    add_tail_for_known_locales(asset_tail);
-
-    constexpr std::string_view kPatchTextPrefix = "patch_text/";
-    constexpr std::string_view kTextPrefix = "text/";
-    if (StartsWith(asset_tail, kPatchTextPrefix)) {
-        add_tail_for_known_locales(std::string(kTextPrefix) +
-                                   std::string(std::string_view(asset_tail).substr(
-                                       kPatchTextPrefix.size())));
-    } else if (StartsWith(asset_tail, kTextPrefix)) {
-        add_tail_for_known_locales(std::string(kPatchTextPrefix) +
-                                   std::string(std::string_view(asset_tail).substr(
-                                       kTextPrefix.size())));
-    }
 }
 
 void AddRuntimeDirectoryAlias(std::unordered_set<std::string>* directories,
@@ -1912,7 +1974,6 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
     std::unordered_set<std::uint64_t> hash_keys;
     std::unordered_set<std::uint32_t> owned_hashes;
     std::unordered_set<std::string> directories;
-    std::unordered_set<std::string> runtime_language_candidates;
     std::unordered_set<std::string> runtime_parent_candidates;
     std::unordered_map<std::string, std::uint32_t> candidate_ids;
     std::vector<std::string> candidates;
@@ -1920,7 +1981,6 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
     hash_keys.reserve(rows.size());
     owned_hashes.reserve(rows.size());
     directories.reserve(rows.size());
-    runtime_language_candidates.reserve(rows.size() / 4 + 16);
     runtime_parent_candidates.reserve(rows.size() / 2 + 16);
     candidate_ids.reserve(rows.size());
     candidates.reserve(rows.size() / 2);
@@ -1934,10 +1994,6 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
                                        &candidates,
                                        alias,
                                        normalized_candidate);
-        if (runtime_language_candidates.insert(normalized_candidate).second) {
-            AddRuntimeLanguageAliases(
-                &alias_shards, &alias_keys, &candidate_ids, &candidates, normalized_candidate);
-        }
         if (runtime_parent_candidates.insert(normalized_candidate).second) {
             AddRuntimeParentDirectories(&directories, normalized_candidate);
         }
@@ -2099,14 +2155,14 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
             }
             return false;
         }
-        output << "# refii_vfs_alias_index_v2\n";
-        output << "# alias\tcandidate\n";
+        output << "# refii_vfs_alias_index_v3\n";
+        output << "# alias\tcandidate_id\n";
         std::size_t shard_entry_count = 0;
         for (const auto& [alias, candidate_id] : aliases) {
             if (candidate_id >= candidates.size()) {
                 continue;
             }
-            output << alias << '\t' << candidates[candidate_id] << '\n';
+            output << alias << '\t' << candidate_id << '\n';
             ++shard_entry_count;
         }
         if (!output) {
@@ -2143,14 +2199,14 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
             }
             return false;
         }
-        output << "# refii_vfs_hash_index_v2\n";
-        output << "# hash_hex\tcandidate\n";
+        output << "# refii_vfs_hash_index_v3\n";
+        output << "# hash_hex\tcandidate_id\n";
         std::size_t shard_entry_count = 0;
         for (const auto& [hash, candidate_id] : hashes) {
             if (candidate_id >= candidates.size()) {
                 continue;
             }
-            output << HexUint32(hash) << '\t' << candidates[candidate_id] << '\n';
+            output << HexUint32(hash) << '\t' << candidate_id << '\n';
             ++shard_entry_count;
         }
         if (!output) {
@@ -2197,7 +2253,7 @@ bool WriteRuntimeVfsIndex(const std::filesystem::path& runtime_index_root,
         }
         return false;
     }
-    metadata << "# refii_vfs_runtime_index_v5\n";
+    metadata << "# refii_vfs_runtime_index_v6\n";
     metadata << "candidates\t" << candidates.size() << '\n';
     metadata << "alias_entries\t" << alias_entry_count << '\n';
     metadata << "hash_entries\t" << hash_entry_count << '\n';
@@ -2499,6 +2555,21 @@ void AddVfsExtractedCandidate(VfsDatabaseBuildState* state,
     }
     if (IsDirectLooseVfsFile(candidate)) {
         AddVfsDatabasePathAliases(&state->rows, &state->row_keys, candidate, candidate);
+        // A .gdb.csv / .babel.csv is the extracted form of its binary database:
+        // index the database name as a virtual candidate so hash lookups still
+        // route to it. The loose resolver compiles the CSV when it is opened.
+        const std::string normalized_candidate = NormalizeVfsKey(candidate);
+        if (EndsWith(normalized_candidate, ".gdb.csv") ||
+            EndsWith(normalized_candidate, ".babel.csv")) {
+            const std::string_view database_candidate =
+                std::string_view(candidate).substr(0, candidate.size() - 4);
+            AddVfsDatabasePathAliases(&state->rows,
+                                      &state->row_keys,
+                                      database_candidate,
+                                      database_candidate);
+            AddVfsBasenameCandidate(&state->basename_candidates,
+                                    database_candidate);
+        }
     }
     ++state->indexed_files;
 }
@@ -2695,6 +2766,19 @@ bool CollectSupplementalVfsFiles(VfsDatabaseBuildState* state, std::string* erro
             continue;
         }
         AddVfsDatabasePathAliases(&state->rows, &state->row_keys, candidate, candidate);
+        // A .gdb.csv / .babel.csv is the extracted form of its binary database:
+        // index the database name as a virtual candidate so hash lookups still
+        // route to it. The loose resolver compiles the CSV when it is opened.
+        const std::string normalized_candidate = NormalizeVfsKey(candidate);
+        if (EndsWith(normalized_candidate, ".gdb.csv") ||
+            EndsWith(normalized_candidate, ".babel.csv")) {
+            const std::string_view database_candidate =
+                std::string_view(candidate).substr(0, candidate.size() - 4);
+            AddVfsDatabasePathAliases(&state->rows,
+                                      &state->row_keys,
+                                      database_candidate,
+                                      database_candidate);
+        }
     }
 
     return true;
@@ -3000,6 +3084,53 @@ bool EnsureOutputParentDirectory(const std::filesystem::path& output_path,
     return true;
 }
 
+// The extracted representation of a .gdb or .babel database is an editable
+// .csv twin; like every other extracted format, the packed original is not
+// kept. The VFS runtime compiles the CSV back to binary on demand. Bank-scoped
+// payload copies under refii_vfs/ stay binary because manifest routing serves
+// their raw bytes. An existing CSV is treated as the source of truth: the
+// freshly written binary is dropped without overwriting it, so user edits
+// survive incremental re-extraction.
+bool MaybeReplaceDatabaseWithCsv(const std::filesystem::path& output_path,
+                                 bool convert_gdb,
+                                 bool convert_babel) {
+    std::string extension = output_path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char ch) {
+                       return static_cast<char>(std::tolower(ch));
+                   });
+    const bool is_gdb = convert_gdb && extension == ".gdb";
+    const bool is_babel = convert_babel && extension == ".babel";
+    if (!is_gdb && !is_babel) {
+        return false;
+    }
+    for (const std::filesystem::path& component : output_path) {
+        const std::string name = component.string();
+        if (name == "refii_vfs" || name == ".cache") {
+            return false;
+        }
+    }
+    std::filesystem::path csv_path = output_path;
+    csv_path += ".csv";
+    std::error_code status_error;
+    if (!std::filesystem::exists(csv_path, status_error)) {
+        std::string error;
+        const bool converted =
+            is_gdb ? refii::vfs::gdb::ConvertGdbFileToCsvFile(
+                         output_path, csv_path, &error)
+                   : refii::vfs::babel::ConvertBabelFileToCsvFile(
+                         output_path, csv_path, &error);
+        if (!converted) {
+            // Unknown variants must not fail extraction; keep the binary and
+            // drop the partial CSV so the runtime never sees it.
+            std::filesystem::remove(csv_path, status_error);
+            return false;
+        }
+    }
+    std::filesystem::remove(output_path, status_error);
+    return true;
+}
+
 bool CopyFileRange(std::ifstream& source,
                    std::uint64_t offset,
                    std::uint64_t size,
@@ -3049,6 +3180,11 @@ bool CopyFileRange(std::ifstream& source,
         remaining -= to_read;
     }
 
+    output.close();
+    if (context != nullptr) {
+        MaybeReplaceDatabaseWithCsv(output_path, context->convert_gdb_databases,
+                                    context->convert_babel_databases);
+    }
     return true;
 }
 
@@ -3079,6 +3215,11 @@ bool WriteBytes(const std::filesystem::path& output_path,
         }
     }
 
+    output.close();
+    if (context != nullptr) {
+        MaybeReplaceDatabaseWithCsv(output_path, context->convert_gdb_databases,
+                                    context->convert_babel_databases);
+    }
     return true;
 }
 
@@ -3532,6 +3673,40 @@ bool ExtractOneBank(const std::filesystem::path& bank_path,
             planned_entry.skip_duplicate = identical;
         }
 
+        if (context != nullptr && context->loose_path_owners != nullptr &&
+            !planned_entry.skip_duplicate &&
+            planned_entry.host_relative_path == planned_entry.relative_path) {
+            const auto owner_it = context->loose_path_owners->find(relative_key);
+            bool scope_entry = false;
+            if (owner_it != context->loose_path_owners->end() &&
+                context->bank_ordinal != owner_it->second.owner_ordinal) {
+                if (entry.size != owner_it->second.size) {
+                    scope_entry = true;
+                } else if (owner_it->second.multi_bank &&
+                           owner_it->second.fingerprint_valid) {
+                    // Same size as the owner: compare content so world
+                    // streaming variants that differ only in bytes are still
+                    // served per-bank.
+                    std::vector<std::uint8_t> entry_bytes;
+                    std::string fingerprint_error;
+                    if (ReadEntryOutputBytes(file, table, entry, &entry_bytes,
+                                             &fingerprint_error)) {
+                        scope_entry = Fnv1aFingerprint(entry_bytes) !=
+                                      owner_it->second.fingerprint;
+                    }
+                }
+            }
+            if (scope_entry) {
+                const std::filesystem::path bank_relative_root =
+                    bank_root.lexically_relative(context->output_root)
+                        .lexically_normal();
+                planned_entry.host_relative_path =
+                    bank_relative_root / "entries" /
+                    (std::to_string(entry_index) + ".bin");
+                planned_entry.bank_scoped = true;
+            }
+        }
+
         planned_entries.push_back(std::move(planned_entry));
     }
 
@@ -3549,7 +3724,7 @@ bool ExtractOneBank(const std::filesystem::path& bank_path,
             AddVfsSyntheticBankRowsForManifest(
                 context->vfs_database, logical_bank_root, manifest_root);
             for (const PlannedBankEntry& planned_entry : planned_entries) {
-                if (planned_entry.skip_duplicate) {
+                if (planned_entry.skip_duplicate || planned_entry.bank_scoped) {
                     continue;
                 }
                 const std::filesystem::path candidate_path =
@@ -3696,6 +3871,143 @@ std::filesystem::path GetBankOutputRoot(const std::filesystem::path& output_root
         .lexically_normal();
 }
 
+namespace {
+
+// Converts .gdb / .babel databases already present in the unpacked tree into
+// their extracted .csv representation (extraction converts inline; this covers
+// trees extracted before CSV support existed). Runtime metadata under
+// refii_vfs/ and the compiled-override cache are skipped. Two-phase so the
+// removal of converted binaries cannot disturb the directory walk.
+std::size_t ConvertUnpackedDatabasesToCsv(
+    const std::filesystem::path& unpacked_root,
+    bool convert_gdb,
+    bool convert_babel) {
+    if (!convert_gdb && !convert_babel) {
+        return 0;
+    }
+    std::vector<std::filesystem::path> databases;
+    std::error_code iterator_error;
+    constexpr auto options =
+        std::filesystem::directory_options::skip_permission_denied;
+    for (std::filesystem::recursive_directory_iterator
+             it(unpacked_root, options, iterator_error),
+         end;
+         it != end; it.increment(iterator_error)) {
+        if (iterator_error) {
+            iterator_error.clear();
+            continue;
+        }
+        const std::string filename = it->path().filename().string();
+        if (it->is_directory(iterator_error) &&
+            (filename == "refii_vfs" || filename == ".cache")) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        std::error_code file_error;
+        if (it->is_regular_file(file_error)) {
+            databases.push_back(it->path());
+        }
+    }
+    std::size_t converted = 0;
+    for (const std::filesystem::path& path : databases) {
+        if (MaybeReplaceDatabaseWithCsv(path, convert_gdb, convert_babel)) {
+            ++converted;
+        }
+    }
+    return converted;
+}
+
+// Babel keys are the same FNV-1 symbols carried by GDB name tables. Extraction
+// can encounter the Babel payload before its companion GDB, so inline
+// conversion initially has to preserve unknown keys as #xxxxxxxx. Once the
+// tree is complete, enrich every Babel CSV from every extracted GDB CSV and
+// rewrite only files whose readable links improve.
+std::size_t LinkBabelCsvNamesFromGdbCsvs(
+    const std::filesystem::path& unpacked_root) {
+    std::vector<std::filesystem::path> gdb_csvs;
+    std::vector<std::filesystem::path> babel_csvs;
+    std::error_code iterator_error;
+    constexpr auto options =
+        std::filesystem::directory_options::skip_permission_denied;
+    for (std::filesystem::recursive_directory_iterator
+             it(unpacked_root, options, iterator_error),
+         end;
+         it != end; it.increment(iterator_error)) {
+        if (iterator_error) {
+            iterator_error.clear();
+            continue;
+        }
+        const std::string filename = LowercaseAscii(it->path().filename().string());
+        if (it->is_directory(iterator_error) &&
+            (filename == "refii_vfs" || filename == ".cache")) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        std::error_code file_error;
+        if (!it->is_regular_file(file_error)) {
+            continue;
+        }
+        if (EndsWith(filename, ".gdb.csv")) {
+            gdb_csvs.push_back(it->path());
+        } else if (EndsWith(filename, ".babel.csv")) {
+            babel_csvs.push_back(it->path());
+        }
+    }
+
+    std::unordered_map<uint32_t, std::string> linked_names;
+    std::unordered_set<uint32_t> ambiguous_names;
+    for (const std::filesystem::path& path : gdb_csvs) {
+        std::ifstream input(path, std::ios::binary);
+        const std::string csv((std::istreambuf_iterator<char>(input)),
+                              std::istreambuf_iterator<char>());
+        refii::vfs::gdb::GdbDatabase database;
+        std::string error;
+        if (!input.bad() && refii::vfs::gdb::ParseCsv(csv, &database, &error)) {
+            for (const auto& [hash, name] : database.names) {
+                if (ambiguous_names.count(hash) != 0) {
+                    continue;
+                }
+                const auto [match, inserted] = linked_names.try_emplace(hash, name);
+                if (!inserted && match->second != name) {
+                    linked_names.erase(match);
+                    ambiguous_names.insert(hash);
+                }
+            }
+        }
+    }
+
+    std::size_t linked = 0;
+    for (const std::filesystem::path& path : babel_csvs) {
+        std::ifstream input(path, std::ios::binary);
+        const std::string csv((std::istreambuf_iterator<char>(input)),
+                              std::istreambuf_iterator<char>());
+        refii::vfs::babel::BabelDatabase database;
+        std::string error;
+        if (input.bad() ||
+            !refii::vfs::babel::ParseCsv(csv, &database, &error)) {
+            continue;
+        }
+        for (const auto& [hash, name] : linked_names) {
+            if (refii::vfs::babel::Fnv1(name) == hash) {
+                database.AddName(name);
+            }
+        }
+        std::string enriched;
+        refii::vfs::babel::SerializeCsv(database, &enriched);
+        if (enriched == csv) {
+            continue;
+        }
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        if (output.write(enriched.data(),
+                         static_cast<std::streamsize>(enriched.size()))) {
+            ++linked;
+        }
+    }
+    return linked;
+}
+
+}  // namespace
+
 bool BuildVfsDatabase(const VfsDatabaseBuildOptions& options,
                       VfsDatabaseBuildSummary* summary,
                       std::string* error) {
@@ -3723,6 +4035,12 @@ bool BuildVfsDatabase(const VfsDatabaseBuildOptions& options,
     if (!PublishDirectGlobalsFilesForVfsIndex(unpacked_root, error)) {
         return false;
     }
+    active_summary->database_csv_emitted = ConvertUnpackedDatabasesToCsv(
+        unpacked_root, options.convert_gdb_databases,
+        options.convert_babel_databases);
+    if (options.convert_babel_databases) {
+        LinkBabelCsvNamesFromGdbCsvs(unpacked_root);
+    }
 
     const std::filesystem::path default_legacy_database_path =
         unpacked_root / "_refii_vfs.tsv";
@@ -3748,6 +4066,78 @@ bool BuildVfsDatabase(const VfsDatabaseBuildOptions& options,
     }
     return WriteVfsDatabaseState(&state, active_summary, error);
 }
+
+namespace {
+
+// Bank-scoped entries/ files (header/payload split variants) repeat heavily
+// across world banks -- ~78% of their bytes are duplicates. Collapse
+// byte-identical files into hardlinks after extraction; paths are unchanged
+// so the runtime manifest routing is unaffected.
+void DedupeBankScopedEntryFiles(const std::filesystem::path& output_root) {
+    const std::filesystem::path banks_root = output_root / "refii_vfs" / "banks";
+    std::error_code ec;
+    if (!std::filesystem::exists(banks_root, ec)) {
+        return;
+    }
+    std::unordered_map<std::string, std::filesystem::path> canonical_by_key;
+    for (std::filesystem::recursive_directory_iterator
+             it(banks_root, std::filesystem::directory_options::skip_permission_denied, ec),
+         end;
+         it != end; it.increment(ec)) {
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (!it->is_regular_file(ec) ||
+            it->path().parent_path().filename() != "entries") {
+            continue;
+        }
+        const auto size = std::filesystem::file_size(it->path(), ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        std::ifstream file(it->path(), std::ios::binary);
+        if (!file) {
+            continue;
+        }
+        // Key on size + content hash (FNV-1a over the bytes).
+        std::uint64_t hash = 1469598103934665603ull;
+        char buffer[65536];
+        while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
+            const std::streamsize got = file.gcount();
+            for (std::streamsize i = 0; i < got; ++i) {
+                hash ^= static_cast<unsigned char>(buffer[i]);
+                hash *= 1099511628211ull;
+            }
+            if (got < static_cast<std::streamsize>(sizeof(buffer))) {
+                break;
+            }
+        }
+        const std::string key =
+            std::to_string(size) + ":" + std::to_string(hash);
+        const auto [canon, inserted] =
+            canonical_by_key.try_emplace(key, it->path());
+        if (inserted) {
+            continue;
+        }
+        const std::filesystem::path tmp = it->path().string() + ".lnk";
+        std::filesystem::remove(tmp, ec);
+        ec.clear();
+        std::filesystem::create_hard_link(canon->second, tmp, ec);
+        if (ec) {
+            ec.clear();
+            continue;  // filesystem without hardlinks: keep the copy
+        }
+        std::filesystem::rename(tmp, it->path(), ec);
+        if (ec) {
+            ec.clear();
+            std::filesystem::remove(tmp, ec);
+        }
+    }
+}
+
+}  // namespace
 
 bool ExtractBanks(const BankExtractionOptions& options,
                   BankExtractionSummary* summary,
@@ -3812,6 +4202,134 @@ bool ExtractBanks(const BankExtractionOptions& options,
     }
 
     const std::size_t total_banks = options.bank_relative_paths.size();
+
+    // Pre-pass sweep A: parse every bank table (headers only) and record, per
+    // relative path, the LAST bank in extraction order to carry that name --
+    // the historical loose-file owner under the old overwrite behavior.
+    // Sweep B then fingerprints the owner's bytes for names carried by more
+    // than one bank, so planning can route same-size-but-different-content
+    // entries (world streaming variants) to bank-scoped files as well.
+    std::unordered_map<std::string, LoosePathOwner> loose_path_owners;
+    for (std::size_t index = 0; index < total_banks; ++index) {
+        std::filesystem::path bank_relative_path;
+        if (!NormalizeBankRelativePath(
+                options.bank_relative_paths[index], &bank_relative_path, error)) {
+            return false;
+        }
+        std::filesystem::path bank_path =
+            active_summary->game_content_root / bank_relative_path;
+        if (!std::filesystem::exists(bank_path)) {
+            const std::filesystem::path case_insensitive_bank_path =
+                ResolveCaseInsensitiveExistingPath(active_summary->game_content_root,
+                                                   bank_relative_path);
+            if (case_insensitive_bank_path.empty() ||
+                !std::filesystem::exists(case_insensitive_bank_path)) {
+                continue;  // reported properly by the extraction pass below
+            }
+            bank_path = case_insensitive_bank_path;
+        }
+        std::ifstream file(bank_path, std::ios::binary);
+        if (!file) {
+            continue;
+        }
+        file.seekg(0, std::ios::end);
+        const std::streamoff stream_size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        if (stream_size <= 0) {
+            continue;
+        }
+        BankTable table;
+        std::string prepass_error;
+        if (!ParseBankTable(bank_path, file,
+                            static_cast<std::uint64_t>(stream_size), &table,
+                            &prepass_error)) {
+            continue;
+        }
+        for (const BankEntry& entry : table.entries) {
+            std::filesystem::path relative_path;
+            std::string normalize_error;
+            if (!NormalizeLowercaseRelativePath(entry.relative_path,
+                                                &relative_path,
+                                                &normalize_error)) {
+                continue;
+            }
+            // Later banks overwrite: last writer owns the loose path.
+            auto [owner_it, first_sighting] = loose_path_owners.try_emplace(
+                relative_path.generic_string());
+            if (!first_sighting) {
+                owner_it->second.multi_bank = true;
+            }
+            owner_it->second.owner_ordinal = index;
+            owner_it->second.size = entry.size;
+            owner_it->second.fingerprint_valid = false;
+        }
+    }
+
+    // Pre-pass sweep B: fingerprint the owner's output bytes for every name
+    // carried by more than one bank, enabling content comparison for
+    // same-size cross-bank entries during planning.
+    for (std::size_t index = 0; index < total_banks; ++index) {
+        std::filesystem::path bank_relative_path;
+        if (!NormalizeBankRelativePath(
+                options.bank_relative_paths[index], &bank_relative_path, error)) {
+            return false;
+        }
+        std::filesystem::path bank_path =
+            active_summary->game_content_root / bank_relative_path;
+        if (!std::filesystem::exists(bank_path)) {
+            const std::filesystem::path case_insensitive_bank_path =
+                ResolveCaseInsensitiveExistingPath(active_summary->game_content_root,
+                                                   bank_relative_path);
+            if (case_insensitive_bank_path.empty() ||
+                !std::filesystem::exists(case_insensitive_bank_path)) {
+                continue;
+            }
+            bank_path = case_insensitive_bank_path;
+        }
+        std::ifstream file(bank_path, std::ios::binary);
+        if (!file) {
+            continue;
+        }
+        file.seekg(0, std::ios::end);
+        const std::streamoff stream_size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        if (stream_size <= 0) {
+            continue;
+        }
+        BankTable table;
+        std::string prepass_error;
+        if (!ParseBankTable(bank_path, file,
+                            static_cast<std::uint64_t>(stream_size), &table,
+                            &prepass_error)) {
+            continue;
+        }
+        for (const BankEntry& entry : table.entries) {
+            std::filesystem::path relative_path;
+            std::string normalize_error;
+            if (!NormalizeLowercaseRelativePath(entry.relative_path,
+                                                &relative_path,
+                                                &normalize_error)) {
+                continue;
+            }
+            const auto owner_it =
+                loose_path_owners.find(relative_path.generic_string());
+            if (owner_it == loose_path_owners.end() ||
+                !owner_it->second.multi_bank ||
+                owner_it->second.owner_ordinal != index ||
+                owner_it->second.fingerprint_valid) {
+                continue;
+            }
+            std::vector<std::uint8_t> owner_bytes;
+            std::string read_error;
+            if (!ReadEntryOutputBytes(file, table, entry, &owner_bytes,
+                                      &read_error)) {
+                continue;
+            }
+            owner_it->second.fingerprint = Fnv1aFingerprint(owner_bytes);
+            owner_it->second.fingerprint_valid = true;
+        }
+    }
+
     for (std::size_t index = 0; index < total_banks; ++index) {
         std::filesystem::path bank_relative_path;
         if (!NormalizeBankRelativePath(
@@ -3877,14 +4395,29 @@ bool ExtractBanks(const BankExtractionOptions& options,
         context.extract_payloads = options.extract_payloads;
         context.extract_nested_banks = options.extract_nested_banks;
         context.payload_worker_count = options.payload_worker_count;
+        context.convert_gdb_databases = options.convert_gdb_databases;
+        context.convert_babel_databases = options.convert_babel_databases;
         context.summary = active_summary;
         context.vfs_database = options.build_vfs_database ? &database_state : nullptr;
+        context.loose_path_owners = &loose_path_owners;
+        context.bank_ordinal = index;
         if (!ExtractOneBank(bank_path, bank_output_root, &context, error)) {
             return false;
         }
     }
 
     EmitProgress(options.progress_callback, "extracting_banks", total_banks, total_banks);
+    DedupeBankScopedEntryFiles(active_summary->output_root);
+    // Bank payload writers already converted their own databases; this sweep
+    // converts loose databases the installer copied into the output root
+    // before extraction, and must run before the globals publish below so the
+    // lowercase mirror propagates CSVs.
+    active_summary->database_csv_converted = ConvertUnpackedDatabasesToCsv(
+        active_summary->output_root, options.convert_gdb_databases,
+        options.convert_babel_databases);
+    if (options.convert_babel_databases) {
+        LinkBabelCsvNamesFromGdbCsvs(active_summary->output_root);
+    }
     if (options.build_vfs_database) {
         EmitProgress(options.progress_callback,
                      "building_vfs_database",

@@ -334,6 +334,53 @@ std::filesystem::path ResolveConfiguredModsRoot(
     return refii::modding::GetDefaultModsRoot(assetsRoot);
 }
 
+struct ModdingTabState {
+    bool loaded = false;
+    std::filesystem::path modsRoot;
+    std::vector<refii::modding::ModInstall> mods;
+    // Priority order: first entry is searched first and wins conflicts.
+    std::vector<std::string> enabledMods;
+    std::map<std::string, refii::modding::ModAssetSummary> summaries;
+    std::map<std::string, std::size_t> conflictCounts;
+};
+
+void RefreshModdingTabState(ModdingTabState& state,
+                            const std::filesystem::path& modsRoot) {
+    state.modsRoot = modsRoot;
+    state.mods = refii::modding::DiscoverModInstalls(modsRoot);
+    state.enabledMods = refii::modding::ReadEnabledModNames(modsRoot);
+    state.summaries.clear();
+    state.conflictCounts.clear();
+
+    std::map<std::string, std::vector<std::string>> ownersByPath;
+    for (const std::string& name : state.enabledMods) {
+        const auto mod = std::find_if(
+            state.mods.begin(), state.mods.end(),
+            [&](const refii::modding::ModInstall& installed) {
+                return installed.name == name;
+            });
+        if (mod == state.mods.end()) {
+            continue;
+        }
+        refii::modding::ModAssetSummary summary =
+            refii::modding::SummarizeModAssets(
+                refii::modding::GetModAssetRoot(*mod));
+        for (const std::string& path : summary.normalized_paths) {
+            ownersByPath[path].push_back(name);
+        }
+        state.summaries[name] = std::move(summary);
+    }
+    for (const auto& [path, owners] : ownersByPath) {
+        if (owners.size() < 2) {
+            continue;
+        }
+        for (const std::string& owner : owners) {
+            ++state.conflictCounts[owner];
+        }
+    }
+    state.loaded = true;
+}
+
 void RenderModdingTab(std::string& moddingStatusMessage) {
     const std::filesystem::path runtimeConfigPath = Installer::GetRuntimeConfigPath();
     std::map<std::string, std::string> runtimeValues =
@@ -341,46 +388,90 @@ void RenderModdingTab(std::string& moddingStatusMessage) {
     const std::filesystem::path modsRoot =
         ResolveConfiguredModsRoot(runtimeValues);
 
+    static ModdingTabState state;
+    if (!state.loaded || state.modsRoot != modsRoot) {
+        RefreshModdingTabState(state, modsRoot);
+    }
+
+    auto saveEnabledMods = [&]() {
+        std::string error;
+        if (refii::modding::WriteEnabledModNames(modsRoot, state.enabledMods,
+                                                 &error)) {
+            moddingStatusMessage = "Updated enabled mods.";
+        } else {
+            moddingStatusMessage = "Failed to update enabled mods: " + error;
+        }
+        RefreshModdingTabState(state, modsRoot);
+    };
+
     ImGui::TextWrapped("Mod folder: %s", modsRoot.generic_string().c_str());
-    ImGui::TextWrapped("Install loose-file mods as folders here. A mod can place files directly in its folder, or under a files folder.");
+    ImGui::TextWrapped(
+        "Install loose-file mods as folders here. A mod can place files "
+        "directly in its folder, or under a files folder. Enabled mods "
+        "override matching game files; a mod that ships "
+        "refii_vfs/banks/<bank>/_manifest.tsv replaces that bank's contents. "
+        "Higher mods in the list win conflicts. Changes apply the next time "
+        "the game starts.");
 
     if (ImGui::Button("Create Folder")) {
         std::error_code error;
         std::filesystem::create_directories(modsRoot, error);
         moddingStatusMessage = error ? ("Failed to create mod folder: " + error.message())
                                      : "Mod folder is ready.";
+        RefreshModdingTabState(state, modsRoot);
     }
     ImGui::SameLine();
     if (ImGui::Button("Refresh")) {
         moddingStatusMessage.clear();
+        RefreshModdingTabState(state, modsRoot);
     }
 
     if (!moddingStatusMessage.empty()) {
         ImGui::TextWrapped("%s", moddingStatusMessage.c_str());
     }
 
-    std::vector<refii::modding::ModInstall> mods =
-        refii::modding::DiscoverModInstalls(modsRoot);
-    std::vector<std::string> enabledMods =
-        refii::modding::ReadEnabledModNames(modsRoot);
-
     ImGui::Separator();
-    if (mods.empty()) {
+    if (state.mods.empty()) {
         ImGui::TextWrapped("No mods found.");
         return;
     }
 
-    ImGui::BeginTable("ModdingModsTable", 3,
+    // Enabled mods first in priority order, then the rest alphabetically.
+    std::vector<const refii::modding::ModInstall*> orderedMods;
+    orderedMods.reserve(state.mods.size());
+    for (const std::string& name : state.enabledMods) {
+        const auto mod = std::find_if(
+            state.mods.begin(), state.mods.end(),
+            [&](const refii::modding::ModInstall& installed) {
+                return installed.name == name;
+            });
+        if (mod != state.mods.end()) {
+            orderedMods.push_back(&*mod);
+        }
+    }
+    for (const refii::modding::ModInstall& mod : state.mods) {
+        if (std::find(state.enabledMods.begin(), state.enabledMods.end(),
+                      mod.name) == state.enabledMods.end()) {
+            orderedMods.push_back(&mod);
+        }
+    }
+
+    ImGui::BeginTable("ModdingModsTable", 6,
                       ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
                           ImGuiTableFlags_NoHostExtendX);
-    ImGui::TableSetupColumn("Enabled", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("Enabled", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+    ImGui::TableSetupColumn("Order", ImGuiTableColumnFlags_WidthFixed, 70.0f);
     ImGui::TableSetupColumn("Mod", ImGuiTableColumnFlags_WidthFixed, 220.0f);
+    ImGui::TableSetupColumn("Files", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+    ImGui::TableSetupColumn("Conflicts", ImGuiTableColumnFlags_WidthFixed, 80.0f);
     ImGui::TableSetupColumn("Path", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
 
-    for (const refii::modding::ModInstall& mod : mods) {
-        const bool wasEnabled =
-            std::find(enabledMods.begin(), enabledMods.end(), mod.name) !=
-            enabledMods.end();
+    for (const refii::modding::ModInstall* modPtr : orderedMods) {
+        const refii::modding::ModInstall& mod = *modPtr;
+        const auto enabledIt = std::find(state.enabledMods.begin(),
+                                         state.enabledMods.end(), mod.name);
+        const bool wasEnabled = enabledIt != state.enabledMods.end();
         bool enabled = wasEnabled;
 
         ImGui::PushID(mod.name.c_str());
@@ -388,29 +479,104 @@ void RenderModdingTab(std::string& moddingStatusMessage) {
         ImGui::TableSetColumnIndex(0);
         if (ImGui::Checkbox("##enabled", &enabled) && enabled != wasEnabled) {
             if (enabled) {
-                enabledMods.push_back(mod.name);
+                state.enabledMods.push_back(mod.name);
             } else {
-                enabledMods.erase(
-                    std::remove(enabledMods.begin(), enabledMods.end(), mod.name),
-                    enabledMods.end());
+                state.enabledMods.erase(
+                    std::remove(state.enabledMods.begin(),
+                                state.enabledMods.end(), mod.name),
+                    state.enabledMods.end());
             }
-
-            std::string error;
-            if (refii::modding::WriteEnabledModNames(modsRoot, enabledMods,
-                                                     &error)) {
-                moddingStatusMessage = "Updated enabled mods.";
-            } else {
-                moddingStatusMessage = "Failed to update enabled mods: " + error;
-            }
+            saveEnabledMods();
+            ImGui::PopID();
+            break;  // state refreshed; re-render next frame
         }
 
         ImGui::TableSetColumnIndex(1);
-        ImGui::TextUnformatted(mod.name.c_str());
-        if (mod.has_files_folder && ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Uses the files folder as its asset root.");
+        if (wasEnabled) {
+            const std::size_t position =
+                static_cast<std::size_t>(enabledIt - state.enabledMods.begin());
+            ImGui::Text("%zu", position + 1);
+            ImGui::SameLine();
+            ImGui::BeginDisabled(position == 0);
+            if (ImGui::ArrowButton("##up", ImGuiDir_Up)) {
+                std::swap(state.enabledMods[position],
+                          state.enabledMods[position - 1]);
+                saveEnabledMods();
+                ImGui::EndDisabled();
+                ImGui::PopID();
+                break;
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(position + 1 >= state.enabledMods.size());
+            if (ImGui::ArrowButton("##down", ImGuiDir_Down)) {
+                std::swap(state.enabledMods[position],
+                          state.enabledMods[position + 1]);
+                saveEnabledMods();
+                ImGui::EndDisabled();
+                ImGui::PopID();
+                break;
+            }
+            ImGui::EndDisabled();
         }
 
         ImGui::TableSetColumnIndex(2);
+        const std::string display_name = mod.metadata.title.empty()
+                                             ? mod.name
+                                             : mod.metadata.title;
+        if (mod.metadata.version.empty()) {
+            ImGui::TextUnformatted(display_name.c_str());
+        } else {
+            ImGui::Text("%s (%s)", display_name.c_str(),
+                        mod.metadata.version.c_str());
+        }
+        if (ImGui::IsItemHovered()) {
+            std::string tooltip = "Folder: " + mod.name;
+            if (!mod.metadata.author.empty()) {
+                tooltip += "\nAuthor: " + mod.metadata.author;
+            }
+            if (!mod.metadata.description.empty()) {
+                tooltip += "\n" + mod.metadata.description;
+            }
+            if (mod.has_files_folder) {
+                tooltip += "\nUses the files folder as its asset root.";
+            }
+            ImGui::SetTooltip("%s", tooltip.c_str());
+        }
+
+        ImGui::TableSetColumnIndex(3);
+        if (wasEnabled) {
+            const auto summary = state.summaries.find(mod.name);
+            if (summary != state.summaries.end()) {
+                ImGui::Text("%zu", summary->second.file_count);
+                if (summary->second.has_bank_manifests &&
+                    ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Ships bank manifest overlays.");
+                }
+            }
+        } else {
+            ImGui::TextDisabled("-");
+        }
+
+        ImGui::TableSetColumnIndex(4);
+        if (wasEnabled) {
+            const auto conflicts = state.conflictCounts.find(mod.name);
+            if (conflicts != state.conflictCounts.end()) {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%zu",
+                                   conflicts->second);
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "Files also provided by another enabled mod; the "
+                        "higher mod in the list wins.");
+                }
+            } else {
+                ImGui::TextDisabled("0");
+            }
+        } else {
+            ImGui::TextDisabled("-");
+        }
+
+        ImGui::TableSetColumnIndex(5);
         const std::string path = mod.root.generic_string();
         ImGui::TextUnformatted(path.c_str());
         ImGui::PopID();

@@ -86,8 +86,15 @@ std::vector<std::string> BuildSyntheticVfsEntryCandidates(
 }
 
 bool IsKnownLanguageLocale(std::string_view value) {
+  // IDA/Lumen: the original language table includes these locale roots (same
+  // set the extractor materializes aliases for). en-uk first to match runtime
+  // fallback scoring.
   constexpr std::string_view kKnownLanguageLocales[] = {
-      "en-uk", "hu-hu", "zh-cht", "cs-cz", "ko-kr", "pl-pl", "sk-sk"};
+      "en-uk", "en-us", "ja-jp", "de-de", "fr-fr", "es-es",
+      "it-it", "ko-kr", "zh-tw", "zh-cht", "pt-pt", "zh-cn",
+      "pl-pl", "ru-ru", "fr-be", "cs-cz", "da-dk", "fi-fi",
+      "el-gr", "hu-hu", "es-la", "nl-nl", "nb-no", "sk-sk",
+      "sv-se"};
   for (const std::string_view locale : kKnownLanguageLocales) {
     if (value == locale) {
       return true;
@@ -138,6 +145,50 @@ std::string_view GetLanguageLocale(std::string_view normalized_alias) {
       language_tail.substr(0, first_separator);
   return IsKnownLanguageLocale(first_segment) ? first_segment
                                               : std::string_view{};
+}
+
+std::string CanonicalizeRefiiVfsDatabaseAliasKey(std::string_view normalized_key) {
+  // Canonical database alias spelling shared with extraction-time emission:
+  // requests reachable by mechanical rewrites collapse onto one stored row.
+  // - a redundant data/ root is stripped,
+  // - a known locale component after language/ or language_dlc/ is dropped,
+  // - the patch_text/ spelling folds onto text/.
+  std::string_view key = normalized_key;
+  if (StartsWith(key, "data/")) {
+    key.remove_prefix(5);
+  }
+
+  constexpr std::string_view kLanguagePrefix = "language/";
+  constexpr std::string_view kLanguageDlcPrefix = "language_dlc/";
+  std::string_view root;
+  std::string_view tail;
+  if (StartsWith(key, kLanguagePrefix)) {
+    root = key.substr(0, kLanguagePrefix.size() - 1);
+    tail = key.substr(kLanguagePrefix.size());
+  } else if (StartsWith(key, kLanguageDlcPrefix)) {
+    root = key.substr(0, kLanguageDlcPrefix.size() - 1);
+    tail = key.substr(kLanguageDlcPrefix.size());
+  } else {
+    return std::string(key);
+  }
+
+  const size_t first_separator = tail.find('/');
+  if (first_separator != std::string_view::npos &&
+      first_separator + 1 < tail.size() &&
+      IsKnownLanguageLocale(tail.substr(0, first_separator))) {
+    tail = tail.substr(first_separator + 1);
+  }
+
+  std::string canonical(root);
+  canonical += '/';
+  constexpr std::string_view kPatchTextPrefix = "patch_text/";
+  if (StartsWith(tail, kPatchTextPrefix)) {
+    canonical += "text/";
+    canonical += tail.substr(kPatchTextPrefix.size());
+  } else {
+    canonical += tail;
+  }
+  return canonical;
 }
 
 bool IsLanguageVideoAssetTail(std::string_view asset_tail) {
@@ -316,7 +367,33 @@ GetSyntheticBankTemplateSnapshot() {
       templates.push_back(bank_template);
     }
   }
+  std::sort(templates.begin(), templates.end(), [](const auto& lhs,
+                                                   const auto& rhs) {
+    return NormalizeLooseAssetKey(lhs->manifest_root.generic_string()) <
+           NormalizeLooseAssetKey(rhs->manifest_root.generic_string());
+  });
   return templates;
+}
+
+bool PreferSyntheticVfsEntry(const SyntheticVfsEntry& candidate,
+                             const SyntheticVfsEntry& current) {
+  const bool candidate_is_logical_owner =
+      NormalizeLooseAssetKey(candidate.host_relative_path) ==
+      NormalizeLooseAssetKey(candidate.relative_path);
+  const bool current_is_logical_owner =
+      NormalizeLooseAssetKey(current.host_relative_path) ==
+      NormalizeLooseAssetKey(current.relative_path);
+  if (candidate_is_logical_owner != current_is_logical_owner) {
+    return candidate_is_logical_owner;
+  }
+
+  // Equal-owner duplicates either share the same loose payload or are legacy
+  // manifests without extractor conflict scoping. Keep their selection stable
+  // instead of depending on unordered bank registration order.
+  return std::tie(candidate.manifest_root, candidate.host_relative_path,
+                  candidate.relative_path) <
+         std::tie(current.manifest_root, current.host_relative_path,
+                  current.relative_path);
 }
 
 void AddSyntheticVfsEntryAlias(SyntheticVfsEntryIndex& index,
@@ -324,7 +401,11 @@ void AddSyntheticVfsEntryAlias(SyntheticVfsEntryIndex& index,
                                const SyntheticVfsEntry& entry) {
   const std::string normalized = NormalizeLooseAssetKey(alias);
   if (!normalized.empty()) {
-    index.by_normalized_path.try_emplace(normalized, entry);
+    auto [match, inserted] = index.by_normalized_path.try_emplace(normalized,
+                                                                  entry);
+    if (!inserted && PreferSyntheticVfsEntry(entry, match->second)) {
+      match->second = entry;
+    }
   }
 }
 

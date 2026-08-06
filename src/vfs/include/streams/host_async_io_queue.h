@@ -26,10 +26,14 @@ uint32_t CreateDeferredReadRequest(PPCContext& ctx,
                                    uint32_t requested_bytes,
                                    bool uses_stream_destination);
 void CompleteRefiiReadRequest(
+    PPCContext& ctx,
     uint8_t* base,
     const std::shared_ptr<RefiiReadRequestRecord>& record,
     uint32_t record_guest,
     uint32_t bytes_read);
+void CloseRefiiReadRequestEvent(PPCContext& ctx,
+                                uint8_t* base,
+                                uint32_t request_guest);
 void StartRefiiReadRequestAsync(
     PPCContext ctx,
     uint8_t* base,

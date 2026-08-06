@@ -519,13 +519,33 @@ std::string BuildRawDownloadUrl(const std::string& repositoryRelativePath) {
            GetRepositoryBranch() + "/" + repositoryRelativePath;
 }
 
-std::vector<std::string> GetShaderCompileTargets() {
-    std::vector<std::string> targets;
-    targets.push_back("vulkan");
-#if defined(_WIN32)
-    targets.push_back("d3d12");
+// The launcher is the authoritative entry point for shader translation, so it
+// must request exactly the target set the standalone refii-shader-sbk tool and
+// the build-time coverage checker use.  REFII_LAUNCHER_SHADER_TARGETS is wired
+// from the REFII_SHADER_VALIDATION_TARGETS cache variable (src/launcher/
+// CMakeLists.txt); "auto" falls through to BuildDefaultTranslateTargets() in
+// src/shader/src/shader_sbk_pipeline.cpp, which is the same default the CLI
+// uses.
+//
+// This used to hardcode vulkan-only on non-Windows hosts, which silently
+// produced half a shader set from the launcher while the CLI produced both
+// backends.  The vendored DXC ships libdxil.so for x64 Linux, so d3d12 is
+// translatable and signable on Linux too.
+#if !defined(REFII_LAUNCHER_SHADER_TARGETS)
+#define REFII_LAUNCHER_SHADER_TARGETS "auto"
 #endif
-    return targets;
+
+std::string GetShaderCompileTargets() {
+    // BY DESIGN (project owner, 2026-07-26): D3D12 artifacts are produced only
+    // on hosts that can run the D3D12 backend.  Linux is Vulkan-only, so
+    // translating the DXIL half here is pure cost for something this platform
+    // can never load.  `"auto"` defers to BuildDefaultTranslateTargets(), which
+    // encodes the same per-platform rule — keeping the launcher and the CLI on
+    // one policy instead of two that can drift apart.
+    //
+    // REFII_LAUNCHER_SHADER_TARGETS still overrides for deliberate
+    // cross-production (e.g. staging a Windows artifact set from a Linux box).
+    return REFII_LAUNCHER_SHADER_TARGETS;
 }
 
 bool EnsureDirectoryRemovedIfExists(const std::filesystem::path& path, std::string* error) {
@@ -947,6 +967,32 @@ bool ExtractGeneralGameBanksInternal(
     return true;
 }
 
+// The deepest extracted asset is ~178 chars below assets/unpacked/, so a
+// Windows install needs the base path to leave room under MAX_PATH (260)
+// unless long paths are enabled system-wide, which cannot be assumed.
+bool InstallBasePathLeavesWindowsPathRoom(const std::filesystem::path& base,
+                                          std::string* error) {
+#ifdef _WIN32
+    constexpr std::size_t kWindowsMaxPath = 260;
+    constexpr std::size_t kDeepestAssetRelativeLength =
+        sizeof("assets/unpacked/") - 1 + 178;
+    const std::size_t base_length = base.lexically_normal().native().size();
+    if (base_length + 1 + kDeepestAssetRelativeLength >= kWindowsMaxPath) {
+        if (error != nullptr) {
+            *error = "The install folder path is too long for Windows: game "
+                     "files would exceed the 260 character path limit. Move "
+                     "the launcher to a shorter path (for example C:\\Games\\"
+                     "Refii) and try again.";
+        }
+        return false;
+    }
+#else
+    (void)base;
+    (void)error;
+#endif
+    return true;
+}
+
 bool InstallGameInternal(
     const std::filesystem::path& isoPath,
     const std::filesystem::path& xexpPath,
@@ -954,6 +1000,12 @@ bool InstallGameInternal(
     const InstallStageCallback& stageCallback,
     const TransientStatusCallback& transientStatusCallback) {
     (void)transientStatusCallback;
+
+    if (!InstallBasePathLeavesWindowsPathRoom(Installer::GetInstallBasePath(),
+                                              error)) {
+        ReportInstallStage(stageCallback, "Install path is too long.");
+        return false;
+    }
 
     ReportInstallStage(stageCallback, "Extracting ISO...");
     if (!Installer::ExtractIso(isoPath, Installer::GetGameDataDirectoryPath(), error)) {
@@ -1227,10 +1279,16 @@ bool ExtractIso(
         return false;
     }
 
+    // Icons are decorative, so a failure here must never abort the install: the
+    // XEXP copy still has to run, and without it the runtime boots the base
+    // image instead of patching it live from default.xexp.
     const std::filesystem::path defaultXexPath = destinationDirectory / "default.xex";
-    if (std::filesystem::exists(defaultXexPath) &&
-        !refii::extractor::ExtractDefaultXexIcons(defaultXexPath, nullptr, error)) {
-        return false;
+    if (std::filesystem::exists(defaultXexPath)) {
+        std::string iconError;
+        if (!refii::extractor::ExtractDefaultXexIcons(defaultXexPath, nullptr, &iconError)) {
+            std::cerr << "default.xex icon extraction skipped: "
+                      << (iconError.empty() ? "unknown error" : iconError) << "\n";
+        }
     }
 
     return true;
@@ -1280,7 +1338,7 @@ bool ExtractGameShadersInternal(
     std::string* error,
     const InstallStageCallback& stageCallback,
     const TransientStatusCallback& transientStatusCallback) {
-    const std::vector<std::string> targets = GetShaderCompileTargets();
+    const std::string requestedTargets = GetShaderCompileTargets();
     const std::filesystem::path gameDataPath = GetGameDataDirectoryPath();
     const std::filesystem::path shaderInputRoot = gameDataPath / "data" / "Shaders";
     const std::filesystem::path shaderOutputRoot = GetLuaWorkspacePath() / "shaders";
@@ -1314,11 +1372,16 @@ bool ExtractGameShadersInternal(
         ReportInstallStage(stageCallback, "Shader compile failed.");
         return false;
     }
+    // Every directory BuildCompileTargetOutputStem() can produce, plus the
+    // case variants older runs left behind.  A target directory that survives
+    // the wipe would let stale artifacts pass the coverage gate.
     const std::vector<std::string> targetOutputDirectories = {
         "vulkan",
         "Vulkan",
         "D3D12",
         "d3d12",
+        "metal",
+        "Metal",
     };
     for (const std::string& directoryName : targetOutputDirectories) {
         if (!EnsureDirectoryRemovedIfExists(shaderOutputRoot / directoryName, error)) {
@@ -1335,14 +1398,6 @@ bool ExtractGameShadersInternal(
         }
         ReportInstallStage(stageCallback, "Shader compile failed.");
         return false;
-    }
-
-    std::string requestedTargets;
-    for (std::size_t i = 0; i < targets.size(); ++i) {
-        if (i > 0) {
-            requestedTargets.push_back(',');
-        }
-        requestedTargets += targets[i];
     }
 
     ReportInstallStage(stageCallback, "Preparing shader compile...");
@@ -1383,10 +1438,67 @@ bool ExtractGameShadersInternal(
         return false;
     }
 
-    if (summary.translate.failed > 0) {
-        std::cerr << "Warning: " << summary.translate.failed
-                  << " shader compile entries failed. See " << reportPath.string() << "\n";
+    // The pipeline returns true as long as it managed to write a report, so a
+    // run where individual shaders failed still lands here.  Surface it as a
+    // hard failure: a partial shader set is invisible until the runtime drops
+    // the draw with "shader has no generated artifact".
+    if (summary.translate.failed > 0 || summary.translate.timed_out > 0 ||
+        summary.translate.backend_missing > 0) {
+        std::ostringstream message;
+        message << "Shader compile produced " << summary.translate.failed << " failed, "
+                << summary.translate.timed_out << " timed-out and "
+                << summary.translate.backend_missing
+                << " backend-missing entries (targets " << summary.translate.resolved_targets
+                << "). See " << reportPath.string() << ".";
+        if (error != nullptr) {
+            *error = message.str();
+        }
+        std::cerr << message.str() << "\n";
+        ReportInstallStage(stageCallback, "Shader compile failed.");
+        return false;
     }
+
+    // Same acceptance gate the build runs via
+    // tools/check_refii_shader_translation_coverage.py.  Running it natively
+    // here keeps the launcher-driven path from bypassing the check on machines
+    // with no Python, which matters once this becomes part of the automated
+    // install.
+    ReportInstallStage(stageCallback, "Verifying shader coverage...");
+    refii::shader::ShaderSbkCoverageOptions coverageOptions;
+    coverageOptions.shader_root = shaderOutputRoot;
+    coverageOptions.extract_manifest_path = manifestPath;
+    coverageOptions.report_path = reportPath;
+    coverageOptions.targets = summary.translate.resolved_targets;
+
+    refii::shader::ShaderSbkCoverageSummary coverageSummary;
+    std::string coverageError;
+    bool coverageAccepted = false;
+    try {
+        coverageAccepted = refii::shader::VerifyTranslatedShaderCoverage(
+            coverageOptions, &coverageSummary, &coverageError);
+    } catch (const std::exception& exception) {
+        coverageError =
+            "Shader coverage check crashed with exception: " + std::string(exception.what());
+        coverageAccepted = false;
+    } catch (...) {
+        coverageError = "Shader coverage check crashed with an unknown exception.";
+        coverageAccepted = false;
+    }
+
+    if (!coverageAccepted) {
+        if (error != nullptr) {
+            *error = coverageError.empty() ? "Shader coverage verification failed."
+                                           : coverageError;
+        }
+        std::cerr << coverageError << "\n";
+        ReportInstallStage(stageCallback, "Shader compile failed.");
+        return false;
+    }
+
+    std::cerr << "shader_translation_coverage=ACCEPTED blobs=" << coverageSummary.blob_count
+              << " targets=" << coverageSummary.resolved_targets << " covered="
+              << refii::shader::DescribeShaderCoverageSummary(coverageSummary)
+              << " root=" << shaderOutputRoot.string() << "\n";
 
     ReportInstallStage(stageCallback, "Shader compile complete.");
     return true;

@@ -17,7 +17,9 @@
 #include <rex/system/util/xdbf_utils.h>
 
 #if REFII_HAS_RENDERER_RUNTIME
+#include "renderdoc_debugger.h"
 #include "renderer_runtime.h"
+#include "runtime/cvars.h"
 #include "runtime/plume/general/plume_backend.h"
 #include "runtime/plume/general/plume_graphics_system.h"
 #include "runtime/plume/general/plume_imgui_overlay.h"
@@ -174,6 +176,36 @@ inline void RefiiEnsureDirectoryExists(const std::filesystem::path &path) {
   std::filesystem::create_directories(path, error);
 }
 
+/// Built-in `rexnet.toml`, written only when the install has none. Mirrors
+/// assets/metadata/rexnet.toml; that file carries the reasoning for each value.
+inline void RefiiWriteDefaultRexNetConfig(const std::filesystem::path &path) {
+  std::error_code ec;
+  if (std::filesystem::exists(path, ec)) {
+    return;
+  }
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out.is_open()) {
+    return;
+  }
+  out << R"(# Written by the refii launcher on first launch. A shipped
+# assets/metadata/rexnet.toml wins and replaces this once it is newer.
+
+[game]
+session_model = "private-invite"
+# XRNM runs its own reliability; the game plane must stay unreliable.
+game_channel = "unreliable"
+# 0 = take the id from the XEX header (0x4D5307F1).
+advertised_title_id = 0
+
+# Ambient "Connected" tier. The loader defaults this off, so a title that
+# wants passive presence has to say so here.
+[shard]
+enabled = true
+cap = 255
+surface_as_friends = true
+)";
+}
+
 inline void
 RefiiEnsurePackagedRuntimeDirectories(const rex::PathConfig &paths) {
   RefiiEnsureDirectoryExists(paths.config_path.parent_path());
@@ -187,6 +219,58 @@ RefiiEnsurePackagedRuntimeDirectories(const rex::PathConfig &paths) {
   RefiiEnsureDirectoryExists(paths.user_data_root);
   RefiiEnsureDirectoryExists(paths.update_data_root);
   RefiiEnsureDirectoryExists(paths.cache_root);
+
+  // Seed per-title metadata (rexnet.toml, ...) into the packaged runtime.
+  //
+  // Runtime::FindMetadataPath only searches under game_data_root, so a
+  // packaged install that never receives these files silently runs with all
+  // per-title configuration inactive -- RexNet shard opt-in,
+  // advertised_title_id, presence mappings -- and the sole symptom is one
+  // warning at startup. That cost a debugging round on 2026-07-21, where a
+  // packaged instance and a build-tree instance behaved differently for no
+  // visible reason.
+  const std::filesystem::path runtime_metadata = gameBase / "metadata";
+  RefiiEnsureDirectoryExists(runtime_metadata);
+
+  const std::filesystem::path bundled_metadata =
+      rex::filesystem::GetExecutableFolder() / "assets" / "metadata";
+  std::error_code ec;
+  if (std::filesystem::exists(bundled_metadata, ec)) {
+    for (const auto &entry :
+         std::filesystem::directory_iterator(bundled_metadata, ec)) {
+      if (ec) {
+        break;
+      }
+      std::error_code entry_ec;
+      if (!entry.is_regular_file(entry_ec) || entry_ec) {
+        continue;
+      }
+      const std::filesystem::path dst =
+          runtime_metadata / entry.path().filename();
+      // Copy when absent, and refresh when the shipped copy is newer. These
+      // are shipped data rather than user settings (user config lives in
+      // refii.toml), so an updated build must not be shadowed by a stale copy
+      // left over from a previous install.
+      std::error_code stat_ec;
+      bool stale = !std::filesystem::exists(dst, stat_ec);
+      if (!stale) {
+        const auto src_time =
+            std::filesystem::last_write_time(entry.path(), stat_ec);
+        const auto dst_time = std::filesystem::last_write_time(dst, stat_ec);
+        stale = !stat_ec && src_time > dst_time;
+      }
+      if (stale) {
+        std::error_code copy_ec;
+        std::filesystem::copy_file(
+            entry.path(), dst,
+            std::filesystem::copy_options::overwrite_existing, copy_ec);
+      }
+    }
+  }
+
+  // A package that shipped no metadata at all still needs the title's config,
+  // or ambient shards stay off and nothing forms on the LAN.
+  RefiiWriteDefaultRexNetConfig(runtime_metadata / "rexnet.toml");
 }
 
 inline std::vector<char> RefiiLoadWindowIconBytes() {
@@ -272,8 +356,49 @@ public:
 
   void OnPreSetup(rex::RuntimeConfig &config) override {
     RefiiLogRuntimeBackendSplit();
+    // The backend setting is final here (TOML + launcher env both applied);
+    // freeze the cache so per-hook backend queries stop string-parsing the
+    // cvar (measured on the xenia per-D3D-call path).
+    refii::renderer::FreezeRendererBackendCache();
+
+    // Native/xenia backend arms RenderDoc HERE, in pre-setup: it renders
+    // through rexglue's own Vulkan instance (Plume's arming never touches
+    // it), and refii's per-hook path is dormant in native mode
+    // (RendererHooksEnabled() is false without the heavy observe cvar), so
+    // the OnRendererGuestHookEnter arming never runs. Pre-setup is before
+    // the guest boots — before rexglue's vkCreateInstance — so the layer
+    // env lands in time and F12/captures work under backend=xenia. Plume
+    // arms itself later in its own backend init; only arm here for native.
+    if (RefiiGetLowerRuntimeCVar("renderer_backend") != "plume" &&
+        refii::renderer::RenderDocNativeArmEnabled()) {
+      refii::renderer::PrepareRenderDocVulkanLayer();
+      refii::renderer::InitializeRenderDocDebugger();
+      REXLOG_INFO(
+          "Refii RenderDoc armed for the native/xenia backend in pre-setup; "
+          "use F12 to capture (the capture_request file needs a per-frame "
+          "poll that the native hook path does not run)");
+    } else if (RefiiGetLowerRuntimeCVar("renderer_backend") != "plume" &&
+               refii::renderer::RenderDocDebuggerEnabled()) {
+      // renderer_renderdoc_native_arm defaults ON; this branch only fires
+      // when it was explicitly disabled to isolate layer interactions.
+      REXLOG_INFO(
+          "Refii RenderDoc native arming SKIPPED "
+          "(renderer_renderdoc_native_arm is off)");
+    }
 
     if (!RefiiShouldSuppressReXGlueRenderer()) {
+#if defined(REFII_REXGLUE_NETPLAY) && REFII_REXGLUE_NETPLAY
+      // The netplay SDK ships its Xenia-derived GPU emulation as an opt-in
+      // plugin (empty gpu_plugin cvar = no graphics system = blank window).
+      // backend=xenia means the user wants exactly that system, so default it.
+      if (config.gpu_plugin.empty()) {
+        config.gpu_plugin = "xenos";
+        REXLOG_INFO(
+            "Refii renderer backend is {}; defaulting the netplay SDK GPU "
+            "plugin to 'xenos'",
+            RefiiGetLowerRuntimeCVar("renderer_backend"));
+      }
+#endif
       return;
     }
 

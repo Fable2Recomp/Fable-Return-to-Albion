@@ -206,7 +206,7 @@ bool DecodeVertexDeclaration(PlumeTrackedResource& tracked,
     plume::RenderFormat format = ConvertGuestDeclType(type);
     if (format == plume::RenderFormat::UNKNOWN) {
       REXLOG_WARN(
-          "Refii plume vertex declaration skipped unknown element type "
+          "Refii plume vertex declaration rejected unknown element type "
           "guest=0x{:08X} type=0x{:08X} usage={} usage_index={}",
           snapshot.guest_address, type, usage, usage_index);
       continue;
@@ -227,7 +227,7 @@ bool DecodeVertexDeclaration(PlumeTrackedResource& tracked,
     const uint32_t location = ConvertGuestDeclLocation(usage, usage_index);
     if (location == UINT32_MAX) {
       REXLOG_WARN(
-          "Refii plume vertex declaration skipped unknown semantic "
+          "Refii plume vertex declaration rejected unknown semantic "
           "guest=0x{:08X} usage={} usage_index={}",
           snapshot.guest_address, usage, usage_index);
       continue;

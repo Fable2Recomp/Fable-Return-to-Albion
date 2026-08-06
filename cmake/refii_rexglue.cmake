@@ -1,7 +1,24 @@
 include_guard(GLOBAL)
 
+# Selects which bundled ReXGlue tree the build uses:
+#   OFF - rexglue/     (stable v0.8.0 tree, no online play)
+#   ON  - rexglue-net/ (experimental netplay tree with the RexNet module)
+# The netplay SDK needs a Rust toolchain (corrosion/cargo) and Clang 20+ on
+# Linux; see rexglue-net/README.md.
+option(
+    REFII_REXGLUE_NETPLAY
+    "Build against the experimental netplay ReXGlue SDK (rexglue-net/) instead of the stable tree (rexglue/)"
+    OFF
+)
+
+if(REFII_REXGLUE_NETPLAY)
+    set(_refii_rexglue_tree_root "${CMAKE_CURRENT_SOURCE_DIR}/rexglue-net")
+else()
+    set(_refii_rexglue_tree_root "${CMAKE_CURRENT_SOURCE_DIR}/rexglue")
+endif()
+
 set(REFII_REXGLUE_SDK_SOURCE_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/rexglue/rexglue-sdk"
+    "${_refii_rexglue_tree_root}/rexglue-sdk"
     CACHE PATH
     "Path to the bundled ReXGlue SDK source tree"
 )
@@ -13,7 +30,7 @@ set(REFII_REXGLUE_OUTPUT_ROOT
 )
 
 set(REFII_REXGLUE_SHADOW_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/rexglue/shadow/rexglue-sdk"
+    "${_refii_rexglue_tree_root}/shadow/rexglue-sdk"
     CACHE PATH
     "Path to Refii's ReXGlue SDK shadow source tree"
 )
@@ -23,6 +40,51 @@ set(REFII_REXGLUE_SHADOW_BUILD_DIR
     CACHE PATH
     "Build-local ReXGlue SDK source tree with Refii shadow files overlaid"
 )
+
+# Reconfiguring an existing build dir with a different REFII_REXGLUE_NETPLAY
+# value repoints the (cached) tree paths and rebuilds the shadow overlay from
+# scratch. Note this overrides any explicit -DREFII_REXGLUE_*_DIR passed in
+# the same invocation as the flip; pass those on a follow-up configure.
+if(DEFINED CACHE{REFII_REXGLUE_SELECTED_TREE} AND
+   NOT REFII_REXGLUE_SELECTED_TREE STREQUAL _refii_rexglue_tree_root)
+    message(STATUS
+        "ReXGlue tree switched to ${_refii_rexglue_tree_root}; "
+        "repointing SDK/shadow paths and resetting the shadow overlay"
+    )
+    set(REFII_REXGLUE_SDK_SOURCE_DIR
+        "${_refii_rexglue_tree_root}/rexglue-sdk"
+        CACHE PATH
+        "Path to the bundled ReXGlue SDK source tree"
+        FORCE
+    )
+    set(REFII_REXGLUE_SHADOW_DIR
+        "${_refii_rexglue_tree_root}/shadow/rexglue-sdk"
+        CACHE PATH
+        "Path to Refii's ReXGlue SDK shadow source tree"
+        FORCE
+    )
+    file(REMOVE_RECURSE "${REFII_REXGLUE_SHADOW_BUILD_DIR}")
+    unset(REXSDK_DIR CACHE)
+endif()
+set(REFII_REXGLUE_SELECTED_TREE
+    "${_refii_rexglue_tree_root}"
+    CACHE INTERNAL
+    "ReXGlue tree the build dir was last configured against"
+)
+
+if(REFII_REXGLUE_NETPLAY)
+    # Default the RexNet module on; -DREXGLUE_ENABLE_REXNET=OFF still works for
+    # a netplay-SDK build without the networking module.
+    set(REXGLUE_ENABLE_REXNET ON CACHE BOOL "Build the RexNet netplay module")
+    if(NOT WIN32 AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "20.0")
+        message(WARNING
+            "The netplay ReXGlue SDK is known to need Clang 20+ on Linux "
+            "(std::expected); found ${CMAKE_CXX_COMPILER_VERSION}. Pass "
+            "-DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20."
+        )
+    endif()
+endif()
+unset(_refii_rexglue_tree_root)
 
 option(
     REFII_REXGLUE_GENERATE_SOURCES_AT_CONFIGURE
@@ -218,7 +280,9 @@ function(refii_rexglue_prepare_shadow_sdk out_var)
         "${REFII_REXGLUE_SHADOW_BUILD_DIR}"
     )
 
-    if(REFII_SDL3_WINDOW_ENABLED)
+    # The netplay SDK ships SDL3 windowing natively; the Win32/GTK-to-SDL
+    # surgery below only applies to the stable v0.8.0 tree.
+    if(REFII_SDL3_WINDOW_ENABLED AND NOT REFII_REXGLUE_NETPLAY)
         refii_rexglue_shadow_copy_mutable_sdk_file("src/ui/presenter.cpp")
         refii_rexglue_shadow_copy_mutable_sdk_file("include/rex/ui/presenter.h")
         refii_rexglue_shadow_copy_mutable_sdk_file("src/input/mnk/mnk_input_driver.cpp")
@@ -317,6 +381,7 @@ function(refii_rexglue_prepare_shadow_sdk out_var)
         thirdparty/FFmpeg
         thirdparty/catch2
         thirdparty/cli11
+        thirdparty/corrosion
         thirdparty/fmt
         thirdparty/glslang
         thirdparty/imgui
@@ -332,6 +397,7 @@ function(refii_rexglue_prepare_shadow_sdk out_var)
         thirdparty/spdlog
         thirdparty/spirv-headers
         thirdparty/spirv-tools
+        thirdparty/stb
         thirdparty/tomlplusplus
         thirdparty/tracy
         thirdparty/utfcpp
@@ -575,32 +641,56 @@ function(refii_define_rexglue_codegen_bootstrap_target)
         return()
     endif()
 
+    # After codegen produces generated/sources.cmake, the configure that made
+    # this bootstrap graph is stale, and ninja will NOT regenerate on its own:
+    # CMake drops nonexistent CONFIGURE_DEPENDS files from the regeneration
+    # rule, so the file appearing later never dirties it. Chain an explicit
+    # reconfigure, then build the full project in the same invocation.
+    get_property(_refii_rexglue_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+    set(_refii_rexglue_continue_configure
+        "${CMAKE_COMMAND}" -S "${CMAKE_SOURCE_DIR}" -B "${CMAKE_BINARY_DIR}")
+    set(_refii_rexglue_continue_build "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}")
+    if(_refii_rexglue_multi_config)
+        list(APPEND _refii_rexglue_continue_build --config $<CONFIG>)
+    endif()
+
     if(TARGET refii_codegen)
         add_custom_target(refii_codegen_if_empty ALL
+            COMMAND ${_refii_rexglue_continue_configure}
+            COMMAND ${_refii_rexglue_continue_build}
             DEPENDS refii_codegen
+            COMMENT "Reconfiguring and building Refii with the generated sources"
+            USES_TERMINAL
+            VERBATIM
+        )
+    elseif(TARGET rexglue)
+        add_custom_target(refii_codegen_if_empty ALL
+            COMMAND $<TARGET_FILE:rexglue> --force codegen
+                    "${CMAKE_CURRENT_SOURCE_DIR}/refii_manifest.toml"
+            COMMAND ${_refii_rexglue_continue_configure}
+            COMMAND ${_refii_rexglue_continue_build}
+            DEPENDS rexglue
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
             COMMENT "Generating Refii sources because generated/sources.cmake is missing"
+            USES_TERMINAL
+            VERBATIM
         )
-        message(WARNING
-            "generated/sources.cmake is missing. Build target "
-            "refii_codegen_if_empty, then re-run CMake."
-        )
+    else()
         return()
     endif()
 
-    if(NOT TARGET rexglue)
-        return()
-    endif()
+    # The nested build recompiles the full project; make sure every other
+    # target in this bootstrap graph is finished first so two build processes
+    # never write the same objects concurrently.
+    foreach(_refii_rexglue_prior_target IN ITEMS
+            refii_rexglue_sdk refii_achievement refii_achievement_ui)
+        if(TARGET "${_refii_rexglue_prior_target}")
+            add_dependencies(refii_codegen_if_empty "${_refii_rexglue_prior_target}")
+        endif()
+    endforeach()
 
-    add_custom_target(refii_codegen_if_empty ALL
-        COMMAND $<TARGET_FILE:rexglue> --force codegen
-                "${CMAKE_CURRENT_SOURCE_DIR}/refii_manifest.toml"
-        DEPENDS rexglue
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        COMMENT "Generating Refii sources because generated/sources.cmake is missing"
-        VERBATIM
-    )
-    message(WARNING
-        "generated/sources.cmake is missing. Build target "
-        "refii_codegen_if_empty, then re-run CMake."
+    message(STATUS
+        "generated/sources.cmake is missing; this build will run ReXGlue "
+        "codegen and then automatically reconfigure and build the full project."
     )
 endfunction()

@@ -1,3 +1,4 @@
+#include "core/host_lua_vm.h"
 #include "core/native_lua_hooks.h"
 #include "core/native_lua_rexglue_compat.h"
 #include "lua_script_paths.h"
@@ -783,6 +784,20 @@ NativeDispatchResult DispatchNativeScript(PPCContext& ppc, uint8_t* base,
                   request.source_guest, request.chunk_name_guest);
     }
     return NativeDispatchResult::kUnhandled;
+  }
+
+  // Stage 2 (Lua volume): host-VM execution outranks hand-written handlers so
+  // the generic path gets exercised where enabled; it returns kUnhandled on
+  // any doubt, falling through to the tiers below.
+  const NativeDispatchResult host_vm_result =
+      TryExecuteScriptWithHostVm(ppc, base, request, script_key);
+  if (host_vm_result != NativeDispatchResult::kUnhandled) {
+    if (REXCVAR_GET(lua_trace_native_handlers)) {
+      REXLOG_INFO("Lua host VM {} for {}",
+                  host_vm_result == NativeDispatchResult::kHandledSuccess ? "succeeded" : "failed",
+                  script_key);
+    }
+    return host_vm_result;
   }
 
   NativeScriptHandler handler = nullptr;

@@ -31,6 +31,10 @@ struct LooseAssetRuntimeStats {
   std::atomic<uint64_t> refii_lua_streams_opened{0};
   std::atomic<uint64_t> refii_synthetic_streams_opened{0};
   std::atomic<uint64_t> refii_database_streams_opened{0};
+  std::atomic<uint64_t> refii_texture_streams_opened{0};
+  std::atomic<uint64_t> refii_mesh_streams_opened{0};
+  std::atomic<uint64_t> refii_audio_streams_opened{0};
+  std::atomic<uint64_t> refii_other_streams_opened{0};
 };
 
 }  // namespace refii::vfs

@@ -12,6 +12,10 @@ set(REFII_VFS_INCLUDE_DIRS
 
 set(REFII_VFS_RUNTIME_SOURCES
     ${REFII_VFS_ROOT}/src/loose_asset_runtime.cpp
+    ${REFII_VFS_ROOT}/src/gdb/gdb_database.cpp
+    ${REFII_VFS_ROOT}/src/gdb/gdb_csv_override.cpp
+    ${REFII_VFS_ROOT}/src/babel/babel_database.cpp
+    ${REFII_VFS_ROOT}/src/babel/babel_csv_override.cpp
     ${REFII_VFS_ROOT}/src/runtime/cvars.cpp
     ${REFII_VFS_ROOT}/src/runtime/path_resolution.cpp
     ${REFII_VFS_ROOT}/src/runtime/replacement_paths.cpp
@@ -127,7 +131,28 @@ target_include_directories(refii_vfs
 target_link_libraries(refii_vfs
     PUBLIC
         rex::runtime
+        refii_modding
 )
+
+# The gdb/babel CSV codecs need zlib (babel blocks are deflate streams). Reuse
+# the extractor's vendored zlib target when present, otherwise a system copy.
+if(TARGET ZLIB::ZLIB)
+    target_link_libraries(refii_vfs PRIVATE ZLIB::ZLIB)
+else()
+    find_package(ZLIB REQUIRED)
+    target_link_libraries(refii_vfs PRIVATE ZLIB::ZLIB)
+endif()
+
+# The database codecs compile whole CSVs at asset-open time; keep them
+# optimized in Debug like the extractor (unoptimized, globals.gdb takes ~1.4s
+# to compile at boot vs ~140ms with -O2).
+if(NOT MSVC)
+    set_source_files_properties(
+        ${REFII_VFS_ROOT}/src/gdb/gdb_database.cpp
+        ${REFII_VFS_ROOT}/src/babel/babel_database.cpp
+        PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>"
+    )
+endif()
 set_target_properties(refii_vfs PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     OUTPUT_NAME refii_vfs

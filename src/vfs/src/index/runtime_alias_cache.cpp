@@ -619,6 +619,15 @@ bool PrimeRefiiVfsRuntimeAliasCandidates(
   }
 
   const std::string root_key = loose_root.lexically_normal().string();
+  // Each requested alias resolves through a small probe set: its normalized
+  // spelling plus the canonical database spelling (data/ root stripped,
+  // language locale dropped, patch_text folded onto text). The database only
+  // stores canonical rows; other spellings are rewritten here at lookup time.
+  struct RequestedAliasProbes {
+    std::string normalized;
+    std::vector<std::string> probes;
+  };
+  std::vector<RequestedAliasProbes> requested_probes;
   std::vector<std::string> aliases_to_load;
   {
     std::lock_guard<std::mutex> lock(
@@ -628,53 +637,39 @@ bool PrimeRefiiVfsRuntimeAliasCandidates(
       cache = RefiiVfsDatabaseAliasCandidateCache{};
       cache.root_key = root_key;
     }
-    auto add_alias_to_load = [&](std::string normalized_alias) {
+    auto add_alias_to_load = [&](std::string_view normalized_alias) {
       if (normalized_alias.empty() ||
-          cache.known_aliases.find(normalized_alias) !=
-              cache.known_aliases.end() ||
           std::find(aliases_to_load.begin(), aliases_to_load.end(),
                     normalized_alias) != aliases_to_load.end()) {
         return;
       }
-      aliases_to_load.push_back(std::move(normalized_alias));
+      aliases_to_load.emplace_back(normalized_alias);
     };
 
     for (const std::string& alias : aliases) {
-      const std::string normalized_alias = NormalizeLooseAssetKey(alias);
-      add_alias_to_load(normalized_alias);
-
-      constexpr std::string_view kLanguagePrefix = "language/";
-      constexpr std::string_view kKnownLanguageLocales[] = {
-          "en-uk", "hu-hu", "zh-cht", "cs-cz",
-          "ko-kr", "pl-pl", "sk-sk"};
-      if (StartsWith(normalized_alias, kLanguagePrefix)) {
-        const std::string_view asset_tail =
-            GetLanguageAssetTail(normalized_alias);
-        if (!asset_tail.empty()) {
-          if (IsLanguageVideoAssetTail(asset_tail)) {
-            continue;
-          }
-          auto add_language_tail = [&](std::string_view tail) {
-            for (const std::string_view locale : kKnownLanguageLocales) {
-              add_alias_to_load(std::string(kLanguagePrefix) +
-                                std::string(locale) + "/" +
-                                std::string(tail));
-            }
-          };
-          add_language_tail(asset_tail);
-          constexpr std::string_view kPatchTextPrefix = "patch_text/";
-          constexpr std::string_view kTextPrefix = "text/";
-          if (StartsWith(asset_tail, kPatchTextPrefix)) {
-            add_language_tail(std::string(kTextPrefix) +
-                              std::string(
-                                  asset_tail.substr(kPatchTextPrefix.size())));
-          } else if (StartsWith(asset_tail, kTextPrefix)) {
-            add_language_tail(std::string(kPatchTextPrefix) +
-                              std::string(
-                                  asset_tail.substr(kTextPrefix.size())));
-          }
-        }
+      std::string normalized_alias = NormalizeLooseAssetKey(alias);
+      if (normalized_alias.empty() ||
+          cache.known_aliases.find(normalized_alias) !=
+              cache.known_aliases.end() ||
+          std::find_if(requested_probes.begin(), requested_probes.end(),
+                       [&](const RequestedAliasProbes& existing) {
+                         return existing.normalized == normalized_alias;
+                       }) != requested_probes.end()) {
+        continue;
       }
+
+      RequestedAliasProbes request;
+      request.probes.push_back(normalized_alias);
+      std::string canonical =
+          CanonicalizeRefiiVfsDatabaseAliasKey(normalized_alias);
+      if (!canonical.empty() && canonical != normalized_alias) {
+        request.probes.push_back(std::move(canonical));
+      }
+      for (const std::string& probe : request.probes) {
+        add_alias_to_load(probe);
+      }
+      request.normalized = std::move(normalized_alias);
+      requested_probes.push_back(std::move(request));
     }
   }
 
@@ -742,6 +737,27 @@ bool PrimeRefiiVfsRuntimeAliasCandidates(
     }
   }
 
+  // A probe key that is itself an indexed file resolves to itself; the
+  // database does not materialize identity rows.
+  std::unordered_map<std::string, std::vector<std::string>>
+      candidates_by_request;
+  candidates_by_request.reserve(requested_probes.size());
+  for (const RequestedAliasProbes& request : requested_probes) {
+    std::vector<std::string>& candidates =
+        candidates_by_request[request.normalized];
+    for (const std::string& probe : request.probes) {
+      if (const auto match = loaded_candidates.find(probe);
+          match != loaded_candidates.end()) {
+        for (const std::string& candidate : match->second) {
+          AddUnique(candidates, candidate);
+        }
+      }
+      if (RefiiVfsRuntimeCandidateSetContains(loose_root, probe)) {
+        AddUnique(candidates, probe);
+      }
+    }
+  }
+
   size_t hit_aliases = 0;
   size_t loaded_candidates_count = 0;
   {
@@ -752,18 +768,13 @@ bool PrimeRefiiVfsRuntimeAliasCandidates(
       cache = RefiiVfsDatabaseAliasCandidateCache{};
       cache.root_key = root_key;
     }
-    for (const std::string& alias : aliases_to_load) {
-      std::vector<std::string> candidates;
-      if (auto match = loaded_candidates.find(alias);
-          match != loaded_candidates.end()) {
-        candidates = std::move(match->second);
-        if (!candidates.empty()) {
-          ++hit_aliases;
-          loaded_candidates_count += candidates.size();
-        }
+    for (auto& [request_alias, candidates] : candidates_by_request) {
+      if (!candidates.empty()) {
+        ++hit_aliases;
+        loaded_candidates_count += candidates.size();
       }
-      cache.candidates_by_alias.emplace(alias, std::move(candidates));
-      cache.known_aliases.insert(alias);
+      cache.candidates_by_alias.emplace(request_alias, std::move(candidates));
+      cache.known_aliases.insert(request_alias);
     }
   }
 
@@ -788,109 +799,14 @@ bool PrimeRefiiVfsRuntimeAliasCandidates(
 bool PrimeRefiiVfsRuntimeExactAliasCandidate(
     const std::filesystem::path& loose_root,
     std::string_view alias) {
-  if (!AnyRefiiVfsRuntimeAliasIndexExists(loose_root)) {
-    return false;
-  }
-
   const std::string normalized_alias = NormalizeLooseAssetKey(alias);
   if (normalized_alias.empty()) {
     return false;
   }
-
-  const std::string root_key = loose_root.lexically_normal().string();
-  {
-    std::lock_guard<std::mutex> lock(
-        RefiiVfsDatabaseAliasCandidateCacheMutex());
-    auto& cache = RefiiVfsDatabaseAliasCandidateCacheInstance();
-    if (cache.root_key != root_key) {
-      cache = RefiiVfsDatabaseAliasCandidateCache{};
-      cache.root_key = root_key;
-    }
-    if (cache.known_aliases.find(normalized_alias) !=
-        cache.known_aliases.end()) {
-      return true;
-    }
-  }
-
-  const auto started = std::chrono::steady_clock::now();
-  const uint16_t shard =
-      RefiiVfsRuntimeAliasShardForHash(ComputeResourceNameHash(normalized_alias));
-  bool loaded_shard_now = false;
-  {
-    std::lock_guard<std::mutex> lock(RefiiVfsRuntimeAliasShardCacheMutex());
-    auto& shard_cache = RefiiVfsRuntimeAliasShardCacheInstance();
-    if (shard_cache.root_key != root_key) {
-      shard_cache = RefiiVfsRuntimeAliasShardCache{};
-      shard_cache.root_key = root_key;
-    }
-    loaded_shard_now =
-        shard_cache.loaded_shards.find(shard) == shard_cache.loaded_shards.end();
-  }
-
-  if (loaded_shard_now) {
-    std::unordered_map<std::string, std::vector<std::string>> loaded_shard =
-        LoadRefiiVfsRuntimeAliasShardForSearchRoots(loose_root, shard);
-
-    std::lock_guard<std::mutex> lock(RefiiVfsRuntimeAliasShardCacheMutex());
-    auto& shard_cache = RefiiVfsRuntimeAliasShardCacheInstance();
-    if (shard_cache.root_key != root_key) {
-      shard_cache = RefiiVfsRuntimeAliasShardCache{};
-      shard_cache.root_key = root_key;
-    }
-    if (shard_cache.loaded_shards.insert(shard).second) {
-      for (auto& [loaded_alias, candidates] : loaded_shard) {
-        auto& cached_candidates =
-            shard_cache.candidates_by_alias[loaded_alias];
-        for (std::string& candidate : candidates) {
-          AddUnique(cached_candidates, std::move(candidate));
-        }
-      }
-    } else {
-      loaded_shard_now = false;
-    }
-  }
-
-  std::vector<std::string> candidates;
-  {
-    std::lock_guard<std::mutex> lock(RefiiVfsRuntimeAliasShardCacheMutex());
-    const auto& shard_cache = RefiiVfsRuntimeAliasShardCacheInstance();
-    if (shard_cache.root_key == root_key) {
-      if (const auto match =
-              shard_cache.candidates_by_alias.find(normalized_alias);
-          match != shard_cache.candidates_by_alias.end()) {
-        candidates = match->second;
-      }
-    }
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(
-        RefiiVfsDatabaseAliasCandidateCacheMutex());
-    auto& cache = RefiiVfsDatabaseAliasCandidateCacheInstance();
-    if (cache.root_key != root_key) {
-      cache = RefiiVfsDatabaseAliasCandidateCache{};
-      cache.root_key = root_key;
-    }
-    cache.candidates_by_alias[normalized_alias] = candidates;
-    cache.known_aliases.insert(normalized_alias);
-  }
-
-  if (VfsTracingEnabled() &&
-      ShouldLogRepeatedVfsTraceOperation("VfsDatabaseExactAliasPrime", 32)) {
-    const auto elapsed_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - started)
-            .count();
-    REXLOG_INFO("Refii VFS runtime exact alias prime alias={} hits={} "
-                "candidates={} shard=0x{:04X} loaded={} elapsed_ms={}",
-                normalized_alias,
-                candidates.empty() ? 0 : 1,
-                candidates.size(),
-                shard,
-                loaded_shard_now,
-                elapsed_ms);
-  }
-  return true;
+  // The batched prime already handles the canonical probe rewrites and the
+  // candidate-set identity check for a single alias.
+  return PrimeRefiiVfsRuntimeAliasCandidates(
+      loose_root, std::vector<std::string>{normalized_alias});
 }
 
 void PrimeRefiiVfsDatabaseAliasCandidates(

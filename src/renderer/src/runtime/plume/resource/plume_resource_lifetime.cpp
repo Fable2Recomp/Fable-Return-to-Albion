@@ -27,6 +27,7 @@ void RetireFableFramebuffersLocked() {
   if (g_plume_resources.framebuffers.empty()) {
     return;
   }
+  ++g_plume_resources.framebuffer_invalidation_generation;
   for (auto& [key, framebuffer] : g_plume_resources.framebuffers) {
     (void)key;
     if (framebuffer) {
@@ -69,6 +70,9 @@ void RetirePlumeResourceLocked(PlumeTrackedResource&& resource,
   }
   if (resource.guest_texture.texture || resource.guest_texture.view ||
       resource.guest_surface.attachment_view) {
+    // Bump even when the framebuffer map is empty: a memoized binding can
+    // reference this texture's views without any live framebuffer entry.
+    ++g_plume_resources.framebuffer_invalidation_generation;
     RetireFableFramebuffersLocked();
   }
   g_plume_resources.retired_resources.push_back(

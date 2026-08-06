@@ -23,11 +23,20 @@ class GuestLuaBridge {
   bool PushString(std::string_view value);
   void PushInteger(int32_t value) const;
   void PushBoolean(bool value) const;
+  void PushNumber(double value) const;
+  void PushNil() const;
+  // Pushes a copy of the value at a live guest stack index (lua_pushvalue).
+  void PushValueAt(int index) const;
 
   bool PCall(int nargs, int nresults, int errfunc = 0) const;
 
+  // Recycles the guest scratch area used for staged strings. Safe once the
+  // strings have been consumed by a guest push (Lua interns its own copy).
+  void ResetScratch();
+
   bool ReadString(int index, std::string& out) const;
   bool ReadBoolean(int index, bool& out) const;
+  bool ReadNumber(int index, double& out) const;
   bool ReadValueType(int index, int& out) const;
   bool DescribeValue(int index, std::string& out) const;
 

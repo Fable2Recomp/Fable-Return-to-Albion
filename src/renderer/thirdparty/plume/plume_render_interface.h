@@ -150,6 +150,9 @@ namespace plume {
         virtual void discardTexture(const RenderTexture* texture) = 0; // D3D12 only.
         virtual void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) = 0;
         virtual void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) = 0;
+        virtual void beginDebugLabel(const std::string &name) { (void)name; }
+        virtual void endDebugLabel() { }
+        virtual void insertDebugLabel(const std::string &name) { (void)name; }
 
         // Concrete implementation shortcuts.
         inline void barriers(RenderBarrierStages stages, const RenderBufferBarrier &barrier) {

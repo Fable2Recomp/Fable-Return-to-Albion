@@ -130,6 +130,7 @@ void AppendUniqueDatabaseCandidate(std::vector<std::string>* candidates,
 struct RefiiVfsRuntimeCandidateTable {
   std::string root_key;
   std::vector<std::string> candidates;
+  std::unordered_set<std::string> candidate_set;
   bool loaded = false;
 };
 
@@ -380,10 +381,46 @@ std::vector<std::string> GetRefiiVfsRuntimeCandidatesCached(
     if (table.root_key != root_key || !table.loaded) {
       table.root_key = root_key;
       table.candidates = std::move(loaded_candidates);
+      table.candidate_set.clear();
+      table.candidate_set.reserve(table.candidates.size());
+      for (const std::string& candidate : table.candidates) {
+        if (!candidate.empty()) {
+          table.candidate_set.insert(candidate);
+        }
+      }
       table.loaded = true;
     }
     return table.candidates;
   }
+}
+
+bool RefiiVfsRuntimeCandidateSetContains(
+    const std::filesystem::path& loose_root,
+    std::string_view normalized_candidate) {
+  if (normalized_candidate.empty()) {
+    return false;
+  }
+  const std::string root_key = loose_root.lexically_normal().string();
+  if (root_key.empty()) {
+    return false;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(RefiiVfsRuntimeCandidateTableMutex());
+    const auto& table = RefiiVfsRuntimeCandidateTableInstance();
+    if (table.root_key == root_key && table.loaded) {
+      return table.candidate_set.find(std::string(normalized_candidate)) !=
+             table.candidate_set.end();
+    }
+  }
+
+  GetRefiiVfsRuntimeCandidatesCached(loose_root);
+
+  std::lock_guard<std::mutex> lock(RefiiVfsRuntimeCandidateTableMutex());
+  const auto& table = RefiiVfsRuntimeCandidateTableInstance();
+  return table.root_key == root_key && table.loaded &&
+         table.candidate_set.find(std::string(normalized_candidate)) !=
+             table.candidate_set.end();
 }
 
 std::string ResolveRefiiVfsRuntimeCandidateField(
@@ -470,19 +507,27 @@ bool LookupRefiiVfsTypedBankManifest(std::string_view bank_name,
         return false;
       }
       for (const RefiiVfsRuntimeBankRecord& record : match->second) {
-        const std::filesystem::path manifest_path =
-            loose_root / record.manifest_root / "_manifest.tsv";
-        std::error_code error;
-        if (!std::filesystem::is_regular_file(manifest_path, error)) {
-          continue;
+        // Search-root order lets an enabled mod override the extracted bank
+        // manifest by shipping refii_vfs/banks/<bank>/_manifest.tsv.
+        for (const std::filesystem::path& search_root :
+             GetLooseAssetSearchRoots()) {
+          if (search_root.empty()) {
+            continue;
+          }
+          const std::filesystem::path manifest_path =
+              search_root / record.manifest_root / "_manifest.tsv";
+          std::error_code error;
+          if (!std::filesystem::is_regular_file(manifest_path, error)) {
+            continue;
+          }
+          if (out_manifest_root != nullptr) {
+            *out_manifest_root = record.manifest_root;
+          }
+          if (out_manifest_path != nullptr) {
+            *out_manifest_path = manifest_path.lexically_normal();
+          }
+          return true;
         }
-        if (out_manifest_root != nullptr) {
-          *out_manifest_root = record.manifest_root;
-        }
-        if (out_manifest_path != nullptr) {
-          *out_manifest_path = manifest_path.lexically_normal();
-        }
-        return true;
       }
       return false;
     }

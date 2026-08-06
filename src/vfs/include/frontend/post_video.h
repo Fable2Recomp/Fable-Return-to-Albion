@@ -101,14 +101,11 @@ void RecordRefiiRenderProducerScheduleSnapshot(uint8_t* base,
 bool RefiiPostVideoEventMatchesHandoffWait(uint32_t guest);
 bool RefiiStartupVideoSlotReady(const RefiiStartupVideoItemTrace& slot);
 bool RefiiStartupVideosReadyForMenuHandoff();
-bool RefiiStartupVideosFinalizedForMenuHandoff();
 bool RefiiStartupVideosSettledForMenuHandoff();
 bool RefiiStartupVideosSettledForPostVideoHandoffLocked(
     const RefiiPostVideoHandoffTrace& trace,
     int64_t* settled_age_ms_out);
 bool RefiiStartupVideosNativeObjectsRetiredLocked(
-    const RefiiPostVideoHandoffTrace& trace);
-bool RefiiStartupReadyCompletionSeenForPostVideoHandoffLocked(
     const RefiiPostVideoHandoffTrace& trace);
 std::string FormatRefiiPostVideoStageTimingForLog();
 std::string RefiiPostVideoSlowFrameNextBoundary();
@@ -195,24 +192,6 @@ bool TryCollapseRefiiCompletedFrontEndAudioSyncWait(
     uint32_t wait_object_guest,
     uint32_t wait_handle_guest,
     bool trace);
-bool TryCollapseRefiiPostVideoRendererSyncWait(PPCContext& ctx,
-                                               const PPCContext& original_ctx,
-                                               uint8_t* base,
-                                               uint32_t wait_object_guest,
-                                               uint32_t wait_handle_guest,
-                                               bool trace);
-bool TryCollapseRefiiPostVideoGeneratedRenderWait(PPCContext& ctx,
-                                                  const PPCContext& original_ctx,
-                                                  uint8_t* base,
-                                                  uint32_t wait_object_guest,
-                                                  uint32_t wait_handle_guest,
-                                                  bool trace);
-bool TryCollapseRefiiCompletedNativeVfsWorkerWait(PPCContext& ctx,
-                                                  const PPCContext& original_ctx,
-                                                  uint8_t* base,
-                                                  uint32_t wait_object_guest,
-                                                  uint32_t wait_handle_guest,
-                                                  bool trace);
 bool ShouldTracePostVideoGeneratedEventWait(uint32_t lr,
                                             uint32_t wait_object_guest,
                                             uint32_t wait_handle_guest);

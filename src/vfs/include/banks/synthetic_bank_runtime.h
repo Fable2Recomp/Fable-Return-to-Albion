@@ -47,6 +47,7 @@ void IndexSyntheticManifestEntries(SyntheticVfsEntryIndex& index,
 uint32_t ComputeResourceNameHash(std::string_view value);
 bool ParseHexUint32(std::string_view text, uint32_t* out_value);
 std::string_view GetLanguageAssetTail(std::string_view normalized_alias);
+std::string CanonicalizeRefiiVfsDatabaseAliasKey(std::string_view normalized_key);
 bool IsLanguageVideoAssetTail(std::string_view asset_tail);
 bool IsLanguageVideoAssetKey(std::string_view normalized_alias);
 std::string MakeSyntheticVfsLookupCacheKey(std::string_view asset_path,

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "runtime/plume/direct/fable_render_types.h"
-#include "runtime/plume/direct/fable_resource_snapshots.h"
+#include "runtime/refii_renderer/plume/fable/packets/fable_render_types.h"
+#include "runtime/refii_renderer/plume/fable/resource/fable_resource_snapshots.h"
 
 #include <array>
 #include <algorithm>
@@ -62,6 +62,28 @@ struct PlumeGuestTextureObject {
   bool upload_decoded = false;
   bool upload_pending = false;
   bool plume_owned = false;
+  // WHAT THE LIVE VkImage WAS ACTUALLY CREATED WITH (2026-08-04).
+  //
+  // The fields above are METADATA and are relabelled wholesale by
+  // RefreshPlumeGuestImageObjectsFromTrackedFields every time the tracked
+  // resource is re-decoded — while `texture` below is deliberately preserved.
+  // So after PromoteFableRenderSurfaceToOutputExtent runs on a resource that
+  // was ALREADY materialized, `width`/`height` say 1680x1080 and the image is
+  // still the 1120x720 one. Nothing recreated it, and the shape-change
+  // detector compared metadata to metadata and therefore agreed with itself.
+  //
+  // Measured, run 596 frame 13696: pshader_sunglare drew with viewport
+  // 1680x1080 into a 1120x720 attachment; sundisc and sunbeams did 840x540
+  // into 560x360. Every other draw in the frame was a clean 1.50 scale. The
+  // affected surfaces are exactly those materialized BEFORE their scene
+  // extent E was registered (E=1120x720 was added mid-run at 18:25:44).
+  //
+  // These fields are the image's own truth: stamped at creation, preserved
+  // across every relabel, and never derived from the guest metadata again.
+  // Extent only — every creation path pins width/height from the desc it
+  // builds, so those are the fields for which image-vs-metadata is decidable.
+  uint32_t image_width = 0;
+  uint32_t image_height = 0;
   std::unique_ptr<plume::RenderTexture> texture;
   std::unique_ptr<plume::RenderTextureView> view;
   uint32_t view_mapping_key = UINT32_MAX;
@@ -135,6 +157,23 @@ struct PlumeTrackedResource {
   uint64_t content_serial = 0;
   uint64_t draw_content_serial = 0;
   uint64_t clear_content_serial = 0;
+  // Frame index of the last sync touch or bind-path lookup. Feeds the
+  // staleness sweep in SyncDirectResourcesLocked: guest addresses that are
+  // never Released (per-frame recreated panel headers at fresh heap
+  // addresses) otherwise pin a VkImage forever — run 436 grew the map
+  // 2 -> 4618 entries (+7-11/frame) at title until device memory exhausted.
+  uint64_t last_referenced_frame = 0;
+  // Sticky channel ownership carried from the guest record (kBink et al.):
+  // bind-path consumers use this instead of querying the observer maps.
+  FableGuestContentChannel content_channel = FableGuestContentChannel::kNone;
+  // CPU upload generation observed when the GPU last drew/copied into this
+  // resource — lets the upload gate keep last-writer-wins across domains:
+  // a CPU capture with a newer generation than this reclaims ownership.
+  uint64_t upload_generation_at_gpu_write = 0;
+  // Last snapshot generation for which a full-image recapture was requested
+  // after a partial (sub-range) capture failed the size gate — one request
+  // per generation, so the retry can't spin.
+  uint64_t partial_recapture_requested_generation = 0;
   bool plume_owned = false;
   std::string shader_name;
   std::string debug_summary;
@@ -156,6 +195,22 @@ struct PlumeTrackedResource {
   plume::RenderFormat texture_format = plume::RenderFormat::UNKNOWN;
   uint32_t texture_width = 0;
   uint32_t texture_height = 0;
+  // THE GUEST'S OWN EXTENT, before render-surface promotion (2026-08-04).
+  //
+  // PromoteFableRenderSurfaceToOutputExtent OVERWRITES texture_width/height with
+  // the output-sized extent and used to keep no record of what the guest asked
+  // for. That loss is the reason viewport scaling had to be guessed downstream:
+  // with the guest extent gone, `ScaleFableTitleDrawStateToFramebuffer` could
+  // only pattern-match "title-like" draws against literal viewport sizes, so
+  // anything outside the pattern kept a guest-space viewport on an output-sized
+  // target — content in the top-left corner at the wrong size.
+  //
+  // Keep it. `framebuffer_extent / promoted_from_*` is the ONE exact scale
+  // factor for every stage, and when nothing was promoted it equals the host
+  // extent and the scale is 1, so the same code path is correct for
+  // unpromoted surfaces without a special case.
+  uint32_t promoted_from_guest_width = 0;
+  uint32_t promoted_from_guest_height = 0;
   uint32_t texture_depth = 0;
   uint32_t texture_mip_levels = 0;
   uint32_t texture_guest_base = 0;
@@ -175,11 +230,37 @@ struct PlumeTrackedResource {
   plume::RenderBuffer* texture_upload_buffer = nullptr;
   bool texture_guest_tiled = false;
   bool texture_render_target = false;
+  // True only while the CURRENT host texture was created with RENDER_TARGET
+  // usage. texture_render_target also carries content-ownership semantics and
+  // can be flipped on a live resource without a recreate (metadata refresh,
+  // copy-destination hints); attaching a framebuffer on that stale bool trips
+  // the Vulkan "Color attachment must be a render target" assert (runs
+  // 470/471 SIGABRT). Written only where the texture is (re)created.
+  bool texture_host_color_target = false;
   bool texture_depth_target = false;
   bool texture_upload_has_source = false;
   bool texture_upload_decoded = false;
   bool texture_upload_pending = false;
   bool texture_upload_new_resource = false;
+  // True when the current upload state was applied from a preserved/published
+  // title identity rather than staged from this record's own guest lock; a
+  // record's own fetch-derived lock upload is authoritative over publishes.
+  bool texture_upload_published = false;
+  // True when the current upload bytes came from the GTL unlock-range content
+  // store rather than an observer capture (RefreshTrackedTextureUpload §4
+  // cutover). Read by the identity-registration confirmation log only.
+  bool texture_upload_gtl_content = false;
+  // Highest GTL content-store generation whose bytes were APPLIED to this
+  // record (§4). The observer-gen==0 clock adoption only lets the store's
+  // bytes win while its generation advances past this; a static entry
+  // re-serving the same generation yields to the record's live channel
+  // (green-movie fix, runs 423-425).
+  uint64_t texture_upload_gtl_generation = 0;
+  // Host format the current upload payload was staged for. The live texture
+  // format can be rewritten later (color-target promotion, identity replay),
+  // so preserved identities must carry this instead of the live format or a
+  // rematerialize replays wrongly-typed bytes.
+  plume::RenderFormat texture_upload_format = plume::RenderFormat::UNKNOWN;
   PlumeGuestBufferObject guest_buffer;
   PlumeGuestTextureObject guest_texture;
   PlumeGuestSurfaceObject guest_surface;
@@ -276,6 +357,15 @@ inline plume::RenderFormat PlumeGuestTextureFormat(
              : resource.texture_format;
 }
 
+// Stamp the shape the live VkImage was just created with. Call this at every
+// site that assigns guest_texture.texture, immediately after a successful
+// create, and pass the SAME values that built the RenderTextureDesc.
+inline void StampPlumeLiveImageShape(PlumeTrackedResource& resource,
+                                     uint32_t width, uint32_t height) {
+  resource.guest_texture.image_width = width;
+  resource.guest_texture.image_height = height;
+}
+
 inline uint32_t PlumeGuestTextureWidth(const PlumeTrackedResource& resource) {
   return resource.guest_texture.width != 0 ? resource.guest_texture.width
                                            : resource.texture_width;
@@ -358,33 +448,6 @@ inline uint32_t PlumeGuestResourceByteSize(
       break;
   }
   return resource.size;
-}
-
-inline uint32_t PlumeGuestResourceMeta(const PlumeTrackedResource& resource) {
-  switch (resource.kind) {
-    case RendererTrackedResourceKind::kVertexBuffer:
-    case RendererTrackedResourceKind::kIndexBuffer:
-      return PlumeGuestBufferStrideOrFormat(resource);
-    case RendererTrackedResourceKind::kTexture:
-      return 0;
-    case RendererTrackedResourceKind::kSurface:
-    case RendererTrackedResourceKind::kDepthSurface:
-      return resource.guest_surface.pitch_msaa != 0
-                 ? resource.guest_surface.pitch_msaa
-                 : resource.stride_or_format;
-    case RendererTrackedResourceKind::kVertexShader:
-    case RendererTrackedResourceKind::kPixelShader:
-      return resource.guest_shader.bytecode_offset != 0
-                 ? resource.guest_shader.bytecode_offset
-                 : resource.stride_or_format;
-    case RendererTrackedResourceKind::kVertexDeclaration:
-      return resource.guest_vertex_declaration.element_count != 0
-                 ? resource.guest_vertex_declaration.element_count
-                 : resource.stride_or_format;
-    case RendererTrackedResourceKind::kUnknown:
-      break;
-  }
-  return resource.stride_or_format;
 }
 
 struct FableGuestResource {
@@ -678,9 +741,34 @@ struct PlumeRetiredFramebuffer {
   std::unique_ptr<plume::RenderFramebuffer> framebuffer;
 };
 
-constexpr uint64_t kRetiredPlumeResourceEpochs = 16;
+// How many epochs (= frames; the epoch advances once per frame in
+// EndFableDirectFrame) a retired resource is held before it may be freed.
+//
+// WAS 512, WHICH EXHAUSTED DEVICE MEMORY. Retirements run at roughly 16 per
+// frame at the title/menu, so a 512-frame hold reaches a steady state of ~8000
+// resident textures. Measured with RenderDoc: host textures climbed
+// 1220 -> 2865 over ~100 frames (run 316), and by frame 1932 the capture could
+// no longer be REPLAYED at all -- VK_ERROR_OUT_OF_DEVICE_MEMORY. Everything
+// that scales with resource population degraded in step (the alias phase grew
+// 8.0 -> 18.6 -> 40.8 ms while identity map keys stayed flat).
+//
+// What the hold actually has to cover is GPU in-flight reference. Plume reports
+// 3 frame contexts and WaitPlumeFrameContextLocked fences on the context from N
+// frames ago before recording begins, so ~4 frames is the real requirement --
+// the same margin the per-frame constant arena uses. 32 keeps an ~8x margin on
+// top of that for anything holding a resource longer (packet-queue replay
+// carrying commands across frames, a descriptor set not yet invalidated), while
+// cutting resident retired textures by 16x.
+//
+// The budget below is a backstop, not the primary gate, and at 65536 it could
+// never have bounded this: 16/frame would take ~4000 frames to reach it.
+// If retirement pressure ever needs tuning again, measure resident count first
+// -- `retired_resources.size()` -- rather than guessing an epoch count.
+constexpr uint64_t kRetiredPlumeResourceEpochs = 32;
+// Buffers left at 256 deliberately: they are smaller and no measurement
+// implicates them yet. Revisit if buffer retirement ever shows up in a capture.
 constexpr uint64_t kRetiredPlumeBufferResourceEpochs = 256;
-constexpr size_t kMaxRetiredPlumeResources = 4096;
+constexpr size_t kMaxRetiredPlumeResources = 65536;
 constexpr uint32_t kMaxFableTextureSlots = 32;
 constexpr uint32_t kMaxFableRenderTargets = 4;
 constexpr uint32_t kFableDescriptorCount = 4096;
@@ -689,7 +777,7 @@ constexpr uint32_t kFableSamplerDescriptorCount = 1024;
 #else
 constexpr uint32_t kFableSamplerDescriptorCount = kFableDescriptorCount;
 #endif
-constexpr uint32_t kPresentBlitDescriptorSetRingSize = 8;
+constexpr uint32_t kPresentBlitDescriptorSetRingSize = 256;
 constexpr uint32_t kFableClearColorTargetMask = 0xFu;
 constexpr uint32_t kFableClearDepth = 0x10u;
 constexpr uint32_t kFableClearStencil = 0x20u;
@@ -726,22 +814,8 @@ struct FableDrawTargetDesc {
   uint32_t color_count = 0;
 };
 
-struct PlumeDepthSampleCopy {
-  uint32_t width = 0;
-  uint32_t height = 0;
-  plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
-  std::unique_ptr<plume::RenderTexture> texture;
-  std::unique_ptr<plume::RenderTextureView> view;
-};
-
-struct PlumeColorSampleCopy {
-  uint32_t width = 0;
-  uint32_t height = 0;
-  plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
-  std::unique_ptr<plume::RenderTexture> texture;
-  std::unique_ptr<plume::RenderTextureView> view;
-  mutable std::array<std::unique_ptr<plume::RenderTextureView>, 3> plane_views;
-};
+// Depth/color sample-copy scaffolding deleted 2026-07-19 (vestigial:
+// zero writers/readers; depth resolves sample depth views directly).
 
 struct PlumeColorAttachmentPadding {
   uint32_t width = 0;
@@ -750,11 +824,6 @@ struct PlumeColorAttachmentPadding {
   std::unique_ptr<plume::RenderTexture> texture;
   std::unique_ptr<plume::RenderTextureView> view;
 };
-
-using PlumeDepthSampleCopySlots =
-    std::array<const PlumeDepthSampleCopy*, kMaxFableTextureSlots>;
-using PlumeColorSampleCopySlots =
-    std::array<const PlumeColorSampleCopy*, kMaxFableTextureSlots>;
 
 struct PlumeFablePushConstants {
   uint64_t vertex_shader_constants = 0;
@@ -1062,19 +1131,6 @@ struct FablePresentModel {
   }
 };
 
-struct FableSuppressedSurfaceCopyAlias {
-  RendererSurfaceCopyAliasSnapshot alias;
-  uint32_t destination_surface = 0;
-  uint32_t source_surface = 0;
-  uint64_t serial = 0;
-};
-
-struct FableSuppressedTextureCopyAlias {
-  uint32_t destination_surface = 0;
-  uint32_t source_texture = 0;
-  uint64_t serial = 0;
-};
-
 struct PlumeFrameTextureUploadSlab {
   std::unique_ptr<plume::RenderBuffer> buffer;
   uint8_t* mapped = nullptr;
@@ -1161,8 +1217,14 @@ struct PlumeResourceManagerState {
   std::unordered_map<std::string, std::unique_ptr<plume::RenderFramebuffer>>
       framebuffers;
   std::deque<PlumeRetiredFramebuffer> retired_framebuffers;
-  std::unordered_map<std::string, PlumeDepthSampleCopy> depth_sample_copies;
-  std::unordered_map<std::string, PlumeColorSampleCopy> color_sample_copies;
+  // Bumped whenever a framebuffer or a tracked texture/view that a resolved
+  // DirectFramebufferBinding could reference is retired or dropped
+  // (RetireFableFramebuffersLocked, RetirePlumeResourceLocked's texture
+  // branch, and the raw framebuffers.clear() sites). Consumed by the clear
+  // framebuffer memo as its structural-invalidation input: it moves ONLY on
+  // events that can change or dangle a memoized binding, never on content
+  // uploads.
+  uint64_t framebuffer_invalidation_generation = 0;
   std::unordered_map<std::string, PlumeColorAttachmentPadding>
       color_attachment_padding;
   std::unordered_map<uint32_t, std::unique_ptr<plume::RenderSampler>>
@@ -1176,6 +1238,11 @@ struct PlumeResourceManagerState {
                                 PlumeTextureDescriptorKeyHash>,
              3>
       texture_descriptor_lookup;
+  // Guest texture objects are stable across host image recreation. Reuse the
+  // same bindless slot for an object instead of exhausting the table on every
+  // upload/resource-cache invalidation.
+  std::array<std::unordered_map<uint32_t, uint32_t>, 3>
+      texture_descriptor_identity_lookup;
   std::array<uint32_t, 3> next_texture_descriptor_indices = {1u, 1u, 1u};
   uint64_t texture_descriptor_epoch = 0;
   std::array<plume::RenderSampler*, kFableSamplerDescriptorCount>
@@ -1211,12 +1278,6 @@ struct PlumeResourceManagerState {
       surface_copy_aliases = {};
   uint32_t surface_copy_alias_count = 0;
   uint64_t surface_copy_alias_snapshot_serial = 0;
-  std::unordered_map<uint32_t, uint32_t>
-      surface_copy_alias_latest_index_by_destination;
-  std::unordered_map<uint32_t, FableSuppressedSurfaceCopyAlias>
-      suppressed_surface_copy_aliases;
-  std::unordered_map<uint32_t, FableSuppressedTextureCopyAlias>
-      suppressed_texture_copy_aliases;
   std::unordered_map<const plume::RenderTexture*, const PlumeTrackedResource*>
       texture_pointer_lookup_cache;
   std::unordered_map<FableTextureAliasPairKey, bool,
@@ -1250,6 +1311,11 @@ struct PlumeResourceManagerState {
   std::unique_ptr<plume::RenderBuffer> implicit_rectangle_vertex_buffer;
   std::vector<PlumeCachedIndexBuffer> quad_list_index_buffers;
   std::unique_ptr<plume::RenderBuffer> null_texture_uploads[3];
+  // The staged white texel is copied into the null textures once, the first
+  // time a command list exists. The staging buffers are kept alive rather than
+  // released at that point: the copy is only RECORDED there, so freeing them
+  // would leave the GPU reading a dead allocation.
+  bool null_texture_content_initialized = false;
   std::unique_ptr<plume::RenderBuffer> frame_constant_slab;
   uint8_t* frame_constant_slab_mapped = nullptr;
   uint64_t frame_constant_slab_size = 0;
@@ -1354,7 +1420,6 @@ extern PlumeResourceManagerState g_plume_resources;
 
 #if REFII_RENDERER_HAS_PLUME
 void InvalidateFableDescriptorCacheLocked();
-void BeginFableFrameLookupCacheLocked();
 void ClearFableFrameLookupCacheLocked();
 void ClearFableTextureLookupIndexLocked();
 void TrimRetiredFableFramebuffersLocked();
@@ -1363,47 +1428,28 @@ void TrimRetiredPlumeResourcesLocked();
 void RetirePlumeResourceLocked(PlumeTrackedResource&& resource,
                                uint64_t valid_until_serial = 0);
 
-bool IsFableResolveCopyDraw(const RendererDrawEventSnapshot& draw_event);
 uint32_t NormalizeFableResolveDestinationBase(uint32_t destination_base);
 uint32_t NormalizeFableGpuBase(uint32_t base);
 uint32_t DecodeFableGpuBase(uint32_t base);
 std::array<uint32_t, 4> FableDisplayBaseCandidates(uint32_t base);
-bool FableDisplayBasesMatch(uint32_t lhs, uint32_t rhs);
 const FableRenderTargetResolveAlias* FindFableResolveAliasLocked(
     uint32_t destination_base);
 bool IsLikelyFableObjectAddress(uint32_t guest_address);
-bool FableWordsLookLikeInlinePathString(const std::vector<uint32_t>& words);
-void AppendFableHandlePointerCandidates(const std::vector<uint32_t>& words,
-                                        std::vector<uint32_t>& candidates);
-bool IsPlausibleFableSurfaceShape(const FableSurfaceShape& shape);
 bool IsPlausibleFableColorRenderTargetExtent(uint32_t width, uint32_t height);
-bool IsPlausibleDecodedFableColorRenderTargetShape(
-    const FableSurfaceShape& shape);
-bool IsPlausibleDecodedFableDepthTargetShape(const FableSurfaceShape& shape);
 bool DecodeFableSurfaceExtentFromPacked(uint32_t packed_extent,
                                         uint32_t packed_dimension,
                                         uint32_t& width, uint32_t& height,
                                         uint32_t* depth = nullptr);
-bool DecodeFableSurfaceExtentFromWords(const std::vector<uint32_t>& words,
-                                       uint32_t& width, uint32_t& height);
 plume::RenderFormat ConvertFableD3DDepthFormat(uint32_t d3d_format);
-plume::RenderFormat DecodeFableSurfaceRenderFormatFromWords(
-    const std::vector<uint32_t>& words, RendererTrackedResourceKind kind);
-bool DecodeFableSurfaceShapeFromWords(const std::vector<uint32_t>& words,
-                                      RendererTrackedResourceKind kind,
-                                      FableSurfaceShape& shape);
 
-void CacheTextureLookupForResourceLocked(const PlumeTrackedResource& resource);
-bool SameTrackedTextureShape(const PlumeTrackedResource& lhs,
-                             const PlumeTrackedResource& rhs);
-void EnsureFableTextureLookupIndexLocked();
 bool SetFableTextureDescriptorAtIndexLocked(
     uint32_t set_index, uint32_t descriptor_index,
     plume::RenderTexture* texture, plume::RenderTextureLayout layout,
     plume::RenderTextureView* view);
 uint32_t FindOrSetFableTextureDescriptorLocked(
     uint32_t set_index, plume::RenderTexture* texture,
-    plume::RenderTextureLayout layout, plume::RenderTextureView* view);
+    plume::RenderTextureLayout layout, plume::RenderTextureView* view,
+    uint32_t guest_identity = 0);
 bool SetFableSamplerDescriptorAtIndexLocked(uint32_t descriptor_index,
                                             plume::RenderSampler* sampler);
 uint32_t FindOrSetFableSamplerDescriptorLocked(plume::RenderSampler* sampler);
@@ -1424,6 +1470,11 @@ inline void RefreshPlumeGuestImageObjectsFromTrackedFields(
                                            : tracked.size;
   auto texture = std::move(tracked.guest_texture.texture);
   auto view = std::move(tracked.guest_texture.view);
+  // The live image survives this relabel, so its recorded shape must survive
+  // with it — otherwise the metadata would silently start describing an image
+  // that was never created. See the field comment on image_width.
+  const uint32_t image_width = tracked.guest_texture.image_width;
+  const uint32_t image_height = tracked.guest_texture.image_height;
   const uint32_t view_mapping_key = tracked.guest_texture.view_mapping_key;
   auto mapped_views = std::move(tracked.guest_texture.mapped_views);
   plume::RenderBuffer* upload_buffer = tracked.guest_texture.upload_buffer;
@@ -1454,6 +1505,8 @@ inline void RefreshPlumeGuestImageObjectsFromTrackedFields(
   };
   tracked.guest_texture.texture = std::move(texture);
   tracked.guest_texture.view = std::move(view);
+  tracked.guest_texture.image_width = image_width;
+  tracked.guest_texture.image_height = image_height;
   tracked.guest_texture.view_mapping_key = view_mapping_key;
   tracked.guest_texture.mapped_views = std::move(mapped_views);
   tracked.guest_texture.upload_buffer =
@@ -1490,6 +1543,17 @@ plume::RenderFormat ConvertXenosColorRenderTargetFormat(
 bool IsUsablePlumeTextureFormat(plume::RenderFormat format);
 bool IsUsablePlumeColorTargetFormat(plume::RenderFormat format);
 bool IsBlockCompressedFormat(plume::RenderFormat format);
+// Partial-upload recapture handoff: the upload gate queues addresses while
+// the sync/harvest locks are held; the frame boundary drains them and runs
+// the observer recapture lock-free. The fetch dwords carry the consuming
+// draw's layout (the record's own fetch may describe a stale tenant).
+struct PartialUploadRecaptureRequest {
+  uint32_t guest_address = 0;
+  std::array<uint32_t, 6> fetch_dwords{};
+};
+void QueuePartialUploadRecapture(uint32_t guest_address,
+                                 const std::array<uint32_t, 6>& fetch_dwords);
+std::vector<PartialUploadRecaptureRequest> DrainPartialUploadRecaptures();
 uint32_t TextureBlockWidth(plume::RenderFormat format);
 uint32_t TextureBlockHeight(plume::RenderFormat format);
 uint32_t TextureRowCount(plume::RenderFormat format, uint32_t height);
@@ -1501,6 +1565,12 @@ bool DecodePacked16XenosTexel(rex::graphics::xenos::TextureFormat format,
                               uint16_t texel, uint8_t* rgba);
 bool IsPacked16XenosTextureFormat(
     rex::graphics::xenos::TextureFormat format);
+bool DecodePackedDepthXenosTexel(rex::graphics::xenos::TextureFormat format,
+                                 uint32_t texel, float* depth);
+bool IsPackedDepthXenosTextureFormat(
+    rex::graphics::xenos::TextureFormat format);
+bool IsCtx1DecodeConversion(rex::graphics::xenos::TextureFormat guest_format,
+                            plume::RenderFormat host_format);
 plume::RenderTextureViewDimension ViewDimensionForTextureDimension(
     plume::RenderTextureDimension dimension, bool cube);
 plume::RenderTextureViewDesc TextureViewDescForDimension(
@@ -1512,8 +1582,6 @@ bool FableSingleSourceVideoUsesDecodedChannels(uint32_t guest_format);
 bool IsLikelyFableVideoNeutralChromaTexture(
     const RendererTrackedResourceSnapshot& snapshot,
     const PlumeTrackedResource& tracked);
-uint32_t PackTextureComponentMapping(
-    const plume::RenderComponentMapping& mapping);
 uint64_t AlignUp(uint64_t value, uint64_t alignment);
 bool IsPowerOfTwo(uint32_t value);
 inline bool HasTrackedFetchDwords(const std::array<uint32_t, 6>& dwords) {
@@ -1556,17 +1624,23 @@ std::unique_ptr<plume::RenderTexture> CreateTextureForTrackedResource(
     PlumeTrackedResource& tracked);
 void NameTrackedTexture(plume::RenderTexture* texture,
                         const RendererTrackedResourceSnapshot& snapshot,
-                        const PlumeTrackedResource& tracked);
+                        PlumeTrackedResource& tracked);
 uint32_t ClampGuestTextureExtent(uint32_t extent);
+// Ceiling on a single guest image. The console has 512 MB of unified memory
+// TOTAL, and the largest real Fable 2 image (a 1920x1080 R16G16B16A16 scene
+// target at 1080p promotion) is 15.8 MB. See the derivation in
+// plume_texture_formats.cpp.
+constexpr uint64_t kMaxGuestImageBytes = 64ull * 1024ull * 1024ull;
+uint64_t GuestImageAllocationBytes(plume::RenderFormat format, uint32_t width,
+                                   uint32_t height, uint32_t depth,
+                                   uint32_t array_size);
+// Rejects an image whose total byte footprint cannot belong to a 512 MB
+// console. Catches the volume explosions ClampGuestTextureExtent is blind to.
+bool ValidGuestImageAllocation(plume::RenderFormat format, uint32_t width,
+                               uint32_t height, uint32_t depth,
+                               uint32_t array_size, uint64_t* out_bytes);
 plume::RenderFormat ConvertXenosTextureFormat(
     rex::graphics::xenos::TextureFormat format);
-uint32_t FableFetchTextureWidth(
-    const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch);
-uint32_t FableFetchTextureHeight(
-    const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch);
-bool FableResolveAliasMatchesFetch(
-    const PlumeTrackedResource& resource,
-    const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch);
 #endif
 
 }  // namespace refii::renderer

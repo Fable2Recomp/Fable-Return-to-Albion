@@ -1,5 +1,7 @@
 #include "runtime/plume/resource/plume_resource_manager_internal.h"
 
+#include "rex/logging.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -9,190 +11,18 @@ namespace refii::renderer {
 #if REFII_RENDERER_HAS_PLUME
 namespace {
 
-bool TextureLookupVersionMatches(
-    const RendererTrackedResourceVersion& lhs,
-    const RendererTrackedResourceVersion& rhs) {
-  // Texture lookup keys are based on object identity, base address, fetch
-  // shape, and dimensions. Unlocks refresh contents, but they do not by
-  // themselves require rebuilding the lookup table for Plume-owned resources.
-  return lhs.serial == rhs.serial &&
-         lhs.resource_creates == rhs.resource_creates &&
-         lhs.resource_destroys == rhs.resource_destroys;
-}
 
-void CacheNewestTextureShapeResourceLocked(
-    const FableTextureShapeKey& key, const PlumeTrackedResource& resource) {
-  auto [it, inserted] =
-      g_plume_resources.texture_fetch_shape_index.emplace(key, &resource);
-  if (!inserted && (!it->second || resource.serial > it->second->serial)) {
-    it->second = &resource;
-  }
-}
 
-void CacheNewestTextureBaseResourceLocked(uint32_t base,
-                                          const PlumeTrackedResource& resource) {
-  if (base == 0) {
-    return;
-  }
-  auto [it, inserted] =
-      g_plume_resources.texture_base_index.emplace(base, &resource);
-  if (!inserted && (!it->second || resource.serial > it->second->serial)) {
-    it->second = &resource;
-  }
-}
 
-void CacheNewestTextureFetchResourceLocked(
-    const FableTextureFetchKey& key, const PlumeTrackedResource& resource) {
-  auto [it, inserted] =
-      g_plume_resources.texture_fetch_exact_index.emplace(key, &resource);
-  if (!inserted && (!it->second || resource.serial > it->second->serial)) {
-    it->second = &resource;
-  }
-}
 
-void RebuildFableTextureLookupIndexLocked() {
-  g_plume_resources.texture_fetch_exact_index.clear();
-  g_plume_resources.texture_fetch_shape_index.clear();
-  g_plume_resources.texture_base_index.clear();
-  for (const auto& [address, resource] : g_plume_resources.resources) {
-    (void)address;
-    CacheTextureLookupForResourceLocked(resource);
-  }
-  for (const auto& [address, resource] :
-       g_plume_resources.decoded_color_targets) {
-    (void)address;
-    CacheTextureLookupForResourceLocked(resource);
-  }
-  for (const auto& [address, resource] :
-       g_plume_resources.decoded_depth_targets) {
-    (void)address;
-    CacheTextureLookupForResourceLocked(resource);
-  }
-}
 
 }  // namespace
 
-uint32_t FableFetchTextureWidth(
-    const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch) {
-  namespace xenos = rex::graphics::xenos;
-  switch (fetch.dimension) {
-    case xenos::DataDimension::k1D:
-      return fetch.size_1d.width + 1u;
-    case xenos::DataDimension::k3D:
-      return fetch.size_3d.width + 1u;
-    case xenos::DataDimension::k2DOrStacked:
-    case xenos::DataDimension::kCube:
-      return fetch.size_2d.width + 1u;
-    default:
-      return 0;
-  }
-}
 
-uint32_t FableFetchTextureHeight(
-    const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch) {
-  namespace xenos = rex::graphics::xenos;
-  switch (fetch.dimension) {
-    case xenos::DataDimension::k1D:
-      return 1;
-    case xenos::DataDimension::k3D:
-      return fetch.size_3d.height + 1u;
-    case xenos::DataDimension::k2DOrStacked:
-    case xenos::DataDimension::kCube:
-      return fetch.size_2d.height + 1u;
-    default:
-      return 0;
-  }
-}
 
-bool FableResolveAliasMatchesFetch(
-    const PlumeTrackedResource& resource,
-    const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch) {
-  namespace xenos = rex::graphics::xenos;
-  if (fetch.dimension != xenos::DataDimension::k2DOrStacked) {
-    return false;
-  }
 
-  const uint32_t fetch_width = FableFetchTextureWidth(fetch);
-  const uint32_t fetch_height = FableFetchTextureHeight(fetch);
-  if (fetch_width == 0 || fetch_height == 0 ||
-      PlumeGuestTextureWidth(resource) != fetch_width ||
-      PlumeGuestTextureHeight(resource) != fetch_height ||
-      PlumeGuestTextureDepth(resource) != 1) {
-    return false;
-  }
 
-  if (resource.texture_depth_target) {
-    return true;
-  }
 
-  const plume::RenderFormat fetch_format =
-      ConvertXenosTextureFormat(fetch.format);
-  return fetch_format == plume::RenderFormat::UNKNOWN ||
-         PlumeGuestTextureFormat(resource) == fetch_format;
-}
-
-void CacheTextureLookupForResourceLocked(const PlumeTrackedResource& resource) {
-  if (!IsImageResource(resource.kind) || !PlumeGuestImageReady(resource)) {
-    return;
-  }
-
-  FableTextureFetchKey exact_key{};
-  exact_key.dwords = PlumeGuestTextureFetchDwords(resource);
-  const bool has_exact_key =
-      (exact_key.dwords[0] | exact_key.dwords[1] | exact_key.dwords[2] |
-       exact_key.dwords[3] | exact_key.dwords[4] | exact_key.dwords[5]) != 0;
-  if (has_exact_key) {
-    CacheNewestTextureFetchResourceLocked(exact_key, resource);
-  }
-
-  const FableTextureShapeKey shape_key{
-      PlumeGuestTextureBaseAddress(resource),
-      PlumeGuestTextureMipAddress(resource),
-      PlumeGuestTexturePitch(resource),
-      PlumeGuestTextureGuestFormat(resource),
-      PlumeGuestTextureDimension(resource)};
-  if ((shape_key.base | shape_key.mips | shape_key.pitch | shape_key.format |
-       shape_key.dimension) != 0) {
-    CacheNewestTextureShapeResourceLocked(shape_key, resource);
-  }
-  CacheNewestTextureBaseResourceLocked(PlumeGuestTextureBaseAddress(resource),
-                                       resource);
-}
-
-bool SameTrackedTextureShape(const PlumeTrackedResource& lhs,
-                             const PlumeTrackedResource& rhs) {
-  if (lhs.texture_dimension != rhs.texture_dimension ||
-      lhs.texture_view_dimension != rhs.texture_view_dimension ||
-      PlumeGuestTextureFormat(lhs) != PlumeGuestTextureFormat(rhs) ||
-      PlumeGuestTextureWidth(lhs) != PlumeGuestTextureWidth(rhs) ||
-      PlumeGuestTextureHeight(lhs) != PlumeGuestTextureHeight(rhs) ||
-      PlumeGuestTextureDepth(lhs) != PlumeGuestTextureDepth(rhs) ||
-      lhs.texture_mip_levels != rhs.texture_mip_levels ||
-      lhs.texture_render_target != rhs.texture_render_target ||
-      lhs.texture_depth_target != rhs.texture_depth_target) {
-    return false;
-  }
-
-  return true;
-}
-
-void EnsureFableTextureLookupIndexLocked() {
-  if (g_plume_resources.texture_lookup_index_valid &&
-      g_plume_resources.resource_sync_version_valid &&
-      TextureLookupVersionMatches(
-          g_plume_resources.texture_lookup_index_version,
-          g_plume_resources.last_resource_sync_version)) {
-    return;
-  }
-
-  RebuildFableTextureLookupIndexLocked();
-  g_plume_resources.texture_lookup_index_version =
-      g_plume_resources.resource_sync_version_valid
-          ? g_plume_resources.last_resource_sync_version
-          : RendererTrackedResourceVersion{};
-  g_plume_resources.texture_lookup_index_valid =
-      g_plume_resources.resource_sync_version_valid;
-}
 
 bool SetFableTextureDescriptorAtIndexLocked(
     uint32_t set_index, uint32_t descriptor_index,
@@ -207,8 +37,39 @@ bool SetFableTextureDescriptorAtIndexLocked(
 
   PlumeCachedTextureDescriptor& cached =
       g_plume_resources.cached_texture_descriptors[set_index][descriptor_index];
-  if (cached.texture == texture && cached.view == view &&
-      cached.layout == layout) {
+  // DESCRIPTOR-WRITE HISTORY (2026-07-25): investigating a confirmed-real
+  // (not a RenderDoc replay artifact -- verified via the bindless CSV tool,
+  // which resolves other shaders' heap indices to real resources fine)
+  // tree-billboard bug: the shared-constants buffer correctly names heap
+  // indices 28/24 for slots 13/14/15, but RenderDoc's replay finds no valid
+  // resource bound there. Hypothesis: cached.texture/view are raw pointers,
+  // and pointer-identity reuse after a texture object is destroyed+recreated
+  // at the same address would make this "already correct, skip" branch wrongly
+  // treat a NEW, different texture as already-bound, leaving the real Vulkan
+  // descriptor stale. Unconditional, unfiltered write-history log (unlocked
+  // cap; if this floods, lower it, but the whole point is to see index 28/24's
+  // full history across a run, not a sampled slice).
+  // NOTE: not filtered by descriptor_index -- the bindless heap allocator
+  // assigns indices in first-seen order per run, so index 24/28 (this
+  // session's observed values) are not stable across runs. Log every
+  // write/skip unconditionally (capped) instead; grep the resulting log by
+  // whatever index the next run's draw-state CSV names as the problem slot.
+  static uint32_t logged_descriptor_writes = 0;
+  const bool cache_hit = cached.texture == texture && cached.view == view &&
+                         cached.layout == layout;
+  if (logged_descriptor_writes < 8000u) {
+    ++logged_descriptor_writes;
+    REXLOG_INFO(
+        "Refii plume descriptor-write history #{} set={} index={} "
+        "cache_hit={} new_texture={} new_view={} prev_texture={} "
+        "prev_view={}",
+        logged_descriptor_writes, set_index, descriptor_index,
+        cache_hit ? 1 : 0, static_cast<const void*>(texture),
+        static_cast<const void*>(view),
+        static_cast<const void*>(cached.texture),
+        static_cast<const void*>(cached.view));
+  }
+  if (cache_hit) {
     return true;
   }
 
@@ -229,7 +90,8 @@ bool SetFableTextureDescriptorAtIndexLocked(
 
 uint32_t FindOrSetFableTextureDescriptorLocked(
     uint32_t set_index, plume::RenderTexture* texture,
-    plume::RenderTextureLayout layout, plume::RenderTextureView* view) {
+    plume::RenderTextureLayout layout, plume::RenderTextureView* view,
+    uint32_t guest_identity) {
   if (set_index >= std::size(g_plume_resources.texture_descriptor_sets) ||
       !g_plume_resources.texture_descriptor_sets[set_index] || !texture ||
       !view) {
@@ -239,6 +101,19 @@ uint32_t FindOrSetFableTextureDescriptorLocked(
   const uint32_t next_descriptor = std::min<uint32_t>(
       g_plume_resources.next_texture_descriptor_indices[set_index],
       kFableDescriptorCount);
+  if (guest_identity != 0) {
+    auto& identities =
+        g_plume_resources.texture_descriptor_identity_lookup[set_index];
+    const auto identity_it = identities.find(guest_identity);
+    if (identity_it != identities.end() && identity_it->second != 0 &&
+        identity_it->second < kFableDescriptorCount) {
+      if (SetFableTextureDescriptorAtIndexLocked(
+              set_index, identity_it->second, texture, layout, view)) {
+        return identity_it->second;
+      }
+      return 0;
+    }
+  }
   const PlumeTextureDescriptorKey key{texture, view, layout};
   const auto descriptor_it =
       g_plume_resources.texture_descriptor_lookup[set_index].find(key);
@@ -259,6 +134,11 @@ uint32_t FindOrSetFableTextureDescriptorLocked(
   }
   g_plume_resources.next_texture_descriptor_indices[set_index] =
       next_descriptor + 1u;
+  if (guest_identity != 0) {
+    g_plume_resources.texture_descriptor_identity_lookup[set_index]
+                                                        [guest_identity] =
+        next_descriptor;
+  }
   return next_descriptor;
 }
 

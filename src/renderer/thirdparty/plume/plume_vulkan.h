@@ -306,6 +306,24 @@ namespace plume {
         const VulkanPipelineLayout *activeGraphicsPipelineLayout = nullptr;
         const VulkanPipelineLayout *activeRaytracingPipelineLayout = nullptr;
         VkRenderPass activeRenderPass = VK_NULL_HANDLE;
+        // Refii: redundant-bind elision (see setPipeline / setDescriptorSet).
+        // Vulkan pipeline and descriptor-set bindings persist across render
+        // passes and are only lost on command buffer reset, so re-binding the
+        // identical object is a semantic no-op the recorder can skip. Refii's
+        // direct draw executor re-binds the same three descriptor sets and
+        // frequently the same pipeline on EVERY draw.
+        static const uint32_t BoundDescriptorSetCacheSize = 16;
+        struct BoundDescriptorSetCache {
+            const VulkanPipelineLayout *layout = nullptr;
+            const RenderDescriptorSet *sets[BoundDescriptorSetCacheSize] = {};
+        };
+        const VulkanPipeline *boundComputePipeline = nullptr;
+        const VulkanPipeline *boundGraphicsPipeline = nullptr;
+        const VulkanPipeline *boundRaytracingPipeline = nullptr;
+        BoundDescriptorSetCache boundComputeDescriptorSets;
+        BoundDescriptorSetCache boundGraphicsDescriptorSets;
+        BoundDescriptorSetCache boundRaytracingDescriptorSets;
+        void resetBoundState();
 
         VulkanCommandList(VulkanCommandQueue *queue);
         ~VulkanCommandList() override;
@@ -346,6 +364,9 @@ namespace plume {
         void discardTexture(const RenderTexture* texture) override;
         void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
         void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void beginDebugLabel(const std::string &name) override;
+        void endDebugLabel() override;
+        void insertDebugLabel(const std::string &name) override;
         void checkActiveRenderPass();
         void endActiveRenderPass();
         void setDescriptorSet(VkPipelineBindPoint bindPoint, const VulkanPipelineLayout *pipelineLayout, const RenderDescriptorSet *descriptorSet, uint32_t setIndex);
@@ -456,8 +477,24 @@ namespace plume {
         bool endCapture() override;
     };
 
+    // Refii: the validation layer is requested in every Debug build and
+    // VK_EXT_debug_utils is already a required instance extension, but no
+    // messenger was ever created — so every validation message fell through to
+    // the loader's default handler, which prints to stderr. Nothing reached
+    // refii_NNN.log, which is why several investigations concluded "validation
+    // produced no output" when it had in fact produced plenty, into a terminal
+    // nobody was capturing. The same is true of the VK_ERROR_DEVICE_LOST notice.
+    //
+    // Plume must not know about Fable or the host's logger, so it owns a sink
+    // instead: install a callback and the messages arrive wherever the host
+    // wants them. Unset, behaviour is exactly as before (stderr).
+    typedef void (*RenderVulkanDebugMessageCallback)(const char *message, bool isError);
+    void SetRenderVulkanDebugMessageCallback(RenderVulkanDebugMessageCallback callback);
+    void EmitRenderVulkanDebugMessage(const char *message, bool isError);
+
     struct VulkanInterface : RenderInterface {
         VkInstance instance = VK_NULL_HANDLE;
+        VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
         VkApplicationInfo appInfo = {};
         RenderInterfaceCapabilities capabilities;
         std::vector<std::string> deviceNames;

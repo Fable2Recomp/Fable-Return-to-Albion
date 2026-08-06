@@ -3,6 +3,56 @@
 namespace refii::vfs {
 inline namespace detail {
 
+namespace {
+constexpr uint32_t kCreateEvent = 0x82CC2CE0u;
+constexpr uint32_t kSetEvent = 0x822C9388u;
+constexpr uint32_t kCloseHandle = 0x82CC27B0u;
+
+uint32_t CreateReadRequestEvent(PPCContext& source_ctx, uint8_t* base) {
+  PPCFunc* function = FindGuestFunction(kCreateEvent);
+  if (function == nullptr) {
+    return 0;
+  }
+  PPCContext call_ctx = source_ctx;
+  call_ctx.r3.u32 = 0;
+  call_ctx.r4.u32 = 0;
+  call_ctx.r5.u32 = 0;
+  call_ctx.r6.u32 = 0;
+  call_ctx.ctr.u32 = kCreateEvent;
+  function(call_ctx, base);
+  return call_ctx.r3.u32;
+}
+
+void SignalReadRequestEvent(PPCContext& source_ctx,
+                            uint8_t* base,
+                            uint32_t request_guest) {
+  const uint32_t event = LoadGuestU32(base, request_guest + 332);
+  PPCFunc* function = event != 0 ? FindGuestFunction(kSetEvent) : nullptr;
+  if (function == nullptr) {
+    return;
+  }
+  PPCContext call_ctx = source_ctx;
+  call_ctx.r3.u32 = event;
+  call_ctx.ctr.u32 = kSetEvent;
+  function(call_ctx, base);
+}
+}  // namespace
+
+void CloseRefiiReadRequestEvent(PPCContext& source_ctx,
+                                uint8_t* base,
+                                uint32_t request_guest) {
+  const uint32_t event = LoadGuestU32(base, request_guest + 332);
+  PPCFunc* function = event != 0 ? FindGuestFunction(kCloseHandle) : nullptr;
+  if (function == nullptr) {
+    return;
+  }
+  StoreGuestU32(base, request_guest + 332, 0);
+  PPCContext call_ctx = source_ctx;
+  call_ctx.r3.u32 = event;
+  call_ctx.ctr.u32 = kCloseHandle;
+  function(call_ctx, base);
+}
+
 void StoreRefiiHostDiskStreamObject(uint8_t* base,
                                     uint32_t stream_guest,
                                     uint64_t size) {
@@ -357,7 +407,7 @@ uint32_t CreateCompletedReadRequest(PPCContext& ctx,
   // The read-request waiter returns field +24; decompression treats value 1 as
   // a completed successful read.
   StoreGuestU32(base, request_guest + 24, 1);
-  StoreGuestU32(base, request_guest + 28, 0);
+  StoreGuestU32(base, request_guest + 28, 997);
   StoreGuestU32(base, request_guest + 124, bytes_read);
   StoreGuestU32(base, request_guest + 128, 0);
   StoreGuestU32(base, request_guest + 168, 5);
@@ -365,7 +415,8 @@ uint32_t CreateCompletedReadRequest(PPCContext& ctx,
   StoreGuestU32(base, request_guest + 176, bytes_read);
   StoreGuestU64(base, request_guest + 192, requested_bytes);
   StoreGuestU32(base, request_guest + 200, static_cast<uint32_t>(offset));
-  StoreGuestU32(base, request_guest + 332, 0);
+  StoreGuestU32(base, request_guest + 332,
+                CreateReadRequestEvent(ctx, base));
   StoreGuestU32(base, request_guest + 340, 0);
 
   auto read_record = std::make_shared<RefiiReadRequestRecord>();
@@ -382,6 +433,7 @@ uint32_t CreateCompletedReadRequest(PPCContext& ctx,
   read_record->started_at = read_record->queued_at;
   read_record->completed_at = read_record->queued_at;
   StoreRefiiReadRequestRecord(request_guest, std::move(read_record));
+  SignalReadRequestEvent(ctx, base, request_guest);
   LooseStats().read_requests_completed.fetch_add(1, std::memory_order_relaxed);
   LooseStats().refii_owned_reads_completed.fetch_add(
       1, std::memory_order_relaxed);
@@ -436,7 +488,7 @@ uint32_t CreateDeferredReadRequest(PPCContext& ctx,
   AddRefGuestObject(ctx, base, stream_guest);
   StoreGuestU32(base, request_guest + 20, 1);
   StoreGuestU32(base, request_guest + 24, 0);
-  StoreGuestU32(base, request_guest + 28, 0);
+  StoreGuestU32(base, request_guest + 28, 997);
   StoreGuestU32(base, request_guest + 124, 0);
   StoreGuestU32(base, request_guest + 128, 0);
   StoreGuestU32(base, request_guest + 168, 5);
@@ -444,7 +496,8 @@ uint32_t CreateDeferredReadRequest(PPCContext& ctx,
   StoreGuestU32(base, request_guest + 176, 0);
   StoreGuestU64(base, request_guest + 192, requested_bytes);
   StoreGuestU32(base, request_guest + 200, static_cast<uint32_t>(offset));
-  StoreGuestU32(base, request_guest + 332, 0);
+  StoreGuestU32(base, request_guest + 332,
+                CreateReadRequestEvent(ctx, base));
   StoreGuestU32(base, request_guest + 340, 0);
 
   auto read_record = std::make_shared<RefiiReadRequestRecord>();
@@ -683,12 +736,30 @@ uint32_t ReadRefiiHostStreamForReadRequest(
                                           record->requested_bytes);
 }
 
-void CompleteRefiiReadRequest(uint8_t* base,
+void CompleteRefiiReadRequest(PPCContext& ctx,
+                              uint8_t* base,
                               const std::shared_ptr<RefiiReadRequestRecord>& record,
                               uint32_t record_guest,
                               uint32_t bytes_read) {
   if (base == nullptr || record == nullptr || record_guest == 0) {
     return;
+  }
+
+  // Native NtReadFile completion reports status and transferred bytes
+  // independently. A short read at EOF is STATUS_SUCCESS; Bink relies on that
+  // final partial refill. Validate the transferred count against the stream's
+  // remaining bytes instead of treating every short read as an I/O failure.
+  bool io_succeeded = false;
+  if (const auto stream_record =
+          FindRefiiHostStreamRecord(record->stream_guest)) {
+    std::lock_guard<std::mutex> stream_lock(stream_record->mutex);
+    const uint64_t available =
+        record->offset < stream_record->size
+            ? stream_record->size - record->offset
+            : 0u;
+    const uint32_t expected_read = static_cast<uint32_t>(
+        std::min<uint64_t>(available, record->requested_bytes));
+    io_succeeded = bytes_read == expected_read;
   }
 
   bool count_completion = false;
@@ -703,7 +774,7 @@ void CompleteRefiiReadRequest(uint8_t* base,
     }
     record->attempted = true;
     record->bytes_read = bytes_read;
-    record->completed = bytes_read == record->requested_bytes;
+    record->completed = io_succeeded;
     record->completed_at = std::chrono::steady_clock::now();
     queued_at = record->queued_at;
     started_at = record->started_at;
@@ -718,6 +789,7 @@ void CompleteRefiiReadRequest(uint8_t* base,
   StoreGuestU32(base, record_guest + 24, completed ? 1 : 0);
   StoreGuestU32(base, record_guest + 124, bytes_read);
   StoreGuestU32(base, record_guest + 176, bytes_read);
+  SignalReadRequestEvent(ctx, base, record_guest);
 
   if (completed) {
     if (record->offset == 0 && record->buffer_guest != 0) {

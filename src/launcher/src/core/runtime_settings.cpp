@@ -841,6 +841,8 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"vfs_startup_video_minimum_playback_ms", "VFS", RuntimeCVarType::Int, "0", "Optional extra startup-video playback floor before Refii VFS post-video handoff may continue when native finalizers are not observed. 0 uses the built-in observed playback gate."},
         {"vfs_loose_asset_root", "VFS", RuntimeCVarType::String, "", "Optional host loose asset root; empty defaults to <assets_root>/unpacked."},
         {"vfs_auto_augment_request_manager_hashes", "VFS", RuntimeCVarType::Bool, "true", "Add Refii-owned runtime resource hashes to the native request-manager hash table."},
+        {"vfs_frontend_synthetic_handoff", "VFS", RuntimeCVarType::Bool, "false", "Legacy synthetic frontend handoff machinery; off by default (corrupted native GUI state). Diagnosis only."},
+        {"vfs_auto_press_start", "VFS", RuntimeCVarType::Bool, "false", "Testing aid: emulate the player pressing Start once at the interactive title screen."},
 
         {"renderer_backend", "Renderer", RuntimeCVarType::String, "xenia", "Renderer backend: plume for the Refii RHI path, xenia for the original Fable 2 renderer.", "xenia,plume,disabled"},
         {"renderer_plume_api", "Renderer", RuntimeCVarType::String, "vulkan", "Plume graphics API: vulkan or d3d12.", "vulkan,d3d12"},
@@ -848,6 +850,15 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"renderer_trace_resources", "Renderer", RuntimeCVarType::Bool, "false", "Log renderer resource create/lock/unlock/destroy flow."},
         {"renderer_trace_draws", "Renderer", RuntimeCVarType::Bool, "false", "Log draw, state, and presentation calls."},
         {"renderer_trace_verbose", "Renderer", RuntimeCVarType::Bool, "false", "Log high-volume renderer details while hook tracing is enabled."},
+        {"renderer_unlock_dirty_ranges", "Renderer", RuntimeCVarType::Bool, "false", "Unlock capture uses the dirty extent stated by the unlock root instead of the lock-time pointer/size."},
+        {"renderer_physical_view_reads", "Renderer", RuntimeCVarType::Bool, "false", "Read guest texture content through the 0xC0000000 physical view instead of treating a Xenos physical base as a low virtual address."},
+        // Must track the runtime default in cvars.cpp (true since the §4
+        // cutover landed). The launcher writes this string into the value map
+        // when a setting is unset/reset, so a stale "false" here silently
+        // disables the content cutover for any launcher-driven run — which
+        // presents as an unexplained content regression with nothing in the
+        // logs to point at it.
+        {"renderer_gtl_content_authority", "Renderer", RuntimeCVarType::Bool, "true", "Texture content comes from the GTL unlock-range store instead of the observer's capture machinery."},
 
         {"renderer_imgui_enable", "Renderer/ImGui", RuntimeCVarType::Bool, "false", "Enable the ReXGlue ImGui interface on the Plume renderer path."},
         {"renderer_imgui_show_stats", "Renderer/ImGui", RuntimeCVarType::Bool, "false", "Show Refii renderer stats windows when ImGui is enabled."},
@@ -863,11 +874,16 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"renderer_d3d12_debug_layer", "Renderer/D3D12", RuntimeCVarType::Bool, "false", "Enable the DirectX 12 debug layer for the Plume renderer backend."},
 
         {"renderer_renderdoc_enable", "Renderer/RenderDoc", RuntimeCVarType::Bool, "false", "Enable RenderDoc in-application capture integration for the Refii renderer."},
+        {"renderer_renderdoc_native_arm", "Renderer/RenderDoc", RuntimeCVarType::Bool, "true", "Arm the RenderDoc Vulkan layer for the native/xenia backend (F12 captures) when RenderDoc is enabled. Turn off only to isolate layer interactions."},
         {"renderer_renderdoc_capture_next_frame", "Renderer/RenderDoc", RuntimeCVarType::Bool, "false", "Capture the next Plume-rendered frame with RenderDoc."},
+        {"renderer_renderdoc_trigger_capture", "Renderer/RenderDoc", RuntimeCVarType::Bool, "false", "One-shot RenderDoc-owned capture request. This mirrors pressing RenderDoc's capture hotkey so Refii observes the capture and writes sidecars without owning EndFrameCapture."},
         {"renderer_renderdoc_capture_frame", "Renderer/RenderDoc", RuntimeCVarType::Int, "0", "Capture a specific Plume frame with RenderDoc. 0 disables frame-index capture."},
-        {"renderer_renderdoc_capture_draw_target", "Renderer/RenderDoc", RuntimeCVarType::String, "", "Capture the first Plume frame whose queued direct draw matches this target. Supported values: treebillboard, particlematerial, overdrawvisualise, postprocessingdownscale4, postprocessinggaussblur, screenfacingsprite, decal, texturedquadpreservestencil.", "treebillboard"},
+        {"renderer_renderdoc_capture_draw", "Renderer/RenderDoc", RuntimeCVarType::Int, "0", "Capture the first Plume frame whose queued direct draw packet has this draw ID. 0 disables draw-index capture."},
+        {"renderer_renderdoc_capture_draw_target", "Renderer/RenderDoc", RuntimeCVarType::String, "", "Capture the first Plume frame whose queued direct draw, record-time copy/resolve, or hook-root state matches this target. Supported values: treebillboard, particlematerial, overdrawvisualise, postprocessingdownscale4, postprocessinggaussblur, screenfacingsprite, decal, texturedquadpreservestencil, titlehandoff, titlevisible, titleguistrip, binkvideo, pixvideo, surfacedestination, surfacecopy, resolvecopy, pm4resolve, allroots, rootcoverage, hookroots, root:HookName, root:0xFableAddress. Use titleguistrip for the early GUI-tonemap strip diagnostic; use titlevisible for logo/title billboard proof. Use allroots/rootcoverage for hook-root coverage; pm4resolve only watches packet-backed resolve-copy commands.", "treebillboard,titlevisible,titleguistrip,surfacedestination,pixvideo,allroots,root:EndExport"},
+        {"renderer_renderdoc_capture_pass", "Renderer/RenderDoc", RuntimeCVarType::String, "", "Capture the first Plume frame whose queued direct draw belongs to this classified pass. Supported values include MainScene, Video, PrivateRect, DepthOnly, PostProcessOrUI, Immediate, PM4, and WrapperDraw.", "MainScene,Video,PrivateRect,PrivateRectCopy,PrivateRectDepth,DepthOnly,PostProcessOrUI,Immediate,PM4,WrapperDraw"},
         {"renderer_renderdoc_overlay", "Renderer/RenderDoc", RuntimeCVarType::Bool, "true", "Show RenderDoc's capture overlay when the RenderDoc API is available."},
         {"renderer_renderdoc_launch_replay", "Renderer/RenderDoc", RuntimeCVarType::Bool, "false", "Ask RenderDoc to launch or focus its replay UI when a capture is triggered from Refii."},
+        {"renderer_renderdoc_capture_on_error", "Renderer/RenderDoc", RuntimeCVarType::Bool, "false", "Automatically capture the next Plume frame when a serious direct renderer error such as a final failed draw or resolve is reported."},
         {"renderer_renderdoc_runtime_path", "Renderer/RenderDoc", RuntimeCVarType::String, "", "Optional RenderDoc runtime library path. Empty searches common system and local librenderdoc locations."},
         {"renderer_renderdoc_capture_path", "Renderer/RenderDoc", RuntimeCVarType::String, "renderdoc/captures", "Directory for RenderDoc captures. Relative paths resolve beside refii."},
 
@@ -996,6 +1012,11 @@ const std::vector<RuntimeCVarDefinition>& GetRuntimeCVarDefinitions() {
         {"headless", "Kernel", RuntimeCVarType::Bool, "false", "Run without UI prompts."},
         {"user_language", "Kernel", RuntimeCVarType::Int, "1", "User language ID."},
         {"user_country", "Kernel", RuntimeCVarType::Int, "103", "User country ID."},
+        {"xam_trace_msgs", "XAM", RuntimeCVarType::Bool, "false", "Log every XMsg app dispatch (app id, message id, result)."},
+
+        {"rexnet", "RexNet", RuntimeCVarType::Bool, "true", "Enable the RexNet netplay module (when built in)."},
+        {"rexnet_display_name", "RexNet", RuntimeCVarType::String, "", "Self-asserted display name shown to friends (max 32 bytes)."},
+        {"rexnet_bootstrap", "RexNet", RuntimeCVarType::String, "amino", "DHT bootstrap: 'amino' (public IPFS set), 'none', or comma-separated multiaddrs."},
 
         {"protect_zero", "Memory", RuntimeCVarType::Bool, "true", "Protect the zero page."},
         {"protect_on_release", "Memory", RuntimeCVarType::Bool, "false", "Protect memory after release."},

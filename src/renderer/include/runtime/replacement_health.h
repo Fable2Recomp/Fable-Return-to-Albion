@@ -1,7 +1,7 @@
 #pragma once
 
 #include "renderer_runtime.h"
-#include "runtime/plume/direct/fable_direct_renderer.h"
+#include "runtime/refii_renderer/plume/fable/direct/fable_direct_renderer.h"
 #include "runtime/shader_library.h"
 
 #include <cstdint>

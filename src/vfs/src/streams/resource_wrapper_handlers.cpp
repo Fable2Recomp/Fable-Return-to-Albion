@@ -369,6 +369,35 @@ bool TryHandleRefiiHostDiskStreamRead(PPCContext& ctx,
     return false;
   }
 
+  // Native DiskStream::Read (0x82C72EA8) does not create a request when the
+  // requested window extends beyond the stream view. Match that behavior at
+  // the call boundary instead of queuing a Refii request which later completes
+  // as a short read: consumers use a null request differently from a failed
+  // asynchronous request for parser callbacks and residency bookkeeping.
+  const auto stream_record = FindRefiiHostStreamRecord(stream_guest);
+  const bool window_in_range =
+      stream_record != nullptr && offset <= stream_record->size &&
+      requested_bytes <= stream_record->size - offset;
+  if (!window_in_range) {
+    if (out_guest != 0) {
+      StoreGuestU32(base, out_guest, 0);
+    }
+    ctx.r3.u32 = out_guest;
+    if (ShouldLogLooseStreamOperation(
+            "RefiiHostStream_ReadOutOfRange", stream_guest, 16)) {
+      REXLOG_WARN("Refii host loose stream read rejected like native "
+                  "stream=0x{:08X} out=0x{:08X} destination=0x{:08X} "
+                  "offset={} requested={} size={}",
+                  stream_guest,
+                  out_guest,
+                  buffer_guest,
+                  offset,
+                  requested_bytes,
+                  stream_record != nullptr ? stream_record->size : 0);
+    }
+    return true;
+  }
+
   const uint32_t request_guest = CreateDeferredReadRequest(
       ctx, base, stream_guest, buffer_guest, offset, requested_bytes, true);
   if (out_guest != 0) {
@@ -662,7 +691,8 @@ bool EnsureRefiiReadRequestCompleted(uint8_t* base,
   if (!attempted) {
     PPCContext fallback_ctx{};
     read = ReadRefiiHostStreamForReadRequest(fallback_ctx, base, record);
-    CompleteRefiiReadRequest(base, record, record_guest, read);
+    CompleteRefiiReadRequest(
+        fallback_ctx, base, record, record_guest, read);
     std::lock_guard<std::mutex> lock(record->mutex);
     completed = record->completed;
   }
@@ -816,6 +846,7 @@ bool TryHandleRefiiReadRequestRelease(PPCContext& ctx,
 
   if (ref_count == 0) {
     WaitForRefiiReadRequest(record);
+    CloseRefiiReadRequestEvent(ctx, base, record_guest);
     EraseRefiiReadRequestRecord(record_guest);
     ReleaseRefiiReadRequestStreamReference(ctx, base, record->stream_guest);
   }
@@ -851,6 +882,7 @@ bool RetireRefiiReadRequestAfterNativeRelease(PPCContext& ctx,
           : 0;
 
   WaitForRefiiReadRequest(record);
+  CloseRefiiReadRequestEvent(ctx, base, record_guest);
   EraseRefiiReadRequestRecord(record_guest);
   const ReleasedRefiiHostStreamReference released =
       ReleaseRefiiReadRequestStreamReference(ctx, base, stream_guest);

@@ -1,4 +1,7 @@
 #include "vfs_hooks_private.h"
+#include <sys/uio.h>
+#include <unistd.h>
+#include <array>
 
 namespace refii::vfs {
 inline namespace detail {
@@ -142,7 +145,8 @@ void LogLooseStatsMilestone(std::string_view label,
               "reads={} active_reads={} handles={}/{} pruned={} "
               "ownership=owned:{} native_shaped:{} optional:{} "
               "native_fallback:{} owned_streams:{}/{} owned_reads:{} "
-              "sources=lua:{} synthetic:{} database:{}",
+              "sources=lua:{} synthetic:{} database:{} texture:{} mesh:{} "
+              "audio:{} other:{}",
               label,
               value,
               stats.vfs_hits.load(std::memory_order_relaxed),
@@ -169,26 +173,67 @@ void LogLooseStatsMilestone(std::string_view label,
               stats.refii_owned_reads_completed.load(std::memory_order_relaxed),
               stats.refii_lua_streams_opened.load(std::memory_order_relaxed),
               stats.refii_synthetic_streams_opened.load(std::memory_order_relaxed),
-              stats.refii_database_streams_opened.load(std::memory_order_relaxed));
+              stats.refii_database_streams_opened.load(std::memory_order_relaxed),
+              stats.refii_texture_streams_opened.load(std::memory_order_relaxed),
+              stats.refii_mesh_streams_opened.load(std::memory_order_relaxed),
+              stats.refii_audio_streams_opened.load(std::memory_order_relaxed),
+              stats.refii_other_streams_opened.load(std::memory_order_relaxed));
 }
 
 void RecordRefiiOwnedStreamLifecycleOpen(std::string_view provider_name) {
   auto& stats = LooseStats();
   stats.refii_owned_streams_opened.fetch_add(1, std::memory_order_relaxed);
+  const auto record_class = [](std::atomic<uint64_t>& counter,
+                               std::string_view label) {
+    const uint64_t value =
+        counter.fetch_add(1, std::memory_order_relaxed) + 1;
+    LogLooseStatsMilestone(label, value,
+                           std::numeric_limits<size_t>::max());
+  };
   const std::string normalized = NormalizeLooseAssetKey(provider_name);
+  bool classified = false;
   if (normalized.ends_with(".lua") || normalized.find("lua") != std::string::npos) {
-    stats.refii_lua_streams_opened.fetch_add(1, std::memory_order_relaxed);
+    record_class(stats.refii_lua_streams_opened, "lua_streams_opened");
+    classified = true;
   }
   if (normalized.rfind("banks/", 0) == 0 ||
       normalized.find(".bank") != std::string::npos ||
       normalized.find("_headers/") != std::string::npos) {
-    stats.refii_synthetic_streams_opened.fetch_add(1, std::memory_order_relaxed);
+    record_class(stats.refii_synthetic_streams_opened,
+                 "bank_container_streams_opened");
+    classified = true;
   }
-  if (normalized.rfind("refii_vfs/", 0) == 0 ||
+  if (normalized.ends_with(".gdb") || normalized.ends_with(".babel") ||
+      normalized.ends_with(".gdb.csv") || normalized.ends_with(".babel.csv")) {
+    record_class(stats.refii_database_streams_opened,
+                 "database_streams_opened");
+    classified = true;
+  }
+  if (IsTextureAssetCandidate(normalized) ||
       normalized.find("texture_headers/") != std::string::npos ||
-      normalized.find("textures/") != std::string::npos ||
-      normalized.find("data/") != std::string::npos) {
-    stats.refii_database_streams_opened.fetch_add(1, std::memory_order_relaxed);
+      normalized.find("textures/") != std::string::npos) {
+    record_class(stats.refii_texture_streams_opened,
+                 "texture_streams_opened");
+    classified = true;
+  }
+  if (normalized.find("models/") != std::string::npos ||
+      normalized.find("meshes/") != std::string::npos ||
+      normalized.find("/mesh/") != std::string::npos ||
+      normalized.ends_with(".model") || normalized.ends_with(".mesh") ||
+      normalized.ends_with(".mdl") || normalized.ends_with(".mdl.gmd") ||
+      normalized.ends_with(".hkx") || normalized.ends_with(".hkx.hpb") ||
+      normalized.ends_with("_models.bnk") ||
+      normalized.ends_with("_model_headers.bnk")) {
+    record_class(stats.refii_mesh_streams_opened, "mesh_streams_opened");
+    classified = true;
+  }
+  if (normalized.ends_with(".adb") || normalized.ends_with(".amp") ||
+      normalized.ends_with(".loco") || normalized.find("audio/") != std::string::npos) {
+    record_class(stats.refii_audio_streams_opened, "audio_streams_opened");
+    classified = true;
+  }
+  if (!classified) {
+    record_class(stats.refii_other_streams_opened, "other_streams_opened");
   }
 }
 
@@ -478,6 +523,35 @@ uint64_t LoadGuestU64(uint8_t* base, uint32_t guest_address) {
 }
 
 void StoreGuestU8(uint8_t* base, uint32_t guest_address, uint8_t value) {
+  if (base != nullptr && value != 0u) {
+    const uint32_t root = LoadGuestU32(base, 0x83496B0Cu);
+    if (LooksLikeGuestPointer(root)) {
+      const uint32_t state = LoadGuestU32(base, root + 8u);
+      const uint32_t owner = LooksLikeGuestPointer(state)
+                                 ? LoadGuestU32(base, state + 40u)
+                                 : 0u;
+      const uint32_t frame = LooksLikeGuestPointer(owner)
+                                 ? LoadGuestU32(base, owner + 4u)
+                                 : 0u;
+      if (LooksLikeGuestPointer(frame) && guest_address == frame + 244u) {
+        const uint32_t movie = LoadGuestU32(base, frame + 76u);
+        if (LooksLikeGuestPointer(movie) &&
+            LoadGuestU32(base, movie + 8u) != 0u) {
+          static std::atomic<uint32_t> rejected_writes{0};
+          const uint32_t count =
+              rejected_writes.fetch_add(1, std::memory_order_relaxed) + 1u;
+          if (count <= 8u) {
+            REXLOG_WARN("Refii VFS rejected synthetic active startup frame "
+                        "failure-byte write #{} frame=0x{:08X} "
+                        "movie=0x{:08X} bink_frame={}/{}",
+                        count, frame, movie, LoadGuestU32(base, movie + 12u),
+                        LoadGuestU32(base, movie + 8u));
+          }
+          return;
+        }
+      }
+    }
+  }
   *rex::memory::GuestPtr<uint8_t*>(base, guest_address) = value;
 }
 
@@ -550,35 +624,30 @@ std::pair<uint32_t, uint32_t> EnsureRefiiResourceWrapperVTables(
       rex::memory::GuestPtr<uint8_t*>(base, kResourceStreamWrapperInterfaceVTable),
       kResourceWrapperVTableCopySize);
 
-  StoreGuestU32(base, primary + 8, kResourceWrapperDtorFunc);
-  StoreGuestU32(base, primary + 12, kResourceWrapperStatusFunc);
-  StoreGuestU32(base, primary + 16, kResourceWrapperWaitFunc);
-  StoreGuestU32(base, primary + 20, kResourceWrapperGetBytesFunc);
-  StoreGuestU32(base, primary + 24, kResourceWrapperGetSizeFunc);
-  StoreGuestU32(base, primary + 36, kResourceWrapperSlot36Func);
-
-  StoreGuestU32(base, interface + 8, kResourceWrapperDtorFunc);
-  StoreGuestU32(base, interface + 12, kResourceWrapperStatusFunc);
-  StoreGuestU32(base, interface + 16, kResourceWrapperWaitFunc);
-  StoreGuestU32(base, interface + 20, kResourceWrapperGetBytesFunc);
-  StoreGuestU32(base, interface + 24, kResourceWrapperGetSizeFunc);
-  StoreGuestU32(base, interface + 36, kResourceWrapperSlot36Func);
+  // The copies are unmodified duplicates of the native vtables and exist only
+  // so IsRefiiResourceWrapper*VTable can recognise our own objects by vtable
+  // address. Do not install slot overrides here.
+  //
+  // The two vtables are the two bases of one 28-byte object built by
+  // FindAndCreateStream (0x82B53D68): primary at +0, second base at +4. Their
+  // slot maps differ, so a shared override list is wrong by construction --
+  // 0x820F9DD8+8 is a -4 adjustor thunk and +16 is CBasicBufferedRequest::
+  // GetDevice (sret), where the primary has Release and a [this+0x10]
+  // forwarder. The shared forwarders (+12/+36) are deliberate: `lwz r3,0x10(r3)`
+  // resolves to the stream at +16 from the primary base and to the second inner
+  // interface at +20 from the second base.
+  //
+  // Native Release (0x822C72E8) is refcounted and deletes via vtbl[+44] only at
+  // zero; we initialise the refcount at wrapper+8, so it is already correct.
 
   g_refii_resource_wrapper_vtable = primary;
   g_refii_resource_wrapper_interface_vtable = interface;
 
   if (VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("Refii resource wrapper private vtables primary=0x{:08X} "
-                "interface=0x{:08X} slots=[dtor=0x{:08X} status=0x{:08X} "
-                "wait=0x{:08X} bytes=0x{:08X} size=0x{:08X} slot36=0x{:08X}]",
+                "interface=0x{:08X} (native slot maps, identity copies only)",
                 primary,
-                interface,
-                kResourceWrapperDtorFunc,
-                kResourceWrapperStatusFunc,
-                kResourceWrapperWaitFunc,
-                kResourceWrapperGetBytesFunc,
-                kResourceWrapperGetSizeFunc,
-                kResourceWrapperSlot36Func);
+                interface);
   }
 
   return {primary, interface};
@@ -812,6 +881,14 @@ bool IsReadableAssetChar(char ch) {
          ch == ')' || ch == ',' || ch == '\'' || ch == '"' || ch == '=';
 }
 
+// Best-effort guest string reads must never fault: the tail of the 4GB
+// guest reservation is unmapped guard pages, and save-load name objects can
+// carry sentinel data pointers (a -1 pointer walked LoadGuestU8 into the
+// last page and SIGBUSed inside rex_lhResourceManager_GetCached's name
+// logging — core 352739, 2026-07-19). Every string-data window stays below
+// the physical arena ceiling.
+constexpr uint32_t kGuestStringDataCeiling = 0xE0000000u;
+
 std::string ReadGuestWideStringObject(uint8_t* base,
                                       uint32_t object_guest,
                                       size_t max_chars) {
@@ -819,9 +896,19 @@ std::string ReadGuestWideStringObject(uint8_t* base,
     return {};
   }
 
+  auto plausible_string_data = [](uint32_t data_guest,
+                                  uint32_t length) -> bool {
+    if (data_guest < 0x10000u || length == 0) {
+      return false;
+    }
+    const uint64_t last_byte =
+        uint64_t(data_guest) + uint64_t(length - 1u) * 2u + 1u;
+    return last_byte < kGuestStringDataCeiling;
+  };
+
   auto read_wide = [&](uint32_t data_guest, uint32_t length) -> std::string {
     if (data_guest == 0 || length == 0 || length > max_chars ||
-        length > 0x100000) {
+        length > 0x100000 || !plausible_string_data(data_guest, length)) {
       return {};
     }
 
@@ -846,13 +933,15 @@ std::string ReadGuestWideStringObject(uint8_t* base,
   };
 
   auto read_wide_cstr = [&](uint32_t data_guest) -> std::string {
-    if (data_guest == 0) {
+    if (data_guest < 0x10000u || data_guest >= kGuestStringDataCeiling) {
       return {};
     }
 
+    const size_t bounded_chars = std::min<size_t>(
+        max_chars, (kGuestStringDataCeiling - data_guest) / 2u);
     std::string value;
-    value.reserve(std::min<size_t>(max_chars, 256));
-    for (size_t index = 0; index < max_chars; ++index) {
+    value.reserve(std::min<size_t>(bounded_chars, 256));
+    for (size_t index = 0; index < bounded_chars; ++index) {
       const uint16_t code_unit = LoadGuestU16(
           base, data_guest + static_cast<uint32_t>(index * 2));
       if (code_unit == 0) {
@@ -913,9 +1002,18 @@ std::string ReadGuestAsciiStringObject(uint8_t* base,
     return {};
   }
 
+  auto plausible_string_data = [](uint32_t data_guest,
+                                  uint32_t length) -> bool {
+    if (data_guest < 0x10000u || length == 0) {
+      return false;
+    }
+    const uint64_t last_byte = uint64_t(data_guest) + uint64_t(length - 1u);
+    return last_byte < kGuestStringDataCeiling;
+  };
+
   auto read_ascii = [&](uint32_t data_guest, uint32_t length) -> std::string {
     if (data_guest == 0 || length == 0 || length > max_chars ||
-        length > 0x100000) {
+        length > 0x100000 || !plausible_string_data(data_guest, length)) {
       return {};
     }
 
@@ -935,13 +1033,15 @@ std::string ReadGuestAsciiStringObject(uint8_t* base,
   };
 
   auto read_ascii_cstr = [&](uint32_t data_guest) -> std::string {
-    if (data_guest == 0) {
+    if (data_guest < 0x10000u || data_guest >= kGuestStringDataCeiling) {
       return {};
     }
 
+    const size_t bounded_chars =
+        std::min<size_t>(max_chars, kGuestStringDataCeiling - data_guest);
     std::string value;
-    value.reserve(std::min<size_t>(max_chars, 256));
-    for (size_t index = 0; index < max_chars; ++index) {
+    value.reserve(std::min<size_t>(bounded_chars, 256));
+    for (size_t index = 0; index < bounded_chars; ++index) {
       const char ch =
           static_cast<char>(LoadGuestU8(base, data_guest + index));
       if (ch == '\0') {
@@ -987,7 +1087,7 @@ std::string ReadGuestAsciiStringObject(uint8_t* base,
 std::string ReadGuestWideCString(uint8_t* base,
                                  uint32_t string_guest,
                                  size_t max_chars) {
-  if (base == nullptr || string_guest == 0) {
+  if (base == nullptr || string_guest < 0x10000u) {
     return {};
   }
 
@@ -1054,13 +1154,35 @@ std::string FormatGuestWords(uint8_t* base, uint32_t guest, uint32_t word_count)
     return {};
   }
 
+  // Trace-only helper fed by pointer heuristics, so the address may land on
+  // an unmapped page of the sparse guest mapping; a direct load there is a
+  // host SIGBUS. Copy via process_vm_readv, which reports EFAULT instead of
+  // faulting.
+  std::array<uint32_t, 64> words{};
+  const uint32_t clamped = std::min<uint32_t>(word_count, words.size());
+  struct iovec local {
+    words.data(), clamped * sizeof(uint32_t)
+  };
+  struct iovec remote {
+    rex::memory::GuestPtr<uint8_t*>(base, guest), clamped * sizeof(uint32_t)
+  };
+  const ssize_t copied =
+      process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+  if (copied < 0) {
+    return fmt::format("<unmapped:0x{:08X}>", guest);
+  }
+
   std::ostringstream stream;
-  for (uint32_t index = 0; index < word_count; ++index) {
+  const uint32_t got = static_cast<uint32_t>(copied) / sizeof(uint32_t);
+  for (uint32_t index = 0; index < clamped; ++index) {
     if (index != 0) {
       stream << ' ';
     }
-    stream << fmt::format("0x{:08X}",
-                          LoadGuestU32(base, guest + index * sizeof(uint32_t)));
+    if (index < got) {
+      stream << fmt::format("0x{:08X}", __builtin_bswap32(words[index]));
+    } else {
+      stream << "<unmapped>";
+    }
   }
   return stream.str();
 }
@@ -1080,13 +1202,16 @@ std::string JoinStrings(const std::vector<std::string>& values,
 std::string FormatGuestAsciiBytes(uint8_t* base,
                                   uint32_t guest,
                                   uint32_t max_chars) {
-  if (base == nullptr || guest == 0) {
+  if (base == nullptr || guest < 0x10000u ||
+      guest >= kGuestStringDataCeiling) {
     return {};
   }
 
+  const uint32_t bounded_chars =
+      std::min<uint32_t>(max_chars, kGuestStringDataCeiling - guest);
   std::string value;
-  value.reserve(max_chars);
-  for (uint32_t index = 0; index < max_chars; ++index) {
+  value.reserve(bounded_chars);
+  for (uint32_t index = 0; index < bounded_chars; ++index) {
     const char ch = static_cast<char>(LoadGuestU8(base, guest + index));
     if (ch == '\0') {
       break;

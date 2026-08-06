@@ -14,6 +14,7 @@ set(REFII_LUA51_INCLUDE_DIRS
 )
 
 set(REFII_LUA_RUNTIME_PUBLIC_HEADERS
+    ${REFII_LUA_ROOT}/include/core/host_lua_vm.h
     ${REFII_LUA_ROOT}/include/core/native_lua_bridge.h
     ${REFII_LUA_ROOT}/include/core/native_lua_hooks.h
     ${REFII_LUA_ROOT}/include/lua_script_paths.h
@@ -24,6 +25,7 @@ set(REFII_LUA_RUNTIME_PRIVATE_HEADERS
 )
 
 set(REFII_LUA_RUNTIME_SOURCES
+    ${REFII_LUA_ROOT}/src/core/host_lua_vm.cpp
     ${REFII_LUA_ROOT}/src/core/native_lua_bridge.cpp
     ${REFII_LUA_ROOT}/src/core/native_lua_handlers.cpp
     ${REFII_LUA_ROOT}/src/core/native_lua_runtime.cpp
@@ -351,6 +353,9 @@ else()
     target_compile_definitions(refii_lua51 PUBLIC LUA_USE_LINUX)
     target_link_libraries(refii_lua51 PUBLIC ${CMAKE_DL_LIBS} m)
 endif()
+
+# The host-VM executor (src/core/host_lua_vm.cpp) embeds the vendored lua51.
+target_link_libraries(refii_lua PRIVATE refii_lua51)
 
 if(TARGET refii_bnk_extractor)
     add_library(refii_lua_decompiler_workspace STATIC

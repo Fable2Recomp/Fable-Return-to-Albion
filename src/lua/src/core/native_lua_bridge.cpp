@@ -16,6 +16,8 @@ PPC_EXTERN_FUNC(sub_8219A908);
 PPC_EXTERN_FUNC(sub_82227A50); // Lumen: lua_pushboolean
 PPC_EXTERN_FUNC(sub_822D7888); // Lumen: lua_objlen
 PPC_EXTERN_FUNC(sub_82BCBD08); // Lumen: lua_settop
+PPC_EXTERN_FUNC(sub_8220A4B0); // Lumen: lua_pushnumber (float32 lua_Number)
+PPC_EXTERN_FUNC(sub_82229218); // Lumen: lua_pushvalue
 
 namespace refii::lua {
 namespace {
@@ -149,6 +151,27 @@ void GuestLuaBridge::PushBoolean(bool value) const {
   sub_82227A50(ppc_, base_);
 }
 
+void GuestLuaBridge::PushNumber(double value) const {
+  ppc_.r3.u32 = lua_state_guest_;
+  // The guest build stores lua_Number as float32 (stfs f1); passing the
+  // double in f1 lets the guest instruction do the narrowing.
+  ppc_.f1.f64 = value;
+  sub_8220A4B0(ppc_, base_);
+}
+
+void GuestLuaBridge::PushNil() const {
+  // 5.1 semantics: settop above the current top fills the gap with nil.
+  ppc_.r3.u32 = lua_state_guest_;
+  ppc_.r4.s64 = GetTop() + 1;
+  sub_82BCBD08(ppc_, base_);
+}
+
+void GuestLuaBridge::PushValueAt(int index) const {
+  ppc_.r3.u32 = lua_state_guest_;
+  ppc_.r4.s64 = index;
+  sub_82229218(ppc_, base_);
+}
+
 bool GuestLuaBridge::PCall(int nargs, int nresults, int errfunc) const {
   ppc_.r3.u32 = lua_state_guest_;
   ppc_.r4.s64 = nargs;
@@ -200,6 +223,24 @@ bool GuestLuaBridge::ReadBoolean(int index, bool& out) const {
   }
 
   out = true;
+  return true;
+}
+
+bool GuestLuaBridge::ReadNumber(int index, double& out) const {
+  const uint32_t value_address = IndexToAddress(index);
+  if (value_address == 0) {
+    return false;
+  }
+
+  uint8_t* base = base_;
+  if (PpcLoadU32(base, value_address + 4) != kLuaTNumber) {
+    return false;
+  }
+
+  const uint32_t bits = PpcLoadU32(base, value_address);
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  out = value;
   return true;
 }
 
@@ -283,6 +324,8 @@ bool GuestLuaBridge::DescribeValue(int index, std::string& out) const {
     }
   }
 }
+
+void GuestLuaBridge::ResetScratch() { scratch_cursor_guest_ = scratch_begin_guest_; }
 
 uint32_t GuestLuaBridge::AllocateScratch(size_t size, size_t alignment) {
   const uint32_t mask = static_cast<uint32_t>(std::max<size_t>(alignment, 1) - 1);

@@ -1960,77 +1960,13 @@ bool TryFinalizeRefiiPostLoadingFrontendGeneratedState(
     }
   }
 
-  uint32_t post_loading_after_holder_guest = 0;
-  bool post_loading_after_holder_returned = false;
-  bool post_loading_after_holder_armed = false;
-  bool post_loading_after_holder_mode2_collapsed = false;
-  bool post_loading_after_holder_native_tick = false;
-  if (clear_render_handoff && secondary_loading_global_released &&
-      preserve_post_gameface_primary &&
-      RefiiPostVfsChainReadyForLoadingOwnerRelease()) {
-    PPCContext after_holder_ctx = source_ctx;
-    after_holder_ctx.r4.u32 = render_owner;
-    post_loading_after_holder_returned =
-        TryReturnRefiiPostLoadingAfterHolderSingletonForCompletedVfsChain(
-            after_holder_ctx,
-            base,
-            &post_loading_after_holder_guest,
-            "post_loading_generated_state_finalize");
-    if (post_loading_after_holder_returned &&
-        LooksLikeGuestPointer(post_loading_after_holder_guest)) {
-      post_loading_after_holder_armed =
-          TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
-              after_holder_ctx,
-              base,
-              post_loading_after_holder_guest,
-              "post_loading_generated_state_finalize");
-      if (post_loading_after_holder_armed) {
-        post_loading_after_holder_mode2_collapsed =
-            TryCollapseRefiiPostLoadingAfterHolderMode2(
-                after_holder_ctx,
-                base,
-                post_loading_after_holder_guest,
-                "post_loading_generated_state_finalize");
-        const bool defer_after_holder_native_tick_for_final_handoff =
-            RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
-            RefiiPostGameFacePackageReadyForGeneratedRelease() &&
-            RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
-        if (!post_loading_after_holder_mode2_collapsed &&
-            !RefiiPostLoadingMiddlewareVideoReadComplete() &&
-            !defer_after_holder_native_tick_for_final_handoff) {
-          PPCContext native_after_holder_ctx = after_holder_ctx;
-          native_after_holder_ctx.r3.u32 = post_loading_after_holder_guest;
-          native_after_holder_ctx.r4.u32 = render_owner;
-          native_after_holder_ctx.lr = static_cast<uint32_t>(source_ctx.lr);
-          __imp__sub_82467B08(native_after_holder_ctx, base);
-          post_loading_after_holder_native_tick = true;
-          RecordRefiiMainMenuBlockerEvent(
-              "post_loading_after_holder_native_mode2_tick",
-              fmt::format("source={} holder=0x{:08X} result=0x{:08X} "
-                          "state=[{}]",
-                          source_api,
-                          post_loading_after_holder_guest,
-                          native_after_holder_ctx.r3.u32,
-                          FormatRefiiPostLoadingAfterHolderState(
-                              base, post_loading_after_holder_guest)));
-          if (VfsTracingEnabled() ||
-              ShouldLogRepeatedVfsTraceOperation(
-                  "PostLoadingAfterHolderNativeMode2Tick", 8)) {
-            REXLOG_INFO("Refii VFS post-loading after-holder native mode2 "
-                        "tick source={} holder=0x{:08X} result=0x{:08X} "
-                        "state=[{}] handoff=[{}] main_menu=[{}]",
-                        source_api,
-                        post_loading_after_holder_guest,
-                        native_after_holder_ctx.r3.u32,
-                        FormatRefiiPostLoadingAfterHolderState(
-                            base, post_loading_after_holder_guest),
-                        FormatRefiiPostVideoHandoffTraceForLog(),
-                        FormatRefiiMainMenuBlockerTraceForLog());
-          }
-        }
-      }
-    }
-  }
+  // The synthetic after-holder arm/collapse machinery was removed; these
+  // stay for the finalize trace fields below and truthfully report inactive.
+  const uint32_t post_loading_after_holder_guest = 0;
+  const bool post_loading_after_holder_returned = false;
+  const bool post_loading_after_holder_armed = false;
+  const bool post_loading_after_holder_mode2_collapsed = false;
+  const bool post_loading_after_holder_native_tick = false;
 
   RecordRefiiMainMenuBlockerEvent(
       "post_loading_frontend_generated_state_finalize",
@@ -2863,14 +2799,6 @@ bool TryRunRefiiPostLoadingFrontendRenderRequestNativeFromTrace(
                               "native_worker_continue");
     }
 	    if (ownerless_request_ready) {
-	      const uint32_t cleaned_holder =
-	          RefiiPostLoadingAfterHolderMode5CleanedHolder().load(
-	              std::memory_order_relaxed);
-	      TryFinalizeRefiiOwnerlessPostLoadingAfterHolderState(
-	          source_ctx,
-	          base,
-	          cleaned_holder,
-	          "post_loading_frontend_ownerless_render_handoff");
 	    } else {
       const bool completed_owner_release =
           source_api == "completed_owner_wait_release" ||
@@ -3065,11 +2993,6 @@ bool TryRunRefiiPostLoadingFrontendRenderRequestNativeFromTrace(
   return true;
 }
 
-bool MaybeSignalRefiiFrontendDeferredHashWakeHandoff(
-    const PPCContext& source_ctx,
-    uint8_t* base,
-    std::string_view mode);
-
 bool MaybeRefreshRefiiPostGameFaceFollowupBoundary(
     const PPCContext& source_ctx,
     uint8_t* base,
@@ -3126,25 +3049,6 @@ bool MaybeRefreshRefiiPostGameFaceFollowupBoundary(
 	          "post_gameface_followup_boundary",
 	          &bridged_handle);
 	  bool loading_animation_primed = false;
-	  if (!sequence_bridged && !LooksLikeNativeResourceHandle(bridged_handle)) {
-	    PPCContext prime_ctx = source_ctx;
-	    loading_animation_primed =
-	        TryPrimeRefiiFrontendTextureResource(
-	            prime_ctx,
-	            base,
-	            kRefiiLoadingAnimationHash,
-	            "PostGameFaceFollowup_LoadingAnimationPrime");
-	    if (loading_animation_primed) {
-	      PPCContext retry_ctx = source_ctx;
-	      sequence_bridged =
-	          TryRefreshRememberedLoadingScreenSequenceBridge(
-	              retry_ctx,
-	              base,
-	              "post_gameface_followup_boundary_loading_animation_prime",
-	              &bridged_handle);
-	    }
-	  }
-
 	  PPCContext publish_ctx = source_ctx;
 	  const bool primary_published =
 	      TryPublishRefiiPostGameFacePrimaryOwnerFromTrace(

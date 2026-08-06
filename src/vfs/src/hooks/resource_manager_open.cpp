@@ -92,7 +92,35 @@ REX_EXTERN(rex_lhResourceManager_Open) {
 REX_EXTERN(sub_82B6DB20) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B6DB20);
+  // Native path replicates REFII_VFS_NATIVE_PASSTHROUGH but keeps the pool
+  // stream-in outcome log (the macro's early return made it dead code).
+  if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {
+    const uint32_t native_item = ctx.r3.u32;
+    __imp__sub_82B6DB20(ctx, base);
+    const uint32_t success_byte =
+        refii::vfs::LoadGuestU32(base, native_item + 116u) >> 24;
+    static std::atomic<uint32_t> logged_native_pool_execs{0};
+    const uint32_t exec_count =
+        logged_native_pool_execs.fetch_add(1, std::memory_order_relaxed) + 1u;
+    if (exec_count <= 32u) {
+      REXLOG_INFO(
+          "Refii pool stream-in exec #{} item=0x{:08X} success={} "
+          "hash=0x{:08X} off8=0x{:08X} sz12=0x{:08X} sz16=0x{:08X} "
+          "off20=0x{:08X} flags28=0x{:08X} mode104={} sel112={} "
+          "off48=0x{:08X}",
+          exec_count, native_item, success_byte,
+          refii::vfs::LoadGuestU32(base, native_item + 4u),
+          refii::vfs::LoadGuestU32(base, native_item + 8u),
+          refii::vfs::LoadGuestU32(base, native_item + 12u),
+          refii::vfs::LoadGuestU32(base, native_item + 16u),
+          refii::vfs::LoadGuestU32(base, native_item + 20u),
+          refii::vfs::LoadGuestU32(base, native_item + 28u),
+          refii::vfs::LoadGuestU32(base, native_item + 104u),
+          refii::vfs::LoadGuestU32(base, native_item + 112u),
+          refii::vfs::LoadGuestU32(base, native_item + 48u));
+    }
+    return;
+  }
 
   const PPCContext original_ctx = ctx;
   const uint32_t texture_guest = original_ctx.r3.u32;
@@ -208,6 +236,35 @@ REX_EXTERN(sub_82B6DB20) {
   }
 
   __imp__sub_82B6DB20(ctx, base);
+
+  // Pool stream-in outcome (native-VFS diagnosable: VfsTracingEnabled is
+  // hard-disabled without the loose backend). item+116 == 0 after execution
+  // means rex_lhResourceManager_Open rejected this pool page — the title
+  // logo/loading-screen family's reads die here.
+  {
+    const uint32_t success_byte =
+        refii::vfs::LoadGuestU32(base, texture_guest + 116u) >> 24;
+    static std::atomic<uint32_t> logged_pool_open_outcomes{0};
+    const uint32_t outcome_count =
+        logged_pool_open_outcomes.fetch_add(1, std::memory_order_relaxed) + 1u;
+    if (outcome_count <= 32u) {
+      REXLOG_INFO(
+          "Refii pool stream-in exec #{} item=0x{:08X} success={} "
+          "hash=0x{:08X} off8=0x{:08X} sz12=0x{:08X} sz16=0x{:08X} "
+          "off20=0x{:08X} flags28=0x{:08X} mode104={} sel112={} "
+          "off48=0x{:08X}",
+          outcome_count, texture_guest, success_byte,
+          refii::vfs::LoadGuestU32(base, texture_guest + 4u),
+          refii::vfs::LoadGuestU32(base, texture_guest + 8u),
+          refii::vfs::LoadGuestU32(base, texture_guest + 12u),
+          refii::vfs::LoadGuestU32(base, texture_guest + 16u),
+          refii::vfs::LoadGuestU32(base, texture_guest + 20u),
+          refii::vfs::LoadGuestU32(base, texture_guest + 28u),
+          refii::vfs::LoadGuestU32(base, texture_guest + 104u),
+          refii::vfs::LoadGuestU32(base, texture_guest + 112u),
+          refii::vfs::LoadGuestU32(base, texture_guest + 48u));
+    }
+  }
 
   if (trace_texture) {
     const uint32_t next_texture_wrapper =

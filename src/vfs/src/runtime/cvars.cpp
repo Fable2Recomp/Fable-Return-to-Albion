@@ -2,7 +2,9 @@
 #include "runtime/cvars.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -54,6 +56,63 @@ REXCVAR_DEFINE_STRING(vfs_mod_roots, "", "VFS",
                       "uses the same game-relative layout as unpacked.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(vfs_auto_press_start, false, "VFS",
+                    "Testing aid: emulate the player pressing Start once at "
+                    "the interactive title screen (drives the exact native "
+                    "press handler). Lets unattended runs advance into the "
+                    "main menu.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(vfs_frontend_synthetic_handoff, false, "VFS",
+                    "Enable the legacy synthetic post-video/post-loading "
+                    "frontend handoff machinery (texture descriptor "
+                    "synthesis, holder arming, wait collapsing). Off by "
+                    "default: the fabricated guest writes corrupted native "
+                    "GUI state (boot fault-loops); the native flow reaches "
+                    "the menu without them. Kept for diagnosis only.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(vfs_force_retail_update_mode, true, "VFS",
+                    "Report the retail (non-dev-kit) update-path mode to "
+                    "GameInit so bootstrap follows the packed-container "
+                    "resource path instead of the dev-roots path (the host "
+                    "filesystem otherwise looks like a dev kit and takes a "
+                    "boot path retail Fable 2 never used).")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(vfs_native_bank_parse_probe, false, "VFS",
+                    "Diagnostic: run the native Bank_ParseHeader on the "
+                    "incoming stream for extracted banks and log the resulting "
+                    "entry-table shape, instead of building a synthetic bank.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(vfs_gdb_csv_overrides, true, "VFS",
+                    "Serve <name>.gdb.csv files found in loose asset roots in "
+                    "place of the binary .gdb game database: the CSV is "
+                    "compiled to .cache/gdb_compiled/ on demand and handed to "
+                    "the guest. Enabled by default for the Refii backend.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(vfs_babel_csv_overrides, true, "VFS",
+                    "Serve <name>.babel.csv files found in loose asset roots "
+                    "in place of the binary .babel localized-text database: "
+                    "the CSV is compiled to .cache/babel_compiled/ on demand "
+                    "and handed to the guest. Enabled by default for the "
+                    "Refii backend.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_STRING(vfs_mods_root, "", "VFS",
+                      "Folder that holds installed mod packages. Defaults to "
+                      "<assets_root>/mods.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_STRING(vfs_enabled_mods, "", "VFS",
+                      "Optional semicolon-separated enabled mod folder names "
+                      "under vfs_mods_root. Merged with "
+                      "<vfs_mods_root>/enabled.txt; list order is search "
+                      "priority.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 bool EqualsAsciiCaseInsensitive(std::string_view left, std::string_view right) {
   if (left.size() != right.size()) {
     return false;
@@ -68,23 +127,77 @@ bool EqualsAsciiCaseInsensitive(std::string_view left, std::string_view right) {
   return true;
 }
 
+
+// The backend/trace checks below run on every hooked guest call (hundreds of
+// thousands of times per second on the render thread). REXCVAR_GET on a
+// string cvar heap-allocates a copy per read, which perf showed costing ~20%
+// of total process cycles. Cache the decisions in atomics and refresh them
+// through the cvar change callbacks so hot-reload semantics are preserved at
+// zero steady-state cost.
+std::atomic<bool> g_cached_refii_backend{false};
+std::atomic<bool> g_cached_trace_vfs{false};
+std::atomic<bool> g_cached_trace_loose_assets{false};
+std::atomic<bool> g_cached_trace_verbose_io{false};
+std::once_flag g_cvar_cache_once;
+std::atomic<bool> g_cvar_cache_ready{false};
+
+void RefreshVfsCvarCache() {
+  const std::string backend = REXCVAR_GET(vfs_loose_asset_backend);
+  g_cached_refii_backend.store(EqualsAsciiCaseInsensitive(backend, "refii"),
+                               std::memory_order_release);
+  g_cached_trace_vfs.store(REXCVAR_GET(vfs_trace_vfs),
+                           std::memory_order_release);
+  g_cached_trace_loose_assets.store(REXCVAR_GET(vfs_trace_loose_assets),
+                                    std::memory_order_release);
+  g_cached_trace_verbose_io.store(REXCVAR_GET(vfs_trace_vfs_verbose_io),
+                                  std::memory_order_release);
+}
+
+void InitializeVfsCvarCacheSlow() {
+  std::call_once(g_cvar_cache_once, [] {
+    RefreshVfsCvarCache();
+    const auto refresh = [](std::string_view, std::string_view) {
+      RefreshVfsCvarCache();
+    };
+    rex::cvar::RegisterChangeCallback("vfs_loose_asset_backend", refresh);
+    rex::cvar::RegisterChangeCallback("vfs_trace_vfs", refresh);
+    rex::cvar::RegisterChangeCallback("vfs_trace_loose_assets", refresh);
+    rex::cvar::RegisterChangeCallback("vfs_trace_vfs_verbose_io", refresh);
+    g_cvar_cache_ready.store(true, std::memory_order_release);
+  });
+}
+
+inline void EnsureVfsCvarCache() {
+  // Double-checked fast path: one relaxed-ish atomic load per call.
+  // std::call_once's fast path alone showed up at ~2% of process cycles.
+  if (!g_cvar_cache_ready.load(std::memory_order_acquire)) [[unlikely]] {
+    InitializeVfsCvarCacheSlow();
+  }
+}
+
 }  // namespace
 
 bool LooseAssetOverridesEnabled() {
-  return GetLooseAssetBackend() == LooseAssetBackend::kRefii;
+  EnsureVfsCvarCache();
+  return g_cached_refii_backend.load(std::memory_order_acquire);
 }
 
 bool LooseAssetOverrideTracingEnabled() {
-  return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_trace_loose_assets);
+  EnsureVfsCvarCache();
+  return g_cached_refii_backend.load(std::memory_order_acquire) &&
+         g_cached_trace_loose_assets.load(std::memory_order_acquire);
 }
 
 bool VfsTracingEnabled() {
-  return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_trace_vfs);
+  EnsureVfsCvarCache();
+  return g_cached_refii_backend.load(std::memory_order_acquire) &&
+         g_cached_trace_vfs.load(std::memory_order_acquire);
 }
 
 bool VfsVerboseIoTracingEnabled() {
-  return RefiiLooseAssetBackendEnabled() &&
-         REXCVAR_GET(vfs_trace_vfs_verbose_io);
+  EnsureVfsCvarCache();
+  return g_cached_refii_backend.load(std::memory_order_acquire) &&
+         g_cached_trace_verbose_io.load(std::memory_order_acquire);
 }
 
 bool LooseGameFaceBinaryOverridesEnabled() {
@@ -93,6 +206,33 @@ bool LooseGameFaceBinaryOverridesEnabled() {
 
 bool LooseBankEntryOverridesEnabled() {
   return RefiiLooseAssetBackendEnabled();
+}
+
+bool NativeBankParseProbeEnabled() {
+  return RefiiLooseAssetBackendEnabled() &&
+         REXCVAR_GET(vfs_native_bank_parse_probe);
+}
+
+bool GdbCsvOverridesEnabled() {
+  return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_gdb_csv_overrides);
+}
+
+bool BabelCsvOverridesEnabled() {
+  return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_babel_csv_overrides);
+}
+
+bool AutoPressStartEnabled() {
+  return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_auto_press_start);
+}
+
+bool FrontendSyntheticHandoffEnabled() {
+  return RefiiLooseAssetBackendEnabled() &&
+         REXCVAR_GET(vfs_frontend_synthetic_handoff);
+}
+
+bool ForceRetailUpdateModeEnabled() {
+  return RefiiLooseAssetBackendEnabled() &&
+         REXCVAR_GET(vfs_force_retail_update_mode);
 }
 
 bool SkipStartupVideosEnabled() {
@@ -107,12 +247,10 @@ int StartupVideoMinimumPlaybackMs() {
 }
 
 LooseAssetBackend GetLooseAssetBackend() {
-  std::string backend = REXCVAR_GET(vfs_loose_asset_backend);
-  if (EqualsAsciiCaseInsensitive(backend, "refii")) {
-    return LooseAssetBackend::kRefii;
-  }
-
-  return LooseAssetBackend::kNative;
+  EnsureVfsCvarCache();
+  return g_cached_refii_backend.load(std::memory_order_acquire)
+             ? LooseAssetBackend::kRefii
+             : LooseAssetBackend::kNative;
 }
 
 bool RefiiLooseAssetBackendEnabled() {
@@ -127,6 +265,14 @@ std::string ConfiguredLooseAssetRoot() {
 
 std::string ConfiguredModAssetRoots() {
   return REXCVAR_GET(vfs_mod_roots);
+}
+
+std::string ConfiguredModsRootSetting() {
+  return REXCVAR_GET(vfs_mods_root);
+}
+
+std::string ConfiguredEnabledModsSetting() {
+  return REXCVAR_GET(vfs_enabled_mods);
 }
 
 }  // namespace detail

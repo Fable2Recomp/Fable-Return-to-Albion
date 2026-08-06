@@ -193,6 +193,9 @@ std::vector<RefiiVfsRuntimeLuaRecord> GetRefiiVfsRuntimeLuaRecordsCached(
     const std::filesystem::path& loose_root);
 std::vector<std::string> GetRefiiVfsRuntimeCandidatesCached(
     const std::filesystem::path& loose_root);
+bool RefiiVfsRuntimeCandidateSetContains(
+    const std::filesystem::path& loose_root,
+    std::string_view normalized_candidate);
 std::mutex& RefiiFindDirectoryIndexMutex();
 RefiiFindDirectoryIndex& RefiiFindDirectoryIndexInstance();
 std::mutex& RefiiFindDirectoryParentCacheMutex();

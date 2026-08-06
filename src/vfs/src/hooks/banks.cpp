@@ -257,6 +257,34 @@ REX_EXTERN(rex_lhBank_ParseHeader) {
         refii::vfs::InferSyntheticBankNameFromStream(base, stream_guest);
     synthetic_bank_source = "stream_provider";
   }
+  if (refii::vfs::NativeBankParseProbeEnabled()) {
+    __imp__rex_lhBank_ParseHeader(ctx, base);
+    const uint32_t bank_guest =
+        refii::vfs::TryReadOutputPointer(base, out_guest);
+    const uint32_t entries_begin =
+        bank_guest == 0 ? 0 : refii::vfs::LoadGuestU32(base, bank_guest + 68);
+    const uint32_t entries_end =
+        bank_guest == 0 ? 0 : refii::vfs::LoadGuestU32(base, bank_guest + 72);
+    const uint32_t name_table_begin =
+        bank_guest == 0 ? 0 : refii::vfs::LoadGuestU32(base, bank_guest + 96);
+    const uint32_t entry_count =
+        entries_end > entries_begin ? (entries_end - entries_begin) / 12 : 0;
+    REXLOG_INFO("Refii VFS native bank parse probe name={} source={} "
+                "in_stream=0x{:08X} out=0x{:08X} bank=0x{:08X} result=0x{:08X} "
+                "entries={} name_table=0x{:08X} first_words={}",
+                synthetic_bank_name,
+                synthetic_bank_source,
+                stream_guest,
+                out_guest,
+                bank_guest,
+                ctx.r3.u32,
+                entry_count,
+                name_table_begin,
+                bank_guest == 0
+                    ? std::string()
+                    : refii::vfs::FormatGuestWords(base, bank_guest, 12));
+    return;
+  }
   std::string concrete_bank_candidate;
   if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
       ShouldUseNativeConcreteBankContainer(synthetic_bank_name,

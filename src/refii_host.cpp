@@ -45,6 +45,16 @@
 
 namespace {
 
+// The stable-tree shadow context names the loop RunMainSDLLoop; the netplay
+// SDK's own SDL context names it RunMainMessageLoop.
+int RunHostMainLoop(rex::ui::SDLWindowedAppContext& appContext) {
+#if defined(REFII_REXGLUE_NETPLAY) && REFII_REXGLUE_NETPLAY
+    return appContext.RunMainMessageLoop();
+#else
+    return appContext.RunMainSDLLoop();
+#endif
+}
+
 #if !defined(_WIN32)
 std::atomic_bool g_posix_external_shutdown_requested{false};
 std::once_flag g_posix_terminate_handler_once;
@@ -455,7 +465,7 @@ int RunEmbeddedOnWindows(std::vector<std::string> ownedArguments) {
         return EXIT_FAILURE;
     }
 
-    const int result = app->OnInitialize() ? appContext.RunMainSDLLoop() : EXIT_FAILURE;
+    const int result = app->OnInitialize() ? RunHostMainLoop(appContext) : EXIT_FAILURE;
 
     app->InvokeOnDestroy();
     rex::ShutdownLogging();
@@ -486,7 +496,7 @@ int RunEmbeddedOnPosix(std::vector<std::string> ownedArguments) {
     int result = EXIT_FAILURE;
     if (app->OnInitialize()) {
         signalBridge.RefreshHandlers();
-        appContext.RunMainSDLLoop();
+        RunHostMainLoop(appContext);
         MarkPosixExternalShutdownInProgress();
         result = EXIT_SUCCESS;
     }

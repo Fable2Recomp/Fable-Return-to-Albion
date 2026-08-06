@@ -187,5 +187,11 @@ std::unique_ptr<WindowedApp> (*GetWindowedAppCreator())(WindowedAppContext& app_
 // Deprecated: use REX_DEFINE_APP
 #define XE_DEFINE_WINDOWED_APP(identifier, creator) REX_DEFINE_APP(identifier, creator)
 
+// True once app teardown has begun (window close / external shutdown). The
+// POSIX terminate handler consults this so a guest-thread exception during
+// teardown exits cleanly instead of aborting (the window-close teardown race
+// never set the signal-path shutdown flag).
+bool AppTeardownStarted();
+
 }  // namespace ui
 }  // namespace rex

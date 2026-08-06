@@ -106,7 +106,7 @@ void RefiiIoWorkerLoop(uint32_t worker_index) {
         }
         read = ReadRefiiHostStreamForReadRequest(job.ctx, job.base, job.record);
         CompleteRefiiReadRequest(
-            job.base, job.record, job.request_guest, read);
+            job.ctx, job.base, job.record, job.request_guest, read);
       }
     } catch (const std::exception& ex) {
       REXLOG_WARN("Refii I/O worker failed request=0x{:08X} worker={} "
@@ -114,13 +114,15 @@ void RefiiIoWorkerLoop(uint32_t worker_index) {
                   job.request_guest,
                   worker_index,
                   ex.what());
-      CompleteRefiiReadRequest(job.base, job.record, job.request_guest, 0);
+      CompleteRefiiReadRequest(
+          job.ctx, job.base, job.record, job.request_guest, 0);
     } catch (...) {
       REXLOG_WARN("Refii I/O worker failed request=0x{:08X} worker={} "
                   "error=<unknown>",
                   job.request_guest,
                   worker_index);
-      CompleteRefiiReadRequest(job.base, job.record, job.request_guest, 0);
+      CompleteRefiiReadRequest(
+          job.ctx, job.base, job.record, job.request_guest, 0);
     }
 
     FinishRefiiIoJobPromise(job.completion);

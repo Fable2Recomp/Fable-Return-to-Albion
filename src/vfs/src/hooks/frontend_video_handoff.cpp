@@ -1,5 +1,18 @@
 #include "vfs_hooks_private.h"
 
+#include <atomic>
+#include <bit>
+#include <cstdlib>
+
+#include "hooks/ppc_externs.h"
+#include "renderer_runtime.h"
+#include <rex/kernel/xboxkrnl/video.h>
+#include <rex/system/xvideo.h>
+
+namespace refii::renderer {
+bool PlumeRendererBackendEnabled();
+}  // namespace refii::renderer
+
 namespace {
 
 struct CompactStartupVideoProgress {
@@ -31,6 +44,101 @@ bool ShouldLogNativeStartupPlaybackAudit(std::string_view key,
   const uint32_t next_count = ++counts[std::string(key)];
   return next_count <= first_count ||
          (interval != 0 && (next_count % interval) == 0);
+}
+
+bool ShouldLogNativeStartupBikAudit(std::string_view key, uint32_t limit) {
+  if (refii::vfs::RefiiLooseAssetBackendEnabled()) {
+    return false;
+  }
+  if (refii::vfs::RefiiStartupVideosPlaybackCriticalActive()) {
+    return false;
+  }
+
+  static std::mutex mutex;
+  static std::unordered_map<std::string, uint32_t> counts;
+
+  std::lock_guard<std::mutex> lock(mutex);
+  const uint32_t next_count = ++counts[std::string(key)];
+  return next_count <= limit;
+}
+
+bool NativeStartupUpdateHasActiveMovie(uint8_t* base, uint32_t update_guest) {
+  if (base == nullptr || !refii::vfs::LooksLikeGuestPointer(update_guest)) {
+    return false;
+  }
+
+  const uint32_t vector_begin = refii::vfs::LoadGuestU32(base, update_guest + 56);
+  const uint32_t vector_end = refii::vfs::LoadGuestU32(base, update_guest + 60);
+  const uint32_t video_index = refii::vfs::LoadGuestU32(base, update_guest + 84);
+  const uint32_t count =
+      vector_end >= vector_begin ? (vector_end - vector_begin) / 8 : 0;
+  if (count != 0 && video_index < count) {
+    return true;
+  }
+
+  constexpr uint32_t kStartupVideoGlobalRoot = 0x83496B0C;
+  const uint32_t global_root =
+      refii::vfs::LoadGuestU32(base, kStartupVideoGlobalRoot);
+  const uint32_t game_state =
+      global_root != 0 ? refii::vfs::LoadGuestU32(base, global_root + 8) : 0;
+  const uint32_t owner =
+      game_state != 0 ? refii::vfs::LoadGuestU32(base, game_state + 40) : 0;
+  return owner != 0 && refii::vfs::LoadGuestU32(base, owner + 4) != 0;
+}
+
+void NotifyRendererStartupVideoPumpInitIfNeeded(const char* label,
+                                                uint8_t* base,
+                                                uint32_t wrapper_guest) {
+  const std::string_view stage(label);
+  const uint32_t update_guest =
+      wrapper_guest != 0 ? refii::vfs::LoadGuestU32(base, wrapper_guest + 12)
+                         : 0;
+  if (stage == "StartupReadyRequest_Update_82378110") {
+    refii::renderer::NotifyFableStartupVideoPumpInitComplete(wrapper_guest,
+                                                             update_guest);
+  } else if (stage == "StartupReadyRequest_Dispatch_82378118") {
+    refii::renderer::NotifyFableStartupVideoPumpDispatchComplete(wrapper_guest,
+                                                                 update_guest);
+  }
+}
+
+std::string FormatNativeStartupMovieOwnerSlot(uint8_t* base) {
+  constexpr uint32_t kStartupVideoGlobalRoot = 0x83496B0C;
+  if (base == nullptr) {
+    return "base=null";
+  }
+
+  const uint32_t global_root =
+      refii::vfs::LoadGuestU32(base, kStartupVideoGlobalRoot);
+  const uint32_t game_state =
+      global_root != 0 ? refii::vfs::LoadGuestU32(base, global_root + 8) : 0;
+  const uint32_t owner =
+      game_state != 0 ? refii::vfs::LoadGuestU32(base, game_state + 40) : 0;
+  const uint32_t movie_owner =
+      owner != 0 ? refii::vfs::LoadGuestU32(base, owner + 4) : 0;
+  const uint32_t duration_word =
+      movie_owner != 0 ? refii::vfs::LoadGuestU32(base, movie_owner + 4) : 0;
+  const uint32_t elapsed_word =
+      movie_owner != 0 ? refii::vfs::LoadGuestU32(base, movie_owner + 8) : 0;
+  const uint8_t complete_gate =
+      movie_owner != 0 ? refii::vfs::LoadGuestU8(base, movie_owner + 233) : 0;
+  const uint8_t ready_gate =
+      movie_owner != 0 ? refii::vfs::LoadGuestU8(base, movie_owner + 244) : 0;
+
+  return fmt::format(
+      "global_root=0x{:08X} game_state=0x{:08X} owner=0x{:08X} "
+      "movie_owner=0x{:08X} flags233/244={}/{} duration={} elapsed={} "
+      "owner_words={} movie_words={}",
+      global_root,
+      game_state,
+      owner,
+      movie_owner,
+      complete_gate,
+      ready_gate,
+      refii::vfs::RefiiGuestF32FromWord(duration_word),
+      refii::vfs::RefiiGuestF32FromWord(elapsed_word),
+      refii::vfs::FormatGuestWordsIfPointer(base, owner, 8),
+      refii::vfs::FormatGuestWordsIfPointer(base, movie_owner, 16));
 }
 
 void MaybeLogCompactStartupVideoProgress(uint8_t* base,
@@ -89,142 +197,53 @@ void MaybeLogCompactStartupVideoProgress(uint8_t* base,
                                                                   : "false");
 }
 
-std::string ResolveSetupUiStartupBikName(uint8_t* base,
-                                         const PPCContext& ctx,
-                                         uint32_t name_guest) {
-  std::string name = refii::vfs::ReadBestEffortGuestString(base, name_guest, 512);
-  if (!name.empty()) {
-    return name;
-  }
-
-  if (ctx.lr == 0x822F4F44u && name_guest >= ctx.r1.u32) {
-    switch (name_guest - ctx.r1.u32) {
-      case 120:
-        return "art/videos/microsoft_logo.bik";
-      case 124:
-        return "art/videos/lionhead_logo.bik";
-      default:
-        break;
-    }
-  }
-  return {};
-}
-
-bool TryBuildStartupBikObjectFromRefiiVfs(PPCContext& ctx,
-                                          uint8_t* base,
-                                          const PPCContext& original_ctx,
-                                          uint32_t object_guest,
-                                          std::string_view requested_name) {
-  if (base == nullptr || object_guest == 0 ||
-      original_ctx.lr != 0x822F4F44u ||
-      !refii::vfs::IsStartupBikAssetName(requested_name)) {
-    return false;
-  }
-
-  constexpr uint32_t kBikObjectVTable = 0x8200DF48u;
-  refii::vfs::StoreGuestU32(base, object_guest, kBikObjectVTable);
-
-  PPCContext string_init_ctx = original_ctx;
-  string_init_ctx.r3.u32 = object_guest + 4;
-  sub_821F7800(string_init_ctx, base);
-
-  PPCContext string_copy_ctx = original_ctx;
-  string_copy_ctx.r3.u32 = object_guest + 4;
-  string_copy_ctx.r4.u32 = original_ctx.r4.u32;
-  sub_822651A0(string_copy_ctx, base);
-
-  refii::vfs::StoreGuestU32(base, object_guest + 8, 0);
-  refii::vfs::StoreGuestU32(base, object_guest + 12, 0);
-
-  const uint32_t raw_out_guest = refii::vfs::CallLhMalloc(ctx, base, 4);
-  if (raw_out_guest == 0) {
-    return false;
-  }
-  refii::vfs::StoreGuestU32(base, raw_out_guest, 0);
-
-  PPCContext open_ctx = original_ctx;
-  refii::vfs::RefiiVfsOpenResult open_result;
-  refii::vfs::TryOpenRefiiVfsAsset(
-      open_ctx,
-      base,
-      original_ctx,
-      refii::vfs::RefiiVfsOpenShape::RawStream,
-      refii::vfs::RefiiVfsOpenRequest{
-          .api = "StartupBikObject_Ctor",
-          .request_name = requested_name,
-          .out_guest = raw_out_guest,
-          .mode = original_ctx.r5.u32,
-          .caller_lr = static_cast<uint32_t>(original_ctx.lr),
-      },
-      &open_result);
-  if (open_result.disposition != refii::vfs::RefiiVfsOpenDisposition::Opened) {
-    return false;
-  }
-
-  const uint32_t raw_stream_guest =
-      refii::vfs::LoadGuestU32(base, raw_out_guest);
-  if (raw_stream_guest == 0) {
-    return false;
-  }
-
-  const uint32_t buffered_out_guest = refii::vfs::CallLhMalloc(ctx, base, 4);
-  if (buffered_out_guest == 0) {
-    return false;
-  }
-  refii::vfs::StoreGuestU32(base, buffered_out_guest, 0);
-
-  PPCContext buffered_ctx = original_ctx;
-  buffered_ctx.r3.u32 = buffered_out_guest;
-  buffered_ctx.r4.u32 = raw_stream_guest;
-  buffered_ctx.r5.u32 = 1;
-  __imp__rex_lhStream_CreateBuffered(buffered_ctx, base);
-
-  const uint32_t buffered_stream_guest =
-      refii::vfs::TryReadOutputPointer(base, buffered_out_guest);
-  const uint32_t assign_source_guest =
-      buffered_stream_guest != 0 ? buffered_out_guest : raw_out_guest;
-
-  PPCContext assign_ctx = original_ctx;
-  assign_ctx.r3.u32 = object_guest + 8;
-  assign_ctx.r4.u32 = assign_source_guest;
-  __imp__sub_8252AA18(assign_ctx, base);
-
-  if (buffered_stream_guest != 0) {
-    refii::vfs::ReleaseGuestObject(ctx, base, buffered_stream_guest);
-  }
-  refii::vfs::ReleaseGuestObject(ctx, base, raw_stream_guest);
-
-  refii::vfs::RecordRefiiStartupVideoObjectHandoff(
-      base,
-      "StartupBikObject_CtorRefii",
-      static_cast<uint32_t>(original_ctx.lr),
-      object_guest,
-      0,
-      buffered_stream_guest,
-      object_guest,
-      requested_name);
-
-  ctx.r3.u32 = object_guest;
-  REXLOG_INFO("Refii VFS startup BIK object ctor refii-built "
-              "lr=0x{:08X} requested={} object=0x{:08X} raw=0x{:08X} "
-              "buffered=0x{:08X}",
-              original_ctx.lr,
-              requested_name,
-              object_guest,
-              raw_stream_guest,
-              buffered_stream_guest != 0 ? buffered_stream_guest
-                                         : raw_stream_guest);
-  return true;
-}
-
 } // namespace
 
 REX_EXTERN(sub_82377A00) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82377A00);
-
   const PPCContext original_ctx = ctx;
+  if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {
+    const bool native_startup_audit =
+        !NativeStartupUpdateHasActiveMovie(base, original_ctx.r3.u32) &&
+        ShouldLogNativeStartupBikAudit("NativeStartupUpdate_82377A00", 24);
+    if (native_startup_audit) {
+      REXLOG_INFO("Refii VFS native startup update enter sub_82377A00 "
+                  "lr=0x{:08X} update_timing=[{}] owner_slot=[{}] args=[{}]",
+                  original_ctx.lr,
+                  refii::vfs::FormatStartupVideoUpdateTimingState(
+                      base, original_ctx.r3.u32),
+                  FormatNativeStartupMovieOwnerSlot(base),
+                  refii::vfs::FormatPostVideoBoundaryArgs(base,
+                                                          original_ctx));
+    }
+
+    __imp__sub_82377A00(ctx, base);
+    refii::renderer::NotifyFableStartupVideoPumpRunComplete(
+        original_ctx.r3.u32);
+
+    refii::vfs::RecordRefiiStartupUpdateSnapshot(base,
+                                                 original_ctx.r3.u32,
+                                                 original_ctx.lr,
+                                                 ctx.r3.u32);
+    MaybeLogCompactStartupVideoProgress(base,
+                                        original_ctx.r3.u32,
+                                        original_ctx.lr,
+                                        ctx.r3.u32);
+    if (native_startup_audit) {
+      REXLOG_INFO("Refii VFS native startup update exit sub_82377A00 "
+                  "lr=0x{:08X} result=0x{:08X} update_after=[{}] "
+                  "owner_slot_after=[{}] args_after=[{}]",
+                  original_ctx.lr,
+                  ctx.r3.u32,
+                  refii::vfs::FormatStartupVideoUpdateTimingState(
+                      base, original_ctx.r3.u32),
+                  FormatNativeStartupMovieOwnerSlot(base),
+                  refii::vfs::FormatPostVideoBoundaryArgs(base, ctx));
+    }
+    return;
+  }
+
   const bool native_startup_audit = ShouldLogNativeStartupPlaybackAudit(
       "NativeStartupUpdate_82377A00", 4, 120);
   const bool trace = refii::vfs::ShouldTraceStartupVideoLoopProbe(
@@ -242,6 +261,8 @@ REX_EXTERN(sub_82377A00) {
   }
 
   __imp__sub_82377A00(ctx, base);
+  refii::renderer::NotifyFableStartupVideoPumpRunComplete(
+      original_ctx.r3.u32);
 
   if (refii::vfs::SkipStartupVideosEnabled()) {
     refii::vfs::ApplyRefiiSkipStartupVideoReadyPatch(
@@ -299,64 +320,6 @@ REX_EXTERN(sub_82377A00) {
       original_ctx.lr, "StartupVideoUpdate_82377A00", base);
 }
 
-REX_EXTERN(sub_823781D8) {
-  REX_FUNC_PROLOGUE();
-
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_823781D8);
-
-  const PPCContext original_ctx = ctx;
-  const uint32_t request_guest = original_ctx.r3.u32;
-  const uint32_t update_guest =
-      refii::vfs::LooksLikeGuestPointer(request_guest)
-          ? refii::vfs::LoadGuestU32(base, request_guest + 12)
-          : 0;
-  const bool tracked_request =
-      refii::vfs::IsNativeVfsScheduledRequest(base, request_guest);
-  const bool trace =
-      refii::vfs::VfsTracingEnabled() && tracked_request &&
-      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "StartupReadyRequest_RunUpdate_823781D8", 24);
-  std::string before_state;
-  if (trace) {
-    before_state =
-        refii::vfs::FormatNativeVfsAsyncRequestState(base, request_guest);
-    REXLOG_INFO("VFS trace native scheduled request enter "
-                "StartupReadyRequest_RunUpdate_823781D8 lr=0x{:08X} "
-                "ctr=0x{:08X} request=0x{:08X} update=0x{:08X} "
-                "state=[{}] handoff=[{}] main_menu=[{}]",
-                original_ctx.lr,
-                original_ctx.ctr.u32,
-                request_guest,
-                update_guest,
-                before_state,
-                refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-  }
-
-  __imp__sub_823781D8(ctx, base);
-
-  if (update_guest != 0) {
-    refii::vfs::RecordRefiiStartupUpdateSnapshot(
-        base, update_guest, original_ctx.lr, ctx.r3.u32);
-    MaybeLogCompactStartupVideoProgress(
-        base, update_guest, original_ctx.lr, ctx.r3.u32);
-  }
-
-  if (trace) {
-    REXLOG_INFO("VFS trace native scheduled request exit "
-                "StartupReadyRequest_RunUpdate_823781D8 lr=0x{:08X} "
-                "result=0x{:08X} before=[{}] after=[{}] handoff=[{}] "
-                "main_menu=[{}]",
-                original_ctx.lr,
-                ctx.r3.u32,
-                before_state,
-                refii::vfs::FormatNativeVfsAsyncRequestState(base,
-                                                                  request_guest),
-                refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-  }
-}
-
 REX_EXTERN(sub_82377980) {
   REX_FUNC_PROLOGUE();
 
@@ -400,13 +363,12 @@ REX_EXTERN(sub_82377980) {
       refii::vfs::RefiiMainMenuTraceNeedsTexturePrime();
   const bool startup_videos_settled =
       refii::vfs::RefiiStartupVideosSettledForMenuHandoff();
-  const bool collapse_refii_ready_completion = false;
   if (trace || (refii::vfs::VfsTracingEnabled() && update_complete)) {
     REXLOG_INFO("Refii VFS startup-video ready completion collapse gate "
                 "sub_82377980 lr=0x{:08X} update=0x{:08X} backend={} "
                 "update_valid={} update_complete={} texture_owned={} "
                 "hash_only={} menu_texture_refii_owned={} "
-                "menu_texture_needs_prime={} collapse={}",
+                "menu_texture_needs_prime={} completion=native",
                 original_ctx.lr,
                 original_ctx.r3.u32,
                 refii::vfs::RefiiLooseAssetBackendEnabled() ? "true"
@@ -419,8 +381,7 @@ REX_EXTERN(sub_82377980) {
                 refii::vfs::RefiiMainMenuTraceIsHashOnly() ? "true"
                                                                : "false",
                 menu_texture_refii_owned ? "true" : "false",
-                menu_texture_needs_prime ? "true" : "false",
-                collapse_refii_ready_completion ? "true" : "false");
+                menu_texture_needs_prime ? "true" : "false");
   }
   if (refii::vfs::RefiiLooseAssetBackendEnabled() && update_complete &&
       menu_texture_refii_owned && !refii::vfs::SkipStartupVideosEnabled() &&
@@ -438,186 +399,7 @@ REX_EXTERN(sub_82377980) {
                 refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
                 refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
   }
-  if (collapse_refii_ready_completion) {
-    const uint32_t ready_object_guest =
-        update_guest_valid
-            ? refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 92)
-            : 0;
-    ctx = original_ctx;
-    ctx.r3.u32 = original_ctx.r3.u32;
-    refii::vfs::RecordRefiiStartupUpdateSnapshot(base,
-                                                     original_ctx.r3.u32,
-                                                     original_ctx.lr,
-                                                     ctx.r3.u32);
-    refii::vfs::RecordRefiiPostVideoUiEvent(
-        "StartupVideoReadyCompletion_82377980_collapsed_noalloc",
-        original_ctx.lr,
-        ctx.r3.u32,
-        original_ctx.r3.u32,
-        original_ctx.r4.u32,
-        original_ctx.r5.u32);
-    if (trace || refii::vfs::VfsTracingEnabled()) {
-      REXLOG_INFO("Refii VFS startup-video ready completion collapsed "
-                  "sub_82377980 lr=0x{:08X} update=0x{:08X} "
-                  "ready_object=0x{:08X} update_complete={} "
-                  "menu_texture_refii_owned={} allocation=false "
-                  "update_after=[{}] handoff=[{}] main_menu=[{}]",
-                  original_ctx.lr,
-                  original_ctx.r3.u32,
-                  ready_object_guest,
-                  update_complete ? "true" : "false",
-                  menu_texture_refii_owned ? "true" : "false",
-                  refii::vfs::FormatStartupVideoUpdateTimingState(
-                      base, original_ctx.r3.u32),
-                  refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                  refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-      refii::vfs::LogRefiiVfsChainVerdict(
-          "frontend_post_video",
-          static_cast<uint32_t>(original_ctx.lr),
-          "menu_texture_refii_owned",
-          "",
-          "",
-          "startup_ready_completion",
-          "sub_82377980_collapsed_noalloc",
-          "TraceOnce",
-          "frontend_texture_consumer_or_DB20");
-    }
-    refii::vfs::MaybeLogRefiiStartupReadyGateTextureOpenVerdict(
-        original_ctx.lr, "StartupVideoReadyCompletion_82377980_collapsed", base);
-    refii::vfs::MaybeLogRefiiPostVideoHashOnlyBlocker(
-        original_ctx.lr, "StartupVideoReadyCompletion_82377980_collapsed", base);
-    PPCContext post_video_synthetic_ctx = original_ctx;
-    refii::vfs::TryRunPostVideoFrontendSyntheticHandoff(
-        post_video_synthetic_ctx,
-        base,
-        original_ctx.r3.u32,
-        "StartupVideoReadyCompletion_82377980_collapsed");
-    return;
-  } else if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-             update_complete && menu_texture_refii_owned &&
-             (refii::vfs::SkipStartupVideosEnabled() ||
-              startup_videos_settled)) {
-    const uint32_t ready_object_guest =
-        update_guest_valid
-            ? refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 92)
-            : 0;
-    uint32_t completion_guest =
-        update_guest_valid
-            ? refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 88)
-            : 0;
-    uint32_t inner_guest = 0;
-    bool constructed = false;
-    bool linked = false;
-    if (update_guest_valid && refii::vfs::LooksLikeGuestPointer(ready_object_guest)) {
-      PPCContext alloc_ctx = original_ctx;
-      const uint32_t allocated_guest =
-          refii::vfs::CallLhMalloc(alloc_ctx, base, 16);
-      if (refii::vfs::LooksLikeGuestPointer(allocated_guest)) {
-        PPCContext ctor_ctx = original_ctx;
-        ctor_ctx.r3.u32 = allocated_guest;
-        ctor_ctx.r4.u32 = ready_object_guest;
-        ctor_ctx.lr = 0x823779A8u;
-        __imp__sub_8231A908(ctor_ctx, base);
-        completion_guest = ctor_ctx.r3.u32;
-        constructed = refii::vfs::LooksLikeGuestPointer(completion_guest);
-        if (constructed) {
-          inner_guest = refii::vfs::LoadGuestU32(base, completion_guest + 12);
-        }
-      }
-    }
-
-    if (update_guest_valid &&
-        refii::vfs::LooksLikeGuestPointer(completion_guest) &&
-        refii::vfs::LooksLikeGuestPointer(inner_guest)) {
-      const uint32_t source_begin =
-          refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 8);
-      const uint32_t source_end =
-          refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 12);
-      const uint32_t previous_end =
-          refii::vfs::LoadGuestU32(base, inner_guest + 20);
-      if (previous_end != source_end) {
-        refii::vfs::StoreGuestU32(base, inner_guest + 16, source_begin);
-        refii::vfs::StoreGuestU32(base, inner_guest + 20, source_end);
-        if (refii::vfs::LooksLikeGuestPointer(source_end)) {
-          const uint32_t refs = refii::vfs::LoadGuestU32(base, source_end);
-          refii::vfs::StoreGuestU32(base, source_end, refs + 1);
-        }
-      }
-      refii::vfs::StoreGuestU32(base, original_ctx.r3.u32 + 88,
-                                    completion_guest);
-      linked = true;
-    }
-
-    ctx = original_ctx;
-    ctx.r3.u32 = update_guest_valid
-                     ? refii::vfs::LoadGuestU32(base,
-                                                    original_ctx.r3.u32 + 88)
-                     : completion_guest;
-    refii::vfs::RecordRefiiStartupUpdateSnapshot(base,
-                                                     original_ctx.r3.u32,
-                                                     original_ctx.lr,
-                                                     ctx.r3.u32);
-    refii::vfs::RecordRefiiPostVideoUiEvent(
-        "StartupVideoReadyCompletion_82377980_guarded_generated",
-        original_ctx.lr,
-        ctx.r3.u32,
-        original_ctx.r3.u32,
-        original_ctx.r4.u32,
-        original_ctx.r5.u32);
-    if (trace || refii::vfs::VfsTracingEnabled()) {
-      REXLOG_INFO("Refii VFS startup-video ready completion guarded "
-                  "generated-equivalent sub_82377980 lr=0x{:08X} "
-                  "update=0x{:08X} ready_object=0x{:08X} "
-                  "completion=0x{:08X} inner=0x{:08X} constructed={} "
-                  "linked={} update_after=[{}] handoff=[{}] main_menu=[{}]",
-                  original_ctx.lr,
-                  original_ctx.r3.u32,
-                  ready_object_guest,
-                  ctx.r3.u32,
-                  inner_guest,
-                  constructed ? "true" : "false",
-                  linked ? "true" : "false",
-                  refii::vfs::FormatStartupVideoUpdateTimingState(
-                      base, original_ctx.r3.u32),
-                  refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                  refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-      refii::vfs::LogRefiiVfsChainVerdict(
-          "frontend_post_video",
-          static_cast<uint32_t>(original_ctx.lr),
-          "menu_texture_refii_owned",
-          "",
-          "",
-          "startup_ready_completion",
-          "sub_82377980_guarded_generated",
-          linked ? "Opened" : "OpenFailed",
-          linked ? "frontend_texture_consumer_or_event_dispatch"
-                 : "ready_completion_constructor_rejected");
-    }
-    if (trace || refii::vfs::VfsTracingEnabled()) {
-      REXLOG_INFO("Refii VFS startup-video ready completion guarded "
-                  "generated-equivalent returning to native event dispatch "
-                  "sub_82377980 lr=0x{:08X} completion=0x{:08X} "
-                  "linked={} next=frontend_texture_consumer_or_event_wait",
-                  original_ctx.lr,
-                  ctx.r3.u32,
-                  linked ? "true" : "false");
-    }
-    refii::vfs::MaybeLogRefiiStartupReadyGateTextureOpenVerdict(
-        original_ctx.lr,
-        "StartupVideoReadyCompletion_82377980_guarded_generated",
-        base);
-    refii::vfs::MaybeLogRefiiPostVideoHashOnlyBlocker(
-        original_ctx.lr,
-        "StartupVideoReadyCompletion_82377980_guarded_generated",
-        base);
-    PPCContext post_video_synthetic_ctx = original_ctx;
-    refii::vfs::TryRunPostVideoFrontendSyntheticHandoff(
-        post_video_synthetic_ctx,
-        base,
-        original_ctx.r3.u32,
-        "StartupVideoReadyCompletion_82377980_guarded_generated");
-    return;
-  } else if (trace) {
+  if (trace) {
     REXLOG_INFO("Refii VFS startup-video ready completion collapse skipped "
                 "sub_82377980 lr=0x{:08X} update=0x{:08X} "
                 "backend={} update_valid={} update_complete={} "
@@ -655,16 +437,6 @@ REX_EXTERN(sub_82377980) {
                                               original_ctx.r3.u32,
                                               original_ctx.r4.u32,
                                               original_ctx.r5.u32);
-  PPCContext post_video_synthetic_ctx = original_ctx;
-  const uint32_t post_video_root_guest =
-      refii::vfs::LooksLikeGuestPointer(ctx.r3.u32) ? ctx.r3.u32
-                                                        : original_ctx.r3.u32;
-  refii::vfs::TryRunPostVideoFrontendSyntheticHandoff(
-      post_video_synthetic_ctx,
-      base,
-      post_video_root_guest,
-      "StartupVideoReadyCompletion_82377980");
-
   if (trace || native_completion_audit) {
     REXLOG_INFO("VFS trace startup-video ready completion exit sub_82377980 "
                 "lr=0x{:08X} result=0x{:08X} update_after=[{}] "
@@ -698,12 +470,43 @@ REX_EXTERN(sub_82377980) {
                                                 label, log_after_state)       \
   REX_EXTERN(function_name) {                                              \
     REX_FUNC_PROLOGUE();                                                      \
-    REFII_VFS_NATIVE_PASSTHROUGH(function_name);                              \
                                                                                \
     const PPCContext original_ctx = ctx;                                       \
     const uint32_t request_guest = original_ctx.r3.u32;                        \
     const bool tracked_request =                                               \
         refii::vfs::IsNativeVfsScheduledRequest(base, request_guest);      \
+    if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {                       \
+      const bool native_startup_audit =                                        \
+          tracked_request &&                                                   \
+          ShouldLogNativeStartupBikAudit(label, 24);                           \
+      std::string before_state;                                                \
+      if (native_startup_audit) {                                              \
+        before_state = refii::vfs::FormatNativeVfsAsyncRequestState(       \
+            base, request_guest);                                              \
+        REXLOG_INFO("Refii VFS native scheduled request enter " label          \
+                    " lr=0x{:08X} ctr=0x{:08X} r4=0x{:08X} state=[{}]",       \
+                    original_ctx.lr,                                           \
+                    original_ctx.ctr.u32,                                      \
+                    original_ctx.r4.u32,                                       \
+                    before_state);                                             \
+      }                                                                        \
+                                                                               \
+      imp_name(ctx, base);                                                     \
+      NotifyRendererStartupVideoPumpInitIfNeeded(label, base, request_guest);  \
+                                                                               \
+      if (native_startup_audit) {                                              \
+        REXLOG_INFO("Refii VFS native scheduled request exit " label           \
+                    " lr=0x{:08X} result=0x{:08X} before=[{}] after=[{}]",    \
+                    original_ctx.lr,                                           \
+                    ctx.r3.u32,                                                \
+                    before_state,                                              \
+                    log_after_state                                            \
+                        ? refii::vfs::FormatNativeVfsAsyncRequestState(    \
+                              base, request_guest)                             \
+                        : std::string{"<skipped_after_destructor>"});         \
+      }                                                                        \
+      return;                                                                  \
+    }                                                                          \
     const bool trace =                                                         \
         refii::vfs::VfsTracingEnabled() &&                                 \
         tracked_request &&                                                     \
@@ -728,6 +531,7 @@ REX_EXTERN(sub_82377980) {
     }                                                                          \
                                                                                \
     imp_name(ctx, base);                                                       \
+    NotifyRendererStartupVideoPumpInitIfNeeded(label, base, request_guest);    \
                                                                                \
     if (trace) {                                                               \
       REXLOG_INFO("VFS trace native scheduled request exit " label             \
@@ -919,9 +723,49 @@ REFII_NATIVE_VFS_SHARED_REQUEST_TRACE(sub_82C2FC78,
 REFII_NATIVE_VFS_SHARED_REQUEST_TRACE(sub_82EA63A8,
                                       __imp__sub_82EA63A8,
                                       "ScheduledRequest_Slot20_82EA63A8")
-REFII_NATIVE_VFS_SHARED_REQUEST_TRACE(sub_8231A368,
-                                      __imp__sub_8231A368,
-                                      "FrontendRenderRequest_Slot24_8231A368")
+// sub_8231A368 doubles as the title-state input poll (`if (!state[+132] &&
+// !byte_8331960F) route input to the press-start screen at state+140`), so it
+// gets a hand-written hook instead of the shared request-trace macro: when the
+// auto-press testing aid is enabled, emulate the player's Start press exactly
+// once by driving the native press handler (sub_82506BD8 case 0: stop title
+// sounds, set byte_8331960F, kick the frontend) with the same screen object
+// the real input path would use. Lets unattended runs advance into the menu.
+REX_EXTERN(sub_8231A368) {
+  REX_FUNC_PROLOGUE();
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_8231A368);
+
+  if (refii::vfs::AutoPressStartEnabled() && base != nullptr &&
+      refii::vfs::LoadGuestU8(base, 0x8331960Fu) == 0) {
+    const uint32_t state_obj = ctx.r3.u32;
+    const bool state_gate_open =
+        refii::vfs::LooksLikeGuestPointer(state_obj) &&
+        refii::vfs::LoadGuestU32(base, state_obj + 132) == 0;
+    const uint32_t screen_obj =
+        state_gate_open ? refii::vfs::LoadGuestU32(base, state_obj + 140) : 0;
+    if (refii::vfs::LooksLikeGuestPointer(screen_obj) &&
+        refii::vfs::LoadGuestU32(base, screen_obj + 4) == 0) {
+      static std::atomic<bool> auto_press_fired{false};
+      if (!auto_press_fired.exchange(true, std::memory_order_relaxed)) {
+        if (PPCFunc* press = refii::vfs::FindGuestFunction(0x82506BD8u)) {
+          PPCContext press_ctx = ctx;
+          press_ctx.r3.u32 = screen_obj;
+          press_ctx.r4.u32 = 0;
+          press_ctx.r5.u32 = 0;
+          press_ctx.ctr.u32 = 0x82506BD8u;
+          press(press_ctx, base);
+          REXLOG_INFO("Refii VFS auto press-start fired screen=0x{:08X} "
+                      "state=0x{:08X} flag_after=0x{:02X}",
+                      screen_obj,
+                      state_obj,
+                      refii::vfs::LoadGuestU8(base, 0x8331960Fu));
+          return;
+        }
+      }
+    }
+  }
+  __imp__sub_8231A368(ctx, base);
+}
 
 #undef REFII_NATIVE_VFS_SHARED_REQUEST_TRACE
 
@@ -1063,54 +907,6 @@ REX_EXTERN(sub_82378618) {
         refii::vfs::MaybeLogRefiiStartupReadyGateTextureOpenVerdict(
             original_ctx.lr, ui_event_api, base);
         if (refii::vfs::ConsumeDeferredFrontendTextureHashWake()) {
-          const bool suppress_collapsed_hash_wake =
-              mode == "collapsed_descriptor_bundle" &&
-              frontend_trace.any_refii_owned &&
-              frontend_trace.texture_parser_seen &&
-              frontend_trace.followon_frame_list_committed;
-          if (suppress_collapsed_hash_wake) {
-            refii::vfs::RecordRefiiMainMenuBlockerEvent(
-                "deferred_texture_hash_wake_collapsed_augmented",
-                fmt::format("mode={} lr=0x{:08X} summary=[{}]",
-                            mode,
-                            original_ctx.lr,
-                            refii::vfs::
-                                FormatFrontendTextureConsumerTraceForLog(
-                                    frontend_trace)));
-            PPCContext augment_ctx = original_ctx;
-            refii::vfs::RerunKnownRequestManagerHashAugmentation(
-                augment_ctx,
-                base,
-                "FrontendTextureConsumer_DeferredTextureWakeCollapsedParsed",
-                0,
-                "frontend_texture_consumer");
-            refii::vfs::MaybeSignalRefiiFrontendDeferredHashWakeHandoff(
-                original_ctx, base, mode);
-            if (refii::vfs::VfsTracingEnabled() &&
-                refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-                    "FrontendTextureConsumerDeferredTextureWakeAugmented",
-                    16)) {
-              REXLOG_INFO("Refii VFS frontend texture consumer deferred "
-                          "texture hash wake augmented mode={} lr=0x{:08X} "
-                          "reason=collapsed_consumer_already_parsed "
-                          "summary=[{}]",
-                          mode,
-                          original_ctx.lr,
-                          refii::vfs::
-                              FormatFrontendTextureConsumerTraceForLog(
-                                  frontend_trace));
-            }
-            refii::vfs::LogRefiiVfsChainVerdict(
-                "request_manager_hash",
-                static_cast<uint32_t>(original_ctx.lr),
-                "frontend_texture_consumer",
-                "",
-                "",
-                "RefiiRequestManagerHashEntry",
-                "FrontendTextureConsumer_DeferredTextureWake",
-                "Opened",
-                "RequestManager_FindStreamByHashEntry");
-          } else {
           PPCContext augment_ctx = original_ctx;
           refii::vfs::RerunKnownRequestManagerHashAugmentation(
               augment_ctx,
@@ -1118,348 +914,13 @@ REX_EXTERN(sub_82378618) {
               "FrontendTextureConsumer_DeferredTextureWake",
               0,
               "frontend_texture_consumer");
-          }
         }
-        refii::vfs::TryPrimeRefiiPostFrontendGameFacePackage(
-            original_ctx, base, frontend_trace, mode);
-        refii::vfs::MaybeSignalRefiiFrontendDeferredHashWakeHandoff(
-            original_ctx, base, mode);
         refii::vfs::MaybeSignalRefiiPostFrontendConsumerHandoff(
             original_ctx, base, frontend_trace, mode);
       };
 
-  const uint32_t collapsible_bundle_guest =
-      refii::vfs::TryGetCollapsibleRefiiFrontendTextureBundle(base,
-                                                                  original_ctx);
-  if (collapsible_bundle_guest != 0) {
-    PPCContext bundle_ctx = original_ctx;
-    bundle_ctx.r3.u32 = collapsible_bundle_guest;
-    bundle_ctx.lr = refii::vfs::kFrontendTextureConsumerBundleCallLr;
-    if (trace) {
-      REXLOG_INFO("Refii VFS frontend texture consumer collapsed descriptor "
-                  "bundle enter lr=0x{:08X} object=0x{:08X} bundle=0x{:08X} "
-                  "bundle_words={} main_menu=[{}]",
-                  original_ctx.lr,
-                  original_ctx.r3.u32,
-                  collapsible_bundle_guest,
-                  refii::vfs::FormatGuestWordsIfPointer(
-                      base, collapsible_bundle_guest, 28),
-                  refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-    }
-    bool native_bundle_ran = false;
-    PPCContext synthetic_ctx = original_ctx;
-    bool synthetic_descriptors =
-        refii::vfs::TrySynthesizeFrontendTextureDescriptorPhase(
-            synthetic_ctx, base, original_ctx.r3.u32, true, false);
-    if (!synthetic_descriptors) {
-      __imp__sub_826D5E48(bundle_ctx, base);
-      native_bundle_ran = true;
-      synthetic_descriptors =
-          refii::vfs::TrySynthesizeFrontendTextureDescriptorPhase(
-              bundle_ctx, base, original_ctx.r3.u32, true, false);
-    }
-    refii::vfs::RecordFrontendTextureConsumerResourceBoundary(
-        native_bundle_ran ? "sub_82378618_collapsed_descriptor_bundle_native"
-                          : "sub_82378618_collapsed_descriptor_bundle_refii",
-        0,
-        native_bundle_ran ? bundle_ctx.r3.u32 : original_ctx.r3.u32);
-    bool generated_handoff = false;
-    uint32_t generated_handoff_result = 0;
-    if (synthetic_descriptors &&
-        refii::vfs::kRunCollapsedFrontendGeneratedHandoff) {
-      PPCContext handoff_ctx = original_ctx;
-      handoff_ctx.r3.u32 = original_ctx.r3.u32;
-      handoff_ctx.lr = 0x82378DB4u;
-      if (trace) {
-        REXLOG_INFO("Refii VFS frontend texture consumer collapsed generated "
-                    "handoff enter lr=0x{:08X} object=0x{:08X} "
-                    "list_200={} tex_slots_260={} tex_slots_268={} "
-                    "tex_out_280={} main_menu=[{}]",
-                    handoff_ctx.lr,
-                    original_ctx.r3.u32,
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 200, 8),
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 260, 8),
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 268, 8),
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 280, 4),
-                    refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-      }
-      generated_handoff =
-          refii::vfs::TryCollapseFrontendTextureGeneratedHandoff(
-              handoff_ctx,
-              base,
-              false,
-              "sub_82378618_collapsed");
-      generated_handoff_result = handoff_ctx.r3.u32;
-      if (generated_handoff) {
-        refii::vfs::
-            TryRunFrontendTextureConsumerNativeUpdateForPendingVfsDirect(
-                handoff_ctx,
-                base,
-                original_ctx.r3.u32,
-                "sub_82378618_collapsed");
-      }
-      if (trace) {
-        REXLOG_INFO("Refii VFS frontend texture consumer collapsed generated "
-                    "handoff exit lr=0x{:08X} object=0x{:08X} "
-                    "collapsed={} result=0x{:08X} list_200={} "
-                    "tex_slots_260={} tex_slots_268={} tex_out_280={} "
-                    "main_menu=[{}]",
-                    handoff_ctx.lr,
-                    original_ctx.r3.u32,
-                    generated_handoff ? "true" : "false",
-                    generated_handoff_result,
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 200, 8),
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 260, 8),
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 268, 8),
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 280, 4),
-                    refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-      }
-    }
-    else if (synthetic_descriptors) {
-      refii::vfs::RecordRefiiMainMenuBlockerEvent(
-          "frontend_descriptor_collapsed_generated_handoff_skipped",
-          fmt::format("object=0x{:08X} owner_slots=[{}] next={}",
-                      original_ctx.r3.u32,
-                      refii::vfs::FormatFrontendTextureConsumerOwnerSlots(
-                          base, original_ctx.r3.u32),
-                      "ResourceManager_Open_or_DB20"));
-      refii::vfs::LogRefiiVfsChainVerdict(
-          "frontend_texture_consumer",
-          static_cast<uint32_t>(original_ctx.lr),
-          "menu_texture_refii_owned",
-          "",
-          "",
-          "frontend_texture_descriptor_consumer",
-          "sub_82378618_collapsed",
-          "TraceOnce",
-          "generated_handoff_suppressed");
-      if (trace) {
-        REXLOG_INFO("Refii VFS frontend texture consumer collapsed generated "
-                    "handoff skipped lr=0x{:08X} object=0x{:08X} "
-                    "list_200={} tex_slots_260={} tex_slots_268={} "
-                    "tex_out_280={} next={} main_menu=[{}]",
-                    original_ctx.lr,
-                    original_ctx.r3.u32,
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 200, 8),
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 260, 8),
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 268, 8),
-                    refii::vfs::FormatGuestWordsAtOffsetIfPointer(
-                        base, original_ctx.r3.u32, 280, 4),
-                    "ResourceManager_Open_or_DB20",
-                    refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-      }
-    }
-    ctx = original_ctx;
-    ctx.r3.u32 = original_ctx.r3.u32;
-    if (trace) {
-      REXLOG_INFO("Refii VFS frontend texture consumer collapsed descriptor "
-                  "bundle exit lr=0x{:08X} object=0x{:08X} bundle=0x{:08X} "
-                  "bundle_result=0x{:08X} synthetic_descriptors={} "
-                  "native_bundle_ran={} generated_handoff={} "
-                  "handoff_result=0x{:08X} "
-                  "bundle_after={} main_menu=[{}]",
-                  original_ctx.lr,
-                  original_ctx.r3.u32,
-                  collapsible_bundle_guest,
-                  native_bundle_ran ? bundle_ctx.r3.u32 : original_ctx.r3.u32,
-                  synthetic_descriptors ? "true" : "false",
-                  native_bundle_ran ? "true" : "false",
-                  generated_handoff ? "true" : "false",
-                  generated_handoff_result,
-                  refii::vfs::FormatGuestWordsIfPointer(
-                      base, collapsible_bundle_guest, 28),
-                  refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-    }
-    finish_consumer("collapsed_descriptor_bundle",
-                    "FrontendTextureConsumer_82378618_collapsed");
-    return;
-  }
-
   __imp__sub_82378618(ctx, base);
   finish_consumer("native", "FrontendTextureConsumer_82378618");
-}
-
-REX_EXTERN(sub_82379088) {
-  REX_FUNC_PROLOGUE();
-
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82379088);
-
-  const PPCContext original_ctx = ctx;
-  const uint32_t owner_guest = original_ctx.r3.u32;
-  const bool active = refii::vfs::FrontendTextureConsumerTraceActive();
-  const bool collapse_frontend_handoff =
-      active && base != nullptr &&
-      static_cast<uint32_t>(original_ctx.lr) == 0x82378DB4u &&
-      refii::vfs::LooksLikeGuestPointer(owner_guest) &&
-      refii::vfs::LoadGuestU32(base, owner_guest) ==
-          refii::vfs::kFrontendTextureConsumerObjectVTable;
-  if (collapse_frontend_handoff) {
-    refii::vfs::TryCollapseFrontendTextureGeneratedHandoff(
-        ctx,
-        base,
-        true,
-        "sub_82379088_hook");
-    return;
-  }
-
-  __imp__sub_82379088(ctx, base);
-}
-
-REX_EXTERN(sub_826DB598) {
-  REX_FUNC_PROLOGUE();
-
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_826DB598);
-
-  const PPCContext original_ctx = ctx;
-  const bool active = refii::vfs::FrontendTextureConsumerTraceActive();
-  const bool trace =
-      active && refii::vfs::VfsTracingEnabled() &&
-      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "FrontendTextureStaticBridge_826DB598", 4);
-  if (trace) {
-    REXLOG_INFO("VFS trace frontend texture static bridge enter sub_826DB598 "
-                "lr=0x{:08X} args=[{}] main_menu=[{}]",
-                original_ctx.lr,
-                refii::vfs::FormatPostVideoBoundaryArgs(base, original_ctx),
-                refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-  }
-
-  if (active && base != nullptr &&
-      static_cast<uint32_t>(original_ctx.lr) == 0x82378638u) {
-    constexpr uint32_t kBridgeVectorA = 0x8349B4F0u;
-    constexpr uint32_t kBridgeVectorB = 0x8349B500u;
-    constexpr uint32_t kBridgeVectorC = 0x8349B4E0u;
-    if (trace) {
-      REXLOG_INFO(
-          "VFS trace frontend texture static bridge collapsed sub_826DB598 "
-          "lr=0x{:08X} preserving vectors A=[{}] B=[{}] C=[{}]",
-          original_ctx.lr,
-          refii::vfs::FormatGuestWords(base, kBridgeVectorA, 4),
-          refii::vfs::FormatGuestWords(base, kBridgeVectorB, 4),
-          refii::vfs::FormatGuestWords(base, kBridgeVectorC, 4));
-    }
-    refii::vfs::RecordFrontendTextureConsumerResourceBoundary(
-        "sub_826DB598_frontend_static_bridge_collapsed",
-        0,
-        original_ctx.r3.u32);
-    PPCContext synth_ctx = original_ctx;
-    uint32_t synth_owner = 0;
-    bool synth_opened = false;
-    const bool synth_attempted =
-        refii::vfs::TryRunActiveFrontendTextureConsumerSyntheticPhase(
-            synth_ctx, base, &synth_owner, &synth_opened);
-    bool generated_handoff = false;
-    uint32_t generated_handoff_result = 0;
-    if (synth_opened && refii::vfs::kRunCollapsedFrontendGeneratedHandoff &&
-        refii::vfs::LooksLikeGuestPointer(synth_owner)) {
-      PPCContext handoff_ctx = original_ctx;
-      handoff_ctx.r3.u32 = synth_owner;
-      handoff_ctx.lr = 0x82378DB4u;
-      generated_handoff =
-          refii::vfs::TryCollapseFrontendTextureGeneratedHandoff(
-              handoff_ctx,
-              base,
-              true,
-              "sub_826DB598_static_bridge");
-      generated_handoff_result = handoff_ctx.r3.u32;
-      if (generated_handoff) {
-        refii::vfs::
-            TryRunFrontendTextureConsumerNativeUpdateForPendingVfsDirect(
-                handoff_ctx,
-                base,
-                synth_owner,
-                "sub_826DB598_static_bridge");
-      }
-    }
-    if (trace || synth_opened) {
-      REXLOG_INFO("Refii VFS frontend texture static bridge synthetic phase "
-                  "attempted={} opened={} generated_handoff={} "
-                  "handoff_result=0x{:08X} owner=0x{:08X} lr=0x{:08X} "
-                  "owner_slots=[{}] main_menu=[{}]",
-                  synth_attempted ? "true" : "false",
-                  synth_opened ? "true" : "false",
-                  generated_handoff ? "true" : "false",
-                  generated_handoff_result,
-                  synth_owner,
-                  original_ctx.lr,
-                  refii::vfs::FormatFrontendTextureConsumerOwnerSlots(
-                      base, synth_owner),
-                  refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-    }
-    ctx = original_ctx;
-    return;
-  }
-
-  __imp__sub_826DB598(ctx, base);
-
-  if (active) {
-    PPCContext synth_ctx = original_ctx;
-    uint32_t synth_owner = 0;
-    bool synth_opened = false;
-    const bool synth_attempted =
-        refii::vfs::TryRunActiveFrontendTextureConsumerSyntheticPhase(
-            synth_ctx, base, &synth_owner, &synth_opened);
-    bool generated_handoff = false;
-    uint32_t generated_handoff_result = 0;
-    if (synth_opened && refii::vfs::kRunCollapsedFrontendGeneratedHandoff &&
-        refii::vfs::LooksLikeGuestPointer(synth_owner)) {
-      PPCContext handoff_ctx = original_ctx;
-      handoff_ctx.r3.u32 = synth_owner;
-      handoff_ctx.lr = 0x82378DB4u;
-      generated_handoff =
-          refii::vfs::TryCollapseFrontendTextureGeneratedHandoff(
-              handoff_ctx,
-              base,
-              true,
-              "sub_826DB598_static_bridge_after_native");
-      generated_handoff_result = handoff_ctx.r3.u32;
-      if (generated_handoff) {
-        refii::vfs::
-            TryRunFrontendTextureConsumerNativeUpdateForPendingVfsDirect(
-                handoff_ctx,
-                base,
-                synth_owner,
-                "sub_826DB598_static_bridge_after_native");
-      }
-    }
-    if (trace || synth_opened) {
-      REXLOG_INFO("Refii VFS frontend texture static bridge synthetic phase "
-                  "attempted={} opened={} generated_handoff={} "
-                  "handoff_result=0x{:08X} owner=0x{:08X} lr=0x{:08X} "
-                  "owner_slots=[{}] main_menu=[{}]",
-                  synth_attempted ? "true" : "false",
-                  synth_opened ? "true" : "false",
-                  generated_handoff ? "true" : "false",
-                  generated_handoff_result,
-                  synth_owner,
-                  original_ctx.lr,
-                  refii::vfs::FormatFrontendTextureConsumerOwnerSlots(
-                      base, synth_owner),
-                  refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-    }
-    refii::vfs::RecordFrontendTextureConsumerResourceBoundary(
-        "sub_826DB598_frontend_static_bridge",
-        0,
-        ctx.r3.u32);
-  }
-  if (trace) {
-    REXLOG_INFO("VFS trace frontend texture static bridge exit sub_826DB598 "
-                "lr=0x{:08X} result=0x{:08X} main_menu=[{}]",
-                original_ctx.lr,
-                ctx.r3.u32,
-                refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-  }
 }
 
 REX_EXTERN(sub_826D5E48) {
@@ -1984,9 +1445,204 @@ REX_EXTERN(sub_82378F00) {
 REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
   REX_FUNC_PROLOGUE();
 
+  // SPIN PROBE (temporary, 2026-07-27). We are ~4 fps with the GPU doing
+  // 0.277 ms/frame and the present pump BLOCKED on the guest thread, hitting a
+  // 250 ms heartbeat timeout 111 times in 120 samples. Four attempts to find
+  // the cost in our own host code failed.
+  //
+  // IDA says guest Present (0x82B6F1D0) contains a two-frame throttle at
+  // ~0x82B6F39C-0x82B6F3F8 that spins on SwitchToThread while
+  // (submitted - completed) > 1. `submitted` is bumped by Present itself;
+  // `completed` advances ONLY via a GPU completion callback that our port never
+  // invokes (we never write 0x83491DA8 and do not emulate D3D_InsertCallback).
+  // If that is what is happening, the guest is spinning here and no amount of
+  // host-side optimisation will ever help.
+  //
+  // Counting by CALLER (lr) rather than in total, because "SwitchToThread is
+  // hot" alone would not distinguish the present throttle from ordinary thread
+  // yielding elsewhere in the title.
+  {
+    static std::atomic<uint64_t> total{0};
+    static std::atomic<uint64_t> from_present_throttle{0};
+    const uint32_t lr = ctx.lr;
+    const bool present_throttle = lr >= 0x82B6F380u && lr <= 0x82B6F410u;
+    if (present_throttle) {
+      from_present_throttle.fetch_add(1, std::memory_order_relaxed);
+    }
+    const uint64_t n = total.fetch_add(1, std::memory_order_relaxed) + 1;
+    if ((n % 100000ull) == 0ull) {
+      REXLOG_INFO("Refii guest SwitchToThread spin probe total={} "
+                  "from_present_throttle={} last_lr=0x{:08X}",
+                  static_cast<unsigned long long>(n),
+                  static_cast<unsigned long long>(
+                      from_present_throttle.load(std::memory_order_relaxed)),
+                  lr);
+      // Pacing-globals check + heal (IDA-proven, 2026-07-29). The drain
+      // spin's overdue test and its escape budget both divide by
+      // flt_8336035C (XVIDEO_MODE.RefreshRate) and multiply by
+      // dword_83360358 (PresentationInterval). Their ONLY writer is guest
+      // CreateDevice (sub_82B6F6C0 @0x82b6f8f0/0x82b6f90c), which runs only
+      // when the front-buffer texture creation in
+      // Render_InitPresentationAndFirstSwap succeeds — a region our port is
+      // suspected to skip. RefreshRate==0.0 makes the overdue threshold
+      // +inf AND the budget +inf simultaneously: the exact unbounded spin
+      // measured in runs 437/439 (13.9M-51.8M yields). Diagnose from live
+      // guest memory and, if poisoned, write what the guest's own code
+      // would have written (values from the same VdQueryVideoMode the
+      // guest copy reads). Idempotent: if CreateDevice later runs, it
+      // rewrites the same values.
+      {
+        constexpr uint32_t kGuestRefreshRateFloat = 0x8336035Cu;
+        constexpr uint32_t kGuestPresentInterval = 0x83360358u;
+        constexpr uint32_t kGuestDisplayPairW = 0x834A5FE8u;
+        const uint32_t refresh_bits =
+            refii::vfs::LoadGuestU32(base, kGuestRefreshRateFloat);
+        static std::atomic<bool> pacing_globals_logged{false};
+        static std::atomic<bool> pacing_globals_healed{false};
+        if (refresh_bits == 0u &&
+            !pacing_globals_healed.exchange(true, std::memory_order_relaxed)) {
+          rex::system::X_VIDEO_MODE mode;
+          rex::kernel::xboxkrnl::VdQueryVideoMode(&mode);
+          const float refresh = mode.refresh_rate;
+          refii::vfs::StoreGuestU32(base, kGuestRefreshRateFloat,
+                                    std::bit_cast<uint32_t>(refresh));
+          if (refii::vfs::LoadGuestU32(base, kGuestPresentInterval) == 0u) {
+            refii::vfs::StoreGuestU32(base, kGuestPresentInterval, 1u);
+          }
+          REXLOG_INFO(
+              "Refii pacing globals HEALED refresh={} interval={} "
+              "display_pair=0x{:08X}/0x{:08X} (guest CreateDevice stores "
+              "never ran — sub_82B6F6C0 skipped)",
+              refresh,
+              refii::vfs::LoadGuestU32(base, kGuestPresentInterval),
+              refii::vfs::LoadGuestU32(base, kGuestDisplayPairW),
+              refii::vfs::LoadGuestU32(base, kGuestDisplayPairW + 4u));
+        } else if (refresh_bits != 0u &&
+                   !pacing_globals_logged.exchange(
+                       true, std::memory_order_relaxed)) {
+          REXLOG_INFO(
+              "Refii pacing globals OK refresh_bits=0x{:08X} ({}) "
+              "interval={} display_pair=0x{:08X}/0x{:08X}",
+              refresh_bits, std::bit_cast<float>(refresh_bits),
+              refii::vfs::LoadGuestU32(base, kGuestPresentInterval),
+              refii::vfs::LoadGuestU32(base, kGuestDisplayPairW),
+              refii::vfs::LoadGuestU32(base, kGuestDisplayPairW + 4u));
+        }
+      }
+      // Slot autopsy for the stream-drain spin (0x822DFF2C, inside
+      // sub_822DFE08): IDA-proven r31 = the command-stream slot being
+      // drained. The spin ends only when the OWNING guest thread (tid at
+      // slot+100) publishes its shared WPTR (slot[15], guarded by the CS at
+      // slot+72). Run 437 spent 51s here hostaging the GPU-access lock and
+      // the loading-screen fence (black logo videos) — this names the
+      // parked producer thread so we can see what OUR runtime has it
+      // blocked in. Fields: [1]=buffer, [3]=read cursor, [4]=WPTR snapshot,
+      // [15]=shared WPTR.
+      if (lr == 0x822DFF2Cu) {
+        const uint32_t slot = ctx.r31.u32;
+        if (refii::vfs::LooksLikeGuestPointer(slot)) {
+          const uint32_t owner_tid =
+              refii::vfs::LoadGuestU32(base, slot + 100u);
+          const uint32_t read_cursor =
+              refii::vfs::LoadGuestU32(base, slot + 12u);
+          const uint32_t wptr_snapshot =
+              refii::vfs::LoadGuestU32(base, slot + 16u);
+          const uint32_t shared_wptr =
+              refii::vfs::LoadGuestU32(base, slot + 60u);
+          // Autopsy of the PARKED owner: its most recent hooked guest symbol
+          // and how long ago that hook entered (registry written on every
+          // hook enter; see NoteRendererHookThreadTelemetry). A stale
+          // symbol + large us_since pins where tid parked; "none" means the
+          // owner never passed through a renderer hook.
+          const char* owner_last_hook = "none";
+          uint64_t owner_hook_age_us = 0;
+          refii::renderer::QueryRendererHookThreadTelemetry(
+              owner_tid, &owner_last_hook, &owner_hook_age_us);
+          REXLOG_INFO(
+              "Refii guest stream-drain spin slot=0x{:08X} owner_tid=0x{:08X} "
+              "read=0x{:08X} wptr_snap=0x{:08X} shared_wptr=0x{:08X} "
+              "owner_last_hook={} owner_hook_age_us={}",
+              slot, owner_tid, read_cursor, wptr_snapshot, shared_wptr,
+              owner_last_hook, owner_hook_age_us);
+        }
+      }
+    }
+  }
+
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82CC38E8);
 
   const PPCContext original_ctx = ctx;
+  if (original_ctx.lr == 0x82377D40u) {
+    // sub_82377A00 calls SwitchToThread immediately after publishing a newly
+    // constructed startup-frame owner into global_owner+4.  Keep this probe at
+    // that native boundary so an address-reused second Bink can be
+    // distinguished from an owner that was never published or was cleared.
+    const uint32_t root = refii::vfs::LoadGuestU32(base, 0x83496B0Cu);
+    const uint32_t root_state =
+        refii::vfs::LooksLikeGuestPointer(root)
+            ? refii::vfs::LoadGuestU32(base, root + 8u)
+            : 0u;
+    const uint32_t owner =
+        refii::vfs::LooksLikeGuestPointer(root_state)
+            ? refii::vfs::LoadGuestU32(base, root_state + 40u)
+            : 0u;
+    const uint32_t frame_object =
+        refii::vfs::LooksLikeGuestPointer(owner)
+            ? refii::vfs::LoadGuestU32(base, owner + 4u)
+            : 0u;
+    const uint32_t movie =
+        refii::vfs::LooksLikeGuestPointer(frame_object)
+            ? refii::vfs::LoadGuestU32(base, frame_object + 76u)
+            : 0u;
+    static std::atomic<uint32_t> owner_publish_logs{0};
+    static std::atomic<uint32_t> last_published_frame_object{0};
+    static std::atomic<uint32_t> last_published_movie_total{0};
+    static std::atomic<uint32_t> last_published_owner_flags{0};
+    const uint32_t count =
+        owner_publish_logs.fetch_add(1, std::memory_order_relaxed) + 1u;
+    const uint32_t previous_frame_object =
+        last_published_frame_object.exchange(frame_object,
+                                             std::memory_order_relaxed);
+    const uint32_t movie_total =
+        refii::vfs::LooksLikeGuestPointer(movie)
+            ? refii::vfs::LoadGuestU32(base, movie + 8u)
+            : 0u;
+    const uint32_t owner_flags =
+        refii::vfs::LooksLikeGuestPointer(frame_object)
+            ? (static_cast<uint32_t>(
+                   refii::vfs::LoadGuestU8(base, frame_object + 233u)) |
+               (static_cast<uint32_t>(
+                    refii::vfs::LoadGuestU8(base, frame_object + 244u))
+                << 8u))
+            : 0u;
+    const uint32_t previous_movie_total =
+        last_published_movie_total.exchange(movie_total,
+                                            std::memory_order_relaxed);
+    const uint32_t previous_owner_flags =
+        last_published_owner_flags.exchange(owner_flags,
+                                            std::memory_order_relaxed);
+    if (count <= 8u || previous_frame_object != frame_object ||
+        previous_movie_total != movie_total ||
+        previous_owner_flags != owner_flags) {
+      REXLOG_INFO(
+          "Refii VFS startup-video native owner publish boundary #{} "
+          "root=0x{:08X} state=0x{:08X} owner=0x{:08X} previous=0x{:08X} "
+          "frame_object=0x{:08X} finished={} failed={} movie=0x{:08X} "
+          "frame={}/{} previous_total={} previous_flags=0x{:04X}",
+          count, root, root_state, owner, previous_frame_object, frame_object,
+          refii::vfs::LooksLikeGuestPointer(frame_object)
+              ? refii::vfs::LoadGuestU8(base, frame_object + 233u)
+              : 0u,
+          refii::vfs::LooksLikeGuestPointer(frame_object)
+              ? refii::vfs::LoadGuestU8(base, frame_object + 244u)
+              : 0u,
+          movie,
+          refii::vfs::LooksLikeGuestPointer(movie)
+              ? refii::vfs::LoadGuestU32(base, movie + 12u)
+              : 0u,
+          movie_total, previous_movie_total, previous_owner_flags);
+    }
+  }
   const bool trace = refii::vfs::ShouldTraceStartupVideoLoopProbe(
       "StartupVideoLoop_Pump_82CC38E8", original_ctx.lr, 12);
   const auto started_at = std::chrono::steady_clock::now();
@@ -2077,43 +1733,6 @@ REX_EXTERN(sub_822F3B20) {
                   ctx.r3.u32,
                   refii::vfs::FormatRefiiPostVideoHandoffTraceForLog());
     }
-  } else if (native_result == 0) {
-    int64_t false_age_ms = -1;
-    if (refii::vfs::RefiiStartupReadyGateFalseLongEnoughForDebugAccelerator(
-            &false_age_ms)) {
-      uint32_t pending_before = 0;
-      if (original_ctx.r3.u32 >= 0x10000) {
-        pending_before =
-            refii::vfs::LoadGuestU32(base, original_ctx.r3.u32 + 52);
-        refii::vfs::StoreGuestU8(base, original_ctx.r3.u32 + 5, 1);
-        if (pending_before != 0) {
-          refii::vfs::StoreGuestU32(base, original_ctx.r3.u32 + 52, 0);
-        }
-      }
-      ctx.r3.u32 = 1;
-      constexpr const char* ready_patch_reason =
-          "ready_poll_refii_frontend_texture_ready";
-      refii::vfs::RecordRefiiStartupReadyGateObjectPatch(
-          original_ctx.r3.u32, ready_patch_reason);
-      refii::vfs::MarkRefiiStartupReadyGateDebugAcceleratorEmitted();
-      refii::vfs::RecordRefiiStartupReadyPoll(
-          base, original_ctx.r3.u32, original_ctx.lr, ctx.r3.u32);
-      if (refii::vfs::VfsTracingEnabled()) {
-        REXLOG_INFO("Refii VFS startup ready-gate VFS completion bridge "
-                    "lr=0x{:08X} object=0x{:08X} reason={} false_age_ms={} "
-                    "pending_before=0x{:08X} native_result=0x{:08X} "
-                    "result=0x{:08X} handoff=[{}] main_menu=[{}]",
-                    original_ctx.lr,
-                    original_ctx.r3.u32,
-                    ready_patch_reason,
-                    false_age_ms,
-                    pending_before,
-                    native_result,
-                    ctx.r3.u32,
-                    refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                    refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-      }
-    }
   }
 
   if (trace) {
@@ -2156,7 +1775,15 @@ REX_EXTERN(rex_Sleep) {
                 refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
   }
 
+  if (original_ctx.lr == 0x8222A680u) {
+    refii::renderer::RepairFableSceneStreamPublishHandoffForWait(
+        "sub_8222A5D8_sleep", base);
+  }
   __imp__rex_Sleep(ctx, base);
+  if (original_ctx.lr == 0x8222A680u) {
+    refii::renderer::RepairFableSceneStreamPublishHandoffForWait(
+        "sub_8222A5D8_sleep_exit", base);
+  }
   refii::vfs::MaybeLogRefiiStartupVideoReadyNoFinalizerBlocker(
       original_ctx.lr, "StartupVideoLoop_Sleep", base);
   if (const uint32_t update_guest =
@@ -2165,9 +1792,6 @@ REX_EXTERN(rex_Sleep) {
     refii::vfs::RecordRefiiStartupUpdateSnapshot(
         base, update_guest, original_ctx.lr, ctx.r3.u32);
   }
-  refii::vfs::MaybeApplyRefiiVfsStartupHandoffReadyPatch(
-      base, original_ctx.lr, "StartupVideoLoop_Sleep");
-
   if (trace) {
     REXLOG_INFO("VFS trace startup video loop sleep exit rex_Sleep "
                 "lr=0x{:08X} millis={} result=0x{:08X} handoff=[{}] "
@@ -2205,6 +1829,20 @@ REX_EXTERN(sub_821E2C08) {
                 refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
   }
 
+  // IDA: this callsite only emits the legacy D3D command-buffer preamble for
+  // sub_82389210.  Plume owns the startup Bink draw and must not advance that
+  // legacy ring; doing so once per movie frame eventually faults the native
+  // owner asynchronously.  Decode, BinkWait, frame advance, and owner
+  // lifecycle remain native.
+  const bool plume_owns_startup_bink_draw =
+      original_ctx.lr == 0x8238925Cu &&
+      refii::renderer::PlumeRendererBackendEnabled() &&
+      refii::renderer::FableStartupVideoPumpActive();
+  if (plume_owns_startup_bink_draw) {
+    ctx.r3 = original_ctx.r3;
+    return;
+  }
+
   __imp__sub_821E2C08(ctx, base);
 
   if (trace) {
@@ -2213,57 +1851,6 @@ REX_EXTERN(sub_821E2C08) {
             std::chrono::steady_clock::now() - started_at)
             .count();
     REXLOG_INFO("VFS trace post-video frame render-prep exit sub_821E2C08 "
-                "lr=0x{:08X} result=0x{:08X} elapsed_ms={} args_after=[{}] "
-                "chain_after=[{}] handoff=[{}] main_menu=[{}]",
-                original_ctx.lr,
-                ctx.r3.u32,
-                elapsed_ms,
-                refii::vfs::FormatPostVideoBoundaryArgs(base, ctx),
-                refii::vfs::FormatCurrentPostVideoFrameChainState(base),
-                refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-  }
-}
-
-REX_EXTERN(sub_82A41F10) {
-  REX_FUNC_PROLOGUE();
-
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82A41F10);
-
-  const PPCContext original_ctx = ctx;
-  const bool trace =
-      refii::vfs::kTraceNonVfsBootFrameProbes &&
-      refii::vfs::VfsTracingEnabled() &&
-      original_ctx.lr == 0x82389274 &&
-      (refii::vfs::RefiiStartupVideosReadyForMenuHandoff() ||
-       refii::vfs::RefiiMainMenuTraceNeedsFrontendHandoff()) &&
-      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "PostVideoFrame_RenderQueue_82A41F10", 12);
-  const auto started_at = std::chrono::steady_clock::now();
-  if (trace) {
-    REXLOG_INFO("VFS trace post-video frame render-queue enter sub_82A41F10 "
-                "lr=0x{:08X} args=[{}] chain=[{}] handoff=[{}] main_menu=[{}]",
-                original_ctx.lr,
-                refii::vfs::FormatPostVideoBoundaryArgs(base, original_ctx),
-                refii::vfs::FormatCurrentPostVideoFrameChainState(base),
-                refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-  }
-
-  __imp__sub_82A41F10(ctx, base);
-
-  if (trace) {
-    const auto elapsed_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - started_at)
-            .count();
-    refii::vfs::RecordRefiiPostVideoUiEvent("PostVideoFrame_82A41F10",
-                                                original_ctx.lr,
-                                                ctx.r3.u32,
-                                                original_ctx.r3.u32,
-                                                original_ctx.r4.u32,
-                                                original_ctx.r5.u32);
-    REXLOG_INFO("VFS trace post-video frame render-queue exit sub_82A41F10 "
                 "lr=0x{:08X} result=0x{:08X} elapsed_ms={} args_after=[{}] "
                 "chain_after=[{}] handoff=[{}] main_menu=[{}]",
                 original_ctx.lr,
@@ -2335,301 +1922,6 @@ REX_EXTERN(sub_82377DC8) {
       original_ctx.lr, "StartupVideoCompletionGate_82377DC8", base);
   refii::vfs::MaybeLogRefiiStartupReadyGateTextureOpenVerdict(
       original_ctx.lr, "StartupVideoCompletionGate_82377DC8", base);
-}
-
-#define REFII_BIK_OBJECT_METHOD_TRACE(function_name, imp_name, label)        \
-  REX_EXTERN(function_name) {                                             \
-    REX_FUNC_PROLOGUE();                                                     \
-    REFII_VFS_NATIVE_PASSTHROUGH(function_name);                             \
-                                                                             \
-    const PPCContext original_ctx = ctx;                                     \
-    const uint32_t object_guest = original_ctx.r3.u32;                       \
-    const uint32_t stream_before =                                           \
-        object_guest != 0 ? refii::vfs::LoadGuestU32(base, object_guest + 8) \
-                          : 0;                                               \
-    const bool trace =                                                       \
-        refii::vfs::ShouldTraceBikConsumerHandoffProbe(                  \
-            base, object_guest, stream_before, {}, label, 6);                \
-    if (trace) {                                                             \
-      REXLOG_INFO("VFS trace BIK object method enter " label                 \
-                  " lr=0x{:08X} ctr=0x{:08X} args=[{}] {}",                 \
-                  original_ctx.lr,                                           \
-                  original_ctx.ctr.u32,                                      \
-                  refii::vfs::FormatPostVideoBoundaryArgs(base,          \
-                                                              original_ctx),  \
-                  refii::vfs::FormatBikObjectVirtualProbe(base,          \
-                                                              object_guest)); \
-    }                                                                        \
-                                                                             \
-    imp_name(ctx, base);                                                     \
-                                                                             \
-    const uint32_t stream_after =                                            \
-        object_guest != 0 ? refii::vfs::LoadGuestU32(base, object_guest + 8) \
-                          : 0;                                               \
-    refii::vfs::RecordRefiiStartupVideoObjectHandoff(base,               \
-                                                         label,              \
-                                                         original_ctx.lr,    \
-                                                         object_guest,       \
-                                                         stream_before,      \
-                                                         stream_after,       \
-                                                         ctx.r3.u32);        \
-    if (trace) {                                                             \
-      REXLOG_INFO("VFS trace BIK object method exit " label                  \
-                  " lr=0x{:08X} result=0x{:08X} stream=0x{:08X}->0x{:08X} " \
-                  "args_after=[{}] {}",                                     \
-                  original_ctx.lr,                                           \
-                  ctx.r3.u32,                                                \
-                  stream_before,                                             \
-                  stream_after,                                              \
-                  refii::vfs::FormatPostVideoBoundaryArgs(base, ctx),    \
-                  refii::vfs::FormatBikObjectVirtualProbe(base,          \
-                                                              object_guest)); \
-    }                                                                        \
-  }
-
-REFII_BIK_OBJECT_METHOD_TRACE(sub_82C6E308,
-                              __imp__sub_82C6E308,
-                              "BIKObject_Method_82C6E308")
-REFII_BIK_OBJECT_METHOD_TRACE(sub_82C6E888,
-                              __imp__sub_82C6E888,
-                              "BIKObject_ReleaseStream_82C6E888")
-REFII_BIK_OBJECT_METHOD_TRACE(sub_82C6E978,
-                              __imp__sub_82C6E978,
-                              "BIKObject_SeekOrRead_82C6E978")
-REFII_BIK_OBJECT_METHOD_TRACE(sub_82C6E9F0,
-                              __imp__sub_82C6E9F0,
-                              "BIKObject_SetOffset_82C6E9F0")
-REFII_BIK_OBJECT_METHOD_TRACE(sub_82C6EA08,
-                              __imp__sub_82C6EA08,
-                              "BIKObject_AddOffset_82C6EA08")
-REFII_BIK_OBJECT_METHOD_TRACE(sub_82C6EA28,
-                              __imp__sub_82C6EA28,
-                              "BIKObject_GetOffset_82C6EA28")
-
-#undef REFII_BIK_OBJECT_METHOD_TRACE
-
-REX_EXTERN(sub_82C6F870) {
-  REX_FUNC_PROLOGUE();
-
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6F870);
-
-  const PPCContext original_ctx = ctx;
-  const uint32_t object_guest = original_ctx.r3.u32;
-  const std::string requested_name =
-      ResolveSetupUiStartupBikName(base, original_ctx, original_ctx.r4.u32);
-  const bool startup_bik = refii::vfs::IsStartupBikAssetName(requested_name);
-  if (refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "BikObjectCtorCompactEnter", 16)) {
-    REXLOG_INFO("Refii VFS BIK object ctor enter "
-                "lr=0x{:08X} requested={} object=0x{:08X} "
-                "name_obj=0x{:08X} mode=0x{:08X} flags=0x{:08X} "
-                "startup_bik={}",
-                original_ctx.lr,
-                requested_name.empty() ? "unknown" : requested_name,
-                object_guest,
-                original_ctx.r4.u32,
-                original_ctx.r5.u32,
-                original_ctx.r6.u32,
-                startup_bik);
-  }
-  if (startup_bik &&
-      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "StartupBikObjectCtorCompactEnter", 8)) {
-    REXLOG_INFO("Refii VFS startup BIK object ctor enter "
-                "lr=0x{:08X} requested={} object=0x{:08X} "
-                "mode=0x{:08X} flags=0x{:08X}",
-                original_ctx.lr,
-                requested_name.empty() ? "unknown" : requested_name,
-                object_guest,
-                original_ctx.r5.u32,
-                original_ctx.r6.u32);
-  }
-
-  __imp__sub_82C6F870(ctx, base);
-
-  const uint32_t stream_after =
-      object_guest != 0 ? refii::vfs::LoadGuestU32(base, object_guest + 8)
-                        : 0;
-  if (refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "BikObjectCtorCompactExit", 16)) {
-    REXLOG_INFO("Refii VFS BIK object ctor exit "
-                "lr=0x{:08X} result=0x{:08X} requested={} object=0x{:08X} "
-                "stream_after=0x{:08X} startup_bik={}",
-                original_ctx.lr,
-                ctx.r3.u32,
-                requested_name.empty() ? "unknown" : requested_name,
-                object_guest,
-                stream_after,
-                startup_bik);
-  }
-  if (startup_bik &&
-      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "StartupBikObjectCtorCompactExit", 8)) {
-    REXLOG_INFO("Refii VFS startup BIK object ctor exit "
-                "lr=0x{:08X} result=0x{:08X} requested={} object=0x{:08X} "
-                "stream_after=0x{:08X}",
-                original_ctx.lr,
-                ctx.r3.u32,
-                requested_name.empty() ? "unknown" : requested_name,
-                object_guest,
-                stream_after);
-  }
-}
-
-REX_EXTERN(sub_82C6F2A8) {
-  REX_FUNC_PROLOGUE();
-
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6F2A8);
-
-  const PPCContext original_ctx = ctx;
-  const uint32_t object_guest = original_ctx.r3.u32;
-  const uint32_t stream_before =
-      object_guest != 0 ? refii::vfs::LoadGuestU32(base, object_guest + 8)
-                        : 0;
-  const std::string requested_name =
-      refii::vfs::ReadStartupBikRequestName(base, original_ctx.r4.u32);
-  const bool trace = refii::vfs::ShouldTraceBikConsumerHandoffProbe(
-      base,
-      object_guest,
-      stream_before,
-      requested_name,
-      "BIKObject_Open_82C6F2A8",
-      8);
-  if (refii::vfs::IsStartupBikAssetName(requested_name) &&
-      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "StartupBikObjectOpenCompactEnter", 8)) {
-    REXLOG_INFO("Refii VFS startup BIK object open enter "
-                "lr=0x{:08X} requested={} object=0x{:08X} "
-                "stream_before=0x{:08X} mode=0x{:08X} flags=0x{:08X}",
-                original_ctx.lr,
-                requested_name.empty() ? "unknown" : requested_name,
-                object_guest,
-                stream_before,
-                original_ctx.r5.u32,
-                original_ctx.r6.u32);
-  }
-  if (trace) {
-    REXLOG_INFO("VFS trace BIK object open enter sub_82C6F2A8 "
-                "lr=0x{:08X} ctr=0x{:08X} requested={} mode=0x{:08X} "
-                "flags=0x{:08X} object=0x{:08X} stream_before=0x{:08X} "
-                "object_state=[{}] stream_before_shape=[{}] handoff=[{}]",
-                original_ctx.lr,
-                original_ctx.ctr.u32,
-                requested_name.empty() ? "unknown" : requested_name,
-                original_ctx.r5.u32,
-                original_ctx.r6.u32,
-                object_guest,
-                stream_before,
-                refii::vfs::FormatBikObjectVirtualProbe(base, object_guest),
-                refii::vfs::FormatBikPpcStreamSummary(base, stream_before),
-                refii::vfs::FormatRefiiPostVideoHandoffTraceForLog());
-  }
-
-  __imp__sub_82C6F2A8(ctx, base);
-
-  const uint32_t stream_after =
-      object_guest != 0 ? refii::vfs::LoadGuestU32(base, object_guest + 8)
-                        : 0;
-  const bool trace_after =
-      trace || refii::vfs::ShouldTraceBikConsumerHandoffProbe(
-                   base,
-                   object_guest,
-                   stream_after,
-                   requested_name,
-                   "BIKObject_Open_82C6F2A8_exit",
-                   8);
-  refii::vfs::RecordRefiiStartupVideoObjectHandoff(
-      base,
-      "BIKObject_Open_82C6F2A8",
-      original_ctx.lr,
-      object_guest,
-      stream_before,
-      stream_after,
-      ctx.r3.u32,
-      requested_name);
-  if (refii::vfs::IsStartupBikAssetName(requested_name) &&
-      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "StartupBikObjectOpenCompact", 8)) {
-    REXLOG_INFO("Refii VFS startup BIK object open "
-                "lr=0x{:08X} result=0x{:08X} requested={} object=0x{:08X} "
-                "stream=0x{:08X}->0x{:08X}",
-                original_ctx.lr,
-                ctx.r3.u32,
-                requested_name.empty() ? "unknown" : requested_name,
-                object_guest,
-                stream_before,
-                stream_after);
-  }
-  if (trace_after) {
-    REXLOG_INFO("VFS trace BIK object open exit sub_82C6F2A8 "
-                "lr=0x{:08X} result=0x{:08X} requested={} object=0x{:08X} "
-                "stream=0x{:08X}->0x{:08X} object_state=[{}] "
-                "stream_after_shape=[{}] handoff=[{}]",
-                original_ctx.lr,
-                ctx.r3.u32,
-                requested_name.empty() ? "unknown" : requested_name,
-                object_guest,
-                stream_before,
-                stream_after,
-                refii::vfs::FormatBikObjectVirtualProbe(base, object_guest),
-                refii::vfs::FormatBikBufferedNativeShape(base, stream_after),
-                refii::vfs::FormatRefiiPostVideoHandoffTraceForLog());
-  }
-}
-
-REX_EXTERN(sub_82C6EF70) {
-  REX_FUNC_PROLOGUE();
-
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6EF70);
-
-  const PPCContext original_ctx = ctx;
-  const uint32_t object_guest = original_ctx.r3.u32;
-  const bool trace = refii::vfs::ShouldTraceBikObjectVirtualProbe(
-      base, object_guest, "BIKObject_Finalizer_82C6EF70", 6);
-  if (trace) {
-    REXLOG_INFO("VFS trace BIK object finalizer enter lr=0x{:08X} ctr=0x{:08X} "
-                "args=[{}] {}",
-                original_ctx.lr,
-                original_ctx.ctr.u32,
-                refii::vfs::FormatPostVideoBoundaryArgs(base, original_ctx),
-                refii::vfs::FormatBikObjectVirtualProbe(base, object_guest));
-  }
-
-  __imp__sub_82C6EF70(ctx, base);
-  refii::vfs::RecordRefiiStartupVideoFinalizer(
-      base, object_guest, ctx.r3.u32);
-
-  if (refii::vfs::VfsTracingEnabled() &&
-      refii::vfs::RefiiIsTrackedStartupVideoObject(object_guest) &&
-      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "BIKObject_Finalizer_82C6EF70_compact", 8)) {
-    REXLOG_INFO("Refii VFS BIK object finalizer compact "
-                "lr=0x{:08X} object=0x{:08X} result=0x{:08X} "
-                "object_state=[{}]",
-                original_ctx.lr,
-                object_guest,
-                ctx.r3.u32,
-                refii::vfs::FormatBikObjectVirtualProbe(base, object_guest));
-  }
-
-  if (trace && refii::vfs::RefiiIsTrackedStartupVideoObject(object_guest)) {
-    refii::vfs::RecordRefiiPostVideoUiEvent("BIKObject_Finalizer_82C6EF70",
-                                                original_ctx.lr,
-                                                ctx.r3.u32,
-                                                original_ctx.r3.u32,
-                                                original_ctx.r4.u32,
-                                                original_ctx.r5.u32);
-  }
-  if (trace) {
-    REXLOG_INFO("VFS trace BIK object finalizer exit lr=0x{:08X} result=0x{:08X} "
-                "args_after=[{}] {}",
-                original_ctx.lr,
-                ctx.r3.u32,
-                refii::vfs::FormatPostVideoBoundaryArgs(base, ctx),
-                refii::vfs::FormatBikObjectVirtualProbe(base, object_guest));
-  }
-  refii::vfs::MaybeLogRefiiPostVideoHashOnlyBlocker(
-      original_ctx.lr, "BIKObject_Finalizer_82C6EF70", base);
 }
 
 REX_EXTERN(sub_82B49028) {
@@ -3015,6 +2307,178 @@ REX_EXTERN(sub_82B49D80) {
   }
 }
 
+namespace {
+
+// ---- lhRenderer suspend/resume handshake emulation (2026-08-02) ----------
+// Save-load black screen root cause (runs 516/517/518). Ground truth from
+// generated/refii_recomp.19.cpp: the "3D Engine" render-thread controller
+// object obj carries flags +140 running / +148 stop / +192 suspend-request /
+// +193 suspend-ack, and THREE auto-reset events signalled with PulseEvent
+// (sub_822C9388), each waited INFINITE via sub_82B4F400(event_obj = obj +
+// embed_offset, -1, 0) where the OS handle lives at event_obj+128:
+//   A embed +196 (handle +324) suspend ack — waited at lr 0x823889FC
+//     (sub_823889A8), pulsed at lr 0x823882B8 AFTER the render thread stores
+//     +192=0, +193=1;
+//   B embed +328 (handle +456) resume kick — waited at lr 0x823882E0
+//     (rex_lhRenderer_ThreadFunc), pulsed at lr 0x82388A40 (sub_82388A18);
+//     the only other +456 xref is CloseHandle in the dtor sub_82388720;
+//   C embed +460 (handle +588) resume ack — waited at lr 0x82388A6C
+//     (sub_82388A18), pulsed at lr 0x82388308 AFTER the render thread clears
+//     +193.
+// Every waiter releases the controller CS BEFORE entering its wait, and
+// PulseEvent releases only threads ALREADY waiting — a pulse landing in that
+// gap is silently discarded and, the waits being INFINITE, both the loading
+// thread and the render thread park forever (run-518 watchdog autopsy: the
+// pair parked together at stall onset). The loading screen is drawn by the
+// LOADING thread while the render thread is suspended, so the result is a
+// permanent black screen.
+//
+// Fix shape (waiter-side, guest state untouched): the FLAGS are the
+// authoritative handshake state; the pulses are only wakeups. Each of the
+// three waits runs in bounded slices through __imp__sub_82B4F400 (so a
+// DELIVERED pulse still wakes it immediately) and additionally completes on
+// its condition:
+//   A completes when +193 == 1 (stored before the pulse, same CS),
+//   C completes when +193 == 0 (cleared before the pulse, same CS),
+//   B has no guest flag — the pulse IS the whole message — so the single
+//     pulse site bumps a host-side epoch BEFORE the guest pulse and the wait
+//     completes when epoch > consumed.
+// A lost pulse therefore costs at most one slice instead of a permanent
+// park. Behaviour is unchanged whenever the pulse is delivered. Kill switch:
+// REX_VFS_LH_HANDSHAKE_EMULATION=0 restores the original INFINITE waits.
+constexpr uint32_t kLhSuspendAckWaitLr = 0x823889FCu;
+constexpr uint32_t kLhResumeKickWaitLr = 0x823882E0u;
+constexpr uint32_t kLhResumeAckWaitLr = 0x82388A6Cu;
+constexpr uint32_t kLhResumeKickPulseLr = 0x82388A40u;
+constexpr uint32_t kLhEventSuspendAckEmbedOffset = 196u;
+constexpr uint32_t kLhEventResumeKickEmbedOffset = 328u;
+constexpr uint32_t kLhEventResumeAckEmbedOffset = 460u;
+constexpr uint32_t kLhSuspendAckFlagOffset = 193u;
+// sub_82B4F400 result mapping (generated/refii_recomp.83.cpp): 2 = signalled
+// (WAIT_OBJECT_0/ABANDONED), 1 = APC (WAIT_IO_COMPLETION), 0 = WAIT_TIMEOUT.
+constexpr uint32_t kLhWaitResultSignalled = 2u;
+constexpr uint32_t kLhWaitResultTimeout = 0u;
+constexpr uint32_t kLhWaitSliceMs = 4u;
+
+std::atomic<uint64_t> g_lh_resume_kick_epoch{0};
+std::atomic<uint64_t> g_lh_resume_kick_consumed{0};
+
+bool LhHandshakeEmulationEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("REX_VFS_LH_HANDSHAKE_EMULATION");
+    return value == nullptr || value[0] != '0';
+  }();
+  return enabled;
+}
+
+// Returns true when it handled the wait (ctx.r3 holds the mapped result);
+// false hands the call to the original INFINITE wait.
+bool TryEmulateLhRendererHandshakeWait(PPCContext& ctx, uint8_t* base,
+                                       const PPCContext& original_ctx) {
+  if (!LhHandshakeEmulationEnabled()) {
+    return false;
+  }
+  // Only the three known INFINITE handshake waits; anything else (including
+  // these sites with a finite timeout, which never ships) is untouched.
+  if (original_ctx.r4.u32 != 0xFFFFFFFFu) {
+    return false;
+  }
+  const uint32_t lr = static_cast<uint32_t>(original_ctx.lr);
+  enum class LhWaitKind { kSuspendAck, kResumeKick, kResumeAck };
+  LhWaitKind kind;
+  uint32_t controller_guest = 0;
+  switch (lr) {
+    case kLhSuspendAckWaitLr:
+      kind = LhWaitKind::kSuspendAck;
+      controller_guest = original_ctx.r3.u32 - kLhEventSuspendAckEmbedOffset;
+      break;
+    case kLhResumeKickWaitLr:
+      kind = LhWaitKind::kResumeKick;
+      controller_guest = original_ctx.r3.u32 - kLhEventResumeKickEmbedOffset;
+      break;
+    case kLhResumeAckWaitLr:
+      kind = LhWaitKind::kResumeAck;
+      controller_guest = original_ctx.r3.u32 - kLhEventResumeAckEmbedOffset;
+      break;
+    default:
+      return false;
+  }
+  const auto condition_satisfied = [&]() -> bool {
+    switch (kind) {
+      case LhWaitKind::kSuspendAck:
+        return refii::vfs::LoadGuestU8(
+                   base, controller_guest + kLhSuspendAckFlagOffset) != 0;
+      case LhWaitKind::kResumeAck:
+        return refii::vfs::LoadGuestU8(
+                   base, controller_guest + kLhSuspendAckFlagOffset) == 0;
+      case LhWaitKind::kResumeKick: {
+        const uint64_t epoch =
+            g_lh_resume_kick_epoch.load(std::memory_order_acquire);
+        if (epoch >
+            g_lh_resume_kick_consumed.load(std::memory_order_relaxed)) {
+          g_lh_resume_kick_consumed.store(epoch, std::memory_order_relaxed);
+          return true;
+        }
+        return false;
+      }
+    }
+    return false;
+  };
+  const auto t0 = std::chrono::steady_clock::now();
+  uint32_t slices = 0;
+  bool recovered = false;
+  for (;;) {
+    // Condition FIRST: a pulse lost BEFORE this wait was entered (the exact
+    // run-516/517/518 race window) is recovered without blocking at all.
+    if (condition_satisfied()) {
+      ctx.r3.u64 = kLhWaitResultSignalled;
+      recovered = true;
+      break;
+    }
+    ctx.r3.u32 = original_ctx.r3.u32;
+    ctx.r4.s64 = static_cast<int32_t>(kLhWaitSliceMs);
+    ctx.r5.u32 = original_ctx.r5.u32;
+    __imp__sub_82B4F400(ctx, base);
+    ++slices;
+    if (ctx.r3.u32 != kLhWaitResultTimeout) {
+      // Real wake (or APC): original semantics, pass the result through. Keep
+      // the resume-kick ledger aligned — its pulse pre-incremented the epoch.
+      if (kind == LhWaitKind::kResumeKick &&
+          ctx.r3.u32 == kLhWaitResultSignalled) {
+        g_lh_resume_kick_consumed.store(
+            g_lh_resume_kick_epoch.load(std::memory_order_acquire),
+            std::memory_order_relaxed);
+      }
+      break;
+    }
+  }
+  if (recovered) {
+    // Only a recovery is interesting: the original code would have parked
+    // forever here. Expected once per lost pulse, i.e. rarely.
+    static std::atomic<uint32_t> recovery_logs{0};
+    const uint32_t count =
+        recovery_logs.fetch_add(1, std::memory_order_relaxed) + 1u;
+    if (count <= 16u || (count % 64u) == 0u) {
+      const int64_t waited_ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - t0)
+              .count();
+      REXLOG_WARN(
+          "Refii loading-screen handshake emulated #{}: {} satisfied by "
+          "condition after a lost pulse — waited {}ms (slices={}) "
+          "controller=0x{:08X} lr=0x{:08X}",
+          count,
+          kind == LhWaitKind::kSuspendAck    ? "suspend ack"
+          : kind == LhWaitKind::kResumeKick  ? "resume kick"
+                                             : "resume ack",
+          waited_ms, slices, controller_guest, lr);
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 REX_EXTERN(sub_822C9388) { // Lumen: PulseEvent
   REX_FUNC_PROLOGUE();
 
@@ -3022,6 +2486,13 @@ REX_EXTERN(sub_822C9388) { // Lumen: PulseEvent
 
   const PPCContext original_ctx = ctx;
   const uint32_t event_handle_guest = original_ctx.r3.u32;
+  // Resume-kick ledger (see TryEmulateLhRendererHandshakeWait): the resume
+  // request's only message is this pulse, so publish it host-side BEFORE the
+  // guest pulse — a waiter woken by the real pulse then always observes
+  // epoch > consumed.
+  if (original_ctx.lr == kLhResumeKickPulseLr) {
+    g_lh_resume_kick_epoch.fetch_add(1, std::memory_order_release);
+  }
   const bool trace =
       refii::vfs::kTraceNonVfsBootFrameProbes &&
       refii::vfs::VfsTracingEnabled() &&
@@ -3059,6 +2530,7 @@ REX_EXTERN(sub_82B4F400) {
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4F400);
 
   const PPCContext original_ctx = ctx;
+  const bool native_startup_frame_wait = original_ctx.lr == 0x823889FCu;
   const uint32_t wait_object_guest = original_ctx.r3.u32;
   const uint32_t wait_handle_guest =
       wait_object_guest != 0
@@ -3098,34 +2570,34 @@ REX_EXTERN(sub_82B4F400) {
                 refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
   }
 
-  refii::vfs::MaybeSignalRefiiPostVideoGeneratedWaitBeforeNative(
-      original_ctx, base, wait_object_guest, wait_handle_guest);
-
-  if (refii::vfs::TryCollapseRefiiCompletedFrontEndAudioSyncWait(
-          ctx, original_ctx, base, wait_object_guest, wait_handle_guest, trace)) {
-    return;
+  // lhRenderer suspend/resume handshake waits are emulated (bounded slices +
+  // authoritative-flag completion) so a lost PulseEvent cannot park the
+  // loading/render thread pair forever; every other wait is untouched.
+  if (!TryEmulateLhRendererHandshakeWait(ctx, base, original_ctx)) {
+    __imp__sub_82B4F400(ctx, base);
   }
-  if (refii::vfs::TryCollapseRefiiCompletedLoadingOwnerWorkerWait(
-          ctx, original_ctx, base, wait_object_guest, wait_handle_guest, trace)) {
-    return;
-  }
-  // Keep the renderer synchronization boundary native. The VFS now supplies the
-  // texture/parser shape before this point; forcing this wait nonblocking can
-  // let generated render prep run with an invalid command-buffer cursor.
-  if (refii::vfs::TryCollapseRefiiPostVideoGeneratedRenderWait(
-          ctx, original_ctx, base, wait_object_guest, wait_handle_guest, trace)) {
-    return;
-  }
-  if (refii::vfs::TryCollapseRefiiCompletedNativeVfsWorkerWait(
-          ctx, original_ctx, base, wait_object_guest, wait_handle_guest, trace)) {
-    return;
-  }
-
-  __imp__sub_82B4F400(ctx, base);
-
   const int64_t wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::steady_clock::now() - begin)
                               .count();
+  if (native_startup_frame_wait && wait_ms >= 50) {
+    static std::atomic<uint32_t> startup_frame_wait_logs{0};
+    const uint32_t count =
+        startup_frame_wait_logs.fetch_add(1, std::memory_order_relaxed) + 1u;
+    if (count <= 16u || (count % 120u) == 0u) {
+      REXLOG_INFO(
+          "Refii VFS startup-video native event wait handoff #{} "
+          "lr=0x{:08X} wait_object=0x{:08X} wait_handle=0x{:08X} "
+          "timeout=0x{:08X} result=0x{:08X} wait_ms={} state=[{}]",
+          count,
+          original_ctx.lr,
+          wait_object_guest,
+          wait_handle_guest,
+          original_ctx.r4.u32,
+          ctx.r3.u32,
+          wait_ms,
+          refii::vfs::FormatGeneratedEventWaitState(base, wait_object_guest));
+    }
+  }
   if (trace) {
     REXLOG_INFO("VFS trace generated event wait exit sub_82B4F400 "
                 "lr=0x{:08X} wait_object=0x{:08X} result=0x{:08X} "
@@ -3147,20 +2619,6 @@ REX_EXTERN(sub_82B4F400) {
         wait_ms,
         wait_object_guest,
         wait_handle_guest);
-  }
-  if (ctx.r3.u32 == 0 &&
-      refii::vfs::IsPostVideoGeneratedWaitLr(
-          static_cast<uint32_t>(original_ctx.lr)) &&
-      refii::vfs::RefiiStartupVideosReadyForMenuHandoff() &&
-      (refii::vfs::RefiiMainMenuTraceNeedsFrontendHandoff() ||
-       refii::vfs::RefiiMainMenuTraceAllowsPostVideoReadyAdvance() ||
-       refii::vfs::RefiiMainMenuTextureKnownOwnedByVfsIndex())) {
-    PPCContext post_video_synthetic_ctx = original_ctx;
-    refii::vfs::TryRunPostVideoFrontendSyntheticHandoff(
-        post_video_synthetic_ctx,
-        base,
-        wait_object_guest,
-        "GeneratedEvent_Wait_PostNativeOwnerProbe");
   }
   if (wait_ms >= 250 &&
       refii::vfs::RefiiPostVideoVfsHandoffTraceActive() &&
@@ -3233,131 +2691,7 @@ REX_EXTERN(sub_82388A18) {
                 refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
   }
 
-  bool refii_nonblocking_wait = false;
-  bool refii_wait_signaled = false;
-  bool refii_post_loading_native_run = false;
-  bool refii_generated_state_released = false;
-  uint32_t refii_wait_owner = original_ctx.r3.u32;
-  uint32_t refii_wait_handoff = 0;
-  uint32_t refii_signal_handle = 0;
-  uint32_t refii_wait_handle = 0;
-  const bool refii_post_video_wait_lr =
-      original_ctx.lr == 0x82377D1Cu || original_ctx.lr == 0x823891C8u ||
-      original_ctx.lr == 0x82389308u || original_ctx.lr == 0x82389390u;
-  const bool refii_completed_post_vfs_chain =
-      refii::vfs::RefiiPostVfsChainReadyForLoadingOwnerRelease();
-  const bool refii_menu_texture_shape_ready =
-      original_ctx.lr == 0x82389390u &&
-      refii::vfs::RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload() &&
-      !refii::vfs::RefiiMainMenuTraceNeedsTexturePrime();
-  const bool refii_frame_wait_can_release =
-      refii_completed_post_vfs_chain || refii_menu_texture_shape_ready;
-  if (base != nullptr && refii_post_video_wait_lr &&
-      refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      refii::vfs::RefiiStartupVideosReadyForMenuHandoff() &&
-      refii_frame_wait_can_release &&
-      refii::vfs::LooksLikeGuestPointer(refii_wait_owner)) {
-    refii_wait_handoff =
-        refii::vfs::LoadGuestU32(base, refii_wait_owner + 4);
-    if (refii::vfs::LooksLikeGuestPointer(refii_wait_handoff)) {
-      refii_signal_handle =
-          refii::vfs::LoadGuestU32(base, refii_wait_handoff + 456);
-      refii_wait_handle =
-          refii::vfs::LoadGuestU32(base, refii_wait_handoff + 460 + 128);
-      refii::vfs::StoreGuestU8(base, refii_wait_handoff + 168, 1);
-      refii::vfs::StoreGuestU8(base, refii_wait_handoff + 244, 1);
-
-      auto looks_like_generated_event_handle = [](uint32_t handle) {
-        return (handle & 0xFF000000u) == 0xF8000000u;
-      };
-
-      PPCContext signal_ctx = original_ctx;
-      if (looks_like_generated_event_handle(refii_signal_handle)) {
-        signal_ctx.r3.u32 = refii_signal_handle;
-        ::__imp__sub_822C9388(signal_ctx, base);
-        refii_wait_signaled = true;
-      }
-      PPCContext wait_signal_ctx = original_ctx;
-      if (looks_like_generated_event_handle(refii_wait_handle) &&
-          refii_wait_handle != refii_signal_handle) {
-        wait_signal_ctx.r3.u32 = refii_wait_handle;
-        ::__imp__sub_822C9388(wait_signal_ctx, base);
-        refii_wait_signaled = true;
-      }
-
-      refii_post_loading_native_run =
-          refii::vfs::TryRunRefiiPostLoadingFrontendRenderRequestNativeFromTrace(
-              original_ctx, base, "sub_82388A18_vfs_wait_release");
-      refii_generated_state_released =
-          refii::vfs::TryFinalizeRefiiPostLoadingFrontendGeneratedState(
-              original_ctx,
-              base,
-              "sub_82388A18_vfs_wait_release",
-              true,
-              false);
-      refii_nonblocking_wait =
-          refii_wait_signaled || refii_post_loading_native_run ||
-          refii_generated_state_released;
-      if (refii_nonblocking_wait) {
-        ctx.r3.u32 = 0;
-        refii::vfs::RecordRefiiMainMenuBlockerEvent(
-            "post_video_frame_wait_vfs_nonblocking",
-            fmt::format("lr=0x{:08X} owner=0x{:08X} handoff=0x{:08X} "
-                        "signal_handle=0x{:08X} wait_handle=0x{:08X} "
-                        "signaled={} native_run={} generated_release={} "
-                        "completed_chain={} texture_shape_ready={} "
-                        "state=[{}]",
-                        static_cast<uint32_t>(original_ctx.lr),
-                        refii_wait_owner,
-                        refii_wait_handoff,
-                        refii_signal_handle,
-                        refii_wait_handle,
-                        refii_wait_signaled ? "true" : "false",
-                        refii_post_loading_native_run ? "true" : "false",
-                        refii_generated_state_released ? "true" : "false",
-                        refii_completed_post_vfs_chain ? "true" : "false",
-                        refii_menu_texture_shape_ready ? "true" : "false",
-                        refii::vfs::FormatPostVideoFrameWaitState(
-                            base, original_ctx.r3.u32)));
-        if (trace || refii::vfs::VfsTracingEnabled() ||
-            refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-                "PostVideoFrameWaitVfsNonblocking", 8)) {
-          REXLOG_INFO("Refii VFS post-video frame wait released by VFS "
-                      "lr=0x{:08X} owner=0x{:08X} handoff=0x{:08X} "
-                      "signal_handle=0x{:08X} wait_handle=0x{:08X} "
-                      "signaled={} native_run={} generated_release={} "
-                      "completed_chain={} texture_shape_ready={} "
-                      "handoff_trace=[{}] main_menu=[{}]",
-                      original_ctx.lr,
-                      refii_wait_owner,
-                      refii_wait_handoff,
-                      refii_signal_handle,
-                      refii_wait_handle,
-                      refii_wait_signaled ? "true" : "false",
-                      refii_post_loading_native_run ? "true" : "false",
-                      refii_generated_state_released ? "true" : "false",
-                      refii_completed_post_vfs_chain ? "true" : "false",
-                      refii_menu_texture_shape_ready ? "true" : "false",
-                      refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                      refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-        }
-        refii::vfs::LogRefiiVfsChainVerdict(
-            "frontend_post_video",
-            static_cast<uint32_t>(original_ctx.lr),
-            "post_video_frame_wait",
-            "",
-            "",
-            "native_generated_wait_pair",
-            "sub_82388A18_vfs_nonblocking",
-            "Opened",
-            "main_menu_or_next_frontend_request");
-      }
-    }
-  }
-
-  if (!refii_nonblocking_wait) {
-    __imp__sub_82388A18(ctx, base);
-  }
+  __imp__sub_82388A18(ctx, base);
 
   const int64_t elapsed_ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(

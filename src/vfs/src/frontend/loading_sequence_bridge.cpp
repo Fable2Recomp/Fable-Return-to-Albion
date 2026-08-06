@@ -186,28 +186,7 @@ bool TryResolveRefiiLoadingAnimationSequenceHandle(PPCContext& source_ctx,
       }
     }
   }
-  static std::atomic<bool> loading_animation_prime_attempted{false};
-  bool loading_animation_primed = false;
-  if (!loading_animation_prime_attempted.exchange(true,
-                                                  std::memory_order_relaxed)) {
-    PPCContext prime_ctx = source_ctx;
-    prime_ctx.lr = kResolverLr;
-    loading_animation_primed = TryPrimeRefiiFrontendTextureResource(
-        prime_ctx,
-        base,
-        kRefiiLoadingAnimationHash,
-        "LoadingSequenceHandleBootstrap_PrimeTexture");
-    RecordRefiiMainMenuBlockerEvent(
-        "loading_sequence_texture_prime",
-        fmt::format("handle=0x{:08X} primed={} hash=0x{:08X} "
-                    "candidate={} provider={}",
-                    resolver_result,
-                    loading_animation_primed ? "true" : "false",
-                    kRefiiLoadingAnimationHash,
-                    selected_candidate,
-                    NormalizeLooseAssetKey(
-                        selected_resolution.provider_relative_path)));
-  }
+  const bool loading_animation_primed = false;
   if (out_handle != nullptr) {
     *out_handle = resolver_result;
   }
@@ -238,6 +217,16 @@ bool TryBridgeLoadingScreenSequenceListFromRefiiHandle(PPCContext& source_ctx,
                                                        uint8_t* base,
                                                        uint32_t owner_guest,
                                                        uint32_t* out_handle) {
+  // Synthetic loading-screen sequence bridge (fabricates the loading
+  // animation sequence list in guest memory). Gated with the rest of
+  // the synthetic frontend handoff machinery (default OFF): the core
+  // dump showed the game thread stuck here inside the native frontend
+  // texture resolver on the natural video path. Native drives the
+  // loading screen on its own.
+  if (!FrontendSyntheticHandoffEnabled()) {
+    return false;
+  }
+
   if (out_handle != nullptr) {
     *out_handle = 0;
   }
@@ -429,6 +418,16 @@ bool TryRefreshRememberedLoadingScreenSequenceBridge(PPCContext& source_ctx,
                                                      uint8_t* base,
                                                      std::string_view source_api,
                                                      uint32_t* out_handle) {
+  // Synthetic loading-screen sequence bridge (fabricates the loading
+  // animation sequence list in guest memory). Gated with the rest of
+  // the synthetic frontend handoff machinery (default OFF): the core
+  // dump showed the game thread stuck here inside the native frontend
+  // texture resolver on the natural video path. Native drives the
+  // loading screen on its own.
+  if (!FrontendSyntheticHandoffEnabled()) {
+    return false;
+  }
+
   if (out_handle != nullptr) {
     *out_handle = 0;
   }
@@ -1071,19 +1070,6 @@ bool RefiiMainMenuTraceIsTextureOwnedButNotOpened() {
          trace.last_texture_stream_build.empty();
 }
 
-bool RefiiMainMenuTraceHasStarted() {
-  std::lock_guard<std::mutex> lock(RefiiMainMenuBlockerTraceMutex());
-  const auto& trace = RefiiMainMenuBlockerTraceState();
-  return
-      !trace.last_texture_hash.empty() ||
-      !trace.last_texture_selection.empty() ||
-      !trace.last_wrapper_view.empty() ||
-      !trace.last_wrapper_slot36.empty() ||
-      !trace.last_texture_parser.empty() ||
-      !trace.last_texture_stream_build.empty() ||
-      !trace.last_loading_frame.empty();
-}
-
 bool RefiiMainMenuTraceNeedsTexturePrime() {
   std::lock_guard<std::mutex> lock(RefiiMainMenuBlockerTraceMutex());
   const auto& trace = RefiiMainMenuBlockerTraceState();
@@ -1126,6 +1112,19 @@ bool RefiiPostFrontendConsumerHandoffSignalEmitted() {
   std::lock_guard<std::mutex> lock(RefiiPostVideoHandoffTraceMutex());
   const auto& trace = RefiiPostVideoHandoffTraceState();
   return trace.post_frontend_consumer_handoff_signal_emitted;
+}
+
+bool RefiiMainMenuTraceHasStarted() {
+  std::lock_guard<std::mutex> lock(RefiiMainMenuBlockerTraceMutex());
+  const auto& trace = RefiiMainMenuBlockerTraceState();
+  return
+      !trace.last_texture_hash.empty() ||
+      !trace.last_texture_selection.empty() ||
+      !trace.last_wrapper_view.empty() ||
+      !trace.last_wrapper_slot36.empty() ||
+      !trace.last_texture_parser.empty() ||
+      !trace.last_texture_stream_build.empty() ||
+      !trace.last_loading_frame.empty();
 }
 
 bool RefiiMainMenuTraceNeedsFrontendHandoff() {

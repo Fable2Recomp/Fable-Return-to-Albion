@@ -19,6 +19,10 @@ mono_crash.*
 
 # Build results
 [Dd]ebug/
+!src/renderer/include/runtime/refii_renderer/plume/fable/debug/
+!src/renderer/include/runtime/refii_renderer/plume/fable/debug/**
+!src/renderer/src/runtime/plume/fable/debug/
+!src/renderer/src/runtime/plume/fable/debug/**
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/

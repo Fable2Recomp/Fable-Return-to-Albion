@@ -180,13 +180,6 @@ bool IsLikelyFableVideoNeutralChromaTexture(
          snapshot.texture.raw_fetch_dwords[4] == 3;
 }
 
-uint32_t PackTextureComponentMapping(
-    const plume::RenderComponentMapping& mapping) {
-  return static_cast<uint32_t>(mapping.r) |
-         (static_cast<uint32_t>(mapping.g) << 4u) |
-         (static_cast<uint32_t>(mapping.b) << 8u) |
-         (static_cast<uint32_t>(mapping.a) << 12u);
-}
 #endif
 
 }  // namespace refii::renderer

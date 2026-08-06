@@ -60,6 +60,12 @@ set(LAUNCHER_SOURCES
 
 if(WIN32)
     list(APPEND LAUNCHER_SOURCES src/windows/platform.cpp)
+    # Opt in to Win32 long paths; the installer writes asset paths up to ~194
+    # chars below the install root. MSVC embeds .manifest sources via mt.exe.
+    if(MSVC)
+        list(APPEND LAUNCHER_SOURCES
+            "${CMAKE_SOURCE_DIR}/packaging/windows/refii_long_paths.manifest")
+    endif()
     add_executable(${LAUNCHER_TARGET} ${LAUNCHER_SOURCES})
 else()
     list(APPEND LAUNCHER_SOURCES src/linux/platform.cpp)
@@ -100,6 +106,27 @@ if(TARGET refii_lua_decompiler_workspace)
 endif()
 if(TARGET refii_shader_sbk_workspace)
     target_link_libraries(${LAUNCHER_TARGET} PRIVATE refii_shader_sbk_workspace)
+
+    # The launcher's "Compile Shaders" flow must request the same backend set
+    # the standalone refii-shader-sbk tool does, otherwise a launcher-driven
+    # retranslation silently produces fewer targets.  This is the only
+    # consumer of REFII_SHADER_VALIDATION_TARGETS: the build has no coverage
+    # gate of its own (shader artifacts are launcher output, not build input),
+    # so the value here just seeds the launcher's compile-time default.
+    # Empty/undefined falls back to "auto", which the pipeline resolves
+    # through BuildDefaultTranslateTargets(); coverage itself is verified
+    # natively by refii::shader::VerifyTranslatedShaderCoverage().
+    if(DEFINED REFII_SHADER_VALIDATION_TARGETS AND
+       NOT REFII_SHADER_VALIDATION_TARGETS STREQUAL "")
+        set(REFII_LAUNCHER_SHADER_TARGETS_VALUE "${REFII_SHADER_VALIDATION_TARGETS}")
+    else()
+        set(REFII_LAUNCHER_SHADER_TARGETS_VALUE "auto")
+    endif()
+    target_compile_definitions(${LAUNCHER_TARGET} PRIVATE
+        REFII_LAUNCHER_SHADER_TARGETS="${REFII_LAUNCHER_SHADER_TARGETS_VALUE}"
+    )
+    message(STATUS
+        "Launcher shader compile targets: ${REFII_LAUNCHER_SHADER_TARGETS_VALUE}")
 endif()
 if(WIN32)
     target_link_libraries(${LAUNCHER_TARGET} PRIVATE

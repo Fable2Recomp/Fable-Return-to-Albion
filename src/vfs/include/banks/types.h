@@ -33,6 +33,10 @@ struct RefiiSyntheticBankTemplate {
   std::filesystem::path manifest_path;
   std::filesystem::path manifest_root;
   std::vector<std::streamoff> entry_line_offsets;
+  // Entry names as the game spells them (backslash separators), parallel to
+  // entry_line_offsets. Used to build the native bank name table so the file
+  // system provider can enumerate the bank's contents.
+  std::vector<std::string> entry_names;
   uint32_t entries_begin = 0;
   uint32_t entries_end = 0;
 };

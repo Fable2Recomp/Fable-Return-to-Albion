@@ -3,6 +3,9 @@
 #include "shader.h"
 #include "shader_code.h"
 
+#include <algorithm>
+#include <vector>
+
 struct StringBuffer
 {
     std::string out;
@@ -34,6 +37,20 @@ struct ShaderRecompiler : StringBuffer
     std::unordered_map<uint32_t, uint32_t> ifEndLabels;
     uint32_t specConstantsMask = 0;
 
+    // Xenos memory export (memexport) analysis, filled in by
+    // analyzeMemoryExports() before any code is emitted.
+    //
+    // memexportStreamConstants holds the float4 constant register indices
+    // recovered from every `mad eA, r#, const0100, c#` idiom, in first-seen
+    // order. memexportUnresolvedAddressWrites counts eA writes that did NOT
+    // match that idiom - those still export at runtime (eA is decoded in the
+    // shader) but their destination cannot be validated ahead of time, so they
+    // are surfaced in the translator report rather than passed over silently.
+    std::vector<uint32_t> memexportStreamConstants;
+    uint32_t memexportEMWrittenMask = 0;
+    uint32_t memexportUnresolvedAddressWrites = 0;
+    bool memexportEnabled = false;
+
 #ifdef UNLEASHED_RECOMP
     bool hasMtxProjection = false;
     bool hasMtxPrevInvViewProjection = false;
@@ -47,6 +64,9 @@ struct ShaderRecompiler : StringBuffer
 
     void printDstSwizzle(uint32_t dstSwizzle, bool operand);
     void printDstSwizzle01(uint32_t dstRegister, uint32_t dstSwizzle);
+
+    void analyzeMemoryExports(const uint8_t* shaderData);
+    void emitMemoryExportFlush();
 
     void recompile(const VertexFetchInstruction& instr, uint32_t address);
     void recompile(const TextureFetchInstruction& instr, bool bicubic);

@@ -431,18 +431,16 @@ bool AugmentRequestManagerHashTable(PPCContext& ctx,
       }
 
       found_targeted_hashes.insert(entry_hash);
-      const uint32_t provider_index = LoadGuestU32(base, entry_guest + 4);
       const uint32_t provider_entry_key = LoadGuestU32(base, entry_guest + 8);
       const bool already_refii =
-          provider_index == kRefiiRequestManagerProviderIndex &&
           provider_entry_key == kRefiiRequestManagerEntryKey;
       if (already_refii) {
         ++refii_target_hits;
       } else {
-        StoreGuestU32(base, entry_guest + 4, kRefiiRequestManagerProviderIndex);
-        StoreGuestU32(base, entry_guest + 8, kRefiiRequestManagerEntryKey);
+        // Leave the native entry untouched: its provider route is the correct
+        // fallback when a refii open misses, and the FindStreamByHashEntry
+        // hook pre-empts by hash regardless of the entry's provider fields.
         ++native_target_hits;
-        ++rewritten_in_place;
       }
 
       const TargetedRequestManagerHashContribution& contribution =
@@ -514,7 +512,7 @@ bool AugmentRequestManagerHashTable(PPCContext& ctx,
         continue;
       }
       missing_targeted_entries.push_back({resource_hash,
-                                          kRefiiRequestManagerProviderIndex,
+                                          kRefiiRequestManagerGuestProviderIndex,
                                           kRefiiRequestManagerEntryKey});
       LogRefiiVfsChainVerdict(
           "request_manager_hash",
@@ -706,8 +704,7 @@ bool AugmentRequestManagerHashTable(PPCContext& ctx,
   }
   for (RequestManagerHashEntry& entry : entries) {
     if (entry.hash == 0 ||
-        (entry.provider_index == kRefiiRequestManagerProviderIndex &&
-         entry.provider_entry_key == kRefiiRequestManagerEntryKey)) {
+        entry.provider_entry_key == kRefiiRequestManagerEntryKey) {
       continue;
     }
 
@@ -740,8 +737,8 @@ bool AugmentRequestManagerHashTable(PPCContext& ctx,
       continue;
     }
 
-    entry.provider_index = kRefiiRequestManagerProviderIndex;
-    entry.provider_entry_key = kRefiiRequestManagerEntryKey;
+    // No mutation: native entries keep their provider route as the fallback.
+    // `rewritten` now counts refii-owned hashes that were confirmed present.
     ++rewritten;
     if (targeted.has_value()) {
       LogRefiiVfsChainVerdict(
@@ -1247,6 +1244,7 @@ void RegisterRefiiOwnedTextureHashContribution(PPCContext& ctx,
                                                      candidate,
                                                      resolution.provider_relative_path,
                                                      source);
+  // (Texel-bridge registration is centralized in ResolveRefiiOwnedTextureResolution.)
   LogRefiiOwnedTextureResolution("ResourceNameHash",
                                  caller_lr,
                                  resource_hash,
@@ -1524,6 +1522,15 @@ bool ResolveSyntheticBankEntryLooseAsset(std::string_view asset_path,
     if (ResolveVfsDatabaseAliasLooseAsset(candidate,
                                          &resolved.resolution,
                                          &resolved.candidate)) {
+      resolved.found = true;
+      break;
+    }
+  }
+  for (const std::string& candidate : resolved.found ? std::vector<std::string>{}
+                                                     : candidates) {
+    if (ResolveOriginalGameDataAsset(candidate,
+                                     &resolved.resolution,
+                                     &resolved.candidate)) {
       resolved.found = true;
       break;
     }

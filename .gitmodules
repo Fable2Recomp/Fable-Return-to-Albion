@@ -31,3 +31,7 @@
 [submodule "src/renderer/thirdparty/plume/contrib/D3D12MemoryAllocator"]
 	path = src/renderer/thirdparty/plume/contrib/D3D12MemoryAllocator
 	url = https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator
+[submodule "rexglue-net/rexglue-sdk"]
+	path = rexglue-net/rexglue-sdk
+	url = https://github.com/Loreaxe/rexglue-sdk.git
+	branch = netplay

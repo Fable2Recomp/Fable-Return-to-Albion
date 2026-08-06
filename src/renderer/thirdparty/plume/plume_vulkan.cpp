@@ -32,6 +32,17 @@
 // - Fix resource pools.
 
 namespace plume {
+    // Refii: runtime opt-out for the compiled-in validation layer. Read once.
+    // Only consulted under VULKAN_VALIDATION_LAYER_ENABLED, so release builds
+    // are unaffected either way.
+    static bool RenderVulkanValidationRequested() {
+        static const bool requested = []() {
+            const char *value = getenv("REFII_VULKAN_VALIDATION");
+            return (value == nullptr) || (value[0] == '\0') || (value[0] != '0');
+        }();
+        return requested;
+    }
+
     // Backend constants.
 
     // Required buffer alignment for acceleration structures.
@@ -87,8 +98,54 @@ namespace plume {
 
         device->deviceLost.store(true, std::memory_order_release);
         if (!device->deviceLossLogged.exchange(true, std::memory_order_acq_rel)) {
-            fprintf(stderr, "%s failed with VK_ERROR_DEVICE_LOST; suppressing further Vulkan queue work.\n", operation);
+            // Refii: through the sink, so this lands in refii_NNN.log next to the
+            // frame that caused it. On stderr alone it was invisible to every log
+            // analysis, and the loss itself is silent afterwards — every queue op
+            // just returns false — so the log simply stopped with no reason given.
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "%s failed with VK_ERROR_DEVICE_LOST; suppressing further Vulkan queue work.",
+                     operation);
+            EmitRenderVulkanDebugMessage(message, true);
         }
+    }
+
+    // Refii: debug-message sink. See the note in plume_vulkan.h — without a
+    // messenger, validation output goes to the loader's stderr handler and never
+    // reaches the host's log.
+    static RenderVulkanDebugMessageCallback g_debugMessageCallback = nullptr;
+
+    void SetRenderVulkanDebugMessageCallback(RenderVulkanDebugMessageCallback callback) {
+        g_debugMessageCallback = callback;
+    }
+
+    void EmitRenderVulkanDebugMessage(const char *message, bool isError) {
+        if (message == nullptr) {
+            return;
+        }
+        if (g_debugMessageCallback != nullptr) {
+            g_debugMessageCallback(message, isError);
+            return;
+        }
+        fprintf(stderr, "%s\n", message);
+    }
+
+    static VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsMessengerCallback(
+        VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+        VkDebugUtilsMessageTypeFlagsEXT types,
+        const VkDebugUtilsMessengerCallbackDataEXT *callbackData,
+        void *userData)
+    {
+        (void)types;
+        (void)userData;
+        if (callbackData == nullptr || callbackData->pMessage == nullptr) {
+            return VK_FALSE;
+        }
+        const bool isError = (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0;
+        EmitRenderVulkanDebugMessage(callbackData->pMessage, isError);
+        // VK_FALSE: never abort the offending call. A validation error must be
+        // reported and survived, not turned into a second failure mode.
+        return VK_FALSE;
     }
 
     // Required extensions.
@@ -358,6 +415,20 @@ namespace plume {
             assert(false && "Unknown resource dimension.");
             return VK_IMAGE_VIEW_TYPE_MAX_ENUM;
         }
+    }
+
+    static RenderTextureViewDimension normalizeImageViewDimension(
+        RenderTextureViewDimension dimension, const RenderTextureDesc &textureDesc,
+        uint32_t baseArrayLayer, uint32_t arraySize) {
+        if (dimension != RenderTextureViewDimension::TEXTURE_CUBE) {
+            return dimension;
+        }
+
+        const bool cubeCompatible =
+            (textureDesc.flags & RenderTextureFlag::CUBE) &&
+            textureDesc.width == textureDesc.height && textureDesc.arraySize >= 6 &&
+            (baseArrayLayer % 6) == 0 && arraySize >= 6 && (arraySize % 6) == 0;
+        return cubeCompatible ? dimension : RenderTextureViewDimension::TEXTURE_2D;
     }
 
     static VkImageTiling toVk(RenderTextureArrangement arrangement) {
@@ -860,6 +931,17 @@ namespace plume {
 #   endif
     }
 
+    static VkDebugUtilsLabelEXT makeDebugLabel(const std::string &name) {
+        VkDebugUtilsLabelEXT label = {};
+        label.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+        label.pLabelName = name.c_str();
+        label.color[0] = 0.10f;
+        label.color[1] = 0.70f;
+        label.color[2] = 0.95f;
+        label.color[3] = 1.0f;
+        return label;
+    }
+
     static void fillSpecInfo(const RenderSpecConstant *specConstants, uint32_t specConstantsCount,
         VkSpecializationInfo &specInfo, VkSpecializationMapEntry *specEntries, uint32_t *specData)
     {
@@ -1025,6 +1107,16 @@ namespace plume {
     }
 
     void VulkanBuffer::unmap(uint32_t subresource, const RenderRange *writtenRange) {
+        if (writtenRange != nullptr) {
+            const VkDeviceSize offset = static_cast<VkDeviceSize>(writtenRange->begin);
+            const VkDeviceSize size = static_cast<VkDeviceSize>(
+                writtenRange->end > writtenRange->begin
+                    ? writtenRange->end - writtenRange->begin
+                    : 0);
+            if (size != 0) {
+                vmaFlushAllocation(device->allocator, allocation, offset, size);
+            }
+        }
         vmaUnmapMemory(device->allocator, allocation);
     }
 
@@ -1105,7 +1197,12 @@ namespace plume {
             imageInfo.flags |= VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT;
         }
 
-        if (desc.flags & RenderTextureFlag::CUBE) {
+        // Vulkan cube-compatible images must have square faces and at least
+        // six array layers. Guest metadata can transiently carry the cube bit
+        // while Refii is reconstructing a 2D surface alias; do not turn that
+        // incomplete shape into an invalid VkImage.
+        if ((desc.flags & RenderTextureFlag::CUBE) &&
+            desc.width == desc.height && desc.arraySize >= 6) {
             imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         }
 
@@ -1152,7 +1249,9 @@ namespace plume {
         VkImageViewCreateInfo viewInfo = {};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image = vk;
-        viewInfo.viewType = toImageViewType(RenderTextureDimensionToView(desc.dimension), desc.arraySize);
+        const RenderTextureViewDimension viewDimension = normalizeImageViewDimension(
+            RenderTextureDimensionToView(desc.dimension), desc, 0, desc.arraySize);
+        viewInfo.viewType = toImageViewType(viewDimension, desc.arraySize);
         viewInfo.format = format;
         viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
         viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1199,7 +1298,9 @@ namespace plume {
         VkImageViewCreateInfo viewInfo = {};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image = texture->vk;
-        viewInfo.viewType = toImageViewType(desc.dimension, arraySize);
+        const RenderTextureViewDimension viewDimension = normalizeImageViewDimension(
+            desc.dimension, texture->desc, desc.arrayIndex, arraySize);
+        viewInfo.viewType = toImageViewType(viewDimension, arraySize);
         viewInfo.format = toVk(desc.format);
         viewInfo.components.r = toVk(desc.componentMapping.r);
         viewInfo.components.g = toVk(desc.componentMapping.g);
@@ -2582,6 +2683,12 @@ namespace plume {
         if (immediatePresentModeSupported && !vsyncEnabled) {
             requiredPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
         }
+        // Mailbox also never blocks the presenting thread; prefer it over FIFO
+        // when vsync is off but the surface has no immediate mode (common on
+        // Wayland compositors, which typically expose only FIFO and MAILBOX).
+        else if (mailboxPresentModeSupported && !vsyncEnabled) {
+            requiredPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        }
         // FIFO is guaranteed to be supported.
         else {
             requiredPresentMode = VK_PRESENT_MODE_FIFO_KHR;
@@ -2984,7 +3091,20 @@ namespace plume {
         }
     }
 
+    void VulkanCommandList::resetBoundState() {
+        boundComputePipeline = nullptr;
+        boundGraphicsPipeline = nullptr;
+        boundRaytracingPipeline = nullptr;
+        boundComputeDescriptorSets = BoundDescriptorSetCache();
+        boundGraphicsDescriptorSets = BoundDescriptorSetCache();
+        boundRaytracingDescriptorSets = BoundDescriptorSetCache();
+    }
+
     void VulkanCommandList::begin() {
+        // Refii: the reset wipes all command buffer state, so the
+        // redundant-bind caches must forget what the previous recording bound.
+        resetBoundState();
+
         vkResetCommandBuffer(vk, 0);
 
         VkCommandBufferBeginInfo beginInfo = {};
@@ -3011,6 +3131,40 @@ namespace plume {
         activeComputePipelineLayout = nullptr;
         activeGraphicsPipelineLayout = nullptr;
         activeRaytracingPipelineLayout = nullptr;
+        resetBoundState();
+    }
+
+    void VulkanCommandList::beginDebugLabel(const std::string &name) {
+#   ifdef VULKAN_OBJECT_NAMES_ENABLED
+        if ((vkCmdBeginDebugUtilsLabelEXT == nullptr) || name.empty()) {
+            return;
+        }
+        const VkDebugUtilsLabelEXT label = makeDebugLabel(name);
+        vkCmdBeginDebugUtilsLabelEXT(vk, &label);
+#   else
+        (void)name;
+#   endif
+    }
+
+    void VulkanCommandList::endDebugLabel() {
+#   ifdef VULKAN_OBJECT_NAMES_ENABLED
+        if (vkCmdEndDebugUtilsLabelEXT == nullptr) {
+            return;
+        }
+        vkCmdEndDebugUtilsLabelEXT(vk);
+#   endif
+    }
+
+    void VulkanCommandList::insertDebugLabel(const std::string &name) {
+#   ifdef VULKAN_OBJECT_NAMES_ENABLED
+        if ((vkCmdInsertDebugUtilsLabelEXT == nullptr) || name.empty()) {
+            return;
+        }
+        const VkDebugUtilsLabelEXT label = makeDebugLabel(name);
+        vkCmdInsertDebugUtilsLabelEXT(vk, &label);
+#   else
+        (void)name;
+#   endif
     }
 
     void VulkanCommandList::barriers(RenderBarrierStages stages, const RenderBufferBarrier *bufferBarriers, uint32_t bufferBarriersCount, const RenderTextureBarrier *textureBarriers, uint32_t textureBarriersCount) {
@@ -3137,18 +3291,34 @@ namespace plume {
         const VulkanPipeline *interfacePipeline = static_cast<const VulkanPipeline *>(pipeline);
         switch (interfacePipeline->type) {
         case VulkanPipeline::Type::Compute: {
+            // Refii: pipeline bindings persist until the command buffer is
+            // reset; re-binding the identical pipeline object is a no-op.
+            // (Callers never destroy a pipeline mid-recording, so pointer
+            // identity is sufficient.)
+            if (interfacePipeline == boundComputePipeline) {
+                return;
+            }
             const VulkanComputePipeline *computePipeline = static_cast<const VulkanComputePipeline *>(interfacePipeline);
             vkCmdBindPipeline(vk, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline->vk);
+            boundComputePipeline = interfacePipeline;
             break;
         }
         case VulkanPipeline::Type::Graphics: {
+            if (interfacePipeline == boundGraphicsPipeline) {
+                return;
+            }
             const VulkanGraphicsPipeline *graphicsPipeline = static_cast<const VulkanGraphicsPipeline *>(interfacePipeline);
             vkCmdBindPipeline(vk, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline->vk);
+            boundGraphicsPipeline = interfacePipeline;
             break;
         }
         case VulkanPipeline::Type::Raytracing: {
+            if (interfacePipeline == boundRaytracingPipeline) {
+                return;
+            }
             const VulkanRaytracingPipeline *raytracingPipeline = static_cast<const VulkanRaytracingPipeline *>(interfacePipeline);
             vkCmdBindPipeline(vk, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, raytracingPipeline->vk);
+            boundRaytracingPipeline = interfacePipeline;
             break;
         }
         default:
@@ -3289,15 +3459,27 @@ namespace plume {
     }
 
     void VulkanCommandList::setFramebuffer(const RenderFramebuffer *framebuffer) {
-        endActiveRenderPass();
+        // Refii: skip the render-pass cycle when the target is not actually
+        // changing. Refii re-binds the framebuffer before EVERY draw, and this
+        // function used to end the active pass unconditionally, so a run of
+        // draws into one target paid a vkCmdEndRenderPass + vkCmdBeginRenderPass
+        // per draw and nothing in the stream could ever batch.
+        //
+        // Safe because the end here is only needed to CHANGE the target, never
+        // for another command's correctness: every command that must execute
+        // outside a render pass already ends it itself -- barriers(), copyBuffer,
+        // copyBufferRegion, copyTexture, copyTextureRegion and end(). And the
+        // cycle it removes was semantically a no-op: every attachment is created
+        // LOAD_OP_LOAD / STORE_OP_STORE (or the NONE_EXT read-only pair), so
+        // ending and re-beginning the same pass preserved contents exactly.
+        const VulkanFramebuffer *interfaceFramebuffer =
+            (framebuffer != nullptr) ? static_cast<const VulkanFramebuffer *>(framebuffer) : nullptr;
+        if (interfaceFramebuffer == targetFramebuffer) {
+            return;
+        }
 
-        if (framebuffer != nullptr) {
-            const VulkanFramebuffer *interfaceFramebuffer = static_cast<const VulkanFramebuffer *>(framebuffer);
-            targetFramebuffer = interfaceFramebuffer;
-        }
-        else {
-            targetFramebuffer = nullptr;
-        }
+        endActiveRenderPass();
+        targetFramebuffer = interfaceFramebuffer;
     }
 
     void VulkanCommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
@@ -3368,11 +3550,17 @@ namespace plume {
         if (clearDepth) {
             attachment.aspectMask |= VK_IMAGE_ASPECT_DEPTH_BIT;
         }
-        if (clearStencil) {
+        if (clearStencil && targetFramebuffer->depthAttachment != nullptr &&
+            RenderFormatIsStencil(
+                targetFramebuffer->depthAttachment->desc.format)) {
             attachment.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
         }
 
-        vkCmdClearAttachments(vk, 1, &attachment, uint32_t(rectVector.size()), rectVector.data());
+        if (attachment.aspectMask != 0) {
+            vkCmdClearAttachments(vk, 1, &attachment,
+                                  uint32_t(rectVector.size()),
+                                  rectVector.data());
+        }
     }
 
     void VulkanCommandList::copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) {
@@ -3491,16 +3679,23 @@ namespace plume {
         imageCopy.dstSubresource.aspectMask = toAspectFlags(dst->desc.format, dst->desc.flags);
         imageCopy.dstSubresource.baseArrayLayer = 0;
         imageCopy.dstSubresource.layerCount = 1;
-        imageCopy.extent.width = uint32_t(dst->desc.width);
-        imageCopy.extent.height = dst->desc.height;
         imageCopy.extent.depth = dst->desc.depth;
 
         assert(dst->desc.mipLevels > 0);
-        assert(src->desc.mipLevels == dst->desc.mipLevels);
 
-        for (uint32_t i = 0; i < dst->desc.mipLevels; i++) {
+        const uint32_t mipLevels = std::min(src->desc.mipLevels, dst->desc.mipLevels);
+        for (uint32_t i = 0; i < mipLevels; i++) {
             imageCopy.srcSubresource.mipLevel = i;
             imageCopy.dstSubresource.mipLevel = i;
+            imageCopy.extent.width = std::min(
+                std::max<uint32_t>(1, uint32_t(src->desc.width) >> i),
+                std::max<uint32_t>(1, uint32_t(dst->desc.width) >> i));
+            imageCopy.extent.height = std::min(
+                std::max<uint32_t>(1, uint32_t(src->desc.height) >> i),
+                std::max<uint32_t>(1, uint32_t(dst->desc.height) >> i));
+            imageCopy.extent.depth = std::min(
+                std::max<uint32_t>(1, src->desc.depth >> i),
+                std::max<uint32_t>(1, dst->desc.depth >> i));
             imageCopies.emplace_back(imageCopy);
         }
 
@@ -3684,6 +3879,42 @@ namespace plume {
         assert(pipelineLayout != nullptr);
         assert(descriptorSet != nullptr);
         assert(setIndex < pipelineLayout->descriptorSetLayouts.size());
+
+        // Refii: skip re-binding the identical set object at the same index
+        // with the same layout — binding is by object reference, so this is a
+        // semantic no-op (descriptor UPDATES are visible without re-binding).
+        // A bind through a DIFFERENT layout clears the cache: set
+        // compatibility rules can disturb higher-numbered bindings, so only
+        // same-layout history is trusted. No dynamic offsets are ever passed
+        // here, so offsets cannot make an identical bind meaningful.
+        BoundDescriptorSetCache *cache = nullptr;
+        switch (bindPoint) {
+        case VK_PIPELINE_BIND_POINT_COMPUTE:
+            cache = &boundComputeDescriptorSets;
+            break;
+        case VK_PIPELINE_BIND_POINT_GRAPHICS:
+            cache = &boundGraphicsDescriptorSets;
+            break;
+        case VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR:
+            cache = &boundRaytracingDescriptorSets;
+            break;
+        default:
+            break;
+        }
+        if (cache != nullptr) {
+            if (cache->layout != pipelineLayout) {
+                cache->layout = pipelineLayout;
+                for (uint32_t i = 0; i < BoundDescriptorSetCacheSize; i++) {
+                    cache->sets[i] = nullptr;
+                }
+            }
+            else if ((setIndex < BoundDescriptorSetCacheSize) && (cache->sets[setIndex] == descriptorSet)) {
+                return;
+            }
+            if (setIndex < BoundDescriptorSetCacheSize) {
+                cache->sets[setIndex] = descriptorSet;
+            }
+        }
 
         const VulkanDescriptorSet *interfaceSet = static_cast<const VulkanDescriptorSet *>(descriptorSet);
         vkCmdBindDescriptorSets(vk, bindPoint, pipelineLayout->vk, setIndex, 1, &interfaceSet->vk, 0, nullptr);
@@ -4829,20 +5060,31 @@ namespace plume {
         createInfo.enabledExtensionCount = uint32_t(enabledExtensions.size());
 
 #   ifdef VULKAN_VALIDATION_LAYER_ENABLED
-        // Search for validation layer and enabled it.
-        uint32_t layerCount;
-        vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+        // Refii: the validation layer is compiled in for every non-NDEBUG build,
+        // and Refii develops exclusively in Debug -- so every run was paying a
+        // layer that intercepts EVERY vkCmd* call, on a frame that issues
+        // hundreds of draws. Because the layer is requested explicitly here
+        // rather than loaded implicitly, VK_LOADER_LAYERS_DISABLE is not a
+        // reliable way to switch it off; the loader honours explicit requests.
+        // REFII_VULKAN_VALIDATION=0 skips the request itself, which is the only
+        // thing that actually keeps the layer out of the dispatch chain.
+        // Default stays ON so that "Debug" continues to mean validated.
+        if (RenderVulkanValidationRequested()) {
+            // Search for validation layer and enabled it.
+            uint32_t layerCount;
+            vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
 
-        std::vector<VkLayerProperties> availableLayers(layerCount);
-        vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
-        
-        const char validationLayerName[] = "VK_LAYER_KHRONOS_validation";
-        const char *enabledLayerNames[] = { validationLayerName };
-        for (const VkLayerProperties &layerProperties : availableLayers) {
-            if (strcmp(layerProperties.layerName, validationLayerName) == 0) {
-                createInfo.ppEnabledLayerNames = enabledLayerNames;
-                createInfo.enabledLayerCount = 1;
-                break;
+            std::vector<VkLayerProperties> availableLayers(layerCount);
+            vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+
+            const char validationLayerName[] = "VK_LAYER_KHRONOS_validation";
+            const char *enabledLayerNames[] = { validationLayerName };
+            for (const VkLayerProperties &layerProperties : availableLayers) {
+                if (strcmp(layerProperties.layerName, validationLayerName) == 0) {
+                    createInfo.ppEnabledLayerNames = enabledLayerNames;
+                    createInfo.enabledLayerCount = 1;
+                    break;
+                }
             }
         }
 #   endif
@@ -4854,6 +5096,25 @@ namespace plume {
         }
 
         volkLoadInstance(instance);
+
+        // Refii: now that the instance exists, attach a messenger so validation
+        // output reaches the host's sink instead of the loader's stderr default.
+        // Errors and warnings only — INFO/VERBOSE from the layer is enormous on
+        // a frame that issues hundreds of draws.
+        if (vkCreateDebugUtilsMessengerEXT != nullptr) {
+            VkDebugUtilsMessengerCreateInfoEXT messengerInfo = {};
+            messengerInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+            messengerInfo.messageSeverity =
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
+            messengerInfo.messageType =
+                VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+            messengerInfo.pfnUserCallback = debugUtilsMessengerCallback;
+            if (vkCreateDebugUtilsMessengerEXT(instance, &messengerInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
+                debugMessenger = VK_NULL_HANDLE;
+            }
+        }
 
         // Fill capabilities.
         capabilities.shaderFormat = RenderShaderFormat::SPIRV;
@@ -4877,6 +5138,11 @@ namespace plume {
     }
 
     VulkanInterface::~VulkanInterface() {
+        // Refii: the messenger must go before the instance that owns it.
+        if (debugMessenger != VK_NULL_HANDLE && vkDestroyDebugUtilsMessengerEXT != nullptr) {
+            vkDestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
+            debugMessenger = VK_NULL_HANDLE;
+        }
         if (instance != nullptr) {
             vkDestroyInstance(instance, nullptr);
         }

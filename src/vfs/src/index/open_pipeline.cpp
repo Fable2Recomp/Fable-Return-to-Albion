@@ -1793,6 +1793,7 @@ uint32_t ReadRefiiPrivateFileHandleBytes(uint8_t* base,
     return 0;
   }
 
+  const uint32_t original_requested_bytes = requested_bytes;
   requested_bytes = static_cast<uint32_t>(
       std::min<uint64_t>(requested_bytes, record->size - offset));
   record->file.clear();
@@ -1831,6 +1832,21 @@ uint32_t ReadRefiiPrivateFileHandleBytes(uint8_t* base,
   if (overlapped_guest == 0) {
     record->position = offset + total_read;
   }
+  if (IsRefiiPostLoadingMiddlewareVideoPath(record->virtual_path) &&
+      ShouldLogRepeatedVfsTraceOperation("MiddlewareBikPrivateRead", 512)) {
+    REXLOG_INFO("Refii VFS middleware BIK private read handle=0x{:08X} "
+                "path={} offset={} requested={} available_request={} "
+                "bytes_read={} size={} cursor={} overlapped=0x{:08X}",
+                handle,
+                record->virtual_path,
+                offset,
+                original_requested_bytes,
+                requested_bytes,
+                total_read,
+                record->size,
+                record->position,
+                overlapped_guest);
+  }
   const uint64_t read_end = offset + total_read;
   record->max_read_end = std::max<uint64_t>(record->max_read_end, read_end);
   if (!record->fully_read_reported && record->size != 0 &&
@@ -1866,8 +1882,6 @@ bool TryReadRefiiPrivateFileHandle(PPCContext& ctx,
     ctx.r3.u32 = 0;
     return true;
   }
-  const bool was_post_loading_middleware_complete =
-      RefiiPostLoadingMiddlewareVideoReadComplete();
   if (bytes_read_guest != 0) {
     StoreGuestU32(base, bytes_read_guest, 0);
   }
@@ -1879,49 +1893,6 @@ bool TryReadRefiiPrivateFileHandle(PPCContext& ctx,
   if (overlapped_guest != 0) {
     StoreGuestU32(base, overlapped_guest + 0, 0);
     StoreGuestU32(base, overlapped_guest + 4, bytes_read);
-  }
-  if (!was_post_loading_middleware_complete &&
-      RefiiPostLoadingMiddlewareVideoReadComplete() &&
-      IsRefiiPostLoadingMiddlewareVideoPath(record->virtual_path)) {
-    constexpr uint32_t kAfterHolderSingleton = 0x834C20B8u;
-    PPCContext holder_ctx = ctx;
-    holder_ctx.r3.u32 = kAfterHolderSingleton;
-    holder_ctx.r4.u32 = SelectRefiiPostLoadingAfterHolderRenderOwner();
-    holder_ctx.lr = static_cast<uint32_t>(ctx.lr);
-    const bool ready_marked = TryMarkRefiiPostLoadingAfterHolderReady(
-        holder_ctx,
-        base,
-        kAfterHolderSingleton,
-        "private_middleware_bik_read_complete");
-    const bool advanced =
-        !ready_marked && TryAdvanceRefiiPostLoadingAfterHolderMode4(
-                             holder_ctx,
-                             base,
-                             kAfterHolderSingleton,
-                             "private_middleware_bik_read_complete");
-    const bool finalized =
-        !ready_marked && !advanced &&
-        TryFinalizeRefiiOwnerlessPostLoadingAfterHolderState(
-            holder_ctx,
-            base,
-            kAfterHolderSingleton,
-            "private_middleware_bik_read_complete");
-    if (VfsTracingEnabled() ||
-        ShouldLogRepeatedVfsTraceOperation(
-            "PostLoadingMiddlewareBikAfterHolderKick", 8)) {
-      REXLOG_INFO("Refii VFS post-loading middleware BIK completion kick "
-                  "handle=0x{:08X} path={} ready_marked={} advanced={} "
-                  "finalized={} holder=[{}] handoff=[{}] main_menu=[{}]",
-                  handle,
-                  record->virtual_path,
-                  ready_marked ? "true" : "false",
-                  advanced ? "true" : "false",
-                  finalized ? "true" : "false",
-                  FormatRefiiPostLoadingAfterHolderState(
-                      base, kAfterHolderSingleton),
-                  FormatRefiiPostVideoHandoffTraceForLog(),
-                  FormatRefiiMainMenuBlockerTraceForLog());
-    }
   }
   ctx.r3.u32 = 1;
   return true;
@@ -2576,9 +2547,15 @@ bool LoadRefiiDirectoryEntryBinaryIndex(
       return false;
     }
 
-    const std::string parent = StripRefiiDataPrefix(parent_view);
+    // RFDIREN2 is emitted from normalized, data-prefix-stripped candidates by
+    // the extractor. Trust that contract here: renormalizing every parent and
+    // every child on the permanent-bank thread turns the 19 MB startup table
+    // into a multi-second residency stall before model/texture consumers run.
+    const std::string parent = trusted_presorted
+                                   ? std::string(parent_view)
+                                   : StripRefiiDataPrefix(parent_view);
     std::vector<RefiiPrivateFindEntry>* parent_entries = nullptr;
-    if (trusted_presorted && !IsInternalLooseAssetKey(parent)) {
+    if (trusted_presorted) {
       parent_entries = &index->entries_by_parent[parent];
       parent_entries->reserve(parent_entries->size() + entry_count);
     }
@@ -2598,8 +2575,7 @@ bool LoadRefiiDirectoryEntryBinaryIndex(
       }
       const bool directory = type == 'd';
       if (trusted_presorted) {
-        if (parent_entries != nullptr && !name.empty() &&
-            !IsInternalLooseAssetKey(name)) {
+        if (parent_entries != nullptr && !name.empty()) {
           parent_entries->push_back({std::string(name), directory, 0});
           if (directory) {
             ++index->directory_count;
@@ -3256,8 +3232,7 @@ void AddRefiiFindHostFiles(std::vector<RefiiPrivateFindEntry>* entries,
                            const std::filesystem::path& loose_root,
                            std::string_view parent,
                            std::string_view pattern) {
-  if (entries == nullptr || seen == nullptr ||
-      !IsRefiiFindAllowedFileParent(parent)) {
+  if (entries == nullptr || seen == nullptr || loose_root.empty()) {
     return;
   }
   const std::string stripped_parent = StripRefiiDataPrefix(parent);
@@ -3469,9 +3444,13 @@ std::vector<RefiiPrivateFindEntry> BuildRefiiFindEntries(std::string_view path) 
       AddRefiiIndexedDirectoryEntriesWithAliases(
           &entries, &seen, root, stripped_parent, pattern);
     }
-    if (!any_directory_index_authoritative && entries.empty()) {
-      for (const std::filesystem::path& root : loose_roots) {
-        AddRefiiFindHostFiles(&entries, &seen, root, stripped_parent, pattern);
+    // An authoritative base database must not hide new files supplied by a
+    // developer loose root or an enabled mod.  Only scan roots that do not
+    // have their own database; database-backed roots remain index-only.
+    for (const std::filesystem::path& root : loose_roots) {
+      if (!RefiiVfsDatabaseExists(root)) {
+        AddRefiiFindHostFilesWithAliases(
+            &entries, &seen, root, stripped_parent, pattern);
       }
     }
   }
@@ -3794,7 +3773,7 @@ void AddRefiiRequestManagerHashEntry(
   }
 
   entries.push_back({resource_hash,
-                     kRefiiRequestManagerProviderIndex,
+                     kRefiiRequestManagerGuestProviderIndex,
                      kRefiiRequestManagerEntryKey});
   added_hashes.insert(resource_hash);
   if (contributed != nullptr) {
@@ -4120,9 +4099,7 @@ std::string FormatTargetedTextureHashTableAudit(uint8_t* base) {
         matched = true;
         matched_provider_index = LoadGuestU32(base, entry_guest + 4);
         matched_entry_key = LoadGuestU32(base, entry_guest + 8);
-        matched_refii =
-            matched_provider_index == kRefiiRequestManagerProviderIndex &&
-            matched_entry_key == kRefiiRequestManagerEntryKey;
+        matched_refii = matched_entry_key == kRefiiRequestManagerEntryKey;
         break;
       }
 

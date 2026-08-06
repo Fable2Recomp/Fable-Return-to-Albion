@@ -27,10 +27,6 @@ inline bool TryRunRefiiFrontendRenderRequestInline(PPCContext& source_ctx,
   return TryRunRefiiFrontendRenderRequestInline(
       source_ctx, base, request_guest, api, true, false);
 }
-bool TryRunRefiiDeferredPostLoadingFrontendRequestOnRenderThread(
-    PPCContext& source_ctx,
-    uint8_t* base,
-    std::string_view api);
 bool RefiiFrontendRenderRequestInlineAlreadyCompleted(uint32_t request_guest);
 std::mutex& RefiiInlineFrontendRenderRequestMutex();
 std::unordered_set<uint32_t>& RefiiPostLoadingNativeFrontendRenderRuns();
@@ -58,46 +54,6 @@ void RecordRefiiPostLoadingMiddlewareVideoReadComplete(
     const RefiiPrivateFileHandleRecord& record,
     uint32_t handle,
     uint64_t read_end);
-bool TryAdvanceRefiiPostLoadingAfterHolderMode4(const PPCContext& source_ctx,
-                                                uint8_t* base,
-                                                uint32_t holder_guest,
-                                                std::string_view api);
-bool TryMarkRefiiPostLoadingAfterHolderReady(const PPCContext& source_ctx,
-                                             uint8_t* base,
-                                             uint32_t holder_guest,
-                                             std::string_view api);
-bool TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
-    const PPCContext& source_ctx,
-    uint8_t* base,
-    uint32_t holder_guest,
-    std::string_view api);
-inline bool TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
-    PPCContext& source_ctx,
-    uint8_t* base,
-    std::string_view api) {
-  return TryArmRefiiPostLoadingAfterHolderFromCompletedVfsChain(
-      source_ctx, base, 0, api);
-}
-bool TryReturnRefiiPostLoadingAfterHolderSingletonForCompletedVfsChain(
-    const PPCContext& source_ctx,
-    uint8_t* base,
-    uint32_t* out_holder_guest,
-    std::string_view api);
-bool TryCompleteRefiiPostLoadingAfterHolderForCompletedOwner(
-    const PPCContext& source_ctx,
-    uint8_t* base,
-    uint32_t holder_guest,
-    std::string_view api);
-bool TryCollapseRefiiPostLoadingAfterHolderMode2(
-    const PPCContext& source_ctx,
-    uint8_t* base,
-    uint32_t holder_guest,
-    std::string_view api);
-bool TryFinalizeRefiiOwnerlessPostLoadingAfterHolderState(
-    const PPCContext& source_ctx,
-    uint8_t* base,
-    uint32_t holder_guest,
-    std::string_view source_api);
 bool RefiiPostLoadingAfterHolderAlreadyConsumed(uint8_t* base,
                                                 uint32_t holder_guest);
 std::atomic<uint32_t>& RefiiPostLoadingAfterHolderMode5CleanedHolder();

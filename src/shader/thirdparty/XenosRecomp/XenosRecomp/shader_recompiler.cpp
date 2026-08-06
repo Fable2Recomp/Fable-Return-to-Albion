@@ -591,7 +591,30 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     std::string exportRegisterStorage;
     std::string_view exportRegister;
     bool hasResolvedExportRegister = false;
-    if (instr.exportData)
+    // Index of the eM# register this instruction exports to, or -1.
+    int32_t memexportDataRegister = -1;
+    if (instr.exportData && memexportEnabled &&
+        instr.vectorDest >= uint32_t(ExportRegister::ExportAddress) &&
+        instr.vectorDest <= uint32_t(ExportRegister::ExportData4))
+    {
+        // Memory export registers live in their own file - resolving them here
+        // (instead of letting them fall through to r32..r37) is what stops the
+        // export writes from being silently dropped, and stops them colliding
+        // with genuine uses of GPRs 32..37.
+        if (instr.vectorDest == uint32_t(ExportRegister::ExportAddress))
+        {
+            exportRegister = "eA";
+        }
+        else
+        {
+            memexportDataRegister =
+                int32_t(instr.vectorDest) - int32_t(ExportRegister::ExportData0);
+            exportRegisterStorage = fmt::format("eM{}", memexportDataRegister);
+            exportRegister = exportRegisterStorage;
+        }
+        hasResolvedExportRegister = true;
+    }
+    else if (instr.exportData)
     {
         if (isPixelShader)
         {
@@ -1100,6 +1123,16 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         }
     }
 
+    if (memexportDataRegister >= 0)
+    {
+        // Track which eM# were written by this invocation - the write can sit
+        // inside a predicate or a conditional exec, so the mask has to be a
+        // runtime value (the SDK keeps the same bitfield in
+        // system_temp_memexport_enabled_and_eM_written_.y).
+        indent();
+        println("eMWritten |= {}u;", 1u << uint32_t(memexportDataRegister));
+    }
+
     if (instr.scalarOpcode >= AluScalarOpcode::KillsEq && instr.scalarOpcode <= AluScalarOpcode::KillsOne)
     {
         indent();
@@ -1121,6 +1154,213 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     }
 }
 
+// Scans the control flow / ALU stream for Xenos memory exports before any code
+// is emitted, so the prologue knows whether to declare eA/eM# and pull in the
+// memexport runtime.
+//
+// Mirrors rexglue-sdk Shader::GatherAluInstructionInformation() and
+// ParsedAluInstruction::GetMemExportStreamConstant()
+// (rexglue-sdk/src/graphics/pipeline/shader/translator.cpp:500 and :1413).
+void ShaderRecompiler::analyzeMemoryExports(const uint8_t* shaderData)
+{
+    const auto shaderContainer = reinterpret_cast<const ShaderContainer*>(shaderData);
+    const auto shader = reinterpret_cast<const Shader*>(shaderData + shaderContainer->shaderOffset);
+    const be<uint32_t>* code = reinterpret_cast<const be<uint32_t>*>(
+        shaderData + shaderContainer->virtualSize + shader->physicalOffset);
+
+    union
+    {
+        ControlFlowInstruction controlFlow[2];
+        struct
+        {
+            uint32_t code0;
+            uint32_t code1;
+            uint32_t code2;
+            uint32_t code3;
+        };
+    };
+
+    // Clamp the control flow region exactly the way the emitting pass does, so
+    // the ALU scan below never walks off into instruction memory.
+    auto controlFlowCode = code;
+    uint32_t instrAddress = 0;
+    uint32_t instrSize = shader->size;
+
+    while (instrAddress < instrSize)
+    {
+        code0 = controlFlowCode[0];
+        code1 = controlFlowCode[1] & 0xFFFF;
+        code2 = (controlFlowCode[1] >> 16) | (controlFlowCode[2] << 16);
+        code3 = controlFlowCode[2] >> 16;
+
+        for (auto& cfInstr : controlFlow)
+        {
+            uint32_t address = 0;
+
+            switch (cfInstr.opcode)
+            {
+            case ControlFlowOpcode::Exec:
+            case ControlFlowOpcode::ExecEnd:
+                address = cfInstr.exec.address;
+                break;
+
+            case ControlFlowOpcode::CondExec:
+            case ControlFlowOpcode::CondExecEnd:
+            case ControlFlowOpcode::CondExecPredClean:
+            case ControlFlowOpcode::CondExecPredCleanEnd:
+                address = cfInstr.condExec.address;
+                break;
+
+            case ControlFlowOpcode::CondExecPred:
+            case ControlFlowOpcode::CondExecPredEnd:
+                address = cfInstr.condExecPred.address;
+                break;
+            }
+
+            if (address != 0)
+                instrSize = std::min<uint32_t>(instrSize, address * 12);
+        }
+
+        controlFlowCode += 3;
+        instrAddress += 12;
+    }
+
+    controlFlowCode = code;
+    instrAddress = 0;
+
+    while (instrAddress < instrSize)
+    {
+        code0 = controlFlowCode[0];
+        code1 = controlFlowCode[1] & 0xFFFF;
+        code2 = (controlFlowCode[1] >> 16) | (controlFlowCode[2] << 16);
+        code3 = controlFlowCode[2] >> 16;
+
+        for (auto& cfInstr : controlFlow)
+        {
+            uint32_t address = 0;
+            uint32_t count = 0;
+            uint32_t sequence = 0;
+
+            switch (cfInstr.opcode)
+            {
+            case ControlFlowOpcode::Exec:
+            case ControlFlowOpcode::ExecEnd:
+                address = cfInstr.exec.address;
+                count = cfInstr.exec.count;
+                sequence = cfInstr.exec.sequence;
+                break;
+
+            case ControlFlowOpcode::CondExec:
+            case ControlFlowOpcode::CondExecEnd:
+            case ControlFlowOpcode::CondExecPredClean:
+            case ControlFlowOpcode::CondExecPredCleanEnd:
+                address = cfInstr.condExec.address;
+                count = cfInstr.condExec.count;
+                sequence = cfInstr.condExec.sequence;
+                break;
+
+            case ControlFlowOpcode::CondExecPred:
+            case ControlFlowOpcode::CondExecPredEnd:
+                address = cfInstr.condExecPred.address;
+                count = cfInstr.condExecPred.count;
+                sequence = cfInstr.condExecPred.sequence;
+                break;
+            }
+
+            auto instructionCode = code + address * 3;
+
+            for (uint32_t i = 0; i < count; i++)
+            {
+                union
+                {
+                    AluInstruction alu;
+                    struct
+                    {
+                        uint32_t aluCode0;
+                        uint32_t aluCode1;
+                        uint32_t aluCode2;
+                    };
+                };
+
+                aluCode0 = instructionCode[0];
+                aluCode1 = instructionCode[1];
+                aluCode2 = instructionCode[2];
+
+                // Only ALU slots can export; fetch slots cannot.
+                if ((sequence & 0x1) == 0 && alu.exportData)
+                {
+                    const uint32_t dest = alu.vectorDest;
+                    if (dest == uint32_t(ExportRegister::ExportAddress))
+                    {
+                        // `mad eA, r#, const0100, c#` - the third operand is the
+                        // stream float4 constant. Every condition here comes from
+                        // GetMemExportStreamConstant().
+                        const bool isStreamConstantIdiom =
+                            alu.vectorOpcode == AluVectorOpcode::Mad &&
+                            alu.vectorWriteMask == 0b1111 &&
+                            !alu.vectorSaturate &&
+                            !alu.src3Select &&                  // a float constant, not a GPR
+                            !alu.src3Negate &&
+                            !alu.absConstants &&
+                            (alu.src3Swizzle & 0xFF) == 0 &&    // standard .xyzw swizzle
+                            !alu.const0Relative &&
+                            !alu.const1Relative;
+
+                        if (isStreamConstantIdiom)
+                        {
+                            const uint32_t streamConstant = alu.src3Register;
+                            if (std::find(memexportStreamConstants.begin(),
+                                          memexportStreamConstants.end(),
+                                          streamConstant) == memexportStreamConstants.end())
+                            {
+                                memexportStreamConstants.push_back(streamConstant);
+                            }
+                        }
+                        else
+                        {
+                            // Still exported at runtime (eA is decoded in the
+                            // shader), but the destination cannot be validated
+                            // ahead of time. Surfaced in the translator report.
+                            ++memexportUnresolvedAddressWrites;
+                        }
+                    }
+                    else if (dest >= uint32_t(ExportRegister::ExportData0) &&
+                             dest <= uint32_t(ExportRegister::ExportData4))
+                    {
+                        memexportEMWrittenMask |=
+                            1u << (dest - uint32_t(ExportRegister::ExportData0));
+                    }
+                }
+
+                sequence >>= 2;
+                instructionCode += 3;
+            }
+        }
+
+        controlFlowCode += 3;
+        instrAddress += 12;
+    }
+
+    // The SDK gates the whole memexport path on eM# actually being written -
+    // an eA write on its own exports nothing.
+    memexportEnabled = memexportEMWrittenMask != 0;
+}
+
+// Writes out the eM# registers accumulated since the last `alloc` (or since the
+// start of the shader). Mirrors DxbcShaderTranslator::ProcessAllocInstruction /
+// the memexport tail of CompleteShaderCode.
+void ShaderRecompiler::emitMemoryExportFlush()
+{
+    if (!memexportEnabled)
+        return;
+
+    indent();
+    out += "memexportFlush(g_MemoryExportWindowBase, g_MemoryExportWindowBytes, "
+           "eA, eMWritten, eM0, eM1, eM2, eM3, eM4);\n";
+    indent();
+    out += "eMWritten = 0u;\n";
+}
+
 void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_view& include)
 {
     const auto shaderContainer = reinterpret_cast<const ShaderContainer*>(shaderData);
@@ -1130,6 +1370,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     isPixelShader = (shaderContainer->flags & 0x1) == 0;
 
+    analyzeMemoryExports(shaderData);
+
+    println("#define REFII_MEMEXPORT_ENABLED {}", memexportEnabled ? 1 : 0);
+    println("#define REFII_MEMEXPORT_STREAMS {}",
+        memexportEnabled ? uint32_t(memexportStreamConstants.size()) : 0u);
     println("#define REFII_SHADER_STAGE_PIXEL {}", isPixelShader ? 1 : 0);
     out += include;
     out += "\n#undef REFII_SHADER_STAGE_PIXEL\n\n";
@@ -1319,6 +1564,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     }
 
     out += "\tDEFINE_SHARED_CONSTANTS();\n";
+    if (memexportEnabled)
+    {
+        // Only exporting shaders get the extra cbuffer fields, so every other
+        // blob's generated HLSL is byte-identical to before.
+        out += "\tDEFINE_MEMEXPORT_SHARED_CONSTANTS();\n";
+    }
+    if (!isPixelShader)
+    {
+        // D3D12 mirror of the tessellation slots (c35). Guarded so the normal
+        // variant's cbuffer is unchanged; only the .tess.<target>.bin compile
+        // (dxc -D REFII_TESSELLATION_VARIANT=1) sees the extra fields.
+        out += "#if REFII_TESSELLATION_VARIANT\n";
+        out += "\tDEFINE_TESSELLATION_SHARED_CONSTANTS();\n";
+        out += "#endif\n";
+    }
     out += "};\n\n";
 
     out += "#endif\n";
@@ -1497,6 +1757,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         }
     #endif
 
+        // Tessellation-variant inputs (see REFII_TESSELLATION_VARIANT in
+        // shader_common.h). SPIR-V/DXIL builtins, so no vk::location or input
+        // slot is consumed; the normal variant's signature is unchanged.
+        out += "#if REFII_TESSELLATION_VARIANT\n";
+        out += "\tin uint iVertexId : SV_VertexID,\n";
+        out += "\tin uint iInstanceId : SV_InstanceID,\n";
+        out += "#endif\n";
+
         out += "\tout float4 oPos : SV_Position";
 
         for (auto& [usage, usageIndex] : INTERPOLATORS)
@@ -1641,6 +1909,36 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     {
         if (!printedRegisters[i])
         {
+#ifndef UNLEASHED_RECOMP  // Unleashed's hasIndexCount path owns VS r0 below.
+            if (!isPixelShader && i == 0)
+            {
+                // Xenos tessellation input contract (IDA: terrain 0x82207AF8 /
+                // water 0x8221C898 tess draws bind NO vertex streams; the guest
+                // VS reads only r0.x = patch index, r0.yz = domain UV and does
+                // its own grid-cell decode + vertex-texture fetches):
+                //   r0.x = patch index  = SV_InstanceID + VGT_INDX_OFFSET
+                //   r0.y = domain U     = (vid % (N+1)) / N
+                //   r0.z = domain V     = (vid / (N+1)) / N
+                //   r1.x = 0.0          (third quad-patch weight; satisfied by
+                //                        the normal zero init of r1 below)
+                // N and the index offset arrive via SharedConstants bytes
+                // 560/564 (shader_common.h). N==0 (runtime not wired) clamps to
+                // a 1x1 grid instead of dividing by zero. The body translation
+                // is identical in both variants.
+                out += "#if REFII_TESSELLATION_VARIANT\n";
+                out += "\tuint refiiTessFactor = max(g_TessellationFactor, 1u);\n";
+                out += "\tfloat4 r0 = float4(\n";
+                out += "\t\tfloat(iInstanceId) + float(g_TessellationIndexOffset),\n";
+                out += "\t\tfloat(iVertexId % (refiiTessFactor + 1u)) / float(refiiTessFactor),\n";
+                out += "\t\tfloat(iVertexId / (refiiTessFactor + 1u)) / float(refiiTessFactor),\n";
+                out += "\t\t0.0);\n";
+                out += "#else\n";
+                out += "\tfloat4 r0 = 0.0;\n";
+                out += "#endif\n";
+                continue;
+            }
+#endif
+
             print("\tfloat4 r{} = ", i);
             if (isPixelShader && i == ((shader->fieldC >> 8) & 0xFF))
             {
@@ -1663,6 +1961,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     out += "\tint aL = 0;\n";
     out += "\tbool p0 = false;\n";
     out += "\tfloat ps = 0.0;\n";
+
+    if (memexportEnabled)
+    {
+        // The export registers are a separate file from the 64 GPRs - shaders
+        // such as vshader_decal_memexport use r32..r37 as ordinary registers as
+        // well as exporting through eA/eM0..eM4, so they must not alias.
+        out += "\tfloat4 eA = 0.0;\n";
+        for (uint32_t i = 0; i < 5; i++)
+            println("\tfloat4 eM{} = 0.0;", i);
+        out += "\tuint eMWritten = 0u;\n";
+    }
     if (isPixelShader)
     {
 #ifdef UNLEASHED_RECOMP
@@ -1874,12 +2183,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     }
                     else
                     {
-                        auto findResult = boolConstants.find(cfInstr.condJmp.boolAddress);
+                        // Pixel shaders address the unified Xenos bool space at
+                        // 128+, while the constant table (and the runtime's
+                        // g_Booleans packing) uses 0-based per-stage registers.
+                        uint32_t boolRegister = cfInstr.condJmp.boolAddress;
+                        if (isPixelShader && boolRegister >= 128)
+                            boolRegister -= 128;
+
+                        auto findResult = boolConstants.find(boolRegister);
                         if (findResult != boolConstants.end())
                             println("if ((g_Booleans & {}) {}= 0)", findResult->second, cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
                         else
                             println("if ((g_Booleans & (1u << {})) {}= 0)",
-                                uint32_t(cfInstr.condJmp.boolAddress),
+                                boolRegister + (isPixelShader ? 16u : 0u),
                                 cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
                     }
 
@@ -1899,6 +2215,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 }
                 break;
             }
+
+            case ControlFlowOpcode::Alloc:
+                // Every `alloc` closes the previous memory export: the eM#
+                // registers written since the last alloc belong to the stream
+                // whose constant is still sitting in eA. Same flush point the
+                // SDK uses in DxbcShaderTranslator::ProcessAllocInstruction.
+                emitMemoryExportFlush();
+                break;
             }
 
             auto instructionCode = code + address * 3;
@@ -1976,6 +2300,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             if (shouldReturn)
             {
+                // Anything still pending in eM# is exported at shader exit.
+                emitMemoryExportFlush();
+
                 if (isPixelShader)
                 {
                     specConstantsMask |= SPEC_CONSTANT_ALPHA_TEST;

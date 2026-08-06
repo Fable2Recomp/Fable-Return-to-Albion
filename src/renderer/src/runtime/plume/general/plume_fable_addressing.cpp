@@ -1,7 +1,13 @@
+#include "runtime/refii_renderer/plume/general/plume_fable_addressing.h"
+
 #include "runtime/plume/resource/plume_resource_manager_internal.h"
 
 namespace refii::renderer {
 namespace {
+
+constexpr uint32_t kFableObjectAddressMin = 0x40000000u;
+constexpr uint32_t kFableObjectAddressMax = 0x80000000u;
+constexpr uint32_t kMaxFableScratchUploadSnapshotSize = 16u << 20;
 
 #if REFII_RENDERER_HAS_PLUME
 void AddFableDisplayBaseCandidate(std::array<uint32_t, 4>& candidates,
@@ -25,29 +31,73 @@ void AddFableDisplayBaseCandidate(std::array<uint32_t, 4>& candidates,
 
 }  // namespace
 
-#if REFII_RENDERER_HAS_PLUME
-bool IsFableResolveCopyDraw(const RendererDrawEventSnapshot& draw_event) {
-  constexpr uint32_t kXenosEdramModeCopy = 6u;
-  return draw_event.pm4_registers_valid &&
-         (draw_event.rb_modecontrol & 0x7u) == kXenosEdramModeCopy;
+bool IsLikelyFableObjectAddress(uint32_t guest_address) {
+  return guest_address >= kFableObjectAddressMin &&
+         guest_address < kFableObjectAddressMax &&
+         (guest_address & (alignof(uint32_t) - 1u)) == 0;
 }
+
+bool IsLikelyFableGpuByteBufferRange(uint32_t guest_address, uint32_t size) {
+  return guest_address >= 0x1000u && guest_address < kFableObjectAddressMin &&
+         size != 0 && size <= kMaxFableScratchUploadSnapshotSize;
+}
+
+bool IsLikelyFableHighScratchByteBufferRange(uint32_t guest_address,
+                                             uint32_t size) {
+  return guest_address >= 0x80000000u &&
+         (guest_address & (alignof(uint32_t) - 1u)) == 0 && size != 0 &&
+         size <= kMaxFableScratchUploadSnapshotSize;
+}
+
+#if REFII_RENDERER_HAS_PLUME
 
 uint32_t NormalizeFableResolveDestinationBase(uint32_t destination_base) {
   return destination_base & ~0xFFFu;
 }
 
+uint32_t NormalizeFableGpuAddress(uint32_t pointer) {
+  if (pointer >= 0x41000000u && pointer < 0x50000000u) {
+    return pointer - 0x41000000u;
+  }
+  if (pointer >= 0x40000000u && pointer < 0x41000000u) {
+    return pointer - 0x40000000u;
+  }
+  return pointer;
+}
+
 uint32_t NormalizeFableGpuBase(uint32_t base) {
-  if (base >= 0x41000000u && base < 0x50000000u) {
-    return base - 0x41000000u;
-  }
-  if (base >= 0x40000000u && base < 0x41000000u) {
-    return base - 0x40000000u;
-  }
-  return base;
+  return NormalizeFableGpuAddress(base);
+}
+
+uint32_t DecodeFableGpuMemoryPointer(uint32_t pointer) {
+  return (((pointer >> 20u) + 512u) & 0x1000u) +
+         (pointer & 0x1FFFFFFFu);
+}
+
+uint32_t DecodeFableGpuBufferPointer(uint32_t pointer) {
+  return DecodeFableGpuMemoryPointer(pointer & ~3u);
 }
 
 uint32_t DecodeFableGpuBase(uint32_t base) {
-  return (((base >> 20u) + 512u) & 0x1000u) + (base & 0x1FFFFFFFu);
+  return DecodeFableGpuMemoryPointer(base);
+}
+
+bool IsFableGuestPhysicalAddress(uint32_t address) {
+  // Xenos physical memory is 512MB. Anything at or above 0x20000000 already
+  // carries a view prefix (0x40 virtual, 0x80/0x90 xex, 0xA0/0xC0/0xE0
+  // physical views) and must be left alone.
+  return address != 0 && address < 0x20000000u;
+}
+
+uint32_t FableGuestPhysicalViewAddress(uint32_t address) {
+  if (!IsFableGuestPhysicalAddress(address)) {
+    return address;
+  }
+  // 0xC0000000 and not 0xE0000000: the 0xE0 view is mapped from file offset
+  // 0x100001000 (rexglue xmemory.cpp map_info), so guest 0xE0000000+P reaches
+  // physical P+0x1000 — one 4KB page PAST the intended texel. The 0xC0 view
+  // is mapped at 0x100000000 with no skew, so 0xC0000000|P is exactly P.
+  return 0xC0000000u | address;
 }
 
 std::array<uint32_t, 4> FableDisplayBaseCandidates(uint32_t base) {
@@ -63,26 +113,6 @@ std::array<uint32_t, 4> FableDisplayBaseCandidates(uint32_t base) {
   return candidates;
 }
 
-bool FableDisplayBasesMatch(uint32_t lhs, uint32_t rhs) {
-  if (lhs == 0 || rhs == 0) {
-    return false;
-  }
-  const std::array<uint32_t, 4> lhs_candidates =
-      FableDisplayBaseCandidates(lhs);
-  const std::array<uint32_t, 4> rhs_candidates =
-      FableDisplayBaseCandidates(rhs);
-  for (uint32_t lhs_candidate : lhs_candidates) {
-    if (lhs_candidate == 0) {
-      continue;
-    }
-    for (uint32_t rhs_candidate : rhs_candidates) {
-      if (rhs_candidate != 0 && lhs_candidate == rhs_candidate) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
 
 const FableRenderTargetResolveAlias* FindFableResolveAliasLocked(
     uint32_t destination_base) {

@@ -251,6 +251,24 @@ bool ResolveOriginalGameDataAsset(std::string_view asset_path,
     add_candidate("data/" + normalized);
   }
 
+  // The guest's patch-language layer opens patch_text paths even when the
+  // title update contains no replacement. Native VFS then resolves the base
+  // language carrier from text/. Keep direct disc-file ownership consistent
+  // with the synthetic VFS/hash candidate builder, which already applies the
+  // same alias.
+  constexpr std::string_view kPatchTextSegment = "/patch_text/";
+  const size_t patch_text = normalized.find(kPatchTextSegment);
+  if (patch_text != std::string::npos &&
+      patch_text + kPatchTextSegment.size() < normalized.size()) {
+    const std::string base_text =
+        normalized.substr(0, patch_text) + "/text/" +
+        normalized.substr(patch_text + kPatchTextSegment.size());
+    add_candidate(base_text);
+    if (!StartsWith(base_text, "data/")) {
+      add_candidate("data/" + base_text);
+    }
+  }
+
   for (const std::string& candidate : candidates) {
     const std::filesystem::path host_path =
         ResolveCaseInsensitiveExistingPath(game_root, candidate);

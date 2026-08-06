@@ -86,19 +86,6 @@ inline bool MaybeSignalRefiiPostGameFacePackageHandoff(
   return MaybeSignalRefiiPostGameFacePackageHandoff(
       source_ctx, base, asset_path, stream_guest, true);
 }
-bool TryPrimeRefiiPostFrontendGameFacePackage(
-    const PPCContext& source_ctx,
-    uint8_t* base,
-    const ActiveFrontendTextureConsumerTraceContext& consumer_trace,
-    std::string_view api);
-bool MaybeSignalRefiiFrontendDeferredHashWakeHandoff(
-    const PPCContext& source_ctx,
-    uint8_t* base,
-    std::string_view api);
-bool TryRunPostVideoFrontendSyntheticHandoff(PPCContext& source_ctx,
-                                             uint8_t* base,
-                                             uint32_t root_guest,
-                                             std::string_view api);
 std::string FormatFrontendTextureConsumerTraceForLog(
     const ActiveFrontendTextureConsumerTraceContext& trace);
 std::string FrontendTextureConsumerNextBoundary(

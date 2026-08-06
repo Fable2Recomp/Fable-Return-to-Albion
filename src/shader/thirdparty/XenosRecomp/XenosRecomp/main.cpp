@@ -61,6 +61,26 @@ static void writeAllBytes(const char* filePath, const void* data, size_t dataSiz
     fclose(file);
 }
 
+static void translateSingleShaderFile(const char* input,
+                                      const char* output,
+                                      const std::string_view& include,
+                                      XenosRecompTranslationStats* stats)
+{
+    ShaderRecompiler recompiler;
+    size_t fileSize = 0;
+    auto data = readAllBytes(input, fileSize);
+    recompiler.recompile(data.get(), include);
+    writeAllBytes(output, recompiler.out.data(), recompiler.out.size());
+
+    if (stats != nullptr)
+    {
+        stats->memexportEnabled = recompiler.memexportEnabled ? 1u : 0u;
+        stats->memexportStreams = static_cast<uint32_t>(recompiler.memexportStreamConstants.size());
+        stats->memexportDataRegisterMask = recompiler.memexportEMWrittenMask;
+        stats->memexportUnresolvedAddressWrites = recompiler.memexportUnresolvedAddressWrites;
+    }
+}
+
 struct RecompiledShader
 {
     uint8_t* data = nullptr;
@@ -249,23 +269,24 @@ int XenosRecompEntrypoint(int argc, char** argv)
     }
     else
     {
-        ShaderRecompiler recompiler;
-        size_t fileSize;
-        recompiler.recompile(readAllBytes(input, fileSize).get(), include);
-        writeAllBytes(output, recompiler.out.data(), recompiler.out.size());
+        translateSingleShaderFile(input, output, include, nullptr);
     }
 
     return 0;
 }
 
-extern "C" bool XenosRecompTranslateToHlsl(
+extern "C" bool XenosRecompTranslateToHlslEx(
     const char* inputPath,
     const char* outputPath,
     const char* shaderCommonPath,
+    XenosRecompTranslationStats* stats,
     const char** errorMessage) {
     thread_local std::string lastError;
     if (errorMessage != nullptr) {
         *errorMessage = nullptr;
+    }
+    if (stats != nullptr) {
+        *stats = XenosRecompTranslationStats{};
     }
 
     if (inputPath == nullptr || outputPath == nullptr || shaderCommonPath == nullptr) {
@@ -274,6 +295,24 @@ extern "C" bool XenosRecompTranslateToHlsl(
             *errorMessage = lastError.c_str();
         }
         return false;
+    }
+
+    // Single-blob translation is the path refii drives, and the only one that
+    // can report per-shader memexport facts. Directories still go through the
+    // shader-cache entrypoint.
+    if (stats != nullptr && !std::filesystem::is_directory(inputPath)) {
+        size_t includeSize = 0;
+        auto includeData = readAllBytes(shaderCommonPath, includeSize);
+        if (includeData == nullptr) {
+            if (errorMessage != nullptr) {
+                lastError = std::string("failed to read shader common header: ") + shaderCommonPath;
+                *errorMessage = lastError.c_str();
+            }
+            return false;
+        }
+        std::string_view include(reinterpret_cast<const char*>(includeData.get()), includeSize);
+        translateSingleShaderFile(inputPath, outputPath, include, stats);
+        return true;
     }
 
     char* args[4];
@@ -292,6 +331,15 @@ extern "C" bool XenosRecompTranslateToHlsl(
     }
 
     return true;
+}
+
+extern "C" bool XenosRecompTranslateToHlsl(
+    const char* inputPath,
+    const char* outputPath,
+    const char* shaderCommonPath,
+    const char** errorMessage) {
+    return XenosRecompTranslateToHlslEx(
+        inputPath, outputPath, shaderCommonPath, nullptr, errorMessage);
 }
 
 int main(int argc, char** argv) {
