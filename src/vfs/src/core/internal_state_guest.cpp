@@ -535,6 +535,17 @@ size_t TryCopyGuestBytes(uint8_t* base, uint32_t guest_address, void* dst,
 #endif
 }
 
+bool TryLoadGuestU32(uint8_t* base, uint32_t guest_address, uint32_t* out) {
+  uint8_t bytes[4] = {};
+  if (TryCopyGuestBytes(base, guest_address, bytes, sizeof(bytes)) !=
+      sizeof(bytes)) {
+    return false;
+  }
+  *out = (uint32_t(bytes[0]) << 24) | (uint32_t(bytes[1]) << 16) |
+         (uint32_t(bytes[2]) << 8) | uint32_t(bytes[3]);
+  return true;
+}
+
 uint16_t LoadGuestU16(uint8_t* base, uint32_t guest_address) {
   const auto* ptr = rex::memory::GuestPtr<uint8_t*>(base, guest_address);
   return static_cast<uint16_t>((uint16_t(ptr[0]) << 8) | uint16_t(ptr[1]));
@@ -941,11 +952,18 @@ std::string ReadGuestWideStringObject(uint8_t* base,
       return {};
     }
 
+    std::vector<uint8_t> scratch(size_t(length) * 2u);
+    const size_t readable =
+        TryCopyGuestBytes(base, data_guest, scratch.data(), scratch.size());
     std::string value;
     value.reserve(length);
     for (uint32_t index = 0; index < length; ++index) {
-      const uint16_t code_unit = LoadGuestU16(
-          base, data_guest + static_cast<uint32_t>(index * 2));
+      if (size_t(index) * 2u + 1u >= readable) {
+        break;
+      }
+      const uint16_t code_unit =
+          static_cast<uint16_t>((uint16_t(scratch[index * 2u]) << 8) |
+                                uint16_t(scratch[index * 2u + 1u]));
       if (code_unit == 0) {
         break;
       }
@@ -968,11 +986,18 @@ std::string ReadGuestWideStringObject(uint8_t* base,
 
     const size_t bounded_chars = std::min<size_t>(
         max_chars, (kGuestStringDataCeiling - data_guest) / 2u);
+    std::vector<uint8_t> scratch(std::min<size_t>(bounded_chars, 4096) * 2u);
+    const size_t readable =
+        TryCopyGuestBytes(base, data_guest, scratch.data(), scratch.size());
     std::string value;
     value.reserve(std::min<size_t>(bounded_chars, 256));
     for (size_t index = 0; index < bounded_chars; ++index) {
-      const uint16_t code_unit = LoadGuestU16(
-          base, data_guest + static_cast<uint32_t>(index * 2));
+      if (index * 2u + 1u >= readable) {
+        break;
+      }
+      const uint16_t code_unit =
+          static_cast<uint16_t>((uint16_t(scratch[index * 2u]) << 8) |
+                                uint16_t(scratch[index * 2u + 1u]));
       if (code_unit == 0) {
         break;
       }
@@ -988,10 +1013,15 @@ std::string ReadGuestWideStringObject(uint8_t* base,
     return value;
   };
 
-  const uint32_t ref_string_guest = LoadGuestU32(base, object_guest);
-  if (ref_string_guest >= 0x10000 && ref_string_guest < 0x90000000) {
-    const uint32_t data_guest = LoadGuestU32(base, ref_string_guest);
-    const uint32_t length = LoadGuestU32(base, ref_string_guest + 4);
+  uint32_t ref_string_guest = 0;
+  if (TryLoadGuestU32(base, object_guest, &ref_string_guest) &&
+      ref_string_guest >= 0x10000 && ref_string_guest < 0x90000000) {
+    uint32_t data_guest = 0;
+    uint32_t length = 0;
+    if (!TryLoadGuestU32(base, ref_string_guest, &data_guest) ||
+        !TryLoadGuestU32(base, ref_string_guest + 4, &length)) {
+      return {};
+    }
     std::string value = read_wide(data_guest, length);
     if (!value.empty()) {
       return value;
@@ -1003,20 +1033,31 @@ std::string ReadGuestWideStringObject(uint8_t* base,
     }
   }
 
-  std::string value =
-      read_wide(LoadGuestU32(base, object_guest), LoadGuestU32(base, object_guest + 4));
+  uint32_t head_data_guest = 0;
+  uint32_t head_length = 0;
+  if (!TryLoadGuestU32(base, object_guest, &head_data_guest) ||
+      !TryLoadGuestU32(base, object_guest + 4, &head_length)) {
+    return {};
+  }
+  std::string value = read_wide(head_data_guest, head_length);
   if (!value.empty()) {
     return value;
   }
 
-  const uint32_t length = LoadGuestU32(base, object_guest + 20);
-  const uint32_t capacity = LoadGuestU32(base, object_guest + 24);
+  uint32_t length = 0;
+  uint32_t capacity = 0;
+  if (!TryLoadGuestU32(base, object_guest + 20, &length) ||
+      !TryLoadGuestU32(base, object_guest + 24, &capacity)) {
+    return {};
+  }
   if (length == 0 || length > max_chars || capacity > 0x100000) {
     return read_wide_cstr(object_guest);
   }
 
-  const uint32_t data_guest =
-      capacity >= 8 ? LoadGuestU32(base, object_guest + 4) : object_guest + 4;
+  uint32_t data_guest = object_guest + 4;
+  if (capacity >= 8 && !TryLoadGuestU32(base, object_guest + 4, &data_guest)) {
+    return {};
+  }
   if (data_guest == 0) {
     return {};
   }
@@ -1086,28 +1127,38 @@ std::string ReadGuestAsciiStringObject(uint8_t* base,
     return value;
   };
 
-  const uint32_t ref_string_guest = LoadGuestU32(base, object_guest);
-  if (ref_string_guest >= 0x10000 && ref_string_guest < 0x90000000) {
-    const uint32_t data_guest = LoadGuestU32(base, ref_string_guest);
-    const uint32_t length = LoadGuestU32(base, ref_string_guest + 4);
-    std::string value = read_ascii(data_guest, length);
-    if (!value.empty()) {
-      return value;
-    }
-    value = read_ascii_cstr(data_guest);
-    if (!value.empty()) {
-      return value;
+  uint32_t ref_string_guest = 0;
+  if (TryLoadGuestU32(base, object_guest, &ref_string_guest) &&
+      ref_string_guest >= 0x10000 && ref_string_guest < 0x90000000) {
+    uint32_t data_guest = 0;
+    uint32_t length = 0;
+    if (TryLoadGuestU32(base, ref_string_guest, &data_guest) &&
+        TryLoadGuestU32(base, ref_string_guest + 4, &length)) {
+      std::string value = read_ascii(data_guest, length);
+      if (!value.empty()) {
+        return value;
+      }
+      value = read_ascii_cstr(data_guest);
+      if (!value.empty()) {
+        return value;
+      }
     }
   }
 
-  const uint32_t length = LoadGuestU32(base, object_guest + 20);
-  const uint32_t capacity = LoadGuestU32(base, object_guest + 24);
+  uint32_t length = 0;
+  uint32_t capacity = 0;
+  if (!TryLoadGuestU32(base, object_guest + 20, &length) ||
+      !TryLoadGuestU32(base, object_guest + 24, &capacity)) {
+    return {};
+  }
   if (length == 0 || length > max_chars || capacity > 0x100000) {
     return {};
   }
 
-  const uint32_t data_guest =
-      capacity >= 16 ? LoadGuestU32(base, object_guest + 4) : object_guest + 4;
+  uint32_t data_guest = object_guest + 4;
+  if (capacity >= 16 && !TryLoadGuestU32(base, object_guest + 4, &data_guest)) {
+    return {};
+  }
   std::string value = read_ascii(data_guest, length);
   if (!value.empty()) {
     return value;
@@ -1122,11 +1173,18 @@ std::string ReadGuestWideCString(uint8_t* base,
     return {};
   }
 
+  std::vector<uint8_t> scratch(std::min<size_t>(max_chars, 4096) * 2u);
+  const size_t readable =
+      TryCopyGuestBytes(base, string_guest, scratch.data(), scratch.size());
   std::string value;
   value.reserve(std::min<size_t>(max_chars, 256));
   for (size_t index = 0; index < max_chars; ++index) {
-    const uint16_t code_unit = LoadGuestU16(
-        base, string_guest + static_cast<uint32_t>(index * sizeof(uint16_t)));
+    if (index * 2u + 1u >= readable) {
+      break;
+    }
+    const uint16_t code_unit =
+        static_cast<uint16_t>((uint16_t(scratch[index * 2u]) << 8) |
+                              uint16_t(scratch[index * 2u + 1u]));
     if (code_unit == 0) {
       break;
     }
