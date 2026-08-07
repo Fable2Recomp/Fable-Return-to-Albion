@@ -76,6 +76,73 @@ set_target_properties(${LAUNCHER_TARGET} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${LAUNCHER_OUTPUT_DIR}"
 )
 
+set(LAUNCHER_OPS_TARGET refii_launcher_ops)
+set(LAUNCHER_OPS_SOURCES
+    src/abi/launcher_ops_c_api.cpp
+    src/installer/installer.cpp
+    src/installer/xiso_extractor.cpp
+    src/core/runtime_settings.cpp
+    src/core/utils/filedownloader.cpp
+    src/core/utils/githubapi.cpp
+    src/core/utils/versionmanager.cpp
+    vendors/imgui/imgui.cpp
+    vendors/imgui/imgui_draw.cpp
+    vendors/imgui/imgui_tables.cpp
+    vendors/imgui/imgui_widgets.cpp
+)
+if(WIN32)
+    list(APPEND LAUNCHER_OPS_SOURCES src/windows/platform.cpp)
+else()
+    list(APPEND LAUNCHER_OPS_SOURCES src/linux/platform.cpp)
+endif()
+
+add_library(${LAUNCHER_OPS_TARGET} SHARED ${LAUNCHER_OPS_SOURCES})
+
+target_include_directories(${LAUNCHER_OPS_TARGET} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/generated/glad/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/utils
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendors/imgui
+    ${CMAKE_SOURCE_DIR}/src/abi/include
+)
+
+target_link_libraries(${LAUNCHER_OPS_TARGET} PRIVATE
+    glfw
+    refii_modding
+    refii_bnk_extractor
+)
+
+if(TARGET refii_lua_decompiler_workspace)
+    target_link_libraries(${LAUNCHER_OPS_TARGET} PRIVATE refii_lua_decompiler_workspace)
+endif()
+if(TARGET refii_shader_sbk_workspace)
+    target_link_libraries(${LAUNCHER_OPS_TARGET} PRIVATE refii_shader_sbk_workspace)
+endif()
+
+if(WIN32)
+    target_link_libraries(${LAUNCHER_OPS_TARGET} PRIVATE
+        comdlg32.lib
+        dwmapi.lib
+        ole32.lib
+        shell32.lib
+        shlwapi.lib
+        winhttp.lib
+    )
+endif()
+
+set_target_properties(${LAUNCHER_OPS_TARGET} PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    POSITION_INDEPENDENT_CODE ON
+    OUTPUT_NAME refii_launcher_ops
+    LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN"
+)
+
 target_include_directories(${LAUNCHER_TARGET} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/generated/glad/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -49,4 +49,6 @@ void CloseProcessHandle(ProcessHandle& handle);
 std::filesystem::path GetExecutablePath();
 std::filesystem::path GetExecutableDirectory();
 
+void SetExecutableDirectoryOverride(const std::filesystem::path& directory);
+
 }  // namespace Platform

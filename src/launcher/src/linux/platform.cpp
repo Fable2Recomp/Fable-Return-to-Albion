@@ -607,7 +607,19 @@ void CloseProcessHandle(ProcessHandle& handle) {
     handle.nativeHandle = nullptr;
 }
 
+std::filesystem::path& ExecutableDirectoryOverride() {
+    static std::filesystem::path override_path;
+    return override_path;
+}
+
+void SetExecutableDirectoryOverride(const std::filesystem::path& directory) {
+    ExecutableDirectoryOverride() = directory;
+}
+
 std::filesystem::path GetExecutableDirectory() {
+    if (!ExecutableDirectoryOverride().empty()) {
+        return ExecutableDirectoryOverride();
+    }
     std::array<char, PATH_MAX> buffer = {};
     const ssize_t length = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
     if (length <= 0) {

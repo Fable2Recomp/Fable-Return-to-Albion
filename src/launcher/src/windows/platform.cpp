@@ -633,7 +633,19 @@ std::filesystem::path GetExecutablePath() {
     return std::filesystem::path(buffer);
 }
 
+std::filesystem::path& ExecutableDirectoryOverride() {
+    static std::filesystem::path override_path;
+    return override_path;
+}
+
+void SetExecutableDirectoryOverride(const std::filesystem::path& directory) {
+    ExecutableDirectoryOverride() = directory;
+}
+
 std::filesystem::path GetExecutableDirectory() {
+    if (!ExecutableDirectoryOverride().empty()) {
+        return ExecutableDirectoryOverride();
+    }
     wchar_t buffer[MAX_PATH] = {};
     const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
     if (length == 0) {

@@ -1485,6 +1485,17 @@ bool PublishDirectGlobalsFilesForVfsIndex(const std::filesystem::path& unpacked_
         return true;
     }
 
+    // On case-insensitive filesystems (Windows, default macOS) "Globals" and
+    // "globals" name the same directory, so there is nothing to canonicalize and
+    // every copy below would be a file onto itself.
+    std::error_code equivalent_error;
+    if (std::filesystem::exists(destination_root, equivalent_error) &&
+        std::filesystem::equivalent(source_root, destination_root, equivalent_error) &&
+        !equivalent_error) {
+        return true;
+    }
+    equivalent_error.clear();
+
     std::error_code create_error;
     std::filesystem::create_directories(destination_root, create_error);
     if (create_error) {
@@ -1541,6 +1552,14 @@ bool PublishDirectGlobalsFilesForVfsIndex(const std::filesystem::path& unpacked_
                 continue;
             }
         }
+
+        std::error_code same_file_error;
+        if (std::filesystem::exists(destination_path, same_file_error) &&
+            std::filesystem::equivalent(it->path(), destination_path, same_file_error) &&
+            !same_file_error) {
+            continue;
+        }
+        same_file_error.clear();
 
         std::error_code copy_error;
         std::filesystem::copy_file(it->path(),

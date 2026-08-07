@@ -431,3 +431,7 @@ src/Shader/processed/
 /assets/game/data
 /assets/assets/save
 /assets/unpacked/
+/assets
+
+# Local working notes (not for pushing)
+/NEXT.md

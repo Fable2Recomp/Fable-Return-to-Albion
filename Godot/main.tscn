@@ -1,8 +1,101 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene format=3 uid="uid://do5ascqc6uxdl"]
 
-[ext_resource type="Script" path="res://src/LauncherApp.cs" id="1_launcher"]
+[ext_resource type="Script" path="res://src/launcher/LauncherApp.cs" id="1_launcher"]
+[ext_resource type="Texture2D" uid="uid://da210bysxbaqm" path="res://assets/launcher/backgrounds/01.png" id="2_7mycd"]
+[ext_resource type="Script" path="res://src/launcher/settings/SettingsPanel.cs" id="2_settings"]
+[ext_resource type="FontFile" uid="uid://tc55nxxw33ga" path="res://assets/launcher/fable2.ttf" id="3_272bh"]
+[ext_resource type="Script" path="res://src/launcher/mods/ModdingPanel.cs" id="3_modding"]
+[ext_resource type="Script" path="res://src/launcher/reinstall/ReinstallPanel.cs" id="4_reinstall"]
 
-[node name="Main" type="Control"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_5vw27"]
+bg_color = Color(0.0057, 0.0165, 0.030000001, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_kek77"]
+bg_color = Color(0.35, 0.06999999, 0.06999999, 0.54)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.6, 0, 0, 0.5)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4c57u"]
+bg_color = Color(0.019599998, 0.042, 0.07, 0.54)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.120000005, 0.48000002, 0.23999998, 0.5)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_efxa6"]
+bg_color = Color(0.18200003, 0.56, 0.30799997, 0.4)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dg77c"]
+bg_color = Color(0.16900001, 0.52, 0.28599995, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_ycdy4"]
+bg_color = Color(0.16000001, 0.64000005, 0.32, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_w48qg"]
+bg_color = Color(0.3, 0.3, 0.3, 0.5)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_vivmo"]
+bg_color = Color(0.019599998, 0.042, 0.07, 0.54)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.120000005, 0.48000002, 0.23999998, 0.5)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_2cqfq"]
+content_margin_left = 6.0
+content_margin_top = 2.0
+content_margin_right = 6.0
+content_margin_bottom = 2.0
+bg_color = Color(0.00456, 0.013199999, 0.024, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_yaehf"]
+content_margin_left = 8.0
+content_margin_top = 3.0
+content_margin_right = 8.0
+content_margin_bottom = 3.0
+bg_color = Color(0.025199996, 0.053999994, 0.089999996, 0.86)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.120000005, 0.48000002, 0.23999998, 0.5)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_074og"]
+content_margin_left = 8.0
+content_margin_top = 3.0
+content_margin_right = 8.0
+content_margin_bottom = 3.0
+bg_color = Color(0.16000001, 0.64000005, 0.32, 0.8)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.120000005, 0.48000002, 0.23999998, 0.5)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_cegan"]
+content_margin_left = 8.0
+content_margin_top = 3.0
+content_margin_right = 8.0
+content_margin_bottom = 3.0
+bg_color = Color(0.15080002, 0.464, 0.25519997, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.120000005, 0.48000002, 0.23999998, 0.5)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+
+[node name="Main" type="Control" unique_id=1264879237]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -10,3 +103,224 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_launcher")
+
+[node name="Background" type="TextureRect" parent="." unique_id=381088725]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = ExtResource("2_7mycd")
+expand_mode = 1
+stretch_mode = 6
+
+[node name="BackgroundNext" type="TextureRect" parent="." unique_id=943743730]
+modulate = Color(1, 1, 1, 0)
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+expand_mode = 1
+stretch_mode = 6
+
+[node name="MenuBar" type="Panel" parent="." unique_id=113473174]
+layout_mode = 0
+offset_right = 1280.0
+offset_bottom = 26.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_5vw27")
+
+[node name="MenuRow" type="HBoxContainer" parent="MenuBar" unique_id=1290549344]
+layout_mode = 0
+offset_left = 6.0
+offset_right = 300.0
+offset_bottom = 26.0
+theme_override_constants/separation = 4
+
+[node name="FileMenu" type="MenuButton" parent="MenuBar/MenuRow" unique_id=1459756267]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_fonts/font = ExtResource("3_272bh")
+theme_override_font_sizes/font_size = 18
+text = "File"
+item_count = 8
+popup/item_0/text = "Set Install Folder"
+popup/item_0/id = 0
+popup/item_1/text = "Uninstall"
+popup/item_1/id = 1
+popup/item_2/id = -1
+popup/item_2/separator = true
+popup/item_3/text = "Verify Lua Workspace"
+popup/item_3/id = 3
+popup/item_4/text = "Reset All Lua Files"
+popup/item_4/id = 4
+popup/item_5/text = "Reset Lua File..."
+popup/item_5/id = 5
+popup/item_6/id = -1
+popup/item_6/separator = true
+popup/item_7/text = "Close"
+popup/item_7/id = 7
+
+[node name="AboutMenu" type="MenuButton" parent="MenuBar/MenuRow" unique_id=353850046]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_fonts/font = ExtResource("3_272bh")
+theme_override_font_sizes/font_size = 18
+text = "About"
+item_count = 2
+popup/item_0/text = "Fable 2 Recompiled"
+popup/item_0/id = 0
+popup/item_1/text = "RexGlue"
+popup/item_1/id = 1
+
+[node name="ArtCredit" type="Label" parent="." unique_id=1900001001]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 580.0
+offset_right = 830.0
+offset_bottom = 606.0
+visible = false
+mouse_filter = 2
+theme_override_fonts/font = ExtResource("3_272bh")
+theme_override_font_sizes/font_size = 17
+
+[node name="WarningPanel" type="Panel" parent="." unique_id=1039540127]
+layout_mode = 0
+offset_top = 608.0
+offset_right = 840.0
+offset_bottom = 652.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_kek77")
+
+[node name="WarningLabel" type="Label" parent="WarningPanel" unique_id=1313589438]
+layout_mode = 0
+offset_left = 10.0
+offset_right = 830.0
+offset_bottom = 44.0
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_fonts/font = ExtResource("3_272bh")
+theme_override_font_sizes/font_size = 18
+text = "Fable 2 Recompiled is not intended to be fully playable yet."
+vertical_alignment = 1
+
+[node name="ActionPanel" type="Panel" parent="." unique_id=1159979176]
+layout_mode = 0
+offset_top = 652.0
+offset_right = 840.0
+offset_bottom = 760.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_4c57u")
+
+[node name="ProgressTrack" type="TextureRect" parent="ActionPanel"]
+layout_mode = 0
+offset_top = 10.0
+offset_right = 840.0
+offset_bottom = 98.0
+visible = false
+mouse_filter = 2
+stretch_mode = 1
+
+[node name="ProgressClip" type="Control" parent="ActionPanel"]
+layout_mode = 0
+offset_top = 10.0
+offset_right = 840.0
+offset_bottom = 98.0
+visible = false
+mouse_filter = 2
+clip_contents = true
+
+[node name="ProgressFill" type="TextureRect" parent="ActionPanel/ProgressClip"]
+layout_mode = 0
+offset_right = 840.0
+offset_bottom = 88.0
+mouse_filter = 2
+stretch_mode = 1
+
+[node name="PrimaryButton" type="Button" parent="ActionPanel" unique_id=452318710]
+layout_mode = 0
+offset_top = 10.0
+offset_right = 840.0
+offset_bottom = 98.0
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_colors/font_disabled_color = Color(1, 1, 1, 1)
+theme_override_fonts/font = ExtResource("3_272bh")
+theme_override_font_sizes/font_size = 30
+theme_override_styles/normal = SubResource("StyleBoxFlat_efxa6")
+theme_override_styles/pressed = SubResource("StyleBoxFlat_dg77c")
+theme_override_styles/hover = SubResource("StyleBoxFlat_ycdy4")
+theme_override_styles/disabled = SubResource("StyleBoxFlat_w48qg")
+text = "Install Fable 2"
+
+[node name="InfoPanel" type="Panel" parent="." unique_id=238176640]
+layout_mode = 0
+offset_left = 840.0
+offset_top = 26.0
+offset_right = 1280.0
+offset_bottom = 760.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_vivmo")
+
+[node name="InfoColumn" type="VBoxContainer" parent="InfoPanel" unique_id=1757504070]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 10.0
+offset_top = 8.0
+offset_right = -10.0
+offset_bottom = -10.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 6
+
+[node name="InfoTitle" type="Label" parent="InfoPanel/InfoColumn" unique_id=1029795349]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_fonts/font = ExtResource("3_272bh")
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("StyleBoxFlat_2cqfq")
+text = "Launcher Info"
+
+[node name="InfoTabs" type="TabBar" parent="InfoPanel/InfoColumn" unique_id=194145473]
+layout_mode = 2
+theme_override_colors/font_selected_color = Color(1, 1, 1, 1)
+theme_override_colors/font_unselected_color = Color(1, 1, 1, 1)
+theme_override_constants/h_separation = 4
+theme_override_fonts/font = ExtResource("3_272bh")
+theme_override_font_sizes/font_size = 18
+theme_override_styles/tab_unselected = SubResource("StyleBoxFlat_yaehf")
+theme_override_styles/tab_hovered = SubResource("StyleBoxFlat_074og")
+theme_override_styles/tab_selected = SubResource("StyleBoxFlat_cegan")
+current_tab = 0
+tab_count = 5
+tab_0/title = "Change Log"
+tab_1/title = "Credits"
+tab_2/title = "Reinstall"
+tab_3/title = "Modding"
+tab_4/title = "Settings"
+
+[node name="InfoBody" type="RichTextLabel" parent="InfoPanel/InfoColumn" unique_id=806957867]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_colors/default_color = Color(1, 1, 1, 1)
+text = "Loading commits from GitHub..."
+
+[node name="SettingsPanel" type="VBoxContainer" parent="InfoPanel/InfoColumn" unique_id=527388159]
+visible = false
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 6
+script = ExtResource("2_settings")
+
+[node name="ModdingPanel" type="VBoxContainer" parent="InfoPanel/InfoColumn" unique_id=1250263370]
+visible = false
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 6
+script = ExtResource("3_modding")
+
+[node name="ReinstallPanel" type="VBoxContainer" parent="InfoPanel/InfoColumn" unique_id=335484158]
+visible = false
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 8
+script = ExtResource("4_reinstall")
