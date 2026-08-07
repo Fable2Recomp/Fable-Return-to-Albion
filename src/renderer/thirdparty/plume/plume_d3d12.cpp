@@ -770,9 +770,83 @@ namespace plume {
         }
     }
 
+    // Set REFII_D3D12_DEBUG_LAYER=1 to turn on D3D12 validation at runtime and
+    // route its messages to stderr. A device lost to DXGI_ERROR_INVALID_CALL
+    // only names the offending call through the validation layer.
+    static bool d3d12DebugLayerRequested() {
+        const char *value = std::getenv("REFII_D3D12_DEBUG_LAYER");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }
+
     static void setObjectName(ID3D12Object *object, const std::string &name) {
+        if (object == nullptr) {
+            return;
+        }
+
         const std::wstring wideCharName = Utf8ToUtf16(name);
         object->SetName(wideCharName.c_str());
+    }
+
+    // Reports why the device was lost, including the DRED auto-breadcrumb of
+    // the last GPU operations and the page-fault address when one is present.
+    // Only the first loss is reported; afterwards every D3D12 call fails and
+    // repeating the dump would bury it.
+    static void reportDeviceRemoved(ID3D12Device *device, const char *context) {
+        static bool alreadyReported = false;
+        if (alreadyReported || device == nullptr) {
+            return;
+        }
+
+        alreadyReported = true;
+        const HRESULT reason = device->GetDeviceRemovedReason();
+        fprintf(stderr, "=== plume device removed (%s) reason 0x%lX ===\n", context, reason);
+
+        ID3D12DeviceRemovedExtendedData *dred = nullptr;
+        if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dred)))) {
+            fprintf(stderr, "DRED unavailable; rerun with DRED enabled for breadcrumbs.\n");
+            return;
+        }
+
+        D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs = {};
+        if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs))) {
+            const D3D12_AUTO_BREADCRUMB_NODE *node = breadcrumbs.pHeadAutoBreadcrumbNode;
+            uint32_t nodeIndex = 0;
+            while (node != nullptr && nodeIndex < 8) {
+                const uint32_t executed = (node->pLastBreadcrumbValue != nullptr) ? *node->pLastBreadcrumbValue : 0;
+                fprintf(stderr, "  breadcrumb node %u: cmdlist='%ls' queue='%ls' executed %u of %u ops\n", nodeIndex,
+                    (node->pCommandListDebugNameW != nullptr) ? node->pCommandListDebugNameW : L"<unnamed>",
+                    (node->pCommandQueueDebugNameW != nullptr) ? node->pCommandQueueDebugNameW : L"<unnamed>", executed,
+                    node->BreadcrumbCount);
+
+                // The op at the executed index is the one that did not finish.
+                if (node->pCommandHistory != nullptr && executed < node->BreadcrumbCount) {
+                    fprintf(stderr, "    faulting op index %u = D3D12_AUTO_BREADCRUMB_OP %u\n", executed,
+                        static_cast<uint32_t>(node->pCommandHistory[executed]));
+                }
+
+                node = node->pNext;
+                nodeIndex++;
+            }
+        }
+
+        D3D12_DRED_PAGE_FAULT_OUTPUT pageFault = {};
+        if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&pageFault))) {
+            fprintf(stderr, "  page fault VA 0x%llX\n", static_cast<unsigned long long>(pageFault.PageFaultVA));
+            for (const D3D12_DRED_ALLOCATION_NODE *alloc = pageFault.pHeadExistingAllocationNode; alloc != nullptr;
+                 alloc = alloc->pNext) {
+                fprintf(stderr, "    existing allocation '%ls' type %u\n",
+                    (alloc->ObjectNameW != nullptr) ? alloc->ObjectNameW : L"<unnamed>",
+                    static_cast<uint32_t>(alloc->AllocationType));
+            }
+            for (const D3D12_DRED_ALLOCATION_NODE *alloc = pageFault.pHeadRecentFreedAllocationNode; alloc != nullptr;
+                 alloc = alloc->pNext) {
+                fprintf(stderr, "    recently freed '%ls' type %u\n",
+                    (alloc->ObjectNameW != nullptr) ? alloc->ObjectNameW : L"<unnamed>",
+                    static_cast<uint32_t>(alloc->AllocationType));
+            }
+        }
+
+        dred->Release();
     }
 
     // D3D12DescriptorHeapAllocator
@@ -2274,6 +2348,14 @@ namespace plume {
         assert(targetFramebuffer->depthHandle.ptr != 0);
         assert((clearRectsCount == 0) || (clearRects != nullptr));
 
+        // A framebuffer without a depth attachment has a null handle, which
+        // setFramebuffer already treats as valid. Passing it to
+        // ClearDepthStencilView is an invalid call that costs the device, and
+        // the assert above is compiled out in release builds.
+        if (targetFramebuffer == nullptr || targetFramebuffer->depthHandle.ptr == 0) {
+            return;
+        }
+
         checkFramebufferSamplePositions();
 
         thread_local std::vector<D3D12_RECT> rectVector;
@@ -2825,6 +2907,9 @@ namespace plume {
         HRESULT res = device->allocator->CreateResource(&allocationDesc, &resourceDesc, resourceStates, nullptr, &allocation, IID_PPV_ARGS(&d3d));
         if (FAILED(res)) {
             fprintf(stderr, "CreateResource failed with error code 0x%lX.\n", res);
+            if (res == DXGI_ERROR_DEVICE_REMOVED || res == DXGI_ERROR_DEVICE_RESET) {
+                reportDeviceRemoved(device->d3d, "D3D12Buffer::CreateResource");
+            }
             return;
         }
     }
@@ -3815,6 +3900,27 @@ namespace plume {
 
                 adapter = adapterOption;
                 d3d = deviceOption;
+
+                if (d3d12DebugLayerRequested()) {
+                    ID3D12InfoQueue1 *infoQueue = nullptr;
+                    if (SUCCEEDED(d3d->QueryInterface(IID_PPV_ARGS(&infoQueue)))) {
+                        DWORD callbackCookie = 0;
+                        infoQueue->RegisterMessageCallback(
+                            [](D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id,
+                                LPCSTR description, void *) {
+                                if (severity <= D3D12_MESSAGE_SEVERITY_WARNING) {
+                                    fprintf(stderr, "D3D12 %s [%u]: %s\n",
+                                        (severity == D3D12_MESSAGE_SEVERITY_CORRUPTION)  ? "CORRUPTION"
+                                            : (severity == D3D12_MESSAGE_SEVERITY_ERROR) ? "ERROR"
+                                                                                         : "WARNING",
+                                        static_cast<uint32_t>(id), description);
+                                }
+                            },
+                            D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &callbackCookie);
+                        infoQueue->Release();
+                    }
+                }
+
                 shaderModel = dataShaderModel.HighestShaderModel;
                 capabilities.geometryShader = true;
                 capabilities.raytracing = rtSupportOption;
@@ -4246,6 +4352,25 @@ namespace plume {
     D3D12Interface::D3D12Interface() {
         // Create DXGI Factory.
         UINT dxgiFactoryFlags = 0;
+
+        // Device-removed extended data must be armed before the device exists,
+        // otherwise a GPU fault gives no breadcrumb to read back.
+        ID3D12DeviceRemovedExtendedDataSettings *dredSettings = nullptr;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSettings)))) {
+            dredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dredSettings->Release();
+        }
+
+        if (d3d12DebugLayerRequested()) {
+            ID3D12Debug *runtimeDebugController = nullptr;
+            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&runtimeDebugController)))) {
+                runtimeDebugController->EnableDebugLayer();
+                runtimeDebugController->Release();
+                dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+                fprintf(stderr, "plume: D3D12 debug layer enabled by REFII_D3D12_DEBUG_LAYER.\n");
+            }
+        }
 
 #   ifdef D3D12_DEBUG_LAYER_ENABLED
         ID3D12Debug1 *debugController;

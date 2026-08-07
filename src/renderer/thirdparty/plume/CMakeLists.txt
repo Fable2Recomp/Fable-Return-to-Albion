@@ -102,6 +102,7 @@ if(WIN32)
     target_include_directories(plume PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/contrib/D3D12MemoryAllocator/include
     )
+    target_link_libraries(plume PUBLIC d3d12 dxgi)
 endif()
 
 if(PLUME_SDL_VULKAN_ENABLED)

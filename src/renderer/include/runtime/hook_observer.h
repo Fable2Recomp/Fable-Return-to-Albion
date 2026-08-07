@@ -300,10 +300,6 @@ std::string FormatFeedCensus();
 // Returns true when the record has content afterwards.
 bool NotifyFableScratchDrawInputMissing(uint32_t buffer_address);
 RendererHookObserverSnapshot GetRendererHookObserverSnapshot();
-// Execute-time guest-memory read (bounded, try_lock): used to pull scratch
-// ring payloads that were written after their Begin hook captured.
-std::vector<uint8_t> CopyRendererGuestBytes(uint32_t guest_address,
-                                            uint32_t byte_count);
 // Sample-time revalidation for CPU-authored textures (plain CPU writes fire
 // no hook): re-captures the record from its own fetch dwords. Returns true
 // when content changed. `caller` tags decline-reason logs (nullptr callers
