@@ -1195,18 +1195,32 @@ struct FableShaderObject {
 
 FableShaderObject ResolveFableShaderObjectFromWrapper(uint8_t *guest_base,
                                                       uint32_t wrapper) {
+  static std::atomic<uint32_t> logged_drops{0};
+  const auto log_drop = [&](const char *cause, uint32_t object,
+                            uint32_t common) {
+    const uint32_t n = logged_drops.fetch_add(1, std::memory_order_relaxed);
+    if (n < 16u) {
+      REXLOG_INFO(
+          "Refii GTL Fable shader create DROPPED #{} cause={} wrapper=0x{:08X} "
+          "object=0x{:08X} common=0x{:08X}",
+          n + 1u, cause, wrapper, object, common);
+    }
+  };
   FableShaderObject resolved;
   if (guest_base == nullptr || wrapper == 0) {
+    log_drop("null_wrapper", 0u, 0u);
     return resolved;
   }
   if (!refii::renderer::bink::IsReadableGuestByteRange(guest_base, wrapper,
                                                        12u)) {
+    log_drop("wrapper_unreadable", 0u, 0u);
     return resolved;
   }
   const uint32_t object =
       refii::renderer::bink::LoadGuestU32(guest_base, wrapper + 8u);
   if (object == 0 || !refii::renderer::bink::IsReadableGuestByteRange(
                          guest_base, object, 4u)) {
+    log_drop("object_unreadable", object, 0u);
     return resolved;
   }
   const uint32_t common =
@@ -1221,6 +1235,7 @@ FableShaderObject ResolveFableShaderObjectFromWrapper(uint8_t *guest_base,
     default:
       // Not a shader object: leave object 0 so the caller counts a dropped
       // create instead of registering a mystery address.
+      log_drop("stage_tag", object, common);
       return resolved;
   }
   resolved.object = object;
@@ -1481,6 +1496,16 @@ void RegisterCreateLocked(ResourceKind kind, uint32_t object,
       if (!PopulateShaderFromContainerLocked(resource, pending.guest_base,
                                              container)) {
         PopulateShaderFromObjectLocked(resource, pending.guest_base, object);
+      }
+      static uint32_t logged_shader_creates = 0;
+      if (logged_shader_creates < 8u) {
+        REXLOG_INFO(
+            "Refii GTL shader create #{} kind={} object=0x{:08X} "
+            "container=0x{:08X} container_size={} hash=0x{:016X}",
+            ++logged_shader_creates,
+            kind == ResourceKind::kVertexShader ? "vertex" : "pixel", object,
+            resource.shader_container_address, resource.shader_container_size,
+            resource.shader_bytecode_hash);
       }
       break;
     }

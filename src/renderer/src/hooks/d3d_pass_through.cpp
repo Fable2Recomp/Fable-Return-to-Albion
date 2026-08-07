@@ -492,7 +492,12 @@ REFII_RENDERER_RESOURCE_HOOK(rex_lhTexture_Create) // Lumen: D3DDevice_CreateSur
 REFII_RENDERER_RESOURCE_HOOK(rex_lhGfx_SetupRenderTargets)
 REFII_RENDERER_RESOURCE_HOOK(sub_82B6F040) // IDA: Fable presentation/depth scratch setup
 REFII_RENDERER_RESOURCE_HOOK(sub_82B6F5C8) // IDA: Fable presentation/depth scratch teardown
-REFII_RENDERER_GENERAL_HOOK(sub_821A5BD0) // IDA: Fable scene stream publish cursor sync
+REX_EXTERN(sub_821A5BD0) { // IDA: Fable scene stream publish cursor sync
+  REX_FUNC_PROLOGUE();
+  refii::renderer::NoteFableProducerPublishSpin(
+      static_cast<uint32_t>(ctx.lr));
+  __imp__sub_821A5BD0(ctx, base);
+}
 REFII_RENDERER_GENERAL_HOOK(sub_821A59E0) // IDA: Fable scene stream publish marker
 // REMOVED 2026-07-28 — THESE TWO ARE SPIN-LOOP PREDICATES. DO NOT RE-ADD.
 //

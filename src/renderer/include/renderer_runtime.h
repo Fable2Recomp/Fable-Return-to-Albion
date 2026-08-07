@@ -241,6 +241,7 @@ void OnRendererGuestHookExit(const char* symbol, RendererHookKind kind,
                              const FableHookSymbolDesc* desc);
 void RepairFableSceneStreamPublishHandoffForWait(const char* reason,
                                                  uint8_t* base);
+void NoteFableProducerPublishSpin(uint32_t lr);
 // Diagnostic counters for the guest GUI quad-batch pipeline stages
 // (queue append sub_82A5AA98 / enable+prep sub_822AA0A0 / dispatcher
 // sub_821CA5E8); logged by the traversal counter dump.

@@ -12407,6 +12407,15 @@ void RendererWaitProbeNote(const char *symbol, const RendererHookArgs &args,
       args, is_enter);
 }
 
+void NoteFableProducerPublishSpin(uint32_t lr) {
+  static const int probe_index =
+      RendererWaitProbeIndexForSymbol("sub_821A5BD0");
+  RendererHookArgs args{};
+  args.lr = lr;
+  RendererWaitProbeNoteIndexed(probe_index, args, true);
+  RendererWaitProbeNoteIndexed(probe_index, args, false);
+}
+
 // ---------------------------------------------------------------------------
 // FableHookSymbolDesc: per-call-site descriptor resolution.
 //
