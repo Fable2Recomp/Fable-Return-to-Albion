@@ -123,6 +123,9 @@ public partial class LauncherApp : Control
 		if (!Engine.IsEditorHint())
 		{
 			DisplayServer.WindowSetTitle(LauncherTheme.WindowTitle);
+			ApplyWindowIcon();
+			WindowEffects.Apply();
+			CallDeferred(MethodName.ReapplyWindowTitle);
 		}
 
 		Resized += ApplyLayout;
@@ -244,6 +247,32 @@ public partial class LauncherApp : Control
 		}
 
 		Ini.Load(writePath);
+	}
+
+	private void ReapplyWindowTitle()
+	{
+		DisplayServer.WindowSetTitle(LauncherTheme.WindowTitle);
+	}
+
+	private static void ApplyWindowIcon()
+	{
+		string external = LauncherPaths.GetLauncherAssetPath("icon.png");
+		if (File.Exists(external))
+		{
+			Image external_image = Image.LoadFromFile(external);
+			if (external_image is not null)
+			{
+				DisplayServer.SetIcon(external_image);
+				return;
+			}
+		}
+
+		var bundled = ResourceLoader.Load<Texture2D>("res://assets/launcher/icon.png");
+		Image? image = bundled?.GetImage();
+		if (image is not null)
+		{
+			DisplayServer.SetIcon(image);
+		}
 	}
 
 	private Font? LoadLauncherFont()
