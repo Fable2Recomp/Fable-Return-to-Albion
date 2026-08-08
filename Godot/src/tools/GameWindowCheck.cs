@@ -43,8 +43,15 @@ public partial class GameWindowCheck : Node
 		// The window is attached on a deferred call and its _Ready runs then, so nothing
 		// about it is true yet on the frame Open returned. Wait for it to be in the tree
 		// rather than guessing at a frame count.
-		if (!_closing && (_window is null || !IsInstanceValid(_window)))
+		if (_window is null || !IsInstanceValid(_window))
 		{
+			if (_closing)
+			{
+				// Freed by the close we asked for; the post-close check still has to run.
+				CheckAfterClose();
+				return;
+			}
+
 			GD.Print("[window] the window went away before it was attached.");
 			GetTree().Quit(1);
 			return;
