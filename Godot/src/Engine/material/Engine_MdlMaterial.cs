@@ -40,7 +40,7 @@ public static class Engine_MdlMaterial
         if (albedo is not null && DiffuseHasAlpha(material.Diffuse))
         {
             result.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-            result.AlphaScissorThreshold = 0.5f;
+            result.AlphaScissorThreshold = 0.25f;
         }
 
         if (normal is not null)
@@ -87,12 +87,16 @@ public static class Engine_MdlMaterial
         }
 
         byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(name.Replace('\\', '/').TrimStart('/'));
-        if (bytes is null || !Engine_TexData.TryParseChain(bytes, out var mips, out _) || mips.Count == 0)
+        if (bytes is null || !TexHeader.TryParse(bytes, out TexHeader header, out _))
         {
             return false;
         }
 
-        return mips[0].CompFlag is 1 or 11;
+        TexSurfaceFormat format = header.BlockStride == 16
+            ? (header.CodecId == 3 ? TexSurfaceFormat.Bc5 : TexSurfaceFormat.Bc3)
+            : header.SurfaceFormat;
+
+        return format is TexSurfaceFormat.Bc3 or TexSurfaceFormat.Rgba8;
     }
 
     private static Texture2D? TryLoad(string name)

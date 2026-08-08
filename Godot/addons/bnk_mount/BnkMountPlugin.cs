@@ -14,12 +14,22 @@ public partial class BnkMountPlugin : EditorPlugin
     private const string RootLabel = "Game://";
     private const string PlaceholderMeta = "__bnk_placeholder__";
     private const string RootMeta = "__bnk_root__";
+    private const string DatabaseRootMeta = "__bnk_database_root__";
+    private const string LevelsRootMeta = "__bnk_levels_root__";
+    private const string LevelRegionPrefix = "lvlregion:";
+    private const string LevelPrefix = "lvl:";
     private const string ContainerMeta = "__bnk_container__";
     private const string FilePrefix = "game://";
 
     private BnkFileSystem? _filesystem;
     private Refii.Textures.Engine_BnkTextureLoader? _textureLoader;
     private Refii.Models.Engine_BnkMeshLoader? _meshLoader;
+    private Refii.Audio.Engine_BnkAudioLoader? _audioLoader;
+    private Refii.Gdb.Engine_BnkGdbLoader? _gdbLoader;
+    private Refii.Level.Engine_BnkTerrainLoader? _terrainLoader;
+    private Refii.Level.Engine_BnkTerrainAlbedoLoader? _albedoLoader;
+    private Refii.Level.Engine_BnkTerrainMaterialLoader? _terrainMaterialLoader;
+    private Dictionary<string, string>? _byFileName;
     private Tree? _tree;
     private TreeItem? _gameRoot;
     private bool _mounting;
@@ -68,6 +78,7 @@ public partial class BnkMountPlugin : EditorPlugin
             }
 
             _filesystem = mounted;
+            _byFileName = null;
             _mounting = false;
             CallDeferred(nameof(Inject));
         });
@@ -102,12 +113,57 @@ public partial class BnkMountPlugin : EditorPlugin
         }
     }
 
+    private string? HeightfieldForEhf(string ehfVirtualPath)
+    {
+        foreach (Refii.Level.LevelEntry level in Levels())
+        {
+            if (level.MainEhfPath.Equals(ehfVirtualPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return level.HeightfieldPath;
+            }
+        }
+
+        return null;
+    }
+
+    private string? FindByFileName(string fileName)
+    {
+        if (_filesystem is null)
+        {
+            return null;
+        }
+
+        if (_byFileName is null)
+        {
+            _byFileName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (BnkFile file in _filesystem.EnumerateAllFiles())
+            {
+                string path = file.VirtualPath;
+                int slash = path.LastIndexOf('/');
+                string name = slash < 0 ? path : path[(slash + 1)..];
+                if (name.Length != 0)
+                {
+                    _byFileName.TryAdd(name, path);
+                }
+            }
+        }
+
+        return _byFileName.TryGetValue(fileName, out string? found) ? found : null;
+    }
+
     private void EnsureLoaders()
     {
         Refii.Textures.Engine_BnkTextureLoader.SetResolver(ResolveBytes);
         Refii.Models.Engine_BnkMeshLoader.SetResolver(ResolveBytes);
         Refii.Models.Engine_BnkMeshLoader.SetExistsProbe(
             p => _filesystem is not null && _filesystem.TryGetFile(p, out _));
+        Refii.Audio.Engine_BnkAudioLoader.SetResolver(ResolveBytes);
+        Refii.Gdb.Engine_BnkGdbLoader.SetResolver(ResolveBytes);
+        Refii.Level.Engine_BnkTerrainLoader.SetResolver(ResolveBytes);
+        Refii.Level.Engine_BnkTerrainAlbedoLoader.SetResolver(ResolveBytes);
+        Refii.Level.Engine_BnkTerrainAlbedoLoader.SetHeightfieldLookup(HeightfieldForEhf);
+        Refii.Level.Engine_BnkTerrainMaterialLoader.SetResolver(ResolveBytes);
+        Refii.Level.Engine_BnkTerrainMaterialLoader.SetNameLookup(FindByFileName);
 
         if (_textureLoader is null)
         {
@@ -119,6 +175,36 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             _meshLoader = new Refii.Models.Engine_BnkMeshLoader();
             ResourceLoader.AddResourceFormatLoader(_meshLoader);
+        }
+
+        if (_audioLoader is null)
+        {
+            _audioLoader = new Refii.Audio.Engine_BnkAudioLoader();
+            ResourceLoader.AddResourceFormatLoader(_audioLoader);
+        }
+
+        if (_gdbLoader is null)
+        {
+            _gdbLoader = new Refii.Gdb.Engine_BnkGdbLoader();
+            ResourceLoader.AddResourceFormatLoader(_gdbLoader);
+        }
+
+        if (_terrainLoader is null)
+        {
+            _terrainLoader = new Refii.Level.Engine_BnkTerrainLoader();
+            ResourceLoader.AddResourceFormatLoader(_terrainLoader);
+        }
+
+        if (_albedoLoader is null)
+        {
+            _albedoLoader = new Refii.Level.Engine_BnkTerrainAlbedoLoader();
+            ResourceLoader.AddResourceFormatLoader(_albedoLoader);
+        }
+
+        if (_terrainMaterialLoader is null)
+        {
+            _terrainMaterialLoader = new Refii.Level.Engine_BnkTerrainMaterialLoader();
+            ResourceLoader.AddResourceFormatLoader(_terrainMaterialLoader);
         }
     }
 
@@ -136,9 +222,47 @@ public partial class BnkMountPlugin : EditorPlugin
             _meshLoader = null;
         }
 
+        if (_audioLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_audioLoader);
+            _audioLoader = null;
+        }
+
+        if (_gdbLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_gdbLoader);
+            _gdbLoader = null;
+        }
+
+        if (_terrainLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_terrainLoader);
+            _terrainLoader = null;
+        }
+
+        if (_albedoLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_albedoLoader);
+            _albedoLoader = null;
+        }
+
+        if (_terrainMaterialLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_terrainMaterialLoader);
+            _terrainMaterialLoader = null;
+        }
+
         Refii.Textures.Engine_BnkTextureLoader.SetResolver(null);
         Refii.Models.Engine_BnkMeshLoader.SetResolver(null);
         Refii.Models.Engine_BnkMeshLoader.SetExistsProbe(null);
+        Refii.Audio.Engine_BnkAudioLoader.SetResolver(null);
+        Refii.Gdb.Engine_BnkGdbLoader.SetResolver(null);
+        Refii.Level.Engine_BnkTerrainLoader.SetResolver(null);
+        Refii.Level.Engine_BnkTerrainAlbedoLoader.SetResolver(null);
+        Refii.Level.Engine_BnkTerrainAlbedoLoader.SetHeightfieldLookup(null);
+        Refii.Level.Engine_BnkTerrainMaterialLoader.SetResolver(null);
+        Refii.Level.Engine_BnkTerrainMaterialLoader.SetNameLookup(null);
+        _byFileName = null;
     }
 
     private void Inject()
@@ -182,6 +306,24 @@ public partial class BnkMountPlugin : EditorPlugin
         assets.SetIconModulate(0, GameFolderColor);
         AddPlaceholder(tree, assets);
         assets.Collapsed = true;
+
+        TreeItem databases = tree.CreateItem(_gameRoot);
+        databases.SetText(0, "Database");
+        databases.SetMetadata(0, DatabaseRootMeta);
+        databases.SetSelectable(0, false);
+        databases.SetIcon(0, GetFolderIcon());
+        databases.SetIconModulate(0, GameFolderColor);
+        AddPlaceholder(tree, databases);
+        databases.Collapsed = true;
+
+        TreeItem levels = tree.CreateItem(_gameRoot);
+        levels.SetText(0, "Levels");
+        levels.SetMetadata(0, LevelsRootMeta);
+        levels.SetSelectable(0, false);
+        levels.SetIcon(0, GetFolderIcon());
+        levels.SetIconModulate(0, GameFolderColor);
+        AddPlaceholder(tree, levels);
+        levels.Collapsed = true;
 
         TreeItem? resRoot = FindResRoot(root);
         if (resRoot is not null)
@@ -247,8 +389,12 @@ public partial class BnkMountPlugin : EditorPlugin
 
         string meta = item.GetMetadata(0).AsString();
         return meta == RootMeta ||
+               meta == DatabaseRootMeta ||
+               meta == LevelsRootMeta ||
                meta == ContainerMeta ||
                meta.StartsWith("bnk:", StringComparison.Ordinal) ||
+               meta.StartsWith(LevelRegionPrefix, StringComparison.Ordinal) ||
+               meta.StartsWith(LevelPrefix, StringComparison.Ordinal) ||
                meta.StartsWith(FilePrefix, StringComparison.Ordinal) ||
                meta == PlaceholderMeta;
     }
@@ -256,6 +402,13 @@ public partial class BnkMountPlugin : EditorPlugin
     private void ActivateBnkItem(TreeItem item)
     {
         string meta = item.GetMetadata(0).AsString();
+
+        if (meta.StartsWith(LevelPrefix, StringComparison.Ordinal))
+        {
+            ActivateLevel(meta[LevelPrefix.Length..]);
+            return;
+        }
+
         if (!meta.StartsWith(FilePrefix, StringComparison.Ordinal))
         {
             item.Collapsed = !item.Collapsed;
@@ -270,9 +423,42 @@ public partial class BnkMountPlugin : EditorPlugin
 
         bool isTexture = virtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase);
         bool isModel = virtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase);
-        if (!isTexture && !isModel)
+        bool isAudio = virtualPath.EndsWith(".wav", StringComparison.OrdinalIgnoreCase);
+        bool isDatabase = virtualPath.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase);
+        if (!isTexture && !isModel && !isAudio && !isDatabase)
         {
             GD.Print($"[bnk_mount] {virtualPath}  ({file.Size:N0} bytes, no viewer for this type)");
+            return;
+        }
+
+        if (isDatabase)
+        {
+            var database = ResourceLoader.Load<Refii.Gdb.GdbDatabase>(meta, "GdbDatabase");
+            if (database is null)
+            {
+                return;
+            }
+
+            EditorInterface.Singleton.InspectObject(database);
+
+            GD.Print($"[bnk_mount] {virtualPath} -> {database.RecordCount:N0} records, " +
+                     $"{database.NamedRecordCount:N0} named, " +
+                     $"{database.DictionaryEntryCount:N0} dictionary entries");
+            return;
+        }
+
+        if (isAudio)
+        {
+            var stream = ResourceLoader.Load<AudioStreamWav>(meta, "AudioStreamWAV");
+            if (stream is null)
+            {
+                return;
+            }
+
+            EditorInterface.Singleton.InspectObject(stream);
+
+            GD.Print($"[bnk_mount] {virtualPath} -> {stream.GetLength():0.00}s, " +
+                     $"{stream.MixRate} Hz, {(stream.Stereo ? "stereo" : "mono")}");
             return;
         }
 
@@ -327,6 +513,51 @@ public partial class BnkMountPlugin : EditorPlugin
         GD.Print($"[bnk_mount] {virtualPath} -> {texture.GetWidth()}x{texture.GetHeight()} Texture2D");
     }
 
+    private void ActivateLevel(string heightfieldPath)
+    {
+        Refii.Level.LevelEntry? level = Levels()
+            .Find(l => l.HeightfieldPath.Equals(heightfieldPath, StringComparison.OrdinalIgnoreCase));
+
+        if (level is null || _filesystem is null)
+        {
+            return;
+        }
+
+        bool sceneExisted = Godot.FileAccess.FileExists(level.ScenePath);
+
+        string vista = level.AdjacentEhfPaths.Length != 0
+            ? $" (+{level.AdjacentEhfPaths.Length} adjacent)"
+            : string.Empty;
+        GD.Print($"[bnk_mount] building {level}{vista} …");
+
+        if (!Refii.Level.Engine_LevelScene.TryBuild(
+                level, ResolveBytes, out string scenePath, out string error))
+        {
+            GD.PushWarning($"[bnk_mount] {level}: {error}");
+            return;
+        }
+
+        EditorFileSystem filesystem = EditorInterface.Singleton.GetResourceFilesystem();
+        if (sceneExisted)
+        {
+            filesystem.UpdateFile(scenePath);
+        }
+        else
+        {
+            filesystem.Scan();
+        }
+
+        GD.Print($"[bnk_mount] {level} -> {scenePath}");
+
+        if (Array.IndexOf(EditorInterface.Singleton.GetOpenScenes(), level.ScenePath) >= 0)
+        {
+            EditorInterface.Singleton.ReloadSceneFromPath(level.ScenePath);
+            return;
+        }
+
+        EditorInterface.Singleton.OpenSceneFromPath(level.ScenePath);
+    }
+
     private void OnItemCollapsed(TreeItem item)
     {
         if (item.Collapsed || item.GetChildCount() != 1 || _filesystem is null)
@@ -340,7 +571,11 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         string meta = item.GetMetadata(0).AsString();
-        if (meta != RootMeta && !meta.StartsWith("bnk:", StringComparison.Ordinal))
+        if (meta != RootMeta &&
+            meta != DatabaseRootMeta &&
+            meta != LevelsRootMeta &&
+            !meta.StartsWith(LevelRegionPrefix, StringComparison.Ordinal) &&
+            !meta.StartsWith("bnk:", StringComparison.Ordinal))
         {
             return;
         }
@@ -376,7 +611,174 @@ public partial class BnkMountPlugin : EditorPlugin
             only.Free();
 
             string meta = item.GetMetadata(0).AsString();
+            if (meta == DatabaseRootMeta)
+            {
+                PopulateDatabases(item);
+                continue;
+            }
+
+            if (meta == LevelsRootMeta)
+            {
+                PopulateRegions(item);
+                continue;
+            }
+
+            if (meta.StartsWith(LevelRegionPrefix, StringComparison.Ordinal))
+            {
+                PopulateRegionLevels(item, meta[LevelRegionPrefix.Length..]);
+                continue;
+            }
+
             Populate(item, meta == RootMeta ? string.Empty : meta[4..]);
+        }
+    }
+
+    private List<Refii.Level.LevelEntry>? _levels;
+
+    private List<Refii.Level.LevelEntry> Levels()
+    {
+        if (_levels is null && _filesystem is not null)
+        {
+            _levels = Refii.Level.Engine_LevelIndex.Discover(_filesystem);
+        }
+
+        return _levels ?? new List<Refii.Level.LevelEntry>();
+    }
+
+    private void PopulateRegions(TreeItem parent)
+    {
+        Tree? tree = ResolveTree();
+        if (tree is null)
+        {
+            return;
+        }
+
+        Texture2D folder = GetFolderIcon();
+        var groups = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (Refii.Level.LevelEntry level in Levels())
+        {
+            groups[level.Group] = groups.GetValueOrDefault(level.Group) + 1;
+        }
+
+        foreach (KeyValuePair<string, int> group in groups)
+        {
+            TreeItem item = tree.CreateItem(parent);
+            item.SetText(0, $"{group.Key}  ({group.Value})");
+            item.SetMetadata(0, LevelRegionPrefix + group.Key);
+            item.SetSelectable(0, false);
+            item.SetIcon(0, folder);
+            item.SetIconModulate(0, GameFolderColor);
+            AddPlaceholder(tree, item);
+            item.Collapsed = true;
+        }
+
+        if (groups.Count == 0)
+        {
+            TreeItem empty = tree.CreateItem(parent);
+            empty.SetText(0, "(no heightfields found)");
+            empty.SetSelectable(0, false);
+            empty.SetMetadata(0, PlaceholderMeta);
+        }
+    }
+
+    private void PopulateRegionLevels(TreeItem parent, string group)
+    {
+        Tree? tree = ResolveTree();
+        if (tree is null)
+        {
+            return;
+        }
+
+        Texture2D? icon = GetClassIcon(LevelIconNames);
+
+        foreach (Refii.Level.LevelEntry level in Levels())
+        {
+            if (!level.Group.Equals(group, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            TreeItem item = tree.CreateItem(parent);
+            item.SetText(0, level.DisplayName);
+            item.SetMetadata(0, LevelPrefix + level.HeightfieldPath);
+
+            if (icon is not null)
+            {
+                item.SetIcon(0, icon);
+                item.SetIconModulate(0, Colors.White);
+            }
+
+            bool built = Godot.FileAccess.FileExists(level.ScenePath);
+            string scenarios = level.Scenarios.Length != 0
+                ? $"\nscenarios: {string.Join(", ", level.Scenarios)}"
+                : string.Empty;
+
+            item.SetTooltipText(0,
+                $"{level.World}/{level.LevelPath}{scenarios}\n" +
+                $"game://{level.HeightfieldPath}\n{level.HeightfieldSize:N0} bytes\n" +
+                (built ? $"built → {level.ScenePath}" : "double-click to build the .tscn"));
+        }
+    }
+
+    private void PopulateDatabases(TreeItem parent)
+    {
+        Tree? tree = ResolveTree();
+        if (tree is null || _filesystem is null)
+        {
+            return;
+        }
+
+        var databases = new List<BnkFile>();
+        foreach (BnkFile file in _filesystem.EnumerateAllFiles())
+        {
+            if (file.VirtualPath.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase))
+            {
+                databases.Add(file);
+            }
+        }
+
+        databases.Sort((a, b) =>
+        {
+            int byName = string.Compare(
+                Path.GetFileName(a.VirtualPath), Path.GetFileName(b.VirtualPath),
+                StringComparison.OrdinalIgnoreCase);
+            return byName != 0
+                ? byName
+                : string.Compare(a.VirtualPath, b.VirtualPath, StringComparison.OrdinalIgnoreCase);
+        });
+
+        Texture2D? icon = GetClassIcon(DatabaseIconNames);
+
+        foreach (BnkFile file in databases)
+        {
+            TreeItem item = tree.CreateItem(parent);
+            item.SetText(0, Path.GetFileName(file.VirtualPath));
+            item.SetMetadata(0, FilePrefix + file.VirtualPath);
+
+            if (icon is not null)
+            {
+                item.SetIcon(0, icon);
+                item.SetIconModulate(0, Colors.White);
+            }
+            else
+            {
+                item.SetIcon(0, GetFileIcon());
+                item.SetIconModulate(0, GameFolderColor);
+            }
+
+            string origin = file.IsLoose
+                ? $"loose file · {file.SourceArchivePath}"
+                : file.SourceArchiveName;
+            item.SetTooltipText(0,
+                $"game://{file.VirtualPath}\n{file.Size:N0} bytes  ·  {origin}");
+        }
+
+        if (databases.Count == 0)
+        {
+            TreeItem empty = tree.CreateItem(parent);
+            empty.SetText(0, "(no .gdb found)");
+            empty.SetSelectable(0, false);
+            empty.SetMetadata(0, PlaceholderMeta);
         }
     }
 
@@ -416,7 +818,7 @@ public partial class BnkMountPlugin : EditorPlugin
             {
                 item.SetTooltipText(0,
                     $"game://{child}\n{file.Size:N0} bytes  ·  {file.SourceArchiveName}");
-                ApplyThumbnail(item, file);
+                ApplyIcon(item, file);
             }
         }
     }
@@ -424,10 +826,76 @@ public partial class BnkMountPlugin : EditorPlugin
     private const int ThumbnailSize = 32;
     private const int MaxThumbnailBytes = 4 * 1024 * 1024;
 
-    private static void ApplyThumbnail(TreeItem item, BnkFile file)
+    private static readonly string[] DatabaseIconNames =
+        { "PackedDataContainer", "Dictionary", "FileList", "ItemList" };
+
+    private static readonly string[] LevelIconNames =
+        { "PackedScene", "Node3D", "WorldEnvironment" };
+
+    private static void ApplyIcon(TreeItem item, BnkFile file)
     {
-        if (!file.VirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) ||
-            file.Size == 0 || file.Size > MaxThumbnailBytes)
+        string path = file.VirtualPath;
+
+        if (path.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyTextureThumbnail(item, file);
+            return;
+        }
+
+        if (path.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase))
+        {
+            Texture2D? database = GetClassIcon(DatabaseIconNames);
+            if (database is not null)
+            {
+                item.SetIcon(0, database);
+                item.SetIconModulate(0, Colors.White);
+            }
+
+            return;
+        }
+
+        string[]? candidates =
+            path.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase)
+                ? new[] { "ArrayMesh", "Mesh", "MeshInstance3D" }
+                : path.EndsWith(".gmd", StringComparison.OrdinalIgnoreCase)
+                    ? new[] { "Skeleton3D", "BoneAttachment3D" }
+                    : path.EndsWith(".wav", StringComparison.OrdinalIgnoreCase)
+                        ? new[] { "AudioStreamWAV", "AudioStream", "AudioStreamPlayer" }
+                        : null;
+
+        if (candidates is null)
+        {
+            return;
+        }
+
+        Texture2D? icon = GetClassIcon(candidates);
+        if (icon is null)
+        {
+            return;
+        }
+
+        item.SetIcon(0, icon);
+
+        item.SetIconModulate(0, Colors.White);
+    }
+
+    private static Texture2D? GetClassIcon(string[] classNames)
+    {
+        Theme theme = EditorInterface.Singleton.GetEditorTheme();
+        foreach (string className in classNames)
+        {
+            if (theme.HasIcon(className, "EditorIcons"))
+            {
+                return theme.GetIcon(className, "EditorIcons");
+            }
+        }
+
+        return null;
+    }
+
+    private static void ApplyTextureThumbnail(TreeItem item, BnkFile file)
+    {
+        if (file.Size == 0 || file.Size > MaxThumbnailBytes)
         {
             return;
         }

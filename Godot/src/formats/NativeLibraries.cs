@@ -77,6 +77,19 @@ public static class NativeLibraries
 	public static string FileNameFor(string library) =>
 		OperatingSystem.IsWindows() ? $"{library}.dll" : $"lib{library}.so";
 
+	private static IEnumerable<string> FileNamesFor(string library)
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			yield return $"{library}.dll";
+			yield return $"lib{library}.dll";
+			yield break;
+		}
+
+		yield return $"lib{library}.so";
+		yield return $"{library}.so";
+	}
+
 	private static IntPtr Resolve(string name, Assembly assembly, DllImportSearchPath? path)
 	{
 		// Ours only. Anything else falls through to the runtime's default probing.
@@ -89,8 +102,6 @@ public static class NativeLibraries
 		// nothing had published the paths yet. Publish here, where every resolve passes.
 		EnsurePublished();
 
-		string fileName = FileNameFor(name);
-
 		// Several build outputs can each hold a copy, and directory enumeration order is
 		// the filesystem's, not sorted — so "first found" is nondeterministic and can pick
 		// a stale library whose entry points predate the current ABI. Take the most
@@ -98,9 +109,12 @@ public static class NativeLibraries
 		var found = new List<string>();
 		foreach (string directory in CandidateDirectories())
 		{
-			string candidate = Path.Combine(directory, fileName);
-			if (File.Exists(candidate))
-				found.Add(candidate);
+			foreach (string fileName in FileNamesFor(name))
+			{
+				string candidate = Path.Combine(directory, fileName);
+				if (File.Exists(candidate))
+					found.Add(candidate);
+			}
 		}
 
 		foreach (string candidate in found.OrderByDescending(File.GetLastWriteTimeUtc))

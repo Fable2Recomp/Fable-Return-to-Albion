@@ -9,194 +9,275 @@ namespace Refii.Assets;
 
 public partial class Engine_GameAssets : Node
 {
-    public const string PathPrefix = "game://";
+	public const string PathPrefix = "game://";
 
-    private static readonly object MountLock = new();
+	private static readonly object MountLock = new();
 
-    private BnkFileSystem? _filesystem;
-    private bool _mounting;
+	private BnkFileSystem? _filesystem;
+	private bool _mounting;
 
-    public static Engine_GameAssets? Instance { get; private set; }
+	public static Engine_GameAssets? Instance { get; private set; }
 
-    [Signal]
-    public delegate void MountedEventHandler(int fileCount);
+	[Signal]
+	public delegate void MountedEventHandler(int fileCount);
 
-    [Signal]
-    public delegate void MountFailedEventHandler(string reason);
+	[Signal]
+	public delegate void MountFailedEventHandler(string reason);
 
-    public string GameDirectory { get; private set; } = string.Empty;
+	public string GameDirectory { get; private set; } = string.Empty;
 
-    public bool IsMounted
-    {
-        get
-        {
-            lock (MountLock)
-            {
-                return _filesystem is not null;
-            }
-        }
-    }
+	public bool IsMounted
+	{
+		get
+		{
+			lock (MountLock)
+			{
+				return _filesystem is not null;
+			}
+		}
+	}
 
-    public bool IsMounting
-    {
-        get
-        {
-            lock (MountLock)
-            {
-                return _mounting;
-            }
-        }
-    }
+	public bool IsMounting
+	{
+		get
+		{
+			lock (MountLock)
+			{
+				return _mounting;
+			}
+		}
+	}
 
-    public int ArchiveCount => Snapshot()?.Archives.Count ?? 0;
+	public int ArchiveCount => Snapshot()?.Archives.Count ?? 0;
 
-    public int NestedArchiveCount => Snapshot()?.NestedArchiveCount ?? 0;
+	public int NestedArchiveCount => Snapshot()?.NestedArchiveCount ?? 0;
 
-    public int FileCount => Snapshot()?.FileCount ?? 0;
+	public int FileCount => Snapshot()?.FileCount ?? 0;
 
-    public int ShadowedFileCount => Snapshot()?.ShadowedFileCount ?? 0;
+	public int ShadowedFileCount => Snapshot()?.ShadowedFileCount ?? 0;
 
-    public IReadOnlyList<string> Failures =>
-        Snapshot()?.Failures ?? (IReadOnlyList<string>)Array.Empty<string>();
+	public IReadOnlyList<string> Failures =>
+		Snapshot()?.Failures ?? (IReadOnlyList<string>)Array.Empty<string>();
 
-    public override void _EnterTree() => Instance = this;
+	public override void _EnterTree() => Instance = this;
 
-    public override void _ExitTree()
-    {
-        if (Instance == this)
-        {
-            Instance = null;
-        }
+	public override void _ExitTree()
+	{
+		if (Instance == this)
+		{
+			Instance = null;
+		}
 
-        BnkFileSystem? previous;
-        lock (MountLock)
-        {
-            previous = _filesystem;
-            _filesystem = null;
-        }
+		BnkFileSystem? previous;
+		lock (MountLock)
+		{
+			previous = _filesystem;
+			_filesystem = null;
+		}
 
-        previous?.Dispose();
-    }
+		previous?.Dispose();
+	}
 
-    public void Mount(string gameDirectory)
-    {
-        lock (MountLock)
-        {
-            if (_mounting)
-            {
-                return;
-            }
+	public void Mount(string gameDirectory)
+	{
+		lock (MountLock)
+		{
+			if (_mounting)
+			{
+				return;
+			}
 
-            _mounting = true;
-        }
+			_mounting = true;
+		}
 
-        GameDirectory = gameDirectory ?? string.Empty;
+		GameDirectory = gameDirectory ?? string.Empty;
 
-        Task.Run(() =>
-        {
-            BnkFileSystem? mounted = null;
-            string failure = string.Empty;
-            try
-            {
-                mounted = BnkFileSystem.Mount(GameDirectory);
-            }
-            catch (Exception exception)
-            {
-                failure = exception.Message;
-            }
+		Task.Run(() =>
+		{
+			BnkFileSystem? mounted = null;
+			string failure = string.Empty;
+			try
+			{
+				mounted = BnkFileSystem.Mount(GameDirectory);
+			}
+			catch (Exception exception)
+			{
+				failure = exception.Message;
+			}
 
-            BnkFileSystem? previous;
-            lock (MountLock)
-            {
-                previous = _filesystem;
-                _filesystem = mounted;
-                _mounting = false;
-            }
+			BnkFileSystem? previous;
+			lock (MountLock)
+			{
+				previous = _filesystem;
+				_filesystem = mounted;
+				_byFileName = null;
+				_levels = null;
+				_mounting = false;
+			}
 
-            previous?.Dispose();
+			previous?.Dispose();
 
-            int count = mounted?.FileCount ?? 0;
-            if (mounted is null)
-            {
-                CallDeferred(nameof(ReportFailure), failure);
-            }
-            else
-            {
-                CallDeferred(nameof(ReportMounted), count);
-            }
-        });
-    }
+			int count = mounted?.FileCount ?? 0;
+			if (mounted is null)
+			{
+				CallDeferred(nameof(ReportFailure), failure);
+			}
+			else
+			{
+				CallDeferred(nameof(ReportMounted), count);
+			}
+		});
+	}
 
-    private void ReportMounted(int fileCount)
-    {
-        EnsureTextureLoader();
-        EmitSignal(SignalName.Mounted, fileCount);
-    }
+	private void ReportMounted(int fileCount)
+	{
+		EnsureTextureLoader();
+		EmitSignal(SignalName.Mounted, fileCount);
+	}
 
-    private void EnsureTextureLoader()
-    {
-        Refii.Textures.Engine_BnkTextureLoader.SetResolver(ReadAllBytes);
-        if (_textureLoader is null)
-        {
-            _textureLoader = new Refii.Textures.Engine_BnkTextureLoader();
-            ResourceLoader.AddResourceFormatLoader(_textureLoader);
-        }
+	private void EnsureTextureLoader()
+	{
+		Refii.Textures.Engine_BnkTextureLoader.SetResolver(ReadAllBytes);
+		if (_textureLoader is null)
+		{
+			_textureLoader = new Refii.Textures.Engine_BnkTextureLoader();
+			ResourceLoader.AddResourceFormatLoader(_textureLoader);
+		}
 
-        Refii.Models.Engine_BnkMeshLoader.SetResolver(ReadAllBytes);
-        Refii.Models.Engine_BnkMeshLoader.SetExistsProbe(p => TryGetFile(p, out _));
-        if (_meshLoader is null)
-        {
-            _meshLoader = new Refii.Models.Engine_BnkMeshLoader();
-            ResourceLoader.AddResourceFormatLoader(_meshLoader);
-        }
-    }
+		Refii.Models.Engine_BnkMeshLoader.SetResolver(ReadAllBytes);
+		Refii.Models.Engine_BnkMeshLoader.SetExistsProbe(p => TryGetFile(p, out _));
+		if (_meshLoader is null)
+		{
+			_meshLoader = new Refii.Models.Engine_BnkMeshLoader();
+			ResourceLoader.AddResourceFormatLoader(_meshLoader);
+		}
 
-    private Refii.Textures.Engine_BnkTextureLoader? _textureLoader;
-    private Refii.Models.Engine_BnkMeshLoader? _meshLoader;
+		Refii.Level.Engine_BnkTerrainLoader.SetResolver(ReadAllBytes);
+		Refii.Level.Engine_BnkTerrainAlbedoLoader.SetResolver(ReadAllBytes);
+		Refii.Level.Engine_BnkTerrainAlbedoLoader.SetHeightfieldLookup(HeightfieldForEhf);
+		Refii.Level.Engine_BnkTerrainMaterialLoader.SetResolver(ReadAllBytes);
+		Refii.Level.Engine_BnkTerrainMaterialLoader.SetNameLookup(FindByFileName);
 
-    private void ReportFailure(string reason) => EmitSignal(SignalName.MountFailed, reason);
+		if (_terrainLoader is null)
+		{
+			_terrainLoader = new Refii.Level.Engine_BnkTerrainLoader();
+			ResourceLoader.AddResourceFormatLoader(_terrainLoader);
+		}
 
-    public bool TryGetFile(string virtualPath, out BnkFile file)
-    {
-        file = default!;
-        BnkFileSystem? fs = Snapshot();
-        return fs is not null && fs.TryGetFile(Strip(virtualPath), out file);
-    }
+		if (_albedoLoader is null)
+		{
+			_albedoLoader = new Refii.Level.Engine_BnkTerrainAlbedoLoader();
+			ResourceLoader.AddResourceFormatLoader(_albedoLoader);
+		}
 
-    public byte[]? ReadAllBytes(string virtualPath) =>
-        TryGetFile(virtualPath, out BnkFile file) ? file.ReadAllBytes() : null;
+		if (_terrainMaterialLoader is null)
+		{
+			_terrainMaterialLoader = new Refii.Level.Engine_BnkTerrainMaterialLoader();
+			ResourceLoader.AddResourceFormatLoader(_terrainMaterialLoader);
+		}
+	}
 
-    public bool FileExists(string virtualPath) => TryGetFile(virtualPath, out _);
+	private string? FindByFileName(string fileName)
+	{
+		Dictionary<string, string>? index = _byFileName;
+		if (index is null)
+		{
+			BnkFileSystem? fs = Snapshot();
+			if (fs is null)
+			{
+				return null;
+			}
 
-    public bool DirectoryExists(string virtualDirectory) =>
-        Snapshot()?.DirectoryExists(Strip(virtualDirectory)) ?? false;
+			index = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+			foreach (BnkFile file in fs.EnumerateAllFiles())
+			{
+				string path = file.VirtualPath;
+				int slash = path.LastIndexOf('/');
+				string name = slash < 0 ? path : path[(slash + 1)..];
+				if (name.Length != 0)
+				{
+					index.TryAdd(name, path);
+				}
+			}
 
-    public string[] GetDirectories(string virtualDirectory) =>
-        Snapshot()?.EnumerateDirectories(Strip(virtualDirectory)).ToArray() ?? Array.Empty<string>();
+			_byFileName = index;
+		}
 
-    public string[] GetFiles(string virtualDirectory) =>
-        Snapshot()?.EnumerateFiles(Strip(virtualDirectory)).ToArray() ?? Array.Empty<string>();
+		return index.TryGetValue(fileName, out string? found) ? found : null;
+	}
 
-    public IEnumerable<BnkFile> EnumerateAllFiles() =>
-        Snapshot()?.EnumerateAllFiles() ?? Enumerable.Empty<BnkFile>();
+	private string? HeightfieldForEhf(string ehfVirtualPath)
+	{
+		BnkFileSystem? fs = Snapshot();
+		if (fs is null)
+		{
+			return null;
+		}
 
-    private BnkFileSystem? Snapshot()
-    {
-        lock (MountLock)
-        {
-            return _filesystem;
-        }
-    }
+		_levels ??= Refii.Level.Engine_LevelIndex.Discover(fs);
 
-    private static string Strip(string path)
-    {
-        if (string.IsNullOrEmpty(path))
-        {
-            return string.Empty;
-        }
+		foreach (Refii.Level.LevelEntry level in _levels)
+		{
+			if (level.MainEhfPath.Equals(ehfVirtualPath, StringComparison.OrdinalIgnoreCase))
+			{
+				return level.HeightfieldPath;
+			}
+		}
 
-        return path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase)
-            ? path[PathPrefix.Length..]
-            : path;
-    }
+		return null;
+	}
+
+	private Refii.Textures.Engine_BnkTextureLoader? _textureLoader;
+	private Refii.Models.Engine_BnkMeshLoader? _meshLoader;
+	private Refii.Level.Engine_BnkTerrainLoader? _terrainLoader;
+	private Refii.Level.Engine_BnkTerrainAlbedoLoader? _albedoLoader;
+	private Refii.Level.Engine_BnkTerrainMaterialLoader? _terrainMaterialLoader;
+	private Dictionary<string, string>? _byFileName;
+	private List<Refii.Level.LevelEntry>? _levels;
+
+	private void ReportFailure(string reason) => EmitSignal(SignalName.MountFailed, reason);
+
+	public bool TryGetFile(string virtualPath, out BnkFile file)
+	{
+		file = default!;
+		BnkFileSystem? fs = Snapshot();
+		return fs is not null && fs.TryGetFile(Strip(virtualPath), out file);
+	}
+
+	public byte[]? ReadAllBytes(string virtualPath) =>
+		TryGetFile(virtualPath, out BnkFile file) ? file.ReadAllBytes() : null;
+
+	public bool FileExists(string virtualPath) => TryGetFile(virtualPath, out _);
+
+	public bool DirectoryExists(string virtualDirectory) =>
+		Snapshot()?.DirectoryExists(Strip(virtualDirectory)) ?? false;
+
+	public string[] GetDirectories(string virtualDirectory) =>
+		Snapshot()?.EnumerateDirectories(Strip(virtualDirectory)).ToArray() ?? Array.Empty<string>();
+
+	public string[] GetFiles(string virtualDirectory) =>
+		Snapshot()?.EnumerateFiles(Strip(virtualDirectory)).ToArray() ?? Array.Empty<string>();
+
+	public IEnumerable<BnkFile> EnumerateAllFiles() =>
+		Snapshot()?.EnumerateAllFiles() ?? Enumerable.Empty<BnkFile>();
+
+	private BnkFileSystem? Snapshot()
+	{
+		lock (MountLock)
+		{
+			return _filesystem;
+		}
+	}
+
+	private static string Strip(string path)
+	{
+		if (string.IsNullOrEmpty(path))
+		{
+			return string.Empty;
+		}
+
+		return path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase)
+			? path[PathPrefix.Length..]
+			: path;
+	}
 }

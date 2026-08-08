@@ -39,7 +39,12 @@ public sealed class BnkFileSystem : IDisposable
 
     public int ShadowedFileCount { get; private set; }
 
-    public static BnkFileSystem Mount(string gameDirectory, bool expandNested = true)
+    public static readonly string[] DefaultLooseExtensions = { ".gdb", ".list" };
+
+    public static BnkFileSystem Mount(
+        string gameDirectory,
+        bool expandNested = true,
+        IReadOnlyList<string>? looseExtensions = null)
     {
         var filesystem = new BnkFileSystem();
         if (string.IsNullOrEmpty(gameDirectory) || !Directory.Exists(gameDirectory))
@@ -73,7 +78,63 @@ public sealed class BnkFileSystem : IDisposable
             }
         }
 
+        filesystem.IndexLoose(gameDirectory, looseExtensions ?? DefaultLooseExtensions);
         return filesystem;
+    }
+
+    private void IndexLoose(string gameDirectory, IReadOnlyList<string> extensions)
+    {
+        foreach (string extension in extensions)
+        {
+            string pattern = extension.StartsWith('.') ? $"*{extension}" : $"*.{extension}";
+
+            IEnumerable<string> matches;
+            try
+            {
+                matches = Directory.EnumerateFiles(
+                    gameDirectory, pattern, SearchOption.AllDirectories);
+            }
+            catch (Exception exception)
+            {
+                _failures.Add($"{gameDirectory} ({pattern}): {exception.Message}");
+                continue;
+            }
+
+            foreach (string path in matches.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+            {
+                string relative;
+                long size;
+                try
+                {
+                    relative = Path.GetRelativePath(gameDirectory, path);
+                    size = new FileInfo(path).Length;
+                }
+                catch (Exception exception)
+                {
+                    _failures.Add($"{path}: {exception.Message}");
+                    continue;
+                }
+
+                string normalized = Normalize(relative);
+                if (normalized.Length == 0)
+                {
+                    continue;
+                }
+
+                var entry = new BnkEntry
+                {
+                    RelativePath = normalized,
+                    Size = (uint)Math.Min(size, uint.MaxValue),
+                    StoredSize = (uint)Math.Min(size, uint.MaxValue),
+                };
+
+                string diskPath = path;
+                Insert(
+                    normalized,
+                    new BnkFile(diskPath, entry, normalized, _ => File.ReadAllBytes(diskPath), true),
+                    preferNew: true);
+            }
+        }
     }
 
     private void Index(
@@ -163,7 +224,7 @@ public sealed class BnkFileSystem : IDisposable
         return true;
     }
 
-    private void Insert(string normalized, BnkFile file)
+    private void Insert(string normalized, BnkFile file, bool preferNew = false)
     {
         string[] parts = normalized.Split('/');
         Node node = _root;
@@ -187,7 +248,8 @@ public sealed class BnkFileSystem : IDisposable
         }
 
         ++ShadowedFileCount;
-        if (file.Size > existing.Size)
+
+        if (preferNew || file.Size > existing.Size)
         {
             node.Files[name] = file;
             file.Alternates.Add(existing);
@@ -310,15 +372,22 @@ public sealed class BnkFile
     private readonly Func<BnkEntry, byte[]> _read;
 
     internal BnkFile(
-        string sourceArchivePath, BnkEntry entry, string virtualPath, Func<BnkEntry, byte[]> read)
+        string sourceArchivePath,
+        BnkEntry entry,
+        string virtualPath,
+        Func<BnkEntry, byte[]> read,
+        bool isLoose = false)
     {
         SourceArchivePath = sourceArchivePath;
         Entry = entry;
         VirtualPath = virtualPath;
         _read = read;
+        IsLoose = isLoose;
     }
 
     public string SourceArchivePath { get; }
+
+    public bool IsLoose { get; }
 
     public string SourceArchiveName => Path.GetFileName(SourceArchivePath);
 

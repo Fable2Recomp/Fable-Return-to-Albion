@@ -449,6 +449,8 @@ Godot/assets/gui/
 # Scratch timing notes.
 /Godot/t1.txt
 
+/Godot/levels/
+
 # Godot/debug/ is SOURCE — diagnostic scenes — not a build configuration. The
 # [Dd]ebug/ rule far above targets CMake/MSVC output directories and swallows it
 # silently; that same pattern already cost this tree four renderer .cpp files that

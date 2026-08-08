@@ -6,53 +6,53 @@ namespace Refii.Textures;
 
 public static class Engine_TexImage
 {
-    public static Image.Format ToGodotFormat(TexSurfaceFormat format) => format switch
-    {
-        TexSurfaceFormat.Bc1 => Image.Format.Dxt1,
-        TexSurfaceFormat.Bc3 => Image.Format.Dxt5,
-        TexSurfaceFormat.Bc4 => Image.Format.RgtcR,
-        TexSurfaceFormat.Bc5 => Image.Format.RgtcRg,
-        TexSurfaceFormat.Rgba8 => Image.Format.Rgba8,
-        _ => Image.Format.Dxt1,
-    };
+	public static Image.Format ToGodotFormat(TexSurfaceFormat format) => format switch
+	{
+		TexSurfaceFormat.Bc1 => Image.Format.Dxt1,
+		TexSurfaceFormat.Bc3 => Image.Format.Dxt5,
+		TexSurfaceFormat.Bc4 => Image.Format.RgtcR,
+		TexSurfaceFormat.Bc5 => Image.Format.RgtcRg,
+		TexSurfaceFormat.Rgba8 => Image.Format.Rgba8,
+		_ => Image.Format.Dxt1,
+	};
 
     /// <summary>Levels a complete chain holds, counting the base and ending at 1x1.</summary>
-    public static int FullChainLength(int width, int height)
-    {
-        int levels = 1;
-        int w = width;
-        int h = height;
-        while (w > 1 || h > 1)
-        {
-            w = Math.Max(1, w / 2);
-            h = Math.Max(1, h / 2);
-            ++levels;
-        }
+	public static int FullChainLength(int width, int height)
+	{
+		int levels = 1;
+		int w = width;
+		int h = height;
+		while (w > 1 || h > 1)
+		{
+			w = Math.Max(1, w / 2);
+			h = Math.Max(1, h / 2);
+			++levels;
+		}
 
-        return levels;
-    }
+		return levels;
+	}
 
-    public static Image? TryCreateImage(byte[] texBytes, out string error)
-    {
-        if (!Engine_TexData.TryDecode(texBytes, out TexSurface surface, out error))
-        {
-            return null;
-        }
+	public static Image? TryCreateImage(byte[] texBytes, out string error)
+	{
+		if (!Engine_TexData.TryDecode(texBytes, out TexSurface surface, out error))
+		{
+			return null;
+		}
 
-        if (surface.Format == TexSurfaceFormat.Unsupported)
-        {
-            error = "unsupported surface format";
-            return null;
-        }
+		if (surface.Format == TexSurfaceFormat.Unsupported)
+		{
+			error = "unsupported surface format";
+			return null;
+		}
 
-        Image.Format format = ToGodotFormat(surface.Format);
+		Image.Format format = ToGodotFormat(surface.Format);
 
         // Forces the unmipped path for the WHOLE texture, shipped levels included. Paired
         // with REFII_TEX_NO_MIP_TAIL this separates "mipmapping at all" from "the levels we
         // synthesised", which no single switch can distinguish.
-        bool suppressMips = OS.GetEnvironment("REFII_TEX_NO_MIPS") == "1";
+		bool suppressMips = OS.GetEnvironment("REFII_TEX_NO_MIPS") == "1";
 
-        int fullChain = FullChainLength(surface.Width, surface.Height);
+		int fullChain = FullChainLength(surface.Width, surface.Height);
 
         // Note the gate is on the FULL chain length, not on whether the file shipped more
         // than one level. Fable 2 ships exactly one for 1,161 textures — including the
@@ -60,50 +60,50 @@ public static class Engine_TexImage
         // surface.HasMipmaps left precisely those uploading unfiltered, which is the
         // opposite of what mipmapping is for. A single-level file simply has its whole
         // chain synthesised from level 0.
-        if (fullChain > 1 && !suppressMips)
-        {
-            byte[] chain = surface.Data;
+		if (fullChain > 1 && !suppressMips)
+		{
+			byte[] chain = surface.Data;
 
             // Fable 2 stops its chains well above 1x1 — 8,974 of 9,419 textures — while
             // Godot requires every level down to it. Extending here is what lets those
             // upload mipped at all; without it the game samples unfiltered at distance,
             // which reads as sparkle on anything far away.
-            if (surface.MipLevels < fullChain && !TryExtendChain(surface, format, ref chain))
-            {
-                chain = surface.Data;
-            }
+			if (surface.MipLevels < fullChain && !TryExtendChain(surface, format, ref chain))
+			{
+				chain = surface.Data;
+			}
 
-            if (chain.Length != surface.Data.Length || surface.MipLevels == fullChain)
-            {
-                Image mipped = Image.CreateFromData(
-                    surface.Width, surface.Height, true, format, chain);
-                if (IsUsable(mipped, surface))
-                {
-                    return mipped;
-                }
-            }
-        }
+			if (chain.Length != surface.Data.Length || surface.MipLevels == fullChain)
+			{
+				Image mipped = Image.CreateFromData(
+					surface.Width, surface.Height, true, format, chain);
+				if (IsUsable(mipped, surface))
+				{
+					return mipped;
+				}
+			}
+		}
 
-        int topLevel = TopLevelBytes(surface);
-        byte[] top = surface.Data;
-        if (topLevel > 0 && top.Length > topLevel)
-        {
-            top = new byte[topLevel];
-            Buffer.BlockCopy(surface.Data, 0, top, 0, topLevel);
-        }
+		int topLevel = TopLevelBytes(surface);
+		byte[] top = surface.Data;
+		if (topLevel > 0 && top.Length > topLevel)
+		{
+			top = new byte[topLevel];
+			Buffer.BlockCopy(surface.Data, 0, top, 0, topLevel);
+		}
 
-        Image image = Image.CreateFromData(
-            surface.Width, surface.Height, false, format, top);
+		Image image = Image.CreateFromData(
+			surface.Width, surface.Height, false, format, top);
 
-        if (!IsUsable(image, surface))
-        {
-            error = $"Image.CreateFromData rejected {surface.Width}x{surface.Height} " +
-                    $"{surface.Format} ({top.Length} bytes)";
-            return null;
-        }
+		if (!IsUsable(image, surface))
+		{
+			error = $"Image.CreateFromData rejected {surface.Width}x{surface.Height} " +
+					$"{surface.Format} ({top.Length} bytes)";
+			return null;
+		}
 
-        return image;
-    }
+		return image;
+	}
 
     /// <summary>
     /// Extends a short mip chain down to 1x1 by downsampling the smallest level the file

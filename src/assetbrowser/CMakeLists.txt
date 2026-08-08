@@ -61,9 +61,21 @@ set(REFII_AB_CORE_SOURCES
     ${REFII_AB_SRC}/Utilities/Utils.cpp
 )
 
+set(REFII_AB_AUDIO_SOURCES
+    ${REFII_AB_SRC}/Audio/XmaDecoder.cpp
+    ${REFII_AB_SRC}/Audio/Xma2Codec/XmaParser.cpp
+    ${REFII_AB_SRC}/Audio/Xma2Codec/XmaBitstream.cpp
+    ${REFII_AB_SRC}/Audio/Xma2Codec/XmaSupport.cpp
+    ${REFII_AB_SRC}/Audio/Xma2Codec/XmaTx.cpp
+    ${REFII_AB_SRC}/Audio/Xma2Codec/XmaWmaCore.cpp
+    ${REFII_AB_SRC}/Audio/Xma2Codec/XmaWmaProDecoder.cpp
+)
+
 add_library(refii_assetbrowser SHARED
     ${REFII_AB_CORE_SOURCES}
+    ${REFII_AB_AUDIO_SOURCES}
     ${REFII_AB_SHADOW}/abi/refii_mdl_abi.cpp
+    ${REFII_AB_SHADOW}/abi/refii_audio_abi.cpp
     ${REFII_AB_SHADOW}/abi/coreshim.cpp
 )
 
@@ -85,7 +97,11 @@ target_include_directories(refii_assetbrowser PRIVATE
 # zlib is REQUIRED: the bank reader inflates every entry. A quiet find that silently
 # fails leaves inflate/uncompress unresolved in the .so, which only surfaces when
 # something links against it.
-find_package(ZLIB REQUIRED)
+if(TARGET ZLIB::ZLIB)
+    message(STATUS "refii_assetbrowser: using the ZLIB::ZLIB target already defined")
+else()
+    find_package(ZLIB REQUIRED)
+endif()
 target_link_libraries(refii_assetbrowser PUBLIC ZLIB::ZLIB)
 
 set_target_properties(refii_assetbrowser PROPERTIES

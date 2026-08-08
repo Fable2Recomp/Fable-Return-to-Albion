@@ -1,0 +1,63 @@
+using System;
+using Godot;
+
+namespace Refii.Audio;
+
+[Tool]
+public partial class Engine_BnkAudioLoader : ResourceFormatLoader
+{
+    public const string PathPrefix = "game://";
+
+    private static Func<string, byte[]?>? _resolver;
+
+    public static void SetResolver(Func<string, byte[]?>? resolver) => _resolver = resolver;
+
+    public static byte[]? ReadBytes(string virtualPath) => _resolver?.Invoke(virtualPath);
+
+    public static bool Recognises(string path) =>
+        path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase) &&
+        path.EndsWith(".wav", StringComparison.OrdinalIgnoreCase);
+
+    public override string[] _GetRecognizedExtensions() => new[] { "wav" };
+
+    public override bool _RecognizePath(string path, StringName type) => Recognises(path);
+
+    public override bool _Exists(string path) => Recognises(path);
+
+    public override bool _HandlesType(StringName type)
+    {
+        string name = type.ToString();
+        return name is "AudioStream" or "AudioStreamWAV" or "Resource";
+    }
+
+    public override string _GetResourceType(string path) =>
+        Recognises(path) ? "AudioStreamWAV" : string.Empty;
+
+    public override Variant _Load(
+        string path, string originalPath, bool useSubThreads, int cacheMode)
+    {
+        if (!Recognises(path))
+        {
+            return Variant.CreateFrom((int)Error.FileUnrecognized);
+        }
+
+        string virtualPath = path[PathPrefix.Length..];
+        byte[]? bytes = _resolver?.Invoke(virtualPath);
+        if (bytes is null)
+        {
+            GD.PushWarning($"[bnk] audio not found: {path}");
+            return Variant.CreateFrom((int)Error.FileNotFound);
+        }
+
+        AudioStreamWav? stream = Engine_AudioStream.TryCreateStream(bytes, out string error);
+        if (stream is null)
+        {
+            GD.Print($"[bnk] {path}: {error}");
+            return Variant.CreateFrom((int)Error.FileCorrupt);
+        }
+
+        stream.ResourceName = virtualPath[(virtualPath.LastIndexOf('/') + 1)..];
+        stream.ResourcePath = path;
+        return stream;
+    }
+}
