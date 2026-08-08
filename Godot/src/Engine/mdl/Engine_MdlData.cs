@@ -21,6 +21,12 @@ public sealed class MdlMaterial
     public string Metallic { get; set; } = string.Empty;
 
     public string Extra { get; set; } = string.Empty;
+
+    public uint ShaderType { get; set; }
+
+    public string[] ShaderParams { get; set; } = Array.Empty<string>();
+
+    public float[] MaterialFloats { get; set; } = Array.Empty<float>();
 }
 
 public sealed class MdlMesh
@@ -39,6 +45,10 @@ public sealed class MdlSubMesh
     public uint StartIndex { get; set; }
 
     public byte MaterialIndex { get; set; }
+
+    public byte PrimitiveType { get; set; }
+
+    public float[] BoundingBox { get; set; } = Array.Empty<float>();
 }
 
 public sealed class MdlMeshBuffer
@@ -62,6 +72,10 @@ public sealed class MdlMeshBuffer
     public bool IsFoliagePath { get; set; }
 
     public int FoliageVertexStride { get; set; }
+
+    public bool IsEngineSkinned { get; set; }
+
+    public bool IsEngineRigid { get; set; }
 
     public List<MdlSubMesh> SubMeshes { get; } = new();
 }
@@ -89,6 +103,90 @@ public sealed class MdlInfo
     public bool HasTreeTag { get; set; }
 
     public bool IsStub { get; set; }
+
+    public bool IsEngineFormat { get; set; }
+
+    public uint Version { get; set; }
+
+    public uint LodCount { get; set; }
+
+    public uint[] LodSizes { get; set; } = Array.Empty<uint>();
+
+    public float[] FileBoundingSphere { get; set; } = Array.Empty<float>();
+
+    public float[] FileBoundingBox { get; set; } = Array.Empty<float>();
+
+    public uint RigidCount { get; set; }
+
+    public uint SkinnedCount { get; set; }
+
+    public byte SectionFlag { get; set; }
+
+    public List<string> Tags { get; } = new();
+
+    public uint[] ShDescriptor { get; set; } = Array.Empty<uint>();
+
+    public float[] ShProbeData { get; set; } = Array.Empty<float>();
+
+    public List<MdlClothBlock> ClothBlocks { get; } = new();
+
+    public List<MdlMorphTarget> MorphTargets { get; } = new();
+}
+
+public sealed class MdlClothBlock
+{
+    public uint RecordIndex { get; set; }
+
+    public uint MeshIndex { get; set; }
+
+    public int BlockOffset { get; set; }
+
+    public int BlockSize { get; set; }
+
+    public uint SimVertexCount { get; set; }
+
+    public uint TriangleCount { get; set; }
+
+    public uint IndexCount { get; set; }
+
+    public uint EdgeCount { get; set; }
+
+    public uint BonesPerVertex { get; set; }
+
+    public uint DistConstraints { get; set; }
+
+    public uint BendConstraintsA { get; set; }
+
+    public uint BendConstraintsB { get; set; }
+
+    public uint VolConstraints { get; set; }
+
+    public uint LinkConstraints { get; set; }
+
+    public float[] SimParams { get; set; } = new float[6];
+
+    public int RestPosOffset { get; set; }
+
+    public int IndexListOffset { get; set; }
+
+    public int BoneIdOffset { get; set; }
+
+    public int WeightOffset { get; set; }
+
+    public int FlagOffset { get; set; }
+}
+
+public sealed class MdlMorphTarget
+{
+    public uint RecordIndex { get; set; }
+
+    public uint Header0 { get; set; }
+
+    public uint Header1 { get; set; }
+
+    public uint Count { get; set; }
+
+    public int DataOffset { get; set; }
 }
 
 public static class Engine_MdlData
@@ -99,6 +197,16 @@ public static class Engine_MdlData
     public static bool TryParseInfo(
         byte[] data, string virtualPath, out MdlInfo info, out string error)
     {
+        info = new MdlInfo();
+        error = string.Empty;
+
+        if (Engine_MdlEngine.TryParse(data, info))
+        {
+            return true;
+        }
+
+        info = new MdlInfo();
+
         if (!TryParseHeader(data, virtualPath, out info, out error))
         {
             if (!Engine_MdlReparse.TryMissingBuffers(data, info) &&

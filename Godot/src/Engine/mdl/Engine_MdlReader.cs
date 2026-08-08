@@ -178,6 +178,34 @@ public sealed class MdlReader
         }
     }
 
+    public static (float x, float y, float z) DecodeNormal_11_11_10(uint packed)
+    {
+        int ix = (int)(packed >> 21);
+        if ((ix & 0x400) != 0) ix -= 0x800;
+        int iy = (int)((packed >> 10) & 0x7FF);
+        if ((iy & 0x400) != 0) iy -= 0x800;
+        int iz = (int)(packed & 0x3FF);
+        if ((iz & 0x200) != 0) iz -= 0x400;
+        return (ix / 1023f, iy / 1023f, iz / 511f);
+    }
+
+    public static (float x, float y, float z, float w) DecodeTangent_DEC3N(uint packed)
+    {
+        uint iw = (packed >> 30) & 0x3;
+        int ix = (int)((packed >> 20) & 0x3FF);
+        if ((ix & 0x200) != 0) ix -= 0x400;
+        int iy = (int)((packed >> 10) & 0x3FF);
+        if ((iy & 0x200) != 0) iy -= 0x400;
+        int iz = (int)(packed & 0x3FF);
+        if ((iz & 0x200) != 0) iz -= 0x400;
+        float w = (iw == 1 || iw == 0) ? 1f : -1f;
+        return (ix / 511f, iy / 511f, iz / 511f, w);
+    }
+
+    public static uint ReadU32BE(byte[] data, int at) =>
+        ((uint)data[at] << 24) | ((uint)data[at + 1] << 16) |
+        ((uint)data[at + 2] << 8) | data[at + 3];
+
     public static float[] ComputeSmoothNormals(int vertexCount, List<uint> indices, float[] positions)
     {
         var normals = new float[vertexCount * 3];

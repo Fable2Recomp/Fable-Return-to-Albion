@@ -51,9 +51,7 @@ public static class Engine_MdlMaterial
 
         if (occlusion is not null)
         {
-            result.AOEnabled = true;
-            result.AOTexture = occlusion;
-            result.AOTextureChannel = BaseMaterial3D.TextureChannel.Red;
+            result.Roughness = 0.7f;
         }
 
         if (metallicRoughness is not null)

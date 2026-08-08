@@ -70,6 +70,24 @@ public static class Engine_MdlMesh
             arrays[(int)Mesh.ArrayType.TexUV] = uvs;
             arrays[(int)Mesh.ArrayType.Index] = indices;
 
+            if (geo.HasTangents)
+            {
+                var tangents = new float[geo.VertexCount * 4];
+                System.Array.Copy(geo.Tangents, tangents, tangents.Length);
+                arrays[(int)Mesh.ArrayType.Tangent] = tangents;
+            }
+
+            if (geo.HasBones)
+            {
+                var bones = new int[geo.VertexCount * 4];
+                System.Array.Copy(geo.BoneIds, bones, bones.Length);
+                arrays[(int)Mesh.ArrayType.Bones] = bones;
+
+                var weights = new float[geo.VertexCount * 4];
+                System.Array.Copy(geo.BoneWeights, weights, weights.Length);
+                arrays[(int)Mesh.ArrayType.Weights] = weights;
+            }
+
             mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
             if (geo.Name.Length != 0)
             {
