@@ -108,17 +108,19 @@ public partial class LauncherApp : Control
 		LoadLauncherConfig();
 		LauncherTheme.Load();
 
-		if (!Engine.IsEditorHint())
-		{
-			MountGameAssets();
-		}
-
 		_patches = new Patches();
 		_launch = new LaunchController(_patches);
 		_updates = new UpdateChecker();
 		InitPatches();
 
 		BindNodes();
+
+		// NOT mounted here. The launcher shows a change log, settings and a Play button —
+		// none of which reads a single game asset. Mounting cost 123,710 files and a
+		// 200-texture decode on every startup, before the user had asked for anything.
+		//
+		// The two things that DO need the assets mount for themselves, when they start:
+		// the editor (through the bnk_mount addon) and the game session.
 		_font = LoadLauncherFont();
 		BuildStyles();
 		ApplyStyles();
@@ -223,7 +225,18 @@ public partial class LauncherApp : Control
 			assets.MountFailed += reason => Log($"Game assets mount failed: {reason}");
 		}
 
-		assets.Mount(Installer.GetGameDataDirectoryPath());
+		// Do not mount when the game is not installed. Mounting nothing is not harmless:
+		// it reports "0 files" as though the mount worked, which reads as a broken
+		// reader rather than a missing install, and every consumer downstream then
+		// behaves as if it has assets.
+		string directory = Installer.ResolveGameDataDirectory();
+		if (directory.Length == 0)
+		{
+			Log("Game assets not mounted: no install found. Install the game first.");
+			return;
+		}
+
+		assets.Mount(directory);
 	}
 
 	private bool _gameAssetsSignalsBound;
@@ -290,13 +303,24 @@ public partial class LauncherApp : Control
 			return staged.TrimEnd(Path.DirectorySeparatorChar);
 		}
 
-		foreach (string configuration in new[] { "RelWithDebInfo", "Release", "Debug" })
+		// Every build output, not a hardcoded config list. The configurations differ by
+		// platform — win-amd64-release/RelWithDebInfo on Windows, linux-amd64-debug/bin
+		// here — and a fixed list simply never matches on the other one, which is how
+		// the launcher came to report a missing runtime on Linux regardless of what was
+		// actually built.
+		string builds = Path.Combine(repoRoot, "out", "build");
+		if (Directory.Exists(builds))
 		{
-			string candidate = Path.Combine(
-				repoRoot, "out", "build", "win-amd64-release", configuration, "bin");
-			if (File.Exists(Path.Combine(candidate, Platform.ExecutableName)))
+			foreach (string config in Directory.EnumerateDirectories(builds))
 			{
-				return candidate.TrimEnd(Path.DirectorySeparatorChar);
+				foreach (string sub in new[] { "bin", "", "RelWithDebInfo", "Release", "Debug" })
+				{
+					string candidate = sub.Length == 0 ? config : Path.Combine(config, sub);
+					if (File.Exists(Path.Combine(candidate, Platform.ExecutableName)))
+					{
+						return candidate.TrimEnd(Path.DirectorySeparatorChar);
+					}
+				}
 			}
 		}
 
@@ -824,6 +848,16 @@ public partial class LauncherApp : Control
 
 	private void RefreshInfoBody()
 	{
+		// Log() calls through to here, and logging can happen before BindNodes() has
+		// run — anything in _Ready that reports a problem does exactly that. Without
+		// this guard the FIRST such message becomes a NullReferenceException that takes
+		// the whole launcher down, so the startup path is least able to report the
+		// startup problems it exists to report.
+		if (_infoTabs is null || _infoBody is null)
+		{
+			return;
+		}
+
 		string tab = InfoTabs[Mathf.Clamp(_infoTabs.CurrentTab, 0, InfoTabs.Length - 1)];
 		bool isSettings = tab == "Settings";
 		bool isModding = tab == "Modding";
@@ -988,14 +1022,19 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		if (!Installer.InstalledBuildExists())
+		// Godot hosts the guest — open a game window rather than spawning refii.
+		//
+		// The old path launched the external executable, which brought its own window,
+		// its own renderer and its own frame loop. Under the current design Godot owns
+		// all three and the guest runs headless inside this process, so there is nothing
+		// to spawn: the "runtime" is the host bridge, not an executable on disk.
+		if (Refii.Game.GameWindow.Open(this) is null)
 		{
-			Log("Runtime files are missing from: " + Platform.GetExecutableDirectory());
+			Log("A game window is already open.");
 			return;
 		}
 
-		LaunchResult result = _launch.Launch();
-		Log(result.Message);
+		Log("Opened the game window; the guest runs inside this process.");
 		RefreshState();
 	}
 

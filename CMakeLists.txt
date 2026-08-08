@@ -316,8 +316,21 @@ option(REFII_BUILD_LAUNCHER "Build the launcher executable" ON)
 option(REFII_BUILD_NATIVE_LUA "Build the native Lua runtime and Lua tools" ON)
 option(REFII_BUILD_NATIVE_HOOKS "Build native hook sources into refii_generated" ON)
 option(REFII_BUILD_VFS_HOOKS "Build the native VFS runtime and hook sources" ON)
-option(REFII_BUILD_RENDERER_HOOKS "Build the native renderer runtime and hook sources" ON)
+# OFF by default: Godot renders, so the guest never draws. This target is the
+# whole D3D9 replacement — Plume, its D3D12/Vulkan/Metal bridges, and the
+# native/"xenia" backend that renders through rexglue's own Vulkan instance.
+# It is 86% of the build (1880 targets down to 277 without it) and `refii`
+# links with no reference to it.
+#
+# The renderer is kept, not deleted: it survives as the reference instrument
+# that proves a converted asset or a reconstructed transform is right. Turn
+# this ON to build it for that.
+option(REFII_BUILD_RENDERER_HOOKS "Build the native renderer runtime and hook sources" OFF)
 option(REFII_BUILD_SHADER_PIPELINE "Build shader SBK extraction/compilation pipeline tooling" ON)
+
+# The C ABI Godot P/Invokes to host the guest in its own process, rather than spawning
+# `refii` as a child. Cheap to build and it links only the runtime.
+option(REFII_BUILD_HOST_BRIDGE "Build the Godot host bridge over the guest runtime" ON)
 option(REFII_BUILD_TOOLS
     "Build optional lightweight test tool executables (bnk extractor, decompiler, shader utilities)"
     ON
@@ -527,6 +540,7 @@ set(REFII_RENDERER_LIBRARIES)
 set(REFII_HOOK_OBJECTS)
 
 add_subdirectory(src/extractor)
+add_subdirectory(src/assetbrowser)
 
 if(TARGET refii-default-xex-icon-extractor
         AND EXISTS "${REFII_DEFAULT_XEX_SOURCE}"
@@ -708,6 +722,9 @@ add_library(refii_host STATIC
 )
 set_target_properties(refii_host PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    # Linked into refii_hostbridge, which is SHARED so Godot can P/Invoke it. Without
+    # PIC the link fails on an R_X86_64_PC32 relocation a shared object cannot carry.
+    POSITION_INDEPENDENT_CODE ON
 )
 target_include_directories(refii_host
     PUBLIC
@@ -741,6 +758,13 @@ target_link_libraries(refii_host
     PRIVATE
         refii_achievement_ui
 )
+
+# AFTER refii_host: the bridge stages the whole dependency closure into Godot/build/bin,
+# and `if(TARGET ...)` only sees targets already defined. Added earlier, it silently
+# staged a partial set — the bridge without the recompiled guest behind it.
+if(REFII_BUILD_HOST_BRIDGE)
+    add_subdirectory(src/hostbridge)
+endif()
 
 if(UNIX AND NOT APPLE)
     target_link_options(refii_core

@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://c8mdlviewer01"]
+
+[ext_resource type="Script" path="res://src/tools/ModelViewer.cs" id="1_modelviewer"]
+
+[node name="ModelViewer" type="Node3D"]
+script = ExtResource("1_modelviewer")

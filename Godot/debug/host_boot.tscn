@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://b2qh7mx4nqaka"]
+
+[ext_resource type="Script" path="res://src/tools/HostBootCheck.cs" id="1_hostboot"]
+
+[node name="HostBootCheck" type="Node"]
+script = ExtResource("1_hostboot")

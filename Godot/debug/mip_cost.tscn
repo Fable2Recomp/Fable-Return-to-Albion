@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cmipcost0001"]
+
+[ext_resource type="Script" path="res://src/tools/MipCost.cs" id="1_mipcost"]
+
+[node name="MipCost" type="Node"]
+script = ExtResource("1_mipcost")

@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://jtdhvyo8oo87"]
+
+[ext_resource type="Script" path="res://src/tools/GameWindowCheck.cs" id="1_gamewindowcheck"]
+
+[node name="GameWindowCheck" type="Node"]
+script = ExtResource("1_gamewindowcheck")

@@ -37,7 +37,7 @@ public static class Engine_MdlMesh
         var mesh = new ArrayMesh();
         int added = 0;
 
-        foreach (MdlGeometry geo in geometry)
+        foreach (MdlGeometry geo in Engine_MdlMerge.ByMaterial(geometry))
         {
             if (geo.VertexCount == 0 || geo.TriangleCount == 0)
             {

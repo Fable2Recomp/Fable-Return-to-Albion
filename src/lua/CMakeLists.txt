@@ -378,6 +378,10 @@ if(TARGET refii_bnk_extractor)
         CXX_STANDARD 23
         CXX_STANDARD_REQUIRED ON
         ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+        # This static library is linked into refii_launcher_ops, which is SHARED.
+        # Without PIC the thread-local session cache emits an R_X86_64_TPOFF32
+        # relocation that a shared object cannot carry, and the link fails.
+        POSITION_INDEPENDENT_CODE ON
     )
 
     if(REFII_BUILD_TOOLS)

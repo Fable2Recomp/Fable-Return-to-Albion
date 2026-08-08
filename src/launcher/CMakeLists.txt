@@ -129,6 +129,13 @@ if(WIN32)
         shlwapi.lib
         winhttp.lib
     )
+else()
+    # The HTTP client, same as winhttp above. src/linux/platform.cpp is in this target's
+    # sources and calls curl directly, so without this the library builds clean and then
+    # fails at LOAD with `undefined symbol: curl_global_init` — which surfaces as the
+    # Godot launcher dying on startup, nowhere near the actual cause.
+    find_package(CURL REQUIRED)
+    target_link_libraries(${LAUNCHER_OPS_TARGET} PRIVATE CURL::libcurl)
 endif()
 
 set_target_properties(${LAUNCHER_OPS_TARGET} PROPERTIES

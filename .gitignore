@@ -435,3 +435,23 @@ src/Shader/processed/
 
 # Local working notes (not for pushing)
 /NEXT.md
+
+# Assets converted from the user's own copy of Fable 2. Derived game data —
+# never redistributable, so it lives in the per-user data dir (user://), never
+# here. This entry is a backstop in case a tool is misconfigured.
+Godot/assets/gui/
+
+# Godot's staged runtime: native libraries, a generated refii.toml, and a SYMLINK
+# to the player's own game data. It is a build output, and the symlink means a
+# careless `git add` would try to commit Fable 2 itself.
+/Godot/build/
+
+# Scratch timing notes.
+/Godot/t1.txt
+
+# Godot/debug/ is SOURCE — diagnostic scenes — not a build configuration. The
+# [Dd]ebug/ rule far above targets CMake/MSVC output directories and swallows it
+# silently; that same pattern already cost this tree four renderer .cpp files that
+# went missing until a configure failed.
+!/Godot/debug/
+!/Godot/debug/**

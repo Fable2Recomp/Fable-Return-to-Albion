@@ -15,9 +15,26 @@ public sealed class ProcessHandle
 
 public static class Platform
 {
-	public const string ExecutableName = "refii.exe";
-	public const string DevelopmentExecutableRelativePath =
-		"out/build/win-amd64-relwithdebinfo/refii.exe";
+	/// <summary>
+	/// The guest runtime's file name on THIS platform.
+	///
+	/// It was a hardcoded <c>refii.exe</c>, so every "is the runtime installed" check
+	/// failed on Linux no matter what was present — the launcher reported "Missing
+	/// Runtime Files" while happily mounting 123,710 game files beside it, which is the
+	/// contradiction that gave this away.
+	/// </summary>
+	public static string ExecutableName =>
+		OperatingSystem.IsWindows() ? "refii.exe" : "refii";
+
+	/// <summary>
+	/// Where a dev build leaves the runtime, relative to the repository root. The build
+	/// config is part of the path and differs per platform, so this cannot be one
+	/// constant either.
+	/// </summary>
+	public static string DevelopmentExecutableRelativePath =>
+		OperatingSystem.IsWindows()
+			? "out/build/win-amd64-relwithdebinfo/refii.exe"
+			: "out/build/linux-amd64-debug/bin/refii";
 
 	public static string? RuntimeDirectoryOverride { get; set; }
 

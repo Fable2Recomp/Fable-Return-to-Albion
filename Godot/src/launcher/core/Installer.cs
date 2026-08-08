@@ -183,11 +183,76 @@ public static class Installer
     public static bool EnsureRuntimeConfigFile(out string error) =>
         RuntimeConfig.EnsureDefaults(GetRuntimeConfigPath(), out error);
 
+    /// <summary>
+    /// True when a directory really holds an extracted install.
+    ///
+    /// The marker is necessary but NOT sufficient. A source checkout ships
+    /// <c>assets/game/default.xexp</c> with no banks beside it, so a marker-only test
+    /// reports "installed" for a tree that has no game in it — and everything
+    /// downstream then tries to mount nothing and reports 0 files instead of saying the
+    /// game is missing. The banks are the payload, so the banks are the test.
+    /// </summary>
     public static bool HasExtractedAssets(string gameDataDirectory, string markerPath) =>
-        Directory.Exists(gameDataDirectory) && File.Exists(markerPath);
+        Directory.Exists(gameDataDirectory) && File.Exists(markerPath) &&
+        HasBanks(gameDataDirectory);
 
-    public static bool AssetsExist() =>
-        HasExtractedAssets(GetGameDataDirectoryPath(), GetGameMarkerPath());
+    /// <summary>
+    /// True when a tree carries at least one <c>.bnk</c>.
+    ///
+    /// Two levels, not recursive: an unpacked asset tree is large enough that walking
+    /// all of it to conclude "no banks" stalls startup for tens of seconds, and the
+    /// banks always sit at the top or one level down.
+    /// </summary>
+    public static bool HasBanks(string root)
+    {
+        if (!Directory.Exists(root))
+        {
+            return false;
+        }
+
+        try
+        {
+            foreach (string _ in Directory.EnumerateFiles(root, "*.bnk", SearchOption.TopDirectoryOnly))
+                return true;
+
+            foreach (string child in Directory.EnumerateDirectories(root))
+                foreach (string _ in Directory.EnumerateFiles(child, "*.bnk", SearchOption.TopDirectoryOnly))
+                    return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Where the game data actually is, or empty when it is not installed anywhere.
+    ///
+    /// The configured install location wins — that is what a player sets and where an
+    /// install writes. A DEV tree is the exception: nothing has been installed under the
+    /// launcher directory and the data sits staged in a build output instead, so the
+    /// shared convention is consulted before giving up. Both candidates must carry banks
+    /// to be accepted; a marker on its own is not an install.
+    /// </summary>
+    public static string ResolveGameDataDirectory()
+    {
+        string configured = GetGameDataDirectoryPath();
+        if (HasExtractedAssets(configured, GetGameMarkerPath()))
+        {
+            return configured;
+        }
+
+        string resolved = Refii.Launcher.Formats.UiGameData.Resolve();
+        return HasBanks(resolved) ? resolved : string.Empty;
+    }
+
+    public static bool AssetsExist() => ResolveGameDataDirectory().Length > 0;
 
     public static bool InstalledBuildExists() => File.Exists(GetInstalledExecutablePath());
 

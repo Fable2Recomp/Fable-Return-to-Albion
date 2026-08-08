@@ -1,0 +1,153 @@
+using Godot;
+using Refii.Game;
+
+namespace Refii.Launcher.Tools;
+
+/// <summary>
+/// Proves the game opens in a REAL OS window rather than one drawn inside the launcher.
+///
+/// The distinction is invisible in a screenshot — an embedded subwindow has a title bar
+/// and a close button and looks like a window — so it needs asserting rather than eyeing.
+/// <c>Window.IsEmbedded()</c> is the ground truth.
+///
+/// The guest is left off: this checks window management, and a two-second guest init in
+/// the middle of it only makes the failure slower to see.
+/// </summary>
+public partial class GameWindowCheck : Node
+{
+	public override void _Ready()
+	{
+		// REFII_GAME_WINDOW_GUEST=1 runs the real thing. It matters: with the guest off the
+		// session's shutdown is a no-op, so the interesting question — whether tearing the
+		// guest down takes the process with it — is exactly the one a guest-less run cannot
+		// answer.
+		bool guest = OS.GetEnvironment("REFII_GAME_WINDOW_GUEST") == "1";
+		GD.Print($"[window] guest: {(guest ? "on" : "off")}");
+
+		GameWindow? window = GameWindow.Open(this, startGuest: guest);
+		if (window is null)
+		{
+			GD.Print("[window] Open returned null — one is already up.");
+			GetTree().Quit(1);
+			return;
+		}
+
+		_window = window;
+	}
+
+	private GameWindow? _window;
+	private int _frames;
+
+	public override void _Process(double delta)
+	{
+		// The window is attached on a deferred call and its _Ready runs then, so nothing
+		// about it is true yet on the frame Open returned. Wait for it to be in the tree
+		// rather than guessing at a frame count.
+		if (!_closing && (_window is null || !IsInstanceValid(_window)))
+		{
+			GD.Print("[window] the window went away before it was attached.");
+			GetTree().Quit(1);
+			return;
+		}
+
+		if (_closing)
+		{
+			// A few frames for the free and the window-manager round trip to land.
+			if (++_afterFrames < 10)
+			{
+				return;
+			}
+
+			CheckAfterClose();
+			return;
+		}
+
+		// Let the guest actually run for a bit before closing it, so shutdown happens
+		// against a live runtime rather than one still starting.
+		if (_window.IsInsideTree() && _window.Session is { IsDriving: true } && ++_ranFrames < 90)
+		{
+			return;
+		}
+
+		if (!_window.IsInsideTree())
+		{
+			if (++_frames > 120)
+			{
+				GD.Print("[window] never entered the tree.");
+				GetTree().Quit(1);
+			}
+
+			return;
+		}
+
+		Report(_window);
+	}
+
+	private void Report(GameWindow window)
+	{
+		bool embedded = window.IsEmbedded();
+		// Assert against refii.toml, not against a constant. A check that hardcodes
+		// 1280x720 passes whether or not the file is being read at all, which is precisely
+		// the thing it exists to prove.
+		GameWindowSettings expected = GameWindowSettings.Load();
+		GD.Print($"[window] title={window.Title} size={window.Size} " +
+			$"embedded={embedded} visible={window.Visible}");
+		GD.Print($"[window] refii.toml says: {expected}");
+
+		if (window.Size != expected.Size)
+		{
+			GD.Print($"[window] FAIL — window is {window.Size}, refii.toml asks for {expected.Size}.");
+			GetTree().Quit(1);
+			return;
+		}
+		GD.Print(embedded
+			? "[window] FAIL — drawn inside the launcher viewport, not an OS window."
+			: "[window] OK — a real OS window.");
+
+		if (embedded)
+		{
+			GetTree().Quit(1);
+			return;
+		}
+
+		DisplayServer.WindowMode launcher =
+			DisplayServer.WindowGetMode((int)DisplayServer.MainWindowId);
+		GD.Print($"[window] launcher mode while the game is up: {launcher}");
+		if (launcher != DisplayServer.WindowMode.Minimized)
+		{
+			GD.Print("[window] FAIL — the launcher did not get out of the way.");
+			GetTree().Quit(1);
+			return;
+		}
+
+		// Close it the way the user does: the window manager sends close_requested rather
+		// than anything calling QueueFree directly, so testing QueueFree would skip the
+		// handler that actually has to restore the launcher.
+		_closing = true;
+		window.EmitSignal(Window.SignalName.CloseRequested);
+	}
+
+	private bool _closing;
+	private int _afterFrames;
+	private int _ranFrames;
+
+	private void CheckAfterClose()
+	{
+		// The launcher must be BACK, and the process must still be alive to report it —
+		// that second half is the real assertion, since a child window closing the whole
+		// app would simply mean no output at all from here.
+		DisplayServer.WindowMode launcher =
+			DisplayServer.WindowGetMode((int)DisplayServer.MainWindowId);
+		bool gone = _window is null || !IsInstanceValid(_window) || !_window.IsInsideTree();
+
+		GD.Print($"[window] after close: launcher={launcher} gameWindowGone={gone} " +
+			"process=alive");
+
+		bool ok = gone && launcher != DisplayServer.WindowMode.Minimized;
+		GD.Print(ok
+			? "[window] OK — launcher restored and still running."
+			: "[window] FAIL — launcher not restored, or the game window is still up.");
+
+		GetTree().Quit(ok ? 0 : 1);
+	}
+}

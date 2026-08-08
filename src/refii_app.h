@@ -304,7 +304,27 @@ inline std::string RefiiGetLowerRuntimeCVar(std::string_view name) {
   return value;
 }
 
+/// True when the guest is embedded in a host that owns presentation (Godot). Set by the
+/// host bridge before the guest boots; see rex_app.cpp's SetupPresentation.
+inline bool RefiiIsEmbeddedHeadless() {
+  const char* embedded = std::getenv("REX_EMBED_HEADLESS");
+  return embedded != nullptr && embedded[0] == '1';
+}
+
 inline bool RefiiShouldSuppressReXGlueRenderer() {
+  // Embedded, there is no guest GPU at all — the host presents. This has to be checked
+  // FIRST and cannot go through the cvar: `renderer_backend` is defined in
+  // src/renderer/src/rendering/core/cvars.cpp, so with the renderer not built the cvar
+  // is never registered and GetFlagByName returns EMPTY — never "plume", no matter what
+  // is passed on the command line or in the environment.
+  //
+  // Empty then falls through to the netplay SDK's default of gpu_plugin="xenos", which
+  // tries to dlopen librexgpu-xenosd.so from beside the executable. Embedded, that is
+  // the HOST's directory, so it fails there and takes the boot down.
+  if (RefiiIsEmbeddedHeadless()) {
+    return true;
+  }
+
   const std::string backend = RefiiGetLowerRuntimeCVar("renderer_backend");
   return backend == "plume";
 }
@@ -356,6 +376,7 @@ public:
 
   void OnPreSetup(rex::RuntimeConfig &config) override {
     RefiiLogRuntimeBackendSplit();
+#if REFII_HAS_RENDERER_RUNTIME
     // The backend setting is final here (TOML + launcher env both applied);
     // freeze the cache so per-hook backend queries stop string-parsing the
     // cvar (measured on the xenia per-D3D-call path).
@@ -385,6 +406,7 @@ public:
           "Refii RenderDoc native arming SKIPPED "
           "(renderer_renderdoc_native_arm is off)");
     }
+#endif  // REFII_HAS_RENDERER_RUNTIME
 
     if (!RefiiShouldSuppressReXGlueRenderer()) {
 #if defined(REFII_REXGLUE_NETPLAY) && REFII_REXGLUE_NETPLAY

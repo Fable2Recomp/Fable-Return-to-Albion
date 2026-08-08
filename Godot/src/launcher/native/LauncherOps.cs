@@ -115,25 +115,6 @@ public sealed class LauncherOps : IDisposable
 
 	public static bool Available => _available;
 
-	private static IntPtr Resolve(string name, Assembly assembly, DllImportSearchPath? path)
-	{
-		if (name != "refii_launcher_ops")
-		{
-			return IntPtr.Zero;
-		}
-
-		foreach (string directory in SearchDirectories())
-		{
-			string candidate = Path.Combine(directory, "refii_launcher_ops.dll");
-			if (File.Exists(candidate) && NativeLibrary.TryLoad(candidate, out IntPtr handle))
-			{
-				return handle;
-			}
-		}
-
-		return IntPtr.Zero;
-	}
-
 	private static IEnumerable<string> SearchDirectories()
 	{
 		string hostDirectory =
@@ -167,14 +148,15 @@ public sealed class LauncherOps : IDisposable
 		}
 
 		_initialized = true;
-		try
+
+		// One resolver for the whole assembly — see NativeLibraries. This contributes the
+		// launcher's own directories to it rather than installing a second.
+		foreach (string directory in SearchDirectories())
 		{
-			NativeLibrary.SetDllImportResolver(
-				typeof(LauncherOps).Assembly, Resolve);
+			Refii.Launcher.Formats.NativeLibraries.AddSearchPath(directory);
 		}
-		catch (InvalidOperationException)
-		{
-		}
+
+		Refii.Launcher.Formats.NativeLibraries.Install();
 
 		try
 		{

@@ -96,6 +96,38 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
   /// Request the same orderly shutdown used by window-close handling.
   void RequestShutdown();
 
+
+  /// True once the threads spawned for shutdown have finished, without waiting.
+  ///
+  /// WaitForShutdownThreads BLOCKS for the whole grace period, which is useless to a host
+  /// that has to keep pumping the UI thread for those very threads to make progress:
+  /// TerminateTitle runs on its own thread but queues work back to the UI thread, so a
+  /// host that blocks instead of pumping guarantees the timeout it is waiting on.
+  bool ShutdownThreadsFinished() const noexcept {
+    return (!title_termination_thread_.joinable() ||
+            title_termination_finished_.load(std::memory_order_acquire)) &&
+           (!module_thread_.joinable() ||
+            module_thread_finished_.load(std::memory_order_acquire));
+  }
+
+  /// Names whichever shutdown threads are still outstanding, for a host that has to
+  /// report why it could not tear the guest down. "" means none are.
+  std::string ShutdownThreadsPending() const {
+    std::string pending;
+    if (title_termination_thread_.joinable() &&
+        !title_termination_finished_.load(std::memory_order_acquire)) {
+      pending += "title-termination";
+    }
+    if (module_thread_.joinable() &&
+        !module_thread_finished_.load(std::memory_order_acquire)) {
+      if (!pending.empty()) {
+        pending += ", ";
+      }
+      pending += "module";
+    }
+    return pending;
+  }
+
   /// Request title termination from an external signal/control-handler thread.
   void RequestExternalShutdown() override;
 
@@ -304,6 +336,10 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
   std::filesystem::path metadata_root_;
   std::unique_ptr<Runtime> runtime_;
   std::unique_ptr<ui::Window> window_;
+
+  /// True when REX_EMBED_HEADLESS=1 — the guest is embedded in a host that owns the
+  /// window, so it creates none of its own. See SetupPresentation.
+  bool headless_ = false;
   std::thread module_thread_;
   std::thread title_termination_thread_;
   std::atomic<bool> shutting_down_{false};

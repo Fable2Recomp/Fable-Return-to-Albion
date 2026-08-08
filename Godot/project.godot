@@ -36,3 +36,8 @@ project/assembly_name="refii-launcher"
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/bnk_mount/plugin.cfg")
+
+[refii]
+
+banks/native_dir="res://../out/build/assetbrowser"
+banks/game_data_root="res://../out/build/linux-amd64-debug/bin/assets/game/data"

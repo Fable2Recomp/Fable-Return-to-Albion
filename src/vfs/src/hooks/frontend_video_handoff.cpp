@@ -5,12 +5,45 @@
 #include <cstdlib>
 
 #include "hooks/ppc_externs.h"
+#if REFII_VFS_HAS_RENDERER_RUNTIME
 #include "renderer_runtime.h"
+#endif
 #include <rex/kernel/xboxkrnl/video.h>
 #include <rex/system/xvideo.h>
 
 namespace refii::renderer {
+#if REFII_VFS_HAS_RENDERER_RUNTIME
 bool PlumeRendererBackendEnabled();
+#else
+// No-renderer shims.
+//
+// This hook's own work — tracking the guest's startup-video pump and keeping
+// the boot sequence moving — is renderer-independent; what it hands the
+// renderer is notifications. With no renderer built there is nothing to notify,
+// so these are the honest no-ops rather than ten scattered #ifs through 2,800
+// lines. Sibling hooks guard per-call-site because they have renderer logic to
+// omit; this file does not.
+//
+// The two predicates must answer FALSE, and that is a behavioural statement,
+// not a convenience: line ~1839 asks whether Plume owns the startup Bink draw
+// before declining to advance the pump itself. With no Plume, nobody else
+// advances it, so the hook must take the path where it does.
+inline void NotifyFableStartupVideoPumpInitComplete(uint32_t, uint32_t) {}
+inline void NotifyFableStartupVideoPumpDispatchComplete(uint32_t, uint32_t) {}
+inline void NotifyFableStartupVideoPumpRunComplete(uint32_t) {}
+inline void RepairFableSceneStreamPublishHandoffForWait(const char*, uint8_t*) {}
+inline bool PlumeRendererBackendEnabled() { return false; }
+inline bool FableStartupVideoPumpActive() { return false; }
+
+inline bool QueryRendererHookThreadTelemetry(uint32_t, const char** last_symbol,
+                                             uint64_t* us_since_enter) {
+  // Leave the caller's defaults alone and report "no telemetry" — the caller
+  // logs these, and inventing values would put fiction in the log.
+  (void)last_symbol;
+  (void)us_since_enter;
+  return false;
+}
+#endif  // REFII_VFS_HAS_RENDERER_RUNTIME
 }  // namespace refii::renderer
 
 namespace {

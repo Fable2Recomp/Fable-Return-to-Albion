@@ -148,6 +148,28 @@ void ApplyEarlyPathCvars(const std::filesystem::path& config_path) {
   }
 }
 
+
+// True when refii runs as a LIBRARY inside a host process (Godot) rather than owning the
+// process it is in. The host bridge sets this alongside the headless flag.
+//
+// Every hard exit below is CORRECT for a standalone app: a straggler guest thread must
+// not be allowed to wedge shutdown, so the app stops asking politely and calls
+// std::_Exit. Hosted, that same call takes the HOST down with it — closing the game
+// window killed the launcher, because ReXApp::OnDestroy exits the process when its
+// shutdown threads miss the grace period, which they routinely do.
+//
+// Embedded, teardown therefore stops early and RETURNS instead. Guest threads may still
+// be running afterwards; that is accepted, because the session is single-shot anyway
+// (the runtime holds process-global state and cannot be started twice), and a live
+// thread is a smaller problem than killing the application hosting it.
+bool RexIsEmbeddedHost() {
+  static const bool embedded = []() {
+    const char* value = std::getenv("REX_EMBED_HEADLESS");
+    return value != nullptr && value[0] == '1';
+  }();
+  return embedded;
+}
+
 }  // namespace
 
 // --- ReXApp ---
@@ -158,6 +180,20 @@ ReXApp::~ReXApp() {
   }
   if (title_termination_thread_.joinable() || module_thread_.joinable()) {
     if (!WaitForShutdownThreads()) {
+      if (RexIsEmbeddedHost()) {
+        // Detach rather than join: these threads missed the deadline, so joining them
+        // blocks the host's main thread for as long as they keep running.
+        std::fputs("Shutdown thread cleanup timed out; leaving threads detached\n", stderr);
+        std::fflush(nullptr);
+        if (title_termination_thread_.joinable()) {
+          title_termination_thread_.detach();
+        }
+        if (module_thread_.joinable()) {
+          module_thread_.detach();
+        }
+        return;
+      }
+
       std::fputs("Shutdown thread cleanup timed out; exiting process\n", stderr);
       std::fflush(nullptr);
       std::_Exit(EXIT_SUCCESS);
@@ -399,7 +435,12 @@ bool ReXApp::SetupPresentation() {
 
   OnPreSetup(config_);
 
-  if (config_.graphics) {
+  // Embedded: do NOT set up presentation. SetupPresentation builds a swapchain-capable
+  // provider and expects a window to present into; with no window it either fails or
+  // presents nowhere. The guest GPU still gets built lazily on the headless path
+  // (CreateProvider(with_presentation=false)), which is what keeps the guest's own
+  // device state readable — the "conformant null device" rather than "no device".
+  if (config_.graphics && !headless_) {
     X_STATUS status = config_.graphics->SetupPresentation(&app_context());
     if (XFAILED(status)) {
       REXLOG_ERROR("Graphics presentation setup failed: {:08X}", status);
@@ -407,24 +448,49 @@ bool ReXApp::SetupPresentation() {
     }
   }
 
-  // Create window
-  window_ = rex::ui::Window::Create(app_context(), GetName(), 1280, 720);
-  if (!window_) {
-    REXLOG_ERROR("Failed to create window");
-    return false;
+  // EMBEDDED: the host owns the window, so the guest creates none.
+  //
+  // Set REX_EMBED_HEADLESS=1 when the guest runs inside a host that presents for it —
+  // Godot, in this tree. A window of its own is not a lesser version of the right
+  // thing; it is a second empty window competing for focus and input with the host's.
+  //
+  // Window::Create is a LINK-time choice (window_sdl.cpp / window_win.cpp), not a
+  // runtime factory, so a host cannot supply its own Window subclass. Not creating one
+  // is the seam that actually exists.
+  //
+  // NOT named REX_HEADLESS: that maps to the existing `headless` KERNEL cvar, which
+  // suppresses XAM UI dialogs and has nothing to do with window creation. Using it here
+  // silently changed guest dialog behaviour as a side effect.
+  //
+  // An env var rather than a cvar because the config file is loaded AFTER the command
+  // line and would override it — which is why --renderer_backend=plume did not take.
+  const char* embedded = std::getenv("REX_EMBED_HEADLESS");
+  headless_ = embedded != nullptr && embedded[0] == '1';
+
+  if (headless_) {
+    REXLOG_INFO(
+        "REX_HEADLESS=1: no window, no ImGui drawer. The host owns presentation; "
+        "the guest simulates only.");
+  } else {
+    // Create window
+    window_ = rex::ui::Window::Create(app_context(), GetName(), 1280, 720);
+    if (!window_) {
+      REXLOG_ERROR("Failed to create window");
+      return false;
+    }
+
+    // Set window title with SDK build stamp
+    std::string title = std::string(GetName()) + " " + REXGLUE_BUILD_TITLE;
+    window_->SetTitle(title);
+
+    window_->AddListener(this);
+    window_->AddInputListener(this, 0);
+
+    if (REXCVAR_GET(fullscreen)) {
+      window_->SetFullscreen(true);
+    }
+    window_->Open();
   }
-
-  // Set window title with SDK build stamp
-  std::string title = std::string(GetName()) + " " + REXGLUE_BUILD_TITLE;
-  window_->SetTitle(title);
-
-  window_->AddListener(this);
-  window_->AddInputListener(this, 0);
-
-  if (REXCVAR_GET(fullscreen)) {
-    window_->SetFullscreen(true);
-  }
-  window_->Open();
 
   auto create_imgui_drawer = [this]() {
     if (imgui_drawer_) {
@@ -461,7 +527,12 @@ bool ReXApp::SetupPresentation() {
     OnCreateDialogs(imgui_drawer_.get());
   };
 
-  auto* graphics_system = static_cast<rex::graphics::GraphicsSystem*>(config_.graphics.get());
+  // The ImGuiDrawer binds to window_ and registers an input listener on it, so with no
+  // window it dereferences null inside AddInputListener. Both creation sites have to be
+  // guarded, not just the one below: this one fires whenever a presenter exists, which
+  // is independent of whether an overlay was asked for.
+  auto* graphics_system =
+      headless_ ? nullptr : static_cast<rex::graphics::GraphicsSystem*>(config_.graphics.get());
   if (graphics_system && graphics_system->presenter()) {
     auto* presenter = graphics_system->presenter();
     auto* provider = graphics_system->provider();
@@ -473,9 +544,13 @@ bool ReXApp::SetupPresentation() {
         imgui_drawer_->SetPresenterAndImmediateDrawer(presenter, immediate_drawer_.get());
       }
     }
-    window_->SetPresenter(presenter);
+    if (window_) {
+      window_->SetPresenter(presenter);
+    }
   }
-  if (!imgui_drawer_ && OnNeedsImGuiDrawerWithoutPresenter()) {
+  // The drawer binds to the window, so headless has nothing to bind to. It is also
+  // exactly the overlay the host should be drawing itself.
+  if (!imgui_drawer_ && !headless_ && OnNeedsImGuiDrawerWithoutPresenter()) {
     create_imgui_drawer();
   }
 
@@ -616,6 +691,12 @@ void ReXApp::StartExternalShutdownWatchdog() {
     return;
   }
 
+  // The watchdog exists only to kill the process after a grace period. Hosted, there is
+  // nothing it could do that the host would survive.
+  if (RexIsEmbeddedHost()) {
+    return;
+  }
+
   std::thread([]() {
     std::this_thread::sleep_for(kExternalShutdownWatchdogPeriod);
     std::fputs("External shutdown grace period expired; exiting process\n", stderr);
@@ -658,17 +739,25 @@ void ReXApp::OnDestroy() {
   }
 
   if (!WaitForShutdownThreads()) {
-    std::fputs("Graceful shutdown timed out; exiting without further teardown\n", stderr);
+    std::fputs("Graceful shutdown timed out; skipping further teardown\n", stderr);
     std::fflush(nullptr);
-    std::_Exit(EXIT_SUCCESS);
+    if (!RexIsEmbeddedHost()) {
+      std::_Exit(EXIT_SUCCESS);
+    }
+
+    return;
   }
 
   if (external_shutdown_requested_.load(std::memory_order_acquire)) {
     REXLOG_INFO(
-        "External shutdown completed title termination; exiting without "
-        "extended UI teardown");
+        "External shutdown completed title termination; skipping extended UI "
+        "teardown");
     std::fflush(nullptr);
-    std::_Exit(EXIT_SUCCESS);
+    if (!RexIsEmbeddedHost()) {
+      std::_Exit(EXIT_SUCCESS);
+    }
+
+    return;
   }
 
   // Unregister overlay keybinds before destroying dialogs

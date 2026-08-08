@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://c8hb1kx3vq2mr"]
+
+[ext_resource type="Script" path="res://src/tools/HostBridgeCheck.cs" id="1_hostcheck"]
+
+[node name="HostBridgeCheck" type="Node"]
+script = ExtResource("1_hostcheck")

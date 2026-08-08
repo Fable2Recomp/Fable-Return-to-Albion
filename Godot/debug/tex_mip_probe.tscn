@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cdyhjhh78t5c7"]
+
+[ext_resource type="Script" path="res://src/tools/TexMipProbe.cs" id="1_texmipprobe"]
+
+[node name="TexMipProbe" type="Node"]
+script = ExtResource("1_texmipprobe")

@@ -333,9 +333,34 @@ public sealed class BnkFile
     public byte[] ReadAllBytes()
     {
         byte[] body = _read(Entry);
-        if (Alternates.Count == 0 ||
-            !VirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) ||
-            HasMeshFileMagic(body))
+        if (Alternates.Count == 0)
+        {
+            return body;
+        }
+
+        // A .mdl and a .tex are each ONE logical file served as two bank entries under
+        // the same name — a small header in one bank, the body in another. The indexer
+        // keeps the larger as primary and the other as an alternate, so reading the
+        // primary alone yields a body with no header.
+        //
+        // Which half we hold is decided by looking for the header's own marker, never by
+        // size: a .tex header is 84 bytes and its payload can be smaller than that for a
+        // tiny mip, so "the big one is the body" is not safe.
+        Func<byte[], bool> isHeader;
+        if (VirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
+        {
+            isHeader = HasMeshFileMagic;
+        }
+        else if (VirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+        {
+            isHeader = HasTexHeaderMagic;
+        }
+        else
+        {
+            return body;
+        }
+
+        if (isHeader(body))
         {
             return body;
         }
@@ -352,7 +377,7 @@ public sealed class BnkFile
                 continue;
             }
 
-            if (!HasMeshFileMagic(header))
+            if (!isHeader(header))
             {
                 continue;
             }
@@ -369,6 +394,14 @@ public sealed class BnkFile
     private static bool HasMeshFileMagic(byte[] d) =>
         d.Length >= 8 && d[0] == 'M' && d[1] == 'e' && d[2] == 's' && d[3] == 'h' &&
         d[4] == 'F' && d[5] == 'i' && d[6] == 'l' && d[7] == 'e';
+
+    /// <summary>
+    /// True when the bytes open with a <c>.tex</c> header. It has no ASCII magic — the
+    /// marker is that dword 0 holds the NEGATED version, so it reads as a large negative
+    /// number (version 2 is 0xFFFFFFFE).
+    /// </summary>
+    private static bool HasTexHeaderMagic(byte[] d) =>
+        d.Length >= 84 && (d[0] & 0x80) != 0 && d[0] == 0xFF;
 
     public override string ToString() => VirtualPath;
 }

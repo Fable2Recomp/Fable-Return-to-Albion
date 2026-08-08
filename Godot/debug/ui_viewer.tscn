@@ -1,0 +1,18 @@
+[gd_scene format=3 uid="uid://byq3vn8w1kx2r"]
+
+[ext_resource type="Script" path="res://src/tools/UiScreenViewer.cs" id="1_viewer"]
+
+[node name="UiScreenViewer" type="Node3D"]
+script = ExtResource("1_viewer")
+StartScreen = "menubox"
+UseFramingCamera = false
+
+[node name="Overlay" type="CanvasLayer" parent="."]
+
+[node name="Status" type="Label" parent="Overlay"]
+unique_name_in_owner = true
+offset_left = 12.0
+offset_top = 8.0
+offset_right = 900.0
+offset_bottom = 80.0
+text = "loading..."

@@ -1,4 +1,5 @@
 #include "extractor/bnk_extractor.h"
+#include "extractor/bank_archive.h"
 
 #include "gdb/gdb_database.h"
 #include "babel/babel_database.h"
@@ -10,6 +11,8 @@
 #include <atomic>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
+#include <memory>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -4458,4 +4461,232 @@ bool ExtractBanks(const BankExtractionOptions& options,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Random-access reads (extractor/bank_archive.h)
+//
+// Lives here rather than in its own translation unit so it can reuse the table
+// parser and entry decoder above. A second copy of the bank layout would be free
+// to drift from the one the guest's VFS agrees with.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Folds a bank path for lookup: lowercase ASCII, backslashes to forward.
+std::string FoldBankPath(std::string_view value) {
+    std::string folded(value);
+    for (char& ch : folded) {
+        if (ch == '\\') {
+            ch = '/';
+        } else {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
+    }
+    return folded;
+}
+
+}  // namespace
+
+struct BankArchive::Impl {
+    std::filesystem::path bank_path;
+    mutable std::ifstream file;
+    std::uint64_t file_size = 0;
+    BankTable table;
+    std::vector<BankArchiveEntry> entries;
+    std::unordered_map<std::string, std::size_t> by_folded_path;
+};
+
+BankArchive::BankArchive() : impl_(std::make_unique<Impl>()) {}
+BankArchive::~BankArchive() = default;
+
+std::unique_ptr<BankArchive> BankArchive::Open(const std::filesystem::path& bank_path,
+                                               std::string* error) {
+    auto archive = std::unique_ptr<BankArchive>(new BankArchive());
+    Impl& impl = *archive->impl_;
+    impl.bank_path = bank_path;
+
+    impl.file.open(bank_path, std::ios::binary);
+    if (!impl.file) {
+        if (error != nullptr) {
+            *error = "failed to open " + bank_path.string();
+        }
+        return nullptr;
+    }
+
+    impl.file.seekg(0, std::ios::end);
+    const std::streampos stream_size = impl.file.tellg();
+    if (stream_size < 0) {
+        if (error != nullptr) {
+            *error = "failed to determine size of " + bank_path.string();
+        }
+        return nullptr;
+    }
+    impl.file_size = static_cast<std::uint64_t>(stream_size);
+
+    if (!ParseBankTable(bank_path, impl.file, impl.file_size, &impl.table, error)) {
+        return nullptr;
+    }
+
+    impl.entries.reserve(impl.table.entries.size());
+    for (const BankEntry& entry : impl.table.entries) {
+        BankArchiveEntry summary;
+        summary.relative_path = entry.relative_path;
+        summary.size = entry.size;
+        summary.stored_size = entry.stored_size;
+        summary.is_compressed = entry.is_compressed;
+        // First writer wins: duplicate names inside one bank are resolved the
+        // same way the extraction path resolves them.
+        impl.by_folded_path.emplace(FoldBankPath(entry.relative_path), impl.entries.size());
+        impl.entries.push_back(std::move(summary));
+    }
+
+    return archive;
+}
+
+const std::vector<BankArchiveEntry>& BankArchive::Entries() const { return impl_->entries; }
+
+std::ptrdiff_t BankArchive::Find(std::string_view relative_path) const {
+    const auto it = impl_->by_folded_path.find(FoldBankPath(relative_path));
+    return it == impl_->by_folded_path.end() ? -1 : static_cast<std::ptrdiff_t>(it->second);
+}
+
+bool BankArchive::Read(std::size_t index,
+                       std::vector<std::uint8_t>* output_bytes,
+                       std::string* error) const {
+    if (output_bytes == nullptr) {
+        return false;
+    }
+    if (index >= impl_->table.entries.size()) {
+        if (error != nullptr) {
+            *error = "entry index out of range";
+        }
+        return false;
+    }
+
+    const BankEntry& entry = impl_->table.entries[index];
+    if (!EntryPayloadWithinBankBounds(impl_->bank_path, impl_->table, entry, impl_->file_size,
+                                      error)) {
+        return false;
+    }
+
+    impl_->file.clear();
+    return ReadEntryOutputBytes(impl_->file, impl_->table, entry, output_bytes, error);
+}
+
 }  // namespace refii::bnk
+
+// ---------------------------------------------------------------------------
+// C ABI
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Copies a reason into a caller buffer, always NUL-terminating.
+void WriteAbiError(const std::string& message, char* error, size_t error_capacity) {
+    if (error == nullptr || error_capacity == 0) {
+        return;
+    }
+    const size_t copied = std::min(message.size(), error_capacity - 1);
+    std::memcpy(error, message.data(), copied);
+    error[copied] = '\0';
+}
+
+refii::bnk::BankArchive* AsArchive(const RefiiBankArchive* archive) {
+    return const_cast<refii::bnk::BankArchive*>(
+        reinterpret_cast<const refii::bnk::BankArchive*>(archive));
+}
+
+}  // namespace
+
+extern "C" {
+
+RefiiBankArchive* RefiiBankArchiveOpen(const char* bank_path, char* error, size_t error_capacity) {
+    if (bank_path == nullptr) {
+        WriteAbiError("bank path is null", error, error_capacity);
+        return nullptr;
+    }
+    try {
+        std::string reason;
+        std::unique_ptr<refii::bnk::BankArchive> archive =
+            refii::bnk::BankArchive::Open(std::filesystem::path(bank_path), &reason);
+        if (archive == nullptr) {
+            WriteAbiError(reason, error, error_capacity);
+            return nullptr;
+        }
+        return reinterpret_cast<RefiiBankArchive*>(archive.release());
+    } catch (const std::exception& ex) {
+        WriteAbiError(ex.what(), error, error_capacity);
+        return nullptr;
+    } catch (...) {
+        WriteAbiError("unknown failure opening bank", error, error_capacity);
+        return nullptr;
+    }
+}
+
+void RefiiBankArchiveClose(RefiiBankArchive* archive) { delete AsArchive(archive); }
+
+size_t RefiiBankArchiveEntryCount(const RefiiBankArchive* archive) {
+    return archive == nullptr ? 0 : AsArchive(archive)->Entries().size();
+}
+
+const char* RefiiBankArchiveEntryPath(const RefiiBankArchive* archive, size_t index) {
+    if (archive == nullptr) {
+        return nullptr;
+    }
+    const auto& entries = AsArchive(archive)->Entries();
+    return index >= entries.size() ? nullptr : entries[index].relative_path.c_str();
+}
+
+uint32_t RefiiBankArchiveEntrySize(const RefiiBankArchive* archive, size_t index) {
+    if (archive == nullptr) {
+        return 0;
+    }
+    const auto& entries = AsArchive(archive)->Entries();
+    return index >= entries.size() ? 0 : entries[index].size;
+}
+
+int64_t RefiiBankArchiveFind(const RefiiBankArchive* archive, const char* relative_path) {
+    if (archive == nullptr || relative_path == nullptr) {
+        return -1;
+    }
+    return static_cast<int64_t>(AsArchive(archive)->Find(relative_path));
+}
+
+int RefiiBankArchiveRead(const RefiiBankArchive* archive,
+                         size_t index,
+                         uint8_t* buffer,
+                         size_t buffer_capacity,
+                         size_t* written,
+                         char* error,
+                         size_t error_capacity) {
+    if (archive == nullptr) {
+        WriteAbiError("archive is null", error, error_capacity);
+        return 0;
+    }
+    try {
+        std::vector<std::uint8_t> bytes;
+        std::string reason;
+        if (!AsArchive(archive)->Read(index, &bytes, &reason)) {
+            WriteAbiError(reason, error, error_capacity);
+            return 0;
+        }
+        if (written != nullptr) {
+            *written = bytes.size();
+        }
+        // Report the size even when the buffer is short, so a caller can size
+        // from the failure rather than needing a separate query.
+        if (buffer == nullptr || buffer_capacity < bytes.size()) {
+            WriteAbiError("buffer too small", error, error_capacity);
+            return -1;
+        }
+        std::memcpy(buffer, bytes.data(), bytes.size());
+        return 1;
+    } catch (const std::exception& ex) {
+        WriteAbiError(ex.what(), error, error_capacity);
+        return 0;
+    } catch (...) {
+        WriteAbiError("unknown failure reading bank entry", error, error_capacity);
+        return 0;
+    }
+}
+
+}  // extern "C"
