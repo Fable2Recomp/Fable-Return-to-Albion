@@ -35,3 +35,6 @@
 	path = rexglue-net/rexglue-sdk
 	url = https://github.com/Loreaxe/rexglue-sdk.git
 	branch = netplay
+[submodule "src/assetbrowser/assetbrowser-sdk"]
+	path = src/assetbrowser/assetbrowser-sdk
+	url = https://github.com/adarec1994/Fable2AssetBrowser.git

@@ -455,3 +455,6 @@ Godot/assets/gui/
 # went missing until a configure failed.
 !/Godot/debug/
 !/Godot/debug/**
+
+# Python bytecode from the Blender addon.
+__pycache__/

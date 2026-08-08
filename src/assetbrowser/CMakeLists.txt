@@ -1,0 +1,95 @@
+cmake_minimum_required(VERSION 3.20)
+
+# Standalone-configurable so this library can be built on its own, without
+# configuring the whole refii project (recompiled PPC, renderer, shaders). It is
+# still an add_subdirectory of the top-level build when that is what you want.
+if(NOT DEFINED PROJECT_NAME)
+    project(refii_assetbrowser CXX)
+endif()
+
+# Vendored headers live in the refii tree; find them whether we are standalone or
+# a subdirectory.
+if(DEFINED CMAKE_SOURCE_DIR AND EXISTS ${CMAKE_SOURCE_DIR}/src/launcher/vendors/imgui)
+    set(REFII_AB_VENDORS ${CMAKE_SOURCE_DIR}/src/launcher/vendors)
+else()
+    set(REFII_AB_VENDORS ${CMAKE_CURRENT_SOURCE_DIR}/../launcher/vendors)
+endif()
+
+# Fable2AssetBrowser, merged into refii.
+#
+# Upstream: https://github.com/adarec1994/Fable2AssetBrowser (same author). The two
+# projects are converging into one; the browser's ImGui UI is being migrated to Godot
+# exactly as the launcher was, so what matters here is the CORE — the parsers and
+# converters — built as a shared library that the Godot C# side consumes by P/Invoke.
+#
+# That is the same shape as refii_bnk_extractor: native format code, Godot UI on top.
+# The upstream CMakeLists is kept as CMakeLists.upstream.txt for reference; it builds
+# the ImGui application, which we do not.
+
+set(REFII_AB_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+# The SDK is a submodule of Fable2AssetBrowser, whose sources live under source/src.
+# The merge originally vendored a flattened, pruned copy with that level removed; a
+# submodule tracks upstream's real layout, so the extra level is back.
+set(REFII_AB_SRC ${REFII_AB_ROOT}/assetbrowser-sdk/source/src)
+set(REFII_AB_SHADOW ${REFII_AB_ROOT}/shadow/assetbrowser-sdk)
+
+# The 18 translation units the .mdl -> glTF converter actually needs, found by
+# linking. Deliberately NOT "every non-UI source": compiling that pulls in ImGui,
+# Quest::Bp::Register*Nodes and Level::Creation::*, none of which the converter
+# touches. textures/export/TextureExport.cpp is excluded for the same reason — it is
+# an ImGui menu.
+set(REFII_AB_CORE_SOURCES
+    ${REFII_AB_SRC}/BNKCore.cpp
+    ${REFII_AB_SRC}/ISO/IsoMount.cpp
+    ${REFII_AB_SRC}/MDL/mdl_converter.cpp
+    ${REFII_AB_SRC}/MDL/MdlFbxExport.cpp
+    ${REFII_AB_SRC}/MDL/MdlTexExport.cpp
+    ${REFII_AB_SRC}/MDL/ModelParser.cpp
+    ${REFII_AB_SRC}/textures/TexParser.cpp
+    ${REFII_AB_SRC}/textures/LhTexCodec.cpp
+    ${REFII_AB_SRC}/textures/export/DdsExport.cpp
+    ${REFII_AB_SRC}/textures/export/TiffExport.cpp
+    ${REFII_AB_SRC}/textures/export/PngExport.cpp
+    ${REFII_AB_SRC}/textures/export/JpgExport.cpp
+    ${REFII_AB_SRC}/animations/AnimBank.cpp
+    ${REFII_AB_SRC}/animations/AnimDataFile.cpp
+    ${REFII_AB_SRC}/animations/AnimDecoder.cpp
+    ${REFII_AB_SRC}/animations/AnimPlayer.cpp
+    ${REFII_AB_SRC}/animations/Locomotion.cpp
+    ${REFII_AB_SRC}/Utilities/DebugLog.cpp
+    ${REFII_AB_SRC}/Utilities/Files.cpp
+    ${REFII_AB_SRC}/Utilities/Utils.cpp
+)
+
+add_library(refii_assetbrowser SHARED
+    ${REFII_AB_CORE_SOURCES}
+    ${REFII_AB_SHADOW}/abi/refii_mdl_abi.cpp
+    ${REFII_AB_SHADOW}/abi/coreshim.cpp
+)
+
+target_include_directories(refii_assetbrowser
+    PUBLIC
+        ${REFII_AB_SHADOW}/abi
+    PRIVATE
+        ${REFII_AB_SRC}
+)
+
+# State.h reaches for ImGui key enums only; the migration removes that, but until
+# then the headers are needed to compile. stb provides the image writers the
+# texture-export path references.
+target_include_directories(refii_assetbrowser PRIVATE
+    ${REFII_AB_VENDORS}/imgui
+    ${REFII_AB_VENDORS}/stb
+)
+
+# zlib is REQUIRED: the bank reader inflates every entry. A quiet find that silently
+# fails leaves inflate/uncompress unresolved in the .so, which only surfaces when
+# something links against it.
+find_package(ZLIB REQUIRED)
+target_link_libraries(refii_assetbrowser PUBLIC ZLIB::ZLIB)
+
+set_target_properties(refii_assetbrowser PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    WINDOWS_EXPORT_ALL_SYMBOLS ON
+)
