@@ -26,6 +26,7 @@ struct Options {
     std::uint64_t source_wall_time_budget_ms = 60000;
     std::size_t max_phase2_heavy_exactification_jobs = 0;
     int debug_function_index = 0;
+    bool debug_function_index_set = false;
     bool audit_bytecode = false;
     bool debug_render_body = false;
     bool debug_render_raw = false;
@@ -82,6 +83,7 @@ bool ParseArguments(int argc, char** argv, Options& options) {
                        i + 1 < argc) {
                 try {
                     options.debug_function_index = std::stoi(argv[++i]);
+                    options.debug_function_index_set = true;
                 } catch (const std::exception&) {
                     return false;
                 }
@@ -477,7 +479,7 @@ int main(int argc, char** argv) {
             if (options.debug_render_raw) {
                 extra_args.push_back("--raw");
             }
-            if (options.debug_function_index > 0) {
+            if (options.debug_function_index_set) {
                 extra_args.push_back("-f");
                 extra_args.push_back(std::to_string(options.debug_function_index));
             }

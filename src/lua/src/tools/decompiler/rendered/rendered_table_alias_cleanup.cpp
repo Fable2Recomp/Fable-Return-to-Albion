@@ -1,6 +1,7 @@
 #include "tools/decompiler/rendered/rendered_lua_text.h"
 
 #include "tools/decompiler/rendered/rendered_cleanup_common_helpers.h"
+#include "tools/decompiler/repair/lua_decompile_repair_context.h"
 
 #include <algorithm>
 #include <cctype>
@@ -19,6 +20,9 @@ template <typename PassFn>
 bool RunTableAliasCleanupPassLoop(int max_iterations, PassFn&& run_single_pass) {
     bool changed = false;
     for (int pass = 0; pass < max_iterations; ++pass) {
+        if (internal::IsCurrentDecompileRepairDeadlineExceeded()) {
+            break;
+        }
         const bool pass_changed = run_single_pass();
         if (!pass_changed) {
             break;
@@ -576,6 +580,9 @@ bool SimplifyRenderedLuaTopLevelMemberAliases(std::vector<std::string>* lines) {
                 !IsRenderedSafePrefixExpression(current_target)) {
                 continue;
             }
+            if (CountIdentifierUses(current_target, lhs_expression) > 1) {
+                continue;
+            }
 
             std::vector<std::pair<std::size_t, std::string>> rewritten_lines;
             std::vector<std::size_t> removable_alias_lines;
@@ -946,6 +953,9 @@ bool SimplifyRenderedLuaScopedMemberAliases(std::vector<std::string>* lines) {
             if (normalized_rhs.empty() || IsRenderTemporaryName(normalized_rhs) ||
                 normalized_rhs == "self" || normalized_rhs.starts_with("self.") ||
                 !IsRenderedSafePrefixExpression(normalized_rhs)) {
+                continue;
+            }
+            if (CountIdentifierUses(normalized_rhs, lhs_expression) > 1) {
                 continue;
             }
 

@@ -1027,6 +1027,8 @@ bool WriteDecompiledTextFile(const std::filesystem::path& output_path,
     return static_cast<bool>(stream);
 }
 
+constexpr unsigned int kDefaultNativeRenderDeadlineSeconds = 45;
+
 int RunInProcessNativeRenderer(const std::filesystem::path& input_path,
                                const std::filesystem::path& output_path,
                                const std::vector<std::string>& extra_args) {
@@ -1088,6 +1090,10 @@ int RunInProcessNativeRenderer(const std::filesystem::path& input_path,
             bytes.size() >= 160 * 1024 ? 25u : 40u;
         native_deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(render_timeout_seconds);
+    }
+    if (native_deadline == std::chrono::steady_clock::time_point{}) {
+        native_deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(kDefaultNativeRenderDeadlineSeconds);
     }
     refii::lua::internal::SetCurrentDecompileRepairContext(
         false, false, false, false, native_deadline);
@@ -14934,11 +14940,18 @@ bool ApplySharedRenderedLuaCleanupProfile(
     bool changed = false;
     const SharedCleanupRuleTableCallbacks callbacks =
         MakeSharedCleanupRuleTableCallbacks();
+    const bool trace_rules = std::getenv("REFII_LUA_TRACE_RENDER") != nullptr;
     refii::lua::internal::ApplySharedCleanupRuleTableSteps(
         profile,
         lines,
         callbacks,
         [&](const auto& rule) {
+            if (trace_rules) {
+                std::fprintf(stderr,
+                             "[native-render] rule=%s\n",
+                             rule.id != nullptr ? rule.id : "?");
+                std::fflush(stderr);
+            }
             changed |= rule.apply(lines);
         });
     return changed;

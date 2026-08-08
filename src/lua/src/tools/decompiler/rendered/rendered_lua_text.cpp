@@ -1,5 +1,6 @@
 #include "tools/decompiler/rendered/rendered_lua_text.h"
 #include "tools/decompiler/rendered/rendered_cleanup_common_helpers.h"
+#include "tools/decompiler/repair/lua_decompile_repair_context.h"
 #include "tools/decompiler/straight_line_render.h"
 
 #include <algorithm>
@@ -98,6 +99,10 @@ bool RunRenderedLuaCleanupPassLoop(std::string_view step_name,
     bool changed = false;
     const int pass_cap = GetRenderedLuaCleanupStepPassCap(step_name, default_cap);
     for (int pass = 0; pass < pass_cap; ++pass) {
+        if (internal::IsCurrentDecompileRepairDeadlineExceeded()) {
+            NoteRenderedLuaCleanupStepCapHit(step_name);
+            break;
+        }
         NoteRenderedLuaCleanupStepPass(step_name);
         const bool pass_changed = run_single_pass();
         if (!pass_changed) {
@@ -715,6 +720,10 @@ bool RunRenderedLuaCleanupPassLoop(std::string_view step_name,
     bool changed = false;
     const int pass_cap = GetRenderedLuaCleanupStepPassCap(step_name, default_cap);
     for (int pass = 0; pass < pass_cap; ++pass) {
+        if (internal::IsCurrentDecompileRepairDeadlineExceeded()) {
+            NoteRenderedLuaCleanupStepCapHit(step_name);
+            break;
+        }
         NoteRenderedLuaCleanupStepPass(step_name);
         const bool pass_changed = run_single_pass();
         if (!pass_changed) {
@@ -933,11 +942,18 @@ bool IsRenderTemporaryName(std::string_view value) {
     return false;
 }
 
-std::size_t FindIdentifierUse(std::string_view text,
-                              std::string_view identifier,
-                              std::size_t offset) {
+struct RenderedIdentifierScan {
+    std::size_t first_use = std::string_view::npos;
+    std::size_t count = 0;
+};
+
+static RenderedIdentifierScan ScanRenderedIdentifierUses(std::string_view text,
+                                                         std::string_view identifier,
+                                                         std::size_t offset,
+                                                         bool stop_at_first) {
+    RenderedIdentifierScan result;
     if (identifier.empty() || offset >= text.size()) {
-        return std::string_view::npos;
+        return result;
     }
 
     bool in_single_quote = false;
@@ -1000,26 +1016,29 @@ std::size_t FindIdentifierUse(std::string_view text,
             end >= text.size() ||
             (!std::isalnum(static_cast<unsigned char>(text[end])) && text[end] != '_');
         if (boundary_before && boundary_after) {
-            return i;
+            if (result.count == 0) {
+                result.first_use = i;
+            }
+            ++result.count;
+            if (stop_at_first) {
+                return result;
+            }
         }
 
         i = end;
     }
 
-    return std::string_view::npos;
+    return result;
+}
+
+std::size_t FindIdentifierUse(std::string_view text,
+                              std::string_view identifier,
+                              std::size_t offset) {
+    return ScanRenderedIdentifierUses(text, identifier, offset, true).first_use;
 }
 
 std::size_t CountIdentifierUses(std::string_view text, std::string_view identifier) {
-    std::size_t count = 0;
-    std::size_t offset = 0;
-    while (true) {
-        const std::size_t found = FindIdentifierUse(text, identifier, offset);
-        if (found == std::string_view::npos) {
-            return count;
-        }
-        ++count;
-        offset = found + identifier.size();
-    }
+    return ScanRenderedIdentifierUses(text, identifier, 0, false).count;
 }
 
 bool IsTemporaryAssignmentLine(std::string_view line,

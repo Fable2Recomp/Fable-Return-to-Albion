@@ -1073,36 +1073,56 @@ bool RenderLua51StraightLineFunctionImpl(const Lua51Function& function,
         std::getenv("REFII_LUA_DISABLE_RENDER_SIMPLIFY") != nullptr;
     const int max_profile_passes =
         disable_simplify ? 1 : (runtime_light_hotspot || large_cleanup_body ? 2 : 4);
-    RunBoundedRenderPassLoop(max_profile_passes, [&](int /*pass*/) {
+    RunBoundedRenderPassLoop(max_profile_passes, [&](int pass) {
         if (deadline_exceeded()) {
             return false;
         }
         bool changed = false;
+        const auto step = [&](std::string_view name) {
+            if (!trace_render) {
+                return;
+            }
+            std::cerr << "[native-render] cleanup pass=" << pass << " step=" << name << '\n';
+        };
+        step("ScanRenderedLuaCleanupFeatures");
         const LuaRenderedCleanupFeatures features = ScanRenderedLuaCleanupFeatures(lines);
         if (!large_cleanup_body || features.has_table_builder_candidates) {
+            step("NormalizeRenderedLuaLoopActionBuilderAliases");
             changed |= NormalizeRenderedLuaLoopActionBuilderAliases(&lines);
+            step("NormalizeRenderedLuaNilTablePlaceholders");
             changed |= NormalizeRenderedLuaNilTablePlaceholders(&lines);
         }
         if (!large_cleanup_body || features.has_temporary_candidates) {
+            step("SimplifyRenderedLuaTemporaries");
             changed |= SimplifyRenderedLuaTemporaries(&lines);
+            step("SimplifyRenderedLuaReturnTemporaries");
             changed |= SimplifyRenderedLuaReturnTemporaries(&lines);
+            step("LocalizeRenderedLuaFirstAssignments");
             changed |= LocalizeRenderedLuaFirstAssignments(&lines);
+            step("LocalizeRenderedLuaFunctionLocals");
             changed |= LocalizeRenderedLuaFunctionLocals(&lines);
         }
         if (!large_cleanup_body || features.has_conditional_iife_candidates) {
+            step("SimplifyRenderedLuaConditionalIifes");
             changed |= SimplifyRenderedLuaConditionalIifes(&lines);
         }
         if (!large_cleanup_body || features.has_call_parenthesis_candidates) {
+            step("SimplifyRenderedLuaCallParentheses");
             changed |= SimplifyRenderedLuaCallParentheses(&lines);
         }
+        step("DisambiguateRenderedLuaLeadingIifeStatements");
         changed |= DisambiguateRenderedLuaLeadingIifeStatements(&lines);
+        step("ApplySharedRenderedLuaCleanup");
         changed |= internal::ApplySharedRenderedLuaCleanup(
             &lines,
             disable_simplify
                 ? internal::RenderedLuaCleanupProfile::kValidatedOutput
                 : internal::RenderedLuaCleanupProfile::kAggressiveCandidateRefinement);
+        step("RepairRenderedLuaSourceGuardedTemporaryFallbacks");
         changed |= RepairRenderedLuaSourceGuardedTemporaryFallbacks(&lines);
+        step("NormalizeRenderedLuaWhitespace");
         changed |= NormalizeRenderedLuaWhitespace(&lines);
+        step("pass-end");
         if (!changed) {
             return false;
         }
