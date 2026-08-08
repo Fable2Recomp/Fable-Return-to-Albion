@@ -20,6 +20,10 @@ run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 config/icon="res://assets/launcher/icon.png"
 
+[autoload]
+
+GameAssets="*res://src/Engine/Engine_GameAssets.cs"
+
 [display]
 
 window/size/viewport_width=1280
@@ -28,3 +32,7 @@ window/size/viewport_height=760
 [dotnet]
 
 project/assembly_name="refii-launcher"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/bnk_mount/plugin.cfg")

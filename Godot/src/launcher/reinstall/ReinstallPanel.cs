@@ -17,11 +17,18 @@ public partial class ReinstallPanel : VBoxContainer
 	private Button _unpackBanks = null!;
 	private Button _decompileLua = null!;
 	private Button _compileShaders = null!;
+	private Label _unpackBanksStatus = null!;
+	private Label _decompileLuaStatus = null!;
+	private Label _compileShadersStatus = null!;
 	private Label _operationLabel = null!;
 	private Label _statusLabel = null!;
 	private Label _errorLabel = null!;
 	private HSeparator _progressSeparator = null!;
 	private bool _built;
+
+	private const string StatusGlyph = "✓";
+	private static readonly Color DoneColor = new(0.36f, 0.85f, 0.47f);
+	private static readonly Color PendingColor = new(0.55f, 0.55f, 0.55f);
 
 	public event Action? ReinstallRequested;
 	public event Action? UnpackBanksRequested;
@@ -62,12 +69,12 @@ public partial class ReinstallPanel : VBoxContainer
 		AddChild(_targetLabel);
 
 		_reinstall = AddAction("Reinstall Fable 2", () => ReinstallRequested?.Invoke());
-		_unpackBanks = AddAction("Unpack Game Banks",
-			() => UnpackBanksRequested?.Invoke());
-		_decompileLua = AddAction("Unpack and Decompile Lua",
-			() => DecompileLuaRequested?.Invoke());
-		_compileShaders = AddAction("Compile Shaders",
-			() => CompileShadersRequested?.Invoke());
+		_unpackBanks = AddTrackedAction("Unpack Game Banks",
+			() => UnpackBanksRequested?.Invoke(), out _unpackBanksStatus);
+		_decompileLua = AddTrackedAction("Unpack and Decompile Lua",
+			() => DecompileLuaRequested?.Invoke(), out _decompileLuaStatus);
+		_compileShaders = AddTrackedAction("Compile Shaders",
+			() => CompileShadersRequested?.Invoke(), out _compileShadersStatus);
 
 		_progressSeparator = new HSeparator { Visible = false };
 		AddChild(_progressSeparator);
@@ -128,6 +135,35 @@ public partial class ReinstallPanel : VBoxContainer
 
 	private Button AddAction(string text, Action onPressed)
 	{
+		Button button = MakeActionButton(text, onPressed);
+		AddChild(button);
+		return button;
+	}
+
+	private Button AddTrackedAction(string text, Action onPressed, out Label status)
+	{
+		var row = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+		row.AddThemeConstantOverride("separation", 6);
+
+		status = new Label
+		{
+			Text = StatusGlyph,
+			CustomMinimumSize = new Vector2(20, 0),
+			HorizontalAlignment = HorizontalAlignment.Center,
+			VerticalAlignment = VerticalAlignment.Center,
+		};
+		status.AddThemeFontSizeOverride("font_size", _fontSize);
+		status.AddThemeColorOverride("font_color", PendingColor);
+		row.AddChild(status);
+
+		Button button = MakeActionButton(text, onPressed);
+		row.AddChild(button);
+		AddChild(row);
+		return button;
+	}
+
+	private Button MakeActionButton(string text, Action onPressed)
+	{
 		var button = new Button
 		{
 			Text = text,
@@ -150,7 +186,6 @@ public partial class ReinstallPanel : VBoxContainer
 		button.AddThemeColorOverride("font_disabled_color", _style.TextDisabled);
 
 		button.Pressed += onPressed;
-		AddChild(button);
 		return button;
 	}
 
@@ -165,7 +200,15 @@ public partial class ReinstallPanel : VBoxContainer
 		_unpackBanks.Disabled = !moddingEnabled;
 		_decompileLua.Disabled = !moddingEnabled;
 		_compileShaders.Disabled = !moddingEnabled;
+
+		Installer.ReinstallStepStatus status = Installer.GetReinstallStepStatus();
+		SetStatus(_unpackBanksStatus, status.Banks);
+		SetStatus(_decompileLuaStatus, status.Lua);
+		SetStatus(_compileShadersStatus, status.Shaders);
 	}
+
+	private static void SetStatus(Label label, bool done) =>
+		label.AddThemeColorOverride("font_color", done ? DoneColor : PendingColor);
 
 	public void SetProgress(string operationLabel, string statusMessage, string errorMessage = "")
 	{

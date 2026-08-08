@@ -148,6 +148,7 @@ public sealed class LauncherOps : IDisposable
 		}
 
 		string projectDir = ProjectSettings.GlobalizePath("res://");
+		yield return Path.Combine(projectDir, "build", "bin");
 		yield return Path.Combine(projectDir, "bin");
 
 		string repoRoot = Path.GetFullPath(Path.Combine(projectDir, ".."));

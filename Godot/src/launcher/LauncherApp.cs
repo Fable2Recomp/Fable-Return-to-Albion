@@ -108,6 +108,11 @@ public partial class LauncherApp : Control
 		LoadLauncherConfig();
 		LauncherTheme.Load();
 
+		if (!Engine.IsEditorHint())
+		{
+			MountGameAssets();
+		}
+
 		_patches = new Patches();
 		_launch = new LaunchController(_patches);
 		_updates = new UpdateChecker();
@@ -184,6 +189,12 @@ public partial class LauncherApp : Control
 		}
 
 		string projectDir = ProjectSettings.GlobalizePath("res://");
+		string staged = Path.Combine(projectDir, "build");
+		if (Directory.Exists(staged))
+		{
+			return staged.TrimEnd(Path.DirectorySeparatorChar);
+		}
+
 		string repoRoot = Path.GetFullPath(Path.Combine(projectDir, ".."));
 		if (Directory.Exists(Path.Combine(repoRoot, "assets")))
 		{
@@ -191,6 +202,70 @@ public partial class LauncherApp : Control
 		}
 
 		return AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+	}
+
+	private void MountGameAssets()
+	{
+		Refii.Assets.Engine_GameAssets? assets = Refii.Assets.Engine_GameAssets.Instance;
+		if (assets is null)
+		{
+			return;
+		}
+
+		if (!_gameAssetsSignalsBound)
+		{
+			_gameAssetsSignalsBound = true;
+			assets.Mounted += count =>
+			{
+				Log($"Game assets mounted: {count:N0} files.");
+				VerifyTextureLoad(assets);
+			};
+			assets.MountFailed += reason => Log($"Game assets mount failed: {reason}");
+		}
+
+		assets.Mount(Installer.GetGameDataDirectoryPath());
+	}
+
+	private bool _gameAssetsSignalsBound;
+
+	private void VerifyTextureLoad(Refii.Assets.Engine_GameAssets assets)
+	{
+		int attempted = 0;
+		int loaded = 0;
+		foreach (Refii.Bnk.BnkFile file in assets.EnumerateAllFiles())
+		{
+			if (!file.VirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			++attempted;
+			byte[]? raw = assets.ReadAllBytes(file.VirtualPath);
+			if (raw is null)
+			{
+				continue;
+			}
+
+			Image? image = Refii.Textures.Engine_TexImage.TryCreateImage(raw, out _);
+			if (image is not null)
+			{
+				++loaded;
+				image.ClearMipmaps();
+				image.Decompress();
+				image.Resize(16, 16, Image.Interpolation.Bilinear);
+				if (loaded <= 4)
+				{
+					Log($"  thumbnail ok {image.GetWidth()}x{image.GetHeight()} <- {file.VirtualPath}");
+				}
+			}
+
+			if (attempted >= 200)
+			{
+				break;
+			}
+		}
+
+		Log($"ResourceLoader.Load as Texture2D: {loaded}/{attempted} of first 200 .tex");
 	}
 
 	private static string? ResolveRuntimeDirectory()
@@ -208,6 +283,12 @@ public partial class LauncherApp : Control
 
 		string projectDir = ProjectSettings.GlobalizePath("res://");
 		string repoRoot = Path.GetFullPath(Path.Combine(projectDir, ".."));
+
+		string staged = Path.Combine(projectDir, "build");
+		if (File.Exists(Path.Combine(staged, Platform.ExecutableName)))
+		{
+			return staged.TrimEnd(Path.DirectorySeparatorChar);
+		}
 
 		foreach (string configuration in new[] { "RelWithDebInfo", "Release", "Debug" })
 		{
@@ -1230,6 +1311,8 @@ public partial class LauncherApp : Control
 		_ops.Dispose();
 		_ops = null;
 		_opsStatus = string.Empty;
+		Installer.InvalidateReinstallStepStatus();
+		MountGameAssets();
 		RefreshState();
 	}
 

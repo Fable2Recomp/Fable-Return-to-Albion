@@ -143,6 +143,26 @@ set_target_properties(${LAUNCHER_OPS_TARGET} PROPERTIES
     INSTALL_RPATH "$ORIGIN"
 )
 
+option(REFII_STAGE_GODOT_BIN "Copy launcher ops + runtime DLLs into Godot/build/bin after building" ON)
+if(REFII_STAGE_GODOT_BIN)
+    set(REFII_GODOT_BIN_DIR "${CMAKE_SOURCE_DIR}/Godot/build/bin")
+    add_custom_command(TARGET ${LAUNCHER_OPS_TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_GODOT_BIN_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:${LAUNCHER_OPS_TARGET}>" "${REFII_GODOT_BIN_DIR}"
+        COMMENT "Staging ${LAUNCHER_OPS_TARGET} into Godot/build/bin"
+        VERBATIM
+    )
+    if(WIN32)
+        add_custom_command(TARGET ${LAUNCHER_OPS_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_RUNTIME_DLLS:${LAUNCHER_OPS_TARGET}>" "${REFII_GODOT_BIN_DIR}"
+            COMMAND_EXPAND_LISTS
+            VERBATIM
+        )
+    endif()
+endif()
+
 target_include_directories(${LAUNCHER_TARGET} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/generated/glad/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -41,6 +41,20 @@ set(REFII_LIBRARY_OUTPUT_DIR
     FORCE
 )
 set(REFII_RUNTIME_DATA_DIR "${REFII_RUNTIME_OUTPUT_DIR}/assets")
+set(REFII_LONG_PATHS_MANIFEST
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/refii_long_paths.manifest")
+function(refii_embed_long_paths_manifest target)
+    if(NOT WIN32 OR MSVC)
+        return()
+    endif()
+    target_link_options(${target} PRIVATE
+        "LINKER:/MANIFEST:EMBED"
+        "LINKER:/MANIFESTINPUT:${REFII_LONG_PATHS_MANIFEST}")
+endfunction()
+
+option(REFII_STAGE_GODOT_BUILD "Stage the runtime and native DLLs into Godot/build" ON)
+set(REFII_GODOT_BUILD_DIR "${CMAKE_SOURCE_DIR}/Godot/build")
+set(REFII_GODOT_BUILD_BIN_DIR "${REFII_GODOT_BUILD_DIR}/bin")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}")
@@ -766,12 +780,16 @@ if(REFII_BUILD_STANDALONE)
     list(APPEND REFII_SOURCES ${REFII_WINDOWED_APP_MAIN_SOURCE})
     if(WIN32)
         # Opt in to Win32 long paths; extracted asset paths reach ~194 chars
-        # below the install root. MSVC embeds .manifest sources via mt.exe.
+        # below the install root. MSVC embeds .manifest sources via mt.exe;
+        # the clang++/lld-link toolchain needs the linker flags below instead.
         if(MSVC)
             list(APPEND REFII_SOURCES
                 "${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/refii_long_paths.manifest")
         endif()
         add_executable(refii WIN32 ${REFII_SOURCES})
+        if(NOT MSVC)
+            refii_embed_long_paths_manifest(refii)
+        endif()
     else()
         add_executable(refii ${REFII_SOURCES})
     endif()
@@ -820,6 +838,19 @@ if(REFII_BUILD_STANDALONE)
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "$<TARGET_FILE:rex::gpu-xenos>"
                     "$<TARGET_FILE_DIR:refii>"
+                VERBATIM
+            )
+        endif()
+
+        if(REFII_STAGE_GODOT_BUILD)
+            add_custom_command(TARGET refii POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_GODOT_BUILD_BIN_DIR}"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:refii>" "${REFII_GODOT_BUILD_DIR}"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_RUNTIME_DLLS:refii>" "${REFII_GODOT_BUILD_DIR}"
+                COMMENT "Staging refii runtime into Godot/build"
+                COMMAND_EXPAND_LISTS
                 VERBATIM
             )
         endif()

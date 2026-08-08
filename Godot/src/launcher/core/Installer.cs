@@ -23,9 +23,55 @@ public static class Installer
     private const int WindowsMaxPath = 260;
     private const int DeepestAssetRelativeLength = 16 + 178;
 
-    public static bool InstallBasePathLeavesWindowsPathRoom(string basePath, out string error)
+    private static bool? _longPathsUsable;
+
+    public static bool LongPathsUsable()
     {
         if (!OperatingSystem.IsWindows())
+        {
+            return true;
+        }
+
+        if (_longPathsUsable.HasValue)
+        {
+            return _longPathsUsable.Value;
+        }
+
+        bool usable = false;
+        string probe = Path.Combine(Path.GetTempPath(), new string('p', 250));
+        try
+        {
+            if (probe.Length > WindowsMaxPath)
+            {
+                Directory.CreateDirectory(probe);
+                usable = Directory.Exists(probe);
+            }
+        }
+        catch (Exception)
+        {
+            usable = false;
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(probe))
+                {
+                    Directory.Delete(probe);
+                }
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        _longPathsUsable = usable;
+        return usable;
+    }
+
+    public static bool InstallBasePathLeavesWindowsPathRoom(string basePath, out string error)
+    {
+        if (!OperatingSystem.IsWindows() || LongPathsUsable())
         {
             error = string.Empty;
             return true;
@@ -103,6 +149,33 @@ public static class Installer
 
     public static string GetLuaWorkspacePath() =>
         Path.Combine(GetWorkspaceBasePath(GetGameDataDirectoryPath()), "unpacked");
+
+    public readonly record struct ReinstallStepStatus(bool Banks, bool Lua, bool Shaders);
+
+    private const long StepStatusTtlMs = 1000;
+    private static ReinstallStepStatus _stepStatus;
+    private static bool _stepStatusValid;
+    private static long _stepStatusStamp;
+
+    public static void InvalidateReinstallStepStatus() => _stepStatusValid = false;
+
+    public static ReinstallStepStatus GetReinstallStepStatus()
+    {
+        long now = Environment.TickCount64;
+        if (_stepStatusValid && now - _stepStatusStamp < StepStatusTtlMs)
+        {
+            return _stepStatus;
+        }
+
+        string workspace = GetLuaWorkspacePath();
+        _stepStatus = new ReinstallStepStatus(
+            File.Exists(Path.Combine(workspace, "dir.manifest")),
+            File.Exists(Path.Combine(workspace, "_manifest.live.tsv")),
+            File.Exists(Path.Combine(workspace, "shaders", "compile_report.tsv")));
+        _stepStatusValid = true;
+        _stepStatusStamp = now;
+        return _stepStatus;
+    }
 
     public static string GetGameContentDirectoryPath() =>
         Path.Combine(GetGameDataDirectoryPath(), "data");
