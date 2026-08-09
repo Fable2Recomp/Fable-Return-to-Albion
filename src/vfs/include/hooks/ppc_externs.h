@@ -88,6 +88,12 @@ PPC_EXTERN_FUNC(__imp__sub_82B456D8);
 PPC_EXTERN_FUNC(__imp__sub_82B45F70);
 PPC_EXTERN_FUNC(__imp__sub_8218FA68);
 PPC_EXTERN_FUNC(__imp__sub_82C6E8F0);
+
+// Render_DrawBinkMovieFrame — the game's own call into Bink, hooked to capture the BINK
+// handle so the host can find the CPU-decoded video planes. Hooking inside Bink itself
+// does not work; it dispatches through a function-pointer table. See
+// hooks/bink_frame_capture.cpp.
+PPC_EXTERN_FUNC(__imp__sub_82A41B48);
 PPC_EXTERN_FUNC(__imp__sub_82C6EA48);
 PPC_EXTERN_FUNC(__imp__sub_82C6EA80);
 PPC_EXTERN_FUNC(__imp__sub_82C6EAD8);
@@ -175,7 +181,6 @@ PPC_EXTERN_FUNC(__imp__sub_821E2C08);
 PPC_EXTERN_FUNC(__imp__sub_82A415C0);
 PPC_EXTERN_FUNC(__imp__sub_82A41758);
 PPC_EXTERN_FUNC(__imp__sub_82A41B00);
-PPC_EXTERN_FUNC(__imp__sub_82A41B48);
 PPC_EXTERN_FUNC(sub_82A97368);
 PPC_EXTERN_FUNC(sub_82426518);
 PPC_EXTERN_FUNC(sub_82426CA8);

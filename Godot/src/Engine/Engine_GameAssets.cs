@@ -152,6 +152,15 @@ public partial class Engine_GameAssets : Node
 			ResourceLoader.AddResourceFormatLoader(_meshLoader);
 		}
 
+		Refii.Video.Engine_BnkVideoLoader.SetResolver(ReadAllBytes);
+		Refii.Video.Engine_BnkVideoLoader.SetLibrary(
+			Refii.Video.Engine_VideoLibrary.Load(GameDirectory));
+		if (_videoLoader is null)
+		{
+			_videoLoader = new Refii.Video.Engine_BnkVideoLoader();
+			ResourceLoader.AddResourceFormatLoader(_videoLoader);
+		}
+
 		Refii.Level.Engine_BnkTerrainLoader.SetResolver(ReadAllBytes);
 		Refii.Level.Engine_BnkTerrainAlbedoLoader.SetResolver(ReadAllBytes);
 		Refii.Level.Engine_BnkTerrainAlbedoLoader.SetHeightfieldLookup(HeightfieldForEhf);
@@ -229,6 +238,7 @@ public partial class Engine_GameAssets : Node
 
 	private Refii.Textures.Engine_BnkTextureLoader? _textureLoader;
 	private Refii.Models.Engine_BnkMeshLoader? _meshLoader;
+	private Refii.Video.Engine_BnkVideoLoader? _videoLoader;
 	private Refii.Level.Engine_BnkTerrainLoader? _terrainLoader;
 	private Refii.Level.Engine_BnkTerrainAlbedoLoader? _albedoLoader;
 	private Refii.Level.Engine_BnkTerrainMaterialLoader? _terrainMaterialLoader;

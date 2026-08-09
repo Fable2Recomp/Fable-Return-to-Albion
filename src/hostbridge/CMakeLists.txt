@@ -16,6 +16,7 @@ add_library(refii_hostbridge SHARED
 target_link_libraries(refii_hostbridge
     PRIVATE
         refii_host
+        refii_vfs
         rex::runtime
 )
 
@@ -65,6 +66,28 @@ if(REFII_STAGE_GODOT_BUILD)
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "$<TARGET_FILE:${_staged}>" "${REFII_GODOT_BUILD_BIN_DIR}"
             )
+        endif()
+    endforeach()
+
+    # A staging TARGET rather than a POST_BUILD on the bridge alone.
+    #
+    # Hanging the whole closure off refii_hostbridge's POST_BUILD meant a rebuild that
+    # touched only one of the others never restaged it: librefii_vfs.so sat in
+    # Godot/build/bin twelve hours stale while the build tree was current, and every run
+    # silently loaded the old code — which looked for all the world like a hook that was
+    # not firing. add_custom_command(TARGET) also has to live in the directory that
+    # created the target, so it cannot reach refii_vfs from here at all.
+    #
+    # ALL so it runs every build; copy_if_different so that costs nothing when nothing
+    # moved.
+    add_custom_target(refii_stage_godot ALL
+        ${_refii_hostbridge_stage_commands}
+        COMMENT "Staging the runtime closure into Godot/build/bin"
+        COMMAND_EXPAND_LISTS
+    )
+    foreach(_staged IN LISTS _refii_hostbridge_staged_targets)
+        if(TARGET ${_staged})
+            add_dependencies(refii_stage_godot ${_staged})
         endif()
     endforeach()
 

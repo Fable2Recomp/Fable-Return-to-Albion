@@ -4,7 +4,9 @@ using System.IO;
 using System.Linq;
 using Godot;
 using Refii.Bnk;
-using Refii.Launcher.Formats;
+using Refii.Core;
+using Refii.Text;
+using Refii.Ui;
 using Refii.Models;
 
 namespace Refii.Launcher.Tools;
@@ -57,7 +59,7 @@ public partial class ModelViewer : Node3D
 
 	public override void _Ready()
 	{
-		string dataRoot = UiGameData.Resolve();
+		string dataRoot = Engine_GameData.Resolve();
 		if (dataRoot.Length == 0)
 		{
 			GD.PrintErr("[viewer] no game data found; set REFII_GAME_DATA or stage assets/game.");

@@ -112,6 +112,35 @@ refii_rexglue_generate_sources_if_missing()
 include(generated/rexglue.cmake)
 add_subdirectory(src/achievement)
 refii_rexglue_apply_shadow_overrides()
+
+# Bink VIDEO decoding, for playing the game's .bik files in Godot without the guest.
+#
+# rexglue builds FFmpeg audio-only (XMA/WMA Pro), so the Bink decoder is present in
+# source but compiled out. Enabling it needs three things: the config flag (see
+# cmake/ffmpeg-bink/config.h, prepended to the include path so it wins over the SDK's),
+# the decoder itself, and the DSP helpers it calls into — blockdsp and hpeldsp are not
+# in the audio subset because nothing audio-only needs them.
+#
+# The decoder is reached directly through `ff_bink_decoder` rather than by registering it
+# in the SDK's generated codec_list.c, which would mean editing a pristine generated file
+# for no gain: avcodec_open2 takes the AVCodec outright.
+if(TARGET libavcodec)
+    set(_refii_ffmpeg_dir "${REFII_REXGLUE_SDK_SOURCE_DIR}/thirdparty/FFmpeg")
+    target_include_directories(libavcodec BEFORE PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ffmpeg-bink"
+    )
+    target_sources(libavcodec PRIVATE
+        "${_refii_ffmpeg_dir}/libavcodec/bink.c"
+        "${_refii_ffmpeg_dir}/libavcodec/binkdsp.c"
+        "${_refii_ffmpeg_dir}/libavcodec/blockdsp.c"
+        "${_refii_ffmpeg_dir}/libavcodec/hpeldsp.c"
+    )
+    message(STATUS "Refii: enabled the FFmpeg Bink video decoder")
+endif()
+
+# Must come AFTER the block above: it links libavcodec, which only carries the Bink
+# decoder once those sources have been added to it.
+add_subdirectory(src/binkdecode)
 refii_define_rexglue_build_target()
 refii_define_rexglue_codegen_bootstrap_target()
 
@@ -719,6 +748,10 @@ endif()
 unset(REFII_GENERATED_LIBRARY_TYPE)
 add_library(refii_host STATIC
     src/refii_host.cpp
+    # Godot-fed controller input. Lives here rather than in the host bridge because
+    # refii_app.h installs it through RuntimeConfig::input_factory, and the bridge links
+    # refii_host rather than the other way round.
+    src/host_input.cpp
 )
 set_target_properties(refii_host PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"

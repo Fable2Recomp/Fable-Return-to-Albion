@@ -14,7 +14,11 @@
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 #include <rex/system/kernel_state.h>
+#include <rex/input/input_system.h>
+#include <rex/input/nop/nop_input_driver.h>
 #include <rex/system/util/xdbf_utils.h>
+
+#include "host_input.h"
 
 #if REFII_HAS_RENDERER_RUNTIME
 #include "renderdoc_debugger.h"
@@ -376,6 +380,41 @@ public:
 
   void OnPreSetup(rex::RuntimeConfig &config) override {
     RefiiLogRuntimeBackendSplit();
+
+    // Embedded, the HOST owns input.
+    //
+    // The SDK's default input system builds an SDL driver whose subsystems are
+    // initialised in OnWindowAvailable. An embedded guest deliberately creates no
+    // window, so that never fires and every XInput entry point is left uninitialised —
+    // which aborted the process the moment Fable 2 polled controller capabilities during
+    // startup. Swapping the whole input system is cleaner than teaching the SDL driver
+    // to be windowless, and it is the same shape as the window: Godot reads the real
+    // device and the guest is served a snapshot.
+    //
+    // The NOP driver stays behind ours as the fallback the SDK always installs, so a
+    // guest asking about pad 4 gets the same answer it always did.
+    if (RefiiIsEmbeddedHeadless()) {
+      config.input_factory =
+          [](bool tool_mode) -> std::unique_ptr<rex::system::IInputSystem> {
+        // X_STATUS_SUCCESS is a macro that casts to an unqualified X_STATUS, so it can
+        // only be used where that name is visible.
+        using namespace rex;
+
+        auto input = std::make_unique<rex::input::InputSystem>(nullptr);
+        if (!tool_mode) {
+          auto host_driver =
+              std::make_unique<refii::host::HostInputDriver>(nullptr, 0);
+          if (host_driver->Setup() == X_STATUS_SUCCESS) {
+            input->AddDriver(std::move(host_driver));
+          }
+        }
+
+        input->AddDriver(
+            std::make_unique<rex::input::nop::NopInputDriver>(nullptr, 1));
+        return input;
+      };
+      REXLOG_INFO("Refii: embedded — host-fed controller input installed");
+    }
 #if REFII_HAS_RENDERER_RUNTIME
     // The backend setting is final here (TOML + launcher env both applied);
     // freeze the cache so per-hook backend queries stop string-parsing the

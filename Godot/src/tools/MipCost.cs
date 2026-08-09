@@ -4,7 +4,9 @@ using System.Diagnostics;
 using System.Linq;
 using Godot;
 using Refii.Bnk;
-using Refii.Launcher.Formats;
+using Refii.Core;
+using Refii.Text;
+using Refii.Ui;
 using Refii.Textures;
 
 namespace Refii.Launcher.Tools;
@@ -30,7 +32,7 @@ public partial class MipCost : Node
 
 	public override void _Ready()
 	{
-		string dataRoot = UiGameData.Resolve();
+		string dataRoot = Engine_GameData.Resolve();
 		if (dataRoot.Length == 0)
 		{
 			GD.Print("no game data found; set REFII_GAME_DATA or stage assets/game.");

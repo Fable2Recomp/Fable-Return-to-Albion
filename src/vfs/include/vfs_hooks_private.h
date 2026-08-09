@@ -67,6 +67,27 @@
 #define REX_FUNC_PROLOGUE() ((void)0)
 #endif
 
+namespace refii::vfs {
+// Bink video frame capture — defined in src/hooks/bink_frame_capture.cpp.
+void NoteBinkMovieOpen(uint32_t player);
+uint32_t BinkFrameBuffersGuestAddress();
+
+/// The movie the guest last handed to BinkOpen. The argument is EITHER a pointer to the
+/// already-loaded .bik in guest memory OR a pointer to its path — the title opens the
+/// startup logos from a preloaded buffer and later movies by name.
+void NoteBinkVideoRequested(uint8_t* base, uint32_t data_guest);
+void RequestedBinkVideo(uint32_t* out_address, uint32_t* out_size,
+                        uint32_t* out_generation, uint32_t* out_swapped);
+
+/// The path form of the same request. Empty when the last request carried a buffer.
+/// Writes at most `capacity` bytes including the terminator; returns the length written.
+uint32_t RequestedBinkVideoName(char* out, uint32_t capacity);
+
+/// Marks the live movie finished, so the guest's startup sequence advances in step with
+/// what the host has actually shown. Returns the player retired, or 0.
+uint32_t FinishCurrentBinkMovie(uint8_t* base);
+}  // namespace refii::vfs
+
 #define REFII_VFS_NATIVE_PASSTHROUGH(function_name) \
   do {                                              \
     if (!refii::vfs::RefiiLooseAssetBackendEnabled()) { \

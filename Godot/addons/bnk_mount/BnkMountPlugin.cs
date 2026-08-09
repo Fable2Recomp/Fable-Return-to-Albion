@@ -17,6 +17,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private const string DatabaseRootMeta = "__bnk_database_root__";
     private const string LevelsRootMeta = "__bnk_levels_root__";
     private const string EntitiesRootMeta = "__bnk_entities_root__";
+    private const string VideosRootMeta = "__bnk_videos_root__";
     private const string LevelRegionPrefix = "lvlregion:";
     private const string LevelPrefix = "lvl:";
     private const string ContainerMeta = "__bnk_container__";
@@ -205,6 +206,7 @@ public partial class BnkMountPlugin : EditorPlugin
             }
 
             _filesystem = mounted;
+            _videos = Refii.Video.Engine_VideoLibrary.Load(gameDirectory);
             _byFileName = null;
             _mounting = false;
             CallDeferred(nameof(Inject));
@@ -535,6 +537,15 @@ public partial class BnkMountPlugin : EditorPlugin
         AddPlaceholder(tree, levels);
         levels.Collapsed = true;
 
+        TreeItem videos = tree.CreateItem(_gameRoot);
+        videos.SetText(0, "Videos");
+        videos.SetMetadata(0, VideosRootMeta);
+        videos.SetSelectable(0, false);
+        videos.SetIcon(0, GetFolderIcon());
+        videos.SetIconModulate(0, GameFolderColor);
+        AddPlaceholder(tree, videos);
+        videos.Collapsed = true;
+
         TreeItem? resRoot = FindResRoot(root);
         if (resRoot is not null)
         {
@@ -602,6 +613,7 @@ public partial class BnkMountPlugin : EditorPlugin
                meta == DatabaseRootMeta ||
                meta == LevelsRootMeta ||
                meta == EntitiesRootMeta ||
+               meta == VideosRootMeta ||
                meta == ContainerMeta ||
                meta.StartsWith("bnk:", StringComparison.Ordinal) ||
                meta.StartsWith(LevelRegionPrefix, StringComparison.Ordinal) ||
@@ -642,6 +654,14 @@ public partial class BnkMountPlugin : EditorPlugin
             }
 
             EditorInterface.Singleton.InspectObject(entity);
+            return;
+        }
+
+        // Before the bank lookup: movies live on disc, so TryGetFile would reject every
+        // one of them.
+        if (virtualPath.EndsWith(".bik", StringComparison.OrdinalIgnoreCase))
+        {
+            ActivateVideo(meta, virtualPath);
             return;
         }
 
@@ -804,6 +824,7 @@ public partial class BnkMountPlugin : EditorPlugin
             meta != DatabaseRootMeta &&
             meta != LevelsRootMeta &&
             meta != EntitiesRootMeta &&
+            meta != VideosRootMeta &&
             !meta.StartsWith(LevelRegionPrefix, StringComparison.Ordinal) &&
             !meta.StartsWith("bnk:", StringComparison.Ordinal))
         {
@@ -856,6 +877,9 @@ public partial class BnkMountPlugin : EditorPlugin
             if (meta == EntitiesRootMeta)
             {
                 PopulateEntities(item);
+            if (meta == VideosRootMeta)
+            {
+                PopulateVideos(item);
                 continue;
             }
 
@@ -870,6 +894,12 @@ public partial class BnkMountPlugin : EditorPlugin
     }
 
     private List<Refii.Level.LevelEntry>? _levels;
+
+    /// <summary>
+    /// The movies, indexed separately from the banks — Fable 2 ships every .bik loose
+    /// under art/videos, so none of them appear in the bank index.
+    /// </summary>
+    private Refii.Video.Engine_VideoLibrary _videos = new();
 
     private List<Refii.Level.LevelEntry> Levels()
     {
@@ -977,6 +1007,56 @@ public partial class BnkMountPlugin : EditorPlugin
                 (built ? $"built → {level.ScenePath}" : "double-click to build the .tscn"));
         }
     }
+
+    private void ActivateVideo(string resourcePath, string virtualPath)
+    {
+        var video = ResourceLoader.Load<Refii.Video.Engine_BinkVideo>(resourcePath);
+        if (video is null)
+        {
+            return;
+        }
+
+        EditorInterface.Singleton.InspectObject(video);
+
+        GD.Print($"[bnk_mount] {virtualPath} -> {video.Width}x{video.Height}, " +
+                 $"{video.FrameCount:N0} frames  ·  {video.Duration:0.0}s");
+    }
+
+    private void PopulateVideos(TreeItem parent)
+    {
+        Tree? tree = ResolveTree();
+        if (tree is null)
+        {
+            return;
+        }
+
+        Texture2D? icon = GetClassIcon(VideoIconNames);
+
+        foreach (string name in _videos.Names)
+        {
+            TreeItem item = tree.CreateItem(parent);
+            item.SetText(0, name + ".bik");
+            item.SetMetadata(0, FilePrefix + "art/videos/" + name + ".bik");
+
+            if (icon is not null)
+            {
+                item.SetIcon(0, icon);
+                item.SetIconModulate(0, Colors.White);
+            }
+            else
+            {
+                item.SetIcon(0, GetFileIcon());
+                item.SetIconModulate(0, GameFolderColor);
+            }
+
+            item.SetTooltipText(0, $"game://art/videos/{name}.bik\nloose file");
+        }
+    }
+
+    private static readonly string[] VideoIconNames =
+    {
+        "VideoStreamPlayer", "AnimatedTexture", "FileVideo", "File",
+    };
 
     private void PopulateDatabases(TreeItem parent)
     {

@@ -2,6 +2,10 @@ using System;
 using System.Collections.Generic;
 using Godot;
 
+using Refii.Core;
+
+using Refii.Ui;
+
 namespace Refii.Textures;
 
 public static class Engine_TexImage

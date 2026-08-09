@@ -1,3 +1,4 @@
+using Refii.Host;
 using Godot;
 
 namespace Refii.Game;
@@ -17,6 +18,9 @@ public partial class GameWindow : Window
 	private static GameWindow? _current;
 
 	private GameSession? _session;
+	private GameUi? _ui;
+	private GameVideo? _video;
+
 	private DisplayServer.WindowMode _launcherMode = DisplayServer.WindowMode.Windowed;
 	private bool _launcherRestored;
 
@@ -73,6 +77,30 @@ public partial class GameWindow : Window
 		_session = new GameSession { Name = "GameSession", StartGuest = StartGuest };
 		AddChild(_session);
 
+		// The game's own UI, rendered by Godot from the title's presentation data. Added
+		// alongside the session rather than inside it: the UI stands up from the shipped
+		// assets and does not need a running guest, so a failed boot still shows a screen
+		// instead of a blank window.
+		_ui = new GameUi { Name = "GameUi" };
+		AddChild(_ui);
+
+		// Above the UI: the startup logos play over everything.
+		_video = new GameVideo { Name = "GameVideo" };
+		AddChild(_video);
+
+		// The boot order the player sees: logos first, then the front end.
+		//
+		// The UI is built during the logos but stays off screen until the movies are done,
+		// so the front end never flashes up ahead of them. After that it is simply "video
+		// over UI" — a movie the guest opens later covers the front end and hands it back
+		// when it ends. That needs no knowledge of how many movies the startup sequence
+		// contains, which is the guest's business, not ours.
+		//
+		// Concealing is immediate. Revealing waits for the GUEST to say it has reached its
+		// front end — see _Process — rather than for a movie to end, which was the host
+		// guessing and put the menu on screen in the seam between two logos.
+		_video.MovieStarted += _ => _ui.Conceal();
+
 		_session.Stopped += OnSessionStopped;
 
 		// Closing the window ends the session rather than orphaning a running guest. The
@@ -84,6 +112,62 @@ public partial class GameWindow : Window
 			QueueFree();
 		};
 	}
+
+	/// <summary>
+	/// Shows the front end exactly when the guest has one.
+	///
+	/// The guest builds its title/main-menu state only after every startup logo has played
+	/// AND its bank mounter has finished, so this is the title itself saying the boot
+	/// sequence is over. A movie opened later still covers the UI, and hands it back when
+	/// it ends.
+	/// </summary>
+	public override void _Process(double delta)
+	{
+		TraceFrontEnd();
+
+		if (_ui is null || _video is null || _ui.IsRevealed || _video.IsPlaying)
+		{
+			return;
+		}
+
+		if (HostBridge.TryGetAbiVersion() is not null && HostBridge.FrontEndState() != 0)
+		{
+			_ui.Reveal();
+		}
+	}
+
+	/// <summary>
+	/// Reports the guest's front end as it moves, so a run says what the title is doing
+	/// rather than only what we drew. Logged on change only — this is polled every frame.
+	/// </summary>
+	private void TraceFrontEnd()
+	{
+		if (HostBridge.TryGetAbiVersion() is null ||
+			!HostBridge.TryGetFrontEnd(out HostBridge.FrontEndScreen screen,
+				out uint state, out bool canPressA, out uint cursor,
+				out int sceneSlide, out int slideCount))
+		{
+			return;
+		}
+
+		// FollowGuest compares the live slide table itself and is a no-op when nothing
+		// moved, so it is called every frame — a widget changing state does not show up
+		// in the screen-level fields below.
+		_ui?.FollowGuest(screen, sceneSlide);
+
+		var now = (screen, state, canPressA, cursor, sceneSlide);
+		if (now == _lastFrontEnd)
+		{
+			return;
+		}
+
+		_lastFrontEnd = now;
+
+		GD.Print($"[guest-ui] {screen} state={state} slide={sceneSlide}/{slideCount}" +
+			(screen == HostBridge.FrontEndScreen.Title ? $" canPressA={canPressA}" : $" cursor={cursor}"));
+	}
+
+	private (HostBridge.FrontEndScreen, uint, bool, uint, int) _lastFrontEnd;
 
 	public override void _ExitTree()
 	{

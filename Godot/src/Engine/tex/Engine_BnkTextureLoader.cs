@@ -1,6 +1,10 @@
 using System;
 using Godot;
 
+using Refii.Core;
+
+using Refii.Ui;
+
 namespace Refii.Textures;
 
 [Tool]
@@ -11,6 +15,27 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 	private static Func<string, byte[]?>? _resolver;
 
 	public static void SetResolver(Func<string, byte[]?>? resolver) => _resolver = resolver;
+
+	private static Engine_BnkTextureLoader? _registered;
+
+	/// <summary>
+	/// Registers this loader with Godot's ResourceLoader, once per process.
+	///
+	/// Without it <c>game://…</c> resolves to nothing, and the failure is silent — a
+	/// screen simply comes up untextured. Callers that build a UI outside the running
+	/// game (the screen viewer, the scene exporter) reach it through
+	/// <see cref="Engine_UiTextureCache"/> rather than knowing to do this themselves.
+	/// </summary>
+	public static void EnsureRegistered()
+	{
+		if (_registered is not null)
+		{
+			return;
+		}
+
+		_registered = new Engine_BnkTextureLoader();
+		ResourceLoader.AddResourceFormatLoader(_registered);
+	}
 
 	public static bool Recognises(string path) =>
 		path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase) &&

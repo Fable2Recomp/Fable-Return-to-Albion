@@ -1,10 +1,13 @@
+using Refii.Textures;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Godot;
 using Refii.Bnk;
-using Refii.Launcher.Formats;
+using Refii.Core;
+using Refii.Text;
+using Refii.Ui;
 
 namespace Refii.Launcher.Tools;
 
@@ -54,7 +57,7 @@ public partial class UiSceneExporter : Node
 		// the plugin, the viewer and this must not disagree about which install they read.
 		string data = Directory.Exists(GameDataRoot)
 			? GameDataRoot
-			: UiGameData.Resolve();
+			: Engine_GameData.Resolve();
 
 		if (!Directory.Exists(data))
 		{
@@ -79,8 +82,8 @@ public partial class UiSceneExporter : Node
 			DirAccess.MakeDirRecursiveAbsolute(dir);
 
 		var allPaths = banks.EnumerateAllFiles().Select(f => f.VirtualPath).ToList();
-		var names = TextureNameTable.FromPaths(allPaths, new[] { ".tex" });
-		var cache = new UiTextureCache(banks);
+		var names = Engine_TextureNameTable.FromPaths(allPaths, new[] { ".tex" });
+		var cache = new Engine_UiTextureCache(banks);
 
 		// Pass 1 — every texture any screen references, saved once and shared.
 		var screens = allPaths
@@ -113,7 +116,7 @@ public partial class UiSceneExporter : Node
 		var wanted = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
 		foreach (string bgfPath in screens)
 		{
-			UiScreen screen = LoadScreen(banks, bgfPath, names);
+			Engine_UiScreen screen = LoadScreen(banks, bgfPath, names);
 			foreach (UiNode node in screen.Nodes)
 				if (node.Quad is not null && node.Quad.TexturePath.Length > 0)
 					wanted.Add(node.Quad.TexturePath);
@@ -165,9 +168,9 @@ public partial class UiSceneExporter : Node
 		foreach (string bgfPath in screens)
 		{
 			string name = Path.GetFileNameWithoutExtension(bgfPath.Replace('\\', '/'));
-			UiScreen screen = LoadScreen(banks, bgfPath, names);
+			Engine_UiScreen screen = LoadScreen(banks, bgfPath, names);
 
-			var builder = new UiSceneBuilder
+			var builder = new Engine_UiSceneBuilder
 			{
 				TextureResolver = rel => saved.TryGetValue(rel, out Texture2D? t) ? t : null,
 			};
@@ -176,11 +179,11 @@ public partial class UiSceneExporter : Node
 
 			// The scene has to carry a working camera, or opening it renders nothing.
 			AddChild(root);
-			UiSceneBuilder.ApplyCameraAiming(root);
-			UiSceneBuilder.ActivateCamera(root);
+			Engine_UiSceneBuilder.ApplyCameraAiming(root);
+			Engine_UiSceneBuilder.ActivateCamera(root);
 			RemoveChild(root);
 
-			Error err = UiSceneBuilder.SaveAsScene(root, $"{sceneOut}/{name}.tscn");
+			Error err = Engine_UiSceneBuilder.SaveAsScene(root, $"{sceneOut}/{name}.tscn");
 			if (err != Error.Ok) { GD.PrintErr($"export: {name}: {err}"); sceneBad++; }
 			else { sceneOk++; quads += builder.QuadsBuilt; texts += builder.TextsBuilt; }
 
@@ -192,13 +195,13 @@ public partial class UiSceneExporter : Node
 		return sceneBad == 0 && texOk > 0 ? 0 : 1;
 	}
 
-	private static UiScreen LoadScreen(BnkFileSystem bank, string bgfPath, TextureNameTable names)
+	private static Engine_UiScreen LoadScreen(BnkFileSystem bank, string bgfPath, Engine_TextureNameTable names)
 	{
 		byte[] bgf = Read(bank, bgfPath) ?? throw new IOException($"{bgfPath} missing from bank");
 		byte[]? fac = Read(bank, Path.ChangeExtension(bgfPath, ".fac"));
 		byte[]? bsg = Read(bank, Path.ChangeExtension(bgfPath, ".bsg"));
 		string name = Path.GetFileNameWithoutExtension(bgfPath.Replace('\\', '/'));
-		return UiScreen.Parse(name, bgf, fac, bsg, names);
+		return Engine_UiScreen.Parse(name, bgf, fac, bsg, names);
 	}
 
 	/// <summary>Reads one bank entry, or null when it is not present.</summary>

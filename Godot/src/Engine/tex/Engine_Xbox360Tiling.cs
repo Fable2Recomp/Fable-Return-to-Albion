@@ -1,5 +1,9 @@
 using System;
 
+using Refii.Core;
+
+using Refii.Ui;
+
 namespace Refii.Textures;
 
 public static class Engine_Xbox360Tiling

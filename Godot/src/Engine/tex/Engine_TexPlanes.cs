@@ -2,6 +2,10 @@ using System;
 using System.Linq;
 using System.Buffers.Binary;
 
+using Refii.Core;
+
+using Refii.Ui;
+
 namespace Refii.Textures;
 
 public readonly struct TexPlane

@@ -1,10 +1,13 @@
+using Refii.Textures;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Godot;
 using Refii.Bnk;
-using Refii.Launcher.Formats;
+using Refii.Core;
+using Refii.Text;
+using Refii.Ui;
 
 namespace Refii.Launcher.Tools;
 
@@ -49,14 +52,14 @@ public partial class UiScreenViewer : Node3D
 	private int _index;
 
 	/// <summary>Set by whichever start path won — banks or an extracted tree.</summary>
-	private Func<string, UiScreen>? _loadScreen;
+	private Func<string, Engine_UiScreen>? _loadScreen;
 
 	private readonly List<IDisposable> _owned = new();
-	private TextureNameTable? _names;
-	private UiTextureCache? _textures;
+	private Engine_TextureNameTable? _names;
+	private Engine_UiTextureCache? _textures;
 	private BnkFileSystem? _banks;
-	private UiFontLibrary? _fonts;
-	private BabelDatabase? _strings;
+	private Engine_UiFontLibrary? _fonts;
+	private Engine_BabelDatabase? _strings;
 	private Node3D? _current;
 	private Label? _status;
 	private string _root = string.Empty;
@@ -105,7 +108,7 @@ public partial class UiScreenViewer : Node3D
 			return;
 		}
 
-		_loadScreen = name => UiScreen.Load(files[name], _names);
+		_loadScreen = name => Engine_UiScreen.Load(files[name], _names, null, SceneSlide, LiveSlides);
 		Start();
 	}
 
@@ -155,8 +158,8 @@ public partial class UiScreenViewer : Node3D
 		if (byName.Count == 0)
 			return false;
 
-		_names = TextureNameTable.FromPaths(texturePaths, new[] { ".tex" });
-		_textures = new UiTextureCache(banks);
+		_names = Engine_TextureNameTable.FromPaths(texturePaths, new[] { ".tex" });
+		_textures = new Engine_UiTextureCache(banks);
 		LoadTextResources(data);
 
 		_screens.AddRange(byName.Keys.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
@@ -170,7 +173,8 @@ public partial class UiScreenViewer : Node3D
 			// The .bsg carries the base transform the .bgf overrides — all three
 			// sidecars are separate bank entries under the same stem.
 			byte[]? bsg = Read(banks, Path.ChangeExtension(bgfPath, ".bsg"));
-			return UiScreen.Parse(name, bgf, fac, bsg, _names, _strings);
+			return Engine_UiScreen.Parse(name, bgf, fac, bsg, _names, _strings, SceneSlide, LiveSlides,
+				LiveText);
 		};
 
 		Start();
@@ -191,14 +195,14 @@ public partial class UiScreenViewer : Node3D
 	/// </summary>
 	private void LoadTextResources(string dataRoot)
 	{
-		_fonts = UiFontLibrary.Load(dataRoot);
+		_fonts = Engine_UiFontLibrary.Load(dataRoot);
 		foreach (string failure in _fonts.Failures)
 			GD.PushWarning($"[ui] font: {failure}");
 
 		DumpFontAtlasIfRequested();
 
-		string? textDir = UiFontLibrary.LanguageSubdirectory(
-			dataRoot, UiFontLibrary.DefaultCulture, "text");
+		string? textDir = Engine_UiFontLibrary.LanguageSubdirectory(
+			dataRoot, Engine_UiFontLibrary.DefaultCulture, "text");
 		string babel = textDir is null ? string.Empty : Path.Combine(textDir, "book.babel");
 		if (babel.Length == 0 || !File.Exists(babel))
 		{
@@ -208,7 +212,7 @@ public partial class UiScreenViewer : Node3D
 
 		try
 		{
-			_strings = BabelDatabase.Load(babel);
+			_strings = Engine_BabelDatabase.Load(babel);
 		}
 		catch (Exception exception)
 		{
@@ -257,7 +261,7 @@ public partial class UiScreenViewer : Node3D
 				}
 			}
 
-			string name = $"{UiFontLibrary.BucketFor(size)}".ToLowerInvariant();
+			string name = $"{Engine_UiFontLibrary.BucketFor(size)}".ToLowerInvariant();
 			string path = Path.Combine(directory!, $"font_{name}.png");
 			GD.Print($"font {name} (size {size} -> scale {scale:F3}): " +
 				$"{image.GetWidth()}x{image.GetHeight()} {image.GetFormat()}  " +
@@ -280,6 +284,31 @@ public partial class UiScreenViewer : Node3D
 	{
 		// REFII_UI_SCREEN picks the screen without editing the scene, so a capture run
 		// can target any of the 52.
+		if (int.TryParse(System.Environment.GetEnvironmentVariable("REFII_UI_SCENE_SLIDE"),
+				out int wantSlide))
+			SceneSlide = wantSlide;
+
+		if (System.Environment.GetEnvironmentVariable("REFII_UI_ELEMENTS") == "1")
+		{
+			Engine_UiScreen probe = _loadScreen!(_screens[
+				Math.Max(0, _screens.FindIndex(n => string.Equals(n,
+					System.Environment.GetEnvironmentVariable("REFII_UI_SCREEN") ?? StartScreen,
+					StringComparison.OrdinalIgnoreCase)))]);
+			var hashes = new HashSet<uint>();
+			int spatial = 0;
+			foreach (BgfElement e in probe.Document.Elements)
+			{
+				hashes.Add(e.NameHash);
+				if (Engine_UiScreen.IsSpatial(e.Type)) ++spatial;
+			}
+			GD.Print($"[ui] elements={probe.Document.Elements.Length} " +
+				$"unique-hashes={hashes.Count} spatial={spatial} " +
+				$"slides={probe.Document.Slides.Length}");
+		}
+
+		if (System.Environment.GetEnvironmentVariable("REFII_UI_LIST") == "1")
+			GD.Print($"[ui] screens: {string.Join(", ", _screens)}");
+
 		string want = System.Environment.GetEnvironmentVariable("REFII_UI_SCREEN") ?? StartScreen;
 		int start = _screens.FindIndex(n => string.Equals(n, want, StringComparison.OrdinalIgnoreCase));
 		_index = start >= 0 ? start : 0;
@@ -300,7 +329,7 @@ public partial class UiScreenViewer : Node3D
 		if (Directory.Exists(GameDataRoot))
 			return GameDataRoot;
 
-		string resolved = UiGameData.Resolve();
+		string resolved = Engine_GameData.Resolve();
 		return Directory.Exists(resolved) ? resolved : string.Empty;
 	}
 
@@ -323,6 +352,77 @@ public partial class UiScreenViewer : Node3D
 		GetViewport().SetInputAsHandled();
 	}
 
+	/// <summary>
+	/// Which scene-level slide to build, 1-based, or 0 for the preview heuristic.
+	///
+	/// The front-end screens are one page per slide — see
+	/// <see cref="Engine_BgfDocument.SetSceneSlide"/>. Changing this takes effect on the next
+	/// <see cref="ShowByName(string,int)"/>, because visibility and attribute overrides
+	/// are resolved while the screen is being built.
+	/// </summary>
+	public int SceneSlide { get; set; }
+
+	/// <summary>
+	/// Per-element slides read from the running guest, keyed by sdbm name hash. When set,
+	/// these win over <see cref="SceneSlide"/> — they are what the game is actually
+	/// showing rather than a guess at it.
+	/// </summary>
+	public IReadOnlyList<int>? LiveSlides { get; set; }
+
+	/// <summary>The screen currently built, for diagnostics.</summary>
+	public Engine_UiScreen? CurrentScreen { get; private set; }
+
+	/// <summary>Per-element text read from the running guest, keyed by sdbm name hash.</summary>
+	public IReadOnlyList<string?>? LiveText { get; set; }
+
+	/// <summary>
+	/// Shows a screen by name, on a given scene slide. Returns false when the
+	/// presentation is not among the shipped set, or when the viewer has not finished
+	/// standing up yet.
+	/// </summary>
+	public bool ShowByName(string name, int sceneSlide)
+	{
+		SceneSlide = sceneSlide;
+		return ShowByName(name);
+	}
+
+	/// <summary>Shows a screen with the guest's live per-element slides applied.</summary>
+	public bool ShowByName(string name, IReadOnlyList<int>? liveSlides)
+	{
+		LiveSlides = liveSlides;
+		return ShowByName(name);
+	}
+
+	/// <summary>Rebuilds the current screen — after the live slides have changed.</summary>
+	public void Rebuild()
+	{
+		if (_screens.Count > 0)
+		{
+			Show(_index);
+		}
+	}
+
+	/// <summary>
+	/// Shows a screen by name. Returns false when the presentation is not among the
+	/// shipped set, or when the viewer has not finished standing up yet.
+	/// </summary>
+	public bool ShowByName(string name)
+	{
+		int index = _screens.FindIndex(
+			n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+		if (index < 0)
+		{
+			return false;
+		}
+
+		_index = index;
+		Show(index);
+		return true;
+	}
+
+	/// <summary>The presentations available, once the viewer has loaded.</summary>
+	public IReadOnlyList<string> ScreenNames => _screens;
+
 	private void Show(int index)
 	{
 		string name = _screens[index];
@@ -334,7 +434,7 @@ public partial class UiScreenViewer : Node3D
 			_current = null;
 		}
 
-		UiScreen screen;
+		Engine_UiScreen screen;
 		try
 		{
 			screen = _loadScreen!(name);
@@ -345,14 +445,16 @@ public partial class UiScreenViewer : Node3D
 			return;
 		}
 
-		var builder = new UiSceneBuilder
+		CurrentScreen = screen;
+
+		var builder = new Engine_UiSceneBuilder
 		{
 			TextureResolver = rel => _textures?.Load(rel),
 			FontResolver = size => _fonts?.For(size),
 		};
 		_current = builder.Build(screen);
 		AddChild(_current);
-		UiSceneBuilder.ApplyCameraAiming(_current);
+		Engine_UiSceneBuilder.ApplyCameraAiming(_current);
 
 		// Building a camera is not enough — one has to be made current or the viewport
 		// renders through Godot's default camera and the screen looks empty.
@@ -360,7 +462,7 @@ public partial class UiScreenViewer : Node3D
 		// can be compared against the authored camera's.
 		bool framing = UseFramingCamera ||
 			System.Environment.GetEnvironmentVariable("REFII_UI_FRAME") is not null;
-		Camera3D camera = UiSceneBuilder.ActivateCamera(_current, framing);
+		Camera3D camera = Engine_UiSceneBuilder.ActivateCamera(_current, framing);
 
 		DumpSlides(screen);
 		DumpQuads(screen);
@@ -445,15 +547,15 @@ public partial class UiScreenViewer : Node3D
 	/// switches on.
 	///
 	/// Which named slide the game shows is not in the file — see
-	/// <see cref="BgfDocument.ComputeVisibility"/> — so this is how you see what the
+	/// <see cref="Engine_BgfDocument.ComputeVisibility"/> — so this is how you see what the
 	/// alternatives even are before deciding what a static preview should pick.
 	/// </summary>
-	private void DumpSlides(UiScreen screen)
+	private void DumpSlides(Engine_UiScreen screen)
 	{
 		if (System.Environment.GetEnvironmentVariable("REFII_UI_SLIDES") is null)
 			return;
 
-		BgfDocument doc = screen.Document;
+		Engine_BgfDocument doc = screen.Document;
 		var byOwner = new Dictionary<int, List<BgfSlide>>();
 		foreach (BgfSlide s in doc.Slides)
 		{
@@ -497,7 +599,7 @@ public partial class UiScreenViewer : Node3D
 							_ => a.AsInt().ToString(),
 						};
 						GD.Print($"          {(e.Active ? "on " : "off")} {target,-18} " +
-							$"{BgfAttributeNames.Describe(a.Id),-16} {a.Type,-10} {value}");
+							$"{Engine_BgfAttributeNames.Describe(a.Id),-16} {a.Type,-10} {value}");
 					}
 				}
 			}
@@ -512,7 +614,7 @@ public partial class UiScreenViewer : Node3D
 	/// which is the question a flat-coloured quad actually poses. Reading it off the
 	/// screen instead has produced wrong guesses.
 	/// </summary>
-	private void DumpQuads(UiScreen screen)
+	private void DumpQuads(Engine_UiScreen screen)
 	{
 		if (System.Environment.GetEnvironmentVariable("REFII_UI_QUADS") is null)
 			return;

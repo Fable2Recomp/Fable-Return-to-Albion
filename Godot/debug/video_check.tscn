@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://lyd31clcwvlg"]
+
+[ext_resource type="Script" path="res://src/tools/VideoCheck.cs" id="1_videocheck"]
+
+[node name="VideoCheck" type="Node"]
+script = ExtResource("1_videocheck")

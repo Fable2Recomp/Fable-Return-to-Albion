@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://lyd4ldlwqnlg"]
+
+[ext_resource type="Script" path="res://src/tools/VideoViewer.cs" id="1_videoviewer"]
+
+[node name="VideoViewer" type="Node"]
+script = ExtResource("1_videoviewer")

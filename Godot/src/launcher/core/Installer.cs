@@ -248,7 +248,7 @@ public static class Installer
             return configured;
         }
 
-        string resolved = Refii.Launcher.Formats.UiGameData.Resolve();
+        string resolved = Refii.Core.Engine_GameData.Resolve();
         return HasBanks(resolved) ? resolved : string.Empty;
     }
 

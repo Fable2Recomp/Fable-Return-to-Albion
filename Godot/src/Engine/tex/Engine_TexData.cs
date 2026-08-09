@@ -2,6 +2,10 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 
+using Refii.Core;
+
+using Refii.Ui;
+
 namespace Refii.Textures;
 
 public enum TexSurfaceFormat

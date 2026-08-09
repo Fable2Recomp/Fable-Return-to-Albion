@@ -1,7 +1,9 @@
 using System;
 using Godot;
 using Refii.Host;
-using Refii.Launcher.Formats;
+using Refii.Core;
+using Refii.Text;
+using Refii.Ui;
 
 namespace Refii.Launcher.Tools;
 
@@ -41,7 +43,7 @@ public partial class HostBootCheck : Node
 
 		// The guest wants the directory holding `data`, which is what the UI tools
 		// already resolve. One convention, not a second one for the host.
-		_dataRoot = UiGameData.Resolve();
+		_dataRoot = Engine_GameData.Resolve();
 		if (_dataRoot.Length == 0)
 		{
 			GD.Print("no game data found; set REFII_GAME_DATA or stage assets/game.");

@@ -149,14 +149,14 @@ public sealed class LauncherOps : IDisposable
 
 		_initialized = true;
 
-		// One resolver for the whole assembly — see NativeLibraries. This contributes the
+		// One resolver for the whole assembly — see Engine_NativeLibraries. This contributes the
 		// launcher's own directories to it rather than installing a second.
 		foreach (string directory in SearchDirectories())
 		{
-			Refii.Launcher.Formats.NativeLibraries.AddSearchPath(directory);
+			Refii.Core.Engine_NativeLibraries.AddSearchPath(directory);
 		}
 
-		Refii.Launcher.Formats.NativeLibraries.Install();
+		Refii.Core.Engine_NativeLibraries.Install();
 
 		try
 		{

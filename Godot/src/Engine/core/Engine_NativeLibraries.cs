@@ -1,0 +1,205 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices;
+
+namespace Refii.Core;
+
+/// <summary>
+/// The assembly's one and only DllImport resolver.
+///
+/// .NET permits a SINGLE resolver per assembly — a second
+/// <see cref="NativeLibrary.SetDllImportResolver"/> throws "A resolver is already set
+/// for the assembly". Every binding here used to install its own from a static
+/// constructor, so whichever type initialised second died with a
+/// <see cref="TypeInitializationException"/>: mounting banks first made
+/// <see cref="MdlConverter"/> permanently unusable, which is exactly the order the
+/// model bridge runs in.
+///
+/// So resolution lives here, once, and the bindings contribute directories instead.
+/// This class stays engine-free — Godot-side code publishes the project-relative
+/// directories through <see cref="AddSearchPath"/>.
+/// </summary>
+public static class Engine_NativeLibraries
+{
+	/// <summary>
+	/// Directories to search, in preference order.
+	///
+	/// A LIST, not one directory: the libraries are produced by different targets into
+	/// different build outputs — <c>librefii_bnk_extractor</c> into a config's
+	/// <c>lib/</c>, <c>librefii_assetbrowser</c> into its own build dir — so a single
+	/// configured directory can only ever find one of them.
+	/// </summary>
+	private static readonly List<string> Paths = new();
+
+	private static readonly object Gate = new();
+	private static bool _installed;
+	private static bool _published;
+
+	/// <summary>Installs the resolver. Idempotent and safe to call from anywhere.</summary>
+	public static void Install()
+	{
+		lock (Gate)
+		{
+			if (_installed)
+				return;
+
+			_installed = true;
+			NativeLibrary.SetDllImportResolver(typeof(Engine_NativeLibraries).Assembly, Resolve);
+		}
+	}
+
+	/// <summary>
+	/// Adds a directory to search. Deduplicating, so republishing the project's paths
+	/// neither grows the list nor discards a directory another subsystem contributed.
+	/// </summary>
+	public static void AddSearchPath(string? directory)
+	{
+		if (string.IsNullOrEmpty(directory))
+			return;
+
+		lock (Gate)
+		{
+			if (!Paths.Contains(directory, StringComparer.Ordinal))
+				Paths.Add(directory);
+		}
+	}
+
+	/// <summary>Snapshot of the search path, for diagnostics.</summary>
+	public static IReadOnlyList<string> SearchPaths
+	{
+		get { lock (Gate) return Paths.ToArray(); }
+	}
+
+	/// <summary>Platform file name for one of our libraries.</summary>
+	public static string FileNameFor(string library) =>
+		OperatingSystem.IsWindows() ? $"{library}.dll" : $"lib{library}.so";
+
+	private static IEnumerable<string> FileNamesFor(string library)
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			yield return $"{library}.dll";
+			yield return $"lib{library}.dll";
+			yield break;
+		}
+
+		yield return $"lib{library}.so";
+		yield return $"{library}.so";
+	}
+
+	private static IntPtr Resolve(string name, Assembly assembly, DllImportSearchPath? path)
+	{
+		// Ours only. Anything else falls through to the runtime's default probing.
+		if (!name.StartsWith("refii_", StringComparison.Ordinal))
+			return IntPtr.Zero;
+
+		// The project's build directories are discovered from Godot, and the first
+		// P/Invoke is not always preceded by a mount — BankAssetSource opens a bank
+		// directly, and used to fail with "unable to load shared library" purely because
+		// nothing had published the paths yet. Publish here, where every resolve passes.
+		EnsurePublished();
+
+		// Several build outputs can each hold a copy, and directory enumeration order is
+		// the filesystem's, not sorted — so "first found" is nondeterministic and can pick
+		// a stale library whose entry points predate the current ABI. Take the most
+		// recently built one.
+		var found = new List<string>();
+		foreach (string directory in CandidateDirectories())
+		{
+			foreach (string fileName in FileNamesFor(name))
+			{
+				string candidate = Path.Combine(directory, fileName);
+				if (File.Exists(candidate))
+					found.Add(candidate);
+			}
+		}
+
+		foreach (string candidate in found.OrderByDescending(File.GetLastWriteTimeUtc))
+			if (NativeLibrary.TryLoad(candidate, out IntPtr handle))
+				return handle;
+
+		return IntPtr.Zero;
+	}
+
+	/// <summary>
+	/// Adds the project's build directories, once. Kept lazy so resolution does not
+	/// depend on the caller having mounted anything first.
+	/// </summary>
+	private static void EnsurePublished()
+	{
+		lock (Gate)
+		{
+			if (_published)
+				return;
+			_published = true;
+		}
+
+		// Every build output under out/build. No config is hardcoded — they vary by
+		// platform and by debug/netplay — and the libraries land in different
+		// subdirectories per target, so all three are tried.
+		//
+		// This used to live on the bank reader, which the engine's pure-C# one
+		// superseded and removed. Losing it is not obvious: the remaining P/Invokes
+		// (the launcher ops DLL, the host bridge) simply report "library not found"
+		// while sitting in a build directory nobody is looking in.
+		try
+		{
+			string projectDir = Godot.ProjectSettings.GlobalizePath("res://");
+
+			// The STAGED copy first — Godot/build/bin, where the native build puts the
+			// launcher ops, the host bridge and the guest runtime. This is the only
+			// location that survives an export; everything below it is a dev-tree
+			// convenience.
+			AddSearchPath(System.IO.Path.Combine(projectDir, "build", "bin"));
+			AddSearchPath(System.IO.Path.Combine(projectDir, "build"));
+
+			string repoRoot = System.IO.Path.GetFullPath(
+				System.IO.Path.Combine(projectDir, ".."));
+			string builds = System.IO.Path.Combine(repoRoot, "out", "build");
+			if (!Directory.Exists(builds))
+				return;
+
+			foreach (string config in Directory.EnumerateDirectories(builds))
+			{
+				foreach (string sub in new[] { "lib", "bin", "" })
+				{
+					string directory = sub.Length == 0 ? config : System.IO.Path.Combine(config, sub);
+					if (Directory.Exists(directory))
+						AddSearchPath(directory);
+				}
+			}
+		}
+		catch (Exception)
+		{
+			// Godot not up yet, or no project — the environment override and the
+			// assembly's own directory still apply.
+		}
+	}
+
+	private static IEnumerable<string> CandidateDirectories()
+	{
+		// The explicit override wins — the build output is on no default search path and
+		// Godot runs the assembly from the project directory, nowhere near it.
+		string? explicitDir = Environment.GetEnvironmentVariable("REFII_NATIVE_DIR");
+		if (!string.IsNullOrEmpty(explicitDir))
+			yield return explicitDir!;
+
+		foreach (string dir in SearchPaths)
+			yield return dir;
+
+		yield return AppContext.BaseDirectory;
+
+		string? refiiRoot = Environment.GetEnvironmentVariable("REFII_ROOT");
+		if (!string.IsNullOrEmpty(refiiRoot))
+		{
+			string builds = Path.Combine(refiiRoot!, "out", "build");
+			if (Directory.Exists(builds))
+				foreach (string config in Directory.EnumerateDirectories(builds))
+					foreach (string sub in new[] { "lib", "bin", "" })
+						yield return sub.Length == 0 ? config : Path.Combine(config, sub);
+		}
+	}
+}

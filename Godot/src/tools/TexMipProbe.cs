@@ -4,7 +4,9 @@ using System.IO;
 using System.Linq;
 using Godot;
 using Refii.Bnk;
-using Refii.Launcher.Formats;
+using Refii.Core;
+using Refii.Text;
+using Refii.Ui;
 using Refii.Textures;
 
 namespace Refii.Launcher.Tools;
@@ -32,7 +34,7 @@ public partial class TexMipProbe : Node
 			return;
 		}
 
-		string dataRoot = UiGameData.Resolve();
+		string dataRoot = Engine_GameData.Resolve();
 		using BnkFileSystem filesystem = BnkFileSystem.Mount(dataRoot);
 
 		string wanted = OS.GetEnvironment("REFII_TEX");

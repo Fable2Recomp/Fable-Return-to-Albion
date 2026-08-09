@@ -19,6 +19,10 @@ set(REFII_VFS_RUNTIME_SOURCES
     ${REFII_VFS_ROOT}/src/runtime/cvars.cpp
     ${REFII_VFS_ROOT}/src/runtime/path_resolution.cpp
     ${REFII_VFS_ROOT}/src/runtime/replacement_paths.cpp
+    # Bink video state shared by the guest hooks and the host bridge. Must live in
+    # refii_vfs, which BOTH link, and not in the hook set: a copy in each library
+    # means the hook writes one global and the bridge reads another.
+    ${REFII_VFS_ROOT}/src/core/bink_frame_state.cpp
 )
 
 set(REFII_VFS_HOOK_INTERNAL_SOURCES

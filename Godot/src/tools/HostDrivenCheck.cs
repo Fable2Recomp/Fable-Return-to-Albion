@@ -1,6 +1,8 @@
 using Godot;
 using Refii.Host;
-using Refii.Launcher.Formats;
+using Refii.Core;
+using Refii.Text;
+using Refii.Ui;
 
 namespace Refii.Launcher.Tools;
 
@@ -39,7 +41,7 @@ public partial class HostDrivenCheck : Node
 			return;
 		}
 
-		string dataRoot = UiGameData.Resolve();
+		string dataRoot = Engine_GameData.Resolve();
 		if (dataRoot.Length == 0)
 		{
 			GD.Print("no game data found; set REFII_GAME_DATA or stage assets/game.");

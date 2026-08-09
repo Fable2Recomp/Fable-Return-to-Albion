@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://dkprdy7hnvx41"]
+
+[ext_resource type="Script" path="res://src/tools/BankExtract.cs" id="1_bankextract"]
+
+[node name="BankExtract" type="Node"]
+script = ExtResource("1_bankextract")

@@ -1,5 +1,9 @@
 using System;
 
+using Refii.Core;
+
+using Refii.Ui;
+
 namespace Refii.Textures;
 
 internal static class Engine_BcEncoder

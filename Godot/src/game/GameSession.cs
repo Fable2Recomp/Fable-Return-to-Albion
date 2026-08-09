@@ -2,7 +2,9 @@ using System;
 using Godot;
 using Refii.Assets;
 using Refii.Host;
-using Refii.Launcher.Formats;
+using Refii.Core;
+using Refii.Text;
+using Refii.Ui;
 
 namespace Refii.Game;
 
@@ -91,6 +93,10 @@ public partial class GameSession : Node
 			return;
 		}
 
+		// Input starts only once the guest is actually running, so a failed boot does not
+		// leave a node publishing controller frames at a runtime that never came up.
+		AddChild(new GameInput { Name = "GameInput" });
+
 		_driving = true;
 		EmitSignal(SignalName.Started);
 	}
@@ -125,7 +131,7 @@ public partial class GameSession : Node
 
 	/// <summary>The export wins; otherwise the one shared convention.</summary>
 	private static string Directory(string configured) =>
-		System.IO.Directory.Exists(configured) ? configured : UiGameData.Resolve();
+		System.IO.Directory.Exists(configured) ? configured : Engine_GameData.Resolve();
 
 	private void Fail(string reason)
 	{

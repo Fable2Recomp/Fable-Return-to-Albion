@@ -1,0 +1,16 @@
+[gd_scene format=3 uid="uid://cenua5e641eqd"]
+
+[ext_resource type="Script" uid="uid://cyxj7fe4yt0cq" path="res://src/tools/UiScreenViewer.cs" id="1_viewer"]
+
+[node name="UiScreenViewer" type="Node3D" unique_id=492536389]
+script = ExtResource("1_viewer")
+
+[node name="Overlay" type="CanvasLayer" parent="." unique_id=1479112195]
+
+[node name="Status" type="Label" parent="Overlay" unique_id=1743088634]
+unique_name_in_owner = true
+offset_left = 12.0
+offset_top = 8.0
+offset_right = 900.0
+offset_bottom = 80.0
+text = "loading..."

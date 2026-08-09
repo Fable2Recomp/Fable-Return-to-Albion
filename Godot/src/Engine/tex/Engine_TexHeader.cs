@@ -1,6 +1,10 @@
 using System;
 using System.Buffers.Binary;
 
+using Refii.Core;
+
+using Refii.Ui;
+
 namespace Refii.Textures;
 
 public enum TexPixelFormat

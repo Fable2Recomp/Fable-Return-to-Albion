@@ -71,7 +71,15 @@ public partial class GameWindowCheck : Node
 
 		// Let the guest actually run for a bit before closing it, so shutdown happens
 		// against a live runtime rather than one still starting.
-		if (_window.IsInsideTree() && _window.Session is { IsDriving: true } && ++_ranFrames < 90)
+		// The startup video does not begin until several seconds in, so a shot taken at
+		// four seconds catches an empty screen and reads as "video is broken".
+		int settle = OS.GetEnvironment("REFII_GAME_SHOT").Length != 0 ? 240 : 90;
+		if (int.TryParse(OS.GetEnvironment("REFII_GAME_SHOT_FRAMES"), out int wanted) &&
+			wanted > 0)
+		{
+			settle = wanted;
+		}
+		if (_window.IsInsideTree() && _window.Session is { IsDriving: true } && ++_ranFrames < settle)
 		{
 			return;
 		}
@@ -130,6 +138,16 @@ public partial class GameWindowCheck : Node
 		// Close it the way the user does: the window manager sends close_requested rather
 		// than anything calling QueueFree directly, so testing QueueFree would skip the
 		// handler that actually has to restore the launcher.
+		// Optional screenshot of the game window itself, so the UI can be looked at rather
+		// than inferred from log lines.
+		string shot = OS.GetEnvironment("REFII_GAME_SHOT");
+		if (shot.Length != 0)
+		{
+			Image image = window.GetTexture().GetImage();
+			System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(shot)!);
+			GD.Print($"[window] shot -> {shot} ({image.SavePng(shot)})");
+		}
+
 		_closing = true;
 		window.EmitSignal(Window.SignalName.CloseRequested);
 	}
