@@ -112,12 +112,8 @@ public partial class GameWindow : Window
 		// closing it must not read as quitting the app.
 		CloseRequested += () =>
 		{
-			// SAY SO. The game window disappearing seconds after boot is an intermittent
-			// failure that has been read as a code regression more than once — including by
-			// me, on two runs, which against a flaky start is not evidence at all. A close
-			// arriving here means the WINDOW MANAGER asked for it; a teardown with no such
-			// line came from somewhere else entirely, and that distinction is the whole
-			// diagnosis.
+			// A close here means the window manager asked for it; a teardown without this
+			// line came from somewhere else.
 			GD.Print("[window] close_requested from the window manager");
 			RestoreLauncher();
 			QueueFree();
@@ -141,9 +137,8 @@ public partial class GameWindow : Window
 			return;
 		}
 
-		// Take the front end back off screen once the guest no longer has one. Without this
-		// the main menu stays drawn over the running game forever, because every field we
-		// mirror it from belongs to an object the game has already replaced.
+		// Off screen once the guest no longer has a front end, or the menu stays drawn over
+		// the running game.
 		if (_ui.IsRevealed)
 		{
 			if (HostBridge.TryGetAbiVersion() is not null && !HostBridge.FrontEndGuiIsUp)
@@ -166,12 +161,8 @@ public partial class GameWindow : Window
 	/// rather than only what we drew. Logged on change only — this is polled every frame.
 	/// </summary>
 	/// <summary>
-	/// Reports the guest crossing into the game, and then the fence its level load waits on.
-	///
-	/// CmdLevelChange_Update's gates are silent by construction — each one returns early and
-	/// logs nothing, so a load that never starts looks exactly like a guest with nothing to
-	/// do. This makes state 7's fence visible: `sub_82387B38` answers BUSY while
-	/// submitted &lt;= retired or the busy byte is set, and with no GPU nothing retires frames.
+	/// Reports the guest crossing into the game, and the fence its level load waits on —
+	/// CmdLevelChange_Update's gates are silent, so a stalled load looks like an idle guest.
 	/// </summary>
 	private void TraceLevelLoad()
 	{
@@ -188,10 +179,8 @@ public partial class GameWindow : Window
 				$"{(inGame ? "IN GAME" : "out of the game")}");
 		}
 
-		// NOT gated on the in-game flag. That flag is set late in Game_InitDatabases
-		// (0x82311648), after the level-change command has already been queued at
-		// 0x823115D0 — so gating the fence report on it hides the fence during exactly the
-		// window the load is waiting in.
+		// Not gated on the in-game flag: it is set at 0x82311648, after the level change is
+		// queued at 0x823115D0, so gating on it would hide the fence during the wait.
 		if (HostBridge.GetRenderFence() is not { } fence)
 		{
 			return;
@@ -215,9 +204,8 @@ public partial class GameWindow : Window
 				$"fade={loading.Fade} requested={loading.Requested} done={loading.Done}");
 		}
 
-		// The command-stream rings. `WouldBlock` is sub_8222ABE0's own condition, evaluated
-		// for the 4-byte reserve it makes twice per message — so a run says whether the
-		// producer is genuinely wedged rather than leaving it to be inferred.
+		// `WouldBlock` is sub_8222ABE0's own condition for the 4-byte reserve it makes twice
+		// per message.
 		foreach (HostBridge.SceneStream stream in HostBridge.GetSceneStreams())
 		{
 			GD.Print($"[guest-ring] obj=0x{stream.Object:X8} cap=0x{stream.Capacity:X} " +
@@ -262,12 +250,9 @@ public partial class GameWindow : Window
 
 		_lastFrontEnd = now;
 
-		// "None" is the case that needs naming, and the GUI's OWN vtable is what names it.
-		// dword_83496B08 is written by two different constructions through the same base
-		// (0x8237132C): the front-end GUI, and a base-only instance built by
-		// Game_InitDatabases whose +180/+184/+188 are not screen pointers at all. Reported
-		// blind, the second one reads as "the front end went nowhere" when the truth is
-		// that the game started.
+		// dword_83496B08 is written by two constructions through the same base (0x8237132C):
+		// the front-end GUI, and a base-only instance from Game_InitDatabases whose
+		// +180/+184/+188 are not screen pointers. The vtable is what tells them apart.
 		string where = string.Empty;
 		if (screen == HostBridge.FrontEndScreen.None &&
 			HostBridge.GetFrontEndRaw() is { } words)
@@ -290,9 +275,7 @@ public partial class GameWindow : Window
 
 	public override void _ExitTree()
 	{
-		// The other half of the same question: this fires however the window went away, so a
-		// run always records the moment, and the presence or absence of the close_requested
-		// line above says which path took it.
+		// Fires however the window went away; the line above says whether the WM asked.
 		GD.Print($"[window] leaving the tree after {Engine.GetProcessFrames()} frames " +
 			$"(visible={Visible} inTree={IsInsideTree()})");
 

@@ -35,8 +35,7 @@
 
 namespace {
 
-/// One line in, one line out, once each. These run during a one-shot init, so rate limiting
-/// would only risk hiding the very call we are looking for.
+/// One line in, one line out, once each — a one-shot init, so no rate limiting.
 #define REFII_TRACE_GAME_INIT_CALL(symbol)                                    \
     REX_EXTERN(symbol) {                                                      \
         REX_FUNC_PROLOGUE();                                                  \

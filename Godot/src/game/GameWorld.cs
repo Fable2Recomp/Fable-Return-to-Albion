@@ -83,22 +83,13 @@ public partial class GameWorld : Node3D
 	}
 
 	/// <summary>
-	/// Builds the region the GUEST NAMED, once it has named one.
-	///
-	/// `sub_82379628` writes the destination in plain text before it starts the game —
-	/// g_StartWorldName / g_StartLevelName / g_StartEntranceName — so Godot is told which
-	/// region to build rather than inferring it from anything it observes. That is the
-	/// architecture's whole split, and it is why this waits for the guest instead of
-	/// guessing from a config value.
+	/// Builds the region the guest named. `sub_82379628` writes the destination before it
+	/// starts the game, so Godot is told which region to build rather than inferring one.
 	/// </summary>
 	private void FollowGuestIntoTheWorld()
 	{
-		// WAIT FOR IN-GAME. These globals are populated at boot with the startup script's
-		// placeholders — SetInitialWorldName/SetInitialLevelName put "TestWorld/TestLevel1"
-		// there long before anyone picks New Game, and sub_82379628 only overwrites them
-		// with the real destination as the game starts. Latching the first non-empty read
-		// captures the placeholder and never looks again, which is exactly what happened.
-		// byte_83496A5E is the guest stating the game has begun, so it is the right edge.
+		// Wait for in-game: the startup script leaves "TestWorld/TestLevel1" in these globals
+		// until sub_82379628 overwrites them, so an earlier read latches the placeholder.
 		if (_loaded || !HostBridge.IsInGame ||
 			HostBridge.GetStartLevel() is not { } start || start.Level.Length == 0)
 		{
@@ -109,7 +100,7 @@ public partial class GameWorld : Node3D
 		GD.Print($"[game-world] the guest is going to {start.World}/{start.Level} " +
 			$"(entrance '{start.Entrance}')");
 
-		// Build it through the editor's own path, then put it under the live camera.
+		// The editor's own construction path, then mount it under the live camera.
 		if (Refii.Assets.Engine_GameAssets.Instance is not { } assets)
 		{
 			GD.PrintErr("[game-world] no asset mount; the camera is live over an empty scene.");
@@ -119,9 +110,8 @@ public partial class GameWorld : Node3D
 		if (!assets.TryBuildLevel(start.World, start.Level, out string scenePath,
 				out string error))
 		{
-			// Named, not silent. An empty world under a live camera renders as flat grey,
-			// which is indistinguishable from "rendering is broken" — and was read as
-			// exactly that.
+			// Named, not silent: an empty world under a live camera is flat grey, which reads
+			// as "rendering is broken".
 			GD.PrintErr($"[game-world] could not build {start.World}/{start.Level}: {error}");
 			return;
 		}

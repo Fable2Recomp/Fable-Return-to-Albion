@@ -38,20 +38,11 @@ public partial class GameInput : Node
 
 	public override void _Process(double delta)
 	{
-		// EVERYTHING the machine has goes to pad 0, and the other three report disconnected.
-		//
-		// Not a simplification — it is what the guest's own rule requires. The front end
-		// latches the pad that pressed A (`dword_83496AF8`, written at 0x826E30DC) and then
-		// ignores every other one (`a3 == dword_83496AF8` at 0x826DEE64). So input split
-		// across devices is input the guest throws away: press A on a pad that is not the
-		// latched one and nothing happens, with no error anywhere.
-		//
-		// Device INDEX cannot be trusted to pick the right one either. On this machine
-		// Godot's joypad 0 is the Corsair keyboard's mouse interface — the kernel exposes it
-		// as js0 — and the real Xbox pad is joypad 1. Publishing by index put a keyboard's
-		// mouse on the pad the guest listens to and the actual controller on one it does
-		// not, and it also killed the keyboard fallback, which only ran when NO joypad was
-		// present. Aggregating sidesteps device enumeration entirely.
+		// Everything goes to pad 0; the rest report disconnected. The front end latches the
+		// pad that pressed A (dword_83496AF8, 0x826E30DC) and ignores every other one
+		// (0x826DEE64), so input split across devices is input the guest discards. Device
+		// index cannot pick the right one either — Godot's joypad 0 here is the keyboard's
+		// mouse interface, and the real pad is joypad 1.
 		Publish0();
 
 		for (int pad = 1; pad < MaxControllers; ++pad)

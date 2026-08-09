@@ -130,13 +130,9 @@ uint32_t ImplementationFor(uint8_t* base, uint32_t func) {
 REX_EXTERN(sub_82228730) {
     REX_FUNC_PROLOGUE();
 
-    // The observation is skippable, the delegation is not.
-    //
-    // This sits on the game VM's C-function call path, so it runs for EVERY native those
-    // shipped scripts invoke — and `sub_82459280`, the gameplay Lua bring-up at 0x82311318,
-    // is the first thing to exercise it in bulk. That call is currently entered and never
-    // returned from, so this hook has to be removable in one run to be cleared or convicted:
-    // REFII_LUA_NATIVE_TRACE=0 keeps the guest's behaviour and drops ours.
+    // Opt-in: this runs for every native the game VM calls, and left on it hangs the Lua
+    // bring-up in Game_InitDatabases. The delegation below is not optional, the observation
+    // is.
     static const bool observe = [] {
         const char* value = std::getenv("REFII_LUA_NATIVE_TRACE");
         return value != nullptr && std::string_view(value) == "1";
@@ -219,14 +215,8 @@ REX_EXTERN(sub_82228730) {
 REX_EXTERN(sub_823CE420) {
     REX_FUNC_PROLOGUE();
 
-    // Same gate as the call-path hook, and it should have covered this from the start.
-    //
-    // The measured stall is inside `sub_82458C88` — the native registration fan-out, which
-    // calls THIS function once per binding across ~3,000 natives. Our work here is a
-    // three-hop pointer chase plus a best-effort string read, under a mutex, inline on that
-    // thread. An earlier run appeared to exonerate the UI cut, but REFII_LUA_NATIVE_TRACE=0
-    // only silenced the luaD_precall_2 hook; this one kept running. That is the wrong kind
-    // of "cleared", so the flag now covers both halves and the hook can be judged honestly.
+    // Same gate: `sub_82458C88` calls this once per binding across ~3,000 natives, and the
+    // pointer chase plus string read here is enough to hang that loop.
     static const bool observe = [] {
         const char* value = std::getenv("REFII_LUA_NATIVE_TRACE");
         return value != nullptr && std::string_view(value) == "1";
