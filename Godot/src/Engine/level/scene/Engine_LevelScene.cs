@@ -201,10 +201,16 @@ public static class Engine_LevelScene
             Engine_LevelBakedLighting.ApplyInstanceLighting(terrainNode, lightingFrame);
         }
 
+        Refii.Entities.EntityInspectData? inspect = null;
+        if (source is not null)
+        {
+            inspect = Refii.Entities.Engine_EntityInspect.Build(level, p => source(p));
+        }
+
         if (source is not null)
         {
             Node3D? props = Engine_LevelProps.Build(
-                level, p => source(p), probeField, lightingFrame, bakedLightmaps,
+                level, p => source(p), probeField, lightingFrame, bakedLightmaps, inspect,
                 out PropBuildStats propStats);
 
             if (props is not null)
@@ -220,7 +226,7 @@ public static class Engine_LevelScene
             GD.Print($"[props] {level}: {propStats}");
 
             Node3D? entities = Refii.Entities.Engine_LevelEntities.Build(
-                level, p => source(p), probeField, lightingFrame,
+                level, p => source(p), probeField, lightingFrame, inspect,
                 out Refii.Entities.EntityPlaceStats entityStats);
 
             if (entities is not null)
@@ -234,6 +240,24 @@ public static class Engine_LevelScene
             }
 
             GD.Print($"[entities] {level}: {entityStats}");
+
+            if (inspect is not null)
+            {
+                Node3D? markers = Refii.Entities.Engine_EntityInspect.BuildMarkers(inspect);
+                if (markers is not null)
+                {
+                    root.AddChild(markers);
+                    markers.Owner = root;
+                    foreach (Node child in markers.GetChildren())
+                    {
+                        child.Owner = root;
+                    }
+
+                    GD.Print(
+                        $"[inspect] {level}: {markers.GetChildCount()} " +
+                        "container marker(s) without a placed prop");
+                }
+            }
         }
 
         if (source is not null)

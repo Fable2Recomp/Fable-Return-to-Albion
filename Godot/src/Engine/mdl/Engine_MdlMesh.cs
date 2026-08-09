@@ -58,9 +58,11 @@ public static class Engine_MdlMesh
             }
 
             var indices = new int[geo.Indices.Length];
-            for (int i = 0; i < geo.Indices.Length; ++i)
+            for (int i = 0; i + 2 < geo.Indices.Length; i += 3)
             {
                 indices[i] = (int)geo.Indices[i];
+                indices[i + 1] = (int)geo.Indices[i + 2];
+                indices[i + 2] = (int)geo.Indices[i + 1];
             }
 
             var arrays = new Godot.Collections.Array();
@@ -95,10 +97,11 @@ public static class Engine_MdlMesh
             }
 
             Material? material = Engine_MdlMaterial.TryCreate(geo.Material);
-            if (material is not null)
+            material ??= new StandardMaterial3D
             {
-                mesh.SurfaceSetMaterial(added, material);
-            }
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            };
+            mesh.SurfaceSetMaterial(added, material);
 
             ++added;
         }

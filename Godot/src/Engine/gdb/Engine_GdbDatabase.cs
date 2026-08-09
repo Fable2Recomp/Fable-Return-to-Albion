@@ -110,9 +110,22 @@ public partial class GdbDatabase : Resource
         foreach (GdbField field in _view.Fields(index))
         {
             string name = field.Name.Length != 0 ? field.Name : $"0x{field.Hash:X8}";
-            text.AppendLine($"    {name} : {field.Type} = {field.Describe()}");
+            text.Append($"    {name} : {field.Type} = {field.Describe()}");
+            if (field.Type == GdbFieldType.String &&
+                Engine_BnkTextBankLoader.TryLookup(field.Raw, out string localized))
+            {
+                text.Append($"  → \"{Flatten(localized, 100)}\"");
+            }
+
+            text.AppendLine();
         }
 
         return text.ToString();
+    }
+
+    private static string Flatten(string value, int limit)
+    {
+        value = value.Replace('\n', ' ').Replace('\r', ' ').Trim();
+        return value.Length <= limit ? value : value[..limit] + "…";
     }
 }

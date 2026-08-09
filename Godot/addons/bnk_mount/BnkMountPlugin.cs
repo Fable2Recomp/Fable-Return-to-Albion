@@ -52,15 +52,25 @@ public partial class BnkMountPlugin : EditorPlugin
 
     private static readonly Color StreamingDoneColor = new(0.55f, 0.85f, 0.55f);
 
+    private EntityInspectorPlugin? _entityInspector;
+
     public override void _EnterTree()
     {
         StartMount();
         EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged += OnFilesystemChanged;
         AddStreamingLabel();
+        _entityInspector = new EntityInspectorPlugin();
+        AddInspectorPlugin(_entityInspector);
     }
 
     public override void _ExitTree()
     {
+        if (_entityInspector is not null)
+        {
+            RemoveInspectorPlugin(_entityInspector);
+            _entityInspector = null;
+        }
+
         EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged -= OnFilesystemChanged;
         RemoveStreamingLabel();
         RemoveGameRoot();
@@ -192,6 +202,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         _mounting = true;
         string gameDirectory = ResolveGameDirectory();
+        Refii.Gdb.Engine_BnkTextBankLoader.SetGameDirectory(gameDirectory);
 
         Task.Run(() =>
         {

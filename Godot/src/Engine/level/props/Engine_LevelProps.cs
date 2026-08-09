@@ -108,7 +108,7 @@ public static class Engine_LevelProps
 
     public static Node3D? Build(
         LevelEntry level, Func<string, byte[]?> read, out PropBuildStats stats) =>
-        Build(level, read, null, null, out stats);
+        Build(level, read, null, null, null, null, out stats);
 
     public static Node3D? Build(
         LevelEntry level,
@@ -116,7 +116,7 @@ public static class Engine_LevelProps
         Refii.Lighting.LightProbeField? probes,
         Refii.Lighting.LightingFrame? lighting,
         out PropBuildStats stats) =>
-        Build(level, read, probes, lighting, null, out stats);
+        Build(level, read, probes, lighting, null, null, out stats);
 
     public static Node3D? Build(
         LevelEntry level,
@@ -124,6 +124,7 @@ public static class Engine_LevelProps
         Refii.Lighting.LightProbeField? probes,
         Refii.Lighting.LightingFrame? lighting,
         Refii.Lighting.LightmapContainer? bakes,
+        Refii.Entities.EntityInspectData? inspect,
         out PropBuildStats stats)
     {
         stats = new PropBuildStats();
@@ -191,7 +192,7 @@ public static class Engine_LevelProps
                 order.Add(companionKey);
             }
 
-            companionBlock.Instances.Add(transform);
+            companionBlock.AddInstance(transform);
             buildStats.Instances++;
         }
 
@@ -209,10 +210,23 @@ public static class Engine_LevelProps
                 continue;
             }
 
-            string? modelPath = placement.ModelPathHash == 0
-                ? null
-                : Engine_PropModelIndex.Resolve(
-                    placement.ModelPathHash, Array.Empty<string>());
+            bool RejectSubstitute(string candidate, bool containerGuard)
+            {
+                if (IsBadMarketSubstitution(placement.EntityName, candidate))
+                {
+                    return true;
+                }
+
+                return containerGuard && inspect is not null &&
+                    inspect.Contents.ContainsKey(placement.Hash) &&
+                    IsImplausibleContainerShellModel(candidate);
+            }
+
+            bool authoredHash = placement.ModelPathHash != 0 && !placement.ModelPathFilled;
+            string? modelPath = authoredHash
+                ? Engine_PropModelIndex.Resolve(
+                    placement.ModelPathHash, Array.Empty<string>())
+                : null;
 
             bool matchedByHash = modelPath is not null;
 
@@ -226,6 +240,11 @@ public static class Engine_LevelProps
                 if (curated is not null)
                 {
                     modelPath = Engine_PropModelIndex.ResolveByPath(curated);
+                    if (modelPath is not null && RejectSubstitute(modelPath, true))
+                    {
+                        modelPath = null;
+                    }
+
                     if (modelPath is not null)
                     {
                         stats.CuratedMatched++;
@@ -233,10 +252,31 @@ public static class Engine_LevelProps
                 }
             }
 
+            if (modelPath is null && placement.ModelPathFilled &&
+                placement.ModelPathHash != 0)
+            {
+                modelPath = Engine_PropModelIndex.Resolve(
+                    placement.ModelPathHash, Array.Empty<string>());
+                if (modelPath is not null && RejectSubstitute(modelPath, true))
+                {
+                    modelPath = null;
+                }
+
+                if (modelPath is not null)
+                {
+                    matchedByHash = true;
+                }
+            }
+
             if (modelPath is null && placement.EntityName.Length != 0)
             {
                 modelPath = Engine_PropModelIndex.ResolveByEntityName(placement.EntityName)
                     ?? Engine_ModelScoring.ResolveByEntityScore(placement.EntityName);
+
+                if (modelPath is not null && RejectSubstitute(modelPath, false))
+                {
+                    modelPath = null;
+                }
 
                 if (modelPath is not null)
                 {
@@ -316,8 +356,7 @@ public static class Engine_LevelProps
                 order.Add(key);
             }
 
-            block.Instances.Add(transform);
-            block.InstanceKeys.Add(placement.Hash);
+            block.AddInstance(transform, placement.Hash);
             stats.Instances++;
 
             bool clocktowerBasePrimary = NormalisePath(modelPath).Contains(
@@ -362,6 +401,38 @@ public static class Engine_LevelProps
         // scene carries the path rather than a million baked colours.
         container.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.LevelGdbMeta, gdbPath);
 
+        void AddSingle(PropBlockBuild block, int index)
+        {
+            var single = new MeshInstance3D
+            {
+                Name = UniqueName(container, block.Label),
+                Transform = block.Instances[index],
+            };
+
+            single.SetMeta(Engine_PropStreamer.ModelPathMeta, block.ModelPath);
+
+            uint hash = index < block.InstanceHashes.Count ? block.InstanceHashes[index] : 0;
+
+            // An authored per-vertex bake outranks the probe field — the guest's own order is
+            // per-vertex D3DCOLOR, then object lightmap, then probes. Only the KEY is stored;
+            // the streamer resolves it once the mesh is standing and can check that it fits.
+            if (hash != 0 && bakeKeys.Contains(hash))
+            {
+                single.SetMeta(
+                    Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, (long)hash);
+            }
+
+            Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(
+                single, block.Instances[index].Origin, probes);
+
+            if (inspect is not null && hash != 0)
+            {
+                Refii.Entities.Engine_EntityInspect.Annotate(single, hash, inspect);
+            }
+
+            container.AddChild(single);
+        }
+
         foreach (string key in order)
         {
             PropBlockBuild block = blocks[key];
@@ -370,31 +441,44 @@ public static class Engine_LevelProps
             {
                 for (int i = 0; i < block.Instances.Count; i++)
                 {
-                    var single = new MeshInstance3D
-                    {
-                        Name = UniqueName(container, block.Label),
-                        Transform = block.Instances[i],
-                    };
-
-                    single.SetMeta(Engine_PropStreamer.ModelPathMeta, block.ModelPath);
-
-                    // An authored per-vertex bake outranks the probe field — that is the guest's
-                    // own priority order (per-vertex D3DCOLOR, then object lightmap, then
-                    // probes), and it is authored data rather than something we resample. Only
-                    // the KEY is stored; the streamer resolves it once the mesh is standing and
-                    // can check the bake actually fits.
-                    if (i < block.InstanceKeys.Count && bakeKeys.Contains(block.InstanceKeys[i]))
-                    {
-                        single.SetMeta(
-                            Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta,
-                            (long)block.InstanceKeys[i]);
-                    }
-
-                    Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(
-                        single, block.Instances[i].Origin, probes);
-                    container.AddChild(single);
+                    AddSingle(block, i);
                 }
 
+                stats.Blocks++;
+                continue;
+            }
+
+            var batched = new List<int>(block.Instances.Count);
+            for (int i = 0; i < block.Instances.Count; i++)
+            {
+                bool forcedSingle = inspect is not null &&
+                    i < block.InstanceHashes.Count &&
+                    inspect.HasFor(block.InstanceHashes[i]);
+                if (forcedSingle)
+                {
+                    AddSingle(block, i);
+                }
+                else
+                {
+                    batched.Add(i);
+                }
+            }
+
+            if (OS.GetEnvironment("REFII_DUMP_BATCH").Length != 0 &&
+                block.ModelPath.Contains("MarketStall", StringComparison.OrdinalIgnoreCase))
+            {
+                for (int i = 0; i < batched.Count; i++)
+                {
+                    int idx = batched[i];
+                    uint h = idx < block.InstanceHashes.Count ? block.InstanceHashes[idx] : 0;
+                    Vector3 o = block.Instances[idx].Origin;
+                    GD.Print($"[batch] {NameOf(block.ModelPath)} elem={i} hash={h:x8} " +
+                        $"at=({o.X:0.##},{o.Y:0.##},{o.Z:0.##})");
+                }
+            }
+
+            if (batched.Count == 0)
+            {
                 stats.Blocks++;
                 continue;
             }
@@ -405,14 +489,14 @@ public static class Engine_LevelProps
             {
                 TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
                 UseColors = true,
-                InstanceCount = block.Instances.Count,
+                InstanceCount = batched.Count,
             };
 
-            var bounds = new Aabb(block.Instances[0].Origin, Vector3.Zero);
-            for (int i = 0; i < block.Instances.Count; i++)
+            var bounds = new Aabb(block.Instances[batched[0]].Origin, Vector3.Zero);
+            for (int i = 0; i < batched.Count; i++)
             {
-                multiMesh.SetInstanceTransform(i, block.Instances[i]);
-                bounds = bounds.Expand(block.Instances[i].Origin);
+                multiMesh.SetInstanceTransform(i, block.Instances[batched[i]]);
+                bounds = bounds.Expand(block.Instances[batched[i]].Origin);
             }
 
             // ONE PROBE SAMPLE PER INSTANCE, not one per block.
@@ -427,8 +511,18 @@ public static class Engine_LevelProps
             // The L1 bands are dropped here and the flat L0 kept: a MultiMesh instance carries
             // one colour, and L0 is the dominant term by a wide margin (0.60 average against
             // ±0.27 for L1 across this region).
+            // THE BATCHED SUBSET, not block.Instances. The inspector pulls some placements out
+            // of the batch and into their own nodes, so the MultiMesh holds fewer instances than
+            // the block does — sampling the full list would pair instance N's buffer slot with
+            // placement N's position and slide every colour along by however many were pulled.
+            var batchedTransforms = new List<Transform3D>(batched.Count);
+            foreach (int index in batched)
+            {
+                batchedTransforms.Add(block.Instances[index]);
+            }
+
             bool coloured = Refii.Lighting.Engine_LevelBakedLighting.ApplyMultiMeshProbes(
-                multiMesh, block.Instances, probes);
+                multiMesh, batchedTransforms, probes);
 
             multiMesh.CustomAabb = bounds.Grow(ModelReach);
 
@@ -492,7 +586,7 @@ public static class Engine_LevelProps
             {
                 if (transformKeys.Add(TransformKey(transform, resolved)))
                 {
-                    build.Instances.Add(transform);
+                    build.AddInstance(transform);
                 }
             }
 
@@ -580,7 +674,7 @@ public static class Engine_LevelProps
                     Transform3D world = ComposeChild(instance, child.Local);
                     if (transformKeys.Add(TransformKey(world, childPath)))
                     {
-                        build.Instances.Add(world);
+                        build.AddInstance(world);
                         stats.GmdChildren++;
                         stats.Instances++;
                     }
@@ -800,7 +894,7 @@ public static class Engine_LevelProps
                     order.Add(key);
                 }
 
-                build.Instances.Add(transform);
+                build.AddInstance(transform);
                 stats.Shells++;
                 stats.Instances++;
             }
@@ -892,8 +986,8 @@ public static class Engine_LevelProps
             PropBlockBuild block = blocks[key];
             for (int i = 0; i < block.Instances.Count && matched < 24; i++)
             {
-                if (i >= block.InstanceKeys.Count ||
-                    !byLowKey.TryGetValue(block.InstanceKeys[i], out int bakeVerts))
+                if (i >= block.InstanceHashes.Count ||
+                    !byLowKey.TryGetValue(block.InstanceHashes[i], out int bakeVerts))
                 {
                     continue;
                 }
@@ -951,11 +1045,18 @@ public static class Engine_LevelProps
         /// <summary>
         /// The placement id behind each instance, or 0 where the source did not carry one.
         ///
-        /// Parallel to <see cref="Instances"/> because the .lmp binds a baked vertex buffer to
-        /// a PLACEMENT, not to a model — grouping by model is what lets us share a mesh, and it
-        /// is exactly what throws away the identity the bake is keyed on.
+        /// Parallel to <see cref="Instances"/>, and load-bearing twice over: the entity
+        /// inspector annotates by it, and the .lmp binds a baked vertex buffer to a PLACEMENT
+        /// rather than to a model — grouping by model is what lets us share a mesh, and it is
+        /// exactly what throws away the identity the bake is keyed on.
         /// </summary>
-        public List<uint> InstanceKeys { get; } = new();
+        public List<uint> InstanceHashes { get; } = new();
+
+        public void AddInstance(Transform3D transform, uint hash = 0)
+        {
+            Instances.Add(transform);
+            InstanceHashes.Add(hash);
+        }
     }
 
     private static void AppendEngineLevelBlocks(
@@ -1008,7 +1109,7 @@ public static class Engine_LevelProps
                     continue;
                 }
 
-                build.Instances.Add(transform);
+                build.AddInstance(transform);
                 emitted++;
             }
 
@@ -1058,7 +1159,7 @@ public static class Engine_LevelProps
             {
                 Transform3D transform =
                     BuildFoliageTransform(instance.Values, instance.Rotation);
-                build.Instances.Add(transform);
+                build.AddInstance(transform);
                 transformKeys.Add(TransformKey(transform, modelPath));
             }
         }
@@ -1238,7 +1339,7 @@ public static class Engine_LevelProps
     /// </summary>
     private static Vector3 GuestToGodot(Vector3 guest) => new(guest.X, guest.Z, guest.Y);
 
-    private static List<GdbView> LoadSupplementalViews(Func<string, byte[]?> read)
+    public static List<GdbView> LoadSupplementalViews(Func<string, byte[]?> read)
     {
         var views = new List<GdbView>();
         foreach (string path in SupplementalGdbPaths)
@@ -1253,7 +1354,7 @@ public static class Engine_LevelProps
         return views;
     }
 
-    private static void AugmentPlacementModelHashes(
+    public static void AugmentPlacementModelHashes(
         LevelEntry level,
         List<GdbPlacement> placements,
         List<GdbView> views,
@@ -1325,6 +1426,7 @@ public static class Engine_LevelProps
             {
                 p.ModelPathHashes = found;
                 p.ModelPathHash = found[0];
+                p.ModelPathFilled = true;
             }
 
             stats.SupplementalModelFills++;
@@ -1546,6 +1648,168 @@ public static class Engine_LevelProps
         return path.StartsWith("art/characters/", StringComparison.Ordinal) ||
                path.Contains("/art/characters/", StringComparison.Ordinal) ||
                path.Contains("/characters/heros/", StringComparison.Ordinal);
+    }
+
+    private static string CompactText(string value)
+    {
+        var text = new System.Text.StringBuilder(value.Length);
+        foreach (char c in value)
+        {
+            if (char.IsLetterOrDigit(c))
+            {
+                text.Append(char.ToLowerInvariant(c));
+            }
+        }
+
+        return text.ToString();
+    }
+
+    private static bool KeyIsOrNumbered(string key, string baseKey)
+    {
+        if (key == baseKey)
+        {
+            return true;
+        }
+
+        if (key.Length <= baseKey.Length ||
+            !key.StartsWith(baseKey, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        for (int i = baseKey.Length; i < key.Length; i++)
+        {
+            if (!char.IsDigit(key[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool KeyIsOrVariant(string key, string baseKey)
+    {
+        if (KeyIsOrNumbered(key, baseKey))
+        {
+            return true;
+        }
+
+        if (key.Length <= baseKey.Length + 1 ||
+            !key.StartsWith(baseKey, StringComparison.Ordinal) ||
+            key[baseKey.Length] != 'v')
+        {
+            return false;
+        }
+
+        for (int i = baseKey.Length + 1; i < key.Length; i++)
+        {
+            if (!char.IsDigit(key[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public static bool IsImplausibleContainerShellModel(string modelPath)
+    {
+        string key = CompactText(modelPath.Replace('\\', '/'));
+        return key.Contains("bridge", StringComparison.Ordinal) ||
+               key.Contains("facade", StringComparison.Ordinal) ||
+               key.Contains("clocktower", StringComparison.Ordinal) ||
+               modelPath.Replace('\\', '/').ToLowerInvariant()
+                   .Contains("/buildings/", StringComparison.Ordinal) ||
+               key.EndsWith("exteriormdl", StringComparison.Ordinal) ||
+               key.EndsWith("interiormdl", StringComparison.Ordinal);
+    }
+
+    public static bool IsBadMarketSubstitution(string entityName, string modelPath)
+    {
+        string entityKey = Engine_PropModelIndex.EntityKey(entityName);
+        string rawKey = CompactText(entityName);
+        string modelKey = CompactText(NameOf(modelPath));
+        string modelPathKey = CompactText(modelPath.Replace('\\', '/'));
+
+        bool signEntity =
+            entityKey.Contains("sign", StringComparison.Ordinal) ||
+            rawKey.Contains("sign", StringComparison.Ordinal);
+        bool doorEntity =
+            entityKey.Contains("door", StringComparison.Ordinal) ||
+            rawKey.Contains("door", StringComparison.Ordinal);
+
+        bool generalStoreBuilding =
+            KeyIsOrNumbered(entityKey, "generalstore") ||
+            KeyIsOrNumbered(rawKey, "objectbuildinggeneralstore") ||
+            KeyIsOrNumbered(rawKey, "newobjectbuildinggeneralstore");
+        if (modelPathKey.Contains("bsmarketgeneralshop", StringComparison.Ordinal) &&
+            (modelPathKey.Contains("exterior", StringComparison.Ordinal) ||
+             modelPathKey.Contains("interior", StringComparison.Ordinal)) &&
+            !generalStoreBuilding)
+        {
+            return true;
+        }
+
+        if (generalStoreBuilding && !signEntity &&
+            modelKey.Contains("signgeneralstore", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        bool tavernBuilding =
+            entityKey.Contains("bsmarkettavern", StringComparison.Ordinal) ||
+            entityKey.Contains("markettavern", StringComparison.Ordinal) ||
+            rawKey.Contains("objectbuildingbsmarkettavern", StringComparison.Ordinal) ||
+            rawKey.Contains("newobjectbuildingbsmarkettavern", StringComparison.Ordinal);
+        if (modelPathKey.Contains("bsmarkettavern", StringComparison.Ordinal) &&
+            !tavernBuilding)
+        {
+            return true;
+        }
+
+        if (tavernBuilding && !signEntity &&
+            (modelKey.Contains("botavernsign", StringComparison.Ordinal) ||
+             modelKey.Contains("tavernsign", StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        bool tarotStallBuilding =
+            entityKey.Contains("tarotstall", StringComparison.Ordinal) ||
+            rawKey.Contains("tarotstall", StringComparison.Ordinal);
+        if (tarotStallBuilding && !doorEntity &&
+            modelKey.Contains("tarotstalldoors", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        bool marketStallBuilding =
+            KeyIsOrVariant(entityKey, "bsopenstall") ||
+            KeyIsOrVariant(entityKey, "bsmarketopenstall") ||
+            KeyIsOrVariant(entityKey, "bsmarketstall") ||
+            rawKey.Contains("objectbuildingbsopenstall", StringComparison.Ordinal) ||
+            rawKey.Contains("objectbuildingbsmarketstall", StringComparison.Ordinal) ||
+            rawKey.Contains("newobjectbuildingbsmarketstall", StringComparison.Ordinal);
+        bool marketStallShellModel =
+            (modelKey.Contains("bsmarketmarketstall", StringComparison.Ordinal) ||
+             modelKey.Contains("bsmarketopenstall", StringComparison.Ordinal) ||
+             modelKey.Contains("bsopenstall", StringComparison.Ordinal)) &&
+            !modelKey.Contains("esashopmarketstall", StringComparison.Ordinal);
+        if (marketStallShellModel && !marketStallBuilding)
+        {
+            return true;
+        }
+
+        if ((generalStoreBuilding || tavernBuilding ||
+             marketStallBuilding || tarotStallBuilding) &&
+            (modelKey.Contains("bstownhouse", StringComparison.Ordinal) ||
+             modelKey.Contains("townhouse", StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     public static string LeafOf(string path)

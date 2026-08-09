@@ -27,13 +27,14 @@ public static class Engine_LevelEntities
 
     public static Node3D? Build(
         LevelEntry level, Func<string, byte[]?> read, out EntityPlaceStats stats) =>
-        Build(level, read, null, null, out stats);
+        Build(level, read, null, null, null, out stats);
 
     public static Node3D? Build(
         LevelEntry level,
         Func<string, byte[]?> read,
         Refii.Lighting.LightProbeField? probes,
         Refii.Lighting.LightingFrame? lighting,
+        EntityInspectData? inspect,
         out EntityPlaceStats stats)
     {
         stats = new EntityPlaceStats();
@@ -119,6 +120,11 @@ public static class Engine_LevelEntities
 
             Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(
                 node, node.Transform.Origin, probes);
+            if (inspect is not null)
+            {
+                Engine_EntityInspect.Annotate(node, saved.Key, inspect);
+            }
+
             container.AddChild(node);
             stats.Placed++;
         }
