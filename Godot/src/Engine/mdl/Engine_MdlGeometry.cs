@@ -34,7 +34,6 @@ public sealed class MdlGeometry
 
 public static class Engine_MdlGeometry
 {
-    // False will disabled smoothing the normals, looks odd in the editor :p
     public static bool smooth_normals = true;
 
     private const int VertexStride = 28;

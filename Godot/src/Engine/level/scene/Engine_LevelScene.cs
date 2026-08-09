@@ -46,8 +46,18 @@ public static class Engine_LevelScene
 
     public const string AdjacentNodeName = "AdjacentTerrain";
 
+    public const string WaterNodeName = "Water";
+
     public static bool TryBuild(
-        LevelEntry level, Func<string, byte[]?>? source, out string scenePath, out string error)
+        LevelEntry level, Func<string, byte[]?>? source, out string scenePath, out string error) =>
+        TryBuild(level, source, null, out scenePath, out error);
+
+    public static bool TryBuild(
+        LevelEntry level,
+        Func<string, byte[]?>? source,
+        Func<string, string?>? findByName,
+        out string scenePath,
+        out string error)
     {
         scenePath = level.ScenePath;
         error = string.Empty;
@@ -63,11 +73,6 @@ public static class Engine_LevelScene
             return false;
         }
 
-        // Nothing is baked into the project. The terrain mesh and its albedo are ordinary
-        // game:// resources, so the scene stores only a reference to each and the bank
-        // loaders build them on demand. A level costs a few hundred bytes on disk instead
-        // of tens of megabytes of .res, and re-exporting the game data is picked up
-        // without regenerating anything.
         string meshPath = Engine_BnkTerrainLoader.PathPrefix + level.HeightfieldPath;
         var terrainMesh = ResourceLoader.Load<ArrayMesh>(meshPath, "ArrayMesh");
         if (terrainMesh is null)
@@ -96,9 +101,6 @@ public static class Engine_LevelScene
         root.AddChild(terrainNode);
         terrainNode.Owner = root;
 
-        // The vista IS embedded, unlike the terrain. It is a couple of hundred triangles
-        // built from several .ehf at once, which no single game:// path names, and at that
-        // size inlining costs nothing.
         TerrainMesh? vista = BuildAdjacent(level, source);
         if (vista is not null)
         {
@@ -110,6 +112,95 @@ public static class Engine_LevelScene
 
             root.AddChild(vistaNode);
             vistaNode.Owner = root;
+        }
+
+        AddWater(level, source, findByName, root);
+
+        if (source is not null)
+        {
+            Node3D? props = Engine_LevelProps.Build(
+                level, p => source(p), out PropBuildStats propStats);
+
+            if (props is not null)
+            {
+                root.AddChild(props);
+                props.Owner = root;
+                foreach (Node child in props.GetChildren())
+                {
+                    child.Owner = root;
+                }
+            }
+
+            GD.Print($"[props] {level}: {propStats}");
+        }
+
+        if (source is not null)
+        {
+            WorldEnvironment? sky = Engine_SkyEnvironment.Build(
+                level, p => source(p), out _, out WeatherTheme weather);
+            if (sky is not null)
+            {
+                root.AddChild(sky);
+                sky.Owner = root;
+            }
+
+            float windAzimuth = weather.HasWind
+                ? (weather.WindXyRotationMin + weather.WindXyRotationMax) * 0.5f *
+                  (MathF.PI / 180f)
+                : 0f;
+            float windStrength = weather.HasWind
+                ? (weather.WindStrengthMin + weather.WindStrengthMax) * 0.5f
+                : 0f;
+
+            MeshInstance3D? precipitation =
+                Engine_Weather.Build(weather, windAzimuth, windStrength);
+            if (precipitation is not null)
+            {
+                root.AddChild(precipitation);
+                precipitation.Owner = root;
+            }
+
+            List<byte[]> gdbs = Engine_SkyEnvironment.BuildGdbChain(level, p => source(p));
+            if (gdbs.Count != 0 &&
+                Engine_EnvironmentTheme.TryExtractSky(gdbs, out SkyTheme skyTheme))
+            {
+                SkyFrame frame = Engine_SkyFrame.Evaluate(
+                    skyTheme, skyTheme.SourceTimeOfDay >= 0f ? skyTheme.SourceTimeOfDay : 0.5f);
+
+                Node3D? celestial = Engine_CelestialElements.Build(
+                    skyTheme, frame, p => source(p));
+
+                if (celestial is not null)
+                {
+                    root.AddChild(celestial);
+                    celestial.Owner = root;
+                    foreach (Node child in celestial.GetChildren())
+                    {
+                        child.Owner = root;
+                    }
+                }
+
+                if (Engine_EnvironmentTheme.TryExtractClouds(gdbs, out CloudTheme cloudTheme))
+                {
+                    Node3D? clouds = Engine_Clouds.Build(
+                        cloudTheme,
+                        gdbs,
+                        frame.SunDirection,
+                        frame.MainLightColour,
+                        p => source(p),
+                        findByName is null ? null : n => findByName(n));
+
+                    if (clouds is not null)
+                    {
+                        root.AddChild(clouds);
+                        clouds.Owner = root;
+                        foreach (Node child in clouds.GetChildren())
+                        {
+                            child.Owner = root;
+                        }
+                    }
+                }
+            }
         }
 
         var packed = new PackedScene();
@@ -158,6 +249,116 @@ public static class Engine_LevelScene
             Metallic = 0f,
             Roughness = 0.9f,
         };
+    }
+
+    private static void AddWater(
+        LevelEntry level,
+        Func<string, byte[]?>? source,
+        Func<string, string?>? findByName,
+        Node3D root)
+    {
+        if (source is null)
+        {
+            return;
+        }
+
+        byte[]? bytes = null;
+        foreach (string candidate in WaterCandidates(level))
+        {
+            bytes = source(candidate);
+            if (bytes is not null && bytes.Length > 8)
+            {
+                break;
+            }
+
+            bytes = null;
+        }
+
+        if (bytes is null)
+        {
+            return;
+        }
+
+        if (!Engine_WaterFile.TryParse(bytes, out WaterScene scene, out string why))
+        {
+            GD.Print($"[water] {level}: {why}");
+            return;
+        }
+
+        var container = new Node3D { Name = WaterNodeName };
+        int emitted = 0;
+
+        for (int i = 0; i < scene.Bodies.Count; i++)
+        {
+            WaterBody body = scene.Bodies[i];
+            TerrainMesh? mesh = Engine_WaterMesh.BuildBody(body);
+            if (mesh is null)
+            {
+                continue;
+            }
+
+            string name = $"WaterBody{i}";
+            var node = new MeshInstance3D
+            {
+                Name = name,
+                Mesh = Engine_LevelMesh.ToArrayMesh(mesh, name),
+            };
+
+            ShaderMaterial? material = Engine_WaterMaterial.Build(
+                body,
+                p => source(p),
+                findByName is null ? null : n => findByName(n),
+                out string materialError);
+
+            if (material is null)
+            {
+                GD.Print($"[water] {level}: {materialError}");
+            }
+            else
+            {
+                node.MaterialOverride = material;
+            }
+
+            container.AddChild(node);
+            node.Owner = root;
+            emitted++;
+        }
+
+        if (emitted == 0)
+        {
+            container.QueueFree();
+            return;
+        }
+
+        root.AddChild(container);
+        container.Owner = root;
+
+        foreach (Node child in container.GetChildren())
+        {
+            child.Owner = root;
+        }
+
+        GD.Print(
+            $"[water] {level}: {emitted} body(s), {scene.TileCount} tiles");
+    }
+
+    private static IEnumerable<string> WaterCandidates(LevelEntry level)
+    {
+        if (level.MainEhfPath.Length != 0)
+        {
+            yield return ReplaceExtension(level.MainEhfPath, ".water");
+        }
+
+        if (level.HeightfieldPath.Length != 0)
+        {
+            yield return ReplaceExtension(level.HeightfieldPath, ".water");
+        }
+    }
+
+    private static string ReplaceExtension(string path, string extension)
+    {
+        int dot = path.LastIndexOf('.');
+        return dot < 0 ? path + extension : path[..dot] + extension;
     }
 
     private static TerrainMesh? BuildAdjacent(LevelEntry level, Func<string, byte[]?>? source)

@@ -118,8 +118,6 @@ public static class Engine_EhfAtlas
 
         byte[] blocks = Untile(tiled, (int)width, (int)height, 4, blockBytes);
 
-        // The 360 stores BC endpoints and indices as big-endian 16-bit words. Without
-        // this every block decodes to noise, which is exactly what it looks like.
         for (int i = 0; i + 2 <= blocks.Length; i += 2)
         {
             (blocks[i], blocks[i + 1]) = (blocks[i + 1], blocks[i]);
@@ -250,8 +248,6 @@ public static class Engine_EhfAtlas
         uint heightBlocks = (uint)((heightPixels / blockPixels) +
                                    (heightPixels % blockPixels != 0 ? 1 : 0));
 
-        // Surfaces 16px or smaller sit at a block offset inside the tile rather than at
-        // its corner; without this the small mips come out shifted.
         uint offsetX = 0;
         uint offsetY = 0;
         if (widthPixels <= 16 && heightPixels <= 16)

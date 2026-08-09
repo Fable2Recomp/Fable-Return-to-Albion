@@ -139,8 +139,8 @@ public static class Engine_GhfTerrain
             for (int x = 0; x < w; x++)
             {
                 long i = ((long)y * w) + x;
-                float wx = x * CellSize;
-                float wz = y * CellSize;
+                float wx = heights.OriginX + (x * CellSize);
+                float wz = heights.OriginZ + (y * CellSize);
 
                 positions[(i * 3) + 0] = wx;
                 positions[(i * 3) + 1] = values[i];

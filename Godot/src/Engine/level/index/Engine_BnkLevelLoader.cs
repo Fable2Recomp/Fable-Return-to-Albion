@@ -111,8 +111,6 @@ public partial class Engine_BnkTerrainAlbedoLoader : ResourceFormatLoader
             return Variant.CreateFrom((int)Error.FileNotFound);
         }
 
-        // The composite is sized in terrain cells, so the paired heightfield has to be
-        // read to know how many there are.
         string? heightfield = _heightfieldForEhf?.Invoke(virtualPath);
         int verticesX = 0;
         int verticesZ = 0;

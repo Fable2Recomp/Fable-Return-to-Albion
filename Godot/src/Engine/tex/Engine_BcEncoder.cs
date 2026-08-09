@@ -2,28 +2,8 @@ using System;
 
 namespace Refii.Textures;
 
-/// <summary>
-/// A small, exact block encoder for the synthesised mip tail.
-///
-/// <b>Why not Godot's.</b> <c>Image.Compress</c> picks its backend from whether a
-/// RenderingDevice exists. With a window it uses the GPU compressor, and that path returns
-/// the WRONG COLOURS — a gold banner re-encodes to green, verified by dumping the same
-/// texture windowed and headless and comparing: identical input, `Ok` both times, gold on
-/// the CPU path and green on the GPU one. There is no public way to ask for the CPU path,
-/// so a texture would decode correctly or not depending on whether anything was on screen.
-/// Encoding here removes the question: same bytes in the editor, in a build, and headless.
-///
-/// Quality is deliberately modest — endpoints from the block's bounding box, nearest
-/// palette entry per texel, no exhaustive search. These blocks are only ever sampled when
-/// something is a handful of pixels across, and a correct cheap fit beats an optimal
-/// encoder that is not available at runtime.
-/// </summary>
 internal static class Engine_BcEncoder
 {
-    /// <summary>
-    /// Encodes RGBA8 pixels to the block format matching <paramref name="format"/>.
-    /// Returns null when the format is not block-compressed.
-    /// </summary>
     internal static byte[]? Encode(
         byte[] rgba, int width, int height, TexSurfaceFormat format)
     {
@@ -65,14 +45,11 @@ internal static class Engine_BcEncoder
                         break;
 
                     case TexSurfaceFormat.Bc3:
-                        // DXT5: the BC4-coded alpha half first, then the BC1 colour half.
                         EncodeBc4Block(texels, 3, output, cursor);
                         EncodeBc1Block(texels, output, cursor + 8);
                         break;
 
                     case TexSurfaceFormat.Bc5:
-                        // DXN: red half then green half, matching the order the plane
-                        // decoder writes for codec 3.
                         EncodeBc4Block(texels, 0, output, cursor);
                         EncodeBc4Block(texels, 1, output, cursor + 8);
                         break;
@@ -85,12 +62,6 @@ internal static class Engine_BcEncoder
         return output;
     }
 
-    /// <summary>
-    /// Copies a 4x4 block out of the image, CLAMPING at the edges. Levels below 4x4 are
-    /// smaller than one block, so sampling past the edge is normal here rather than a
-    /// bounds error; clamping repeats the edge texel, which is what a 1x1 or 2x2 level
-    /// needs to fill a block without inventing colour.
-    /// </summary>
     private static void GatherBlock(
         byte[] rgba, int width, int height, int originX, int originY, byte[] texels)
     {
@@ -128,9 +99,6 @@ internal static class Engine_BcEncoder
         ushort high = Pack565(maxR, maxG, maxB);
         ushort low = Pack565(minR, minG, minB);
 
-        // The four-colour palette requires colour0 > colour1. When they compare equal the
-        // block is flat, and every index can stay 0 rather than forcing an ordering that
-        // would select the three-colour punch-through mode by accident.
         if (high < low)
         {
             (high, low) = (low, high);
@@ -217,8 +185,6 @@ internal static class Engine_BcEncoder
             return;
         }
 
-        // Eight-value mode: endpoints plus six interpolated steps, selected because
-        // endpoint0 > endpoint1.
         Span<int> palette = stackalloc int[8];
         palette[0] = max;
         palette[1] = min;
@@ -261,8 +227,6 @@ internal static class Engine_BcEncoder
         int g6 = (value >> 5) & 0x3F;
         int b5 = value & 0x1F;
 
-        // Replicate the high bits into the low ones so full-scale values stay full-scale;
-        // a plain shift turns 31 into 248 and quietly darkens every bright texel.
         r = (r5 << 3) | (r5 >> 2);
         g = (g6 << 2) | (g6 >> 4);
         b = (b5 << 3) | (b5 >> 2);

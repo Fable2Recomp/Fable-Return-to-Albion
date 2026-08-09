@@ -3,43 +3,8 @@ using System.Collections.Generic;
 
 namespace Refii.Models;
 
-/// <summary>
-/// Collapses the submesh chunking a .mdl carries for the Xbox 360 back into one surface
-/// per material.
-///
-/// A .mdl splits its geometry into many small chunks — <c>WC_Crucible_Room_Large</c> has
-/// 481 of them across just 10 materials. The split is an index-buffer artefact, not a
-/// material boundary, and the original engine treated it that way: its draw loop
-/// (<c>Render_DrawIndexedMesh</c>, 0x82b27728) walks the 64-byte submesh records issuing
-/// one DrawIndexedVertices each, but only rebinds the material when the submesh's
-/// material index DIFFERS from the previous one. That redundant-bind check is a plain
-/// "not equal to last", with no lookup behind it, which only works because consecutive
-/// submeshes sharing a material are already adjacent. Merging them is therefore not an
-/// optimisation layered on top of the format — it is the grouping the format already
-/// assumed.
-///
-/// Without this, four room models silently LOSE geometry: Godot's ArrayMesh stops
-/// accepting surfaces at 256, so surface 257 onward is dropped with an error per surface
-/// and a mesh that still reports success. Holes in a dungeon, no failed load to explain
-/// them.
-///
-/// Chunks are merged only when their vertex FORMAT also matches. Godot fixes the array
-/// layout per surface, so a skinned chunk and an unskinned one cannot share a surface
-/// even if they share a material.
-/// </summary>
 internal static class Engine_MdlMerge
 {
-    /// <summary>
-    /// Identity of a material for merge purposes: the texture set plus the shader. Two
-    /// chunks with the same key produce the same <see cref="Godot.StandardMaterial3D"/>,
-    /// so they draw identically and can share a surface.
-    ///
-    /// This deliberately keys on the RESOLVED texture set rather than the material index
-    /// the file stores. Chunks carrying different indices into the material table that
-    /// nonetheless resolve to identical textures and shader still merge, and — more
-    /// importantly — chunks are never merged on an index match alone if the resolved
-    /// materials somehow differ.
-    /// </summary>
     internal static string MaterialKey(MdlMaterial? material) =>
         material is null
             ? "<none>"
@@ -52,14 +17,6 @@ internal static class Engine_MdlMerge
                 material.Extra,
                 material.ShaderType.ToString());
 
-    /// <summary>
-    /// Returns geometry grouped to one entry per (material, vertex format), preserving
-    /// the order in which each group first appears.
-    ///
-    /// The input list is returned UNCHANGED when nothing can merge, so the overwhelming
-    /// majority of models — which have a handful of chunks and no duplicates — pay a
-    /// dictionary walk and no copying.
-    /// </summary>
     internal static List<MdlGeometry> ByMaterial(List<MdlGeometry> geometry)
     {
         if (geometry.Count < 2)
@@ -159,8 +116,6 @@ internal static class Engine_MdlMerge
                 Array.Copy(part.BoneWeights, 0, result.BoneWeights, vertexBase * 4, count * 4);
             }
 
-            // Every chunk indexes from zero into its own vertex range, so concatenating
-            // the vertices makes every index after the first chunk point at the wrong one.
             foreach (uint index in part.Indices)
             {
                 result.Indices[indexCursor++] = (uint)(index + vertexBase);

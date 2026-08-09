@@ -151,6 +151,39 @@ public partial class BnkMountPlugin : EditorPlugin
         return _byFileName.TryGetValue(fileName, out string? found) ? found : null;
     }
 
+    private IEnumerable<string> EnumerateTexturePaths()
+    {
+        if (_filesystem is null)
+        {
+            yield break;
+        }
+
+        foreach (BnkFile file in _filesystem.EnumerateAllFiles())
+        {
+            if (file.VirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return file.VirtualPath;
+            }
+        }
+    }
+
+    private IEnumerable<Refii.Level.PropModelAsset> EnumerateModelAssets()
+    {
+        if (_filesystem is null)
+        {
+            yield break;
+        }
+
+        foreach (BnkFile file in _filesystem.EnumerateAllFiles())
+        {
+            if (file.VirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return new Refii.Level.PropModelAsset(
+                    file.VirtualPath, file.SourceArchivePath);
+            }
+        }
+    }
+
     private void EnsureLoaders()
     {
         Refii.Textures.Engine_BnkTextureLoader.SetResolver(ResolveBytes);
@@ -164,6 +197,8 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Level.Engine_BnkTerrainAlbedoLoader.SetHeightfieldLookup(HeightfieldForEhf);
         Refii.Level.Engine_BnkTerrainMaterialLoader.SetResolver(ResolveBytes);
         Refii.Level.Engine_BnkTerrainMaterialLoader.SetNameLookup(FindByFileName);
+        Refii.Level.Engine_Clouds.SetTexturePathSource(EnumerateTexturePaths);
+        Refii.Level.Engine_PropModelIndex.SetModelSource(EnumerateModelAssets);
 
         if (_textureLoader is null)
         {
@@ -531,7 +566,7 @@ public partial class BnkMountPlugin : EditorPlugin
         GD.Print($"[bnk_mount] building {level}{vista} …");
 
         if (!Refii.Level.Engine_LevelScene.TryBuild(
-                level, ResolveBytes, out string scenePath, out string error))
+                level, ResolveBytes, FindByFileName, out string scenePath, out string error))
         {
             GD.PushWarning($"[bnk_mount] {level}: {error}");
             return;

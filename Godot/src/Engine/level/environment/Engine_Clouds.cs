@@ -1,0 +1,185 @@
+using System;
+using System.Collections.Generic;
+using Godot;
+using Refii.Gdb;
+using Refii.Textures;
+
+namespace Refii.Level;
+
+public static class Engine_Clouds
+{
+    public const string ShaderPath = "res://src/Engine/level/environment/clouds.gdshader";
+
+    public const float VelocityScale = 0.001f;
+
+    public const float AlphaTestThreshold = 5f / 255f;
+
+    public delegate byte[]? ReadAsset(string virtualPath);
+
+    public delegate string? FindByName(string fileName);
+
+    public static Node3D? Build(
+        CloudTheme theme,
+        IReadOnlyList<byte[]> gdbs,
+        float[] sunDirection,
+        float[] mainLightColour,
+        ReadAsset read,
+        FindByName? findByName)
+    {
+        if (theme.LayerCount == 0)
+        {
+            return null;
+        }
+
+        var shader = GD.Load<Shader>(ShaderPath);
+        if (shader is null)
+        {
+            GD.Print($"[clouds] shader missing at {ShaderPath}");
+            return null;
+        }
+
+        var order = new List<int>();
+        for (int i = 0; i < theme.Layers.Length; i++)
+        {
+            CloudLayerTheme layer = theme.Layers[i];
+            if (layer.Enabled && layer.HasDensityMap && layer.Transparency > 0f)
+            {
+                order.Add(i);
+            }
+        }
+
+        if (order.Count == 0)
+        {
+            return null;
+        }
+
+        order.Sort((a, b) => theme.Layers[b].Height.CompareTo(theme.Layers[a].Height));
+
+        var container = new Node3D { Name = "Clouds" };
+        int built = 0;
+
+        foreach (int index in order)
+        {
+            CloudLayerTheme layer = theme.Layers[index];
+
+            Texture2D? density = ResolveDensityMap(layer.DensityMapHash, gdbs, read, findByName);
+            if (density is null)
+            {
+                GD.Print($"[clouds] layer {index}: density map 0x{layer.DensityMapHash:X8} unresolved");
+                continue;
+            }
+
+            var material = new ShaderMaterial { Shader = shader };
+            material.SetShaderParameter("cloud_density", density);
+
+            material.SetShaderParameter("layer_params", new Vector4(
+                layer.Transparency,
+                layer.AmbientLight,
+                layer.Brightness,
+                ShaderNormalStrength(layer.NormalStrength)));
+
+            material.SetShaderParameter("uv_scale_offset", new Vector4(
+                layer.TextureScaleX,
+                layer.TextureScaleY,
+                layer.VelocityX * VelocityScale,
+                layer.VelocityY * VelocityScale));
+
+            material.SetShaderParameter("cloud_globals",
+                new Vector4(1f, 0f, AlphaTestThreshold, 0f));
+
+            material.SetShaderParameter("light_colour", new Vector4(
+                mainLightColour[0], mainLightColour[1], mainLightColour[2], 1f));
+
+            material.SetShaderParameter("sun_direction", new Vector3(
+                sunDirection[0], sunDirection[1], sunDirection[2]));
+
+            var node = new MeshInstance3D
+            {
+                Name = $"CloudLayer{index}",
+                Mesh = BuildQuad(layer.SizeX, layer.SizeY, layer.Height),
+                MaterialOverride = material,
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            };
+
+            container.AddChild(node);
+            built++;
+        }
+
+        if (built == 0)
+        {
+            container.QueueFree();
+            return null;
+        }
+
+        GD.Print($"[clouds] {built} layer(s) of {theme.LayerCount}");
+        return container;
+    }
+
+    public static float ShaderNormalStrength(float authored)
+    {
+        float transformed = 1f - authored;
+        if (!(transformed >= 0.1f))
+        {
+            transformed = 0.1f;
+        }
+
+        return transformed > 2f ? 2f : transformed;
+    }
+
+    private static ArrayMesh BuildQuad(float sizeX, float sizeY, float height)
+    {
+        var vertices = new Vector3[]
+        {
+            new(-sizeX, height, -sizeY),
+            new(sizeX, height, -sizeY),
+            new(-sizeX, height, sizeY),
+            new(sizeX, height, sizeY),
+        };
+
+        var uvs = new Vector2[]
+        {
+            new(0f, 0f), new(1f, 0f), new(0f, 1f), new(1f, 1f),
+        };
+
+        var indices = new[] { 0, 1, 2, 1, 3, 2 };
+
+        var arrays = new Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = vertices;
+        arrays[(int)Mesh.ArrayType.TexUV] = uvs;
+        arrays[(int)Mesh.ArrayType.Index] = indices;
+
+        var mesh = new ArrayMesh();
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        mesh.SurfaceSetName(0, "CloudLayer");
+        return mesh;
+    }
+
+    public static void SetTexturePathSource(Func<IEnumerable<string>>? source) =>
+        Engine_EnvironmentTextures.SetTexturePathSource(source);
+
+    public static uint EnvironmentTextureHash(string value, bool lowercase) =>
+        Engine_EnvironmentTextures.Hash(value, lowercase);
+
+    public static string? ResolveEnvironmentTextureHash(uint hash) =>
+        Engine_EnvironmentTextures.ResolvePath(hash);
+
+    private static Texture2D? ResolveDensityMap(
+        uint hash, IReadOnlyList<byte[]> gdbs, ReadAsset read, FindByName? findByName)
+    {
+        string? path = ResolveEnvironmentTextureHash(hash);
+        if (path is null)
+        {
+            return null;
+        }
+
+        byte[]? bytes = read(path);
+        if (bytes is null)
+        {
+            GD.Print($"[clouds] density map '{path}' did not read");
+            return null;
+        }
+
+        return Engine_TexImage.TryCreateTexture(bytes, out _);
+    }
+}

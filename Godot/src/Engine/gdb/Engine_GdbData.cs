@@ -244,6 +244,161 @@ public sealed class GdbView
             ? count
             : 0;
 
+    public bool TryFindLocal(int index, uint fieldHash, int expectedType, out GdbField found)
+    {
+        found = default;
+        if (!TryFindLocalRaw(index, fieldHash, expectedType, out uint raw, out GdbFieldType type))
+        {
+            return false;
+        }
+
+        Names.TryGetValue(fieldHash, out string? name);
+        found = new GdbField(
+            fieldHash, type, raw, name ?? string.Empty, ResolveValueText(type, raw));
+        return true;
+    }
+
+    public bool TryFindLocalRaw(
+        int index, uint fieldHash, int expectedType, out uint raw, out GdbFieldType type)
+    {
+        raw = 0;
+        type = default;
+
+        if (index < 0 || index >= RecordCount)
+        {
+            return false;
+        }
+
+        int record = _recordOffsets[index];
+        if (!TryReadSchemaHeader(
+                _bytes, record, SchemaBase, HashBase, out int schemaOffset, out int fieldCount))
+        {
+            return false;
+        }
+
+        int hashes = schemaOffset + 4;
+        int descriptors = hashes + (fieldCount * 4);
+
+        for (int i = 0; i < fieldCount; i++)
+        {
+            if (ReadU32(_bytes, hashes + (i * 4)) != fieldHash)
+            {
+                continue;
+            }
+
+            var found = (GdbFieldType)(byte)(ReadU32(_bytes, descriptors + (i * 4)) >> 24);
+            if (expectedType >= 0 && (int)found != expectedType)
+            {
+                return false;
+            }
+
+            int slot = record + 4 + (i * 4);
+            if (slot + 4 > BodyEnd)
+            {
+                return false;
+            }
+
+            raw = ReadU32(_bytes, slot);
+            type = found;
+            return true;
+        }
+
+        return false;
+    }
+
+    public uint ReadU32At(int at) =>
+        at >= 0 && at + 4 <= _bytes.Length ? ReadU32(_bytes, at) : 0u;
+
+    public float ReadF32At(int at) =>
+        BitConverter.Int32BitsToSingle(unchecked((int)ReadU32At(at)));
+
+    public bool TryPayloadRange(int index, out int start, out int end)
+    {
+        start = 0;
+        end = 0;
+
+        if (index < 0 || index >= RecordCount)
+        {
+            return false;
+        }
+
+        int record = _recordOffsets[index];
+        if (!TryReadSchemaHeader(
+                _bytes, record, SchemaBase, HashBase, out _, out int fieldCount))
+        {
+            return false;
+        }
+
+        start = record + 4 + (fieldCount * 4);
+        if (start > BodyEnd)
+        {
+            return false;
+        }
+
+        end = index + 1 < RecordCount ? _recordOffsets[index + 1] : BodyEnd;
+        end = Math.Min(end, start + 0x200);
+        return start + 4 <= end;
+    }
+
+    public bool TryFindFieldOwner(
+        int index, uint fieldHash, int expectedType, out GdbField found, out int owner)
+    {
+        found = default;
+        owner = -1;
+
+        int current = index;
+        for (int depth = 0; depth < 64; depth++)
+        {
+            if (TryFindLocal(current, fieldHash, expectedType, out found))
+            {
+                owner = current;
+                return true;
+            }
+
+            if (!TryFindLocal(current, HashParent, 6, out GdbField parent) || parent.Raw == 0)
+            {
+                return false;
+            }
+
+            if (!TryLookup(parent.Raw, out int parentIndex) || parentIndex == current)
+            {
+                return false;
+            }
+
+            current = parentIndex;
+        }
+
+        return false;
+    }
+
+    public bool TryReadVec3Record(int index, out float x, out float y, out float z)
+    {
+        x = 0f;
+        y = 0f;
+        z = 0f;
+
+        if (!TryFindLocalRaw(index, HashVecX, (int)GdbFieldType.Float, out uint rx, out _) ||
+            !TryFindLocalRaw(index, HashVecY, (int)GdbFieldType.Float, out uint ry, out _) ||
+            !TryFindLocalRaw(index, HashVecZ, (int)GdbFieldType.Float, out uint rz, out _))
+        {
+            return false;
+        }
+
+        x = BitConverter.Int32BitsToSingle(unchecked((int)rx));
+        y = BitConverter.Int32BitsToSingle(unchecked((int)ry));
+        z = BitConverter.Int32BitsToSingle(unchecked((int)rz));
+
+        return float.IsFinite(x) && float.IsFinite(y) && float.IsFinite(z);
+    }
+
+    public bool TryReadVec3Ref(uint hash, out float x, out float y, out float z)
+    {
+        x = 0f;
+        y = 0f;
+        z = 0f;
+        return TryLookup(hash, out int index) && TryReadVec3Record(index, out x, out y, out z);
+    }
+
     private static bool TryReadSchemaHeader(
         byte[] bytes, int record, int schemaBase, int hashBase,
         out int schemaOffset, out int fieldCount)

@@ -11,15 +11,8 @@ public enum TexSurfaceFormat
 	Bc3,
 	Bc4,
 
-    /// <summary>
-    /// Two-channel DXN/BC5, which Fable 2 uses for every tangent-space normal map. Its
-    /// block is a BC4 red half followed by a BC4 green half, so it has DXT5's 16-byte
-    /// stride and NONE of its meaning: read as DXT5 the green half is interpreted as a
-    /// BC1 colour block and the surface comes out as noise.
-    /// </summary>
     Bc5,
 
-    /// <summary>Uncompressed 32-bit, already swizzled to Godot's channel order.</summary>
 	Rgba8,
 }
 
@@ -171,11 +164,6 @@ public static class Engine_TexData
 
 	public static bool TryDecode(byte[] d, out TexSurface surface, out string error)
 	{
-        // Most .tex files open with an 84-byte header, not a mip chain. Read it first:
-        // it is the authority on format, dimensions and container, none of which the
-        // payload can be trusted for. Sniffing the payload instead reads a DXT5 surface
-        // as BC1 — plausible-looking and stripped of its alpha — and rejects outright
-        // every file whose bytes do not begin with a record.
 		if (TexHeader.TryParse(d, out TexHeader header, out _))
 		{
 			return TryDecodeWithHeader(d, header, out surface, out error);
@@ -189,21 +177,6 @@ public static class Engine_TexData
 		return TryDecodeSingle(d, out surface, out error);
 	}
 
-    /// <summary>
-    /// Decodes levels 1..n and appends them to the already-decoded level 0.
-    ///
-    /// Without a chain a texture uploads with no mipmaps, and the GPU then samples a
-    /// full-resolution surface for a handful of pixels whenever the model is far away. The
-    /// result is aliasing that looks convincingly like a broken decoder — the Crucible
-    /// arena sparkled all over at a distance and was pin-sharp up close, which is the
-    /// signature of missing mips rather than bad blocks.
-    ///
-    /// Returns however many levels the FILE holds, which for Fable 2 is usually short of
-    /// 1x1. Levels must still be contiguous and correctly sized: Godot derives each one
-    /// arithmetically from the base dimensions, so a chain that skips a level or disagrees
-    /// about a size desynchronises every level after it. A gap therefore fails the whole
-    /// chain rather than returning a prefix.
-    /// </summary>
 	private static bool TryDecodeMipChain(
 		byte[] d, TexHeader header, byte[] level0, out byte[] chain, out int levels)
 	{
@@ -216,17 +189,6 @@ public static class Engine_TexData
 			return false;
 		}
 
-        // A SHORT chain is returned as-is, with MipLevels saying how short.
-        //
-        // Godot sizes a mipmapped surface by deriving every level from the base dimensions
-        // down to 1x1; it does not read a level count from us, so it rejects a short chain
-        // outright (128x128 DXT1 stopping at 16x16 is 10,880 bytes against the 10,936 it
-        // computes). 95% of Fable 2's textures are short, so refusing them here is refusing
-        // mipmaps for the whole game.
-        //
-        // Completing the chain is Engine_TexImage's job, not this one: the tail has to be
-        // downsampled and re-encoded, which needs Godot's Image, and this decoder's
-        // contract is bytes and formats.
 		var parts = new List<byte[]>(available) { level0 };
 		int width = header.Width;
 		int height = header.Height;
@@ -269,11 +231,6 @@ public static class Engine_TexData
 		return true;
 	}
 
-    /// <summary>
-    /// Decodes a file that carries a <see cref="TexHeader"/>, dispatching on the
-    /// container the header names and falling back to the chain decoders for the ones
-    /// that do hold a mip chain after the header.
-    /// </summary>
 	private static bool TryDecodeWithHeader(byte[] d, TexHeader header,
 		out TexSurface surface, out string error)
 	{
@@ -285,9 +242,6 @@ public static class Engine_TexData
 			return TryDecodeRawSurface(d, header, out surface, out error);
 		}
 
-        // Level 0's PLANE RECORD, located by the header. This is the correct read: the
-        // payload is one 48-byte record per level, not a chain, and only a record read
-        // recovers the second plane of a two-plane family.
         int recordOffset = header.LevelOffsets[0] > 0 ? header.LevelOffsets[0] : TexHeader.Size;
         if (recordOffset < 0 || recordOffset >= d.Length)
         {
@@ -297,9 +251,6 @@ public static class Engine_TexData
 
         if (Engine_TexPlanes.TryDecodeLevel(d, recordOffset, header, out byte[] blocks, out string planeError))
         {
-            // Stride alone cannot name the format: codecs 1, 2 and 3 all pack two planes
-            // into 16 bytes, but codec 3 is DXN and the other two are DXT2/3/5. Labelling
-            // all three Bc3 hands Godot a BC5 surface to decode as DXT5.
             TexSurfaceFormat format = header.BlockStride == 16
                 ? (header.CodecId == 3 ? TexSurfaceFormat.Bc5 : TexSurfaceFormat.Bc3)
                 : header.SurfaceFormat;
@@ -327,9 +278,6 @@ public static class Engine_TexData
             return true;
         }
 
-        // Fall back to the chain sniffer for anything the record path cannot decode —
-        // an unported plane codec, or a file whose payload really is chain-shaped. It
-        // returns a colour-only surface, which is still better than nothing.
         var payload = new byte[d.Length - recordOffset];
         Buffer.BlockCopy(d, recordOffset, payload, 0, payload.Length);
 
@@ -340,15 +288,6 @@ public static class Engine_TexData
             return false;
         }
 
-        // The header names the ORIGINAL surface format; the chain decoders report what
-        // they actually produced. Those differ whenever a family is only partly ported —
-        // a DXT5 file whose colour plane decodes to BC1 blocks is BC1-shaped data with a
-        // Bc3 label, and relabelling it makes Image.CreateFromData reject the buffer for
-        // being half the size it expects.
-        //
-        // So the header only wins when the byte count agrees with it. That keeps the
-        // authoritative format where it is safe — which is what recovers alpha — and
-        // leaves a partly-decoded surface honestly labelled.
         TexSurfaceFormat declared = header.SurfaceFormat;
         if (declared != TexSurfaceFormat.Unsupported &&
             declared != surface.Format &&
@@ -367,10 +306,6 @@ public static class Engine_TexData
         return true;
     }
 
-    /// <summary>
-    /// True when a surface's byte count is consistent with a format, counting the top
-    /// level only — a mipped surface carries more, never less.
-    /// </summary>
 	private static bool Fits(TexSurface surface, TexSurfaceFormat format)
 	{
 		int stride = format is TexSurfaceFormat.Bc3 or TexSurfaceFormat.Bc5 ? 16 : 8;
@@ -379,11 +314,6 @@ public static class Engine_TexData
 		return surface.Data.Length >= blocksW * blocksH * stride;
 	}
 
-    /// <summary>
-    /// The <c>flags &amp; 0x02</c> container: the payload is exactly what the Xbox 360's
-    /// GPU was handed — word-swapped for the big-endian bus and TILED — after a u32 byte
-    /// count. Both have to be undone; untiled it is noise.
-    /// </summary>
     private static bool TryDecodeRawSurface(byte[] d, TexHeader header,
         out TexSurface surface, out string error)
     {
@@ -398,7 +328,6 @@ public static class Engine_TexData
             return false;
         }
 
-        // A u32 count precedes the surface, immediately after the header.
         int at = TexHeader.Size;
         if (at + 4 > d.Length)
         {
@@ -416,13 +345,10 @@ public static class Engine_TexData
         var payload = new byte[count];
         Buffer.BlockCopy(d, at, payload, 0, count);
 
-        // Blocks for a compressed format, pixels for an uncompressed one.
         bool blockCompressed = blockBytes >= 8;
         int unitsWide = blockCompressed ? header.BlocksWide : header.Width;
         int unitsHigh = blockCompressed ? header.BlocksHigh : header.Height;
 
-        // Endianness is per unit width: a compressed block is a stream of 16-bit fields,
-        // an A8R8G8B8 pixel is one 32-bit word.
         if (blockCompressed)
         {
             Engine_Xbox360Tiling.SwapWords16(payload);
@@ -434,7 +360,6 @@ public static class Engine_TexData
 
         byte[] data = Engine_Xbox360Tiling.Untile(payload, unitsWide, unitsHigh, blockBytes);
 
-        // A8R8G8B8 is ARGB in memory; Godot's Rgba8 wants RGBA.
 		if (format == TexSurfaceFormat.Rgba8)
 		{
 			SwizzleArgbToRgba(data, header.PixelFormat == (int)TexPixelFormat.X8R8G8B8);
@@ -451,11 +376,6 @@ public static class Engine_TexData
 		return true;
 	}
 
-    /// <summary>
-    /// Rotates ARGB bytes into RGBA order in place. <paramref name="opaque"/> forces
-    /// alpha to 255 for the X8 variant, whose alpha byte is undefined rather than 0 —
-    /// trusting it there makes the whole surface invisible.
-    /// </summary>
 	private static void SwizzleArgbToRgba(byte[] data, bool opaque)
 	{
 		for (int i = 0; i + 3 < data.Length; i += 4)
