@@ -306,6 +306,38 @@ public sealed class GdbView
         return false;
     }
 
+    public IEnumerable<(uint Hash, GdbFieldType Type, uint Raw)> RawFields(int index)
+    {
+        if (index < 0 || index >= RecordCount)
+        {
+            yield break;
+        }
+
+        int record = _recordOffsets[index];
+        if (!TryReadSchemaHeader(
+                _bytes, record, SchemaBase, HashBase, out int schemaOffset, out int fieldCount))
+        {
+            yield break;
+        }
+
+        int hashes = schemaOffset + 4;
+        int descriptors = hashes + (fieldCount * 4);
+
+        for (int i = 0; i < fieldCount; i++)
+        {
+            int slot = record + 4 + (i * 4);
+            if (slot + 4 > BodyEnd)
+            {
+                yield break;
+            }
+
+            yield return (
+                ReadU32(_bytes, hashes + (i * 4)),
+                (GdbFieldType)(byte)(ReadU32(_bytes, descriptors + (i * 4)) >> 24),
+                ReadU32(_bytes, slot));
+        }
+    }
+
     public uint ReadU32At(int at) =>
         at >= 0 && at + 4 <= _bytes.Length ? ReadU32(_bytes, at) : 0u;
 

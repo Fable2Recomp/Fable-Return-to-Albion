@@ -15,7 +15,7 @@ public partial class Engine_PropStreamer : Node3D
 
     private static readonly List<Engine_PropStreamer> Live = new();
 
-    private readonly List<MultiMeshInstance3D> _pending = new();
+    private readonly List<GeometryInstance3D> _pending = new();
 
     private readonly Stopwatch _watch = new();
 
@@ -81,17 +81,22 @@ public partial class Engine_PropStreamer : Node3D
 
         foreach (Node child in GetChildren())
         {
-            if (child is MultiMeshInstance3D instance &&
-                instance.Multimesh is not null &&
-                instance.Multimesh.Mesh is null &&
-                instance.HasMeta(ModelPathMeta))
+            if (child is MultiMeshInstance3D multi &&
+                multi.Multimesh is not null &&
+                multi.Multimesh.Mesh is null &&
+                multi.HasMeta(ModelPathMeta))
             {
-                _pending.Add(instance);
+                _pending.Add(multi);
+            }
+            else if (child is MeshInstance3D single &&
+                single.Mesh is null &&
+                single.HasMeta(ModelPathMeta))
+            {
+                _pending.Add(single);
             }
         }
 
-        _pending.Sort((a, b) =>
-            b.Multimesh.InstanceCount.CompareTo(a.Multimesh.InstanceCount));
+        _pending.Sort((a, b) => InstanceCount(b).CompareTo(InstanceCount(a)));
 
         SetProcess(_pending.Count != 0);
         PublishProgress();
@@ -114,7 +119,7 @@ public partial class Engine_PropStreamer : Node3D
 
         while (_cursor < _pending.Count)
         {
-            MultiMeshInstance3D instance = _pending[_cursor++];
+            GeometryInstance3D instance = _pending[_cursor++];
             Step(instance);
 
             if (_watch.Elapsed.TotalMilliseconds >= MillisecondsPerFrame)
@@ -135,13 +140,18 @@ public partial class Engine_PropStreamer : Node3D
         }
     }
 
-    private void Step(MultiMeshInstance3D instance)
+    private static int InstanceCount(GeometryInstance3D instance) =>
+        instance is MultiMeshInstance3D multi && multi.Multimesh is not null
+            ? multi.Multimesh.InstanceCount
+            : 1;
+
+    private void Step(GeometryInstance3D instance)
     {
         string path = string.Empty;
 
         try
         {
-            if (!GodotObject.IsInstanceValid(instance) || instance.Multimesh is null)
+            if (!GodotObject.IsInstanceValid(instance))
             {
                 return;
             }
@@ -160,13 +170,20 @@ public partial class Engine_PropStreamer : Node3D
                 return;
             }
 
-            instance.Multimesh.Mesh = mesh;
-
-            Aabb local = mesh.GetAabb();
-            float reach = MathF.Max(local.Position.Length(), local.End.Length());
-            if (float.IsFinite(reach) && reach > Engine_LevelProps.ModelReach)
+            if (instance is MultiMeshInstance3D multi && multi.Multimesh is not null)
             {
-                instance.Multimesh.CustomAabb = instance.Multimesh.CustomAabb.Grow(reach);
+                multi.Multimesh.Mesh = mesh;
+
+                Aabb local = mesh.GetAabb();
+                float reach = MathF.Max(local.Position.Length(), local.End.Length());
+                if (float.IsFinite(reach) && reach > Engine_LevelProps.ModelReach)
+                {
+                    multi.Multimesh.CustomAabb = multi.Multimesh.CustomAabb.Grow(reach);
+                }
+            }
+            else if (instance is MeshInstance3D single)
+            {
+                single.Mesh = mesh;
             }
 
             _loaded++;

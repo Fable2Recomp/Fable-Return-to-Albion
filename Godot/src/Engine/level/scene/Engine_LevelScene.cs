@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using Refii.Lighting;
 
 namespace Refii.Level;
 
@@ -116,10 +117,72 @@ public static class Engine_LevelScene
 
         AddWater(level, source, findByName, root);
 
+        LightmapContainer? bakedLightmaps = null;
+        LightProbeField? probeField = null;
+        if (source is not null)
+        {
+            Engine_LevelGdb.TryRead(level, p => source(p), out string bakedGdbPath);
+            Engine_LevelBakedLighting.TryLoad(
+                bakedGdbPath, p => source(p), out bakedLightmaps, out probeField);
+
+            GD.Print(
+                $"[baked] {level}: {Engine_LevelBakedLighting.Describe(bakedLightmaps, probeField)}");
+
+            if (bakedLightmaps is not null &&
+                terrainNode.MaterialOverride is ShaderMaterial terrainSplat &&
+                Engine_LevelBakedLighting.TryPickTerrainLightmap(
+                    bakedLightmaps, out ulong terrainKey, out byte[] terrainBlob))
+            {
+                ImageTexture? lightmapTexture = Engine_LevelBakedLighting.DecodeTexture(terrainBlob);
+                if (lightmapTexture is not null)
+                {
+                    terrainSplat.SetShaderParameter("lightmap", lightmapTexture);
+                    GD.Print($"[baked] {level}: terrain lightmap 0x{terrainKey:X16} applied");
+                }
+            }
+        }
+
+        LightingFrame? lightingFrame = null;
+        SkyTheme? resolvedSkyTheme = null;
+        SkyFrame? resolvedSkyFrame = null;
+        if (source is not null)
+        {
+            List<byte[]> lightingGdbs =
+                Engine_SkyEnvironment.BuildGdbChain(level, p => source(p));
+            if (lightingGdbs.Count != 0 &&
+                Engine_EnvironmentTheme.TryExtractSky(lightingGdbs, out SkyTheme lightingSky))
+            {
+                float lightingTod =
+                    lightingSky.SourceTimeOfDay >= 0f ? lightingSky.SourceTimeOfDay : 0.5f;
+                string? forcedLightingTod =
+                    System.Environment.GetEnvironmentVariable("REFII_FORCE_TOD");
+                if (forcedLightingTod is not null &&
+                    float.TryParse(
+                        forcedLightingTod, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out float forcedLighting))
+                {
+                    lightingTod = forcedLighting;
+                }
+
+                SkyFrame lightingSkyFrame = Engine_SkyFrame.Evaluate(lightingSky, lightingTod);
+                resolvedSkyTheme = lightingSky;
+                resolvedSkyFrame = lightingSkyFrame;
+
+                if (Engine_LightingTheme.TryExtract(
+                        lightingGdbs, lightingTod, out LightingTheme lightingTheme))
+                {
+                    lightingFrame = Engine_LightingFrame.Evaluate(
+                        lightingSky, lightingTheme, lightingSkyFrame);
+                }
+            }
+        }
+
         if (source is not null)
         {
             Node3D? props = Engine_LevelProps.Build(
-                level, p => source(p), out PropBuildStats propStats);
+                level, p => source(p), probeField, lightingFrame,
+                out PropBuildStats propStats);
 
             if (props is not null)
             {
@@ -132,6 +195,22 @@ public static class Engine_LevelScene
             }
 
             GD.Print($"[props] {level}: {propStats}");
+
+            Node3D? entities = Refii.Entities.Engine_LevelEntities.Build(
+                level, p => source(p), probeField, lightingFrame,
+                out Refii.Entities.EntityPlaceStats entityStats);
+
+            if (entities is not null)
+            {
+                root.AddChild(entities);
+                entities.Owner = root;
+                foreach (Node child in entities.GetChildren())
+                {
+                    child.Owner = root;
+                }
+            }
+
+            GD.Print($"[entities] {level}: {entityStats}");
         }
 
         if (source is not null)
@@ -161,11 +240,37 @@ public static class Engine_LevelScene
             }
 
             List<byte[]> gdbs = Engine_SkyEnvironment.BuildGdbChain(level, p => source(p));
-            if (gdbs.Count != 0 &&
-                Engine_EnvironmentTheme.TryExtractSky(gdbs, out SkyTheme skyTheme))
+            if (resolvedSkyTheme is not null && resolvedSkyFrame is not null)
             {
-                SkyFrame frame = Engine_SkyFrame.Evaluate(
-                    skyTheme, skyTheme.SourceTimeOfDay >= 0f ? skyTheme.SourceTimeOfDay : 0.5f);
+                SkyTheme skyTheme = resolvedSkyTheme;
+                SkyFrame frame = resolvedSkyFrame;
+
+                if (lightingFrame is not null)
+                {
+                    DirectionalLight3D sun = Engine_LevelLighting.BuildSun(lightingFrame);
+                    root.AddChild(sun);
+                    sun.Owner = root;
+
+                    if (sky is not null)
+                    {
+                        Engine_LevelLighting.ConfigureEnvironment(sky.Environment, lightingFrame);
+                    }
+
+                    if (sky is Engine_SkyEnvironmentNode skyNode)
+                    {
+                        skyNode.LightingGdbs.AddRange(gdbs);
+                        skyNode.Sun = sun;
+                    }
+
+                    GD.Print(
+                        $"[lighting] {level}: tod={frame.TimeOfDay:0.##} " +
+                        $"sun=({lightingFrame.SunColour[0]:0.00}," +
+                        $"{lightingFrame.SunColour[1]:0.00}," +
+                        $"{lightingFrame.SunColour[2]:0.00})x{lightingFrame.SunEnergy:0.00} " +
+                        $"shadow={lightingFrame.SunShadow} " +
+                        $"ambient={(lightingFrame.HasAmbient ? lightingFrame.AmbientEnergy.ToString("0.00") : "probes")} " +
+                        $"fog={(lightingFrame.HasFog ? $"{lightingFrame.FogBegin:0}->{lightingFrame.FogEnd:0}" : "off")}");
+                }
 
                 Node3D? celestial = Engine_CelestialElements.Build(
                     skyTheme, frame, p => source(p));

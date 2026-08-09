@@ -290,11 +290,21 @@ public static class Engine_EnvironmentTheme
 {
     private readonly record struct RecordRef(int Db, int Index, bool Valid);
 
-    public static bool TryExtractSky(IReadOnlyList<byte[]> gdbs, out SkyTheme theme)
+    public static bool TryExtractSky(IReadOnlyList<byte[]> gdbs, out SkyTheme theme) =>
+        TryExtractSky(gdbs, 0.5f, out theme);
+
+    public static bool TryExtractSky(
+        IReadOnlyList<byte[]> gdbs, float targetTime, out SkyTheme theme)
     {
         theme = new SkyTheme();
         var extractor = Extractor.Create(gdbs);
-        return extractor is not null && extractor.ExtractSky(theme);
+        if (extractor is null)
+        {
+            return false;
+        }
+
+        extractor.TargetTime = targetTime;
+        return extractor.ExtractSky(theme);
     }
 
     public static bool TryExtractWeather(IReadOnlyList<byte[]> gdbs, out WeatherTheme theme)
@@ -314,6 +324,8 @@ public static class Engine_EnvironmentTheme
     private sealed class Extractor
     {
         private readonly List<GdbView> _views = new();
+
+        public float TargetTime { get; set; } = 0.5f;
 
         public static Extractor? Create(IReadOnlyList<byte[]> gdbs)
         {
@@ -877,10 +889,11 @@ public static class Engine_EnvironmentTheme
                 float time = 0.5f;
                 if (ReadFloat(entry, EnvHash.TimeOfDay, out float readTime))
                 {
-                    time = readTime;
+                    time = NormalizeTimeOfDay(readTime);
                 }
 
-                float distance = Math.Abs(time - 0.5f);
+                float distance = Math.Abs(time - TargetTime);
+                distance = MathF.Min(distance, 1.0f - distance);
                 if (!found || distance < bestDistance)
                 {
                     bestDistance = distance;
@@ -891,6 +904,27 @@ public static class Engine_EnvironmentTheme
             }
 
             return found;
+        }
+
+        internal static float NormalizeTimeOfDay(float time)
+        {
+            if (!float.IsFinite(time))
+            {
+                return 0.5f;
+            }
+
+            if (time > 1.0f && time <= 24.0f)
+            {
+                time *= 1.0f / 24.0f;
+            }
+
+            time -= MathF.Floor(time);
+            if (time < 0.0f)
+            {
+                time += 1.0f;
+            }
+
+            return time;
         }
 
         private RecordRef FindDaySet(bool levelOnly)

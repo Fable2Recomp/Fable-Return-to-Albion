@@ -1,0 +1,431 @@
+using System;
+using Godot;
+
+namespace Refii.Lighting;
+
+public struct ProbeSample
+{
+    public Vector4 R;
+    public Vector4 G;
+    public Vector4 B;
+}
+
+public sealed class LightProbeField
+{
+    public const float DistanceEpsilon = 9.9999997e-6f;
+
+    public const float ShL0Basis = 0.28209481f;
+
+    public Vector3 Origin { get; set; }
+
+    public Vector3 BoundsSize { get; set; }
+
+    public Vector3 CellExtent { get; set; }
+
+    public int DimX { get; set; }
+
+    public int DimY { get; set; }
+
+    public int DimZ { get; set; }
+
+    public int MaxInternalDepth { get; set; }
+
+    public int ShBands { get; set; }
+
+    public int[] RootPairKeys { get; set; } = Array.Empty<int>();
+
+    public int[] RootPairIds { get; set; } = Array.Empty<int>();
+
+    public uint[] RootLevelStart { get; set; } = Array.Empty<uint>();
+
+    public uint[] LevelOffsets { get; set; } = Array.Empty<uint>();
+
+    public uint[] RootNodeStart { get; set; } = Array.Empty<uint>();
+
+    public short[] NodeDescriptors { get; set; } = Array.Empty<short>();
+
+    public uint[] RootLeafStart { get; set; } = Array.Empty<uint>();
+
+    public byte[] Leaves { get; set; } = Array.Empty<byte>();
+
+    public Vector3[][] Banks { get; set; } = { Array.Empty<Vector3>(), Array.Empty<Vector3>(), Array.Empty<Vector3>(), Array.Empty<Vector3>() };
+
+    public bool HasData =>
+        RootPairKeys.Length > 0 && Banks.Length == 4 && Banks[0].Length > 0 &&
+        DimX > 0 && DimY > 0 && DimZ > 0;
+
+    public ProbeSample Sample(Vector3 world)
+    {
+        var sample = new ProbeSample();
+        if (!HasData)
+        {
+            return sample;
+        }
+
+        float cellX = CellExtent.X * 32f;
+        float cellY = CellExtent.Y * 32f;
+        float cellZ = CellExtent.Z * 32f;
+        if (cellX <= 0f || cellY <= 0f || cellZ <= 0f)
+        {
+            return sample;
+        }
+
+        int cx = Clamp((int)MathF.Floor((world.X - Origin.X) / cellX), DimX);
+        int cy = Clamp((int)MathF.Floor((world.Y - Origin.Y) / cellY), DimY);
+        int cz = Clamp((int)MathF.Floor((world.Z - Origin.Z) / cellZ), DimZ);
+
+        int key = cx + (DimX * cy) + (DimX * DimY * cz);
+
+        int root = FindRoot(key);
+        if (root < 0)
+        {
+            return sample;
+        }
+
+        var mins = new int[] { 0, 0, 0 };
+        var maxs = new int[] { 32, 32, 32 };
+        Descend(world, cx, cy, cz, root, 0, mins, maxs, 0, ref sample);
+        return sample;
+    }
+
+    public Color AmbientAt(Vector3 world, out float energy)
+    {
+        ProbeSample s = Sample(world);
+        float r = MathF.Max(s.R.X * ShL0Basis, 0f);
+        float g = MathF.Max(s.G.X * ShL0Basis, 0f);
+        float b = MathF.Max(s.B.X * ShL0Basis, 0f);
+        float m = MathF.Max(MathF.Max(r, g), b);
+
+        if (m <= 1e-4f)
+        {
+            energy = 0f;
+            return new Color(0f, 0f, 0f);
+        }
+
+        energy = MathF.Min(m, 16f);
+        return new Color(
+            Math.Clamp(r / m, 0f, 1f),
+            Math.Clamp(g / m, 0f, 1f),
+            Math.Clamp(b / m, 0f, 1f));
+    }
+
+    private void Descend(
+        Vector3 p, int cx, int cy, int cz, int root, int depth,
+        int[] mins, int[] maxs, int selector, ref ProbeSample sample)
+    {
+        long descIndex = RootNodeStart[root] + selector;
+        if (descIndex < 0 || descIndex >= NodeDescriptors.Length)
+        {
+            return;
+        }
+
+        short desc = NodeDescriptors[descIndex];
+
+        if (desc >= 0)
+        {
+            Vector3 a = CornerWorld(cx, cy, cz, mins[0], mins[1], mins[2]);
+            Vector3 b = CornerWorld(cx, cy, cz, maxs[0], maxs[1], maxs[2]);
+            Vector3 half = (b - a) * 0.5f;
+
+            int octant =
+                (p.X >= a.X + half.X ? 1 : 0) |
+                (p.Y >= a.Y + half.Y ? 2 : 0) |
+                (p.Z >= a.Z + half.Z ? 4 : 0);
+
+            var nextMin = new int[] { mins[0], mins[1], mins[2] };
+            var nextMax = new int[] { maxs[0], maxs[1], maxs[2] };
+            int hx = (maxs[0] - mins[0]) >> 1;
+            int hy = (maxs[1] - mins[1]) >> 1;
+            int hz = (maxs[2] - mins[2]) >> 1;
+
+            if ((octant & 1) != 0) nextMin[0] += hx; else nextMax[0] = mins[0] + hx;
+            if ((octant & 2) != 0) nextMin[1] += hy; else nextMax[1] = mins[1] + hy;
+            if ((octant & 4) != 0) nextMin[2] += hz; else nextMax[2] = mins[2] + hz;
+
+            long levelIndex = RootLevelStart[root] + depth;
+            if (levelIndex < 0 || levelIndex >= LevelOffsets.Length)
+            {
+                return;
+            }
+
+            int next = (int)LevelOffsets[levelIndex] + desc + octant;
+            Descend(p, cx, cy, cz, root, depth + 1, nextMin, nextMax, next, ref sample);
+            return;
+        }
+
+        long leafIndex = (long)RootLeafStart[root] - desc - 1;
+        long leafByte = leafIndex * 32;
+        if (leafIndex < 0 || leafByte + 32 > Leaves.Length)
+        {
+            return;
+        }
+
+        var accR = new float[4];
+        var accG = new float[4];
+        var accB = new float[4];
+        float weightSum = 0f;
+
+        for (int corner = 0; corner < 8; corner++)
+        {
+            int lx = (corner & 1) != 0 ? maxs[0] : mins[0];
+            int ly = (corner & 2) != 0 ? maxs[1] : mins[1];
+            int lz = (corner & 4) != 0 ? maxs[2] : mins[2];
+
+            Vector3 cornerWorld = CornerWorld(cx, cy, cz, lx, ly, lz);
+            Vector3 d = cornerWorld - p;
+            float d2 = (d.X * d.X) + (d.Y * d.Y) + (d.Z * d.Z);
+            float w = 1f / MathF.Max(DistanceEpsilon, d2 * d2);
+
+            for (int j = 0; j < 4; j++)
+            {
+                byte idx = Leaves[leafByte + (corner * 4) + j];
+                Vector3[] bank = Banks[j];
+                if (idx >= bank.Length)
+                {
+                    continue;
+                }
+
+                Vector3 rgb = bank[idx];
+                accR[j] += w * rgb.X;
+                accG[j] += w * rgb.Y;
+                accB[j] += w * rgb.Z;
+            }
+
+            weightSum += w;
+        }
+
+        if (weightSum <= 0f)
+        {
+            return;
+        }
+
+        float inv = 1f / weightSum;
+        sample.R = new Vector4(accR[0] * inv, accR[1] * inv, accR[2] * inv, accR[3] * inv);
+        sample.G = new Vector4(accG[0] * inv, accG[1] * inv, accG[2] * inv, accG[3] * inv);
+        sample.B = new Vector4(accB[0] * inv, accB[1] * inv, accB[2] * inv, accB[3] * inv);
+    }
+
+    private Vector3 CornerWorld(int cx, int cy, int cz, int lx, int ly, int lz) =>
+        new(
+            Origin.X + (CellExtent.X * ((32 * cx) + lx)),
+            Origin.Y + (CellExtent.Y * ((32 * cy) + ly)),
+            Origin.Z + (CellExtent.Z * ((32 * cz) + lz)));
+
+    private int FindRoot(int key)
+    {
+        int lo = 0;
+        int hi = RootPairKeys.Length;
+        while (lo < hi)
+        {
+            int mid = lo + ((hi - lo) / 2);
+            if (RootPairKeys[mid] < key)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+
+        if (lo >= RootPairKeys.Length || RootPairKeys[lo] != key)
+        {
+            return -1;
+        }
+
+        int root = RootPairIds[lo];
+        return root >= 0 && root < RootNodeStart.Length ? root : -1;
+    }
+
+    private static int Clamp(int value, int dim)
+    {
+        if (value < 0)
+        {
+            return 0;
+        }
+
+        return value >= dim ? dim - 1 : value;
+    }
+}
+
+public static class Engine_LightProbeField
+{
+    public static bool TryParse(byte[] bytes, out LightProbeField field, out string error)
+    {
+        field = new LightProbeField();
+        error = string.Empty;
+
+        var reader = new BeReader(bytes);
+
+        if (!ReadVec3(reader, out Vector3 origin) ||
+            !ReadVec3(reader, out Vector3 boundsSize) ||
+            !ReadVec3(reader, out Vector3 cellExtent))
+        {
+            error = "truncated reading lattice header";
+            return false;
+        }
+
+        field.Origin = origin;
+        field.BoundsSize = boundsSize;
+        field.CellExtent = cellExtent;
+
+        if (!reader.U32(out uint dimX) || !reader.U32(out uint dimY) || !reader.U32(out uint dimZ) ||
+            !reader.U32(out uint maxDepth) || !reader.U32(out uint shBands))
+        {
+            error = "truncated reading dims";
+            return false;
+        }
+
+        field.DimX = (int)dimX;
+        field.DimY = (int)dimY;
+        field.DimZ = (int)dimZ;
+        field.MaxInternalDepth = (int)maxDepth;
+        field.ShBands = (int)shBands;
+
+        if (!reader.U32(out uint rootCount))
+        {
+            error = "truncated reading root count";
+            return false;
+        }
+
+        var keys = new int[rootCount];
+        var ids = new int[rootCount];
+        for (uint i = 0; i < rootCount; i++)
+        {
+            if (!reader.U32(out uint keyRaw) || !reader.U32(out uint idRaw))
+            {
+                error = $"truncated root pair {i}";
+                return false;
+            }
+
+            keys[i] = unchecked((int)keyRaw);
+            ids[i] = unchecked((int)idRaw);
+        }
+
+        SortPairs(keys, ids);
+        field.RootPairKeys = keys;
+        field.RootPairIds = ids;
+
+        if (!reader.U32Array(rootCount, out uint[] rootLevelStart))
+        {
+            error = "truncated reading root level starts";
+            return false;
+        }
+
+        field.RootLevelStart = rootLevelStart;
+
+        if (!reader.U32(out uint levelCount) || !reader.U32Array(levelCount, out uint[] levelOffsets))
+        {
+            error = "truncated reading level offsets";
+            return false;
+        }
+
+        field.LevelOffsets = levelOffsets;
+
+        if (!reader.U32Array(rootCount, out uint[] rootNodeStart))
+        {
+            error = "truncated reading root node starts";
+            return false;
+        }
+
+        field.RootNodeStart = rootNodeStart;
+
+        if (!reader.U32(out uint nodeCount) || !ReadS16Array(reader, nodeCount, out short[] descriptors))
+        {
+            error = "truncated reading node descriptors";
+            return false;
+        }
+
+        field.NodeDescriptors = descriptors;
+
+        if (!reader.U32Array(rootCount, out uint[] rootLeafStart))
+        {
+            error = "truncated reading root leaf starts";
+            return false;
+        }
+
+        field.RootLeafStart = rootLeafStart;
+
+        if (!reader.U32(out uint leafCount) || !reader.Bytes(leafCount * 32, out byte[] leaves))
+        {
+            error = "truncated reading leaves";
+            return false;
+        }
+
+        field.Leaves = leaves;
+
+        var banks = new Vector3[4][];
+        for (int bank = 0; bank < 4; bank++)
+        {
+            if (!reader.U32(out uint entryCount))
+            {
+                error = $"truncated reading bank {bank} count";
+                return false;
+            }
+
+            var entries = new Vector3[entryCount];
+            for (uint j = 0; j < entryCount; j++)
+            {
+                if (!ReadVec3(reader, out Vector3 rgb))
+                {
+                    error = $"truncated bank {bank} entry {j}";
+                    return false;
+                }
+
+                entries[j] = rgb;
+            }
+
+            banks[bank] = entries;
+        }
+
+        field.Banks = banks;
+        return true;
+    }
+
+    private static bool ReadVec3(BeReader reader, out Vector3 value)
+    {
+        value = Vector3.Zero;
+        if (!ReadF32(reader, out float x) || !ReadF32(reader, out float y) || !ReadF32(reader, out float z))
+        {
+            return false;
+        }
+
+        value = new Vector3(x, y, z);
+        return true;
+    }
+
+    private static bool ReadF32(BeReader reader, out float value)
+    {
+        value = 0f;
+        if (!reader.U32(out uint raw))
+        {
+            return false;
+        }
+
+        value = BitConverter.Int32BitsToSingle(unchecked((int)raw));
+        return true;
+    }
+
+    private static bool ReadS16Array(BeReader reader, uint count, out short[] values)
+    {
+        values = Array.Empty<short>();
+        var result = new short[count];
+        for (uint i = 0; i < count; i++)
+        {
+            if (!reader.U16(out ushort raw))
+            {
+                return false;
+            }
+
+            result[i] = unchecked((short)raw);
+        }
+
+        values = result;
+        return true;
+    }
+
+    private static void SortPairs(int[] keys, int[] ids)
+    {
+        Array.Sort(keys, ids);
+    }
+}

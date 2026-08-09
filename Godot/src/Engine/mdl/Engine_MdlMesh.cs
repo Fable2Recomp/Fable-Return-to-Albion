@@ -94,7 +94,7 @@ public static class Engine_MdlMesh
                 mesh.SurfaceSetName(added, geo.Name);
             }
 
-            StandardMaterial3D? material = Engine_MdlMaterial.TryCreate(geo.Material);
+            Material? material = Engine_MdlMaterial.TryCreate(geo.Material);
             if (material is not null)
             {
                 mesh.SurfaceSetMaterial(added, material);

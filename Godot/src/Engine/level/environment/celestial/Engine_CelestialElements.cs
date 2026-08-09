@@ -217,6 +217,59 @@ public static class Engine_CelestialElements
         return container;
     }
 
+    public static void Update(Node3D container, SkyTheme theme, SkyFrame frame)
+    {
+        float[] element = ElementParams(theme);
+        AtmosphereState state = Engine_SkyAtmosphere.Compute(
+            Engine_SkyAtmosphere.FromFrame(frame, theme));
+        float[] sunTint = state.SunElementColour;
+
+        Vector3 sun = ToGodot(frame.SunDirection);
+        Vector3 moon = ToGodot(frame.MoonDirection);
+        bool day = frame.SunDirection[1] > -0.05f;
+        bool night = frame.SunDirection[1] < 0.05f;
+
+        foreach (Node child in container.GetChildren())
+        {
+            if (child is not MeshInstance3D mesh ||
+                mesh.MaterialOverride is not ShaderMaterial material)
+            {
+                continue;
+            }
+
+            switch (child.Name.ToString())
+            {
+                case "SunBeams":
+                    material.SetShaderParameter("element_dir", sun);
+                    material.SetShaderParameter("element_colour", new Vector4(
+                        sunTint[0] * element[13] * Exposure,
+                        sunTint[1] * element[13] * Exposure,
+                        sunTint[2] * element[13] * Exposure, 1f));
+                    mesh.Visible = day;
+                    break;
+                case "SunDisc":
+                    material.SetShaderParameter("element_dir", sun);
+                    mesh.Visible = day;
+                    break;
+                case "SunGlare":
+                    material.SetShaderParameter("element_dir", sun);
+                    material.SetShaderParameter("element_colour", new Vector4(
+                        sunTint[0] * element[14] * Exposure,
+                        sunTint[1] * element[14] * Exposure,
+                        sunTint[2] * element[14] * Exposure, 1f));
+                    mesh.Visible = day;
+                    break;
+                case "Moon":
+                case "MoonGlare":
+                    material.SetShaderParameter("element_dir", moon);
+                    break;
+                case "Stars":
+                    mesh.Visible = night;
+                    break;
+            }
+        }
+    }
+
     private static Vector3 ToGodot(float[] direction) =>
         new(-direction[0], direction[1], direction[2]);
 

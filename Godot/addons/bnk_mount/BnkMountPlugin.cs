@@ -16,6 +16,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private const string RootMeta = "__bnk_root__";
     private const string DatabaseRootMeta = "__bnk_database_root__";
     private const string LevelsRootMeta = "__bnk_levels_root__";
+    private const string EntitiesRootMeta = "__bnk_entities_root__";
     private const string LevelRegionPrefix = "lvlregion:";
     private const string LevelPrefix = "lvl:";
     private const string ContainerMeta = "__bnk_container__";
@@ -29,6 +30,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private Refii.Level.Engine_BnkTerrainLoader? _terrainLoader;
     private Refii.Level.Engine_BnkTerrainAlbedoLoader? _albedoLoader;
     private Refii.Level.Engine_BnkTerrainMaterialLoader? _terrainMaterialLoader;
+    private Refii.Entities.Engine_BnkEntityLoader? _entityLoader;
     private Dictionary<string, string>? _byFileName;
     private Tree? _tree;
     private TreeItem? _gameRoot;
@@ -292,6 +294,29 @@ public partial class BnkMountPlugin : EditorPlugin
         }
     }
 
+    private IEnumerable<string> EnumerateStreamingHints()
+    {
+        if (_filesystem is null)
+        {
+            yield break;
+        }
+
+        foreach (BnkFile file in _filesystem.EnumerateAllFiles())
+        {
+            if (!file.SourceArchiveName.Contains(
+                    "streaming", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (file.VirtualPath.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase) ||
+                file.VirtualPath.EndsWith(".mdl.gmd", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return file.VirtualPath;
+            }
+        }
+    }
+
     private IEnumerable<Refii.Level.PropModelAsset> EnumerateModelAssets()
     {
         if (_filesystem is null)
@@ -324,6 +349,14 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Level.Engine_BnkTerrainMaterialLoader.SetNameLookup(FindByFileName);
         Refii.Level.Engine_Clouds.SetTexturePathSource(EnumerateTexturePaths);
         Refii.Level.Engine_PropModelIndex.SetModelSource(EnumerateModelAssets);
+        Refii.Level.Engine_StreamingCandidates.SetHintSource(EnumerateStreamingHints);
+        Refii.Entities.Engine_EntityIndex.SetResolver(ResolveBytes);
+
+        if (_entityLoader is null)
+        {
+            _entityLoader = new Refii.Entities.Engine_BnkEntityLoader();
+            ResourceLoader.AddResourceFormatLoader(_entityLoader);
+        }
 
         if (_textureLoader is null)
         {
@@ -370,6 +403,14 @@ public partial class BnkMountPlugin : EditorPlugin
 
     private void RemoveLoaders()
     {
+        Refii.Entities.Engine_EntityIndex.SetResolver(null);
+
+        if (_entityLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_entityLoader);
+            _entityLoader = null;
+        }
+
         if (_textureLoader is not null)
         {
             ResourceLoader.RemoveResourceFormatLoader(_textureLoader);
@@ -476,6 +517,15 @@ public partial class BnkMountPlugin : EditorPlugin
         AddPlaceholder(tree, databases);
         databases.Collapsed = true;
 
+        TreeItem entities = tree.CreateItem(_gameRoot);
+        entities.SetText(0, "Entities");
+        entities.SetMetadata(0, EntitiesRootMeta);
+        entities.SetSelectable(0, false);
+        entities.SetIcon(0, GetFolderIcon());
+        entities.SetIconModulate(0, GameFolderColor);
+        AddPlaceholder(tree, entities);
+        entities.Collapsed = true;
+
         TreeItem levels = tree.CreateItem(_gameRoot);
         levels.SetText(0, "Levels");
         levels.SetMetadata(0, LevelsRootMeta);
@@ -551,6 +601,7 @@ public partial class BnkMountPlugin : EditorPlugin
         return meta == RootMeta ||
                meta == DatabaseRootMeta ||
                meta == LevelsRootMeta ||
+               meta == EntitiesRootMeta ||
                meta == ContainerMeta ||
                meta.StartsWith("bnk:", StringComparison.Ordinal) ||
                meta.StartsWith(LevelRegionPrefix, StringComparison.Ordinal) ||
@@ -576,6 +627,24 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         string virtualPath = meta[FilePrefix.Length..];
+
+        if (virtualPath.EndsWith(
+                Refii.Entities.Engine_EntityIndex.Extension,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            var entity = ResourceLoader.Load<Refii.Entities.Engine_EntityResource>(
+                meta, "ArrayMesh", ResourceLoader.CacheMode.Ignore);
+
+            if (entity is null)
+            {
+                GD.Print($"[entities] could not load {virtualPath}");
+                return;
+            }
+
+            EditorInterface.Singleton.InspectObject(entity);
+            return;
+        }
+
         if (_filesystem is null || !_filesystem.TryGetFile(virtualPath, out BnkFile file))
         {
             return;
@@ -734,6 +803,7 @@ public partial class BnkMountPlugin : EditorPlugin
         if (meta != RootMeta &&
             meta != DatabaseRootMeta &&
             meta != LevelsRootMeta &&
+            meta != EntitiesRootMeta &&
             !meta.StartsWith(LevelRegionPrefix, StringComparison.Ordinal) &&
             !meta.StartsWith("bnk:", StringComparison.Ordinal))
         {
@@ -783,6 +853,12 @@ public partial class BnkMountPlugin : EditorPlugin
                 continue;
             }
 
+            if (meta == EntitiesRootMeta)
+            {
+                PopulateEntities(item);
+                continue;
+            }
+
             if (meta.StartsWith(LevelRegionPrefix, StringComparison.Ordinal))
             {
                 PopulateRegionLevels(item, meta[LevelRegionPrefix.Length..]);
@@ -803,6 +879,28 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         return _levels ?? new List<Refii.Level.LevelEntry>();
+    }
+
+    private void PopulateEntities(TreeItem parent)
+    {
+        Tree? tree = ResolveTree();
+        if (tree is null)
+        {
+            return;
+        }
+
+        Texture2D? icon = GetFileIcon();
+        foreach (Refii.Gdb.EntityEntry entry in Refii.Entities.Engine_EntityIndex.Entries)
+        {
+            TreeItem item = tree.CreateItem(parent);
+            item.SetText(0, Refii.Entities.Engine_EntityIndex.FileNameOf(entry));
+            item.SetMetadata(
+                0, FilePrefix + Refii.Entities.Engine_EntityIndex.VirtualPathOf(entry));
+            if (icon is not null)
+            {
+                item.SetIcon(0, icon);
+            }
+        }
     }
 
     private void PopulateRegions(TreeItem parent)

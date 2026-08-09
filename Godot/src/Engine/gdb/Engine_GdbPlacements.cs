@@ -433,6 +433,32 @@ public static class Engine_GdbPlacements
         return Finite3(x, y, z);
     }
 
+    public static bool TryLookupModelPathHashes(
+        GdbView view, uint recordHash, out List<uint> hashes, out uint parentHash)
+    {
+        hashes = new List<uint>();
+        parentHash = 0;
+
+        if (recordHash == 0 || !view.TryLookup(recordHash, out int record))
+        {
+            return false;
+        }
+
+        if (view.TryFindLocalRaw(record, GdbView.HashParent, 6, out uint parent, out _))
+        {
+            parentHash = parent;
+        }
+
+        hashes = CollectModelPathHashes(view, record);
+        if (hashes.Count == 0 && parentHash != 0 &&
+            view.TryLookup(parentHash, out int parentRecord))
+        {
+            hashes = CollectModelPathHashes(view, parentRecord);
+        }
+
+        return hashes.Count != 0;
+    }
+
     public static List<uint> CollectModelPathHashes(GdbView view, int record)
     {
         var hashes = new List<uint>();

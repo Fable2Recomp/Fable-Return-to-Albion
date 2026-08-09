@@ -31,8 +31,13 @@ public static class Engine_TexImage
 		return levels;
 	}
 
-	public static Image? TryCreateImage(byte[] texBytes, out string error)
+	public static Image? TryCreateImage(byte[] texBytes, out string error) =>
+		TryCreateImage(texBytes, out _, out error);
+
+	public static Image? TryCreateImage(byte[] texBytes, out bool hasAlpha, out string error)
 	{
+		hasAlpha = false;
+
 		if (!Engine_TexData.TryDecode(texBytes, out TexSurface surface, out error))
 		{
 			return null;
@@ -42,6 +47,19 @@ public static class Engine_TexImage
 		{
 			error = "unsupported surface format";
 			return null;
+		}
+
+		hasAlpha = surface.Format is TexSurfaceFormat.Bc3 or TexSurfaceFormat.Rgba8;
+
+		if (surface.Format == TexSurfaceFormat.Bc1 &&
+			Bc1HasPunchThrough(surface.Data))
+		{
+			Image? punched = TryCreateBc1PunchThroughImage(surface);
+			if (punched is not null)
+			{
+				hasAlpha = true;
+				return punched;
+			}
 		}
 
 		Image.Format format = ToGodotFormat(surface.Format);
@@ -220,9 +238,186 @@ public static class Engine_TexImage
         return BlockBytesFor(surface.Width, surface.Height, surface.Format);
     }
 
-    public static ImageTexture? TryCreateTexture(byte[] texBytes, out string error)
+    public static ImageTexture? TryCreateTexture(byte[] texBytes, out string error) =>
+        TryCreateTexture(texBytes, out _, out error);
+
+    public static ImageTexture? TryCreateTexture(
+        byte[] texBytes, out bool hasAlpha, out string error)
     {
-        Image? image = TryCreateImage(texBytes, out error);
+        Image? image = TryCreateImage(texBytes, out hasAlpha, out error);
         return image is null ? null : ImageTexture.CreateFromImage(image);
+    }
+
+    public static bool Bc1HasPunchThrough(byte[] blocks)
+    {
+        for (int b = 0; b + 8 <= blocks.Length; b += 8)
+        {
+            ushort c0 = (ushort)(blocks[b] | (blocks[b + 1] << 8));
+            ushort c1 = (ushort)(blocks[b + 2] | (blocks[b + 3] << 8));
+            if (c0 > c1)
+            {
+                continue;
+            }
+
+            uint bits = blocks[b + 4] | ((uint)blocks[b + 5] << 8) |
+                        ((uint)blocks[b + 6] << 16) | ((uint)blocks[b + 7] << 24);
+            for (int t = 0; t < 16; ++t)
+            {
+                if (((bits >> (t * 2)) & 0x3u) == 3u)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static Image? TryCreateBc1PunchThroughImage(TexSurface surface)
+    {
+        int fullChain = FullChainLength(surface.Width, surface.Height);
+        bool shipsFullChain = surface.MipLevels >= fullChain;
+        bool suppressMips = OS.GetEnvironment("REFII_TEX_NO_MIPS") == "1";
+
+        try
+        {
+            if (shipsFullChain && !suppressMips)
+            {
+                var chain = new List<byte[]>();
+                int w = surface.Width;
+                int h = surface.Height;
+                int offset = 0;
+                for (int level = 0; level < fullChain; ++level)
+                {
+                    int blockBytes = BlockBytesFor(w, h, TexSurfaceFormat.Bc1);
+                    if (offset + blockBytes > surface.Data.Length)
+                    {
+                        return null;
+                    }
+
+                    chain.Add(DecodeBc1Rgba(surface.Data, offset, w, h));
+                    offset += blockBytes;
+                    w = Math.Max(1, w / 2);
+                    h = Math.Max(1, h / 2);
+                }
+
+                int total = 0;
+                foreach (byte[] part in chain)
+                {
+                    total += part.Length;
+                }
+
+                var data = new byte[total];
+                int cursor = 0;
+                foreach (byte[] part in chain)
+                {
+                    Buffer.BlockCopy(part, 0, data, cursor, part.Length);
+                    cursor += part.Length;
+                }
+
+                Image full = Image.CreateFromData(
+                    surface.Width, surface.Height, true, Image.Format.Rgba8, data);
+                if (IsUsable(full, surface))
+                {
+                    return full;
+                }
+            }
+
+            byte[] top = DecodeBc1Rgba(surface.Data, 0, surface.Width, surface.Height);
+            Image image = Image.CreateFromData(
+                surface.Width, surface.Height, false, Image.Format.Rgba8, top);
+            if (!IsUsable(image, surface))
+            {
+                return null;
+            }
+
+            if (!suppressMips)
+            {
+                image.GenerateMipmaps();
+            }
+
+            return image;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static byte[] DecodeBc1Rgba(byte[] blocks, int offset, int width, int height)
+    {
+        var pixels = new byte[width * height * 4];
+        int blocksW = Math.Max(1, (width + 3) / 4);
+        int blocksH = Math.Max(1, (height + 3) / 4);
+
+        Span<byte> palette = stackalloc byte[16];
+
+        for (int by = 0; by < blocksH; ++by)
+        {
+            for (int bx = 0; bx < blocksW; ++bx)
+            {
+                int b = offset + (((by * blocksW) + bx) * 8);
+                ushort c0 = (ushort)(blocks[b] | (blocks[b + 1] << 8));
+                ushort c1 = (ushort)(blocks[b + 2] | (blocks[b + 3] << 8));
+                uint bits = blocks[b + 4] | ((uint)blocks[b + 5] << 8) |
+                            ((uint)blocks[b + 6] << 16) | ((uint)blocks[b + 7] << 24);
+
+                Expand565(c0, palette, 0);
+                Expand565(c1, palette, 4);
+
+                if (c0 > c1)
+                {
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        palette[8 + k] = (byte)(((2 * palette[k]) + palette[4 + k] + 1) / 3);
+                        palette[12 + k] = (byte)((palette[k] + (2 * palette[4 + k]) + 1) / 3);
+                    }
+
+                    palette[11] = 255;
+                    palette[15] = 255;
+                }
+                else
+                {
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        palette[8 + k] = (byte)((palette[k] + palette[4 + k]) / 2);
+                        palette[12 + k] = 0;
+                    }
+
+                    palette[11] = 255;
+                    palette[15] = 0;
+                }
+
+                for (int t = 0; t < 16; ++t)
+                {
+                    int px = (bx * 4) + (t & 3);
+                    int py = (by * 4) + (t >> 2);
+                    if (px >= width || py >= height)
+                    {
+                        continue;
+                    }
+
+                    int index = (int)((bits >> (t * 2)) & 0x3u) * 4;
+                    int at = ((py * width) + px) * 4;
+                    pixels[at] = palette[index];
+                    pixels[at + 1] = palette[index + 1];
+                    pixels[at + 2] = palette[index + 2];
+                    pixels[at + 3] = palette[index + 3];
+                }
+            }
+        }
+
+        return pixels;
+    }
+
+    private static void Expand565(ushort colour, Span<byte> palette, int at)
+    {
+        int r = (colour >> 11) & 0x1F;
+        int g = (colour >> 5) & 0x3F;
+        int b = colour & 0x1F;
+        palette[at] = (byte)((r << 3) | (r >> 2));
+        palette[at + 1] = (byte)((g << 2) | (g >> 4));
+        palette[at + 2] = (byte)((b << 3) | (b >> 2));
+        palette[at + 3] = 255;
     }
 }
