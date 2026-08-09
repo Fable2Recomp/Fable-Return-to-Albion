@@ -276,22 +276,9 @@ void ArmGuestNoGpuMode() {
 ///   +28 read cap · +32 write cursor · +36 write consumed · +40 write mark · +52 write wrap
 ///   +60 published end · +64 READER CONSUMED · +68 published cap
 void RetireGuestSceneStreams() {
-    // OFF unless explicitly asked for, because this is MEASURED HARMFUL and its premise was
-    // refuted:
-    //
-    //   - Premise gone. It exists to free a ring the reserve was thought to be blocked on.
-    //     Reading the ring in the stalled state (RefiiHostGetSceneStreams) showed
-    //     cap=0x200000 write=0x22360 reader=0x2207F — the reader BEHIND the writer, ~140 KB
-    //     of 2 MB used, and not one sample where sub_8222ABE0's condition held.
-    //   - Actively breaks the boot. Same scenario, one variable: with this on, the startup
-    //     Bink logos never play and the guest hangs before them; with it off, both movies
-    //     play and the guest runs to the front end and into Game_InitDatabases. Writing four
-    //     ring fields from Godot's thread on EVERY step, from boot onward, is what a
-    //     producer reserving ring space cannot survive.
-    //
-    // Kept rather than deleted because the field map and the publish/refresh mapping are
-    // correct and hard-won, and a real consumer-side implementation will want them. It must
-    // never default on again without a run that shows the logos playing.
+    // OFF unless asked for: measured harmful (it stops the startup logos playing) and its
+    // premise was refuted — the ring is never full when the reserve is blocked. Kept only
+    // because the field map below is correct and a real consumer will want it.
     static const bool enabled = [] {
         const char* value = std::getenv("REFII_RETIRE_SCENE_STREAMS");
         return value != nullptr && std::string_view(value) == "1";
@@ -1173,13 +1160,8 @@ void RefiiHostGetInitMarkers(uint32_t* out) {
     out[3] = read32(0x83496AC0u);
 }
 
-/// The command-stream rings, read-only — the measurement that should have come first.
-///
-/// `sub_8222ABE0` blocks when the reader traps the writer, and everything about that is in
-/// four numbers per slot. Reporting them while the guest is stalled says whether the ring
-/// is genuinely full and which cursor is pinned, instead of inferring it from the fact that
-/// something else stopped. Read-only ON PURPOSE: this is the instrument, and
-/// RetireGuestSceneStreams is the intervention, so they must not be the same code.
+/// The command-stream rings, read-only. `sub_8222ABE0` blocks when the reader traps the
+/// writer, and these four numbers per slot are the whole condition.
 ///
 /// Fills 4 slots x 6 words: object, capacity, write cursor (+32), write consumed (+36),
 /// reader consumed (+64), last read (+24). A zero object means the slot is empty.
@@ -1224,22 +1206,14 @@ void RefiiHostGetSceneStreams(uint32_t* out) {
     }
 }
 
-/// Where the guest is going: the world, level and entrance it asked for.
-///
-/// `sub_82379628` — the sole new-game entry, fired by the choose-card presentation — writes
-/// these in plain text before it latches the mode change:
+/// Where the guest is going. `sub_82379628` — the sole new-game entry — writes these before
+/// it latches the mode change:
 ///
 ///     g_StartWorldName    = "Albion"                 0x83497584
 ///     g_StartLevelName    = "BWSSlums"               0x83497588
 ///     g_StartEntranceName = "QC010_ChildhoodStart"   0x83497590
 ///
-/// This is the guest STATING its destination, which is the whole architecture in one call:
-/// Godot does not infer which region to build from anything it observes, it is told. The
-/// same globals serve a load, since `Frontend_SetStartGameTarget` writes the identical set.
-///
-/// Each global holds a pointer to the string. The characters are read best-effort as ASCII
-/// and then as UTF-16BE, because the engine's string type is used both ways in this binary
-/// and guessing wrong yields a plausible-looking empty name rather than an error.
+/// Each global holds a Rep pointer; characters are read best-effort as ASCII then UTF-16BE.
 ///
 /// Fills three NUL-terminated buffers. Returns 1 when the level name came out non-empty —
 /// that is the one a caller cannot proceed without.

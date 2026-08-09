@@ -877,6 +877,9 @@ public partial class BnkMountPlugin : EditorPlugin
             if (meta == EntitiesRootMeta)
             {
                 PopulateEntities(item);
+                continue;
+            }
+
             if (meta == VideosRootMeta)
             {
                 PopulateVideos(item);
