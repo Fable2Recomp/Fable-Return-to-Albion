@@ -13,6 +13,8 @@ public partial class Engine_PropStreamer : Node3D
 
     private static readonly Dictionary<string, ArrayMesh> Cache = new();
 
+    private static readonly List<Engine_PropStreamer> Live = new();
+
     private readonly List<MultiMeshInstance3D> _pending = new();
 
     private readonly Stopwatch _watch = new();
@@ -25,14 +27,52 @@ public partial class Engine_PropStreamer : Node3D
 
     private bool _reported;
 
-    [Export] public double MillisecondsPerFrame { get; set; } = 8.0;
+    [Export] public double MillisecondsPerFrame { get; set; } = 25.0;
 
     [Export] public bool Enabled { get; set; } = true;
 
+    public int Total => _pending.Count;
+
+    public int Done => _cursor;
+
+    public static event Action<int, int>? ProgressChanged;
+
     public static void ClearCache() => Cache.Clear();
+
+    public static void PublishProgress()
+    {
+        TryGetProgress(out int done, out int total);
+        ProgressChanged?.Invoke(done, total);
+    }
+
+    public static bool TryGetProgress(out int done, out int total)
+    {
+        done = 0;
+        total = 0;
+
+        for (int i = Live.Count - 1; i >= 0; i--)
+        {
+            Engine_PropStreamer streamer = Live[i];
+            if (!GodotObject.IsInstanceValid(streamer))
+            {
+                Live.RemoveAt(i);
+                continue;
+            }
+
+            done += streamer.Done;
+            total += streamer.Total;
+        }
+
+        return total > 0;
+    }
 
     public override void _Ready()
     {
+        if (!Live.Contains(this))
+        {
+            Live.Add(this);
+        }
+
         _pending.Clear();
         _cursor = 0;
         _loaded = 0;
@@ -54,6 +94,13 @@ public partial class Engine_PropStreamer : Node3D
             b.Multimesh.InstanceCount.CompareTo(a.Multimesh.InstanceCount));
 
         SetProcess(_pending.Count != 0);
+        PublishProgress();
+    }
+
+    public override void _ExitTree()
+    {
+        Live.Remove(this);
+        PublishProgress();
     }
 
     public override void _Process(double delta)
@@ -68,32 +115,69 @@ public partial class Engine_PropStreamer : Node3D
         while (_cursor < _pending.Count)
         {
             MultiMeshInstance3D instance = _pending[_cursor++];
-            string path = instance.GetMeta(ModelPathMeta).AsString();
-
-            ArrayMesh? mesh = Resolve(path);
-            if (mesh is null)
-            {
-                _failed++;
-            }
-            else if (instance.Multimesh is not null)
-            {
-                instance.Multimesh.Mesh = mesh;
-                _loaded++;
-            }
+            Step(instance);
 
             if (_watch.Elapsed.TotalMilliseconds >= MillisecondsPerFrame)
             {
+                PublishProgress();
                 return;
             }
         }
 
         SetProcess(false);
+        PublishProgress();
 
         if (!_reported)
         {
             _reported = true;
             GD.Print($"[props] streamed {_loaded} model(s)" +
                 (_failed == 0 ? string.Empty : $", {_failed} failed"));
+        }
+    }
+
+    private void Step(MultiMeshInstance3D instance)
+    {
+        string path = string.Empty;
+
+        try
+        {
+            if (!GodotObject.IsInstanceValid(instance) || instance.Multimesh is null)
+            {
+                return;
+            }
+
+            path = instance.GetMeta(ModelPathMeta).AsString();
+
+            ArrayMesh? mesh = Resolve(path);
+            if (mesh is null)
+            {
+                _failed++;
+                if (_failed <= 8)
+                {
+                    GD.Print($"[props] stream failed: {path}");
+                }
+
+                return;
+            }
+
+            instance.Multimesh.Mesh = mesh;
+
+            Aabb local = mesh.GetAabb();
+            float reach = MathF.Max(local.Position.Length(), local.End.Length());
+            if (float.IsFinite(reach) && reach > Engine_LevelProps.ModelReach)
+            {
+                instance.Multimesh.CustomAabb = instance.Multimesh.CustomAabb.Grow(reach);
+            }
+
+            _loaded++;
+        }
+        catch (Exception exception)
+        {
+            _failed++;
+            if (_failed <= 8)
+            {
+                GD.Print($"[props] stream error on '{path}': {exception.Message}");
+            }
         }
     }
 
@@ -104,7 +188,8 @@ public partial class Engine_PropStreamer : Node3D
             return null;
         }
 
-        if (Cache.TryGetValue(virtualPath, out ArrayMesh? cached))
+        if (Cache.TryGetValue(virtualPath, out ArrayMesh? cached) &&
+            GodotObject.IsInstanceValid(cached))
         {
             return cached;
         }

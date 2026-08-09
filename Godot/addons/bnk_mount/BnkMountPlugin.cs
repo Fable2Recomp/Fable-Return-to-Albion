@@ -36,21 +36,146 @@ public partial class BnkMountPlugin : EditorPlugin
     private bool _collapsedHooked;
     private readonly List<TreeItem> _pending = new();
 
+    private Label? _streamingLabel;
+    private Tween? _streamingFade;
+    private bool _fadingStreamingLabel;
+
+    private const double StreamingHoldSeconds = 1.0;
+    private const double StreamingFadeSeconds = 0.8;
+
     private static readonly Color GameFolderColor = new(0.36f, 0.85f, 0.47f);
+
+    private static readonly Color StreamingBusyColor = new(1.0f, 0.78f, 0.35f);
+
+    private static readonly Color StreamingDoneColor = new(0.55f, 0.85f, 0.55f);
 
     public override void _EnterTree()
     {
         StartMount();
         EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged += OnFilesystemChanged;
+        AddStreamingLabel();
     }
 
     public override void _ExitTree()
     {
         EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged -= OnFilesystemChanged;
+        RemoveStreamingLabel();
         RemoveGameRoot();
         RemoveLoaders();
         _filesystem?.Dispose();
         _filesystem = null;
+    }
+
+    private void OnStreamingProgress(int done, int total)
+    {
+        if (_streamingLabel is null || !IsInstanceValid(_streamingLabel))
+        {
+            return;
+        }
+
+        if (total <= 0)
+        {
+            CancelStreamingFade();
+            _streamingLabel.Visible = false;
+            return;
+        }
+
+        bool complete = done >= total;
+
+        _streamingLabel.Text = complete
+            ? $"File streaming: {total}/{total} — done"
+            : $"File streaming: {done}/{total}";
+        _streamingLabel.AddThemeColorOverride(
+            "font_color", complete ? StreamingDoneColor : StreamingBusyColor);
+
+        if (!complete)
+        {
+            CancelStreamingFade();
+            _streamingLabel.Visible = true;
+            _streamingLabel.Modulate = Colors.White;
+            return;
+        }
+
+        if (_fadingStreamingLabel)
+        {
+            return;
+        }
+
+        _fadingStreamingLabel = true;
+        _streamingLabel.Visible = true;
+        _streamingLabel.Modulate = Colors.White;
+
+        Label label = _streamingLabel;
+        _streamingFade = label.CreateTween();
+        _streamingFade.TweenInterval(StreamingHoldSeconds);
+        _streamingFade.TweenProperty(label, "modulate:a", 0.0f, StreamingFadeSeconds);
+        _streamingFade.TweenCallback(Callable.From(() =>
+        {
+            if (IsInstanceValid(label))
+            {
+                label.Visible = false;
+            }
+        }));
+    }
+
+    private void CancelStreamingFade()
+    {
+        if (_streamingFade is not null && IsInstanceValid(_streamingFade))
+        {
+            _streamingFade.Kill();
+        }
+
+        _streamingFade = null;
+        _fadingStreamingLabel = false;
+    }
+
+    private void AddStreamingLabel()
+    {
+        if (_streamingLabel is not null)
+        {
+            return;
+        }
+
+        SubViewport? viewport = EditorInterface.Singleton.GetEditorViewport3D(0);
+        if (viewport?.GetParent() is not Control host)
+        {
+            return;
+        }
+
+        _streamingLabel = new Label
+        {
+            Text = "File streaming:",
+            Visible = false,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            Position = new Vector2(16f, 42f),
+        };
+
+        _streamingLabel.AddThemeConstantOverride("outline_size", 6);
+        _streamingLabel.AddThemeColorOverride("font_outline_color", new Color(0f, 0f, 0f, 0.85f));
+        _streamingLabel.AddThemeFontSizeOverride("font_size", 16);
+
+        host.AddChild(_streamingLabel);
+        Refii.Level.Engine_PropStreamer.ProgressChanged += OnStreamingProgress;
+        Refii.Level.Engine_PropStreamer.PublishProgress();
+    }
+
+    private void RemoveStreamingLabel()
+    {
+        Refii.Level.Engine_PropStreamer.ProgressChanged -= OnStreamingProgress;
+        CancelStreamingFade();
+
+        if (_streamingLabel is null)
+        {
+            return;
+        }
+
+        if (IsInstanceValid(_streamingLabel))
+        {
+            _streamingLabel.GetParent()?.RemoveChild(_streamingLabel);
+            _streamingLabel.QueueFree();
+        }
+
+        _streamingLabel = null;
     }
 
     private void OnFilesystemChanged() => CallDeferred(nameof(Inject));

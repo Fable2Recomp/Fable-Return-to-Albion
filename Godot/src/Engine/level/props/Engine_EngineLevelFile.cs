@@ -44,9 +44,13 @@ public sealed class EngineLevelFile
 
     public List<EngineLevelBlock> PropBlocks { get; } = new();
 
+    public List<EngineLevelBlock> FoliageBlocks { get; } = new();
+
     public int Type21Blocks { get; set; }
 
     public int Type21Instances { get; set; }
+
+    public int Type21Rejected { get; set; }
 
     public uint StoppedAtType { get; set; }
 
@@ -150,7 +154,7 @@ public static class Engine_EngineLevelFile
                     break;
 
                 case 21:
-                    if (!ReadType21(reader, file))
+                    if (!ReadType21(reader, offset, file))
                     {
                         return file;
                     }
@@ -232,13 +236,18 @@ public static class Engine_EngineLevelFile
         return true;
     }
 
-    private static bool ReadType21(Reader reader, EngineLevelFile file)
+    private static bool ReadType21(Reader reader, int offset, EngineLevelFile file)
     {
-        if (!reader.CString(out _) || !reader.CString(out _))
+        var block = new EngineLevelBlock { Offset = offset, Type = 21 };
+
+        if (!reader.CString(out string modelPath) || !reader.CString(out string lodPath))
         {
             file.Error = "truncated reading strings for type 21";
             return false;
         }
+
+        block.ModelPath = modelPath;
+        block.LodModelPath = lodPath;
 
         if (!reader.Skip(8 + 1 + 1))
         {
@@ -264,11 +273,70 @@ public static class Engine_EngineLevelFile
             return false;
         }
 
-        int loop1Stride = file.Version == 11 ? 4 * 4 : (3 * 4) + (5 * 2);
-        if (!reader.Skip((long)loop1Count * loop1Stride))
+        for (uint k = 0; k < loop1Count; k++)
         {
-            file.Error = "truncated type-21 loop1 body";
-            return false;
+            var instance = new EngineLevelInstance();
+
+            if (file.Version == 11)
+            {
+                for (int j = 0; j < 4; j++)
+                {
+                    if (!reader.F32(out float value))
+                    {
+                        file.Error = "truncated type-21 v11 loop1 body";
+                        return false;
+                    }
+
+                    instance.Values[j] = value;
+                }
+
+                instance.Values[7] = 1f;
+                instance.Values[9] = 1f;
+                instance.Values[10] = 1f;
+                instance.Values[11] = 1f;
+            }
+            else
+            {
+                if (!reader.F32(out float px) || !reader.F32(out float py) ||
+                    !reader.F32(out float pz))
+                {
+                    file.Error = "truncated type-21 v12 instance vec3";
+                    return false;
+                }
+
+                if (!reader.Half(out float qx) || !reader.Half(out float qy) ||
+                    !reader.Half(out float qz) || !reader.Half(out float qw) ||
+                    !reader.Half(out float scale))
+                {
+                    file.Error = "truncated type-21 v12 instance quat/scale";
+                    return false;
+                }
+
+                instance.Values[0] = px;
+                instance.Values[1] = py;
+                instance.Values[2] = pz;
+
+                float num = 2f * ((qw * qz) + (qx * qy));
+                float den = 1f - (2f * ((qy * qy) + (qz * qz)));
+                float mag = MathF.Sqrt((num * num) + (den * den));
+                if (mag > 1e-6f)
+                {
+                    instance.Values[6] = num / mag;
+                    instance.Values[7] = den / mag;
+                }
+                else
+                {
+                    instance.Values[6] = 0f;
+                    instance.Values[7] = 1f;
+                }
+
+                float s = scale > 0f ? scale : 1f;
+                instance.Values[9] = s;
+                instance.Values[10] = s;
+                instance.Values[11] = s;
+            }
+
+            block.Instances.Add(instance);
         }
 
         if (!reader.U32(out uint loop2Count))
@@ -283,16 +351,70 @@ public static class Engine_EngineLevelFile
             return false;
         }
 
-        if (!reader.Skip((long)loop2Count * 8 * 4))
+        for (uint k = 0; k < loop2Count; k++)
         {
-            file.Error = "truncated type-21 loop2 body";
-            return false;
+            if (!reader.F32(out float aValue) || !reader.F32(out _) ||
+                !reader.F32(out float p1X) || !reader.F32(out float p1Y) ||
+                !reader.F32(out float p1Z) ||
+                !reader.F32(out float p2X) || !reader.F32(out float p2Y) ||
+                !reader.F32(out _))
+            {
+                file.Error = "truncated type-21 loop2 body";
+                return false;
+            }
+
+            bool plausible =
+                InBounds(p1X, -2048f, 2048f) &&
+                InBounds(p1Y, -2048f, 2048f) &&
+                InBounds(p1Z, -512f, 512f) &&
+                (MathF.Abs(p1X) + MathF.Abs(p1Y) + MathF.Abs(p1Z)) > 0.5f;
+
+            if (!plausible)
+            {
+                file.Type21Rejected++;
+                continue;
+            }
+
+            var instance = new EngineLevelInstance();
+            instance.Values[0] = p1X;
+            instance.Values[1] = p1Y;
+            instance.Values[2] = p1Z;
+
+            float fxy = MathF.Sqrt((p2X * p2X) + (p2Y * p2Y));
+            if (float.IsFinite(fxy) && fxy > 0.001f && fxy < 100f)
+            {
+                instance.Values[6] = p2Y / fxy;
+                instance.Values[7] = p2X / fxy;
+            }
+            else
+            {
+                instance.Values[6] = 0f;
+                instance.Values[7] = 1f;
+            }
+
+            float s = float.IsFinite(aValue) && aValue > 0.05f && aValue < 100f
+                ? aValue
+                : 1f;
+            instance.Values[9] = s;
+            instance.Values[10] = s;
+            instance.Values[11] = s;
+
+            block.Instances.Add(instance);
         }
 
         file.Type21Blocks++;
-        file.Type21Instances += (int)(loop1Count + loop2Count);
+        file.Type21Instances += block.Instances.Count;
+
+        if (block.Instances.Count != 0)
+        {
+            file.FoliageBlocks.Add(block);
+        }
+
         return true;
     }
+
+    private static bool InBounds(float value, float low, float high) =>
+        float.IsFinite(value) && value >= low && value <= high;
 
     private sealed class Reader
     {
@@ -348,6 +470,55 @@ public static class Engine_EngineLevelFile
             }
 
             value = ((ulong)high << 32) | low;
+            return true;
+        }
+
+        public bool Half(out float value)
+        {
+            value = 0f;
+            if (Position + 2 > _data.Length)
+            {
+                return false;
+            }
+
+            uint h = ((uint)_data[Position] << 8) | _data[Position + 1];
+            Position += 2;
+
+            uint sign = (h & 0x8000u) << 16;
+            uint exponent = (h >> 10) & 0x1fu;
+            uint mantissa = h & 0x3ffu;
+            uint bits;
+
+            if (exponent == 0)
+            {
+                if (mantissa == 0)
+                {
+                    bits = sign;
+                }
+                else
+                {
+                    uint e = 127 - 14;
+                    uint m = mantissa;
+                    while ((m & 0x400u) == 0)
+                    {
+                        m <<= 1;
+                        e--;
+                    }
+
+                    m &= 0x3ffu;
+                    bits = sign | (e << 23) | (m << 13);
+                }
+            }
+            else if (exponent == 31)
+            {
+                bits = sign | (0xffu << 23) | (mantissa << 13);
+            }
+            else
+            {
+                bits = sign | ((exponent + (127 - 15)) << 23) | (mantissa << 13);
+            }
+
+            value = BitConverter.Int32BitsToSingle(unchecked((int)bits));
             return true;
         }
 

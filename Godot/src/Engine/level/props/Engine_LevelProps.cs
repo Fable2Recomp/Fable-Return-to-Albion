@@ -40,6 +40,12 @@ public sealed class PropBuildStats
 
     public int EngineLevelType21Blocks { get; set; }
 
+    public int FoliageBlocks { get; set; }
+
+    public int FoliageInstances { get; set; }
+
+    public int FoliageUnresolved { get; set; }
+
     public string EngineLevelError { get; set; } = string.Empty;
 
     public override string ToString() =>
@@ -49,7 +55,9 @@ public sealed class PropBuildStats
         $"unresolved={UnresolvedModel} character={RejectedCharacter} " +
         $"duprecord={DuplicateRecord} duptransform={DuplicateTransform}) " +
         $"engine_level(blocks={EngineLevelBlocks} inst={EngineLevelInstances} " +
-        $"unresolved={EngineLevelUnresolved} type21={EngineLevelType21Blocks})" +
+        $"unresolved={EngineLevelUnresolved} type21={EngineLevelType21Blocks}) " +
+        $"foliage(models={FoliageBlocks} inst={FoliageInstances} " +
+        $"unresolved={FoliageUnresolved})" +
         (EngineLevelError.Length == 0 ? string.Empty : $" [{EngineLevelError}]");
 }
 
@@ -291,6 +299,54 @@ public static class Engine_LevelProps
             stats.EngineLevelInstances += emitted;
             stats.Instances += emitted;
             stats.EngineLevelBlocks++;
+        }
+
+        AppendFoliageBlocks(file, blocks, order, transformKeys, stats);
+    }
+
+    private static void AppendFoliageBlocks(
+        EngineLevelFile file,
+        Dictionary<string, PropBlockBuild> blocks,
+        List<string> order,
+        HashSet<string> transformKeys,
+        PropBuildStats stats)
+    {
+        var merged = new Dictionary<string, PropBlockBuild>();
+        var mergedOrder = new List<string>();
+
+        foreach (EngineLevelBlock block in file.FoliageBlocks)
+        {
+            string? modelPath = Engine_PropModelIndex.ResolveByPath(block.ModelPath);
+            if (modelPath is null)
+            {
+                stats.FoliageUnresolved += block.Instances.Count;
+                continue;
+            }
+
+            if (!merged.TryGetValue(modelPath, out PropBlockBuild? build))
+            {
+                build = new PropBlockBuild(modelPath, $"foliage {NameOf(modelPath)}");
+                merged[modelPath] = build;
+                mergedOrder.Add(modelPath);
+            }
+
+            foreach (EngineLevelInstance instance in block.Instances)
+            {
+                Transform3D transform = BuildEngineLevelTransform(instance.Values);
+                build.Instances.Add(transform);
+                transformKeys.Add(TransformKey(transform, modelPath));
+            }
+        }
+
+        foreach (string modelPath in mergedOrder)
+        {
+            PropBlockBuild build = merged[modelPath];
+            blocks["foliage|" + modelPath] = build;
+            order.Add("foliage|" + modelPath);
+
+            stats.FoliageBlocks++;
+            stats.FoliageInstances += build.Instances.Count;
+            stats.Instances += build.Instances.Count;
         }
     }
 
