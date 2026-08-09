@@ -43,6 +43,7 @@ void RequestedBinkVideo(uint32_t* out_address, uint32_t* out_size,
                         uint32_t* out_generation, uint32_t* out_swapped);
 uint32_t RequestedBinkVideoName(char* out, uint32_t capacity);
 uint32_t FinishCurrentBinkMovie(uint8_t* base);
+uint32_t BinkMovieState(uint8_t* base);
 }  // namespace refii::vfs
 #include "refii_host.h"
 
@@ -238,6 +239,190 @@ void ArmGuestNoGpuMode() {
 /// Zeroing it every step is correct precisely BECAUSE there is no GPU: with nothing to
 /// retire indirect buffers, "outstanding" can only ever grow. The binary's own hang
 /// handler does exactly this write at 0x82BA7678.
+/// Retires the guest's command-stream rings, which nothing else does headless.
+///
+/// The guest reserves ring space through `sub_8222ABE0`, and when the ring looks full it
+/// SPINS — `Sleep(0)` with no timeout and no GPU-dead check:
+///
+///     while ( a1[9] >= a1[8] ) {                       /*0x8222ACB4*/
+///       if ( v6 + a1[8] <= a1[9] ) break;
+///       sub_82CC2E80(0);                                // Sleep(0)
+///       sub_821A5BD0(a1); }                             // re-read the reader window
+///
+/// and `sub_821A5BD0` sources that window from exactly one place:
+///
+///     v2 = a1[16];  a1[9] = v2;                         /*0x821A5BF4 / 0x821A5C04*/
+///
+/// `a1[16]` is +64, the CONSUMER's read-back. Neither function consults `dev+0x2ABD`, so
+/// the no-GPU latch above does not release this one — it is a producer waiting on a
+/// consumer, not on hardware. With Godot rendering and the guest's commands going nowhere,
+/// there is no consumer, so the reserve waits forever. Measured: a New Game parks here
+/// before `GameFlow_QueueCommand(CmdLevelChange)` at 0x823115D0, which is why the level
+/// change is never even queued.
+///
+/// The retire itself is not invented here. It mirrors the guest's own
+/// SceneStreamSyncPublishCursor + SceneStreamRefresh pair, the same mapping the renderer
+/// module already implements in RepairFableSceneStreamPublishHandoff — that code is correct
+/// but lives behind REFII_BUILD_RENDERER_HOOKS, which is OFF by design because Godot
+/// renders. Draining is a command-stream contract, not renderer work, so it belongs here
+/// where it is always built.
+///
+/// Discarding the commands is the right semantic rather than a shortcut: the guest is a
+/// simulation server, it states what it would have drawn, and a null device consumes and
+/// drops it.
+///
+/// Four slots, `dword_8349F9B0[0..3]`. Field map (shared with the renderer's):
+///   +8 capacity · +12 read cursor · +16 visible end · +20 read limit · +24 last read
+///   +28 read cap · +32 write cursor · +36 write consumed · +40 write mark · +52 write wrap
+///   +60 published end · +64 READER CONSUMED · +68 published cap
+void RetireGuestSceneStreams() {
+    // OFF unless explicitly asked for, because this is MEASURED HARMFUL and its premise was
+    // refuted:
+    //
+    //   - Premise gone. It exists to free a ring the reserve was thought to be blocked on.
+    //     Reading the ring in the stalled state (RefiiHostGetSceneStreams) showed
+    //     cap=0x200000 write=0x22360 reader=0x2207F — the reader BEHIND the writer, ~140 KB
+    //     of 2 MB used, and not one sample where sub_8222ABE0's condition held.
+    //   - Actively breaks the boot. Same scenario, one variable: with this on, the startup
+    //     Bink logos never play and the guest hangs before them; with it off, both movies
+    //     play and the guest runs to the front end and into Game_InitDatabases. Writing four
+    //     ring fields from Godot's thread on EVERY step, from boot onward, is what a
+    //     producer reserving ring space cannot survive.
+    //
+    // Kept rather than deleted because the field map and the publish/refresh mapping are
+    // correct and hard-won, and a real consumer-side implementation will want them. It must
+    // never default on again without a run that shows the logos playing.
+    static const bool enabled = [] {
+        const char* value = std::getenv("REFII_RETIRE_SCENE_STREAMS");
+        return value != nullptr && std::string_view(value) == "1";
+    }();
+    if (!enabled) {
+        return;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return;
+    }
+
+    const auto read32 = [base](uint32_t at) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    const auto write32 = [base](uint32_t at, uint32_t value) {
+        const uint32_t raw = __builtin_bswap32(value);
+        std::memcpy(base + at, &raw, sizeof(raw));
+    };
+
+    // A cursor must land inside its own ring. Anything else means we are looking at a slot
+    // that is not a scene stream — half-built, freed, or simply another kind of object —
+    // and writing to it would be scribbling on guest memory.
+    constexpr uint32_t kMaxRingBytes = 16u * 1024u * 1024u;
+    const auto sane_offset = [](uint32_t offset, uint32_t cap) {
+        return cap != 0u && cap <= kMaxRingBytes && offset <= cap;
+    };
+
+    constexpr uint32_t kSchedulerStreams = 0x8349F9B0u;
+
+    for (uint32_t slot = 0; slot < 4u; ++slot) {
+        const uint32_t object = read32(kSchedulerStreams + slot * 4u);
+        if (object < 0x10000u || object >= 0xC0000000u) {
+            continue;
+        }
+
+        const uint32_t capacity = read32(object + 8u);
+        const uint32_t write_cursor = read32(object + 32u);
+        const uint32_t write_consumed = read32(object + 36u);
+        const uint32_t write_mark = read32(object + 40u);
+        const uint32_t write_wrap = read32(object + 52u);
+        const uint32_t published_end = read32(object + 60u);
+        const uint32_t reader_consumed = read32(object + 64u);
+        const uint32_t published_cap = read32(object + 68u);
+
+        if (!sane_offset(write_cursor, capacity) ||
+            !sane_offset(write_mark, capacity) ||
+            !sane_offset(write_wrap, capacity) ||
+            !sane_offset(reader_consumed, capacity)) {
+            continue;
+        }
+
+        // Publish the writer's boundary and import the reader's, exactly as the guest's own
+        // publish does. This does not consume unread messages by itself.
+        uint32_t next_published_end = write_mark;
+        uint32_t next_published_cap = write_wrap;
+        if (reader_consumed < write_cursor || reader_consumed > write_wrap) {
+            next_published_cap = capacity;
+        }
+        if (next_published_end == next_published_cap) {
+            next_published_end = 0u;
+        }
+
+        // The refresh half. The renderer's version stops at `last_read - 1`, because when
+        // the renderer is built there is a real consumer moving the read head and this only
+        // has to IMPORT its position. Headless there is no such consumer, so importing a
+        // head that never moves publishes a ring that never drains: measured, this left
+        // reader_consumed pinned at 0xEF while the writer advanced, which stalls the moment
+        // the writer wraps onto it.
+        //
+        // So the host asserts what a null device actually did: it consumed everything. The
+        // read head follows the write head, and reader_consumed sits ONE BEHIND it — the
+        // ring's own "empty" encoding, the same `x == 0 ? capacity - 1 : x - 1` the guest
+        // uses. That satisfies both of `sub_8222ABE0`'s spins at once, which is the tell
+        // that it is the right state rather than a number that happens to unblock one:
+        // the pre-wrap loop wants `write >= read` and the post-wrap loop wants the reader
+        // not to be trapping the writer, and "empty" is the only state that is both.
+        const uint32_t next_reader_consumed =
+            write_cursor == 0u ? capacity - 1u : write_cursor - 1u;
+
+        if (!sane_offset(next_reader_consumed, capacity)) {
+            continue;
+        }
+
+        bool changed = false;
+        const auto store_if = [&](uint32_t at, uint32_t was, uint32_t now) {
+            if (was != now) {
+                write32(at, now);
+                changed = true;
+            }
+        };
+
+        // PRODUCER-FACING FIELDS ONLY.
+        //
+        // An earlier version also wrote the consumer's own read state — +12 read cursor,
+        // +16 visible end, +20 read limit, +24 last read, +28 read cap — mirroring what the
+        // renderer's repair does. That killed the process within seconds of guest init, and
+        // an A/B with REFII_RETIRE_SCENE_STREAMS=0 confirmed the write was the cause.
+        //
+        // The reason is that the guest's consumer thread is NOT absent, only starved: it is
+        // the one spinning at 0x822DFF2C inside sub_822DFE08, which our own drain logger has
+        // been reporting for months. Moving its read head from Godot's thread while it is
+        // mid-read hands it a position it never asked for. Publishing the writer's boundary
+        // and the space the producer may use is safe; steering the reader is not.
+        store_if(object + 36u, write_consumed, reader_consumed);
+        store_if(object + 60u, published_end, next_published_end);
+        store_if(object + 68u, published_cap, next_published_cap);
+        store_if(object + 64u, reader_consumed, next_reader_consumed);
+
+        // Once per slot, so a run says the drain engaged without printing every step.
+        static bool announced[4] = {false, false, false, false};
+        if (changed && !announced[slot]) {
+            announced[slot] = true;
+            REXLOG_INFO(
+                "Refii host: retiring guest scene stream slot {} (object=0x{:08X} "
+                "capacity=0x{:X} write=0x{:X} reader_consumed 0x{:X} -> 0x{:X})",
+                slot, object, capacity, write_cursor, reader_consumed,
+                next_reader_consumed);
+        }
+    }
+}
+
 void KeepGuestIdleCounterClear() {
     if (!g_no_gpu_armed || g_guest_device == 0) {
         return;
@@ -291,7 +476,21 @@ extern "C" {
 /// 10 adds RefiiHostGetFrontEndState.
 /// 11 adds RefiiHostGetFrontEnd.
 /// 12 adds RefiiHostGetUiElements (13 replaced a truncating slides-only form).
-int RefiiHostBridgeAbiVersion(void) { return 13; }
+/// 14 adds RefiiHostMovieState.
+/// 15 adds RefiiHostGetCamera.
+/// 16 adds RefiiHostGetUiAttributes.
+/// 17 widens RefiiHostGetFrontEnd to NINE words — the ninth is the active screen's vtable,
+///    which is what names the screen the front end hands over to.
+/// 18 adds a tenth: the GUI object's own vtable, without which the other nine cannot be
+///    known to be about a front-end GUI at all.
+/// 19 adds RefiiHostIsInGame and RefiiHostGetRenderFence — the guest's own in-game flag,
+///    and the silent fence the level load waits on.
+/// 20 adds RefiiHostGetLoadingScreen — the take-down handshake the game thread blocks on.
+/// 23 adds RefiiHostGetStartLevel — the world/level/entrance the guest asked for.
+/// 22 adds RefiiHostGetSceneStreams — the command-stream rings, read-only.
+/// 21 adds RefiiHostGetInitMarkers — how far Game_InitDatabases has got, which it does not
+///    say itself.
+int RefiiHostBridgeAbiVersion(void) { return 23; }
 
 /// Publishes one controller's state, in XInput terms, for the guest to read.
 ///
@@ -732,6 +931,405 @@ uint32_t RefiiHostGetRequestedVideoName(char* out, uint32_t capacity,
 /// Bank Mounter" handshake has completed — the boot-movie loop blocks at 0x82377D74 on
 /// `sub_822F3B20` until the mounter sets its +5 byte. So this going true is the title
 /// SAYING the boot sequence is over, rather than the host timing a movie and guessing.
+/// Whether the guest is IN GAME, as the guest itself states it.
+///
+/// `byte_83496A5E` — set to 1 by `Game_InitDatabases` at 0x82311648 and cleared by the game
+/// mode's shutdown at 0x82311860, with ~150 readers. This is the signal to use rather than
+/// inferring from the front end going away: `dword_83496B08` is re-pointed at a 176-byte
+/// base-only GUI at that moment, so every front-end field reads out of bounds.
+uint32_t RefiiHostIsInGame(void) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    return base == nullptr ? 0u : base[0x83496A5Eu];
+}
+
+/// The render-frame fence the LEVEL LOAD waits on — state 7 of `CmdLevelChange_Update`.
+///
+/// `CmdLevelChange_Update` (0x823D5AA8) is a nine-state polled machine on `cmd+44`, and
+/// every one of its gates fails SILENTLY: it returns each tick, logs nothing, and the load
+/// simply never advances. State 7 is the one a host with no GPU has to answer for:
+///
+///     v83 = mode->vtbl[+16](dword_83496AB8);          /*0x823D65C8*/  -> *(*(a1+12)+104)
+///     if (!sub_82387B38(*(v83 + 4))) { *(cmd+44) = 8; }
+///
+///     int sub_82387B38(int a1) {                       // under the render critical section
+///       if (*(double *)(a1 + 152) <= *(double *)(a1 + 176) || *(BYTE *)(a1 + 600))
+///         return 1;                                    // BUSY
+///       return 0;                                      // idle — the load may proceed
+///     }
+///
+/// A submitted-vs-retired pair plus a busy byte. With nothing retiring frames it answers
+/// BUSY forever and the level change parks in state 7. This reports the three values so a
+/// run can say which of them is holding, instead of the load being invisible.
+///
+/// Reads the chain rather than calling the guest's virtual: slot +16 is literally
+/// `return *(*(a1 + 12) + 104);`. Fills manager, submitted, retired, busy. Returns 1 when
+/// the chain resolved.
+int RefiiHostGetRenderFence(uint32_t* out_manager, double* out_submitted,
+                            double* out_retired, uint32_t* out_busy) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t at) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    const auto read_double = [base](uint32_t at) {
+        uint64_t raw = 0;
+        std::memcpy(&raw, base + at, sizeof(raw));
+        raw = __builtin_bswap64(raw);
+        double value = 0.0;
+        std::memcpy(&value, &raw, sizeof(value));
+        return value;
+    };
+
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+
+    const uint32_t mode = read32(0x83496AB8u);
+    if (!plausible(mode)) {
+        return 0;
+    }
+
+    const uint32_t owner = read32(mode + 12u);
+    if (!plausible(owner)) {
+        return 0;
+    }
+
+    const uint32_t frame = read32(owner + 104u);
+    if (!plausible(frame)) {
+        return 0;
+    }
+
+    // sub_82387B38's argument is *(v83 + 4), not v83.
+    const uint32_t manager = read32(frame + 4u);
+    if (!plausible(manager)) {
+        return 0;
+    }
+
+    if (out_manager != nullptr) *out_manager = manager;
+    if (out_submitted != nullptr) *out_submitted = read_double(manager + 152u);
+    if (out_retired != nullptr) *out_retired = read_double(manager + 176u);
+    if (out_busy != nullptr) *out_busy = base[manager + 600u];
+    return 1;
+}
+
+/// The LOADING SCREEN's take-down handshake — the guest thread's one unbounded wait.
+///
+/// `sub_82361458` tears the loading screen down by asking for it and then blocking forever:
+///
+///     823614EC  stfs f0, 0xAC(r8)    ; obj+172 = 1.0f   fade
+///     823614F0  stb  r10, 0xB0(r8)   ; obj+176 = 1      shutdown REQUESTED
+///     823614FC  bl   RtlLeaveCriticalSection
+///     82361528  li   r4, -1          ; INFINITE
+///     8236152C  lwz  r3, 0xB4(r11)   ; obj+180 = the event
+///     82361530  bl   sub_821969C8    ; WaitForSingleObjectEx(h, INFINITE, FALSE)
+///
+/// The only thing that ever signals that event is `sub_8235E5A0`, and only after the fade
+/// counts 1.0 down to ~0 at 1/15 per tick — FIFTEEN ticks. Those ticks come from
+/// `sub_82388380` on the guest's "3D Engine" thread, which ticks the loading screen and
+/// then PRESENTS. With the renderer off and the guest never presenting, that loop does not
+/// run, the fade never moves, the event is never set, and the game thread waits forever
+/// with no log line and no error.
+///
+/// So this reports the handshake itself: fade, "shutdown requested", and the "done" latch
+/// (obj+177) that `sub_8235E5A0` sets alongside the signal. A fade pinned at 1.0 with
+/// requested=1 and done=0 IS the stall, stated by the guest's own fields.
+///
+/// Chain: `dword_83496AB8` -> +8 (the shared context) -> +36 (the manager) -> +4 (the
+/// 400-byte screen, 0 when none). Fills manager, screen, fade, requested, done. Returns 1
+/// when a screen object exists.
+int RefiiHostGetLoadingScreen(uint32_t* out_manager, uint32_t* out_screen, float* out_fade,
+                              uint32_t* out_requested, uint32_t* out_done) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t at) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    const auto read_float = [&read32](uint32_t at) {
+        const uint32_t raw = read32(at);
+        float value = 0.0f;
+        std::memcpy(&value, &raw, sizeof(value));
+        return value;
+    };
+
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+
+    // The same priority the guest's own render loop uses at 0x8238860C: the game mode
+    // first, then the front-end mode. Both carry the SAME context at +8, so the manager is
+    // one object either way — but reading whichever is live avoids a null during the swap.
+    uint32_t context = 0;
+    for (uint32_t mode_global : {0x83496AB8u, 0x83496AC0u}) {
+        const uint32_t mode = read32(mode_global);
+        if (!plausible(mode)) {
+            continue;
+        }
+
+        const uint32_t candidate = read32(mode + 8u);
+        if (plausible(candidate)) {
+            context = candidate;
+            break;
+        }
+    }
+
+    if (context == 0) {
+        return 0;
+    }
+
+    const uint32_t manager = read32(context + 36u);
+    if (!plausible(manager)) {
+        return 0;
+    }
+
+    if (out_manager != nullptr) *out_manager = manager;
+
+    // manager+4 is 0 when no loading screen exists. That is not a failure — it is the
+    // answer "there is no screen to be waiting on".
+    const uint32_t screen = read32(manager + 4u);
+    if (out_screen != nullptr) *out_screen = screen;
+    if (!plausible(screen)) {
+        return 0;
+    }
+
+    if (out_fade != nullptr) *out_fade = read_float(screen + 172u);
+    if (out_requested != nullptr) *out_requested = base[screen + 176u];
+    if (out_done != nullptr) *out_done = base[screen + 177u];
+    return 1;
+}
+
+/// How far the guest has got through starting a game, as four globals it maintains itself.
+///
+/// `Game_InitDatabases` (0x823108B8) is where a New Game actually begins, and it is silent:
+/// it neither logs nor sets any progress flag until its very last statement. These four
+/// bracket it:
+///
+///   out[0] `g_GDBManager`   0x83496DA0 — the game-database manager. The front end's Leave
+///          NULLS it (`GDBManager_UnloadFilesByTagAndRebuild` then `g_GDBManager = 0` at
+///          0x82319BC8) and Game_InitDatabases rebuilds it. Zero after the handover means
+///          the databases have been torn down and not yet come back.
+///   out[1] `byte_83496A5E`  — set 1 at 0x82311648, the LAST statement of the function.
+///   out[2] `dword_83496AB8` — the game mode, built by sub_823130D8.
+///   out[3] `dword_83496AC0` — the front-end mode; its own destructor zeroes it at
+///          0x8231AA54, so 0 here means the front end is genuinely gone rather than hidden.
+///
+/// Together they say which side of the handover we are on and whether the databases came
+/// back — without which "the guest went quiet" cannot be told apart from "the guest is
+/// loading".
+void RefiiHostGetInitMarkers(uint32_t* out) {
+    if (out == nullptr) {
+        return;
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        out[i] = 0;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return;
+    }
+
+    const auto read32 = [base](uint32_t at) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    out[0] = read32(0x83496DA0u);
+    out[1] = base[0x83496A5Eu];
+    out[2] = read32(0x83496AB8u);
+    out[3] = read32(0x83496AC0u);
+}
+
+/// The command-stream rings, read-only — the measurement that should have come first.
+///
+/// `sub_8222ABE0` blocks when the reader traps the writer, and everything about that is in
+/// four numbers per slot. Reporting them while the guest is stalled says whether the ring
+/// is genuinely full and which cursor is pinned, instead of inferring it from the fact that
+/// something else stopped. Read-only ON PURPOSE: this is the instrument, and
+/// RetireGuestSceneStreams is the intervention, so they must not be the same code.
+///
+/// Fills 4 slots x 6 words: object, capacity, write cursor (+32), write consumed (+36),
+/// reader consumed (+64), last read (+24). A zero object means the slot is empty.
+void RefiiHostGetSceneStreams(uint32_t* out) {
+    if (out == nullptr) {
+        return;
+    }
+
+    for (int i = 0; i < 24; ++i) {
+        out[i] = 0;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return;
+    }
+
+    const auto read32 = [base](uint32_t at) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    for (uint32_t slot = 0; slot < 4u; ++slot) {
+        const uint32_t object = read32(0x8349F9B0u + slot * 4u);
+        if (object < 0x10000u || object >= 0xC0000000u) {
+            continue;
+        }
+
+        uint32_t* row = out + slot * 6u;
+        row[0] = object;
+        row[1] = read32(object + 8u);
+        row[2] = read32(object + 32u);
+        row[3] = read32(object + 36u);
+        row[4] = read32(object + 64u);
+        row[5] = read32(object + 24u);
+    }
+}
+
+/// Where the guest is going: the world, level and entrance it asked for.
+///
+/// `sub_82379628` — the sole new-game entry, fired by the choose-card presentation — writes
+/// these in plain text before it latches the mode change:
+///
+///     g_StartWorldName    = "Albion"                 0x83497584
+///     g_StartLevelName    = "BWSSlums"               0x83497588
+///     g_StartEntranceName = "QC010_ChildhoodStart"   0x83497590
+///
+/// This is the guest STATING its destination, which is the whole architecture in one call:
+/// Godot does not infer which region to build from anything it observes, it is told. The
+/// same globals serve a load, since `Frontend_SetStartGameTarget` writes the identical set.
+///
+/// Each global holds a pointer to the string. The characters are read best-effort as ASCII
+/// and then as UTF-16BE, because the engine's string type is used both ways in this binary
+/// and guessing wrong yields a plausible-looking empty name rather than an error.
+///
+/// Fills three NUL-terminated buffers. Returns 1 when the level name came out non-empty —
+/// that is the one a caller cannot proceed without.
+int RefiiHostGetStartLevel(char* world, char* level, char* entrance, uint32_t capacity) {
+    if (capacity == 0) {
+        return 0;
+    }
+
+    if (world != nullptr) world[0] = '\0';
+    if (level != nullptr) level[0] = '\0';
+    if (entrance != nullptr) entrance[0] = '\0';
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t at) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    // ASCII first, then UTF-16BE. A name here is short, printable and non-empty; anything
+    // else means we read the wrong encoding and should say nothing rather than something.
+    const auto read_name = [&](uint32_t global, char* out) {
+        if (out == nullptr) {
+            return false;
+        }
+
+        // The global holds a REP POINTER, not characters — `sub_821F0240` copies `*a2` and
+        // then bumps a refcount at `Rep+12` (0x821F02A4 / 0x821F02B4). Reading the Rep as
+        // if it were the text is what made this return empty and skip the world build
+        // silently.
+        const uint32_t rep = read32(global);
+        if (rep < 0x10000u || rep >= 0xC0000000u) {
+            return false;
+        }
+
+        const auto printable = [](char c) { return c >= 0x20 && c <= 0x7E; };
+
+        // {data, length, capacity, refcount} leaves two plausible homes for the characters:
+        // inline after the 16-byte header, or behind the pointer at +0. Try both rather
+        // than pick — a wrong guess here reads plausible rubbish instead of failing.
+        const uint32_t inline_chars = rep + 16u;
+        const uint32_t indirect = read32(rep);
+        const uint32_t candidates[] = {inline_chars, indirect, rep};
+
+        for (uint32_t pointer : candidates) {
+        if (pointer < 0x10000u || pointer >= 0xC0000000u) {
+            continue;
+        }
+
+        for (int wide = 0; wide < 2; ++wide) {
+            uint32_t written = 0;
+            for (uint32_t i = 0; i + 1 < capacity; ++i) {
+                const char c = wide != 0
+                    ? static_cast<char>(base[pointer + i * 2u + 1u])
+                    : static_cast<char>(base[pointer + i]);
+                if (c == '\0') {
+                    break;
+                }
+                if (!printable(c)) {
+                    written = 0;
+                    break;
+                }
+                out[written++] = c;
+            }
+
+            if (written != 0) {
+                out[written] = '\0';
+                return true;
+            }
+        }
+        }
+
+        out[0] = '\0';
+        return false;
+    };
+
+    read_name(0x83497584u, world);
+    read_name(0x83497590u, entrance);
+    return read_name(0x83497588u, level) ? 1 : 0;
+}
+
 uint32_t RefiiHostGetFrontEndState(void) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
@@ -939,14 +1537,31 @@ uint32_t RefiiHostGetUiElements(uint32_t* words, uint32_t word_capacity,
 /// `screen+20` (CPresentation, vtable 0x82006D48) -> `+492` (element manager, its vtable
 /// slot +68 is literally `return *(u32*)(mgr+8)`) -> the root.
 ///
-/// Fills eight words: gui, active screen, which (0 none / 1 title / 2 menu), state,
-/// press-A-armed, cursor, scene slide, slide count. Returns 1 when the GUI exists.
+/// Fills TEN words: gui, active screen, which (0 none / 1 title / 2 menu), state,
+/// press-A-armed, cursor, scene slide, slide count, the ACTIVE SCREEN'S VTABLE, and THE
+/// GUI OBJECT'S OWN VTABLE.
+///
+/// The GUI's vtable is not belt and braces — it is the only thing that says whether these
+/// fields mean anything. `dword_83496B08` has TWO writers, both through the same base ctor
+/// `sub_823710A8` (the store is at 0x8237132C):
+///
+///   - `sub_82378230`, the front-end GUI, whose derived part holds +180 title,
+///     +184 menu, +188 active;
+///   - `Game_InitDatabases` (0x82310FF0), which builds a BASE-ONLY instance. The base ctor
+///     initialises to +172 and no further, so +180/+184/+188 on that object are not screen
+///     pointers at all.
+///
+/// Reading the second one as though it were the first is how a run reports "the front end
+/// went nowhere" when what actually happened is that the game started. So the caller must
+/// check the vtable before believing `which`.
+///
+/// Returns 1 when the GUI exists.
 int RefiiHostGetFrontEnd(uint32_t* out) {
     if (out == nullptr) {
         return 0;
     }
 
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 10; ++i) {
         out[i] = 0;
     }
 
@@ -979,6 +1594,7 @@ int RefiiHostGetFrontEnd(uint32_t* out) {
     }
 
     out[0] = gui;
+    out[9] = read32(gui);  // the GUI object's vtable — which of the two kinds this is
 
     const uint32_t startup = read32(gui + 180u);
     const uint32_t menu = read32(gui + 184u);
@@ -990,6 +1606,7 @@ int RefiiHostGetFrontEnd(uint32_t* out) {
     out[1] = active;
     out[2] = active == startup ? 1u : (active == menu ? 2u : 0u);
     out[3] = read32(active + 24u);
+    out[8] = read32(active);  // the screen's vtable — its identity
 
     if (plausible(startup)) {
         out[4] = base[startup + 80u];
@@ -1009,6 +1626,237 @@ int RefiiHostGetFrontEnd(uint32_t* out) {
     }
 
     return 1;
+}
+
+/// The LIVE attribute values of every element on the active screen.
+///
+/// This is what a .bgf alone cannot tell you. The shipped file holds the authored
+/// attributes and the slides that override them, but the screen's Lua then moves and
+/// hides things at runtime: Page.Initialize does `setAttribute(DimensionsImage,
+/// "opacity", 0)`, Page.ArrangeItemsVertically writes "position.y" per item, DisplayBox
+/// writes "textstring". A host that reads only the file draws all of that where the file
+/// put it — which is a dialog panel sitting over the main menu that the game has hidden.
+///
+/// Layout verified directly, not taken second-hand (sub_822848E0, and sub_82284948 for
+/// the value offset):
+///
+///   base  = (*(u16*)(elem + 28) & 1) ? elem + 68 : elem + 32
+///   count = *(u8*)(elem + 31)
+///   record = 8 bytes; id = *(u32*)(rec + 0) >> 5; VALUE = *(u32*)(rec + 4)
+///
+/// `ids` are sdbm hashes of the attribute names (sub_82189140), which is exactly what
+/// Engine_GameHash.Sdbm computes — the caller passes them so the hash lives in one place.
+///
+/// Emits TWO words per (element, id) in walk order: the raw value and 1/0 for present.
+/// The value is raw bits; a float attribute is a big-endian float, already swapped here.
+/// Returns the number of ELEMENTS walked.
+uint32_t RefiiHostGetUiAttributes(const uint32_t* ids, uint32_t id_count,
+                                  uint32_t* out, uint32_t out_capacity) {
+    if (ids == nullptr || id_count == 0) {
+        return 0;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    auto read32 = [base](uint32_t address) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+
+    const uint32_t gui = read32(0x83496B08u);
+    if (!plausible(gui)) {
+        return 0;
+    }
+
+    const uint32_t active = read32(gui + 188u);
+    if (!plausible(active)) {
+        return 0;
+    }
+
+    const uint32_t presentation = read32(active + 20u);
+    if (!plausible(presentation)) {
+        return 0;
+    }
+
+    const uint32_t root = read32(presentation + 492u + 8u);
+    if (!plausible(root)) {
+        return 0;
+    }
+
+    // One attribute of one element, or "absent".
+    auto find = [&](uint32_t element, uint32_t id, uint32_t* value) -> bool {
+        const uint16_t flags = static_cast<uint16_t>(read32(element + 28u) >> 16);
+        const uint32_t records = (flags & 1u) != 0 ? element + 68u : element + 32u;
+        const uint32_t count = base[element + 31u];
+
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t record = records + i * 8u;
+            if ((read32(record) >> 5) == id) {
+                *value = read32(record + 4u);
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    constexpr uint32_t kMaxElements = 16384u;
+
+    uint32_t found = 0;
+    uint32_t element = root;
+
+    while (element != 0 && found < kMaxElements) {
+        if (!plausible(element)) {
+            break;
+        }
+
+        for (uint32_t i = 0; i < id_count; ++i) {
+            const uint32_t slot = (found * id_count + i) * 2u;
+            uint32_t value = 0;
+            const bool present = find(element, ids[i], &value);
+            if (out != nullptr && (slot + 1u) < out_capacity) {
+                out[slot] = value;
+                out[slot + 1u] = present ? 1u : 0u;
+            }
+        }
+
+        ++found;
+
+        const uint32_t child = read32(element + 20u);
+        if (plausible(child)) {
+            element = child;
+            continue;
+        }
+
+        while (element != 0) {
+            if (element == root) {
+                element = 0;
+                break;
+            }
+
+            const uint32_t sibling = read32(element + 16u);
+            if (plausible(sibling)) {
+                element = sibling;
+                break;
+            }
+
+            const uint32_t parent = read32(element + 12u);
+            element = plausible(parent) ? parent : 0;
+        }
+    }
+
+    return found;
+}
+
+/// The guest's camera, for Godot to render through.
+///
+/// Reads the snapshot at 0x8331A230. Layout is IDA-proven, and two details are not what a
+/// reasonable guess would give:
+///
+///   +0x00  position   16-byte lanes, NOT 12 — three separate stvx128 at 0x8221161C,
+///   +0x10  up         0x82211628 and 0x82211630. A packed-12 reader is wrong from the
+///   +0x20  forward    second vector on. Only xyz is ever read by the guest (vmsum3fp128).
+///   +0x30  HORIZONTAL field of view, radians (the "vertical" reading is wrong —
+///          sub_82293820 derives vfov from it at 0x822938A8)
+///   +0x34  a boolean whose meaning is UNPROVEN
+///
+/// World basis is right-handed with X right, Y FORWARD, Z up — proven from sub_821B0068
+/// building [cross(fwd,up), fwd, up] as a proper rotation, and from the defaults
+/// (fwd = +Y, up = +Z).
+///
+/// CAVEAT, and the reason this logs before it drives anything: the structure is a PULL
+/// CACHE. sub_82211598 refreshes it only when guest code calls it and a generation counter
+/// has moved, and every caller is a culling or visibility query. Whether any of them still
+/// runs when the guest never draws is UNPROVEN — if none do, this freezes at its last
+/// value silently. The push-driven copy on the camera manager at +0xE0 is the fallback.
+///
+/// Fills 8 floats: pos xyz, up xyz... actually 11: pos[3], up[3], fwd[3], hfov, flag.
+/// Returns 1 on a coherent read, 0 if the two reads disagreed or the guest is absent.
+int RefiiHostGetCamera(float* out) {
+    if (out == nullptr) {
+        return 0;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    constexpr uint32_t kCamera = 0x8331A230u;
+
+    // Five unsynchronised stores with no barrier and no sequence counter, and the
+    // "cached" memo is published BEFORE the payload (0x82211600, ahead of the vectors at
+    // 0x8221161C onward) — so watching that memo for freshness is the worst available
+    // signal. Reading twice and requiring agreement is the cheapest correct thing: the
+    // window is nine instructions wide, so a retry almost never happens.
+    auto snapshot = [&](uint8_t* into) {
+        std::memcpy(into, base + kCamera, 0x38u);
+    };
+
+    uint8_t first[0x38];
+    uint8_t second[0x38];
+    bool coherent = false;
+    for (int attempt = 0; attempt < 4 && !coherent; ++attempt) {
+        snapshot(first);
+        snapshot(second);
+        coherent = std::memcmp(first, second, sizeof(first)) == 0;
+    }
+
+    if (!coherent) {
+        return 0;
+    }
+
+    auto read_float = [&](uint32_t offset) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, first + offset, sizeof(bits));
+        bits = __builtin_bswap32(bits);
+        float value = 0.0f;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+
+    for (int lane = 0; lane < 3; ++lane) {
+        out[lane] = read_float(0x00u + lane * 4u);       // position
+        out[3 + lane] = read_float(0x10u + lane * 4u);   // up
+        out[6 + lane] = read_float(0x20u + lane * 4u);   // forward
+    }
+
+    out[9] = read_float(0x30u);          // horizontal FOV, radians
+    out[10] = first[0x34u] != 0 ? 1.0f : 0.0f;
+    return 1;
+}
+
+/// Whether the guest still wants the movie the host is showing.
+///
+/// 0 none, 1 still wanted, 2 the guest has ended it — by finishing its own decode or by
+/// skipping, which is what a button press at the title does. The host stops on 2 rather
+/// than playing to its own end, or it keeps a finished movie over whatever the guest has
+/// moved on to.
+uint32_t RefiiHostMovieState(void) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    return refii::vfs::BinkMovieState(memory->virtual_membase());
 }
 
 /// Tells the guest the movie the host was showing has finished.
@@ -1332,6 +2180,9 @@ int RefiiHostStep(void) {
         // Cheap until it succeeds, then a single predictable branch.
         ArmGuestNoGpuMode();
         KeepGuestIdleCounterClear();
+        // Runs on Godot's thread, which is the point: the guest thread that needs this is
+        // the one spinning, so it cannot pump its own ring.
+        RetireGuestSceneStreams();
 
         if (hosted.context->HasQuitFromUIThread()) {
             hosted.finished = true;

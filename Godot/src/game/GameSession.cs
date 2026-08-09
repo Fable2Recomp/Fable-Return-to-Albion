@@ -118,7 +118,45 @@ public partial class GameSession : Node
 		}
 
 		_steps++;
+		TraceCamera();
 	}
+
+	/// <summary>
+	/// Logs the guest camera when it MOVES, to answer the one thing IDA could not settle:
+	/// whether the snapshot at 0x8331A230 still updates when the guest never draws.
+	///
+	/// It is a pull cache — refreshed only when guest code calls sub_82211598, and every
+	/// caller is a culling or visibility query. If none of them run headless it freezes at
+	/// its last value with no error and no timestamp, and the only way to tell is to watch
+	/// it. If it never moves, the push-driven copy on the camera manager (+0xE0) is the
+	/// fallback.
+	/// </summary>
+	private void TraceCamera()
+	{
+		if (HostBridge.GetCamera() is not { } camera)
+		{
+			return;
+		}
+
+		bool moved = _lastCamera is not { } previous ||
+			previous.Position.DistanceTo(camera.Position) > 0.01f ||
+			previous.Forward.DistanceTo(camera.Forward) > 0.001f;
+		if (!moved)
+		{
+			return;
+		}
+
+		_lastCamera = camera;
+		if (++_cameraReports <= 20)
+		{
+			GD.Print($"[guest-camera] pos={camera.Position} fwd={camera.Forward} " +
+				$"up={camera.Up} vfov={camera.VerticalFovDegrees:F1}deg " +
+				$"{(camera.IsDefault ? "DEFAULT (no live camera)" : "live")}");
+		}
+	}
+
+	private HostBridge.GuestCamera? _lastCamera;
+	private int _cameraReports;
 
 	public override void _ExitTree()
 	{

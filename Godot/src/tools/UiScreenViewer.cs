@@ -375,6 +375,9 @@ public partial class UiScreenViewer : Node3D
 	/// <summary>Per-element text read from the running guest, keyed by sdbm name hash.</summary>
 	public IReadOnlyList<string?>? LiveText { get; set; }
 
+	/// <summary>Per-element opacity read from the running guest, by element ordinal.</summary>
+	public IReadOnlyList<float?>? LiveOpacity { get; set; }
+
 	/// <summary>
 	/// Shows a screen by name, on a given scene slide. Returns false when the
 	/// presentation is not among the shipped set, or when the viewer has not finished

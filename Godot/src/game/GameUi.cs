@@ -141,6 +141,23 @@ public partial class GameUi : Node
 			return;
 		}
 
+		// Live opacity, keyed the same way. This is the attribute the screen's Lua uses to
+		// hide things it does not want drawn.
+		float?[]? opacity = null;
+		if (slides is not null)
+		{
+			HostBridge.LiveAttribute[,]? attributes = HostBridge.GetUiAttributes(OpacityIds);
+			if (attributes is not null)
+			{
+				opacity = new float?[System.Math.Min(attributes.GetLength(0), slides.Length)];
+				for (int i = 0; i < opacity.Length; ++i)
+				{
+					opacity[i] = attributes[i, 0].Present ? attributes[i, 0].AsFloat : null;
+				}
+			}
+		}
+
+		_viewer.LiveOpacity = opacity;
 		_viewer.LiveSlides = slides;
 		_viewer.LiveText = texts;
 		if (!_viewer.ShowByName(presentation, sceneSlide))
@@ -162,10 +179,20 @@ public partial class GameUi : Node
 		_showingSlides = slides;
 	}
 
+	/// <summary>
+	/// The attributes we read live. sdbm of the name, which is the id the runtime stores —
+	/// computed once rather than per frame.
+	/// </summary>
+	private static readonly uint[] OpacityIds =
+	{
+		Engine_GameHash.Sdbm("opacity") & Engine_GameHash.AttributeIdMask,
+	};
+
 	private string? _showing;
 	private int _showingSlide;
 	private int[]? _showingSlides;
 	private bool _countsLogged;
+	private bool _opacityLogged;
 
 	/// <summary>Puts the UI on screen. Idempotent.</summary>
 	public void Reveal()
@@ -177,7 +204,10 @@ public partial class GameUi : Node
 
 		IsRevealed = true;
 		_viewer.Visible = true;
-		GD.Print($"[game-ui] revealed '{Screen}'");
+		// _showing, not Screen: the export is the STARTING presentation and never changes,
+		// so naming it here reported the title screen long after the guest had moved on and
+		// read as the front end bouncing back.
+		GD.Print($"[game-ui] revealed '{_showing ?? Screen}'");
 	}
 
 	/// <summary>Takes the UI back off screen — a movie playing over the front end.</summary>

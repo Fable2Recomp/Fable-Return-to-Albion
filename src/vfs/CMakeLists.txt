@@ -65,6 +65,8 @@ set(REFII_VFS_HOOK_INTERNAL_SOURCES
 set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/texture_parser.cpp
     ${REFII_VFS_ROOT}/src/hooks/boot_lifecycle.cpp
+    ${REFII_VFS_ROOT}/src/hooks/gui_natives.cpp
+    ${REFII_VFS_ROOT}/src/hooks/game_init_trace.cpp
     ${REFII_VFS_ROOT}/src/hooks/frontend_video_handoff.cpp
     ${REFII_VFS_ROOT}/src/hooks/native_misc.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_open.cpp

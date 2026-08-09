@@ -186,6 +186,46 @@ public partial class Engine_GameAssets : Node
 		}
 	}
 
+	/// <summary>
+	/// Builds the region the GUEST named, through the SAME construction path the editor
+	/// uses — <see cref="Refii.Level.Engine_LevelScene.TryBuild"/>.
+	///
+	/// It lives here rather than in the game code because everything it needs is already
+	/// here: the mounted banks, the byte reader and the name lookup the terrain materials
+	/// resolve through. Reaching into those from outside would mean a second way to build a
+	/// level, and the editor and the running game executing different construction paths is
+	/// exactly what this project is arranged to prevent.
+	/// </summary>
+	public bool TryBuildLevel(string world, string name, out string scenePath, out string error)
+	{
+		scenePath = string.Empty;
+		error = string.Empty;
+
+		BnkFileSystem? fs = Snapshot();
+		if (fs is null)
+		{
+			error = "banks are not mounted";
+			return false;
+		}
+
+		_levels ??= Refii.Level.Engine_LevelIndex.Discover(fs);
+
+		foreach (Refii.Level.LevelEntry level in _levels)
+		{
+			if (!level.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
+				!level.World.Equals(world, StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			return Refii.Level.Engine_LevelScene.TryBuild(
+				level, ReadAllBytes, FindByFileName, out scenePath, out error);
+		}
+
+		error = $"no level named {world}/{name} in the mounted banks";
+		return false;
+	}
+
 	private string? FindByFileName(string fileName)
 	{
 		Dictionary<string, string>? index = _byFileName;

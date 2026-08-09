@@ -1,3 +1,4 @@
+using Godot;
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -23,7 +24,7 @@ public static class HostBridge
 	private const string Library = "refii_hostbridge";
 
 	/// <summary>ABI this binding expects. A mismatch means a stale library on the search path.</summary>
-	public const int ExpectedAbiVersion = 13;
+	public const int ExpectedAbiVersion = 23;
 
 	private const int MessageCapacity = 512;
 
@@ -296,6 +297,119 @@ public static class HostBridge
 	public static uint FinishMovie() => RefiiHostFinishMovie();
 
 	/// <summary>
+	/// The live value of one attribute on one element, as the running game holds it.
+	/// </summary>
+	public readonly record struct LiveAttribute(uint RawValue, bool Present)
+	{
+		/// <summary>The value read as a float, which is what layout attributes are.</summary>
+		public float AsFloat => BitConverter.UInt32BitsToSingle(RawValue);
+	}
+
+	/// <summary>
+	/// Every element's live attribute values, in the same walk order as
+	/// <see cref="GetUiElements"/>, one row per element and one column per requested id.
+	///
+	/// The shipped .bgf holds what an element was AUTHORED with; the screen's Lua then
+	/// moves and hides things at runtime with setAttribute. Reading only the file draws
+	/// hidden widgets where the file put them.
+	///
+	/// Ids are sdbm hashes of the attribute names — use <c>Engine_GameHash.Sdbm</c>, which
+	/// mirrors the engine's own sub_82189140.
+	/// </summary>
+	public static LiveAttribute[,]? GetUiAttributes(uint[] ids)
+	{
+		if (ids.Length == 0)
+		{
+			return null;
+		}
+
+		uint elements = RefiiHostGetUiAttributes(ids, (uint)ids.Length, null, 0);
+		if (elements == 0)
+		{
+			return null;
+		}
+
+		var words = new uint[elements * ids.Length * 2];
+		uint written = RefiiHostGetUiAttributes(ids, (uint)ids.Length, words, (uint)words.Length);
+
+		int rows = (int)Math.Min(written, elements);
+		var table = new LiveAttribute[rows, ids.Length];
+		for (int row = 0; row < rows; ++row)
+		{
+			for (int column = 0; column < ids.Length; ++column)
+			{
+				int slot = (row * ids.Length + column) * 2;
+				table[row, column] = new LiveAttribute(words[slot], words[slot + 1] != 0);
+			}
+		}
+
+		return table;
+	}
+
+	/// <summary>The guest's camera, in guest world space.</summary>
+	public readonly record struct GuestCamera(
+		Vector3 Position, Vector3 Up, Vector3 Forward, float HorizontalFov, bool Flag)
+	{
+		/// <summary>
+		/// True when this is the engine's "no camera" default rather than a live one.
+		///
+		/// There is no validity bit; the only tell is the exact default signature the
+		/// guest writes when there is no camera to report — position zero, up +Z,
+		/// forward +Y, and 1.2217305 rad (70°).
+		/// </summary>
+		public bool IsDefault =>
+			Position == Vector3.Zero && Up == new Vector3(0f, 0f, 1f) &&
+			Forward == new Vector3(0f, 1f, 0f) && Mathf.IsEqualApprox(HorizontalFov, 1.2217305f);
+
+		/// <summary>
+		/// The VERTICAL field of view in degrees, for Godot.
+		///
+		/// The guest stores a HORIZONTAL fov. Both of its aspect branches collapse to the
+		/// same vertical angle — 4:3 gives 2·atan(tan(h/2)·0.75) and 16:9 gives
+		/// 2·atan(tan(h/2)·(4/3)·(9/16)), which is the same number — so widescreen widens
+		/// horizontally only and this needs no aspect input.
+		/// </summary>
+		public float VerticalFovDegrees =>
+			Mathf.RadToDeg(2f * Mathf.Atan(0.75f * Mathf.Tan(HorizontalFov * 0.5f)));
+	}
+
+	/// <summary>
+	/// The guest's camera, or null when it could not be read coherently.
+	///
+	/// The snapshot is five unsynchronised stores with no sequence counter, so the bridge
+	/// reads it twice and requires agreement; a disagreement returns null rather than a
+	/// torn camera.
+	/// </summary>
+	public static GuestCamera? GetCamera()
+	{
+		var values = new float[11];
+		if (RefiiHostGetCamera(values) == 0)
+		{
+			return null;
+		}
+
+		return new GuestCamera(
+			new Vector3(values[0], values[1], values[2]),
+			new Vector3(values[3], values[4], values[5]),
+			new Vector3(values[6], values[7], values[8]),
+			values[9],
+			values[10] != 0f);
+	}
+
+	/// <summary>Whether the guest still wants the movie the host is showing.</summary>
+	public enum MoviePlayback { None = 0, Wanted = 1, EndedByGuest = 2 }
+
+	/// <summary>
+	/// The guest's view of the movie in progress.
+	///
+	/// The host and the guest can each end a movie. The host ends one by running out of
+	/// frames; the guest ends one by finishing its own decode or by SKIPPING — which is
+	/// what a button press at the title does. Watching for the second is what stops a
+	/// skipped attract clip playing on over whatever the guest moved on to.
+	/// </summary>
+	public static MoviePlayback MovieState() => (MoviePlayback)RefiiHostMovieState();
+
+	/// <summary>
 	/// The guest's front-end (title/main-menu) state object, or 0 while it is still
 	/// booting. The guest builds it only once every startup logo has played and its bank
 	/// mounter has finished, so a non-zero value is the guest saying it has reached the
@@ -305,6 +419,154 @@ public static class HostBridge
 
 	/// <summary>Which of the guest's front-end screens is up, and its state.</summary>
 	public enum FrontEndScreen { None = 0, Title = 1, MainMenu = 2 }
+
+	/// <summary>
+	/// The raw eight words behind <see cref="TryGetFrontEnd"/>: the GUI object, the ACTIVE
+	/// screen, which one it is, state, press-A-armed, cursor, scene slide, slide count.
+	///
+	/// Worth having because <see cref="FrontEndScreen.None"/> is not "no screen" — it is a
+	/// screen that is neither the title nor the menu, which is exactly what the front end
+	/// hands over to. Without the pointer a run can only say the guest went somewhere.
+	/// </summary>
+	public static uint[]? GetFrontEndRaw()
+	{
+		uint[] words = new uint[10];
+		return RefiiHostGetFrontEnd(words) != 0 ? words : null;
+	}
+
+	/// <summary>
+	/// The front-end GUI's vtable — the class whose slots include the GUI pump at
+	/// 0x82379170. This is an identity STATED by the binary, not a guess: the base ctor
+	/// writes off_82001610 at 0x8237111C and the derived front-end ctor overwrites it, so
+	/// the word at the object's address says which of the two constructions built it.
+	/// </summary>
+	private const uint FrontEndGuiVtable = 0x820A924Cu;
+
+	/// <summary>
+	/// Whether the object at dword_83496B08 is the FRONT-END GUI at all.
+	///
+	/// False once the game starts: Game_InitDatabases republishes that global with a
+	/// base-only instance (vtable off_82001610 = 0x82001610) that has no screens, and
+	/// reading its +180/+184/+188 as title/menu/active reports "no front end screen" about
+	/// an object that never had one. That misreads the game STARTING as the front end
+	/// going nowhere.
+	/// </summary>
+	/// <summary>
+	/// Whether the guest is in game, as the guest STATES it — <c>byte_83496A5E</c>, set by
+	/// Game_InitDatabases (0x82311648) and cleared by the game mode's shutdown (0x82311860).
+	/// Use this rather than inferring it from the front end disappearing.
+	/// </summary>
+	public static bool IsInGame => RefiiHostIsInGame() != 0;
+
+	/// <summary>The render-frame fence state 7 of CmdLevelChange_Update polls.</summary>
+	public readonly record struct RenderFence(
+		uint Manager, double Submitted, double Retired, bool Busy)
+	{
+		/// <summary>
+		/// What <c>sub_82387B38</c> answers: BUSY while submitted &lt;= retired, or the busy
+		/// byte is set. The level load only advances past state 7 when this is false.
+		/// </summary>
+		public bool BlocksLevelLoad => Submitted <= Retired || Busy;
+	}
+
+	/// <summary>
+	/// The loading screen's take-down handshake — see RefiiHostGetLoadingScreen.
+	///
+	/// <c>Fade</c> counts 1.0 down to ~0 at 1/15 per render-thread tick; <c>Requested</c> is
+	/// set by the game thread just before it blocks on an INFINITE wait; <c>Done</c> is
+	/// latched by the render thread when it signals. Fade pinned at 1.0 with Requested and
+	/// no Done is the stall.
+	/// </summary>
+	public readonly record struct LoadingScreen(
+		uint Manager, uint Screen, float Fade, bool Requested, bool Done);
+
+	/// <summary>
+	/// How far the guest has got into starting a game: the GDB manager, the in-game flag,
+	/// and the two mode singletons. See RefiiHostGetInitMarkers.
+	/// </summary>
+	public readonly record struct InitMarkers(
+		uint GdbManager, bool InGame, uint GameMode, uint FrontEndMode);
+
+	public static InitMarkers GetInitMarkers()
+	{
+		uint[] words = new uint[4];
+		RefiiHostGetInitMarkers(words);
+		return new InitMarkers(words[0], words[1] != 0, words[2], words[3]);
+	}
+
+	/// <summary>One command-stream ring: the four numbers that decide whether a reserve blocks.</summary>
+	public readonly record struct SceneStream(
+		uint Object, uint Capacity, uint WriteCursor, uint WriteConsumed,
+		uint ReaderConsumed, uint LastRead)
+	{
+		/// <summary>
+		/// sub_8222ABE0's own condition: it spins while the reader is at or ahead of the
+		/// writer AND the write would cross it.
+		/// </summary>
+		public bool WouldBlock(uint bytes) =>
+			ReaderConsumed >= WriteCursor && WriteCursor + bytes > ReaderConsumed;
+	}
+
+	/// <summary>Where the guest said it is going. Level is empty until it has decided.</summary>
+	public readonly record struct StartLevel(string World, string Level, string Entrance);
+
+	/// <summary>
+	/// The world/level/entrance the guest asked for, or null before it has asked.
+	///
+	/// This is the guest STATING its destination — Godot builds the region it is told to
+	/// rather than inferring one, which is the whole split in a single call.
+	/// </summary>
+	public static StartLevel? GetStartLevel()
+	{
+		var world = new byte[128];
+		var level = new byte[128];
+		var entrance = new byte[128];
+		if (RefiiHostGetStartLevel(world, level, entrance, (uint)level.Length) == 0)
+		{
+			return null;
+		}
+
+		return new StartLevel(Decode(world), Decode(level), Decode(entrance));
+	}
+
+	/// <summary>The live rings, empty slots dropped.</summary>
+	public static List<SceneStream> GetSceneStreams()
+	{
+		uint[] words = new uint[24];
+		RefiiHostGetSceneStreams(words);
+
+		var streams = new List<SceneStream>(4);
+		for (int slot = 0; slot < 4; ++slot)
+		{
+			int at = slot * 6;
+			if (words[at] == 0)
+			{
+				continue;
+			}
+
+			streams.Add(new SceneStream(words[at], words[at + 1], words[at + 2],
+				words[at + 3], words[at + 4], words[at + 5]));
+		}
+
+		return streams;
+	}
+
+	/// <summary>The handshake, or null when no loading screen object exists.</summary>
+	public static LoadingScreen? GetLoadingScreen() =>
+		RefiiHostGetLoadingScreen(out uint manager, out uint screen, out float fade,
+			out uint requested, out uint done) != 0
+			? new LoadingScreen(manager, screen, fade, requested != 0, done != 0)
+			: null;
+
+	/// <summary>The fence values, or null when the chain to the manager did not resolve.</summary>
+	public static RenderFence? GetRenderFence() =>
+		RefiiHostGetRenderFence(out uint manager, out double submitted,
+			out double retired, out uint busy) != 0
+			? new RenderFence(manager, submitted, retired, busy != 0)
+			: null;
+
+	public static bool FrontEndGuiIsUp =>
+		GetFrontEndRaw() is { } words && words[9] == FrontEndGuiVtable;
 
 	/// <summary>
 	/// The guest's live front-end state.
@@ -318,7 +580,7 @@ public static class HostBridge
 		out FrontEndScreen screen, out uint state, out bool canPressA, out uint cursor,
 		out int sceneSlide, out int slideCount)
 	{
-		uint[] words = new uint[8];
+		uint[] words = new uint[10];
 		int ok = RefiiHostGetFrontEnd(words);
 
 		screen = (FrontEndScreen)words[2];
@@ -431,7 +693,38 @@ public static class HostBridge
 	private static extern uint RefiiHostFinishMovie();
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostMovieState();
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetCamera(float[] outValues);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetUiAttributes(
+		uint[] ids, uint idCount, uint[]? outWords, uint outCapacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetFrontEndState();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostIsInGame();
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetRenderFence(
+		out uint manager, out double submitted, out double retired, out uint busy);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostGetInitMarkers(uint[] outWords);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostGetSceneStreams(uint[] outWords);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetStartLevel(
+		byte[] world, byte[] level, byte[] entrance, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetLoadingScreen(
+		out uint manager, out uint screen, out float fade, out uint requested, out uint done);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetFrontEnd(uint[] outWords);

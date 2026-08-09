@@ -93,6 +93,37 @@ PPC_EXTERN_FUNC(__imp__sub_82C6E8F0);
 // handle so the host can find the CPU-decoded video planes. Hooking inside Bink itself
 // does not work; it dispatches through a function-pointer table. See
 // hooks/bink_frame_capture.cpp.
+// luaD_precall_2 — the GAME VM's copy, and THE single site through which every
+// lua_CFunction in that VM is invoked (the indirect call at 0x822289F0). Hooked once to
+// intercept the ~120 semantic GUI natives; see hooks/gui_natives.cpp.
+//
+// The title links TWO copies of the Lua library. luaD_precall (0x8219EF68) belongs to the
+// GAMEFACE UI VM — hooking it fires tens of thousands of times and never sees a GUI
+// native, because RegisterGUI registers into the game VM. The copies are not even
+// layout-identical: the hook-mask byte is at L+56 here and L+54 there.
+PPC_EXTERN_FUNC(__imp__sub_82228730);
+PPC_EXTERN_FUNC(__imp__sub_8234EF58);
+PPC_EXTERN_FUNC(__imp__sub_82C68F30);
+PPC_EXTERN_FUNC(__imp__sub_8219A9A0);
+PPC_EXTERN_FUNC(__imp__sub_82458C88);
+PPC_EXTERN_FUNC(__imp__sub_821956A0);
+PPC_EXTERN_FUNC(__imp__sub_824732A8);
+PPC_EXTERN_FUNC(__imp__sub_82473C60);
+PPC_EXTERN_FUNC(__imp__sub_8247A720);
+PPC_EXTERN_FUNC(__imp__sub_82487790);
+PPC_EXTERN_FUNC(__imp__sub_824926A8);
+PPC_EXTERN_FUNC(__imp__sub_82882C88);
+PPC_EXTERN_FUNC(__imp__sub_821E3108);
+PPC_EXTERN_FUNC(__imp__sub_82459280);
+PPC_EXTERN_FUNC(__imp__sub_823272E0);
+PPC_EXTERN_FUNC(__imp__sub_823BEDC0);
+
+// The registration side channel — runs between pushcclosure and setfield for EVERY Lua
+// native, with the closure on the stack and the name in r5. Hooked to build impl -> name
+// without an address table, because the shipped metadata's address column is the THUNK for
+// some entries and thunks are shared between different natives.
+PPC_EXTERN_FUNC(__imp__sub_823CE420);
+
 PPC_EXTERN_FUNC(__imp__sub_82A41B48);
 PPC_EXTERN_FUNC(__imp__sub_82C6EA48);
 PPC_EXTERN_FUNC(__imp__sub_82C6EA80);

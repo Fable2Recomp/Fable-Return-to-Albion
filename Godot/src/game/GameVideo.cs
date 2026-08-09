@@ -163,6 +163,15 @@ public partial class GameVideo : Node
 		EmitSignal(SignalName.MovieStarted, _decoder.FrameCount);
 	}
 
+	/// <summary>Takes the current movie off screen and releases its decoder.</summary>
+	private void StopVideo()
+	{
+		_decoder?.Dispose();
+		_decoder = null;
+		_view.Visible = false;
+		EmitSignal(SignalName.MovieFinished);
+	}
+
 	private void AdvanceVideo(double delta)
 	{
 		if (_decoder is null)

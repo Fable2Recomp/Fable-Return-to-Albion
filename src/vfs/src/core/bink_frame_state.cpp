@@ -225,6 +225,93 @@ void NoteBinkVideoRequested(uint8_t* base, uint32_t data_guest) {
   g_requested_generation.fetch_add(1, std::memory_order_release);
 }
 
+/// Is the guest still playing the movie it opened?
+///
+/// THE BASE. Everything here is relative to what sub_82A41B48 receives in r3, which is
+/// NOT the movie player: sub_82389040 allocates a 248-byte player P and calls
+/// sub_82A41B48(P + 12, ...) at 0x8238910C. So the pointer we record — call it B — is the
+/// embedded Bink wrapper at P+12.
+///
+/// Getting that wrong is not a subtle error. Reading the skip flag as B+244 lands at
+/// P+256, EIGHT BYTES PAST THE END of the allocation, in heap metadata — which read
+/// nonzero immediately and reported every movie as skipped the instant it opened. The
+/// framebuffer address is genuinely B+68 (sub_82A42D20 does `v2 = a1 + 68` on this same
+/// base), which is why that path has always worked and masked the mistake.
+///
+/// B-relative, all IDA-proven:
+///   B-8   float  minimum play time   (P+4,  5.0 for the logos, 0.0 for attract)
+///   B-4   float  elapsed             (P+8,  accumulated at 0x82389238)
+///   B+64  dword  HBINK               (stored at 0x82A41BFC)
+///   B+221 byte   DONE                (set at 0x82A42CF0 when FrameNum == Frames)
+///   B+232 byte   SKIP                (set at 0x82377E04 / 0x826E3064 / 0x826E35D8)
+///
+/// Both flags are zeroed by the constructor (0x823890C4 and 0x823890D4), so a recycled
+/// allocation — and the block IS recycled, LIFO out of a 248-byte free list — cannot
+/// carry a stale flag.
+
+/// Only the SKIP flag counts, and the distinction matters.
+///
+/// B+232 (SKIP) is set when the movie is abandoned — a button press, gated on elapsed >
+/// minimum play time (0x82377E04 for the logo sequence, 0x826E3064 and 0x826E35D8 for
+/// attract). That is a decision about what the player watches, so the host follows it.
+/// All three write literally 1, and nothing but the constructors ever clears it.
+///
+/// B+221 (DONE) is NOT usable here. The guest sets it when its own decode reaches the
+/// last frame, and that decode is invisible work on its own clock — it can finish long
+/// before the picture does. It is also the byte the host writes to retire a movie, so
+/// treating it as "the guest ended this" would make the host stop the moment it asked the
+/// guest to advance.
+///
+/// The two are disjoint by construction: the decode path never touches SKIP and the input
+/// handlers never touch DONE, so SKIP alone means "the user abandoned it" with no false
+/// positive from a movie simply ending.
+///
+/// Without this the host kept showing a movie the guest had already walked away from: the
+/// attract clip ran a further 30 seconds over the top of the main menu the guest had
+/// moved on to.
+///
+/// Returns 0 when no movie is live, 1 while the guest still wants it, 2 once the guest
+/// has ended it.
+uint32_t BinkMovieState(uint8_t* base) {
+  if (base == nullptr) {
+    return 0;
+  }
+
+  const uint32_t player = g_bink_player.load(std::memory_order_relaxed);
+  if (player == 0) {
+    return 0;
+  }
+
+  // Reading a player the guest may have freed is safe — it is arena memory that stays
+  // mapped — and a stale byte only costs one poll, because opening the next movie
+  // republishes the pointer.
+  const uint8_t done = base[player + 221u];
+  const uint8_t skip = base[player + 232u];
+
+  // Rate-limited raw dump. The skip flag reads nonzero for every movie AFTER the first,
+  // which the constructor's zeroing at 0x823890D4 says is impossible — so one of the base,
+  // the offset, or the lifetime assumption is wrong, and guessing which has already cost
+  // two rounds. Print what is actually there.
+  static std::atomic<uint32_t> polls{0};
+  const uint32_t poll = polls.fetch_add(1, std::memory_order_relaxed);
+  if (poll < 40u || (poll % 512u) == 0u) {
+    REXLOG_INFO("Refii Bink poll #{} bink=0x{:08X} done(+221)={} skip(+232)={} "
+                "raw[216..236]={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} "
+                "{:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} "
+                "{:02X} {:02X} {:02X}",
+                poll, player, done, skip,
+                base[player + 216u], base[player + 217u], base[player + 218u],
+                base[player + 219u], base[player + 220u], base[player + 221u],
+                base[player + 222u], base[player + 223u], base[player + 224u],
+                base[player + 225u], base[player + 226u], base[player + 227u],
+                base[player + 228u], base[player + 229u], base[player + 230u],
+                base[player + 231u], base[player + 232u], base[player + 233u],
+                base[player + 234u], base[player + 235u], base[player + 236u]);
+  }
+
+  return skip != 0 ? 2u : 1u;
+}
+
 /// Retires the movie the host has finished showing, so the guest advances with it.
 ///
 /// IDA-proven. The startup sequence is a BLOCKING loop (sub_82377A00) whose only exit is
@@ -238,10 +325,9 @@ void NoteBinkVideoRequested(uint8_t* base, uint32_t data_guest) {
 /// the logos for 45 seconds while the host had shown them in 8. Writing the same byte the
 /// guest writes puts the sequence back under the clock the player is actually watching.
 ///
-/// The player object is at `bink - 12` (sub_82389210 passes `player + 12` to the draw at
-/// 0x82389260), so the done byte the guest writes as bink+221 is player+233 — the same
-/// offset sub_82389210 tests at 0x82389230 before skipping the draw and destroying the
-/// player.
+/// The byte is B+221 — the one Render_DrawBinkMovieFrame itself writes at 0x82A42CF0.
+/// sub_82389210 tests the same byte as 0xE9 off the PLAYER, and 221 + 12 = 233 confirms
+/// the two bases line up.
 ///
 /// Returns the player it retired, or 0 when no movie is live.
 uint32_t FinishCurrentBinkMovie(uint8_t* base) {
@@ -257,11 +343,12 @@ uint32_t FinishCurrentBinkMovie(uint8_t* base) {
   }
 
   // A single byte, so endianness does not enter into it.
-  base[player + 233u] = 1u;
+  base[player + 221u] = 1u;
 
   static std::atomic<uint32_t> retired{0};
   if (retired.fetch_add(1) < 64u) {
-    REXLOG_INFO("Refii Bink retired by host: player=0x{:08X} (done byte at +233)", player);
+    REXLOG_INFO("Refii Bink retired by host: bink=0x{:08X} player=0x{:08X} (done at +221)",
+                player, player - 12u);
   }
 
   return player;
@@ -271,7 +358,7 @@ uint32_t FinishCurrentBinkMovie(uint8_t* base) {
 ///
 /// BINKFRAMEBUFFERS is inline at player+68 — sub_82A42D20 does
 /// `v2 = a1 + 68; memset(a1 + 68, 0, 0x78); BinkGetFrameBuffersInfo(*(a1 + 64), v2)`.
-void NoteBinkMovieOpen(uint32_t player) {
+void NoteBinkMovieOpen(uint32_t player, uint8_t* base_for_open) {
   if (player == 0) {
     return;
   }
@@ -280,8 +367,11 @@ void NoteBinkMovieOpen(uint32_t player) {
 
   static std::atomic<uint32_t> seen{0};
   if (seen.fetch_add(1) < 64u) {
-    REXLOG_INFO("Refii Bink movie open: player=0x{:08X} frame_buffers=0x{:08X}", player,
-                player + 68u);
+    REXLOG_INFO("Refii Bink movie open: bink=0x{:08X} player=0x{:08X} frame_buffers=0x{:08X} "
+                "at-open done(+221)={} skip(+232)={}",
+                player, player - 12u, player + 68u,
+                base_for_open == nullptr ? 0xFFu : base_for_open[player + 221u],
+                base_for_open == nullptr ? 0xFFu : base_for_open[player + 232u]);
   }
 
   SetBinkFrameBuffersGuestAddress(player + 68u);

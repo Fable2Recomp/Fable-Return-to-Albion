@@ -69,7 +69,7 @@
 
 namespace refii::vfs {
 // Bink video frame capture — defined in src/hooks/bink_frame_capture.cpp.
-void NoteBinkMovieOpen(uint32_t player);
+void NoteBinkMovieOpen(uint32_t player, uint8_t* base_for_open = nullptr);
 uint32_t BinkFrameBuffersGuestAddress();
 
 /// The movie the guest last handed to BinkOpen. The argument is EITHER a pointer to the
@@ -86,6 +86,9 @@ uint32_t RequestedBinkVideoName(char* out, uint32_t capacity);
 /// Marks the live movie finished, so the guest's startup sequence advances in step with
 /// what the host has actually shown. Returns the player retired, or 0.
 uint32_t FinishCurrentBinkMovie(uint8_t* base);
+
+/// 0 no movie, 1 the guest still wants it, 2 the guest has ended it (done or skipped).
+uint32_t BinkMovieState(uint8_t* base);
 }  // namespace refii::vfs
 
 #define REFII_VFS_NATIVE_PASSTHROUGH(function_name) \

@@ -183,7 +183,8 @@ public sealed class Engine_UiScreen
 	public static Engine_UiScreen Parse(string name, byte[] bgfBytes, byte[]? facBytes,
 		byte[]? bsgBytes = null, Engine_TextureNameTable? textures = null, Engine_BabelDatabase? strings = null,
 		int sceneSlide = 0, IReadOnlyList<int>? liveSlides = null,
-		IReadOnlyList<string?>? liveText = null)
+		IReadOnlyList<string?>? liveText = null,
+		IReadOnlyList<float?>? liveOpacity = null)
 	{
 		var doc = Engine_BgfDocument.Parse(bgfBytes);
 
@@ -309,6 +310,15 @@ public sealed class Engine_UiScreen
 		// book (GUI_CONTINUE_WITHOUT_SAVING is in neither, under any of the engine's hash
 		// variants). Both are moot if we take the string the game is displaying.
 		screen.IsLive = live;
+
+		// The screen's Lua hides and moves elements at runtime with setAttribute, and none
+		// of that is in the file — Page.Initialize sets DimensionsImage opacity to 0, the
+		// display boxes hide themselves the same way. Applying the live value is what stops
+		// a hidden dialog drawing over the menu.
+		if (live && liveOpacity is { Count: > 0 })
+		{
+			screen.ApplyLiveOpacity(liveOpacity);
+		}
 		if (live && liveText is { Count: > 0 })
 		{
 			screen.ApplyLiveText(liveText);
@@ -360,6 +370,23 @@ public sealed class Engine_UiScreen
 	/// A node the guest did not report keeps whatever the file resolved to, so a partial
 	/// read degrades to the authored text rather than blanking the screen.
 	/// </summary>
+	/// <summary>
+	/// Replaces each node's opacity with the one the running guest holds.
+	///
+	/// Indexed by element ordinal, like the slides — the runtime walk order and the file
+	/// order are the same. A node the guest did not report keeps the authored value.
+	/// </summary>
+	private void ApplyLiveOpacity(IReadOnlyList<float?> liveOpacity)
+	{
+		for (int i = 0; i < Nodes.Length && i < liveOpacity.Count; ++i)
+		{
+			if (liveOpacity[i] is { } opacity)
+			{
+				Nodes[i].Opacity = opacity;
+			}
+		}
+	}
+
 	private void ApplyLiveText(IReadOnlyList<string?> liveText)
 	{
 		for (int i = 0; i < Nodes.Length && i < liveText.Count; ++i)

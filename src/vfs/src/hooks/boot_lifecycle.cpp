@@ -1646,7 +1646,7 @@ REX_EXTERN(sub_82A41B48) {
   // memset(a1 + 68, 0, 0x78); BinkGetFrameBuffersInfo(*(a1 + 64), v2)`), so the ADDRESS
   // is valid on entry even though the contents are filled during the call. The host
   // polls, so it picks the contents up on a later frame.
-  refii::vfs::NoteBinkMovieOpen(ctx.r3.u32);
+  refii::vfs::NoteBinkMovieOpen(ctx.r3.u32, base);
 
   // r4 is the file name handed to BinkOpen (`sub_832BB4B8(a2, *(a1 + 224))`). Capturing
   // it is what lets the host play the video itself rather than scraping the guest's
