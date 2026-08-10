@@ -115,6 +115,15 @@ public static class Engine_LevelProps
         Func<string, byte[]?> read,
         Refii.Lighting.LightProbeField? probes,
         Refii.Lighting.LightingFrame? lighting,
+        out PropBuildStats stats) =>
+        Build(level, read, probes, lighting, null, out stats);
+
+    public static Node3D? Build(
+        LevelEntry level,
+        Func<string, byte[]?> read,
+        Refii.Lighting.LightProbeField? probes,
+        Refii.Lighting.LightingFrame? lighting,
+        Refii.Lighting.LightmapContainer? bakes,
         out PropBuildStats stats)
     {
         stats = new PropBuildStats();
@@ -308,6 +317,7 @@ public static class Engine_LevelProps
             }
 
             block.Instances.Add(transform);
+            block.InstanceKeys.Add(placement.Hash);
             stats.Instances++;
 
             bool clocktowerBasePrimary = NormalisePath(modelPath).Contains(
@@ -335,7 +345,22 @@ public static class Engine_LevelProps
             return null;
         }
 
+        ReportVertexBakeFit(bakes, blocks, order);
+
+        var bakeKeys = new HashSet<uint>();
+        if (bakes is not null)
+        {
+            foreach (KeyValuePair<ulong, uint[]> bake in bakes.VertexBakes)
+            {
+                bakeKeys.Add((uint)bake.Key);
+            }
+        }
+
         var container = new Engine_PropStreamer { Name = NodeName };
+
+        // The streamer reads the .lmp back out of the bank when it needs a bake, so the saved
+        // scene carries the path rather than a million baked colours.
+        container.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.LevelGdbMeta, gdbPath);
 
         foreach (string key in order)
         {
@@ -352,8 +377,21 @@ public static class Engine_LevelProps
                     };
 
                     single.SetMeta(Engine_PropStreamer.ModelPathMeta, block.ModelPath);
-                    Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
-                        single, block.Instances[i].Origin, probes, lighting);
+
+                    // An authored per-vertex bake outranks the probe field — that is the guest's
+                    // own priority order (per-vertex D3DCOLOR, then object lightmap, then
+                    // probes), and it is authored data rather than something we resample. Only
+                    // the KEY is stored; the streamer resolves it once the mesh is standing and
+                    // can check the bake actually fits.
+                    if (i < block.InstanceKeys.Count && bakeKeys.Contains(block.InstanceKeys[i]))
+                    {
+                        single.SetMeta(
+                            Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta,
+                            (long)block.InstanceKeys[i]);
+                    }
+
+                    Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(
+                        single, block.Instances[i].Origin, probes);
                     container.AddChild(single);
                 }
 
@@ -361,9 +399,12 @@ public static class Engine_LevelProps
                 continue;
             }
 
+            // UseColors BEFORE InstanceCount — Godot fixes the buffer format when the count is
+            // set, and turning colours on afterwards silently does nothing.
             var multiMesh = new MultiMesh
             {
                 TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
+                UseColors = true,
                 InstanceCount = block.Instances.Count,
             };
 
@@ -374,6 +415,21 @@ public static class Engine_LevelProps
                 bounds = bounds.Expand(block.Instances[i].Origin);
             }
 
+            // ONE PROBE SAMPLE PER INSTANCE, not one per block.
+            //
+            // A block is every placement of the same model in the region — this level's foliage
+            // is 10,836 instances across 21 models — so a single sample taken at the centre of
+            // their combined bounds lit every tree in the level identically, from a point that
+            // is as likely to be inside a building as under open sky. Godot's per-instance
+            // colour is the native place for this and it survives the pack, which the node's
+            // instance uniforms do not.
+            //
+            // The L1 bands are dropped here and the flat L0 kept: a MultiMesh instance carries
+            // one colour, and L0 is the dominant term by a wide margin (0.60 average against
+            // ±0.27 for L1 across this region).
+            bool coloured = Refii.Lighting.Engine_LevelBakedLighting.ApplyMultiMeshProbes(
+                multiMesh, block.Instances, probes);
+
             multiMesh.CustomAabb = bounds.Grow(ModelReach);
 
             var node = new MultiMeshInstance3D
@@ -383,8 +439,16 @@ public static class Engine_LevelProps
             };
 
             node.SetMeta(Engine_PropStreamer.ModelPathMeta, block.ModelPath);
-            Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
-                node, bounds.GetCenter(), probes, lighting);
+            if (coloured)
+            {
+                node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeModeMeta, 2);
+            }
+            else
+            {
+                Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(
+                    node, bounds.GetCenter(), probes);
+            }
+
             container.AddChild(node);
 
             stats.Blocks++;
@@ -786,6 +850,90 @@ public static class Engine_LevelProps
         return copy;
     }
 
+    /// <summary>
+    /// Does a shipped per-vertex bake actually FIT the mesh we parsed for that placement?
+    ///
+    /// The key mapping is settled — every one of this region's 586 bakes resolves to a
+    /// placement — but a matching key only proves we found the right bake, not that our .mdl
+    /// reader produced the same vertices in the same order the bake was authored against. The
+    /// guest asserts on size alone (`4 * totalVertices == bufferSize`), and so can we; a
+    /// mismatch here kills the whole approach before any of it is built, and an exact match
+    /// across hundreds of models is strong evidence the ORDER agrees too.
+    ///
+    /// A sample, not a sweep: resolving every model at build time is what streaming exists to
+    /// avoid.
+    /// </summary>
+    private static void ReportVertexBakeFit(
+        Refii.Lighting.LightmapContainer? bakes,
+        Dictionary<string, PropBlockBuild> blocks,
+        List<string> order)
+    {
+        if (bakes is null || bakes.VertexBakes.Count == 0)
+        {
+            return;
+        }
+
+        var byLowKey = new Dictionary<uint, int>();
+        foreach (KeyValuePair<ulong, uint[]> bake in bakes.VertexBakes)
+        {
+            byLowKey[(uint)bake.Key] = bake.Value.Length;
+        }
+
+        int matched = 0, fits = 0, misfits = 0, unresolved = 0;
+        string sample = string.Empty;
+
+        foreach (string key in order)
+        {
+            if (matched >= 24)
+            {
+                break;
+            }
+
+            PropBlockBuild block = blocks[key];
+            for (int i = 0; i < block.Instances.Count && matched < 24; i++)
+            {
+                if (i >= block.InstanceKeys.Count ||
+                    !byLowKey.TryGetValue(block.InstanceKeys[i], out int bakeVerts))
+                {
+                    continue;
+                }
+
+                ++matched;
+
+                ArrayMesh? mesh = Engine_PropStreamer.Resolve(block.ModelPath);
+                if (mesh is null || mesh.GetSurfaceCount() == 0)
+                {
+                    ++unresolved;
+                    continue;
+                }
+
+                int meshVerts = 0;
+                for (int s = 0; s < mesh.GetSurfaceCount(); s++)
+                {
+                    meshVerts += mesh.SurfaceGetArrays(s)[(int)Mesh.ArrayType.Vertex]
+                        .AsVector3Array().Length;
+                }
+
+                if (meshVerts == bakeVerts)
+                {
+                    ++fits;
+                }
+                else
+                {
+                    ++misfits;
+                    if (sample.Length == 0)
+                    {
+                        sample = $" first misfit: {NameOf(block.ModelPath)} " +
+                            $"bake={bakeVerts} mesh={meshVerts}";
+                    }
+                }
+            }
+        }
+
+        GD.Print($"[bakefit] sampled={matched} fit={fits} misfit={misfits} " +
+            $"unresolved={unresolved}{sample}");
+    }
+
     private sealed class PropBlockBuild
     {
         public PropBlockBuild(string modelPath, string label)
@@ -799,6 +947,15 @@ public static class Engine_LevelProps
         public string Label { get; }
 
         public List<Transform3D> Instances { get; } = new();
+
+        /// <summary>
+        /// The placement id behind each instance, or 0 where the source did not carry one.
+        ///
+        /// Parallel to <see cref="Instances"/> because the .lmp binds a baked vertex buffer to
+        /// a PLACEMENT, not to a model — grouping by model is what lets us share a mesh, and it
+        /// is exactly what throws away the identity the bake is keyed on.
+        /// </summary>
+        public List<uint> InstanceKeys { get; } = new();
     }
 
     private static void AppendEngineLevelBlocks(
@@ -845,7 +1002,7 @@ public static class Engine_LevelProps
             int emitted = 0;
             foreach (EngineLevelInstance instance in block.Instances)
             {
-                Transform3D transform = BuildEngineLevelTransform(instance.Values);
+                Transform3D transform = BuildStaticPlacementTransform(instance.Values);
                 if (!transformKeys.Add(TransformKey(transform, modelPath)))
                 {
                     continue;
@@ -899,7 +1056,8 @@ public static class Engine_LevelProps
 
             foreach (EngineLevelInstance instance in block.Instances)
             {
-                Transform3D transform = BuildEngineLevelTransform(instance.Values);
+                Transform3D transform =
+                    BuildFoliageTransform(instance.Values, instance.Rotation);
                 build.Instances.Add(transform);
                 transformKeys.Add(TransformKey(transform, modelPath));
             }
@@ -917,16 +1075,168 @@ public static class Engine_LevelProps
         }
     }
 
-    public static Transform3D BuildEngineLevelTransform(float[] values)
+    /// <summary>
+    /// A FOLIAGE (type-21) instance's transform.
+    ///
+    /// Type 21 ships a quaternion and a half-float scale, which
+    /// <see cref="Engine_EngineLevelFile"/> reduces to a yaw sin/cos pair in
+    /// <c>values[6]/[7]</c> and a uniform scale broadcast into <c>values[9..11]</c>. That
+    /// synthesis is why this reads the slots it does — they are ours, not the file's.
+    ///
+    /// Static props do NOT share this shape; see
+    /// <see cref="BuildStaticPlacementTransform"/>. They used to, and it silently threw away
+    /// every prop's real orientation.
+    /// </summary>
+    public static Transform3D BuildFoliageTransform(float[] values) =>
+        BuildFoliageTransform(values, null);
+
+    /// <summary>
+    /// A foliage instance's transform, from its full authored rotation when the record has
+    /// one and from the yaw pair when it does not.
+    ///
+    /// Type-21 v12 ships a quaternion; the parser also reduces it to a yaw sin/cos pair, and
+    /// using only that stands every plant bolt upright. Real foliage is authored leaning —
+    /// on banks, against walls, out of a wall's cracks — and that lean is pitch and roll,
+    /// exactly what the yaw reduction discards. v11 records carry no quaternion, so they keep
+    /// the old path.
+    /// </summary>
+    public static Transform3D BuildFoliageTransform(
+        float[] values, System.Numerics.Quaternion? rotation)
     {
         float sx = values[9] == 0f ? 1f : values[9];
         float sy = values[10] == 0f ? sx : values[10];
         float sz = values[11] == 0f ? sx : values[11];
 
+        var origin = new Vector3(values[0], values[2], values[1]);
+
+        if (rotation is not { } q || !float.IsFinite(q.X) || !float.IsFinite(q.W))
+        {
+            return new Transform3D(YawScaleBasis(values[6], values[7], sx, sy, sz), origin);
+        }
+
+        float lengthSquared = (q.X * q.X) + (q.Y * q.Y) + (q.Z * q.Z) + (q.W * q.W);
+        if (lengthSquared < 1e-8f)
+        {
+            return new Transform3D(YawScaleBasis(values[6], values[7], sx, sy, sz), origin);
+        }
+
+        // The guest's own quaternion-to-matrix, sub_8220C8F0: s = 2/|q|^2, and it produces the
+        // ROW-vector form whose rows are the local axes in guest world space.
+        float s = 2f / lengthSquared;
+        var localX = new Vector3(
+            1f - (s * ((q.Y * q.Y) + (q.Z * q.Z))),
+            s * ((q.X * q.Y) + (q.Z * q.W)),
+            s * ((q.X * q.Z) - (q.Y * q.W)));
+        var localY = new Vector3(
+            s * ((q.X * q.Y) - (q.Z * q.W)),
+            1f - (s * ((q.X * q.X) + (q.Z * q.Z))),
+            s * ((q.Y * q.Z) + (q.X * q.W)));
+        var localZ = new Vector3(
+            s * ((q.X * q.Z) + (q.Y * q.W)),
+            s * ((q.Y * q.Z) - (q.X * q.W)),
+            1f - (s * ((q.X * q.X) + (q.Y * q.Y))));
+
+        // Same column order as BuildStaticPlacementTransform, and for the same reason: the mesh
+        // is already mapped by M(x,y,z) = (x, z, -y) while placements use P(x,y,z) = (x, z, y),
+        // so the basis is P * R * M^-1 and M^-1 sends e0,e1,e2 to localX, localZ and -localY.
         return new Transform3D(
-            YawScaleBasis(values[6], values[7], sx, sy, sz),
-            new Vector3(values[0], values[2], values[1]));
+            new Basis(
+                GuestToGodot(localX) * sx,
+                GuestToGodot(localZ) * sz,
+                -GuestToGodot(localY) * sy),
+            origin);
     }
+
+    /// <summary>
+    /// A STATIC PLACEMENT's (type-2) world transform, built the way the guest builds it.
+    ///
+    /// The file states the basis AXES directly — there is no yaw scalar, no Euler triple and
+    /// no quaternion on disk for this record type. sub_82AB9CF8 reads four vec3s in file
+    /// order through sub_82A21910 (0x82ABA040, 0x82ABA04C, 0x82ABA058, 0x82ABA064) into four
+    /// separate stack slots, then at 0x82ABA5A0 copies vec#1 to pair+0 and vec#2 to pair+16
+    /// and hands the pair to sub_821B0068 (0x82ABA694).
+    ///
+    /// sub_821B0068 takes A = pair+0 and B = pair+16 and lays down rows
+    /// [cross(B,A), B, A, (0,0,0,1)] — the cross is B.yzx*A.zxy - B.zxy*A.yzx, which is
+    /// cross(B, A). Against the world basis being X = cross(fwd,up), Y = fwd, Z = up, that
+    /// fixes A = UP and B = FORWARD. So:
+    ///
+    ///   values[0..2]  position        values[3..5]  UP        values[6..8]  FORWARD
+    ///   values[9..11] READ AND DISCARDED by the guest (no reader on this path)
+    ///   values[12]    uniform scale
+    ///
+    /// The guest then stores quaternion at record+0x10, position at +0x20 and ONE scale
+    /// float at +0x30 (0x82ABA6A8-0x82ABA6D4), and sub_82AA2F38 multiplies all three
+    /// rotation rows by splats of that single float — the scale is uniform, not per-axis.
+    ///
+    /// WHAT THIS REPLACED: values[6] and values[7] were being read as a yaw sin/cos pair and
+    /// values[9..11] as a per-axis scale — the FOLIAGE shape. On a static placement those
+    /// are the first two components of the forward vector and the vector the guest throws
+    /// away, so every prop was oriented from two thirds of its forward axis, with the real
+    /// up vector, the third forward component and the real scale all ignored.
+    ///
+    /// The guest launders the basis through matrix -> quaternion -> matrix, and the quat to
+    /// matrix step divides by |q|^2, so the round trip orthonormalises. Building the axes
+    /// directly is exact for well-formed data and the normalisation here matches what that
+    /// round trip would have done to anything else.
+    /// </summary>
+    public static Transform3D BuildStaticPlacementTransform(float[] values)
+    {
+        // Guest space throughout, because the cross product has to happen BEFORE the change
+        // of basis: the guest-to-Godot map is a reflection, and cross does not commute with
+        // one — S(a x b) = -(S a x S b). Crossing after converting silently flips every
+        // prop's right axis.
+        var up = new Vector3(values[3], values[4], values[5]);
+        var forward = new Vector3(values[6], values[7], values[8]);
+
+        float scale = float.IsFinite(values[12]) && values[12] > 0.0001f ? values[12] : 1f;
+
+        Vector3 right = forward.Cross(up);
+        if (!up.IsFinite() || !forward.IsFinite() || right.LengthSquared() < 1e-12f)
+        {
+            // Degenerate or parallel axes: the orientation is unrecoverable, so place it
+            // upright rather than emitting a zero basis that collapses the mesh to nothing.
+            return new Transform3D(
+                Basis.Identity.Scaled(new Vector3(scale, scale, scale)),
+                GuestToGodot(new Vector3(values[0], values[1], values[2])));
+        }
+
+        right = right.Normalized();
+        forward = forward.Normalized();
+        up = right.Cross(forward).Normalized();
+
+        // THE MESH IS NOT IN GUEST SPACE. Engine_MdlGeometry.ConvertZUpToYUp has already
+        // mapped every vertex by M(x,y,z) = (x, z, -y) — a determinant +1 rotation — while
+        // placements use P(x,y,z) = (x, z, y), a reflection. The two differ, so the basis has
+        // to absorb the difference as well as carry the rotation:
+        //
+        //     Basis * M(v) + origin  ==  P(R*v + t)     for every model vertex v
+        //  => Basis = P * R * M^-1,  origin = P(t)
+        //
+        // and M^-1 sends e0,e1,e2 to (1,0,0), (0,0,1), (0,-1,0), so R maps those to right,
+        // up and -forward. Hence the columns below — NOT right/forward/up in order, which is
+        // what it looks like it should be and is wrong by a swap and a sign.
+        //
+        // Equivalently this is (P R P) with column 2 negated, since M^-1 = P * diag(1,1,-1).
+        // That is exactly the shape RotationBasis and ToGodotBasis already use, which is the
+        // corroboration: the existing structure was right and only the SOURCE of the rotation
+        // was wrong.
+        return new Transform3D(
+            new Basis(
+                GuestToGodot(right) * scale,
+                GuestToGodot(up) * scale,
+                -GuestToGodot(forward) * scale),
+            GuestToGodot(new Vector3(values[0], values[1], values[2])));
+    }
+
+    /// <summary>
+    /// Guest space to the level scene's INTERNAL space — the half of the conversion that
+    /// lives on the placement. <c>Engine_LevelScene</c> gives the level root
+    /// <c>Scale = (-1, 1, 1)</c>, and the two compose to a determinant +1 rotation; see
+    /// <c>GameWorld.ToGodot</c>, which carries the net map because the camera is a sibling
+    /// of the region rather than a child.
+    /// </summary>
+    private static Vector3 GuestToGodot(Vector3 guest) => new(guest.X, guest.Z, guest.Y);
 
     private static List<GdbView> LoadSupplementalViews(Func<string, byte[]?> read)
     {

@@ -128,6 +128,17 @@ public static class Engine_LevelScene
             GD.Print(
                 $"[baked] {level}: {Engine_LevelBakedLighting.Describe(bakedLightmaps, probeField)}");
 
+            // THE KEY TEST. The guest binds a per-vertex bake to a placement by a 64-bit id it
+            // copies verbatim out of the level descriptor, and our engine-level records carry a
+            // 64-bit Hash. If those are the same number space, the 586 vertex bakes we decode
+            // and ignore can be attached to the props they belong to; if they are not, nothing
+            // downstream of this is worth building. Counted rather than argued.
+            if (bakedLightmaps is not null)
+            {
+                Engine_LevelBakedLighting.ReportBakeKeyMatch(
+                    bakedLightmaps, bakedGdbPath, p => source(p));
+            }
+
             if (bakedLightmaps is not null &&
                 terrainNode.MaterialOverride is ShaderMaterial terrainSplat &&
                 Engine_LevelBakedLighting.TryPickTerrainLightmap(
@@ -137,6 +148,7 @@ public static class Engine_LevelScene
                 if (lightmapTexture is not null)
                 {
                     terrainSplat.SetShaderParameter("lightmap", lightmapTexture);
+                    terrainSplat.SetShaderParameter("has_lightmap", true);
                     GD.Print($"[baked] {level}: terrain lightmap 0x{terrainKey:X16} applied");
                 }
             }
@@ -178,10 +190,21 @@ public static class Engine_LevelScene
             }
         }
 
+        // The ground takes the theme's ambient and lightmap tint through the same call every
+        // prop does. Its bake comes from the .lmp texture rather than the probe field, so it
+        // stores no probe sample — the terrain shader gates on its own bound lightmap.
+        //
+        // Unlike a prop the terrain HAS its material here, so this survives the pack and the
+        // saved scene is already correct before anything runs.
+        if (lightingFrame is not null)
+        {
+            Engine_LevelBakedLighting.ApplyInstanceLighting(terrainNode, lightingFrame);
+        }
+
         if (source is not null)
         {
             Node3D? props = Engine_LevelProps.Build(
-                level, p => source(p), probeField, lightingFrame,
+                level, p => source(p), probeField, lightingFrame, bakedLightmaps,
                 out PropBuildStats propStats);
 
             if (props is not null)
@@ -269,7 +292,10 @@ public static class Engine_LevelScene
                         $"{lightingFrame.SunColour[2]:0.00})x{lightingFrame.SunEnergy:0.00} " +
                         $"shadow={lightingFrame.SunShadow} " +
                         $"ambient={(lightingFrame.HasAmbient ? lightingFrame.AmbientEnergy.ToString("0.00") : "probes")} " +
-                        $"fog={(lightingFrame.HasFog ? $"{lightingFrame.FogBegin:0}->{lightingFrame.FogEnd:0}" : "off")}");
+                        $"fog={(lightingFrame.HasFog ? $"{lightingFrame.FogBegin:0}->{lightingFrame.FogEnd:0}" : "off")}" +
+                        $"@{lightingFrame.FogNearDensity:0.00}->{lightingFrame.FogDensity:0.00} " +
+                        $"fogrgb=({lightingFrame.FogColour[0]:0.000}," +
+                        $"{lightingFrame.FogColour[1]:0.000},{lightingFrame.FogColour[2]:0.000})");
                 }
 
                 Node3D? celestial = Engine_CelestialElements.Build(

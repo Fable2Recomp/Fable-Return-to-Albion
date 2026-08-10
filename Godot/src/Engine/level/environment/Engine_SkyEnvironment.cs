@@ -8,6 +8,12 @@ public static class Engine_SkyEnvironment
 {
     public const string ShaderPath = "res://src/Engine/level/environment/sky.gdshader";
 
+    /// <summary>
+    /// Name of the region's environment node. It is also the address everything in the region
+    /// looks the lighting up at, so it is a constant rather than a literal in two places.
+    /// </summary>
+    public const string NodeName = "SkyEnvironment";
+
     public const string EnvironmentThemesPath = "environmentthemes/environmentthemes.gdb";
 
     public const string GlobalsPath = "globals/globals.gdb";
@@ -61,7 +67,7 @@ public static class Engine_SkyEnvironment
             $"sun=({frame.SunDirection[0]:0.00},{frame.SunDirection[1]:0.00},{frame.SunDirection[2]:0.00}) " +
             $"ray={frame.SkyParams[2]:0.00} mie={frame.SkyParams[3]:0.00}");
 
-        var node = new Engine_SkyEnvironmentNode { Name = "SkyEnvironment", Environment = environment };
+        var node = new Engine_SkyEnvironmentNode { Name = NodeName, Environment = environment };
         node.Initialise(sky, timeOfDay, levelGdbPath);
         return node;
     }

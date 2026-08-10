@@ -59,6 +59,15 @@ public partial class Engine_EntityInstance : MeshInstance3D
         if (mesh.GetSurfaceCount() != 0)
         {
             Mesh = mesh;
+
+            // Light it in the same breath as assembling it. Until the mesh is set this node has
+            // no material, and Godot drops an instance shader parameter written to a node whose
+            // material it cannot resolve — so the probe sample stored at build time reaches the
+            // surface HERE or not at all. Missing it leaves the entity on the shader's bare
+            // defaults, which is no bake and no ambient: a solid black silhouette standing in a
+            // correctly lit street.
+            Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
+                this, Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting);
         }
     }
 

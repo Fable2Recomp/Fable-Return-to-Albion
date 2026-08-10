@@ -55,6 +55,21 @@ public sealed class SkyTheme
     public float SunAxisZOffset { get; set; }
     public float SunAxisXyRotation { get; set; }
     public float MainLightTimeFactor { get; set; } = 1.0f;
+
+    /// <summary>
+    /// The main light's elevation at 0, 6, 12 and 18 hours, IN DEGREES.
+    ///
+    /// The sun's height is authored as four keyframes and cosine-blended between them; it is
+    /// not derived from a single axis tilt. `sub_821DF670` reads them at theme+864/880/896/912
+    /// and converts with 0.017453292, which is what proves the unit.
+    /// </summary>
+    public float[] MainLightElevation { get; } = { 26.0f, 26.0f, 26.0f, 26.0f };
+
+    public bool HasMainLightElevation { get; set; }
+
+    /// <summary>The light rig's Z rotation, in degrees. The ONLY azimuth offset the main
+    /// light gets — SunAxisXYRotationOffset belongs to a different vector.</summary>
+    public float LightRigXyRotation { get; set; }
     public float MoonIntensity { get; set; } = 1.0f;
     public float MoonSize { get; set; } = 1.0f;
     public float MoonGlareIntensity { get; set; }
@@ -236,6 +251,13 @@ public static class EnvHash
     public const uint SunAxisZOffset = 0x2EF474B9;
     public const uint SunAxisXyRotationOffset = 0x2E4D729C;
     public const uint TimeFactor = 0x703AEFF3;
+
+    // Lighting group. FNV-1 of the property names the guest registers at 0x83289A7C onward.
+    public const uint MainLightElevation0 = 0xFFC79021;
+    public const uint MainLightElevation6 = 0xFFC79027;
+    public const uint MainLightElevation12 = 0xC727E252;
+    public const uint MainLightElevation18 = 0xC727E258;
+    public const uint LightRigXyRotation = 0x3E2D0280;
 
     public const uint NearDistance = 0xDA3F7AAA;
     public const uint NearDensity = 0x91F00AC5;
@@ -614,6 +636,26 @@ public static class Engine_EnvironmentTheme
                     theme.HasMainLightColour = true;
                     any = true;
                 }
+
+                // The sun's PATH. These live in the Lighting record, not in Sky — the guest
+                // registers MainLightElevation0/6/12/18, TimeFactor and LightRigXYRotation
+                // against the "Lighting" group and only SunAxis* against "Sky".
+                any |= Param(lighting, EnvHash.MainLightElevation0,
+                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[0] = v; });
+                any |= Param(lighting, EnvHash.MainLightElevation6,
+                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[1] = v; });
+                any |= Param(lighting, EnvHash.MainLightElevation12,
+                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[2] = v; });
+                any |= Param(lighting, EnvHash.MainLightElevation18,
+                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[3] = v; });
+                any |= Param(lighting, EnvHash.LightRigXyRotation,
+                    v => theme.LightRigXyRotation = v);
+
+                if (ReadFloat(lighting, EnvHash.TimeFactor, out float lightingTimeFactor) &&
+                    float.IsFinite(lightingTimeFactor) && lightingTimeFactor > 0f)
+                {
+                    theme.MainLightTimeFactor = lightingTimeFactor;
+                }
             }
 
             return any;
@@ -889,7 +931,7 @@ public static class Engine_EnvironmentTheme
                 float time = 0.5f;
                 if (ReadFloat(entry, EnvHash.TimeOfDay, out float readTime))
                 {
-                    time = NormalizeTimeOfDay(readTime);
+                    time = Refii.Lighting.Chain.NormalizeTimeOfDay(readTime);
                 }
 
                 float distance = Math.Abs(time - TargetTime);
@@ -904,27 +946,6 @@ public static class Engine_EnvironmentTheme
             }
 
             return found;
-        }
-
-        internal static float NormalizeTimeOfDay(float time)
-        {
-            if (!float.IsFinite(time))
-            {
-                return 0.5f;
-            }
-
-            if (time > 1.0f && time <= 24.0f)
-            {
-                time *= 1.0f / 24.0f;
-            }
-
-            time -= MathF.Floor(time);
-            if (time < 0.0f)
-            {
-                time += 1.0f;
-            }
-
-            return time;
         }
 
         private RecordRef FindDaySet(bool levelOnly)

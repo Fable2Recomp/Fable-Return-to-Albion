@@ -25,6 +25,12 @@ public partial class Engine_PropStreamer : Node3D
 
     private int _failed;
 
+    /// <summary>Failures whose path is in no bank — the index invented the name.</summary>
+    private int _absent;
+
+    /// <summary>Failures whose bytes are there and would not decode — a reader defect.</summary>
+    private int _undecodable;
+
     private bool _reported;
 
     [Export] public double MillisecondsPerFrame { get; set; } = 25.0;
@@ -135,8 +141,12 @@ public partial class Engine_PropStreamer : Node3D
         if (!_reported)
         {
             _reported = true;
+            GD.Print($"[props] vertex bakes applied={_bakeApplied} misfit={_bakeMisfit}");
             GD.Print($"[props] streamed {_loaded} model(s)" +
-                (_failed == 0 ? string.Empty : $", {_failed} failed"));
+                (_failed == 0
+                    ? string.Empty
+                    : $", {_failed} failed ({_absent} absent from every bank, " +
+                      $"{_undecodable} present but would not decode)"));
         }
     }
 
@@ -144,6 +154,56 @@ public partial class Engine_PropStreamer : Node3D
         instance is MultiMeshInstance3D multi && multi.Multimesh is not null
             ? multi.Multimesh.InstanceCount
             : 1;
+
+    /// <summary>
+    /// The region's lighting, from the one node that owns it.
+    ///
+    /// Resolved per call rather than cached: streaming runs for many frames and the time of day
+    /// can move while it does, so a prop that arrives late has to be lit for the moment it
+    /// arrives rather than for the moment streaming started.
+    /// </summary>
+    private static Refii.Lighting.LightingFrame? RegionLighting() =>
+        Engine_SkyEnvironmentNode.Current?.Lighting;
+
+    /// <summary>
+    /// Swaps in a per-placement copy of the mesh carrying the level's AUTHORED per-vertex bake,
+    /// when this placement has one and it fits.
+    ///
+    /// This is the guest's highest-priority lighting mode and it is real shipped data: 586 of
+    /// them for this region, every one resolvable to a placement. It outranks the probe field,
+    /// so the mode flag is raised to 3 and the probe sample the node is also carrying goes
+    /// unused — matching the guest, which picks one mode per instance rather than blending.
+    /// </summary>
+    private void ApplyVertexBake(MeshInstance3D node, ArrayMesh mesh)
+    {
+        if (node.GetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, default)
+            is not { VariantType: Variant.Type.Int } stored)
+        {
+            return;
+        }
+
+        string gdbPath = GetMeta(
+            Refii.Lighting.Engine_LevelBakedLighting.LevelGdbMeta, string.Empty).AsString();
+
+        ArrayMesh? baked = Refii.Lighting.Engine_LevelBakedLighting.TryBuildVertexBake(
+            Refii.Lighting.Engine_LevelBakedLighting.ContainerFor(gdbPath),
+            (uint)stored.AsInt64(),
+            mesh);
+
+        if (baked is null)
+        {
+            ++_bakeMisfit;
+            return;
+        }
+
+        node.Mesh = baked;
+        node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeModeMeta, 3);
+        ++_bakeApplied;
+    }
+
+    private int _bakeApplied;
+
+    private int _bakeMisfit;
 
     private void Step(GeometryInstance3D instance)
     {
@@ -158,13 +218,28 @@ public partial class Engine_PropStreamer : Node3D
 
             path = instance.GetMeta(ModelPathMeta).AsString();
 
-            ArrayMesh? mesh = Resolve(path);
+            ArrayMesh? mesh = Resolve(path, out bool present);
             if (mesh is null)
             {
                 _failed++;
-                if (_failed <= 8)
+
+                // WHICH failure, not just that there was one. "Absent" means the path we
+                // asked for is in no bank — an index that synthesised a name by convention
+                // rather than reading one, which is a different defect from a model that is
+                // there and will not decode. The two were indistinguishable and the counts
+                // got attributed to the parser.
+                if (present)
                 {
-                    GD.Print($"[props] stream failed: {path}");
+                    _undecodable++;
+                }
+                else
+                {
+                    _absent++;
+                }
+
+                if (_failed <= 32)
+                {
+                    GD.Print($"[props] stream failed ({(present ? LastError : "absent from every bank")}): {path}");
                 }
 
                 return;
@@ -184,7 +259,16 @@ public partial class Engine_PropStreamer : Node3D
             else if (instance is MeshInstance3D single)
             {
                 single.Mesh = mesh;
+                ApplyVertexBake(single, mesh);
             }
+
+            // LIGHT IT NOW, not at build time. Until this line the node had no material, and
+            // Godot will not carry an instance shader parameter on a node whose material it
+            // cannot see — so the lighting written while the scene was being built never
+            // reached the saved file and never reached the screen. The probe sample rode along
+            // as metadata instead; this is where it becomes shader state.
+            Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
+                instance, RegionLighting());
 
             _loaded++;
         }
@@ -198,8 +282,21 @@ public partial class Engine_PropStreamer : Node3D
         }
     }
 
-    public static ArrayMesh? Resolve(string virtualPath)
+    public static ArrayMesh? Resolve(string virtualPath) => Resolve(virtualPath, out _);
+
+    /// <summary>Why the last <see cref="Resolve(string, out bool)"/> returned null.</summary>
+    public static string LastError { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// The mesh at a virtual path, or null.
+    ///
+    /// <paramref name="present"/> separates the two ways null happens: false when the banks
+    /// hold no such entry at all, true when they do and it would not decode. Only the second
+    /// is a reader defect; the first says whatever produced the path invented it.
+    /// </summary>
+    public static ArrayMesh? Resolve(string virtualPath, out bool present)
     {
+        present = false;
         if (virtualPath.Length == 0)
         {
             return null;
@@ -208,6 +305,7 @@ public partial class Engine_PropStreamer : Node3D
         if (Cache.TryGetValue(virtualPath, out ArrayMesh? cached) &&
             GodotObject.IsInstanceValid(cached))
         {
+            present = true;
             return cached;
         }
 
@@ -217,8 +315,16 @@ public partial class Engine_PropStreamer : Node3D
             return null;
         }
 
+        present = true;
+
+        // The reader says WHY it gave up and this used to discard it, so fifteen models a
+        // level failed with no reason recorded anywhere.
         ArrayMesh? mesh = Engine_MdlMesh.TryCreateMesh(
-            bytes, virtualPath, out _, out _);
+            bytes, virtualPath, out string reason, out _);
+        if (mesh is null)
+        {
+            LastError = reason.Length != 0 ? reason : "no reason given";
+        }
 
         if (mesh is not null)
         {

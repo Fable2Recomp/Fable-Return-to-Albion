@@ -32,6 +32,19 @@ public sealed class LightingFrame
     public float FogBegin { get; set; }
 
     public float FogEnd { get; set; }
+
+    /// <summary>
+    /// How much fog the theme asks for AT <see cref="FogEnd"/>, in 0..1.
+    ///
+    /// The guest states a near and a far pair — a distance AND a density at each — so the far
+    /// density is a CEILING, not an implied 1.0. Dropping it and letting the ramp run to full
+    /// occlusion is what turned a stated 40% haze into a wall that swallowed the far half of
+    /// every region.
+    /// </summary>
+    public float FogDensity { get; set; } = 1.0f;
+
+    /// <summary>Density at <see cref="FogBegin"/>, in 0..1. Usually zero.</summary>
+    public float FogNearDensity { get; set; }
 }
 
 public static class Engine_LightingFrame
@@ -72,6 +85,10 @@ public static class Engine_LightingFrame
             Array.Copy(sky.FogColour, result.FogColour, 3);
             result.FogBegin = sky.NearDistance;
             result.FogEnd = sky.FarDistance;
+            result.FogNearDensity = Math.Clamp(sky.NearDensity, 0f, 1f);
+            result.FogDensity = float.IsFinite(sky.FarDensity) && sky.FarDensity > 0f
+                ? Math.Clamp(sky.FarDensity, 0f, 1f)
+                : 1.0f;
         }
 
         return result;

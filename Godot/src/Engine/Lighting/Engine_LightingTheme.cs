@@ -27,7 +27,6 @@ public static class LightingHash
     public const uint AmbientNormalMapDarkeningColourRed = 0x845F9A30;
     public const uint AmbientNormalMapDarkeningColourGreen = 0x06BBC2B0;
     public const uint AmbientNormalMapDarkeningColourBlue = 0x649C467B;
-    public const uint AmbientNormalMapDarkeningColourFactor = 0x2059168E;
 }
 
 public sealed class LightingTheme
@@ -38,7 +37,6 @@ public sealed class LightingTheme
     public bool HasAmbientColour { get; set; }
     public bool HasLightmapColour { get; set; }
     public bool HasDarkeningColour { get; set; }
-    public bool HasSunIntensity { get; set; }
     public bool HasDistantShadowFactor { get; set; }
     public bool HasLightZoneShadowCulling { get; set; }
 
@@ -47,7 +45,6 @@ public sealed class LightingTheme
     public float[] LightmapColour { get; } = { 1.0f, 1.0f, 1.0f };
     public float[] DarkeningColour { get; } = { 1.0f, 1.0f, 1.0f };
 
-    public float SunIntensity { get; set; } = 1.0f;
     public float MainLightShadowed { get; set; } = 1.0f;
     public float DistantShadowFactor { get; set; } = 1.0f;
     public float EnableLightZoneShadowCulling { get; set; }
@@ -130,23 +127,27 @@ public static class Engine_LightingTheme
             any = true;
         }
 
-        if (chain.ReadColourRecordField(lighting, LightingHash.AmbientNormalMapDarkeningColour, colour) ||
+        // NO FACTOR on this one. It is the only lighting colour the guest registers as type 1
+        // rather than type 2 (`dword_8349EB8C = 1` at 0x83288CA0), and the type-1 arm of the
+        // parser reads Red, Green and Blue only — 0x82A45768 / 0x82A457AC / 0x82A457F0 — then
+        // scales by 1/255 alone at 0x82A45A74. Reading a Factor here reads a field the guest
+        // never looks at.
+        if (chain.ReadColourRecordField(
+                lighting, LightingHash.AmbientNormalMapDarkeningColour, colour, useFactor: false) ||
             chain.ReadFlatColour(lighting, LightingHash.AmbientNormalMapDarkeningColourRed,
                 LightingHash.AmbientNormalMapDarkeningColourGreen,
                 LightingHash.AmbientNormalMapDarkeningColourBlue,
-                LightingHash.AmbientNormalMapDarkeningColourFactor, colour))
+                0, colour))
         {
             Array.Copy(colour, theme.DarkeningColour, 3);
             theme.HasDarkeningColour = true;
             any = true;
         }
 
-        if (chain.ReadFloat(lighting, EnvHash.SunIntensity, out float sunIntensity))
-        {
-            theme.SunIntensity = sunIntensity;
-            theme.HasSunIntensity = true;
-            any = true;
-        }
+        // SunIntensity is NOT a Lighting field. The guest registers it under the Sky record
+        // (`addi r29, r10, aSky@l` at 0x83288EA0, used as the record path at 0x83288EA8), so
+        // SkyTheme is where it belongs and reading it here found it only when a parent chain
+        // happened to leak it down.
 
         if (chain.ReadFloat(lighting, LightingHash.MainLightShadowed, out float shadowed))
         {
@@ -247,25 +248,35 @@ public sealed class Chain
         return found;
     }
 
-    private static float NormalizeTimeOfDay(float time)
+    /// <summary>
+    /// A day-set entry's TimeOfDay to a day fraction in [0,1).
+    ///
+    /// THE STORED VALUE IS CLOCK FORM, HH.MM — not decimal hours and not a fraction. The guest
+    /// takes it apart with integer arithmetic at <c>sub_82A46BD0</c>: it scales by 100 and
+    /// truncates (<c>fmuls f0, f31, f29</c> with f29 = 100.0 at 0x82A46CFC, <c>fctiwz</c> at
+    /// 0x82A46D0C), then divides and takes the remainder by 100 to get hours and minutes
+    /// (<c>divw r7, r11, r16</c> at 0x82A46D20, <c>mulli</c>/<c>subf</c> at 0x82A46D40), and
+    /// recombines as <c>hours/24 + (minutes/60)/24</c> — <c>fmadds f4, f5, f30, f9</c> at
+    /// 0x82A46D68 with f30 = 1/24 and f28 = 1/60.
+    ///
+    /// So 6.30 is half past six, 0.2708 of a day. Reading it as decimal hours gives 0.2625 and
+    /// reading it as an already-normalised fraction gives 6.30 wrapped to 0.30 — the first is
+    /// wrong by twenty minutes of game time, the second picks a different theme entirely. Both
+    /// land on a plausible-looking sun, which is why this needed the binary rather than a look
+    /// at the numbers.
+    /// </summary>
+    public static float NormalizeTimeOfDay(float time)
     {
-        if (!float.IsFinite(time))
+        if (!float.IsFinite(time) || time < 0.0f || time >= 24.0f)
         {
             return 0.5f;
         }
 
-        if (time > 1.0f && time <= 24.0f)
-        {
-            time *= 1.0f / 24.0f;
-        }
+        int clock = (int)(time * 100.0f);
+        int hours = clock / 100;
+        int minutes = clock % 100;
 
-        time -= MathF.Floor(time);
-        if (time < 0.0f)
-        {
-            time += 1.0f;
-        }
-
-        return time;
+        return (hours * (1.0f / 24.0f)) + (minutes * (1.0f / 60.0f) * (1.0f / 24.0f));
     }
 
     private RecordRef FindDaySet()
@@ -485,7 +496,18 @@ public sealed class Chain
         return true;
     }
 
-    public bool ReadColourRecordField(RecordRef record, uint fieldHash, float[] outColour)
+    public bool ReadColourRecordField(RecordRef record, uint fieldHash, float[] outColour) =>
+        ReadColourRecordField(record, fieldHash, outColour, useFactor: true);
+
+    /// <summary>
+    /// Reads a colour held as a child record with Red/Green/Blue/Factor fields.
+    ///
+    /// <paramref name="useFactor"/> exists because the guest's own parser distinguishes two
+    /// colour kinds and one of them has no Factor at all — see the type-1 note at the
+    /// AmbientNormalMapDarkeningColour read site.
+    /// </summary>
+    public bool ReadColourRecordField(
+        RecordRef record, uint fieldHash, float[] outColour, bool useFactor)
     {
         RecordRef colour = ResolveRecordField(record, fieldHash);
         if (!colour.Valid)
@@ -498,7 +520,8 @@ public sealed class Chain
             return false;
         }
 
-        if (ReadFloat(colour, EnvHash.Factor, out float factor) &&
+        if (useFactor &&
+            ReadFloat(colour, EnvHash.Factor, out float factor) &&
             float.IsFinite(factor) && factor > 0f)
         {
             outColour[0] *= factor;
@@ -509,6 +532,19 @@ public sealed class Chain
         return true;
     }
 
+    /// <summary>
+    /// GDB colour channels are authored 0..255 and the engine wants 0..1.
+    ///
+    /// The divisor is exactly 255 and there is no gamma step: <c>sub_82A44D08</c> holds
+    /// <c>flt_833216C8 = 0.0039215689</c> in f31 for the whole parse and applies it with a
+    /// single <c>fmuls</c> per channel — <c>fmuls f9, f12, f31</c> at 0x82A45644 — with no
+    /// <c>pow</c>, no table and no square anywhere in the function.
+    ///
+    /// NOT CLAMPED, deliberately. The guest does not clamp, and the values genuinely exceed
+    /// one: this region's LightmapColour comes out above five. Clamping the ratio before the
+    /// Factor multiply silently caps any channel authored at or past 255 and quietly changes
+    /// the hue of every tint that has one.
+    /// </summary>
     private static float ToLinearInput(float value) =>
-        Math.Clamp(value * (1f / 255f), 0f, 1f);
+        float.IsFinite(value) ? MathF.Max(value * (1f / 255f), 0f) : 0f;
 }

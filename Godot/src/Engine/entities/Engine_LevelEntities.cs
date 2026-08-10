@@ -117,8 +117,8 @@ public static class Engine_LevelEntities
                     Engine_EntityInstance.CombatMeta, ToDictionary(gameplay.CombatFields));
             }
 
-            Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
-                node, node.Transform.Origin, probes, lighting);
+            Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(
+                node, node.Transform.Origin, probes);
             container.AddChild(node);
             stats.Placed++;
         }

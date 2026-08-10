@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://c8lvlviewer01"]
+
+[ext_resource type="Script" path="res://src/tools/LevelViewer.cs" id="1_levelviewer"]
+
+[node name="LevelViewer" type="Node3D"]
+script = ExtResource("1_levelviewer")
