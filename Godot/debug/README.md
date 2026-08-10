@@ -22,8 +22,10 @@ Add `--headless` for anything that does not need to draw. The two viewers do.
 | `model_viewer` | Does the geometry LOOK right? Orbit + step through models; the only instrument that catches mirroring, bad winding, or wrong materials. |
 | `mip_cost` | What does completing the short mip chains cost? Times tail generation against the decode already being paid. |
 | `tex_mip_probe` | Dumps one texture's levels — shipped and synthesised — as PNGs. This is what separates a bad seed from a bad downsample from a bad encode; each of those looks identical on a model. |
+| `fx_check` | Does the particle data reach the effects, and where does the chain break? Bank parse, per-route resolution counts, how many survive the one-shot and dedup gates, and whether the textures exist. Replaces the keyword table that used to make a region look full of fires whether or not a binding had ever been read. |
 | `ui_export` | Converts every GUI screen and texture; prints the pass/fail counts that gate UI work. |
 | `ui_viewer` | Renders one converted GUI screen. |
+| `front_end_menu` | Does the Godot-owned front end LOOK and FEEL like the original? Drives the row menu and the boy/girl gender card with no guest. The slot bow, the auto-repeat curve and the card poses are all read out of shipped data and all look plausible when wrong, so a still is not enough — this is the only place they can be watched moving. |
 | `host_check` | Is the native host bridge present and at the expected ABI? |
 | `host_boot` | Does the guest boot in-process, running its own loop? |
 | `host_driven` | Does the guest run with GODOT driving it a slice per frame? The plan's "refii as a library". |
@@ -42,6 +44,16 @@ Add `--headless` for anything that does not need to draw. The two viewers do.
 - `REFII_MODEL_ZOOM` — multiplier on the framed distance (`0.15` to inspect surface detail)
 - `REFII_MAT_MODE` — `Full`, `NoNormal`, or `Albedo`; isolates a lighting fault from a
   texture-decode fault, which otherwise look alike
+
+`front_end_menu` takes:
+
+- `REFII_MENU_SCREEN` — a presentation to stand up behind the menu. Set it to
+  `frontendmainmenu` to source the row frames and the boy/girl cards from the real front end;
+  unset, the menu is labels only and the card draws stand-ins
+- `REFII_MENU_OPEN=card` — open the gender card immediately, so a capture run does not have to
+  synthesise a keypress to reach it
+- `REFII_MENU_SHOT` — write the viewport here and quit (outside the repository; a render of the
+  game's card art is derived data)
 
 `tex_mip_probe` takes:
 

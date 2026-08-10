@@ -255,6 +255,94 @@ public partial class ModelViewer : Node3D
 		GD.Print($"[viewer] {path}: {mesh.GetSurfaceCount()} surfaces, {vertices:N0} vertices, " +
 			$"extent {bounds.Size.X:F2}x{bounds.Size.Y:F2}x{bounds.Size.Z:F2}");
 
+		// THE MODEL'S OWN BONE TABLE. This is the index space a skinned mesh's BONES array
+		// addresses, and the live pose is numbered by the GUEST. If the two counts disagree
+		// then binding a skin by index is binding to the wrong bones, which is the difference
+		// between a character and a fan of spikes.
+		if (mesh.HasMeta(Refii.Models.Engine_MdlMesh.BoneParentsMeta))
+		{
+			int[] parents = mesh.GetMeta(Refii.Models.Engine_MdlMesh.BoneParentsMeta).AsInt32Array();
+			string[] names = mesh.GetMeta(Refii.Models.Engine_MdlMesh.BoneNamesMeta).AsStringArray();
+
+			int highest = -1;
+			for (int s = 0; s < mesh.GetSurfaceCount(); s++)
+			{
+				Godot.Collections.Array arrays = mesh.SurfaceGetArrays(s);
+				if (arrays.Count <= (int)Mesh.ArrayType.Bones ||
+					arrays[(int)Mesh.ArrayType.Bones].VariantType == Variant.Type.Nil)
+				{
+					continue;
+				}
+
+				foreach (int id in arrays[(int)Mesh.ArrayType.Bones].AsInt32Array())
+				{
+					if (id > highest)
+					{
+						highest = id;
+					}
+				}
+			}
+
+			// Whether the model brought its own rest pose decides whether a character can be
+			// stood up without the guest at all, so it is reported next to the bone count
+			// rather than left to be discovered by a skeleton that silently comes out flat.
+			bool hasRest = mesh.HasMeta(Refii.Models.Engine_MdlMesh.BoneRestMeta);
+			GD.Print($"[viewer]   skeleton: {parents.Length} bones, highest index used {highest}" +
+				(hasRest ? ", with local rest transforms" : ", NO rest transforms"));
+			// Grouped by prefix. A table where every name starts the same way is not a plain
+			// hierarchy, and the shape of it decides whether a mesh index means what we think.
+			var groups = new System.Collections.Generic.Dictionary<string, int>();
+			foreach (string n in names)
+			{
+				int cut = n.IndexOf('_');
+				string prefix = cut > 0 ? n[..cut] : n;
+				groups[prefix] = groups.TryGetValue(prefix, out int c) ? c + 1 : 1;
+			}
+
+			var summary = new System.Text.StringBuilder();
+			foreach (System.Collections.Generic.KeyValuePair<string, int> g in groups)
+			{
+				summary.Append($" {g.Key}x{g.Value}");
+			}
+
+			GD.Print($"[viewer]     prefixes:{summary}");
+
+			foreach (int b in new[] { 0, 1, 2, 40, 80, 128, 129, 130, names.Length - 2, names.Length - 1 })
+			{
+				if (b >= 0 && b < names.Length)
+				{
+					GD.Print($"[viewer]     bone {b} parent {parents[b]} '{names[b]}'");
+				}
+			}
+
+			// STAND THE RIG UP WITH NO GUEST, and check it against the mesh it has to fit.
+			//
+			// This is the bind half of skinning, on its own, offline. It is worth doing here
+			// rather than only in the game because the two halves fail in opposite directions
+			// and the game cannot separate them: a rig whose bones collapse into a point and
+			// one whose live pose flings them apart both arrive as "the character is wrong".
+			// The bind needs no guest, no camera and no region — so it should not be waiting
+			// on a run to be checked, and previously it was.
+			//
+			// The same engine path the game uses, deliberately. Passing the model's own names
+			// as the guest's makes the name map the identity, which exercises construction,
+			// the rest conversion and the skin without a guest to supply the other side.
+			if (Refii.Models.Engine_MdlRig.TryFrom(mesh) is { } rig)
+			{
+				if (Refii.Entities.Engine_EntitySkeleton.Build(rig, rig.Names) is { } stood)
+				{
+					Aabb bind = stood.Bounds(rest: true);
+					GD.Print($"[viewer]     bind bones pos={bind.Position} size={bind.Size}");
+					GD.Print($"[viewer]     mesh aabb  pos={bounds.Position} size={bounds.Size}");
+					stood.Node.QueueFree();
+				}
+				else
+				{
+					GD.Print("[viewer]     rig REFUSED — Godot would not take the model's bones");
+				}
+			}
+		}
+
 		// Name the source .tex each surface uses, with its mip level count. Tracking an
 		// artefact back from "the arches look wrong" to a file is otherwise guesswork, and
 		// the Godot material has already forgotten where its textures came from.

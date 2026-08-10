@@ -5,9 +5,26 @@ namespace Refii.Models;
 
 public static class Engine_MdlEngine
 {
-    public static bool TryParse(byte[] data, MdlInfo info)
+    /// <summary>Where the LOD payloads begin: magic(8) + version(4) + header size(4) + 88.</summary>
+    public const int BodyStart = 104;
+
+    /// <summary>
+    /// The 104-byte file header, without its body.
+    ///
+    /// This is the whole of what <c>globals_model_headers.bnk</c> ships, and it is a complete
+    /// record in its own right: the guest opens the header alone (<c>sub_82AB4C10</c>) and only
+    /// later byte-ranges the payloads out of the same logical file. So it is worth reading even
+    /// when the body is missing — it states how many bytes SHOULD have followed, which is the
+    /// difference between "the bank has no body entry for this model" and "our parser gave up".
+    ///
+    /// Field meanings are from the guest's own parse (<c>sub_82AB4DC8</c> / <c>sub_82B8F1B8</c>):
+    /// +8 version, +12 the remaining header size, +56 the LOD count, +60/+64/+68 the byte size
+    /// of each LOD's payload. The version gate is the guest's: <c>blt 0x21 / bgt 0x24</c>.
+    /// </summary>
+    public static bool TryReadFileHeader(byte[] data, MdlInfo info, out long bodyBytesStated)
     {
-        if (data.Length < 0x68) return false;
+        bodyBytesStated = 0;
+        if (data.Length < BodyStart) return false;
 
         string magic = System.Text.Encoding.ASCII.GetString(data, 0, 8);
         if (magic is not "MeshFile" and not "DefMeshF") return false;
@@ -17,8 +34,10 @@ public static class Engine_MdlEngine
         info.Magic = magic;
         r.Position = 8;
         if (!r.U32(out uint version)) return false;
+        if (version < 33 || version > 36) return false;
         info.Version = version;
         if (!r.U32(out uint hdrSize)) return false;
+        if (16 + hdrSize != BodyStart) return false;
         info.HeaderSize = hdrSize;
 
         info.FileBoundingSphere = new float[4];
@@ -35,21 +54,40 @@ public static class Engine_MdlEngine
         info.LodCount = lodCount;
 
         info.LodSizes = new uint[3];
-        long total = 0;
         for (uint i = 0; i < lodCount; i++)
         {
             if (!r.U32(out info.LodSizes[i])) return false;
-            total += info.LodSizes[i];
+            bodyBytesStated += info.LodSizes[i];
         }
 
-        if (104 + total != data.Length) return false;
+        return true;
+    }
+
+    public static bool TryParse(byte[] data, MdlInfo info)
+    {
+        if (!TryReadFileHeader(data, info, out long total)) return false;
+
+        var r = new MdlReader(data);
+        uint lodCount = info.LodCount;
+
+        // THE BODY MUST COVER WHAT THE HEADER STATES, and may be longer.
+        //
+        // Demanding equality throws out three shipped models that are longer than their own LOD
+        // table says — a 133-byte LOD 0 sitting in a 168-byte body entry — and they then fall
+        // through to the legacy scanner, which finds nothing, and read as a reader defect.
+        //
+        // The guest never compares the two. It builds LOD i's read as base = 104 + sum of the
+        // preceding sizes and length = size[i] (`sub_82AB4868`: `add r5, r9, r5` over the size
+        // array at mesh+84, then `rex_lhResourceManager_Open(nameHash, &h, r5, r6, 1, 1)`), so
+        // bytes past the last payload are simply never read. Trailing padding is not corruption.
+        if (BodyStart + total > data.Length) return false;
 
         var allRecords = new List<EngRecord>();
         var allHeaders = new List<EngMeshHeader>();
         uint outBoneCount = 0;
         var outHideRegions = new List<string>();
 
-        int off = 0x68;
+        int off = BodyStart;
         for (uint lod = 0; lod < lodCount; lod++)
         {
             long secEnd = off + info.LodSizes[lod];

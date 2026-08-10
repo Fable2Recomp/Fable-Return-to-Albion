@@ -14,6 +14,9 @@ public static class Engine_CelestialElements
     public const string AdditiveShaderPath =
         "res://src/Engine/level/environment/celestial/celestial_additive.gdshader";
 
+    public const string OverlayShaderPath =
+        "res://src/Engine/level/environment/celestial/celestial_overlay.gdshader";
+
     public const string StarsShaderPath =
         "res://src/Engine/level/environment/celestial/stars.gdshader";
 
@@ -49,7 +52,9 @@ public static class Engine_CelestialElements
 
     public const float StarPhaseRate = 2.5f;
 
-    public const float Exposure = 10.0f;
+    public const float Exposure = 10.0f / 3.0f;
+
+    public const float MoonGlareFixedScale = 0.025f;
 
     public const int DefaultMoonPhase = 4;
 
@@ -94,7 +99,6 @@ public static class Engine_CelestialElements
             return null;
         }
 
-        float[] element = ElementParams(theme);
         AtmosphereState state = Engine_SkyAtmosphere.Compute(
             Engine_SkyAtmosphere.FromFrame(frame, theme));
         float[] sunTint = state.SunElementColour;
@@ -103,108 +107,19 @@ public static class Engine_CelestialElements
         Vector3 moon = ToGodot(frame.MoonDirection);
 
         var container = new Node3D { Name = NodeName };
-        var names = new List<string>();
-        int priority = 0;
-
-        if (frame.SkyParams[0] >= IntensityGate)
-        {
-            if (element[13] >= IntensityGate && theme.HasSunBeamsTexture)
-            {
-                Texture2D? beams = Load(theme.SunBeamsTextureHash, read, "sun beams");
-                if (beams is not null)
-                {
-                    container.AddChild(Billboard(
-                        "SunBeams", additiveShader, beams, sun, SunBeamsDistance,
-                        element[11] * SunBeamsSizeScale, element[12] * SunBeamsSizeScale,
-                        Scaled(sunTint, element[13] * Exposure), 1f, 0f, 0f, 1f, priority++));
-                    names.Add("beams");
-                }
-            }
-
-            if (theme.HasSunDiscTexture)
-            {
-                Texture2D? disc = Load(theme.SunDiscTextureHash, read, "sun disc");
-                if (disc is not null)
-                {
-                    float discScale = element[7] * Exposure;
-                    container.AddChild(Billboard(
-                        "SunDisc", mixShader, disc, sun, SunDiscDistance,
-                        element[6] * SunDiscSizeScale, element[6] * SunDiscSizeScale,
-                        new Vector3(
-                            element[8] * discScale,
-                            element[9] * discScale,
-                            element[10] * discScale),
-                        1f, 0f, 0f, 1f, priority++));
-                    names.Add("disc");
-                }
-            }
-
-            if (element[14] >= IntensityGate && theme.HasSunGlareTexture)
-            {
-                Texture2D? glare = Load(theme.SunGlareTextureHash, read, "sun glare");
-                if (glare is not null)
-                {
-                    container.AddChild(Billboard(
-                        "SunGlare", additiveShader, glare, sun, SunGlareDistance,
-                        element[15] * SunGlareSizeScale, element[15] * SunGlareSizeScale,
-                        Scaled(sunTint, element[14] * Exposure), 1f, 2f, 0f, 1f, priority++));
-                    names.Add("glare");
-                }
-            }
-        }
-
-        if (element[0] >= IntensityGate)
-        {
-            int phase = Math.Clamp(moonPhase, 0, 7);
-            float u0 = phase * MoonPhaseUStep;
-            float u1 = (phase + 1) * MoonPhaseUStep;
-
-            if (theme.HasMoonTexture)
-            {
-                Texture2D? disc = Load(theme.MoonTextureHash, read, "moon");
-                if (disc is not null)
-                {
-                    container.AddChild(Billboard(
-                        "Moon", mixShader, disc, moon, MoonBillboardDistance,
-                        element[1] * MoonSizeScale, element[1] * MoonSizeScale,
-                        new Vector3(
-                            0.5f * element[0] * Exposure,
-                            0.5f * element[0] * Exposure,
-                            element[4] * Exposure),
-                        element[4], 0f, u0, u1, priority++));
-                    names.Add("moon");
-                }
-            }
-
-            if (element[2] >= IntensityGate && theme.HasMoonGlareTexture)
-            {
-                Texture2D? glare = Load(theme.MoonGlareTextureHash, read, "moon glare");
-                if (glare is not null)
-                {
-                    float scale = element[2] * Exposure;
-                    container.AddChild(Billboard(
-                        "MoonGlare", additiveShader, glare, moon, MoonGlareDistance,
-                        element[3] * MoonGlareSizeScale, element[3] * MoonGlareSizeScale,
-                        new Vector3(scale, scale, scale), 1f, 0f, 0f, 1f, priority++));
-                    names.Add("moon glare");
-                }
-            }
-        }
-
-        if (element[5] >= IntensityGate)
-        {
-            MeshInstance3D? stars = Stars(element[5], priority++);
-            if (stars is not null)
-            {
-                container.AddChild(stars);
-                names.Add("stars");
-            }
-        }
+        EnsureElements(container, theme, read, moonPhase);
+        Update(container, theme, frame, read, moonPhase);
 
         if (container.GetChildCount() == 0)
         {
             container.QueueFree();
             return null;
+        }
+
+        var names = new List<string>();
+        foreach (Node child in container.GetChildren())
+        {
+            names.Add(child.Name.ToString());
         }
 
         GD.Print(
@@ -217,8 +132,114 @@ public static class Engine_CelestialElements
         return container;
     }
 
-    public static void Update(Node3D container, SkyTheme theme, SkyFrame frame)
+    public static void EnsureElements(
+        Node3D container,
+        SkyTheme theme,
+        Func<string, byte[]?> read,
+        int moonPhase = DefaultMoonPhase)
     {
+        Shader? mixShader = GD.Load<Shader>(MixShaderPath);
+        Shader? additiveShader = GD.Load<Shader>(AdditiveShaderPath);
+        if (mixShader is null || additiveShader is null)
+        {
+            return;
+        }
+
+        float[] element = ElementParams(theme);
+        int priority = container.GetChildCount();
+
+        if (theme.HasSunBeamsTexture &&
+            container.GetNodeOrNull<MeshInstance3D>("SunBeams") is null)
+        {
+            Texture2D? beams = Load(theme.SunBeamsTextureHash, read, "sun beams");
+            if (beams is not null)
+            {
+                container.AddChild(Billboard(
+                    "SunBeams", additiveShader, beams, Vector3.Up, SunBeamsDistance,
+                    element[11] * SunBeamsSizeScale, element[12] * SunBeamsSizeScale,
+                    Vector3.Zero, 1f, 0f, 0f, 1f, priority++));
+            }
+        }
+
+        if (theme.HasSunDiscTexture &&
+            container.GetNodeOrNull<MeshInstance3D>("SunDisc") is null)
+        {
+            Texture2D? disc = Load(theme.SunDiscTextureHash, read, "sun disc");
+            if (disc is not null)
+            {
+                container.AddChild(Billboard(
+                    "SunDisc", mixShader, disc, Vector3.Up, SunDiscDistance,
+                    element[6] * SunDiscSizeScale, element[6] * SunDiscSizeScale,
+                    Vector3.Zero, 1f, 0f, 0f, 1f, priority++, 1));
+            }
+        }
+
+        Shader overlayShader = GD.Load<Shader>(OverlayShaderPath) ?? additiveShader;
+
+        if (theme.HasSunGlareTexture &&
+            container.GetNodeOrNull<MeshInstance3D>("SunGlare") is null)
+        {
+            Texture2D? glare = Load(theme.SunGlareTextureHash, read, "sun glare");
+            if (glare is not null)
+            {
+                container.AddChild(Billboard(
+                    "SunGlare", overlayShader, glare, Vector3.Up, SunGlareDistance,
+                    element[15] * SunGlareSizeScale, element[15] * SunGlareSizeScale,
+                    Vector3.Zero, 1f, 2f, 0f, 1f, priority++));
+            }
+        }
+
+        int phase = Math.Clamp(moonPhase, 0, 7);
+        float u0 = phase * MoonPhaseUStep;
+        float u1 = (phase + 1) * MoonPhaseUStep;
+
+        if (theme.HasMoonTexture &&
+            container.GetNodeOrNull<MeshInstance3D>("Moon") is null)
+        {
+            Texture2D? moonDisc = Load(theme.MoonTextureHash, read, "moon");
+            if (moonDisc is not null)
+            {
+                container.AddChild(Billboard(
+                    "Moon", mixShader, moonDisc, Vector3.Up, MoonBillboardDistance,
+                    element[1] * MoonSizeScale, element[1] * MoonSizeScale,
+                    Vector3.Zero, element[4], 0f, u0, u1, priority++, 2));
+            }
+        }
+
+        if (theme.HasMoonGlareTexture &&
+            container.GetNodeOrNull<MeshInstance3D>("MoonGlare") is null)
+        {
+            Texture2D? moonGlare = Load(theme.MoonGlareTextureHash, read, "moon glare");
+            if (moonGlare is not null)
+            {
+                container.AddChild(Billboard(
+                    "MoonGlare", overlayShader, moonGlare, Vector3.Up, MoonGlareDistance,
+                    element[3] * MoonGlareSizeScale, element[3] * MoonGlareSizeScale,
+                    Vector3.Zero, 1f, 0f, 0f, 1f, priority++));
+            }
+        }
+
+        if (container.GetNodeOrNull<MeshInstance3D>("Stars") is null)
+        {
+            MeshInstance3D? stars = Stars(element[5], priority++);
+            if (stars is not null)
+            {
+                container.AddChild(stars);
+            }
+        }
+    }
+
+    public static void Update(
+        Node3D container,
+        SkyTheme theme,
+        SkyFrame frame,
+        Func<string, byte[]?>? read = null,
+        int moonPhase = DefaultMoonPhase)
+    {
+        EnsureElements(
+            container, theme,
+            read ?? Refii.Models.Engine_BnkMeshLoader.ReadBytes, moonPhase);
+
         float[] element = ElementParams(theme);
         AtmosphereState state = Engine_SkyAtmosphere.Compute(
             Engine_SkyAtmosphere.FromFrame(frame, theme));
@@ -226,8 +247,21 @@ public static class Engine_CelestialElements
 
         Vector3 sun = ToGodot(frame.SunDirection);
         Vector3 moon = ToGodot(frame.MoonDirection);
-        bool day = frame.SunDirection[1] > -0.05f;
-        bool night = frame.SunDirection[1] < 0.05f;
+        bool sunActive = frame.SkyParams[0] >= IntensityGate;
+
+        if (OS.GetEnvironment("REFII_CELESTIAL_DEBUG").Length != 0)
+        {
+            GD.Print(
+                $"[celestial-dbg] sun=({sun.X:0.00},{sun.Y:0.00},{sun.Z:0.00}) " +
+                $"moon=({moon.X:0.00},{moon.Y:0.00},{moon.Z:0.00}) " +
+                $"tint=({sunTint[0]:0.00},{sunTint[1]:0.00},{sunTint[2]:0.00}) " +
+                $"discCol=({element[8]:0.00},{element[9]:0.00},{element[10]:0.00}) " +
+                $"discInt={element[7]:0.000} moonInt={element[0]:0.000} " +
+                $"moonTrans={element[4]:0.000} moonGlareInt={element[2]:0.000} " +
+                $"sunActive={sunActive}");
+        }
+
+        Shader? overlay = null;
 
         foreach (Node child in container.GetChildren())
         {
@@ -237,34 +271,85 @@ public static class Engine_CelestialElements
                 continue;
             }
 
-            switch (child.Name.ToString())
+            string elementName = child.Name.ToString();
+            if (elementName is "SunGlare" or "MoonGlare" &&
+                material.Shader?.ResourcePath != OverlayShaderPath)
+            {
+                overlay ??= GD.Load<Shader>(OverlayShaderPath);
+                if (overlay is not null)
+                {
+                    material.Shader = overlay;
+                }
+            }
+
+            switch (elementName)
             {
                 case "SunBeams":
                     material.SetShaderParameter("element_dir", sun);
+                    material.SetShaderParameter("element_half", new Vector2(
+                        element[11] * SunBeamsSizeScale,
+                        element[12] * SunBeamsSizeScale));
                     material.SetShaderParameter("element_colour", new Vector4(
-                        sunTint[0] * element[13] * Exposure,
-                        sunTint[1] * element[13] * Exposure,
-                        sunTint[2] * element[13] * Exposure, 1f));
-                    mesh.Visible = day;
+                        sunTint[0] * element[13],
+                        sunTint[1] * element[13],
+                        sunTint[2] * element[13], 1f));
+                    mesh.Visible = sunActive && element[13] >= IntensityGate;
                     break;
                 case "SunDisc":
                     material.SetShaderParameter("element_dir", sun);
-                    mesh.Visible = day;
+                    material.SetShaderParameter("element_half", new Vector2(
+                        element[6] * SunDiscSizeScale,
+                        element[6] * SunDiscSizeScale));
+                    material.SetShaderParameter("element_colour", new Vector4(
+                        element[8] * element[7],
+                        element[9] * element[7],
+                        element[10] * element[7], 1f));
+                    mesh.Visible = sunActive && element[7] >= IntensityGate;
                     break;
                 case "SunGlare":
                     material.SetShaderParameter("element_dir", sun);
+                    material.SetShaderParameter("element_half", new Vector2(
+                        element[15] * SunGlareSizeScale,
+                        element[15] * SunGlareSizeScale));
                     material.SetShaderParameter("element_colour", new Vector4(
-                        sunTint[0] * element[14] * Exposure,
-                        sunTint[1] * element[14] * Exposure,
-                        sunTint[2] * element[14] * Exposure, 1f));
-                    mesh.Visible = day;
+                        sunTint[0] * element[14],
+                        sunTint[1] * element[14],
+                        sunTint[2] * element[14], 1f));
+                    material.SetShaderParameter("occlusion_half",
+                        element[6] * SunDiscSizeScale);
+                    material.SetShaderParameter("occlusion_distance", SunDiscDistance);
+                    mesh.Visible = sunActive && element[14] >= IntensityGate;
                     break;
                 case "Moon":
+                    material.SetShaderParameter("element_dir", moon);
+                    material.SetShaderParameter("element_half", new Vector2(
+                        element[1] * MoonSizeScale,
+                        element[1] * MoonSizeScale));
+                    material.SetShaderParameter("element_colour", new Vector4(
+                        0.5f * element[0],
+                        0.5f * element[0],
+                        0.5f * element[0],
+                        element[4]));
+                    mesh.Visible = element[0] >= IntensityGate;
+                    break;
                 case "MoonGlare":
                     material.SetShaderParameter("element_dir", moon);
+                    material.SetShaderParameter("element_half", new Vector2(
+                        element[3] * MoonGlareSizeScale,
+                        element[3] * MoonGlareSizeScale));
+                    float glareScale = MoonGlareFixedScale * element[2];
+                    material.SetShaderParameter("element_colour", new Vector4(
+                        glareScale, glareScale, glareScale, 1f));
+                    material.SetShaderParameter("occlusion_half",
+                        element[1] * MoonSizeScale);
+                    material.SetShaderParameter("occlusion_distance",
+                        MoonBillboardDistance);
+                    mesh.Visible =
+                        element[0] >= IntensityGate && element[2] >= IntensityGate;
                     break;
                 case "Stars":
-                    mesh.Visible = night;
+                    material.SetShaderParameter("star_brightness", element[5]);
+                    mesh.Visible = element[5] >= IntensityGate;
                     break;
             }
         }
@@ -302,7 +387,8 @@ public static class Engine_CelestialElements
         float facingPower,
         float u0,
         float u1,
-        int priority)
+        int priority,
+        int mode = 0)
     {
         var material = new ShaderMaterial { Shader = shader, RenderPriority = priority };
         material.SetShaderParameter("element_tex", texture);
@@ -312,6 +398,8 @@ public static class Engine_CelestialElements
         material.SetShaderParameter("element_colour",
             new Vector4(colour.X, colour.Y, colour.Z, alpha));
         material.SetShaderParameter("element_facing_power", facingPower);
+        material.SetShaderParameter("element_mode", mode);
+        material.SetShaderParameter("element_exposure", Exposure);
 
         return new MeshInstance3D
         {

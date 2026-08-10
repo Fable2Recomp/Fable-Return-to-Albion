@@ -19,6 +19,28 @@ public sealed class SplatMaterial
 
     public int DetailHeight { get; init; }
 
+    /// <summary>
+    /// The layer's normal maps, one per colour map.
+    /// </summary>
+    /// <remarks>
+    /// A landscape material is six texture names and four floats, and the second and fifth
+    /// names are normal maps — the .ehf record has always carried them and
+    /// <see cref="EhfLodEntry.BaseNormal"/> has always parsed them; nothing loaded them. The
+    /// guest binds them at samplers s2 and s14 beside their colour partners at s0 and s13, and
+    /// samples both with the SAME UV, so a layer's normal needs no addressing of its own.
+    /// </remarks>
+    public byte[] BaseNormalRgba { get; init; } = Array.Empty<byte>();
+
+    public int BaseNormalWidth { get; init; }
+
+    public int BaseNormalHeight { get; init; }
+
+    public byte[] DetailNormalRgba { get; init; } = Array.Empty<byte>();
+
+    public int DetailNormalWidth { get; init; }
+
+    public int DetailNormalHeight { get; init; }
+
     public float BaseTileScale { get; init; }
 
     public float DetailTileScale { get; init; }
@@ -62,6 +84,10 @@ public sealed class TerrainSplatData
 
     public byte[][] DetailSlices { get; init; } = Array.Empty<byte[]>();
 
+    public byte[][] BaseNormalSlices { get; init; } = Array.Empty<byte[]>();
+
+    public byte[][] DetailNormalSlices { get; init; } = Array.Empty<byte[]>();
+
     public int SeededBase { get; init; }
 
     public int SeededDetail { get; init; }
@@ -76,6 +102,56 @@ public sealed class TerrainSplatData
 public static class Engine_EhfSplat
 {
     public const int CommonLodSize = 1024;
+
+    /// <summary>
+    /// One normal-map slice per material, flat where a layer names none.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT sharing <c>BuildSlices</c>' fallback behaviour. A colour layer with no
+    /// texture borrows another layer's so the ground is not black; a normal layer with none is
+    /// FLAT, and borrowing a neighbour's would emboss one material's bumps onto a different
+    /// material's paint. Flat is also the value that makes the guest's darkening term collapse
+    /// to exactly 1, which is what it should do for a layer that has no normal to deviate by.
+    /// </remarks>
+    private static byte[][] BuildNormalSlices(IReadOnlyList<SplatMaterial> materials, bool detail)
+    {
+        var slices = new byte[Math.Min(materials.Count, MaxMaterials)][];
+        byte[]? flat = null;
+
+        for (int s = 0; s < slices.Length; s++)
+        {
+            SplatMaterial material = materials[s];
+            byte[] source = detail ? material.DetailNormalRgba : material.BaseNormalRgba;
+            int width = detail ? material.DetailNormalWidth : material.BaseNormalWidth;
+            int height = detail ? material.DetailNormalHeight : material.BaseNormalHeight;
+
+            if (source.Length != 0 && width > 0 && height > 0)
+            {
+                slices[s] = ResizeRgba8(source, width, height, CommonLodSize, CommonLodSize);
+                continue;
+            }
+
+            flat ??= FlatNormal();
+            slices[s] = flat;
+        }
+
+        return slices;
+    }
+
+    /// <summary>A tangent-space normal of (0, 0, 1), encoded.</summary>
+    private static byte[] FlatNormal()
+    {
+        var flat = new byte[CommonLodSize * CommonLodSize * 4];
+        for (int i = 0; i < flat.Length; i += 4)
+        {
+            flat[i] = 128;
+            flat[i + 1] = 128;
+            flat[i + 2] = 255;
+            flat[i + 3] = 255;
+        }
+
+        return flat;
+    }
 
     public const int MaxMaterials = 32;
 
@@ -212,6 +288,8 @@ public static class Engine_EhfSplat
             SliceSize = CommonLodSize,
             BaseSlices = baseSlices,
             DetailSlices = detailSlices,
+            BaseNormalSlices = BuildNormalSlices(materials, detail: false),
+            DetailNormalSlices = BuildNormalSlices(materials, detail: true),
             SeededBase = seededBase,
             SeededDetail = seededDetail,
             PaintedTexels = painted,

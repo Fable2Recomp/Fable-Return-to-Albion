@@ -12,7 +12,7 @@ render_mode blend_mix, depth_draw_opaque, cull_disabled,
 //
 // Note the swizzle in the guest's line: rgb only. Alpha is left alone, which matters because
 // it is the scissor threshold.
-uniform sampler2D albedo_tex : filter_linear_mipmap_anisotropic;
+uniform sampler2D albedo_tex : hint_default_white, filter_linear_mipmap_anisotropic;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic;
 uniform sampler2D emission_tex : filter_linear_mipmap_anisotropic;
 uniform bool has_normal = false;
@@ -30,6 +30,21 @@ void fragment() {
     // it was tested above as the artist authored it.
     alb.rgb *= alb.rgb;
     ALBEDO = alb.rgb;
+
+    // TWO-SIDED GEOMETRY NEEDS A TWO-SIDED NORMAL, and this shader is `cull_disabled`.
+    //
+    // A back-facing triangle keeps the normal it was authored with, which points away from the
+    // viewer — so `clamp(dot(normal, light), 0, 1)` in `fable_direct` collapses to zero and the
+    // surface takes no direct light at all, only ambient. On a closed prop that never shows,
+    // because you never see its back faces. On FOLIAGE it is most of what you see: a grass tuft
+    // or a flower is intersecting single-thickness cards, so about half of every plant was lit
+    // and the other half was not, which reads as flat, patchy and wrongly coloured rather than
+    // as a lighting bug.
+    //
+    // Flipped before the bake below as well as before `light()`, because the probe SH is
+    // evaluated for a direction too and a back face was sampling the wrong lobe of it.
+    NORMAL = FRONT_FACING ? NORMAL : -NORMAL;
+    BINORMAL = FRONT_FACING ? BINORMAL : -BINORMAL;
 
     if (has_normal) {
         NORMAL_MAP = texture(normal_tex, UV).rgb;

@@ -98,17 +98,19 @@ public static class Engine_PropModelIndex
             return cached;
         }
 
-        string? hit = Resolve(PathHash(path), Array.Empty<string>())
-            ?? ResolveBySuffix(target);
-
-        if (hit is null)
-        {
-            string leaf = ModelToken(NameWithoutExtension(path));
-            if (leaf.Length != 0 && leaf != "interior" && leaf != "exterior")
-            {
-                hit = ResolveByToken(leaf);
-            }
-        }
+        // THE STATED PATH, AND NOTHING ELSE. No suffix match, no token match, no scoring.
+        //
+        // Falling back — exact hash, then any indexed path ending with the same leaf, then a
+        // fuzzy token — does not fill gaps, it INVENTS them. Surveyed across all 5,446 model
+        // names against the region's own data: every path a level states resolves to a model
+        // that has geometry, and the handful that fail to load are paths no level ever asked
+        // for, conjured by a fallback and then reported as reader defects.
+        //
+        // A missing prop is a hole in the world and looks like one. A substituted prop looks
+        // like the world is correct, and that is the more expensive failure — it is the same
+        // class as the front-end heuristic that read one string four different ways, and the
+        // same rule: the guest states, we follow.
+        string? hit = Resolve(PathHash(path), Array.Empty<string>());
 
         Build();
         _lowerPathCache ??= new Dictionary<string, string?>();
@@ -116,47 +118,16 @@ public static class Engine_PropModelIndex
         return hit;
     }
 
-    private static string? ResolveBySuffix(string target)
-    {
-        Build();
-        if (_lowerPaths is null)
-        {
-            return null;
-        }
-
-        var hits = new List<PropModelAsset>();
-        foreach ((string lower, PropModelAsset asset) in _lowerPaths)
-        {
-            if (lower.Length > target.Length &&
-                lower.EndsWith(target, StringComparison.Ordinal) &&
-                lower[lower.Length - target.Length - 1] == '/')
-            {
-                hits.Add(asset);
-            }
-        }
-
-        return hits.Count == 0 ? null : Choose(hits, Array.Empty<string>());
-    }
-
-    public static string? ResolveByEntityName(string entityName)
-    {
-        string token = EntityToken(entityName);
-        return token.Length == 0 ? null : ResolveByToken(token);
-    }
-
-    public static string? ResolveByToken(string token)
-    {
-        Build();
-
-        if (_byToken is null ||
-            !_byToken.TryGetValue(token, out List<PropModelAsset>? candidates) ||
-            candidates.Count == 0)
-        {
-            return null;
-        }
-
-        return Choose(candidates, Array.Empty<string>());
-    }
+    // ResolveBySuffix / ResolveByEntityName / ResolveByToken lived here and are GONE.
+    //
+    // They were the fallback chain: match any indexed path ending with the same leaf, or
+    // tokenise a name and take the best-scoring candidate. Both invent. A survey of all 5,446
+    // model names against a region's own data showed every STATED path resolves to a model
+    // that has geometry — so these never recovered a real miss, they only manufactured paths
+    // no level had asked for, which then failed to load and were mistaken for reader defects.
+    //
+    // Deleted rather than left unreferenced: a fallback that still compiles is a fallback
+    // somebody re-wires in six months.
 
     public static string ModelToken(string name)
     {

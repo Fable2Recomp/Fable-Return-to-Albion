@@ -178,13 +178,26 @@ public sealed class MdlReader
         }
     }
 
+    /// <summary>
+    /// Unpacks a vertex normal. The field order is X in the LOW 11 bits, Y in the middle 11,
+    /// Z in the TOP 10 — which is what "10:11:11" in the vertex declaration says when it is
+    /// read high-to-low. Taking the name left-to-right gives the opposite order.
+    ///
+    /// Settled by measurement rather than by reading the layout off a name: a correct decode
+    /// makes every normal unit length, and over 12 shipped models the low-X order gives
+    /// 1161/1206 unit normals against 79/1206 for the high-X order. The residue is the
+    /// sampler's run boundaries, not the decode.
+    ///
+    /// Worth measuring rather than eyeballing, because wrong normals do not look like wrong
+    /// normals — they look like bad lighting.
+    /// </summary>
     public static (float x, float y, float z) DecodeNormal_11_11_10(uint packed)
     {
-        int ix = (int)(packed >> 21);
+        int ix = (int)(packed & 0x7FF);
         if ((ix & 0x400) != 0) ix -= 0x800;
-        int iy = (int)((packed >> 10) & 0x7FF);
+        int iy = (int)((packed >> 11) & 0x7FF);
         if ((iy & 0x400) != 0) iy -= 0x800;
-        int iz = (int)(packed & 0x3FF);
+        int iz = (int)((packed >> 22) & 0x3FF);
         if ((iz & 0x200) != 0) iz -= 0x400;
         return (ix / 1023f, iy / 1023f, iz / 511f);
     }

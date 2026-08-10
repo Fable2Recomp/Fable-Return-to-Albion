@@ -53,6 +53,14 @@ public static class Engine_LevelScene
         LevelEntry level, Func<string, byte[]?>? source, out string scenePath, out string error) =>
         TryBuild(level, source, null, out scenePath, out error);
 
+    /// <summary>
+    /// Builds a level and SAVES it as a scene — the editor's path.
+    ///
+    /// Saving is an editor capability, not a game one: <c>res://</c> is read-only inside an
+    /// exported pack, so this only works while running from the project. The GAME calls
+    /// <see cref="Build"/> and mounts the node directly, which is the same construction and one
+    /// less round trip through the disk.
+    /// </summary>
     public static bool TryBuild(
         LevelEntry level,
         Func<string, byte[]?>? source,
@@ -61,17 +69,66 @@ public static class Engine_LevelScene
         out string error)
     {
         scenePath = level.ScenePath;
+
+        if (!EnsureDirectory(level, out error))
+        {
+            return false;
+        }
+
+        if (Build(level, source, findByName, out error) is not { } root)
+        {
+            return false;
+        }
+
+        var packed = new PackedScene();
+        Error packedResult = packed.Pack(root);
+        if (packedResult != Error.Ok)
+        {
+            root.QueueFree();
+            error = $"could not pack scene: {packedResult}";
+            return false;
+        }
+
+        Error saved = ResourceSaver.Save(packed, level.ScenePath);
+        root.QueueFree();
+
+        if (saved != Error.Ok)
+        {
+            error = $"could not save scene to {level.ScenePath}: {saved}";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Builds a level and hands back the live node. THE CALLER OWNS IT.
+    ///
+    /// This is the whole construction — terrain, water, props, entities, lighting, sky, weather
+    /// — and it is the one implementation the editor and the game share. The editor packs and
+    /// saves what comes back; the game adds it to the tree.
+    ///
+    /// THE GAME USED TO GO THROUGH THE DISK: build, `ResourceSaver.Save` to `res://levels/...`,
+    /// then `ResourceLoader.Load` and instantiate. That only ever worked because we run from
+    /// the editor — `res://` is inside a read-only pack in an exported build, so the save fails
+    /// and the game gets no world. Nothing about streaming a region needs a `.tscn` to exist;
+    /// the banks are read in place and the props page in over frames either way.
+    ///
+    /// Children still get their <c>Owner</c> set, because that is what makes them survive the
+    /// editor's pack and it costs the game nothing.
+    /// </summary>
+    public static Node3D? Build(
+        LevelEntry level,
+        Func<string, byte[]?>? source,
+        Func<string, string?>? findByName,
+        out string error)
+    {
         error = string.Empty;
 
         if (level.HeightfieldPath.Length == 0)
         {
             error = "level has no heightfield";
-            return false;
-        }
-
-        if (!EnsureDirectory(level, out error))
-        {
-            return false;
+            return null;
         }
 
         string meshPath = Engine_BnkTerrainLoader.PathPrefix + level.HeightfieldPath;
@@ -79,7 +136,7 @@ public static class Engine_LevelScene
         if (terrainMesh is null)
         {
             error = $"terrain mesh did not load from {meshPath}";
-            return false;
+            return null;
         }
 
         var root = new Node3D
@@ -102,17 +159,28 @@ public static class Engine_LevelScene
         root.AddChild(terrainNode);
         terrainNode.Owner = root;
 
-        TerrainMesh? vista = BuildAdjacent(level, source);
-        if (vista is not null)
+        List<(string Path, TerrainMesh Mesh)> vistas = BuildAdjacent(level, source);
+        var vistaNodes = new List<(string Path, MeshInstance3D Node)>();
+        for (int i = 0; i < vistas.Count; i++)
         {
+            (string vistaPath, TerrainMesh vistaMesh) = vistas[i];
+            string name = vistas.Count == 1 ? AdjacentNodeName : $"{AdjacentNodeName}{i}";
+
             var vistaNode = new MeshInstance3D
             {
-                Name = AdjacentNodeName,
-                Mesh = Engine_LevelMesh.ToArrayMesh(vista, AdjacentNodeName),
+                Name = name,
+                Mesh = Engine_LevelMesh.ToArrayMesh(vistaMesh, name),
+                MaterialOverride = LoadTerrainMaterial(vistaPath),
             };
 
             root.AddChild(vistaNode);
             vistaNode.Owner = root;
+            vistaNodes.Add((vistaPath, vistaNode));
+
+            GD.Print(
+                $"[vista] {level}: {name} from {vistaPath} " +
+                $"({vistaMesh.TriangleCount} tris, " +
+                (vistaNode.MaterialOverride is null ? "NO splat material" : "splat material") + ")");
         }
 
         AddWater(level, source, findByName, root);
@@ -122,35 +190,29 @@ public static class Engine_LevelScene
         if (source is not null)
         {
             Engine_LevelGdb.TryRead(level, p => source(p), out string bakedGdbPath);
+            GD.Print($"[level] {level}: scenario='{level.Scenario}' gdb={bakedGdbPath}");
             Engine_LevelBakedLighting.TryLoad(
                 bakedGdbPath, p => source(p), out bakedLightmaps, out probeField);
 
             GD.Print(
                 $"[baked] {level}: {Engine_LevelBakedLighting.Describe(bakedLightmaps, probeField)}");
 
-            // THE KEY TEST. The guest binds a per-vertex bake to a placement by a 64-bit id it
-            // copies verbatim out of the level descriptor, and our engine-level records carry a
-            // 64-bit Hash. If those are the same number space, the 586 vertex bakes we decode
-            // and ignore can be attached to the props they belong to; if they are not, nothing
-            // downstream of this is worth building. Counted rather than argued.
-            if (bakedLightmaps is not null)
+            // The ground's bake, by the id the level itself states for this heightfield.
+            //
+            // Each heightfield names its own lightmap in a type-4 record of the .engine_level,
+            // and the guest does one 64-bit map lookup with it — no search, no sizing rule.
+            // Taking whichever blob is biggest lands on the right one only because a region
+            // ships so few: chapter2slums has two, a 576x576 for the landscape and a 32x64 for
+            // the sea vista.
+            if (bakedLightmaps is not null && source is not null)
             {
-                Engine_LevelBakedLighting.ReportBakeKeyMatch(
-                    bakedLightmaps, bakedGdbPath, p => source(p));
-            }
-
-            if (bakedLightmaps is not null &&
-                terrainNode.MaterialOverride is ShaderMaterial terrainSplat &&
-                Engine_LevelBakedLighting.TryPickTerrainLightmap(
-                    bakedLightmaps, out ulong terrainKey, out byte[] terrainBlob))
-            {
-                ImageTexture? lightmapTexture = Engine_LevelBakedLighting.DecodeTexture(terrainBlob);
-                if (lightmapTexture is not null)
+                var surfaces = new List<(string Path, MeshInstance3D Node)>
                 {
-                    terrainSplat.SetShaderParameter("lightmap", lightmapTexture);
-                    terrainSplat.SetShaderParameter("has_lightmap", true);
-                    GD.Print($"[baked] {level}: terrain lightmap 0x{terrainKey:X16} applied");
-                }
+                    (level.MainEhfPath, terrainNode),
+                };
+                surfaces.AddRange(vistaNodes);
+
+                BindTerrainLightmaps(level, surfaces, bakedLightmaps, bakedGdbPath, source);
             }
         }
 
@@ -177,11 +239,17 @@ public static class Engine_LevelScene
                     lightingTod = forcedLighting;
                 }
 
+                if (Engine_ThemeTimeline.TryExtractSkyBlended(
+                        lightingGdbs, lightingTod, out SkyTheme blendedSky))
+                {
+                    lightingSky = blendedSky;
+                }
+
                 SkyFrame lightingSkyFrame = Engine_SkyFrame.Evaluate(lightingSky, lightingTod);
                 resolvedSkyTheme = lightingSky;
                 resolvedSkyFrame = lightingSkyFrame;
 
-                if (Engine_LightingTheme.TryExtract(
+                if (Engine_ThemeTimeline.TryExtractLightingBlended(
                         lightingGdbs, lightingTod, out LightingTheme lightingTheme))
                 {
                     lightingFrame = Engine_LightingFrame.Evaluate(
@@ -199,6 +267,14 @@ public static class Engine_LevelScene
         if (lightingFrame is not null)
         {
             Engine_LevelBakedLighting.ApplyInstanceLighting(terrainNode, lightingFrame);
+
+            // The vistas too. They are landscapes on the same theme, and leaving them on the
+            // shader's defaults is how a distant hillside ends up lit differently from the
+            // ground it continues.
+            foreach ((string _, MeshInstance3D vistaNode) in vistaNodes)
+            {
+                Engine_LevelBakedLighting.ApplyInstanceLighting(vistaNode, lightingFrame);
+            }
         }
 
         Refii.Entities.EntityInspectData? inspect = null;
@@ -216,11 +292,7 @@ public static class Engine_LevelScene
             if (props is not null)
             {
                 root.AddChild(props);
-                props.Owner = root;
-                foreach (Node child in props.GetChildren())
-                {
-                    child.Owner = root;
-                }
+                SetOwnerRecursive(props, root);
             }
 
             GD.Print($"[props] {level}: {propStats}");
@@ -335,7 +407,8 @@ public static class Engine_LevelScene
                     }
                 }
 
-                if (Engine_EnvironmentTheme.TryExtractClouds(gdbs, out CloudTheme cloudTheme))
+                if (Engine_ThemeTimeline.TryExtractCloudsBlended(
+                        gdbs, frame.TimeOfDay, out CloudTheme cloudTheme))
                 {
                     Node3D? clouds = Engine_Clouds.Build(
                         cloudTheme,
@@ -358,25 +431,125 @@ public static class Engine_LevelScene
             }
         }
 
-        var packed = new PackedScene();
-        Error packedResult = packed.Pack(root);
-        if (packedResult != Error.Ok)
+        return root;
+    }
+
+    /// <summary>
+    /// Gives the terrain the bake its own heightfield names, and says so for any it does not.
+    /// </summary>
+    /// <remarks>
+    /// The heightfields are matched by PATH because that is what the type-4 record carries — a
+    /// backslashed asset path and the eight bytes of its lightmap id. A level that ships bakes
+    /// for heightfields we do not draw is a normal state, not an error: the sea vista is merged
+    /// into one distant mesh with no splat material of its own, so its bake has nowhere to go
+    /// yet. That is reported rather than dropped in silence, which is how the wrong bake went
+    /// unnoticed on the ground in the first place.
+    /// </remarks>
+    private static void BindTerrainLightmaps(
+        LevelEntry level,
+        List<(string Path, MeshInstance3D Node)> surfaces,
+        LightmapContainer lightmaps,
+        string gdbPath,
+        Func<string, byte[]?> source)
+    {
+        string enginePath = Engine_LevelGdb.SiblingWithExtension(gdbPath, ".engine_level");
+        byte[]? bytes = source(enginePath) ?? source("data/" + enginePath);
+        if (bytes is null)
         {
-            root.QueueFree();
-            error = $"could not pack scene: {packedResult}";
+            GD.Print($"[baked] {level}: no .engine_level at {enginePath}, terrain unlit");
+            return;
+        }
+
+        EngineLevelFile engineLevel = Engine_EngineLevelFile.Parse(bytes);
+        var bound = new HashSet<ulong>();
+
+        foreach ((string surfacePath, MeshInstance3D node) in surfaces)
+        {
+            if (node.MaterialOverride is not ShaderMaterial splat)
+            {
+                continue;
+            }
+
+            foreach (EngineLevelHeightfield heightfield in engineLevel.Heightfields)
+            {
+                if (!SameAsset(heightfield.Path, surfacePath))
+                {
+                    continue;
+                }
+
+                if (!Engine_LevelBakedLighting.TryGetTerrainLightmap(
+                        lightmaps, heightfield.LightmapKey, out TerrainLightmap bake))
+                {
+                    GD.Print(
+                        $"[baked] {level}: heightfield states lightmap " +
+                        $"0x{heightfield.LightmapKey:X16} but the .lmp has no such entry");
+                    break;
+                }
+
+                ImageTexture? texture = Engine_LevelBakedLighting.DecodeTexture(bake.Blob);
+                if (texture is null)
+                {
+                    GD.Print($"[baked] {level}: lightmap 0x{heightfield.LightmapKey:X16} did not decode");
+                    break;
+                }
+
+                splat.SetShaderParameter("lightmap", texture);
+                splat.SetShaderParameter("has_lightmap", true);
+                bound.Add(heightfield.LightmapKey);
+
+                // One texel per CELL is what makes the plain normalised heightfield coordinate
+                // the right UV, so say it out loud when it is not — a bake built for a
+                // different lattice is a real failure mode and it looks like bad lighting
+                // rather than like a mismatch.
+                bool cellAligned =
+                    texture.GetWidth() == bake.SamplesX - 1 &&
+                    texture.GetHeight() == bake.SamplesY - 1;
+
+                GD.Print(
+                    $"[baked] {level}: terrain lightmap 0x{heightfield.LightmapKey:X16} " +
+                    $"({texture.GetWidth()}x{texture.GetHeight()} over " +
+                    $"{bake.SamplesX}x{bake.SamplesY} samples" +
+                    (cellAligned ? "" : ", NOT CELL-ALIGNED") +
+                    $") applied from {heightfield.Path}");
+                break;
+            }
+        }
+
+        foreach (EngineLevelHeightfield heightfield in engineLevel.Heightfields)
+        {
+            if (!bound.Contains(heightfield.LightmapKey) &&
+                lightmaps.TerrainLightmapBlobs.ContainsKey(heightfield.LightmapKey))
+            {
+                GD.Print(
+                    $"[baked] {level}: lightmap 0x{heightfield.LightmapKey:X16} for " +
+                    $"{heightfield.Path} is shipped but nothing draws that heightfield");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether a type-4 record's asset path and one of ours name the same file.
+    /// </summary>
+    /// <remarks>
+    /// The .engine_level writes Windows paths — <c>worlds\albion\...\x.ehf</c> — while ours are
+    /// the VFS's forward-slashed ones, and either may carry a directory prefix the other does
+    /// not. Comparing the file name alone is enough to be unambiguous inside one level and is
+    /// the only part both spellings agree on.
+    /// </remarks>
+    private static bool SameAsset(string a, string b)
+    {
+        if (a.Length == 0 || b.Length == 0)
+        {
             return false;
         }
 
-        Error saved = ResourceSaver.Save(packed, level.ScenePath);
-        root.QueueFree();
+        return string.Equals(LeafName(a), LeafName(b), StringComparison.OrdinalIgnoreCase);
+    }
 
-        if (saved != Error.Ok)
-        {
-            error = $"could not save scene to {level.ScenePath}: {saved}";
-            return false;
-        }
-
-        return true;
+    private static string LeafName(string path)
+    {
+        int cut = path.LastIndexOfAny(new[] { '/', '\\' });
+        return cut < 0 ? path : path[(cut + 1)..];
     }
 
     private static Material? LoadTerrainMaterial(string ehfPath)
@@ -404,6 +577,15 @@ public static class Engine_LevelScene
             Metallic = 0f,
             Roughness = 0.9f,
         };
+    }
+
+    private static void SetOwnerRecursive(Node node, Node root)
+    {
+        node.Owner = root;
+        foreach (Node child in node.GetChildren())
+        {
+            SetOwnerRecursive(child, root);
+        }
     }
 
     private static void AddWater(
@@ -516,14 +698,28 @@ public static class Engine_LevelScene
         return dot < 0 ? path + extension : path[..dot] + extension;
     }
 
-    private static TerrainMesh? BuildAdjacent(LevelEntry level, Func<string, byte[]?>? source)
+    /// <summary>
+    /// The level's adjacent heightfields, ONE MESH PER FILE rather than all of them fused.
+    /// </summary>
+    /// <remarks>
+    /// Concatenating them into a single anonymous mesh costs the vista both halves of its
+    /// lighting: a landscape's splat material is built for ITS heightfield's world extents, and
+    /// a landscape's bake is keyed by ITS own type-4 record. Fused there is no file to ask about
+    /// either, so the vista falls back to Godot's default material with no bake while the ground
+    /// beside it takes the region's full lighting model.
+    ///
+    /// Keeping them separate costs one draw call each — a region ships one or two — and lets the
+    /// vista go through exactly the same material and bake path as the terrain it continues.
+    /// </remarks>
+    private static List<(string Path, TerrainMesh Mesh)> BuildAdjacent(
+        LevelEntry level, Func<string, byte[]?>? source)
     {
+        var built = new List<(string, TerrainMesh)>();
         if (source is null || level.AdjacentEhfPaths.Length == 0)
         {
-            return null;
+            return built;
         }
 
-        var meshes = new List<TerrainMesh>();
         foreach (string path in level.AdjacentEhfPaths)
         {
             byte[]? bytes = source(path);
@@ -538,6 +734,7 @@ public static class Engine_LevelScene
                 continue;
             }
 
+            var meshes = new List<TerrainMesh>();
             foreach (EhfVistaPatch patch in patches)
             {
                 if (patch.Mesh.TriangleCount != 0)
@@ -545,9 +742,15 @@ public static class Engine_LevelScene
                     meshes.Add(patch.Mesh);
                 }
             }
+
+            // The PATCHES of one heightfield do fuse — they share its material and its bake.
+            if (meshes.Count != 0)
+            {
+                built.Add((path, Concatenate(meshes)));
+            }
         }
 
-        return meshes.Count == 0 ? null : Concatenate(meshes);
+        return built;
     }
 
     private static TerrainMesh Concatenate(List<TerrainMesh> meshes)

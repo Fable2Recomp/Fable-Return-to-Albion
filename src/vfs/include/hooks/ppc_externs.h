@@ -170,6 +170,8 @@ PPC_EXTERN_FUNC(__imp__sub_82378F00);
 PPC_EXTERN_FUNC(__imp__sub_82379D78);
 PPC_EXTERN_FUNC(__imp__sub_82379088);
 PPC_EXTERN_FUNC(__imp__sub_82379170);
+// The guest's once-per-tick thunk, on its own "GameThread" — see guest_tick_pump.cpp.
+PPC_EXTERN_FUNC(__imp__sub_822C1BD0);
 PPC_EXTERN_FUNC(sub_823DCB10);
 PPC_EXTERN_FUNC(sub_823DCC70);
 PPC_EXTERN_FUNC(__imp__sub_82426470);

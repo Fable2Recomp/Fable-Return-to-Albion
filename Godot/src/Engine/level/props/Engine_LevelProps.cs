@@ -142,8 +142,14 @@ public static class Engine_LevelProps
         }
 
         string savePath = Engine_LevelGdb.SiblingWithExtension(gdbPath, ".save");
-        List<KeyValuePair<uint, string>> saveMap = Engine_GdbSaveMap.Parse(read(savePath));
+        List<KeyValuePair<uint, string>> saveMap =
+            Engine_GdbSaveMap.Parse(read(savePath), out SaveLayerStats layers);
         stats.SaveEntities = saveMap.Count;
+
+        // THE LAYER GATE, out loud. Everything downstream is built from this list, so if it is
+        // ever wrong the whole region is wrong, and the way that failure looks — a street with
+        // holes in it — is indistinguishable by eye from a dozen other defects.
+        GD.Print($"[layers] {level}: {layers}");
 
         List<GdbPlacement> placements = Engine_GdbPlacements.Parse(view, saveMap);
         List<GdbView> supplementalViews = LoadSupplementalViews(read);
@@ -156,6 +162,8 @@ public static class Engine_LevelProps
         var transformKeys = new HashSet<string>();
         var order = new List<string>();
         var shellCandidates = new List<ShellCandidate>();
+        var silverKeys = new List<SilverKeyNode>();
+        var fxModelPaths = new Dictionary<uint, string>();
 
         AppendEngineLevelBlocks(
             read, Engine_LevelGdb.SiblingWithExtension(gdbPath, ".engine_level"),
@@ -268,21 +276,18 @@ public static class Engine_LevelProps
                 }
             }
 
-            if (modelPath is null && placement.EntityName.Length != 0)
-            {
-                modelPath = Engine_PropModelIndex.ResolveByEntityName(placement.EntityName)
-                    ?? Engine_ModelScoring.ResolveByEntityScore(placement.EntityName);
-
-                if (modelPath is not null && RejectSubstitute(modelPath, false))
-                {
-                    modelPath = null;
-                }
-
-                if (modelPath is not null)
-                {
-                    stats.NameMatched++;
-                }
-            }
+            // NO NAME-MATCH FALLBACK. An entity that does not state a model does not get one
+            // guessed from its name.
+            //
+            // This resolved a placement's model by tokenising its ENTITY name and scoring
+            // candidates against it — so an entity called something like a rug got whichever
+            // indexed model scored best for "rug". It reported 162 hits in one region, and
+            // every one of them was a model the level had not asked for. `RejectSubstitute`
+            // existing at all is the tell: the code already knew it was substituting, and was
+            // filtering the worst of its own guesses.
+            //
+            // If a placement's model cannot be resolved from what the level STATES, it is not
+            // drawn and it is counted. See Engine_PropModelIndex.ResolveByPath.
 
             if (modelPath is null)
             {
@@ -304,6 +309,14 @@ public static class Engine_LevelProps
                 continue;
             }
 
+            // WHICH MODEL THIS PLACEMENT GOT, remembered for the FX pass.
+            //
+            // An attached effect hangs off a bone of the prop's own model, so Engine_LevelFx has
+            // to know which model that is. Resolving it a second time down there would mean a
+            // second copy of the ladder above — hash, then curated parent/entity key, then the
+            // filled hash, each with its own rejections — and the two copies would drift.
+            fxModelPaths[placement.Hash] = modelPath;
+
             if (!matchedByHash && IsBridgeModel(modelPath))
             {
                 stats.RejectedBridge++;
@@ -313,6 +326,12 @@ public static class Engine_LevelProps
             if (IsCharacterModel(modelPath))
             {
                 stats.RejectedCharacter++;
+                continue;
+            }
+
+            if (Engine_LevelFx.IsSilverKeyPlacement(placement) &&
+                !NormalisePath(modelPath).Contains("silverkey", StringComparison.Ordinal))
+            {
                 continue;
             }
 
@@ -348,6 +367,26 @@ public static class Engine_LevelProps
                 continue;
             }
 
+            if (Engine_LevelFx.IsSilverKeyPlacement(placement))
+            {
+                var keyNode = new SilverKeyNode
+                {
+                    Transform = transform,
+                    BaseTransform = transform,
+                };
+                keyNode.SetMeta(Engine_PropStreamer.ModelPathMeta, modelPath);
+
+                var keyFx = new Refii.Fx.FableFx
+                {
+                    Name = "KeyFx",
+                    EffectName = Engine_LevelFx.SilverKeyEffect,
+                };
+                keyNode.AddChild(keyFx);
+                silverKeys.Add(keyNode);
+                stats.Instances++;
+                continue;
+            }
+
             string key = "prop|" + modelPath;
             if (!blocks.TryGetValue(key, out PropBlockBuild? block))
             {
@@ -356,7 +395,10 @@ public static class Engine_LevelProps
                 order.Add(key);
             }
 
-            block.AddInstance(transform, placement.Hash);
+            block.AddInstance(
+                transform,
+                placement.Hash,
+                ((ulong)placement.ModelPathHash << 32) | placement.Hash);
             stats.Instances++;
 
             bool clocktowerBasePrimary = NormalisePath(modelPath).Contains(
@@ -386,12 +428,12 @@ public static class Engine_LevelProps
 
         ReportVertexBakeFit(bakes, blocks, order);
 
-        var bakeKeys = new HashSet<uint>();
+        var bakeKeys = new HashSet<ulong>();
         if (bakes is not null)
         {
             foreach (KeyValuePair<ulong, uint[]> bake in bakes.VertexBakes)
             {
-                bakeKeys.Add((uint)bake.Key);
+                bakeKeys.Add(bake.Key);
             }
         }
 
@@ -400,6 +442,20 @@ public static class Engine_LevelProps
         // The streamer reads the .lmp back out of the bank when it needs a bake, so the saved
         // scene carries the path rather than a million baked colours.
         container.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.LevelGdbMeta, gdbPath);
+
+        foreach (SilverKeyNode keyNode in silverKeys)
+        {
+            keyNode.Name = UniqueName(container, "SilverKey");
+
+            // Same route every other prop takes: the probe sample is STORED on the node and the
+            // streamer turns it into shader state once the mesh is standing. A key carries its
+            // mesh from the start, so it is lit here too — but through the stored sample, not a
+            // second lighting path of its own.
+            Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(
+                keyNode, keyNode.BaseTransform.Origin, probes);
+            Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(keyNode, lighting);
+            container.AddChild(keyNode);
+        }
 
         void AddSingle(PropBlockBuild block, int index)
         {
@@ -413,13 +469,24 @@ public static class Engine_LevelProps
 
             uint hash = index < block.InstanceHashes.Count ? block.InstanceHashes[index] : 0;
 
+            // WHICH `.save` RECORD THIS IS, carried onto the node so the running game can tell
+            // that the guest is about to place the same thing itself. The editor ignores it.
+            if (hash != 0)
+            {
+                single.SetMeta(Engine_PropStreamer.RecordMeta, (long)hash);
+            }
+
             // An authored per-vertex bake outranks the probe field — the guest's own order is
             // per-vertex D3DCOLOR, then object lightmap, then probes. Only the KEY is stored;
             // the streamer resolves it once the mesh is standing and can check that it fits.
-            if (hash != 0 && bakeKeys.Contains(hash))
+            ulong bakeKey = index < block.InstanceBakeKeys.Count
+                ? block.InstanceBakeKeys[index]
+                : 0;
+
+            if (bakeKey != 0 && bakeKeys.Contains(bakeKey))
             {
                 single.SetMeta(
-                    Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, (long)hash);
+                    Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, (long)bakeKey);
             }
 
             Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(
@@ -533,6 +600,28 @@ public static class Engine_LevelProps
             };
 
             node.SetMeta(Engine_PropStreamer.ModelPathMeta, block.ModelPath);
+
+            // THE BATCHED SUBSET AGAIN, for the same reason the probe colours use it: the
+            // inspector pulls placements out of the batch into nodes of their own, so instance
+            // N of the MultiMesh is not placement N of the block. A column indexed off the full
+            // list would name the wrong record for every instance after the first pulled one,
+            // and retiring by it would delete a prop that is still the guest's only copy.
+            var records = new long[batched.Count];
+            bool anyRecord = false;
+            for (int i = 0; i < batched.Count; i++)
+            {
+                int index = batched[i];
+                records[i] = index < block.InstanceHashes.Count
+                    ? block.InstanceHashes[index]
+                    : 0L;
+                anyRecord |= records[i] != 0L;
+            }
+
+            if (anyRecord)
+            {
+                node.SetMeta(Engine_PropStreamer.RecordsMeta, records);
+            }
+
             if (coloured)
             {
                 node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeModeMeta, 2);
@@ -546,6 +635,13 @@ public static class Engine_LevelProps
             container.AddChild(node);
 
             stats.Blocks++;
+        }
+
+        int levelFx = Engine_LevelFx.Spawn(
+            container, view, supplementalViews, placements, fxModelPaths);
+        if (levelFx != 0)
+        {
+            GD.Print($"[props] {level}: {levelFx} level FX spawned from bank");
         }
 
         if (container.GetChildCount() == 0)
@@ -967,10 +1063,10 @@ public static class Engine_LevelProps
             return;
         }
 
-        var byLowKey = new Dictionary<uint, int>();
+        var byKey = new Dictionary<ulong, int>();
         foreach (KeyValuePair<ulong, uint[]> bake in bakes.VertexBakes)
         {
-            byLowKey[(uint)bake.Key] = bake.Value.Length;
+            byKey[bake.Key] = bake.Value.Length;
         }
 
         int matched = 0, fits = 0, misfits = 0, unresolved = 0;
@@ -986,8 +1082,8 @@ public static class Engine_LevelProps
             PropBlockBuild block = blocks[key];
             for (int i = 0; i < block.Instances.Count && matched < 24; i++)
             {
-                if (i >= block.InstanceHashes.Count ||
-                    !byLowKey.TryGetValue(block.InstanceHashes[i], out int bakeVerts))
+                if (i >= block.InstanceBakeKeys.Count ||
+                    !byKey.TryGetValue(block.InstanceBakeKeys[i], out int bakeVerts))
                 {
                     continue;
                 }
@@ -1001,12 +1097,13 @@ public static class Engine_LevelProps
                     continue;
                 }
 
-                int meshVerts = 0;
-                for (int s = 0; s < mesh.GetSurfaceCount(); s++)
-                {
-                    meshVerts += mesh.SurfaceGetArrays(s)[(int)Mesh.ArrayType.Vertex]
-                        .AsVector3Array().Length;
-                }
+                // The MODEL's vertex count, which is what the bake was built against — not the
+                // sum over our surfaces, which double-counts every vertex two submeshes share.
+                int meshVerts = mesh.GetMeta(
+                    Refii.Models.Engine_MdlMesh.SourceVertexTotalMeta, default) is
+                    { VariantType: Variant.Type.Int } totalMeta
+                    ? totalMeta.AsInt32()
+                    : 0;
 
                 if (meshVerts == bakeVerts)
                 {
@@ -1017,8 +1114,23 @@ public static class Engine_LevelProps
                     ++misfits;
                     if (sample.Length == 0)
                     {
+                        // Per surface, still, but no longer to hunt a constant delta — that
+                        // question is closed. The old sum over surfaces double-counted every
+                        // vertex two submeshes shared, which is why an eight-vertex gap kept
+                        // turning up; it now compares the model's own count. A surface breakdown
+                        // is still what tells a genuine LOD or build mismatch apart from a
+                        // model whose bake simply belongs to a different revision.
+                        var perSurface = new System.Text.StringBuilder();
+                        for (int s = 0; s < mesh.GetSurfaceCount(); s++)
+                        {
+                            perSurface.Append(
+                                $" [{mesh.SurfaceGetName(s)}]=" +
+                                mesh.SurfaceGetArrays(s)[(int)Mesh.ArrayType.Vertex]
+                                    .AsVector3Array().Length);
+                        }
+
                         sample = $" first misfit: {NameOf(block.ModelPath)} " +
-                            $"bake={bakeVerts} mesh={meshVerts}";
+                            $"bake={bakeVerts} mesh={meshVerts} surfaces:{perSurface}";
                     }
                 }
             }
@@ -1052,10 +1164,28 @@ public static class Engine_LevelProps
         /// </summary>
         public List<uint> InstanceHashes { get; } = new();
 
-        public void AddInstance(Transform3D transform, uint hash = 0)
+        /// <summary>
+        /// The full 64-bit key the .lmp files this placement's bake under, or 0 for none.
+        /// </summary>
+        /// <remarks>
+        /// The placement hash alone is NOT the key, and the difference is not academic. The
+        /// guest composes the two halves at 0x8223725C —
+        ///
+        ///     key = ((u64)modelFileHash &lt;&lt; 32) | (u32)placementHash
+        ///
+        /// — where the high half is the entity's `ModelFile` GDB property and the low half is
+        /// its own GDB entry hash. Matching on the low half alone very nearly works, which is
+        /// what makes it dangerous: this region ships 572 bakes with only 555 distinct low
+        /// halves, so seventeen placements are resolved by whichever entry the walk reaches
+        /// first, and a bake built for a different model is then applied vertex-for-vertex.
+        /// </remarks>
+        public List<ulong> InstanceBakeKeys { get; } = new();
+
+        public void AddInstance(Transform3D transform, uint hash = 0, ulong bakeKey = 0)
         {
             Instances.Add(transform);
             InstanceHashes.Add(hash);
+            InstanceBakeKeys.Add(bakeKey);
         }
     }
 
@@ -1270,11 +1400,11 @@ public static class Engine_LevelProps
     /// float at +0x30 (0x82ABA6A8-0x82ABA6D4), and sub_82AA2F38 multiplies all three
     /// rotation rows by splats of that single float — the scale is uniform, not per-axis.
     ///
-    /// WHAT THIS REPLACED: values[6] and values[7] were being read as a yaw sin/cos pair and
-    /// values[9..11] as a per-axis scale — the FOLIAGE shape. On a static placement those
-    /// are the first two components of the forward vector and the vector the guest throws
-    /// away, so every prop was oriented from two thirds of its forward axis, with the real
-    /// up vector, the third forward component and the real scale all ignored.
+    /// NOT THE FOLIAGE SHAPE, which reads values[6] and values[7] as a yaw sin/cos pair and
+    /// values[9..11] as a per-axis scale. On a static placement those are the first two
+    /// components of the forward vector and the vector the guest throws away, so that reading
+    /// orients a prop from two thirds of its forward axis and ignores the up vector, the third
+    /// forward component and the real scale.
     ///
     /// The guest launders the basis through matrix -> quaternion -> matrix, and the quat to
     /// matrix step divides by |q|^2, so the round trip orthonormalises. Building the axes
@@ -1318,10 +1448,8 @@ public static class Engine_LevelProps
         // up and -forward. Hence the columns below — NOT right/forward/up in order, which is
         // what it looks like it should be and is wrong by a swap and a sign.
         //
-        // Equivalently this is (P R P) with column 2 negated, since M^-1 = P * diag(1,1,-1).
-        // That is exactly the shape RotationBasis and ToGodotBasis already use, which is the
-        // corroboration: the existing structure was right and only the SOURCE of the rotation
-        // was wrong.
+        // Equivalently this is (P R P) with column 2 negated, since M^-1 = P * diag(1,1,-1) —
+        // the same shape RotationBasis and ToGodotBasis already use.
         return new Transform3D(
             new Basis(
                 GuestToGodot(right) * scale,

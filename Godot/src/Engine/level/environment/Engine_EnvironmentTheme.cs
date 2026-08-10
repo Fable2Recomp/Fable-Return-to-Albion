@@ -336,11 +336,36 @@ public static class Engine_EnvironmentTheme
         return extractor is not null && extractor.ExtractWeather(theme);
     }
 
-    public static bool TryExtractClouds(IReadOnlyList<byte[]> gdbs, out CloudTheme theme)
+    public static bool TryExtractClouds(IReadOnlyList<byte[]> gdbs, out CloudTheme theme) =>
+        TryExtractClouds(gdbs, 0.5f, out theme);
+
+    public static bool TryExtractClouds(
+        IReadOnlyList<byte[]> gdbs, float targetTime, out CloudTheme theme)
     {
         theme = new CloudTheme();
         var extractor = Extractor.Create(gdbs);
-        return extractor is not null && extractor.ExtractClouds(theme);
+        if (extractor is null)
+        {
+            return false;
+        }
+
+        extractor.TargetTime = targetTime;
+        return extractor.ExtractClouds(theme);
+    }
+
+    public static bool TryGetDaySetTimes(
+        IReadOnlyList<byte[]> gdbs, out List<float> times)
+    {
+        times = new List<float>();
+        var extractor = Extractor.Create(gdbs);
+        if (extractor is null)
+        {
+            return false;
+        }
+
+        extractor.CollectDaySetTimes(times);
+        times.Sort();
+        return times.Count > 0;
     }
 
     private sealed class Extractor
@@ -893,6 +918,52 @@ public static class Engine_EnvironmentTheme
 
             assign(field.Raw);
             return true;
+        }
+
+        public void CollectDaySetTimes(List<float> times)
+        {
+            RecordRef daySet = FindDaySet(true);
+            if (!daySet.Valid)
+            {
+                daySet = FindDaySet(false);
+            }
+
+            if (!daySet.Valid)
+            {
+                return;
+            }
+
+            foreach (GdbField field in _views[daySet.Db].Fields(daySet.Index))
+            {
+                byte type = (byte)field.Type;
+                if (type != 4 && type != 6 && type != 7)
+                {
+                    continue;
+                }
+
+                RecordRef entry = FieldToRecord(field);
+                if (!entry.Valid)
+                {
+                    continue;
+                }
+
+                RecordRef theme = ResolveRecordField(entry, EnvHash.Theme);
+                if (!theme.Valid)
+                {
+                    continue;
+                }
+
+                float time = 0.5f;
+                if (ReadFloat(entry, EnvHash.TimeOfDay, out float readTime))
+                {
+                    time = Refii.Lighting.Chain.NormalizeTimeOfDay(readTime);
+                }
+
+                if (!times.Contains(time))
+                {
+                    times.Add(time);
+                }
+            }
         }
 
         private bool SelectThemeFromDaySet(RecordRef daySet, out RecordRef outTheme, out float outTime)

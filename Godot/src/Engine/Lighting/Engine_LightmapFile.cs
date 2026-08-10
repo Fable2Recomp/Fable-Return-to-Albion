@@ -2,13 +2,34 @@ using System.Collections.Generic;
 
 namespace Refii.Lighting;
 
+/// <summary>
+/// A heightfield's baked lightmap, and the lattice the bake was made for.
+/// </summary>
+/// <remarks>
+/// The two counts beside the blob are the heightfield's SAMPLE counts, and they are worth
+/// keeping because they are the one check that a bake belongs to the terrain it is about to be
+/// drawn on. A bake is one texel per CELL, so the texture is (samples - 1) on each axis —
+/// exact for both of chapter2slums' heightfields, 577x577 samples over a 576x576 bake and
+/// 33x65 over 32x64. That relation is also why the guest's two landscape UV constants are the
+/// same number, which is what lets the terrain sample its bake with the plain normalised
+/// heightfield coordinate.
+/// </remarks>
+public sealed class TerrainLightmap
+{
+    public uint SamplesX { get; init; }
+
+    public uint SamplesY { get; init; }
+
+    public byte[] Blob { get; init; } = System.Array.Empty<byte>();
+}
+
 public sealed class LightmapContainer
 {
     public uint Version { get; set; }
 
     public uint BuiltChangelist { get; set; }
 
-    public Dictionary<ulong, byte[]> TerrainLightmapBlobs { get; } = new();
+    public Dictionary<ulong, TerrainLightmap> TerrainLightmapBlobs { get; } = new();
 
     public Dictionary<ulong, byte[]> ObjectLightmapBlobs { get; } = new();
 
@@ -70,8 +91,8 @@ public static class Engine_LightmapFile
         for (uint i = 0; i < terrainCount; i++)
         {
             if (!reader.U64(out ulong key) ||
-                !reader.U32(out _) ||
-                !reader.U32(out _) ||
+                !reader.U32(out uint samplesX) ||
+                !reader.U32(out uint samplesY) ||
                 !reader.U32(out uint blobSize) ||
                 !reader.Bytes(blobSize, out byte[] blob))
             {
@@ -79,7 +100,12 @@ public static class Engine_LightmapFile
                 return false;
             }
 
-            container.TerrainLightmapBlobs[key] = blob;
+            container.TerrainLightmapBlobs[key] = new TerrainLightmap
+            {
+                SamplesX = samplesX,
+                SamplesY = samplesY,
+                Blob = blob,
+            };
         }
 
         if (!reader.U32(out uint objectCount))

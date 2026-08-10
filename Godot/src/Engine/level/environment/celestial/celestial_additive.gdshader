@@ -28,11 +28,19 @@ void vertex() {
 		POSITION = vec4(clip.xy / clip.w,
 		                mix(far_depth, 1.0 - far_depth, element_depth_bias), 1.0);
 
-		vec3 hdr = element_colour.rgb * pow(facing, element_facing_power);
-		v_colour = hdr / (vec3(1.0) + hdr);
+		v_colour = element_colour.rgb * pow(facing, element_facing_power);
 	}
 }
 
+// ADDITIVE IN LINEAR, WHICH IS WHAT `blend_add` ALREADY DOES.
+//
+// Estimating the sky behind the element, adding itself to it in display space and subtracting
+// the sky back off — `linear(sky + add) - linear(sky)` — compensates for a premise the shipped
+// shaders refute: 0117 sunglare is `oC0.xyz = texel.rgb * g_SunColour.rgb; oC0.w = 1.0`, and
+// 0121 sunbeams is the same with a 1/6 attenuation. Two multiplies, no saturate, no transfer.
+// The elements write linear HDR and the hardware blend sums them in that space, so the correct
+// contribution is just the product, and subtracting an estimated background from it removes
+// light the blend never double-counted.
 void fragment() {
 	ALBEDO = texture(element_tex, UV).rgb * v_colour;
 	ALPHA = 1.0;

@@ -399,12 +399,28 @@ public sealed class BnkFile
 
     internal List<BnkFile> Alternates { get; } = new();
 
+    /// <summary>
+    /// The file's bytes, with a header entry and a payload entry rejoined when the format keeps
+    /// them apart.
+    ///
+    /// A .mdl and a .tex each ship as TWO bank entries under ONE name: a small header, always in
+    /// a `*_headers.bnk`, and a payload in a models/textures bank — usually a region's, nested
+    /// inside `streaming.bnk`. The guest never sees the split. It opens one logical file by name
+    /// hash and byte-ranges into it: LOD i of a model is read at 104 + the sum of the preceding
+    /// LOD sizes, for the length the header states (`sub_82AB4868`). So a caller has to be given
+    /// the concatenation, in that order, or every offset in the file is 104 bytes wrong.
+    ///
+    /// Which of the two entries won the shadow contest in <see cref="BnkFileSystem.Insert"/> is
+    /// not something this can rest on — that picks the larger, and "larger" is a property of the
+    /// data rather than of the format. The header is identified by its magic and joined in front
+    /// whichever side it arrived on.
+    /// </summary>
     public byte[] ReadAllBytes()
     {
-        byte[] body = _read(Entry);
+        byte[] own = _read(Entry);
         if (Alternates.Count == 0)
         {
-            return body;
+            return own;
         }
 
         Func<byte[], bool> isHeader;
@@ -418,43 +434,67 @@ public sealed class BnkFile
         }
         else
         {
-            return body;
+            return own;
         }
 
-        if (isHeader(body))
-        {
-            return body;
-        }
+        bool ownIsHeader = isHeader(own);
 
         foreach (BnkFile alternate in Alternates)
         {
-            byte[] header;
+            byte[] other;
             try
             {
-                header = alternate._read(alternate.Entry);
+                other = alternate._read(alternate.Entry);
             }
             catch (Exception)
             {
                 continue;
             }
 
-            if (!isHeader(header))
+            if (isHeader(other) == ownIsHeader)
             {
+                // Two headers, or two payloads: the same file shipped in several banks, not the
+                // two halves of one. Nothing to join.
                 continue;
             }
 
-            var combined = new byte[header.Length + body.Length];
+            byte[] header = ownIsHeader ? own : other;
+            byte[] payload = ownIsHeader ? other : own;
+
+            var combined = new byte[header.Length + payload.Length];
             Buffer.BlockCopy(header, 0, combined, 0, header.Length);
-            Buffer.BlockCopy(body, 0, combined, header.Length, body.Length);
+            Buffer.BlockCopy(payload, 0, combined, header.Length, payload.Length);
             return combined;
         }
 
-        return body;
+        return own;
     }
 
+    /// <summary>
+    /// A model file header. "DefMeshF" is the build's placeholder for a mesh that failed to
+    /// export; the guest tests for it FIRST, warns, and parses it as an ordinary header
+    /// (<c>sub_82AB4DC8</c> at 0x82AB4E74), so it is a header here too.
+    /// </summary>
     private static bool HasMeshFileMagic(byte[] d) =>
-        d.Length >= 8 && d[0] == 'M' && d[1] == 'e' && d[2] == 's' && d[3] == 'h' &&
-        d[4] == 'F' && d[5] == 'i' && d[6] == 'l' && d[7] == 'e';
+        HasMagic(d, "MeshFile") || HasMagic(d, "DefMeshF");
+
+    private static bool HasMagic(byte[] d, string magic)
+    {
+        if (d.Length < magic.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < magic.Length; ++i)
+        {
+            if (d[i] != magic[i])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static bool HasTexHeaderMagic(byte[] d) =>
         d.Length >= 84 && (d[0] & 0x80) != 0 && d[0] == 0xFF;

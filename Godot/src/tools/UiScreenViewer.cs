@@ -1,12 +1,8 @@
-using Refii.Textures;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Godot;
-using Refii.Bnk;
-using Refii.Core;
-using Refii.Text;
 using Refii.Ui;
 
 namespace Refii.Launcher.Tools;
@@ -14,210 +10,115 @@ namespace Refii.Launcher.Tools;
 /// <summary>
 /// Renders a Fable 2 Gameface screen so it can be eyeballed against the original game.
 ///
-/// This is a development harness, not part of the launcher UI. It expects a bank
-/// extraction laid out as three roots — see <see cref="AssetRoot"/> — and cycles through
-/// every <c>.bgf</c> it finds with the left/right arrows.
+/// This is a development harness, not part of the game. Standing the screen up is
+/// <see cref="Engine_UiPresentationHost"/>'s job — the same code the running game's front
+/// end goes through, so what is eyeballed here is what ships. What this class adds is only
+/// the things a harness needs and a game must not have: cycling every presentation with the
+/// arrow keys, the <c>REFII_UI_*</c> dumps, and screenshot-and-quit.
 ///
-/// The asset root is resolved in this order, so a checkout with assets in a different
-/// place needs no code change:
-/// <list type="number">
-/// <item>the <c>REFII_GUI_ASSETS</c> environment variable,</item>
-/// <item><c>&lt;user data&gt;/assets/gui-extracted</c>,</item>
-/// <item>the <c>AssetRoot</c> export on the node.</item>
-/// </list>
+/// The keyboard is the reason the split exists: a game that reached its front end by
+/// instantiating this class would change which of the 52 screens was up on a direction press.
 /// </summary>
-public partial class UiScreenViewer : Node3D
+public partial class UiScreenViewer : Engine_UiPresentationHost
 {
-	/// <summary>Fallback asset root, used when neither the env var nor the user data path resolves.</summary>
-	[Export] public string AssetRoot { get; set; } = string.Empty;
-
-	/// <summary>Screen to show first. Empty means whichever sorts first.</summary>
-	[Export] public string StartScreen { get; set; } = "menubox";
-
-	/// <summary>
-	/// Ignore the screen's own camera and frame the content instead. Separates a
-	/// layout fault from a framing one — if the pieces sit correctly under this and
-	/// wrongly under the authored camera, the camera is what needs work.
-	/// </summary>
-	[Export] public bool UseFramingCamera { get; set; }
-
-	/// <summary>
-	/// The shipped <c>data</c> directory to stream banks from. Setting this in the
-	/// Inspector is the whole configuration — no environment variables needed.
-	/// </summary>
-	[Export(PropertyHint.GlobalDir)] public string GameDataRoot { get; set; } = string.Empty;
-
-	/// <summary>Screen names, in display order. How one is fetched is <see cref="_loadScreen"/>'s job.</summary>
-	private readonly List<string> _screens = new();
-	private int _index;
-
-	/// <summary>Set by whichever start path won — banks or an extracted tree.</summary>
-	private Func<string, Engine_UiScreen>? _loadScreen;
-
-	private readonly List<IDisposable> _owned = new();
-	private Engine_TextureNameTable? _names;
-	private Engine_UiTextureCache? _textures;
-	private BnkFileSystem? _banks;
-	private Engine_UiFontLibrary? _fonts;
-	private Engine_BabelDatabase? _strings;
-	private Node3D? _current;
 	private Label? _status;
-	private string _root = string.Empty;
 
 	public override void _Ready()
 	{
 		_status = GetNodeOrNull<Label>("%Status");
 
-		// Streaming from the shipped banks is the real path — no extraction, and the
-		// same parser the guest's VFS uses. The extracted-tree branch below stays only
-		// as a fallback for a checkout without the game data.
-		if (TryStartFromBanks())
-			return;
+		// The viewer's historical default. The game sets its own start screen explicitly.
+		if (StartScreen.Length == 0)
+			StartScreen = "menubox";
 
-		_root = ResolveAssetRoot();
-		if (_root.Length == 0)
-		{
-			Report("No GUI asset root found.\nSet REFII_GUI_ASSETS to a directory containing headers/, payloads/ and gameface/.");
-			return;
-		}
-
-		string gameface = Path.Combine(_root, "gameface");
-		string headers = Path.Combine(_root, "headers");
-		string payloads = Path.Combine(_root, "payloads");
-
-		foreach (string required in new[] { gameface, headers, payloads })
-		{
-			if (!Directory.Exists(required))
-			{
-				Report($"Asset root {_root}\nis missing {Path.GetFileName(required)}/.");
-				return;
-			}
-		}
-
-		// The name table hashes the real extracted paths rather than guessing from the
-		// authoring strings, which is what takes UV resolution to 100%.
-
-		var files = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		foreach (string file in Directory.EnumerateFiles(gameface, "*.bgf"))
-			files[Path.GetFileNameWithoutExtension(file)] = file;
-
-		_screens.AddRange(files.Keys.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
-		if (_screens.Count == 0)
-		{
-			Report($"No .bgf files under {gameface}.");
-			return;
-		}
-
-		_loadScreen = name => Engine_UiScreen.Load(files[name], _names, null, SceneSlide, LiveSlides);
-		Start();
+		base._Ready();
 	}
 
 	/// <summary>
-	/// Opens the shipped banks and serves every screen and texture straight out of
-	/// them. Returns false when the game data is not present, so the caller can fall
-	/// back to an extracted tree.
-	/// </summary>
-	private bool TryStartFromBanks()
-	{
-		string data = ResolveGameDataRoot();
-		if (data.Length == 0)
-			return false;
-
-		// One mount for everything. The engine's bank filesystem indexes every bank
-		// under the game directory and stitches the header/payload halves a .tex is
-		// split across, so screens and textures come from the same handle rather than
-		// from three separately-opened banks.
-		BnkFileSystem banks;
-		try
-		{
-			banks = BnkFileSystem.Mount(data);
-		}
-		catch (Exception ex)
-		{
-			// A mount that is present but unreadable is worth surfacing rather than
-			// silently falling through to the extracted tree.
-			Report($"Bank streaming unavailable: {ex.Message}");
-			return false;
-		}
-
-		_owned.Add(banks);
-		_banks = banks;
-
-		var texturePaths = new List<string>();
-		var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		foreach (BnkFile file in banks.EnumerateAllFiles())
-		{
-			string path = file.VirtualPath;
-			if (path.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
-				texturePaths.Add(path);
-			// One entry per presentation; the .fac sidecar is a separate bank entry.
-			else if (path.EndsWith(".bgf", StringComparison.OrdinalIgnoreCase))
-				byName[BankEntryName(path)] = path;
-		}
-
-		if (byName.Count == 0)
-			return false;
-
-		_names = Engine_TextureNameTable.FromPaths(texturePaths, new[] { ".tex" });
-		_textures = new Engine_UiTextureCache(banks);
-		LoadTextResources(data);
-
-		_screens.AddRange(byName.Keys.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
-		_root = $"banks: {data}";
-
-		_loadScreen = name =>
-		{
-			string bgfPath = byName[name];
-			byte[] bgf = Read(banks, bgfPath) ?? throw new IOException($"{bgfPath} vanished from the bank");
-			byte[]? fac = Read(banks, Path.ChangeExtension(bgfPath, ".fac"));
-			// The .bsg carries the base transform the .bgf overrides — all three
-			// sidecars are separate bank entries under the same stem.
-			byte[]? bsg = Read(banks, Path.ChangeExtension(bgfPath, ".bsg"));
-			return Engine_UiScreen.Parse(name, bgf, fac, bsg, _names, _strings, SceneSlide, LiveSlides,
-				LiveText);
-		};
-
-		Start();
-		return true;
-	}
-
-	/// <summary>Reads one bank entry, or null when it is not present.</summary>
-	private static byte[]? Read(BnkFileSystem banks, string virtualPath) =>
-		banks.TryGetFile(virtualPath, out BnkFile file) ? file.ReadAllBytes() : null;
-
-	/// <summary>
-	/// Loads the bitmap fonts and the localised string database.
+	/// Applies the environment overrides, then shows the screen and runs the probes.
 	///
-	/// Both are LOOSE FILES under <c>language/</c>, not bank entries, so they are found
-	/// from the data root rather than through the mounted banks. Neither is fatal: a
-	/// screen without fonts still renders its art, and without Babel the authored tag is
-	/// displayed verbatim — which is what the engine falls back to as well.
+	/// REFII_UI_SCREEN picks the screen without editing the scene, so a capture run can
+	/// target any of the 52.
 	/// </summary>
-	private void LoadTextResources(string dataRoot)
+	protected override void OnLoaded()
 	{
-		_fonts = Engine_UiFontLibrary.Load(dataRoot);
-		foreach (string failure in _fonts.Failures)
-			GD.PushWarning($"[ui] font: {failure}");
-
 		DumpFontAtlasIfRequested();
 
-		string? textDir = Engine_UiFontLibrary.LanguageSubdirectory(
-			dataRoot, Engine_UiFontLibrary.DefaultCulture, "text");
-		string babel = textDir is null ? string.Empty : Path.Combine(textDir, "book.babel");
-		if (babel.Length == 0 || !File.Exists(babel))
-		{
-			GD.PushWarning($"[ui] no string database under {dataRoot}; tags will display raw");
+		if (int.TryParse(System.Environment.GetEnvironmentVariable("REFII_UI_SCENE_SLIDE"),
+				out int wantSlide))
+			SceneSlide = wantSlide;
+
+		if (System.Environment.GetEnvironmentVariable("REFII_UI_LIST") == "1")
+			GD.Print($"[ui] screens: {string.Join(", ", ScreenNames)}");
+
+		if (System.Environment.GetEnvironmentVariable("REFII_UI_SCREEN") is { } want)
+			StartScreen = want;
+
+		base.OnLoaded();
+
+		DumpElementCountsIfRequested();
+		CaptureIfRequested();
+	}
+
+	protected override void OnScreenShown(
+		Engine_UiScreen screen, Engine_UiSceneBuilder builder, Camera3D camera)
+	{
+		DumpSlides(screen);
+		DumpQuads(screen);
+		DumpSliceGeometry();
+		DumpTextureIfRequested();
+
+		Report($"[{CurrentIndex + 1}/{ScreenNames.Count}] {screen.Name}   " +
+			$"{screen.CanvasWidth}x{screen.CanvasHeight}\n" +
+			$"quads {builder.QuadsBuilt} (degenerate {builder.DegenerateQuads})   " +
+			$"textures {builder.TexturesResolved}   " +
+			$"text {builder.TextsBuilt} ({builder.TextGlyphsBuilt} glyphs)   " +
+			$"camera {camera.Name}\n" +
+			"left/right: change screen");
+	}
+
+	public override void _UnhandledInput(InputEvent @event)
+	{
+		if (ScreenNames.Count == 0 || @event is not InputEventKey { Pressed: true } key)
 			return;
+
+		int delta = key.Keycode switch
+		{
+			Key.Right or Key.Down => 1,
+			Key.Left or Key.Up => -1,
+			_ => 0,
+		};
+		if (delta == 0)
+			return;
+
+		Show((CurrentIndex + delta + ScreenNames.Count) % ScreenNames.Count);
+		GetViewport().SetInputAsHandled();
+	}
+
+	/// <summary>
+	/// With <c>REFII_UI_ELEMENTS=1</c>, prints how many elements the shown screen carries and
+	/// how many of them are spatial.
+	///
+	/// Unique hashes against the total is the number that matters: they are far apart on the
+	/// title screen, which is why the live state is keyed by ORDINAL and not by name hash.
+	/// </summary>
+	private void DumpElementCountsIfRequested()
+	{
+		if (System.Environment.GetEnvironmentVariable("REFII_UI_ELEMENTS") != "1" ||
+			CurrentScreen is not { } probe)
+			return;
+
+		var hashes = new HashSet<uint>();
+		int spatial = 0;
+		foreach (BgfElement e in probe.Document.Elements)
+		{
+			hashes.Add(e.NameHash);
+			if (Engine_UiScreen.IsSpatial(e.Type)) ++spatial;
 		}
 
-		try
-		{
-			_strings = Engine_BabelDatabase.Load(babel);
-		}
-		catch (Exception exception)
-		{
-			GD.PushWarning($"[ui] string database: {exception.Message}");
-		}
+		GD.Print($"[ui] elements={probe.Document.Elements.Length} " +
+			$"unique-hashes={hashes.Count} spatial={spatial} " +
+			$"slides={probe.Document.Slides.Length}");
 	}
 
 	/// <summary>
@@ -232,14 +133,14 @@ public partial class UiScreenViewer : Node3D
 	private void DumpFontAtlasIfRequested()
 	{
 		string? directory = System.Environment.GetEnvironmentVariable("REFII_FONT_DUMP");
-		if (string.IsNullOrEmpty(directory) || _fonts is null)
+		if (string.IsNullOrEmpty(directory) || Fonts is null)
 			return;
 
 		DirAccess.MakeDirRecursiveAbsolute(directory!);
 
 		foreach (int size in new[] { 12, 18, 24 })
 		{
-			if (_fonts.For(size) is not { } selection)
+			if (Fonts.For(size) is not { } selection)
 				continue;
 
 			(UiFont font, float scale) = selection;
@@ -270,214 +171,6 @@ public partial class UiScreenViewer : Node3D
 				$"glyphs={font.Font.GlyphCount}");
 			GD.Print(image.SavePng(path) == Error.Ok ? $"  wrote {path}" : "  save failed");
 		}
-	}
-
-	/// <summary>
-	/// Base name of a bank entry. Bank paths are authored with backslashes, which are
-	/// ordinary characters on Linux — <see cref="Path.GetFileNameWithoutExtension"/>
-	/// would hand back the whole path, so the separators are normalised first.
-	/// </summary>
-	private static string BankEntryName(string bankPath) =>
-		Path.GetFileNameWithoutExtension(bankPath.Replace('\\', '/'));
-
-	private void Start()
-	{
-		// REFII_UI_SCREEN picks the screen without editing the scene, so a capture run
-		// can target any of the 52.
-		if (int.TryParse(System.Environment.GetEnvironmentVariable("REFII_UI_SCENE_SLIDE"),
-				out int wantSlide))
-			SceneSlide = wantSlide;
-
-		if (System.Environment.GetEnvironmentVariable("REFII_UI_ELEMENTS") == "1")
-		{
-			Engine_UiScreen probe = _loadScreen!(_screens[
-				Math.Max(0, _screens.FindIndex(n => string.Equals(n,
-					System.Environment.GetEnvironmentVariable("REFII_UI_SCREEN") ?? StartScreen,
-					StringComparison.OrdinalIgnoreCase)))]);
-			var hashes = new HashSet<uint>();
-			int spatial = 0;
-			foreach (BgfElement e in probe.Document.Elements)
-			{
-				hashes.Add(e.NameHash);
-				if (Engine_UiScreen.IsSpatial(e.Type)) ++spatial;
-			}
-			GD.Print($"[ui] elements={probe.Document.Elements.Length} " +
-				$"unique-hashes={hashes.Count} spatial={spatial} " +
-				$"slides={probe.Document.Slides.Length}");
-		}
-
-		if (System.Environment.GetEnvironmentVariable("REFII_UI_LIST") == "1")
-			GD.Print($"[ui] screens: {string.Join(", ", _screens)}");
-
-		string want = System.Environment.GetEnvironmentVariable("REFII_UI_SCREEN") ?? StartScreen;
-		int start = _screens.FindIndex(n => string.Equals(n, want, StringComparison.OrdinalIgnoreCase));
-		_index = start >= 0 ? start : 0;
-		Show(_index);
-		CaptureIfRequested();
-	}
-
-	/// <summary>
-	/// Finds the shipped game data.
-	///
-	/// The <see cref="GameDataRoot"/> export is an explicit override and nothing more;
-	/// everything else defers to <see cref="BankFileSystem.ResolveGameDataRoot"/>. This
-	/// used to carry its own copy of the search order, which is precisely how a viewer
-	/// ends up reading a different install from the plugin and the exporter.
-	/// </summary>
-	private string ResolveGameDataRoot()
-	{
-		if (Directory.Exists(GameDataRoot))
-			return GameDataRoot;
-
-		string resolved = Engine_GameData.Resolve();
-		return Directory.Exists(resolved) ? resolved : string.Empty;
-	}
-
-	public override void _UnhandledInput(InputEvent @event)
-	{
-		if (_screens.Count == 0 || @event is not InputEventKey { Pressed: true } key)
-			return;
-
-		int delta = key.Keycode switch
-		{
-			Key.Right or Key.Down => 1,
-			Key.Left or Key.Up => -1,
-			_ => 0,
-		};
-		if (delta == 0)
-			return;
-
-		_index = (_index + delta + _screens.Count) % _screens.Count;
-		Show(_index);
-		GetViewport().SetInputAsHandled();
-	}
-
-	/// <summary>
-	/// Which scene-level slide to build, 1-based, or 0 for the preview heuristic.
-	///
-	/// The front-end screens are one page per slide — see
-	/// <see cref="Engine_BgfDocument.SetSceneSlide"/>. Changing this takes effect on the next
-	/// <see cref="ShowByName(string,int)"/>, because visibility and attribute overrides
-	/// are resolved while the screen is being built.
-	/// </summary>
-	public int SceneSlide { get; set; }
-
-	/// <summary>
-	/// Per-element slides read from the running guest, keyed by sdbm name hash. When set,
-	/// these win over <see cref="SceneSlide"/> — they are what the game is actually
-	/// showing rather than a guess at it.
-	/// </summary>
-	public IReadOnlyList<int>? LiveSlides { get; set; }
-
-	/// <summary>The screen currently built, for diagnostics.</summary>
-	public Engine_UiScreen? CurrentScreen { get; private set; }
-
-	/// <summary>Per-element text read from the running guest, keyed by sdbm name hash.</summary>
-	public IReadOnlyList<string?>? LiveText { get; set; }
-
-	/// <summary>Per-element opacity read from the running guest, by element ordinal.</summary>
-	public IReadOnlyList<float?>? LiveOpacity { get; set; }
-
-	/// <summary>
-	/// Shows a screen by name, on a given scene slide. Returns false when the
-	/// presentation is not among the shipped set, or when the viewer has not finished
-	/// standing up yet.
-	/// </summary>
-	public bool ShowByName(string name, int sceneSlide)
-	{
-		SceneSlide = sceneSlide;
-		return ShowByName(name);
-	}
-
-	/// <summary>Shows a screen with the guest's live per-element slides applied.</summary>
-	public bool ShowByName(string name, IReadOnlyList<int>? liveSlides)
-	{
-		LiveSlides = liveSlides;
-		return ShowByName(name);
-	}
-
-	/// <summary>Rebuilds the current screen — after the live slides have changed.</summary>
-	public void Rebuild()
-	{
-		if (_screens.Count > 0)
-		{
-			Show(_index);
-		}
-	}
-
-	/// <summary>
-	/// Shows a screen by name. Returns false when the presentation is not among the
-	/// shipped set, or when the viewer has not finished standing up yet.
-	/// </summary>
-	public bool ShowByName(string name)
-	{
-		int index = _screens.FindIndex(
-			n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
-		if (index < 0)
-		{
-			return false;
-		}
-
-		_index = index;
-		Show(index);
-		return true;
-	}
-
-	/// <summary>The presentations available, once the viewer has loaded.</summary>
-	public IReadOnlyList<string> ScreenNames => _screens;
-
-	private void Show(int index)
-	{
-		string name = _screens[index];
-
-		if (_current is not null)
-		{
-			RemoveChild(_current);
-			_current.QueueFree();
-			_current = null;
-		}
-
-		Engine_UiScreen screen;
-		try
-		{
-			screen = _loadScreen!(name);
-		}
-		catch (Exception ex)
-		{
-			Report($"{name}\nload failed: {ex.Message}");
-			return;
-		}
-
-		CurrentScreen = screen;
-
-		var builder = new Engine_UiSceneBuilder
-		{
-			TextureResolver = rel => _textures?.Load(rel),
-			FontResolver = size => _fonts?.For(size),
-		};
-		_current = builder.Build(screen);
-		AddChild(_current);
-		Engine_UiSceneBuilder.ApplyCameraAiming(_current);
-
-		// Building a camera is not enough — one has to be made current or the viewport
-		// renders through Godot's default camera and the screen looks empty.
-		// REFII_UI_FRAME forces the framing camera without editing the scene, so one run
-		// can be compared against the authored camera's.
-		bool framing = UseFramingCamera ||
-			System.Environment.GetEnvironmentVariable("REFII_UI_FRAME") is not null;
-		Camera3D camera = Engine_UiSceneBuilder.ActivateCamera(_current, framing);
-
-		DumpSlides(screen);
-		DumpQuads(screen);
-		DumpSliceGeometry();
-		DumpTextureIfRequested();
-
-		Report($"[{index + 1}/{_screens.Count}] {screen.Name}   {screen.CanvasWidth}x{screen.CanvasHeight}\n" +
-			$"quads {builder.QuadsBuilt} (degenerate {builder.DegenerateQuads})   " +
-			$"textures {builder.TexturesResolved}   " +
-			$"text {builder.TextsBuilt} ({builder.TextGlyphsBuilt} glyphs)   " +
-			$"camera {camera.Name}\n" +
-			"left/right: change screen");
 	}
 
 	/// <summary>
@@ -520,7 +213,7 @@ public partial class UiScreenViewer : Node3D
 	{
 		DirAccess.MakeDirRecursiveAbsolute(directory);
 
-		for (int i = 0; i < _screens.Count; i++)
+		for (int i = 0; i < ScreenNames.Count; i++)
 		{
 			Show(i);
 
@@ -529,20 +222,13 @@ public partial class UiScreenViewer : Node3D
 			await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
 
 			Image image = GetViewport().GetTexture().GetImage();
-			string path = Path.Combine(directory, $"{i:D2}_{_screens[i]}.png");
+			string path = Path.Combine(directory, $"{i:D2}_{ScreenNames[i]}.png");
 			if (image.SavePng(path) != Error.Ok)
 				GD.PrintErr($"screenshot failed: {path}");
 		}
 
-		GD.Print($"captured {_screens.Count} screens to {directory}");
+		GD.Print($"captured {ScreenNames.Count} screens to {directory}");
 		GetTree().Quit();
-	}
-
-	public override void _ExitTree()
-	{
-		foreach (IDisposable owned in _owned)
-			owned.Dispose();
-		_owned.Clear();
 	}
 
 	/// <summary>
@@ -647,7 +333,7 @@ public partial class UiScreenViewer : Node3D
 					dropped = ReferenceEquals(walk, n) ? "  OFF" : $"  OFF via {walk.Name}";
 			}
 
-			Texture2D? tex = q.TexturePath.Length == 0 ? null : _textures?.Load(q.TexturePath);
+			Texture2D? tex = q.TexturePath.Length == 0 ? null : Textures?.Load(q.TexturePath);
 			string texInfo = q.TexturePath.Length == 0
 				? $"<unresolved hash {q.TextureHash:X8}>"
 				: $"{Path.GetFileName(q.TexturePath.Replace('\\', '/'))} " +
@@ -690,7 +376,7 @@ public partial class UiScreenViewer : Node3D
 	/// </summary>
 	private void DumpSliceGeometry()
 	{
-		if (System.Environment.GetEnvironmentVariable("REFII_UI_DEBUG") is null || _current is null)
+		if (System.Environment.GetEnvironmentVariable("REFII_UI_DEBUG") is null || Built is null)
 			return;
 
 		var rows = new List<(string path, Aabb box, string tex)>();
@@ -708,7 +394,7 @@ public partial class UiScreenViewer : Node3D
 				Walk(child, path);
 		}
 
-		Walk(_current, string.Empty);
+		Walk(Built, string.Empty);
 
 		// Camera versus content, together: "the screen is empty" has two causes that look
 		// identical — content built somewhere the camera is not pointing, and a camera
@@ -729,7 +415,7 @@ public partial class UiScreenViewer : Node3D
 				$"z=[{content.Position.Z:F1}..{content.End.Z:F1}]");
 		}
 
-		foreach (Camera3D cam in FindCameras(_current))
+		foreach (Camera3D cam in FindCameras(Built))
 		{
 			GD.Print($"camera {cam.Name}: current={cam.Current} {cam.Projection} " +
 				$"fov={cam.Fov:F2} size={cam.Size:F2} near={cam.Near:F3} far={cam.Far:F1} " +
@@ -758,14 +444,14 @@ public partial class UiScreenViewer : Node3D
 	{
 		string? want = System.Environment.GetEnvironmentVariable("REFII_TEX_DUMP");
 		string? outPath = System.Environment.GetEnvironmentVariable("REFII_TEX_OUT");
-		if (string.IsNullOrEmpty(want) || string.IsNullOrEmpty(outPath) || _textures is null)
+		if (string.IsNullOrEmpty(want) || string.IsNullOrEmpty(outPath) || Textures is null)
 			return;
 
-		Texture2D? tex = _textures.Load(want!);
+		Texture2D? tex = Textures.Load(want!);
 		if (tex is null)
 		{
 			GD.Print($"texture dump failed: {want} -> " +
-				(_textures.Failures.TryGetValue(want!, out string? why) ? why : "not found"));
+				(Textures.Failures.TryGetValue(want!, out string? why) ? why : "not found"));
 			return;
 		}
 
@@ -778,31 +464,10 @@ public partial class UiScreenViewer : Node3D
 			: "texture dump: SavePng failed");
 	}
 
-	private void Report(string message)
+	protected override void Report(string message)
 	{
 		if (_status is not null)
 			_status.Text = message;
 		GD.Print(message);
-	}
-
-	/// <summary>
-	/// Finds the extraction. Kept out of <see cref="_Ready"/> so the precedence is
-	/// readable and so a missing root reports which candidates were tried.
-	/// </summary>
-	private string ResolveAssetRoot()
-	{
-		string? fromEnv = System.Environment.GetEnvironmentVariable("REFII_GUI_ASSETS");
-		if (!string.IsNullOrEmpty(fromEnv) && Directory.Exists(fromEnv))
-			return fromEnv!;
-
-		string? home = System.Environment.GetEnvironmentVariable("HOME");
-		if (!string.IsNullOrEmpty(home))
-		{
-			string candidate = Path.Combine(home!, ".local", "share", "refii", "assets", "gui-extracted");
-			if (Directory.Exists(candidate))
-				return candidate;
-		}
-
-		return Directory.Exists(AssetRoot) ? AssetRoot : string.Empty;
 	}
 }

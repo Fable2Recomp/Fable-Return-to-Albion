@@ -16,9 +16,16 @@ public sealed class EntityPlaceStats
 
     public int NoTransform { get; set; }
 
+    /// <summary>The creature's record is not in the level view at all — wrong database.</summary>
+    public int CreatureMissingRecord { get; set; }
+
+    /// <summary>The record is here but carries no transform shape we read.</summary>
+    public int CreatureMissingTransform { get; set; }
+
     public override string ToString() =>
         $"save={SaveEntities} creatures={Creatures} placed={Placed} " +
-        $"noTransform={NoTransform}";
+        $"noTransform={NoTransform} " +
+        $"(noRecord={CreatureMissingRecord} noShape={CreatureMissingTransform})";
 }
 
 public static class Engine_LevelEntities
@@ -74,10 +81,36 @@ public static class Engine_LevelEntities
 
             stats.Creatures++;
 
+            int beforeRecord = Refii.Gdb.Engine_GdbPlacements.MissingRecord;
             if (!Engine_GdbPlacements.TryLookupPlacement(
                     levelView, saved.Key, saved.Value, true, out GdbPlacement placement))
             {
                 stats.NoTransform++;
+                if (Refii.Gdb.Engine_GdbPlacements.MissingRecord != beforeRecord)
+                {
+                    stats.CreatureMissingRecord++;
+                }
+                else
+                {
+                    stats.CreatureMissingTransform++;
+
+                    // WHAT IS ACTUALLY IN THERE. A count says the shape is unrecognised; only
+                    // the field list says which shape it is. Three is enough to see a pattern
+                    // and few enough not to bury the log.
+                    if (stats.CreatureMissingTransform <= 3 &&
+                        levelView.TryLookup(saved.Key, out int failing))
+                    {
+                        var names = new System.Text.StringBuilder();
+                        foreach (Refii.Gdb.GdbField field in levelView.Fields(failing))
+                        {
+                            names.Append($" {field.Hash:X8}:t{(byte)field.Type}");
+                        }
+
+                        GD.Print($"[entities] no transform shape for '{entry.Name}' " +
+                            $"0x{saved.Key:X8}:{names}");
+                    }
+                }
+
                 continue;
             }
 

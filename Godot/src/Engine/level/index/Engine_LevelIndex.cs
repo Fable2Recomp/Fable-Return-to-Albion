@@ -17,6 +17,15 @@ public sealed class LevelEntry
 
     public string[] Scenarios { get; init; } = Array.Empty<string>();
 
+    /// <summary>
+    /// The scenario this entry is being built for, once something has resolved one.
+    ///
+    /// Settable rather than init-only because the index discovers heightfields and only the
+    /// GUEST knows which scenario it is standing in; the resolver stamps it on the entry it
+    /// picked. Empty means nothing has said, and the readers fall back to searching.
+    /// </summary>
+    public string Scenario { get; set; } = string.Empty;
+
     public string HeightfieldPath { get; init; } = string.Empty;
 
     public uint HeightfieldSize { get; init; }

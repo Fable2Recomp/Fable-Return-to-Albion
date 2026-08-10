@@ -35,28 +35,15 @@ public partial class Engine_EntityInstance : MeshInstance3D
             return;
         }
 
-        var mesh = new ArrayMesh();
-        foreach (string path in GetMeta(ModelsMeta).AsStringArray())
-        {
-            ArrayMesh? part = Engine_PropStreamer.Resolve(path);
-            if (part is null)
-            {
-                continue;
-            }
+        // The SHARED assembly, not a copy of it. A composite character built from the guest's
+        // Morph component is the same operation on a different list of parts.
+        ArrayMesh? mesh = Refii.Models.Engine_MdlComposite.Build(
+            GetMeta(ModelsMeta).AsStringArray(),
+            Engine_PropStreamer.Resolve,
+            out _,
+            out _);
 
-            for (int surface = 0; surface < part.GetSurfaceCount(); surface++)
-            {
-                mesh.AddSurfaceFromArrays(
-                    part.SurfaceGetPrimitiveType(surface),
-                    part.SurfaceGetArrays(surface));
-
-                int added = mesh.GetSurfaceCount() - 1;
-                mesh.SurfaceSetName(added, part.SurfaceGetName(surface));
-                mesh.SurfaceSetMaterial(added, part.SurfaceGetMaterial(surface));
-            }
-        }
-
-        if (mesh.GetSurfaceCount() != 0)
+        if (mesh is not null)
         {
             Mesh = mesh;
 

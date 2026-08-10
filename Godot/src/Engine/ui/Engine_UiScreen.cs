@@ -184,7 +184,9 @@ public sealed class Engine_UiScreen
 		byte[]? bsgBytes = null, Engine_TextureNameTable? textures = null, Engine_BabelDatabase? strings = null,
 		int sceneSlide = 0, IReadOnlyList<int>? liveSlides = null,
 		IReadOnlyList<string?>? liveText = null,
-		IReadOnlyList<float?>? liveOpacity = null)
+		IReadOnlyList<float?>? liveOpacity = null,
+		IReadOnlyList<bool>? liveVisible = null,
+		IReadOnlyList<float?[]?>? liveTransform = null)
 	{
 		var doc = Engine_BgfDocument.Parse(bgfBytes);
 
@@ -315,9 +317,20 @@ public sealed class Engine_UiScreen
 		// of that is in the file — Page.Initialize sets DimensionsImage opacity to 0, the
 		// display boxes hide themselves the same way. Applying the live value is what stops
 		// a hidden dialog drawing over the menu.
+		if (live && liveVisible is { Count: > 0 })
+		{
+			screen.ApplyLiveVisibility(liveVisible);
+		}
 		if (live && liveOpacity is { Count: > 0 })
 		{
 			screen.ApplyLiveOpacity(liveOpacity);
+		}
+		// AFTER the slide state is resolved, because a slide's own move is an attribute write
+		// too: whatever the guest currently has on the element is the final word, and it
+		// already includes anything the slide did.
+		if (live && liveTransform is { Count: > 0 })
+		{
+			screen.ApplyLiveTransform(liveTransform);
 		}
 		if (live && liveText is { Count: > 0 })
 		{
@@ -376,6 +389,53 @@ public sealed class Engine_UiScreen
 	/// Indexed by element ordinal, like the slides — the runtime walk order and the file
 	/// order are the same. A node the guest did not report keeps the authored value.
 	/// </summary>
+	/// <summary>
+	/// Replaces each node's visibility with the guest's own <c>globalactive</c>.
+	///
+	/// This OVERRIDES the slide-derived state entirely, and that is the point. Computing
+	/// visibility from the file reproduces what the .bgf authored plus what its slides say;
+	/// the runtime then moves it — the screens' Lua calls setAttribute, and none of that is in
+	/// the file. The guest derives globalactive every frame as
+	/// <c>active AND in-time-range AND parent's globalactive</c> and gates drawing on exactly
+	/// it, so following it is following the contract rather than re-deriving it.
+	///
+	/// The parent chain is already folded in on the guest side, so an element whose ancestor
+	/// is off arrives false here and the builder drops its subtree — the same pruning the
+	/// runtime does.
+	///
+	/// A node the guest did not report keeps the file's answer, so a short read degrades to
+	/// the old behaviour rather than blanking the screen.
+	/// </summary>
+	private void ApplyLiveVisibility(IReadOnlyList<bool> liveVisible)
+	{
+		// Keep what the FILE said before overwriting it. The two disagreeing is the whole
+		// justification for reading the guest's value, so being able to measure the
+		// disagreement is worth one array — otherwise "we now follow the guest" is a claim
+		// with no evidence behind it.
+		_fileVisible = new bool[Nodes.Length];
+		for (int i = 0; i < Nodes.Length; ++i)
+		{
+			_fileVisible[i] = Nodes[i].Visible;
+		}
+
+		for (int i = 0; i < Nodes.Length && i < liveVisible.Count; ++i)
+		{
+			Nodes[i].Visible = liveVisible[i];
+		}
+	}
+
+	private bool[]? _fileVisible;
+
+	/// <summary>
+	/// What the .bgf's own slide state said about element <paramref name="index"/>, before the
+	/// guest's <c>globalactive</c> replaced it. Falls back to the live value when no live
+	/// visibility was applied.
+	/// </summary>
+	public bool FileVisible(int index) =>
+		_fileVisible is not null && index >= 0 && index < _fileVisible.Length
+			? _fileVisible[index]
+			: index >= 0 && index < Nodes.Length && Nodes[index].Visible;
+
 	private void ApplyLiveOpacity(IReadOnlyList<float?> liveOpacity)
 	{
 		for (int i = 0; i < Nodes.Length && i < liveOpacity.Count; ++i)
@@ -384,6 +444,39 @@ public sealed class Engine_UiScreen
 			{
 				Nodes[i].Opacity = opacity;
 			}
+		}
+	}
+
+	/// <summary>
+	/// Applies the guest's live TRANSFORM attributes over the ones the file authored.
+	///
+	/// THIS IS WHERE THE OVERLAPPING TEXT CAME FROM. A slide moves an element by writing its
+	/// attributes — `setAttribute(el, 'position.x', …)` — and the shipped Lua does the same
+	/// thing directly for anything it lays out itself, the expandable menu's rows being the
+	/// obvious case: twelve row components authored at one spot, positioned apart at runtime.
+	/// Reading only `opacity` meant every one of them kept its authored position, so a menu's
+	/// rows and the HUD's labels all stacked on top of each other and read as garbled text.
+	///
+	/// A null entry means the guest has no such attribute on that element, which is the normal
+	/// case — most elements never move — so the file's value stands. Only a value the guest
+	/// actually states overrides anything.
+	/// </summary>
+	private void ApplyLiveTransform(IReadOnlyList<float?[]?> liveTransform)
+	{
+		for (int i = 0; i < Nodes.Length && i < liveTransform.Count; ++i)
+		{
+			if (liveTransform[i] is not { } values)
+			{
+				continue;
+			}
+
+			UiNode n = Nodes[i];
+			if (values.Length > 0 && values[0] is { } x) n.PositionX = x;
+			if (values.Length > 1 && values[1] is { } y) n.PositionY = y;
+			if (values.Length > 2 && values[2] is { } z) n.PositionZ = z;
+			if (values.Length > 3 && values[3] is { } sx) n.ScaleX = sx;
+			if (values.Length > 4 && values[4] is { } sy) n.ScaleY = sy;
+			if (values.Length > 5 && values[5] is { } sz) n.ScaleZ = sz;
 		}
 	}
 

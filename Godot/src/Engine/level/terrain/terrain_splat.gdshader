@@ -9,14 +9,50 @@ uniform bool has_lightmap = false;
 uniform sampler2DArray lod_array : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray lod_detail_array : filter_linear_mipmap_anisotropic, repeat_enable;
 
+// The per-layer normal maps, sampled with their colour partner's UV because that is what the
+// guest does — `sub_82215BE0` passes the SAME scale float to the ground pair (material+0xB0 and
+// +0xB4, samplers s0/s2, both scaled by UVGroundFactor at +0xBC) and a different one to the
+// cliff pair (+0xC8/+0xCC, s13/s14, UVCliffFactor at +0xD4). There is no normal-only UV set.
+uniform sampler2DArray lod_normal_array : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2DArray lod_detail_normal_array : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform bool has_normals = false;
+
 uniform sampler2DArray material_weight : filter_linear, repeat_disable;
 
-// source_color, unlike the colour textures above. A lightmap texture is loaded through the
-// GAMMA SIBLING of whatever format the .tex states — the loader passes a3 == 1 and
-// sub_82B8CEE0 walks the format table for `stated | 0x7E00` — so the decode is the hardware's
-// sRGB, not the shader's squaring. Sampling it raw used gamma values as linear and made the
-// ground read far brighter than everything standing on it.
-uniform sampler2D lightmap : source_color, filter_linear, repeat_enable, hint_default_white;
+// THE BAKE TAKES TWO DECODES, AND BOTH ARE REAL. This looks like a mistake and is not.
+//
+// First the hardware. The .lmp loader creates every lightmap texture through `sub_82B8CEE0`
+// with a3 == 1, and that arm walks the format table for `stated | 0x7E00` — the sRGB sibling
+// of whatever format the blob's own header names — and the chosen D3DFORMAT goes straight to
+// XGSetTextureHeader. So the sample arrives already sRGB-decoded, which is what `source_color`
+// reproduces here.
+//
+// Then the shader, on top of it:
+//
+//     r2.xyw = log2(|lightmap.xyz|) * g_LightmapFactorAndSRGBGamma.www
+//     r4.xyz = exp2(r2.xyw)
+//
+// THE EXPONENT IS 1.3, NOT 2.2, and getting that wrong is a visible exposure error rather than
+// a rounding one. There is no binding-id setter for this constant, which is what made an
+// earlier reading call it an unwritable 2.2 shader literal — but the CPU writes it DIRECTLY
+// into the device constant shadow instead, bypassing the binding table entirely.
+// `sub_821B16F8` loads `flt_8209950C` (0x3FA66666 = 1.3f), permutes it against the theme's
+// lightmap colour and stores the result to the pixel constant at device+0x18D0..0x18DC —
+// which is c21, and the shipped shaders name c21 `g_LightmapFactorAndSRGBGamma`.
+//
+// The 1.3 is therefore a contrast lift applied after a real sRGB decode, not a gamma standing
+// in for one. Note it is NOT the 2.2 the props use on their per-vertex bakes: that one is a
+// literal compiled into the AMB1 VERTEX shader for the D3DCOLOR path, a different operand
+// through a different stage.
+// CLAMP, not repeat. The engine never calls D3DDevice_SetSamplerState_* at all — sampler state
+// lives in deferred state-var records drained by `Render_ApplyDirtyStateVar` — and the
+// once-per-frame default pass `sub_822C2C60` writes stage 3 (the lightmap's) as
+// AddressU = AddressV = g_Address2DMode = 2 = D3DTADDRESS_CLAMP, Min/Mag/Mip = LINEAR.
+// It matters at exactly one place, the outermost half-texel, where wrapping folds the far edge
+// of the region onto the near one.
+uniform sampler2D lightmap : source_color, filter_linear, repeat_disable, hint_default_white;
+
+const float FABLE_LIGHTMAP_GAMMA = 1.3;
 
 uniform vec4 chunk_origin_extent;
 
@@ -38,19 +74,95 @@ void vertex() {
 	v_local_normal = NORMAL;
 }
 
-vec3 sample_material(int slice, vec2 world_xy, float slope_w) {
+/// The two vertical projections a cliff layer is sampled through, and their weights.
+///
+/// THE CLIFF IS TRIPLANAR AND THE GROUND IS NOT. The guest projects its ground layer straight
+/// down — horizontal world position times UVGroundFactor — and its cliff layer through two
+/// VERTICAL planes times UVCliffFactor, blended by how much the surface faces each of the two
+/// horizontal axes: `|n.x|` and `|n.y|` in the guest's Z-up axes, normalised by their sum plus
+/// a small epsilon. Sampling a cliff with the ground's downward projection is what smears a
+/// texture into vertical streaks on anything steep, which is the whole reason the second
+/// projection exists.
+///
+/// `v_local` is already world space here — `mesh_xform` is (1, 1, 0, 0) — so the height axis is
+/// simply `v_local.y`, and the guest's two horizontal axes are our x and z.
+void cliff_projection(
+		vec3 local, vec3 n, float scale, out vec2 uv_x, out vec2 uv_z, out vec2 w) {
+	uv_x = vec2(local.z, local.y) * scale;
+	uv_z = vec2(local.x, local.y) * scale;
+
+	float wx = abs(n.x);
+	float wz = abs(n.z);
+	w = vec2(wx, wz) / (wx + wz + 0.0001);
+}
+
+vec3 sample_material(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w) {
 	int max_slice = max(int(chunk_grid_size.z) - 1, 0);
 	int s = min(max(slice, 0), max_slice);
 	vec4 mp = material_params[s];
 
-	float base_scale = splat_params.y;
-	float detail_scale = splat_params.y;
+	// PER MATERIAL, not one global scale for the whole landscape. mp.x is the layer's
+	// UVGroundFactor and mp.y its UVCliffFactor — two different authored numbers that the guest
+	// hands to two different sampler pairs. Using `splat_params.y` for both tiled every layer
+	// at the same rate and ignored what the .ehf actually states for each.
+	float base_scale = mp.x > 0.0 ? mp.x : splat_params.y;
+	float cliff_scale = mp.y > 0.0 ? mp.y : base_scale;
+
+	vec2 uv_x;
+	vec2 uv_z;
+	vec2 pw;
+	cliff_projection(local, n, cliff_scale, uv_x, uv_z, pw);
 
 	vec3 base = texture(lod_array, vec3(world_xy * base_scale, float(s))).rgb;
-	vec3 detail = texture(lod_detail_array, vec3(world_xy * detail_scale, float(s))).rgb;
+	vec3 cliff =
+		texture(lod_detail_array, vec3(uv_x, float(s))).rgb * pw.x +
+		texture(lod_detail_array, vec3(uv_z, float(s))).rgb * pw.y;
 
-	float detail_w = slope_w * clamp(mp.z, 0.0, 1.0) * clamp(mp.w, 0.0, 1.0);
-	return mix(base, detail, detail_w);
+	// Gamma 2.0 by squaring, PER SAMPLE — the position matters. The guest squares each fetch
+	// the instant it lands, `r11.xyz = r11.zxy * r11.zxy` straight after the tfetch, and it
+	// draws one pass per material blending into the framebuffer. So what accumulates is a
+	// weighted sum of SQUARED colours. Squaring the blended result instead computes
+	// (sum w*c)^2 where the guest computes sum w*c^2, and those differ wherever two layers
+	// overlap — which is every transition in the region.
+	base *= base;
+	cliff *= cliff;
+
+	// mp.w is NOT part of this. It is the layer's UVCliffMacroMapFactor — a UV scale for a
+	// macro map the guest samples elsewhere — and multiplying the cliff's share of the blend by
+	// it was thinning every slope by an unrelated authored number.
+	float cliff_w = slope_w * clamp(mp.z, 0.0, 1.0);
+	return mix(base, cliff, cliff_w);
+}
+
+/// This layer's tangent-space normal, blended by the same slope weight as its colour.
+///
+/// Z IS RECONSTRUCTED rather than read. The guest's landscape normals are two-channel — it
+/// decodes `n.xy = sample.xy * 2 - 1` and then `n.z = sqrt(1 - x*x - y*y)` — and reconstructing
+/// gives the same answer for a three-channel map, so this is correct either way and does not
+/// depend on knowing which compressed format a given .tex shipped in.
+vec3 sample_material_normal(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w) {
+	int max_slice = max(int(chunk_grid_size.z) - 1, 0);
+	int s = min(max(slice, 0), max_slice);
+	vec4 mp = material_params[s];
+
+	// Each normal map rides its colour partner's UV and projection — the guest passes the same
+	// scale float to s0/s2 and the same one to s13/s14.
+	float base_scale = mp.x > 0.0 ? mp.x : splat_params.y;
+	float cliff_scale = mp.y > 0.0 ? mp.y : base_scale;
+
+	vec2 uv_x;
+	vec2 uv_z;
+	vec2 pw;
+	cliff_projection(local, n, cliff_scale, uv_x, uv_z, pw);
+
+	vec2 base_xy = texture(lod_normal_array, vec3(world_xy * base_scale, float(s))).xy;
+	vec2 cliff_xy =
+		texture(lod_detail_normal_array, vec3(uv_x, float(s))).xy * pw.x +
+		texture(lod_detail_normal_array, vec3(uv_z, float(s))).xy * pw.y;
+
+	float cliff_w = slope_w * clamp(mp.z, 0.0, 1.0);
+	vec2 xy = mix(base_xy, cliff_xy, cliff_w) * 2.0 - 1.0;
+	return vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
 }
 
 void fragment() {
@@ -65,9 +177,11 @@ void fragment() {
 	vec2 chunk_co = (world_xy - origin) / extent;
 	vec2 chunk_clamped = clamp(chunk_co, vec2(0.0), vec2(cw - 0.001, ch - 0.001));
 
-	float slope_w = clamp((0.90 - abs(normalize(v_local_normal).y)) / 0.10, 0.0, 1.0);
+	vec3 geom_normal = normalize(v_local_normal);
+	float slope_w = clamp((0.90 - abs(geom_normal.y)) / 0.10, 0.0, 1.0);
 
 	vec3 final = vec3(0.0);
+	vec3 mapped_normal = vec3(0.0);
 	float weight_sum = 0.0;
 
 	vec2 inv_weight_size = weight_size.zw;
@@ -85,52 +199,116 @@ void fragment() {
 			continue;
 		}
 
-		final += sample_material(mat, world_xy, slope_w) * w;
+		final += sample_material(mat, world_xy, v_local, geom_normal, slope_w) * w;
+		if (has_normals) {
+			mapped_normal += sample_material_normal(mat, world_xy, v_local, geom_normal, slope_w) * w;
+		}
 		weight_sum += w;
 	}
 
 	if (weight_sum > 0.001) {
 		final /= weight_sum;
+		mapped_normal /= weight_sum;
 	} else {
-		final = sample_material(0, world_xy, slope_w);
+		final = sample_material(0, world_xy, v_local, geom_normal, slope_w);
+		mapped_normal = has_normals
+			? sample_material_normal(0, world_xy, v_local, geom_normal, slope_w)
+			: vec3(0.0, 0.0, 1.0);
 	}
 
+	mapped_normal = has_normals ? normalize(mapped_normal) : vec3(0.0, 0.0, 1.0);
+
+	// `final` is already squared — `sample_material` does it per fetch, where the guest does.
+	//
+	// That decode is what the ground was missing, and it is why the theme's LightmapFactor
+	// could not be applied before: an unsquared albedo is roughly the square root of the
+	// guest's, about twice as bright through the midtones, so a factor authored against the
+	// darker operand drove the whole surface to white. The ground reading visibly hotter than
+	// the props standing on it was the same defect seen from the other end.
 	ALBEDO = final;
 
-	// THE TERRAIN HAS A LIGHTMAP. This was disputed between two IDA passes — one found no
-	// type-6 override of the lightmap-fetch virtual and concluded the heightfield has none —
-	// and the shipped shader settles it: PSHADER_LANDSCAPEMATERIAL_..._AMB1, recompiled out of
-	// Shaders.sbk, binds `g_TextureLightmapSampler` at sampler s3 and samples it with its own
-	// UV set. The IDA negative was real but was evidence about the CPU, and the binding is
-	// data-driven through the shared material path, which is why it was not visible there.
+	// Godot builds the heightfield's tangent frame; the guest builds its own in the vertex
+	// shader from a region-wide normal texture. Handing it the blended tangent-space normal is
+	// what makes the direct light respond to the layers' bumps at all — the darkening term
+	// below only affects the AMBIENT half.
+	if (has_normals) {
+		NORMAL_MAP = mapped_normal * 0.5 + 0.5;
+	}
+
+	// THE TERRAIN HAS A LIGHTMAP, and the shipped shader is what says so:
+	// PSHADER_LANDSCAPEMATERIAL_..._AMB1 binds `g_TextureLightmapSampler` and samples it with
+	// its own UV set. There is no type-6 override of the lightmap-fetch virtual to find on the
+	// CPU side — the binding is data-driven through the shared material path.
 	//
 	// The guest's composition, from the same shader:
 	//
-	//     darken  = lerp(AmbientNormalMapDarkeningColour, 1, saturate(dot(Ngeom, Nmapped)))
+	//     darken  = lerp(AmbientNormalMapDarkeningColour, 1, saturate(dot(Nbent, Nmapped))^2)
 	//     ambient = pow(lightmap, gamma) * LightmapFactor * darken + GlobalAmbient
 	//
-	// The darkening term is omitted here and only here: it needs a terrain normal map, which
-	// this splat shader does not yet have, so dot(Ngeom, Nmapped) is identically 1 and the term
-	// collapses to 1. When terrain normal maps land, that lerp is the line to add.
+	// TWO THINGS ABOUT THAT DOT ARE EASY TO GET WRONG.
+	// It is SQUARED — `r0.xy = r0.xy * r0.zy` feeds the lerp, not the raw cosine, and
+	// two independent shader blobs (0189 and the CLF1 variant 0205) agree. And the first
+	// operand is NOT the geometric normal: the vertex shader builds a BENT normal,
+	//
+	//     t     = 0.5 * (dot(N, g_AmbientLightReferenceDirection) + 1)
+	//     Nbent = normalize(lerp(N, g_AmbientLightReferenceDirection, t))
+	//
+	// and passes it down as its own interpolator. So the term does not vanish on flat ground
+	// the way a geometric-vs-mapped dot would.
+	//
+	// TWO DIVERGENCES REMAIN, and they are in the first operand rather than the shape. The
+	// guest's bent normal leans toward `g_AmbientLightReferenceDirection`, a constant whose
+	// source we have not established, so the geometric normal stands in for it — which makes
+	// the dot measure how far the normal map departs from the surface, the term's evident
+	// intent, but not the guest's exact cosine. And the guest builds its tangent frame in the
+	// vertex shader from a region-wide normal texture it fetches at s17, Gram-Schmidt'd against
+	// the interpolated normal; ours is Godot's heightfield frame. Both make this darker or
+	// lighter by degrees, neither changes what it is.
+	//
+	// With no normal maps loaded the term is exactly 1: `mapped_normal` is (0,0,1), the dot is
+	// 1, and the lerp returns the second operand.
+	//
+	// THE UV IS A PLANAR WORLD PROJECTION, AND IT IS THE HEIGHTFIELD'S OWN. The landscape
+	// vertex shader states it in two lines, with no offset of its own anywhere:
+	//
+	//     oTexCoord3.xy = g_LandscapeLightmapUVFactor.xy * worldXY
+	//
+	// where worldXY is the same landscape-relative position the heightfield fetch uses,
+	// `worldXY * g_TexCoordScale.xy`. Two different constants, and they turn out to be the
+	// same number:
+	//
+	//     g_TexCoordScale.xy            = 1 / ((sampleCount - 1) * metresPerTexel)   [VS binding 393]
+	//     g_LandscapeLightmapUVFactor   = 1 / (lightmapTexelDim   * metresPerTexel)  [sub_82A8EA50]
+	//
+	// The second is built into landscape+0x100 beside the texture lookup and uploaded by
+	// `sub_822AA878`, which binds the bake at sampler 3 and writes that float4 to the device
+	// constant shadow at +0x860 — the same register the no-lightmap path explicitly zeroes.
+	//
+	// They agree because a bake's texel grid is exactly the heightfield's CELL grid. Checked
+	// against the shipped .lmp rather than assumed — its records carry the sample counts beside
+	// the blob, and both of this level's heightfields are exact:
+	//
+	//     landscape  samples 577x577 -> bake 576x576     (577-1, 577-1)
+	//     sea vista  samples  33x65  -> bake  32x64      ( 33-1,  65-1)
+	//
+	// So the bake spans the heightfield's extent one texel per cell, and the normalised
+	// heightfield coordinate below IS that projection. Nothing per-patch is involved: the
+	// patches carry no id of their own, and one lightmap covers a landscape's whole grid.
 	vec2 lm_uv = clamp(chunk_co / vec2(cw, ch), vec2(0.000001), vec2(0.999999));
-	vec3 bake = has_lightmap ? texture(lightmap, lm_uv).rgb : vec3(0.0);
+	vec3 bake = has_lightmap
+		? pow(max(texture(lightmap, lm_uv).rgb, vec3(0.0)), vec3(FABLE_LIGHTMAP_GAMMA))
+		: vec3(0.0);
 
-	// LightmapFactor is NOT applied here, and the measurement is why. The guest's shape is
-	// `bake * LightmapFactor + GlobalAmbient` and this region states a factor of
-	// (3.54, 3.38, 5.16); against our decoded lightmap, which averages about 0.6 once the sRGB
-	// decode is applied, that is 2.1 to 3.1 and the ground clips to flat white.
-	//
-	// The factor is almost certainly right — it balances exactly against the SH band constant
-	// on the probe path, where 0.17 x 3.54 lands on 0.60. What is wrong is far more likely to
-	// be OUR LIGHTMAP BINDING, which is known to diverge from the guest in three ways at once:
-	// the guest binds one lightmap PER LANDSCAPE PATCH selected by that patch's own 64-bit UID
-	// (`sub_82A8EA50`), addresses it with a PLANAR WORLD-XZ projection scaled by
-	// 1/(texDim * metres-per-texel), and this level ships two candidate blobs of which we simply
-	// take the larger. We bind one texture for the whole heightfield with normalised chunk UVs.
-	//
-	// So: fix the binding first, then re-apply the factor. Applying it now would be following
-	// the guest's arithmetic with the wrong operand.
-	EMISSION = final * fable_ambient(bake);
+	// darken = lerp(DarkeningColour, 1, saturate(dot(Nbent, Nmapped))^2). The square is the
+	// guest's, and the theme's darkening colour arrives through `darkening_colour` — it is the
+	// one lighting colour registered as type 1 rather than type 2, so it carries no Factor.
+	float ndotn = clamp(mapped_normal.z, 0.0, 1.0);
+	vec3 darken = mix(darkening_colour.rgb, vec3(1.0), ndotn * ndotn);
+
+	// The theme's LightmapFactor, applied now that it has the operand the guest authored it
+	// against. `fable_ambient` adds the flat GlobalAmbient on top, so this line is the guest's
+	// `bake * LightmapFactor + GlobalAmbient` with the darkening term collapsed to 1.
+	EMISSION = final * fable_ambient(bake * lightmap_colour.rgb * darken);
 }
 
 void light() {

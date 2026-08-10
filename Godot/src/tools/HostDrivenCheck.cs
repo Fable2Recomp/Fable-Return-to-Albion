@@ -26,6 +26,22 @@ public partial class HostDrivenCheck : Node
 	/// <summary>Seconds to drive the guest before reporting.</summary>
 	[Export] public double WatchSeconds { get; set; } = 30.0;
 
+	/// <summary>
+	/// Optionally start a game part-way through the watch, so the in-game UI can be observed.
+	///
+	/// OPT-IN, and off by default. It exists because the question "does the guest stand up a
+	/// HUD at all under a null device" cannot be answered from the front end, and answering it
+	/// otherwise costs a human a playthrough. This does NOT drive input — it posts a front-end
+	/// action onto the guest's tick pump, which is the same route the Godot menu uses, so the
+	/// guest reaches the game through its own code rather than through synthetic key presses.
+	///
+	/// <c>REFII_HOST_BOOT_NEWGAME=1</c> turns it on; <c>REFII_HOST_BOOT_SECONDS</c> lengthens
+	/// the watch, since a level load and its intro movie take far longer than the default 30s.
+	/// </summary>
+	private bool _startRequested;
+
+	private bool _startPosted;
+
 	private double _elapsed;
 	private bool _driving;
 	private long _steps;
@@ -51,6 +67,15 @@ public partial class HostDrivenCheck : Node
 
 		GD.Print($"host bridge ABI {abi}");
 		GD.Print($"game directory: {dataRoot}");
+
+		_startRequested =
+			System.Environment.GetEnvironmentVariable("REFII_HOST_BOOT_NEWGAME") == "1";
+		if (double.TryParse(
+				System.Environment.GetEnvironmentVariable("REFII_HOST_BOOT_SECONDS"),
+				out double seconds) && seconds > 0.0)
+		{
+			WatchSeconds = seconds;
+		}
 
 		if (System.Environment.GetEnvironmentVariable("REFII_HOST_BOOT") != "1")
 		{
@@ -91,13 +116,93 @@ public partial class HostDrivenCheck : Node
 
 		_steps++;
 
+		// A third of the way in, so the boot movies and the front-end handover are done. The
+		// pump holds the action rather than faulting if the front end is not up yet, so an
+		// early post is safe — this is only about not waiting longer than necessary.
+		if (_startRequested && !_startPosted && _elapsed >= WatchSeconds / 3.0)
+		{
+			_startPosted = true;
+			uint queued = HostBridge.PostFrontEndAction("New Game");
+			GD.Print($"[host-driven] posted 'New Game' to the guest tick pump (queue {queued})");
+		}
+
+		if (_startRequested && _startPosted && _elapsed >= WatchSeconds / 2.0 &&
+			_elapsed - _lastPresentationReport >= 5.0)
+		{
+			// Sampled on the way in as well as at the end. A presentation the guest stands up
+			// during the load and tears down before the finish would otherwise never be seen,
+			// and "the HUD exists briefly" and "the HUD never exists" are different problems.
+			_lastPresentationReport = _elapsed;
+			ReportPresentations($"t={_elapsed:F0}s");
+		}
+
 		if (_elapsed >= WatchSeconds)
 		{
 			GD.Print($"drove the guest for {_elapsed:F1}s across {_steps:N0} steps " +
 				$"({_steps / _elapsed:F0} steps/s): {HostBridge.HostedStatus}");
 			GD.Print("HOST DRIVEN OK — Godot owns the loop and the guest is alive");
+
+			ReportPresentations("final");
 			_driving = false;
 			GetTree().Quit(0);
+		}
+	}
+
+	private double _lastPresentationReport;
+
+	/// <summary>sdbm of "opacity", masked the way the runtime stores an attribute id.</summary>
+	private static readonly uint[] OpacityIds =
+	{
+		Engine_GameHash.Sdbm("opacity") & Engine_GameHash.AttributeIdMask,
+	};
+
+	/// <summary>
+	/// What UI the guest has actually STOOD UP, from the one registry that holds every live
+	/// presentation.
+	///
+	/// This is the half of "the in-game UI is missing" that can be settled without a human
+	/// playing: either the guest built a HUD and Godot is not drawing it, or it never built
+	/// one under a null device. Those need opposite fixes and look identical on screen.
+	/// </summary>
+	private static void ReportPresentations(string when)
+	{
+		System.Collections.Generic.List<HostBridge.Presentation> live =
+			HostBridge.GetPresentations();
+
+		GD.Print($"[presentation] {when}: {live.Count} live " +
+			$"(inGame={HostBridge.IsInGame})");
+		foreach (HostBridge.Presentation p in live)
+		{
+			// Opacity is only read for a screen we would actually draw — it costs a full
+			// element walk, and a parked menu's answer is stale anyway.
+			string opacity = string.Empty;
+			if (p.IsShowing)
+			{
+				HostBridge.LiveAttribute[,]? attrs =
+					HostBridge.GetUiAttributes(OpacityIds, p.Address);
+				if (attrs is null)
+				{
+					opacity = " opacity=NONE";
+				}
+				else
+				{
+					int reported = 0;
+					int zero = 0;
+					for (int i = 0; i < attrs.GetLength(0); ++i)
+					{
+						if (!attrs[i, 0].Present) continue;
+						++reported;
+						if (attrs[i, 0].AsFloat <= 0.001f) ++zero;
+					}
+
+					opacity = $" opacity={reported} reported/{zero} at zero";
+				}
+			}
+
+			GD.Print($"[presentation]   {p.Address:X8} root={p.Root:X8} " +
+				$"{(p.IsShowing ? "SHOWING" : "hidden ")} active={p.ActiveElements,-5} " +
+				$"{(p.IsFrozen ? "FROZEN " : string.Empty)}{(p.IsSuppressed ? "PARKED " : string.Empty)}" +
+				$"'{p.Name}'{opacity}");
 		}
 	}
 

@@ -82,11 +82,11 @@ public sealed class Engine_UiSceneBuilder
 	/// Builds the shared quad. A plain one: U increases with +X, V downward from the
 	/// top-left, normal toward +Z where <see cref="BuildTransform"/> puts the viewer.
 	///
-	/// It used to bake a horizontal mirror in, to compensate for a camera whose
-	/// screen-right pointed at world -X. That fixed textures and left GEOMETRY mirrored:
-	/// menubox's A/B prompts rendered bottom-LEFT, and the two halves of a paper panel
-	/// swapped so both their outer borders met in the middle as a dark seam. The
-	/// handedness belongs in the transform, once, not in the mesh.
+	/// No mirror is baked in here. Compensating in the mesh for a camera whose screen-right
+	/// points at world -X fixes textures and leaves GEOMETRY mirrored: menubox's A/B prompts
+	/// render bottom-LEFT, and the two halves of a paper panel swap so both their outer
+	/// borders meet in the middle as a dark seam. The handedness belongs in the transform,
+	/// once.
 	/// </summary>
 	private static ArrayMesh BuildQuadMesh(float size)
 	{
@@ -146,6 +146,7 @@ public sealed class Engine_UiSceneBuilder
 	public Node3D Build(Engine_UiScreen screen)
 	{
 		QuadsBuilt = TexturesResolved = TextsBuilt = DegenerateQuads = TextGlyphsBuilt = 0;
+		_inheritedOpacity = 1f;
 
 		var root = new Node3D { Name = SanitizeName(screen.Name) };
 		root.SetMeta("canvas_width", screen.CanvasWidth);
@@ -162,6 +163,26 @@ public sealed class Engine_UiSceneBuilder
 		}
 		return root;
 	}
+
+	/// <summary>
+	/// Opacity accumulated from the root down to the element being built, 0..1.
+	///
+	/// OPACITY IS A CHAIN, not a per-element value, and treating it as one is how a hidden HUD
+	/// stays on screen. The engine multiplies down the tree — <c>sub_8229E250</c> takes the
+	/// parent frame's accumulated value, multiplies by this element's own <c>opacity/100</c>,
+	/// and stores the product on the render association — so an element at 100 under a group at
+	/// 0 draws at 0.
+	///
+	/// That is exactly how the game hides the whole HUD: <c>hud.lua</c>'s <c>Enable</c>/
+	/// <c>Disable</c> is <c>setAttribute(getElement('Scene.Layer'), 'opacity', 100 | 0)</c> on
+	/// ONE group, and every element beneath it must go with it.
+	///
+	/// It is NOT a visibility gate, which is the other half of the trap. The traversal
+	/// <c>sub_822849A0</c> never reads opacity, so at 0 the subtree is still walked, still
+	/// reports <c>globalactive</c> true, and is still submitted — just at alpha 0. Collapsing
+	/// it to <c>Visible = false</c> would give the right pixels and the wrong element state.
+	/// </summary>
+	private float _inheritedOpacity = 1f;
 
 	private Node3D? BuildNode(UiNode n)
 	{
@@ -182,6 +203,11 @@ public sealed class Engine_UiSceneBuilder
 			return null;
 		}
 
+		// This element's own opacity folded into the chain, BEFORE the node is created —
+		// CreateNodeFor builds the quad and needs the accumulated alpha, not the local one.
+		float parentOpacity = _inheritedOpacity;
+		_inheritedOpacity = parentOpacity * (n.Opacity / 100f);
+
 		Node3D node = CreateNodeFor(n);
 		node.Name = SanitizeName(n.Name);
 		node.Transform = BuildTransform(n);
@@ -192,6 +218,10 @@ public sealed class Engine_UiSceneBuilder
 			node.SetMeta("name_synthesised", true);
 		if (n.Opacity < 100f)
 			node.SetMeta("opacity", n.Opacity / 100f);
+		// The accumulated value too, and separately: a consumer asking "why is this invisible"
+		// needs to tell "this element is transparent" from "something above it is".
+		if (_inheritedOpacity < 1f)
+			node.SetMeta("opacity_accumulated", _inheritedOpacity);
 
 		foreach (UiNode child in n.Children)
 		{
@@ -199,6 +229,10 @@ public sealed class Engine_UiSceneBuilder
 			if (built is not null)
 				node.AddChild(built);
 		}
+
+		// Restore on the way back up. The walk is depth-first over siblings, so leaving this
+		// at the child's value would make every later sibling inherit its transparency.
+		_inheritedOpacity = parentOpacity;
 		return node;
 	}
 
@@ -277,24 +311,43 @@ public sealed class Engine_UiSceneBuilder
 			return node;
 
 		node.Mesh = mesh;
-		node.MaterialOverride = new StandardMaterial3D
-		{
-			Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-			CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-			AlbedoTexture = font.Atlas,
-			// The authored alpha is overwritten with 1.0 by the engine — UI text is
-			// always opaque, and it does not take the element's opacity either.
-			AlbedoColor = new Color(text.R, text.G, text.B, 1f),
-			// A glyph atlas is padded with transparent black; without a clip the
-			// bilinear tail of a neighbouring cell shows as a halo.
-			AlphaScissorThreshold = 0.01f,
-		};
+		// The AUTHORED alpha is overwritten with 1.0 by the engine — a .bgf's own text colour
+		// is always opaque. The opacity CHAIN is a different value and does apply: it is
+		// accumulated on the render association, which text elements have like any other, so a
+		// label under a group faded to 0 fades with it. Conflating the two is what left HUD
+		// text on screen after the game had hidden the HUD.
+		node.MaterialOverride =
+			TextMaterial(new Color(text.R, text.G, text.B, _inheritedOpacity), font.Atlas);
 
 		node.SetMeta("text_lines", lines);
 		TextGlyphsBuilt += mesh.SurfaceGetArrayLen(0) / 4;
 		return node;
 	}
+
+	/// <summary>
+	/// The material every piece of UI text is drawn with, whether it came out of a
+	/// <c>.bgf</c> or was authored natively.
+	///
+	/// Shared rather than repeated because the two halves of it are not free choices and a
+	/// second copy drifts. Unshaded, because a glyph atlas is emissive art and shading it
+	/// against the screen's authored lights leaves the text black. And an alpha SCISSOR
+	/// rather than plain alpha blending, because the atlas is padded with transparent black:
+	/// without the clip, the bilinear tail of the neighbouring glyph cell shows as a halo
+	/// around every character.
+	///
+	/// <paramref name="colour"/> carries its own alpha. The scene builder always passes 1
+	/// (see <see cref="BuildText"/>); a host-authored screen can fade a label by passing
+	/// less, which is what the front-end menu's gutter slots need.
+	/// </summary>
+	public static StandardMaterial3D TextMaterial(Color colour, Texture2D? atlas) => new()
+	{
+		Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+		CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+		ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+		AlbedoTexture = atlas,
+		AlbedoColor = colour,
+		AlphaScissorThreshold = 0.01f,
+	};
 
 	private MeshInstance3D BuildQuad(UiNode n)
 	{
@@ -312,7 +365,9 @@ public sealed class Engine_UiSceneBuilder
 			// screen depend on the authored lights, which are positioned for the game's
 			// own renderer and leave the panel black here.
 			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-			AlbedoColor = new Color(q.R, q.G, q.B, n.Opacity / 100f),
+			// The ACCUMULATED alpha, not this element's own. _inheritedOpacity already has
+			// n.Opacity folded in by BuildNode, so this is the product down the whole chain.
+			AlbedoColor = new Color(q.R, q.G, q.B, _inheritedOpacity),
 			// The atlas rectangle rides on the material rather than custom mesh UVs, so
 			// every quad can share one QuadMesh.
 			Uv1Scale = new Vector3(q.UMax - q.UMin, q.VMax - q.VMin, 1f),
@@ -375,11 +430,10 @@ public sealed class Engine_UiSceneBuilder
 	/// looks toward +Z. Godot is right-handed, so the conversion is to negate Z.
 	///
 	/// Negating Z rather than X is what keeps the screen the right way round. Reflecting
-	/// through the other axis also produces a camera that can see the content, which is
-	/// why this stayed wrong for a while: it renders, it just renders mirrored, and a
-	/// symmetric panel gives that away only at the details — the A/B prompts on the
-	/// wrong side, and a two-piece paper panel showing both its outer borders down the
-	/// middle.
+	/// through the other axis also produces a camera that can see the content — it
+	/// renders, it just renders mirrored, and a symmetric panel gives that away only at
+	/// the details: the A/B prompts on the wrong side, and a two-piece paper panel
+	/// showing both its outer borders down the middle.
 	///
 	/// Applied per node rather than as one flip on the root, so no transform in the tree
 	/// ends up with a negative determinant.
@@ -435,90 +489,79 @@ public sealed class Engine_UiSceneBuilder
 	/// </summary>
 	public static Camera3D ActivateCamera(Node3D root, bool preferFraming = false)
 	{
-		Camera3D? authored = preferFraming ? null : FindFirstCamera(root);
-		if (authored is not null)
+		if (preferFraming)
 		{
-			authored.Current = true;
-			if (System.Environment.GetEnvironmentVariable("REFII_UI_BOUNDS") is not null)
-			{
-				GD.Print($"[ui] authored camera proj={authored.Projection} " +
-					$"size={authored.Size} fov={authored.Fov} pos={authored.GlobalPosition}");
-			}
-
-			return authored;
+			return AddFramingCamera(root);
 		}
 
-		// A screen that ships no camera is composed against its own CANVAS, not against
-		// whatever happens to be visible. frontendmainmenu is one of these, and framing to
-		// content made its scale depend on its state: with most of the screen on its Intro
-		// slide only a few elements are up, so the camera zoomed into them and the panel
-		// overflowed the window. The canvas is a property of the screen and does not move.
-		if (!preferFraming && CanvasCameraFor(root) is { } canvas)
-		{
-			return canvas;
-		}
-
-		return AddFramingCamera(root);
+		return AddCanvasCamera(root);
 	}
 
 	/// <summary>
-	/// A camera framing the screen's authored canvas, or null when the canvas is unknown.
+	/// The reference height a Gameface screen is RENDERED against — a fixed 720, and
+	/// deliberately not the presentation's own authored canvas.
 	///
-	/// Modelled on the cameras the screens that DO ship one carry. Those are perspective,
-	/// sit on +Z looking back at the origin, and all frame about the same height:
-	/// menubox is fov 10 at z=4000 and displaybox fov 60 at z=600, which come to
-	/// 2·4000·tan5° ≈ 700 and 2·600·tan30° ≈ 693 — the 720-unit canvas either way. The
-	/// content is authored around the ORIGIN, not from a corner: frontendmainmenu measures
-	/// x ∈ [-1000, 1000], y ∈ [-1100, 1000], centred on (0, -50).
+	/// The two are easy to conflate and are different things. The authored canvas is what
+	/// Lua's getScreenInfo hands back, and it varies: across the 52 shipped presentations it
+	/// is 960x720 on 40, 1280x720 on 8 (frontendmainmenu and frontendstartupscreen among
+	/// them) and 800x450 on 4 — the last being HUD widgets rather than full screens. All 52
+	/// carry scale-mode 1, "Fixed", so getScreenInfo returns that authored pair verbatim and
+	/// the aspect-fit branch at 0x82BB89B0 is dead code for shipped content.
 	///
-	/// So a cameraless screen gets the same arrangement at a middling field of view,
-	/// placed at whatever distance frames the canvas height. That keeps scale a property
-	/// of the screen rather than of which elements happen to be visible — framing to
-	/// content made frontendmainmenu's panel overflow the window whenever most of it was
-	/// hidden.
+	/// The RENDER scale ignores all of that and divides by a literal 720: sub_822271A0 stores
+	/// screenHeight * (1/720) — flt_82000BD4 — into both axis scales immediately before the
+	/// draw (0x822272DC / 0x822272E4), and sub_826D6878 computes the same ratio at
+	/// 0x826D697C-0x826D699C. So a screen authored at 800x450 is not scaled up to fill the
+	/// height; it simply occupies 450 of the same 720 units, which is what makes it a HUD
+	/// overlay rather than a page.
+	///
+	/// That is why this is one constant and not a per-screen value.
 	/// </summary>
-	private static Camera3D? CanvasCameraFor(Node3D root)
+	public const float CanvasHeight = 720f;
+
+	/// <summary>
+	/// The projection the GUEST uses, which is not the one the screens are authored with.
+	///
+	/// A .bgf carries a camera element with fov, orthographic, clipnear and clipfar, and
+	/// using it is the obvious thing to do. The guest does not. sub_82226DE0 reads the
+	/// layer's camera element and fov and hands them to the renderer's SetCamera at
+	/// vtable+0x20 — and for the Gameface renderer (vtable 0x82006CC0) that slot is
+	/// 0x82B96E78, which is <c>nullsub_1</c>: a single <c>blr</c>. The authored camera is
+	/// read, passed and dropped. clipnear and clipfar (0x834BE554 / 0x834BE558) have no
+	/// readers anywhere in the image at all.
+	///
+	/// What happens instead is a uniform scale by HEIGHT. sub_822271A0 recomputes both axis
+	/// scales from the screen height alone immediately before the draw — 0x8222726C loads
+	/// the height, 0x82227268 loads 1/720, and 0x822272DC / 0x822272E4 store the same
+	/// product into +0xB0 and +0xAC. The constructor's aspect-corrected X scale is
+	/// overwritten there, so there is no letterbox, no pillarbox and no stretch: 720 units
+	/// fill the viewport height and a wider window simply sees more.
+	///
+	/// An orthographic camera of size 720 with Godot's default KeepAspect.Height is exactly
+	/// that, so this is a replacement of the stated contract rather than an approximation of
+	/// it. It also drops the perspective foreshortening the previous fov-60 canvas camera
+	/// introduced, which the guest never had — elements at different position.z were being
+	/// scaled by their depth.
+	/// </summary>
+	private static Camera3D AddCanvasCamera(Node3D root)
 	{
-		if (!root.HasMeta("canvas_height") || !root.HasMeta("canvas_width"))
-		{
-			return null;
-		}
-
-		float height = root.GetMeta("canvas_height").AsInt32();
-		if (height <= 0f)
-		{
-			return null;
-		}
-
-		const float FieldOfView = 60f;
-		float distance = height / 2f / Mathf.Tan(Mathf.DegToRad(FieldOfView / 2f));
-
 		var camera = new Camera3D
 		{
 			Name = "CanvasCamera",
-			Projection = Camera3D.ProjectionType.Perspective,
-			Fov = FieldOfView,
+			Projection = Camera3D.ProjectionType.Orthogonal,
+			Size = CanvasHeight,
+			KeepAspect = Camera3D.KeepAspectEnum.Height,
 			Near = 0.05f,
 			Far = 100_000f,
 			Current = true,
-			Position = new Vector3(0f, 0f, distance),
+
+			// Orthographic, so this sets clipping only and not scale. Far enough back that
+			// no authored position.z falls behind the near plane.
+			Position = new Vector3(0f, 0f, 10_000f),
 		};
 
 		root.AddChild(camera);
 		return camera;
-	}
-
-	private static Camera3D? FindFirstCamera(Node node)
-	{
-		if (node is Camera3D cam)
-			return cam;
-		foreach (Node child in node.GetChildren())
-		{
-			Camera3D? found = FindFirstCamera(child);
-			if (found is not null)
-				return found;
-		}
-		return null;
 	}
 
 	/// <summary>

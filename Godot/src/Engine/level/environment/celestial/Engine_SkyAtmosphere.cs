@@ -203,6 +203,106 @@ public static class Engine_SkyAtmosphere
         return state;
     }
 
+    public const int LutWidth = 64;
+
+    public static float[] BuildInScatterLut(AtmosphereState state)
+    {
+        var outRgba = new float[LutWidth * 4];
+
+        var recip = new float[3];
+        for (int channel = 0; channel < 3; channel++)
+        {
+            recip[channel] = 1f / (state.BetaRayleigh[channel] + state.BetaMie[channel]);
+        }
+
+        var colourDelta = new float[3];
+        for (int channel = 0; channel < 3; channel++)
+        {
+            colourDelta[channel] = state.LutColourA[channel] - state.LutColourB[channel];
+        }
+
+        float[] rampDelta = { 0f, 0.3f - 1f, 0.1f - 1f };
+
+        for (int i = 0; i < LutWidth; i++)
+        {
+            float t = i / (float)LutWidth;
+            float onePlusT2 = (t * t) + 1f;
+            float hgDenominator = MathF.Pow(
+                state.LutHg[1] - (state.LutHg[2] * t), 1.5f);
+            float tCos = t * state.LutCosSunElevation;
+            float hgRatio = state.LutHg[0] / hgDenominator;
+
+            float gated = (t * 0.5f) + state.LutBiasPlusHalf < 0f ? 0f : hgRatio;
+            float colourFactor = gated < 1f ? gated : 1f;
+
+            for (int channel = 0; channel < 3; channel++)
+            {
+                float phase =
+                    (state.LutBetaMiePhase[channel] * hgRatio) +
+                    (state.LutBetaRayleighPhase[channel] * onePlusT2);
+                float ramp = (rampDelta[channel] * tCos) + 1f;
+                float colour =
+                    (colourDelta[channel] * colourFactor) + state.LutColourB[channel];
+                float scaled = ramp * state.LutScale[channel] * state.LutScale[3];
+                outRgba[(i * 4) + channel] =
+                    scaled * (phase * recip[channel]) * colour;
+            }
+
+            outRgba[(i * 4) + 3] = 0f;
+        }
+
+        return outRgba;
+    }
+
+    public static float[] EvaluateDomeDisplay(
+        AtmosphereState state, float[] lut, float[] frameSunDirection,
+        float gx, float gy, float gz)
+    {
+        float nx = gx;
+        float ny = gz;
+        float nz = gy;
+        float len = MathF.Sqrt((nx * nx) + (ny * ny) + (nz * nz));
+        if (len > 1e-6f)
+        {
+            nx /= len;
+            ny /= len;
+            nz /= len;
+        }
+
+        float sx = -frameSunDirection[0];
+        float sy = frameSunDirection[2];
+        float sz = frameSunDirection[1];
+        float slen = MathF.Sqrt((sx * sx) + (sy * sy) + (sz * sz));
+        if (slen > 1e-6f)
+        {
+            sx /= slen;
+            sy /= slen;
+            sz /= slen;
+        }
+
+        float sunDot = Math.Clamp((sx * nx) + (sy * ny) + (sz * nz), 0f, 1f);
+        float u = sunDot * (LutWidth - 1);
+        int i0 = Math.Clamp((int)u, 0, LutWidth - 1);
+        int i1 = Math.Min(i0 + 1, LutWidth - 1);
+        float t = u - i0;
+
+        float up = MathF.Max(MathF.Abs(nz), 0.0001f);
+        float upPow = MathF.Pow(up, 0.2f);
+        float dist = HorizonDistance * (1.05f + upPow) * (1f + upPow);
+
+        var display = new float[3];
+        for (int c = 0; c < 3; c++)
+        {
+            float scatter = (lut[(i0 * 4) + c] * (1f - t)) + (lut[(i1 * 4) + c] * t);
+            float tau = (state.BetaRayleigh[c] + state.BetaMie[c]) * dist;
+            float extinction = MathF.Pow(2f, -tau * 1.4427f);
+            float hdr = (1f - extinction) * scatter * 10f;
+            display[c] = hdr / (1f + hdr);
+        }
+
+        return display;
+    }
+
     public static float SunElevationAngle(float[] sunDirection)
     {
         var negated = new[] { -sunDirection[0], -sunDirection[1], -sunDirection[2] };

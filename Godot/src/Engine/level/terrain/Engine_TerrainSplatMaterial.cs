@@ -68,6 +68,27 @@ public static class Engine_TerrainSplatMaterial
         material.SetShaderParameter("lod_detail_array", detailArray);
         material.SetShaderParameter("material_weight", weightArray);
 
+        // The layers' normal maps, which the .ehf has always named and nothing has ever loaded.
+        // A missing pair leaves the shader's flat default, which costs a sample and nothing else.
+        Texture2DArray? baseNormalArray = BuildColourArray(data.BaseNormalSlices, data.SliceSize);
+        Texture2DArray? detailNormalArray =
+            BuildColourArray(data.DetailNormalSlices, data.SliceSize);
+        int normalCount = 0;
+        foreach (EhfLodEntry lod in parsed.Lods)
+        {
+            if (!string.IsNullOrEmpty(lod.BaseNormal) || !string.IsNullOrEmpty(lod.DetailNormal))
+            {
+                ++normalCount;
+            }
+        }
+
+        if (baseNormalArray is not null && detailNormalArray is not null)
+        {
+            material.SetShaderParameter("lod_normal_array", baseNormalArray);
+            material.SetShaderParameter("lod_detail_normal_array", detailNormalArray);
+            material.SetShaderParameter("has_normals", normalCount != 0);
+        }
+
         material.SetShaderParameter(
             "chunk_origin_extent",
             new Vector4(data.WorldOriginX, data.WorldOriginZ, data.ChunkExtentX, data.ChunkExtentZ));
@@ -108,7 +129,7 @@ public static class Engine_TerrainSplatMaterial
 
         GD.Print(
             $"[terrain] splat: {data.ChunkWidth}x{data.ChunkHeight} chunks, " +
-            $"{data.MaterialCount} materials ({resolved} textured), " +
+            $"{data.MaterialCount} materials ({resolved} textured, {normalCount} normal-mapped), " +
             $"weights {data.WeightWidth}x{data.WeightHeight} " +
             $"({data.Contributions} layer samples, {data.PaintedTexels} painted, " +
             $"{data.FallbackTexels} fallback)");
@@ -131,6 +152,10 @@ public static class Engine_TerrainSplatMaterial
                 LoadTexture(lod.BaseDiffuse, read, findByName, cache);
             (byte[] detailRgba, int detailWidth, int detailHeight) =
                 LoadTexture(lod.DetailDiffuse, read, findByName, cache);
+            (byte[] baseNormal, int baseNormalWidth, int baseNormalHeight) =
+                LoadTexture(lod.BaseNormal, read, findByName, cache);
+            (byte[] detailNormal, int detailNormalWidth, int detailNormalHeight) =
+                LoadTexture(lod.DetailNormal, read, findByName, cache);
 
             if (baseRgba.Length != 0 || detailRgba.Length != 0)
             {
@@ -145,6 +170,12 @@ public static class Engine_TerrainSplatMaterial
                 DetailRgba = detailRgba,
                 DetailWidth = detailWidth,
                 DetailHeight = detailHeight,
+                BaseNormalRgba = baseNormal,
+                BaseNormalWidth = baseNormalWidth,
+                BaseNormalHeight = baseNormalHeight,
+                DetailNormalRgba = detailNormal,
+                DetailNormalWidth = detailNormalWidth,
+                DetailNormalHeight = detailNormalHeight,
                 BaseTileScale = lod.BaseTileScale,
                 DetailTileScale = lod.DetailTileScale,
                 DetailIntensity = lod.DetailIntensity,

@@ -66,6 +66,7 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/texture_parser.cpp
     ${REFII_VFS_ROOT}/src/hooks/boot_lifecycle.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_natives.cpp
+    ${REFII_VFS_ROOT}/src/hooks/guest_tick_pump.cpp
     ${REFII_VFS_ROOT}/src/hooks/game_init_trace.cpp
     ${REFII_VFS_ROOT}/src/hooks/frontend_video_handoff.cpp
     ${REFII_VFS_ROOT}/src/hooks/native_misc.cpp

@@ -104,6 +104,13 @@ public sealed class MdlInfo
 
     public bool IsStub { get; set; }
 
+    /// <summary>
+    /// Bytes of LOD payload the 104-byte file header says follow it, whether or not they are
+    /// there. Nonzero on a stub means the header is intact and the BODY BANK ENTRY is missing —
+    /// a gap in the shipped data, not a parse that went wrong.
+    /// </summary>
+    public long BodyBytesStated { get; set; }
+
     public bool IsEngineFormat { get; set; }
 
     public uint Version { get; set; }
@@ -202,6 +209,24 @@ public static class Engine_MdlData
 
         if (Engine_MdlEngine.TryParse(data, info))
         {
+            return true;
+        }
+
+        // A HEADER WITH NO BODY IS A COMPLETE READ, NOT A FAILED ONE.
+        //
+        // Every .mdl is two bank entries under one name — the 104-byte header, always in
+        // `globals_model_headers.bnk`, and a body in `globals_models.bnk` or a region's
+        // `<scenario>_models.bnk`. The bank filesystem stitches them the way it stitches a .tex.
+        // 1,111 of the 5,446 header names in the shipped data have NO body entry in any bank,
+        // so what arrives here is the header alone, and no amount of parsing will find geometry
+        // in it. Saying so, with the byte count the header states, is what stops the next reader
+        // of this code from going looking for a decoder bug that is not there.
+        info = new MdlInfo();
+        if (Engine_MdlEngine.TryReadFileHeader(data, info, out long stated) &&
+            data.Length <= Engine_MdlEngine.BodyStart)
+        {
+            info.IsStub = true;
+            info.BodyBytesStated = stated;
             return true;
         }
 

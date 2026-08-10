@@ -18,6 +18,21 @@ public static class Engine_MdlMaterial
     public static void ClearCache() => TextureCache.Clear();
 
 
+    /// <summary>
+    /// A material for a surface that names no textures at all.
+    ///
+    /// It has to be OUR shader. A StandardMaterial3D here is lit by Godot's own PBR against the
+    /// environment ambient, which for this region is a saturated blue — so an untextured surface
+    /// comes out pale blue-white while everything beside it is lit by the guest's bake, and the
+    /// two do not look like the same world. The albedo sampler defaults to white, so binding
+    /// nothing is a neutral surface rather than a black one.
+    /// </summary>
+    public static Material? Fallback()
+    {
+        _shader ??= GD.Load<Shader>(ShaderPath);
+        return _shader is null ? null : new ShaderMaterial { Shader = _shader };
+    }
+
     public static Material? TryCreate(MdlMaterial? material)
     {
         if (material is null)

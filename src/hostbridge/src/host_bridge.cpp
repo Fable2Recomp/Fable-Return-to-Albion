@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -44,6 +45,12 @@ void RequestedBinkVideo(uint32_t* out_address, uint32_t* out_size,
 uint32_t RequestedBinkVideoName(char* out, uint32_t capacity);
 uint32_t FinishCurrentBinkMovie(uint8_t* base);
 uint32_t BinkMovieState(uint8_t* base);
+
+// Defined in src/vfs/src/hooks/guest_tick_pump.cpp — the ONLY route from this thread onto
+// the guest's own tick thread. See that file for why a memory write cannot do this job.
+uint32_t PostGuestTickAction(const char* name);
+void GuestTickPumpCounters(uint64_t* out_ticks, uint64_t* out_drained,
+                           uint32_t* out_queued);
 }  // namespace refii::vfs
 #include "refii_host.h"
 
@@ -477,7 +484,73 @@ extern "C" {
 /// 22 adds RefiiHostGetSceneStreams — the command-stream rings, read-only.
 /// 21 adds RefiiHostGetInitMarkers — how far Game_InitDatabases has got, which it does not
 ///    say itself.
-int RefiiHostBridgeAbiVersion(void) { return 23; }
+/// 24 adds RefiiHostGetEntities — every live entity's world transform and model.
+/// 25 names the placement vtables RefiiHostGetEntities could not resolve.
+/// 26 returns that unknown-vtable list as {vtable, count} pairs with an explicit length,
+///    since a vtable word reading 0 is an observation the walk can make and 25's zero
+///    terminator swallowed the rest of the list.
+/// 27 adds RefiiHostGetEntityPose — a live character's bone pose and its parent table.
+/// 28 adds RefiiHostGetEntityRestPose — the bind pose Godot needs to build a skin.
+/// 29 widens RefiiHostGetUiElements to stride 4, adding the element TYPE byte so the ordinal
+///    join between the guest walk and the .bgf can be CHECKED, not assumed.
+/// 30 widens it to stride 5, adding the element FLAGS halfword — bit 0x1000 `globalactive`
+///    is the guest's own draw gate.
+/// 31 adds RefiiHostGetFrontEndModel — the front end as a MODEL (which entries exist, which
+///    screen is up) rather than as widgets, for a natively rebuilt menu.
+/// 33 adds RefiiHostGetEntityBoneNames. The guest skeleton and the model number their bones
+///    differently (161 against 143 for the child hero), so the name is the only join.
+/// 34 widens RefiiHostGetRenderFence with the five values that say WHICH arm holds the
+///    engine-preloading flag, and renames its third word from "retired" to the deadline it
+///    actually is.
+/// 35 adds RefiiHostPostFrontEndAction and RefiiHostGuestTickPump — the first route for HOST
+///    work onto the guest's own tick thread. A memory write cannot do this job: the
+///    start-game commit ALLOCATES, and its globals are refcounted strings.
+/// 36 adds RefiiHostGetEntityComponents — the {id, pointer} pairs one entity carries, which
+///    is a live-memory fact no decompile answers.
+/// 37 adds RefiiHostGetPresentations and gives RefiiHostGetUiElements a leading presentation
+///    argument (0 keeps the old front-end meaning). The old walker went through `gui+188`, a
+///    field only the derived front-end GUI has, so the HUD and the thirty in-game menus were
+///    unreachable through it.
+/// 38 widens RefiiHostGetPresentations to stride 5, adding whether the presentation is
+///    actually SHOWING — the root element's `active` bit (0x2000), the freeze byte, and the
+///    guest's own per-frame active-element count. Live in the registry is NOT visible; the
+///    guest keeps closed menus standing up permanently.
+/// 39 adds the presentation-level SUPPRESSION byte `pres+0x368` to the state word (bit 2).
+///    That is the byte the scene draw itself reads, and the one the game writes to park a
+///    menu; the update gate `+0x369` and the root `active` bit are not the whole contract.
+/// 40 gives RefiiHostGetUiAttributes a leading presentation argument, matching
+///    RefiiHostGetUiElements — opacity is how the game hides the in-game HUD, one
+///    `setAttribute` of 0 on Scene.Layer multiplied down the tree.
+/// 41 adds RefiiHostGetEntityMorphParts — the model hashes a COMPOSITE character is built
+///    from, off CECGraphicAppearanceMorph (component 17). Those characters carry a live
+///    skeleton and a zero model hash on component 6, so this is the only route to geometry.
+/// 42 widens RefiiHostGetFrontEndModel to 11 words: how many saves the guest has ENUMERATED,
+///    from the same vector its own "Load Game" branch tests.
+int RefiiHostBridgeAbiVersion(void) { return 42; }
+
+/// Asks the guest to perform a front-end action, BY NAME.
+///
+/// It does not happen here and it does not happen now. The name is queued, and the guest
+/// picks it up on its own tick thread inside `sub_822C1BD0` — see guest_tick_pump.cpp. That
+/// indirection is the entire point: this call is safe from Godot's thread precisely because
+/// it touches no guest state, and the work lands where the guest's own code would do it.
+///
+/// Returns the queue depth after posting. A depth that climbs is a pump that has stopped
+/// draining — usually because the front end is not up, which holds actions rather than
+/// dropping them.
+uint32_t RefiiHostPostFrontEndAction(const char* name) {
+    return refii::vfs::PostGuestTickAction(name);
+}
+
+/// Pump health: ticks observed, actions run, actions still queued.
+///
+/// Three numbers rather than one because they fail differently. Zero ticks is a hook that
+/// never landed. Ticks climbing with a non-zero queue is the guest running but not yet ready
+/// to take the action. Ticks climbing with an empty queue and no drains is nobody posting.
+void RefiiHostGuestTickPump(uint64_t* out_ticks, uint64_t* out_drained,
+                            uint32_t* out_queued) {
+    refii::vfs::GuestTickPumpCounters(out_ticks, out_drained, out_queued);
+}
 
 /// Publishes one controller's state, in XInput terms, for the guest to read.
 ///
@@ -601,9 +674,8 @@ int RefiiHostGetVideoFrame(uint8_t* out_rgba, uint32_t capacity, uint32_t* out_w
     }
 
     // A null buffer is a SIZE PROBE and succeeds: the caller is asking whether video is
-    // live and how big it is. Returning 0 here made "no video playing" and "your buffer
-    // is too small" indistinguishable, which is how the garbage dimensions above got
-    // used in the first place.
+    // live and how big it is. Returning 0 here would make "no video playing" and "your
+    // buffer is too small" indistinguishable, and the caller would size against garbage.
     if (out_rgba == nullptr) {
         return 1;
     }
@@ -954,10 +1026,17 @@ uint32_t RefiiHostIsInGame(void) {
 /// run can say which of them is holding, instead of the load being invisible.
 ///
 /// Reads the chain rather than calling the guest's virtual: slot +16 is literally
-/// `return *(*(a1 + 12) + 104);`. Fills manager, submitted, retired, busy. Returns 1 when
-/// the chain resolved.
+/// `return *(*(a1 + 12) + 104);`. Fills manager, submitted, DEADLINE, busy, and five
+/// discriminator words. Returns 1 when the chain resolved.
+///
+/// `+176` IS NOT "RETIRED". It has two writers only — the ctor, and `sub_82388B48` under the
+/// `+56` critical section — and it is a render DEADLINE BARRIER: "a frame has been requested
+/// for time T, stay busy until the render thread passes T". `+152` is the render thread's
+/// current frame time. So `+176` sitting still while `+152` climbs past it is the NORMAL
+/// resting state, not a stall; it means nobody has posted a new deadline.
 int RefiiHostGetRenderFence(uint32_t* out_manager, double* out_submitted,
-                            double* out_retired, uint32_t* out_busy) {
+                            double* out_retired, uint32_t* out_busy,
+                            uint32_t* out_arms) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -1012,6 +1091,38 @@ int RefiiHostGetRenderFence(uint32_t* out_manager, double* out_submitted,
     if (out_submitted != nullptr) *out_submitted = read_double(manager + 152u);
     if (out_retired != nullptr) *out_retired = read_double(manager + 176u);
     if (out_busy != nullptr) *out_busy = base[manager + 600u];
+
+    // WHICH ARM is holding the load, if any. Reads only — nothing here writes guest memory.
+    //
+    // The object is the "3D Engine" (0x260 bytes, ctor sub_823877E8), and sub_82387B38 is its
+    // own `IsEnginePreLoading` — the name comes from the guest's Lua registration in
+    // sub_82387DC0, not from a guess. So state 7 of the level change is literally
+    // "while (IsEnginePreLoading()) wait".
+    //
+    // `+600` carries NO state of its own: sub_82388380 re-copies `byte_83496E20` into it every
+    // render-thread iteration (`lbz r30, byte_83496E20` / `stb r30, 0x258(r31)`). That global
+    // has exactly ONE writer, sub_82181B68, reachable only from the 3D Engine thread, and it
+    // is decided by three arms — none of which touches a present, flip, fence or render
+    // callback, so nothing in the producer depends on the GPU.
+    //
+    // Which arm is holding takes a discriminator, and these five values are it:
+    //   view/vector cursor `engine+116` and `engine+124` — both -1 means nothing is
+    //     recomputing the flag and it is a STALE 1 (sub_82388040 sets +124 to -1 during the
+    //     level load; only a re-submitted view clears it),
+    //   `0x83496E34` in 1..4 means the resource-preload arm is holding,
+    //   `0x8349FB5C` non-zero means the streamed-texture-residency arm is holding,
+    //   `0x83496E20` should equal +600, and a disagreement means the mirror itself is stale.
+    //
+    // The third arm walks the scene container and TIMES ITSELF OUT, so it cannot hold this
+    // forever and is not worth reporting.
+    if (out_arms != nullptr) {
+        out_arms[0] = read32(manager + 116u);
+        out_arms[1] = read32(manager + 124u);
+        out_arms[2] = read32(0x83496E34u);
+        out_arms[3] = read32(0x8349FB5Cu);
+        out_arms[4] = base[0x83496E20u];
+    }
+
     return 1;
 }
 
@@ -1160,6 +1271,1078 @@ void RefiiHostGetInitMarkers(uint32_t* out) {
     out[3] = read32(0x83496AC0u);
 }
 
+/// Every LIVE entity's world transform and model, for Godot to draw.
+///
+/// This is the plan's phase 1 — the state feed — and it is a PURE MEMORY READ. No guest
+/// function is called, nothing is written, and it is safe to run from Godot's thread while
+/// the guest simulates: a torn read costs one frame of one entity, never a crash.
+///
+/// THE LIST. `0x83496B28` holds a POINTER to the manager, not the header — that is the first
+/// trap, and reading it as the header walks garbage. The header is the 12 bytes at mgr+0x08:
+/// front +0x08, back +0x0C, live count +0x10. The node is embedded at entity+0x08 as
+/// {next, prev, owner}, so the owner back-pointer is node+0x08. Verified against the guest's
+/// own walk, sub_8238D3A0: `lwz r10, dword_83496B28` / `lwz r11, 8(r10)` / `lwz r11, 8(r6)`.
+///
+/// WHICH ENTITIES COUNT. `entity+0x90 & 0x40` is the LIVE bit — set at construction
+/// (sub_8238B320 stores 0xCC) and cleared only by the despawn sub_8238D828 — and it is the
+/// game's own universal validity guard, tested at 3714 sites against one or two for every
+/// other bit. There is NO separate visible/hidden flag anywhere on an entity; drawability is
+/// membership, so the second half of the filter is `entity+0x7C != 0`, the same thing despawn
+/// gates its deregistration on.
+///
+/// THE TRANSFORM. entity+0x7C is the placement component ("EC-2"), whose slot 0x40 returns a
+/// position and 0x44 an orientation, both sret — caller's buffer in r3, `this` in r4, 16 bytes
+/// written (sub_8222CD80 is the whole idiom: `li r11,0x20; lvx128 v0,r4,r11; stvx128 v0,r0,r3`).
+/// We do NOT call them. There are exactly twelve EC-2 vtables and between them only four
+/// position bodies and three orientation bodies, so the read is a switch on the vtable
+/// pointer — a `.rdata` constant, stable across runs.
+///
+/// An UNKNOWN vtable is reported, never guessed. Only three delegate classes were enumerated
+/// and the writer of EC2+0x20 was never found, so the set cannot be proven closed, and
+/// defaulting to some plausible offset would put entities at silently wrong positions.
+/// Unknown means skipped and counted.
+///
+/// THE MODEL. Carried by a graphic-appearance component, not by the entity: id 4 static mesh
+/// at +0x18, id 6 animated at +0x20, ids 10 and 11 at +0x14. The value is a resource-name
+/// hash, written once at load. Id 5 (multiple-mesh) holds a vector and is skipped.
+///
+/// Fills `stride` dwords per entity; returns how many were written.
+///
+/// `out_unknown_vtables` receives {vtable, entity count} PAIRS and the number of pairs comes
+/// back in `out_unknown_vtable_count`. The count is explicit rather than a zero terminator
+/// because zero is a value the walk can legitimately record — a placement component whose
+/// vtable word reads 0 is the under-construction case, and terminating on it buries every
+/// later entry. The per-vtable tally is what makes the list actionable: one address standing
+/// for 300 entities is a different decision from thirty standing for a dozen each.
+uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_entities, uint32_t* out_unknown,
+                              uint32_t* out_unknown_vtables, uint32_t max_unknown_vtables,
+                              uint32_t* out_unknown_vtable_count) {
+    constexpr uint32_t kEntityStride = 12u;
+    constexpr uint16_t kNoDirect = 0xFFFFu;
+
+    /// The twelve EC-2 vtables, and how each states its placement.
+    /// `pos`/`ori` are byte offsets into the component; kNoDirect means "not a direct read".
+    struct Ec2Layout {
+        uint32_t vtable;
+        uint16_t pos;
+        uint16_t ori;
+        bool hybrid;    // sub_82213A08: cached at +0x70 unless it defers to the physics body
+        bool delegate;  // sub_8220DDB0: the placement lives on the object at +0x20
+    };
+
+    static constexpr Ec2Layout kEc2Layouts[] = {
+    {0x82006F88u, 0x20u, kNoDirect, false, false},  // orientation is a global
+    {0x82007258u, 0x20u, 0x30u, false, false},
+    {0x820E6048u, 0x20u, 0x30u, false, false},
+    {0x820CA190u, 0x40u, 0x30u, false, false},
+    {0x82007038u, 0x70u, kNoDirect, true, false},
+    {0x820071A0u, 0x70u, kNoDirect, true, false},
+    {0x820C4B90u, 0x70u, kNoDirect, true, false},
+    {0x820070F0u, kNoDirect, kNoDirect, false, true},
+    {0x82007308u, kNoDirect, kNoDirect, false, true},
+    {0x820073B8u, kNoDirect, kNoDirect, false, true},
+    {0x820C6E58u, kNoDirect, kNoDirect, false, true},
+    {0x820CB140u, kNoDirect, kNoDirect, false, true},  // the abstract base
+};
+
+    /// The delegate targets — the physics/proxy objects an EC-2 hands its placement to.
+    ///
+    /// The EC-2 getters do NOT call these at slot 0x40/0x44. `sub_8220DDB0` loads the object
+    /// from EC2+0x20 and dispatches slot 0x0C for position; `sub_8220B940` dispatches slot
+    /// 0x10 for orientation. A delegate vtable read as if it answered at 0x40 lands in the
+    /// middle of a real vtable and names no class at all.
+    ///
+    /// `hop` is a CHAIN, not a special case, because the guest's is: a getter that is not a
+    /// plain load holds a pointer at some offset and asks THAT object instead, and the object
+    /// it names can do the same again. `0x82006A40` hops through +0x38 and dispatches on what
+    /// it finds; `0x82005B80` hops through +0x2C and reads the vectors straight out.
+    ///
+    /// `dispatch` says which kind: true means look the object at `hop` up in this table again,
+    /// false means read `pos`/`ori` out of it directly.
+    ///
+    /// A NULL at a hop is not a failure — the getters fall back to `flt_82099484`, which is
+    /// 0.0, so the object genuinely is at the origin.
+    static constexpr uint16_t kNoHop = 0xFFFFu;
+
+    struct DelegateLayout {
+        uint32_t vtable;
+        uint16_t pos;
+        uint16_t ori;
+        uint16_t hop;
+        bool dispatch;
+    };
+
+    static constexpr DelegateLayout kDelegateLayouts[] = {
+        // slot 0x0C = sub_8255AFE0 `li r11,0x50`, slot 0x10 = sub_828CA2A0 `ld 0x60/0x68`.
+        {0x82006B30u, 0x50u, 0x60u, kNoHop, false},
+        // slot 0x0C = sub_8222A4B0 `li r11,0x40`, slot 0x10 = sub_822082F8 `ld 0x50/0x58`.
+        // 90 of the 388 unplaceable entities in BWSSlums were this class.
+        {0x820069C8u, 0x40u, 0x50u, kNoHop, false},
+        // slot 0x0C = sub_8220B9E0 `lwz r4,0x38(r4)` then slot 0x14; slot 0x10 = sub_82232B70,
+        // same hop then slot 0x18. 298 of the 388 were this one.
+        {0x82006A40u, 0u, 0u, 0x38u, true},
+        // slot 0x14 = sub_8257A608 `li r11,0xF0`, slot 0x18 = sub_8257A618 `ld 0x100/0x108`.
+        // Reached from 0x82006A40's hop and from the hybrid's +0x38.
+        {0x82005460u, 0xF0u, 0x100u, kNoHop, false},
+        // slot 0x14 = sub_8220B9C8 `lwz r11,0x2C(r4); li r10,0x110`, slot 0x18 = sub_82232B38,
+        // same hop then +0x150. The other thing 0x82006A40's +0x38 can hold — and what all
+        // 298 of them actually held.
+        {0x82005B80u, 0x110u, 0x150u, 0x2Cu, false},
+    };
+
+    /// The delegate layout for a vtable, or null when it is not one we know.
+    const auto find_delegate = [&](uint32_t vtable) -> const DelegateLayout* {
+        for (const DelegateLayout& candidate : kDelegateLayouts) {
+            if (candidate.vtable == vtable) {
+                return &candidate;
+            }
+        }
+        return nullptr;
+    };
+
+    /// The graphic-appearance components, and where each keeps its model hash.
+    struct ModelSlot {
+        uint8_t id;
+        uint16_t offset;
+    };
+
+    static constexpr ModelSlot kModelSlots[] = {
+        {4u, 0x18u},   // static mesh
+        {6u, 0x20u},   // animated mesh
+        {10u, 0x14u},  // portal
+        {11u, 0x14u},  // screen-facing sprite
+    };
+
+    // Cleared up front so every early return below leaves the caller with "nothing unknown"
+    // rather than whatever the last call wrote.
+    if (out_unknown != nullptr) {
+        *out_unknown = 0u;
+    }
+
+    if (out_unknown_vtable_count != nullptr) {
+        *out_unknown_vtable_count = 0u;
+    }
+
+    if (out == nullptr || max_entities == 0u) {
+        return 0u;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    // Guest pointers are big-endian and the address space is 32-bit; anything outside it is a
+    // torn read rather than an object, so every hop is bounds-checked.
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return base[at]; };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+    const auto read_vector = [&](uint32_t at, uint32_t* dst, int lanes) {
+        for (int i = 0; i < lanes; ++i) {
+            dst[i] = read32(at + (uint32_t)(i * 4));
+        }
+    };
+
+    /// Walks a delegate chain to the object that actually holds the vectors.
+    ///
+    /// Returns false when the chain reaches a class this table does not know, leaving the
+    /// offending vtable in `unrecognised` so the caller can NAME it rather than guess an
+    /// offset. `source` comes back 0 when the chain bottomed out on the guest's own null
+    /// fallback — that is the origin, and a real answer.
+    const auto follow_delegate = [&](uint32_t object, uint32_t& source, uint16_t& pos,
+                                     uint16_t& ori, uint32_t& unrecognised) -> bool {
+        // Bounded. The longest real chain is body -> +0x38 -> +0x2C; a cycle in guest memory
+        // must not become a hang in a read that runs every frame.
+        for (int depth = 0; depth < 4; ++depth) {
+            const DelegateLayout* layout = find_delegate(read32(object));
+            if (layout == nullptr) {
+                unrecognised = read32(object);
+                return false;
+            }
+
+            if (layout->hop == kNoHop) {
+                source = object;
+                pos = layout->pos;
+                ori = layout->ori;
+                return true;
+            }
+
+            const uint32_t next = read32(object + layout->hop);
+            if (!plausible(next)) {
+                source = 0u;  // the guest's own zero-vector fallback
+                pos = kNoDirect;
+                ori = kNoDirect;
+                return true;
+            }
+
+            if (!layout->dispatch) {
+                source = next;
+                pos = layout->pos;
+                ori = layout->ori;
+                return true;
+            }
+
+            object = next;
+        }
+
+        unrecognised = read32(object);
+        return false;
+    };
+
+    const uint32_t manager = read32(0x83496B28u);
+    if (!plausible(manager)) {
+        return 0u;
+    }
+
+    uint32_t written = 0u;
+    uint32_t unknown = 0u;
+    uint32_t unknown_vtable_count = 0u;
+
+    // Naming the vtables we do not know is the whole point of counting them: it turns "27% of
+    // entities are unplaceable" into a short list of addresses to look up and add.
+    //
+    // `max_unknown_vtables` is a pair capacity, not a word capacity.
+    const auto note_unknown = [&](uint32_t vtable) {
+        ++unknown;
+        if (out_unknown_vtables == nullptr) {
+            return;
+        }
+        for (uint32_t i = 0; i < unknown_vtable_count; ++i) {
+            if (out_unknown_vtables[i * 2u] == vtable) {
+                ++out_unknown_vtables[(i * 2u) + 1u];
+                return;  // distinct only — the pair carries the tally
+            }
+        }
+        if (unknown_vtable_count < max_unknown_vtables) {
+            out_unknown_vtables[unknown_vtable_count * 2u] = vtable;
+            out_unknown_vtables[(unknown_vtable_count * 2u) + 1u] = 1u;
+            ++unknown_vtable_count;
+        }
+    };
+
+    uint32_t node = read32(manager + 8u);
+
+    // The live count bounds the walk, so a corrupt link cannot spin forever.
+    const uint32_t counted = read32(manager + 0x10u);
+    const uint32_t guard = counted > 0u && counted < 65536u ? counted + 16u : 65536u;
+
+    for (uint32_t steps = 0u; plausible(node) && written < max_entities && steps < guard;
+         ++steps) {
+        const uint32_t next = read32(node + 0u);
+        const uint32_t entity = read32(node + 8u);
+        node = next;
+
+        if (!plausible(entity)) {
+            break;
+        }
+
+        if ((read8(entity + 0x90u) & 0x40u) == 0u) {
+            continue;  // not LIVE
+        }
+
+        const uint32_t placement = read32(entity + 0x7Cu);
+        if (!plausible(placement)) {
+            continue;  // no placement component == not drawable
+        }
+
+        const uint32_t vtable = read32(placement);
+        const Ec2Layout* layout = nullptr;
+        for (const Ec2Layout& candidate : kEc2Layouts) {
+            if (candidate.vtable == vtable) {
+                layout = &candidate;
+                break;
+            }
+        }
+
+        if (layout == nullptr) {
+            note_unknown(vtable);  // loudly, not guessed
+            continue;
+        }
+
+        uint32_t position[4] = {0u, 0u, 0u, 0u};
+        uint32_t orientation[4] = {0u, 0u, 0u, 0x3F800000u};  // identity (x,y,z,w)
+        bool resolved = false;
+
+        uint32_t source = placement;
+        uint16_t position_offset = layout->pos;
+        uint16_t orientation_offset = layout->ori;
+
+        /// A CHARACTER'S FACING, out of its Havok shape phantom.
+        ///
+        /// THIS IS WHY EVERY HUMAN IN THE STREET FACED THE SAME WAY. The character placement
+        /// classes (`CECPhysicsSimulationCharacterControlled` 0x820071A0 and
+        /// `...CharacterNavigator` 0x82007038) do not store an orientation. Their getter
+        /// `sub_82211110` hops `comp+0x20` -> `+0x38` and dispatches slot 0x18 on what it
+        /// finds, which is a proxy with vtable 0x82005720 — a class this table did not know, so
+        /// the chain walk failed and every character got the identity fallback, every frame.
+        ///
+        /// Position hid the bug. `sub_82213A08` caches the position at `comp+0x70` and falls
+        /// back to it, so positions were right and people walked around correctly; there is no
+        /// equivalent cache for orientation, so a missed delegate is total.
+        ///
+        /// Verified in-line, not taken from a report — the proxy's two getters differ only in
+        /// the offset they read out of the SAME object:
+        ///
+        ///   sub_82210F88 (slot 0x18, orientation): lwz r11, 0x2C(r4) / addi r4, r11, 0xA0
+        ///   sub_82213A80 (slot 0x14, position):    lwz r11, 0x2C(r4) / li r10, 0xD0
+        ///
+        /// So `proxy+0x2C` is an `hkpShapePhantom` and its `hkTransform` starts at `+0xA0`:
+        /// three column-major `float4` basis vectors (world X, Y, Z) then the translation at
+        /// `+0xD0`. There is NO stored quaternion — the guest derives one per call.
+        ///
+        /// Offsets are measured from the PROXY (`controller+0x38`), not the placement component.
+        const auto read_phantom_quaternion = [&](uint32_t proxy, uint32_t* out) -> bool {
+            if (!plausible(proxy) || read32(proxy) != 0x82005720u) {
+                return false;
+            }
+
+            const uint32_t phantom = read32(proxy + 0x2Cu);
+            if (!plausible(phantom)) {
+                return false;
+            }
+
+            // Column-major: element (row, col) is float [col * 4 + row].
+            float m[12];
+            for (int i = 0; i < 12; ++i) {
+                const uint32_t bits = read32(phantom + 0xA0u + (uint32_t)(i * 4));
+                std::memcpy(&m[i], &bits, sizeof(m[i]));
+                if (!std::isfinite(m[i])) {
+                    return false;
+                }
+            }
+
+            const float m00 = m[0], m10 = m[1], m20 = m[2];
+            const float m01 = m[4], m11 = m[5], m21 = m[6];
+            const float m02 = m[8], m12 = m[9], m22 = m[10];
+
+            // Shepperd's method — the largest-denominator branch, so it never divides by a
+            // value near zero. The guest's own extraction (`quaternionFromRotatation`
+            // @0x82D56728) takes `x = m21 - m12`, `y = m02 - m20`, `z = m10 - m01`, which is
+            // this indexing exactly; it is only reproduced rather than called because any
+            // correct extraction yields the same ROTATION, and q and -q are the same rotation.
+            float x, y, z, w;
+            const float trace = m00 + m11 + m22;
+            if (trace > 0.0f) {
+                const float s = std::sqrt(trace + 1.0f) * 2.0f;
+                w = 0.25f * s;
+                x = (m21 - m12) / s;
+                y = (m02 - m20) / s;
+                z = (m10 - m01) / s;
+            } else if (m00 > m11 && m00 > m22) {
+                const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+                w = (m21 - m12) / s;
+                x = 0.25f * s;
+                y = (m01 + m10) / s;
+                z = (m02 + m20) / s;
+            } else if (m11 > m22) {
+                const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+                w = (m02 - m20) / s;
+                x = (m01 + m10) / s;
+                y = 0.25f * s;
+                z = (m12 + m21) / s;
+            } else {
+                const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+                w = (m10 - m01) / s;
+                x = (m02 + m20) / s;
+                y = (m12 + m21) / s;
+                z = 0.25f * s;
+            }
+
+            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+                !std::isfinite(w)) {
+                return false;
+            }
+
+            // Back to the guest's byte order, because everything downstream byte-swaps.
+            const float lanes[4] = {x, y, z, w};
+            for (int i = 0; i < 4; ++i) {
+                uint32_t bits = 0;
+                std::memcpy(&bits, &lanes[i], sizeof(bits));
+                out[i] = __builtin_bswap32(bits);
+            }
+
+            return true;
+        };
+
+        if (layout->hybrid) {
+            // The two halves gate DIFFERENTLY and must be asked separately.
+            //
+            // sub_82213A08 (position) defers to the sub-object only when the component has
+            // NOT latched +0xA4; otherwise the cached vector at +0x70 wins. sub_82211110
+            // (orientation) has no +0xA4 test at all — it delegates whenever the chain is
+            // there, and falls back to identity, never to +0x70.
+            //
+            // Tying them to one branch returns identity for every latched entity, which looks
+            // exactly like "the orientation offset is wrong" and is really the wrong gate.
+            const uint32_t body = read32(placement + 0x20u);
+            const uint32_t sub = plausible(body) ? read32(body + 0x38u) : 0u;
+
+            uint32_t chained = 0u;
+            uint16_t chained_pos = kNoDirect;
+            uint16_t chained_ori = kNoDirect;
+            uint32_t unrecognised = 0u;
+
+            // THE CHARACTER PROXY FIRST. `sub` here is what `sub_82211110` dispatches slot 0x18
+            // on, and for a character that is the Havok proxy — which holds a transform, not a
+            // quaternion, so the generic delegate walk cannot express it and falls through. That
+            // failure is silent and total: no orientation, identity forever, every human in the
+            // street facing the same way while walking around perfectly correctly.
+            if (read_phantom_quaternion(sub, orientation)) {
+                orientation_offset = kNoDirect;
+
+                // Position still comes from the component's own cache below. The phantom carries
+                // it too, at +0xD0, and the two agreeing is what would prove the whole chain —
+                // but the cached read already works, and swapping a working read for a new one
+                // on the same frame as a fix makes a regression unattributable.
+            } else if (read32(placement + 0xE0u) != 0u || read32(placement + 0xE4u) != 0u ||
+                       read32(placement + 0xE8u) != 0u || read32(placement + 0xECu) != 0u) {
+                // THE COMPONENT'S OWN CACHE, second and only if it has ever been written.
+                //
+                // `sub_825989D8` (vtable +0x74, SetOrientation) stores the quaternion at
+                // comp+0xE0 as well as pushing it to the physics proxy, so it is the guest's
+                // own record of the facing. It is NOT per-frame — the constructor
+                // `sub_825967B8` leaves it all zeros rather than identity, and only an explicit
+                // set ever writes it — so it is a fallback, never the primary. All-zero is the
+                // "never written" state and is not a rotation; taking it would be worse than
+                // identity, hence the guard.
+                read_vector(placement + 0xE0u, orientation, 4);
+                orientation_offset = kNoDirect;
+            } else if (plausible(sub) &&
+                follow_delegate(sub, chained, chained_pos, chained_ori, unrecognised) &&
+                chained != 0u && chained_ori != kNoDirect) {
+                // Orientation always follows the chain when it exists.
+                read_vector(chained + chained_ori, orientation, 4);
+                orientation_offset = kNoDirect;
+
+                if (read8(placement + 0xA4u) == 0u) {
+                    source = chained;
+                    position_offset = chained_pos;
+                }
+            }
+        } else if (layout->delegate) {
+            const uint32_t body = read32(placement + 0x20u);
+            if (!plausible(body)) {
+                // A null body is the guest's own zero-vector/identity case, a real answer.
+                resolved = true;
+            } else {
+                uint32_t chained = 0u;
+                uint16_t chained_pos = kNoDirect;
+                uint16_t chained_ori = kNoDirect;
+                uint32_t unrecognised = 0u;
+
+                if (!follow_delegate(body, chained, chained_pos, chained_ori, unrecognised)) {
+                    note_unknown(unrecognised);  // named, never guessed
+                    continue;
+                }
+
+                if (chained == 0u) {
+                    resolved = true;  // the chain bottomed out at the origin
+                } else {
+                    source = chained;
+                    position_offset = chained_pos;
+                    orientation_offset = chained_ori;
+                }
+            }
+        }
+
+        if (!resolved && position_offset != kNoDirect) {
+            read_vector(source + position_offset, position, 3);
+            resolved = true;
+        }
+
+        if (!resolved) {
+            note_unknown(vtable);
+            continue;
+        }
+
+        if (orientation_offset != kNoDirect) {
+            read_vector(source + orientation_offset, orientation, 4);
+        }
+
+        // The model hash, off whichever graphic-appearance component the entity carries.
+        uint32_t model = 0u;
+        const uint32_t components = read32(entity + 0x48u);
+        const uint32_t components_end = read32(entity + 0x4Cu);
+        const uint32_t accelerator = read32(entity + 0x8Cu);
+
+        for (const ModelSlot& slot : kModelSlots) {
+            const uint32_t word = read32(entity + 0x24u + ((uint32_t)(slot.id) / 32u) * 4u);
+            if (((word >> (slot.id % 32u)) & 1u) == 0u) {
+                continue;
+            }
+
+            uint32_t component = 0u;
+            if (plausible(accelerator) && plausible(components)) {
+                component = read32(components + 8u * read8(accelerator + slot.id) + 4u);
+            } else if (plausible(components) && components_end > components) {
+                for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
+                    if (read32(at) == slot.id) {
+                        component = read32(at + 4u);
+                        break;
+                    }
+                }
+            }
+
+            if (plausible(component)) {
+                model = read32(component + slot.offset);
+                if (model != 0u) {
+                    break;
+                }
+            }
+        }
+
+        uint32_t* row = out + (written * kEntityStride);
+        row[0] = position[0];
+        row[1] = position[1];
+        row[2] = position[2];
+        row[3] = orientation[0];
+        row[4] = orientation[1];
+        row[5] = orientation[2];
+        row[6] = orientation[3];
+        row[7] = model;
+        row[8] = entity;
+        row[9] = read32(entity + 0x14u);  // UniqueID, high
+        row[10] = read32(entity + 0x18u); // UniqueID, low
+        row[11] = read32(entity + 0x1Cu); // GDB record hash
+        ++written;
+    }
+
+    if (out_unknown != nullptr) {
+        *out_unknown = unknown;
+    }
+
+    if (out_unknown_vtable_count != nullptr) {
+        *out_unknown_vtable_count = unknown_vtable_count;
+    }
+
+    return written;
+}
+
+/// The COMPONENTS one entity carries, as {id, pointer} pairs.
+///
+/// Which components an entity carries is a live-memory fact, and no decompile answers it. A
+/// character whose component 6 holds `*(comp6 + 0x20) == 0` has no model hash there and can
+/// only be drawn through the parts list on `CECGraphicAppearanceMorph` (component id 17) —
+/// see RefiiHostGetEntityMorphParts — so which of the two applies has to be measured first.
+///
+/// This reads no offset INSIDE any component, only the list, so it depends on no layout
+/// beyond the walk itself.
+///
+/// The walk is the entity's own component vector at `entity+0x48`..`entity+0x4C`, 8-byte
+/// `{id, pointer}` pairs — the same walk `RefiiHostGetEntities` falls back to when the
+/// accelerator at `entity+0x8C` is not plausible.
+///
+/// Writes `count * 2` words: id then pointer. Returns the number of PAIRS written, which is
+/// capped at `max_pairs`; 0 means the entity has no readable component list.
+uint32_t RefiiHostGetEntityComponents(uint32_t entity, uint32_t* out_pairs,
+                                      uint32_t max_pairs) {
+    if (out_pairs == nullptr || max_pairs == 0u) {
+        return 0u;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    if (!plausible(entity)) {
+        return 0u;
+    }
+
+    const uint32_t components = read32(entity + 0x48u);
+    const uint32_t components_end = read32(entity + 0x4Cu);
+    if (!plausible(components) || components_end <= components) {
+        return 0u;
+    }
+
+    // Bounded against a torn read the same way the entity walk is: a component vector that
+    // claims to be enormous is a bad pointer pair, not an entity with thousands of parts.
+    const uint32_t span = components_end - components;
+    if (span > 0x4000u) {
+        return 0u;
+    }
+
+    uint32_t written = 0u;
+    for (uint32_t at = components; at + 8u <= components_end && written < max_pairs;
+         at += 8u) {
+        out_pairs[written * 2u] = read32(at);
+        out_pairs[(written * 2u) + 1u] = read32(at + 4u);
+        ++written;
+    }
+
+    return written;
+}
+
+/// The model hashes a COMPOSITE character is assembled from.
+///
+/// WHY THIS EXISTS. 29 of BWSSlums's 138 characters have a live 160-bone skeleton and a model
+/// hash of exactly zero at comp6+0x20, so nothing draws them — they are people missing from
+/// the street. `sub_82229BE0` proves zero is terminal on component 6:
+///
+///   82229ee4  lwz    r11, 0x14(r28)     ; r28 = comp6+12, so this is comp6+0x20
+///   82229ef0  ble    cr6, loc_8222A3B8  ; hash == 0 -> branch past the ENTIRE mesh block
+///
+/// Their geometry is on `CECGraphicAppearanceMorph`, component id 17 — confirmed, not assumed:
+/// `sub_8263C078` sets `v13[1] = 17` beside the class-name string in the 264-class registry,
+/// and all 29 were measured to carry id 17.
+///
+/// TWO LISTS, AND WE READ THE ONE THAT IS ACTUALLY FILLED. Verified in `sub_8217FA50`:
+///
+///   comp17+0x28..0x2C  stride 4   the SOURCE hashes, written by the property loader
+///   comp17+0x38..0x3C  stride 24  the BUILT part records, +0 = the same hash
+///
+/// `sub_8217FA50` maps the first to the second — `(a1[11] - a1[10]) >> 2` walks the source and
+/// `sub_824C6388` pushes 24-byte records — and it is reached from `sub_8220DE88`, the per-frame
+/// DRAW virtual. Our guest never draws, so the built list may never be populated at all, while
+/// the source list is filled at construction from HeadModel / TorsoModel / LegsModel /
+/// *Accessories / AdditionalModelFiles on the CharacterCreationRecord.
+///
+/// So the source list is what is returned, and the built count comes back separately rather
+/// than being assumed either way. If `out_built` is non-zero the draw path does run here and
+/// the 24-byte records are available too; if it is zero, this export is the only way in.
+///
+/// All offsets are measured from the COMPONENT POINTER. Writes up to `max_hashes` model
+/// resource-name hashes and returns how many were written.
+uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uint32_t* out_hashes,
+                                      uint32_t max_hashes, uint32_t* out_built) {
+    if (out_built != nullptr) {
+        *out_built = 0u;
+    }
+
+    if (out_hashes == nullptr || max_hashes == 0u) {
+        return 0u;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return base[at]; };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    if (!plausible(entity)) {
+        return 0u;
+    }
+
+    // The Morph component, through the entity's own lookup contract: presence bitmask of 8
+    // dwords at entity+0x24, then either the byte index table at entity+0x8C or a walk of the
+    // {id, ptr} pairs. Same shape RefiiHostGetEntities uses for the graphic-appearance slots.
+    constexpr uint8_t kMorphComponentId = 17u;
+
+    const uint32_t present = read32(entity + 0x24u + ((uint32_t)(kMorphComponentId) / 32u) * 4u);
+    if (((present >> (kMorphComponentId % 32u)) & 1u) == 0u) {
+        return 0u;
+    }
+
+    const uint32_t components = read32(entity + 0x48u);
+    const uint32_t components_end = read32(entity + 0x4Cu);
+    const uint32_t accelerator = read32(entity + 0x8Cu);
+
+    uint32_t morph = 0u;
+    if (plausible(accelerator) && plausible(components)) {
+        morph = read32(components + 8u * read8(accelerator + kMorphComponentId) + 4u);
+    } else if (plausible(components) && components_end > components) {
+        for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
+            if (read32(at) == kMorphComponentId) {
+                morph = read32(at + 4u);
+                break;
+            }
+        }
+    }
+
+    if (!plausible(morph)) {
+        return 0u;
+    }
+
+    // The BUILT list, reported only. Stride 24, first dword is the same hash.
+    const uint32_t built_begin = read32(morph + 0x38u);
+    const uint32_t built_end = read32(morph + 0x3Cu);
+    if (out_built != nullptr && plausible(built_begin) && built_end > built_begin &&
+        ((built_end - built_begin) % 24u) == 0u && (built_end - built_begin) <= 0x4000u) {
+        *out_built = (built_end - built_begin) / 24u;
+    }
+
+    // The SOURCE list, returned. Stride 4.
+    const uint32_t begin = read32(morph + 0x28u);
+    const uint32_t end = read32(morph + 0x2Cu);
+    if (!plausible(begin) || end <= begin || ((end - begin) % 4u) != 0u ||
+        (end - begin) > 0x4000u) {
+        return 0u;
+    }
+
+    uint32_t written = 0u;
+    for (uint32_t at = begin; at + 4u <= end && written < max_hashes; at += 4u) {
+        const uint32_t hash = read32(at);
+        if (hash != 0u) {
+            out_hashes[written++] = hash;
+        }
+    }
+
+    return written;
+}
+
+/// One live character's SKELETON POSE, so Godot can drive a Skeleton3D from the guest.
+///
+/// The placement feed puts a prop where the guest says it is; this is the rest of what a
+/// CHARACTER needs. Like the placement read it calls no guest code — the pose the animation
+/// system evaluated is left in a stable, component-owned heap array, and we copy it out.
+///
+/// WHERE IT IS. The animated-mesh component is id 6 (`CECGraphicAppearanceAnimatedMesh`),
+/// and it owns a vector of 48-byte bone transforms at comp+0x2C: begin +0x30, end +0x34, so
+/// the bone count is `(end - begin) / 48`.
+///
+/// WHY THAT ARRAY AND NOT THE POSE OBJECT AT comp+0x24. Both exist and only one is the live
+/// finished pose. `sub_821F2C78` XMemCpys the freshly evaluated pose INTO comp+0x30 —
+/// `XMemCpy(*(a1+48), *(a2+4), 48 * ((*(a1+52) - *(a1+48)) / 48))` — and its caller
+/// `sub_8257D8B8` then runs `sub_821F57D0(*(a1+48), *(a1+148), a1+112, 0)` to turn it from
+/// local into MODEL space in place, stamps `*(a1+20) = 2` and sets the dirty byte at
+/// `*(a1+228)`. So this array is per-frame, and by the time the frame is over it is already
+/// object-space: no parent walk on our side.
+///
+/// `comp+0x14` STATES the space — 1 local, 2 model — and it is returned rather than assumed.
+/// A pose read mid-update is local, and silently treating those bones as model-space is the
+/// kind of plausible-and-wrong result that reads as a rigging bug.
+///
+/// ELEMENT LAYOUT, 48 bytes: quaternion at +0 (w in lane 3), translation at +0x10, scale at
+/// +0x20. NOTE this is NOT Havok's order — `hkQsTransform` is translation first, and the two
+/// are the same size, so one reader cannot serve both.
+///
+/// The PARENT table comes from the skeleton at comp+0x94: entries of 8 bytes between
+/// skel+0x2C and skel+0x30, parent index (-1 for a root) in the first dword. Bones are
+/// ordered parent-before-child.
+///
+/// Fills 12 floats per bone and one parent index per bone. Returns the bone count, or 0 when
+/// the entity carries no animated mesh — which is the common case and not an error.
+static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
+                                       int32_t* out_parents, uint32_t max_bones,
+                                       uint32_t* out_space, bool rest);
+
+uint32_t RefiiHostGetEntityPose(uint32_t entity, float* out_transforms, int32_t* out_parents,
+                                uint32_t max_bones, uint32_t* out_space) {
+    return RefiiHostReadEntityRig(entity, out_transforms, out_parents, max_bones, out_space,
+                                  false);
+}
+
+/// The REST pose of a character's rig — the bind pose Godot needs to build its skin.
+///
+/// Separate from the live pose because it is read ONCE per model and never changes, while
+/// the live pose is read every frame. Same bone ordering and same parent table, so the two
+/// index the same rig.
+///
+/// It is stored LOCAL and has to be composed through the parent chain to be useful, which is
+/// the opposite of the live pose. Verified rather than assumed: `sub_82B73170` computes the
+/// count as `(*(skel+148) - *(skel+144)) / 48`, copies those elements to a scratch buffer,
+/// and runs the local-to-model converter `sub_82B734B0` ON THE COPY — you do not convert
+/// something that is already converted.
+///
+/// Bones come back parent-before-child, so one forward pass composes them.
+uint32_t RefiiHostGetEntityRestPose(uint32_t entity, float* out_transforms,
+                                    int32_t* out_parents, uint32_t max_bones) {
+    return RefiiHostReadEntityRig(entity, out_transforms, out_parents, max_bones, nullptr,
+                                  true);
+}
+
+/// The shared body of the two rig reads above.
+///
+/// One implementation, because the only difference between them is WHICH 48-byte array on
+/// the same component they take — the entity walk, the component lookup, the bounds checks
+/// and the parent table are identical, and two copies of that would be two things to keep
+/// in agreement.
+static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
+                                       int32_t* out_parents, uint32_t max_bones,
+                                       uint32_t* out_space, bool rest) {
+    constexpr uint8_t kAnimatedMeshId = 6u;
+
+    if (out_space != nullptr) {
+        *out_space = 0u;
+    }
+
+    if (out_transforms == nullptr || out_parents == nullptr || max_bones == 0u) {
+        return 0u;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return base[at]; };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+    const auto read_float = [&](uint32_t at) -> float {
+        const uint32_t bits = read32(at);
+        float value = 0.0f;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+
+    if (!plausible(entity)) {
+        return 0u;
+    }
+
+    // Same component lookup the model-hash read uses: the id bitmask gates it, the
+    // accelerator resolves it in one step, and the linear scan is the fallback for an
+    // entity that has not built one.
+    if (((read32(entity + 0x24u) >> kAnimatedMeshId) & 1u) == 0u) {
+        return 0u;
+    }
+
+    const uint32_t components = read32(entity + 0x48u);
+    const uint32_t components_end = read32(entity + 0x4Cu);
+    const uint32_t accelerator = read32(entity + 0x8Cu);
+
+    uint32_t component = 0u;
+    if (plausible(accelerator) && plausible(components)) {
+        component = read32(components + 8u * read8(accelerator + kAnimatedMeshId) + 4u);
+    } else if (plausible(components) && components_end > components) {
+        for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
+            if (read32(at) == kAnimatedMeshId) {
+                component = read32(at + 4u);
+                break;
+            }
+        }
+    }
+
+    if (!plausible(component)) {
+        return 0u;
+    }
+
+    // The parent table is the skeleton's, and it has to agree with whichever array we read
+    // or the two are describing different rigs.
+    const uint32_t skeleton = read32(component + 0x94u);
+    if (!plausible(skeleton)) {
+        return 0u;
+    }
+
+    // The live pose hangs off the COMPONENT; the rest pose off the SKELETON. Same element
+    // size, same bone order, different owner — and quoting one against the other's base is
+    // exactly the mistake that has cost this project a shipped-wrong offset before.
+    const uint32_t pose = rest ? read32(skeleton + 0x90u) : read32(component + 0x30u);
+    const uint32_t pose_end = rest ? read32(skeleton + 0x94u) : read32(component + 0x34u);
+    if (!plausible(pose) || pose_end <= pose) {
+        return 0u;  // sized but never filled — the character has not been posed yet
+    }
+
+    uint32_t bones = (pose_end - pose) / 48u;
+    if (bones > max_bones) {
+        bones = max_bones;
+    }
+
+    const uint32_t bone_table = read32(skeleton + 0x2Cu);
+    const uint32_t bone_table_end = read32(skeleton + 0x30u);
+    if (!plausible(bone_table) || bone_table_end <= bone_table ||
+        (bone_table_end - bone_table) / 8u < bones) {
+        return 0u;
+    }
+
+    for (uint32_t i = 0u; i < bones; ++i) {
+        const uint32_t element = pose + (i * 48u);
+        float* row = out_transforms + (i * 12u);
+        for (uint32_t lane = 0u; lane < 12u; ++lane) {
+            row[lane] = read_float(element + (lane * 4u));
+        }
+
+        out_parents[i] = (int32_t)read32(bone_table + (i * 8u));
+    }
+
+    if (out_space != nullptr) {
+        *out_space = read32(component + 0x14u);
+    }
+
+    return bones;
+}
+
+/// The guest's own NAME for each of a character's bones.
+///
+/// THIS IS WHAT MAKES A CHARACTER DRAWABLE. The `.mdl` numbers its bones one way and the
+/// guest's runtime skeleton numbers them another — 143 against 161 for the child hero, and
+/// 39 against 39 with only 11 of the parent links agreeing for a chicken. A mesh's
+/// BLENDINDICES address the model's table, so binding them to a skeleton built in the
+/// guest's order attaches every vertex to the wrong bone and the character renders as a fan
+/// of spikes. The name is the only key both sides share.
+///
+/// WHERE THE CHARACTERS ARE. `sub_821B5508` is the guest's own find-bone-by-name and is the
+/// ground truth for all of this:
+///
+///     v3 = *(skel + 44);                    // skel+0x2C, bone table begin
+///     v4 = (*(skel + 48) - v3) >> 3;        // 8 bytes per entry
+///     for ( i = (int *)(v3 + 4); ; i += 2 ) // &bone[0].name, stride 8
+///         if ( *i == v5 ) ...               // *a2, compared WITHOUT a dereference
+///
+/// so the dword at `bone + 4` IS the string node, not a handle to be resolved. The node's
+/// own layout comes from the comparator it falls back on when the pointers differ,
+/// `LHString_CBasicString_char_operator` @ 0x8226D790, which is called with those same two
+/// node pointers:
+///
+///     return *(_DWORD *)(a1 + 4) == *(_DWORD *)(a2 + 4)
+///         && sub_8226D7F8(*(_BYTE **)a1, *(_BYTE **)a2) == 0;
+///
+/// — `node + 4` is the byte length and `*(char**)node` is NUL-terminated ASCII. Plain
+/// characters, in memory, in the shipped build: a strcmp cannot work otherwise.
+///
+/// A null node is legitimate and means an unnamed bone, not a failure — the guest degrades
+/// it to the shared empty string at 0x8208FFDF, which is a single 0x00 byte. Names are also
+/// INTERNED through a global set, so two bones with the same name share one node; that is
+/// why the scan above has a pointer fast path, and it is why a caller must never key a map
+/// on the pointer.
+///
+/// Fills `max_bones * stride` bytes, one NUL-padded name per bone. Returns the bone count,
+/// or 0 when the entity carries no animated mesh.
+///
+/// The STRIDE is the caller's, not a constant here, so there is exactly one owner of it. A
+/// matching pair of constants either side of a P/Invoke is a thing that drifts, and it
+/// drifts silently: the reader simply starts finding the tail of the previous name.
+uint32_t RefiiHostGetEntityBoneNames(uint32_t entity, char* out_names, uint32_t stride,
+                                     uint32_t max_bones) {
+    constexpr uint8_t kAnimatedMeshId = 6u;
+
+    if (out_names == nullptr || max_bones == 0u || stride < 2u) {
+        return 0u;
+    }
+
+    std::memset(out_names, 0, (size_t)max_bones * stride);
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return base[at]; };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    if (!plausible(entity) || ((read32(entity + 0x24u) >> kAnimatedMeshId) & 1u) == 0u) {
+        return 0u;
+    }
+
+    const uint32_t components = read32(entity + 0x48u);
+    const uint32_t components_end = read32(entity + 0x4Cu);
+    const uint32_t accelerator = read32(entity + 0x8Cu);
+
+    uint32_t component = 0u;
+    if (plausible(accelerator) && plausible(components)) {
+        component = read32(components + 8u * read8(accelerator + kAnimatedMeshId) + 4u);
+    } else if (plausible(components) && components_end > components) {
+        for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
+            if (read32(at) == kAnimatedMeshId) {
+                component = read32(at + 4u);
+                break;
+            }
+        }
+    }
+
+    if (!plausible(component)) {
+        return 0u;
+    }
+
+    const uint32_t skeleton = read32(component + 0x94u);
+    if (!plausible(skeleton)) {
+        return 0u;
+    }
+
+    const uint32_t table = read32(skeleton + 0x2Cu);
+    const uint32_t table_end = read32(skeleton + 0x30u);
+    if (!plausible(table) || table_end <= table) {
+        return 0u;
+    }
+
+    uint32_t bones = (table_end - table) / 8u;
+    if (bones > max_bones) {
+        bones = max_bones;
+    }
+
+    for (uint32_t i = 0u; i < bones; ++i) {
+        char* slot = out_names + ((size_t)i * stride);
+        const uint32_t node = read32(table + (i * 8u) + 4u);
+        if (!plausible(node)) {
+            continue;  // unnamed — the guest's own empty-string case, not an error
+        }
+
+        const uint32_t chars = read32(node);
+        uint32_t length = read32(node + 4u);
+        if (!plausible(chars)) {
+            continue;
+        }
+
+        // The length is the guest's, so it is clamped rather than trusted: a torn read of a
+        // string being rebuilt would otherwise walk off into whatever follows it.
+        if (length > stride - 1u) {
+            length = stride - 1u;
+        }
+
+        for (uint32_t c = 0u; c < length; ++c) {
+            const uint8_t byte = read8(chars + c);
+            if (byte == 0u) {
+                break;
+            }
+
+            slot[c] = (char)byte;
+        }
+    }
+
+    return bones;
+}
+
 /// The command-stream rings, read-only. `sub_8222ABE0` blocks when the reader traps the
 /// writer, and these four numbers per slot are the whole condition.
 ///
@@ -1206,17 +2389,77 @@ void RefiiHostGetSceneStreams(uint32_t* out) {
     }
 }
 
+/// One guest LHString global to a NUL-terminated ASCII buffer.
+///
+/// The global holds a REP POINTER, not characters — `sub_821F0240` copies `*a2` and then
+/// bumps a refcount at `Rep+12` (0x821F02A4 / 0x821F02B4). Reading the Rep as if it were the
+/// text is what made this return empty and skip the world build silently.
+///
+/// THE REP LAYOUT, decompiled rather than guessed. `sub_82208778` is the whole definition —
+/// it is the only thing that ever fills one:
+///
+///   v7 = alloc((len + 4) & ~3);   *a1 = v7;      // +0x00 = the CHARACTER BUFFER
+///   a1[1] = len;                                 // +0x04 = length
+///   a1[2] = (2 * ((len + 4) & ~3)) | (a1[2] & 1);// +0x08 = capacity<<1 | flag
+///   *(BYTE *)(v7 + len) = 0;                     // NUL, so it is narrow, not UTF-16
+///   XMemCpy(*a1, a2, len);                       // one byte per character
+///
+/// Read the layout, do not probe for it. A heuristic that tries candidate pointers against
+/// two encodings and takes whichever comes out printable does not fail loudly when it is
+/// wrong — it returns plausible rubbish, and one global read as "TravelRS_Coach", "P ",
+/// "Albion" and "Mh" across four consecutive runs.
+static bool read_guest_name(const uint8_t* base, uint32_t global, char* out,
+                            uint32_t capacity) {
+    if (out == nullptr || capacity == 0) {
+        return false;
+    }
+
+    const auto read32 = [base](uint32_t at) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    const uint32_t rep = read32(global);
+    if (rep < 0x10000u || rep >= 0xC0000000u) {
+        return false;
+    }
+
+    const uint32_t chars = read32(rep);
+    const uint32_t length = read32(rep + 4u);
+    if (chars < 0x10000u || chars >= 0xC0000000u || length == 0u || length >= capacity) {
+        out[0] = '\0';
+        return false;
+    }
+
+    for (uint32_t i = 0; i < length; ++i) {
+        const char c = static_cast<char>(base[chars + i]);
+
+        // A name here is short and printable. Anything else means the Rep was freed or torn
+        // under us, and half a name is worse than none.
+        if (c < 0x20 || c > 0x7E) {
+            out[0] = '\0';
+            return false;
+        }
+
+        out[i] = c;
+    }
+
+    out[length] = '\0';
+    return true;
+}
+
 /// Where the guest is going. `sub_82379628` — the sole new-game entry — writes these before
-/// it latches the mode change:
+/// it latches the mode change, into four CONSECUTIVE globals:
 ///
 ///     g_StartWorldName    = "Albion"                 0x83497584
 ///     g_StartLevelName    = "BWSSlums"               0x83497588
+///     g_StartScenarioName = "DefaultScenario"        0x8349758C   (0x8237972C)
 ///     g_StartEntranceName = "QC010_ChildhoodStart"   0x83497590
 ///
-/// Each global holds a Rep pointer; characters are read best-effort as ASCII then UTF-16BE.
-///
 /// Fills three NUL-terminated buffers. Returns 1 when the level name came out non-empty —
-/// that is the one a caller cannot proceed without.
+/// that is the one a caller cannot proceed without. The scenario has its own entry point
+/// because adding a parameter here would break the ABI for a value most callers do not want.
 int RefiiHostGetStartLevel(char* world, char* level, char* entrance, uint32_t capacity) {
     if (capacity == 0) {
         return 0;
@@ -1231,77 +2474,212 @@ int RefiiHostGetStartLevel(char* world, char* level, char* entrance, uint32_t ca
         return 0;
     }
 
-    uint8_t* base = memory->virtual_membase();
+    const uint8_t* base = memory->virtual_membase();
     if (base == nullptr) {
         return 0;
     }
 
-    const auto read32 = [base](uint32_t at) {
+    read_guest_name(base, 0x83497584u, world, capacity);
+    read_guest_name(base, 0x83497590u, entrance, capacity);
+    return read_guest_name(base, 0x83497588u, level, capacity) ? 1 : 0;
+}
+
+/// The world manager, from the one fixed global that reaches it.
+///
+/// Six hops, and every one of them was quoted out of `sub_823BBA70` (0x823BBA8C onward), which
+/// emits the whole chain in seven consecutive instructions. Two other call sites — the savegame
+/// loader at 0x82447B44 and the Lua registrar at 0x82458FFC — emit the identical form, which is
+/// what a canonical accessor looks like when it has been inlined everywhere.
+///
+/// NOT CACHED across a level load: the chain is rebuilt, so a stale pointer here is a pointer
+/// into a freed object.
+static uint32_t world_manager(const uint8_t* base) {
+    const auto u32 = [base](uint32_t at) {
         uint32_t value = 0;
         std::memcpy(&value, base + at, sizeof(value));
         return __builtin_bswap32(value);
     };
 
-    // ASCII first, then UTF-16BE. A name here is short, printable and non-empty; anything
-    // else means we read the wrong encoding and should say nothing rather than something.
-    const auto read_name = [&](uint32_t global, char* out) {
-        if (out == nullptr) {
-            return false;
+    const auto step = [&](uint32_t at, uint32_t offset) -> uint32_t {
+        if (at < 0x10000u || at >= 0xC0000000u) {
+            return 0;
         }
+        return u32(at + offset);
+    };
 
-        // The global holds a REP POINTER, not characters — `sub_821F0240` copies `*a2` and
-        // then bumps a refcount at `Rep+12` (0x821F02A4 / 0x821F02B4). Reading the Rep as
-        // if it were the text is what made this return empty and skip the world build
-        // silently.
-        const uint32_t rep = read32(global);
-        if (rep < 0x10000u || rep >= 0xC0000000u) {
-            return false;
-        }
+    uint32_t at = u32(0x83496AB8u);
+    at = step(at, 0x0Cu);
+    at = step(at, 0x58u);
+    at = step(at, 0x04u);
+    at = step(at, 0x08u);
+    at = step(at, 0x04u);
+    return (at >= 0x10000u && at < 0xC0000000u) ? at : 0;
+}
 
-        const auto printable = [](char c) { return c >= 0x20 && c <= 0x7E; };
+/// The scenario the guest is ACTUALLY in, for the level it currently has loaded.
+///
+/// This is the live answer, where RefiiHostGetStartScenario is only the value a new game began
+/// with. `Layers.ActivateScenario` rewrites it and reloads the level, so a quest advancing the
+/// story changes which map and which placements the level has.
+///
+/// The lookup is the guest's own: the level caches its FNV-1 key at level+180, and the scenario
+/// map is a vector of {u32 key, LHString name} at worldMgr+88..+92. THE SORT IS LAZY — worldMgr
+/// +101 is a dirty flag and `sub_82321228` only sorts when it is set, so a host polling between
+/// an insert and the flush must scan linearly or it will silently miss the entry it wants.
+int RefiiHostGetActiveScenario(char* scenario, uint32_t capacity) {
+    if (scenario == nullptr || capacity == 0) {
+        return 0;
+    }
 
-        // {data, length, capacity, refcount} leaves two plausible homes for the characters:
-        // inline after the 16-byte header, or behind the pointer at +0. Try both rather
-        // than pick — a wrong guess here reads plausible rubbish instead of failing.
-        const uint32_t inline_chars = rep + 16u;
-        const uint32_t indirect = read32(rep);
-        const uint32_t candidates[] = {inline_chars, indirect, rep};
+    scenario[0] = '\0';
 
-        for (uint32_t pointer : candidates) {
-        if (pointer < 0x10000u || pointer >= 0xC0000000u) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto u32 = [base](uint32_t at) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    const uint32_t wm = world_manager(base);
+    if (wm == 0) {
+        return 0;
+    }
+
+    const uint32_t holder = u32(wm + 36u);
+    if (holder < 0x10000u || holder >= 0xC0000000u) {
+        return 0;  // no level loaded
+    }
+
+    const uint32_t level = u32(holder + 4u);
+    if (level < 0x10000u || level >= 0xC0000000u) {
+        return 0;
+    }
+
+    const uint32_t key = u32(level + 180u);
+    const uint32_t first = u32(wm + 88u);
+    const uint32_t last = u32(wm + 92u);
+    if (first < 0x10000u || last < first || ((last - first) % 8u) != 0u) {
+        return 0;
+    }
+
+    // Linear either way. The vector is at most a few dozen entries, and a binary search that is
+    // wrong when the dirty flag is set is worse than a scan that is always right.
+    for (uint32_t at = first; at + 8u <= last; at += 8u) {
+        if (u32(at) != key) {
             continue;
         }
 
-        for (int wide = 0; wide < 2; ++wide) {
-            uint32_t written = 0;
-            for (uint32_t i = 0; i + 1 < capacity; ++i) {
-                const char c = wide != 0
-                    ? static_cast<char>(base[pointer + i * 2u + 1u])
-                    : static_cast<char>(base[pointer + i]);
-                if (c == '\0') {
-                    break;
-                }
-                if (!printable(c)) {
-                    written = 0;
-                    break;
-                }
-                out[written++] = c;
-            }
+        return read_guest_name(base, at + 4u, scenario, capacity) ? 1 : 0;
+    }
 
-            if (written != 0) {
-                out[written] = '\0';
-                return true;
-            }
-        }
-        }
+    return 0;
+}
 
-        out[0] = '\0';
-        return false;
+/// The FNV-1 hashes of the layers the guest currently has active.
+///
+/// Layers gate ENTITY INSTANTIATION — the `.engine_level` marks elements AlwaysOn or
+/// InitiallyOn and `Layers.ActivateLayer` turns the rest on — so a host that places everything
+/// it finds will place things the guest has not.
+///
+/// The container is an MSVC `std::list<uint32_t>`, which the overflow guard gives away by
+/// raising "list<T> too long" (`sub_82322878`). worldMgr+60 is the _Myproxy and reads as a
+/// perfectly plausible pointer; the head is +64 and the size is +68. Nodes are 12 bytes,
+/// {_Next, _Prev, u32 hash}.
+///
+/// There is a SECOND identically shaped list at worldMgr+72; it is not this one and its meaning
+/// is unproven.
+///
+/// Returns how many hashes were written. Hashes are FNV-1 over the layer name's EXACT bytes —
+/// no lowercasing and no separator normalisation, unlike the world+level key.
+uint32_t RefiiHostGetActiveLayers(uint32_t* out, uint32_t capacity) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto u32 = [base](uint32_t at) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
     };
 
-    read_name(0x83497584u, world);
-    read_name(0x83497590u, entrance);
-    return read_name(0x83497588u, level) ? 1 : 0;
+    const uint32_t wm = world_manager(base);
+    if (wm == 0) {
+        return 0;
+    }
+
+    const uint32_t head = u32(wm + 64u);
+    if (head < 0x10000u || head >= 0xC0000000u) {
+        return 0;
+    }
+
+    const uint32_t size = u32(wm + 68u);
+    if (size > 4096u) {
+        return 0;  // not a list we recognise
+    }
+
+    uint32_t written = 0;
+    uint32_t node = u32(head);
+    for (uint32_t guard = 0; guard <= size + 8u; ++guard) {
+        if (node == head || node < 0x10000u || node >= 0xC0000000u) {
+            break;
+        }
+
+        if (out != nullptr && written < capacity) {
+            out[written] = u32(node + 8u);
+        }
+
+        ++written;
+        node = u32(node);
+    }
+
+    return written;
+}
+
+/// THE SCENARIO, which is what actually picks the map.
+///
+/// `Level_BuildDataWorldsFilePath` (0x8250EED0) builds
+/// `Data\Worlds\<World>\<Level>\<Scenario>\<Scenario>.list` and the loader takes every
+/// .ghf that manifest names — `Level_LoadHeightfieldGhfEntry` (0x8250ECE0) does no filtering
+/// of its own. So a level with five heightfields has five scenarios, and without this value a
+/// host has to guess which one; picking by name order put a childhood entrance in chapter 2's
+/// Bowerstone, which reads as the wrong season because the seasons ARE the scenarios.
+///
+/// This returns the START scenario. The LIVE one is a world-manager map keyed by
+/// FNV-1(world + level) that Lua's `Layers.ActivateScenario` writes, and it is not exposed
+/// yet — so this is right for a new game and stale once a quest moves the story on.
+int RefiiHostGetStartScenario(char* scenario, uint32_t capacity) {
+    if (scenario == nullptr || capacity == 0) {
+        return 0;
+    }
+
+    scenario[0] = '\0';
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    return read_guest_name(base, 0x8349758Cu, scenario, capacity) ? 1 : 0;
 }
 
 uint32_t RefiiHostGetFrontEndState(void) {
@@ -1339,8 +2717,177 @@ uint32_t RefiiHostGetFrontEndState(void) {
 ///   `text`   — the strings, host-endian UTF-16, each NUL-terminated.
 ///
 /// Returns the number of ELEMENTS available. Pass nulls to size the buffers.
-uint32_t RefiiHostGetUiElements(uint32_t* words, uint32_t word_capacity,
-                                uint16_t* text, uint32_t text_capacity) {
+/// The front end as a MODEL, not as widgets — what a natively rebuilt menu needs.
+///
+/// The element tree is not where the front end's meaning lives, so mirroring it is not enough.
+/// The main menu has no C++ item list and no C++ highlight: items, order,
+/// nesting and the highlight are all inside the shipped Lua object `g_Menu`. `sub_826E2220`
+/// SPAWNS seven items into it one call at a time and keeps none of them, and root-menu
+/// Up/Down never touch C++ state at all — they forward strings to Lua.
+///
+/// So there is nothing to read that says "item 3 is highlighted". A native menu owns its own
+/// highlight; what it needs from the guest is which entries EXIST, because the guest's own
+/// spawn conditions decide that and a host list that disagrees would offer a menu the guest
+/// will not honour.
+///
+/// The two spawn conditions, at the instruction level:
+///   signed in  — `lwz r4, dword_83496AF8` / `lwz r10, dword_83496A70` / `slw r7, r8, r4` /
+///                `and r5, r7, r10`, and a zero result skips the Load Game spawn entirely.
+///   languages  — `lwz r11, dword_83319934` / `cmplwi cr6, r11, 1` / `ble` past the spawn,
+///                so the Language entry exists only for MORE THAN ONE installed language.
+///
+/// LOAD GAME IS NOT HERE, and that is deliberate. Its condition is signed-in AND at least one
+/// save, and the save count comes from `sub_82443308`, which is a live
+/// `XamContentCreateEnumerator` — a guest CALL, not a memory read. Everything in this bridge
+/// is call-free by design, so the count is left to the caller, which in this port owns
+/// storage anyway. Reporting a guessed count would be worse than reporting none.
+///
+/// Fills 11 words. Returns 1 when the front-end GUI is up, 0 otherwise.
+uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
+    if (out == nullptr) {
+        return 0u;
+    }
+
+    for (int i = 0; i < 11; ++i) {
+        out[i] = 0u;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    const uint32_t gui = read32(0x83496B08u);
+    if (!plausible(gui) || read32(gui) != 0x820A924Cu) {
+        return 0u;  // the base-only instance the game republishes — no front end here
+    }
+
+    const uint32_t title = read32(gui + 180u);
+    const uint32_t menu = read32(gui + 184u);
+    const uint32_t active = read32(gui + 188u);
+
+    const uint32_t user = read32(0x83496AF8u);
+    const uint32_t signed_mask = read32(0x83496A70u);
+    const bool signed_in = user < 32u && ((1u << user) & signed_mask) != 0u;
+
+    out[0] = signed_in ? 1u : 0u;
+    out[1] = user;
+    out[2] = read32(0x83319934u);  // installed language count; > 1 spawns "Language"
+    out[3] = read32(0x83319938u);  // current language index
+
+    // The "new downloadable content" glyph: shown when the flag is set and the available
+    // count differs from the count already seen.
+    const uint32_t available = read32(0x83496B20u);
+    const uint32_t seen = read32(0x83496B24u);
+    out[4] = (base[0x8331963Eu] != 0u && (int32_t)available > 0 && available != seen) ? 1u : 0u;
+
+    // WHICH SCREEN, by pointer identity. There is no title state that means "the menu is up" —
+    // state 11 is consumed and reset to 0 in the same update, so reading it that way reports
+    // the handover as never having happened.
+    out[5] = (plausible(menu) && active == menu) ? 1u : 0u;
+    out[6] = plausible(menu) ? read32(menu + 24u) : 0u;
+    out[7] = plausible(title) ? read32(title + 24u) : 0u;
+    out[8] = plausible(title) ? base[title + 80u] : 0u;  // the CAN_PRESS_A gate
+
+    // The Load Game card cursor. NOT the menu highlight — it moves only on Left/Right and only
+    // in menu state 5, and it indexes the save-card vector at menu+84.
+    out[9] = plausible(menu) ? read32(menu + 72u) : 0u;
+
+    // HOW MANY SAVES THE GUEST HAS ENUMERATED, from the same vector its own "Load Game"
+    // branch tests before deciding whether to offer one:
+    //
+    //     826e03d0  lwz    r11, 8(r28)     ; end        (screen+88)
+    //     826e03d8  lwz    r10, 4(r28)     ; begin      (screen+84)
+    //     826e03dc  subf   r9, r10, r11
+    //     826e03e0  srawi. r8, r9, 2       ; / 4 = count
+    //     826e03e4  beq    -> "no save games"
+    //
+    // A std::vector of 4-byte entries, so the count is the byte span over 4. This is a stated
+    // value read with no call, which a host-side guess at storage cannot be.
+    //
+    // CAVEAT, and it is why this is named "enumerated" rather than "saves": the guest fills
+    // this vector when it enumerates, which it does on its own schedule. A zero here means
+    // "the guest has not told us about any", NOT "there are none on the device" — the guest
+    // decides that with a live XamContentCreateEnumerator, which is a call and not a read.
+    uint32_t enumerated = 0;
+    if (plausible(menu)) {
+        const uint32_t begin = read32(menu + 84u);
+        const uint32_t end = read32(menu + 88u);
+        if (end >= begin && (end - begin) < 0x10000u) {
+            enumerated = (end - begin) / 4u;
+        }
+    }
+    out[10] = enumerated;
+
+    return 1u;
+}
+
+/// Every Gameface presentation the guest currently has live — HUD, menus and front end.
+///
+/// ONE REGISTRY, NO SPECIAL CASES. The three owners keep their `CPresentation*` in three
+/// different places (`wrapper+20` for the front end, `GUI+32 -> +4` for the HUD,
+/// `mgr+12+4*id` for the menus), but every one of them is also appended to a single array on
+/// the AKPlayer at `GUI+16`. Enumerating that array means the host never has to know which
+/// kind of screen it is looking at — and `GUI+16` is a BASE-class field, zeroed in
+/// `sub_823710A8` and populated by base-class code, so unlike `GUI+188` it survives the
+/// object swap when the game takes the GUI over.
+///
+/// The array is DENSE: removal (`sub_82BEDC90`) memmoves the tail down and decrements the
+/// count, so there are no holes to skip and indices are not stable across removals.
+///
+/// WHETHER IT IS ACTUALLY SHOWING is a separate question from whether it is live, and this
+/// answers both. In game the guest keeps `pausemainmenu.bgf` and `menucycler.bgf` in the
+/// registry permanently with valid roots while neither is on screen, so a host that draws
+/// everything live puts a closed pause menu over the running game.
+///
+/// The gate is the ROOT ELEMENT's own `active` bit, read straight out of
+/// `CPresentation::Update` (`sub_822AC880`):
+///
+///     822ac9c4  lwz    r4, 0x1F4(r30)     ; root = *(pres + 500)
+///     822ac9d4  lhz    r11, 0x1C(r4)      ; the flags halfword
+///     822ac9d8  rlwinm r10, r11, 0,18,18  ; bit 18 MSB-first == 0x2000
+///     822ac9e0  beq    cr6, loc_822AC9EC  ; clear -> skip the entire tree walk
+///
+/// It is bit `0x2000` (`active`) and NOT `0x1000` (`globalactive`). That distinction is the
+/// whole trap: the flag writer is a plain mask set/clear with no cross-linking, and the only
+/// code that clears `0x1000` lives inside the tree walk that this gate skips — so a hidden
+/// presentation keeps `globalactive` set on its root forever. Following `0x1000` here would
+/// report every closed menu as visible.
+///
+/// `pres+873` is checked too, but it means FROZEN rather than hidden: non-zero returns before
+/// the per-frame lists are wiped, so the presentation holds last frame's content instead of
+/// becoming empty.
+///
+/// Five words per presentation — {address, root, name offset, state, active count} — where
+/// state bit 0 is "root active", bit 1 is "frozen". The active count is the guest's own
+/// answer: `pres+84` is a 48-byte array rebuilt every frame with exactly the globally-active
+/// elements, so its count (at `pres+124`) is zero for a screen that is contributing nothing.
+///
+/// The names are written
+/// into <paramref name="names"/> as NUL-separated ASCII. The NAME is the only discriminator
+/// there is: every presentation shares one vtable (`off_82006D48`), so the class cannot tell
+/// the HUD from a menu; the string at `presentation+12` can. It is an AKString — `char*` at
+/// +12, u16 length at +16 — and it holds the path the factory was handed, e.g. the one ending
+/// `HUD.bgf`. Match on a SUFFIX rather than the whole string: the path is built by
+/// `LHFile_MakePathOSConformant` and its prefix and slash direction are not established.
+///
+/// Returns the number of live presentations, which may exceed what fitted.
+uint32_t RefiiHostGetPresentations(uint32_t* words, uint32_t word_capacity,
+                                   char* names, uint32_t name_capacity) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -1366,16 +2913,168 @@ uint32_t RefiiHostGetUiElements(uint32_t* words, uint32_t word_capacity,
         return 0;
     }
 
-    const uint32_t active = read32(gui + 188u);
-    if (!plausible(active)) {
+    const uint32_t player = read32(gui + 16u);
+    if (!plausible(player)) {
         return 0;
     }
 
-    const uint32_t presentation = read32(active + 20u);
+    const uint32_t array = read32(player + 72u);
+    const uint32_t count = read32(player + 80u);
+    if (!plausible(array)) {
+        return 0;
+    }
+
+    // A ceiling on a count read out of guest memory, so a corrupted word cannot walk us off
+    // into the address space. The shipped game keeps a handful live at once.
+    constexpr uint32_t kMaxPresentations = 256u;
+    constexpr uint32_t kMaxNameChars = 260u;
+
+    uint32_t found = 0;
+    uint32_t chars = 0;
+
+    for (uint32_t i = 0; i < count && i < kMaxPresentations; ++i) {
+        const uint32_t presentation = read32(array + i * 4u);
+        if (!plausible(presentation)) {
+            continue;
+        }
+
+        // Null-checked rather than assumed: nothing in the image stores to +500 except the
+        // constructor's zero-init, so the pool is installed through a pointer to the +492
+        // subobject and there is a window during load where a live presentation has no root.
+        const uint32_t root = read32(presentation + 492u + 8u);
+
+        uint32_t offset = 0xFFFFFFFFu;
+        const uint32_t text = read32(presentation + 12u);
+        uint16_t length = 0;
+        std::memcpy(&length, base + presentation + 16u, sizeof(length));
+        length = __builtin_bswap16(length);
+
+        if (plausible(text) && length > 0 && length < kMaxNameChars) {
+            offset = chars;
+            for (uint16_t c = 0; c < length; ++c) {
+                if (names != nullptr && chars < name_capacity) {
+                    names[chars] = static_cast<char>(base[text + c]);
+                }
+                ++chars;
+            }
+            if (names != nullptr && chars < name_capacity) {
+                names[chars] = '\0';
+            }
+            ++chars;
+        }
+
+        // Is it SHOWING? The root's own `active` bit, and the freeze byte.
+        uint32_t state = 0u;
+        if (plausible(root)) {
+            uint16_t flags = 0;
+            std::memcpy(&flags, base + root + 0x1Cu, sizeof(flags));
+            if ((__builtin_bswap16(flags) & 0x2000u) != 0u) {
+                state |= 1u;
+            }
+        }
+        // The two presentation-level suppression bytes, INVERTED — 0 is live, 1 is parked.
+        // The constructor zeroes both, so a presentation is born visible and the game parks
+        // the ones it does not want.
+        //
+        //   +0x369 (873) gates the per-frame UPDATE. `CPresentation::Update` reads it first
+        //                (`lbz r11, 0x369(r30)` at 0x822AC890) and returns immediately.
+        //   +0x368 (872) gates the SCENE DRAW. `CScene`'s slot-5 fetches the owning
+        //                presentation from `scene+4`, calls its vtable +0x60 — which is
+        //                `sub_822CD108`, a two-instruction `lbz r3, 0x368(r3); blr` — and
+        //                branches past the whole draw when it is non-zero.
+        //
+        // The pause menu and the menu cycler are loaded and then written (1,1); the HUD's
+        // loader never touches either byte, which is exactly why only the HUD is on screen.
+        if (base[presentation + 873u] != 0u) {
+            state |= 2u;
+        }
+        if (base[presentation + 872u] != 0u) {
+            state |= 4u;
+        }
+
+        // The guest's own count of globally-active elements this frame — zero for a screen
+        // that is drawing nothing. Reported alongside the flag rather than instead of it, so
+        // a disagreement between the two is visible rather than silently resolved.
+        const uint32_t active_count = read32(presentation + 124u);
+
+        if (words != nullptr && (found * 5u + 4u) < word_capacity) {
+            words[found * 5u] = presentation;
+            words[found * 5u + 1u] = plausible(root) ? root : 0u;
+            words[found * 5u + 2u] = offset;
+            words[found * 5u + 3u] = state;
+            words[found * 5u + 4u] = active_count;
+        }
+        ++found;
+    }
+
+    return found;
+}
+
+/// Walks one presentation's element tree.
+///
+/// <paramref name="requested_presentation"/> is a `CPresentation*` from
+/// <see cref="RefiiHostGetPresentations"/>, or 0 for the front end's active screen — which is
+/// what every caller meant before the HUD and the in-game menus needed reaching.
+uint32_t RefiiHostGetUiElements(uint32_t requested_presentation,
+                                uint32_t* words, uint32_t word_capacity,
+                                uint16_t* text, uint32_t text_capacity) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    auto read32 = [base](uint32_t address) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+
+    // WHICH presentation. Zero keeps the old meaning — the front end's active screen — and
+    // any other value is one the caller enumerated.
+    //
+    // The front-end chain below is NOT general and it is DEAD in game: `gui+188` is written
+    // only by the derived GUI_FRONT_END constructor (`sub_82378230`), and once the game takes
+    // over, the object republished at 0x83496B08 is the BASE class, allocated at 176 bytes
+    // (`li r3, 0xB0` at 0x82310FE0) — so reading +188 there runs off the end of the
+    // allocation. That is why the HUD and the thirty in-game menus were invisible here: not
+    // because they are a different kind of object, but because this could only ever find one
+    // screen, and only while the front end owned the GUI.
+    uint32_t presentation = requested_presentation;
+    if (presentation == 0u) {
+        const uint32_t gui = read32(0x83496B08u);
+        if (!plausible(gui)) {
+            return 0;
+        }
+
+        const uint32_t active = read32(gui + 188u);
+        if (!plausible(active)) {
+            return 0;
+        }
+
+        // Front-end wrappers hold the CPresentation at +20. The HUD (`GUI+32` then `+4`) and
+        // the menus (`mgr+12+4*id`) store it DIRECTLY — that indirection difference is what
+        // RefiiHostGetPresentations exists to hide.
+        presentation = read32(active + 20u);
+    }
+
     if (!plausible(presentation)) {
         return 0;
     }
 
+    // +492 is an embedded subobject and its `+8` is the root node — verified from two
+    // one-instruction thunks that compose to it: `sub_82284360` is `addi r3, r3, 0x1EC; blr`
+    // and `sub_830F3910` is `lwz r3, 8(r3); blr`. 0x1EC is 492, measured from the
+    // CPresentation base. Identical for the HUD, the menus and the front end, because all
+    // three come out of one factory (`sub_823DCB10`).
     const uint32_t root = read32(presentation + 492u + 8u);
     if (!plausible(root)) {
         return 0;
@@ -1446,10 +3145,49 @@ uint32_t RefiiHostGetUiElements(uint32_t* words, uint32_t word_capacity,
             }
         }
 
-        if (words != nullptr && (found * 3u + 2u) < word_capacity) {
-            words[found * 3u] = read32(element);
-            words[found * 3u + 1u] = base[element + 43u];
-            words[found * 3u + 2u] = offset;
+        // Stride 5: vtable, slide, text offset, type, FLAGS.
+        //
+        // The flags word is the one that decides whether an element is drawn, and reading it
+        // replaces a host-side reimplementation of the rule with the guest's own answer.
+        //
+        // `element+0x1C` is a big-endian u16. Bit 0x2000 is `active`, the authored state the
+        // .bgf carries and Lua's setAttribute writes; bit 0x1000 is `globalactive`, which the
+        // runtime DERIVES every frame in sub_822849A0 as
+        //     globalactive = active AND in-time-range AND parent's globalactive
+        // and enforces structurally — that walk never enters a subtree whose parent failed.
+        //
+        // 0x1000 is the one to follow. sub_82188B70 copies exactly it onto the render node:
+        //     lwz  r11, 4(r31)    ; node+4 = element
+        //     lhz  r10, 0x1C(r11) ; the flags halfword
+        //     extrwi r9, r10, 1,19; bit 0x1000
+        //     stb  r9, 8(r31)     ; node+8, the draw gate
+        // and sub_8229E400 tests node+8 before descending, so a zero prunes the whole subtree.
+        //
+        // Opacity is NOT a second gate. sub_8229E358 uses it only to choose the transparent
+        // bucket — a fully transparent element is still traversed and still submitted, so an
+        // element carrying no opacity attribute is not thereby hidden.
+        //
+        // The TYPE byte at +0x1E carries no live state; it is here so the ORDINAL JOIN between
+        // the guest walk and the .bgf can be checked rather than assumed.
+        //
+        // Every piece of live state we apply — slide, text, opacity — is keyed by position:
+        // the guest's depth-first walk order is taken to equal the .bgf's element order. That
+        // was verified 77/77 on the title screen and never on the main menu, which has 3812
+        // elements. A divergence anywhere would hand every element after it someone else's
+        // state, which does not look like a join bug; it looks like a mostly-correct screen
+        // with stray widgets on it, and that is exactly what we are looking at.
+        //
+        // Comparing the guest's type sequence against the file's localises any divergence to
+        // an exact index, or proves there is none.
+        if (words != nullptr && (found * 5u + 4u) < word_capacity) {
+            uint16_t flags = 0;
+            std::memcpy(&flags, base + element + 0x1Cu, sizeof(flags));
+
+            words[found * 5u] = read32(element);
+            words[found * 5u + 1u] = base[element + 43u];
+            words[found * 5u + 2u] = offset;
+            words[found * 5u + 3u] = base[element + 30u];
+            words[found * 5u + 4u] = __builtin_bswap16(flags);
         }
         ++found;
 
@@ -1525,9 +3263,8 @@ uint32_t RefiiHostGetUiElements(uint32_t* words, uint32_t word_capacity,
 ///     initialises to +172 and no further, so +180/+184/+188 on that object are not screen
 ///     pointers at all.
 ///
-/// Reading the second one as though it were the first is how a run reports "the front end
-/// went nowhere" when what actually happened is that the game started. So the caller must
-/// check the vtable before believing `which`.
+/// Reading the second as though it were the first reports "the front end went nowhere" for a
+/// game that has started, so the caller must check the vtable before believing `which`.
 ///
 /// Returns 1 when the GUI exists.
 int RefiiHostGetFrontEnd(uint32_t* out) {
@@ -1624,7 +3361,15 @@ int RefiiHostGetFrontEnd(uint32_t* out) {
 /// Emits TWO words per (element, id) in walk order: the raw value and 1/0 for present.
 /// The value is raw bits; a float attribute is a big-endian float, already swapped here.
 /// Returns the number of ELEMENTS walked.
-uint32_t RefiiHostGetUiAttributes(const uint32_t* ids, uint32_t id_count,
+/// Reads named attributes off every element of one presentation.
+///
+/// <paramref name="requested_presentation"/> is a `CPresentation*` from
+/// <see cref="RefiiHostGetPresentations"/>, or 0 for the front end's active screen. Same
+/// parameterisation as RefiiHostGetUiElements and for the same reason: the front-end chain
+/// this used to hardcode cannot reach the HUD, and `opacity` is exactly the attribute the
+/// in-game UI needs — the game hides the whole HUD by writing it to 0 on one group.
+uint32_t RefiiHostGetUiAttributes(uint32_t requested_presentation,
+                                  const uint32_t* ids, uint32_t id_count,
                                   uint32_t* out, uint32_t out_capacity) {
     if (ids == nullptr || id_count == 0) {
         return 0;
@@ -1650,17 +3395,21 @@ uint32_t RefiiHostGetUiAttributes(const uint32_t* ids, uint32_t id_count,
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui)) {
-        return 0;
+    uint32_t presentation = requested_presentation;
+    if (presentation == 0u) {
+        const uint32_t gui = read32(0x83496B08u);
+        if (!plausible(gui)) {
+            return 0;
+        }
+
+        const uint32_t active = read32(gui + 188u);
+        if (!plausible(active)) {
+            return 0;
+        }
+
+        presentation = read32(active + 20u);
     }
 
-    const uint32_t active = read32(gui + 188u);
-    if (!plausible(active)) {
-        return 0;
-    }
-
-    const uint32_t presentation = read32(active + 20u);
     if (!plausible(presentation)) {
         return 0;
     }
@@ -1751,11 +3500,25 @@ uint32_t RefiiHostGetUiAttributes(const uint32_t* ids, uint32_t id_count,
 /// building [cross(fwd,up), fwd, up] as a proper rotation, and from the defaults
 /// (fwd = +Y, up = +Z).
 ///
-/// CAVEAT, and the reason this logs before it drives anything: the structure is a PULL
-/// CACHE. sub_82211598 refreshes it only when guest code calls it and a generation counter
-/// has moved, and every caller is a culling or visibility query. Whether any of them still
-/// runs when the guest never draws is UNPROVEN — if none do, this freezes at its last
-/// value silently. The push-driven copy on the camera manager at +0xE0 is the fallback.
+/// It is a PULL CACHE: sub_82211598 rewrites it only when the sim generation counter
+/// dword_83319650 has moved. Whether any of its callers still run headless was the open
+/// question; it is now SETTLED and the answer is yes. All ten are Lua natives
+/// ("IsPositionInCameraFrustrum", "IsSphereInCameraFrustrum",
+/// "IsEntityInCameraFrustrumWithMultiplier"), Kynapse path-object distance gates, effect
+/// ticks and animation-LOD classifiers. None contains a device call, so none of them needs
+/// the render path. dword_83319650 is a SIMULATION tick counter — incremented at the tail
+/// of sub_821D4628 and sub_823D9898, both world updates — not a present counter.
+///
+/// It is still a copy of a copy. sub_82211598 reads through sub_821DD3B0 -> sub_82265F90,
+/// and that one's own memo at cameraManager+0xD0 is stamped with KeTickCount, so the whole
+/// chain refreshes at most once a millisecond. The camera manager's PUSHED block is the
+/// better source and is laid out the same way, measured from the CAMERA MANAGER base:
+/// +0xE0 position, +0xF0 up, +0x100 forward, +0x110 fov, +0x114 bool. sub_821B8FD8 writes
+/// it — stvx128 at 0x821B917C for the position, sub_822BDD10 for up and forward, stfs/stb
+/// at 0x821B91DC/0x821B91C4 — and sub_8233B6B0 drives it with force=1 once per sim tick.
+/// Resolving the manager needs no guest call: Game = *(0x83496AB8+12), binary-search the
+/// 12-byte entries between *(Game+0x9C)+8 and +12 for key 1 (key 2 when *(Game+0x8C)+0x34
+/// and +0x36 are both set), take *(entry+4), then *(view+4).
 ///
 /// Fills 8 floats: pos xyz, up xyz... actually 11: pos[3], up[3], fwd[3], hfov, flag.
 /// Returns 1 on a coherent read, 0 if the two reads disagreed or the guest is absent.

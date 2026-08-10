@@ -14,6 +14,8 @@ public static class Engine_Clouds
 
     public const float AlphaTestThreshold = 5f / 255f;
 
+    public const float Exposure = 10.0f / 3.0f;
+
     public delegate byte[]? ReadAsset(string virtualPath);
 
     public delegate string? FindByName(string fileName);
@@ -81,17 +83,17 @@ public static class Engine_Clouds
             material.SetShaderParameter("uv_scale_offset", new Vector4(
                 layer.TextureScaleX,
                 layer.TextureScaleY,
-                layer.VelocityX * VelocityScale,
-                layer.VelocityY * VelocityScale));
+                0f,
+                0f));
 
             material.SetShaderParameter("cloud_globals",
-                new Vector4(1f, 0f, AlphaTestThreshold, 0f));
+                new Vector4(Exposure, 0f, AlphaTestThreshold, 0f));
 
             material.SetShaderParameter("light_colour", new Vector4(
                 mainLightColour[0], mainLightColour[1], mainLightColour[2], 1f));
 
-            material.SetShaderParameter("sun_direction", new Vector3(
-                sunDirection[0], sunDirection[1], sunDirection[2]));
+            material.SetShaderParameter("light_direction_world", new Vector3(
+                -sunDirection[0], sunDirection[1], sunDirection[2]));
 
             var node = new MeshInstance3D
             {
@@ -113,6 +115,49 @@ public static class Engine_Clouds
 
         GD.Print($"[clouds] {built} layer(s) of {theme.LayerCount}");
         return container;
+    }
+
+    public static void Update(
+        Node3D container,
+        CloudTheme theme,
+        float[] lightDirection,
+        float[] lightColour)
+    {
+        foreach (Node child in container.GetChildren())
+        {
+            if (child is not MeshInstance3D mesh ||
+                mesh.MaterialOverride is not ShaderMaterial material)
+            {
+                continue;
+            }
+
+            string name = child.Name.ToString();
+            if (!name.StartsWith("CloudLayer", StringComparison.Ordinal) ||
+                !int.TryParse(name.AsSpan("CloudLayer".Length), out int index) ||
+                index < 0 || index >= theme.Layers.Length)
+            {
+                continue;
+            }
+
+            CloudLayerTheme layer = theme.Layers[index];
+            material.SetShaderParameter("layer_params", new Vector4(
+                layer.Transparency,
+                layer.AmbientLight,
+                layer.Brightness,
+                ShaderNormalStrength(layer.NormalStrength)));
+
+            Vector4 current = material.GetShaderParameter("uv_scale_offset").AsVector4();
+            material.SetShaderParameter("uv_scale_offset", new Vector4(
+                layer.TextureScaleX,
+                layer.TextureScaleY,
+                current.Z,
+                current.W));
+            material.SetShaderParameter("light_colour", new Vector4(
+                lightColour[0], lightColour[1], lightColour[2], 1f));
+            material.SetShaderParameter("light_direction_world", new Vector3(
+                -lightDirection[0], lightDirection[1], lightDirection[2]));
+            mesh.Visible = layer.Enabled && layer.Transparency > 0.001f;
+        }
     }
 
     public static float ShaderNormalStrength(float authored)

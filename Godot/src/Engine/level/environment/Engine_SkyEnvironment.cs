@@ -30,7 +30,30 @@ public static class Engine_SkyEnvironment
             return null;
         }
 
-        Engine_EnvironmentTheme.TryExtractSky(chain, out sky);
+        float requestedTime = -1f;
+        string? forcedEnv = System.Environment.GetEnvironmentVariable("REFII_FORCE_TOD");
+        if (forcedEnv is not null &&
+            float.TryParse(
+                forcedEnv, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float forcedTime))
+        {
+            requestedTime = forcedTime;
+        }
+
+        if (requestedTime >= 0f)
+        {
+            Engine_ThemeTimeline.TryExtractSkyBlended(chain, requestedTime, out sky);
+        }
+        else
+        {
+            Engine_EnvironmentTheme.TryExtractSky(chain, out sky);
+            if (sky.SourceTimeOfDay >= 0f)
+            {
+                Engine_ThemeTimeline.TryExtractSkyBlended(
+                    chain, sky.SourceTimeOfDay, out sky);
+            }
+        }
+
         Engine_EnvironmentTheme.TryExtractWeather(chain, out weather);
 
         var shader = GD.Load<Shader>(ShaderPath);
@@ -74,12 +97,74 @@ public static class Engine_SkyEnvironment
 
     public static void ApplyFrame(ShaderMaterial material, SkyFrame frame)
     {
-        material.SetShaderParameter("sky_top", ToVector4(frame.SkyTop, 1f));
-        material.SetShaderParameter("sky_bottom", ToVector4(frame.SkyBottom, 1f));
-        material.SetShaderParameter("sky_sunset", ToVector4(frame.SkySunset, 1f));
-        material.SetShaderParameter("sky_params", new Vector4(
-            frame.SkyParams[0], frame.SkyParams[1], frame.SkyParams[2], frame.SkyParams[3]));
-        material.SetShaderParameter("sky_sun", ToVector4(frame.SunDirection, 0f));
+        (AtmosphereState state, ImageTexture lut) = ComputeDome(frame);
+        ApplyDomeUniforms(material, frame, state, lut);
+    }
+
+    public static (AtmosphereState State, ImageTexture Lut) ComputeDome(SkyFrame frame)
+    {
+        var inputs = new AtmosphereInputs
+        {
+            SunIntensity = frame.SkyParams[0],
+            ComplementaryBias = frame.SkyParams[1],
+            BetaRayleighMultiplier = frame.SkyParams[2],
+            BetaMieMultiplier = frame.SkyParams[3],
+        };
+        for (int i = 0; i < 3; i++)
+        {
+            inputs.SkyColour[i] = frame.SkyTop[i];
+            inputs.ComplementaryColour[i] = frame.SkyBottom[i];
+            inputs.SunsetColour[i] = frame.SkySunset[i];
+        }
+
+        inputs.SunDirection[0] = frame.SunDirection[0];
+        inputs.SunDirection[1] = frame.SunDirection[2];
+        inputs.SunDirection[2] = frame.SunDirection[1];
+        inputs.SunDirection[3] = 0f;
+
+        AtmosphereState state = Engine_SkyAtmosphere.Compute(inputs);
+        float[] lut = Engine_SkyAtmosphere.BuildInScatterLut(state);
+
+        var bytes = new byte[lut.Length * sizeof(float)];
+        Buffer.BlockCopy(lut, 0, bytes, 0, bytes.Length);
+        var image = Image.CreateFromData(
+            Engine_SkyAtmosphere.LutWidth, 1, false, Image.Format.Rgbaf, bytes);
+        return (state, ImageTexture.CreateFromImage(image));
+    }
+
+    public static void ApplyDomeUniforms(
+        ShaderMaterial material, SkyFrame frame, AtmosphereState state, ImageTexture lut)
+    {
+        material.SetShaderParameter("in_scatter_lut", lut);
+        material.SetShaderParameter("beta_rayleigh", new Vector3(
+            state.BetaRayleigh[0], state.BetaRayleigh[1], state.BetaRayleigh[2]));
+        material.SetShaderParameter("beta_mie", new Vector3(
+            state.BetaMie[0], state.BetaMie[1], state.BetaMie[2]));
+        material.SetShaderParameter("sun_engine", new Vector3(
+            -frame.SunDirection[0], frame.SunDirection[2], frame.SunDirection[1]));
+        material.SetShaderParameter("horizon_distance",
+            Engine_SkyAtmosphere.HorizonDistance);
+        material.SetShaderParameter("dome_exposure", 10.0f);
+    }
+
+    public static void ApplyWaterFrame(
+        ShaderMaterial material, SkyFrame frame, AtmosphereState state, ImageTexture lut)
+    {
+        ApplyDomeUniforms(material, frame, state, lut);
+
+        var sun = new Vector3(
+            -frame.SunDirection[0],
+            frame.SunDirection[1],
+            frame.SunDirection[2]);
+        if (sun.LengthSquared() > 1e-8f)
+        {
+            sun = sun.Normalized();
+        }
+
+        float sunUp = Math.Clamp(sun.Y * 3f, 0f, 1f);
+        material.SetShaderParameter("w_light", new Vector4(sun.X, sun.Y, sun.Z, 0f));
+        material.SetShaderParameter("w_sun", new Vector4(
+            1f, 0.55f + (0.42f * sunUp), 0.30f + (0.60f * sunUp), sun.Y));
     }
 
     public static List<byte[]> BuildGdbChain(LevelEntry level, Func<string, byte[]?> read) =>

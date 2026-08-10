@@ -83,6 +83,7 @@ internal static class Engine_MdlMerge
             Normals = new float[vertices * 3],
             Uvs = new float[vertices * 2],
             Indices = new uint[indices],
+            SourceVertices = new int[vertices],
         };
 
         if (first.HasTangents)
@@ -104,6 +105,17 @@ internal static class Engine_MdlMerge
             Array.Copy(part.Positions, 0, result.Positions, vertexBase * 3, count * 3);
             Array.Copy(part.Normals, 0, result.Normals, vertexBase * 3, count * 3);
             Array.Copy(part.Uvs, 0, result.Uvs, vertexBase * 2, count * 2);
+
+            // Merging by material reorders vertices too, so the map has to travel with them or
+            // a bake lands on the wrong surface entirely rather than merely being rejected.
+            if (part.SourceVertices.Length == count)
+            {
+                Array.Copy(part.SourceVertices, 0, result.SourceVertices, vertexBase, count);
+            }
+            else
+            {
+                Array.Fill(result.SourceVertices, -1, vertexBase, count);
+            }
 
             if (result.Tangents.Length != 0 && part.HasTangents)
             {

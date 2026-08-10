@@ -36,6 +36,13 @@ void vertex() {
 	}
 }
 
+// 0127 pshader_sky_stars is three lines and has no texture, no constants and no transfer:
+//
+//     oC0.xyz = r0.xxx;      // the twinkle brightness the vertex shader computed
+//     oC0.w   = 0.0;
+//
+// The brightness goes out raw. Note the guest writes ALPHA 0, which only works because the
+// draw is additive — a src-alpha blend would erase it.
 void fragment() {
 	ALBEDO = vec3(v_value);
 	ALPHA = 1.0;

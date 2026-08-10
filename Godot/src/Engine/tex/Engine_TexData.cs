@@ -15,7 +15,7 @@ public enum TexSurfaceFormat
 	Bc3,
 	Bc4,
 
-    Bc5,
+	Bc5,
 
 	Rgba8,
 }
@@ -246,69 +246,69 @@ public static class Engine_TexData
 			return TryDecodeRawSurface(d, header, out surface, out error);
 		}
 
-        int recordOffset = header.LevelOffsets[0] > 0 ? header.LevelOffsets[0] : TexHeader.Size;
-        if (recordOffset < 0 || recordOffset >= d.Length)
-        {
-            error = $"header points level 0 at {recordOffset}, outside {d.Length} bytes";
-            return false;
-        }
+		int recordOffset = header.LevelOffsets[0] > 0 ? header.LevelOffsets[0] : TexHeader.Size;
+		if (recordOffset < 0 || recordOffset >= d.Length)
+		{
+			error = $"header points level 0 at {recordOffset}, outside {d.Length} bytes";
+			return false;
+		}
 
-        if (Engine_TexPlanes.TryDecodeLevel(d, recordOffset, header, out byte[] blocks, out string planeError))
-        {
-            TexSurfaceFormat format = header.BlockStride == 16
-                ? (header.CodecId == 3 ? TexSurfaceFormat.Bc5 : TexSurfaceFormat.Bc3)
-                : header.SurfaceFormat;
+		if (Engine_TexPlanes.TryDecodeLevel(d, recordOffset, header, out byte[] blocks, out string planeError))
+		{
+			TexSurfaceFormat format = header.BlockStride == 16
+				? (header.CodecId == 3 ? TexSurfaceFormat.Bc5 : TexSurfaceFormat.Bc3)
+				: header.SurfaceFormat;
 
-            if (TryDecodeMipChain(d, header, blocks, out byte[] chain, out int levels))
-            {
-                surface = new TexSurface
-                {
-                    Width = header.Width,
-                    Height = header.Height,
-                    Format = format,
-                    Data = chain,
-                    MipLevels = levels,
-                };
-                return true;
-            }
+			if (TryDecodeMipChain(d, header, blocks, out byte[] chain, out int levels))
+			{
+				surface = new TexSurface
+				{
+					Width = header.Width,
+					Height = header.Height,
+					Format = format,
+					Data = chain,
+					MipLevels = levels,
+				};
+				return true;
+			}
 
-            surface = new TexSurface
-            {
-                Width = header.Width,
-                Height = header.Height,
-                Format = format,
-                Data = blocks,
-            };
-            return true;
-        }
+			surface = new TexSurface
+			{
+				Width = header.Width,
+				Height = header.Height,
+				Format = format,
+				Data = blocks,
+			};
+			return true;
+		}
 
-        var payload = new byte[d.Length - recordOffset];
-        Buffer.BlockCopy(d, recordOffset, payload, 0, payload.Length);
+		var payload = new byte[d.Length - recordOffset];
+		Buffer.BlockCopy(d, recordOffset, payload, 0, payload.Length);
 
-        if (!TryDecodePyramid(payload, out surface, out error) &&
-            !TryDecodeSingle(payload, out surface, out error))
-        {
-            error = planeError.Length > 0 ? planeError : error;
-            return false;
-        }
+		if (!TryDecodePyramid(payload, out surface, out error) &&
+			!TryDecodeSingle(payload, out surface, out error))
+		{
+			error = planeError.Length > 0 ? planeError : error;
+			return false;
+		}
 
-        TexSurfaceFormat declared = header.SurfaceFormat;
-        if (declared != TexSurfaceFormat.Unsupported &&
-            declared != surface.Format &&
-            Fits(surface, declared))
-        {
-            surface = new TexSurface
-            {
-                Width = surface.Width,
-                Height = surface.Height,
-                Format = declared,
-                Data = surface.Data,
-                MipLevels = surface.MipLevels,
-            };
-        }
+		TexSurfaceFormat declared = header.SurfaceFormat;
+		if (declared != TexSurfaceFormat.Unsupported &&
+			declared != surface.Format &&
+			Fits(surface, declared))
+		{
+			surface = new TexSurface
+			{
+				Width = surface.Width,
+				Height = surface.Height,
+				Format = declared,
+				Data = surface.Data,
+				MipLevels = surface.MipLevels,
+			};
+		}
 
-        return true;
-    }
+		return true;
+	}
 
 	private static bool Fits(TexSurface surface, TexSurfaceFormat format)
 	{
@@ -318,51 +318,51 @@ public static class Engine_TexData
 		return surface.Data.Length >= blocksW * blocksH * stride;
 	}
 
-    private static bool TryDecodeRawSurface(byte[] d, TexHeader header,
-        out TexSurface surface, out string error)
-    {
-        surface = default!;
-        error = string.Empty;
+	private static bool TryDecodeRawSurface(byte[] d, TexHeader header,
+		out TexSurface surface, out string error)
+	{
+		surface = default!;
+		error = string.Empty;
 
-        int blockBytes = header.TilingBlockBytes;
-        TexSurfaceFormat format = header.SurfaceFormat;
-        if (blockBytes == 0 || format == TexSurfaceFormat.Unsupported)
-        {
-            error = $"raw surface: unsupported pixel format {header.PixelFormat}";
-            return false;
-        }
+		int blockBytes = header.TilingBlockBytes;
+		TexSurfaceFormat format = header.SurfaceFormat;
+		if (blockBytes == 0 || format == TexSurfaceFormat.Unsupported)
+		{
+			error = $"raw surface: unsupported pixel format {header.PixelFormat}";
+			return false;
+		}
 
-        int at = TexHeader.Size;
-        if (at + 4 > d.Length)
-        {
-            error = "raw surface: truncated before its byte count";
-            return false;
-        }
+		int at = TexHeader.Size;
+		if (at + 4 > d.Length)
+		{
+			error = "raw surface: truncated before its byte count";
+			return false;
+		}
 
-        int count = (int)Be(d, at);
-        at += 4;
-        if (count <= 0 || at + count > d.Length)
-        {
-            count = d.Length - at;
-        }
+		int count = (int)Be(d, at);
+		at += 4;
+		if (count <= 0 || at + count > d.Length)
+		{
+			count = d.Length - at;
+		}
 
-        var payload = new byte[count];
-        Buffer.BlockCopy(d, at, payload, 0, count);
+		var payload = new byte[count];
+		Buffer.BlockCopy(d, at, payload, 0, count);
 
-        bool blockCompressed = blockBytes >= 8;
-        int unitsWide = blockCompressed ? header.BlocksWide : header.Width;
-        int unitsHigh = blockCompressed ? header.BlocksHigh : header.Height;
+		bool blockCompressed = blockBytes >= 8;
+		int unitsWide = blockCompressed ? header.BlocksWide : header.Width;
+		int unitsHigh = blockCompressed ? header.BlocksHigh : header.Height;
 
-        if (blockCompressed)
-        {
-            Engine_Xbox360Tiling.SwapWords16(payload);
-        }
-        else
-        {
-            Engine_Xbox360Tiling.SwapWords32(payload);
-        }
+		if (blockCompressed)
+		{
+			Engine_Xbox360Tiling.SwapWords16(payload);
+		}
+		else
+		{
+			Engine_Xbox360Tiling.SwapWords32(payload);
+		}
 
-        byte[] data = Engine_Xbox360Tiling.Untile(payload, unitsWide, unitsHigh, blockBytes);
+		byte[] data = Engine_Xbox360Tiling.Untile(payload, unitsWide, unitsHigh, blockBytes);
 
 		if (format == TexSurfaceFormat.Rgba8)
 		{

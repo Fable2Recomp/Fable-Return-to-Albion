@@ -147,6 +147,19 @@ public static class Engine_GdbPlacements
         return placements;
     }
 
+    /// <summary>
+    /// Why a placement lookup failed, split because the two causes need opposite fixes.
+    ///
+    /// "The record is not in this view" means we are looking in the wrong gdb — the creature is
+    /// described by one database and placed by another. "The record is here but carries no
+    /// transform we recognise" means the placement is stored in a shape the three readers below
+    /// do not cover. A single noTransform count cannot tell those apart, and the two lead to
+    /// completely different places.
+    /// </summary>
+    public static int MissingRecord;
+
+    public static int MissingTransform;
+
     public static bool TryLookupPlacement(
         GdbView view,
         uint recordHash,
@@ -158,6 +171,7 @@ public static class Engine_GdbPlacements
 
         if (recordHash == 0 || !view.TryLookup(recordHash, out int record))
         {
+            ++MissingRecord;
             return false;
         }
 
@@ -165,10 +179,12 @@ public static class Engine_GdbPlacements
         bool found =
             TryComponentTransformRecord(view, record, transform, lenient) ||
             TryTransformRecord(view, record, transform, lenient) ||
-            TryIndexedInlineTransform(view, record, transform);
+            TryIndexedInlineTransform(view, record, transform) ||
+            TryAnyComponentTransform(view, record, transform, lenient);
 
         if (!found)
         {
+            ++MissingTransform;
             return false;
         }
 
@@ -247,6 +263,42 @@ public static class Engine_GdbPlacements
                TryComponentTransformField(
                    view, record, GdbHash.PhysicsSimulationDynamicComponent,
                    transform, lenient);
+    }
+
+    /// <summary>
+    /// Looks for a transform in ANY component the record references, not just the five we can
+    /// name.
+    ///
+    /// An entity in this database is a bag of component references — every field on a creature
+    /// record is a type-6 reference and none of them is a position. Naming the components we
+    /// will look inside is a whitelist, and it fails exactly the way whitelists do: BWSSlums's
+    /// childhood scenario has 65 creatures and 47 of them carry their transform in a component
+    /// outside the list, so they were counted as "no transform" and never placed. Of the five
+    /// components a villager carries, only CreatureComponent (0xC3B90D4F) is even identifiable
+    /// by name.
+    ///
+    /// One level deep and no recursion: a component holds the transform, it does not hold
+    /// another entity. Going deeper would start finding other entities' positions.
+    /// </summary>
+    private static bool TryAnyComponentTransform(
+        GdbView view, int record, Transform transform, bool lenient)
+    {
+        foreach (GdbField field in view.Fields(record))
+        {
+            if ((byte)field.Type != 6 || field.Raw == 0 ||
+                !view.TryLookup(field.Raw, out int componentRecord) ||
+                componentRecord == record)
+            {
+                continue;
+            }
+
+            if (TryTransformRecord(view, componentRecord, transform, lenient))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool TryComponentTransformField(

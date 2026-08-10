@@ -309,6 +309,49 @@ uint32_t BinkMovieState(uint8_t* base) {
                 base[player + 234u], base[player + 235u], base[player + 236u]);
   }
 
+  // THE SKIP BYTE IS REAL, BUT IT IS NOT ALWAYS THERE.
+  //
+  // Our handle is the BINK object `B`, and `B = P + 12` where `P` is the outer movie player
+  // — verified in the constructor `sub_82389040`, which splits the two registers explicitly:
+  //
+  //     82389068  addi r31, r29, 0xC    ; r29 = P, r31 = B
+  //     82389070  lfs  f0, flt_8209BE04 ; the skip threshold
+  //     82389080  stfs f0, 4(r29)       ; P+4  = threshold seconds
+  //     82389088  stfs f31, 8(r29)      ; P+8  = elapsed
+  //
+  // So `B+232` is `P+244`, and `P+244` IS the guest's own skip flag — the byte written by
+  // every one of its skip sites, e.g. `0x826E3064` on the title screen's A press. It is NOT
+  // `P+256` measured from this base — that is four bytes past the end of a 248-byte block.
+  //
+  // The catch, and the whole reason for the class test below: **only the front-end players
+  // are 248 bytes.** The in-game cutscene player (`sub_823C1658`) is 228 and has no skip
+  // field at all — reading `B+232` there is off the end of the block, and WRITING it would
+  // corrupt coalescing-heap metadata. That, plus a stale `B` after the guest frees a player,
+  // is the explanation for the non-zero-after-the-first-movie reading noted above.
+  //
+  // So the class is read first, from a value the guest itself states.
+  uint32_t flags = 0;
+  std::memcpy(&flags, base + player + 224u, sizeof(flags));
+  flags = __builtin_bswap32(flags);
+
+  // The flags dword the guest hands BinkOpen, set by whichever constructor built the player.
+  // A stated value, not an address or a filename — which is what lets the host tell the
+  // three shapes apart without a whitelist.
+  constexpr uint32_t kStartupQueue = 0x04000400u;  // sub_82389040, skippable after 5s
+  constexpr uint32_t kAttract = 0x00000400u;       // sub_82388ED0, skippable immediately
+  constexpr uint32_t kCutscene = 0x00004400u;      // sub_823C1658, 228 bytes, NO skip field
+
+  const bool has_skip_field = flags == kStartupQueue || flags == kAttract;
+  if (!has_skip_field) {
+    // Cutscene, or a shape we do not recognise. Report playing and touch nothing else: an
+    // unrecognised flags value is exactly when reading past a smaller block would happen.
+    return 1u;
+  }
+
+  // 2 == the GUEST has decided this movie is over early. It sets this itself, from its own
+  // gate `P+8 > P+4` (elapsed past the skip threshold) when the player presses A — which is
+  // why the host must NOT decide skippability: feed the input, and the guest enforces
+  // "unskippable" for free.
   return skip != 0 ? 2u : 1u;
 }
 
@@ -367,9 +410,19 @@ void NoteBinkMovieOpen(uint32_t player, uint8_t* base_for_open) {
 
   static std::atomic<uint32_t> seen{0};
   if (seen.fetch_add(1) < 64u) {
+    // The CLASS is logged too, because it decides whether the skip byte beside it is even in
+    // bounds: 0x04000400 startup queue, 0x00000400 attract, 0x00004400 in-game cutscene (a
+    // 228-byte player with no skip field). A value that is none of those means the host is
+    // looking at a shape it does not know, and every offset past +224 is then a guess.
+    uint32_t open_flags = 0;
+    if (base_for_open != nullptr) {
+        std::memcpy(&open_flags, base_for_open + player + 224u, sizeof(open_flags));
+        open_flags = __builtin_bswap32(open_flags);
+    }
+
     REXLOG_INFO("Refii Bink movie open: bink=0x{:08X} player=0x{:08X} frame_buffers=0x{:08X} "
-                "at-open done(+221)={} skip(+232)={}",
-                player, player - 12u, player + 68u,
+                "class(+224)=0x{:08X} at-open done(+221)={} skip(+232)={}",
+                player, player - 12u, player + 68u, open_flags,
                 base_for_open == nullptr ? 0xFFu : base_for_open[player + 221u],
                 base_for_open == nullptr ? 0xFFu : base_for_open[player + 232u]);
   }

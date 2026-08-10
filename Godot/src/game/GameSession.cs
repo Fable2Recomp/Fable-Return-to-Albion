@@ -122,14 +122,26 @@ public partial class GameSession : Node
 	}
 
 	/// <summary>
-	/// Logs the guest camera when it MOVES, to answer the one thing IDA could not settle:
-	/// whether the snapshot at 0x8331A230 still updates when the guest never draws.
+	/// Logs the guest camera when it MOVES.
 	///
-	/// It is a pull cache — refreshed only when guest code calls sub_82211598, and every
-	/// caller is a culling or visibility query. If none of them run headless it freezes at
-	/// its last value with no error and no timestamp, and the only way to tell is to watch
-	/// it. If it never moves, the push-driven copy on the camera manager (+0xE0) is the
-	/// fallback.
+	/// The question this was added for — whether the snapshot at 0x8331A230 still updates
+	/// when the guest never draws — is SETTLED, and the answer is yes. It is a pull cache
+	/// refreshed by sub_82211598 only when the sim generation counter dword_83319650 has
+	/// moved, and all ten callers are Lua natives ("IsPositionInCameraFrustrum",
+	/// "IsSphereInCameraFrustrum", "IsEntityInCameraFrustrumWithMultiplier"), AI path gates
+	/// and effect ticks. Not one of them contains a device call, so none of them needs the
+	/// render path to run.
+	///
+	/// It is still a copy of a copy, and a laggy one: sub_82211598 reads it through
+	/// sub_821DD3B0 -> sub_82265F90, whose own memo at cameraManager+0xD0 is stamped with
+	/// KeTickCount and so refreshes at most once a millisecond. The camera manager's PUSHED
+	/// block is the better source — cameraManager+0xE0 position, +0xF0 up, +0x100 forward,
+	/// +0x110 fov, +0x114 bool, written by sub_821B8FD8 (the stvx128 at 0x821B917C, then
+	/// sub_822BDD10 for the two basis vectors) and driven with force=1 once per sim tick
+	/// from sub_8233B6B0. Reaching it needs the manager pointer, which is a pure memory
+	/// walk: Game = *(0x83496AB8+12), then a binary search of the 12-byte entries between
+	/// *(Game+0x9C)+8 and +12 for key 1 (key 2 when *(Game+0x8C)+0x34 and +0x36 say split
+	/// screen), taking *(entry+4) and then *(view+4).
 	/// </summary>
 	private void TraceCamera()
 	{

@@ -11,6 +11,27 @@ public partial class Engine_PropStreamer : Node3D
 {
     public const string ModelPathMeta = "model_path";
 
+    /// <summary>
+    /// The `.save` record one prop instance was built from, on a node that holds a single one.
+    ///
+    /// ONLY THE GDB ENTITY-PLACEMENT PASS SETS THIS, and that is the point: foliage, the
+    /// engine_level blocks, the GMD children, the companions and the shells are all level
+    /// geometry that no `.save` record names, so they carry nothing. The presence of a record
+    /// hash is therefore exactly the statement "the guest owns this one too", which is what
+    /// <see cref="Refii.Entities.Engine_StaticTwins"/> needs to tell a duplicate from a prop
+    /// only we know about.
+    /// </summary>
+    public const string RecordMeta = "record_hash";
+
+    /// <summary>
+    /// The `.save` records behind a batched node, parallel to its MultiMesh instances.
+    ///
+    /// A MultiMesh instance is not a node and cannot carry metadata of its own, so the whole
+    /// column rides on the node and is indexed by instance. Zero means the same thing it means
+    /// on a single: this instance came from something other than an entity placement.
+    /// </summary>
+    public const string RecordsMeta = "record_hashes";
+
     private static readonly Dictionary<string, ArrayMesh> Cache = new();
 
     private static readonly List<Engine_PropStreamer> Live = new();
@@ -126,6 +147,17 @@ public partial class Engine_PropStreamer : Node3D
         while (_cursor < _pending.Count)
         {
             GeometryInstance3D instance = _pending[_cursor++];
+
+            // HIDDEN PROPS ARE NOT STREAMED. In the running game the guest owns most of these
+            // and its own copy is what you see, so decoding their geometry is work for a mesh
+            // nothing will draw — it was 45% of the streaming in BWSSlums. They are not dropped
+            // though: `EnsureStreamed` loads one the moment it is shown again, which is what
+            // happens when a layer activates and the guest hands a record back.
+            if (!instance.Visible)
+            {
+                continue;
+            }
+
             Step(instance);
 
             if (_watch.Elapsed.TotalMilliseconds >= MillisecondsPerFrame)
@@ -147,6 +179,21 @@ public partial class Engine_PropStreamer : Node3D
                     ? string.Empty
                     : $", {_failed} failed ({_absent} absent from every bank, " +
                       $"{_undecodable} present but would not decode)"));
+        }
+    }
+
+    /// <summary>
+    /// Streams one prop NOW, if it has not been already.
+    ///
+    /// For a prop that was hidden when the streaming pass reached it and has since been shown
+    /// again — the guest activating a layer it had gated off. The pass is a one-way cursor, so
+    /// it will never come back to it on its own.
+    /// </summary>
+    public void EnsureStreamed(MeshInstance3D node)
+    {
+        if (node.Mesh is null && node.HasMeta(ModelPathMeta))
+        {
+            Step(node);
         }
     }
 
@@ -187,7 +234,7 @@ public partial class Engine_PropStreamer : Node3D
 
         ArrayMesh? baked = Refii.Lighting.Engine_LevelBakedLighting.TryBuildVertexBake(
             Refii.Lighting.Engine_LevelBakedLighting.ContainerFor(gdbPath),
-            (uint)stored.AsInt64(),
+            (ulong)stored.AsInt64(),
             mesh);
 
         if (baked is null)
@@ -317,8 +364,8 @@ public partial class Engine_PropStreamer : Node3D
 
         present = true;
 
-        // The reader says WHY it gave up and this used to discard it, so fifteen models a
-        // level failed with no reason recorded anywhere.
+        // The reader says WHY it gave up; discarding that leaves the fifteen or so models a
+        // level fails to load with no reason recorded anywhere.
         ArrayMesh? mesh = Engine_MdlMesh.TryCreateMesh(
             bytes, virtualPath, out string reason, out _);
         if (mesh is null)

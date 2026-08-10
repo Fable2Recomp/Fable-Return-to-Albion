@@ -64,7 +64,15 @@ public partial class LevelViewer : Node3D
 			LevelName = requested;
 		}
 
-		_camera = new Camera3D { Name = "Camera", Current = true, Near = 0.05f, Far = 20_000f };
+		// The same auto-exposure the game runs, so the editor and the game agree on exposure.
+		_camera = new Camera3D
+		{
+			Name = "Camera",
+			Current = true,
+			Near = 0.05f,
+			Far = 20_000f,
+			Attributes = Refii.Lighting.Engine_LevelLighting.BuildCameraAttributes(),
+		};
 		AddChild(_camera);
 
 		var layer = new CanvasLayer { Name = "Hud" };

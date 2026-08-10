@@ -9,11 +9,10 @@
 //   DIRECT  — the theme's main light, evaluated live so it moves with time of day and casts
 //             real shadows.
 //
-// Keeping this in one file is not tidiness. Terrain used to be `unshaded` with the bake
-// folded in as `bake * 0.55 + 0.45`, so the ground took no sun, no shadow and no ambient
-// while everything standing on it took all three — and a street where the buildings darken
-// at dusk over a path that does not reads as "the lighting is broken" rather than as two
-// lighting models.
+// Keeping this in one file is not tidiness. A second lighting model for terrain — `unshaded`
+// with the bake folded in — gives the ground no sun, no shadow and no ambient while
+// everything standing on it takes all three, and a street whose buildings darken at dusk over
+// a path that does not reads as "the lighting is broken" rather than as two models.
 
 instance uniform vec4 probe_r = vec4(0.0);
 instance uniform vec4 probe_g = vec4(0.0);
@@ -39,6 +38,17 @@ const float FABLE_BAKE_GAMMA = 2.2;
 // rgb: the theme's AmbientColour already multiplied by its energy.
 instance uniform vec4 ambient_colour = vec4(0.0);
 
+/// rgb: the theme's AmbientNormalMapDarkeningColour — how dark the ambient goes where a mapped
+/// normal turns away from the surface. WHITE IS THE NEUTRAL VALUE, not black: the guest's term
+/// is `lerp(this, 1, ndotn^2)`, so this colour is the FLOOR the ambient falls to, and a default
+/// of white leaves a surface with no normal map exactly as it was.
+///
+/// It carries no Factor. This is the only lighting colour the guest registers as type 1 rather
+/// than type 2 (`dword_8349EB8C = 1` at 0x83288CA0); the type-1 arm reads Red, Green and Blue,
+/// forces w to 1.0 and scales by 1/255, and never looks for the Factor field the type-2 colours
+/// have.
+instance uniform vec4 darkening_colour = vec4(1.0);
+
 /// The probe field's order-2 spherical harmonics, evaluated for a world normal.
 ///
 /// THE BASIS IS D3DX's, AND ITS SIGNS ARE NOT SYMMETRIC. Decompiling `D3DXSHEvalDirection`
@@ -51,11 +61,10 @@ instance uniform vec4 ambient_colour = vec4(0.0);
 ///     out[2] = +0.4886025 * z        (0x82D13C28)
 ///     out[3] = -0.4886025 * x        (0x82D13C30)
 ///
-/// Two things were wrong here before. The band constants were missing entirely, so the flat
-/// term came out 3.5x too strong; and the three directional coefficients were paired with the
-/// wrong axes in the wrong signs — coefficient 1 goes with y and NEGATED, 2 with z, 3 with x
-/// and negated, where this used to read them as plainly x, y, z. That does not look like a bug,
-/// it looks like the bake is lit from somewhere else.
+/// TWO THINGS ARE EASY TO GET WRONG HERE, and both present as a bake lit from somewhere else
+/// rather than as a bug. The band constants are not optional — without them the flat term is
+/// 3.5x too strong. And the three directional coefficients are NOT plainly x, y, z:
+/// coefficient 1 goes with y and NEGATED, 2 with z, 3 with x and negated.
 ///
 /// The field is stored in the GUEST's axes — X right, Y forward, Z up — so the normal is
 /// carried back into them first. Godot's is Y-up and the level root is mirrored through X on

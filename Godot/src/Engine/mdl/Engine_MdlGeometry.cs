@@ -23,6 +23,22 @@ public sealed class MdlGeometry
 
     public MdlMaterial? Material { get; set; }
 
+    /// <summary>
+    /// For each vertex here, which vertex of the MODEL's own concatenated buffers it came from.
+    /// </summary>
+    /// <remarks>
+    /// Needed because our vertices are not the file's vertices. Splitting a mesh buffer into one
+    /// surface per submesh keeps only the vertices that submesh's indices reach and renumbers
+    /// them from zero, so a vertex two submeshes share is emitted TWICE and every index after it
+    /// shifts. Anything the file states PER VERTEX — the .lmp's authored per-vertex bake is the
+    /// one that matters — is indexed against the original numbering and cannot survive that
+    /// without this map.
+    ///
+    /// It is what turns "our mesh has 770 vertices, the bake has 762" from an unexplained
+    /// mismatch into an exact lookup: the bake is not short, we emit eight vertices twice.
+    /// </remarks>
+    public int[] SourceVertices { get; set; } = Array.Empty<int>();
+
     public int VertexCount => Positions.Length / 3;
 
     public int TriangleCount => Indices.Length / 3;
@@ -43,8 +59,16 @@ public static class Engine_MdlGeometry
     {
         geometry = new List<MdlGeometry>();
 
+        // Where this buffer's vertices start in the model's own numbering. It advances for EVERY
+        // buffer including the ones we go on to skip, because the file's numbering does not care
+        // which of them we managed to decode — a bake is indexed against all of them.
+        int vertexBase = 0;
+
         foreach (MdlMeshBuffer mb in info.MeshBuffers)
         {
+            int bufferBase = vertexBase;
+            vertexBase += (int)mb.VertexCount;
+
             if (mb.VertexCount == 0 || mb.FaceCount == 0)
             {
                 continue;
@@ -92,7 +116,7 @@ public static class Engine_MdlGeometry
             if (mb.SubMeshes.Count > 1)
             {
                 AddSubMeshSurfaces(geometry, info, mb, positions, uvs, normals,
-                    tangents, boneIds, boneWeights, strip);
+                    tangents, boneIds, boneWeights, strip, bufferBase);
                 continue;
             }
 
@@ -140,6 +164,7 @@ public static class Engine_MdlGeometry
                 BoneWeights = boneWeights ?? Array.Empty<float>(),
                 Name = ResolveName(info, mb.MeshIndex, -1),
                 Material = ResolveMaterial(info, mb.MeshIndex, 0),
+                SourceVertices = Identity(bufferBase, (int)mb.VertexCount),
             };
 
             geometry.Add(geo);
@@ -333,10 +358,23 @@ public static class Engine_MdlGeometry
                 boneIds[v * 4 + 2] = data[p + 14];
                 boneIds[v * 4 + 3] = data[p + 15];
 
-                float w0 = data[p + 16] / 255f;
-                float w1 = data[p + 17] / 255f;
-                float w2 = data[p + 18] / 255f;
-                float w3 = data[p + 19] / 255f;
+                // THE TWO ELEMENTS ARE NOT THE SAME FORMAT, which is the whole trap here.
+                //
+                // BLENDINDICES is UBYTE4, so its four bytes map straight to influences 0..3 —
+                // what the loop above does. BLENDWEIGHT is D3DCOLOR, and a D3DCOLOR is
+                // 0xAARRGGBB delivered to the shader as (R, G, B, A). In this big-endian
+                // buffer that puts A first in memory, so the weight for influence 0 is byte
+                // +17, not +16, and the alpha byte is the LAST influence.
+                //
+                // Reading them in memory order rotates every weight one slot against the bone
+                // it belongs to — a vertex weighted entirely to its first bone comes out
+                // weighted entirely to its second. The declaration is built by sub_82A750E8
+                // through the D3DDECLTYPE table at 0x83316CC0, where BLENDINDICES is type 5
+                // (UBYTE4) and BLENDWEIGHT type 4 (D3DCOLOR).
+                float w0 = data[p + 17] / 255f;
+                float w1 = data[p + 18] / 255f;
+                float w2 = data[p + 19] / 255f;
+                float w3 = data[p + 16] / 255f;
                 boneWeights![v * 4] = w0;
                 boneWeights[v * 4 + 1] = w1;
                 boneWeights[v * 4 + 2] = w2;
@@ -360,10 +398,23 @@ public static class Engine_MdlGeometry
         return true;
     }
 
+    /// <summary>An unsplit buffer's vertices, numbered as the file numbers them.</summary>
+    private static int[] Identity(int start, int count)
+    {
+        var map = new int[count];
+        for (int i = 0; i < count; i++)
+        {
+            map[i] = start + i;
+        }
+
+        return map;
+    }
+
     private static void AddSubMeshSurfaces(
         List<MdlGeometry> geometry, MdlInfo info, MdlMeshBuffer mb,
         float[] positions, float[] uvs, float[]? normals,
-        float[]? tangents, int[]? boneIds, float[]? boneWeights, ushort[] strip)
+        float[]? tangents, int[]? boneIds, float[]? boneWeights, ushort[] strip,
+        int bufferBase)
     {
         for (int si = 0; si < mb.SubMeshes.Count; ++si)
         {
@@ -430,6 +481,7 @@ public static class Engine_MdlGeometry
                 continue;
             }
 
+            var subSource = new int[used];
             var subPositions = new float[used * 3];
             var subUvs = new float[used * 2];
             float[]? subNormals = normals is null ? null : new float[used * 3];
@@ -445,6 +497,7 @@ public static class Engine_MdlGeometry
                     continue;
                 }
 
+                subSource[nv] = bufferBase + (int)v;
                 subPositions[nv * 3] = positions[v * 3];
                 subPositions[(nv * 3) + 1] = positions[(v * 3) + 1];
                 subPositions[(nv * 3) + 2] = positions[(v * 3) + 2];
@@ -498,6 +551,7 @@ public static class Engine_MdlGeometry
                 BoneWeights = subBoneWeights ?? Array.Empty<float>(),
                 Name = ResolveName(info, mb.MeshIndex, si),
                 Material = ResolveMaterial(info, mb.MeshIndex, sub.MaterialIndex),
+                SourceVertices = subSource,
             });
         }
     }

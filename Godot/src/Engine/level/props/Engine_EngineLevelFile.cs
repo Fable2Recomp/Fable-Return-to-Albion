@@ -15,6 +15,17 @@ public sealed class EngineLevelInstance
     public byte Flag2 { get; set; }
 
     public float[] Values { get; } = new float[20];
+
+    /// <summary>
+    /// The instance's full authored rotation, (x, y, z, w), when the record carried one.
+    ///
+    /// Type-21 v12 ships a quaternion, and reducing it to a yaw angle throws away the pitch
+    /// and roll the file actually states — which is most of what makes foliage look planted
+    /// rather than stamped. Kept alongside <see cref="Values"/> rather than packed into it
+    /// because the two type-21 versions fill different slots and overloading them again is how
+    /// the static-placement records ended up being read with the foliage layout.
+    /// </summary>
+    public System.Numerics.Quaternion? Rotation { get; set; }
 }
 
 public sealed class EngineLevelBlock
@@ -34,6 +45,28 @@ public sealed class EngineLevelBlock
     public List<EngineLevelInstance> Instances { get; } = new();
 }
 
+/// <summary>
+/// A type-4 record: one heightfield, and the id of the baked lightmap that belongs to it.
+/// </summary>
+/// <remarks>
+/// This record is how a landscape finds its bake, and the pairing exists nowhere else. The
+/// guest reads the eight bytes that follow the name straight into its descriptor
+/// (<c>descriptor+0x28</c>, <c>sub_82ABAEF0</c>), carries them to the render entity
+/// (<c>entity+0x110</c>, <c>sub_82A8EBE8</c>) and looks them up in the <c>.lmp</c>'s terrain
+/// map with a 64-bit compare (<c>sub_82A8EA50</c>: <c>*(level+0xD50)+0x1C</c>).
+///
+/// Confirmed against the shipped data rather than argued. For chapter2slums the two type-4
+/// records carry 0xE6ABDD70 and 0x5129BEB3, and those are exactly the two keys in the .lmp's
+/// terrain map — the first a 576x576 bake for the region's own heightfield, the second a
+/// 32x64 one for the sea vista.
+/// </remarks>
+public sealed class EngineLevelHeightfield
+{
+    public string Path { get; set; } = string.Empty;
+
+    public ulong LightmapKey { get; set; }
+}
+
 public sealed class EngineLevelFile
 {
     public bool Ok { get; set; }
@@ -45,6 +78,9 @@ public sealed class EngineLevelFile
     public List<EngineLevelBlock> PropBlocks { get; } = new();
 
     public List<EngineLevelBlock> FoliageBlocks { get; } = new();
+
+    /// <summary>The level's heightfields, in file order, each with its lightmap id.</summary>
+    public List<EngineLevelHeightfield> Heightfields { get; } = new();
 
     public int Type21Blocks { get; set; }
 
@@ -139,16 +175,29 @@ public static class Engine_EngineLevelFile
                 case 4:
                 case 5:
                 case 32:
-                    if (!reader.CString(out _))
+                    if (!reader.CString(out string assetPath))
                     {
                         file.Error = $"truncated reading string for type {type}";
                         return file;
                     }
 
-                    if (type == 4 && !reader.Skip(8))
+                    // The type-4 tail is the heightfield's LIGHTMAP ID, not padding. It used to
+                    // be skipped, and skipping it is why the ground was lit from whichever of
+                    // the level's bakes happened to be the larger — the vista, which has one of
+                    // its own, got none at all.
+                    if (type == 4)
                     {
-                        file.Error = "truncated reading type-4 tail";
-                        return file;
+                        if (!reader.U64(out ulong lightmapKey))
+                        {
+                            file.Error = "truncated reading type-4 lightmap id";
+                            return file;
+                        }
+
+                        file.Heightfields.Add(new EngineLevelHeightfield
+                        {
+                            Path = assetPath,
+                            LightmapKey = lightmapKey,
+                        });
                     }
 
                     break;
@@ -315,6 +364,10 @@ public static class Engine_EngineLevelFile
                 instance.Values[0] = px;
                 instance.Values[1] = py;
                 instance.Values[2] = pz;
+
+                // The whole rotation, kept. The yaw pair below stays as the fallback for
+                // anything that cannot use a quaternion.
+                instance.Rotation = new System.Numerics.Quaternion(qx, qy, qz, qw);
 
                 float num = 2f * ((qw * qz) + (qx * qy));
                 float den = 1f - (2f * ((qy * qy) + (qz * qz)));

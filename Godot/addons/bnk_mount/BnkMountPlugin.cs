@@ -17,6 +17,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private const string DatabaseRootMeta = "__bnk_database_root__";
     private const string LevelsRootMeta = "__bnk_levels_root__";
     private const string EntitiesRootMeta = "__bnk_entities_root__";
+    private const string EffectsRootMeta = "__bnk_effects_root__";
     private const string VideosRootMeta = "__bnk_videos_root__";
     private const string LevelRegionPrefix = "lvlregion:";
     private const string LevelPrefix = "lvl:";
@@ -32,6 +33,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private Refii.Level.Engine_BnkTerrainAlbedoLoader? _albedoLoader;
     private Refii.Level.Engine_BnkTerrainMaterialLoader? _terrainMaterialLoader;
     private Refii.Entities.Engine_BnkEntityLoader? _entityLoader;
+    private Refii.Fx.Engine_BnkFxLoader? _fxLoader;
     private Dictionary<string, string>? _byFileName;
     private Tree? _tree;
     private TreeItem? _gameRoot;
@@ -371,6 +373,12 @@ public partial class BnkMountPlugin : EditorPlugin
             ResourceLoader.AddResourceFormatLoader(_entityLoader);
         }
 
+        if (_fxLoader is null)
+        {
+            _fxLoader = new Refii.Fx.Engine_BnkFxLoader();
+            ResourceLoader.AddResourceFormatLoader(_fxLoader);
+        }
+
         if (_textureLoader is null)
         {
             _textureLoader = new Refii.Textures.Engine_BnkTextureLoader();
@@ -422,6 +430,12 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             ResourceLoader.RemoveResourceFormatLoader(_entityLoader);
             _entityLoader = null;
+        }
+
+        if (_fxLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_fxLoader);
+            _fxLoader = null;
         }
 
         if (_textureLoader is not null)
@@ -538,6 +552,15 @@ public partial class BnkMountPlugin : EditorPlugin
         entities.SetIconModulate(0, GameFolderColor);
         AddPlaceholder(tree, entities);
         entities.Collapsed = true;
+
+        TreeItem effects = tree.CreateItem(_gameRoot);
+        effects.SetText(0, "Effects");
+        effects.SetMetadata(0, EffectsRootMeta);
+        effects.SetSelectable(0, false);
+        effects.SetIcon(0, GetFolderIcon());
+        effects.SetIconModulate(0, GameFolderColor);
+        AddPlaceholder(tree, effects);
+        effects.Collapsed = true;
 
         TreeItem levels = tree.CreateItem(_gameRoot);
         levels.SetText(0, "Levels");
@@ -676,6 +699,13 @@ public partial class BnkMountPlugin : EditorPlugin
             return;
         }
 
+        if (virtualPath.EndsWith(
+                Refii.Fx.Engine_BnkFxLoader.Extension, StringComparison.OrdinalIgnoreCase))
+        {
+            ActivateFx(meta, virtualPath);
+            return;
+        }
+
         if (_filesystem is null || !_filesystem.TryGetFile(virtualPath, out BnkFile file))
         {
             return;
@@ -773,6 +803,39 @@ public partial class BnkMountPlugin : EditorPlugin
         GD.Print($"[bnk_mount] {virtualPath} -> {texture.GetWidth()}x{texture.GetHeight()} Texture2D");
     }
 
+    private void ActivateFx(string meta, string virtualPath)
+    {
+        string effect = Refii.Fx.Engine_BnkFxLoader.EffectNameOf(virtualPath);
+
+        var scene = ResourceLoader.Load<PackedScene>(
+            meta, "PackedScene", ResourceLoader.CacheMode.Ignore);
+        if (scene is null)
+        {
+            GD.Print($"[bnk_mount] fx '{effect}' could not be loaded from the bank");
+            return;
+        }
+
+        Node? instance = scene.Instantiate();
+        if (instance is null)
+        {
+            return;
+        }
+
+        Node? root = EditorInterface.Singleton.GetEditedSceneRoot();
+        if (root is null)
+        {
+            instance.Free();
+            GD.Print($"[bnk_mount] open a scene, then activate '{effect}' to drop it in");
+            return;
+        }
+
+        root.AddChild(instance);
+        instance.Owner = root;
+        EditorInterface.Singleton.GetSelection().Clear();
+        EditorInterface.Singleton.GetSelection().AddNode(instance);
+        GD.Print($"[bnk_mount] fx '{effect}' added from bank -> {root.Name}");
+    }
+
     private void ActivateLevel(string heightfieldPath)
     {
         Refii.Level.LevelEntry? level = Levels()
@@ -835,6 +898,7 @@ public partial class BnkMountPlugin : EditorPlugin
             meta != DatabaseRootMeta &&
             meta != LevelsRootMeta &&
             meta != EntitiesRootMeta &&
+            meta != EffectsRootMeta &&
             meta != VideosRootMeta &&
             !meta.StartsWith(LevelRegionPrefix, StringComparison.Ordinal) &&
             !meta.StartsWith("bnk:", StringComparison.Ordinal))
@@ -891,6 +955,12 @@ public partial class BnkMountPlugin : EditorPlugin
                 continue;
             }
 
+            if (meta == EffectsRootMeta)
+            {
+                PopulateEffects(item);
+                continue;
+            }
+
             if (meta == VideosRootMeta)
             {
                 PopulateVideos(item);
@@ -940,6 +1010,82 @@ public partial class BnkMountPlugin : EditorPlugin
             item.SetText(0, Refii.Entities.Engine_EntityIndex.FileNameOf(entry));
             item.SetMetadata(
                 0, FilePrefix + Refii.Entities.Engine_EntityIndex.VirtualPathOf(entry));
+            if (icon is not null)
+            {
+                item.SetIcon(0, icon);
+            }
+        }
+    }
+
+    private bool _fxNamesDone;
+
+    private void EnsureFxNames(Refii.Fx.FxBank bank)
+    {
+        if (_fxNamesDone || _filesystem is null)
+        {
+            return;
+        }
+
+        _fxNamesDone = true;
+
+        var wanted = new HashSet<uint>();
+        foreach (Refii.Fx.FxEffect effect in bank.Effects)
+        {
+            wanted.Add(effect.NameHash);
+        }
+
+        var files = new List<string>();
+        foreach (BnkFile file in _filesystem.EnumerateAllFiles())
+        {
+            files.Add(file.VirtualPath);
+        }
+
+        Dictionary<uint, string> names =
+            Refii.Fx.Engine_FxNames.Harvest(wanted, files, ResolveBytes);
+        int applied = Refii.Fx.Engine_FxNames.Apply(bank, names);
+        GD.Print($"[bnk_mount] fx names resolved: {applied}/{bank.Effects.Count}");
+    }
+
+    private void PopulateEffects(TreeItem parent)
+    {
+        Tree? tree = ResolveTree();
+        if (tree is null)
+        {
+            return;
+        }
+
+        Refii.Fx.FxBank? bank = Refii.Fx.FableFx.SharedBank();
+        if (bank is null)
+        {
+            return;
+        }
+
+        EnsureFxNames(bank);
+
+        var rows = new List<(string Display, bool Named)>(bank.Effects.Count);
+        foreach (Refii.Fx.FxEffect effect in bank.Effects)
+        {
+            bool named = effect.Name.Length != 0;
+            string display = named ? effect.Name : $"FX_{effect.NameHash:X8}";
+            rows.Add((display, named));
+        }
+
+        rows.Sort((a, b) =>
+        {
+            if (a.Named != b.Named)
+            {
+                return a.Named ? -1 : 1;
+            }
+
+            return string.Compare(a.Display, b.Display, StringComparison.OrdinalIgnoreCase);
+        });
+
+        Texture2D? icon = GetFileIcon();
+        foreach ((string display, bool _) in rows)
+        {
+            TreeItem item = tree.CreateItem(parent);
+            item.SetText(0, display);
+            item.SetMetadata(0, FilePrefix + Refii.Fx.Engine_BnkFxLoader.VirtualPathOf(display));
             if (icon is not null)
             {
                 item.SetIcon(0, icon);

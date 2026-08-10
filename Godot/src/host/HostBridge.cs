@@ -23,8 +23,15 @@ public static class HostBridge
 {
 	private const string Library = "refii_hostbridge";
 
-	/// <summary>ABI this binding expects. A mismatch means a stale library on the search path.</summary>
-	public const int ExpectedAbiVersion = 23;
+	/// <summary>
+	/// ABI this binding expects. A mismatch means a stale library on the search path.
+	///
+	/// BUMP THIS IN THE SAME BREATH AS `RefiiHostBridgeAbiVersion`. The check is exact and
+	/// `GameSession` treats a mismatch as fatal — it fails before the guest is initialised, so
+	/// the game does not limp, it stops, and it stops before anything has written a guest log
+	/// segment to look in. Adding export 33 without touching this line is what that looks like.
+	/// </summary>
+	public const int ExpectedAbiVersion = 42;
 
 	private const int MessageCapacity = 512;
 
@@ -316,21 +323,26 @@ public static class HostBridge
 	/// Ids are sdbm hashes of the attribute names — use <c>Engine_GameHash.Sdbm</c>, which
 	/// mirrors the engine's own sub_82189140.
 	/// </summary>
-	public static LiveAttribute[,]? GetUiAttributes(uint[] ids)
+	/// <param name="presentation">
+	/// A presentation from <see cref="GetPresentations"/>, or 0 for the front end's active
+	/// screen. The HUD needs this: the game hides it by writing <c>opacity</c> 0 on one group.
+	/// </param>
+	public static LiveAttribute[,]? GetUiAttributes(uint[] ids, uint presentation = 0)
 	{
 		if (ids.Length == 0)
 		{
 			return null;
 		}
 
-		uint elements = RefiiHostGetUiAttributes(ids, (uint)ids.Length, null, 0);
+		uint elements = RefiiHostGetUiAttributes(presentation, ids, (uint)ids.Length, null, 0);
 		if (elements == 0)
 		{
 			return null;
 		}
 
 		var words = new uint[elements * ids.Length * 2];
-		uint written = RefiiHostGetUiAttributes(ids, (uint)ids.Length, words, (uint)words.Length);
+		uint written = RefiiHostGetUiAttributes(
+			presentation, ids, (uint)ids.Length, words, (uint)words.Length);
 
 		int rows = (int)Math.Min(written, elements);
 		var table = new LiveAttribute[rows, ids.Length];
@@ -344,6 +356,396 @@ public static class HostBridge
 		}
 
 		return table;
+	}
+
+	/// <summary>One live guest entity, in guest world space.</summary>
+	public readonly record struct GuestEntity(
+		Vector3 Position, Quaternion Rotation, uint ModelHash,
+		uint Address, ulong UniqueId, uint RecordHash);
+
+	/// <summary>How many entities <see cref="GetEntities"/> will read in one call.</summary>
+	private const int MaxEntities = 4096;
+
+	private const int EntityStride = 12;
+
+	/// <summary>How many DISTINCT unrecognised placement vtables to bring back.</summary>
+	private const uint MaxUnknownVtables = 32;
+
+	private static uint[]? _entityWords;
+
+	/// <summary>
+	/// A placement vtable the bridge does not know, and how many live entities carry it.
+	///
+	/// The tally is what makes the list a work list. One address standing for three hundred
+	/// entities is the thing to decompile next; thirty standing for a dozen each says the
+	/// class hierarchy is wider than the twelve EC-2 vtables assumed.
+	/// </summary>
+	public readonly record struct UnknownPlacement(uint Vtable, uint Entities);
+
+	/// <summary>
+	/// Every live entity's transform and model, straight out of guest memory.
+	///
+	/// The plan's phase 1. It costs one pass over the entity list and calls no guest code, so
+	/// it is safe to run each frame while the guest simulates — a torn read is one bad frame
+	/// for one entity, never a fault.
+	///
+	/// <paramref name="unknown"/> counts entities whose placement component had a vtable the
+	/// bridge does not recognise. Those are SKIPPED rather than guessed: the set of physics
+	/// delegate classes could not be proven closed, and placing an entity from an unverified
+	/// offset would put it somewhere plausible and wrong.
+	///
+	/// <paramref name="unknownVtables"/> names them, with how many entities each accounts for.
+	/// The bridge returns the length explicitly rather than terminating the list, because a
+	/// vtable word that reads zero is a real observation and a zero terminator hid every one
+	/// of 388 unplaceable entities behind it.
+	/// </summary>
+	public static System.Collections.Generic.List<GuestEntity> GetEntities(
+		out uint unknown, out UnknownPlacement[] unknownVtables)
+	{
+		unknown = 0;
+		var pairs = new uint[MaxUnknownVtables * 2];
+		unknownVtables = System.Array.Empty<UnknownPlacement>();
+		var entities = new System.Collections.Generic.List<GuestEntity>();
+		if (TryGetAbiVersion() is null)
+		{
+			return entities;
+		}
+
+		_entityWords ??= new uint[MaxEntities * EntityStride];
+		uint count = RefiiHostGetEntities(
+			_entityWords, MaxEntities, out unknown, pairs, MaxUnknownVtables,
+			out uint distinct);
+
+		distinct = System.Math.Min(distinct, MaxUnknownVtables);
+		unknownVtables = new UnknownPlacement[distinct];
+		for (uint i = 0; i < distinct; ++i)
+		{
+			unknownVtables[i] = new UnknownPlacement(pairs[i * 2], pairs[(i * 2) + 1]);
+		}
+
+		for (uint i = 0; i < count; ++i)
+		{
+			int at = (int)(i * EntityStride);
+			entities.Add(new GuestEntity(
+				new Vector3(
+					BitConverter.Int32BitsToSingle((int)_entityWords[at]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 1]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 2])),
+				new Quaternion(
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 3]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 4]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 5]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 6])),
+				_entityWords[at + 7],
+				_entityWords[at + 8],
+				((ulong)_entityWords[at + 9] << 32) | _entityWords[at + 10],
+				_entityWords[at + 11]));
+		}
+
+		return entities;
+	}
+
+	/// <summary>The most bones a character rig is read at. Fable's rigs are well under this.</summary>
+	public const int MaxBones = 256;
+
+	/// <summary>
+	/// A live character's skeleton pose, or null when the entity has no animated mesh.
+	///
+	/// <see cref="BonePose.Space"/> is the guest's own statement of which space the bones are
+	/// in — 2 model, 1 local — read from the component rather than assumed. The animation
+	/// update writes the array LOCAL and converts it in place, so a pose sampled mid-update is
+	/// genuinely local and using it as model-space would splay the rig apart.
+	/// </summary>
+	public readonly record struct BonePose(
+		int BoneCount, uint Space, float[] Transforms, int[] Parents)
+	{
+		/// <summary>True when the bones are already object-space — no parent walk needed.</summary>
+		public bool IsModelSpace => Space == 2;
+
+		/// <summary>Bone <paramref name="index"/>'s rotation.</summary>
+		public Quaternion Rotation(int index) => new(
+			Transforms[(index * 12) + 0], Transforms[(index * 12) + 1],
+			Transforms[(index * 12) + 2], Transforms[(index * 12) + 3]);
+
+		/// <summary>Bone <paramref name="index"/>'s translation.</summary>
+		public Vector3 Translation(int index) => new(
+			Transforms[(index * 12) + 4], Transforms[(index * 12) + 5],
+			Transforms[(index * 12) + 6]);
+
+		/// <summary>Bone <paramref name="index"/>'s scale.</summary>
+		public Vector3 Scale(int index) => new(
+			Transforms[(index * 12) + 8], Transforms[(index * 12) + 9],
+			Transforms[(index * 12) + 10]);
+	}
+
+	private static float[]? _poseTransforms;
+
+	private static int[]? _poseParents;
+
+	/// <summary>
+	/// The pose of one entity, or null when it carries no animated mesh — which most entities
+	/// do not, so null is the ordinary answer and not a failure.
+	///
+	/// The buffers are reused across calls, so the returned arrays are only valid until the
+	/// next call. Callers copy what they keep.
+	/// </summary>
+	public static BonePose? GetEntityPose(uint entity)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		_poseTransforms ??= new float[MaxBones * 12];
+		_poseParents ??= new int[MaxBones];
+
+		uint bones = RefiiHostGetEntityPose(
+			entity, _poseTransforms, _poseParents, MaxBones, out uint space);
+
+		return bones == 0
+			? null
+			: new BonePose((int)bones, space, _poseTransforms, _poseParents);
+	}
+
+	/// <summary>
+	/// A character's REST pose — the bind pose, read once per model rather than per frame.
+	///
+	/// Unlike the live pose this is LOCAL and the caller has to compose it through the parent
+	/// chain. What comes back is a copy, not the shared buffer: it is kept for the life of the
+	/// skeleton while the live pose is consumed immediately.
+	///
+	/// ASKING IS CHEAP AND THE ANSWER IS USUALLY NO, so nothing is allocated until the entity
+	/// turns out to have a rig. Most entities are not characters and the bridge says so from a
+	/// single bit at `entity+0x24`, which makes this a reasonable thing to poll — but only if
+	/// the caller does not pay for a rig it is not going to get. Sizing the buffers up front
+	/// cost 13 KB per ask, so retrying across a thousand entities produced more garbage than
+	/// the rigs were worth, and the retry was not written.
+	/// </summary>
+	public static BonePose? GetEntityRestPose(uint entity)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		_poseTransforms ??= new float[MaxBones * 12];
+		_poseParents ??= new int[MaxBones];
+
+		uint bones = RefiiHostGetEntityRestPose(entity, _poseTransforms, _poseParents, MaxBones);
+		if (bones == 0)
+		{
+			return null;
+		}
+
+		var transforms = new float[bones * 12];
+		var parents = new int[bones];
+		System.Array.Copy(_poseTransforms, transforms, transforms.Length);
+		System.Array.Copy(_poseParents, parents, parents.Length);
+
+		// Space 1 — LOCAL, and said explicitly so a caller cannot mistake this for the live
+		// pose, which arrives already composed.
+		return new BonePose((int)bones, 1, transforms, parents);
+	}
+
+	/// <summary>
+	/// The guest's own name for each bone of a character's rig, or null when it has none.
+	///
+	/// THE ONLY KEY THE TWO SKELETONS SHARE. A `.mdl` numbers its bones one way and the guest
+	/// numbers its runtime rig another — 143 against 161 for the child hero, and 39 against 39
+	/// with 28 of the parent links disagreeing for a chicken — so an index means different
+	/// things on the two sides and nothing but the name relates them.
+	///
+	/// An empty entry is a real answer: the guest allows an unnamed bone and degrades it to its
+	/// shared empty string. Names are interned, so duplicates are expected and a caller that
+	/// wants a map must decide what a repeat means rather than assume there are none.
+	/// </summary>
+	public static string[]? GetEntityBoneNames(uint entity)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		_boneNames ??= new byte[MaxBones * BoneNameStride];
+		uint bones = RefiiHostGetEntityBoneNames(entity, _boneNames, BoneNameStride, MaxBones);
+		if (bones == 0)
+		{
+			return null;
+		}
+
+		var names = new string[bones];
+		for (int i = 0; i < bones; ++i)
+		{
+			int start = i * (int)BoneNameStride;
+			int length = 0;
+			while (length < BoneNameStride && _boneNames[start + length] != 0)
+			{
+				++length;
+			}
+
+			names[i] = System.Text.Encoding.ASCII.GetString(_boneNames, start, length);
+		}
+
+		return names;
+	}
+
+	/// <summary>
+	/// Bytes per name in the bone-name buffer. Passed to the bridge rather than agreed with it,
+	/// so there is one owner and nothing to drift out of step.
+	///
+	/// 64 clears the longest name in the shipped rigs with room to spare —
+	/// `Carry_SheathRangedWeaponBack_DummyObject` is 40.
+	/// </summary>
+	private const uint BoneNameStride = 64;
+
+	private static byte[]? _boneNames;
+
+	/// <summary>
+	/// The component ids one entity carries, in the order its own vector holds them.
+	///
+	/// A MEASUREMENT, not a feature. A character with a live skeleton and a model hash of zero
+	/// is drawn from the parts list on <c>CECGraphicAppearanceMorph</c> (id 17) instead — see
+	/// <see cref="GetEntityMorphParts"/> — and whether an entity carries id 17 at all is a
+	/// live-memory question no decompile settles. This answers it, before any offset inside
+	/// that component is trusted.
+	///
+	/// The pointer half is deliberately dropped: knowing a component EXISTS is the whole
+	/// question, and returning an address invites reading through it on the strength of a
+	/// layout nobody has verified yet.
+	/// </summary>
+	public static byte[] GetEntityComponents(uint entity)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return System.Array.Empty<byte>();
+		}
+
+		_componentPairs ??= new uint[MaxComponents * 2];
+		uint pairs = RefiiHostGetEntityComponents(entity, _componentPairs, MaxComponents);
+		if (pairs == 0)
+		{
+			return System.Array.Empty<byte>();
+		}
+
+		var ids = new byte[pairs];
+		for (int i = 0; i < pairs; ++i)
+		{
+			ids[i] = (byte)_componentPairs[i * 2];
+		}
+
+		return ids;
+	}
+
+	/// <summary>
+	/// Component pairs read per entity. The class registry in `sub_826399A8` holds 264 classes,
+	/// so no entity can carry more than that and 128 is far past anything real.
+	/// </summary>
+	private const uint MaxComponents = 128;
+
+	private static uint[]? _componentPairs;
+
+	/// <summary>
+	/// The model hashes a COMPOSITE character is assembled from, or empty for anything else.
+	///
+	/// A character whose <c>CECGraphicAppearanceAnimatedMesh</c> states a model hash of zero
+	/// cannot be drawn from that component — the guest's own mesh block branches straight past
+	/// it. Its geometry is a LIST on <c>CECGraphicAppearanceMorph</c>, component 17, and this
+	/// is that list.
+	///
+	/// <paramref name="builtParts"/> is the length of the component's OTHER, built list, which
+	/// the guest fills in its draw virtual. It is reported rather than used: our guest never
+	/// draws, so that list is expected to be empty here, and a non-zero value would mean the
+	/// draw path runs after all and the richer 24-byte records are available too.
+	/// </summary>
+	public static uint[] GetEntityMorphParts(uint entity, out int builtParts)
+	{
+		builtParts = 0;
+		if (TryGetAbiVersion() is null)
+		{
+			return System.Array.Empty<uint>();
+		}
+
+		_morphParts ??= new uint[MaxMorphParts];
+		uint written = RefiiHostGetEntityMorphParts(
+			entity, _morphParts, MaxMorphParts, out uint built);
+		builtParts = (int)built;
+
+		if (written == 0)
+		{
+			return System.Array.Empty<uint>();
+		}
+
+		var hashes = new uint[written];
+		System.Array.Copy(_morphParts, hashes, written);
+		return hashes;
+	}
+
+	/// <summary>
+	/// Parts read per composite character. A layered appearance is a head, a torso, legs, eyes
+	/// and accessories — 64 is far past anything the character creator can produce.
+	/// </summary>
+	private const uint MaxMorphParts = 64;
+
+	private static uint[]? _morphParts;
+
+	/// <summary>
+	/// The front end as a MODEL — which entries exist and which screen is up — for a menu
+	/// Godot draws itself.
+	///
+	/// This replaces reading the guest's widgets. The main menu has no C++ item list and no
+	/// C++ highlight: items, order, nesting and the highlight all live in the shipped Lua
+	/// `g_Menu`, and the C++ side only spawns into it. So there is nothing to read that says
+	/// "item 3 is selected" — a native menu owns its own highlight, and what it needs from the
+	/// guest is which entries the guest's own spawn conditions will honour.
+	/// </summary>
+	public readonly record struct FrontEndModel(
+		bool SignedIn, uint UserIndex, uint LanguageCount, uint LanguageIndex,
+		bool HasNewDownloadableContent, bool MenuIsUp, uint MenuState, uint TitleState,
+		bool CanPressA, uint LoadCardCursor, uint EnumeratedSaves)
+	{
+		/// <summary>
+		/// Saves the guest has ENUMERATED — not "saves that exist".
+		///
+		/// Read from the vector its own "Load Game" branch tests, so a non-zero value is the
+		/// guest saying it has cards to offer. Zero means it has not enumerated any yet, which
+		/// is not the same as there being none: that answer needs a live
+		/// XamContentCreateEnumerator, which is a call rather than a read.
+		/// </summary>
+		public bool HasSaves => EnumeratedSaves > 0;
+
+		/// <summary>
+		/// Whether the "Language" entry is spawned — the guest shows it only when more than one
+		/// language is installed (`lwz r11, dword_83319934` / `cmplwi r11, 1` / `ble` past the
+		/// spawn). A host list that always shows it would offer an entry the guest ignores.
+		/// </summary>
+		public bool HasLanguageEntry => LanguageCount > 1;
+	}
+
+	private static uint[]? _frontEndModelWords;
+
+	/// <summary>
+	/// The front-end model, or null when the front-end GUI is not up.
+	///
+	/// Null once the game starts, and that is correct rather than a failure: the guest
+	/// republishes its GUI global with a base-only instance that has no screens at all.
+	/// </summary>
+	public static FrontEndModel? GetFrontEndModel()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		_frontEndModelWords ??= new uint[11];
+		if (RefiiHostGetFrontEndModel(_frontEndModelWords) == 0)
+		{
+			return null;
+		}
+
+		uint[] w = _frontEndModelWords;
+		return new FrontEndModel(
+			w[0] != 0, w[1], w[2], w[3], w[4] != 0, w[5] != 0, w[6], w[7], w[8] != 0, w[9],
+			w[10]);
 	}
 
 	/// <summary>The guest's camera, in guest world space.</summary>
@@ -458,15 +860,35 @@ public static class HostBridge
 	/// </summary>
 	public static bool IsInGame => RefiiHostIsInGame() != 0;
 
-	/// <summary>The render-frame fence state 7 of CmdLevelChange_Update polls.</summary>
+	/// <summary>The engine-preloading gate state 7 of CmdLevelChange_Update polls.</summary>
 	public readonly record struct RenderFence(
-		uint Manager, double Submitted, double Retired, bool Busy)
+		uint Manager, double Submitted, double Deadline, bool Busy,
+		uint ViewCursor, uint ViewSubmitted, uint PreloadState, uint TextureResidency,
+		uint PreloadFlag)
 	{
 		/// <summary>
-		/// What <c>sub_82387B38</c> answers: BUSY while submitted &lt;= retired, or the busy
-		/// byte is set. The level load only advances past state 7 when this is false.
+		/// What <c>sub_82387B38</c> (the guest's own <c>IsEnginePreLoading</c>) answers. The
+		/// level load only advances past state 7 when this is false.
 		/// </summary>
-		public bool BlocksLevelLoad => Submitted <= Retired || Busy;
+		public bool BlocksLevelLoad => Submitted <= Deadline || Busy;
+
+		/// <summary>
+		/// Which producer is holding the flag, in words.
+		///
+		/// The flag itself carries no state — it is <c>byte_83496E20</c> re-copied every
+		/// render-thread iteration — so "busy" alone names nothing. Its one writer has three
+		/// arms, and the third times itself out, which leaves a short list.
+		/// </summary>
+		public string Holder =>
+			ViewCursor == 0xFFFFFFFFu && ViewSubmitted == 0xFFFFFFFFu
+				? "STALE — no view submitted, so nothing is recomputing the flag"
+				: PreloadState is >= 1 and <= 4
+					? $"resource preload (state {PreloadState})"
+					: TextureResidency != 0
+						? "streamed-texture residency"
+						: PreloadFlag != 0
+							? "scene walk (self-limiting) or a producer we cannot see"
+							: "nothing — the mirror at +600 disagrees with 0x83496E20";
 	}
 
 	/// <summary>
@@ -529,6 +951,81 @@ public static class HostBridge
 		return new StartLevel(Decode(world), Decode(level), Decode(entrance));
 	}
 
+	/// <summary>
+	/// The scenario the guest starts in, or null when it has not stated one yet.
+	///
+	/// This is what picks the map. The guest builds
+	/// <c>Data\Worlds\&lt;World&gt;\&lt;Level&gt;\&lt;Scenario&gt;\&lt;Scenario&gt;.list</c> and loads every
+	/// heightfield that manifest names, so a level with five heightfields has five scenarios
+	/// and the level name alone cannot choose between them.
+	/// </summary>
+	public static string? GetStartScenario()
+	{
+		var scenario = new byte[128];
+		return RefiiHostGetStartScenario(scenario, (uint)scenario.Length) == 0
+			? null
+			: Decode(scenario);
+	}
+
+	/// <summary>
+	/// The scenario the guest is ACTUALLY in, or null when no level is loaded.
+	///
+	/// Prefer this over <see cref="GetStartScenario"/>: `Layers.ActivateScenario` rewrites it
+	/// and reloads the level, so the start value goes stale the moment a quest advances.
+	/// </summary>
+	public static string? GetActiveScenario()
+	{
+		var scenario = new byte[128];
+		return RefiiHostGetActiveScenario(scenario, (uint)scenario.Length) == 0
+			? null
+			: Decode(scenario);
+	}
+
+	/// <summary>
+	/// FNV-1 hashes of the layers the guest currently has active.
+	///
+	/// Layers gate ENTITY INSTANTIATION, so a host that places every placement it can find
+	/// places things the guest has not. The hash is over the layer name's EXACT bytes — no
+	/// lowercasing, no separator normalisation, unlike the world+level key.
+	/// </summary>
+	public static uint[] GetActiveLayers()
+	{
+		var hashes = new uint[256];
+		uint count = RefiiHostGetActiveLayers(hashes, (uint)hashes.Length);
+		if (count == 0)
+		{
+			return System.Array.Empty<uint>();
+		}
+
+		System.Array.Resize(ref hashes, (int)System.Math.Min(count, (uint)hashes.Length));
+		return hashes;
+	}
+
+	/// <summary>
+	/// Asks the guest to perform a front-end action, by the NAME it dispatches on.
+	///
+	/// Nothing happens on this thread. The name is queued and the guest picks it up inside
+	/// its own tick, which is what makes this safe to call from Godot: it touches no guest
+	/// state here, and the work lands where the guest's own code would have done it.
+	///
+	/// Returns the queue depth after posting — a depth that climbs means the pump is holding
+	/// the action because the front end is not up yet, which is the normal state during the
+	/// boot movies.
+	/// </summary>
+	public static uint PostFrontEndAction(string name) =>
+		RefiiHostPostFrontEndAction(name);
+
+	/// <summary>
+	/// Pump health. Three numbers because they fail differently: zero ticks is a hook that
+	/// never landed, ticks climbing with a non-empty queue is the guest not yet ready, and
+	/// ticks climbing with nothing drained is nobody posting.
+	/// </summary>
+	public static (ulong Ticks, ulong Drained, uint Queued) GuestTickPump()
+	{
+		RefiiHostGuestTickPump(out ulong ticks, out ulong drained, out uint queued);
+		return (ticks, drained, queued);
+	}
+
 	/// <summary>The live rings, empty slots dropped.</summary>
 	public static List<SceneStream> GetSceneStreams()
 	{
@@ -558,12 +1055,29 @@ public static class HostBridge
 			? new LoadingScreen(manager, screen, fade, requested != 0, done != 0)
 			: null;
 
-	/// <summary>The fence values, or null when the chain to the manager did not resolve.</summary>
-	public static RenderFence? GetRenderFence() =>
-		RefiiHostGetRenderFence(out uint manager, out double submitted,
-			out double retired, out uint busy) != 0
-			? new RenderFence(manager, submitted, retired, busy != 0)
+	private static uint[]? _fenceArms;
+
+	/// <summary>
+	/// The engine-preloading gate the level load waits on, or null when the chain did not
+	/// resolve.
+	///
+	/// The object is the guest's "3D Engine" and the predicate is its own `IsEnginePreLoading`
+	/// — state 7 of the level change is literally "while preloading, wait". `Deadline` is the
+	/// render deadline barrier at +176, NOT a retired-frame count: it sitting still while
+	/// `Submitted` climbs past it is the normal resting state.
+	///
+	/// The arms say WHICH of the three producers is holding the flag, so a stall names its own
+	/// cause instead of being a byte that is mysteriously 1.
+	/// </summary>
+	public static RenderFence? GetRenderFence()
+	{
+		_fenceArms ??= new uint[5];
+		return RefiiHostGetRenderFence(out uint manager, out double submitted,
+			out double deadline, out uint busy, _fenceArms) != 0
+			? new RenderFence(manager, submitted, deadline, busy != 0,
+				_fenceArms[0], _fenceArms[1], _fenceArms[2], _fenceArms[3], _fenceArms[4])
 			: null;
+	}
 
 	public static bool FrontEndGuiIsUp =>
 		GetFrontEndRaw() is { } words && words[9] == FrontEndGuiVtable;
@@ -594,7 +1108,137 @@ public static class HostBridge
 
 
 	/// <summary>One element of the guest's live UI.</summary>
-	public readonly record struct UiElement(uint NameHash, int Slide, string? Text);
+	/// <summary>
+	/// One element of the guest's live front end.
+	///
+	/// <paramref name="Type"/> is the element kind byte the runtime holds. It carries no live
+	/// state of its own — it is here so the POSITIONAL join against the .bgf can be verified.
+	/// Slide, text and opacity are all applied by ordinal, on the belief that the guest's
+	/// depth-first walk and the file's element order are the same sequence; comparing types
+	/// turns that belief into a check that names the first index where it fails.
+	/// </summary>
+	public readonly record struct UiElement(
+		uint NameHash, int Slide, string? Text, int Type, int Flags)
+	{
+		/// <summary>
+		/// Whether the guest is DRAWING this element.
+		///
+		/// `globalactive`, bit 0x1000 of the element's flags halfword — the runtime derives it
+		/// every frame as <c>active AND in-time-range AND parent's globalactive</c>, and
+		/// `sub_82188B70` copies exactly this bit onto the render node's draw gate, which
+		/// `sub_8229E400` tests before descending. A false here prunes the whole subtree.
+		///
+		/// This is the value to follow. Computing visibility from the .bgf's authored state
+		/// plus slide overrides reproduces only what the FILE says, and the screens' own Lua
+		/// changes it at runtime.
+		/// </summary>
+		public bool IsGloballyActive => (Flags & 0x1000) != 0;
+
+		/// <summary>
+		/// The AUTHORED active flag, bit 0x2000 — what the .bgf carried and setAttribute
+		/// writes. Not the draw gate: an active element inside an inactive parent still does
+		/// not draw. Kept because the two disagreeing is worth being able to see.
+		/// </summary>
+		public bool IsActive => (Flags & 0x2000) != 0;
+	}
+
+	/// <summary>One live Gameface presentation: where it is, its root, its path, and whether
+	/// it is actually on screen.</summary>
+	public readonly record struct Presentation(
+		uint Address, uint Root, string Name, uint State, uint ActiveElements)
+	{
+		/// <summary>
+		/// The guest is drawing this screen.
+		///
+		/// LIVE IS NOT VISIBLE. The guest keeps closed menus in the registry permanently with
+		/// valid roots, so "it exists" says nothing about whether it is on screen.
+		/// What decides it is the ROOT element's own `active` bit — <c>CPresentation::Update</c>
+		/// skips the entire tree walk when it is clear, leaving the screen contributing no
+		/// elements at all.
+		///
+		/// Frozen screens are excluded too. A non-zero freeze byte returns before the per-frame
+		/// lists are rebuilt, so the screen holds stale content rather than current content.
+		/// </summary>
+		/// <remarks>
+		/// THREE gates, at three levels, and all of them must pass. The guest suppresses a
+		/// screen at whichever level suits it, so checking one is not enough:
+		/// the presentation's own draw byte, its update byte, and the root element's
+		/// <c>active</c> bit that its element traversal tests.
+		/// </remarks>
+		public bool IsShowing =>
+			(State & 1u) != 0u && (State & 2u) == 0u && (State & 4u) == 0u && Root != 0u;
+
+		/// <summary>Held at last frame's content rather than being updated.</summary>
+		public bool IsFrozen => (State & 2u) != 0u;
+
+		/// <summary>
+		/// Parked by the guest: loaded, kept in the registry, and skipped by the scene draw.
+		///
+		/// This is how the pause menu and the menu cycler spend the whole game. Their loaders
+		/// write the suppression pair immediately after loading; the HUD's loader never touches
+		/// it, which is the entire reason only the HUD is on screen.
+		/// </summary>
+		public bool IsSuppressed => (State & 4u) != 0u;
+
+		/// <summary>
+		/// True when the path ends with the given file name.
+		///
+		/// A SUFFIX test rather than an equality one, deliberately. The string is the path the
+		/// factory was handed, built by the guest's own path conformer, and neither its prefix
+		/// nor its slash direction is established — matching the whole thing would be matching
+		/// a format we have not proven.
+		/// </summary>
+		public bool Is(string fileName) =>
+			Name.EndsWith(fileName, StringComparison.OrdinalIgnoreCase);
+	}
+
+	/// <summary>
+	/// Every presentation the guest has live — the HUD, whichever menus are open, and the
+	/// front end, all from one registry.
+	///
+	/// This is what replaced "the front end's active screen" as the way to find UI. That older
+	/// route went through a field only the front-end GUI object has, so it could see exactly
+	/// one screen and only before the game took over; everything in game was invisible to it.
+	/// </summary>
+	public static List<Presentation> GetPresentations()
+	{
+		uint count = RefiiHostGetPresentations(null, 0, null, 0);
+		if (count == 0)
+		{
+			return new List<Presentation>();
+		}
+
+		// Headroom on both, for the same reason the element walk takes it: the guest is
+		// mutating the registry while we read, so the second call can find more than the probe.
+		// Stride 5 since ABI 38 — the two words that say whether it is on screen.
+		var words = new uint[count * 5 + 32];
+		var names = new byte[count * 96 + 512];
+		uint written = RefiiHostGetPresentations(
+			words, (uint)words.Length, names, (uint)names.Length);
+
+		int usable = (int)Math.Min(written, (uint)(words.Length / 5));
+		var live = new List<Presentation>(usable);
+		for (int i = 0; i < usable; ++i)
+		{
+			uint offset = words[i * 5 + 2];
+			string name = string.Empty;
+			if (offset != 0xFFFFFFFFu && offset < names.Length)
+			{
+				int end = (int)offset;
+				while (end < names.Length && names[end] != 0)
+				{
+					++end;
+				}
+
+				name = Encoding.ASCII.GetString(names, (int)offset, end - (int)offset);
+			}
+
+			live.Add(new Presentation(
+				words[i * 5], words[i * 5 + 1], name, words[i * 5 + 3], words[i * 5 + 4]));
+		}
+
+		return live;
+	}
 
 	/// <summary>
 	/// Every element of the guest's active screen: its slide and the text it is actually
@@ -604,9 +1248,13 @@ public static class HostBridge
 	/// presentation carries placeholders the game overwrites at runtime, and some tags
 	/// resolve through a table that is not the Babel book.
 	/// </summary>
-	public static List<UiElement>? GetUiElements()
+	/// <param name="presentation">
+	/// A presentation from <see cref="GetPresentations"/>, or 0 for the front end's active
+	/// screen — which is what this meant before the HUD and the in-game menus needed reaching.
+	/// </param>
+	public static List<UiElement>? GetUiElements(uint presentation = 0)
 	{
-		uint count = RefiiHostGetUiElements(null, 0, null, 0);
+		uint count = RefiiHostGetUiElements(presentation, null, 0, null, 0);
 		if (count == 0)
 		{
 			return null;
@@ -614,15 +1262,17 @@ public static class HostBridge
 
 		// Sized from the probe, with headroom: the guest is mutating the tree, so the
 		// second walk can legitimately find more than the first.
-		var words = new uint[count * 3 + 64];
+		// Stride 5 since ABI 30 — type byte and flags halfword.
+		var words = new uint[count * 5 + 64];
 		var chars = new ushort[count * 24 + 1024];
-		uint written = RefiiHostGetUiElements(words, (uint)words.Length, chars, (uint)chars.Length);
+		uint written = RefiiHostGetUiElements(
+			presentation, words, (uint)words.Length, chars, (uint)chars.Length);
 
-		int usable = (int)Math.Min(written, (uint)(words.Length / 3));
+		int usable = (int)Math.Min(written, (uint)(words.Length / 5));
 		var elements = new List<UiElement>(usable);
 		for (int i = 0; i < usable; ++i)
 		{
-			uint offset = words[i * 3 + 2];
+			uint offset = words[i * 5 + 2];
 			string? text = null;
 			if (offset != 0xFFFFFFFFu && offset < chars.Length)
 			{
@@ -641,7 +1291,8 @@ public static class HostBridge
 				text = new string(span);
 			}
 
-			elements.Add(new UiElement(words[i * 3], (int)words[i * 3 + 1], text));
+			elements.Add(new UiElement(words[i * 5], (int)words[i * 5 + 1], text,
+				(int)words[i * 5 + 3], (int)words[i * 5 + 4]));
 		}
 
 		return elements;
@@ -700,7 +1351,7 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetUiAttributes(
-		uint[] ids, uint idCount, uint[]? outWords, uint outCapacity);
+		uint presentation, uint[] ids, uint idCount, uint[]? outWords, uint outCapacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetFrontEndState();
@@ -710,17 +1361,59 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetRenderFence(
-		out uint manager, out double submitted, out double retired, out uint busy);
+		out uint manager, out double submitted, out double deadline, out uint busy,
+		uint[] outArms);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostGetInitMarkers(uint[] outWords);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntities(
+		uint[] outWords, uint maxEntities, out uint outUnknown,
+		uint[] outUnknownVtables, uint maxUnknownVtables, out uint outUnknownVtableCount);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityPose(
+		uint entity, float[] outTransforms, int[] outParents, uint maxBones, out uint outSpace);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityRestPose(
+		uint entity, float[] outTransforms, int[] outParents, uint maxBones);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityBoneNames(
+		uint entity, byte[] outNames, uint stride, uint maxBones);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityComponents(
+		uint entity, uint[] outPairs, uint maxPairs);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityMorphParts(
+		uint entity, uint[] outHashes, uint maxHashes, out uint outBuilt);
+
+	[DllImport(Library)]
 	private static extern void RefiiHostGetSceneStreams(uint[] outWords);
+
+	[DllImport(Library, CharSet = CharSet.Ansi)]
+	private static extern uint RefiiHostPostFrontEndAction(string name);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostGuestTickPump(
+		out ulong ticks, out ulong drained, out uint queued);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetStartLevel(
 		byte[] world, byte[] level, byte[] entrance, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetStartScenario(byte[] scenario, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetActiveScenario(byte[] scenario, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetActiveLayers(uint[] outHashes, uint capacity);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetLoadingScreen(
@@ -730,8 +1423,16 @@ public static class HostBridge
 	private static extern int RefiiHostGetFrontEnd(uint[] outWords);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetFrontEndModel(uint[] outWords);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetUiElements(
-		uint[]? outWords, uint wordCapacity, ushort[]? outText, uint textCapacity);
+		uint presentation, uint[]? outWords, uint wordCapacity,
+		ushort[]? outText, uint textCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetPresentations(
+		uint[]? outWords, uint wordCapacity, byte[]? outNames, uint nameCapacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetRequestedVideoName(

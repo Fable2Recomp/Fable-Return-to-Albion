@@ -37,12 +37,65 @@ public partial class GameVideo : Node
 	/// <summary>How many the guest has asked for, finished or not.</summary>
 	public int MoviesRequested { get; private set; }
 
+	/// <summary>How many were ended early by the player rather than running out of frames.</summary>
+	public int MoviesSkipped { get; private set; }
+
+	/// <summary>
+	/// Whether Godot ends a movie when the GUEST says it was skipped. On unless
+	/// <c>REFII_VIDEO_FOLLOW_SKIP=0</c>.
+	/// </summary>
+	private static readonly bool FollowGuestSkip =
+		OS.GetEnvironment("REFII_VIDEO_FOLLOW_SKIP") != "0";
+
+	/// <summary>
+	/// Ends the movie on screen NOW, as if it had reached its last frame.
+	///
+	/// Godot owns playback, so a skip is Godot stopping the picture and then telling the
+	/// guest — in that order. The guest is told through the SAME byte its own
+	/// <c>Render_DrawBinkMovieFrame</c> writes when a movie runs out
+	/// (<c>bink+221</c>, via <see cref="HostBridge.FinishMovie"/>), which is why a skip needs
+	/// no separate mechanism and cannot leave the guest's startup sequence waiting: to the
+	/// guest, a skipped movie and a finished one are the same event.
+	///
+	/// NOT a decision about whether skipping is ALLOWED. That is the guest's contract and the
+	/// caller's business; this only carries it out. Returns false when nothing was playing.
+	/// </summary>
+	public bool Skip(string reason)
+	{
+		if (_decoder is null)
+		{
+			return false;
+		}
+
+		_decoder.Dispose();
+		_decoder = null;
+		_view.Visible = false;
+		++MoviesSkipped;
+
+		uint retired = HostBridge.FinishMovie();
+		GD.Print($"[game-video] skipped ({reason})" +
+			(retired != 0
+				? $"; retired the guest's player 0x{retired:X8}"
+				: "; NO LIVE GUEST PLAYER — the guest had already retired it"));
+		EmitSignal(SignalName.MovieFinished);
+		return true;
+	}
+
 	private TextureRect _view = null!;
 	private ShaderMaterial _material = null!;
 
 	private Engine_BinkDecoder? _decoder;
 	private uint _lastRequest;
 	private double _frameClock;
+
+	/// <summary>
+	/// Most frames decoded in one host frame while catching up.
+	///
+	/// Bounded so a long stall cannot turn into a decode spiral that makes the next host
+	/// frame longer still. Four is roughly a 7 fps floor against a 30 fps movie; below that
+	/// the clock is reset rather than chased.
+	/// </summary>
+	private const int MaxCatchUpFrames = 4;
 
 	private ImageTexture? _luma;
 	private ImageTexture? _chromaU;
@@ -187,9 +240,71 @@ public partial class GameVideo : Node
 			return;
 		}
 
-		_frameClock -= _decoder.FrameSeconds;
+		// DRAIN the clock, do not consume one frame from it.
+		//
+		// Decoding exactly one frame per host frame and subtracting one frame's worth cannot
+		// keep time. Whenever a host frame takes longer than a movie frame — a 30 fps movie
+		// and any dip below 30 fps, which streaming a region reliably causes — the accumulator
+		// grows and never shrinks, so the movie plays SLOWER THAN REAL TIME and drifts further
+		// behind for as long as it runs, with no path that decodes two frames in one.
+		//
+		// That drift is the Bink desync. The guest decodes the same movie on ITS own wall
+		// clock to decide when its startup sequence may continue — this class then reports
+		// the movie finished, and a picture running late reports late. The guest was waiting
+		// on our clock, and our clock was slow.
+		//
+		// So: decode until caught up, and upload only the frame that actually lands on
+		// screen. Intermediate frames are dropped, which is what a video player does when it
+		// is behind; showing every frame late is the one option that keeps the audio, the
+		// guest and the picture disagreeing.
+		int chromaWidth = 0;
+		int chromaHeight = 0;
+		int decoded = 0;
+		bool ended = false;
 
-		if (!_decoder.NextFrame(_y, _u, _v, out int chromaWidth, out int chromaHeight))
+		// THE GUEST MAY HAVE ENDED THIS MOVIE ALREADY, and a skip is how.
+		//
+		// Skippability is the GUEST's to decide and it already does: the player carries a
+		// threshold and an elapsed accumulator, and its own skip sites set the flag when the
+		// button is pressed and enough of the movie has run — five seconds for the startup
+		// logos, immediately for the attract clip, and never for an in-game cutscene, which
+		// has no such field at all. Since Godot feeds the real button press through XInput,
+		// all of that enforcement happens without the host deciding anything.
+		//
+		// What the host has to do is NOTICE. Godot owns the picture, so a movie the guest has
+		// retired keeps playing over whatever it moved on to unless we stop. This is that
+		// stop — and it deliberately does not consult a filename or a duration of our own.
+		// REVERSIBLE ON PURPOSE. This is new, and "the world is showing where the movie should
+		// be" is exactly what a spurious end looks like — so it can be turned off in one run
+		// rather than argued about. REFII_VIDEO_FOLLOW_SKIP=0 leaves Godot ending movies only
+		// when its own decode runs out, which is the behaviour that was working before.
+		if (FollowGuestSkip && HostBridge.MovieState() == HostBridge.MoviePlayback.EndedByGuest)
+		{
+			Skip("the guest skipped it");
+			return;
+		}
+
+		while (_frameClock >= _decoder.FrameSeconds && decoded < MaxCatchUpFrames)
+		{
+			_frameClock -= _decoder.FrameSeconds;
+			if (!_decoder.NextFrame(_y, _u, _v, out chromaWidth, out chromaHeight))
+			{
+				ended = true;
+				break;
+			}
+
+			++decoded;
+		}
+
+		// A pause long enough to exceed the catch-up cap — a level load, a breakpoint — must
+		// not leave the clock holding seconds of debt that then plays out as a fast-forward.
+		// Dropping the remainder resynchronises to now, which is where the guest already is.
+		if (_frameClock >= _decoder.FrameSeconds)
+		{
+			_frameClock = 0.0;
+		}
+
+		if (ended)
 		{
 			// End of the movie: stop drawing rather than freezing on the last frame.
 			_decoder.Dispose();
@@ -206,6 +321,11 @@ public partial class GameVideo : Node
 				(retired != 0 ? $"; retired the guest's player 0x{retired:X8}" : string.Empty));
 			EmitSignal(SignalName.MovieFinished);
 			return;
+		}
+
+		if (decoded == 0)
+		{
+			return;  // caught up without a new frame — nothing to upload
 		}
 
 		_lumaImage!.SetData(_decoder.Width, _decoder.Height, false, Image.Format.R8, _y);

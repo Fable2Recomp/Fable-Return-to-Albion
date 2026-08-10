@@ -131,30 +131,119 @@ public partial class GameWindow : Window
 	public override void _Process(double delta)
 	{
 		TraceFrontEnd();
+		StepShots();
 
 		if (_ui is null || _video is null || _video.IsPlaying)
 		{
 			return;
 		}
 
-		// Off screen once the guest no longer has a front end, or the menu stays drawn over
-		// the running game.
+		if (HostBridge.TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		// THE UI LAYER STAYS UP IN GAME.
+		//
+		// Concealing it the moment the front end goes away keeps the menu off the running game,
+		// but it also makes "the front end is gone" mean "there is no UI at all" — and the guest
+		// has a HUD standing up the whole time it is in game, plus a pause menu and a menu
+		// cycler, none of which would ever get a chance to draw.
+		//
+		// So the layer follows whether the guest has ANY live presentation worth drawing, and
+		// which one is drawn is GameUi's business.
+		//
+		// REVEALING AND CONCEALING ARE TWO DIFFERENT CONDITIONS, and collapsing them into one
+		// is a bug. Revealing waits for the front end to reach a non-zero state, because that
+		// is the guest saying it has something up. Concealing must NOT be the negation of that:
+		// the title screen sits at state 0 while it is perfectly visible, so hiding on
+		// `state == 0` blanks the front end in the middle of itself.
+		//
+		// What ends the UI is the guest no longer HAVING one — the front-end GUI object gone
+		// and no in-game presentation standing up.
+		bool guestHasUi = HostBridge.FrontEndGuiIsUp || _ui.HasInGameUi;
+
 		if (_ui.IsRevealed)
 		{
-			if (HostBridge.TryGetAbiVersion() is not null && !HostBridge.FrontEndGuiIsUp)
+			if (!guestHasUi)
 			{
-				GD.Print("[game-ui] the guest's front end is gone; hiding it");
+				GD.Print("[game-ui] the guest has no live UI; hiding the layer");
 				_ui.Conceal();
 			}
 
 			return;
 		}
 
-		if (HostBridge.TryGetAbiVersion() is not null && HostBridge.FrontEndState() != 0)
+		if (HostBridge.FrontEndState() != 0 || _ui.HasInGameUi)
 		{
 			_ui.Reveal();
 		}
 	}
+
+	/// <summary>
+	/// Writes periodic screenshots of the REAL window, when <c>REFII_SHOT_DIR</c> asks for it.
+	///
+	/// The two UI tools stand the front end up with no guest, which answers "does the screen
+	/// build" and cannot answer "is it right": with no guest every element sits on its default
+	/// slide and every label falls back to the .bgf's own DEFAULT_TEXT_ID, so a dialog the game
+	/// would never show is drawn over the logo and reads as a layout bug. Only a live run puts
+	/// the guest's own per-element state on the screen, and only a shot of the window shows the
+	/// front end composed over the world the way the game composes it.
+	///
+	/// Interval comes from <c>REFII_SHOT_EVERY</c> in frames (default 600, ~10s at 60fps), so
+	/// one unattended run yields the boot logos, the title, the menu and the world in sequence
+	/// without anyone at the keyboard.
+	/// </summary>
+	private void StepShots()
+	{
+		if (_shotDirectory is null)
+		{
+			_shotDirectory = OS.GetEnvironment("REFII_SHOT_DIR");
+			if (_shotDirectory.Length == 0)
+			{
+				return;
+			}
+
+			if (int.TryParse(OS.GetEnvironment("REFII_SHOT_EVERY"), out int every) && every > 0)
+			{
+				_shotEvery = every;
+			}
+
+			DirAccess.MakeDirRecursiveAbsolute(_shotDirectory);
+			GD.Print($"[game-shot] writing a shot every {_shotEvery} frames to {_shotDirectory}");
+		}
+
+		if (_shotDirectory.Length == 0 || ++_shotFrames % _shotEvery != 0)
+		{
+			return;
+		}
+
+		// Never during a movie. A Bink frame is the guest's own pre-rendered video drawn over
+		// everything, so a shot taken then says nothing about what Godot rendered — and the
+		// boot logos plus the opening cinematic run for minutes, which is long enough that
+		// three consecutive runs produced nothing but movie frames while the world was
+		// standing behind them the whole time.
+		if (_video is { IsPlaying: true })
+		{
+			// Try again next frame rather than waiting out another whole interval.
+			--_shotFrames;
+			return;
+		}
+
+		// The window's own texture, not the tree's root: this is a separate Window and its
+		// viewport is what the player is looking at.
+		Image image = GetTexture().GetImage();
+		string path = $"{_shotDirectory}/shot_{_shotFrames:D6}.png";
+		GD.Print(image.SavePng(path) == Error.Ok
+			? $"[game-shot] {path} (frontEnd={HostBridge.FrontEndGuiIsUp} inGame={HostBridge.IsInGame})"
+			: $"[game-shot] could not write {path}");
+	}
+
+	private string? _shotDirectory;
+
+	private int _shotEvery = 600;
+
+	private int _shotFrames;
 
 	/// <summary>
 	/// Reports the guest's front end as it moves, so a run says what the title is doing
@@ -192,8 +281,15 @@ public partial class GameWindow : Window
 			return;
 		}
 
-		GD.Print($"[guest-fence] mgr=0x{fence.Manager:X8} submitted={fence.Submitted} " +
-			$"retired={fence.Retired} busy={fence.Busy} " +
+		// "deadline", not "retired". +176 is a render DEADLINE BARRIER with two writers — the
+		// ctor and sub_82388B48 — and it standing still while submitted climbs past it is the
+		// normal resting state, not a stall.
+		//
+		// The holder is the part worth reading: the busy byte carries no state of its own, so
+		// "busy=True" on its own names nothing.
+		GD.Print($"[guest-fence] mgr=0x{fence.Manager:X8} preloading={fence.Busy} " +
+			$"holder={fence.Holder} " +
+			$"(submitted={fence.Submitted:F2} deadline={fence.Deadline:F2}) " +
 			$"{(fence.BlocksLevelLoad ? "BLOCKS the level load" : "clear")}");
 
 		// The loading screen's take-down handshake, alongside it — the game thread's one

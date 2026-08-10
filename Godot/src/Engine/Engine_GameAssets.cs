@@ -184,6 +184,92 @@ public partial class Engine_GameAssets : Node
 			_terrainMaterialLoader = new Refii.Level.Engine_BnkTerrainMaterialLoader();
 			ResourceLoader.AddResourceFormatLoader(_terrainMaterialLoader);
 		}
+
+		// EVERYTHING BELOW WAS REGISTERED ONLY BY THE EDITOR PLUGIN, so the running game had
+		// none of it. That is why a level built with correct terrain and nothing standing on
+		// it: Engine_PropModelIndex had no model source, so its index never built and all 2748
+		// of BWSSlums's placements resolved to nothing (instances=0, unresolved=2335,
+		// nomodel=413). The entity index was empty the same way — 7 creatures, 0 placed.
+		//
+		// The two lists are the same list and have to stay that way. addons/bnk_mount's
+		// EnsureLoaders is the other copy; anything added there belongs here too, and the
+		// failure mode is silent — the game renders, just emptier than the editor.
+		Refii.Audio.Engine_BnkAudioLoader.SetResolver(ReadAllBytes);
+		Refii.Gdb.Engine_BnkGdbLoader.SetResolver(ReadAllBytes);
+		Refii.Level.Engine_Clouds.SetTexturePathSource(EnumerateTexturePaths);
+		Refii.Level.Engine_PropModelIndex.SetModelSource(EnumerateModelAssets);
+		Refii.Level.Engine_StreamingCandidates.SetHintSource(EnumerateStreamingHints);
+		Refii.Entities.Engine_EntityIndex.SetResolver(ReadAllBytes);
+
+		if (_entityLoader is null)
+		{
+			_entityLoader = new Refii.Entities.Engine_BnkEntityLoader();
+			ResourceLoader.AddResourceFormatLoader(_entityLoader);
+		}
+
+		if (_fxLoader is null)
+		{
+			_fxLoader = new Refii.Fx.Engine_BnkFxLoader();
+			ResourceLoader.AddResourceFormatLoader(_fxLoader);
+		}
+	}
+
+	/// <summary>Every <c>.mdl</c> in the mount, for the prop model index.</summary>
+	private IEnumerable<Refii.Level.PropModelAsset> EnumerateModelAssets()
+	{
+		BnkFileSystem? fs = Snapshot();
+		if (fs is null)
+		{
+			yield break;
+		}
+
+		foreach (BnkFile file in fs.EnumerateAllFiles())
+		{
+			if (file.VirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
+			{
+				yield return new Refii.Level.PropModelAsset(
+					file.VirtualPath, file.SourceArchivePath);
+			}
+		}
+	}
+
+	/// <summary>Every <c>.tex</c> path in the mount, for the cloud layers.</summary>
+	private IEnumerable<string> EnumerateTexturePaths()
+	{
+		BnkFileSystem? fs = Snapshot();
+		if (fs is null)
+		{
+			yield break;
+		}
+
+		foreach (BnkFile file in fs.EnumerateAllFiles())
+		{
+			if (file.VirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+			{
+				yield return file.VirtualPath;
+			}
+		}
+	}
+
+	/// <summary>
+	/// Paths that came out of a STREAMING bank, which is what marks a model as one the game
+	/// pages in rather than one that ships resident.
+	/// </summary>
+	private IEnumerable<string> EnumerateStreamingHints()
+	{
+		BnkFileSystem? fs = Snapshot();
+		if (fs is null)
+		{
+			yield break;
+		}
+
+		foreach (BnkFile file in fs.EnumerateAllFiles())
+		{
+			if (file.SourceArchiveName.Contains("streaming", StringComparison.OrdinalIgnoreCase))
+			{
+				yield return file.VirtualPath;
+			}
+		}
 	}
 
 	/// <summary>
@@ -196,9 +282,107 @@ public partial class Engine_GameAssets : Node
 	/// level, and the editor and the running game executing different construction paths is
 	/// exactly what this project is arranged to prevent.
 	/// </summary>
+	/// <summary>The scenario a new game starts in. `sub_82379628` writes it at 0x8237972C.</summary>
+	public const string DefaultScenario = "defaultscenario";
+
+	/// <summary>
+	/// The scenario the guest is in for this level. Defaults to DefaultScenario, which is both
+	/// the guest's own fallback when its map has no entry and what a new game sets.
+	///
+	/// NOT YET READ FROM THE GUEST. The live value is a world-manager map keyed by
+	/// FNV-1(world + level), written by the Lua binding `Layers.ActivateScenario`, and reaching
+	/// it needs a host-bridge field that does not exist yet. Until it does this is right for a
+	/// new game and wrong the moment a quest moves the story on, so it is a named constant
+	/// rather than a silent assumption.
+	/// </summary>
+	public string CurrentScenario { get; set; } = DefaultScenario;
+
+	/// <summary>
+	/// Picks the level variant whose heightfield the scenario's own manifest names.
+	/// </summary>
+	private bool TryResolveByScenario(
+		List<Refii.Level.LevelEntry> candidates, string world, string name,
+		out Refii.Level.LevelEntry picked)
+	{
+		picked = candidates[0];
+
+		string levelWorld = candidates[0].World;
+		foreach (string scenario in new[] { CurrentScenario, DefaultScenario })
+		{
+			string listPath =
+				$"worlds/{levelWorld}/{name.ToLowerInvariant()}/{scenario}/{scenario}.list";
+			byte[]? bytes = ReadAllBytes(listPath) ?? ReadAllBytes("data/" + listPath);
+			if (bytes is null)
+			{
+				continue;
+			}
+
+			string text = System.Text.Encoding.ASCII.GetString(bytes);
+			if (System.Environment.GetEnvironmentVariable("REFII_DUMP_SCENARIO_LIST") == "1")
+			{
+				GD.Print($"[assets] ==== {listPath} ====\n{text}");
+			}
+
+			foreach (Refii.Level.LevelEntry entry in candidates)
+			{
+				string stem = System.IO.Path.GetFileNameWithoutExtension(entry.HeightfieldPath);
+				if (text.Contains(stem, StringComparison.OrdinalIgnoreCase))
+				{
+					GD.Print($"[assets] {name}: scenario '{scenario}' names {entry.Variant}");
+					entry.Scenario = scenario;
+					picked = entry;
+					return true;
+				}
+			}
+
+			GD.Print($"[assets] {name}: {scenario}.list named no known heightfield");
+		}
+
+		GD.Print($"[assets] {name}: no scenario manifest found; falling back to name order");
+		return false;
+	}
+
+	/// <summary>
+	/// Builds a level and SAVES it as a scene. The editor's path — see
+	/// <see cref="BuildLevelNode"/> for the game's.
+	/// </summary>
 	public bool TryBuildLevel(string world, string name, out string scenePath, out string error)
 	{
 		scenePath = string.Empty;
+		if (!TryResolveLevel(world, name, out Refii.Level.LevelEntry entry, out error))
+		{
+			return false;
+		}
+
+		return Refii.Level.Engine_LevelScene.TryBuild(
+			entry, ReadAllBytes, FindByFileName, out scenePath, out error);
+	}
+
+	/// <summary>
+	/// Builds a level and hands back the live node, with no trip through the disk.
+	///
+	/// THE GAME'S PATH. The same construction the editor uses, minus the save and reload —
+	/// `res://` is read-only in an exported build, so a game that mounts a level by saving a
+	/// `.tscn` and loading it back only works from the project.
+	/// </summary>
+	public Node3D? BuildLevelNode(string world, string name, out string error)
+	{
+		if (!TryResolveLevel(world, name, out Refii.Level.LevelEntry entry, out error))
+		{
+			return null;
+		}
+
+		return Refii.Level.Engine_LevelScene.Build(entry, ReadAllBytes, FindByFileName, out error);
+	}
+
+	/// <summary>
+	/// Picks WHICH level entry the guest means. Scenario first, then the dev override, then the
+	/// level name with the world as a tiebreak.
+	/// </summary>
+	private bool TryResolveLevel(
+		string world, string name, out Refii.Level.LevelEntry resolvedEntry, out string error)
+	{
+		resolvedEntry = default!;
 		error = string.Empty;
 
 		BnkFileSystem? fs = Snapshot();
@@ -210,19 +394,116 @@ public partial class Engine_GameAssets : Node
 
 		_levels ??= Refii.Level.Engine_LevelIndex.Discover(fs);
 
+		// EVERY variant that answers to this name, named out loud.
+		//
+		// A level ships several heightfields — chapters, seasons, story states — and we pick by
+		// name and take the first. That is a guess wearing the clothes of a lookup: it is how
+		// Bowerstone Slums came up as `ch2_heightfield_posh` for a childhood entrance, which is a
+		// different chapter of the same place and reads as the wrong season.
+		var candidates = new List<Refii.Level.LevelEntry>();
+		foreach (Refii.Level.LevelEntry entry in _levels)
+		{
+			if (entry.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+			{
+				candidates.Add(entry);
+			}
+		}
+
+		if (candidates.Count > 1)
+		{
+			GD.Print($"[assets] {name}: {candidates.Count} variants — " +
+				string.Join(", ", candidates.ConvertAll(c => c.Variant)));
+		}
+
+		// THE SCENARIO PICKS THE HEIGHTFIELD. Not the name, not the chapter, not the entrance.
+		//
+		// The guest builds `Data\Worlds\<World>\<Level>\<Scenario>\<Scenario>.list` in
+		// Level_BuildDataWorldsFilePath (0x8250EED0) and loads every .ghf that manifest names,
+		// with no further filtering — Level_LoadHeightfieldGhfEntry (0x8250ECE0) just opens
+		// what it is given. The scenario comes from the world manager's {fnv1(world+level) ->
+		// name} map and defaults to "DefaultScenario"; a new game sets exactly that, at
+		// 0x8237972C.
+		//
+		// Matching on the level name and taking the first of five is what put a CHILDHOOD
+		// entrance in chapter 2's Bowerstone — a different chapter of the same place, which
+		// reads as the wrong season because the seasons ARE the variants. scenarios.list
+		// states them: albion\bwsslums has defaultscenario, chapter3slums, chapter3posh,
+		// chapter2slums and chapter2posh, against heightfields new_heightfield_9,
+		// ch3_heightfield_slums, ch3_heightfield_posh, ch2_heightfield_slums and
+		// ch2_heightfield_posh.
+		if (candidates.Count > 1 &&
+			TryResolveByScenario(candidates, world, name, out Refii.Level.LevelEntry scenarioPick))
+		{
+			resolvedEntry = scenarioPick;
+			return true;
+		}
+
+		// REFII_LEVEL_VARIANT is a DEV OVERRIDE for looking at a variant directly. It runs after
+		// the scenario lookup so it can only ever override a resolved answer, never stand in for
+		// one.
+		string forced = System.Environment.GetEnvironmentVariable("REFII_LEVEL_VARIANT") ?? string.Empty;
+		if (forced.Length != 0)
+		{
+			foreach (Refii.Level.LevelEntry entry in candidates)
+			{
+				if (entry.Variant.Contains(forced, StringComparison.OrdinalIgnoreCase))
+				{
+					GD.Print($"[assets] variant forced to {entry.Variant}");
+					resolvedEntry = entry;
+					return true;
+				}
+			}
+
+			GD.PrintErr($"[assets] no variant of {name} matches '{forced}'");
+		}
+
+
+		// THE LEVEL NAME IS THE KEY; the world is only a tiebreak.
+		//
+		// The guest states a world/level pair, and it is tempting to require both. It does not
+		// hold: starting a new game the guest says "Travel_TheWell/BWSSlums" with entrance
+		// "QC010_ChildhoodStart", and Travel_TheWell is not a world in the bank layout at all —
+		// the banks register worlds/albion/..., and BWSSlums (Bowerstone Slums) lives there.
+		// That slot carries a travel-node name, not a bank world.
+		//
+		// Requiring both matched nothing, so the guest walked into a region that was never
+		// built and Godot drew an empty world through a perfectly good camera — which reads as
+		// "the renderer is broken" rather than "the lookup missed".
+		//
+		// So: prefer an exact world match when the guest does name a real world, otherwise take
+		// the level name on its own. Names repeat only across variants of the SAME level, which
+		// the first-match behaviour already handled.
+		Refii.Level.LevelEntry? fallback = null;
 		foreach (Refii.Level.LevelEntry level in _levels)
 		{
-			if (!level.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
-				!level.World.Equals(world, StringComparison.OrdinalIgnoreCase))
+			if (!level.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
 			{
 				continue;
 			}
 
-			return Refii.Level.Engine_LevelScene.TryBuild(
-				level, ReadAllBytes, FindByFileName, out scenePath, out error);
+			if (level.World.Equals(world, StringComparison.OrdinalIgnoreCase))
+			{
+				resolvedEntry = level;
+				return true;
+			}
+
+			fallback ??= level;
 		}
 
-		error = $"no level named {world}/{name} in the mounted banks";
+		if (fallback is { } resolved)
+		{
+			// Named, not silent: resolving across a world mismatch is a real assumption, and if
+			// it ever picks the wrong region this line is what says why.
+			GD.Print($"[assets] the guest asked for {world}/{name}; the banks register it under " +
+				$"{resolved.World}/{resolved.Name} — building that");
+
+			resolvedEntry = resolved;
+			return true;
+		}
+
+		error = $"no level named '{name}' in the mounted banks " +
+			$"(the guest called its world '{world}'; known worlds carry " +
+			$"{_levels.Count} level(s))";
 		return false;
 	}
 
@@ -282,6 +563,8 @@ public partial class Engine_GameAssets : Node
 	private Refii.Level.Engine_BnkTerrainLoader? _terrainLoader;
 	private Refii.Level.Engine_BnkTerrainAlbedoLoader? _albedoLoader;
 	private Refii.Level.Engine_BnkTerrainMaterialLoader? _terrainMaterialLoader;
+	private Refii.Entities.Engine_BnkEntityLoader? _entityLoader;
+	private Refii.Fx.Engine_BnkFxLoader? _fxLoader;
 	private Dictionary<string, string>? _byFileName;
 	private List<Refii.Level.LevelEntry>? _levels;
 
