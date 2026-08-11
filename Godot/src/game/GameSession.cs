@@ -72,7 +72,7 @@ public partial class GameSession : Node
 			return;
 		}
 
-		int? abi = HostBridge.TryGetAbiVersion();
+		int? abi = HostBridge.TryGetRawAbiVersion();
 		if (abi != HostBridge.ExpectedAbiVersion)
 		{
 			Fail($"host bridge ABI {abi?.ToString() ?? "unavailable"}, " +

@@ -6250,6 +6250,11 @@
 0x82CD7C4C = { size = 0x18 } # recomp-coverage sweep 2026-07-19 (referenced gap code)
 0x82CD7F08 = { size = 0x4C }
 0x82CD8080 = { size = 0x5C }
+# The XAudio API shims (0x82CD92B0..0x82CD9B00) are hooked in
+# src/vfs/src/hooks/xaudio_voices.cpp, but deliberately NOT named here. Naming them would
+# only take effect after a full codegen, and it would rename the very symbols those hooks
+# bind to — so a regeneration would silently detach the audio mirror. They are hooked by
+# address instead. See docs/audio_xaudio_cut.md.
 0x82CDE1A0 = { size = 0x8 } # recomp-coverage audit 2026-07-19 (IDA-known, address-taken/jumptable arm)
 0x82CDE910 = { name = "rex_lh_XAudioDriver_Init", size = 0x20 }
 0x82CDE930 = { name = "rex_lh_XAudioDriver_RegisterClient", size = 0x68 }

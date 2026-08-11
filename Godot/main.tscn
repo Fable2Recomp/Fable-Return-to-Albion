@@ -8,26 +8,26 @@
 [ext_resource type="Script" uid="uid://cdfrbr6g8xo31" path="res://src/launcher/mods/ModdingPanel.cs" id="3_modding"]
 [ext_resource type="Script" uid="uid://c0iwmp3i4gvk5" path="res://src/launcher/reinstall/ReinstallPanel.cs" id="4_reinstall"]
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_5vw27"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_272bh"]
 bg_color = Color(0.0057, 0.0165, 0.030000001, 1)
 
-[sub_resource type="Gradient" id="Gradient_kek77"]
+[sub_resource type="Gradient" id="Gradient_5vw27"]
 offsets = PackedFloat32Array(0, 0.65, 1)
 colors = PackedColorArray(0.35, 0.06999999, 0.06999999, 0.54, 0.35, 0.06999999, 0.06999999, 0.54, 0.35, 0.06999999, 0.06999999, 0)
 
-[sub_resource type="GradientTexture2D" id="GradientTexture2D_4c57u"]
-gradient = SubResource("Gradient_kek77")
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_kek77"]
+gradient = SubResource("Gradient_5vw27")
 width = 256
 height = 4
 
-[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_efxa6"]
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_4c57u"]
 content_margin_left = 0.0
 content_margin_top = 0.0
 content_margin_right = 0.0
 content_margin_bottom = 0.0
-texture = SubResource("GradientTexture2D_4c57u")
+texture = SubResource("GradientTexture2D_kek77")
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dg77c"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_efxa6"]
 bg_color = Color(0.019599998, 0.042, 0.07, 0.54)
 border_width_left = 1
 border_width_top = 1
@@ -35,76 +35,76 @@ border_width_right = 1
 border_width_bottom = 1
 border_color = Color(0.120000005, 0.48000002, 0.23999998, 0.5)
 
-[sub_resource type="Gradient" id="Gradient_ycdy4"]
+[sub_resource type="Gradient" id="Gradient_dg77c"]
 offsets = PackedFloat32Array(0, 0.25, 0.75, 1)
 colors = PackedColorArray(0.3, 0.3, 0.3, 0, 0.3, 0.3, 0.3, 0.5, 0.3, 0.3, 0.3, 0.5, 0.3, 0.3, 0.3, 0)
 
-[sub_resource type="GradientTexture2D" id="GradientTexture2D_w48qg"]
-gradient = SubResource("Gradient_ycdy4")
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_ycdy4"]
+gradient = SubResource("Gradient_dg77c")
 width = 256
 height = 4
 
-[sub_resource type="Gradient" id="Gradient_vivmo"]
+[sub_resource type="Gradient" id="Gradient_w48qg"]
 offsets = PackedFloat32Array(0, 0.25, 0.75, 1)
 colors = PackedColorArray(0.18200003, 0.56, 0.30799997, 0, 0.18200003, 0.56, 0.30799997, 0.4, 0.18200003, 0.56, 0.30799997, 0.4, 0.18200003, 0.56, 0.30799997, 0)
 
-[sub_resource type="GradientTexture2D" id="GradientTexture2D_2cqfq"]
-gradient = SubResource("Gradient_vivmo")
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_vivmo"]
+gradient = SubResource("Gradient_w48qg")
 width = 256
 height = 4
 
-[sub_resource type="Gradient" id="Gradient_yaehf"]
+[sub_resource type="Gradient" id="Gradient_2cqfq"]
 offsets = PackedFloat32Array(0, 0.25, 0.75, 1)
 colors = PackedColorArray(0.18200003, 0.56, 0.30799997, 0, 0.18200003, 0.56, 0.30799997, 0.4, 0.18200003, 0.56, 0.30799997, 0.4, 0.18200003, 0.56, 0.30799997, 0)
 
-[sub_resource type="GradientTexture2D" id="GradientTexture2D_074og"]
-gradient = SubResource("Gradient_yaehf")
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_yaehf"]
+gradient = SubResource("Gradient_2cqfq")
 width = 256
 height = 4
 
-[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_cegan"]
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_074og"]
 content_margin_left = 0.0
 content_margin_top = 0.0
 content_margin_right = 0.0
 content_margin_bottom = 0.0
-texture = SubResource("GradientTexture2D_074og")
+texture = SubResource("GradientTexture2D_yaehf")
 
-[sub_resource type="Gradient" id="Gradient_82xsv"]
+[sub_resource type="Gradient" id="Gradient_cegan"]
 offsets = PackedFloat32Array(0, 0.25, 0.75, 1)
 colors = PackedColorArray(0.16900001, 0.52, 0.28599995, 0, 0.16900001, 0.52, 0.28599995, 1, 0.16900001, 0.52, 0.28599995, 1, 0.16900001, 0.52, 0.28599995, 0)
 
-[sub_resource type="GradientTexture2D" id="GradientTexture2D_getpj"]
-gradient = SubResource("Gradient_82xsv")
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_82xsv"]
+gradient = SubResource("Gradient_cegan")
 width = 256
 height = 4
 
-[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_ryguw"]
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_getpj"]
 content_margin_left = 0.0
 content_margin_top = 0.0
 content_margin_right = 0.0
 content_margin_bottom = 0.0
-texture = SubResource("GradientTexture2D_getpj")
+texture = SubResource("GradientTexture2D_82xsv")
 
-[sub_resource type="Gradient" id="Gradient_d13ii"]
+[sub_resource type="Gradient" id="Gradient_ryguw"]
 offsets = PackedFloat32Array(0, 0.25, 0.75, 1)
 colors = PackedColorArray(0.16000001, 0.64000005, 0.32, 0, 0.16000001, 0.64000005, 0.32, 1, 0.16000001, 0.64000005, 0.32, 1, 0.16000001, 0.64000005, 0.32, 0)
 
-[sub_resource type="GradientTexture2D" id="GradientTexture2D_1u8w0"]
-gradient = SubResource("Gradient_d13ii")
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_d13ii"]
+gradient = SubResource("Gradient_ryguw")
 width = 256
 height = 4
 
-[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_0odxb"]
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_1u8w0"]
 content_margin_left = 0.0
 content_margin_top = 0.0
 content_margin_right = 0.0
 content_margin_bottom = 0.0
-texture = SubResource("GradientTexture2D_1u8w0")
+texture = SubResource("GradientTexture2D_d13ii")
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_lswn8"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_0odxb"]
 bg_color = Color(0, 0, 0, 0)
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_a6jrf"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_lswn8"]
 bg_color = Color(0.019599998, 0.042, 0.07, 0.54)
 border_width_left = 1
 border_width_top = 1
@@ -112,14 +112,14 @@ border_width_right = 1
 border_width_bottom = 1
 border_color = Color(0.120000005, 0.48000002, 0.23999998, 0.5)
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_xuqvo"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_a6jrf"]
 content_margin_left = 6.0
 content_margin_top = 2.0
 content_margin_right = 6.0
 content_margin_bottom = 2.0
 bg_color = Color(0.00456, 0.013199999, 0.024, 1)
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_qsp4k"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_xuqvo"]
 content_margin_left = 8.0
 content_margin_top = 3.0
 content_margin_right = 8.0
@@ -133,7 +133,7 @@ border_color = Color(0.120000005, 0.48000002, 0.23999998, 0.5)
 corner_radius_top_left = 4
 corner_radius_top_right = 4
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_kq58d"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_qsp4k"]
 content_margin_left = 8.0
 content_margin_top = 3.0
 content_margin_right = 8.0
@@ -147,7 +147,7 @@ border_color = Color(0.120000005, 0.48000002, 0.23999998, 0.5)
 corner_radius_top_left = 4
 corner_radius_top_right = 4
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_seu75"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_kq58d"]
 content_margin_left = 8.0
 content_margin_top = 3.0
 content_margin_right = 8.0
@@ -177,7 +177,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-texture = ExtResource("2_272bh")
+texture = ExtResource("2_7mycd")
 expand_mode = 1
 stretch_mode = 6
 
@@ -189,7 +189,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-texture = ExtResource("2_7mycd")
+texture = ExtResource("2_272bh")
 expand_mode = 1
 stretch_mode = 6
 
@@ -197,7 +197,7 @@ stretch_mode = 6
 layout_mode = 0
 offset_right = 1280.0
 offset_bottom = 26.0
-theme_override_styles/panel = SubResource("StyleBoxFlat_5vw27")
+theme_override_styles/panel = SubResource("StyleBoxFlat_272bh")
 
 [node name="MenuRow" type="HBoxContainer" parent="MenuBar" unique_id=1290549344]
 layout_mode = 0
@@ -243,6 +243,8 @@ popup/item_1/text = "RexGlue"
 popup/item_1/id = 1
 
 [node name="ArtCredit" type="Label" parent="." unique_id=1900001001]
+visible = false
+modulate = Color(1, 1, 1, 0.06604195)
 layout_mode = 0
 offset_left = 12.0
 offset_top = 582.0
@@ -261,7 +263,7 @@ layout_mode = 0
 offset_top = 608.0
 offset_right = 840.0
 offset_bottom = 652.0
-theme_override_styles/panel = SubResource("StyleBoxTexture_efxa6")
+theme_override_styles/panel = SubResource("StyleBoxTexture_4c57u")
 
 [node name="WarningLabel" type="Label" parent="WarningPanel" unique_id=1313589438]
 layout_mode = 0
@@ -279,7 +281,7 @@ layout_mode = 0
 offset_top = 652.0
 offset_right = 840.0
 offset_bottom = 760.0
-theme_override_styles/panel = SubResource("StyleBoxFlat_dg77c")
+theme_override_styles/panel = SubResource("StyleBoxFlat_efxa6")
 
 [node name="ProgressTrack" type="TextureRect" parent="ActionPanel" unique_id=889204785]
 visible = false
@@ -288,7 +290,7 @@ offset_top = 10.0
 offset_right = 840.0
 offset_bottom = 98.0
 mouse_filter = 2
-texture = SubResource("GradientTexture2D_w48qg")
+texture = SubResource("GradientTexture2D_ycdy4")
 stretch_mode = 1
 
 [node name="ProgressClip" type="Control" parent="ActionPanel" unique_id=656491887]
@@ -304,7 +306,7 @@ layout_mode = 0
 offset_right = 840.0
 offset_bottom = 88.0
 mouse_filter = 2
-texture = SubResource("GradientTexture2D_2cqfq")
+texture = SubResource("GradientTexture2D_vivmo")
 stretch_mode = 1
 
 [node name="PrimaryButton" type="Button" parent="ActionPanel" unique_id=452318710]
@@ -316,11 +318,11 @@ theme_override_colors/font_color = Color(1, 1, 1, 1)
 theme_override_colors/font_disabled_color = Color(1, 1, 1, 1)
 theme_override_fonts/font = ExtResource("3_272bh")
 theme_override_font_sizes/font_size = 30
-theme_override_styles/normal = SubResource("StyleBoxTexture_cegan")
-theme_override_styles/pressed = SubResource("StyleBoxTexture_ryguw")
-theme_override_styles/hover = SubResource("StyleBoxTexture_0odxb")
-theme_override_styles/disabled = SubResource("StyleBoxFlat_lswn8")
-text = "Missing Runtime Files"
+theme_override_styles/normal = SubResource("StyleBoxTexture_074og")
+theme_override_styles/pressed = SubResource("StyleBoxTexture_getpj")
+theme_override_styles/hover = SubResource("StyleBoxTexture_1u8w0")
+theme_override_styles/disabled = SubResource("StyleBoxFlat_0odxb")
+text = "Play Fable 2"
 
 [node name="InfoPanel" type="Panel" parent="." unique_id=238176640]
 layout_mode = 0
@@ -328,7 +330,7 @@ offset_left = 840.0
 offset_top = 26.0
 offset_right = 1280.0
 offset_bottom = 760.0
-theme_override_styles/panel = SubResource("StyleBoxFlat_a6jrf")
+theme_override_styles/panel = SubResource("StyleBoxFlat_lswn8")
 
 [node name="InfoColumn" type="VBoxContainer" parent="InfoPanel" unique_id=1757504070]
 layout_mode = 1
@@ -348,7 +350,7 @@ layout_mode = 2
 theme_override_colors/font_color = Color(1, 1, 1, 1)
 theme_override_fonts/font = ExtResource("3_272bh")
 theme_override_font_sizes/font_size = 18
-theme_override_styles/normal = SubResource("StyleBoxFlat_xuqvo")
+theme_override_styles/normal = SubResource("StyleBoxFlat_a6jrf")
 text = "Launcher Info"
 
 [node name="InfoTabs" type="TabBar" parent="InfoPanel/InfoColumn" unique_id=194145473]
@@ -358,9 +360,9 @@ theme_override_colors/font_unselected_color = Color(1, 1, 1, 1)
 theme_override_constants/h_separation = 4
 theme_override_fonts/font = ExtResource("3_272bh")
 theme_override_font_sizes/font_size = 18
-theme_override_styles/tab_unselected = SubResource("StyleBoxFlat_qsp4k")
-theme_override_styles/tab_hovered = SubResource("StyleBoxFlat_kq58d")
-theme_override_styles/tab_selected = SubResource("StyleBoxFlat_seu75")
+theme_override_styles/tab_unselected = SubResource("StyleBoxFlat_xuqvo")
+theme_override_styles/tab_hovered = SubResource("StyleBoxFlat_qsp4k")
+theme_override_styles/tab_selected = SubResource("StyleBoxFlat_kq58d")
 current_tab = 0
 tab_count = 5
 tab_0/title = "Change Log"

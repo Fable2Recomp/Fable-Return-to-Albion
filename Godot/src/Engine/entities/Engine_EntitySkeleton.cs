@@ -58,8 +58,26 @@ public sealed class Engine_EntitySkeleton
 	/// <summary>Bones the guest has that the model does not. Expected to be non-zero.</summary>
 	public int GuestOnly { get; }
 
+	/// <summary>
+	/// Unmapped-bone findings already reported, so a model shared by a hundred placements
+	/// states its miss once. A run total on purpose — clearing it per frame would restore
+	/// exactly the flood it exists to stop.
+	/// </summary>
+	private static readonly System.Collections.Generic.HashSet<string> _reportedUnmapped = new();
+
 	/// <summary>Rigs left in bind this frame because the guest offered no pose at all.</summary>
 	public static int NoPose;
+
+	/// <summary>
+	/// Poses refused because the read could not be made coherent — the guest was rewriting the
+	/// array while we copied it.
+	///
+	/// A RUN TOTAL, deliberately, and unlike its neighbours it is NOT reset per frame. Tearing
+	/// is a rare event by nature: a per-frame count of it would read zero almost always and
+	/// say nothing about whether the run had a problem. It sits with the other run totals in
+	/// the facing report rather than among the per-frame counts.
+	/// </summary>
+	public static int TornPoses;
 
 	/// <summary>
 	/// Rigs left in bind because the live pose's bone count differs from the guest skeleton's.
@@ -76,6 +94,47 @@ public sealed class Engine_EntitySkeleton
 	public static int NeverPosed;
 
 	/// <summary>
+	/// The largest departure from a unit scale any bone reported this frame, and the scale that
+	/// produced it.
+	///
+	/// This exists to close a specific question rather than to watch a number. The composition
+	/// used to carry <c>_scale[parent] * s</c> down the chain, which is only destructive if the
+	/// lane is not 1 — and a previous pass measured every bone in a region at exactly 1, which
+	/// would have made the bug invisible and the fix a coincidence. One line settles which of
+	/// those it was, and a deviation near zero would mean the explosion is still unexplained.
+	/// </summary>
+	public static float WorstScaleDeviation;
+
+	/// <summary>The scale behind <see cref="WorstScaleDeviation"/>, so its shape shows.</summary>
+	public static Vector3 WorstScale = Vector3.One;
+
+	/// <summary>
+	/// Bones whose raw translation matches the model's LOCAL rest length — genuinely local data.
+	/// </summary>
+	public static int BonesLookingLocal;
+
+	/// <summary>
+	/// Bones whose raw translation matches the model's GLOBAL rest distance instead — data that
+	/// is ALREADY MODEL SPACE while the component's flag claims otherwise.
+	///
+	/// This is the measurement that decides the whole local branch, and it exists because the
+	/// arithmetic already points one way and pointing is not proving. A tongue segment's local
+	/// offset is ~0.019 (measured across 919 models); its distance from the root is ~1.17. Those
+	/// differ by sixty times, so a single comparison per bone separates them with no ambiguity
+	/// and no threshold worth arguing about.
+	///
+	/// If this dominates, the flag at comp+0x14 is not telling us what we assumed — and it is
+	/// the field the guest itself never reads.
+	/// </summary>
+	public static int BonesLookingModel;
+
+	/// <summary>Rigs that took the local-composition branch this frame.</summary>
+	public static int RigsLocalBranch;
+
+	/// <summary>Rigs whose pose the component already declared model space.</summary>
+	public static int RigsModelBranch;
+
+	/// <summary>
 	/// Zeroes the per-frame refusal counters. Called once per tick by whoever drives the rigs.
 	///
 	/// Without this they are run totals read as frame counts: after five thousand frames
@@ -87,6 +146,53 @@ public sealed class Engine_EntitySkeleton
 		NoPose = 0;
 		CountMismatch = 0;
 		NeverPosed = 0;
+		WorstScaleDeviation = 0f;
+		WorstScale = Vector3.One;
+		BonesLookingLocal = 0;
+		BonesLookingModel = 0;
+		RigsLocalBranch = 0;
+		RigsModelBranch = 0;
+	}
+
+	/// <summary>
+	/// Asks the DATA what space it is in, by comparing each bone's raw translation length
+	/// against the two rest lengths it could plausibly be.
+	///
+	/// Length is invariant under the basis map, so no swizzle is needed and the comparison is
+	/// exact. The two candidates are sixty times apart for a deep bone, so there is no
+	/// threshold to tune and no case where both are close.
+	/// </summary>
+	private void Classify(in HostBridge.BonePose pose)
+	{
+		for (int m = 0; m < _modelToGuest.Length; ++m)
+		{
+			int g = _modelToGuest[m];
+			if (g < 0)
+			{
+				continue;
+			}
+
+			float raw = pose.Translation(g).Length();
+			float local = _rig.Translation(m).Length();
+			float global = _skeleton.GetBoneGlobalRest(m).Origin.Length();
+
+			// Only bones where the two answers actually differ can testify. Near the root they
+			// coincide, and counting those would dilute the result toward whichever is nearer
+			// by luck.
+			if (Mathf.Abs(global - local) < 0.05f)
+			{
+				continue;
+			}
+
+			if (Mathf.Abs(raw - local) <= Mathf.Abs(raw - global))
+			{
+				++BonesLookingLocal;
+			}
+			else
+			{
+				++BonesLookingModel;
+			}
+		}
 	}
 
 	/// <summary>Scratch for composing a local pose, allocated once.</summary>
@@ -98,8 +204,8 @@ public sealed class Engine_EntitySkeleton
 	/// <summary>Read once — the environment does not change mid-run.</summary>
 	private static bool? _bindOnly;
 
-	/// <summary>Read once — see REFII_RIG_ASSUME_MODEL in <see cref="Follow"/>.</summary>
-	private static bool? _assumeModel;
+	/// <summary>Read once — see REFII_RIG_COMPOSE_LOCAL in <see cref="Follow"/>.</summary>
+	private static bool? _composeLocal;
 
 	private Engine_EntitySkeleton(
 		Skeleton3D skeleton, Engine_MdlRig rig, int[] modelToGuest, int guestBones, int mapped)
@@ -120,6 +226,56 @@ public sealed class Engine_EntitySkeleton
 
 	/// <summary>How many bones the guest's own rig has.</summary>
 	public int GuestBoneCount => _guestBones;
+
+	/// <summary>
+	/// True when the guest drives this MODEL bone. False means it holds its bind transform for
+	/// ever while its parent moves, which tears any geometry weighted to it.
+	/// </summary>
+	public bool IsPosed(int modelBone) =>
+		modelBone >= 0 && modelBone < _modelToGuest.Length && _modelToGuest[modelBone] >= 0;
+
+	/// <summary>The model's name for a bone, for diagnostics that have to be actionable.</summary>
+	public string BoneName(int modelBone) =>
+		modelBone >= 0 && modelBone < _rig.BoneCount ? _rig.Names[modelBone] : "<out of range>";
+
+	/// <summary>
+	/// How far the POSE turns the body away from the entity's own forward, in degrees.
+	///
+	/// A character's rendered facing is the entity rotation and the bone pose COMPOSED, and the
+	/// walking test cannot tell which of the two is wrong — a body turned 90° inside a correctly
+	/// oriented entity looks identical to a correctly posed body in a 90° entity. This separates
+	/// them: it ignores the node entirely and asks only what the hip does relative to the mesh's
+	/// own forward.
+	///
+	/// Near zero means the pose keeps the body pointing where the model was authored, so any
+	/// facing error belongs to the entity rotation. A large steady value means the guest's pose
+	/// carries the heading itself, and composing the entity rotation on top double-counts it.
+	///
+	/// NaN when there is no hip to ask.
+	/// </summary>
+	public float PoseYawDegrees()
+	{
+		for (int m = 0; m < _rig.BoneCount; ++m)
+		{
+			// The hip is the first real bone of every Fable rig and the one the body's heading
+			// hangs off; the `*_Rig_Asset` wrapper above it is never posed.
+			if (!_rig.Names[m].Contains("Hip") || _modelToGuest[m] < 0)
+			{
+				continue;
+			}
+
+			// MESH-space forward is M(0, 1, 0) = (0, 0, -1) — the model's own +Y, measured from
+			// the sheath dummies in the `.mdl`, mapped through the mesh's basis.
+			var forward = new Vector3(0f, 0f, -1f);
+			Vector3 posed = _skeleton.GetBoneGlobalPose(m).Basis * forward;
+			posed.Y = 0f;
+			return posed.Length() < 1e-4f
+				? float.NaN
+				: Mathf.RadToDeg(forward.SignedAngleTo(posed.Normalized(), Vector3.Up));
+		}
+
+		return float.NaN;
+	}
 
 	/// <summary>
 	/// The axis-aligned bounds of the bones, in the space the mesh is drawn in.
@@ -199,7 +355,17 @@ public sealed class Engine_EntitySkeleton
 			: "<root>";
 
 		int guest = _modelToGuest[worst];
-		return $"\n    furthest bone '{_rig.Names[worst]}'[{worst}] is {worstDistance:0.###} " +
+		int testified = BonesLookingLocal + BonesLookingModel;
+		return $"\n    worst bone scale this frame {WorstScale} " +
+			$"({WorstScaleDeviation:0.####} off unity)" +
+			$"\n    raw pose translations look " +
+			(testified == 0
+				? "— no bone could tell the two apart"
+				: $"{(BonesLookingModel > BonesLookingLocal ? "MODEL SPACE" : "LOCAL")}: " +
+				  $"{BonesLookingModel} of {testified} bones match their distance from the root " +
+				  $"rather than their local offset ({RigsModelBranch} rig(s) taken as model, " +
+				  $"{RigsLocalBranch} composed)") +
+			$"\n    furthest bone '{_rig.Names[worst]}'[{worst}] is {worstDistance:0.###} " +
 			$"from the root at {_skeleton.GetBoneGlobalPose(worst).Origin}, " +
 			$"rest {_skeleton.GetBoneGlobalRest(worst).Origin}; " +
 			$"parent {parentText}; " +
@@ -210,13 +376,13 @@ public sealed class Engine_EntitySkeleton
 	/// Builds a rig for one entity, or null when it carries no animated mesh or the guest has
 	/// not named its bones yet.
 	///
-	/// The MODEL supplies the skeleton; the guest supplies only the names, and only so the two
-	/// can be related. That ordering is deliberate — it means the skeleton cannot disagree with
-	/// the bind matrices Godot derives from it, whatever the guest is doing.
+	/// The MODEL supplies the bone TABLE — the numbering, the parents, the names — because that
+	/// is what the mesh's BLENDINDICES address. The GUEST supplies the BIND POSE, because that
+	/// is what its live pose is measured against.
 	/// </summary>
 	public static Engine_EntitySkeleton? TryBuild(uint entity, Engine_MdlRig? rig) =>
 		rig is { } model && HostBridge.GetEntityBoneNames(entity) is { Length: > 0 } guestNames
-			? Build(model, guestNames)
+			? Build(model, guestNames, HostBridge.GetEntityRestPose(entity))
 			: null;
 
 	/// <summary>
@@ -227,7 +393,8 @@ public sealed class Engine_EntitySkeleton
 	/// The engine is shared between the editor and the game by rule, and a rig that only
 	/// existed when the guest was live would be a second implementation waiting to happen.
 	/// </summary>
-	public static Engine_EntitySkeleton? Build(Engine_MdlRig rig, string[] guestNames)
+	public static Engine_EntitySkeleton? Build(
+		Engine_MdlRig rig, string[] guestNames, HostBridge.BonePose? guestRest = null)
 	{
 		var skeleton = new Skeleton3D { Name = "Skeleton" };
 
@@ -264,21 +431,6 @@ public sealed class Engine_EntitySkeleton
 			{
 				skeleton.SetBoneParent(i, parent);
 			}
-		}
-
-		// The rest is LOCAL, which is exactly what SetBoneRest wants — Godot composes it
-		// itself. Composing it here first and handing over a global transform would apply the
-		// parent chain twice.
-		for (int i = 0; i < rig.BoneCount; ++i)
-		{
-			Transform3D local = ToGodot(rig.Rotation(i), rig.Translation(i), rig.Scale(i));
-			skeleton.SetBoneRest(i, local);
-
-			// Seed the pose from the rest too, so a character drawn before its first live pose
-			// arrives stands in bind rather than collapsing to the origin.
-			skeleton.SetBonePosePosition(i, local.Origin);
-			skeleton.SetBonePoseRotation(i, local.Basis.GetRotationQuaternion());
-			skeleton.SetBonePoseScale(i, local.Basis.Scale);
 		}
 
 		// THE MAP, BY NAME, because the name is the only key the two rigs share.
@@ -331,14 +483,32 @@ public sealed class Engine_EntitySkeleton
 			}
 		}
 
+		(float bindGap, string bindGapBone) = SetRest(skeleton, rig, modelToGuest, guestRest);
+
+		// ONCE PER DISTINCT FINDING, not once per instance.
+		//
+		// This is a property of the MODEL, and a street holds a hundred copies of the same
+		// lamp — so the run emitted a hundred identical lines and pushed everything after it
+		// off the end of the log. A diagnostic that buries the rest of the report is a
+		// diagnostic that costs more than it tells, and it hid the entity report three runs
+		// running. Keyed on the message so a genuinely different miss still prints.
 		if (unmapped.Count != 0)
 		{
-			GD.Print($"[rig] {rig.BoneCount - mapped} model bone(s) the guest never names, so " +
-				$"they hold their REST while their parents move: {string.Join(", ", unmapped)}");
+			string line = $"[rig] {rig.BoneCount - mapped} model bone(s) the guest never " +
+				$"names, so they hold their REST while their parents move: " +
+				string.Join(", ", unmapped);
+			if (_reportedUnmapped.Add(line))
+			{
+				GD.Print(line);
+			}
 		}
 
 		return new Engine_EntitySkeleton(
-			skeleton, rig, modelToGuest, guestNames.Length, mapped);
+			skeleton, rig, modelToGuest, guestNames.Length, mapped)
+		{
+			BindGap = bindGap,
+			BindGapBone = bindGapBone,
+		};
 	}
 
 	/// <summary>
@@ -365,6 +535,24 @@ public sealed class Engine_EntitySkeleton
 			return;
 		}
 
+		// A TORN READ IS WORSE THAN A STALE ONE, so hold what we already have.
+		//
+		// The guest rewrites the pose array in place and converts it from parent-relative to
+		// model space BONE BY BONE over the same memory (`sub_821F57D0`). A read that lands
+		// mid-conversion returns bones in two different spaces at once, and since we treat the
+		// whole array as model space, the half that has not been converted yet is interpreted
+		// completely wrongly — that is a character exploding for a single frame, not a bone
+		// lagging slightly.
+		//
+		// Returning here leaves the Skeleton3D holding the previous frame's pose, which is at
+		// most 33 ms old and always a real pose. There is nothing to fix up and nothing to
+		// interpolate: the correct response to "this sample is not a pose" is to not use it.
+		if (pose.Torn)
+		{
+			++TornPoses;
+			return;
+		}
+
 		if (pose.BoneCount != _guestBones)
 		{
 			// A bone count that changed means the entity swapped rigs — a different skeleton,
@@ -387,23 +575,50 @@ public sealed class Engine_EntitySkeleton
 			return;  // never posed — leave it in bind rather than invent one
 		}
 
-		// REFII_RIG_ASSUME_MODEL=1 treats EVERY pose as already model space.
-		//
-		// The other half of the bisect that REFII_RIG_BIND_ONLY started, and it exists because
-		// every exploding rig explodes the same way: the error compounds down the chain and each
-		// link adds roughly the bone's REST offset rather than a bone-length delta, which is
-		// what composing already-absolute transforms looks like. 126 of 138 characters report
-		// space=1 and explode; the 12 that report space=2 skip the composition and do not.
-		//
-		// The flag itself is not in doubt — `sub_821F2C78` stamps comp+0x14 = 1 after copying
-		// the evaluated pose and `sub_8257D8B8` stamps 2 after converting, so 1 IS local — but
-		// what the guest calls local may not be parent-relative in the sense this composition
-		// assumes. With this set, a street that stands up correctly puts the fault entirely in
-		// the composition; one that is still wrong puts it somewhere else, and that is a
-		// distinction no amount of staring at bounds can make.
-		_assumeModel ??= OS.GetEnvironment("REFII_RIG_ASSUME_MODEL") == "1";
+		Classify(pose);
 
-		if (!pose.IsModelSpace && _assumeModel != true)
+		// THE POSE ARRAY IS MODEL SPACE, WHATEVER comp+0x14 SAYS.
+		//
+		// We used to trust that flag and compose anything it called "local" through the parent
+		// chain, and it is what made every character explode. Three pieces of evidence, in
+		// increasing order of how hard they are to argue with:
+		//
+		// 1. THE FLAG IS NOT A CONTRACT. `comp+0x14` is WRITE-ONLY in the shipped binary — a
+		//    whole-binary scan for a read of it found none. Six writers stamp it at different
+		//    points of the tick; nothing consumes it. The guest's own live latch is comp+0x10.
+		//    We picked a field the guest itself ignores and treated it as authority, which is
+		//    exactly the mistake the architecture rule warns about.
+		//
+		// 2. THE GUEST ALWAYS CONVERTS. `sub_8257D8B8` calls the local->model converter
+		//    `sub_821F57D0` unconditionally — no flag, no dirty bit, no visibility gate — and
+		//    only then stamps 2. By the time anything outside the tick can read the array, it
+		//    has been converted. A stamp of 1 is a value left behind mid-pipeline.
+		//
+		// 3. THE NUMBERS. Measured on the child hero: the live step from 'Shadow_tongue2' to
+		//    'Shadow_tongue3' is 1.1521 long. That bone's LOCAL rest offset is ~0.019 (the
+		//    median across 919 shipped models is 0.0186); its distance from the root is 1.1726.
+		//    The step matches the absolute position to within 1.8% and misses the local one by
+		//    sixty times. Composing that as if it were parent-relative adds every ancestor a
+		//    second time, which is why the worst bone was always the tip of the longest chain.
+		//
+		// `Classify` re-measures this every frame rather than trusting the reasoning above, and
+		// reports it in the rig line. If BonesLookingLocal ever dominates, this is wrong.
+		//
+		// REFII_RIG_COMPOSE_LOCAL=1 restores the parent walk, so the two can still be compared
+		// without a rebuild.
+		_composeLocal ??= OS.GetEnvironment("REFII_RIG_COMPOSE_LOCAL") == "1";
+
+		bool modelSpace = _composeLocal != true || pose.IsModelSpace;
+		if (modelSpace)
+		{
+			++RigsModelBranch;
+		}
+		else
+		{
+			++RigsLocalBranch;
+		}
+
+		if (!modelSpace)
 		{
 			_composed ??= new Transform3D[HostBridge.MaxBones];
 			_rotation ??= new Quaternion[HostBridge.MaxBones];
@@ -428,38 +643,81 @@ public sealed class Engine_EntitySkeleton
 					s = Vector3.One;
 				}
 
+				// SCALE IS NOT A LINK IN THE CHAIN — it is a property of the bone.
+				//
+				// Every bone's deviation from unity, so one line can say whether the lane holds
+				// anything at all. It is asked because the scale used to be composed down the
+				// chain, and if these were all 1 that would have been harmless.
+				float deviation = Mathf.Max(Mathf.Abs(s.X - 1f),
+					Mathf.Max(Mathf.Abs(s.Y - 1f), Mathf.Abs(s.Z - 1f)));
+
+				if (deviation > WorstScaleDeviation)
+				{
+					WorstScaleDeviation = deviation;
+					WorstScale = s;
+				}
+
 				// A bone whose parent comes later is a torn read, not a rig to fix up: the
 				// guest's own conversion relies on parent-before-child ordering too.
 				int parent = pose.Parents[g];
-				if (parent >= 0 && parent < g)
+				if (g == 0)
 				{
-					// COMPOSE TRS, NOT MATRICES.
+					// BONE 0 IS STAMPED IDENTITY, and its stored transform is thrown away.
 					//
-					// This was `_composed[parent] * local`, a full affine multiply, and that is
-					// not what the guest does. `sub_821F58D8` takes a quaternion PRODUCT for
-					// rotation and `parent.translation + rotate(parent.rotation, child.translation)`
-					// for position — scale never enters it; a separate pass (`sub_821E5AC0`)
-					// applies parent scale to the child's translation alone.
+					// Not an optimisation and not a guess — `sub_821F57D0` writes the root's
+					// element before it composes anything, and I read the three stores:
 					//
-					// A Transform3D multiply folds scale into the BASIS, so a parent with any
-					// non-unit scale shears its child's rotation, and the error compounds down
-					// the chain. That is why the hero came out roughly right in the torso with
-					// shards spiking off the hands and weapon attachments — the ends of the
-					// longest chains, where the most parents had multiplied in.
-					_translation[g] = _translation[parent] +
-						(_rotation[parent] * (t * _scale[parent]));
+					//     821f5858  stvx128 v127, r29, r26   ; pose[0]+0x10 = (0,0,0,0)
+					//     821f585c  stvx128 v11,  r29, r5    ; pose[0]+0x20 = (1,1,1,1)
+					//     821f5860  stvx128 v10,  r0,  r29   ; pose[0]+0x00 = (0,0,0,1)
+					//
+					// with r26=0x10, r5=0x20, v127 = vspltisw128 0, v11 = splat(flt_82099490)
+					// = 1.0, and v10 = splat(1.0) AND unk_82099160 (0,0,0,0xFFFFFFFF), which is
+					// the identity quaternion with w in lane 3. So the guest's "model space" is
+					// the ROOT BONE's frame with the root's own animation zeroed out, and a host
+					// that keeps it applies one extra transform to every bone in the rig.
+					_translation[0] = Vector3.Zero;
+					_rotation[0] = Quaternion.Identity;
+					_scale[0] = Vector3.One;
+				}
+				else if (parent >= 0 && parent < g)
+				{
+					// COMPOSE TRS, NOT MATRICES, AND LEAVE SCALE OUT OF IT ENTIRELY.
+					//
+					// `sub_821F58D8` is 65 instructions and the only displacements it touches on
+					// either element are 0, 8 and 0x10: a Hamilton product into the child's
+					// quaternion at +0x00, then `t_parent + rotate(q_parent, t_child)` into the
+					// child's translation at +0x10. It never loads or stores +0x20.
+					//
+					// So scale is neither accumulated down the chain nor applied to a child's
+					// translation. It stays exactly as the animation left it, and reaches the
+					// GPU one step later, per bone, in `sub_8222E1C0` — which builds
+					// `[R * diag(s) | t]`, scaling COLUMN k by s[k] and leaving the translation
+					// alone. That is a post-multiply on the bone's own axes.
+					//
+					// Carrying `_scale[parent] * s` here multiplied a field the guest never
+					// reads, once per link, and a chain ten bones deep turns a scale the
+					// animation never meant as a factor into a hundredfold one at the tip. That
+					// is the fan of shards, and it is why the worst bone was always a tongue, a
+					// ponytail or a wattle — the deepest chains in the rig.
+					_translation[g] = _translation[parent] + (_rotation[parent] * t);
 					_rotation[g] = _rotation[parent] * r;
-					_scale[g] = _scale[parent] * s;
+					_scale[g] = s;
 				}
 				else
 				{
+					// Parent -1 on a non-root bone: the guest skips it and leaves the element
+					// holding its local transform, so local IS model for this one.
 					_translation[g] = t;
 					_rotation[g] = r;
 					_scale[g] = s;
 				}
 
-				// ScaledLocal for the same reason ToGodot uses it: the element is quaternion
-				// THEN scale, so the scale belongs on the bone's own axes.
+				// ScaledLocal for the same reason ToGodot uses it, and now with a citation:
+				// `sub_8222E1C0` splats the scale's three lanes and multiplies them into the
+				// three COLUMNS of the rotation matrix (`vmulfp128 v21, v24, v11` and its two
+				// siblings), giving `[R * diag(s) | t]`. Scale on the bone's own axes, applied
+				// after the rotation, and never touching the translation in column 3.
 				_composed[g] = new Transform3D(
 					new Basis(_rotation[g]).ScaledLocal(_scale[g]), _translation[g]);
 			}
@@ -476,11 +734,136 @@ public sealed class Engine_EntitySkeleton
 				continue;
 			}
 
-			_skeleton.SetBoneGlobalPose(m, pose.IsModelSpace || _assumeModel == true
+			_skeleton.SetBoneGlobalPose(m, modelSpace
 				? ToGodot(pose.Rotation(g), pose.Translation(g), pose.Scale(g))
 				: _composed![g]);
 		}
 	}
+
+	/// <summary>
+	/// Gives the skeleton its BIND POSE, from THE MODEL FILE, and measures how far the guest's
+	/// own bind sits from it.
+	///
+	/// THE BIND MUST MATCH THE SPACE THE VERTICES ARE AUTHORED IN, WHICH IS THE MODEL'S.
+	/// Skinning is <c>Σ wᵢ · pose_i · bind_i⁻¹ · v</c>, and <c>v</c> comes out of the `.mdl`, so
+	/// <c>bind</c> has to be the `.mdl`'s. A previous pass took the bind from the guest instead,
+	/// reasoning that the pose and the bind should come from the same rig — which sounds right
+	/// and is wrong, because the vertex is the third term and it does not move.
+	///
+	/// The run that refuted it: the child hero's mesh is 1.3839 tall, its model bind 1.3797, and
+	/// the guest's bind for the same entity **1.8542** — an ADULT skeleton, its X matching the
+	/// adult composite's to seven digits. The hero's runtime rig is the grown-up one and the
+	/// child's proportions live in the LIVE pose, not the reference pose. Binding a child mesh
+	/// through an adult bind is what left that one character in shards after every other
+	/// character had come good.
+	///
+	/// So the guest's rest is read only to be MEASURED against the model's. A large gap is worth
+	/// knowing about — it is real, and it is why the idea was tempting — but it is not a licence
+	/// to use it.
+	/// </summary>
+	private static (float Gap, string Bone) SetRest(
+		Skeleton3D skeleton, Engine_MdlRig rig, int[] modelToGuest, HostBridge.BonePose? guestRest)
+	{
+		float gap = 0f;
+		string gapBone = string.Empty;
+
+		// The guest's rest is LOCAL and needs the same parent walk its live pose does NOT — see
+		// `RefiiHostGetEntityRestPose`, which reads skeleton+0x90 and states as much, and
+		// `sub_82B734B0`, the guest's own converter for it. Composed here in the GUEST's
+		// numbering, because that is the numbering its parents are expressed in.
+		Transform3D[]? guestGlobal = null;
+		if (guestRest is { } bind && bind.BoneCount > 0)
+		{
+			guestGlobal = new Transform3D[bind.BoneCount];
+			var rotation = new Quaternion[bind.BoneCount];
+			var translation = new Vector3[bind.BoneCount];
+
+			for (int g = 0; g < bind.BoneCount; ++g)
+			{
+				Quaternion r = GuestRotation(bind.Rotation(g));
+				Vector3 t = Swizzle(bind.Translation(g));
+				Vector3 guestScale = bind.Scale(g);
+				var s = new Vector3(guestScale.X, guestScale.Z, guestScale.Y);
+
+				int parent = bind.Parents[g];
+
+				// THE SAME COMPOSITION THE LIVE POSE USES, because it is the same contract:
+				// `sub_82B734B0` converts the rest through `sub_821F58D8` exactly as
+				// `sub_821F57D0` converts the pose — a quaternion product and
+				// `t_parent + rotate(q_parent, t_child)`, with the scale lane never read. A
+				// Transform3D multiply would fold scale into the basis and shear every child of
+				// a scaled bone. Element 0 is stamped identity by the converter, as it is there.
+				if (g == 0)
+				{
+					rotation[0] = Quaternion.Identity;
+					translation[0] = Vector3.Zero;
+					s = Vector3.One;
+				}
+				else if (parent >= 0 && parent < g)
+				{
+					translation[g] = translation[parent] + (rotation[parent] * t);
+					rotation[g] = rotation[parent] * r;
+				}
+				else
+				{
+					translation[g] = t;
+					rotation[g] = r;
+				}
+
+				guestGlobal[g] = new Transform3D(
+					new Basis(rotation[g]).ScaledLocal(s), translation[g]);
+			}
+		}
+
+		// Walked parent-before-child — guaranteed, measured across all 919 rigged models — so a
+		// parent's global rest is final before a child needs it to convert back to local.
+		var global = new Transform3D[rig.BoneCount];
+		for (int m = 0; m < rig.BoneCount; ++m)
+		{
+			Transform3D modelLocal =
+				ToGodot(rig.Rotation(m), rig.Translation(m), rig.Scale(m));
+
+			int parent = rig.Parents[m];
+			Transform3D parentGlobal = parent >= 0 && parent < m
+				? global[parent]
+				: Transform3D.Identity;
+
+			global[m] = parentGlobal * modelLocal;
+
+			// MEASURED, NOT USED — see the note above on why the guest's bind is the wrong one.
+			int g = modelToGuest[m];
+			if (guestGlobal is not null && g >= 0 && g < guestGlobal.Length)
+			{
+				float apart = guestGlobal[g].Origin.DistanceTo(global[m].Origin);
+				if (apart > gap)
+				{
+					gap = apart;
+					gapBone = rig.Names[m];
+				}
+			}
+
+			skeleton.SetBoneRest(m, modelLocal);
+
+			// Seed the pose from the rest too, so a character drawn before its first live pose
+			// arrives stands in bind rather than collapsing to the origin.
+			skeleton.SetBonePosePosition(m, modelLocal.Origin);
+			skeleton.SetBonePoseRotation(m, modelLocal.Basis.GetRotationQuaternion());
+			skeleton.SetBonePoseScale(m, modelLocal.Basis.Scale);
+		}
+
+		return (gap, gapBone);
+	}
+
+	/// <summary>
+	/// How far the guest's own bind sits from the model file's, for the worst bone of THIS rig.
+	///
+	/// Per instance, not static: a run total answers a different question than the one the name
+	/// asks, and the previous version reported one shared figure against every character.
+	/// </summary>
+	public float BindGap { get; init; }
+
+	/// <summary>Which bone disagreed most, because a number alone is not actionable.</summary>
+	public string BindGapBone { get; init; } = string.Empty;
 
 	/// <summary>
 	/// One bone's transform, in THE MESH'S space.

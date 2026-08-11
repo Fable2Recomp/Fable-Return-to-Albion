@@ -23,15 +23,23 @@ public static class Engine_EntityIndex
 
     public static void SetResolver(Func<string, byte[]?>? resolver)
     {
-        _resolver = resolver;
-        Invalidate();
+        lock (IndexLock)
+        {
+            _resolver = resolver;
+            _multi = null;
+            _entries = null;
+            _byFileName = null;
+        }
     }
 
     public static void Invalidate()
     {
-        _multi = null;
-        _entries = null;
-        _byFileName = null;
+        lock (IndexLock)
+        {
+            _multi = null;
+            _entries = null;
+            _byFileName = null;
+        }
     }
 
     public static IReadOnlyList<EntityEntry> Entries
@@ -89,7 +97,21 @@ public static class Engine_EntityIndex
         return _byFileName.TryGetValue(leaf, out entry!);
     }
 
+    /// <summary>
+    /// Serialises the lazy index build. A level change puts the next region's build on a worker
+    /// while the region we are standing in still resolves entities on the main thread.
+    /// </summary>
+    private static readonly object IndexLock = new();
+
     private static void Build()
+    {
+        lock (IndexLock)
+        {
+            BuildLocked();
+        }
+    }
+
+    private static void BuildLocked()
     {
         if (_entries is not null || _resolver is null)
         {
@@ -102,19 +124,24 @@ public static class Engine_EntityIndex
             blobs.Add(_resolver(path) ?? _resolver("data/" + path));
         }
 
-        _multi = GdbMulti.Build(blobs);
-        _entries = Engine_EntityCatalog.Build(_multi);
+        GdbMulti multi = GdbMulti.Build(blobs);
+        List<EntityEntry> entries = Engine_EntityCatalog.Build(multi);
 
         var map = new Dictionary<string, EntityEntry>();
-        foreach (EntityEntry entry in _entries)
+        foreach (EntityEntry entry in entries)
         {
             map[FileNameOf(entry)] = entry;
         }
 
+        // THE GUARD LAST. `_entries` is what line 1 of this method tests, so assigning it
+        // before `_byFileName` advertises an index whose name map is still null — the same
+        // publish-before-payload mistake the prop index carried.
+        _multi = multi;
         _byFileName = map;
+        _entries = entries;
 
-        GD.Print($"[entities] indexed {_entries.Count} entit(ies) " +
-            $"from {_multi.Views.Count} database(s), {_multi.RecordCount:N0} records");
+        GD.Print($"[entities] indexed {entries.Count} entit(ies) " +
+            $"from {multi.Views.Count} database(s), {multi.RecordCount:N0} records");
     }
 
     public static Engine_EntityResource? BuildResource(string virtualPath)

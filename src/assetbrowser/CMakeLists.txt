@@ -109,3 +109,25 @@ set_target_properties(refii_assetbrowser PROPERTIES
     CXX_STANDARD_REQUIRED ON
     WINDOWS_EXPORT_ALL_SYMBOLS ON
 )
+
+# Stage into Godot/build/bin, the same convention the host bridge uses.
+#
+# This library carries the .tex/.mdl readers and the XMA decoder behind
+# Engine_XmaDecoder, so it is not an editor-only convenience: a sound has to be
+# playable in the Godot editor, in the editor we package OUTSIDE Godot, and in the
+# running game, and all three go through the same C# path.
+#
+# Without this it was found only because Engine_NativeLibraries walks out/build looking
+# for the newest copy — a DEV-TREE ACCIDENT that does not survive an export, exactly as
+# src/hostbridge/CMakeLists.txt warns. In a packaged build every audio preview failed
+# with "refii_assetbrowser not found", and only in the packaged build, which is the worst
+# place for a difference to first appear.
+if(REFII_STAGE_GODOT_BUILD AND DEFINED REFII_GODOT_BUILD_BIN_DIR)
+    add_custom_command(TARGET refii_assetbrowser POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_GODOT_BUILD_BIN_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:refii_assetbrowser>" "${REFII_GODOT_BUILD_BIN_DIR}"
+        COMMENT "Staging refii_assetbrowser into Godot/build/bin"
+        VERBATIM
+    )
+endif()

@@ -212,6 +212,16 @@ public partial class Engine_GameAssets : Node
 			_fxLoader = new Refii.Fx.Engine_BnkFxLoader();
 			ResourceLoader.AddResourceFormatLoader(_fxLoader);
 		}
+
+		// Audio was the last instance of the bug the comment above describes: the resolver
+		// was set but the loader never registered here, only in addons/bnk_mount. So a sound
+		// could be opened in the Godot editor and nowhere else — not in the editor we package
+		// outside Godot, and not by the running game. One registration, three contexts.
+		if (_audioLoader is null)
+		{
+			_audioLoader = new Refii.Audio.Engine_BnkAudioLoader();
+			ResourceLoader.AddResourceFormatLoader(_audioLoader);
+		}
 	}
 
 	/// <summary>Every <c>.mdl</c> in the mount, for the prop model index.</summary>
@@ -394,18 +404,48 @@ public partial class Engine_GameAssets : Node
 
 		_levels ??= Refii.Level.Engine_LevelIndex.Discover(fs);
 
+		// THE GUEST NAMES A PATH, NOT ALWAYS A LEAF.
+		//
+		// Walking into a cave, the guest states its level as `Caves\GargoylesCave` — a nested
+		// path in the guest's own separator, which `World_ComputeWorldLevelFnv1Key` normalises
+		// to backslash. The index stores the full path in `LevelPath` and only the LAST segment
+		// in `Name`, so matching `Name` against the whole thing found nothing and the region
+		// never built: "no level named 'Caves\GargoylesCave'" while 83 levels sat under Albion.
+		//
+		// A grey screen with a correct camera is the symptom, which reads as a renderer fault
+		// rather than a lookup miss — the same trap the world-tiebreak comment below describes.
+		//
+		// Normalise the separator and keep BOTH forms: the full path is the specific answer and
+		// the leaf is the fallback, so a level stated either way resolves to the same entry.
+		string wanted = name.Replace('\\', '/');
+		string leaf = wanted[(wanted.LastIndexOf('/') + 1)..];
+
 		// EVERY variant that answers to this name, named out loud.
 		//
 		// A level ships several heightfields — chapters, seasons, story states — and we pick by
 		// name and take the first. That is a guess wearing the clothes of a lookup: it is how
 		// Bowerstone Slums came up as `ch2_heightfield_posh` for a childhood entrance, which is a
 		// different chapter of the same place and reads as the wrong season.
+		// The FULL PATH wins when the guest gives one. Only if nothing answers to it do we fall
+		// back to the leaf, because two worlds can each hold a `GargoylesCave` and taking the
+		// leaf first would pick whichever was discovered earliest.
 		var candidates = new List<Refii.Level.LevelEntry>();
 		foreach (Refii.Level.LevelEntry entry in _levels)
 		{
-			if (entry.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+			if (entry.LevelPath.Replace('\\', '/').Equals(wanted, StringComparison.OrdinalIgnoreCase))
 			{
 				candidates.Add(entry);
+			}
+		}
+
+		if (candidates.Count == 0)
+		{
+			foreach (Refii.Level.LevelEntry entry in _levels)
+			{
+				if (entry.Name.Equals(leaf, StringComparison.OrdinalIgnoreCase))
+				{
+					candidates.Add(entry);
+				}
 			}
 		}
 
@@ -476,7 +516,9 @@ public partial class Engine_GameAssets : Node
 		Refii.Level.LevelEntry? fallback = null;
 		foreach (Refii.Level.LevelEntry level in _levels)
 		{
-			if (!level.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+			// Same two forms as the candidate scan above: the guest may state a nested path.
+			if (!level.LevelPath.Replace('\\', '/').Equals(wanted, StringComparison.OrdinalIgnoreCase) &&
+				!level.Name.Equals(leaf, StringComparison.OrdinalIgnoreCase))
 			{
 				continue;
 			}
@@ -565,6 +607,7 @@ public partial class Engine_GameAssets : Node
 	private Refii.Level.Engine_BnkTerrainMaterialLoader? _terrainMaterialLoader;
 	private Refii.Entities.Engine_BnkEntityLoader? _entityLoader;
 	private Refii.Fx.Engine_BnkFxLoader? _fxLoader;
+	private Refii.Audio.Engine_BnkAudioLoader? _audioLoader;
 	private Dictionary<string, string>? _byFileName;
 	private List<Refii.Level.LevelEntry>? _levels;
 

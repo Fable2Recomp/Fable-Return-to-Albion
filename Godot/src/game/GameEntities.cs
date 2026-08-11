@@ -57,6 +57,10 @@ public partial class GameEntities : Node3D
             return;
         }
 
+        // BEFORE the early-out, because the clocks beat whether or not this frame had anything
+        // to draw, and a sampler that only runs on populated frames measures the population.
+        SampleSimClock();
+
         List<HostBridge.GuestEntity> entities =
             HostBridge.GetEntities(out uint unknown, out HostBridge.UnknownPlacement[] unknownVtables);
         if (entities.Count == 0)
@@ -175,6 +179,16 @@ public partial class GameEntities : Node3D
                     Refii.Entities.Engine_EntitySkeleton? rig))
             {
                 rig.Follow(entity.Address);
+                SampleFacing(entity.Address, node, entity.Rotation);
+                StateVisibleExtent(node, rig);
+
+                float poseYaw = rig.PoseYawDegrees();
+                if (!float.IsNaN(poseYaw))
+                {
+                    ++_poseYawSamples;
+                    _poseYawSum += Mathf.Abs(poseYaw);
+                    _poseYawWorst = Mathf.Max(_poseYawWorst, Mathf.Abs(poseYaw));
+                }
             }
         }
 
@@ -280,6 +294,97 @@ public partial class GameEntities : Node3D
             $"hash(es) not in the index this frame); guest built-part records this frame = " +
             $"{_builtParts} — non-zero means the guest's DRAW path runs here and comp17+0x38 " +
             "is populated, which was NOT the assumption");
+
+        // DO THE PARTS AGREE ON THE SKELETON THEY SHARE?
+        //
+        // The union keeps the first part's rest for a bone two parts both carry, which is only
+        // lossless if they quote the same one. Across the shipped models they often do not —
+        // `Shadow_L_Shin` is 0.26 apart between a male coat and the male body — but most of
+        // that spread is child-versus-adult rigs that never appear on one character. Only the
+        // guest's own part lists settle it, and they are only known here.
+        //
+        // A non-zero disagreement count means the losing part's geometry is displaced by up to
+        // the distance shown, which reads as a garment hanging off a body rather than on it.
+        int shared = Refii.Models.Engine_MdlComposite.SharedBonesAgreeing +
+            Refii.Models.Engine_MdlComposite.SharedBonesDisagreeing;
+        if (shared != 0)
+        {
+            GD.Print($"[game-entities] composite rigs: {shared} shared bone(s) across the " +
+                $"parts, {Refii.Models.Engine_MdlComposite.SharedBonesDisagreeing} of them " +
+                $"quoting a DIFFERENT rest" +
+                (Refii.Models.Engine_MdlComposite.SharedBonesDisagreeing == 0
+                    ? " — the parts agree, first-wins is lossless"
+                    : $", worst '{Refii.Models.Engine_MdlComposite.WorstRestBone}' at " +
+                      $"{Refii.Models.Engine_MdlComposite.WorstRestDisagreement:0.####} apart " +
+                      "— that part's vertices are displaced by exactly that"));
+        }
+
+        // A part that could not be remapped was binding through ANOTHER part's numbering.
+        if (Refii.Models.Engine_MdlComposite.UnremappableSurfaces != 0)
+        {
+            GD.Print($"[game-entities] composite rigs: " +
+                $"{Refii.Models.Engine_MdlComposite.UnremappableSurfaces} skinned surface(s) " +
+                $"({Refii.Models.Engine_MdlComposite.UnremappableVertices} vertices) shipped no " +
+                "usable bone table, so their indices addressed the UNIONED table raw — they " +
+                "were binding to whatever bone sat at that index. Collapsed to the root");
+        }
+
+        // THE FACING, CHECKED AGAINST WALKING — the one reference the conversion chain cannot
+        // manufacture. See SampleFacing: the offset's VALUE names the fix.
+        if (_facingSamples != 0)
+        {
+            // A MAJORITY, NOT MERELY THE LARGEST BUCKET. The first version called 234 of 464 a
+            // pass because 0° was the biggest pile, and reported the facing RIGHT while half
+            // the samples disagreed with it. A verdict that cannot fail is not a verdict.
+            int onTarget = _facingBuckets[0];
+            int total = onTarget + _facingBuckets[1] + _facingBuckets[2] + _facingBuckets[3];
+            int worst = 1;
+            for (int i = 2; i < 4; ++i)
+            {
+                if (_facingBuckets[i] > _facingBuckets[worst])
+                {
+                    worst = i;
+                }
+            }
+
+            GD.Print($"[game-entities] facing vs travel: {_facingSamples} walking sample(s), " +
+                $"mean {_facingSum / _facingSamples:0.#}° off; {Quadrants(_facingBuckets)}" +
+                (onTarget >= (int)(0.9f * total)
+                    ? " — characters walk the way they face, the facing is RIGHT"
+                    : $" — NOT clean; the largest error pile is {worst * 90}°") +
+                $"\n    composite (morph) characters: {Quadrants(_facingBucketsComposite)}" +
+                $"\n    single-model characters:      {Quadrants(_facingBucketsNamed)}" +
+                (_poseYawSamples == 0
+                    ? "\n    pose yaw: no hip bone to measure"
+                    : $"\n    pose yaw: the POSE turns the body {_poseYawSum / _poseYawSamples:0.#}° " +
+                      $"from the model's own forward on average (worst {_poseYawWorst:0.#}°) — " +
+                      (_poseYawSum / _poseYawSamples < 15f
+                          ? "small, so the heading is NOT in the pose and any facing error is the entity rotation"
+                          : "LARGE, so the pose carries the heading and composing the entity rotation on top double-counts it")) +
+                $"\n    culling box: stated on {_extentStated} rig(s), {_extentOverflow} of " +
+                "those had a live pose reaching OUTSIDE the mesh's own box" +
+                (_extentOverflow == 0
+                    ? " — the bind box already covered them, so culling was not the vanishing"
+                    : " — those are the ones the renderer could drop while they were on screen") +
+                $"\n    position coherence: {_positionJumps} of {_positionSamples} frame(s) " +
+                $"moved an entity more than {TeleportThreshold} in one frame " +
+                $"(worst {_worstJump:0.#})" +
+                (_positionJumps == 0
+                    ? " — reads are coherent, so jitter is the two clocks beating, not tearing"
+                    : " — that is either a scripted teleport or a TORN READ, and tearing would " +
+                      "explain both the jitter and the vanishing") +
+                SimClockReport() +
+                $"\n    poses refused as TORN: {Refii.Entities.Engine_EntitySkeleton.TornPoses}" +
+                (Refii.Entities.Engine_EntitySkeleton.TornPoses == 0
+                    ? " — every rig read came back coherent"
+                    : " — those rigs held last frame's pose instead of a half-written one; " +
+                      "each would otherwise have been a character exploding for one frame") +
+                $"\n    rotations refused as NOT UNIT: {NonUnitRotations}" +
+                (NonUnitRotations == 0
+                    ? " — every entity handed us a real rotation"
+                    : " — that many transforms fell back to identity because what the bridge " +
+                      "returned was not a rotation"));
+        }
 
         // THE GHOST COUNT, and the proof that the two sides are keyed on the same thing.
         //
@@ -480,6 +585,90 @@ public partial class GameEntities : Node3D
     /// counts and an in-range maximum means the numbering agrees and the fault is elsewhere;
     /// a maximum at or above the skeleton's bone count proves a remap is missing.
     /// </summary>
+    /// <summary>
+    /// How much geometry is weighted to a bone the guest never drives — ACROSS EVERY SURFACE.
+    ///
+    /// With the bone bounds now matching the bind pose, the skeleton is right and whatever is
+    /// left is about which vertices attach where. A bone the guest does not name keeps its bind
+    /// transform for ever while its parent moves, so any vertex weighted to it is anchored in
+    /// place while the rest of the body walks away — which on screen is a flat sheet of
+    /// triangles fanning between the character and where that bone used to be. That is the
+    /// shape actually on screen, and it is a different fault from a rig that explodes.
+    ///
+    /// EVERY SURFACE, not surface 0. A composite character is a body plus a head plus garments,
+    /// concatenated as separate surfaces, and the body is usually first — so a garment left
+    /// behind is invisible to a probe that only ever looks at surface 0. The pale sheets hang
+    /// off forearms and chests, which is where garments are.
+    ///
+    /// Weight-bearing only: an index with a zero weight influences nothing and is common
+    /// padding, so counting it would report tearing on meshes that are perfectly fine.
+    /// </summary>
+    private static void ReportUndrivenWeights(
+        ArrayMesh array, Refii.Entities.Engine_EntitySkeleton skeleton)
+    {
+        var byBone = new Dictionary<int, int>();
+        int affected = 0;
+        int total = 0;
+
+        for (int s = 0; s < array.GetSurfaceCount(); ++s)
+        {
+            Godot.Collections.Array arrays = array.SurfaceGetArrays(s);
+            if (arrays.Count <= (int)Mesh.ArrayType.Weights ||
+                arrays[(int)Mesh.ArrayType.Bones].VariantType == Variant.Type.Nil ||
+                arrays[(int)Mesh.ArrayType.Weights].VariantType == Variant.Type.Nil)
+            {
+                continue;
+            }
+
+            int[] bones = arrays[(int)Mesh.ArrayType.Bones].AsInt32Array();
+            float[] weights = arrays[(int)Mesh.ArrayType.Weights].AsFloat32Array();
+
+            for (int v = 0; v + 3 < bones.Length && v + 3 < weights.Length; v += 4)
+            {
+                ++total;
+                bool torn = false;
+                for (int k = 0; k < 4; ++k)
+                {
+                    if (weights[v + k] <= 0.0001f || skeleton.IsPosed(bones[v + k]))
+                    {
+                        continue;
+                    }
+
+                    torn = true;
+                    byBone.TryGetValue(bones[v + k], out int count);
+                    byBone[bones[v + k]] = count + 1;
+                }
+
+                if (torn)
+                {
+                    ++affected;
+                }
+            }
+        }
+
+        if (affected == 0)
+        {
+            GD.Print($"    every weighted vertex of {total} attaches to a bone the guest " +
+                "drives — nothing is anchored in bind");
+            return;
+        }
+
+        var worst = new List<KeyValuePair<int, int>>(byBone);
+        worst.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+        var named = new List<string>();
+        for (int i = 0; i < worst.Count && i < 5; ++i)
+        {
+            named.Add($"'{skeleton.BoneName(worst[i].Key)}'[{worst[i].Key}] x{worst[i].Value}");
+        }
+
+        GD.Print($"    ANCHORED IN BIND: {affected} of {total} vertices carry weight on a bone " +
+            $"the guest never drives, across {byBone.Count} such bone(s) — " +
+            string.Join(", ", named) +
+            " — those vertices stay put while their parents move, which is the sheet of " +
+            "triangles on screen");
+    }
+
     private void ReportRig(Mesh mesh, Refii.Entities.Engine_EntitySkeleton skeleton)
     {
         if (_rigReports >= RigReportLimit || mesh is not ArrayMesh array || array.GetSurfaceCount() == 0)
@@ -555,6 +744,18 @@ public partial class GameEntities : Node3D
             (highest >= skeleton.BoneCount
                 ? " — OUT OF RANGE, the skeleton is not the model's table"
                 : " — in range"));
+
+        // The bind is the MODEL's, because that is the space the vertices are authored in. This
+        // line is how far the GUEST's own bind sits from it — informative, deliberately unused.
+        // The child hero is the reason: its guest bind is the adult rig, 1.85 against a 1.38
+        // mesh, so "same rig as the pose" is the wrong rule and this number is the proof.
+        GD.Print($"    bind: from the MODEL" +
+            (skeleton.BindGap > 0.0005f
+                ? $"; the guest's own bind differs by up to {skeleton.BindGap:0.####} at " +
+                  $"'{skeleton.BindGapBone}' — measured, not used"
+                : "; the guest's bind agrees with it"));
+
+        ReportUndrivenWeights(array, skeleton);
 
         // The decisive comparison, and the one that needs no camera. If the bind bounds do not
         // resemble the mesh the rig is wrong before the guest's pose is even applied; if they
@@ -742,6 +943,391 @@ public partial class GameEntities : Node3D
     }
 
     /// <summary>
+    /// TELLS THE RENDERER HOW BIG THE CHARACTER ACTUALLY IS, so it stops culling live ones.
+    ///
+    /// A skinned <see cref="MeshInstance3D"/> is culled against its MESH's bounding box, and
+    /// that box is the BIND pose — the extent of the character standing still in the shape the
+    /// artist authored. Bones driven from outside, as these are, move the skin without the mesh
+    /// resource ever hearing about it, so a character whose arm leaves the bind box has geometry
+    /// outside the volume the renderer is testing. When the whole box leaves the frustum the
+    /// character is dropped even though it is plainly on screen: it VANISHES.
+    ///
+    /// Nothing in our own bookkeeping can see that happen — the entity is still live, still
+    /// drawn, still rigged, still posed, and every counter says so. That is why the vanishing
+    /// showed up in the run and in none of the numbers.
+    ///
+    /// So state the extent rather than let it be inferred. The union of the mesh's own box and
+    /// the live bone cloud is a real measurement of where this character is, not a guess, and it
+    /// is only ever larger than what Godot would have assumed — a custom box that was too small
+    /// would cull MORE, so the margin matters.
+    /// </summary>
+    private void StateVisibleExtent(MeshInstance3D node, Refii.Entities.Engine_EntitySkeleton rig)
+    {
+        // Not every frame. The box only has to bound the pose, not track it, and re-stating it
+        // per character per frame is work the renderer does not need.
+        if (_ticks % ExtentRestateTicks != 0 || node.Mesh is not { } mesh)
+        {
+            return;
+        }
+
+        Aabb live = rig.Bounds(false);
+        Aabb box = mesh.GetAabb().Merge(live).Grow(BoneSkinMargin);
+
+        if (!box.Position.IsFinite() || !box.Size.IsFinite() || box.Size.Length() < 1e-3f)
+        {
+            return;  // a torn pose is one bad frame; do not bake it into the culling box
+        }
+
+        // Counted so the next run says whether this was the fault: a live cloud that fits inside
+        // the mesh box means the renderer was never culling wrongly and the vanishing is
+        // something else.
+        if (!mesh.GetAabb().Encloses(live))
+        {
+            ++_extentOverflow;
+        }
+
+        ++_extentStated;
+        node.CustomAabb = box;
+    }
+
+    /// <summary>
+    /// How far the skin can hang off the bones. A bone is a point; the flesh around it is not,
+    /// and the bone cloud alone would still cut a shoulder off at the joint.
+    /// </summary>
+    private const float BoneSkinMargin = 0.35f;
+
+    /// <summary>Half a second at 60fps. The box bounds the pose; it need not track it.</summary>
+    private const int ExtentRestateTicks = 30;
+
+    private int _extentStated;
+
+    private int _extentOverflow;
+
+    /// <summary>
+    /// DOES A CHARACTER FACE THE WAY IT WALKS?
+    ///
+    /// The conversion chain cannot answer whether the facing is RIGHT, only whether it is
+    /// applied consistently — and it is: the rendered forward works out to
+    /// <c>N·R·M⁻¹ · M(0,1,0) = N(guest forward)</c> algebraically, so the maths will always
+    /// agree with itself no matter how wrong the input is. Settling it needs a reference the
+    /// pipeline does not produce.
+    ///
+    /// Walking is that reference. People walk forwards, so over any distance the direction of
+    /// travel IS the facing, and it is measured from positions alone — no rotation, no basis,
+    /// no convention. If the two agree the facing is right and the fault is elsewhere; if they
+    /// sit at a constant offset, that offset is the bug and its VALUE names the fix: 180° is a
+    /// forward/back flip, ±90° is an axis convention, and a uniform spread is the facing not
+    /// tracking at all.
+    ///
+    /// The model's own forward is +Y, measured from the `.mdl` rather than assumed:
+    /// `Carry_SheathWeaponFront_DummyObject` sits at y=+0.1116 and `...Back...` at y=-0.1023 on
+    /// the same spine bone. In mesh space that is <c>M(0,1,0) = (0, 0, -1)</c>.
+    /// </summary>
+    private void SampleFacing(uint address, MeshInstance3D node, Quaternion rotation)
+    {
+        Vector3 here = node.Transform.Origin;
+        if (!_lastPosition.TryGetValue(address, out Vector3 last))
+        {
+            _lastPosition[address] = here;
+            return;
+        }
+
+        _lastPosition[address] = here;
+
+        // DID THIS ENTITY TELEPORT? The measurement that separates a torn read from a rate.
+        //
+        // We sample guest memory from Godot's thread while the guest simulates on its own,
+        // unlocked, so a read can splice bytes from either side of a write. A torn float is
+        // usually enormous, which puts the character out of the frustum for one frame and reads
+        // as it VANISHING — the same symptom the culling box also produces, from a completely
+        // different cause, which is why guessing between them was never going to work.
+        //
+        // A walking character covers ~0.025 per frame. Anything past this is a teleport: either
+        // a genuine one (a door, a cutscene — rare, and they exist) or a torn read. If the count
+        // is zero the reads are coherent and the jitter is purely the two clocks beating against
+        // each other, which needs interpolation and NOT locking. If it is large, the reads
+        // themselves are the fault and interpolating them would only smear the garbage.
+        float jump = (here - last).Length();
+        if (jump > TeleportThreshold)
+        {
+            ++_positionJumps;
+            if (jump > _worstJump)
+            {
+                _worstJump = jump;
+            }
+        }
+
+        ++_positionSamples;
+
+        // ONLY A CHARACTER THAT IS ACTUALLY WALKING CAN TESTIFY, and the threshold decides
+        // whether that is true. The first version used 0.004 per frame; a person walking at
+        // ~1.4 m/s at 60fps covers 0.023, so that admitted samples six times smaller than a
+        // stride — standing jitter, turning on the spot, physics settling — and every one of
+        // those has a travel direction that means nothing. Half the first run's samples landed
+        // off-axis and it was impossible to say whether that was a real defect or the noise
+        // floor. A walker moves at least this far.
+        Vector3 travel = here - last;
+        travel.Y = 0f;
+        if (travel.Length() < 0.015f)
+        {
+            return;
+        }
+
+        // KEPT RAW as well as flattened. Zeroing Y before printing would hide the one case the
+        // numbers most need to distinguish — a basis that sends the model's forward somewhere
+        // VERTICAL, whose horizontal remainder is then whatever noise is left over.
+        Vector3 rawForward = node.Transform.Basis * new Vector3(0f, 0f, -1f);
+        Vector3 forward = rawForward;
+        forward.Y = 0f;
+        if (forward.Length() < 1e-4f)
+        {
+            return;
+        }
+
+        float degrees = Mathf.RadToDeg(
+            travel.Normalized().SignedAngleTo(forward.Normalized(), Vector3.Up));
+
+        ++_facingSamples;
+        _facingSum += degrees;
+
+        // Bucketed as well as averaged, because a mean of zero is produced BOTH by a facing
+        // that is correct and by one that is uniformly wrong in both directions. The buckets
+        // tell those apart.
+        int bucket = (int)Mathf.Round(Mathf.PosMod(degrees, 360f) / 90f) % 4;
+        ++_facingBuckets[bucket];
+
+        // SPLIT BY KIND, because the guest has more than one orientation source and a mixture
+        // averages into nonsense. `sub_82211110` tries the Havok phantom first, then the
+        // component's own cache at +0xE0, then the delegate chain — and a previous defect in
+        // exactly this area had chickens turning correctly while every human faced one way. If
+        // one kind is clean and the other is not, that names the source; if both look the same,
+        // the fault is common to all of them and the source is not the question.
+        //
+        // Composite characters are the ones assembled from morph parts and carry no mesh
+        // resource name, which is the cheapest discriminator available here and happens to
+        // separate the humans from the animals and props almost exactly.
+        bool composite = node.Mesh is not ArrayMesh named || named.ResourceName.Length == 0;
+        int[] buckets = composite ? _facingBucketsComposite : _facingBucketsNamed;
+        ++buckets[bucket];
+
+        // THE RAW PAIRS, because a histogram cannot name a RELATIONSHIP.
+        //
+        // 21% on target with 43% at 180° and 28% at 90° is not a fixed convention error — a
+        // constant offset would pile into one bucket. A spread like that is what an
+        // input-DEPENDENT error looks like, and the candidates are distinguishable only by
+        // seeing the two angles side by side:
+        //
+        //   facing ==  travel          -> right
+        //   facing == -travel          -> the rotation is INVERTED (a transposed basis)
+        //   facing ==  travel + k*90   -> an axis convention, and k names it
+        //   facing ==  2*travel        -> the rotation is applied twice
+        //   no relation at all         -> we are reading something that is not the facing
+        //
+        // A dozen pairs settle which. Capped, because this is a work-list and not telemetry.
+        if (_facingPairs < FacingPairLimit)
+        {
+            ++_facingPairs;
+            float travelYaw = Mathf.RadToDeg(
+                Vector3.Forward.SignedAngleTo(travel.Normalized(), Vector3.Up));
+            float facingYaw = Mathf.RadToDeg(
+                Vector3.Forward.SignedAngleTo(forward.Normalized(), Vector3.Up));
+            // THE INPUT AS WELL AS THE OUTPUT. `facing` came back as exactly 0.0° on every
+            // sample, which no real rotation can produce through this basis — even identity
+            // renders 180° — so either the quaternion is degenerate or my reading of the basis
+            // is wrong. Printing the quaternion, its length and the forward vector settles
+            // which without another round of algebra: a zero/near-zero |q| is the degenerate
+            // branch, a unit |q| with a constant forward means the basis is at fault.
+            float length = Mathf.Sqrt((rotation.X * rotation.X) + (rotation.Y * rotation.Y) +
+                (rotation.Z * rotation.Z) + (rotation.W * rotation.W));
+
+            GD.Print($"    [facing] 0x{address:X8} travel={travelYaw,7:0.#}°  " +
+                $"facing={facingYaw,7:0.#}°  diff={degrees,7:0.#}°  " +
+                $"q=({rotation.X:0.###},{rotation.Y:0.###},{rotation.Z:0.###},{rotation.W:0.###}) " +
+                $"|q|={length:0.###}  " +
+                $"fwd=({rawForward.X:0.##},{rawForward.Y:0.##},{rawForward.Z:0.##})  " +
+                $"{(composite ? "composite" : "single")}");
+        }
+    }
+
+    /// <summary>
+    /// Samples the guest's own simulation clock against the frame we are about to draw.
+    ///
+    /// THE JITTER QUESTION, MEASURED RATHER THAN ARGUED. The guest advances on a clock we do
+    /// not drive — `sub_82276D10` schedules a fixed 30 Hz step against the wall clock, with a
+    /// game tick every second one — and Godot presents on vsync. Two unlocked clocks means a
+    /// state is shown for a VARYING number of frames even when every individual sample is
+    /// perfectly correct, and that unevenness is what a character walking in a straight line
+    /// looks like when it stutters.
+    ///
+    /// WHAT THIS COUNTS, PRECISELY, BECAUSE IT IS NOT THE POSE RATE. `dword_83319650` is
+    /// bumped only by `sub_821D4628` and `sub_823D9898`, and `sub_82275F68` under them divides
+    /// its delta by 15.0 — so this is the 15 Hz GAME tick. Bone poses are driven from the
+    /// other world-advance path, `sub_822AF5D8` -> `sub_82278C20` -> `sub_8220D1B8` ->
+    /// `sub_82204FF0`, which runs at 30 Hz and never touches this counter. So the histogram
+    /// below describes the game tick against the display, NOT animation judder, and reading it
+    /// as the latter would be the same mistake as comparing a raw count to a deduplicated one.
+    ///
+    /// It is still worth having: it is the only direct statement of whether the guest is
+    /// keeping its intended schedule at all, and a guest that has fallen off 15 Hz is a
+    /// different problem from one whose clock merely disagrees with ours.
+    ///
+    /// Deliberately a run total: the beat is a property of the two rates and takes seconds of
+    /// frames to show up, so a per-frame reset would report noise.
+    /// </summary>
+    private void SampleSimClock()
+    {
+        uint tick = HostBridge.SimTick;
+        ++_renderFrames;
+
+        if (_simClockStartMsec == 0)
+        {
+            _simClockStartMsec = Godot.Time.GetTicksMsec();
+            _simTickLast = tick;
+            return;
+        }
+
+        // INEQUALITY, not subtraction. The counter's reset behaviour across a level load is
+        // not settled, so a difference is not a trustworthy count of ticks — but "it changed"
+        // is trustworthy whatever the counter did.
+        if (tick == _simTickLast)
+        {
+            ++_framesOnThisState;
+            return;
+        }
+
+        // SKIPPED STATES, counted separately and defensively. A difference is only meaningful
+        // while the counter is monotonic, and whether a level load resets it is unproven — so
+        // an implausible step is DISCARDED rather than reported as a thousand lost frames. What
+        // survives is the case that matters: the guest ticking faster than we draw, where we
+        // never see some of the states it produced.
+        uint delta = tick - _simTickLast;
+        if (delta > 1u && delta < 1000u)
+        {
+            _simStatesSkipped += (int)(delta - 1u);
+        }
+
+        _simTickLast = tick;
+        ++_simAdvances;
+
+        // Bucket how long the state we just finished was on screen for. Index 0 is one frame.
+        int shown = _framesOnThisState + 1;
+        _framesOnThisState = 0;
+        _stateRepeats[Mathf.Min(shown - 1, _stateRepeats.Length - 1)]++;
+    }
+
+    /// <summary>
+    /// Renders the two clocks and the beat between them.
+    ///
+    /// Reports both rates because either one alone is unfalsifiable: a sim rate with no render
+    /// rate beside it cannot say whether the mismatch is the guest running slow or Godot
+    /// running fast, and those call for opposite responses.
+    /// </summary>
+    private string SimClockReport()
+    {
+        if (_simClockStartMsec == 0 || _simAdvances == 0)
+        {
+            return "\n    game tick: the guest has not advanced a tick yet";
+        }
+
+        float seconds = (Godot.Time.GetTicksMsec() - _simClockStartMsec) / 1000f;
+        if (seconds < 1f)
+        {
+            return "\n    game tick: too little wall time to state a rate";
+        }
+
+        int settled = _stateRepeats[0] + _stateRepeats[1] + _stateRepeats[2] + _stateRepeats[3];
+        int dominant = 0;
+        for (int i = 1; i < _stateRepeats.Length; ++i)
+        {
+            if (_stateRepeats[i] > _stateRepeats[dominant])
+            {
+                dominant = i;
+            }
+        }
+
+        bool locked = settled != 0 && _stateRepeats[dominant] >= (int)(0.95f * settled);
+
+        return $"\n    game tick: the guest advanced {_simAdvances / seconds:0.#} time(s)/s, " +
+            $"Godot drew {_renderFrames / seconds:0.#} frame(s)/s over {seconds:0.#}s" +
+            $"\n    each game tick was shown for: " +
+            $"1 frame x{_stateRepeats[0]}, 2 x{_stateRepeats[1]}, 3 x{_stateRepeats[2]}, " +
+            $"4+ x{_stateRepeats[3]}" +
+            (locked
+                ? $" — {dominant + 1} frame(s) every time, so these two clocks are IN STEP"
+                : " — an UNEVEN spread, which is two clocks beating; that shows as stutter " +
+                  "however correct each sample is, and the answer to it is interpolation, " +
+                  "never locking") +
+            (_simStatesSkipped == 0
+                ? ""
+                : $"\n    game ticks we never sampled: {_simStatesSkipped} — the guest is " +
+                  "ticking faster than we look at it");
+    }
+
+    private uint _simTickLast;
+
+    private ulong _simClockStartMsec;
+
+    private int _simStatesSkipped;
+
+    private int _renderFrames;
+
+    private int _simAdvances;
+
+    private int _framesOnThisState;
+
+    /// <summary>How many frames each sim state stayed on screen: 1, 2, 3, 4 or more.</summary>
+    private readonly int[] _stateRepeats = new int[4];
+
+    /// <summary>
+    /// Eighty times a walking stride in one frame. Below this is movement; above it is either a
+    /// scripted teleport or a read that straddled a write.
+    /// </summary>
+    private const float TeleportThreshold = 2.0f;
+
+    private int _positionJumps;
+
+    private int _positionSamples;
+
+    private float _worstJump;
+
+    private int _facingPairs;
+
+    /// <summary>Enough pairs to see the relationship, few enough to read in one screen.</summary>
+    private const int FacingPairLimit = 14;
+
+    /// <summary>Quadrant counts for composite (morph-assembled) characters.</summary>
+    private readonly int[] _facingBucketsComposite = new int[4];
+
+    /// <summary>Quadrant counts for characters drawn from a single named model.</summary>
+    private readonly int[] _facingBucketsNamed = new int[4];
+
+    /// <summary>Renders one quadrant histogram, with the share that landed on target.</summary>
+    private static string Quadrants(int[] buckets)
+    {
+        int total = buckets[0] + buckets[1] + buckets[2] + buckets[3];
+        return total == 0
+            ? "no moving samples"
+            : $"0°={buckets[0]} 90°={buckets[1]} 180°={buckets[2]} 270°={buckets[3]} " +
+              $"({100f * buckets[0] / total:0}% on target of {total})";
+    }
+
+    /// <summary>Last frame's position per rigged entity, for the travel direction.</summary>
+    private readonly Dictionary<uint, Vector3> _lastPosition = new();
+
+    private int _facingSamples;
+
+    private float _facingSum;
+
+    /// <summary>Counts of samples nearest 0°, 90°, 180° and 270° off the direction of travel.</summary>
+    private readonly int[] _facingBuckets = new int[4];
+
+    private int _poseYawSamples;
+
+    private float _poseYawSum;
+
+    private float _poseYawWorst;
+
+    /// <summary>
     /// A guest entity's transform, in Godot world space.
     ///
     /// Three conversions have to agree here and it is worth naming all three, because using
@@ -764,8 +1350,18 @@ public partial class GameEntities : Node3D
         float lengthSquared = (rotation.X * rotation.X) + (rotation.Y * rotation.Y) +
             (rotation.Z * rotation.Z) + (rotation.W * rotation.W);
 
-        if (!float.IsFinite(lengthSquared) || lengthSquared < 1e-8f)
+        // A ROTATION QUATERNION IS UNIT. Anything else is not a rotation we can use, and the
+        // old guard — finite and not near zero — let a great deal through: measured live,
+        // character rotations arrived as `(0, 0, -8.98e34, 0)` and `(0, 0, 19169.12, -0)`.
+        //
+        // The second of those is the dangerous shape. The `s = 2/|q|²` form self-normalises, so
+        // a wildly non-unit quaternion does not blow up — it quietly becomes a PERFECTLY VALID
+        // rotation that has nothing to do with the character, and every downstream check passes.
+        // Rejecting it makes the failure visible as "everyone faces one way" instead of
+        // "everyone faces a plausible wrong way", and the counter below says how often.
+        if (!float.IsFinite(lengthSquared) || lengthSquared < 0.98f || lengthSquared > 1.02f)
         {
+            ++NonUnitRotations;
             return new Transform3D(Basis.Identity, ToGodot(position));
         }
 
@@ -792,4 +1388,12 @@ public partial class GameEntities : Node3D
 
     /// <summary>Guest world space to Godot world space, outside the region root.</summary>
     private static Vector3 ToGodot(Vector3 guest) => new(-guest.X, guest.Z, guest.Y);
+
+    /// <summary>
+    /// Entity transforms whose quaternion was not unit and was refused. Run total.
+    ///
+    /// The number that says whether the bridge is handing us rotations at all. Non-zero means
+    /// some entity's orientation source is still returning something that is not a rotation.
+    /// </summary>
+    public static int NonUnitRotations;
 }

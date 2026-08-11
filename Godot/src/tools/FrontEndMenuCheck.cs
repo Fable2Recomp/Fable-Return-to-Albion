@@ -77,6 +77,17 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 				? $"[menu-check] '{backdrop}' is up but carries no 'Buttons' component group — rows will be text only"
 				: $"[menu-check] cloning row art from '{template.Name}' under {backdrop}");
 
+			// THE SHIPPED ROWS GO AWAY, as they do in the game — GameUi.AdoptMenu hides this
+			// same group after every rebuild. Without it the harness draws two menus: ours, and
+			// the twelve components the presentation ships with their authored placeholder
+			// labels ("DEFAULT_TEXT_ID") sitting across ours. That is a harness that disagrees
+			// with the thing it exists to check.
+			if (Engine_UiTheme.FindByName(Built, Engine_FrontEndMenuView.RowGroupName)
+				is Node3D shipped)
+			{
+				shipped.Visible = false;
+			}
+
 			// WHERE THE FILE PUTS THE MENU, in depth. The view anchors itself at z 0, which is
 			// a number nobody read — and it decides whether the rows are drawn over or under
 			// the gender card, whose own poses reach z -134.
@@ -129,6 +140,41 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			{
 				GD.Print($"[menu-check] {_cards.Describe()}");
 			}
+		}
+
+		// REFII_MENU_NAV=<n> steps the highlight down n times before the capture, so a still can
+		// catch the column MID-SLIDE. The capture waits two frames, which is ~33ms into a 150ms
+		// tween — far enough in to see rows between slots, and the only way a screenshot can say
+		// anything about an animation at all.
+		// REFII_MENU_BACKDROP=0 keeps the presentation mounted as the ART SOURCE and stops it
+		// being the picture. With no guest, nothing hides the six pages the screen is not on, so
+		// the backdrop draws the load-game cards, the friends page and a full-screen dialog over
+		// whatever is being looked at.
+		if (System.Environment.GetEnvironmentVariable("REFII_MENU_BACKDROP") == "0" &&
+			Built is not null)
+		{
+			Built.Visible = false;
+		}
+
+		if (int.TryParse(System.Environment.GetEnvironmentVariable("REFII_MENU_NAV"), out int steps))
+		{
+			for (int i = 0; i < steps; ++i)
+			{
+				// A whole second per step, so the model's auto-repeat interval has always
+				// elapsed and each call is one move rather than a swallowed repeat.
+				_view.Navigate(1, 1.0);
+			}
+
+			GD.Print($"[menu-check] stepped down {steps}x — {_view.Describe()}");
+		}
+
+		// REFII_MENU_ACTIVATE=1 presses A after the steps, so a capture can catch an EXPANDED
+		// submenu. The child rows are the only place the red tab face and the child indent are
+		// visible at all, and neither can be checked from a screenshot of the root list.
+		if (System.Environment.GetEnvironmentVariable("REFII_MENU_ACTIVATE") == "1")
+		{
+			string? dispatched = _view.Activate();
+			GD.Print($"[menu-check] activated — {(dispatched ?? "handled here")}\n{_view.Describe()}");
 		}
 
 		CaptureIfRequested();
@@ -360,7 +406,9 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 				CanPressA: true,
 				LoadCardCursor: 0,
 				EnumeratedSaves: (uint)_saveCount),
-			_saveCount);
+			// Limit 6, which is what `sub_82378618` stores over `dword_83319620` before the menu
+			// can dispatch — not the 150 that sits in the image.
+			new HostBridge.SaveState(_signedIn, _saveCount, Engine_FrontEndMenu.DefaultSaveLimit));
 
 	public override void _Process(double delta)
 	{

@@ -90,6 +90,18 @@ public sealed class Engine_UiTheme
 		Walk(presentation);
 	}
 
+	/// <summary>
+	/// Forgets the catalogue, for when the presentation it was taken from is being freed.
+	///
+	/// Every entry is a node inside that tree, so leaving them behind hands the next caller a
+	/// dangling reference. Clones already taken out are unaffected — that is what they are for.
+	/// </summary>
+	public void Clear()
+	{
+		_art.Clear();
+		ArtSource = string.Empty;
+	}
+
 	private void Walk(Node node)
 	{
 		if (node is Node3D element && !element.HasMeta("name_synthesised"))

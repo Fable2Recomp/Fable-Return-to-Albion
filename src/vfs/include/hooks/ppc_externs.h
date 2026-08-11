@@ -341,3 +341,16 @@ PPC_EXTERN_FUNC(__imp__sub_82C72E60);
 PPC_EXTERN_FUNC(__imp__sub_82C73028);
 PPC_EXTERN_FUNC(__imp__sub_82C8C718);
 PPC_EXTERN_FUNC(rex_lhVFS_GetGlobalDataProvider);
+
+// The guest's XAudio API shims — the audio seam Godot plays through.
+// Hooked in src/hooks/xaudio_voices.cpp. Named by address rather than through
+// refii_config.toml on purpose: a config name only takes effect after a full codegen, and
+// it would rename the very symbols these hooks bind to, silently detaching the mirror.
+PPC_EXTERN_FUNC(__imp__sub_82CD92B0);  // XAudioDestroyVoice
+PPC_EXTERN_FUNC(__imp__sub_82CD93E0);  // XAudioSetChannelVolumes
+PPC_EXTERN_FUNC(__imp__sub_82CD9490);  // XAudioSubmitSourceBuffer
+PPC_EXTERN_FUNC(__imp__sub_82CD9548);  // XAudioStartVoice
+PPC_EXTERN_FUNC(__imp__sub_82CD9590);  // XAudioStopVoice
+PPC_EXTERN_FUNC(__imp__sub_82CD97B0);  // XAudioSetVolume
+PPC_EXTERN_FUNC(__imp__sub_82CD9828);  // XAudioSetPitch
+PPC_EXTERN_FUNC(__imp__sub_82CD9B00);  // XAudioCreateSourceVoice

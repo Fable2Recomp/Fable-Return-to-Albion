@@ -23,6 +23,10 @@ set(REFII_VFS_RUNTIME_SOURCES
     # refii_vfs, which BOTH link, and not in the hook set: a copy in each library
     # means the hook writes one global and the bridge reads another.
     ${REFII_VFS_ROOT}/src/core/bink_frame_state.cpp
+    # Audio state, shared for the same reason and by three libraries rather than two:
+    # the Stage 2 voice hooks (refii_generated), the Stage 1 driver (refii_host) and the
+    # host bridge all link refii_vfs, so this is the one place they can agree.
+    ${REFII_VFS_ROOT}/src/core/audio_state.cpp
 )
 
 set(REFII_VFS_HOOK_INTERNAL_SOURCES
@@ -77,6 +81,8 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/request_provider.cpp
     ${REFII_VFS_ROOT}/src/hooks/streams.cpp
     ${REFII_VFS_ROOT}/src/hooks/file_api.cpp
+    # The guest's XAudio shims, mirrored so Godot can play each voice itself.
+    ${REFII_VFS_ROOT}/src/hooks/xaudio_voices.cpp
 )
 
 set(REFII_VFS_HOOK_PARTS

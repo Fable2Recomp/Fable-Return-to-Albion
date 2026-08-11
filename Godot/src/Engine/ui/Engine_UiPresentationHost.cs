@@ -93,6 +93,29 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// </summary>
 	public Engine_UiTheme? Theme { get; private set; }
 
+	/// <summary>
+	/// Art as the FILE authors it, with nothing the guest has done to it applied.
+	///
+	/// TWO CATALOGUES, BECAUSE THERE ARE TWO QUESTIONS. <see cref="Theme"/> is the screen that is
+	/// on the wall: it carries the guest's live slides, visibility, transforms and opacity,
+	/// because that is what the player is looking at. This is the pattern book — what the artist
+	/// drew — and a host-authored screen wants that one.
+	///
+	/// The distinction is not academic; it was a bug. `Engine_UiScreen.ApplyLiveOpacity`
+	/// OVERWRITES an element's authored opacity with the guest's, and the builder bakes the
+	/// accumulated result into each material. The expandable menu's twelve row components sit
+	/// faded out in a running front end — Godot owns the menu, so the guest's own `g_Menu` never
+	/// populates or fades them in — so a row tab cloned from the live tree came out invisible.
+	/// The tabs drew in the harness, which has no guest, and vanished in the game, which was the
+	/// whole tell.
+	///
+	/// Built once per screen NAME and kept. The tree is never added to the scene, so it costs
+	/// memory and nothing else: a Godot node does not have to be in the tree to be duplicated.
+	/// </summary>
+	public Engine_UiTheme? Templates { get; private set; }
+
+	private readonly Dictionary<string, Node3D> _templateTrees = new(StringComparer.OrdinalIgnoreCase);
+
 	/// <summary>The node tree currently mounted, or null before the first screen is shown.</summary>
 	protected Node3D? Built { get; private set; }
 
@@ -484,6 +507,34 @@ public partial class Engine_UiPresentationHost : Node3D
 		return built;
 	}
 
+	/// <summary>
+	/// Takes the mounted screen down and forgets it.
+	///
+	/// <see cref="Show"/> only ever frees the old screen on its way to a NEW one, which is
+	/// right for a viewer flipping through presentations and wrong for a game: when the guest
+	/// leaves the front end there is no next screen, so the last one stayed mounted. It does
+	/// not stay hidden either — the layer is concealed only while the guest has NO live UI at
+	/// all, so the first in-game presentation to stand up brings the whole dead front end back
+	/// with it, over the running game.
+	///
+	/// The art catalogue goes with it. Every entry points at a node inside the tree being
+	/// freed, and a caller asking the theme for art afterwards would be handed a dangling
+	/// reference. Clones already taken out of it are unaffected — that is why they are clones.
+	/// </summary>
+	public void ClearScreen()
+	{
+		if (Built is null)
+		{
+			return;
+		}
+
+		RemoveChild(Built);
+		Built.QueueFree();
+		Built = null;
+		CurrentScreen = null;
+		Theme?.Clear();
+	}
+
 	/// <summary>Rebuilds the current screen — after the live slides have changed.</summary>
 	public void Rebuild()
 	{
@@ -533,12 +584,75 @@ public partial class Engine_UiPresentationHost : Node3D
 		// the catalogue is rebuilt here rather than once at load. Cataloguing every screen up
 		// front would mean building all 52 presentations to find one tab.
 		Theme?.Catalogue(Built, name);
+		CatalogueTemplates(name);
 
 		// Building a camera is not enough — one has to be made current or the viewport
 		// renders through Godot's default camera and the screen looks empty.
 		Camera3D camera = Engine_UiSceneBuilder.ActivateCamera(Built, UseFramingCamera);
 
 		OnScreenShown(screen, builder, camera);
+	}
+
+	/// <summary>
+	/// Catalogues <see cref="Templates"/> from a FILE-ONLY build of a screen.
+	///
+	/// The live inputs are withheld for the duration and put back afterwards, which is the whole
+	/// trick: the same parser and the same builder produce the artist's version when they are
+	/// given nothing from the guest. No second implementation, and no way for the two to drift.
+	///
+	/// Built once per name. A screen is rebuilt on every guest state change and the pattern book
+	/// does not change with it, so doing this per rebuild would double the cost of the thing
+	/// that already dominates a front-end frame.
+	/// </summary>
+	private void CatalogueTemplates(string name)
+	{
+		if (!_templateTrees.TryGetValue(name, out Node3D? tree))
+		{
+			IReadOnlyList<int>? slides = LiveSlides;
+			IReadOnlyList<string?>? text = LiveText;
+			IReadOnlyList<float?>? opacity = LiveOpacity;
+			IReadOnlyList<bool>? visible = LiveVisible;
+			IReadOnlyList<float?[]?>? transform = LiveTransform;
+			int sceneSlide = SceneSlide;
+
+			try
+			{
+				LiveSlides = null;
+				LiveText = null;
+				LiveOpacity = null;
+				LiveVisible = null;
+				LiveTransform = null;
+
+				// THE SCENE SLIDE GOES TOO, and forgetting it is what left the pattern book
+				// empty. A screen is built on ONE page, and the builder drops an inactive
+				// element's whole subtree — so cataloguing on the guest's current page (1, the
+				// menu's Intro) threw away the very components a host-owned screen wants to
+				// borrow: the row tabs, the highlight cursor, the gender cards. Zero is the
+				// preview heuristic, which takes each owner's first real slide and is the
+				// closest thing the file has to "everything the artist drew".
+				SceneSlide = 0;
+				tree = BuildDetached(name, out _);
+			}
+			finally
+			{
+				LiveSlides = slides;
+				LiveText = text;
+				LiveOpacity = opacity;
+				LiveVisible = visible;
+				LiveTransform = transform;
+				SceneSlide = sceneSlide;
+			}
+
+			if (tree is null)
+			{
+				return;
+			}
+
+			_templateTrees[name] = tree;
+		}
+
+		Templates ??= new Engine_UiTheme { Fonts = Fonts, Strings = Strings };
+		Templates.Catalogue(tree, name);
 	}
 
 	/// <summary>
@@ -561,6 +675,11 @@ public partial class Engine_UiPresentationHost : Node3D
 
 	public override void _ExitTree()
 	{
+		// The template trees were never added to the scene, so nothing else will free them.
+		foreach (Node3D tree in _templateTrees.Values)
+			tree.QueueFree();
+		_templateTrees.Clear();
+
 		foreach (IDisposable owned in _owned)
 			owned.Dispose();
 		_owned.Clear();

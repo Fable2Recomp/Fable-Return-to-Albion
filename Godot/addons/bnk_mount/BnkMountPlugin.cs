@@ -747,8 +747,13 @@ public partial class BnkMountPlugin : EditorPlugin
 
             EditorInterface.Singleton.InspectObject(stream);
 
-            GD.Print($"[bnk_mount] {virtualPath} -> {stream.GetLength():0.00}s, " +
-                     $"{stream.MixRate} Hz, {(stream.Stereo ? "stereo" : "mono")}");
+            // Hear it, don't just look at it — through the SAME player the packaged editor
+            // and the running game use, so "it plays in the browser" and "it plays in the
+            // game" cannot drift apart.
+            Refii.Audio.Engine_AudioPreview.Play(this, stream);
+
+            GD.Print($"[bnk_mount] {virtualPath} -> " +
+                     Refii.Audio.Engine_AudioPreview.Describe(stream));
             return;
         }
 

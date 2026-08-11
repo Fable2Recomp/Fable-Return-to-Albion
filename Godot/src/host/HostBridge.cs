@@ -31,18 +31,37 @@ public static class HostBridge
 	/// the game does not limp, it stops, and it stops before anything has written a guest log
 	/// segment to look in. Adding export 33 without touching this line is what that looks like.
 	/// </summary>
-	public const int ExpectedAbiVersion = 42;
+	public const int ExpectedAbiVersion = 50;
 
 	private const int MessageCapacity = 512;
 
 	static HostBridge() => Engine_NativeLibraries.Install();
 
 	/// <summary>
-	/// The loaded library's ABI version, or null when it could not be loaded at all.
-	/// Distinguishes "not built yet" from "built but out of date", which otherwise look
-	/// the same at the call site.
+	/// The bridge's version if it is USABLE, and null if it is not — either because the library
+	/// would not load or because it is a version this binding cannot speak.
+	///
+	/// A MISMATCH USED TO PASS EVERY GUARD IN THE GAME. Callers write
+	/// <c>if (TryGetAbiVersion() is null) return;</c> and mean "the bridge is not usable", but
+	/// this returned the raw number — so a stale library answered with a version, every guard
+	/// accepted it, and the whole app ran against a bridge whose guest `GameSession` had
+	/// refused to initialise. That is not a limp, it is a segfault in UI startup with an ABI
+	/// line thirty lines earlier as the only clue.
+	///
+	/// Refusing here fixes every call site at once, which is the point: the alternative is
+	/// trusting a few dozen guards to each remember to compare against
+	/// <see cref="ExpectedAbiVersion"/>. Use <see cref="TryGetRawAbiVersion"/> when you want to
+	/// REPORT the version, which is the one case that genuinely wants the stale number.
 	/// </summary>
-	public static int? TryGetAbiVersion()
+	public static int? TryGetAbiVersion() =>
+		TryGetRawAbiVersion() is { } version && version == ExpectedAbiVersion ? version : null;
+
+	/// <summary>
+	/// The loaded library's ABI version whatever it is, or null when it could not be loaded at
+	/// all. Distinguishes "not built yet" from "built but out of date" — which is exactly the
+	/// distinction a diagnostic needs and a guard must not make.
+	/// </summary>
+	public static int? TryGetRawAbiVersion()
 	{
 		try
 		{
@@ -304,6 +323,190 @@ public static class HostBridge
 	public static uint FinishMovie() => RefiiHostFinishMovie();
 
 	/// <summary>
+	/// One of the guest's XAudio source voices, as the voice hooks last saw it.
+	///
+	/// Field order and widths mirror <c>refii::vfs::VoiceRecord</c>; the native side
+	/// static_asserts the sizes match, because a silent mismatch marshals garbage rather
+	/// than failing to build.
+	/// </summary>
+	[StructLayout(LayoutKind.Sequential)]
+	public struct GuestVoice
+	{
+		/// <summary>The guest's voice pointer. Unique only together with Generation.</summary>
+		public uint Handle;
+
+		/// <summary>
+		/// Bumped every time a voice is created. The guest's allocator reuses handles, so
+		/// this is what stops a new sound inheriting the previous one's stream.
+		/// </summary>
+		public uint Generation;
+
+		public uint SampleRate;
+		public uint Channels;
+
+		/// <summary>Non-zero between the guest's Start and Stop.</summary>
+		public uint Started;
+
+		/// <summary>Set once the guest has destroyed the voice.</summary>
+		public uint Retired;
+
+		/// <summary>Linear amplitude, 1.0 unity. The guest never speaks in decibels.</summary>
+		public float Volume;
+
+		/// <summary>
+		/// Frequency ratio. The guest states OCTAVES — CSourceStream::SetPitch stores
+		/// <c>powf(2.0f, arg)</c> — and the native side converts once so no consumer has
+		/// to remember the unit. This is directly Godot's PitchScale.
+		/// </summary>
+		public float PitchRatio;
+
+		/// <summary>PCM bytes waiting to be drained for this voice.</summary>
+		public uint QueuedBytes;
+
+		/// <summary>Bumped per submit, so a consumer can spot buffers it missed.</summary>
+		public uint SubmittedSeq;
+
+		/// <summary>
+		/// The guest's own spatialisation, folded to a stereo balance — not something the
+		/// host invented. These come from the X3DAudio matrix the game computed for this
+		/// voice and handed to XAudioSetChannelVolumes, so following them keeps a per-voice
+		/// mix positioned the way the game intended.
+		/// </summary>
+		public float PanLeft;
+
+		/// <inheritdoc cref="PanLeft"/>
+		public float PanRight;
+	}
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostPullAudio(float[] outFrames, uint maxFrames);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostAudioSampleRate();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostAudioChannels();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostAudioSamplesPerFrame();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostAudioFloatsPerFrame();
+
+	[DllImport(Library)]
+	private static extern void RefiiHostAudioStats(
+		out uint outQueuedFrames, out ulong outPushed, out ulong outPopped,
+		out ulong outDropped, out int outDriverInstalled);
+
+	// [Out] IS LOad-BEARING, not decoration.
+	//
+	// Without it a run measured this exactly: the native side reported "11 live voices,
+	// 99328 bytes held, 6954 snapshots" — it was writing 11 valid records on every call —
+	// while C# received an array of all zeros and therefore never drained a single byte.
+	// .NET only pins an array and lets the callee write through it when the element type
+	// is blittable; otherwise it marshals a COPY, and the default direction for an array
+	// parameter is in-only, so everything the native side wrote was discarded. [Out] forces
+	// the copy back, and costs nothing when the array was pinned anyway.
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetVoices([Out] GuestVoice[]? outVoices, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostTakeVoicePcm(
+		uint handle, uint generation, [Out] byte[] outPcm, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostVoiceCaptureActive();
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetVoicePlaybackOwned(int owned);
+
+	/// <summary>
+	/// Takes up to <paramref name="maxFrames"/> mixed frames as interleaved stereo float.
+	///
+	/// THIS CALL IS THE GUEST'S AUDIO CLOCK. Each frame taken credits the guest for one
+	/// more, which is what lets its mixer produce the next. Only call it with somewhere to
+	/// put the audio: draining faster than playback lets the guest run ahead of what is
+	/// audible, which is the drift this whole path exists to remove.
+	/// </summary>
+	public static uint PullAudio(float[] outFrames, uint maxFrames) =>
+		RefiiHostPullAudio(outFrames, maxFrames);
+
+	/// <summary>The guest's output rate — 48000, stated by its mastering voice.</summary>
+	public static uint AudioSampleRate() => RefiiHostAudioSampleRate();
+
+	/// <summary>Channels the host receives, after the 5.1 fold.</summary>
+	public static uint AudioChannels() => RefiiHostAudioChannels();
+
+	/// <summary>256 — one frame is 5.333 ms, so 187.5 frames a second.</summary>
+	public static uint AudioSamplesPerFrame() => RefiiHostAudioSamplesPerFrame();
+
+	/// <summary>Floats in one frame, i.e. samples times channels.</summary>
+	public static uint AudioFloatsPerFrame() => RefiiHostAudioFloatsPerFrame();
+
+	/// <summary>
+	/// Audio health. <paramref name="pushed"/> should settle at 187.5/s once the guest is
+	/// producing — a rate that is not that means the clock is wrong however it sounds.
+	/// <paramref name="dropped"/> climbing means nothing is draining.
+	/// </summary>
+	public static void AudioStats(
+		out uint queuedFrames, out ulong pushed, out ulong popped, out ulong dropped,
+		out bool driverInstalled)
+	{
+		RefiiHostAudioStats(out queuedFrames, out pushed, out popped, out dropped,
+			out int installed);
+		driverInstalled = installed != 0;
+	}
+
+	/// <summary>
+	/// Snapshots the guest's live voices. Returns the number that exist, which may exceed
+	/// the buffer — grow and ask again rather than lose voices.
+	/// </summary>
+	public static uint GetVoices(GuestVoice[]? outVoices)
+	{
+		uint total = RefiiHostGetVoices(outVoices, outVoices is null ? 0u : (uint)outVoices.Length);
+
+		// A non-zero count with a zeroed first record can only mean the payload did not
+		// survive marshalling — the native side never reports a voice with a null handle.
+		// Said once, because the symptom otherwise reads as "the guest has no audio", which
+		// is the opposite of the truth and cost two runs to tell apart.
+		if (!_reportedVoiceMarshalFault && total > 0 && outVoices is not null &&
+			outVoices.Length > 0 && outVoices[0].Handle == 0)
+		{
+			_reportedVoiceMarshalFault = true;
+			GD.PushError(
+				$"[audio] the bridge reported {total} voices but the first record came back " +
+				"zeroed — the array is not reaching native code writable. Check [Out] on " +
+				"RefiiHostGetVoices.");
+		}
+
+		return total;
+	}
+
+	private static bool _reportedVoiceMarshalFault;
+
+	/// <summary>
+	/// Drains one voice's PCM as interleaved 16-bit samples. The generation guards against
+	/// the guest recycling a handle: a mismatch returns 0 rather than the wrong sound.
+	/// </summary>
+	public static uint TakeVoicePcm(uint handle, uint generation, byte[] outPcm) =>
+		RefiiHostTakeVoicePcm(handle, generation, outPcm, (uint)outPcm.Length);
+
+	/// <summary>
+	/// True once the voice hooks have seen any voice — distinguishes "built but the guest
+	/// has not reached audio yet" from "not running".
+	/// </summary>
+	public static bool VoiceCaptureActive() => RefiiHostVoiceCaptureActive() != 0;
+
+	/// <summary>
+	/// Hands per-voice playback to Godot. While set, the guest's mixed frame is discarded
+	/// rather than queued, because playing both would double every sound. The guest's
+	/// mixer keeps running and keeps being credited — that is the clock, and it does not
+	/// stop being the clock just because nobody is listening to it.
+	/// </summary>
+	public static void SetVoicePlaybackOwned(bool owned) =>
+		RefiiHostSetVoicePlaybackOwned(owned ? 1 : 0);
+
+	/// <summary>
 	/// The live value of one attribute on one element, as the running game holds it.
 	/// </summary>
 	public readonly record struct LiveAttribute(uint RawValue, bool Present)
@@ -457,7 +660,7 @@ public static class HostBridge
 	/// genuinely local and using it as model-space would splay the rig apart.
 	/// </summary>
 	public readonly record struct BonePose(
-		int BoneCount, uint Space, float[] Transforms, int[] Parents)
+		int BoneCount, uint Space, bool Torn, float[] Transforms, int[] Parents)
 	{
 		/// <summary>True when the bones are already object-space — no parent walk needed.</summary>
 		public bool IsModelSpace => Space == 2;
@@ -500,11 +703,11 @@ public static class HostBridge
 		_poseParents ??= new int[MaxBones];
 
 		uint bones = RefiiHostGetEntityPose(
-			entity, _poseTransforms, _poseParents, MaxBones, out uint space);
+			entity, _poseTransforms, _poseParents, MaxBones, out uint space, out uint torn);
 
 		return bones == 0
 			? null
-			: new BonePose((int)bones, space, _poseTransforms, _poseParents);
+			: new BonePose((int)bones, space, torn != 0, _poseTransforms, _poseParents);
 	}
 
 	/// <summary>
@@ -543,8 +746,9 @@ public static class HostBridge
 		System.Array.Copy(_poseParents, parents, parents.Length);
 
 		// Space 1 — LOCAL, and said explicitly so a caller cannot mistake this for the live
-		// pose, which arrives already composed.
-		return new BonePose((int)bones, 1, transforms, parents);
+		// pose, which arrives already composed. Never torn: this is the SKELETON's array, not
+		// the component's, and it is written once at load rather than every frame.
+		return new BonePose((int)bones, 1, false, transforms, parents);
 	}
 
 	/// <summary>
@@ -860,6 +1064,16 @@ public static class HostBridge
 	/// </summary>
 	public static bool IsInGame => RefiiHostIsInGame() != 0;
 
+	/// <summary>
+	/// The guest's simulation tick — <c>dword_83319650</c>, incremented by the world update.
+	///
+	/// This is the guest's OWN clock, and it is the only honest answer to "has the simulation
+	/// moved since we last looked". Godot's frame delta and the audio rate both measure our
+	/// side of the boundary; the guest advances on neither. Compare successive values for
+	/// INEQUALITY only — do not subtract and assume the difference is a count of ticks.
+	/// </summary>
+	public static uint SimTick => RefiiHostGetSimTick();
+
 	/// <summary>The engine-preloading gate state 7 of CmdLevelChange_Update polls.</summary>
 	public readonly record struct RenderFence(
 		uint Manager, double Submitted, double Deadline, bool Busy,
@@ -952,6 +1166,147 @@ public static class HostBridge
 	}
 
 	/// <summary>
+	/// The level the guest is STANDING IN, with the key that identifies it.
+	///
+	/// <see cref="Key"/> is the guest's own FNV-1 hash of lowercase "world/level", held at
+	/// Level+0xB4. It is the value to compare frame to frame: one aligned dword that changes on
+	/// exactly the transitions that reload a level, whichever mechanism caused them.
+	/// </summary>
+	public readonly record struct CurrentLevel(
+		string World, string Level, string Entrance, uint Key);
+
+	/// <summary>
+	/// Where the guest actually IS, or null when no level is standing.
+	///
+	/// USE THIS, NOT <see cref="GetStartLevel"/>, TO NOTICE A LEVEL CHANGE. The start globals
+	/// are written only by game-START paths — the new-game entry, the front-end target setter,
+	/// the dev override, the network-join handler and the debug level menu. A door, a
+	/// teleporter, fast travel and `World.LoadLevel` all put their destination on the
+	/// CmdLevelChange command object instead and never touch a global, so polling the start
+	/// values sees a new game and nothing else.
+	///
+	/// Null is ordinary, not a failure: it is the state before the first load, and the window
+	/// during a transition when the old Level has been released and the new one not yet built.
+	/// </summary>
+	/// <summary>
+	/// A level change the guest has queued, as its own command describes it.
+	///
+	/// <see cref="State"/> is the command's state word (1..9, never 0). The entity teardown
+	/// happens at state 2, so state >= 2 is the moment a host may free its scene.
+	///
+	/// <see cref="FullLoad"/> is the one that must not be ignored: when it is false the guest
+	/// tears NOTHING down — it is a reposition inside the resident level — so freeing a scene
+	/// on it rebuilds a region the guest never unloaded.
+	/// </summary>
+	public readonly record struct LevelChange(
+		string World, string Level, string Entrance, uint State, uint TravelType, bool FullLoad);
+
+	/// <summary>
+	/// The level change in flight, or null when none is.
+	///
+	/// Prefer this to the falling edge of <see cref="WorldIsReady"/> for deciding when to take a
+	/// world down: that byte is not cleared until state 3, after the blocking load has already
+	/// returned, while the entities were freed back in state 2.
+	/// </summary>
+	/// <summary>
+	/// Holds the guest in its own loading screen while Godot builds a region.
+	///
+	/// The guest asks its renderer "IsEnginePreLoading" from state 7 of its level-change command
+	/// and waits while the answer is yes. Godot is that renderer, so this is answering a stated
+	/// question rather than stalling the simulation from outside — the guest keeps its loading
+	/// screen, its music and its own pacing throughout.
+	///
+	/// MUST BE CLEARED on every path that leaves a build, success or failure. A hold that is
+	/// never released parks the guest at state 7 indefinitely.
+	/// </summary>
+	public static void SetWorldBuildPending(bool pending)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		RefiiHostSetWorldBuildPending(pending ? 1u : 0u);
+	}
+
+	/// <summary>
+	/// Whether the guest's world is ACTIVATED and populated — the one signal both load paths
+	/// write, and the right question to ask before mounting a region against it.
+	///
+	/// `World+0xA8`, set by the entity activator and cleared by the world teardown. Travel
+	/// reaches it from level-change state 5, a load-from-save from its own state 2, so this
+	/// needs no knowledge of which mechanism moved the player and nothing walked.
+	///
+	/// Prefer this to <see cref="WorldIsReady"/>: that byte is only set at the terminal state,
+	/// behind the render fence and loading-screen gates a headless host may never satisfy, and
+	/// it boots as true.
+	/// </summary>
+	public static bool WorldIsActive()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return false;
+		}
+
+		return RefiiHostWorldIsActive() != 0;
+	}
+
+	/// <summary>
+	/// The gameflow command queue as text — what is actually in it, for when a walk of it comes
+	/// back empty and the alternative is another guess at the layout.
+	/// </summary>
+	public static string DescribeGameFlowQueue()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return "bridge unavailable";
+		}
+
+		var text = new byte[512];
+		return RefiiHostDescribeGameFlowQueue(text, (uint)text.Length) == 0
+			? "unreadable"
+			: Decode(text);
+	}
+
+	public static LevelChange? GetLevelChange()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		var world = new byte[128];
+		var level = new byte[128];
+		var entrance = new byte[128];
+		if (RefiiHostGetLevelChange(world, level, entrance, (uint)level.Length,
+				out uint state, out uint travel, out uint fullLoad) == 0)
+		{
+			return null;
+		}
+
+		return new LevelChange(
+			Decode(world), Decode(level), Decode(entrance), state, travel, fullLoad != 0);
+	}
+
+	public static CurrentLevel? GetCurrentLevel()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		var world = new byte[128];
+		var level = new byte[128];
+		var entrance = new byte[128];
+		if (RefiiHostGetCurrentLevel(world, level, entrance, (uint)level.Length, out uint key) == 0)
+		{
+			return null;
+		}
+
+		return new CurrentLevel(Decode(world), Decode(level), Decode(entrance), key);
+	}
+
+	/// <summary>
 	/// The scenario the guest starts in, or null when it has not stated one yet.
 	///
 	/// This is what picks the map. The guest builds
@@ -1016,6 +1371,133 @@ public static class HostBridge
 		RefiiHostPostFrontEndAction(name);
 
 	/// <summary>
+	/// The front end's own storage criteria.
+	///
+	/// <paramref name="Count"/> is -1 until the tick pump has taken a sample, and that is NOT
+	/// zero. A menu built while it is -1 has no answer yet and must not conclude "no saves" —
+	/// answering early is exactly how Load Game went missing on a profile that had some.
+	/// </summary>
+	public readonly record struct SaveState(bool SignedIn, int Count, int Limit)
+	{
+		/// <summary>True once the pump has answered at all.</summary>
+		public bool Known => Count >= 0;
+
+		/// <summary>
+		/// The guest's own Load Game spawn guard, at 0x826E2264..0x826E2278:
+		/// signed in, and `sub_82443308()` returned non-zero.
+		/// </summary>
+		public bool CanLoad => SignedIn && Count > 0;
+
+		/// <summary>
+		/// The guest's own New Game slot cap, at 0x826E0148. Unsigned compare there, and the
+		/// limit is 6 once the front end has entered — `sub_82378618` stores it over the 150
+		/// that sits in the image.
+		/// </summary>
+		public bool AtSaveLimit => Known && Limit > 0 && Count >= Limit;
+	}
+
+	/// <summary>
+	/// What the guest would gate its own New Game and Load Game entries on.
+	///
+	/// Two of the three numbers are plain guest memory; the count is a guest CALL and therefore
+	/// arrives from the tick pump's sample rather than live. See RefiiHostGetSaveState.
+	/// </summary>
+	public static SaveState GetSaveState()
+	{
+		try
+		{
+			RefiiHostGetSaveState(out uint signedIn, out int count, out uint limit);
+			return new SaveState(signedIn != 0, count, (int)limit);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			// An older native library. Unknown rather than empty, so the caller holds the entry
+			// back instead of asserting there are no saves.
+			return new SaveState(false, -1, 0);
+		}
+	}
+
+	/// <summary>Asks the pump to re-take the saved-game count on its next front-end tick.</summary>
+	public static void RefreshSaveState()
+	{
+		try
+		{
+			RefiiHostRefreshSaveState();
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>
+	/// Loads the save at <paramref name="index"/> in the guest's own enumerated list.
+	///
+	/// AN INDEX, NOT A NAME, because the guest identifies a save by the ADDRESS of its handle
+	/// slot inside its own vector — `Frontend_SetStartGameTarget` takes `*(screen+84) + 4*i` and
+	/// `*(screen+148) + 40*i + 12`, both pointers to live handles. Sending the text would mean
+	/// finding it again on the guest's side and trusting two orderings to agree; the index is
+	/// the join the guest itself uses.
+	///
+	/// Posted, not called — the commit allocates, rewrites `dword_83496AB8` and mutates
+	/// refcounts non-atomically, so it belongs on the guest's tick thread and nowhere else.
+	/// </summary>
+	public static uint LoadSave(int index) => PostFrontEndAction($"LoadSave:{index}");
+
+	/// <summary>One installed language, as the guest's own table holds it.</summary>
+	public readonly record struct Language(int Index, string Name, bool IsCurrent);
+
+	/// <summary>
+	/// The languages the guest has installed, in its own table order.
+	///
+	/// <see cref="Language.Name"/> is the DISPLAY NAME the guest spawns its menu entry with, not
+	/// the locale code — `sub_826E1C98` hands that string to the spawner and the front end then
+	/// resolves it through Babel, so a caller should put it through the same book.
+	///
+	/// The INDEX is the row, and it is the whole reason this exists: the guest's language
+	/// entries are dispatched by command 302 with that index, never by name, so a host menu that
+	/// only knows the label cannot perform the action.
+	/// </summary>
+	public static System.Collections.Generic.List<Language> GetLanguages()
+	{
+		var languages = new System.Collections.Generic.List<Language>();
+
+		var names = new byte[2048];
+		uint count;
+		uint current;
+
+		try
+		{
+			count = RefiiHostGetLanguages(out current, names, (uint)names.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			// An older native library. Degrading to "no languages" is right rather than fatal:
+			// the caller then leaves the Language entry childless, which is what it was before
+			// this export existed — and a menu that throws while being built takes the whole
+			// front end with it.
+			return languages;
+		}
+
+		int at = 0;
+		for (uint i = 0; i < count; ++i)
+		{
+			int end = System.Array.IndexOf(names, (byte)0, at);
+			if (end < 0)
+			{
+				break;
+			}
+
+			languages.Add(new Language(
+				(int)i,
+				System.Text.Encoding.UTF8.GetString(names, at, end - at),
+				i == current));
+			at = end + 1;
+		}
+
+		return languages;
+	}
+
+	/// <summary>
 	/// Pump health. Three numbers because they fail differently: zero ticks is a hook that
 	/// never landed, ticks climbing with a non-empty queue is the guest not yet ready, and
 	/// ticks climbing with nothing drained is nobody posting.
@@ -1046,6 +1528,60 @@ public static class HostBridge
 		}
 
 		return streams;
+	}
+
+	/// <summary>
+	/// WHICH loading screen the guest picked — its type and the texture name it chose.
+	///
+	/// The loading screen is NOT a Gameface presentation: `sub_8235F108` submits direct textured
+	/// quads, so there is no element tree to mirror and this pair is the whole interface. The
+	/// name is read through an LHString HANDLE (two dereferences from `screen+272`), verified in
+	/// `sub_8235F2F8` — every writer there is `sub_822651A0(a1 + 272, ...)`.
+	///
+	/// `Body` is reported so a run where that indirection is wrong shows an address rather than
+	/// quietly producing an empty name.
+	/// </summary>
+	public readonly record struct LoadingArt(uint Type, uint Body, string Name);
+
+	/// <summary>The chosen loading art, or null when there is no loading screen.</summary>
+	public static LoadingArt? GetLoadingScreenArt()
+	{
+		var buffer = new byte[128];
+		try
+		{
+			uint ok = RefiiHostGetLoadingScreenArt(
+				out uint type, out uint body, buffer, (uint)buffer.Length);
+			if (body == 0 && ok == 0)
+			{
+				return null;
+			}
+
+			int end = System.Array.IndexOf(buffer, (byte)0);
+			return new LoadingArt(type, body,
+				System.Text.Encoding.UTF8.GetString(buffer, 0, end < 0 ? 0 : end));
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// The guest's own "the world is loaded and ready" byte — `game + 0x105`.
+	///
+	/// NOT the same as the loading screen coming down. `CmdLevelChange_Update` clears it when
+	/// the load begins and sets it when its nine-state machine finishes.
+	/// </summary>
+	public static bool WorldIsReady()
+	{
+		try
+		{
+			return RefiiHostWorldIsReady() != 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
 	}
 
 	/// <summary>The handshake, or null when no loading screen object exists.</summary>
@@ -1360,6 +1896,9 @@ public static class HostBridge
 	private static extern uint RefiiHostIsInGame();
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetSimTick();
+
+	[DllImport(Library)]
 	private static extern int RefiiHostGetRenderFence(
 		out uint manager, out double submitted, out double deadline, out uint busy,
 		uint[] outArms);
@@ -1374,7 +1913,8 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityPose(
-		uint entity, float[] outTransforms, int[] outParents, uint maxBones, out uint outSpace);
+		uint entity, float[] outTransforms, int[] outParents, uint maxBones, out uint outSpace,
+		out uint outTorn);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityRestPose(
@@ -1399,8 +1939,44 @@ public static class HostBridge
 	private static extern uint RefiiHostPostFrontEndAction(string name);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetLanguages(
+		out uint current, byte[] names, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetLoadingScreenArt(
+		out uint type, out uint body, byte[] name, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostWorldIsReady();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetSaveState(
+		out uint signedIn, out int count, out uint limit);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostRefreshSaveState();
+
+	[DllImport(Library)]
 	private static extern void RefiiHostGuestTickPump(
 		out ulong ticks, out ulong drained, out uint queued);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetWorldBuildPending(uint pending);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostDescribeGameFlowQueue(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostWorldIsActive();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetLevelChange(
+		byte[] world, byte[] level, byte[] entrance, uint capacity,
+		out uint outState, out uint outTravelType, out uint outFullLoad);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCurrentLevel(
+		byte[] world, byte[] level, byte[] entrance, uint capacity, out uint outKey);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetStartLevel(

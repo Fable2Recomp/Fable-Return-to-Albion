@@ -64,7 +64,13 @@ public partial class Engine_PropStreamer : Node3D
 
     public static event Action<int, int>? ProgressChanged;
 
-    public static void ClearCache() => Cache.Clear();
+    public static void ClearCache()
+    {
+        lock (Cache)
+        {
+            Cache.Clear();
+        }
+    }
 
     public static void PublishProgress()
     {
@@ -349,11 +355,22 @@ public partial class Engine_PropStreamer : Node3D
             return null;
         }
 
-        if (Cache.TryGetValue(virtualPath, out ArrayMesh? cached) &&
-            GodotObject.IsInstanceValid(cached))
+        // LOCKED, because a level change starts the next region's build while this region's
+        // props are still paging in. A `Dictionary` written by two threads does not merely lose
+        // an entry — a resize caught mid-flight corrupts its buckets and the next lookup spins
+        // forever, so the failure is a hang rather than a wrong mesh.
+        //
+        // Only the lookup and the store are held. Decoding stays outside: it is the expensive
+        // half, and the worst a race there can do is build the same mesh twice and keep the
+        // second, which costs one allocation and is otherwise indistinguishable.
+        lock (Cache)
         {
-            present = true;
-            return cached;
+            if (Cache.TryGetValue(virtualPath, out ArrayMesh? cached) &&
+                GodotObject.IsInstanceValid(cached))
+            {
+                present = true;
+                return cached;
+            }
         }
 
         byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(virtualPath);
@@ -376,7 +393,10 @@ public partial class Engine_PropStreamer : Node3D
         if (mesh is not null)
         {
             mesh.ResourceName = Engine_LevelProps.LeafOf(virtualPath);
-            Cache[virtualPath] = mesh;
+            lock (Cache)
+            {
+                Cache[virtualPath] = mesh;
+            }
         }
 
         return mesh;

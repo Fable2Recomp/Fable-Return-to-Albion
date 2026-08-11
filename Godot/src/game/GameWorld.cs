@@ -45,6 +45,7 @@ public partial class GameWorld : Node3D
 		}
 
 		FollowGuestIntoTheWorld();
+		ReleaseWhenPropsHaveStreamed();
 		TraceEntities();
 
 		if (HostBridge.GetCamera() is not { } camera || camera.IsDefault)
@@ -87,18 +88,358 @@ public partial class GameWorld : Node3D
 	}
 
 	/// <summary>
+	/// Lets the guest go once the mounted region has actually finished paging in.
+	///
+	/// THE MOUNT IS NOT THE FINISH LINE. `Engine_PropStreamer` streams props over frames after
+	/// the region enters the tree — 25 ms of work a frame by default — so a world released at
+	/// AddChild is bare terrain under an empty sky that fills in while the player walks through
+	/// it. That reads as a failed build and is not one: it is a build the guest was let into
+	/// too early.
+	///
+	/// Runs every frame rather than hooking `ProgressChanged`, because the streamer publishes
+	/// progress from its own tick and a missed final event would strand the hold forever. A
+	/// poll cannot miss an edge.
+	/// </summary>
+	private void ReleaseWhenPropsHaveStreamed()
+	{
+		if (!_loaded || !_holdingForProps)
+		{
+			return;
+		}
+
+		// COUNTED UNDER THE STANDING REGION ONLY, not across every live streamer.
+		//
+		// `Engine_PropStreamer.TryGetProgress` sums the whole static `Live` list, which spans
+		// regions. One leftover streamer that never drains — a region torn down mid-stream, a
+		// node whose `_ExitTree` has not run yet — holds the total above the count for ever, and
+		// the guest with it. Walking the region we actually mounted cannot be poisoned that way.
+		//
+		// No streamer at all is DONE, not pending: a region with nothing to page in must not
+		// hold the guest.
+		int done = 0;
+		int total = 0;
+		if (_region is not null)
+		{
+			SumPropProgress(_region, ref done, ref total);
+		}
+
+		bool pending = total > 0 && done < total;
+
+		++_propHoldFrames;
+
+		if (pending)
+		{
+			// A HOLD THAT NEVER RELEASES IS A HUNG GAME, so it reports itself and then gives up.
+			// A wait with neither is indistinguishable from a crash, and the counts are what say
+			// whether the streamer is progressing slowly or not progressing at all.
+			if (_propHoldFrames % PropHoldReportFrames == 0)
+			{
+				GD.Print($"[game-world] still holding the guest for {_standing}: " +
+					$"{done}/{total} prop(s) streamed after {_propHoldFrames} frame(s)");
+			}
+
+			if (_propHoldFrames < PropHoldFrameLimit)
+			{
+				return;
+			}
+
+			GD.PrintErr($"[game-world] props for {_standing} did not finish streaming " +
+				$"({done}/{total}) after {_propHoldFrames} frame(s) — releasing the guest " +
+				"anyway. A world that fills in late is worse than one the player cannot leave.");
+		}
+
+		_holdingForProps = false;
+		HostBridge.SetWorldBuildPending(false);
+
+		if (!pending)
+		{
+			GD.Print($"[game-world] {_standing} finished streaming its props after " +
+				$"{_propHoldFrames} frame(s) — releasing the guest");
+		}
+	}
+
+	/// <summary>Adds up every prop streamer beneath one node. Recursive: a region nests them.</summary>
+	private static void SumPropProgress(Node node, ref int done, ref int total)
+	{
+		if (node is Refii.Level.Engine_PropStreamer streamer)
+		{
+			done += streamer.Done;
+			total += streamer.Total;
+		}
+
+		foreach (Node child in node.GetChildren())
+		{
+			SumPropProgress(child, ref done, ref total);
+		}
+	}
+
+	/// <summary>True between mounting a region and its props finishing streaming.</summary>
+	private bool _holdingForProps;
+
+	private int _propHoldFrames;
+
+	private int _entityWaitFrames;
+
+	/// <summary>Every ~5s at 60fps, so a stall keeps saying what it is waiting for.</summary>
+	private const int EntityWaitReportFrames = 300;
+
+	/// <summary>
+	/// About 30s. The guest's own load is blocking and finishes long before this; anything
+	/// longer means we are misreading it, and a late mount beats a world nobody can enter.
+	/// </summary>
+	private const int EntityWaitFrameLimit = 1800;
+
+	/// <summary>Roughly every 5s at 60fps, so a stall says what it is waiting for.</summary>
+	private const int PropHoldReportFrames = 300;
+
+	/// <summary>
+	/// About a minute. Long enough for a big region to page in honestly, short enough that a
+	/// hold which will never release does not read as a hang with no explanation.
+	/// </summary>
+	private const int PropHoldFrameLimit = 3600;
+
+	/// <summary>
+	/// The region build, running off the main thread. Null until one has been started.
+	/// </summary>
+	private System.Threading.Tasks.Task? _build;
+
+	/// <summary>
+	/// What the worker produced. Written by the worker BEFORE the task completes and read by
+	/// the main thread only AFTER <see cref="System.Threading.Tasks.Task.IsCompleted"/>, which
+	/// is the ordering that makes these safe without a lock of their own — completing a task
+	/// publishes everything the task wrote.
+	/// </summary>
+	private Node3D? _builtRegion;
+
+	private string _buildError = string.Empty;
+
+	/// <summary>"World/Level" the in-flight build was started for, so its completion cannot be
+	/// reported against a level the guest moved to in the meantime.</summary>
+	private string _buildingLevel = string.Empty;
+
+	private System.Diagnostics.Stopwatch? _buildClock;
+
+	/// <summary>
+	/// Kicks off the region build on a worker thread.
+	///
+	/// The scenario is resolved by the CALLER, on the main thread, before this is reached —
+	/// it is read from the guest and written to shared state on the assets singleton, and
+	/// doing that from the worker would race the very first thing the worker reads.
+	/// </summary>
+	private void StartBuild(Refii.Assets.Engine_GameAssets assets, HostBridge.StartLevel start)
+	{
+		string world = start.World;
+		string level = start.Level;
+		_buildingLevel = $"{world}/{level}";
+
+		_buildClock = System.Diagnostics.Stopwatch.StartNew();
+
+		// HOLD THE GUEST, using its own question. State 7 of the level-change command polls
+		// "IsEnginePreLoading" and waits while the answer is yes; Godot is the engine. Set
+		// before the worker starts so there is no frame where the guest could be let through
+		// between the decision to build and the build beginning.
+		HostBridge.SetWorldBuildPending(true);
+
+		GD.Print($"[game-world] building {world}/{level} on a worker thread; " +
+			"the guest waits in its own loading screen");
+
+		_build = System.Threading.Tasks.Task.Run(() =>
+		{
+			try
+			{
+				_builtRegion = assets.BuildLevelNode(world, level, out string error);
+				_buildError = error;
+			}
+			catch (System.Exception e)
+			{
+				// CAUGHT AND CARRIED BACK, never left to the task. An exception on a worker
+				// does not stop the game — it is stored in the Task and silently discarded when
+				// nothing observes it, so the world would simply never appear with nothing at
+				// all in the log to say why.
+				_builtRegion = null;
+				_buildError = $"{e.GetType().Name}: {e.Message}";
+			}
+		});
+	}
+
+	/// <summary>
+	/// Takes the finished region, or null when the build produced nothing.
+	///
+	/// <paramref name="failed"/> separates the two nulls: a build that ERRORED is worth saying
+	/// once, while a build that simply found no banks mounted yet is the ordinary early state
+	/// and is retried in silence.
+	/// </summary>
+	private Node3D? TakeBuiltRegion(HostBridge.StartLevel start, out bool failed)
+	{
+		Node3D? region = _builtRegion;
+		_builtRegion = null;
+		failed = region is null && _buildError.Length != 0;
+
+		// NAMED BY WHAT WAS BUILT, not by what the guest happens to say now.
+		//
+		// These lines used to print the CURRENT frame's level, so a build started for BWSMarket
+		// and finished while the guest had moved on reported "BowerLake built" and "mounted
+		// BowerLake" over BWSMarket's geometry. The log asserted a level change that had not
+		// happened, which is worse than saying nothing — it is the reason this took a run to
+		// spot. `_buildingLevel` is captured when the worker starts and cannot drift.
+		if (region is not null && _buildClock is not null)
+		{
+			GD.Print($"[game-world] {_buildingLevel} built in " +
+				$"{_buildClock.ElapsedMilliseconds} ms of WALL time off the main thread");
+			_buildClock = null;
+		}
+
+		if (region is not null &&
+			!_buildingLevel.Equals($"{start.World}/{start.Level}",
+				System.StringComparison.OrdinalIgnoreCase))
+		{
+			// The guest moved while we were building. Throwing the region away and rebuilding is
+			// the only honest outcome — mounting it would put the wrong world under the camera
+			// and call it the right one.
+			GD.Print($"[game-world] built {_buildingLevel} but the guest is now in " +
+				$"{start.World}/{start.Level} — discarding it and rebuilding");
+			region.QueueFree();
+			return null;
+		}
+
+		return region;
+	}
+
+	/// <summary>
 	/// Builds the region the guest named. `sub_82379628` writes the destination before it
 	/// starts the game, so Godot is told which region to build rather than inferring one.
 	/// </summary>
 	private void FollowGuestIntoTheWorld()
 	{
-		// Wait for in-game: the startup script leaves "TestWorld/TestLevel1" in these globals
-		// until sub_82379628 overwrites them, so an earlier read latches the placeholder.
-		if (_loaded || !HostBridge.IsInGame ||
-			HostBridge.GetStartLevel() is not { } start || start.Level.Length == 0)
+		// THE LEVEL THE GUEST IS STANDING IN, not the one a New Game asked for.
+		//
+		// This used to read `GetStartLevel`, and that only ever worked for a new game. Every
+		// writer of those globals is a game-START path; a door (`sub_8283C7F8`), a teleporter,
+		// fast travel (`sub_82519B08`) and `World.LoadLevel` (`sub_82350D20`) all put their
+		// destination on the CmdLevelChange command object and never touch a global. The
+		// version that appeared to work did so because the DEV DEBUG MENU happens to rewrite
+		// those globals before it issues `Debug.LoadLevel` — right answer, wrong reason, and it
+		// would have done nothing the first time anyone walked through a door.
+		//
+		// Null is ordinary: before the first load, and during the window when the old Level is
+		// released and the new one not yet constructed.
+		if (!HostBridge.IsInGame)
 		{
 			return;
 		}
+
+		// THE UNLOAD EDGE, TAKEN FROM THE COMMAND AND NOT FROM THE READY BYTE.
+		//
+		// `game+0x105` looks like the signal for this and is the wrong one. The entity teardown
+		// runs in STATE 2 (`sub_823D6798` -> `sub_8231CB90` -> `sub_82364698`, which destroys
+		// every entity flagged 0x08 in `entity+0x90` and drains the delete list), but the ready
+		// byte is not cleared until STATE 3, after the blocking load has already returned. That
+		// leaves a window covering state 2 and all of state 3 where the byte still reads 1 and
+		// the entities it implies are already freed — so a scene freed on its falling edge is a
+		// scene that spent the whole load drawing entities that no longer existed, and reading
+		// freed guest memory to place them.
+		//
+		// FULLLOAD DECIDES WHETHER THERE IS ANYTHING TO TAKE DOWN AT ALL. With `cmd+0x32` clear
+		// the guest tears nothing down — state 3 takes the player-manager branch instead of the
+		// load, and the teardown is not reachable from it. That is a reposition inside the
+		// resident level, so the region must stay standing; freeing it would rebuild a world the
+		// guest never unloaded.
+		HostBridge.LevelChange? inFlight = HostBridge.GetLevelChange();
+
+		// ONLY IF WHAT IS STANDING IS NOT WHERE THE GUEST IS GOING.
+		//
+		// Testing the state alone tears down the region we have just built. The command stays in
+		// the queue until state 9 retires it, so the frame after mounting the destination still
+		// sees "a full load at state >= 2" and frees it again — a full rebuild of a region that
+		// was already correct, repeating for as long as the command lives. The destination is
+		// right there on the command; compare it.
+		if (_loaded && inFlight is { } change && change.FullLoad && change.State >= 2)
+		{
+			string destination = $"{change.World}/{change.Level}";
+			if (!destination.Equals(_standing, System.StringComparison.OrdinalIgnoreCase))
+			{
+				GD.Print($"[game-world] the guest is changing level (state {change.State}, " +
+					$"travel {change.TravelType}) to {destination} — taking {_standing} down");
+				TearDownRegion();
+				return;
+			}
+		}
+
+		// AND DO NOT BUILD FROM A DESTINATION THAT DOES NOT EXIST YET.
+		//
+		// The new Level object is not constructed until state 3, so before that
+		// `GetCurrentLevel` still names the level being LEFT — and building on it rebuilds the
+		// region the player is walking away from. Worse, the completion lines name the CURRENT
+		// level, so the log reports the destination over the old level's geometry: a level
+		// change that silently rebuilds where you came from is indistinguishable from one that
+		// never happened.
+		if (inFlight is { FullLoad: true, State: < 3 })
+		{
+			return;
+		}
+
+		bool ready = HostBridge.WorldIsReady();
+
+		// START BUILDING AS SOON AS THE DESTINATION EXISTS — MOUNT ONLY WHEN THE GUEST IS READY.
+		//
+		// These are two different moments and treating them as one wasted the whole overlap. Our
+		// region build measured 18115 ms; gating its START on `ready` put all of that AFTER the
+		// guest had finished loading, so the player waited for the guest and then waited for us.
+		//
+		// The new Level object is constructed in state 3, so from state 3 onward
+		// `GetCurrentLevel` already names the destination — and states 4 through 8 (net ack,
+		// entrance placement, fade, render fence, peer acks) all run while we build. That is the
+		// preload: our work overlaps the guest's instead of following it.
+		//
+		// NOT EARLIER THAN STATE 3, deliberately. Before it the live Level is still the OLD one,
+		// so `GetActiveScenario` — which resolves through the world's {level key -> scenario} map
+		// — would hand us the previous level's scenario, and the scenario is what SELECTS THE
+		// HEIGHTFIELD. That is the failure that put a childhood entrance in chapter 2's
+		// Bowerstone: coherent, plausible, and the wrong map.
+		if (HostBridge.GetCurrentLevel() is not { } here || here.Level.Length == 0)
+		{
+			return;
+		}
+
+		// THE SAME RULE WITHOUT THE COMMAND, because the command is not always findable.
+		//
+		// The state-3 gate above needs a CmdLevelChange in the queue, and the queue dump proved
+		// we cannot count on that: a load-from-save carries CmdLoadSaveGame and no level-change
+		// command at all, and even during a door transition the command is only in the queue for
+		// part of it. So that guard went missing on exactly the frames that mattered, and the
+		// build started against the level being LEFT.
+		//
+		// Remembering the key we tore down needs nothing from the queue. Whatever mechanism
+		// moved the player, rebuilding the level we just left is never right — so wait until the
+		// guest names a DIFFERENT one. Cleared as soon as it does.
+		if (_torndownKey != 0u && here.Key == _torndownKey)
+		{
+			return;
+		}
+
+		_torndownKey = 0u;
+
+		// KEYED ON THE GUEST'S OWN KEY. `here.Key` is Level+0xB4, the guest's FNV-1 of lowercase
+		// "world/level", stamped by the Level constructor from `World_ComputeWorldLevelFnv1Key`.
+		// Comparing that rather than a formatted name means the edge does not depend on how
+		// either side spells a level, and it is one dword instead of two string builds a frame.
+		//
+		// Still checked even though the unload above normally fires first: a transition that
+		// never clears the ready byte would otherwise leave the wrong region standing forever,
+		// and this is the cheaper of the two things to be wrong about.
+		if (_loaded)
+		{
+			if (here.Key == _standingKey)
+			{
+				return;
+			}
+
+			GD.Print($"[game-world] the guest is in {here.World}/{here.Level} but {_standing} " +
+				$"is standing (key 0x{_standingKey:X8} -> 0x{here.Key:X8}) — taking it down");
+			TearDownRegion();
+		}
+
+		var start = new HostBridge.StartLevel(here.World, here.Level, here.Entrance);
 
 		if (!_announced)
 		{
@@ -124,7 +465,13 @@ public partial class GameWorld : Node3D
 		// Bowerstone. Taking it from the guest rather than inferring it is the whole point: the
 		// guest states which map it is standing in.
 		// The LIVE scenario wins; the start value is only the fallback before a level is up.
-		if ((HostBridge.GetActiveScenario() ?? HostBridge.GetStartScenario())
+		//
+		// ONLY WHILE NO BUILD IS IN FLIGHT. This runs every frame, and the worker reads the
+		// scenario off the same singleton to pick the heightfield — so continuing to rewrite it
+		// during the build is a genuine race, and one whose symptom would be the wrong map
+		// loading intermittently rather than anything that looks like a threading fault.
+		if (_build is null &&
+			(HostBridge.GetActiveScenario() ?? HostBridge.GetStartScenario())
 				is { Length: > 0 } scenario)
 		{
 			assets.CurrentScenario = scenario.ToLowerInvariant();
@@ -144,21 +491,156 @@ public partial class GameWorld : Node3D
 		// same construction through a round trip that cannot survive an export: `res://` is a
 		// read-only pack in an exported build, so the save fails and the game gets no world at
 		// all. The editor still saves, because a scene you can open IS the editor's point.
-		if (assets.BuildLevelNode(start.World, start.Level, out string error) is not { } region)
+		//
+		// AND ON A WORKER THREAD, because it measured 14312 ms in ONE frame — terrain 9357,
+		// props 3634. Every millisecond of that stopped Godot's main loop: nothing drew, no
+		// loading screen was possible, and the guest — which paces itself against the wall
+		// clock in `sub_82276D10` and RESYNCS by dropping ticks when it falls behind — lost
+		// fourteen seconds of simulation in one go.
+		//
+		// Only the construction moves. Godot's scene tree is not thread-safe, so the finished
+		// root is handed back and mounted from `_Process` below. That split is safe because a
+		// node is only tree-bound once something adds it: `AddChild` and `Owner` on a detached
+		// subtree are plain object writes, which is what lets the whole region be assembled
+		// away from the main thread and attached in one step.
+		if (_build is null)
 		{
-			// Named, not silent: an empty world under a live camera is flat grey, which reads
-			// as "rendering is broken". Once only — this is retried every frame.
-			if (!_buildFailureLogged)
+			// The back-off from a failed attempt. Costs nothing when there has not been one.
+			if (_retryDelay > 0)
 			{
-				_buildFailureLogged = true;
-				GD.PrintErr($"[game-world] could not build {start.World}/{start.Level}: {error}");
+				--_retryDelay;
+				return;
+			}
+
+			StartBuild(assets, start);
+			return;
+		}
+
+		if (!_build.IsCompleted)
+		{
+			return;
+		}
+
+		// THE MOUNT GATE — and it must not be `ready` alone, or it deadlocks against the hold.
+		//
+		// `ready` is state 9. We hold the guest at state 7. So waiting for state 9 to mount, and
+		// holding until we mount, is a circular wait: the run stalled at exactly this line with
+		// "built and waiting for the guest to finish its own load" as its last word, forever.
+		//
+		// STATE 5 IS THE REAL ANSWER, and the contract already said so. Every entity a region
+		// contributes is constructed in the blocking load in state 3 and ACTIVATED IN STATE 5;
+		// there is no budgeted or deferred spawn path. States 6, 7 and 8 are a screen fade, this
+		// render fence and co-op peer acknowledgement — not one of them touches an entity. So a
+		// command that has reached state 5 has a complete entity set, and `ready` is simply a
+		// later, coarser signal for the same fact.
+		//
+		// `ready` is still honoured for the case with no command in flight — the command retires
+		// itself in state 9, so anything that arrives after that has only the byte to go on.
+		//
+		// (Entities can still appear later, but only on demand: the deferred store at
+		// entityMgr+160 instantiates one at a time by uid when a quest or AI asks. GameEntities
+		// polls every frame, so those arrive on their own.)
+		// AND A CEILING ON IT. Any wait whose release depends on the host correctly reading guest
+		// memory can be wrong, and when it is wrong the player gets a frozen loading screen with
+		// no recourse. Mounting a few frames early is a cosmetic risk; never mounting is not.
+		// THE GUEST'S OWN "the world is activated" BIT, and it is the answer for both paths.
+		//
+		// `World+0xA8` is set by the entity activator `sub_823640E0` and cleared by the world
+		// teardown. Travel reaches the activator from level-change state 5; a load-from-save
+		// reaches the SAME function from its own state 2. So this one poll replaces both of the
+		// mechanism-specific gates below, and needs nothing walked or matched.
+		//
+		// The other two stay as corroboration, and the frame limit stays as a backstop — but if
+		// this works they should never be what decides, and the log will say which one did.
+		bool active = HostBridge.WorldIsActive();
+		bool entitiesComplete = active || ready || inFlight is { State: >= 5 } ||
+			_entityWaitFrames >= EntityWaitFrameLimit;
+
+		if (!entitiesComplete)
+		{
+			++_entityWaitFrames;
+			// NAMES WHAT IT IS WAITING FOR, and keeps saying so. "Waiting for the guest", said
+			// once, is true and useless: with three signals feeding this gate the only useful
+			// line is the one that prints all of them.
+			if (_entityWaitFrames % EntityWaitReportFrames == 0)
+			{
+				_waitingForGuest = true;
+				GD.Print($"[game-world] {start.World}/{start.Level} is built; waiting for the " +
+					"guest to activate its entities (needs level-change state 5, currently " +
+					$"{(inFlight is { } s ? s.State.ToString() : "no command in flight")}, " +
+					$"worldReady={ready}, worldActive={active})" +
+					// The queue itself when we cannot find the command in it. `worldReady` false
+					// with no command found is a contradiction — the byte is only clear between
+					// state 3 and state 9 — so one of the two reads is wrong, and this says which.
+					(inFlight is null
+						? $"\n    gameflow queue: {HostBridge.DescribeGameFlowQueue()}"
+						: string.Empty));
+			}
+
+			return;
+		}
+
+		if (_entityWaitFrames >= EntityWaitFrameLimit && !ready && inFlight is not { State: >= 5 })
+		{
+			GD.PrintErr($"[game-world] the guest never reported its entities ready for " +
+				$"{start.World}/{start.Level} after {_entityWaitFrames} frame(s) " +
+				$"(worldActive={active}, worldReady={ready}, level change " +
+				$"{(inFlight is { } c ? $"state {c.State}" : "not in the queue")}) — " +
+				"mounting anyway rather than leaving the world unreachable.");
+		}
+
+		_waitingForGuest = false;
+		_entityWaitFrames = 0;
+
+		Node3D? region = TakeBuiltRegion(start, out bool failed);
+		if (region is null)
+		{
+			// A FAILED BUILD MUST NOT LATCH — but it must not spin either.
+			//
+			// `_loaded` stays false and `_build` clears so a later frame retries, because the
+			// guest can reach the game before the banks finish mounting and treating those few
+			// frames as fatal left a permanently empty world.
+			//
+			// But a build that failed for a REASON (rather than for "not mounted yet") will fail
+			// again on the next frame with the same inputs, so retrying at frame rate cannot
+			// help — it only spawns a task per frame and buries the real error under its own
+			// repetition. Back off, and say so once per destination: a failure on a different
+			// level is news, the same one again is not.
+			// RELEASE ON FAILURE TOO. A hold that outlives its build parks the guest at state 7
+			// forever, loading music playing, which is indistinguishable from a hung load — and
+			// far worse than the empty world the failure would otherwise leave.
+			HostBridge.SetWorldBuildPending(false);
+			_build = null;
+			_retryDelay = RetryFrames;
+
+			if (failed)
+			{
+				string destination = $"{start.World}/{start.Level}";
+				if (destination != _reportedFailure)
+				{
+					_reportedFailure = destination;
+					GD.PrintErr($"[game-world] could not build {destination}: {_buildError}");
+				}
 			}
 
 			return;
 		}
 
 		_loaded = true;
+		_standing = $"{start.World}/{start.Level}";
+		_standingKey = here.Key;
+		_region = region;
+		_holdingForProps = true;
+		_propHoldFrames = 0;
 		AddChild(region);
+
+		// NOT RELEASED HERE. Mounting is not the same as being ready to look at.
+		//
+		// `Engine_PropStreamer` pages props in over frames AFTER the mount, at 25 ms a frame, so
+		// the region enters the tree as terrain and fills in afterwards. Releasing on AddChild
+		// let the guest resume into exactly that: a screenshot of bare ground under a white sky
+		// with the hero walking through it. The hold now runs until the streamer has drained —
+		// see `ReleaseWhenPropsHaveStreamed`.
 
 		// THE REGION'S OWN COPY OF EVERY ENTITY THE GUEST PLACES, indexed so it can be retired
 		// one record at a time as the guest claims it.
@@ -180,12 +662,73 @@ public partial class GameWorld : Node3D
 
 		// Alongside the region, not inside it: the live entities carry the whole guest-to-Godot
 		// map themselves, exactly as the camera does.
-		AddChild(new GameEntities
+		_entities = new GameEntities
 		{
 			Name = "GameEntities",
 			Twins = twins,
-		});
+		};
+		AddChild(_entities);
 		GD.Print($"[game-world] built and mounted {start.World}/{start.Level}");
+	}
+
+	/// <summary>
+	/// Frees the standing region so the next one can be built.
+	///
+	/// BOTH NODES, and the entity feed FIRST. `GameEntities` holds the region's static-twin
+	/// map and one node per live entity keyed on a guest address; leaving it up across a level
+	/// change would have it reconciling this region's records against the next region's
+	/// entities, which is not a wrong picture so much as two worlds mixed together.
+	///
+	/// `QueueFree` rather than `Free`: this runs from `_Process`, which is inside the very
+	/// tree walk that would be mutated, and freeing a node out from under that is the one way
+	/// to crash a Godot frame from managed code. The nodes are detached immediately so nothing
+	/// finds them again in the meantime, and reclaimed at the end of the frame.
+	///
+	/// The caches these regions share are NOT cleared here. They are keyed on the asset path,
+	/// every level that names the same model wants the same mesh, and dropping them would make
+	/// a level change pay full decode cost for scenery it already has in memory.
+	/// </summary>
+	private void TearDownRegion()
+	{
+		if (_entities is not null)
+		{
+			RemoveChild(_entities);
+			_entities.QueueFree();
+			_entities = null;
+		}
+
+		if (_region is not null)
+		{
+			RemoveChild(_region);
+			_region.QueueFree();
+			_region = null;
+		}
+
+		// REMEMBERED BEFORE IT IS CLEARED. Everything below forgets what was standing, and the
+		// one thing the next build must not do is recreate it.
+		_torndownKey = _standingKey;
+
+		_loaded = false;
+		_standing = string.Empty;
+		_standingKey = 0u;
+		_waitingForGuest = false;
+		_holdingForProps = false;
+		_entityWaitFrames = 0;
+
+		// A teardown can land while a build is in flight — the guest changing its mind mid-load.
+		// The next StartBuild re-asserts it, so clearing here cannot let the guest through early
+		// but does guarantee no hold survives a region that no longer exists.
+		HostBridge.SetWorldBuildPending(false);
+		_build = null;
+		_builtRegion = null;
+		_buildError = string.Empty;
+
+		// The once-only reports are once PER REGION, not once per run. Left latched, the second
+		// level would build in silence and the log would read as though nothing had happened —
+		// and the scenario line matters most exactly here, since a level change is when the
+		// guest is most likely to name a different one.
+		_announced = false;
+		_scenarioReported = false;
 	}
 
 	/// <summary>
@@ -488,11 +1031,50 @@ public partial class GameWorld : Node3D
 
 	private bool _loaded;
 
+	/// <summary>
+	/// "World/Level" of the region currently standing, empty when none is. Compared against
+	/// what the guest names so a level change is noticed rather than assumed never to happen.
+	/// </summary>
+	private string _standing = string.Empty;
+
+	/// <summary>
+	/// The guest's own key for the standing region — Level+0xB4, its FNV-1 of lowercase
+	/// "world/level". This is what the level-change edge compares; <see cref="_standing"/> is
+	/// carried alongside it only so the log can name what moved.
+	/// </summary>
+	private uint _standingKey;
+
+	/// <summary>
+	/// The key of the region most recently torn down, held until the guest names a different
+	/// one. Zero when nothing is pending. This is what stops a transition from rebuilding the
+	/// level it just left, and unlike the level-change command it is always available.
+	/// </summary>
+	private uint _torndownKey;
+
+	/// <summary>The standing region and its entity feed, held so they can be taken down.</summary>
+	private Node3D? _region;
+
+	private GameEntities? _entities;
+
 	/// <summary>The destination has been reported. Separate from <see cref="_loaded"/>, which
 	/// only becomes true once the region is actually standing.</summary>
 	private bool _announced;
 
-	private bool _buildFailureLogged;
+
+	/// <summary>Frames to wait before retrying a failed build. Zero means retry at once.</summary>
+	private int _retryDelay;
+
+	/// <summary>Said once per transition, so "we are ahead of the guest" is visible without
+	/// writing it every frame — which is the mistake that made the last log unreadable.</summary>
+	private bool _waitingForGuest;
+
+	/// <summary>Roughly two seconds at 60 fps — often enough to catch a late bank mount, rare
+	/// enough that an unresolvable level does not flood the log or the thread pool.</summary>
+	private const int RetryFrames = 120;
+
+	/// <summary>The destination whose failure has already been reported, so the same one is not
+	/// said twice while a different one still is.</summary>
+	private string _reportedFailure = string.Empty;
 
 	private bool _scenarioReported;
 

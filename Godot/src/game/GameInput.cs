@@ -80,12 +80,78 @@ public partial class GameInput : Node
 			rightY = Dominant(rightY, -Axis(pad, JoyAxis.RightY));
 		}
 
+		// TWO CONSUMERS, AND ONLY ONE OF THEM OWNS THE MENU.
+		//
+		// The guest gets a filtered set; the host-owned menu below gets the real one. See
+		// <see cref="WithoutMenuInput"/> — the guest is still running its own front-end menu,
+		// and handing it the same press drives two menus at once.
+		bool masked = MaskMenuInput;
 		HostBridge.SetControllerState(
-			0, connected: true, buttons, leftTrigger, rightTrigger,
-			leftX, leftY, rightX, rightY);
+			0, connected: true, masked ? WithoutMenuInput(buttons) : buttons,
+			leftTrigger, rightTrigger,
+			// The STICK is masked with the buttons, not separately. `sub_826E39C0` dead-zones
+			// the left stick against ±0.75 and emits the very same button codes the D-pad does
+			// — 28/29 for Y at 0x826E3C04/0x826E3C58 and 30/31 for X at 0x826E3B50/0x826E3BAC
+			// — so leaving it live would move the guest's highlight with the D-pad blocked.
+			masked ? 0 : leftX, masked ? 0 : leftY, rightX, rightY);
 
 		PublishToHost(buttons, leftX, leftY);
 	}
+
+	/// <summary>
+	/// Whether the guest's own front-end menu should be shielded from this frame's input.
+	///
+	/// TRUE WHILE THE GUEST'S ACTIVE SCREEN IS THE MAIN MENU, because that is the screen Godot
+	/// took over. Nothing else is masked: the TITLE screen keeps every button, since A there is
+	/// the guest's own documented contract (`if (a2 == 36 &amp;&amp; *(BYTE*)(a1+80))` at 0x826E3078)
+	/// and it is how the front end is reached at all.
+	///
+	/// AND ONLY IN ITS ROOT SUBSTATE, which is the guest telling us the list is what is up.
+	/// `screen+24` is 0 for the menu list and anything else means the guest owns the screen: 1
+	/// is its own "swallow all input" lock, 2/3/4 the gender card, 5 the load-game carousel,
+	/// 6/7 a modal. Masking through those would be a deadlock rather than a nuisance — every
+	/// failure path in `sub_826DFD58` raises a modal that parks the screen in substate 1 until
+	/// an A press arrives, and DLC with no profile signed in raises one immediately. Hold A back
+	/// there and the dialog can never be dismissed.
+	///
+	/// THE VTABLE CHECK IS LOAD-BEARING, not belt and braces. `dword_83496B08` has two writers
+	/// through the same base ctor, and once the game has taken over it holds a BASE-ONLY object
+	/// whose +180/+184/+188 are not screen pointers — so `screen` is then decoded from fields
+	/// that mean nothing and can read as MainMenu at any moment. Masking on that would take the
+	/// D-pad and the left stick away from the player in the middle of the game.
+	/// </summary>
+	private static bool MaskMenuInput =>
+		HostBridge.FrontEndGuiIsUp &&
+		HostBridge.TryGetFrontEnd(out HostBridge.FrontEndScreen screen, out uint state, out _,
+			out _, out _, out _) &&
+		screen == HostBridge.FrontEndScreen.MainMenu && state == MenuRootState;
+
+	/// <summary>
+	/// `screen+24` while the menu LIST is the thing on screen. Every other value is a substate
+	/// the guest drives itself — see <see cref="MaskMenuInput"/>.
+	/// </summary>
+	private const uint MenuRootState = 0;
+
+	/// <summary>
+	/// The buttons with the front end's navigation taken out.
+	///
+	/// WHY THIS EXISTS. Godot owns the main menu — its list, its order and its highlight — and
+	/// dispatches the result to the guest BY NAME, which is the guest's own contract. But the
+	/// guest never stopped running its own menu: its shipped `g_Menu` Lua still holds a list and
+	/// a highlight, and `sub_826DEE40` still forwards A and B to it through `OnPressA` /
+	/// `OnPressB` while `screen+24` is 0. Feeding it the same press ran both menus, and their
+	/// highlights are not the same object — a press on Godot's "Downloadable Content" put the
+	/// guest into substate 5, its LOAD-GAME carousel, because that is what ITS list had
+	/// selected. Two menus acting on one press is not a cosmetic problem: the guest was also
+	/// setting slides on `choosecard` behind the panel Godot had just put up.
+	///
+	/// B IS DELIBERATELY LEFT THROUGH. On the root menu it is the guest's business — B there
+	/// leaves for the title screen, and that path runs entirely inside the guest. Masking it
+	/// would need a host route back to the title that does not exist yet, so the entry that
+	/// works today keeps working.
+	/// </summary>
+	private static uint WithoutMenuInput(uint buttons) =>
+		buttons & ~(DpadUp | DpadDown | DpadLeft | DpadRight | ButtonA);
 
 	/// <summary>
 	/// The same frame's input, in the terms a HOST-OWNED menu needs.
@@ -116,11 +182,11 @@ public partial class GameInput : Node
 			// Axis() returns the Xbox's signed range, and up is positive after the negation
 			// above — so a positive Y is "up", which is -1 in list order.
 			double stick = leftY / 32767.0;
-			if (stick >= Refii.Ui.Engine_FrontEndMenu.ThumbstickReleaseThreshold)
+			if (Held(ref _pushingUp, stick))
 			{
 				direction = -1;
 			}
-			else if (stick <= -Refii.Ui.Engine_FrontEndMenu.ThumbstickReleaseThreshold)
+			else if (Held(ref _pushingDown, -stick))
 			{
 				direction = 1;
 			}
@@ -148,11 +214,11 @@ public partial class GameInput : Node
 		else
 		{
 			double stick = leftX / 32767.0;
-			if (stick <= -Refii.Ui.Engine_FrontEndMenu.ThumbstickReleaseThreshold)
+			if (Held(ref _pushingLeft, -stick))
 			{
 				horizontal = -1;
 			}
-			else if (stick >= Refii.Ui.Engine_FrontEndMenu.ThumbstickReleaseThreshold)
+			else if (Held(ref _pushingRight, stick))
 			{
 				horizontal = 1;
 			}
@@ -169,6 +235,29 @@ public partial class GameInput : Node
 		_acceptWasDown = a;
 		_backWasDown = b;
 	}
+
+	/// <summary>
+	/// One direction's stick hysteresis, as `guistateandconstants.lua` states it.
+	///
+	/// <paramref name="magnitude"/> is the stick along that direction, already signed so that
+	/// pushing THIS way is positive. The direction engages above
+	/// `THUMBSTICK_PUSH_THRESHOLD` (0.70) and stays engaged until the stick falls back under
+	/// `THUMBSTICK_RELEASE_THRESHOLD` (0.65) — which is why the shipped script keeps a
+	/// `Pushing<Direction>Held` boolean per direction rather than recomputing from one cutoff.
+	/// </summary>
+	private static bool Held(ref bool held, double magnitude)
+	{
+		held = held
+			? magnitude > Refii.Ui.Engine_FrontEndMenu.ThumbstickReleaseThreshold
+			: magnitude >= Refii.Ui.Engine_FrontEndMenu.ThumbstickPushThreshold;
+		return held;
+	}
+
+	/// <summary>The four `Pushing*Held` flags the shipped input model keeps.</summary>
+	private static bool _pushingUp;
+	private static bool _pushingDown;
+	private static bool _pushingLeft;
+	private static bool _pushingRight;
 
 	/// <summary>-1 up, +1 down, 0 centred — for a host-owned menu.</summary>
 	public static int MenuDirection { get; private set; }

@@ -752,6 +752,10 @@ add_library(refii_host STATIC
     # refii_app.h installs it through RuntimeConfig::input_factory, and the bridge links
     # refii_host rather than the other way round.
     src/host_input.cpp
+    # Godot-fed audio output, installed the same way through RuntimeConfig::audio_factory.
+    # Its queue and counters live in refii_vfs, which the host bridge also links — the
+    # bridge and this driver must see one ring, not one each.
+    src/host_audio.cpp
 )
 set_target_properties(refii_host PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
@@ -791,6 +795,14 @@ target_link_libraries(refii_host
     PRIVATE
         refii_achievement_ui
 )
+
+# host_audio.cpp keeps its ring in refii_vfs so the host bridge reads the same one. The
+# link is PUBLIC because refii_vfs exports its include directories and the standalone
+# `refii` executable compiles this translation unit too, so it needs the symbols even
+# though only the embedded path ever constructs the driver.
+if(TARGET refii_vfs)
+    target_link_libraries(refii_host PUBLIC refii_vfs)
+endif()
 
 # AFTER refii_host: the bridge stages the whole dependency closure into Godot/build/bin,
 # and `if(TARGET ...)` only sees targets already defined. Added earlier, it silently

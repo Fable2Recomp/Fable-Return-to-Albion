@@ -125,6 +125,29 @@ public static class Engine_LevelScene
     {
         error = string.Empty;
 
+        // PER-PHASE TIMING. It is what settled where the cost actually was: 14312 ms total,
+        // of which terrain 9357 and props 3634 — so the answer was never "split the small
+        // phases across frames", it was to get the whole thing off the main thread.
+        //
+        // THE GAME NOW CALLS THIS FROM A WORKER (see `GameWorld.StartBuild`); the editor still
+        // calls it inline. Nothing here may touch Godot's scene tree: every node this builds is
+        // detached until the caller mounts it, and `AddChild`/`Owner` on a detached subtree are
+        // plain object writes rather than tree operations. Keep it that way — a `GetTree()`,
+        // an autoload lookup or a `MakeCurrent` added here would fault only in the game, only
+        // sometimes, and would look like a level-data bug.
+        //
+        // The phase numbers are still worth keeping. They are now CPU time on the worker rather
+        // than stall time on the main loop, which is a different quantity with the same units.
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var phases = new List<(string Name, long Ms)>();
+        long phaseStart = 0;
+        void Mark(string name)
+        {
+            long now = clock.ElapsedMilliseconds;
+            phases.Add((name, now - phaseStart));
+            phaseStart = now;
+        }
+
         if (level.HeightfieldPath.Length == 0)
         {
             error = "level has no heightfield";
@@ -158,6 +181,7 @@ public static class Engine_LevelScene
 
         root.AddChild(terrainNode);
         terrainNode.Owner = root;
+        Mark("terrain");
 
         List<(string Path, TerrainMesh Mesh)> vistas = BuildAdjacent(level, source);
         var vistaNodes = new List<(string Path, MeshInstance3D Node)>();
@@ -183,7 +207,10 @@ public static class Engine_LevelScene
                 (vistaNode.MaterialOverride is null ? "NO splat material" : "splat material") + ")");
         }
 
+        Mark("vistas");
+
         AddWater(level, source, findByName, root);
+        Mark("water");
 
         LightmapContainer? bakedLightmaps = null;
         LightProbeField? probeField = null;
@@ -215,6 +242,8 @@ public static class Engine_LevelScene
                 BindTerrainLightmaps(level, surfaces, bakedLightmaps, bakedGdbPath, source);
             }
         }
+
+        Mark("baked-lighting");
 
         LightingFrame? lightingFrame = null;
         SkyTheme? resolvedSkyTheme = null;
@@ -277,11 +306,15 @@ public static class Engine_LevelScene
             }
         }
 
+        Mark("sky+lighting");
+
         Refii.Entities.EntityInspectData? inspect = null;
         if (source is not null)
         {
             inspect = Refii.Entities.Engine_EntityInspect.Build(level, p => source(p));
         }
+
+        Mark("inspect");
 
         if (source is not null)
         {
@@ -296,6 +329,7 @@ public static class Engine_LevelScene
             }
 
             GD.Print($"[props] {level}: {propStats}");
+            Mark("props");
 
             Node3D? entities = Refii.Entities.Engine_LevelEntities.Build(
                 level, p => source(p), probeField, lightingFrame, inspect,
@@ -312,6 +346,7 @@ public static class Engine_LevelScene
             }
 
             GD.Print($"[entities] {level}: {entityStats}");
+            Mark("entities");
 
             if (inspect is not null)
             {
@@ -430,6 +465,11 @@ public static class Engine_LevelScene
                 }
             }
         }
+
+        Mark("rest");
+
+        GD.Print($"[level-build] {level}: {clock.ElapsedMilliseconds} ms of construction — " +
+            string.Join("  ", phases.ConvertAll(p => $"{p.Name} {p.Ms}ms")));
 
         return root;
     }

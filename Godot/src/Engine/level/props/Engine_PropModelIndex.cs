@@ -48,11 +48,32 @@ public static class Engine_PropModelIndex
 
     public static void SetModelSource(Func<IEnumerable<PropModelAsset>>? source)
     {
-        _models = source;
-        Invalidate();
+        // Under the same lock as the build, and the SOURCE is swapped inside it too: a
+        // rebuild that reads `_models` while this is halfway through indexes the old banks
+        // under the new mount.
+        lock (IndexLock)
+        {
+            _models = source;
+            InvalidateLocked();
+        }
     }
 
+    /// <summary>
+    /// Drops the index so the next lookup rebuilds it — a bank remount or a level change.
+    ///
+    /// Locked because tearing it down is exactly as concurrent as building it, and this is the
+    /// more dangerous direction: a reader holding a table this nulls out mid-lookup is reading
+    /// an index for banks that are no longer mounted.
+    /// </summary>
     public static void Invalidate()
+    {
+        lock (IndexLock)
+        {
+            InvalidateLocked();
+        }
+    }
+
+    private static void InvalidateLocked()
     {
         _byPathHash = null;
         _byToken = null;
@@ -92,10 +113,13 @@ public static class Engine_PropModelIndex
 
         string target = path.Replace('\\', '/').ToLowerInvariant();
 
-        if (_lowerPathCache is not null &&
-            _lowerPathCache.TryGetValue(target, out string? cached))
+        lock (IndexLock)
         {
-            return cached;
+            if (_lowerPathCache is not null &&
+                _lowerPathCache.TryGetValue(target, out string? cached))
+            {
+                return cached;
+            }
         }
 
         // THE STATED PATH, AND NOTHING ELSE. No suffix match, no token match, no scoring.
@@ -112,9 +136,13 @@ public static class Engine_PropModelIndex
         // same rule: the guest states, we follow.
         string? hit = Resolve(PathHash(path), Array.Empty<string>());
 
-        Build();
-        _lowerPathCache ??= new Dictionary<string, string?>();
-        _lowerPathCache[target] = hit;
+        lock (IndexLock)
+        {
+            BuildLocked();
+            _lowerPathCache ??= new Dictionary<string, string?>();
+            _lowerPathCache[target] = hit;
+        }
+
         return hit;
     }
 
@@ -359,7 +387,31 @@ public static class Engine_PropModelIndex
         return normalised.EndsWith("_models.bnk", StringComparison.Ordinal) ? 50 : 0;
     }
 
+    /// <summary>
+    /// Serialises the lazy index build and the lookup caches.
+    ///
+    /// A LEVEL CHANGE HAS TWO THREADS IN HERE. The next region builds on a worker while the
+    /// region we are standing in still resolves models on the main thread, so both can reach
+    /// an index that has not been built yet.
+    ///
+    /// AND THE GUARD USED TO BE PUBLISHED BEFORE THE PAYLOAD. `Build` assigned `_byPathHash`
+    /// first and the other three tables after it, while every reader tests `_byPathHash` and
+    /// then uses `_byToken` or `_byCompactKey` — so a second thread could see the index as
+    /// "already built" and read null out of the tables that had not landed yet. That is the
+    /// same shape as the guest's own `comp+0x14`, which is stamped after the payload it is
+    /// supposed to describe, and it fails the same way: silently, and only sometimes.
+    /// </summary>
+    private static readonly object IndexLock = new();
+
     private static void Build()
+    {
+        lock (IndexLock)
+        {
+            BuildLocked();
+        }
+    }
+
+    private static void BuildLocked()
     {
         if (_byPathHash is not null || _models is null)
         {
@@ -410,9 +462,13 @@ public static class Engine_PropModelIndex
             }
         }
 
-        _byPathHash = index;
+        // THE GUARD LAST. `_byPathHash` is what every reader tests to decide the index exists,
+        // so it must be the final store — publishing it first advertises three tables that are
+        // still null. The lock makes this correct on its own, but the order is what keeps it
+        // correct for any reader that ever looks without taking the lock.
         _byToken = tokens;
         _byCompactKey = compact;
         _lowerPaths = lowered;
+        _byPathHash = index;
     }
 }

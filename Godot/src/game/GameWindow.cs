@@ -77,6 +77,12 @@ public partial class GameWindow : Window
 		_session = new GameSession { Name = "GameSession", StartGuest = StartGuest };
 		AddChild(_session);
 
+		// Audio, played by Godot and — because the guest is credited for exactly what this
+		// node takes — paced by Godot. Added beside the session rather than inside it: the
+		// guest's audio worker stalls if nothing drains its output, so this wants to be up
+		// for the whole life of the session, not only once the world exists.
+		AddChild(new GameAudio { Name = "GameAudio" });
+
 		// The game's own UI, rendered by Godot from the title's presentation data. Added
 		// alongside the session rather than inside it: the UI stands up from the shipped
 		// assets and does not need a running guest, so a failed boot still shows a screen
@@ -296,8 +302,17 @@ public partial class GameWindow : Window
 		// UNBOUNDED wait sits on this, and only the render thread's fade tick releases it.
 		if (HostBridge.GetLoadingScreen() is { } loading)
 		{
+			// The ART the guest picked, alongside the handshake. `obj != 0` already means a
+			// loading screen is WANTED — that has been true throughout every level load in the
+			// logs while nothing was drawn — so the missing half was never "is one up" but
+			// "which one", and that is a texture name rather than a presentation.
+			string art = HostBridge.GetLoadingScreenArt() is { } picked
+				? $" type={picked.Type} art='{picked.Name}' body=0x{picked.Body:X8}"
+				: " art=UNREADABLE";
+
 			GD.Print($"[guest-loadscreen] mgr=0x{loading.Manager:X8} obj=0x{loading.Screen:X8} " +
-				$"fade={loading.Fade} requested={loading.Requested} done={loading.Done}");
+				$"fade={loading.Fade} requested={loading.Requested} done={loading.Done}" +
+				$"{art} worldReady={HostBridge.WorldIsReady()}");
 		}
 
 		// `WouldBlock` is sub_8222ABE0's own condition for the 4-byte reserve it makes twice

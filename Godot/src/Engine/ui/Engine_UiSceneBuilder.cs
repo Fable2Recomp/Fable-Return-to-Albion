@@ -143,10 +143,24 @@ public sealed class Engine_UiSceneBuilder
 	/// <summary>Elements dropped by the slide baseline, subtrees included.</summary>
 	public int SkippedInactive { get; private set; }
 
+	/// <summary>
+	/// The built node for each element ORDINAL, or null where the slide baseline dropped one.
+	///
+	/// This is what lets a live screen be UPDATED rather than rebuilt. Everything the guest
+	/// states arrives keyed by ordinal — slides, visibility, opacity, transforms — and without a
+	/// way back from an ordinal to its node, the only way to apply any of it was to build the
+	/// whole tree again. That is why a presentation which merely MOVES never moved: the change
+	/// test could not afford to notice, because noticing meant rebuilding 3812 elements.
+	///
+	/// Empty until <see cref="Build"/> has run.
+	/// </summary>
+	public Node3D?[] ByOrdinal { get; private set; } = System.Array.Empty<Node3D?>();
+
 	public Node3D Build(Engine_UiScreen screen)
 	{
 		QuadsBuilt = TexturesResolved = TextsBuilt = DegenerateQuads = TextGlyphsBuilt = 0;
 		_inheritedOpacity = 1f;
+		ByOrdinal = new Node3D?[screen.Nodes.Length];
 
 		var root = new Node3D { Name = SanitizeName(screen.Name) };
 		root.SetMeta("canvas_width", screen.CanvasWidth);
@@ -162,6 +176,58 @@ public sealed class Engine_UiSceneBuilder
 				root.AddChild(child);
 		}
 		return root;
+	}
+
+	/// <summary>
+	/// Writes the guest's live transforms onto a tree that is already built, and reports how
+	/// many elements actually moved.
+	///
+	/// THIS IS WHY THE BACKGROUND DID NOT SCROLL. The front end's backdrop is animated by the
+	/// guest every frame — `sub_82990730` advances the `Foreground.Book` sub-object, and the
+	/// ambient presentation's `"Scrolling"` element is driven the same way — and every one of
+	/// those is an attribute write, not a slide or a visibility change. The only way we had to
+	/// pick up a moved element was to rebuild the presentation, so the change test deliberately
+	/// ignored transforms and a screen that merely moved never did.
+	///
+	/// Rebuilding is the wrong tool for it anyway: the tree is identical apart from a handful of
+	/// transforms, and rebuilding 94 nodes sixty times a second to slide a backdrop — or 3431 to
+	/// nudge a HUD counter — is work with nothing to show for it.
+	///
+	/// <paramref name="transform"/> is keyed by ordinal, with a null row where the guest states
+	/// nothing for that element, in which case the file's own transform stands.
+	/// </summary>
+	public int ApplyLiveTransform(System.Collections.Generic.IReadOnlyList<float?[]?> transform)
+	{
+		int moved = 0;
+
+		for (int i = 0; i < ByOrdinal.Length && i < transform.Count; ++i)
+		{
+			if (ByOrdinal[i] is not { } node || transform[i] is not { } values)
+			{
+				continue;
+			}
+
+			Vector3 position = node.Position;
+			Vector3 scale = node.Scale;
+
+			if (values.Length > 0 && values[0] is { } x) position.X = x;
+			if (values.Length > 1 && values[1] is { } y) position.Y = y;
+			if (values.Length > 2 && values[2] is { } z) position.Z = z;
+			if (values.Length > 3 && values[3] is { } sx) scale.X = sx;
+			if (values.Length > 4 && values[4] is { } sy) scale.Y = sy;
+			if (values.Length > 5 && values[5] is { } sz) scale.Z = sz;
+
+			if (node.Position == position && node.Scale == scale)
+			{
+				continue;
+			}
+
+			node.Position = position;
+			node.Scale = scale;
+			++moved;
+		}
+
+		return moved;
 	}
 
 	/// <summary>
@@ -212,6 +278,9 @@ public sealed class Engine_UiSceneBuilder
 		node.Name = SanitizeName(n.Name);
 		node.Transform = BuildTransform(n);
 
+		if (n.Ordinal >= 0 && n.Ordinal < ByOrdinal.Length)
+			ByOrdinal[n.Ordinal] = node;
+
 		node.SetMeta("object_id", n.ObjectId);
 		node.SetMeta("element_type", n.Type.ToString());
 		if (!n.HasAuthoredName)
@@ -222,6 +291,15 @@ public sealed class Engine_UiSceneBuilder
 		// needs to tell "this element is transparent" from "something above it is".
 		if (_inheritedOpacity < 1f)
 			node.SetMeta("opacity_accumulated", _inheritedOpacity);
+		// And what was inherited FROM ABOVE, which is the one of the three that cannot be
+		// derived from the other two. The scripts set opacity on a GROUP —
+		// `setAttribute(Tab.InnerRed, 'opacity', 100)` is how a row picks its face, and
+		// `hud.lua` disables a whole layer the same way — so a host that owns a screen has to be
+		// able to re-run that. Recomputing a subtree needs the factor above the group, and
+		// dividing the accumulated by the group's own value cannot recover it: the case worth
+		// changing is precisely the one where the group sits at zero.
+		if (parentOpacity < 1f)
+			node.SetMeta("opacity_inherited", parentOpacity);
 
 		foreach (UiNode child in n.Children)
 		{
@@ -361,6 +439,13 @@ public sealed class Engine_UiSceneBuilder
 		{
 			Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
 			CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+			// CLAMPED, NOT REPEATED — this is what closes the seams between tiling panels.
+			// The front end's backdrop is a 7x2 grid of 512x512 quads, each sampling its own
+			// texture across the full 0..1, laid edge to edge. With the default repeat wrap the
+			// bilinear tap at u=0 and u=1 blends with the OPPOSITE edge of the same texture, so
+			// every panel boundary draws a one-pixel line of the wrong scenery. No UI quad wants
+			// to tile: a repeated one would be a bug in the .fac, not a feature.
+			TextureRepeat = false,
 			// A UI atlas is emissive art, not a lit surface. Shading it would make the
 			// screen depend on the authored lights, which are positioned for the game's
 			// own renderer and leave the panel black here.
@@ -381,6 +466,34 @@ public sealed class Engine_UiSceneBuilder
 			{
 				mat.AlbedoTexture = tex;
 				TexturesResolved++;
+
+				// HALF A TEXEL OFF EVERY EDGE — the seams that clamping cannot close.
+				//
+				// Clamping fixed the panorama, whose panels each own a whole texture. The
+				// frames do not: the pillars, rims and tabs are CELLS of a shared atlas
+				// (`frames_elements.tex`, `frames_04.tex`), selected by a sub-rect. A bilinear
+				// tap on the boundary row of a cell reaches into the cell NEXT to it, so every
+				// piece of frame art draws a hairline of its neighbour down the join — and no
+				// wrap mode helps, because the sampler never leaves the texture.
+				//
+				// Insetting to texel CENTRES is the standard remedy and costs half a texel of
+				// the cell's outermost row, which at these sizes is well under a screen pixel.
+				// Skipped for a degenerate rect, where there is no inside to move into.
+				float du = 0.5f / Mathf.Max(tex.GetWidth(), 1);
+				float dv = 0.5f / Mathf.Max(tex.GetHeight(), 1);
+				float uSpan = q.UMax - q.UMin;
+				float vSpan = q.VMax - q.VMin;
+
+				if (Mathf.Abs(uSpan) > 2f * du && Mathf.Abs(vSpan) > 2f * dv)
+				{
+					// Signed, so a flipped rect (UMax < UMin) is inset inward too rather than
+					// being widened into its neighbours.
+					float uStep = Mathf.Sign(uSpan) * du;
+					float vStep = Mathf.Sign(vSpan) * dv;
+
+					mat.Uv1Offset = new Vector3(q.UMin + uStep, q.VMin + vStep, 0f);
+					mat.Uv1Scale = new Vector3(uSpan - (2f * uStep), vSpan - (2f * vStep), 1f);
+				}
 			}
 			mesh.SetMeta("texture_path", q.TexturePath);
 		}

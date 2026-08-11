@@ -31,6 +31,10 @@ OPCODES = [
 # Opcodes whose Bx indexes the constant table directly.
 BX_IS_CONSTANT = {"LOADK", "GETGLOBAL", "SETGLOBAL"}
 
+# Opcodes whose B and C are RK operands — a register below 256, a constant above it.
+# SETTABLE is the one that matters: it is how a Lua constants table is written.
+RK_BC = {"SETTABLE"}
+
 
 class Reader:
     def __init__(self, data):
@@ -255,6 +259,17 @@ def full(f):
                 note = f"  ; {constant(fn, d['Bx'])!r}"
             elif d["op"] == "SELF":
                 note = f"  ; :{rk(fn, d['C'])}"
+            elif d["op"] in RK_BC:
+                # A constants chunk writes `NAME = value` as one SETTABLE with BOTH operands
+                # constant, so neither shows up as a LOADK. Without resolving them here the
+                # timings and slot tables these files exist to carry are unreadable — the
+                # --summary pairing only catches the LOADK form and silently drops the rest.
+                key = rk(fn, d["B"])
+                value = rk(fn, d["C"])
+                shown = [f"{part!r}" for part in (key, value)
+                         if part is not None]
+                if shown:
+                    note = f"  ; {' = '.join(shown)}"
             print(f"    {i:5}  {d['op']:<10} A={d['A']:<4}B={d['B']:<4}"
                   f"C={d['C']:<4}Bx={d['Bx']}{note}")
 

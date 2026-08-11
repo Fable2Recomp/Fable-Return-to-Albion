@@ -54,6 +54,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -64,6 +66,48 @@
 // The New Game commit. NOT hooked — we call the guest's own function, so this is the plain
 // symbol rather than an `__imp__` original.
 PPC_EXTERN_FUNC(sub_826E0D60);
+
+// The front end's own menu-action dispatcher, vtable slot +16 of 0x820D0934. Called directly
+// rather than through the vtable: the slot is fixed, and reading a vtable to reach a function
+// we already know the address of is indirection with nothing on the other end of it.
+PPC_EXTERN_FUNC(sub_826DFD58);
+
+// "How many saved games does the signed-in user have?" — the guest's own spawn-time probe.
+//
+// THIS IS THE ONE THE FRONT END USES, and picking it over its two siblings is the whole point:
+//
+//   sub_82443308  no parameters, no device, no overlapped structure. Enumerates content type 1
+//                 for user `dword_83496AF8` with DeviceID 0 — ALL devices — and returns the
+//                 item count. Closes its handle unconditionally.
+//   sub_824431E8  same enumeration, but reads a DeviceID out of the save manager's map at
+//                 `saveMgr+0x7EC`, and returns 0 when that map has no entry.
+//   sub_82443048  same again, and fills a vector of save NAMES.
+//
+// The last two are useless to a host poll, because the map they read is only ever written by
+// `sub_82441CB8` — which calls `j_XamShowDeviceSelectorUI` and blocks on
+// `XGetOverlappedResult(..., bWait=1)`. Asking them before the user has been through a device
+// picker returns a confident zero. `sub_82443308` asks the question directly and is why the
+// guest's own Load Game guard uses it rather than the vector it fills later.
+PPC_EXTERN_FUNC(sub_82443308);
+
+// Frontend_SetStartGameTarget — the LOAD commit, and it commits by itself.
+//
+// Verified in its own decompile rather than taken second hand, because this one starts a level
+// load and a wrong argument is worse than a blank card:
+//
+//   823798ac  sub_822651A0(&g_PendingLoadSaveName, a2)   ; a2 = the save NAME
+//   8237989c  sub_822651A0(&g_StartLevelName,      a3)   ; a3 = the LEVEL to load
+//   823798e0  *(*(dword_83496AC0 + 12) + 92) = 1         ; the run loop's exit flag
+//   823798e8  sub_82319928(*(dword_83496AC0 + 12))       ; builds the next game state
+//
+// BOTH ARGUMENTS ARE HANDLE SLOTS, NOT STRINGS. `sub_822651A0` copies a 4-byte handle and bumps
+// the refcount at `*handle + 12`, so it must be handed the ADDRESS of a live handle — pointing
+// it at character data would refcount whatever the first word of the text happened to be. `a1`
+// is never referenced in the body.
+//
+// It also dereferences `dword_83496AC0 + 12` with NO null check, so it is only safe while the
+// front end is up — the same precondition StartNewGame already enforces.
+PPC_EXTERN_FUNC(sub_82379838);
 
 namespace refii::vfs {
 
@@ -87,6 +131,21 @@ std::atomic<uint64_t> g_ticks{0};
 /// and the queue was always empty" are distinguishable — a single number cannot tell those
 /// apart, and they need completely different fixes.
 std::atomic<uint64_t> g_drained{0};
+
+/// The saved-game count, sampled by calling the guest's own probe on this thread.
+///
+/// -1 means "not asked yet" and is NOT the same as 0. A host that cannot tell them apart draws
+/// a menu with Load Game missing and no way to know whether that is the answer or the absence
+/// of one — which is exactly the bug this replaces, where an empty vector stood in for both.
+std::atomic<int32_t> g_save_count{-1};
+
+/// Set to ask for a fresh sample. Starts true so the first front-end tick takes one, and is set
+/// again whenever the host knows the answer has changed — after a game is started, say.
+///
+/// Sampled rather than polled every tick because the probe is not free: it allocates a 46 320
+/// byte guest stack frame and walks up to 150 content entries. The guest itself asks exactly
+/// once, at menu spawn.
+std::atomic<bool> g_resample{true};
 
 }  // namespace
 
@@ -115,6 +174,16 @@ void GuestTickPumpCounters(uint64_t* out_ticks, uint64_t* out_drained,
     std::lock_guard<std::mutex> lock(g_mutex);
     *out_queued = static_cast<uint32_t>(g_pending.size());
   }
+}
+
+/// The saved-game count as last sampled, or -1 if it has not been sampled yet.
+int32_t GuestSavedGameCount() {
+  return g_save_count.load(std::memory_order_relaxed);
+}
+
+/// Asks for a fresh sample on the next front-end tick. Safe from any thread.
+void RefreshGuestSavedGameCount() {
+  g_resample.store(true, std::memory_order_relaxed);
 }
 
 /// The front-end state object. `sub_826E0D60` dereferences it with NO null check —
@@ -217,6 +286,253 @@ bool StartNewGame(PPCContext& ctx, uint8_t* base, bool female) {
   sub_826E0D60(ctx, base);
 
   ctx = saved;
+
+  // A game just started, so the saved-game count is stale. It will not be re-sampled until the
+  // front end is up again, which is exactly when it next matters.
+  g_resample.store(true, std::memory_order_relaxed);
+  return true;
+}
+
+/// The GUI object, and the main-menu screen hanging off it at +184.
+///
+/// The vtable check is the one from `RefiiHostGetFrontEnd`, and it is load-bearing here too:
+/// `dword_83496B08` has two writers through the same base ctor, and once the game has taken
+/// over it holds a BASE-ONLY object whose +184 is not a screen pointer at all. Dispatching a
+/// menu action into that would hand `sub_826DFD58` a `this` it immediately calls a virtual on.
+constexpr uint32_t kGuiObject = 0x83496B08u;
+constexpr uint32_t kFrontEndGuiVtable = 0x820A924Cu;
+constexpr uint32_t kMainMenuScreenOffset = 184u;
+
+uint32_t MainMenuScreen(uint8_t* base) {
+  const uint32_t gui = LoadGuestU32(base, kGuiObject);
+  if (gui < 0x10000u || gui >= 0xC0000000u) {
+    return 0;
+  }
+
+  if (LoadGuestU32(base, gui) != kFrontEndGuiVtable) {
+    // The base-only instance — the game has taken the front end over.
+    return 0;
+  }
+
+  const uint32_t screen = LoadGuestU32(base, gui + kMainMenuScreenOffset);
+  return (screen >= 0x10000u && screen < 0xC0000000u) ? screen : 0;
+}
+
+/// Takes one saved-game count, on the guest's thread, by calling the guest's own probe.
+///
+/// GATED ON THE FRONT END BEING UP, though the probe itself needs nothing of the sort. Two
+/// reasons, and the second is the load-bearing one:
+///
+///   * it is when the guest asks. `sub_826E2220` calls this at menu-spawn time and nowhere
+///     else, so sampling there is sampling the same moment with the same answer.
+///   * the SLOT LIMIT is not valid before then. `dword_83319620` holds 150 in the image and is
+///     overwritten with 6 by `sub_82378618` — the front-end enter — so a count taken earlier
+///     would be compared against a limit 25x too large. The two have to come from the same
+///     side of that store.
+///
+/// NO SCRATCH FRAME, unlike every other call in this file. `sub_82443308` takes no arguments
+/// and frames its own 46 320 bytes downward from r1 after an `RtlCheckStack12` probe, so the
+/// discipline the other calls need — claim a gap the callee cannot frame into — has nothing to
+/// protect here. The context save/restore still applies: we are standing inside
+/// `sub_822C1BD0`, whose own delegation still needs its registers.
+void SampleSavedGameCount(PPCContext& ctx, uint8_t* base) {
+  if (!g_resample.load(std::memory_order_relaxed)) {
+    return;
+  }
+  if (MainMenuScreen(base) == 0) {
+    // Front end not up. Left pending rather than answered with a zero — see g_save_count.
+    return;
+  }
+
+  g_resample.store(false, std::memory_order_relaxed);
+
+  const PPCContext saved = ctx;
+  sub_82443308(ctx, base);
+  const int32_t count = static_cast<int32_t>(ctx.r3.u32);
+  ctx = saved;
+
+  g_save_count.store(count, std::memory_order_relaxed);
+  REXLOG_INFO("Refii guest-tick pump: the guest reports {} saved game(s)", count);
+}
+
+/// The front-end root screen's save list, as `sub_82443048` leaves it.
+///
+/// Two parallel arrays, both indexed by the same selection:
+///
+///   this+84   begin of a vector<handle>, 4-byte stride — the save FILE NAMES
+///   this+88   its end, so the count is (end - begin) / 4
+///   this+148  begin of a vector of EMBEDDED 40-byte records — the ChapterSave metadata
+///
+/// Within a record, `+12` is the LevelName handle and `+24` is the compatibility verdict that
+/// `sub_82441780` computed from VersionNumber and CurrentEpisode. The guest's own confirm
+/// refuses a save whose `+24` is zero (0x826E0480), so this does too.
+constexpr uint32_t kSaveNamesBegin = 84u;
+constexpr uint32_t kSaveNamesEnd = 88u;
+constexpr uint32_t kSaveRecordsBegin = 148u;
+constexpr uint32_t kSaveRecordStride = 40u;
+constexpr uint32_t kSaveRecordLevelName = 12u;
+constexpr uint32_t kSaveRecordCompatible = 24u;
+
+/// Loads the save at `index`, by handing the guest the two handle slots it wants.
+///
+/// THE ADDRESSES ARE THE ARGUMENTS. `Frontend_SetStartGameTarget` takes pointers to live handle
+/// slots inside the guest's own vectors — so this passes `begin + 4*index` and
+/// `records + 40*index + 12` rather than copying anything. There is nothing to allocate and no
+/// scratch frame to claim, which is why this is the one commit in this file with no stack work.
+///
+/// Returns false when the front end is down or the list cannot support the index, leaving the
+/// action queued rather than calling with a bad pointer.
+bool LoadSavedGame(PPCContext& ctx, uint8_t* base, uint32_t index) {
+  const uint32_t screen = MainMenuScreen(base);
+  if (screen == 0) {
+    return false;
+  }
+
+  const uint32_t begin = LoadGuestU32(base, screen + kSaveNamesBegin);
+  const uint32_t end = LoadGuestU32(base, screen + kSaveNamesEnd);
+  const uint32_t records = LoadGuestU32(base, screen + kSaveRecordsBegin);
+  if (begin == 0 || end <= begin || records == 0) {
+    // The vectors are filled only inside the dispatcher's own "Load Game" branch, so an empty
+    // list here means that branch has not run yet — held, not failed.
+    return false;
+  }
+
+  const uint32_t count = (end - begin) / 4u;
+  if (index >= count) {
+    REXLOG_INFO("Refii guest-tick pump: save {} is out of range (the guest lists {})", index,
+                count);
+    return true;  // Dropped rather than retried forever; the list will not grow on its own.
+  }
+
+  const uint32_t record = records + (index * kSaveRecordStride);
+  if (base[record + kSaveRecordCompatible] == 0) {
+    // The guest's own gate at 0x826E0480. A save this byte rejects is the one that raises
+    // GUI_CORRUPT_SAVE_GAME_WARNING rather than loading.
+    REXLOG_INFO("Refii guest-tick pump: save {} is marked incompatible — refused", index);
+    return true;
+  }
+
+  const PPCContext saved = ctx;
+  ctx.r3.u32 = 0u;  // never referenced by the callee
+  ctx.r4.u32 = begin + (index * 4u);
+  ctx.r5.u32 = record + kSaveRecordLevelName;
+
+  sub_82379838(ctx, base);
+
+  ctx = saved;
+  return true;
+}
+
+/// Performs a menu entry the way the guest performs it: by NAME, through its own dispatcher.
+///
+/// THIS IS THE GENERAL ROUTE, and it exists because the alternative was five special cases.
+/// `sub_826DFD58` is a strcmp chain over the front end's own item names — "Load Game",
+/// "Downloadable Content", "SubtitlesOn", "SubtitlesOff" — so naming one is the entire
+/// contract. An entry the guest was never shipped with simply matches nothing and does
+/// nothing, which is exactly the behaviour a host-authored menu wants.
+///
+/// THE RECORD IS THREE WORDS AND NEEDS NO GUEST OBJECT. `a2+0` is a pointer to a string body
+/// whose own `+0` is a `char*`; `a2+4` is a command id; `a2+8` an extra param. The dispatcher
+/// dereferences `a2[0]` exactly once (`lwz r3, 0(r28)` at 0x826DFFEC feeding the strcmp at
+/// 0x826E0040), never retains the record, never frees it, and overwrites its own copy of `r4`
+/// before the name chain even begins. So a scratch frame on the guest stack is sufficient —
+/// there is no refcount to honour and no allocator to involve.
+///
+/// `a2+4` MUST NOT BE 302, 141 OR 140. Those three are consumed by a switch ahead of the name
+/// chain — 302 is Language (and reads `a2+8`), 140/141 are the menu slide sounds — so a stray
+/// value there would perform something other than the name asked for. Zero falls through to
+/// the names and is then never read again.
+///
+/// Returns false when the front end is not up, leaving the action queued.
+/// The dispatcher's three ID-based cases, which are decided BEFORE the name chain is reached.
+///
+/// 140 and 141 are the menu's own slide sounds — they fire "SE_GUI_SLIDE_MENU_UP"
+/// (`dword_83497DD8`) and "SE_GUI_SLIDE_MENU_DOWN" (`dword_83497DDC`) on the emitter at
+/// `*(*(dword_83496AC0+8)+0x50)` and do nothing else. That is the whole reason a host that owns
+/// the menu can still make the game's own movement sound: it asks the guest for it by the same
+/// id its shipped Lua would have used, rather than reaching for the audio system directly.
+///
+/// 302 is Language: it reads `a2+8` as the index into the guest's language table and is the
+/// ONLY way to reach that action — the language entries are spawned with this command id and
+/// never appear in the dispatcher's name chain at all, which is why naming "Language" did
+/// nothing.
+constexpr uint32_t kCommandNone = 0u;
+constexpr uint32_t kCommandSetLanguage = 302u;
+constexpr uint32_t kCommandSlideMenuUp = 140u;
+constexpr uint32_t kCommandSlideMenuDown = 141u;
+
+/// Host-only names for the two sounds. The guest has no such menu entries — on its side these
+/// are command ids, not names — so these are the pump's vocabulary, the way "New Game Female"
+/// already is.
+constexpr const char* kActionSlideUp = "MenuSlideUp";
+constexpr const char* kActionSlideDown = "MenuSlideDown";
+
+/// "Language:<index>" — the one action that needs a NUMBER as well as an identity.
+///
+/// A name with the index on the end rather than a second export, because the queue is a queue
+/// of names and every other action fits that. The guest's own language entries are spawned one
+/// per installed language with command 302 and the row index, so this is the same pair, carried
+/// the only way this pump carries anything.
+constexpr const char* kActionLanguagePrefix = "Language:";
+
+/// "LoadSave:<index>" — pick a save out of the list the guest enumerated.
+///
+/// An index rather than a name, because the guest identifies a save by the ADDRESS of its
+/// handle slot inside its own vector, not by its text. Sending the name would mean finding it
+/// again on this side and hoping the two orderings agree; the index is the join the guest
+/// itself uses (`this+72`, moved by its own left/right handler).
+constexpr const char* kActionLoadSavePrefix = "LoadSave:";
+
+bool DispatchByName(PPCContext& ctx, uint8_t* base, const std::string& name,
+                    uint32_t command = kCommandNone, uint32_t param = 0u) {
+  const uint32_t screen = MainMenuScreen(base);
+  if (screen == 0) {
+    return false;
+  }
+
+  // A frame of our own on the GUEST stack, claimed by lowering r1 — the same discipline
+  // StartNewGame uses and for the same reason: the callee frames below OUR frame and would
+  // otherwise overwrite the very argument it was passed.
+  const uint32_t sp = ctx.r1.u32;
+  const uint32_t frame = (sp - 0x80u) & ~0xFu;
+
+  // Laid out upward from the frame base so nothing overlaps: text, then the 4-byte body that
+  // points at it, then the 12-byte record that points at the body.
+  const uint32_t text = frame + 0x20u;
+  const uint32_t body = frame + 0x60u;
+  const uint32_t record = frame + 0x68u;
+
+  // 0x40 bytes for the name, which every shipped menu entry fits inside with room to spare.
+  // Refused rather than truncated: a truncated name would silently match a DIFFERENT branch
+  // of the strcmp chain, which is worse than not acting at all.
+  if (name.size() + 1u > 0x40u) {
+    REXLOG_INFO("Refii guest-tick pump: '{}' is too long to dispatch — dropped", name);
+    return true;
+  }
+
+  for (size_t i = 0; i < name.size(); ++i) {
+    base[text + i] = static_cast<uint8_t>(name[i]);
+  }
+  base[text + name.size()] = 0;
+
+  StoreGuestU32(base, body, text);
+  StoreGuestU32(base, record + 0u, body);
+  StoreGuestU32(base, record + 4u, command);
+  // `a2+8` is read on exactly one path — case 302, which passes it to `sub_82382C68` as the
+  // LANGUAGE INDEX. Every other branch ignores it, so zero is the right default and this is
+  // meaningful only alongside kCommandSetLanguage.
+  StoreGuestU32(base, record + 8u, param);
+
+  // Whole-context save/restore. The pump is standing in the middle of `sub_822C1BD0`, whose
+  // own delegation still needs its registers.
+  const PPCContext saved = ctx;
+  ctx.r1.u32 = frame;
+  ctx.r3.u32 = screen;
+  ctx.r4.u32 = record;
+
+  sub_826DFD58(ctx, base);
+
+  ctx = saved;
   return true;
 }
 
@@ -245,17 +561,52 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
     // dispatcher is a strcmp chain over these strings, not an index or a table. Keeping the
     // host side keyed the same way is what lets a Godot-authored entry name a guest action,
     // and lets an entry the guest never had simply never match.
+    // THE TWO NEW-GAME NAMES ARE THE EXCEPTION, and deliberately so. The guest's own "New
+    // Game" branch does not start a game — it opens the gender card and waits for the
+    // presentation to answer. Godot asks that question itself (Engine_FrontEndCardChoice), so
+    // these two carry the ANSWER and go straight to the commit rather than back through a
+    // dispatcher that would put the card up again behind ours.
     if (action.name == "New Game") {
       ran = StartNewGame(ctx, base, /*female=*/false);
     } else if (action.name == "New Game Female") {
       ran = StartNewGame(ctx, base, /*female=*/true);
+    } else if (action.name.rfind(kActionLanguagePrefix, 0) == 0) {
+      // The name carries the index; the dispatcher takes it from `a2+8` and the name is never
+      // looked at on this path, so it is left empty rather than sent as "Language:3".
+      const std::string index = action.name.substr(std::strlen(kActionLanguagePrefix));
+      char* end = nullptr;
+      const unsigned long value = std::strtoul(index.c_str(), &end, 10);
+      if (end == index.c_str() || *end != '\0') {
+        REXLOG_INFO("Refii guest-tick pump: '{}' has no language index — dropped", action.name);
+        g_drained.fetch_add(1, std::memory_order_relaxed);
+        continue;
+      }
+
+      ran = DispatchByName(ctx, base, std::string(), kCommandSetLanguage,
+                           static_cast<uint32_t>(value));
+    } else if (action.name.rfind(kActionLoadSavePrefix, 0) == 0) {
+      const std::string index = action.name.substr(std::strlen(kActionLoadSavePrefix));
+      char* end = nullptr;
+      const unsigned long value = std::strtoul(index.c_str(), &end, 10);
+      if (end == index.c_str() || *end != '\0') {
+        REXLOG_INFO("Refii guest-tick pump: '{}' has no save index — dropped", action.name);
+        g_drained.fetch_add(1, std::memory_order_relaxed);
+        continue;
+      }
+
+      ran = LoadSavedGame(ctx, base, static_cast<uint32_t>(value));
+    } else if (action.name == kActionSlideUp) {
+      // Name empty on purpose: the switch takes the id before the name chain is reached, so
+      // the string is never dereferenced on this path.
+      ran = DispatchByName(ctx, base, std::string(), kCommandSlideMenuUp);
+    } else if (action.name == kActionSlideDown) {
+      ran = DispatchByName(ctx, base, std::string(), kCommandSlideMenuDown);
     } else {
-      // An unimplemented name is DROPPED, loudly. Requeueing it would grow the queue without
-      // bound, and a silent drop is the failure that takes longest to notice — the menu would
-      // look like it worked.
-      REXLOG_INFO("Refii guest-tick pump: '{}' has no action — dropped", action.name);
-      g_drained.fetch_add(1, std::memory_order_relaxed);
-      continue;
+      // Everything else goes through the guest's own by-name dispatcher. A name it was never
+      // shipped with matches nothing in the strcmp chain and does nothing — which is the right
+      // outcome for a host-authored entry, and is why there is no host-side list to keep in
+      // step with the guest's.
+      ran = DispatchByName(ctx, base, action.name);
     }
 
     if (ran) {
@@ -294,6 +645,10 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   }
 
   DrainOnGuestThread(ctx, base);
+
+  // After the drain, so a "New Game" that just ran is reflected in the next answer rather than
+  // the one before it.
+  SampleSavedGameCount(ctx, base);
 }
 
 }  // namespace refii::vfs

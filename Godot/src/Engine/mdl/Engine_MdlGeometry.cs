@@ -358,27 +358,33 @@ public static class Engine_MdlGeometry
                 boneIds[v * 4 + 2] = data[p + 14];
                 boneIds[v * 4 + 3] = data[p + 15];
 
-                // THE TWO ELEMENTS ARE NOT THE SAME FORMAT, which is the whole trap here.
+                // INDEX k PAIRS WITH WEIGHT k, IN MEMORY ORDER. Measured, not reasoned.
                 //
-                // BLENDINDICES is UBYTE4, so its four bytes map straight to influences 0..3 —
-                // what the loop above does. BLENDWEIGHT is D3DCOLOR, and a D3DCOLOR is
-                // 0xAARRGGBB delivered to the shader as (R, G, B, A). In this big-endian
-                // buffer that puts A first in memory, so the weight for influence 0 is byte
-                // +17, not +16, and the alpha byte is the LAST influence.
+                // This used to rotate the weights one slot, on the argument that BLENDINDICES
+                // is UBYTE4 while BLENDWEIGHT is D3DCOLOR (0xAARRGGBB delivered as R,G,B,A),
+                // which in a big-endian buffer would put the alpha byte first and influence 0's
+                // weight at +17. That argument is WRONG, and the shipped data refutes it
+                // outright.
                 //
-                // Reading them in memory order rotates every weight one slot against the bone
-                // it belongs to — a vertex weighted entirely to its first bone comes out
-                // weighted entirely to its second. The declaration is built by sub_82A750E8
-                // through the D3DDECLTYPE table at 0x83316CC0, where BLENDINDICES is type 5
-                // (UBYTE4) and BLENDWEIGHT type 4 (D3DCOLOR).
-                float w0 = data[p + 17] / 255f;
-                float w1 = data[p + 18] / 255f;
-                float w2 = data[p + 19] / 255f;
-                float w3 = data[p + 16] / 255f;
-                boneWeights![v * 4] = w0;
-                boneWeights[v * 4 + 1] = w1;
-                boneWeights[v * 4 + 2] = w2;
-                boneWeights[v * 4 + 3] = w3;
+                // The test that settles it is a single-influence vertex: exactly one weight
+                // byte is 255, and it must line up with the slot holding the real bone. Every
+                // rotation passes a "weights sum to 1" check, which is why this survived so
+                // long. Across `ch_herochild_male`, `ch_heromale_morph_body` and
+                // `chickenblack` — 12,045 such vertices, ZERO counterexamples — every one reads
+                //
+                //     indices[+12..+15] = [0, 0, 0, X]      weights[+16..+19] = [0, 0, 0, 255]
+                //
+                // the real bone in the LAST slot and its full weight in the LAST byte.
+                //
+                // Rotating that gave influence 2 the weight of 1.0 — and influence 2's index is
+                // 0, the `*_Rig_Asset` wrapper root, which the guest never poses. So EVERY
+                // single-influence vertex in the game was pinned to a bone that never moves
+                // while the rest of the body animated away from it: 97% of a character's
+                // vertices anchored in bind, dragged out into flat sheets of triangles.
+                boneWeights![v * 4] = data[p + 16] / 255f;
+                boneWeights[v * 4 + 1] = data[p + 17] / 255f;
+                boneWeights[v * 4 + 2] = data[p + 18] / 255f;
+                boneWeights[v * 4 + 3] = data[p + 19] / 255f;
             }
 
             int u = p + uvOff;

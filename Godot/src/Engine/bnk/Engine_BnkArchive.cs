@@ -308,20 +308,42 @@ public sealed class BnkArchive : IDisposable
 	public long GetEntryDataOffset(BnkEntry entry) =>
 		_offsetsAreAbsolute ? entry.Offset : (long)_dataBaseOffset + entry.Offset;
 
+	/// <summary>
+	/// A SEEK AND A READ ARE ONE OPERATION, and the stream's position is shared state.
+	///
+	/// Every subsystem reads banks through this one archive object, so once anything reads off
+	/// the main thread — the region build does — two readers interleaving `Position = x` and
+	/// `ReadExact` hand each other the wrong bytes. It would not throw: it would decompress
+	/// whatever happened to be at the other reader's offset and surface as a corrupt mesh or a
+	/// texture from a different file, which is a bug that looks like a format problem.
+	///
+	/// Held for the I/O only. Inflation is pure CPU work on a private buffer and is the
+	/// expensive half, so it stays outside and two threads can decompress at once.
+	/// </summary>
+	private readonly object _streamLock = new();
+
 	public byte[] ReadEntryBytes(BnkEntry entry)
 	{
 		long dataOffset = GetEntryDataOffset(entry);
-		_stream.Position = dataOffset;
 
 		if (!entry.IsCompressed)
 		{
 			var raw = new byte[entry.Size];
-			ReadExact(_stream, raw);
+			lock (_streamLock)
+			{
+				_stream.Position = dataOffset;
+				ReadExact(_stream, raw);
+			}
+
 			return raw;
 		}
 
 		var stored = new byte[entry.StoredSize];
-		ReadExact(_stream, stored);
+		lock (_streamLock)
+		{
+			_stream.Position = dataOffset;
+			ReadExact(_stream, stored);
+		}
 
 		var output = new byte[entry.Size];
 		int produced = 0;

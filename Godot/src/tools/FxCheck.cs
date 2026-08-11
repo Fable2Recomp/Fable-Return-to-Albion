@@ -209,7 +209,22 @@ public partial class FxCheck : Node
                         continue;
                     }
 
-                    bool inBank = bank.FindByHash(raw) is not null;
+                    // ASK THE BANK THE WAY THE WALK ASKS IT, not the way the field is stored.
+                    //
+                    // The GDB holds the hash of the string AS WRITTEN and the bank is keyed on
+                    // the LOWERCASED name, so a raw-hash probe answers for "fxcre_shadow_hobbe"
+                    // and misses "FXENV_Lamp_Flame_02" — which is most of what a level actually
+                    // places. Bucketing on the raw hash reported 160 string emitters UNRESOLVED
+                    // and made a naming convention look like missing data; the resolver never
+                    // had that problem, because it re-hashes the resolved TEXT. Counting one way
+                    // and resolving the other is how a census indicts working code.
+                    string text = view.Fields(record)
+                        .Find(f => f.Hash == hash && f.Raw == raw).Text;
+                    uint key = type == GdbFieldType.String && text.Length != 0
+                        ? FxBank.Fnv1Lower(text)
+                        : raw;
+
+                    bool inBank = bank.FindByHash(key) is not null;
                     bool isEntry = false;
                     foreach (GdbView probe in seenViews)
                     {
@@ -222,7 +237,10 @@ public partial class FxCheck : Node
 
                     string verdict = inBank
                         ? "-> BANK EFFECT"
-                        : isEntry ? "-> gdb entry (needs another hop)" : "-> UNRESOLVED";
+                        : isEntry ? "-> gdb entry (needs another hop)"
+                        : type == GdbFieldType.String && text.Length == 0
+                            ? "-> UNRESOLVED (no name for the hash)"
+                            : "-> UNRESOLVED";
                     Bump($"{field} type={type} {verdict}");
                 }
             }
@@ -276,6 +294,8 @@ public partial class FxCheck : Node
             GD.Print($"[fx-check]     x{n,-4} {val,-52} -> {bone}{mark}");
         }
 
+        DumpOffsetFromDummy(seenViews);
+
         GD.Print("[fx-check] --- every field name mentioning 'Particle' ---");
         foreach ((string key, int count) in particleNames.OrderByDescending(kv => kv.Value))
         {
@@ -327,6 +347,96 @@ public partial class FxCheck : Node
                     }
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// HOW IS <c>OffsetFromDummy</c> ENCODED? The resolver leaves it out on purpose, because
+    /// `sub_824BC3D0` writing three floats into the attacher record at +16/+20/+24 says what the
+    /// RUNTIME struct looks like and nothing about what the FILE holds — and an offset applied
+    /// with the wrong encoding displaces every attached effect silently.
+    ///
+    /// The field census answers the first half already: it appears as a Reference, not as three
+    /// inline floats, so the value is another GDB entry. This prints that entry's whole field
+    /// list so the second half — what is ON it — is read rather than assumed.
+    /// </summary>
+    private static void DumpOffsetFromDummy(List<GdbView> views)
+    {
+        GD.Print("[fx-check] --- OffsetFromDummy, every stated value ---");
+
+        int shown = 0;
+        var byType = new Dictionary<GdbFieldType, int>();
+        foreach (GdbView view in views)
+        {
+            for (int record = 0; record < view.RecordCount; record++)
+            {
+                foreach (GdbField f in view.Fields(record))
+                {
+                    if (f.Hash != Engine_LevelFx.OffsetFromDummy)
+                    {
+                        continue;
+                    }
+
+                    byType[f.Type] = byType.TryGetValue(f.Type, out int n) ? n + 1 : 1;
+                    if (!f.IsReference || f.Raw == 0 || shown >= 8)
+                    {
+                        continue;
+                    }
+
+                    GD.Print(
+                        $"[fx-check]     on record 0x{view.RecordHash(record):X8} " +
+                        $"({view.RecordName(record)}) -> {f.Describe()}");
+
+                    bool found = false;
+                    foreach (GdbView probe in views)
+                    {
+                        if (!probe.TryLookup(f.Raw, out int target))
+                        {
+                            continue;
+                        }
+
+                        found = true;
+                        foreach (GdbField g in probe.Fields(target))
+                        {
+                            GD.Print(
+                                $"[fx-check]         {g.Hash:X8} {g.Type,-18} " +
+                                $"{(g.Name.Length != 0 ? g.Name : "?"),-12} {g.Describe()}");
+                        }
+
+                        // The vec3 record shape the rest of the engine already reads, asked for
+                        // by name. If this succeeds the encoding is settled; if it fails the
+                        // fields above say what it is instead.
+                        if (probe.TryReadVec3Record(target, out float x, out float y, out float z))
+                        {
+                            GD.Print($"[fx-check]         => vec3 ({x}, {y}, {z})");
+                        }
+                        else
+                        {
+                            GD.Print("[fx-check]         => NOT a VecX/VecY/VecZ record");
+                        }
+
+                        break;
+                    }
+
+                    if (!found)
+                    {
+                        GD.Print("[fx-check]         *** target not in any view ***");
+                    }
+
+                    shown++;
+                }
+            }
+        }
+
+        if (byType.Count == 0)
+        {
+            GD.Print("[fx-check]     none stated in these views");
+            return;
+        }
+
+        foreach ((GdbFieldType type, int count) in byType.OrderByDescending(kv => kv.Value))
+        {
+            GD.Print($"[fx-check]     {count,6}  type={type}");
         }
     }
 
@@ -596,6 +706,9 @@ public partial class FxCheck : Node
         views.AddRange(supplemental);
 
         int authored = 0, byName = 0, byBinding = 0, notInBank = 0, unresolved = 0, attached = 0;
+        int multi = 0, extra = 0, displaced = 0;
+        var multiNames = new List<string>();
+        var displacedNames = new List<string>();
         var dummyNames = new Dictionary<string, int>();
         var missNames = new List<string>();
         var hitEffects = new Dictionary<uint, int>();
@@ -604,7 +717,42 @@ public partial class FxCheck : Node
         {
             // The routes in the order Engine_LevelFx.Spawn takes them, so the numbers here
             // and the numbers it prints at build time describe the same thing.
-            uint fx = Engine_LevelFx.HuntFxHash(placement.Hash, views, out string dummy);
+            List<Engine_LevelFx.FxAttachment> all =
+                Engine_LevelFx.HuntFxAttachments(placement.Hash, views);
+
+            // HOW MANY EFFECTS DOES ONE ENTITY STATE? `sub_827661B0` loops its attach list, so
+            // more than one is legal and dropping the tail is invisible in every other count on
+            // this report — the placement still resolves, still spawns, still draws.
+            foreach (Engine_LevelFx.FxAttachment a in all)
+            {
+                if (a.Offset != Godot.Vector3.Zero)
+                {
+                    displaced++;
+                    if (displacedNames.Count < 6)
+                    {
+                        displacedNames.Add(
+                            $"{placement.EntityName ?? "?"}[{a.Dummy}] -{a.Offset}");
+                    }
+                }
+            }
+
+            if (all.Count > 1)
+            {
+                multi++;
+                extra += all.Count - 1;
+                if (multiNames.Count < 8)
+                {
+                    multiNames.Add(
+                        $"{placement.EntityName ?? "?"} x{all.Count}: " + string.Join(
+                            " + ",
+                            all.Select(a =>
+                                $"{(EffectNames.TryGetValue(a.Effect, out string? an) ? an : a.Effect.ToString("X8"))}" +
+                                $"@{(a.Dummy.Length != 0 ? a.Dummy : "origin")}")));
+                }
+            }
+
+            uint fx = all.Count != 0 ? all[0].Effect : 0u;
+            string dummy = all.Count != 0 ? all[0].Dummy : string.Empty;
             int route = fx != 0 && fx != Engine_LevelFx.Null ? 1 : 0;
             if (route == 1 && dummy.Length != 0)
             {
@@ -686,6 +834,20 @@ public partial class FxCheck : Node
         foreach ((string bone, int n) in dummyNames.OrderByDescending(kv => kv.Value).Take(4))
         {
             GD.Print($"[fx-check]     bone '{bone}' x{n}");
+        }
+
+        GD.Print(
+            $"[fx-check]     {multi} placement(s) state more than one effect, " +
+            $"{extra} effect(s) beyond the first");
+        foreach (string sample in multiNames)
+        {
+            GD.Print($"[fx-check]         {sample}");
+        }
+
+        GD.Print($"[fx-check]     {displaced} attachment(s) state an OffsetFromDummy");
+        foreach (string sample in displacedNames)
+        {
+            GD.Print($"[fx-check]         {sample}");
         }
 
         // DOES IT PRODUCE ANYTHING? Spawning a node is not the same as drawing a particle, and

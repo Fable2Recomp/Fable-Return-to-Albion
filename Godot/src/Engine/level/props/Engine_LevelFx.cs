@@ -64,13 +64,22 @@ public static class Engine_LevelFx
 
     public static bool IsAmbientEffect(FxBank bank, uint effectHash)
     {
-        if (SustainCache.TryGetValue(effectHash, out bool cached))
+        // LOCKED FOR THE LEVEL CHANGE: the next region's FX spawn on a worker while the region
+        // we are standing in still ticks its own effects on the main thread.
+        lock (SustainCache)
         {
-            return cached;
+            if (SustainCache.TryGetValue(effectHash, out bool cached))
+            {
+                return cached;
+            }
         }
 
         bool sustains = Engine_FxSystem.EffectSustains(bank, effectHash);
-        SustainCache[effectHash] = sustains;
+        lock (SustainCache)
+        {
+            SustainCache[effectHash] = sustains;
+        }
+
         return sustains;
     }
 
@@ -111,18 +120,26 @@ public static class Engine_LevelFx
 
         Dictionary<uint, uint> bindings = ExtractParticleFxBindings(views, bank);
 
-        // ONE EFFECT PER PLACEMENT, keyed on the placement's own record hash.
+        // ONE EFFECT PER (PLACEMENT, EFFECT, BONE) — not one per placement, and not a proximity
+        // test.
         //
-        // The record hash, not a proximity test. What has to be stopped is the two passes below
-        // emitting the same placement twice — the second pass walks the whole list again, so
-        // anything the first resolved comes back round — and a distance rule does that only by
-        // also throwing away any SECOND instance of an effect near the first. Street lamps are
-        // closer together than 2.5m: measured on BWSSlums, 289 placements resolve, 112 are
-        // one-shots, and of the 177 left a 2.5m rule keeps 94 and silently eats 83.
+        // What has to be stopped is the two passes below emitting the same thing twice: the
+        // second pass walks the whole list again, so anything the first resolved comes back
+        // round. A distance rule does that only by also throwing away any SECOND instance of an
+        // effect near the first, and street lamps are closer together than 2.5m — measured on
+        // BWSSlums, 289 placements resolve, 112 are one-shots, and of the 177 left a 2.5m rule
+        // keeps 94 and silently eats 83.
         //
-        // The guest has no such rule. It registers an attacher per component and plays them all,
-        // so co-located duplicates in the data are meant to be co-located duplicates on screen.
-        var emitted = new HashSet<uint>();
+        // Keying on the placement alone is nearly as lossy in the other direction, because one
+        // entity can legitimately state several effects on several bones: Bowerlake's
+        // Waterfall_Medium is one placement carrying fxenv_water_fall_main_thin, _wide and
+        // _wider on three different dummies, and across the shipped levels 47 placements state
+        // 58 effects beyond their first. The bone is in the key because that is what makes two
+        // attachments on one prop distinct rather than a repeat.
+        //
+        // The guest has no dedup rule at all. It registers an attacher per component and plays
+        // them all, so co-located duplicates in the data are meant to be duplicates on screen.
+        var emitted = new Dictionary<(uint Placement, uint Effect, string Dummy), Vector3>();
         int count = 0;
         int oneShotSkips = 0;
         int byAuthored = 0;
@@ -130,28 +147,84 @@ public static class Engine_LevelFx
         int byBinding = 0;
         int attached = 0;
         int missedBone = 0;
+        int duplicate = 0;
+        int duplicateElsewhere = 0;
+        int displaced = 0;
+
+        // WHY a bone was missed, not just how many. "17 stated a bone we could not find" has two
+        // completely different causes behind it — the placement resolved to no model at all, so
+        // there was never a rig to search, or the rig is there and does not carry the node the
+        // data named. The first is a placement defect and belongs to Engine_LevelProps; the
+        // second is ours. One counter cannot say which, and guessing picks the wrong file to fix.
+        var noModel = new List<string>();
+        var noNode = new List<string>();
 
         bool Emit(
             GdbPlacement placement,
             uint hash,
             out Vector3 origin,
             bool bypassAmbient = false,
-            string dummy = "")
+            string dummy = "",
+            Vector3 offset = default)
         {
             Transform3D xform = Engine_LevelProps.BuildTransform(placement);
 
             // ONTO THE BONE, not the prop's origin. A lamp's flame belongs at its head, and 78
             // of BWSSlums' 86 effects state a DummyObject saying so.
-            if (dummy.Length != 0 && modelPaths is not null &&
-                modelPaths.TryGetValue(placement.Hash, out string? model) &&
-                TryDummyTransform(model, dummy, out Transform3D bone))
+            if (dummy.Length != 0)
             {
-                xform *= bone;
-                attached++;
+                string? model = null;
+                modelPaths?.TryGetValue(placement.Hash, out model);
+
+                if (model is null || model.Length == 0)
+                {
+                    missedBone++;
+                    if (noModel.Count < 12)
+                    {
+                        noModel.Add($"{placement.EntityName ?? "?"}[{dummy}]");
+                    }
+                }
+                else if (TryDummyTransform(model, dummy, out Transform3D bone))
+                {
+                    xform *= bone;
+                    attached++;
+                }
+                else
+                {
+                    missedBone++;
+                    if (noNode.Count < 12)
+                    {
+                        noNode.Add($"{model}[{dummy}]");
+                    }
+                }
             }
-            else if (dummy.Length != 0)
+
+            // THE OFFSET IS SUBTRACTED, IT GOES INNERMOST, AND IT DOES NOT NEED A BONE. All
+            // three are in the binary, and each is easy to get wrong in a way that reads as a
+            // bad scale rather than a sign, an ordering or a missing case.
+            //
+            // `sub_825EBBC8` stores the offset matrix TWICE on the attach record: as given at
+            // +16, and `sub_82260FE0` of it at +80. That function dots row 3 against each basis
+            // row (`vmsum3fp128 v10, v12, v0` at 0x82261008 and its two neighbours), negates the
+            // three results and transposes — the affine inverse of a rigid transform.
+            // `sub_825ED2A0` then composes with `addi r4, r31, 0x50` — +80, the INVERSE, not the
+            // +16 original — and puts it LEFT of the attach point, which in the guest's
+            // row-vector convention means innermost:
+            //
+            //     child = inv(T(offset)) x attachPointLocal x parentWorld
+            //
+            // Godot composes the other way round, so the same frame is the placement, then the
+            // bone, then a translation by MINUS the offset.
+            //
+            // Outside the bone branch because attachPointLocal is IDENTITY when nothing names a
+            // dummy, and the offset still applies — that is not a rare corner, it is every
+            // stated offset in the shipped levels. Silver keys, silver books and Murgo's statues
+            // all state OffsetFromDummy (0, 0, -0.25) with no DummyObject at all, so an offset
+            // applied only alongside a bone is an offset never applied.
+            if (offset != Vector3.Zero)
             {
-                missedBone++;
+                xform *= new Transform3D(Basis.Identity, -offset);
+                displaced++;
             }
 
             origin = xform.Origin;
@@ -162,8 +235,22 @@ public static class Engine_LevelFx
                 return false;
             }
 
-            if (!emitted.Add(placement.Hash))
+            var key = (placement.Hash, hash, dummy);
+            if (!emitted.TryAdd(key, xform.Origin))
             {
+                duplicate++;
+
+                // A REPEAT AT A DIFFERENT PLACE IS NOT A REPEAT. The placement list carries more
+                // entries than the save has entities (1410 against 1345 in BWSSlums) and some
+                // share a record hash, so keying on the hash alone quietly collapses two effects
+                // into one wherever those twins stand apart. Counting the ones that disagree is
+                // what says whether the key is the right key — a silent collapse and a correct
+                // dedup produce exactly the same spawn count.
+                if (emitted[key].DistanceSquaredTo(xform.Origin) > 0.01f)
+                {
+                    duplicateElsewhere++;
+                }
+
                 return false;
             }
 
@@ -178,23 +265,33 @@ public static class Engine_LevelFx
             return true;
         }
 
+        // Which placements the authored route answered for, so the name route below does not
+        // offer a second opinion on an entity whose data already stated what it carries.
+        var authoredFor = new HashSet<uint>();
+
         foreach (GdbPlacement placement in placements)
         {
-            uint fx = HuntFxHash(placement.Hash, views, out string dummy);
-            if (fx == 0 || fx == Null || bank.FindByHash(fx) is null)
+            foreach (FxAttachment attachment in HuntFxAttachments(placement.Hash, views))
             {
-                continue;
-            }
+                if (attachment.Effect == 0 || attachment.Effect == Null ||
+                    bank.FindByHash(attachment.Effect) is null)
+                {
+                    continue;
+                }
 
-            if (Emit(placement, fx, out _, false, dummy))
-            {
-                byAuthored++;
+                authoredFor.Add(placement.Hash);
+                if (Emit(
+                        placement, attachment.Effect, out _, false,
+                        attachment.Dummy, attachment.Offset))
+                {
+                    byAuthored++;
+                }
             }
         }
 
         foreach (GdbPlacement placement in placements)
         {
-            if (IsSilverKeyPlacement(placement))
+            if (IsSilverKeyPlacement(placement) || authoredFor.Contains(placement.Hash))
             {
                 continue;
             }
@@ -246,8 +343,20 @@ public static class Engine_LevelFx
             // table was hiding.
             GD.Print(
                 $"[fx] level spawn: {count} ({byAuthored} authored, {byName} by name, " +
-                $"{byBinding} by binding; {attached} on a bone, {missedBone} stated a bone we " +
-                $"could not find; {oneShotSkips} one-shot placement(s) skipped)");
+                $"{byBinding} by binding; {attached} on a bone ({displaced} offset from it), " +
+                $"{missedBone} stated a bone we could not find; " +
+                $"{oneShotSkips} one-shot placement(s) skipped, {duplicate} already emitted " +
+                $"({duplicateElsewhere} of them somewhere else))");
+
+            if (noModel.Count != 0)
+            {
+                GD.Print($"[fx]     no model for: {string.Join(", ", noModel)}");
+            }
+
+            if (noNode.Count != 0)
+            {
+                GD.Print($"[fx]     model carries no such node: {string.Join(", ", noNode)}");
+            }
         }
 
         return count;
@@ -335,81 +444,16 @@ public static class Engine_LevelFx
             : string.Join('_', parts) + "_DummyObject" + suffix;
     }
 
-    /// <summary>
-    /// The ONLY edges an ambient effect is reached through, and the reason there is a list at
-    /// all rather than a graph search.
+    /// <summary>One effect an entity states, with where on the entity it hangs.</summary>
+    /// <param name="Effect">
+    /// The bank key, ALREADY RE-HASHED FROM THE RESOLVED TEXT rather than taken as stored.
     ///
-    /// A breadth-first walk over every reference does find effects — it found 481 in Bloodstone
-    /// — but they are the wrong ones. It leaves the entity it started on, wanders through shared
-    /// base entries, and comes back with whatever it bumps into: BWSSlums loaded with 67
-    /// permanent `fxenv_windowbreak_small_green`, 27 `FXWPN_Breakable_China_01` and 12
-    /// `FXWPN_Crate_Strike_01` going off in the street, while the torches and lanterns it walked
-    /// straight past resolved to nothing.
-    ///
-    /// The guest never searches. Each component asks for a property named after its own class
-    /// and reads what is on the other end, so the reachable set is exactly these edges:
-    ///
-    ///     ParticleEmitterComponent  -> [parent*] -> ParticleEmitter (String)
-    ///     ParticleAttacherComponent -> ParticlesToAttach -> <entry>* -> ParticleEmitter
-    ///
-    /// Every other Particle-named property in the data is an EVENT effect and belongs to
-    /// something happening, not to the level standing still: ParticleEffect (breakable
-    /// destruction), ImpactParticleEffect, LeftoverParticleEffect, OpenDoorParticleFX,
-    /// WeaponParticle, ClothingParticle, OnFireParticleFXIndex, ThemeParticleFX,
-    /// FirefliesParticleEffect. Adding any of them here puts a permanent explosion in a street.
-    /// </summary>
-    private static readonly uint[] AmbientEdges =
-    {
-        ParticleEmitterComponent,
-        ParticleAttacherComponent,
-        ParticlesToAttach,
-        AttachedParticle,
-        ParticleEmitter,
-        Parent,
-    };
-
-    /// <summary>
-    /// Resolves the effect a placement states, by walking the chain the guest walks.
-    ///
-    /// THE SHAPE IS THE GUEST'S, and it is visible in the data exactly as IDA described it.
-    /// One real chain out of Bloodstone, printed by <c>FxCheck</c>:
-    ///
-    ///     ParticleEmitter (ResourceReference) 0xA4FCA3BC        <- on the placement
-    ///       ParticleEmitterComponent (Reference) 0x86FE8402     <- sub_821DA3B0's component hop
-    ///         ParticleEmitter (String) "fxcre_shadow_hobbe_tar" <- the answer
-    ///         parent (Reference) ParticleEmitterComponent       <- base, states the empty hash
-    ///
-    /// Three things that each cost a resolution if you skip them:
-    ///
-    /// THE TYPE DECIDES WHAT THE VALUE IS. As a String it is a name hash; as a Reference it is
-    /// a GDB ENTRY hash and the effect is named on the entry it points at. Returning the value
-    /// whichever it was meant every reference-typed field became an entry hash asked of a name
-    /// table — 254 of Bloodstone's misses, none of them a data problem.
-    ///
-    /// THE BANK IS KEYED ON THE LOWERCASED NAME, and the GDB stores the hash of the string AS
-    /// WRITTEN. "fxcre_shadow_hobbe_tar" matches by luck because it is already lower;
-    /// "FXCRE_Hollowman_Wisp_Trail" does not. So the answer comes from re-hashing the resolved
-    /// TEXT, not from the stored hash — which is what the guest does too, resolving the hash to
-    /// a name through GDBNames_ResolveHash before looking it up.
-    ///
-    /// THE BASE ENTRY STATES THE EMPTY HASH. Every ParticleEmitterComponent inherits from one
-    /// that carries `ParticleEmitter = 0x811C9DC5`, the bare FNV-1 basis — the "nothing here"
-    /// value. Treating that as a name gives every emitter in the game the same effect, so
-    /// <see cref="Null"/> is rejected wherever a value is read.
-    /// </summary>
-    /// <remarks>
-    /// It follows <see cref="AmbientEdges"/> and nothing else, breadth-first so the nearest
-    /// stated effect wins. Inside a ParticlesToAttach list the entries are unnamed, so that one
-    /// subtree opens up to any reference — bounded, because it is only reached through the
-    /// attacher.
-    /// </remarks>
-    public static uint HuntFxHash(uint root, List<GdbView> views) =>
-        HuntFxHash(root, views, out _, out _);
-
-    public static uint HuntFxHash(uint root, List<GdbView> views, out string dummy) =>
-        HuntFxHash(root, views, out dummy, out _);
-
-    /// <param name="dummy">
+    /// The bank is keyed on the LOWERCASED name and the GDB stores the hash of the string AS
+    /// WRITTEN, so "fxcre_shadow_hobbe_tar" matches by luck because it is already lower and
+    /// "FXCRE_Hollowman_Wisp_Trail" does not. The guest re-hashes too, resolving the stored hash
+    /// to a name through GDBNames_ResolveHash before looking it up.
+    /// </param>
+    /// <param name="Dummy">
     /// The <c>DummyObject</c> bone the effect attaches to, empty when it is a plain
     /// CECParticleEmitter sitting at its entity's origin.
     ///
@@ -419,31 +463,101 @@ public static class Engine_LevelFx
     /// OB_MusicBox all carry an `FX_Particle_DummyObject`. Until it is honoured, a lamp's flame
     /// is placed at the lamp's ORIGIN rather than at its head.
     /// </param>
-    /// <param name="offset">
+    /// <param name="Offset">
     /// <c>OffsetFromDummy</c>, a translation in the BONE's space that is SUBTRACTED, not added.
     ///
-    /// `sub_827661B0` builds a matrix whose rotation rows are identity and whose row 3 is the
-    /// offset, and `sub_825EBBC8` stores its INVERSE at the attach record's +80. That inverse is
-    /// what `sub_825ED2A0` composes with — `addi r4, r31, 0x50`, not `0x10` — so the frame is
+    /// `sub_827661B0` walks the attacher's list at stride 32 and loads the offset as a vector
+    /// from the record's +16 (`lvx128 v1, r29, r18` with r18 = 16), which `sub_82B4FD98` turns
+    /// into a matrix whose row 3 is that vector. `sub_825EBBC8` then stores the matrix twice on
+    /// the attach record — as given at +16, and `sub_82260FE0` of it, the affine inverse, at
+    /// +80. That inverse is what `sub_825ED2A0` composes with — `addi r4, r31, 0x50`, not
+    /// `0x10` — and it goes LEFT of the attach point, so in row-vector terms the frame is
     ///
     ///     child = inv(translate(Offset)) x attachPointLocal x parentWorld
     ///
     /// Getting the sign backwards puts a flame as far the wrong side of the lamp as it should
     /// have been the right side, which reads as a plausible mis-scale rather than a sign error.
+    ///
+    /// It is a REFERENCE to a vector record, not three inline floats, and that record states
+    /// only its non-zero components — see <see cref="ReadOffsetVector"/>.
     /// </param>
-    public static uint HuntFxHash(
-        uint root, List<GdbView> views, out string dummy, out Vector3 offset)
+    public readonly record struct FxAttachment(uint Effect, string Dummy, Vector3 Offset);
+
+    /// <summary>
+    /// EVERY effect an entity states, not just the nearest one.
+    ///
+    /// `sub_827661B0` is a LOOP: it walks the attacher's list from `*(a2+4)` to `*(a2+8)` at
+    /// stride 32 and calls the spawner `sub_8238B860` once per entry, each with that entry's own
+    /// offset vector from +16 and its own flags from +13/+14/+15. An entity with two attachments
+    /// gets two effects — which the shipped data asks for plainly: the dummy census carries
+    /// `Prop.FX.Particle.Effect_1.` AND `Prop.FX.Particle.Effect_2.`, and OB_MusicBox's rig
+    /// carries `FX_Particle_DummyObject` beside `FX_Particle_DummyObject1` for them to hang from.
+    ///
+    /// Returning one hash could never express that, so a musicbox got its first effect and
+    /// silently dropped the second.
+    ///
+    /// WHAT STILL RETURNS ONE is inheritance. `GDBEntry_FindPropWalkParents` (0x821E5A08) stops
+    /// at the first entry in the parent chain that carries the property, so a child overriding
+    /// its base's emitter REPLACES it — collecting along parent edges as well would give every
+    /// overriding entity both its own effect and the one it was overriding. Multiplicity comes
+    /// from LIST MEMBERSHIP and from nothing else, which is why <c>parent</c> is resolved through
+    /// the field lookup below rather than being walked as an edge.
+    /// </summary>
+    /// <remarks>
+    /// THE SHAPE IS THE GUEST'S, and it is visible in the data exactly as IDA described it.
+    /// One real chain out of Bloodstone, printed by <c>FxCheck</c>:
+    ///
+    ///     ParticleEmitter (ResourceReference) 0xA4FCA3BC        &lt;- on the placement
+    ///       ParticleEmitterComponent (Reference) 0x86FE8402     &lt;- sub_821DA3B0's component hop
+    ///         ParticleEmitter (String) "fxcre_shadow_hobbe_tar" &lt;- the answer
+    ///         parent (Reference) ParticleEmitterComponent       &lt;- base, states the empty hash
+    ///
+    /// THE TYPE DECIDES WHAT THE VALUE IS, and that one field name means both. As a String it is
+    /// a name hash; as a Reference it is a GDB ENTRY hash and the effect is named on the entry it
+    /// points at. Taking the value whichever it was meant every reference-typed field became an
+    /// entry hash asked of a name table — 254 of Bloodstone's misses, none of them a data
+    /// problem. So the String form ends the walk and the Reference form is an edge.
+    ///
+    /// THE BASE ENTRY STATES THE EMPTY HASH. Every ParticleEmitterComponent inherits from one
+    /// that carries `ParticleEmitter = 0x811C9DC5`, the bare FNV-1 basis — the "nothing here"
+    /// value. Treating that as a name gives every emitter in the game the same effect, so
+    /// <see cref="Null"/> is rejected wherever a value is read.
+    ///
+    /// THE EDGES ARE A FIXED LIST, NOT A GRAPH SEARCH, and that is the whole difference between
+    /// this and a walk that "finds more effects".
+    ///
+    /// A breadth-first walk over every reference does find effects — it found 481 in Bloodstone
+    /// — but they are the wrong ones. It leaves the entity it started on, wanders through shared
+    /// base entries, and comes back with whatever it bumps into: BWSSlums loaded with 67
+    /// permanent `fxenv_windowbreak_small_green`, 27 `FXWPN_Breakable_China_01` and 12
+    /// `FXWPN_Crate_Strike_01` going off in the street, while the torches and lanterns it walked
+    /// straight past resolved to nothing.
+    ///
+    /// The guest never searches. Each component asks for a property named after its own class
+    /// and reads what is on the other end, so the reachable set is exactly:
+    ///
+    ///     ParticleEmitterComponent  -> [parent*] -> ParticleEmitter (String)
+    ///     ParticleAttacherComponent -> ParticlesToAttach -> &lt;entry&gt;* -> ParticleEmitter
+    ///
+    /// Every other Particle-named property in the data is an EVENT effect and belongs to
+    /// something happening, not to the level standing still: ParticleEffect (breakable
+    /// destruction), ImpactParticleEffect, LeftoverParticleEffect, OpenDoorParticleFX,
+    /// WeaponParticle, ClothingParticle, OnFireParticleFXIndex, ThemeParticleFX,
+    /// FirefliesParticleEffect. Adding any of them here puts a permanent explosion in a street.
+    /// </remarks>
+    public static List<FxAttachment> HuntFxAttachments(uint root, List<GdbView> views)
     {
-        dummy = string.Empty;
-        offset = Vector3.Zero;
+        var found = new List<FxAttachment>();
+        var distinct = new HashSet<FxAttachment>();
         var seen = new HashSet<uint> { root };
-        var queue = new Queue<(uint Hash, int Depth, bool InList)>();
-        queue.Enqueue((root, 0, false));
+        var queue = new Queue<(uint Hash, int Depth, bool InList, string Dummy, Vector3 Offset)>();
+        queue.Enqueue((root, 0, false, string.Empty, Vector3.Zero));
         int budget = 512;
 
         while (queue.Count != 0 && budget-- > 0)
         {
-            (uint hash, int depth, bool inList) = queue.Dequeue();
+            (uint hash, int depth, bool inList, string carried, Vector3 carriedOffset) =
+                queue.Dequeue();
 
             foreach (GdbView view in views)
             {
@@ -454,37 +568,72 @@ public static class Engine_LevelFx
 
                 List<GdbField> fields = view.Fields(record);
 
-                // The attacher states its bone on the SAME entry that states the emitter, so
-                // pick it up on the way past rather than walking the chain a second time.
-                foreach (GdbField f in fields)
+                // THIS ENTRY'S OWN bone and displacement — its own statement, else its nearest
+                // ancestor's, else the one the entry that led here stated. Own-first matters
+                // once more than one attachment is in play: carrying a single dummy forward
+                // across the whole walk, which is what a single pair of out-parameters forced,
+                // gave the second attachment the first's bone.
+                string dummy = Inherited(views, hash, DummyObject, GdbFieldType.String) is
+                    { Text.Length: > 0 } statedDummy ? statedDummy.Text : carried;
+
+                Vector3 offset = carriedOffset;
+                if (Inherited(views, hash, OffsetFromDummy, GdbFieldType.Reference) is
+                    { Raw: not 0 and not Null } statedOffset)
                 {
-                    if (f.Hash == DummyObject && f.Text.Length != 0)
-                    {
-                        dummy = f.Text;
-                    }
-                    // OffsetFromDummy is read here once its encoding is measured — see FxCheck.
-                    // sub_824BC3D0 writes it as three floats into the attacher record at
-                    // +16/+20/+24, but how the GDB stores that struct is not yet established
-                    // and guessing at it would silently displace every attached effect.
+                    offset = ReadOffsetVector(views, statedOffset.Raw);
                 }
 
-                foreach (GdbField f in fields)
+                // ONE EMITTER PER ENTRY, taken through the parent walk rather than by queueing
+                // `parent` as an edge. Both reach a base entry's effect; only this one lets a
+                // child REPLACE it. Walking parents as an edge and collecting everything found
+                // would hand an overriding entity its own effect plus the one it overrode.
+                if (Inherited(views, hash, ParticleEmitter, GdbFieldType.String) is
+                    { Raw: not 0 and not Null } emitter)
                 {
-                    if (f.Hash != ParticleEmitter ||
-                        f.Type != GdbFieldType.String || f.Raw == 0 || f.Raw == Null)
-                    {
-                        continue;
-                    }
+                    uint named = emitter.Text.Length != 0
+                        ? FxBank.Fnv1Lower(emitter.Text)
+                        : emitter.Raw;
 
-                    uint named = f.Text.Length != 0 ? FxBank.Fnv1Lower(f.Text) : f.Raw;
-                    if (named != 0 && named != Null)
+                    // THE SAME ATTACHMENT REACHED TWICE IS ONE ATTACHMENT. An entity's
+                    // ParticleEmitter entryRef and its ParticleEmitterComponent are different
+                    // edges that routinely land on entries inheriting the same emitter from the
+                    // same base, so the walk sees it once per route — 49 of BWSSlums' 134 hits.
+                    // Two attachments are distinct when they differ in what plays or where it
+                    // hangs, and identical otherwise, whichever way the walk got there.
+                    var attachment = new FxAttachment(named, dummy, offset);
+                    if (named != 0 && named != Null && distinct.Add(attachment))
                     {
-                        return named;
+                        found.Add(attachment);
                     }
                 }
 
                 if (depth < 6)
                 {
+                    // Every hop is inherited too — `sub_821DA3B0` asks for a property named after
+                    // the component's own class and a placement can carry none of its own — so
+                    // these are resolved through the parent chain rather than read locally.
+                    //
+                    // ParticleEmitter is in the list because it has TWO live forms and this is
+                    // the other one: as a type-6 entryRef `sub_82767C70` resolves it to another
+                    // GDB entry, and that entry is where ParticleEmitterComponent lives. It is
+                    // the FIRST hop of the chain FxCheck prints, so dropping it does not lose an
+                    // effect here and there — it loses the ordinary route, and BWSSlums falls
+                    // from 83 resolved to 17.
+                    foreach (uint edge in new[]
+                             { ParticleEmitter, ParticleEmitterComponent, ParticleAttacherComponent })
+                    {
+                        if (Inherited(views, hash, edge, GdbFieldType.Reference) is
+                                { Raw: not 0 and not Null } hop &&
+                            seen.Add(hop.Raw))
+                        {
+                            queue.Enqueue((hop.Raw, depth + 1, false, dummy, offset));
+                        }
+                    }
+
+                    // The list edges stay LOCAL, because a list entry states its attachments as
+                    // several fields sharing one hash and the parent walk returns only the
+                    // first. Inside the list any reference is followed — bounded, because the
+                    // subtree is only ever entered through the attacher.
                     foreach (GdbField f in fields)
                     {
                         if (!f.IsReference || f.Raw == 0 || f.Raw == Null)
@@ -492,13 +641,13 @@ public static class Engine_LevelFx
                             continue;
                         }
 
-                        bool named = Array.IndexOf(AmbientEdges, f.Hash) >= 0;
-                        if ((!named && !inList) || !seen.Add(f.Raw))
+                        bool list = f.Hash is ParticlesToAttach or AttachedParticle;
+                        if ((!list && !inList) || !seen.Add(f.Raw))
                         {
                             continue;
                         }
 
-                        queue.Enqueue((f.Raw, depth + 1, f.Hash == ParticlesToAttach || inList));
+                        queue.Enqueue((f.Raw, depth + 1, true, dummy, offset));
                     }
                 }
 
@@ -506,11 +655,117 @@ public static class Engine_LevelFx
             }
         }
 
-        return 0;
+        return found;
     }
 
     /// <summary>
-    /// The rest transform of a model's named dummy bone, in the model's own space.
+    /// A property as <c>GDBEntry_FindPropWalkParents</c> (0x821E5A08) reads it: the entry's own
+    /// statement, else the nearest ancestor that makes one, else nothing.
+    /// </summary>
+    /// <remarks>
+    /// THE CHAIN CROSSES FILES, which is why this walks the views itself instead of calling
+    /// <c>GdbView.TryFindFieldOwner</c>. That helper resolves `parent` with its own
+    /// <c>TryLookup</c>, so it stops dead the moment an entry inherits from one in another
+    /// .gdb — and a level's placements inherit from shared templates almost by definition.
+    /// Measured on BWSSlums: single-view inheritance resolves 17 placements where the walk
+    /// across all views resolves 83.
+    /// </remarks>
+    private static GdbField? Inherited(
+        List<GdbView> views, uint entry, uint fieldHash, GdbFieldType type)
+    {
+        uint current = entry;
+        var path = new HashSet<uint>();
+
+        for (int depth = 0; depth < 64 && current != 0 && current != Null && path.Add(current);
+             depth++)
+        {
+            GdbView? owner = null;
+            int record = -1;
+            foreach (GdbView view in views)
+            {
+                if (view.TryLookup(current, out record))
+                {
+                    owner = view;
+                    break;
+                }
+            }
+
+            if (owner is null)
+            {
+                return null;
+            }
+
+            if (owner.TryFindLocal(record, fieldHash, (int)type, out GdbField found))
+            {
+                return found;
+            }
+
+            // Reference and ResourceReference are the same edge as far as the walk is concerned
+            // — the data uses both for the component hop — so a Reference miss retries as one.
+            if (type == GdbFieldType.Reference &&
+                owner.TryFindLocal(
+                    record, fieldHash, (int)GdbFieldType.ResourceReference, out GdbField resource))
+            {
+                return resource;
+            }
+
+            if (!owner.TryFindLocal(record, GdbView.HashParent, (int)GdbFieldType.Reference,
+                    out GdbField parent) || parent.Raw == 0)
+            {
+                return null;
+            }
+
+            current = parent.Raw;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The vector an <c>OffsetFromDummy</c> reference points at — READ ONE COMPONENT AT A TIME,
+    /// because the record states only the components that are non-zero.
+    ///
+    /// Measured across BWSSlums and its supplementals: of the thirteen stated offsets, one names
+    /// all three of VecX/VecY/VecZ, four name two, and the rest name a single axis and inherit
+    /// the others from `parent`. Asking for the three together — which is what
+    /// <c>GdbView.TryReadVec3Record</c> does, and what every other vector in the level data
+    /// wants — fails on twelve of the thirteen and reads as "no offset stated", which is
+    /// indistinguishable from the field being absent and silently leaves the effect where it was.
+    ///
+    /// So each axis goes through the parent walk on its own, and an axis nobody states is zero:
+    /// a base entry that carries no component is stating no displacement, not an error.
+    /// </summary>
+    private static Vector3 ReadOffsetVector(List<GdbView> views, uint recordHash)
+    {
+        foreach (GdbView view in views)
+        {
+            if (!view.TryLookup(recordHash, out int index))
+            {
+                continue;
+            }
+
+            return new Vector3(
+                OffsetComponent(view, index, GdbView.HashVecX),
+                OffsetComponent(view, index, GdbView.HashVecY),
+                OffsetComponent(view, index, GdbView.HashVecZ));
+        }
+
+        return Vector3.Zero;
+    }
+
+    private static float OffsetComponent(GdbView view, int index, uint hash) =>
+        view.TryFindFieldOwner(index, hash, (int)GdbFieldType.Float, out GdbField found, out _) &&
+        float.IsFinite(found.AsFloat)
+            ? found.AsFloat
+            : 0f;
+
+    /// <summary>
+    /// The rest transform of a model's named dummy, in the model's own space.
+    ///
+    /// TWO TABLES HOLD DUMMIES and the stated name can be in either — the <c>.mdl.gmd</c>
+    /// sidecar's nodes and attachments, and the <c>.mdl</c>'s own bones. The sidecar is asked
+    /// first because it is the one the guest searches and the only one carrying the dotted names
+    /// the data states.
     ///
     /// Walks the parent chain because a dummy is authored as a child — on the lamps
     /// `FX_Particle_DummyObject` hangs off bone 4, not off the root — so its own local rest is
@@ -528,12 +783,55 @@ public static class Engine_LevelFx
             return false;
         }
 
-        if (!RigCache.TryGetValue(modelPath, out Engine_MdlRig? rig))
+        // THE .gmd FIRST, because that is the table the guest searches and it is the only one
+        // that holds the stated name. The .mdl's bone table and the .gmd's are not the same set:
+        // ESA_HangingLantern's bones are `FX_Particle_DummyObject` and `Layout_Light_DummyObject`,
+        // while `Prop.FX.Particle.Effect_1.FXENV_Lamp_Flame_01.par` — the name its data actually
+        // states — is an ATTACHMENT in the sidecar, listed after the nodes.
+        //
+        // Searching only the bones misses it, then misses the derived `FX_Particle_DummyObject1`
+        // too because that node does not exist, and hangs the flame on the lantern's origin. Nine
+        // of BWSSlums' eighteen misplaced effects were this one model.
+        // Parsed outside the lock, published inside it. Two threads racing the same model
+        // costs one redundant parse; a dictionary resized by both costs the next lookup.
+        bool haveGmd;
+        Engine_GmdSkeleton? gmd;
+        lock (GmdCache)
+        {
+            haveGmd = GmdCache.TryGetValue(modelPath, out gmd);
+        }
+
+        if (!haveGmd)
+        {
+            gmd = Engine_GmdSkeleton.TryParse(
+                Engine_BnkMeshLoader.ReadBytes(modelPath + ".gmd"));
+            lock (GmdCache)
+            {
+                GmdCache[modelPath] = gmd;
+            }
+        }
+
+        if (gmd is not null && gmd.TryResolve(dummy, out bone))
+        {
+            return true;
+        }
+
+        bool haveRig;
+        Engine_MdlRig? rig;
+        lock (RigCache)
+        {
+            haveRig = RigCache.TryGetValue(modelPath, out rig);
+        }
+
+        if (!haveRig)
         {
             var mesh = ResourceLoader.Load<Mesh>(
                 Engine_BnkMeshLoader.PathPrefix + modelPath);
             rig = Engine_MdlRig.TryFrom(mesh);
-            RigCache[modelPath] = rig;
+            lock (RigCache)
+            {
+                RigCache[modelPath] = rig;
+            }
         }
 
         if (rig is not { } r)
@@ -541,23 +839,15 @@ public static class Engine_LevelFx
             return false;
         }
 
-        // THE STATED STRING FIRST, because that is the guest's actual key.
-        //
-        // `sub_822650A0` CRC-32s the DummyObject value UNMODIFIED (poly 0xEDB88320, init 0, no
-        // final XOR — `sub_823B0A38`) and binary-searches the .gmd node table with it. There is
-        // no dotted-path parsing and no "_DummyObject" concatenation anywhere in the guest.
-        //
-        // Dumping BS_Lights_Town_Slum.mdl.gmd settles that the key is present verbatim — the
-        // node table holds `Prop.Layout.Light`, `Prop.FX.Particle.FXENV_Lamp_Flame_01.par` and
-        // `Prop.Action.Generic` alongside `Layout_Light_DummyObject` and
-        // `FX_Particle_DummyObject`. Both spellings are real nodes, which is why the derived
-        // form below also finds something; the dotted one is the one the data asked for.
+        // THE MODEL'S OWN BONES, for the models whose sidecar is absent or unreadable. The
+        // stated string is still tried first here for the same reason as above: it is the
+        // guest's key, and `Layout_Light_DummyObject` and `Prop.Layout.Light` are both real
+        // spellings of the same attachment on the same rig.
         int index = Array.FindIndex(
             r.Names, n => n.Equals(dummy, StringComparison.OrdinalIgnoreCase));
 
-        // The authoring convention, as a fallback only. `Prop.Layout.Light` and
-        // `Layout_Light_DummyObject` name the same attachment on the same rig, so a model whose
-        // table our reader exposes under only the underscore spelling still resolves.
+        // The authoring convention, as a last resort. It is a HOST INVENTION — the guest never
+        // rewrites the name — so it only runs once both real tables have said no.
         if (index < 0)
         {
             string derived = DummyBoneName(dummy);
@@ -586,6 +876,8 @@ public static class Engine_LevelFx
     }
 
     private static readonly Dictionary<string, Engine_MdlRig?> RigCache = new();
+
+    private static readonly Dictionary<string, Engine_GmdSkeleton?> GmdCache = new();
 
     private static Dictionary<uint, uint> ExtractParticleFxBindings(
         List<GdbView> views, FxBank bank)

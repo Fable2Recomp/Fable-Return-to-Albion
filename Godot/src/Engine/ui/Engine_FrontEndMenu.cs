@@ -70,6 +70,17 @@ public sealed class Engine_FrontEndMenu
 		public string? Opens { get; set; }
 
 		/// <summary>
+		/// The action this entry performs when the guest dispatches on a COMMAND rather than on
+		/// a name, or null when the name is the identity.
+		///
+		/// The language entries are the case that forces this to exist. The guest spawns one per
+		/// installed language with command 302 and the table row index, and its dispatcher takes
+		/// that pair from `a2+4`/`a2+8` before the name chain is ever reached — so the entries
+		/// have no name the guest would recognise, and naming "Language" reached nothing at all.
+		/// </summary>
+		public string? Command { get; set; }
+
+		/// <summary>
 		/// A whole other menu this entry OPENS, as opposed to <see cref="Children"/>, which
 		/// expand underneath it in place.
 		///
@@ -105,8 +116,24 @@ public sealed class Engine_FrontEndMenu
 	/// <summary>How many accelerating steps before the interval stops shrinking.</summary>
 	public const int InputIntervalClamp = 10;
 
-	/// <summary>Below this magnitude the stick counts as released.</summary>
+	/// <summary>
+	/// Below this magnitude the stick counts as released — `THUMBSTICK_RELEASE_THRESHOLD`.
+	///
+	/// It is HALF of a hysteresis pair, which is easy to miss because only one of the two ever
+	/// gets quoted. See <see cref="ThumbstickPushThreshold"/>.
+	/// </summary>
 	public const double ThumbstickReleaseThreshold = 0.65;
+
+	/// <summary>
+	/// Above this magnitude the stick counts as pushed — `THUMBSTICK_PUSH_THRESHOLD`, 0.70.
+	///
+	/// The gap between the two is deliberate and is why `guistateandconstants.lua` also keeps
+	/// four `Pushing*Held` booleans: a direction ENGAGES at 0.70 and does not release until the
+	/// stick falls back under 0.65. Using one threshold for both — which this did, at 0.65 —
+	/// makes a stick resting in that band read as a push the original would have ignored, and a
+	/// stick wobbling across the line chatter between held and released.
+	/// </summary>
+	public const double ThumbstickPushThreshold = 0.70;
 
 	private readonly List<Item> _roots = new();
 
@@ -176,6 +203,79 @@ public sealed class Engine_FrontEndMenu
 	/// </summary>
 	public const string HeroCardScreen = "HeroCard";
 
+	/// <summary>
+	/// The saved-game slot cap, for a caller with no guest to read it from.
+	///
+	/// SIX, not the 150 that sits in the image at `dword_83319620`. `sub_82378618` — the
+	/// front-end enter, vtable slot 0x820A9260 — stores 6 over it unconditionally, and that
+	/// runs before the menu can dispatch, so 150 is a value the game never decides with.
+	/// </summary>
+	public const int DefaultSaveLimit = 6;
+
+	/// <summary>The guest's own text tag for a New Game with no profile signed in.</summary>
+	public const string NoProfileWarning = "GUI_NO_PROFILE_SELECTED_WARNING";
+
+	/// <summary>The guest's own text tag for a New Game with every save slot used.</summary>
+	public const string SaveLimitWarning = "GUI_REACHED_SAVE_GAME_LIMIT_WARNING";
+
+	/// <summary>What the storage layer last said, as <see cref="ApplyAvailability"/> was told.</summary>
+	public Refii.Host.HostBridge.SaveState Saves { get; private set; } = new(false, -1, 0);
+
+	/// <summary>
+	/// A refusal the last <see cref="Activate"/> produced, as a text tag, or null.
+	///
+	/// Latched rather than thrown or returned, because a refusal is not a dispatch and not a
+	/// screen — the two things <see cref="Activate"/> already distinguishes — and a caller that
+	/// ignores it gets an entry that does nothing rather than one that acts wrongly.
+	/// </summary>
+	public string? Warning { get; private set; }
+
+	/// <summary>The pending refusal, cleared by reading it.</summary>
+	public string? TakeWarning()
+	{
+		string? warning = Warning;
+		Warning = null;
+		return warning;
+	}
+
+	/// <summary>
+	/// The guest's own New Game guards, in its own order — `sub_826DFD58` from 0x826E0040.
+	///
+	/// TWO OF THE THREE. The guest checks, in order:
+	///
+	///   0x826E0078  `(1 &lt;&lt; *0x83496AF8) &amp; *0x83496A70` — a profile is signed in.
+	///   0x826E0094  `sub_82441CB8(saveMgr, user, 1)` — a storage device is selected.
+	///   0x826E0148  `sub_824431E8(...) &lt; *0x83319620` — a slot is free.
+	///
+	/// THE MIDDLE ONE IS DELIBERATELY ABSENT and this is the place to say so. It is not a test:
+	/// `sub_82441CB8` calls `j_XamShowDeviceSelectorUI` and then blocks on
+	/// `XGetOverlappedResult(..., bWait=1)` — it PUTS UP the console's device picker and waits
+	/// for an answer. There is one device here and no picker to show, so reproducing it would
+	/// mean reproducing a console affordance that has nothing to choose between. Its failure
+	/// text, GUI_NO_DEVICE_SELECTED_WARNING, is for a state this port cannot enter.
+	///
+	/// THE COUNT IS A SUBSTITUTION and this is the place to admit it. The guest's third guard
+	/// calls `sub_824431E8`, which enumerates the SELECTED device; our sample comes from
+	/// `sub_82443308`, which enumerates ALL of them. They are different queries and only agree
+	/// where there is one device — which is the case here, and is a consequence of skipping the
+	/// device picker above rather than an independent choice. `sub_824431E8` is not available
+	/// to us: it reads a DeviceID out of a map that only the blocking picker ever writes, so it
+	/// would return a confident zero and let a full profile start a game that cannot be saved.
+	///
+	/// The third guard is why the limit matters: the guest compares against 6, and the WRITE
+	/// side (`sub_82445050` at 0x82445108) makes the same comparison and returns 0 silently.
+	/// This dialog is the only thing that ever tells the player why nothing happened.
+	/// </summary>
+	private string? NewGameRefusal()
+	{
+		if (!Saves.SignedIn)
+		{
+			return NoProfileWarning;
+		}
+
+		return Saves.AtSaveLimit ? SaveLimitWarning : null;
+	}
+
 	public void Add(Item item)
 	{
 		_roots.Add(item);
@@ -185,23 +285,78 @@ public sealed class Engine_FrontEndMenu
 	/// <summary>
 	/// Applies the guest's own availability rules.
 	///
-	/// <paramref name="saveCount"/> is the caller's, not the guest's: the guest decides "Load
-	/// Game" with a live XamContentCreateEnumerator, which is a CALL rather than a memory read,
-	/// and this port owns storage anyway. Everything else comes straight off the model.
+	/// LOAD GAME IS THE ONE THAT NEEDED A CALL, and getting that wrong is what kept it off the
+	/// menu. The guest's spawn guard at 0x826E2264 is `signedIn &amp;&amp; sub_82443308() != 0`
+	/// — a live XamContentCreateEnumerator over content type 1, DeviceID 0. The vector of save
+	/// names at the front-end screen's +84/+88 is NOT that answer: it is filled only inside the
+	/// dispatcher's own "Load Game" branch (`sub_82443048` at 0x826E03CC), so at menu-build time
+	/// it is always empty and gating on it suppressed the entry unconditionally.
+	///
+	/// <paramref name="saves"/> therefore carries the pump's sample, and carries "not asked yet"
+	/// distinctly from "none" — see <see cref="Refii.Host.HostBridge.SaveState"/>. Everything
+	/// else comes straight off the model.
 	/// </summary>
-	public void ApplyAvailability(Refii.Host.HostBridge.FrontEndModel model, int saveCount)
+	public void ApplyAvailability(
+		Refii.Host.HostBridge.FrontEndModel model, Refii.Host.HostBridge.SaveState saves,
+		System.Collections.Generic.IReadOnlyList<Refii.Host.HostBridge.Language>? languages = null)
 	{
 		foreach (Item item in _roots)
 		{
 			item.Available = item.Name switch
 			{
-				"Load Game" => model.SignedIn && saveCount > 0,
+				// Held back until the pump has answered. Drawing it absent and adding it a frame
+				// later is the lesser evil against asserting a profile has no saves.
+				"Load Game" => saves.CanLoad,
 				"Language" => model.HasLanguageEntry,
 				_ => item.Available,
 			};
 		}
 
+		Saves = saves;
+
+		PopulateLanguages(languages);
 		Rebuild();
+	}
+
+	/// <summary>
+	/// Fills "Language" with one child per installed language, as the guest fills it.
+	///
+	/// `sub_826E1C98` walks the guest's own 96-byte-stride table and spawns an entry per row —
+	/// display NAME as the item name, group "Language", command 302, index = the row. So the
+	/// list is the guest's, and the only thing invented here is the order of the two calls.
+	///
+	/// NOTE THE ASYMMETRY, which is the guest's and not a mistake: the children are spawned
+	/// whenever the table has entries, but the "Language" PARENT only appears above one
+	/// installed language. A single-language install therefore has a child list nobody can
+	/// reach, which is exactly what <see cref="ApplyAvailability"/> reproduces by leaving the
+	/// parent unavailable.
+	///
+	/// THE LIST IS THE CALLER'S, for the same reason the save state is: reading it
+	/// means reading GUEST memory, and this class must work without a guest. It called
+	/// `HostBridge.GetLanguages()` itself and segfaulted the menu harness, which builds the very
+	/// same model with no guest behind it — a model that can only be constructed next to a
+	/// running game is not a model.
+	/// </summary>
+	private void PopulateLanguages(
+		System.Collections.Generic.IReadOnlyList<Refii.Host.HostBridge.Language>? languages)
+	{
+		if (languages is null || Find("Language") is not { } language)
+		{
+			return;
+		}
+
+		language.Children.Clear();
+
+		foreach (Refii.Host.HostBridge.Language installed in languages)
+		{
+			// The NAME is the guest's display string and doubles as the text tag: the front end
+			// puts it through Babel, and an unresolved tag renders verbatim, which is the same
+			// fallback the engine takes.
+			language.Children.Add(new Item(installed.Name, installed.Name, "Language")
+			{
+				Command = $"Language:{installed.Index}",
+			});
+		}
 	}
 
 	/// <summary>Recomputes the visible list and keeps the highlight on something real.</summary>
@@ -339,10 +494,24 @@ public sealed class Engine_FrontEndMenu
 
 		if (item.Opens is not null || item.Submenu is not null)
 		{
+			// The guest runs its storage guards BEFORE the card appears, not after the choice —
+			// 0x826E01FC, the switch to the `choosecard` element, is the SUCCESS arm of the
+			// third guard. Refusing here rather than at the commit is following that order.
+			if (item.Opens == HeroCardScreen)
+			{
+				Warning = NewGameRefusal();
+			}
+
 			return null;
 		}
 
-		return item.HostOnly ? null : item.Name;
+		if (item.HostOnly)
+		{
+			return null;
+		}
+
+		// A command entry dispatches on its COMMAND, not its name — see Item.Command.
+		return item.Command ?? item.Name;
 	}
 
 	/// <summary>Collapses an expanded submenu. True when it consumed the press.</summary>

@@ -57,11 +57,22 @@ namespace Refii.Ui;
 ///
 /// WHAT THIS DOES NOT REPRODUCE, and why:
 ///
+/// THE SLIDE IS REPRODUCED, and it is read rather than chosen. <c>ANIMATE_TIME</c> is 0.15,
+/// set as a global at the top of <c>expandablemenuformatting.lua</c> beside
+/// <c>HIGHLIGHT_INDEX = 4</c> and <c>NUM_VIS_SLOTS = 12</c>; the interpolation in
+/// <c>UpdateAnimations</c> is a plain clamped lerp — <c>t = (now - start_time) / duration</c>,
+/// clamped at 1, then <c>start_val + (end_val - start_val) * t</c> — with no easing curve, so a
+/// straight interpolation is faithful here rather than a simplification. What moves is the
+/// COMPONENT, not the slot: <c>AnimatePropertiesToIndex(comp, index)</c> takes a component to a
+/// slot index, which is why the rows below are keyed by ENTRY and change slot, rather than
+/// keyed by slot and changing text.
+///
 /// <list type="bullet">
-/// <item>The <b>animation</b>. <c>ANIMATE_TIME = 0.15</c> drives a tween of position.x through
-/// <c>AnimateComponentIn</c>/<c>Out</c> via <c>x = ±500</c> off-slot, and the scroll handlers
-/// animate a whole column by one slot. Rows here snap. Adding the tween is a self-contained
-/// next step against these same constants.</item>
+/// <item>The <b>spawn and removal</b> animation. <c>ANIMATE_IN_TIME</c> and
+/// <c>ANIMATE_OUT_TIME</c> are both 0.08 in <c>expandablemenustateandconstants.lua</c> and
+/// belong to an item entering or leaving the LIST, which is a different event from one changing
+/// slot. An entry arriving in the window here simply slides in from one slot beyond the
+/// edge.</item>
 /// <item><b>Truncation.</b> Each style carries a <c>truncate</c> width (200/210/240/305) and
 /// the engine clips a long label to it. <see cref="Engine_UiTextMesh"/> has no truncate mode —
 /// wrap mode 0 is a single line it does not fold — so an over-long label overhangs here.</item>
@@ -248,10 +259,62 @@ public partial class Engine_FrontEndMenuView : Node3D
 	/// <summary>Labels that produced no glyphs. Non-zero with a non-zero <see cref="RowsDrawn"/> means no font.</summary>
 	public int LabelsWithoutGlyphs { get; private set; }
 
+	/// <summary>
+	/// How long a row takes to reach its new slot — <c>ANIMATE_TIME</c>, set as a global at the
+	/// top of <c>expandablemenuformatting.lua</c> alongside <c>HIGHLIGHT_INDEX = 4</c> and
+	/// <c>NUM_VIS_SLOTS = 12</c>.
+	///
+	/// NOT the same number as <c>ANIMATE_IN_TIME</c> / <c>ANIMATE_OUT_TIME</c>, which are both
+	/// 0.08 in <c>expandablemenustateandconstants.lua</c> and belong to an item being spawned
+	/// into or removed from the list rather than to one changing slot.
+	/// </summary>
+	public const double AnimateTime = 0.15;
+
+	/// <summary>Where a row is: the four properties a slide interpolates.</summary>
+	private readonly struct RowPose
+	{
+		public readonly float X;
+		public readonly float Y;
+		public readonly float Scale;
+
+		/// <summary>Authored 0..100, as the slot table states it.</summary>
+		public readonly float Opacity;
+
+		public RowPose(float x, float y, float scale, float opacity)
+		{
+			X = x;
+			Y = y;
+			Scale = scale;
+			Opacity = opacity;
+		}
+
+		/// <summary>
+		/// A plain clamped lerp, which is what the engine does — <c>UpdateAnimations</c>
+		/// computes <c>t = (now - start_time) / duration</c>, clamps it at 1 and writes
+		/// <c>start_val + (end_val - start_val) * t</c>. There is no easing curve to miss.
+		/// </summary>
+		public static RowPose Lerp(RowPose from, RowPose to, float t) => new(
+			from.X + ((to.X - from.X) * t),
+			from.Y + ((to.Y - from.Y) * t),
+			from.Scale + ((to.Scale - from.Scale) * t),
+			from.Opacity + ((to.Opacity - from.Opacity) * t));
+	}
+
 	private readonly Node3D[] _rows = new Node3D[Slots.Length];
 	private readonly MeshInstance3D[] _labels = new MeshInstance3D[Slots.Length];
 	private readonly string[] _labelText = new string[Slots.Length];
 	private readonly int[] _labelSize = new int[Slots.Length];
+
+	/// <summary>Which entry each row node is currently drawing. Null means the node is free.</summary>
+	private readonly Engine_FrontEndMenu.Item?[] _rowItem =
+		new Engine_FrontEndMenu.Item?[Slots.Length];
+
+	private readonly RowPose[] _from = new RowPose[Slots.Length];
+	private readonly RowPose[] _to = new RowPose[Slots.Length];
+
+	private double _elapsed;
+	private bool _animating;
+
 	private Node3D? _cursor;
 
 	public override void _Ready()
@@ -333,7 +396,13 @@ public partial class Engine_FrontEndMenuView : Node3D
 
 		if (dispatch is null && item?.Opens is { } screen)
 		{
-			_openedScreen = screen;
+			// A refused entry opens nothing. The model latched the reason as a text tag and the
+			// owner takes it — see Engine_FrontEndMenu.NewGameRefusal.
+			if (Menu.Warning is null)
+			{
+				_openedScreen = screen;
+			}
+
 			return null;
 		}
 
@@ -416,6 +485,22 @@ public partial class Engine_FrontEndMenuView : Node3D
 				// supplies the position, so the clone contributes art and nothing else.
 				frame.Position = Vector3.Zero;
 				row.AddChild(frame);
+
+				// ART AND NOTHING ELSE, which this did not previously deliver. A shipped
+				// `MenuItemButton` carries its own `Icon.Title` text element, and the artist
+				// left the authored placeholder in it — so every cloned row drew
+				// "DEFAULT_TEXT_ID" underneath the label this view had just laid out. It goes
+				// unnoticed in the running game only because the guest's live state happens to
+				// leave that element invisible, which is not a thing to depend on: the view
+				// owns the label, so the clone must not bring one.
+				StripText(frame);
+
+				// EACH ROW NEEDS ITS OWN MATERIALS. Node.Duplicate copies the node but SHARES
+				// its sub-resources, so all twelve clones and the shipped original hold one
+				// StandardMaterial3D per quad. Fading a row would fade every row and the
+				// presentation's own component with it — and a row's opacity is per-slot (the
+				// two gutters are 0), so they cannot share.
+				OwnMaterials(frame);
 			}
 
 			var label = new MeshInstance3D { Name = "Label" };
@@ -425,6 +510,129 @@ public partial class Engine_FrontEndMenuView : Node3D
 		}
 
 		BuildCursor();
+	}
+
+	/// <summary>
+	/// Removes the TEXT a cloned row component brings with it.
+	///
+	/// Keyed on the element TYPE the scene builder recorded, not on the name: the scripts call
+	/// the element `Icon.Title`, but a row is being taken for its frame and its star, and any
+	/// text inside it is a label this view is about to draw itself.
+	/// </summary>
+	private static void StripText(Node node)
+	{
+		foreach (Node child in node.GetChildren())
+		{
+			if (child.HasMeta("element_type") && (string)child.GetMeta("element_type") == "Text")
+			{
+				node.RemoveChild(child);
+				child.QueueFree();
+				continue;
+			}
+
+			StripText(child);
+		}
+	}
+
+	/// <summary>
+	/// Gives every mesh under a cloned row a private copy of its material, and records the
+	/// authored alpha so a later fade is relative to the artist's value rather than to 1.
+	/// </summary>
+	private static void OwnMaterials(Node node)
+	{
+		if (node is MeshInstance3D mesh && mesh.MaterialOverride is StandardMaterial3D shared)
+		{
+			var own = (StandardMaterial3D)shared.Duplicate();
+			mesh.MaterialOverride = own;
+			mesh.SetMeta(AuthoredAlphaMeta, own.AlbedoColor.A);
+		}
+
+		foreach (Node child in node.GetChildren())
+		{
+			OwnMaterials(child);
+		}
+	}
+
+	/// <summary>Where a row quad's authored alpha is kept, so fading never compounds.</summary>
+	private const string AuthoredAlphaMeta = "authored_alpha";
+
+	/// <summary>
+	/// The two alternative tab faces a row component ships with — brown for a root entry, red
+	/// for a submenu one, chosen by <see cref="SetTabFace"/>.
+	/// </summary>
+	public const string HeadingTabFace = "InnerBrown";
+	public const string ChildTabFace = "InnerRed";
+
+	/// <summary>
+	/// Picks the tab face this entry's depth calls for, the way the scripts pick it.
+	///
+	/// <c>UpdateTabInnerTextureMenu</c> is two <c>setAttribute(group, 'opacity', 0|100)</c>
+	/// calls — on the GROUPS, never on their quads — so this re-runs exactly that. Without it
+	/// every row wears the file's default face, which is the red one, and the root entries look
+	/// like submenu rows.
+	///
+	/// It is NOT the same as forcing the quads opaque, which is what I tried first: the brown
+	/// group carries a full-bleed backing plate whose authored alpha is only zero because the
+	/// GROUP is, and lifting the leaves directly puts that plate on screen at full strength.
+	/// </summary>
+	private void SetTabFace(int row, bool heading)
+	{
+		if (_rows[row].GetNodeOrNull<Node3D>("Frame") is not { } frame)
+		{
+			return;
+		}
+
+		Face(HeadingTabFace, heading ? 1f : 0f);
+		Face(ChildTabFace, heading ? 0f : 1f);
+
+		void Face(string name, float opacity)
+		{
+			if (Engine_UiTheme.FindByName(frame, name) is Node3D group)
+			{
+				Recompute(group, Inherited(group) * opacity);
+			}
+		}
+
+		// The group's own factor is REPLACED; everything below it keeps the artist's. That is
+		// the whole of what setAttribute on a group does.
+		static void Recompute(Node node, float accumulated)
+		{
+			if (node is MeshInstance3D mesh)
+			{
+				// Written to the fade baseline rather than to the material, because the slot
+				// opacity is applied on top of it every frame — see ApplyPoses. Setting the
+				// material here would last exactly until the next frame.
+				mesh.SetMeta(AuthoredAlphaMeta, accumulated);
+			}
+
+			foreach (Node child in node.GetChildren())
+			{
+				Recompute(child, accumulated * Own(child));
+			}
+		}
+
+		static float Own(Node node) =>
+			node.HasMeta("opacity") ? (float)node.GetMeta("opacity") : 1f;
+
+		static float Inherited(Node node) =>
+			node.HasMeta("opacity_inherited") ? (float)node.GetMeta("opacity_inherited") : 1f;
+	}
+
+	/// <summary>Scales a whole row's art by a slot opacity, from its authored alpha.</summary>
+	private static void FadeArt(Node node, float opacity)
+	{
+		if (node is MeshInstance3D mesh && mesh.MaterialOverride is StandardMaterial3D material &&
+			mesh.HasMeta(AuthoredAlphaMeta))
+		{
+			float authored = (float)mesh.GetMeta(AuthoredAlphaMeta);
+			Color colour = material.AlbedoColor;
+			material.AlbedoColor = new Color(colour.R, colour.G, colour.B, authored * opacity);
+		}
+
+		foreach (Node child in node.GetChildren())
+		{
+			FadeArt(child, opacity);
+		}
 	}
 
 	private void BuildCursor()
@@ -474,13 +682,15 @@ public partial class Engine_FrontEndMenuView : Node3D
 			return;
 		}
 
-		foreach (Node3D row in _rows)
-		{
-			row.Visible = false;
-		}
-
 		if (Menu is null || Menu.Visible.Count == 0)
 		{
+			foreach (Node3D row in _rows)
+			{
+				row.Visible = false;
+			}
+
+			System.Array.Clear(_rowItem);
+
 			if (_cursor is not null)
 			{
 				_cursor.Visible = false;
@@ -496,7 +706,14 @@ public partial class Engine_FrontEndMenuView : Node3D
 		(int first, int last) = Window(Menu.HighlightIndex + 1, Menu.Visible.Count);
 		int highlight = Menu.HighlightIndex + 1;
 
-		for (int display = first; display <= last; display++)
+		// WHICH SLOT EACH ENTRY IS HEADED FOR. Computed before anything is assigned, because a
+		// row is matched to the node ALREADY DRAWING THAT ENTRY — that is what makes a scroll a
+		// movement rather than a repaint.
+		var wanted = new int[_rows.Length];
+		var entry = new Engine_FrontEndMenu.Item?[_rows.Length];
+		int count = 0;
+
+		for (int display = first; display <= last && count < _rows.Length; display++)
 		{
 			int slot = display - highlight + HighlightSlot;
 			if (slot < 1 || slot > Slots.Length)
@@ -507,9 +724,167 @@ public partial class Engine_FrontEndMenuView : Node3D
 				continue;
 			}
 
-			ApplyRow(slot, Menu.Visible[display - 1]);
+			wanted[count] = slot;
+			entry[count] = Menu.Visible[display - 1];
+			++count;
+		}
+
+		// Each entry keeps the node it was already on. The original does the same thing from
+		// the other end — `AnimatePropertiesToIndex(comp, index)` moves a COMPONENT to a slot,
+		// so the component is the persistent thing and the slot is what changes. A slot-keyed
+		// view would have to retext every node on every press, and would have nothing whose
+		// position could be tweened.
+		var taken = new bool[_rows.Length];
+		var assigned = new int[count];
+		for (int i = 0; i < count; ++i)
+		{
+			assigned[i] = -1;
+			for (int r = 0; r < _rows.Length; ++r)
+			{
+				if (!taken[r] && ReferenceEquals(_rowItem[r], entry[i]))
+				{
+					assigned[i] = r;
+					taken[r] = true;
+					break;
+				}
+			}
+		}
+
+		for (int i = 0; i < count; ++i)
+		{
+			if (assigned[i] >= 0)
+			{
+				continue;
+			}
+
+			for (int r = 0; r < _rows.Length; ++r)
+			{
+				if (!taken[r])
+				{
+					assigned[i] = r;
+					taken[r] = true;
+					break;
+				}
+			}
+		}
+
+		// Anything not carrying a visible entry any more goes away.
+		for (int r = 0; r < _rows.Length; ++r)
+		{
+			if (!taken[r])
+			{
+				_rows[r].Visible = false;
+				_rowItem[r] = null;
+			}
+		}
+
+		for (int i = 0; i < count; ++i)
+		{
+			int row = assigned[i];
+			if (row < 0)
+			{
+				continue;
+			}
+
+			bool wasDrawn = _rowItem[row] is not null && _rows[row].Visible;
+
+			// AN ENTRY ARRIVING STARTS ONE SLOT FURTHER OUT, which is what "the list slides"
+			// means: the window moved by one, so an entry entering it was, a moment ago, just
+			// past the edge. Slots 1 and 12 are the zero-opacity gutters, so an entry sliding in
+			// from beyond them fades up on its way rather than appearing at full strength.
+			_from[row] = wasDrawn
+				? _to[row]
+				: PoseFor(System.Math.Clamp(wanted[i] + (wanted[i] <= HighlightSlot ? -1 : 1),
+					1, Slots.Length), entry[i]!);
+
+			_to[row] = PoseFor(wanted[i], entry[i]!);
+
+			if (!ReferenceEquals(_rowItem[row], entry[i]))
+			{
+				_rowItem[row] = entry[i];
+				SetLabel(row, entry[i]!);
+			}
+
+			_rows[row].Visible = true;
 			RowsDrawn++;
 		}
+
+		// One clock for every row, because they all move together: the whole column slides by
+		// one slot on a press. `ANIMATE_TIME` is 0.15, set as a global in
+		// `expandablemenuformatting.lua`, and the interpolation is a plain clamped lerp with no
+		// easing — `UpdateAnimations` computes `t = (now - start) / duration`, clamps it at 1
+		// and writes `start + (end - start) * t`, which is the whole of it.
+		_elapsed = 0.0;
+		_animating = true;
+		ApplyPoses(0f);
+	}
+
+	/// <summary>
+	/// Advances the slide. Rows move only here, so the tween runs at the display rate rather
+	/// than at whatever rate the caller happens to poll navigation.
+	/// </summary>
+	public override void _Process(double delta)
+	{
+		if (!_animating)
+		{
+			return;
+		}
+
+		_elapsed += delta;
+		float t = AnimateTime <= 0.0 ? 1f : (float)(_elapsed / AnimateTime);
+		if (t >= 1f)
+		{
+			t = 1f;
+			_animating = false;
+		}
+
+		ApplyPoses(t);
+	}
+
+	/// <summary>Writes every visible row at a point on its own from/to interpolation.</summary>
+	private void ApplyPoses(float t)
+	{
+		for (int r = 0; r < _rows.Length; ++r)
+		{
+			if (_rowItem[r] is null || !_rows[r].Visible)
+			{
+				continue;
+			}
+
+			RowPose pose = RowPose.Lerp(_from[r], _to[r], t);
+
+			_rows[r].Position = new Vector3(pose.X, pose.Y, 0f);
+			_rows[r].Scale = new Vector3(pose.Scale, pose.Scale, 1f);
+
+			var tint = new Color(LabelColour.R, LabelColour.G, LabelColour.B, pose.Opacity / 100f);
+			Engine_UiTheme.Retint(_labels[r], tint);
+
+			// The frame fades with the label. The scripts set opacity on the row COMPONENT, so
+			// the tab and its text carry one value — and without this the two gutter slots
+			// would slide a fully opaque tab in under a label that had already faded to
+			// nothing.
+			if (_rows[r].GetNodeOrNull<Node3D>("Frame") is { } frame)
+			{
+				FadeArt(frame, pose.Opacity / 100f);
+			}
+		}
+	}
+
+	/// <summary>Where a given entry sits when it is resting in a given slot.</summary>
+	private static RowPose PoseFor(int slot, Engine_FrontEndMenu.Item item)
+	{
+		Slot placement = Slots[slot - 1];
+		Style style = Styles[placement.StyleIndex - 1];
+
+		// A root entry is a heading; depth counts parent links, so the model's two levels are
+		// depth 1 and 2. Deeper nesting would need the model to expose a real chain.
+		bool heading = item.Parent is null;
+		int depth = heading ? 1 : 2;
+
+		float tab = TabOffset + (TabOffsetPerDepth * (depth - 1)) + (heading ? HeadingTabBonus : 0f);
+		float scale = style.Scale + ((heading ? HeaderScale : DefaultScale) - 1f);
+
+		return new RowPose(placement.X + tab, placement.Y, scale, style.Opacity);
 	}
 
 	/// <summary>
@@ -540,77 +915,64 @@ public partial class Engine_FrontEndMenuView : Node3D
 		return (first, first + count - 1);
 	}
 
-	private void ApplyRow(int slot, Engine_FrontEndMenu.Item item)
+	/// <summary>
+	/// Puts an entry's LABEL on a row node. Called only when the row changes which entry it
+	/// draws, which a scroll does not — the entry keeps its node and moves with it.
+	///
+	/// The glyph mesh is the one thing here that costs anything, and this is what keeps it off
+	/// the per-frame path: the position, scale and opacity that change every frame of a slide
+	/// are a transform and a material write, and the text is not one of them.
+	/// </summary>
+	private void SetLabel(int row, Engine_FrontEndMenu.Item item)
 	{
-		Slot placement = Slots[slot - 1];
-		Style style = Styles[placement.StyleIndex - 1];
-
-		// A root entry is a heading; depth counts parent links, so the model's two levels are
-		// depth 1 and 2. Deeper nesting would need the model to expose a real chain.
 		bool heading = item.Parent is null;
-		int depth = heading ? 1 : 2;
+		SetTabFace(row, heading);
 
-		float tab = TabOffset + (TabOffsetPerDepth * (depth - 1)) + (heading ? HeadingTabBonus : 0f);
-		float scale = style.Scale + ((heading ? HeaderScale : DefaultScale) - 1f);
-
-		Node3D row = _rows[slot - 1];
-		row.Position = new Vector3(placement.X + tab, placement.Y, 0f);
-		row.Scale = new Vector3(scale, scale, 1f);
-		row.Visible = true;
-
-		ApplyLabel(slot, item, style, heading);
-	}
-
-	private void ApplyLabel(int slot, Engine_FrontEndMenu.Item item, in Style style, bool heading)
-	{
-		MeshInstance3D label = _labels[slot - 1];
+		MeshInstance3D label = _labels[row];
 		label.Position = new Vector3(heading ? HeadingLabelX : ChildLabelX, 0f, 0f);
 
 		string display = Resolve(item.TextTag);
 
-		// The slot's opacity, applied to the label.
-		//
-		// Engine_UiSceneBuilder deliberately forces authored text alpha to 1, because the
-		// engine overwrites the .fac's own alpha. This is a different value: the scripts call
-		// setAttribute('opacity', …) on the row COMPONENT every time it changes slot, and the
-		// gutter slots are 0 — a view that ignored it would draw the two fade slots at full
-		// strength and the list would end with a hard edge instead of tailing off.
-		var tint = new Color(LabelColour.R, LabelColour.G, LabelColour.B, style.Opacity / 100f);
+		// The point size is the same in every style record — 18 across all five — so a row
+		// changing slot never re-lays its glyphs. Taken from the table rather than written as
+		// 18 so a style that ever differs is honoured instead of silently ignored.
+		int size = Styles[3].FontSize;
 
-		// Rebuild the glyph mesh only when the string or the point size changed. A scroll
-		// moves an entry between slots every frame it repeats, and re-laying every label at
-		// that rate is the one place this could cost anything — the opacity, which DOES change
-		// on every one of those moves, is a material write below and costs nothing.
-		if (_labelText[slot - 1] != display || _labelSize[slot - 1] != style.FontSize)
+		if (_labelText[row] == display && _labelSize[row] == size)
 		{
-			_labelText[slot - 1] = display;
-			_labelSize[slot - 1] = style.FontSize;
-
-			// Left-aligned and vertically centred on the slot. The row's x offsets are
-			// negative and its truncate width positive, so the string runs rightward from the
-			// anchor — but Icon.Title's own authored alignment is in the .fac rather than in
-			// the scripts, so this is the one placement value here that is inferred.
-			//
-			// Wrap mode 0 is the engine's single-line, truncate-don't-fold mode. The truncate
-			// width itself is not applied; see the class remarks.
-			(ArrayMesh? mesh, Texture2D? atlas) = Theme?.Glyphs(
-				display, style.FontSize, tint,
-				horizontalAlign: 0, verticalAlign: 1,
-				boxWidth: style.Truncate, boxHeight: 0f, wrapMode: 0) ?? (null, null);
-
-			label.Mesh = mesh;
-			label.MaterialOverride = mesh is null
-				? null
-				: Engine_UiSceneBuilder.TextMaterial(tint, atlas);
-		}
-
-		if (label.Mesh is null)
-		{
-			LabelsWithoutGlyphs++;
 			return;
 		}
 
-		Engine_UiTheme.Retint(label, tint);
+		_labelText[row] = display;
+		_labelSize[row] = size;
+
+		// Built opaque; ApplyPoses carries the slot's own opacity every frame. Engine_UiSceneBuilder
+		// deliberately forces authored text alpha to 1 because the engine overwrites the .fac's
+		// own alpha, and the slot opacity is a different value — the scripts set it on the row
+		// COMPONENT, and the two gutters are 0.
+		var opaque = new Color(LabelColour.R, LabelColour.G, LabelColour.B, 1f);
+
+		// Left-aligned and vertically centred on the slot. The row's x offsets are negative and
+		// its truncate width positive, so the string runs rightward from the anchor — but
+		// Icon.Title's own authored alignment is in the .fac rather than in the scripts, so this
+		// is the one placement value here that is inferred.
+		//
+		// Wrap mode 0 is the engine's single-line, truncate-don't-fold mode. The truncate width
+		// itself is not applied; see the class remarks.
+		(ArrayMesh? mesh, Texture2D? atlas) = Theme?.Glyphs(
+			display, size, opaque,
+			horizontalAlign: 0, verticalAlign: 1,
+			boxWidth: Styles[3].Truncate, boxHeight: 0f, wrapMode: 0) ?? (null, null);
+
+		label.Mesh = mesh;
+		label.MaterialOverride = mesh is null
+			? null
+			: Engine_UiSceneBuilder.TextMaterial(opaque, atlas);
+
+		if (mesh is null)
+		{
+			LabelsWithoutGlyphs++;
+		}
 	}
 
 	/// <summary>

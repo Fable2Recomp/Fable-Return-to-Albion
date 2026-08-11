@@ -15,7 +15,7 @@ public partial class HostBridgeCheck : Node
 {
 	public override void _Ready()
 	{
-		int? abi = HostBridge.TryGetAbiVersion();
+		int? abi = HostBridge.TryGetRawAbiVersion();
 		if (abi is null)
 		{
 			GD.Print("HOST BRIDGE UNAVAILABLE — library not loadable.");

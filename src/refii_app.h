@@ -18,6 +18,7 @@
 #include <rex/input/nop/nop_input_driver.h>
 #include <rex/system/util/xdbf_utils.h>
 
+#include "host_audio.h"
 #include "host_input.h"
 
 #if REFII_HAS_RENDERER_RUNTIME
@@ -414,6 +415,26 @@ public:
         return input;
       };
       REXLOG_INFO("Refii: embedded — host-fed controller input installed");
+
+      // Embedded, the HOST owns audio too — and for a reason beyond tidiness.
+      //
+      // ReXApp::SetupPresentation installs the SDL audio system BEFORE the headless
+      // branch, so an embedded guest opened a real host audio device and played to it on
+      // its own clock while Godot drew on another. That is not a latency problem to tune
+      // out; it is two clocks.
+      //
+      // The guest's audio clock is the output device's CONSUMPTION rate: one semaphore
+      // credit per frame consumed wakes the audio worker, which re-enters the guest's
+      // render-driver callback, which mixes the next frame. Handing that credit to Godot
+      // makes Godot the clock, which is the whole point — and is also why the device
+      // cannot simply be closed to silence it: with nothing consuming, the guest's audio
+      // thread stops being pumped and NLHAudio wedges at its ten-packet cap.
+      config.audio_factory =
+          [](rex::runtime::FunctionDispatcher* function_dispatcher)
+          -> std::unique_ptr<rex::system::IAudioSystem> {
+        return refii::host::HostAudioSystem::Create(function_dispatcher);
+      };
+      REXLOG_INFO("Refii: embedded — host-fed audio output installed");
     }
 #if REFII_HAS_RENDERER_RUNTIME
     // The backend setting is final here (TOML + launcher env both applied);
