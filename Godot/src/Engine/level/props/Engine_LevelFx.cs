@@ -670,7 +670,13 @@ public static class Engine_LevelFx
     /// Measured on BWSSlums: single-view inheritance resolves 17 placements where the walk
     /// across all views resolves 83.
     /// </remarks>
-    private static GdbField? Inherited(
+    /// <remarks>
+    /// PUBLIC because the light walk needs the same read. Placed lights arrive through the same
+    /// chain as emitters and inherit from the same cross-file templates, so
+    /// <see cref="Refii.Lighting.Engine_LevelLights"/> resolves its component through this rather
+    /// than growing a second parent walk that would drift from this one.
+    /// </remarks>
+    public static GdbField? Inherited(
         List<GdbView> views, uint entry, uint fieldHash, GdbFieldType type)
     {
         uint current = entry;
@@ -775,7 +781,13 @@ public static class Engine_LevelFx
     /// skeleton (`sub_825ED2A0`), which matters for a character carrying a torch; for a lamp
     /// bolted to a wall the rest pose is that same answer, evaluated once.
     /// </summary>
-    private static bool TryDummyTransform(string modelPath, string dummy, out Transform3D bone)
+    /// <remarks>
+    /// PUBLIC for the light walk, which hangs its lights on the same rigs through the same stated
+    /// names — <c>Prop.Layout.Light</c> resolves to <c>Layout_Light_DummyObject</c>, which sits
+    /// beside the <c>FX_Particle_DummyObject</c> this was written for. One attachment table, one
+    /// lookup.
+    /// </remarks>
+    public static bool TryDummyTransform(string modelPath, string dummy, out Transform3D bone)
     {
         bone = Transform3D.Identity;
         if (dummy.Length == 0)

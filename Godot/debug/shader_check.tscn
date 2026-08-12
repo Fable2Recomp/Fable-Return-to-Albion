@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://b1shadercheck01"]
+
+[ext_resource type="Script" path="res://src/tools/ShaderCheck.cs" id="1_shadercheck"]
+
+[node name="ShaderCheck" type="Node"]
+script = ExtResource("1_shadercheck")

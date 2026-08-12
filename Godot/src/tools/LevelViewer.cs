@@ -72,6 +72,10 @@ public partial class LevelViewer : Node3D
 			Near = 0.05f,
 			Far = 20_000f,
 			Attributes = Refii.Lighting.Engine_LevelLighting.BuildCameraAttributes(),
+
+			// The guest's tone curve, measured per frame. Godot's tonemapper is Linear
+			// wherever this runs — see Engine_LevelLighting.ConfigureEnvironment.
+			Compositor = Refii.Lighting.Engine_LevelLighting.BuildCompositor(),
 		};
 		AddChild(_camera);
 

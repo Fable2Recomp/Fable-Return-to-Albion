@@ -190,8 +190,8 @@ public static class Engine_LevelBakedLighting
 		// came to 770 against a 762-vertex bake purely because its four floorboard submeshes
 		// share eight vertices between them. Checking that sum rejected the bake as a mismatch
 		// when it was the right bake for the right model all along.
-		int[] sourceVertices = mesh.GetMeta(
-			Refii.Models.Engine_MdlMesh.SourceVertexMapMeta, default) is
+		int[] sourceVertices = mesh.HasMeta(Refii.Models.Engine_MdlMesh.SourceVertexMapMeta) &&
+			mesh.GetMeta(Refii.Models.Engine_MdlMesh.SourceVertexMapMeta) is
 			{ VariantType: Variant.Type.PackedInt32Array } mapMeta
 			? mapMeta.AsInt32Array()
 			: Array.Empty<int>();
@@ -308,8 +308,14 @@ public static class Engine_LevelBakedLighting
 	/// </summary>
 	public static void ApplyInstanceLighting(GeometryInstance3D node, LightingFrame? frame)
 	{
+		// HasMeta FIRST, AND IT IS NOT BELT-AND-BRACES. `GetMeta(name, default)` reads as a safe
+		// lookup with a fallback and is not one: Godot returns the fallback only when the fallback
+		// is itself non-nil, and `default` for a Variant is nil. Every absent key otherwise takes
+		// the ERR_FAIL path, printing an error plus a full managed backtrace on the main thread —
+		// once per instance, every time time of day moves.
 		bool probeValid = false;
-		if (node.GetMeta(ProbeMeta, default) is { VariantType: Variant.Type.Array } probeMeta)
+		if (node.HasMeta(ProbeMeta) &&
+			node.GetMeta(ProbeMeta) is { VariantType: Variant.Type.Array } probeMeta)
 		{
 			var sample = probeMeta.AsGodotArray<Vector4>();
 			if (sample.Count == 3)
@@ -322,9 +328,10 @@ public static class Engine_LevelBakedLighting
 		}
 
 		// The node's stated mode wins; a probe sample is only the fallback answer.
-		float mode = node.GetMeta(BakeModeMeta, default) is { VariantType: Variant.Type.Int } stored
-			? stored.AsInt32()
-			: (probeValid ? 1f : 0f);
+		float mode = node.HasMeta(BakeModeMeta) &&
+			node.GetMeta(BakeModeMeta) is { VariantType: Variant.Type.Int } stored
+				? stored.AsInt32()
+				: (probeValid ? 1f : 0f);
 
 		float[] lightmap = frame?.LightmapColour ?? new float[] { 1f, 1f, 1f };
 		node.SetInstanceShaderParameter(
@@ -347,6 +354,32 @@ public static class Engine_LevelBakedLighting
 		float[] darkening = frame?.DarkeningColour ?? new float[] { 1f, 1f, 1f };
 		node.SetInstanceShaderParameter(
 			"darkening_colour", new Vector4(darkening[0], darkening[1], darkening[2], 1f));
+
+		// THE MAIN LIGHT, for the surfaces that cannot take it through Godot's `light()`.
+		//
+		// Water is `unshaded` — it composes reflection, refraction and a sun glint itself, so no
+		// DirectionalLight3D ever reaches it and it needs the light stated. It was lit by a
+		// direction hardcoded in Engine_WaterMaterial instead, which meant the glint sat in the
+		// same corner of every lake at dawn, noon and dusk.
+		//
+		// It is the SAME light, proven rather than assumed: the offscreen water renderer
+		// (`sub_82B3CDE8`) uploads `light+0xD0` of the last PRIMITIVE_INSTANCE_DIRECTIONAL_LIGHT
+		// in the frame's list to the binding its pixel shader reads as `g_LightColor`, and that
+		// +0xD0 is written from the day-set theme's MAIN_LIGHT_COLOUR. That is the light
+		// Engine_LevelLighting.UpdateSun already builds, so both now move together.
+		//
+		// TOWARD the sun, and X is flipped for the same reason the disc's is: SunDirection is
+		// stated in the guest's axes and the level root is mirrored through X. This is the disc's
+		// vector, NOT the DirectionalLight3D's forward — that one is the negation.
+		float[] sunDir = frame?.SunDirection ?? new float[] { 0f, 1f, 0f };
+		node.SetInstanceShaderParameter(
+			"sun_direction", new Vector4(-sunDir[0], sunDir[1], sunDir[2], 0f));
+
+		float[] sunRgb = frame?.SunColour ?? new float[] { 1f, 1f, 1f };
+		float sunEnergy = frame?.SunEnergy ?? 1f;
+		node.SetInstanceShaderParameter(
+			"sun_colour",
+			new Vector4(sunRgb[0] * sunEnergy, sunRgb[1] * sunEnergy, sunRgb[2] * sunEnergy, 1f));
 	}
 
 	/// <summary>

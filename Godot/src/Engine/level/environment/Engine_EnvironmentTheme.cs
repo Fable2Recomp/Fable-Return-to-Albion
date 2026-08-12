@@ -63,7 +63,15 @@ public sealed class SkyTheme
     /// not derived from a single axis tilt. `sub_821DF670` reads them at theme+864/880/896/912
     /// and converts with 0.017453292, which is what proves the unit.
     /// </summary>
-    public float[] MainLightElevation { get; } = { 26.0f, 26.0f, 26.0f, 26.0f };
+    /// <remarks>
+    /// THE DEFAULTS ARE THE GUEST'S OWN AND THEY ARE NOT ALL THE SAME. <c>sub_82A45DD0</c> states
+    /// all four — 50, 20, 70, 20 — at 0x82A46554/64/74/80, and marks them stated, so the guest
+    /// always has a real arc: low at midnight, lower at dawn, high at noon, low again at dusk.
+    ///
+    /// Four copies of 26 was a host invention standing in for values nobody had read, and it makes
+    /// the sun hold one elevation all day — no arc at all, which is the one shape a sun never has.
+    /// </remarks>
+    public float[] MainLightElevation { get; } = { 50.0f, 20.0f, 70.0f, 20.0f };
 
     public bool HasMainLightElevation { get; set; }
 
@@ -379,7 +387,8 @@ public static class Engine_EnvironmentTheme
             var extractor = new Extractor();
             foreach (byte[] bytes in gdbs)
             {
-                if (bytes is not null && GdbView.TryParse(bytes, out GdbView view, out _))
+                // Shared: this runs about nine times per re-evaluation over the same blobs.
+                if (bytes is not null && GdbView.TryParseShared(bytes, out GdbView view, out _))
                 {
                     extractor._views.Add(view);
                 }

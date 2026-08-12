@@ -644,6 +644,16 @@ public static class Engine_LevelProps
             GD.Print($"[props] {level}: {levelFx} level FX spawned from bank");
         }
 
+        // THE REGION'S OWN LIGHTS, beside the effects and off the same placements — a torch's
+        // flame and the light that flame casts are two statements about one fixture, and until
+        // this ran we built the first and not the second.
+        int lights = Refii.Lighting.Engine_LevelLights.Spawn(
+            container, view, supplementalViews, placements, fxModelPaths);
+        if (lights != 0)
+        {
+            GD.Print($"[props] {level}: {lights} placed lights");
+        }
+
         if (container.GetChildCount() == 0)
         {
             container.QueueFree();

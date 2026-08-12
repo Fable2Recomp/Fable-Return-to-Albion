@@ -229,8 +229,11 @@ public partial class Engine_PropStreamer : Node3D
     /// </summary>
     private void ApplyVertexBake(MeshInstance3D node, ArrayMesh mesh)
     {
-        if (node.GetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, default)
-            is not { VariantType: Variant.Type.Int } stored)
+        // HasMeta first — a nil default makes `GetMeta` take its ERR_FAIL path rather than return
+        // the fallback, and most nodes reaching here carry no bake key at all.
+        if (!node.HasMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta) ||
+            node.GetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta)
+                is not { VariantType: Variant.Type.Int } stored)
         {
             return;
         }

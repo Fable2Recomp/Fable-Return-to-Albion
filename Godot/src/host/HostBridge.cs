@@ -1074,6 +1074,35 @@ public static class HostBridge
 	/// </summary>
 	public static uint SimTick => RefiiHostGetSimTick();
 
+	/// <summary>The guest's live time of day, or null while the world clock does not exist.</summary>
+	/// <remarks>
+	/// NULL IS NOT AN ERROR and must not be substituted with a default. `GameTimeManager` is built
+	/// at game-database init and destroyed with the world, so before a level exists there is no
+	/// clock — and a host that answers "midday" in the meantime lights the front end and the first
+	/// frames of a load from a time the game is not at, then snaps when the real value arrives.
+	/// Callers hold their last good value instead.
+	///
+	/// The fraction is in [0, 1) and is the SAME value the guest's own day-set selector blends on,
+	/// so a theme evaluated against it reproduces the guest's selection rather than approximating
+	/// it — see the native side for the chain and the proof.
+	/// </remarks>
+	public static GuestClock? TimeOfDay()
+	{
+		if (RefiiHostGetTimeOfDay(out float fraction, out int day, out int frozen) == 0)
+		{
+			return null;
+		}
+
+		return new GuestClock(fraction, day, frozen != 0);
+	}
+
+	/// <param name="Frozen">
+	/// The guest's own pause: non-zero means something holds a stop-time request and the clock is
+	/// not advancing. Worth carrying rather than inferring from an unchanging fraction, because a
+	/// clock that merely looks still is indistinguishable from one we have stopped reading.
+	/// </param>
+	public readonly record struct GuestClock(float Fraction, int DayCount, bool Frozen);
+
 	/// <summary>The engine-preloading gate state 7 of CmdLevelChange_Update polls.</summary>
 	public readonly record struct RenderFence(
 		uint Manager, double Submitted, double Deadline, bool Busy,
@@ -1897,6 +1926,10 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetSimTick();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetTimeOfDay(
+		out float fraction, out int dayCount, out int frozen);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetRenderFence(

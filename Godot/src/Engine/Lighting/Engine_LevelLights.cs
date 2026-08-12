@@ -1,0 +1,455 @@
+using System;
+using System.Collections.Generic;
+using Godot;
+using Refii.Gdb;
+using Refii.Level;
+
+namespace Refii.Lighting;
+
+/// <summary>
+/// The region's PLACED lights — every torch, brazier, lantern and fixture the level states.
+///
+/// Until this landed a region was lit by exactly two things: the theme's one directional sun and
+/// the offline bake. That is correct at noon in an open street and wrong everywhere else — a lit
+/// torch threw no light on the wall behind it, and an interior with no sun reaching it was lit
+/// only by whatever the bake happened to hold. The guest places 772 light components across the
+/// shipped levels; we placed none.
+///
+/// A placed light is an ENTITY COMPONENT, not a level-owned array. It arrives through the same
+/// entity/layer/placement chain as props and particle effects, which is why this reads it the way
+/// <see cref="Engine_LevelFx"/> reads emitters — through the cross-file parent walk — rather than
+/// looking for a light table that does not exist.
+/// </summary>
+public static class Engine_LevelLights
+{
+	/// <summary>
+	/// FNV-1 of "GraphicAppearanceLightComponent" — the property an entity states to carry a light.
+	///
+	/// The guest never spells this hash out; it builds the name at runtime. <c>sub_8263C388</c>
+	/// registers the type from the string "CECGraphicAppearanceLight" (0x820C57B0), and
+	/// <c>sub_826302C0</c> turns a type name into a property name by stripping the leading "CEC"
+	/// (<c>sub_8222CED0(&amp;v5, (_BYTE *)(a2 + 3))</c>) and appending "Component"
+	/// (<c>sub_821DA9C0(v6, "Component")</c>). The intern it goes through, <c>sub_822078A0</c>,
+	/// only allocates and copies — there is no case folding — so the property name is exactly
+	/// "GraphicAppearanceLightComponent".
+	///
+	/// The hash is therefore COMPUTED rather than quoted, and it was checked the only way a
+	/// computed hash can be: against a value this project already had proven. Our FNV-1 reproduces
+	/// ParticleEmitter = 0x4EDC9083 from its own name, and the same function gives 0xBB61B654 here.
+	/// The shipped data agrees — 772 occurrences of this word across levels.bnk, alongside 436
+	/// HalfAngleDegrees, 606 FadeRange and 408 FlickeringRate.
+	/// </summary>
+	public const uint GraphicAppearanceLightComponent = 0xBB61B654;
+
+	// The component's own fields, read by `sub_825C0CC0` (0x825C0CC0). Every offset below is
+	// measured from the COMPONENT BASE — r28 in that function, which is its first argument — and
+	// was read out of the disassembly rather than taken from a summary.
+	public const uint Colour = 0xB76325F5;
+	public const uint Red = 0x3A232172;
+	public const uint Green = 0x608C9792;
+	public const uint Blue = 0xB1911CC9;
+	public const uint Intensity = 0x8F89F9D4;
+	public const uint Range = 0xF21E235C;
+	public const uint LightType = 0x141A09CB;
+	public const uint HalfAngleDegrees = 0x25ECC30E;
+	public const uint FadeDistance = 0x38B010EA;
+	public const uint FadeRange = 0x7505C7FA;
+	public const uint CastShadows = 0x63200437;
+	public const uint InitialActive = 0xFA11F9CD;
+	public const uint AttachToEntityPosition = 0x84886409;
+	public const uint FlickeringBrightnessRange = 0xB6EE59FF;
+	public const uint FlickeringRadiusRange = 0x553EE81A;
+	public const uint FlickeringRate = 0x5CD3FCE3;
+
+	/// <summary>
+	/// The dummy a light hangs on, and the reason a lamp lights its own head rather than its foot.
+	///
+	/// <c>sub_821E44F0</c> resolves a light's position in a strict order, and the middle case is
+	/// the ordinary one: unless <c>AttachToEntityPosition</c> is set, it interns
+	/// "Prop.Layout.Light" (the string is at 0x820D2470, interned into <c>dword_8349B808</c> by
+	/// <c>sub_83266628</c>), asks the model for how many such dummies it has via
+	/// <c>sub_825727B0</c>, and emits ONE PRIMITIVE PER DUMMY —
+	/// <c>821E4A24 sub_825C2108(v5 - 12, v46, a2, a3)</c> inside the loop.
+	///
+	/// So a model with two of these carries two lights, and this is a count rather than a lookup.
+	/// <see cref="Engine_LevelFx.DummyBoneName"/> already maps this spelling onto the rig's own —
+	/// "Layout_Light_DummyObject" — which the lamp models demonstrably carry beside their
+	/// FX_Particle_DummyObject.
+	/// </summary>
+	public const string LightDummy = "Prop.Layout.Light";
+
+	/// <summary>The GDB null hash — an empty reference, not a missing one.</summary>
+	public const uint NullHash = 0x811C9DC5;
+
+	/// <summary>
+	/// Intensity when the entity does not state one: <b>16.0</b>, from the constructor
+	/// <c>sub_826310D0</c>.
+	///
+	/// This is not a neutral default and it cannot be treated as one. <c>Intensity</c> is one of
+	/// the GATED reads in <c>sub_825C0CC0</c> — it happens only when
+	/// <c>GDBEntry_GetPropTyped(entry, hash, 8)</c> reports the property exists — so an entity
+	/// that states no Intensity keeps whatever the constructor put there, and the constructor put
+	/// 16. Defaulting to 1.0 instead would under-light every such fixture by a factor of sixteen.
+	/// </summary>
+	public const float DefaultIntensity = 16.0f;
+
+	/// <summary>The guest's <c>LightType</c> values. NOT the render-primitive enum.</summary>
+	/// <remarks>
+	/// There are two light enumerations in this engine and they disagree. <c>sub_825C2108</c>
+	/// branches on the GDB field at component+28 — <c>lwz r11, 0x1C(r31)</c> then
+	/// <c>cmpwi cr6, r11, 2</c>, taking the POINT path when it equals 2 and falling through to the
+	/// spot path otherwise — so the authored values are 1 = spot, 2 = point.
+	///
+	/// The render primitives are numbered differently (PointLight = 8, SpotLight = 9,
+	/// DirLight = 10, in the table at 0x8331AE50), and reading an authored LightType against that
+	/// table would silently produce the wrong kind of light for every fixture in the game.
+	///
+	/// <c>LightType == 0</c> is the constructor default and builds NO primitive. That it might
+	/// name a directional light is not established — there is no Directional or Omni string
+	/// anywhere in this path — so it is treated as "no light", which is what the guest does with it.
+	/// </remarks>
+	public const int LightTypeSpot = 1;
+
+	public const int LightTypePoint = 2;
+
+	/// <summary>One light an entity states, with where on the entity it hangs.</summary>
+	/// <param name="ColourLinear">
+	/// The light's colour, already divided by 255 and NOT gamma-decoded.
+	///
+	/// <c>sub_825C2108</c> loads the three bytes at component+18/+17/+16, converts each with
+	/// <c>fcfid</c>/<c>frsp</c> and multiplies by <c>flt_833216C8</c> = 0x3B808081 = 1/255
+	/// (<c>825c222c fmuls f6, f8, f13</c>). There is no <c>pow</c> and no squaring on this path —
+	/// unlike the colour TEXTURE decode, which squares. Treating a light colour as if it needed
+	/// the texture transfer would darken every warm fixture toward red.
+	/// </param>
+	/// <param name="Intensity">
+	/// The scalar the guest premultiplies into that colour, together with the fade multiplier:
+	/// <c>825c2180 fmuls f0, f0, f13</c> with f0 = component+60 (the fade) and f13 = component+20
+	/// (Intensity). It is separate from the colour in the data and combined before the renderer
+	/// ever sees it, so it belongs on the light's ENERGY rather than in its tint.
+	/// </param>
+	/// <param name="Range">
+	/// The light's reach in raw guest world units — <c>stfs f1, 0x18(r28)</c>, with no scaling
+	/// applied anywhere between the GDB read and the render primitive (where it lands at +144).
+	/// </param>
+	/// <param name="HalfAngleRadians">
+	/// The spot cone's half angle, ALREADY IN RADIANS. The field is authored in DEGREES and
+	/// converted on the way in: <c>825c0d8c fmuls f0, f1, f0</c> with f0 = flt_82100ED4 =
+	/// 0x3C8EFA35 = 0.017453292, then <c>825c0d90 stfs f0, 0x20(r28)</c>. The save-game serializer
+	/// names the same offset "HalfAngleRadians", which confirms the stored unit.
+	/// </param>
+	/// <param name="Dummy">
+	/// The rig attachment this light hangs on, empty when the entity states
+	/// <c>AttachToEntityPosition</c> and the light belongs at the entity's own origin.
+	/// </param>
+	/// <param name="FlickerRate">
+	/// How fast the flicker walk moves, and the GATE on the whole effect — at zero the walk never
+	/// leaves its starting value and neither range does anything. See <see cref="Engine_LightFlicker"/>.
+	/// </param>
+	public readonly record struct LightPlacement(
+		Vector3 ColourLinear,
+		float Intensity,
+		float Range,
+		int Type,
+		float HalfAngleRadians,
+		float FadeDistance,
+		float FadeRange,
+		bool CastShadows,
+		bool Active,
+		string Dummy,
+		float FlickerRate,
+		float FlickerBrightnessRange,
+		float FlickerRadiusRange);
+
+	/// <summary>
+	/// The light an entity states, or none.
+	/// </summary>
+	/// <remarks>
+	/// Read through the cross-file parent walk for the same reason the FX walk uses it: a level's
+	/// placements inherit from shared templates that live in other .gdb files, and a component
+	/// def states only what it overrides. A light that states nothing but a Colour inherits its
+	/// Range, Intensity and type from the template it descends from.
+	/// </remarks>
+	public static bool TryRead(uint entity, List<GdbView> views, out LightPlacement light)
+	{
+		light = default;
+
+		if (Engine_LevelFx.Inherited(views, entity, GraphicAppearanceLightComponent,
+				GdbFieldType.Reference) is not { Raw: not 0 and not Engine_LevelFx.Null } hop)
+		{
+			return false;
+		}
+
+		uint component = hop.Raw;
+
+		// LIGHTTYPE FIRST, because it is the gate. `sub_825C2108` builds nothing for type 0, and
+		// type 0 is the constructor default — so an entity carrying a light component that never
+		// states a type carries no light, and emitting one anyway would put a stray point light
+		// at the origin of every such entity.
+		int type = ReadInt(views, component, LightType, 0);
+		if (type != LightTypePoint && type != LightTypeSpot)
+		{
+			return false;
+		}
+
+		float range = ReadFloat(views, component, Range, 0.0f);
+		if (!float.IsFinite(range) || range <= 0.0f)
+		{
+			return false;
+		}
+
+		// The three channels are INTS here, not the floats every theme colour uses. The guest
+		// reads them with `sub_823BF820` — the same getter it uses for LightType — at
+		// 825c0d08/0d1c/0d30, and the shipped records agree: a light colour reads
+		// `Red int 255, Green int 199, Blue int 63`. Asking for a float would find nothing and
+		// leave every fixture white.
+		var colour = new Vector3(1.0f, 1.0f, 1.0f);
+		if (Engine_LevelFx.Inherited(views, component, Colour, GdbFieldType.Reference) is
+			{ Raw: not 0 and not Engine_LevelFx.Null } colourRef)
+		{
+			colour = new Vector3(
+				ReadInt(views, colourRef.Raw, Red, 255) * (1.0f / 255.0f),
+				ReadInt(views, colourRef.Raw, Green, 255) * (1.0f / 255.0f),
+				ReadInt(views, colourRef.Raw, Blue, 255) * (1.0f / 255.0f));
+		}
+
+		// A light that names no dummy still has a home: the entity's own origin. That is the
+		// AttachToEntityPosition branch of `sub_821E44F0` — `if (*(_BYTE *)(result + 120))`,
+		// which is component+132 measured from the component base, since that function's argument
+		// is comp+12.
+		bool atEntity = ReadBool(views, component, AttachToEntityPosition, false);
+
+		light = new LightPlacement(
+			colour,
+			ReadFloat(views, component, Intensity, DefaultIntensity),
+			range,
+			type,
+			ReadFloat(views, component, HalfAngleDegrees, 0.0f) * (MathF.PI / 180.0f),
+			ReadFloat(views, component, FadeDistance, 0.0f),
+			ReadFloat(views, component, FadeRange, 0.0f),
+
+			// CastShadows is read ONLY for a spot in `sub_825C0CC0` — the `825C1168` branch gates
+			// it, SpotLightTexture and UseScreenSpaceShadowmap together on LightType == 1 — so a
+			// point light's stated CastShadows is a field the guest never looks at.
+			type == LightTypeSpot && ReadBool(views, component, CastShadows, false),
+
+			// InitialActive defaults TRUE (`sub_826310D0` stores 1), and `sub_825C2108` builds
+			// nothing while it is clear: `if (!*(_BYTE *)(result + 124))` in the driver.
+			ReadBool(views, component, InitialActive, true),
+			atEntity ? string.Empty : LightDummy,
+
+			// All three default to 0.0 in the component constructor (`sub_826310D0` at
+			// 0x8263117C/80/84), so a light that states none of them simply does not flicker.
+			ReadFloat(views, component, FlickeringRate, 0.0f),
+			ReadFloat(views, component, FlickeringBrightnessRange, 0.0f),
+			ReadFloat(views, component, FlickeringRadiusRange, 0.0f));
+
+		return true;
+	}
+
+	/// <summary>
+	/// Builds the region's placed lights under <paramref name="container"/>, and returns how many.
+	/// </summary>
+	/// <remarks>
+	/// ONE LIGHT PER DUMMY, not one per placement. <c>sub_821E44F0</c> asks the model how many
+	/// <c>Prop.Layout.Light</c> attachment points it carries and loops over them, indexing the
+	/// component's own light vector by the dummy's index — so a twin-headed lamp post is two
+	/// lights, and collapsing it to one loses half of them.
+	/// </remarks>
+	public static int Spawn(
+		Node3D container,
+		GdbView levelView,
+		List<GdbView> supplementalViews,
+		List<GdbPlacement> placements,
+		Dictionary<uint, string>? modelPaths = null)
+	{
+		var views = new List<GdbView>(supplementalViews.Count + 1) { levelView };
+		views.AddRange(supplementalViews);
+
+		int spawned = 0;
+		var flicker = new Engine_LightFlicker { Name = Engine_LightFlicker.NodeName };
+
+		void Emit(in LightPlacement placement, Transform3D at, string? name, int index)
+		{
+			Light3D node = Build(placement, at, name, index);
+			container.AddChild(node);
+			flicker.Add(node, placement);
+		}
+
+		foreach (GdbPlacement placement in placements)
+		{
+			if (!TryRead(placement.Hash, views, out LightPlacement light) || !light.Active)
+			{
+				continue;
+			}
+
+			Transform3D placed = Engine_LevelProps.BuildTransform(placement);
+
+			string? model = null;
+			modelPaths?.TryGetValue(placement.Hash, out model);
+
+			// The entity's own origin, which is what AttachToEntityPosition asks for and also the
+			// only thing left when the placement resolved to no model at all.
+			if (light.Dummy.Length == 0 || model is null || model.Length == 0)
+			{
+				Emit(light, placed, placement.EntityName, 0);
+				spawned++;
+				continue;
+			}
+
+			// EVERY dummy of that name. The numeric spelling is the one this tree already
+			// established for the same attachment table — OB_MusicBox carries
+			// FX_Particle_DummyObject beside FX_Particle_DummyObject1 — so a second light is
+			// Layout_Light_DummyObject1. The scan stops at the first gap rather than probing a
+			// fixed count, because the count is a property of the model.
+			string bone = Engine_LevelFx.DummyBoneName(LightDummy);
+			int index = 0;
+			for (; index < DummyScanLimit; index++)
+			{
+				string named = index == 0 ? bone : bone + index;
+				if (!Engine_LevelFx.TryDummyTransform(model, named, out Transform3D at))
+				{
+					break;
+				}
+
+				Emit(light, placed * at, placement.EntityName, index);
+				spawned++;
+			}
+
+			// A model that names no such dummy still carries the light — the component states it,
+			// and dropping it because the rig is missing an attachment point loses the fixture
+			// entirely rather than misplacing it by a metre.
+			if (index == 0)
+			{
+				Emit(light, placed, placement.EntityName, 0);
+				spawned++;
+			}
+		}
+
+		// The updater only earns its place if something actually flickers. Mounting an empty one
+		// costs a `_Process` call per frame for an empty list.
+		if (flicker.Count != 0)
+		{
+			container.AddChild(flicker);
+		}
+		else
+		{
+			flicker.QueueFree();
+		}
+
+		return spawned;
+	}
+
+	/// <summary>How many same-named attachment points to look for before giving up.</summary>
+	private const int DummyScanLimit = 8;
+
+	private static Light3D Build(
+		LightPlacement light, Transform3D at, string? entityName, int index)
+	{
+		// THE COLOUR AND THE INTENSITY STAY SEPARATE, which is what lets this reach our shader
+		// unchanged. The guest premultiplies them — `825c2180 fmuls f0, f0, f13` — but Godot
+		// multiplies LightColor by LightEnergy on its way into LIGHT_COLOR, so handing the tint to
+		// one and the scalar to the other reproduces the same product. `fable_direct` then divides
+		// LIGHT_COLOR by PI to undo Godot's own multiply, exactly as it already does for the sun,
+		// so a placed light and the main light travel identical arithmetic from here.
+		var colour = new Color(light.ColourLinear.X, light.ColourLinear.Y, light.ColourLinear.Z);
+
+		// THE TWO ATTENUATION EXPONENTS BELOW ARE LOAD-BEARING, not tidying. `fable_attenuation`
+		// recovers the guest's linear ramp by inverting Godot's own falloff in closed form, and
+		// that inversion is only valid for the ZERO-DECAY form `A = (1 - (d/r)^4)^2`. Godot's
+		// default is 1.0, which multiplies in a `pow(d, -1)` term and makes the recovered distance
+		// wrong everywhere — brightest, and most wrongly, close to the fixture.
+		Light3D node = light.Type == LightTypeSpot
+			? new SpotLight3D
+			{
+				// Godot's SpotAngle IS the half angle, in degrees — the same quantity the field
+				// names, which is why this converts back out of the radians the component stores.
+				SpotAngle = Mathf.RadToDeg(light.HalfAngleRadians),
+				SpotRange = light.Range,
+				SpotAttenuation = 0.0f,
+
+				// ONE, because at exactly one Godot's cone ramp IS the guest's. Godot computes
+				// `1 - ((1 - cos)/(1 - K))^p`, which for p = 1 rearranges to `(cos - K)/(1 - K)`
+				// — the guest's `saturate((cos - K) * M)` with the M its spot fill computes as
+				// `1/(1 - cos(HalfAngle))` at 0x82A6CFB0. Any other exponent bends a curve that
+				// currently matches exactly.
+				SpotAngleAttenuation = 1.0f,
+			}
+			: new OmniLight3D
+			{
+				OmniRange = light.Range,
+				OmniAttenuation = 0.0f,
+			};
+
+		node.Name = $"Light_{entityName ?? "?"}_{index}";
+		node.LightColor = colour;
+		node.LightEnergy = light.Intensity;
+		node.ShadowEnabled = light.CastShadows;
+		node.Transform = at;
+
+		// FADEDISTANCE IS THE CAMERA'S, NOT THE LIGHT'S, and reading it as a second radius is the
+		// mistake the numbers themselves rule out: the shipped fixtures state Range 8 with
+		// FadeDistance 40 and FadeRange 20, so a "falloff" starting at 40 would never begin inside
+		// a light that ends at 8. It is the distance at which the light stops being drawn at all —
+		// `sub_82A49D08` takes Range, FadeDistance and FadeRange as three separate arguments — and
+		// Godot's distance fade is the same control.
+		if (light.FadeDistance > 0.0f)
+		{
+			node.DistanceFadeEnabled = true;
+			node.DistanceFadeBegin = light.FadeDistance;
+			node.DistanceFadeLength = MathF.Max(light.FadeRange, 0.01f);
+			node.DistanceFadeShadow = light.FadeDistance;
+		}
+
+		return node;
+	}
+
+	private static float ReadFloat(List<GdbView> views, uint record, uint field, float fallback) =>
+		Engine_LevelFx.Inherited(views, record, field, GdbFieldType.Float) is { } found &&
+		float.IsFinite(found.AsFloat)
+			? found.AsFloat
+			: fallback;
+
+	/// <summary>
+	/// A whole-number field in any of the three spellings the shipped data uses for one.
+	/// </summary>
+	/// <remarks>
+	/// <b>ENUM IS NOT OPTIONAL HERE, and leaving it out silently deletes every light in the game.</b>
+	/// The guest reads <c>LightType</c> and the three colour channels through the SAME getter
+	/// (<c>sub_823BF820</c>, called at 825c0d08/0d1c/0d30 for Red/Green/Blue and at 825c0d58 for
+	/// LightType), so as far as the engine is concerned they are one kind of field. The data does
+	/// not agree about how to write them: the colour channels are stored as GDB ints, and
+	/// <c>LightType</c> is stored as an <b>enum</b> — the shipped template
+	/// <c>GraphicAppearanceLightComponent</c> (0xF6F2F75F) states <c>LightType[Enum]=2</c>.
+	///
+	/// Asking only for Int found nothing, every light read back as type 0, and type 0 is the value
+	/// that means "build no primitive" — so a walk that was reaching 125 of BWSSlums' 2500
+	/// placements correctly reported zero lights. The count was right and the answer was empty,
+	/// which is exactly the failure a survey exists to catch before it reaches the screen.
+	///
+	/// The float spelling is kept as a third try for the colour channels, so a value authored as
+	/// 255.0 does not read as absent and quietly default to white.
+	/// </remarks>
+	private static int ReadInt(List<GdbView> views, uint record, uint field, int fallback)
+	{
+		foreach (GdbFieldType spelling in
+			new[] { GdbFieldType.Int, GdbFieldType.Enum, GdbFieldType.Float })
+		{
+			if (Engine_LevelFx.Inherited(views, record, field, spelling) is not { } found)
+			{
+				continue;
+			}
+
+			return spelling == GdbFieldType.Float
+				? float.IsFinite(found.AsFloat) ? (int)found.AsFloat : fallback
+				: (int)found.Raw;
+		}
+
+		return fallback;
+	}
+
+	private static bool ReadBool(List<GdbView> views, uint record, uint field, bool fallback) =>
+		Engine_LevelFx.Inherited(views, record, field, GdbFieldType.Bool) is { } found
+			? found.Raw != 0
+			: fallback;
+}

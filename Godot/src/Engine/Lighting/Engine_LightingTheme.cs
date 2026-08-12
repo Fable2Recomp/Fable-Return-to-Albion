@@ -11,8 +11,23 @@ public static class LightingHash
     public const uint AmbientColour = 0x2DF6BC3B;
     public const uint LightmapColour = 0xB756359F;
     public const uint AmbientNormalMapDarkeningColour = 0x908D110B;
-    public const uint DistantShadowFactor = 0xEB9E356D;
-    public const uint EnableLightZoneShadowCulling = 0xB3E85CEA;
+
+    // DistantShadowFactor (0xEB9E356D) and EnableLightZoneShadowCulling (0xB3E85CEA) ARE NOT HERE
+    // ON PURPOSE. Both are real fields of the theme's Lighting record — descriptor indices 5 and 6,
+    // landing at theme+0x60 and theme+0x70 with defaults 0.5 and 1.0 — and both are parsed by the
+    // guest and then never read by it. Three independent sweeps for a consumer found none: every
+    // load at those displacements resolves to a different object, and every function that reaches
+    // the theme through the `+0x50 -> +0xC` chain touches only 0x10/0x20/0x30, the sun-rig block at
+    // 0x360-0x410, and 0x4B0 upward.
+    //
+    // The name EnableLightZoneShadowCulling IS live, but on a different record: `sub_825720A8`
+    // reads it off the RENDER SETTINGS entry and sets bit 0x8000 of that object's +0x8C, beside
+    // MaxDrawDistance and LodDistance. So the day-set theme's copy is not the one that does
+    // anything, and reading it here would have implemented the wrong record.
+    //
+    // We parsed both, interpolated both across the day-set, and consumed neither — dead weight
+    // that read as "lighting features we have not got to yet" rather than as fields with no
+    // behaviour behind them.
 
     public const uint AmbientColourRed = 0x727639A0;
     public const uint AmbientColourGreen = 0xF27F72A0;
@@ -37,17 +52,27 @@ public sealed class LightingTheme
     public bool HasAmbientColour { get; set; }
     public bool HasLightmapColour { get; set; }
     public bool HasDarkeningColour { get; set; }
-    public bool HasDistantShadowFactor { get; set; }
-    public bool HasLightZoneShadowCulling { get; set; }
 
     public float[] MainLightColour { get; } = { 1.0f, 1.0f, 1.0f };
     public float[] AmbientColour { get; } = { 0.0f, 0.0f, 0.0f };
     public float[] LightmapColour { get; } = { 1.0f, 1.0f, 1.0f };
     public float[] DarkeningColour { get; } = { 1.0f, 1.0f, 1.0f };
 
-    public float MainLightShadowed { get; set; } = 1.0f;
-    public float DistantShadowFactor { get; set; } = 1.0f;
-    public float EnableLightZoneShadowCulling { get; set; }
+    /// <summary>
+    /// Whether the main light casts shadows, as a float the guest compares against 0.5.
+    /// </summary>
+    /// <remarks>
+    /// THE DEFAULT IS OFF, NOT ON, and it is a default the guest arrives at by omission rather
+    /// than by choice. <c>sub_82A45DD0</c> writes defaults for eleven theme slots and this is not
+    /// one of them — there is no store to theme+0x20 nor to its stated-flag at theme+0xC34 — so
+    /// the constructor's zero-fill (<c>li r11, 0xC2</c> over all 194 slots) is what stands. Zero
+    /// is not greater than 0.5, so an unstated theme gets no sun shadow.
+    ///
+    /// It matters less than it looks: 446 of the 449 shipped Lighting records resolve this through
+    /// the parent chain. But defaulting it to 1.0, as this did, made the three that do not the one
+    /// case where we lit the region differently from the game.
+    /// </remarks>
+    public float MainLightShadowed { get; set; }
 
     public float SourceTimeOfDay { get; set; } = -1.0f;
 }
@@ -156,20 +181,6 @@ public static class Engine_LightingTheme
             any = true;
         }
 
-        if (chain.ReadFloat(lighting, LightingHash.DistantShadowFactor, out float distant))
-        {
-            theme.DistantShadowFactor = distant;
-            theme.HasDistantShadowFactor = true;
-            any = true;
-        }
-
-        if (chain.ReadFloat(lighting, LightingHash.EnableLightZoneShadowCulling, out float zoneCulling))
-        {
-            theme.EnableLightZoneShadowCulling = zoneCulling;
-            theme.HasLightZoneShadowCulling = true;
-            any = true;
-        }
-
         return any;
     }
 }
@@ -185,7 +196,8 @@ public sealed class Chain
         var chain = new Chain();
         foreach (byte[] bytes in gdbs)
         {
-            if (bytes is not null && GdbView.TryParse(bytes, out GdbView view, out _))
+            // Shared: the blended lighting extract rebuilds this chain three times per call.
+            if (bytes is not null && GdbView.TryParseShared(bytes, out GdbView view, out _))
             {
                 chain._views.Add(view);
             }

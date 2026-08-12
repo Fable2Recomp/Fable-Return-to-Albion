@@ -13,8 +13,8 @@ internal static class Engine_MdlMerge
                 material.Diffuse,
                 material.Normal,
                 material.Specular,
-                material.Metallic,
-                material.Extra,
+                material.EnvironmentMap,
+                material.SelfIllumination,
                 material.ShaderType.ToString());
 
     internal static List<MdlGeometry> ByMaterial(List<MdlGeometry> geometry)

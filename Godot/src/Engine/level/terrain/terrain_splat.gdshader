@@ -41,9 +41,19 @@ uniform sampler2DArray material_weight : filter_linear, repeat_disable;
 // which is c21, and the shipped shaders name c21 `g_LightmapFactorAndSRGBGamma`.
 //
 // The 1.3 is therefore a contrast lift applied after a real sRGB decode, not a gamma standing
-// in for one. Note it is NOT the 2.2 the props use on their per-vertex bakes: that one is a
-// literal compiled into the AMB1 VERTEX shader for the D3DCOLOR path, a different operand
-// through a different stage.
+// in for one.
+//
+// AND IT APPLIES TO THE PROPS TOO — this comment used to say the props use 2.2 INSTEAD, and that
+// is the one thing here that was wrong. The 2.2 is real and is a literal in the AMB1 vertex
+// shader, but it does not replace this exponent, it precedes it: blob 0244 computes
+// `oColor0 = pow(iColor0, 2.2)`, and the matching pixel shader (blob 0327) opens with
+// `float4 r3 = iColor0` and then raises r3 by `g_LightmapFactorAndSRGBGamma.w` exactly as the
+// line above does. A per-vertex bake is decoded by 2.2 * 1.3 = 2.86 in total, which is why the
+// engine uploads a literal 2.86 to the vertex side for the path that collapses the two.
+//
+// The pixel shader has no way to know which vertex shader ran, so this exponent is unconditional
+// and the DIFFERENCE between prop and terrain is only whether a 2.2 happened upstream. See
+// fable_lighting.gdshaderinc, which now carries both halves.
 // CLAMP, not repeat. The engine never calls D3DDevice_SetSamplerState_* at all — sampler state
 // lives in deferred state-var records drained by `Render_ApplyDirtyStateVar` — and the
 // once-per-frame default pass `sub_822C2C60` writes stage 3 (the lightmap's) as
@@ -312,5 +322,10 @@ void fragment() {
 }
 
 void light() {
-	DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, ATTENUATION, LIGHT_COLOR, ALBEDO);
+	// The same linear ramp the props take. The ground is where a torch's pool of light is most
+	// readable, so terrain keeping Godot's curve while the wall beside it took the guest's would
+	// be the two-lighting-models problem this file's header warns about, in a new place.
+	// No ALBEDO argument: Godot multiplies DIFFUSE_LIGHT by it after this function returns.
+	DIFFUSE_LIGHT += fable_direct(
+		NORMAL, LIGHT, fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL), LIGHT_COLOR);
 }

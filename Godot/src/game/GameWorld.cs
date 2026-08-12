@@ -26,6 +26,10 @@ public partial class GameWorld : Node3D
 
 			// The guest auto-exposes; a constant cannot follow a scene it was not measured on.
 			Attributes = Refii.Lighting.Engine_LevelLighting.BuildCameraAttributes(),
+
+			// The guest's tone curve, measured per frame. Godot's tonemapper is Linear
+			// wherever this runs — see Engine_LevelLighting.ConfigureEnvironment.
+			Compositor = Refii.Lighting.Engine_LevelLighting.BuildCompositor(),
 		};
 
 		AddChild(_camera);
@@ -634,6 +638,8 @@ public partial class GameWorld : Node3D
 		_propHoldFrames = 0;
 		AddChild(region);
 
+		MountWaterReflections(region);
+
 		// NOT RELEASED HERE. Mounting is not the same as being ready to look at.
 		//
 		// `Engine_PropStreamer` pages props in over frames AFTER the mount, at 25 ms a frame, so
@@ -695,6 +701,15 @@ public partial class GameWorld : Node3D
 			RemoveChild(_entities);
 			_entities.QueueFree();
 			_entities = null;
+		}
+
+		if (_reflections is not null)
+		{
+			// BEFORE the region, not after. These viewports hold a texture the region's water
+			// materials point at, and a level change frees the region out from under them.
+			RemoveChild(_reflections);
+			_reflections.QueueFree();
+			_reflections = null;
 		}
 
 		if (_region is not null)
@@ -1053,6 +1068,35 @@ public partial class GameWorld : Node3D
 
 	/// <summary>The standing region and its entity feed, held so they can be taken down.</summary>
 	private Node3D? _region;
+
+	private Refii.Level.Engine_WaterReflection? _reflections;
+
+	/// <summary>
+	/// Gives every water body in the region a mirrored view of the world to reflect.
+	///
+	/// Mounted HERE rather than in <c>Engine_LevelScene</c> because a planar reflection needs the
+	/// camera it is a reflection of, and the scene builder has none — it runs on a worker and
+	/// produces a detached node. GameWorld owns the camera and the region both, so it is the one
+	/// place where the two meet.
+	/// </summary>
+	private void MountWaterReflections(Node3D region)
+	{
+		if (region.GetNodeOrNull<Node3D>(Refii.Level.Engine_LevelScene.WaterNodeName)
+			is not Node3D water)
+		{
+			return;
+		}
+
+		_reflections = new Refii.Level.Engine_WaterReflection
+		{
+			Name = Refii.Level.Engine_WaterReflection.NodeName,
+		};
+
+		// Added before Mount so the SubViewports are inside the tree when they are asked for their
+		// textures — a detached SubViewport has no render target and hands back nothing.
+		AddChild(_reflections);
+		_reflections.Mount(water, _camera);
+	}
 
 	private GameEntities? _entities;
 

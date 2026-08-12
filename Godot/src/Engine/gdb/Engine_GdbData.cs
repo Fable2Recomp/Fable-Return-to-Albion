@@ -100,6 +100,44 @@ public sealed class GdbView
     public IReadOnlyDictionary<uint, string> RecordNames { get; private set; } =
         new Dictionary<uint, string>();
 
+    /// <summary>
+    /// <see cref="TryParse"/>, but a blob is parsed ONCE and the view is reused.
+    ///
+    /// A parse walks every record header and allocates an index array, and the time-of-day path
+    /// builds an extractor three times over — once to list the day-set times, then once for each
+    /// end of the bracket it blends between. With the sky, lighting and cloud extracts on top, one
+    /// re-evaluation re-parsed the whole chain about nine times to read numbers that had not moved.
+    ///
+    /// KEYED ON THE BLOB'S IDENTITY, NOT ITS CONTENT — no hashing, so the lookup is O(1) and cannot
+    /// be fooled by two banks holding equal bytes. A ConditionalWeakTable rather than a Dictionary
+    /// so a cached view dies with the blob that produced it; a level change drops its banks and the
+    /// cache empties itself, where a strong map would pin every region ever visited.
+    ///
+    /// Callers that genuinely want a fresh parse (a re-read after a bank remount) should call
+    /// <see cref="TryParse"/> directly.
+    /// </summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<byte[], GdbView>
+        SharedViews = new();
+
+    public static bool TryParseShared(byte[] bytes, out GdbView view, out string error)
+    {
+        error = string.Empty;
+
+        if (bytes is not null && SharedViews.TryGetValue(bytes, out GdbView? cached))
+        {
+            view = cached;
+            return true;
+        }
+
+        if (!TryParse(bytes!, out view, out error))
+        {
+            return false;
+        }
+
+        SharedViews.AddOrUpdate(bytes!, view);
+        return true;
+    }
+
     public static bool TryParse(byte[] bytes, out GdbView view, out string error)
     {
         view = null!;

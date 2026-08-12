@@ -66,9 +66,16 @@ public static class Engine_MdlMaterial
 
         Texture2D? albedo = TryLoad(material.Diffuse, out bool albedoHasAlpha);
         Texture2D? normal = TryLoad(material.Normal, out _);
-        Texture2D? emissive = TryLoad(material.Extra, out _);
+        Texture2D? emissive = TryLoad(material.SelfIllumination, out _);
 
-        if (albedo is null && normal is null && emissive is null)
+        // SLOT 2, and its identity is settled rather than guessed: `sub_82A9EEA0` resolves the
+        // second string of the record through the texture loader with a 16x16 TRANSPARENT BLACK
+        // fallback (`sub_82A7AD50`), which is what a specular map degrades to and nothing else
+        // does. The first string's fallback is a dark colour and the third's is (127, 127, 255),
+        // a flat normal — so the first three slots are diffuse, specular, normal, in that order.
+        Texture2D? specular = TryLoad(material.Specular, out _);
+
+        if (albedo is null && normal is null && emissive is null && specular is null)
         {
             return null;
         }
@@ -101,6 +108,19 @@ public static class Engine_MdlMaterial
             result.SetShaderParameter("emission_tex", emissive);
             result.SetShaderParameter("has_emission", true);
         }
+
+        if (specular is not null)
+        {
+            result.SetShaderParameter("specular_tex", specular);
+            result.SetShaderParameter("has_specular", true);
+        }
+
+        // The exponent range the material states, not a constant. It is per material rather than
+        // per texture set: the guest reads one scalar block and then N texture-set records under
+        // it, so every record shares the pair, and Engine_MdlEngine copies it down.
+        result.SetShaderParameter("spec_power_min", material.SpecularPowerMin);
+        result.SetShaderParameter("spec_power_max", material.SpecularPowerMax);
+        result.SetShaderParameter("self_illum_scale", material.SelfIlluminationScale);
 
         return result;
     }

@@ -30,12 +30,6 @@ GameAssets="*res://src/Engine/Engine_GameAssets.cs"
 
 [debug]
 
-; THE RUN LOG HAS TO SURVIVE THE RUN.
-;
-; Every diagnostic this project adds is read out of a pasted terminal buffer, and three runs
-; in a row had their entity report cut off before it printed — so the measurement existed,
-; cost a run each time, and was never seen. Godot writes the same stream to user://logs/
-; here, which makes the tail readable no matter what the terminal kept.
 file_logging/enable_file_logging=true
 file_logging/max_log_files=10
 

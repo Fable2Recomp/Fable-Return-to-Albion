@@ -1362,6 +1362,121 @@ uint32_t RefiiHostGetSimTick(void) {
     return __builtin_bswap32(raw);
 }
 
+/// The guest's live world clock — `GameTimeManager`'s day fraction.
+///
+/// THE SKY AND THE LIGHTING HAVE TO FOLLOW THIS OR THEY FOLLOW NOTHING. Everything the host
+/// draws from the environment theme — sun direction, sun colour, ambient, fog, cloud tint — is
+/// selected and blended by a day fraction, and until this existed that fraction was whatever
+/// day-set entry happened to be chosen at level load, frozen for the lifetime of the region.
+///
+/// The object names itself: `sub_82515D98` serialises it under the class tag "GameTimeManager"
+/// and passes each field beside its own literal — "Time" at +4, "DayCount" at +8, "TimeStep" at
+/// +12. The Lua binding registrar agrees independently, `Timing.GetTimeOfDay` being
+/// `sub_8288B918`: `return *(float *)(a1 + 4);`.
+///
+/// The chain was read out of `sub_8218EAF8`, the day-set theme evaluator, which is the caller
+/// that hands the fraction to `sub_8218E2F0`:
+///
+///     8218eb24  lwz  r9, 0xC(r11)     ; root  -> X
+///     8218eb34  lwz  r8, 0x58(r9)     ; X+0x58 -> Y
+///     8218eb38  lwz  r7, 4(r8)        ; Y+4    -> W
+///     8218eb3c  lwz  r6, 0x14(r7)     ; W+0x14 -> T = GameTimeManager
+///     8218eb40  lfs  f31, 4(r6)       ; T+4    = the day fraction
+///
+/// USING THE SAME CHAIN AS THE THEME SELECTOR IS THE POINT. `sub_821DF670` reaches the same T
+/// by the same offsets to aim the sun, so a host that blends its themes on this value
+/// reproduces the guest's own selection rather than approximating it.
+///
+/// THE CHAIN IS RE-WALKED EVERY CALL, NEVER CACHED. `sub_8234F320` stores T into W+0x14 after
+/// virtually destroying whatever was there, and W's destructor writes a NULL back at
+/// `0x823523D8` — so the whole subtree is torn down and rebuilt across a world re-init, and a
+/// cached pointer would be a use-after-free rather than a stale number.
+///
+/// Returns 0 when the guest is absent or the chain has not been built yet; the outputs are
+/// untouched in that case. Every link is checked because the pointer walk crosses objects the
+/// guest itself only builds at game-database init.
+uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_t* out_day, int32_t* out_frozen) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto load_be32 = [&](uint32_t guest_address) {
+        uint32_t raw = 0;
+        std::memcpy(&raw, base + guest_address, sizeof(raw));
+        return __builtin_bswap32(raw);
+    };
+
+    const uint32_t root = load_be32(0x83496AB8u);
+    if (root == 0) {
+        return 0;
+    }
+
+    const uint32_t x = load_be32(root + 0x0Cu);
+    if (x == 0) {
+        return 0;
+    }
+
+    const uint32_t y = load_be32(x + 0x58u);
+    if (y == 0) {
+        return 0;
+    }
+
+    const uint32_t world = load_be32(y + 0x04u);
+    if (world == 0) {
+        return 0;
+    }
+
+    const uint32_t timing = load_be32(world + 0x14u);
+    if (timing == 0) {
+        return 0;
+    }
+
+    // THE VTABLE IS THE IDENTITY CHECK. 0x820BF8A8 is a one-slot vtable with exactly one
+    // construction site in the whole image (0x8234F2C4), so nothing else can present it. Without
+    // this a half-built chain hands back whatever the allocator left behind, and a garbage day
+    // fraction reads as the sun being in the wrong place rather than as a bad pointer.
+    if (load_be32(timing + 0x00u) != 0x820BF8A8u) {
+        return 0;
+    }
+
+    const uint32_t raw_time = load_be32(timing + 0x04u);
+    float fraction = 0.0f;
+    std::memcpy(&fraction, &raw_time, sizeof(fraction));
+
+    if (!(fraction >= 0.0f) || !(fraction < 1000.0f)) {
+        // NaN or nonsense: the field is a plain float written without synchronisation, and a
+        // torn or uninitialised read is better refused than propagated into the sun's angle.
+        return 0;
+    }
+
+    // TRANSIENTLY >= 1.0 BY CONSTRUCTION. `sub_82298460` advances the fraction at 0x82298508 and
+    // does not wrap it until 0x82298548, so a read landing in those sixteen instructions sees a
+    // value past the end of the day. The guest's own wrap is a subtract of the truncated integer.
+    fraction -= std::floor(fraction);
+
+    if (out_fraction != nullptr) {
+        *out_fraction = fraction;
+    }
+
+    if (out_day != nullptr) {
+        *out_day = static_cast<int32_t>(load_be32(timing + 0x08u));
+    }
+
+    if (out_frozen != nullptr) {
+        // T+0x24 is the count inside the "StopTimeTracker" at T+0x1C, and `sub_82298460` gates
+        // the whole advance on it being zero.
+        *out_frozen = load_be32(timing + 0x24u) != 0 ? 1 : 0;
+    }
+
+    return 1;
+}
+
 /// The render-frame fence the LEVEL LOAD waits on — state 7 of `CmdLevelChange_Update`.
 ///
 /// `CmdLevelChange_Update` (0x823D5AA8) is a nine-state polled machine on `cmd+44`, and

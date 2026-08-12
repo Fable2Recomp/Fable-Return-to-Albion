@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Godot;
 using Refii.Lighting;
 using Refii.Models;
+using Refii.Host;
 
 namespace Refii.Level;
 
@@ -110,7 +111,110 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             }
         }
 
+        FollowGuestClock();
         AnimateSky((float)delta);
+    }
+
+    /// <summary>
+    /// Frozen means the guest is not advancing time, so neither do we.
+    /// </summary>
+    private float _lastEvaluated = float.NegativeInfinity;
+
+    /// <summary>Report a re-evaluation that costs more than a frame at 144 Hz.</summary>
+    private const double ReevaluateWarnMs = 6.9;
+
+    /// <summary>
+    /// How far the day has to move before the themes are re-read: one game minute.
+    /// </summary>
+    /// <remarks>
+    /// NOT EVERY FRAME, because <see cref="Reevaluate"/> is not a cheap function — it walks the
+    /// GDB chain to re-extract and re-blend the sky, cloud and lighting themes, and doing that at
+    /// display rate would cost more than everything it feeds. One minute of game time is 1/1440 of
+    /// the day, which at the guest's default day speed is one real second: fine enough that the
+    /// sun's movement is continuous to the eye and coarse enough to be free.
+    ///
+    /// The guest itself re-evaluates the day set every 15 Hz tick (`sub_82275F68` advances the
+    /// clock at 0x822760C0 and calls `sub_8218EAF8` at 0x82276104), so this is coarser than the
+    /// original by design rather than by accident — and it can afford to be, because its
+    /// re-evaluation uploads a few shader constants where ours re-lights every prop in the region.
+    ///
+    /// FIVE MINUTES, NOT ONE, and the difference is entirely in the stutter rather than the image.
+    /// A day is a full 360 degrees of azimuth, so five game minutes moves the sun about 1.25
+    /// degrees — invisible — while cutting the number of times a frame has to absorb a GDB walk,
+    /// a dome LUT rebuild and a pass over every prop by a factor of five. At the default day speed
+    /// that is one every five real seconds instead of one every second.
+    /// </remarks>
+    private const float ReevaluateStep = 5.0f / 1440.0f;
+
+    /// <summary>
+    /// Drives the region's time of day from the guest's own world clock.
+    /// </summary>
+    /// <remarks>
+    /// UNTIL THIS EXISTED THE WHOLE ENVIRONMENT WAS FROZEN. `Reevaluate` ran only while
+    /// <c>Lighting</c> was null, so the first success was the last: the sun, the sky, the ambient,
+    /// the fog and the cloud tint were all pinned to whichever day-set entry happened to be
+    /// selected at level load, and the day advanced underneath with no effect whatsoever.
+    ///
+    /// A HOST-SIDE CLOCK WOULD NOT DO. The value has to be the guest's, because the guest is the
+    /// thing that decides what time it is — it fast-forwards for sleep, it stops for cutscenes,
+    /// and script sets it outright. Ticking our own would drift within one night's sleep.
+    /// </remarks>
+    private void FollowGuestClock()
+    {
+        if (HostBridge.TimeOfDay() is not { } clock)
+        {
+            // No world clock yet — the front end, or a load in progress. Hold what we have rather
+            // than snapping the sky to a default that the game is not at.
+            return;
+        }
+
+        _dayFraction = clock.Fraction;
+
+        // Wrapped distance, so midnight is not a jump. Crossing 0.999 -> 0.001 is two minutes of
+        // game time, and comparing the raw difference would read it as most of a day and force a
+        // rebuild every midnight.
+        float moved = MathF.Abs(_dayFraction - _lastEvaluated);
+        moved = MathF.Min(moved, 1.0f - moved);
+
+        if (float.IsFinite(_lastEvaluated) && moved < ReevaluateStep)
+        {
+            return;
+        }
+
+        _lastEvaluated = _dayFraction;
+
+        // TIMED, because "it stutters about once a second" and "Reevaluate is expensive" are two
+        // different claims and only one of them is measured. If this is not the cost, the number
+        // says so and the search moves elsewhere instead of the interval being tuned on a hunch.
+        ulong began = Time.GetTicksUsec();
+        Reevaluate();
+        double ms = (Time.GetTicksUsec() - began) / 1000.0;
+
+        if (ms > ReevaluateWarnMs)
+        {
+            // BROKEN DOWN BY PHASE. A single total cannot distinguish the theme extract from the
+            // dome LUT upload from the instance walk, and those want completely different fixes.
+            GD.Print(
+                $"[lighting] re-evaluate took {ms:0.0} ms at tod={_dayFraction:0.0000} " +
+                $"(theme {_msTheme:0.0}, dome {_msDome:0.0}, water {_msWater:0.0}, " +
+                $"celestial {_msCelestial:0.0}, instances {_msInstances:0.0})");
+        }
+    }
+
+    private bool _reportedSunAgreement;
+
+    private double _msTheme;
+    private double _msDome;
+    private double _msWater;
+    private double _msCelestial;
+    private double _msInstances;
+
+    private static double SinceMs(ref ulong mark)
+    {
+        ulong now = Time.GetTicksUsec();
+        double ms = (now - mark) / 1000.0;
+        mark = now;
+        return ms;
     }
 
     /// <summary>Frames to keep asking for the theme. Generous — a cold bank mount is slow.</summary>
@@ -132,6 +236,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             return;
         }
 
+        ulong mark = Time.GetTicksUsec();
+
         if (LightingGdbs.Count != 0 &&
             Engine_ThemeTimeline.TryExtractSkyBlended(
                 LightingGdbs, _dayFraction, out SkyTheme timeTheme))
@@ -140,6 +246,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         SkyFrame frame = Engine_SkyFrame.Evaluate(Theme, _dayFraction);
+        _msTheme = SinceMs(ref mark);
 
         (AtmosphereState domeState, ImageTexture domeLut) =
             Engine_SkyEnvironment.ComputeDome(frame);
@@ -149,10 +256,22 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Engine_SkyEnvironment.ApplyDomeUniforms(material, frame, domeState, domeLut);
         }
 
+        _msDome = SinceMs(ref mark);
+
         Node3D? water = GetParent()?.GetNodeOrNull<Node3D>(
             Engine_LevelScene.WaterNodeName);
         if (water is not null)
         {
+            // Read once, not per body — every body in a region shares the level's theme, and this
+            // walks the gdb chain.
+            Engine_WaterTheme.EdgeBlend edge =
+                LightingGdbs.Count != 0 &&
+                Engine_WaterTheme.TryRead(LightingGdbs, _dayFraction, out var read)
+                    ? read
+                    : Engine_WaterTheme.EdgeBlend.Default;
+
+            var edgeParam = new Vector4(edge.Min, edge.Max, edge.Bias, 0f);
+
             foreach (Node child in water.GetChildren())
             {
                 if (child is MeshInstance3D waterMesh &&
@@ -160,9 +279,12 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 {
                     Engine_SkyEnvironment.ApplyWaterFrame(
                         waterMaterial, frame, domeState, domeLut);
+                    waterMaterial.SetShaderParameter("w_edge", edgeParam);
                 }
             }
         }
+
+        _msWater = SinceMs(ref mark);
 
         Node3D? celestial = GetParent()?.GetNodeOrNull<Node3D>(
             Engine_CelestialElements.NodeName);
@@ -170,6 +292,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         {
             Engine_CelestialElements.Update(celestial, Theme, frame);
         }
+
+        _msCelestial = SinceMs(ref mark);
 
         Node3D? clouds = GetParent()?.GetNodeOrNull<Node3D>("Clouds");
         if (clouds is not null && LightingGdbs.Count != 0 &&
@@ -202,6 +326,59 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         if (sun is not null)
         {
             Engine_LevelLighting.UpdateSun(sun, lighting);
+
+            // DOES THE LIGHT AGREE WITH THE DISC? Reported once, in WORLD space, because that is
+            // the only space where the question is answerable.
+            //
+            // Both the sun disc and this light derive from the same stated SunDirection but reach
+            // the screen through different sign conventions — the celestial elements log +0.44 in X
+            // where the sky frame states -0.44 — and each may or may not sit under the level root's
+            // Scale(-1, 1, 1). On paper the two cancel; the reported symptom is that they do not.
+            // Reading the two nodes' actual global transforms settles it without guessing, and a
+            // sign flipped on a hunch is a coin toss that would look like a fix either way.
+            //
+            // EXPECTED: `travel` is the direction light moves, so it should be the NEGATION of
+            // `disc` (the direction toward the sun). A dot near -1 is correct; near +1 means the
+            // light arrives from precisely the wrong side.
+            if (!_reportedSunAgreement && sun.IsInsideTree())
+            {
+                Vector3 travel = -sun.GlobalTransform.Basis.Column2;
+                Node3D? discOwner = GetParent()?.GetNodeOrNull<Node3D>(
+                    Engine_CelestialElements.NodeName);
+                Node3D? disc = discOwner?.GetNodeOrNull<Node3D>("SunDisc");
+
+                if (disc is not null)
+                {
+                    _reportedSunAgreement = true;
+
+                    // AGAINST THE RIG, NOT THE DISC. `UpdateSun` consumes the LIGHTING frame's
+                    // direction, and the two are deliberately different quantities:
+                    //
+                    //   - the light rig turns on LightRigXYRotation alone
+                    //   - the visible disc adds SunAxisXYRotationOffset and SunAxisZOffset
+                    //
+                    // Measured across the shipped themes they disagree on 209 of 348 samples, worst
+                    // case 156.5 degrees — so a scene lit from almost opposite the visible sun can
+                    // be entirely faithful. Comparing against the disc would mean "fixing" the rig
+                    // until it matched, destroying a separation the game has on purpose.
+                    Vector3 rig = new(
+                        lighting.SunDirection[0],
+                        lighting.SunDirection[1],
+                        lighting.SunDirection[2]);
+
+                    Vector3 discDir = new(
+                        frame.SunDirection[0], frame.SunDirection[1], frame.SunDirection[2]);
+
+                    rig = rig.LengthSquared() > 1e-8f ? rig.Normalized() : Vector3.Up;
+                    discDir = discDir.LengthSquared() > 1e-8f ? discDir.Normalized() : Vector3.Up;
+
+                    GD.Print(
+                        $"[lighting] sun agreement: rig={rig} travel={travel} " +
+                        $"rigDot={travel.Dot(rig):0.000} (expect -1.0; anything else is OUR bug) " +
+                        $"| disc={discDir} rigVsDisc={Mathf.RadToDeg(rig.AngleTo(discDir)):0.0}deg " +
+                        "(expected to differ; the game lights from the rig, not the disc)");
+                }
+            }
         }
 
         // The region and everything mounted ALONGSIDE it, not just the sun and the sky.
@@ -214,8 +391,10 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         // was opened in.
         if (GetParent() is Node region)
         {
+            ulong instanceMark = Time.GetTicksUsec();
             Engine_LevelBakedLighting.RefreshInstanceLighting(
                 region.GetParent() ?? region, lighting);
+            _msInstances = SinceMs(ref instanceMark);
         }
     }
 

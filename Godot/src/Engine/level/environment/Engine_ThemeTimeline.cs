@@ -8,6 +8,107 @@ public static class Engine_ThemeTimeline
 {
     public readonly record struct Bracket(float TimeA, float TimeB, float Weight);
 
+    /// <summary>
+    /// The extracted themes for one gdb chain, kept per day-set ENTRY time.
+    ///
+    /// EXTRACTION, NOT PARSING, IS THE COST. Caching the parsed <c>GdbView</c> removes the record
+    /// walk but not the field resolution above it: every read hunts a hash through a record's
+    /// parent chain, up to 64 levels, and a theme is a few hundred of those.
+    ///
+    /// The saving is available because the endpoints are DISCRETE. Time of day moves continuously,
+    /// but a blend only ever samples the two day-set entries bracketing it, and a level ships about
+    /// seven of those. So each entry is extracted once and every later re-evaluation is just the
+    /// lerp between two finished themes.
+    ///
+    /// KEYED ON THE GDB LIST INSTANCE. Each <c>Engine_SkyEnvironmentNode</c> holds one stable list
+    /// for the level it is showing, so the list's identity is the chain's identity — and a weak
+    /// table means a level change drops the list and the memo goes with it.
+    ///
+    /// ONLY BRACKET ENDPOINTS ARE STORED. The fallback path below extracts at the raw target time,
+    /// which is continuous, and caching that would grow without bound. It stays uncached.
+    /// </summary>
+    private sealed class Memo
+    {
+        public List<float>? Times;
+
+        public readonly Dictionary<float, SkyTheme> Sky = new();
+        public readonly Dictionary<float, LightingTheme> Lighting = new();
+        public readonly Dictionary<float, CloudTheme> Clouds = new();
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, Memo>
+        Memos = new();
+
+    private static Memo MemoFor(IReadOnlyList<byte[]> gdbs) => Memos.GetOrCreateValue(gdbs);
+
+    /// <summary>The day-set entry times, resolved once per chain.</summary>
+    private static bool CachedTimes(IReadOnlyList<byte[]> gdbs, out List<float> times)
+    {
+        Memo memo = MemoFor(gdbs);
+        if (memo.Times is not null)
+        {
+            times = memo.Times;
+            return times.Count != 0;
+        }
+
+        bool ok = Engine_EnvironmentTheme.TryGetDaySetTimes(gdbs, out times!);
+        memo.Times = ok && times is not null ? times : new List<float>();
+        times = memo.Times;
+        return ok && times.Count != 0;
+    }
+
+    private static bool CachedSky(IReadOnlyList<byte[]> gdbs, float time, out SkyTheme theme)
+    {
+        Memo memo = MemoFor(gdbs);
+        if (memo.Sky.TryGetValue(time, out theme!))
+        {
+            return true;
+        }
+
+        bool ok = Engine_EnvironmentTheme.TryExtractSky(gdbs, time, out theme);
+        if (ok)
+        {
+            memo.Sky[time] = theme;
+        }
+
+        return ok;
+    }
+
+    private static bool CachedClouds(IReadOnlyList<byte[]> gdbs, float time, out CloudTheme theme)
+    {
+        Memo memo = MemoFor(gdbs);
+        if (memo.Clouds.TryGetValue(time, out theme!))
+        {
+            return true;
+        }
+
+        bool ok = Engine_EnvironmentTheme.TryExtractClouds(gdbs, time, out theme);
+        if (ok)
+        {
+            memo.Clouds[time] = theme;
+        }
+
+        return ok;
+    }
+
+    private static bool CachedLighting(
+        IReadOnlyList<byte[]> gdbs, float time, out LightingTheme theme)
+    {
+        Memo memo = MemoFor(gdbs);
+        if (memo.Lighting.TryGetValue(time, out theme!))
+        {
+            return true;
+        }
+
+        bool ok = Engine_LightingTheme.TryExtract(gdbs, time, out theme);
+        if (ok)
+        {
+            memo.Lighting[time] = theme;
+        }
+
+        return ok;
+    }
+
     public static Bracket Resolve(IReadOnlyList<float> sortedTimes, float target)
     {
         if (sortedTimes.Count == 0)
@@ -52,15 +153,15 @@ public static class Engine_ThemeTimeline
     public static bool TryExtractSkyBlended(
         IReadOnlyList<byte[]> gdbs, float targetTime, out SkyTheme theme)
     {
-        if (!Engine_EnvironmentTheme.TryGetDaySetTimes(gdbs, out List<float> times) ||
+        if (!CachedTimes(gdbs, out List<float> times) ||
             times.Count < 2)
         {
             return Engine_EnvironmentTheme.TryExtractSky(gdbs, targetTime, out theme);
         }
 
         Bracket bracket = Resolve(times, targetTime);
-        bool okA = Engine_EnvironmentTheme.TryExtractSky(gdbs, bracket.TimeA, out SkyTheme a);
-        bool okB = Engine_EnvironmentTheme.TryExtractSky(gdbs, bracket.TimeB, out SkyTheme b);
+        bool okA = CachedSky(gdbs, bracket.TimeA, out SkyTheme a);
+        bool okB = CachedSky(gdbs, bracket.TimeB, out SkyTheme b);
         if (!okA || !okB)
         {
             theme = okA ? a : b;
@@ -75,15 +176,15 @@ public static class Engine_ThemeTimeline
     public static bool TryExtractCloudsBlended(
         IReadOnlyList<byte[]> gdbs, float targetTime, out CloudTheme theme)
     {
-        if (!Engine_EnvironmentTheme.TryGetDaySetTimes(gdbs, out List<float> times) ||
+        if (!CachedTimes(gdbs, out List<float> times) ||
             times.Count < 2)
         {
             return Engine_EnvironmentTheme.TryExtractClouds(gdbs, targetTime, out theme);
         }
 
         Bracket bracket = Resolve(times, targetTime);
-        bool okA = Engine_EnvironmentTheme.TryExtractClouds(gdbs, bracket.TimeA, out CloudTheme a);
-        bool okB = Engine_EnvironmentTheme.TryExtractClouds(gdbs, bracket.TimeB, out CloudTheme b);
+        bool okA = CachedClouds(gdbs, bracket.TimeA, out CloudTheme a);
+        bool okB = CachedClouds(gdbs, bracket.TimeB, out CloudTheme b);
         if (!okA || !okB)
         {
             theme = okA ? a : b;
@@ -98,15 +199,15 @@ public static class Engine_ThemeTimeline
     public static bool TryExtractLightingBlended(
         IReadOnlyList<byte[]> gdbs, float targetTime, out LightingTheme theme)
     {
-        if (!Engine_EnvironmentTheme.TryGetDaySetTimes(gdbs, out List<float> times) ||
+        if (!CachedTimes(gdbs, out List<float> times) ||
             times.Count < 2)
         {
             return Engine_LightingTheme.TryExtract(gdbs, targetTime, out theme);
         }
 
         Bracket bracket = Resolve(times, targetTime);
-        bool okA = Engine_LightingTheme.TryExtract(gdbs, bracket.TimeA, out LightingTheme a);
-        bool okB = Engine_LightingTheme.TryExtract(gdbs, bracket.TimeB, out LightingTheme b);
+        bool okA = CachedLighting(gdbs, bracket.TimeA, out LightingTheme a);
+        bool okB = CachedLighting(gdbs, bracket.TimeB, out LightingTheme b);
         if (!okA || !okB)
         {
             theme = okA ? a : b;
@@ -291,17 +392,10 @@ public static class Engine_ThemeTimeline
             HasAmbientColour = a.HasAmbientColour || b.HasAmbientColour,
             HasLightmapColour = a.HasLightmapColour || b.HasLightmapColour,
             HasDarkeningColour = a.HasDarkeningColour || b.HasDarkeningColour,
-            HasDistantShadowFactor = a.HasDistantShadowFactor || b.HasDistantShadowFactor,
-            HasLightZoneShadowCulling =
-                a.HasLightZoneShadowCulling || b.HasLightZoneShadowCulling,
 
             // SunIntensity is NOT blended here — it is registered against the Sky group, not
             // Lighting, so it rides on SkyTheme and BlendSky already interpolates it.
             MainLightShadowed = Lerp(a.MainLightShadowed, b.MainLightShadowed, w),
-            DistantShadowFactor = Lerp(a.DistantShadowFactor, b.DistantShadowFactor, w),
-            EnableLightZoneShadowCulling = w < 0.5f
-                ? a.EnableLightZoneShadowCulling
-                : b.EnableLightZoneShadowCulling,
         };
 
         LerpInto(a.MainLightColour, b.MainLightColour, w, o.MainLightColour);

@@ -1,7 +1,11 @@
 shader_type spatial;
 render_mode blend_mix, cull_disabled, depth_draw_never, unshaded;
 
-uniform sampler2D cloud_density : filter_linear, repeat_enable;
+// MIPMAPPED, because these are flat horizontal planes seen almost edge-on. A layer is a rectangle
+// at a fixed height, so toward its vanishing line the UVs compress without bound and a tiled
+// density texture sampled with no mip selection aliases into hard horizontal stripes. The decoder
+// already generates the mip chain (Engine_TexImage).
+uniform sampler2D cloud_density : filter_linear_mipmap, repeat_enable;
 uniform vec4 layer_params;
 uniform vec4 uv_scale_offset;
 uniform vec4 cloud_globals;

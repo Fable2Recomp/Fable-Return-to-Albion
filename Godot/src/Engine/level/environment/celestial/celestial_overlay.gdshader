@@ -37,11 +37,14 @@ void vertex() {
 	}
 }
 
+// NO FAIL-OPEN EARLY EXIT. This function IS the depth test for this shader — the render mode
+// disables the hardware one — so returning "fully visible" when the occlusion radius is zero draws
+// the element straight through the terrain. The discs never set `occlusion_half`, and the glares
+// derive it from the disc size, which the theme may author as zero.
+//
+// A zero radius is not "cannot test", it is "test a point": the 5x5 tap grid collapses onto the
+// centre and still returns a valid single-sample answer.
 float geometry_visibility(mat4 view_matrix, mat4 projection_matrix) {
-	if (occlusion_half <= 0.0) {
-		return 1.0;
-	}
-
 	vec3 dir_view = (view_matrix * vec4(normalize(element_dir), 0.0)).xyz;
 	if (-dir_view.z <= 0.0) {
 		return 0.0;
@@ -61,10 +64,15 @@ float geometry_visibility(mat4 view_matrix, mat4 projection_matrix) {
 				continue;
 			}
 
-			vec2 ndc = clip.xy / clip.w;
-			if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0) {
-				continue;
-			}
+			// CLAMPED TO THE SCREEN, NOT SKIPPED. Discarding off-screen taps leaves a glare whose
+			// CENTRE is off-screen with no taps at all — and the sun glare is authored at a size
+			// scale of 2000 against the disc's 300, so its quad covers much of the screen long
+			// after its centre has left it.
+			//
+			// Sampling the nearest on-screen depth is an approximation, and the right one: at the
+			// screen edge the geometry occluding the sun is very likely the geometry still visible
+			// beside it. The guest resolves occlusion against its own offscreen target instead.
+			vec2 ndc = clamp(clip.xy / clip.w, vec2(-1.0), vec2(1.0));
 
 			vec2 uv = (ndc * 0.5) + vec2(0.5);
 			float scene_depth = texture(depth_tex, uv).r;
@@ -75,7 +83,9 @@ float geometry_visibility(mat4 view_matrix, mat4 projection_matrix) {
 		}
 	}
 
-	return total == 0 ? 1.0 : float(open) / float(total);
+	// FAIL CLOSED. No taps means every one was behind the camera, and an element behind the viewer
+	// is not something to draw over the world.
+	return total == 0 ? 0.0 : float(open) / float(total);
 }
 
 // Additive in linear — see celestial_additive.gdshader for why no background-estimate

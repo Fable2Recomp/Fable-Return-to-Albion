@@ -12,21 +12,107 @@ public sealed class MdlBone
 
 public sealed class MdlMaterial
 {
+    // THE SEVEN TEXTURE SLOTS, named from the binary rather than from what they looked like.
+    //
+    // The record is nine NUL-terminated strings, and the guest scatters them into the 180-byte
+    // texture-set record in an order that is NOT the file order — `sub_82A9EEA0` sends strings
+    // 1,2,3 to +4,+8,+12, then 5,6,7 to +16,+20,+24, and string 4 all the way out to +148.
+    // Strings 8 and 9 are read and immediately destructed (`82a9f728`, `82a9f730`); nothing in
+    // the shipped data fills them, and nothing would read them if it did.
+    //
+    // The sampler each slot reaches is settled by `Render_TextureStateHelper_INFERRED_4`
+    // (0x82216850), which indexes a 6-entry descriptor table at 0x834A51A0 by mask bit:
+    //
+    //     +4   -> s0  hard-coded (834A51A4 = 0)   g_DiffuseTextureSampler
+    //     +8   -> s1  hard-coded (834A51C8 = 1)   g_SpecularTextureSampler
+    //     +12  -> s2  hard-coded (834A51EC = 2)   g_NormalTextureSampler
+    //     +16  -> binding 211                      g_SelfIllumTextureSampler  (s13)
+    //     +20  -> binding 209                      secondary diffuse
+    //     +24  -> binding 263                      tree trunk
+    //     +148 -> binding 84                       g_EnvmapSampler            (s14)
+    //
+    // Slots 0..2 are forced on regardless of the presence mask (`v4 = *result | dword_83496F20`
+    // with that global set to 7), which is why a material with no specular string still binds
+    // something to s1 — the guest's own 16x16 transparent-black default.
+
     public string Diffuse { get; set; } = string.Empty;
 
     public string Specular { get; set; } = string.Empty;
 
     public string Normal { get; set; } = string.Empty;
 
-    public string Metallic { get; set; } = string.Empty;
+    /// <summary>File string 4 — the ENVIRONMENT MAP, a cube map bound to s14.</summary>
+    /// <remarks>
+    /// It was called <c>Metallic</c>, which it is not. It lands at record+148, outside the
+    /// presence mask and with no sampler block of its own, and is bound unconditionally at the
+    /// tail of the mask walk through <c>g_ShaderBindingTable[84]</c>. Its presence is published
+    /// to the shader as pixel bool c6 — <c>g_NeedsEnvmapping</c> — by `sub_82220CA8`:
+    /// <c>82220ed8 lwz r8, 0x94(r9)</c> (record+148), tested non-zero, written with
+    /// <c>li r4, 6</c> to <c>D3DDevice_SetPixelShaderConstantB</c>. 526 of 9,293 shipped material
+    /// records name one.
+    /// </remarks>
+    public string EnvironmentMap { get; set; } = string.Empty;
 
-    public string Extra { get; set; } = string.Empty;
+    /// <summary>File string 5 — the SELF-ILLUMINATION map, bound to s13.</summary>
+    /// <remarks>
+    /// It was called <c>Extra</c> and bound as the emission texture on no evidence; the guess was
+    /// right. It is mask bit 3, so `Render_TextureStateHelper_INFERRED_4(record, 3)` binds it
+    /// through <c>g_ShaderBindingTable[211]</c>, and its presence bit becomes pixel bool c5 —
+    /// <c>g_NeedsSelfIllumination</c> — at <c>82220E48 extrwi r9, r10, 1,28</c>.
+    ///
+    /// No shader-permutation builder tests bit 3, which is what made this slot look dead: self
+    /// illumination is a runtime branch on a bool constant, not a compile-time define, unlike
+    /// bits 4 and 5 which do select permutations. Only 102 of 9,293 records name one.
+    /// </remarks>
+    public string SelfIllumination { get; set; } = string.Empty;
 
     public uint ShaderType { get; set; }
 
+    /// <summary>File strings 6, 7, 8 and 9 — NOT shader parameters.</summary>
+    /// <remarks>
+    /// [0] is the secondary diffuse (record+20, whose mask bit selects the
+    /// <c>SpecNormalSecDifParams_SDif</c> permutation), [1] is the slot whose ABSENCE selects
+    /// <c>SpecNormalSecDifParams_Trunk</c> (record+24), and [2] and [3] are the two strings the
+    /// guest reads and throws away. The shipped data fills none of them: 0, 4, 0 and 0 records
+    /// respectively out of 9,293. The name is kept only because nothing consumes them.
+    /// </remarks>
     public string[] ShaderParams { get; set; } = Array.Empty<string>();
 
     public float[] MaterialFloats { get; set; } = Array.Empty<float>();
+
+    /// <summary>
+    /// The specular exponent this material uses where its specular map's alpha is 0.
+    /// </summary>
+    /// <remarks>
+    /// The shipped pixel shader's `_sp2` variants compute the exponent per pixel:
+    /// <c>power = lerp(c24.x, c24.y, specularTexture.a)</c>, built as
+    /// <c>r0.z = c24.y - c24.x; r2.w = r0.z * specularTex.w + c24.x</c>. c24.x and c24.y are
+    /// packed from material+60 and material+64, which <c>sub_82B243E8</c> fills from the first two
+    /// floats of the material's scalar block. Engine defaults are 1.0 and 20.0
+    /// (<c>sub_82B241A0</c>), but no shipped material uses them: all 9,293 records state 1.0 here
+    /// and a range of 99.0, so the pair is (1, 100) everywhere and the exponent comes entirely
+    /// from the specular map's alpha.
+    /// </remarks>
+    public float SpecularPowerMin { get; set; } = 1.0f;
+
+    /// <summary>The specular exponent where the specular map's alpha is 1.</summary>
+    /// <remarks>
+    /// THE FILE STORES A RANGE, NOT A MAXIMUM. `sub_82B243E8` never stores the second float raw —
+    /// it only ever adds it (<c>82b24ac0 fadds f13, f0, f31</c>, <c>82b24ac8 stfs f13, 0x40(r30)</c>),
+    /// so this is <c>file[0] + file[4]</c>. Reading the pair as a min and a max would give a
+    /// material authored (4, 60) an exponent ceiling of 60 instead of 64.
+    /// </remarks>
+    public float SpecularPowerMax { get; set; } = 20.0f;
+
+    /// <summary>How much of the self-illumination texture is added: the shader's c24.z.</summary>
+    /// <remarks>
+    /// Block offset 29, stored to material+72 (<c>82b24954 stfs f0, 0x48(r30)</c>) and packed into
+    /// c24.z, where the shader uses it as
+    /// <c>colour = selfIllumTex.rgb^2 * g_StandardMaterialPSConstants(0).zzz + colour</c>.
+    ///
+    /// Exactly 1.0 on all 9,293 shipped records, so the map's own intensity carries the effect.
+    /// </remarks>
+    public float SelfIlluminationScale { get; set; } = 1.0f;
 }
 
 public sealed class MdlMesh
@@ -357,9 +443,20 @@ public static class Engine_MdlData
         {
             if (!r.U32(out _)) return Fail("truncated mesh record", out error);
             if (!r.Strz(out string meshName)) return Fail("truncated mesh name", out error);
-            if (!r.F32(out _) || !r.F32(out _)) return Fail("truncated mesh floats", out error);
+
+            // THE SAME 45-BYTE SCALAR BLOCK the engine parser reads, and this path was already
+            // splitting it on the right boundaries — it just threw the values away. 1,312 of the
+            // 5,446 shipped models answer through this fallback rather than the engine format, so
+            // discarding them left roughly a quarter of the asset set on the constructor's
+            // specular range instead of its own.
+            //
+            // The layout is `sub_82B243E8`'s read order; see Engine_MdlEngine for the full map.
+            // Offsets 0 and 4 are the specular power minimum and RANGE, offset 29 the
+            // self-illumination scale.
+            if (!r.F32(out float specPowerMin)) return Fail("truncated mesh floats", out error);
+            if (!r.F32(out float specPowerRange)) return Fail("truncated mesh floats", out error);
             if (!r.Skip(21)) return Fail("truncated mesh block", out error);
-            if (!r.F32(out _)) return Fail("truncated mesh float", out error);
+            if (!r.F32(out float selfIllumScale)) return Fail("truncated mesh float", out error);
             for (int k = 0; k < 3; ++k)
             {
                 if (!r.U32(out _)) return Fail("truncated mesh words", out error);
@@ -381,8 +478,11 @@ public static class Engine_MdlData
                     m.Diffuse = diffuse;
                     m.Specular = specular;
                     m.Normal = normal;
-                    m.Metallic = metallic;
-                    m.Extra = extra;
+                    m.EnvironmentMap = metallic;
+                    m.SelfIllumination = extra;
+                    m.SpecularPowerMin = specPowerMin;
+                    m.SpecularPowerMax = specPowerMin + specPowerRange;
+                    m.SelfIlluminationScale = selfIllumScale;
 
                     if (!SkipMaterialTail(r, info, mi, meshCount, j, materialCount))
                     {

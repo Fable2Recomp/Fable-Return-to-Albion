@@ -146,11 +146,29 @@ public static class Engine_LevelLighting
 	/// </remarks>
 	public static CameraAttributesPractical BuildCameraAttributes() => new()
 	{
-		AutoExposureEnabled = true,
-		AutoExposureScale = AutoExposureTargetGrey,
-		AutoExposureSpeed = AutoExposureSpeed,
-		AutoExposureMinSensitivity = 100.0f,
-		AutoExposureMaxSensitivity = 1600.0f,
+		// OFF, because we run the guest's loop instead — see `Engine_AutoExposure`. Godot's
+		// control loop targets a plain AVERAGE, and on a frame with a large bright sky the average
+		// is dominated by the sky, so the exposure stays low and the street underneath never
+		// lifts. The guest avoids exactly that by taking PERCENTILE thresholds off a histogram and
+		// subtracting the adapted minimum, and by flooring the average at 0.3 whatever the frame
+		// contains. Two loops fighting over the same frame is worse than either alone.
+		AutoExposureEnabled = false,
+	};
+
+	/// <summary>
+	/// The compositor that runs the guest's tone curve, or null where compute is unavailable.
+	/// </summary>
+	/// <remarks>
+	/// One per camera. The effect owns GPU resources keyed to a rendering device, so it is built
+	/// here rather than shared as a singleton — a level change disposes the camera and the effect
+	/// frees its pipelines with it.
+	/// </remarks>
+	public static Compositor BuildCompositor() => new()
+	{
+		CompositorEffects = new Godot.Collections.Array<CompositorEffect>
+		{
+			new Engine_ExposureEffect(),
+		},
 	};
 
 	public static void ConfigureEnvironment(Godot.Environment environment, LightingFrame frame)
@@ -207,9 +225,22 @@ public static class Engine_LevelLighting
 		// encodes sRGB. Pure 2.2 and sRGB agree to well under a percent except in the deep
 		// shadows, where sRGB's linear toe lifts black slightly. It is far the smaller of the
 		// two divergences on this path — the auto-exposure above is the one that matters.
-		environment.TonemapMode = Godot.Environment.ToneMapper.Reinhardt;
-		environment.TonemapWhite = TonemapWhite;
-		environment.TonemapExposure = TonemapExposure;
+		// LINEAR, BECAUSE WE TONEMAP OURSELVES NOW. `Engine_ExposureEffect` runs the guest's own
+		// curve on the HDR buffer at post-transparent, against a white point and a key MEASURED
+		// from the frame's luminance histogram rather than guessed at.
+		//
+		// Leaving Godot's Reinhardt on would compress the frame a second time, and the fixed
+		// numbers it was given are precisely what broke: `TonemapWhite = 4.0` is the histogram's
+		// DOMAIN BOUND, not a white point, and the shipped themes author SunIntensity high enough
+		// that a perfectly ordinary sky sat on the white point and clipped to paper white, dragging
+		// the water that reflects it along with it. The measured white point lands between about
+		// 0.6 and 3.8.
+		//
+		// Measured over the 308 records of environmentthemes.gdb that state SunIntensity: median
+		// 3.68, mean 4.49, range 0..30, with 73% at or above 2.0 — enough to put every channel of
+		// the dome above 1.0. The per-region value is still unmeasured: theme records in the shared
+		// GDB carry no region naming, which lives in the level GDB inside levels.bnk.
+		environment.TonemapMode = Godot.Environment.ToneMapper.Linear;
 
 		if (frame.HasAmbient)
 		{

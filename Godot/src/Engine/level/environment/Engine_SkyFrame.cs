@@ -6,7 +6,26 @@ public sealed class SkyFrame
 {
     public float TimeOfDay { get; set; }
 
+    /// <summary>
+    /// Where the sun DISC is — the sky's vector, not the light's.
+    /// </summary>
+    /// <remarks>
+    /// This is what the atmosphere, the disc, the glare and the clouds want, because it is the
+    /// direction the guest hands to the sky object. It carries SunAxisXYRotationOffset and
+    /// SunAxisZOffset, neither of which reaches the main light. For lighting a surface use
+    /// <see cref="MainLightDirection"/>; the two genuinely disagree.
+    /// </remarks>
     public float[] SunDirection { get; } = new float[3];
+
+    /// <summary>
+    /// Where the main directional light comes FROM — the light rig's vector.
+    /// </summary>
+    /// <remarks>
+    /// Built from the four authored MainLightElevation keyframes and LightRigXYRotation alone.
+    /// This is the one that must drive the DirectionalLight3D and the bake, because it is the
+    /// direction the guest sends to the same object as MainLightColour and MainLightShadowed.
+    /// </remarks>
+    public float[] MainLightDirection { get; } = new float[3];
 
     public float[] MoonDirection { get; } = new float[3];
 
@@ -50,20 +69,36 @@ public static class Engine_SkyFrame
                 ? theme.MainLightTimeFactor
                 : 1f;
 
-        // THE GUEST'S OWN SUN PATH, from sub_821DF670. This used to be a single fixed axis
-        // tilt swept around Z, which put the sun at roughly the same height all day.
+        // THE GUEST BUILDS TWO SUN VECTORS, NOT ONE, and `sub_821DF670` builds them one after the
+        // other from the same orbit. They are not interchangeable and we used to compute only the
+        // first and hand it to both, which put the visible disc somewhere the light did not come
+        // from.
         //
-        //   f     = timeOfDay * TimeFactor
-        //   elev  = a COSINE blend of four authored keyframes at 0/6/12/18h, in degrees
-        //   M     = I . Rz(f*2pi) . Ry(SunAxisElevation) . Rz(LightRigXYRotation)
-        //   h     = normalize(M[0][0], M[0][1], 0)      <- ROW 0, XY only
-        //   dir   = (cos(elev)*h.x, cos(elev)*h.y, sin(elev))
+        // They go to different objects, which is what settles that they are meant to differ: the
+        // sun and moon axes are delivered together to `*(a1+0x10)` (the sky), while the main
+        // light's direction, its MainLightColour and its MainLightShadowed flag all go to
+        // `*(a1+8)` through three `sub_8222AAC8` calls on the same `lwz r3, 8(r31)`.
         //
-        // Three details that are easy to get wrong and were all verified in the disassembly:
-        // the matrix is ROW-major with row 0 at +0x00 (taking column 0 instead mirrors the sun
-        // about X); the final Z rotation uses LightRigXYRotation ALONE, because
-        // SunAxisXYRotationOffset belongs to a different vector built in an earlier block; and
-        // SunAxisZOffset is likewise not part of the main light at all.
+        // Both share the orbit `a = 2*PI * timeOfDay * TimeFactor` and the tilt
+        // `Ry(SunAxisElevation)`. They differ in the final Z rotation and in what happens to Z:
+        //
+        //   LIGHT (0x821DFA48)  M = I . Rz(a) . Ry(e) . Rz(LightRigXYRotation)
+        //                       axis = normalize((1,0,0) . M)
+        //                       L = (cos(E)*axis.x, cos(E)*axis.y, sin(E))
+        //
+        //   DISC  (0x821DF878)  M = I . Rz(a) . Ry(e) . Rz(SunAxisXYRotationOffset + LightRigXYRotation)
+        //                       v = (1,0,0) . M ;  v.z += SunAxisZOffset
+        //                       S = normalize(v)
+        //
+        // The extra azimuth is `821df8a8 fmadds f1, f6, f30, f24` — SunAxisXYRotationOffset times
+        // pi/180 PLUS the light rig's own angle — where the light block twenty instructions later
+        // passes `fmr f1, f24`, the rig angle alone. So the disc leads or trails the light by
+        // exactly SunAxisXYRotationOffset.
+        //
+        // AND THE DISC KEEPS THE ORBIT'S HEIGHT WHILE THE LIGHT REPLACES IT. The light throws
+        // away axis.z and substitutes sin(E) from the four authored elevation keyframes; the disc
+        // keeps -cos(a)sin(e), adds SunAxisZOffset and normalises. That is why the disc can sit on
+        // the horizon while the light still comes from 70 degrees up.
         float f = time * timeFactor;
         float elevation = BlendElevation(theme, f) * toRadians;
 
@@ -72,27 +107,39 @@ public static class Engine_SkyFrame
         float c = theme.LightRigXyRotation * toRadians;
 
         float ca = MathF.Cos(a), sa = MathF.Sin(a);
-        float cb = MathF.Cos(b);
+        float cb = MathF.Cos(b), sb = MathF.Sin(b);
         float cc = MathF.Cos(c), sc = MathF.Sin(c);
 
-        // Row 0 of Rz(a).Ry(b).Rz(c), with the Z component dropped before normalising.
-        float hx = (ca * cb * cc) - (sa * sc);
-        float hy = (ca * cb * sc) + (sa * cc);
-        float hLength = MathF.Sqrt((hx * hx) + (hy * hy));
-        if (hLength > 1e-4f)
-        {
-            hx /= hLength;
-            hy /= hLength;
-        }
+        // Row 0 of Rz(a).Ry(b).Rz(c) — the orbit axis, already unit length because it is a row of
+        // a rotation matrix, which is why the guest's `sub_82260C08` normalise here is a no-op.
+        float axisX = (ca * cb * cc) - (sa * sc);
+        float axisY = (ca * cb * sc) + (sa * cc);
 
         float cosElevation = MathF.Cos(elevation);
 
+        // NO SECOND NORMALISE OF (x, y). This used to rescale the pair to unit length in the
+        // ground plane before applying cos(E), which forces the result's elevation to be exactly
+        // E. The guest does not: it takes axis.x and axis.y straight off the unit 3D axis, so
+        // their length is sqrt(1 - axis.z^2) and the true elevation rides slightly above E
+        // wherever the orbit is tilted. Verified at 0x821DFB18 and 0x821DFB50, which load the
+        // axis components back unmodified and multiply each by cos(E).
+        //
         // Our SunDirection is (groundX, up, groundZ) — the vertical is component [1], where the
         // guest's is [2]. Same vector, our axis order.
         Normalise(
-            cosElevation * hx,
+            cosElevation * axisX,
             MathF.Sin(elevation),
-            cosElevation * hy,
+            cosElevation * axisY,
+            frame.MainLightDirection);
+
+        // The disc's own azimuth, and its own Z.
+        float discC = c + (theme.SunAxisXyRotation * toRadians);
+        float cdc = MathF.Cos(discC), sdc = MathF.Sin(discC);
+
+        Normalise(
+            (ca * cb * cdc) - (sa * sdc),
+            (-ca * sb) + theme.SunAxisZOffset,
+            (ca * cb * sdc) + (sa * cdc),
             frame.SunDirection);
 
         if (theme.HasMoonAxis)
@@ -149,11 +196,11 @@ public static class Engine_SkyFrame
     /// </summary>
     private static float BlendElevation(SkyTheme theme, float f)
     {
-        if (!theme.HasMainLightElevation)
-        {
-            return theme.HasSunAxis ? theme.SunAxisElevation : 26.0f;
-        }
-
+        // NO "UNSTATED" ARM ANY MORE. The guest has no such case: sub_82A45DD0 states all four
+        // keyframes itself and sets their stated-flags, so the blend below always runs and a theme
+        // that names none of them still gets the 50/20/70/20 arc. Substituting SunAxisElevation
+        // was borrowing the SKY's axis tilt for the LIGHT's elevation — two different quantities —
+        // and it produced a sun that never changed height across the day.
         float wrapped = f - MathF.Floor(f);
         int quadrant = (int)(wrapped * 4.0f);
         quadrant = Math.Clamp(quadrant, 0, 3);

@@ -213,10 +213,44 @@ public static class Engine_MdlEngine
                     continue;
                 }
 
-                if (!r.Strz(out string meshName) || !r.Skip(8)) return false;
+                if (!r.Strz(out string meshName)) return false;
                 hdr.Name = meshName;
-                if (!r.Skip(21)) return false;
-                if (!r.Skip(4) || !r.Skip(12)) return false;
+
+                // THE 45 BYTES AFTER THE NAME ARE THE MATERIAL'S SCALAR BLOCK, and they used to be
+                // skipped in four pieces (8 + 21 + 4 + 12). The total was right — `sub_82B243E8`
+                // consumes exactly 45, unconditionally, with no dependence on the file version —
+                // but everything inside it was thrown away, including both numbers the specular
+                // response is built from.
+                //
+                // The layout is that function's read order, byte for byte:
+                //
+                //     0  f32  -> material+60   specular power MIN        (shader c24.x)
+                //     4  f32  -> material+64 = +60 + this, a RANGE       (shader c24.y)
+                //     8  s8   -> material+84
+                //     9  f32  -> material+88                             (c24.w)
+                //    13  f32  -> material+92                             (c25.x)
+                //    17  f32  -> material+96
+                //    21  f32  -> material+100                            (c25.y)
+                //    25  f32  -> material+104                            (c25.z)
+                //    29  f32  -> material+72   self-illumination scale   (c24.z)
+                //    33  f32  -> material+76   |  read by sub_82A21798,
+                //    37  f32  -> material+80   |  a read-two-floats helper
+                //    41  u8   -> material+11
+                //    42  u8   -> material+10
+                //    43  u8   -> material+9
+                //    44  u8   -> material+12
+                //
+                // Only the three the shipped shader consumes are kept. The rest still has to be
+                // READ rather than skipped as a lump, because a wrong split here desynchronises
+                // every material in the file rather than corrupting one field.
+                if (!r.F32(out float specPowerMin)) return false;
+                if (!r.F32(out float specPowerRange)) return false;
+                if (!r.Skip(1)) return false;
+                if (!r.Skip(20)) return false;
+                if (!r.F32(out float selfIllumScale)) return false;
+                if (!r.Skip(8)) return false;
+                if (!r.Skip(4)) return false;
+
                 if (!r.U32(out uint matc)) return false;
                 if (matc > 100000u) return false;
 
@@ -231,8 +265,8 @@ public static class Engine_MdlEngine
                     mat.Diffuse = diffuse;
                     mat.Specular = specular;
                     mat.Normal = normal;
-                    mat.Metallic = metallic;
-                    mat.Extra = extra;
+                    mat.EnvironmentMap = metallic;
+                    mat.SelfIllumination = extra;
                     mat.ShaderType = sel;
 
                     var shaderParams = new string[4];
@@ -247,6 +281,15 @@ public static class Engine_MdlEngine
                     if (!r.F32(out matFloats[0])) return false;
                     if (!r.F32(out matFloats[1])) return false;
                     mat.MaterialFloats = matFloats;
+
+                    // ONE SCALAR BLOCK, N TEXTURE SETS. The guest reads the block once per
+                    // material and then a count of 180-byte texture-set records, so the specular
+                    // range and the self-illumination scale belong to the parent and every record
+                    // under it shares them. Copying them down keeps the consumer holding a single
+                    // object instead of having to carry the parent alongside it.
+                    mat.SpecularPowerMin = specPowerMin;
+                    mat.SpecularPowerMax = specPowerMin + specPowerRange;
+                    mat.SelfIlluminationScale = selfIllumScale;
 
                     hdr.Materials.Add(mat);
                 }

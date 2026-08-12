@@ -58,12 +58,22 @@ public static class Engine_LightingFrame
 			TimeOfDay = frame.TimeOfDay,
 		};
 
-		Array.Copy(frame.SunDirection, result.SunDirection, 3);
+		// THE RIG, NOT THE DISC. `sub_821DF670` sends the main light's direction to the same
+		// object as MainLightColour and MainLightShadowed (`lwz r3, 8(r31)` three times), while
+		// the sun and moon axes go to the sky object at `*(a1+0x10)`. Taking SkyFrame.SunDirection
+		// here — which is the disc — aimed the shadows at the wrong point of the sky by
+		// SunAxisXYRotationOffset, and gave them the orbit's height instead of the authored
+		// elevation arc.
+		Array.Copy(frame.MainLightDirection, result.SunDirection, 3);
 
 		float[] sunRgb = lighting.HasMainLightColour ? lighting.MainLightColour : frame.MainLightColour;
 		Split(sunRgb, result.SunColour, out float sunEnergy);
 		result.SunEnergy = sunEnergy;
-		result.SunShadow = !lighting.HasMainLightShadowed || lighting.MainLightShadowed > 0.5f;
+		// STRICTLY GREATER THAN 0.5, and NOT true-when-unstated. The guest turns the theme's float
+		// into a bool with `fcmpu cr6, f3, f28` against 0.5 followed by `bgt` (0x821DFC34), and it
+		// never defaults the slot — so an unstated field is the zero the theme was constructed
+		// with, and zero means no shadow. See the remark on LightingTheme.MainLightShadowed.
+		result.SunShadow = lighting.MainLightShadowed > 0.5f;
 
 		if (lighting.HasAmbientColour)
 		{

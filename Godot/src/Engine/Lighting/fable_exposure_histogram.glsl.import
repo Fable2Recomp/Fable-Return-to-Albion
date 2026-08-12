@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bl2f6l16gfnuu"
+path="res://.godot/imported/fable_exposure_histogram.glsl-d10a1162ec78dd146e87367f32621292.res"
+
+[deps]
+
+source_file="res://src/Engine/Lighting/fable_exposure_histogram.glsl"
+dest_files=["res://.godot/imported/fable_exposure_histogram.glsl-d10a1162ec78dd146e87367f32621292.res"]
+
+[params]
+
