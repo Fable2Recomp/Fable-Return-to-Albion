@@ -694,7 +694,7 @@ public static class HostBridge
 	/// </summary>
 	public static BonePose? GetEntityPose(uint entity)
 	{
-		if (TryGetAbiVersion() is null)
+		if (TryGetAbiVersion() is null || !IsRunning)
 		{
 			return null;
 		}
@@ -726,7 +726,7 @@ public static class HostBridge
 	/// </summary>
 	public static BonePose? GetEntityRestPose(uint entity)
 	{
-		if (TryGetAbiVersion() is null)
+		if (TryGetAbiVersion() is null || !IsRunning)
 		{
 			return null;
 		}
@@ -765,7 +765,7 @@ public static class HostBridge
 	/// </summary>
 	public static string[]? GetEntityBoneNames(uint entity)
 	{
-		if (TryGetAbiVersion() is null)
+		if (TryGetAbiVersion() is null || !IsRunning)
 		{
 			return null;
 		}
@@ -1088,12 +1088,24 @@ public static class HostBridge
 	/// </remarks>
 	public static GuestClock? TimeOfDay()
 	{
-		if (RefiiHostGetTimeOfDay(out float fraction, out int day, out int frozen) == 0)
+		try
+		{
+			if (RefiiHostIsRunning() != 1)
+			{
+				return null;
+			}
+
+			if (RefiiHostGetTimeOfDay(out float fraction, out int day, out int frozen) == 0)
+			{
+				return null;
+			}
+
+			return new GuestClock(fraction, day, frozen != 0);
+		}
+		catch (DllNotFoundException)
 		{
 			return null;
 		}
-
-		return new GuestClock(fraction, day, frozen != 0);
 	}
 
 	/// <param name="Frozen">
@@ -1489,6 +1501,11 @@ public static class HostBridge
 	public static System.Collections.Generic.List<Language> GetLanguages()
 	{
 		var languages = new System.Collections.Generic.List<Language>();
+
+		if (TryGetAbiVersion() is null || !IsRunning)
+		{
+			return languages;
+		}
 
 		var names = new byte[2048];
 		uint count;
