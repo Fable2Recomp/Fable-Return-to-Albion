@@ -380,6 +380,7 @@ public static class Engine_LevelProps
                 {
                     Name = "KeyFx",
                     EffectName = Engine_LevelFx.SilverKeyEffect,
+                    ExposureScale = Engine_LevelFx.SilverKeyFxExposure,
                 };
                 keyNode.AddChild(keyFx);
                 silverKeys.Add(keyNode);

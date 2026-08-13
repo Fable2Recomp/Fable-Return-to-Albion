@@ -17,6 +17,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private const string DatabaseRootMeta = "__bnk_database_root__";
     private const string LevelsRootMeta = "__bnk_levels_root__";
     private const string EntitiesRootMeta = "__bnk_entities_root__";
+    private const string HeroRootMeta = "__bnk_hero_root__";
     private const string EffectsRootMeta = "__bnk_effects_root__";
     private const string VideosRootMeta = "__bnk_videos_root__";
     private const string LevelRegionPrefix = "lvlregion:";
@@ -60,6 +61,7 @@ public partial class BnkMountPlugin : EditorPlugin
     {
         StartMount();
         EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged += OnFilesystemChanged;
+        GetTree().NodeAdded += OnNodeAdded;
         AddStreamingLabel();
         _entityInspector = new EntityInspectorPlugin();
         AddInspectorPlugin(_entityInspector);
@@ -74,6 +76,7 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged -= OnFilesystemChanged;
+        GetTree().NodeAdded -= OnNodeAdded;
         RemoveStreamingLabel();
         RemoveGameRoot();
         RemoveLoaders();
@@ -366,6 +369,8 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Level.Engine_PropModelIndex.SetModelSource(EnumerateModelAssets);
         Refii.Level.Engine_StreamingCandidates.SetHintSource(EnumerateStreamingHints);
         Refii.Entities.Engine_EntityIndex.SetResolver(ResolveBytes);
+        Refii.Animations.Engine_AnimCatalog.SetFileSource(EnumerateAllPaths);
+        Refii.Hero.Engine_HeroCatalog.SetModelSource(EnumerateAllPaths);
 
         if (_entityLoader is null)
         {
@@ -490,7 +495,84 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Level.Engine_BnkTerrainAlbedoLoader.SetHeightfieldLookup(null);
         Refii.Level.Engine_BnkTerrainMaterialLoader.SetResolver(null);
         Refii.Level.Engine_BnkTerrainMaterialLoader.SetNameLookup(null);
+        Refii.Animations.Engine_AnimCatalog.SetFileSource(null);
+        Refii.Hero.Engine_HeroCatalog.SetModelSource(null);
         _byFileName = null;
+    }
+
+    private IEnumerable<string> EnumerateAllPaths()
+    {
+        if (_filesystem is null)
+        {
+            yield break;
+        }
+
+        foreach (BnkFile file in _filesystem.EnumerateAllFiles())
+        {
+            yield return file.VirtualPath;
+        }
+    }
+
+    private void OnNodeAdded(Node node)
+    {
+        if (node is not Refii.Entities.Engine_EntityInstance entity ||
+            !entity.SceneFilePath.EndsWith(
+                Refii.Entities.Engine_EntityIndex.Extension,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        Callable.From(() => UnpackEntity(entity)).CallDeferred();
+    }
+
+    private void UnpackEntity(Refii.Entities.Engine_EntityInstance entity)
+    {
+        if (!IsInstanceValid(entity) || !entity.IsInsideTree())
+        {
+            return;
+        }
+
+        Node? root = EditorInterface.Singleton.GetEditedSceneRoot();
+        if (root is null || !root.IsAncestorOf(entity))
+        {
+            return;
+        }
+
+        entity.SceneFilePath = string.Empty;
+        SetOwnerRecursive(entity, root);
+    }
+
+    private void ActivateEntity(PackedScene entity)
+    {
+        Node? root = EditorInterface.Singleton.GetEditedSceneRoot();
+        if (root is null)
+        {
+            GD.Print($"[entities] open a scene, then activate '{entity.ResourceName}' " +
+                "to drop it in rigged");
+            return;
+        }
+
+        Node? instance = entity.Instantiate();
+        if (instance is null)
+        {
+            return;
+        }
+
+        root.AddChild(instance);
+        SetOwnerRecursive(instance, root);
+
+        EditorInterface.Singleton.GetSelection().Clear();
+        EditorInterface.Singleton.GetSelection().AddNode(instance);
+    }
+
+    private static void SetOwnerRecursive(Node node, Node root)
+    {
+        node.Owner = root;
+        foreach (Node child in node.GetChildren())
+        {
+            SetOwnerRecursive(child, root);
+        }
     }
 
     private void Inject()
@@ -552,6 +634,15 @@ public partial class BnkMountPlugin : EditorPlugin
         entities.SetIconModulate(0, GameFolderColor);
         AddPlaceholder(tree, entities);
         entities.Collapsed = true;
+
+        TreeItem hero = tree.CreateItem(_gameRoot);
+        hero.SetText(0, "Hero");
+        hero.SetMetadata(0, HeroRootMeta);
+        hero.SetSelectable(0, false);
+        hero.SetIcon(0, GetFolderIcon());
+        hero.SetIconModulate(0, GameFolderColor);
+        AddPlaceholder(tree, hero);
+        hero.Collapsed = true;
 
         TreeItem effects = tree.CreateItem(_gameRoot);
         effects.SetText(0, "Effects");
@@ -647,6 +738,7 @@ public partial class BnkMountPlugin : EditorPlugin
                meta == DatabaseRootMeta ||
                meta == LevelsRootMeta ||
                meta == EntitiesRootMeta ||
+               meta == HeroRootMeta ||
                meta == VideosRootMeta ||
                meta == ContainerMeta ||
                meta.StartsWith("bnk:", StringComparison.Ordinal) ||
@@ -678,8 +770,8 @@ public partial class BnkMountPlugin : EditorPlugin
                 Refii.Entities.Engine_EntityIndex.Extension,
                 StringComparison.OrdinalIgnoreCase))
         {
-            var entity = ResourceLoader.Load<Refii.Entities.Engine_EntityResource>(
-                meta, "ArrayMesh", ResourceLoader.CacheMode.Ignore);
+            var entity = ResourceLoader.Load<PackedScene>(
+                meta, "PackedScene", ResourceLoader.CacheMode.Ignore);
 
             if (entity is null)
             {
@@ -687,7 +779,7 @@ public partial class BnkMountPlugin : EditorPlugin
                 return;
             }
 
-            EditorInterface.Singleton.InspectObject(entity);
+            ActivateEntity(entity);
             return;
         }
 
@@ -903,6 +995,7 @@ public partial class BnkMountPlugin : EditorPlugin
             meta != DatabaseRootMeta &&
             meta != LevelsRootMeta &&
             meta != EntitiesRootMeta &&
+            meta != HeroRootMeta &&
             meta != EffectsRootMeta &&
             meta != VideosRootMeta &&
             !meta.StartsWith(LevelRegionPrefix, StringComparison.Ordinal) &&
@@ -957,6 +1050,12 @@ public partial class BnkMountPlugin : EditorPlugin
             if (meta == EntitiesRootMeta)
             {
                 PopulateEntities(item);
+                continue;
+            }
+
+            if (meta == HeroRootMeta)
+            {
+                PopulateHeroes(item);
                 continue;
             }
 
@@ -1015,6 +1114,28 @@ public partial class BnkMountPlugin : EditorPlugin
             item.SetText(0, Refii.Entities.Engine_EntityIndex.FileNameOf(entry));
             item.SetMetadata(
                 0, FilePrefix + Refii.Entities.Engine_EntityIndex.VirtualPathOf(entry));
+            if (icon is not null)
+            {
+                item.SetIcon(0, icon);
+            }
+        }
+    }
+
+    private void PopulateHeroes(TreeItem parent)
+    {
+        Tree? tree = ResolveTree();
+        if (tree is null)
+        {
+            return;
+        }
+
+        Texture2D? icon = GetFileIcon();
+        foreach (Refii.Hero.HeroEntry entry in Refii.Hero.Engine_HeroCatalog.Entries)
+        {
+            TreeItem item = tree.CreateItem(parent);
+            item.SetText(0, Refii.Hero.Engine_HeroCatalog.FileNameOf(entry));
+            item.SetMetadata(
+                0, FilePrefix + Refii.Hero.Engine_HeroCatalog.VirtualPathOf(entry));
             if (icon is not null)
             {
                 item.SetIcon(0, icon);

@@ -18,6 +18,9 @@ public partial class FableFx : Node3D
 
     public const string TextureFolder = "art/fx/pfx_textures/";
 
+    [Export]
+    public float ExposureScale { get; set; } = 1.0f;
+
     private static FxBank? _bank;
     private static bool _bankTried;
 
@@ -276,7 +279,8 @@ public partial class FableFx : Node3D
 
         int split = key.LastIndexOf('|');
         string texture = split >= 0 ? key[..split] : key;
-        bool additive = key.EndsWith("|add", StringComparison.Ordinal);
+        string mode = split >= 0 ? key[(split + 1)..] : string.Empty;
+        bool additive = mode is "add" or "addone";
 
         Shader? shader = GD.Load<Shader>(additive ? AddShaderPath : MixShaderPath);
         if (shader is null)
@@ -285,6 +289,14 @@ public partial class FableFx : Node3D
         }
 
         var material = new ShaderMaterial { Shader = shader };
+        material.SetShaderParameter(
+            "fx_exposure", Engine_FxSystem.Exposure * ExposureScale);
+
+        if (additive)
+        {
+            material.SetShaderParameter("fx_src_alpha", mode == "add" ? 1.0f : 0.0f);
+        }
+
         Texture2D? tex = LoadTexture(texture);
         if (tex is not null)
         {

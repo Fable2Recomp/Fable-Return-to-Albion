@@ -338,11 +338,7 @@ public static class Engine_LevelScene
             if (entities is not null)
             {
                 root.AddChild(entities);
-                entities.Owner = root;
-                foreach (Node child in entities.GetChildren())
-                {
-                    child.Owner = root;
-                }
+                SetOwnerRecursive(entities, root);
             }
 
             GD.Print($"[entities] {level}: {entityStats}");

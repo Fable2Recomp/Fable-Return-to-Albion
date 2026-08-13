@@ -20,6 +20,8 @@ public partial class Engine_EntityResource : ArrayMesh
 
     public List<string> ModelPaths { get; } = new();
 
+    public List<uint> ModelHashes { get; } = new();
+
     public List<string> MissingModels { get; } = new();
 
     public List<string> Components { get; } = new();

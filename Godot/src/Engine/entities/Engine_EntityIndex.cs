@@ -161,6 +161,8 @@ public static class Engine_EntityIndex
 
         foreach (uint modelHash in entry.ModelHashes)
         {
+            resource.ModelHashes.Add(modelHash);
+
             string? path = Engine_PropModelIndex.Resolve(modelHash, Array.Empty<string>());
             if (path is null)
             {
@@ -169,22 +171,18 @@ public static class Engine_EntityIndex
             }
 
             resource.ModelPaths.Add(path);
-            AppendSurfaces(resource, path);
         }
 
+        AppendComposite(resource);
         FillGdbFields(multi, entry, resource);
         return resource;
     }
 
-    private static void AppendSurfaces(Engine_EntityResource resource, string modelPath)
+    public static void AppendComposite(Engine_EntityResource resource)
     {
-        byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(modelPath);
-        if (bytes is null)
-        {
-            return;
-        }
+        ArrayMesh? mesh = Engine_MdlComposite.Build(
+            resource.ModelPaths, ResolveModel, out _, out _);
 
-        ArrayMesh? mesh = Engine_MdlMesh.TryCreateMesh(bytes, modelPath, out _, out _);
         if (mesh is null)
         {
             return;
@@ -199,6 +197,19 @@ public static class Engine_EntityIndex
             resource.SurfaceSetName(added, mesh.SurfaceGetName(surface));
             resource.SurfaceSetMaterial(added, mesh.SurfaceGetMaterial(surface));
         }
+
+        foreach (StringName meta in mesh.GetMetaList())
+        {
+            resource.SetMeta(meta, mesh.GetMeta(meta));
+        }
+    }
+
+    private static Mesh? ResolveModel(string modelPath)
+    {
+        byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(modelPath);
+        return bytes is null
+            ? null
+            : Engine_MdlMesh.TryCreateMesh(bytes, modelPath, out _, out _);
     }
 
     private static void FillGdbFields(

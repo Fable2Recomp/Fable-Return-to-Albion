@@ -18,7 +18,7 @@ public sealed class FxPlacement
 
 public sealed class Engine_FxSystem
 {
-    public const int TrailHistory = 24;
+    public const int TrailHistory = 32;
     public const float RateToPerSec = 30f;
     public const float MinLife = 0.02f;
     public const float Exposure = 10f / 3f;
@@ -48,10 +48,13 @@ public sealed class Engine_FxSystem
         public float FrameSpeed;
         public bool RandomFrame;
         public bool Additive;
+        public bool SrcAlpha;
         public float[] Colour = { 1f, 1f, 1f };
         public float Alpha = 1f;
         public float HalfX = 0.5f;
         public float HalfY = 0.5f;
+        public float GlobalScaleX = 1f;
+        public float GlobalScaleY = 1f;
         public float Delay;
 
         public bool HasRotation;
@@ -112,6 +115,7 @@ public sealed class Engine_FxSystem
     }
 
     private readonly List<InstanceState> _instances = new();
+    private readonly List<(Vector3 Pos, Vector2 Uv, Color Col)> _scratch = new();
     private uint _rng = 0x1234567u;
     private bool _loop = true;
 
@@ -158,6 +162,12 @@ public sealed class Engine_FxSystem
     {
         const int one = 1;
         return vis.DstBlend == one;
+    }
+
+    private static bool UsesSourceAlpha(FxVisual vis)
+    {
+        const int sourceAlpha = 4;
+        return vis.SrcBlend == sourceAlpha;
     }
 
     public static bool EffectSustains(FxBank bank, uint effectHash, float seconds = 12f)
@@ -341,7 +351,7 @@ public sealed class Engine_FxSystem
                         mode = sys.Mode;
                         if (mode is >= 1 and <= 4)
                         {
-                            rt.Trail = mode is 2 or 3;
+                            rt.Trail = mode is 3;
                             foreach (FxVisual vis in sys.Visuals)
                             {
                                 if (vis.Displacement)
@@ -354,7 +364,7 @@ public sealed class Engine_FxSystem
                                     continue;
                                 }
 
-                                VisualRuntime v = BuildVisual(vis, sc);
+                                VisualRuntime v = BuildVisual(vis, sc, mode);
                                 if (v.Delay > rt.MaxVisualDelay)
                                 {
                                     rt.MaxVisualDelay = v.Delay;
@@ -383,7 +393,7 @@ public sealed class Engine_FxSystem
         }
     }
 
-    private static VisualRuntime BuildVisual(FxVisual vis, float sc)
+    private static VisualRuntime BuildVisual(FxVisual vis, float sc, uint mode)
     {
         var v = new VisualRuntime
         {
@@ -394,14 +404,17 @@ public sealed class Engine_FxSystem
             RandomFrame = vis.RandomFrame,
             Delay = vis.Delay,
             Additive = IsAdditive(vis),
+            SrcAlpha = UsesSourceAlpha(vis),
             Alpha = vis.HasAlpha ? vis.Alpha : 1f,
+            GlobalScaleX = vis.HasGlobalScale ? vis.GlobalScale[0] : 1f,
+            GlobalScaleY = vis.HasGlobalScale ? vis.GlobalScale[1] : 1f,
             HasRotation = vis.HasRotation,
             RotSpeed = vis.RotSpeed,
             RotSpread = vis.RotSpread,
             RotInitialRandom = vis.RotInitialRandom,
             HasFlicker = vis.HasFlicker,
-            TrailWidth = (vis.HasTrailWidth ? vis.TrailWidth : 1f) * sc,
-            TrailLen = Math.Clamp(vis.HasTrailLen ? vis.TrailLen : 8, 2, TrailHistory),
+            TrailWidth = (vis.HasScalarSize ? vis.ScalarSize : 1f) * sc,
+            TrailLen = Math.Clamp(vis.HasNumSegments ? vis.NumSegments : 1, 1, TrailHistory),
         };
 
         if (vis.HasColor)
@@ -419,26 +432,34 @@ public sealed class Engine_FxSystem
             v.FlickerShared = vis.FlickerShared;
         }
 
-        float hx = vis.HasSize ? vis.SizeX : 1f;
-        float hy = vis.HasSize ? vis.SizeY : 1f;
-        if (hx <= 0f)
+        if (!vis.HasSize && mode == 2 && vis.HasScalarSize && vis.ScalarSize > 0f)
         {
-            hx = 1f;
+            v.HalfX = vis.ScalarSize * 0.5f * sc;
+            v.HalfY = vis.ScalarSize * 0.5f * sc;
         }
-
-        if (hy <= 0f)
+        else
         {
-            hy = 1f;
-        }
+            float hx = vis.HasSize ? vis.SizeX : 1f;
+            float hy = vis.HasSize ? vis.SizeY : 1f;
+            if (hx <= 0f)
+            {
+                hx = 1f;
+            }
 
-        v.HalfX = hx * 0.5f * sc;
-        v.HalfY = hy * 0.5f * sc;
+            if (hy <= 0f)
+            {
+                hy = 1f;
+            }
+
+            v.HalfX = hx * 0.5f * sc;
+            v.HalfY = hy * 0.5f * sc;
+        }
 
         if (vis.HasMesh)
         {
             v.IsMesh = true;
             v.MeshPath = vis.MeshPath;
-            v.MeshScale = (vis.HasTrailWidth ? vis.TrailWidth : 1f) * sc;
+            v.MeshScale = (vis.HasScalarSize ? vis.ScalarSize : 1f) * sc;
             v.HasRandScale = vis.HasRandScale;
             if (vis.HasRandScale)
             {
@@ -770,7 +791,7 @@ public sealed class Engine_FxSystem
         }
 
         var batches =
-            new Dictionary<(string Texture, bool Additive), List<(VisualRuntime, ParticleState, EmitterRuntime, float, VisualRuntime?, float)>>();
+            new Dictionary<(string Texture, bool Additive, bool SrcAlpha), List<(VisualRuntime, ParticleState, EmitterRuntime, float, VisualRuntime?, float, VisualRuntime)>>();
 
         foreach (InstanceState inst in _instances)
         {
@@ -819,38 +840,58 @@ public sealed class Engine_FxSystem
                         continue;
                     }
 
-                    (string, bool) key = (va.Texture, va.Additive);
-                    if (!batches.TryGetValue(key, out var list))
+                    if (vb is not null && vb.Texture != va.Texture)
                     {
-                        list = new List<(VisualRuntime, ParticleState, EmitterRuntime, float, VisualRuntime?, float)>();
-                        batches[key] = list;
+                        Enqueue(batches, va, pt, rt, alpha * (1f - w), vb, w, va);
+                        Enqueue(batches, vb, pt, rt, alpha * w, vb, w, va);
                     }
-
-                    list.Add((va, pt, rt, alpha, vb, w));
+                    else
+                    {
+                        Enqueue(batches, va, pt, rt, alpha, vb, w, va);
+                    }
                 }
             }
         }
 
-        foreach (((string texture, bool additive), var list) in batches)
+        foreach (((string texture, bool additive, bool srcAlpha), var list) in batches)
         {
-            VisualBatchMaterial? material = materialLookup(texture + (additive ? "|add" : "|mix"));
+            string suffix = additive ? (srcAlpha ? "|add" : "|addone") : "|mix";
+            VisualBatchMaterial? material = materialLookup(texture + suffix);
             if (material is null)
             {
                 continue;
             }
 
-            mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles, material.Material);
-            foreach ((VisualRuntime va, ParticleState pt, EmitterRuntime rt,
-                float alpha, VisualRuntime? vb, float w) in list)
+            _scratch.Clear();
+            foreach ((VisualRuntime draw, ParticleState pt, EmitterRuntime rt,
+                float alpha, VisualRuntime? vb, float w, VisualRuntime va) in list)
             {
+                if (alpha <= 0.003f)
+                {
+                    continue;
+                }
+
                 if (rt.Trail)
                 {
-                    EmitTrail(mesh, va, vb, w, pt, alpha, cameraPosition);
+                    EmitTrail(_scratch, va, vb, w, pt, alpha, cameraPosition);
                 }
                 else
                 {
-                    EmitBillboard(mesh, va, vb, w, pt, alpha, cameraRight, cameraUp);
+                    EmitBillboard(_scratch, va, vb, w, pt, alpha, cameraRight, cameraUp, draw);
                 }
+            }
+
+            if (_scratch.Count == 0)
+            {
+                continue;
+            }
+
+            mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles, material.Material);
+            foreach ((Vector3 pos, Vector2 uv, Color col) in _scratch)
+            {
+                mesh.SurfaceSetColor(col);
+                mesh.SurfaceSetUV(uv);
+                mesh.SurfaceAddVertex(pos);
             }
 
             mesh.SurfaceEnd();
@@ -904,7 +945,7 @@ public sealed class Engine_FxSystem
     }
 
     private void EmitTrail(
-        ImmediateMesh mesh,
+        List<(Vector3 Pos, Vector2 Uv, Color Col)> mesh,
         VisualRuntime va,
         VisualRuntime? vb,
         float w,
@@ -954,20 +995,48 @@ public sealed class Engine_FxSystem
         }
     }
 
+    private static void Enqueue(
+        Dictionary<(string Texture, bool Additive, bool SrcAlpha),
+            List<(VisualRuntime, ParticleState, EmitterRuntime, float, VisualRuntime?, float, VisualRuntime)>> batches,
+        VisualRuntime draw,
+        ParticleState pt,
+        EmitterRuntime rt,
+        float alpha,
+        VisualRuntime? vb,
+        float w,
+        VisualRuntime va)
+    {
+        (string, bool, bool) key = (draw.Texture, draw.Additive, draw.SrcAlpha);
+        if (!batches.TryGetValue(key, out var list))
+        {
+            list = new List<(VisualRuntime, ParticleState, EmitterRuntime, float, VisualRuntime?, float, VisualRuntime)>();
+            batches[key] = list;
+        }
+
+        list.Add((draw, pt, rt, alpha, vb, w, va));
+    }
+
     private void EmitBillboard(
-        ImmediateMesh mesh,
+        List<(Vector3 Pos, Vector2 Uv, Color Col)> mesh,
         VisualRuntime va,
         VisualRuntime? vb,
         float w,
         ParticleState pt,
         float alpha,
         Vector3 cameraRight,
-        Vector3 cameraUp)
+        Vector3 cameraUp,
+        VisualRuntime draw)
     {
+        float gx = vb is not null
+            ? va.GlobalScaleX + ((vb.GlobalScaleX - va.GlobalScaleX) * w)
+            : va.GlobalScaleX;
+        float gy = vb is not null
+            ? va.GlobalScaleY + ((vb.GlobalScaleY - va.GlobalScaleY) * w)
+            : va.GlobalScaleY;
         float hx = (vb is not null ? va.HalfX + ((vb.HalfX - va.HalfX) * w) : va.HalfX) *
-                   pt.FlickX;
+                   pt.FlickX * gx;
         float hy = (vb is not null ? va.HalfY + ((vb.HalfY - va.HalfY) * w) : va.HalfY) *
-                   pt.FlickY;
+                   pt.FlickY * gy;
         if (hx <= 0f || hy <= 0f)
         {
             return;
@@ -989,8 +1058,8 @@ public sealed class Engine_FxSystem
         Vector3 up = (-cameraRight * s) + (cameraUp * c);
         Vector3 centre = ToGodot(pt.Pos);
 
-        int cols = Math.Max(1, va.Cols);
-        int rows = Math.Max(1, va.Rows);
+        int cols = Math.Max(1, draw.Cols);
+        int rows = Math.Max(1, draw.Rows);
         int frames = cols * rows;
         float u0 = 0f;
         float v0 = 0f;
@@ -999,10 +1068,10 @@ public sealed class Engine_FxSystem
         if (frames > 1)
         {
             float tLife = pt.Life > 0f ? pt.Age / pt.Life : 1f;
-            int f = va.FrameSpeed > 0f
-                ? (int)(pt.Age * va.FrameSpeed * 30f)
+            int f = draw.FrameSpeed > 0f
+                ? (int)(pt.Age * draw.FrameSpeed * 30f)
                 : (int)(tLife * frames);
-            if (va.RandomFrame)
+            if (draw.RandomFrame)
             {
                 f += (int)(pt.Seed * frames);
             }
@@ -1032,12 +1101,10 @@ public sealed class Engine_FxSystem
     }
 
     private static void AddVert(
-        ImmediateMesh mesh, Vector3 pos, Vector2 uv,
+        List<(Vector3 Pos, Vector2 Uv, Color Col)> sink, Vector3 pos, Vector2 uv,
         float r, float g, float b, float a)
     {
-        mesh.SurfaceSetColor(new Color(r, g, b, a));
-        mesh.SurfaceSetUV(uv);
-        mesh.SurfaceAddVertex(pos);
+        sink.Add((pos, uv, new Color(r, g, b, a)));
     }
 }
 

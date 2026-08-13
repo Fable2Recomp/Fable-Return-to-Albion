@@ -163,13 +163,22 @@ public static class Engine_LevelLighting
 	/// here rather than shared as a singleton — a level change disposes the camera and the effect
 	/// frees its pipelines with it.
 	/// </remarks>
-	public static Compositor BuildCompositor() => new()
+	public static Compositor? BuildCompositor()
 	{
-		CompositorEffects = new Godot.Collections.Array<CompositorEffect>
+		if (RenderingServer.GetRenderingDevice() is null)
 		{
-			new Engine_ExposureEffect(),
-		},
-	};
+			GD.Print("[lighting] no rendering device; tone curve disabled for this renderer");
+			return null;
+		}
+
+		return new Compositor
+		{
+			CompositorEffects = new Godot.Collections.Array<CompositorEffect>
+			{
+				new Engine_ExposureEffect(),
+			},
+		};
+	}
 
 	public static void ConfigureEnvironment(Godot.Environment environment, LightingFrame frame)
 	{

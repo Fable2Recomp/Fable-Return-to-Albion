@@ -162,7 +162,7 @@ public partial class Engine_EntityAnimator : Node3D
             }
         }
 
-        _built = true;
+        _built = added != 0 || Engine_AnimCatalog.BindingsReady;
 
         if (added == 0)
         {

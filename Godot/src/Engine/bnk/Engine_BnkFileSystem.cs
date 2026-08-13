@@ -39,7 +39,8 @@ public sealed class BnkFileSystem : IDisposable
 
     public int ShadowedFileCount { get; private set; }
 
-    public static readonly string[] DefaultLooseExtensions = { ".gdb", ".list" };
+    public static readonly string[] DefaultLooseExtensions =
+        { ".gdb", ".list", ".animation_toc", ".animation_data" };
 
     public static BnkFileSystem Mount(
         string gameDirectory,
@@ -55,7 +56,7 @@ public sealed class BnkFileSystem : IDisposable
         IEnumerable<string> banks;
         try
         {
-            banks = Directory.EnumerateFiles(gameDirectory, "*.bnk", SearchOption.AllDirectories);
+            banks = EnumerateByExtension(gameDirectory, ".bnk").ToList();
         }
         catch (Exception exception)
         {
@@ -82,6 +83,23 @@ public sealed class BnkFileSystem : IDisposable
         return filesystem;
     }
 
+    private static IEnumerable<string> EnumerateByExtension(string root, params string[] extensions)
+    {
+        foreach (string path in Directory.EnumerateFiles(
+            root, "*", SearchOption.AllDirectories))
+        {
+            foreach (string extension in extensions)
+            {
+                string suffix = extension.StartsWith('.') ? extension : "." + extension;
+                if (path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    yield return path;
+                    break;
+                }
+            }
+        }
+    }
+
     private void IndexLoose(string gameDirectory, IReadOnlyList<string> extensions)
     {
         foreach (string extension in extensions)
@@ -91,8 +109,7 @@ public sealed class BnkFileSystem : IDisposable
             IEnumerable<string> matches;
             try
             {
-                matches = Directory.EnumerateFiles(
-                    gameDirectory, pattern, SearchOption.AllDirectories);
+                matches = EnumerateByExtension(gameDirectory, extension).ToList();
             }
             catch (Exception exception)
             {

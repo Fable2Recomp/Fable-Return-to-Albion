@@ -120,14 +120,14 @@ public static class Engine_AnimCatalog
             return _ready;
         }
 
-        _tried = true;
-
         byte[]? toc = ReadAnimFile(Engine_AnimBank.TocPath, Engine_AnimBank.TocExtension);
         if (toc is null)
         {
             GD.PushWarning($"[anim] no {Engine_AnimBank.TocExtension} in the mounted archives");
             return false;
         }
+
+        _tried = true;
 
         if (!Engine_AnimBank.TryParse(toc, out List<AnimClip> parsed))
         {
@@ -178,6 +178,11 @@ public static class Engine_AnimCatalog
             {
                 blobs.Add(bytes);
             }
+        }
+
+        if (blobs.Count == 0)
+        {
+            return;
         }
 
         _bindingTask = System.Threading.Tasks.Task.Run(() => ScanBlobs(blobs));

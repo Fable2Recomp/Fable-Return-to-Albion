@@ -460,3 +460,6 @@ Godot/assets/gui/
 
 # Python bytecode from the Blender addon.
 __pycache__/
+/Godot/debug
+/Godot/src/tools
+/Godot/src/tools

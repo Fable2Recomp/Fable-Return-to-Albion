@@ -50,6 +50,8 @@ public static class Engine_LevelFx
 
     public const string SilverKeyEffect = "FX_Key_Silver_01";
 
+    public const float SilverKeyFxExposure = 1.0f;
+
     /// <summary>
     /// The two template entries a silver key is placed from. Matched on the placement's PARENT,
     /// which is the identity the data states.
@@ -271,6 +273,11 @@ public static class Engine_LevelFx
 
         foreach (GdbPlacement placement in placements)
         {
+            if (IsSilverKeyPlacement(placement))
+            {
+                continue;
+            }
+
             foreach (FxAttachment attachment in HuntFxAttachments(placement.Hash, views))
             {
                 if (attachment.Effect == 0 || attachment.Effect == Null ||

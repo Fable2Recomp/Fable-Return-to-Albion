@@ -123,10 +123,18 @@ public sealed class FxVisual
     public float FlickerSpreadY;
     public bool FlickerShared = true;
 
-    public bool HasTrailWidth;
-    public float TrailWidth = 1f;
-    public bool HasTrailLen;
-    public int TrailLen = 1;
+    public bool HasScalarSize;
+    public float ScalarSize = 1f;
+    public bool HasNumSegments;
+    public int NumSegments = 1;
+    public bool HasSelfIllum;
+    public float SelfIllum = 1f;
+    public bool HasGlobalScale;
+    public float[] GlobalScale = { 1f, 1f };
+    public bool HasSpritePoints;
+    public int SpritePoints = 4;
+    public bool HasBlendOp;
+    public int BlendOp;
 
     public bool HasTexture;
 
@@ -555,8 +563,8 @@ public static class Engine_FxBank
                     float tw = r.F32();
                     if (outVis is not null)
                     {
-                        outVis.HasTrailWidth = true;
-                        outVis.TrailWidth = tw;
+                        outVis.HasScalarSize = true;
+                        outVis.ScalarSize = tw;
                     }
 
                     break;
@@ -625,15 +633,37 @@ public static class Engine_FxBank
                     break;
                 }
 
-                case 0x10000: r.Skip(8); break;
-                case 0x20: r.Skip(4); break;
+                case 0x10000:
+                {
+                    float gsx = r.F32();
+                    float gsy = r.F32();
+                    if (outVis is not null)
+                    {
+                        outVis.HasGlobalScale = true;
+                        outVis.GlobalScale = new[] { gsx, gsy };
+                    }
+
+                    break;
+                }
+
+                case 0x20:
+                {
+                    uint sp = r.U32();
+                    if (outVis is not null)
+                    {
+                        outVis.HasSpritePoints = true;
+                        outVis.SpritePoints = (int)sp;
+                    }
+
+                    break;
+                }
                 case 0x800:
                 {
                     uint tl = r.U32();
                     if (outVis is not null)
                     {
-                        outVis.HasTrailLen = true;
-                        outVis.TrailLen = tl is >= 1 and <= 512 ? (int)tl : 8;
+                        outVis.HasNumSegments = true;
+                        outVis.NumSegments = tl is >= 1 and <= 512 ? (int)tl : 1;
                     }
 
                     break;
@@ -692,7 +722,18 @@ public static class Engine_FxBank
                     break;
                 }
 
-                case 0x100: r.U32(); break;
+                case 0x100:
+                {
+                    uint op = r.U32();
+                    if (outVis is not null)
+                    {
+                        outVis.HasBlendOp = true;
+                        outVis.BlendOp = (int)op;
+                    }
+
+                    break;
+                }
+
                 case 0x1000:
                 {
                     r.U32();
@@ -776,7 +817,18 @@ public static class Engine_FxBank
                     break;
                 }
 
-                case 0x8000: r.F32(); break;
+                case 0x8000:
+                {
+                    float si = r.F32();
+                    if (outVis is not null)
+                    {
+                        outVis.HasSelfIllum = true;
+                        outVis.SelfIllum = si;
+                    }
+
+                    break;
+                }
+
                 default:
                     r.Bad = true;
                     break;
@@ -941,16 +993,16 @@ public static class Engine_FxBank
                         v.FlickerShared = p.FlickerShared;
                     }
 
-                    if (!v.HasTrailWidth && p.HasTrailWidth)
+                    if (!v.HasScalarSize && p.HasScalarSize)
                     {
-                        v.HasTrailWidth = true;
-                        v.TrailWidth = p.TrailWidth;
+                        v.HasScalarSize = true;
+                        v.ScalarSize = p.ScalarSize;
                     }
 
-                    if (!v.HasTrailLen && p.HasTrailLen)
+                    if (!v.HasNumSegments && p.HasNumSegments)
                     {
-                        v.HasTrailLen = true;
-                        v.TrailLen = p.TrailLen;
+                        v.HasNumSegments = true;
+                        v.NumSegments = p.NumSegments;
                     }
 
                     if (!v.HasAlignQuat && p.HasAlignQuat)
