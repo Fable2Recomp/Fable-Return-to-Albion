@@ -71,7 +71,8 @@ public static class SwfRasterizer
 
     public static void DrawInto(
         SwfCanvas canvas, SwfShape shape, SwfGeometry geometry, Transform2D shapeToCanvas,
-        SwfColorTransform tint, Func<int, SwfBitmapSampler?>? resolver)
+        SwfColorTransform tint, Func<int, SwfBitmapSampler?>? resolver,
+        Func<int, SwfBitmapSampler?>? hostResolver = null)
     {
         var byFill = new SortedDictionary<int, List<List<Vector2>>>();
         foreach (SwfContour contour in geometry.Contours)
@@ -96,14 +97,39 @@ public static class SwfRasterizer
             rings.Add(transformed);
         }
 
+        SwfFillStyle? hostFill = null;
+        foreach (SwfFillStyle candidate in shape.FillStyles)
+        {
+            if (candidate.BitmapId == HostSuppliedBitmapId)
+            {
+                hostFill = candidate;
+                break;
+            }
+        }
+
         Transform2D canvasToShape = shapeToCanvas.AffineInverse();
         foreach ((int fillIndex, List<List<Vector2>> rings) in byFill)
         {
             SwfFillStyle style = shape.FillStyles[fillIndex - 1];
-            SwfBitmapSampler? bitmap = style.BitmapId >= 0 ? resolver?.Invoke(style.BitmapId) : null;
-            if (style.BitmapId >= 0 && bitmap is null)
+            SwfMatrix matrix = style.Matrix;
+            SwfBitmapSampler? bitmap = null;
+
+            if (style.BitmapId >= 0)
             {
-                continue;
+                if (hostFill is not null && style.BitmapId != HostSuppliedBitmapId)
+                {
+                    bitmap = hostResolver?.Invoke(style.BitmapId);
+                    if (bitmap is not null)
+                    {
+                        matrix = hostFill.Matrix;
+                    }
+                }
+
+                bitmap ??= resolver?.Invoke(style.BitmapId);
+                if (bitmap is null)
+                {
+                    continue;
+                }
             }
 
             bool isGradient = style.Kind is SwfFillKind.LinearGradient
@@ -111,7 +137,7 @@ public static class SwfRasterizer
             Transform2D fillInverse = Transform2D.Identity;
             if (bitmap is not null || isGradient)
             {
-                Transform2D fill = ToTransform(style.Matrix);
+                Transform2D fill = ToTransform(matrix);
                 float determinant = (fill.X.X * fill.Y.Y) - (fill.X.Y * fill.Y.X);
                 fillInverse = Mathf.IsZeroApprox(determinant)
                     ? Transform2D.Identity
@@ -126,8 +152,21 @@ public static class SwfRasterizer
     {
         public float X;
         public float Step;
+        public int StartLine;
         public int LastScanline;
     }
+
+    [ThreadStatic]
+    private static List<ScanEdge>? _edges;
+
+    [ThreadStatic]
+    private static List<ScanEdge>? _active;
+
+    [ThreadStatic]
+    private static List<float>? _crossings;
+
+    private static readonly Comparison<ScanEdge> ByStartLine =
+        (a, b) => a.StartLine.CompareTo(b.StartLine);
 
     private static void ScanFill(
         SwfCanvas canvas, List<List<Vector2>> rings, SwfFillStyle style, SwfBitmapSampler? bitmap,
@@ -156,8 +195,11 @@ public static class SwfRasterizer
             return;
         }
 
-        int lines = y1 - y0 + 1;
-        var buckets = new List<ScanEdge>?[lines];
+        List<ScanEdge> edges = _edges ??= new List<ScanEdge>(256);
+        List<ScanEdge> active = _active ??= new List<ScanEdge>(64);
+        List<float> crossings = _crossings ??= new List<float>(64);
+        edges.Clear();
+        active.Clear();
 
         foreach (List<Vector2> ring in rings)
         {
@@ -175,7 +217,7 @@ public static class SwfRasterizer
                 Vector2 bottom = a.Y < b.Y ? b : a;
                 int first = Mathf.CeilToInt(top.Y - 0.5f);
                 int last = Mathf.CeilToInt(bottom.Y - 0.5f) - 1;
-                if (last < y0 || first > y1)
+                if (last < first || last < y0 || first > y1)
                 {
                     continue;
                 }
@@ -183,23 +225,55 @@ public static class SwfRasterizer
                 float step = (bottom.X - top.X) / (bottom.Y - top.Y);
                 int startLine = Mathf.Max(first, y0);
                 float x = top.X + (((startLine + 0.5f) - top.Y) * step);
-                int endLine = Mathf.Min(last, y1);
 
-                int slot = startLine - y0;
-                buckets[slot] ??= new List<ScanEdge>();
-                buckets[slot]!.Add(new ScanEdge { X = x, Step = step, LastScanline = endLine });
+                edges.Add(new ScanEdge
+                {
+                    X = x,
+                    Step = step,
+                    StartLine = startLine,
+                    LastScanline = Mathf.Min(last, y1),
+                });
             }
         }
 
-        var active = new List<ScanEdge>();
-        var crossings = new List<float>();
+        if (edges.Count == 0)
+        {
+            return;
+        }
 
+        edges.Sort(ByStartLine);
+
+        bool solid = bitmap is null && !isGradient;
+        var flat = new Color(0f, 0f, 0f, 0f);
+        Transform2D sampleToLocal = Transform2D.Identity;
+        Vector2 sampleStep = Vector2.Zero;
+
+        if (solid)
+        {
+            flat = Tint(
+                new Color(
+                    style.Color.R / 255f, style.Color.G / 255f,
+                    style.Color.B / 255f, style.Color.A / 255f),
+                tint);
+
+            if (flat.A <= 0f)
+            {
+                return;
+            }
+        }
+        else
+        {
+            sampleToLocal = fillInverse * canvasToShape;
+            sampleStep = sampleToLocal.X;
+        }
+
+        int pending = 0;
         for (int y = y0; y <= y1; y++)
         {
-            List<ScanEdge>? entering = buckets[y - y0];
-            if (entering is not null)
+            while (pending < edges.Count && edges[pending].StartLine <= y)
             {
-                active.AddRange(entering);
+                active.Add(edges[pending]);
+                pending++;
             }
 
             if (active.Count == 0)
@@ -218,12 +292,24 @@ public static class SwfRasterizer
             {
                 int x0 = Mathf.Max(Mathf.CeilToInt(crossings[i] - 0.5f), 0);
                 int x1 = Mathf.Min(Mathf.FloorToInt(crossings[i + 1] - 0.5f), canvas.Width - 1);
+                if (x1 < x0)
+                {
+                    continue;
+                }
+
+                if (solid)
+                {
+                    canvas.BlendSpan(x0, x1, y, flat.R, flat.G, flat.B, flat.A);
+                    continue;
+                }
+
+                Vector2 local = sampleToLocal * new Vector2(x0 + 0.5f, y + 0.5f);
                 for (int x = x0; x <= x1; x++)
                 {
-                    Vector2 shapePoint = canvasToShape * new Vector2(x + 0.5f, y + 0.5f);
-                    Color colour = SampleTwips(style, bitmap, fillInverse, isGradient, shapePoint);
-                    colour = Tint(colour, tint);
+                    Color colour = Tint(
+                        SampleLocal(style, bitmap, isGradient, local), tint);
                     canvas.Blend(x, y, colour.R, colour.G, colour.B, colour.A);
+                    local += sampleStep;
                 }
             }
 
@@ -240,6 +326,40 @@ public static class SwfRasterizer
                 active[i] = edge;
             }
         }
+    }
+
+    private static Color SampleLocal(
+        SwfFillStyle style, SwfBitmapSampler? bitmap, bool isGradient, Vector2 local)
+    {
+        if (bitmap is not null)
+        {
+            int px = Mathf.FloorToInt(local.X);
+            int py = Mathf.FloorToInt(local.Y);
+            int w = bitmap.Width;
+            int h = bitmap.Height;
+            bool clamp = style.Kind is SwfFillKind.ClippedBitmap
+                or SwfFillKind.NonSmoothedClippedBitmap;
+            if (!clamp && w > 0 && h > 0)
+            {
+                px = ((px % w) + w) % w;
+                py = ((py % h) + h) % h;
+            }
+
+            return bitmap.TrySample(px, py, out float br, out float bg, out float bb, out float ba)
+                ? new Color(br, bg, bb, ba)
+                : new Color(0f, 0f, 0f, 0f);
+        }
+
+        if (isGradient)
+        {
+            float t = style.Kind == SwfFillKind.LinearGradient
+                ? (local.X + 16384f) / 32768f
+                : local.Length() / 16384f;
+            return SampleStops(style.Stops, Mathf.Clamp(t, 0f, 1f));
+        }
+
+        return new Color(
+            style.Color.R / 255f, style.Color.G / 255f, style.Color.B / 255f, style.Color.A / 255f);
     }
 
     private static Color Tint(Color colour, SwfColorTransform tint)

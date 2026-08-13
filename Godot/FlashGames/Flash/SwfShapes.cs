@@ -161,6 +161,31 @@ public static class SwfShapeParser
         }
     }
 
+    public static SwfShape? TryParseGlyph(SwfBitReader reader, int tagCode, out string error)
+    {
+        error = string.Empty;
+        try
+        {
+            var shape = new SwfShape { Id = -1, TagCode = tagCode };
+            shape.FillStyles.Add(new SwfFillStyle
+            {
+                Kind = SwfFillKind.Solid,
+                Color = new SwfColor(255, 255, 255, 255),
+            });
+
+            reader.Align();
+            int fillBits = (int)reader.ReadUnsigned(4);
+            int lineBits = (int)reader.ReadUnsigned(4);
+            ReadRecords(reader, shape, ref fillBits, ref lineBits, true, true, tagCode);
+            return shape;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return null;
+        }
+    }
+
     private static int ReadStyleCount(SwfBitReader reader, bool extendedCounts)
     {
         int count = reader.ReadByte();

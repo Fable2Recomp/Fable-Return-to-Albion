@@ -104,7 +104,7 @@ public static class SwfComposer
                 ((width - (stageWidth * scale)) * 0.5f) - (stage.XMin * scale),
                 ((height - (stageHeight * scale)) * 0.5f) - (stage.YMin * scale)));
 
-        var samplers = new Dictionary<int, SwfBitmapSampler?>();
+        var samplers = new SamplerCache(document, options);
         int budget = options.MaxDrawCalls;
 
         var byDepth = new SortedDictionary<int, SwfPlaceObject>();
@@ -158,7 +158,7 @@ public static class SwfComposer
             return canvas.ToImage();
         }
 
-        var samplers = new Dictionary<int, SwfBitmapSampler?>();
+        var samplers = new SamplerCache(document, options);
 
         float scale = Mathf.Min(width / bounds.Size.X, height / bounds.Size.Y);
         var fit = new Transform2D(
@@ -182,7 +182,7 @@ public static class SwfComposer
     private static void Draw(
         SwfDocument document, int characterId, Transform2D transform,
         SwfColorTransform colour, SwfCanvas canvas, SwfComposeOptions options, int depth,
-        ref int budget, HashSet<int> active, Dictionary<int, SwfBitmapSampler?> samplers)
+        ref int budget, HashSet<int> active, SamplerCache samplers)
     {
 
         if (depth > options.MaxDepth || budget <= 0 || !active.Add(characterId))
@@ -195,12 +195,10 @@ public static class SwfComposer
         {
             budget--;
 
-            Dictionary<int, SwfBitmapSampler?> cache = samplers;
-            SwfDocument doc = document;
-            SwfComposeOptions opt = options;
+            SamplerCache cache = samplers;
             SwfRasterizer.DrawInto(
                 canvas, shape, geometry, transform, colour,
-                id => Sampler(cache, doc, opt, id));
+                cache.Embedded, cache.Host);
             active.Remove(characterId);
             return;
         }
@@ -230,21 +228,38 @@ public static class SwfComposer
         active.Remove(characterId);
     }
 
-    private static SwfBitmapSampler? Sampler(
-        Dictionary<int, SwfBitmapSampler?> cache, SwfDocument document,
-        SwfComposeOptions options, int id)
+    private sealed class SamplerCache
     {
-        if (cache.TryGetValue(id, out SwfBitmapSampler? existing))
+        private readonly Dictionary<int, SwfBitmapSampler?> _embedded = new();
+        private readonly Dictionary<int, SwfBitmapSampler?> _host = new();
+        private readonly SwfDocument _document;
+        private readonly SwfComposeOptions _options;
+
+        public SamplerCache(SwfDocument document, SwfComposeOptions options)
         {
-            return existing;
+            _document = document;
+            _options = options;
         }
 
-        Image? source = id == SwfRasterizer.HostSuppliedBitmapId
-            ? options.HostBitmapResolver?.Invoke(id)
-            : document.Bitmaps.GetValueOrDefault(id);
-        SwfBitmapSampler? sampler = source is null ? null : new SwfBitmapSampler(source);
-        cache[id] = sampler;
-        return sampler;
+        public SwfBitmapSampler? Embedded(int id) =>
+            Lookup(_embedded, id, () => _document.Bitmaps.GetValueOrDefault(id));
+
+        public SwfBitmapSampler? Host(int id) =>
+            Lookup(_host, id, () => _options.HostBitmapResolver?.Invoke(id));
+
+        private static SwfBitmapSampler? Lookup(
+            Dictionary<int, SwfBitmapSampler?> cache, int id, Func<Image?> load)
+        {
+            if (cache.TryGetValue(id, out SwfBitmapSampler? existing))
+            {
+                return existing;
+            }
+
+            Image? source = load();
+            SwfBitmapSampler? sampler = source is null ? null : new SwfBitmapSampler(source);
+            cache[id] = sampler;
+            return sampler;
+        }
     }
 
     private static List<SwfPlaceObject> FlattenFirstFrame(SwfSprite sprite)

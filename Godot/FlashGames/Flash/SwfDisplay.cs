@@ -43,6 +43,8 @@ public sealed class SwfFrame
     public List<int> Removes { get; } = new();
 
     public string Label { get; set; } = string.Empty;
+
+    public bool Stops { get; set; }
 }
 
 public sealed class SwfSprite
@@ -344,6 +346,13 @@ public static class SwfDisplayParser
                     case TagFrameLabel:
                         frame.Label = System.Text.Encoding.UTF8.GetString(
                             nested.Data, 0, Math.Max(0, nested.Data.Length - 1));
+                        break;
+                    case SwfFile.TagDoAction:
+                        if (SwfActions.ContainsStop(nested.Data))
+                        {
+                            frame.Stops = true;
+                        }
+
                         break;
                     case TagShowFrame:
                         sprite.Frames.Add(frame);

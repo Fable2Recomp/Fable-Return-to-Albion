@@ -16,6 +16,10 @@ public sealed class SwfDocument
 
     public Dictionary<string, int> Exports { get; } = new(StringComparer.Ordinal);
 
+    public Dictionary<int, SwfFont> Fonts { get; } = new();
+
+    public Dictionary<int, SwfEditText> EditTexts { get; } = new();
+
     public List<SwfFrame> RootFrames { get; } = new();
 
     public List<string> Problems { get; } = new();
@@ -56,6 +60,33 @@ public sealed class SwfDocument
 
             switch (tag.Code)
             {
+                case SwfFile.TagDefineFont2:
+                case SwfFile.TagDefineFont3:
+                {
+                    SwfFont? font = SwfFont.TryParse(tag, out string fontError);
+                    if (font is null)
+                    {
+                        document.Problems.Add($"font: {fontError}");
+                        break;
+                    }
+
+                    document.Fonts[font.Id] = font;
+                    break;
+                }
+
+                case SwfFile.TagDefineEditText:
+                {
+                    SwfEditText? field = SwfEditText.TryParse(tag, out string textError);
+                    if (field is null)
+                    {
+                        document.Problems.Add($"editText: {textError}");
+                        break;
+                    }
+
+                    document.EditTexts[field.Id] = field;
+                    break;
+                }
+
                 case SwfFile.TagDefineSprite:
                 {
                     SwfSprite? sprite = SwfDisplayParser.TryParseSprite(tag, out string spriteError);

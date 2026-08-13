@@ -25,6 +25,44 @@ public sealed class SwfCanvas
 
     public int Height { get; }
 
+    public void BlendSpan(int x0, int x1, int y, float r, float g, float b, float a)
+    {
+        if (a <= 0f || y < 0 || y >= Height)
+        {
+            return;
+        }
+
+        if (x0 < 0)
+        {
+            x0 = 0;
+        }
+
+        if (x1 >= Width)
+        {
+            x1 = Width - 1;
+        }
+
+        if (a >= 1f)
+        {
+            int start = ((y * Width) + x0) * 4;
+            for (int x = x0; x <= x1; x++)
+            {
+                _pixels[start] = r;
+                _pixels[start + 1] = g;
+                _pixels[start + 2] = b;
+                _pixels[start + 3] = 1f;
+                start += 4;
+            }
+
+            return;
+        }
+
+        for (int x = x0; x <= x1; x++)
+        {
+            Blend(x, y, r, g, b, a);
+        }
+    }
+
     public void Blend(int x, int y, float r, float g, float b, float a)
     {
         if (a <= 0f || x < 0 || y < 0 || x >= Width || y >= Height)
