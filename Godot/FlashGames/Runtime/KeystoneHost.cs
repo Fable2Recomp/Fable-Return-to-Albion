@@ -31,6 +31,9 @@ public partial class KeystoneHost : Node
     public int Skin { get; set; }
 
     [Export]
+    public string Variant { get; set; } = string.Empty;
+
+    [Export]
     public int BuyIn { get; set; } = 500;
 
     [Export]
@@ -157,7 +160,7 @@ public partial class KeystoneHost : Node
         {
             bool variant = child.Name.EndsWith("SD", StringComparison.Ordinal) ||
                 child.Name.EndsWith("WD", StringComparison.Ordinal);
-            if (variant || child.Name is "notice" or "jackpot")
+            if (variant || child.Name is "jackpot")
             {
                 child.Visible = false;
             }
@@ -173,11 +176,7 @@ public partial class KeystoneHost : Node
         _keystone.InitPlayers();
         _board.HideUnusedPlayerUI(_keystone.SeatsPerTable);
 
-        _board.ShowLegend(1, "lt", "txtKeystoneOdds", true);
-        _board.ShowLegend(2, "a", "txtIncreaseBet", true);
-        _board.ShowLegend(3, "x", "txtRoll", true);
-        _board.ShowLegend(4, "y", "txtBanking", true);
-        _board.ShowLegend(5, "rt", "txtStats", true);
+        _keystone.RevealBoard();
 
         _stage.Root.GetChild("betStats")!.Alpha = 100;
         _stage.Root.GetChild("spaceStats")!.Alpha = 100;
@@ -202,6 +201,7 @@ public partial class KeystoneHost : Node
         }
 
         _overlays = new PubOverlays(_keystone, _stage.Root);
+        _keystone.OverlayManager = _overlays;
 
         _scene = new SwfScene(_stage, _view);
         _scene.Sync();
@@ -220,6 +220,7 @@ public partial class KeystoneHost : Node
             ? PubGamesText.ParseSettings(File.ReadAllBytes(ownPath), out _)
             : null;
 
+        _keystone.VariantName = Variant;
         PubGameConfig.Apply(_keystone, shared, own);
 
         if (AiPlayers > 0)
@@ -355,11 +356,14 @@ public partial class KeystoneHost : Node
         }
         else if (_phase == Phase.AwaitContinue && pad.BtnAPressed)
         {
+            _board.PulseLegend(2);
+            _keystone.ShowContinueGameText(false);
             _keystone.AddAnimating(_keystone.MoveWinsToPlayers(null));
             _phase = Phase.Collect;
         }
 
         _keystone.CallbackManager.DoCallbacks(ticks);
+        _keystone.UpdatePlayerChipDisplays(ticks);
         _keystone.WinNumbers?.Update(ticks);
         _stage.Advance();
 
@@ -391,6 +395,8 @@ public partial class KeystoneHost : Node
                 _phase = Phase.Payouts;
                 break;
             case Phase.Payouts:
+                _keystone.ShowContinueGameText(true);
+                _keystone.ReportPointsEarned();
                 _phase = Phase.AwaitContinue;
                 break;
             case Phase.Collect:
@@ -401,6 +407,15 @@ public partial class KeystoneHost : Node
 
     private void Resolve()
     {
+        if (_keystone.JackpotRolled)
+        {
+            _board.ShowJackpot(false, null);
+            if (!_keystone.Tutorial)
+            {
+                _keystone.AchievementEarned("KS_Jackpot");
+            }
+        }
+
         _keystone.GenerateAndResolvePayouts(_keystone.BoardInfos[0]);
         _board.RemoveStone(_keystone.ArchStoneToRemove, null);
         _keystone.RemoveArchStone();
@@ -496,7 +511,6 @@ public partial class KeystoneHost : Node
             if (total.Value != player.Chips)
             {
                 total.Value = player.Chips;
-                _board.UpdatePlayerChipDisplay(seat, player.Chips);
             }
 
             for (int space = KeystoneSpace.Out3; space <= KeystoneSpace.Out18; space++)

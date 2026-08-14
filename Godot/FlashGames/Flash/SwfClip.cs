@@ -54,6 +54,34 @@ public sealed class SwfClip : IPubClip
 
     public string Text { get; set; } = string.Empty;
 
+    public float Height =>
+        _stage.Document.EditTexts.TryGetValue(CharacterId, out SwfEditText? field)
+            ? field.Bounds.Height / SwfShapeGeometry.TwipsPerPixel
+            : 0f;
+
+    public float TextHeight
+    {
+        get
+        {
+            if (!_stage.Document.EditTexts.TryGetValue(CharacterId, out SwfEditText? field))
+            {
+                return 0f;
+            }
+
+            SwfFont? font = _stage.Fonts?.Resolve(field.FontId)
+                ?? _stage.Document.Fonts.GetValueOrDefault(field.FontId);
+            if (font is null)
+            {
+                return 0f;
+            }
+
+            string content = Text.Length != 0 ? Text : field.InitialText;
+            return SwfTextRenderer.MeasureHeight(
+                field, font, SwfTextRenderer.PlainText(content, field.Html)) /
+                SwfShapeGeometry.TwipsPerPixel;
+        }
+    }
+
     public SwfColorTransform Tint { get; set; } = SwfColorTransform.Identity;
 
     public int BlendMode { get; private set; }

@@ -72,10 +72,21 @@ public static class SwfTextRenderer
     };
 
     public static List<SwfGlyphPlacement> Layout(
-        SwfEditText field, SwfFont font, string text, out float usedWidth)
+        SwfEditText field, SwfFont font, string text, out float usedWidth) =>
+        Layout(field, font, text, out usedWidth, out _);
+
+    public static float MeasureHeight(SwfEditText field, SwfFont font, string text)
+    {
+        Layout(field, font, text, out _, out float usedHeight);
+        return usedHeight;
+    }
+
+    public static List<SwfGlyphPlacement> Layout(
+        SwfEditText field, SwfFont font, string text, out float usedWidth, out float usedHeight)
     {
         var placements = new List<SwfGlyphPlacement>();
         usedWidth = 0f;
+        usedHeight = 0f;
 
         if (text.Length == 0 || font.Glyphs.Count == 0 || field.FontHeight <= 0)
         {
@@ -98,6 +109,8 @@ public static class SwfTextRenderer
         {
             lines = new List<string> { lines[0] };
         }
+
+        usedHeight = lines.Count * lineHeight;
 
         float baseline = field.Bounds.YMin + (font.Ascent * scale);
 

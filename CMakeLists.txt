@@ -157,6 +157,69 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
     unset(_refii_rex_simd_target)
 endif()
 
+function(refii_stage_windows_runtime_dlls target_name)
+    if(NOT WIN32 OR NOT TARGET "${target_name}")
+        return()
+    endif()
+
+    add_custom_command(TARGET "${target_name}" POST_BUILD
+        COMMAND "$<$<BOOL:$<TARGET_RUNTIME_DLLS:${target_name}>>:${CMAKE_COMMAND};-E;copy_if_different;$<TARGET_RUNTIME_DLLS:${target_name}>;$<TARGET_FILE_DIR:${target_name}>>"
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+    )
+endfunction()
+
+function(refii_stage_d3d12_agility_runtime target_name)
+    if(NOT WIN32 OR NOT TARGET "${target_name}")
+        return()
+    endif()
+
+    if(NOT REFII_RENDERER_PLUME_D3D12_AGILITY_SDK_ENABLED)
+        return()
+    endif()
+
+    if(NOT EXISTS "${REFII_D3D12_AGILITY_CORE_DLL}" OR
+       NOT EXISTS "${REFII_D3D12_AGILITY_CORE_DEBUG_DLL}" OR
+       NOT EXISTS "${REFII_D3D12_AGILITY_LAYERS_DLL}")
+        message(FATAL_ERROR
+            "D3D12 Agility SDK runtime DLLs are missing. Expected:\n"
+            "  ${REFII_D3D12_AGILITY_CORE_DLL}\n"
+            "  ${REFII_D3D12_AGILITY_CORE_DEBUG_DLL}\n"
+            "  ${REFII_D3D12_AGILITY_LAYERS_DLL}"
+        )
+    endif()
+
+    add_custom_command(TARGET "${target_name}" POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:${target_name}>/D3D12"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<IF:$<CONFIG:Debug>,${REFII_D3D12_AGILITY_CORE_DEBUG_DLL},${REFII_D3D12_AGILITY_CORE_DLL}>"
+            "$<TARGET_FILE_DIR:${target_name}>/D3D12/D3D12Core.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${REFII_D3D12_AGILITY_LAYERS_DLL}"
+            "$<TARGET_FILE_DIR:${target_name}>/D3D12/d3d12SDKLayers.dll"
+        VERBATIM
+    )
+endfunction()
+
+option(REFII_BUILD_LAUNCHER "Build the launcher executable" ON)
+option(REFII_BUILD_NATIVE_LUA "Build the native Lua runtime and Lua tools" ON)
+option(REFII_BUILD_SHADER_PIPELINE "Build shader SBK extraction/compilation pipeline tooling" ON)
+
+add_subdirectory(src/extractor)
+add_subdirectory(src/modding)
+if(REFII_BUILD_NATIVE_LUA)
+    enable_language(C)
+    add_subdirectory(src/lua)
+endif()
+if(REFII_BUILD_SHADER_PIPELINE)
+    add_subdirectory(src/shader)
+endif()
+if(REFII_BUILD_LAUNCHER)
+    set(REFII_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+    add_subdirectory(src/launcher)
+endif()
+
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/generated/sources.cmake"
 )
@@ -245,51 +308,6 @@ function(refii_append_stage_library_command out_var target_name destination_dir)
     endif()
 endfunction()
 
-function(refii_stage_d3d12_agility_runtime target_name)
-    if(NOT WIN32 OR NOT TARGET "${target_name}")
-        return()
-    endif()
-
-    if(NOT REFII_RENDERER_PLUME_D3D12_AGILITY_SDK_ENABLED)
-        return()
-    endif()
-
-    if(NOT EXISTS "${REFII_D3D12_AGILITY_CORE_DLL}" OR
-       NOT EXISTS "${REFII_D3D12_AGILITY_CORE_DEBUG_DLL}" OR
-       NOT EXISTS "${REFII_D3D12_AGILITY_LAYERS_DLL}")
-        message(FATAL_ERROR
-            "D3D12 Agility SDK runtime DLLs are missing. Expected:\n"
-            "  ${REFII_D3D12_AGILITY_CORE_DLL}\n"
-            "  ${REFII_D3D12_AGILITY_CORE_DEBUG_DLL}\n"
-            "  ${REFII_D3D12_AGILITY_LAYERS_DLL}"
-        )
-    endif()
-
-    add_custom_command(TARGET "${target_name}" POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:${target_name}>/D3D12"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<IF:$<CONFIG:Debug>,${REFII_D3D12_AGILITY_CORE_DEBUG_DLL},${REFII_D3D12_AGILITY_CORE_DLL}>"
-            "$<TARGET_FILE_DIR:${target_name}>/D3D12/D3D12Core.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_D3D12_AGILITY_LAYERS_DLL}"
-            "$<TARGET_FILE_DIR:${target_name}>/D3D12/d3d12SDKLayers.dll"
-        VERBATIM
-    )
-endfunction()
-
-function(refii_stage_windows_runtime_dlls target_name)
-    if(NOT WIN32 OR NOT TARGET "${target_name}")
-        return()
-    endif()
-
-    add_custom_command(TARGET "${target_name}" POST_BUILD
-        COMMAND "$<$<BOOL:$<TARGET_RUNTIME_DLLS:${target_name}>>:${CMAKE_COMMAND};-E;copy_if_different;$<TARGET_RUNTIME_DLLS:${target_name}>;$<TARGET_FILE_DIR:${target_name}>>"
-        COMMAND_EXPAND_LISTS
-        VERBATIM
-    )
-endfunction()
-
 set(REFII_TARGET_SUPPORTS_SSE41 OFF)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$")
     set(REFII_TARGET_SUPPORTS_SSE41 ON)
@@ -341,8 +359,6 @@ set(REFII_PACKAGE_EXTERNAL_LIB_TARGETS
 )
 
 option(REFII_BUILD_STANDALONE "Build the standalone refii executable" ON)
-option(REFII_BUILD_LAUNCHER "Build the launcher executable" ON)
-option(REFII_BUILD_NATIVE_LUA "Build the native Lua runtime and Lua tools" ON)
 option(REFII_BUILD_NATIVE_HOOKS "Build native hook sources into refii_generated" ON)
 option(REFII_BUILD_VFS_HOOKS "Build the native VFS runtime and hook sources" ON)
 # OFF by default: Godot renders, so the guest never draws. This target is the
@@ -355,7 +371,6 @@ option(REFII_BUILD_VFS_HOOKS "Build the native VFS runtime and hook sources" ON)
 # that proves a converted asset or a reconstructed transform is right. Turn
 # this ON to build it for that.
 option(REFII_BUILD_RENDERER_HOOKS "Build the native renderer runtime and hook sources" OFF)
-option(REFII_BUILD_SHADER_PIPELINE "Build shader SBK extraction/compilation pipeline tooling" ON)
 
 # The C ABI Godot P/Invokes to host the guest in its own process, rather than spawning
 # `refii` as a child. Cheap to build and it links only the runtime.
@@ -568,7 +583,6 @@ set(REFII_VFS_LIBRARIES)
 set(REFII_RENDERER_LIBRARIES)
 set(REFII_HOOK_OBJECTS)
 
-add_subdirectory(src/extractor)
 add_subdirectory(src/assetbrowser)
 
 if(TARGET refii-default-xex-icon-extractor
@@ -591,13 +605,6 @@ if(TARGET refii-default-xex-icon-extractor
     )
     set(REFII_PACKAGE_ICON_AVAILABLE ON)
     set(REFII_PACKAGE_ICON_TARGET refii-extract-default-xex-icons)
-endif()
-
-add_subdirectory(src/modding)
-
-if(REFII_BUILD_NATIVE_LUA)
-    enable_language(C)
-    add_subdirectory(src/lua)
 endif()
 
 if(REFII_BUILD_VFS_HOOKS)
@@ -626,10 +633,6 @@ endif()
 
 if(REFII_BUILD_NATIVE_HOOKS)
     add_subdirectory(src/hooks)
-endif()
-
-if(REFII_BUILD_SHADER_PIPELINE)
-    add_subdirectory(src/shader)
 endif()
 
 refii_rexglue_shadow_source(
@@ -963,11 +966,6 @@ if(REFII_BUILD_STANDALONE)
         unset(_refii_stage_external_lib_dependencies)
         unset(_refii_external_lib_target)
     endif()
-endif()
-
-if(REFII_BUILD_LAUNCHER)
-    set(REFII_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
-    add_subdirectory(src/launcher)
 endif()
 
 if(TARGET refii-launcher AND TARGET refii-stage-external-libs)

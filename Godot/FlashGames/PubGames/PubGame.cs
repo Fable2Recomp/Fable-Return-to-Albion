@@ -73,6 +73,8 @@ public abstract class PubGame
 
     public CallbackManager CallbackManager { get; private set; }
 
+    public IPubOverlayManager? OverlayManager { get; set; }
+
     public GamePad? Pad { get; protected set; }
 
     public string VariantName { get; set; }
@@ -315,6 +317,10 @@ public abstract class PubGame
         human.Chips = 0;
         human.Debt = debt;
         UpdatePlayerHoldings();
+        if (!Saving)
+        {
+            OverlayManager?.ActivateFadeOut();
+        }
     }
 
     public void GameReallyOver()
@@ -365,6 +371,11 @@ public abstract class PubGame
         }
 
         player.StarRating = rating;
+        if (!hideDialog)
+        {
+            OverlayManager?.ActivateStarRatingDialog();
+        }
+
         Host.Command(PubCommand.NewRank, "newRank:" + player.StarRating);
     }
 
@@ -434,6 +445,42 @@ public abstract class PubGame
 
             ChangeStarRating(0, rating);
         }
+        else if (!RetailGame)
+        {
+            bool concept = false;
+            for (int i = 0; i < ConceptArtPoints.Count; i++)
+            {
+                if (beforePoints < ConceptArtPoints[i] && human.Points >= ConceptArtPoints[i])
+                {
+                    concept = true;
+                }
+            }
+
+            bool table = false;
+            int unlock = 0;
+            for (; unlock < GameUnlockPoints.Count; unlock++)
+            {
+                if (beforeGamePoints < GameUnlockPoints[unlock] &&
+                    human.GamePoints >= GameUnlockPoints[unlock])
+                {
+                    table = true;
+                    break;
+                }
+            }
+
+            if (table)
+            {
+                OverlayManager?.ActivateStarRatingDialog(
+                    table, concept,
+                    unlock < GameUnlockName.Count ? GameUnlockName[unlock] : null,
+                    unlock < GameUnlockMin.Count ? GameUnlockMin[unlock] : 0,
+                    unlock < GameUnlockMax.Count ? GameUnlockMax[unlock] : 0);
+            }
+            else if (concept)
+            {
+                OverlayManager?.ActivateStarRatingDialog(table, concept);
+            }
+        }
 
         if (StarPoints.Count > 1 &&
             (beforePoints < StarPoints[1] && human.Points >= StarPoints[1] ||
@@ -470,7 +517,14 @@ public abstract class PubGame
 
     public void StartSave() => Saving = true;
 
-    public void EndSave() => Saving = false;
+    public void EndSave()
+    {
+        Saving = false;
+        if (GameIsExiting)
+        {
+            OverlayManager?.ActivateFadeOut();
+        }
+    }
 
     public void UpdateVolumeSettings()
     {

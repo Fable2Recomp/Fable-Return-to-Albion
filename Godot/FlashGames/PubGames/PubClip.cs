@@ -22,6 +22,10 @@ public interface IPubClip
 
     string Text { get; set; }
 
+    float Height { get; }
+
+    float TextHeight { get; }
+
     string Name { get; }
 
     void GotoAndStop(int frame);

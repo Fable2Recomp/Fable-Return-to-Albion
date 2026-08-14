@@ -28,6 +28,16 @@ public static class PubGameConfig
 
         Dictionary<string, PubGameSetting> defaults = own.Section(DefaultsSection);
 
+        if (game.VariantName.Length != 0)
+        {
+            foreach ((string key, PubGameSetting value) in own.Section(game.VariantName))
+            {
+                defaults[key] = value;
+            }
+
+            applied.Add("variant:" + game.VariantName);
+        }
+
         game.MinBet = Number(defaults, "minBet", game.MinBet, applied);
         game.MaxBet = Number(defaults, "maxBet", game.MaxBet, applied);
         game.MinInsideBet = Number(defaults, "minInsideBet", game.MinInsideBet, applied);

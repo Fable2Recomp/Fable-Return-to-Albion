@@ -108,6 +108,7 @@ public sealed class GameBoard
                 "txtPlayerName", new Dictionary<string, string> { ["value"] = player.Name }));
         }
 
+        _keystone.SetLastChips(seat, player.Chips);
         UpdatePlayerChipDisplay(seat, player.Chips);
     }
 
@@ -125,6 +126,7 @@ public sealed class GameBoard
             label.Text = _keystone.Localizer.LocalizeString("txtEmptySeat", null);
         }
 
+        _keystone.SetLastChips(seat, 0);
         UpdatePlayerChipDisplay(seat, 0);
     }
 
@@ -171,7 +173,101 @@ public sealed class GameBoard
 
     public void InitCenter() => SetAlpha("fade", 0);
 
+    private float? _noticeY1;
+    private float _noticeY2;
+
     public void InitNotice() => SetAlpha("notice", 0);
+
+    public void ShowNotice(bool show, double time, bool blocking)
+    {
+        IPubClip? notice = _root.GetChild("notice");
+        if (notice is not null)
+        {
+            FadeClip(notice, show, time, blocking);
+        }
+    }
+
+    public void SetNoticeText(
+        string id, IReadOnlyDictionary<string, string>? vars,
+        string id2, IReadOnlyDictionary<string, string>? vars2,
+        string id3, IReadOnlyDictionary<string, string>? vars3,
+        string frame)
+    {
+        IPubClip? notice = _root.GetChild("notice");
+        if (notice is null)
+        {
+            return;
+        }
+
+        IPubClip? text1 = notice.GetChild("noticeText");
+        IPubClip? text2 = notice.GetChild("noticeText2");
+
+        if (_noticeY1 is null)
+        {
+            _noticeY1 = text1?.Y ?? 0f;
+            _noticeY2 = text2?.Y ?? 0f;
+        }
+
+        Localize(text1, id, vars);
+        if (text1 is not null)
+        {
+            text1.Y = _noticeY1.Value +
+                ((text1.Height - (text1.TextHeight * text1.YScale / 100f)) / 2f);
+        }
+
+        Localize(text2, id2, vars2);
+        if (text2 is not null)
+        {
+            text2.Y = _noticeY2 +
+                ((text2.Height - (text2.TextHeight * text2.YScale / 100f)) / 2f);
+        }
+
+        IPubClip? button = notice.GetChild("button1");
+        button?.GetChild("button")?.GotoAndStop(frame);
+        Localize(button?.GetChild("label"), id3, vars3);
+
+        if (text1 is not null)
+        {
+            text1.Alpha = 100;
+        }
+
+        if (text2 is not null)
+        {
+            text2.Alpha = 0;
+        }
+
+        if (button is not null)
+        {
+            button.Alpha = 0;
+        }
+    }
+
+    public void SwapNoticeText(bool forward, double time, bool blocking)
+    {
+        IPubClip? notice = _root.GetChild("notice");
+        if (notice is null)
+        {
+            return;
+        }
+
+        IPubClip? text1 = notice.GetChild("noticeText");
+        if (text1 is not null)
+        {
+            FadeClip(text1, !forward, time, blocking);
+        }
+
+        IPubClip? text2 = notice.GetChild("noticeText2");
+        if (text2 is not null)
+        {
+            FadeClip(text2, forward, time, blocking);
+        }
+
+        IPubClip? button = notice.GetChild("button1");
+        if (button is not null)
+        {
+            FadeClip(button, forward, time, blocking);
+        }
+    }
 
     public void InitSpaceStats()
     {
@@ -258,7 +354,9 @@ public sealed class GameBoard
         Value(stats.GetChild("value4"), "txtInsideWinValue", insideWins);
     }
 
-    public void ShowLegend(int index, string? frame, string? locId, bool show)
+    public void ShowLegend(
+        int index, string? frame, string? locId,
+        IReadOnlyDictionary<string, string>? locVars, bool show, double time, bool blocking)
     {
         IPubClip? button = _root.GetChild("button" + index);
         if (button is null)
@@ -275,11 +373,11 @@ public sealed class GameBoard
 
             if (locId is not null)
             {
-                Localize(button.GetChild("label"), locId, null);
+                Localize(button.GetChild("label"), locId, locVars);
             }
         }
 
-        button.Alpha = show ? 100 : 0;
+        FadeClip(button, show, time, blocking);
     }
 
     private void Value(IPubClip? clip, string key, int value) =>
@@ -707,6 +805,48 @@ public sealed class GameBoard
             Group = group,
         };
         _keystone.CallbackManager.AddCallbackObject(animation);
+    }
+
+    public void ShowJackpot(bool blocking, object? group)
+    {
+        _keystone.PlayDelayedSound(1, "W_jackpot", group);
+        _keystone.PlayDelayedSound(1, "applause05_jackpot", group);
+
+        var jackpot = new AnimateJackpot(
+            "txtJackpot", _keystone.Localizer, _root, 2000, 1, AnimateBase.StyleLinear)
+        {
+            Blocking = blocking,
+            Group = group,
+        };
+        _keystone.CallbackManager.AddCallbackObject(jackpot);
+    }
+
+    public const double PulseTime = 200;
+    public const string PulseGroup = "dg";
+
+    public AnimatePulse PulseClip(IPubClip clip, double delay)
+    {
+        var pulse = new AnimatePulse(clip, PulseTime, delay) { Group = PulseGroup };
+        _keystone.CallbackManager.AddCallbackObject(pulse);
+        return pulse;
+    }
+
+    public void PulseLegend(int index)
+    {
+        IPubClip? inner = _root.GetChild("button" + index)?.GetChild("button");
+        if (inner is not null)
+        {
+            PulseClip(inner, 0);
+        }
+    }
+
+    public void PulseNoticeButton()
+    {
+        IPubClip? inner = _root.GetChild("notice")?.GetChild("button1")?.GetChild("button");
+        if (inner is not null)
+        {
+            PulseClip(inner, 0);
+        }
     }
 
     public AnimateAlpha FadeClip(IPubClip clip, bool show, double time, bool blocking)

@@ -39,6 +39,7 @@ public sealed class Keystone : PubGame
     private readonly bool[] _isWinningSpace = new bool[KeystoneSpace.SpaceCount];
     private readonly bool[] _archStonesIntact = new bool[KeystoneSpace.SpaceCount];
     private readonly int[] _lastBets = new int[KeystoneSpace.SpaceCount];
+    private readonly List<int> _lastChips = new();
     private readonly List<BoardInfo> _boardInfos = new();
     private readonly Queue<int> _scriptedRolls = new();
 
@@ -340,6 +341,10 @@ public sealed class Keystone : PubGame
                     PlayDelayedSound(0, "G_limitReached");
                     BetLimitReached = true;
                     amount = 0;
+                    if (pad.BtnA)
+                    {
+                        Board?.PulseLegend(2);
+                    }
                 }
             }
             else if (held >= _maxBets[Current] && !BetLimitReached)
@@ -347,6 +352,10 @@ public sealed class Keystone : PubGame
                 PlayDelayedSound(0, "G_limitReached");
                 BetLimitReached = true;
                 amount = 0;
+                if (pad.BtnA)
+                {
+                    Board?.PulseLegend(2);
+                }
             }
         }
 
@@ -360,8 +369,15 @@ public sealed class Keystone : PubGame
             amount = _maxBets[Current] - held;
         }
 
-        if (!Bloodstone && amount > player.Chips)
+        if ((!Bloodstone && amount > player.Chips) ||
+            (Bloodstone && amount > 0 && IsBloodstoneBetTooHigh(Current, arch)))
         {
+            if (pad.BtnA)
+            {
+                Board?.PulseLegend(2);
+            }
+
+            OverlayManager?.ActivateNeedChipsAlert();
             return false;
         }
 
@@ -374,6 +390,11 @@ public sealed class Keystone : PubGame
         if (!ChangeBet(amount, player, Current))
         {
             return false;
+        }
+
+        if (pad.BtnA)
+        {
+            Board?.PulseLegend(2);
         }
 
         UpdateBetStatsRecount(arch);
@@ -412,17 +433,283 @@ public sealed class Keystone : PubGame
 
         if (pad.BtnXPressed && (!arch || human.GetBetCount(arch) > 0))
         {
+            if (Bloodstone)
+            {
+                int exposure = BloodstoneExposure(human, true);
+                if (!arch)
+                {
+                    exposure += BloodstoneExposure(human, false);
+                }
+
+                if (exposure > human.Chips)
+                {
+                    OverlayManager?.ActivateNeedChipsAlert();
+                    return false;
+                }
+            }
+
+            if (arch)
+            {
+                Board?.PulseNoticeButton();
+            }
+            else
+            {
+                Board?.PulseLegend(3);
+            }
+
             return true;
         }
 
         if (pad.RightShoulderPressed)
         {
+            int had = human.GetBetCount(arch);
             RePlaceLastBets(arch);
+            if (arch && had <= 0 && human.GetBetCount(arch) > 0)
+            {
+                ShowInnerBetOption(true);
+            }
+
             return false;
         }
 
+        int betsBefore = human.GetBetCount(arch);
         PlaceBet(arch, ticks, pad);
+        if (arch)
+        {
+            int betsAfter = human.GetBetCount(arch);
+            if (betsBefore > 0 && betsAfter <= 0)
+            {
+                ShowInnerBetOption(false);
+            }
+            else if (betsBefore <= 0 && betsAfter > 0)
+            {
+                ShowInnerBetOption(true);
+            }
+        }
+
         return false;
+    }
+
+    public const double LegendFadeTime = 250;
+
+    public void ShowBetText(bool show) =>
+        Board?.ShowLegend(2, "a", "txtIncreaseBet", null, show, LegendFadeTime, false);
+
+    public void ShowContinueGameText(bool show) =>
+        Board?.ShowLegend(2, "a", "txtContinueGame", null, show, LegendFadeTime, false);
+
+    public void ShowRollText(bool show) =>
+        Board?.ShowLegend(3, "x", "txtRoll", null, show, LegendFadeTime, false);
+
+    public void ShowBankText(bool show) =>
+        Board?.ShowLegend(4, "y", "txtBanking", null, show, LegendFadeTime, false);
+
+    public void ShowQuicktipsText(bool show) =>
+        Board?.ShowLegend(1, "lt", "txtKeystoneOdds", null, show, LegendFadeTime, false);
+
+    public void ShowStandingsText(bool show) =>
+        Board?.ShowLegend(
+            5, "rt", Tournament ? "txtStandings" : "txtStats", null, show, LegendFadeTime, false);
+
+    public void ShowInnerBetOption(bool show) =>
+        Board?.SwapNoticeText(show, LegendFadeTime, false);
+
+    public void SetLastChips(int seat, int value)
+    {
+        while (_lastChips.Count <= seat)
+        {
+            _lastChips.Add(0);
+        }
+
+        _lastChips[seat] = value;
+    }
+
+    public void UpdatePlayerChipDisplays(double ticks)
+    {
+        BoardInfo info = _boardInfos[0];
+        for (int seat = 0; seat < SeatsPerTable; seat++)
+        {
+            int target = 0;
+            if (info.GetPlayer(seat) is not null)
+            {
+                target = Board?.GetPlayerStack(seat)?.Value ?? 0;
+            }
+
+            while (_lastChips.Count <= seat)
+            {
+                _lastChips.Add(0);
+            }
+
+            int delta = target - _lastChips[seat];
+            if (delta == 0)
+            {
+                continue;
+            }
+
+            int magnitude = Math.Abs(delta);
+            int sign = magnitude / delta;
+            int step = (int)Math.Floor(Math.Sqrt(magnitude));
+            if (step < 1)
+            {
+                step = 1;
+            }
+            else if (step > 15)
+            {
+                step *= 4;
+            }
+
+            _lastChips[seat] += sign * step;
+            Board?.UpdatePlayerChipDisplay(seat, _lastChips[seat]);
+        }
+    }
+
+    public int BloodstoneExposure(KeystonePlayer player, bool arch)
+    {
+        int[] bets = player.Bets;
+        int best = 0;
+
+        if (arch)
+        {
+            for (int space = KeystoneSpace.Out3; space <= KeystoneSpace.Out18; space++)
+            {
+                if (bets[space] > 0)
+                {
+                    best += KeystoneRules.GetPayoutRate(space);
+                }
+            }
+
+            return best;
+        }
+
+        int first = KeystoneSpace.FirstInnerSpace;
+        int last = KeystoneSpace.LastInnerSpace;
+        var rate = new int[last + 1];
+        var stake = new int[last + 1];
+        for (int space = first; space <= last; space++)
+        {
+            if (bets[space] > 0)
+            {
+                rate[space] = KeystoneRules.GetPayoutRate(space);
+                stake[space] = _payoutBet[space];
+            }
+        }
+
+        for (int d1 = 1; d1 <= 6; d1++)
+        {
+            for (int d2 = d1; d2 <= 6; d2++)
+            {
+                for (int d3 = d2; d3 <= 6; d3++)
+                {
+                    IReadOnlyList<bool> winners = KeystoneRules.GetWinners(d1, d2, d3);
+                    int total = 0;
+                    for (int space = first; space <= last; space++)
+                    {
+                        total += winners[space] ? rate[space] : -stake[space];
+                    }
+
+                    if (total > best)
+                    {
+                        best = total;
+                    }
+                }
+            }
+        }
+
+        return best;
+    }
+
+    public bool IsBloodstoneBetTooHigh(int id, bool arch)
+    {
+        KeystonePlayer? human = GetHumanPlayer();
+        if (human is null)
+        {
+            return false;
+        }
+
+        human.Bets[id] += _payoutBet[id];
+        int exposure = BloodstoneExposure(human, true);
+        if (!arch)
+        {
+            exposure += BloodstoneExposure(human, false);
+        }
+
+        human.Bets[id] -= _payoutBet[id];
+        return exposure > human.Chips;
+    }
+
+    public void SavePointsEarned()
+    {
+        if (Tutorial || Tournament)
+        {
+            return;
+        }
+
+        KeystonePlayer? human = GetHumanPlayer();
+        if (human is null)
+        {
+            return;
+        }
+
+        int first = KeystoneSpace.FirstInnerSpace;
+        int last = KeystoneSpace.LastInnerSpace;
+        if (!ArchPointsLockedIn)
+        {
+            first = KeystoneSpace.FirstBetSpace;
+            last = KeystoneSpace.LastBetSpace;
+            ArchPointsLockedIn = true;
+        }
+
+        InnerPointsLockedIn = true;
+        SavedPoints = 0;
+        for (int space = first; space <= last; space++)
+        {
+            int bet = human.Bets[space];
+            if (bet > 0)
+            {
+                SavedPoints += (int)Math.Floor(
+                    (double)bet / _payoutBet[space] *
+                    Math.Min(_payoutBet[space], KeystoneRules.GetPayoutRate(space)));
+            }
+        }
+    }
+
+    public void ReportPointsEarned()
+    {
+        if (SavedPoints > 0)
+        {
+            PointsEarned(SavedPoints);
+            SavedPoints = 0;
+        }
+    }
+
+    public void PulseBankButton() => Board?.PulseLegend(4);
+
+    public void PulseStandingsButton() => Board?.PulseLegend(5);
+
+    public void PulseQuickTipsButton() => Board?.PulseLegend(1);
+
+    public void ShowArchBetNotice(bool show)
+    {
+        if (show)
+        {
+            Board?.SetNoticeText(
+                "txtPlaceArchBet", null,
+                "txtPlaceArchBetMore", null,
+                "txtPlaceArchBetMove", null,
+                "x");
+        }
+
+        Board?.ShowNotice(show, 250, false);
+    }
+
+    public void RevealBoard()
+    {
+        ShowQuicktipsText(true);
+        ShowStandingsText(true);
+        if (!Tournament)
+        {
+            ShowBankText(true);
+        }
     }
 
     public void StartArchBetting()
@@ -439,6 +726,8 @@ public sealed class Keystone : PubGame
         StartAiBetting(true);
         _blockIncreaseBet = true;
         _blockDecreaseBet = true;
+        ShowBetText(true);
+        ShowArchBetNotice(true);
     }
 
     public void StartInsideBetting()
@@ -454,11 +743,25 @@ public sealed class Keystone : PubGame
         StartAiBetting(false);
         _blockIncreaseBet = true;
         _blockDecreaseBet = true;
+        ShowBetText(true);
+        ShowRollText(true);
     }
 
     public void EndBettingPhase(bool arch)
     {
         SaveLastBets(arch);
+        if (!arch)
+        {
+            SavePointsEarned();
+        }
+
+        ShowBetText(false);
+        ShowRollText(false);
+        if (arch)
+        {
+            ShowArchBetNotice(false);
+        }
+
         Board?.ShowFocus(Current, false, true, null, false);
         FinishAiBets(_boardInfos[0], arch);
     }
@@ -555,7 +858,18 @@ public sealed class Keystone : PubGame
             return;
         }
 
-        if (arch)
+        if (Bloodstone)
+        {
+            if (arch)
+            {
+                ArchBetsValue = BloodstoneExposure(player, true);
+            }
+            else
+            {
+                InsideBetsValue = BloodstoneExposure(player, false);
+            }
+        }
+        else if (arch)
         {
             ArchBetsValue = player.GetBetAmount(true);
         }

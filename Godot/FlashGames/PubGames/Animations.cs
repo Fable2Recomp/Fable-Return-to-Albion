@@ -155,6 +155,55 @@ public sealed class AnimatePulse : AnimateBase
     }
 }
 
+public sealed class AnimateJackpot : AnimateBase
+{
+    private readonly string _locText;
+    private readonly IPubClip _root;
+    private Localizer? _localizer;
+
+    public AnimateJackpot(
+        string locText, Localizer localizer, IPubClip root,
+        double time, double delay, int animStyle)
+        : base(null, time, delay, animStyle)
+    {
+        _locText = locText;
+        _localizer = localizer;
+        _root = root;
+    }
+
+    protected override bool Update(double dt, object? callbackData, bool done)
+    {
+        Object ??= _root.AttachMovie("jackpot", "jackpot", _root.GetNextHighestDepth());
+
+        if (Object is not IPubClip clip)
+        {
+            return done;
+        }
+
+        int frame = (int)Math.Floor(dt * clip.TotalFrames);
+        if (frame >= clip.TotalFrames)
+        {
+            frame--;
+        }
+
+        clip.GotoAndStop(frame + 1);
+
+        IPubClip? label = clip.GetChild("label");
+        if (label is not null)
+        {
+            _localizer?.Localize(label, _locText, null);
+        }
+
+        if (done)
+        {
+            _localizer = null;
+            clip.RemoveMovieClip();
+        }
+
+        return done;
+    }
+}
+
 public delegate bool PubAnimFunction(double dt, object? target, object? animData, bool done);
 
 public sealed class AnimateCallback : AnimateBase

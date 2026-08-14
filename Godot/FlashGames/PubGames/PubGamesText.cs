@@ -131,10 +131,13 @@ public static class PubGamesText
                 continue;
             }
 
+            string? parentName = element.Parent?.Attribute("name")?.Value;
             var setting = new PubGameSetting
             {
                 Name = name!,
-                Section = element.Parent?.Name.LocalName ?? string.Empty,
+                Section = string.IsNullOrEmpty(parentName)
+                    ? element.Parent?.Name.LocalName ?? string.Empty
+                    : parentName!,
                 Type = element.Attribute("type")?.Value ?? string.Empty,
                 Value = element.Attribute("value")?.Value ?? string.Empty,
             };

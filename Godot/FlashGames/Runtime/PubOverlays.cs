@@ -4,8 +4,10 @@ using Refii.FlashGames.PubGames;
 
 namespace Refii.FlashGames.Runtime;
 
-public sealed class PubOverlays
+public sealed class PubOverlays : IPubOverlayManager
 {
+    public void ActivateNeedChipsAlert() => ShowNeedChips();
+
     public const int OverlaysDepth = 100;
     public const int BankDepth = 17;
     public const int BankSubDepth = 18;
@@ -15,6 +17,9 @@ public sealed class PubOverlays
     public const int CashOutDepth = 23;
     public const int HelpDepth = 24;
     public const int NeedChipsDepth = 25;
+    public const int StarDepth = 16;
+    public const int FadeDepth = 35;
+    public const double BoardFadeTime = 750;
     public const double HelpNavDelay = 300;
 
     private readonly Keystone _keystone;
@@ -29,6 +34,14 @@ public sealed class PubOverlays
     private IPubClip? _cashOut;
     private IPubClip? _help;
     private IPubClip? _needChips;
+    private IPubClip? _star;
+    private IPubClip? _fade;
+    private bool _fadeAttached;
+    private bool _starTable;
+    private bool _starConcept;
+    private string? _starGameName;
+    private int _starMin;
+    private int _starMax;
     private int _helpSection = 1;
     private int _helpSections;
     private double _helpWaitTicks;
@@ -49,6 +62,7 @@ public sealed class PubOverlays
             ?? root.CreateEmptyMovieClip("overlays", OverlaysDepth);
         _overlays.SwapDepths(root.GetNextHighestDepth());
         Bank = new Banking(keystone);
+        ActivateFade();
     }
 
     public Banking Bank { get; }
@@ -71,13 +85,17 @@ public sealed class PubOverlays
 
     public bool NeedChipsShowing => _needChips is not null;
 
+    public bool StarShowing => _star is not null;
+
+    public bool FadeShowing { get; private set; }
+
     public int HelpSection => _helpSection;
 
     public int HelpSectionCount => _helpSections;
 
     public bool AbsorbingInput =>
         BankShowing || BankSubShowing || QuickTipsShowing || StandingsShowing ||
-        QuitShowing || CashOutShowing || HelpShowing || NeedChipsShowing;
+        QuitShowing || CashOutShowing || HelpShowing || NeedChipsShowing || StarShowing;
 
     public BankOption SelectedOption => _option;
 
@@ -582,10 +600,201 @@ public sealed class PubOverlays
         _keystone.PlaySound("G_fullscreenMenuCloses");
     }
 
+    public void ActivateFade()
+    {
+        FadeShowing = true;
+        IPubClip? fade = EnsureFadeClip();
+        if (fade is null)
+        {
+            return;
+        }
+
+        var anim = new AnimateAlpha(
+            fade.Alpha, 0, fade, BoardFadeTime, 0, AnimateBase.StyleLinear)
+        {
+            Blocking = true,
+        };
+        anim.SetEndCallback(_ => FadeCompleted(), null);
+        _keystone.CallbackManager.AddCallbackObject(anim);
+    }
+
+    public void ActivateFadeOut()
+    {
+        FadeShowing = true;
+        IPubClip? fade = EnsureFadeClip();
+        if (fade is null)
+        {
+            return;
+        }
+
+        if (_fadeAttached)
+        {
+            fade.Alpha = 0;
+            _fadeAttached = false;
+        }
+
+        var anim = new AnimateAlpha(
+            fade.Alpha, 100, fade, BoardFadeTime / 2, 0, AnimateBase.StyleLinear)
+        {
+            Blocking = true,
+        };
+        _keystone.CallbackManager.AddCallbackObject(anim);
+    }
+
+    private IPubClip? EnsureFadeClip()
+    {
+        if (_fade is null)
+        {
+            _fade = _overlays.AttachMovie("overlay_fade", "overlay_fade", FadeDepth);
+            _fadeAttached = true;
+        }
+
+        return _fade;
+    }
+
+    private void FadeCompleted()
+    {
+        FadeShowing = false;
+        _fade?.RemoveMovieClip();
+        _fade = null;
+    }
+
+    public void ActivateStarRatingDialog(
+        bool table = false, bool concept = false,
+        string? gameName = null, int min = 0, int max = 0)
+    {
+        _starTable = table;
+        _starConcept = concept;
+        _starGameName = gameName;
+        _starMin = min;
+        _starMax = max;
+        ShowStar();
+    }
+
+    public void ShowStar()
+    {
+        if (_star is not null)
+        {
+            return;
+        }
+
+        Player? human = _keystone.PlayerInfo.GetPlayer(0);
+        if (human is null)
+        {
+            return;
+        }
+
+        string export = _starTable || _starConcept ? "overlay_alert1" : "overlay_starrating";
+        _star = _overlays.AttachMovie(export, "overlay_star", StarDepth);
+        if (_star is null)
+        {
+            return;
+        }
+
+        int rating = human.StarRating;
+        foreach (string field in new[] { "body", "body2", "gameName", "gameLimits" })
+        {
+            IPubClip? clip = _star.GetChild(field);
+            if (clip is not null)
+            {
+                clip.Text = string.Empty;
+            }
+        }
+
+        if (_starTable && _starConcept)
+        {
+            Localize(_star.GetChild("body2"), "txtTableAndConceptBody", null);
+            LocalizeUnlockedGame();
+        }
+        else if (_starTable)
+        {
+            Localize(_star.GetChild("body"), "txtTableBody", null);
+            LocalizeUnlockedGame();
+        }
+        else if (_starConcept)
+        {
+            Localize(_star.GetChild("body"), "txtConceptArtBody", null);
+        }
+        else
+        {
+            Localize(_star.GetChild("body"), "txtStarBody", null);
+            _keystone.PlaySound(
+                rating == 5 ? "applause05_jackpot"
+                : rating == 4 ? "applause04_large"
+                : "applause03_medium");
+        }
+
+        if (!_starTable && _starConcept)
+        {
+            IPubClip? body = _star.GetChild("body");
+            if (body is not null)
+            {
+                body.Y += (body.Height - (body.TextHeight * body.YScale / 100f)) / 2f;
+            }
+        }
+
+        if (!_starTable && !_starConcept)
+        {
+            IPubClip? starValue = _star.GetChild("starValue");
+            if (starValue is not null)
+            {
+                starValue.Alpha = 100;
+                starValue.GotoAndStop(rating);
+            }
+
+            Localize(_star.GetChild("starRatingLabel"), "txtStarRatingLabel", null);
+        }
+
+        Localize(_star.GetChild("button1")?.GetChild("label"), "txtStarConfirm", null);
+        _star.GetChild("button1")?.GetChild("button")?.GotoAndStop("b");
+        _keystone.PlaySound("G_acheivementEarned");
+    }
+
+    private void LocalizeUnlockedGame()
+    {
+        if (_star is null)
+        {
+            return;
+        }
+
+        if (_starGameName is not null)
+        {
+            Localize(_star.GetChild("gameName"), _starGameName, null);
+        }
+
+        Localize(
+            _star.GetChild("gameLimits"),
+            _starMin == _starMax ? "txtGameGalleryCardBuyInText" : "txtGameGalleryCardBetText",
+            _starMin == _starMax
+                ? new Dictionary<string, string> { ["BUYIN"] = _starMin.ToString() }
+                : new Dictionary<string, string>
+                {
+                    ["MINIMUM"] = _starMin.ToString(),
+                    ["MAXIMUM"] = _starMax.ToString(),
+                });
+    }
+
+    private void CloseStar()
+    {
+        _star?.RemoveMovieClip();
+        _star = null;
+        _keystone.PlaySound("G_fullscreenMenuCloses");
+    }
+
     public void Update(double ticks, GamePad? pad)
     {
         if (pad is null)
         {
+            return;
+        }
+
+        if (_star is not null)
+        {
+            if (pad.BtnBPressed)
+            {
+                CloseStar();
+            }
+
             return;
         }
 
