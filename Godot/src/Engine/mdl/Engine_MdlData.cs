@@ -12,28 +12,18 @@ public sealed class MdlBone
 
 public sealed class MdlMaterial
 {
-    // THE SEVEN TEXTURE SLOTS, named from the binary rather than from what they looked like.
+    // The record is nine NUL-terminated strings scattered into a 180-byte texture-set record in
+    // an order that is NOT the file order: strings 1,2,3 to +4,+8,+12, then 5,6,7 to
+    // +16,+20,+24, and string 4 out to +148. Strings 8 and 9 are read and immediately
+    // destructed; nothing in the shipped data fills them.
     //
-    // The record is nine NUL-terminated strings, and the guest scatters them into the 180-byte
-    // texture-set record in an order that is NOT the file order — `sub_82A9EEA0` sends strings
-    // 1,2,3 to +4,+8,+12, then 5,6,7 to +16,+20,+24, and string 4 all the way out to +148.
-    // Strings 8 and 9 are read and immediately destructed (`82a9f728`, `82a9f730`); nothing in
-    // the shipped data fills them, and nothing would read them if it did.
-    //
-    // The sampler each slot reaches is settled by `Render_TextureStateHelper_INFERRED_4`
-    // (0x82216850), which indexes a 6-entry descriptor table at 0x834A51A0 by mask bit:
-    //
-    //     +4   -> s0  hard-coded (834A51A4 = 0)   g_DiffuseTextureSampler
-    //     +8   -> s1  hard-coded (834A51C8 = 1)   g_SpecularTextureSampler
-    //     +12  -> s2  hard-coded (834A51EC = 2)   g_NormalTextureSampler
-    //     +16  -> binding 211                      g_SelfIllumTextureSampler  (s13)
-    //     +20  -> binding 209                      secondary diffuse
-    //     +24  -> binding 263                      tree trunk
-    //     +148 -> binding 84                       g_EnvmapSampler            (s14)
-    //
-    // Slots 0..2 are forced on regardless of the presence mask (`v4 = *result | dword_83496F20`
-    // with that global set to 7), which is why a material with no specular string still binds
-    // something to s1 — the guest's own 16x16 transparent-black default.
+    //     +4    g_DiffuseTextureSampler
+    //     +8    g_SpecularTextureSampler
+    //     +12   g_NormalTextureSampler
+    //     +16   g_SelfIllumTextureSampler
+    //     +20   secondary diffuse
+    //     +24   tree trunk
+    //     +148  g_EnvmapSampler
 
     public string Diffuse { get; set; } = string.Empty;
 

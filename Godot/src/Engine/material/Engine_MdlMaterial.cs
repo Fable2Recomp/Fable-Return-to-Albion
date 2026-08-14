@@ -68,11 +68,6 @@ public static class Engine_MdlMaterial
         Texture2D? normal = TryLoad(material.Normal, out _);
         Texture2D? emissive = TryLoad(material.SelfIllumination, out _);
 
-        // SLOT 2, and its identity is settled rather than guessed: `sub_82A9EEA0` resolves the
-        // second string of the record through the texture loader with a 16x16 TRANSPARENT BLACK
-        // fallback (`sub_82A7AD50`), which is what a specular map degrades to and nothing else
-        // does. The first string's fallback is a dark colour and the third's is (127, 127, 255),
-        // a flat normal — so the first three slots are diffuse, specular, normal, in that order.
         Texture2D? specular = TryLoad(material.Specular, out _);
 
         if (albedo is null && normal is null && emissive is null && specular is null)

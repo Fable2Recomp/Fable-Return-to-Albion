@@ -14,6 +14,7 @@ public partial class ShaderCheck : Node
 	private static readonly string[] Shaders =
 	{
 		"res://src/Engine/material/standard_material.gdshader",
+		"res://src/Engine/material/standard_material_phong.gdshader",
 		"res://src/Engine/level/terrain/terrain_splat.gdshader",
 		"res://src/Engine/level/water/water.gdshader",
 		"res://src/Engine/level/environment/sky.gdshader",

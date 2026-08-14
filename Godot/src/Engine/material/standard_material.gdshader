@@ -1,8 +1,4 @@
 shader_type spatial;
-// NOT `specular_disabled` any more. The material's specular map drives a real Phong lobe — see
-// `fable_specular` — and disabling the channel silently discards everything `light()` writes to
-// SPECULAR_LIGHT. 57.5% of the shipped material records (5,347 of 9,293, surveyed across all
-// 5,446 models) name a specular texture, so this was over half the asset set losing a term.
 render_mode blend_mix, depth_draw_opaque, cull_disabled, ambient_light_disabled;
 
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
@@ -20,8 +16,8 @@ uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic;
 uniform sampler2D emission_tex : filter_linear_mipmap_anisotropic;
 
 // BLACK, not white. An unbound specular map has to contribute nothing — the guest's own fallback
-// for this slot is a 16x16 transparent black texture (`sub_82A7AD50`), which is also how its
-// identity as the specular slot was settled.
+// for this slot is a 16x16 transparent black texture, which is also how its identity as the
+// specular slot was settled.
 uniform sampler2D specular_tex : hint_default_black, filter_linear_mipmap_anisotropic;
 
 uniform bool has_normal = false;
@@ -54,14 +50,7 @@ uniform float spec_power_max = 100.0;
 /// intensity is what carries the effect.
 uniform float self_illum_scale = 1.0;
 
-/// The specular term's colour and exponent, carried from `fragment()` to `light()`.
-///
-/// A VARYING BECAUSE `light()` CANNOT SAMPLE. Godot gives the light function NORMAL, LIGHT, VIEW
-/// and the two light accumulators, but no UV — so a per-pixel texture read has to happen in
-/// `fragment()` and be handed across. Godot allows exactly this: a varying written in `fragment()`
-/// is readable in `light()` (and nowhere else).
-varying vec3 v_specular;
-varying float v_specular_power;
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 
 void fragment() {
     vec4 alb = texture(albedo_tex, UV);
@@ -77,15 +66,14 @@ void fragment() {
     // TWO-SIDED GEOMETRY NEEDS A TWO-SIDED NORMAL, and this shader is `cull_disabled`.
     //
     // A back-facing triangle keeps the normal it was authored with, which points away from the
-    // viewer — so `clamp(dot(normal, light), 0, 1)` in `fable_direct` collapses to zero and the
-    // surface takes no direct light at all, only ambient. On a closed prop that never shows,
-    // because you never see its back faces. On FOLIAGE it is most of what you see: a grass tuft
-    // or a flower is intersecting single-thickness cards, so about half of every plant was lit
-    // and the other half was not, which reads as flat, patchy and wrongly coloured rather than
-    // as a lighting bug.
+    // viewer — so the diffuse term collapses to zero and the surface takes no direct light at
+    // all, only ambient. On a closed prop that never shows, because you never see its back
+    // faces. On FOLIAGE it is most of what you see: a grass tuft or a flower is intersecting
+    // single-thickness cards, so about half of every plant was lit and the other half was not,
+    // which reads as flat, patchy and wrongly coloured rather than as a lighting bug.
     //
-    // Flipped before the bake below as well as before `light()`, because the probe SH is
-    // evaluated for a direction too and a back face was sampling the wrong lobe of it.
+    // Flipped before the bake below as well, because the probe SH is evaluated for a direction
+    // too and a back face was sampling the wrong lobe of it.
     NORMAL = FRONT_FACING ? NORMAL : -NORMAL;
     BINORMAL = FRONT_FACING ? BINORMAL : -BINORMAL;
 
@@ -119,12 +107,23 @@ void fragment() {
         ndotn = sqrt(max(1.0 - dot(nxy, nxy), 0.0));
     }
 
-    // SQUARED LIKE THE ALBEDO, and by the same line — the guest reads the specular map raw and
-    // then `r8.x = r8.x * r8.x` component by component, exactly as it does for the diffuse. The
-    // ALPHA is left alone here too, because it is the exponent selector rather than a colour.
-    vec4 spec = has_specular ? texture(specular_tex, UV) : vec4(0.0);
-    v_specular = spec.rgb * spec.rgb;
-    v_specular_power = mix(spec_power_min, spec_power_max, spec.a);
+    METALLIC = 0.0;
+
+    if (has_specular) {
+        // SQUARED LIKE THE ALBEDO, and by the same line — the guest reads the specular map raw
+        // and then `r8.x = r8.x * r8.x` component by component, exactly as it does for the
+        // diffuse. The ALPHA is left alone here too, because it is the exponent selector rather
+        // than a colour.
+        vec4 spec = texture(specular_tex, UV);
+        vec3 spec_colour = spec.rgb * spec.rgb;
+        float power = mix(spec_power_min, spec_power_max, spec.a);
+
+        ROUGHNESS = clamp(sqrt(2.0 / (power + 2.0)), 0.0, 1.0);
+        SPECULAR = clamp(dot(spec_colour, LUMA), 0.0, 1.0);
+    } else {
+        ROUGHNESS = 1.0;
+        SPECULAR = 0.0;
+    }
 
     vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
     vec3 bake = fable_bake(world_normal, COLOR);
@@ -144,16 +143,4 @@ void fragment() {
         vec3 selfIllum = texture(emission_tex, UV).rgb;
         EMISSION += selfIllum * selfIllum * self_illum_scale;
     }
-}
-
-void light() {
-    // ONE ATTENUATION FOR BOTH TERMS, and it is the guest's linear ramp rather than Godot's
-    // curve — see `fable_attenuation`. The diffuse and specular halves must be given the same
-    // scalar because the guest multiplies both by the same `local * visibility` product.
-    float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL);
-
-    // No ALBEDO argument: Godot multiplies DIFFUSE_LIGHT by it after this function returns.
-    DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, atten, LIGHT_COLOR);
-    SPECULAR_LIGHT += fable_specular(
-        NORMAL, LIGHT, VIEW, atten, LIGHT_COLOR, v_specular, v_specular_power);
 }
