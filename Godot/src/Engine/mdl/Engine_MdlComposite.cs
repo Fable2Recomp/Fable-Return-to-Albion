@@ -59,6 +59,10 @@ public static class Engine_MdlComposite
         var parents = new List<int>();
         var rest = new List<float>();
 
+        var pending =
+            new List<(Godot.Collections.Array Arrays, Mesh.PrimitiveType Primitive,
+                string Name, Material Material, string? Bare)>();
+
         foreach (string path in parts)
         {
             if (path.Length == 0 || resolve(path) is not ArrayMesh part ||
@@ -119,12 +123,28 @@ public static class Engine_MdlComposite
                     arrays[(int)Mesh.ArrayType.Bones] = bones;
                 }
 
-                mesh.AddSurfaceFromArrays(part.SurfaceGetPrimitiveType(surface), arrays);
-
-                int added = mesh.GetSurfaceCount() - 1;
-                mesh.SurfaceSetName(added, part.SurfaceGetName(surface));
-                mesh.SurfaceSetMaterial(added, part.SurfaceGetMaterial(surface));
+                pending.Add((
+                    arrays,
+                    part.SurfaceGetPrimitiveType(surface),
+                    part.SurfaceGetName(surface),
+                    part.SurfaceGetMaterial(surface),
+                    skinned ? null : path));
             }
+        }
+
+        foreach ((Godot.Collections.Array arrays, Mesh.PrimitiveType primitive, string name,
+                  Material material, string? bare) in pending)
+        {
+            if (bare is not null)
+            {
+                Anchor(arrays, boneIndex, parents, rest, bare);
+            }
+
+            mesh.AddSurfaceFromArrays(primitive, arrays);
+
+            int added = mesh.GetSurfaceCount() - 1;
+            mesh.SurfaceSetName(added, name);
+            mesh.SurfaceSetMaterial(added, material);
         }
 
         if (mesh.GetSurfaceCount() == 0)
@@ -143,6 +163,159 @@ public static class Engine_MdlComposite
         }
 
         return mesh;
+    }
+
+    private static readonly string[] LeftEyeBones =
+        { "l_eye", "left_eye", "lefteye", "character_focal_eye_left", "focal_eye_dummyobject1" };
+
+    private static readonly string[] RightEyeBones =
+        { "r_eye", "right_eye", "righteye", "character_focal_eye_right", "focal_eye_dummyobject" };
+
+    private static void Anchor(
+        Godot.Collections.Array arrays,
+        Dictionary<string, int> boneIndex,
+        IReadOnlyList<int> parents,
+        IReadOnlyList<float> rest,
+        string path)
+    {
+        if (arrays.Count <= (int)Mesh.ArrayType.Vertex ||
+            arrays[(int)Mesh.ArrayType.Vertex].VariantType != Variant.Type.PackedVector3Array)
+        {
+            return;
+        }
+
+        Vector3[] vertices = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+        if (vertices.Length == 0 || boneIndex.Count == 0)
+        {
+            return;
+        }
+
+        int anchor = 0;
+        if (TryEyeBone(boneIndex, path, out int eye))
+        {
+            anchor = eye;
+
+            Vector3 offset = ToMeshSpace(GlobalOrigin(eye, parents, rest));
+            if (offset != Vector3.Zero)
+            {
+                for (int v = 0; v < vertices.Length; v++)
+                {
+                    vertices[v] += offset;
+                }
+
+                arrays[(int)Mesh.ArrayType.Vertex] = vertices;
+            }
+        }
+
+        var bones = new int[vertices.Length * 4];
+        var weights = new float[vertices.Length * 4];
+
+        for (int v = 0; v < vertices.Length; v++)
+        {
+            bones[v * 4] = anchor;
+            weights[v * 4] = 1.0f;
+        }
+
+        arrays[(int)Mesh.ArrayType.Bones] = bones;
+        arrays[(int)Mesh.ArrayType.Weights] = weights;
+    }
+
+    private static Vector3 GlobalOrigin(
+        int bone, IReadOnlyList<int> parents, IReadOnlyList<float> rest)
+    {
+        var chain = new List<int>();
+        var seen = new HashSet<int>();
+
+        for (int current = bone;
+             current >= 0 && current < parents.Count && seen.Add(current);
+             current = parents[current])
+        {
+            chain.Add(current);
+        }
+
+        var origin = Vector3.Zero;
+
+        foreach (int current in chain)
+        {
+            int at = current * Engine_MdlMesh.BoneRestStride;
+            if (at + Engine_MdlMesh.BoneRestStride > rest.Count)
+            {
+                continue;
+            }
+
+            origin = new Vector3(
+                origin.X * rest[at + 7], origin.Y * rest[at + 8], origin.Z * rest[at + 9]);
+
+            var rotation = new Quaternion(
+                rest[at + 0], rest[at + 1], rest[at + 2], rest[at + 3]);
+
+            if (rotation.LengthSquared() > 1e-16f)
+            {
+                origin = rotation.Normalized() * origin;
+            }
+
+            origin += new Vector3(rest[at + 4], rest[at + 5], rest[at + 6]);
+        }
+
+        return origin;
+    }
+
+    private static Vector3 ToMeshSpace(Vector3 origin) => new(origin.X, origin.Z, -origin.Y);
+
+    private static bool TryEyeBone(
+        Dictionary<string, int> boneIndex, string path, out int bone)
+    {
+        bone = 0;
+
+        string leaf = path.Replace('\\', '/').ToLowerInvariant();
+        int slash = leaf.LastIndexOf('/');
+        if (slash >= 0)
+        {
+            leaf = leaf[(slash + 1)..];
+        }
+
+        if (!leaf.Contains("eye", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        bool left = leaf.Contains("left", StringComparison.Ordinal) ||
+            leaf.EndsWith("_l", StringComparison.Ordinal) ||
+            leaf.Contains("_l.", StringComparison.Ordinal);
+
+        bool right = leaf.Contains("right", StringComparison.Ordinal) ||
+            leaf.EndsWith("_r", StringComparison.Ordinal) ||
+            leaf.Contains("_r.", StringComparison.Ordinal);
+
+        if (!left && !right)
+        {
+            return false;
+        }
+
+        foreach (string candidate in left ? LeftEyeBones : RightEyeBones)
+        {
+            foreach (KeyValuePair<string, int> entry in boneIndex)
+            {
+                if (Flatten(entry.Key) == candidate)
+                {
+                    bone = entry.Value;
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static string Flatten(string name)
+    {
+        var text = new System.Text.StringBuilder(name.Length);
+        foreach (char c in name)
+        {
+            text.Append(c is ' ' or '-' or '.' ? '_' : char.ToLowerInvariant(c));
+        }
+
+        return text.ToString().Trim('_');
     }
 
     /// <summary>

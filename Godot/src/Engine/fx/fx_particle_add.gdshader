@@ -4,6 +4,8 @@ render_mode blend_add, cull_disabled, depth_draw_never, unshaded, shadows_disabl
 uniform sampler2D fx_tex : filter_linear, repeat_enable;
 uniform float fx_exposure = 3.3333333;
 
+uniform float fx_src_alpha = 1.0;
+
 // THE SAME COMPOSITION AS THE MIX VARIANT — only the blend differs.
 //
 // 0210_pshader_particlematerial serves both, and it is a pure multiply chain:
@@ -22,5 +24,5 @@ uniform float fx_exposure = 3.3333333;
 void fragment() {
 	vec4 texel = texture(fx_tex, UV);
 	ALBEDO = COLOR.a * fx_exposure * COLOR.rgb * texel.rgb * texel.rgb;
-	ALPHA = texel.a * COLOR.a;
+	ALPHA = mix(1.0, texel.a * COLOR.a, fx_src_alpha);
 }

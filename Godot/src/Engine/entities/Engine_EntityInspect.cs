@@ -265,7 +265,7 @@ public static class Engine_EntityInspect
 
     public static Node3D? BuildMarkers(EntityInspectData data)
     {
-        var container = new Node3D { Name = MarkersNodeName };
+        var container = new Engine_EditorMarkers { Name = MarkersNodeName };
         var used = new HashSet<string>();
 
         foreach (KeyValuePair<uint, EntityContentsInfo> pair in data.Contents)

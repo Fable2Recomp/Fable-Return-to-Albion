@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode blend_mix, cull_disabled, depth_draw_never, unshaded, shadows_disabled, fog_disabled;
+render_mode blend_premul_alpha, cull_disabled, depth_draw_never, unshaded, shadows_disabled, fog_disabled;
 
 uniform sampler2D fx_tex : filter_linear, repeat_enable;
 uniform float fx_exposure = 3.3333333;

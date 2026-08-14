@@ -57,6 +57,11 @@ public sealed class Engine_GmdSkeleton
     /// </summary>
     public const int MaxNodes = 512;
 
+    public static readonly Basis ZUpToYUp = new(
+        new Vector3(1.0f, 0.0f, 0.0f),
+        new Vector3(0.0f, 0.0f, -1.0f),
+        new Vector3(0.0f, 1.0f, 0.0f));
+
     public const int MaxAttachments = 64;
 
     private Engine_GmdSkeleton(
@@ -135,25 +140,18 @@ public sealed class Engine_GmdSkeleton
 
             for (uint i = 0; i < nodeCount; i++)
             {
-                locals[i] = new Transform3D(
+                locals[i] = ToGodot(new Transform3D(
                     new Basis(ReadQuaternion(bytes, at)),
                     new Vector3(
                         ReadF32(bytes, at + 16), ReadF32(bytes, at + 20),
-                        ReadF32(bytes, at + 24)));
+                        ReadF32(bytes, at + 24))));
                 at += NodeTransformStride;
             }
         }
 
-        if (at + 4 > bytes.Length)
+        if (!TryFindAttachmentCount(bytes, at, out uint attachmentCount, out at))
         {
-            return null;
-        }
-
-        uint attachmentCount = ReadU32(bytes, at);
-        at += 4;
-        if (attachmentCount > MaxAttachments)
-        {
-            return null;
+            return new Engine_GmdSkeleton(names, parents, locals, Array.Empty<GmdAttachment>());
         }
 
         var attachments = new List<GmdAttachment>((int)attachmentCount);
@@ -166,11 +164,11 @@ public sealed class Engine_GmdSkeleton
 
             attachments.Add(new GmdAttachment(
                 name,
-                new Transform3D(
+                ToGodot(new Transform3D(
                     new Basis(ReadQuaternion(bytes, at)),
                     new Vector3(
                         ReadF32(bytes, at + 16), ReadF32(bytes, at + 20),
-                        ReadF32(bytes, at + 24))),
+                        ReadF32(bytes, at + 24)))),
                 unchecked((int)ReadU32(bytes, at + 28))));
             at += 32;
         }
@@ -200,7 +198,7 @@ public sealed class Engine_GmdSkeleton
                 continue;
             }
 
-            local = Compose(attachment.Node) * attachment.Local;
+            local = attachment.Local;
             return true;
         }
 
@@ -233,6 +231,37 @@ public sealed class Engine_GmdSkeleton
         }
 
         return world;
+    }
+
+    private static Transform3D ToGodot(Transform3D game) =>
+        new(ZUpToYUp * game.Basis * ZUpToYUp.Inverse(), ZUpToYUp * game.Origin);
+
+    private static bool TryFindAttachmentCount(
+        byte[] bytes, int from, out uint count, out int after)
+    {
+        count = 0;
+        after = from;
+
+        for (int probe = 0; probe <= 2; probe++)
+        {
+            int at = from + (probe * 4);
+            if (at + 5 > bytes.Length)
+            {
+                return false;
+            }
+
+            uint value = ReadU32(bytes, at);
+            byte next = bytes[at + 4];
+
+            if (value >= 1 && value <= MaxAttachments && next >= 0x20 && next < 0x7F)
+            {
+                count = value;
+                after = at + 4;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool TryReadStringZ(byte[] bytes, ref int at, out string text)

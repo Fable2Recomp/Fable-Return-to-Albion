@@ -12,6 +12,7 @@ public partial class Engine_EntityInstance : MeshInstance3D
     public const string NameMeta = "entity_name";
     public const string HashMeta = "entity_hash";
     public const string ModelsMeta = "entity_models";
+    public const string ModelHashesMeta = "entity_model_hashes";
     public const string StatsMeta = "entity_stats";
     public const string CombatMeta = "entity_combat";
     public const string FactionMeta = "entity_faction";

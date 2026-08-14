@@ -22,9 +22,11 @@ public sealed class EntityPlaceStats
     /// <summary>The record is here but carries no transform shape we read.</summary>
     public int CreatureMissingTransform { get; set; }
 
+    public int Animated { get; set; }
+
     public override string ToString() =>
         $"save={SaveEntities} creatures={Creatures} placed={Placed} " +
-        $"noTransform={NoTransform} " +
+        $"noTransform={NoTransform} animated={Animated} " +
         $"(noRecord={CreatureMissingRecord} noShape={CreatureMissingTransform})";
 }
 
@@ -130,8 +132,11 @@ public static class Engine_LevelEntities
             node.SetMeta(Engine_EntityInstance.HashMeta, $"0x{entry.EntityHash:X8}");
 
             var models = new Godot.Collections.Array<string>();
+            var modelHashes = new Godot.Collections.Array<long>();
             foreach (uint modelHash in entry.ModelHashes)
             {
+                modelHashes.Add(modelHash);
+
                 if (Engine_PropModelIndex.Resolve(
                         modelHash, Array.Empty<string>()) is string modelPath)
                 {
@@ -140,6 +145,17 @@ public static class Engine_LevelEntities
             }
 
             node.SetMeta(Engine_EntityInstance.ModelsMeta, models);
+            node.SetMeta(Engine_EntityInstance.ModelHashesMeta, modelHashes);
+
+            if (models.Count != 0)
+            {
+                node.AddChild(new Refii.Animations.Engine_EntityAnimator
+                {
+                    Name = Refii.Animations.Engine_EntityAnimator.NodeName,
+                });
+
+                stats.Animated++;
+            }
 
             EntityGameplay? gameplay = Engine_EntityGameplay.Extract(multi, saved.Key);
             if (gameplay is not null)
