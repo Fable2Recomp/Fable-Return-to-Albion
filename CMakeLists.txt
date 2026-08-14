@@ -578,7 +578,6 @@ unset(REFII_SHADER_DEFAULT_VALIDATION_TARGETS)
 # launcher's compile-time default target list (src/launcher/CMakeLists.txt),
 # not because anything in the build validates against it.
 
-set(REFII_LUA_LIBRARIES)
 set(REFII_VFS_LIBRARIES)
 set(REFII_RENDERER_LIBRARIES)
 set(REFII_HOOK_OBJECTS)

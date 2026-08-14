@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -36,6 +37,12 @@
 #include <rex/ui/windowed_app_context_sdl.h>
 
 #include "../../host_input.h"
+
+#if defined(_WIN32)
+#define REFII_HOST_ABI_EXPORT __declspec(dllexport)
+#else
+#define REFII_HOST_ABI_EXPORT __attribute__((visibility("default")))
+#endif
 
 // Included rather than redeclared like the Bink entries below: the audio exports marshal
 // VoiceRecord by value, and two hand-written copies of a struct layout is exactly the
@@ -131,11 +138,19 @@ HostedGuest& Hosted() {
     return hosted;
 }
 
+void SetEnvironmentValue(const char* name, const char* value) {
+#ifdef _WIN32
+    ::_putenv_s(name, value);
+#else
+    ::setenv(name, value, 1);
+#endif
+}
+
 /// Applies the switches that make the guest a simulation server rather than an app.
 /// Shared by both entry points so they cannot drift.
 void ApplyEmbeddedEnvironment() {
     // No window, no overlays, no presentation.
-    ::setenv("REX_EMBED_HEADLESS", "1", 1);
+    SetEnvironmentValue("REX_EMBED_HEADLESS", "1");
 }
 
 /// Guest globals and device fields the no-GPU latch needs. All IDA-proven against
@@ -546,7 +561,7 @@ extern "C" {
 /// 50 adds RefiiHostWorldIsActive — World+0xA8, the ONE "the world is up and populated" bit\n///    that both the travel and the load-from-save paths write. Replaces a host-side timeout.\n/// 49 adds RefiiHostDescribeGameFlowQueue — the queue as text, because a walk of it kept\n///    coming back empty while a level change was demonstrably in flight.\n/// 48 adds RefiiHostSetWorldBuildPending — the host answering "IsEnginePreLoading" so the\n///    guest waits in ITS OWN loading screen (state 7) until Godot has mounted the region.\n/// 47 adds RefiiHostGetLevelChange — the queued CmdLevelChange itself: its state word, its\n///    destination and its fullLoad flag. game+0x105 is a rising edge only (cleared in state 3,\n///    AFTER the state-2 entity teardown), so it cannot say when to free a scene.\n/// 46 adds RefiiHostGetCurrentLevel — the level the guest is STANDING IN, read from the live
 ///    World and Level objects. The start globals it replaces are written only by game-START
 ///    paths, so polling them cannot see a door, a teleporter or fast travel.
-int RefiiHostBridgeAbiVersion(void) { return 50; }
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 50; }
 
 // ---------------------------------------------------------------------------------
 // Audio
@@ -562,22 +577,22 @@ int RefiiHostBridgeAbiVersion(void) { return 50; }
 ///
 /// `out` must hold `max_frames * RefiiHostAudioFloatsPerFrame()` floats. Returns frames
 /// written.
-uint32_t RefiiHostPullAudio(float* out, uint32_t max_frames) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostPullAudio(float* out, uint32_t max_frames) {
     return refii::vfs::PopHostAudioFrames(out, max_frames);
 }
 
 /// The frame geometry, so the host does not hard-code what the binary states.
-uint32_t RefiiHostAudioSampleRate(void) { return refii::vfs::kGuestAudioSampleRate; }
-uint32_t RefiiHostAudioChannels(void) { return refii::vfs::kHostAudioChannels; }
-uint32_t RefiiHostAudioSamplesPerFrame(void) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostAudioSampleRate(void) { return refii::vfs::kGuestAudioSampleRate; }
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostAudioChannels(void) { return refii::vfs::kHostAudioChannels; }
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostAudioSamplesPerFrame(void) {
     return refii::vfs::kGuestAudioSamplesPerFrame;
 }
-uint32_t RefiiHostAudioFloatsPerFrame(void) { return refii::vfs::kHostAudioFloatsPerFrame; }
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostAudioFloatsPerFrame(void) { return refii::vfs::kHostAudioFloatsPerFrame; }
 
 /// Health. `pushed` should settle at 187.5/s (48000/256) once the guest is producing —
 /// a rate that is not that means the clock is wrong however it sounds. `dropped` climbing
 /// means nothing is draining.
-void RefiiHostAudioStats(uint32_t* out_queued_frames, uint64_t* out_pushed,
+REFII_HOST_ABI_EXPORT void RefiiHostAudioStats(uint32_t* out_queued_frames, uint64_t* out_pushed,
                          uint64_t* out_popped, uint64_t* out_dropped,
                          int* out_driver_installed) {
     if (out_queued_frames != nullptr) {
@@ -620,7 +635,7 @@ struct RefiiHostVoice {
 
 /// Snapshots the live voices. Pass a null buffer to count. Returns how many exist, which
 /// may exceed `capacity` — the host should grow and ask again rather than lose voices.
-uint32_t RefiiHostGetVoices(RefiiHostVoice* out, uint32_t capacity) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetVoices(RefiiHostVoice* out, uint32_t capacity) {
     static_assert(sizeof(RefiiHostVoice) == sizeof(refii::vfs::VoiceRecord),
                   "RefiiHostVoice must mirror VoiceRecord exactly; a mismatch marshals "
                   "garbage into C# rather than failing to build");
@@ -635,20 +650,20 @@ uint32_t RefiiHostGetVoices(RefiiHostVoice* out, uint32_t capacity) {
 /// Drains one voice's PCM as interleaved 16-bit samples. `generation` guards against the
 /// guest recycling a handle: a mismatch returns 0 rather than the wrong sound's audio.
 /// Returns bytes written.
-uint32_t RefiiHostTakeVoicePcm(uint32_t handle, uint32_t generation, void* out,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeVoicePcm(uint32_t handle, uint32_t generation, void* out,
                                uint32_t capacity) {
     return refii::vfs::TakeVoicePcm(handle, generation, out, capacity);
 }
 
 /// True once the voice hooks have seen any voice at all — distinguishes "Stage 2 is built
 /// but the guest has not reached audio" from "Stage 2 is not running".
-int RefiiHostVoiceCaptureActive(void) { return refii::vfs::VoiceCaptureActive() ? 1 : 0; }
+REFII_HOST_ABI_EXPORT int RefiiHostVoiceCaptureActive(void) { return refii::vfs::VoiceCaptureActive() ? 1 : 0; }
 
 /// Hands per-voice playback to the host. While set, the guest's MIXED frame is discarded
 /// instead of queued — Godot is playing the individual voices and playing both would
 /// double every sound. The mixer keeps running and keeps being credited, because that is
 /// the clock and it does not stop being the clock just because nobody is listening.
-void RefiiHostSetVoicePlaybackOwned(int owned) {
+REFII_HOST_ABI_EXPORT void RefiiHostSetVoicePlaybackOwned(int owned) {
     refii::vfs::SetVoiceCaptureOwnsOutput(owned != 0);
 }
 
@@ -662,7 +677,7 @@ void RefiiHostSetVoicePlaybackOwned(int owned) {
 /// Returns the queue depth after posting. A depth that climbs is a pump that has stopped
 /// draining — usually because the front end is not up, which holds actions rather than
 /// dropping them.
-uint32_t RefiiHostPostFrontEndAction(const char* name) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostPostFrontEndAction(const char* name) {
     return refii::vfs::PostGuestTickAction(name);
 }
 
@@ -688,7 +703,7 @@ uint32_t RefiiHostPostFrontEndAction(const char* name) {
 /// These are the exact inputs to the guest's two decisions. Load Game spawns when
 /// `signed_in && count > 0` (`sub_826E2220` at 0x826E2264..0x826E2278); New Game is refused
 /// with GUI_REACHED_SAVE_GAME_LIMIT_WARNING when `count >= limit` (0x826E0148).
-uint32_t RefiiHostGetSaveState(uint32_t* out_signed_in, int32_t* out_count,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveState(uint32_t* out_signed_in, int32_t* out_count,
                                uint32_t* out_limit) {
     if (out_signed_in != nullptr) {
         *out_signed_in = 0;
@@ -738,7 +753,7 @@ uint32_t RefiiHostGetSaveState(uint32_t* out_signed_in, int32_t* out_count,
 }
 
 /// Asks the pump to re-take the saved-game count on its next front-end tick.
-void RefiiHostRefreshSaveState() {
+REFII_HOST_ABI_EXPORT void RefiiHostRefreshSaveState() {
     refii::vfs::RefreshGuestSavedGameCount();
 }
 
@@ -752,7 +767,7 @@ void RefiiHostRefreshSaveState() {
 ///
 /// Names are written to `names` as NUL-separated UTF-8 in table order, so the caller splits on
 /// the terminators. Returns the number of entries reported, or 0 when the table is not up.
-uint32_t RefiiHostGetLanguages(uint32_t* out_current, char* names, uint32_t capacity) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLanguages(uint32_t* out_current, char* names, uint32_t capacity) {
     if (out_current != nullptr) {
         *out_current = 0;
     }
@@ -861,7 +876,7 @@ uint32_t RefiiHostGetLanguages(uint32_t* out_current, char* names, uint32_t capa
 /// Three numbers rather than one because they fail differently. Zero ticks is a hook that
 /// never landed. Ticks climbing with a non-zero queue is the guest running but not yet ready
 /// to take the action. Ticks climbing with an empty queue and no drains is nobody posting.
-void RefiiHostGuestTickPump(uint64_t* out_ticks, uint64_t* out_drained,
+REFII_HOST_ABI_EXPORT void RefiiHostGuestTickPump(uint64_t* out_ticks, uint64_t* out_drained,
                             uint32_t* out_queued) {
     refii::vfs::GuestTickPumpCounters(out_ticks, out_drained, out_queued);
 }
@@ -878,7 +893,7 @@ void RefiiHostGuestTickPump(uint64_t* out_ticks, uint64_t* out_drained,
 ///
 /// Safe to call every frame from the host's main thread while the guest reads on its
 /// own; the slot is a seqlock, so neither side blocks the other.
-void RefiiHostSetControllerState(uint32_t user_index, int connected, uint32_t buttons,
+REFII_HOST_ABI_EXPORT void RefiiHostSetControllerState(uint32_t user_index, int connected, uint32_t buttons,
                                  uint32_t left_trigger, uint32_t right_trigger,
                                  int32_t thumb_lx, int32_t thumb_ly, int32_t thumb_rx,
                                  int32_t thumb_ry) {
@@ -919,7 +934,7 @@ void RefiiHostSetControllerState(uint32_t user_index, int connected, uint32_t bu
 /// Writes width*height*4 bytes of RGBA into `out_rgba`. Returns 1 on success, 0 when no
 /// video is playing or the buffer is too small; `out_width`/`out_height` are filled in
 /// either way when known, so a caller can size its buffer from a failed probe.
-int RefiiHostGetVideoFrame(uint8_t* out_rgba, uint32_t capacity, uint32_t* out_width,
+REFII_HOST_ABI_EXPORT int RefiiHostGetVideoFrame(uint8_t* out_rgba, uint32_t capacity, uint32_t* out_width,
                            uint32_t* out_height) {
     const uint32_t fb = refii::vfs::BinkFrameBuffersGuestAddress();
     if (fb == 0) {
@@ -1095,7 +1110,7 @@ int RefiiHostGetVideoFrame(uint8_t* out_rgba, uint32_t capacity, uint32_t* out_w
 ///
 /// `out_desc` receives 6 uint32s: luma w, luma h, chroma w, chroma h, and the two plane
 /// sizes actually written (luma, chroma). Returns 1 on success.
-int RefiiHostGetVideoPlanes(uint8_t* out_y, uint32_t y_capacity, uint8_t* out_cr,
+REFII_HOST_ABI_EXPORT int RefiiHostGetVideoPlanes(uint8_t* out_y, uint32_t y_capacity, uint8_t* out_cr,
                             uint32_t cr_capacity, uint8_t* out_cb, uint32_t cb_capacity,
                             uint32_t* out_desc) {
     const uint32_t fb = refii::vfs::BinkFrameBuffersGuestAddress();
@@ -1208,7 +1223,7 @@ int RefiiHostGetVideoPlanes(uint8_t* out_y, uint32_t y_capacity, uint8_t* out_cr
 /// Pass a null buffer to probe the size. `out_generation` changes on every request,
 /// including a repeat of the same movie, because the startup sequence replays logos.
 /// Returns 1 on success, 0 when nothing has been requested or the buffer is too small.
-int RefiiHostGetRequestedVideo(unsigned char* out, uint32_t capacity, uint32_t* out_size,
+REFII_HOST_ABI_EXPORT int RefiiHostGetRequestedVideo(unsigned char* out, uint32_t capacity, uint32_t* out_size,
                                uint32_t* out_generation) {
     uint32_t address = 0;
     uint32_t size = 0;
@@ -1280,7 +1295,7 @@ int RefiiHostGetRequestedVideo(unsigned char* out, uint32_t capacity, uint32_t* 
 /// `out_generation` is the SAME counter as the buffer form: a request is one or the
 /// other, so the host takes whichever of the two has content for the current generation.
 /// Returns the length written, 0 when the last request carried a buffer instead.
-uint32_t RefiiHostGetRequestedVideoName(char* out, uint32_t capacity,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetRequestedVideoName(char* out, uint32_t capacity,
                                         uint32_t* out_generation) {
     uint32_t generation = 0;
     refii::vfs::RequestedBinkVideo(nullptr, nullptr, &generation, nullptr);
@@ -1310,7 +1325,7 @@ uint32_t RefiiHostGetRequestedVideoName(char* out, uint32_t capacity,
 /// mode's shutdown at 0x82311860, with ~150 readers. This is the signal to use rather than
 /// inferring from the front end going away: `dword_83496B08` is re-pointed at a 176-byte
 /// base-only GUI at that moment, so every front-end field reads out of bounds.
-uint32_t RefiiHostIsInGame(void) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostIsInGame(void) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -1346,7 +1361,7 @@ uint32_t RefiiHostIsInGame(void) {
 /// Zero means the guest is absent. Callers must compare for INEQUALITY and must not assume
 /// the value only ever grows, or grows by one: whether a level load resets it is not settled,
 /// and a rate derived from a backwards step would be nonsense reported as fact.
-uint32_t RefiiHostGetSimTick(void) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimTick(void) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -1395,7 +1410,7 @@ uint32_t RefiiHostGetSimTick(void) {
 /// Returns 0 when the guest is absent or the chain has not been built yet; the outputs are
 /// untouched in that case. Every link is checked because the pointer walk crosses objects the
 /// guest itself only builds at game-database init.
-uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_t* out_day, int32_t* out_frozen) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_t* out_day, int32_t* out_frozen) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -1505,7 +1520,7 @@ uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_t* out_day, int32_t* o
 /// for time T, stay busy until the render thread passes T". `+152` is the render thread's
 /// current frame time. So `+176` sitting still while `+152` climbs past it is the NORMAL
 /// resting state, not a stall; it means nobody has posted a new deadline.
-int RefiiHostGetRenderFence(uint32_t* out_manager, double* out_submitted,
+REFII_HOST_ABI_EXPORT int RefiiHostGetRenderFence(uint32_t* out_manager, double* out_submitted,
                             double* out_retired, uint32_t* out_busy,
                             uint32_t* out_arms) {
     auto* memory = rex::system::kernel_memory();
@@ -1622,7 +1637,7 @@ int RefiiHostGetRenderFence(uint32_t* out_manager, double* out_submitted,
 /// Chain: `dword_83496AB8` -> +8 (the shared context) -> +36 (the manager) -> +4 (the
 /// 400-byte screen, 0 when none). Fills manager, screen, fade, requested, done. Returns 1
 /// when a screen object exists.
-int RefiiHostGetLoadingScreen(uint32_t* out_manager, uint32_t* out_screen, float* out_fade,
+REFII_HOST_ABI_EXPORT int RefiiHostGetLoadingScreen(uint32_t* out_manager, uint32_t* out_screen, float* out_fade,
                               uint32_t* out_requested, uint32_t* out_done) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
@@ -1714,7 +1729,7 @@ int RefiiHostGetLoadingScreen(uint32_t* out_manager, uint32_t* out_screen, float
 ///
 /// Returns 1 when a name was read. The raw pointers are reported too, so a run where the
 /// indirection is wrong shows the addresses rather than silently producing an empty name.
-uint32_t RefiiHostGetLoadingScreenArt(uint32_t* out_type, uint32_t* out_body, char* name,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLoadingScreenArt(uint32_t* out_type, uint32_t* out_body, char* name,
                                       uint32_t capacity) {
     if (out_type != nullptr) *out_type = 0;
     if (out_body != nullptr) *out_body = 0;
@@ -1794,7 +1809,7 @@ uint32_t RefiiHostGetLoadingScreenArt(uint32_t* out_type, uint32_t* out_body, ch
 /// Distinct from `game + 0x104`, "a level change is pending", and from the Lua `IsLevelLoading`,
 /// which compares the front gameflow command's type id to 4 and is therefore FALSE during a
 /// load-from-save (type 5).
-uint32_t RefiiHostWorldIsReady(void) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostWorldIsReady(void) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -1964,7 +1979,7 @@ static void apply_world_build_hold(const uint8_t* base) {
 /// Every hop is null before `Game_InitDatabases` has run, so each is checked. Returns 0 when
 /// the world is down, mid-load, or does not exist yet — all three mean the same thing to a
 /// host: do not mount against it.
-uint32_t RefiiHostWorldIsActive(void) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostWorldIsActive(void) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -2009,7 +2024,7 @@ uint32_t RefiiHostWorldIsActive(void) {
 ///
 /// Writes `<count> node(s): vtable@node ...` and never fails loudly — an empty or unreadable
 /// queue is itself the answer.
-uint32_t RefiiHostDescribeGameFlowQueue(char* out, uint32_t capacity) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostDescribeGameFlowQueue(char* out, uint32_t capacity) {
     if (out == nullptr || capacity == 0) {
         return 0;
     }
@@ -2102,7 +2117,7 @@ uint32_t RefiiHostDescribeGameFlowQueue(char* out, uint32_t capacity) {
 /// 1000 ms in state 9 — an arbitrarily long load is the designed case. Audio keeps running
 /// because state 7 is a poll on a thread that keeps ticking and the mixer is not one of the
 /// title's own threads.
-void RefiiHostSetWorldBuildPending(uint32_t pending) {
+REFII_HOST_ABI_EXPORT void RefiiHostSetWorldBuildPending(uint32_t pending) {
     g_world_build_pending.store(pending != 0u, std::memory_order_relaxed);
 
     auto* memory = rex::system::kernel_memory();
@@ -2172,7 +2187,7 @@ void RefiiHostSetWorldBuildPending(uint32_t pending) {
 /// further down, and this belongs beside `RefiiHostWorldIsReady` — the call it exists to correct.
 static bool read_guest_name(const uint8_t* base, uint32_t global, char* out, uint32_t capacity);
 
-uint32_t RefiiHostGetLevelChange(char* world, char* level, char* entrance, uint32_t capacity,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLevelChange(char* world, char* level, char* entrance, uint32_t capacity,
                                  uint32_t* out_state, uint32_t* out_travel_type,
                                  uint32_t* out_full_load) {
     if (out_state != nullptr) *out_state = 0u;
@@ -2300,7 +2315,7 @@ uint32_t RefiiHostGetLevelChange(char* world, char* level, char* entrance, uint3
 /// Together they say which side of the handover we are on and whether the databases came
 /// back — without which "the guest went quiet" cannot be told apart from "the guest is
 /// loading".
-void RefiiHostGetInitMarkers(uint32_t* out) {
+REFII_HOST_ABI_EXPORT void RefiiHostGetInitMarkers(uint32_t* out) {
     if (out == nullptr) {
         return;
     }
@@ -2374,7 +2389,7 @@ void RefiiHostGetInitMarkers(uint32_t* out) {
 /// vtable word reads 0 is the under-construction case, and terminating on it buries every
 /// later entry. The per-vtable tally is what makes the list actionable: one address standing
 /// for 300 entities is a different decision from thirty standing for a dozen each.
-uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_entities, uint32_t* out_unknown,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_entities, uint32_t* out_unknown,
                               uint32_t* out_unknown_vtables, uint32_t max_unknown_vtables,
                               uint32_t* out_unknown_vtable_count) {
     constexpr uint32_t kEntityStride = 12u;
@@ -2977,7 +2992,7 @@ uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_entities, uint32_t* ou
 ///
 /// Writes `count * 2` words: id then pointer. Returns the number of PAIRS written, which is
 /// capped at `max_pairs`; 0 means the entity has no readable component list.
-uint32_t RefiiHostGetEntityComponents(uint32_t entity, uint32_t* out_pairs,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityComponents(uint32_t entity, uint32_t* out_pairs,
                                       uint32_t max_pairs) {
     if (out_pairs == nullptr || max_pairs == 0u) {
         return 0u;
@@ -3060,7 +3075,7 @@ uint32_t RefiiHostGetEntityComponents(uint32_t entity, uint32_t* out_pairs,
 ///
 /// All offsets are measured from the COMPONENT POINTER. Writes up to `max_hashes` model
 /// resource-name hashes and returns how many were written.
-uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uint32_t* out_hashes,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uint32_t* out_hashes,
                                       uint32_t max_hashes, uint32_t* out_built) {
     if (out_built != nullptr) {
         *out_built = 0u;
@@ -3190,7 +3205,7 @@ static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
 /// `out_torn` is set when the read could not be made coherent — see the snapshot comment in
 /// `RefiiHostReadEntityRig`. The bones are still filled in on a torn read, because the
 /// caller is better placed to decide between last frame's pose and this one.
-uint32_t RefiiHostGetEntityPose(uint32_t entity, float* out_transforms, int32_t* out_parents,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPose(uint32_t entity, float* out_transforms, int32_t* out_parents,
                                 uint32_t max_bones, uint32_t* out_space, uint32_t* out_torn) {
     return RefiiHostReadEntityRig(entity, out_transforms, out_parents, max_bones, out_space,
                                   out_torn, false);
@@ -3209,7 +3224,7 @@ uint32_t RefiiHostGetEntityPose(uint32_t entity, float* out_transforms, int32_t*
 /// something that is already converted.
 ///
 /// Bones come back parent-before-child, so one forward pass composes them.
-uint32_t RefiiHostGetEntityRestPose(uint32_t entity, float* out_transforms,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityRestPose(uint32_t entity, float* out_transforms,
                                     int32_t* out_parents, uint32_t max_bones) {
     return RefiiHostReadEntityRig(entity, out_transforms, out_parents, max_bones, nullptr,
                                   nullptr, true);
@@ -3426,7 +3441,7 @@ static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
 /// The STRIDE is the caller's, not a constant here, so there is exactly one owner of it. A
 /// matching pair of constants either side of a P/Invoke is a thing that drifts, and it
 /// drifts silently: the reader simply starts finding the tail of the previous name.
-uint32_t RefiiHostGetEntityBoneNames(uint32_t entity, char* out_names, uint32_t stride,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityBoneNames(uint32_t entity, char* out_names, uint32_t stride,
                                      uint32_t max_bones) {
     constexpr uint8_t kAnimatedMeshId = 6u;
 
@@ -3533,7 +3548,7 @@ uint32_t RefiiHostGetEntityBoneNames(uint32_t entity, char* out_names, uint32_t 
 ///
 /// Fills 4 slots x 6 words: object, capacity, write cursor (+32), write consumed (+36),
 /// reader consumed (+64), last read (+24). A zero object means the slot is empty.
-void RefiiHostGetSceneStreams(uint32_t* out) {
+REFII_HOST_ABI_EXPORT void RefiiHostGetSceneStreams(uint32_t* out) {
     if (out == nullptr) {
         return;
     }
@@ -3645,7 +3660,7 @@ static bool read_guest_name(const uint8_t* base, uint32_t global, char* out,
 /// Fills three NUL-terminated buffers. Returns 1 when the level name came out non-empty —
 /// that is the one a caller cannot proceed without. The scenario has its own entry point
 /// because adding a parameter here would break the ABI for a value most callers do not want.
-int RefiiHostGetStartLevel(char* world, char* level, char* entrance, uint32_t capacity) {
+REFII_HOST_ABI_EXPORT int RefiiHostGetStartLevel(char* world, char* level, char* entrance, uint32_t capacity) {
     if (capacity == 0) {
         return 0;
     }
@@ -3742,7 +3757,7 @@ static uint32_t world_manager(const uint8_t* base) {
 /// `out_key` receives it. Returns 1 when a level is standing, 0 when none is — which is the
 /// ordinary state before the first load and during the window when the old Level has been
 /// released and the new one not yet constructed.
-uint32_t RefiiHostGetCurrentLevel(char* world, char* level, char* entrance, uint32_t capacity,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCurrentLevel(char* world, char* level, char* entrance, uint32_t capacity,
                                   uint32_t* out_key) {
     if (out_key != nullptr) {
         *out_key = 0u;
@@ -3808,7 +3823,7 @@ uint32_t RefiiHostGetCurrentLevel(char* world, char* level, char* entrance, uint
 /// map is a vector of {u32 key, LHString name} at worldMgr+88..+92. THE SORT IS LAZY — worldMgr
 /// +101 is a dirty flag and `sub_82321228` only sorts when it is set, so a host polling between
 /// an insert and the flush must scan linearly or it will silently miss the entry it wants.
-int RefiiHostGetActiveScenario(char* scenario, uint32_t capacity) {
+REFII_HOST_ABI_EXPORT int RefiiHostGetActiveScenario(char* scenario, uint32_t capacity) {
     if (scenario == nullptr || capacity == 0) {
         return 0;
     }
@@ -3882,7 +3897,7 @@ int RefiiHostGetActiveScenario(char* scenario, uint32_t capacity) {
 ///
 /// Returns how many hashes were written. Hashes are FNV-1 over the layer name's EXACT bytes —
 /// no lowercasing and no separator normalisation, unlike the world+level key.
-uint32_t RefiiHostGetActiveLayers(uint32_t* out, uint32_t capacity) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveLayers(uint32_t* out, uint32_t capacity) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -3944,7 +3959,7 @@ uint32_t RefiiHostGetActiveLayers(uint32_t* out, uint32_t capacity) {
 /// This returns the START scenario. The LIVE one is a world-manager map keyed by
 /// FNV-1(world + level) that Lua's `Layers.ActivateScenario` writes, and it is not exposed
 /// yet — so this is right for a new game and stale once a quest moves the story on.
-int RefiiHostGetStartScenario(char* scenario, uint32_t capacity) {
+REFII_HOST_ABI_EXPORT int RefiiHostGetStartScenario(char* scenario, uint32_t capacity) {
     if (scenario == nullptr || capacity == 0) {
         return 0;
     }
@@ -3964,7 +3979,7 @@ int RefiiHostGetStartScenario(char* scenario, uint32_t capacity) {
     return read_guest_name(base, 0x8349758Cu, scenario, capacity) ? 1 : 0;
 }
 
-uint32_t RefiiHostGetFrontEndState(void) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndState(void) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -4025,7 +4040,7 @@ uint32_t RefiiHostGetFrontEndState(void) {
 /// storage anyway. Reporting a guessed count would be worse than reporting none.
 ///
 /// Fills 11 words. Returns 1 when the front-end GUI is up, 0 otherwise.
-uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
     if (out == nullptr) {
         return 0u;
     }
@@ -4168,7 +4183,7 @@ uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
 /// `LHFile_MakePathOSConformant` and its prefix and slash direction are not established.
 ///
 /// Returns the number of live presentations, which may exceed what fitted.
-uint32_t RefiiHostGetPresentations(uint32_t* words, uint32_t word_capacity,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPresentations(uint32_t* words, uint32_t word_capacity,
                                    char* names, uint32_t name_capacity) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
@@ -4297,7 +4312,7 @@ uint32_t RefiiHostGetPresentations(uint32_t* words, uint32_t word_capacity,
 /// <paramref name="requested_presentation"/> is a `CPresentation*` from
 /// <see cref="RefiiHostGetPresentations"/>, or 0 for the front end's active screen — which is
 /// what every caller meant before the HUD and the in-game menus needed reaching.
-uint32_t RefiiHostGetUiElements(uint32_t requested_presentation,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiElements(uint32_t requested_presentation,
                                 uint32_t* words, uint32_t word_capacity,
                                 uint16_t* text, uint32_t text_capacity) {
     auto* memory = rex::system::kernel_memory();
@@ -4549,7 +4564,7 @@ uint32_t RefiiHostGetUiElements(uint32_t requested_presentation,
 /// game that has started, so the caller must check the vtable before believing `which`.
 ///
 /// Returns 1 when the GUI exists.
-int RefiiHostGetFrontEnd(uint32_t* out) {
+REFII_HOST_ABI_EXPORT int RefiiHostGetFrontEnd(uint32_t* out) {
     if (out == nullptr) {
         return 0;
     }
@@ -4650,7 +4665,7 @@ int RefiiHostGetFrontEnd(uint32_t* out) {
 /// parameterisation as RefiiHostGetUiElements and for the same reason: the front-end chain
 /// this used to hardcode cannot reach the HUD, and `opacity` is exactly the attribute the
 /// in-game UI needs — the game hides the whole HUD by writing it to 0 on one group.
-uint32_t RefiiHostGetUiAttributes(uint32_t requested_presentation,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiAttributes(uint32_t requested_presentation,
                                   const uint32_t* ids, uint32_t id_count,
                                   uint32_t* out, uint32_t out_capacity) {
     if (ids == nullptr || id_count == 0) {
@@ -4804,7 +4819,7 @@ uint32_t RefiiHostGetUiAttributes(uint32_t requested_presentation,
 ///
 /// Fills 8 floats: pos xyz, up xyz... actually 11: pos[3], up[3], fwd[3], hfov, flag.
 /// Returns 1 on a coherent read, 0 if the two reads disagreed or the guest is absent.
-int RefiiHostGetCamera(float* out) {
+REFII_HOST_ABI_EXPORT int RefiiHostGetCamera(float* out) {
     if (out == nullptr) {
         return 0;
     }
@@ -4869,7 +4884,7 @@ int RefiiHostGetCamera(float* out) {
 /// skipping, which is what a button press at the title does. The host stops on 2 rather
 /// than playing to its own end, or it keeps a finished movie over whatever the guest has
 /// moved on to.
-uint32_t RefiiHostMovieState(void) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostMovieState(void) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -4887,7 +4902,7 @@ uint32_t RefiiHostMovieState(void) {
 /// movie visibly ends rather than tens of seconds later.
 ///
 /// Returns the player address retired, or 0 when no movie was live.
-uint32_t RefiiHostFinishMovie(void) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostFinishMovie(void) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -4897,7 +4912,7 @@ uint32_t RefiiHostFinishMovie(void) {
 }
 
 /// The rumble the guest last asked for, 0..65535 per motor. Returns 1 on success.
-int RefiiHostGetVibration(uint32_t user_index, uint32_t* out_left, uint32_t* out_right) {
+REFII_HOST_ABI_EXPORT int RefiiHostGetVibration(uint32_t user_index, uint32_t* out_left, uint32_t* out_right) {
     uint16_t left = 0;
     uint16_t right = 0;
     if (!refii::host::TakeVibration(user_index, &left, &right)) {
@@ -4927,7 +4942,7 @@ int RefiiHostGetVibration(uint32_t user_index, uint32_t* out_left, uint32_t* out
 /// The reservation is released again before returning: this answers whether the space
 /// CAN be taken, and holding 4.5 GB of the editor's address space to prove it would be
 /// its own problem.
-int RefiiHostProbeGuestMemory(char* out, std::size_t capacity) {
+REFII_HOST_ABI_EXPORT int RefiiHostProbeGuestMemory(char* out, std::size_t capacity) {
     try {
         auto memory = std::make_unique<rex::memory::Memory>();
         if (!memory->Initialize()) {
@@ -4971,7 +4986,7 @@ int RefiiHostProbeGuestMemory(char* out, std::size_t capacity) {
 /// ONE PER PROCESS. The runtime owns global state — the guest memory map, the kernel
 /// object table, the MMIO signal handler — so a second boot cannot work and is refused
 /// rather than left to corrupt the first.
-int RefiiHostStart(const char* game_directory, const char* arguments,
+REFII_HOST_ABI_EXPORT int RefiiHostStart(const char* game_directory, const char* arguments,
                    char* out, std::size_t capacity) {
     GuestSession& session = Session();
 
@@ -5014,7 +5029,7 @@ int RefiiHostStart(const char* game_directory, const char* arguments,
     // value wins, which is why the guest still came up on the Xenia-derived graphics
     // system. Suppression is handled in SetupPresentation off the embedded flag instead,
     // where nothing can override it later.
-    ::setenv("REX_EMBED_HEADLESS", "1", 1);
+    SetEnvironmentValue("REX_EMBED_HEADLESS", "1");
 
     // No guest GPU at all.
     //
@@ -5028,7 +5043,7 @@ int RefiiHostStart(const char* game_directory, const char* arguments,
     // but SetupEnvironment loads refii.toml afterwards and the file wins. The env is
     // applied by ApplyEnvironment (REX_<CVAR_NAME>) and, embedded, no refii.toml is
     // found beside the host binary to override it.
-    ::setenv("REX_RENDERER_BACKEND", "plume", 1);
+    SetEnvironmentValue("REX_RENDERER_BACKEND", "plume");
 
     // Pass the game directory as an explicit flag, not just positionally.
     //
@@ -5071,13 +5086,13 @@ int RefiiHostStart(const char* game_directory, const char* arguments,
 }
 
 /// 1 while the guest thread is alive.
-int RefiiHostIsRunning(void) { return Session().running.load() ? 1 : 0; }
+REFII_HOST_ABI_EXPORT int RefiiHostIsRunning(void) { return Session().running.load() ? 1 : 0; }
 
 /// The guest's exit code, or -1 while it is still running or was never started.
-int RefiiHostExitCode(void) { return Session().exit_code.load(); }
+REFII_HOST_ABI_EXPORT int RefiiHostExitCode(void) { return Session().exit_code.load(); }
 
 /// A human-readable status line. Same buffer convention as the probe.
-int RefiiHostStatus(char* out, std::size_t capacity) {
+REFII_HOST_ABI_EXPORT int RefiiHostStatus(char* out, std::size_t capacity) {
     return WriteOut(Session().GetStatus(), out, capacity);
 }
 
@@ -5097,7 +5112,7 @@ int RefiiHostStatus(char* out, std::size_t capacity) {
 /// the previous arrangement (guest on a worker) left that unresolved.
 ///
 /// Returns 1 when the guest is initialised and ready to be stepped.
-int RefiiHostInitialize(const char* game_directory, const char* arguments,
+REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const char* arguments,
                         char* out, std::size_t capacity) {
     HostedGuest& hosted = Hosted();
 
@@ -5182,7 +5197,7 @@ int RefiiHostInitialize(const char* game_directory, const char* arguments,
 /// matters is the wakeup that carries pending UI-thread work, and
 /// ExecutePendingFunctionsFromUIThread services that directly. The queue is still
 /// drained so SDL does not accumulate events nobody reads.
-int RefiiHostStep(void) {
+REFII_HOST_ABI_EXPORT int RefiiHostStep(void) {
     HostedGuest& hosted = Hosted();
     if (!hosted.initialized || hosted.finished) {
         return 0;
@@ -5235,7 +5250,7 @@ int RefiiHostStep(void) {
 }
 
 /// Status of the hosted guest, for diagnostics.
-int RefiiHostHostedStatus(char* out, std::size_t capacity) {
+REFII_HOST_ABI_EXPORT int RefiiHostHostedStatus(char* out, std::size_t capacity) {
     return WriteOut(Hosted().status, out, capacity);
 }
 
@@ -5243,7 +5258,7 @@ int RefiiHostHostedStatus(char* out, std::size_t capacity) {
 ///
 /// Without this the guest's threads are still live when the host process exits, which
 /// is what produced the abort on teardown.
-int RefiiHostShutdown(char* out, std::size_t capacity) {
+REFII_HOST_ABI_EXPORT int RefiiHostShutdown(char* out, std::size_t capacity) {
     HostedGuest& hosted = Hosted();
 
     if (!hosted.initialized) {
@@ -5343,7 +5358,7 @@ int RefiiHostShutdown(char* out, std::size_t capacity) {
     }
 }
 
-int RefiiHostJoin(char* out, std::size_t capacity) {
+REFII_HOST_ABI_EXPORT int RefiiHostJoin(char* out, std::size_t capacity) {
     GuestSession& session = Session();
 
     if (session.running.load()) {

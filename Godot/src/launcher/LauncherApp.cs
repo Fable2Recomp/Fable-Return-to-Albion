@@ -192,7 +192,7 @@ public partial class LauncherApp : Control
 
 		string projectDir = ProjectSettings.GlobalizePath("res://");
 		string staged = Path.Combine(projectDir, "build");
-		if (Directory.Exists(staged))
+		if (Installer.HasBanks(Path.Combine(staged, "assets", "game")))
 		{
 			return staged.TrimEnd(Path.DirectorySeparatorChar);
 		}
@@ -313,7 +313,17 @@ public partial class LauncherApp : Control
 		{
 			foreach (string config in Directory.EnumerateDirectories(builds))
 			{
-				foreach (string sub in new[] { "bin", "", "RelWithDebInfo", "Release", "Debug" })
+				foreach (string sub in new[]
+				{
+					"bin",
+					"",
+					Path.Combine("RelWithDebInfo", "bin"),
+					Path.Combine("Release", "bin"),
+					Path.Combine("Debug", "bin"),
+					"RelWithDebInfo",
+					"Release",
+					"Debug",
+				})
 				{
 					string candidate = sub.Length == 0 ? config : Path.Combine(config, sub);
 					if (File.Exists(Path.Combine(candidate, Platform.ExecutableName)))

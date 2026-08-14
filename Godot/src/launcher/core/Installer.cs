@@ -147,8 +147,28 @@ public static class Installer
         return basePath;
     }
 
+    private const long ActiveGameDataTtlMs = 1000;
+    private static string _activeGameData = string.Empty;
+    private static bool _activeGameDataValid;
+    private static long _activeGameDataStamp;
+
+    public static string GetActiveGameDataDirectoryPath()
+    {
+        long now = Environment.TickCount64;
+        if (_activeGameDataValid && now - _activeGameDataStamp < ActiveGameDataTtlMs)
+        {
+            return _activeGameData;
+        }
+
+        string resolved = ResolveGameDataDirectory();
+        _activeGameData = resolved.Length > 0 ? resolved : GetGameDataDirectoryPath();
+        _activeGameDataValid = true;
+        _activeGameDataStamp = now;
+        return _activeGameData;
+    }
+
     public static string GetLuaWorkspacePath() =>
-        Path.Combine(GetWorkspaceBasePath(GetGameDataDirectoryPath()), "unpacked");
+        Path.Combine(GetWorkspaceBasePath(GetActiveGameDataDirectoryPath()), "unpacked");
 
     public readonly record struct ReinstallStepStatus(bool Banks, bool Lua, bool Shaders);
 
@@ -157,7 +177,11 @@ public static class Installer
     private static bool _stepStatusValid;
     private static long _stepStatusStamp;
 
-    public static void InvalidateReinstallStepStatus() => _stepStatusValid = false;
+    public static void InvalidateReinstallStepStatus()
+    {
+        _stepStatusValid = false;
+        _activeGameDataValid = false;
+    }
 
     public static ReinstallStepStatus GetReinstallStepStatus()
     {
@@ -178,7 +202,7 @@ public static class Installer
     }
 
     public static string GetGameContentDirectoryPath() =>
-        Path.Combine(GetGameDataDirectoryPath(), "data");
+        Path.Combine(GetActiveGameDataDirectoryPath(), "data");
 
     public static bool EnsureRuntimeConfigFile(out string error) =>
         RuntimeConfig.EnsureDefaults(GetRuntimeConfigPath(), out error);
