@@ -26,6 +26,8 @@ public sealed class CallbackManager
 
     public int Count => _callbacks.Count;
 
+    public IReadOnlyList<Callback> Callbacks => _callbacks;
+
     public void AddCallbackObject(Callback callback)
     {
         _callbacks.Add(callback);

@@ -121,7 +121,11 @@ public static class SwfRasterizer
                     bitmap = hostResolver?.Invoke(style.BitmapId);
                     if (bitmap is not null)
                     {
-                        matrix = hostFill.Matrix;
+                        matrix = hostFill.Matrix with
+                        {
+                            TranslateX = style.Matrix.TranslateX,
+                            TranslateY = style.Matrix.TranslateY,
+                        };
                     }
                 }
 

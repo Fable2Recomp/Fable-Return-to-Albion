@@ -381,6 +381,172 @@ public sealed class Keystone : PubGame
         return true;
     }
 
+    public bool BetPhase(bool arch, double ticks, GamePad? pad)
+    {
+        DoAiBets(_boardInfos[0], ticks, arch);
+
+        KeystonePlayer? human = GetHumanPlayer();
+        if (human is null)
+        {
+            return false;
+        }
+
+        if (human.IsAI)
+        {
+            return human.BetsToMake <= 0;
+        }
+
+        if (pad is null || BlockGameInput)
+        {
+            return false;
+        }
+
+        int before = Current;
+        Navigate(pad, ticks, null);
+        if (before != Current)
+        {
+            _blockIncreaseBet = true;
+            _blockDecreaseBet = true;
+            BetLimitReached = false;
+        }
+
+        if (pad.BtnXPressed && (!arch || human.GetBetCount(arch) > 0))
+        {
+            return true;
+        }
+
+        if (pad.RightShoulderPressed)
+        {
+            RePlaceLastBets(arch);
+            return false;
+        }
+
+        PlaceBet(arch, ticks, pad);
+        return false;
+    }
+
+    public void StartArchBetting()
+    {
+        ArchBetsValue = 0;
+        ArchWinsValue = 0;
+        InsideBetsValue = 0;
+        InsideWinsValue = 0;
+        ArchPointsLockedIn = false;
+        UpdateBetStats();
+
+        Current = KeystoneSpace.Out10;
+        Board?.ShowFocus(Current, true, true, null, false);
+        StartAiBetting(true);
+        _blockIncreaseBet = true;
+        _blockDecreaseBet = true;
+    }
+
+    public void StartInsideBetting()
+    {
+        PlayDelayedSound(0, "K_startInsideBetting");
+        InsideBetsValue = 0;
+        InsideWinsValue = 0;
+        InnerPointsLockedIn = false;
+        UpdateBetStatsRecount(false);
+
+        Current = KeystoneSpace.Keystone;
+        Board?.ShowFocus(Current, true, true, null, false);
+        StartAiBetting(false);
+        _blockIncreaseBet = true;
+        _blockDecreaseBet = true;
+    }
+
+    public void EndBettingPhase(bool arch)
+    {
+        SaveLastBets(arch);
+        Board?.ShowFocus(Current, false, true, null, false);
+        FinishAiBets(_boardInfos[0], arch);
+    }
+
+    public void SaveLastBets(bool arch)
+    {
+        KeystonePlayer? human = GetHumanPlayer();
+        if (human is null || human.GetBetAmount(arch) <= 0)
+        {
+            return;
+        }
+
+        int first = arch ? KeystoneSpace.Out3 : KeystoneSpace.FirstInnerSpace;
+        int last = arch ? KeystoneSpace.Out18 : KeystoneSpace.LastInnerSpace;
+        for (int space = first; space <= last; space++)
+        {
+            _lastBets[space] = human.Bets[space];
+        }
+    }
+
+    public bool RePlaceLastBets(bool arch)
+    {
+        KeystonePlayer? human = GetHumanPlayer();
+        if (human is null)
+        {
+            return false;
+        }
+
+        int first = arch ? KeystoneSpace.Out3 : KeystoneSpace.FirstInnerSpace;
+        int last = arch ? KeystoneSpace.Out18 : KeystoneSpace.LastInnerSpace;
+        int cap = arch ? MaxBet : MaxInsideBet;
+
+        int needed = 0;
+        for (int space = first; space <= last; space++)
+        {
+            int wanted = _lastBets[space];
+            int held = human.Bets[space];
+            if (held + wanted > cap)
+            {
+                wanted = cap - held;
+            }
+
+            needed += wanted;
+        }
+
+        if (needed > human.Chips || needed <= 0)
+        {
+            PlayDelayedSound(0, "G_limitReached");
+            return false;
+        }
+
+        for (int space = first; space <= last; space++)
+        {
+            ChangeBet(_lastBets[space], human, space);
+        }
+
+        UpdateBetStatsRecount(arch);
+        Board?.UpdateSpaceStatsBet(Current);
+        PlayDelayedSound(0, Bloodstone ? "BS_chips01Single" : "K_playerBetChanged");
+        return true;
+    }
+
+    public void FinishAiBets(BoardInfo info, bool arch)
+    {
+        for (int seat = 0; seat < SeatsPerTable; seat++)
+        {
+            KeystonePlayer? player = info.GetPlayer(seat);
+            if (player is null || !player.IsAI)
+            {
+                continue;
+            }
+
+            while (player.BetsToMake > 0)
+            {
+                int minimum = arch ? MinBet : MinInsideBet;
+                if (player.Chips < minimum)
+                {
+                    break;
+                }
+
+                MakeAiBet(info, player, seat, arch, true, MaxAiFinishBetsTime);
+                player.BetsToMake--;
+            }
+
+            player.BetsToMake = 0;
+        }
+    }
+
     public void UpdateBetStatsRecount(bool arch)
     {
         KeystonePlayer? player = GetHumanPlayer();

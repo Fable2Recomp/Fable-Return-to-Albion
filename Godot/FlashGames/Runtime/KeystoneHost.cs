@@ -30,6 +30,12 @@ public partial class KeystoneHost : Node
     [Export]
     public int Skin { get; set; }
 
+    [Export]
+    public int BuyIn { get; set; } = 500;
+
+    [Export]
+    public int StartingGold { get; set; } = 2000;
+
     public const int UnresolvedLightingDepth = 3;
 
     private SwfStage _stage = null!;
@@ -38,6 +44,7 @@ public partial class KeystoneHost : Node
     private KeystonePlayer _human = null!;
     private Node2D _view = null!;
     private SwfScene _scene = null!;
+    private PubOverlays _overlays = null!;
     private Label _status = null!;
     private PubStopwatchTimer _timer = null!;
 
@@ -46,11 +53,13 @@ public partial class KeystoneHost : Node
     private double _fps;
     private bool _ready;
     private bool _rolling;
-    private Phase _phase = Phase.Betting;
+    private Phase _phase = Phase.ArchBetting;
 
     private enum Phase
     {
-        Betting,
+        ArchBetting,
+        RevealInside,
+        InsideBetting,
         Rolling,
         Sweep,
         Payouts,
@@ -61,6 +70,8 @@ public partial class KeystoneHost : Node
     public SwfStage Stage => _stage;
 
     public SwfScene Scene => _scene;
+
+    public PubOverlays Overlays => _overlays;
 
     public override void _Ready()
     {
@@ -112,6 +123,7 @@ public partial class KeystoneHost : Node
         };
 
         LoadLocalization(set, game);
+        ApplySettings(set, game);
 
         _keystone.InitBetLimits();
         _keystone.InitBoardInfos();
@@ -151,8 +163,10 @@ public partial class KeystoneHost : Node
             }
         }
 
-        _keystone.BuyIn = 500;
-        _human = new KeystonePlayer(0, false, "Hero", 0, 0, 1, 0, 0) { Chips = 500 };
+        _human = new KeystonePlayer(0, false, "Hero", StartingGold, 0, 1, 0, 0)
+        {
+            Chips = _keystone.BuyIn,
+        };
         _keystone.PlayerInfo.AddPlayer(0, _human);
         _keystone.BoardInfos[0].SetPlayer(0, _human);
         _keystone.SeatAiPlayers();
@@ -179,12 +193,49 @@ public partial class KeystoneHost : Node
         _board.RevealStones(null);
         _keystone.JumpToNewLocation(KeystoneSpace.Out10, false, null);
         _keystone.UpdateBetStats();
-        _keystone.StartAiBetting(true);
+        _keystone.StartArchBetting();
+
+        IPubClip? ticksField = _stage.Root.GetChild("ticks");
+        if (ticksField is not null)
+        {
+            ticksField.Visible = false;
+        }
+
+        _overlays = new PubOverlays(_keystone, _stage.Root);
 
         _scene = new SwfScene(_stage, _view);
         _scene.Sync();
 
         return true;
+    }
+
+    private void ApplySettings(PubGamesSet set, PubGameEntry game)
+    {
+        PubGameSettings? shared = File.Exists(set.SettingsPath)
+            ? PubGamesText.ParseSettings(File.ReadAllBytes(set.SettingsPath), out _)
+            : null;
+
+        string ownPath = Path.Combine(game.Folder, PubGamesCatalog.SettingsFileName);
+        PubGameSettings? own = File.Exists(ownPath)
+            ? PubGamesText.ParseSettings(File.ReadAllBytes(ownPath), out _)
+            : null;
+
+        PubGameConfig.Apply(_keystone, shared, own);
+
+        if (AiPlayers > 0)
+        {
+            _keystone.NumberOfAIPlayers = AiPlayers;
+        }
+
+        if (Skin > 0)
+        {
+            _keystone.SkinIndex = Skin;
+        }
+
+        if (BuyIn > 0)
+        {
+            _keystone.BuyIn = BuyIn;
+        }
     }
 
     private string ResolveRoot()
@@ -247,17 +298,60 @@ public partial class KeystoneHost : Node
         _keystone.Input.Update();
         GamePad pad = _keystone.Input.GetPadState(0) ?? _keystone.Input.GetKeyboardPadState();
 
-        if (_phase == Phase.Betting)
-        {
-            _keystone.DoAiBets(_keystone.BoardInfos[0], ticks, true);
-            SyncAiStacks();
-            _keystone.Navigate(pad, ticks, null);
-            _keystone.PlaceBet(true, ticks, pad);
+        _overlays.Update(ticks, pad);
 
-            if (pad.BtnXPressed && _human.GetTotalBetAmount() > 0)
+        if (_overlays.AbsorbingInput)
+        {
+            _keystone.CallbackManager.DoCallbacks(ticks);
+            _keystone.WinNumbers?.Update(ticks);
+            _stage.Advance();
+            Fit();
+            _scene.Sync();
+            Report(delta, pad);
+            return;
+        }
+
+        if (pad.BackPressed)
+        {
+            _overlays.ShowQuit();
+        }
+        else if (pad.StartPressed)
+        {
+            _overlays.ShowHelp();
+        }
+        else if (pad.BtnYPressed)
+        {
+            _overlays.OpenBank();
+        }
+        else if (pad.LeftTriggerPressed)
+        {
+            _overlays.ToggleQuickTips();
+        }
+        else if (pad.RightTriggerPressed)
+        {
+            _overlays.ShowStandings(true);
+        }
+
+        if (_phase == Phase.ArchBetting)
+        {
+            if (_keystone.BetPhase(true, ticks, pad))
             {
+                _keystone.EndBettingPhase(true);
+                _board.ShowCenter(true, 250, false);
+                _phase = Phase.RevealInside;
+            }
+
+            SyncAiStacks();
+        }
+        else if (_phase == Phase.InsideBetting)
+        {
+            if (_keystone.BetPhase(false, ticks, pad))
+            {
+                _keystone.EndBettingPhase(false);
                 Roll();
             }
+
+            SyncAiStacks();
         }
         else if (_phase == Phase.AwaitContinue && pad.BtnAPressed)
         {
@@ -284,6 +378,10 @@ public partial class KeystoneHost : Node
     {
         switch (_phase)
         {
+            case Phase.RevealInside:
+                _keystone.StartInsideBetting();
+                _phase = Phase.InsideBetting;
+                break;
             case Phase.Rolling:
                 Resolve();
                 break;
@@ -329,22 +427,37 @@ public partial class KeystoneHost : Node
                 }
 
                 _board.RevealStones(null);
+                _board.ShowCenter(false, 250, false);
                 _keystone.StartNextGame();
-                _keystone.StartAiBetting(true);
+                _keystone.StartArchBetting();
             });
 
-            _phase = Phase.Betting;
+            _phase = Phase.ArchBetting;
             return;
         }
 
         _keystone.AdvanceRoll();
-        _keystone.StartAiBetting(true);
-        _phase = Phase.Betting;
+        _board.ShowCenter(false, 250, false);
+        _keystone.StartArchBetting();
+        _phase = Phase.ArchBetting;
     }
 
     public bool IsRolling => _rolling;
 
     public string PhaseName => _phase.ToString();
+
+    public void Advance(bool arch)
+    {
+        _keystone.EndBettingPhase(arch);
+        if (arch)
+        {
+            _board.ShowCenter(true, 250, false);
+            _phase = Phase.RevealInside;
+            return;
+        }
+
+        Roll();
+    }
 
     public void Collect()
     {
@@ -450,16 +563,44 @@ public partial class KeystoneHost : Node
             (pad.BtnX ? "X" : "-") + (pad.BtnY ? "Y" : "-") +
             (pad.LeftShoulder ? " LB" : "") + (pad.RightShoulder ? " RB" : "");
 
+        if (_overlays.AbsorbingInput)
+        {
+            _status.Text =
+                $"{device}   {_fps:F1} fps\n" +
+                (_overlays.NeedChipsShowing
+                    ? "not enough chips - A visits the bank  B cancels"
+                    : _overlays.HelpShowing
+                    ? $"how to play {_overlays.HelpSection}/{_overlays.HelpSectionCount}" +
+                      "  left/right pages  B closes"
+                    : _overlays.CashOutShowing
+                    ? "cash out - A confirms and ends the session"
+                    : _overlays.QuitShowing
+                    ? "quit? A confirms  B cancels"
+                    : _overlays.StandingsShowing
+                    ? "session stats - release RT or B closes"
+                    : _overlays.QuickTipsShowing
+                    ? "odds table - release LT or B closes"
+                    : _overlays.BankSubShowing
+                        ? $"left/right sets amount: {_overlays.SliderValue}   A confirms  B cancels"
+                        : $"bank: {_overlays.SelectedOption}   up/down  A selects  B closes") +
+                $"\nchips {_human.Chips}  gold {_human.Gold}  debt {_human.Debt}  " +
+                $"credit {_overlays.Bank.GetCredit()}";
+            return;
+        }
+
         string hint = _phase switch
         {
+            Phase.ArchBetting => _human.GetBetCount(true) > 0
+                ? "X moves to inside betting   RB repeats last bets"
+                : "bet the arch with A   RB repeats last bets",
+            Phase.RevealInside => "revealing inner board",
+            Phase.InsideBetting => "bet inside, X to roll   RB repeats last bets",
             Phase.Rolling => "rolling...",
             Phase.Sweep => "clearing losing bets",
             Phase.Payouts => "paying out",
             Phase.AwaitContinue => "press A to collect",
             Phase.Collect => "collecting",
-            _ => _human.GetTotalBetAmount() > 0
-                ? "X rolls the dice"
-                : "place a bet with A first",
+            _ => "betting",
         };
 
         _status.Text =

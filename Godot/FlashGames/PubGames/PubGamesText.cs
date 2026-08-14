@@ -13,6 +13,8 @@ public sealed class PubGameSetting
 
     public string Type { get; init; } = string.Empty;
 
+    public string Section { get; init; } = string.Empty;
+
     public string Value { get; init; } = string.Empty;
 
     public List<string> Items { get; } = new();
@@ -22,6 +24,22 @@ public sealed class PubGameSetting
 
 public sealed class PubGameSettings
 {
+    public List<PubGameSetting> All { get; } = new();
+
+    public Dictionary<string, PubGameSetting> Section(string section)
+    {
+        var map = new Dictionary<string, PubGameSetting>(StringComparer.OrdinalIgnoreCase);
+        foreach (PubGameSetting setting in All)
+        {
+            if (string.Equals(setting.Section, section, StringComparison.OrdinalIgnoreCase))
+            {
+                map[setting.Name] = setting;
+            }
+        }
+
+        return map;
+    }
+
     public Dictionary<string, PubGameSetting> Settings { get; } =
         new(StringComparer.Ordinal);
 }
@@ -105,7 +123,7 @@ public static class PubGamesText
         }
 
         var settings = new PubGameSettings();
-        foreach (XElement element in document.Root.Elements())
+        foreach (XElement element in document.Root.Descendants())
         {
             string? name = element.Attribute("name")?.Value;
             if (string.IsNullOrEmpty(name))
@@ -116,6 +134,7 @@ public static class PubGamesText
             var setting = new PubGameSetting
             {
                 Name = name!,
+                Section = element.Parent?.Name.LocalName ?? string.Empty,
                 Type = element.Attribute("type")?.Value ?? string.Empty,
                 Value = element.Attribute("value")?.Value ?? string.Empty,
             };
@@ -126,6 +145,7 @@ public static class PubGamesText
             }
 
             settings.Settings[name!] = setting;
+            settings.All.Add(setting);
         }
 
         return settings;
