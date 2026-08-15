@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Godot;
+using Refii.Core;
 using Refii.Ui;
 
 namespace Refii.Launcher.Tools;
@@ -57,12 +58,18 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 		base.OnLoaded();
 
 		DumpElementCountsIfRequested();
+		DumpAttributesIfRequested();
+		DumpBindingsIfRequested();
+		DumpMenuIfRequested();
+		DumpTreeIfRequested();
 		CaptureIfRequested();
 	}
 
 	protected override void OnScreenShown(
 		Engine_UiScreen screen, Engine_UiSceneBuilder builder, Camera3D camera)
 	{
+		DriveValuesIfRequested(screen, builder);
+		DumpWidescreenIfRequested(screen, builder);
 		DumpSlides(screen);
 		DumpQuads(screen);
 		DumpSliceGeometry();
@@ -100,7 +107,7 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 	/// how many of them are spatial.
 	///
 	/// Unique hashes against the total is the number that matters: they are far apart on the
-	/// title screen, which is why the live state is keyed by ORDINAL and not by name hash.
+	/// title screen, which is why the live state is keyed by ordinal and not by name hash.
 	/// </summary>
 	private void DumpElementCountsIfRequested()
 	{
@@ -119,6 +126,318 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 		GD.Print($"[ui] elements={probe.Document.Elements.Length} " +
 			$"unique-hashes={hashes.Count} spatial={spatial} " +
 			$"slides={probe.Document.Slides.Length}");
+	}
+
+	/// <summary>
+	/// With <c>REFII_UI_ATTRS=&lt;name&gt;</c>, prints every element carrying that attribute and
+	/// the value it carries. <c>REFII_UI_ATTRS=*</c> prints every attribute of every element.
+	///
+	/// How a live value finds its widget: the in-game HUD has no layout script and no table on
+	/// our side naming the health bar. An element carries <c>MeterName = "PlayerHealth"</c> and
+	/// the runtime registers it under a hash of that string, so the binding is authored in the
+	/// file and this reads it out.
+	///
+	/// An attribute this dump names but <see cref="Engine_BgfAttributeNames"/> does not know
+	/// still resolves, because the lookup is a forward hash of the name asked for rather than a
+	/// reverse lookup of the id.
+	/// </summary>
+	private void DumpAttributesIfRequested()
+	{
+		if (System.Environment.GetEnvironmentVariable("REFII_UI_ATTRS") is not { } want ||
+			want.Length == 0 || CurrentScreen is not { } probe)
+			return;
+
+		Engine_BgfDocument doc = probe.Document;
+		bool all = want == "*";
+		uint id = all ? 0u : Engine_GameHash.AttributeId(want);
+		int found = 0;
+
+		for (int i = 0; i < doc.Elements.Length; i++)
+		{
+			BgfElement e = doc.Elements[i];
+			foreach (BgfAttribute a in e.Attributes)
+			{
+				if (!all && a.Id != id)
+					continue;
+
+				// The string form is the one that matters for a binding — a meter name is a
+				// string index into the file's own table, and printing the raw index would say
+				// nothing about which value the element draws.
+				string value = a.Type switch
+				{
+					BgfValueType.String => $"\"{doc.GetString(a.AsStringIndex())}\"",
+					BgfValueType.Float => a.AsFloat().ToString("0.####"),
+					BgfValueType.Bool => a.AsBool().ToString(),
+					_ => a.AsInt().ToString(),
+				};
+
+				GD.Print($"[ui-attr] element {i,5} {probe.Nodes[i].Name,-32} " +
+					$"{Engine_BgfAttributeNames.Describe(a.Id),-18} {value}");
+				++found;
+			}
+		}
+
+		GD.Print($"[ui-attr] '{want}' matched {found} attribute(s) across " +
+			$"{doc.Elements.Length} elements");
+	}
+
+	/// <summary>
+	/// Drives the screen's live values with synthetic numbers, so the in-game UI can be checked
+	/// without a guest.
+	///
+	/// Everything else about the HUD is checkable from a log — the bindings resolve, the hashes
+	/// match, the map walks — and none of that says the fill looks right. The guest does not set a scale at all; it scrubs the
+	/// element's authored animation with a percentage, and <see cref="Engine_UiLiveValues"/>
+	/// approximates that by scaling x from the left pivot. Whether that approximation reads as
+	/// a half-full health bar is a question only a picture answers, and with a live guest it is
+	/// tangled up with whether the guest published anything at all.
+	///
+	/// <c>REFII_UI_METERS=50</c> puts every bound meter at 50%. <c>REFII_UI_METERS=PlayerHealth=25,
+	/// PlayerHealthMax=80</c> names them individually — which is the form that catches a bar
+	/// driven by the wrong neighbour, because the two health bars sit on top of each other and
+	/// look identical when both are given the same value.
+	///
+	/// <c>REFII_UI_TEXTS=1</c> writes each bound text field's own name into it, so a field that
+	/// resolves but never draws is told apart from one that was never bound.
+	/// </summary>
+	private void DriveValuesIfRequested(Engine_UiScreen screen, Engine_UiSceneBuilder builder)
+	{
+		string? meterSpec = System.Environment.GetEnvironmentVariable("REFII_UI_METERS");
+		bool wantTexts = System.Environment.GetEnvironmentVariable("REFII_UI_TEXTS") == "1";
+		if (meterSpec is null && !wantTexts)
+			return;
+
+		Engine_UiBindings bindings = Engine_UiBindings.Read(screen.Document);
+		if (bindings.All.Count == 0)
+		{
+			GD.Print($"[ui-drive] '{screen.Name}' carries no live-value bindings — nothing to drive");
+			return;
+		}
+
+		var values = new Engine_UiLiveValues { Theme = Theme };
+		values.Bind(screen.Document, bindings, builder.ByOrdinal);
+
+		var meters = new Dictionary<uint, float>();
+		if (meterSpec is not null)
+		{
+			// A bare number means "every meter", which is the quick look. Named pairs are the
+			// careful one — see the remarks.
+			if (float.TryParse(meterSpec, out float all))
+			{
+				foreach ((string _, uint hash) in bindings.Names(Engine_UiBindings.Kind.Meter))
+					meters[hash] = all;
+			}
+			else
+			{
+				foreach (string pair in meterSpec.Split(',', StringSplitOptions.RemoveEmptyEntries))
+				{
+					string[] halves = pair.Split('=', 2);
+					if (halves.Length == 2 && float.TryParse(halves[1], out float percent))
+						meters[Engine_GameHash.Fnv1(halves[0].Trim())] = percent;
+					else
+						GD.PushWarning($"[ui-drive] cannot read '{pair}' as name=percent");
+				}
+			}
+		}
+
+		var texts = new Dictionary<uint, string>();
+		if (wantTexts)
+		{
+			foreach ((string name, uint hash) in bindings.Names(Engine_UiBindings.Kind.Text))
+				texts[hash] = name;
+		}
+
+		values.Apply(meters, texts);
+		GD.Print($"[ui-drive] {values.Describe(meters)}");
+
+		// Where each driven bar ended up, in world space. A fill that scaled correctly but sits
+		// behind an opaque frame, or off the canvas, looks like one that never moved.
+		foreach ((string name, uint hash, Node3D? bound, float full) in values.Bars)
+		{
+			if (!meters.ContainsKey(hash) || bound is not { } fill)
+				continue;
+
+			// The fill's name and its authored full extent catch a meter driven the wrong way: a
+			// fill named something other than `BarMiddle` means the slide search found it, and a
+			// `full` that is not 1 means the artist's own limit is honoured.
+			//
+			// Basis column lengths, never `.Scale` — Godot's scale getter multiplies by
+			// `SIGN(determinant)`, and SIGN(0) is 0, so a singular basis reports (0,0,0) on every
+			// axis and hides which one actually went to zero. That is exactly how a bar that
+			// drew nothing once reported a perfect fill percentage.
+			Basis local = fill.Transform.Basis;
+			GD.Print($"[ui-drive]   {name,-22} {meters[hash],6:0.#}%  fill='{fill.Name}' " +
+				$"full={full:0.###}  cols=({local.X.Length():0.###}, {local.Y.Length():0.###}, " +
+				$"{local.Z.Length():0.###}) det={local.Determinant():0.####}  " +
+				$"visible={fill.IsVisibleInTree()}  world={fill.GlobalPosition}");
+		}
+	}
+
+	/// <summary>
+	/// With <c>REFII_UI_WIDE=1</c>, applies the game's WIDE layout and reports what moved.
+	///
+	/// The game ships two layouts per element and the authored one is 4:3, so a screen built
+	/// straight from the file is in the wrong arrangement on a 16:9 display — the HUD's ABXY
+	/// prompts land in the middle of the screen instead of a corner. This prints each override
+	/// with the position BEFORE and AFTER, which is the only form that distinguishes "the wide
+	/// layout was applied" from "the wide layout happened to match".
+	/// </summary>
+	private void DumpWidescreenIfRequested(Engine_UiScreen screen, Engine_UiSceneBuilder builder)
+	{
+		if (System.Environment.GetEnvironmentVariable("REFII_UI_WIDE") != "1")
+			return;
+
+		Engine_UiWidescreen wide = Engine_UiWidescreen.Read(screen.Document);
+		GD.Print($"[ui-wide] {wide.Describe()}");
+
+		var before = new Dictionary<int, Vector3>();
+		foreach (Engine_UiWidescreen.Override entry in wide.Overrides)
+		{
+			if (entry.ParentOrdinal < builder.ByOrdinal.Length &&
+				builder.ByOrdinal[entry.ParentOrdinal] is { } node)
+				before[entry.ParentOrdinal] = node.Position;
+		}
+
+		int moved = wide.Apply(builder.ByOrdinal);
+		GD.Print($"[ui-wide] applied to {moved} element(s)");
+
+		// The three NAMED fixups too, because they are the only hardcoded element PATHS in the
+		// widescreen story and a rename in the file would otherwise fail invisibly.
+		if (Built is not null)
+		{
+			Engine_UiWidescreen.ApplyNamedFixups(Built, out string fixups);
+			GD.Print(fixups.Length > 0
+				? $"[ui-wide] {fixups}"
+				: "[ui-wide] this screen carries none of hudpositioningandscaling.lua's " +
+				  "named fixups, which is expected for anything but the HUD");
+		}
+
+		foreach (Engine_UiWidescreen.Override entry in wide.Overrides)
+		{
+			if (entry.ParentOrdinal >= builder.ByOrdinal.Length ||
+				builder.ByOrdinal[entry.ParentOrdinal] is not { } node ||
+				!before.TryGetValue(entry.ParentOrdinal, out Vector3 was))
+				continue;
+
+			GD.Print($"[ui-wide]   {node.Name,-24} {was} -> {node.Position}" +
+				$"{(entry.ScaleX is { } s ? $"  scale.x={s:0.###}" : string.Empty)}");
+		}
+	}
+
+	/// <summary>
+	/// With <c>REFII_UI_TREE=&lt;name&gt;</c>, prints that element's subtree as the FILE authored it.
+	///
+	/// The gap this fills sits between the two dumps either side of it. <c>REFII_UI_DEBUG</c>
+	/// gives world extents, which say what a quad ended up as; <c>REFII_UI_QUADS</c> gives the
+	/// atlas rectangle, which says what it samples. Neither says what the artist wrote, so a
+	/// quad that comes out the wrong size cannot be blamed on the file or on us.
+	///
+	/// That is exactly the question a nine-slice frame raises. A slice called <c>left</c>
+	/// measuring the full width of its box is either the file saying so — in which case the
+	/// runtime must be differentiating the pieces some other way — or our transform chain
+	/// losing the artist's local scale. The authored numbers decide it in one read.
+	/// </summary>
+	private void DumpTreeIfRequested()
+	{
+		if (System.Environment.GetEnvironmentVariable("REFII_UI_TREE") is not { } want ||
+			want.Length == 0 || CurrentScreen is not { } probe)
+			return;
+
+		int found = 0;
+
+		void Walk(UiNode node, int depth)
+		{
+			string pad = new string(' ', depth * 2);
+			string quad = node.Quad is { } q
+				? $"  quad u[{q.UMin:0.###}..{q.UMax:0.###}] v[{q.VMin:0.###}..{q.VMax:0.###}]" +
+				  $" rgb({q.R:0.##},{q.G:0.##},{q.B:0.##})"
+				: node.Text is not null ? "  text" : string.Empty;
+
+			GD.Print($"[ui-tree] {pad}{node.Name,-22} #{node.Ordinal,-5} " +
+				$"pos({node.PositionX,8:0.##},{node.PositionY,8:0.##},{node.PositionZ,7:0.##}) " +
+				$"scale({node.ScaleX,7:0.####},{node.ScaleY,7:0.####}) " +
+				$"pivot({node.PivotX,6:0.##},{node.PivotY,6:0.##}) " +
+				$"op {node.Opacity,3:0} {(node.Visible ? " " : "OFF")}{quad}");
+
+			foreach (UiNode child in node.Children)
+				Walk(child, depth + 1);
+		}
+
+		foreach (UiNode node in probe.Nodes)
+		{
+			if (!string.Equals(node.Name, want, System.StringComparison.OrdinalIgnoreCase))
+				continue;
+
+			++found;
+			GD.Print($"[ui-tree] --- match {found}: '{node.Name}' #{node.Ordinal}, parent " +
+				$"'{node.Parent?.Name ?? "(root)"}' ---");
+			Walk(node, 0);
+		}
+
+		GD.Print($"[ui-tree] '{want}' matched {found} element(s)");
+	}
+
+	/// <summary>
+	/// With <c>REFII_UI_MENU=1</c>, prints the screen's <c>ExpandableMenu</c> button pool.
+	///
+	/// With no guest attached every button is necessarily EMPTY, and that is the point: it
+	/// establishes the pool's size and that the walk down
+	/// <c>ExpandableMenu/Buttons/MenuItemButtonN/Icon/Title</c> finds the labels, so when the
+	/// running game prints the same line with entries in it the difference is the guest's
+	/// spawns and nothing else.
+	/// </summary>
+	private void DumpMenuIfRequested()
+	{
+		if (System.Environment.GetEnvironmentVariable("REFII_UI_MENU") != "1" ||
+			CurrentScreen is not { } probe)
+			return;
+
+		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons =
+			Engine_ExpandableMenuItems.Read(probe, null, null, null);
+
+		foreach (Engine_ExpandableMenuItems.Button b in buttons)
+			GD.Print($"[ui-menu] {b.Name,-20} element {b.Ordinal,5}  " +
+				$"Icon/Title {b.TitleOrdinal,5}  text {(b.Text is null ? "(none)" : $"\"{b.Text}\"")}");
+
+		GD.Print($"[ui-menu] {Engine_ExpandableMenuItems.Describe(buttons)}");
+
+		// The wheel is a separate widget: the expandable menu has a pool of authored buttons the
+		// guest fills, the wheel has items that stay empty until the template is copied in.
+		GD.Print($"[ui-wheel] {Engine_UiMenuCloning.Describe(probe.MenuCloning)}");
+	}
+
+	/// <summary>
+	/// With <c>REFII_UI_BINDINGS=1</c>, prints the live-value bindings
+	/// <see cref="Engine_UiBindings"/> reads out of the shown screen.
+	///
+	/// The hash is the useful column: it is what the guest publishes each value under, so a
+	/// binding whose hash does not appear in a live meter read is either a value nothing drives
+	/// or a hash computed the wrong way — and those look identical in a screenshot of a bar
+	/// that never moves. Front-end screens print nothing, which is the right answer for them.
+	/// </summary>
+	private void DumpBindingsIfRequested()
+	{
+		if (System.Environment.GetEnvironmentVariable("REFII_UI_BINDINGS") != "1" ||
+			CurrentScreen is not { } probe)
+			return;
+
+		Engine_UiBindings bindings = Engine_UiBindings.Read(probe.Document);
+		foreach (Engine_UiBindings.Binding b in bindings.All)
+		{
+			GD.Print($"[ui-bind] {b.Kind,-12} {b.Name,-24} 0x{b.NameHash:X8} " +
+				$"element {b.ElementOrdinal,5} {b.ElementName}");
+		}
+
+		foreach ((Engine_UiBindings.Kind kind, string _) in Engine_UiBindings.Attributes)
+		{
+			foreach ((string name, uint hash) in bindings.Names(kind))
+			{
+				GD.Print($"[ui-bind] {kind} '{name}' 0x{hash:X8} drives " +
+					$"{bindings.Elements(kind, hash).Count} element(s)");
+			}
+		}
+
+		GD.Print(bindings.Describe());
 	}
 
 	/// <summary>
@@ -323,7 +642,7 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 			path.Reverse();
 
 			// A quad can be absent from the render for two very different reasons: its own
-			// slide entry switched it off, or an ANCESTOR's did and took the subtree with
+			// slide entry switched it off, or an ancestor's did and took the subtree with
 			// it. Naming the ancestor is the difference between "this element is off" and
 			// "this whole component is off", which reads identically on screen.
 			string dropped = string.Empty;
@@ -336,7 +655,11 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 			Texture2D? tex = q.TexturePath.Length == 0 ? null : Textures?.Load(q.TexturePath);
 			string texInfo = q.TexturePath.Length == 0
 				? $"<unresolved hash {q.TextureHash:X8}>"
-				: $"{Path.GetFileName(q.TexturePath.Replace('\\', '/'))} " +
+				// The FULL path, not the leaf. Two textures called `empty.tex` under different
+				// folders are indistinguishable by leaf, and the path is what REFII_TEX_DUMP
+				// takes — so printing the leaf meant the next question always needed another
+				// tool to answer.
+				: $"{q.TexturePath} " +
 				  (tex is null ? "(LOAD FAILED)" : $"{tex.GetWidth()}x{tex.GetHeight()}");
 
 			GD.Print($"  {Truncate(string.Join('/', path), 48),-48} " +

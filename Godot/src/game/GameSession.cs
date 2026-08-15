@@ -4,6 +4,7 @@ using Refii.Assets;
 using Refii.Host;
 using Refii.Core;
 using Refii.Text;
+using Refii.Textures;
 using Refii.Ui;
 
 namespace Refii.Game;
@@ -52,6 +53,15 @@ public partial class GameSession : Node
 
 		GD.Print($"[game] assets: {directory}");
 
+		// BEFORE the mount, because the first texture request follows it immediately and a
+		// backend registered after that point does not retroactively enhance what already
+		// resolved. Off unless REFII_TEX_UPSCALE says otherwise.
+		Engine_TexEnhance.RegisterDefault();
+
+		// Stale epochs and the size budget, on a worker. Started here rather than after the
+		// mount so it overlaps the bank walk instead of adding to it.
+		Engine_TexCache.Maintain();
+
 		// Mount HERE, not in the launcher. The world is built from these, so the session
 		// is the thing that needs them.
 		Engine_GameAssets? assets = Engine_GameAssets.Instance;
@@ -97,9 +107,18 @@ public partial class GameSession : Node
 		// leave a node publishing controller frames at a runtime that never came up.
 		AddChild(new GameInput { Name = "GameInput" });
 
+		// THE PUB GAMES WATCH THE GUEST, they are not launched from here. It publishes a state when
+		// the player sits at a table and then waits for whoever draws the game; this node is that
+		// somebody. Added alongside the input for the same reason — a failed boot must not leave
+		// something polling a runtime that never came up.
+		_pubGames = new GamePubGames { Name = "GamePubGames" };
+		AddChild(_pubGames);
+
 		_driving = true;
 		EmitSignal(SignalName.Started);
 	}
+
+	private GamePubGames? _pubGames;
 
 	public override void _Process(double delta)
 	{
@@ -118,6 +137,24 @@ public partial class GameSession : Node
 		}
 
 		_steps++;
+
+		// Enhanced textures that finished on a background worker get swapped in HERE, on the main
+		// thread, and budgeted so a warm cache completing hundreds of entries at once does not
+		// trade a background cost for a visible hitch. It is a no-op with no upscaler registered.
+		Engine_TexLibrary.Pump();
+
+		// Evidence on a good run, not only a bad one, and often enough that a kill or a crash
+		// still leaves some. It prints only when the counters have moved.
+		if (_steps % 600 == 0)
+		{
+			Engine_TexLibrary.ReportIfChanged();
+			Refii.Models.Engine_MdlMaterial.ReportIfChanged();
+		}
+
+		// AFTER the step, so the state read is the one this frame's guest tick produced rather than
+		// the previous frame's. The pub-game manager is written by that tick.
+		_pubGames?.Poll();
+
 		TraceCamera();
 	}
 
@@ -172,6 +209,9 @@ public partial class GameSession : Node
 
 	public override void _ExitTree()
 	{
+		Engine_TexLibrary.Report();
+		Refii.Models.Engine_MdlMaterial.ReportIfChanged();
+
 		// Always. Leaving the guest's threads live at process exit aborts the process.
 		if (HostBridge.TryGetAbiVersion() is not null)
 		{

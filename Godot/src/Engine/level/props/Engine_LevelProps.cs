@@ -165,6 +165,10 @@ public static class Engine_LevelProps
         var silverKeys = new List<SilverKeyNode>();
         var fxModelPaths = new Dictionary<uint, string>();
 
+        // Placements whose effect must hang off a LIVE node rather than stand in the region.
+        // A silver key bobs and spins; its glow has to go with it.
+        var fxAttachTo = new Dictionary<uint, Node3D>();
+
         AppendEngineLevelBlocks(
             read, Engine_LevelGdb.SiblingWithExtension(gdbPath, ".engine_level"),
             blocks, order, transformKeys, stats);
@@ -376,13 +380,15 @@ public static class Engine_LevelProps
                 };
                 keyNode.SetMeta(Engine_PropStreamer.ModelPathMeta, modelPath);
 
-                var keyFx = new Refii.Fx.FableFx
-                {
-                    Name = "KeyFx",
-                    EffectName = Engine_LevelFx.SilverKeyEffect,
-                    ExposureScale = Engine_LevelFx.SilverKeyFxExposure,
-                };
-                keyNode.AddChild(keyFx);
+                // NO EFFECT IS BUILT HERE ANY MORE. This used to hang a hardcoded
+                // `FX_Key_Silver_01` off the key, which is the effect the DATA states for it
+                // anyway — the ordinary attachment walk resolves it, and it simulates. Building it
+                // by hand meant the key alone missed the `OffsetFromDummy` its own data states,
+                // and it was a second implementation of a resolver we already have.
+                //
+                // The node is handed to Engine_LevelFx instead, which spawns the effect the data
+                // names AS A CHILD of it, so the glow still bobs and spins with the key.
+                fxAttachTo[placement.Hash] = keyNode;
                 silverKeys.Add(keyNode);
                 stats.Instances++;
                 continue;
@@ -639,7 +645,7 @@ public static class Engine_LevelProps
         }
 
         int levelFx = Engine_LevelFx.Spawn(
-            container, view, supplementalViews, placements, fxModelPaths);
+            container, view, supplementalViews, placements, fxModelPaths, fxAttachTo);
         if (levelFx != 0)
         {
             GD.Print($"[props] {level}: {levelFx} level FX spawned from bank");

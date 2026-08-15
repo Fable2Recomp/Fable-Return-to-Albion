@@ -242,6 +242,89 @@ public static class Engine_TexImage
 		return BlockBytesFor(surface.Width, surface.Height, surface.Format);
 	}
 
+	/// <summary>
+	/// Builds a Godot <see cref="Cubemap"/> from a cube <c>.tex</c>, or null.
+	/// </summary>
+	/// <remarks>
+	/// FACE ORDER IS FILE ORDER. The guest samples these with <c>tfetchCube</c>, which takes
+	/// D3D's order (+X, -X, +Y, -Y, +Z, -Z), and Godot's Cubemap takes the same six in the same
+	/// order — so the faces are handed over as they were stored. Nothing in the file asks for a
+	/// permutation, and reordering on a hunch is how a reflection ends up mirrored in a way
+	/// nobody can point at afterwards.
+	/// </remarks>
+	public static Cubemap? TryCreateCubemap(byte[] texBytes, out string error) =>
+		TryCreateCubemap(texBytes, out _, out error);
+
+	/// <summary>As above, also handing back the face images so they can be cached.</summary>
+	public static Cubemap? TryCreateCubemap(
+		byte[] texBytes, out Image[] images, out string error)
+	{
+		images = Array.Empty<Image>();
+
+		if (!TexHeader.TryParse(texBytes, out TexHeader header, out error))
+		{
+			return null;
+		}
+
+		if (!Engine_TexCube.TryDecode(texBytes, header, out TexSurface[] faces, out error))
+		{
+			return null;
+		}
+
+		Image.Format format = ToGodotFormat(faces[0].Format);
+		var decoded = new Image[faces.Length];
+		for (int face = 0; face < faces.Length; ++face)
+		{
+			decoded[face] = Image.CreateFromData(
+				faces[face].Width, faces[face].Height, faces[face].HasMipmaps, format,
+				faces[face].Data);
+		}
+
+		Cubemap? cubemap = CubemapFromImages(decoded, out error);
+		if (cubemap is not null)
+		{
+			images = decoded;
+		}
+
+		return cubemap;
+	}
+
+	/// <summary>
+	/// Wraps six face images as a <see cref="Cubemap"/>.
+	/// </summary>
+	/// <remarks>
+	/// <c>CreateFromImages</c> validates that the faces are square, equal-sized and the same
+	/// format, which is worth more than it looks: it is the check that catches a face table read
+	/// in the wrong order or a chain that decoded short, and it does it before anything reaches a
+	/// shader.
+	/// </remarks>
+	public static Cubemap? CubemapFromImages(IReadOnlyList<Image> faces, out string error)
+	{
+		error = string.Empty;
+
+		if (faces.Count != Engine_TexCube.FaceCount)
+		{
+			error = $"a cube needs {Engine_TexCube.FaceCount} faces, got {faces.Count}";
+			return null;
+		}
+
+		var images = new Godot.Collections.Array<Image>();
+		foreach (Image face in faces)
+		{
+			images.Add(face);
+		}
+
+		var cubemap = new Cubemap();
+		Error created = cubemap.CreateFromImages(images);
+		if (created != Error.Ok)
+		{
+			error = $"Cubemap.CreateFromImages: {created}";
+			return null;
+		}
+
+		return cubemap;
+	}
+
 	public static ImageTexture? TryCreateTexture(byte[] texBytes, out string error) =>
 		TryCreateTexture(texBytes, out _, out error);
 

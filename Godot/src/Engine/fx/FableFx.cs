@@ -34,6 +34,14 @@ public partial class FableFx : Node3D
     private bool _built;
     private string _builtName = string.Empty;
 
+    /// <summary>
+    /// One <see cref="OmniLight3D"/> per <c>CPointLightEntityType</c> the effect carries.
+    ///
+    /// These are why a torch now lights the wall behind it. 72 of the bank's entities are lights
+    /// and every one was parsed and discarded before — the flame drew and lit nothing.
+    /// </summary>
+    private readonly List<OmniLight3D> _lights = new();
+
     private string _effectName = string.Empty;
 
     [Export]
@@ -137,7 +145,49 @@ public partial class FableFx : Node3D
         }
 
         _system.SetLoop(Loop);
-        _system.Update((float)delta);
+        // The node's world transform goes in so the system can hold world-space particles still
+        // when this effect moves — see AttachToRoot. A node bolted to a wall passes the same
+        // transform every frame and the system does nothing with it.
+        _system.Update((float)delta, GlobalTransform);
+
+        // THE LIGHTS FOLLOW THE SAME CLOCK AS THE PARTICLES, so a brazier's glow breathes with
+        // its flame instead of sitting at a constant. The colour and the energy stay SEPARATE —
+        // the guest premultiplies them, but Godot multiplies LightColor by LightEnergy on its way
+        // into LIGHT_COLOR, so splitting them here reproduces the same product and lets the tint
+        // reach our shader unchanged. This is the same split the placed level lights use.
+        for (int i = 0; i < _lights.Count; i++)
+        {
+            Engine_FxSystem.FxLightState state = _system.LightAt(i);
+            OmniLight3D light = _lights[i];
+
+            float range = state.Range;
+            float energy = state.Energy;
+            if (!(range > 0f) || !float.IsFinite(range) || !float.IsFinite(energy))
+            {
+                light.Visible = false;
+                continue;
+            }
+
+            light.Visible = true;
+            light.Position = state.Position;
+            light.OmniRange = range;
+            light.LightColor = state.Colour;
+            light.LightEnergy = energy * ExposureScale;
+
+            // FadeDistance is the CAMERA's distance, not a second radius — the fixtures state a
+            // range of a few metres against a fade of tens, so reading it as a falloff would
+            // start a ramp far outside the light it belongs to.
+            if (state.FadeDistance > 0f)
+            {
+                light.DistanceFadeEnabled = true;
+                light.DistanceFadeBegin = state.FadeDistance;
+                light.DistanceFadeLength = MathF.Max(state.FadeRange, 0.01f);
+            }
+            else
+            {
+                light.DistanceFadeEnabled = false;
+            }
+        }
 
         Camera3D? camera = GetViewport()?.GetCamera3D();
         if (camera is null && Engine.IsEditorHint())
@@ -220,6 +270,13 @@ public partial class FableFx : Node3D
         _meshNodes.Clear();
         _meshData.Clear();
 
+        foreach (OmniLight3D light in _lights)
+        {
+            light.QueueFree();
+        }
+
+        _lights.Clear();
+
         var placement = new FxPlacement { Scale = EffectScale };
         if (Engine_BnkFxLoader.TryParseHashToken(_effectName, out uint hash))
         {
@@ -243,6 +300,26 @@ public partial class FableFx : Node3D
                 ExtraCullMargin = 512f,
             };
             AddChild(_surface);
+        }
+
+        // THE EFFECT'S LIGHTS, built once. Their colour, range and energy are all timelines and
+        // move every frame, but how MANY there are is fixed by the bank.
+        for (int i = 0; i < _system.LightCount; i++)
+        {
+            var light = new OmniLight3D
+            {
+                Name = $"FxLight_{i}",
+
+                // ZERO DECAY, matching the placed level lights exactly. `fable_attenuation`
+                // recovers the guest's linear ramp by inverting Godot's falloff in closed form,
+                // and that inversion is only valid for the zero-decay form — Godot's default of
+                // 1.0 multiplies in a `pow(d, -1)` term that is wrong everywhere and worst close
+                // to the fixture, which for a torch is exactly where you are standing.
+                OmniAttenuation = 0.0f,
+                ShadowEnabled = false,
+            };
+            _lights.Add(light);
+            AddChild(light);
         }
 
         _built = true;

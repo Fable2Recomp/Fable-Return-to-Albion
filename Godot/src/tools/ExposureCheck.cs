@@ -135,7 +135,58 @@ public partial class ExposureCheck : Node
 			name, $"white point maps to ~1.0 (got {atWhite:0.000})",
 			atWhite > 0.5f && atWhite < 1.5f);
 
+		failures += Report(name, exposure);
+
 		return failures;
+	}
+
+	/// <summary>
+	/// Does the diagnostic report describe the curve the loop is actually running?
+	///
+	/// TWO IMPLEMENTATIONS OF ONE CURVE, AND THEY HAVE TO AGREE. <see cref="Engine_AutoExposure"/>
+	/// evaluates it from its own live fields; <see cref="Engine_ExposureReport"/> reconstructs it
+	/// from the eight floats the GPU wrote, which is the only form available during a run. A report
+	/// that quietly diverges from the loop is worse than no report — it would be read as evidence
+	/// about the frame and would be describing arithmetic nothing performs.
+	///
+	/// The clip point is the number the report exists for, so it is asserted against its own
+	/// definition rather than against a constant: the luminance it names must be the one that maps
+	/// to 1.0.
+	/// </summary>
+	private static int Report(string name, Engine_AutoExposure exposure)
+	{
+		float scale = exposure.CurveScale;
+		float invWhiteSq = 1.0f / (exposure.WhitePoint * exposure.WhitePoint);
+		float brightness = exposure.Brightness;
+
+		int failures = 0;
+
+		foreach (float luminance in new[] { 0.01f, 0.1f, 0.5f, 1.0f, 3.9f })
+		{
+			float fromLoop = exposure.MapLuminance(luminance) * brightness;
+			float fromState = Engine_ExposureReport.Output(luminance, scale, invWhiteSq, brightness);
+
+			failures += Require(
+				name,
+				$"report agrees with the loop at L={luminance} " +
+				$"(loop={fromLoop:0.00000} report={fromState:0.00000})",
+				MathF.Abs(fromLoop - fromState) <= 1e-4f * MathF.Max(1.0f, fromLoop));
+		}
+
+		float clip = Engine_ExposureReport.ClipPoint(scale, invWhiteSq, brightness);
+		if (float.IsPositiveInfinity(clip))
+		{
+			// Legitimate on a frame the curve never drives to white — assert that it really does not
+			// rather than letting an infinity pass unexamined.
+			return failures + Require(
+				name, "no clip point, and the curve really does stay under 1.0",
+				Engine_ExposureReport.Output(4.0f, scale, invWhiteSq, brightness) < 1.0f);
+		}
+
+		float atClip = Engine_ExposureReport.Output(clip, scale, invWhiteSq, brightness);
+		return failures + Require(
+			name, $"the clip point maps to 1.0 (L={clip:0.0000} -> {atClip:0.00000})",
+			MathF.Abs(atClip - 1.0f) <= 1e-3f);
 	}
 
 	private static int Require(string scene, string what, bool held)

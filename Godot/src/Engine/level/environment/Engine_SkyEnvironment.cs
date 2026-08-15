@@ -76,7 +76,7 @@ public static class Engine_SkyEnvironment
         SkyFrame frame = Engine_SkyFrame.Evaluate(sky, timeOfDay);
 
         var material = new ShaderMaterial { Shader = shader };
-        ApplyFrame(material, frame);
+        ApplyFrame(material, frame, sky);
 
         var environment = new Godot.Environment
         {
@@ -95,33 +95,26 @@ public static class Engine_SkyEnvironment
         return node;
     }
 
-    public static void ApplyFrame(ShaderMaterial material, SkyFrame frame)
+    public static void ApplyFrame(ShaderMaterial material, SkyFrame frame, SkyTheme theme)
     {
-        (AtmosphereState state, ImageTexture lut) = ComputeDome(frame);
+        (AtmosphereState state, ImageTexture lut) = ComputeDome(frame, theme);
         ApplyDomeUniforms(material, frame, state, lut);
+        ApplyAtmosphereGlobals(frame, theme, state, lut);
     }
 
-    public static (AtmosphereState State, ImageTexture Lut) ComputeDome(SkyFrame frame)
+    /// <summary>
+    /// The atmosphere for this frame — the dome's in-scatter table and the state behind it.
+    /// </summary>
+    /// <remarks>
+    /// TAKES THE THEME, not just the evaluated frame, because the fog does. The Fogging record's
+    /// six fields never reach a SkyFrame — they are not part of what the dome needs — and building
+    /// the inputs here without them left <see cref="AtmosphereState.ScatteringMisc"/> holding a
+    /// FoggingStart of zero for as long as nothing consumed it.
+    /// </remarks>
+    public static (AtmosphereState State, ImageTexture Lut) ComputeDome(
+        SkyFrame frame, SkyTheme theme)
     {
-        var inputs = new AtmosphereInputs
-        {
-            SunIntensity = frame.SkyParams[0],
-            ComplementaryBias = frame.SkyParams[1],
-            BetaRayleighMultiplier = frame.SkyParams[2],
-            BetaMieMultiplier = frame.SkyParams[3],
-        };
-        for (int i = 0; i < 3; i++)
-        {
-            inputs.SkyColour[i] = frame.SkyTop[i];
-            inputs.ComplementaryColour[i] = frame.SkyBottom[i];
-            inputs.SunsetColour[i] = frame.SkySunset[i];
-        }
-
-        inputs.SunDirection[0] = frame.SunDirection[0];
-        inputs.SunDirection[1] = frame.SunDirection[2];
-        inputs.SunDirection[2] = frame.SunDirection[1];
-        inputs.SunDirection[3] = 0f;
-
+        AtmosphereInputs inputs = Engine_SkyAtmosphere.FromFrame(frame, theme);
         AtmosphereState state = Engine_SkyAtmosphere.Compute(inputs);
         float[] lut = Engine_SkyAtmosphere.BuildInScatterLut(state);
 
@@ -144,13 +137,156 @@ public static class Engine_SkyEnvironment
             -frame.SunDirection[0], frame.SunDirection[2], frame.SunDirection[1]));
         material.SetShaderParameter("horizon_distance",
             Engine_SkyAtmosphere.HorizonDistance);
-        material.SetShaderParameter("dome_exposure", 10.0f);
+        material.SetShaderParameter("dome_exposure", Engine_SkyAtmosphere.DomeExposure);
+    }
+
+    /// <summary>
+    /// Publishes the atmosphere to every world surface, as global shader parameters.
+    /// </summary>
+    /// <remarks>
+    /// GLOBAL, NOT PER MATERIAL. The fog is one thing for the whole region and it reaches every
+    /// prop, every wall and the ground — thousands of materials in a populated level, rebuilt as
+    /// props stream in. Setting seven uniforms on each of them once a frame is not a cost worth
+    /// paying for state that never differs between them, and it would also mean every code path
+    /// that constructs a material having to remember to seed it.
+    ///
+    /// `project.godot` declares the parameters. A shader referring to a global that has not been
+    /// declared fails to COMPILE, so the declaration has to be in project settings rather than
+    /// added at runtime — the editor compiles these shaders too.
+    ///
+    /// The sky dome and the water take the same values through their own material uniforms and not
+    /// through these, because they were already wired that way and a sky is drawn once.
+    /// </remarks>
+    public static void ApplyAtmosphereGlobals(
+        SkyFrame frame, SkyTheme theme, AtmosphereState state, ImageTexture lut)
+    {
+        RenderingServer.GlobalShaderParameterSet("atmos_inscatter", lut);
+
+        // The sum, because the sum is what the guest's LUT baker exponentiates — it loads both
+        // registers of the atmospheric constant block and adds them per channel before the exp.
+        RenderingServer.GlobalShaderParameterSet("atmos_beta", new Vector3(
+            state.BetaRayleigh[0] + state.BetaMie[0],
+            state.BetaRayleigh[1] + state.BetaMie[1],
+            state.BetaRayleigh[2] + state.BetaMie[2]));
+
+        // The same axes and the same X flip `ApplyDomeUniforms` sends the dome, because the fog
+        // samples the dome's table and has to agree with it about where the sun is.
+        RenderingServer.GlobalShaderParameterSet("atmos_sun", new Vector3(
+            -frame.SunDirection[0], frame.SunDirection[2], frame.SunDirection[1]));
+
+        // Off the STATE, which has already resolved it against the guest's default of white —
+        // reading `theme.FogColour` here instead would let SkyTheme's own blue-grey stand-in
+        // through on a theme that states no colour.
+        RenderingServer.GlobalShaderParameterSet("atmos_close_fog", new Vector3(
+            state.FogCloseColour[0], state.FogCloseColour[1], state.FogCloseColour[2]));
+
+        RenderingServer.GlobalShaderParameterSet("atmos_range", new Vector4(
+            state.ScatteringMisc[0],
+            Engine_SkyAtmosphere.MaxFogDistance,
+            state.ScatteringMisc[2],
+            Engine_SkyAtmosphere.DomeExposure));
+
+        RenderingServer.GlobalShaderParameterSet("atmos_curve", new Vector3(
+            state.FogOpticalDepthAtFar, state.FogRecipFarRange, state.FogExponent));
+
+        RenderingServer.GlobalShaderParameterSet("atmos_factors", new Vector2(
+            Engine_SkyAtmosphere.FogBlendFactor, Engine_SkyAtmosphere.FogColourFactor));
+
+        RenderingServer.GlobalShaderParameterSet("atmos_fog_on", state.HasFog);
+
+        ReportAtmosphere(state);
+    }
+
+    private static string _lastAtmosphereReport = string.Empty;
+
+    /// <summary>
+    /// Prints the fog actually being PUBLISHED, and what it comes to on the screen.
+    /// </summary>
+    /// <remarks>
+    /// THE BUILD-TIME LOG IS NOT THIS. `Engine_LevelScene` prints the theme resolved when the level
+    /// was constructed, but the theme is re-blended from the day set every frame, so what the
+    /// shader receives can differ from what was logged — reasoning about the picture from the
+    /// build-time numbers is reasoning about a different fog.
+    ///
+    /// It prints the SOLVED CURVE and then the fog percentage at a ladder of distances, because
+    /// the curve's parameters are not readable by eye: an optical depth of 553 and an exponent of
+    /// 1.14 say nothing about whether a wall thirty metres away should be visible, and that is the
+    /// only question worth asking of a screenshot.
+    ///
+    /// Keyed on the formatted line rather than on a timer, so a stable atmosphere prints once and a
+    /// changing one prints every time it actually changes — no rate limit to misread as a
+    /// frequency, and no flood while the sun crosses the sky.
+    /// </remarks>
+    private static void ReportAtmosphere(AtmosphereState state)
+    {
+        if (!state.HasFog)
+        {
+            return;
+        }
+
+        float betaR = state.BetaRayleigh[0] + state.BetaMie[0];
+        float betaG = state.BetaRayleigh[1] + state.BetaMie[1];
+        float betaB = state.BetaRayleigh[2] + state.BetaMie[2];
+
+        var ladder = new System.Text.StringBuilder();
+        foreach (float metres in new[] { 25f, 50f, 100f, 200f, 400f, 800f })
+        {
+            float past = metres - state.ScatteringMisc[0];
+            if (past <= 0f)
+            {
+                ladder.Append($" {metres:0}=0%");
+                continue;
+            }
+
+            float t = MathF.Min(past, Engine_SkyAtmosphere.MaxFogDistance) * state.FogRecipFarRange;
+            float depth = state.FogOpticalDepthAtFar * MathF.Pow(t, state.FogExponent);
+
+            // Green, and the effective transmittance rather than the raw one — the same number the
+            // shader arrives at, damping included.
+            float raw = MathF.Exp(-betaG * depth);
+            float fog = Engine_SkyAtmosphere.FogBlendFactor * (1f - raw);
+            ladder.Append($" {metres:0}={fog * 100f:0}%");
+        }
+
+        // SPLIT, NOT JUST THE SUM. The sum is what the shader exponentiates, so it is what decides
+        // how thick the fog is — but it cannot say WHY, and the two halves fail differently. Mie is
+        // wavelength-independent and Rayleigh goes as 1/lambda^4, so a total whose blue/red ratio
+        // is near one is a Mie-dominated atmosphere: a flat grey haze rather than the blue-biased
+        // extinction that makes distance read as distance. Printing only the sum makes that
+        // indistinguishable from a Rayleigh term that is simply too large.
+        string chroma = betaR > 0f
+            ? $"b/r={betaB / betaR:0.00}"
+            : "b/r=n/a";
+
+        string split =
+            $"rayleigh=({state.BetaRayleigh[0]:0.00000},{state.BetaRayleigh[1]:0.00000}," +
+            $"{state.BetaRayleigh[2]:0.00000}) " +
+            $"mie=({state.BetaMie[0]:0.00000},{state.BetaMie[1]:0.00000},{state.BetaMie[2]:0.00000})";
+
+        string line =
+            $"[fog] published: start={state.ScatteringMisc[0]:0.#} " +
+            $"depth={state.FogOpticalDepthAtFar:0.##} " +
+            $"range={(state.FogRecipFarRange > 0f ? 1f / state.FogRecipFarRange : 0f):0.#} " +
+            $"k={state.FogExponent:0.###} " +
+            $"beta=({betaR:0.00000},{betaG:0.00000},{betaB:0.00000}) " +
+            $"closemax={(state.ScatteringMisc[2] > 0f ? 1f / state.ScatteringMisc[2] : 0f):0.#} " +
+            $"Fx={Engine_SkyAtmosphere.FogBlendFactor:0.##} {chroma} |{ladder}\n" +
+            $"[fog] beta split: {split}";
+
+        if (line == _lastAtmosphereReport)
+        {
+            return;
+        }
+
+        _lastAtmosphereReport = line;
+        GD.Print(line);
     }
 
     public static void ApplyWaterFrame(
         ShaderMaterial material, SkyFrame frame, AtmosphereState state, ImageTexture lut)
     {
         ApplyDomeUniforms(material, frame, state, lut);
+        material.SetShaderParameter("has_dome", true);
 
         var sun = new Vector3(
             -frame.SunDirection[0],

@@ -36,7 +36,7 @@ public sealed class RuntimeSettingsModel
         }
 
         Values = RuntimeConfig.ReadValues(ConfigPath);
-        foreach (RuntimeCVarDefinition definition in RuntimeCVars.Definitions)
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
         {
             if (!Values.ContainsKey(definition.Name))
             {
@@ -59,7 +59,7 @@ public sealed class RuntimeSettingsModel
     public void ResetAllToDefaults()
     {
         Values.Clear();
-        foreach (RuntimeCVarDefinition definition in RuntimeCVars.Definitions)
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
         {
             Values[definition.Name] = definition.DefaultValue;
         }
@@ -73,7 +73,7 @@ public sealed class RuntimeSettingsModel
         var order = new List<string>();
         var byCategory = new Dictionary<string, List<RuntimeCVarDefinition>>(StringComparer.Ordinal);
 
-        foreach (RuntimeCVarDefinition definition in RuntimeCVars.Definitions)
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
         {
             if (!RuntimeConfig.ShouldShowCVar(definition, Values) || !MatchesFilter(definition, filter))
             {

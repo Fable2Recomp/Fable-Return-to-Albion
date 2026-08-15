@@ -58,6 +58,26 @@ public partial class Engine_UiPresentationHost : Node3D
 	private readonly List<IDisposable> _owned = new();
 	private Engine_TextureNameTable? _names;
 
+	/// <summary>
+	/// The hash-to-path table the screens were built with, for a caller that gets a texture
+	/// HASH from the guest rather than a path.
+	///
+	/// The load-game cards are why this is public. Their portraits are chosen at runtime — the
+	/// artist authored a placeholder and the guest stamps the real one's hash into the element
+	/// — so the only way to draw the right picture is to invert that hash, and this is the
+	/// table that already knows how.
+	/// </summary>
+	public Engine_TextureNameTable? TextureNames => _names;
+
+	/// <summary>
+	/// Loads a texture by its game-relative path, through the same cache the screens use.
+	///
+	/// Exposed for a caller resolving a texture the FILE does not name — the load-game card
+	/// portraits, chosen by the guest at runtime. Going through this rather than a second cache
+	/// is the engine rule: one texture reaches the screen one way, whoever asked for it.
+	/// </summary>
+	public Texture2D? LoadTexture(string relativePath) => Textures?.Load(relativePath);
+
 	/// <summary>Where the presentations came from, for diagnostics.</summary>
 	protected string SourceRoot = string.Empty;
 
@@ -65,7 +85,7 @@ public partial class Engine_UiPresentationHost : Node3D
 	protected Engine_UiTextureCache? Textures { get; private set; }
 
 	/// <summary>The bitmap fonts text elements are built with. Null until loading succeeds.</summary>
-	protected Engine_UiFontLibrary? Fonts { get; private set; }
+	public Engine_UiFontLibrary? Fonts { get; private set; }
 
 	/// <summary>
 	/// The localised string database, for anything that has a TAG but no presentation.
@@ -77,7 +97,7 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// the engine rules forbid, and it would have drifted the moment either side learned about
 	/// a language override.
 	/// </summary>
-	protected Engine_BabelDatabase? Strings { get; private set; }
+	public Engine_BabelDatabase? Strings { get; private set; }
 
 	/// <summary>
 	/// The shipped look, for anything drawn ALONGSIDE the presentation rather than out of it.
@@ -175,6 +195,17 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// </summary>
 	public IReadOnlyList<float?[]?>? LiveTransform { get; set; }
 
+	/// <summary>
+	/// Per-element live TEXTURE HASH read from the guest, by element ordinal; 0 where the
+	/// guest states none.
+	///
+	/// The file's texture is only a placeholder wherever the game decides the picture at
+	/// runtime — the dpad's quick-slots are all authored on a grey `empty.tex`, the HUD's
+	/// twenty-four world-icon slots all on one icon — so without this every slot of a set
+	/// draws the same wrong image.
+	/// </summary>
+	public IReadOnlyList<uint>? LiveTextures { get; set; }
+
 	public override void _Ready()
 	{
 		// Streaming from the shipped banks is the real path — no extraction, and the
@@ -254,7 +285,7 @@ public partial class Engine_UiPresentationHost : Node3D
 			// that never reaches the parser is worse than no live value, because the call site
 			// looks like it is following the guest and is not.
 			return Engine_UiScreen.Parse(name, bgf, fac, bsg, _names, Strings, SceneSlide, LiveSlides,
-				LiveText, LiveOpacity, LiveVisible, LiveTransform);
+				LiveText, LiveOpacity, LiveVisible, LiveTransform, LiveTextures);
 		};
 
 		OnLoaded();
@@ -590,6 +621,21 @@ public partial class Engine_UiPresentationHost : Node3D
 		// renders through Godot's default camera and the screen looks empty.
 		Camera3D camera = Engine_UiSceneBuilder.ActivateCamera(Built, UseFramingCamera);
 
+		// WHAT THE FRAME ENGINE DID, per screen. Reported rather than left silent because its
+		// two failure modes look identical on screen and want opposite fixes: no frames found
+		// means the detection missed, and frames found with no border slices means the screen
+		// expects the runtime cloning step the original does and we do not.
+		Engine_UiFrameDriver.Report layout = screen.FrameLayout;
+		if (layout.Frames > 0)
+		{
+			GD.Print($"[ui-frame] {name}: {layout.Frames} frame(s), " +
+				$"{layout.Contents} item(s) placed, {layout.Slots} slice(s), " +
+				$"{layout.Blocks} block(s)" +
+				(layout.WithoutBorder > 0
+					? $", {layout.WithoutBorder} with no border elements to drive"
+					: string.Empty));
+		}
+
 		OnScreenShown(screen, builder, camera);
 	}
 
@@ -613,6 +659,7 @@ public partial class Engine_UiPresentationHost : Node3D
 			IReadOnlyList<float?>? opacity = LiveOpacity;
 			IReadOnlyList<bool>? visible = LiveVisible;
 			IReadOnlyList<float?[]?>? transform = LiveTransform;
+			IReadOnlyList<uint>? textures = LiveTextures;
 			int sceneSlide = SceneSlide;
 
 			try
@@ -622,6 +669,7 @@ public partial class Engine_UiPresentationHost : Node3D
 				LiveOpacity = null;
 				LiveVisible = null;
 				LiveTransform = null;
+				LiveTextures = null;
 
 				// THE SCENE SLIDE GOES TOO, and forgetting it is what left the pattern book
 				// empty. A screen is built on ONE page, and the builder drops an inactive
@@ -640,6 +688,7 @@ public partial class Engine_UiPresentationHost : Node3D
 				LiveOpacity = opacity;
 				LiveVisible = visible;
 				LiveTransform = transform;
+				LiveTextures = textures;
 				SceneSlide = sceneSlide;
 			}
 

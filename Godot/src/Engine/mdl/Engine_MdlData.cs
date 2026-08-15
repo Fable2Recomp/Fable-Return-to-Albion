@@ -191,6 +191,31 @@ public sealed class MdlInfo
 
     public uint Version { get; set; }
 
+    /// <summary>
+    /// The mesh KIND from the header. 4 means grass, which the guest lights differently.
+    /// </summary>
+    /// <remarks>
+    /// Only the value 4 is stated anywhere in the binary — it is compared twice and never
+    /// enumerated — so the other values are unnamed and this stays a raw byte rather than an enum
+    /// we would have to invent names for.
+    /// </remarks>
+    public byte MeshKind { get; set; }
+
+    /// <summary>How the mesh moves in wind: 0 still, 1 a low plant, 2 a tree.</summary>
+    public byte MovementMode { get; set; }
+
+    /// <summary>Whether the mesh is flattened by things colliding with it.</summary>
+    public bool SphereCollisions { get; set; }
+
+    /// <summary>Wind skew amplitude; 0.05 across every shipped mesh that has one.</summary>
+    public float WindAmplitude { get; set; }
+
+    /// <summary>Wind skew speed; 1.0 across every shipped mesh that has one.</summary>
+    public float WindSpeed { get; set; }
+
+    /// <summary>True when the header says this mesh bends in wind at all.</summary>
+    public bool SwaysInWind => MovementMode is 1 or 2;
+
     public uint LodCount { get; set; }
 
     public uint[] LodSizes { get; set; } = Array.Empty<uint>();
@@ -347,6 +372,10 @@ public static class Engine_MdlData
             if (!r.U32(out uint headerSize)) return Fail("truncated header size", out error);
             info.HeaderSize = headerSize;
             if (!r.Skip(88)) return Fail("truncated header block", out error);
+
+            // AND READ WHAT THOSE 88 BYTES SAY. They were skipped wholesale, which threw away the
+            // only statement in the shipped data about which props are vegetation.
+            ReadMovementBlock(data, info);
         }
         else
         {
@@ -637,6 +666,48 @@ public static class Engine_MdlData
             }
         }
     }
+
+    /// <summary>
+    /// The last 28 bytes of the 104-byte header: how a mesh moves, and how it is lit.
+    /// </summary>
+    /// <remarks>
+    /// DECODED FROM THE GUEST'S OWN READER, then confirmed against the shipped data. `sub_82B8F1B8`
+    /// parses the header block and hands the tail to `sub_82B8F568`, whose stream order and widths
+    /// are u8, u8, u8, u8, f32, f32, u8, u8, f32, f32, u8, u8, f32 — 28 bytes, which is exactly the
+    /// end of the header. `sub_8222B600` then reads the first of those as a KIND (`== 4` is grass)
+    /// and `sub_82B201D0` reads the second as the wind gate (`== 1`), with the two floats as its
+    /// amplitude and speed.
+    ///
+    /// CONFIRMED BY THE DATA, because an offset derived by arithmetic is a hypothesis until
+    /// something independent agrees with it. Over 1,117 shipped headers, byte 76 is 4 for exactly
+    /// 12 models and every one of them is a plant — dandelion, nettle, forget-me-nots, nightshade,
+    /// grass_feather, grass_short, wheat. Byte 77 separates as cleanly: 1 is low plants (turnip,
+    /// bracken, bramble) and 2 is trees (beech, oak, silver birch, saplings). The names were used
+    /// to CHECK the decode, never to make it — §3.1 forbids classifying by file name, and this is
+    /// the difference between deriving a fact and inventing one.
+    ///
+    /// The guest tests the mode against 1 on the repeated-mesh path only because trees are drawn by
+    /// `treematerial` instead. We have one surface shader, so both modes reach it here.
+    /// </remarks>
+    private static void ReadMovementBlock(byte[] data, MdlInfo info)
+    {
+        const int Block = 76;
+        if (data.Length < Block + 12)
+        {
+            return;
+        }
+
+        info.MeshKind = data[Block];
+        info.MovementMode = data[Block + 1];
+        info.SphereCollisions = data[Block + 3] != 0;
+        info.WindAmplitude = BigEndianSingle(data, Block + 4);
+        info.WindSpeed = BigEndianSingle(data, Block + 8);
+    }
+
+    /// <summary>The file is big endian, as everything shipped for this console is.</summary>
+    private static float BigEndianSingle(byte[] data, int at) =>
+        System.BitConverter.Int32BitsToSingle(
+            (data[at] << 24) | (data[at + 1] << 16) | (data[at + 2] << 8) | data[at + 3]);
 
     private static bool Fail(string message, out string error)
     {

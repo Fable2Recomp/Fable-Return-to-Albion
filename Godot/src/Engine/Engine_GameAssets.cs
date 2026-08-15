@@ -146,6 +146,10 @@ public partial class Engine_GameAssets : Node
 
 		Refii.Models.Engine_BnkMeshLoader.SetResolver(ReadAllBytes);
 		Refii.Models.Engine_BnkMeshLoader.SetExistsProbe(p => TryGetFile(p, out _));
+
+		// The locomotion state machine is READ from the player's own gamescripts bank rather
+		// than transcribed into this repo, so it needs the mount before it can answer anything.
+		Refii.Animations.Engine_LocomotionStates.SetResolver(ReadAllBytes);
 		if (_meshLoader is null)
 		{
 			_meshLoader = new Refii.Models.Engine_BnkMeshLoader();

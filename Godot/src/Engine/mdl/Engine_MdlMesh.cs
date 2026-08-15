@@ -164,6 +164,12 @@ public static class Engine_MdlMesh
                 Engine_MdlMaterial.TryCreate(geo.Material) ?? Engine_MdlMaterial.Fallback();
             if (material is not null)
             {
+                // WIND COMES FROM THE MESH HEADER, not from the material. The shipped file states a
+                // movement mode per MESH — 1 for a low plant, 2 for a tree — and every one of the
+                // 173 meshes that carry it is vegetation, checked against all 5,446 headers by
+                // src/tools/WindGate.cs. A material cannot know this; the surface it is applied to
+                // can.
+                Engine_MdlMaterial.ApplyWind(material, info);
                 mesh.SurfaceSetMaterial(added, material);
             }
 

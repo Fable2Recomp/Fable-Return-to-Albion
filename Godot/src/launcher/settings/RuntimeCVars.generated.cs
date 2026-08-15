@@ -4,7 +4,7 @@ namespace Refii.Launcher.Core;
 
 public static class RuntimeCVars
 {
-    public const int SourceDefinitionCount = 203;
+    public const int SourceDefinitionCount = 205;
 
     public static readonly IReadOnlyList<RuntimeCVarDefinition> Definitions =
         new List<RuntimeCVarDefinition>
@@ -48,6 +48,8 @@ public static class RuntimeCVars
             new("renderer_imgui_enable", "Renderer/ImGui", RuntimeCVarType.Bool, "false", "Enable the ReXGlue ImGui interface on the Plume renderer path.", null),
             new("renderer_imgui_show_stats", "Renderer/ImGui", RuntimeCVarType.Bool, "false", "Show Refii renderer stats windows when ImGui is enabled.", null),
             new("renderer_imgui_dim_fable", "Renderer/ImGui", RuntimeCVarType.Bool, "false", "Draw a dimmer between Fable 2 and the Plume ImGui overlay.", null),
+            new("fx_live_effects", "Effects", RuntimeCVarType.Bool, "true", "Draw the particle effects the GUEST starts at runtime - spell casts, combat impacts, a fire catching. Off leaves only the effects the level itself states.", null),
+            new("fx_live_report", "Effects", RuntimeCVarType.Bool, "false", "Log a periodic census of the guest's live effects: how many resolve in the particle bank and how many do not.", null),
             new("renderer_imgui_dim_alpha", "Renderer/ImGui", RuntimeCVarType.Double, "0.55", "Opacity for the Plume ImGui dimmer over Fable 2.", null),
             new("renderer_debug_test_triangle", "Renderer/Debug", RuntimeCVarType.Bool, "false", "Draw a Plume-native diagnostic triangle over the game output to validate swapchain and pipeline rendering.", null),
             new("renderer_vulkan_shader_root", "Renderer/Vulkan", RuntimeCVarType.String, "assets/unpacked/shaders/vulkan", "Directory containing compiled Vulkan shader artifacts.", null),

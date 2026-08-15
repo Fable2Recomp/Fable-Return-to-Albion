@@ -509,6 +509,11 @@ function(refii_rexglue_apply_shadow_overrides)
         endif()
 
         refii_rexglue_replace_target_source(rexruntime "src/kernel/xam/xam_user.cpp")
+
+        # XamAlloc's first argument is a FLAGS word, and upstream asserts it is zero. The title
+        # passes 0x10000000 for every overlapped system request, which is what a pub game makes as
+        # it starts — so sitting down at a Keystone table aborted the process. See the shadow copy.
+        refii_rexglue_replace_target_source(rexruntime "src/kernel/xam/xam_info.cpp")
     endif()
 
     if(TARGET rexui)

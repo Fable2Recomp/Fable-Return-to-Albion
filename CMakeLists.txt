@@ -372,6 +372,11 @@ option(REFII_BUILD_VFS_HOOKS "Build the native VFS runtime and hook sources" ON)
 # this ON to build it for that.
 option(REFII_BUILD_RENDERER_HOOKS "Build the native renderer runtime and hook sources" OFF)
 
+# The neural texture upscaler (§8). OFF for the same reason the renderer hooks are: ncnn plus
+# glslang is a large build, and the pipeline works without it — Engine_TexRealEsrgan declines when
+# the library is absent and the classical resampler takes over.
+option(REFII_BUILD_UPSCALER "Build the Real-ESRGAN texture upscaler (ncnn + Vulkan)" OFF)
+
 # The C ABI Godot P/Invokes to host the guest in its own process, rather than spawning
 # `refii` as a child. Cheap to build and it links only the runtime.
 option(REFII_BUILD_HOST_BRIDGE "Build the Godot host bridge over the guest runtime" ON)
@@ -583,6 +588,10 @@ set(REFII_RENDERER_LIBRARIES)
 set(REFII_HOOK_OBJECTS)
 
 add_subdirectory(src/assetbrowser)
+
+if(REFII_BUILD_UPSCALER)
+    add_subdirectory(src/upscaler)
+endif()
 
 if(TARGET refii-default-xex-icon-extractor
         AND EXISTS "${REFII_DEFAULT_XEX_SOURCE}"

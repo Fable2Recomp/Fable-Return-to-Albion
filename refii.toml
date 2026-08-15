@@ -20,9 +20,9 @@ log_max_files = 20
 
 # Runtime
 # Override game data path.
-game_data_root = "C:/Users/pwd12/OneDrive/Documents/GitHub/refii/assets"
+game_data_root = "assets"
 # Override user data path.
-user_data_root = "C:/Users/pwd12/OneDrive/Documents/GitHub/refii/assets/save"
+user_data_root = "assets/save"
 # Override update data path.
 update_data_root = ""
 # Override shader cache path.

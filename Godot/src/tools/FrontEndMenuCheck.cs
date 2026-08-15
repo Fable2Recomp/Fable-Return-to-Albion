@@ -47,6 +47,7 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 	private Engine_FrontEndMenu? _menu;
 	private Engine_FrontEndMenuView? _view;
 	private Engine_FrontEndCardChoice? _cards;
+	private Engine_FrontEndSaveCards? _saveCards;
 	private bool _started;
 
 	public override void _Ready()
@@ -113,6 +114,7 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 		_view.Bind(_menu);
 
 		BuildCardChoice();
+		BuildSaveCards();
 
 		GD.Print(Theme?.Describe() ?? "[menu-check] no theme — the host never loaded game data");
 		GD.Print(_view.Describe());
@@ -139,6 +141,30 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			if (_cards is not null && open != "card")
 			{
 				GD.Print($"[menu-check] {_cards.Describe()}");
+			}
+		}
+		else if (open == "saves")
+		{
+			// The fan, straight away. `REFII_MENU_SAVES=<n>` decides how many cards are on it —
+			// see BuildSaveCards for why a count is the whole of what a stand-in save needs.
+			OpenSaveCards();
+
+			// STEPPED THROUGH THE VIEW'S OWN NAVIGATION rather than set, for the reason the
+			// gender card's capture path gives: the raise table is the thing being checked, and a
+			// capture that placed the cursor directly would pass whether or not left and right
+			// reach it.
+			if (int.TryParse(System.Environment.GetEnvironmentVariable("REFII_MENU_SAVE_NAV"),
+					out int right))
+			{
+				for (int i = 0; i < right; ++i)
+				{
+					// A whole second apart, so the auto-repeat interval has always elapsed and
+					// each call is one move rather than a swallowed repeat.
+					_saveCards?.Navigate(1, 1.0);
+					_saveCards?.Navigate(0, 1.0);
+				}
+
+				GD.Print($"[menu-check] stepped right {right}x — {_saveCards?.Describe()}");
 			}
 		}
 
@@ -241,6 +267,94 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 		}
 
 		Walk(card);
+	}
+
+	/// <summary>
+	/// Stands the Load Game fan up beside the menu, from whatever the backdrop carries.
+	///
+	/// Same factory the game uses, for the same reason the gender card's is shared: a harness
+	/// that built the panel its own way would be evidence about the harness.
+	/// </summary>
+	private void BuildSaveCards()
+	{
+		Node3D? page = Built is null ? null : Engine_FrontEndSaveCards.FindPage(Built);
+
+		_saveCards = Engine_FrontEndSaveCards.FromPresentation(page);
+		_saveCards.Theme = Theme;
+		AddChild(_saveCards);
+
+		GD.Print($"[menu-check] {_saveCards.Describe()}" +
+			$"{(page is null ? " (no 'loadgame' page in the backdrop)" : string.Empty)}");
+	}
+
+	/// <summary>
+	/// Puts the fan up with <c>REFII_MENU_SAVES</c> stand-in saves, three by default.
+	///
+	/// THE SAVES ARE STAND-INS AND SAY SO. With no guest there is nothing to enumerate — the
+	/// count comes from a live `XamContentCreateEnumerator` on the guest's side, which is a call
+	/// rather than a read — so the descriptions are numbered placeholders. What the harness is
+	/// for is the LAYOUT: the fan, the raise, and whether the description text lands under it,
+	/// and none of those needs a real save behind it.
+	///
+	/// THE GAME DOES NOT OPEN IT THIS WAY, and that difference is the harness's, not a shortcut.
+	/// There, "Load Game" dispatches to the guest, the guest enumerates and enters substate 5,
+	/// and only then does the fan go up — because the enumeration is the guest's to do. Here
+	/// there is no substate 5 to wait for, so the keypress stands in for it.
+	/// </summary>
+	private void OpenSaveCards()
+	{
+		if (_saveCards is null)
+		{
+			return;
+		}
+
+		int count = int.TryParse(System.Environment.GetEnvironmentVariable("REFII_MENU_SAVES"),
+			out int wanted) ? wanted : 3;
+
+		var saves = new System.Collections.Generic.List<Engine_FrontEndSaveCards.Save>();
+		for (int i = 0; i < count && i < Engine_FrontEndSaveCards.MaxCards; ++i)
+		{
+			saves.Add(new Engine_FrontEndSaveCards.Save($"Save {i + 1} — stand-in, no guest"));
+		}
+
+		_saveCards.SetSaves(saves);
+		_saveCards.Reset();
+		_saveCards.Visible = true;
+
+		if (_view is not null)
+		{
+			_view.Visible = false;
+		}
+
+		// THE BACKDROP GOES AWAY WHILE THE FAN IS UP, for exactly the reason OpenCards gives:
+		// with no guest nothing hides the pages the presentation is not on, and the cards — which
+		// the file parks at z -10 through -100 — end up behind the dialog box and the friends
+		// page. The presentation stays mounted as the ART SOURCE and stops being the picture.
+		if (Built is not null)
+		{
+			Built.Visible = false;
+		}
+
+		GD.Print($"[menu-check] opened the load fan — {_saveCards.Describe()}");
+	}
+
+	/// <summary>Takes the fan down and gives the rows back, as the game does.</summary>
+	private void CloseSaveCards()
+	{
+		if (_saveCards is not null)
+		{
+			_saveCards.Visible = false;
+		}
+
+		if (_view is not null)
+		{
+			_view.Visible = true;
+		}
+
+		if (Built is not null)
+		{
+			Built.Visible = true;
+		}
 	}
 
 	private void OpenCards()
@@ -440,6 +554,30 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			return;
 		}
 
+		// The fan owns the input while it is up, for the same reason the gender card does. It
+		// takes a DELTA as well as a direction, unlike the card: its left and right are relative
+		// — the cursor walks up to six saves — so it auto-repeats on the guest's own curve, where
+		// the card's two sides are absolute and edge-triggered.
+		if (_saveCards is { Visible: true })
+		{
+			int sideways = 0;
+			if (Input.IsKeyPressed(Key.Left))
+			{
+				sideways = -1;
+			}
+			else if (Input.IsKeyPressed(Key.Right))
+			{
+				sideways = 1;
+			}
+
+			if (_saveCards.Navigate(sideways, delta))
+			{
+				GD.Print(_saveCards.Describe());
+			}
+
+			return;
+		}
+
 		// The direction is sampled every frame and handed to the model, which owns the whole
 		// repeat curve. Reading it here as discrete key events instead would put the timing in
 		// the harness, which is exactly the value we are trying to look at.
@@ -487,6 +625,32 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 				case Key.Escape or Key.B:
 					CloseCards();
 					GD.Print("[menu-check] cancelled the gender card — back to the menu");
+					break;
+			}
+
+			return;
+		}
+
+		if (_saveCards is { Visible: true })
+		{
+			switch (key.Keycode)
+			{
+				case Key.Enter or Key.KpEnter or Key.A:
+					int chosen = _saveCards.Activate();
+					if (chosen < 0)
+					{
+						GD.Print("[menu-check] A on an empty fan does nothing — there is no save " +
+							"to commit, and the guest would never have opened the carousel");
+						break;
+					}
+
+					CloseSaveCards();
+					GD.Print($"[menu-check] would post 'LoadSave:{chosen}' to the guest");
+					break;
+
+				case Key.Escape or Key.B:
+					CloseSaveCards();
+					GD.Print("[menu-check] cancelled the load fan — back to the menu");
 					break;
 			}
 

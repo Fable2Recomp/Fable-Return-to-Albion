@@ -1,8 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using Godot;
-using Refii.Launcher.Core;
+using Refii.Core;
 
 namespace Refii.Game;
 
@@ -31,48 +30,9 @@ public readonly struct GameWindowSettings
 	/// <summary>Where the values came from, for the log line that explains the window.</summary>
 	public string Source { get; init; }
 
-	/// <summary>
-	/// Finds <c>refii.toml</c> by CONVENTION rather than by asking the launcher.
-	///
-	/// <see cref="Installer.GetRuntimeConfigPath"/> resolves against a directory the
-	/// launcher sets at startup, so anything that opens a game window without the launcher
-	/// having run — a debug scene, the editor — silently gets defaults and no indication
-	/// that the file was never read. The staged build directory and the repository root
-	/// are where the file actually lives, so look there too.
-	/// </summary>
-	private static string ResolvePath()
-	{
-		var candidates = new List<string>();
-
-		try
-		{
-			candidates.Add(Installer.GetRuntimeConfigPath());
-		}
-		catch (Exception)
-		{
-			// The launcher's path config is not available; the conventional ones still are.
-		}
-
-		string project = ProjectSettings.GlobalizePath("res://");
-		candidates.Add(System.IO.Path.Combine(project, "build", "refii.toml"));
-		candidates.Add(System.IO.Path.Combine(project, "refii.toml"));
-		candidates.Add(System.IO.Path.GetFullPath(
-			System.IO.Path.Combine(project, "..", "refii.toml")));
-
-		foreach (string candidate in candidates)
-		{
-			if (!string.IsNullOrEmpty(candidate) && System.IO.File.Exists(candidate))
-			{
-				return candidate;
-			}
-		}
-
-		return string.Empty;
-	}
-
 	public static GameWindowSettings Load()
 	{
-		string path = ResolvePath();
+		string path = Engine_RefiiConfig.ResolvePath();
 		if (path.Length == 0)
 		{
 			return new GameWindowSettings
@@ -83,28 +43,19 @@ public readonly struct GameWindowSettings
 			};
 		}
 
-		SortedDictionary<string, string> values;
-		try
-		{
-			values = RuntimeConfig.ReadValues(path);
-		}
-		catch (Exception exception)
-		{
-			GD.PushWarning($"[game] could not read {path}: {exception.Message}");
-			values = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		}
+		IReadOnlyDictionary<string, string> values = Engine_RefiiConfig.Read(out _);
 
 		// window_width/height is the WINDOW; video_mode_width/height is the guest's video
 		// mode. They are separate keys and both are honoured, in that order: a player who
 		// set only the video mode still gets a window that matches it, which is what the
 		// other renderers do rather than opening a 1280x720 window around a 1080p mode.
-		int width = ReadInt(values, "window_width", 0);
-		int height = ReadInt(values, "window_height", 0);
+		int width = Engine_RefiiConfig.Int(values, "window_width", 0);
+		int height = Engine_RefiiConfig.Int(values, "window_height", 0);
 
 		if (width <= 0 || height <= 0)
 		{
-			width = ReadInt(values, "video_mode_width", 0);
-			height = ReadInt(values, "video_mode_height", 0);
+			width = Engine_RefiiConfig.Int(values, "video_mode_width", 0);
+			height = Engine_RefiiConfig.Int(values, "video_mode_height", 0);
 		}
 
 		string source = path;
@@ -120,30 +71,11 @@ public readonly struct GameWindowSettings
 			// Clamped, not trusted. A zero or negative size makes a window that cannot be
 			// found on screen, and the file is user-editable.
 			Size = new Vector2I(Math.Max(320, width), Math.Max(240, height)),
-			Fullscreen = ReadBool(values, "fullscreen", false),
-			Monitor = Math.Max(0, ReadInt(values, "monitor", 0)),
-			Vsync = ReadBool(values, "vsync", true),
+			Fullscreen = Engine_RefiiConfig.Bool(values, "fullscreen", false),
+			Monitor = Math.Max(0, Engine_RefiiConfig.Int(values, "monitor", 0)),
+			Vsync = Engine_RefiiConfig.Bool(values, "vsync", true),
 			Source = source,
 		};
-	}
-
-	private static int ReadInt(IReadOnlyDictionary<string, string> values, string key, int fallback) =>
-		values.TryGetValue(key, out string? raw) &&
-		int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
-			? parsed
-			: fallback;
-
-	private static bool ReadBool(IReadOnlyDictionary<string, string> values, string key, bool fallback)
-	{
-		if (!values.TryGetValue(key, out string? raw))
-		{
-			return fallback;
-		}
-
-		string text = raw.Trim().Trim('"');
-		return text.Equals("true", StringComparison.OrdinalIgnoreCase) ||
-			text == "1" ||
-			(!text.Equals("false", StringComparison.OrdinalIgnoreCase) && text != "0" && fallback);
 	}
 
 	public override string ToString() =>

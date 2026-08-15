@@ -25,26 +25,9 @@ public sealed class LightingFrame
 
 	public float[] DarkeningColour { get; } = { 1.0f, 1.0f, 1.0f };
 
-	public bool HasFog { get; set; }
-
-	public float[] FogColour { get; } = { 0.48f, 0.55f, 0.62f };
-
-	public float FogBegin { get; set; }
-
-	public float FogEnd { get; set; }
-
-	/// <summary>
-	/// How much fog the theme asks for AT <see cref="FogEnd"/>, in 0..1.
-	///
-	/// The guest states a near and a far pair — a distance AND a density at each — so the far
-	/// density is a CEILING, not an implied 1.0. Dropping it and letting the ramp run to full
-	/// occlusion is what turned a stated 40% haze into a wall that swallowed the far half of
-	/// every region.
-	/// </summary>
-	public float FogDensity { get; set; } = 1.0f;
-
-	/// <summary>Density at <see cref="FogBegin"/>, in 0..1. Usually zero.</summary>
-	public float FogNearDensity { get; set; }
+	// NO FOG HERE. It is not a lighting-frame value: the theme's Fogging record drives the
+	// atmosphere, which reaches the world through global shader parameters rather than through
+	// Godot's Environment. See `Engine_SkyAtmosphere.SolveFogCurve`.
 }
 
 public static class Engine_LightingFrame
@@ -84,22 +67,6 @@ public static class Engine_LightingFrame
 
 		Array.Copy(lighting.LightmapColour, result.LightmapColour, 3);
 		Array.Copy(lighting.DarkeningColour, result.DarkeningColour, 3);
-
-		bool fogDistances = sky.HasNearFog && sky.HasFarFog &&
-			float.IsFinite(sky.NearDistance) && float.IsFinite(sky.FarDistance) &&
-			sky.FarDistance > sky.NearDistance && sky.NearDistance >= 0f;
-
-		if (fogDistances)
-		{
-			result.HasFog = true;
-			Array.Copy(sky.FogColour, result.FogColour, 3);
-			result.FogBegin = sky.NearDistance;
-			result.FogEnd = sky.FarDistance;
-			result.FogNearDensity = Math.Clamp(sky.NearDensity, 0f, 1f);
-			result.FogDensity = float.IsFinite(sky.FarDensity) && sky.FarDensity > 0f
-				? Math.Clamp(sky.FarDensity, 0f, 1f)
-				: 1.0f;
-		}
 
 		return result;
 	}

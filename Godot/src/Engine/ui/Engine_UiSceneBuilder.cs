@@ -196,6 +196,14 @@ public sealed class Engine_UiSceneBuilder
 	/// <paramref name="transform"/> is keyed by ordinal, with a null row where the guest states
 	/// nothing for that element, in which case the file's own transform stands.
 	/// </summary>
+	/// <summary>The unit vector for a basis column index, for a basis with nothing left to keep.</summary>
+	private static Vector3 UnitAxis(int axis) => axis switch
+	{
+		0 => new Vector3(1f, 0f, 0f),
+		1 => new Vector3(0f, 1f, 0f),
+		_ => new Vector3(0f, 0f, 1f),
+	};
+
 	public int ApplyLiveTransform(System.Collections.Generic.IReadOnlyList<float?[]?> transform)
 	{
 		int moved = 0;
@@ -207,23 +215,64 @@ public sealed class Engine_UiSceneBuilder
 				continue;
 			}
 
-			Vector3 position = node.Position;
-			Vector3 scale = node.Scale;
+			Transform3D before = node.Transform;
+			Vector3 position = before.Origin;
 
 			if (values.Length > 0 && values[0] is { } x) position.X = x;
 			if (values.Length > 1 && values[1] is { } y) position.Y = y;
 			if (values.Length > 2 && values[2] is { } z) position.Z = z;
-			if (values.Length > 3 && values[3] is { } sx) scale.X = sx;
-			if (values.Length > 4 && values[4] is { } sy) scale.Y = sy;
-			if (values.Length > 5 && values[5] is { } sz) scale.Z = sz;
 
-			if (node.Position == position && node.Scale == scale)
+			// SCALE THROUGH THE BASIS COLUMNS, never through `node.Scale`.
+			//
+			// `Basis.Scale` is derived, and on a SINGULAR basis it lies: Godot recovers each
+			// axis length and multiplies by the determinant's sign, so a basis with one zero
+			// column reports (0,0,0) for ALL THREE axes — the determinant is zero and
+			// `Mathf.Sign(0)` is 0. Read-modify-write of that property therefore takes the two
+			// axes the guest did NOT state down to zero along with it, and the property reads
+			// back the value just written, so the collapse is invisible to a log.
+			//
+			// This is not hypothetical on this screen set. Every meter bar in `hud.bgf` is
+			// authored `scale.x = 0` — an empty bar the fill animation opens — so any of them
+			// receiving a live scale on one axis had the other two flattened. The same trap has
+			// already cost this project two turns elsewhere; `Engine_UiWidescreen.SetScaleX`
+			// writes columns for exactly this reason.
+			//
+			// A zero column also has no direction left to scale along, so the axis is rebuilt
+			// from the cross product of the other two — which keeps the basis right-handed
+			// rather than picking an arbitrary unit vector.
+			Basis basis = before.Basis;
+			bool scaled = false;
+			for (int axis = 0; axis < 3; ++axis)
+			{
+				if (values.Length <= 3 + axis || values[3 + axis] is not { } length)
+				{
+					continue;
+				}
+
+				Vector3 column = basis[axis];
+				if (column.LengthSquared() <= 0.000001f)
+				{
+					column = basis[(axis + 1) % 3].Cross(basis[(axis + 2) % 3]);
+				}
+
+				basis[axis] = column.LengthSquared() > 0.000001f
+					? column.Normalized() * length
+					: UnitAxis(axis) * length;
+				scaled = true;
+			}
+
+			if (!scaled && before.Origin == position)
 			{
 				continue;
 			}
 
-			node.Position = position;
-			node.Scale = scale;
+			var after = new Transform3D(basis, position);
+			if (after == before)
+			{
+				continue;
+			}
+
+			node.Transform = after;
 			++moved;
 		}
 
@@ -479,6 +528,16 @@ public sealed class Engine_UiSceneBuilder
 				// Insetting to texel CENTRES is the standard remedy and costs half a texel of
 				// the cell's outermost row, which at these sizes is well under a screen pixel.
 				// Skipped for a degenerate rect, where there is no inside to move into.
+				// READ AT BUILD TIME, and the texture can grow afterwards: an enhanced UI texture
+				// has its image replaced in place, so a material built at 512 keeps an inset sized
+				// for 512 while sampling 1024. That over-insets by half an ORIGINAL texel — it
+				// crops very slightly more of the cell rather than letting the neighbour bleed in,
+				// so it errs the safe way and is well under a screen pixel either way. Worth
+				// knowing before anyone measures a cell edge and finds it half a texel tight.
+				//
+				// Nothing else here depends on the texture's size. The quad is the shared mesh
+				// scaled by the node transform, so an enhancement changes resolution and not
+				// layout.
 				float du = 0.5f / Mathf.Max(tex.GetWidth(), 1);
 				float dv = 0.5f / Mathf.Max(tex.GetHeight(), 1);
 				float uSpan = q.UMax - q.UMin;

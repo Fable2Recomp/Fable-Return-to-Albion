@@ -23,6 +23,7 @@ public partial class SettingsPanel : VBoxContainer
 	private VBoxContainer _list = null!;
 	private bool _built;
 
+
 	public void Configure(Font? font, int fontSize, SmartStyle style)
 	{
 		_font = font;
@@ -41,6 +42,16 @@ public partial class SettingsPanel : VBoxContainer
 
 		Build();
 	}
+
+	/// <summary>
+	/// Writes any pending edits to <c>refii.toml</c>.
+	/// </summary>
+	/// <remarks>
+	/// For the asset prebuild, which has to build for the settings the player MEANT rather than the
+	/// ones that happen to be on disk — they will usually have just chosen a look in this panel and
+	/// then gone to the reinstall tab to build it.
+	/// </remarks>
+	public void SaveIfDirty() => _model.Save();
 
 	private void Build()
 	{

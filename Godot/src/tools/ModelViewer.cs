@@ -392,8 +392,8 @@ public partial class ModelViewer : Node3D
 			}
 
 			// Override on the INSTANCE, never on the mesh's own material: the material is
-			// shared through Engine_MdlMaterial's cache, so editing it would silently change
-			// every other model using the same texture set.
+			// built over textures shared through Engine_TexLibrary, so editing it would silently
+			// change every other model using the same texture set.
 			if (_mode == DisplayMode.Full)
 			{
 				_instance.SetSurfaceOverrideMaterial(surface, null);

@@ -45,6 +45,34 @@ public sealed class ChipStackMulti : IAnimValue
         Value = 0;
     }
 
+    /// <summary>Fades the whole stack, shadows included.</summary>
+    /// <remarks>
+    /// ALL SIX CLIPS. A multi-stack is three columns of chips with a shadow under each, and the
+    /// shadows are siblings rather than children — fading only the columns leaves three shadows
+    /// lying on the felt under nothing.
+    /// </remarks>
+    public void SetAlpha(float alpha)
+    {
+        _stack1.Alpha = alpha;
+        _stack2.Alpha = alpha;
+        _stack3.Alpha = alpha;
+
+        if (_shadow1 is not null)
+        {
+            _shadow1.Alpha = alpha;
+        }
+
+        if (_shadow2 is not null)
+        {
+            _shadow2.Alpha = alpha;
+        }
+
+        if (_shadow3 is not null)
+        {
+            _shadow3.Alpha = alpha;
+        }
+    }
+
     public int Owner { get; set; }
 
     public double Angle1 { get; set; }

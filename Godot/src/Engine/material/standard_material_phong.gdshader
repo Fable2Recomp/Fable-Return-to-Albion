@@ -6,6 +6,7 @@ shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_disabled, ambient_light_disabled;
 
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
+#include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 
 // NOT source_color. Fable decodes its colour textures by SQUARING them, not with the sRGB
 // transfer function — PSHADER_STANDARDMATERIAL_..._AMB1, recompiled out of Shaders.sbk, reads
@@ -143,6 +144,16 @@ void fragment() {
         // surface glow at whatever full strength its map happened to be authored at.
         vec3 selfIllum = texture(emission_tex, UV).rgb;
         EMISSION += selfIllum * selfIllum * self_illum_scale;
+    }
+
+    // LAST, because it attenuates everything above it — and the specular tint with it, which is
+    // why this family reproduces the guest's line exactly where `standard_material` cannot. The
+    // tint is a varying handed to `light()`, so scaling it here scales the lobe per channel.
+    vec3 fog_t;
+    vec3 fog_c;
+    if (fable_atmosphere_terms(VERTEX, INV_VIEW_MATRIX, fog_t, fog_c)) {
+        fable_atmosphere_apply(fog_t, fog_c, alb.a, ALBEDO, EMISSION);
+        v_specular *= fog_t;
     }
 }
 

@@ -9,6 +9,7 @@ set(REFII_HOOK_SOURCES
     ${REFII_VFS_HOOK_SOURCES}
     ${REFII_RENDERER_HOOK_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/src/xstorage_hooks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/unlock_hooks.cpp
 )
 
 set(REFII_HOOK_INCLUDE_DIRS

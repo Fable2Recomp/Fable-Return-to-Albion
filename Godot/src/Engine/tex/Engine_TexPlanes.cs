@@ -105,6 +105,19 @@ public static class Engine_TexPlanes
             int blocksWide = Math.Max(1, (width + 3) / 4);
             int blocksHigh = Math.Max(1, (height + 3) / 4);
 
+            // 32 IS NOT A TUNING NUMBER, it is the macro-tile width, and the file sizes force the
+            // branch rather than a preference choosing it.
+            //
+            // Untile addresses through `alignedWidth = (widthBlocks + 31) & ~31`. At 32 blocks or
+            // more that alignment is a no-op for these power-of-two textures, so untiling reads
+            // exactly the bytes that are there. Below 32 it rounds UP to 32, and a tiled payload
+            // would then have to be alignedWidth * alignedHeight * stride bytes — but the shipped
+            // records store the unaligned count. A 32x32 BC1 cube face is 8x8 blocks and its plane
+            // says size=512 = 64 * 8; tile-padded it would be 8,192. The bytes for a tiled small
+            // texture simply are not in the file, so it cannot be one.
+            //
+            // Untiling anyway would not fail loudly either: the loop skips blocks that fall
+            // outside the buffer, so it would quietly leave most of the image zeroed.
             surface = blocksWide >= 32
                 ? Engine_Xbox360Tiling.Untile(payload, blocksWide, blocksHigh, stride)
                 : payload;

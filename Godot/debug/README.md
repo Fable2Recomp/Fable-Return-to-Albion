@@ -26,6 +26,8 @@ Add `--headless` for anything that does not need to draw. The two viewers do.
 | `ui_export` | Converts every GUI screen and texture; prints the pass/fail counts that gate UI work. |
 | `ui_viewer` | Renders one converted GUI screen. |
 | `front_end_menu` | Does the Godot-owned front end LOOK and FEEL like the original? Drives the row menu and the boy/girl gender card with no guest. The slot bow, the auto-repeat curve and the card poses are all read out of shipped data and all look plausible when wrong, so a still is not enough — this is the only place they can be watched moving. |
+| `locomotion_check` | Does the hero locomotion state machine read correctly out of the shipped Lua, and does it move? Asserts the values and defaults against the binary's own reader, runs a speed ramp through the machine, and measures how many of the states' clip names the animation catalogue can actually resolve. |
+| `locomotion_live` | Does the LIVE guest publish the locomotion state we think it does? Boots the guest, starts a game, and checks every published state name against the 41 the shipped script defines — a wrong pointer hop matches none of them. |
 | `host_check` | Is the native host bridge present and at the expected ABI? |
 | `host_boot` | Does the guest boot in-process, running its own loop? |
 | `host_driven` | Does the guest run with GODOT driving it a slice per frame? The plan's "refii as a library". |
@@ -52,8 +54,30 @@ Add `--headless` for anything that does not need to draw. The two viewers do.
   unset, the menu is labels only and the card draws stand-ins
 - `REFII_MENU_OPEN=card` — open the gender card immediately, so a capture run does not have to
   synthesise a keypress to reach it
+- `REFII_MENU_OPEN=saves` — open the Load Game card fan instead. The game opens it on the
+  guest reaching substate 5, which is a state no harness can reach, so the keypress stands in
+- `REFII_MENU_SAVES=<n>` — how many stand-in saves are on the fan, three by default. Worth
+  sweeping 2 through 6: the fan is CENTRED by a base slot that changes at 2 and at 5, and a
+  short list laid out left-aligned is the failure this exists to catch
+- `REFII_MENU_SAVE_NAV=<n>` — step the fan's cursor right n times before the capture, so a
+  still can show which card drops out of the row. The selected card is the one that does NOT
+  lift, so a capture of the default cursor cannot tell a working panel from an inverted one
 - `REFII_MENU_SHOT` — write the viewport here and quit (outside the repository; a render of the
   game's card art is derived data)
+
+`ui_viewer` also takes:
+
+- `REFII_UI_SCREEN` — which of the 52 screens to stand up; `REFII_UI_LIST=1` names them all
+- `REFII_UI_SLIDES=1` — every owning element's slides and the attribute writes each one makes.
+  This is how a panel's real layout is read: the artist's authored transform is only a starting
+  frame, and the slides state where things actually go
+- `REFII_UI_ATTRS=<name>` — every element carrying that attribute, and its value.
+  `REFII_UI_ATTRS='*'` dumps all 41,659 of them. Set it to `MeterName` on `hud` to see how the
+  in-game HUD binds its live values: `Bar` carries `MeterName "PlayerHealth"`, and the fill
+  under it is authored `scale.x = 0` because the runtime is what fills it
+- `REFII_UI_BINDINGS=1` — the same thing as a table, through `Engine_UiBindings`, with the
+  FNV-1 hash each name is published under. `hud` has 113 bound elements; the front-end screens
+  have none, which is correct for them rather than a failure
 
 `tex_mip_probe` takes:
 
@@ -73,6 +97,28 @@ Together they separate "mipmapping is involved" from "the levels we generated ar
 That distinction is what found the actual bug behind green fringing on the Crucible: not
 the tail, but raw (`comp=7`) shipped levels being copied without untiling.
 
+`level_viewer` also takes:
+
+- `REFII_LEVEL` — level name; `REFII_LEVEL_TOD` moves the time of day after the region stands
+- `REFII_LEVEL_LIGHT` — `direct` or `ambient`, to isolate the sun from the baked term
+- `REFII_LEVEL_FOG=off` — holds the atmosphere off. The THIRD term, and without it the other two
+  isolations can agree and still be answering nothing: where in-scatter supplies most of a frame's
+  luminance, `direct` and `ambient` report the same histogram as each other and as the full frame,
+  which reads as "neither light term matters" rather than as "something else is the picture". Held
+  clear every frame, because the sky node republishes the global from the theme
+- `REFII_LEVEL_PITCH=<deg>` — camera pitch. The sky's share of the frame is a metering choice: a
+  histogram taken over a frame that is mostly dome describes the dome
+- `REFII_EXPOSURE_DUMP=<frames>` — the exposure state AND the sun values, every n frames. This is
+  the pair that separates the two faults a wrong-looking region can have, and they are on one
+  switch because either alone is unreadable. The dump prints the histogram, the adapted triple,
+  the derived curve terms, and the **clip point** — the scene luminance at which the tone curve
+  reaches 1.0. Held against the frame's own p99 that settles it: a clip point BELOW p99 means the
+  curve is throwing away the top of the frame, one well ABOVE it means nothing is clipping and a
+  dark image is dark on arrival, which is a question about the sun term printed beside it.
+  It reads back from the GPU and stalls the device, so it is off unless asked for — the shipping
+  path never crosses the bus. Give it a few hundred frames: the scalar blends at 5% per frame and
+  a single early sample reads as settled without being settled.
+
 `game_window` takes `REFII_GAME_WINDOW_GUEST=1` to run the REAL guest. That distinction
 matters: with the guest off the session's shutdown is a no-op, so a guest-less run cannot
 answer the question the check exists for — whether tearing the guest down takes the host
@@ -82,3 +128,23 @@ process with it. It did, twice, in two different ways.
 
 **Screenshots must be written outside the repository and any build output.** A render of
 game geometry is derived game data and is not redistributable.
+
+Host-side character animation is opt-in with `REFII_HOST_ANIM=1`. It REPLACES the guest bone
+feed for rigged characters rather than adding to it — both write every bone of the same
+skeleton, so running them together tears the rig instead of blending. Off means Godot copies
+the guest's bones (the long-standing behaviour); on means Godot plays the guest's clips.
+
+`ui_viewer` can also drive a screen's live values with no guest, which is the only way to see
+whether a bar is a bar:
+
+- `REFII_UI_METERS=50` — every bound meter at 50%. `REFII_UI_METERS=PlayerHealth=35,PlayerHealthMax=100`
+  names them individually, which is the form that catches a bar driven by the wrong neighbour:
+  the two health bars sit on top of each other and look identical when given the same value
+- `REFII_UI_TEXTS=1` — writes each bound text field's own NAME into it, so a field that resolves
+  but never draws is told apart from one that was never bound
+
+It prints each driven bar's local scale, its INHERITED scale and the basis column lengths of
+every ancestor. That last column is the one that matters: a bar piece is authored `scale.x = 0`,
+so its basis is singular, and `Node3D.Scale` reads back `(0,0,0)` on every axis for it — the
+scale getter multiplies by `SIGN(determinant)`. A fill can therefore report the exact percentage
+asked for and still draw nothing.

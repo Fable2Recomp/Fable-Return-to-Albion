@@ -46,9 +46,31 @@ public partial class LevelViewer : Node3D
 	private int _framesRendered;
 	private bool _requested;
 
+	/// <summary>
+	/// Frames between sun reports, read from <c>REFII_EXPOSURE_DUMP</c>. Zero is off.
+	/// </summary>
+	/// <remarks>
+	/// THE SAME SWITCH AS THE EXPOSURE DUMP, ON PURPOSE. The two readings only answer anything
+	/// TOGETHER: a frame whose pixels sit far below the tone curve's clip point is either lit
+	/// weakly or exposed correctly for a weak scene, and the sun's own colour times its energy is
+	/// what separates those. Two independent switches would make it possible to read one without
+	/// the other, which is the mistake this pairing exists to prevent.
+	/// </remarks>
+	private int _reportPeriod;
+
+	private long _frames;
+
+	/// <summary>Hold the atmosphere off, from <c>REFII_LEVEL_FOG=off</c>.</summary>
+	private bool _fogOff;
+
 	public override void _Ready()
 	{
 		_shotPath = OS.GetEnvironment("REFII_LEVEL_SHOT");
+
+		if (int.TryParse(OS.GetEnvironment("REFII_EXPOSURE_DUMP"), out int period) && period > 0)
+		{
+			_reportPeriod = period;
+		}
 
 		// Streaming is time-boxed per frame, so a big region is still paging in long after the
 		// default warmup — and a shot taken then shows a half-built world and reads as missing
@@ -133,6 +155,16 @@ public partial class LevelViewer : Node3D
 			return;
 		}
 
+		if (_fogOff)
+		{
+			RenderingServer.GlobalShaderParameterSet("atmos_fog_on", false);
+		}
+
+		if (_reportPeriod > 0 && ++_frames % _reportPeriod == 0)
+		{
+			ReportSun();
+		}
+
 		if (_shotPath.Length == 0)
 		{
 			Fly((float)delta);
@@ -142,6 +174,89 @@ public partial class LevelViewer : Node3D
 		if (++_framesRendered >= ShotWarmupFrames)
 		{
 			WriteShot();
+		}
+	}
+
+	/// <summary>
+	/// The sun terms the region is actually being lit by, printed beside the exposure dump.
+	///
+	/// READ OFF THE LIVE NODE, NOT RECOMPUTED. The DirectionalLight3D is what the renderer
+	/// consumes, so reporting its own colour and energy cannot disagree with the image the way a
+	/// second evaluation of the theme could — and a theme read that quietly stopped reaching the
+	/// light is precisely one of the faults this is being used to look for.
+	///
+	/// The colour and the energy are two halves of ONE authored RGB — <c>Engine_LightingFrame.Split</c>
+	/// normalises the triple by its largest channel and carries that magnitude as the energy — so
+	/// the number to compare against a theme is the PRODUCT, and either half alone means nothing.
+	/// </summary>
+	private void ReportSun()
+	{
+		if (_region?.GetNodeOrNull<Refii.Level.Engine_SkyEnvironmentNode>(
+				Refii.Level.Engine_SkyEnvironment.NodeName) is not { } sky)
+		{
+			GD.Print("[sun] the region carries no sky environment; nothing states a sun");
+			return;
+		}
+
+		if (sky.Lighting is not { } lighting)
+		{
+			GD.Print("[sun] the sky environment has not evaluated yet");
+			return;
+		}
+
+		var direction = new Vector3(
+			lighting.SunDirection[0], lighting.SunDirection[1], lighting.SunDirection[2]);
+		direction = direction.LengthSquared() > 1e-8f ? direction.Normalized() : Vector3.Up;
+
+		float elevation = Mathf.RadToDeg(MathF.Asin(Math.Clamp(direction.Y, -1.0f, 1.0f)));
+
+		var authored = new Vector3(
+			lighting.SunColour[0] * lighting.SunEnergy,
+			lighting.SunColour[1] * lighting.SunEnergy,
+			lighting.SunColour[2] * lighting.SunEnergy);
+
+		// Rec.709, the same weights the histogram bins with, so this number and the histogram's
+		// luminances are in one space and can be held against each other directly.
+		float sunLuminance = Refii.Lighting.Engine_AutoExposure.Luminance(
+			authored.X, authored.Y, authored.Z);
+
+		GD.Print($"[sun] tod={sky.TimeOfDay:0.00}h  rig={direction}  elevation={elevation:0.0}deg  " +
+			$"shadow={lighting.SunShadow}");
+		GD.Print($"[sun]   main light  colour={lighting.SunColour[0]:0.000}," +
+			$"{lighting.SunColour[1]:0.000},{lighting.SunColour[2]:0.000}  " +
+			$"energy={lighting.SunEnergy:0.000}  authored={authored}  luminance={sunLuminance:0.0000}");
+
+		string ambient = lighting.HasAmbient
+			? $"colour={lighting.AmbientColour[0]:0.000},{lighting.AmbientColour[1]:0.000}," +
+			  $"{lighting.AmbientColour[2]:0.000} energy={lighting.AmbientEnergy:0.000}"
+			: "NOT STATED by this theme, so Godot's ambient is left alone";
+
+		GD.Print($"[sun]   ambient  {ambient}");
+
+		GD.Print($"[sun]   lightmap={lighting.LightmapColour[0]:0.000}," +
+			$"{lighting.LightmapColour[1]:0.000},{lighting.LightmapColour[2]:0.000}  " +
+			$"darkening={lighting.DarkeningColour[0]:0.000}," +
+			$"{lighting.DarkeningColour[1]:0.000},{lighting.DarkeningColour[2]:0.000}");
+
+		// SunIntensity drives the SKY DOME, not the main light — it is registered against the Sky
+		// record rather than the Lighting one. Printed here because a blown horizon over dark
+		// surfaces is the two of them disagreeing, and reading only the light cannot see it.
+		if (sky.Theme is { } theme)
+		{
+			GD.Print($"[sun]   sky dome  SunIntensity={theme.SunIntensity:0.000} " +
+				$"(stated={theme.HasSunIntensity})");
+		}
+
+		if (_region.GetNodeOrNull<DirectionalLight3D>(
+				Refii.Lighting.Engine_LevelLighting.SunNodeName) is { } light)
+		{
+			GD.Print($"[sun]   live node  colour={light.LightColor} energy={light.LightEnergy:0.000} " +
+				$"shadow={light.ShadowEnabled}");
+		}
+		else
+		{
+			GD.Print("[sun]   live node  MISSING — the region has no DirectionalLight3D named " +
+				$"'{Refii.Lighting.Engine_LevelLighting.SunNodeName}'");
 		}
 	}
 
@@ -215,6 +330,27 @@ public partial class LevelViewer : Node3D
 	/// </summary>
 	private void Isolate(Node3D region)
 	{
+		// THE ATMOSPHERE IS A SEPARATE TERM FROM BOTH OF THE LIGHT ONES, and until this switch
+		// existed it could not be taken out of the picture at all. That is not a gap in the
+		// instrument, it is the gap that let a wrong answer stand: with `direct` and `ambient` the
+		// only isolations available, a frame whose luminance comes almost entirely from in-scatter
+		// reports the SAME histogram under both, and the obvious reading — "neither light term
+		// matters" — says nothing about what does.
+		//
+		// It clears the published global rather than editing a material, because that is the one
+		// switch every fogged surface in the region reads: `fable_atmosphere_terms` returns false
+		// on it before computing anything, so nothing is left half-attenuated.
+		//
+		// RE-ASSERTED EVERY FRAME, not cleared once. `Engine_SkyEnvironment.ApplyAtmosphereGlobals`
+		// republishes this global from the theme on every re-evaluation, so a single clear here is
+		// overwritten before the first frame is drawn — and the run then reports a fully fogged
+		// frame under a flag that says fog is off, which is worse than having no switch.
+		if (OS.GetEnvironment("REFII_LEVEL_FOG").Equals("off", StringComparison.OrdinalIgnoreCase))
+		{
+			_fogOff = true;
+			GD.Print("[level-viewer] fog off: atmos_fog_on held clear every frame");
+		}
+
 		string mode = OS.GetEnvironment("REFII_LEVEL_LIGHT");
 		if (mode.Length == 0 || mode.Equals("full", StringComparison.OrdinalIgnoreCase))
 		{
@@ -294,8 +430,36 @@ public partial class LevelViewer : Node3D
 		}
 
 		Vector3 centre = bounds.GetCenter();
-		_target = new Vector3(centre.X, bounds.Position.Y + (bounds.Size.Y * 0.25f), centre.Z);
+
+		// ABOVE THE TERRAIN, NOT A FRACTION OF THE WHOLE REGION'S BOX.
+		//
+		// A quarter of the way up the merged bounds put the camera UNDER THE GROUND on BWSSlums:
+		// the box spans the tallest building in the region, so a fraction of its height is below
+		// the surface wherever the terrain does not sit on the box's floor. A run from under the
+		// world is not an obviously broken picture — it is a plausible frame of sky dome and
+		// undersides, and it meters as one. The exposure dump read 80% sky and reported it as the
+		// region's luminance distribution.
+		//
+		// The terrain's own AABB is the answer, and it is the one node whose top is ground rather
+		// than roof. Falling back to the merged box's top keeps a region with no terrain framed
+		// from above rather than from inside it.
+		float ground = region.GetNodeOrNull<MeshInstance3D>(
+				Refii.Level.Engine_LevelScene.TerrainNodeName) is { Mesh: not null } terrain
+			? (terrain.GlobalTransform * terrain.Mesh.GetAabb()).End.Y
+			: bounds.End.Y;
+
+		_target = new Vector3(centre.X, ground + 2.0f, centre.Z);
 		_distance = 45.0f;
+
+		// The sky's share of the frame is a METERING choice, not a cosmetic one — a histogram taken
+		// over a frame that is mostly dome describes the dome. Steeper looks further down.
+		if (float.TryParse(OS.GetEnvironment("REFII_LEVEL_PITCH"),
+				System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out float pitch))
+		{
+			_pitch = Math.Clamp(Mathf.DegToRad(pitch), -1.5f, 1.5f);
+		}
+
 		Place();
 	}
 

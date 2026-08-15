@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace Refii.FlashGames.PubGames;
 
-public sealed class Keystone : PubGame
+public sealed partial class Keystone : PubGame
 {
     public const double MaxCursorWaitTime = 250;
     public const double MinCursorWaitTime = 62.5;
@@ -36,6 +36,7 @@ public sealed class Keystone : PubGame
 
     private readonly int[] _payoutBet = new int[KeystoneSpace.SpaceCount];
     private readonly int[] _maxBets = new int[KeystoneSpace.SpaceCount];
+    private readonly int[] _payoutRate = new int[KeystoneSpace.SpaceCount];
     private readonly bool[] _isWinningSpace = new bool[KeystoneSpace.SpaceCount];
     private readonly bool[] _archStonesIntact = new bool[KeystoneSpace.SpaceCount];
     private readonly int[] _lastBets = new int[KeystoneSpace.SpaceCount];
@@ -77,6 +78,7 @@ public sealed class Keystone : PubGame
         ApplauseThreshold3 = 3;
         ApplauseThreshold4 = 6;
         ChipTravelTime = 500;
+        InitPayoutRate();
     }
 
     public int Current { get; set; }
@@ -149,6 +151,27 @@ public sealed class Keystone : PubGame
         int id, bool isAI, string name, int gold, int debt,
         int starRating, int points, int gamePoints) =>
         new KeystonePlayer(id, isAI, name, gold, debt, starRating, points, gamePoints);
+
+    /// <summary>
+    /// True when leaving now would abandon money already committed to the table.
+    /// </summary>
+    /// <remarks>
+    /// LOCKED IN AND STILL STAKED, both. A bet that has not been locked in is still the player's
+    /// and costs nothing to walk away from; a locked-in bet has been taken by the house and is
+    /// riding on the next roll. Only the second is worth stopping the player to ask about, which
+    /// is why each half of this tests the lock AND the amount.
+    /// </remarks>
+    public override bool EndGameWarning()
+    {
+        KeystonePlayer? human = GetHumanPlayer();
+        if (human is null)
+        {
+            return false;
+        }
+
+        return (ArchPointsLockedIn && human.GetBetAmount(true) > 0) ||
+            (InnerPointsLockedIn && human.GetBetAmount(false) > 0);
+    }
 
     public KeystonePlayer? GetPlayerByID(int id) => PlayerInfo.GetPlayer(id) as KeystonePlayer;
 
@@ -574,7 +597,7 @@ public sealed class Keystone : PubGame
             {
                 if (bets[space] > 0)
                 {
-                    best += KeystoneRules.GetPayoutRate(space);
+                    best += GetPayoutRate(space);
                 }
             }
 
@@ -589,7 +612,7 @@ public sealed class Keystone : PubGame
         {
             if (bets[space] > 0)
             {
-                rate[space] = KeystoneRules.GetPayoutRate(space);
+                rate[space] = GetPayoutRate(space);
                 stake[space] = _payoutBet[space];
             }
         }
@@ -668,7 +691,7 @@ public sealed class Keystone : PubGame
             {
                 SavedPoints += (int)Math.Floor(
                     (double)bet / _payoutBet[space] *
-                    Math.Min(_payoutBet[space], KeystoneRules.GetPayoutRate(space)));
+                    Math.Min(_payoutBet[space], GetPayoutRate(space)));
             }
         }
     }
@@ -914,6 +937,47 @@ public sealed class Keystone : PubGame
     {
         CallbackManager.AddCallbackObject(
             new Delay(delay, endCallback, userData, group, blocking));
+    }
+
+    /// <summary>
+    /// Seeds the payout table with the odds the game itself defines.
+    /// </summary>
+    /// <remarks>
+    /// SEPARATE FROM THE TABLE'S ODDS ON PURPOSE, because the file makes them separate. The SWF's
+    /// <c>InitPayoutRate</c> fills the array with these constants and the variation the guest names
+    /// then replaces it wholesale — see <see cref="SetPayoutRates"/>. Called from the constructor
+    /// so a game that is handed no settings at all still pays something.
+    /// </remarks>
+    public void InitPayoutRate()
+    {
+        for (int id = 0; id < _payoutRate.Length; id++)
+        {
+            _payoutRate[id] = KeystoneRules.DefaultPayoutRate(id);
+        }
+    }
+
+    /// <summary>What a space pays, at THIS table.</summary>
+    public int GetPayoutRate(int id) =>
+        id >= 0 && id < _payoutRate.Length ? _payoutRate[id] : 0;
+
+    /// <summary>
+    /// Replaces the payout table from a variation's <c>payoutRate</c> array.
+    /// </summary>
+    /// <remarks>
+    /// POSITIONAL, and the position is <see cref="KeystoneSpace"/>'s. The array in
+    /// <c>settings.xml</c> is written OUT3..OUT18, IN3..IN18, then the special spaces, in exactly
+    /// the order the ids are numbered, and the file comments each entry with the space it is for.
+    ///
+    /// A SHORT ARRAY LEAVES THE REST ALONE rather than zeroing it. A zero rate is not "free", it is
+    /// a space that pays nothing at all, and silently turning the bottom of the board into a losing
+    /// bet is worse than keeping a default that is at least the right shape.
+    /// </remarks>
+    public void SetPayoutRates(IReadOnlyList<int> rates)
+    {
+        for (int id = 0; id < rates.Count && id < _payoutRate.Length; id++)
+        {
+            _payoutRate[id] = rates[id];
+        }
     }
 
     public void InitBetLimits()
@@ -1189,7 +1253,7 @@ public sealed class Keystone : PubGame
                 {
                     if (_isWinningSpace[space])
                     {
-                        winnings = -KeystoneRules.GetPayoutRate(space);
+                        winnings = -GetPayoutRate(space);
                         bet = 0;
                     }
                     else if (!arch || archCollapsed)
@@ -1200,7 +1264,7 @@ public sealed class Keystone : PubGame
                 }
                 else if (_isWinningSpace[space])
                 {
-                    winnings = bet * KeystoneRules.GetPayoutRate(space) / _payoutBet[space];
+                    winnings = bet * GetPayoutRate(space) / _payoutBet[space];
                 }
                 else if (!arch || archCollapsed)
                 {

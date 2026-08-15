@@ -296,7 +296,7 @@ public sealed class GameBoard
             _keystone.Bloodstone ? "txtSpaceOddsBloodstone" : "txtSpaceOddsValue",
             new Dictionary<string, string>
             {
-                ["payout"] = KeystoneRules.GetPayoutRate(space).ToString(),
+                ["payout"] = _keystone.GetPayoutRate(space).ToString(),
                 ["bet"] = _keystone.GetPayoutBet(space).ToString(),
             });
 
@@ -924,6 +924,212 @@ public sealed class GameBoard
 
     public IPubClip? GetHilight(int id) =>
         _root.GetChild("hilights")?.GetChild(KeystoneRules.BetIdToString(id) + "glow");
+
+    /// <summary>Where the tutorial's hilight overlay is attached.</summary>
+    public int TutorialHilightDepth { get; set; }
+
+    private IPubClip? PlayerName(int seat) =>
+        _root.GetChild("playerNames")?.GetChild("player" + seat + "name");
+
+    private IPubClip? ChipTotal(int seat) =>
+        _root.GetChild("playerNames")?.GetChild("chipTotal" + seat);
+
+    /// <summary>Takes a seat's name plate off the table entirely.</summary>
+    public void HidePlayerName(int seat)
+    {
+        IPubClip? name = PlayerName(seat);
+        if (name is not null)
+        {
+            name.Visible = false;
+        }
+    }
+
+    public void SetBetStatsAlpha(float alpha)
+    {
+        IPubClip? stats = _root.GetChild("betStats");
+        if (stats is not null)
+        {
+            stats.Alpha = alpha;
+        }
+    }
+
+    public void SetChipTotalAlpha(int seat, float alpha)
+    {
+        IPubClip? total = ChipTotal(seat);
+        if (total is not null)
+        {
+            total.Alpha = alpha;
+        }
+    }
+
+    /// <summary>Fades a seat's chip columns up from nothing.</summary>
+    /// <remarks>
+    /// The multi-stack is six clips, so the animation drives the stack object's own
+    /// <see cref="ChipStackMulti.SetAlpha"/> rather than any one of them.
+    /// </remarks>
+    public void FadeInPlayerStack(int seat, double time, object? group)
+    {
+        ChipStackMulti? stack = GetPlayerStack(seat);
+        if (stack is null)
+        {
+            return;
+        }
+
+        var fade = new AnimateAlpha(0, 100, stack, time, 0, AnimateBase.StyleLinear)
+        {
+            Group = group,
+        };
+        _keystone.CallbackManager.AddCallbackObject(fade);
+    }
+
+    public void FadeInChipTotal(int seat, double time, object? group, bool blocking)
+    {
+        IPubClip? total = ChipTotal(seat);
+        if (total is null)
+        {
+            return;
+        }
+
+        var fade = new AnimateAlpha(0, 100, total, time, 0, AnimateBase.StyleLinear)
+        {
+            Group = group,
+            Blocking = blocking,
+        };
+        _keystone.CallbackManager.AddCallbackObject(fade);
+    }
+
+    /// <summary>
+    /// Raises or drops the tutorial's "look at this half of the board" overlay.
+    /// </summary>
+    /// <remarks>
+    /// TWO OVERLAYS, ONE FOR EACH HALF. <c>tutorial_hilites</c> covers the arch and
+    /// <c>tutorial_hilites02</c> the inner board, which is what <paramref name="inner"/> picks.
+    /// Attached on demand rather than kept around, and removed by the fade's own end callback when
+    /// it is taken down — a leftover overlay sits on top of the board for the rest of the session.
+    /// </remarks>
+    public void ShowTutorialHilight(
+        bool show, bool inner, object? group, bool blocking)
+    {
+        string export = inner ? "tutorial_hilites02" : "tutorial_hilites";
+        IPubClip? hilights = _root.GetChild("tutorialHilights");
+
+        if (show && hilights is null)
+        {
+            hilights = _root.AttachMovie(export, "tutorialHilights", TutorialHilightDepth);
+            if (hilights is not null)
+            {
+                hilights.Alpha = 0;
+            }
+        }
+
+        if (hilights is null)
+        {
+            return;
+        }
+
+        var fade = new AnimateAlpha(
+            show ? 0 : 100, show ? 100 : 0, hilights, 250, 0, AnimateBase.StyleLinear)
+        {
+            Blocking = blocking,
+            Group = group,
+        };
+
+        if (!show)
+        {
+            fade.SetEndCallback(_ => KillTutorialHilight(), null);
+        }
+
+        _keystone.CallbackManager.AddCallbackObject(fade);
+    }
+
+    public void KillTutorialHilight() => _root.GetChild("tutorialHilights")?.RemoveMovieClip();
+
+    /// <summary>
+    /// Replaces a chip stack's chips with a lammer.
+    /// </summary>
+    /// <remarks>
+    /// A LAMMER IS A MARKER, NOT A BET. Bloodstone tables stake the player's own blood rather than
+    /// chips, so the stack becomes a single flat marker and its value goes to zero — the amount is
+    /// no longer a pile of chips to be counted. The replacement clip inherits the stack's depth,
+    /// name, position and scale so it lands exactly where the chips were, and the shadow goes
+    /// because a lammer does not cast one.
+    /// </remarks>
+    public void SwitchToLammer(ChipStack? stack)
+    {
+        if (stack is null)
+        {
+            return;
+        }
+
+        stack.Shadow?.RemoveMovieClip();
+        stack.Shadow = null;
+
+        IPubClip chips = stack.Stack;
+        int depth = chips.GetDepth();
+        string name = chips.Name;
+        float x = chips.X;
+        float y = chips.Y;
+        float scale = chips.XScale;
+        chips.RemoveMovieClip();
+
+        IPubClip? lammer = _root.GetChild("chips")?.AttachMovie("lammer", name, depth);
+        if (lammer is null)
+        {
+            return;
+        }
+
+        lammer.X = x;
+        lammer.Y = y;
+        lammer.XScale = scale;
+        lammer.YScale = scale;
+
+        stack.Stack = lammer;
+        stack.Lammer = true;
+        stack.Value = 0;
+    }
+
+    /// <summary>
+    /// The arrows that walk the arch toward the stone the roll removes.
+    /// </summary>
+    /// <remarks>
+    /// Shown one space at a time with a shortening delay, so they read as a sweep from the rolled
+    /// total to the stone coming out. See <c>Keystone.HilightWinningSpaces</c>, which drives it.
+    /// </remarks>
+    public void ShowArrow(int id, bool show, double delay, object? group, bool blocking)
+    {
+        IPubClip? arrow = _root.GetChild("arrows")?.GetChild(
+            "arrow" + (id - KeystoneSpace.Out3 + 3));
+        if (arrow is null)
+        {
+            return;
+        }
+
+        var fade = new AnimateAlpha(
+            arrow.Alpha, show ? 100 : 0, arrow, 300, delay, AnimateBase.StyleLinear)
+        {
+            Blocking = blocking,
+            Group = group,
+        };
+        _keystone.CallbackManager.AddCallbackObject(fade);
+    }
+
+    public void ResetAllArrows()
+    {
+        IPubClip? arrows = _root.GetChild("arrows");
+        if (arrows is null)
+        {
+            return;
+        }
+
+        for (int i = KeystoneSpace.Out3; i <= KeystoneSpace.Out18; i++)
+        {
+            IPubClip? arrow = arrows.GetChild("arrow" + (i - KeystoneSpace.Out3 + 3));
+            if (arrow is not null)
+            {
+                arrow.Alpha = 0;
+            }
+        }
+    }
 
     public void ClearAllFoci()
     {

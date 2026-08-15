@@ -64,21 +64,36 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 			return Variant.CreateFrom((int)Error.FileUnrecognized);
 		}
 
-		byte[]? bytes = _resolver?.Invoke(path[PathPrefix.Length..]);
-		if (bytes is null)
+		Func<string, byte[]?> read = _resolver ?? (_ => null);
+
+		// THROUGH THE LIBRARY, not straight to the decoder. This route and the material route
+		// decode the same files — a bank texture is a bank texture whether a prop's albedo or a
+		// menu frame names it — so they share the persistent cache under user:// rather than each
+		// paying the untile and re-encode once per process.
+		//
+		// Ui is the semantic because that is what this path is FOR: the front end, the HUD and
+		// the editor's viewers all arrive here. It is the slot the caller bound, not a guess from
+		// the file name, which is the rule the whole semantic enum exists to keep.
+		//
+		// Decode rather than Get: Godot's ResourceLoader is this route's memory tier and it also
+		// FREES what it caches, so the texture must not also be pinned in the library's live map.
+		Image? image = Engine_TexLibrary.Decode(
+			path[PathPrefix.Length..], TexSemantic.Ui, read, out _);
+		if (image is null)
 		{
-			GD.PushWarning($"[bnk] texture not found: {path}");
+			// The library has already said why, in its own warning.
 			return Variant.CreateFrom((int)Error.FileNotFound);
 		}
 
-		ImageTexture? texture = Engine_TexImage.TryCreateTexture(bytes, out string error);
-		if (texture is null)
-		{
-			GD.PushWarning($"[bnk] {path}: {error}");
-			return Variant.CreateFrom((int)Error.FileCorrupt);
-		}
-
+		ImageTexture texture = ImageTexture.CreateFromImage(image);
 		texture.ResourcePath = path;
+
+		// §7 PUTS THIS PATH FIRST. The HUD, the menus and the front end are priority 0, and they
+		// were the one route that could never be enhanced at all — the loader handed its texture
+		// to Godot and forgot it, so there was nothing left to swap. Tracked weakly, so Godot
+		// still owns the lifetime. A no-op when the player has upscaling off, and in the editor.
+		Engine_TexLibrary.TrackUi(path[PathPrefix.Length..], texture, read);
+
 		return texture;
 	}
 }

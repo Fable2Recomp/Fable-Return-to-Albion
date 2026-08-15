@@ -12,7 +12,17 @@ public static class KeystoneRules
     private static readonly AngleEntry[][] AngleMap = BuildAngleMap();
     private static readonly bool[][][][] WinnerTable = BuildWinnerTable();
 
-    public static int GetPayoutRate(int id) =>
+    /// <summary>
+    /// The odds a space pays before the table's own <c>settings.xml</c> is applied.
+    /// </summary>
+    /// <remarks>
+    /// A DEFAULT, NOT THE ODDS. <c>Keystone::InitPayoutRate</c> writes exactly these numbers into
+    /// the game's own <c>payoutRate</c> array, and every one of the 28 variations in
+    /// <c>keystone/settings.xml</c> then overwrites the whole array — Standard1 pays 18:1 on OUT3
+    /// where this table says 35:1. Ask <see cref="Keystone.GetPayoutRate"/> for what a table
+    /// actually pays; this is only what it starts from.
+    /// </remarks>
+    public static int DefaultPayoutRate(int id) =>
         id >= 0 && id < PayoutRates.Length ? PayoutRates[id] : 0;
 
     public static string BetIdToString(int id) =>

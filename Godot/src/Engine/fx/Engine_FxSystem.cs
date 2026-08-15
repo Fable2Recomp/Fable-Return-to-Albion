@@ -23,6 +23,17 @@ public sealed class Engine_FxSystem
     public const float MinLife = 0.02f;
     public const float Exposure = 10f / 3f;
 
+    /// <summary>
+    /// The constant the guest's gravity term scales, on the world's UP axis — which is game-space
+    /// Z, so the acceleration is (0, 0, <c>Gravity</c>).
+    ///
+    /// `sub_832845B0` builds the global at <c>unk_8349E4D0</c> out of <c>flt_82099484</c> = 0.0
+    /// and <c>flt_82000E34</c>; the four bytes at 0x82000E34 are <c>C1 1C CC CD</c>, which is
+    /// -9.8. `sub_8322D988` multiplies it by generic parameter 7 and adds the result into the
+    /// frame's acceleration (<c>vmulfp128 v28, v0, v29</c> at 0x8322dbe0).
+    /// </summary>
+    public const float Gravity = -9.8f;
+
     private sealed class ParticleState
     {
         public float[] Pos = new float[3];
@@ -103,8 +114,98 @@ public sealed class Engine_FxSystem
         public float Scale = 1f;
         public bool Trail;
         public float SpawnRadius;
+
+        /// <summary>The header's <c>EmitterShape</c>: 0 point, 1 sphere, 2 disc, 3 mesh.</summary>
+        public uint Shape;
+
+        public bool EmitOnSurface;
+        public bool UseShapeSpawnDir;
+
+        /// <summary>
+        /// The emitter TYPE's own orientation, as a 3x3 basis, or null when it is identity.
+        ///
+        /// `sub_83228F78` composes it with the instance's orientation (<c>q_instance (x) q_type</c>,
+        /// loading the instance quat from inst+0x10 and the type's from type+0x10) and the result
+        /// becomes the emitter's frame. The spawn direction is then multiplied through rows 0..2
+        /// of that frame at the tail of `sub_8322CAF0` (0x8322cf0c-0x8322cf1c).
+        ///
+        /// 175 of the bank's emitters carry a non-identity one, and they cluster on
+        /// (+/-0.7071, 0, 0, 0.7071) — a +/-90 degree turn about X, which is exactly what stands a
+        /// "Z forward, Y up" authoring frame up in a Z-up world. Ignoring it aimed all 175 of
+        /// them a right angle away from where the author pointed them.
+        /// </summary>
+        public float[]? TypeBasis;
+
         public bool EmittedInitial;
+
+        /// <summary>The spline this emitter rides, or null when it stands still.</summary>
+        public SplineRuntime? Spline;
+
+        /// <summary>
+        /// Where the emitter sits with its spline at the origin. <see cref="Origin"/> is this plus
+        /// the spline's current point, recomputed every frame, so the two must stay separate.
+        /// </summary>
+        public float[] BaseOrigin = new float[3];
+
         public List<ParticleState> Particles { get; } = new();
+    }
+
+    /// <summary>
+    /// A vector in the emitter's own axes, brought into the effect's space by the emitter type's
+    /// orientation. The placement's rotation is applied after this, by the caller.
+    /// </summary>
+    private static void LocalToEffect(
+        EmitterRuntime rt, float x, float y, float z,
+        out float ox, out float oy, out float oz)
+    {
+        if (rt.TypeBasis is not { } m)
+        {
+            ox = x;
+            oy = y;
+            oz = z;
+            return;
+        }
+
+        ox = (m[0] * x) + (m[1] * y) + (m[2] * z);
+        oy = (m[3] * x) + (m[4] * y) + (m[5] * z);
+        oz = (m[6] * x) + (m[7] * y) + (m[8] * z);
+    }
+
+    /// <summary>
+    /// The 3x3 of a unit quaternion stored X, Y, Z, W — the order the file uses, confirmed by
+    /// <c>CMaterialParamAlignmentQuat</c>'s own serializer naming its four floats X, Y, Z, W.
+    /// Returns null for an identity (or unusable) rotation so the common case costs nothing.
+    /// </summary>
+    private static float[]? BasisFromQuat(float[] q)
+    {
+        float x = q[0];
+        float y = q[1];
+        float z = q[2];
+        float w = q[3];
+
+        float len2 = (x * x) + (y * y) + (z * z) + (w * w);
+        if (!float.IsFinite(len2) || len2 < 1e-6f)
+        {
+            return null;
+        }
+
+        float inv = 1f / MathF.Sqrt(len2);
+        x *= inv;
+        y *= inv;
+        z *= inv;
+        w *= inv;
+
+        if ((x * x) + (y * y) + (z * z) < 1e-8f)
+        {
+            return null;
+        }
+
+        return new[]
+        {
+            1f - (2f * ((y * y) + (z * z))), 2f * ((x * y) - (z * w)), 2f * ((x * z) + (y * w)),
+            2f * ((x * y) + (z * w)), 1f - (2f * ((x * x) + (z * z))), 2f * ((y * z) - (x * w)),
+            2f * ((x * z) - (y * w)), 2f * ((y * z) + (x * w)), 1f - (2f * ((x * x) + (y * y))),
+        };
     }
 
     private sealed class InstanceState
@@ -112,12 +213,290 @@ public sealed class Engine_FxSystem
         public FxPlacement Place = new();
         public float Time;
         public List<EmitterRuntime> Emitters { get; } = new();
+
+        /// <summary>
+        /// The effect's LIGHTS, kept apart from its emitters because they are not emitters: they
+        /// spawn nothing, own no particles and carry no visuals, so running them through the
+        /// particle path would drop them twice over — once on <c>HasMotion</c> and again on
+        /// having an empty visual list.
+        /// </summary>
+        public List<LightRuntime> Lights { get; } = new();
+
+        /// <summary>
+        /// The effect's own attractors. Scoped to the effect because that is the list
+        /// `sub_83229A98` sums for a particle — the one at inst+220 — and the world-wide registry
+        /// beside it only holds attractors that ask to be in it.
+        /// </summary>
+        public List<LightRuntime> Attractors { get; } = new();
+
+        /// <summary>The paths this effect's emitters travel.</summary>
+        public List<SplineRuntime> Splines { get; } = new();
+    }
+
+    /// <summary>
+    /// A part of an effect that is placed but does not emit — a light or an attractor. Both take
+    /// the same base block, so both are positioned the same way.
+    /// </summary>
+    private sealed class LightRuntime
+    {
+        public FxEmitter? Def;
+        public float[] Origin = new float[3];
+        public float Scale = 1f;
+        public float StartDelay;
+    }
+
+    /// <summary>
+    /// A spline the effect travels along, and the <c>t</c> it has reached.
+    ///
+    /// The point on the curve is the spline node's LOCAL translation, which every child inherits
+    /// through the ordinary parent walk — there is no special "move the emitter" code in the
+    /// guest, just a parent that happens to move.
+    /// </summary>
+    private sealed class SplineRuntime
+    {
+        public FxEmitter? Def;
+
+        /// <summary>Where along the curve, in [0, 1].</summary>
+        public float T;
+
+        /// <summary>+1 or -1. Flipped at the ends when <c>ReverseFlow</c> is set.</summary>
+        public float Sign = 1f;
+
+        /// <summary>The current point, in the effect's space, ready to add to a child's origin.</summary>
+        public float[] Offset = new float[3];
+    }
+
+    /// <summary>
+    /// The point at <paramref name="t"/> on a spline, in the spline's own space.
+    ///
+    /// UNIFORM CATMULL-ROM with REFLECTED endpoints, which is what `sub_83235928` computes:
+    ///
+    ///     P(u) = B + 0.5(C-A)u + (A - 2.5B + 2C - 0.5D)u^2 + (-0.5A + 1.5B - 1.5C + 0.5D)u^3
+    ///
+    /// An open spline reflects rather than clamps at the ends — <c>A = 2P0 - P1</c> at the start
+    /// and <c>D = 2P[N-1] - P[N-2]</c> at the finish. That detail is what makes the TWO-POINT
+    /// case, which is the shipped median, collapse exactly to a straight lerp: substituting both
+    /// reflections cancels the quadratic and cubic terms completely. Clamping instead would bow
+    /// a line that should be straight.
+    /// </summary>
+    private static void EvalSpline(FxEmitter d, float t, float[] outXyz)
+    {
+        float[][] p = d.SplinePoints;
+        int n = p.Length;
+        if (n == 0)
+        {
+            outXyz[0] = 0f;
+            outXyz[1] = 0f;
+            outXyz[2] = 0f;
+            return;
+        }
+
+        if (n == 1 || t <= 0f)
+        {
+            Array.Copy(p[t <= 0f ? 0 : 0], outXyz, 3);
+            return;
+        }
+
+        if (t >= 1f)
+        {
+            Array.Copy(p[n - 1], outXyz, 3);
+            return;
+        }
+
+        bool looped = d.SplineLooped && n > 2;
+        int segments = looped ? n : n - 1;
+        int i = (int)(segments * t);
+        if (i >= segments)
+        {
+            i = segments - 1;
+        }
+
+        float u = (segments * t) - i;
+
+        float[] At;
+        float[] Bt = p[i % n];
+        float[] Ct;
+        float[] Dt;
+        if (looped)
+        {
+            At = p[((i - 1) % n + n) % n];
+            Ct = p[(i + 1) % n];
+            Dt = p[(i + 2) % n];
+        }
+        else
+        {
+            Ct = p[Math.Min(i + 1, n - 1)];
+            At = i == 0 ? Reflect(p[0], p[1]) : p[i - 1];
+            Dt = i + 2 <= n - 1 ? p[i + 2] : Reflect(p[n - 1], p[n - 2]);
+        }
+
+        for (int axis = 0; axis < 3; axis++)
+        {
+            float a = At[axis];
+            float b = Bt[axis];
+            float c = Ct[axis];
+            float dd = Dt[axis];
+
+            if (d.SplineStraight)
+            {
+                outXyz[axis] = b + ((c - b) * u);
+                continue;
+            }
+
+            float c1 = 0.5f * (c - a);
+            float c2 = a - (2.5f * b) + (2f * c) - (0.5f * dd);
+            float c3 = (-0.5f * a) + (1.5f * b) - (1.5f * c) + (0.5f * dd);
+            outXyz[axis] = b + (c1 * u) + (c2 * u * u) + (c3 * u * u * u);
+        }
+    }
+
+    /// <summary>The guest's endpoint reflection: <c>2*edge - inner</c>.</summary>
+    private static float[] Reflect(float[] edge, float[] inner) => new[]
+    {
+        (2f * edge[0]) - inner[0],
+        (2f * edge[1]) - inner[1],
+        (2f * edge[2]) - inner[2],
+    };
+
+    /// <summary>One of an effect's lights, evaluated at the effect's current time.</summary>
+    /// <param name="Position">
+    /// In the effect's own space, Godot axes — the caller's node supplies the world transform.
+    /// </param>
+    /// <param name="Energy">
+    /// Intensity times the emitter's alive fraction, which is how the guest fades a light out as
+    /// its effect runs down (`sub_8323FA50` at 0x8323fb28) rather than snapping it off.
+    /// </param>
+    public readonly record struct FxLightState(
+        Vector3 Position,
+        Color Colour,
+        float Range,
+        float Energy,
+        float FadeDistance,
+        float FadeRange);
+
+    /// <summary>How many lights this effect carries. Fixed once <see cref="Build"/> has run.</summary>
+    public int LightCount
+    {
+        get
+        {
+            int total = 0;
+            foreach (InstanceState inst in _instances)
+            {
+                total += inst.Lights.Count;
+            }
+
+            return total;
+        }
+    }
+
+    /// <summary>
+    /// The <paramref name="index"/>th light as it stands this frame.
+    ///
+    /// Evaluated rather than stored: every one of the four values is a TIMELINE, so a brazier
+    /// whose colour warms and whose range breathes does so because this is re-read each frame.
+    /// </summary>
+    public FxLightState LightAt(int index)
+    {
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (LightRuntime light in inst.Lights)
+            {
+                if (index-- != 0)
+                {
+                    continue;
+                }
+
+                FxEmitter? d = light.Def;
+                if (d is null)
+                {
+                    return default;
+                }
+
+                float age = MathF.Max(0f, inst.Time - light.StartDelay);
+                (float r, float g, float b) = d.LightColour.Eval(age);
+
+                // The guest scales the colour by intensity AND by how much of the emitter's life
+                // is left. With no duration stated that fraction is 1.0, which is every ambient
+                // light in the game.
+                float energy = d.LightIntensity.Eval(age);
+
+                return new FxLightState(
+                    ToGodot(light.Origin),
+                    new Color(r, g, b),
+                    MathF.Max(0f, d.LightRange.Eval(age)) * light.Scale,
+                    energy,
+                    d.LightFadeDistance.Eval(age),
+                    d.LightFadeRange.Eval(age));
+            }
+        }
+
+        return default;
     }
 
     private readonly List<InstanceState> _instances = new();
     private readonly List<(Vector3 Pos, Vector2 Uv, Color Col)> _scratch = new();
     private uint _rng = 0x1234567u;
     private bool _loop = true;
+
+    /// <summary>Where the owning node was last frame, for the world-space rebase.</summary>
+    private Transform3D? _previousGlobal;
+
+    /// <summary>Whether any emitter here states <c>AttachToRoot = false</c>.</summary>
+    private bool _detachedParticles;
+
+    /// <summary>
+    /// Moves every world-space particle by <paramref name="delta"/>, cancelling out the node's own
+    /// movement so they hold their place in the world.
+    ///
+    /// The arrays are in the GAME's axes and the delta is in Godot's, so each position makes the
+    /// round trip. Velocities take the rotation only — a translation of the frame does not change
+    /// how fast anything is going.
+    /// </summary>
+    private void Rebase(Transform3D delta)
+    {
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (EmitterRuntime rt in inst.Emitters)
+            {
+                if (rt.Def is null || rt.Def.AttachToRoot)
+                {
+                    continue;
+                }
+
+                foreach (ParticleState pt in rt.Particles)
+                {
+                    var pos = new Vector3(pt.Pos[0], pt.Pos[2], pt.Pos[1]);
+                    pos = delta * pos;
+                    pt.Pos[0] = pos.X;
+                    pt.Pos[1] = pos.Z;
+                    pt.Pos[2] = pos.Y;
+
+                    var vel = new Vector3(pt.Vel[0], pt.Vel[2], pt.Vel[1]);
+                    vel = delta.Basis * vel;
+                    pt.Vel[0] = vel.X;
+                    pt.Vel[1] = vel.Z;
+                    pt.Vel[2] = vel.Y;
+
+                    // The trail history is a path through the world; it has to move with the
+                    // particles or a ribbon snaps back to the emitter every time the node moves.
+                    for (int k = 0; k < pt.HistCount; k++)
+                    {
+                        float[]? h = pt.Hist[k];
+                        if (h is null)
+                        {
+                            continue;
+                        }
+
+                        var hp = new Vector3(h[0], h[2], h[1]);
+                        hp = delta * hp;
+                        h[0] = hp.X;
+                        h[1] = hp.Z;
+                        h[2] = hp.Y;
+                    }
+                }
+            }
+        }
+    }
 
     public int AliveCount()
     {
@@ -275,6 +654,8 @@ public sealed class Engine_FxSystem
     {
         _instances.Clear();
         ResolvedCount = 0;
+        _previousGlobal = null;
+        _detachedParticles = false;
     }
 
     public void Build(FxBank bank, IEnumerable<FxPlacement> placements)
@@ -295,14 +676,95 @@ public sealed class Engine_FxSystem
             FxEffect? effect = bank.FindByHash(place.EffectHash);
             if (effect is not null)
             {
+                // A TYPE-VECTOR IS A CHAIN, IN FILE ORDER, and that chain IS the parenting.
+                //
+                // `sub_83233300` walks each type-vector's entities in order and calls
+                // `sub_83229458(previous, new)` on every one after the first, which writes
+                // `new+0xEC = previous`. There is no parent field anywhere in the file — an
+                // entity's parent is simply the entity before it. `sub_83229458` has exactly two
+                // callers in the whole binary and neither is gameplay code.
+                //
+                // It also STOPS at the first emitter: types 0 and 1 break the inner loop, so a
+                // type-vector reads `[spline, spline, ...] -> emitter` and anything after that
+                // emitter is never instantiated. The shipped data agrees — of 2650 type-vectors
+                // only 10 triples fall after their first emitter, and the second commonest shape
+                // in the bank is `(spline, emitter)`, 367 of them.
+                // SEGMENTED ON THE VECTOR INDEX, NOT ON `Group`. EntityPriorities is a priority
+                // bucket whose values are 1..5 and repeat freely; segmenting on it merged every
+                // adjacent pair of type-vectors that shared a priority and then threw away the
+                // second one's emitter at the "close after the first emitter" rule. That cost 48
+                // effects their ability to sustain — caught only because the whole-bank sustain
+                // count is checked against its baseline after every change.
+                int vector = -1;
+                SplineRuntime? chained = null;
+                bool groupClosed = false;
+
                 foreach (FxEffectPart part in effect.Parts)
                 {
+                    if (part.Vector != vector)
+                    {
+                        vector = part.Vector;
+                        chained = null;
+                        groupClosed = false;
+                    }
+                    else if (groupClosed)
+                    {
+                        continue;
+                    }
+
                     if (part.Emitter < 0 || part.Emitter >= bank.Emitters.Count)
                     {
                         continue;
                     }
 
                     FxEmitter em = bank.Emitters[part.Emitter];
+
+                    if (em.IsSpline)
+                    {
+                        var spline = new SplineRuntime
+                        {
+                            Def = em,
+
+                            // -1 is the guest's own "not started" sentinel; the first update
+                            // resolves it to 0 or, with UseRandomStartPoint, anywhere on the curve.
+                            T = em.SplineRandomStart ? Frand() : 0f,
+                        };
+                        inst.Splines.Add(spline);
+                        chained = spline;
+                        continue;
+                    }
+
+                    // A LIGHT IS PLACED THE SAME WAY AN EMITTER IS — same base block, same
+                    // position, same start time — so it takes the same offset maths and then
+                    // leaves the particle path entirely.
+                    if (em.IsLight)
+                    {
+                        var lit = new LightRuntime
+                        {
+                            Def = em,
+                            Scale = sc,
+                            StartDelay = em.StartTimeSecs,
+                        };
+                        Offset(place, em, sc, cy, sy, lit.Origin);
+                        inst.Lights.Add(lit);
+                        continue;
+                    }
+
+                    // An attractor is placed exactly like an emitter and then pulls on every
+                    // particle the same effect owns, rather than spawning any of its own.
+                    if (em.IsAttractor)
+                    {
+                        var pull = new LightRuntime
+                        {
+                            Def = em,
+                            Scale = sc,
+                            StartDelay = em.StartTimeSecs,
+                        };
+                        Offset(place, em, sc, cy, sy, pull.Origin);
+                        inst.Attractors.Add(pull);
+                        continue;
+                    }
+
                     if (!em.HasMotion)
                     {
                         continue;
@@ -317,32 +779,17 @@ public sealed class Engine_FxSystem
                         YawSin = sy,
                         HasRot = place.HasRot,
                         SpawnRadius = em.SpawnRadius * sc,
+                        Shape = em.SubType,
+                        EmitOnSurface = em.EmitOnSurface,
+                        UseShapeSpawnDir = em.UseShapeSpawnDir,
+                        TypeBasis = BasisFromQuat(em.Quat),
                     };
                     if (place.HasRot)
                     {
                         Array.Copy(place.Rot, rt.RotGame, 9);
                     }
 
-                    float lx;
-                    float ly;
-                    float lz;
-                    if (place.HasRot)
-                    {
-                        float[] m = place.Rot;
-                        lx = (m[0] * em.Pos[0]) + (m[1] * em.Pos[1]) + (m[2] * em.Pos[2]);
-                        ly = (m[3] * em.Pos[0]) + (m[4] * em.Pos[1]) + (m[5] * em.Pos[2]);
-                        lz = (m[6] * em.Pos[0]) + (m[7] * em.Pos[1]) + (m[8] * em.Pos[2]);
-                    }
-                    else
-                    {
-                        lx = (em.Pos[0] * cy) - (em.Pos[1] * sy);
-                        ly = (em.Pos[0] * sy) + (em.Pos[1] * cy);
-                        lz = em.Pos[2];
-                    }
-
-                    rt.Origin[0] = place.Pos[0] + (lx * sc);
-                    rt.Origin[1] = place.Pos[1] + (ly * sc);
-                    rt.Origin[2] = place.Pos[2] + (lz * sc);
+                    Offset(place, em, sc, cy, sy, rt.Origin);
 
                     uint mode = 1;
                     if (part.System >= 0 && part.System < bank.Systems.Count)
@@ -351,7 +798,27 @@ public sealed class Engine_FxSystem
                         mode = sys.Mode;
                         if (mode is >= 1 and <= 4)
                         {
-                            rt.Trail = mode is 3;
+                            // MODE 2 IS A RIBBON, NOT A BILLBOARD — and it is 131 of the bank's
+                            // 2231 systems, against 6 for mode 3.
+                            //
+                            // `Mode` is `CMaterialTimeline::MaterialType`, and the draw dispatcher
+                            // `sub_821CA5E8` switches on it directly (0x821CA6B4 onward):
+                            //
+                            //     lwz   r11, 0xF0(r4)
+                            //     cmpwi r11, 1 ; beq -> quad list          (billboard)
+                            //     cmpwi r11, 2 ; beq -> Render_EffectStripDraw
+                            //     cmpwi r11, 3 ; bne -> return            (nothing else draws)
+                            //                    ... Render_ParticleStripDraw
+                            //
+                            // Both of the strip draws issue TRIANGLESTRIP over the particle's
+                            // position history; only mode 1 expands four corners per particle.
+                            // Drawing a mode-2 system as a camera-facing quad turns every ribbon
+                            // — trails, streaks, the drawn-out part of a splash — into a clump of
+                            // sprites sitting at the head of the path.
+                            //
+                            // Mode 4 is absent from the dispatcher entirely: it is mesh instancing,
+                            // which the visuals' own mesh tag already routes for us.
+                            rt.Trail = mode is 2 or 3;
                             foreach (FxVisual vis in sys.Visuals)
                             {
                                 if (vis.Displacement)
@@ -364,7 +831,7 @@ public sealed class Engine_FxSystem
                                     continue;
                                 }
 
-                                VisualRuntime v = BuildVisual(vis, sc, mode);
+                                VisualRuntime v = BuildVisual(vis, sc);
                                 if (v.Delay > rt.MaxVisualDelay)
                                 {
                                     rt.MaxVisualDelay = v.Delay;
@@ -380,11 +847,27 @@ public sealed class Engine_FxSystem
                         continue;
                     }
 
+                    // The spline this emitter was chained behind, if any. Its point on the curve
+                    // is added to the emitter's own offset every frame.
+                    rt.Spline = chained;
+                    Array.Copy(rt.Origin, rt.BaseOrigin, 3);
+
+                    if (!em.AttachToRoot)
+                    {
+                        _detachedParticles = true;
+                    }
+
+                    // An emitter closes its type-vector.
+                    groupClosed = true;
                     inst.Emitters.Add(rt);
                 }
             }
 
-            if (inst.Emitters.Count != 0)
+            // A LIGHT ALONE IS A RESOLVED EFFECT. Not every effect draws particles — an effect
+            // whose whole job is to light the room around a fire carries one CPointLightEntityType
+            // and no emitter at all, and gating on emitters would report it unresolved and place
+            // nothing.
+            if (inst.Emitters.Count != 0 || inst.Lights.Count != 0)
             {
                 place.Resolved = true;
                 ResolvedCount++;
@@ -393,7 +876,64 @@ public sealed class Engine_FxSystem
         }
     }
 
-    private static VisualRuntime BuildVisual(FxVisual vis, float sc, uint mode)
+    /// <summary>
+    /// Where one part of an effect sits, in the effect's own space: the base block's position,
+    /// turned by the placement's rotation and scaled.
+    ///
+    /// Shared by the emitters and the lights because the guest shares it — both are
+    /// <c>CParticleSystemEntityType</c>s and both take their position out of the same base block,
+    /// so a light that used its own copy of this would drift from the flame it belongs to the
+    /// first time either was corrected.
+    /// </summary>
+    private static void Offset(
+        FxPlacement place, FxEmitter em, float sc, float cy, float sy, float[] origin)
+    {
+        float lx;
+        float ly;
+        float lz;
+        if (place.HasRot)
+        {
+            float[] m = place.Rot;
+            lx = (m[0] * em.Pos[0]) + (m[1] * em.Pos[1]) + (m[2] * em.Pos[2]);
+            ly = (m[3] * em.Pos[0]) + (m[4] * em.Pos[1]) + (m[5] * em.Pos[2]);
+            lz = (m[6] * em.Pos[0]) + (m[7] * em.Pos[1]) + (m[8] * em.Pos[2]);
+        }
+        else
+        {
+            lx = (em.Pos[0] * cy) - (em.Pos[1] * sy);
+            ly = (em.Pos[0] * sy) + (em.Pos[1] * cy);
+            lz = em.Pos[2];
+        }
+
+        origin[0] = place.Pos[0] + (lx * sc);
+        origin[1] = place.Pos[1] + (ly * sc);
+        origin[2] = place.Pos[2] + (lz * sc);
+    }
+
+    /// <summary>
+    /// Turns a vector by the placement's rotation — the same rotation <see cref="Offset"/> applies
+    /// to an emitter's own position, kept in step with it deliberately: the spline point and the
+    /// emitter offset are added together, so they must arrive in the same frame.
+    /// </summary>
+    private static void RotateLikePlacement(
+        EmitterRuntime rt, float x, float y, float z,
+        out float ox, out float oy, out float oz)
+    {
+        if (rt.HasRot)
+        {
+            float[] m = rt.RotGame;
+            ox = (m[0] * x) + (m[1] * y) + (m[2] * z);
+            oy = (m[3] * x) + (m[4] * y) + (m[5] * z);
+            oz = (m[6] * x) + (m[7] * y) + (m[8] * z);
+            return;
+        }
+
+        ox = (x * rt.YawCos) - (y * rt.YawSin);
+        oy = (x * rt.YawSin) + (y * rt.YawCos);
+        oz = z;
+    }
+
+    private static VisualRuntime BuildVisual(FxVisual vis, float sc)
     {
         var v = new VisualRuntime
         {
@@ -432,12 +972,11 @@ public sealed class Engine_FxSystem
             v.FlickerShared = vis.FlickerShared;
         }
 
-        if (!vis.HasSize && mode == 2 && vis.HasScalarSize && vis.ScalarSize > 0f)
-        {
-            v.HalfX = vis.ScalarSize * 0.5f * sc;
-            v.HalfY = vis.ScalarSize * 0.5f * sc;
-        }
-        else
+        // A mode-2 system states no 2-D `Dimensions` because it is a RIBBON — its width is the
+        // scalar `TrailSize`, which `TrailWidth` above already reads. This branch used to give it
+        // a square billboard half-extent from that scalar, which was the right compensation while
+        // mode 2 was drawn as a quad and is dead weight now that it is a strip. Kept out of the
+        // size ladder entirely rather than left to feed a code path that no longer runs.
         {
             float hx = vis.HasSize ? vis.SizeX : 1f;
             float hy = vis.HasSize ? vis.SizeY : 1f;
@@ -488,55 +1027,198 @@ public sealed class Engine_FxSystem
         FxEmitter? d = rt.Def;
         var pt = new ParticleState();
 
-        if (rt.SpawnRadius > 0f)
+        // THE EMITTER SHAPE. SubType is the header's EmitterShape enum and 1 is NOT 2: sphere and
+        // disc are different volumes, and treating them alike put 679 of the bank's emitters in
+        // the wrong place. `sub_8322A9B0`'s switch at 0x8322AA8C installs a different vtable per
+        // value; only the samplers below are reachable from a standard emitter.
+        //
+        // NOTE THE RADIUS DISTRIBUTION. Both samplers take `r = rand01 * R` — uniform in RADIUS —
+        // which concentrates particles toward the centre. The textbook cube-root (sphere) and
+        // square-root (disc) corrections that give a uniform DENSITY are exactly what the guest
+        // does not do, so applying them would spread every puff wider than the author saw. The
+        // rejection sampling this replaced was the uniform-density version.
+        float shapeX = 0f;
+        float shapeY = 0f;
+        float shapeZ = 0f;
+        bool radial = false;
+
+        if (rt.SpawnRadius > 0f && rt.Shape is 1 or 2)
         {
-            float sx;
-            float sy;
-            float sz;
-            do
+            float radius = rt.EmitOnSurface ? rt.SpawnRadius : Frand() * rt.SpawnRadius;
+            float phiShape = Frand() * MathF.Tau;
+
+            if (rt.Shape == 1)
             {
-                sx = Srand2();
-                sy = Srand2();
-                sz = Srand2();
+                // Sphere — direction uniform on the unit sphere. `sub_83224630`: z is uniform in
+                // [-1,1) (0x832246E4), then s = sqrt(1 - z*z) scales the azimuth (0x83224764).
+                float z = (Frand() * 2f) - 1f;
+                float s = MathF.Sqrt(MathF.Max(0f, 1f - (z * z)));
+                shapeX = MathF.Cos(phiShape) * s * radius;
+                shapeY = MathF.Sin(phiShape) * s * radius;
+                shapeZ = z * radius;
             }
-            while ((sx * sx) + (sy * sy) + (sz * sz) > 1f);
-            pt.Pos[0] = rt.Origin[0] + (sx * rt.SpawnRadius);
-            pt.Pos[1] = rt.Origin[1] + (sy * rt.SpawnRadius);
-            pt.Pos[2] = rt.Origin[2] + (sz * rt.SpawnRadius);
+            else
+            {
+                // Disc — a circle in the emitter's local XY plane, normal +Z. `sub_832240C0`
+                // forces out.z = 0 at 0x832240F8.
+                shapeX = MathF.Cos(phiShape) * radius;
+                shapeY = MathF.Sin(phiShape) * radius;
+                shapeZ = 0f;
+            }
+
+            radial = rt.UseShapeSpawnDir;
+        }
+
+        // The shape offset is in the emitter's LOCAL axes, so it turns with the emitter before it
+        // is added to the origin — the same basis the spawn direction goes through below.
+        if (shapeX != 0f || shapeY != 0f || shapeZ != 0f)
+        {
+            LocalToEffect(rt, shapeX, shapeY, shapeZ, out float wx, out float wy, out float wz);
+            pt.Pos[0] = rt.Origin[0] + (wx * rt.Scale);
+            pt.Pos[1] = rt.Origin[1] + (wy * rt.Scale);
+            pt.Pos[2] = rt.Origin[2] + (wz * rt.Scale);
         }
         else
         {
             Array.Copy(rt.Origin, pt.Pos, 3);
         }
 
+        // THE SPAWN DIRECTION, AND WHERE IT POINTS WHEN NOBODY STATES ONE.
+        //
+        // `sub_8322CAF0` builds it from three generic parameters and one shared azimuth:
+        //
+        //     dir.x = param9  * cos(theta)      /*0x8322cba8 -> 0x8322cbc0*/
+        //     dir.y = param10 * sin(theta)      /*0x8322cbf8 -> 0x8322cc10*/
+        //     dir.z = param11                   /*0x8322cc3c -> 0x8322cc48*/
+        //
+        // — each inserted into its own lane by the vperm masks at 0x82099170, 0x82099180 and
+        // 0x82099190, whose bytes select lane 0, 1 and 2 respectively. That is exactly the
+        // construction below, so the shape was right.
+        //
+        // WHAT WAS WRONG IS THE DEGENERATE CASE, and it is the commonest case in the game.
+        // `vmsum3fp128 v7, v0, v0` takes the SQUARED length and the guest branches on it:
+        //
+        //     if (len2 >= 1.1920929e-7)  normalise            /*0x8322cc94, 0x8322ccc0*/
+        //     else { v69[0] = 1.0;                            /*0x8322cc9c*/
+        //            vspltw v12, v13, 0                       // splat 1.0 across all four lanes
+        //            vand   v11, v12, v0 }                    // AND with the mask at 0x82099150
+        //
+        // The mask at 0x82099150 reads `00000000 00000000 ffffffff 00000000` — lane 2 alone
+        // survives — so the fallback direction is (0, 0, 1): the emitter's local +Z, which is UP
+        // in the game's Z-up space.
+        //
+        // This host used (1, 0, 0). Params 9, 10 and 11 all default to 0.0 in the table at
+        // 0x8331DA20, and 977 of the bank's 2277 standard emitters state a real Speed and no
+        // direction at all — so 43% of every emitter in the game was firing a jet SIDEWAYS along
+        // +X where the author asked for a column straight up. Fires, torch flames, steam and
+        // smoke all take this path.
         float phi = Frand() * MathF.Tau;
-        float gx = 1f;
+        float gx = 0f;
         float gy = 0f;
-        float gz = 0f;
+        float gz = 1f;
         if (d is not null)
         {
             gx = d.VelX.Eval(rt.Age) * MathF.Cos(phi);
             gy = d.VelY.Eval(rt.Age) * MathF.Sin(phi);
             gz = d.VelZ.Eval(rt.Age);
-            float len = MathF.Sqrt((gx * gx) + (gy * gy) + (gz * gz));
-            if (len > 1e-4f)
+
+            // The guest's own threshold, against the SQUARED length as it tests it.
+            float len2 = (gx * gx) + (gy * gy) + (gz * gz);
+            if (len2 >= 1.1920929e-7f)
             {
-                gx /= len;
-                gy /= len;
-                gz /= len;
+                float inv = 1f / MathF.Sqrt(len2);
+                gx *= inv;
+                gy *= inv;
+                gz *= inv;
             }
             else
             {
-                gx = 1f;
+                gx = 0f;
                 gy = 0f;
-                gz = 0f;
+                gz = 1f;
             }
 
+            // THE CONE IS FILLED, NOT HOLLOW — and this second stage is the whole difference.
+            //
+            // What the three parameters build above is the cone's EDGE. `sub_8322CAF0` then
+            // rotates that edge vector back toward the +Z axis by a fresh random polar angle:
+            //
+            //     psi  = acos(clamp(dir.z, -1, 1)) * rand01        /*0x8322ce10, 0x8322ce84*/
+            //     perp = normalize((0,0,1) - dir*dir.z)            /*0x8322ce4c, 0x8322cea4*/
+            //     dir  = dir*cos(psi) + perp*sin(psi)              /*0x8322cef0*/
+            //
+            // acos(dir.z) IS the cone's half-angle — there is no separate spread parameter — and
+            // psi uniform in [0, half-angle] fills the interior. Without it every emitter in the
+            // game sprays a hollow shell with nothing down the middle, which reads as a ring or a
+            // hoop where a plume was authored.
+            if (gz <= 0.9995f)
+            {
+                float half = MathF.Acos(Math.Clamp(gz, -1f, 1f));
+                float psi = half * Frand();
+
+                // perp = normalize(+Z - dir*dir.z), which for a unit dir is (-x*z, -y*z, 1-z*z).
+                float px = -gx * gz;
+                float py = -gy * gz;
+                float pz = 1f - (gz * gz);
+                float pl2 = (px * px) + (py * py) + (pz * pz);
+                if (pl2 >= 1.1920929e-7f)
+                {
+                    float pinv = 1f / MathF.Sqrt(pl2);
+                    px *= pinv;
+                    py *= pinv;
+                    pz *= pinv;
+
+                    float cp = MathF.Cos(psi);
+                    float sp = MathF.Sin(psi);
+                    gx = (gx * cp) + (px * sp);
+                    gy = (gy * cp) + (py * sp);
+                    gz = (gz * cp) + (pz * sp);
+                }
+            }
+            else
+            {
+                // The near-degenerate branch the guest takes for an almost-collimated cone:
+                // lerp toward +Z, then renormalise. /*0x8322cd90*/
+                float t = Frand();
+                gx += (0f - gx) * t;
+                gy += (0f - gy) * t;
+                gz += (1f - gz) * t;
+                float nl2 = (gx * gx) + (gy * gy) + (gz * gz);
+                if (nl2 >= 1.1920929e-7f)
+                {
+                    float ninv = 1f / MathF.Sqrt(nl2);
+                    gx *= ninv;
+                    gy *= ninv;
+                    gz *= ninv;
+                }
+            }
+
+            // UseShapeSpawnDir replaces the cone outright: the particle leaves radially from the
+            // shape's centre. /*0x82A04314 branches past the cone builder*/
+            if (radial)
+            {
+                float rl2 = (shapeX * shapeX) + (shapeY * shapeY) + (shapeZ * shapeZ);
+                if (rl2 >= 1.1920929e-7f)
+                {
+                    float rinv = 1f / MathF.Sqrt(rl2);
+                    gx = shapeX * rinv;
+                    gy = shapeY * rinv;
+                    gz = shapeZ * rinv;
+                }
+            }
+
+            // SpeedSpread is ONE-SIDED and ADDITIVE — [0, spread), not +/-. `sub_82A04208`:
+            // mag = P4(t) + rand01 * P5(t), applied AFTER the direction is normalised.
             float spd = d.Speed.Eval(rt.Age) + (Frand() * d.SpeedSpread.Eval(rt.Age));
             gx *= spd;
             gy *= spd;
             gz *= spd;
         }
+
+        // THE EMITTER'S OWN ORIENTATION FIRST, then the placement's. The spawn direction is built
+        // in the emitter's local axes and multiplied through rows 0..2 of the emitter frame at the
+        // tail of `sub_8322CAF0`; the placement rotation is the outer hop that frame chain ends at.
+        LocalToEffect(rt, gx, gy, gz, out gx, out gy, out gz);
 
         if (rt.HasRot)
         {
@@ -620,7 +1302,11 @@ public sealed class Engine_FxSystem
         TotalSpawned++;
     }
 
-    public void Update(float dt)
+    /// <summary>
+    /// Advances the effect. <paramref name="nodeGlobal"/> is the owning node's world transform,
+    /// and is only needed when that node can MOVE.
+    /// </summary>
+    public void Update(float dt, Transform3D? nodeGlobal = null)
     {
         if (dt <= 0f)
         {
@@ -628,11 +1314,96 @@ public sealed class Engine_FxSystem
         }
 
         dt = MathF.Min(dt, 0.1f);
+
+        // WHAT `AttachToRoot = false` MEANS, once the effect is capable of moving.
+        //
+        // Particles here live in the owning node's space, which is exactly the guest's
+        // AttachToRoot=TRUE behaviour: the container is re-transformed by its ancestor every frame
+        // and everything follows rigidly. For the 1667 emitters that state FALSE the guest instead
+        // bakes the spawn transform in and hands the container IDENTITY, so the particles stay
+        // where they were born and a moving emitter leaves them behind.
+        //
+        // Rather than keep two storage spaces, the node's movement is UNDONE on those particles:
+        // shifting them by the inverse of this frame's node delta leaves their world position
+        // exactly where it was, which is the same result. A node that does not move — every static
+        // level effect — produces an identity delta and costs nothing.
+        if (nodeGlobal is { } current)
+        {
+            if (_previousGlobal is { } previous && _detachedParticles)
+            {
+                Transform3D delta = current.AffineInverse() * previous;
+                if (!delta.IsEqualApprox(Transform3D.Identity))
+                {
+                    Rebase(delta);
+                }
+            }
+
+            _previousGlobal = current;
+        }
         foreach (InstanceState inst in _instances)
         {
             inst.Time += dt;
+
+            // THE SPLINES FIRST, because the emitters that ride them read the result. `t` steps by
+            // `dt * Rate * sign`; at either end ReverseFlow flips the sign to ping-pong and its
+            // absence snaps back to 0 (`sub_8323CEF0`).
+            foreach (SplineRuntime spline in inst.Splines)
+            {
+                FxEmitter? sd = spline.Def;
+                if (sd is null || sd.SplinePoints.Length == 0)
+                {
+                    continue;
+                }
+
+                // RATE IS PER 30 Hz TICK, NOT PER SECOND — the same tick base the emission rate
+                // uses, which is why `RateToPerSec` already exists on this class.
+                //
+                // `sub_8323CEF0` steps `t += flt_8335F1D4[mode] * Rate * sign`, and that constant
+                // is TICKS CONSUMED PER SIM STEP: 2.0 at 15 Hz, 1.0 at 30 Hz, so either way the
+                // curve advances by Rate thirty times a second. Reading it as t-per-second made
+                // every spline in the game run 30x too slow — the beehives' six looped paths take
+                // 4 seconds each in the original and were taking well over two minutes here, which
+                // reads as bees hanging motionless in the air rather than circling.
+                spline.T += dt * sd.SplineRate * RateToPerSec * spline.Sign;
+                if (spline.T < 0f || spline.T > 1f)
+                {
+                    if (sd.SplineReverseFlow)
+                    {
+                        spline.Sign = -spline.Sign;
+                    }
+                    else
+                    {
+                        spline.T = 0f;
+                    }
+                }
+
+                spline.T = Math.Clamp(spline.T, 0f, 1f);
+
+                // RandomGenerator does not travel the curve at all — it re-rolls `t` every
+                // evaluation, scattering the point over the whole path.
+                float at = sd.SplineRandomGenerator ? Frand() : spline.T;
+                EvalSpline(sd, at, spline.Offset);
+            }
+
             foreach (EmitterRuntime rt in inst.Emitters)
             {
+                // The emitter's own offset plus wherever its parent spline has travelled to.
+                if (rt.Spline is { Def: not null } ridden)
+                {
+                    // THROUGH THE PLACEMENT'S ROTATION, exactly as the emitter's own offset goes.
+                    // The point comes out of the curve in the effect's local space; adding it raw
+                    // leaves every rotated fixture flying its path in the unrotated orientation,
+                    // so a beehive turned to face a wall sends its bees off in the original
+                    // authoring direction instead.
+                    RotateLikePlacement(
+                        rt, ridden.Offset[0], ridden.Offset[1], ridden.Offset[2],
+                        out float sx, out float sy, out float sz);
+
+                    rt.Origin[0] = rt.BaseOrigin[0] + (sx * rt.Scale);
+                    rt.Origin[1] = rt.BaseOrigin[1] + (sy * rt.Scale);
+                    rt.Origin[2] = rt.BaseOrigin[2] + (sz * rt.Scale);
+                }
+
                 FxEmitter? d = rt.Def;
                 if (inst.Time < rt.StartDelay)
                 {
@@ -678,9 +1449,81 @@ public sealed class Engine_FxSystem
                     SpawnOne(rt);
                 }
 
+                // ONE ACCELERATION PER EMITTER PER FRAME, shared by every particle it owns —
+                // `sub_8322D988` assembles it once into the global at 0x8349E5D0 and
+                // `sub_8322CF40` only ever adds that one vector, evaluated at the EMITTER's age
+                // rather than each particle's.
+                //
+                // Of its three terms only gravity is live for us. The authored-direction term
+                // needs vector timeline 0, which we skip; the global-wind term scales a vector
+                // the weather system owns and that we never set, so it is (0,0,0) and drops out.
+                float accZ = 0f;
+                if (d is not null)
+                {
+                    float gravity = d.GravityScale.Eval(rt.Age);
+                    if (gravity != 0f && float.IsFinite(gravity))
+                    {
+                        accZ = Gravity * gravity;
+                    }
+                }
+
                 foreach (ParticleState pt in rt.Particles)
                 {
                     pt.Age += dt;
+
+                    // Semi-implicit Euler, the guest's own order: velocity takes the acceleration
+                    // first and position integrates the NEW velocity (`vel += acc; pos += vel` at
+                    // 0x8322cf78 then 0x8322d08c). Integrating the old velocity instead lags every
+                    // falling particle by a frame and shortens its arc.
+                    pt.Vel[2] += accZ * dt;
+
+                    // THE EFFECT'S ATTRACTORS, summed per particle. `sub_83229A98` adds every
+                    // attractor's contribution before the damping and the position step, so they
+                    // ride in beside gravity rather than replacing it.
+                    foreach (LightRuntime pull in inst.Attractors)
+                    {
+                        FxEmitter? pd = pull.Def;
+                        if (pd is null)
+                        {
+                            continue;
+                        }
+
+                        float pullAge = MathF.Max(0f, inst.Time - pull.StartDelay);
+                        float radius = pd.AttractRadius.Eval(pullAge) * pull.Scale;
+                        if (!(radius > 1e-4f))
+                        {
+                            continue;
+                        }
+
+                        float dx = pt.Pos[0] - pull.Origin[0];
+                        float dy = pt.Pos[1] - pull.Origin[1];
+                        float dz = pt.Pos[2] - pull.Origin[2];
+                        float d2 = (dx * dx) + (dy * dy) + (dz * dz);
+
+                        // A HARD CUTOFF, tested on the SQUARE — `if (d2 <= R*R)` at 0x8323c120.
+                        // Outside the radius an attractor contributes exactly nothing, which is
+                        // what keeps one effect's vortex from reaching across a room.
+                        if (d2 > radius * radius)
+                        {
+                            continue;
+                        }
+
+                        float distance = MathF.Sqrt(d2);
+                        if (distance < 1e-5f)
+                        {
+                            continue;
+                        }
+
+                        // Linear ramp to zero at the rim, and NEGATED — the guest builds the
+                        // particle-to-attractor delta and then flips it (0x8323c2fc), so a
+                        // positive strength pulls inward.
+                        float force = pd.AttractStrength.Eval(pullAge) * (1f - (distance / radius));
+                        float scale = -force * dt / distance;
+                        pt.Vel[0] += dx * scale;
+                        pt.Vel[1] += dy * scale;
+                        pt.Vel[2] += dz * scale;
+                    }
+
                     pt.Pos[0] += pt.Vel[0] * dt;
                     pt.Pos[1] += pt.Vel[1] * dt;
                     pt.Pos[2] += pt.Vel[2] * dt;

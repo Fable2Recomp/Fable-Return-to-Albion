@@ -3,6 +3,7 @@ shader_type spatial;
 render_mode cull_disabled, ambient_light_disabled, specular_disabled;
 
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
+#include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 
 uniform bool has_lightmap = false;
 
@@ -319,6 +320,16 @@ void fragment() {
 	// against. `fable_ambient` adds the flat GlobalAmbient on top, so this line is the guest's
 	// `bake * LightmapFactor + GlobalAmbient` with the darkening term collapsed to 1.
 	EMISSION = final * fable_ambient(bake * lightmap_colour.rgb * darken);
+
+	// LAST, because it attenuates everything above it. Exact here: the ground is
+	// `specular_disabled`, so ALBEDO and EMISSION between them carry the whole surface, and the
+	// guest's landscape pixel shader (blob 0007) runs the same block instruction for instruction
+	// as the props standing on it. Opaque, so the guest's alpha factor is 1.
+	vec3 fog_t;
+	vec3 fog_c;
+	if (fable_atmosphere_terms(VERTEX, INV_VIEW_MATRIX, fog_t, fog_c)) {
+		fable_atmosphere_apply(fog_t, fog_c, 1.0, ALBEDO, EMISSION);
+	}
 }
 
 void light() {

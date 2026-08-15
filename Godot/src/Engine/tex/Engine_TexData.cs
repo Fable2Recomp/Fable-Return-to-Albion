@@ -241,6 +241,17 @@ public static class Engine_TexData
 		surface = default!;
 		error = string.Empty;
 
+		// A CUBE IS NOT A SURFACE, and saying so plainly is the point. Every one of the 36 shipped
+		// cube textures used to fail here with "plane 0: unsupported compFlag 24", which read as a
+		// missing compression scheme and sent the search after a codec that does not exist — the
+		// 24 is the size of the six-entry face table being misread as a plane triple. This path
+		// genuinely cannot answer for a cube, so it names the one that can.
+		if (header.IsCube)
+		{
+			error = "cube texture: decode it with Engine_TexCube.TryDecode";
+			return false;
+		}
+
 		if (header.IsRaw)
 		{
 			return TryDecodeRawSurface(d, header, out surface, out error);

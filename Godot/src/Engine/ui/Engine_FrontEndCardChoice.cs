@@ -425,7 +425,16 @@ public partial class Engine_FrontEndCardChoice : Node3D
 			// where the game puts them. Taken from the built node rather than hardcoded: the
 			// slide table is expressed in the group's LOCAL space, and the group is a child of
 			// `Layer` rather than of the screen root.
-			panel.Transform = group.GlobalTransform;
+			//
+			// ONLY IF IT IS IN THE TREE — the caller may hand us the PATTERN BOOK's detached
+			// copy, and `GlobalTransform` on a node outside the scene tree is an engine error
+			// returning identity. `GameUi` overwrites this with the live group's transform
+			// immediately afterwards, so the error was pure noise in every front-end log.
+			if (group.IsInsideTree())
+			{
+				panel.Transform = group.GlobalTransform;
+			}
+
 			group.Visible = false;
 		}
 

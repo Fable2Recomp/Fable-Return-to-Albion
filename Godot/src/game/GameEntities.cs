@@ -178,7 +178,19 @@ public partial class GameEntities : Node3D
             if (_skeletons.TryGetValue(entity.Address, out
                     Refii.Entities.Engine_EntitySkeleton? rig))
             {
-                rig.Follow(entity.Address);
+                // HOST ANIMATION AND THE POSE FEED ARE MUTUALLY EXCLUSIVE. Both write every
+                // bone of the same skeleton, so running them together is not a blend — it is
+                // whichever wrote last this frame, per bone, which looks like a rig tearing
+                // rather than like a configuration mistake. Following the guest's bones is
+                // still the default; host animation is opted into per run.
+                if (HostAnimation)
+                {
+                    DriveLocomotion(entity.Address, node, rig);
+                }
+                else
+                {
+                    rig.Follow(entity.Address);
+                }
                 SampleFacing(entity.Address, node, entity.Rotation);
                 StateVisibleExtent(node, rig);
 
@@ -452,6 +464,51 @@ public partial class GameEntities : Node3D
     /// ever" — the two are indistinguishable from here, which is why <see cref="RetryRigs"/>
     /// exists.
     /// </summary>
+    /// <summary>
+    /// Whether Godot plays CLIPS for characters instead of copying the guest's bones.
+    ///
+    /// Opt-in, and off by default, because it replaces a working feed rather than adding to
+    /// one. `REFII_HOST_ANIM=1` turns it on.
+    /// </summary>
+    private static readonly bool HostAnimation =
+        System.Environment.GetEnvironmentVariable("REFII_HOST_ANIM") == "1";
+
+    /// <summary>How many characters currently have a host-side locomotion animator.</summary>
+    private int _locomotionDriven;
+
+    /// <summary>
+    /// Gives one character a locomotion animator over the skeleton it is ALREADY skinned to.
+    ///
+    /// The skeleton is passed in rather than built, because the mesh's bind matrices were
+    /// derived from this exact one. A second skeleton would animate correctly and move nothing
+    /// anyone can see.
+    /// </summary>
+    private void DriveLocomotion(
+        uint address, MeshInstance3D node, Refii.Entities.Engine_EntitySkeleton rig)
+    {
+        var animator =
+            node.GetNodeOrNull<Refii.Animations.Engine_LocomotionAnimator>(
+                Refii.Animations.Engine_LocomotionAnimator.NodeName);
+
+        if (animator is null)
+        {
+            animator = new Refii.Animations.Engine_LocomotionAnimator
+            {
+                Name = Refii.Animations.Engine_LocomotionAnimator.NodeName,
+                EntityAddress = address,
+            };
+
+            node.AddChild(animator);
+
+            uint[] hashes = node.Mesh is Refii.Entities.Engine_EntityResource resource
+                ? System.Linq.Enumerable.ToArray(resource.ModelHashes)
+                : System.Array.Empty<uint>();
+
+            animator.Drive(rig.Node, rig.Node.Name, hashes);
+            _locomotionDriven++;
+        }
+    }
+
     private bool TryRig(uint address, MeshInstance3D node, Mesh mesh)
     {
         // THE MODEL'S OWN BONE TABLE IS THE SKELETON. The mesh's bone indices address it, so

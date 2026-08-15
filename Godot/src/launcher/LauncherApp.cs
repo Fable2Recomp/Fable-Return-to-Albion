@@ -614,6 +614,7 @@ public partial class LauncherApp : Control
 		_reinstallPanel.UnpackBanksRequested += () => StartOps(ops => ops.ExtractGameBanks());
 		_reinstallPanel.DecompileLuaRequested += () => StartOps(ops => ops.RebuildLuaWorkspace());
 		_reinstallPanel.CompileShadersRequested += () => StartOps(ops => ops.CompileShaders());
+		_reinstallPanel.BuildModernizedAssetsRequested += StartAssetPrebuild;
 	}
 
 	private void WireMenus()
@@ -880,11 +881,23 @@ public partial class LauncherApp : Control
 
 		if (isReinstall)
 		{
-			_reinstallPanel.Refresh(_installInProgress || _ops is not null, _launch.GameIsRunning);
-			_reinstallPanel.SetProgress(
-				_ops is not null ? _ops.OperationLabel : _installLabel,
-				_ops is not null ? _ops.StatusMessage : _installStatus,
-				_ops is not null ? string.Empty : _installError);
+			_reinstallPanel.Refresh(
+				_installInProgress || _ops is not null || _prebuilding, _launch.GameIsRunning);
+
+			// THE PREBUILD REPORTS FIRST when it is running. It is the only one of these that is
+			// managed rather than native, so it does not flow through _ops — and without this the
+			// panel would show the last native operation's line for the whole run.
+			if (_prebuilding || _prebuildLabel.Length != 0)
+			{
+				_reinstallPanel.SetProgress(_prebuildLabel, _prebuildStatus);
+			}
+			else
+			{
+				_reinstallPanel.SetProgress(
+					_ops is not null ? _ops.OperationLabel : _installLabel,
+					_ops is not null ? _ops.StatusMessage : _installStatus,
+					_ops is not null ? string.Empty : _installError);
+			}
 		}
 
 		if (isSettings || isModding || isReinstall)
@@ -1292,6 +1305,99 @@ public partial class LauncherApp : Control
 			probe.GetVerifyEntries(), _font, TextFontSize, _baseStyle);
 		dialog.ResetRequested += path => StartOps(ops => ops.ResetLuaWorkspaceFile(path));
 		AddChild(dialog);
+	}
+
+	/// <summary>Set while the managed asset prebuild is running on its own thread.</summary>
+	private volatile bool _prebuilding;
+
+	/// <summary>The line the reinstall panel shows for it. Written by the worker, read here.</summary>
+	private volatile string _prebuildLabel = string.Empty;
+
+	private volatile string _prebuildStatus = string.Empty;
+
+	/// <summary>
+	/// Builds every modernized texture and material up front.
+	/// </summary>
+	/// <remarks>
+	/// NOT THROUGH <see cref="StartOps"/>, and it cannot be. That path creates a native
+	/// <see cref="LauncherOps"/> handle and polls it; this work is managed C# in
+	/// <see cref="Refii.Textures.Engine_TexPrebuild"/> — the decoder, the upscaler and the cache
+	/// all live on the Godot side. So it gets its own flag and its own two status strings, and
+	/// <c>RefreshState</c> prefers them while it runs.
+	///
+	/// A BACKGROUND THREAD, because this is minutes of work: on the main thread the launcher would
+	/// freeze solid, with no progress, no window, and an operating system offering to kill it.
+	/// Background so that closing the launcher mid-run cannot leave a thread holding the cache
+	/// open — the entries already written stay written, and the next run skips them.
+	///
+	/// THE WORKER NEVER TOUCHES A CONTROL. Godot's UI is main-thread only; a worker setting a
+	/// Label's text is the fault that works on the developer's machine and crashes on somebody
+	/// else's. It writes strings here and <c>RefreshState</c> paints them.
+	/// </remarks>
+	private void StartAssetPrebuild()
+	{
+		if (_prebuilding || _ops is not null || _installInProgress)
+		{
+			return;
+		}
+
+		string directory = Refii.Core.Engine_GameData.Resolve();
+		if (directory.Length == 0)
+		{
+			Log("No game data found to build modernized assets from.");
+			return;
+		}
+
+		// THE SETTINGS AS THEY ARE ON DISK. The player has very likely just chosen a look in the
+		// settings panel, and building the cache for the settings they abandoned would be a long
+		// wait for the wrong artefacts.
+		_settingsPanel.SaveIfDirty();
+
+		// REGISTERED HERE, because the launcher process has never touched a texture and so has
+		// never configured the pipeline. Without it the backend is null and the whole run silently
+		// does base decodes only — which looks exactly like a successful prebuild.
+		Refii.Textures.Engine_TexEnhance.RegisterDefault();
+
+		_prebuilding = true;
+		_prebuildLabel = "Build Modernized Assets";
+		_prebuildStatus = "Finding what to build...";
+		Log($"Building modernized assets from {directory}");
+		RefreshState();
+
+		var thread = new System.Threading.Thread(() =>
+		{
+			try
+			{
+				Refii.Textures.Engine_TexPrebuild.Progress result =
+					Refii.Textures.Engine_TexPrebuild.Run(
+						directory,
+						progress => _prebuildStatus = progress.Total == 0
+							? "Finding what to build..."
+							: $"{progress.Done:N0} of {progress.Total:N0} " +
+							  $"({100.0 * progress.Done / progress.Total:F0}%) — " +
+							  $"built {progress.Built:N0}, failed {progress.Failed:N0}");
+
+				_prebuildStatus = result.Total == 0
+					? "Nothing to build — no material records were found."
+					: $"Done: built {result.Built:N0} of {result.Total:N0}" +
+					  (result.Failed > 0 ? $", {result.Failed:N0} could not be read." : ".");
+			}
+			catch (Exception e)
+			{
+				_prebuildStatus = "Failed: " + e.Message;
+			}
+			finally
+			{
+				_prebuilding = false;
+			}
+		})
+		{
+			IsBackground = true,
+			Name = "refii-prebuild",
+			Priority = System.Threading.ThreadPriority.BelowNormal,
+		};
+
+		thread.Start();
 	}
 
 	private void StartOps(Action<LauncherOps> action)

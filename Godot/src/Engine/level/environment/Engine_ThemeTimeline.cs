@@ -257,12 +257,16 @@ public static class Engine_ThemeTimeline
             Rayleigh = Lerp(a.Rayleigh, b.Rayleigh, w),
             Mie = Lerp(a.Mie, b.Mie, w),
             ComplementaryBias = Lerp(a.ComplementaryBias, b.ComplementaryBias, w),
-            NearDistance = Lerp(a.NearDistance, b.NearDistance, w),
-            NearDensity = Lerp(a.NearDensity, b.NearDensity, w),
-            FarDistance = Lerp(a.FarDistance, b.FarDistance, w),
-            FarDensity = Lerp(a.FarDensity, b.FarDensity, w),
-            CloseFogMaxDistance = Lerp(a.CloseFogMaxDistance, b.CloseFogMaxDistance, w),
-            FoggingStart = Lerp(a.FoggingStart, b.FoggingStart, w),
+            // PRESENCE-WEIGHTED, unlike the plain lerps around them. See `LerpStated`.
+            NearDistance = LerpStated(a.HasNearFog, a.NearDistance, b.HasNearFog, b.NearDistance, w),
+            NearDensity = LerpStated(a.HasNearFog, a.NearDensity, b.HasNearFog, b.NearDensity, w),
+            FarDistance = LerpStated(a.HasFarFog, a.FarDistance, b.HasFarFog, b.FarDistance, w),
+            FarDensity = LerpStated(a.HasFarFog, a.FarDensity, b.HasFarFog, b.FarDensity, w),
+            CloseFogMaxDistance = LerpStated(
+                a.CloseFogMaxDistance > 0f, a.CloseFogMaxDistance,
+                b.CloseFogMaxDistance > 0f, b.CloseFogMaxDistance, w),
+            FoggingStart = LerpStated(
+                a.HasFoggingStart, a.FoggingStart, b.HasFoggingStart, b.FoggingStart, w),
             SunAxisElevation = Lerp(a.SunAxisElevation, b.SunAxisElevation, w),
             SunAxisZOffset = Lerp(a.SunAxisZOffset, b.SunAxisZOffset, w),
             SunAxisXyRotation = Lerp(a.SunAxisXyRotation, b.SunAxisXyRotation, w),
@@ -413,6 +417,49 @@ public static class Engine_ThemeTimeline
         }
 
         return hasA ? a : b;
+    }
+
+    /// <summary>
+    /// Blends two day-set entries for a field ONE OF THEM MAY NOT STATE.
+    /// </summary>
+    /// <remarks>
+    /// THE GUEST DOES NOT LERP UNSTATED FIELDS TOWARD ZERO, and a plain lerp does. Its blend
+    /// carries a presence flag per slot and weights the source by it (<c>sub_821D8588</c>):
+    ///
+    ///     821d8608  lfsx    f0, r10, r28        ; the SOURCE's presence flag
+    ///     821d860c  fnmsubs f13, f0, f30, f31   ; 1 - srcFlag*weight
+    ///     821d862c  vmulfp128 v8, v0, v11       ; src * weight
+    ///     821d8630  vmaddfp   v7, v13, v8, v9
+    ///
+    /// so a source that does not state the slot contributes nothing AND does not scale the
+    /// destination down — the value from the entry that does state it survives intact. With both
+    /// flags set this reduces to exactly the lerp below, which is why the difference only shows on
+    /// a partially-stated day set.
+    ///
+    /// It bites hardest on fog. `FarDistance` sits in the denominator of the optical-depth power
+    /// law and inside the logarithm that solves its exponent, so dragging it from a stated 2000
+    /// toward an unstated 0 does not thin the fog proportionally — it collapses the far range and
+    /// the depth runs away. That reads as a wall of fog with a curve that is arithmetically
+    /// correct.
+    ///
+    /// APPLIED TO THE FOG FIELDS ONLY, so far. The other three dozen fields here have the same
+    /// defect and want the same treatment; they are left alone in this pass because none of them
+    /// has been shown to misbehave and changing the sky and light blend on suspicion is how a fix
+    /// for one thing becomes a regression in another.
+    /// </remarks>
+    private static float LerpStated(bool aHas, float a, bool bHas, float b, float w)
+    {
+        if (aHas && bHas)
+        {
+            return Lerp(a, b, w);
+        }
+
+        if (aHas)
+        {
+            return a;
+        }
+
+        return bHas ? b : 0f;
     }
 
     private static float Lerp(float a, float b, float w)

@@ -259,28 +259,23 @@ public static class Engine_LevelLighting
 			environment.AmbientLightEnergy = frame.AmbientEnergy;
 		}
 
-		if (frame.HasFog)
-		{
-			environment.FogEnabled = true;
-			environment.FogMode = Godot.Environment.FogModeEnum.Depth;
-			environment.FogDepthBegin = frame.FogBegin;
-			environment.FogDepthEnd = frame.FogEnd;
-			environment.FogLightColor = new Color(
-				frame.FogColour[0], frame.FogColour[1], frame.FogColour[2]);
+		// OFF, EXPLICITLY, not merely left alone. Five of the saved level scenes carry
+		// `fog_enabled = true` inside their Environment sub-resource from when this function set
+		// it, with a fog colour of 5/255 — so simply not touching the property any more would
+		// leave those regions running Godot's near-black depth fog UNDERNEATH the atmosphere
+		// below, which reads as the world going dark with distance rather than as two fogs.
+		environment.FogEnabled = false;
 
-			// Godot's depth fog is (ramp ^ curve) * density, so density is the amount reached
-			// AT FogDepthEnd — which is exactly what the theme's far density states. Left at
-			// Godot's 1.0 the ramp reaches total occlusion instead, and with this region's fog
-			// colour of 5/255 that is a black wall rather than haze.
-			environment.FogDensity = frame.FogDensity;
-
-			// THE SKY IS NOT FOGGED. Godot blends the sky toward the fog colour like any other
-			// surface, and the theme's own sky already paints its horizon haze from the stated
-			// Rayleigh and Mie coefficients. Doing both is two atmosphere models fighting, and
-			// the loser is visible: a black band between the cloud deck and the rooftops, which
-			// is this region's near-black fog colour applied to the entire sky dome.
-			environment.FogSkyAffect = 0.0f;
-		}
+		// NO GODOT FOG, DELIBERATELY. Fable's fog is not a depth ramp and `Environment` cannot be
+		// configured into one that resembles it: the transmittance is per channel (Rayleigh is
+		// about 3.5x stronger in blue than in red, which is most of the look), the colour it
+		// converges on is the sky's in-scatter in the view direction rather than a constant, and
+		// the two density values the theme states are control points that solve a power law, not
+		// the ends of a lerp — several shipped themes state a near density HIGHER than the far
+		// one, which a ramp cannot represent at all.
+		//
+		// It lives in the surface shaders instead, which is where the guest puts it too. See
+		// `fable_atmosphere.gdshaderinc` and `Engine_SkyAtmosphere.SolveFogCurve`.
 	}
 
 	/// <summary>

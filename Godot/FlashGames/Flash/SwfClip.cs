@@ -54,30 +54,39 @@ public sealed class SwfClip : IPubClip
 
     public string Text { get; set; } = string.Empty;
 
+    // RENAMED FROM `field`, which this codebase uses freely for an edit-text local. Inside a
+    // PROPERTY ACCESSOR it is now a contextual keyword — C# 14 made `field` mean the compiler's
+    // own backing field — so the two collide and the accessor no longer compiles. Only accessors
+    // are affected, which is why the same name is left alone in SwfStage, SwfDocument and
+    // SwfTextRenderer, where it is an ordinary local or parameter.
+    //
+    // The language level is not pinned down to hide this: this tree resolves to C# 14 because a
+    // .NET 10 SDK is installed, and lowering LangVersion for the whole project to accommodate one
+    // identifier would trade a two-line rename for a constraint on everything else.
     public float Height =>
-        _stage.Document.EditTexts.TryGetValue(CharacterId, out SwfEditText? field)
-            ? field.Bounds.Height / SwfShapeGeometry.TwipsPerPixel
+        _stage.Document.EditTexts.TryGetValue(CharacterId, out SwfEditText? editText)
+            ? editText.Bounds.Height / SwfShapeGeometry.TwipsPerPixel
             : 0f;
 
     public float TextHeight
     {
         get
         {
-            if (!_stage.Document.EditTexts.TryGetValue(CharacterId, out SwfEditText? field))
+            if (!_stage.Document.EditTexts.TryGetValue(CharacterId, out SwfEditText? editText))
             {
                 return 0f;
             }
 
-            SwfFont? font = _stage.Fonts?.Resolve(field.FontId)
-                ?? _stage.Document.Fonts.GetValueOrDefault(field.FontId);
+            SwfFont? font = _stage.Fonts?.Resolve(editText.FontId)
+                ?? _stage.Document.Fonts.GetValueOrDefault(editText.FontId);
             if (font is null)
             {
                 return 0f;
             }
 
-            string content = Text.Length != 0 ? Text : field.InitialText;
+            string content = Text.Length != 0 ? Text : editText.InitialText;
             return SwfTextRenderer.MeasureHeight(
-                field, font, SwfTextRenderer.PlainText(content, field.Html)) /
+                editText, font, SwfTextRenderer.PlainText(content, editText.Html)) /
                 SwfShapeGeometry.TwipsPerPixel;
         }
     }

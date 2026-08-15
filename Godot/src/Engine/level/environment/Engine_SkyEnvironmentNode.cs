@@ -249,12 +249,17 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         _msTheme = SinceMs(ref mark);
 
         (AtmosphereState domeState, ImageTexture domeLut) =
-            Engine_SkyEnvironment.ComputeDome(frame);
+            Engine_SkyEnvironment.ComputeDome(frame, Theme);
 
         if (Environment?.Sky?.SkyMaterial is ShaderMaterial material)
         {
             Engine_SkyEnvironment.ApplyDomeUniforms(material, frame, domeState, domeLut);
         }
+
+        // OUTSIDE the sky-material guard. The world is fogged whether or not this region drew a
+        // dome, and a level whose sky material failed to build would otherwise lose its fog too —
+        // which is the harder of the two failures to spot.
+        Engine_SkyEnvironment.ApplyAtmosphereGlobals(frame, Theme, domeState, domeLut);
 
         _msDome = SinceMs(ref mark);
 

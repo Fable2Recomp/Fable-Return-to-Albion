@@ -4,9 +4,13 @@ using Refii.FlashGames.PubGames;
 
 namespace Refii.FlashGames.Runtime;
 
-public sealed class PubOverlays : IPubOverlayManager
+public sealed class PubOverlays : IPubOverlayManager, IPubTutorialOverlays
 {
     public void ActivateNeedChipsAlert() => ShowNeedChips();
+
+    public void ActivateQuitConfirmation() => ShowQuit();
+
+    public void ActivateCashOut() => ShowCashOut();
 
     public const int OverlaysDepth = 100;
     public const int BankDepth = 17;
@@ -101,8 +105,24 @@ public sealed class PubOverlays : IPubOverlayManager
 
     public int SliderValue => _sliderDelta;
 
+    /// <summary>
+    /// Whether the odds table may be opened at all.
+    /// </summary>
+    /// <remarks>
+    /// THE TUTORIAL OWNS THIS. It closes the odds table off for most of its run and opens it for
+    /// exactly the block that teaches it (block 6), so the player cannot wander into an overlay
+    /// the script is not expecting. It is the tutorial that sets it, which is why it lives here
+    /// rather than being derived from anything.
+    /// </remarks>
+    public bool AllowQuickTips { get; set; } = true;
+
     public void ToggleQuickTips()
     {
+        if (!AllowQuickTips && _quickTips is null)
+        {
+            return;
+        }
+
         if (_quickTips is not null)
         {
             _quickTips.RemoveMovieClip();
@@ -130,7 +150,7 @@ public sealed class PubOverlays : IPubOverlayManager
 
         for (int space = KeystoneSpace.FirstBetSpace; space <= KeystoneSpace.LastBetSpace; space++)
         {
-            int payout = KeystoneRules.GetPayoutRate(space);
+            int payout = _keystone.GetPayoutRate(space);
             int bet = _keystone.GetPayoutBet(space);
             Localize(
                 clip.GetChild(KeystoneRules.BetIdToString(space) + "odds"),
@@ -301,6 +321,13 @@ public sealed class PubOverlays : IPubOverlayManager
 
         if (_keystone.Tournament || _keystone.Tutorial || !_keystone.BetsMade)
         {
+            // SETTLED EVEN THOUGH NOTHING WAS PLAYED. This branch used to just leave, and leaving
+            // is not free: GameOver is what nets the player's chips against their debt, and a
+            // player who took 500 chips from the bank on credit and quit before betting still has
+            // both. Skipping it handed the guest a 500 debt the player did not owe and threw the
+            // 500 chips away. `OverlayManager::KillQuitMenu` calls GameOver on exactly this branch
+            // — the other one reaches it through the cash-out card instead.
+            _keystone.GameOver();
             ExitRequested = true;
             return;
         }
@@ -638,7 +665,20 @@ public sealed class PubOverlays : IPubOverlayManager
         {
             Blocking = true,
         };
+
+        // THE FADE IS WHAT ENDS THE SESSION. `OverlayManager::StartFadeOut` hangs
+        // `FadeOutCompleted` off this animation and that is what calls `GameReallyOver`, which
+        // issues the `GameOver` command a host waits on. Without the callback the board simply
+        // faded to black and sat there, and the flag that ended the session had to be set by hand
+        // at each exit — which is how one exit path came to skip the settlement entirely.
+        anim.SetEndCallback(_ => FadeOutCompleted(), null);
         _keystone.CallbackManager.AddCallbackObject(anim);
+    }
+
+    private void FadeOutCompleted()
+    {
+        FadeShowing = false;
+        _keystone.GameReallyOver();
     }
 
     private IPubClip? EnsureFadeClip()
@@ -1152,5 +1192,172 @@ public sealed class PubOverlays : IPubOverlayManager
         {
             clip.Text = _keystone.Localizer.LocalizeString(key, variables);
         }
+    }
+
+    /// <summary>Where the tutorial's instruction card sits.</summary>
+    public const int TutorialDepth = 9;
+
+    /// <summary>How long the card takes to fade away. The SWF's TUTORIAL_FADE_TIME.</summary>
+    public const double TutorialFadeTime = 350;
+
+    private IPubClip? _tutorial;
+
+    public bool TutorialShowing => _tutorial is not null;
+
+    /// <summary>
+    /// Raises the tutorial's instruction card.
+    /// </summary>
+    /// <remarks>
+    /// THE CARD IS RE-USED, NOT REBUILT. `OverlayManager::ShowTutorial` attaches
+    /// <c>overlay_tutorial</c> once and then rewrites its fields for every stage, which is why the
+    /// body's authored Y is remembered the first time: the body is re-centred on each stage
+    /// against however many lines the new text wrapped to, and the title is then moved by the same
+    /// amount so the two stay together. Re-reading the Y after the first move would compound.
+    ///
+    /// BUTTON1 HAS TWO HOMES. When there is no second button the single prompt goes in
+    /// <c>button3</c>, which is centred; with two, it goes in <c>button1</c> beside
+    /// <c>button2</c>. The unused one is hidden AND reset to frame 1 rather than just hidden.
+    /// </remarks>
+    public void ShowTutorial(
+        string? title, string? body, string? button1Frame, string? button1Label,
+        string? button2Frame, string? button2Label, bool fade, object? group)
+    {
+        _tutorial ??= _overlays.AttachMovie("overlay_tutorial", "overlay_tutorial", TutorialDepth);
+        if (_tutorial is null)
+        {
+            return;
+        }
+
+        IPubClip? bodyClip = _tutorial.GetChild("body");
+        IPubClip? titleClip = _tutorial.GetChild("title");
+
+        if (_tutorialBodyY is null && bodyClip is not null)
+        {
+            _tutorialBodyY = bodyClip.Y;
+            _tutorialTitleY = titleClip?.Y ?? 0;
+        }
+
+        if (bodyClip is not null)
+        {
+            bodyClip.Visible = body is not null;
+            if (body is not null)
+            {
+                Localize(bodyClip, body, null);
+                bodyClip.Y = _tutorialBodyY!.Value +
+                    ((bodyClip.Height - (bodyClip.TextHeight * bodyClip.YScale / 100)) / 2);
+            }
+        }
+
+        if (titleClip is not null)
+        {
+            titleClip.Visible = title is not null;
+            if (title is not null)
+            {
+                Localize(titleClip, title, null);
+                titleClip.Y = (bodyClip?.Y ?? 0) - (_tutorialBodyY!.Value - _tutorialTitleY);
+            }
+        }
+
+        Prompt("button1", "button3", button1Frame, button1Label, button2Label is not null);
+        Prompt2("button2", button2Frame, button2Label);
+
+        var alpha = new AnimateAlpha(
+            _tutorial.Alpha, 100, _tutorial, TutorialFadeTime, 1, AnimateBase.StyleLinear)
+        {
+            Blocking = fade,
+            Group = group,
+        };
+        _keystone.CallbackManager.AddCallbackObject(alpha);
+    }
+
+    private float? _tutorialBodyY;
+    private float _tutorialTitleY;
+
+    /// <summary>Fills whichever of the two slots the first prompt belongs in, and clears the other.</summary>
+    private void Prompt(string paired, string alone, string? frame, string? label, bool hasSecond)
+    {
+        IPubClip? pairedClip = _tutorial?.GetChild(paired);
+        IPubClip? aloneClip = _tutorial?.GetChild(alone);
+        if (pairedClip is null)
+        {
+            return;
+        }
+
+        if (label is null)
+        {
+            pairedClip.Visible = false;
+            if (aloneClip is not null)
+            {
+                aloneClip.Visible = false;
+            }
+
+            return;
+        }
+
+        IPubClip? used = hasSecond ? pairedClip : aloneClip;
+        IPubClip? spare = hasSecond ? aloneClip : pairedClip;
+
+        if (used is not null)
+        {
+            used.Visible = true;
+            if (frame is not null)
+            {
+                used.GetChild("button")?.GotoAndStop(frame);
+            }
+
+            Localize(used.GetChild("label"), label, null);
+        }
+
+        if (spare is not null)
+        {
+            spare.Visible = false;
+            spare.GetChild("button")?.GotoAndStop(1);
+        }
+    }
+
+    private void Prompt2(string name, string? frame, string? label)
+    {
+        IPubClip? clip = _tutorial?.GetChild(name);
+        if (clip is null)
+        {
+            return;
+        }
+
+        clip.Visible = label is not null;
+        if (label is null)
+        {
+            return;
+        }
+
+        if (frame is not null)
+        {
+            clip.GetChild("button")?.GotoAndStop(frame);
+        }
+
+        Localize(clip.GetChild("label"), label, null);
+    }
+
+    /// <summary>
+    /// Fades the tutorial card out.
+    /// </summary>
+    /// <remarks>
+    /// FADES, DOES NOT REMOVE. The card is the same clip for every stage, so taking it out of the
+    /// tree would throw away the body's remembered Y and the next stage would re-centre against an
+    /// already-centred position.
+    /// </remarks>
+    public void HideTutorial(bool fade, object? group)
+    {
+        if (!fade || _tutorial is null || _tutorial.Alpha <= 0)
+        {
+            return;
+        }
+
+        var alpha = new AnimateAlpha(
+            _tutorial.Alpha, 0, _tutorial, TutorialFadeTime, 1, AnimateBase.StyleLinear)
+        {
+            Blocking = true,
+            Group = group,
+        };
+        _keystone.CallbackManager.AddCallbackObject(alpha);
     }
 }

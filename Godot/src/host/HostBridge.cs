@@ -31,7 +31,7 @@ public static class HostBridge
 	/// the game does not limp, it stops, and it stops before anything has written a guest log
 	/// segment to look in. Adding export 33 without touching this line is what that looks like.
 	/// </summary>
-	public const int ExpectedAbiVersion = 50;
+	public const int ExpectedAbiVersion = 54;
 
 	private const int MessageCapacity = 512;
 
@@ -153,8 +153,63 @@ public static class HostBridge
 		}
 	}
 
-	/// <summary>True while the guest thread is alive.</summary>
+	/// <summary>
+	/// True while the guest THREAD is alive — the <see cref="Start"/> path only.
+	///
+	/// NOT the test an accessor wants. See <see cref="IsGuestUp"/>: the running game does not
+	/// take this path at all, so this is false throughout a normal session.
+	/// </summary>
 	public static bool IsRunning => RefiiHostIsRunning() == 1;
+
+	/// <summary>
+	/// True while a guest is up by EITHER boot path, and therefore the test any accessor that
+	/// reads guest memory should use.
+	///
+	/// THIS IS A FIX FOR A SILENT, WIDE FAILURE. `RefiiHostStart` runs the guest on its own
+	/// thread and sets the flag <see cref="IsRunning"/> reads; `RefiiHostInitialize` — the
+	/// embedded path <c>GameSession</c> actually uses, stepped a slice per frame — sets a
+	/// different one and never touches it. So every accessor guarded with
+	/// <see cref="IsRunning"/> returned "no guest" on every frame of the running game.
+	///
+	/// The damage was invisible because each one degrades politely: poses returned null, bone
+	/// names returned null, the language list came back empty. A run reported 3205 drawn
+	/// entities with no skeleton, `characters=0 bones=0`, and concluded "a node whose rest pose
+	/// the bridge will not return" — which was true, and was this flag rather than anything in
+	/// the pose path.
+	///
+	/// Falls back to <see cref="IsRunning"/> against an older native library, which is the
+	/// conservative answer: the same behaviour as before rather than reads against a guest that
+	/// may not exist.
+	/// </summary>
+	public static bool IsGuestUp
+	{
+		get
+		{
+			// THE PROBE IS CACHED, and that is not micro-optimisation. This sits in front of
+			// per-entity accessors that run thousands of times a frame — `GameWorld` asks
+			// `GetEntityPose` once per drawn entity, and the run that found this bug had 3205 of
+			// them. Against an older native library the P/Invoke THROWS, and an exception per
+			// entity per frame would turn a graceful fallback into a stall worse than the fault
+			// it is covering for. A missing entry point cannot come back, so it is asked once.
+			if (_hasGuestUpProbe is null)
+			{
+				try
+				{
+					_ = RefiiHostIsGuestUp();
+					_hasGuestUpProbe = true;
+				}
+				catch (EntryPointNotFoundException)
+				{
+					_hasGuestUpProbe = false;
+				}
+			}
+
+			return _hasGuestUpProbe == true ? RefiiHostIsGuestUp() == 1 : IsRunning;
+		}
+	}
+
+	/// <summary>Whether the native library exports the liveness probe. Asked once — see above.</summary>
+	private static bool? _hasGuestUpProbe;
 
 	/// <summary>The guest's exit code, or -1 while running or never started.</summary>
 	public static int ExitCode => RefiiHostExitCode();
@@ -694,7 +749,7 @@ public static class HostBridge
 	/// </summary>
 	public static BonePose? GetEntityPose(uint entity)
 	{
-		if (TryGetAbiVersion() is null || !IsRunning)
+		if (TryGetAbiVersion() is null || !IsGuestUp)
 		{
 			return null;
 		}
@@ -726,7 +781,7 @@ public static class HostBridge
 	/// </summary>
 	public static BonePose? GetEntityRestPose(uint entity)
 	{
-		if (TryGetAbiVersion() is null || !IsRunning)
+		if (TryGetAbiVersion() is null || !IsGuestUp)
 		{
 			return null;
 		}
@@ -765,7 +820,7 @@ public static class HostBridge
 	/// </summary>
 	public static string[]? GetEntityBoneNames(uint entity)
 	{
-		if (TryGetAbiVersion() is null || !IsRunning)
+		if (TryGetAbiVersion() is null || !IsGuestUp)
 		{
 			return null;
 		}
@@ -838,6 +893,80 @@ public static class HostBridge
 		}
 
 		return ids;
+	}
+
+	/// <summary>
+	/// The locomotion state a character is IN, as the guest itself names it.
+	///
+	/// <see cref="State"/> is the empty string when the entity carries no locomotion mode,
+	/// which most entities do not — a prop, a door and a light all read empty, and that is the
+	/// ordinary answer rather than a failure.
+	/// </summary>
+	public readonly record struct GuestLocomotion(
+		uint Machine, uint StateAddress, uint ModeType, float Dwell,
+		uint Stance, uint CombatState, uint Confinement, string State)
+	{
+		/// <summary>True when the guest is running a locomotion machine on this entity.</summary>
+		public bool IsPresent => Machine != 0;
+
+		/// <summary>Walk (2), strafe (3) or aiming (4), from `GetModeType()`.</summary>
+		public bool IsStrafing => ModeType == 3;
+
+		public bool IsAiming => ModeType == 4;
+	}
+
+	private const int LocomotionWords = 7;
+
+	/// <summary>Longest state name the shipped script defines is 47 characters.</summary>
+	private const int LocomotionNameCapacity = 128;
+
+	private static uint[]? _locomotionWords;
+
+	private static byte[]? _locomotionName;
+
+	/// <summary>
+	/// What the guest's own locomotion machine has selected for this entity.
+	///
+	/// THIS IS A READ OF THE GUEST'S DECISION, not a re-derivation of it. The machine is an
+	/// entity mode (component 21, the mode whose `GetModeType()` is 2/3/4) and it holds its
+	/// current state as a named object, so following it costs one string and cannot drift from
+	/// what the simulation is actually doing.
+	///
+	/// The velocity and control magnitudes the machine tests are NOT available: the guest
+	/// builds them into a stack temporary each tick and nothing resident holds them. A host
+	/// that wants to run its own copy of the machine has to supply those itself — which it can,
+	/// since the host is the one feeding the sticks in the first place.
+	/// </summary>
+	public static GuestLocomotion GetEntityLocomotion(uint entity)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		_locomotionWords ??= new uint[LocomotionWords];
+		_locomotionName ??= new byte[LocomotionNameCapacity];
+
+		uint written = RefiiHostGetEntityLocomotion(
+			entity, _locomotionWords, LocomotionWords,
+			_locomotionName, LocomotionNameCapacity);
+
+		if (written < LocomotionWords)
+		{
+			return default;
+		}
+
+		uint[] w = _locomotionWords;
+
+		int length = System.Array.IndexOf(_locomotionName, (byte)0);
+		string state = length <= 0
+			? string.Empty
+			: System.Text.Encoding.ASCII.GetString(_locomotionName, 0, length);
+
+		return new GuestLocomotion(
+			w[0], w[1], w[2],
+			System.BitConverter.Int32BitsToSingle(unchecked((int)w[3])),
+			w[4], w[5], w[6], state);
 	}
 
 	/// <summary>
@@ -1041,6 +1170,272 @@ public static class HostBridge
 	}
 
 	/// <summary>
+	/// The in-game screen IDs the guest's own table assigns, as far as we have read it.
+	///
+	/// The table is built by <c>sub_8281F620</c> as a <c>std::map&lt;int, std::string&gt;</c> of
+	/// ID to <c>.bgf</c> file name, thirty entries, IDs 0..29. Only the two verified in the
+	/// disassembly are named here — the pause menu, which is what this was read for, and its
+	/// neighbour, which is the cross-check that the keys really are sequential:
+	///
+	/// <code>
+	///   addi r4, r11, aPausemainmenuB   # "PauseMainMenu.bgf"
+	///   li   r10, 0                     # key 0
+	///   ...
+	///   addi r4, r8, aPhotomodescree    # "PhotomodeScreen.bgf"
+	///   li   r7, 1                      # key 1
+	/// </code>
+	///
+	/// The rest are deliberately absent rather than guessed. Nothing needs them yet, and the
+	/// screen a presentation IS comes from its own file name through the registry walk — this
+	/// enum only answers which one the guest considers CURRENT.
+	/// </summary>
+	public enum InGameScreen
+	{
+		/// <summary><c>PauseMainMenu.bgf</c>.</summary>
+		PauseMenu = 0,
+
+		/// <summary><c>PhotomodeScreen.bgf</c>.</summary>
+		PhotoMode = 1,
+
+		/// <summary>
+		/// The guest's own "nothing is up", and its INITIAL value.
+		///
+		/// Not a host invention: the screen manager is constructed with 31 in this field
+		/// (<c>*(_DWORD *)(v44 + 152) = 31</c> — 152 being the field's offset in the
+		/// 184-byte allocation before the manager pointer is stored) and the array it indexes
+		/// holds thirty entries, so 31 is one past the end by construction.
+		/// </summary>
+		None = 31,
+	}
+
+	/// <summary>
+	/// Which in-game screen the guest has up, or null when there is no screen manager yet.
+	///
+	/// STATED, NOT INFERRED, and that is the whole point. Godot draws in-game presentations by
+	/// walking the registry and taking whatever has its root element active, which is correct
+	/// for the HUD and for anything layered over it — but it cannot say which screen the player
+	/// is IN, because the pause menu's presentation is built once at game entry and never
+	/// freed. It is in the registry from the first frame of play whether or not the player has
+	/// ever pressed pause.
+	///
+	/// <see cref="InGameScreen.None"/> (31) is a real answer meaning no screen is up, and is
+	/// what this returns for a player simply walking around. Null is different: it means the
+	/// guest has no screen manager, which is true before the game starts.
+	/// </summary>
+	/// <summary>
+	/// The guest's screen manager: which screen is current, and which presentations it owns.
+	/// </summary>
+	/// <param name="Current">
+	/// The current screen, <see cref="InGameScreen.None"/> when nothing is up.
+	/// </param>
+	/// <param name="Owned">
+	/// Presentation addresses the screen manager holds, mapped to the screen ID holding them.
+	/// A presentation NOT in here — the HUD, above all — is not one of the thirty and is not
+	/// governed by <paramref name="Current"/> at all.
+	/// </param>
+	public readonly record struct InGameScreens(
+		InGameScreen Current,
+		System.Collections.Generic.IReadOnlyDictionary<uint, int> Owned)
+	{
+	}
+
+	/// <summary>
+	/// Which of the three ways the guest lays its loading art out.
+	///
+	/// The painting is NOT always drawn the same way, and the difference is not cosmetic: a
+	/// normal level load packs the 1280x720 image into a square texture in two pieces with the
+	/// right-hand strip stored ROTATED, while a fixed-art screen is one plain full-bleed quad.
+	/// Reassembling the second as though it were the first mangles it.
+	/// </summary>
+	/// <param name="FixedArt">`screen+315` — one quad, plain UVs (inset on 4:3).</param>
+	/// <param name="QuitFade">`screen+310` — the quit-without-save fade; one quad, plain UVs.</param>
+	/// <param name="Narrow">`screen+320` — the 4:3 inset variant.</param>
+	public readonly record struct LoadingLayout(bool FixedArt, bool QuitFade, bool Narrow)
+	{
+		/// <summary>
+		/// True when the art is the two-piece packing that has to be reassembled.
+		///
+		/// Stated as the DEFAULT rather than as a case, matching the guest: `sub_8235FDC0`
+		/// falls through to the two-quad path whenever neither flag is set.
+		/// </summary>
+		public bool IsSplit => !FixedArt && !QuitFade;
+	}
+
+	/// <summary>
+	/// The loading screen's TEXT and its spinner clock.
+	/// </summary>
+	/// <param name="TipKey">
+	/// The Babel key of the tip currently up, or 0 when the list is empty. It is a KEY, not a
+	/// string: the guest keeps a list of tag hashes and localises on the fly, so the host
+	/// resolves it through its own Babel database rather than calling into the guest.
+	/// </param>
+	/// <param name="TipIndex">Which tip, and <paramref name="TipCount"/> how many there are.</param>
+	/// <param name="SpinnerFrame">
+	/// The screen's frame counter. The spinner is `counter % 25` into a 5x5 grid — a timed
+	/// flipbook, NOT load progress. The game has no progress bar at all.
+	/// </param>
+	/// <param name="TipsEnabled">`screen+313`.</param>
+	/// <param name="BannerEnabled">`screen+314`.</param>
+	/// <param name="LevelName">The level the banner names.</param>
+	/// <param name="Overlay">Host-set overlay text, usually empty.</param>
+	public readonly record struct LoadingText(
+		uint TipKey, int TipIndex, int TipCount, uint SpinnerFrame,
+		bool TipsEnabled, bool BannerEnabled, string LevelName, string Overlay);
+
+	/// <summary>Reads the loading screen's text state, or null when there is no screen.</summary>
+	public static LoadingText? GetLoadingScreenText()
+	{
+		uint[] words = new uint[6];
+		byte[] buffer = new byte[512];
+		try
+		{
+			if (RefiiHostGetLoadingScreenText(words, buffer, (uint)buffer.Length) == 0)
+			{
+				return null;
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		string level = ReadUtf8(buffer, 0, out int next);
+		string overlay = ReadUtf8(buffer, next, out _);
+
+		return new LoadingText(words[2], (int)words[0], (int)words[1], words[3],
+			words[4] != 0, words[5] != 0, level, overlay);
+	}
+
+	/// <summary>Reads one NUL-terminated UTF-8 string out of a packed buffer.</summary>
+	private static string ReadUtf8(byte[] buffer, int start, out int next)
+	{
+		if (start < 0 || start >= buffer.Length)
+		{
+			next = buffer.Length;
+			return string.Empty;
+		}
+
+		int end = start;
+		while (end < buffer.Length && buffer[end] != 0)
+		{
+			++end;
+		}
+
+		next = end + 1;
+		return end > start
+			? System.Text.Encoding.UTF8.GetString(buffer, start, end - start)
+			: string.Empty;
+	}
+
+	/// <summary>The loading screen's art layout, or null when no screen object exists.</summary>
+	public static LoadingLayout? GetLoadingScreenLayout()
+	{
+		uint[] words = new uint[3];
+		try
+		{
+			if (RefiiHostGetLoadingScreenLayout(words) == 0)
+			{
+				return null;
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		return new LoadingLayout(words[0] != 0, words[1] != 0, words[2] != 0);
+	}
+
+	/// <summary>
+	/// Why a presentation's texture hashes are what they are, broken down.
+	///
+	/// A total of zero swaps has four causes needing different work, and only this separates
+	/// them. <see cref="UiTextureStats.BackPointerMismatch"/> is the one that invalidates the
+	/// rest: the scene node points back at its element, so a non-zero count there means the
+	/// walk is following something that is not a node.
+	/// </summary>
+	public readonly record struct UiTextureStats(
+		int Elements, int WithNode, int WithQuad, int ImageNodes, int WithTexture,
+		int BackPointerMismatch)
+	{
+		public string Describe() =>
+			$"{Elements} elements, {WithNode} with a scene node, {WithQuad} with a render item, " +
+			$"{ImageNodes} image nodes, {WithTexture} carrying a texture" +
+			(BackPointerMismatch > 0
+				? $" — {BackPointerMismatch} NODE BACK-POINTER MISMATCHES, the walk is wrong"
+				: string.Empty);
+	}
+
+	/// <summary>Reads the texture-chain breakdown for one presentation, or null if unavailable.</summary>
+	public static UiTextureStats? GetUiTextureStats(uint presentation)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		uint[] words = new uint[6];
+		try
+		{
+			if (RefiiHostGetUiTextureStats(presentation, words) == 0)
+			{
+				return null;
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		return new UiTextureStats((int)words[0], (int)words[1], (int)words[2],
+			(int)words[3], (int)words[4], (int)words[5]);
+	}
+
+	/// <summary>
+	/// Reads the screen manager whole: the current screen and every presentation it owns.
+	///
+	/// Null when there is no screen manager, which is true before the game starts.
+	/// </summary>
+	public static InGameScreens? GetInGameScreens()
+	{
+		uint[] words = new uint[36];
+		if (RefiiHostGetInGameScreen(words) == 0 || words[1] != InGameGuiVtable)
+		{
+			return null;
+		}
+
+		var owned = new System.Collections.Generic.Dictionary<uint, int>();
+		for (int id = 0; id < 30; ++id)
+		{
+			// A slot is null until that screen has been constructed, and most stay null for a
+			// whole session — only the screens the player actually opens are ever built.
+			uint presentation = words[4 + id];
+			if (presentation != 0)
+			{
+				owned[presentation] = id;
+			}
+		}
+
+		if (words[35] != 0)
+		{
+			owned[words[35]] = (int)words[34];
+		}
+
+		return new InGameScreens((InGameScreen)words[3], owned);
+	}
+
+
+	/// <summary>
+	/// The BASE GUI's vtable — the construction the game uses once it is running.
+	///
+	/// Written by the base ctor <c>sub_823710A8</c> at 0x8237111C and left in place by
+	/// <c>Game_InitDatabases</c>, where the front end's derived ctor would overwrite it with
+	/// <see cref="FrontEndGuiVtable"/>. So the word at the object's address says which of the
+	/// two published it.
+	/// </summary>
+	private const uint InGameGuiVtable = 0x82001610u;
+
+	/// <summary>
 	/// The front-end GUI's vtable — the class whose slots include the GUI pump at
 	/// 0x82379170. This is an identity STATED by the binary, not a guess: the base ctor
 	/// writes off_82001610 at 0x8237111C and the derived front-end ctor overwrites it, so
@@ -1073,6 +1468,133 @@ public static class HostBridge
 	/// INEQUALITY only — do not subtract and assume the difference is a count of ticks.
 	/// </summary>
 	public static uint SimTick => RefiiHostGetSimTick();
+
+	/// <summary>
+	/// Words per effect in <see cref="GetActiveFx"/>'s buffer. MUST match the native
+	/// <c>kStride</c> — both sides index one flat buffer and a disagreement is an ABI break the
+	/// compiler cannot see.
+	/// </summary>
+	public const int ActiveFxStride = 17;
+
+	/// <summary>
+	/// How many live effects we are willing to read in one frame. The guest's vector holds every
+	/// particle NODE, not every effect, so one spell is several entries; 512 is far past what a
+	/// region plus a fight produces and bounds a torn read.
+	/// </summary>
+	private const uint MaxActiveFx = 512;
+
+	private static uint[]? _activeFx;
+
+	/// <summary>One live particle node as the guest currently has it.</summary>
+	/// <param name="Instance">
+	/// The guest pointer, and the only STABLE identity. The guest retires effects by swapping
+	/// with the last element and popping, so a node's index changes when an unrelated effect
+	/// ends — keying a host node on the index makes effects swap places with each other.
+	/// </param>
+	/// <param name="NameHash">
+	/// FNV-1 of the node's lowercased name, which is the same key the particle bank uses.
+	/// </param>
+	/// <param name="Alive">The guest's own has-work predicate, <c>sub_8322EB88</c>.</param>
+	/// <param name="Emitting">Still spawning, as opposed to running its last particles out.</param>
+	/// <param name="Stale">
+	/// The guest has written the node's transform but not yet recomposed its cached matrix. At
+	/// most one tick old; worth counting rather than correcting, because correcting it here would
+	/// mean duplicating the compose the guest is about to do anyway.
+	/// </param>
+	public readonly record struct ActiveFx(
+		uint Instance,
+
+		/// <summary>
+		/// The EFFECT INSTANCE this node belongs to. One effect is many nodes, and they all share
+		/// this — group on it or the whole effect is drawn once per node.
+		/// </summary>
+		uint Handle,
+		uint NameHash,
+		bool Alive,
+		bool Emitting,
+		bool Stale,
+		uint LiveParticles,
+		Vector3 Position,
+		Vector3[] Rows);
+
+	/// <summary>
+	/// Every particle effect the GUEST is currently playing, in world space.
+	///
+	/// This is the only route runtime effects have to the screen. Godot resolves the level's
+	/// ambient effects for itself out of the GDB, but a spell cast, a combat impact or a fire
+	/// catching is started by the guest and was invisible until this existed.
+	///
+	/// Safe to call every frame with the guest running: the native side re-reads both ends of
+	/// the guest's vector together and refuses a span that is not a whole number of elements,
+	/// so a torn snapshot costs a frame rather than a bad pointer.
+	/// </summary>
+	public static System.Collections.Generic.List<ActiveFx> GetActiveFx()
+	{
+		var effects = new System.Collections.Generic.List<ActiveFx>();
+		if (TryGetAbiVersion() is null)
+		{
+			return effects;
+		}
+
+		_activeFx ??= new uint[MaxActiveFx * ActiveFxStride];
+		uint written = RefiiHostGetActiveFx(_activeFx, MaxActiveFx);
+		if (written == 0)
+		{
+			return effects;
+		}
+
+		for (uint i = 0; i < written; i++)
+		{
+			int at = (int)i * ActiveFxStride;
+			uint flags = _activeFx[at + 2];
+
+			// RAW GUEST AXES, deliberately. The guest-to-Godot map is not this layer's to
+			// choose: a node standing BESIDE the region needs `(-x, z, y)`, one built INSIDE it
+			// needs `(x, z, y)`, and the difference is a whole world reflected through X. The
+			// bridge reports what the guest said and the consumer applies its own map.
+			float bx = Bits(_activeFx[at + 4]);
+			float by = Bits(_activeFx[at + 5]);
+			float bz = Bits(_activeFx[at + 6]);
+
+			effects.Add(new ActiveFx(
+				_activeFx[at + 0],
+				_activeFx[at + 16],
+				_activeFx[at + 1],
+				(flags & 1u) != 0,
+				(flags & 4u) != 0,
+				(flags & 2u) != 0,
+				_activeFx[at + 3],
+				new Vector3(bx, by, bz),
+				GuestRows(_activeFx, at + 7)));
+		}
+
+		return effects;
+	}
+
+	private static float Bits(uint raw) => BitConverter.Int32BitsToSingle(unchecked((int)raw));
+
+	/// <summary>
+	/// Rows 0..2 of the guest's world matrix, normalised, IN GUEST AXES.
+	///
+	/// The rows carry the node's scale — <c>sub_8222E678</c> pre-multiplies each by the
+	/// corresponding scale lane — so they are normalised here rather than handing a scaled basis
+	/// to a node whose scale we do not otherwise want. Row 0 is the image of the guest's local X,
+	/// row 1 of its Y, row 2 of its Z; converting them into Godot's axes is the caller's job.
+	/// </summary>
+	private static Vector3[] GuestRows(uint[] words, int at)
+	{
+		var rows = new Vector3[3];
+		for (int r = 0; r < 3; r++)
+		{
+			var row = new Vector3(
+				Bits(words[at + (r * 3) + 0]),
+				Bits(words[at + (r * 3) + 1]),
+				Bits(words[at + (r * 3) + 2]));
+			rows[r] = row.LengthSquared() > 1e-8f ? row.Normalized() : Vector3.Zero;
+		}
+
+		return rows;
+	}
 
 	/// <summary>The guest's live time of day, or null while the world clock does not exist.</summary>
 	/// <remarks>
@@ -1945,6 +2467,21 @@ public static class HostBridge
 	private static extern uint RefiiHostGetSimTick();
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetActiveFx(uint[]? outWords, uint maxEffects);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetSaveCards(out uint cursor, out uint baseSlot, byte[]? text, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetHudMeters([Out] uint[]? hashes, [Out] float[]? values, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetHudTexts([Out] uint[]? hashes, uint capacity, [Out] byte[]? text, uint textCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetUiTextureHashes(uint presentation, [Out] uint[]? hashes, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetTimeOfDay(
 		out float fraction, out int dayCount, out int frozen);
 
@@ -2082,7 +2619,155 @@ public static class HostBridge
 	private static extern int RefiiHostGetVibration(
 		uint userIndex, out uint outLeft, out uint outRight);
 
+	/// <summary>
+	/// What the guest's pub-game manager currently says. §the pub games are the guest's, not ours.
+	/// </summary>
+	/// <remarks>
+	/// THE GUEST DRIVES THE WHOLE LIFECYCLE and Godot only plays the game. It decides a pub game is
+	/// starting, which one, which table variation, which pad and which language; it seeds the
+	/// game's bank from the hero's real gold; and when it is over it credits the winnings, updates
+	/// the statistics, applies the purity balance, gossips about it, awards the achievement and
+	/// raises "FinishedPubGame". None of that is reimplemented here — see the block comment above
+	/// <c>RefiiHostGetPubGame</c> in <c>host_bridge.cpp</c> for the addresses.
+	///
+	/// STATE 2 IS THE SEAM. The guest's tick brings a start request from 1 to 2 having done all the
+	/// snapshotting; 2 through 8 are the Scaleform module Godot replaces; 9 settles and resets
+	/// without ever touching the module pointers. So the host waits for 2, plays, writes the
+	/// result, and hands back 9.
+	/// </remarks>
+	public readonly record struct PubGameState(
+		uint Stage, uint Profile, long Gold, long Debt, string Game, string Variation)
+	{
+		/// <summary>The guest has a pub game up and is waiting for whoever draws it.</summary>
+		public bool WantsHost => Stage == HostStage && Profile != 0;
+
+		/// <summary>
+		/// The state that starts a game — a ONE-SHOT, not the state it plays in.
+		/// </summary>
+		/// <remarks>
+		/// Decompiled from the manager tick <c>sub_82467B08</c>. Case 2 creates the 1 MB heap
+		/// (<c>HeapCreate(0, 0x100000)</c> → <c>mgr+32</c>), creates the audio emitter
+		/// (<c>mgr+64</c>), builds the game object via <c>sub_82468378</c>, and then IMMEDIATELY
+		/// moves itself to 3 — or to 6 if the abandon flag at <c>mgr+136</c> is set. So the guest
+		/// is only ever at 2 for the single tick that sets a session up.
+		/// </remarks>
+		public const uint HostStage = 2;
+
+		/// <summary>
+		/// True while a session is live and the host should keep drawing.
+		/// </summary>
+		/// <remarks>
+		/// STATES 3 AND 4 ARE WHERE THE GAME RUNS — both call <c>sub_82467AA8</c>, which advances
+		/// and displays the movie. 5 is a one-tick bounce back to 3, and 7 and 8 are the fade-out
+		/// the guest runs when something in the world ends the session. Treating anything other
+		/// than 2 as abandonment tore the board down on the very next frame, which is exactly what
+		/// happened: the guest went 2 → 3 on its own and the host walked away from a session the
+		/// guest had already charged the buy-in for.
+		/// </remarks>
+		public bool IsLive => Stage is 2 or 3 or 4 or 5 or 7 or 8;
+
+		/// <summary>
+		/// The state to hand back to end a session — teardown, NOT the settle.
+		/// </summary>
+		/// <remarks>
+		/// WRITING 9 DIRECTLY WOULD LEAK THE SESSION. It is true that case 9 settles without
+		/// dereferencing the module or game pointers, which is why an earlier reading of this seam
+		/// concluded a host could jump straight to it. That was only safe while nothing had been
+		/// created — and case 2 creates plenty: a 1 MB heap, an audio emitter, the game object at
+		/// <c>mgr+60</c>, and a GPU resource at <c>mgr+40</c>. Case 6 is the teardown that releases
+		/// every one of them and then sets 9 itself, so handing back 6 gets the settle AND the
+		/// cleanup, in the guest's own order.
+		/// </remarks>
+		public const uint TeardownStage = 6;
+
+		/// <summary>The state whose tick settles the money and resets the manager.</summary>
+		/// <remarks>Reached by the guest from <see cref="TeardownStage"/>; not written directly.</remarks>
+		public const uint SettleStage = 9;
+	}
+
+	/// <summary>Reads the manager, or null when the guest is not up.</summary>
+	public static PubGameState? GetPubGame()
+	{
+		if (!IsGuestUp)
+		{
+			return null;
+		}
+
+		var values = new uint[6];
+		var name = new byte[64];
+		var variation = new byte[64];
+
+		try
+		{
+			if (RefiiHostGetPubGame(
+				values, name, (uint)name.Length, variation, (uint)variation.Length) == 0)
+			{
+				return null;
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		// HIGH WORD FIRST — the guest is big endian and these are int64. Assembling them the other
+		// way round turns 500 gold into something the settlement would credit as a fortune.
+		long gold = ((long)values[2] << 32) | values[3];
+		long debt = ((long)values[4] << 32) | values[5];
+
+		return new PubGameState(
+			values[0], values[1], gold, debt, Ascii(name), Ascii(variation));
+	}
+
+	/// <summary>
+	/// Writes the game's result into the guest's profile and hands it the settlement state.
+	/// </summary>
+	/// <remarks>
+	/// GOLD IS AN ABSOLUTE BALANCE, not a delta. The guest seeded the profile's bank from the
+	/// hero's real gold before the game started and settles by crediting the DIFFERENCE, so this
+	/// must be what the player finished with — passing winnings would pay them twice.
+	/// </remarks>
+	public static bool SetPubGameResult(long gold, long debt) =>
+		SetPubGameResult(gold, debt, PubGameState.TeardownStage);
+
+	public static bool SetPubGameResult(long gold, long debt, uint state)
+	{
+		if (!IsGuestUp)
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiHostSetPubGameResult(gold, debt, state) != 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	private static string Ascii(byte[] buffer)
+	{
+		int length = System.Array.IndexOf(buffer, (byte)0);
+		return length <= 0
+			? string.Empty
+			: System.Text.Encoding.ASCII.GetString(buffer, 0, length);
+	}
+
+	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+	private static extern int RefiiHostGetPubGame(
+		[Out] uint[] values,
+		[Out] byte[] name,
+		uint nameCapacity,
+		[Out] byte[] variation,
+		uint variationCapacity);
+
+	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+	private static extern int RefiiHostSetPubGameResult(long gold, long debt, uint state);
+
 	[DllImport(Library)]
+
 	private static extern int RefiiHostBridgeAbiVersion();
 
 	[DllImport(Library)]
@@ -2120,4 +2805,166 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern int RefiiHostShutdown(byte[] message, nuint capacity);
+
+	// ---------------------------------------------------------------------------------
+	// RECOVERED FROM THE COMPILED ASSEMBLY, 2026-08-15.
+	//
+	// These members were uncommitted work that I destroyed: an edit meant to replace one
+	// method sliced from that method to the end of the file and took roughly 640 lines with
+	// it. HEAD did not have them, so git could not give them back; they were recovered by
+	// decompiling `refii-launcher.dll` from the last build that predated the truncation.
+	//
+	// THE BODIES ARE THE ORIGINAL LOGIC. The comments are NOT — decompilation does not carry
+	// them, and in this file the comments are usually the reasoning that made the offsets
+	// trustworthy. Treat every explanation here as missing rather than as absent-because-
+	// unnecessary, and restore it from the session that wrote these if it can be recovered.
+	// ---------------------------------------------------------------------------------
+
+		public readonly record struct SaveCard(int Index, string Description);
+
+		public static List<SaveCard> GetSaveCards(out int cursor)
+		{
+			List<SaveCard> list = new List<SaveCard>();
+			cursor = 0;
+			if (!TryGetAbiVersion().HasValue || !IsGuestUp)
+			{
+				return list;
+			}
+			byte[] array = new byte[4096];
+			uint num;
+			try
+			{
+				num = RefiiHostGetSaveCards(out var cursor2, out var _, array, (uint)array.Length);
+				cursor = (int)cursor2;
+			}
+			catch (EntryPointNotFoundException)
+			{
+				return list;
+			}
+			int num2 = 0;
+			for (uint num3 = 0u; num3 < num; num3++)
+			{
+				if (num2 >= array.Length)
+				{
+					break;
+				}
+				int num4 = Array.IndexOf(array, (byte)0, num2);
+				if (num4 < 0)
+				{
+					break;
+				}
+				list.Add(new SaveCard((int)num3, Encoding.UTF8.GetString(array, num2, num4 - num2)));
+				num2 = num4 + 1;
+			}
+			return list;
+		}
+
+		public static Dictionary<uint, float> GetHudMeters()
+		{
+			Dictionary<uint, float> dictionary = new Dictionary<uint, float>();
+			if (!TryGetAbiVersion().HasValue || !IsGuestUp)
+			{
+				return dictionary;
+			}
+			uint[] array = new uint[128];
+			float[] array2 = new float[128];
+			uint num;
+			try
+			{
+				num = RefiiHostGetHudMeters(array, array2, (uint)array.Length);
+			}
+			catch (EntryPointNotFoundException)
+			{
+				return dictionary;
+			}
+			if (num > array.Length)
+			{
+				GD.PushWarning($"[host] the guest holds {num} HUD meters, more than the {array.Length} asked for — the tail was not read");
+				num = (uint)array.Length;
+			}
+			for (uint num2 = 0u; num2 < num; num2++)
+			{
+				dictionary[array[num2]] = array2[num2];
+			}
+			return dictionary;
+		}
+
+		public static Dictionary<uint, string> GetHudTexts()
+		{
+			Dictionary<uint, string> dictionary = new Dictionary<uint, string>();
+			if (!TryGetAbiVersion().HasValue || !IsGuestUp)
+			{
+				return dictionary;
+			}
+			uint[] array = new uint[64];
+			byte[] array2 = new byte[8192];
+			uint num;
+			try
+			{
+				num = RefiiHostGetHudTexts(array, (uint)array.Length, array2, (uint)array2.Length);
+			}
+			catch (EntryPointNotFoundException)
+			{
+				return dictionary;
+			}
+			if (num > array.Length)
+			{
+				GD.PushWarning($"[host] the guest holds {num} HUD texts, more than the {array.Length} asked for — the tail was not read");
+				num = (uint)array.Length;
+			}
+			int num2 = 0;
+			for (uint num3 = 0u; num3 < num; num3++)
+			{
+				if (num2 >= array2.Length)
+				{
+					break;
+				}
+				int num4 = Array.IndexOf(array2, (byte)0, num2);
+				if (num4 < 0)
+				{
+					break;
+				}
+				dictionary[array[num3]] = Encoding.UTF8.GetString(array2, num2, num4 - num2);
+				num2 = num4 + 1;
+			}
+			return dictionary;
+		}
+
+		public static uint[]? GetUiTextureHashes(uint presentation, int elementCount)
+		{
+			if (!TryGetAbiVersion().HasValue || !IsGuestUp || elementCount <= 0)
+			{
+				return null;
+			}
+			uint[] array = new uint[elementCount];
+			uint num;
+			try
+			{
+				num = RefiiHostGetUiTextureHashes(presentation, array, (uint)array.Length);
+			}
+			catch (EntryPointNotFoundException)
+			{
+				return null;
+			}
+			return (num == (uint)elementCount) ? array : null;
+		}
+
+		[DllImport("refii_hostbridge")]
+		private static extern uint RefiiHostGetEntityLocomotion(uint entity, uint[] outWords, uint wordCount, byte[] outName, uint nameCapacity);
+
+		[DllImport("refii_hostbridge")]
+		private static extern int RefiiHostGetInGameScreen(uint[] outWords);
+
+		[DllImport("refii_hostbridge")]
+		private static extern int RefiiHostGetUiTextureStats(uint presentation, uint[] outWords);
+
+		[DllImport("refii_hostbridge")]
+		private static extern int RefiiHostGetLoadingScreenLayout(uint[] outWords);
+
+		[DllImport("refii_hostbridge")]
+		private static extern int RefiiHostGetLoadingScreenText(
+			uint[] outWords, byte[] text, uint capacity);
+
+		[DllImport("refii_hostbridge")]
+		private static extern int RefiiHostIsGuestUp();
 }

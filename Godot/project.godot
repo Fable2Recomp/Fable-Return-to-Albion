@@ -51,3 +51,38 @@ enabled=PackedStringArray("res://addons/bnk_mount/plugin.cfg")
 audio/voice_playback=false
 banks/native_dir="res://../out/build/assetbrowser"
 banks/game_data_root="res://../out/build/linux-amd64-debug/bin/assets/game/data"
+
+[shader_globals]
+
+atmos_inscatter={
+"type": "sampler2D",
+"value": ""
+}
+atmos_beta={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+atmos_sun={
+"type": "vec3",
+"value": Vector3(0, 0, 1)
+}
+atmos_close_fog={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+atmos_range={
+"type": "vec4",
+"value": Vector4(0, 2000, 1, 10)
+}
+atmos_curve={
+"type": "vec3",
+"value": Vector3(0, 0.0005, 1)
+}
+atmos_fog_on={
+"type": "bool",
+"value": false
+}
+atmos_factors={
+"type": "vec2",
+"value": Vector2(1, 1)
+}

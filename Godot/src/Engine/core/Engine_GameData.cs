@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using Godot;
@@ -27,14 +28,23 @@ public static class Engine_GameData
 	/// The directory to mount, or empty when nothing populated was found. The caller
 	/// should report the miss rather than mounting a guess.
 	/// </summary>
-	public static string Resolve()
-	{
-		string? fromEnv = System.Environment.GetEnvironmentVariable(EnvironmentVariable);
-		if (!string.IsNullOrEmpty(fromEnv) && HasBanks(fromEnv!))
-			return fromEnv!;
+	public static string Resolve() => ResolveWhere(HasBanks);
 
+	/// <summary>
+	/// The same search, judged by a different test.
+	/// </summary>
+	/// <remarks>
+	/// EXISTING IS NOT THE TEST, and that is the whole point of the parameter. A caller looking
+	/// for something that is not a bank — the pub games' loose <c>.swf</c> and <c>.dds</c>, which
+	/// live under <c>data/pubgames</c> — cannot use <see cref="Resolve"/>, because in this tree the
+	/// banks and the pub games are in DIFFERENT build outputs. It also cannot just take the first
+	/// directory that exists: <c>&lt;repo&gt;/assets/game</c> exists and holds only shaders, so a
+	/// plain existence check picks it and reports the pub games missing.
+	/// </remarks>
+	public static string ResolveWhere(Func<string, bool> accepts)
+	{
 		foreach (string candidate in Candidates())
-			if (HasBanks(candidate))
+			if (accepts(candidate))
 				return candidate;
 
 		return string.Empty;
@@ -42,6 +52,10 @@ public static class Engine_GameData
 
 	private static IEnumerable<string> Candidates()
 	{
+		string? fromEnv = System.Environment.GetEnvironmentVariable(EnvironmentVariable);
+		if (!string.IsNullOrEmpty(fromEnv))
+			yield return fromEnv!;
+
 		string projectDir = ProjectSettings.GlobalizePath("res://");
 		string repoRoot = Path.GetFullPath(Path.Combine(projectDir, ".."));
 

@@ -58,6 +58,27 @@ public partial class GameUi : Node
 		_ => null,
 	};
 
+	/// <summary>
+	/// True when a bank name is one of the front end's own screens.
+	///
+	/// Asked of <see cref="PresentationFor"/> rather than of a list written out again, so the
+	/// two cannot disagree about what the front end consists of.
+	/// </summary>
+	private static bool IsFrontEndScreen(string bank)
+	{
+		foreach (HostBridge.FrontEndScreen screen in
+			System.Enum.GetValues<HostBridge.FrontEndScreen>())
+		{
+			if (PresentationFor(screen) is { } name &&
+				string.Equals(bank, name, System.StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	private Engine_UiPresentationHost? _presentation;
 	private SubViewport? _viewport;
 	private SubViewportContainer? _container;
@@ -94,6 +115,48 @@ public partial class GameUi : Node
 	/// not have. The panel's own <c>Background</c> tint still dims what is left behind it.
 	/// </summary>
 	private Engine_FrontEndCardChoice? _cardView;
+
+	/// <summary>
+	/// The Load Game card fan.
+	///
+	/// The last piece of the front end that was still a mirror. The guest enumerates the saves
+	/// and builds each card's text — both of those are calls only it can make — but the CARDS
+	/// were still the guest's own six components moving under its own cursor, with Godot merely
+	/// proxying an A press back at it. Now the enumeration is read and Godot draws and moves the
+	/// fan, the same trade the row menu and the gender card already made.
+	/// </summary>
+	private Engine_FrontEndSaveCards? _saveCardView;
+
+	/// <summary>
+	/// The loading screen, on its own layer above this one.
+	///
+	/// Polled every frame rather than driven from the level-change contract, because the guest
+	/// owns both whether one is up and how far it has faded — see <see cref="GameLoadingScreen"/>.
+	/// </summary>
+	private GameLoadingScreen? _loading;
+
+	/// <summary>
+	/// Whether the display takes the game's WIDE layout.
+	///
+	/// Sampled from the viewport rather than assumed, because the answer is the display's and
+	/// the game genuinely ships both. It is re-read as the window changes, so resizing from
+	/// 4:3 to 16:9 moves the HUD the way the original does.
+	/// </summary>
+	private bool _isWidescreen = true;
+
+	/// <summary>
+	/// True while anything modal is over the menu — the gender card, the load fan, or the
+	/// warning box.
+	///
+	/// One place, because "is the row menu allowed on screen" is asked from more than one and
+	/// the answers were drifting apart: the rebuild path knew only about the gender card, so
+	/// every panel added after it shared the screen with the rows for a frame and then kept
+	/// them.
+	/// </summary>
+	private bool ModalPanelUp =>
+		_cardView is { Visible: true } ||
+		_saveCardView is { Visible: true } ||
+		_warningView is { Visible: true };
 
 	/// <summary>
 	/// The refusal box, cloned from the shipped `dialog` page.
@@ -185,6 +248,24 @@ public partial class GameUi : Node
 		{
 			AdoptMenu();
 		}
+
+		// THE LOADING SCREEN, above this layer and below the videos — see GameLoadingScreen for
+		// the whole stack. It is owned here rather than by GameWindow because this class already
+		// owns the layer ordering and the texture loader it needs; GameWindow only ever LOGGED
+		// the art the guest picked, which is why nothing has been drawing it.
+		_loading = new GameLoadingScreen
+		{
+			Name = "LoadingScreen",
+			Resolver = path => _presentation?.LoadTexture(path),
+			// THE GAME'S OWN FONT AND STRINGS, from the same library every Gameface screen
+			// uses. The loading screen is not a presentation, but its tip and its banner are
+			// the title's text and must be drawn in the title's letters — and its tip arrives
+			// as a Babel KEY, so it needs the string database to say anything at all.
+			Fonts = _presentation?.Fonts,
+			Strings = _presentation?.Strings,
+		};
+
+		AddChild(_loading);
 
 		GD.Print($"[game-ui] built '{Screen}' from {dataRoot} " +
 			"in its own viewport (hidden until the logos end)");
@@ -620,6 +701,25 @@ public partial class GameUi : Node
 			_cardView = null;
 		}
 
+		// THE LOAD FAN GOES WITH THEM, and forgetting it here is what left six save cards
+		// hanging over the running game.
+		//
+		// Choosing a save takes the guest out of the front end IMMEDIATELY — the log goes
+		// "load fan: save 0 chosen" straight into "the guest has no live UI; hiding the layer" —
+		// so the fan's own tidy-up in `DriveLoadCarousel` never gets another frame to run: that
+		// path is behind an `IsRevealed` gate which is now false. The layer being hidden masked
+		// it until the HUD came up and revealed the layer again, with the stale fan still
+		// visible on top of it.
+		//
+		// Freed rather than hidden for the reason the two above are: it holds clones sourced
+		// from the tree that is about to go away. `AdoptSaveCards` rebuilds it from the next
+		// front end.
+		if (_saveCardView is not null)
+		{
+			_saveCardView.QueueFree();
+			_saveCardView = null;
+		}
+
 		if (_warningView is not null)
 		{
 			_warningView.QueueFree();
@@ -705,6 +805,7 @@ public partial class GameUi : Node
 		}
 
 		AdoptCardChoice(theme);
+		AdoptSaveCards(theme);
 		AdoptWarning(theme);
 
 		// The guest's own rows, out of the way. Hidden rather than freed: the tree is rebuilt
@@ -715,10 +816,18 @@ public partial class GameUi : Node
 			group.Visible = false;
 		}
 
-		// Not while the card is up. This runs after EVERY rebuild, and the guest keeps changing
-		// state under a front end it no longer drives, so an unconditional show here would put
-		// the rows back across the raised card mid-choice.
-		_menuView.Visible = _cardView is not { Visible: true };
+		// NOT WHILE ANY MODAL PANEL IS UP, and the list of them has to be complete here.
+		//
+		// This runs after EVERY rebuild, and the guest keeps changing state under a front end it
+		// no longer drives — so an unconditional show puts the rows back over whatever is in
+		// front of them, a fraction of a second after they were hidden. It knew about the gender
+		// card and not about the other two, which is why a screenshot of the load fan has a menu
+		// row's label and tab art floating across it: the fan hid the rows, the next rebuild
+		// brought them straight back.
+		//
+		// Kept as one test rather than three scattered assignments so a panel added later fails
+		// visibly here rather than silently sharing the screen.
+		_menuView.Visible = !ModalPanelUp;
 		ApplyMenuAvailability();
 	}
 
@@ -768,6 +877,52 @@ public partial class GameUi : Node
 		if (group is not null)
 		{
 			group.Visible = false;
+		}
+	}
+
+	/// <summary>
+	/// Takes the Load Game fan over from the presentation, the same way
+	/// <see cref="AdoptCardChoice"/> takes the gender card.
+	///
+	/// Built HERE rather than when the guest opens its carousel, and for a sharper reason than
+	/// the gender card's: the card art can only be cloned while `frontendmainmenu` is standing
+	/// up, and by the time substate 5 arrives the screen has been rebuilt several times over.
+	/// Building it behind the menu also spends the cost where nothing is watching.
+	///
+	/// The shipped `loadgame` page is hidden on every rebuild for the reason the rows and the
+	/// gender card are — with Godot drawing the fan, leaving the guest's six components in the
+	/// tree is two fans on one screen. That they are currently parked at y -598 is not
+	/// protection: that is the page's own closed slide, and a live slide brings them back.
+	/// </summary>
+	private void AdoptSaveCards(Engine_UiTheme theme)
+	{
+		Node3D? page = theme.ArtSourceNode(Engine_FrontEndSaveCards.PageName);
+		Node3D? pattern = _presentation?.Templates?.ArtSourceNode(Engine_FrontEndSaveCards.PageName);
+
+		if (_saveCardView is null)
+		{
+			// Cloned from the FILE, placed by the LIVE page's transform — the pattern book has
+			// the art the artist drew, and the live tree is the authority on where on the canvas
+			// that page actually sits. Same split as the gender card, and for the same reason:
+			// the guest leaves its own copy in whatever state its last slide put it.
+			_saveCardView = Engine_FrontEndSaveCards.FromPresentation(pattern ?? page);
+			_saveCardView.Theme = theme;
+			if (page is not null)
+			{
+				_saveCardView.Transform = page.GlobalTransform;
+			}
+
+			_presentation!.AddChild(_saveCardView);
+
+			GD.Print("[game-ui] load fan ready — art " +
+				$"{(_saveCardView.HasShippedArt ? "cloned from 'loadgame'" : "NOT sourced (stand-ins)")}" +
+				$" ({(pattern is null ? "live tree" : "pattern book")})" +
+				$"{(page is null ? ", page ABSENT from this build" : string.Empty)}");
+		}
+
+		if (page is not null)
+		{
+			page.Visible = false;
 		}
 	}
 
@@ -857,6 +1012,26 @@ public partial class GameUi : Node
 		// already somewhere else.
 		// Before the menu gate, because this has to keep reporting once the front end is gone
 		// — that is exactly the window the in-game UI lives in.
+		// THE LOADING SCREEN FIRST, and outside every gate below it. The others return early on
+		// `IsRevealed` or on there being no menu, and a loading screen has to work in exactly
+		// those windows — it is up while the front end is coming down and before the HUD exists.
+		_loading?.Poll();
+
+		// WHICH LAYOUT THE DISPLAY WANTS, re-read as the window changes. Reported on the change
+		// rather than every frame: a HUD that jumped between layouts and a HUD in the wrong one
+		// look the same in a still, and only the transition says which.
+		if (_viewport is not null)
+		{
+			bool wide = Engine_UiWidescreen.IsWidescreen(_viewport.Size);
+			if (wide != _isWidescreen)
+			{
+				_isWidescreen = wide;
+				GD.Print($"[game-ui] the display is now {(wide ? "WIDESCREEN" : "4:3")} " +
+					$"({_viewport.Size.X}x{_viewport.Size.Y}) — the shipped " +
+					$"{(wide ? "wide" : "standard")} layout applies");
+			}
+		}
+
 		TracePresentations();
 
 		// THE MOVING PARTS, every frame — see Engine_UiSceneBuilder.ApplyLiveTransform. This is
@@ -919,24 +1094,24 @@ public partial class GameUi : Node
 			return;
 		}
 
-		if (!_menuView.Visible)
+		// THE LOAD FAN OWNS THE PRESS ONCE THE GUEST HAS OPENED IT, and — like the gender card
+		// above — it is tested BEFORE the menu's own visibility rather than after.
+		//
+		// That ordering is the whole of a bug worth naming, because it is the same one twice. The
+		// fan takes the rows off screen, so a gate requiring a visible menu first would hand it no
+		// input at all and leave it stuck on the screen it had just put up. The earlier version of
+		// this sat below that gate and was reachable only while the rows were still drawn.
+		//
+		// Choosing "Load Game" puts the guest's screen into substate 5 and it keeps receiving
+		// input there, because our input mask covers only the root list. A run showed the
+		// consequence exactly: its cursor walked 0..5 and back while every A press re-dispatched
+		// "Load Game", because this class still believed the root list was up.
+		if (DriveLoadCarousel(delta))
 		{
 			return;
 		}
 
-		// THE LOAD CAROUSEL OWNS THE PRESS ONCE THE GUEST HAS OPENED IT.
-		//
-		// Choosing "Load Game" puts the guest's screen into substate 5 — its own save carousel —
-		// and it keeps receiving input there, because the mask only covers the root list. The
-		// run shows the consequence exactly: its cursor walked 0..5 and back while every A press
-		// re-dispatched "Load Game", because this class still believed the root list was up. The
-		// load could never start; the entry just re-opened the screen it was already on.
-		//
-		// THE SELECTED INDEX IS THE GUEST'S, and taking it is the same rule the rest of the front
-		// end follows: it publishes the carousel's position at `screen+72` and we read it rather
-		// than keeping a second cursor that would have to be kept in step with the one actually
-		// moving the cards.
-		if (DriveLoadCarousel())
+		if (!_menuView.Visible)
 		{
 			return;
 		}
@@ -1022,34 +1197,225 @@ public partial class GameUi : Node
 	}
 
 	/// <summary>
-	/// One frame of the guest's load carousel. True when it consumed the input.
+	/// One frame of the Load Game card fan. True when it consumed the input.
 	///
-	/// SUBSTATE 5 IS THE CAROUSEL — `screen+24`, set at 0x826E07E0 when the Load Game branch
-	/// finds more than one save. While it is up, A must commit the SELECTED save rather than
-	/// re-dispatch the menu entry, and that is the whole bug this fixes.
+	/// THE GUEST OPENS IT; GODOT DRAWS IT. That split is not a compromise — it is the only
+	/// division the enumeration allows. Listing a profile's saves is `sub_82443308`, a live
+	/// `XamContentCreateEnumerator`, and building each card's text is `sub_826E14F8`, which
+	/// mounts every container and parses its `ChapterSave.bin`. Both are guest CALLS, both run
+	/// inside the dispatcher's own "Load Game" branch, and neither is something a host can do
+	/// for itself. So "Load Game" still dispatches by name, the guest still does the work, and
+	/// what Godot takes over is the part that was never the guest's to begin with once the front
+	/// end changed hands: the cards on screen and the cursor moving between them.
 	///
-	/// B is left to the guest. Its own handler maps B in this substate to UNFREEZE, which puts
-	/// `screen+24` back to 0 — and it is already being fed the press, since the mask covers only
-	/// the root list. Posting a second back-out here would drive the same transition twice.
+	/// SUBSTATE 5 IS THE SIGNAL — `screen+24`, set at 0x826E07E0 once the branch has enumerated
+	/// more than one save. A single save never reaches it: that path commits directly at
+	/// 0x826E0470, which is why this returning false during a one-save load is correct rather
+	/// than a gap.
+	///
+	/// B IS LEFT TO THE GUEST, as it was. Its own handler maps B in this substate to UNFREEZE,
+	/// which puts `screen+24` back to 0 — and it is already being fed the press, since the input
+	/// mask covers only the root list. Posting a second back-out would drive one transition
+	/// twice; the fan comes down on the next frame when the substate is no longer 5.
 	/// </summary>
-	private bool DriveLoadCarousel()
+	private bool DriveLoadCarousel(double delta)
 	{
 		if (HostBridge.GetFrontEndModel() is not { } model || model.MenuState != LoadCarouselState)
+		{
+			// The guest has left the carousel — by its own B, or because a save was committed.
+			// Taking the fan down here rather than on our own B press is what keeps the two in
+			// step whichever of them ended it.
+			CloseSaveCards();
+			return false;
+		}
+
+		if (_saveCardView is null)
 		{
 			return false;
 		}
 
-		if (GameInput.MenuAcceptPressed)
+		// POPULATED ONCE PER OPENING, not per frame. The containers are filled before the
+		// substate is set — `sub_826E14F8` runs at 0x826E0448 and `screen+24 = 5` at 0x826E07E0
+		// — so by the time this first sees state 5 the list is complete and re-reading it every
+		// frame would rebuild the glyph mesh for a string that cannot change.
+		if (!_saveCardView.Visible)
 		{
-			int selected = (int)model.LoadCardCursor;
-			uint queued = HostBridge.LoadSave(selected);
-			GD.Print($"[game-ui] load carousel: save {selected} chosen — posted " +
-				$"(queue depth {queued})");
+			System.Collections.Generic.List<HostBridge.SaveCard> cards =
+				HostBridge.GetSaveCards(out int guestCursor);
+			if (cards.Count == 0)
+			{
+				// STATE 5 WITH NOTHING TO DRAW IS A CONTRADICTION, and saying so is the point.
+				// The guest only reaches this substate having enumerated two or more saves —
+				// zero warns and one commits directly — so an empty list means OUR read is
+				// wrong, never that there are no saves.
+				//
+				// It reports the model's own count beside ours because that is the comparison
+				// that localises the fault. `EnumeratedSaves` is read from the same
+				// `screen+84/+88` vector by a different function: if it is non-zero while this
+				// list is empty, the defect is in `GetSaveCards`; if both are zero, the vector
+				// really is empty and the substate is being reached some way the dispatcher
+				// does not explain. Reporting neither is what let the first version of this say
+				// "empty" once a frame for a whole run without narrowing anything — the fault
+				// was a host-side liveness gate returning early, and the log could not have
+				// distinguished that from a bad offset.
+				//
+				// Rate-limited to once per opening: it fired every frame before, which buried
+				// the build lines above it.
+				if (_loadFanEmpty.Add(model.MenuState))
+				{
+					GD.PushWarning("[game-ui] the guest is in its save carousel but the " +
+						$"enumerated list read back empty — model says {model.EnumeratedSaves} " +
+						$"save(s) at screen+84/+88, cursor {model.LoadCardCursor}. The fan " +
+						"cannot be drawn.");
+				}
+
+				return true;
+			}
+
+			_loadFanEmpty.Clear();
+
+			// THE PORTRAITS, taken from the guest rather than from the file.
+			//
+			// Every card in `frontendmainmenu.bgf` is authored with the same placeholder back,
+			// and the guest stamps the real screenshot's texture HASH into each card's
+			// `screenshot` element as it builds the list. Without this the fan draws six
+			// identical blank cards, which is what a run showed.
+			System.Collections.Generic.List<Texture2D?> portraits = ReadCardPortraits();
+
+			var saves = new System.Collections.Generic.List<Engine_FrontEndSaveCards.Save>();
+			for (int i = 0; i < cards.Count; ++i)
+			{
+				saves.Add(new Engine_FrontEndSaveCards.Save(
+					cards[i].Description, i < portraits.Count ? portraits[i] : null));
+			}
+
+			OpenSaveCards(saves);
+			GD.Print($"[game-ui] the guest opened the load fan with {cards.Count} save(s), " +
+				$"its cursor at {guestCursor} — {_saveCardView.Describe()}");
 		}
 
-		// Consumed either way. A press that is not A still belongs to the carousel, and letting
-		// it fall through would move the root list's highlight underneath the cards.
+		if (_saveCardView.Navigate(GameInput.MenuHorizontal, delta))
+		{
+			GD.Print($"[game-ui] load fan moved — {_saveCardView.Describe()}");
+		}
+
+		if (GameInput.MenuAcceptPressed && _saveCardView.Activate() is var chosen && chosen >= 0)
+		{
+			// THE INDEX IS THE GUEST'S JOIN. It identifies a save by the address of its handle
+			// slot — `Frontend_SetStartGameTarget` takes `*(screen+84) + 4*i` and
+			// `*(screen+148) + 40*i + 12` — so the index is what both sides already agree on,
+			// and our fan is populated in that same enumeration order.
+			uint queued = HostBridge.LoadSave(chosen);
+			GD.Print($"[game-ui] load fan: save {chosen} chosen — posted (queue depth {queued})");
+		}
+
+		// Consumed either way. A press that is not A still belongs to the fan, and letting it
+		// fall through would move the root list's highlight underneath the cards.
 		return true;
+	}
+
+	/// <summary>
+	/// Each save card's portrait, in card order, as the guest currently has it.
+	///
+	/// THREE STEPS, and each is a place this can honestly come back empty. The guest publishes
+	/// a texture HASH per element; `Engine_TextureNameTable` inverts it to a path; the texture
+	/// cache loads that path. A card whose quest has no screenshot, a hash the table does not
+	/// know, or a texture the banks do not carry all end with a null — and a null keeps the
+	/// artist's placeholder, which is the right picture for "no screenshot" and an honest one
+	/// for the other two.
+	///
+	/// Read from the LIVE front-end presentation by ordinal, so the join is the same one slides
+	/// and text use. It declines wholesale if the guest's element count disagrees with ours.
+	/// </summary>
+	private System.Collections.Generic.List<Texture2D?> ReadCardPortraits()
+	{
+		var portraits = new System.Collections.Generic.List<Texture2D?>();
+
+		if (_presentation?.TextureNames is not { } names ||
+			HostBridge.GetUiElements() is not { } elements || elements.Count == 0)
+		{
+			return portraits;
+		}
+
+		if (HostBridge.GetUiTextureHashes(0u, elements.Count)
+			is not { } hashes)
+		{
+			return portraits;
+		}
+
+		// THE SIX PORTRAIT ELEMENTS, FOUND BY NAME HASH IN WALK ORDER.
+		//
+		// `frontendmainmenu` carries exactly six elements named `screenshot` and all six are the
+		// load cards' — checked against the file rather than assumed, because matching a leaf
+		// name is only safe when the name is unique to the thing being matched. Walk order is
+		// card order, which is the same order the guest fills the save list in.
+		uint screenshot = Engine_GameHash.Sdbm(Engine_FrontEndSaveCards.PortraitName);
+
+		for (int i = 0; i < elements.Count && portraits.Count < Engine_FrontEndSaveCards.MaxCards; ++i)
+		{
+			if (elements[i].NameHash != screenshot)
+			{
+				continue;
+			}
+
+			Texture2D? texture = null;
+			if (i < hashes.Length && hashes[i] != 0 &&
+				names.TryResolve(hashes[i], out string path))
+			{
+				texture = _presentation.LoadTexture(path);
+			}
+
+			portraits.Add(texture);
+		}
+
+		return portraits;
+	}
+
+	/// <summary>
+	/// Puts the fan up with the guest's own enumerated list, and takes the rows down.
+	///
+	/// The rows go for the reason the gender card's do — see <see cref="_cardView"/>: the file
+	/// puts every menu element at z 0 and the cards reach z -100, so the list would cut straight
+	/// across them, and no shipped slide parks the menu anywhere this could reuse.
+	/// </summary>
+	private void OpenSaveCards(
+		System.Collections.Generic.List<Engine_FrontEndSaveCards.Save> saves)
+	{
+		if (_saveCardView is null)
+		{
+			return;
+		}
+
+		_saveCardView.SetSaves(saves);
+		_saveCardView.Visible = true;
+
+		if (_menuView is not null)
+		{
+			_menuView.Visible = false;
+		}
+	}
+
+	/// <summary>
+	/// Takes the fan down and gives the rows back. Idempotent — it runs on every frame the
+	/// guest is not in substate 5, which is nearly all of them.
+	/// </summary>
+	private void CloseSaveCards()
+	{
+		if (_saveCardView is not { Visible: true })
+		{
+			return;
+		}
+
+		_saveCardView.Visible = false;
+
+		// Not over the gender card, and not over the running game. The menu comes back only if
+		// it is what the player would be looking at.
+		if (_menuView is not null && _cardView is not { Visible: true } && !HasInGameUi)
+		{
+			_menuView.Visible = true;
+		}
+
+		GD.Print("[game-ui] the guest left its save carousel — the load fan is down");
 	}
 
 	/// <summary>
@@ -1057,6 +1423,14 @@ public partial class GameUi : Node
 	/// saves. The one-save case never reaches it; that path commits directly at 0x826E0470.
 	/// </summary>
 	private const uint LoadCarouselState = 5;
+
+	/// <summary>
+	/// Menu states already reported as "carousel up, list empty", so that warning fires once
+	/// per opening rather than once per frame.
+	///
+	/// Cleared as soon as a non-empty list arrives, so a later opening that fails still speaks.
+	/// </summary>
+	private readonly System.Collections.Generic.HashSet<uint> _loadFanEmpty = new();
 
 	/// <summary>
 	/// Sends one named action to the guest.
@@ -1314,6 +1688,35 @@ public partial class GameUi : Node
 			FollowFrontEndExtras(live);
 		}
 
+		// WHICH SCREEN THE GUEST SAYS IT IS ON, reported on change and separately from the set
+		// of live presentations — because for the in-game screens those two are not the same
+		// claim. The pause menu's presentation is created once at game entry and never freed,
+		// so it is in the list below from the first frame of play; only this says whether the
+		// player is actually in it.
+		HostBridge.InGameScreens? manager = HostBridge.GetInGameScreens();
+		HostBridge.InGameScreen? screen = manager?.Current;
+		if (screen != _inGameScreen)
+		{
+			_inGameScreen = screen;
+
+			// THE SLOTS TOO, because "which screen is current" and "which presentation is in
+			// which slot" are separate claims and the draw gate needs both to be right. A gate
+			// that silently never fires looks exactly like a gate that fires and finds nothing,
+			// and only the addresses tell them apart — they can be read straight against the
+			// `[guest-ui] N live presentation(s)` list printed below, which gives each
+			// presentation's address.
+			string slots = manager is { } m && m.Owned.Count > 0
+				? string.Join(", ", System.Linq.Enumerable.Select(
+					System.Linq.Enumerable.OrderBy(m.Owned, e => e.Value),
+					e => $"[{e.Value}]={e.Key:X8}"))
+				: "none built yet";
+
+			GD.Print(screen is null
+				? "[guest-ui] no screen manager yet — the guest is not in game"
+				: $"[guest-ui] the guest's current in-game screen is {screen} " +
+				  $"({(int)screen.Value}); manager holds {slots}");
+		}
+
 		string signature = string.Join('|', live.ConvertAll(p => $"{p.Address:X8}:{p.Name}"));
 		if (signature == _presentationSignature)
 		{
@@ -1371,6 +1774,14 @@ public partial class GameUi : Node
 		public float?[]? Opacity { get; set; }
 
 		/// <summary>
+		/// The live texture hash per element the screen was last built from.
+		///
+		/// Part of the rebuild test, because a texture swap changes nothing else about an
+		/// element — equipping an item repaints a dpad slot without touching its slide.
+		/// </summary>
+		public uint[]? Textures { get; set; }
+
+		/// <summary>
 		/// The builder that produced <see cref="Node"/>, kept for its ordinal map.
 		///
 		/// A transform is the one piece of live state that must NOT trigger a rebuild — the
@@ -1381,6 +1792,25 @@ public partial class GameUi : Node
 
 		/// <summary>How many elements this presentation carries, for the per-frame read.</summary>
 		public int ElementCount { get; set; }
+
+		/// <summary>
+		/// The live-value bindings this presentation carries, and the view that applies them.
+		///
+		/// Non-null only for a screen that HAS bindings, which in practice is the HUD — the
+		/// front-end screens carry none. Rebuilt with the node tree, because the view holds
+		/// nodes belonging to it: a screen the guest changes the state of is rebuilt from the
+		/// file, and a view still pointing at the old tree would drive nodes nobody can see.
+		/// </summary>
+		public Engine_UiLiveValues? Values { get; set; }
+
+		/// <summary>
+		/// The screen's WIDE layout, applied after the guest's transforms every frame.
+		///
+		/// Per screen because it is file data, and re-read with the tree for the same reason the
+		/// bindings are: both are keyed by element ordinal into a tree that is rebuilt whenever
+		/// the guest changes state.
+		/// </summary>
+		public Engine_UiWidescreen? Widescreen { get; set; }
 	}
 
 	private readonly System.Collections.Generic.Dictionary<uint, Drawn> _drawn = new();
@@ -1403,8 +1833,68 @@ public partial class GameUi : Node
 			return;
 		}
 
+		// THE LIVE VALUES, once per frame for every drawn screen that has bindings.
+		//
+		// ONE READ FOR ALL OF THEM, not one per bar. The guest keeps every meter in a single map
+		// keyed by name hash, so the whole HUD's state is one walk — and a per-bar lookup would
+		// mean re-walking a red-black tree fifty-two times a frame for values that were all
+		// written together.
+		//
+		// Read outside the loop for the same reason: two drawn screens can bind the same name,
+		// and sampling twice in one frame could hand them different values from a map the guest
+		// is still writing.
+		++_valueTick;
+
+		System.Collections.Generic.Dictionary<uint, float>? meters = null;
+		System.Collections.Generic.Dictionary<uint, string>? texts = null;
+		foreach (Drawn candidate in _drawn.Values)
+		{
+			if (candidate.Values is not null)
+			{
+				meters = HostBridge.GetHudMeters();
+				texts = HostBridge.GetHudTexts();
+				break;
+			}
+		}
+
 		foreach ((uint address, Drawn drawn) in _drawn)
 		{
+			if (meters is not null && drawn.Values is { } values)
+			{
+				values.Apply(meters, texts);
+
+				// Reported when the picture CHANGES, so "the guest never published" and "we
+				// never applied" stay distinguishable — the same distinction the transform
+				// report below exists to keep, and the one that cost two turns. EITHER half
+				// counts. A HUD whose bars move but whose text never arrives, and one whose text
+				// arrives but whose bars sit at zero, are different faults — and a report that
+				// fired only on meters would stay silent through the second.
+				//
+				// ON CHANGE RATHER THAN ONCE, because a single sample cannot tell a value that
+				// IS zero from one we looked at too early. This used to fire the first time
+				// anything landed, which on the HUD is while the world is still loading — and it
+				// duly reported PlayerHealth=0% for a hero that had not spawned yet, with no
+				// second line to correct it. Sampled rather than polled: the string is rebuilt
+				// once a second per screen, not once a frame.
+				// NO "SOMETHING LANDED" PRECONDITION, and removing it is the fix for a report
+				// that went completely silent. Requiring a non-zero applied count AND the
+				// sample tick meant both had to be true in the SAME frame — one frame in
+				// sixty — so a run where the guest published nothing on those exact frames
+				// produced no line at all, and "the HUD has no values" became
+				// indistinguishable from "the report never ran". A description reading
+				// `meters=0/0` is itself the answer, so it is worth printing.
+				if (_valueTick % ValueSampleFrames == 0)
+				{
+					string described = values.Describe(meters, texts);
+					if (!_valued.TryGetValue(address, out string? wasValued) ||
+						!string.Equals(wasValued, described, System.StringComparison.Ordinal))
+					{
+						_valued[address] = described;
+						GD.Print($"[game-ui] '{drawn.Name}' live values — {described}");
+					}
+				}
+			}
+
 			if (drawn.Builder is null || drawn.ElementCount == 0)
 			{
 				continue;
@@ -1416,6 +1906,16 @@ public partial class GameUi : Node
 			}
 
 			int moved = drawn.Builder.ApplyLiveTransform(transform);
+
+			// THE WIDE LAYOUT LAST, and every frame. The guest still believes it is in 4:3 —
+			// nothing calls `GUI:SetToDisplayInWidescreen()` here, because that is a guest CALL
+			// and this bridge only reads and writes memory — so it keeps restating the
+			// standard-definition position on anything it animates. Applying the override after
+			// the transform is the same final word the shipped event handler has.
+			if (drawn.Widescreen is { } wide && _isWidescreen)
+			{
+				wide.Apply(drawn.Builder.ByOrdinal);
+			}
 			if (moved > 0 && _animated.Add(address))
 			{
 				GD.Print($"[game-ui] '{drawn.Name}' is animating — {moved} element(s) moved " +
@@ -1780,6 +2280,15 @@ public partial class GameUi : Node
 		int untextured = 0;
 		int transparent = 0;
 
+		// NAMED, not just counted. "2 PAINTING UNTEXTURED" says a flat plate is being painted
+		// over the game somewhere and gives no way to find it; a screenshot of a magenta
+		// rectangle on the HUD and a count of two are the same fact reported twice, neither
+		// actionable. The name is the join to the file, where the element's texture and colour
+		// can be read directly.
+		var untexturedNames = new System.Collections.Generic.List<string>();
+		MeshInstance3D? widest = null;
+		float widestSpan = 0f;
+
 		foreach (Node3D? node in drawn.Builder.ByOrdinal)
 		{
 			if (node is not MeshInstance3D mesh)
@@ -1793,12 +2302,29 @@ public partial class GameUi : Node
 				continue;
 			}
 
+			// A MeshInstance3D WITH NO MESH DRAWS NOTHING — skip it before it can be counted
+			// or measured. The builder returns exactly that for a text element whose glyph
+			// build produced no geometry: an empty label keeps its node so the metadata still
+			// hangs off it, but gets neither a mesh nor a material.
+			//
+			// Counting those cost two wrong readings at once. They have no material, so they
+			// were filed under PAINTING UNTEXTURED and named as suspects — `Subtitles/Group/Text`
+			// and `LookAt/LookAt/Text`, neither of which paints a pixel. And `GetAabb()` on a
+			// meshless instance is an empty box at the node's ORIGIN, which still joins the
+			// span union: that is what put a HUD whose real content spans x=[-466..575] on
+			// record as reaching x=-1283.
+			if (mesh.Mesh is null)
+			{
+				continue;
+			}
+
 			// The builder puts the quad's material on the override slot; the surface slot is the
 			// fallback for anything cloned or re-materialised since.
 			var material = (mesh.MaterialOverride ?? mesh.GetActiveMaterial(0)) as BaseMaterial3D;
 			if (material is null)
 			{
 				++untextured;
+				Name(untexturedNames, mesh, "no material");
 				continue;
 			}
 
@@ -1815,14 +2341,47 @@ public partial class GameUi : Node
 			if (material.AlbedoTexture is null)
 			{
 				++untextured;
+
+				// The COLOUR it is painting, because that is what identifies it on screen. A
+				// quad with no albedo texture paints the .fac record's vertex colour flat, so
+				// the magenta plate in a screenshot and the entry in this list are matched by
+				// eye without another run.
+				Color c = material.AlbedoColor;
+				Name(untexturedNames, mesh,
+					$"rgba({c.R:0.##},{c.G:0.##},{c.B:0.##},{c.A:0.##})" +
+					(mesh.HasMeta("texture_path")
+						? $" wanted {(string)mesh.GetMeta("texture_path")}"
+						: " no texture named"));
 			}
 
 			Aabb box = mesh.GlobalTransform * mesh.GetAabb();
 			spans.Add((box.Position.X, box.End.X));
+
+			// THE WIDEST PAINTING QUAD, BY NAME. The span line reports the union of every
+			// painting quad, so a single element reaching past the canvas edge shows up only as
+			// an odd number — `x=[-1283..642]` on a 1280-wide canvas — with nothing to say
+			// whether that is one deliberately over-wide backdrop or something the transform
+			// pass has stretched. The name settles it without another run.
+			if (box.Size.X > widestSpan)
+			{
+				widestSpan = box.Size.X;
+				widest = mesh;
+			}
 		}
 
-		string silent = $" ({hidden} hidden, {transparent} transparent, " +
-			$"{untextured} PAINTING UNTEXTURED)";
+		string widestNote = string.Empty;
+		if (widest is not null)
+		{
+			var named = new System.Collections.Generic.List<string>();
+			Name(named, widest, $"{widestSpan:F0} wide");
+			widestNote = $"  widest={named[0]}";
+		}
+
+		string silent = widestNote + $" ({hidden} hidden, {transparent} transparent, " +
+			$"{untextured} PAINTING UNTEXTURED" +
+			(untexturedNames.Count == 0
+				? string.Empty
+				: ": " + string.Join("; ", untexturedNames)) + ")";
 
 		if (spans.Count == 0)
 		{
@@ -1881,6 +2440,108 @@ public partial class GameUi : Node
 	/// <summary>Presentations reported as still being built, so that line fires once each too.</summary>
 	private readonly System.Collections.Generic.HashSet<uint> _mismatched = new();
 
+	/// <summary>
+	/// Presentations withheld because the guest says no screen is up, so that line fires once
+	/// each rather than several times a second for as long as the player is walking around.
+	/// </summary>
+	private readonly System.Collections.Generic.HashSet<uint> _suppressed = new();
+
+	/// <summary>
+	/// Presentations whose live VALUES have landed at least once, so that line fires once each.
+	///
+	/// Separate from <see cref="_animated"/> because they are different claims about the same
+	/// screen: a HUD can be animating — its needles swinging, its groups fading — while every
+	/// bar it owns sits at the artist's authored zero because no meter ever resolved.
+	/// </summary>
+	private readonly System.Collections.Generic.Dictionary<uint, string> _valued = new();
+
+	/// <summary>Frames between live-value samples — about once a second at any display rate.</summary>
+	private const int ValueSampleFrames = 60;
+
+	private int _valueTick;
+
+	/// <summary>
+	/// What each presentation's <c>ExpandableMenu</c> last contained, so a change is reported.
+	///
+	/// REPORTED ON CHANGE RATHER THAN ONCE, and that is the whole reason this is a dictionary
+	/// and not another <c>HashSet</c>. The guest spawns a menu's entries AFTER the presentation
+	/// appears — the pause menu shows up with an empty 26-button pool and fills it over the
+	/// following frames — so a once-per-build line samples the one moment the menu is
+	/// guaranteed to be empty and reports that as the answer. Keyed by address like the rest,
+	/// and cleared in <see cref="Retire"/>.
+	/// </summary>
+	private readonly System.Collections.Generic.Dictionary<uint, string> _menuContents = new();
+
+	/// <summary>
+	/// Says what the guest has put in this presentation's menu, whenever that changes.
+	///
+	/// The pause menu is the case this exists for. Its entries are not in the file and not in
+	/// the shipped Lua's population table — they are spawned at runtime — so whether the guest
+	/// has filled the button pool is a question no static read can answer, and it is the
+	/// question that decides whether Godot can own the list the way it owns the front end's.
+	/// Silent for every screen without an <c>ExpandableMenu</c>, which is most of them.
+	/// </summary>
+	/// <summary>
+	/// Adds a node to a diagnostic list, by the path that locates it in the file.
+	///
+	/// The leaf name alone is useless on a HUD: slice names repeat across every frame group, so
+	/// a dozen unrelated elements are all called <c>bar</c>. Two ancestors are enough to place
+	/// one without making the line unreadable. Capped, because a fault that hits every quad
+	/// would otherwise print three thousand names.
+	/// </summary>
+	private static void Name(System.Collections.Generic.List<string> into, Node node, string why)
+	{
+		const int limit = 8;
+		if (into.Count >= limit)
+		{
+			return;
+		}
+
+		if (into.Count == limit - 1)
+		{
+			into.Add("…more");
+			return;
+		}
+
+		string path = node.Name;
+		Node? parent = node.GetParent();
+		for (int up = 0; up < 2 && parent is not null; ++up, parent = parent.GetParent())
+		{
+			path = parent.Name + "/" + path;
+		}
+
+		into.Add($"{path} [{why}]");
+	}
+
+	private void ReportMenuContents(uint address, string name, Engine_UiScreen? screen,
+		string?[] texts, bool[] visible, int[] slides, float?[]?[]? transform)
+	{
+		System.Collections.Generic.IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons =
+			Engine_ExpandableMenuItems.Read(screen, texts, visible, slides);
+		if (buttons.Count == 0)
+		{
+			return;
+		}
+
+		// WHETHER THE GUEST'S OWN FORMATTER RAN, which is the other half of the question and
+		// not answerable from the labels. `expandablemenuformatting.lua` lays the pool out by
+		// writing `position.x` and `position.y` on each button component — attributes we
+		// already read — so buttons that all still share one position are buttons the
+		// formatter never touched. The file authors all 26 on top of each other, so "stacked"
+		// is the untouched state and reads as a single bar on screen.
+		string laidOut = Engine_ExpandableMenuItems.DescribeLayout(buttons, transform);
+
+		string described = $"{Engine_ExpandableMenuItems.Describe(buttons)}; {laidOut}";
+		if (_menuContents.TryGetValue(address, out string? was) &&
+			string.Equals(was, described, System.StringComparison.Ordinal))
+		{
+			return;
+		}
+
+		_menuContents[address] = described;
+		GD.Print($"[game-ui] '{name}' menu: {described}");
+	}
+
 	/// <summary>Takes one drawn presentation off screen and forgets it.</summary>
 	private void Retire(uint address, string why)
 	{
@@ -1897,6 +2558,9 @@ public partial class GameUi : Node
 		// silent because a previous incarnation at the same address already had.
 		_animated.Remove(address);
 		_mismatched.Remove(address);
+		_valued.Remove(address);
+		_menuContents.Remove(address);
+		_suppressed.Remove(address);
 	}
 
 	/// <summary>
@@ -1959,6 +2623,24 @@ public partial class GameUi : Node
 				continue;
 			}
 
+			// AND SKIP THE OTHER FRONT-END SCREEN, which is not an extra at all.
+			//
+			// There are exactly two — `frontendstartupscreen` and `frontendmainmenu` — and the
+			// guest tells us which is ACTIVE; the by-name path draws that one and this path must
+			// not draw the other. Its root keeps its active bit set after the hand-over, so
+			// "the guest is showing it" is true of both, and drawing both puts the title
+			// screen's "Press A" prompt over the menu. That is the stray A glyph floating in the
+			// corner of every front-end screenshot: not a widget of ours, the whole title screen
+			// underneath one.
+			//
+			// Derived from our own contract rather than a name list: `PresentationFor` is the
+			// one place that enumerates the front end's screens, so a third would be covered
+			// here the day it is added.
+			if (IsFrontEndScreen(bank))
+			{
+				continue;
+			}
+
 			wanted.Add(p);
 		}
 
@@ -2009,10 +2691,51 @@ public partial class GameUi : Node
 		var wanted = new System.Collections.Generic.List<HostBridge.Presentation>();
 		foreach (HostBridge.Presentation p in live)
 		{
-			if (p.IsShowing)
+			if (!p.IsShowing)
 			{
-				wanted.Add(p);
+				continue;
 			}
+
+			// A SCREEN CONTRIBUTING NO ELEMENTS IS NOT ON SCREEN, and the guest counts them
+			// itself — so this is its statement, not our inference.
+			//
+			// The pause menu is why. Its presentation is created at game entry (`sub_823DC888`,
+			// once, behind the one-shot byte at GUI+102) and never freed, so from the first
+			// frame of play it sits in the registry with its root active. The registry read
+			// from the run this was written against says exactly what it is:
+			//
+			//   SHOWING active=2616  hud.bgf           <- really drawing
+			//   SHOWING active=52    intermissionbox   <- really drawing
+			//   SHOWING active=0     pausemainmenu     <- root active, drawing NOTHING
+			//   hidden  active=1878  pausemainmenu FROZEN
+			//
+			// Drawing that third one is what put a full-screen purple backdrop and a stack of
+			// 26 blank tabs over the running game: the guest contributes nothing, but we
+			// rebuild the screen from the FILE, where those elements are active and stacked.
+			//
+			// It costs nothing elsewhere. The one other screen seen at zero is the HUD on the
+			// first frame after it stands up, where our own build produced `quads 0` anyway —
+			// so this skips an empty tree we were building for no reason and picks the HUD up
+			// on the next sample.
+			//
+			// This replaced a gate on the guest's current-screen ID. That one was sound in
+			// principle and never fired: the screen manager's slot pointers did not match the
+			// addresses the presentation registry reports, so the test could not match. The
+			// element count needs no pointer identity at all.
+			if (p.ActiveElements == 0)
+			{
+				if (_suppressed.Add(p.Address))
+				{
+					GD.Print($"[game-ui] not drawing '{p.Name}' — its root is active but the " +
+						"guest has NO globally-active elements in it, so it is contributing " +
+						"nothing to the frame");
+				}
+
+				continue;
+			}
+
+			_suppressed.Remove(p.Address);
+			wanted.Add(p);
 		}
 
 		// The HUD underneath, everything else over it. Depth is not something the guest states
@@ -2038,14 +2761,25 @@ public partial class GameUi : Node
 			Retire(address, "the guest stopped showing it");
 		}
 
-		if (wanted.Count > 0 && _menuView is not null && _menuView.Visible)
+		if (wanted.Count > 0)
 		{
-			// The front end's menu has no business over the running game — nor does the card,
-			// which by this point has already been answered.
-			_menuView.Visible = false;
+			// NOTHING FROM THE FRONT END BELONGS OVER THE RUNNING GAME. `LeaveFrontEnd` frees
+			// all three when the guest leaves properly; this is the belt to that braces, for the
+			// case where in-game UI appears without that handover having been seen — which is
+			// how the load fan ended up drawn over the world in the first place.
+			if (_menuView is not null)
+			{
+				_menuView.Visible = false;
+			}
+
 			if (_cardView is not null)
 			{
 				_cardView.Visible = false;
+			}
+
+			if (_saveCardView is not null)
+			{
+				_saveCardView.Visible = false;
 			}
 		}
 
@@ -2104,12 +2838,24 @@ public partial class GameUi : Node
 			}
 		}
 
-		bool unchanged = _drawn.TryGetValue(presentation.Address, out Drawn? existing) &&
+		// THE GUEST'S OWN TEXTURE PER ELEMENT, read here rather than after the test below
+		// BECAUSE IT IS PART OF THAT TEST. Anywhere the game chooses a picture at runtime the
+		// file carries only a placeholder — every dpad quick-slot points at the same grey
+		// `empty.tex`, all twenty-four HUD world-icon slots at the same icon — so following the
+		// file alone draws one wrong image in every slot of a set. Equipping an item changes
+		// the slot's texture and NOTHING else: no slide, no visibility, no opacity. Left out of
+		// the comparison the swap would be read once and then never again.
+		uint[]? textures = HostBridge.GetUiTextureHashes(presentation.Address, elements.Count);
+
+        bool unchanged = _drawn.TryGetValue(presentation.Address, out Drawn? existing) &&
 			existing.Slides is not null && existing.Visible is not null &&
 			slides.SequenceEqual(existing.Slides) && visible.SequenceEqual(existing.Visible) &&
 			((existing.Opacity is null && opacity is null) ||
 			 (existing.Opacity is not null && opacity is not null &&
-			  opacity.SequenceEqual(existing.Opacity)));
+			  opacity.SequenceEqual(existing.Opacity))) &&
+			((existing.Textures is null && textures is null) ||
+			 (existing.Textures is not null && textures is not null &&
+			  textures.SequenceEqual(existing.Textures)));
 		if (unchanged)
 		{
 			return;
@@ -2119,7 +2865,10 @@ public partial class GameUi : Node
 		_presentation.LiveText = texts;
 		_presentation.LiveVisible = visible;
 		_presentation.LiveOpacity = opacity;
-		_presentation.LiveTransform = ReadLiveTransform(presentation.Address, elements.Count);
+		float?[]?[]? transform = ReadLiveTransform(presentation.Address, elements.Count);
+		_presentation.LiveTransform = transform;
+
+		_presentation.LiveTextures = textures;
 		_presentation.SceneSlide = 0;
 
 		Node3D? built = _presentation.BuildDetached(
@@ -2167,9 +2916,29 @@ public partial class GameUi : Node
 				  $"{(stats.TexturesResolved < stats.QuadsBuilt ? " — TEXTURES MISSING, those quads draw untextured" : string.Empty)}" +
 				  $", text {stats.TextsBuilt} ({stats.TextGlyphsBuilt} glyphs)";
 
+			// The texture-swap breakdown is here rather than in its own line because it is only
+			// meaningful beside the quad count. It reports STATED as well as swapped: a plain
+			// "0 swapped" cannot tell "the guest names no textures" from "it names exactly what
+			// the file already has" from "it names textures we cannot resolve", and those need
+			// different work. Empty when the guest states none, which is most screens.
+			string swaps = screen?.DescribeLiveTextures() ?? string.Empty;
+
+			// AND WHY, when the answer is "none". The chain the host walks is the guest's own,
+			// verified against `sub_82425C10` instruction for instruction — element+4 to the
+			// scene node, node+0 to the render item, +0x200 for the hash — so an all-zero
+			// result is not evidence that the walk is broken. It is equally consistent with the
+			// guest building no render items at all in this configuration, which is a question
+			// about the GUEST and not about us. This prints the breakdown once per screen so
+			// the two stop looking identical.
+			if (screen is { LiveTexturesStated: 0 } &&
+				HostBridge.GetUiTextureStats(presentation.Address) is { } chain)
+			{
+				GD.Print($"[game-ui] '{name}' texture chain: {chain.Describe()}");
+			}
+
 			GD.Print($"[game-ui] drawing the guest's '{name}' " +
 				$"({elements.Count} live elements, " +
-				$"{System.Array.FindAll(visible, v => v).Length} of them active{art})");
+				$"{System.Array.FindAll(visible, v => v).Length} of them active{art}{swaps})");
 
 			// THE ORDINAL JOIN, checked rather than believed — the same check the front end
 			// makes, because this path applies slide, text and opacity BY POSITION too.
@@ -2216,6 +2985,8 @@ public partial class GameUi : Node
 			}
 		}
 
+		ReportMenuContents(presentation.Address, name, screen, texts, visible, slides, transform);
+
 		// Depth by Z rather than by child order: these share one orthographic canvas camera
 		// looking down -Z, so tree order does not decide what covers what.
 		//
@@ -2229,6 +3000,68 @@ public partial class GameUi : Node
 		// 100000 far plane.
 		built.Position = new Vector3(0f, 0f, depth * PresentationDepthStep);
 		_presentation.AddChild(built);
+
+		// THE LIVE-VALUE BINDINGS, resolved once per build rather than per frame.
+		//
+		// This is what makes the HUD more than a picture. Its numbers are not in the element
+		// tree and not in any script: `hud.bgf` binds an element with `MeterName = "PlayerHealth"`
+		// and the guest publishes a percentage against a hash of that string every frame. Reading
+		// the binding here — while the document and the ordinal map are both in hand — is what
+		// lets the per-frame path be a dictionary lookup and a transform write.
+		//
+		// Only for a screen that HAS bindings, which is the HUD; the front-end screens carry
+		// none and get a null, which costs nothing per frame.
+		Engine_UiLiveValues? values = null;
+		if (screen is not null && stats is not null)
+		{
+			Engine_UiBindings bindings = Engine_UiBindings.Read(screen.Document);
+			if (bindings.All.Count > 0)
+			{
+				values = new Engine_UiLiveValues
+				{
+					// The same theme the front end draws with — the HUD's live text has to be
+					// laid out in the game's own fonts, and without it a bound field simply
+					// keeps whatever the file left in it.
+					Theme = _presentation.Theme,
+				};
+
+				values.Bind(screen.Document, bindings, stats.ByOrdinal);
+				GD.Print($"[game-ui] '{name}' {bindings.Describe()} — {values.BarsBound} bar(s) " +
+					$"and {values.FieldsBound} text field(s) bound to nodes, " +
+					$"{values.BarsUnresolved} not in the built tree");
+			}
+		}
+
+		// THE WIDE LAYOUT, read once per build. The game ships two layouts per element and the
+		// authored one is 4:3; without this the HUD draws in its standard-definition arrangement
+		// on a 16:9 canvas, which is why the ABXY prompts sat in the middle of the screen.
+		Engine_UiWidescreen? widescreen = null;
+		if (screen is not null)
+		{
+			widescreen = Engine_UiWidescreen.Read(screen.Document);
+			if (widescreen.Count > 0)
+			{
+				GD.Print($"[game-ui] '{name}' {widescreen.Describe()}");
+			}
+			else
+			{
+				widescreen = null;
+			}
+
+			// THE NAMED FIXUPS, ONCE PER BUILD AND NEVER PER FRAME. One of the three divides the
+			// vignette's existing scale by 0.75 rather than assigning, so repeating it grows the
+			// border by a third every frame. A rebuild re-reads the artist's value from the file,
+			// which is what makes once-per-build the same thing as the original's once-per-init.
+			if (_isWidescreen)
+			{
+				Engine_UiWidescreen.ApplyNamedFixups(built, out string fixups);
+				if (fixups.Length > 0)
+				{
+					GD.Print($"[game-ui] '{name}' {fixups}");
+				}
+			}
+		}
+
 		_drawn[presentation.Address] = new Drawn
 		{
 			Name = name,
@@ -2236,8 +3069,11 @@ public partial class GameUi : Node
 			Slides = slides,
 			Visible = visible,
 			Opacity = opacity,
+			Textures = textures,
 			Builder = stats,
 			ElementCount = elements.Count,
+			Values = values,
+			Widescreen = widescreen,
 		};
 
 		// A camera has to be current or the sub-viewport renders through Godot's default one
@@ -2250,6 +3086,13 @@ public partial class GameUi : Node
 	}
 
 	private string? _presentationSignature;
+
+	/// <summary>
+	/// The guest's last stated in-game screen, so the line fires on a change rather than
+	/// every sample. Null is a distinct value here — "no screen manager" is not
+	/// <see cref="HostBridge.InGameScreen.None"/>.
+	/// </summary>
+	private HostBridge.InGameScreen? _inGameScreen;
 
 	/// <summary>Frames between registry samples — a few times a second at any display rate.</summary>
 	private const int PresentationSampleFrames = 30;

@@ -674,6 +674,13 @@ public partial class GameWorld : Node3D
 			Twins = twins,
 		};
 		AddChild(_entities);
+
+		// The effects the guest plays for itself, beside the entities and for the same reason:
+		// the region's own FX are the ones the level STATES, and every effect that starts because
+		// something happened — a spell, an impact, a fire catching — exists only in the guest.
+		// It censuses by default and draws only under REFII_FX_LIVE=1; see GameFx.
+		_fx = new GameFx { Name = "GameFx" };
+		AddChild(_fx);
 		GD.Print($"[game-world] built and mounted {start.World}/{start.Level}");
 	}
 
@@ -701,6 +708,17 @@ public partial class GameWorld : Node3D
 			RemoveChild(_entities);
 			_entities.QueueFree();
 			_entities = null;
+		}
+
+		// Alongside the entity feed, and for its reason: this holds one node per LIVE guest
+		// effect keyed on a guest pointer, and the guest reuses those addresses. Left standing
+		// across a level change it would match the next region's effects against this region's
+		// nodes — not a wrong picture so much as two worlds mixed together.
+		if (_fx is not null)
+		{
+			RemoveChild(_fx);
+			_fx.QueueFree();
+			_fx = null;
 		}
 
 		if (_reflections is not null)
@@ -1099,6 +1117,8 @@ public partial class GameWorld : Node3D
 	}
 
 	private GameEntities? _entities;
+
+	private GameFx? _fx;
 
 	/// <summary>The destination has been reported. Separate from <see cref="_loaded"/>, which
 	/// only becomes true once the region is actually standing.</summary>

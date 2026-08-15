@@ -68,6 +68,14 @@ uniform vec3 sun_engine = vec3(1.0, 0.0, 0.0);
 uniform float horizon_distance = 1900.0;
 uniform float dome_exposure = 0.0;
 
+/// Whether the atmosphere uniforms above have been filled in yet.
+///
+/// A FLAG, NOT A THRESHOLD ON THE EXPOSURE. This used to be `dome_exposure > 0.5`, which worked
+/// only because the exposure happened to be 10 — it is now 1.0, and any future value under 0.5
+/// would have silently swapped every water body's sky reflection for a flat constant with nothing
+/// to indicate why.
+uniform bool has_dome = false;
+
 varying vec3 v_local;
 varying vec3 v_eye_local;
 varying vec3 v_sun_local;
@@ -145,7 +153,7 @@ void fragment() {
 	vec3 Nr = normalize(vec3(nxy.x * w_reflp.x * 0.5, 1.0, nxy.y * w_reflp.x * 0.5));
 	vec3 R = reflect(-V, Nr);
 	R.y = abs(R.y);
-	vec3 dome = dome_exposure > 0.5 ? dome_reflect(R) : sky_constant;
+	vec3 dome = has_dome ? dome_reflect(R) : sky_constant;
 
 	// Rf — the guest folds the shadow mask in as `shadow * ShadowScaleBias + (1 - ShadowScaleBias)`
 	// (`g_WaterConstants(23)`, built as the pair `(v, 1-v)` at `821E5014`). We have no water shadow

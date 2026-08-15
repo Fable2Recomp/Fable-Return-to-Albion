@@ -53,6 +53,28 @@ public static class Engine_BgfAttributeNames
 		// Text
 		"text", "font", "fontsize", "size", "halign", "valign",
 		"boxwidth", "boxheight", "wordwrap", "linespacing",
+
+		// HUD BINDINGS — how an element says which live VALUE it draws.
+		//
+		// These are the game's, and they are the whole reason the in-game HUD can be driven
+		// without a table of our own: an element carries `MeterName = "PlayerHealth"` and the
+		// runtime registers it under a hash of that STRING, so the name an element answers to is
+		// stated in the file rather than inferred from where it sits in the tree.
+		//
+		// CASE IS EXACT. The id is sdbm of the authored name with no folding, so "MeterName" and
+		// "metername" are different attributes — unlike everything above, which the artist
+		// happened to author in lower case. These are spelled as the executable's own string
+		// block spells them, at 0x820D9F3C onward.
+		"MeterName", "SlideFaderName", "SlideFader2Name", "PulserName", "BoxName",
+		"TextName", "TinterName", "SlideToggleName", "SlideSetName", "PrimDescName",
+		"ImageName",
+
+		// The widescreen and centring overrides the shipped Lua reads off an element — see
+		// `widescreenadapter.lua` and `screencentertoggle.lua`. Zero means "no override".
+		"widescreenXPos", "widescreenYPos", "WidescreenXWidth", "centerXPos",
+
+		// The generic event payload every Gameface behaviour reads out of `g_Param`.
+		"String1", "String2", "Float1", "Float2",
 	};
 
 	private static readonly Dictionary<uint, string> ById = Build();

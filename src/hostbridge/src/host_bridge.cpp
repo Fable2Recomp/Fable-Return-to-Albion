@@ -561,7 +561,13 @@ extern "C" {
 /// 50 adds RefiiHostWorldIsActive — World+0xA8, the ONE "the world is up and populated" bit\n///    that both the travel and the load-from-save paths write. Replaces a host-side timeout.\n/// 49 adds RefiiHostDescribeGameFlowQueue — the queue as text, because a walk of it kept\n///    coming back empty while a level change was demonstrably in flight.\n/// 48 adds RefiiHostSetWorldBuildPending — the host answering "IsEnginePreLoading" so the\n///    guest waits in ITS OWN loading screen (state 7) until Godot has mounted the region.\n/// 47 adds RefiiHostGetLevelChange — the queued CmdLevelChange itself: its state word, its\n///    destination and its fullLoad flag. game+0x105 is a rising edge only (cleared in state 3,\n///    AFTER the state-2 entity teardown), so it cannot say when to free a scene.\n/// 46 adds RefiiHostGetCurrentLevel — the level the guest is STANDING IN, read from the live
 ///    World and Level objects. The start globals it replaces are written only by game-START
 ///    paths, so polling them cannot see a door, a teleporter or fast travel.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 50; }
+/// 51 adds RefiiHostGetEntityLocomotion — the locomotion state the guest is ACTUALLY IN, by
+///    name. The hero's locomotion machine IS an entity mode (component 21, the mode whose
+///    GetModeType() is 2/3/4), and it keeps its current state as a named object, so the host
+///    can follow the guest's own choice instead of re-deriving it from inputs it would have to
+///    guess at. The velocity/control pair it tests against is NOT included, and deliberately:
+///    that context is a stack temporary built per tick in sub_8228D058 and is not resident.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 54; }
 
 // ---------------------------------------------------------------------------------
 // Audio
@@ -1377,6 +1383,228 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimTick(void) {
     return __builtin_bswap32(raw);
 }
 
+/// EVERY PARTICLE EFFECT THE GUEST IS CURRENTLY PLAYING, so Godot can draw the ones it did not
+/// place itself.
+///
+/// The level's ambient effects — torches, braziers, waterfalls — Godot resolves for itself out
+/// of the GDB and spawns natively. Everything the guest starts at RUNTIME had no route to the
+/// screen at all: spell casts, combat impacts, a fire catching. This is that route.
+///
+/// IT IS A MIRROR, NOT A HOOK, and that is only possible because the particle update sits on the
+/// SIM path. The chain is `sub_82319BE8` (the wall-clock main loop) -> `sub_821DC270` ->
+/// `sub_821DFDD0` (world update) -> `sub_83234C38` (CParticleSystemManager::Update) -> per
+/// instance `sub_8322D988`. Nothing in it touches a present, a GPU wait or the render thread, so
+/// the guest keeps ticking its particle systems perfectly well with our no-GPU latch set and
+/// never drawing a pixel.
+///
+/// THE LIST is the flat vector every instance factory pushes into — `sub_8322A388`,
+/// `sub_83230F00` and their siblings all end in `sub_82450DB8(&dword_8349E48C, ...)`. Its
+/// removal side, `sub_83234338`, reads back `(dword_8349E494 - dword_8349E490) >> 3`, which
+/// fixes the stride at 8: an instance pointer and its refcount node.
+///
+/// INDICES ARE NOT STABLE. That same function retires by swapping with the last element and
+/// popping, so an effect's slot changes when an unrelated one ends. The instance POINTER is the
+/// identity, which is why it is the first word out.
+///
+/// WHY THE TRANSFORM IS A WALK. `instance+0x50` looks like a world position and is not: it is
+/// the authored local translation, before the type's own offset matrix and the uniform scale.
+/// `sub_821DA198` composes those into the cached local 4x4 at `instance+0x70`, and
+/// `sub_832295F0` concatenates that up the `+0xF0` parent chain to reach world. Mirroring
+/// `+0x50` directly would put every runtime effect somewhere plausible and wrong.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_effects) {
+    if (out == nullptr || max_effects == 0u) {
+        return 0u;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    const auto readf = [&read32](uint32_t at) {
+        const uint32_t bits = read32(at);
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+
+    const auto read8 = [base](uint32_t at) { return *(base + at); };
+
+    /// A guest pointer we are willing to dereference. The walk runs while the guest is mutating
+    /// the vector, so a torn read is expected and must be refused rather than followed.
+    ///
+    /// THE WHOLE 32-BIT SPACE IS VALID, and narrowing it is how this returned nothing at all on
+    /// its first run. The bound used to be `>= 0x82000000 && < 0x90000000`, which is roughly the
+    /// EXECUTABLE IMAGE's range — fine for a global, useless for a pointer to a heap object.
+    /// Every particle instance is allocated at runtime and lands outside it, so every entry was
+    /// rejected and the feed reported an empty world.
+    ///
+    /// This is the same test the rest of this file uses for a guest buffer: non-null, and inside
+    /// the guest's own 4 GB space with room for what we are about to read.
+    const auto plausible = [](uint32_t ptr) {
+        return ptr >= 0x1000u && (uint64_t)ptr + 0x200ull <= 0x100000000ull;
+    };
+
+    /// One node's cached LOCAL matrix, row-major, 16 floats at `node+0x70`.
+    ///
+    /// `+0xB0` is the dirty byte the guest sets when it writes `+0x10`/`+0x50` and clears when it
+    /// recomposes. We report it rather than recomposing ourselves: the recompose needs the type's
+    /// own matrix and quaternion too, and the guest refreshes the cache on its next access, so a
+    /// dirty node is at most one tick stale.
+    const auto local_matrix = [&](uint32_t node, float* m) {
+        for (int i = 0; i < 16; ++i) {
+            m[i] = readf(node + 0x70u + static_cast<uint32_t>(i) * 4u);
+        }
+    };
+
+    /// Row-vector concatenation, child on the left — `sub_821C0010` dots each row of the
+    /// accumulator against the columns of the parent.
+    const auto concat = [](const float* a, const float* b, float* r) {
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                r[i * 4 + j] = a[i * 4 + 0] * b[0 * 4 + j] +
+                               a[i * 4 + 1] * b[1 * 4 + j] +
+                               a[i * 4 + 2] * b[2 * 4 + j] +
+                               a[i * 4 + 3] * b[3 * 4 + j];
+            }
+        }
+    };
+
+    constexpr uint32_t kVectorBegin = 0x8349E490u;
+    constexpr uint32_t kVectorEnd = 0x8349E494u;
+    constexpr uint32_t kReservedRootName = 0x8349E678u;
+
+    /// 16 words per effect: instance pointer, name hash, flags, live-particle count, then the
+    /// world position (3 floats) and the world basis rows 0..2 (9 floats). Must match
+    /// `HostBridge.ActiveFxStride` — the two sides indexing the same buffer differently is an
+    /// ABI break that no compiler catches.
+    constexpr uint32_t kStride = 17u;
+
+    // Both ends re-read together: the vector reallocates as it grows and no lock is taken.
+    const uint32_t begin = read32(kVectorBegin);
+    const uint32_t end = read32(kVectorEnd);
+    if (!plausible(begin) || end < begin) {
+        return 0u;
+    }
+
+    const uint32_t span = end - begin;
+    if ((span % 8u) != 0u || span > 0x40000u) {
+        return 0u;
+    }
+
+    const uint32_t reserved_root = read32(kReservedRootName);
+    const uint32_t count = span / 8u;
+    uint32_t written = 0u;
+
+    for (uint32_t i = 0; i < count && written < max_effects; ++i) {
+        const uint32_t node = read32(begin + i * 8u);
+        if (!plausible(node)) {
+            continue;
+        }
+
+        // `+0xC8` is "kill requested", set by `sub_83228E88` and cleared in the ctor. The retire
+        // pass drops these the same tick; skipping them stops a dying effect flickering back.
+        if (read8(node + 0xC8u) != 0u) {
+            continue;
+        }
+
+        const uint32_t type = read32(node + 0xD0u);
+        if (!plausible(type)) {
+            continue;
+        }
+
+        // `type+4` is FNV-1 of the node's LOWERCASED name — `sub_8323BE18` lower-cases twice and
+        // calls `rex_lhResourceName_ComputeHash`, and `sub_822CA588` is FNV-1 (multiply THEN
+        // xor), the same hash the particle bank is keyed on.
+        const uint32_t name_hash = read32(type + 4u);
+        if (name_hash == 0u || name_hash == reserved_root) {
+            continue;
+        }
+
+        // The guest's own has-work predicate, `sub_8322EB88`, evaluated in place:
+        //   (+0xC4 != 0 && (+0x104 == 0 || +0xFC <= +0x108)) || +0x154 != 0
+        // The first clause is "still emitting" (+0xC4 counts down, -1 meaning forever), the
+        // second "particles still alive".
+        const uint32_t remaining = read32(node + 0xC4u);
+        const uint8_t finite = read8(node + 0x104u);
+        const float age = readf(node + 0xFCu);
+        const float limit = readf(node + 0x108u);
+        const uint32_t live_particles = read32(node + 0x154u);
+        const bool emitting = remaining != 0u && (finite == 0u || age <= limit);
+        const bool alive = emitting || live_particles != 0u;
+
+        float world[16];
+        local_matrix(node, world);
+
+        // Up the parent chain. `+0xF0` holds a weak-ref control block whose first word is the
+        // parent, or 0 once it has expired — `sub_82173E38` is exactly that double indirection.
+        uint32_t at = node;
+        for (int hop = 0; hop < 32; ++hop) {
+            const uint32_t block = read32(at + 0xF0u);
+            if (!plausible(block)) {
+                break;
+            }
+
+            const uint32_t parent = read32(block);
+            if (!plausible(parent) || parent == at) {
+                break;
+            }
+
+            float parent_local[16];
+            local_matrix(parent, parent_local);
+            float composed[16];
+            concat(world, parent_local, composed);
+            std::memcpy(world, composed, sizeof(world));
+            at = parent;
+        }
+
+        // Rows 0..2 carry the node's scale; the caller wants a rotation, so hand over the rows
+        // normalised and let it build the basis.
+        uint32_t* row = out + written * kStride;
+        row[0] = node;
+        row[1] = name_hash;
+
+        // THE EFFECT INSTANCE THIS NODE BELONGS TO. One effect is many nodes — `sub_83233300`
+        // builds one instance per entity in each type-vector plus a synthetic root for each, so
+        // the beehive's six (spline, emitter) vectors are eighteen instances of one effect. They
+        // all share this handle, and without it the host draws the whole effect once per node.
+        row[16] = read32(node + 0xE8u);
+        row[2] = (alive ? 1u : 0u) | (read8(node + 0xB0u) != 0u ? 2u : 0u) |
+                 (emitting ? 4u : 0u);
+        row[3] = live_particles;
+
+        const float* translation = world + 12;
+        for (int axis = 0; axis < 3; ++axis) {
+            uint32_t bits;
+            std::memcpy(&bits, translation + axis, sizeof(bits));
+            row[4 + axis] = bits;
+        }
+
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                uint32_t bits;
+                std::memcpy(&bits, world + r * 4 + c, sizeof(bits));
+                row[7 + r * 3 + c] = bits;
+            }
+        }
+
+        ++written;
+    }
+
+    return written;
+}
+
 /// The guest's live world clock — `GameTimeManager`'s day fraction.
 ///
 /// THE SKY AND THE LIGHTING HAVE TO FOLLOW THIS OR THEY FOLLOW NOTHING. Everything the host
@@ -1670,7 +1898,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetLoadingScreen(uint32_t* out_manager, uint3
     // first, then the front-end mode. Both carry the SAME context at +8, so the manager is
     // one object either way — but reading whichever is live avoids a null during the swap.
     uint32_t context = 0;
-    for (uint32_t mode_global : {0x83496AB8u, 0x83496AC0u}) {
+    // THREE ROOTS, NOT TWO — `sub_82388380` falls through 0x83496AB8, then 0x83496AC0, then
+    // 0x8335C4C4 at 0x8238862C, and only gives up when all three are null.
+    for (uint32_t mode_global : {0x83496AB8u, 0x83496AC0u, 0x8335C4C4u}) {
         const uint32_t mode = read32(mode_global);
         if (!plausible(mode)) {
             continue;
@@ -3045,6 +3275,215 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityComponents(uint32_t entity, uin
     return written;
 }
 
+/// How many words RefiiHostGetEntityLocomotion writes.
+#define REFII_LOCOMOTION_WORDS 7u
+
+/// The locomotion state a character is IN, by name, plus the gates that state was chosen under.
+///
+/// WHY BY NAME AND NOT BY INDEX. The guest's machine keeps its current state as an object with
+/// an LHString name, and the name is the only stable identity it has: the 240-byte definition
+/// records are heap-allocated per run and the registry is a std::map keyed by that same string.
+/// Godot already reads the 41 state names out of the shipped script, so a name joins the two
+/// sides exactly and a wrong read cannot masquerade as a different valid state — it comes back
+/// as a string that matches nothing.
+///
+/// THE MACHINE IS AN ENTITY MODE. There is no locomotion component. Modes hang off component
+/// 21 in a circular list and the locomotion machine is simply the one whose `GetModeType()`
+/// returns 2, 3 or 4 (walk / strafe / aiming). Those three cannot be told apart by layout, so
+/// they are identified by VTABLE — the only RTTI a stripped binary offers — and each is
+/// verified to be a movement-interface mode: all three share `GetModeInterface()`
+/// (`0x82EA63A8`, returns 1) at vtable slot +8, while slot +4 returns 2, 3 and 4 respectively.
+///
+/// WHAT IS NOT HERE. The velocity and control magnitudes the state machine actually tests are
+/// built into a ~316-byte STACK temporary each tick by `sub_8228D058` and are gone by the time
+/// any host can look, so there is nothing resident to read. An earlier report of a persistent
+/// velocity ring on the machine did not survive reading that function and is not implemented
+/// rather than being implemented on faith. `is child` is likewise absent: it needs a guest CALL
+/// (`sub_821C2A18`), and this bridge only ever reads memory.
+///
+/// Every offset below was decompiled for this change, not taken on report:
+///   entity+0x24 bit 21, entity+0x8C accelerator, entity+0x48..0x4C  (sub_821E5B28)
+///   mgr+0x18 head, node{next+0, mode+8}, vtable+4 = GetModeType     (sub_821FF5C8)
+///   machine+0x04 entity, machine+0x14 current state                 (sub_822CCE10)
+///   state+0x24 name, state+0x2C dwell seconds                       (sub_822CCE10)
+///   name+0x00 chars, name+0x04 length                               (LHString CBasicString ==)
+///   comp99+16 stance, comp99+40 combat, comp132 confinement list    (sub_8228D058)
+///
+/// Writes REFII_LOCOMOTION_WORDS words: machine, state, modeType, dwell (float bits), stance,
+/// combatState, confinementMask. Returns the words written, or 0 when the entity carries no
+/// locomotion mode — which most entities do not, so 0 is the ordinary answer, not a failure.
+uint32_t RefiiHostGetEntityLocomotion(uint32_t entity, uint32_t* out_words, uint32_t word_count,
+                                      char* out_name, uint32_t name_capacity) {
+    if (out_words == nullptr || word_count < REFII_LOCOMOTION_WORDS) {
+        return 0u;
+    }
+
+    for (uint32_t i = 0u; i < REFII_LOCOMOTION_WORDS; ++i) {
+        out_words[i] = 0u;
+    }
+    if (out_name != nullptr && name_capacity != 0u) {
+        out_name[0] = '\0';
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return base[at]; };
+
+    if (!plausible(entity)) {
+        return 0u;
+    }
+
+    // entity -> component, by the id->slot accelerator with the sorted vector as the fallback.
+    const auto component = [&](uint32_t id) -> uint32_t {
+        const uint32_t word = read32(entity + 0x24u + ((id / 32u) * 4u));
+        if (((word >> (id % 32u)) & 1u) == 0u) {
+            return 0u;
+        }
+
+        const uint32_t begin = read32(entity + 0x48u);
+        const uint32_t end = read32(entity + 0x4Cu);
+        const uint32_t accelerator = read32(entity + 0x8Cu);
+
+        if (plausible(accelerator) && plausible(begin)) {
+            return read32(begin + (8u * read8(accelerator + id)) + 4u);
+        }
+
+        if (!plausible(begin) || end <= begin || (end - begin) > 0x4000u) {
+            return 0u;
+        }
+
+        for (uint32_t at = begin; at + 8u <= end; at += 8u) {
+            if (read32(at) == id) {
+                return read32(at + 4u);
+            }
+        }
+
+        return 0u;
+    };
+
+    const uint32_t manager = component(21u);
+    if (!plausible(manager)) {
+        return 0u;
+    }
+
+    // The mode list is circular and `mgr+0x18` holds the SENTINEL, so the walk starts at its
+    // next and stops when it comes back round. The step cap is against a torn read, not a
+    // real bound: no entity carries anywhere near this many modes.
+    const uint32_t sentinel = read32(manager + 0x18u);
+    if (!plausible(sentinel)) {
+        return 0u;
+    }
+
+    uint32_t machine = 0u;
+    uint32_t mode_type = 0u;
+
+    uint32_t node = read32(sentinel);
+    for (uint32_t step = 0u; step < 64u && plausible(node) && node != sentinel; ++step) {
+        const uint32_t mode = read32(node + 8u);
+        if (plausible(mode)) {
+            switch (read32(mode)) {
+                case 0x82006070u: machine = mode; mode_type = 2u; break;
+                case 0x820DA468u: machine = mode; mode_type = 3u; break;
+                case 0x820DA4C8u: machine = mode; mode_type = 4u; break;
+                default: break;
+            }
+        }
+
+        if (machine != 0u) {
+            break;
+        }
+
+        node = read32(node);
+    }
+
+    if (machine == 0u) {
+        return 0u;
+    }
+
+    const uint32_t state = read32(machine + 0x14u);
+
+    out_words[0] = machine;
+    out_words[1] = state;
+    out_words[2] = mode_type;
+
+    if (plausible(state)) {
+        out_words[3] = read32(state + 0x2Cu);  // dwell seconds, float bits
+
+        const uint32_t name = read32(state + 0x24u);
+        if (plausible(name) && out_name != nullptr && name_capacity != 0u) {
+            const uint32_t chars = read32(name);
+            const uint32_t length = read32(name + 4u);
+            if (plausible(chars) && length < 256u) {
+                uint32_t copy = length;
+                if (copy > name_capacity - 1u) {
+                    copy = name_capacity - 1u;
+                }
+
+                for (uint32_t i = 0u; i < copy; ++i) {
+                    out_name[i] = (char)read8(chars + i);
+                }
+
+                out_name[copy] = '\0';
+            }
+        }
+    }
+
+    // Stance and combat default to 1 — the wildcard on both — when the entity has no stance
+    // component, which is what sub_8228D058 leaves in the context before its own branch.
+    uint32_t stance = 1u;
+    uint32_t combat = 1u;
+
+    const uint32_t stance_component = component(99u);
+    if (plausible(stance_component)) {
+        stance = read32(stance_component + 16u);
+        combat = (read32(stance_component + 40u) != 0u) ? 2u : 1u;
+    }
+
+    // The guest forces a neutral stance to REGULAR before testing, so a state declaring
+    // Stance=1 matches everything and no runtime stance is ever 1.
+    if (stance == 1u) {
+        stance = 2u;
+    }
+
+    out_words[4] = stance;
+    out_words[5] = combat;
+
+    // Confinement is the OR of every ACTIVE contact's mask, not a single field.
+    uint32_t confinement = 0u;
+    const uint32_t confinement_component = component(132u);
+    if (plausible(confinement_component)) {
+        const uint32_t begin = read32(confinement_component + 16u);
+        const uint32_t end = read32(confinement_component + 20u);
+        if (plausible(begin) && end > begin && (end - begin) <= 0x1000u) {
+            for (uint32_t at = begin; at + 8u <= end; at += 8u) {
+                const uint32_t contact = read32(at);
+                if (plausible(contact) && read8(contact + 112u) != 0u) {
+                    confinement |= read32(contact + 128u);
+                }
+            }
+        }
+    }
+
+    out_words[6] = confinement;
+    return REFII_LOCOMOTION_WORDS;
+}
+
 /// The model hashes a COMPOSITE character is assembled from.
 ///
 /// WHY THIS EXISTS. 29 of BWSSlums's 138 characters have a live 160-bone skeleton and a model
@@ -4133,6 +4572,638 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
     return 1u;
 }
 
+/// The save cards the guest has ENUMERATED, with the text it built for each one.
+///
+/// WHY THIS IS A READ AND THE COUNT IS NOT. `RefiiHostGetSaveState` has to go through the tick
+/// pump because "how many saves exist" is `sub_82443308`, a live `XamContentCreateEnumerator`
+/// — a guest CALL. This is the other side of that: once the player has chosen "Load Game", the
+/// guest has ALREADY made the call, and everything the card fan needs is sitting in three
+/// containers on the front-end screen object. So a host that draws the fan reads; it does not
+/// ask.
+///
+/// WHERE, all offsets from the front-end main-menu screen at `GUI+184`, and every one of them
+/// verified in the decompile rather than taken on report:
+///
+///   +84 / +88   `vector<CCharString>` of `szFileName`, stride 4. This is the COUNT: the
+///               dispatcher's own test at 0x826E03E0 is `srawi. r8, r9, 2` over `+88 - +84`.
+///   +132        begin of the container of finished card LHStrings, stride 4.
+///   +72         the selected card index.
+///   +76         the base card slot, which the guest uses to centre a short row.
+///
+/// THE TWO CONTAINERS ARE 1:1 AND THAT IS LOAD-BEARING, because this indexes one by the other's
+/// count. `sub_826E14F8` is the loop that fills the text, and it is bounded by the FILENAME
+/// vector — `while ( v5 < (a1[22] - a1[21]) >> 2 )` at 0x826E1AB4 — pushing exactly one string
+/// per file through `sub_8243BE88(a1 + 32, &v52)` at 0x826E19D8. It is still bounds-checked
+/// below: a torn read mid-enumeration is worth surviving, and half a fan is better than a walk
+/// off the end of a container.
+///
+/// WHAT THE TEXT IS. Not a tag — a finished, localised string the guest assembles per card:
+/// seeded from the container's wide `szDisplayName` (`sub_82287C28(&v52, v7 + a1[25])`), then
+/// the level name resolved through the `LevelNameTextTags` GDB table, then a save-context line.
+/// When the header will not parse it is a version message instead, or
+/// `GUI_CORRUPT_SAVE_GAME_WARNING` when the version reads 0. All of which is why a host must
+/// take this string rather than build its own: the failure text is the guest's answer too.
+///
+/// Names are written to `text` as NUL-separated UTF-8 in card order. Returns the number of
+/// cards, or 0 when the front end is not up. Pass nulls to ask for the count alone.
+/// Defined below, beside the HUD readers that share it — see `write_guest_wide_string`.
+static uint32_t write_guest_wide_string(const uint8_t* base, uint32_t at, char* out,
+                                        uint32_t capacity);
+
+uint32_t RefiiHostGetSaveCards(uint32_t* out_cursor, uint32_t* out_base_slot,
+                               char* text, uint32_t capacity) {
+    if (out_cursor != nullptr) {
+        *out_cursor = 0u;
+    }
+    if (out_base_slot != nullptr) {
+        *out_base_slot = 0u;
+    }
+    if (text != nullptr && capacity > 0) {
+        text[0] = '\0';
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    const uint32_t gui = read32(0x83496B08u);
+    if (!plausible(gui) || read32(gui) != 0x820A924Cu) {
+        return 0u;  // the base-only instance the game republishes — no front end here
+    }
+
+    const uint32_t screen = read32(gui + 184u);
+    if (!plausible(screen)) {
+        return 0u;
+    }
+
+    const uint32_t files_begin = read32(screen + 84u);
+    const uint32_t files_end = read32(screen + 88u);
+    if (!plausible(files_begin) || files_end < files_begin ||
+        (files_end - files_begin) >= 0x10000u) {
+        return 0u;
+    }
+
+    const uint32_t count = (files_end - files_begin) / 4u;
+    if (count == 0u) {
+        return 0u;
+    }
+
+    if (out_cursor != nullptr) {
+        *out_cursor = read32(screen + 72u);
+    }
+    if (out_base_slot != nullptr) {
+        *out_base_slot = read32(screen + 76u);
+    }
+
+    if (text == nullptr || capacity == 0u) {
+        return count;
+    }
+
+    // The description container's OWN bound, not the file count's. They agree by construction
+    // — see the remarks — and disagreeing means the enumeration is half-done, which is a state
+    // a host polling every frame will genuinely observe.
+    const uint32_t text_begin = read32(screen + 132u);
+    const uint32_t text_end = read32(screen + 136u);
+    const uint32_t described =
+        (plausible(text_begin) && text_end >= text_begin && (text_end - text_begin) < 0x10000u)
+            ? (text_end - text_begin) / 4u
+            : 0u;
+
+    // ONE ENCODER, shared with the HUD text reader — see `write_guest_wide_string`. A card whose
+    // text is not there yet still gets an entry, so the index a caller hands back to `LoadSave`
+    // stays the guest's own rather than shifting under a missing description.
+    uint32_t written = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        written += write_guest_wide_string(
+            base, i < described ? text_begin + (i * 4u) : 0u, text + written,
+            capacity > written ? capacity - written : 0u);
+    }
+
+    return count;
+}
+
+/// The TEXTURE each element of a presentation is currently showing, by element ordinal.
+///
+/// WHY THIS EXISTS: the load-game cards. Their portraits are not in the file — the artist
+/// authored every one as the placeholder `art\gui\questscreenshots\loadingcardback.tex`, and
+/// the guest stamps the real one per card at load time. `sub_826E1408` is where, and it is
+/// worth quoting because the indirection is easy to get wrong:
+///
+/// <code>
+/// sub_824714E8(&amp;v15, a1[37] + 40 * i + 16);   // record+16 = QuestName -> a texture HASH
+/// v11 = sub_82426798(name, a1[5]);            // "loadgame.Group.CardN.Group.screenshot"
+/// v12 = *(int **)(v11 + 4);
+/// v13 = *v12;                                 // record = **(element + 4)
+/// if ( v8 != *(_DWORD *)(v13 + 512) ) {
+///     *(_BYTE *)(v13 + 548) = 1;              // dirty
+///     *(_DWORD *)(v13 + 512) = v8;            // the texture hash
+/// }
+/// </code>
+///
+/// So the value is at **`**(element + 4) + 512`** — the SAME double dereference the element's
+/// live text uses at `+140`, against the same record. An offset quoted against `element` rather
+/// than against that record looks perfectly reasonable and reads garbage.
+///
+/// TAKE THE HASH, DO NOT RE-DERIVE IT. `sub_82471638` maps a quest prefix onto a screenshot
+/// name (`QC`/`QO`/`QJ` take the token before `_`, `QR` becomes `QR_<tail>`, `QD010_*` maps to
+/// QO700/710/720, everything else is `albion`) and appends `_Epilogue_Screen_Image`. Host code
+/// could reimplement that from the save record's QuestName, and it would be reimplementing a
+/// decision the guest has already made and published — which is the thing this port does not
+/// do. `Engine_TextureNameTable` inverts the hash back to a path on the Godot side.
+///
+/// BY ORDINAL, in the same depth-first order as the element walk, so a caller that already
+/// knows an element's ordinal — every caller does, that is how slides and text are keyed —
+/// can index straight in. Zero where an element has no texture record, which is most of them.
+///
+/// Returns the number of elements walked. Pass null to count them.
+uint32_t RefiiHostGetUiTextureHashes(uint32_t presentation, uint32_t* out, uint32_t capacity) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    // ZERO MEANS THE FRONT END'S ACTIVE SCREEN, the same convention `RefiiHostGetUiElements`
+    // uses — and it has to, because a caller joining the two arrays by ordinal must be able to
+    // ask both about the same presentation the same way. The `gui+188` chain is the front end's
+    // only and is dead in game; see that function for why.
+    if (presentation == 0u) {
+        const uint32_t gui = read32(0x83496B08u);
+        if (!plausible(gui)) {
+            return 0;
+        }
+
+        const uint32_t active = read32(gui + 188u);
+        if (!plausible(active)) {
+            return 0;
+        }
+
+        presentation = read32(active + 20u);
+    }
+
+    if (!plausible(presentation)) {
+        return 0;
+    }
+
+    const uint32_t root = read32(presentation + 492u + 8u);
+    if (!plausible(root)) {
+        return 0;
+    }
+
+    constexpr uint32_t kMaxElements = 16384u;
+    uint32_t found = 0;
+    uint32_t element = root;
+
+    while (element != 0 && found < kMaxElements) {
+        if (!plausible(element)) {
+            break;
+        }
+
+        if (out != nullptr && found < capacity) {
+            uint32_t hash = 0;
+
+            // The record is two dereferences down and either can be absent — most elements
+            // have no texture record at all, and reading +512 off whatever `+4` happened to
+            // hold for those would be inventing a texture per widget.
+            const uint32_t holder = read32(element + 4u);
+            if (plausible(holder)) {
+                const uint32_t record = read32(holder);
+                if (plausible(record)) {
+                    hash = read32(record + 512u);
+                }
+            }
+
+            out[found] = hash;
+        }
+
+        ++found;
+
+        // Down first, then along, then climb — the identical traversal the element reader
+        // uses, because the ORDINALS have to agree between the two or a caller joining them
+        // would read one element's texture against another's slide.
+        const uint32_t child = read32(element + 20u);
+        if (plausible(child)) {
+            element = child;
+            continue;
+        }
+
+        while (element != 0) {
+            if (element == root) {
+                element = 0;
+                break;
+            }
+
+            const uint32_t sibling = read32(element + 16u);
+            if (plausible(sibling)) {
+                element = sibling;
+                break;
+            }
+
+            const uint32_t parent = read32(element + 12u);
+            element = plausible(parent) ? parent : 0;
+        }
+    }
+
+    return found;
+}
+
+/// Every live value the in-game HUD's METERS are holding, keyed by the name each is published
+/// under.
+///
+/// THIS IS THE HUD'S WHOLE VALUE CONTRACT, and it is one read. Unlike the front end, the HUD
+/// has no script to mirror: `hud.lua` carries no layout tables, no timing constants and — over
+/// all 587 shipped chunks — no reader for a single hero stat. Its `g_HUD.State` health and mana
+/// numbers are Anark authoring placeholders, each written in one chunk and read in none. What
+/// the HUD has instead is a binding authored in `hud.bgf` — an element carries
+/// `MeterName = "PlayerHealth"` — and C++ publishes a percentage against FNV-1 of that string
+/// every frame. So a host reads the published values and draws whichever elements the FILE says
+/// they belong to; nothing here has to know what a name MEANS.
+///
+/// THE CHAIN, every hop verified in the decompile rather than taken on report:
+///
+///   G        = *(0x83496B08)
+///   GUIMgr   = *(G + 0x20)
+///   vector   = *(GUIMgr + 0x20)         ; begin at +28, end at +32, stride 4
+///   registry = *(begin + 4)             ; element [1] — the METER registry
+///
+/// The index is the guest's own: `sub_825E8DE0` bounds-checks the vector for at least two
+/// entries and then passes `*(v31 + 4)` to `sub_823FE210` when it writes PlayerHealth
+/// (0x825E9074..0x825E90D0). Text and pulsers live at other indices in the same vector and are
+/// deliberately NOT read here — a second index taken on inference would be an offset reaching
+/// running code without a decompile behind it.
+///
+/// THE MAP is a plain MSVC `std::_Tree`, and `sub_82375480` (its lower_bound) states the whole
+/// layout without ambiguity:
+///
+///     v3 = *(map + 4);              // _Myhead, the sentinel
+///     v4 = v3[1];                   // head+4 = _Parent = the ROOT
+///     while ( !*((_BYTE *)v4 + 21) )        // node+21 = _Isnil
+///       if ( (unsigned)v4[3] >= *a3 )       // node+12 = the KEY, unsigned
+///         { v3 = v4; v4 = (int *)*v4; }     // node+0  = _Left
+///       else v4 = (int *)v4[2];             // node+8  = _Right
+///
+/// and `sub_822A9C60` returns `*(node + 16)` — node+16 is the mapped RECORD. The map object
+/// itself sits at `registry+4`, so `*(registry+8)` is `_Myhead`.
+///
+/// A RECORD IS A VECTOR OF ELEMENTS, not one element: `record+4`/`record+8` are begin/end,
+/// stride 4, and the setters walk the whole span (`sub_823FE2D0` at 0x823FE3A8 does
+/// `r10 += 4; cmplw r10, *(r3+8); bne`). One name genuinely drives several — "TopBoxY" is on
+/// five elements and "CornerY" on eight — so the value is per NAME and the host applies it to
+/// every element the file bound to that name.
+///
+/// THE VALUE IS `element + 0x14`, the CURRENT percent, 0..100. Its two neighbours are what
+/// prove the roles: `sub_823FE2D0` writes the clamped target to `+0x1C`, zero to `+0x0C`, and
+/// then either `rate = 0` into `+0x18` for an immediate set, or
+/// `(target - *(float *)(e + 0x14)) / seconds` into `+0x18` for a tween — reading `+0x14` as
+/// the value it is interpolating FROM. Taking `+0x14` rather than `+0x1C` is therefore taking
+/// what is on screen now instead of where it is heading, which is what a bar should draw.
+///
+/// Fills two parallel arrays. Returns the number of meters FOUND, which may exceed
+/// `capacity` — a caller that gets a bigger number than it asked for should resize and ask
+/// again rather than assume it saw everything. Pass nulls to size the buffers.
+/// The GUI's typed element registries, by index into the vector at `*(GUIMgr + 0x20)`.
+///
+/// NOT INFERRED. `sub_827F0F00` writes each sub-registry at a fixed offset paired with its own
+/// vtable constant, and every one of those vtables' slot [3] decompiles to a one-line
+/// `sub_8222CED0(a1, "<name>")` returning the `.bgf` attribute it binds on. The full set is
+/// [0] ParticleEffect, [1] MeterName, [2] SlideFaderName, [3] SlideFader2Name, [4] PulserName,
+/// [5] BoxName, [6] TextName, [7] an inert base instance, [8] TinterName, [9] SlideToggleName,
+/// [10] SlideSetName, [11] PrimDescName, [12] ImageName.
+///
+/// Only the two this file reads are named here — an unused constant for a registry nobody
+/// walks would be a claim with no code behind it to keep it honest.
+constexpr uint32_t kGuiRegistryMeter = 1u;
+constexpr uint32_t kGuiRegistryText = 6u;
+
+/// Encodes the guest LHString whose HANDLE sits at `at` as NUL-terminated UTF-8 into `out`.
+///
+/// Returns the bytes written INCLUDING the terminator, so a caller packing several strings back
+/// to back advances by the return value. Writes just the terminator for an absent or unreadable
+/// string, which keeps one entry per name even when a name has no text yet — a caller joining
+/// parallel arrays must not have them slip.
+///
+/// The Rep layout is the guest's usual one, verified in `sub_82425DD0`'s neighbours and used
+/// identically by the element-text walker: `+0` UTF-16 data, `+4` length in code units, and the
+/// characters are BIG-endian like everything else the guest wrote. Only the basic plane is
+/// handled — a surrogate pair would be a string outside it, and emitting a lone surrogate is
+/// worse than stopping at it.
+static uint32_t write_guest_wide_string(const uint8_t* base, uint32_t at, char* out,
+                                        uint32_t capacity) {
+    if (out == nullptr || capacity == 0u) {
+        return 0u;
+    }
+
+    // `at == 0` is the caller's way of saying "no string here" — the save-card reader uses it
+    // for a card whose description has not been built yet. Guarded rather than left to the
+    // plausibility test below, because address 0 is a real, readable place in the guest's
+    // address space and reading it would be a genuine read of the wrong thing.
+    if (at == 0u) {
+        out[0] = '\0';
+        return 1u;
+    }
+
+    const auto read32 = [base](uint32_t address) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    uint32_t written = 0;
+    const uint32_t rep = read32(at);
+    if (plausible(rep)) {
+        const uint32_t chars = read32(rep);
+        const uint32_t length = read32(rep + 4u);
+        if (plausible(chars) && length > 0u && length < 512u) {
+            for (uint32_t c = 0; c < length; ++c) {
+                uint16_t unit = 0;
+                std::memcpy(&unit, base + chars + (c * 2u), sizeof(unit));
+                unit = __builtin_bswap16(unit);
+                if (unit == 0) {
+                    break;
+                }
+
+                char encoded[3];
+                uint32_t bytes = 0;
+                if (unit < 0x80u) {
+                    encoded[0] = static_cast<char>(unit);
+                    bytes = 1;
+                } else if (unit < 0x800u) {
+                    encoded[0] = static_cast<char>(0xC0u | (unit >> 6));
+                    encoded[1] = static_cast<char>(0x80u | (unit & 0x3Fu));
+                    bytes = 2;
+                } else {
+                    encoded[0] = static_cast<char>(0xE0u | (unit >> 12));
+                    encoded[1] = static_cast<char>(0x80u | ((unit >> 6) & 0x3Fu));
+                    encoded[2] = static_cast<char>(0x80u | (unit & 0x3Fu));
+                    bytes = 3;
+                }
+
+                if (written + bytes + 1u >= capacity) {
+                    break;
+                }
+
+                for (uint32_t b = 0; b < bytes; ++b) {
+                    out[written++] = encoded[b];
+                }
+            }
+        }
+    }
+
+    out[written++] = '\0';
+    return written;
+}
+
+/// Walks one of the GUI's typed element registries, calling `visit(nameHash, element)` for the
+/// FIRST element registered under each name.
+///
+/// ONE WALK FOR EVERY REGISTRY, because they are the same structure with different element
+/// types behind them — `sub_827F0F00` builds all thirteen from one base whose register/lookup
+/// code is shared. Writing the traversal twice is how the meter reader and the text reader
+/// would drift apart on the day one of them learned something.
+///
+/// `index` selects the registry, and the indices are the guest's own, proven by each
+/// sub-registry's vtable slot [3] returning its `.bgf` attribute name:
+/// **[1] MeterName, [4] PulserName, [6] TextName, [9] SlideToggleName.**
+///
+/// THE FIRST ELEMENT PER NAME STANDS FOR THE NAME. One hash genuinely drives several elements
+/// and every setter writes them all the same value in one loop, so reporting one per name
+/// reports what the guest stated; asking per element would be asking which of several identical
+/// answers was preferred.
+///
+/// Fills parallel `out_hashes` / `out_elements` arrays and returns the number of names found,
+/// which may exceed `capacity` — a caller that gets a bigger number should resize and ask again
+/// rather than assume it saw everything.
+///
+/// Deliberately NOT a template taking a visitor: this lives inside the file's `extern "C"`
+/// block, and a template cannot have C language linkage. Handing back the pairs and letting
+/// each reader pull the field it wants costs one small array and keeps the traversal in one
+/// place, which is the point.
+static uint32_t walk_gui_registry(const uint8_t* base, uint32_t index, uint32_t* out_hashes,
+                                  uint32_t* out_elements, uint32_t capacity) {
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    const uint32_t gui = read32(0x83496B08u);
+    if (!plausible(gui)) {
+        return 0u;
+    }
+
+    const uint32_t manager = read32(gui + 0x20u);
+    if (!plausible(manager)) {
+        return 0u;
+    }
+
+    const uint32_t vector = read32(manager + 0x20u);
+    if (!plausible(vector)) {
+        return 0u;
+    }
+
+    const uint32_t begin = read32(vector + 28u);
+    const uint32_t end = read32(vector + 32u);
+    if (!plausible(begin) || end <= begin || (end - begin) > 0x400u) {
+        return 0u;
+    }
+
+    // The same bound the guest's own writers check before indexing — they `__trap()` on a
+    // vector too short for the slot they want, and a host must simply decline instead.
+    if (((end - begin) / 4u) <= index) {
+        return 0u;
+    }
+
+    const uint32_t registry = read32(begin + (index * 4u));
+    if (!plausible(registry)) {
+        return 0u;
+    }
+
+    // The map object is at `registry+4`, so its `_Myhead` is at `registry+8` — which is exactly
+    // what `sub_822A9C60` compares a found node against to detect `end()`.
+    const uint32_t head = read32(registry + 8u);
+    if (!plausible(head)) {
+        return 0u;
+    }
+
+    const uint32_t root = read32(head + 4u);  // head->_Parent
+    if (!plausible(root)) {
+        return 0u;
+    }
+
+    // AN EXPLICIT STACK, NOT RECURSION. This runs on Godot's thread against memory another
+    // thread is mutating, so a torn pointer must cost a truncated answer rather than the
+    // process. The depth bound is the same reasoning: a red-black tree of N nodes is at most
+    // 2*log2(N+1) deep, so 64 is unreachable for any real registry and a tree that asks for
+    // more has been corrupted under us.
+    constexpr uint32_t kMaxDepth = 64u;
+    constexpr uint32_t kMaxNames = 512u;
+
+    uint32_t stack[kMaxDepth];
+    uint32_t depth = 0;
+    uint32_t found = 0;
+
+    stack[depth++] = root;
+
+    while (depth > 0 && found < kMaxNames) {
+        const uint32_t node = stack[--depth];
+        if (!plausible(node) || base[node + 21u] != 0u) {
+            continue;  // node+21 is _Isnil: the sentinel, or a pointer that cannot be a node
+        }
+
+        const uint32_t key = read32(node + 12u);
+        const uint32_t record = read32(node + 16u);
+
+        if (plausible(record)) {
+            const uint32_t elements = read32(record + 4u);
+            const uint32_t elements_end = read32(record + 8u);
+            if (plausible(elements) && elements_end > elements) {
+                const uint32_t element = read32(elements);
+                if (plausible(element)) {
+                    if (out_hashes != nullptr && out_elements != nullptr && found < capacity) {
+                        out_hashes[found] = key;
+                        out_elements[found] = element;
+                    }
+
+                    ++found;
+                }
+            }
+        }
+
+        if (depth + 2u <= kMaxDepth) {
+            stack[depth++] = read32(node + 0u);  // _Left
+            stack[depth++] = read32(node + 8u);  // _Right
+        }
+    }
+
+    return found;
+}
+
+uint32_t RefiiHostGetHudMeters(uint32_t* out_hashes, float* out_values, uint32_t capacity) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    constexpr uint32_t kMaxNames = 512u;
+    uint32_t elements[kMaxNames];
+    const uint32_t want = capacity < kMaxNames ? capacity : kMaxNames;
+
+    const uint32_t found =
+        walk_gui_registry(base, kGuiRegistryMeter, out_hashes, elements, want);
+
+    const uint32_t stored = found < want ? found : want;
+    for (uint32_t i = 0; i < stored; ++i) {
+        if (out_values == nullptr) {
+            break;
+        }
+
+        uint32_t raw = 0;
+        std::memcpy(&raw, base + elements[i] + 0x14u, sizeof(raw));
+        raw = __builtin_bswap32(raw);
+        std::memcpy(&out_values[i], &raw, sizeof(out_values[i]));
+    }
+
+    return found;
+}
+
+/// Every live TEXT the in-game HUD is holding, keyed by the name each is published under.
+///
+/// THE COMPANION TO THE METERS, and needed because the two halves of the HUD arrive by
+/// different routes even though they share a registry structure. `hud.bgf` binds 18 text
+/// elements — `TopTitle`, `TopMain`, `Subtitles`, `Counter1..4`, the four experience readouts
+/// — and `sub_823FEB28(registry, hash, string)` writes each one:
+///
+/// <code>
+/// v7 = *(_DWORD *)v6;                                   // the text element
+/// sub_822B88A8((int *)(*(_DWORD *)v6 + 16), a3);        // element+0x10 = the LHString
+/// *(_BYTE *)(v7 + 12) = 1;                              // element+0x0C = dirty
+/// </code>
+///
+/// so the value is at **`element + 0x10`** and it is a REFCOUNTED LHString handle, read here
+/// the same way the save-card descriptions are: `+0` UTF-16 data, `+4` length in code units,
+/// characters BIG-endian.
+///
+/// IT IS THE RESOLVED STRING, NOT A TAG. Both writers localise first — `SetGUIText`
+/// (`sub_823C5B00`) goes through `TextManager_GetString` before calling, and the mini-game
+/// screen passes text it has already put through `sub_8230E0E8`. So a host must NOT put this
+/// through Babel again; doing so would look up a sentence.
+///
+/// Strings are written to `text` as NUL-separated UTF-8, one per hash, in the same order as
+/// `out_hashes`. The two buffers are sized SEPARATELY — a hash is four bytes and a string is a
+/// sentence, so one capacity for both would either waste the array or truncate the text.
+/// Returns the number of names found. Pass nulls to size the buffers.
+uint32_t RefiiHostGetHudTexts(uint32_t* out_hashes, uint32_t capacity, char* text,
+                              uint32_t text_capacity) {
+    if (text != nullptr && text_capacity > 0) {
+        text[0] = '\0';
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    constexpr uint32_t kMaxNames = 512u;
+    uint32_t elements[kMaxNames];
+    const uint32_t want = capacity < kMaxNames ? capacity : kMaxNames;
+
+    const uint32_t found =
+        walk_gui_registry(base, kGuiRegistryText, out_hashes, elements, want);
+
+    const uint32_t stored = found < want ? found : want;
+    uint32_t written = 0;
+    for (uint32_t i = 0; i < stored && text != nullptr; ++i) {
+        written += write_guest_wide_string(base, elements[i] + 0x10u, text + written,
+                                           text_capacity > written ? text_capacity - written : 0u);
+    }
+
+    return found;
+}
+
 /// Every Gameface presentation the guest currently has live — HUD, menus and front end.
 ///
 /// ONE REGISTRY, NO SPECIAL CASES. The three owners keep their `CPresentation*` in three
@@ -4636,6 +5707,708 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetFrontEnd(uint32_t* out) {
     return 1;
 }
 
+/// One NARROW LHString out of the guest, as NUL-terminated UTF-8.
+///
+/// The member at the offset is a `Rep*`, not the Rep — four bytes, not eight — so the two
+/// consecutive strings at `+268` and `+272` do NOT overlap, which is worth stating because
+/// assuming an inline 8-byte Rep makes them look as though they must. `Rep+0` is the character
+/// data and `Rep+4` its length; `sub_821F0240` keeps the refcount at `Rep+12`.
+///
+/// Returns the number of bytes written INCLUDING the terminator, so a caller can pack several
+/// strings back to back.
+static uint32_t write_guest_narrow_string(const uint8_t* base, uint32_t at, char* out,
+                                          uint32_t capacity) {
+    if (out == nullptr || capacity == 0u) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t address) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    out[0] = '\0';
+    if (at == 0u) {
+        return 1u;
+    }
+
+    const uint32_t rep = read32(at);
+    if (!plausible(rep)) {
+        return 1u;
+    }
+
+    const uint32_t chars = read32(rep);
+    const uint32_t length = read32(rep + 4u);
+    if (!plausible(chars) || length == 0u || length >= 512u) {
+        return 1u;
+    }
+
+    uint32_t written = 0;
+    for (uint32_t i = 0; i < length && written + 1u < capacity; ++i) {
+        const char c = static_cast<char>(base[chars + i]);
+        if (c == '\0') {
+            break;
+        }
+        out[written++] = c;
+    }
+
+    out[written] = '\0';
+    return written + 1u;
+}
+
+/// THE LOADING SCREEN OBJECT — and the one global that has to be right to reach it.
+///
+/// THE ROOT IS NOT `0x83496B08`. That global is the FRONT END's, and reading the loading screen
+/// through it is how three of this file's four loading-screen readers came to return other
+/// people's memory. The guest's own frame driver `sub_82388380` picks its root from a
+/// three-deep fallback chain, verified instruction for instruction at 0x823885FC-0x82388644:
+///
+///     823885fc  lis    r11, dword_83496AB8@ha
+///     8238860c  lwz    r11, dword_83496AB8@l(r11)   ; first choice
+///     82388614  bne    cr6, loc_82388638            ; non-null wins
+///     8238861c  lwz    r11, dword_83496AC0@l(r11)   ; else this
+///     82388624  bne    cr6, loc_82388638
+///     8238862c  lwz    r11, dword_8335C4C4@l(r11)   ; else this
+///     82388634  beq    cr6, loc_82388648            ; all null: no loading screen at all
+///     82388638  lwz    r11, 8(r11)                  ; owner   = *(app + 8)
+///     82388640  lwz    r3,  0x24(r11)               ; manager = *(owner + 36)
+///
+/// and then `sub_82361AF8` takes `screen = *(manager + 4)`.
+///
+/// THE SYMPTOM THIS EXPLAINS, and why it was so easy to misread as bad offsets. The art reader
+/// went through `RefiiHostGetLoadingScreen`, which already used the right roots; the tip and
+/// layout readers used the front end's. Both landed on a 400-byte block, so both looked like
+/// they were working — the art path, the type and the fade all read back correctly from the
+/// real object, while the tip index and the list count came off a DIFFERENT, freed one and read
+/// as rising floats around 3.3. Every offset involved was correct. Only the base was wrong.
+///
+/// One resolver now, so the four readers cannot drift apart again. Returns 0 when there is no
+/// screen up, which is an ordinary state rather than a failure.
+static uint32_t loading_screen_object(const uint8_t* base) {
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    for (uint32_t root : {0x83496AB8u, 0x83496AC0u, 0x8335C4C4u}) {
+        const uint32_t app = read32(root);
+        if (!plausible(app)) {
+            continue;
+        }
+
+        const uint32_t owner = read32(app + 8u);
+        if (!plausible(owner)) {
+            continue;
+        }
+
+        const uint32_t manager = read32(owner + 36u);
+        if (!plausible(manager)) {
+            continue;
+        }
+
+        // 0 here is "no loading screen", not "wrong pointer" — `sub_82361458` clears it on
+        // teardown. Keep looking rather than reporting the first root's silence as the answer.
+        const uint32_t screen = read32(manager + 4u);
+        if (plausible(screen)) {
+            return screen;
+        }
+    }
+
+    return 0;
+}
+
+/// EVERYTHING THE LOADING SCREEN DRAWS BESIDES THE PAINTING — the tip, the banner, the spinner.
+///
+/// The screen is more than its art: the original also puts up a rotating TIP over a panel, a
+/// "Loading <level>" banner, an animated spinner and a vignette. None of that is a Gameface
+/// presentation, so none of it arrives through the element walk — it has to be read off the
+/// screen object directly. Offsets measured from the SCREEN object (`manager+4`).
+///
+/// THE TIP IS A BABEL TAG, NOT A STRING. `sub_8235E420` resolves the tag GROUP named by
+/// `dword_834975C0` (default `"GUI_SCREEN_LOADING_TIPS"`) and pushes every member tag onto the
+/// std::list at `+380`; `sub_82360418` then picks entry `+300`, wrapping on the count at `+388`,
+/// and advances it every ten seconds. So this returns the tag KEY and the host localises it
+/// with its own Babel database — the alternative would be calling the guest's TextManager, and
+/// this bridge does not call into the guest.
+///
+/// List walk: `+380` is the list object, so `+384` is `_Myhead` and `+388` is `_Mysize`. MSVC's
+/// node is `{ _Next, _Prev, _Myval }`, hence the first element is `*(*(screen+384))` and the
+/// value sits at node+8 — matching `sub_82360418`'s own `v9 = (_DWORD *)*v9` / `v9[2]`.
+///
+/// Fills SIX words — tip index, tip count, the current tip's tag key, the spinner's frame
+/// counter, and the tips/banner enable bytes — and writes the level name then the host-set
+/// overlay text as two NUL-separated UTF-8 strings. Returns 1 when a screen object was read.
+int RefiiHostGetLoadingScreenText(uint32_t* out, char* text, uint32_t capacity) {
+    if (out != nullptr) {
+        for (int i = 0; i < 6; ++i) {
+            out[i] = 0;
+        }
+    }
+    if (text != nullptr && capacity > 0u) {
+        text[0] = '\0';
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    const uint32_t screen = loading_screen_object(base);
+    if (!plausible(screen)) {
+        return 0;
+    }
+
+    if (out != nullptr) {
+        const uint32_t index = read32(screen + 300u);
+        const uint32_t count = read32(screen + 388u);
+
+        out[0] = index;
+        out[1] = count;
+        out[3] = read32(screen + 168u);
+        out[4] = base[screen + 313u];
+        out[5] = base[screen + 314u];
+
+        // Walk to the current tip. Bounded by the list's own count as well as by the index, so
+        // a torn read cannot send this off the end of the chain.
+        const uint32_t head = read32(screen + 384u);
+        if (plausible(head) && count > 0u && index < count) {
+            uint32_t node = read32(head);
+            for (uint32_t step = 0; step < index && plausible(node); ++step) {
+                node = read32(node);
+            }
+
+            if (plausible(node)) {
+                out[2] = read32(node + 8u);
+            }
+        }
+    }
+
+    uint32_t written = 0;
+    if (text != nullptr) {
+        // THE TWO STRINGS ARE DIFFERENT WIDTHS, and reading either with the other's decoder
+        // produces something that looks like a decoding bug rather than an encoding one.
+        //
+        // `+268` is the level NAME KEY, and it is NARROW — the same string instantiation as the
+        // art path at `+272`, which this file already reads a byte at a time and gets right.
+        // Reading it as UTF-16 halves its length and returns mojibake or nothing.
+        //
+        // `+280` is the host-set overlay, and it is WIDE (UTF-16, big-endian). It goes through
+        // the other instantiation, `sub_82287C28` — the one Babel and the text manager return —
+        // and `sub_82360968` searches it with the wide helpers. Reading it as bytes returns one
+        // stray character, which is exactly what it was returning.
+        written += write_guest_narrow_string(base, screen + 268u, text, capacity);
+        written += write_guest_wide_string(base, screen + 280u, text + written,
+                                           capacity > written ? capacity - written : 0u);
+    }
+
+    return 1;
+}
+
+/// HOW THE LOADING SCREEN LAYS ITS ART OUT — which of the guest's three paths is in force.
+///
+/// `sub_8235FDC0` does NOT draw the painting one way. It picks between three, and getting this
+/// wrong mangles the picture rather than merely offsetting it:
+///
+///   +310 set  — the "quit without save" black fade: ONE quad (0,0,1280,720), plain 0..1 UVs.
+///   +315 set  — a fixed art (`dword_8349AA04`): ONE quad, plain 0..1 UVs on a wide display,
+///               or inset to (160,0,1120,720) — a centre crop — on 4:3.
+///   otherwise — a normal level load: TWO quads. The 1280x720 painting is packed into a square
+///               texture in two pieces and the right-hand 280 columns are stored ROTATED 90
+///               degrees, so it must be reassembled:
+///                 dest (0,0,1000,720)     u 0..0.9766  v 0..0.7031    straight
+///                 dest (1000,0,1280,720)  u 0..0.7031  v 0.7266..1.0  u and v TRANSPOSED
+///
+/// Reassembling a fixed-art screen as though it were two pieces is exactly as wrong as
+/// stretching a two-piece one flat, which is why the host cannot pick a single path and has to
+/// be told. Offsets below are measured from the SCREEN object — the pointer at manager+4, the
+/// same one `RefiiHostGetLoadingScreen` already returns.
+///
+/// Fills THREE words: the +315 fixed-art flag, the +310 quit-fade flag, and the +320 4:3 inset
+/// flag. Returns 1 when a screen object was there to read.
+int RefiiHostGetLoadingScreenLayout(uint32_t* out) {
+    if (out == nullptr) {
+        return 0;
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        out[i] = 0;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    const uint32_t screen = loading_screen_object(base);
+    if (!plausible(screen)) {
+        return 0;
+    }
+
+    out[0] = base[screen + 315u];
+    out[1] = base[screen + 310u];
+    out[2] = base[screen + 320u];
+    return 1;
+}
+
+/// WHY A PRESENTATION'S TEXTURE HASHES ARE ALL ZERO — the breakdown, not the total.
+///
+/// `RefiiHostGetUiTextureHashes` returns zero for an element in four different situations, and
+/// they need completely different work. The chain it walks is the guest's own, verified
+/// instruction for instruction against `sub_82425C10`, the engine's "set this element's
+/// texture" helper:
+///
+/// <code>
+///   82425c10  lwz r11, 4(r4)      ; element+4 = scene node   -- NULL check, return 0
+///   82425c1c  lwz r11, 0(r11)     ; node+0    = render item  -- NULL check, return 0
+///   82425c2c  lwz r9, 0x200(r11)  ; quad+512  = texture hash
+/// </code>
+///
+/// So a zero can mean: the element has no scene node; it has a node with no render item; it has
+/// a render item carrying no image (0 is the guest's own "no texture" encoding — an empty name
+/// hashes to 0 and the hash field doubles as a not-yet-computed sentinel); or the node is not an
+/// IMAGE node at all (`node+10` selects the applier — only type 2 carries a texture).
+///
+/// Counting those apart is the difference between "this game does not swap textures", "the
+/// guest builds no render items in this configuration", and "our walk is broken". A single
+/// total of zero says none of them.
+///
+/// Fills SIX words: elements walked, with a scene node, with a render item, image nodes
+/// (`node+10 == 2`), non-zero hashes, and nodes whose back-pointer disagrees.
+///
+/// THE BACK-POINTER IS THE VALIDITY CHECK. `node+4` points back at the element
+/// (`sub_82188D10` reads it as its first act), so `*(node+4) == element` is the cheap proof
+/// that what we followed really is a scene node rather than whatever else happened to be at
+/// `element+4`. A non-zero count in that word means the walk is wrong and every other number
+/// here is meaningless.
+///
+/// Returns 1 when the presentation was walked.
+int RefiiHostGetUiTextureStats(uint32_t presentation, uint32_t* out) {
+    if (out == nullptr) {
+        return 0;
+    }
+
+    for (int i = 0; i < 6; ++i) {
+        out[i] = 0;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    if (!plausible(presentation)) {
+        return 0;
+    }
+
+    const uint32_t root = read32(presentation + 492u + 8u);
+    if (!plausible(root)) {
+        return 0;
+    }
+
+    constexpr uint32_t kMaxElements = 16384u;
+    uint32_t element = root;
+
+    while (element != 0 && out[0] < kMaxElements) {
+        if (!plausible(element)) {
+            break;
+        }
+
+        ++out[0];
+
+        const uint32_t node = read32(element + 4u);
+        if (plausible(node)) {
+            ++out[1];
+
+            if (read32(node + 4u) != element) {
+                ++out[5];
+            }
+
+            if (base[node + 10u] == 2u) {
+                ++out[3];
+            }
+
+            const uint32_t quad = read32(node);
+            if (plausible(quad)) {
+                ++out[2];
+                if (read32(quad + 512u) != 0u) {
+                    ++out[4];
+                }
+            }
+        }
+
+        const uint32_t child = read32(element + 20u);
+        if (plausible(child)) {
+            element = child;
+            continue;
+        }
+
+        while (element != 0) {
+            if (element == root) {
+                element = 0;
+                break;
+            }
+
+            const uint32_t sibling = read32(element + 16u);
+            if (plausible(sibling)) {
+                element = sibling;
+                break;
+            }
+
+            const uint32_t parent = read32(element + 12u);
+            element = plausible(parent) ? parent : 0u;
+        }
+    }
+
+    return 1;
+}
+
+/// WHICH IN-GAME SCREEN THE GUEST HAS UP — stated by the guest, not inferred.
+///
+/// The front end names its two screens in dedicated GUI members; the thirty IN-GAME screens
+/// do not work that way at all. They live in a screen manager hung off `GUI+56`, as an array
+/// of `CPresentation*` indexed by a screen ID, with a `std::map<int, std::string>` beside it
+/// mapping that ID to the `.bgf` file name.
+///
+/// Layout, verified in the binary rather than taken second-hand — every offset below is
+/// measured from the SCREEN MANAGER, i.e. from `*(GUI + 56)`, except where it says GUI:
+///
+///   mgr        = *(0x83496B08 + 56)
+///   mgr + 0x04 = the CURRENT screen ID; 31 means "none up"
+///   mgr + 0x0C = the first of 30 `CPresentation*`, indexed by ID
+///   mgr + 0xA0 = the std::map<int, std::string> of ID -> ".bgf" name
+///
+/// The proof for the two that matter:
+///
+///   sub_8236E630, the generic opener, at 0x8236eb20:
+///       *(_DWORD *)(*(_DWORD *)(dword_83496B08 + 56) + 4) = a2;   // a2 IS the screen ID
+///
+///   sub_823DCBE0, which reads it back:
+///       v3 = a1[1];                       // mgr + 4
+///       if ( v3 < 30 ) return a1[v3 + 3]; // mgr + 0x0C + 4*id
+///
+///   sub_8281F620, the ID -> name table, at 0x8281f640..0x8281f684:
+///       addi r4, r11, aPausemainmenuB   # "PauseMainMenu.bgf"
+///       li   r10, 0                     # <-- the key
+///       stw  r10, 0x90+var_38(r1)
+///       bl   sub_82321D80               # map.insert(0, "PauseMainMenu.bgf")
+///   so SCREEN ID 0 IS THE PAUSE MENU, and 1 is PhotomodeScreen.bgf.
+///
+/// WHY THIS IS WORTH A CALL OF ITS OWN. We already walk the presentation registry and draw
+/// whatever has its root element active, which is right for the HUD and for anything layered
+/// over it — but "active" cannot say which screen the player is IN. The pause menu's
+/// presentation is created ONCE at game entry (`sub_823DC888` from `sub_82371788`, gated on
+/// the once-only byte at GUI+102) and is never freed, so it is in the registry from the first
+/// frame of play whether or not the player has ever pressed pause. This field is the guest
+/// stating the answer, which beats inferring it.
+///
+/// Fills 4 + 30 + 2 words: the GUI object, its vtable, the screen manager, the current screen
+/// ID; then the THIRTY presentation pointers indexed by screen ID; then the shared slot's
+/// owning ID and its presentation.
+///
+/// THE THIRTY POINTERS ARE THE POINT, not padding. Knowing that no screen is up is useless on
+/// its own — the host still has to know WHICH of the presentations it can see belong to this
+/// array, because the HUD does not (it hangs off the HUD manager at GUI+32, not off the screen
+/// manager) and must keep drawing regardless. Comparing a presentation's address against these
+/// thirty is the guest's own statement of membership, and it needs no name list.
+///
+/// The vtable is there for the same reason RefiiHostGetFrontEnd carries it — `0x83496B08` has
+/// two writers and only the in-game one (`0x82001610`) has a screen manager at +56.
+///
+/// Returns 1 when the screen manager was reached.
+// ---------------------------------------------------------------------------
+// PUB GAMES
+//
+// THE GUEST OWNS THE WHOLE LIFECYCLE; Godot only plays the game. Read from the binary rather
+// than inferred, and every offset below was verified by decompiling the function that writes it:
+//
+//   sub_82180418  returns &dword_834C20B8            -- the manager singleton
+//   sub_824679F8  StartPubGame(name, variation):     -- mgr+8 = name, mgr+12 = variation,
+//                 refuses while mgr+52 is non-zero      mgr+136 = 0, then state 1
+//   sub_82467E40  *(mgr + 52) = state, under the critical section at mgr+68
+//   sub_82467EF8  mgr+124 = statsComponent + 0x500   -- `addi r3, r11, 0x500 ; stw r3, 0x7C(r29)`
+//                 and seeds the profile's bank from the hero's real gold
+//   sub_82EE8640  *(profile + 264) = gold  (0x108)   -- and sets the dirty byte at +868 (0x364)
+//   sub_82EE8810  *(profile + 304) = debt  (0x130)
+//
+// WHY STATE 2 IS OUR SEAM. The guest's tick (sub_821987B8) case 1 does everything we want and
+// nothing we do not: it picks the loading screen, snapshots the language, the pad, the camera and
+// the hero's gold, seeds the profile's bank from it, then moves to state 2. States 2 through 8 are
+// the Scaleform module -- create the GFx movie, run it, hand it EndGame, tear it down -- and that
+// is precisely the part Godot replaces. Case 9 dereferences NEITHER the module (mgr+56) nor the
+// game (mgr+60): it calls sub_824684F8 to settle and then resets. So a host may run 1 -> play -> 9
+// and the guest settles correctly with Scaleform never created.
+//
+// AND THE SETTLEMENT STAYS THE GUEST'S. sub_824684F8 credits the real gold by
+// (profile gold now - mgr+96), nets the debt against mgr+100, updates the per-game statistics,
+// applies PurityBalancing, gossips MiniGamePlayedGood/Bad, awards the achievement and raises
+// "FinishedPubGame". Reimplementing any of that host-side would be a second, disagreeing copy of
+// rules the binary already states.
+//
+// THE NAME IS TWO DEREFERENCES FROM mgr+8, not one. sub_82275438 allocates a 16-byte string
+// object and stores the POINTER at the destination, so mgr+8 holds `object*` and `object+0` holds
+// the `char*`. Reading one level in gets a plausible-looking pointer that is not text.
+
+namespace {
+
+constexpr uint32_t kPubGameManager = 0x834C20B8u;
+
+constexpr uint32_t kPubGameNameOffset = 8u;
+constexpr uint32_t kPubGameVariationOffset = 12u;
+constexpr uint32_t kPubGameStateOffset = 52u;
+constexpr uint32_t kPubGameProfileOffset = 124u;
+
+constexpr uint32_t kPubProfileGoldOffset = 0x108u;
+constexpr uint32_t kPubProfileDebtOffset = 0x130u;
+constexpr uint32_t kPubProfileDirtyOffset = 0x364u;
+
+}  // namespace
+
+REFII_HOST_ABI_EXPORT int RefiiHostGetPubGame(uint32_t* out,
+                                              char* name,
+                                              uint32_t name_capacity,
+                                              char* variation,
+                                              uint32_t variation_capacity) {
+    if (out == nullptr) {
+        return 0;
+    }
+
+    for (int i = 0; i < 6; ++i) {
+        out[i] = 0;
+    }
+
+    if (name != nullptr && name_capacity > 0) {
+        name[0] = '\0';
+    }
+
+    if (variation != nullptr && variation_capacity > 0) {
+        variation[0] = '\0';
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t address) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+
+    const uint32_t state = read32(kPubGameManager + kPubGameStateOffset);
+    const uint32_t profile = read32(kPubGameManager + kPubGameProfileOffset);
+
+    out[0] = state;
+    out[1] = plausible(profile) ? profile : 0u;
+
+    if (out[1] != 0u) {
+        // BIG ENDIAN, so the HIGH word is at the lower address. Reading these the other way round
+        // turns 500 gold into 2,147,483,648 and the settlement would credit the difference.
+        out[2] = read32(profile + kPubProfileGoldOffset);
+        out[3] = read32(profile + kPubProfileGoldOffset + 4u);
+        out[4] = read32(profile + kPubProfileDebtOffset);
+        out[5] = read32(profile + kPubProfileDebtOffset + 4u);
+    }
+
+    const auto read_string = [&](uint32_t at, char* into, uint32_t capacity) {
+        if (into == nullptr || capacity == 0) {
+            return;
+        }
+
+        const uint32_t object = read32(at);
+        if (!plausible(object)) {
+            return;
+        }
+
+        const uint32_t text = read32(object);
+        if (!plausible(text)) {
+            return;
+        }
+
+        uint32_t i = 0;
+        for (; i + 1 < capacity; ++i) {
+            const char c = static_cast<char>(*(base + text + i));
+            if (c == '\0') {
+                break;
+            }
+
+            into[i] = c;
+        }
+
+        into[i] = '\0';
+    };
+
+    read_string(kPubGameManager + kPubGameNameOffset, name, name_capacity);
+    read_string(kPubGameManager + kPubGameVariationOffset, variation, variation_capacity);
+    return 1;
+}
+
+// Writes the result back and hands the guest its own settlement state.
+//
+// THE STATE IS WRITTEN LAST, and that ordering is the contract: the guest's tick reads the state
+// and immediately settles from the profile, so a state that landed before the gold would settle
+// the previous balance. Nothing here takes the guest's critical section at mgr+68 -- the host
+// cannot -- but the tick reads the state once per frame into a local, so a torn transition costs
+// one frame rather than a wrong number.
+REFII_HOST_ABI_EXPORT int RefiiHostSetPubGameResult(int64_t gold, int64_t debt, uint32_t state) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t address) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    const auto write32 = [base](uint32_t address, uint32_t value) {
+        const uint32_t raw = __builtin_bswap32(value);
+        std::memcpy(base + address, &raw, sizeof(raw));
+    };
+
+    const uint32_t profile = read32(kPubGameManager + kPubGameProfileOffset);
+    if (profile >= 0x10000u && profile < 0xC0000000u) {
+        write32(profile + kPubProfileGoldOffset, static_cast<uint32_t>(gold >> 32));
+        write32(profile + kPubProfileGoldOffset + 4u, static_cast<uint32_t>(gold));
+        write32(profile + kPubProfileDebtOffset, static_cast<uint32_t>(debt >> 32));
+        write32(profile + kPubProfileDebtOffset + 4u, static_cast<uint32_t>(debt));
+
+        // The same dirty byte sub_82EE8640 sets. The profile is merged and saved by code that
+        // tests it, so a write that skipped it would be discarded rather than persisted.
+        *(base + profile + kPubProfileDirtyOffset) = 1;
+    }
+
+    write32(kPubGameManager + kPubGameStateOffset, state);
+    return 1;
+}
+
+REFII_HOST_ABI_EXPORT int RefiiHostGetInGameScreen(uint32_t* out) {
+    if (out == nullptr) {
+        return 0;
+    }
+
+    for (int i = 0; i < 36; ++i) {
+        out[i] = 0;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    auto read32 = [base](uint32_t address) -> uint32_t {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+
+    const uint32_t gui = read32(0x83496B08u);
+    if (!plausible(gui)) {
+        return 0;
+    }
+
+    out[0] = gui;
+    out[1] = read32(gui);
+
+    const uint32_t manager = read32(gui + 56u);
+    if (!plausible(manager)) {
+        return 0;
+    }
+
+    out[2] = manager;
+
+    // NOT RANGE-CHECKED TO 0..29 HERE. 31 is the guest's own "no screen up" and the caller
+    // needs to see it; clamping it into the array's range would report the pause menu as open
+    // for a player who is simply walking around.
+    out[3] = read32(manager + 4u);
+
+    // The thirty per-screen slots, ID order. `sub_823DCBE0` indexes them as `a1[id + 3]`, i.e.
+    // manager + 0x0C + 4*id, for id < 30.
+    for (uint32_t id = 0; id < 30u; ++id) {
+        out[4 + id] = read32(manager + 0x0Cu + 4u * id);
+    }
+
+    // The shared slot. Screens not in `sub_823DCDA0`'s dedicated list take turns in this one,
+    // so a presentation found here belongs to whichever ID currently owns it.
+    out[34] = read32(manager + 0x98u);
+    out[35] = read32(manager + 0x9Cu);
+    return 1;
+}
+
 /// The LIVE attribute values of every element on the active screen.
 ///
 /// This is what a .bgf alone cannot tell you. The shipped file holds the authored
@@ -5087,6 +6860,30 @@ REFII_HOST_ABI_EXPORT int RefiiHostStart(const char* game_directory, const char*
 
 /// 1 while the guest thread is alive.
 REFII_HOST_ABI_EXPORT int RefiiHostIsRunning(void) { return Session().running.load() ? 1 : 0; }
+
+/// 1 while a guest is up and its memory is safe to read, BY EITHER BOOT PATH.
+///
+/// WHY THIS EXISTS, and it is worth stating plainly because the absence of it cost a whole
+/// character pipeline. There are two ways to bring the guest up and they set different flags:
+///
+///   `RefiiHostStart`      — runs the guest on its OWN thread; sets `Session().running`.
+///   `RefiiHostInitialize` — the EMBEDDED path the game uses, driven a slice per frame by
+///                           `RefiiHostStep`; sets `Hosted().initialized` and never touches
+///                           `Session().running`.
+///
+/// `RefiiHostIsRunning` only ever answers for the first. Every host accessor that guarded
+/// itself with it — entity poses, rest poses, bone names, locomotion, the language table —
+/// therefore returned "no guest" on every frame of the RUNNING GAME while the guest was
+/// perfectly alive, and did so silently. A run showed the shape of it exactly: 3205 drawn
+/// entities with no skeleton, `characters=0 bones=0`, and the report itself concluding "a node
+/// whose rest pose the bridge will not return". Nothing was wrong with any of those readers.
+///
+/// So this is the predicate an accessor wants: not "did anyone call Start", but "is there a
+/// guest whose address space I may read". `RefiiHostIsRunning` keeps its narrower meaning for
+/// the callers that genuinely ask about the session THREAD — chiefly waiting for it to exit.
+REFII_HOST_ABI_EXPORT int RefiiHostIsGuestUp(void) {
+    return (Session().running.load() || Hosted().initialized) ? 1 : 0;
+}
 
 /// The guest's exit code, or -1 while it is still running or was never started.
 REFII_HOST_ABI_EXPORT int RefiiHostExitCode(void) { return Session().exit_code.load(); }

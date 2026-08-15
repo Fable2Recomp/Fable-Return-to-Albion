@@ -17,6 +17,7 @@ public partial class ReinstallPanel : VBoxContainer
 	private Button _unpackBanks = null!;
 	private Button _decompileLua = null!;
 	private Button _compileShaders = null!;
+	private Button _buildAssets = null!;
 	private Label _unpackBanksStatus = null!;
 	private Label _decompileLuaStatus = null!;
 	private Label _compileShadersStatus = null!;
@@ -34,6 +35,19 @@ public partial class ReinstallPanel : VBoxContainer
 	public event Action? UnpackBanksRequested;
 	public event Action? DecompileLuaRequested;
 	public event Action? CompileShadersRequested;
+
+	/// <summary>
+	/// Build every modernized texture and material now, rather than during play.
+	/// </summary>
+	/// <remarks>
+	/// AN INSTALL STEP, which is why it sits here beside unpacking the banks and compiling the
+	/// shaders rather than in the settings panel where it was first put. It is the same kind of
+	/// thing they are: a one-off preparation of the player's own game data that makes every later
+	/// session cheaper, not a preference that changes how the game behaves. The preference — which
+	/// look you get — is <c>materials_modernized</c>, and it lives in settings; this only decides
+	/// WHEN that look is paid for.
+	/// </remarks>
+	public event Action? BuildModernizedAssetsRequested;
 
 	public void Configure(Font? font, int fontSize, SmartStyle style)
 	{
@@ -75,6 +89,13 @@ public partial class ReinstallPanel : VBoxContainer
 			() => DecompileLuaRequested?.Invoke(), out _decompileLuaStatus);
 		_compileShaders = AddTrackedAction("Compile Shaders",
 			() => CompileShadersRequested?.Invoke(), out _compileShadersStatus);
+
+		// UNTRACKED, unlike the three above. Their tick comes from
+		// Installer.GetReinstallStepStatus, which reports on files the native installer writes;
+		// this one fills a cache under user:// that the installer knows nothing about, and a tick
+		// driven by "has anything been cached" would show complete after a single texture.
+		_buildAssets = AddAction(
+			"Build Modernized Assets", () => BuildModernizedAssetsRequested?.Invoke());
 
 		_progressSeparator = new HSeparator { Visible = false };
 		AddChild(_progressSeparator);
@@ -200,6 +221,11 @@ public partial class ReinstallPanel : VBoxContainer
 		_unpackBanks.Disabled = !moddingEnabled;
 		_decompileLua.Disabled = !moddingEnabled;
 		_compileShaders.Disabled = !moddingEnabled;
+
+		// GATED ON THE ASSETS EXISTING, like the other three, because there is nothing to build
+		// from without them — and on the game not running, because the prebuild and a live session
+		// would be two writers on one cache directory.
+		_buildAssets.Disabled = !moddingEnabled;
 
 		Installer.ReinstallStepStatus status = Installer.GetReinstallStepStatus();
 		SetStatus(_unpackBanksStatus, status.Banks);

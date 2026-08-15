@@ -381,6 +381,16 @@ public static class Engine_LevelScene
                 ? (weather.WindStrengthMin + weather.WindStrengthMax) * 0.5f
                 : 0f;
 
+            // THE SAME DIRECTION THE RAIN USES, so vegetation and weather cannot disagree about
+            // which way it blows — but the DIRECTION ONLY, as a unit vector. windStrength is not
+            // applied: its units were never established, and scaling by it bent every tree flat.
+            //
+            // Set BEFORE the props are built, because materials take it at construction — pushing
+            // it afterwards would leave this level's plants on the previous level's wind.
+            Refii.Models.Engine_MdlMaterial.WindDirection = weather.HasWind
+                ? new Vector2(MathF.Cos(windAzimuth), MathF.Sin(windAzimuth))
+                : Vector2.Zero;
+
             MeshInstance3D? precipitation =
                 Engine_Weather.Build(weather, windAzimuth, windStrength);
             if (precipitation is not null)
@@ -412,17 +422,37 @@ public static class Engine_LevelScene
                         skyNode.Sun = sun;
                     }
 
+                    // BOTH THE STATED FIELDS AND THE SOLVED CURVE. The two densities are control
+                    // points rather than amounts, so the stated numbers on their own say nothing
+                    // about how thick the fog will look — the exponent is what decides that, and
+                    // it is the value to check first when a region reads as too clear or as
+                    // pea soup.
+                    AtmosphereInputs fogInputs =
+                        Engine_SkyAtmosphere.FromFrame(frame, skyTheme);
+                    var fogState = new AtmosphereState();
+                    Engine_SkyAtmosphere.SolveFogCurve(fogInputs, fogState);
+
                     GD.Print(
                         $"[lighting] {level}: tod={frame.TimeOfDay:0.##} " +
                         $"sun=({lightingFrame.SunColour[0]:0.00}," +
                         $"{lightingFrame.SunColour[1]:0.00}," +
                         $"{lightingFrame.SunColour[2]:0.00})x{lightingFrame.SunEnergy:0.00} " +
                         $"shadow={lightingFrame.SunShadow} " +
-                        $"ambient={(lightingFrame.HasAmbient ? lightingFrame.AmbientEnergy.ToString("0.00") : "probes")} " +
-                        $"fog={(lightingFrame.HasFog ? $"{lightingFrame.FogBegin:0}->{lightingFrame.FogEnd:0}" : "off")}" +
-                        $"@{lightingFrame.FogNearDensity:0.00}->{lightingFrame.FogDensity:0.00} " +
-                        $"fogrgb=({lightingFrame.FogColour[0]:0.000}," +
-                        $"{lightingFrame.FogColour[1]:0.000},{lightingFrame.FogColour[2]:0.000})");
+                        $"ambient={(lightingFrame.HasAmbient ? lightingFrame.AmbientEnergy.ToString("0.00") : "probes")}");
+
+                    GD.Print(
+                        $"[fog] {level}: " +
+                        (fogState.HasFog
+                            ? $"start={fogInputs.FoggingStart:0.#} " +
+                              $"near={fogInputs.NearDistance:0.#}@{fogInputs.NearDensity:0.###} " +
+                              $"far={fogInputs.FarDistance:0.#}@{fogInputs.FarDensity:0.###} " +
+                              $"-> depth={fogState.FogOpticalDepthAtFar:0.###} " +
+                              $"range={1f / fogState.FogRecipFarRange:0.#} " +
+                              $"k={fogState.FogExponent:0.###} "
+                            : "off ") +
+                        $"closergb=({skyTheme.FogColour[0]:0.000}," +
+                        $"{skyTheme.FogColour[1]:0.000},{skyTheme.FogColour[2]:0.000}) " +
+                        $"closemax={skyTheme.CloseFogMaxDistance:0.#}");
                 }
 
                 Node3D? celestial = Engine_CelestialElements.Build(

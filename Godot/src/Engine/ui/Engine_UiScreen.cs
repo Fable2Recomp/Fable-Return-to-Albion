@@ -117,6 +117,19 @@ public sealed class UiNode
 
 	public BgfElement Element = null!;
 
+	/// <summary>
+	/// True when <see cref="Engine_UiMenuCloning"/> produced this node rather than the file.
+	///
+	/// A clone has <see cref="Ordinal"/> -1 because it has no element in the document, so it
+	/// takes no live state — every live array is indexed by document ordinal. It carries the
+	/// source's <see cref="Element"/>, so an attribute read on a clone answers with the
+	/// template's authored value.
+	/// </summary>
+	public bool IsClone;
+
+	/// <summary>The document ordinal of the template subtree this was copied from, or -1.</summary>
+	public int CloneSourceOrdinal = -1;
+
 	public bool IsRoot => Parent is null;
 }
 
@@ -186,7 +199,8 @@ public sealed class Engine_UiScreen
 		IReadOnlyList<string?>? liveText = null,
 		IReadOnlyList<float?>? liveOpacity = null,
 		IReadOnlyList<bool>? liveVisible = null,
-		IReadOnlyList<float?[]?>? liveTransform = null)
+		IReadOnlyList<float?[]?>? liveTransform = null,
+		IReadOnlyList<uint>? liveTextures = null)
 	{
 		var doc = Engine_BgfDocument.Parse(bgfBytes);
 
@@ -337,8 +351,43 @@ public sealed class Engine_UiScreen
 			screen.ApplyLiveText(liveText);
 		}
 
+		// AFTER the quads exist — AttachFac builds them — and after the slide baseline, so a
+		// swap lands on the quad the screen is actually going to draw.
+		if (live && liveTextures is { Count: > 0 })
+		{
+			screen.LiveTexturesRead = true;
+			screen.ApplyLiveTextures(liveTextures, textures);
+		}
+
+		// Before the frame engine: a wheel item's frame is copied off MenuItemTemplate rather
+		// than authored, and it is a nine-slice, so laying out first would size panels against a
+		// screen still missing that content.
+		screen.MenuCloning = Engine_UiMenuCloning.Apply(screen);
+
+		// Last: the frame engine sizes a panel from what its contents measure and which are
+		// switched on, so it needs the slide baseline applied and the quads built, both done
+		// above. Every screen goes through this one call site — the map, logbook, shop and pause
+		// menu are the same widget.
+		screen.FrameLayout = Engine_UiFrameDriver.Apply(screen);
+
 		return screen;
 	}
+
+	/// <summary>
+	/// What the frame engine did to this screen, for the caller that wants to report it.
+	///
+	/// Zero frames is a real answer rather than a failure — a screen can legitimately have none —
+	/// but zero frames on the map or the pause menu means the detection missed, and that is worth
+	/// being able to see without a debugger.
+	/// </summary>
+	public Engine_UiFrameDriver.Report FrameLayout { get; private set; }
+
+	/// <summary>
+	/// What the wheel-menu cloning step did to this screen. Default on the 49 screens with no
+	/// <c>MenuItemTemplate</c>; only <c>quickmainmenu</c>, <c>spellsmenu</c> and
+	/// <c>regionsscreen</c> ship one.
+	/// </summary>
+	public Engine_UiMenuCloning.Report MenuCloning { get; private set; }
 
 	private void AttachFac(Engine_FacDocument fac, Engine_TextureNameTable? textures, Engine_BabelDatabase? strings)
 	{
@@ -392,19 +441,16 @@ public sealed class Engine_UiScreen
 	/// <summary>
 	/// Replaces each node's visibility with the guest's own <c>globalactive</c>.
 	///
-	/// This OVERRIDES the slide-derived state entirely, and that is the point. Computing
-	/// visibility from the file reproduces what the .bgf authored plus what its slides say;
-	/// the runtime then moves it — the screens' Lua calls setAttribute, and none of that is in
-	/// the file. The guest derives globalactive every frame as
-	/// <c>active AND in-time-range AND parent's globalactive</c> and gates drawing on exactly
-	/// it, so following it is following the contract rather than re-deriving it.
+	/// This overrides the slide-derived state entirely. The file gives what the .bgf authored
+	/// plus its slides, but the screens' Lua then moves things with setAttribute and none of
+	/// that is in the file. The guest derives globalactive every frame as
+	/// <c>active AND in-time-range AND parent's globalactive</c> and gates drawing on it.
 	///
-	/// The parent chain is already folded in on the guest side, so an element whose ancestor
-	/// is off arrives false here and the builder drops its subtree — the same pruning the
-	/// runtime does.
+	/// The parent chain is folded in guest-side, so an element whose ancestor is off arrives
+	/// false and the builder drops its subtree.
 	///
-	/// A node the guest did not report keeps the file's answer, so a short read degrades to
-	/// the old behaviour rather than blanking the screen.
+	/// A node the guest did not report keeps the file's answer, so a short read degrades rather
+	/// than blanking the screen.
 	/// </summary>
 	private void ApplyLiveVisibility(IReadOnlyList<bool> liveVisible)
 	{
@@ -448,18 +494,15 @@ public sealed class Engine_UiScreen
 	}
 
 	/// <summary>
-	/// Applies the guest's live TRANSFORM attributes over the ones the file authored.
+	/// Applies the guest's live transform attributes over the ones the file authored.
 	///
-	/// THIS IS WHERE THE OVERLAPPING TEXT CAME FROM. A slide moves an element by writing its
-	/// attributes — `setAttribute(el, 'position.x', …)` — and the shipped Lua does the same
-	/// thing directly for anything it lays out itself, the expandable menu's rows being the
-	/// obvious case: twelve row components authored at one spot, positioned apart at runtime.
-	/// Reading only `opacity` meant every one of them kept its authored position, so a menu's
-	/// rows and the HUD's labels all stacked on top of each other and read as garbled text.
+	/// A slide moves an element by writing its attributes — `setAttribute(el, 'position.x', …)`
+	/// — and the shipped Lua does the same directly for anything it lays out itself. The
+	/// expandable menu is the clear case: twelve row components authored at one spot and
+	/// positioned apart at runtime, so without this they stay stacked.
 	///
-	/// A null entry means the guest has no such attribute on that element, which is the normal
-	/// case — most elements never move — so the file's value stands. Only a value the guest
-	/// actually states overrides anything.
+	/// A null entry means the guest states no such attribute on that element, the normal case,
+	/// and the file's value stands.
 	/// </summary>
 	private void ApplyLiveTransform(IReadOnlyList<float?[]?> liveTransform)
 	{
@@ -478,6 +521,106 @@ public sealed class Engine_UiScreen
 			if (values.Length > 4 && values[4] is { } sy) n.ScaleY = sy;
 			if (values.Length > 5 && values[5] is { } sz) n.ScaleZ = sz;
 		}
+	}
+
+	/// <summary>
+	/// Replaces each quad's texture with the one the running guest has put on that element.
+	///
+	/// The file's texture is a placeholder for a whole class of widget. The dpad's four
+	/// quick-slots are authored on `art\gui\expressions\empty.tex` because what belongs there
+	/// is whatever the player equipped, and the HUD's twenty-four `WorldIcons` slots share one
+	/// icon because the guest decides per icon whether it is a quest marker, a shop or the dog.
+	///
+	/// A zero hash means the guest states nothing for that element, the common case, and the
+	/// file's texture stands. A hash that resolves to no path is also left alone rather than
+	/// blanking the quad — an unknown name is a gap in the name table.
+	/// </summary>
+	private void ApplyLiveTextures(IReadOnlyList<uint> liveTextures, Engine_TextureNameTable? textures)
+	{
+		if (textures is null)
+		{
+			return;
+		}
+
+		for (int i = 0; i < Nodes.Length && i < liveTextures.Count; ++i)
+		{
+			uint hash = liveTextures[i];
+			if (hash == 0)
+			{
+				continue;
+			}
+
+			++LiveTexturesStated;
+
+			if (Nodes[i].Quad is not { } quad)
+			{
+				continue;
+			}
+
+			if (quad.TextureHash == hash)
+			{
+				++LiveTexturesSame;
+				continue;
+			}
+
+			if (!textures.TryResolve(hash, out string path))
+			{
+				++LiveTexturesUnresolved;
+				continue;
+			}
+
+			quad.TextureHash = hash;
+			quad.TexturePath = path;
+			++LiveTexturesApplied;
+		}
+	}
+
+	/// <summary>Quads whose texture the guest replaced. Zero on a screen that swaps none.</summary>
+	public int LiveTexturesApplied;
+
+	/// <summary>
+	/// Elements for which the guest stated ANY texture, applied or not.
+	///
+	/// The three counters below exist because "0 swapped" has four causes that need different
+	/// work: the host never read the array at all, the guest states nothing, it states exactly
+	/// what the file already says, or it names a texture our table cannot resolve. Only the
+	/// last is a bug on our side, and a single zero cannot tell them apart.
+	/// </summary>
+	public int LiveTexturesStated;
+
+	/// <summary>Stated textures identical to the file's — the guest confirming, not swapping.</summary>
+	public int LiveTexturesSame;
+
+	/// <summary>Stated textures whose hash is not in the name table. These are the losses.</summary>
+	public int LiveTexturesUnresolved;
+
+	/// <summary>True when the host handed us a per-element texture array at all.</summary>
+	public bool LiveTexturesRead;
+
+	/// <summary>
+	/// One line describing the texture-swap pass.
+	///
+	/// Deliberately not silent when nothing happened: an array read that comes back entirely
+	/// zero is a different state from one never read, and a texture read chasing the wrong
+	/// pointer chain is indistinguishable from a game that never swaps a texture otherwise.
+	/// </summary>
+	public string DescribeLiveTextures()
+	{
+		if (!LiveTexturesRead)
+		{
+			return ", no live texture array";
+		}
+
+		if (LiveTexturesStated == 0)
+		{
+			return ", live textures read but every element stated 0";
+		}
+
+		return $", textures stated {LiveTexturesStated}: {LiveTexturesApplied} swapped, " +
+			$"{LiveTexturesSame} already correct" +
+			(LiveTexturesUnresolved > 0
+				? $", {LiveTexturesUnresolved} NOT IN THE NAME TABLE"
+				: string.Empty);
 	}
 
 	private void ApplyLiveText(IReadOnlyList<string?> liveText)
@@ -540,14 +683,14 @@ public sealed class Engine_UiScreen
 	/// A float attribute for element <paramref name="ordinal"/>, with the applied
 	/// slide's write taking precedence over the element's own.
 	///
-	/// A slide command OVERWRITES an existing attribute record; it never creates one.
+	/// A slide command overwrites an existing attribute record; it never creates one.
 	/// <c>sub_82284798</c> — the same entry point Lua's <c>element:setAttribute()</c>
 	/// uses — calls <c>sub_822848E0</c> to find the record by id and returns doing
 	/// nothing when there is none (<c>beq</c> at 0x822847C8). So a command naming an
 	/// attribute the element does not carry is silently dropped by the engine, and
 	/// honouring it here would move elements the game leaves alone.
 	///
-	/// The element's record also keeps its own TYPE — the applier forwards only the id
+	/// The element's record also keeps its own type — the applier forwards only the id
 	/// and the raw value word (0x82BB6934), so the element is the authority on how the
 	/// value word is read, not the command.
 	/// </summary>

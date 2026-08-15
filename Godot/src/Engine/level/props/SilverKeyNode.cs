@@ -40,14 +40,14 @@ public partial class SilverKeyNode : MeshInstance3D
             _yaw -= twoPi;
         }
 
+        // THE PIVOT IS FOR THE SPIN, and only for the spin. It used to reposition a hardcoded
+        // "KeyFx" child onto the mesh's centre too; the effect now comes from
+        // <see cref="Refii.Level.Engine_LevelFx"/> and is placed by the `OffsetFromDummy` the
+        // key's own data states, so moving it from here would be the host overriding the game.
         if (!_pivotSet && Mesh is not null)
         {
             _pivotSet = true;
             _pivot = Mesh.GetAabb().GetCenter();
-            if (GetNodeOrNull<FableFx>("KeyFx") is { } fx)
-            {
-                fx.Position = _pivot;
-            }
         }
 
         float bob = (BobAmplitude * MathF.Sin(_phase)) + BobAltitude;

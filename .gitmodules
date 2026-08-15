@@ -38,3 +38,6 @@
 [submodule "src/assetbrowser/assetbrowser-sdk"]
 	path = src/assetbrowser/assetbrowser-sdk
 	url = https://github.com/adarec1994/Fable2AssetBrowser.git
+[submodule "src/thirdparty/ncnn"]
+	path = src/thirdparty/ncnn
+	url = https://github.com/Tencent/ncnn.git

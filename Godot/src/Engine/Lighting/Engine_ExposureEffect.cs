@@ -43,6 +43,25 @@ public partial class Engine_ExposureEffect : CompositorEffect
 	/// <summary>Bytes in the histogram buffer: 512 buckets of one uint.</summary>
 	private const int HistogramBytes = Engine_AutoExposure.Buckets * sizeof(uint);
 
+	/// <summary>
+	/// How often the diagnostic dump reads the state back, in frames. Zero — the default — is off.
+	/// </summary>
+	/// <remarks>
+	/// THE ONE PLACE THE BUS MAY BE CROSSED, AND ONLY WHEN ASKED. `BufferGetData` flushes the
+	/// device, which is exactly why the shipping path never calls it; a dump every N frames trades
+	/// that stall for the only numbers that can tell a clipped frame from a dark one, and the frame
+	/// rate during a diagnostic run is not the thing being measured.
+	///
+	/// Set <c>REFII_EXPOSURE_DUMP</c> to a frame period — <c>REFII_EXPOSURE_DUMP=120</c> prints
+	/// every two seconds at 60 Hz, which is the cadence that shows the loop CONVERGING rather than
+	/// one sample of unknown settledness. The exposure scalar blends at 5% per frame and the three
+	/// adapted values at 1% per 30 Hz tick, so the first few hundred frames are the loop still
+	/// moving; a single early sample reads as a settled state and is not one.
+	/// </remarks>
+	private readonly int _dumpPeriod;
+
+	private long _frameIndex;
+
 	private RenderingDevice? _rd;
 
 	private Rid _histogramShader;
@@ -66,6 +85,13 @@ public partial class Engine_ExposureEffect : CompositorEffect
 		// POST-TRANSPARENT is the last callback that sees the frame in linear HDR, before Godot's
 		// own post-processing. Anything later would be operating on an already-encoded image.
 		EffectCallbackType = EffectCallbackTypeEnum.PostTransparent;
+
+		if (int.TryParse(OS.GetEnvironment("REFII_EXPOSURE_DUMP"), out int period) && period > 0)
+		{
+			_dumpPeriod = period;
+			GD.Print($"[exposure] dumping the histogram and state every {period} frame(s). " +
+				"This READS BACK from the GPU and stalls the device — diagnostic runs only.");
+		}
 
 		RenderingServer.CallOnRenderThread(Callable.From(Initialise));
 	}
@@ -192,6 +218,38 @@ public partial class Engine_ExposureEffect : CompositorEffect
 		}
 
 		_firstFrame = false;
+
+		// AFTER the reduce, so the state reported is the one this frame's histogram produced.
+		// Reading it before would report the previous frame's state beside this frame's counts and
+		// look like a one-frame lag in the loop that is not there.
+		if (_dumpPeriod > 0 && ++_frameIndex % _dumpPeriod == 0)
+		{
+			Dump(size, dt);
+		}
+	}
+
+	/// <summary>
+	/// Prints the histogram and the exposure state. DIAGNOSTIC ONLY — see <see cref="_dumpPeriod"/>.
+	/// </summary>
+	private void Dump(Vector2I size, float dt)
+	{
+		byte[] histogram = _rd!.BufferGetData(_histogramBuffer, 0, HistogramBytes);
+		byte[] stateBytes = _rd.BufferGetData(_stateBuffer, 0, StateBytes);
+
+		if (histogram.Length < HistogramBytes || stateBytes.Length < StateBytes)
+		{
+			GD.PrintErr($"[exposure] readback short: {histogram.Length}/{HistogramBytes} bytes of " +
+				$"histogram, {stateBytes.Length}/{StateBytes} of state");
+			return;
+		}
+
+		var bins = new uint[Engine_AutoExposure.Buckets];
+		System.Buffer.BlockCopy(histogram, 0, bins, 0, HistogramBytes);
+
+		var state = new float[StateFloats];
+		System.Buffer.BlockCopy(stateBytes, 0, state, 0, StateBytes);
+
+		GD.Print(Engine_ExposureReport.Format(bins, state, size.X, size.Y, dt, _frameIndex));
 	}
 
 	/// <summary>Real seconds since the last frame, for the temporal blend.</summary>

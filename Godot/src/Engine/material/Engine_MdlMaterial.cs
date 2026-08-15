@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Threading;
 using Godot;
 using Refii.Textures;
 
@@ -7,22 +7,85 @@ namespace Refii.Models;
 
 public static class Engine_MdlMaterial
 {
+    /// <summary>
+    /// The wind's direction in world XZ, as a UNIT vector. Set by the level from its theme.
+    /// </summary>
+    /// <remarks>
+    /// DIRECTION ONLY. The theme also states `WindStrengthMin/Max`, and the first version of this
+    /// multiplied by it — which bent every tree in Bowerstone flat, because its units were never
+    /// established and a census of the shipped themes could not recover a plausible range. An angle
+    /// has a known scale; that value does not, so it is not used as a gain. If it is ever decoded,
+    /// it belongs as a modest clamped multiplier here and nowhere else.
+    ///
+    /// APPLIED WHEN A MATERIAL IS BUILT, so a weather change mid-level does not retro-fit surfaces
+    /// already standing. Stated rather than hidden; fixing it wants a global shader parameter.
+    /// </remarks>
+    public static Vector2 WindDirection { get; set; } = Vector2.Zero;
+
+    /// <summary>
+    /// Turns on the shader's wind sway for a mesh whose own header says it is vegetation.
+    /// </summary>
+    /// <remarks>
+    /// EVERY NUMBER HERE COMES FROM THE FILE. `WindSkewMaxAmplitude` (0.05 on everything shipped)
+    /// is a fraction of the surface's height, and `WindSkewMaxSpeed` (1.0) is the rate — so a
+    /// four-metre tree's canopy travels about twenty centimetres, which is a breeze. Nothing is
+    /// scaled by a constant chosen here: the previous version multiplied the amplitude by 20 and
+    /// then by an unmeasured wind strength, and produced a hurricane.
+    ///
+    /// THE TWO MODES DIFFER ONLY SLIGHTLY. The guest draws low plants and trees through different
+    /// shader families and never has to weigh one against the other; we have one surface shader, so
+    /// the distinction has to be a number — but it is a modest one, because the file already states
+    /// the amplitude and that is the authority.
+    /// </remarks>
+    public static void ApplyWind(Material material, Refii.Models.MdlInfo info)
+    {
+        if (material is not ShaderMaterial shader || !info.SwaysInWind)
+        {
+            return;
+        }
+
+        // A TREE IS LIT AS A CANOPY, whether or not it moves. `treematerial`'s canopy permutation
+        // takes no `dot` against a normal at all; drawing it as a solid is what flattens it.
+        if (info.MovementMode == 2)
+        {
+            shader.SetShaderParameter("foliage", true);
+        }
+
+        float authored = Mathf.Clamp(info.WindAmplitude, 0.0f, 0.5f);
+        if (authored <= 0.0f)
+        {
+            return;
+        }
+
+        // TREES DO NOT SWAY, and this is a correctness limit rather than a taste one. Mode 2 is a
+        // tree and the guest draws it with `treematerial`, whose own vertex stage we have not
+        // implemented. Our bend is anchored at the base and scales with height, which is the right
+        // model for a frond growing out of the ground and the WRONG one for a trunk: it leans the
+        // whole tree over like a sapling in a gale instead of moving only the canopy.
+        //
+        // So a tree stays still until `treematerial` is implemented. A still tree is merely the
+        // shipped look; a leaning one is an animation we invented.
+        if (info.MovementMode != 1)
+        {
+            return;
+        }
+
+
+        shader.SetShaderParameter("wind_amplitude", authored);
+        shader.SetShaderParameter("wind_speed", Mathf.Clamp(info.WindSpeed, 0.1f, 8.0f));
+        shader.SetShaderParameter("wind_direction", WindDirection);
+    }
+
     public const string ShaderPath =
         "res://src/Engine/material/standard_material.gdshader";
 
-    private static readonly Dictionary<string, (Texture2D? Texture, bool HasAlpha)>
-        TextureCache = new();
-
     private static Shader? _shader;
 
-    public static void ClearCache()
-    {
-        lock (TextureCache)
-        {
-            TextureCache.Clear();
-        }
-    }
-
+    // NO TEXTURE CACHE HERE ANY MORE. This class used to own a private Dictionary of decoded
+    // textures that lived and died with the process, while the UI reached the same files through
+    // the game:// loader — so one .tex arrived by two routes and only one of them could ever be
+    // given a persistent cache. Both now go through Engine_TexLibrary, and clearing is its call
+    // to offer (Engine_TexLibrary.Clear); the forwarder that used to sit here had no callers.
 
     /// <summary>
     /// A material for a surface that names no textures at all.
@@ -57,6 +120,44 @@ public static class Engine_MdlMaterial
 
     private static readonly object ShaderLock = new();
 
+    private static int _built;
+    private static int _withNormal;
+    private static int _withSpecular;
+    private static int _withEmission;
+    private static int _withEnvmap;
+    private static int _withOrm;
+    private static int _lastReported = -1;
+
+    /// <summary>
+    /// One line saying what the region's materials actually bound.
+    /// </summary>
+    /// <remarks>
+    /// THIS EXISTS BECAUSE A RUN COULD NOT ANSWER "ARE THE REFLECTIONS WORKING?". Only 526 of the
+    /// 8,931 shipped material records name an environment map — about six per cent — so walking
+    /// around a region and seeing none is exactly what you would expect whether the feature works
+    /// or is completely broken. Nothing was logged when one bound, so the log could not tell those
+    /// two apart either, and the question came back as "look at it again".
+    ///
+    /// A count settles it: zero envmaps in a region means there were none to draw, and a non-zero
+    /// count means the binding ran and the question is about appearance rather than plumbing.
+    /// </remarks>
+    public static void ReportIfChanged()
+    {
+        int built = Volatile.Read(ref _built);
+        if (built == _lastReported)
+        {
+            return;
+        }
+
+        _lastReported = built;
+        GD.Print(
+            $"[material] {built:N0} built: {Volatile.Read(ref _withNormal):N0} normal, " +
+            $"{Volatile.Read(ref _withSpecular):N0} specular, " +
+            $"{Volatile.Read(ref _withEmission):N0} self-illum, " +
+            $"{Volatile.Read(ref _withEnvmap):N0} envmap, " +
+            $"{Volatile.Read(ref _withOrm):N0} orm");
+    }
+
     public static Material? TryCreate(MdlMaterial? material)
     {
         if (material is null)
@@ -64,13 +165,21 @@ public static class Engine_MdlMaterial
             return null;
         }
 
-        Texture2D? albedo = TryLoad(material.Diffuse, out bool albedoHasAlpha);
-        Texture2D? normal = TryLoad(material.Normal, out _);
-        Texture2D? emissive = TryLoad(material.SelfIllumination, out _);
+        Texture2D? albedo = TryLoad(material.Diffuse, TexSemantic.Albedo, out bool albedoHasAlpha);
+        Texture2D? normal = TryLoad(material.Normal, TexSemantic.Normal, out _);
+        Texture2D? emissive =
+            TryLoad(material.SelfIllumination, TexSemantic.SelfIllumination, out _);
 
-        Texture2D? specular = TryLoad(material.Specular, out _);
+        Texture2D? specular = TryLoad(material.Specular, TexSemantic.Specular, out _);
 
-        if (albedo is null && normal is null && emissive is null && specular is null)
+        // The environment cube. 526 of the 8,931 shipped material records name one and none of
+        // them were rendering it, because the decoder could not read a cube .tex at all until
+        // Engine_TexCube landed.
+        Cubemap? envmap = Engine_TexLibrary.GetCubemap(
+            material.EnvironmentMap, Engine_BnkMeshLoader.ReadBytes);
+
+        if (albedo is null && normal is null && emissive is null && specular is null &&
+            envmap is null)
         {
             return null;
         }
@@ -81,6 +190,10 @@ public static class Engine_MdlMaterial
             GD.Print($"[material] retail shader missing at {ShaderPath}");
             return null;
         }
+
+        // Counted from a WORKER. The world build runs off the main thread and a level change runs
+        // two of them at once, so these are interlocked rather than incremented.
+        Interlocked.Increment(ref _built);
 
         var result = new ShaderMaterial { Shader = shader };
         if (albedo is not null)
@@ -96,18 +209,47 @@ public static class Engine_MdlMaterial
         {
             result.SetShaderParameter("normal_tex", normal);
             result.SetShaderParameter("has_normal", true);
+            Interlocked.Increment(ref _withNormal);
         }
 
         if (emissive is not null)
         {
             result.SetShaderParameter("emission_tex", emissive);
             result.SetShaderParameter("has_emission", true);
+            Interlocked.Increment(ref _withEmission);
         }
 
         if (specular is not null)
         {
             result.SetShaderParameter("specular_tex", specular);
             result.SetShaderParameter("has_specular", true);
+            Interlocked.Increment(ref _withSpecular);
+        }
+
+        if (envmap is not null)
+        {
+            result.SetShaderParameter("envmap_tex", envmap);
+            result.SetShaderParameter("has_envmap", true);
+            Interlocked.Increment(ref _withEnvmap);
+        }
+
+        // The packed ORM, when the player has asked for it. Derived from the SPECULAR map and the
+        // material's own exponent range, so it is only meaningful where there is a specular map to
+        // derive it from.
+        if (specular is not null)
+        {
+            ImageTexture? orm = Engine_TexLibrary.GetOrm(
+                material.Specular,
+                material.Normal,
+                material.SpecularPowerMin,
+                material.SpecularPowerMax,
+                Engine_BnkMeshLoader.ReadBytes);
+            if (orm is not null)
+            {
+                result.SetShaderParameter("orm_tex", orm);
+                result.SetShaderParameter("has_orm", true);
+                Interlocked.Increment(ref _withOrm);
+            }
         }
 
         // The exponent range the material states, not a constant. It is per material rather than
@@ -117,62 +259,41 @@ public static class Engine_MdlMaterial
         result.SetShaderParameter("spec_power_max", material.SpecularPowerMax);
         result.SetShaderParameter("self_illum_scale", material.SelfIlluminationScale);
 
+        // The §6 second pass, and it touches nothing built above.
+        //
+        // NO CALLBACK AND NO REFERENCE TO THIS MATERIAL. An enhancement replaces the image inside
+        // the Texture2D the library already handed over, so this material — and every other one
+        // naming the same texture — updates because it is holding that same object. The earlier
+        // version of this registered four weak references to the material per surface just to be
+        // able to re-assign the samplers, which a region's worth of materials made into thousands
+        // of live callbacks that a level change then had to outlive.
+        RequestEnhanced(material.Diffuse, TexSemantic.Albedo, albedo);
+        RequestEnhanced(material.Normal, TexSemantic.Normal, normal);
+        RequestEnhanced(material.SelfIllumination, TexSemantic.SelfIllumination, emissive);
+        RequestEnhanced(material.Specular, TexSemantic.Specular, specular);
+
         return result;
     }
 
-    private static Texture2D? TryLoad(string name, out bool hasAlpha)
+    private static Texture2D? TryLoad(string name, TexSemantic semantic, out bool hasAlpha) =>
+        Engine_TexLibrary.Get(name, semantic, Engine_BnkMeshLoader.ReadBytes, out hasAlpha);
+
+    /// <summary>
+    /// Queues one sampler's enhancement.
+    /// </summary>
+    /// <remarks>
+    /// Skipped when the slot resolved to nothing: a material that names no normal map has
+    /// <c>has_normal</c> false, and filling that sampler later would leave the flag's meaning
+    /// untrue without turning the flag on.
+    /// </remarks>
+    private static void RequestEnhanced(string name, TexSemantic semantic, Texture2D? current)
     {
-        hasAlpha = false;
-
-        if (string.IsNullOrWhiteSpace(name))
+        if (current is null || string.IsNullOrWhiteSpace(name))
         {
-            return null;
+            return;
         }
 
-        // LOCKED FOR THE LEVEL CHANGE. The region build runs on a worker while the region we
-        // are still standing in pages its props in on the main thread, so both threads reach
-        // this cache. A `Dictionary` torn by a concurrent resize does not lose an entry, it
-        // corrupts its buckets and the next lookup never returns.
-        //
-        // Decoding stays outside the lock — it is the expensive half, and two threads racing
-        // to decode the same texture costs one redundant decode and nothing else.
-        string virtualPath = name.Replace('\\', '/').TrimStart('/');
-        lock (TextureCache)
-        {
-            if (TextureCache.TryGetValue(
-                    virtualPath, out (Texture2D? Texture, bool HasAlpha) cached))
-            {
-                hasAlpha = cached.HasAlpha;
-                return cached.Texture;
-            }
-        }
-
-        Texture2D? texture = Decode(virtualPath, out hasAlpha);
-        lock (TextureCache)
-        {
-            TextureCache[virtualPath] = (texture, hasAlpha);
-        }
-
-        return texture;
-    }
-
-    private static Texture2D? Decode(string virtualPath, out bool hasAlpha)
-    {
-        hasAlpha = false;
-
-        byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(virtualPath);
-        if (bytes is null)
-        {
-            return null;
-        }
-
-        try
-        {
-            return Engine_TexImage.TryCreateTexture(bytes, out hasAlpha, out _);
-        }
-        catch (Exception)
-        {
-            return null;
-        }
+        Engine_TexLibrary.RequestEnhanced(
+            name, semantic, TexPriority.Scene, Engine_BnkMeshLoader.ReadBytes);
     }
 }
