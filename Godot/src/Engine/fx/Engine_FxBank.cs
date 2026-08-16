@@ -9,43 +9,19 @@ public sealed class FxTimeline
 
     public float DefaultValue { get; set; }
 
+    public Xex.XexScalarTimeline Engine { get; set; } = new();
+
     public bool IsEmpty => Keys.Count == 0;
 
-    public float Eval(float t)
-    {
-        if (Keys.Count == 0)
-        {
-            return DefaultValue;
-        }
+    public float Eval(float t) => Keys.Count == 0 ? DefaultValue : Engine.Eval((int)(t * Xex.XexConst.Fps));
 
-        if (t <= Keys[0].Time)
-        {
-            return Keys[0].Value;
-        }
+    public float EvalFrame(int frame) => Keys.Count == 0 ? DefaultValue : Engine.Eval(frame);
 
-        if (t >= Keys[^1].Time)
-        {
-            return Keys[^1].Value;
-        }
-
-        for (int i = 1; i < Keys.Count; i++)
-        {
-            if (t <= Keys[i].Time)
-            {
-                (float ta, float va) = Keys[i - 1];
-                (float tb, float vb) = Keys[i];
-                float span = tb - ta;
-                float u = span > 1e-6f ? (t - ta) / span : 0f;
-                return va + ((vb - va) * u);
-            }
-        }
-
-        return Keys[^1].Value;
-    }
+    public float FirstOr(float fallback) => Keys.Count == 0 ? fallback : Keys[0].Value;
 
     public float MaxValue()
     {
-        float m = DefaultValue;
+        float m = Keys.Count == 0 ? DefaultValue : Keys[0].Value;
         foreach ((_, float v) in Keys)
         {
             if (v > m)
@@ -58,57 +34,29 @@ public sealed class FxTimeline
     }
 }
 
-/// <summary>
-/// A timeline whose value is a vector — four floats per key, stored <c>(time, x, y, z)</c>.
-///
-/// THE FIRST LANE IS THE TIME, which the shipped data settles rather than the format doing so:
-/// across all 72 light entities it is 0.0 in every key and non-decreasing within every timeline,
-/// while the other three read unmistakably as colours — (1.0, 0.8, 0.3) for a torch, (0.5, 0.6,
-/// 1.0) for a cold blue. Read as four raw components instead, every light in the game would take
-/// its red from a time.
-/// </summary>
 public sealed class FxVectorTimeline
 {
     public List<(float Time, float X, float Y, float Z)> Keys { get; } = new();
 
+    public float[] DefaultValue { get; set; } = { 0f, 0f, 0f };
+
+    public Xex.XexVecTimeline Engine { get; set; } = new();
+
     public bool IsEmpty => Keys.Count == 0;
 
-    /// <summary>
-    /// The value at <paramref name="t"/>, holding the first and last key beyond the ends — the
-    /// same clamped-hold the scalar timelines use.
-    /// </summary>
-    public (float X, float Y, float Z) Eval(float t)
+    private readonly float[] _tmp = new float[4];
+
+    public (float X, float Y, float Z) Eval(float t) => EvalFrame((int)(t * Xex.XexConst.Fps));
+
+    public (float X, float Y, float Z) EvalFrame(int frame)
     {
         if (Keys.Count == 0)
         {
-            return (0f, 0f, 0f);
+            return (DefaultValue[0], DefaultValue[1], DefaultValue[2]);
         }
 
-        if (t <= Keys[0].Time)
-        {
-            return (Keys[0].X, Keys[0].Y, Keys[0].Z);
-        }
-
-        if (t >= Keys[^1].Time)
-        {
-            return (Keys[^1].X, Keys[^1].Y, Keys[^1].Z);
-        }
-
-        for (int i = 1; i < Keys.Count; i++)
-        {
-            if (t > Keys[i].Time)
-            {
-                continue;
-            }
-
-            (float ta, float ax, float ay, float az) = Keys[i - 1];
-            (float tb, float bx, float by, float bz) = Keys[i];
-            float span = tb - ta;
-            float u = span > 1e-6f ? (t - ta) / span : 0f;
-            return (ax + ((bx - ax) * u), ay + ((by - ay) * u), az + ((bz - az) * u));
-        }
-
-        return (Keys[^1].X, Keys[^1].Y, Keys[^1].Z);
+        Engine.Eval(frame, _tmp);
+        return (_tmp[0], _tmp[1], _tmp[2]);
     }
 }
 
@@ -371,6 +319,52 @@ public sealed class FxEmitter
 
     /// <summary>Read; only reachable through gameplay overriding a spline's points.</summary>
     public bool SplineScaleEmissionByLength;
+
+
+    public FxTimeline[] Generic = MakeGeneric();
+
+    public FxVectorTimeline Vec0 = new();
+    public FxVectorTimeline Vec1 = new();
+    public FxVectorTimeline Vec2 = new();
+
+    public FxTimeline P13 = new();
+    public FxTimeline P14 = new();
+
+    public bool UseLife;
+    public int LifetimeFrames;
+    public float ProcessRadius = 32f;
+    public float[] Fades = { 0.8f, 1f, 25f, 32f };
+    public bool PositionalInteractable;
+
+    public bool ShapeFlagA;
+
+    public bool ShapeFlagB;
+
+    public bool ReleaseTrail;
+    public bool GlobalCollider;
+    public float CollisionRestitution = 1f;
+
+    public float AngularRotationRate;
+
+    public float SplineRateEmitter = 0.01f;
+    public int AnimationMode;
+    public int NumSplineSegments = 1;
+    public float RandomiseAnimMagnitude = 0.5f;
+    public float SmoothAnimationSpeed;
+    public float JerkyAnimationRate;
+    public bool RandomiseAnimMagnitudeFlag;
+    public bool RandomiseAnimationRates;
+
+    private static FxTimeline[] MakeGeneric()
+    {
+        var a = new FxTimeline[28];
+        for (int i = 0; i < 28; i++)
+        {
+            a[i] = new FxTimeline();
+        }
+
+        return a;
+    }
 }
 
 public sealed class FxVisual
@@ -437,8 +431,20 @@ public sealed class FxVisual
     public float OrSpeed;
     public float OrSpread;
     public bool OrRandAngle;
-    public float[] OrAxis = { 0f, 0f, 1f };
+    public float[] OrAxis = { 1f, 0f, 0f };
     public bool OrRandAxis = true;
+
+    public int DelayFrames;
+    public float InvSpan;
+    public float[] ColorSq = { 1f, 1f, 1f };
+    public bool SaturationMask;
+    public float SoftDepthContrast;
+    public int FlickerFrames;
+    public bool HasBlend;
+    public bool HasTrailWidth;
+    public float TrailWidth = 1f;
+    public bool HasTrailLen;
+    public int TrailLen = 1;
 }
 
 public sealed class FxSystemDef
@@ -446,6 +452,11 @@ public sealed class FxSystemDef
     public uint Id;
     public uint Mode = 1;
     public List<FxVisual> Visuals { get; } = new();
+    public float LoopStartFrames;
+    public float LoopEndFrames;
+    public int LoopCount;
+    public int LastStartFrames;
+    public int ChildCount;
 }
 
 /// <param name="Group">
@@ -459,12 +470,14 @@ public sealed class FxSystemDef
 /// guest instantiates one chain per type-vector and resets its parent link at each boundary, so
 /// the parenting is only correct if the boundary is.
 /// </param>
-public readonly record struct FxEffectPart(int Emitter, int System, uint Group, int Vector);
+public readonly record struct FxEffectPart(int Emitter, int System, uint Group, int Vector, int TrailSystem = -1);
 
 public sealed class FxEffect
 {
     public uint NameHash;
     public string Name = string.Empty;
+    public bool ZSortEmitters;
+    public uint UpdateFrequency;
     public List<FxEffectPart> Parts { get; } = new();
 }
 
@@ -590,1063 +603,412 @@ public sealed class FxBank
         return map;
     }
 
-    public static uint Fnv1Lower(string s)
-    {
-        uint h = 0x811C9DC5u;
-        foreach (char c in s)
-        {
-            h *= 0x01000193u;
-            h ^= (byte)char.ToLowerInvariant(c);
-        }
+    public Xex.XexBank? ExactModel { get; internal set; }
 
-        return h;
-    }
+    public static uint Fnv1Lower(string s) => Xex.XexBankParser.Fnv1LowerResourceName(s);
 }
 
 public static class Engine_FxBank
 {
-    private const uint MarkVer = 0x4AD78C59u;
-    private const uint Baad = 0xBAADF00Du;
-    private const uint ChildMark = 0x37E185B9u;
-    private const int Sec4Fixed = 0x1C917E;
-
-    private static readonly float[] GenericDefaults =
-    {
-        0.95f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 15.0f,
-        1.0f, 64.0f, 50.0f, 0.05f, 0.05f, 0.1f, 0.2f, 0.1f,
-        0.785398185f, 0.0f, 0.0f, 0.0f,
-    };
-
-    private sealed class Reader
-    {
-        public readonly byte[] Data;
-        public int O;
-        public bool Bad;
-
-        public Reader(byte[] data) => Data = data;
-
-        public bool Have(int k) => O + k <= Data.Length;
-
-        public uint U32()
-        {
-            if (!Have(4))
-            {
-                Bad = true;
-                return 0;
-            }
-
-            uint v = ((uint)Data[O] << 24) | ((uint)Data[O + 1] << 16) |
-                     ((uint)Data[O + 2] << 8) | Data[O + 3];
-            O += 4;
-            return v;
-        }
-
-        public float F32() => BitConverter.Int32BitsToSingle((int)U32());
-
-        public byte U8()
-        {
-            if (!Have(1))
-            {
-                Bad = true;
-                return 0;
-            }
-
-            return Data[O++];
-        }
-
-        public void Skip(int k)
-        {
-            O += k;
-            if (O > Data.Length)
-            {
-                O = Data.Length;
-                Bad = true;
-            }
-        }
-
-        public uint Peek(int at)
-        {
-            if (at + 4 > Data.Length)
-            {
-                return 0;
-            }
-
-            return ((uint)Data[at] << 24) | ((uint)Data[at + 1] << 16) |
-                   ((uint)Data[at + 2] << 8) | Data[at + 3];
-        }
-    }
-
-    private static void OptBaad(Reader r)
-    {
-        if (r.Peek(r.O) == Baad)
-        {
-            r.Skip(4);
-            r.U32();
-        }
-    }
-
-    private static float GenericDefault(int idx) =>
-        idx >= 0 && idx < GenericDefaults.Length ? GenericDefaults[idx] : 0f;
-
-    private static FxTimeline ReadStl(Reader r, int idx)
-    {
-        var t = new FxTimeline { DefaultValue = GenericDefault(idx) };
-        if (r.Peek(r.O) == MarkVer)
-        {
-            r.Skip(4);
-            r.U32();
-        }
-
-        uint cnt = r.U32();
-        if (cnt > 100000)
-        {
-            r.Bad = true;
-            return t;
-        }
-
-        for (uint i = 0; i < cnt && !r.Bad; i++)
-        {
-            float time = r.F32();
-            float value = r.F32();
-            t.Keys.Add((time, value));
-        }
-
-        return t;
-    }
-
-    private static void SkipStl(Reader r, int idx) => ReadStl(r, idx);
-
-    private static void SkipVtl(Reader r) => ReadVtl(r);
-
-    /// <summary>
-    /// A VECTOR timeline — the same shape as the scalar one but four floats per key.
-    ///
-    /// Only the light entities need their vector timeline read rather than stepped over, and they
-    /// need it badly: vector parameter 3 is the light's COLOUR and its default is (0,0,0,0), so a
-    /// light whose timeline we skip is a light that emits black.
-    /// </summary>
-    private static FxVectorTimeline ReadVtl(Reader r)
-    {
-        var t = new FxVectorTimeline();
-        if (r.Peek(r.O) == MarkVer)
-        {
-            r.Skip(4);
-            r.U32();
-        }
-
-        uint cnt = r.U32();
-        if (cnt > 100000)
-        {
-            r.Bad = true;
-            return t;
-        }
-
-        for (uint i = 0; i < cnt && !r.Bad; i++)
-        {
-            // The key's time shares the first lane with the value's X in the scalar form; here the
-            // record is four floats and the walk only needs them kept in order.
-            float x = r.F32();
-            float y = r.F32();
-            float z = r.F32();
-            float w = r.F32();
-            t.Keys.Add((x, y, z, w));
-        }
-
-        return t;
-    }
-
-    private static void ReadBase(Reader r, FxEmitter e)
-    {
-        r.U32();
-        e.Pos = new[] { r.F32(), r.F32(), r.F32() };
-        e.Quat = new[] { r.F32(), r.F32(), r.F32(), r.F32() };
-        r.U8();
-        float start = r.F32();
-        r.F32();
-        r.U32();
-
-        e.StartTimeSecs = start >= 0f && start < 3600f ? start : 0f;
-    }
-
-    private static void ReadEmitterTail(Reader r, FxEmitter e)
-    {
-        r.U8();
-        e.Rate = ReadStl(r, 2);
-        e.RateSpread = ReadStl(r, 3);
-        e.MaxActive = (int)r.U32();
-        e.InitialNum = r.F32();
-
-        // StartFadeInDistance / EndFadeInDistance / StartFadeOutDistance / EndFadeOutDistance.
-        // LOD distances, not times — the tool's legacy clamp at 0x832446B8 pins the last two to
-        // 25 and 32, which is exactly where the shipped medians sit.
-        r.F32();
-        r.F32();
-        r.F32();
-        r.F32();
-
-        e.SortParticles = r.U8() != 0;
-        e.ForceToFullSizeRenderBuffer = r.U8() != 0;
-        e.AttachToRoot = r.U8() != 0;
-        ReadBase(r, e);
-    }
-
-    private static void ReadStandard(Reader r, FxEmitter e)
-    {
-        OptBaad(r);
-        if (e.SubType is 1 or 2)
-        {
-            e.SpawnRadius = r.F32();
-            e.EmitOnSurface = r.U8() != 0;
-            e.UseShapeSpawnDir = r.U8() != 0;
-        }
-        else if (e.SubType == 3)
-        {
-            r.U8();
-        }
-
-        e.Speed = ReadStl(r, 4);
-        e.SpeedSpread = ReadStl(r, 5);
-        SkipVtl(r);
-        e.AccelDirScale = ReadStl(r, 6);
-        e.GravityScale = ReadStl(r, 7);
-        e.GlobalWindScale = ReadStl(r, 8);
-        e.VelX = ReadStl(r, 9);
-        e.VelY = ReadStl(r, 10);
-        e.VelZ = ReadStl(r, 11);
-        SkipVtl(r);
-        e.Wind = ReadStl(r, 12);
-        SkipStl(r, 13);
-        SkipVtl(r);
-        SkipStl(r, 14);
-        r.U8();
-        r.U8();
-        r.F32();
-        ReadEmitterTail(r, e);
-        e.HasMotion = true;
-    }
-
-    private static void ReadLight(Reader r, FxEmitter e)
-    {
-        // `PositionalInteractable`, then the halo texture's name hash — the field `sub_8323FA50`
-        // reads back from type+196 and passes to the descriptor alongside params 22 and 23.
-        r.U8();
-        r.U32();
-
-        e.LightColour = ReadVtl(r);
-        e.LightRange = ReadStl(r, 15);
-        e.LightIntensity = ReadStl(r, 16);
-        e.LightFadeDistance = ReadStl(r, 17);
-        e.LightFadeRange = ReadStl(r, 18);
-
-        // 19..21 are a vec3 and 22..23 a pair, both handed to the descriptor builder; their
-        // meaning was not established, and a light renders correctly without them.
-        foreach (int idx in new[] { 19, 20, 21, 22, 23, 0, 1 })
-        {
-            SkipStl(r, idx);
-        }
-
-        ReadBase(r, e);
-        e.IsLight = true;
-    }
-
-    private static void ReadLight8(Reader r, FxEmitter e)
-    {
-        r.U8();
-        r.U32();
-        r.U32();
-        r.U8();
-        SkipVtl(r);
-        foreach (int idx in new[] { 15, 24, 16, 17, 18, 19, 20, 21, 22, 23, 0, 1 })
-        {
-            SkipStl(r, idx);
-        }
-
-        ReadBase(r, e);
-    }
-
-    /// <summary>
-    /// <c>CSplineObject::LoadBinary</c>. The field order is the WRITER's, `sub_8323D010`, whose
-    /// sibling archive serialiser spells every name out.
-    ///
-    /// THE MAGIC IS OPTIONAL. The reader marks its position, reads a u32, and if it is not
-    /// <c>0x50B5F001</c> it seeks BACK and leaves the version at 0 — so a spline with no header
-    /// is legal and its last two flags are simply absent. All shipped data is version 4, but the
-    /// rewind costs one comparison and a parser that assumed the header would desync the entire
-    /// entity list on the first file that omitted it.
-    /// </summary>
-    private static void ReadSplineObject(Reader r, FxEmitter e)
-    {
-        const uint splineMagic = 0x50B5F001u;
-
-        int mark = r.O;
-        uint version = 0;
-        if (r.U32() == splineMagic)
-        {
-            version = r.U32();
-        }
-        else
-        {
-            r.O = mark;
-        }
-
-        uint np = r.U32();
-        if (np > 4096)
-        {
-            r.Bad = true;
-            return;
-        }
-
-        var points = new float[np][];
-        for (uint i = 0; i < np && !r.Bad; i++)
-        {
-            points[i] = new[] { r.F32(), r.F32(), r.F32() };
-        }
-
-        e.SplinePoints = points;
-        e.SplineRandomGenerator = r.U8() != 0;
-        e.SplineReverseFlow = r.U8() != 0;
-        e.SplineRate = r.F32();
-        e.SplineLooped = r.U8() != 0;
-        e.SplineRandomStart = r.U8() != 0;
-
-        // Version-gated exactly as the reader gates them.
-        e.SplineStraight = version >= 3 && r.U8() != 0;
-        e.SplineScaleEmissionByLength = version >= 4 && r.U8() != 0;
-    }
-
-    private static void ReadSplineEntity(Reader r, FxEmitter e)
-    {
-        // `PositionalInteractable` comes FIRST, before CSplineObject's own header. The reader
-        // this replaces took a u32 and then a u8, which is the same 5 bytes in the wrong order —
-        // it landed byte-exact on the file's last byte across all 2751 entities and still read
-        // the flags off by one field.
-        r.U8();
-        ReadSplineObject(r, e);
-        SkipStl(r, 0);
-        SkipStl(r, 1);
-        ReadBase(r, e);
-        e.IsSpline = true;
-    }
-
-    private static void ReadSplineEmitter(Reader r, FxEmitter e)
-    {
-        ReadEmitterTail(r, e);
-        r.U32();
-        r.U32();
-        r.U8();
-        r.U8();
-        r.F32();
-        r.Skip(4);
-        r.F32();
-        r.F32();
-        r.F32();
-        r.F32();
-        r.F32();
-        r.U8();
-        r.U8();
-        e.HasMotion = true;
-    }
-
-    private static void ReadType3(Reader r, FxEmitter e)
-    {
-        r.U8();
-        SkipStl(r, 25);
-        r.F32();
-        SkipStl(r, 0);
-        SkipStl(r, 1);
-        ReadBase(r, e);
-    }
-
-    private static void ReadAttractor(Reader r, FxEmitter e)
-    {
-        r.U8();
-        e.AttractRadius = ReadStl(r, 26);
-        e.AttractStrength = ReadStl(r, 27);
-        e.GlobalAttractor = r.U8() != 0;
-        SkipStl(r, 0);
-        SkipStl(r, 1);
-        ReadBase(r, e);
-        e.IsAttractor = true;
-    }
-
-    private static bool ReadEntity(Reader r, FxEmitter e)
-    {
-        e.TypeId = r.U32();
-        e.EntityId = r.U32();
-        e.SubType = r.U32();
-        switch (e.TypeId)
-        {
-            case 0: ReadStandard(r, e); break;
-            case 3: ReadType3(r, e); break;
-            case 4: ReadAttractor(r, e); break;
-            case 5: ReadSplineEntity(r, e); break;
-            case 6: ReadBase(r, e); break;
-            case 7: ReadLight(r, e); break;
-            case 8: ReadLight8(r, e); break;
-            case 9: ReadSplineEmitter(r, e); break;
-            default: return false;
-        }
-
-        return !r.Bad;
-    }
-
-    private static bool WalkNode(Reader r, FxVisual? outVis, ref bool outTextured)
-    {
-        uint nid = r.U32();
-        r.U32();
-        uint cnt = r.U32();
-        if (r.Bad || cnt > 64)
-        {
-            r.Bad = true;
-            return false;
-        }
-
-        bool hasMesh = false;
-        for (uint i = 0; i < cnt && !r.Bad; i++)
-        {
-            uint tag = r.U32();
-            switch (tag)
-            {
-                case 0x1:
-                    break;
-                case 0x2:
-                {
-                    float av = r.F32();
-                    if (outVis is not null)
-                    {
-                        outVis.Alpha = av;
-                        outVis.HasAlpha = true;
-                    }
-
-                    break;
-                }
-
-                case 0x400:
-                {
-                    float tw = r.F32();
-                    if (outVis is not null)
-                    {
-                        outVis.HasScalarSize = true;
-                        outVis.ScalarSize = tw;
-                    }
-
-                    break;
-                }
-
-                case 0x4:
-                {
-                    float cr = r.F32();
-                    float cg = r.F32();
-                    float cb = r.F32();
-                    if (outVis is not null)
-                    {
-                        outVis.Color = new[] { cr, cg, cb };
-                        outVis.HasColor = true;
-                    }
-
-                    break;
-                }
-
-                case 0x8:
-                {
-                    r.U32();
-                    uint ln = r.U32();
-                    if (r.Bad || ln > 512 || !r.Have((int)ln + 1))
-                    {
-                        r.Bad = true;
-                        break;
-                    }
-
-                    string path = System.Text.Encoding.ASCII.GetString(
-                        r.Data, r.O, (int)ln);
-                    r.Skip((int)ln + 1);
-                    uint nx = r.U32();
-                    uint ny = r.U32();
-                    byte rif = r.U8();
-                    float spd = r.F32();
-                    byte disp = r.U8();
-                    r.U8();
-                    r.F32();
-                    if (outVis is not null)
-                    {
-                        outVis.Texture = path;
-                        outVis.TexCols = nx is >= 1 and <= 16 ? (int)nx : 1;
-                        outVis.TexRows = ny is >= 1 and <= 16 ? (int)ny : 1;
-                        outVis.RandomFrame = rif != 0;
-                        outVis.FrameSpeed = spd;
-                        outVis.Displacement = disp != 0;
-                        outVis.HasTexture = true;
-                    }
-
-                    outTextured = true;
-                    break;
-                }
-
-                case 0x10:
-                {
-                    float sx = r.F32();
-                    float sy = r.F32();
-                    if (outVis is not null)
-                    {
-                        outVis.SizeX = sx;
-                        outVis.SizeY = sy;
-                        outVis.HasSize = true;
-                    }
-
-                    break;
-                }
-
-                case 0x10000:
-                {
-                    float gsx = r.F32();
-                    float gsy = r.F32();
-                    if (outVis is not null)
-                    {
-                        outVis.HasGlobalScale = true;
-                        outVis.GlobalScale = new[] { gsx, gsy };
-                    }
-
-                    break;
-                }
-
-                case 0x20:
-                {
-                    uint sp = r.U32();
-                    if (outVis is not null)
-                    {
-                        outVis.HasSpritePoints = true;
-                        outVis.SpritePoints = (int)sp;
-                    }
-
-                    break;
-                }
-                case 0x800:
-                {
-                    uint tl = r.U32();
-                    if (outVis is not null)
-                    {
-                        outVis.HasNumSegments = true;
-                        outVis.NumSegments = tl is >= 1 and <= 512 ? (int)tl : 1;
-                    }
-
-                    break;
-                }
-
-                case 0x200:
-                {
-                    float speed = r.F32();
-                    float spread = r.F32();
-                    byte initRand = r.U8();
-                    if (outVis is not null)
-                    {
-                        outVis.HasRotation = true;
-                        outVis.RotSpeed = speed;
-                        outVis.RotSpread = spread;
-                        outVis.RotInitialRandom = initRand != 0;
-                    }
-
-                    break;
-                }
-
-                case 0x20000:
-                {
-                    float qx = r.F32();
-                    float qy = r.F32();
-                    float qz = r.F32();
-                    float qw = r.F32();
-                    if (outVis is not null)
-                    {
-                        outVis.HasAlignQuat = true;
-                        outVis.AlignQuat = new[] { qx, qy, qz, qw };
-                    }
-
-                    break;
-                }
-
-                case 0x40:
-                {
-                    uint b = r.U32();
-                    if (outVis is not null)
-                    {
-                        outVis.SrcBlend = (int)b;
-                    }
-
-                    break;
-                }
-
-                case 0x80:
-                {
-                    uint b = r.U32();
-                    if (outVis is not null)
-                    {
-                        outVis.DstBlend = (int)b;
-                    }
-
-                    break;
-                }
-
-                case 0x100:
-                {
-                    uint op = r.U32();
-                    if (outVis is not null)
-                    {
-                        outVis.HasBlendOp = true;
-                        outVis.BlendOp = (int)op;
-                    }
-
-                    break;
-                }
-
-                case 0x1000:
-                {
-                    r.U32();
-                    uint ln = r.U32();
-                    if (r.Bad || ln > 512 || !r.Have((int)ln + 2))
-                    {
-                        r.Bad = true;
-                        break;
-                    }
-
-                    string mpath = System.Text.Encoding.ASCII.GetString(
-                        r.Data, r.O, (int)ln);
-                    r.Skip((int)ln + 1 + 1);
-                    if (outVis is not null)
-                    {
-                        outVis.HasMesh = true;
-                        outVis.MeshPath = mpath;
-                    }
-
-                    hasMesh = true;
-                    break;
-                }
-
-                case 0x2000:
-                {
-                    if (hasMesh)
-                    {
-                        float fq = r.F32();
-                        float mn = r.F32();
-                        float rg = r.F32();
-                        if (outVis is not null)
-                        {
-                            outVis.HasRandScale = true;
-                            outVis.RsFreq = fq;
-                            outVis.RsMin = mn;
-                            outVis.RsRange = rg;
-                        }
-
-                        break;
-                    }
-
-                    float per = r.F32();
-                    float bx = r.F32();
-                    float by = r.F32();
-                    float sx2 = r.F32();
-                    float sy2 = r.F32();
-                    byte shared = r.U8();
-                    if (outVis is not null)
-                    {
-                        outVis.HasFlicker = true;
-                        outVis.FlickerPeriod = per;
-                        outVis.FlickerBaseX = bx;
-                        outVis.FlickerBaseY = by;
-                        outVis.FlickerSpreadX = sx2;
-                        outVis.FlickerSpreadY = sy2;
-                        outVis.FlickerShared = shared != 0;
-                    }
-
-                    break;
-                }
-
-                case 0x4000:
-                {
-                    float osp = r.F32();
-                    float ospr = r.F32();
-                    byte ra = r.U8();
-                    float ax = r.F32();
-                    float ay = r.F32();
-                    float az = r.F32();
-                    byte rx = r.U8();
-                    if (outVis is not null)
-                    {
-                        outVis.HasOrient = true;
-                        outVis.OrSpeed = osp;
-                        outVis.OrSpread = ospr;
-                        outVis.OrRandAngle = ra != 0;
-                        outVis.OrAxis = new[] { ax, ay, az };
-                        outVis.OrRandAxis = rx != 0;
-                    }
-
-                    break;
-                }
-
-                case 0x8000:
-                {
-                    float si = r.F32();
-                    if (outVis is not null)
-                    {
-                        outVis.HasSelfIllum = true;
-                        outVis.SelfIllum = si;
-                    }
-
-                    break;
-                }
-
-                default:
-                    r.Bad = true;
-                    break;
-            }
-        }
-
-        uint nid2 = r.U32();
-        if (r.Bad || nid2 != nid)
-        {
-            r.Bad = true;
-            return false;
-        }
-
-        return true;
-    }
-
     public static bool Parse(byte[] bytes, FxBank outBank)
     {
-        var r = new Reader(bytes);
-        byte[] magic = System.Text.Encoding.ASCII.GetBytes("ParticleBankFile");
-        if (bytes.Length < 0x2C)
+        var x = new Xex.XexBank();
+        if (!Xex.XexBankParser.ParseBank(bytes, x))
         {
-            outBank.Error = "too small";
+            outBank.Ok = false;
+            outBank.Error = x.Error.Length == 0 ? "particle bank parse failed" : x.Error;
             return false;
         }
 
-        for (int i = 0; i < 16; i++)
-        {
-            if (bytes[i] != magic[i])
-            {
-                outBank.Error = "bad magic";
-                return false;
-            }
-        }
+        outBank.ExactModel = x;
+        outBank.Version = x.BankVersion;
+        outBank.Emitters.Clear();
+        outBank.Systems.Clear();
+        outBank.Effects.Clear();
+        outBank.TypeToEffect.Clear();
+        outBank.AmbiguousTypes = 0;
 
-        r.O = 16;
-        if (r.Peek(r.O) == Baad)
-        {
-            r.Skip(4);
-        }
-
-        outBank.Version = r.U32();
-
-        r.O = 0x20;
-        r.U32();
-        uint c2 = r.U32();
-        bool sectionsOk = c2 > 0 && c2 < 200000;
-        bool ignored = false;
-        for (uint i = 0; sectionsOk && i < c2; i++)
-        {
-            if (!WalkNode(r, null, ref ignored))
-            {
-                sectionsOk = false;
-                break;
-            }
-        }
-
-        if (sectionsOk)
-        {
-            r.U32();
-            uint c3 = r.U32();
-            if (c3 == 0 || c3 > 200000)
-            {
-                sectionsOk = false;
-            }
-
-            for (uint i = 0; sectionsOk && i < c3; i++)
-            {
-                var sys = new FxSystemDef { Id = r.U32(), Mode = r.U32() };
-                uint cc = r.U32();
-                if (r.Bad || cc > 32)
-                {
-                    sectionsOk = false;
-                    break;
-                }
-
-                var raw = new List<FxVisual>();
-                for (uint j = 0; j < cc; j++)
-                {
-                    if (r.Peek(r.O) == ChildMark)
-                    {
-                        r.Skip(8);
-                    }
-
-                    float delay = r.F32();
-                    var vis = new FxVisual { Delay = delay };
-                    bool textured = false;
-                    if (!WalkNode(r, vis, ref textured))
-                    {
-                        sectionsOk = false;
-                        break;
-                    }
-
-                    raw.Add(vis);
-                }
-
-                if (!sectionsOk)
-                {
-                    break;
-                }
-
-                for (int k = 1; k < raw.Count; k++)
-                {
-                    FxVisual v = raw[k];
-                    FxVisual p = raw[k - 1];
-                    if (!v.HasAlpha && p.HasAlpha)
-                    {
-                        v.HasAlpha = true;
-                        v.Alpha = p.Alpha;
-                    }
-
-                    if (!v.HasColor && p.HasColor)
-                    {
-                        v.HasColor = true;
-                        v.Color = (float[])p.Color.Clone();
-                    }
-
-                    if (!v.HasTexture && p.HasTexture)
-                    {
-                        v.HasTexture = true;
-                        v.Texture = p.Texture;
-                        v.TexCols = p.TexCols;
-                        v.TexRows = p.TexRows;
-                        v.RandomFrame = p.RandomFrame;
-                        v.FrameSpeed = p.FrameSpeed;
-                        v.Displacement = p.Displacement;
-                    }
-
-                    if (!v.HasSize && p.HasSize)
-                    {
-                        v.HasSize = true;
-                        v.SizeX = p.SizeX;
-                        v.SizeY = p.SizeY;
-                    }
-
-                    if (v.SrcBlend < 0)
-                    {
-                        v.SrcBlend = p.SrcBlend;
-                    }
-
-                    if (v.DstBlend < 0)
-                    {
-                        v.DstBlend = p.DstBlend;
-                    }
-
-                    if (!v.HasRotation && p.HasRotation)
-                    {
-                        v.HasRotation = true;
-                        v.RotSpeed = p.RotSpeed;
-                        v.RotSpread = p.RotSpread;
-                        v.RotInitialRandom = p.RotInitialRandom;
-                    }
-
-                    if (!v.HasFlicker && p.HasFlicker)
-                    {
-                        v.HasFlicker = true;
-                        v.FlickerPeriod = p.FlickerPeriod;
-                        v.FlickerBaseX = p.FlickerBaseX;
-                        v.FlickerBaseY = p.FlickerBaseY;
-                        v.FlickerSpreadX = p.FlickerSpreadX;
-                        v.FlickerSpreadY = p.FlickerSpreadY;
-                        v.FlickerShared = p.FlickerShared;
-                    }
-
-                    if (!v.HasScalarSize && p.HasScalarSize)
-                    {
-                        v.HasScalarSize = true;
-                        v.ScalarSize = p.ScalarSize;
-                    }
-
-                    if (!v.HasNumSegments && p.HasNumSegments)
-                    {
-                        v.HasNumSegments = true;
-                        v.NumSegments = p.NumSegments;
-                    }
-
-                    if (!v.HasAlignQuat && p.HasAlignQuat)
-                    {
-                        v.HasAlignQuat = true;
-                        v.AlignQuat = (float[])p.AlignQuat.Clone();
-                    }
-
-                    if (!v.HasMesh && p.HasMesh)
-                    {
-                        v.HasMesh = true;
-                        v.MeshPath = p.MeshPath;
-                    }
-
-                    if (!v.HasRandScale && p.HasRandScale)
-                    {
-                        v.HasRandScale = true;
-                        v.RsFreq = p.RsFreq;
-                        v.RsMin = p.RsMin;
-                        v.RsRange = p.RsRange;
-                    }
-
-                    if (!v.HasOrient && p.HasOrient)
-                    {
-                        v.HasOrient = true;
-                        v.OrSpeed = p.OrSpeed;
-                        v.OrSpread = p.OrSpread;
-                        v.OrRandAngle = p.OrRandAngle;
-                        v.OrAxis = (float[])p.OrAxis.Clone();
-                        v.OrRandAxis = p.OrRandAxis;
-                    }
-                }
-
-                foreach (FxVisual v in raw)
-                {
-                    if (v.HasTexture || v.HasMesh)
-                    {
-                        sys.Visuals.Add(v);
-                    }
-                }
-
-                r.Skip(12);
-                uint id2 = r.U32();
-                if (r.Bad || id2 != sys.Id)
-                {
-                    sectionsOk = false;
-                    break;
-                }
-
-                outBank.Systems.Add(sys);
-            }
-        }
-
-        int sec4At = sectionsOk ? r.O : Sec4Fixed;
-        if (!sectionsOk)
-        {
-            outBank.Systems.Clear();
-            outBank.Error = "sec2/3 walk failed; effects unavailable";
-        }
-
-        if (sec4At + 8 > bytes.Length)
-        {
-            outBank.Error = "no section 4";
-            return false;
-        }
-
-        r.O = sec4At;
-        r.Bad = false;
-        r.U32();
-        uint count = r.U32();
-        if (count == 0 || count > 200000)
-        {
-            outBank.Error = "bad entity count";
-            return false;
-        }
-
-        for (uint k = 0; k < count; k++)
+        var eidToIdx = new Dictionary<uint, int>();
+        foreach (Xex.XexEntityRef reference in x.EntityOrder)
         {
             var e = new FxEmitter();
-            int start = r.O;
-            if (!ReadEntity(r, e) || r.O <= start)
+            switch (reference.TypeId)
             {
-                outBank.Error = $"entity parse stopped at #{k}";
-                break;
+                case 0:
+                {
+                    Xex.XexStandardEmitterType se = x.StdEmitters[reference.Index];
+                    FillEmitterCommon(se, e);
+                    e.SpawnRadius = se.Shape is Xex.XexEmitterShape.Sphere or Xex.XexEmitterShape.Disc ? se.ShapeRadius : 0f;
+                    e.ShapeFlagA = se.ShapeFlagA;
+                    e.ShapeFlagB = se.ShapeFlagB;
+                    e.EmitOnSurface = se.ShapeFlagA;
+                    e.UseShapeSpawnDir = se.ShapeFlagB;
+                    e.ReleaseTrail = se.ReleaseTrail;
+                    e.GlobalCollider = se.GlobalCollider;
+                    e.CollisionRestitution = se.CollisionRestitution;
+                    e.HasMotion = true;
+                    break;
+                }
+
+                case 9:
+                {
+                    Xex.XexSplineEmitterType se = x.SplineEmitters[reference.Index];
+                    FillEmitterCommon(se, e);
+                    e.SplineRateEmitter = se.Spline.Rate;
+                    e.SplineRate = se.Spline.Rate;
+                    e.SplineReverseFlow = se.Spline.ReverseFlow;
+                    e.SplineLooped = se.Spline.LoopedSpline;
+                    e.SplineRandomStart = se.Spline.UseRandomStartPoint;
+                    e.SplineStraight = se.Spline.TreatAsStraightSegments;
+                    e.SplineRandomGenerator = se.Spline.RandomGenerator;
+                    e.AnimationMode = se.AnimationMode;
+                    e.NumSplineSegments = se.NumSplineSegments;
+                    e.RandomiseAnimMagnitude = se.RandomiseAnimMagnitude;
+                    e.SmoothAnimationSpeed = se.SmoothAnimationSpeed;
+                    e.JerkyAnimationRate = se.JerkyAnimationRate;
+                    e.RandomiseAnimMagnitudeFlag = se.RandomiseAnimMagnitudeFlag;
+                    e.RandomiseAnimationRates = se.RandomiseAnimationRates;
+                    e.HasMotion = true;
+                    break;
+                }
+
+                case 3:
+                {
+                    Xex.XexOrbitalEntityType o = x.Orbitals[reference.Index];
+                    FillEntityCommon(o, e);
+                    e.PositionalInteractable = o.PositionalInteractable;
+                    e.AngularRotationRate = o.AngularRotationRate;
+                    break;
+                }
+
+                case 4:
+                {
+                    Xex.XexAttractorEntityType a = x.Attractors[reference.Index];
+                    FillEntityCommon(a, e);
+                    e.PositionalInteractable = a.PositionalInteractable;
+                    e.GlobalAttractor = a.GlobalParticleAttractor;
+                    e.IsAttractor = true;
+                    e.AttractRadius = e.Generic[26];
+                    e.AttractStrength = e.Generic[27];
+                    break;
+                }
+
+                case 5:
+                {
+                    Xex.XexSplineEntityType sp = x.SplineEntities[reference.Index];
+                    FillEntityCommon(sp, e);
+                    e.PositionalInteractable = sp.PositionalInteractable;
+                    e.IsSpline = true;
+                    e.SplinePoints = sp.Spline.Points.ToArray();
+                    e.SplineRate = sp.Spline.Rate;
+                    e.SplineReverseFlow = sp.Spline.ReverseFlow;
+                    e.SplineLooped = sp.Spline.LoopedSpline;
+                    e.SplineRandomStart = sp.Spline.UseRandomStartPoint;
+                    e.SplineStraight = sp.Spline.TreatAsStraightSegments;
+                    e.SplineRandomGenerator = sp.Spline.RandomGenerator;
+                    e.SplineScaleEmissionByLength = sp.Spline.ScaleEmissionRatesBySplineLength;
+                    break;
+                }
+
+                case 6: FillEntityCommon(x.Roots[reference.Index], e); break;
+                case 7:
+                {
+                    Xex.XexPointLightEntityType l = x.PointLights[reference.Index];
+                    FillEntityCommon(l, e);
+                    e.PositionalInteractable = l.PositionalInteractable;
+                    e.IsLight = true;
+                    e.LightColour = ToVecTimeline(l.Vec[3], 3);
+                    e.LightRange = e.Generic[15];
+                    e.LightIntensity = e.Generic[16];
+                    e.LightFadeDistance = e.Generic[17];
+                    e.LightFadeRange = e.Generic[18];
+                    break;
+                }
+
+                case 8:
+                {
+                    Xex.XexSpotLightEntityType l = x.SpotLights[reference.Index];
+                    FillEntityCommon(l, e);
+                    e.PositionalInteractable = l.PositionalInteractable;
+                    e.LightColour = ToVecTimeline(l.Vec[3], 3);
+                    e.LightRange = e.Generic[15];
+                    e.LightIntensity = e.Generic[16];
+                    e.LightFadeDistance = e.Generic[17];
+                    e.LightFadeRange = e.Generic[18];
+                    break;
+                }
+
+                default: break;
             }
 
+            eidToIdx[reference.EntityId] = outBank.Emitters.Count;
             outBank.Emitters.Add(e);
         }
 
-        if (sectionsOk && outBank.Emitters.Count == count && r.O + 8 <= bytes.Length)
+        var sysToIdx = new Dictionary<uint, int>();
+        foreach (Xex.XexSystemDef xs in x.Systems)
         {
-            var eidToIdx = new Dictionary<uint, int>();
-            for (int i = 0; i < outBank.Emitters.Count; i++)
+            var sys = new FxSystemDef
             {
-                eidToIdx[outBank.Emitters[i].EntityId] = i;
+                Id = xs.Id,
+                Mode = xs.MaterialType,
+                LoopStartFrames = xs.LoopStartFrames,
+                LoopEndFrames = xs.LoopEndFrames,
+                LoopCount = (int)xs.LoopCount,
+                ChildCount = xs.Children.Count,
+            };
+            foreach (Xex.XexSystemChild c in xs.Children)
+            {
+                sys.LastStartFrames = Math.Max(sys.LastStartFrames, c.StartFrames);
             }
 
-            var sysToIdx = new Dictionary<uint, int>();
-            for (int i = 0; i < outBank.Systems.Count; i++)
+            for (int i = 0; i < xs.Segments.Count; i++)
             {
-                sysToIdx[outBank.Systems[i].Id] = i;
+                FxVisual v = VisualFromSegment(xs, i);
+                if (v.HasTexture || v.HasMesh)
+                {
+                    sys.Visuals.Add(v);
+                }
             }
 
-            r.U32();
-            r.U32();
-            var typesInRecord = new List<uint>();
-            while (r.O + 17 <= bytes.Length && !r.Bad)
+            sysToIdx[xs.Id] = outBank.Systems.Count;
+            outBank.Systems.Add(sys);
+        }
+
+        foreach (Xex.XexEffectCollection xe in x.Effects)
+        {
+            var eff = new FxEffect { NameHash = xe.Id, ZSortEmitters = xe.ZSortEmitters, UpdateFrequency = xe.UpdateFrequency };
+            int chain = 0;
+            foreach (Xex.XexEffectTypeVector tv in xe.TypeVectors)
             {
-                int recStart = r.O;
-                uint key = r.U32();
-                r.U32();
-                r.U32();
-                byte cnt = r.U8();
-                if (cnt > 64)
+                foreach (Xex.XexEffectItem it in tv.Items)
                 {
-                    r.O = recStart;
-                    break;
-                }
-
-                var eff = new FxEffect { NameHash = key };
-                bool recOk = true;
-                typesInRecord.Clear();
-                for (byte i = 0; i < cnt && recOk; i++)
-                {
-                    uint group = r.U32();
-                    uint m = r.U32();
-                    if (r.Bad || m > 16)
+                    int emitter = eidToIdx.TryGetValue(it.EntityTypeId, out int ei) ? ei : -1;
+                    int system = sysToIdx.TryGetValue(it.MaterialTimelineId, out int si) ? si : -1;
+                    int trail = sysToIdx.TryGetValue(it.TrailMaterialTimelineId, out int ti) ? ti : -1;
+                    if (emitter >= 0)
                     {
-                        recOk = false;
-                        break;
+                        eff.Parts.Add(new FxEffectPart(emitter, system, tv.Priority, chain, trail));
                     }
 
-                    for (uint j = 0; j < m; j++)
-                    {
-                        uint eid = r.U32();
-                        uint sid = r.U32();
-                        r.U32();
-
-                        // THE JOIN A LIVE INSTANCE NEEDS. `eid` is the entity TYPE's id hash —
-                        // the very value a running instance carries at `*(type+4)` — so recording
-                        // which effect claimed it is what lets the live feed name what it is
-                        // looking at. Held aside until the record validates, so a torn record
-                        // cannot poison the map.
-                        typesInRecord.Add(eid);
-
-                        int emitterIdx = eidToIdx.TryGetValue(eid, out int ei) ? ei : -1;
-                        int systemIdx = sysToIdx.TryGetValue(sid, out int si) ? si : -1;
-                        if (emitterIdx >= 0)
-                        {
-                            eff.Parts.Add(new FxEffectPart(emitterIdx, systemIdx, group, i));
-                        }
-                    }
-                }
-
-                uint key2 = r.U32();
-                if (!recOk || r.Bad || key2 != key)
-                {
-                    r.O = recStart;
-                    break;
-                }
-
-                outBank.Effects.Add(eff);
-
-                // Committed only now the record has validated its trailing key.
-                foreach (uint typeId in typesInRecord)
-                {
-                    if (!outBank.TypeToEffect.TryAdd(typeId, key))
+                    if (!outBank.TypeToEffect.TryAdd(it.EntityTypeId, xe.Id) &&
+                        outBank.TypeToEffect[it.EntityTypeId] != xe.Id)
                     {
                         outBank.AmbiguousTypes++;
                     }
                 }
+
+                chain++;
+            }
+
+            outBank.Effects.Add(eff);
+        }
+
+        outBank.Ok = outBank.Emitters.Count != 0;
+        outBank.Error = outBank.Ok ? string.Empty : "no emitters parsed";
+        return outBank.Ok;
+    }
+
+    private static FxTimeline ToTimeline(Xex.XexScalarTimeline t, int idx)
+    {
+        var o = new FxTimeline { DefaultValue = Xex.XexConst.ScalarParamDefaults[idx], Engine = t };
+        if (t.Present)
+        {
+            foreach (Xex.XexScalarKey k in t.Keys)
+            {
+                o.Keys.Add((k.TimeSecs, k.Value));
             }
         }
 
-        outBank.Ok = outBank.Emitters.Count > 0;
-        if (!outBank.Ok && outBank.Error.Length == 0)
+        return o;
+    }
+
+    private static FxVectorTimeline ToVecTimeline(Xex.XexVecTimeline t, int idx)
+    {
+        var o = new FxVectorTimeline
         {
-            outBank.Error = "no emitters parsed";
+            DefaultValue = new[] { Xex.XexConst.VecParamDefaults[idx][0], Xex.XexConst.VecParamDefaults[idx][1], Xex.XexConst.VecParamDefaults[idx][2] },
+            Engine = t,
+        };
+        if (t.Present)
+        {
+            foreach (Xex.XexVecKey k in t.Keys)
+            {
+                o.Keys.Add((k.TimeSecs, k.X, k.Y, k.Z));
+            }
         }
 
-        return outBank.Ok;
+        return o;
+    }
+
+    private static void FillEntityCommon(Xex.XexEntityType x, FxEmitter e)
+    {
+        e.TypeId = x.TypeId;
+        e.EntityId = x.EntityId;
+        e.SubType = x.SubType;
+        e.Pos = new[] { x.Pos[0], x.Pos[1], x.Pos[2] };
+        e.Quat = new[] { x.Quat[0], x.Quat[1], x.Quat[2], x.Quat[3] };
+        e.UseLife = x.UseLife;
+        e.LifetimeFrames = x.LifetimeFrames;
+        e.ProcessRadius = x.ProcessRadius;
+        for (int i = 0; i < 28; i++)
+        {
+            e.Generic[i] = ToTimeline(x.Scalar[i], i);
+        }
+
+        e.Vec0 = ToVecTimeline(x.Vec[0], 0);
+        e.Vec1 = ToVecTimeline(x.Vec[1], 1);
+        e.Vec2 = ToVecTimeline(x.Vec[2], 2);
+    }
+
+    private static void FillEmitterCommon(Xex.XexEmitterType x, FxEmitter e)
+    {
+        FillEntityCommon(x, e);
+        e.PositionalInteractable = x.PositionalInteractable;
+        e.MaxActive = x.MaxActiveParticles;
+        e.InitialNum = x.InitialNumParticles;
+        e.Fades = new[] { x.StartFadeIn, x.EndFadeIn, x.StartFadeOut, x.EndFadeOut };
+        e.SortParticles = x.SortParticles;
+        e.ForceToFullSizeRenderBuffer = x.ForceFullSizeRenderBuffer;
+        e.AttachToRoot = x.AttachToRoot;
+        e.Rate = e.Generic[2];
+        e.RateSpread = e.Generic[3];
+        e.Speed = e.Generic[4];
+        e.SpeedSpread = e.Generic[5];
+        e.AccelDirScale = e.Generic[6];
+        e.GravityScale = e.Generic[7];
+        e.GlobalWindScale = e.Generic[8];
+        e.VelX = e.Generic[9];
+        e.VelY = e.Generic[10];
+        e.VelZ = e.Generic[11];
+        e.Wind = e.Generic[12];
+        e.P13 = e.Generic[13];
+        e.P14 = e.Generic[14];
+    }
+
+    private static FxVisual VisualFromSegment(Xex.XexSystemDef sys, int i)
+    {
+        Xex.XexSegmentRecord r = sys.Segments[i];
+        Xex.XexSystemChild child = sys.Children[sys.ChildOrder[i]];
+        Xex.XexMaterial m = child.Material;
+        var v = new FxVisual
+        {
+            Delay = child.StartSecs,
+            DelayFrames = child.StartFrames,
+            InvSpan = r.InvSpan,
+            HasTexture = r.TexPath.Length != 0,
+            Texture = r.TexPath,
+            RandomFrame = r.RandomInitialFrame != 0,
+            FrameSpeed = r.FrameChangeSpeed,
+            Displacement = r.IsDispTex != 0,
+            SaturationMask = r.SatMask != 0,
+            SoftDepthContrast = r.SoftDepth,
+        };
+
+        if (v.HasTexture)
+        {
+            Xex.XexTexEntry? te = null;
+            foreach (Xex.XexTexEntry t in sys.TexList)
+            {
+                if (t.TexHash == r.TexHash)
+                {
+                    te = t;
+                }
+            }
+
+            if (te is not null)
+            {
+                v.TexCols = te.NumXDiv >= 1 ? te.NumXDiv : 1;
+                v.TexRows = te.NumYDiv >= 1 ? te.NumYDiv : 1;
+                if (sys.MaterialType == 1 && v.FrameSpeed == 0f)
+                {
+                    v.FrameSpeed = te.FrameChangeSpeed;
+                }
+            }
+
+            if (m.Has(Xex.XexTag.DiffuseTexture))
+            {
+                v.TexCols = m.NumXDiv >= 1 ? (int)m.NumXDiv : 1;
+                v.TexRows = m.NumYDiv >= 1 ? (int)m.NumYDiv : 1;
+            }
+        }
+
+        v.HasColor = m.Has(Xex.XexTag.DiffuseColor) || i > 0;
+        v.ColorSq = new[] { r.Rgb[0], r.Rgb[1], r.Rgb[2] };
+        v.Color = new[]
+        {
+            MathF.Sqrt(MathF.Max(0f, r.Rgb[0])), MathF.Sqrt(MathF.Max(0f, r.Rgb[1])), MathF.Sqrt(MathF.Max(0f, r.Rgb[2])),
+        };
+        if (m.Has(Xex.XexTag.DiffuseColor))
+        {
+            v.Color = new[] { m.ColorFile[0], m.ColorFile[1], m.ColorFile[2] };
+        }
+
+        v.HasAlpha = true;
+        v.Alpha = r.Alpha;
+        v.SrcBlend = (int)r.SrcBlend;
+        v.DstBlend = (int)r.DstBlend;
+        v.BlendOp = (int)r.BlendOp;
+        v.HasBlendOp = m.Has(Xex.XexTag.BlendOp);
+        v.HasBlend = m.Has(Xex.XexTag.SrcBlendMode) || m.Has(Xex.XexTag.DestBlendMode) || m.Has(Xex.XexTag.BlendOp);
+        v.HasSelfIllum = true;
+        v.SelfIllum = r.SelfIllum;
+
+        if (sys.MaterialType == 1)
+        {
+            v.HasSize = true;
+            v.SizeX = r.Dims[0];
+            v.SizeY = r.Dims[1];
+            v.HasGlobalScale = true;
+            v.GlobalScale = new[] { r.GlobalFrameScale[0], r.GlobalFrameScale[1] };
+            v.HasSpritePoints = true;
+            v.SpritePoints = (int)r.NumSpritePoints;
+            v.HasRotation = r.RotSpeed != 0f || r.RotSpread != 0f || r.RotInitRandom != 0;
+            v.RotSpeed = r.RotSpeed;
+            v.RotSpread = r.RotSpread;
+            v.RotInitialRandom = r.RotInitRandom != 0;
+            v.HasAlignQuat = r.HasAlignQuat != 0;
+            v.AlignQuat = new[] { r.AlignQuat[0], r.AlignQuat[1], r.AlignQuat[2], r.AlignQuat[3] };
+            v.HasFlicker = r.RsFreqFrames != 0 || r.RsRange[0] != 0f || r.RsRange[1] != 0f || r.RsMin[0] != 1f || r.RsMin[1] != 1f;
+            v.FlickerFrames = r.RsFreqFrames;
+            v.FlickerPeriod = r.RsFreqFrames / Xex.XexConst.Fps;
+            v.FlickerBaseX = r.RsMin[0];
+            v.FlickerBaseY = r.RsMin[1];
+            v.FlickerSpreadX = r.RsRange[0];
+            v.FlickerSpreadY = r.RsRange[1];
+            v.FlickerShared = r.RsLinked != 0;
+        }
+        else if (sys.MaterialType is 2 or 3)
+        {
+            v.HasTrailWidth = true;
+            v.TrailWidth = r.Size;
+            v.HasScalarSize = true;
+            v.ScalarSize = r.Size;
+            v.HasTrailLen = true;
+            v.TrailLen = r.NumSegments >= 1 ? r.NumSegments : 1;
+            v.HasNumSegments = true;
+            v.NumSegments = v.TrailLen;
+        }
+        else if (sys.MaterialType == 4)
+        {
+            v.HasMesh = r.MeshPath.Length != 0;
+            v.MeshPath = r.MeshPath;
+            v.HasTrailWidth = true;
+            v.TrailWidth = r.MeshScale;
+            v.HasScalarSize = true;
+            v.ScalarSize = r.MeshScale;
+            v.HasRandScale = r.RsFreqFrames != 0 || r.MrsRange != 0f || r.MrsMin != 1f;
+            v.RsFreq = r.RsFreqFrames / Xex.XexConst.Fps;
+            v.RsMin = r.MrsMin;
+            v.RsRange = r.MrsRange;
+            v.HasOrient = true;
+            v.OrSpeed = r.RotSpeed;
+            v.OrSpread = r.RotSpread;
+            v.OrRandAngle = r.RotInitRandom != 0;
+            v.OrAxis = new[] { r.OrAxis[0], r.OrAxis[1], r.OrAxis[2] };
+            v.OrRandAxis = r.OrInitRandomAxis != 0;
+        }
+
+        return v;
     }
 }
