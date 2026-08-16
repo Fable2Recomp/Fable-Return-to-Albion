@@ -38,6 +38,15 @@ public partial class GameInput : Node
 
 	public override void _Process(double delta)
 	{
+		// NOTHING IS PUBLISHED TO A GUEST THAT IS NOT THERE. This node is only added once
+		// `Initialize` has succeeded, so the ordinary case never sees this — but the guest can
+		// END while it is up, and then every frame would go on writing controller state into a
+		// runtime that has torn down.
+		if (HostBridge.TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
 		// Everything goes to pad 0; the rest report disconnected. The front end latches the
 		// pad that pressed A (dword_83496AF8, 0x826E30DC) and ignores every other one
 		// (0x826DEE64), so input split across devices is input the guest discards. Device

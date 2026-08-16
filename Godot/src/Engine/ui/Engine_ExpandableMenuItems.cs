@@ -58,10 +58,12 @@ public static class Engine_ExpandableMenuItems
 	/// <param name="Name">Its authored name, e.g. <c>MenuItemButton3</c>.</param>
 	/// <param name="TitleOrdinal">Index of its <c>Icon/Title</c> label, or -1 if it has none.</param>
 	/// <param name="Text">The label the guest wrote, null when it never wrote one.</param>
+	/// <param name="Authored">The tag the FILE puts in this button's label, before any spawn.</param>
 	/// <param name="Active">The guest's own draw gate for the button.</param>
 	/// <param name="Slide">The button's live slide.</param>
 	public readonly record struct Button(
-		int Ordinal, string Name, int TitleOrdinal, string? Text, bool Active, int Slide)
+		int Ordinal, string Name, int TitleOrdinal, string? Text, string Authored,
+		bool Active, int Slide)
 	{
 		/// <summary>
 		/// True when the guest has actually put an entry in this button.
@@ -70,7 +72,18 @@ public static class Engine_ExpandableMenuItems
 		/// before anything is spawned into them, so gating on the draw gate counts 26 entries
 		/// on a menu that has none. A label is written only by a spawn or a refresh.
 		/// </summary>
-		public bool IsFilled => !string.IsNullOrEmpty(Text);
+		///
+		/// AND NOT MERELY "HAS TEXT" EITHER. Every button in the pool is authored carrying
+		/// <c>DEFAULT_TEXT_ID</c>, and the guest hands that same tag straight back for the
+		/// buttons it never spawned into — so a bare emptiness test reported the pause menu as
+		/// "26 of 26 filled" when eight were real and eighteen were the placeholder, and the
+		/// real estate screen as "18 of 18" for one entry. Comparing against what the FILE put
+		/// there is the test that separates them, and it takes the placeholder from the
+		/// presentation rather than naming it here — a hardcoded "DEFAULT_TEXT_ID" would be a
+		/// host-side guess about a string the file already states.
+		public bool IsFilled =>
+			!string.IsNullOrEmpty(Text) &&
+			!string.Equals(Text, Authored, System.StringComparison.Ordinal);
 	}
 
 	/// <summary>
@@ -98,13 +111,18 @@ public static class Engine_ExpandableMenuItems
 
 		foreach (UiNode child in group.Children)
 		{
-			int titleOrdinal = FindTitle(child) is { } title ? title.Ordinal : -1;
+			UiNode? title = FindTitle(child);
+			int titleOrdinal = title?.Ordinal ?? -1;
 
 			buttons.Add(new Button(
 				child.Ordinal,
 				child.Name,
 				titleOrdinal,
 				titleOrdinal >= 0 ? At(text, titleOrdinal) : null,
+				// The authored tag, not the displayed string: `Display` has already had the
+				// guest's live text folded into it by the time this runs, so comparing against
+				// that would compare the label with itself.
+				title?.Text?.Tag ?? string.Empty,
 				At(active, child.Ordinal),
 				AtInt(slides, child.Ordinal)));
 		}
@@ -185,8 +203,8 @@ public static class Engine_ExpandableMenuItems
 		}
 
 		return filled.Count == 0
-			? $"{buttons.Count} button(s) in the pool, NONE carries a label — " +
-			  "the guest has spawned no entries"
+			? $"{buttons.Count} button(s) in the pool, every one still carrying its authored " +
+			  "placeholder — the guest has spawned no entries"
 			: $"{filled.Count} of {buttons.Count} button(s) filled: {string.Join(", ", filled)}";
 	}
 

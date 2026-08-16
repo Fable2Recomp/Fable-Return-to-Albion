@@ -31,7 +31,7 @@ public static class HostBridge
 	/// the game does not limp, it stops, and it stops before anything has written a guest log
 	/// segment to look in. Adding export 33 without touching this line is what that looks like.
 	/// </summary>
-	public const int ExpectedAbiVersion = 54;
+	public const int ExpectedAbiVersion = 56;
 
 	private const int MessageCapacity = 512;
 
@@ -54,7 +54,48 @@ public static class HostBridge
 	/// REPORT the version, which is the one case that genuinely wants the stale number.
 	/// </summary>
 	public static int? TryGetAbiVersion() =>
+		!Unusable &&
 		TryGetRawAbiVersion() is { } version && version == ExpectedAbiVersion ? version : null;
+
+	/// <summary>
+	/// Why the bridge was given up on, or empty while it is usable.
+	///
+	/// A MATCHING ABI IS NOT A RUNNING GUEST. The version check catches a stale library, and that
+	/// is the only failure it catches — a boot that failed for any other reason (no game data, a
+	/// XEX that would not load, an `Initialize` that returned false) leaves the version answering
+	/// correctly, so every `TryGetAbiVersion() is null` guard in the app passes and the whole UI
+	/// carries on polling a guest that does not exist.
+	///
+	/// That was survivable only because the native side stopped dereferencing a null kernel. It
+	/// still meant a failed session spent every frame asking a dead bridge questions and acting
+	/// on the zeroes it got back, which reads as a guest that is up and simply doing nothing.
+	/// </summary>
+	public static string UnusableReason { get; private set; } = string.Empty;
+
+	private static bool Unusable => UnusableReason.Length != 0;
+
+	/// <summary>
+	/// Gives up on the bridge, so every accessor guarded on <see cref="TryGetAbiVersion"/> starts
+	/// refusing at once.
+	///
+	/// LATCHED IN ONE PLACE ON PURPOSE. The alternative is teaching a few dozen call sites to each
+	/// remember a second condition, which is the mistake this type already made once — see the
+	/// note on <see cref="TryGetAbiVersion"/>. Called by <c>GameSession</c> when it abandons a
+	/// boot; cleared by a successful <see cref="Initialize"/> so a later session is not poisoned
+	/// by an earlier one.
+	/// </summary>
+	public static void MarkUnusable(string reason)
+	{
+		if (Unusable)
+		{
+			return;
+		}
+
+		UnusableReason = reason.Length != 0 ? reason : "the session gave up on the guest";
+		GD.PrintErr($"[host] the bridge is now REFUSING every read: {UnusableReason}. " +
+			"Anything that polls the guest will behave as though there is none, which is the " +
+			"honest answer.");
+	}
 
 	/// <summary>
 	/// The loaded library's ABI version whatever it is, or null when it could not be loaded at
@@ -250,6 +291,13 @@ public static class HostBridge
 		try
 		{
 			int ok = RefiiHostInitialize(gameDirectory, packed, message, (nuint)message.Length);
+			if (ok == 1)
+			{
+				// A guest is up, so any refusal latched by an earlier attempt is stale. Cleared
+				// on SUCCESS only — a second failed boot must not un-refuse the first.
+				UnusableReason = string.Empty;
+			}
+
 			return new ProbeResult(ok == 1, Decode(message));
 		}
 		catch (DllNotFoundException)
@@ -621,8 +669,33 @@ public static class HostBridge
 		Vector3 Position, Quaternion Rotation, uint ModelHash,
 		uint Address, ulong UniqueId, uint RecordHash);
 
-	/// <summary>How many entities <see cref="GetEntities"/> will read in one call.</summary>
-	private const int MaxEntities = 4096;
+	/// <summary>
+	/// How many entities <see cref="GetEntities"/> will read in one call.
+	///
+	/// SIZED ABOVE THE BIGGEST REGION, because the walk TRUNCATES rather than failing.
+	/// `RefiiHostGetEntities` runs `written < max_entities` as a loop condition and returns
+	/// the count it managed, so a cap below the live population is indistinguishable from a
+	/// guest that genuinely has that many entities.
+	///
+	/// At 4096 that silently cost Ravenscar its scenery. `Engine_StaticTwins.Reconcile` reads
+	/// "not in the list" as "the guest states no such entity" and HIDES the region's own copy —
+	/// so every record past the cap lost both halves at once, with no live node to replace the
+	/// static one. Measured: Ravenscar hid 1497 drawables that way, against 0 in HobbeCave,
+	/// whose 1669 live entities fit. Ravenscar's `.save` names 5749 records.
+	/// </summary>
+	private const int MaxEntities = 32768;
+
+	/// <summary>
+	/// The last <see cref="GetEntities"/> filled its buffer, so the list is a PREFIX of the
+	/// guest's entities rather than all of them.
+	///
+	/// Saturation is the only evidence available — the bridge returns a count and not an
+	/// overflow flag — so this reads "possibly truncated", and the honest response to it is to
+	/// stop drawing conclusions from an entity's ABSENCE. A count that exactly equals the cap
+	/// by coincidence costs one region a duplicate-prop pass; treating a truncated list as
+	/// complete empties the region.
+	/// </summary>
+	public static bool EntitiesTruncated { get; private set; }
 
 	private const int EntityStride = 12;
 
@@ -630,6 +703,8 @@ public static class HostBridge
 	private const uint MaxUnknownVtables = 32;
 
 	private static uint[]? _entityWords;
+
+	private static bool _reportedTruncation;
 
 	/// <summary>
 	/// A placement vtable the bridge does not know, and how many live entities carry it.
@@ -673,6 +748,15 @@ public static class HostBridge
 		uint count = RefiiHostGetEntities(
 			_entityWords, MaxEntities, out unknown, pairs, MaxUnknownVtables,
 			out uint distinct);
+
+		EntitiesTruncated = count >= MaxEntities;
+		if (EntitiesTruncated && !_reportedTruncation)
+		{
+			_reportedTruncation = true;
+			GD.PrintErr($"[host] the entity walk filled its {MaxEntities}-entry buffer — the " +
+				"list is a PREFIX of the guest's entities. Nothing may treat an entity's " +
+				"absence from it as a statement that the guest does not have one.");
+		}
 
 		distinct = System.Math.Min(distinct, MaxUnknownVtables);
 		unknownVtables = new UnknownPlacement[distinct];
@@ -1900,11 +1984,62 @@ public static class HostBridge
 	}
 
 	/// <summary>
-	/// FNV-1 hashes of the layers the guest currently has active.
+	/// FNV-1 hashes of the layers the guest has explicitly DEACTIVATED — worldMgr+72.
 	///
-	/// Layers gate ENTITY INSTANTIATION, so a host that places every placement it can find
-	/// places things the guest has not. The hash is over the layer name's EXACT bytes — no
-	/// lowercasing, no separator normalisation, unlike the world+level key.
+	/// THE GATE, and NOT <see cref="GetActiveLayers"/>. `sub_823662C8` reads a different
+	/// container per the layer's `load` attribute: `AlwaysOn` consults neither list,
+	/// `InitiallyOn` spawns iff ABSENT from +72, and anything else spawns iff PRESENT in +60.
+	/// The props build only ever emits the first two, so the whole runtime gate is "+72 names
+	/// this layer".
+	///
+	/// Both lists are EMPTY on a new game — `sub_8231BF20` default-constructs each and only
+	/// `World_LoadLevelFromSaveHeader` assigns them — so gating on the ACTIVATED list would hide
+	/// every `InitiallyOn` layer in a fresh world.
+	///
+	/// Null, not empty, when the native library predates ABI 55: empty is a real answer meaning
+	/// "nothing is deactivated", and a caller must be able to tell that from "cannot ask". A
+	/// stale library that returned empty would read as a fully-active world, which is the safe
+	/// direction, but it would do so silently.
+	/// </summary>
+	public static uint[]? GetDeactivatedLayers()
+	{
+		if (_deactivatedLayersMissing)
+		{
+			return null;
+		}
+
+		var hashes = new uint[256];
+		uint count;
+		try
+		{
+			count = RefiiHostGetDeactivatedLayers(hashes, (uint)hashes.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_deactivatedLayersMissing = true;
+			GD.PrintErr("[host] the native bridge predates ABI 55 and cannot report the " +
+				"deactivated layers — the layer gate is OFF, so nothing will be hidden. " +
+				"Rebuild the native library.");
+			return null;
+		}
+
+		if (count == 0)
+		{
+			return System.Array.Empty<uint>();
+		}
+
+		System.Array.Resize(ref hashes, (int)System.Math.Min(count, (uint)hashes.Length));
+		return hashes;
+	}
+
+	private static bool _deactivatedLayersMissing;
+
+	/// <summary>
+	/// FNV-1 hashes of the layers the guest has explicitly ACTIVATED — worldMgr+60.
+	///
+	/// Reported for diagnostics. It is NOT the gate — see <see cref="GetDeactivatedLayers"/>,
+	/// which is the list the `InitiallyOn` branch actually consults. The hash is over the layer
+	/// name's EXACT bytes: no lowercasing, no separator normalisation, unlike the world+level key.
 	/// </summary>
 	public static uint[] GetActiveLayers()
 	{
@@ -2448,6 +2583,32 @@ public static class HostBridge
 	}
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetUiMovie(
+		uint presentation, out uint outOrdinal, byte[]? outPath, uint capacity);
+
+	/// <summary>
+	/// The element of <paramref name="presentation"/> currently hosting a Bink movie, and the
+	/// path it is playing, or null when none is.
+	///
+	/// THE GUEST HAS NO EMBEDDED-VIDEO FLAG — a sprite whose `Movie` string is non-empty draws
+	/// a movie into its own rect INSTEAD of a texture, and that string is the only statement of
+	/// which element is playing. The ordinal is in the same traversal every other live array
+	/// uses, so it joins straight onto the built scene by index.
+	/// </summary>
+	public static (int Ordinal, string Path)? GetUiMovie(uint presentation)
+	{
+		var buffer = new byte[260];
+		if (RefiiHostGetUiMovie(presentation, out uint ordinal, buffer, (uint)buffer.Length) == 0)
+		{
+			return null;
+		}
+
+		int length = System.Array.IndexOf(buffer, (byte)0);
+		return ((int)ordinal,
+			System.Text.Encoding.ASCII.GetString(buffer, 0, length < 0 ? buffer.Length : length));
+	}
+
+	[DllImport(Library)]
 	private static extern int RefiiHostGetRequestedVideo(
 		byte[]? outBuffer, uint capacity, out uint outSize, out uint outGeneration);
 
@@ -2584,6 +2745,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetActiveLayers(uint[] outHashes, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetDeactivatedLayers(uint[] outHashes, uint capacity);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetLoadingScreen(

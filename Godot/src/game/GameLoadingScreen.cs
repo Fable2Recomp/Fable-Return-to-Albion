@@ -252,6 +252,22 @@ public partial class GameLoadingScreen : Node
 			return;
 		}
 
+		// THE FIRST BRIDGE READ OF THE FRAME, and it used to be an unguarded one.
+		//
+		// `GameUi._Process` calls this before any of its own gates, deliberately — a loading
+		// screen has to work in exactly the windows the other gates return early on. That put it
+		// ahead of every "is the guest usable" test in the app, so a session that had already
+		// abandoned its boot still reached the bridge here, which is how an ABI mismatch became a
+		// SIGSEGV in `RefiiHostGetLoadingScreen` with the explanation thirty log lines earlier.
+		//
+		// Hidden rather than merely skipped: leaving the furniture up would freeze whatever
+		// loading screen was last drawn over a game that has stopped.
+		if (HostBridge.TryGetAbiVersion() is null)
+		{
+			Hide("the bridge is not usable");
+			return;
+		}
+
 		if (HostBridge.GetLoadingScreen() is not { } loading || loading.Screen == 0)
 		{
 			Hide("the guest has no loading screen up");

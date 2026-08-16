@@ -109,7 +109,19 @@ public partial class GameWindow : Window
 		// Concealing is immediate. Revealing waits for the GUEST to say it has reached its
 		// front end — see _Process — rather than for a movie to end, which was the host
 		// guessing and put the menu on screen in the seam between two logos.
-		_video.MovieStarted += _ => _ui.Conceal();
+		// NOT FOR AN EMBEDDED MOVIE — an ability preview plays inside the abilities card, and
+		// concealing would hide the screen it belongs to.
+		_video.MovieStarted += _ =>
+		{
+			if (!_ui.HasEmbeddedMovie)
+			{
+				_ui.Conceal();
+			}
+		};
+
+		// So the UI can draw an embedded movie into the element hosting it: the presentation
+		// and its ordinal map live in GameUi, the decoded frame lives here.
+		_ui.Video = _video;
 
 		_session.Stopped += OnSessionStopped;
 

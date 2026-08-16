@@ -132,6 +132,11 @@ public partial class GameSession : Node
 			_driving = false;
 			string reason = HostBridge.HostedStatus;
 			GD.Print($"[game] guest stopped after {_steps:N0} steps: {reason}");
+
+			// AFTER the status is read, because latching makes the bridge refuse. A guest that
+			// has ended is as unreadable as one that never started, and the nodes polling it have
+			// no other way to find out — `Stopped` reaches only `GameWindow`.
+			HostBridge.MarkUnusable($"the guest stopped: {reason}");
 			EmitSignal(SignalName.Stopped, reason);
 			return;
 		}
@@ -213,7 +218,14 @@ public partial class GameSession : Node
 		Refii.Models.Engine_MdlMaterial.ReportIfChanged();
 
 		// Always. Leaving the guest's threads live at process exit aborts the process.
-		if (HostBridge.TryGetAbiVersion() is not null)
+		//
+		// THE RAW VERSION, NOT `TryGetAbiVersion`. That one now also reports the refusal latch,
+		// and the latch is set precisely when the guest STOPPED — so gating teardown on it would
+		// skip the shutdown in the one case that most needs it, and turn a clean exit into the
+		// abort this line exists to prevent. Refusing to READ a dead guest and refusing to TEAR
+		// IT DOWN are opposite things; only the library being absent or the wrong version can
+		// excuse the second.
+		if (HostBridge.TryGetRawAbiVersion() == HostBridge.ExpectedAbiVersion)
 		{
 			GD.Print($"[game] shutdown: {HostBridge.Shutdown().Message}");
 		}
@@ -223,9 +235,25 @@ public partial class GameSession : Node
 	private static string Directory(string configured) =>
 		System.IO.Directory.Exists(configured) ? configured : Engine_GameData.Resolve();
 
+	/// <summary>
+	/// Abandons the boot, and makes every OTHER node stop asking the guest questions.
+	///
+	/// THE SIGNAL ALONE WAS NOT ENOUGH, and the comment that said this stops the game was wrong.
+	/// `Stopped` is handled by `GameWindow.OnSessionStopped`, which deliberately leaves the window
+	/// up so the reason is readable — the UI stands on shipped assets and does not need a guest.
+	/// But `GameUi`, `GameAudio` and `GameInput` went on running, and `GameUi._Process` polls the
+	/// loading screen through the bridge before any of its own guards. So a boot that had already
+	/// given up spent every frame reading a guest that was never created.
+	///
+	/// Latching the bridge is what actually stops it, and it stops all of them at once rather
+	/// than relying on each to remember. It also covers the case the ABI check cannot see: a boot
+	/// that fails AFTER the version matched still leaves every `TryGetAbiVersion() is null` guard
+	/// passing, which is most of them.
+	/// </summary>
 	private void Fail(string reason)
 	{
 		GD.PrintErr($"[game] {reason}");
+		HostBridge.MarkUnusable(reason);
 		EmitSignal(SignalName.Stopped, reason);
 	}
 }

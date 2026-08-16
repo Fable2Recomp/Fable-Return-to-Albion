@@ -159,8 +159,9 @@ public sealed class Engine_UiWidescreen
 	/// Call AFTER the guest's live transforms each frame — see the class remarks for why once
 	/// at build time is not enough.
 	/// </summary>
-	public int Apply(IReadOnlyList<Node3D?> nodes)
+	public int Apply(Engine_UiSceneBuilder builder)
 	{
+		IReadOnlyList<Node3D?> nodes = builder.ByOrdinal;
 		int moved = 0;
 
 		foreach (Override entry in _overrides)
@@ -170,20 +171,14 @@ public sealed class Engine_UiWidescreen
 				continue;
 			}
 
+			// A POSITION, NOT AN ORIGIN. `widescreenXPos` is the same kind of value the guest
+			// states live, so it goes through the same writer — which subtracts the pivot term
+			// the builder folded into the origin. Assigning `transform.Origin.X` here would
+			// have quietly reinstated, for these 17 HUD elements, the displacement that put
+			// the pause menu's frames 136 units off each edge.
+			builder.SetLivePosition(entry.ParentOrdinal, entry.X, entry.Y);
+
 			Transform3D transform = node.Transform;
-			Vector3 origin = transform.Origin;
-
-			if (entry.X is { } x)
-			{
-				origin.X = x;
-			}
-
-			if (entry.Y is { } y)
-			{
-				origin.Y = y;
-			}
-
-			transform.Origin = origin;
 
 			if (entry.ScaleX is { } scale)
 			{

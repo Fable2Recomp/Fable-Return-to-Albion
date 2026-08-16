@@ -65,9 +65,31 @@ public static class Engine_BgfAttributeNames
 		// "metername" are different attributes — unlike everything above, which the artist
 		// happened to author in lower case. These are spelled as the executable's own string
 		// block spells them, at 0x820D9F3C onward.
+
+		// The tint's WEIGHT, same exact-case family. `sub_8286ED40` routes it to
+		// `sub_8286EFB8`, which rewrites lane .w of the packed vertex colour (.fac field 13).
+		"TintingAmount",
+
 		"MeterName", "SlideFaderName", "SlideFader2Name", "PulserName", "BoxName",
 		"TextName", "TinterName", "SlideToggleName", "SlideSetName", "PrimDescName",
 		"ImageName",
+
+		// A sprite whose `Movie` string is non-empty draws a Bink movie into its own rect
+		// INSTEAD of a texture; setting a texture clears it (`sub_8286DDC0`). Sprite +0x234.
+		"Movie", "Mask", "RenderInGame",
+
+		// THE CLIP BINDING, BY NAME not hierarchy: the mask carries `Mask` + `Scroller`, the
+		// clipped element carries `MaskName` / `ScrollerName` holding that mask's NAME. The two
+		// are INDEPENDENT — an element can scroll without being clipped.
+		"MaskName", "Scroller", "ScrollerName",
+
+		// Text and colour names the shipped screens use that were printing as raw #hex.
+		// `TextID` is the BABEL KEY an authored Text carries beside its English `textstring`
+		// — that pair is how a row states its own localised label.
+		"TextID", "textstring", "texttype", "textcolor.r", "textcolor.g", "textcolor.b",
+		"backcolor.r", "backcolor.g", "backcolor.b", "usebackcolor",
+		"horzscroll", "vertscroll", "leading", "tracking", "orientation",
+		"renderstyle", "rotationorder", "priority", "endtime", "timeoffset",
 
 		// The widescreen and centring overrides the shipped Lua reads off an element — see
 		// `widescreenadapter.lua` and `screencentertoggle.lua`. Zero means "no override".

@@ -70,11 +70,27 @@ public sealed class PropBuildStats
 
     public string EngineLevelError { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Placements with no model hash that DO declare a mesh component — the work list.
+    ///
+    /// A subset of <see cref="NoModelHash"/>, and the only part of it that is a defect. The rest
+    /// are triggers, markers, sound emitters and region volumes, which state no appearance and
+    /// were never going to draw. Reported as one number, 462 of them in Ravenscar said nothing
+    /// about how many models were actually lost.
+    /// </summary>
+    public int NoModelHashWithAppearance { get; set; }
+
+    /// <summary>engine_level instances dropped because another placement already occupies the
+    /// same transform with the same model. Silent until now, and it is subtracted from the
+    /// instance count the level reports.</summary>
+    public int EngineLevelDuplicate { get; set; }
+
     public override string ToString() =>
         $"save={SaveEntities} placements={Placements} instances={Instances} " +
         $"blocks={Blocks} supplemental={SupplementalHits} " +
         $"modelfills={SupplementalModelFills} " +
-        $"skipped(skeletal={Skeletal} unnamed={Unnamed} nomodel={NoModelHash} " +
+        $"skipped(skeletal={Skeletal} unnamed={Unnamed} " +
+        $"nomodel={NoModelHash}(of which {NoModelHashWithAppearance} DECLARE A MESH) " +
         $"unresolved={UnresolvedModel} character={RejectedCharacter} " +
         $"bridge={RejectedBridge} shellpos={ShellBadPosition}) " +
         $"namematched={NameMatched} curated={CuratedMatched} " +
@@ -83,7 +99,8 @@ public sealed class PropBuildStats
         $"children={GmdChildren} unresolved={GmdChildrenMissing}) (" +
         $"duprecord={DuplicateRecord} duptransform={DuplicateTransform}) " +
         $"engine_level(blocks={EngineLevelBlocks} inst={EngineLevelInstances} " +
-        $"unresolved={EngineLevelUnresolved} type21={EngineLevelType21Blocks}) " +
+        $"unresolved={EngineLevelUnresolved} duptransform={EngineLevelDuplicate} " +
+        $"type21={EngineLevelType21Blocks}) " +
         $"foliage(models={FoliageBlocks} inst={FoliageInstances} " +
         $"unresolved={FoliageUnresolved})" +
         (EngineLevelError.Length == 0 ? string.Empty : $" [{EngineLevelError}]");
@@ -142,8 +159,14 @@ public static class Engine_LevelProps
         }
 
         string savePath = Engine_LevelGdb.SiblingWithExtension(gdbPath, ".save");
-        List<KeyValuePair<uint, string>> saveMap =
-            Engine_GdbSaveMap.Parse(read(savePath), out SaveLayerStats layers);
+        List<SaveEntity> saveEntities =
+            Engine_GdbSaveMap.ParseEntities(read(savePath), out SaveLayerStats layers);
+        var saveMap = new List<KeyValuePair<uint, string>>(saveEntities.Count);
+        foreach (SaveEntity entity in saveEntities)
+        {
+            saveMap.Add(new KeyValuePair<uint, string>(entity.Record, entity.Name));
+        }
+
         stats.SaveEntities = saveMap.Count;
 
         // THE LAYER GATE, out loud. Everything downstream is built from this list, so if it is
@@ -298,6 +321,14 @@ public static class Engine_LevelProps
                 if (placement.ModelPathHash == 0)
                 {
                     stats.NoModelHash++;
+
+                    // AND WHETHER THAT WAS THE LEVEL'S ANSWER OR OURS. A placement declaring a
+                    // mesh component that yielded no `ModelFile` is a hole in the walk, not a
+                    // trigger volume, and it is the only half of this count worth chasing.
+                    if (placement.StatesAppearance)
+                    {
+                        stats.NoModelHashWithAppearance++;
+                    }
 
                     string shellKey = Engine_PropModelIndex.EntityKey(placement.EntityName);
                     if (IsNoHashShellKey(shellKey) && HasWorldishPosition(placement))
@@ -667,12 +698,70 @@ public static class Engine_LevelProps
             return null;
         }
 
+        StoreLayerMap(container, saveEntities);
+
         if (OS.GetThreadCallerId() != OS.GetMainThreadId())
         {
             Engine_PropStreamer.PrefetchModels(Engine_PropStreamer.PendingModelPaths(container));
         }
 
         return container;
+    }
+
+    /// <summary>Record hashes, parallel to <see cref="LayerKeysMeta"/>.</summary>
+    public const string LayerRecordsMeta = "layer_records";
+
+    /// <summary>The layer each record sits in — FNV-1 of the layer `name` attribute.</summary>
+    public const string LayerKeysMeta = "layer_keys";
+
+    /// <summary>
+    /// The layer keys whose `load` is `AlwaysOn`, as a set.
+    ///
+    /// Held separately because it is a property of the LAYER, and there are 81 of them against
+    /// Ravenscar's 5749 entities. Nothing may ever hide an entity in one of these: the guest's
+    /// `AlwaysOn` branch at 0x823664D0 spawns without consulting either runtime list.
+    /// </summary>
+    public const string AlwaysOnLayersMeta = "layer_alwayson";
+
+    /// <summary>
+    /// Writes the record → layer map onto the props container.
+    ///
+    /// IT RIDES ON THE NODE because the consumer is downstream of the build and has nothing but
+    /// the region. `Engine_StaticTwins` decides, every half second, whether the region's copy of
+    /// a record should be visible; without the layer it was left inferring that from whether the
+    /// entity turned up in a walk of guest memory, and absence from a walk is not a statement.
+    ///
+    /// The whole `.save` set is stored, not just the placements that drew something — a record
+    /// with no prop costs two array slots and its absence would read as "no layer known", which
+    /// is the ambiguity this exists to remove.
+    /// </summary>
+    private static void StoreLayerMap(Node3D container, List<SaveEntity> saveEntities)
+    {
+        var records = new long[saveEntities.Count];
+        var keys = new long[saveEntities.Count];
+        var alwaysOn = new HashSet<uint>();
+
+        for (int i = 0; i < saveEntities.Count; i++)
+        {
+            SaveEntity entity = saveEntities[i];
+            records[i] = entity.Record;
+            keys[i] = entity.LayerHash;
+            if (entity.LayerAlwaysOn && entity.LayerHash != 0)
+            {
+                alwaysOn.Add(entity.LayerHash);
+            }
+        }
+
+        var alwaysOnKeys = new long[alwaysOn.Count];
+        int at = 0;
+        foreach (uint key in alwaysOn)
+        {
+            alwaysOnKeys[at++] = key;
+        }
+
+        container.SetMeta(LayerRecordsMeta, records);
+        container.SetMeta(LayerKeysMeta, keys);
+        container.SetMeta(AlwaysOnLayersMeta, alwaysOnKeys);
     }
 
     private static void AppendCompanionBlocks(
@@ -1219,9 +1308,17 @@ public static class Engine_LevelProps
         HashSet<string> transformKeys,
         PropBuildStats stats)
     {
+        // THE WHOLE FILE, INCLUDING ALL THE FOLIAGE, rides on this read — so a miss is said.
+        //
+        // `AppendFoliageBlocks` is called from the bottom of this function, so a bare return here
+        // drops the level's engine_level blocks AND every instanced plant in one go. Ravenscar
+        // draws 80,530 foliage instances from this path and Dunecrest 29,285; a level that
+        // silently returned zero of them looked like a level with no undergrowth authored, and
+        // there was nothing in the log to say otherwise.
         byte[]? bytes = read(enginePath);
         if (bytes is null)
         {
+            stats.EngineLevelError = $"absent from every bank: {enginePath}";
             return;
         }
 
@@ -1258,6 +1355,9 @@ public static class Engine_LevelProps
                 Transform3D transform = BuildStaticPlacementTransform(instance.Values);
                 if (!transformKeys.Add(TransformKey(transform, modelPath)))
                 {
+                    // COUNTED, because the gap between `block.Instances.Count` and `emitted` was
+                    // otherwise invisible and reads as the file having stated fewer instances.
+                    stats.EngineLevelDuplicate++;
                     continue;
                 }
 

@@ -462,7 +462,7 @@ public static class Engine_TexImage
 		int blocksW = Math.Max(1, (width + 3) / 4);
 		int blocksH = Math.Max(1, (height + 3) / 4);
 
-		Span<uint> texels = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(pixels);
+		Span<uint> texels = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(pixels.AsSpan());
 		Span<uint> palette = stackalloc uint[4];
 
 		for (int by = 0; by < blocksH; ++by)

@@ -50,6 +50,31 @@ public static class Engine_GhfTerrain
 
     public const int CellStride = 14;
 
+    /// <summary>World units between adjacent heightfield samples. Half a unit.</summary>
+    /// <remarks>
+    /// THIS SETS THE WORLD SCALE FOR EVERYTHING, so it is worth more than a bare literal — terrain
+    /// vertices are placed at `origin + index * CellSize` and every placement that lands on the
+    /// ground inherits it. It also decides how the atmosphere reads: the fog curve is
+    /// DISTANCE-DRIVEN over a fixed 2000-unit domain against control points the theme states in the
+    /// guest's units, so a scale that is off by a factor puts every control point at the wrong
+    /// distance and produces a faithful curve evaluated in the wrong space.
+    ///
+    /// IT IS THE FILES' OWN, AND THE TILING PROVES IT. A census of all 83 shipped heightfields
+    /// (`src/tools/GhfHeaderProbe.cs`) found every dimension is `2^n + 1` and every origin a
+    /// multiple of 16, and the fields ABUT:
+    ///
+    ///     new_heightfield_10   769 x 769   origin (0, 0)
+    ///     new_heightfield_1    769 x 641   origin (0, 384)
+    ///
+    /// `(769 - 1) * 0.5 = 384`, exactly where the neighbour begins. At 1.0 the two would overlap
+    /// by half their width; at 0.25 a 384-unit gap would open between them. The `- 1` matters and
+    /// is the same fencepost the lightmap binding uses — a 577-sample field bakes to 576 texels.
+    ///
+    /// NOT IN THE HEADER. The .ghf header is 0x14 bytes carrying originX, originZ, width and
+    /// height, and the four bytes at +0x08 that look like the obvious home for a spacing are ZERO
+    /// in all 83 files — checked, because an unread field beside the origin is exactly where one
+    /// would live. The spacing is a constant of the format rather than a per-file value.
+    /// </remarks>
     public const float CellSize = 0.5f;
 
 

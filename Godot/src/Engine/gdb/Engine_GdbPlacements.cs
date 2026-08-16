@@ -39,6 +39,15 @@ public sealed class GdbPlacement
 
     public List<uint> ModelPathHashes { get; set; } = new();
 
+    /// <summary>
+    /// This placement declares a mesh component but no model hash came out of it.
+    ///
+    /// Only ever set when <see cref="ModelPathHashes"/> is empty, and it is what separates a
+    /// placement that was never going to draw from one we FAILED to resolve. See
+    /// <c>Engine_GdbPlacements.StatesAppearanceComponent</c>.
+    /// </summary>
+    public bool StatesAppearance { get; set; }
+
     public GdbPlacement Clone() => new()
     {
         Hash = Hash,
@@ -58,6 +67,7 @@ public sealed class GdbPlacement
         SkeletonFileHash = SkeletonFileHash,
         RetargetSkeletonFileHash = RetargetSkeletonFileHash,
         ModelPathHashes = new List<uint>(ModelPathHashes),
+        StatesAppearance = StatesAppearance,
     };
 }
 
@@ -219,6 +229,16 @@ public static class Engine_GdbPlacements
         if (result.ModelPathHashes.Count != 0)
         {
             result.ModelPathHash = result.ModelPathHashes[0];
+        }
+        else
+        {
+            // Only when there is nothing — this walks the parent chain a second time, and the
+            // answer is only interesting for the placements that came back empty.
+            result.StatesAppearance =
+                StatesAppearanceComponent(view, record) ||
+                (result.ParentHash != 0 &&
+                    view.TryLookup(result.ParentHash, out int appearanceParent) &&
+                    StatesAppearanceComponent(view, appearanceParent));
         }
 
         if (TryReadInheritedHash(view, record, GdbHash.SkeletonFile, out uint skeleton))
@@ -526,6 +546,43 @@ public static class Engine_GdbPlacements
         });
 
         return hashes;
+    }
+
+    /// <summary>
+    /// Does this record, or any ancestor, STATE an appearance component at all?
+    ///
+    /// THE DENOMINATOR FOR "no model hash", which conflated two different facts and so could
+    /// not be acted on. A placement with no `ModelFile` is either a trigger, a marker, a sound
+    /// emitter or a region volume — content that was never going to draw and whose absence is
+    /// correct — or an entity that DOES declare a mesh component whose hash the walk above
+    /// failed to reach, which is our defect and a genuinely missing model. Ravenscar reported
+    /// 462 of them as one number, so there was no way to tell how many were real.
+    ///
+    /// The test is the presence of the FIELD, not of anything it resolves to: the four
+    /// collectors each begin by looking one of these up, so a record carrying none of them
+    /// gives them nothing to do and its empty result is the honest answer rather than a
+    /// dead end. Run only when the collection came back empty, so the common path is unchanged.
+    /// </summary>
+    public static bool StatesAppearanceComponent(GdbView view, int record)
+    {
+        bool stated = false;
+        VisitRecordAndParents(view, record, r =>
+        {
+            if (stated)
+            {
+                return;
+            }
+
+            stated =
+                view.TryFindFieldOwner(r, GdbHash.StaticMeshComponent, 6, out _, out _) ||
+                view.TryFindFieldOwner(
+                    r, GdbHash.GraphicAppearanceAnimatedMeshComponent, 6, out _, out _) ||
+                view.TryFindFieldOwner(
+                    r, GdbHash.StaticMultipleMeshComponent, 6, out _, out _) ||
+                view.TryFindLocalRaw(r, GdbHash.GraphicAppearanceComponent, 6, out _, out _);
+        });
+
+        return stated;
     }
 
     private static void VisitRecordAndParents(GdbView view, int record, Action<int> visit)

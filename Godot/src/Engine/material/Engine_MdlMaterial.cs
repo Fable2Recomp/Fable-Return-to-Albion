@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Godot;
 using Refii.Textures;
@@ -79,7 +80,7 @@ public static class Engine_MdlMaterial
     public const string ShaderPath =
         "res://src/Engine/material/standard_material.gdshader";
 
-    private static Shader? _shader;
+
 
     // NO TEXTURE CACHE HERE ANY MORE. This class used to own a private Dictionary of decoded
     // textures that lived and died with the process, while the UI reached the same files through
@@ -110,13 +111,35 @@ public static class Engine_MdlMaterial
     /// — it would leave two Shader instances alive with materials bound to each, and "the same
     /// shader" would stop being true of the scene without anything reporting a fault.
     /// </summary>
-    private static Shader? Shared()
+    private static Shader? Shared() => Shared(ShaderFamily.Standard);
+
+    /// <summary>
+    /// The shader for one FAMILY, loaded once each.
+    /// </summary>
+    /// <remarks>
+    /// ONE INSTANCE PER FAMILY, not one per material — the same reason the single shader was
+    /// cached before. The dictionary replaces the old single field because the family is now
+    /// chosen by the draw path, and a level change builds several families concurrently on two
+    /// worker threads.
+    /// </remarks>
+    private static Shader? Shared(ShaderFamily family)
     {
+        string path = Engine_ShaderFamily.PathFor(family);
+
         lock (ShaderLock)
         {
-            return _shader ??= GD.Load<Shader>(ShaderPath);
+            if (_shaders.TryGetValue(path, out Shader? cached))
+            {
+                return cached;
+            }
+
+            Shader? loaded = GD.Load<Shader>(path);
+            _shaders[path] = loaded;
+            return loaded;
         }
     }
+
+    private static readonly Dictionary<string, Shader?> _shaders = new();
 
     private static readonly object ShaderLock = new();
 

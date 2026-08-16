@@ -34,6 +34,26 @@ public sealed class SaveLayerStats
         $"gated={Gated} unlayered={Unlayered}";
 }
 
+/// <summary>
+/// One `&lt;Entity&gt;` from a level's `.save`, WITH the layer that contains it.
+///
+/// The layer is carried because the gate is not decided once at load. `AlwaysOn` is
+/// unconditional, but `InitiallyOn` spawns only while its layer is not deactivated, and the
+/// guest moves layers in and out of those lists while you play — so a host that resolves the
+/// gate at build time and throws the layer away can never follow it afterwards. That is what
+/// left `Engine_StaticTwins` inferring the gate from whether an entity happened to appear in a
+/// walk of guest memory, which is not the same question and answered it wrongly.
+/// </summary>
+/// <param name="Record">The GDB record hash the entity names.</param>
+/// <param name="Name">Its `name` attribute, for the log.</param>
+/// <param name="LayerHash">FNV-1 over the layer `name` attribute's EXACT bytes.</param>
+/// <param name="LayerAlwaysOn">
+/// True for `AlwaysOn`, false for `InitiallyOn`. Only the second is gateable at runtime — the
+/// guest's `AlwaysOn` branch consults no list at all, so nothing may ever hide one of these.
+/// </param>
+public readonly record struct SaveEntity(
+    uint Record, string Name, uint LayerHash, bool LayerAlwaysOn);
+
 public static class Engine_GdbSaveMap
 {
     /// <summary>
@@ -64,6 +84,26 @@ public static class Engine_GdbSaveMap
         Parse(saveBytes, out _);
 
     /// <summary>
+    /// The same walk, projected to the (record, name) pairs most callers want.
+    ///
+    /// ONE PARSER. <see cref="ParseEntities"/> is the implementation and this is a view of it —
+    /// a second reader of the same XML is how the layer gate and the placement pass would come
+    /// to disagree about which entities the level states.
+    /// </summary>
+    public static List<KeyValuePair<uint, string>> Parse(
+        byte[]? saveBytes, out SaveLayerStats stats)
+    {
+        List<SaveEntity> entities = ParseEntities(saveBytes, out stats);
+        var pairs = new List<KeyValuePair<uint, string>>(entities.Count);
+        foreach (SaveEntity entity in entities)
+        {
+            pairs.Add(new KeyValuePair<uint, string>(entity.Record, entity.Name));
+        }
+
+        return pairs;
+    }
+
+    /// <summary>
     /// The entities a level's `.save` states, GATED BY THEIR LAYER exactly as the guest gates
     /// them.
     ///
@@ -86,11 +126,11 @@ public static class Engine_GdbSaveMap
     /// the tag is some other id and nothing here should key on it. This reader needs neither —
     /// it reads the `load` attribute directly.
     /// </summary>
-    public static List<KeyValuePair<uint, string>> Parse(
+    public static List<SaveEntity> ParseEntities(
         byte[]? saveBytes, out SaveLayerStats stats)
     {
         stats = new SaveLayerStats();
-        var entries = new List<KeyValuePair<uint, string>>();
+        var entries = new List<SaveEntity>();
         if (saveBytes is null || saveBytes.Length == 0)
         {
             return entries;
@@ -103,6 +143,8 @@ public static class Engine_GdbSaveMap
         // children and close themselves constantly.
         string layerTag = string.Empty;
         bool layerSpawns = false;
+        uint layerHash = 0;
+        bool layerAlwaysOn = false;
 
         int cursor = 0;
         while (true)
@@ -127,6 +169,8 @@ public static class Engine_GdbSaveMap
                 {
                     layerTag = string.Empty;
                     layerSpawns = false;
+                    layerHash = 0;
+                    layerAlwaysOn = false;
                 }
 
                 cursor = close + 1;
@@ -150,7 +194,9 @@ public static class Engine_GdbSaveMap
 
             if (tag.Equals("Entity", StringComparison.Ordinal))
             {
-                cursor = ReadEntity(xml, open, close, entries, stats, layerTag, layerSpawns);
+                cursor = ReadEntity(
+                    xml, open, close, entries, stats,
+                    layerTag, layerSpawns, layerHash, layerAlwaysOn);
                 continue;
             }
 
@@ -182,6 +228,16 @@ public static class Engine_GdbSaveMap
                 {
                     layerTag = tag;
                     layerSpawns = spawns;
+
+                    // THE LAYER'S OWN KEY, so the gate can be re-decided while the game runs.
+                    //
+                    // FNV-1 over the `name` attribute's EXACT bytes — the guest hashes it that
+                    // way at 0x823664B4, with no lowercasing and no separator normalisation,
+                    // unlike the world+level key. The `id_XXXXXXXX` tag is a DIFFERENT id and
+                    // must not be used: `id_5A4CBED4` carries name="DefaultLayer", whose FNV-1
+                    // is 0x67E6B60F.
+                    layerHash = LayerKey(xml, nameEnd, close);
+                    layerAlwaysOn = value.Equals("AlwaysOn", StringComparison.Ordinal);
                 }
             }
 
@@ -192,16 +248,42 @@ public static class Engine_GdbSaveMap
     }
 
     /// <summary>
+    /// FNV-1 of a layer element's <c>name="..."</c> attribute, or 0 when it has none.
+    ///
+    /// Hashed over the attribute's UTF-8 bytes exactly as written. A layer with no name cannot
+    /// be matched against the guest's lists and is reported as 0 rather than as some fallback,
+    /// because a wrong key would silently gate the wrong entities.
+    /// </summary>
+    private static uint LayerKey(string xml, int attributesStart, int close)
+    {
+        const string NameAttribute = "name=\"";
+
+        int at = xml.IndexOf(NameAttribute, attributesStart, StringComparison.Ordinal);
+        if (at < 0 || at > close)
+        {
+            return 0;
+        }
+
+        at += NameAttribute.Length;
+        int end = xml.IndexOf('"', at);
+        return end < 0 || end > close
+            ? 0
+            : Refii.Core.Engine_GameHash.Fnv1(xml[at..end]);
+    }
+
+    /// <summary>
     /// Takes one <c>&lt;Entity name="..."&gt;0xHASH&lt;/Entity&gt;</c> and returns where to resume.
     /// </summary>
     private static int ReadEntity(
         string xml,
         int open,
         int close,
-        List<KeyValuePair<uint, string>> entries,
+        List<SaveEntity> entries,
         SaveLayerStats stats,
         string layerTag,
-        bool layerSpawns)
+        bool layerSpawns,
+        uint layerHash,
+        bool layerAlwaysOn)
     {
         const string NameAttribute = "name=\"";
 
@@ -266,7 +348,7 @@ public static class Engine_GdbSaveMap
             hash = unchecked((hash << 4) | (uint)digit);
         }
 
-        entries.Add(new KeyValuePair<uint, string>(hash, name));
+        entries.Add(new SaveEntity(hash, name, layerHash, layerAlwaysOn));
         ++stats.Entities;
         return resume;
     }
