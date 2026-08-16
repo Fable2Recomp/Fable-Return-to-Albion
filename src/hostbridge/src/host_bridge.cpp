@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <csignal>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -27,6 +28,14 @@
 #include <vector>
 
 #include <SDL3/SDL_events.h>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <dbghelp.h>
+#endif
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -65,6 +74,7 @@ void GuestTickPumpCounters(uint64_t* out_ticks, uint64_t* out_drained,
                            uint32_t* out_queued);
 int32_t GuestSavedGameCount();
 void RefreshGuestSavedGameCount();
+void FinishStuckInGameLoadingScreenFromHost(uint8_t* base);
 }  // namespace refii::vfs
 #include "refii_host.h"
 
@@ -138,6 +148,148 @@ HostedGuest& Hosted() {
     return hosted;
 }
 
+/// Guest memory is not always THERE on Windows.
+///
+/// The guest space is RESERVED up front, committed as the guest touches it, and decommitted
+/// as the guest frees it. Linux backs an untouched page with zeroes on read; Windows faults on
+/// reserved-but-uncommitted memory, so a host peek at a global the guest has not written yet,
+/// or through a pointer chain the guest has since torn down (a level change frees the old
+/// "3D Engine" under `RefiiHostGetRenderFence`), takes the whole process down inside a
+/// P/Invoke. Every host-side read of guest memory goes through here.
+///
+/// SEH rather than VirtualQuery-then-read: a query per read is a syscall the entity and UI
+/// walks pay thousands of times a frame, and it still races the guest's own decommit between
+/// the query and the read. A `__try` costs nothing on the path that does not fault.
+///
+/// A plain function with no C++ objects on purpose — neither MSVC nor clang will put SEH in a
+/// frame that also needs unwinding. The copy itself is out of line so the faulting instruction
+/// is a call the try range is guaranteed to cover, whatever the optimiser does with the body.
+#ifdef _WIN32
+__attribute__((noinline)) void CopyGuestBytesRaw(const uint8_t* source, void* out,
+                                                 std::size_t size) {
+    std::memcpy(out, source, size);
+}
+
+int GuestFaultFilter(unsigned long code) {
+    return code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR
+               ? EXCEPTION_EXECUTE_HANDLER
+               : EXCEPTION_CONTINUE_SEARCH;
+}
+
+bool CopyGuestBytesGuarded(const uint8_t* source, void* out, std::size_t size) {
+    __try {
+        CopyGuestBytesRaw(source, out, size);
+        return true;
+    } __except (GuestFaultFilter(GetExceptionCode())) {
+        return false;
+    }
+}
+
+__attribute__((noinline)) void StoreGuestBytesRaw(uint8_t* target, const void* value,
+                                                  std::size_t size) {
+    std::memcpy(target, value, size);
+}
+
+bool StoreGuestBytesGuarded(uint8_t* target, const void* value, std::size_t size) {
+    __try {
+        StoreGuestBytesRaw(target, value, size);
+        return true;
+    } __except (GuestFaultFilter(GetExceptionCode())) {
+        return false;
+    }
+}
+
+/// Non-zero while a guarded read is in flight, so the trace handler below does not report
+/// the fault that this path exists to absorb.
+thread_local int g_guarded_guest_reads = 0;
+#endif
+
+/// The first few unreadable reads are worth naming: this is the read that used to take
+/// Windows down, and a stale chain that reads zero forever is a symptom worth a line.
+[[maybe_unused]] void ReportUnreadableGuestRead(uint32_t address, std::size_t size) {
+    static std::atomic<uint32_t> reported{0};
+    if (reported.fetch_add(1, std::memory_order_relaxed) < 12u) {
+        REXLOG_INFO(
+            "Refii host: guest 0x{:08X} (+{}) is not readable — uncommitted or freed; "
+            "reading zeroes instead of faulting (harmless on Linux, fatal on Windows)",
+            address, size);
+    }
+}
+
+/// Copies `size` guest bytes at `address` into `out`, or zero-fills and returns false when
+/// they are not readable. The one read primitive everything else here is built on.
+bool CopyGuest(const uint8_t* base, uint32_t address, void* out, std::size_t size) {
+    if (base == nullptr) {
+        std::memset(out, 0, size);
+        return false;
+    }
+
+#ifdef _WIN32
+    ++g_guarded_guest_reads;
+    const bool ok = CopyGuestBytesGuarded(base + address, out, size);
+    --g_guarded_guest_reads;
+    if (!ok) {
+        std::memset(out, 0, size);
+        ReportUnreadableGuestRead(address, size);
+        return false;
+    }
+    return true;
+#else
+    std::memcpy(out, base + address, size);
+    return true;
+#endif
+}
+
+/// One guest byte, or 0 when it is not readable.
+uint8_t GuestByteAt(const uint8_t* base, uint32_t address) {
+    uint8_t value = 0;
+    CopyGuest(base, address, &value, sizeof(value));
+    return value;
+}
+
+/// One guest word, big-endian, or 0 when it is not readable.
+uint32_t GuestWordAt(const uint8_t* base, uint32_t address) {
+    uint32_t value = 0;
+    CopyGuest(base, address, &value, sizeof(value));
+    return __builtin_bswap32(value);
+}
+
+/// One guest halfword, big-endian, or 0 when it is not readable.
+uint16_t GuestHalfAt(const uint8_t* base, uint32_t address) {
+    uint16_t value = 0;
+    CopyGuest(base, address, &value, sizeof(value));
+    return __builtin_bswap16(value);
+}
+
+/// One guest doubleword, big-endian, or 0 when it is not readable.
+uint64_t GuestWord64At(const uint8_t* base, uint32_t address) {
+    uint64_t value = 0;
+    CopyGuest(base, address, &value, sizeof(value));
+    return __builtin_bswap64(value);
+}
+
+/// Stores `size` bytes into guest memory, or returns false when the page is not there. The
+/// few host-side writes are latches on objects the guest handed over, so a miss is a stale
+/// pointer, not a reason to fault.
+bool StoreGuest(uint8_t* base, uint32_t address, const void* value, std::size_t size) {
+    if (base == nullptr) {
+        return false;
+    }
+
+#ifdef _WIN32
+    ++g_guarded_guest_reads;
+    const bool ok = StoreGuestBytesGuarded(base + address, value, size);
+    --g_guarded_guest_reads;
+    if (!ok) {
+        ReportUnreadableGuestRead(address, size);
+    }
+    return ok;
+#else
+    std::memcpy(base + address, value, size);
+    return true;
+#endif
+}
+
 void SetEnvironmentValue(const char* name, const char* value) {
 #ifdef _WIN32
     ::_putenv_s(name, value);
@@ -146,9 +298,154 @@ void SetEnvironmentValue(const char* name, const char* value) {
 #endif
 }
 
+/// A fail-fast inside the guest leaves no exception, no log line and no exit status —
+/// only 0xC0000409 from ucrtbase. These name the reason before the process dies.
+void ReportEmbeddedFailure(const char* kind, const std::string& detail) {
+    std::string line = std::string("[hostbridge] ") + kind;
+    if (!detail.empty()) {
+        line += ": " + detail;
+    }
+    line += '\n';
+
+    std::fputs(line.c_str(), stderr);
+
+#ifdef _WIN32
+    void* frames[62];
+    const USHORT captured = ::CaptureStackBackTrace(0, 62, frames, nullptr);
+    const HANDLE process = ::GetCurrentProcess();
+    ::SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES);
+    ::SymInitialize(process, nullptr, TRUE);
+
+    alignas(SYMBOL_INFO) char symbol_storage[sizeof(SYMBOL_INFO) + 512] = {};
+    auto* symbol = reinterpret_cast<SYMBOL_INFO*>(symbol_storage);
+    symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+    symbol->MaxNameLen = 511;
+
+    for (USHORT frame = 0; frame < captured; ++frame) {
+        const auto address = reinterpret_cast<DWORD64>(frames[frame]);
+        const char* name = "??";
+        if (::SymFromAddr(process, address, nullptr, symbol)) {
+            name = symbol->Name;
+        }
+
+        HMODULE module = nullptr;
+        const char* module_name = "?";
+        unsigned long long rva = 0;
+        if (::GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                 reinterpret_cast<LPCSTR>(frames[frame]), &module) &&
+            module != nullptr) {
+            static char module_path[MAX_PATH];
+            if (::GetModuleFileNameA(module, module_path, MAX_PATH) != 0) {
+                const char* slash = std::strrchr(module_path, '\\');
+                module_name = slash != nullptr ? slash + 1 : module_path;
+            }
+            rva = address - reinterpret_cast<DWORD64>(module);
+        }
+
+        IMAGEHLP_LINE64 location = {};
+        location.SizeOfStruct = sizeof(location);
+        DWORD displacement = 0;
+        if (::SymGetLineFromAddr64(process, address, &displacement, &location)) {
+            std::fprintf(stderr, "  #%02u %s!%s (%s:%lu)\n", frame, module_name, name,
+                         location.FileName, location.LineNumber);
+        } else {
+            std::fprintf(stderr, "  #%02u %s+0x%llx (nearest %s)\n", frame, module_name,
+                         rva, name);
+        }
+    }
+#endif
+
+    std::fflush(stderr);
+}
+
+#ifdef _WIN32
+/// MSVC keeps terminate handlers PER THREAD, so a throw on a guest worker never reaches
+/// the one installed here. This catches the throw itself, before any unwinding.
+LONG CALLBACK TraceThrowHandler(PEXCEPTION_POINTERS info) {
+    if (info == nullptr || info->ExceptionRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code == 0xE06D7363u) {
+        // Opt-in: a throw is not necessarily fatal, and the guest throws in normal operation.
+        static const bool trace_throws = [] {
+            const char* value = std::getenv("REFII_HOST_TRACE_THROWS");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (trace_throws) {
+            ReportEmbeddedFailure("C++ throw", {});
+        }
+    } else if (code == EXCEPTION_ACCESS_VIOLATION) {
+        // A guarded read is about to absorb this one; it is not the crash this reports.
+        if (g_guarded_guest_reads > 0) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+
+        // The guest may fault by design for MMIO, so cap the noise.
+        static std::atomic<int> reported{0};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 3) {
+            std::ostringstream detail;
+            detail << "at 0x" << std::hex << info->ExceptionRecord->ExceptionAddress
+                   << " accessing 0x" << info->ExceptionRecord->ExceptionInformation[1];
+            ReportEmbeddedFailure("ACCESS VIOLATION", detail.str());
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
+void InstallEmbeddedFailureHandlers() {
+    static bool installed = false;
+    if (installed) {
+        return;
+    }
+    installed = true;
+
+#ifdef _WIN32
+    // Always on. A crash that prints nothing costs a whole test run to learn nothing from;
+    // the handler is capped and only reports faults that were going to be fatal anyway.
+    ::AddVectoredExceptionHandler(1, TraceThrowHandler);
+#endif
+
+    // abort() raises SIGABRT before it fail-fasts, and unlike terminate this handler is
+    // process-wide — it is the only one that sees a guest worker die.
+    std::signal(SIGABRT, [](int) {
+        ReportEmbeddedFailure("SIGABRT", {});
+    });
+
+    std::set_terminate([]() {
+        std::string detail;
+        if (std::exception_ptr active = std::current_exception()) {
+            try {
+                std::rethrow_exception(active);
+            } catch (const std::exception& error) {
+                detail = error.what();
+            } catch (...) {
+                detail = "non-std exception";
+            }
+        } else {
+            detail = "no active exception";
+        }
+        ReportEmbeddedFailure("std::terminate", detail);
+        std::abort();
+    });
+
+#ifdef _WIN32
+    _set_invalid_parameter_handler([](const wchar_t*, const wchar_t*, const wchar_t*,
+                                      unsigned int, uintptr_t) {
+        ReportEmbeddedFailure("CRT invalid parameter", {});
+        std::abort();
+    });
+#endif
+}
+
 /// Applies the switches that make the guest a simulation server rather than an app.
 /// Shared by both entry points so they cannot drift.
 void ApplyEmbeddedEnvironment() {
+    InstallEmbeddedFailureHandlers();
+
     // No window, no overlays, no presentation.
     SetEnvironmentValue("REX_EMBED_HEADLESS", "1");
 }
@@ -217,11 +514,7 @@ void ArmGuestNoGpuMode() {
     }
 
     // Guest memory is big-endian; these are plain aligned loads the guest also does.
-    const auto load_be32 = [&](uint32_t guest_address) {
-        uint32_t raw = 0;
-        std::memcpy(&raw, base + guest_address, sizeof(raw));
-        return __builtin_bswap32(raw);
-    };
+    const auto load_be32 = [base](uint32_t guest_address) { return GuestWordAt(base, guest_address); };
 
     const uint32_t device = load_be32(kGuestDevicePointer);
     if (device == 0) {
@@ -236,16 +529,16 @@ void ArmGuestNoGpuMode() {
         return;
     }
 
-    uint8_t* flag = base + device + kDeviceNoGpuFlagByte;
-    const uint8_t before = *flag;
-    *flag = static_cast<uint8_t>(before | kDeviceNoGpuFlagBit);
+    const uint8_t before = GuestByteAt(base, device + kDeviceNoGpuFlagByte);
+    const uint8_t latched = static_cast<uint8_t>(before | kDeviceNoGpuFlagBit);
+    StoreGuest(base, device + kDeviceNoGpuFlagByte, &latched, sizeof(latched));
     g_no_gpu_armed = true;
     g_guest_device = device;
 
     REXLOG_INFO(
         "Refii host: armed the guest's no-GPU mode (device=0x{:08X}, "
         "dev+0x2ABD 0x{:02X} -> 0x{:02X})",
-        device, before, *flag);
+        device, before, latched);
 }
 
 /// Keeps `D3DDevice_BlockUntilIdle` satisfiable.
@@ -326,15 +619,11 @@ void RetireGuestSceneStreams() {
         return;
     }
 
-    const auto read32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const auto write32 = [base](uint32_t at, uint32_t value) {
         const uint32_t raw = __builtin_bswap32(value);
-        std::memcpy(base + at, &raw, sizeof(raw));
+        StoreGuest(base, at, &raw, sizeof(raw));
     };
 
     // A cursor must land inside its own ring. Anything else means we are looking at a slot
@@ -454,8 +743,8 @@ void KeepGuestIdleCounterClear() {
         return;
     }
 
-    uint32_t zero = 0;
-    std::memcpy(base + g_guest_device + kDeviceOutstandingIbs, &zero, sizeof(zero));
+    const uint32_t zero = 0;
+    StoreGuest(base, g_guest_device + kDeviceOutstandingIbs, &zero, sizeof(zero));
 }
 
 std::vector<std::string> SplitArguments(const char* packed) {
@@ -731,11 +1020,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveState(uint32_t* out_signed_in, in
         return 0;
     }
 
-    auto read32 = [base](uint32_t address) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + address, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
 
     constexpr uint32_t kActiveUserIndex = 0x83496AF8u;
     constexpr uint32_t kSignedInMask = 0x83496A70u;
@@ -791,11 +1076,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLanguages(uint32_t* out_current, char
         return 0;
     }
 
-    auto read32 = [base](uint32_t address) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + address, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
 
     auto plausible = [](uint32_t pointer) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
@@ -832,9 +1113,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLanguages(uint32_t* out_current, char
         // locales are, and emitting a lone surrogate is worse than stopping at it.
         if (plausible(wide)) {
             for (uint32_t c = 0; c < 128u; ++c) {
-                uint16_t unit = 0;
-                std::memcpy(&unit, base + wide + (c * 2u), sizeof(unit));
-                unit = __builtin_bswap16(unit);
+                const uint16_t unit = GuestHalfAt(base, wide + (c * 2u));
                 if (unit == 0) {
                     break;
                 }
@@ -957,11 +1236,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetVideoFrame(uint8_t* out_rgba, uint32_t cap
         return 0;
     }
 
-    const auto load_be32 = [&](uint32_t at) {
-        uint32_t raw = 0;
-        std::memcpy(&raw, base + at, sizeof(raw));
-        return __builtin_bswap32(raw);
-    };
+    const auto load_be32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const uint32_t luma_width = load_be32(fb + 4);
     const uint32_t luma_height = load_be32(fb + 8);
@@ -1062,18 +1337,21 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetVideoFrame(uint8_t* out_rgba, uint32_t cap
         }
     }
 
-    const uint8_t* y_plane = base + y_ptr;
-    const uint8_t* cr_plane = base + cr_ptr;
-    const uint8_t* cb_plane = base + cb_ptr;
+    // Rows are staged out of guest memory through the guarded copy rather than read in
+    // place: a frame buffer the guest has just released must read as zeroes, not fault.
+    std::vector<uint8_t> staged((std::size_t)luma_width + 2u * (std::size_t)chroma_width);
+    uint8_t* y_row = staged.data();
+    uint8_t* cr_row = y_row + luma_width;
+    uint8_t* cb_row = cr_row + chroma_width;
 
     for (uint32_t row = 0; row < luma_height; ++row) {
         // Scale into chroma by the REAL ratio rather than assuming 2:1 — the planes are
         // 8-aligned independently, so at some sizes they are not exactly half.
         const uint32_t chroma_row =
             (uint32_t)((uint64_t)row * chroma_height / luma_height);
-        const uint8_t* y_row = y_plane + ((uint64_t)row * y_pitch);
-        const uint8_t* cr_row = cr_plane + ((uint64_t)chroma_row * cr_pitch);
-        const uint8_t* cb_row = cb_plane + ((uint64_t)chroma_row * cb_pitch);
+        CopyGuest(base, y_ptr + row * y_pitch, y_row, luma_width);
+        CopyGuest(base, cr_ptr + chroma_row * cr_pitch, cr_row, chroma_width);
+        CopyGuest(base, cb_ptr + chroma_row * cb_pitch, cb_row, chroma_width);
         uint8_t* out_row = out_rgba + ((uint64_t)row * luma_width * 4u);
 
         for (uint32_t col = 0; col < luma_width; ++col) {
@@ -1134,11 +1412,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetVideoPlanes(uint8_t* out_y, uint32_t y_cap
         return 0;
     }
 
-    const auto load_be32 = [&](uint32_t at) {
-        uint32_t raw = 0;
-        std::memcpy(&raw, base + at, sizeof(raw));
-        return __builtin_bswap32(raw);
-    };
+    const auto load_be32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const uint32_t luma_width = load_be32(fb + 4);
     const uint32_t luma_height = load_be32(fb + 8);
@@ -1208,8 +1482,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetVideoPlanes(uint8_t* out_y, uint32_t y_cap
     const auto copy_plane = [&](uint32_t ptr, uint32_t pitch, uint32_t width,
                                 uint32_t height, uint8_t* dst) {
         for (uint32_t row = 0; row < height; ++row) {
-            std::memcpy(dst + ((std::size_t)row * width),
-                        base + ptr + ((std::size_t)row * pitch), width);
+            CopyGuest(base, ptr + row * pitch, dst + ((std::size_t)row * width), width);
         }
     };
 
@@ -1273,21 +1546,19 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetRequestedVideo(unsigned char* out, uint32_
     if (swapped != 0) {
         const uint32_t whole = size & ~3u;
         for (uint32_t at = 0; at < whole; at += 4) {
-            uint32_t word = 0;
-            std::memcpy(&word, base + address + at, sizeof(word));
-            word = __builtin_bswap32(word);
+            const uint32_t word = GuestWordAt(base, address + at);
             std::memcpy(out + at, &word, sizeof(word));
         }
 
         // A trailing partial dword keeps its order: it was never a whole word to swap.
         if (whole < size) {
-            std::memcpy(out + whole, base + address + whole, size - whole);
+            CopyGuest(base, address + whole, out + whole, size - whole);
         }
 
         return 1;
     }
 
-    std::memcpy(out, base + address, size);
+    CopyGuest(base, address, out, size);
     return 1;
 }
 
@@ -1338,7 +1609,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostIsInGame(void) {
     }
 
     uint8_t* base = memory->virtual_membase();
-    return base == nullptr ? 0u : base[0x83496A5Eu];
+    if (base == nullptr) {
+        return 0;
+    }
+
+    return GuestByteAt(base, 0x83496A5Eu);
 }
 
 /// The guest's SIMULATION TICK, as the guest itself counts it.
@@ -1379,7 +1654,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimTick(void) {
     }
 
     uint32_t raw;
-    std::memcpy(&raw, base + 0x83319650u, sizeof(raw));
+    raw = __builtin_bswap32(GuestWordAt(base, 0x83319650u));
     return __builtin_bswap32(raw);
 }
 
@@ -1426,11 +1701,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         return 0u;
     }
 
-    const auto read32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const auto readf = [&read32](uint32_t at) {
         const uint32_t bits = read32(at);
@@ -1439,7 +1710,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         return value;
     };
 
-    const auto read8 = [base](uint32_t at) { return *(base + at); };
+    const auto read8 = [base](uint32_t at) { return GuestByteAt(base, at); };
 
     /// A guest pointer we are willing to dereference. The walk runs while the guest is mutating
     /// the vector, so a torn read is expected and must be refused rather than followed.
@@ -1649,11 +1920,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_
         return 0;
     }
 
-    const auto load_be32 = [&](uint32_t guest_address) {
-        uint32_t raw = 0;
-        std::memcpy(&raw, base + guest_address, sizeof(raw));
-        return __builtin_bswap32(raw);
-    };
+    const auto load_be32 = [base](uint32_t guest_address) { return GuestWordAt(base, guest_address); };
 
     const uint32_t root = load_be32(0x83496AB8u);
     if (root == 0) {
@@ -1761,16 +2028,10 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetRenderFence(uint32_t* out_manager, double*
         return 0;
     }
 
-    const auto read32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const auto read_double = [base](uint32_t at) {
-        uint64_t raw = 0;
-        std::memcpy(&raw, base + at, sizeof(raw));
-        raw = __builtin_bswap64(raw);
+        const uint64_t raw = GuestWord64At(base, at);
         double value = 0.0;
         std::memcpy(&value, &raw, sizeof(value));
         return value;
@@ -1780,7 +2041,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetRenderFence(uint32_t* out_manager, double*
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t mode = read32(0x83496AB8u);
+    const uint32_t mode = GuestWordAt(base, 0x83496AB8u);
     if (!plausible(mode)) {
         return 0;
     }
@@ -1804,7 +2065,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetRenderFence(uint32_t* out_manager, double*
     if (out_manager != nullptr) *out_manager = manager;
     if (out_submitted != nullptr) *out_submitted = read_double(manager + 152u);
     if (out_retired != nullptr) *out_retired = read_double(manager + 176u);
-    if (out_busy != nullptr) *out_busy = base[manager + 600u];
+    if (out_busy != nullptr) *out_busy = GuestByteAt(base, manager + 600u);
 
     // WHICH ARM is holding the load, if any. Reads only — nothing here writes guest memory.
     //
@@ -1832,9 +2093,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetRenderFence(uint32_t* out_manager, double*
     if (out_arms != nullptr) {
         out_arms[0] = read32(manager + 116u);
         out_arms[1] = read32(manager + 124u);
-        out_arms[2] = read32(0x83496E34u);
-        out_arms[3] = read32(0x8349FB5Cu);
-        out_arms[4] = base[0x83496E20u];
+        out_arms[2] = GuestWordAt(base, 0x83496E34u);
+        out_arms[3] = GuestWordAt(base, 0x8349FB5Cu);
+        out_arms[4] = GuestByteAt(base, 0x83496E20u);
     }
 
     return 1;
@@ -1877,11 +2138,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetLoadingScreen(uint32_t* out_manager, uint3
         return 0;
     }
 
-    const auto read32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const auto read_float = [&read32](uint32_t at) {
         const uint32_t raw = read32(at);
@@ -1933,8 +2190,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetLoadingScreen(uint32_t* out_manager, uint3
     }
 
     if (out_fade != nullptr) *out_fade = read_float(screen + 172u);
-    if (out_requested != nullptr) *out_requested = base[screen + 176u];
-    if (out_done != nullptr) *out_done = base[screen + 177u];
+    if (out_requested != nullptr) *out_requested = GuestByteAt(base, screen + 176u);
+    if (out_done != nullptr) *out_done = GuestByteAt(base, screen + 177u);
     return 1;
 }
 
@@ -1975,11 +2232,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLoadingScreenArt(uint32_t* out_type, 
         return 0;
     }
 
-    const auto read32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const auto plausible = [](uint32_t pointer) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
@@ -2009,7 +2262,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLoadingScreenArt(uint32_t* out_type, 
 
     uint32_t i = 0;
     for (; i + 1u < capacity; ++i) {
-        const char c = static_cast<char>(base[text + i]);
+        const char c = static_cast<char>(GuestByteAt(base, text + i));
         if (c == '\0') {
             break;
         }
@@ -2051,20 +2304,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostWorldIsReady(void) {
     }
 
     uint32_t mode = 0;
-    std::memcpy(&mode, base + 0x83496AB8u, sizeof(mode));
+    mode = __builtin_bswap32(GuestWordAt(base, 0x83496AB8u));
     mode = __builtin_bswap32(mode);
     if (mode < 0x10000u || mode >= 0xC0000000u) {
         return 0;
     }
 
-    uint32_t game = 0;
-    std::memcpy(&game, base + mode + 0x0Cu, sizeof(game));
-    game = __builtin_bswap32(game);
+    const uint32_t game = GuestWordAt(base, mode + 0x0Cu);
     if (game < 0x10000u || game >= 0xC0000000u) {
         return 0;
     }
 
-    return base[game + 0x105u] != 0 ? 1u : 0u;
+    return GuestByteAt(base, game + 0x105u) != 0 ? 1u : 0u;
 }
 
 /// Whether Godot is still building a region the guest must not be let into yet.
@@ -2082,11 +2333,7 @@ static std::atomic_bool g_world_build_pending{false};
 ///     P      = *(Game + 0x68)      /* the 8-byte holder, filled at 0x82310CAC */
 ///     engine = *(P    + 0x04)      /* 823D65CC: lwz r3, 4(r3) off the CALL'S RESULT */
 static uint32_t engine_object(const uint8_t* base) {
-    const auto u32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto step = [&](uint32_t at, uint32_t offset) -> uint32_t {
         return (at >= 0x10000u && at < 0xC0000000u) ? u32(at + offset) : 0u;
     };
@@ -2168,7 +2415,7 @@ static void apply_world_build_hold(const uint8_t* base) {
     uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
     bits = __builtin_bswap64(bits);
-    std::memcpy(const_cast<uint8_t*>(base) + engine + 0xB0u, &bits, sizeof(bits));
+    StoreGuest(const_cast<uint8_t*>(base), engine + 0xB0u, &bits, sizeof(bits));
 }
 
 /// THE ONE SIGNAL THAT COVERS BOTH LOAD PATHS: the world is activated and populated.
@@ -2220,11 +2467,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostWorldIsActive(void) {
         return 0;
     }
 
-    const auto u32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t at) {
         return at >= 0x10000u && at < 0xC0000000u;
     };
@@ -2241,7 +2484,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostWorldIsActive(void) {
         return 0;
     }
 
-    return base[at + 0xA8u] != 0 ? 1u : 0u;
+    return GuestByteAt(base, at + 0xA8u) != 0 ? 1u : 0u;
 }
 
 /// Describes the gameflow command queue as text, for when a walk of it comes back empty.
@@ -2271,11 +2514,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostDescribeGameFlowQueue(char* out, uint32_
         return 0;
     }
 
-    const auto u32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t at) {
         return at >= 0x10000u && at < 0xC0000000u;
     };
@@ -2442,11 +2681,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLevelChange(char* world, char* level,
         return 0;
     }
 
-    const auto u32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t at) {
         return at >= 0x10000u && at < 0xC0000000u;
     };
@@ -2519,7 +2754,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLevelChange(char* world, char* level,
 
     if (out_state != nullptr) *out_state = u32(command + 0x2Cu);
     if (out_travel_type != nullptr) *out_travel_type = u32(command + 0x24u);
-    if (out_full_load != nullptr) *out_full_load = base[command + 0x32u] != 0 ? 1u : 0u;
+    if (out_full_load != nullptr) *out_full_load = GuestByteAt(base, command + 0x32u) != 0 ? 1u : 0u;
 
     read_guest_name(base, command + 0x14u, world, capacity);
     read_guest_name(base, command + 0x1Cu, entrance, capacity);
@@ -2564,16 +2799,12 @@ REFII_HOST_ABI_EXPORT void RefiiHostGetInitMarkers(uint32_t* out) {
         return;
     }
 
-    const auto read32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
-    out[0] = read32(0x83496DA0u);
-    out[1] = base[0x83496A5Eu];
-    out[2] = read32(0x83496AB8u);
-    out[3] = read32(0x83496AC0u);
+    out[0] = GuestWordAt(base, 0x83496DA0u);
+    out[1] = GuestByteAt(base, 0x83496A5Eu);
+    out[2] = GuestWordAt(base, 0x83496AB8u);
+    out[3] = GuestWordAt(base, 0x83496AC0u);
 }
 
 /// Every LIVE entity's world transform and model, for Godot to draw.
@@ -2744,12 +2975,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
 
     // Guest pointers are big-endian and the address space is 32-bit; anything outside it is a
     // torn read rather than an object, so every hop is bounds-checked.
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
-    const auto read8 = [base](uint32_t at) -> uint8_t { return base[at]; };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -2842,7 +3069,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         return false;
     };
 
-    const uint32_t manager = read32(0x83496B28u);
+    const uint32_t manager = GuestWordAt(base, 0x83496B28u);
     if (!plausible(manager)) {
         return 0u;
     }
@@ -3238,11 +3465,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityComponents(uint32_t entity, uin
         return 0u;
     }
 
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -3312,7 +3535,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityComponents(uint32_t entity, uin
 /// Writes REFII_LOCOMOTION_WORDS words: machine, state, modeType, dwell (float bits), stance,
 /// combatState, confinementMask. Returns the words written, or 0 when the entity carries no
 /// locomotion mode — which most entities do not, so 0 is the ordinary answer, not a failure.
-uint32_t RefiiHostGetEntityLocomotion(uint32_t entity, uint32_t* out_words, uint32_t word_count,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLocomotion(uint32_t entity, uint32_t* out_words, uint32_t word_count,
                                       char* out_name, uint32_t name_capacity) {
     if (out_words == nullptr || word_count < REFII_LOCOMOTION_WORDS) {
         return 0u;
@@ -3338,12 +3561,8 @@ uint32_t RefiiHostGetEntityLocomotion(uint32_t entity, uint32_t* out_words, uint
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
-    const auto read8 = [base](uint32_t at) -> uint8_t { return base[at]; };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
 
     if (!plausible(entity)) {
         return 0u;
@@ -3534,12 +3753,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
         return 0u;
     }
 
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
-    const auto read8 = [base](uint32_t at) -> uint8_t { return base[at]; };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -3704,12 +3919,8 @@ static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
         return 0u;
     }
 
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
-    const auto read8 = [base](uint32_t at) -> uint8_t { return base[at]; };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -3809,8 +4020,8 @@ static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
 
     bool coherent = false;
     for (int attempt = 0; attempt < 4 && !coherent; ++attempt) {
-        std::memcpy(first, base + pose, span);
-        std::memcpy(second, base + pose, span);
+        CopyGuest(base, pose, first, span);
+        CopyGuest(base, pose, second, span);
         coherent = std::memcmp(first, second, span) == 0;
     }
 
@@ -3900,12 +4111,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityBoneNames(uint32_t entity, char
         return 0u;
     }
 
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
-    const auto read8 = [base](uint32_t at) -> uint8_t { return base[at]; };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -4006,14 +4213,10 @@ REFII_HOST_ABI_EXPORT void RefiiHostGetSceneStreams(uint32_t* out) {
         return;
     }
 
-    const auto read32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     for (uint32_t slot = 0; slot < 4u; ++slot) {
-        const uint32_t object = read32(0x8349F9B0u + slot * 4u);
+        const uint32_t object = GuestWordAt(base, 0x8349F9B0u + slot * 4u);
         if (object < 0x10000u || object >= 0xC0000000u) {
             continue;
         }
@@ -4053,11 +4256,7 @@ static bool read_guest_name(const uint8_t* base, uint32_t global, char* out,
         return false;
     }
 
-    const auto read32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const uint32_t rep = read32(global);
     if (rep < 0x10000u || rep >= 0xC0000000u) {
@@ -4072,7 +4271,7 @@ static bool read_guest_name(const uint8_t* base, uint32_t global, char* out,
     }
 
     for (uint32_t i = 0; i < length; ++i) {
-        const char c = static_cast<char>(base[chars + i]);
+        const char c = static_cast<char>(GuestByteAt(base, chars + i));
 
         // A name here is short and printable. Anything else means the Rep was freed or torn
         // under us, and half a name is worse than none.
@@ -4133,11 +4332,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetStartLevel(char* world, char* level, char*
 /// NOT CACHED across a level load: the chain is rebuilt, so a stale pointer here is a pointer
 /// into a freed object.
 static uint32_t world_manager(const uint8_t* base) {
-    const auto u32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const auto step = [&](uint32_t at, uint32_t offset) -> uint32_t {
         if (at < 0x10000u || at >= 0xC0000000u) {
@@ -4220,11 +4415,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCurrentLevel(char* world, char* level
         return 0;
     }
 
-    const auto u32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const uint32_t world_object = world_manager(base);
     if (world_object == 0) {
@@ -4279,11 +4470,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetActiveScenario(char* scenario, uint32_t ca
         return 0;
     }
 
-    const auto u32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const uint32_t wm = world_manager(base);
     if (wm == 0) {
@@ -4347,11 +4534,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveLayers(uint32_t* out, uint32_t 
         return 0;
     }
 
-    const auto u32 = [base](uint32_t at) {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     const uint32_t wm = world_manager(base);
     if (wm == 0) {
@@ -4430,7 +4613,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndState(void) {
     }
 
     // byte_83496AC4 — one byte, so endianness does not enter into it.
-    return base[0x83496AC4u];
+    return GuestByteAt(base, 0x83496AC4u);
 }
 
 /// Every element of the active screen: its identity, its slide, and its live TEXT.
@@ -4498,16 +4681,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
         return 0u;
     }
 
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
 
-    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
     if (!plausible(gui) || read32(gui) != 0x820A924Cu) {
         return 0u;  // the base-only instance the game republishes — no front end here
     }
@@ -4516,20 +4695,20 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
     const uint32_t menu = read32(gui + 184u);
     const uint32_t active = read32(gui + 188u);
 
-    const uint32_t user = read32(0x83496AF8u);
-    const uint32_t signed_mask = read32(0x83496A70u);
+    const uint32_t user = GuestWordAt(base, 0x83496AF8u);
+    const uint32_t signed_mask = GuestWordAt(base, 0x83496A70u);
     const bool signed_in = user < 32u && ((1u << user) & signed_mask) != 0u;
 
     out[0] = signed_in ? 1u : 0u;
     out[1] = user;
-    out[2] = read32(0x83319934u);  // installed language count; > 1 spawns "Language"
-    out[3] = read32(0x83319938u);  // current language index
+    out[2] = GuestWordAt(base, 0x83319934u);  // installed language count; > 1 spawns "Language"
+    out[3] = GuestWordAt(base, 0x83319938u);  // current language index
 
     // The "new downloadable content" glyph: shown when the flag is set and the available
     // count differs from the count already seen.
-    const uint32_t available = read32(0x83496B20u);
-    const uint32_t seen = read32(0x83496B24u);
-    out[4] = (base[0x8331963Eu] != 0u && (int32_t)available > 0 && available != seen) ? 1u : 0u;
+    const uint32_t available = GuestWordAt(base, 0x83496B20u);
+    const uint32_t seen = GuestWordAt(base, 0x83496B24u);
+    out[4] = (GuestByteAt(base, 0x8331963Eu) != 0u && (int32_t)available > 0 && available != seen) ? 1u : 0u;
 
     // WHICH SCREEN, by pointer identity. There is no title state that means "the menu is up" —
     // state 11 is consumed and reset to 0 in the same update, so reading it that way reports
@@ -4537,7 +4716,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
     out[5] = (plausible(menu) && active == menu) ? 1u : 0u;
     out[6] = plausible(menu) ? read32(menu + 24u) : 0u;
     out[7] = plausible(title) ? read32(title + 24u) : 0u;
-    out[8] = plausible(title) ? base[title + 80u] : 0u;  // the CAN_PRESS_A gate
+    out[8] = plausible(title) ? GuestByteAt(base, title + 80u) : 0u;  // the CAN_PRESS_A gate
 
     // The Load Game card cursor. NOT the menu highlight — it moves only on Left/Right and only
     // in menu state 5, and it indexes the save-card vector at menu+84.
@@ -4610,7 +4789,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
 static uint32_t write_guest_wide_string(const uint8_t* base, uint32_t at, char* out,
                                         uint32_t capacity);
 
-uint32_t RefiiHostGetSaveCards(uint32_t* out_cursor, uint32_t* out_base_slot,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveCards(uint32_t* out_cursor, uint32_t* out_base_slot,
                                char* text, uint32_t capacity) {
     if (out_cursor != nullptr) {
         *out_cursor = 0u;
@@ -4632,11 +4811,7 @@ uint32_t RefiiHostGetSaveCards(uint32_t* out_cursor, uint32_t* out_base_slot,
         return 0u;
     }
 
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -4731,7 +4906,7 @@ uint32_t RefiiHostGetSaveCards(uint32_t* out_cursor, uint32_t* out_base_slot,
 /// can index straight in. Zero where an element has no texture record, which is most of them.
 ///
 /// Returns the number of elements walked. Pass null to count them.
-uint32_t RefiiHostGetUiTextureHashes(uint32_t presentation, uint32_t* out, uint32_t capacity) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiTextureHashes(uint32_t presentation, uint32_t* out, uint32_t capacity) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0;
@@ -4742,11 +4917,7 @@ uint32_t RefiiHostGetUiTextureHashes(uint32_t presentation, uint32_t* out, uint3
         return 0;
     }
 
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -4930,11 +5101,7 @@ static uint32_t write_guest_wide_string(const uint8_t* base, uint32_t at, char* 
         return 1u;
     }
 
-    const auto read32 = [base](uint32_t address) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + address, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -4946,9 +5113,7 @@ static uint32_t write_guest_wide_string(const uint8_t* base, uint32_t at, char* 
         const uint32_t length = read32(rep + 4u);
         if (plausible(chars) && length > 0u && length < 512u) {
             for (uint32_t c = 0; c < length; ++c) {
-                uint16_t unit = 0;
-                std::memcpy(&unit, base + chars + (c * 2u), sizeof(unit));
-                unit = __builtin_bswap16(unit);
+                const uint16_t unit = GuestHalfAt(base, chars + (c * 2u));
                 if (unit == 0) {
                     break;
                 }
@@ -5011,11 +5176,7 @@ static uint32_t write_guest_wide_string(const uint8_t* base, uint32_t at, char* 
 /// place, which is the point.
 static uint32_t walk_gui_registry(const uint8_t* base, uint32_t index, uint32_t* out_hashes,
                                   uint32_t* out_elements, uint32_t capacity) {
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -5080,7 +5241,7 @@ static uint32_t walk_gui_registry(const uint8_t* base, uint32_t index, uint32_t*
 
     while (depth > 0 && found < kMaxNames) {
         const uint32_t node = stack[--depth];
-        if (!plausible(node) || base[node + 21u] != 0u) {
+        if (!plausible(node) || GuestByteAt(base, node + 21u) != 0u) {
             continue;  // node+21 is _Isnil: the sentinel, or a pointer that cannot be a node
         }
 
@@ -5112,7 +5273,7 @@ static uint32_t walk_gui_registry(const uint8_t* base, uint32_t index, uint32_t*
     return found;
 }
 
-uint32_t RefiiHostGetHudMeters(uint32_t* out_hashes, float* out_values, uint32_t capacity) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudMeters(uint32_t* out_hashes, float* out_values, uint32_t capacity) {
     auto* memory = rex::system::kernel_memory();
     if (memory == nullptr) {
         return 0u;
@@ -5136,9 +5297,7 @@ uint32_t RefiiHostGetHudMeters(uint32_t* out_hashes, float* out_values, uint32_t
             break;
         }
 
-        uint32_t raw = 0;
-        std::memcpy(&raw, base + elements[i] + 0x14u, sizeof(raw));
-        raw = __builtin_bswap32(raw);
+        const uint32_t raw = GuestWordAt(base, elements[i] + 0x14u);
         std::memcpy(&out_values[i], &raw, sizeof(out_values[i]));
     }
 
@@ -5171,7 +5330,7 @@ uint32_t RefiiHostGetHudMeters(uint32_t* out_hashes, float* out_values, uint32_t
 /// `out_hashes`. The two buffers are sized SEPARATELY — a hash is four bytes and a string is a
 /// sentence, so one capacity for both would either waste the array or truncate the text.
 /// Returns the number of names found. Pass nulls to size the buffers.
-uint32_t RefiiHostGetHudTexts(uint32_t* out_hashes, uint32_t capacity, char* text,
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudTexts(uint32_t* out_hashes, uint32_t capacity, char* text,
                               uint32_t text_capacity) {
     if (text != nullptr && text_capacity > 0) {
         text[0] = '\0';
@@ -5266,17 +5425,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPresentations(uint32_t* words, uint32
         return 0;
     }
 
-    auto read32 = [base](uint32_t address) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + address, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
 
     auto plausible = [](uint32_t pointer) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
     if (!plausible(gui)) {
         return 0;
     }
@@ -5313,15 +5468,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPresentations(uint32_t* words, uint32
 
         uint32_t offset = 0xFFFFFFFFu;
         const uint32_t text = read32(presentation + 12u);
-        uint16_t length = 0;
-        std::memcpy(&length, base + presentation + 16u, sizeof(length));
-        length = __builtin_bswap16(length);
+        const uint16_t length = GuestHalfAt(base, presentation + 16u);
 
         if (plausible(text) && length > 0 && length < kMaxNameChars) {
             offset = chars;
             for (uint16_t c = 0; c < length; ++c) {
                 if (names != nullptr && chars < name_capacity) {
-                    names[chars] = static_cast<char>(base[text + c]);
+                    names[chars] = static_cast<char>(GuestByteAt(base, text + c));
                 }
                 ++chars;
             }
@@ -5334,9 +5487,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPresentations(uint32_t* words, uint32
         // Is it SHOWING? The root's own `active` bit, and the freeze byte.
         uint32_t state = 0u;
         if (plausible(root)) {
-            uint16_t flags = 0;
-            std::memcpy(&flags, base + root + 0x1Cu, sizeof(flags));
-            if ((__builtin_bswap16(flags) & 0x2000u) != 0u) {
+            const uint16_t flags = GuestHalfAt(base, root + 0x1Cu);
+            if ((flags & 0x2000u) != 0u) {
                 state |= 1u;
             }
         }
@@ -5353,10 +5505,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPresentations(uint32_t* words, uint32
         //
         // The pause menu and the menu cycler are loaded and then written (1,1); the HUD's
         // loader never touches either byte, which is exactly why only the HUD is on screen.
-        if (base[presentation + 873u] != 0u) {
+        if (GuestByteAt(base, presentation + 873u) != 0u) {
             state |= 2u;
         }
-        if (base[presentation + 872u] != 0u) {
+        if (GuestByteAt(base, presentation + 872u) != 0u) {
             state |= 4u;
         }
 
@@ -5396,11 +5548,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiElements(uint32_t requested_present
         return 0;
     }
 
-    auto read32 = [base](uint32_t address) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + address, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
 
     auto plausible = [](uint32_t pointer) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
@@ -5418,7 +5566,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiElements(uint32_t requested_present
     // screen, and only while the front end owned the GUI.
     uint32_t presentation = requested_presentation;
     if (presentation == 0u) {
-        const uint32_t gui = read32(0x83496B08u);
+        const uint32_t gui = GuestWordAt(base, 0x83496B08u);
         if (!plausible(gui)) {
             return 0;
         }
@@ -5452,7 +5600,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiElements(uint32_t requested_present
     // record; asking any other kind for one would be dereferencing whatever `+4` happens
     // to point at for that type.
     auto text_rep = [&](uint32_t element) -> uint32_t {
-        if (base[element + 30u] != 4u) {
+        if (GuestByteAt(base, element + 30u) != 4u) {
             return 0;
         }
 
@@ -5497,9 +5645,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiElements(uint32_t requested_present
             if (plausible(data) && length > 0 && length < kMaxChars) {
                 offset = chars;
                 for (uint32_t i = 0; i < length; ++i) {
-                    uint16_t unit = 0;
-                    std::memcpy(&unit, base + data + i * 2u, sizeof(unit));
-                    unit = __builtin_bswap16(unit);
+                    const uint16_t unit = GuestHalfAt(base, data + i * 2u);
                     if (text != nullptr && chars < text_capacity) {
                         text[chars] = unit;
                     }
@@ -5548,14 +5694,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiElements(uint32_t requested_present
         // Comparing the guest's type sequence against the file's localises any divergence to
         // an exact index, or proves there is none.
         if (words != nullptr && (found * 5u + 4u) < word_capacity) {
-            uint16_t flags = 0;
-            std::memcpy(&flags, base + element + 0x1Cu, sizeof(flags));
+            const uint16_t flags = GuestHalfAt(base, element + 0x1Cu);
 
             words[found * 5u] = read32(element);
-            words[found * 5u + 1u] = base[element + 43u];
+            words[found * 5u + 1u] = GuestByteAt(base, element + 43u);
             words[found * 5u + 2u] = offset;
-            words[found * 5u + 3u] = base[element + 30u];
-            words[found * 5u + 4u] = __builtin_bswap16(flags);
+            words[found * 5u + 3u] = GuestByteAt(base, element + 30u);
+            words[found * 5u + 4u] = flags;
         }
         ++found;
 
@@ -5655,11 +5800,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetFrontEnd(uint32_t* out) {
     }
 
     // The guest is big-endian; every pointer and int below needs the swap.
-    auto read32 = [base](uint32_t address) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + address, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
 
     // A guest pointer, not an offset into anything of ours — sanity-check it before
     // chasing it, or a half-built GUI walks us into unmapped memory.
@@ -5667,7 +5808,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetFrontEnd(uint32_t* out) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
     if (!plausible(gui)) {
         return 0;
     }
@@ -5688,7 +5829,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetFrontEnd(uint32_t* out) {
     out[8] = read32(active);  // the screen's vtable — its identity
 
     if (plausible(startup)) {
-        out[4] = base[startup + 80u];
+        out[4] = GuestByteAt(base, startup + 80u);
     }
     if (plausible(menu)) {
         out[5] = read32(menu + 72u);
@@ -5699,8 +5840,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetFrontEnd(uint32_t* out) {
     if (plausible(presentation)) {
         const uint32_t root = read32(presentation + 492u + 8u);
         if (plausible(root)) {
-            out[6] = base[root + 43u];  // current slide
-            out[7] = base[root + 42u];  // how many it has, for a sanity check
+            out[6] = GuestByteAt(base, root + 43u);  // current slide
+            out[7] = GuestByteAt(base, root + 42u);  // how many it has, for a sanity check
         }
     }
 
@@ -5722,11 +5863,7 @@ static uint32_t write_guest_narrow_string(const uint8_t* base, uint32_t at, char
         return 0u;
     }
 
-    const auto read32 = [base](uint32_t address) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + address, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -5749,7 +5886,7 @@ static uint32_t write_guest_narrow_string(const uint8_t* base, uint32_t at, char
 
     uint32_t written = 0;
     for (uint32_t i = 0; i < length && written + 1u < capacity; ++i) {
-        const char c = static_cast<char>(base[chars + i]);
+        const char c = static_cast<char>(GuestByteAt(base, chars + i));
         if (c == '\0') {
             break;
         }
@@ -5789,11 +5926,7 @@ static uint32_t write_guest_narrow_string(const uint8_t* base, uint32_t at, char
 /// One resolver now, so the four readers cannot drift apart again. Returns 0 when there is no
 /// screen up, which is an ordinary state rather than a failure.
 static uint32_t loading_screen_object(const uint8_t* base) {
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -5846,7 +5979,7 @@ static uint32_t loading_screen_object(const uint8_t* base) {
 /// Fills SIX words — tip index, tip count, the current tip's tag key, the spinner's frame
 /// counter, and the tips/banner enable bytes — and writes the level name then the host-set
 /// overlay text as two NUL-separated UTF-8 strings. Returns 1 when a screen object was read.
-int RefiiHostGetLoadingScreenText(uint32_t* out, char* text, uint32_t capacity) {
+REFII_HOST_ABI_EXPORT int RefiiHostGetLoadingScreenText(uint32_t* out, char* text, uint32_t capacity) {
     if (out != nullptr) {
         for (int i = 0; i < 6; ++i) {
             out[i] = 0;
@@ -5866,11 +5999,7 @@ int RefiiHostGetLoadingScreenText(uint32_t* out, char* text, uint32_t capacity) 
         return 0;
     }
 
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -5887,8 +6016,8 @@ int RefiiHostGetLoadingScreenText(uint32_t* out, char* text, uint32_t capacity) 
         out[0] = index;
         out[1] = count;
         out[3] = read32(screen + 168u);
-        out[4] = base[screen + 313u];
-        out[5] = base[screen + 314u];
+        out[4] = GuestByteAt(base, screen + 313u);
+        out[5] = GuestByteAt(base, screen + 314u);
 
         // Walk to the current tip. Bounded by the list's own count as well as by the index, so
         // a torn read cannot send this off the end of the chain.
@@ -5947,7 +6076,7 @@ int RefiiHostGetLoadingScreenText(uint32_t* out, char* text, uint32_t capacity) 
 ///
 /// Fills THREE words: the +315 fixed-art flag, the +310 quit-fade flag, and the +320 4:3 inset
 /// flag. Returns 1 when a screen object was there to read.
-int RefiiHostGetLoadingScreenLayout(uint32_t* out) {
+REFII_HOST_ABI_EXPORT int RefiiHostGetLoadingScreenLayout(uint32_t* out) {
     if (out == nullptr) {
         return 0;
     }
@@ -5966,11 +6095,7 @@ int RefiiHostGetLoadingScreenLayout(uint32_t* out) {
         return 0;
     }
 
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -5980,9 +6105,9 @@ int RefiiHostGetLoadingScreenLayout(uint32_t* out) {
         return 0;
     }
 
-    out[0] = base[screen + 315u];
-    out[1] = base[screen + 310u];
-    out[2] = base[screen + 320u];
+    out[0] = GuestByteAt(base, screen + 315u);
+    out[1] = GuestByteAt(base, screen + 310u);
+    out[2] = GuestByteAt(base, screen + 320u);
     return 1;
 }
 
@@ -6018,7 +6143,7 @@ int RefiiHostGetLoadingScreenLayout(uint32_t* out) {
 /// here is meaningless.
 ///
 /// Returns 1 when the presentation was walked.
-int RefiiHostGetUiTextureStats(uint32_t presentation, uint32_t* out) {
+REFII_HOST_ABI_EXPORT int RefiiHostGetUiTextureStats(uint32_t presentation, uint32_t* out) {
     if (out == nullptr) {
         return 0;
     }
@@ -6037,11 +6162,7 @@ int RefiiHostGetUiTextureStats(uint32_t presentation, uint32_t* out) {
         return 0;
     }
 
-    const auto read32 = [base](uint32_t at) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + at, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -6073,7 +6194,7 @@ int RefiiHostGetUiTextureStats(uint32_t presentation, uint32_t* out) {
                 ++out[5];
             }
 
-            if (base[node + 10u] == 2u) {
+            if (GuestByteAt(base, node + 10u) == 2u) {
                 ++out[3];
             }
 
@@ -6244,11 +6365,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetPubGame(uint32_t* out,
         return 0;
     }
 
-    const auto read32 = [base](uint32_t address) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + address, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
 
     const auto plausible = [](uint32_t pointer) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
@@ -6286,7 +6403,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetPubGame(uint32_t* out,
 
         uint32_t i = 0;
         for (; i + 1 < capacity; ++i) {
-            const char c = static_cast<char>(*(base + text + i));
+            const char c = static_cast<char>(GuestByteAt(base, text + i));
             if (c == '\0') {
                 break;
             }
@@ -6320,15 +6437,11 @@ REFII_HOST_ABI_EXPORT int RefiiHostSetPubGameResult(int64_t gold, int64_t debt, 
         return 0;
     }
 
-    const auto read32 = [base](uint32_t address) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + address, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    const auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
 
     const auto write32 = [base](uint32_t address, uint32_t value) {
         const uint32_t raw = __builtin_bswap32(value);
-        std::memcpy(base + address, &raw, sizeof(raw));
+        StoreGuest(base, address, &raw, sizeof(raw));
     };
 
     const uint32_t profile = read32(kPubGameManager + kPubGameProfileOffset);
@@ -6340,7 +6453,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostSetPubGameResult(int64_t gold, int64_t debt, 
 
         // The same dirty byte sub_82EE8640 sets. The profile is merged and saved by code that
         // tests it, so a write that skipped it would be discarded rather than persisted.
-        *(base + profile + kPubProfileDirtyOffset) = 1;
+        const uint8_t dirty = 1;
+        StoreGuest(base, profile + kPubProfileDirtyOffset, &dirty, sizeof(dirty));
     }
 
     write32(kPubGameManager + kPubGameStateOffset, state);
@@ -6366,11 +6480,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetInGameScreen(uint32_t* out) {
         return 0;
     }
 
-    auto read32 = [base](uint32_t address) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + address, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
 
     auto plausible = [](uint32_t pointer) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
@@ -6455,11 +6565,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiAttributes(uint32_t requested_prese
         return 0;
     }
 
-    auto read32 = [base](uint32_t address) -> uint32_t {
-        uint32_t value = 0;
-        std::memcpy(&value, base + address, sizeof(value));
-        return __builtin_bswap32(value);
-    };
+    auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
 
     auto plausible = [](uint32_t pointer) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
@@ -6467,7 +6573,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiAttributes(uint32_t requested_prese
 
     uint32_t presentation = requested_presentation;
     if (presentation == 0u) {
-        const uint32_t gui = read32(0x83496B08u);
+        const uint32_t gui = GuestWordAt(base, 0x83496B08u);
         if (!plausible(gui)) {
             return 0;
         }
@@ -6493,7 +6599,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiAttributes(uint32_t requested_prese
     auto find = [&](uint32_t element, uint32_t id, uint32_t* value) -> bool {
         const uint16_t flags = static_cast<uint16_t>(read32(element + 28u) >> 16);
         const uint32_t records = (flags & 1u) != 0 ? element + 68u : element + 32u;
-        const uint32_t count = base[element + 31u];
+        const uint32_t count = GuestByteAt(base, element + 31u);
 
         for (uint32_t i = 0; i < count; ++i) {
             const uint32_t record = records + i * 8u;
@@ -6554,6 +6660,62 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiAttributes(uint32_t requested_prese
     return found;
 }
 
+/// The camera manager, whose PUSHED block (manager+0xE0) is the live camera in game.
+///
+/// No guest call — a pure pointer walk from the game object, per the comment on
+/// `RefiiHostGetCamera` below: mode = *(0x83496AB8) -> game = *(mode+0x0C) -> the view
+/// container *(game+0x9C), whose 12-byte {key, view, _} entries run from *(container+8) to
+/// *(container+0x0C); take the one keyed 1 (2 in split screen, when *(game+0x8C)+0x34 and +0x36
+/// are both set), view = *(entry+4), manager = *(view+4). 0 when the chain is not up yet —
+/// which is the ordinary case out of game, and why the caller keeps the pull cache as a
+/// fallback. Every hop is a guarded read, so a half-built chain reads back 0 rather than faults.
+static uint32_t resolve_camera_manager(const uint8_t* base) {
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+
+    const uint32_t mode = u32(0x83496AB8u);
+    if (!plausible(mode)) {
+        return 0;
+    }
+    const uint32_t game = u32(mode + 0x0Cu);
+    if (!plausible(game)) {
+        return 0;
+    }
+
+    uint32_t key = 1u;
+    const uint32_t split = u32(game + 0x8Cu);
+    if (plausible(split) && GuestByteAt(base, split + 0x34u) != 0 &&
+        GuestByteAt(base, split + 0x36u) != 0) {
+        key = 2u;
+    }
+
+    const uint32_t container = u32(game + 0x9Cu);
+    if (!plausible(container)) {
+        return 0;
+    }
+    const uint32_t begin = u32(container + 0x08u);
+    const uint32_t end = u32(container + 0x0Cu);
+    // Bounded so a torn read of either pointer cannot walk a runaway range.
+    if (!plausible(begin) || end <= begin || (end - begin) > 0x1000u) {
+        return 0;
+    }
+
+    for (uint32_t entry = begin; entry + 12u <= end; entry += 12u) {
+        if (u32(entry) != key) {
+            continue;
+        }
+        const uint32_t view = u32(entry + 4u);
+        if (!plausible(view)) {
+            return 0;
+        }
+        const uint32_t manager = u32(view + 4u);
+        return plausible(manager) ? manager : 0u;
+    }
+    return 0;
+}
+
 /// The guest's camera, for Godot to render through.
 ///
 /// Reads the snapshot at 0x8331A230. Layout is IDA-proven, and two details are not what a
@@ -6607,6 +6769,94 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCamera(float* out) {
         return 0;
     }
 
+    // PREFER THE CAMERA MANAGER'S PUSHED BLOCK. `sub_8233B6B0` writes it force=1 once per SIM
+    // tick (manager+0xE0 pos, +0xF0 up, +0x100 fwd, +0x110 hfov, +0x114 flag — same 0x38-byte
+    // layout as the cache), so it is live the moment the world is up. The pull cache below only
+    // refreshes when a Lua frustum native runs, and in game none has yet, so it reads the default
+    // pose and the world renders through nothing. Coherent double-read, same unsynchronised
+    // stores as the cache; used only when it resolves to a real forward vector, else fall through.
+    // OFF until the manager+0xE0 layout is confirmed: a first cut read `pos`/`fwd` back as a
+    // static ~3.79 with a ~0 fov (fwd not even unit length), so the walk resolves an object but
+    // those offsets are not the camera block. `REFII_CAMERA_PUSHED_BLOCK=1` re-enables it, and
+    // `REFII_CAMERA_DEBUG=1` dumps the walk and a float window so the real offsets can be found.
+    static const bool use_pushed_camera = [] {
+        const char* value = std::getenv("REFII_CAMERA_PUSHED_BLOCK");
+        return value != nullptr && value[0] == '1';
+    }();
+    const uint32_t manager = use_pushed_camera ? resolve_camera_manager(base) : 0u;
+    if (manager != 0u) {
+        static const bool debug_camera = [] {
+            const char* value = std::getenv("REFII_CAMERA_DEBUG");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (debug_camera) {
+            static std::atomic<uint32_t> dumped{0};
+            if (dumped.fetch_add(1, std::memory_order_relaxed) < 3u) {
+                const auto f = [base](uint32_t at) {
+                    uint32_t bits = __builtin_bswap32(GuestWordAt(base, at));
+                    float v = 0.0f;
+                    std::memcpy(&v, &bits, sizeof(v));
+                    return v;
+                };
+                std::string floats;
+                for (uint32_t off = 0x90u; off <= 0x130u; off += 4u) {
+                    char buf[32];
+                    std::snprintf(buf, sizeof(buf), "%02X:%.3f ", off, f(manager + off));
+                    floats += buf;
+                }
+                REXLOG_INFO("Refii camera manager 0x{:08X} floats {}", manager, floats);
+            }
+        }
+
+        uint8_t a[0x38];
+        uint8_t b[0x38];
+        bool coherent = false;
+        for (int attempt = 0; attempt < 4 && !coherent; ++attempt) {
+            CopyGuest(base, manager + 0xE0u, a, sizeof(a));
+            CopyGuest(base, manager + 0xE0u, b, sizeof(b));
+            coherent = std::memcmp(a, b, sizeof(a)) == 0;
+        }
+
+        if (coherent) {
+            const auto rf = [&a](uint32_t offset) {
+                uint32_t bits = 0;
+                std::memcpy(&bits, a + offset, sizeof(bits));
+                bits = __builtin_bswap32(bits);
+                float value = 0.0f;
+                std::memcpy(&value, &bits, sizeof(value));
+                return value;
+            };
+
+            float cam[11];
+            for (int lane = 0; lane < 3; ++lane) {
+                cam[lane] = rf(0x00u + lane * 4u);
+                cam[3 + lane] = rf(0x10u + lane * 4u);
+                cam[6 + lane] = rf(0x20u + lane * 4u);
+            }
+            cam[9] = rf(0x30u);
+            cam[10] = a[0x34u] != 0 ? 1.0f : 0.0f;
+
+            bool finite = true;
+            for (int i = 0; i < 10; ++i) {
+                finite = finite && cam[i] == cam[i] && cam[i] > -1e18f && cam[i] < 1e18f;
+            }
+            const float fwd2 = cam[6] * cam[6] + cam[7] * cam[7] + cam[8] * cam[8];
+            if (finite && fwd2 > 1e-4f) {
+                for (int i = 0; i < 11; ++i) {
+                    out[i] = cam[i];
+                }
+                static std::atomic<uint32_t> logged{0};
+                const uint32_t n = logged.fetch_add(1, std::memory_order_relaxed);
+                if (n < 8u || (n % 256u) == 0u) {
+                    REXLOG_INFO("Refii host camera [pushed] mgr=0x{:08X} pos=({:.2f},{:.2f},"
+                                "{:.2f}) fwd=({:.2f},{:.2f},{:.2f}) hfov={:.3f}",
+                                manager, cam[0], cam[1], cam[2], cam[6], cam[7], cam[8], cam[9]);
+                }
+                return 1;
+            }
+        }
+    }
+
     constexpr uint32_t kCamera = 0x8331A230u;
 
     // Five unsynchronised stores with no barrier and no sequence counter, and the
@@ -6615,7 +6865,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCamera(float* out) {
     // signal. Reading twice and requiring agreement is the cheapest correct thing: the
     // window is nine instructions wide, so a retry almost never happens.
     auto snapshot = [&](uint8_t* into) {
-        std::memcpy(into, base + kCamera, 0x38u);
+        CopyGuest(base, kCamera, into, 0x38u);
     };
 
     uint8_t first[0x38];
@@ -6817,6 +7067,11 @@ REFII_HOST_ABI_EXPORT int RefiiHostStart(const char* game_directory, const char*
     // applied by ApplyEnvironment (REX_<CVAR_NAME>) and, embedded, no refii.toml is
     // found beside the host binary to override it.
     SetEnvironmentValue("REX_RENDERER_BACKEND", "plume");
+
+    // NOTE ON THE LUA WORKSPACE: `lua_use_mod_overrides` is on, but src/lua now filters the
+    // files it will actually use against the workspace's own `_manifest.tsv`, so only
+    // reconstructions the decompiler marked EXACT reach the guest. That gate is what makes the
+    // flag safe to leave on; nothing needs forcing from here.
 
     // Pass the game directory as an explicit flag, not just positionally.
     //
@@ -7027,6 +7282,12 @@ REFII_HOST_ABI_EXPORT int RefiiHostStep(void) {
         // Runs on Godot's thread, which is the point: the guest thread that needs this is
         // the one spinning, so it cannot pump its own ring.
         RetireGuestSceneStreams();
+
+        if (auto* step_memory = rex::system::kernel_memory()) {
+            if (uint8_t* step_base = step_memory->virtual_membase()) {
+                refii::vfs::FinishStuckInGameLoadingScreenFromHost(step_base);
+            }
+        }
 
         if (hosted.context->HasQuitFromUIThread()) {
             hosted.finished = true;

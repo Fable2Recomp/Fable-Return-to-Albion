@@ -80,6 +80,16 @@ public partial class GameInput : Node
 			rightY = Dominant(rightY, -Axis(pad, JoyAxis.RightY));
 		}
 
+		// DIAGNOSTIC: a synthetic stick deflection, so the whole input chain can be exercised
+		// without a human holding a controller. `REFII_FAKE_STICK=1` pushes the left stick
+		// forward permanently, which is enough to make the hero walk and — if the camera really
+		// does follow the hero — to make the camera move. It answers "is the camera frozen
+		// because nothing is driving it, or because the camera itself is stuck?" in one run.
+		if (System.Environment.GetEnvironmentVariable("REFII_FAKE_STICK") == "1")
+		{
+			leftY = 24000;
+		}
+
 		// TWO CONSUMERS, AND ONLY ONE OF THEM OWNS THE MENU.
 		//
 		// The guest gets a filtered set; the host-owned menu below gets the real one. See
@@ -120,11 +130,47 @@ public partial class GameInput : Node
 	/// that mean nothing and can read as MainMenu at any moment. Masking on that would take the
 	/// D-pad and the left stick away from the player in the middle of the game.
 	/// </summary>
-	private static bool MaskMenuInput =>
-		HostBridge.FrontEndGuiIsUp &&
-		HostBridge.TryGetFrontEnd(out HostBridge.FrontEndScreen screen, out uint state, out _,
-			out _, out _, out _) &&
-		screen == HostBridge.FrontEndScreen.MainMenu && state == MenuRootState;
+	private static bool MaskMenuInput
+	{
+		get
+		{
+			bool wouldMask =
+				HostBridge.FrontEndGuiIsUp &&
+				HostBridge.TryGetFrontEnd(out HostBridge.FrontEndScreen screen, out uint state,
+					out _, out _, out _, out _) &&
+				screen == HostBridge.FrontEndScreen.MainMenu && state == MenuRootState;
+
+			// NEVER MASK ONCE A WORLD IS UP, whatever the front-end decode says.
+			//
+			// The paragraph above documents the hazard and then trusts a vtable check to hold it
+			// off: in game, `dword_83496B08` holds a BASE-ONLY object whose +180/+184/+188 are
+			// not screen pointers, so `screen` is decoded from fields that mean nothing and can
+			// read as MainMenu at any moment. If it does, this masks the D-pad AND ZEROES THE
+			// LEFT STICK — the player cannot walk, and because the camera follows the hero, the
+			// camera freezes too. That is indistinguishable from "the camera is broken".
+			//
+			// Masking only ever exists to stop Godot's main menu and the guest's own menu acting
+			// on one press. A live world means the main menu is not what is on screen, so there
+			// is nothing to protect and every reason not to take the controls away. Cheap,
+			// unambiguous, and it cannot be fooled by a misdecoded screen.
+			if (wouldMask && (HostBridge.IsInGame || HostBridge.WorldIsActive()))
+			{
+				if (!_reportedInGameMask)
+				{
+					_reportedInGameMask = true;
+					GD.Print("[game-input] the front end decoded as MainMenu while a world is up — " +
+						"NOT masking input. Left unmasked the player would have been unable to " +
+						"move, and the camera with them.");
+				}
+
+				return false;
+			}
+
+			return wouldMask;
+		}
+	}
+
+	private static bool _reportedInGameMask;
 
 	/// <summary>
 	/// `screen+24` while the menu LIST is the thing on screen. Every other value is a substate

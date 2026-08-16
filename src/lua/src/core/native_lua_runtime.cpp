@@ -40,9 +40,27 @@ REXCVAR_DEFINE_BOOL(lua_force_loose_banks, false, "Lua",
                     "Force loose-script mode from native startup handlers to aid Lua workspace iteration.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// ON, but GATED PER FILE on the workspace manifest — see `LuaWorkspaceFileIsTrustworthy`.
+//
+// This points the guest at `assets/unpacked/scripts/**`, the launcher installer's DECOMPILED
+// reconstruction of the script banks, of which 473 of ~680 are `nonexact` — plausible-looking
+// Lua that does not do what the original bytecode did. Ungated, this silently replaced game
+// code with guesses, and because the workspace is generated locally and gitignored, a machine
+// that had run the installer and one that had not ran DIFFERENT GAME CODE with nothing to say so.
+//
+// It cost a full day: the `nonexact` `scripts/camera/cameramanager.lua` never performs the setup
+// that stands up the camera's view, so the camera update found both view pointers null, never
+// computed a pose, and there was no in-game camera at all (see camera_view_guard.cpp). The
+// symptom — "the camera is broken on Windows" — pointed nowhere near the cause.
+//
+// So the flag stays on and the FILES are filtered: only entries the decompiler itself marked
+// exact are used, everything else falls through to the guest's own bytecode. Modding keeps
+// working, hand-written `override/` files are always honoured, and a bad reconstruction can no
+// longer quietly break the game.
 REXCVAR_DEFINE_BOOL(lua_use_mod_overrides, true, "Lua",
                     "Prefer decompiled loose Lua files from the mod workspace before extracted "
-                    "source chunks.")
+                    "source chunks. Files the workspace manifest does not mark exact are skipped "
+                    "in favour of the guest's own bytecode.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(lua_trace_mod_overrides, false, "Lua",
@@ -721,6 +739,90 @@ bool NativeLuaScriptLoadTracingEnabled() { return REXCVAR_GET(lua_trace_script_l
 
 bool NativeLuaForceLooseBanksEnabled() { return REXCVAR_GET(lua_force_loose_banks); }
 
+/// The workspace's own verdict on each file it produced, keyed by normalized relative path.
+///
+/// `_manifest.tsv` is written by the decompiler as `status<TAB>input<TAB>output<TAB>source<TAB>note`
+/// with a header row. `status` is the ONLY honest signal we have about whether a reconstructed
+/// script is safe to hand the guest, and the decompiler already computes it — it was simply never
+/// consulted at load time.
+const std::unordered_map<std::string, std::string>& GetLuaWorkspaceManifest() {
+  static std::unordered_map<std::string, std::string> manifest = [] {
+    std::unordered_map<std::string, std::string> entries;
+    const std::filesystem::path root = GetLuaModWorkspaceRoot();
+    if (root.empty()) {
+      return entries;
+    }
+
+    std::ifstream stream(root / "_manifest.tsv");
+    if (!stream) {
+      return entries;
+    }
+
+    std::string line;
+    while (std::getline(stream, line)) {
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+      }
+      const std::size_t first = line.find('\t');
+      if (first == std::string::npos) {
+        continue;
+      }
+      const std::size_t second = line.find('\t', first + 1);
+      if (second == std::string::npos) {
+        continue;
+      }
+
+      std::string status = line.substr(0, first);
+      std::string output = line.substr(second + 1, line.find('\t', second + 1) - (second + 1));
+      if (status == "status" || output.empty()) {
+        continue;  // header row
+      }
+      entries.emplace(NormalizeLuaScriptKey(std::move(output)), std::move(status));
+    }
+
+    REXLOG_INFO("Refii Lua workspace manifest: {} entries from {}", entries.size(),
+                (root / "_manifest.tsv").string());
+    return entries;
+  }();
+  return manifest;
+}
+
+/// May the guest be handed this reconstructed file?
+///
+/// ONLY IF THE DECOMPILER SAID IT CAME OUT EXACT. `nonexact` means the reconstruction did not
+/// round-trip to the original bytecode — it is a plausible-looking Lua file that does not do the
+/// same thing, and handing one to the guest is how the in-game camera disappeared: the `nonexact`
+/// `scripts/camera/cameramanager.lua` never performs the setup that stands up the camera's view,
+/// so the camera update found a null view and no pose was ever computed. Nothing in the logs said
+/// so, because a wrong-but-valid script executes perfectly happily.
+///
+/// Two things are deliberately exempt:
+///   - anything under `override/`, which is a HAND-WRITTEN mod. The point of the workspace is that
+///     a human can put a file there and have it win; that is a deliberate act, not decompiler
+///     output, and it is not the manifest's business.
+///   - a workspace with no manifest at all, which is somebody's own tree rather than an installer
+///     one. Refusing everything there would break a setup that never involved the decompiler.
+bool LuaWorkspaceFileIsTrustworthy(const std::string& candidate) {
+  if (StartsWith(candidate, "override/")) {
+    return true;
+  }
+
+  const auto& manifest = GetLuaWorkspaceManifest();
+  if (manifest.empty()) {
+    return true;
+  }
+
+  const auto entry = manifest.find(NormalizeLuaScriptKey(candidate));
+  if (entry == manifest.end()) {
+    return true;  // not something the decompiler produced; leave it alone
+  }
+
+  // `copied` is a verbatim loose file and `decompiled` round-tripped exactly. Everything else —
+  // `nonexact`, `aliased_nonexact`, `disassembled`, `invalid`, `budget_exceeded` — is a guess.
+  return entry->second == "decompiled" || entry->second == "copied" ||
+         entry->second == "aliased";
+}
+
 bool NativeLuaModOverridesEnabled() { return REXCVAR_GET(lua_use_mod_overrides); }
 
 bool NativeLuaModOverrideTracingEnabled() { return REXCVAR_GET(lua_trace_mod_overrides); }
@@ -747,9 +849,30 @@ std::filesystem::path ResolveLuaModOverridePath(std::string_view script_key) {
     }
 
     std::error_code error;
-    if (std::filesystem::is_regular_file(resolved_path, error)) {
-      return resolved_path;
+    if (!std::filesystem::is_regular_file(resolved_path, error)) {
+      continue;
     }
+
+    // The file exists — but existing is not the same as being right. Gate it on the
+    // decompiler's own verdict; a `nonexact` reconstruction is worse than no override at
+    // all, because the guest runs it happily and the damage shows up somewhere unrelated.
+    if (!LuaWorkspaceFileIsTrustworthy(candidate)) {
+      static std::mutex reported_mutex;
+      static std::unordered_map<std::string, bool> reported;
+      bool first = false;
+      {
+        std::scoped_lock lock(reported_mutex);
+        first = reported.emplace(candidate, true).second;
+      }
+      if (first) {
+        REXLOG_INFO("Refii Lua override for {} SKIPPED — the workspace manifest does not mark it "
+                    "exact; using the guest's own bytecode instead",
+                    candidate);
+      }
+      continue;
+    }
+
+    return resolved_path;
   }
 
   return {};

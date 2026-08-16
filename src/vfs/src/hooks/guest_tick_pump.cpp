@@ -60,6 +60,8 @@
 #include <string>
 #include <vector>
 
+#include <rex/kernel/xboxkrnl/threading.h>
+
 #include "core/guest_state.h"
 #include "hooks/ppc_externs.h"
 
@@ -628,6 +630,253 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+/// The in-game loading screen the guest stood up, or 0 when none is up.
+///
+/// Same three-root walk the host bridge's `loading_screen_object` uses — `sub_82388380`'s own
+/// fallback chain (0x83496AB8, then 0x83496AC0, then 0x8335C4C4) -> app -> +8 context -> +36
+/// manager -> +4 screen. `manager+4` is 0 when there is no screen, which is the ordinary case
+/// out of game and during the front end.
+uint32_t ResolveInGameLoadingScreen(uint8_t* base) {
+  for (uint32_t root : {0x83496AB8u, 0x83496AC0u, 0x8335C4C4u}) {
+    const uint32_t app = LoadGuestU32(base, root);
+    if (!LooksLikeGuestPointer(app)) continue;
+    const uint32_t owner = LoadGuestU32(base, app + 8u);
+    if (!LooksLikeGuestPointer(owner)) continue;
+    const uint32_t manager = LoadGuestU32(base, owner + 36u);
+    if (!LooksLikeGuestPointer(manager)) continue;
+    const uint32_t screen = LoadGuestU32(base, manager + 4u);
+    if (LooksLikeGuestPointer(screen)) return screen;
+  }
+  return 0;
+}
+
+/// Is a game WORLD up and populated — `World + 0xA8`, the bit both the travel and load-from-save
+/// paths set. The same walk `RefiiHostWorldIsActive` uses. False through boot and the front end,
+/// which is exactly what keeps the finish below off the startup loading owner.
+bool InGameWorldActive(uint8_t* base) {
+  const auto step = [&](uint32_t at, uint32_t offset) -> uint32_t {
+    return LooksLikeGuestPointer(at) ? LoadGuestU32(base, at + offset) : 0u;
+  };
+  uint32_t at = LoadGuestU32(base, 0x83496AB8u);
+  at = step(at, 0x0Cu);
+  at = step(at, 0x58u);
+  at = step(at, 0x04u);
+  at = step(at, 0x00u);
+  return LooksLikeGuestPointer(at) && LoadGuestU8(base, at + 0xA8u) != 0;
+}
+
+/// The screen object we have already brought down, so the finish fires once per load and not
+/// every tick. Cleared when no screen is up, which re-arms it for the next level change.
+std::atomic<uint32_t> g_finished_loading_screen{0};
+
+/// Bring the IN-GAME loading screen down — the host standing in for the present loop that would.
+///
+/// In this headless embedded mode nothing presents, so after an in-game level load the guest
+/// never runs the render tick that fades its loading screen out and releases the game thread: it
+/// sits at `fade=1 requested=0` forever with the loading music playing, which is the black-screen
+/// stall. The STARTUP screen is finished synthetically by the frontend bridge
+/// (`TryFinishRefiiLoadingScreenOwnerFromCollapsedPipeline`); this is that same move for the
+/// in-game one, and it runs from the in-game tick (`sub_82276D10` -> the pump) where it belongs.
+///
+/// Gated on the game world being active so it can ONLY touch an in-game screen. It mirrors the
+/// frontend bridge's proven sequence: keep the frame past the fade's ten-tick guard, drop the
+/// fade, request teardown, run the guest's own fade/teardown tick, and — if one tick does not
+/// latch `done` — finish it directly and pulse the event `sub_82361458` blocks the game thread on.
+void MaybeFinishInGameLoadingScreen(PPCContext& ctx, uint8_t* base) {
+  if (base == nullptr) {
+    return;
+  }
+
+  static const bool enabled = [] {
+    const char* value = std::getenv("REFII_FINISH_INGAME_LOADSCREEN");
+    return value == nullptr || value[0] != '0';
+  }();
+  if (!enabled || !InGameWorldActive(base)) {
+    return;
+  }
+
+  const uint32_t screen = ResolveInGameLoadingScreen(base);
+  if (screen == 0) {
+    g_finished_loading_screen.store(0, std::memory_order_relaxed);
+    return;
+  }
+  if (g_finished_loading_screen.load(std::memory_order_relaxed) == screen) {
+    return;
+  }
+  if (LoadGuestU8(base, screen + 177u) != 0) {
+    g_finished_loading_screen.store(screen, std::memory_order_relaxed);
+    return;
+  }
+
+  if (LoadGuestU32(base, screen + 168u) < 10u) {
+    StoreGuestU32(base, screen + 168u, 10u);
+  }
+  StoreGuestU32(base, screen + 172u, 0u);
+
+  // DO NOT DRIVE `sub_8235E5A0` FROM THIS THREAD. It deadlocks, every time, and the stack is
+  // unambiguous:
+  //
+  //   rex_lhGameLoop_Tick -> sub_822C1BD0 -> OnGuestTick -> MaybeFinishInGameLoadingScreen
+  //     -> sub_8235E5A0 -> rex_lhRenderer_BeginGPUFrame -> RtlEnterCriticalSection  [blocks]
+  //
+  // The screen's own tick reaches into the renderer to open a GPU frame, and that lock is held
+  // by the 3D Engine thread, which is parked forever inside `rex_lhRenderer_RenderFrame` ->
+  // `sub_822DFE08` (the command-stream drain) spinning on SwitchToThread — there is no GPU to
+  // drain the ring, so it never returns and never releases. The game thread then waits on it
+  // for ever: the 15 Hz tick stops, `dword_83319650` stays frozen, and because that counter is
+  // what gates the world update, the camera snapshot is never refreshed either. The "camera is
+  // out of whack" symptom is this deadlock, one remove.
+  //
+  // So do the teardown by hand instead, which is what the fallback below always did anyway:
+  // latch `done` directly and pulse the event `sub_82361458` blocks the game thread on. Pure
+  // memory writes plus one event signal, no renderer lock, nothing that can block.
+  StoreGuestU8(base, screen + 176u, 0u);
+  StoreGuestU8(base, screen + 177u, 1u);
+  const uint32_t event = LoadGuestU32(base, screen + 180u);
+  if (LooksLikeGuestPointer(event)) {
+    PPCContext signal_ctx = ctx;
+    signal_ctx.r3.u32 = event;
+    signal_ctx.lr = 0x8235E7D8u;
+    ::__imp__sub_822C9388(signal_ctx, base);
+  }
+
+  g_finished_loading_screen.store(screen, std::memory_order_relaxed);
+  REXLOG_INFO("Refii in-game loading screen brought down (screen=0x{:08X})", screen);
+}
+
+/// Let the in-game tick actually simulate: `game+0x104`, the flag it gates all of it on.
+///
+/// `rex_lhGameLoop_Tick` (`sub_82276D10`) opens with
+///
+///     lbz r11, 260(r31)   ; game+0x104   -> if zero, SKIP
+///     lbz r11, 261(r31)   ; game+0x105   -> if zero, SKIP
+///
+/// and everything behind that gate is the in-game world: the entity advance, the animation
+/// pose build, the camera update. Measured in this port after a level load, `+0x105` is 1 (the
+/// world is ready) and **`+0x104` is 0** — so the tick loops for ever doing none of it. Particle
+/// systems live OUTSIDE the gate, on `sub_821DFDD0`, which is why FX animate happily while the
+/// hero, the NPCs and the camera are frozen: the entity path was entered exactly once, before
+/// the flag went to zero, and never again.
+///
+/// The guest sets this itself from `sub_82312EE8` (`li r11,1; stb r11,260(r3)`) and its siblings
+/// on the game object, all of which run off the front-end/gameplay transition that this hosted,
+/// no-present build never completes. Setting it here is the same class of nudge as the loading
+/// screen finish above: the host standing in for a transition the guest cannot reach on its own.
+///
+/// Gated on the world genuinely being up (`InGameWorldActive`) and on the guest's own
+/// `+0x105`, so this can only ever start a simulation the guest already considers ready — it
+/// cannot force one during boot, the front end, or a level change. Off-switch
+/// `REFII_ARM_INGAME_SIM=0`.
+void MaybeArmInGameSimulation(PPCContext& ctx, uint8_t* base) {
+  (void)ctx;
+  if (base == nullptr) {
+    return;
+  }
+
+  // OFF BY DEFAULT — THIS DOES NOT WORK, and the negative result is the useful part.
+  //
+  // Forcing `+0x104` to 1 does open the gate, and the guest then faults within about half a
+  // second (0xC0000005). So the flag being clear is a SYMPTOM, not the cause: the game object
+  // has not completed its transition into gameplay, and the block behind the gate dereferences
+  // state that transition is supposed to have built. Setting the flag just runs that code
+  // against a half-built object.
+  //
+  // Kept, opt-in via `REFII_ARM_INGAME_SIM=1`, purely so nobody has to rediscover that the
+  // obvious shortcut is a dead end. The real fix is upstream: make the guest actually complete
+  // the front-end -> gameplay transition, which in this hosted build it never does.
+  static const bool enabled = [] {
+    const char* value = std::getenv("REFII_ARM_INGAME_SIM");
+    return value != nullptr && value[0] == '1';
+  }();
+  if (!enabled || !InGameWorldActive(base)) {
+    return;
+  }
+
+  const uint32_t mode = LoadGuestU32(base, 0x83496AB8u);
+  if (!LooksLikeGuestPointer(mode)) {
+    return;
+  }
+  const uint32_t game = LoadGuestU32(base, mode + 0x0Cu);
+  if (!LooksLikeGuestPointer(game)) {
+    return;
+  }
+
+  // Only when the guest itself says the world is ready, and only when the flag is actually
+  // clear — a write every tick would be a pointless store and would mask the guest setting it.
+  if (LoadGuestU8(base, game + 0x105u) == 0 || LoadGuestU8(base, game + 0x104u) != 0) {
+    return;
+  }
+
+  StoreGuestU8(base, game + 0x104u, 1u);
+
+  static std::atomic<uint32_t> armed{0};
+  if (armed.fetch_add(1, std::memory_order_relaxed) < 4u) {
+    REXLOG_INFO("Refii in-game simulation armed: game 0x{:08X} +0x104 0 -> 1 (+0x105={}), the "
+                "game tick can now run the entity/animation/camera block",
+                game, LoadGuestU8(base, game + 0x105u));
+  }
+}
+
+void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
+  if (base == nullptr) {
+    return;
+  }
+
+  static const bool enabled = [] {
+    const char* value = std::getenv("REFII_FINISH_INGAME_LOADSCREEN");
+    return value == nullptr || value[0] != '0';
+  }();
+  if (!enabled || !InGameWorldActive(base)) {
+    return;
+  }
+
+  const uint32_t screen = ResolveInGameLoadingScreen(base);
+
+  static uint32_t watched = 0;
+  static uint32_t stuck_steps = 0;
+
+  const bool stuck = screen != 0 && LoadGuestU8(base, screen + 177u) != 0 &&
+                     LoadGuestU32(base, screen + 172u) != 0u;
+  if (!stuck) {
+    watched = 0;
+    stuck_steps = 0;
+    return;
+  }
+
+  if (screen != watched) {
+    watched = screen;
+    stuck_steps = 0;
+  }
+
+  constexpr uint32_t kStuckSteps = 30u;
+  if (stuck_steps < kStuckSteps) {
+    ++stuck_steps;
+    return;
+  }
+
+  if (LoadGuestU32(base, screen + 168u) < 10u) {
+    StoreGuestU32(base, screen + 168u, 10u);
+  }
+  StoreGuestU32(base, screen + 172u, 0u);
+  StoreGuestU8(base, screen + 176u, 0u);
+  StoreGuestU8(base, screen + 177u, 1u);
+
+  const uint32_t event = LoadGuestU32(base, screen + 180u);
+  if (event != 0u) {
+    rex::kernel::xboxkrnl::xeNtSetEvent(event, nullptr);
+  }
+
+  watched = 0;
+  stuck_steps = 0;
+
+  static std::atomic<uint32_t> logged{0};
+  if (logged.fetch_add(1, std::memory_order_relaxed) < 8u) {
+    REXLOG_INFO("Refii in-game loading screen finished from host step "
+                "(screen=0x{:08X} event=0x{:08X})",
+                screen, event);
+  }
+}
+
 /// One tick's worth of pump work. Split out so the hook body stays the delegation it must be.
 void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   const uint64_t tick = g_ticks.fetch_add(1, std::memory_order_relaxed);
@@ -645,6 +894,15 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   }
 
   DrainOnGuestThread(ctx, base);
+
+  // The present loop that would normally fade the in-game loading screen out is off in this
+  // headless mode, so the guest never releases the game thread from it. Do it here, from the
+  // in-game tick, once the world it was loading is up.
+  MaybeFinishInGameLoadingScreen(ctx, base);
+
+  MaybeArmInGameSimulation(ctx, base);
+
+  TraceCameraProbe(base, tick);
 
   // After the drain, so a "New Game" that just ran is reflected in the next answer rather than
   // the one before it.

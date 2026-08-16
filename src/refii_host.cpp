@@ -36,6 +36,10 @@
 #include <windows.h>
 #include <objbase.h>
 #include <processthreadsapi.h>
+// Symbolizing the fault stack in WriteWindowsCrashRecord. refii_host is a static library
+// inside refii_hostbridge.dll, which already links dbghelp for ReportEmbeddedFailure.
+#include <dbghelp.h>
+#include <cstring>
 #else
 #include <cerrno>
 #include <fcntl.h>
@@ -355,14 +359,37 @@ void WriteWindowsCrashRecord(const char* source,
     std::fprintf(crashLog, "code\t0x%08lX\n", static_cast<unsigned long>(exceptionCode));
     std::fprintf(crashLog, "exception_address\t%p\n", exceptionAddress);
     std::fprintf(crashLog, "instruction_pointer\t%p\n", instructionPointer);
-    const uintptr_t moduleBase =
-        reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
-    std::fprintf(crashLog, "module_base\t%p\n",
-                 reinterpret_cast<void*>(moduleBase));
-    if (instructionPointer != nullptr && moduleBase != 0) {
+    // THE MODULE CONTAINING THE FAULT, not the process image.
+    //
+    // This used to report `GetModuleHandleA(nullptr)` — the EXE — and subtract that from the
+    // instruction pointer. Embedded, the exe is Godot, while every interesting fault is inside
+    // refii_hostbridge.dll or rexruntime.dll, so the "rva" was a difference between two
+    // unrelated modules: a large number that resolves to nothing and cannot be looked up in any
+    // map. Name the owning module and give an RVA relative to IT, which is what
+    // refii_hostbridge.map is keyed by (see the /MAP: link option in src/hostbridge).
+    HMODULE faultModule = nullptr;
+    char faultModuleName[MAX_PATH] = "?";
+    if (instructionPointer != nullptr &&
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(instructionPointer), &faultModule) &&
+        faultModule != nullptr) {
+        char path[MAX_PATH] = {};
+        if (GetModuleFileNameA(faultModule, path, MAX_PATH) != 0) {
+            const char* slash = std::strrchr(path, '\\');
+            std::snprintf(faultModuleName, sizeof(faultModuleName), "%s",
+                          slash != nullptr ? slash + 1 : path);
+        }
+    }
+
+    std::fprintf(crashLog, "fault_module\t%s\n", faultModuleName);
+    std::fprintf(crashLog, "fault_module_base\t%p\n",
+                 reinterpret_cast<void*>(faultModule));
+    if (instructionPointer != nullptr && faultModule != nullptr) {
         std::fprintf(crashLog, "fault_rva\t0x%llX\n",
                      static_cast<unsigned long long>(
-                         reinterpret_cast<uintptr_t>(instructionPointer) - moduleBase));
+                         reinterpret_cast<uintptr_t>(instructionPointer) -
+                         reinterpret_cast<uintptr_t>(faultModule)));
     }
     if (haveAccessInfo) {
         const char* kindText = accessKind == 0   ? "read"
@@ -373,6 +400,74 @@ void WriteWindowsCrashRecord(const char* source,
         std::fprintf(crashLog, "access_address\t0x%llX\n",
                      static_cast<unsigned long long>(accessAddress));
     }
+    // THE STACK, symbolized as far as it can be.
+    //
+    // Without this a crash record is an address and nothing else, and on this box there is no
+    // debugger to open a dump with — so an intermittent fault stays unattributable however many
+    // times it happens. `StackWalk64` on the exception's own ContextRecord gives the faulting
+    // thread's real frames. dbghelp is already linked (refii_host is a static lib inside
+    // refii_hostbridge.dll); there are no PDBs, so `SymFromAddr` resolves exports only and the
+    // rest is module+RVA — which is exactly what refii_hostbridge.map is keyed by.
+    //
+    // StackWalk64 MUTATES the context it walks, so it gets a copy: the real one belongs to the
+    // exception dispatcher and corrupting it would turn a diagnosable fault into a mystery.
+    if (exceptionPointers != nullptr && exceptionPointers->ContextRecord != nullptr) {
+        CONTEXT walkContext = *exceptionPointers->ContextRecord;
+        STACKFRAME64 frame = {};
+        frame.AddrPC.Offset = walkContext.Rip;
+        frame.AddrPC.Mode = AddrModeFlat;
+        frame.AddrFrame.Offset = walkContext.Rbp;
+        frame.AddrFrame.Mode = AddrModeFlat;
+        frame.AddrStack.Offset = walkContext.Rsp;
+        frame.AddrStack.Mode = AddrModeFlat;
+
+        const HANDLE process = GetCurrentProcess();
+        static std::once_flag symbolsOnce;
+        std::call_once(symbolsOnce, [process] {
+            SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
+            SymInitialize(process, nullptr, TRUE);
+        });
+
+        alignas(SYMBOL_INFO) char symbolStorage[sizeof(SYMBOL_INFO) + 512] = {};
+        auto* symbol = reinterpret_cast<SYMBOL_INFO*>(symbolStorage);
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        symbol->MaxNameLen = 511;
+
+        std::fprintf(crashLog, "stack\n");
+        for (int depth = 0; depth < 24; ++depth) {
+            if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, GetCurrentThread(), &frame,
+                             &walkContext, nullptr, SymFunctionTableAccess64,
+                             SymGetModuleBase64, nullptr) ||
+                frame.AddrPC.Offset == 0) {
+                break;
+            }
+
+            const auto pc = static_cast<uintptr_t>(frame.AddrPC.Offset);
+            HMODULE owner = nullptr;
+            char ownerName[MAX_PATH] = "?";
+            uintptr_t rva = 0;
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCSTR>(pc), &owner) &&
+                owner != nullptr) {
+                char path[MAX_PATH] = {};
+                if (GetModuleFileNameA(owner, path, MAX_PATH) != 0) {
+                    const char* slash = std::strrchr(path, '\\');
+                    std::snprintf(ownerName, sizeof(ownerName), "%s",
+                                  slash != nullptr ? slash + 1 : path);
+                }
+                rva = pc - reinterpret_cast<uintptr_t>(owner);
+            }
+
+            DWORD64 displacement = 0;
+            const char* name =
+                SymFromAddr(process, frame.AddrPC.Offset, &displacement, symbol) ? symbol->Name
+                                                                                : "";
+            std::fprintf(crashLog, "  #%02d\t%s+0x%llX\t%s\n", depth, ownerName,
+                         static_cast<unsigned long long>(rva), name);
+        }
+    }
+
     std::fprintf(crashLog, "\n");
     std::fclose(crashLog);
 }

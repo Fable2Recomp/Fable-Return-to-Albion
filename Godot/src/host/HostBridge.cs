@@ -2153,11 +2153,18 @@ public static class HostBridge
 	}
 
 	/// <summary>The handshake, or null when no loading screen object exists.</summary>
-	public static LoadingScreen? GetLoadingScreen() =>
-		RefiiHostGetLoadingScreen(out uint manager, out uint screen, out float fade,
+	public static LoadingScreen? GetLoadingScreen()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		return RefiiHostGetLoadingScreen(out uint manager, out uint screen, out float fade,
 			out uint requested, out uint done) != 0
 			? new LoadingScreen(manager, screen, fade, requested != 0, done != 0)
 			: null;
+	}
 
 	private static uint[]? _fenceArms;
 

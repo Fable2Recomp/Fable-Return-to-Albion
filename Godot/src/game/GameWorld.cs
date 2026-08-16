@@ -155,10 +155,30 @@ public partial class GameWorld : Node3D
 		_holdingForProps = false;
 		HostBridge.SetWorldBuildPending(false);
 
+		if (_region is not null)
+		{
+			SetStreamBudget(_region, Refii.Level.Engine_PropStreamer.DefaultMsPerFrame);
+		}
+
 		if (!pending)
 		{
 			GD.Print($"[game-world] {_standing} finished streaming its props after " +
 				$"{_propHoldFrames} frame(s) — releasing the guest");
+		}
+	}
+
+	private const double HeldStreamMsPerFrame = 100.0;
+
+	private static void SetStreamBudget(Node node, double milliseconds)
+	{
+		if (node is Refii.Level.Engine_PropStreamer streamer)
+		{
+			streamer.MillisecondsPerFrame = milliseconds;
+		}
+
+		foreach (Node child in node.GetChildren())
+		{
+			SetStreamBudget(child, milliseconds);
 		}
 	}
 
@@ -637,6 +657,8 @@ public partial class GameWorld : Node3D
 		_holdingForProps = true;
 		_propHoldFrames = 0;
 		AddChild(region);
+
+		SetStreamBudget(region, HeldStreamMsPerFrame);
 
 		MountWaterReflections(region);
 

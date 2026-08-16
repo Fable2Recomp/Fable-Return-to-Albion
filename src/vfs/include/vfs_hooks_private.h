@@ -89,6 +89,14 @@ uint32_t FinishCurrentBinkMovie(uint8_t* base);
 
 /// 0 no movie, 1 the guest still wants it, 2 the guest has ended it (done or skipped).
 uint32_t BinkMovieState(uint8_t* base);
+
+/// Periodic camera-manager state line from the guest tick — defined in camera_view_guard.cpp.
+void TraceCameraProbe(uint8_t* base, uint64_t tick);
+
+/// Brings a stuck in-game loading screen down from the host step thread — defined in
+/// guest_tick_pump.cpp. Runs when the guest game thread is parked in its own post-cutscene
+/// teardown wait and the pump can no longer fire.
+void FinishStuckInGameLoadingScreenFromHost(uint8_t* base);
 }  // namespace refii::vfs
 
 #define REFII_VFS_NATIVE_PASSTHROUGH(function_name) \

@@ -74,6 +74,8 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/game_init_trace.cpp
     ${REFII_VFS_ROOT}/src/hooks/frontend_video_handoff.cpp
     ${REFII_VFS_ROOT}/src/hooks/native_misc.cpp
+    ${REFII_VFS_ROOT}/src/hooks/camera_view_guard.cpp
+    ${REFII_VFS_ROOT}/src/hooks/sim_path_probe.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_open.cpp
     ${REFII_VFS_ROOT}/src/hooks/loading_resource_hashes.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_streams.cpp

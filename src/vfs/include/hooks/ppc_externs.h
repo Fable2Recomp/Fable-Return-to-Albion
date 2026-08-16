@@ -354,3 +354,13 @@ PPC_EXTERN_FUNC(__imp__sub_82CD9590);  // XAudioStopVoice
 PPC_EXTERN_FUNC(__imp__sub_82CD97B0);  // XAudioSetVolume
 PPC_EXTERN_FUNC(__imp__sub_82CD9828);  // XAudioSetPitch
 PPC_EXTERN_FUNC(__imp__sub_82CD9B00);  // XAudioCreateSourceVoice
+
+// Camera view walk — see camera_view_guard.cpp
+PPC_EXTERN_FUNC(__imp__sub_8219A758);
+PPC_EXTERN_FUNC(__imp__sub_821B9258);
+
+// World-update / entity-advance paths — see sim_path_probe.cpp
+PPC_EXTERN_FUNC(__imp__sub_821DFDD0);
+PPC_EXTERN_FUNC(__imp__sub_822AF5D8);
+PPC_EXTERN_FUNC(__imp__sub_82278C20);
+PPC_EXTERN_FUNC(__imp__sub_82204FF0);
