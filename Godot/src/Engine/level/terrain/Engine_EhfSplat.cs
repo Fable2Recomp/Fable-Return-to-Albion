@@ -519,54 +519,66 @@ public static class Engine_EhfSplat
     public static byte[] ResizeRgba8(
         byte[] source, int sourceWidth, int sourceHeight, int width, int height)
     {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || width <= 0 || height <= 0 ||
+            source.LongLength < (long)sourceWidth * sourceHeight * 4)
+        {
+            return new byte[(long)width * height * 4];
+        }
+
+        if (sourceWidth == width && sourceHeight == height &&
+            source.LongLength == (long)width * height * 4)
+        {
+            return source;
+        }
+
         var destination = new byte[(long)width * height * 4];
-        if (sourceWidth <= 0 || sourceHeight <= 0 || width <= 0 || height <= 0)
-        {
-            return destination;
-        }
 
-        if (source.LongLength < (long)sourceWidth * sourceHeight * 4)
-        {
-            return destination;
-        }
-
+        var x0 = new int[width];
+        var x1 = new int[width];
+        var wx = new int[width];
         float scaleX = (float)sourceWidth / width;
-        float scaleY = (float)sourceHeight / height;
+        for (int x = 0; x < width; x++)
+        {
+            float sx = ((x + 0.5f) * scaleX) - 0.5f;
+            int sx0 = Math.Clamp((int)MathF.Floor(sx), 0, sourceWidth - 1);
+            x0[x] = sx0 * 4;
+            x1[x] = Math.Min(sx0 + 1, sourceWidth - 1) * 4;
+            wx[x] = (int)(Math.Clamp(sx - sx0, 0f, 1f) * 256f + 0.5f);
+        }
 
-        for (int y = 0; y < height; y++)
+        float scaleY = (float)sourceHeight / height;
+        System.Threading.Tasks.Parallel.For(0, height, y =>
         {
             float sy = ((y + 0.5f) * scaleY) - 0.5f;
             int sy0 = Math.Clamp((int)MathF.Floor(sy), 0, sourceHeight - 1);
             int sy1 = Math.Min(sy0 + 1, sourceHeight - 1);
-            float fy = Math.Clamp(sy - sy0, 0f, 1f);
+            int fy = (int)(Math.Clamp(sy - sy0, 0f, 1f) * 256f + 0.5f);
+            int gy = 256 - fy;
+
+            ReadOnlySpan<byte> row0 = source.AsSpan(sy0 * sourceWidth * 4, sourceWidth * 4);
+            ReadOnlySpan<byte> row1 = source.AsSpan(sy1 * sourceWidth * 4, sourceWidth * 4);
+            Span<byte> outRow = destination.AsSpan(y * width * 4, width * 4);
 
             for (int x = 0; x < width; x++)
             {
-                float sx = ((x + 0.5f) * scaleX) - 0.5f;
-                int sx0 = Math.Clamp((int)MathF.Floor(sx), 0, sourceWidth - 1);
-                int sx1 = Math.Min(sx0 + 1, sourceWidth - 1);
-                float fx = Math.Clamp(sx - sx0, 0f, 1f);
-
-                long p00 = (((long)sy0 * sourceWidth) + sx0) * 4;
-                long p10 = (((long)sy0 * sourceWidth) + sx1) * 4;
-                long p01 = (((long)sy1 * sourceWidth) + sx0) * 4;
-                long p11 = (((long)sy1 * sourceWidth) + sx1) * 4;
-                long at = (((long)y * width) + x) * 4;
-
-                float w00 = (1f - fx) * (1f - fy);
-                float w10 = fx * (1f - fy);
-                float w01 = (1f - fx) * fy;
-                float w11 = fx * fy;
+                int fx = wx[x];
+                int gx = 256 - fx;
+                int w00 = gx * gy;
+                int w10 = fx * gy;
+                int w01 = gx * fy;
+                int w11 = fx * fy;
+                int p0 = x0[x];
+                int p1 = x1[x];
+                int at = x * 4;
 
                 for (int c = 0; c < 4; c++)
                 {
-                    destination[at + c] = (byte)Math.Clamp(
-                        (source[p00 + c] * w00) + (source[p10 + c] * w10) +
-                        (source[p01 + c] * w01) + (source[p11 + c] * w11),
-                        0f, 255f);
+                    int value = (row0[p0 + c] * w00) + (row0[p1 + c] * w10) +
+                                (row1[p0 + c] * w01) + (row1[p1 + c] * w11);
+                    outRow[at + c] = (byte)((value + 32768) >> 16);
                 }
             }
-        }
+        });
 
         return destination;
     }

@@ -38,9 +38,15 @@ public partial class Engine_PropStreamer : Node3D
 
     private readonly List<GeometryInstance3D> _pending = new();
 
+    private readonly List<GeometryInstance3D> _remaining = new();
+
     private readonly Stopwatch _watch = new();
 
-    private int _cursor;
+    private int _scan;
+
+    private int _done;
+
+    private PrefetchJob? _prefetch;
 
     private int _loaded;
 
@@ -54,13 +60,15 @@ public partial class Engine_PropStreamer : Node3D
 
     private bool _reported;
 
-    [Export] public double MillisecondsPerFrame { get; set; } = 25.0;
+    public const double DefaultMsPerFrame = 25.0;
+
+    [Export] public double MillisecondsPerFrame { get; set; } = DefaultMsPerFrame;
 
     [Export] public bool Enabled { get; set; } = true;
 
     public int Total => _pending.Count;
 
-    public int Done => _cursor;
+    public int Done => _done;
 
     public static event Action<int, int>? ProgressChanged;
 
@@ -69,6 +77,7 @@ public partial class Engine_PropStreamer : Node3D
         lock (Cache)
         {
             Cache.Clear();
+            Failed.Clear();
         }
     }
 
@@ -107,7 +116,9 @@ public partial class Engine_PropStreamer : Node3D
         }
 
         _pending.Clear();
-        _cursor = 0;
+        _remaining.Clear();
+        _scan = 0;
+        _done = 0;
         _loaded = 0;
         _failed = 0;
         _reported = false;
@@ -130,13 +141,133 @@ public partial class Engine_PropStreamer : Node3D
         }
 
         _pending.Sort((a, b) => InstanceCount(b).CompareTo(InstanceCount(a)));
+        _remaining.AddRange(_pending);
+
+        StartPrefetch();
 
         SetProcess(_pending.Count != 0);
         PublishProgress();
     }
 
+    private volatile bool _prefetchStop;
+
+    private void StartPrefetch()
+    {
+        var paths = new List<string>(_pending.Count);
+        foreach (GeometryInstance3D instance in _pending)
+        {
+            if (instance.Visible)
+            {
+                paths.Add(instance.GetMeta(ModelPathMeta).AsString());
+            }
+        }
+
+        _prefetchStop = false;
+        _prefetch = PrefetchModels(paths, () => _prefetchStop);
+    }
+
+    public sealed class PrefetchJob
+    {
+        private int _remaining;
+
+        internal PrefetchJob(int count) => _remaining = count;
+
+        public bool IsComplete => System.Threading.Volatile.Read(ref _remaining) <= 0;
+
+        internal void MarkOne() => System.Threading.Interlocked.Decrement(ref _remaining);
+
+        internal void MarkRest(int count) => System.Threading.Interlocked.Add(ref _remaining, -count);
+
+        public static readonly PrefetchJob Empty = new(0);
+    }
+
+    public static PrefetchJob PrefetchModels(IReadOnlyList<string> paths, Func<bool>? stop = null)
+    {
+        var distinct = new List<string>(paths.Count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string path in paths)
+        {
+            if (path.Length != 0 && seen.Add(path))
+            {
+                distinct.Add(path);
+            }
+        }
+
+        if (distinct.Count == 0)
+        {
+            return PrefetchJob.Empty;
+        }
+
+        var job = new PrefetchJob(distinct.Count);
+
+        int workers = Math.Min(Math.Max(2, System.Environment.ProcessorCount - 1), 8);
+        workers = Math.Min(workers, distinct.Count);
+
+        int cursor = -1;
+        for (int w = 0; w < workers; ++w)
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                for (;;)
+                {
+                    int i = System.Threading.Interlocked.Increment(ref cursor);
+                    if (i >= distinct.Count)
+                    {
+                        return;
+                    }
+
+                    if (stop is not null && stop())
+                    {
+                        job.MarkRest(distinct.Count - i);
+                        return;
+                    }
+
+                    try
+                    {
+                        Resolve(distinct[i]);
+                    }
+                    catch (Exception)
+                    {
+                    }
+                    finally
+                    {
+                        job.MarkOne();
+                    }
+                }
+            });
+        }
+
+        return job;
+    }
+
+    public static List<string> PendingModelPaths(Node container)
+    {
+        var paths = new List<string>();
+        foreach (Node child in container.GetChildren())
+        {
+            if (child is MultiMeshInstance3D multi &&
+                multi.Visible &&
+                multi.Multimesh is not null &&
+                multi.Multimesh.Mesh is null &&
+                multi.HasMeta(ModelPathMeta))
+            {
+                paths.Add(multi.GetMeta(ModelPathMeta).AsString());
+            }
+            else if (child is MeshInstance3D single &&
+                single.Visible &&
+                single.Mesh is null &&
+                single.HasMeta(ModelPathMeta))
+            {
+                paths.Add(single.GetMeta(ModelPathMeta).AsString());
+            }
+        }
+
+        return paths;
+    }
+
     public override void _ExitTree()
     {
+        _prefetchStop = true;
         Live.Remove(this);
         PublishProgress();
     }
@@ -150,27 +281,62 @@ public partial class Engine_PropStreamer : Node3D
 
         _watch.Restart();
 
-        while (_cursor < _pending.Count)
+        double budget = Engine.IsEditorHint() ? double.PositiveInfinity : MillisecondsPerFrame;
+        bool poolDone = _prefetch is null || _prefetch.IsComplete;
+        int untouched = 0;
+        while (_remaining.Count != 0 && untouched < _remaining.Count)
         {
-            GeometryInstance3D instance = _pending[_cursor++];
+            if (_scan >= _remaining.Count)
+            {
+                _scan = 0;
+            }
+
+            GeometryInstance3D instance = _remaining[_scan];
 
             // HIDDEN PROPS ARE NOT STREAMED. In the running game the guest owns most of these
             // and its own copy is what you see, so decoding their geometry is work for a mesh
             // nothing will draw — it was 45% of the streaming in BWSSlums. They are not dropped
             // though: `EnsureStreamed` loads one the moment it is shown again, which is what
             // happens when a layer activates and the guest hands a record back.
-            if (!instance.Visible)
+            bool settled = !GodotObject.IsInstanceValid(instance) || !instance.Visible;
+            if (!settled)
             {
-                continue;
+                string path = instance.GetMeta(ModelPathMeta).AsString();
+                if (TryPeek(path, out ArrayMesh? ready, out bool knownFailure))
+                {
+                    Step(instance, ready, knownFailure);
+                    settled = true;
+                }
+                else if (poolDone)
+                {
+                    Step(instance, null, false);
+                    settled = true;
+                }
             }
 
-            Step(instance);
+            if (settled)
+            {
+                _remaining.RemoveAt(_scan);
+                _done++;
+                untouched = 0;
+            }
+            else
+            {
+                _scan++;
+                untouched++;
+            }
 
-            if (_watch.Elapsed.TotalMilliseconds >= MillisecondsPerFrame)
+            if (_watch.Elapsed.TotalMilliseconds >= budget)
             {
                 PublishProgress();
                 return;
             }
+        }
+
+        if (_remaining.Count != 0)
+        {
+            PublishProgress();
+            return;
         }
 
         SetProcess(false);
@@ -199,8 +365,30 @@ public partial class Engine_PropStreamer : Node3D
     {
         if (node.Mesh is null && node.HasMeta(ModelPathMeta))
         {
-            Step(node);
+            Step(node, null, false);
         }
+    }
+
+    private static bool TryPeek(string path, out ArrayMesh? mesh, out bool knownFailure)
+    {
+        mesh = null;
+        knownFailure = false;
+        lock (Cache)
+        {
+            if (Cache.TryGetValue(path, out ArrayMesh? cached) && GodotObject.IsInstanceValid(cached))
+            {
+                mesh = cached;
+                return true;
+            }
+
+            if (Failed.ContainsKey(path))
+            {
+                knownFailure = true;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static int InstanceCount(GeometryInstance3D instance) =>
@@ -261,7 +449,7 @@ public partial class Engine_PropStreamer : Node3D
 
     private int _bakeMisfit;
 
-    private void Step(GeometryInstance3D instance)
+    private void Step(GeometryInstance3D instance, ArrayMesh? ready, bool knownFailure)
     {
         string path = string.Empty;
 
@@ -274,7 +462,18 @@ public partial class Engine_PropStreamer : Node3D
 
             path = instance.GetMeta(ModelPathMeta).AsString();
 
-            ArrayMesh? mesh = Resolve(path, out bool present);
+            bool present;
+            string why;
+            ArrayMesh? mesh = ready;
+            if (mesh is null && !knownFailure)
+            {
+                mesh = Resolve(path, out present, out why);
+            }
+            else
+            {
+                (present, why) = FailureOf(path);
+            }
+
             if (mesh is null)
             {
                 _failed++;
@@ -295,7 +494,7 @@ public partial class Engine_PropStreamer : Node3D
 
                 if (_failed <= 32)
                 {
-                    GD.Print($"[props] stream failed ({(present ? LastError : "absent from every bank")}): {path}");
+                    GD.Print($"[props] stream failed ({(present ? why : "absent from every bank")}): {path}");
                 }
 
                 return;
@@ -350,9 +549,27 @@ public partial class Engine_PropStreamer : Node3D
     /// hold no such entry at all, true when they do and it would not decode. Only the second
     /// is a reader defect; the first says whatever produced the path invented it.
     /// </summary>
-    public static ArrayMesh? Resolve(string virtualPath, out bool present)
+    public static ArrayMesh? Resolve(string virtualPath, out bool present) =>
+        Resolve(virtualPath, out present, out _);
+
+    private static readonly Dictionary<string, (bool Present, string Reason)> Failed = new();
+
+    private static readonly Dictionary<string, object> InFlight = new();
+
+    private static (bool Present, string Reason) FailureOf(string path)
+    {
+        lock (Cache)
+        {
+            return Failed.TryGetValue(path, out (bool Present, string Reason) failure)
+                ? failure
+                : (false, "absent from every bank");
+        }
+    }
+
+    public static ArrayMesh? Resolve(string virtualPath, out bool present, out string reason)
     {
         present = false;
+        reason = string.Empty;
         if (virtualPath.Length == 0)
         {
             return null;
@@ -366,6 +583,7 @@ public partial class Engine_PropStreamer : Node3D
         // Only the lookup and the store are held. Decoding stays outside: it is the expensive
         // half, and the worst a race there can do is build the same mesh twice and keep the
         // second, which costs one allocation and is otherwise indistinguishable.
+        object gate;
         lock (Cache)
         {
             if (Cache.TryGetValue(virtualPath, out ArrayMesh? cached) &&
@@ -374,34 +592,83 @@ public partial class Engine_PropStreamer : Node3D
                 present = true;
                 return cached;
             }
-        }
 
-        byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(virtualPath);
-        if (bytes is null)
-        {
-            return null;
-        }
-
-        present = true;
-
-        // The reader says WHY it gave up; discarding that leaves the fifteen or so models a
-        // level fails to load with no reason recorded anywhere.
-        ArrayMesh? mesh = Engine_MdlMesh.TryCreateMesh(
-            bytes, virtualPath, out string reason, out _);
-        if (mesh is null)
-        {
-            LastError = reason.Length != 0 ? reason : "no reason given";
-        }
-
-        if (mesh is not null)
-        {
-            mesh.ResourceName = Engine_LevelProps.LeafOf(virtualPath);
-            lock (Cache)
+            if (Failed.TryGetValue(virtualPath, out (bool Present, string Reason) failure))
             {
-                Cache[virtualPath] = mesh;
+                present = failure.Present;
+                reason = failure.Reason;
+                LastError = reason;
+                return null;
+            }
+
+            if (!InFlight.TryGetValue(virtualPath, out gate!))
+            {
+                gate = new object();
+                InFlight[virtualPath] = gate;
             }
         }
 
-        return mesh;
+        lock (gate)
+        {
+            lock (Cache)
+            {
+                if (Cache.TryGetValue(virtualPath, out ArrayMesh? cached) &&
+                    GodotObject.IsInstanceValid(cached))
+                {
+                    present = true;
+                    return cached;
+                }
+
+                if (Failed.TryGetValue(virtualPath, out (bool Present, string Reason) failure))
+                {
+                    present = failure.Present;
+                    reason = failure.Reason;
+                    LastError = reason;
+                    return null;
+                }
+            }
+
+            ArrayMesh? mesh = null;
+            try
+            {
+                byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(virtualPath);
+                if (bytes is null)
+                {
+                    reason = "absent from every bank";
+                    return null;
+                }
+
+                present = true;
+
+                // The reader says WHY it gave up; discarding that leaves the fifteen or so models a
+                // level fails to load with no reason recorded anywhere.
+                mesh = Engine_MdlMesh.TryCreateMesh(bytes, virtualPath, out reason, out _);
+                if (mesh is null)
+                {
+                    reason = reason.Length != 0 ? reason : "no reason given";
+                    LastError = reason;
+                    return null;
+                }
+
+                mesh.ResourceName = Engine_LevelProps.LeafOf(virtualPath);
+                return mesh;
+            }
+            finally
+            {
+                lock (Cache)
+                {
+                    if (mesh is not null)
+                    {
+                        Cache[virtualPath] = mesh;
+                    }
+                    else
+                    {
+                        Failed[virtualPath] = (present, reason);
+                    }
+
+                    InFlight.Remove(virtualPath);
+                }
+            }
+        }
     }
 }

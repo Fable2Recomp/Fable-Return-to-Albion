@@ -192,8 +192,37 @@ public sealed class BnkArchive : IDisposable
 			written += chunk.Length;
 		}
 
-		return Inflate(joined, 0, joined.Length, 0)
+		return InflateAll(joined)
 			   ?? throw new InvalidDataException("failed to decompress file-table stream");
+	}
+
+	private static byte[]? InflateAll(byte[] source)
+	{
+		foreach (int wrapper in new[] { 0, 1, 2 })
+		{
+			try
+			{
+				using var input = new MemoryStream(source, 0, source.Length, false);
+				Stream decompressor = wrapper switch
+				{
+					0 => new ZLibStream(input, CompressionMode.Decompress, true),
+					1 => new DeflateStream(input, CompressionMode.Decompress, true),
+					_ => new GZipStream(input, CompressionMode.Decompress, true),
+				};
+
+				using (decompressor)
+				{
+					using var output = new MemoryStream();
+					decompressor.CopyTo(output);
+					return output.ToArray();
+				}
+			}
+			catch (InvalidDataException)
+			{
+			}
+		}
+
+		return null;
 	}
 
 	private static List<BnkEntry> ParseEntryTable(
@@ -346,11 +375,23 @@ public sealed class BnkArchive : IDisposable
 		}
 
 		var output = new byte[entry.Size];
-		int produced = 0;
+		int chunkCount = entry.ChunkSizes.Count;
 
-		for (int i = 0; i < entry.ChunkSizes.Count; ++i)
+		var starts = new int[chunkCount + 1];
+		for (int i = 0; i < chunkCount; ++i)
 		{
-			int outLength = (int)entry.ChunkSizes[i];
+			starts[i + 1] = (int)Math.Min((long)starts[i] + entry.ChunkSizes[i], output.Length);
+		}
+
+		void InflateChunk(int i)
+		{
+			int outOffset = starts[i];
+			int outLength = starts[i + 1] - starts[i];
+			if (outLength <= 0)
+			{
+				return;
+			}
+
 			int compressedOffset = i * CompressedChunkSize;
 			if (compressedOffset >= stored.Length)
 			{
@@ -358,25 +399,40 @@ public sealed class BnkArchive : IDisposable
 					$"invalid chunk offset in {entry.RelativePath}");
 			}
 
-			int available = stored.Length - compressedOffset;
-			int compressedSize = Math.Min(CompressedChunkSize, available);
-
-			byte[]? chunk = Inflate(stored, compressedOffset, compressedSize, outLength);
-			if (chunk is null)
+			int compressedSize = Math.Min(CompressedChunkSize, stored.Length - compressedOffset);
+			if (!InflateInto(stored, compressedOffset, compressedSize, output, outOffset, outLength))
 			{
 				throw new InvalidDataException(
 					$"failed to inflate chunk {i} of {entry.RelativePath}");
 			}
+		}
 
-			int copy = Math.Min(chunk.Length, output.Length - produced);
-			Buffer.BlockCopy(chunk, 0, output, produced, copy);
-			produced += copy;
+		if (chunkCount >= ParallelInflateChunks)
+		{
+			try
+			{
+				System.Threading.Tasks.Parallel.For(0, chunkCount, InflateChunk);
+			}
+			catch (AggregateException aggregate) when (aggregate.InnerException is not null)
+			{
+				throw aggregate.InnerException;
+			}
+		}
+		else
+		{
+			for (int i = 0; i < chunkCount; ++i)
+			{
+				InflateChunk(i);
+			}
 		}
 
 		return output;
 	}
 
-	private static byte[]? Inflate(byte[] source, int offset, int count, int expectedLength)
+	private const int ParallelInflateChunks = 64;
+
+	private static bool InflateInto(
+		byte[] source, int offset, int count, byte[] output, int outOffset, int outLength)
 	{
 		foreach (int wrapper in new[] { 0, 1, 2 })
 		{
@@ -392,17 +448,24 @@ public sealed class BnkArchive : IDisposable
 
 				using (decompressor)
 				{
-					using var output = expectedLength > 0
-						? new MemoryStream(expectedLength)
-						: new MemoryStream();
-					decompressor.CopyTo(output);
-					byte[] result = output.ToArray();
-					if (expectedLength > 0 && result.Length != expectedLength)
+					int read = 0;
+					while (read < outLength)
 					{
-						Array.Resize(ref result, expectedLength);
+						int got = decompressor.Read(output, outOffset + read, outLength - read);
+						if (got <= 0)
+						{
+							break;
+						}
+
+						read += got;
 					}
 
-					return result;
+					if (read == 0 && outLength > 0)
+					{
+						continue;
+					}
+
+					return true;
 				}
 			}
 			catch (InvalidDataException)
@@ -410,7 +473,7 @@ public sealed class BnkArchive : IDisposable
 			}
 		}
 
-		return null;
+		return false;
 	}
 
 	private static void ReadExact(Stream stream, Span<byte> buffer)

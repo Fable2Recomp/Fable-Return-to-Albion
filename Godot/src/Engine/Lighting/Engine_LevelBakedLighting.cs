@@ -1,6 +1,4 @@
 using System;
-using System.IO;
-using System.IO.Compression;
 using Godot;
 using Refii.Level;
 using Refii.Textures;
@@ -209,10 +207,11 @@ public static class Engine_LevelBakedLighting
 
 		var baked = new ArrayMesh();
 		int cursor = 0;
-		for (int s = 0; s < mesh.GetSurfaceCount(); s++)
+		SourceSurfaces source = SurfacesOf(mesh);
+		for (int s = 0; s < source.Arrays.Length; s++)
 		{
-			Godot.Collections.Array arrays = mesh.SurfaceGetArrays(s);
-			int count = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array().Length;
+			var arrays = (Godot.Collections.Array)source.Arrays[s].Duplicate(false);
+			int count = source.VertexCounts[s];
 
 			// Through the map, not by running cursor. Our vertex order is not the file's — a
 			// shared vertex appears in two surfaces and everything after it shifts — so walking
@@ -221,22 +220,76 @@ public static class Engine_LevelBakedLighting
 			var vertexColours = new Color[count];
 			for (int v = 0; v < count; v++)
 			{
-				int source = cursor + v < sourceVertices.Length ? sourceVertices[cursor + v] : -1;
-				vertexColours[v] = source >= 0 && source < colours.Length
-					? FromD3DColour(colours[source])
+				int from = cursor + v < sourceVertices.Length ? sourceVertices[cursor + v] : -1;
+				vertexColours[v] = from >= 0 && from < colours.Length
+					? FromD3DColour(colours[from])
 					: new Color(1f, 1f, 1f, 1f);
 			}
 
 			arrays[(int)Mesh.ArrayType.Color] = vertexColours;
 			cursor += count;
 
-			baked.AddSurfaceFromArrays(mesh.SurfaceGetPrimitiveType(s), arrays);
+			baked.AddSurfaceFromArrays(source.Primitives[s], arrays);
 			int added = baked.GetSurfaceCount() - 1;
-			baked.SurfaceSetName(added, mesh.SurfaceGetName(s));
-			baked.SurfaceSetMaterial(added, mesh.SurfaceGetMaterial(s));
+			baked.SurfaceSetName(added, source.Names[s]);
+			baked.SurfaceSetMaterial(added, source.Materials[s]);
 		}
 
 		return baked;
+	}
+
+	private sealed class SourceSurfaces
+	{
+		public Godot.Collections.Array[] Arrays = System.Array.Empty<Godot.Collections.Array>();
+		public int[] VertexCounts = System.Array.Empty<int>();
+		public Mesh.PrimitiveType[] Primitives = System.Array.Empty<Mesh.PrimitiveType>();
+		public string[] Names = System.Array.Empty<string>();
+		public Material?[] Materials = System.Array.Empty<Material?>();
+	}
+
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ArrayMesh, SourceSurfaces>
+		SurfaceCache = new();
+
+	private static SourceSurfaces SurfacesOf(ArrayMesh mesh)
+	{
+		lock (SurfaceCache)
+		{
+			if (SurfaceCache.TryGetValue(mesh, out SourceSurfaces? cached))
+			{
+				return cached;
+			}
+		}
+
+		int surfaces = mesh.GetSurfaceCount();
+		var read = new SourceSurfaces
+		{
+			Arrays = new Godot.Collections.Array[surfaces],
+			VertexCounts = new int[surfaces],
+			Primitives = new Mesh.PrimitiveType[surfaces],
+			Names = new string[surfaces],
+			Materials = new Material?[surfaces],
+		};
+
+		for (int s = 0; s < surfaces; s++)
+		{
+			Godot.Collections.Array arrays = mesh.SurfaceGetArrays(s);
+			read.Arrays[s] = arrays;
+			read.VertexCounts[s] = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array().Length;
+			read.Primitives[s] = mesh.SurfaceGetPrimitiveType(s);
+			read.Names[s] = mesh.SurfaceGetName(s);
+			read.Materials[s] = mesh.SurfaceGetMaterial(s);
+		}
+
+		lock (SurfaceCache)
+		{
+			return SurfaceCache.TryGetValue(mesh, out SourceSurfaces? raced) ? raced : Add(mesh, read);
+		}
+
+		static SourceSurfaces Add(ArrayMesh mesh, SourceSurfaces read)
+		{
+			SurfaceCache.Add(mesh, read);
+			return read;
+		}
 	}
 
 	/// <summary>
@@ -522,24 +575,5 @@ public static class Engine_LevelBakedLighting
 		return $"{min:0.###}/{sum / (bank.Length * 3):0.###}/{max:0.###}";
 	}
 
-	private static byte[]? MaybeGunzip(byte[]? data)
-	{
-		if (data is null || data.Length < 2 || data[0] != 0x1F || data[1] != 0x8B)
-		{
-			return data;
-		}
-
-		try
-		{
-			using var input = new MemoryStream(data);
-			using var gzip = new GZipStream(input, CompressionMode.Decompress);
-			using var output = new MemoryStream();
-			gzip.CopyTo(output);
-			return output.ToArray();
-		}
-		catch (Exception)
-		{
-			return data;
-		}
-	}
+	private static byte[]? MaybeGunzip(byte[]? data) => Refii.Core.Engine_GameGzip.MaybeGunzip(data);
 }

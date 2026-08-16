@@ -23,6 +23,8 @@ public static class Engine_TerrainSplatMaterial
         material = null!;
         error = string.Empty;
 
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
         if (!Engine_EhfBody.TryParse(ehf, out EhfParsedBody parsed, out error))
         {
             return false;
@@ -41,6 +43,9 @@ public static class Engine_TerrainSplatMaterial
             return false;
         }
 
+        long parseMs = clock.ElapsedMilliseconds;
+        clock.Restart();
+
         List<SplatMaterial> materials = ResolveMaterials(parsed, read, findByName, out int resolved);
         if (resolved == 0)
         {
@@ -48,10 +53,16 @@ public static class Engine_TerrainSplatMaterial
             return false;
         }
 
+        long resolveMs = clock.ElapsedMilliseconds;
+        clock.Restart();
+
         if (!Engine_EhfSplat.TryBuild(parsed, materials, out TerrainSplatData data, out error))
         {
             return false;
         }
+
+        long splatMs = clock.ElapsedMilliseconds;
+        clock.Restart();
 
         Texture2DArray? baseArray = BuildColourArray(data.BaseSlices, data.SliceSize);
         Texture2DArray? detailArray = BuildColourArray(data.DetailSlices, data.SliceSize);
@@ -62,6 +73,10 @@ public static class Engine_TerrainSplatMaterial
             error = "could not create the terrain texture arrays";
             return false;
         }
+
+        GD.Print(
+            $"[terrain] splat timing: parse {parseMs} ms, textures {resolveMs} ms, " +
+            $"splat {splatMs} ms, arrays {clock.ElapsedMilliseconds} ms");
 
         material = new ShaderMaterial { Shader = shader };
         material.SetShaderParameter("lod_array", baseArray);
@@ -146,6 +161,39 @@ public static class Engine_TerrainSplatMaterial
             StringComparer.OrdinalIgnoreCase);
         var materials = new List<SplatMaterial>(parsed.Lods.Count);
 
+        var unique = new List<string>();
+        foreach (EhfLodEntry lod in parsed.Lods)
+        {
+            foreach (string path in new[]
+                     {
+                         lod.BaseDiffuse, lod.DetailDiffuse, lod.BaseNormal, lod.DetailNormal,
+                     })
+            {
+                if (string.IsNullOrEmpty(path))
+                {
+                    continue;
+                }
+
+                string normalized = path.Replace('\\', '/').Trim('/');
+                if (!cache.ContainsKey(normalized))
+                {
+                    cache[normalized] = default;
+                    unique.Add(normalized);
+                }
+            }
+        }
+
+        var decoded = new (byte[] Rgba, int Width, int Height)[unique.Count];
+        System.Threading.Tasks.Parallel.For(0, unique.Count, i =>
+        {
+            decoded[i] = DecodeShared(unique[i], read, findByName);
+        });
+
+        for (int i = 0; i < unique.Count; i++)
+        {
+            cache[unique[i]] = decoded[i];
+        }
+
         foreach (EhfLodEntry lod in parsed.Lods)
         {
             (byte[] baseRgba, int baseWidth, int baseHeight) =
@@ -197,11 +245,61 @@ public static class Engine_TerrainSplatMaterial
         }
 
         string normalized = path.Replace('\\', '/').Trim('/');
-        if (cache.TryGetValue(normalized, out (byte[] Rgba, int Width, int Height) hit))
+        if (cache.TryGetValue(normalized, out (byte[] Rgba, int Width, int Height) hit) &&
+            hit.Rgba is not null)
         {
             return hit;
         }
 
+        (byte[], int, int) result = DecodeTexture(normalized, read, findByName);
+        cache[normalized] = result;
+        return result;
+    }
+
+    private static readonly Dictionary<string, (byte[] Rgba, int Width, int Height)> Shared =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private const long SharedBudget = 384L << 20;
+
+    private static long _sharedBytes;
+
+    private static (byte[] Rgba, int Width, int Height) DecodeShared(
+        string normalized, ReadAsset read, FindByName? findByName)
+    {
+        lock (Shared)
+        {
+            if (Shared.TryGetValue(normalized, out (byte[] Rgba, int Width, int Height) hit))
+            {
+                return hit;
+            }
+        }
+
+        (byte[] Rgba, int Width, int Height) result = DecodeTexture(normalized, read, findByName);
+        if (result.Rgba.Length == 0)
+        {
+            return result;
+        }
+
+        lock (Shared)
+        {
+            if (_sharedBytes + result.Rgba.LongLength > SharedBudget)
+            {
+                Shared.Clear();
+                _sharedBytes = 0;
+            }
+
+            if (Shared.TryAdd(normalized, result))
+            {
+                _sharedBytes += result.Rgba.LongLength;
+            }
+        }
+
+        return result;
+    }
+
+    private static (byte[] Rgba, int Width, int Height) DecodeTexture(
+        string normalized, ReadAsset read, FindByName? findByName)
+    {
         byte[]? bytes = read(normalized) ?? read("data/" + normalized);
 
         if (bytes is null && findByName is not null)
@@ -230,7 +328,6 @@ public static class Engine_TerrainSplatMaterial
             }
         }
 
-        cache[normalized] = result;
         return result;
     }
 
@@ -285,11 +382,22 @@ public static class Engine_TerrainSplatMaterial
             return null;
         }
 
-        var images = new Godot.Collections.Array<Image>();
-        foreach (byte[] slice in slices)
+        var built = new Image[slices.Length];
+        System.Threading.Tasks.Parallel.For(0, slices.Length, i =>
         {
-            Image image = Image.CreateFromData(size, size, false, Image.Format.Rgba8, slice);
+            Image image = Image.CreateFromData(size, size, false, Image.Format.Rgba8, slices[i]);
             image.GenerateMipmaps();
+            built[i] = image;
+        });
+
+        var images = new Godot.Collections.Array<Image>();
+        foreach (Image image in built)
+        {
+            if (image is null)
+            {
+                return null;
+            }
+
             images.Add(image);
         }
 

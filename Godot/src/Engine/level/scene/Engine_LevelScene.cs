@@ -80,6 +80,8 @@ public static class Engine_LevelScene
             return false;
         }
 
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
         var packed = new PackedScene();
         Error packedResult = packed.Pack(root);
         if (packedResult != Error.Ok)
@@ -89,6 +91,9 @@ public static class Engine_LevelScene
             return false;
         }
 
+        long packMs = clock.ElapsedMilliseconds;
+        clock.Restart();
+
         Error saved = ResourceSaver.Save(packed, level.ScenePath);
         root.QueueFree();
 
@@ -97,6 +102,17 @@ public static class Engine_LevelScene
             error = $"could not save scene to {level.ScenePath}: {saved}";
             return false;
         }
+
+        long size = 0;
+        string globalized = ProjectSettings.GlobalizePath(level.ScenePath);
+        if (System.IO.File.Exists(globalized))
+        {
+            size = new System.IO.FileInfo(globalized).Length;
+        }
+
+        GD.Print(
+            $"[level-save] {level}: pack {packMs} ms, save {clock.ElapsedMilliseconds} ms, " +
+            $"{size / (1024.0 * 1024.0):0.0} MB at {level.ScenePath}");
 
         return true;
     }
@@ -148,19 +164,115 @@ public static class Engine_LevelScene
             phaseStart = now;
         }
 
-        if (level.HeightfieldPath.Length == 0)
+        LevelReads? reads = null;
+        if (source is not null)
+        {
+            reads = new LevelReads(source);
+            source = reads.Read;
+            Refii.Animations.Engine_AnimCatalog.Prewarm();
+        }
+
+        string heightfieldPath = level.HeightfieldPath;
+        ScenarioManifest? gameManifest = null;
+        if (source is not null)
+        {
+            Engine_LevelVfsConfig.Apply(level, source);
+
+            if (Engine_LevelManifest.TryResolve(
+                    level, source, out ScenarioManifest manifest, out string manifestPath,
+                    out string scenarioUsed))
+            {
+                gameManifest = manifest;
+                if (level.Scenario.Length == 0)
+                {
+                    level.Scenario = scenarioUsed;
+                }
+
+                GD.Print(
+                    $"[level] LoadLevel world={level.World} level={level.Name} " +
+                    $"scenario={scenarioUsed} " +
+                    $"id=0x{Engine_LevelManifest.LevelId(level.Name):X8} — " +
+                    $"{manifestPath}: {manifest.Describe()}");
+            }
+            else
+            {
+                GD.Print($"[level] {level}: no scenario .list, using discovered heightfield");
+            }
+        }
+
+        Mark("manifest");
+
+        if (gameManifest is not null && reads is not null)
+        {
+            Preload(level, gameManifest, reads);
+            Mark("preload");
+
+            if (gameManifest.Ghf.Count != 0)
+            {
+                bool discoveredIsStated = gameManifest.Ghf.Exists(line =>
+                    Engine_LevelManifest.VirtualPath(line).Equals(
+                        heightfieldPath, StringComparison.OrdinalIgnoreCase));
+
+                if (!discoveredIsStated &&
+                    Engine_LevelManifest.TryResolvePath(
+                        gameManifest.Ghf[0], reads.Read, out string statedHeightfield))
+                {
+                    GD.Print(
+                        $"[level] {level}: manifest states heightfield " +
+                        $"{statedHeightfield}" +
+                        (heightfieldPath.Length != 0
+                            ? $" (discovery had {heightfieldPath})"
+                            : string.Empty));
+                    heightfieldPath = statedHeightfield;
+                }
+            }
+
+            ReadGameOrderResources(level, gameManifest, reads.Read);
+            Mark("game-order");
+        }
+
+        if (heightfieldPath.Length == 0)
         {
             error = "level has no heightfield";
             return null;
         }
 
-        string meshPath = Engine_BnkTerrainLoader.PathPrefix + level.HeightfieldPath;
-        var terrainMesh = ResourceLoader.Load<ArrayMesh>(meshPath, "ArrayMesh");
-        if (terrainMesh is null)
+        string meshPath = Engine_BnkTerrainLoader.PathPrefix + heightfieldPath;
+        Func<string, byte[]?>? terrainRead = source;
+        (ArrayMesh? Mesh, Material? Material,
+            List<(string Path, string Name, ArrayMesh Mesh, Material? Material)> VistaBuilt)
+            TerrainWork()
         {
-            error = $"terrain mesh did not load from {meshPath}";
-            return null;
+            var mesh = ResourceLoader.Load<ArrayMesh>(meshPath, "ArrayMesh");
+
+            Material? material = level.MainEhfPath.Length != 0
+                ? LoadTerrainMaterial(level.MainEhfPath)
+                : null;
+
+            var vistaBuilt = new List<(string Path, string Name, ArrayMesh Mesh, Material? Material)>();
+            List<(string Path, TerrainMesh Mesh)> vistas = BuildAdjacent(level, terrainRead);
+            for (int i = 0; i < vistas.Count; i++)
+            {
+                (string vistaPath, TerrainMesh vistaMesh) = vistas[i];
+                string name = vistas.Count == 1 ? AdjacentNodeName : $"{AdjacentNodeName}{i}";
+                Material? vistaMaterial = LoadTerrainMaterial(vistaPath);
+
+                GD.Print(
+                    $"[vista] {level}: {name} from {vistaPath} " +
+                    $"({vistaMesh.TriangleCount} tris, " +
+                    (vistaMaterial is null ? "NO splat material" : "splat material") + ")");
+
+                vistaBuilt.Add(
+                    (vistaPath, name, Engine_LevelMesh.ToArrayMesh(vistaMesh, name), vistaMaterial));
+            }
+
+            return (mesh, material, vistaBuilt);
         }
+
+        var terrainTask =
+            OS.GetThreadCallerId() == OS.GetMainThreadId()
+                ? null
+                : System.Threading.Tasks.Task.Run(TerrainWork);
 
         var root = new Node3D
         {
@@ -168,79 +280,21 @@ public static class Engine_LevelScene
             Scale = new Vector3(-1f, 1f, 1f),
         };
 
-        var terrainNode = new MeshInstance3D
-        {
-            Name = TerrainNodeName,
-            Mesh = terrainMesh,
-        };
-
-        if (level.MainEhfPath.Length != 0)
-        {
-            terrainNode.MaterialOverride = LoadTerrainMaterial(level.MainEhfPath);
-        }
-
-        root.AddChild(terrainNode);
-        terrainNode.Owner = root;
-        Mark("terrain");
-
-        List<(string Path, TerrainMesh Mesh)> vistas = BuildAdjacent(level, source);
-        var vistaNodes = new List<(string Path, MeshInstance3D Node)>();
-        for (int i = 0; i < vistas.Count; i++)
-        {
-            (string vistaPath, TerrainMesh vistaMesh) = vistas[i];
-            string name = vistas.Count == 1 ? AdjacentNodeName : $"{AdjacentNodeName}{i}";
-
-            var vistaNode = new MeshInstance3D
-            {
-                Name = name,
-                Mesh = Engine_LevelMesh.ToArrayMesh(vistaMesh, name),
-                MaterialOverride = LoadTerrainMaterial(vistaPath),
-            };
-
-            root.AddChild(vistaNode);
-            vistaNode.Owner = root;
-            vistaNodes.Add((vistaPath, vistaNode));
-
-            GD.Print(
-                $"[vista] {level}: {name} from {vistaPath} " +
-                $"({vistaMesh.TriangleCount} tris, " +
-                (vistaNode.MaterialOverride is null ? "NO splat material" : "splat material") + ")");
-        }
-
-        Mark("vistas");
-
         AddWater(level, source, findByName, root);
         Mark("water");
 
         LightmapContainer? bakedLightmaps = null;
         LightProbeField? probeField = null;
+        string bakedGdbPath = string.Empty;
         if (source is not null)
         {
-            Engine_LevelGdb.TryRead(level, p => source(p), out string bakedGdbPath);
+            Engine_LevelGdb.TryRead(level, p => source(p), out bakedGdbPath);
             GD.Print($"[level] {level}: scenario='{level.Scenario}' gdb={bakedGdbPath}");
             Engine_LevelBakedLighting.TryLoad(
                 bakedGdbPath, p => source(p), out bakedLightmaps, out probeField);
 
             GD.Print(
                 $"[baked] {level}: {Engine_LevelBakedLighting.Describe(bakedLightmaps, probeField)}");
-
-            // The ground's bake, by the id the level itself states for this heightfield.
-            //
-            // Each heightfield names its own lightmap in a type-4 record of the .engine_level,
-            // and the guest does one 64-bit map lookup with it — no search, no sizing rule.
-            // Taking whichever blob is biggest lands on the right one only because a region
-            // ships so few: chapter2slums has two, a 576x576 for the landscape and a 32x64 for
-            // the sea vista.
-            if (bakedLightmaps is not null && source is not null)
-            {
-                var surfaces = new List<(string Path, MeshInstance3D Node)>
-                {
-                    (level.MainEhfPath, terrainNode),
-                };
-                surfaces.AddRange(vistaNodes);
-
-                BindTerrainLightmaps(level, surfaces, bakedLightmaps, bakedGdbPath, source);
-            }
         }
 
         Mark("baked-lighting");
@@ -284,25 +338,6 @@ public static class Engine_LevelScene
                     lightingFrame = Engine_LightingFrame.Evaluate(
                         lightingSky, lightingTheme, lightingSkyFrame);
                 }
-            }
-        }
-
-        // The ground takes the theme's ambient and lightmap tint through the same call every
-        // prop does. Its bake comes from the .lmp texture rather than the probe field, so it
-        // stores no probe sample — the terrain shader gates on its own bound lightmap.
-        //
-        // Unlike a prop the terrain HAS its material here, so this survives the pack and the
-        // saved scene is already correct before anything runs.
-        if (lightingFrame is not null)
-        {
-            Engine_LevelBakedLighting.ApplyInstanceLighting(terrainNode, lightingFrame);
-
-            // The vistas too. They are landscapes on the same theme, and leaving them on the
-            // shader's defaults is how a distant hillside ends up lit differently from the
-            // ground it continues.
-            foreach ((string _, MeshInstance3D vistaNode) in vistaNodes)
-            {
-                Engine_LevelBakedLighting.ApplyInstanceLighting(vistaNode, lightingFrame);
             }
         }
 
@@ -494,6 +529,73 @@ public static class Engine_LevelScene
 
         Mark("rest");
 
+        (ArrayMesh? terrainMesh, Material? terrainMaterial,
+            List<(string Path, string Name, ArrayMesh Mesh, Material? Material)> vistaBuilt) =
+            terrainTask is not null ? terrainTask.GetAwaiter().GetResult() : TerrainWork();
+
+        if (terrainMesh is null)
+        {
+            root.QueueFree();
+            error = $"terrain mesh did not load from {meshPath}";
+            return null;
+        }
+
+        var terrainNode = new MeshInstance3D
+        {
+            Name = TerrainNodeName,
+            Mesh = terrainMesh,
+        };
+
+        if (terrainMaterial is not null)
+        {
+            terrainNode.MaterialOverride = terrainMaterial;
+        }
+
+        root.AddChild(terrainNode);
+        terrainNode.Owner = root;
+
+        var vistaNodes = new List<(string Path, MeshInstance3D Node)>();
+        foreach ((string vistaPath, string vistaName, ArrayMesh vistaMesh, Material? vistaMaterial)
+                 in vistaBuilt)
+        {
+            var vistaNode = new MeshInstance3D
+            {
+                Name = vistaName,
+                Mesh = vistaMesh,
+            };
+
+            if (vistaMaterial is not null)
+            {
+                vistaNode.MaterialOverride = vistaMaterial;
+            }
+
+            root.AddChild(vistaNode);
+            vistaNode.Owner = root;
+            vistaNodes.Add((vistaPath, vistaNode));
+        }
+
+        if (bakedLightmaps is not null && source is not null)
+        {
+            var surfaces = new List<(string Path, MeshInstance3D Node)>
+            {
+                (level.MainEhfPath, terrainNode),
+            };
+            surfaces.AddRange(vistaNodes);
+
+            BindTerrainLightmaps(level, surfaces, bakedLightmaps, bakedGdbPath, source);
+        }
+
+        if (lightingFrame is not null)
+        {
+            Engine_LevelBakedLighting.ApplyInstanceLighting(terrainNode, lightingFrame);
+            foreach ((string _, MeshInstance3D vistaNode) in vistaNodes)
+            {
+                Engine_LevelBakedLighting.ApplyInstanceLighting(vistaNode, lightingFrame);
+            }
+        }
+
+        Mark("terrain-join");
+
         GD.Print($"[level-build] {level}: {clock.ElapsedMilliseconds} ms of construction — " +
             string.Join("  ", phases.ConvertAll(p => $"{p.Name} {p.Ms}ms")));
 
@@ -518,7 +620,7 @@ public static class Engine_LevelScene
         string gdbPath,
         Func<string, byte[]?> source)
     {
-        string enginePath = Engine_LevelGdb.SiblingWithExtension(gdbPath, ".engine_level");
+        string enginePath = Engine_LevelGdb.EngineLevelPath(level, source, gdbPath);
         byte[]? bytes = source(enginePath) ?? source("data/" + enginePath);
         if (bytes is null)
         {
@@ -645,6 +747,100 @@ public static class Engine_LevelScene
         };
     }
 
+    private static void Preload(LevelEntry level, ScenarioManifest manifest, LevelReads reads)
+    {
+        var wanted = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        void Add(string path)
+        {
+            if (path.Length != 0 && seen.Add(path))
+            {
+                wanted.Add(path);
+            }
+        }
+
+        void AddBucket(List<string> bucket)
+        {
+            foreach (string line in bucket)
+            {
+                Add(Engine_LevelManifest.VirtualPath(line));
+            }
+        }
+
+        AddBucket(manifest.Gdb);
+        AddBucket(manifest.EngineTheme);
+        AddBucket(manifest.Ghf);
+        AddBucket(manifest.AudioMaps);
+        AddBucket(manifest.Hdb);
+        AddBucket(manifest.Genv);
+        AddBucket(manifest.EngineLevel);
+        AddBucket(manifest.AiConfig);
+        AddBucket(manifest.Save);
+        AddBucket(manifest.HavokScenario);
+        AddBucket(manifest.Unrecognized);
+
+        if (manifest.Gdb.Count != 0)
+        {
+            string stem = Engine_LevelManifest.VirtualPath(manifest.Gdb[0]);
+            foreach (string extension in new[] { ".lmp", ".gdb", ".save", ".engine_level" })
+            {
+                Add(Engine_LevelGdb.SiblingWithExtension(stem, extension));
+            }
+        }
+
+        foreach (string candidate in Engine_LevelVfsConfig.CandidatePaths(level))
+        {
+            Add(candidate);
+        }
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        (int fetched, List<string> missing) = reads.Prefetch(wanted);
+
+        string summary =
+            $"[level-preload] {level}: {fetched}/{wanted.Count} manifest file(s) in " +
+            $"{clock.ElapsedMilliseconds} ms";
+
+        if (missing.Count != 0)
+        {
+            missing.Sort(StringComparer.Ordinal);
+            var shown = new List<string>();
+            for (int i = 0; i < missing.Count && shown.Count < 8; i++)
+            {
+                shown.Add(LeafName(missing[i]));
+            }
+
+            summary += $" — {missing.Count} unresolved: {string.Join(", ", shown)}" +
+                       (missing.Count > shown.Count ? ", ..." : string.Empty);
+        }
+
+        GD.Print(summary);
+    }
+
+    private static void ReadGameOrderResources(
+        LevelEntry level, ScenarioManifest manifest, Func<string, byte[]?> source)
+    {
+        var order = new (string Label, List<string> Bucket)[]
+        {
+            (".ghf  (terrain grid)", manifest.Ghf),
+            ("audio map layer", manifest.AudioMaps),
+            (".hdb  (height database)", manifest.Hdb),
+            (".genv (env grid)", manifest.Genv),
+        };
+
+        foreach ((string label, List<string> bucket) in order)
+        {
+            foreach (string line in bucket)
+            {
+                string path = Engine_LevelManifest.VirtualPath(line);
+                byte[]? bytes = source(path);
+                GD.Print(bytes is not null
+                    ? $"[level] {label} loaded ({bytes.Length} bytes)  {path}"
+                    : $"[level] {label} load FAILED: {path}");
+            }
+        }
+    }
+
     private static void SetOwnerRecursive(Node node, Node root)
     {
         node.Owner = root;
@@ -723,7 +919,6 @@ public static class Engine_LevelScene
             }
 
             container.AddChild(node);
-            node.Owner = root;
             emitted++;
         }
 

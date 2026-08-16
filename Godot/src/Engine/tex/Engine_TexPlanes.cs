@@ -211,16 +211,26 @@ public static class Engine_TexPlanes
 
     private static void Scatter(byte[] src, byte[] dst, int blocks, int stride, int bias)
     {
-        for (int i = 0; i < blocks; i++)
+        int count = Math.Min(blocks, src.Length / 8);
+        if (stride == 8 && bias == 0)
         {
-            int s = i * 8;
-            int t = i * stride + bias;
-            if (s + 8 > src.Length || t + 8 > dst.Length)
+            Buffer.BlockCopy(src, 0, dst, 0, Math.Min(count * 8, dst.Length));
+            return;
+        }
+
+        System.ReadOnlySpan<ulong> source = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(src);
+        System.Span<ulong> target = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(dst);
+        int step = stride / 8;
+        int offset = bias / 8;
+        for (int i = 0; i < count; i++)
+        {
+            int t = (i * step) + offset;
+            if (t >= target.Length)
             {
                 return;
             }
 
-            Buffer.BlockCopy(src, s, dst, t, 8);
+            target[t] = source[i];
         }
     }
 

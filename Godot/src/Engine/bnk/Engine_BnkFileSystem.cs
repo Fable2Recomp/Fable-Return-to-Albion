@@ -24,6 +24,83 @@ public sealed class BnkFileSystem : IDisposable
     private readonly Dictionary<string, BnkContainer> _containers =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private const long NestedCacheBudget = 1024L << 20;
+
+    private sealed class NestedSlot
+    {
+        public required string Key;
+        public required Func<BnkEntry, byte[]> ReadOuter;
+        public required BnkEntry Container;
+        public readonly object LoadLock = new();
+        public volatile BnkArchive? Archive;
+        public long Bytes;
+        public LinkedListNode<NestedSlot>? Node;
+    }
+
+    private readonly object _nestedLock = new();
+    private readonly LinkedList<NestedSlot> _nestedLoaded = new();
+    private long _nestedLoadedBytes;
+
+    private byte[] ReadNestedEntry(NestedSlot slot, BnkEntry target)
+    {
+        BnkArchive? archive = slot.Archive;
+        if (archive is null)
+        {
+            lock (slot.LoadLock)
+            {
+                archive = slot.Archive;
+                if (archive is null)
+                {
+                    byte[] container = slot.ReadOuter(slot.Container);
+                    if (!BnkArchive.TryOpenBytes(
+                            slot.Key, container, out archive, out string error) ||
+                        archive is null)
+                    {
+                        throw new InvalidDataException(error);
+                    }
+
+                    slot.Bytes = container.LongLength;
+                    slot.Archive = archive;
+                    Retain(slot);
+                }
+            }
+        }
+
+        Touch(slot);
+        return archive.ReadEntryBytes(target);
+    }
+
+    private void Retain(NestedSlot slot)
+    {
+        lock (_nestedLock)
+        {
+            slot.Node = _nestedLoaded.AddFirst(slot);
+            _nestedLoadedBytes += slot.Bytes;
+
+            while (_nestedLoadedBytes > NestedCacheBudget && _nestedLoaded.Count > 1)
+            {
+                NestedSlot evicted = _nestedLoaded.Last!.Value;
+                _nestedLoaded.RemoveLast();
+                _nestedLoadedBytes -= evicted.Bytes;
+                evicted.Node = null;
+                evicted.Bytes = 0;
+                evicted.Archive = null;
+            }
+        }
+    }
+
+    private void Touch(NestedSlot slot)
+    {
+        lock (_nestedLock)
+        {
+            if (slot.Node?.List == _nestedLoaded && slot.Node != _nestedLoaded.First)
+            {
+                _nestedLoaded.Remove(slot.Node);
+                _nestedLoaded.AddFirst(slot.Node);
+            }
+        }
+    }
+
     public IReadOnlyDictionary<string, BnkContainer> Containers => _containers;
 
     public bool TryGetContainer(string virtualPath, out BnkContainer container) =>
@@ -203,22 +280,8 @@ public sealed class BnkFileSystem : IDisposable
             return false;
         }
 
-        BnkEntry container = entry;
-        Func<BnkEntry, byte[]> nestedRead = target =>
-        {
-            byte[] containerBytes = read(container);
-            if (!BnkArchive.TryOpenBytes(
-                    normalized, containerBytes, out BnkArchive? reopened, out string reopenError) ||
-                reopened is null)
-            {
-                throw new InvalidDataException(reopenError);
-            }
-
-            using (reopened)
-            {
-                return reopened.ReadEntryBytes(target);
-            }
-        };
+        var slot = new NestedSlot { Key = normalized, ReadOuter = read, Container = entry };
+        Func<BnkEntry, byte[]> nestedRead = target => ReadNestedEntry(slot, target);
 
         using (nested)
         {
@@ -416,6 +479,8 @@ public sealed class BnkFile
 
     internal List<BnkFile> Alternates { get; } = new();
 
+    internal byte[] ReadOwn() => _read(Entry);
+
     /// <summary>
     /// The file's bytes, with a header entry and a payload entry rejoined when the format keeps
     /// them apart.
@@ -434,6 +499,13 @@ public sealed class BnkFile
     /// </summary>
     public byte[] ReadAllBytes()
     {
+        if (Alternates.Count != 0 &&
+            VirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) &&
+            TryReadTexture(out byte[] texture))
+        {
+            return texture;
+        }
+
         byte[] own = _read(Entry);
         if (Alternates.Count == 0)
         {
@@ -485,6 +557,116 @@ public sealed class BnkFile
         }
 
         return own;
+    }
+
+    private bool TryReadTexture(out byte[] bytes)
+    {
+        bytes = Array.Empty<byte>();
+
+        var parts = new List<BnkFile>(Alternates.Count + 1) { this };
+        parts.AddRange(Alternates);
+
+        BnkFile? headerFile = null;
+        byte[]? header = null;
+        foreach (BnkFile part in parts)
+        {
+            if (part.Entry.Size < Refii.Textures.TexHeader.Size || part.Entry.Size > 4096)
+            {
+                continue;
+            }
+
+            byte[] candidate;
+            try
+            {
+                candidate = part._read(part.Entry);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            if (Refii.Textures.TexHeader.LooksLikeHeader(candidate))
+            {
+                headerFile = part;
+                header = candidate;
+                break;
+            }
+        }
+
+        if (header is null ||
+            !Refii.Textures.TexHeader.TryParse(header, out Refii.Textures.TexHeader parsed, out _) ||
+            parsed.PayloadSize <= 0)
+        {
+            return false;
+        }
+
+        long payload = parsed.PayloadSize;
+        BnkFile? whole = null;
+        BnkFile? mip0 = null;
+        BnkFile? rest = null;
+        long mip0Size = parsed.LevelCount >= 2 && parsed.LevelOffsets[1] > Refii.Textures.TexHeader.Size
+            ? parsed.LevelOffsets[1] - Refii.Textures.TexHeader.Size
+            : -1;
+
+        foreach (BnkFile part in parts)
+        {
+            if (part == headerFile)
+            {
+                continue;
+            }
+
+            long size = part.Entry.Size;
+            if (size == payload)
+            {
+                whole ??= part;
+            }
+            else if (mip0Size > 0 && size == mip0Size)
+            {
+                mip0 ??= part;
+            }
+            else if (mip0Size > 0 && size == payload - mip0Size)
+            {
+                rest ??= part;
+            }
+        }
+
+        try
+        {
+            if (whole is not null)
+            {
+                bytes = Concat(header, whole._read(whole.Entry));
+                return true;
+            }
+
+            if (mip0 is not null && rest is not null)
+            {
+                bytes = Concat(header, mip0._read(mip0.Entry), rest._read(rest.Entry));
+                return true;
+            }
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static byte[] Concat(byte[] a, byte[] b)
+    {
+        var joined = new byte[a.Length + b.Length];
+        Buffer.BlockCopy(a, 0, joined, 0, a.Length);
+        Buffer.BlockCopy(b, 0, joined, a.Length, b.Length);
+        return joined;
+    }
+
+    private static byte[] Concat(byte[] a, byte[] b, byte[] c)
+    {
+        var joined = new byte[a.Length + b.Length + c.Length];
+        Buffer.BlockCopy(a, 0, joined, 0, a.Length);
+        Buffer.BlockCopy(b, 0, joined, a.Length, b.Length);
+        Buffer.BlockCopy(c, 0, joined, a.Length + b.Length, c.Length);
+        return joined;
     }
 
     /// <summary>

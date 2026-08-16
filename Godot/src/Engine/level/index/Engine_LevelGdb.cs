@@ -21,10 +21,9 @@ public static class Engine_LevelGdb
         // Getting this wrong does not fail loudly. It finds SOME level gdb and builds a world
         // out of another story state's placements, which is how objects come out duplicated
         // and the wrong NPCs spawn.
-        if (level.Scenario.Length != 0 &&
-            Engine_LevelManifest.TryFind(level, read, ".gdb", out string stated))
+        if (Engine_LevelManifest.TryFind(level, read, ".gdb", out string stated))
         {
-            byte[]? statedBytes = read(stated);
+            byte[]? statedBytes = read(stated) ?? read("data/" + stated);
             if (statedBytes is not null)
             {
                 path = stated;
@@ -78,6 +77,17 @@ public static class Engine_LevelGdb
         }
 
         return null;
+    }
+
+    public static string EngineLevelPath(
+        LevelEntry level, Func<string, byte[]?> read, string gdbPath)
+    {
+        if (Engine_LevelManifest.TryFind(level, read, ".engine_level", out string stated))
+        {
+            return stated;
+        }
+
+        return SiblingWithExtension(gdbPath, ".engine_level");
     }
 
     public static string SiblingWithExtension(string gdbPath, string extension)

@@ -142,63 +142,63 @@ public static class Engine_TexImage
 			return false;
 		}
 
-		var seedData = new byte[smallestBytes];
-		Buffer.BlockCopy(surface.Data, offset, seedData, 0, smallestBytes);
+		var seedBlocks = new byte[smallestBytes];
+		Buffer.BlockCopy(surface.Data, offset, seedBlocks, 0, smallestBytes);
 
-		Image? seed;
-		try
+		byte[]? colour = null;
+		byte[]? gray0 = null;
+		byte[]? gray1 = null;
+		switch (surface.Format)
 		{
-			seed = Image.CreateFromData(width, height, false, format, seedData);
-		}
-		catch (Exception)
-		{
-			return false;
-		}
-
-		if (seed is null || seed.GetWidth() != width || seed.Decompress() != Error.Ok)
-		{
-			return false;
-		}
-
-		if (seed.GetFormat() != Image.Format.Rgba8)
-		{
-			seed.Convert(Image.Format.Rgba8);
+			case TexSurfaceFormat.Bc1:
+				colour = Engine_TexMipGen.DecodeBc1(seedBlocks, width, height);
+				break;
+			case TexSurfaceFormat.Bc4:
+				gray0 = Engine_TexMipGen.DecodeBc4(seedBlocks, width, height);
+				break;
+			case TexSurfaceFormat.Bc5:
+				gray0 = Engine_TexMipGen.DecodeBc4(HalfBlocks(seedBlocks, 0), width, height);
+				gray1 = Engine_TexMipGen.DecodeBc4(HalfBlocks(seedBlocks, 8), width, height);
+				break;
+			case TexSurfaceFormat.Bc3:
+				gray0 = Engine_TexMipGen.DecodeBc4(HalfBlocks(seedBlocks, 0), width, height);
+				colour = Engine_TexMipGen.DecodeBc1(HalfBlocks(seedBlocks, 8), width, height);
+				break;
+			default:
+				return false;
 		}
 
 		var parts = new List<byte[]> { surface.Data };
-
-		int w = Math.Max(1, width / 2);
-		int h = Math.Max(1, height / 2);
-
-		Image current = seed;
-
-		while (true)
+		int w = width;
+		int h = height;
+		while (w > 1 || h > 1)
 		{
-			var tail = (Image)current.Duplicate();
-			tail.Resize(w, h, Image.Interpolation.Lanczos);
-			if (tail.GetFormat() != Image.Format.Rgba8)
+			int nw = Math.Max(1, w / 2);
+			int nh = Math.Max(1, h / 2);
+			if (colour is not null) colour = Engine_TexMipGen.Downscale(colour, w, h, 4);
+			if (gray0 is not null) gray0 = Engine_TexMipGen.Downscale(gray0, w, h, 1);
+			if (gray1 is not null) gray1 = Engine_TexMipGen.Downscale(gray1, w, h, 1);
+			w = nw;
+			h = nh;
+
+			byte[] level = surface.Format switch
 			{
-				tail.Convert(Image.Format.Rgba8);
-			}
+				TexSurfaceFormat.Bc1 => Engine_TexMipGen.EncodeBc1(colour!, w, h),
+				TexSurfaceFormat.Bc4 => Engine_TexMipGen.EncodeBc4(gray0!, w, h),
+				TexSurfaceFormat.Bc5 => Interleave(
+					Engine_TexMipGen.EncodeBc4(gray0!, w, h),
+					Engine_TexMipGen.EncodeBc4(gray1!, w, h)),
+				_ => Interleave(
+					Engine_TexMipGen.EncodeBc4(gray0!, w, h),
+					Engine_TexMipGen.EncodeBc1(colour!, w, h)),
+			};
 
-			current = tail;
-
-			byte[]? blocks = Engine_BcEncoder.Encode(
-				tail.GetData(), w, h, surface.Format);
-
-			if (blocks is null || blocks.Length != BlockBytesFor(w, h, surface.Format))
+			if (level.Length != BlockBytesFor(w, h, surface.Format))
 			{
 				return false;
 			}
 
-			parts.Add(blocks);
-			if (w == 1 && h == 1)
-			{
-				break;
-			}
-
-			w = Math.Max(1, w / 2);
-			h = Math.Max(1, h / 2);
+			parts.Add(level);
 		}
 
 		int total = 0;
@@ -217,6 +217,31 @@ public static class Engine_TexImage
 
 		chain = result;
 		return true;
+	}
+
+	private static byte[] HalfBlocks(byte[] blocks16, int at)
+	{
+		int count = blocks16.Length / 16;
+		var half = new byte[count * 8];
+		for (int i = 0; i < count; ++i)
+		{
+			Buffer.BlockCopy(blocks16, (i * 16) + at, half, i * 8, 8);
+		}
+
+		return half;
+	}
+
+	private static byte[] Interleave(byte[] first, byte[] second)
+	{
+		int count = Math.Min(first.Length, second.Length) / 8;
+		var blocks = new byte[count * 16];
+		for (int i = 0; i < count; ++i)
+		{
+			Buffer.BlockCopy(first, i * 8, blocks, i * 16, 8);
+			Buffer.BlockCopy(second, i * 8, blocks, (i * 16) + 8, 8);
+		}
+
+		return blocks;
 	}
 
 	private static int BlockBytesFor(int width, int height, TexSurfaceFormat format)
@@ -437,7 +462,8 @@ public static class Engine_TexImage
 		int blocksW = Math.Max(1, (width + 3) / 4);
 		int blocksH = Math.Max(1, (height + 3) / 4);
 
-		Span<byte> palette = stackalloc byte[16];
+		Span<uint> texels = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(pixels);
+		Span<uint> palette = stackalloc uint[4];
 
 		for (int by = 0; by < blocksH; ++by)
 		{
@@ -449,47 +475,49 @@ public static class Engine_TexImage
 				uint bits = blocks[b + 4] | ((uint)blocks[b + 5] << 8) |
 							((uint)blocks[b + 6] << 16) | ((uint)blocks[b + 7] << 24);
 
-				Expand565(c0, palette, 0);
-				Expand565(c1, palette, 4);
+				Expand565(c0, out int r0, out int g0, out int b0);
+				Expand565(c1, out int r1, out int g1, out int b1);
+				palette[0] = Pack(r0, g0, b0, 255);
+				palette[1] = Pack(r1, g1, b1, 255);
 
 				if (c0 > c1)
 				{
-					for (int k = 0; k < 3; ++k)
-					{
-						palette[8 + k] = (byte)(((2 * palette[k]) + palette[4 + k] + 1) / 3);
-						palette[12 + k] = (byte)((palette[k] + (2 * palette[4 + k]) + 1) / 3);
-					}
-
-					palette[11] = 255;
-					palette[15] = 255;
+					palette[2] = Pack(((2 * r0) + r1 + 1) / 3, ((2 * g0) + g1 + 1) / 3, ((2 * b0) + b1 + 1) / 3, 255);
+					palette[3] = Pack((r0 + (2 * r1) + 1) / 3, (g0 + (2 * g1) + 1) / 3, (b0 + (2 * b1) + 1) / 3, 255);
 				}
 				else
 				{
-					for (int k = 0; k < 3; ++k)
+					palette[2] = Pack((r0 + r1) / 2, (g0 + g1) / 2, (b0 + b1) / 2, 255);
+					palette[3] = 0;
+				}
+
+				int x0 = bx * 4;
+				int y0 = by * 4;
+				if (x0 + 4 <= width && y0 + 4 <= height)
+				{
+					for (int row = 0; row < 4; ++row)
 					{
-						palette[8 + k] = (byte)((palette[k] + palette[4 + k]) / 2);
-						palette[12 + k] = 0;
+						int at = ((y0 + row) * width) + x0;
+						uint rowBits = bits >> (row * 8);
+						texels[at] = palette[(int)(rowBits & 3u)];
+						texels[at + 1] = palette[(int)((rowBits >> 2) & 3u)];
+						texels[at + 2] = palette[(int)((rowBits >> 4) & 3u)];
+						texels[at + 3] = palette[(int)((rowBits >> 6) & 3u)];
 					}
 
-					palette[11] = 255;
-					palette[15] = 0;
+					continue;
 				}
 
 				for (int t = 0; t < 16; ++t)
 				{
-					int px = (bx * 4) + (t & 3);
-					int py = (by * 4) + (t >> 2);
+					int px = x0 + (t & 3);
+					int py = y0 + (t >> 2);
 					if (px >= width || py >= height)
 					{
 						continue;
 					}
 
-					int index = (int)((bits >> (t * 2)) & 0x3u) * 4;
-					int at = ((py * width) + px) * 4;
-					pixels[at] = palette[index];
-					pixels[at + 1] = palette[index + 1];
-					pixels[at + 2] = palette[index + 2];
-					pixels[at + 3] = palette[index + 3];
+					texels[(py * width) + px] = palette[(int)((bits >> (t * 2)) & 3u)];
 				}
 			}
 		}
@@ -497,14 +525,16 @@ public static class Engine_TexImage
 		return pixels;
 	}
 
-	private static void Expand565(ushort colour, Span<byte> palette, int at)
+	private static uint Pack(int r, int g, int b, int a) =>
+		(uint)r | ((uint)g << 8) | ((uint)b << 16) | ((uint)a << 24);
+
+	private static void Expand565(ushort colour, out int r, out int g, out int b)
 	{
-		int r = (colour >> 11) & 0x1F;
-		int g = (colour >> 5) & 0x3F;
-		int b = colour & 0x1F;
-		palette[at] = (byte)((r << 3) | (r >> 2));
-		palette[at + 1] = (byte)((g << 2) | (g >> 4));
-		palette[at + 2] = (byte)((b << 3) | (b >> 2));
-		palette[at + 3] = 255;
+		int r5 = (colour >> 11) & 0x1F;
+		int g6 = (colour >> 5) & 0x3F;
+		int b5 = colour & 0x1F;
+		r = (r5 << 3) | (r5 >> 2);
+		g = (g6 << 2) | (g6 >> 4);
+		b = (b5 << 3) | (b5 >> 2);
 	}
 }

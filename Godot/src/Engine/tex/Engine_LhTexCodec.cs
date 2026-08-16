@@ -71,58 +71,62 @@ public static class Engine_LhTexCodec
 
 	private sealed class BitReader
 	{
-		private readonly byte[] _data;
-		private readonly int _bytes;
+		private readonly uint[] _words;
 
 		public BitReader(byte[] data, int offset, int length)
 		{
-			_data = data;
-			Offset = offset;
-			_bytes = length;
-		}
+			int wordCount = (length + 3) / 4;
+			_words = new uint[wordCount + 2];
 
-		public int Offset { get; }
+			int i = 0;
+			int b = offset;
+			int end = offset + length;
+			for (; b + 4 <= end; b += 4, ++i)
+			{
+				_words[i] = ((uint)data[b] << 24) | ((uint)data[b + 1] << 16) |
+							((uint)data[b + 2] << 8) | data[b + 3];
+			}
+
+			if (b < end)
+			{
+				uint partial = 0;
+				for (int k = 0; b + k < end; ++k)
+				{
+					partial |= (uint)data[b + k] << (24 - 8 * k);
+				}
+
+				_words[i] = partial;
+			}
+
+			TotalBits = (long)length * 8;
+		}
 
 		public long CurrentBit { get; private set; }
 
-		public long TotalBits => (long)_bytes * 8;
+		public long TotalBits { get; }
 
-		private uint Word(long index)
+		[System.Runtime.CompilerServices.MethodImpl(
+			System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+		public uint Peek(int n)
 		{
-			long off = index * 4;
-			if (off + 4 > _bytes)
-			{
-				uint partial = 0;
-				for (int i = 0; i < 4 && off + i < _bytes; ++i)
-				{
-					partial |= (uint)_data[Offset + off + i] << (24 - 8 * i);
-				}
-
-				return partial;
-			}
-
-			int b = Offset + (int)off;
-			return ((uint)_data[b] << 24) | ((uint)_data[b + 1] << 16) |
-				   ((uint)_data[b + 2] << 8) | _data[b + 3];
+			int bitOff = (int)(CurrentBit & 31);
+			long w = CurrentBit >> 5;
+			uint[] words = _words;
+			ulong lo = w < words.Length ? words[w] : 0u;
+			ulong hi = w + 1 < words.Length ? words[w + 1] : 0u;
+			uint value = (uint)(((hi << 32) | lo) >> bitOff);
+			return n == 32 ? value : value & ((1u << n) - 1u);
 		}
 
+		[System.Runtime.CompilerServices.MethodImpl(
+			System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+		public void Skip(int n) => CurrentBit += n;
+
+		[System.Runtime.CompilerServices.MethodImpl(
+			System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
 		public uint Read(int n)
 		{
-			uint mask = n == 32 ? 0xFFFFFFFFu : (1u << n) - 1u;
-			int bitOff = (int)(CurrentBit & 31);
-			long wordIdx = CurrentBit >> 5;
-			uint value;
-			if (bitOff + n > 32)
-			{
-				uint lo = Word(wordIdx);
-				uint hi = Word(wordIdx + 1);
-				value = ((hi << (32 - bitOff)) | (lo >> bitOff)) & mask;
-			}
-			else
-			{
-				value = (Word(wordIdx) >> bitOff) & mask;
-			}
-
+			uint value = Peek(n);
 			CurrentBit += n;
 			return value;
 		}
@@ -130,11 +134,17 @@ public static class Engine_LhTexCodec
 
 	private sealed class HuffTree
 	{
+		private const int TableBits = 11;
+
+		private const ushort TableSlow = 0;
+
 		private readonly uint[] _freq;
 		private readonly int[] _sym;
 		private readonly int[] _left;
 		private readonly int[] _right;
 		private int _count;
+
+		private ushort[]? _table;
 
 		public HuffTree(int capacity)
 		{
@@ -145,6 +155,52 @@ public static class Engine_LhTexCodec
 		}
 
 		public int Root { get; private set; } = -1;
+
+		private void BuildTable()
+		{
+			_table = new ushort[1 << TableBits];
+			if (Root >= 0)
+			{
+				Fill(Root, 0, 0);
+			}
+		}
+
+		private void Fill(int node, uint code, int length)
+		{
+			if (node < 0)
+			{
+				return;
+			}
+
+			ushort[] table = _table!;
+			if (_sym[node] >= 0)
+			{
+				if (length <= TableBits)
+				{
+					var entry = (ushort)(0x8000 | (length << 8) | (_sym[node] & 0xFF));
+					uint step = 1u << length;
+					for (uint j = code; j < (1u << TableBits); j += step)
+					{
+						table[j] = entry;
+					}
+				}
+				else
+				{
+					table[code & ((1u << TableBits) - 1u)] = TableSlow;
+				}
+
+				return;
+			}
+
+			if (length == TableBits)
+			{
+				table[code] = TableSlow;
+				return;
+			}
+
+			Fill(_left[node], code, length + 1);
+			Fill(_right[node], code | (1u << length), length + 1);
+		}
 
 		private int Alloc(uint freq, int sym, int left, int right)
 		{
@@ -226,11 +282,21 @@ public static class Engine_LhTexCodec
 			}
 
 			tree.Root = heapSize > 0 ? Pop() : -1;
+			tree.BuildTable();
 			return tree;
 		}
 
+		[System.Runtime.CompilerServices.MethodImpl(
+			System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
 		public int Decode(BitReader reader)
 		{
+			ushort entry = _table![reader.Peek(TableBits)];
+			if (entry != TableSlow)
+			{
+				reader.Skip((entry >> 8) & 0x7F);
+				return entry & 0xFF;
+			}
+
 			int n = Root;
 			while (n >= 0 && _sym[n] < 0)
 			{
@@ -239,6 +305,23 @@ public static class Engine_LhTexCodec
 
 			return n >= 0 ? _sym[n] : -1;
 		}
+	}
+
+	private static readonly int[] OpFlat = Flatten(OpTable);
+	private static readonly int[] DeltaFlat = Flatten(DeltaTable);
+
+	private static int[] Flatten(int[,] table)
+	{
+		int rows = table.GetLength(0);
+		var flat = new int[rows * 3];
+		for (int r = 0; r < rows; ++r)
+		{
+			flat[r * 3] = table[r, 0];
+			flat[(r * 3) + 1] = table[r, 1];
+			flat[(r * 3) + 2] = table[r, 2];
+		}
+
+		return flat;
 	}
 
 	private static readonly byte[] Dq6To8 = BuildDq(64, 63);
@@ -315,6 +398,7 @@ public static class Engine_LhTexCodec
 		int runRemaining = 0;
 		int lastOpType = -1;
 		byte lastV20 = 0;
+		Span<byte> indices = stackalloc byte[16];
 
 		for (int by = 0; by < byCount; ++by)
 		{
@@ -403,7 +487,6 @@ public static class Engine_LhTexCodec
 						int a0 = Dq6To8[Clamp6(symA + symB)];
 						int a1 = Dq6To8[Clamp6(symA - symB)];
 
-						var indices = new byte[16];
 						for (int iter = 0; iter < 4; ++iter)
 						{
 							int c1 = treeC.Decode(reader);
@@ -559,9 +642,9 @@ public static class Engine_LhTexCodec
 					return false;
 				}
 
-				int op = OpTable[opIdx, 0];
-				int dx = OpTable[opIdx, 1];
-				int dy = OpTable[opIdx, 2];
+				int op = OpFlat[opIdx * 3];
+				int dx = OpFlat[(opIdx * 3) + 1];
+				int dy = OpFlat[(opIdx * 3) + 2];
 
 				ushort c0;
 				ushort c1;
@@ -595,7 +678,7 @@ public static class Engine_LhTexCodec
 							return false;
 						}
 
-						c0 = ApplyDelta(c0, DeltaTable[d, 0], DeltaTable[d, 1], DeltaTable[d, 2]);
+						c0 = ApplyDelta(c0, DeltaFlat[d * 3], DeltaFlat[(d * 3) + 1], DeltaFlat[(d * 3) + 2]);
 					}
 
 					if (op == 2 || op == 3)
@@ -607,7 +690,7 @@ public static class Engine_LhTexCodec
 							return false;
 						}
 
-						c1 = ApplyDelta(c1, DeltaTable[d, 0], DeltaTable[d, 1], DeltaTable[d, 2]);
+						c1 = ApplyDelta(c1, DeltaFlat[d * 3], DeltaFlat[(d * 3) + 1], DeltaFlat[(d * 3) + 2]);
 					}
 
 					if (!comp11Layout && c0 < c1)

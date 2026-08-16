@@ -229,6 +229,11 @@ public static class Engine_GhfTerrain
 
     private static byte[] Gunzip(byte[] input)
     {
+        if (!Refii.Core.Engine_GameGzip.IsGzip(input))
+        {
+            return input;
+        }
+
         using var source = new MemoryStream(input);
         using var gzip = new GZipStream(source, CompressionMode.Decompress);
         using var output = new MemoryStream();

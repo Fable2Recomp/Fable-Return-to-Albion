@@ -6,5 +6,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AssemblyName>refii-launcher</AssemblyName>
+    <Optimize>true</Optimize>
+    <DebugType>portable</DebugType>
   </PropertyGroup>
 </Project>

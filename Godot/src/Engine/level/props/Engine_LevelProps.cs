@@ -170,7 +170,7 @@ public static class Engine_LevelProps
         var fxAttachTo = new Dictionary<uint, Node3D>();
 
         AppendEngineLevelBlocks(
-            read, Engine_LevelGdb.SiblingWithExtension(gdbPath, ".engine_level"),
+            read, Engine_LevelGdb.EngineLevelPath(level, read, gdbPath),
             blocks, order, transformKeys, stats);
 
         bool hasExplicitClocktowerBase = false;
@@ -665,6 +665,11 @@ public static class Engine_LevelProps
         {
             container.QueueFree();
             return null;
+        }
+
+        if (OS.GetThreadCallerId() != OS.GetMainThreadId())
+        {
+            Engine_PropStreamer.PrefetchModels(Engine_PropStreamer.PendingModelPaths(container));
         }
 
         return container;

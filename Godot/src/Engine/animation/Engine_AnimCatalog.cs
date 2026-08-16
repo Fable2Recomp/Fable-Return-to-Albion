@@ -98,22 +98,55 @@ public static class Engine_AnimCatalog
 
     public static bool IsReady => _ready;
 
+    private static readonly object Gate = new();
+
     public static void Reset()
     {
-        _tried = false;
-        _ready = false;
-        _boundTried = false;
-        _bindingTask = null;
-        Clips.Clear();
-        ByKey.Clear();
-        IndexByKey.Clear();
-        Bindings.Clear();
-        BindingsByModel.Clear();
-        Data.Close();
-        Decoder.ClearCache();
+        lock (Gate)
+        {
+            _tried = false;
+            _ready = false;
+            _boundTried = false;
+            _bindingTask = null;
+            Clips.Clear();
+            ByKey.Clear();
+            IndexByKey.Clear();
+            Bindings.Clear();
+            BindingsByModel.Clear();
+            Data.Close();
+            Decoder.ClearCache();
+        }
+    }
+
+    public static void Prewarm()
+    {
+        if (_boundTried)
+        {
+            return;
+        }
+
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                EnsureBindings();
+            }
+            catch (System.Exception exception)
+            {
+                GD.PushWarning($"[anim] prewarm failed: {exception.Message}");
+            }
+        });
     }
 
     public static bool EnsureLoaded()
+    {
+        lock (Gate)
+        {
+            return EnsureLoadedLocked();
+        }
+    }
+
+    private static bool EnsureLoadedLocked()
     {
         if (_tried)
         {
@@ -165,27 +198,30 @@ public static class Engine_AnimCatalog
 
     public static void BeginBindings()
     {
-        if (!_ready || _boundTried || _bindingTask is not null)
+        lock (Gate)
         {
-            return;
-        }
-
-        var blobs = new List<byte[]>();
-        foreach (string path in GdbPaths())
-        {
-            byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(path);
-            if (bytes is not null && bytes.Length != 0)
+            if (!_ready || _boundTried || _bindingTask is not null)
             {
-                blobs.Add(bytes);
+                return;
             }
-        }
 
-        if (blobs.Count == 0)
-        {
-            return;
-        }
+            var blobs = new List<byte[]>();
+            foreach (string path in GdbPaths())
+            {
+                byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(path);
+                if (bytes is not null && bytes.Length != 0)
+                {
+                    blobs.Add(bytes);
+                }
+            }
 
-        _bindingTask = System.Threading.Tasks.Task.Run(() => ScanBlobs(blobs));
+            if (blobs.Count == 0)
+            {
+                return;
+            }
+
+            _bindingTask = System.Threading.Tasks.Task.Run(() => ScanBlobs(blobs));
+        }
     }
 
     private static void ScanBlobs(List<byte[]> blobs)
@@ -238,7 +274,14 @@ public static class Engine_AnimCatalog
         }
 
         BeginBindings();
-        _bindingTask?.Wait();
+
+        System.Threading.Tasks.Task? scan;
+        lock (Gate)
+        {
+            scan = _bindingTask;
+        }
+
+        scan?.Wait();
         return Bindings.Count != 0;
     }
 
