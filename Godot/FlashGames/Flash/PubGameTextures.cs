@@ -25,14 +25,9 @@ public sealed class PubGameTextures
     {
         var textures = new PubGameTextures();
 
-        foreach (string path in set.SharedTextures)
+        foreach ((string name, string path) in Files(set, game))
         {
-            textures._files[Normalize(Path.GetFileNameWithoutExtension(path))] = path;
-        }
-
-        foreach (string path in game.Backgrounds)
-        {
-            textures._files[Normalize(Path.GetFileNameWithoutExtension(path))] = path;
+            textures._files[name] = path;
         }
 
         string background = string.Empty;
@@ -96,7 +91,11 @@ public sealed class PubGameTextures
     public Image? Resolve(int characterId) =>
         _byCharacter.TryGetValue(characterId, out Image? replacement) ? replacement : null;
 
-    private string Match(string exportName, string background)
+    private string Match(string exportName, string background) =>
+        MatchFile(_files, exportName, background);
+
+    public static string MatchFile(
+        IReadOnlyDictionary<string, string> files, string exportName, string background)
     {
         string key = Normalize(exportName);
         if (key == "tablebackground")
@@ -104,12 +103,12 @@ public sealed class PubGameTextures
             return background;
         }
 
-        if (_files.TryGetValue(key, out string? exact))
+        if (files.TryGetValue(key, out string? exact))
         {
             return exact;
         }
 
-        foreach ((string candidate, string path) in _files)
+        foreach ((string candidate, string path) in files)
         {
             if (key.StartsWith(candidate, StringComparison.Ordinal) ||
                 candidate.StartsWith(key, StringComparison.Ordinal))
@@ -119,6 +118,22 @@ public sealed class PubGameTextures
         }
 
         return string.Empty;
+    }
+
+    public static Dictionary<string, string> Files(PubGamesSet set, PubGameEntry game)
+    {
+        var files = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string path in set.SharedTextures)
+        {
+            files[Normalize(Path.GetFileNameWithoutExtension(path))] = path;
+        }
+
+        foreach (string path in game.Backgrounds)
+        {
+            files[Normalize(Path.GetFileNameWithoutExtension(path))] = path;
+        }
+
+        return files;
     }
 
     /// <summary>

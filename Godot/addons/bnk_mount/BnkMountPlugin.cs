@@ -35,6 +35,9 @@ public partial class BnkMountPlugin : EditorPlugin
     private Refii.Level.Engine_BnkTerrainMaterialLoader? _terrainMaterialLoader;
     private Refii.Entities.Engine_BnkEntityLoader? _entityLoader;
     private Refii.Fx.Engine_BnkFxLoader? _fxLoader;
+    private Refii.FlashGames.Engine_SwfTextureLoader? _swfTextureLoader;
+    private Refii.FlashGames.Engine_SwfMeshLoader? _swfMeshLoader;
+    private Refii.FlashGames.Engine_SwfFontLoader? _swfFontLoader;
     private Dictionary<string, string>? _byFileName;
     private Tree? _tree;
     private TreeItem? _gameRoot;
@@ -425,11 +428,47 @@ public partial class BnkMountPlugin : EditorPlugin
             _terrainMaterialLoader = new Refii.Level.Engine_BnkTerrainMaterialLoader();
             ResourceLoader.AddResourceFormatLoader(_terrainMaterialLoader);
         }
+
+        if (_swfTextureLoader is null)
+        {
+            _swfTextureLoader = new Refii.FlashGames.Engine_SwfTextureLoader();
+            ResourceLoader.AddResourceFormatLoader(_swfTextureLoader, atFront: true);
+        }
+
+        if (_swfMeshLoader is null)
+        {
+            _swfMeshLoader = new Refii.FlashGames.Engine_SwfMeshLoader();
+            ResourceLoader.AddResourceFormatLoader(_swfMeshLoader, atFront: true);
+        }
+
+        if (_swfFontLoader is null)
+        {
+            _swfFontLoader = new Refii.FlashGames.Engine_SwfFontLoader();
+            ResourceLoader.AddResourceFormatLoader(_swfFontLoader, atFront: true);
+        }
     }
 
     private void RemoveLoaders()
     {
         Refii.Entities.Engine_EntityIndex.SetResolver(null);
+
+        if (_swfFontLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_swfFontLoader);
+            _swfFontLoader = null;
+        }
+
+        if (_swfMeshLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_swfMeshLoader);
+            _swfMeshLoader = null;
+        }
+
+        if (_swfTextureLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_swfTextureLoader);
+            _swfTextureLoader = null;
+        }
 
         if (_entityLoader is not null)
         {
@@ -807,9 +846,56 @@ public partial class BnkMountPlugin : EditorPlugin
         bool isModel = virtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase);
         bool isAudio = virtualPath.EndsWith(".wav", StringComparison.OrdinalIgnoreCase);
         bool isDatabase = virtualPath.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase);
-        if (!isTexture && !isModel && !isAudio && !isDatabase)
+        bool isFlash = Refii.FlashGames.Engine_SwfAssets.RecognisesTexture(virtualPath);
+        bool isFlashMesh = Refii.FlashGames.Engine_SwfAssets.RecognisesMesh(virtualPath);
+        bool isFlashFont = Refii.FlashGames.Engine_SwfAssets.RecognisesFont(virtualPath);
+        if (!isTexture && !isModel && !isAudio && !isDatabase && !isFlash && !isFlashMesh && !isFlashFont)
         {
             GD.Print($"[bnk_mount] {virtualPath}  ({file.Size:N0} bytes, no viewer for this type)");
+            return;
+        }
+
+        if (isFlashFont)
+        {
+            var font = ResourceLoader.Load<FontFile>(meta, "FontFile");
+            if (font is null)
+            {
+                GD.PushWarning($"[bnk_mount] {virtualPath}: the face did not build");
+                return;
+            }
+
+            EditorInterface.Singleton.InspectObject(font);
+            GD.Print($"[bnk_mount] {virtualPath} -> FontFile {font.FontName}  ·  {file.SourceArchiveName}");
+            return;
+        }
+
+        if (isFlashMesh)
+        {
+            var part = ResourceLoader.Load<ArrayMesh>(meta, "ArrayMesh");
+            if (part is null)
+            {
+                GD.PushWarning($"[bnk_mount] {virtualPath}: the shape did not build");
+                return;
+            }
+
+            EditorInterface.Singleton.InspectObject(part);
+            GD.Print($"[bnk_mount] {virtualPath} -> ArrayMesh, " +
+                     $"{(part.GetSurfaceCount() > 0 ? part.SurfaceGetArrayLen(0) / 3 : 0):N0} triangles  ·  {file.SourceArchiveName}");
+            return;
+        }
+
+        if (isFlash)
+        {
+            var flash = ResourceLoader.Load<Texture2D>(meta, "Texture2D");
+            if (flash is null)
+            {
+                GD.PushWarning($"[bnk_mount] {virtualPath}: the SWF bitmap did not decode");
+                return;
+            }
+
+            EditorInterface.Singleton.InspectObject(flash);
+            GD.Print($"[bnk_mount] {virtualPath} -> {flash.GetWidth()}x{flash.GetHeight()} " +
+                     $"Texture2D  ·  {file.SourceArchiveName}");
             return;
         }
 
@@ -1466,6 +1552,36 @@ public partial class BnkMountPlugin : EditorPlugin
             return;
         }
 
+        if (Refii.FlashGames.Engine_SwfAssets.RecognisesTexture(path))
+        {
+            ApplyFlashThumbnail(item, path);
+            return;
+        }
+
+        if (Refii.FlashGames.Engine_SwfAssets.RecognisesMesh(path))
+        {
+            Texture2D? mesh = GetClassIcon(new[] { "MeshInstance2D", "ArrayMesh", "Mesh" });
+            if (mesh is not null)
+            {
+                item.SetIcon(0, mesh);
+                item.SetIconModulate(0, Colors.White);
+            }
+
+            return;
+        }
+
+        if (Refii.FlashGames.Engine_SwfAssets.RecognisesFont(path))
+        {
+            Texture2D? font = GetClassIcon(new[] { "FontFile", "Font", "Label" });
+            if (font is not null)
+            {
+                item.SetIcon(0, font);
+                item.SetIconModulate(0, Colors.White);
+            }
+
+            return;
+        }
+
         if (path.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase))
         {
             Texture2D? database = GetClassIcon(DatabaseIconNames);
@@ -1515,6 +1631,42 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         return null;
+    }
+
+    private static void ApplyFlashThumbnail(TreeItem item, string virtualPath)
+    {
+        try
+        {
+            Image? source = Refii.FlashGames.Engine_SwfAssets.TryGetImage(virtualPath);
+            if (source is null)
+            {
+                return;
+            }
+
+            var image = (Image)source.Duplicate();
+            image.ClearMipmaps();
+            image.Decompress();
+            int w = image.GetWidth();
+            int h = image.GetHeight();
+            if (w <= 0 || h <= 0)
+            {
+                return;
+            }
+
+            float scale = (float)ThumbnailSize / Math.Max(w, h);
+            image.Resize(
+                Math.Max(1, (int)(w * scale)),
+                Math.Max(1, (int)(h * scale)),
+                Image.Interpolation.Bilinear);
+
+            ImageTexture thumb = ImageTexture.CreateFromImage(image);
+            item.SetIcon(0, thumb);
+            item.SetIconModulate(0, Colors.White);
+            item.SetIconMaxWidth(0, ThumbnailSize);
+        }
+        catch (Exception)
+        {
+        }
     }
 
     private static void ApplyTextureThumbnail(TreeItem item, BnkFile file)

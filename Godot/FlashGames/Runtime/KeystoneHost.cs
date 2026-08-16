@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using Godot;
 using Refii.Core;
+using Refii.Ui.Flash.Keystone;
 using Refii.FlashGames.PubGames;
 using Refii.Textures;
 
@@ -84,16 +85,23 @@ public partial class KeystoneHost : Node
 
     public const int UnresolvedLightingDepth = 3;
 
-    private SwfStage _stage = null!;
     private Keystone _keystone = null!;
     private GameBoard _board = null!;
     private KeystonePlayer _human = null!;
     private Node2D _view = null!;
-    private SwfScene _scene = null!;
     private PubOverlays _overlays = null!;
     private Label _status = null!;
     private PubStopwatchTimer _timer = null!;
     private PubGameCommandSink _commands = null!;
+
+    private KeystoneScene? _sceneUi;
+    private SwfStage? _stage;
+    private SwfScene? _scene;
+    private IPubClip _root = null!;
+    private Vector2 _stageSize = new(640f, 462f);
+
+    private bool _autoOpenBank =
+        System.Environment.GetEnvironmentVariable("REFII_KEYSTONE_OPEN_BANK") is "1";
 
     private double _fpsAccumulator;
     private int _fpsFrames;
@@ -114,9 +122,11 @@ public partial class KeystoneHost : Node
         Collect,
     }
 
-    public SwfStage Stage => _stage;
+    public SwfStage? Stage => _stage;
 
-    public SwfScene Scene => _scene;
+    public SwfScene? Scene => _scene;
+
+    public KeystoneScene? SceneUi => _sceneUi;
 
     public PubOverlays Overlays => _overlays;
 
@@ -159,14 +169,6 @@ public partial class KeystoneHost : Node
             return false;
         }
 
-        SwfFile? file = SwfFile.TryLoad(File.ReadAllBytes(game.SwfPath), out string error);
-        if (file is null)
-        {
-            _status.Text = "swf load failed: " + error;
-            return false;
-        }
-
-        SwfDocument document = SwfDocument.Build(file);
         _timer = new PubStopwatchTimer();
 
         // SETTLED BEFORE ANYTHING IS BUILT FROM IT. The table's skin comes out of the variation the
@@ -180,26 +182,30 @@ public partial class KeystoneHost : Node
         List<string> applied = ApplySettings(set, game);
         GD.Print($"[pubgame] settings: {string.Join(", ", applied)}");
 
-        PubGameTextures textures = PubGameTextures.Build(set, game, document, _keystone.SkinIndex);
-        set.SharedFonts.TryGetValue(Language, out string? pack);
-        PubGameFonts fonts = PubGameFonts.Build(document, pack ?? string.Empty, Language);
-
-        _stage = new SwfStage(document, file.FrameSize, textures.Resolve) { Fonts = fonts };
+        if (SwfUiForced() || !LoadSceneUi(root))
+        {
+            if (!LoadSwfStage(set, game))
+            {
+                return false;
+            }
+        }
 
         _keystone.InitBetLimits();
         _keystone.InitBoardInfos();
         _keystone.ResetArchStones();
 
-        IPubClip? mark1 = _stage.Root.GetChild("player0chips1");
-        IPubClip? mark2 = _stage.Root.GetChild("player0chips2");
+        IPubClip? mark1 = _root.GetChild("player0chips1");
+        IPubClip? mark2 = _root.GetChild("player0chips2");
         if (mark1 is not null && mark2 is not null)
         {
             _keystone.WinNumbers = new AnimateWinNumbers(
                 (mark1.X + mark2.X) * 0.5f, mark2.Y, _keystone.ChipTravelTime);
         }
 
-        _board = new GameBoard(_keystone, _stage.Root, random);
+        var boardClock = System.Diagnostics.Stopwatch.StartNew();
+        _board = new GameBoard(_keystone, _root, random);
         _board.Init();
+        GD.Print($"[pubgame] board init {boardClock.Elapsed.TotalMilliseconds:0} ms");
         _keystone.SeatsPerTable =
             Math.Min(1 + _keystone.NumberOfAIPlayers, _board.MaxPlayersPerBoard);
         _board.AdjustLayers(false);
@@ -215,7 +221,7 @@ public partial class KeystoneHost : Node
 
         _keystone.Board = _board;
 
-        foreach (SwfClip child in _stage.Root.Children.Values)
+        foreach (IPubClip child in RootChildren())
         {
             bool variant = child.Name.EndsWith("SD", StringComparison.Ordinal) ||
                 child.Name.EndsWith("WD", StringComparison.Ordinal);
@@ -237,12 +243,21 @@ public partial class KeystoneHost : Node
 
         _keystone.RevealBoard();
 
-        _stage.Root.GetChild("betStats")!.Alpha = 100;
-        _stage.Root.GetChild("spaceStats")!.Alpha = 100;
-
-        foreach (SwfClip child in _stage.Root.Children.Values)
+        IPubClip? betStats = _root.GetChild("betStats");
+        if (betStats is not null)
         {
-            if (child.Depth == UnresolvedLightingDepth)
+            betStats.Alpha = 100;
+        }
+
+        IPubClip? spaceStats = _root.GetChild("spaceStats");
+        if (spaceStats is not null)
+        {
+            spaceStats.Alpha = 100;
+        }
+
+        foreach (IPubClip child in RootChildren())
+        {
+            if (child.GetDepth() == UnresolvedLightingDepth)
             {
                 child.Visible = false;
             }
@@ -252,13 +267,13 @@ public partial class KeystoneHost : Node
         _keystone.JumpToNewLocation(KeystoneSpace.Out10, false, null);
         _keystone.UpdateBetStats();
 
-        IPubClip? ticksField = _stage.Root.GetChild("ticks");
+        IPubClip? ticksField = _root.GetChild("ticks");
         if (ticksField is not null)
         {
             ticksField.Visible = false;
         }
 
-        _overlays = new PubOverlays(_keystone, _stage.Root);
+        _overlays = new PubOverlays(_keystone, _root);
         _keystone.OverlayManager = _overlays;
 
         // THE OVERLAYS HAVE TO EXIST FIRST. The tutorial's opening step raises a card and closes
@@ -274,10 +289,61 @@ public partial class KeystoneHost : Node
             _keystone.StartArchBetting();
         }
 
-        _scene = new SwfScene(_stage, _view)
+        GD.Print(
+            $"[pubgame] {game.Name} from {set.Root}: " +
+            (_sceneUi is not null
+                ? $"scene {KeystoneScene.ScenePath}, {_stageSize.X:0}x{_stageSize.Y:0} stage"
+                : $"swf stage, {(_scene!.Vector ? "vector geometry" : "rasterized artwork")}, " +
+                  $"upscaler {Engine_TexEnhance.BackendId}"));
+
+        return true;
+    }
+
+    private bool LoadSceneUi(string root)
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        if (Refii.Assets.Engine_GameAssets.Instance is not { IsMounted: true })
         {
-            Vector = Engine_TexSettings.PubGameVectorShapes,
-        };
+            string pubGames = PubGamesCatalog.ResolveRoot(root);
+            Refii.Bnk.BnkFileSystem.Mount(pubGames.Length != 0 ? pubGames : root);
+            Engine_SwfAssets.EnsureLoaders();
+        }
+
+        double mounted = clock.Elapsed.TotalMilliseconds;
+        _sceneUi = KeystoneScene.Load();
+        if (_sceneUi is null)
+        {
+            return false;
+        }
+
+        double loaded = clock.Elapsed.TotalMilliseconds;
+        _view.AddChild(_sceneUi.Node);
+        _root = _sceneUi.Root;
+        _stageSize = _sceneUi.StageSize;
+        GD.Print($"[pubgame] scene ui: mount {mounted:0} ms, load+instantiate {loaded - mounted:0} ms, " +
+                 $"in tree {clock.Elapsed.TotalMilliseconds - loaded:0} ms");
+        return true;
+    }
+
+    private bool LoadSwfStage(PubGamesSet set, PubGameEntry game)
+    {
+        SwfFile? file = SwfFile.TryLoad(File.ReadAllBytes(game.SwfPath), out string error);
+        if (file is null)
+        {
+            _status.Text = "swf load failed: " + error;
+            return false;
+        }
+
+        SwfDocument document = SwfDocument.Build(file);
+        PubGameTextures textures = PubGameTextures.Build(set, game, document, _keystone.SkinIndex);
+        set.SharedFonts.TryGetValue(Language, out string? pack);
+        PubGameFonts fonts = PubGameFonts.Build(document, pack ?? string.Empty, Language);
+
+        _stage = new SwfStage(document, file.FrameSize, textures.Resolve) { Fonts = fonts };
+        _root = _stage.Root;
+        _stageSize = new Vector2(
+            Mathf.Max(file.FrameSize.Width, 1) / SwfShapeGeometry.TwipsPerPixel,
+            Mathf.Max(file.FrameSize.Height, 1) / SwfShapeGeometry.TwipsPerPixel);
 
         // NOT SYNCED HERE, and that is the point. The viewport has no size yet during _Ready — it
         // reports zero — so the raster scale cannot be known, and rasterizing the whole board now
@@ -288,14 +354,33 @@ public partial class KeystoneHost : Node
         // SAID OUT LOUD, because both halves of this have failed silently. A resolver that picked
         // an empty directory left the scene reporting "pub games not found" with the files present,
         // and a texture path that skipped the pipeline looked exactly like one that used it.
-        GD.Print(
-            $"[pubgame] {game.Name} from {set.Root}: {textures.Bindings.Count} texture(s) bound, " +
-            $"{textures.Unbound.Count} unbound, " +
-            $"{(_scene.Vector ? "vector geometry" : "rasterized artwork")}, " +
-            $"upscaler {Engine_TexEnhance.BackendId}");
+        _scene = new SwfScene(_stage, _view)
+        {
+            Vector = Engine_TexSettings.PubGameVectorShapes,
+        };
 
+        GD.Print($"[pubgame] textures: {textures.Bindings.Count} bound, {textures.Unbound.Count} unbound");
         return true;
     }
+
+    private void AdvanceUi(double delta)
+    {
+        _stage?.Advance();
+        _sceneUi?.Advance(delta);
+    }
+
+    private IEnumerable<IPubClip> RootChildren()
+    {
+        if (_sceneUi is not null)
+        {
+            return _sceneUi.Root.Children;
+        }
+
+        return _stage!.Root.Children.Values;
+    }
+
+    private static bool SwfUiForced() =>
+        System.Environment.GetEnvironmentVariable("REFII_KEYSTONE_SWF_UI") is "1" or "true";
 
     private List<string> ApplySettings(PubGamesSet set, PubGameEntry game)
     {
@@ -414,6 +499,13 @@ public partial class KeystoneHost : Node
         }
 
         double ticks = delta * 1000.0;
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        if (_autoOpenBank)
+        {
+            _autoOpenBank = false;
+            _overlays.OpenBank();
+        }
 
         PubGameInput.Poll(_keystone.Input);
         _keystone.Input.Update();
@@ -425,9 +517,9 @@ public partial class KeystoneHost : Node
         {
             _keystone.CallbackManager.DoCallbacks(ticks);
             _keystone.WinNumbers?.Update(ticks);
-            _stage.Advance();
+            AdvanceUi(delta);
             Fit();
-            _scene.Sync();
+            _scene?.Sync();
             Report(delta, pad);
             return;
         }
@@ -468,10 +560,10 @@ public partial class KeystoneHost : Node
             _keystone.CallbackManager.DoCallbacks(ticks);
             _keystone.UpdatePlayerChipDisplays(ticks);
             _keystone.WinNumbers?.Update(ticks);
-            _stage.Advance();
+            AdvanceUi(delta);
             SyncChips();
             Fit();
-            _scene.Sync();
+            _scene?.Sync();
             Report(delta, pad);
             return;
         }
@@ -508,7 +600,7 @@ public partial class KeystoneHost : Node
         _keystone.CallbackManager.DoCallbacks(ticks);
         _keystone.UpdatePlayerChipDisplays(ticks);
         _keystone.WinNumbers?.Update(ticks);
-        _stage.Advance();
+        AdvanceUi(delta);
 
         if (_keystone.CallbackManager.Count == 0)
         {
@@ -517,9 +609,12 @@ public partial class KeystoneHost : Node
 
         SyncChips();
         Fit();
-        _scene.Sync();
+        _scene?.Sync();
+        _processMs = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         Report(delta, pad);
     }
+
+    private double _processMs;
 
     private void Settle()
     {
@@ -724,11 +819,9 @@ public partial class KeystoneHost : Node
     /// </remarks>
     public const float MaxRasterScale = 3f;
 
-    private float StageWidth =>
-        Mathf.Max(_stage.FrameSize.Width, 1) / SwfShapeGeometry.TwipsPerPixel;
+    private float StageWidth => Mathf.Max(_stageSize.X, 1f);
 
-    private float StageHeight =>
-        Mathf.Max(_stage.FrameSize.Height, 1) / SwfShapeGeometry.TwipsPerPixel;
+    private float StageHeight => Mathf.Max(_stageSize.Y, 1f);
 
     /// <summary>How far the whole stage is magnified to fill the window.</summary>
     private float StageFit()
@@ -780,7 +873,7 @@ public partial class KeystoneHost : Node
 
         // NOTHING TO DO ON THE VECTOR PATH, and that is its whole advantage: the geometry is the
         // same geometry at every size, so a resize is a transform and not a rebuild.
-        if (_scene.Vector)
+        if (_scene is null || _scene.Vector)
         {
             return;
         }
@@ -816,6 +909,25 @@ public partial class KeystoneHost : Node
             _fps = _fpsFrames / _fpsAccumulator;
             _fpsAccumulator = 0;
             _fpsFrames = 0;
+
+            if (_sceneUi is not null &&
+                System.Environment.GetEnvironmentVariable("REFII_KEYSTONE_CLIP_LOG") is "1")
+            {
+                int nodes = 0, players = 0, playing = 0, meshes = 0;
+                void Walk(Node n)
+                {
+                    nodes++;
+                    if (n is AnimationPlayer ap) { players++; if (ap.IsPlaying()) playing++; }
+                    if (n is MeshInstance2D) meshes++;
+                    foreach (Node c in n.GetChildren()) Walk(c);
+                }
+
+                Walk(_sceneUi.Node);
+                GD.Print($"[perf] fps {_fps:F1} nodes {nodes} meshes {meshes} players {players} playing {playing} " +
+                         $"process {_processMs:F2} ms  frame {Performance.GetMonitor(Performance.Monitor.TimeProcess) * 1000:F1} ms  " +
+                         $"draw calls {Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame)}  " +
+                         $"objects {Performance.GetMonitor(Performance.Monitor.RenderTotalObjectsInFrame)}");
+            }
         }
 
         string device = Godot.Input.GetConnectedJoypads().Count > 0
@@ -879,6 +991,6 @@ public partial class KeystoneHost : Node
             $"{_keystone.RollTotal}\n" +
             $"buttons [{held}]   stick ({pad.ThumbLX:F2},{pad.ThumbLY:F2})\n" +
             $"{hint}\n" +
-            $"nodes {_scene.DrawnNodes}";
+            (_scene is not null ? $"nodes {_scene.DrawnNodes}" : "scene ui");
     }
 }

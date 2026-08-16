@@ -49,6 +49,14 @@ public sealed class SwfVectorPart
 
     /// <summary>Whether the bitmap tiles rather than being clipped to one copy.</summary>
     public bool Repeat { get; init; }
+
+    public int FirstFill { get; init; }
+
+    public required Vector2[] Vertices { get; init; }
+
+    public Color[]? Colours { get; init; }
+
+    public Vector2[]? Uvs { get; init; }
 }
 
 public static class SwfVectorShape
@@ -89,22 +97,9 @@ public static class SwfVectorShape
             return parts;
         }
 
-        // THE HOST'S OWN FILL, found the way the rasterizer finds it: the first style naming the
-        // sentinel id. Its MATRIX is what the replacement artwork is placed by — the per-style
-        // matrix only contributes its translation — so it has to be located before any style is
-        // resolved rather than per fill.
-        SwfFillStyle? hostFill = null;
-        foreach (SwfFillStyle candidate in shape.FillStyles)
-        {
-            if (candidate.BitmapId == SwfRasterizer.HostSuppliedBitmapId)
-            {
-                hostFill = candidate;
-                break;
-            }
-        }
-
         var solidPoints = new List<Vector2>();
         var solidColours = new List<Color>();
+        var runStart = 0;
 
         foreach (SwfFillMesh mesh in meshes)
         {
@@ -112,6 +107,11 @@ public static class SwfVectorShape
 
             if (style.Kind == SwfFillKind.Solid)
             {
+                if (solidPoints.Count == 0)
+                {
+                    runStart = mesh.FillStyle;
+                }
+
                 Color colour = ToColor(style.Color);
                 foreach (Vector2 point in mesh.Vertices)
                 {
@@ -128,34 +128,80 @@ public static class SwfVectorShape
             // A TEXTURED FILL ENDS THE RUN. Flushing here rather than at the end is what keeps the
             // paint order: everything solid so far is underneath this fill, and anything solid
             // after it goes on top in a new batch.
-            Flush(parts, solidPoints, solidColours);
+            Flush(parts, solidPoints, solidColours, runStart);
 
-            SwfVectorPart? textured = Textured(mesh, style, hostFill, hostBitmap, embeddedBitmap);
+            SwfVectorPart? textured = Textured(mesh, style, hostBitmap, embeddedBitmap);
             if (textured is not null)
             {
                 parts.Add(textured);
             }
         }
 
-        Flush(parts, solidPoints, solidColours);
+        Flush(parts, solidPoints, solidColours, runStart);
         return parts;
+    }
+
+    public static List<int> PartFills(SwfShape shape, SwfGeometry geometry)
+    {
+        var withContours = new SortedSet<int>();
+        foreach (SwfContour contour in geometry.Contours)
+        {
+            if (contour.FillStyle > 0 && contour.FillStyle <= shape.FillStyles.Count &&
+                contour.Points.Count >= 3)
+            {
+                withContours.Add(contour.FillStyle);
+            }
+        }
+
+        var fills = new List<int>();
+        var inSolidRun = false;
+        foreach (int fill in withContours)
+        {
+            SwfFillStyle style = shape.FillStyles[fill - 1];
+            if (style.Kind == SwfFillKind.Solid)
+            {
+                if (!inSolidRun)
+                {
+                    fills.Add(fill);
+                    inSolidRun = true;
+                }
+
+                continue;
+            }
+
+            inSolidRun = false;
+            if (style.BitmapId != SwfRasterizer.HostSuppliedBitmapId)
+            {
+                fills.Add(fill);
+            }
+        }
+
+        return fills;
     }
 
     /// <summary>Emits the accumulated solid run as one mesh and starts a new run.</summary>
     private static void Flush(
-        List<SwfVectorPart> parts, List<Vector2> points, List<Color> colours)
+        List<SwfVectorPart> parts, List<Vector2> points, List<Color> colours, int firstFill)
     {
         if (points.Count >= 3)
         {
+            Vector2[] vertices = points.ToArray();
+            Color[] tints = colours.ToArray();
             parts.Add(new SwfVectorPart
             {
-                Mesh = MeshOf(points.ToArray(), colours.ToArray(), uvs: null),
+                Mesh = MeshOf(vertices, tints, uvs: null),
+                FirstFill = firstFill,
+                Vertices = vertices,
+                Colours = tints,
             });
         }
 
         points.Clear();
         colours.Clear();
     }
+
+    public static ArrayMesh MeshFrom(Vector2[] vertices, Color[]? colours, Vector2[]? uvs) =>
+        MeshOf(vertices, colours, uvs);
 
     /// <summary>
     /// A triangle soup as a canvas mesh.
@@ -193,7 +239,6 @@ public static class SwfVectorShape
     private static SwfVectorPart? Textured(
         SwfFillMesh mesh,
         SwfFillStyle style,
-        SwfFillStyle? hostFill,
         Func<int, Texture2D?>? hostBitmap,
         Func<int, Texture2D?>? embeddedBitmap)
     {
@@ -201,32 +246,27 @@ public static class SwfVectorShape
         Texture2D? texture = null;
         var repeat = false;
 
+        Vector2 space = Vector2.One;
+
         if (style.BitmapId >= 0)
         {
-            // THE REPLACEMENT FIRST, and when one is found the HOST fill's matrix is used with the
-            // style's own translation — the substitute artwork is a different size from what the
-            // SWF authored, so its own placement is the only one that fits it. Copied from the
-            // rasterizer rather than re-derived.
-            if (hostFill is not null && style.BitmapId != SwfRasterizer.HostSuppliedBitmapId)
+            if (style.BitmapId == SwfRasterizer.HostSuppliedBitmapId)
             {
-                texture = hostBitmap?.Invoke(style.BitmapId);
-                if (texture is not null)
-                {
-                    matrix = hostFill.Matrix with
-                    {
-                        TranslateX = style.Matrix.TranslateX,
-                        TranslateY = style.Matrix.TranslateY,
-                    };
-                }
+                return null;
             }
 
-            texture ??= embeddedBitmap?.Invoke(style.BitmapId);
+            Texture2D? embedded = embeddedBitmap?.Invoke(style.BitmapId);
+            texture = hostBitmap?.Invoke(style.BitmapId) ?? embedded;
             if (texture is null)
             {
                 // The rasterizer skips the fill entirely rather than drawing it flat, and a missing
                 // bitmap drawn as a solid rectangle is far more visible than a missing one.
                 return null;
             }
+
+            Texture2D reference = embedded ?? texture;
+            space = new Vector2(
+                Mathf.Max(reference.GetWidth(), 1), Mathf.Max(reference.GetHeight(), 1));
 
             repeat = style.Kind is SwfFillKind.RepeatingBitmap
                 or SwfFillKind.NonSmoothedRepeatingBitmap;
@@ -250,6 +290,8 @@ public static class SwfVectorShape
         var uvs = new Vector2[mesh.Vertices.Length];
         bool isGradient = style.BitmapId < 0;
 
+        var texel = new Vector2(1f / space.X, 1f / space.Y);
+
         for (var i = 0; i < mesh.Vertices.Length; i++)
         {
             points[i] = mesh.Vertices[i];
@@ -262,7 +304,7 @@ public static class SwfVectorShape
             // that space IS texture pixels — the rasterizer floors the result and indexes the
             // bitmap with it directly, which is only correct if the units are pixels.
             Vector2 local = inverse * (mesh.Vertices[i] * SwfShapeGeometry.TwipsPerPixel);
-            uvs[i] = isGradient ? GradientUv(style, local) : local;
+            uvs[i] = isGradient ? GradientUv(style, local) : local * texel;
         }
 
         // NO VERTEX COLOURS on a textured part. Godot multiplies the two, and an unset colour array
@@ -275,6 +317,9 @@ public static class SwfVectorShape
             // REPEAT IS A CANVAS ITEM PROPERTY, not a texture one, so it travels with the part and
             // is set on the node that draws — two fills of the same bitmap can disagree about it.
             Repeat = repeat,
+            FirstFill = mesh.FillStyle,
+            Vertices = points,
+            Uvs = uvs,
         };
     }
 
@@ -293,16 +338,17 @@ public static class SwfVectorShape
         if (style.Kind == SwfFillKind.LinearGradient)
         {
             float t = (local.X + GradientHalfSpan) / (GradientHalfSpan * 2f);
-            return new Vector2(Mathf.Clamp(t, 0f, 1f) * GradientResolution, 0.5f);
+            return new Vector2(Mathf.Clamp(t, 0f, 1f), 0.5f);
         }
 
         // The radial texture is a square whose centre is the gradient's origin and whose half
         // width is the gradient's radius, so the mapping is a scale and a shift into it.
-        Vector2 normalised = (local / (GradientHalfSpan * 2f)) + new Vector2(0.5f, 0.5f);
-        return normalised * GradientResolution;
+        return (local / (GradientHalfSpan * 2f)) + new Vector2(0.5f, 0.5f);
     }
 
     /// <summary>The stops as a texture: 1D along X for linear, radial in a square otherwise.</summary>
+    public static Texture2D? GradientTexture(SwfFillStyle style) => Gradient(style);
+
     private static Texture2D? Gradient(SwfFillStyle style)
     {
         if (style.Stops.Count == 0)

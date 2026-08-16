@@ -71,7 +71,7 @@ public sealed class PubGameFonts
 
     public SwfFont? Resolve(int fontId) => _byStubId.GetValueOrDefault(fontId);
 
-    private static SwfFont? Match(SwfFont stub, SwfDocument provider)
+    public static SwfFont? Match(SwfFont stub, SwfDocument provider)
     {
         string want = Normalize(stub.Name);
         SwfFont? nameOnly = null;

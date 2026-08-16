@@ -226,6 +226,24 @@ public partial class Engine_GameAssets : Node
 			_audioLoader = new Refii.Audio.Engine_BnkAudioLoader();
 			ResourceLoader.AddResourceFormatLoader(_audioLoader);
 		}
+
+		if (_swfTextureLoader is null)
+		{
+			_swfTextureLoader = new Refii.FlashGames.Engine_SwfTextureLoader();
+			ResourceLoader.AddResourceFormatLoader(_swfTextureLoader, atFront: true);
+		}
+
+		if (_swfMeshLoader is null)
+		{
+			_swfMeshLoader = new Refii.FlashGames.Engine_SwfMeshLoader();
+			ResourceLoader.AddResourceFormatLoader(_swfMeshLoader, atFront: true);
+		}
+
+		if (_swfFontLoader is null)
+		{
+			_swfFontLoader = new Refii.FlashGames.Engine_SwfFontLoader();
+			ResourceLoader.AddResourceFormatLoader(_swfFontLoader, atFront: true);
+		}
 	}
 
 	/// <summary>Every <c>.mdl</c> in the mount, for the prop model index.</summary>
@@ -612,6 +630,9 @@ public partial class Engine_GameAssets : Node
 	private Refii.Entities.Engine_BnkEntityLoader? _entityLoader;
 	private Refii.Fx.Engine_BnkFxLoader? _fxLoader;
 	private Refii.Audio.Engine_BnkAudioLoader? _audioLoader;
+	private Refii.FlashGames.Engine_SwfTextureLoader? _swfTextureLoader;
+	private Refii.FlashGames.Engine_SwfMeshLoader? _swfMeshLoader;
+	private Refii.FlashGames.Engine_SwfFontLoader? _swfFontLoader;
 	private Dictionary<string, string>? _byFileName;
 	private List<Refii.Level.LevelEntry>? _levels;
 

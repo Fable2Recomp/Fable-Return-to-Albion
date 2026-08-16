@@ -902,8 +902,6 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
 
   MaybeArmInGameSimulation(ctx, base);
 
-  TraceCameraProbe(base, tick);
-
   // After the drain, so a "New Game" that just ran is reflected in the next answer rather than
   // the one before it.
   SampleSavedGameCount(ctx, base);

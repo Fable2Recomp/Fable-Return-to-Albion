@@ -8,9 +8,12 @@ public static class PubGameInput
 {
     public const float TriggerScale = 255f;
 
+    private static readonly bool IgnorePads =
+        System.Environment.GetEnvironmentVariable("REFII_PUBGAME_NO_PAD") is "1";
+
     public static void Poll(PubInput input, int device = 0)
     {
-        if (Godot.Input.GetConnectedJoypads().Count == 0)
+        if (IgnorePads || Godot.Input.GetConnectedJoypads().Count == 0)
         {
             input.UpdateFromKeyboard(IsKeyDown);
             return;

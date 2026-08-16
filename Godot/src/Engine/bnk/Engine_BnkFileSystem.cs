@@ -157,7 +157,27 @@ public sealed class BnkFileSystem : IDisposable
         }
 
         filesystem.IndexLoose(gameDirectory, looseExtensions ?? DefaultLooseExtensions);
+
+        Refii.FlashGames.Engine_SwfAssets.Index(filesystem, gameDirectory);
         return filesystem;
+    }
+
+    public void AddVirtualFile(string virtualPath, string sourcePath, long size, Func<byte[]> read)
+    {
+        string normalized = Normalize(virtualPath);
+        if (normalized.Length == 0)
+        {
+            return;
+        }
+
+        var entry = new BnkEntry
+        {
+            RelativePath = normalized,
+            Size = (uint)Math.Min(size, uint.MaxValue),
+            StoredSize = (uint)Math.Min(size, uint.MaxValue),
+        };
+
+        Insert(normalized, new BnkFile(sourcePath, entry, normalized, _ => read(), true), preferNew: true);
     }
 
     private static IEnumerable<string> EnumerateByExtension(string root, params string[] extensions)

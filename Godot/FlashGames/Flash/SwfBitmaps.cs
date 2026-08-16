@@ -12,8 +12,32 @@ public static class SwfBitmaps
     {
         problems = new List<string>();
         var images = new Dictionary<int, Image>();
-        byte[]? tables = null;
+        byte[]? tables = JpegTables(swf);
 
+        foreach (SwfTag tag in swf.Tags)
+        {
+            if (!IsBitmapTag(tag.Code))
+            {
+                continue;
+            }
+
+            Image? image = Decode(tag, tables, out int id, out string? problem);
+            if (image is not null)
+            {
+                images[id] = image;
+            }
+            else if (problem is not null)
+            {
+                problems.Add(problem);
+            }
+        }
+
+        return images;
+    }
+
+    public static byte[]? JpegTables(SwfFile swf)
+    {
+        byte[]? tables = null;
         foreach (SwfTag tag in swf.Tags)
         {
             if (tag.Code == SwfFile.TagJpegTables)
@@ -22,69 +46,64 @@ public static class SwfBitmaps
             }
         }
 
-        foreach (SwfTag tag in swf.Tags)
-        {
-            switch (tag.Code)
-            {
-                case SwfFile.TagDefineBitsJpeg:
-                {
-                    if (tag.Data.Length < 2)
-                    {
-                        continue;
-                    }
-
-                    int id = BitConverter.ToUInt16(tag.Data, 0);
-                    byte[] jpeg = CombineWithTables(tables, tag.Data[2..]);
-                    AddJpeg(images, problems, id, jpeg, null);
-                    break;
-                }
-
-                case SwfFile.TagDefineBitsJpeg2:
-                {
-                    if (tag.Data.Length < 2)
-                    {
-                        continue;
-                    }
-
-                    int id = BitConverter.ToUInt16(tag.Data, 0);
-                    AddJpeg(images, problems, id, StripMarkerPair(tag.Data[2..]), null);
-                    break;
-                }
-
-                case SwfFile.TagDefineBitsJpeg3:
-                {
-                    if (tag.Data.Length < 6)
-                    {
-                        continue;
-                    }
-
-                    int id = BitConverter.ToUInt16(tag.Data, 0);
-                    int jpegLength = (int)BitConverter.ToUInt32(tag.Data, 2);
-                    if (6 + jpegLength > tag.Data.Length)
-                    {
-                        problems.Add($"id {id}: jpeg3 length overruns tag");
-                        continue;
-                    }
-
-                    byte[] jpeg = StripMarkerPair(tag.Data[6..(6 + jpegLength)]);
-                    byte[]? alpha = null;
-                    if (6 + jpegLength < tag.Data.Length)
-                    {
-                        alpha = Inflate(tag.Data[(6 + jpegLength)..]);
-                    }
-
-                    AddJpeg(images, problems, id, jpeg, alpha);
-                    break;
-                }
-            }
-        }
-
-        return images;
+        return tables;
     }
 
-    private static void AddJpeg(
-        Dictionary<int, Image> images, List<string> problems, int id, byte[] jpeg, byte[]? alpha)
+    public static bool IsBitmapTag(int code) =>
+        code is SwfFile.TagDefineBitsJpeg or SwfFile.TagDefineBitsJpeg2 or SwfFile.TagDefineBitsJpeg3;
+
+    public static int BitmapId(SwfTag tag) =>
+        IsBitmapTag(tag.Code) && tag.Data.Length >= 2 ? BitConverter.ToUInt16(tag.Data, 0) : -1;
+
+    public static Image? Decode(SwfTag tag, byte[]? tables, out int id, out string? problem)
     {
+        problem = null;
+        id = BitmapId(tag);
+        if (id < 0)
+        {
+            return null;
+        }
+
+        switch (tag.Code)
+        {
+            case SwfFile.TagDefineBitsJpeg:
+                return DecodeJpeg(id, CombineWithTables(tables, tag.Data[2..]), null, out problem);
+
+            case SwfFile.TagDefineBitsJpeg2:
+                return DecodeJpeg(id, StripMarkerPair(tag.Data[2..]), null, out problem);
+
+            case SwfFile.TagDefineBitsJpeg3:
+            {
+                if (tag.Data.Length < 6)
+                {
+                    return null;
+                }
+
+                int jpegLength = (int)BitConverter.ToUInt32(tag.Data, 2);
+                if (6 + jpegLength > tag.Data.Length)
+                {
+                    problem = $"id {id}: jpeg3 length overruns tag";
+                    return null;
+                }
+
+                byte[] jpeg = StripMarkerPair(tag.Data[6..(6 + jpegLength)]);
+                byte[]? alpha = null;
+                if (6 + jpegLength < tag.Data.Length)
+                {
+                    alpha = Inflate(tag.Data[(6 + jpegLength)..]);
+                }
+
+                return DecodeJpeg(id, jpeg, alpha, out problem);
+            }
+
+            default:
+                return null;
+        }
+    }
+
+    private static Image? DecodeJpeg(int id, byte[] jpeg, byte[]? alpha, out string? problem)
+    {
+        problem = null;
         Image? image = null;
         Error error = Error.Failed;
         foreach (byte[] candidate in new[] { StripMarkerPair(jpeg), jpeg })
@@ -100,8 +119,8 @@ public static class SwfBitmaps
 
         if (image is null)
         {
-            problems.Add($"id {id}: jpeg decode failed ({error})");
-            return;
+            problem = $"id {id}: jpeg decode failed ({error})";
+            return null;
         }
 
         if (alpha is not null)
@@ -109,7 +128,7 @@ public static class SwfBitmaps
             ApplyAlpha(image, alpha);
         }
 
-        images[id] = image;
+        return image;
     }
 
     private static void ApplyAlpha(Image image, byte[] alpha)
