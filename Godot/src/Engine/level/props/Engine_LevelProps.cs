@@ -344,13 +344,18 @@ public static class Engine_LevelProps
                 continue;
             }
 
-            // WHICH MODEL THIS PLACEMENT GOT, remembered for the FX pass.
-            //
-            // An attached effect hangs off a bone of the prop's own model, so Engine_LevelFx has
-            // to know which model that is. Resolving it a second time down there would mean a
-            // second copy of the ladder above — hash, then curated parent/entity key, then the
-            // filled hash, each with its own rejections — and the two copies would drift.
-            fxModelPaths[placement.Hash] = modelPath;
+            {
+                string want = OS.GetEnvironment("REFII_PROPS_DUMP");
+                if (want.Length != 0 && placement.EntityName is not null &&
+                    placement.EntityName.Contains(want, StringComparison.OrdinalIgnoreCase))
+                {
+                    GD.Print(
+                        $"[props-dump] {placement.EntityName} hash={placement.Hash:X8} " +
+                        $"modelHash={placement.ModelPathHash:X8} filled={placement.ModelPathFilled} " +
+                        $"authored={authoredHash} byHash={matchedByHash} " +
+                        $"parent={placement.ParentHash:X8} -> {modelPath}");
+                }
+            }
 
             if (!matchedByHash && IsBridgeModel(modelPath))
             {
@@ -363,6 +368,14 @@ public static class Engine_LevelProps
                 stats.RejectedCharacter++;
                 continue;
             }
+
+            // WHICH MODEL THIS PLACEMENT GOT, remembered for the FX pass.
+            //
+            // An attached effect hangs off a bone of the prop's own model, so Engine_LevelFx has
+            // to know which model that is. Resolving it a second time down there would mean a
+            // second copy of the ladder above — hash, then curated parent/entity key, then the
+            // filled hash, each with its own rejections — and the two copies would drift.
+            fxModelPaths[placement.Hash] = modelPath;
 
             if (Engine_LevelFx.IsSilverKeyPlacement(placement) &&
                 !NormalisePath(modelPath).Contains("silverkey", StringComparison.Ordinal))

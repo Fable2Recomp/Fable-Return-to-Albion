@@ -170,6 +170,8 @@ public static class Engine_LevelFx
         var noModel = new List<string>();
         var noNode = new List<string>();
 
+        bool dumpPlacements = OS.GetEnvironment("REFII_FX_DUMP").Length != 0;
+
         bool Emit(
             GdbPlacement placement,
             uint hash,
@@ -191,10 +193,16 @@ public static class Engine_LevelFx
 
             // ONTO THE BONE, not the prop's origin. A lamp's flame belongs at its head, and 78
             // of BWSSlums' 86 effects state a DummyObject saying so.
+            Vector3 placedAt = xform.Origin;
+            Vector3 boneAt = Vector3.Zero;
+            string boneSource = "none";
+            string dumpModel = "";
+
             if (dummy.Length != 0)
             {
                 string? model = null;
                 modelPaths?.TryGetValue(placement.Hash, out model);
+                dumpModel = model ?? "";
 
                 if (model is null || model.Length == 0)
                 {
@@ -207,6 +215,8 @@ public static class Engine_LevelFx
                 else if (TryDummyTransform(model, dummy, out Transform3D bone))
                 {
                     xform *= bone;
+                    boneAt = bone.Origin;
+                    boneSource = "gmd";
                     attached++;
                 }
                 else if (Engine_LevelProps.CompanionPath(model) is { Length: > 0 } companion &&
@@ -227,6 +237,8 @@ public static class Engine_LevelFx
                     // building; splitting that into two files is our storage detail, so
                     // searching both is what restores the entity's single attachment set.
                     xform *= companionBone;
+                    boneAt = companionBone.Origin;
+                    boneSource = "companion";
                     attached++;
                 }
                 else
@@ -283,6 +295,16 @@ public static class Engine_LevelFx
             }
 
             origin = xform.Origin;
+
+            if (dumpPlacements && dummy.Length != 0)
+            {
+                GD.Print(
+                    $"[fx-dump] {placement.EntityName ?? "?"} rec={placement.Hash:X8} " +
+                    $"maps={modelPaths?.Count ?? -1} {hash:X8} dummy='{dummy}' " +
+                    $"bone={boneSource} placed={placedAt} boneLocal={boneAt} " +
+                    $"final={xform.Origin} parented={(parent is not null)} " +
+                    $"model={dumpModel}");
+            }
 
             if (!bypassAmbient && !IsAmbientEffect(bank, hash))
             {
