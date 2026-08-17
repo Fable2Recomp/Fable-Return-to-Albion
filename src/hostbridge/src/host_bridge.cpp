@@ -856,7 +856,7 @@ extern "C" {
 ///    can follow the guest's own choice instead of re-deriving it from inputs it would have to
 ///    guess at. The velocity/control pair it tests against is NOT included, and deliberately:
 ///    that context is a stack temporary built per tick in sub_8228D058 and is not resident.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 54; }
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 56; }
 
 // ---------------------------------------------------------------------------------
 // Audio
@@ -5271,6 +5271,204 @@ static uint32_t walk_gui_registry(const uint8_t* base, uint32_t index, uint32_t*
     }
 
     return found;
+}
+
+/// The FNV-1 hashes of the layers the guest has explicitly DEACTIVATED — worldMgr+72.
+///
+/// THIS IS THE LIST A HOST NEEDS, and it is not the one the name "active layers" suggests.
+/// `sub_823662C8` reads a different container per the layer's `load` attribute:
+///
+///   823664d0  bne cr6, loc_82366548   AlwaysOn    -> spawn, consulting NEITHER list
+///   823664e8  bl  sub_82320A68        InitiallyOn -> spawn iff ABSENT from +72
+///   82366520  bl  sub_8244C428        else        -> spawn iff PRESENT in +60
+///
+/// `sub_82320A68` walks `W+72` and returns PRESENT — `subf/cntlzw/extrwi` then `xori r3, r8, 1`
+/// at 0x82320AE4 — and the caller spawns on zero (`beq cr6, loc_82366548`, 0x823664F4). The
+/// else-branch test is inline at `loc_823664F8` against r23, which `World_LoadLevel_Execute`
+/// supplies as `a1 + 60` (0x8231C788).
+///
+/// The two are pinned by their writers touching BOTH off one base, which is what makes the
+/// assignment airtight rather than a guess:
+///
+///   Layers.ActivateLayer   sub_8231D8F0  insert +60, erase  +72
+///   Layers.DeactivateLayer sub_8231DBE0  erase  +60, insert +72
+///
+/// and `IsLayerActive` (`sub_8231DEA8`) tests +60 for presence.
+///
+/// Both lists are EMPTY on a new game: `sub_8231BF20` default-constructs each, and the only bulk
+/// writer is `World_LoadLevelFromSaveHeader` (0x8231C7E4/0x8231C7F0), which the new-game path
+/// through `CmdLevelChange_Update` never reaches. That is why a host must gate on THIS list —
+/// gating on the activated one would hide every `InitiallyOn` layer in a fresh world.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDeactivatedLayers(uint32_t* out, uint32_t capacity) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    // Mirrors RefiiHostGetActiveLayers: MSVC `std::list`, _Myproxy then _Myhead at +4 and
+    // _Mysize at +8. The only difference is the container offset — +60 activated, +72 here.
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+
+    const uint32_t wm = world_manager(base);
+    if (wm == 0) {
+        return 0;
+    }
+
+    const uint32_t head = u32(wm + 72u + 4u);
+    if (head < 0x10000u || head >= 0xC0000000u) {
+        return 0;
+    }
+
+    const uint32_t size = u32(wm + 72u + 8u);
+    if (size > 4096u) {
+        return 0;  // not a list we recognise
+    }
+
+    uint32_t written = 0;
+    uint32_t node = u32(head);
+    for (uint32_t guard = 0; guard <= size + 8u; ++guard) {
+        if (node == head || node < 0x10000u || node >= 0xC0000000u) {
+            break;
+        }
+
+        if (out != nullptr && written < capacity) {
+            out[written] = u32(node + 8u);
+        }
+
+        ++written;
+        node = u32(node);
+    }
+
+    return written;
+}
+
+/// The element currently hosting a Bink MOVIE, and the path it is playing.
+///
+/// There is no "embedded video" flag: a sprite whose `Movie` string is non-empty draws a movie
+/// into ITS OWN rect instead of a texture, and setting a texture clears it (`sub_8286DDC0`).
+///
+/// The string is at sprite +0x234, the same base whose +0x200 texture hash
+/// `RefiiHostGetUiTextureHashes` reads (`sub_8286E360`, 0x8286E704). It is an LHString: two
+/// pointer reads then the bytes, and a NULL first pointer is the empty case — per
+/// `sub_8229B1B8`, which takes `_BYTE***`, branches on `*a1` and compares `**a1`.
+///
+/// Returns 1 when a slot is playing, with `out_ordinal` in the same traversal
+/// `RefiiHostGetUiElements` uses. Only the FIRST is reported; shipped screens carry one.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiMovie(uint32_t presentation, uint32_t* out_ordinal,
+                                                   char* out, uint32_t capacity) {
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    if (presentation == 0u) {
+        const uint32_t gui = read32(0x83496B08u);
+        if (!plausible(gui)) {
+            return 0;
+        }
+
+        const uint32_t active = read32(gui + 188u);
+        if (!plausible(active)) {
+            return 0;
+        }
+
+        presentation = read32(active + 20u);
+    }
+
+    if (!plausible(presentation)) {
+        return 0;
+    }
+
+    const uint32_t root = read32(presentation + 492u + 8u);
+    if (!plausible(root)) {
+        return 0;
+    }
+
+    constexpr uint32_t kMaxElements = 16384u;
+    uint32_t ordinal = 0;
+    uint32_t element = root;
+
+    while (element != 0 && ordinal < kMaxElements) {
+        if (!plausible(element)) {
+            break;
+        }
+
+        // Same two dereferences as the texture read: most elements have no render item.
+        const uint32_t holder = read32(element + 4u);
+
+        // THE TYPE BYTE IS NOT OPTIONAL — `node+10 == 2` is the guest's own guard before it
+        // treats `node+0` as a sprite (`sub_829A5A18` at 0x829A5B64). Without it, +564 is read
+        // off every kind of render item and returns whatever pointer-shaped bytes are there.
+        if (plausible(holder) && (base[holder + 10u] == 2u)) {
+            const uint32_t record = read32(holder);
+            if (plausible(record)) {
+                const uint32_t indirect = read32(record + 564u);
+                if (plausible(indirect)) {
+                    const uint32_t text = read32(indirect);
+                    if (plausible(text) && base[text] != 0) {
+                        if (out_ordinal != nullptr) {
+                            *out_ordinal = ordinal;
+                        }
+
+                        if (out != nullptr && capacity > 0) {
+                            uint32_t i = 0;
+                            for (; i + 1u < capacity; ++i) {
+                                const char c = (char)base[text + i];
+                                if (c == 0) {
+                                    break;
+                                }
+                                out[i] = c;
+                            }
+                            out[i] = 0;
+                        }
+
+                        return 1;
+                    }
+                }
+            }
+        }
+
+        ++ordinal;
+
+        const uint32_t child = read32(element + 20u);
+        if (plausible(child)) {
+            element = child;
+            continue;
+        }
+
+        while (element != 0) {
+            if (element == root) {
+                element = 0;
+                break;
+            }
+
+            const uint32_t sibling = read32(element + 16u);
+            if (plausible(sibling)) {
+                element = sibling;
+                break;
+            }
+
+            const uint32_t parent = read32(element + 12u);
+            element = plausible(parent) ? parent : 0;
+        }
+    }
+
+    return 0;
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudMeters(uint32_t* out_hashes, float* out_values, uint32_t capacity) {

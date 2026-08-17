@@ -44,8 +44,11 @@ public sealed class Engine_UiTextureCache
 	/// screen viewer, the scene exporter — set it here; the running game sets the same
 	/// thing from Engine_GameAssets over the same mount.
 	/// </summary>
+	private readonly BnkFileSystem _banks;
+
 	public Engine_UiTextureCache(BnkFileSystem banks)
 	{
+		_banks = banks;
 		Engine_BnkTextureLoader.EnsureRegistered();
 		Engine_BnkTextureLoader.SetResolver(
 			path => banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null);
@@ -72,8 +75,13 @@ public sealed class Engine_UiTextureCache
 			Engine_BnkTextureLoader.PathPrefix + virtualPath);
 		if (texture is null)
 		{
-			// The loader has already said why, in its own warning.
-			_failures[relativePath] = "not loaded";
+			// Says which side failed. ResourceLoader answers a miss with a bare "Cannot open
+			// file" whether our loader was consulted or not, so record what the bank itself
+			// thinks of the same path — a hit here means the asset is present and the loader
+			// route is the fault, a miss means the path never resolves.
+			_failures[relativePath] = _banks.TryGetFile(virtualPath, out BnkFile probe)
+				? $"bank has it ({probe.Size} bytes) but the loader returned null"
+				: "not in the bank under this path";
 			return null;
 		}
 

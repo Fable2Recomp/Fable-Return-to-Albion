@@ -784,6 +784,18 @@ public partial class GameWorld : Node3D
 		// guest is most likely to name a different one.
 		_announced = false;
 		_scenarioReported = false;
+
+		// AND THE CAPPED ONES TOO, for the same reason and a sharper one. `TraceEntities` stops
+		// after ten reports, and those ten were being spent on the first two regions of a run —
+		// so Ravenscar, the region that actually had an entity problem, produced no
+		// `[guest-entities]` line at all and the live count could not be read off the log. A
+		// rate limit that never resets measures whichever level happened to load first.
+		_entityReports = 0;
+		_entityTicks = 0;
+
+		// Per region for the same reason: a run total cannot say whether the level now standing
+		// is the one whose models are not arriving.
+		Refii.Models.Engine_BnkMeshLoader.ResetEmptyMeshCounts();
 	}
 
 	/// <summary>

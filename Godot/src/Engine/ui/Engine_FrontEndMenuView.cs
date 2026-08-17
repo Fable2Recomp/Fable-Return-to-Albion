@@ -540,11 +540,9 @@ public partial class Engine_FrontEndMenuView : Node3D
 	/// </summary>
 	private static void OwnMaterials(Node node)
 	{
-		if (node is MeshInstance3D mesh && mesh.MaterialOverride is StandardMaterial3D shared)
+		if (node is MeshInstance3D mesh && Engine_UiSceneBuilder.OwnQuadMaterial(mesh))
 		{
-			var own = (StandardMaterial3D)shared.Duplicate();
-			mesh.MaterialOverride = own;
-			mesh.SetMeta(AuthoredAlphaMeta, own.AlbedoColor.A);
+			mesh.SetMeta(AuthoredAlphaMeta, Engine_UiSceneBuilder.QuadOpacity(mesh));
 		}
 
 		foreach (Node child in node.GetChildren())
@@ -621,12 +619,10 @@ public partial class Engine_FrontEndMenuView : Node3D
 	/// <summary>Scales a whole row's art by a slot opacity, from its authored alpha.</summary>
 	private static void FadeArt(Node node, float opacity)
 	{
-		if (node is MeshInstance3D mesh && mesh.MaterialOverride is StandardMaterial3D material &&
-			mesh.HasMeta(AuthoredAlphaMeta))
+		if (node is MeshInstance3D mesh && mesh.HasMeta(AuthoredAlphaMeta))
 		{
 			float authored = (float)mesh.GetMeta(AuthoredAlphaMeta);
-			Color colour = material.AlbedoColor;
-			material.AlbedoColor = new Color(colour.R, colour.G, colour.B, authored * opacity);
+			Engine_UiSceneBuilder.SetQuadOpacity(mesh, authored * opacity);
 		}
 
 		foreach (Node child in node.GetChildren())

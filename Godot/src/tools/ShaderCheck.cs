@@ -15,6 +15,12 @@ public partial class ShaderCheck : Node
 	{
 		"res://src/Engine/material/standard_material.gdshader",
 		"res://src/Engine/material/standard_material_phong.gdshader",
+
+		// The draw-path families. Each is a DIFFERENT LIGHTING MODEL rather than a variant, so
+		// each can break on its own — and a family with no caller yet (the canopy, until the
+		// per-surface trunk/canopy discriminator is settled) would otherwise not be compiled by
+		// anything at all and could sit broken indefinitely.
+		Refii.Models.Engine_ShaderFamily.TreeCanopyPath,
 		"res://src/Engine/level/terrain/terrain_splat.gdshader",
 		"res://src/Engine/level/water/water.gdshader",
 		"res://src/Engine/level/environment/sky.gdshader",

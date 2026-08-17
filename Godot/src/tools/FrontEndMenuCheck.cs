@@ -248,10 +248,13 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 				// turns the card over, and a card flipped 180 degrees about Y puts its front
 				// face behind its back — which looks exactly like a depth-sort fault and is
 				// not one.
-				string material = spatial is MeshInstance3D m &&
-					m.MaterialOverride is StandardMaterial3D s
-					? $"alpha={s.AlbedoColor.A:F2} tex={(s.AlbedoTexture is null ? "NONE" : "set")} " +
-					  $"prio={s.RenderPriority} vis={m.Visible}"
+				// Reads the quad's opacity through the builder rather than casting: a card face
+				// is a shader-driven quad now, and the old StandardMaterial3D cast reported an
+				// empty string for every one of them — which read as "this node has no
+				// material" on exactly the nodes the check exists to describe.
+				string material = spatial is MeshInstance3D m
+					? $"alpha={Engine_UiSceneBuilder.QuadOpacity(m):F2} " +
+					  $"prio={m.MaterialOverride?.RenderPriority ?? 0} vis={m.Visible}"
 					: string.Empty;
 
 				GD.Print($"[menu-check]   {which}/{spatial.Name} z={spatial.Position.Z:F3} " +

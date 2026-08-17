@@ -219,7 +219,7 @@ public static class Engine_TexPlanes
         }
 
         System.ReadOnlySpan<ulong> source = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(src);
-        System.Span<ulong> target = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(dst);
+        System.Span<ulong> target = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(dst.AsSpan());
         int step = stride / 8;
         int offset = bias / 8;
         for (int i = 0; i < count; i++)

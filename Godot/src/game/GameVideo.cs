@@ -128,7 +128,49 @@ public partial class GameVideo : Node
 		};
 		_view.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		layer.AddChild(_view);
+
+		// THE SAME DECODE, A SECOND DESTINATION: the same YUV planes and material, drawn into a
+		// UI element's rect instead of the screen. The SubViewport makes it a sampleable
+		// Texture2D.
+		_embedded = new SubViewport
+		{
+			Name = "VideoEmbed",
+			RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
+			RenderTargetClearMode = SubViewport.ClearMode.Always,
+			TransparentBg = false,
+			Disable3D = true,
+			Size = new Vector2I(2, 2),
+		};
+		AddChild(_embedded);
+
+		// STRETCHED, never letterboxed: the guest's draw (0x82A41F10) never reads the movie's
+		// own width or height.
+		_embeddedView = new TextureRect
+		{
+			Name = "EmbedView",
+			ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+			StretchMode = TextureRect.StretchModeEnum.Scale,
+			Material = _material,
+		};
+		_embeddedView.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		_embedded.AddChild(_embeddedView);
 	}
+
+	private SubViewport _embedded = null!;
+	private TextureRect _embeddedView = null!;
+
+	/// <summary>
+	/// Where the movie is going: an element ordinal, or -1 for the screen.
+	///
+	/// Set by <see cref="Refii.Game.GameUi"/> from the guest's own statement — a sprite whose
+	/// `Movie` string is non-empty hosts the movie in its own rect — because the presentation
+	/// and its ordinal map live there and not here.
+	/// </summary>
+	public int EmbedOrdinal { get; set; } = -1;
+
+	/// <summary>The decoded frame as a texture a UI quad can sample, or null when not playing.</summary>
+	public Texture2D? FrameTexture =>
+		_decoder is null || EmbedOrdinal < 0 ? null : _embedded.GetTexture();
 
 	public override void _Process(double delta)
 	{
@@ -337,7 +379,10 @@ public partial class GameVideo : Node
 		_luma!.Update(_lumaImage);
 		_chromaU!.Update(_chromaUImage);
 		_chromaV!.Update(_chromaVImage);
-		_view.Visible = true;
+
+		// An embedded movie must not also paint the screen — the two share one material.
+		_embeddedView.Texture = _luma;
+		_view.Visible = EmbedOrdinal < 0;
 
 		// Deterministic capture: save once, a little way into playback, rather than
 		// guessing a wall-clock moment. The startup videos begin at a time that moves
@@ -382,6 +427,7 @@ public partial class GameVideo : Node
 		_chromaU = ImageTexture.CreateFromImage(_chromaUImage);
 		_chromaV = ImageTexture.CreateFromImage(_chromaVImage);
 
+		_embedded.Size = new Vector2I(decoder.Width, decoder.Height);
 		_view.Texture = _luma;
 		_material.SetShaderParameter("luma", _luma);
 		_material.SetShaderParameter("chroma_r", _chromaV);

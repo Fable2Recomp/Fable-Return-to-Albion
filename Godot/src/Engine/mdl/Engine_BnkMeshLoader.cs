@@ -11,6 +11,29 @@ public partial class Engine_BnkMeshLoader : ResourceFormatLoader
     private static Func<string, byte[]?>? _resolver;
     private static Func<string, bool>? _exists;
 
+    /// <summary>How many of each kind of empty mesh get a line before the count alone speaks.</summary>
+    private const int EmptyMeshReportCap = 12;
+
+    /// <summary>
+    /// Models that loaded and DREW NOTHING, split by why, for the run.
+    ///
+    /// A stub is a header whose body lives in a bank that is not mounted — expected during a
+    /// level change, a defect if it persists. Undecodable is a reader failure. They were
+    /// indistinguishable while both returned an empty mesh in silence, which is the one way a
+    /// missing model leaves no trace anywhere: the node exists, the material is applied, the
+    /// prop is counted as streamed, and nothing draws.
+    /// </summary>
+    public static int EmptyStubs { get; private set; }
+
+    public static int EmptyUndecodable { get; private set; }
+
+    /// <summary>Zeroed per region, so the counts describe the level rather than the run.</summary>
+    public static void ResetEmptyMeshCounts()
+    {
+        EmptyStubs = 0;
+        EmptyUndecodable = 0;
+    }
+
     public static void SetResolver(Func<string, byte[]?>? resolver) => _resolver = resolver;
 
     public static void SetExistsProbe(Func<string, bool>? probe) => _exists = probe;
@@ -59,10 +82,31 @@ public partial class Engine_BnkMeshLoader : ResourceFormatLoader
 
         if (mesh is null)
         {
+            // AN EMPTY MESH IS A DRAW THAT NEVER HAPPENS, so it is counted and said.
+            //
+            // A stub used to return this in silence, on the reasoning that a header-only entry in
+            // a resident bank is expected and its body pages in from a streaming one. But the
+            // caller cannot tell that apart from a model that arrived and decoded to nothing: both
+            // hand back a live `ArrayMesh` with no surfaces, the node is created, and every
+            // counter upstream records a success. A prop that is present, placed, lit and
+            // invisible is the hardest kind of missing model to find, and it was the only failure
+            // in this file that produced no line at all.
+            //
+            // Rate-limited per KIND rather than globally: a level whose streaming bank is not
+            // mounted yet can produce hundreds of stubs, and burying the handful of real decode
+            // failures under them is how the log stops being readable.
             mesh = new ArrayMesh();
-            if (!isStub)
+
+            int seen = isStub ? ++EmptyStubs : ++EmptyUndecodable;
+            if (seen <= EmptyMeshReportCap)
             {
-                GD.Print($"[bnk] {path}: {error}");
+                GD.Print($"[bnk] {path} DREW NOTHING — " +
+                    (isStub
+                        ? "stub: the header states a body that is in no mounted bank"
+                        : error) +
+                    (seen == EmptyMeshReportCap
+                        ? "  (further ones of this kind are counted, not printed)"
+                        : string.Empty));
             }
         }
 

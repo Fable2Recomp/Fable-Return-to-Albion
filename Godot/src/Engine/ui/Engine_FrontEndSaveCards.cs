@@ -525,13 +525,12 @@ public partial class Engine_FrontEndSaveCards : Node3D
 				continue;
 			}
 
-			if (Engine_UiTheme.FindByName(card, PortraitName) is MeshInstance3D quad &&
-				quad.MaterialOverride is StandardMaterial3D material)
+			if (Engine_UiTheme.FindByName(card, PortraitName) is MeshInstance3D quad)
 			{
 				// The clone already owns its material — `CloneFace` duplicates the node and the
-				// builder gives each quad its own StandardMaterial3D — so writing the albedo
-				// here cannot leak onto the shipped card the art came from.
-				material.AlbedoTexture = portrait;
+				// builder gives each quad its own material — so writing the texture here cannot
+				// leak onto the shipped card the art came from.
+				Engine_UiSceneBuilder.SetQuadTexture(quad, portrait);
 			}
 		}
 	}

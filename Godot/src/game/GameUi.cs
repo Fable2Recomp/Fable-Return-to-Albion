@@ -356,20 +356,25 @@ public partial class GameUi : Node
 		// traversed and still submitted. Hiding is globalactive's job, above. This is here so
 		// a faded widget looks faded, nothing more.
 		float?[]? opacity = null;
+		Engine_UiScreen.LiveTint?[]? tint = null;
 		if (slides is not null)
 		{
 			HostBridge.LiveAttribute[,]? attributes = HostBridge.GetUiAttributes(OpacityIds);
 			if (attributes is not null)
 			{
-				opacity = new float?[System.Math.Min(attributes.GetLength(0), slides.Length)];
-				for (int i = 0; i < opacity.Length; ++i)
+				int count = System.Math.Min(attributes.GetLength(0), slides.Length);
+				opacity = new float?[count];
+				tint = new Engine_UiScreen.LiveTint?[count];
+				for (int i = 0; i < count; ++i)
 				{
 					opacity[i] = attributes[i, 0].Present ? attributes[i, 0].AsFloat : null;
+					tint[i] = ReadTint(attributes, i);
 				}
 			}
 		}
 
 		_presentation.LiveOpacity = opacity;
+		_presentation.LiveTint = tint;
 		_presentation.LiveVisible = visible;
 		_presentation.LiveSlides = slides;
 		_presentation.LiveText = texts;
@@ -1585,7 +1590,29 @@ public partial class GameUi : Node
 	private static readonly uint[] OpacityIds =
 	{
 		Engine_GameHash.Sdbm("opacity") & Engine_GameHash.AttributeIdMask,
+
+		// The tint's WEIGHT, read in the same pass rather than a second walk over 3,444
+		// elements. Without it every quad draws at the authored weight, which is usually none.
+		Engine_GameHash.Sdbm("TintingAmount") & Engine_GameHash.AttributeIdMask,
+
+		// THE TINT COLOUR, useless without the weight and vice versa: `rgb -= (1 - tint) *
+		// amount` subtracts nothing against white. `SetTintingAmountAndDiffuseColour` writes
+		// both together. These are 0..255 (divided on the way in at 0x8286EE18); the weight is
+		// stored verbatim.
+		Engine_GameHash.Sdbm("diffuse.r") & Engine_GameHash.AttributeIdMask,
+		Engine_GameHash.Sdbm("diffuse.g") & Engine_GameHash.AttributeIdMask,
+		Engine_GameHash.Sdbm("diffuse.b") & Engine_GameHash.AttributeIdMask,
 	};
+
+	/// <summary>Indices within <see cref="OpacityIds"/>.</summary>
+	private const int TintingAmountSlot = 1;
+
+	private const int DiffuseRSlot = 2;
+	private const int DiffuseGSlot = 3;
+	private const int DiffuseBSlot = 4;
+
+	/// <summary>The guest stores diffuse attributes 0..255 and divides by this on the way in.</summary>
+	private const float DiffuseScale = 1f / 255f;
 
 	/// <summary>
 	/// The attributes that decide WHERE an element is, in the order
@@ -1774,6 +1801,15 @@ public partial class GameUi : Node
 		public float?[]? Opacity { get; set; }
 
 		/// <summary>
+		/// The tint WEIGHT per element the screen was last built from.
+		///
+		/// In the test for the same reason opacity is. A wheel item highlighting raises its
+		/// `TintingAmount` and changes nothing else — no slide, no visibility, no opacity — so
+		/// a screen whose only change is a tint would keep drawing the previous weight.
+		/// </summary>
+		public Engine_UiScreen.LiveTint?[]? Tint { get; set; }
+
+		/// <summary>
 		/// The live texture hash per element the screen was last built from.
 		///
 		/// Part of the rebuild test, because a texture swap changes nothing else about an
@@ -1914,15 +1950,22 @@ public partial class GameUi : Node
 			// the transform is the same final word the shipped event handler has.
 			if (drawn.Widescreen is { } wide && _isWidescreen)
 			{
-				wide.Apply(drawn.Builder.ByOrdinal);
+				wide.Apply(drawn.Builder);
 			}
+
+			// LAST, because a clip has to follow whatever moved the mask — the live transform
+			// above, or the widescreen override after it. A mask is an ordinary scene node and
+			// the pause menu animates its own in lockstep with the page slide.
+			drawn.Builder.RefreshClips();
 			if (moved > 0 && _animated.Add(address))
 			{
 				GD.Print($"[game-ui] '{drawn.Name}' is animating — {moved} element(s) moved " +
 					"on the first frame it did");
 			}
 
+			_lastAddress = address;
 			ReportScroll(drawn, moved);
+			FollowMovie(drawn, address);
 		}
 	}
 
@@ -1966,8 +2009,8 @@ public partial class GameUi : Node
 				return;
 			}
 
-			var material = (mesh.MaterialOverride ?? mesh.GetActiveMaterial(0)) as BaseMaterial3D;
-			if (material is null || material.AlbedoColor.A <= 0.01f)
+			Engine_UiSceneBuilder.QuadPaint paint = Engine_UiSceneBuilder.DescribeQuad(mesh);
+			if (!paint.Painted)
 			{
 				return;
 			}
@@ -1980,15 +2023,15 @@ public partial class GameUi : Node
 				return;
 			}
 
-			// AN UNTEXTURED QUAD IS NOT SKIPPED, it is NAMED. A StandardMaterial3D with no
-			// albedo texture paints its albedo COLOUR across the whole quad — which for the
-			// default white is a solid white plate. That is the single most likely cause of a
-			// screen going white, so a scanline that filtered it out would have dutifully
-			// reported whatever was behind the very thing being looked for.
-			string texture = material.AlbedoTexture is { } albedo
+			// AN UNTEXTURED QUAD IS NOT SKIPPED, it is NAMED. A quad with no texture paints its
+			// tint flat across its whole area — which for the default white is a solid white
+			// plate. That is the single most likely cause of a screen going white, so a
+			// scanline that filtered it out would have dutifully reported whatever was behind
+			// the very thing being looked for.
+			string texture = paint.Texture is { } albedo
 				? albedo.ResourcePath.GetFile()
 				: "NO-TEXTURE";
-			Color tint = material.AlbedoColor;
+			Color tint = paint.Tint;
 
 			quads.Add((box.Position.X, box.End.X, box.Position.Z,
 				$"{mesh.Name}<{(texture.Length > 0 ? texture : "runtime")} " +
@@ -2091,12 +2134,12 @@ public partial class GameUi : Node
 				return;
 			}
 
-			var material = (mesh.MaterialOverride ?? mesh.GetActiveMaterial(0)) as BaseMaterial3D;
+			Engine_UiSceneBuilder.QuadPaint paint = Engine_UiSceneBuilder.DescribeQuad(mesh);
 			Aabb box = mesh.GlobalTransform * mesh.GetAabb();
 
 			found[name] =
 				$"x[{box.Position.X:F0}..{box.End.X:F0}] y[{box.Position.Y:F0}..{box.End.Y:F0}] " +
-				$"a{material?.AlbedoColor.A ?? 0f:F2}";
+				$"a{paint.Opacity:F2}";
 		}
 
 		var line = new System.Text.StringBuilder(
@@ -2202,6 +2245,85 @@ public partial class GameUi : Node
 	private string? _titleScreen;
 
 	/// <summary>
+	/// One element's live tint, as weight plus colour, or null when the guest states no weight.
+	///
+	/// Both halves or neither: a weight with no colour subtracts nothing, and a colour with no
+	/// weight is inert. The guest writes them together and so does this.
+	/// </summary>
+	private static Engine_UiScreen.LiveTint? ReadTint(HostBridge.LiveAttribute[,] attributes, int i)
+	{
+		if (!attributes[i, TintingAmountSlot].Present)
+		{
+			return null;
+		}
+
+		return new Engine_UiScreen.LiveTint(
+			attributes[i, TintingAmountSlot].AsFloat,
+			attributes[i, DiffuseRSlot].Present
+				? attributes[i, DiffuseRSlot].AsFloat * DiffuseScale : null,
+			attributes[i, DiffuseGSlot].Present
+				? attributes[i, DiffuseGSlot].AsFloat * DiffuseScale : null,
+			attributes[i, DiffuseBSlot].Present
+				? attributes[i, DiffuseBSlot].AsFloat * DiffuseScale : null);
+	}
+
+	/// <summary>The video player, so an embedded movie can be drawn into the element hosting it.</summary>
+	public GameVideo? Video { get; set; }
+
+	/// <summary>Element ordinals currently hosting a movie, per presentation address.</summary>
+	private readonly System.Collections.Generic.Dictionary<uint, int> _movieSlots = new();
+
+	/// <summary>
+	/// True while any drawn presentation hosts an embedded movie — so the window's
+	/// "hide the UI" handler does not conceal the screen a preview is playing inside.
+	/// </summary>
+	public bool HasEmbeddedMovie => _movieSlots.Count > 0;
+
+	/// <summary>
+	/// Draws the guest's embedded movie into the element hosting it. A sprite whose `Movie`
+	/// string is non-empty draws a movie into its OWN rect instead of a texture;
+	/// `RefiiHostGetUiMovie` reads it off the same sprite base as the texture hash, so its
+	/// ordinal joins like every other live array. The frame is STRETCHED — the guest's draw
+	/// never reads the movie's own size.
+	/// </summary>
+	private void FollowMovie(Drawn drawn, uint address)
+	{
+		if (Video is null || drawn.Builder is null)
+		{
+			return;
+		}
+
+		if (HostBridge.GetUiMovie(address) is not { } movie)
+		{
+			if (_movieSlots.Remove(address) && !HasEmbeddedMovie)
+			{
+				Video.EmbedOrdinal = -1;
+			}
+
+			return;
+		}
+
+		if (!_movieSlots.TryGetValue(address, out int was) || was != movie.Ordinal)
+		{
+			_movieSlots[address] = movie.Ordinal;
+			GD.Print($"[game-ui] '{drawn.Name}' element {movie.Ordinal} is hosting a movie: " +
+				$"{movie.Path}");
+		}
+
+		Video.EmbedOrdinal = movie.Ordinal;
+
+		// The element the ATTRIBUTE sits on is a Node whose quad is the card; the guest also
+		// authors `Movie` on its Material child, which has no quad of its own. Painting is
+		// therefore skipped rather than forced when the ordinal has no quad.
+		if (movie.Ordinal < drawn.Builder.ByOrdinal.Length &&
+			drawn.Builder.ByOrdinal[movie.Ordinal] is MeshInstance3D quad &&
+			Video.FrameTexture is { } frame)
+		{
+			Engine_UiSceneBuilder.SetQuadTexture(quad, frame);
+		}
+	}
+
+	/// <summary>
 	/// Reports WHERE the moving parts have got to, about once a second.
 	///
 	/// The backdrop is a strip of 512-wide panels drawn twice, and the copy is nested inside the
@@ -2215,12 +2337,22 @@ public partial class GameUi : Node
 	/// </summary>
 	private void ReportScroll(Drawn drawn, int moved)
 	{
-		if (moved == 0 || drawn.Builder is null || ++_scrollTick % ScrollSampleFrames != 0)
+		if (drawn.Builder is null)
 		{
 			return;
 		}
 
-		var report = new System.Text.StringBuilder($"[game-ui] '{drawn.Name}' moving:");
+		// A SETTLED SCREEN IS REPORTED TOO, once. Gating on `moved > 0` only ever described a
+		// screen mid-animation, and the state worth measuring is the one after it stops.
+		bool settled = moved == 0 && _animated.Contains(_lastAddress) && _stilled.Add(_lastAddress);
+
+		if (!settled && (moved == 0 || ++_scrollTick % ScrollSampleFrames != 0))
+		{
+			return;
+		}
+
+		var report = new System.Text.StringBuilder(
+			$"[game-ui] '{drawn.Name}' {(settled ? "settled" : "moving")}:");
 		int shown = 0;
 
 		Node3D?[] byOrdinal = drawn.Builder.ByOrdinal;
@@ -2286,6 +2418,14 @@ public partial class GameUi : Node
 		// actionable. The name is the join to the file, where the element's texture and colour
 		// can be read directly.
 		var untexturedNames = new System.Collections.Generic.List<string>();
+
+		// Every painting quad as (front Z, area, node), for the covering report below.
+		var frontMost = new System.Collections.Generic.List<(float Z, float Area, MeshInstance3D Mesh)>();
+
+		MeshInstance3D? leftMost = null;
+		MeshInstance3D? rightMost = null;
+		float leftX = 0f;
+		float rightX = 0f;
 		MeshInstance3D? widest = null;
 		float widestSpan = 0f;
 
@@ -2319,16 +2459,17 @@ public partial class GameUi : Node
 			}
 
 			// The builder puts the quad's material on the override slot; the surface slot is the
-			// fallback for anything cloned or re-materialised since.
-			var material = (mesh.MaterialOverride ?? mesh.GetActiveMaterial(0)) as BaseMaterial3D;
-			if (material is null)
+			// fallback for anything cloned or re-materialised since. Read through the builder
+			// so a quad and a text mesh both answer — see DescribeQuad.
+			Engine_UiSceneBuilder.QuadPaint paint = Engine_UiSceneBuilder.DescribeQuad(mesh);
+			if (paint.Opacity <= 0f && paint.Texture is null && !paint.DetailMapped)
 			{
 				++untextured;
 				Name(untexturedNames, mesh, "no material");
 				continue;
 			}
 
-			if (material.AlbedoColor.A <= 0.01f)
+			if (!paint.Painted)
 			{
 				++transparent;
 				continue;
@@ -2338,7 +2479,10 @@ public partial class GameUi : Node
 			// the material paints its albedo colour over the whole quad, so it covers its span
 			// with a flat plate. Filing it under "not drawing" was backwards, and that is the
 			// same mistake in miniature as counting geometry instead of pixels.
-			if (material.AlbedoTexture is null)
+			// A DETAIL-MAPPED QUAD IS TEXTURED even with no primary: its RGB comes from the
+			// detail map, and the primary would only have supplied alpha. Counting those as
+			// untextured would report the entire frame widget as painting flat colour.
+			if (paint.Texture is null && !paint.DetailMapped)
 			{
 				++untextured;
 
@@ -2346,7 +2490,7 @@ public partial class GameUi : Node
 				// quad with no albedo texture paints the .fac record's vertex colour flat, so
 				// the magenta plate in a screenshot and the entry in this list are matched by
 				// eye without another run.
-				Color c = material.AlbedoColor;
+				Color c = paint.Tint;
 				Name(untexturedNames, mesh,
 					$"rgba({c.R:0.##},{c.G:0.##},{c.B:0.##},{c.A:0.##})" +
 					(mesh.HasMeta("texture_path")
@@ -2356,6 +2500,24 @@ public partial class GameUi : Node
 
 			Aabb box = mesh.GlobalTransform * mesh.GetAabb();
 			spans.Add((box.Position.X, box.End.X));
+
+			// WHAT IS IN FRONT. The span says how wide the painting is, not what the player
+			// sees. These presentations share one orthographic camera and write no depth, so
+			// covering is decided purely by the Z sort.
+			frontMost.Add((box.End.Z, box.Size.X * box.Size.Y, mesh));
+
+			// THE OUTLIERS BY NAME — the span's union cannot say which element reaches past it.
+			if (leftMost is null || box.Position.X < leftX)
+			{
+				leftX = box.Position.X;
+				leftMost = mesh;
+			}
+
+			if (rightMost is null || box.End.X > rightX)
+			{
+				rightX = box.End.X;
+				rightMost = mesh;
+			}
 
 			// THE WIDEST PAINTING QUAD, BY NAME. The span line reports the union of every
 			// painting quad, so a single element reaching past the canvas edge shows up only as
@@ -2377,7 +2539,48 @@ public partial class GameUi : Node
 			widestNote = $"  widest={named[0]}";
 		}
 
-		string silent = widestNote + $" ({hidden} hidden, {transparent} transparent, " +
+		// The three front-most quads big enough to matter, nearest first. Area-gated at a
+		// twentieth of the canvas so the report names backdrops and panels rather than the
+		// topmost pixel of a cursor.
+		string covering = string.Empty;
+		if (frontMost.Count > 0)
+		{
+			frontMost.Sort((a, b) => b.Z.CompareTo(a.Z));
+			var names = new System.Collections.Generic.List<string>();
+			foreach ((float z, float area, MeshInstance3D mesh) in frontMost)
+			{
+				if (area < 960f * 720f / 20f)
+				{
+					continue;
+				}
+
+				var one = new System.Collections.Generic.List<string>();
+				Name(one, mesh, $"z={z:F0} {Mathf.Sqrt(area):F0}²");
+				names.Add(one[0]);
+				if (names.Count == 3)
+				{
+					break;
+				}
+			}
+
+			if (names.Count > 0)
+			{
+				covering = "  infront=" + string.Join(" > ", names);
+			}
+		}
+
+		string edges = string.Empty;
+		if (leftMost is not null && rightMost is not null)
+		{
+			var l = new System.Collections.Generic.List<string>();
+			Name(l, leftMost, $"x={leftX:F0}");
+			var r = new System.Collections.Generic.List<string>();
+			Name(r, rightMost, $"x={rightX:F0}");
+			edges = $"  leftmost={l[0]}  rightmost={r[0]}";
+		}
+
+		string silent = widestNote + edges + covering +
+			$" ({hidden} hidden, {transparent} transparent, " +
 			$"{untextured} PAINTING UNTEXTURED" +
 			(untexturedNames.Count == 0
 				? string.Empty
@@ -2436,6 +2639,15 @@ public partial class GameUi : Node
 
 	/// <summary>Presentations already reported as animating, so the line fires once each.</summary>
 	private readonly System.Collections.Generic.HashSet<uint> _animated = new();
+
+	/// <summary>
+	/// Presentations already reported in their SETTLED state, so that census fires once each
+	/// rather than every frame the screen sits still — which is most of them.
+	/// </summary>
+	private readonly System.Collections.Generic.HashSet<uint> _stilled = new();
+
+	/// <summary>The address whose <see cref="Drawn"/> is being reported, for the settled test.</summary>
+	private uint _lastAddress;
 
 	/// <summary>Presentations reported as still being built, so that line fires once each too.</summary>
 	private readonly System.Collections.Generic.HashSet<uint> _mismatched = new();
@@ -2557,6 +2769,8 @@ public partial class GameUi : Node
 		// So a presentation that comes back reports its movement again rather than staying
 		// silent because a previous incarnation at the same address already had.
 		_animated.Remove(address);
+		_stilled.Remove(address);
+		_movieSlots.Remove(address);
 		_mismatched.Remove(address);
 		_valued.Remove(address);
 		_menuContents.Remove(address);
@@ -2827,14 +3041,18 @@ public partial class GameUi : Node
 		// Read BEFORE the unchanged test below, because it is part of that test: a HUD fading
 		// out changes no slide and no visibility, so comparing only those would never notice.
 		float?[]? opacity = null;
+		Engine_UiScreen.LiveTint?[]? tint = null;
 		HostBridge.LiveAttribute[,]? attributes =
 			HostBridge.GetUiAttributes(OpacityIds, presentation.Address);
 		if (attributes is not null)
 		{
-			opacity = new float?[System.Math.Min(attributes.GetLength(0), elements.Count)];
-			for (int i = 0; i < opacity.Length; ++i)
+			int count = System.Math.Min(attributes.GetLength(0), elements.Count);
+			opacity = new float?[count];
+			tint = new Engine_UiScreen.LiveTint?[count];
+			for (int i = 0; i < count; ++i)
 			{
 				opacity[i] = attributes[i, 0].Present ? attributes[i, 0].AsFloat : null;
+				tint[i] = ReadTint(attributes, i);
 			}
 		}
 
@@ -2855,7 +3073,10 @@ public partial class GameUi : Node
 			  opacity.SequenceEqual(existing.Opacity))) &&
 			((existing.Textures is null && textures is null) ||
 			 (existing.Textures is not null && textures is not null &&
-			  textures.SequenceEqual(existing.Textures)));
+			  textures.SequenceEqual(existing.Textures))) &&
+			((existing.Tint is null && tint is null) ||
+			 (existing.Tint is not null && tint is not null &&
+			  tint.SequenceEqual(existing.Tint)));
 		if (unchanged)
 		{
 			return;
@@ -2865,6 +3086,7 @@ public partial class GameUi : Node
 		_presentation.LiveText = texts;
 		_presentation.LiveVisible = visible;
 		_presentation.LiveOpacity = opacity;
+		_presentation.LiveTint = tint;
 		float?[]?[]? transform = ReadLiveTransform(presentation.Address, elements.Count);
 		_presentation.LiveTransform = transform;
 
@@ -2923,6 +3145,15 @@ public partial class GameUi : Node
 			// different work. Empty when the guest states none, which is most screens.
 			string swaps = screen?.DescribeLiveTextures() ?? string.Empty;
 
+			// THE TINT WEIGHT, reported separately from the swap counts because it answers a
+			// different question. Every quad now draws its tint SUBTRACTIVELY at this weight,
+			// and the weight is 0 on most authored records — so "the frames look pale" and
+			// "the guest never stated a TintingAmount" are the same observation, and a screen
+			// that states none needs to be distinguishable from one whose read is broken.
+			string tints = screen is null || screen.LiveTintsApplied == 0
+				? string.Empty
+				: $", {screen.LiveTintsApplied} tint weight(s) stated";
+
 			// AND WHY, when the answer is "none". The chain the host walks is the guest's own,
 			// verified against `sub_82425C10` instruction for instruction — element+4 to the
 			// scene node, node+0 to the render item, +0x200 for the hash — so an all-zero
@@ -2938,7 +3169,7 @@ public partial class GameUi : Node
 
 			GD.Print($"[game-ui] drawing the guest's '{name}' " +
 				$"({elements.Count} live elements, " +
-				$"{System.Array.FindAll(visible, v => v).Length} of them active{art}{swaps})");
+				$"{System.Array.FindAll(visible, v => v).Length} of them active{art}{swaps}{tints})");
 
 			// THE ORDINAL JOIN, checked rather than believed — the same check the front end
 			// makes, because this path applies slide, text and opacity BY POSITION too.
@@ -3000,6 +3231,12 @@ public partial class GameUi : Node
 		// 100000 far plane.
 		built.Position = new Vector3(0f, 0f, depth * PresentationDepthStep);
 		_presentation.AddChild(built);
+
+		// AFTER the attach, which is the contract `ApplyCameraAiming` states and the one
+		// `BuildDetached` cannot keep: the aim rides through the camera's parent GLOBAL
+		// transform, and a detached tree has none. Doing it here is what makes an in-game
+		// presentation's cameras aim at the same points the viewer's do.
+		Engine_UiSceneBuilder.ApplyCameraAiming(built);
 
 		// THE LIVE-VALUE BINDINGS, resolved once per build rather than per frame.
 		//
@@ -3070,6 +3307,7 @@ public partial class GameUi : Node
 			Visible = visible,
 			Opacity = opacity,
 			Textures = textures,
+			Tint = tint,
 			Builder = stats,
 			ElementCount = elements.Count,
 			Values = values,

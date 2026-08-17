@@ -259,7 +259,33 @@ public partial class GameEntities : Node3D
                 }
             }
 
-            Twins.Reconcile(_liveRecords, _drawnRecords);
+            // AND THE GUEST'S OWN LAYER STATE, which is what decides visibility now.
+            //
+            // THE DEACTIVATED LIST, not the active one. Every prop the region built came from a
+            // layer whose `load` is `AlwaysOn` or `InitiallyOn`, and the guest gates exactly one
+            // of those: `InitiallyOn` spawns unless its hash is in worldMgr+72. The activated
+            // list at +60 governs the `InitiallyOff` layers we never build, and it is EMPTY on a
+            // new game — gating on it would have hidden the whole level.
+            //
+            // Rebuilt per reconcile rather than cached: `Layers.ActivateLayer` and
+            // `DeactivateLayer` move layers while you play, and a set sampled once at mount would
+            // freeze the region into whatever the world looked like on that frame.
+            //
+            // Null is "cannot ask" and is NOT the same as empty, which is the ordinary answer for
+            // a world where nothing has been deactivated. `Reconcile` gates nothing on null.
+            uint[]? deactivated = HostBridge.GetDeactivatedLayers();
+            if (deactivated is not null)
+            {
+                _deactivatedLayers.Clear();
+                foreach (uint layer in deactivated)
+                {
+                    _deactivatedLayers.Add(layer);
+                }
+            }
+
+            Twins.Reconcile(
+                _liveRecords, _drawnRecords, !HostBridge.EntitiesTruncated,
+                deactivated is null ? null : _deactivatedLayers.Contains);
         }
 
         bool settled = _settledFor == SettleTicks ||
@@ -288,7 +314,13 @@ public partial class GameEntities : Node3D
         // Path resolution and mesh loading are DIFFERENT NUMBERS: a hash that resolves to a
         // path still has to find a mesh, so "resolved 1030/1030" is not "1030 drawable".
         GD.Print($"[game-entities] of {_withModel} with a model hash, {_noMesh} loaded NO MESH " +
-            "(header-only stub or not in a mounted bank)");
+            "(header-only stub or not in a mounted bank)" +
+            // SPLIT BY WHY, from the loader that actually knows. A stub is a body in an unmounted
+            // bank and should drain as streaming banks come up; an undecodable model never will.
+            // Both used to return an empty mesh in silence and be counted as a success here.
+            $" — the loader turned back {Refii.Models.Engine_BnkMeshLoader.EmptyStubs} stub(s) " +
+            $"and {Refii.Models.Engine_BnkMeshLoader.EmptyUndecodable} undecodable model(s) " +
+            "in this region");
 
         // THE COMPOSITE CHARACTERS — the ones with no model hash of their own.
         //
@@ -411,11 +443,29 @@ public partial class GameEntities : Node3D
             // THE INVARIANT, AS THREE NUMBERS THAT MUST ADD UP. A record is hidden because we
             // draw it, hidden because the guest does not have it, or visible because the guest
             // has it and we cannot draw it. Anything else is a bug in the reconcile.
-            int shown = twins.Records - twins.HiddenForLive - twins.HiddenUnstated;
+            int shown = twins.Records - twins.HiddenForLive - twins.HiddenByLayer;
             GD.Print($"[game-entities] static twins: {twins.Records} record(s) over " +
                 $"{twins.Instances} drawable(s) — {twins.HiddenForLive} hidden because the " +
-                $"guest draws its own, {twins.HiddenUnstated} hidden because the guest states " +
-                $"no such entity (a layer or quest gate), {shown} left standing as the only copy");
+                $"guest draws its own, {twins.HiddenByLayer} hidden because their LAYER is " +
+                $"deactivated, {shown} left standing as the only copy" +
+                (twins.LiveWasTruncated
+                    ? "  (the entity walk saturated its buffer this tick — the dedup half is " +
+                      "under-counting, the layer gate is unaffected)"
+                    : string.Empty));
+
+            // THE GATE'S OWN HEALTH, said every time, because the failure it guards against is
+            // invisible by construction: a wrongly-read layer state hides props while every
+            // other counter on this line stays perfectly plausible.
+            GD.Print($"[game-entities] layer gate: " +
+                (twins.LayerGateRan
+                    ? $"ON over {twins.LayeredRecords} record(s) in " +
+                      $"{twins.AlwaysOnLayers} AlwaysOn layer(s) + the rest InitiallyOn"
+                    : "OFF — no `.save` layer map on the region, or the bridge could not be " +
+                      "asked; nothing is being gated") +
+                (twins.GatedButLive == 0
+                    ? string.Empty
+                    : $"  ** {twins.GatedButLive} RECORD(S) GATED OFF THAT THE GUEST REPORTS AS " +
+                      "LIVE — the layer state is being read wrongly and props are being deleted **"));
 
             GD.Print($"[game-entities] {twins.Unmatched} live record(s) the region drew nothing " +
                 $"for, {twins.NoRecord} live draw(s) with no record hash, {twins.Restored} " +
@@ -623,6 +673,9 @@ public partial class GameEntities : Node3D
 
     /// <summary>Scratch for the reconcile, reused so a twice-a-second pass allocates nothing.</summary>
     private readonly HashSet<uint> _liveRecords = new();
+
+    /// <summary>The guest's deactivated-layer set, refreshed each reconcile. See the note there.</summary>
+    private readonly HashSet<uint> _deactivatedLayers = new();
 
     /// <summary>Records we have a live node for THIS frame, filled as the entities are drawn.</summary>
     private readonly HashSet<uint> _drawnRecords = new();
@@ -993,6 +1046,23 @@ public partial class GameEntities : Node3D
         {
             mesh = ResourceLoader.Load<Mesh>(
                 Refii.Models.Engine_BnkMeshLoader.PathPrefix + path, "Mesh");
+
+            // A MESH WITH NO SURFACES IS NOT A MESH, and it is not null either.
+            //
+            // `Engine_BnkMeshLoader` hands back an empty `ArrayMesh` when a model is a stub —
+            // a header whose body is in no mounted bank — because a loader that returns an
+            // error makes Godot log a resource failure for something that is expected mid
+            // level-change. The cost was paid here: the null check below passed, a node was
+            // created, and `Twins.Claim` hid the region's own copy for an entity that draws
+            // nothing. That is the exact failure the comment on `Claim` says it is avoiding,
+            // defeated by a non-null answer.
+            //
+            // Not cached as a failure: the body pages in from a streaming bank, so the next
+            // frame's ask can legitimately succeed. Only a resolved, surfaced mesh is kept.
+            if (mesh is not null && mesh.GetSurfaceCount() == 0)
+            {
+                return null;
+            }
         }
 
         _meshes[modelHash] = mesh;

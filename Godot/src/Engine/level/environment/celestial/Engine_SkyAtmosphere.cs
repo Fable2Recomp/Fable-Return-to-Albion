@@ -254,6 +254,29 @@ public static class Engine_SkyAtmosphere
         0.007337032921211229, 0.009459203185216139, 0.025727610716641394,
     };
 
+    /// <summary>The Mie base, which is CHROMATIC on purpose — a lambda^-2 aerosol term.</summary>
+    /// <remarks>
+    /// MIE BEING NON-GREY IS NOT A BUG, AND IT LOOKS EXACTLY LIKE ONE. Textbook Mie scattering is
+    /// wavelength-independent, so a published blue/red ratio of 1.87 reads as a defect and invites
+    /// someone to flatten it to grey. It is authored: normalise both tables to red and they are
+    /// 1 : 1.28924 : 3.50652 for Rayleigh and 1 : 1.13545 : 1.87257 for Mie, and
+    /// `sqrt(3.50652) = 1.87257` to every digit. This is the lambda^-2 counterpart of the
+    /// lambda^-4 table above — ordinary aerosol authoring, not isotropic Mie.
+    ///
+    /// WHICH TABLE IS WHICH IS PROVEN BY THE PHASE NORMALISATION, and it is worth recording because
+    /// the guest only ever SUMS the two vectors, so its own code cannot tell them apart and the
+    /// pairing is invisible to a reader of the extinction path. `sub_82263570` at 0x82263900
+    /// separates them:
+    ///
+    ///     82263900  vmulfp128 v10, v126, v13   ; * 0.079577468 = 1/(4pi)   isotropic -> MIE
+    ///     82263908  vmulfp128 v9,  v125, v11   ; * 0.059683103 = 3/(16pi)  Rayleigh's own
+    ///
+    /// 3/(16pi) is the leading coefficient of the Rayleigh phase function, so `v125` — the vector
+    /// carrying the x500 scale and the theme's `SKY_BETA_RAYLEIGH_MULTIPLIER` (registrar index 8,
+    /// theme block +0x90) — is Rayleigh. `v126` takes `SKY_BETA_MIE_MULTIPLIER` (index 9, +0xA0)
+    /// with no extra scale. Swapping them would put a multiplier authored near 1.24 onto the
+    /// lambda^-4 table and one near 1.2e-4 onto the aerosol one.
+    /// </remarks>
     public static readonly float[] BetaMieChannel =
     {
         0.0056148912f, 0.0063754139f, 0.010514311f,

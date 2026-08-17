@@ -123,12 +123,24 @@ public sealed class Engine_FrontEndTitle
 	{
 		int faded = 0;
 
-		if (node is MeshInstance3D mesh &&
-			(mesh.MaterialOverride ?? mesh.GetActiveMaterial(0)) is BaseMaterial3D material)
+		// Each kind asked through its own door rather than by a type test: a quad carries its
+		// alpha as `opacity`, a label as the alpha of `colour`, and a host-authored panel may
+		// carry a plain material.
+		if (node is MeshInstance3D mesh)
 		{
-			Color albedo = material.AlbedoColor;
-			material.AlbedoColor = new Color(albedo.R, albedo.G, albedo.B, alpha);
-			++faded;
+			Color was = Engine_UiSceneBuilder.TextColour(mesh);
+
+			if (Engine_UiSceneBuilder.SetQuadOpacity(mesh, alpha) ||
+				Engine_UiSceneBuilder.SetTextColour(mesh, new Color(was.R, was.G, was.B, alpha)))
+			{
+				++faded;
+			}
+			else if ((mesh.MaterialOverride ?? mesh.GetActiveMaterial(0)) is BaseMaterial3D material)
+			{
+				Color albedo = material.AlbedoColor;
+				material.AlbedoColor = new Color(albedo.R, albedo.G, albedo.B, alpha);
+				++faded;
+			}
 		}
 
 		foreach (Node child in node.GetChildren())

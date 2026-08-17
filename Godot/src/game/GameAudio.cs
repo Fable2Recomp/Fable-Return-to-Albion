@@ -180,6 +180,20 @@ public partial class GameAudio : Node
 			return;
 		}
 
+		// THE VOICE MIRROR ONLY, and only while there is a guest to mirror.
+		//
+		// This node is added beside the session rather than inside it, so it is up before the
+		// boot and survives a failed one — and `PumpVoices` reads the guest's voice table every
+		// frame. With no guest that is a per-frame read of a runtime that was never created.
+		//
+		// The MIXED path is deliberately untouched: it is pulled by the sink's own thread and it
+		// owns the guest's clock, so it must keep being called and must SILENCE rather than skip.
+		// `PullAudio` already returns nothing when there is no guest, which is that silence.
+		if (HostBridge.TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
 		// The mixed output is pumped by the sink's own thread; only the per-voice mirror and
 		// the health report belong on the render frame.
 		PumpVoices();

@@ -79,6 +79,15 @@ public sealed class Engine_UiSceneBuilder
 	private static readonly ArrayMesh SharedQuad = BuildQuadMesh(QuadBaseSize);
 
 	/// <summary>
+	/// The one shader every Gameface quad draws through, loaded once.
+	///
+	/// Shared rather than per-material because a Shader is the program and a ShaderMaterial
+	/// is the parameter set — 15,790 copies of the same program would compile 15,790 times.
+	/// </summary>
+	private static readonly Shader QuadShader =
+		GD.Load<Shader>("res://src/Engine/ui/ui_quad.gdshader");
+
+	/// <summary>
 	/// Builds the shared quad. A plain one: U increases with +X, V downward from the
 	/// top-left, normal toward +Z where <see cref="BuildTransform"/> puts the viewer.
 	///
@@ -156,11 +165,58 @@ public sealed class Engine_UiSceneBuilder
 	/// </summary>
 	public Node3D?[] ByOrdinal { get; private set; } = System.Array.Empty<Node3D?>();
 
+	/// <summary>Each element's pivot, in Godot space, for the live transform's origin term.</summary>
+	public Vector3[] PivotByOrdinal { get; private set; } = System.Array.Empty<Vector3>();
+
+	/// <summary>
+	/// Writes a live X and/or Y POSITION onto a built element, pivot term included.
+	///
+	/// For anything outside this class that overrides where an element sits — the widescreen
+	/// layout is the one such caller. It exists so that "a position is not an origin" is
+	/// stated once: a second writer that assigns `transform.Origin.X` directly reintroduces
+	/// exactly the displacement <see cref="ApplyLiveTransform"/> was fixed to stop.
+	/// </summary>
+	public bool SetLivePosition(int ordinal, float? x, float? y)
+	{
+		if (ordinal < 0 || ordinal >= ByOrdinal.Length || ByOrdinal[ordinal] is not { } node)
+		{
+			return false;
+		}
+
+		Vector3 position = PositionByOrdinal[ordinal];
+		if (x is { } px) position.X = px;
+		if (y is { } py) position.Y = py;
+
+		Transform3D before = node.Transform;
+		var after = new Transform3D(before.Basis, position - before.Basis * PivotByOrdinal[ordinal]);
+		PositionByOrdinal[ordinal] = position;
+
+		if (after == before)
+		{
+			return false;
+		}
+
+		node.Transform = after;
+		return true;
+	}
+
+	/// <summary>
+	/// Each element's POSITION, in Godot space — not its node origin, which has the pivot term
+	/// folded in and cannot be separated once a scale has changed underneath it.
+	/// </summary>
+	public Vector3[] PositionByOrdinal { get; private set; } = System.Array.Empty<Vector3>();
+
 	public Node3D Build(Engine_UiScreen screen)
 	{
 		QuadsBuilt = TexturesResolved = TextsBuilt = DegenerateQuads = TextGlyphsBuilt = 0;
+		MasksApplied = 0;
+		MasksSkipped = 0;
+		_clipped.Clear();
+		_screen = screen;
 		_inheritedOpacity = 1f;
 		ByOrdinal = new Node3D?[screen.Nodes.Length];
+		PivotByOrdinal = new Vector3[screen.Nodes.Length];
+		PositionByOrdinal = new Vector3[screen.Nodes.Length];
 
 		var root = new Node3D { Name = SanitizeName(screen.Name) };
 		root.SetMeta("canvas_width", screen.CanvasWidth);
@@ -216,11 +272,20 @@ public sealed class Engine_UiSceneBuilder
 			}
 
 			Transform3D before = node.Transform;
-			Vector3 position = before.Origin;
+
+			// THE POSITION, NOT THE ORIGIN. `BuildTransform` stores
+			// `origin = position - basis * pivot`, so writing a stated position straight into
+			// the origin displaces every element with a non-zero pivot by `basis * pivot`.
+			Vector3 position = PositionByOrdinal[i];
+			Vector3 pivot = PivotByOrdinal[i];
 
 			if (values.Length > 0 && values[0] is { } x) position.X = x;
 			if (values.Length > 1 && values[1] is { } y) position.Y = y;
-			if (values.Length > 2 && values[2] is { } z) position.Z = z;
+
+			// THROUGH THE HANDEDNESS FLIP, as BuildTransform builds it. Fable authors UI
+			// left-handed (+Z away), so a raw z inverts the DEPTH of every element the guest
+			// restates a position for.
+			if (values.Length > 2 && values[2] is { } z) position.Z = ToGodotZ(z);
 
 			// SCALE THROUGH THE BASIS COLUMNS, never through `node.Scale`.
 			//
@@ -261,18 +326,21 @@ public sealed class Engine_UiSceneBuilder
 				scaled = true;
 			}
 
-			if (!scaled && before.Origin == position)
-			{
-				continue;
-			}
+			// Rebuilt from the CURRENT basis: a live scale changes the term as surely as a
+			// position does, which is the purpose of a ±50 pivot on a frame slice.
+			Vector3 origin = position - basis * pivot;
 
-			var after = new Transform3D(basis, position);
+			var after = new Transform3D(basis, origin);
 			if (after == before)
 			{
 				continue;
 			}
 
 			node.Transform = after;
+
+			// The MERGED position, not the authored one — the guest stops stating an axis when
+			// it settles, and the authored value would snap it back.
+			PositionByOrdinal[i] = position;
 			++moved;
 		}
 
@@ -328,7 +396,15 @@ public sealed class Engine_UiSceneBuilder
 		node.Transform = BuildTransform(n);
 
 		if (n.Ordinal >= 0 && n.Ordinal < ByOrdinal.Length)
+		{
 			ByOrdinal[n.Ordinal] = node;
+
+			// The two terms `ApplyLiveTransform` rebuilds the origin from: an origin is
+			// `position - basis * pivot`, so it needs both, for stated axes and unstated.
+			PivotByOrdinal[n.Ordinal] = new Vector3(n.PivotX, n.PivotY, ToGodotZ(n.PivotZ));
+			PositionByOrdinal[n.Ordinal] =
+				new Vector3(n.PositionX, n.PositionY, ToGodotZ(n.PositionZ));
+		}
 
 		node.SetMeta("object_id", n.ObjectId);
 		node.SetMeta("element_type", n.Type.ToString());
@@ -365,6 +441,15 @@ public sealed class Engine_UiSceneBuilder
 
 	private Node3D CreateNodeFor(UiNode n)
 	{
+		// A MASK PUBLISHES A RECT AND DRAWS NOTHING — `sub_8286E748` returns at 0x8286E784
+		// before emitting the quad. The NODE is still built: RefreshClips reads its transform.
+		if (_screen is { } screen && n.Ordinal >= 0 &&
+			n.Ordinal < screen.MaskByOrdinal.Length && screen.MaskElements.Contains(n.Ordinal))
+		{
+			++MasksSkipped;
+			return new Node3D();
+		}
+
 		switch (n.Type)
 		{
 			case BgfElementType.Camera:
@@ -443,8 +528,10 @@ public sealed class Engine_UiSceneBuilder
 		// accumulated on the render association, which text elements have like any other, so a
 		// label under a group faded to 0 fades with it. Conflating the two is what left HUD
 		// text on screen after the game had hidden the HUD.
-		node.MaterialOverride =
+		var textMaterial =
 			TextMaterial(new Color(text.R, text.G, text.B, _inheritedOpacity), font.Atlas);
+		ApplyClip(textMaterial, n);
+		node.MaterialOverride = textMaterial;
 
 		node.SetMeta("text_lines", lines);
 		TextGlyphsBuilt += mesh.SurfaceGetArrayLen(0) / 4;
@@ -466,15 +553,37 @@ public sealed class Engine_UiSceneBuilder
 	/// (see <see cref="BuildText"/>); a host-authored screen can fade a label by passing
 	/// less, which is what the front-end menu's gutter slots need.
 	/// </summary>
-	public static StandardMaterial3D TextMaterial(Color colour, Texture2D? atlas) => new()
+	public static ShaderMaterial TextMaterial(Color colour, Texture2D? atlas)
 	{
-		Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-		CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-		ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-		AlbedoTexture = atlas,
-		AlbedoColor = colour,
-		AlphaScissorThreshold = 0.01f,
-	};
+		var material = new ShaderMaterial { Shader = TextShader };
+		material.SetShaderParameter("colour", colour);
+		if (atlas is not null)
+		{
+			material.SetShaderParameter("atlas", atlas);
+		}
+
+		return material;
+	}
+
+	/// <summary>The text shader, loaded once — see <see cref="QuadShader"/> for why it is shared.</summary>
+	private static readonly Shader TextShader =
+		GD.Load<Shader>("res://src/Engine/ui/ui_text.gdshader");
+
+	/// <summary>A built label's colour, or white when the node is not one.</summary>
+	public static Color TextColour(MeshInstance3D label) =>
+		LabelMaterial(label) is { } m ? m.GetShaderParameter("colour").AsColor() : Colors.White;
+
+	/// <summary>Recolours a built label. Silently does nothing if it has no material.</summary>
+	public static bool SetTextColour(MeshInstance3D label, Color colour)
+	{
+		if (LabelMaterial(label) is not { } m)
+		{
+			return false;
+		}
+
+		m.SetShaderParameter("colour", colour);
+		return true;
+	}
 
 	private MeshInstance3D BuildQuad(UiNode n)
 	{
@@ -484,36 +593,34 @@ public sealed class Engine_UiSceneBuilder
 			DegenerateQuads++;
 
 		var mesh = new MeshInstance3D { Mesh = SharedQuad };
-		var mat = new StandardMaterial3D
-		{
-			Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-			CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-			// CLAMPED, NOT REPEATED — this is what closes the seams between tiling panels.
-			// The front end's backdrop is a 7x2 grid of 512x512 quads, each sampling its own
-			// texture across the full 0..1, laid edge to edge. With the default repeat wrap the
-			// bilinear tap at u=0 and u=1 blends with the OPPOSITE edge of the same texture, so
-			// every panel boundary draws a one-pixel line of the wrong scenery. No UI quad wants
-			// to tile: a repeated one would be a bug in the .fac, not a feature.
-			TextureRepeat = false,
-			// A UI atlas is emissive art, not a lit surface. Shading it would make the
-			// screen depend on the authored lights, which are positioned for the game's
-			// own renderer and leave the panel black here.
-			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-			// The ACCUMULATED alpha, not this element's own. _inheritedOpacity already has
-			// n.Opacity folded in by BuildNode, so this is the product down the whole chain.
-			AlbedoColor = new Color(q.R, q.G, q.B, _inheritedOpacity),
-			// The atlas rectangle rides on the material rather than custom mesh UVs, so
-			// every quad can share one QuadMesh.
-			Uv1Scale = new Vector3(q.UMax - q.UMin, q.VMax - q.VMin, 1f),
-			Uv1Offset = new Vector3(q.UMin, q.VMin, 0f),
-		};
+
+		// ONE SHADER FOR EVERY QUAD, as the guest has: a single `guiquad` with a
+		// `g_DetailMapped` branch. See ui_quad.gdshader for the contract.
+		var mat = new ShaderMaterial { Shader = QuadShader };
+
+		// The ACCUMULATED alpha, not this element's own. _inheritedOpacity already has
+		// n.Opacity folded in by BuildNode, so this is the product down the whole chain.
+		mat.SetShaderParameter("opacity", _inheritedOpacity);
+		mat.SetShaderParameter("quad_base_size", QuadBaseSize);
+
+		// Colour and WEIGHT kept apart: the weight is 0 on most records, so most quads are untinted.
+		mat.SetShaderParameter("tint_rgb", new Vector3(q.R, q.G, q.B));
+		mat.SetShaderParameter("tint_amount", q.TintAmount);
+
+		// The atlas rectangle rides on the material rather than custom mesh UVs, so
+		// every quad can share one QuadMesh.
+		mat.SetShaderParameter("uv1_scale", new Vector2(q.UMax - q.UMin, q.VMax - q.VMin));
+		mat.SetShaderParameter("uv1_offset", new Vector2(q.UMin, q.VMin));
+
+		ApplyDetailMap(mat, q, n);
+		ApplyClip(mat, n);
 
 		if (q.TexturePath.Length > 0)
 		{
 			Texture2D? tex = TextureResolver?.Invoke(q.TexturePath);
 			if (tex is not null)
 			{
-				mat.AlbedoTexture = tex;
+				mat.SetShaderParameter("diffuse_tex", tex);
 				TexturesResolved++;
 
 				// HALF A TEXEL OFF EVERY EDGE — the seams that clamping cannot close.
@@ -540,19 +647,18 @@ public sealed class Engine_UiSceneBuilder
 				// layout.
 				float du = 0.5f / Mathf.Max(tex.GetWidth(), 1);
 				float dv = 0.5f / Mathf.Max(tex.GetHeight(), 1);
-				float uSpan = q.UMax - q.UMin;
-				float vSpan = q.VMax - q.VMin;
 
-				if (Mathf.Abs(uSpan) > 2f * du && Mathf.Abs(vSpan) > 2f * dv)
-				{
-					// Signed, so a flipped rect (UMax < UMin) is inset inward too rather than
-					// being widened into its neighbours.
-					float uStep = Mathf.Sign(uSpan) * du;
-					float vStep = Mathf.Sign(vSpan) * dv;
+				// Per axis, because a nine-slice's edge cells are zero-extent on ONE axis only.
+				// `UpperMiddle/Rim` is authored u[0.5..0.5] v[0.25..0.5]: a single atlas column
+				// meant to be stretched along the top edge. Testing both axes together skipped
+				// the inset for all of them, leaving u sitting exactly on the boundary between
+				// two cells — where the bilinear tap returns the neighbour and the strip draws
+				// as a flat block of whatever is next to it.
+				(float uOffset, float uScale) = InsetAxis(q.UMin, q.UMax, du);
+				(float vOffset, float vScale) = InsetAxis(q.VMin, q.VMax, dv);
 
-					mat.Uv1Offset = new Vector3(q.UMin + uStep, q.VMin + vStep, 0f);
-					mat.Uv1Scale = new Vector3(uSpan - (2f * uStep), vSpan - (2f * vStep), 1f);
-				}
+				mat.SetShaderParameter("uv1_offset", new Vector2(uOffset, vOffset));
+				mat.SetShaderParameter("uv1_scale", new Vector2(uScale, vScale));
 			}
 			mesh.SetMeta("texture_path", q.TexturePath);
 		}
@@ -562,6 +668,281 @@ public sealed class Engine_UiSceneBuilder
 
 		mesh.MaterialOverride = mat;
 		return mesh;
+	}
+
+	/// <summary>
+	/// A built quad's material, or null when the node is not one. Every caller that touches a
+	/// built quad's appearance goes through these helpers rather than casting.
+	/// </summary>
+	private static ShaderMaterial? QuadMaterial(MeshInstance3D mesh) =>
+		mesh.MaterialOverride is ShaderMaterial m && m.Shader == QuadShader ? m : null;
+
+	/// <summary>
+	/// A built label's material, or null when the node is not one. THE SHADER IS THE
+	/// DISCRIMINATOR — text and quads are both ShaderMaterial, and they declare different
+	/// uniforms, so a bare type test matches the wrong one.
+	/// </summary>
+	private static ShaderMaterial? LabelMaterial(MeshInstance3D mesh) =>
+		mesh.MaterialOverride is ShaderMaterial m && m.Shader == TextShader ? m : null;
+
+	/// <summary>Gives a cloned quad a private material, so writing it cannot leak.</summary>
+	public static bool OwnQuadMaterial(MeshInstance3D mesh)
+	{
+		if (QuadMaterial(mesh) is not { } shared)
+		{
+			return false;
+		}
+
+		// The Shader itself is deliberately NOT duplicated — Duplicate copies the parameter
+		// set and keeps pointing at the one compiled program, which is the whole reason the
+		// shader is a shared static.
+		mesh.MaterialOverride = (ShaderMaterial)shared.Duplicate();
+		return true;
+	}
+
+	/// <summary>Replaces a built quad's primary texture. Used where the guest names art we clone.</summary>
+	public static bool SetQuadTexture(MeshInstance3D mesh, Texture2D texture)
+	{
+		if (QuadMaterial(mesh) is not { } material)
+		{
+			return false;
+		}
+
+		material.SetShaderParameter("diffuse_tex", texture);
+		return true;
+	}
+
+	/// <summary>
+	/// What a built mesh will actually paint. The one reader for it, so the material's type is
+	/// known in a single place and a scanner cannot silently miss a kind it does not expect.
+	/// </summary>
+	/// <param name="Painted">False when the mesh cannot draw at all — no material, or fully transparent.</param>
+	/// <param name="Texture">The primary texture, or null for an untextured quad.</param>
+	/// <param name="Opacity">Accumulated opacity.</param>
+	/// <param name="Tint">The authored tint colour. Only acts at <paramref name="TintAmount"/>.</param>
+	/// <param name="TintAmount">The subtractive weight. Zero means the tint does nothing.</param>
+	/// <param name="DetailMapped">True when the RGB comes from a detail map, not from <paramref name="Texture"/>.</param>
+	public readonly record struct QuadPaint(
+		bool Painted, Texture2D? Texture, float Opacity, Color Tint, float TintAmount,
+		bool DetailMapped);
+
+	/// <summary>Reads what a mesh paints, whichever kind of material it carries.</summary>
+	public static QuadPaint DescribeQuad(MeshInstance3D mesh)
+	{
+		if (QuadMaterial(mesh) is { } shader)
+		{
+			float opacity = shader.GetShaderParameter("opacity").AsSingle();
+			Vector3 tint = shader.GetShaderParameter("tint_rgb").AsVector3();
+			return new QuadPaint(
+				opacity > 0.01f,
+				shader.GetShaderParameter("diffuse_tex").As<Texture2D>(),
+				opacity,
+				new Color(tint.X, tint.Y, tint.Z),
+				shader.GetShaderParameter("tint_amount").AsSingle(),
+				shader.GetShaderParameter("detail_mapped").AsBool());
+		}
+
+		// A LABEL, which carries its colour and coverage rather than a tint and an atlas rect.
+		if (LabelMaterial(mesh) is { } label)
+		{
+			Color c = label.GetShaderParameter("colour").AsColor();
+			return new QuadPaint(
+				c.A > 0.01f, label.GetShaderParameter("atlas").As<Texture2D>(), c.A, c, 1f, false);
+		}
+
+		// Anything a host-authored screen built with a plain material of its own.
+		if ((mesh.MaterialOverride ?? mesh.GetActiveMaterial(0)) is BaseMaterial3D basic)
+		{
+			Color albedo = basic.AlbedoColor;
+			return new QuadPaint(
+				albedo.A > 0.01f, basic.AlbedoTexture, albedo.A, albedo, 1f, false);
+		}
+
+		return new QuadPaint(false, null, 0f, Colors.White, 0f, false);
+	}
+
+	/// <summary>A built quad's accumulated opacity, or 1 when it is not one of ours.</summary>
+	public static float QuadOpacity(MeshInstance3D mesh) =>
+		QuadMaterial(mesh)?.GetShaderParameter("opacity").AsSingle() ?? 1f;
+
+	/// <summary>Scales a built quad's opacity.</summary>
+	public static bool SetQuadOpacity(MeshInstance3D mesh, float opacity)
+	{
+		if (QuadMaterial(mesh) is not { } material)
+		{
+			return false;
+		}
+
+		material.SetShaderParameter("opacity", opacity);
+		return true;
+	}
+
+	/// <summary>
+	/// The detail map, keyed by the <c>.fac</c> record's secondary-texture slot.
+	///
+	/// THE SLOT IS AN INDEX INTO A THEME TABLE, not a texture name. `sub_8286F578` reads
+	/// `[[0x83496B08+48] + 36]` as a row selector into a 3-theme by 3-slot table. Row 0 ships —
+	/// its only other writer is the debug command "CYCLE the Theme". Any slot but 1/2/3 takes
+	/// the default, as the guest does.
+	/// </summary>
+	private static string DetailMapPath(int slot) => slot switch
+	{
+		1 => @"art\gui\frames\buttondetailmap.tex",
+		2 => @"art\gui\frames\frames_01.tex",
+		3 => @"art\gui\persistant\frame_tiled_background.tex",
+		_ => @"art\gui\frames\framedetailmap.tex",
+	};
+
+	/// <summary>
+	/// Points a quad's material at its detail map, when the record asks for one.
+	///
+	/// FOUR IS THE ONLY VALUE THAT ACTS — `if (v17 == 4)` at 0x8286E4B4; 0/1/2/3 fall through.
+	/// The branch's write of `buttondetailmap`'s hash to `+0x20C` is a dead store, overwritten
+	/// by `sub_8286F578` three instructions later. The SLOT alone chooses the texture.
+	/// </summary>
+	private void ApplyDetailMap(ShaderMaterial mat, UiQuad q, UiNode n)
+	{
+		const int DetailMapped = 4;
+		if (q.Source.DetailMapMode != DetailMapped)
+		{
+			mat.SetShaderParameter("detail_mapped", false);
+			return;
+		}
+
+		string path = DetailMapPath(q.Source.SecondaryTexture);
+		if (!_detailMaps.TryGetValue(path, out Texture2D? detail))
+		{
+			detail = TextureResolver?.Invoke(path);
+			_detailMaps[path] = detail;
+		}
+
+		if (detail is null)
+		{
+			// Without one the primary's RGB stands, which for these quads is flat magenta.
+			mat.SetShaderParameter("detail_mapped", false);
+			++DetailMapsMissing;
+			return;
+		}
+
+		mat.SetShaderParameter("detail_mapped", true);
+		mat.SetShaderParameter("detail_tex", detail);
+
+		// Deterministic where the guest is random (`sub_8286F830` uses two
+		// LHMath_GFFloatRandom(1.0)); hashing the ordinal keeps a rebuild pixel-identical.
+		uint h = (uint)n.Ordinal * 2654435761u;
+		mat.SetShaderParameter("detail_origin", new Vector2(
+			(h & 0xFFFF) / 65535f, ((h >> 16) & 0xFFFF) / 65535f));
+
+		++DetailQuads;
+	}
+
+	private Engine_UiScreen? _screen;
+
+	private readonly List<(ShaderMaterial Material, int Mask)> _clipped = new();
+
+	/// <summary>
+	/// Recomputes every clip rect from the mask nodes' BUILT transforms, so a mask the guest
+	/// moves clips where it now is. Call after the live transform. One pass over the clipped
+	/// materials, not the element tree.
+	/// </summary>
+	public void RefreshClips()
+	{
+		foreach ((ShaderMaterial material, int mask) in _clipped)
+		{
+			if (mask < 0 || mask >= ByOrdinal.Length || ByOrdinal[mask] is not { } node ||
+				!node.IsInsideTree())
+			{
+				continue;
+			}
+
+			Transform3D world = node.GlobalTransform;
+			float halfW = 0.5f * QuadBaseSize * world.Basis.X.Length();
+			float halfH = 0.5f * QuadBaseSize * world.Basis.Y.Length();
+
+			material.SetShaderParameter("clip_rect", new Vector4(
+				world.Origin.X - halfW, world.Origin.Y - halfH,
+				world.Origin.X + halfW, world.Origin.Y + halfH));
+		}
+	}
+
+	/// <summary>Quads clipped to a mask's rect. Zero on a screen that authors none.</summary>
+	public int MasksApplied;
+
+	/// <summary>Mask elements built as bare nodes rather than drawn. One per mask.</summary>
+	public int MasksSkipped;
+
+	/// <summary>
+	/// Clips a quad to its mask's rect. The binding is by NAME, not hierarchy, so this reads
+	/// <see cref="Engine_UiScreen.MaskByOrdinal"/> rather than walking the tree. The region is
+	/// the mask's own quad, `position ± 50·scale`; its texture plays no part.
+	/// </summary>
+	private void ApplyClip(ShaderMaterial mat, UiNode n)
+	{
+		if (_screen is not { } screen || n.Ordinal < 0 ||
+			n.Ordinal >= screen.MaskByOrdinal.Length)
+		{
+			return;
+		}
+
+		int mask = screen.MaskByOrdinal[n.Ordinal];
+		if (mask < 0 || mask >= screen.Nodes.Length)
+		{
+			return;
+		}
+
+		// Centre and half-extent, from the slide-resolved values BuildTransform uses.
+		UiNode m = screen.Nodes[mask];
+		float halfW = 0.5f * QuadBaseSize * Mathf.Abs(m.ScaleX);
+		float halfH = 0.5f * QuadBaseSize * Mathf.Abs(m.ScaleY);
+		float cx = m.PositionX;
+		float cy = m.PositionY;
+
+		for (UiNode? up = m.Parent; up is not null; up = up.Parent)
+		{
+			cx = cx * up.ScaleX + up.PositionX;
+			cy = cy * up.ScaleY + up.PositionY;
+			halfW *= Mathf.Abs(up.ScaleX);
+			halfH *= Mathf.Abs(up.ScaleY);
+		}
+
+		mat.SetShaderParameter("clip_rect",
+			new Vector4(cx - halfW, cy - halfH, cx + halfW, cy + halfH));
+
+		// Remembered so RefreshClips can recompute when the guest moves a mask: a live
+		// transform arrives per frame without a rebuild.
+		_clipped.Add((mat, mask));
+		++MasksApplied;
+	}
+
+	private readonly Dictionary<string, Texture2D?> _detailMaps = new();
+
+	/// <summary>Quads drawn through a detail map — the frames, the wheels, the beams.</summary>
+	public int DetailQuads;
+
+	/// <summary>Quads that asked for a detail map and did not get one. Should be zero.</summary>
+	public int DetailMapsMissing;
+
+	/// <summary>
+	/// Insets one axis of an atlas rect to texel centres, returning its offset and scale.
+	///
+	/// Three cases. A rect wider than a texel is pulled in half a texel each side, signed so a
+	/// flipped rect (max &lt; min) insets inward rather than widening into its neighbours. A
+	/// zero-extent rect — a nine-slice stretch strip — keeps a scale of 0 but moves to the
+	/// centre of the texel starting at <paramref name="min"/>, so it samples that column
+	/// instead of the seam. A rect narrower than a texel but not zero is left alone, since
+	/// there is no inside to move into.
+	/// </summary>
+	private static (float Offset, float Scale) InsetAxis(float min, float max, float half)
+	{
+		float span = max - min;
+
+		if (Mathf.Abs(span) > 2f * half)
+		{
+			float step = Mathf.Sign(span) * half;
+			return (min + step, span - (2f * step));
+		}
+
+		return span == 0f ? (min + half, 0f) : (min, span);
 	}
 
 	private Transform3D BuildTransform(UiNode n)
@@ -632,7 +1013,14 @@ public sealed class Engine_UiSceneBuilder
 	/// </summary>
 	public static void ApplyCameraAiming(Node root)
 	{
-		if (root is Camera3D cam && cam.HasMeta("lookatpoint"))
+		// NOT WHILE DETACHED, because the aim is computed from GLOBAL transforms and a
+		// detached node's global transform is the identity. `BuildDetached` calls this on a
+		// tree that is by definition not in the scene yet, which logged an
+		// `!is_inside_tree()` error per camera per build — 310 in one run — and aimed every
+		// camera it did not skip against a parent transform of identity. The caller that
+		// attaches the tree calls this again afterwards; this early return is what makes the
+		// first call harmless rather than wrong.
+		if (root is Camera3D cam && cam.HasMeta("lookatpoint") && cam.IsInsideTree())
 		{
 			// The look-at point is authored in the camera's own parent space, so it has
 			// to ride through the parent's global transform — including the root's
@@ -715,6 +1103,44 @@ public sealed class Engine_UiSceneBuilder
 	/// introduced, which the guest never had — elements at different position.z were being
 	/// scaled by their depth.
 	/// </summary>
+	/// <summary>
+	/// The widescreen design box the shipped screens actually paint into.
+	///
+	/// The <c>.bgf</c> canvas field says 960x720 — the 4:3 authoring canvas — but the 16:9 art
+	/// reaches ±640: `pausemainmenu`'s backdrop is exactly 1280 wide and its outermost frames
+	/// end at ±636. Measured, not assumed. Some screens overscan deliberately beyond it
+	/// (`giftgivingscreen`'s backdrop is 1472) which is what makes an ULTRA-wide window safe.
+	/// </summary>
+	public const float DesignWidth = 1280f;
+
+	/// <summary>
+	/// Sizes a canvas camera so the whole <see cref="DesignWidth"/> x <see cref="CanvasHeight"/>
+	/// box is visible, whatever the window is.
+	///
+	/// A DELIBERATE STEP PAST THE GUEST: `sub_822271A0` scales both axes from screen HEIGHT
+	/// alone, so a narrower window loses the sides. Fitting shrinks rather than crops, and at
+	/// exactly 16:9 the two are identical. Pin the height when the window fits 1280, else the
+	/// width.
+	/// </summary>
+	public static void FitCanvasCamera(Camera3D camera, Vector2 viewport)
+	{
+		if (viewport.X <= 0f || viewport.Y <= 0f)
+		{
+			return;
+		}
+
+		if (viewport.X / viewport.Y >= DesignWidth / CanvasHeight)
+		{
+			camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
+			camera.Size = CanvasHeight;
+		}
+		else
+		{
+			camera.KeepAspect = Camera3D.KeepAspectEnum.Width;
+			camera.Size = DesignWidth;
+		}
+	}
+
 	private static Camera3D AddCanvasCamera(Node3D root)
 	{
 		var camera = new Camera3D
@@ -733,6 +1159,14 @@ public sealed class Engine_UiSceneBuilder
 		};
 
 		root.AddChild(camera);
+
+		// Sized from the viewport rather than left at the 16:9 default, so a window that is
+		// not 16:9 is right on the first frame instead of after the first resize.
+		if (root.IsInsideTree())
+		{
+			FitCanvasCamera(camera, root.GetViewport().GetVisibleRect().Size);
+		}
+
 		return camera;
 	}
 

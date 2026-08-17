@@ -319,6 +319,26 @@ void fragment() {
 	// The theme's LightmapFactor, applied now that it has the operand the guest authored it
 	// against. `fable_ambient` adds the flat GlobalAmbient on top, so this line is the guest's
 	// `bake * LightmapFactor + GlobalAmbient` with the darkening term collapsed to 1.
+	//
+	// `g_LandscapeAmbientLightFactor` IS DELIBERATELY ABSENT, AND ITS VALUE HERE IS 1. The guest's
+	// landscape pixel shader ends on
+	//
+	//     r0.xyz = ambient * g_LandscapeAmbientLightFactor.xxx + direct;
+	//
+	// which reads like a brightness control on the ambient half and is not one. It is pixel
+	// constant c11, written only by `sub_822159D8` at 0x82215BB4, and its value is a splatted
+	// literal chosen by a PASS COUNTER — 1.0 on a patch's first pass, 0.0 on every later one
+	// (0x82215B48 `lwz r11, 0x54(r30)`, then `vspltisw v0, 1` / `vspltisw v0, 0`). It exists so
+	// that the additive terms land ONCE PER PATCH rather than once per blend layer, because the
+	// guest draws terrain one layer per pass; `g_AtmosphericFactors` is gated by the same
+	// predicate two instructions earlier.
+	//
+	// We draw the whole splat in ONE pass, so we are permanently the first pass and the factor is
+	// permanently 1. Multiplying by it would be a no-op; adding it as a uniform would invite
+	// someone to tune it, which would be tuning a pass counter. IF THIS SHADER EVER GOES
+	// MULTI-PASS, both this ambient term and the atmosphere block below have to be gated off on
+	// every pass after the first, or the region gains one extra ambient and one extra in-scatter
+	// per layer.
 	EMISSION = final * fable_ambient(bake * lightmap_colour.rgb * darken);
 
 	// LAST, because it attenuates everything above it. Exact here: the ground is

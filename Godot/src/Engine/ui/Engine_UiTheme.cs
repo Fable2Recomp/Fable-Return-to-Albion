@@ -267,10 +267,8 @@ public sealed class Engine_UiTheme
 	/// </summary>
 	public static void Retint(MeshInstance3D label, Color colour)
 	{
-		if (label.MaterialOverride is StandardMaterial3D material)
-		{
-			material.AlbedoColor = colour;
-		}
+		// Through the builder, not a cast — see Engine_UiSceneBuilder.SetTextColour.
+		Engine_UiSceneBuilder.SetTextColour(label, colour);
 	}
 
 	/// <summary>Depth-first search by node name. Godot's own find is by path or by pattern.</summary>

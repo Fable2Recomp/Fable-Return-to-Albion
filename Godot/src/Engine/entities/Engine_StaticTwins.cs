@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 
@@ -14,14 +15,24 @@ namespace Refii.Entities;
 ///
 /// ONE INVARIANT DECIDES EVERYTHING:
 ///
-///     a static copy is visible  IFF  the guest HAS that record
-///                                    AND we are not drawing a live node for it
+///     a static copy is visible  IFF  we are not drawing a live node for that record
+///                                    AND its LAYER is not deactivated
 ///
-/// Both halves of that matter, and they fail in opposite directions. The guest states 1437 live
-/// entities but only 1030 name a model, so a record the guest HAS and we cannot draw must keep
-/// its static copy — that is the only copy, and removing it empties the street. A record the
-/// guest does NOT have is one it gated off (a layer whose `load` is `InitiallyOff`, a quest that
-/// has not run) and drawing it is scenery the game never asked for.
+/// THE SECOND HALF USED TO READ "the guest HAS that record", AND THAT WAS THE BUG. It inferred
+/// the gate from whether the entity turned up in a walk of guest memory, and absence from a walk
+/// is not a statement. Two independent things made it wrong. The walk TRUNCATES — it stops at its
+/// buffer's end and returns a plain count — so absence often meant "past the cap"; that alone
+/// hid 1497 of Ravenscar's drawables while HobbeCave, whose population fit, lost none. And the
+/// guest instantiates from a deferred store on demand, so a record it has not built YET is not a
+/// record it has gated off.
+///
+/// The layer is the thing both sides actually state. The level states membership positionally in
+/// its `.save`, and the guest keeps the runtime layer lists itself — so the gate is read rather
+/// than guessed. See <c>GatedOff</c> for which list, which is not the obvious one.
+///
+/// The first half stands unchanged and for its original reason: the guest states 1437 live
+/// entities but only 1030 name a model, so a record we cannot draw a live node for must keep its
+/// static copy — that is the only copy, and removing it empties the street.
 ///
 /// NOTHING IS FREED, AND THAT IS THE POINT. `Layers.ActivateLayer` spawns a layer's entities
 /// mid-game and `DeactivateLayer` destroys them again, so the correct answer for a given record
@@ -70,11 +81,39 @@ public sealed class Engine_StaticTwins
     /// <summary>Records hidden because the guest is drawing its own copy.</summary>
     public int HiddenForLive { get; private set; }
 
-    /// <summary>Records hidden because the guest states no such entity — a gate we do not implement.</summary>
-    public int HiddenUnstated { get; private set; }
+    /// <summary>
+    /// Records hidden because their LAYER is off.
+    ///
+    /// This used to mean "the guest reported no entity for it", which was an inference and a
+    /// wrong one. It now means the level put the record in a layer and the guest says that layer
+    /// is not active — a statement from both sides.
+    /// </summary>
+    public int HiddenByLayer { get; private set; }
+
+    /// <summary>
+    /// Records gated off whose entity the guest is nonetheless reporting as LIVE.
+    ///
+    /// MUST BE ZERO. Anything else means the layer state is being read wrongly, and it is the
+    /// only counter that can tell a correct gate from one that is quietly deleting the level.
+    /// </summary>
+    public int GatedButLive { get; private set; }
+
+    /// <summary>The layer gate actually ran — the map was present and the guest could be asked.</summary>
+    public bool LayerGateRan { get; private set; }
 
     /// <summary>Records shown again after the guest gave one up. Non-zero means a layer activated.</summary>
     public int Restored { get; private set; }
+
+    /// <summary>
+    /// The last reconcile ran against a TRUNCATED entity list.
+    ///
+    /// This no longer changes what is hidden — visibility is decided by the layer and by whether
+    /// we drew a live node, neither of which reads an entity's absence. It still matters for the
+    /// DEDUP half: a record whose live node exists past the cap will not be in `drawn`, so its
+    /// static copy stays up and the prop is briefly doubled. A duplicate, not a hole, which is
+    /// the direction this is all arranged to fail in.
+    /// </summary>
+    public bool LiveWasTruncated { get; private set; }
 
     /// <summary>
     /// Records the guest named that the region drew nothing for.
@@ -105,6 +144,7 @@ public sealed class Engine_StaticTwins
         if (region.GetNodeOrNull<Node3D>(Refii.Level.Engine_LevelProps.NodeName) is { } props)
         {
             twins.IndexProps(props);
+            twins.IndexLayers(props);
         }
 
         if (region.GetNodeOrNull<Node3D>(Engine_LevelEntities.NodeName) is { } entities)
@@ -113,6 +153,93 @@ public sealed class Engine_StaticTwins
         }
 
         return twins;
+    }
+
+    /// <summary>The layer each record sits in, from the `.save`. Zero when the file named none.</summary>
+    private readonly Dictionary<uint, uint> _layerOf = new();
+
+    /// <summary>Layers whose `load` is `AlwaysOn` — unconditional, never gateable.</summary>
+    private readonly HashSet<uint> _alwaysOnLayers = new();
+
+    /// <summary>Records whose layer the `.save` did state. Reported so a zero map is visible.</summary>
+    public int LayeredRecords => _layerOf.Count;
+
+    public int AlwaysOnLayers => _alwaysOnLayers.Count;
+
+    /// <summary>
+    /// Reads the record → layer map the props build left on the container.
+    ///
+    /// This is the gate's INPUT, and it is read from the level's own `.save` rather than
+    /// inferred: layer membership is positional in that file — an entity belongs to the element
+    /// that contains it — so it is a statement the level makes and not a heuristic.
+    /// </summary>
+    private void IndexLayers(Node3D props)
+    {
+        if (!props.HasMeta(Refii.Level.Engine_LevelProps.LayerRecordsMeta) ||
+            !props.HasMeta(Refii.Level.Engine_LevelProps.LayerKeysMeta))
+        {
+            return;
+        }
+
+        long[] records =
+            props.GetMeta(Refii.Level.Engine_LevelProps.LayerRecordsMeta).AsInt64Array();
+        long[] keys = props.GetMeta(Refii.Level.Engine_LevelProps.LayerKeysMeta).AsInt64Array();
+
+        for (int i = 0; i < records.Length && i < keys.Length; i++)
+        {
+            if (records[i] != 0L)
+            {
+                _layerOf[(uint)records[i]] = (uint)keys[i];
+            }
+        }
+
+        if (props.HasMeta(Refii.Level.Engine_LevelProps.AlwaysOnLayersMeta))
+        {
+            foreach (long key in
+                props.GetMeta(Refii.Level.Engine_LevelProps.AlwaysOnLayersMeta).AsInt64Array())
+            {
+                _alwaysOnLayers.Add((uint)key);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Should the region's copy of this record be gated off, per the guest's LAYER state?
+    ///
+    /// THE PREDICATE IS "IS THIS LAYER DEACTIVATED", AND IT IS NOT THE OBVIOUS ONE.
+    ///
+    /// The world manager keeps two `std::list&lt;uint32_t&gt;` — ACTIVATED at +60 and DEACTIVATED at
+    /// +72 — and `sub_823662C8` reads a different one per `load` value:
+    ///
+    ///   823664d0  bne cr6, loc_82366548   AlwaysOn    -> spawn, consulting NEITHER list
+    ///   823664e8  bl  sub_82320A68        InitiallyOn -> spawn iff ABSENT from +72
+    ///   82366520  bl  sub_8244C428        else        -> spawn iff PRESENT in +60
+    ///
+    /// `sub_82320A68` walks `W+72` and returns PRESENT (`xori r3, r8, 1` at 82320AE4); the call
+    /// site then spawns on zero (`beq cr6, loc_82366548` at 823664F4). And the two lists are
+    /// pinned by their writers touching both off one base: `Layers.ActivateLayer` inserts into
+    /// +60 and erases from +72, `DeactivateLayer` does the reverse.
+    ///
+    /// Only the first two rows can reach this code — the props build already dropped everything
+    /// else — so the whole gate is: an `InitiallyOn` layer named in the DEACTIVATED list.
+    ///
+    /// Asking the ACTIVATED list instead would have been catastrophic and plausible. Both lists
+    /// start EMPTY (`sub_8231BF20` default-constructs each, and only a save-game load assigns
+    /// them), so on a new game "is it in the activated list" is false for every layer in the
+    /// level and would have hidden every `InitiallyOn` prop in it.
+    ///
+    /// Null means we cannot ask, and then nothing is gated — the safe direction: an ungated prop
+    /// is at worst a duplicate the entity pass retires, a wrongly gated one is a hole.
+    /// </summary>
+    private bool GatedOff(uint record, Func<uint, bool>? layerIsDeactivated)
+    {
+        if (layerIsDeactivated is null ||
+            !_layerOf.TryGetValue(record, out uint layer) || layer == 0u)
+        {
+            return false;
+        }
+
+        return !_alwaysOnLayers.Contains(layer) && layerIsDeactivated(layer);
     }
 
     private void IndexProps(Node3D props)
@@ -231,16 +358,49 @@ public sealed class Engine_StaticTwins
     /// </summary>
     /// <param name="live">Every record the guest currently reports an entity for.</param>
     /// <param name="drawn">The subset of those we have a live node for.</param>
-    public void Reconcile(HashSet<uint> live, HashSet<uint> drawn)
+    /// <param name="liveIsComplete">
+    /// <paramref name="live"/> is EVERY entity the guest has, not a prefix of them. False
+    /// disables the hide-on-unstated half — see the note on that branch.
+    /// </param>
+    /// <param name="layerIsDeactivated">
+    /// The guest's own answer to "is this layer hash in the DEACTIVATED list", or null when it
+    /// cannot be asked. THIS IS THE GATE — see <see cref="GatedOff"/> for why it is this list
+    /// and not the activated one.
+    /// </param>
+    public void Reconcile(
+        HashSet<uint> live,
+        HashSet<uint> drawn,
+        bool liveIsComplete = true,
+        Func<uint, bool>? layerIsDeactivated = null)
     {
         HiddenForLive = 0;
-        HiddenUnstated = 0;
+        HiddenByLayer = 0;
+        GatedButLive = 0;
+        LiveWasTruncated = !liveIsComplete;
+        LayerGateRan = layerIsDeactivated is not null && _layerOf.Count != 0;
 
         foreach (KeyValuePair<uint, List<Twin>> pair in _byRecord)
         {
-            bool stated = live.Contains(pair.Key);
             bool ours = drawn.Contains(pair.Key);
-            bool shouldShow = stated && !ours;
+
+            // THE GATE IS THE LAYER, NOT THE ENTITY'S ABSENCE FROM A WALK.
+            //
+            // This used to read `live.Contains(record)` and hide anything the guest had not
+            // reported. Two separate things made that wrong. The entity walk TRUNCATES — it stops
+            // at its buffer's end and returns a plain count — so absence often just meant "past
+            // the cap"; that alone cost Ravenscar 1497 drawables against HobbeCave's 0, the only
+            // difference between them being whether the population fit. And even with a complete
+            // list it inferred a gate the guest states outright: the guest instantiates from a
+            // deferred store on demand, so a record it has not built yet is not a record it has
+            // gated off.
+            //
+            // So ask the question the level and the guest both answer. Layer membership is
+            // positional in the `.save` and the guest keeps the runtime layer state itself; a
+            // record outside an inactive layer is not gated, whatever the entity walk did or did
+            // not return. `live` is no longer consulted for visibility at all — only `drawn` is,
+            // and that is a positive statement that we put geometry on screen for this record.
+            bool gated = GatedOff(pair.Key, layerIsDeactivated);
+            bool shouldShow = !ours && !gated;
 
             if (!shouldShow)
             {
@@ -250,7 +410,20 @@ public sealed class Engine_StaticTwins
                 }
                 else
                 {
-                    ++HiddenUnstated;
+                    ++HiddenByLayer;
+
+                    // THE CONTRADICTION, AND THE ONLY THING THAT CAN CATCH A WRONG GATE.
+                    //
+                    // We just hid a record because its layer reads as off, and the guest is
+                    // reporting a live entity for that same record. Both cannot be true. A
+                    // non-zero count here means the layer state is being read wrongly — the wrong
+                    // world-manager list, or the right one with inverted polarity — and it is the
+                    // failure that would otherwise look exactly like the bug this replaced:
+                    // props quietly disappearing with every counter claiming to be correct.
+                    if (live.Contains(pair.Key))
+                    {
+                        ++GatedButLive;
+                    }
                 }
 
                 Hide(pair.Key);

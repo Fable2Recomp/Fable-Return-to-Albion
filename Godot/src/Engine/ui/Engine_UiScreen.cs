@@ -25,13 +25,25 @@ public sealed class UiQuad
 	public float R = 1, G = 1, B = 1;
 
 	/// <summary>
+	/// The guest's <c>TintingAmount</c>. Kept SEPARATE from the colour, which is only ever
+	/// applied subtractively at this weight: <c>rgb -= (1 - tint) * amount</c>. Seeded from the
+	/// <c>.fac</c>'s fourth colour lane (0 on ~85% of records) and raised at runtime through the
+	/// attribute — <c>sub_8286ED40</c> routes it to <c>sub_8286EFB8</c>, lane .w.
+	/// </summary>
+	public float TintAmount;
+
+	/// <summary>
 	/// True when the atlas rectangle has no area. 442 of the 15,790 shipped quads are
 	/// like this — 249 with zero U extent, 251 with zero V, and 36 outright negative.
-	/// The values are cleanly authored, so this is real data rather than a parse error:
-	/// almost certainly elements that start collapsed and animate open, since
-	/// <c>scaleu</c> and <c>scalev</c> are among the animated attributes.
-	/// Keep them — dropping one loses whatever it animates into — but expect them to
-	/// render as nothing until a timeline drives them.
+	///
+	/// THESE ARE NINE-SLICE EDGE CELLS. The zero axis is always the axis that edge is
+	/// stretched ALONG — <c>UpperMiddle</c>/<c>LowerMiddle</c> have du=0, <c>Left</c>/
+	/// <c>Right</c> dv=0, <c>Middle</c> both — and the four CORNERS are never degenerate.
+	/// A single texel line smeared down an edge; the runtime drives it with
+	/// <c>scale.x</c>/<c>scale.y</c>, never <c>scaleu</c>/<c>scalev</c>.
+	///
+	/// Keep them and expect them to render; the builder's half-texel inset skips the zero axis
+	/// for this reason.
 	/// </summary>
 	public bool IsDegenerate => UMax - UMin <= 0f || VMax - VMin <= 0f;
 
@@ -200,7 +212,8 @@ public sealed class Engine_UiScreen
 		IReadOnlyList<float?>? liveOpacity = null,
 		IReadOnlyList<bool>? liveVisible = null,
 		IReadOnlyList<float?[]?>? liveTransform = null,
-		IReadOnlyList<uint>? liveTextures = null)
+		IReadOnlyList<uint>? liveTextures = null,
+		IReadOnlyList<LiveTint?>? liveTint = null)
 	{
 		var doc = Engine_BgfDocument.Parse(bgfBytes);
 
@@ -319,6 +332,14 @@ public sealed class Engine_UiScreen
 		if (facBytes is not null)
 			screen.AttachFac(Engine_FacDocument.Parse(facBytes), textures, strings);
 
+		// THE VIDEO SLOTS, read off the file so the host knows which elements can host one
+		// before the guest ever names a movie. A sprite whose `Movie` string is non-empty
+		// draws a Bink movie into its own rect INSTEAD of a texture; the shipped value on the
+		// abilities card is the placeholder `testability.bik`, which does not exist on disk,
+		// and the guest restates it with the real path from the ability's GDB record.
+		screen.FindMovieSlots();
+		screen.ResolveMasks();
+
 		// Last, over everything the file said: what the element ACTUALLY holds right now.
 		//
 		// The shipped presentation carries placeholders — the dialog panel authors
@@ -359,6 +380,14 @@ public sealed class Engine_UiScreen
 			screen.ApplyLiveTextures(liveTextures, textures);
 		}
 
+		// Same reason, same place: the tint WEIGHT is a live attribute the guest raises and
+		// lowers, and the file's copy is only where it starts. Applied after the quads exist
+		// because it lands on a quad, not on an element.
+		if (live && liveTint is { Count: > 0 })
+		{
+			screen.ApplyLiveTint(liveTint);
+		}
+
 		// Before the frame engine: a wheel item's frame is copied off MenuItemTemplate rather
 		// than authored, and it is a nine-slice, so laying out first would size panels against a
 		// screen still missing that content.
@@ -389,6 +418,120 @@ public sealed class Engine_UiScreen
 	/// </summary>
 	public Engine_UiMenuCloning.Report MenuCloning { get; private set; }
 
+	/// <summary>
+	/// An element that can host a Bink movie, and the path the FILE authored on it.
+	///
+	/// The authored path is a placeholder on every slot that matters — `testability.bik` on
+	/// the abilities card — and the guest overwrites it at runtime. It is kept because its
+	/// PRESENCE is what marks the slot, and because a slot whose authored path is still what
+	/// is playing means the guest never restated it.
+	/// </summary>
+	public readonly record struct MovieSlot(int Ordinal, string Name, string AuthoredPath);
+
+	/// <summary>Elements carrying a <c>Movie</c> attribute. Empty on most screens.</summary>
+	public readonly List<MovieSlot> MovieSlots = new();
+
+	/// <summary>
+	/// The mask element clipping each element, by ordinal, or -1 for none.
+	///
+	/// Gameface clipping is a by-NAME binding, and the mask lives nowhere near what it clips —
+	/// at <c>Layer</c> level, while the content is deep under <c>Foreground/.../Pages</c>.
+	/// </summary>
+	public int[] MaskByOrdinal = Array.Empty<int>();
+
+	/// <summary>Elements that ARE masks. They draw nothing; they only publish a rect.</summary>
+	public readonly List<int> MaskElements = new();
+
+	/// <summary>
+	/// Resolves every element's clip mask, following the guest's own lookup.
+	///
+	/// THE EMPTY STRING MEANS INHERIT, NOT "UNBOUND": `sub_82427188` recurses to the parent
+	/// until it finds a non-empty `MaskName` or reaches the root, which is what makes a tagged
+	/// element clip its whole subtree.
+	///
+	/// The value is a `.`-separated path resolved against the element named <c>Layer</c>
+	/// (`sub_824265A0`). Every shipped value is a single name, so this takes the LEAF.
+	/// </summary>
+	private void ResolveMasks()
+	{
+		MaskByOrdinal = new int[Nodes.Length];
+		Array.Fill(MaskByOrdinal, -1);
+
+		uint maskId = Engine_GameHash.AttributeId("Mask");
+		uint maskNameId = Engine_GameHash.AttributeId("MaskName");
+
+		var byName = new Dictionary<string, int>(StringComparer.Ordinal);
+		for (int i = 0; i < Nodes.Length; ++i)
+		{
+			if (Nodes[i].Element.TryGetAttribute(maskId, out BgfAttribute flag) &&
+				flag.Type == BgfValueType.Bool && flag.AsBool())
+			{
+				MaskElements.Add(i);
+			}
+
+			// Last writer wins is fine: a mask is named uniquely within its own presentation,
+			// which is what makes a by-name binding workable at all.
+			byName[Nodes[i].Name] = i;
+		}
+
+		if (MaskElements.Count == 0)
+		{
+			return;
+		}
+
+		for (int i = 0; i < Nodes.Length; ++i)
+		{
+			for (UiNode? walk = Nodes[i]; walk is not null; walk = walk.Parent)
+			{
+				if (!walk.Element.TryGetAttribute(maskNameId, out BgfAttribute named) ||
+					named.Type != BgfValueType.String)
+				{
+					continue;
+				}
+
+				string path = Document.GetString(named.AsStringIndex());
+				if (path.Length == 0)
+				{
+					continue;  // empty: keep walking up, exactly as sub_82427188 does
+				}
+
+				string leaf = path[(path.LastIndexOf('.') + 1)..];
+				if (byName.TryGetValue(leaf, out int mask))
+				{
+					MaskByOrdinal[i] = mask;
+				}
+
+				break;
+			}
+		}
+	}
+
+	/// <summary>
+	/// Finds every element the file marks as a movie host.
+	///
+	/// Both the Node and its Material child carry the attribute — `abilitiesscreen` authors it
+	/// on 137 `tarot_card_frame` and 138 `Material5566` — and only the NODE has a quad to draw
+	/// into, so a consumer wanting somewhere to put pixels should prefer the one whose
+	/// <see cref="UiNode.Quad"/> is non-null. Both are listed rather than filtered here,
+	/// because which one the guest restates is its business and not ours to assume.
+	/// </summary>
+	private void FindMovieSlots()
+	{
+		uint movieId = Engine_GameHash.AttributeId("Movie");
+
+		for (int i = 0; i < Nodes.Length; ++i)
+		{
+			if (!Nodes[i].Element.TryGetAttribute(movieId, out BgfAttribute attribute) ||
+				attribute.Type != BgfValueType.String)
+			{
+				continue;
+			}
+
+			MovieSlots.Add(new MovieSlot(
+				i, Nodes[i].Name, Document.GetString(attribute.AsStringIndex())));
+		}
+	}
+
 	private void AttachFac(Engine_FacDocument fac, Engine_TextureNameTable? textures, Engine_BabelDatabase? strings)
 	{
 		var byObjectId = new Dictionary<uint, UiNode>(Nodes.Length);
@@ -408,6 +551,7 @@ public sealed class Engine_UiScreen
 				TexturePath = textures?.Resolve(uv) ?? string.Empty,
 				UMin = uv.UMin, UMax = uv.UMax, VMin = uv.VMin, VMax = uv.VMax,
 				R = uv.R, G = uv.G, B = uv.B,
+				TintAmount = uv.VertexLane3,
 				Source = uv,
 			};
 		}
@@ -482,6 +626,56 @@ public sealed class Engine_UiScreen
 			? _fileVisible[index]
 			: index >= 0 && index < Nodes.Length && Nodes[index].Visible;
 
+	/// <summary>
+	/// Applies the guest's <c>TintingAmount</c> to each quad that has one.
+	///
+	/// A null entry means the guest states no amount for that element and the authored lane
+	/// stands — the same "unstated is not zero" rule the transform read follows. Elements
+	/// with no quad are skipped rather than counted: the attribute is legal on any element,
+	/// but only a quad has a colour to weight.
+	/// </summary>
+	/// <summary>The guest's live tint for one element: a weight, and the colour it weights.</summary>
+	public readonly record struct LiveTint(float Amount, float? R, float? G, float? B);
+
+	private void ApplyLiveTint(IReadOnlyList<LiveTint?> liveTint)
+	{
+		for (int i = 0; i < Nodes.Length && i < liveTint.Count; ++i)
+		{
+			if (liveTint[i] is not { } tint)
+			{
+				continue;
+			}
+
+			// THE ATTRIBUTE IS ON A MATERIAL CHILD; THE QUAD IS ON ITS PARENT.
+			// `g_MenuFormatter:SetTintingAmountAndDiffuseColour` targets `GetFirstChild(border)`,
+			// so the element carrying `TintingAmount` never has a quad and vice versa. Hoisting
+			// to the parent is the first-child rule `Engine_UiMenuCloning.TintWritesUnder` uses.
+			UiQuad? quad = Nodes[i].Quad;
+			if (quad is null && Nodes[i].Parent is { Quad: { } parentQuad })
+			{
+				quad = parentQuad;
+			}
+
+			if (quad is null)
+			{
+				continue;
+			}
+
+			quad.TintAmount = tint.Amount;
+
+			// Colour only where the guest states it — an unstated channel keeps the .fac's,
+			// which is the same "unstated is not zero" rule the transform read follows.
+			if (tint.R is { } r) quad.R = r;
+			if (tint.G is { } g) quad.G = g;
+			if (tint.B is { } b) quad.B = b;
+
+			++LiveTintsApplied;
+		}
+	}
+
+	/// <summary>Quads whose tint weight the guest stated. Zero on a screen it never tints.</summary>
+	public int LiveTintsApplied;
+
 	private void ApplyLiveOpacity(IReadOnlyList<float?> liveOpacity)
 	{
 		for (int i = 0; i < Nodes.Length && i < liveOpacity.Count; ++i)
@@ -554,6 +748,7 @@ public sealed class Engine_UiScreen
 
 			if (Nodes[i].Quad is not { } quad)
 			{
+				++LiveTexturesNotAQuad;
 				continue;
 			}
 
@@ -566,6 +761,18 @@ public sealed class Engine_UiScreen
 			if (!textures.TryResolve(hash, out string path))
 			{
 				++LiveTexturesUnresolved;
+
+				// NAMED, not just counted. An unresolved hash is either a gap in the name
+				// table or a surface the guest RENDERS INTO rather than loads — a Bink video
+				// target being the case that matters — and those need opposite work. A count
+				// cannot tell them apart, and finding which element of 4,434 carries it by
+				// any other means is a search rather than a read. Capped, because a genuine
+				// table gap would otherwise print thousands.
+				if (UnresolvedTextures.Count < 8)
+				{
+					UnresolvedTextures.Add($"{Nodes[i].Name}#{i}=0x{hash:X8}");
+				}
+
 				continue;
 			}
 
@@ -594,6 +801,16 @@ public sealed class Engine_UiScreen
 	/// <summary>Stated textures whose hash is not in the name table. These are the losses.</summary>
 	public int LiveTexturesUnresolved;
 
+	/// <summary>The first few unresolved ones by element and hash — see ApplyLiveTextures.</summary>
+	public readonly List<string> UnresolvedTextures = new();
+
+	/// <summary>
+	/// Stated textures on an element we built no quad for — the fourth bucket, so the
+	/// breakdown adds up. Not a defect by itself: the guest holds texture references on
+	/// Material and Texture elements too, and those never draw.
+	/// </summary>
+	public int LiveTexturesNotAQuad;
+
 	/// <summary>True when the host handed us a per-element texture array at all.</summary>
 	public bool LiveTexturesRead;
 
@@ -618,8 +835,12 @@ public sealed class Engine_UiScreen
 
 		return $", textures stated {LiveTexturesStated}: {LiveTexturesApplied} swapped, " +
 			$"{LiveTexturesSame} already correct" +
+			(LiveTexturesNotAQuad > 0
+				? $", {LiveTexturesNotAQuad} on elements that draw no quad"
+				: string.Empty) +
 			(LiveTexturesUnresolved > 0
-				? $", {LiveTexturesUnresolved} NOT IN THE NAME TABLE"
+				? $", {LiveTexturesUnresolved} NOT IN THE NAME TABLE " +
+				  $"[{string.Join(", ", UnresolvedTextures)}]"
 				: string.Empty);
 	}
 

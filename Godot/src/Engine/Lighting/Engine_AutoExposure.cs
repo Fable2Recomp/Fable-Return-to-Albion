@@ -395,11 +395,41 @@ public sealed class Engine_AutoExposure
 	/// the divide without the multiply leaves only the divide.
 	///
 	/// It is published by <c>sub_82191C18</c> at its very last instruction —
-	/// <c>82191dbc stfs f0, 0x41AC(r3)</c> with f0 the scalar it just stored to +0x41A8 — and read
-	/// back for upload at <c>822826b8 lfs f1, 0x41AC(r11)</c>. The other arm,
-	/// <c>82191db4</c>, publishes 1.0 when a flag at the object's +0 is clear; WHAT THAT FLAG IS
-	/// HAS NOT BEEN ESTABLISHED, so this always reports the scalar. If a case is ever found where
-	/// the guest ships 1.0 instead, it belongs here.
+	/// <c>82191dbc stfs f0, 0x41AC(r3)</c> with f0 the scalar it just stored to +0x41A8. The other
+	/// arm, <c>82191db4</c>, publishes 1.0 when a flag at the object's +0 is clear; WHAT THAT FLAG
+	/// IS HAS NOT BEEN ESTABLISHED, so this always reports the scalar. If a case is ever found
+	/// where the guest ships 1.0 instead, it belongs here.
+	///
+	/// WHERE IT IS CONSUMED IS NOT THE TONE-MAP SHADER, and this note said otherwise for a while.
+	/// <c>822826b8 lfs f1, 0x41AC(r11)</c> is the argument to <c>sub_821B1958</c>, which permutes
+	/// the value into the <b>.w lane of pixel constant c20</b> — <c>g_GlobalAmbientAndBrightness</c>
+	/// — at <c>device + 0x18CC</c>. That is the constant every SURFACE shader's tail multiplies by:
+	/// <c>oC0.xyz = r0.xyz * g_GlobalAmbientAndBrightness.www</c>, in 356 of the 589 shipped blobs.
+	///
+	/// THE GUEST HAS TWO BRIGHTNESS MULTIPLIERS AND WE HAVE ONE. Read out of the shipped microcode
+	/// rather than argued from the CPU side, because neither is statically resolvable from the
+	/// executable — the register behind binding id 1 lives in a runtime-populated table:
+	///
+	///     0499_pshader_postprocessingmaterial          -> g_GlobalGammaAdjustment only
+	///     0500_pshader_postprocessingmaterial_tonemap1 -> g_GlobalGammaAdjustment
+	///                                                     g_SaturationBrightnessBaseAndOffset
+	///
+	/// NEITHER post-process blob references <c>g_ActualFramebufferBrightness</c> or
+	/// <c>g_GlobalAmbientAndBrightness</c>. So this scalar is applied in the SURFACE shaders and
+	/// nowhere else, while the tone-map's own multiply is a different constant:
+	///
+	///     0500:78   ps = g_SaturationBrightnessBaseAndOffset.y * LUT(luminance * 0.25);
+	///
+	/// We apply this scalar in <see cref="Engine_ExposureEffect"/> — the tone-map — which is where
+	/// the guest applies the OTHER one, and we apply nothing on surfaces. So the placement is wrong
+	/// AND <c>g_SaturationBrightnessBaseAndOffset.y</c> is missing from the pipeline entirely. Its
+	/// value has not been recovered; it is a post-object field, and until it is read this is a
+	/// known gap rather than a number to guess.
+	///
+	/// The placement is not merely cosmetic, because the curve is non-linear: the guest's LUT is
+	/// addressed with an already-brightened luminance and its entries carry <c>key/prevExposure</c>,
+	/// so the brightness and the divide cancel inside the lookup. Our fold performs the same
+	/// cancellation outside it. Whether the two are equal to the last stop has NOT been checked.
 	/// </remarks>
 	public float Brightness => Exposure;
 

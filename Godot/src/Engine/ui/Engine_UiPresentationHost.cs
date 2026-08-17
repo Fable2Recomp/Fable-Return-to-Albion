@@ -206,6 +206,54 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// </summary>
 	public IReadOnlyList<uint>? LiveTextures { get; set; }
 
+	/// <summary>
+	/// The guest's <c>TintingAmount</c> per element, or null where it states none.
+	///
+	/// The WEIGHT of the vertex tint, not the tint. The guest never multiplies by the colour;
+	/// it subtracts <c>(1 - tint)</c> scaled by this, and this starts at zero on most quads —
+	/// so a screen read without it draws every tinted surface untinted.
+	/// </summary>
+	public IReadOnlyList<Engine_UiScreen.LiveTint?>? LiveTint { get; set; }
+
+	/// <summary>
+	/// The camera the current screen renders through, so a window resize can re-fit it.
+	///
+	/// A canvas camera is sized against the window's ASPECT (see
+	/// <see cref="Engine_UiSceneBuilder.FitCanvasCamera"/>), and a camera sized once at build
+	/// time is right until the player drags the window — after which the design box is either
+	/// cropped or floating in a gap, with nothing in any log to say so.
+	/// </summary>
+	private Camera3D? _canvasCamera;
+
+	private Vector2 _fittedTo;
+
+	/// <summary>Re-fits the current camera when the viewport has changed size.</summary>
+	protected void FitToViewport()
+	{
+		if (_canvasCamera is null || !IsInsideTree())
+		{
+			return;
+		}
+
+		Vector2 size = GetViewport().GetVisibleRect().Size;
+		if (size == _fittedTo)
+		{
+			return;
+		}
+
+		_fittedTo = size;
+
+		// The FRAMING camera is not a canvas camera — it is fitted to the tree's bounds for a
+		// screen that ships no camera of its own, and re-sizing it against the design box would
+		// throw that framing away.
+		if (_canvasCamera.Name == "CanvasCamera")
+		{
+			Engine_UiSceneBuilder.FitCanvasCamera(_canvasCamera, size);
+		}
+	}
+
+	public override void _Process(double delta) => FitToViewport();
+
 	public override void _Ready()
 	{
 		// Streaming from the shipped banks is the real path — no extraction, and the
@@ -285,7 +333,7 @@ public partial class Engine_UiPresentationHost : Node3D
 			// that never reaches the parser is worse than no live value, because the call site
 			// looks like it is following the guest and is not.
 			return Engine_UiScreen.Parse(name, bgf, fac, bsg, _names, Strings, SceneSlide, LiveSlides,
-				LiveText, LiveOpacity, LiveVisible, LiveTransform, LiveTextures);
+				LiveText, LiveOpacity, LiveVisible, LiveTransform, LiveTextures, LiveTint);
 		};
 
 		OnLoaded();
@@ -620,6 +668,8 @@ public partial class Engine_UiPresentationHost : Node3D
 		// Building a camera is not enough — one has to be made current or the viewport
 		// renders through Godot's default camera and the screen looks empty.
 		Camera3D camera = Engine_UiSceneBuilder.ActivateCamera(Built, UseFramingCamera);
+		_canvasCamera = camera;
+		FitToViewport();
 
 		// WHAT THE FRAME ENGINE DID, per screen. Reported rather than left silent because its
 		// two failure modes look identical on screen and want opposite fixes: no frames found
@@ -660,6 +710,7 @@ public partial class Engine_UiPresentationHost : Node3D
 			IReadOnlyList<bool>? visible = LiveVisible;
 			IReadOnlyList<float?[]?>? transform = LiveTransform;
 			IReadOnlyList<uint>? textures = LiveTextures;
+			IReadOnlyList<Engine_UiScreen.LiveTint?>? tint = LiveTint;
 			int sceneSlide = SceneSlide;
 
 			try
@@ -670,6 +721,7 @@ public partial class Engine_UiPresentationHost : Node3D
 				LiveVisible = null;
 				LiveTransform = null;
 				LiveTextures = null;
+				LiveTint = null;
 
 				// THE SCENE SLIDE GOES TOO, and forgetting it is what left the pattern book
 				// empty. A screen is built on ONE page, and the builder drops an inactive
@@ -689,6 +741,7 @@ public partial class Engine_UiPresentationHost : Node3D
 				LiveVisible = visible;
 				LiveTransform = transform;
 				LiveTextures = textures;
+				LiveTint = tint;
 				SceneSlide = sceneSlide;
 			}
 

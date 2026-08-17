@@ -63,8 +63,8 @@ public static class Engine_BitmapFontTexture
 	/// This is the form a renderer wants. The atlas carries coverage in one channel and
 	/// nothing else, so a material has to turn that into opacity and take its colour
 	/// from the text element — sampling it as red would draw every string red. Doing the
-	/// conversion once here rather than in a shader keeps the material a plain
-	/// <c>StandardMaterial3D</c>, which is what the exporter can serialise into a scene.
+	/// conversion once here rather than in the shader keeps <c>ui_text.gdshader</c> to a
+	/// single coverage read, and keeps the atlas usable by anything that samples it plainly.
 	/// </summary>
 	public static ImageTexture CreateAtlasTextureDecompressed(Engine_BitmapFont font)
 	{

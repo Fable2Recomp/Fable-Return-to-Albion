@@ -74,11 +74,16 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 		DumpQuads(screen);
 		DumpSliceGeometry();
 		DumpTextureIfRequested();
+		DumpTextureFailures();
 
 		Report($"[{CurrentIndex + 1}/{ScreenNames.Count}] {screen.Name}   " +
 			$"{screen.CanvasWidth}x{screen.CanvasHeight}\n" +
 			$"quads {builder.QuadsBuilt} (degenerate {builder.DegenerateQuads})   " +
 			$"textures {builder.TexturesResolved}   " +
+			$"masked {builder.MasksApplied}   " +
+			$"detail {builder.DetailQuads}" +
+			(builder.DetailMapsMissing > 0 ? $" ({builder.DetailMapsMissing} MISSING)" : "") +
+			"   " +
 			$"text {builder.TextsBuilt} ({builder.TextGlyphsBuilt} glyphs)   " +
 			$"camera {camera.Name}\n" +
 			"left/right: change screen");
@@ -298,7 +303,7 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 				before[entry.ParentOrdinal] = node.Position;
 		}
 
-		int moved = wide.Apply(builder.ByOrdinal);
+		int moved = wide.Apply(builder);
 		GD.Print($"[ui-wide] applied to {moved} element(s)");
 
 		// The three NAMED fixups too, because they are the only hardcoded element PATHS in the
@@ -397,13 +402,41 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 
 		foreach (Engine_ExpandableMenuItems.Button b in buttons)
 			GD.Print($"[ui-menu] {b.Name,-20} element {b.Ordinal,5}  " +
-				$"Icon/Title {b.TitleOrdinal,5}  text {(b.Text is null ? "(none)" : $"\"{b.Text}\"")}");
+				$"Icon/Title {b.TitleOrdinal,5}  authored \"{b.Authored}\"  " +
+				$"text {(b.Text is null ? "(none)" : $"\"{b.Text}\"")}");
 
 		GD.Print($"[ui-menu] {Engine_ExpandableMenuItems.Describe(buttons)}");
 
 		// The wheel is a separate widget: the expandable menu has a pool of authored buttons the
 		// guest fills, the wheel has items that stay empty until the template is copied in.
 		GD.Print($"[ui-wheel] {Engine_UiMenuCloning.Describe(probe.MenuCloning)}");
+
+		// The movie hosts, because a screen that can play video says so in the file and it is
+		// otherwise invisible: the authored path is a placeholder the guest overwrites.
+		foreach (Engine_UiScreen.MovieSlot slot in probe.MovieSlots)
+			GD.Print($"[ui-movie] element {slot.Ordinal,5} {slot.Name,-32} \"{slot.AuthoredPath}\"");
+	}
+
+	/// <summary>
+	/// Prints every texture the screen asked for and did not get, with which side failed.
+	///
+	/// Not gated on a flag: an untextured quad draws as a flat rectangle, which reads as a
+	/// styling choice rather than a missing asset, and Godot's own "Cannot open file" names the
+	/// path without saying whether the bank has it.
+	/// </summary>
+	private void DumpTextureFailures()
+	{
+		if (Textures is not { } cache || cache.Failures.Count == 0)
+		{
+			return;
+		}
+
+		foreach ((string path, string why) in cache.Failures)
+		{
+			GD.Print($"[ui-tex] {path}: {why}");
+		}
+
+		GD.Print($"[ui-tex] {cache.Failures.Count} texture(s) failed, {cache.Loaded} loaded");
 	}
 
 	/// <summary>
@@ -665,7 +698,11 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 			GD.Print($"  {Truncate(string.Join('/', path), 48),-48} " +
 				$"{q.UMin,6:F3} {q.UMax,6:F3} {q.VMin,6:F3} {q.VMax,6:F3} " +
 				$"{q.UMax - q.UMin,6:F3} {q.VMax - q.VMin,6:F3} " +
-				$"{q.R,4:F2},{q.G,4:F2},{q.B,4:F2} {n.Opacity,5:F0}  {texInfo}" +
+				$"{q.R,4:F2},{q.G,4:F2},{q.B,4:F2} {n.Opacity,5:F0}  " +
+				// The two record fields the quad itself does not carry into the scene. A cell
+				// that samples empty atlas space is either aimed wrong or drawing from a slot
+				// we never read, and those look identical without them.
+				$"det{q.Source.DetailMapMode} sec{q.Source.SecondaryTexture}  {texInfo}" +
 				(q.IsDegenerate ? "  STRETCH" : "") + dropped);
 		}
 	}
