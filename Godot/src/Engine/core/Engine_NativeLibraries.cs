@@ -38,6 +38,26 @@ public static class Engine_NativeLibraries
 	private static bool _installed;
 	private static bool _published;
 
+	/// <summary>
+	/// The staging folder name for the architecture THIS PROCESS is running as — matching
+	/// REFII_GODOT_ARCH in the root CMakeLists, which stages each architecture's native
+	/// closure into Godot/build/&lt;arch&gt;/bin.
+	/// </summary>
+	public static string ArchFolder => RuntimeInformation.ProcessArchitecture switch
+	{
+		Architecture.Arm64 => "arm64",
+		Architecture.X64 => "x86_64",
+		var other => other.ToString().ToLowerInvariant(),
+	};
+
+	/// <summary>
+	/// Where the native build stages this architecture's DLLs, and where anything shipped
+	/// beside them (the upscaler weights, for instance) lives.
+	/// </summary>
+	/// <param name="projectDir">Globalized "res://".</param>
+	public static string StagedBinDirectory(string projectDir) =>
+		System.IO.Path.Combine(projectDir, "build", ArchFolder, "bin");
+
 	/// <summary>Installs the resolver. Idempotent and safe to call from anywhere.</summary>
 	public static void Install()
 	{
@@ -149,10 +169,22 @@ public static class Engine_NativeLibraries
 		{
 			string projectDir = Godot.ProjectSettings.GlobalizePath("res://");
 
-			// The STAGED copy first — Godot/build/bin, where the native build puts the
-			// launcher ops, the host bridge and the guest runtime. This is the only
+			// The STAGED copy first — Godot/build/<arch>/bin, where the native build puts
+			// the launcher ops, the host bridge and the guest runtime. This is the only
 			// location that survives an export; everything below it is a dev-tree
 			// convenience.
+			//
+			// Staging is PER-ARCHITECTURE: an x86_64 and an ARM64 build produce DLLs with
+			// identical names, so a single flat directory can only ever hold one of them
+			// and exporting for two architectures is impossible. Only the root matching
+			// the architecture this process is actually running as is searched — picking
+			// up the wrong one would fail at load with a confusing "not a valid Win32
+			// application" rather than "library not found".
+			AddSearchPath(StagedBinDirectory(projectDir));
+			AddSearchPath(System.IO.Path.Combine(projectDir, "build", ArchFolder));
+
+			// The pre-split flat layout, still honoured so an existing tree (or an export
+			// that flattened the closure next to the executable) keeps working.
 			AddSearchPath(System.IO.Path.Combine(projectDir, "build", "bin"));
 			AddSearchPath(System.IO.Path.Combine(projectDir, "build"));
 

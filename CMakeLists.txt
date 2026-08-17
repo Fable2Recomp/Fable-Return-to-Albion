@@ -53,8 +53,24 @@ function(refii_embed_long_paths_manifest target)
 endfunction()
 
 option(REFII_STAGE_GODOT_BUILD "Stage the runtime and native DLLs into Godot/build" ON)
-set(REFII_GODOT_BUILD_DIR "${CMAKE_SOURCE_DIR}/Godot/build")
+
+# Staging is per-architecture, because Godot exports one build per architecture and each
+# needs its OWN native closure. With a single Godot/build the x86_64 and ARM64 builds
+# overwrite each other's DLLs, so only whichever ran last could ever be exported — and the
+# breakage is silent, because the file names are identical.
+#
+# Godot's export presets pull from the matching root, and Engine_NativeLibraries prefers
+# the subdirectory for the architecture the process is actually running as.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    set(REFII_GODOT_ARCH "arm64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    set(REFII_GODOT_ARCH "x86_64")
+else()
+    set(REFII_GODOT_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+set(REFII_GODOT_BUILD_DIR "${CMAKE_SOURCE_DIR}/Godot/build/${REFII_GODOT_ARCH}")
 set(REFII_GODOT_BUILD_BIN_DIR "${REFII_GODOT_BUILD_DIR}/bin")
+message(STATUS "Refii: Godot staging root is Godot/build/${REFII_GODOT_ARCH}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}")

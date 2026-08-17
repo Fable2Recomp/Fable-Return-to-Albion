@@ -222,8 +222,11 @@ public static class Engine_TexEnhance
 				// so the log says which arrived.
 				// BESIDE THE BUILD, which is where the native library is staged and where the
 				// weights are documented to live. res:// is the project, not the build output.
-				string weightsDirectory = System.IO.Path.Combine(
-					ProjectSettings.GlobalizePath("res://"), "build", "bin");
+				// Per-architecture, matching where the native build stages this arch's
+				// closure — a flat build/bin cannot hold an x86_64 and an ARM64 copy of
+				// the same DLL at once.
+				string weightsDirectory = Refii.Core.Engine_NativeLibraries.StagedBinDirectory(
+					ProjectSettings.GlobalizePath("res://"));
 
 				ITexUpscaler? neural = Engine_TexRealEsrgan.TryCreate(
 					weightsDirectory, Engine_TexSettings.Weights);
