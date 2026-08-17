@@ -29,22 +29,6 @@ public sealed class SwfScene
 
     public Node2D Root { get; }
 
-    /// <summary>
-    /// Raster pixels per authored SWF pixel.
-    /// </summary>
-    /// <remarks>
-    /// THIS IS WHAT DECIDES WHETHER AN UPSCALED SOURCE IS VISIBLE. Every shape is rasterized once,
-    /// on the CPU, into a texture this many times its authored size, and the host then scales the
-    /// whole stage to fill the window — a 640x462 stage is magnified about 2.3x at 1080p. At a
-    /// scale of 1 that magnification is Godot stretching an authored-size bitmap, so a source
-    /// texture with four times the detail in it lands in a canvas with nowhere to put it and the
-    /// upscaling pays for nothing.
-    ///
-    /// Settable rather than fixed at construction because the fit factor is a property of the
-    /// WINDOW, which the player can resize. Changing it drops every rasterized shape and every
-    /// built node, so the next <see cref="Sync"/> rebuilds the tree at the new scale — the
-    /// caller is expected to quantise, not to set it on every pixel of a drag.
-    /// </remarks>
     public float TextureScale
     {
         get => _textureScale;
@@ -66,39 +50,10 @@ public sealed class SwfScene
 
     public int MaxTextureEdge { get; set; } = 2048;
 
-    /// <summary>
-    /// Draw the artwork as triangles rather than rasterizing it into bitmaps.
-    /// </summary>
-    /// <remarks>
-    /// THIS IS THE POINT OF HAVING THE PUB GAMES IN C#. Flash artwork is vectors, and the whole
-    /// reason to rebuild the games natively rather than interpret them is that Godot can draw those
-    /// vectors at the size the window actually is. Rasterizing them into bitmaps at their authored
-    /// size and stretching the result is what an interpreter has to do; it is not what we have to
-    /// do.
-    ///
-    /// Measured on keystone's 234 placed shapes: rasterizing costs 109 MB and 4.6 s at authored
-    /// size and 348 MB and 11.9 s at 2.5x, and is soft at any window size that is not exactly the
-    /// stage's. The triangles cost 28.8 MB and 1.65 s, once, and a resize costs nothing because
-    /// there is nothing to rebuild.
-    ///
-    /// Settable so the bitmap path stays reachable — it is the one the artwork was verified
-    /// against, and a difference between the two is worth being able to look at rather than
-    /// reason about.
-    /// </remarks>
     public bool Vector { get; set; } = true;
 
     public int DrawnNodes { get; private set; }
 
-    /// <summary>
-    /// Throws away everything derived from <see cref="TextureScale"/>.
-    /// </summary>
-    /// <remarks>
-    /// The nodes go too, not just the textures. A <see cref="Cached"/> carries an offset and a
-    /// residual scale alongside its texture, and those were copied onto the Sprite2D when it was
-    /// built — replacing the texture underneath a sprite that still holds the old pair puts the
-    /// shape in the wrong place at the wrong size. Rebuilding is also what keeps this correct
-    /// without a second code path: <see cref="Sync"/> already knows how to build the tree.
-    /// </remarks>
     private void Rebuild()
     {
         foreach (Node2D container in _containers)
@@ -116,11 +71,6 @@ public sealed class SwfScene
         _nodes.Clear();
         _shapes.Clear();
         _textContent.Clear();
-
-        // THE VECTOR TEMPLATES SURVIVE, and must. They are the one thing here that does not depend
-        // on the raster scale — triangles are the same triangles at any size — so throwing them
-        // away would re-triangulate the whole board to change a setting that cannot affect them.
-        // Their duplicates went out with the containers above.
     }
 
     public void Sync()
@@ -257,9 +207,6 @@ public sealed class SwfScene
             return container;
         }
 
-        // VECTORS IF WE CAN, a rasterized bitmap if we cannot. The vector path draws the artwork
-        // as triangles, so it costs the same whatever size the window is; the bitmap path bakes it
-        // at one size and is stretched to any other. See <see cref="Vector"/>.
         if (Vector)
         {
             Node2D? built = VectorShape(clip.CharacterId);
@@ -337,24 +284,12 @@ public sealed class SwfScene
         sprite.Scale = Vector2.One / TextureScale;
     }
 
-    /// <summary>Built vector geometry per character, so a shape is triangulated once.</summary>
     private readonly Dictionary<int, List<SwfVectorPart>> _vectors = new();
 
     private readonly Dictionary<int, Texture2D?> _hostTextures = new();
 
     private readonly Dictionary<int, Texture2D?> _embeddedTextures = new();
 
-    /// <summary>
-    /// The shape's triangles, as fresh nodes referencing the shared meshes.
-    /// </summary>
-    /// <remarks>
-    /// THE MESHES ARE CACHED, THE NODES ARE NOT. A node has one parent and the same character is
-    /// routinely placed many times — keystone's board is 1,775 placements of 234 distinct shapes.
-    /// Caching nodes and duplicating them per placement worked and leaked, because the cached
-    /// originals are never in the tree and so are never freed: a run exited reporting 479 orphaned
-    /// meshes and 667 orphaned canvas items. A mesh is a resource, so the instances can share it
-    /// and it is released with the last one.
-    /// </remarks>
     private Node2D? VectorShape(int characterId)
     {
         if (!_vectors.TryGetValue(characterId, out List<SwfVectorPart>? parts))
@@ -395,14 +330,6 @@ public sealed class SwfScene
             _embeddedTextures, characterId,
             () => _stage.Document.Bitmaps.GetValueOrDefault(characterId));
 
-    /// <summary>
-    /// One <see cref="ImageTexture"/> per bitmap, remembered including the misses.
-    /// </summary>
-    /// <remarks>
-    /// A negative entry matters as much as a positive one here: a fill naming a bitmap that does
-    /// not resolve is asked for once per shape that uses it, and without the null being cached each
-    /// of those re-runs the host resolver — which for the pub games is a file read and a decode.
-    /// </remarks>
     private static Texture2D? Resolve(
         Dictionary<int, Texture2D?> cache, int characterId, Func<Image?> load)
     {

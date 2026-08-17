@@ -7,17 +7,6 @@ using Action = Refii.FlashGames.Framework.Action;
 
 namespace Refii.FlashGames.MageDice;
 
-/// <summary>
-/// Plays a win clip's timeline once, and lets the player cut it short.
-/// </summary>
-/// <remarks>
-/// <see cref="MageDice.KillWinAnims"/> IS AN ESCAPE HATCH, not a stop. When the player starts the
-/// next spin mid-celebration the flag goes up and this fades out rather than snapping — the
-/// timeline keeps running, only the alpha falls. Killing it outright would leave the win rings lit
-/// on a board that has already begun spinning.
-///
-/// A 1:1 port of <c>AnimateWin.as</c>.
-/// </remarks>
 public sealed class AnimateWin : Action
 {
     private readonly IPubClip _clip;
@@ -71,20 +60,6 @@ public sealed class AnimateWin : Action
     }
 }
 
-/// <summary>
-/// The amount won, floating up off the board and fading.
-/// </summary>
-/// <remarks>
-/// STACKED UNDER A SHARED PARENT so several can be in the air at once — the board's
-/// <c>winAnimations</c> clip is created on first use and each instance takes the next free depth.
-///
-/// THE FADE IS IN THREE PARTS: up over the first third, held, then out from 70% — or out
-/// immediately from wherever it is if the player has started the next spin. The label is
-/// re-localised every frame because the value it shows is formatted by the same string table as
-/// everything else.
-///
-/// A 1:1 port of <c>FloatyText.as</c>.
-/// </remarks>
 public sealed class FloatyText : Action
 {
     private readonly IPubClip? _clip;
@@ -187,12 +162,4 @@ public sealed class FloatyText : Action
     }
 }
 
-/// <summary>
-/// Where a floating win amount starts from.
-/// </summary>
-/// <remarks>
-/// CAPTURED FROM A CLIP THAT IS THEN DELETED. <c>MageDice.PreInitialize</c> reads the position and
-/// scale off the authored <c>_root.winAmount</c> and removes it, so the stage does not carry a
-/// stray label — the numbers live on only as the template every floating win is placed with.
-/// </remarks>
 public readonly record struct MageDiceWinVars(float X, float Y, float XScale, float YScale);

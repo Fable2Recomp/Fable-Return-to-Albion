@@ -3,6 +3,7 @@ using Godot;
 using Refii.FlashGames.Framework;
 using Refii.FlashGames.Keystone;
 using Refii.FlashGames.MageDice;
+using Refii.FlashGames.WizardsTower;
 using Refii.Host;
 
 namespace Refii.Game;
@@ -25,11 +26,11 @@ namespace Refii.Game;
 /// resets while dereferencing NEITHER the module pointer nor the game pointer, so a host may run
 /// 1 → play → 9 and the guest settles correctly with Scaleform never created at all.
 ///
-/// A GAME WE CANNOT PLAY MUST STILL BE ANSWERED. Keystone and Mage Dice have C# gameplay;
-/// Wizard's Tower ships art and rules we have not built. The guest waits at state 2 for as long as
-/// it takes, so declining silently is a soft lock in front of a black screen. Declining means
-/// handing back the balance UNCHANGED, which settles a delta of zero and puts the player back in
-/// the world having lost nothing.
+/// A GAME WE CANNOT PLAY MUST STILL BE ANSWERED. All three shipped games — Keystone, Mage Dice and
+/// Wizard's Tower — have C# gameplay, so the decline should never fire; it stays because the guest
+/// waits at state 2 for as long as it takes, and declining silently is a soft lock in front of a
+/// black screen. Declining means handing back the balance UNCHANGED, which settles a delta of zero
+/// and puts the player back in the world having lost nothing.
 ///
 /// THE DISPATCH IS ON THE GUEST'S OWN NAME for the game, which is the string it holds at
 /// <c>mgr+8</c> and matches the game-data folder: <c>keystone</c>, <c>magedice</c>,
@@ -216,14 +217,26 @@ public partial class GamePubGames : Node
 				Variant = Table(pub, "CowAndCorset1"),
 			},
 
+			"wizardstower" => new WizardsTowerHost
+			{
+				Name = "PubGame",
+				StartingGold = Clamp(pub.Gold),
+				AiPlayers = WizardsTowerHost.Unset,
+				Skin = WizardsTowerHost.Unset,
+				BuyIn = WizardsTowerHost.Unset,
+				ShowDiagnostics = false,
+				Variant = Table(pub, "Ruby1"),
+			},
+
 			_ => null,
 		};
 
 		if (host is not IPubGameSession session)
 		{
-			// DECLINED, AND ANSWERED. Leaving the guest at state 2 would hang it forever, and
-			// wizardstower still has no gameplay. Handing back the balance UNCHANGED settles a
-			// delta of zero and puts the player back in the world having lost nothing.
+			// DECLINED, AND ANSWERED. Leaving the guest at state 2 would hang it forever, so an
+			// unrecognised game hands the balance back UNCHANGED: a delta of zero puts the player
+			// back in the world having lost nothing. All three shipped games are wired now, so
+			// this only fires if the guest names something that is not one of them.
 			Report(
 				$"[pubgame] the guest asked for '{pub.Game}', which has no gameplay yet — " +
 				"returning the player's balance unchanged");

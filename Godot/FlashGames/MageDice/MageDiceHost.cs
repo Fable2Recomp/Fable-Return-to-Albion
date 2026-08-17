@@ -12,32 +12,10 @@ using Refii.Ui.Flash;
 
 namespace Refii.FlashGames.MageDice;
 
-/// <summary>
-/// Draws and plays Mage Dice inside Godot.
-/// </summary>
-/// <remarks>
-/// MUCH THINNER THAN <c>KeystoneHost</c>, and deliberately so. Keystone's host owns a phase enum
-/// and steps the game through betting, rolling and paying; Mage Dice runs its own state machine off
-/// the callback manager (see <see cref="MageDice.GameLoop"/>), so all this has to do is build the
-/// game, poll the pad, tick the clock and fit the stage to the window.
-///
-/// THE CONVENTIONS ARE <c>KeystoneHost</c>'s, because the guest treats both games the same way:
-/// the <see cref="Unset"/> sentinel so <c>settings.xml</c> outranks the scene's exports,
-/// <see cref="IsFinished"/> gated on the game's own <c>GameOver</c> command rather than on an
-/// overlay flag, and <see cref="FinalGold"/> reported as an ABSOLUTE balance for the guest to
-/// settle against.
-/// </remarks>
 public partial class MageDiceHost : Node, IPubGameSession
 {
-    /// <summary>The mount key Mage Dice's assets and built stage are filed under.</summary>
-    /// <remarks>
-    /// <c>Magedice</c>, NOT <c>MageDice</c>. <see cref="Engine_SwfAssets"/> derives the folder from
-    /// the game-data directory name by uppercasing the first character only, and the directory is
-    /// <c>magedice</c>. Spelling it the natural way here finds nothing in the mount.
-    /// </remarks>
     public const string GameName = "Magedice";
 
-    /// <summary>"The file decides", for the exports the guest normally supplies.</summary>
     public const int Unset = -1;
 
     [Export]
@@ -55,14 +33,6 @@ public partial class MageDiceHost : Node, IPubGameSession
     [Export]
     public int Skin { get; set; } = Unset;
 
-    /// <summary>
-    /// The table, by its name in the game's own <c>settings.xml</c>.
-    /// </summary>
-    /// <remarks>
-    /// CowAndCorset1 is the lowest cash table and the sane thing for the scene to open on when it
-    /// is run by itself; under the guest this is replaced by whichever of the 41 variations the
-    /// player actually sat down at.
-    /// </remarks>
     [Export]
     public string Variant { get; set; } = "CowAndCorset1";
 
@@ -145,27 +115,13 @@ public partial class MageDiceHost : Node, IPubGameSession
         _human = _game.CreatePlayerObject(0, false, "Hero", StartingGold, 0, 1, 0, 0);
         _game.PlayerInfo.AddPlayer(0, _human);
 
-        // THE GAME BUILDS ITSELF FROM HERE. Initialize runs PreInitialize, and the base's Run
-        // finishes with PostInitialize, which is what registers the game loop on the callback
-        // manager and puts the board on screen.
         _game.Initialize();
 
-        // AFTER Initialize, AND THAT ORDERING IS LOAD-BEARING. The overlay manager's constructor
-        // calls ActivateFade, which drops a full-screen black cover over the stage and queues the
-        // animation that fades it back out. Initialize opens with
-        // CallbackManager.RemoveAllCallbacks — so building the overlays first put the cover up and
-        // then deleted the only thing that would ever take it down, leaving the whole board behind
-        // an opaque black rectangle for the rest of the session.
-        //
-        // PostInitialize needs it (ForceQuickTips), so between the two is the only place it fits.
         _overlays = new MageDiceOverlayManager(_game, _root);
         _game.OverlayManager = _overlays;
 
         _game.Run();
 
-        // A HARNESS SWITCH, not a cheat: the game's own autoplay, which the developer menu toggles
-        // in the shipped build. It spins forever without a pad, which is the only way to watch the
-        // reels resolve in a run nobody is sitting at.
         if (System.Environment.GetEnvironmentVariable("REFII_MAGEDICE_AUTOPLAY") is "1")
         {
             _game.AutoPlay = true;
@@ -193,7 +149,6 @@ public partial class MageDiceHost : Node, IPubGameSession
             $"[pubgame] {game.Name} from {set.Root}: scene {_sceneUi!.ScenePath}, " +
             $"{_stageSize.X:0}x{_stageSize.Y:0} stage, variant '{_game.VariantName}', " +
             $"{_game.Variant.GameType} reels");
-
 
         return true;
     }
@@ -236,15 +191,11 @@ public partial class MageDiceHost : Node, IPubGameSession
             ? PubGamesText.ParseSettings(File.ReadAllBytes(ownPath), out _)
             : null;
 
-        // A HARNESS OVERRIDE, so one build can be pointed at any of the 41 tables without editing
-        // the scene. Under the guest the variation comes from the guest and this is never set.
         string wanted = System.Environment.GetEnvironmentVariable("REFII_MAGEDICE_VARIANT")
             ?? string.Empty;
         _game.VariantName = wanted.Length != 0 ? wanted : Variant;
         List<string> applied = MageDiceConfig.Apply(_game, shared, own);
 
-        // THE FILE WINS UNLESS SOMEONE ASKED — these are harness overrides, and an override only
-        // overrides when it was actually set.
         if (AiPlayers != Unset)
         {
             _game.NumberOfAIPlayers = AiPlayers;
@@ -356,8 +307,6 @@ public partial class MageDiceHost : Node, IPubGameSession
             }
         }
 
-        // THE GAME LOOP IS A CALLBACK, so this one line runs the whole machine: the state machine,
-        // the reels, the fades and the chip counter are all actions on this manager.
         _game.CallbackManager.DoCallbacks(ticks);
 
         _sceneUi?.Advance(delta);
@@ -381,10 +330,8 @@ public partial class MageDiceHost : Node, IPubGameSession
             (viewport.Y - (height * scale)) * 0.5f);
     }
 
-    /// <summary>True once the game has settled and said so.</summary>
     public bool IsFinished => _ready && _commands.GameOverIssued;
 
-    /// <summary>The player's gold, as an ABSOLUTE balance for the guest to settle against.</summary>
     public long FinalGold => _human?.Gold ?? 0;
 
     public long FinalDebt => _human?.Debt ?? 0;
@@ -416,9 +363,6 @@ public partial class MageDiceHost : Node, IPubGameSession
                         : "-");
                 }
 
-                // CHIPS ARE THE GROUND TRUTH HERE, not RunningPayout: this samples once a second
-                // and a spin takes two or three, so by the time it reads a win the next NewSpin has
-                // usually already cleared the running total. Watch the chips move instead.
                 GD.Print(
                     $"[magedice] spin {_game.TotalSpins} [{string.Join(" ", faces)}] " +
                     $"bet {live.CostPerSpin()} chips {_human.Chips} " +

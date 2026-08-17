@@ -68,7 +68,6 @@ public static class SwfRasterizer
         return image;
     }
 
-
     public static void DrawInto(
         SwfCanvas canvas, SwfShape shape, SwfGeometry geometry, Transform2D shapeToCanvas,
         SwfColorTransform tint, Func<int, SwfBitmapSampler?>? resolver,

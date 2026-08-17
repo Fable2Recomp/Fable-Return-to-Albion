@@ -4,20 +4,6 @@ using Refii.FlashGames.Framework;
 
 namespace Refii.FlashGames.MageDice;
 
-/// <summary>
-/// The keys in <c>magedice/settings.xml</c> that only Mage Dice understands.
-/// </summary>
-/// <remarks>
-/// FORTY-EIGHT ARRAYS ACROSS FORTY-ONE VARIATIONS, in a 503 KB file. This is the most dangerous
-/// code in the port, because every way of getting it wrong is silent: bind <c>ReelPayoutsx3B</c>
-/// to the wrong board type and the machine draws one paytable and settles by another, with nothing
-/// on screen to say so. So the binding is written out flat, one line per setting, next to the
-/// board type it belongs to — no loops over suffixes, nothing computed. It should be readable
-/// against the XML by eye.
-///
-/// EVERY ARRAY THAT LANDS IS LOGGED WITH ITS LENGTH, for the same reason: a table that quietly
-/// fell back to the defaults looks exactly like one that applied.
-/// </remarks>
 public static class MageDiceConfig
 {
     public static List<string> Apply(
@@ -36,9 +22,6 @@ public static class MageDiceConfig
         game.WinThreshold5 =
             PubGameConfig.Number(defaults, "winThreshold5", game.WinThreshold5, applied);
 
-        // FRACTIONAL, SO NOT PubGameConfig.Number. reelSpeedBoost is 2.5 and the spin extensions
-        // are sub-second; rounding them to integers would either stop the reels dead or double the
-        // hold on a bonus tease.
         game.ReelSpeedBoost =
             PubGameConfig.Real(defaults, "reelSpeedBoost", game.ReelSpeedBoost, applied);
         game.SpinTimeExtension1 =
@@ -48,12 +31,8 @@ public static class MageDiceConfig
         game.TourneyWinThresholdMultiplier = PubGameConfig.Real(
             defaults, "tourneyWinThresholdMultiplier", game.TourneyWinThresholdMultiplier, applied);
 
-        // TWELVE NUMBERS READ AS SIX MIN/MAX PAIRS OF SECONDS. Rounding these to integers would
-        // make every reel land on the same beat, or not spin at all.
         PubGameConfig.FillDoubles(defaults, "spinTimes", game.SpinTimes, applied);
 
-        // The three board types. Suffix "" is the table the player sits at; B and C are the extra
-        // machines the tutorial walks through.
         Tables(defaults, game.TablesA, string.Empty, applied);
         Tables(defaults, game.TablesB, "B", applied);
         Tables(defaults, game.TablesC, "C", applied);
@@ -61,13 +40,6 @@ public static class MageDiceConfig
         return applied;
     }
 
-    /// <summary>
-    /// Reads one board type's fifteen arrays and its reel count.
-    /// </summary>
-    /// <remarks>
-    /// The suffix is the ONLY thing that varies between the three calls, and it is passed rather
-    /// than derived so the setting names below read exactly as they appear in the file.
-    /// </remarks>
     private static void Tables(
         Dictionary<string, PubGameSetting> defaults, MageDiceTables tables, string suffix,
         List<string> applied)

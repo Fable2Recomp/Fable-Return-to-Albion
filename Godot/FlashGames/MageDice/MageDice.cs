@@ -7,21 +7,8 @@ using Action = Refii.FlashGames.Framework.Action;
 
 namespace Refii.FlashGames.MageDice;
 
-/// <summary>What the game is doing this tick.</summary>
 public delegate void MageDiceState(double ticks);
 
-/// <summary>
-/// Mage Dice: a six-reel fruit machine with a bonus reel, free spins and a growing multiplier.
-/// </summary>
-/// <remarks>
-/// IT DRIVES ITSELF. Unlike Keystone, whose host owns a phase enum and steps the game through it,
-/// Mage Dice registers <see cref="GameLoop"/> with <c>Action.RunUntilTrue</c> in
-/// <see cref="PostInitialize"/> and dispatches through <see cref="_activeState"/>, a function
-/// pointer it reassigns as it goes. A host only has to poll input and tick the callback manager.
-///
-/// A 1:1 port of <c>MageDice.as</c>, split across this file and <c>MageDiceDisplay.cs</c> the way
-/// <c>Keystone.cs</c> is split — the shipped class is one 1,560-line file.
-/// </remarks>
 public sealed partial class MageDice : PubGame
 {
     public const double SpinTimeMs = 2000;
@@ -41,23 +28,12 @@ public sealed partial class MageDice : PubGame
     public const double GlintDelay = 15000;
     public const double QuickTipDelay = 3500;
 
-    /// <summary>
-    /// The live game, for the animation classes that reach for it.
-    /// </summary>
-    /// <remarks>
-    /// STATIC BECAUSE THE SHIPPED CODE IS — <c>MageDice.Game</c>, set in
-    /// <see cref="PreInitialize"/>, is how <c>AnimateReel</c> reaches <c>reelSpeedBoost</c> without
-    /// being handed the game. Only one pub game runs at a time, which is what makes it safe.
-    /// </remarks>
     public static MageDice? Game { get; private set; }
 
-    /// <summary>A reel has moved far enough to be worth a tick of sound.</summary>
     public static bool RequestAudioTick { get; set; }
 
-    /// <summary>The player is holding A to hurry the reels along.</summary>
     public static bool SpeedAnimation { get; set; }
 
-    /// <summary>Win celebrations should fade out — the next spin has started.</summary>
     public static bool KillWinAnims { get; set; }
 
     private readonly IPubClip _root;
@@ -120,13 +96,10 @@ public sealed partial class MageDice : PubGame
         _root = root;
     }
 
-    /// <summary>Whether the developer reel picker is reachable. False in every shipped table.</summary>
     public bool AllowDebug { get; set; }
 
-    /// <summary>How much faster the reels run while the player is hurrying them.</summary>
     public double ReelSpeedBoost { get; set; } = 2.5;
 
-    /// <summary>Six min/max pairs of reel stop times, in seconds.</summary>
     public List<double> SpinTimes { get; } = new()
     {
         0.8, 1.3, 0.8, 1.3, 0.8, 1.3, 0.8, 1.3, 0.8, 1.3, 0.8, 1.3,
@@ -144,7 +117,6 @@ public sealed partial class MageDice : PubGame
 
     public double TourneyWinThresholdMultiplier { get; set; } = 1;
 
-    /// <summary>The three board-type templates a table can be built from.</summary>
     public MageDiceTables TablesA { get; } = new(3);
 
     public MageDiceTables TablesB { get; } = new(4);
@@ -165,27 +137,8 @@ public sealed partial class MageDice : PubGame
 
     public IPubClip Root => _root;
 
-    /// <summary>
-    /// Hands the game this frame's pad.
-    /// </summary>
-    /// <remarks>
-    /// MAGE DICE READS THE PAD ITSELF rather than being passed it per call the way Keystone is, so
-    /// the host has to put it somewhere the game can see. <see cref="PubGame.OnEnterFrame"/> would
-    /// do this — it is the shipped per-frame entry — but it also calls <c>Input.Update()</c>, and
-    /// the host has already done that to read the pad for its own bindings; updating twice in a
-    /// frame eats the just-pressed edges the game is waiting on.
-    /// </remarks>
     public void SetPad(GamePad pad) => Pad = pad;
 
-    /// <summary>
-    /// Pins the reels to chosen symbols, as the shipped developer menu does.
-    /// </summary>
-    /// <remarks>
-    /// THE ONLY WAY TO REACH THE BONUS PATHS DELIBERATELY. A bonus reel needs three of one symbol
-    /// and a free-spin run needs a token that most tables do not even carry, so waiting for the RNG
-    /// to produce one is not a test. This is <c>debugOverrides</c> and <c>useDebugOverride</c> from
-    /// the shipped debug menu, reachable without it.
-    /// </remarks>
     public void ForceReels(IReadOnlyList<int> values)
     {
         for (var i = 0; i < _debugOverrides.Length && i < values.Count; i++)
@@ -221,9 +174,6 @@ public sealed partial class MageDice : PubGame
         _lastBet = 0;
         _winAnimDelay = 0;
 
-        // THE TEMPLATE IS READ OFF THE STAGE AND THEN THE STAGE CLIP IS DELETED. Every floating
-        // win amount is placed with these numbers; leaving the authored clip in place would show a
-        // stray label over the board.
         IPubClip? winAmount = _root.GetChild("winAmount");
         if (winAmount is not null)
         {
@@ -239,8 +189,6 @@ public sealed partial class MageDice : PubGame
         _variants.Add(TablesA.ToVariant(MinBet));
         if (Tutorial)
         {
-            // THE TUTORIAL WALKS THROUGH THREE MACHINES, and they are pushed in C-then-B order so
-            // its script can step the player from the six-reel board back down.
             _variants.Add(TablesC.ToVariant(MinBet));
             _variants.Add(TablesB.ToVariant(MinBet));
         }
@@ -270,9 +218,6 @@ public sealed partial class MageDice : PubGame
 
         if (Tutorial)
         {
-            // EVERY OUTCOME IS SCRIPTED, so the override is on for the whole session and each step
-            // writes the reels it wants. STAGE -1 because StateTutorialNext increments before it
-            // enters, so the first card shown is 0.
             _useDebugOverride = true;
             _tutorialStage = -1;
             if (OverlayManager is OverlayManager tutorialOverlays)
@@ -363,14 +308,6 @@ public sealed partial class MageDice : PubGame
         _boards.Clear();
     }
 
-    /// <summary>
-    /// Builds the machine the player sees, plus one silent machine per tournament opponent.
-    /// </summary>
-    /// <remarks>
-    /// THE OPPONENTS ARE REAL BOARDS, not simulated scores — a tournament rolls every seat against
-    /// the same variation and pays each one, so the standings come out of the same rules the player
-    /// is playing. They are plain <see cref="GameBoard"/>s because nobody watches them.
-    /// </remarks>
     public void Reset()
     {
         DisposeBoards();
@@ -398,11 +335,6 @@ public sealed partial class MageDice : PubGame
         UpdateDebug();
     }
 
-    // ---------------------------------------------------------------------------------------
-    // The state machine
-    // ---------------------------------------------------------------------------------------
-
-    /// <summary>One tick. Registered once and never removed.</summary>
     public bool GameLoop(double ticks, object? callbackData, bool blocked)
     {
         HandleGlobalInput(ticks);
@@ -413,7 +345,6 @@ public sealed partial class MageDice : PubGame
         return false;
     }
 
-    /// <summary>Does nothing: the board is still fading in.</summary>
     private void StateWaiting(double ticks)
     {
     }
@@ -424,15 +355,6 @@ public sealed partial class MageDice : PubGame
         _activeState = _defaultState;
     }
 
-    /// <summary>
-    /// Idle at the table, waiting for the player to spin.
-    /// </summary>
-    /// <remarks>
-    /// A FREE SPIN MID-RUN PLAYS ITSELF, but the last one does not — see
-    /// <see cref="GameBoard.AutoPlayFreeSpins"/> — so the player is present for the result. Neither
-    /// autoplay nor a free-spin run starts while the first payout pass is still lighting up the
-    /// board, or the celebration would be cut off by its own reward.
-    /// </remarks>
     private void StateWaitForPlayer(double ticks)
     {
         bool overlayUp = OverlayManager is OverlayManager o &&
@@ -466,17 +388,6 @@ public sealed partial class MageDice : PubGame
 
     private void ResetGlint() => _glintCounter = GlintDelay;
 
-    /// <summary>
-    /// Everything the game does while nobody is spinning: the shine, the bet, the celebration.
-    /// </summary>
-    /// <remarks>
-    /// THE BET IS READ FROM BOTH STICKS AND THE D-PAD AT ONCE, summed and then reduced to a single
-    /// left-or-right by the ANGLE of the result. That is why a diagonal still counts: anything in
-    /// the right half circle raises the bet and anything in the left half lowers it.
-    ///
-    /// THE REPEAT DELAY RESETS ON A DIRECTION CHANGE, so flicking the other way responds at once
-    /// rather than waiting out the interval from the previous press.
-    /// </remarks>
     private void DoIdleTasks(double ticks)
     {
         var standings = false;
@@ -625,14 +536,6 @@ public sealed partial class MageDice : PubGame
         }
     }
 
-    /// <summary>
-    /// The reels are turning.
-    /// </summary>
-    /// <remarks>
-    /// THE RESULT IS ALREADY DECIDED before the first frame — <c>BeginSpin</c> rolls and
-    /// <c>Update</c> resolves, then <c>AnimateSpin</c> plays it back. The bonus tiers re-enter this
-    /// state twice more, spinning the bonus reel and then everything.
-    /// </remarks>
     private void StateSpinSwitches(double ticks)
     {
         switch (_spinState)
@@ -709,18 +612,6 @@ public sealed partial class MageDice : PubGame
 
     private void AnimFinishedCallback() => _animState = AnimFinished;
 
-    // ---------------------------------------------------------------------------------------
-    // Spending and paying
-    // ---------------------------------------------------------------------------------------
-
-    /// <summary>
-    /// Takes the stake, or sends the player to the bank.
-    /// </summary>
-    /// <remarks>
-    /// A FREE SPIN COSTS NOTHING AND SETS NOTHING. It does not overwrite <c>lastBet</c>, which the
-    /// chip counter uses to pace its ticking, and it earns no points — a spin the player did not
-    /// pay for should not move their standing with the pub.
-    /// </remarks>
     private bool ChargePlayerForSpin()
     {
         _thisSpinIsFree = _board.FreeSpins > 0;
@@ -764,15 +655,6 @@ public sealed partial class MageDice : PubGame
         ResetGlint();
     }
 
-    /// <summary>
-    /// Settles the spin: pays the player, applauds, and hands the table back.
-    /// </summary>
-    /// <remarks>
-    /// CHIPS ARE ONLY PAID OUT WHEN THE FREE SPINS RUN OUT, and then it is the whole run's
-    /// <see cref="GameBoard.RunningPayout"/> at once. Mid-run the applause still fires off this
-    /// spin's own payout, so a big hit inside a free run is celebrated when it happens rather than
-    /// at the end.
-    /// </remarks>
     private void AwardPayout()
     {
         _board.ResolveAndPay();
@@ -867,17 +749,6 @@ public sealed partial class MageDice : PubGame
         UpdateTourneyRank();
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Input outside the state machine
-    // ---------------------------------------------------------------------------------------
-
-    /// <summary>
-    /// Input the game answers whatever state it is in.
-    /// </summary>
-    /// <remarks>
-    /// HOLDING A DURING A SPIN HURRIES IT. That is the only always-live binding; the rest of this
-    /// is the developer menu, which <c>allowDebug</c> keeps off in every shipped table.
-    /// </remarks>
     private void HandleGlobalInput(double ticks)
     {
         if (Pad is not { } pad)

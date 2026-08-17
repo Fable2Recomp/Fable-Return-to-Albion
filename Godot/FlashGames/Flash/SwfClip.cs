@@ -54,15 +54,6 @@ public sealed class SwfClip : IPubClip
 
     public string Text { get; set; } = string.Empty;
 
-    // RENAMED FROM `field`, which this codebase uses freely for an edit-text local. Inside a
-    // PROPERTY ACCESSOR it is now a contextual keyword — C# 14 made `field` mean the compiler's
-    // own backing field — so the two collide and the accessor no longer compiles. Only accessors
-    // are affected, which is why the same name is left alone in SwfStage, SwfDocument and
-    // SwfTextRenderer, where it is an ordinary local or parameter.
-    //
-    // The language level is not pinned down to hide this: this tree resolves to C# 14 because a
-    // .NET 10 SDK is installed, and lowering LangVersion for the whole project to accommodate one
-    // identifier would trade a two-line rename for a constraint on everything else.
     public float Height =>
         _stage.Document.EditTexts.TryGetValue(CharacterId, out SwfEditText? editText)
             ? editText.Bounds.Height / SwfShapeGeometry.TwipsPerPixel

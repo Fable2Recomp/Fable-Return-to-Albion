@@ -154,15 +154,6 @@ public sealed partial class Keystone : PubGame
         int starRating, int points, int gamePoints) =>
         new KeystonePlayer(id, isAI, name, gold, debt, starRating, points, gamePoints);
 
-    /// <summary>
-    /// True when leaving now would abandon money already committed to the table.
-    /// </summary>
-    /// <remarks>
-    /// LOCKED IN AND STILL STAKED, both. A bet that has not been locked in is still the player's
-    /// and costs nothing to walk away from; a locked-in bet has been taken by the house and is
-    /// riding on the next roll. Only the second is worth stopping the player to ask about, which
-    /// is why each half of this tests the lock AND the amount.
-    /// </remarks>
     public override bool EndGameWarning()
     {
         KeystonePlayer? human = GetHumanPlayer();
@@ -941,15 +932,6 @@ public sealed partial class Keystone : PubGame
             new Delay(delay, endCallback, userData, group, blocking));
     }
 
-    /// <summary>
-    /// Seeds the payout table with the odds the game itself defines.
-    /// </summary>
-    /// <remarks>
-    /// SEPARATE FROM THE TABLE'S ODDS ON PURPOSE, because the file makes them separate. The SWF's
-    /// <c>InitPayoutRate</c> fills the array with these constants and the variation the guest names
-    /// then replaces it wholesale — see <see cref="SetPayoutRates"/>. Called from the constructor
-    /// so a game that is handed no settings at all still pays something.
-    /// </remarks>
     public void InitPayoutRate()
     {
         for (int id = 0; id < _payoutRate.Length; id++)
@@ -958,22 +940,9 @@ public sealed partial class Keystone : PubGame
         }
     }
 
-    /// <summary>What a space pays, at THIS table.</summary>
     public int GetPayoutRate(int id) =>
         id >= 0 && id < _payoutRate.Length ? _payoutRate[id] : 0;
 
-    /// <summary>
-    /// Replaces the payout table from a variation's <c>payoutRate</c> array.
-    /// </summary>
-    /// <remarks>
-    /// POSITIONAL, and the position is <see cref="KeystoneSpace"/>'s. The array in
-    /// <c>settings.xml</c> is written OUT3..OUT18, IN3..IN18, then the special spaces, in exactly
-    /// the order the ids are numbered, and the file comments each entry with the space it is for.
-    ///
-    /// A SHORT ARRAY LEAVES THE REST ALONE rather than zeroing it. A zero rate is not "free", it is
-    /// a space that pays nothing at all, and silently turning the bottom of the board into a losing
-    /// bet is worse than keeping a default that is at least the right shape.
-    /// </remarks>
     public void SetPayoutRates(IReadOnlyList<int> rates)
     {
         for (int id = 0; id < rates.Count && id < _payoutRate.Length; id++)

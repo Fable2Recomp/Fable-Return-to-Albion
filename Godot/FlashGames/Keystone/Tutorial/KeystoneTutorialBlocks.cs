@@ -2,20 +2,6 @@ using Refii.FlashGames.Framework;
 
 namespace Refii.FlashGames.Keystone;
 
-/// <summary>
-/// What each tutorial stage does to the board before its card is shown.
-/// </summary>
-/// <remarks>
-/// MOST STAGES DO NOTHING, and that is not an omission. Of the 36 stages only 16 have any setup at
-/// all; the rest simply raise a card over whatever the previous stage left on the table. The SWF
-/// stores these as methods named <c>EnterBlock{block}Stage{stage}</c> and looks them up by name,
-/// falling back to an empty <c>EnterNullBlock</c> — the switch here is that lookup.
-///
-/// THE NUMBERS ARE THE LESSON. Every roll, every space and every stake in this file is authored to
-/// demonstrate something: 6+6+6 is the jackpot, 4+4+2 is a bloodstone pair, and the twelve bets
-/// dealt onto the board in block 10 are there so the payout sweep has something to sweep. Nothing
-/// here should be tidied into a loop or a formula, because none of it is derived.
-/// </remarks>
 public sealed partial class Keystone
 {
     private void EnterBlock(int block, int stage)
@@ -68,12 +54,6 @@ public sealed partial class Keystone
         DelayCallback(1, _ => TutorialCollapseArch(), null, TutorialScript, true);
     }
 
-    /// <summary>The player is given their bankroll and asked to bet the arch.</summary>
-    /// <remarks>
-    /// THE STACK FADES IN FROM NOTHING while its value counts up to 100, which is why the alpha is
-    /// forced to zero first: <see cref="TutorialPreFadeIn"/> left the chips hidden rather than
-    /// absent, and animating alpha from its current value would start at whatever it happened to be.
-    /// </remarks>
     private void EnterBlock5Stage2()
     {
         KeystonePlayer? human = GetHumanPlayer();
@@ -116,7 +96,6 @@ public sealed partial class Keystone
         }
     }
 
-    /// <summary>The inner board opens; the odds table is closed off again.</summary>
     private void EnterBlock7Stage2()
     {
         Board?.ShowTutorialHilight(true, true, TutorialAnim, false);
@@ -159,14 +138,6 @@ public sealed partial class Keystone
         AddTutorialAnimWait();
     }
 
-    /// <summary>
-    /// A full board of bets, dealt rather than played, so the jackpot roll has something to pay.
-    /// </summary>
-    /// <remarks>
-    /// THE STAKE IS SUBTRACTED UP FRONT. The player is set to 100 minus the twelve stakes and the
-    /// bets are written straight into their array, because these were not placed through
-    /// <c>ChangeBet</c> and nothing else will have taken the money.
-    /// </remarks>
     private void EnterBlock10Stage2()
     {
         ResetArchStones();
@@ -240,15 +211,6 @@ public sealed partial class Keystone
         DelayCallback(1, _ => TutorialRevealArch(), null, TutorialScript, true);
     }
 
-    /// <summary>
-    /// The bloodstone table: the same board, staked in blood rather than chips.
-    /// </summary>
-    /// <remarks>
-    /// EVERY STACK BECOMES A LAMMER, because a bloodstone bet is a marker and not an amount — see
-    /// <c>GameBoard.SwitchToLammer</c>. The stakes are flattened to 10 across the board and two
-    /// payout rates are overwritten by hand so the numbers on the card match what the roll pays.
-    /// The exposure, not the stake, is what the bet-stats line shows here.
-    /// </remarks>
     private void EnterBlock11Stage2()
     {
         Bloodstone = true;

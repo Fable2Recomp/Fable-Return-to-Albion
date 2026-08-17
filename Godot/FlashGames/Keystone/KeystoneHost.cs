@@ -24,42 +24,15 @@ public partial class KeystoneHost : Node, IPubGameSession
     [Export]
     public int RenderHeight { get; set; } = 462;
 
-    /// <summary>
-    /// The number of seats to fill, or -1 to take the table's own.
-    /// </summary>
-    /// <remarks>
-    /// UNSET IS -1, NOT ZERO, AND THAT MATTERS. These four exports exist so the scene can be run on
-    /// its own as a harness, but under the guest the authority is the variation named in
-    /// <c>settings.xml</c> — Standard1 buys in for 100, Tutorial for 0. Defaulting them to real
-    /// numbers made the harness values win every time: every pub table in the game was played with
-    /// three AI opponents, a 500 buy-in and skin 0, whatever the file said. A sentinel that cannot
-    /// be a legitimate setting is the only way an export can mean "I did not ask".
-    /// </remarks>
     [Export]
     public int AiPlayers { get; set; } = Unset;
 
-    /// <summary>The RNG seed, or 0 to draw a fresh one per session.</summary>
-    /// <remarks>
-    /// NOT A CONSTANT BY DEFAULT. A fixed seed makes every session of every table roll the same
-    /// dice in the same order, which is exactly what a repeatable harness wants and exactly what a
-    /// casino must not do.
-    /// </remarks>
     [Export]
     public ulong Seed { get; set; }
 
     [Export]
     public int Skin { get; set; } = Unset;
 
-    /// <summary>
-    /// The table, by its name in the game's own <c>settings.xml</c>.
-    /// </summary>
-    /// <remarks>
-    /// NOT EMPTY BY DEFAULT, because "no variation" is not a playable table. The file's
-    /// <c>&lt;defaults&gt;</c> section states no <c>buyIn</c> at all, so a game handed no variation
-    /// starts the player with nothing to bet. Standard1 is the lowest cash table and the sane
-    /// thing for the scene to open on when it is run by itself; under the guest this is replaced
-    /// by whichever of the 28 tables the player actually sat down at.
-    /// </remarks>
     [Export]
     public string Variant { get; set; } = "Standard1";
 
@@ -69,25 +42,11 @@ public partial class KeystoneHost : Node, IPubGameSession
     [Export]
     public int StartingGold { get; set; } = 2000;
 
-    /// <summary>"The file decides", for the exports the guest normally supplies.</summary>
     public const int Unset = -1;
 
-    /// <summary>
-    /// Hides the on-screen diagnostic, for a host that is not a debugging harness.
-    /// </summary>
-    /// <remarks>
-    /// The status label names the pad, the frame rate, the phase, the raw stick axes and the last
-    /// roll. That is the right thing in front of a developer running the scene alone and the wrong
-    /// thing in front of a player who walked into a pub.
-    /// </remarks>
     [Export]
     public bool ShowDiagnostics { get; set; } = true;
 
-    /// <summary>The mount key Keystone's assets and built stage are filed under.</summary>
-    /// <remarks>
-    /// Engine_SwfAssets derives this from the game-data folder name by uppercasing the first
-    /// character, so it is "Keystone" from "keystone" — not a display name we get to choose.
-    /// </remarks>
     public const string GameName = "Keystone";
 
     public const int UnresolvedLightingDepth = 3;
@@ -139,8 +98,6 @@ public partial class KeystoneHost : Node, IPubGameSession
 
     public override void _Ready()
     {
-        // The scene is also run on its own as a harness, where nothing else has configured the
-        // texture pipeline. A no-op inside a normal session, which registered at boot.
         Engine_TexEnhance.EnsureRegistered();
 
         _view = new Node2D();
@@ -151,13 +108,9 @@ public partial class KeystoneHost : Node, IPubGameSession
 
         if (!Load())
         {
-            // ON SCREEN *AND* IN THE LOG. The label alone is invisible to a headless run, so a
-            // scene that found nothing looked identical to one that loaded silently.
             string message = "pub games not found under " + GameRoot;
             _status.Text = message;
 
-            // SHOWN EVEN WHEN DIAGNOSTICS ARE OFF. A player who sat down at a table and got a
-            // blank layer is owed the reason; hiding it leaves them staring at nothing.
             _status.Visible = true;
             GD.PushWarning($"[pubgame] {message}");
             return;
@@ -178,9 +131,6 @@ public partial class KeystoneHost : Node, IPubGameSession
 
         _timer = new PubStopwatchTimer();
 
-        // SETTLED BEFORE ANYTHING IS BUILT FROM IT. The table's skin comes out of the variation the
-        // guest named, and the background texture is chosen by that number — building the textures
-        // first means every table in the game shows background0 whatever its settings.xml says.
         var random = new PubRandom(ResolveSeed());
         _commands = new PubGameCommandSink();
         _keystone = new Keystone(_commands, _timer, random);
@@ -283,9 +233,6 @@ public partial class KeystoneHost : Node, IPubGameSession
         _overlays = new KeystoneOverlayManager(_keystone, _root);
         _keystone.OverlayManager = _overlays;
 
-        // THE OVERLAYS HAVE TO EXIST FIRST. The tutorial's opening step raises a card and closes
-        // the odds table off, both of which go through the overlay manager — starting it before
-        // this line silently skipped its first stage.
         if (_keystone.Tutorial)
         {
             _keystone.TutorialPreFadeIn();
@@ -352,15 +299,6 @@ public partial class KeystoneHost : Node, IPubGameSession
             Mathf.Max(file.FrameSize.Width, 1) / SwfShapeGeometry.TwipsPerPixel,
             Mathf.Max(file.FrameSize.Height, 1) / SwfShapeGeometry.TwipsPerPixel);
 
-        // NOT SYNCED HERE, and that is the point. The viewport has no size yet during _Ready — it
-        // reports zero — so the raster scale cannot be known, and rasterizing the whole board now
-        // would build every shape at 1x and then throw all of it away on the first Fit(). The
-        // first _Process calls Fit() and then Sync(), in that order, on both of its paths, so the
-        // board is built exactly once and at the size it will be shown at.
-        //
-        // SAID OUT LOUD, because both halves of this have failed silently. A resolver that picked
-        // an empty directory left the scene reporting "pub games not found" with the files present,
-        // and a texture path that skipped the pipeline looked exactly like one that used it.
         _scene = new SwfScene(_stage, _view)
         {
             Vector = Engine_TexSettings.PubGameVectorShapes,
@@ -400,15 +338,11 @@ public partial class KeystoneHost : Node, IPubGameSession
             ? PubGamesText.ParseSettings(File.ReadAllBytes(ownPath), out _)
             : null;
 
-        // A HARNESS OVERRIDE, so one build can be pointed at any of the 28 tables — the tutorial
-        // in particular — without editing the scene. The guest never sets this.
         string wanted = System.Environment.GetEnvironmentVariable("REFII_KEYSTONE_VARIANT")
             ?? string.Empty;
         _keystone.VariantName = wanted.Length != 0 ? wanted : Variant;
         List<string> applied = KeystoneConfig.Apply(_keystone, shared, own);
 
-        // THE FILE WINS UNLESS SOMEONE ASKED. See the Unset remarks above — these are harness
-        // overrides, and an override only overrides when it was actually set.
         if (AiPlayers != Unset)
         {
             _keystone.NumberOfAIPlayers = AiPlayers;
@@ -430,30 +364,9 @@ public partial class KeystoneHost : Node, IPubGameSession
         return applied;
     }
 
-    /// <summary>
-    /// The seed the dice are drawn from.
-    /// </summary>
-    /// <remarks>
-    /// A SET SEED IS HONOURED EXACTLY, because that is what a set seed is for — the triangulation
-    /// and rules probes replay a table and compare it against the last run, and they cannot do that
-    /// against a clock. Zero means nobody asked, and a session nobody seeded gets a fresh one.
-    /// </remarks>
     private ulong ResolveSeed() =>
         Seed != 0 ? Seed : (ulong)System.DateTime.UtcNow.Ticks;
 
-    /// <summary>
-    /// The game-data directory that actually carries the pub games.
-    /// </summary>
-    /// <remarks>
-    /// THE TEST IS "HAS PUB GAMES", NOT "EXISTS". Every candidate below used to be accepted on
-    /// existence alone, and in this tree the first one that exists — <c>&lt;repo&gt;/assets/game</c>
-    /// — holds nothing but shaders. The search stopped there and the scene reported the pub games
-    /// missing while they sat in a build output two candidates further down.
-    ///
-    /// The candidate list is <see cref="Engine_GameData"/>'s, so this resolves by the same
-    /// convention as the banks and honours the same <c>REFII_GAME_DATA</c> override, rather than
-    /// keeping a second idea of where the game data is.
-    /// </remarks>
     private string ResolveRoot()
     {
         if (Path.IsPathRooted(GameRoot) && PubGamesCatalog.ResolveRoot(GameRoot).Length != 0)
@@ -537,12 +450,6 @@ public partial class KeystoneHost : Node, IPubGameSession
 
         if (pad.BackPressed)
         {
-            // THROUGH EndGame, NOT STRAIGHT TO THE CARD. Back does not mean "show the quit
-            // dialogue" — it means "I want to leave", and the game decides what that costs: a
-            // confirmation when there is money riding on the roll, the cash-out card when the
-            // player has played and is up or down, and an immediate settle when neither applies.
-            // Raising the quit card unconditionally asked a player who had bet nothing to confirm
-            // abandoning bets they did not have.
             _keystone.EndGame();
         }
         else if (pad.StartPressed)
@@ -562,9 +469,6 @@ public partial class KeystoneHost : Node, IPubGameSession
             _overlays.ShowStandings(true);
         }
 
-        // THE TUTORIAL IS ITS OWN STATE MACHINE and does not share the betting phases. It scripts
-        // its own rolls, deals its own bets and advances only when the player answers a card, so
-        // letting the phase machine run alongside it would have two things driving the same board.
         if (_keystone.Tutorial)
         {
             _keystone.HandleTutorialInput(pad, ticks);
@@ -709,30 +613,10 @@ public partial class KeystoneHost : Node, IPubGameSession
         _phase = Phase.ArchBetting;
     }
 
-    /// <summary>
-    /// True once the game has settled and said so, so a host knows the session is over.
-    /// </summary>
-    /// <remarks>
-    /// THE GAME'S OWN "GameOver", NOT AN OVERLAY'S FLAG. Every exit runs the same chain —
-    /// <c>PubGame::GameOver</c> nets chips against debt and turns the remainder into gold, fades
-    /// the board out, and the fade's completion calls <c>GameReallyOver</c>, which issues this
-    /// command. Reading an overlay's "the player closed me" flag instead sampled the balance
-    /// BEFORE the settlement had run and, on the quit-without-betting path, in place of running it
-    /// at all. See [[refii-sample-late-not-early]] in spirit: gate on the settled state.
-    ///
-    /// This is the signal the guest is waiting on. It sits at state 2 until whoever is drawing the
-    /// game hands it back state 9 to settle.
-    /// </remarks>
     public bool IsFinished => _ready && _commands.GameOverIssued;
 
-    /// <summary>The player's gold, as an ABSOLUTE balance for the guest to settle against.</summary>
-    /// <remarks>
-    /// Not winnings. The guest seeded this game's bank from the hero's real gold before the
-    /// session and settles by crediting the DIFFERENCE, so handing it a delta would pay twice.
-    /// </remarks>
     public long FinalGold => _human?.Gold ?? 0;
 
-    /// <summary>The player's pub-game debt, likewise absolute.</summary>
     public long FinalDebt => _human?.Debt ?? 0;
 
     public bool IsRolling => _rolling;
@@ -772,7 +656,6 @@ public partial class KeystoneHost : Node, IPubGameSession
         _keystone.DelayCallback(
             3400, _ => _board.ShowNumberAbove(_keystone.ArchStoneToRemove, true, null, false, 0));
     }
-
 
     private void SyncAiStacks()
     {
@@ -822,49 +705,18 @@ public partial class KeystoneHost : Node, IPubGameSession
         }
     }
 
-    /// <summary>
-    /// The most a shape is rasterized above its authored size.
-    /// </summary>
-    /// <remarks>
-    /// The rasterizer is software and its cost is per PIXEL, so this is a quadratic budget: 3x is
-    /// nine times the work of 1x. It is set at 3 because that covers a 640-wide stage filling a
-    /// 4K window's height, and past that the authored art has no more detail to expose however
-    /// large the canvas is.
-    /// </remarks>
     public const float MaxRasterScale = 3f;
 
     private float StageWidth => Mathf.Max(_stageSize.X, 1f);
 
     private float StageHeight => Mathf.Max(_stageSize.Y, 1f);
 
-    /// <summary>How far the whole stage is magnified to fill the window.</summary>
     private float StageFit()
     {
         Vector2 viewport = GetViewport().GetVisibleRect().Size;
         return Mathf.Min(viewport.X / StageWidth, viewport.Y / StageHeight);
     }
 
-    /// <summary>
-    /// The oversampling the scene rasterizes at.
-    /// </summary>
-    /// <remarks>
-    /// THE SETTING DECIDES, AND ITS DEFAULT IS 1. Following the window is the version that makes
-    /// the board sharp, and it is not the default because it is expensive in a way nothing else
-    /// in this pipeline is: the shapes are rasterized on the CPU at load, so the cost is quadratic
-    /// in this number. Keystone measures 234 canvases at 109 MB and 4.6 s at 1x, and 348 MB and
-    /// 11.9 s at 2.5x. Seven extra seconds in front of a pub minigame is worse than a soft board,
-    /// so a player who wants the sharp one asks for it — see
-    /// <see cref="Engine_TexSettings.PubGameRasterScale"/>.
-    ///
-    /// FOLLOWING THE WINDOW IS ROUNDED UP TO A HALF STEP, and rounded rather than followed
-    /// exactly, because changing it throws away every rasterized shape: tracking the fit factor
-    /// continuously would rebuild the entire tree on every pixel of a window drag. Up rather than
-    /// down so the canvas is never smaller than what is on screen — a shortfall is visible as
-    /// blur, an excess is not visible at all.
-    ///
-    /// Never below 1 either way: the stage is only ever magnified to fit, never shrunk below its
-    /// authored size in a way that would make a smaller canvas correct.
-    /// </remarks>
     private float RasterScale()
     {
         float setting = Engine_TexSettings.PubGameRasterScale;
@@ -885,16 +737,11 @@ public partial class KeystoneHost : Node, IPubGameSession
             (viewport.X - (StageWidth * scale)) * 0.5f,
             (viewport.Y - (StageHeight * scale)) * 0.5f);
 
-        // NOTHING TO DO ON THE VECTOR PATH, and that is its whole advantage: the geometry is the
-        // same geometry at every size, so a resize is a transform and not a rebuild.
         if (_scene is null || _scene.Vector)
         {
             return;
         }
 
-        // THE RASTER SCALE FOLLOWS THE WINDOW. Set here rather than once at load so a resize —
-        // or a borderless-to-fullscreen switch — re-rasterizes instead of leaving the stage
-        // showing canvases built for the old size. A no-op unless the quantised value moved.
         _scene.TextureScale = RasterScale();
 
         if (!Mathf.IsEqualApprox(_scene.TextureScale, _reportedRaster))
@@ -906,7 +753,6 @@ public partial class KeystoneHost : Node, IPubGameSession
         }
     }
 
-    /// <summary>The raster scale the last log line named, so a per-frame Fit does not flood.</summary>
     private float _reportedRaster;
 
     private void Report(double delta, GamePad pad)

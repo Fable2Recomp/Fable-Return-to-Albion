@@ -2,27 +2,6 @@ using System;
 
 namespace Refii.FlashGames.Framework;
 
-// THE "== NaN" TESTS IN THE SHIPPED CODE ARE "isNaN" TESTS, and this file is where that matters.
-//
-// Fade and Animate both open their Run with what decompiles as `if (this.StartAlpha == NaN)`, and
-// the bytecode agrees: Push StartAlpha, Push <double NaN>, Equals2, Not, If. Under ECMA equality
-// NaN == NaN is false, so a literal transcription never captures the starting value, leaves it NaN,
-// and assigns NaN to the clip's alpha or frame on every tick.
-//
-// That reading cannot be what the game does. InitLegend sets `_root["button" + i]._alpha = 0` and
-// the ONLY thing that ever raises it is Fade.In; same for InitFreeSpins and InitBonusMultiplier.
-// Under the literal reading the button prompts and the free-spin counter would never once become
-// visible, and they plainly do. So the intent is isNaN — a first-run initialiser — and that is what
-// is written here.
-//
-// Transcribing the defect instead would be faithful to the bytes and wrong about the game, and in
-// C# it is worse than in Flash: Godot has no forgiving coercion for a NaN modulate, so a NaN alpha
-// propagates into the render rather than being quietly ignored.
-//
-// (Found while reading this: tools/as2dis.py decoded AVM1 doubles with the two 32-bit halves
-// swapped, printing NaN as 1.06e-314 — fixed there, or none of the above would have been legible.)
-
-/// <summary>Plays a clip's timeline from one frame to another over a duration.</summary>
 public sealed class Animate : Action
 {
     private readonly IPubClip _clip;
@@ -40,7 +19,6 @@ public sealed class Animate : Action
         Group = group;
     }
 
-    /// <summary>NaN until the first tick reads the clip's current frame.</summary>
     public double StartFrame { get; set; }
 
     public double FinalFrame { get; set; }
@@ -63,14 +41,6 @@ public sealed class Animate : Action
         IPubClip thingToAnimate, double finalFrame, double duration, object? group = null) =>
         Add(new Animate(thingToAnimate, finalFrame, duration, group));
 
-    /// <summary>
-    /// Loops a stretch of timeline for a total duration.
-    /// </summary>
-    /// <remarks>
-    /// ONE LOOP IS THE FRAME SPAN AT 60 FPS — <c>(finalFrame - startFrame) / 60</c> — so the loop
-    /// runs at the rate the artwork was authored at, and <paramref name="duration"/> only decides
-    /// how many times round it goes.
-    /// </remarks>
     public static Animate Loop(
         IPubClip thingToAnimate, double startFrame, double finalFrame, double duration,
         object? group = null)
@@ -86,7 +56,6 @@ public sealed class Animate : Action
         return animate;
     }
 
-    /// <summary>Runs for whatever <paramref name="synch"/> has left when this first ticks.</summary>
     public static Animate Synched(
         IPubClip thingToAnimate, double finalFrame, Action synch, object? group = null)
     {
@@ -137,7 +106,6 @@ public sealed class Animate : Action
             StartFrame = _clip.CurrentFrame;
         }
 
-        // TRUNCATED, WHICH IS WHAT gotoAndStop DOES with a fractional frame.
         _clip.GotoAndStop((int)(StartFrame + (PercentDone * (FinalFrame - StartFrame))));
 
         if (PercentDone == 1)
@@ -156,7 +124,6 @@ public sealed class Animate : Action
     }
 }
 
-/// <summary>Holds a group up, either for a fixed time or until the rest of it is done.</summary>
 public sealed class Wait : Action
 {
     public Wait(double duration, object? group, bool runOnlyWhileActive)
@@ -173,13 +140,6 @@ public sealed class Wait : Action
     public static Wait Seconds(double duration, object? group = null) =>
         Add(new Wait(duration, group, false));
 
-    /// <summary>
-    /// Blocks until nothing else in the group ran this tick.
-    /// </summary>
-    /// <remarks>
-    /// The one-second duration is a floor, not the wait: <c>groupActive</c> is what actually ends
-    /// it, and it stops blocking the moment its group falls quiet.
-    /// </remarks>
     public static Wait UntilFinished(object? group = null) =>
         Add(new Wait(1, group, true));
 
@@ -205,7 +165,6 @@ public sealed class Wait : Action
     }
 }
 
-/// <summary>Tweens a clip's alpha to a target over a duration.</summary>
 public sealed class Fade : Action
 {
     private readonly IPubClip _clip;
@@ -221,7 +180,6 @@ public sealed class Fade : Action
         Group = group;
     }
 
-    /// <summary>NaN until the first tick reads the clip's current alpha.</summary>
     public double StartAlpha { get; set; }
 
     public double FinalAlpha { get; set; }
@@ -265,14 +223,6 @@ public sealed class Fade : Action
     }
 }
 
-/// <summary>
-/// Fades a set of clips together.
-/// </summary>
-/// <remarks>
-/// AN <see cref="AnimateBase"/>, NOT AN <see cref="Action"/> — the odd one out in this file, and
-/// that is how it is in the shipped code. Nothing calls it: it is in Mage Dice's SWF with no
-/// callers at all. Ported for completeness rather than because anything needs it.
-/// </remarks>
 public sealed class FadeClips : AnimateBase
 {
     private readonly IPubClip[] _clips;
@@ -299,7 +249,6 @@ public sealed class FadeClips : AnimateBase
     }
 }
 
-/// <summary>Fires a sound cue, optionally after a delay.</summary>
 public sealed class PlaySound : Action
 {
     private readonly Audio _audio;

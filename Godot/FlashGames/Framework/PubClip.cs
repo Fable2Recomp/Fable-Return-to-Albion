@@ -51,6 +51,16 @@ public interface IPubClip
     void SwapDepths(int depth);
 
     int GetNextHighestDepth();
+
+    void SetTint(
+        float redMultiply, float greenMultiply, float blueMultiply,
+        float redOffset, float greenOffset, float blueOffset)
+    {
+    }
+
+    void SetTextFormat(PubTextFormat format)
+    {
+    }
 }
 
 public interface IAnimPos

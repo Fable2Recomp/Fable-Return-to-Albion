@@ -5,18 +5,6 @@ using Refii.FlashGames.Framework;
 
 namespace Refii.FlashGames.MageDice;
 
-/// <summary>
-/// The Mage Dice board on screen: the reels, the win rings, the lines between them.
-/// </summary>
-/// <remarks>
-/// THE BOARD CLIP IS SWAPPED IN AT RUNTIME. The stage ships a placeholder called <c>board</c>,
-/// which the constructor deletes and replaces with the export named
-/// <c>&lt;reels&gt;switch&lt;skin&gt;</c> — <c>3switch0</c>, <c>4switch2</c>, <c>6switch1</c>. The
-/// reel count and the pub's decor are both in that one name, which is why a three-reel table and a
-/// six-reel one can share every line of code below.
-///
-/// A 1:1 port of <c>AnimatingGameBoard.as</c>.
-/// </remarks>
 public sealed class AnimatingGameBoard : GameBoard
 {
     private readonly IPubClip _boardMC;
@@ -62,14 +50,6 @@ public sealed class AnimatingGameBoard : GameBoard
 
     public IPubClip GetBoardClip() => _boardMC;
 
-    /// <summary>
-    /// True while the first pass over a win is still playing.
-    /// </summary>
-    /// <remarks>
-    /// AUTOPLAY WAITS ON THIS. The first pass lights every chain at once so the player sees the
-    /// shape of the win; only afterwards are they walked one at a time with their amounts. Letting
-    /// autoplay start the next spin during that first pass would hide the result it is celebrating.
-    /// </remarks>
     public bool FirstPayoutSequence => Chains.Count > 0 && _firstPayoutSequence;
 
     public BonusSwitch? GetBonusSwitch() => BonusSwitch as BonusSwitch;
@@ -111,7 +91,6 @@ public sealed class AnimatingGameBoard : GameBoard
         }
     }
 
-    /// <summary>Clears the lines drawn between reels of a winning chain.</summary>
     private void HideWinAnims()
     {
         for (var a = 0; a < BoardType; a++)
@@ -135,28 +114,6 @@ public sealed class AnimatingGameBoard : GameBoard
         _firstPayoutSequence = true;
     }
 
-    /// <summary>
-    /// Starts every reel spinning, staggered, with the sound each one should land on.
-    /// </summary>
-    /// <remarks>
-    /// THE STAGGER IS CUMULATIVE AND RANDOM WITHIN A BAND. <c>spinTimes</c> is twelve numbers read
-    /// as six min/max pairs, one per reel, and each reel's stop time is added to the last — so the
-    /// reels always land left to right, but never on the same beat twice.
-    ///
-    /// THE LANDING SOUND IS A TEASE, chosen from what the board will look like once this reel
-    /// stops. <c>M_genericMatching2</c> as the second of a pair lands, <c>M_bonusMatching3</c> as
-    /// the third bonus symbol lands. The count is rebuilt here rather than read off the payout
-    /// tables because it has to be the count SO FAR, reel by reel, not the final one.
-    ///
-    /// THE SIX-REEL BOARD NEEDS ITS OWN ARITHMETIC because its reels are not all adjacent — a
-    /// match on reel 3 only counts if reel 1 shows the same face. That is why this repeats the
-    /// adjacency from <see cref="GameBoard.Init"/> rather than counting matches outright: the
-    /// sound has to promise a win that the payout will actually honour.
-    ///
-    /// AND THE TWO BONUS REELS BUY TIME. A second bonus symbol extends the next reel's spin by
-    /// <c>spinTimeExtension1</c> and a third by <c>spinTimeExtension2</c>, so the reel that could
-    /// complete the set hangs before it lands.
-    /// </remarks>
     public void AnimateSpin()
     {
         var counts = new int[Variant.ReelImages.Count];
@@ -293,8 +250,6 @@ public sealed class AnimatingGameBoard : GameBoard
                 {
                     freeSpins++;
 
-                    // A LONE FREE SPIN ON THE LAST REEL GETS NO SOUND, because it cannot be the
-                    // start of anything — there are no reels left to match it.
                     if (reel != Variant.GameType - 1 || freeSpins != 1)
                     {
                         sound = "M_bonusCoinFreeSpin" + freeSpins;
@@ -334,7 +289,6 @@ public sealed class AnimatingGameBoard : GameBoard
         bool IsBonusReel(int reel) => Variant.Types[GetSwitch(reel).Value] == Token.TypeBonusReel;
     }
 
-    /// <summary>A stop time drawn from reel <c>pair / 2</c>'s min/max band.</summary>
     private double Band(int pair)
     {
         if (pair + 1 >= _spinTimes.Count)
@@ -345,14 +299,11 @@ public sealed class AnimatingGameBoard : GameBoard
         return _spinTimes[pair] + (Random.NextDouble() * (_spinTimes[pair + 1] - _spinTimes[pair]));
     }
 
-    /// <summary>Opens the shutter and spins the bonus reel on its own.</summary>
     public void AnimateBonusSpin()
     {
         GetBonusSwitch()?.Show();
         PlaySound.Once(Audio, "M_bonusFourthSwitchReveal", null);
 
-        // THE HURRY-UP IS CANCELLED HERE. The bonus reel is the payoff; letting a held button rush
-        // it would skip the one spin the player most wants to watch.
         MageDice.SpeedAnimation = false;
 
         string? endSound = null;
@@ -365,7 +316,6 @@ public sealed class AnimatingGameBoard : GameBoard
         GetBonusSwitch()?.SpinReel(_spinTimeExtension1 + Band(0), endSound);
     }
 
-    /// <summary>The second bonus tier: the bonus reel and every ordinary reel together.</summary>
     public void AnimateBonus2Spin()
     {
         MageDice.SpeedAnimation = false;
@@ -378,15 +328,6 @@ public sealed class AnimatingGameBoard : GameBoard
         }
     }
 
-    /// <summary>
-    /// Steps the payout celebration on by one.
-    /// </summary>
-    /// <remarks>
-    /// TWO PASSES OVER THE CHAINS. The first lights all of them at once with no amounts — that is
-    /// the <c>chainIndex &lt; 0</c> branch, which runs the whole list and then rewinds. The second
-    /// walks them one at a time, each with its floating amount. A single chain skips the first pass
-    /// entirely, because showing one win twice is just a stutter.
-    /// </remarks>
     public void PlayNextWinAnimation()
     {
         if (_chainIndex < 0)
@@ -418,14 +359,6 @@ public sealed class AnimatingGameBoard : GameBoard
         _chainIndex++;
     }
 
-    /// <summary>
-    /// Lights one chain: its reels, the lines between them, and optionally what it paid.
-    /// </summary>
-    /// <remarks>
-    /// THE RING TIER IS THE CHAIN'S SIZE, not its value: more than five reels gets the top ring,
-    /// more than three — or anything won inside the bonus — gets the middle one. A big win and a
-    /// valuable win are not the same thing, and the board says which this was.
-    /// </remarks>
     private void AnimateChain(bool showFloaty)
     {
         List<Switch> chain = Chains[_chainIndex];
@@ -477,14 +410,12 @@ public sealed class AnimatingGameBoard : GameBoard
         PlaySound.Once(Audio, "SB_highlightGlow", null);
     }
 
-    /// <summary>The idle shine, parked on its last frame so it is not showing.</summary>
     private void InitGlint()
     {
         IPubClip? glint = _boardMC.GetChild("ambient")?.GetChild("glint");
         glint?.GotoAndStop(glint.TotalFrames);
     }
 
-    /// <summary>Runs the idle shine, which is what a board does when nobody is playing it.</summary>
     public void AnimateGlint()
     {
         IPubClip? glint = _boardMC.GetChild("ambient")?.GetChild("glint");

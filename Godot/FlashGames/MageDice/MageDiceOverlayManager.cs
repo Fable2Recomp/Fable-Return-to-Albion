@@ -5,14 +5,6 @@ using Refii.FlashGames.Framework;
 
 namespace Refii.FlashGames.MageDice;
 
-/// <summary>
-/// The overlay cards Mage Dice answers for itself, over the shared <see cref="OverlayManager"/>.
-/// </summary>
-/// <remarks>
-/// A 1:1 port of <c>MageDiceOverlayManager.as</c>. Where Keystone's subclass prints a payout table
-/// over board spaces, this one builds a paytable over reel symbols — same seam, entirely different
-/// content, which is the reason the seam exists.
-/// </remarks>
 public sealed class MageDiceOverlayManager : OverlayManager
 {
     private readonly MageDice _mageDice;
@@ -23,26 +15,8 @@ public sealed class MageDiceOverlayManager : OverlayManager
     public MageDiceOverlayManager(MageDice mageDice, IPubClip root)
         : base(mageDice, root) => _mageDice = mageDice;
 
-    // GetChipsInPlay IS NOT OVERRIDDEN, because the base does not declare it — see the note in
-    // OverlayManager. Mage Dice's version returns the player's chips, which is exactly what the
-    // AS2 base already returns, so nothing is lost by its absence: the override existed only to
-    // restate the default.
-
-    /// <summary>Mage Dice counts a play as a spin.</summary>
     protected override int GetPlays() => _mageDice.TotalSpins;
 
-    /// <summary>
-    /// Builds the odds card for this machine: its symbols, and what runs of them pay.
-    /// </summary>
-    /// <remarks>
-    /// THE CARD HAS A FRAME PER LAYOUT, chosen from the reel count: three or four reels take frame
-    /// 1 or 2, six takes frame 3 — except that a six-reel table where two in a row already pay
-    /// needs the extra column, so it takes frame 4 instead.
-    ///
-    /// ONLY PAYING SYMBOLS GET A SLOT. Bonus reel, multiplier and free-spin symbols are pulled out
-    /// of the run and shown once in the "special" position with an explanatory line, because they
-    /// do not pay by run length like the rest.
-    /// </remarks>
     protected override void InitQuickTips(IPubClip clip)
     {
         _lastVariant = _mageDice.ActiveVariantIndex;
@@ -109,9 +83,6 @@ public sealed class MageDiceOverlayManager : OverlayManager
             SetVariantTitle(title);
         }
 
-        // ALWAYS HIDDEN, in both branches of the shipped code — the symbol is swapped in but the
-        // slot is never shown. Kept because removing it would change what the card looks like if
-        // anything ever un-hides it.
         if (clip.GetChild("special") is { } specialClip)
         {
             specialClip.Visible = false;
@@ -145,13 +116,6 @@ public sealed class MageDiceOverlayManager : OverlayManager
         }
     }
 
-    /// <summary>
-    /// Refreshes the paytable when the stake changes.
-    /// </summary>
-    /// <remarks>
-    /// THE CARD SHOWS CHIPS, NOT ODDS, so it is rebuilt whenever the bet moves — a payout of 10 at
-    /// a stake of 5 is 50, and the player reads the number they would win rather than a ratio.
-    /// </remarks>
     protected override void UpdateQuickTips(IPubClip clip)
     {
         if (_lastVariant != _mageDice.ActiveVariantIndex)
@@ -220,24 +184,6 @@ public sealed class MageDiceOverlayManager : OverlayManager
 
     protected override void PulseQuickTipsButton() => _mageDice.PulseQuickTipsButton();
 
-    /// <summary>
-    /// Names the pub this machine sits in.
-    /// </summary>
-    /// <remarks>
-    /// THE VARIATION NAME IS TRIMMED DOWN TO THE VENUE: the 41 variations are things like
-    /// <c>CowAndCorset1</c>, <c>SBTowerOfRiches4</c> and <c>JohnTheMiller</c>, and the localisation
-    /// file carries nine keys, one per venue — so a trailing tier digit and a leading <c>SB</c> are
-    /// stripped to get from one to the other.
-    ///
-    /// THE DIGIT TEST IS A TEST, though the shipped source does not read like one. It writes
-    /// <c>if (Number(last) != NaN)</c>, which in ActionScript is TRUE for every value including NaN
-    /// itself, so it would strip the last character unconditionally. The localisation file proves
-    /// that is not the intent: three of the nine venues — <c>ConquestOfTheSeas</c>,
-    /// <c>JohnTheMiller</c> and <c>Tutorial</c> — end in a letter, and stripping it would ask for
-    /// <c>txtVariantSpinnerBoxConquestOfTheSea</c>, which does not exist. Testing for a digit
-    /// resolves all nine. This is the same always-true NaN comparison that appears in
-    /// <c>Fade.Run</c> and <c>Animate.Run</c>; see the note at the top of <c>Actions.cs</c>.
-    /// </remarks>
     private void SetVariantTitle(IPubClip t)
     {
         if (Game.Tournament)

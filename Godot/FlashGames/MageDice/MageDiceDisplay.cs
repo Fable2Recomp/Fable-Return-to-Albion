@@ -7,9 +7,6 @@ using Action = Refii.FlashGames.Framework.Action;
 
 namespace Refii.FlashGames.MageDice;
 
-/// <summary>
-/// The half of <see cref="MageDice"/> that talks to the stage rather than the rules.
-/// </summary>
 public sealed partial class MageDice
 {
     public const int Legend1 = 1;
@@ -29,14 +26,6 @@ public sealed partial class MageDice
 
     public const double LegendFadeTime = 0.25;
 
-    /// <summary>
-    /// Builds the player's chip stack out of three columns and their shadows.
-    /// </summary>
-    /// <remarks>
-    /// THE SHADOWS ARE ATTACHED, NOT AUTHORED, and they are placed to match each column exactly.
-    /// They are siblings rather than children so that layering can put the whole stack in front of
-    /// the board while the shadows stay on the felt.
-    /// </remarks>
     private void InitChips()
     {
         Shadow("Stack0A", "Shadow0A");
@@ -76,15 +65,6 @@ public sealed partial class MageDice
     private IPubClip Child(string name) =>
         _root.GetChild(name) ?? _root.CreateEmptyMovieClip(name, _root.GetNextHighestDepth());
 
-    /// <summary>
-    /// Puts the stage's clips into the order they draw in.
-    /// </summary>
-    /// <remarks>
-    /// ORDER OF THE CALLS IS THE ORDER OF THE LAYERS, back to front, because each one takes the
-    /// next free depth. The board goes furthest back and the overlays in front of everything; the
-    /// developer clips are removed outright when the table did not ask for them, so they cannot
-    /// intercept anything.
-    /// </remarks>
     private void AdjustLayers()
     {
         foreach (string name in new[]
@@ -143,15 +123,6 @@ public sealed partial class MageDice
         }
     }
 
-    /// <summary>
-    /// Walks the displayed chip total towards the real one.
-    /// </summary>
-    /// <remarks>
-    /// TWO SPEEDS, AND THE SLOW ONE IS THE POINT. After a win the count is deliberately paced —
-    /// five audible dings a second, each worth a multiple of the last bet — so a big payout takes
-    /// time to land and sounds like it. Everywhere else it catches up at the square root of the
-    /// difference, which is fast for small corrections and still bounded for huge ones.
-    /// </remarks>
     private void UpdatePlayerChipDisplay(double ticks)
     {
         int target = _chipStack.Value;
@@ -218,13 +189,6 @@ public sealed partial class MageDice
         }
     }
 
-    /// <summary>
-    /// Raises and lowers the button prompts as what the player can do changes.
-    /// </summary>
-    /// <remarks>
-    /// EACH PROMPT REMEMBERS WHETHER IT IS UP, because raising it is a fade and re-raising an
-    /// already-raised prompt every frame would restart that fade forever.
-    /// </remarks>
     private void ShowButtons()
     {
         bool waiting = _activeState == StateWaitForPlayer;
@@ -258,13 +222,6 @@ public sealed partial class MageDice
         RequestAudioTick = false;
     }
 
-    /// <summary>
-    /// The reel ticking, rate limited.
-    /// </summary>
-    /// <remarks>
-    /// SIX REELS ASKING AT ONCE WOULD BE A BUZZ, so the reels raise a flag and this fires at most
-    /// one tick every 70 ms, picked from six samples so the sound does not repeat audibly.
-    /// </remarks>
     private void PlayTickSound(double ticks)
     {
         _tickAudioTimer -= ticks;
@@ -279,7 +236,6 @@ public sealed partial class MageDice
         _tickAudioTimer = 70;
     }
 
-    /// <summary>The chip sound scales with the size of the change, not the total.</summary>
     private void PlayChipStackSound(int delta)
     {
         int size = Math.Abs(delta);
@@ -301,17 +257,6 @@ public sealed partial class MageDice
         }
     }
 
-    /// <summary>
-    /// Refreshes the free-spin counter and the multiplier badge.
-    /// </summary>
-    /// <remarks>
-    /// THE COUNTER RUNS BEHIND ON PURPOSE. <c>freeSpinCounter</c> is worked down one ding at a time
-    /// by <see cref="DoIdleTasks"/> and subtracted here, so newly won spins are counted onto the
-    /// display audibly rather than appearing all at once.
-    ///
-    /// THE NEXT MULTIPLIER IS HIDDEN WHILE THE REELS TURN — it would spoil the result it is about
-    /// to be part of — so it shows a placeholder until the spin settles.
-    /// </remarks>
     private void UpdateDisplay()
     {
         bool free = _board.FreeSpins > 0 || _thisSpinIsFree;
@@ -605,8 +550,6 @@ public sealed partial class MageDice
             return;
         }
 
-        // STARTS INVISIBLE BY ALPHA, and the ONLY thing that ever raises it is the fade in
-        // ShowLegend. See the note at the top of Actions.cs about why that fade has to work.
         clip.Alpha = 0;
         clip.GetChild("button")?.GotoAndStop(1);
     }
@@ -654,7 +597,6 @@ public sealed partial class MageDice
 
     public void PulseQuickTipsButton() => PulseLegend(Legend4);
 
-    /// <summary>Fades the whole board in or out.</summary>
     public Fade? ShowBoard(bool show, double time, bool blocking, object? group)
     {
         IPubClip? clip = _root.GetChild("fadeAll");
@@ -670,18 +612,10 @@ public sealed partial class MageDice
 
     public override void BankingMenuDispelled()
     {
-        // NOT SLOWLY. The bank changed the total by an amount the player chose, so counting it up
-        // one ding at a time would be pacing a number they already know.
         _slowChipCount = false;
         UpdateChipstack();
     }
 
-    /// <summary>
-    /// Swaps one clip for a different library symbol, keeping its place and size.
-    /// </summary>
-    /// <remarks>
-    /// A 1:1 port of <c>ReplaceClip</c>. Only the developer reel picker uses it.
-    /// </remarks>
     internal static void ReplaceClip(IPubClip parent, IPubClip clip, string symbolName)
     {
         int depth = clip.GetDepth();

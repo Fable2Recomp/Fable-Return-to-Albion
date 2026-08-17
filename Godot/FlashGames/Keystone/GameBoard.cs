@@ -927,7 +927,6 @@ public sealed class GameBoard
     public IPubClip? GetHilight(int id) =>
         _root.GetChild("hilights")?.GetChild(KeystoneRules.BetIdToString(id) + "glow");
 
-    /// <summary>Where the tutorial's hilight overlay is attached.</summary>
     public int TutorialHilightDepth { get; set; }
 
     private IPubClip? PlayerName(int seat) =>
@@ -936,7 +935,6 @@ public sealed class GameBoard
     private IPubClip? ChipTotal(int seat) =>
         _root.GetChild("playerNames")?.GetChild("chipTotal" + seat);
 
-    /// <summary>Takes a seat's name plate off the table entirely.</summary>
     public void HidePlayerName(int seat)
     {
         IPubClip? name = PlayerName(seat);
@@ -964,11 +962,6 @@ public sealed class GameBoard
         }
     }
 
-    /// <summary>Fades a seat's chip columns up from nothing.</summary>
-    /// <remarks>
-    /// The multi-stack is six clips, so the animation drives the stack object's own
-    /// <see cref="ChipStackMulti.SetAlpha"/> rather than any one of them.
-    /// </remarks>
     public void FadeInPlayerStack(int seat, double time, object? group)
     {
         ChipStackMulti? stack = GetPlayerStack(seat);
@@ -1000,15 +993,6 @@ public sealed class GameBoard
         _keystone.CallbackManager.AddCallbackObject(fade);
     }
 
-    /// <summary>
-    /// Raises or drops the tutorial's "look at this half of the board" overlay.
-    /// </summary>
-    /// <remarks>
-    /// TWO OVERLAYS, ONE FOR EACH HALF. <c>tutorial_hilites</c> covers the arch and
-    /// <c>tutorial_hilites02</c> the inner board, which is what <paramref name="inner"/> picks.
-    /// Attached on demand rather than kept around, and removed by the fade's own end callback when
-    /// it is taken down — a leftover overlay sits on top of the board for the rest of the session.
-    /// </remarks>
     public void ShowTutorialHilight(
         bool show, bool inner, object? group, bool blocking)
     {
@@ -1046,16 +1030,6 @@ public sealed class GameBoard
 
     public void KillTutorialHilight() => _root.GetChild("tutorialHilights")?.RemoveMovieClip();
 
-    /// <summary>
-    /// Replaces a chip stack's chips with a lammer.
-    /// </summary>
-    /// <remarks>
-    /// A LAMMER IS A MARKER, NOT A BET. Bloodstone tables stake the player's own blood rather than
-    /// chips, so the stack becomes a single flat marker and its value goes to zero — the amount is
-    /// no longer a pile of chips to be counted. The replacement clip inherits the stack's depth,
-    /// name, position and scale so it lands exactly where the chips were, and the shadow goes
-    /// because a lammer does not cast one.
-    /// </remarks>
     public void SwitchToLammer(ChipStack? stack)
     {
         if (stack is null)
@@ -1090,13 +1064,6 @@ public sealed class GameBoard
         stack.Value = 0;
     }
 
-    /// <summary>
-    /// The arrows that walk the arch toward the stone the roll removes.
-    /// </summary>
-    /// <remarks>
-    /// Shown one space at a time with a shortening delay, so they read as a sweep from the rolled
-    /// total to the stone coming out. See <c>Keystone.HilightWinningSpaces</c>, which drives it.
-    /// </remarks>
     public void ShowArrow(int id, bool show, double delay, object? group, bool blocking)
     {
         IPubClip? arrow = _root.GetChild("arrows")?.GetChild(

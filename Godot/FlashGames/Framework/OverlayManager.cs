@@ -3,21 +3,6 @@ using System.Collections.Generic;
 
 namespace Refii.FlashGames.Framework;
 
-/// <summary>
-/// The overlay cards every pub game shares: the bank, help, standings, quit, cash out and star
-/// rating.
-/// </summary>
-/// <remarks>
-/// ABSTRACT BECAUSE THE SHIPPED CODE IS. <c>OverlayManager.as</c> is 2,695 lines and is BYTE
-/// IDENTICAL between Keystone and Mage Dice; what differs is a ~100-200 line subclass per game
-/// that answers a handful of questions the base cannot — how many chips are on the table, how
-/// many plays there have been, and what goes in the odds card, which for one game is a payout
-/// table over board spaces and for the other a paytable over reel symbols.
-///
-/// This class was <c>PubOverlays</c>, the base and Keystone's subclass fused into one sealed
-/// class typed <c>Keystone</c>. That worked while Keystone was the only game with gameplay and
-/// stopped working the moment there was a second one. The seam restored here is the AS2's own.
-/// </remarks>
 public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
 {
     public void ActivateNeedChipsAlert() => ShowNeedChips();
@@ -40,7 +25,6 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
     public const double BoardFadeTime = 750;
     public const double HelpNavDelay = 300;
 
-    /// <summary>The game these overlays belong to. <c>OverlayManager.as</c> calls it pubGame.</summary>
     protected readonly PubGame Game;
 
     private readonly IPubClip _root;
@@ -85,19 +69,8 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
         ActivateFade();
     }
 
-    /// <summary>How many rounds have been played, for the session card.</summary>
-    /// <remarks><c>OverlayManager.as:187</c>, read at <c>:2370</c>.</remarks>
     protected virtual int GetPlays() => 0;
 
-    // NOT PORTED, AND DELIBERATELY ABSENT RATHER THAN EMPTY. OverlayManager.as also carries
-    // GetChipsInPlay and GetChipsInPlayButNotLockedIn, which its own TotalWinnings and cash-out
-    // arithmetic read (:239, :634, :2514, :2524, :2554). In this port that arithmetic lives in
-    // Banking, which is handed a PubGame and cannot reach an overlay's override — a divergence
-    // that predates the framework split. Declaring the virtuals here anyway would offer a
-    // subclass a hook that silently does nothing, which is worse than not offering one. Wiring
-    // them means giving Banking the seam, and that is a behaviour change to Keystone.
-
-    /// <summary>Fills the odds card. Empty in the base — the paytable is the game's own.</summary>
     protected virtual void InitQuickTips(IPubClip clip)
     {
     }
@@ -106,7 +79,6 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
     {
     }
 
-    /// <summary>The session card's title, which names the table type.</summary>
     protected virtual void InitCashGameOverlay(IPubClip clip) =>
         Localize(clip.GetChild("title"), "txtCashGameTitle", null);
 
@@ -127,9 +99,6 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
         }
     }
 
-    /// <summary>
-    /// A game-specific replacement for the "not enough chips" card, or null for the standard one.
-    /// </summary>
     protected virtual IPubClip? InitNeedChipsAlternate(string instanceName, int depth) => null;
 
     protected virtual bool NeedChipsAllowBank() => !Game.Tournament;
@@ -182,46 +151,14 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
 
     public int SliderValue => _sliderDelta;
 
-    /// <summary>
-    /// Whether the odds table may be opened at all.
-    /// </summary>
-    /// <remarks>
-    /// THE TUTORIAL OWNS THIS. It closes the odds table off for most of its run and opens it for
-    /// exactly the block that teaches it (block 6), so the player cannot wander into an overlay
-    /// the script is not expecting. It is the tutorial that sets it, which is why it lives here
-    /// rather than being derived from anything.
-    /// </remarks>
     public bool AllowQuickTips { get; set; } = true;
 
-    /// <summary>
-    /// True while the player is looking at their own standings mid-tournament.
-    /// </summary>
-    /// <remarks>
-    /// NOT THE SAME AS THE STANDINGS BEING UP: it also needs the guest to have reported a result,
-    /// which is what makes this "the card showing where you came" rather than "the card showing
-    /// where you are". Mage Dice holds its win celebration while it is showing.
-    /// </remarks>
     public bool TournamentResultShowing => StandingsShowing && Game.TournamentResultReported;
 
-    /// <summary>Milliseconds of odds card still owed to a player who did not ask for it.</summary>
     private double _forceQuickTipsTimer;
 
-    /// <summary>
-    /// Shows the odds card unprompted for a while.
-    /// </summary>
-    /// <remarks>
-    /// USED ONCE, AT THE START OF A SESSION. A player who has just sat down at a machine they have
-    /// never seen is shown what it pays before they are asked to bet on it.
-    /// </remarks>
     public void ForceQuickTips(double ticks) => _forceQuickTipsTimer = ticks;
 
-    /// <summary>
-    /// Bounces a clip to draw the eye to it.
-    /// </summary>
-    /// <remarks>
-    /// ALL PULSES SHARE ONE GROUP, so a second pulse on a different button does not stack on top of
-    /// the first — the callback manager runs one per group per tick.
-    /// </remarks>
     public AnimatePulse PulseClip(IPubClip clip, double delay)
     {
         var pulse = new AnimatePulse(clip, DialogFadeTime, delay) { Group = PulseGroup };
@@ -231,7 +168,6 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
 
     public const string PulseGroup = "dg";
 
-    /// <summary>How long a card takes to fade, and how long a pulse lasts.</summary>
     public const double DialogFadeTime = 200;
 
     public void ToggleQuickTips()
@@ -291,8 +227,6 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
             return;
         }
 
-        // THE TITLE IS THE GAME'S. Keystone names the table type — jackpot, bloodstone or plain
-        // cash — and Mage Dice names the variant. The base's answer is the plain one.
         InitCashGameOverlay(clip);
 
         Localize(
@@ -414,12 +348,6 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
 
         if (Game.Tournament || Game.Tutorial || !Game.BetsMade)
         {
-            // SETTLED EVEN THOUGH NOTHING WAS PLAYED. This branch used to just leave, and leaving
-            // is not free: GameOver is what nets the player's chips against their debt, and a
-            // player who took 500 chips from the bank on credit and quit before betting still has
-            // both. Skipping it handed the guest a 500 debt the player did not owe and threw the
-            // 500 chips away. `OverlayManager::KillQuitMenu` calls GameOver on exactly this branch
-            // — the other one reaches it through the cash-out card instead.
             Game.GameOver();
             ExitRequested = true;
             return;
@@ -759,11 +687,6 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
             Blocking = true,
         };
 
-        // THE FADE IS WHAT ENDS THE SESSION. `OverlayManager::StartFadeOut` hangs
-        // `FadeOutCompleted` off this animation and that is what calls `GameReallyOver`, which
-        // issues the `GameOver` command a host waits on. Without the callback the board simply
-        // faded to black and sat there, and the flag that ended the session had to be set by hand
-        // at each exit — which is how one exit path came to skip the settlement entirely.
         anim.SetEndCallback(_ => FadeOutCompleted(), null);
         Game.CallbackManager.AddCallbackObject(anim);
     }
@@ -1019,15 +942,8 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
 
         if (_quickTips is not null)
         {
-            // EVERY FRAME THE CARD IS UP, because the amounts on it are the stake times the odds
-            // and the player can change the stake with the card open. InitQuickTips only lays the
-            // symbols out; without this the payout columns keep whatever the artwork shipped with,
-            // which is a row of zeroes.
             UpdateQuickTips(_quickTips);
 
-            // A FORCED CARD IGNORES THE TRIGGER. It was opened for the player rather than by them,
-            // so it runs its time out instead of closing the instant they are not holding LT —
-            // which they are not, since they never pressed it.
             if (_forceQuickTipsTimer > 0)
             {
                 _forceQuickTipsTimer -= ticks;
@@ -1314,53 +1230,20 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
         }
     }
 
-    /// <summary>Where the tutorial's instruction card sits.</summary>
     public const int TutorialDepth = 9;
 
-    /// <summary>How long the card takes to fade away. The SWF's TUTORIAL_FADE_TIME.</summary>
     public const double TutorialFadeTime = 350;
 
     private IPubClip? _tutorial;
 
     public bool TutorialShowing => _current is not null;
 
-    /// <summary>
-    /// The tutorial card itself, for a script that needs to dress it.
-    /// </summary>
-    /// <remarks>
-    /// Mage Dice's lesson hides the card's second button until the player has dialled the stake it
-    /// asked for, which needs the clip rather than another parameter on ShowTutorial for something
-    /// only one step in one game does.
-    /// </remarks>
     public IPubClip? TutorialClip => _current;
 
-    /// <summary>
-    /// Raises the tutorial's instruction card.
-    /// </summary>
-    /// <remarks>
-    /// THE CARD IS RE-USED, NOT REBUILT. `OverlayManager::ShowTutorial` attaches
-    /// <c>overlay_tutorial</c> once and then rewrites its fields for every stage, which is why the
-    /// body's authored Y is remembered the first time: the body is re-centred on each stage
-    /// against however many lines the new text wrapped to, and the title is then moved by the same
-    /// amount so the two stay together. Re-reading the Y after the first move would compound.
-    ///
-    /// BUTTON1 HAS TWO HOMES. When there is no second button the single prompt goes in
-    /// <c>button3</c>, which is centred; with two, it goes in <c>button1</c> beside
-    /// <c>button2</c>. The unused one is hidden AND reset to frame 1 rather than just hidden.
-    /// </remarks>
     public void ShowTutorial(
         string? title, string? body, string? button1Frame, string? button1Label,
         string? button2Frame, string? button2Label, bool fade, object? group)
     {
-        // TWO CARDS, AND THEY ARE NOT INTERCHANGEABLE. `overlay_tutorial` is the one with a heading
-        // and carries a SINGLE prompt slot (button1); `overlay_tutorial2` has no heading and carries
-        // three (button1, button2, button3), which is what a step wanting both "change the bet" and
-        // "spin" needs. Every two-prompt step in the script is titleless, so the title is a reliable
-        // way to pick — and it is the way the shipped code picks.
-        //
-        // Attaching only the titled one, as this did, meant a two-prompt step had nowhere to put its
-        // second prompt AND a one-prompt step lost its first: Prompt looked for the centred button3
-        // slot, did not find it on that card, and hid button1 on the way past. No prompt at all.
         string wanted = title is null ? "overlay_tutorial2" : "overlay_tutorial";
         IPubClip? card = title is null ? _tutorial2 : _tutorial;
         if (card is null)
@@ -1382,8 +1265,6 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
             return;
         }
 
-        // THE OTHER CARD GETS OUT OF THE WAY. Both stay attached once used, at different depths, so
-        // whichever is not being shown has to be hidden or it sits on top of its replacement.
         IPubClip? other = title is null ? _tutorial : _tutorial2;
         if (other is not null)
         {
@@ -1438,27 +1319,11 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
     private IPubClip? _tutorial2;
     private IPubClip? _current;
 
-    /// <summary>The titleless card sits one depth above the titled one.</summary>
     public const int Tutorial2Depth = TutorialDepth + 1;
 
     private float? _tutorialBodyY;
     private float _tutorialTitleY;
 
-    /// <summary>Fills whichever of the two slots the first prompt belongs in, and clears the other.</summary>
-    /// <summary>
-    /// Fills whichever slot the first prompt belongs in, and clears the other.
-    /// </summary>
-    /// <remarks>
-    /// WHICH SLOT DEPENDS ON THE CARD, NOT ON THE STEP. The titleless card carries three prompt
-    /// slots: button1 and button2 side by side, and button3 centred on its own. A step with one
-    /// prompt should use the centred slot; a step with two should use the pair. The titled card
-    /// only has button1, so it always uses that.
-    ///
-    /// The test is therefore "does this card HAVE a second slot that we are not filling" — which is
-    /// what the shipped code asks (<c>button2 != null &amp;&amp; button2Label == null</c>) — and not
-    /// "were we given a second label". Asking the second question sent a one-prompt step on the
-    /// titled card looking for a button3 that card does not have, and it hid button1 on the way.
-    /// </remarks>
     private void Prompt(IPubClip card, string? frame, string? label, string? secondLabel)
     {
         IPubClip? button1 = card.GetChild("button1");
@@ -1524,23 +1389,6 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
         Localize(clip.GetChild("label"), label, null);
     }
 
-    /// <summary>
-    /// Fades the tutorial card out.
-    /// </summary>
-    /// <remarks>
-    /// FADES, DOES NOT REMOVE. The card is the same clip for every stage, so taking it out of the
-    /// tree would throw away the body's remembered Y and the next stage would re-centre against an
-    /// already-centred position.
-    /// </remarks>
-    /// <summary>
-    /// Fades whichever card is up back out.
-    /// </summary>
-    /// <remarks>
-    /// WHICHEVER IS UP, not the titled one. The shipped code only ever fades
-    /// <c>overlay_tutorial</c> here, which works in Flash because the next card's fade-in covers
-    /// the one left behind — but it means a titleless card is never actually taken down. Following
-    /// that literally would leave a stale card sitting under every step that follows one.
-    /// </remarks>
     public void HideTutorial(bool fade, object? group)
     {
         if (!fade || _current is null || _current.Alpha <= 0)

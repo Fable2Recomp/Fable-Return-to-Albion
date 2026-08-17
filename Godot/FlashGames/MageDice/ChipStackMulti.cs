@@ -5,22 +5,8 @@ using Refii.FlashGames.Framework;
 
 namespace Refii.FlashGames.MageDice;
 
-/// <summary>
-/// The player's chips, as three columns that grow and shrink.
-/// </summary>
-/// <remarks>
-/// NOT KEYSTONE'S CLASS, DESPITE THE NAME. The two SWFs each ship a <c>ChipStackMulti.as</c> and
-/// they differ by 184 lines. Mage Dice's fades individual chips in and out as the total changes;
-/// Keystone's redraws the whole stack and offsets every chip's frame by the seat number to colour
-/// it. Sharing one class would mean either losing Keystone's per-seat colours or giving Mage Dice
-/// a stack that pops. The chip-denomination arithmetic below IS common to both and is the same
-/// code in each.
-///
-/// A 1:1 port of Mage Dice's <c>ChipStackMulti.as</c>.
-/// </remarks>
 public sealed class ChipStackMulti
 {
-    /// <summary>How long a chip takes to fade in or out, in milliseconds.</summary>
     public const double ChipsFadeTime = 250;
 
     private readonly IPubClip _stack1;
@@ -62,8 +48,6 @@ public sealed class ChipStackMulti
         Angle2 = Math.PI / 2;
         Angle3 = Math.PI / 2;
 
-        // STARTS AT -1 SO THAT SETTING IT TO 0 STILL DRAWS. An empty stack has to be laid out once
-        // like any other, and a value that began at 0 would take the "nothing changed" path.
         _value = -1;
         SetValue(0, null);
     }
@@ -100,7 +84,6 @@ public sealed class ChipStackMulti
         }
     }
 
-    /// <summary>Scales all six clips together, columns and shadows.</summary>
     public void SetScale(float scale)
     {
         foreach (IPubClip? clip in new[] { _stack1, _shadow1, _stack2, _shadow2, _stack3, _shadow3 })
@@ -113,17 +96,6 @@ public sealed class ChipStackMulti
         }
     }
 
-    /// <summary>
-    /// Redraws the stack for a new total, fading the difference in or out.
-    /// </summary>
-    /// <remarks>
-    /// THE OLD LAYOUT IS MEASURED FIRST. Chips that were already there keep their random lean and
-    /// simply stay; only the ones added or removed animate. Recomputing every chip's position would
-    /// make the whole stack twitch every time a single chip landed.
-    ///
-    /// WITHOUT A CALLBACK MANAGER IT SNAPS. That is the path the opening layout takes, where there
-    /// is nothing to animate from.
-    /// </remarks>
     public void SetValue(int newVal, CallbackManager? callbackManager)
     {
         if (newVal == _value)
@@ -172,11 +144,6 @@ public sealed class ChipStackMulti
             }
             else
             {
-                // THE SHIPPED CODE INDEXES THE WRONG LIST HERE — it walks fadeOut's length but
-                // reads fadeIn's contents, which in ActionScript quietly does nothing when fadeIn
-                // is shorter. It is unreachable in practice: the only call with no callback manager
-                // is the opening layout, where nothing is being removed. Written correctly rather
-                // than reproduced, because the C# equivalent is an exception rather than a no-op.
                 foreach (IPubClip chip in fadeOut)
                 {
                     chip.Alpha = 0;
@@ -185,14 +152,6 @@ public sealed class ChipStackMulti
         }
     }
 
-    /// <summary>
-    /// Lays out one column.
-    /// </summary>
-    /// <remarks>
-    /// THE COLUMN CLIP GOES TO THE LARGER OF THE OLD AND NEW COUNTS while its SHADOW goes to the
-    /// new one. That asymmetry is the whole trick: the chips being removed have to still exist to
-    /// be faded out, but the shadow underneath must already be the size the stack is becoming.
-    /// </remarks>
     private void SetSingleStack(
         IPubClip stackClip, IPubClip? shadowClip, double angle,
         List<IPubClip> fadeInChips, List<IPubClip> fadeOutChips,
@@ -223,8 +182,6 @@ public sealed class ChipStackMulti
                 continue;
             }
 
-            // NO OWNER OFFSET, unlike Keystone: Mage Dice seats one player, so the frames are the
-            // denominations straight through.
             int frame = 1;
             if (i < n50000)
             {
@@ -293,17 +250,6 @@ public sealed class ChipStackMulti
     private static bool InRange(int type, int smallest, int largest) =>
         smallest <= type && largest >= type;
 
-    /// <summary>
-    /// Breaks a total into chips, and decides which denominations each column carries.
-    /// </summary>
-    /// <remarks>
-    /// IDENTICAL TO KEYSTONE'S, and deliberately left duplicated rather than shared: it is the same
-    /// code in both SWFs, and lifting it into the framework would make two per-game classes depend
-    /// on a third that neither shipped file has.
-    ///
-    /// THE BANDS SHIFT AS THE PLAYER GETS RICHER so no column ever grows past what its clip can
-    /// draw — a stack that would need a hundred one-chips is shown as twenties instead.
-    /// </remarks>
     private void CalculateChips(int totalChips)
     {
         int remaining = totalChips;

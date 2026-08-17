@@ -4,26 +4,9 @@ using Refii.FlashGames.Framework;
 
 namespace Refii.FlashGames.MageDice;
 
-/// <summary>
-/// The rules of one Mage Dice machine: roll the reels, find the chains, work out what they pay.
-/// </summary>
-/// <remarks>
-/// A 1:1 port of Mage Dice's <c>GameBoard.as</c>. Note the name is shared with
-/// <see cref="Refii.FlashGames.Keystone.GameBoard"/> and the two have nothing in common — they are
-/// different classes with the same name in two different SWFs, kept apart by namespace rather than
-/// renamed, so each still matches its own source file.
-///
-/// TWO GLOBALS BECOME ARGUMENTS. The shipped code reaches for <c>Math.random()</c> and the global
-/// <c>Audio</c>; both are passed in here so a seeded session replays and so nothing in the rules
-/// layer reaches for engine state, exactly as the Keystone port does.
-/// </remarks>
 public class GameBoard
 {
     protected readonly IPubRandom Random;
-    // QUALIFIED, because Refii.Audio is a namespace and outranks the using here: C# walks outward
-    // from Refii.FlashGames.MageDice and finds the NAMESPACE Refii.Audio before it consults an
-    // imported type of the same name. Keystone writes a bare Audio only because it inherits
-    // PubGame.Audio, and an inherited member outranks both.
     protected readonly Framework.Audio Audio;
 
     private readonly List<Switch> _switches = new();
@@ -71,12 +54,10 @@ public class GameBoard
 
     protected List<Switch> Switches => _switches;
 
-    /// <summary>Winnings across a whole free-spin run, which is what the player is shown.</summary>
     public int RunningPayout => _runningPayout;
 
     public int BonusUnlocked => _bonusUnlocked;
 
-    /// <summary>True when the last spin produced anything at all.</summary>
     public bool Paid => _chains.Count > 0;
 
     public int BetMultiple => _betMultiple;
@@ -93,14 +74,12 @@ public class GameBoard
 
     public int NewFreeSpins => _newFreeSpins;
 
-    /// <summary>The chains that won, each a connected run of reels.</summary>
     public IReadOnlyList<List<Switch>> Chains => _chains;
 
     public IReadOnlyList<int> Payouts => _payouts;
 
     public IReadOnlyList<int> PayoutTypes => _payoutTypes;
 
-    /// <summary>Mid-run free spins play themselves; the last one waits for the player.</summary>
     public bool AutoPlayFreeSpins() => _freeSpins > 0 && _freeSpins < _totalFreeSpins;
 
     public virtual Switch GetSwitch(int i) => _switches[i];
@@ -121,21 +100,6 @@ public class GameBoard
     protected virtual Switch BuildBonusSwitch(int id, int reeltype, int value) =>
         new(Variant, id, reeltype, value, Random);
 
-    /// <summary>
-    /// Builds the reels and wires up which of them count as adjacent.
-    /// </summary>
-    /// <remarks>
-    /// ADJACENCY IS THE BOARD'S SHAPE and it is hand-written per board type, not derived. Three and
-    /// four reels are fully connected — any match anywhere is a chain. SIX IS NOT: reel 0 touches
-    /// only 1 and 2, reel 3 only 1 and 4, and so on, so the six-reel board is a shape where three
-    /// matching symbols in the wrong places pay nothing. Deriving this from a rule would get it
-    /// wrong; it is transcribed.
-    ///
-    /// THE OPENING SYMBOLS ARE SHUFFLED CHAIN TOKENS, so a machine does not always come to rest
-    /// showing the same face. The shuffle is the shipped one — a forward pass swapping each entry
-    /// with a uniformly random index, which is biased, and kept because the alternative is a
-    /// different opening distribution than the game has.
-    /// </remarks>
     public void Init()
     {
         BonusSwitch = null;
@@ -213,14 +177,6 @@ public class GameBoard
         }
     }
 
-    /// <summary>
-    /// Clears the last result and takes a free spin if one is owed.
-    /// </summary>
-    /// <remarks>
-    /// THE RUNNING TOTAL SURVIVES A FREE SPIN AND NOTHING ELSE. Free spins are one accumulating
-    /// session — the player is shown what the whole run has won — so <see cref="RunningPayout"/>
-    /// and <see cref="TotalFreeSpins"/> reset only on a spin that was paid for.
-    /// </remarks>
     public virtual void NewSpin()
     {
         _chains.Clear();
@@ -303,14 +259,6 @@ public class GameBoard
         Update();
     }
 
-    /// <summary>
-    /// Records a winning group.
-    /// </summary>
-    /// <remarks>
-    /// ONLY A CHAIN IS SCALED BY THE STAKE. A free-spin or multiplier win is a COUNT — two free
-    /// spins is two free spins whatever the bet — so multiplying those by the stake would hand a
-    /// high roller a hundred free spins off one symbol.
-    /// </remarks>
     public void AddWinner(List<Switch> s, int val, int tokenType)
     {
         if (tokenType == Token.TypeChain)
@@ -323,19 +271,6 @@ public class GameBoard
         _payoutTypes.Add(tokenType);
     }
 
-    /// <summary>
-    /// Reads the stopped reels and works out every win on the board.
-    /// </summary>
-    /// <remarks>
-    /// THREE MODES, and the bonus ones are not variations of the ordinary one. At bonus level 1 the
-    /// bonus reel alone is read — either it shows another bonus symbol and escalates to level 2, or
-    /// it pays as though three of its symbol had landed. At level 2 EVERY reel pays at the
-    /// three-match rate. Only the ordinary path walks the token table.
-    ///
-    /// A CHAIN IS A FLOOD FILL, not a run. Reels are a graph (see <see cref="Init"/>), so a win is
-    /// a connected component of reels showing the same token, found breadth-first from each reel in
-    /// turn with a visited flag stopping the same component being paid twice.
-    /// </remarks>
     public void Update()
     {
         if (_bonusLevel == 1)
@@ -385,8 +320,6 @@ public class GameBoard
                         }
                     }
 
-                    // EXACTLY THREE, not three or more. A fourth bonus symbol on a four-reel board
-                    // does not unlock anything, which is the shipped behaviour.
                     if (matched == 3)
                     {
                         _bonusUnlocked = 1;
@@ -457,15 +390,6 @@ public class GameBoard
         }
     }
 
-    /// <summary>
-    /// Turns the recorded wins into chips, free spins and multipliers.
-    /// </summary>
-    /// <remarks>
-    /// THE MULTIPLIER RESETS ONLY IF IT WAS NOT RAISED THIS SPIN. <c>nextBonusMultiplier</c>
-    /// accumulates as multiplier symbols land and is moved into <c>bonusMultiplier</c> by the next
-    /// <see cref="NewSpin"/>; the equality test at the end is how a multiplier that was just spent
-    /// and not re-earned falls back to 1 while one earned this spin survives.
-    /// </remarks>
     public void ResolveAndPay()
     {
         for (var i = 0; i < _chains.Count; i++)
@@ -497,14 +421,6 @@ public class GameBoard
 
     public int CostPerSpin() => Variant.Cost * _betMultiple;
 
-    /// <summary>
-    /// Moves the stake up or down, and says whether anything worth a sound happened.
-    /// </summary>
-    /// <remarks>
-    /// THE BET IS LOCKED DURING A FREE-SPIN RUN OR A PENDING MULTIPLIER, because both were earned
-    /// against the stake that was showing when they landed — letting the player raise the bet
-    /// afterwards would pay out a run they never staked.
-    /// </remarks>
     public bool ChangeBetMultiple(int x, int max, bool newPress)
     {
         var changed = false;

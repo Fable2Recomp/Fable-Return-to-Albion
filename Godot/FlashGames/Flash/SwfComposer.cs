@@ -23,7 +23,6 @@ public sealed class SwfComposeOptions
 
 public static class SwfComposer
 {
-
     public static Rect2 MeasureCharacter(SwfDocument document, int characterId, int depth = 0)
     {
         return Measure(document, characterId, depth, new Dictionary<int, Rect2>(), new HashSet<int>());
@@ -184,7 +183,6 @@ public static class SwfComposer
         SwfColorTransform colour, SwfCanvas canvas, SwfComposeOptions options, int depth,
         ref int budget, HashSet<int> active, SamplerCache samplers)
     {
-
         if (depth > options.MaxDepth || budget <= 0 || !active.Add(characterId))
         {
             return;

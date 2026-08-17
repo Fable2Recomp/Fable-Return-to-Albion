@@ -281,8 +281,6 @@ public abstract class PubGame
 
         if (casual && BetsMade)
         {
-            // PLAYED AND LEAVING: the chips have to become gold before the session ends, and the
-            // cash-out card is what runs GameOver when it closes.
             OverlayManager?.ActivateCashOut();
             return;
         }

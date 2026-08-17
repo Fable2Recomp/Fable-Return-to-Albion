@@ -76,23 +76,42 @@ public sealed class SwfSceneClip : IPubClip
 
     public string Name => _name;
 
+    private bool Gone => !GodotObject.IsInstanceValid(_node);
+
     public float X
     {
-        get => _node.Position.X;
-        set => _node.Position = new Vector2(value, _node.Position.Y);
+        get => Gone ? 0f : _node.Position.X;
+        set
+        {
+            if (!Gone)
+            {
+                _node.Position = new Vector2(value, _node.Position.Y);
+            }
+        }
     }
 
     public float Y
     {
-        get => _node.Position.Y;
-        set => _node.Position = new Vector2(_node.Position.X, value);
+        get => Gone ? 0f : _node.Position.Y;
+        set
+        {
+            if (!Gone)
+            {
+                _node.Position = new Vector2(_node.Position.X, value);
+            }
+        }
     }
 
     public float Alpha
     {
-        get => _node.Modulate.A * 100f;
+        get => Gone ? 0f : _node.Modulate.A * 100f;
         set
         {
+            if (Gone)
+            {
+                return;
+            }
+
             Color m = _node.Modulate;
             m.A = Mathf.Clamp(value / 100f, 0f, 1f);
             _node.Modulate = m;
@@ -101,26 +120,66 @@ public sealed class SwfSceneClip : IPubClip
 
     public float XScale
     {
-        get => _node.Scale.X * 100f;
-        set => _node.Scale = new Vector2(value / 100f, _node.Scale.Y);
+        get => Gone ? 100f : _node.Scale.X * 100f;
+        set
+        {
+            if (!Gone)
+            {
+                _node.Scale = new Vector2(value / 100f, _node.Scale.Y);
+            }
+        }
     }
 
     public float YScale
     {
-        get => _node.Scale.Y * 100f;
-        set => _node.Scale = new Vector2(_node.Scale.X, value / 100f);
+        get => Gone ? 100f : _node.Scale.Y * 100f;
+        set
+        {
+            if (!Gone)
+            {
+                _node.Scale = new Vector2(_node.Scale.X, value / 100f);
+            }
+        }
     }
 
     public float Rotation
     {
-        get => Mathf.RadToDeg(_node.Rotation);
-        set => _node.Rotation = Mathf.DegToRad(value);
+        get => Gone ? 0f : Mathf.RadToDeg(_node.Rotation);
+        set
+        {
+            if (!Gone)
+            {
+                _node.Rotation = Mathf.DegToRad(value);
+            }
+        }
     }
 
     public bool Visible
     {
-        get => _node.Visible;
-        set => _node.Visible = value;
+        get => !Gone && _node.Visible;
+        set
+        {
+            if (!Gone)
+            {
+                _node.Visible = value;
+            }
+        }
+    }
+
+    public void SetTint(
+        float redMultiply, float greenMultiply, float blueMultiply,
+        float redOffset, float greenOffset, float blueOffset)
+    {
+        if (Gone)
+        {
+            return;
+        }
+
+        Color modulate = _node.Modulate;
+        modulate.R = Mathf.Clamp(redMultiply + (redOffset / 255f), 0f, 1f);
+        modulate.G = Mathf.Clamp(greenMultiply + (greenOffset / 255f), 0f, 1f);
+        modulate.B = Mathf.Clamp(blueMultiply + (blueOffset / 255f), 0f, 1f);
+        _node.Modulate = modulate;
     }
 
     public string Text
@@ -177,7 +236,7 @@ public sealed class SwfSceneClip : IPubClip
     }
 
     public int TotalFrames =>
-        _node.HasMeta(Engine_SwfScene.FrameCountMeta)
+        !Gone && _node.HasMeta(Engine_SwfScene.FrameCountMeta)
             ? Math.Max(1, (int)_node.GetMeta(Engine_SwfScene.FrameCountMeta))
             : 1;
 
@@ -397,6 +456,13 @@ public sealed class SwfSceneClip : IPubClip
 
     private void EnsureChildren()
     {
+        if (Gone)
+        {
+            _children ??= new SortedDictionary<int, SwfSceneClip>();
+            _byName ??= new Dictionary<string, SwfSceneClip>();
+            return;
+        }
+
         if (_children is not null)
         {
             return;
@@ -433,6 +499,11 @@ public sealed class SwfSceneClip : IPubClip
 
     private Label? TextLabel()
     {
+        if (Gone)
+        {
+            return null;
+        }
+
         if (!_textLooked)
         {
             _textLooked = true;
@@ -444,6 +515,11 @@ public sealed class SwfSceneClip : IPubClip
 
     private AnimationPlayer? Timeline()
     {
+        if (Gone)
+        {
+            return null;
+        }
+
         if (!_timelineLooked)
         {
             _timelineLooked = true;
@@ -455,6 +531,11 @@ public sealed class SwfSceneClip : IPubClip
 
     private void Seek(int frame, bool play)
     {
+        if (Gone)
+        {
+            return;
+        }
+
         int total = TotalFrames;
         frame = Math.Clamp(frame, 1, total);
 
@@ -547,6 +628,7 @@ public sealed class SwfSceneClip : IPubClip
             Remove(child);
         }
     }
+
 
     private static void ApplyPlacement(Node2D node, Godot.Collections.Dictionary place)
     {
