@@ -25,6 +25,16 @@
             }
         },
         {
+            "name": "windows-arm64-base",
+            "hidden": true,
+            "inherits": "windows-base",
+            "cacheVariables": {
+                "CMAKE_C_FLAGS": "",
+                "CMAKE_CXX_FLAGS": "",
+                "REFII_VCPKG_TRIPLET": "arm64-windows"
+            }
+        },
+        {
             "name": "linux-base",
             "hidden": true,
             "generator": "Ninja",
@@ -121,6 +131,36 @@
             "inherits": ["netplay", "windows-base"]
         },
         {
+            "name": "win-arm64-debug",
+            "displayName": "Windows ARM64 Debug",
+            "inherits": "windows-arm64-base"
+        },
+        {
+            "name": "win-arm64-release",
+            "displayName": "Windows ARM64 Release",
+            "inherits": "windows-arm64-base"
+        },
+        {
+            "name": "win-arm64-relwithdebinfo",
+            "displayName": "Windows ARM64 RelWithDebInfo",
+            "inherits": "windows-arm64-base"
+        },
+        {
+            "name": "win-arm64-debug-netplay",
+            "displayName": "Windows ARM64 Netplay Debug",
+            "inherits": ["netplay", "windows-arm64-base"]
+        },
+        {
+            "name": "win-arm64-release-netplay",
+            "displayName": "Windows ARM64 Netplay Release",
+            "inherits": ["netplay", "windows-arm64-base"]
+        },
+        {
+            "name": "win-arm64-relwithdebinfo-netplay",
+            "displayName": "Windows ARM64 Netplay RelWithDebInfo",
+            "inherits": ["netplay", "windows-arm64-base"]
+        },
+        {
             "name": "linux-amd64-debug-netplay",
             "displayName": "Linux AMD64 Netplay Debug",
             "inherits": ["netplay", "linux-base"],
@@ -152,6 +192,12 @@
         { "name": "win-amd64-debug-netplay", "configurePreset": "win-amd64-debug-netplay", "configuration": "Debug" },
         { "name": "win-amd64-release-netplay", "configurePreset": "win-amd64-release-netplay", "configuration": "Release" },
         { "name": "win-amd64-relwithdebinfo-netplay", "configurePreset": "win-amd64-relwithdebinfo-netplay", "configuration": "RelWithDebInfo" },
+        { "name": "win-arm64-debug", "configurePreset": "win-arm64-debug", "configuration": "Debug" },
+        { "name": "win-arm64-release", "configurePreset": "win-arm64-release", "configuration": "Release" },
+        { "name": "win-arm64-relwithdebinfo", "configurePreset": "win-arm64-relwithdebinfo", "configuration": "RelWithDebInfo" },
+        { "name": "win-arm64-debug-netplay", "configurePreset": "win-arm64-debug-netplay", "configuration": "Debug" },
+        { "name": "win-arm64-release-netplay", "configurePreset": "win-arm64-release-netplay", "configuration": "Release" },
+        { "name": "win-arm64-relwithdebinfo-netplay", "configurePreset": "win-arm64-relwithdebinfo-netplay", "configuration": "RelWithDebInfo" },
         { "name": "linux-amd64-debug-netplay", "configurePreset": "linux-amd64-debug-netplay" },
         { "name": "linux-amd64-release-netplay", "configurePreset": "linux-amd64-release-netplay" },
         { "name": "linux-amd64-relwithdebinfo-netplay", "configurePreset": "linux-amd64-relwithdebinfo-netplay" }

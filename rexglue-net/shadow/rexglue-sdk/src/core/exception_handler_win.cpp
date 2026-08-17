@@ -1,0 +1,218 @@
+/**
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2015 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ *
+ * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+ */
+
+// SHADOW: Windows-on-ARM64 port of the vectored exception handler.
+//
+// Upstream's ARM64 support was written for Linux only: include/rex/exception_handler.h
+// already carries a full ARM64 HostThreadContext (x[31]/sp/pc/pstate/fpsr/fpcr/v[32])
+// and Exception exposes modified_x_registers()/modified_v_registers(), and
+// exception_handler_posix.cpp implements the aarch64 path -- but this file reads and
+// writes CONTEXT::Rip/EFlags/Rax/Xmm0 unconditionally. Those members do not exist in the
+// ARM64 CONTEXT, so rexcore did not compile on win-arm64 (20 errors, all in this file;
+// it was the ONLY file in the whole SDK that failed).
+//
+// The AMD64 branch below is upstream's code verbatim, only wrapped in #if REX_ARCH_AMD64.
+// On x86_64 the preprocessor selects exactly the original statements, so that build is
+// unchanged.
+//
+// Unlike the POSIX path, Windows reports the access type directly in
+// ExceptionInformation[0] on ARM64 exactly as it does on x64, so the fault-classification
+// switch stays architecture-neutral and IsArm64LoadPrefetchStore() is not needed here.
+//
+// UPSTREAM: this belongs in the rexglue-sdk netplay branch. While it lives here as a
+// whole-file shadow it will silently revert any upstream change to
+// src/core/exception_handler_win.cpp -- re-diff it whenever the submodule pin moves.
+
+#include <rex/exception_handler.h>
+
+#if REX_PLATFORM_WIN32
+
+#include "platform_win.h"
+
+#include <rex/assert.h>
+#include <rex/math.h>
+
+namespace rex::arch {
+
+// Handle of the added VectoredExceptionHandler.
+void* veh_handle_ = nullptr;
+// Handle of the added VectoredContinueHandler.
+void* vch_handle_ = nullptr;
+
+// This can be as large as needed, but isn't often needed.
+// As we will be sometimes firing many exceptions we want to avoid having to
+// scan the table too much or invoke many custom handlers.
+constexpr size_t kMaxHandlerCount = 8;
+
+// All custom handlers, left-aligned and null terminated.
+// Executed in order.
+std::pair<ExceptionHandler::Handler, void*> handlers_[kMaxHandlerCount];
+
+LONG CALLBACK ExceptionHandlerCallback(PEXCEPTION_POINTERS ex_info) {
+  // Visual Studio SetThreadName.
+  if (ex_info->ExceptionRecord->ExceptionCode == 0x406D1388) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+
+  HostThreadContext thread_context;
+#if REX_ARCH_AMD64
+  thread_context.rip = ex_info->ContextRecord->Rip;
+  thread_context.eflags = ex_info->ContextRecord->EFlags;
+  std::memcpy(thread_context.int_registers, &ex_info->ContextRecord->Rax,
+              sizeof(thread_context.int_registers));
+  std::memcpy(thread_context.xmm_registers, &ex_info->ContextRecord->Xmm0,
+              sizeof(thread_context.xmm_registers));
+#elif REX_ARCH_ARM64
+  // The ARM64 CONTEXT exposes X0..X28/Fp/Lr as a union with X[31], which matches
+  // HostThreadContext::x element for element.
+  std::memcpy(thread_context.x, ex_info->ContextRecord->X, sizeof(thread_context.x));
+  thread_context.sp = ex_info->ContextRecord->Sp;
+  thread_context.pc = ex_info->ContextRecord->Pc;
+  thread_context.pstate = ex_info->ContextRecord->Cpsr;
+  thread_context.fpsr = ex_info->ContextRecord->Fpsr;
+  thread_context.fpcr = ex_info->ContextRecord->Fpcr;
+  static_assert(sizeof(thread_context.v) == sizeof(ex_info->ContextRecord->V),
+                "ARM64 CONTEXT vector file must match HostThreadContext::v");
+  std::memcpy(thread_context.v, ex_info->ContextRecord->V, sizeof(thread_context.v));
+#endif  // REX_ARCH
+
+  // https://msdn.microsoft.com/en-us/library/ms679331(v=vs.85).aspx
+  // https://msdn.microsoft.com/en-us/library/aa363082(v=vs.85).aspx
+  Exception ex;
+  switch (ex_info->ExceptionRecord->ExceptionCode) {
+    case STATUS_ILLEGAL_INSTRUCTION:
+      ex.InitializeIllegalInstruction(&thread_context);
+      break;
+    case STATUS_ACCESS_VIOLATION: {
+      Exception::AccessViolationOperation access_violation_operation;
+      switch (ex_info->ExceptionRecord->ExceptionInformation[0]) {
+        case 0:
+          access_violation_operation = Exception::AccessViolationOperation::kRead;
+          break;
+        case 1:
+          access_violation_operation = Exception::AccessViolationOperation::kWrite;
+          break;
+        default:
+          access_violation_operation = Exception::AccessViolationOperation::kUnknown;
+          break;
+      }
+      ex.InitializeAccessViolation(&thread_context,
+                                   ex_info->ExceptionRecord->ExceptionInformation[1],
+                                   access_violation_operation);
+    } break;
+    default:
+      // Unknown/unhandled type.
+      return EXCEPTION_CONTINUE_SEARCH;
+  }
+
+  for (size_t i = 0; i < rex::countof(handlers_) && handlers_[i].first; ++i) {
+    if (handlers_[i].first(&ex, handlers_[i].second)) {
+      // Exception handled.
+#if REX_ARCH_AMD64
+      ex_info->ContextRecord->Rip = thread_context.rip;
+      ex_info->ContextRecord->EFlags = thread_context.eflags;
+      uint32_t modified_register_index;
+      uint16_t modified_int_registers_remaining = ex.modified_int_registers();
+      while (rex::bit_scan_forward(modified_int_registers_remaining, &modified_register_index)) {
+        modified_int_registers_remaining &= ~(UINT16_C(1) << modified_register_index);
+        (&ex_info->ContextRecord->Rax)[modified_register_index] =
+            thread_context.int_registers[modified_register_index];
+      }
+      uint16_t modified_xmm_registers_remaining = ex.modified_xmm_registers();
+      while (rex::bit_scan_forward(modified_xmm_registers_remaining, &modified_register_index)) {
+        modified_xmm_registers_remaining &= ~(UINT16_C(1) << modified_register_index);
+        std::memcpy(&ex_info->ContextRecord->Xmm0 + modified_register_index,
+                    &thread_context.xmm_registers[modified_register_index], sizeof(vec128_t));
+      }
+#elif REX_ARCH_ARM64
+      uint32_t modified_register_index;
+      uint32_t modified_x_registers_remaining = ex.modified_x_registers();
+      while (rex::bit_scan_forward(modified_x_registers_remaining, &modified_register_index)) {
+        modified_x_registers_remaining &= ~(UINT32_C(1) << modified_register_index);
+        ex_info->ContextRecord->X[modified_register_index] =
+            thread_context.x[modified_register_index];
+      }
+      uint32_t modified_v_registers_remaining = ex.modified_v_registers();
+      while (rex::bit_scan_forward(modified_v_registers_remaining, &modified_register_index)) {
+        modified_v_registers_remaining &= ~(UINT32_C(1) << modified_register_index);
+        std::memcpy(&ex_info->ContextRecord->V[modified_register_index],
+                    &thread_context.v[modified_register_index], sizeof(vec128_t));
+      }
+      // Unlike the X/V files these are not mask-tracked, so they are always
+      // restored -- matching what the POSIX aarch64 path does with
+      // sp/pc/pstate/fpsr/fpcr.
+      ex_info->ContextRecord->Sp = thread_context.sp;
+      ex_info->ContextRecord->Pc = thread_context.pc;
+      ex_info->ContextRecord->Cpsr = static_cast<DWORD>(thread_context.pstate);
+      ex_info->ContextRecord->Fpsr = thread_context.fpsr;
+      ex_info->ContextRecord->Fpcr = thread_context.fpcr;
+#endif  // REX_ARCH
+      return EXCEPTION_CONTINUE_EXECUTION;
+    }
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void ExceptionHandler::Install(Handler fn, void* data) {
+  if (!veh_handle_) {
+    veh_handle_ = AddVectoredExceptionHandler(1, ExceptionHandlerCallback);
+
+    if (IsDebuggerPresent()) {
+      // TODO(benvanik): do we need a continue handler if a debugger is
+      // attached?
+      // vch_handle_ = AddVectoredContinueHandler(1, ExceptionHandlerCallback);
+    }
+  }
+
+  for (size_t i = 0; i < rex::countof(handlers_); ++i) {
+    if (!handlers_[i].first) {
+      handlers_[i].first = fn;
+      handlers_[i].second = data;
+      return;
+    }
+  }
+  assert_always("Too many exception handlers installed");
+}
+
+void ExceptionHandler::Uninstall(Handler fn, void* data) {
+  for (size_t i = 0; i < rex::countof(handlers_); ++i) {
+    if (handlers_[i].first == fn && handlers_[i].second == data) {
+      for (; i < rex::countof(handlers_) - 1; ++i) {
+        handlers_[i] = handlers_[i + 1];
+      }
+      handlers_[i].first = nullptr;
+      handlers_[i].second = nullptr;
+      break;
+    }
+  }
+
+  bool has_any = false;
+  for (size_t i = 0; i < rex::countof(handlers_); ++i) {
+    if (handlers_[i].first) {
+      has_any = true;
+      break;
+    }
+  }
+  if (!has_any) {
+    if (veh_handle_) {
+      RemoveVectoredExceptionHandler(veh_handle_);
+      veh_handle_ = nullptr;
+    }
+    if (vch_handle_) {
+      RemoveVectoredContinueHandler(vch_handle_);
+      vch_handle_ = nullptr;
+    }
+  }
+}
+
+}  // namespace rex::arch
+
+#endif  // REX_PLATFORM_WIN32

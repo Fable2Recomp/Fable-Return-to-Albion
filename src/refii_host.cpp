@@ -414,12 +414,26 @@ void WriteWindowsCrashRecord(const char* source,
     if (exceptionPointers != nullptr && exceptionPointers->ContextRecord != nullptr) {
         CONTEXT walkContext = *exceptionPointers->ContextRecord;
         STACKFRAME64 frame = {};
+        // The seed registers and the machine type are the only architecture-specific part of
+        // this walk: ARM64's CONTEXT has no Rip/Rbp/Rsp, and its frame pointer is X29, which
+        // winnt.h surfaces as CONTEXT::Fp.
+#if defined(_M_ARM64) || defined(__aarch64__)
+        constexpr DWORD kStackWalkMachine = IMAGE_FILE_MACHINE_ARM64;
+        frame.AddrPC.Offset = walkContext.Pc;
+        frame.AddrPC.Mode = AddrModeFlat;
+        frame.AddrFrame.Offset = walkContext.Fp;
+        frame.AddrFrame.Mode = AddrModeFlat;
+        frame.AddrStack.Offset = walkContext.Sp;
+        frame.AddrStack.Mode = AddrModeFlat;
+#else
+        constexpr DWORD kStackWalkMachine = IMAGE_FILE_MACHINE_AMD64;
         frame.AddrPC.Offset = walkContext.Rip;
         frame.AddrPC.Mode = AddrModeFlat;
         frame.AddrFrame.Offset = walkContext.Rbp;
         frame.AddrFrame.Mode = AddrModeFlat;
         frame.AddrStack.Offset = walkContext.Rsp;
         frame.AddrStack.Mode = AddrModeFlat;
+#endif
 
         const HANDLE process = GetCurrentProcess();
         static std::once_flag symbolsOnce;
@@ -435,7 +449,7 @@ void WriteWindowsCrashRecord(const char* source,
 
         std::fprintf(crashLog, "stack\n");
         for (int depth = 0; depth < 24; ++depth) {
-            if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, GetCurrentThread(), &frame,
+            if (!StackWalk64(kStackWalkMachine, process, GetCurrentThread(), &frame,
                              &walkContext, nullptr, SymFunctionTableAccess64,
                              SymGetModuleBase64, nullptr) ||
                 frame.AddrPC.Offset == 0) {
