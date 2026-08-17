@@ -9,7 +9,11 @@ namespace Refii.Audio;
 
 public static class Engine_XmaDecoder
 {
-	private const string Library = "refii_assetbrowser";
+	// FFmpeg's ff_xma1_decoder/ff_xma2_decoder, wrapped by src/xmadecode — the same shape
+	// as refii_binkdecode. This used to be refii_assetbrowser, whose Fable2AssetBrowser
+	// submodule reimplemented the decoder FFmpeg already ships (and does not build with
+	// clang on any architecture). The exported ABI below is unchanged.
+	private const string Library = "refii_xmadecode";
 
 	public const int ExpectedAbiVersion = 1;
 
@@ -81,12 +85,12 @@ public static class Engine_XmaDecoder
 		}
 		catch (DllNotFoundException)
 		{
-			error = "refii_assetbrowser not found — build src/assetbrowser";
+			error = "refii_xmadecode not found — build src/xmadecode";
 			return false;
 		}
 		catch (EntryPointNotFoundException)
 		{
-			error = "refii_assetbrowser is missing the audio ABI — rebuild it";
+			error = "refii_xmadecode is missing the audio ABI — rebuild it";
 			return false;
 		}
 		finally

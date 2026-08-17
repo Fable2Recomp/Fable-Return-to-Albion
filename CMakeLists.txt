@@ -141,6 +141,11 @@ endif()
 # Must come AFTER the block above: it links libavcodec, which only carries the Bink
 # decoder once those sources have been added to it.
 add_subdirectory(src/binkdecode)
+
+# XMA1/XMA2 audio for Godot. No source list of its own: wmaprodec.c is already compiled
+# for WMA Pro and defines ff_xma1_decoder/ff_xma2_decoder, which cmake/ffmpeg-bink's
+# config override enables.
+add_subdirectory(src/xmadecode)
 refii_define_rexglue_build_target()
 refii_define_rexglue_codegen_bootstrap_target()
 
@@ -587,7 +592,22 @@ set(REFII_VFS_LIBRARIES)
 set(REFII_RENDERER_LIBRARIES)
 set(REFII_HOOK_OBJECTS)
 
-add_subdirectory(src/assetbrowser)
+# OFF: the Fable2AssetBrowser submodule is reference source, not part of the game build.
+# Its XMA decoder — the one thing Godot actually needed from it — is now served by
+# src/xmadecode via FFmpeg. What remains is the .mdl -> glTF converter, which its own
+# shadow/assetbrowser-sdk/abi/README.md still describes as "not yet buildable in-tree".
+#
+# It also does not currently compile with clang on ANY architecture: wmaprodata.h is
+# #included inside `namespace Xma { namespace { ... } }` and pulls in <stddef.h>, whose
+# clang version declares `namespace std { ... nullptr_t; }` — so a nested
+# Xma::(anonymous namespace)::std swallows every later std::array/std::once_flag (20
+# errors, verified identical on x86_64 and ARM64). No compile flag works around it; the
+# fix belongs upstream, moving that include out of the namespace.
+option(REFII_BUILD_ASSETBROWSER
+       "Build the Fable2AssetBrowser native library (reference; see comment above)" OFF)
+if(REFII_BUILD_ASSETBROWSER)
+    add_subdirectory(src/assetbrowser)
+endif()
 
 if(REFII_BUILD_UPSCALER)
     add_subdirectory(src/upscaler)
