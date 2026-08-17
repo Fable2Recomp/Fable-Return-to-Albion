@@ -36,6 +36,7 @@ public sealed class Engine_FxSystem
         public float[] Pos = new float[3];
         public float[] Vel = new float[3];
         public float Age;
+        public float KeyAge;
         public float Life;
         public int Seg = 1;
         public int LoopIter;
@@ -57,10 +58,12 @@ public sealed class Engine_FxSystem
         public int Rows = 1;
         public float FrameSpeed;
         public bool RandomFrame;
-        public bool Additive;
-        public bool SrcAlpha;
+        public string BlendMode = "mix";
+        public bool SatMask;
+        public float SoftDepth;
         public float[] Colour = { 1f, 1f, 1f };
         public float Alpha = 1f;
+        public float SelfIllum = 1f;
         public float HalfX = 0.5f;
         public float HalfY = 0.5f;
         public float GlobalScaleX = 1f;
@@ -194,6 +197,7 @@ public sealed class Engine_FxSystem
         public float[] PlacePos = new float[3];
         public float[] PlaceRot = { 1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f };
         public float Scale = 1f;
+        public float[] Lit = { 1f, 1f, 1f };
         public float Time;
         public float DtAccum;
         public int Frame;
@@ -321,9 +325,32 @@ public sealed class Engine_FxSystem
 
     private static Vector3 ToGodot(float[] game) => new(game[0], game[2], game[1]);
 
-    private static bool IsAdditive(FxVisual vis) => vis.DstBlend == 1;
+    public static Action<float[], float[]>? AmbientProvider;
 
-    private static bool UsesSourceAlpha(FxVisual vis) => vis.SrcBlend == 4;
+    public static bool DebugEmit;
+
+    public void SetAmbient(float r, float g, float b)
+    {
+        foreach (InstanceState inst in _instances)
+        {
+            inst.Lit[0] = r; inst.Lit[1] = g; inst.Lit[2] = b;
+        }
+    }
+
+    public static string BlendModeFor(int src, int dst, int op)
+    {
+        if (src < 0 || src > 10) src = 1;
+        if (dst < 0 || dst > 10) dst = 1;
+        if (op < 0 || op > 4) op = 0;
+        if (op == 2) return src == 1 && dst == 5 ? "revsub" : "sub";
+        if (op != 0) return "mix";
+        if (src == 1 && dst == 5) return "mix";
+        if (src == 1 && dst == 1) return "addone";
+        if (src == 4 && dst == 1) return "add";
+        if (src == 4 && dst == 5) return "mixalpha";
+        if (src == 0 && dst == 5) return "darken";
+        return "mix";
+    }
 
     private void UpdateChain(List<ChainNode> chain, InstanceState inst, float[] placePos, float[] placeRot, float scale, float[] outPos, float[] outRot)
     {
@@ -390,9 +417,27 @@ public sealed class Engine_FxSystem
         Array.Copy(R, outRot, 9);
     }
 
+    private void BuildVisuals(FxSystemDef sysd, float sc, float[] rotW, List<VisualRuntime> outv)
+    {
+        if (sysd.Visuals.Count == 0) return;
+        FxVisual first = sysd.Visuals[0];
+        if (first.Displacement) return;
+        string blendMode = BlendModeFor(first.SrcBlend, first.DstBlend, first.BlendOp);
+        bool satMask = first.SaturationMask;
+        float softDepth = first.SoftDepthContrast > 0f ? first.SoftDepthContrast : 0f;
+        foreach (FxVisual vis in sysd.Visuals)
+        {
+            VisualRuntime? v = BuildVisual(vis, sc, rotW);
+            if (v is null) continue;
+            v.BlendMode = blendMode;
+            v.SatMask = satMask;
+            v.SoftDepth = softDepth;
+            outv.Add(v);
+        }
+    }
+
     private VisualRuntime? BuildVisual(FxVisual vis, float sc, float[] rotW)
     {
-        if (vis.Displacement) return null;
         if (vis.Texture.Length == 0 && !vis.HasMesh) return null;
         var v = new VisualRuntime
         {
@@ -401,8 +446,7 @@ public sealed class Engine_FxSystem
             InvSpan = vis.InvSpan,
             Colour = new[] { vis.ColorSq[0], vis.ColorSq[1], vis.ColorSq[2] },
             Alpha = vis.HasAlpha ? vis.Alpha : 1f,
-            Additive = IsAdditive(vis),
-            SrcAlpha = UsesSourceAlpha(vis),
+            SelfIllum = vis.SelfIllum,
         };
         if (vis.HasMesh)
         {
@@ -497,6 +541,8 @@ public sealed class Engine_FxSystem
             MatVec(placeRot, p.Socket, rsk);
             var placePos = new[] { p.Pos[0] + (sc * rsk[0]), p.Pos[1] + (sc * rsk[1]), p.Pos[2] + (sc * rsk[2]) };
             Array.Copy(placePos, inst.PlacePos, 3);
+            inst.Lit[0] = inst.Lit[1] = inst.Lit[2] = 1f;
+            AmbientProvider?.Invoke(placePos, inst.Lit);
             Array.Copy(placeRot, inst.PlaceRot, 9);
             inst.Scale = sc;
 
@@ -563,11 +609,7 @@ public sealed class Engine_FxSystem
                     rt.LoopCount = sysd.LoopCount;
                     if (sysd.ChildCount < 2) { chain.Add(node); continue; }
                     rt.LifeFrames = sysd.LastStartFrames;
-                    foreach (FxVisual vis in sysd.Visuals)
-                    {
-                        VisualRuntime? v = BuildVisual(vis, sc, rt.RotW);
-                        if (v is not null) rt.Visuals.Add(v);
-                    }
+                    BuildVisuals(sysd, sc, rt.RotW, rt.Visuals);
                 }
 
                 if (em.ReleaseTrail && part.TrailSystem >= 0 && part.TrailSystem < bank.Systems.Count)
@@ -575,11 +617,7 @@ public sealed class Engine_FxSystem
                     FxSystemDef tsys = bank.Systems[part.TrailSystem];
                     if (tsys.Mode == 2 && tsys.ChildCount >= 2)
                     {
-                        foreach (FxVisual vis in tsys.Visuals)
-                        {
-                            VisualRuntime? v = BuildVisual(vis, sc, rt.RotW);
-                            if (v is not null) rt.TrailVisuals.Add(v);
-                        }
+                        BuildVisuals(tsys, sc, rt.RotW, rt.TrailVisuals);
 
                         rt.Trail = rt.TrailVisuals.Count != 0;
                         rt.TrailLife = tsys.LastStartFrames;
@@ -943,17 +981,18 @@ public sealed class Engine_FxSystem
 
             bool windowOpen = !d.UseLife || rt.Age <= d.LifetimeFrames;
             int nvis = rt.Visuals.Count;
+            rt.Particles.RemoveAll(p => p.Life >= 0f && p.Age >= p.Life);
             if (rt.Beam)
             {
                 BeamTick(rt);
                 rt.FirstFrame = false;
                 foreach (ParticleState pt in rt.Particles)
                 {
-                    pt.Age += 1f;
                     while (pt.Seg < nvis && pt.Age >= (int)rt.Visuals[pt.Seg].DelayFrames + 0.5f) pt.Seg++;
+                    pt.KeyAge = pt.Age;
+                    pt.Age += 1f;
                 }
 
-                rt.Particles.RemoveAll(p => p.Life >= 0f && p.Age >= p.Life);
                 continue;
             }
 
@@ -990,17 +1029,6 @@ public sealed class Engine_FxSystem
             bool hasVec0 = !d.Vec0.IsEmpty;
             foreach (ParticleState pt in rt.Particles)
             {
-                if (!rt.Frozen) StepParticle(inst, rt, pt, hasAttr, hasP14, hasVec0);
-                pt.Rot += pt.Spin;
-                if (rt.Trail)
-                {
-                    int hn = Math.Min(pt.HistCount + 1, TrailHistory);
-                    for (int k = hn - 1; k > 0; k--) pt.Hist[k] = pt.Hist[k - 1];
-                    pt.Hist[0] = new[] { pt.Pos[0], pt.Pos[1], pt.Pos[2] };
-                    pt.HistCount = hn;
-                }
-
-                pt.Age += 1f;
                 if (rt.LoopCount != 0 && rt.LoopEnd <= pt.Age)
                 {
                     if (rt.LoopCount < 0 || pt.LoopIter < rt.LoopCount) { pt.Age = rt.LoopStart; pt.Seg = 1; pt.LoopIter++; }
@@ -1015,6 +1043,19 @@ public sealed class Engine_FxSystem
                     if (vv.IsMesh) pt.Spin = vv.OrSpeed + ((Frand() - 0.5f) * vv.OrSpread);
                     else if (vv.HasRotation) pt.Spin = vv.RotSpeed + ((Frand() - 0.5f) * vv.RotSpread);
                 }
+
+                if (!rt.Frozen) StepParticle(inst, rt, pt, hasAttr, hasP14, hasVec0);
+                pt.Rot += pt.Spin;
+                if (rt.Trail)
+                {
+                    int hn = Math.Min(pt.HistCount + 1, TrailHistory);
+                    for (int k = hn - 1; k > 0; k--) pt.Hist[k] = pt.Hist[k - 1];
+                    pt.Hist[0] = new[] { pt.Pos[0], pt.Pos[1], pt.Pos[2] };
+                    pt.HistCount = hn;
+                }
+
+                pt.KeyAge = pt.Age;
+                pt.Age += 1f;
 
                 if (nvis != 0)
                 {
@@ -1033,8 +1074,6 @@ public sealed class Engine_FxSystem
                     }
                 }
             }
-
-            rt.Particles.RemoveAll(p => p.Life >= 0f && p.Age >= p.Life);
         }
 
         if (_loop && inst.Time > 1.5f)
@@ -1217,11 +1256,11 @@ public sealed class Engine_FxSystem
 
     private readonly struct DrawKey : IEquatable<DrawKey>
     {
-        public readonly string Texture; public readonly bool Additive; public readonly bool SrcAlpha; public readonly int ZOrder;
-        public DrawKey(string t, bool a, bool s, int z) { Texture = t; Additive = a; SrcAlpha = s; ZOrder = z; }
-        public bool Equals(DrawKey o) => Texture == o.Texture && Additive == o.Additive && SrcAlpha == o.SrcAlpha && ZOrder == o.ZOrder;
+        public readonly string Texture; public readonly string Mode; public readonly bool Sat; public readonly float Soft; public readonly int ZOrder;
+        public DrawKey(string t, string m, bool sat, float soft, int z) { Texture = t; Mode = m; Sat = sat; Soft = soft; ZOrder = z; }
+        public bool Equals(DrawKey o) => Texture == o.Texture && Mode == o.Mode && Sat == o.Sat && Soft == o.Soft && ZOrder == o.ZOrder;
         public override bool Equals(object? o) => o is DrawKey k && Equals(k);
-        public override int GetHashCode() => HashCode.Combine(Texture, Additive, SrcAlpha, ZOrder);
+        public override int GetHashCode() => HashCode.Combine(Texture, Mode, Sat, Soft, ZOrder);
     }
 
     private float DistanceFadeFactor(EmitterRuntime rt, Vector3 p, Vector3 cam)
@@ -1248,7 +1287,7 @@ public sealed class Engine_FxSystem
         var batches = new Dictionary<DrawKey, List<(Vector3 Pos, Vector2 Uv, Color Col)>>();
         List<(Vector3, Vector2, Color)> Sink(VisualRuntime v, int z)
         {
-            var key = new DrawKey(v.Texture, v.Additive, v.SrcAlpha, z);
+            var key = new DrawKey(v.Texture, v.BlendMode, v.SatMask, v.SoftDepth, z);
             if (!batches.TryGetValue(key, out var list)) { list = new List<(Vector3, Vector2, Color)>(); batches[key] = list; }
             return list;
         }
@@ -1273,15 +1312,15 @@ public sealed class Engine_FxSystem
                             pts.Add(ToGodot(h)); ages.Add(k);
                         }
 
-                        EmitRibbon(Sink, rt, rt.TrailVisuals, pts, ages, cameraPosition, false);
+                        EmitRibbon(Sink, rt, rt.TrailVisuals, pts, ages, cameraPosition, false, inst.Lit);
                     }
                 }
 
                 if (rt.Ribbon)
                 {
                     pts.Clear(); ages.Clear();
-                    foreach (ParticleState pt in rt.Particles) { pts.Add(ToGodot(pt.Pos)); ages.Add(pt.Age); }
-                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, cameraPosition, true);
+                    foreach (ParticleState pt in rt.Particles) { pts.Add(ToGodot(pt.Pos)); ages.Add(pt.KeyAge); }
+                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, cameraPosition, true, inst.Lit);
                     continue;
                 }
 
@@ -1289,23 +1328,24 @@ public sealed class Engine_FxSystem
                 {
                     if (nvis == 0) continue;
                     Vector3 ppos = ToGodot(pt.Pos);
-                    float tLife = pt.Life > 0f ? Math.Clamp(pt.Age / pt.Life, 0f, 1f) : 0f;
+                    float tLife = pt.Life > 0f ? Math.Clamp(pt.KeyAge / pt.Life, 0f, 1f) : 0f;
                     int segB = nvis <= 1 ? 0 : Math.Clamp(pt.Seg, 1, nvis - 1);
                     int segA = Math.Max(segB - 1, 0);
                     VisualRuntime va = rt.Visuals[segA];
                     VisualRuntime? vb = nvis > 1 && segB > segA ? rt.Visuals[segB] : null;
                     float w = 0f;
-                    if (vb is not null) w = Math.Clamp((pt.Age - va.DelayFrames) * vb.InvSpan, 0f, 1f);
+                    if (vb is not null) w = Math.Clamp((pt.KeyAge - va.DelayFrames) * vb.InvSpan, 0f, 1f);
                     float Lerp(float x, float y) => x + ((y - x) * w);
 
                     float hx = (vb is not null ? Lerp(va.HalfX, vb.HalfX) : va.HalfX) * pt.FlickX * (vb is not null ? Lerp(va.GlobalScaleX, vb.GlobalScaleX) : va.GlobalScaleX);
                     float hy = (vb is not null ? Lerp(va.HalfY, vb.HalfY) : va.HalfY) * pt.FlickY * (vb is not null ? Lerp(va.GlobalScaleY, vb.GlobalScaleY) : va.GlobalScaleY);
                     if (hx <= 0f || hy <= 0f) continue;
+                    float si = vb is not null ? Lerp(va.SelfIllum, vb.SelfIllum) : va.SelfIllum;
                     var col = new[]
                     {
-                        vb is not null ? Lerp(va.Colour[0], vb.Colour[0]) : va.Colour[0],
-                        vb is not null ? Lerp(va.Colour[1], vb.Colour[1]) : va.Colour[1],
-                        vb is not null ? Lerp(va.Colour[2], vb.Colour[2]) : va.Colour[2],
+                        inst.Lit[0] + (((vb is not null ? Lerp(va.Colour[0], vb.Colour[0]) : va.Colour[0]) - inst.Lit[0]) * si),
+                        inst.Lit[1] + (((vb is not null ? Lerp(va.Colour[1], vb.Colour[1]) : va.Colour[1]) - inst.Lit[1]) * si),
+                        inst.Lit[2] + (((vb is not null ? Lerp(va.Colour[2], vb.Colour[2]) : va.Colour[2]) - inst.Lit[2]) * si),
                     };
                     float a = vb is not null ? Lerp(va.Alpha, vb.Alpha) : va.Alpha;
                     a *= DistanceFadeFactor(rt, ppos, cameraPosition);
@@ -1336,19 +1376,23 @@ public sealed class Engine_FxSystem
         {
             List<(Vector3 Pos, Vector2 Uv, Color Col)> list = batches[key];
             if (list.Count == 0) continue;
-            string suffix = key.Additive ? (key.SrcAlpha ? "|add" : "|addone") : "|mix";
-            VisualBatchMaterial? material = materialLookup(key.Texture + suffix);
-            if (material is null) continue;
             SortQuadsBackToFront(list, cameraPosition);
-            mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles, material.Material);
-            foreach ((Vector3 pos, Vector2 uv, Color colr) in list)
+            if (DebugEmit && list.Count > 0) GD.Print($"[fx-emit] {key.Texture} mode={key.Mode} sat={key.Sat} soft={key.Soft} z={key.ZOrder} verts={list.Count} v0={list[0].Pos} uv0={list[0].Uv} c0={list[0].Col} v1={list[1].Pos} v2={list[2].Pos}");
+            string[] passes = key.Mode == "revsub" ? new[] { "darken", "sub" } : new[] { key.Mode };
+            foreach (string pass in passes)
             {
-                mesh.SurfaceSetColor(colr);
-                mesh.SurfaceSetUV(uv);
-                mesh.SurfaceAddVertex(pos);
-            }
+                VisualBatchMaterial? material = materialLookup(key.Texture + "|" + pass + (key.Sat ? "|sat" : string.Empty) + (key.Soft > 0f ? "|soft" + key.Soft.ToString("R", System.Globalization.CultureInfo.InvariantCulture) : string.Empty));
+                if (material is null) continue;
+                mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles, material.Material);
+                foreach ((Vector3 pos, Vector2 uv, Color colr) in list)
+                {
+                    mesh.SurfaceSetColor(colr);
+                    mesh.SurfaceSetUV(uv);
+                    mesh.SurfaceAddVertex(pos);
+                }
 
-            mesh.SurfaceEnd();
+                mesh.SurfaceEnd();
+            }
         }
     }
 
@@ -1409,7 +1453,7 @@ public sealed class Engine_FxSystem
         float u0 = 0f, v0 = 0f, u1 = 1f, v1 = 1f;
         if (frames > 1)
         {
-            int f = vis.FrameSpeed > 0f ? (int)(pt.Age * vis.FrameSpeed) : (int)(tLife * frames);
+            int f = vis.FrameSpeed > 0f ? (int)(pt.KeyAge * vis.FrameSpeed) : (int)(tLife * frames);
             if (vis.RandomFrame) f += (int)(pt.Seed * frames);
             f = ((f % frames) + frames) % frames;
             int fx = f % cols, fy = f / cols;
@@ -1430,7 +1474,7 @@ public sealed class Engine_FxSystem
 
     private void EmitRibbon(
         Func<VisualRuntime, int, List<(Vector3, Vector2, Color)>> sink, EmitterRuntime rt, List<VisualRuntime> vis,
-        List<Vector3> pts, List<float> ages, Vector3 eye, bool constWidth)
+        List<Vector3> pts, List<float> ages, Vector3 eye, bool constWidth, float[] lit)
     {
         int n = pts.Count;
         if (n < 2 || vis.Count == 0) return;
@@ -1446,7 +1490,11 @@ public sealed class Engine_FxSystem
             VisualRuntime va = vis[sa], vb = vis[sb];
             float w = sb > sa ? Math.Clamp((age - va.DelayFrames) * vb.InvSpan, 0f, 1f) : 0f;
             attrW[k] = constWidth ? vis[0].TrailWidth * 0.5f : (va.TrailWidth + ((vb.TrailWidth - va.TrailWidth) * w)) * 0.5f;
-            attrC[k] = new Vector3(va.Colour[0] + ((vb.Colour[0] - va.Colour[0]) * w), va.Colour[1] + ((vb.Colour[1] - va.Colour[1]) * w), va.Colour[2] + ((vb.Colour[2] - va.Colour[2]) * w));
+            float si = va.SelfIllum + ((vb.SelfIllum - va.SelfIllum) * w);
+            attrC[k] = new Vector3(
+                lit[0] + ((va.Colour[0] + ((vb.Colour[0] - va.Colour[0]) * w) - lit[0]) * si),
+                lit[1] + ((va.Colour[1] + ((vb.Colour[1] - va.Colour[1]) * w) - lit[1]) * si),
+                lit[2] + ((va.Colour[2] + ((vb.Colour[2] - va.Colour[2]) * w) - lit[2]) * si));
             attrA[k] = (va.Alpha + ((vb.Alpha - va.Alpha) * w)) * DistanceFadeFactor(rt, pts[k], eye);
             attrTex[k] = sa;
         }

@@ -645,7 +645,7 @@ public static class Engine_LevelProps
         }
 
         int levelFx = Engine_LevelFx.Spawn(
-            container, view, supplementalViews, placements, fxModelPaths, fxAttachTo);
+            container, view, supplementalViews, placements, fxModelPaths, fxAttachTo, probes);
         if (levelFx != 0)
         {
             GD.Print($"[props] {level}: {levelFx} level FX spawned from bank");

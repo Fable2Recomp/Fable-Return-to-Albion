@@ -16,6 +16,12 @@ public partial class FableFx : Node3D
 
     public const string AddShaderPath = "res://src/Engine/fx/fx_particle_add.gdshader";
 
+    public const string MixAlphaShaderPath = "res://src/Engine/fx/fx_particle_mixalpha.gdshader";
+
+    public const string DarkenShaderPath = "res://src/Engine/fx/fx_particle_darken.gdshader";
+
+    public const string SubShaderPath = "res://src/Engine/fx/fx_particle_sub.gdshader";
+
     public const string TextureFolder = "art/fx/pfx_textures/";
 
     [Export]
@@ -145,6 +151,7 @@ public partial class FableFx : Node3D
         }
 
         _system.SetLoop(Loop);
+        ApplyLit();
         // The node's world transform goes in so the system can hold world-space particles still
         // when this effect moves — see AttachToRoot. A node bolted to a wall passes the same
         // transform every frame and the system does nothing with it.
@@ -242,6 +249,44 @@ public partial class FableFx : Node3D
             }
         }
     }
+
+    private void ApplyLit()
+    {
+        float r = 1f, g = 1f, b = 1f;
+        if (HasMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMeta) &&
+            GetMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMeta) is { VariantType: Variant.Type.Array } probeMeta)
+        {
+            var sample = probeMeta.AsGodotArray<Vector4>();
+            if (sample.Count == 3)
+            {
+                var basis = new Vector4(0.2820948f, 0f, 0.4886025f, 0f);
+                float br = MathF.Max(sample[0].Dot(basis), 0f);
+                float bg = MathF.Max(sample[1].Dot(basis), 0f);
+                float bb = MathF.Max(sample[2].Dot(basis), 0f);
+                const float gamma = 1.3f;
+                br = MathF.Pow(br, gamma); bg = MathF.Pow(bg, gamma); bb = MathF.Pow(bb, gamma);
+                Refii.Lighting.LightingFrame? frame = Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting;
+                float[] lm = frame?.LightmapColour ?? new float[] { 1f, 1f, 1f };
+                float ar = 0f, ag = 0f, ab = 0f;
+                if (frame is not null && frame.HasAmbient)
+                {
+                    ar = frame.AmbientColour[0] * frame.AmbientEnergy;
+                    ag = frame.AmbientColour[1] * frame.AmbientEnergy;
+                    ab = frame.AmbientColour[2] * frame.AmbientEnergy;
+                }
+
+                r = (br * lm[0]) + ar; g = (bg * lm[1]) + ag; b = (bb * lm[2]) + ab;
+            }
+        }
+
+        _system.SetAmbient(r, g, b);
+    }
+
+    public int DebugAlive => _system.AliveCount();
+
+    public int DebugSpawned => _system.TotalSpawned;
+
+    public int DebugSurfaces => _mesh?.GetSurfaceCount() ?? -1;
 
     public void Restart()
     {
@@ -342,7 +387,7 @@ public partial class FableFx : Node3D
                 Time.GetTicksMsec() >= _textureRetryAtMsec)
             {
                 _textureRetryAtMsec = Time.GetTicksMsec() + 2000;
-                int retrySplit = key.LastIndexOf('|');
+                int retrySplit = key.IndexOf('|');
                 Texture2D? late = LoadTexture(retrySplit >= 0 ? key[..retrySplit] : key);
                 if (late is not null && cached.Material is ShaderMaterial sm)
                 {
@@ -354,20 +399,47 @@ public partial class FableFx : Node3D
             return cached;
         }
 
-        int split = key.LastIndexOf('|');
-        string texture = split >= 0 ? key[..split] : key;
-        string mode = split >= 0 ? key[(split + 1)..] : string.Empty;
+        string[] segments = key.Split('|');
+        string texture = segments[0];
+        string mode = segments.Length > 1 ? segments[1] : string.Empty;
+        bool satMask = false;
+        float softDepth = 0f;
+        for (int i = 2; i < segments.Length; i++)
+        {
+            if (segments[i] == "sat") satMask = true;
+            else if (segments[i].StartsWith("soft", StringComparison.Ordinal))
+            {
+                float.TryParse(segments[i][4..], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out softDepth);
+            }
+        }
         bool additive = mode is "add" or "addone";
+        string shaderPath = mode switch
+        {
+            "add" or "addone" => AddShaderPath,
+            "mixalpha" => MixAlphaShaderPath,
+            "darken" => DarkenShaderPath,
+            "sub" => SubShaderPath,
+            _ => MixShaderPath,
+        };
 
-        Shader? shader = GD.Load<Shader>(additive ? AddShaderPath : MixShaderPath);
+        Shader? shader = GD.Load<Shader>(shaderPath);
         if (shader is null)
         {
             return null;
         }
 
         var material = new ShaderMaterial { Shader = shader };
-        material.SetShaderParameter(
-            "fx_exposure", Engine_FxSystem.Exposure * ExposureScale);
+        material.SetShaderParameter("fx_alpha_ref", satMask ? 16.0f : 1.0f);
+        material.SetShaderParameter("fx_soft_inv", softDepth > 0f ? 1.0f / softDepth : 0.0f);
+        if (mode == "darken")
+        {
+            material.RenderPriority = -1;
+        }
+        else
+        {
+            material.SetShaderParameter(
+                "fx_exposure", Engine_FxSystem.Exposure * ExposureScale);
+        }
 
         if (additive)
         {

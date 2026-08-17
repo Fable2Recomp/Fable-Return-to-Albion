@@ -116,7 +116,8 @@ public static class Engine_LevelFx
         List<GdbView> supplementalViews,
         List<GdbPlacement> placements,
         Dictionary<uint, string>? modelPaths = null,
-        Dictionary<uint, Node3D>? attachTo = null)
+        Dictionary<uint, Node3D>? attachTo = null,
+        Refii.Lighting.LightProbeField? probes = null)
     {
         FxBank? bank = FableFx.SharedBank();
         if (bank is null)
@@ -314,6 +315,12 @@ public static class Engine_LevelFx
                 EffectName = $"FX_{hash:X8}",
                 Transform = xform,
             };
+            if (probes is not null)
+            {
+                Transform3D levelXform = xform;
+                for (Node? walk = parent; walk is Node3D n3 && walk != container; walk = walk.GetParent()) levelXform = n3.Transform * levelXform;
+                Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(fx, levelXform.Origin, probes);
+            }
             (parent ?? container).AddChild(fx);
             count++;
             FxBank.FxComposition parts = bank.Composition(hash);
