@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dtp0gpbq0rosf"
+path="res://.godot/imported/fx_depth_capture.glsl-0c72c23ad08b150f30063fb146d63a4a.res"
+
+[deps]
+
+source_file="res://src/Engine/fx/fx_depth_capture.glsl"
+dest_files=["res://.godot/imported/fx_depth_capture.glsl-0c72c23ad08b150f30063fb146d63a4a.res"]
+
+[params]
+

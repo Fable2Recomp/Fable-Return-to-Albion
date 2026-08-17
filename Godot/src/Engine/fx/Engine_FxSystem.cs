@@ -329,6 +329,20 @@ public sealed class Engine_FxSystem
 
     public static bool DebugEmit;
 
+    public bool HasDisplacement
+    {
+        get
+        {
+            foreach (InstanceState inst in _instances)
+                foreach (EmitterRuntime rt in inst.Emitters)
+                {
+                    foreach (VisualRuntime v in rt.Visuals) if (v.BlendMode == "disp") return true;
+                    foreach (VisualRuntime v in rt.TrailVisuals) if (v.BlendMode == "disp") return true;
+                }
+            return false;
+        }
+    }
+
     public void SetAmbient(float r, float g, float b)
     {
         foreach (InstanceState inst in _instances)
@@ -421,8 +435,7 @@ public sealed class Engine_FxSystem
     {
         if (sysd.Visuals.Count == 0) return;
         FxVisual first = sysd.Visuals[0];
-        if (first.Displacement) return;
-        string blendMode = BlendModeFor(first.SrcBlend, first.DstBlend, first.BlendOp);
+        string blendMode = first.Displacement ? "disp" : BlendModeFor(first.SrcBlend, first.DstBlend, first.BlendOp);
         bool satMask = first.SaturationMask;
         float softDepth = first.SoftDepthContrast > 0f ? first.SoftDepthContrast : 0f;
         foreach (FxVisual vis in sysd.Visuals)
@@ -1251,6 +1264,7 @@ public sealed class Engine_FxSystem
     public sealed class MeshInstanceData
     {
         public string MeshPath = string.Empty;
+        public bool Displacement;
         public List<(Transform3D Transform, Color Colour)> Instances { get; } = new();
     }
 
@@ -1279,9 +1293,11 @@ public sealed class Engine_FxSystem
         Vector3 cameraPosition,
         Vector3 cameraRight,
         Vector3 cameraUp,
-        Dictionary<string, MeshInstanceData> meshOut)
+        Dictionary<string, MeshInstanceData> meshOut,
+        ImmediateMesh? dispMesh = null)
     {
         mesh.ClearSurfaces();
+        dispMesh?.ClearSurfaces();
         foreach (MeshInstanceData data in meshOut.Values) data.Instances.Clear();
 
         var batches = new Dictionary<DrawKey, List<(Vector3 Pos, Vector2 Uv, Color Col)>>();
@@ -1340,7 +1356,7 @@ public sealed class Engine_FxSystem
                     float hx = (vb is not null ? Lerp(va.HalfX, vb.HalfX) : va.HalfX) * pt.FlickX * (vb is not null ? Lerp(va.GlobalScaleX, vb.GlobalScaleX) : va.GlobalScaleX);
                     float hy = (vb is not null ? Lerp(va.HalfY, vb.HalfY) : va.HalfY) * pt.FlickY * (vb is not null ? Lerp(va.GlobalScaleY, vb.GlobalScaleY) : va.GlobalScaleY);
                     if (hx <= 0f || hy <= 0f) continue;
-                    float si = vb is not null ? Lerp(va.SelfIllum, vb.SelfIllum) : va.SelfIllum;
+                    float si = va.BlendMode == "disp" ? 1f : (vb is not null ? Lerp(va.SelfIllum, vb.SelfIllum) : va.SelfIllum);
                     var col = new[]
                     {
                         inst.Lit[0] + (((vb is not null ? Lerp(va.Colour[0], vb.Colour[0]) : va.Colour[0]) - inst.Lit[0]) * si),
@@ -1378,6 +1394,23 @@ public sealed class Engine_FxSystem
             if (list.Count == 0) continue;
             SortQuadsBackToFront(list, cameraPosition);
             if (DebugEmit && list.Count > 0) GD.Print($"[fx-emit] {key.Texture} mode={key.Mode} sat={key.Sat} soft={key.Soft} z={key.ZOrder} verts={list.Count} v0={list[0].Pos} uv0={list[0].Uv} c0={list[0].Col} v1={list[1].Pos} v2={list[2].Pos}");
+            if (key.Mode == "disp")
+            {
+                if (dispMesh is null) continue;
+                VisualBatchMaterial? dispMaterial = materialLookup(key.Texture + "|disp");
+                if (dispMaterial is null) continue;
+                dispMesh.SurfaceBegin(Mesh.PrimitiveType.Triangles, dispMaterial.Material);
+                foreach ((Vector3 pos, Vector2 uv, Color colr) in list)
+                {
+                    dispMesh.SurfaceSetColor(colr);
+                    dispMesh.SurfaceSetUV(uv);
+                    dispMesh.SurfaceAddVertex(pos);
+                }
+
+                dispMesh.SurfaceEnd();
+                continue;
+            }
+
             string[] passes = key.Mode == "revsub" ? new[] { "darken", "sub" } : new[] { key.Mode };
             foreach (string pass in passes)
             {
@@ -1416,11 +1449,14 @@ public sealed class Engine_FxSystem
 
     private void EmitMeshParticle(VisualRuntime va, VisualRuntime? vb, float w, ParticleState pt, float alpha, float[] col, Dictionary<string, MeshInstanceData> meshOut)
     {
-        if (!meshOut.TryGetValue(va.MeshPath, out MeshInstanceData? data))
+        bool disp = va.BlendMode == "disp";
+        string meshKey = disp ? va.MeshPath + "|disp" : va.MeshPath;
+        if (!meshOut.TryGetValue(meshKey, out MeshInstanceData? data))
         {
-            data = new MeshInstanceData { MeshPath = va.MeshPath };
-            meshOut[va.MeshPath] = data;
+            data = new MeshInstanceData { MeshPath = va.MeshPath, Displacement = disp };
+            meshOut[meshKey] = data;
         }
+        if (disp) Engine_FxDisplacement.NotifyActive();
 
         float ms = vb is not null && vb.IsMesh ? va.MeshScale + ((vb.MeshScale - va.MeshScale) * w) : va.MeshScale;
         float s = ms * pt.FlickX;

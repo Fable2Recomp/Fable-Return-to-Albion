@@ -175,6 +175,7 @@ public static class Engine_LevelLighting
 		{
 			CompositorEffects = new Godot.Collections.Array<CompositorEffect>
 			{
+				new Refii.Fx.Engine_FxDepthCaptureEffect(),
 				new Engine_ExposureEffect(),
 			},
 		};

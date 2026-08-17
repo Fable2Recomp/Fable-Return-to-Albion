@@ -993,6 +993,7 @@ public static class Engine_FxBank
         {
             v.HasMesh = r.MeshPath.Length != 0;
             v.MeshPath = r.MeshPath;
+            if (r.IsDispMesh != 0) v.Displacement = true;
             v.HasTrailWidth = true;
             v.TrailWidth = r.MeshScale;
             v.HasScalarSize = true;

@@ -22,10 +22,17 @@ public partial class FableFx : Node3D
 
     public const string SubShaderPath = "res://src/Engine/fx/fx_particle_sub.gdshader";
 
+    public const string DispShaderPath = "res://src/Engine/fx/fx_particle_disp.gdshader";
+
     public const string TextureFolder = "art/fx/pfx_textures/";
 
     [Export]
     public float ExposureScale { get; set; } = 1.0f;
+
+    static FableFx()
+    {
+        Engine_FxDepthCaptureEffect.RegisterGlobals();
+    }
 
     private static FxBank? _bank;
     private static bool _bankTried;
@@ -37,6 +44,8 @@ public partial class FableFx : Node3D
 
     private MeshInstance3D? _surface;
     private ImmediateMesh? _mesh;
+    private MeshInstance3D? _dispSurface;
+    private ImmediateMesh? _dispMesh;
     private bool _built;
     private string _builtName = string.Empty;
 
@@ -213,13 +222,15 @@ public partial class FableFx : Node3D
         Vector3 cameraUp = local.Basis.Y.Normalized();
 
         _system.EmitGeometry(
-            _mesh, LookupMaterial, cameraPos, cameraRight, cameraUp, _meshData);
+            _mesh, LookupMaterial, cameraPos, cameraRight, cameraUp, _meshData, _dispMesh);
+        if (_dispMesh is not null && _dispMesh.GetSurfaceCount() > 0) Engine_FxDisplacement.NotifyActive();
 
         foreach ((string path, Engine_FxSystem.MeshInstanceData data) in _meshData)
         {
             if (!_meshNodes.TryGetValue(path, out MultiMeshInstance3D? node))
             {
-                node = BuildMeshNode(path);
+                node = BuildMeshNode(data.MeshPath, data.Displacement);
+                if (data.Displacement) Engine_FxDisplacement.Ensure(this);
                 if (node is null)
                 {
                     continue;
@@ -347,6 +358,21 @@ public partial class FableFx : Node3D
             AddChild(_surface);
         }
 
+        if (_dispSurface is null && _system.HasDisplacement)
+        {
+            _dispMesh = new ImmediateMesh();
+            _dispSurface = new MeshInstance3D
+            {
+                Name = "FxDisplacement",
+                Mesh = _dispMesh,
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+                ExtraCullMargin = 512f,
+                Layers = Engine_FxDisplacement.LayerMask,
+            };
+            AddChild(_dispSurface);
+            Engine_FxDisplacement.Ensure(this);
+        }
+
         // THE EFFECT'S LIGHTS, built once. Their colour, range and energy are all timelines and
         // move every frame, but how MANY there are is fixed by the bank.
         for (int i = 0; i < _system.LightCount; i++)
@@ -419,6 +445,7 @@ public partial class FableFx : Node3D
             "mixalpha" => MixAlphaShaderPath,
             "darken" => DarkenShaderPath,
             "sub" => SubShaderPath,
+            "disp" => DispShaderPath,
             _ => MixShaderPath,
         };
 
@@ -435,7 +462,7 @@ public partial class FableFx : Node3D
         {
             material.RenderPriority = -1;
         }
-        else
+        else if (mode != "disp")
         {
             material.SetShaderParameter(
                 "fx_exposure", Engine_FxSystem.Exposure * ExposureScale);
@@ -494,7 +521,9 @@ public partial class FableFx : Node3D
         return null;
     }
 
-    private static MultiMeshInstance3D? BuildMeshNode(string meshPath)
+    public const string MeshDispShaderPath = "res://src/Engine/fx/fx_mesh_disp.gdshader";
+
+    private static MultiMeshInstance3D? BuildMeshNode(string meshPath, bool displacement = false)
     {
         string virtualPath = meshPath.Replace('\\', '/');
         byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(virtualPath) ??
@@ -522,12 +551,24 @@ public partial class FableFx : Node3D
             VisibleInstanceCount = 0,
         };
 
-        return new MultiMeshInstance3D
+        var node = new MultiMeshInstance3D
         {
             Name = "FxMesh_" + System.IO.Path.GetFileNameWithoutExtension(virtualPath),
             Multimesh = multi,
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
             ExtraCullMargin = 512f,
         };
+        if (displacement)
+        {
+            var dispMat = new ShaderMaterial { Shader = GD.Load<Shader>(MeshDispShaderPath) };
+            if (mesh.GetSurfaceCount() > 0 && mesh.SurfaceGetMaterial(0) is ShaderMaterial src && src.GetShaderParameter("albedo_tex").Obj is Texture2D albedo)
+            {
+                dispMat.SetShaderParameter("albedo_tex", albedo);
+            }
+            node.MaterialOverride = dispMat;
+            node.Layers = Engine_FxDisplacement.LayerMask;
+        }
+
+        return node;
     }
 }
