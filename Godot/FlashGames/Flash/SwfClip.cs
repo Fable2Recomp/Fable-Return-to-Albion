@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
-using Refii.FlashGames.PubGames;
+using Refii.FlashGames.Framework;
 
 namespace Refii.FlashGames;
 

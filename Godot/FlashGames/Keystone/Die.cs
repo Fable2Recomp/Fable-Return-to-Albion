@@ -1,6 +1,8 @@
 using System;
 
-namespace Refii.FlashGames.PubGames;
+using Refii.FlashGames.Framework;
+
+namespace Refii.FlashGames.Keystone;
 
 public sealed class Die : IAnimPos, IAnimScale, IAnimFrame
 {

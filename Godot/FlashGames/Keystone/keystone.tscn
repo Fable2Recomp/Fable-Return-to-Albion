@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://FlashGames/Keystone/KeystoneHost.cs" id="1_keystone"]
+
+[node name="KeystoneHost" type="Node"]
+script = ExtResource("1_keystone")

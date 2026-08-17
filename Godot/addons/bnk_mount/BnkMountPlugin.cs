@@ -35,9 +35,6 @@ public partial class BnkMountPlugin : EditorPlugin
     private Refii.Level.Engine_BnkTerrainMaterialLoader? _terrainMaterialLoader;
     private Refii.Entities.Engine_BnkEntityLoader? _entityLoader;
     private Refii.Fx.Engine_BnkFxLoader? _fxLoader;
-    private Refii.FlashGames.Engine_SwfTextureLoader? _swfTextureLoader;
-    private Refii.FlashGames.Engine_SwfMeshLoader? _swfMeshLoader;
-    private Refii.FlashGames.Engine_SwfFontLoader? _swfFontLoader;
     private Dictionary<string, string>? _byFileName;
     private Tree? _tree;
     private TreeItem? _gameRoot;
@@ -62,6 +59,33 @@ public partial class BnkMountPlugin : EditorPlugin
 
     public override void _EnterTree()
     {
+        // BEFORE THE MOUNT, ON THIS THREAD, AND BOTH HALVES MATTER. Godot restores the last-open
+        // scene the moment the editor comes up, and res://levels/pubgames/*.tscn is nothing but
+        // game:// references. The rest of the loaders are registered by Inject() once the
+        // background bank mount lands, which is far too late: every reference resolved in the
+        // meantime failed with "Cannot open file" and Godot CACHED the failure, so the scene could
+        // never be opened afterwards either.
+        //
+        // The index is built here too rather than on demand from inside the loaders. That was tried
+        // and is worse than the problem: a loader runs on a resource worker thread, and doing file
+        // IO and SWF parsing there while a scene's references are being resolved wedged the
+        // filesystem scan and left the whole project unmounted. A second on the main thread, once.
+        // GUARDED, AND THE MOUNT GOES FIRST IF THIS FAILS. Anything that throws in _EnterTree takes
+        // the whole plugin down with it, and until this was wrapped that is exactly what happened:
+        // an exception parsing a pub game aborted _EnterTree before StartMount, so NOTHING mounted
+        // — no banks, no game:// tree, on a project that has nothing to do with pub games. The
+        // indexing used to live inside the mount task, where BnkFileSystem.Mount's own try/catch
+        // covered it; moving it out here moved it out of that cover too.
+        try
+        {
+            Refii.FlashGames.Engine_SwfAssets.EnsureLoaders();
+            Refii.FlashGames.Engine_SwfAssets.EnsureIndexed();
+        }
+        catch (Exception exception)
+        {
+            GD.PushWarning($"[bnk_mount] pub games not indexed: {exception.Message}");
+        }
+
         StartMount();
         EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged += OnFilesystemChanged;
         GetTree().NodeAdded += OnNodeAdded;
@@ -83,6 +107,7 @@ public partial class BnkMountPlugin : EditorPlugin
         RemoveStreamingLabel();
         RemoveGameRoot();
         RemoveLoaders();
+        Refii.FlashGames.Engine_SwfAssets.RemoveLoaders();
         _filesystem?.Dispose();
         _filesystem = null;
     }
@@ -429,46 +454,16 @@ public partial class BnkMountPlugin : EditorPlugin
             ResourceLoader.AddResourceFormatLoader(_terrainMaterialLoader);
         }
 
-        if (_swfTextureLoader is null)
-        {
-            _swfTextureLoader = new Refii.FlashGames.Engine_SwfTextureLoader();
-            ResourceLoader.AddResourceFormatLoader(_swfTextureLoader, atFront: true);
-        }
-
-        if (_swfMeshLoader is null)
-        {
-            _swfMeshLoader = new Refii.FlashGames.Engine_SwfMeshLoader();
-            ResourceLoader.AddResourceFormatLoader(_swfMeshLoader, atFront: true);
-        }
-
-        if (_swfFontLoader is null)
-        {
-            _swfFontLoader = new Refii.FlashGames.Engine_SwfFontLoader();
-            ResourceLoader.AddResourceFormatLoader(_swfFontLoader, atFront: true);
-        }
+        // NOT REGISTERED HERE. _EnterTree already did it through Engine_SwfAssets.EnsureLoaders,
+        // which owns its own instances. Registering a second set from this class put six SWF
+        // loaders in a table Godot caps, and every load past the cap failed with
+        // "Condition i >= loader_count is true" — which looks like a mount failure and is not one.
     }
 
     private void RemoveLoaders()
     {
         Refii.Entities.Engine_EntityIndex.SetResolver(null);
 
-        if (_swfFontLoader is not null)
-        {
-            ResourceLoader.RemoveResourceFormatLoader(_swfFontLoader);
-            _swfFontLoader = null;
-        }
-
-        if (_swfMeshLoader is not null)
-        {
-            ResourceLoader.RemoveResourceFormatLoader(_swfMeshLoader);
-            _swfMeshLoader = null;
-        }
-
-        if (_swfTextureLoader is not null)
-        {
-            ResourceLoader.RemoveResourceFormatLoader(_swfTextureLoader);
-            _swfTextureLoader = null;
-        }
 
         if (_entityLoader is not null)
         {

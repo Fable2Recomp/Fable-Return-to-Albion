@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 
-namespace Refii.FlashGames.PubGames;
+using Refii.FlashGames.Framework;
+
+namespace Refii.FlashGames.Keystone;
 
 public sealed class Payout
 {

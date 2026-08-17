@@ -1,6 +1,8 @@
 using System;
 
-namespace Refii.FlashGames.PubGames;
+using Refii.FlashGames.Framework;
+
+namespace Refii.FlashGames.Keystone;
 
 /// <summary>
 /// Lighting up what the roll won, and the arrows that point at the stone it takes.

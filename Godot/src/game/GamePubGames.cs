@@ -1,6 +1,8 @@
 using Godot;
 
-using Refii.FlashGames.Runtime;
+using Refii.FlashGames.Framework;
+using Refii.FlashGames.Keystone;
+using Refii.FlashGames.MageDice;
 using Refii.Host;
 
 namespace Refii.Game;
@@ -23,11 +25,16 @@ namespace Refii.Game;
 /// resets while dereferencing NEITHER the module pointer nor the game pointer, so a host may run
 /// 1 → play → 9 and the guest settles correctly with Scaleform never created at all.
 ///
-/// A GAME WE CANNOT PLAY MUST STILL BE ANSWERED. Only Keystone has C# gameplay; Mage Dice and
-/// Wizard's Tower ship art and rules we have not built. The guest waits at state 2 for as long as
+/// A GAME WE CANNOT PLAY MUST STILL BE ANSWERED. Keystone and Mage Dice have C# gameplay;
+/// Wizard's Tower ships art and rules we have not built. The guest waits at state 2 for as long as
 /// it takes, so declining silently is a soft lock in front of a black screen. Declining means
 /// handing back the balance UNCHANGED, which settles a delta of zero and puts the player back in
 /// the world having lost nothing.
+///
+/// THE DISPATCH IS ON THE GUEST'S OWN NAME for the game, which is the string it holds at
+/// <c>mgr+8</c> and matches the game-data folder: <c>keystone</c>, <c>magedice</c>,
+/// <c>wizardstower</c>. Anything else — including a name we cannot read — falls through to the
+/// decline, which is the safe direction to be wrong in.
 /// </remarks>
 public partial class GamePubGames : Node
 {
@@ -50,12 +57,13 @@ public partial class GamePubGames : Node
 	/// </remarks>
 	public const int LayerIndex = 9;
 
-	/// <summary>The only pub game with C# gameplay so far.</summary>
-	private const string Playable = "keystone";
-
 	private CanvasLayer? _layer;
 
-	private KeystoneHost? _host;
+	/// <summary>The board on screen, as a node to add and free.</summary>
+	private Node? _host;
+
+	/// <summary>The same object, as the two numbers the guest is waiting for.</summary>
+	private IPubGameSession? _session;
 
 	/// <summary>What the last poll reported, so a per-frame check does not flood the log.</summary>
 	private string _reported = string.Empty;
@@ -138,15 +146,15 @@ public partial class GamePubGames : Node
 			return;
 		}
 
-		if (_host is null || !_host.IsFinished)
+		if (_session is null || !_session.IsFinished)
 		{
 			return;
 		}
 
 		// THE BALANCE, NOT THE WINNINGS. The guest seeded the bank from the hero's real gold and
 		// settles by crediting the difference; handing it a delta would pay the player twice.
-		long gold = _host.FinalGold;
-		long debt = _host.FinalDebt;
+		long gold = _session.FinalGold;
+		long debt = _session.FinalDebt;
 
 		Report(
 			$"[pubgame] finished with {gold:N0} gold and {debt:N0} debt " +
@@ -169,12 +177,57 @@ public partial class GamePubGames : Node
 			return;
 		}
 
-		if (pub.Game != Playable)
+		// SEEDED FROM THE GUEST, which is the point of entering at state 2 rather than launching
+		// this ourselves — the bank it hands over is the hero's real gold, already snapshotted.
+		//
+		// EVERYTHING ELSE IS THE VARIATION'S. Buy-in, seat count and skin are stated per table in
+		// settings.xml, and a host's exports are a harness convenience that must not speak over the
+		// file — see the Unset remarks on either host. Leaving them at their old defaults played
+		// every Keystone table in the game at a 500 buy-in with three opponents.
+		//
+		// SAID, NOT SUBSTITUTED. The variation is the table — its stakes, its odds and whether it
+		// is a tournament — so if the guest names one we take it verbatim. If it names none there
+		// is nothing to follow, and the host's own default table is better than a game with no
+		// buy-in; but that is a guess, and a guess about the player's money gets logged.
+		Node? host = pub.Game switch
 		{
-			// DECLINED, AND ANSWERED. Leaving the guest at state 2 would hang it forever.
+			"keystone" => new KeystoneHost
+			{
+				Name = "PubGame",
+				StartingGold = Clamp(pub.Gold),
+				AiPlayers = KeystoneHost.Unset,
+				Skin = KeystoneHost.Unset,
+				BuyIn = KeystoneHost.Unset,
+
+				// A PLAYER IS NOT A HARNESS. The status label reports the frame rate, the raw
+				// stick axes and the internal phase name.
+				ShowDiagnostics = false,
+				Variant = Table(pub, "Standard1"),
+			},
+
+			"magedice" => new MageDiceHost
+			{
+				Name = "PubGame",
+				StartingGold = Clamp(pub.Gold),
+				AiPlayers = MageDiceHost.Unset,
+				Skin = MageDiceHost.Unset,
+				BuyIn = MageDiceHost.Unset,
+				ShowDiagnostics = false,
+				Variant = Table(pub, "CowAndCorset1"),
+			},
+
+			_ => null,
+		};
+
+		if (host is not IPubGameSession session)
+		{
+			// DECLINED, AND ANSWERED. Leaving the guest at state 2 would hang it forever, and
+			// wizardstower still has no gameplay. Handing back the balance UNCHANGED settles a
+			// delta of zero and puts the player back in the world having lost nothing.
 			Report(
 				$"[pubgame] the guest asked for '{pub.Game}', which has no gameplay yet — " +
 				"returning the player's balance unchanged");
+			host?.QueueFree();
 			HostBridge.SetPubGameResult(pub.Gold, pub.Debt);
 			return;
 		}
@@ -183,44 +236,28 @@ public partial class GamePubGames : Node
 			$"[pubgame] the guest started '{pub.Game}' variation '{pub.Variation}' " +
 			$"with {pub.Gold:N0} gold and {pub.Debt:N0} debt");
 
-		_host = new KeystoneHost
-		{
-			Name = "PubGame",
+		_host = host;
+		_session = session;
+		_layer.AddChild(host);
+	}
 
-			// SEEDED FROM THE GUEST, which is the point of entering at state 2 rather than
-			// launching this ourselves — the bank it hands over is the hero's real gold, already
-			// snapshotted, and the variation names the table's stake tier in the game's own
-			// settings.xml.
-			StartingGold = Clamp(pub.Gold),
-
-			// EVERYTHING ELSE IS THE VARIATION'S. Buy-in, seat count and skin are stated per table
-			// in settings.xml, and the host's exports are a harness convenience that must not
-			// speak over the file — see KeystoneHost.Unset. Leaving them at their old defaults
-			// played every table in the game at a 500 buy-in with three opponents.
-			AiPlayers = KeystoneHost.Unset,
-			Skin = KeystoneHost.Unset,
-			BuyIn = KeystoneHost.Unset,
-
-			// A PLAYER IS NOT A HARNESS. The status label reports the frame rate, the raw stick
-			// axes and the internal phase name.
-			ShowDiagnostics = false,
-		};
-
-		// SAID, NOT SUBSTITUTED. The variation is the table — its stakes, its odds and whether it
-		// is a tournament — so if the guest names one we take it verbatim. If it names none there
-		// is nothing to follow, and the host's own default table is better than a game with no
-		// buy-in; but that is a guess, and a guess about the player's money gets logged.
+	/// <summary>
+	/// The variation the guest named, or the game's own default with a warning.
+	/// </summary>
+	/// <remarks>
+	/// THE FALLBACK IS PER GAME because the tables are: Keystone's variations are Standard1 through
+	/// the tournament tables, Mage Dice's are named after the pubs they sit in. There is no shared
+	/// name that means "the cheapest table".
+	/// </remarks>
+	private static string Table(HostBridge.PubGameState pub, string fallback)
+	{
 		if (pub.Variation.Length != 0)
 		{
-			_host.Variant = pub.Variation;
-		}
-		else
-		{
-			GD.PushWarning(
-				$"[pubgame] the guest named no variation; playing '{_host.Variant}'");
+			return pub.Variation;
 		}
 
-		_layer.AddChild(_host);
+		GD.PushWarning($"[pubgame] the guest named no variation; playing '{fallback}'");
+		return fallback;
 	}
 
 	/// <summary>
@@ -251,6 +288,7 @@ public partial class GamePubGames : Node
 
 		_host.QueueFree();
 		_host = null;
+		_session = null;
 	}
 
 	/// <summary>

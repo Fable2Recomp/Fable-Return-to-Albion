@@ -6,7 +6,6 @@ using Godot;
 
 using Refii.Bnk;
 using Refii.Core;
-using Refii.FlashGames.Runtime;
 
 namespace Refii.FlashGames;
 
@@ -157,7 +156,85 @@ public static class Engine_SwfAssets
         }
     }
 
-    public static void Index(BnkFileSystem filesystem, string gameDirectory)
+    public static void RemoveLoaders()
+    {
+        if (_fontLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_fontLoader);
+            _fontLoader = null;
+        }
+
+        if (_meshLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_meshLoader);
+            _meshLoader = null;
+        }
+
+        if (_textureLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_textureLoader);
+            _textureLoader = null;
+        }
+    }
+
+    private static bool _indexed;
+
+    /// <summary>
+    /// Builds the pub-game index if nothing has yet, resolving the game data itself.
+    /// </summary>
+    /// <remarks>
+    /// FOR THE EDITOR, WHERE NOTHING GUARANTEES THE ORDER. At runtime a host mounts and then loads
+    /// its stage, so the index is always ready first. In the editor the addon starts the bank mount
+    /// on a background thread and Godot restores the last-open scene immediately — and
+    /// <c>res://levels/pubgames/*.tscn</c> is nothing but <c>game://</c> references, so every one
+    /// resolved before that thread finished failed with "Cannot open file" and got cached as a
+    /// failure. Registering the loaders early is half the fix; this is the other half.
+    ///
+    /// CALLED FROM THE EDITOR PLUGIN'S <c>_EnterTree</c>, ON THE MAIN THREAD, AND NOWHERE ELSE.
+    /// It was briefly wired into the loaders' <c>Load</c> instead, to avoid paying for it on
+    /// projects that never open a pub game — but a loader runs on Godot's resource worker threads
+    /// while a scene's external references are being resolved, and doing this much work there (file
+    /// IO, SWF parsing, GD.PushWarning) wedged the editor's filesystem scan and left nothing
+    /// mounted at all. It is about a second, once, on the main thread.
+    /// </remarks>
+    public static void EnsureIndexed()
+    {
+        if (_indexed)
+        {
+            return;
+        }
+
+        try
+        {
+            string root = Engine_GameData.ResolveWhere(
+                candidate => PubGamesCatalog.ResolveRoot(candidate).Length != 0);
+            if (root.Length == 0)
+            {
+                // NOT AN ERROR. A checkout with no game data staged is the normal state of this
+                // repo; the pub games simply are not there to index.
+                return;
+            }
+
+            Index(null, root);
+        }
+        catch (Exception exception)
+        {
+            // NEVER THROWS TO ITS CALLER. This runs during editor plugin start-up, where an
+            // exception costs the whole plugin — and a malformed pub game must not be able to
+            // unmount the entire project.
+            GD.PushWarning($"[swf] pub games not indexed: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Indexes the pub games' bitmaps, shapes and fonts.
+    /// </summary>
+    /// <param name="filesystem">
+    /// Where to publish the virtual files, or null to build the index only. The loaders read the
+    /// static tables below rather than the filesystem, so a null here still makes every
+    /// <c>game://FlashGames/*</c> path loadable — it just does not list them in the file browser.
+    /// </param>
+    public static void Index(BnkFileSystem? filesystem, string gameDirectory)
     {
         string gameRoot = PubGamesCatalog.ResolveRoot(gameDirectory).Length != 0
             ? gameDirectory
@@ -193,41 +270,69 @@ public static class Engine_SwfAssets
         {
             IndexGame(filesystem, set, game);
         }
+
+        _indexed = true;
     }
 
-    private static void IndexFontPack(BnkFileSystem filesystem, string language, string path)
+    private static void IndexFontPack(BnkFileSystem? filesystem, string language, string path)
     {
-        byte[] bytes;
-        try
-        {
-            bytes = File.ReadAllBytes(path);
-        }
-        catch (Exception exception)
-        {
-            GD.PushWarning($"[swf] {path}: {exception.Message}");
-            return;
-        }
-
-        SwfFile? swf = SwfFile.TryLoad(bytes, out string error);
-        if (swf is null)
-        {
-            GD.PushWarning($"[swf] {path}: {error}");
-            return;
-        }
-
-        var pack = new FontPack
-        {
-            Path = path,
-            Language = language,
-            Stem = Path.GetFileNameWithoutExtension(path),
-            Swf = swf,
-            Hash = Digest(bytes),
-        };
+        // INDEXED TWICE, PARSED ONCE. The editor builds the index lazily with no filesystem, and
+        // the background bank mount comes along later with one; the second pass only has to publish
+        // the virtual files. Re-reading the SWF would cost a megabyte of decompression per pack and
+        // leave a duplicate in Packs, which PreferredPack walks.
+        FontPack? existing = null;
         lock (Gate)
         {
-            Packs.Add(pack);
+            foreach (FontPack candidate in Packs)
+            {
+                if (string.Equals(candidate.Path, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    existing = candidate;
+                    break;
+                }
+            }
         }
 
+        FontPack pack;
+        if (existing is not null)
+        {
+            pack = existing;
+        }
+        else
+        {
+            byte[] bytes;
+            try
+            {
+                bytes = File.ReadAllBytes(path);
+            }
+            catch (Exception exception)
+            {
+                GD.PushWarning($"[swf] {path}: {exception.Message}");
+                return;
+            }
+
+            SwfFile? loaded = SwfFile.TryLoad(bytes, out string error);
+            if (loaded is null)
+            {
+                GD.PushWarning($"[swf] {path}: {error}");
+                return;
+            }
+
+            pack = new FontPack
+            {
+                Path = path,
+                Language = language,
+                Stem = Path.GetFileNameWithoutExtension(path),
+                Swf = loaded,
+                Hash = Digest(bytes),
+            };
+            lock (Gate)
+            {
+                Packs.Add(pack);
+            }
+        }
+
+        SwfFile swf = pack.Swf;
         string folder = RootFolder + "/" + CommonFolder + "/" + SafeName(pack.Stem);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (SwfTag tag in swf.Tags)
@@ -254,7 +359,7 @@ public static class Engine_SwfAssets
 
             pack.FacePaths[id] = virtualPath;
             string key = virtualPath;
-            filesystem.AddVirtualFile(virtualPath, path, tag.Data.Length, () => ReadFontText(key));
+            filesystem?.AddVirtualFile(virtualPath, path, tag.Data.Length, () => ReadFontText(key));
         }
     }
 
@@ -283,34 +388,49 @@ public static class Engine_SwfAssets
         return true;
     }
 
-    private static void IndexGame(BnkFileSystem filesystem, PubGamesSet set, PubGameEntry entry)
+    private static void IndexGame(BnkFileSystem? filesystem, PubGamesSet set, PubGameEntry entry)
     {
-        byte[] bytes;
-        try
-        {
-            bytes = File.ReadAllBytes(entry.SwfPath);
-        }
-        catch (Exception exception)
-        {
-            GD.PushWarning($"[swf] {entry.SwfPath}: {exception.Message}");
-            return;
-        }
-
-        SwfFile? swf = SwfFile.TryLoad(bytes, out string error);
-        if (swf is null)
-        {
-            GD.PushWarning($"[swf] {entry.SwfPath}: {error}");
-            return;
-        }
-
-        var game = new Game
-        {
-            Folder = FolderName(entry.Name), SwfPath = entry.SwfPath, Swf = swf, Hash = Digest(bytes),
-        };
+        // SAME REUSE AS THE FONT PACKS ABOVE: the lazy editor pass parses, the later mount pass only
+        // publishes. Re-parsing would also throw away every SwfVectorPart already built against the
+        // old Game object, so the scene's meshes would be rebuilt from scratch.
+        string folderName = FolderName(entry.Name);
+        Game? game;
         lock (Gate)
         {
-            Games[game.Folder] = game;
+            Games.TryGetValue(folderName, out game);
         }
+
+        if (game is null)
+        {
+            byte[] bytes;
+            try
+            {
+                bytes = File.ReadAllBytes(entry.SwfPath);
+            }
+            catch (Exception exception)
+            {
+                GD.PushWarning($"[swf] {entry.SwfPath}: {exception.Message}");
+                return;
+            }
+
+            SwfFile? loaded = SwfFile.TryLoad(bytes, out string error);
+            if (loaded is null)
+            {
+                GD.PushWarning($"[swf] {entry.SwfPath}: {error}");
+                return;
+            }
+
+            game = new Game
+            {
+                Folder = folderName, SwfPath = entry.SwfPath, Swf = loaded, Hash = Digest(bytes),
+            };
+            lock (Gate)
+            {
+                Games[game.Folder] = game;
+            }
+        }
+
+        SwfFile swf = game.Swf;
 
         var names = new Dictionary<int, string>();
         foreach (SwfSymbol symbol in swf.Exports)
@@ -361,7 +481,7 @@ public static class Engine_SwfAssets
             string key = virtualPath;
             long size = substitute.Length != 0 ? new FileInfo(substitute).Length : tag.Data.Length;
             string source = substitute.Length != 0 ? substitute : entry.SwfPath;
-            filesystem.AddVirtualFile(virtualPath, source, size, () => ReadPng(key));
+            filesystem?.AddVirtualFile(virtualPath, source, size, () => ReadPng(key));
         }
 
         SwfDocument document = DocumentOf(game);
@@ -382,7 +502,7 @@ public static class Engine_SwfAssets
                 }
 
                 string key = virtualPath;
-                filesystem.AddVirtualFile(virtualPath, entry.SwfPath, size, () => ReadMeshBytes(key));
+                filesystem?.AddVirtualFile(virtualPath, entry.SwfPath, size, () => ReadMeshBytes(key));
             }
         }
     }
@@ -675,6 +795,7 @@ public static class Engine_SwfAssets
     }
     public static ArrayMesh? TryGetMesh(string virtualPath)
     {
+
         MeshEntry? entry;
         lock (Gate)
         {
@@ -699,6 +820,7 @@ public static class Engine_SwfAssets
 
     public static Image? TryGetImage(string virtualPath)
     {
+
         Bitmap? bitmap;
         lock (Gate)
         {
@@ -808,6 +930,7 @@ public static class Engine_SwfAssets
 
     public static FontFile? TryBuildFont(string virtualPath)
     {
+
         Face? face;
         lock (Gate)
         {
