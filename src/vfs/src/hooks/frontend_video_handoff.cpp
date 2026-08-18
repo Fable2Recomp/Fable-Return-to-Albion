@@ -2570,27 +2570,29 @@ REX_EXTERN(sub_82B4F400) {
 
   const PPCContext original_ctx = ctx;
 
-  // THE WORLD UPDATE'S PRESENT GATE: rex_lhRenderer_SyncThread's bounded wait
-  // (lr 0x82A3ECB0) loops until the present-completion event signals, which the
-  // render side never does here — the game thread parks and the camera never
-  // advances after New Game. Release it at the call site, like the startup
-  // movies' frame handoff. The event object's OS handle lives at +128.
+  // A COMMAND-STREAM FENCE WAIT, not a present-completion event.
   //
-  // GATED ON PAST-THE-BOOT: the STARTUP movies' present path runs through this
-  // same SyncThread wait, and releasing it there breaks the video handoff (the
-  // run died mid-movie). Both boot flags are clear through the movies, so the
-  // gate holds them untouched.
-  const bool present_gate_past_boot =
+  // sub_82A4EB08 builds the object this waits on: CreateEventA(0, 1, 0, 0) at +128, then
+  // writes a 0xF0F0F0F0-tagged packet carrying it into the ring at dword_8349F9B0. The
+  // consumer is sub_822DFE08, and Render_GpuAccessLock_Enter (0x82A4F0E0) picks between
+  // them — 0x82A4F19C drains inline when this thread owns the lock, 0x82A4F1AC posts the
+  // fence and waits (sub_82A3EC20) when it does not. Headless nothing drains the ring, so
+  // the wait at lr 0x82A3ECB0 never completes and the game thread parks after New Game.
+  //
+  // Returning kLhWaitResultSignalled IS the release. Signalling the event first would be a
+  // no-op: sub_82A3EC20 CloseHandle()s it at 0x82A3ECD4, two instructions after the wait
+  // returns. (It also does not build — the payload reaches rex:: only through the C bridge.)
+  //
+  // The gate is NOT "past boot". byte_83496AC4 is set by the front-end setup (sub_82319340)
+  // and cleared by its teardown (sub_82319A40 @0x82319B24), so it is 0 again in game;
+  // byte_83496A5E is set by Game_InitDatabases (@0x82311648) and cleared by sub_823117A8.
+  // The OR reads "front end up OR databases up", which is what holds it clear through the
+  // startup movies — the property this relies on. The fence itself means the same thing in
+  // both phases, so this is a phase heuristic, not a contract.
+  const bool frontend_or_databases_up =
       refii::vfs::LoadGuestU8(base, 0x83496AC4u) != 0u ||
       refii::vfs::LoadGuestU8(base, 0x83496A5Eu) != 0u;
-  if (original_ctx.lr == kPresentGateWaitLr && present_gate_past_boot) {
-    const uint32_t present_obj = original_ctx.r3.u32;
-    const uint32_t present_handle =
-        present_obj != 0 ? refii::vfs::LoadGuestU32(base, present_obj + 128)
-                         : 0;
-    if (present_handle != 0) {
-      rex::kernel::xboxkrnl::xeNtSetEvent(present_handle, nullptr);
-    }
+  if (original_ctx.lr == kPresentGateWaitLr && frontend_or_databases_up) {
     ctx.r3.u32 = kLhWaitResultSignalled;
     return;
   }
