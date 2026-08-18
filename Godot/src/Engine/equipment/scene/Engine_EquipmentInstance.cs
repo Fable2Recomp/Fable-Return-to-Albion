@@ -54,7 +54,7 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
         var list = new Array<Dictionary>();
 
         Group(list, Text(KindMeta).Length != 0 ? Text(KindMeta) : "Equipment");
-        Row(list, "Name");
+        Row(list, "Name", Text(NameMeta));
 
         if (Text(SlotMeta).Length != 0)
         {
@@ -65,7 +65,7 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
 
         if (ModelPath.Length != 0)
         {
-            Row(list, "Model");
+            Row(list, "Model", ModelPath);
         }
 
         if (!HasMeta(DetailMeta))
@@ -82,7 +82,7 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
         Group(list, "GDB Record");
         foreach (Variant key in detail.Keys)
         {
-            Row(list, key.AsString());
+            Row(list, key.AsString(), detail[key].AsString());
         }
 
         return list;
@@ -141,6 +141,13 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
             { "hint_string", string.Empty },
         });
 
+    public const int MultilineThreshold = 64;
+
+    public static bool NeedsMultiline(string value) =>
+        value.Length > MultilineThreshold ||
+        value.Contains('\n') ||
+        value.Contains('\r');
+
     private static void Row(Array<Dictionary> list, string name) =>
         list.Add(new Dictionary
         {
@@ -148,4 +155,22 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
             { "type", (int)Variant.Type.String },
             { "usage", (int)(PropertyUsageFlags.Editor | PropertyUsageFlags.ReadOnly) },
         });
+
+    private static void Row(Array<Dictionary> list, string name, string value)
+    {
+        if (!NeedsMultiline(value))
+        {
+            Row(list, name);
+            return;
+        }
+
+        list.Add(new Dictionary
+        {
+            { "name", name },
+            { "type", (int)Variant.Type.String },
+            { "usage", (int)(PropertyUsageFlags.Editor | PropertyUsageFlags.ReadOnly) },
+            { "hint", (int)PropertyHint.MultilineText },
+            { "hint_string", string.Empty },
+        });
+    }
 }
