@@ -58,6 +58,8 @@ public sealed class ItemDetail
 
     public bool IsMoney { get; set; }
 
+    public bool HasInventoryItem { get; set; }
+
     public List<KeyValuePair<string, string>> Stats { get; } = new();
 }
 
@@ -182,6 +184,8 @@ public static class Engine_ItemDetails
                 cursor, InventoryItemComponent, 6, out _, out uint inventoryHash, out _) &&
             IsRef(inventoryHash) &&
             multi.TryLookup(inventoryHash, out inventoryComponent);
+
+        detail.HasInventoryItem = hasInventory;
 
         if (hasInventory &&
             multi.TryFindInherited(

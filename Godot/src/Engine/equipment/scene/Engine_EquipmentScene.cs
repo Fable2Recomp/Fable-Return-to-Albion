@@ -9,6 +9,75 @@ public static class Engine_EquipmentScene
 
     public const string ClothingKind = "Garment";
 
+    public const string ItemKind = "Item";
+
+    public static PackedScene? ForItem(ItemEntry entry)
+    {
+        ItemDetail detail = entry.Detail;
+
+        var rows = new List<KeyValuePair<string, string>>
+        {
+            new("Category ID", detail.Category.ToString()),
+            new("Internal Name", detail.InternalName),
+            new("Name Tag", detail.NameTagName),
+            new("Description Tag", detail.DescTagName),
+            new("Description", Engine_ItemNames.DescriptionOf(detail)),
+            new("Icon", detail.IconTex),
+        };
+
+        if (detail.WeaponComponent != 0)
+        {
+            rows.Add(new KeyValuePair<string, string>(
+                "Weapon Type", Engine_WeaponKinds.DescribeType(detail.WeaponType)));
+        }
+
+        if (detail.Money >= 0)
+        {
+            rows.Add(new KeyValuePair<string, string>("Base Value", detail.Money.ToString()));
+        }
+
+        if (detail.WornModelPath.Length != 0 || detail.WornModelPathHash != 0)
+        {
+            rows.Add(new KeyValuePair<string, string>(
+                "Worn Model",
+                detail.WornModelPath.Length != 0
+                    ? detail.WornModelPath
+                    : $"0x{detail.WornModelPathHash:X8}"));
+        }
+
+        if (detail.FemaleWornModelPath.Length != 0 || detail.FemaleWornModelPathHash != 0)
+        {
+            rows.Add(new KeyValuePair<string, string>(
+                "Female Worn Model",
+                detail.FemaleWornModelPath.Length != 0
+                    ? detail.FemaleWornModelPath
+                    : $"0x{detail.FemaleWornModelPathHash:X8}"));
+        }
+
+        if (detail.BodyAreasCovered != 0)
+        {
+            rows.Add(new KeyValuePair<string, string>(
+                "Body Areas Covered", $"0x{detail.BodyAreasCovered:X}"));
+        }
+
+        if (detail.ClusterSortLayer != -100)
+        {
+            rows.Add(new KeyValuePair<string, string>(
+                "Cluster Sort Layer", detail.ClusterSortLayer.ToString()));
+        }
+
+        rows.AddRange(detail.Stats);
+
+        return Build(
+            entry.Name,
+            ItemKind,
+            Engine_ItemCategories.LabelOf(detail.Category),
+            detail.RecordHash,
+            entry.ModelPath,
+            rows,
+            "Category");
+    }
+
     public static PackedScene? ForWeapon(WeaponEntry entry)
     {
         ItemDetail detail = entry.Detail;
@@ -83,7 +152,8 @@ public static class Engine_EquipmentScene
         string slot,
         uint recordHash,
         string modelPath,
-        IEnumerable<KeyValuePair<string, string>> rows)
+        IEnumerable<KeyValuePair<string, string>> rows,
+        string slotLabel = Engine_EquipmentInstance.DefaultSlotLabel)
     {
         string safeName = name.Length != 0 ? name : kind;
 
@@ -95,6 +165,7 @@ public static class Engine_EquipmentScene
         node.SetMeta(Engine_EquipmentInstance.NameMeta, safeName);
         node.SetMeta(Engine_EquipmentInstance.KindMeta, kind);
         node.SetMeta(Engine_EquipmentInstance.SlotMeta, slot);
+        node.SetMeta(Engine_EquipmentInstance.SlotLabelMeta, slotLabel);
         node.SetMeta(Engine_EquipmentInstance.HashMeta, $"0x{recordHash:X8}");
         node.SetMeta(Engine_EquipmentInstance.ModelMeta, modelPath);
         node.SetMeta(

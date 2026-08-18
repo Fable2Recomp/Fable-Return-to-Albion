@@ -23,6 +23,8 @@ public partial class BnkMountPlugin : EditorPlugin
     private const string WeaponFamilyPrefix = "weaponfam:";
     private const string ClothesRootMeta = "__bnk_clothes_root__";
     private const string ClothingSlotPrefix = "clothslot:";
+    private const string ItemsRootMeta = "__bnk_items_root__";
+    private const string ItemCategoryPrefix = "itemcat:";
     private const string EffectsRootMeta = "__bnk_effects_root__";
     private const string VideosRootMeta = "__bnk_videos_root__";
     private const string LevelRegionPrefix = "lvlregion:";
@@ -41,6 +43,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private Refii.Entities.Engine_BnkEntityLoader? _entityLoader;
     private Refii.Equipment.Engine_BnkWeaponLoader? _weaponLoader;
     private Refii.Equipment.Engine_BnkClothingLoader? _clothingLoader;
+    private Refii.Equipment.Engine_BnkItemLoader? _itemLoader;
     private Refii.Fx.Engine_BnkFxLoader? _fxLoader;
     private Dictionary<string, string>? _byFileName;
     private Tree? _tree;
@@ -61,6 +64,8 @@ public partial class BnkMountPlugin : EditorPlugin
     private static readonly Color StreamingBusyColor = new(1.0f, 0.78f, 0.35f);
 
     private static readonly Color StreamingDoneColor = new(0.55f, 0.85f, 0.55f);
+
+    private static readonly Color MeshlessItemColor = new(0.62f, 0.62f, 0.62f);
 
     private EntityInspectorPlugin? _entityInspector;
 
@@ -407,6 +412,7 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Entities.Engine_EntityIndex.SetResolver(ResolveBytes);
         Refii.Equipment.Engine_WeaponIndex.SetResolver(ResolveBytes);
         Refii.Equipment.Engine_ClothingIndex.SetResolver(ResolveBytes);
+        Refii.Equipment.Engine_ItemIndex.SetResolver(ResolveBytes);
         Refii.Physics.Engine_PhysicsIndex.SetResolver(ResolveBytes);
         Refii.Hero.Engine_HeroMorphCatalog.SetResolver(ResolveBytes);
         Refii.Hero.Engine_SkeletalMorphs.SetSource(EnumerateAllPaths, ResolveBytes);
@@ -436,6 +442,12 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             _clothingLoader = new Refii.Equipment.Engine_BnkClothingLoader();
             ResourceLoader.AddResourceFormatLoader(_clothingLoader);
+        }
+
+        if (_itemLoader is null)
+        {
+            _itemLoader = new Refii.Equipment.Engine_BnkItemLoader();
+            ResourceLoader.AddResourceFormatLoader(_itemLoader);
         }
 
         if (_textureLoader is null)
@@ -491,6 +503,7 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Entities.Engine_EntityIndex.SetResolver(null);
         Refii.Equipment.Engine_WeaponIndex.SetResolver(null);
         Refii.Equipment.Engine_ClothingIndex.SetResolver(null);
+        Refii.Equipment.Engine_ItemIndex.SetResolver(null);
         Refii.Physics.Engine_PhysicsIndex.SetResolver(null);
         Refii.Hero.Engine_HeroMorphCatalog.SetResolver(null);
         Refii.Hero.Engine_SkeletalMorphs.SetSource(null, null);
@@ -506,6 +519,12 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             ResourceLoader.RemoveResourceFormatLoader(_clothingLoader);
             _clothingLoader = null;
+        }
+
+        if (_itemLoader is not null)
+        {
+            ResourceLoader.RemoveResourceFormatLoader(_itemLoader);
+            _itemLoader = null;
         }
 
         if (_entityLoader is not null)
@@ -731,6 +750,15 @@ public partial class BnkMountPlugin : EditorPlugin
         AddPlaceholder(tree, equipment);
         equipment.Collapsed = true;
 
+        TreeItem items = tree.CreateItem(_gameRoot);
+        items.SetText(0, "Items");
+        items.SetMetadata(0, ItemsRootMeta);
+        items.SetSelectable(0, false);
+        items.SetIcon(0, GetFolderIcon());
+        items.SetIconModulate(0, GameFolderColor);
+        AddPlaceholder(tree, items);
+        items.Collapsed = true;
+
         TreeItem effects = tree.CreateItem(_gameRoot);
         effects.SetText(0, "Effects");
         effects.SetMetadata(0, EffectsRootMeta);
@@ -831,6 +859,8 @@ public partial class BnkMountPlugin : EditorPlugin
                meta == ClothesRootMeta ||
                meta.StartsWith(WeaponFamilyPrefix, StringComparison.Ordinal) ||
                meta.StartsWith(ClothingSlotPrefix, StringComparison.Ordinal) ||
+               meta == ItemsRootMeta ||
+               meta.StartsWith(ItemCategoryPrefix, StringComparison.Ordinal) ||
                meta == VideosRootMeta ||
                meta == ContainerMeta ||
                meta.StartsWith("bnk:", StringComparison.Ordinal) ||
@@ -888,6 +918,14 @@ public partial class BnkMountPlugin : EditorPlugin
                 StringComparison.OrdinalIgnoreCase))
         {
             ActivateClothing(meta, virtualPath);
+            return;
+        }
+
+        if (virtualPath.EndsWith(
+                Refii.Equipment.Engine_ItemIndex.Extension,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            ActivateItem(meta, virtualPath);
             return;
         }
 
@@ -1061,6 +1099,9 @@ public partial class BnkMountPlugin : EditorPlugin
     private void ActivateClothing(string meta, string virtualPath) =>
         ActivateEquipment(meta, virtualPath, "clothes");
 
+    private void ActivateItem(string meta, string virtualPath) =>
+        ActivateEquipment(meta, virtualPath, "items");
+
     private void ActivateEquipment(string meta, string virtualPath, string tag)
     {
         var scene = ResourceLoader.Load<PackedScene>(
@@ -1200,6 +1241,8 @@ public partial class BnkMountPlugin : EditorPlugin
             meta != ClothesRootMeta &&
             !meta.StartsWith(WeaponFamilyPrefix, StringComparison.Ordinal) &&
             !meta.StartsWith(ClothingSlotPrefix, StringComparison.Ordinal) &&
+            meta != ItemsRootMeta &&
+            !meta.StartsWith(ItemCategoryPrefix, StringComparison.Ordinal) &&
             meta != EffectsRootMeta &&
             meta != VideosRootMeta &&
             !meta.StartsWith(LevelRegionPrefix, StringComparison.Ordinal) &&
@@ -1290,6 +1333,18 @@ public partial class BnkMountPlugin : EditorPlugin
             if (meta.StartsWith(ClothingSlotPrefix, StringComparison.Ordinal))
             {
                 PopulateClothingSlot(item, meta[ClothingSlotPrefix.Length..]);
+                continue;
+            }
+
+            if (meta == ItemsRootMeta)
+            {
+                PopulateItemCategories(item);
+                continue;
+            }
+
+            if (meta.StartsWith(ItemCategoryPrefix, StringComparison.Ordinal))
+            {
+                PopulateItemCategory(item, meta[ItemCategoryPrefix.Length..]);
                 continue;
             }
 
@@ -1521,6 +1576,77 @@ public partial class BnkMountPlugin : EditorPlugin
             item.SetMetadata(
                 0, FilePrefix + Refii.Equipment.Engine_ClothingIndex.VirtualPathOf(entry));
             ApplyEquipmentIcon(item, entry.Detail.IconTex, fallback);
+        }
+    }
+
+    private void PopulateItemCategories(TreeItem parent)
+    {
+        Tree? tree = ResolveTree();
+        if (tree is null)
+        {
+            return;
+        }
+
+        foreach (int category in Refii.Equipment.Engine_ItemIndex.Categories)
+        {
+            string folder = Refii.Equipment.Engine_ItemCategories.FolderOf(category);
+            int count = Refii.Equipment.Engine_ItemIndex.InCategory(category).Count;
+
+            TreeItem item = tree.CreateItem(parent);
+            item.SetText(0, $"{folder} ({count})");
+            item.SetTooltipText(
+                0, Refii.Equipment.Engine_ItemCategories.DescribeCategory(category));
+            item.SetMetadata(0, ItemCategoryPrefix + folder);
+            item.SetSelectable(0, false);
+            item.SetIcon(0, GetFolderIcon());
+            item.SetIconModulate(0, GameFolderColor);
+            AddPlaceholder(tree, item);
+            item.Collapsed = true;
+        }
+    }
+
+    private void PopulateItemCategory(TreeItem parent, string folder)
+    {
+        Tree? tree = ResolveTree();
+        if (tree is null ||
+            !Refii.Equipment.Engine_ItemCategories.TryParseFolder(folder, out int category))
+        {
+            return;
+        }
+
+        Texture2D? fallback = GetFileIcon();
+        List<Refii.Equipment.ItemEntry> entries =
+            Refii.Equipment.Engine_ItemIndex.InCategory(category);
+
+        var names = new List<string>(entries.Count);
+        var hashes = new List<uint>(entries.Count);
+        foreach (Refii.Equipment.ItemEntry entry in entries)
+        {
+            names.Add(entry.Name);
+            hashes.Add(entry.RecordHash);
+        }
+
+        List<string> labels = UniqueLabels(names, hashes);
+
+        for (int i = 0; i < entries.Count; i++)
+        {
+            Refii.Equipment.ItemEntry entry = entries[i];
+
+            TreeItem item = tree.CreateItem(parent);
+            item.SetText(0, labels[i]);
+            string mesh = entry.HasModel ? entry.ModelPath : "no mesh";
+            item.SetTooltipText(
+                0,
+                Refii.Equipment.Engine_ItemIndex.FileNameOf(entry) +
+                    System.Environment.NewLine + mesh);
+            item.SetMetadata(
+                0, FilePrefix + Refii.Equipment.Engine_ItemIndex.VirtualPathOf(entry));
+            ApplyEquipmentIcon(item, entry.Detail.IconTex, fallback);
+
+            if (!entry.HasModel)
+            {
+                item.SetCustomColor(0, MeshlessItemColor);
+            }
         }
     }
 

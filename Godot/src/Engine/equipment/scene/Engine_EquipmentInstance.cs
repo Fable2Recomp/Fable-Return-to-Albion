@@ -11,6 +11,7 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
     public const string NameMeta = "equipment_name";
     public const string KindMeta = "equipment_kind";
     public const string SlotMeta = "equipment_slot";
+    public const string SlotLabelMeta = "equipment_slot_label";
     public const string HashMeta = "equipment_hash";
     public const string ModelMeta = "equipment_model";
     public const string DetailMeta = "equipment_detail";
@@ -20,6 +21,11 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
     public override void _Ready() => EnsureMesh();
 
     public string ModelPath => Text(ModelMeta);
+
+    public const string DefaultSlotLabel = "Slot";
+
+    private string SlotLabel =>
+        Text(SlotLabelMeta).Length != 0 ? Text(SlotLabelMeta) : DefaultSlotLabel;
 
     public void EnsureMesh()
     {
@@ -58,7 +64,7 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
 
         if (Text(SlotMeta).Length != 0)
         {
-            Row(list, "Slot");
+            Row(list, SlotLabel);
         }
 
         Row(list, "Record Hash");
@@ -92,12 +98,15 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
     {
         string name = property.ToString();
 
+        if (name == SlotLabel)
+        {
+            return Text(SlotMeta);
+        }
+
         switch (name)
         {
             case "Name":
                 return Text(NameMeta);
-            case "Slot":
-                return Text(SlotMeta);
             case "Record Hash":
                 return Text(HashMeta);
             case "Model":
