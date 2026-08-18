@@ -916,7 +916,7 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
     const char* value = std::getenv("REFII_FINISH_INGAME_LOADSCREEN");
     return value == nullptr || value[0] != '0';
   }();
-  if (!enabled || !InGameWorldActive(base)) {
+  if (!enabled) {
     return;
   }
 
@@ -925,8 +925,15 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
   static uint32_t watched = 0;
   static uint32_t stuck_steps = 0;
 
-  const bool stuck = screen != 0 && LoadGuestU8(base, screen + 177u) != 0 &&
-                     LoadGuestU32(base, screen + 172u) != 0u;
+  // NOT gated on the world being up. The guest's game thread blocks on the loading
+  // screen's fade-out, which only its present loop ticks — off in this headless build —
+  // so the level change that would activate the world can never advance while the block
+  // holds. Waiting for the world before breaking the wait is the deadlock, not a guard.
+  // The stuck test below is the specificity: `sub_82361458` sets fade=1.0 (+172) and
+  // shutdown requested (+176) and then blocks on the event (+180) until the render side
+  // latches done (+177). Stuck = requested set, done not latched, 30 host steps.
+  const bool stuck = screen != 0 && LoadGuestU8(base, screen + 176u) != 0u &&
+                     LoadGuestU8(base, screen + 177u) == 0u;
   if (!stuck) {
     watched = 0;
     stuck_steps = 0;
