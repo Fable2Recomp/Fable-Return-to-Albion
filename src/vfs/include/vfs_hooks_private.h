@@ -99,9 +99,62 @@ uint32_t FinishCurrentBinkMovie(uint8_t* base);
 uint32_t BinkMovieState(uint8_t* base);
 
 /// Brings a stuck in-game loading screen down from the host step thread — defined in
-/// guest_tick_pump.cpp. Runs when the guest game thread is parked in its own post-cutscene
-/// teardown wait and the pump can no longer fire.
+/// src/core/guest_tick_pump_state.cpp. Runs when the guest game thread is parked in its own
+/// post-cutscene teardown wait and the pump can no longer fire.
 void FinishStuckInGameLoadingScreenFromHost(uint8_t* base);
+
+// The guest tick pump's shared state — defined in src/core/guest_tick_pump_state.cpp, which
+// links into librefii_vfs. The HOST posts and the PAYLOAD drains, so the queue cannot live
+// beside the pump hook; see that file. The pump compiles into the payload, so it crosses
+// through the C entries in core/payload_bridge.h rather than by C++ symbol.
+
+/// The in-game loading screen the guest stood up, or 0 when none is up.
+inline uint32_t ResolveInGameLoadingScreen(uint8_t* base) {
+  return refii_bridge_resolve_in_game_loading_screen(base);
+}
+
+/// Ticks observed BEFORE this one, so the pump's first tick reads 0.
+inline uint64_t GuestTickPumpObserveTick() {
+  return refii_bridge_guest_tick_pump_observe_tick();
+}
+inline uint64_t GuestTickPumpDrained() { return refii_bridge_guest_tick_pump_drained(); }
+inline void GuestTickPumpNoteRan() { refii_bridge_guest_tick_pump_note_ran(); }
+
+/// Takes the whole queue aside and answers how many actions came with it.
+inline uint32_t GuestTickPumpBeginDrain() {
+  return refii_bridge_guest_tick_pump_begin_drain();
+}
+
+/// One action from that batch. Measured first, then filled: the name is the front end's own
+/// identity for a menu entry and nothing bounds its length, so a fixed buffer would be a
+/// silent truncation waiting for a long one.
+inline std::string GuestTickPumpTakenAction(uint32_t index) {
+  const size_t needed = refii_bridge_guest_tick_pump_taken_action(index, nullptr, 0);
+  std::string name(needed, '\0');
+  if (needed != 0) {
+    refii_bridge_guest_tick_pump_taken_action(index, name.data(), needed + 1);
+  }
+  return name;
+}
+
+/// Holds an action that could not run yet. End puts every deferred one back at the front.
+inline void GuestTickPumpDeferAction(const std::string& name) {
+  refii_bridge_guest_tick_pump_defer_action(name.c_str(), name.size());
+}
+inline void GuestTickPumpEndDrain() { refii_bridge_guest_tick_pump_end_drain(); }
+
+inline bool GuestTickPumpWantsSaveCount() {
+  return refii_bridge_guest_tick_pump_wants_save_count() != 0;
+}
+inline void GuestTickPumpClearSaveCountRequest() {
+  refii_bridge_guest_tick_pump_clear_save_count_request();
+}
+inline void GuestTickPumpNoteSaveCount(int32_t count) {
+  refii_bridge_guest_tick_pump_note_save_count(count);
+}
+inline void GuestTickPumpRequestSaveCount() {
+  refii_bridge_guest_tick_pump_request_save_count();
+}
 }  // namespace refii::vfs
 
 #define REFII_VFS_NATIVE_PASSTHROUGH(function_name) \

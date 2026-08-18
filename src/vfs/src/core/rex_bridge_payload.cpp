@@ -147,6 +147,26 @@ std::recursive_mutex& global_critical_region::mutex() {
 }
 }  // namespace rex::thread
 
+// NOT ON WINDOWS, where spdlog is IN this module and defining it here is a hard link error.
+//
+// Every other forwarder above replaces a symbol the payload would otherwise import from
+// librexruntime, and the archive member that also defines it is never pulled, so there is
+// nothing to collide with. spdlog is the exception on Windows: rexruntime is a DLL there and
+// its import library does not re-export the spdlog it statically absorbed, so the payload
+// links spdlogd.lib for itself. That library is built consolidated -- spdlog.cpp.obj carries
+// logger::log_it_, logger::err_handler_, backtracer::enabled AND logger::flush in one member
+// -- so the payload's real uses of the first three drag the member in, and lld-link then sees
+// two definitions of flush. On Linux librexruntime.so exports its spdlog with default
+// visibility, the payload's undefined references bind to it at load time, libspdlog.a is
+// never consulted, and this definition stands alone.
+//
+// So on Windows flush() resolves to spdlog's own, running against the host-owned logger this
+// points at. That is safe in the way the rest of this file is not: flush_() walks sinks_ and
+// dispatches virtually into the host's sink objects, and both sides are our compiler and our
+// copy of these headers -- refii_generated is not the player's build. Losing the C hop costs
+// only the hop.
+#if !defined(_WIN32)
 namespace spdlog {
 void logger::flush() { refii_bridge_rex_logger_flush(this); }
 }  // namespace spdlog
+#endif

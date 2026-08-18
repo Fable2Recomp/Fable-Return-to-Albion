@@ -197,6 +197,22 @@ function(refii_stage_windows_runtime_dlls target_name)
         COMMAND_EXPAND_LISTS
         VERBATIM
     )
+
+    # STAGED ONE TOOL AT A TIME, because every tool stages into the SAME directory
+    # (REFII_TOOL_OUTPUT_DIR) and several of them stage the SAME dll -- both extractor tools
+    # link refii_bnk_extractor, so both copy refii_bnk_extractor.dll there. Ninja links tools
+    # in parallel and a POST_BUILD command belongs to its target's edge, so two
+    # `cmake -E copy_if_different` calls open one destination at once; Windows refuses the
+    # second with a sharing violation, which surfaces as "Permission denied" and fails the
+    # build. POSIX lets both writes through, so only Windows ever sees this.
+    #
+    # Chaining each registered tool behind the previous one serialises the copies without
+    # serialising anything else. It costs the parallelism of ~5 small tool links.
+    get_property(_refii_staged_predecessor GLOBAL PROPERTY REFII_WINDOWS_RUNTIME_DLL_LAST_TARGET)
+    if(_refii_staged_predecessor)
+        add_dependencies("${target_name}" "${_refii_staged_predecessor}")
+    endif()
+    set_property(GLOBAL PROPERTY REFII_WINDOWS_RUNTIME_DLL_LAST_TARGET "${target_name}")
 endfunction()
 
 function(refii_stage_d3d12_agility_runtime target_name)

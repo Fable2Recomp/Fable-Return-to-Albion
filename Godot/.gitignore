@@ -1,5 +1,4 @@
 .godot/
-export_presets.cfg
 *.translation
 
 # Exported game builds — artifacts, not source

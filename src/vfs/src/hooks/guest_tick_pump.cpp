@@ -132,80 +132,11 @@ PPC_EXTERN_FUNC(sub_82379838);
 
 namespace refii::vfs {
 
-namespace {
-
-/// One piece of posted work. `name` is the front end's own identity for a menu entry — the
-/// guest dispatches on the NAME STRING, a strcmp chain, not on an index or a table, which is
-/// what lets a host-authored entry name a guest action at all.
-struct PendingAction {
-  std::string name;
-};
-
-std::mutex g_mutex;
-std::vector<PendingAction> g_pending;
-
-/// Ticks observed, for the diagnostic below. Relaxed: it is a counter nobody makes a decision
-/// on, and making it ordered would put a barrier in a function that runs every frame.
-std::atomic<uint64_t> g_ticks{0};
-
-/// Actions taken off the queue. Separate from ticks so "the pump never ran" and "the pump ran
-/// and the queue was always empty" are distinguishable — a single number cannot tell those
-/// apart, and they need completely different fixes.
-std::atomic<uint64_t> g_drained{0};
-
-/// The saved-game count, sampled by calling the guest's own probe on this thread.
-///
-/// -1 means "not asked yet" and is NOT the same as 0. A host that cannot tell them apart draws
-/// a menu with Load Game missing and no way to know whether that is the answer or the absence
-/// of one — which is exactly the bug this replaces, where an empty vector stood in for both.
-std::atomic<int32_t> g_save_count{-1};
-
-/// Set to ask for a fresh sample. Starts true so the first front-end tick takes one, and is set
-/// again whenever the host knows the answer has changed — after a game is started, say.
-///
-/// Sampled rather than polled every tick because the probe is not free: it allocates a 46 320
-/// byte guest stack frame and walks up to 150 content entries. The guest itself asks exactly
-/// once, at menu spawn.
-std::atomic<bool> g_resample{true};
-
-}  // namespace
-
-/// Queues work to run on the guest's tick thread. Safe from any thread; returns the queue
-/// depth after the post, so a caller can notice a pump that has stopped draining.
-uint32_t PostGuestTickAction(const char* name) {
-  if (name == nullptr || name[0] == '\0') {
-    return 0;
-  }
-
-  std::lock_guard<std::mutex> lock(g_mutex);
-  g_pending.push_back(PendingAction{std::string(name)});
-  return static_cast<uint32_t>(g_pending.size());
-}
-
-/// Ticks seen and actions drained, for the host's diagnostics.
-void GuestTickPumpCounters(uint64_t* out_ticks, uint64_t* out_drained,
-                           uint32_t* out_queued) {
-  if (out_ticks != nullptr) {
-    *out_ticks = g_ticks.load(std::memory_order_relaxed);
-  }
-  if (out_drained != nullptr) {
-    *out_drained = g_drained.load(std::memory_order_relaxed);
-  }
-  if (out_queued != nullptr) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    *out_queued = static_cast<uint32_t>(g_pending.size());
-  }
-}
-
-/// The saved-game count as last sampled, or -1 if it has not been sampled yet.
-int32_t GuestSavedGameCount() {
-  return g_save_count.load(std::memory_order_relaxed);
-}
-
-/// Asks for a fresh sample on the next front-end tick. Safe from any thread.
-void RefreshGuestSavedGameCount() {
-  g_resample.store(true, std::memory_order_relaxed);
-}
+// THE QUEUE AND THE COUNTERS ARE NOT HERE. They live in src/core/guest_tick_pump_state.cpp,
+// which links into refii_vfs, because the HOST posts and this side drains: state beside the
+// pump would be a copy the payload writes and the bridge never reads. This file reaches it
+// through the GuestTickPump* wrappers in vfs_hooks_private.h — see that header, and see
+// core/payload_bridge.h for why the crossing is C.
 
 /// The front-end state object. `sub_826E0D60` dereferences it with NO null check —
 /// `lwz r11, dword_83496AC0` then `lwz r9, 8(r11)` at 0x826E0E30 — so an action that runs
@@ -381,7 +312,7 @@ bool StartNewGame(PPCContext& ctx, uint8_t* base, bool female) {
 
   // A game just started, so the saved-game count is stale. It will not be re-sampled until the
   // front end is up again, which is exactly when it next matters.
-  g_resample.store(true, std::memory_order_relaxed);
+  GuestTickPumpRequestSaveCount();
   return true;
 }
 
@@ -428,22 +359,25 @@ uint32_t MainMenuScreen(uint8_t* base) {
 /// protect here. The context save/restore still applies: we are standing inside
 /// `sub_822C1BD0`, whose own delegation still needs its registers.
 void SampleSavedGameCount(PPCContext& ctx, uint8_t* base) {
-  if (!g_resample.load(std::memory_order_relaxed)) {
+  if (!GuestTickPumpWantsSaveCount()) {
     return;
   }
   if (MainMenuScreen(base) == 0) {
-    // Front end not up. Left pending rather than answered with a zero — see g_save_count.
+    // Front end not up. Left pending rather than answered with a zero — see the count's own
+    // comment in src/core/guest_tick_pump_state.cpp: -1 is not 0.
     return;
   }
 
-  g_resample.store(false, std::memory_order_relaxed);
+  // Cleared BEFORE the probe, not after: a request the host makes while the probe is running
+  // must survive it, and clearing afterwards would swallow exactly that one.
+  GuestTickPumpClearSaveCountRequest();
 
   const PPCContext saved = ctx;
   sub_82443308(ctx, base);
   const int32_t count = static_cast<int32_t>(ctx.r3.u32);
   ctx = saved;
 
-  g_save_count.store(count, std::memory_order_relaxed);
+  GuestTickPumpNoteSaveCount(count);
   REXLOG_INFO("Refii guest-tick pump: the guest reports {} saved game(s)", count);
 }
 
@@ -635,18 +569,13 @@ bool DispatchByName(PPCContext& ctx, uint8_t* base, const std::string& name,
 /// thread's critical path. It also means a post made WHILE the pump is running lands in the
 /// next tick rather than extending this one indefinitely.
 void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
-  std::vector<PendingAction> taken;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_pending.empty()) {
-      return;
-    }
-    taken.swap(g_pending);
+  const uint32_t taken = GuestTickPumpBeginDrain();
+  if (taken == 0) {
+    return;
   }
 
-  std::vector<PendingAction> deferred;
-
-  for (const PendingAction& action : taken) {
+  for (uint32_t slot = 0; slot < taken; ++slot) {
+    const std::string name = GuestTickPumpTakenAction(slot);
     bool ran = false;
 
     // Dispatch BY NAME, because that is the guest's own contract for the front end — its
@@ -658,87 +587,68 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
     // presentation to answer. Godot asks that question itself (Engine_FrontEndCardChoice), so
     // these two carry the ANSWER and go straight to the commit rather than back through a
     // dispatcher that would put the card up again behind ours.
-    if (action.name == "New Game") {
+    if (name == "New Game") {
       ran = StartNewGame(ctx, base, /*female=*/false);
-    } else if (action.name == "New Game Female") {
+    } else if (name == "New Game Female") {
       ran = StartNewGame(ctx, base, /*female=*/true);
-    } else if (action.name.rfind(kActionLanguagePrefix, 0) == 0) {
+    } else if (name.rfind(kActionLanguagePrefix, 0) == 0) {
       // The name carries the index; the dispatcher takes it from `a2+8` and the name is never
       // looked at on this path, so it is left empty rather than sent as "Language:3".
-      const std::string index = action.name.substr(std::strlen(kActionLanguagePrefix));
+      const std::string index = name.substr(std::strlen(kActionLanguagePrefix));
       char* end = nullptr;
       const unsigned long value = std::strtoul(index.c_str(), &end, 10);
       if (end == index.c_str() || *end != '\0') {
-        REXLOG_INFO("Refii guest-tick pump: '{}' has no language index — dropped", action.name);
-        g_drained.fetch_add(1, std::memory_order_relaxed);
+        REXLOG_INFO("Refii guest-tick pump: '{}' has no language index — dropped", name);
+        GuestTickPumpNoteRan();
         continue;
       }
 
       ran = DispatchByName(ctx, base, std::string(), kCommandSetLanguage,
                            static_cast<uint32_t>(value));
-    } else if (action.name.rfind(kActionLoadSavePrefix, 0) == 0) {
-      const std::string index = action.name.substr(std::strlen(kActionLoadSavePrefix));
+    } else if (name.rfind(kActionLoadSavePrefix, 0) == 0) {
+      const std::string index = name.substr(std::strlen(kActionLoadSavePrefix));
       char* end = nullptr;
       const unsigned long value = std::strtoul(index.c_str(), &end, 10);
       if (end == index.c_str() || *end != '\0') {
-        REXLOG_INFO("Refii guest-tick pump: '{}' has no save index — dropped", action.name);
-        g_drained.fetch_add(1, std::memory_order_relaxed);
+        REXLOG_INFO("Refii guest-tick pump: '{}' has no save index — dropped", name);
+        GuestTickPumpNoteRan();
         continue;
       }
 
       ran = LoadSavedGame(ctx, base, static_cast<uint32_t>(value));
-    } else if (action.name == kActionSlideUp) {
+    } else if (name == kActionSlideUp) {
       // Name empty on purpose: the switch takes the id before the name chain is reached, so
       // the string is never dereferenced on this path.
       ran = DispatchByName(ctx, base, std::string(), kCommandSlideMenuUp);
-    } else if (action.name == kActionSlideDown) {
+    } else if (name == kActionSlideDown) {
       ran = DispatchByName(ctx, base, std::string(), kCommandSlideMenuDown);
     } else {
       // Everything else goes through the guest's own by-name dispatcher. A name it was never
       // shipped with matches nothing in the strcmp chain and does nothing — which is the right
       // outcome for a host-authored entry, and is why there is no host-side list to keep in
       // step with the guest's.
-      ran = DispatchByName(ctx, base, action.name);
+      ran = DispatchByName(ctx, base, name);
     }
 
     if (ran) {
-      REXLOG_INFO("Refii guest-tick pump: ran '{}' on the guest tick thread", action.name);
-      g_drained.fetch_add(1, std::memory_order_relaxed);
+      REXLOG_INFO("Refii guest-tick pump: ran '{}' on the guest tick thread", name);
+      GuestTickPumpNoteRan();
     } else {
       // The world is not ready — the front-end state does not exist yet, or the event ids
       // have not been interned. Held rather than dropped or forced: the pump runs from the
       // boot movies onward, so "too early" is the normal case for the first few hundred
       // ticks, and forcing it would dereference a null.
-      deferred.push_back(action);
+      GuestTickPumpDeferAction(name);
     }
   }
 
-  if (!deferred.empty()) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    // Front of the queue: an action posted while this one was waiting must not overtake it.
-    g_pending.insert(g_pending.begin(), deferred.begin(), deferred.end());
-  }
+  // Puts the deferred ones back at the front of the queue and drops the batch.
+  GuestTickPumpEndDrain();
 }
 
-/// The in-game loading screen the guest stood up, or 0 when none is up.
-///
-/// Same three-root walk the host bridge's `loading_screen_object` uses — `sub_82388380`'s own
-/// fallback chain (0x83496AB8, then 0x83496AC0, then 0x8335C4C4) -> app -> +8 context -> +36
-/// manager -> +4 screen. `manager+4` is 0 when there is no screen, which is the ordinary case
-/// out of game and during the front end.
-uint32_t ResolveInGameLoadingScreen(uint8_t* base) {
-  for (uint32_t root : {0x83496AB8u, 0x83496AC0u, 0x8335C4C4u}) {
-    const uint32_t app = LoadGuestU32(base, root);
-    if (!LooksLikeGuestPointer(app)) continue;
-    const uint32_t owner = LoadGuestU32(base, app + 8u);
-    if (!LooksLikeGuestPointer(owner)) continue;
-    const uint32_t manager = LoadGuestU32(base, owner + 36u);
-    if (!LooksLikeGuestPointer(manager)) continue;
-    const uint32_t screen = LoadGuestU32(base, manager + 4u);
-    if (LooksLikeGuestPointer(screen)) return screen;
-  }
-  return 0;
-}
+// ResolveInGameLoadingScreen moved to src/core/guest_tick_pump_state.cpp, and is reached here
+// through the wrapper in vfs_hooks_private.h. The host's own finisher walks for the same
+// object, and one copy is the only way the two cannot come to different answers about it.
 
 /// Is a game WORLD up and populated — `World + 0xA8`, the bit both the travel and load-from-save
 /// paths set. The same walk `RefiiHostWorldIsActive` uses. False through boot and the front end,
@@ -907,113 +817,14 @@ void MaybeArmInGameSimulation(PPCContext& ctx, uint8_t* base) {
   }
 }
 
-void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
-  if (base == nullptr) {
-    return;
-  }
-
-  static const bool enabled = [] {
-    const char* value = std::getenv("REFII_FINISH_INGAME_LOADSCREEN");
-    return value == nullptr || value[0] != '0';
-  }();
-  if (!enabled) {
-    return;
-  }
-
-  // THE PRESENT GATE, released EVERY step the guest is past the boot. The world update's
-  // frame construct (sub_82B4F400) waits on the loading screen's take-down event on every
-  // present; the render tick that signals it is off in this headless build, so a single
-  // pulse is consumed by the first waiter and the next frame blocks forever. The event is
-  // auto-reset, so signalling it per step can only release a waiter, never stack.
-  //
-  // GATED ON PAST-THE-BOOT, NOT in-game: the New Game flow's loading screen (sub_82361458,
-  // reached from the frontend loop sub_82319BE8) blocks on this event while the guest is
-  // still in the frontend — gating on byte_83496A5E starved exactly that phase. The frontend
-  // flag (0x83496AC4) is clear through the boot movies, so neither flag alone fires there.
-  //
-  // THE HANDLE OUTLIVES THE SCREEN, and MORE THAN ONE is live at once. The teardown clears
-  // the loading-screen chain while the present gate keeps waiting on the SAME event, so
-  // gating the signal on the screen resolving starves it — and a SINGLE remembered handle is
-  // wrong too: the frame object's wait handle is the PREVIOUS screen's event, so the newest
-  // screen's +180 overwrites the one the world update actually waits on (measured: the
-  // thread parked on 0xF8000188 while the finisher signalled 0xF80000A4). Keep a small ring
-  // and signal every entry; a stale handle is a no-op (INVALID_HANDLE).
-  static uint32_t event_ring[4] = {0, 0, 0, 0};
-  static uint32_t ring_count = 0;
-  const uint32_t screen = ResolveInGameLoadingScreen(base);
-  if (screen != 0) {
-    const uint32_t event = LoadGuestU32(base, screen + 180u);
-    if (event != 0u) {
-      bool known = false;
-      for (uint32_t i = 0; i < ring_count; ++i) {
-        if (event_ring[i] == event) {
-          known = true;
-          break;
-        }
-      }
-      if (!known && ring_count < 4u) {
-        event_ring[ring_count++] = event;
-      }
-    }
-  }
-  const bool past_boot =
-      LoadGuestU8(base, 0x83496AC4u) != 0u || LoadGuestU8(base, 0x83496A5Eu) != 0u;
-  if (past_boot) {
-    for (uint32_t i = 0; i < ring_count; ++i) {
-      rex::kernel::xboxkrnl::xeNtSetEvent(event_ring[i], nullptr);
-    }
-  }
-
-  static uint32_t watched = 0;
-  static uint32_t stuck_steps = 0;
-
-  // NOT gated on the world being up. The guest's game thread blocks on the loading
-  // screen's fade-out, which only its present loop ticks — off in this headless build —
-  // so the level change that would activate the world can never advance while the block
-  // holds. Waiting for the world before breaking the wait is the deadlock, not a guard.
-  // The stuck test below is the specificity: `sub_82361458` sets fade=1.0 (+172) and
-  // shutdown requested (+176) and then blocks on the event (+180) until the render side
-  // latches done (+177). Stuck = requested set, done not latched, 30 host steps.
-  const bool stuck = screen != 0 && LoadGuestU8(base, screen + 176u) != 0u &&
-                     LoadGuestU8(base, screen + 177u) == 0u;
-  if (!stuck) {
-    watched = 0;
-    stuck_steps = 0;
-    return;
-  }
-
-  if (screen != watched) {
-    watched = screen;
-    stuck_steps = 0;
-  }
-
-  constexpr uint32_t kStuckSteps = 30u;
-  if (stuck_steps < kStuckSteps) {
-    ++stuck_steps;
-    return;
-  }
-
-  if (LoadGuestU32(base, screen + 168u) < 10u) {
-    StoreGuestU32(base, screen + 168u, 10u);
-  }
-  StoreGuestU32(base, screen + 172u, 0u);
-  StoreGuestU8(base, screen + 176u, 0u);
-  StoreGuestU8(base, screen + 177u, 1u);
-
-  watched = 0;
-  stuck_steps = 0;
-
-  static std::atomic<uint32_t> logged{0};
-  if (logged.fetch_add(1, std::memory_order_relaxed) < 8u) {
-    REXLOG_INFO("Refii in-game loading screen finished from host step "
-                "(screen=0x{:08X} event=0x{:08X})",
-                screen, LoadGuestU32(base, screen + 180u));
-  }
-}
+// FinishStuckInGameLoadingScreenFromHost moved to src/core/guest_tick_pump_state.cpp. It runs
+// on the HOST step thread, so the host bridge has to be able to link it, and only refii_vfs is
+// a library both ends have. Nothing in it needs the payload: it reads and writes guest memory
+// through base and signals the take-down event, with no PPC call anywhere in it.
 
 /// One tick's worth of pump work. Split out so the hook body stays the delegation it must be.
 void OnGuestTick(PPCContext& ctx, uint8_t* base) {
-  const uint64_t tick = g_ticks.fetch_add(1, std::memory_order_relaxed);
+  const uint64_t tick = GuestTickPumpObserveTick();
 
   // The pump announcing itself, once and then rarely.
   //
@@ -1024,7 +835,7 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   // pump runs" from "the pump ran during the logos and stopped".
   if (tick == 0 || tick == 600 || tick == 6000 || tick == 60000) {
     REXLOG_INFO("Refii guest-tick pump: tick {} on the guest tick thread (drained {})",
-                tick + 1, g_drained.load(std::memory_order_relaxed));
+                tick + 1, GuestTickPumpDrained());
   }
 
   DrainOnGuestThread(ctx, base);

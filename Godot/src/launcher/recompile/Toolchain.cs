@@ -91,6 +91,11 @@ public readonly record struct Toolchain(string Zig, string Root)
 				ArgumentList = { "version" },
 				RedirectStandardOutput = true,
 				UseShellExecute = false,
+
+				// A console window for `zig version` is still a console window: this runs
+				// while the build record is written, so on Windows it flashes one up in the
+				// middle of an otherwise quiet phase.
+				CreateNoWindow = true,
 			});
 
 			return process?.StandardOutput.ReadToEnd().Trim() ?? string.Empty;

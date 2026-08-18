@@ -27,6 +27,13 @@ set(REFII_VFS_RUNTIME_SOURCES
     # the Stage 2 voice hooks (refii_generated), the Stage 1 driver (refii_host) and the
     # host bridge all link refii_vfs, so this is the one place they can agree.
     ${REFII_VFS_ROOT}/src/core/audio_state.cpp
+    # The guest tick pump's queue and counters, and the host-step loading-screen finisher.
+    # Here for the same reason as bink_frame_state.cpp, and by the same rule: the HOST posts
+    # and the PAYLOAD drains, so the state cannot sit beside the pump hook. It did, which left
+    # the host bridge naming symbols only the payload defined — resolvable on Linux through
+    # RTLD_GLOBAL, unresolvable in a Windows DLL, and against refii_payload/payload.h either
+    # way.
+    ${REFII_VFS_ROOT}/src/core/guest_tick_pump_state.cpp
     # Host side of the payload's log bridge. Must be in refii_vfs, which the payload links,
     # and NOT in the hook set: the hooks compile into the payload, which is the caller.
     ${REFII_VFS_ROOT}/src/core/log_bridge.cpp

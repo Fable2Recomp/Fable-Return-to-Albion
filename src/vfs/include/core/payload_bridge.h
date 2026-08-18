@@ -44,6 +44,41 @@ void refii_bridge_note_voice_pcm(uint32_t handle, const void* pcm, uint32_t byte
 void refii_bridge_note_bink_movie_open(uint32_t player, uint8_t* base_for_open);
 void refii_bridge_note_bink_video_requested(uint8_t* base, uint32_t data_guest);
 
+// Guest tick pump. Wrappers: refii::vfs::GuestTickPump* in vfs_hooks_private.h.
+//
+// The host POSTS and the payload DRAINS, so the queue and the counters live in refii_vfs
+// (src/core/guest_tick_pump_state.cpp) and the payload reaches them here. Observe returns the
+// tick count BEFORE the increment, so the pump's first tick is 0.
+uint64_t refii_bridge_guest_tick_pump_observe_tick(void);
+uint64_t refii_bridge_guest_tick_pump_drained(void);
+void refii_bridge_guest_tick_pump_note_ran(void);
+
+// The drain protocol, and ONLY from the guest tick thread. Begin takes the whole queue aside
+// under the lock and answers how many it took — swapped rather than popped one at a time so
+// that a post made WHILE the drain runs lands in the next tick instead of extending this one
+// indefinitely, and so no host mutex is held across guest code. Read each by index with the
+// usual measure-then-fill convention, defer the ones that could not run yet, and End puts the
+// deferred ones back at the FRONT so a later post cannot overtake them.
+uint32_t refii_bridge_guest_tick_pump_begin_drain(void);
+size_t refii_bridge_guest_tick_pump_taken_action(uint32_t index, char* out, size_t capacity);
+void refii_bridge_guest_tick_pump_defer_action(const char* name, size_t length);
+void refii_bridge_guest_tick_pump_end_drain(void);
+
+// Saved-game count. The payload samples it by calling the guest's own probe on the tick
+// thread; the host reads the answer. Non-zero from _wants_ means "take a fresh sample".
+//
+// Clear and note are separate, and the pump clears BEFORE it probes: the probe runs guest
+// code, and a request the host makes during it has to survive. Clearing afterwards would
+// swallow that one and leave the host waiting on an answer that never refreshes.
+int32_t refii_bridge_guest_tick_pump_wants_save_count(void);
+void refii_bridge_guest_tick_pump_clear_save_count_request(void);
+void refii_bridge_guest_tick_pump_note_save_count(int32_t count);
+void refii_bridge_guest_tick_pump_request_save_count(void);
+
+// The in-game loading screen the guest stood up, or 0. Shared because the payload's own
+// finisher and the host's step finisher must not disagree about which object that is.
+uint32_t refii_bridge_resolve_in_game_loading_screen(uint8_t* base);
+
 // Loose-asset and VFS gates. Wrappers: refii::vfs::* in loose_asset_hooks.h.
 //
 // int32_t rather than bool: a one-byte C++ bool and a C _Bool agree on the ABIs we build
