@@ -64,6 +64,14 @@ function(refii_stage_payload_sdk)
     refii_stage_hook_sources(refii_hooks "${_sdk_dir}" "${CMAKE_SOURCE_DIR}")
 
     set(_commands
+        # lib/ IS EMPTIED FIRST, because copy_if_different only ever adds. A tree configured
+        # RelWithDebInfo and then Debug ends up holding rexruntimerd.dll AND rexruntimed.dll,
+        # and the payload link picks by name from whatever it finds: it linked the stale one,
+        # so the payload imported one runtime while the host loaded the other. Two copies of
+        # the runtime means two copies of its globals, and the guest died reading a field off
+        # a null the second copy had never initialised. Same rule the hook staging already
+        # follows one call above.
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${_sdk_dir}/lib"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_sdk_dir}/lib" "${_sdk_dir}/src" "${_sdk_dir}/bin"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/src/payload/src/payload_export.cpp"

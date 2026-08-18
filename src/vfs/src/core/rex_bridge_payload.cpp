@@ -21,8 +21,19 @@
 
 #include "core/rex_payload_bridge.h"
 
+#include <cstring>
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+
+// For the cvar definitions at the end of this file: FlagEntry, FlagRegistrar and the registry
+// declarations whose out-of-line halves live in the runtime.
+#include <rex/cvar.h>
 
 #include <rex/logging.h>
 #include <rex/thread.h>
@@ -170,3 +181,189 @@ namespace spdlog {
 void logger::flush() { refii_bridge_rex_logger_flush(this); }
 }  // namespace spdlog
 #endif
+
+// CVARS THE PAYLOAD ITSELF DEFINES. The Lua runtime's sources compile into the payload rather
+// than shipping as a library -- they call the recompiled guest, so they cannot be a DLL and an
+// MSVC static library cannot enter a MinGW link -- and they define ten cvars between them.
+// That makes RegisterFlag, UnregisterFlag and FlagRegistrar::apply_ payload-side references
+// to the runtime's C++ registry, which is exactly what this file exists to avoid.
+//
+// The entry stays HERE, because its setter and getter are std::functions closing over the
+// cvar's own storage and cannot cross. The host is handed the scalars, the text, and one
+// fixed pair of accessors keyed by name; it rebuilds an entry whose closures call back
+// through them. So the registry the launcher and config drive is the real one, with only C
+// in between.
+namespace {
+
+// The WHOLE entry, not just the accessors. apply_ has to re-send everything the host was
+// given, so anything dropped here would come back default-constructed and wipe the real
+// registry's copy of it.
+struct PayloadCvar {
+  ::rex::cvar::FlagType type{};
+  std::string category;
+  std::string description;
+  std::string default_value;
+  ::rex::cvar::Lifecycle lifecycle{};
+  bool is_debug_only = false;
+  std::function<bool(std::string_view)> setter;
+  std::function<std::string()> getter;
+};
+
+std::mutex& PayloadCvarMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<std::string, PayloadCvar, std::less<>>& PayloadCvars() {
+  static std::map<std::string, PayloadCvar, std::less<>> cvars;
+  return cvars;
+}
+
+}  // namespace
+
+// The two fixed accessors. Keyed by name so ten cvars need one pair, not ten trampolines.
+extern "C" int32_t refii_payload_cvar_set(const char* name, const char* value) {
+  if (name == nullptr || value == nullptr) {
+    return 0;
+  }
+
+  std::function<bool(std::string_view)> setter;
+  {
+    std::lock_guard<std::mutex> lock(PayloadCvarMutex());
+    auto it = PayloadCvars().find(name);
+    if (it == PayloadCvars().end()) {
+      return 0;
+    }
+    setter = it->second.setter;
+  }
+  return setter && setter(value) ? 1 : 0;
+}
+
+extern "C" size_t refii_payload_cvar_get(const char* name, char* out, size_t capacity) {
+  if (name == nullptr) {
+    return 0;
+  }
+
+  std::function<std::string()> getter;
+  {
+    std::lock_guard<std::mutex> lock(PayloadCvarMutex());
+    auto it = PayloadCvars().find(name);
+    if (it == PayloadCvars().end()) {
+      return 0;
+    }
+    getter = it->second.getter;
+  }
+  if (!getter) {
+    return 0;
+  }
+
+  // The caller-buffer contract: return what was NEEDED, copy only what fits.
+  const std::string value = getter();
+  if (out != nullptr && capacity > 0) {
+    const size_t copied = value.size() < capacity ? value.size() : capacity;
+    std::memcpy(out, value.data(), copied);
+  }
+  return value.size();
+}
+
+namespace rex::cvar {
+
+std::optional<size_t> RegisterFlag(FlagEntry entry) {
+  const std::string name = entry.name;
+
+  PayloadCvar stored;
+  stored.type = entry.type;
+  stored.category = entry.category;
+  stored.description = entry.description;
+  stored.default_value = entry.default_value;
+  stored.lifecycle = entry.lifecycle;
+  stored.is_debug_only = entry.is_debug_only;
+  stored.setter = std::move(entry.setter);
+  stored.getter = std::move(entry.getter);
+
+  {
+    std::lock_guard<std::mutex> lock(PayloadCvarMutex());
+    PayloadCvars()[name] = std::move(stored);
+  }
+
+  if (refii_bridge_rex_cvar_register(
+          name.c_str(), static_cast<uint32_t>(entry.type), entry.category.c_str(),
+          entry.description.c_str(), entry.default_value.c_str(),
+          static_cast<uint32_t>(entry.lifecycle), entry.is_debug_only ? 1 : 0,
+          &refii_payload_cvar_set, &refii_payload_cvar_get) == 0) {
+    std::lock_guard<std::mutex> lock(PayloadCvarMutex());
+    PayloadCvars().erase(name);
+    return std::nullopt;
+  }
+
+  // The index the real registry assigned is not reported back: FlagRegistrar only checks
+  // whether the optional has a value, and nothing in the payload uses the number.
+  return std::optional<size_t>(0);
+}
+
+void UnregisterFlag(std::string_view name) {
+  const std::string owned(name);
+  {
+    std::lock_guard<std::mutex> lock(PayloadCvarMutex());
+    PayloadCvars().erase(owned);
+  }
+  refii_bridge_rex_cvar_unregister(owned.c_str());
+}
+
+// REGISTERED ALREADY, so a chained mutation has to be replayed. The entry the host holds was
+// built from scalars, so re-registering is how .lifecycle() and .debug_only() land there. The
+// in-tree callers all pass Lifecycle::kHotReload, which the macro already set, so this is a
+// no-op in practice -- it is written to be correct rather than to rely on that.
+//
+// A .validator() cannot be replayed: the custom validator is a std::function and does not
+// cross. Nothing in the payload chains one, and the bridge would have to grow a third
+// accessor if that changed.
+void FlagRegistrar::apply_(std::function<void(FlagEntry&)> fn) {
+  if (!fn || owned_name_.empty()) {
+    return;
+  }
+
+  FlagEntry entry{};
+  entry.name = owned_name_;
+  {
+    std::lock_guard<std::mutex> lock(PayloadCvarMutex());
+    auto it = PayloadCvars().find(owned_name_);
+    if (it == PayloadCvars().end()) {
+      return;
+    }
+    entry.type = it->second.type;
+    entry.category = it->second.category;
+    entry.description = it->second.description;
+    entry.default_value = it->second.default_value;
+    entry.lifecycle = it->second.lifecycle;
+    entry.is_debug_only = it->second.is_debug_only;
+    entry.setter = it->second.setter;
+    entry.getter = it->second.getter;
+  }
+
+  fn(entry);
+
+  // Write the mutation back to our own copy as well, so a second chained call starts from the
+  // first one's result instead of undoing it.
+  {
+    std::lock_guard<std::mutex> lock(PayloadCvarMutex());
+    auto it = PayloadCvars().find(owned_name_);
+    if (it != PayloadCvars().end()) {
+      it->second.type = entry.type;
+      it->second.category = entry.category;
+      it->second.description = entry.description;
+      it->second.default_value = entry.default_value;
+      it->second.lifecycle = entry.lifecycle;
+      it->second.is_debug_only = entry.is_debug_only;
+    }
+  }
+
+  refii_bridge_rex_cvar_unregister(owned_name_.c_str());
+  refii_bridge_rex_cvar_register(
+      owned_name_.c_str(), static_cast<uint32_t>(entry.type), entry.category.c_str(),
+      entry.description.c_str(), entry.default_value.c_str(),
+      static_cast<uint32_t>(entry.lifecycle), entry.is_debug_only ? 1 : 0,
+      &refii_payload_cvar_set, &refii_payload_cvar_get);
+}
+
+}  // namespace rex::cvar

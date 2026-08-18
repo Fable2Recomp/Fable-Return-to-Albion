@@ -6,6 +6,15 @@
 
 #include "core/rex_payload_bridge.h"
 
+// For the cvar bridge below: TakeString turns the caller-buffer getter back into a
+// std::string on THIS side's heap, which is where rex::cvar's getter has to return one.
+#include "core/payload_bridge_string.h"
+
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/thread.h>
 
@@ -112,4 +121,51 @@ extern "C" void refii_bridge_rex_logger_flush(void* logger) {
 
 extern "C" void* refii_bridge_rex_global_critical_region_mutex(void) {
   return &::rex::thread::global_critical_region::mutex();
+}
+
+// CVAR REGISTRATION FOR THE PAYLOAD. Its cvars have to reach the same registry the launcher
+// and the config file drive, and rex::cvar::RegisterFlag takes a FlagEntry holding
+// std::function and std::string -- neither of which survives a compiler boundary. The entry
+// is therefore rebuilt HERE, on this side, from scalars and text, and its setter and getter
+// close over the payload's own function pointers.
+//
+// The name is copied into the closures because the payload's `name` argument is only valid
+// for the duration of this call.
+extern "C" int32_t refii_bridge_rex_cvar_register(
+    const char* name, uint32_t type, const char* category, const char* description,
+    const char* default_value, uint32_t lifecycle, int32_t is_debug_only,
+    int32_t (*setter)(const char* name, const char* value),
+    size_t (*getter)(const char* name, char* out, size_t capacity)) {
+  if (name == nullptr || setter == nullptr || getter == nullptr) {
+    return 0;
+  }
+
+  std::string owned_name(name);
+
+  ::rex::cvar::FlagEntry entry{};
+  entry.name = owned_name;
+  entry.type = static_cast<::rex::cvar::FlagType>(type);
+  entry.category = category != nullptr ? category : "";
+  entry.description = description != nullptr ? description : "";
+  entry.setter = [setter, owned_name](std::string_view value) {
+    // std::string_view is not NUL-terminated; the C side takes a C string.
+    return setter(owned_name.c_str(), std::string(value).c_str()) != 0;
+  };
+  entry.getter = [getter, owned_name]() {
+    return ::refii::bridge::TakeString([&](char* out, size_t capacity) {
+      return getter(owned_name.c_str(), out, capacity);
+    });
+  };
+  entry.command_callback = [](std::string_view) {};
+  entry.lifecycle = static_cast<::rex::cvar::Lifecycle>(lifecycle);
+  entry.default_value = default_value != nullptr ? default_value : "";
+  entry.is_debug_only = is_debug_only != 0;
+
+  return ::rex::cvar::RegisterFlag(std::move(entry)).has_value() ? 1 : 0;
+}
+
+extern "C" void refii_bridge_rex_cvar_unregister(const char* name) {
+  if (name != nullptr) {
+    ::rex::cvar::UnregisterFlag(name);
+  }
 }

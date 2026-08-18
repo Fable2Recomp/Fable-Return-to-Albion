@@ -43,4 +43,21 @@ void* refii_bridge_rex_default_logger(void);
 void refii_bridge_rex_logger_flush(void* logger);
 void* refii_bridge_rex_global_critical_region_mutex(void);
 
+// CVAR REGISTRATION. The payload defines cvars of its own -- the Lua runtime's ten, since its
+// sources compile into the payload rather than shipping as a library -- and rex::cvar's
+// registry lives in the runtime. FlagEntry cannot cross: it holds std::function and
+// std::string. So the scalars and text cross as C, and the two accessors cross as function
+// pointers the payload owns, keyed BY NAME so one fixed pair serves every cvar instead of a
+// trampoline each.
+//
+// `lifecycle` and `is_debug_only` are passed rather than defaulted because the chain methods
+// (.lifecycle(), .debug_only()) mutate them after construction, and re-registering is how the
+// payload side replays that. A custom validator cannot cross and is not supported here.
+int32_t refii_bridge_rex_cvar_register(
+    const char* name, uint32_t type, const char* category, const char* description,
+    const char* default_value, uint32_t lifecycle, int32_t is_debug_only,
+    int32_t (*setter)(const char* name, const char* value),
+    size_t (*getter)(const char* name, char* out, size_t capacity));
+void refii_bridge_rex_cvar_unregister(const char* name);
+
 }  // extern "C"

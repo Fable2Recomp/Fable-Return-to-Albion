@@ -51,13 +51,22 @@ set(_REFII_GODOT_BASE_URL
 # Only the hosts we actually package from are pinned. An unpinned host is a hard error naming
 # REFII_GODOT_EXECUTABLE, because silently falling back to whatever Godot is on PATH is how a
 # release gets exported by an editor nobody chose.
+# Godot does NOT name these by one pattern: the x86_64 Windows archive is "win64" while the
+# ARM64 one is "windows_arm64", and Linux is "linux_<arch>" throughout. They are spelled out
+# rather than assembled, so a wrong guess is impossible.
 function(_refii_godot_editor_spec platform arch out_file out_sha)
     if(platform STREQUAL "windows" AND arch STREQUAL "x86_64")
         set(_f "Godot_v${REFII_GODOT_VERSION}_${REFII_GODOT_FLAVOUR}_win64.zip")
         set(_s "764a089809fb1a6f745686ce9f6d3ca83adce8fb60fb9a4e2324b63baaebaa45")
+    elseif(platform STREQUAL "windows" AND arch STREQUAL "arm64")
+        set(_f "Godot_v${REFII_GODOT_VERSION}_${REFII_GODOT_FLAVOUR}_windows_arm64.zip")
+        set(_s "b6095e7866181157a32c5af12a6a5e516b26752ce344ae9da882c8eec49a3277")
     elseif(platform STREQUAL "linux" AND arch STREQUAL "x86_64")
         set(_f "Godot_v${REFII_GODOT_VERSION}_${REFII_GODOT_FLAVOUR}_linux_x86_64.zip")
         set(_s "6ca7ff0459f1b806900be683c1b0837c607a9c16834c530dc68c81b9fc3ae1f6")
+    elseif(platform STREQUAL "linux" AND arch STREQUAL "arm64")
+        set(_f "Godot_v${REFII_GODOT_VERSION}_${REFII_GODOT_FLAVOUR}_linux_arm64.zip")
+        set(_s "8350cee2b8c4af1739eca3b31dc8885d86158d514de76c0152f03ffbd58e25ce")
     else()
         message(FATAL_ERROR
             "No pinned Godot editor for host ${platform}-${arch}. Add one to "
@@ -95,7 +104,7 @@ endfunction()
 
 # Where the executable lands inside <dest>. Separate because the already-staged check needs it
 # before anything has been extracted.
-function(_refii_godot_binary_path platform dest out_binary)
+function(_refii_godot_binary_path platform arch dest out_binary)
     if(platform STREQUAL "windows")
         # THE CONSOLE BUILD. The plain .exe is a GUI-subsystem binary: run headless from a
         # build it still detaches from the console, so --export-release prints nothing and a
@@ -103,14 +112,23 @@ function(_refii_godot_binary_path platform dest out_binary)
         # the terminal it was started from, which is what makes a packaging failure readable
         # in the build log. It is a wrapper -- it needs the GUI executable beside it, which
         # staging the whole tree already guarantees.
-        file(GLOB _candidates "${dest}/Godot_v*_win64_console.exe")
+        # Same naming split as the archives: "win64" on x86_64, "windows_arm64" on ARM64.
+        if(arch STREQUAL "arm64")
+            file(GLOB _candidates "${dest}/Godot_v*_windows_arm64_console.exe")
+        else()
+            file(GLOB _candidates "${dest}/Godot_v*_win64_console.exe")
+        endif()
     else()
-        file(GLOB _candidates "${dest}/Godot_v*_linux.x86_64")
+        # Linux is uniform: Godot_v<ver>_mono_linux.<arch>, and there is no console variant.
+        file(GLOB _candidates "${dest}/Godot_v*_linux.${arch}")
     endif()
 
-    list(GET _candidates 0 _binary)
-    if(NOT _binary)
-        set(_binary "${dest}/godot-not-staged")
+    # list(GET) is a hard error on an empty list, so the not-staged fallback has to be the
+    # default rather than a correction after the fact -- the caller relies on this returning
+    # a path that simply does not exist when nothing has been staged yet.
+    set(_binary "${dest}/godot-not-staged")
+    if(_candidates)
+        list(GET _candidates 0 _binary)
     endif()
     set(${out_binary} "${_binary}" PARENT_SCOPE)
 endfunction()
@@ -165,7 +183,7 @@ function(refii_fetch_godot host_platform host_arch
         file(READ "${_stamp}" _have)
         string(STRIP "${_have}" _have)
         if(_have STREQUAL _want)
-            _refii_godot_binary_path("${host_platform}" "${dest}" _binary)
+            _refii_godot_binary_path("${host_platform}" "${host_arch}" "${dest}" _binary)
             if(EXISTS "${_binary}")
                 set(${out_binary} "${_binary}" PARENT_SCOPE)
                 return()
@@ -194,7 +212,7 @@ function(refii_fetch_godot host_platform host_arch
     file(MAKE_DIRECTORY "${dest}")
     file(COPY "${_root}/" DESTINATION "${dest}")
 
-    _refii_godot_binary_path("${host_platform}" "${dest}" _binary)
+    _refii_godot_binary_path("${host_platform}" "${host_arch}" "${dest}" _binary)
     if(NOT EXISTS "${_binary}")
         message(FATAL_ERROR "Godot staged but ${_binary} is missing")
     endif()

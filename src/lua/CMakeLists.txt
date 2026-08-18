@@ -13,6 +13,12 @@ set(REFII_LUA51_INCLUDE_DIRS
     ${REFII_LUA_ROOT}/thirdparty/lua51/src
 )
 
+# Appended here, NOT in the block above, because that one is declared before
+# REFII_LUA51_INCLUDE_DIRS exists and would expand it to nothing. The staged payload
+# sources include lua.h directly and have no target to inherit it from -- the install-time
+# build gets a flat list of -I and nothing else.
+list(APPEND REFII_LUA_INCLUDE_DIRS ${REFII_LUA51_INCLUDE_DIRS})
+
 set(REFII_LUA_RUNTIME_PUBLIC_HEADERS
     ${REFII_LUA_ROOT}/include/core/host_lua_vm.h
     ${REFII_LUA_ROOT}/include/core/native_lua_bridge.h
@@ -37,8 +43,17 @@ set(REFII_LUA_RUNTIME_PARTS
 )
 set_source_files_properties(${REFII_LUA_RUNTIME_PARTS} PROPERTIES HEADER_FILE_ONLY TRUE)
 
+# THE PAYLOAD COMPILES THESE, IT DOES NOT LINK THEM. Every one of these files calls the
+# recompiled guest -- native_lua_bridge.cpp alone declares ten PPC_EXTERN_FUNCs -- and the
+# guest only exists inside refii_generated, which is built on the player's machine. That
+# rules out shipping them as a library: a Windows DLL must resolve every symbol at link
+# time and cannot, while a STATIC lib links but is MSVC-built, so its /DEFAULTLIB:msvcrtd
+# directives break the MinGW-driver payload link. Staging the sources puts them through
+# the same compiler as the generated code, which is what src/vfs already does with its 51
+# hook sources. refii_lua itself stays for staging and is linked by nothing.
 set(REFII_LUA_HOOK_SOURCES
     ${REFII_LUA_ROOT}/src/core/native_lua_hooks.cpp
+    ${REFII_LUA_RUNTIME_SOURCES}
 )
 
 set(REFII_LUA_HOOK_PARTS
@@ -77,6 +92,13 @@ set(REFII_LUA51_SOURCES
     ${REFII_LUA_ROOT}/thirdparty/lua51/src/lvm.c
     ${REFII_LUA_ROOT}/thirdparty/lua51/src/lzio.c
 )
+
+# Appended after the list exists rather than inside the block above, which is declared
+# earlier and would expand this to nothing. host_lua_vm.cpp calls 32 lua51 C entry points
+# and the payload has nothing to link them from, so lua51 is compiled into the payload as
+# well. Pure C, so zig builds it exactly as this tree does, and the payload stays one
+# compiler's output.
+list(APPEND REFII_LUA_HOOK_SOURCES ${REFII_LUA51_SOURCES})
 
 set(REFII_LUA_DECOMPILER_WORKSPACE_SOURCES
     ${REFII_LUA_ROOT}/src/tools/crypto/sha256.cpp

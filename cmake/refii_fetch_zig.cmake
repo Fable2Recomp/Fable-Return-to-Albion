@@ -35,8 +35,14 @@ function(_refii_zig_spec platform arch out_file out_sha)
         set(_f "zig-x86_64-windows-${REFII_ZIG_VERSION}.zip")
         set(_s "68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e")
     elseif(platform STREQUAL "windows" AND arch STREQUAL "arm64")
-        set(_f "zig-aarch64-windows-${REFII_ZIG_VERSION}.zip")
-        set(_s "aee38316ee4111717900f45dd3130145c39289e105541d737eb8c5ed653c78ef")
+        # THE x86_64 BUILD, ON PURPOSE, run under emulation and cross-compiling to aarch64.
+        # zig 0.16.0's aarch64-windows binary crashes clang on -include-pch (see TargetFlags in
+        # Godot/src/launcher/recompile/GameCodeBuild.cs for the measurements); the x86_64 build
+        # emits the same objects with the precompiled header intact, and does it faster than the
+        # native build manages without one. GameCodeBuild names the target explicitly, because
+        # this toolchain can no longer infer it from the machine it is running on.
+        set(_f "zig-x86_64-windows-${REFII_ZIG_VERSION}.zip")
+        set(_s "68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e")
     else()
         message(FATAL_ERROR "No pinned Zig for ${platform}-${arch}")
     endif()

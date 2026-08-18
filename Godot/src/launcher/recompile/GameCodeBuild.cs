@@ -748,6 +748,74 @@ public static class GameCodeBuild
 	/// Measured per generated TU: -O0 9.6s, -O1 14.3s, -O2 17.7s. Debug info costs nothing
 	/// measurable and keeps generated frames resolvable in a backtrace.
 	/// </remarks>
+	/// <summary>
+	/// The triple to compile for, when the bundled zig is not built for this host.
+	/// </summary>
+	/// <remarks>
+	/// WINDOWS ON ARM IS SHIPPED THE x86_64 ZIG, deliberately, so the target the toolchain would
+	/// otherwise have inferred has to be named here instead.
+	///
+	/// zig 0.16.0's own aarch64-windows build crashes clang on -include-pch: 6 to 13 of every 16
+	/// units, sequentially as much as in parallel, on a precompiled header of nothing but
+	/// standard library headers, with STATUS_ACCESS_VIOLATION and STATUS_INSTRUCTION_MISALIGNMENT.
+	/// Jumping to a misaligned instruction is bad codegen inside zig's binary, not anything this
+	/// build does wrong -- and zig's aarch64-windows CI is down for want of hardware, so it is not
+	/// a thing upstream is currently catching. The same units compiled without the PCH crash 0 of
+	/// 16, which is what made the header look innocent at first.
+	///
+	/// The x86_64 build under emulation cross-compiles the identical objects with the PCH working,
+	/// and measured 0.27s per unit against 0.64s for dropping the PCH on the native build: the
+	/// header is worth more than the emulation costs, so this is 2.4x FASTER, not a compromise.
+	///
+	/// aarch64-windows-gnu is what the native toolchain already defaulted to, so no ABI changes --
+	/// see Toolchain's note on the GNU/MinGW ABI. Linux and Windows x86_64 name nothing and keep
+	/// native detection, which is what the glibc discovery described there depends on.
+	/// </remarks>
+	private static IReadOnlyList<string> TargetFlags() =>
+		OperatingSystem.IsWindows()
+				&& RuntimeInformation.OSArchitecture == Architecture.Arm64
+			? new[] { "-target", "aarch64-windows-gnu" }
+			: Array.Empty<string>();
+
+	/// <summary>True for a C translation unit, which cannot take the C++ flag set.</summary>
+	private static bool IsCSource(string path) =>
+		Path.GetExtension(path).Equals(".c", StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// The C++ flag set rewritten for a C translation unit.
+	/// </summary>
+	/// <remarks>
+	/// Only the flags that are actually C++-specific are touched, so the defines, the undefines
+	/// and every include path stay exactly as the C++ units saw them -- lua51 has to be
+	/// configured by the same macros whichever language builds it.
+	///
+	/// gnu99 to match refii_lua51's own C_STANDARD, so the payload's copy is built the way this
+	/// tree builds it. The dropped `-include` is the libc++ chrono shim, which is C++ only.
+	/// </remarks>
+	private static List<string> AsCFlags(IReadOnlyList<string> cxxFlags)
+	{
+		var flags = new List<string>(cxxFlags.Count);
+		for (int index = 0; index < cxxFlags.Count; index++)
+		{
+			string flag = cxxFlags[index];
+			if (flag.StartsWith("-std=", StringComparison.Ordinal))
+			{
+				flags.Add("-std=gnu99");
+				continue;
+			}
+
+			if (flag == "-include")
+			{
+				index++;  // and the header it names
+				continue;
+			}
+
+			flags.Add(flag);
+		}
+
+		return flags;
+	}
+
 	private static List<string> CompileFlags(IReadOnlyList<string> includeDirectories)
 	{
 		var flags = new List<string>
@@ -755,8 +823,13 @@ public static class GameCodeBuild
 			"-std=gnu++23",
 			"-fPIC",
 			"-O2",
-			"-g",
+			// NO -g. This is a release build of the player's own game code, and the debug info
+			// was not free: refii_register.cpp is 61,000 lines of one function, where the DWARF
+			// for it dominated the unit's compile time. Nothing ships a debugger for it.
 		};
+
+		// Ahead of everything else so the rest is read against the right target.
+		flags.InsertRange(0, TargetFlags());
 
 		if (RuntimeInformation.OSArchitecture == Architecture.X64)
 		{
@@ -773,6 +846,14 @@ public static class GameCodeBuild
 		// logging crosses as C rather than as spdlog, and Tracy is absent. Omitting either
 		// produces a module that imports C++ symbols again and fails to link on Windows.
 		flags.Add("-DREFII_PAYLOAD_LOG_BRIDGE=1");
+
+		// HEADER-ONLY fmt. The log bridge still formats with ::fmt::format before handing the
+		// finished string across the C boundary, so the payload pulls in fmt::vformat, which is
+		// NOT inline. On Linux that resolves inside librexruntime because both sides are GNU; on
+		// Windows the runtime is MSVC-built and mangles it differently, so it can never resolve
+		// and the link ends on one undefined symbol. Inlining fmt removes the import entirely,
+		// which is the same answer on both platforms rather than a Windows special case.
+		flags.Add("-DFMT_HEADER_ONLY");
 
 		// SPDLOG_COMPILED_LIB is not optional here. Without it spdlog's headers switch to
 		// header-only and define logger::flush() inline, which collides with the payload's
@@ -898,6 +979,24 @@ public static class GameCodeBuild
 		string failure = string.Empty;
 		object failureLock = new();
 
+		// THE PRECOMPILED HEADER IS NOT ALWAYS USABLE. zig 0.16.0 on windows-arm64 crashes
+		// clang on -include-pch: measured 6-13 of every 16 units, sequentially as well as in
+		// parallel, with and without -fno-pch-timestamp, while the same units compiled without
+		// it crash 0 of 16. It is only a speed optimisation and every unit includes the header
+		// itself, so a build that hits this drops the PCH and carries on rather than failing.
+		int pchBroken = 0;
+
+		// ONE UNIT ALONE FIRST, then the rest in parallel.
+		//
+		// ZIG CRASHES ON A COLD SHARED CACHE. Step 0 deletes the build directory and
+		// CompileCacheDirectory lives inside it, so every build starts with an empty
+		// ZIG_GLOBAL_CACHE_DIR/ZIG_LOCAL_CACHE_DIR. Several zig processes populating that at
+		// once intermittently die with an access violation, heap corruption or a stack buffer
+		// overrun -- measured at 2-3 of every 16 units on windows-arm64, against 0-1 once a
+		// single compile has populated it. Costs nothing: unit 0 is work the build had to do.
+		var warmed = new TaskCompletionSource<bool>(
+			TaskCreationOptions.RunContinuationsAsynchronously);
+
 		using var gate = new SemaphoreSlim(JobCount());
 		var running = new List<Task>(total);
 
@@ -906,6 +1005,13 @@ public static class GameCodeBuild
 			int slot = index;
 			running.Add(Task.Run(async () =>
 			{
+				// OUTSIDE THE GATE, deliberately. Waiting on unit 0 while holding a permit lets the
+				// other units take every permit and leaves unit 0 unable to acquire one.
+				if (slot != 0)
+				{
+					await warmed.Task.WaitAsync(cancellation).ConfigureAwait(false);
+				}
+
 				await gate.WaitAsync(cancellation).ConfigureAwait(false);
 				try
 				{
@@ -917,30 +1023,67 @@ public static class GameCodeBuild
 						}
 					}
 
-					var arguments = new List<string>(flags);
-					if (precompiledHeader.Length != 0)
+					// LUA51 IS C. Its 32 files compile into the payload beside the generated code,
+					// and everything above this is a C++ flag set: clang rejects -std=gnu++23
+					// outright on a C input, and a C++ precompiled header and the libc++ chrono
+					// shim mean nothing there either.
+					//
+					// They must build AS C, not merely be made to compile. lua.h carries no
+					// extern "C" guards and host_lua_vm.cpp wraps its includes in one, so the
+					// C-linkage names are what that side references -- built as C++ every lua_*
+					// entry would be mangled and none of them would resolve.
+					bool isC = IsCSource(sources[slot]);
+
+					List<string> BuildArguments(bool withPch)
 					{
-						arguments.Add("-include-pch");
-						arguments.Add(precompiledHeader);
+						var arguments = isC ? AsCFlags(flags) : new List<string>(flags);
+						if (withPch && !isC)
+						{
+							arguments.Add("-include-pch");
+							arguments.Add(precompiledHeader);
+						}
+
+						// PAYLOAD-INTERNAL BY CONSTRUCTION. rex_bridge_payload.cpp defines the
+						// rex:: symbols librexruntime also defines; exported, the payload's copies
+						// capture the host's own lazily-bound references through the RTLD_GLOBAL
+						// scope and each forwarder recurses into itself until the stack ends.
+						// Mirrors the source-file property in src/hooks/CMakeLists.txt.
+						if (Path.GetFileName(sources[slot]) == "rex_bridge_payload.cpp")
+						{
+							arguments.Add("-fvisibility=hidden");
+						}
+
+						arguments.Add("-c");
+						arguments.Add(sources[slot]);
+						arguments.Add("-o");
+						arguments.Add(ObjectPath(slot));
+						return arguments;
 					}
 
-					// PAYLOAD-INTERNAL BY CONSTRUCTION. rex_bridge_payload.cpp defines the
-					// rex:: symbols librexruntime also defines; exported, the payload's copies
-					// capture the host's own lazily-bound references through the RTLD_GLOBAL
-					// scope and each forwarder recurses into itself until the stack ends.
-					// Mirrors the source-file property in src/hooks/CMakeLists.txt.
-					if (Path.GetFileName(sources[slot]) == "rex_bridge_payload.cpp")
-					{
-						arguments.Add("-fvisibility=hidden");
-					}
-
-					arguments.Add("-c");
-					arguments.Add(sources[slot]);
-					arguments.Add("-o");
-					arguments.Add(ObjectPath(slot));
+					// A C unit never uses it, so it can never be the unit that blames it either.
+					bool usePch = precompiledHeader.Length != 0 && !isC
+						&& Volatile.Read(ref pchBroken) == 0;
 
 					(int code, string output) = await RunCaptureAsync(
-						zig.Zig, Prefixed("c++", arguments), cancellation).ConfigureAwait(false);
+						zig.Zig, Prefixed(isC ? "cc" : "c++", BuildArguments(usePch)), cancellation)
+						.ConfigureAwait(false);
+
+					// A CRASH WITH THE PCH IS THE PCH'S FAULT until shown otherwise, so this unit is
+					// compiled again without it and every later unit skips it too. A real compile error
+					// is exit 1 and is left alone -- dropping the header would not change it, and the
+					// second attempt would only bury the diagnostic the player needs to see.
+					if (code != 0 && usePch && IsCrashExit(code))
+					{
+						if (Interlocked.Exchange(ref pchBroken, 1) == 0)
+						{
+							LogWrite("the precompiled header crashes this toolchain; "
+								+ "compiling the rest without it");
+						}
+
+						(code, output) = await RunCaptureAsync(
+							zig.Zig, Prefixed(isC ? "cc" : "c++", BuildArguments(false)), cancellation)
+							.ConfigureAwait(false);
+					}
 
 					if (code != 0)
 					{
@@ -963,6 +1106,13 @@ public static class GameCodeBuild
 				finally
 				{
 					gate.Release();
+
+					// ALWAYS, even when unit 0 failed or threw: everything else is waiting on this
+					// and never signalling would hang the build instead of reporting the failure.
+					if (slot == 0)
+					{
+						warmed.TrySetResult(true);
+					}
 				}
 			}, cancellation));
 		}
@@ -996,6 +1146,7 @@ public static class GameCodeBuild
 		string libraryDirectory = Path.Combine(RecompileDirectory, "lib");
 
 		var arguments = new List<string> { "-shared", "-o", ModulePath };
+		arguments.InsertRange(0, TargetFlags());
 		if (!OperatingSystem.IsWindows())
 		{
 			arguments.Add("-mcmodel=large");
@@ -1025,7 +1176,12 @@ public static class GameCodeBuild
 
 		// Already loaded in the process by the time the payload is; linking them here only
 		// resolves the references.
-		foreach (string name in new[] { "rexruntime", "refii_core", "refii_vfs", "refii_lua" })
+		// NO refii_lua. Its sources are staged and compiled beside the generated code instead
+		// (see REFII_LUA_HOOK_SOURCES): they call the recompiled guest, so they cannot ship as a
+		// library the payload links -- and linking the MSVC-built static one is what dragged
+		// /DEFAULTLIB:msvcrtd into a MinGW link. The refii_bridge_lua_* entry points the payload
+		// needs are among those sources, so they are defined in the payload itself now.
+		foreach (string name in new[] { "rexruntime", "refii_core", "refii_vfs" })
 		{
 			string found = FindLibrary(libraryDirectory, name);
 			if (found.Length == 0)
@@ -1069,7 +1225,9 @@ public static class GameCodeBuild
 	/// </remarks>
 	private static string FindLibrary(string directory, string name)
 	{
-		foreach (string suffix in new[] { string.Empty, "d" })
+		var found = new List<string>();
+
+		foreach (string suffix in new[] { string.Empty, "rd", "d" })
 		{
 			foreach (string candidate in new[]
 			{
@@ -1077,17 +1235,42 @@ public static class GameCodeBuild
 				"lib" + name + suffix + ".a",
 				name + suffix + ".lib",
 				"lib" + name + suffix + ".dll.a",
+				// LAST, so a real import library wins if one was staged. A Windows SHARED target
+				// stages $<TARGET_FILE>, which is the DLL and not the .lib, and lld links against a
+				// DLL directly -- verified against the staged runtime.
+				name + suffix + ".dll",
+				"lib" + name + suffix + ".dll",
 			})
 			{
 				string path = Path.Combine(directory, candidate);
 				if (File.Exists(path))
 				{
-					return path;
+					found.Add(path);
 				}
 			}
 		}
 
-		return string.Empty;
+		if (found.Count == 0)
+		{
+			return string.Empty;
+		}
+
+		// ONE CONFIGURATION SHOULD BE PRESENT, and the staging now empties lib/ so that it is.
+		// When more than one is anyway -- an older tree, or a hand-copied file -- the newest is
+		// the one this install just built, and taking it on name order instead is how the
+		// payload ended up importing a four-hour-old rexruntimerd.dll while the host loaded
+		// rexruntimed.dll. Two runtimes, two sets of globals, and a null deref in the guest.
+		// Logged rather than silent: picking between configurations is never routine.
+		if (found.Count > 1)
+		{
+			found.Sort((left, right) =>
+				File.GetLastWriteTimeUtc(right).CompareTo(File.GetLastWriteTimeUtc(left)));
+			LogWrite("more than one " + name + " in " + directory + " ("
+				+ string.Join(", ", found.ConvertAll(Path.GetFileName))
+				+ "); taking the newest: " + Path.GetFileName(found[0]));
+		}
+
+		return found[0];
 	}
 
 	private static List<string> Prefixed(string first, IReadOnlyList<string> rest)
@@ -1123,8 +1306,53 @@ public static class GameCodeBuild
 		}
 	}
 
-	/// <summary>Runs a process to completion and returns its exit code and output.</summary>
+	/// <summary>
+	/// Windows status codes that mean zig DIED rather than rejecting the source.
+	/// </summary>
+	/// <remarks>
+	/// A CRASH IS NOT A DIAGNOSTIC. clang reports a bad translation unit as exit 1 with a
+	/// message on stderr; these exit with an NTSTATUS and stderr EMPTY, so the install used to
+	/// fail with a filename, a colon and nothing after it. Retrying only these codes leaves a
+	/// genuine compile error failing on the spot, which is what it should do.
+	///
+	/// Seen on windows-arm64 while several zig processes populate one cold cache directory.
+	/// The object file is usually already written when it happens, so the retry is cheap.
+	/// </remarks>
+	private static bool IsCrashExit(int code) =>
+		code == unchecked((int)0xC0000005)   // STATUS_ACCESS_VIOLATION
+			|| code == unchecked((int)0xC0000374)   // STATUS_HEAP_CORRUPTION
+			|| code == unchecked((int)0xC0000409);  // STATUS_STACK_BUFFER_OVERRUN
+
+	/// <summary>How many times a crashed (not failed) zig invocation is run again.</summary>
+	private const int CrashRetries = 2;
+
+	/// <summary>
+	/// Runs zig, retrying if it crashes. Every caller is a deterministic, re-runnable step --
+	/// the precompiled header, one translation unit, or the link -- so running one again is
+	/// always safe.
+	/// </summary>
 	private static async Task<(int Code, string Output)> RunCaptureAsync(
+		string executable, IReadOnlyList<string> arguments, CancellationToken cancellation)
+	{
+		for (int attempt = 0; ; attempt++)
+		{
+			(int Code, string Output) result = await RunCaptureOnceAsync(
+				executable, arguments, cancellation).ConfigureAwait(false);
+
+			if (!IsCrashExit(result.Code) || attempt >= CrashRetries
+					|| cancellation.IsCancellationRequested)
+			{
+				return result;
+			}
+
+			LogWrite("retrying " + Path.GetFileName(executable) + " after crash exit 0x"
+				+ result.Code.ToString("X8") + ", attempt " + (attempt + 2)
+				+ " of " + (CrashRetries + 1));
+		}
+	}
+
+	/// <summary>Runs a process to completion and returns its exit code and output.</summary>
+	private static async Task<(int Code, string Output)> RunCaptureOnceAsync(
 		string executable, IReadOnlyList<string> arguments, CancellationToken cancellation)
 	{
 		var startInfo = new ProcessStartInfo
@@ -1167,7 +1395,27 @@ public static class GameCodeBuild
 
 			Task<string> output = process.StandardOutput.ReadToEndAsync();
 			Task<string> errors = process.StandardError.ReadToEndAsync();
-			await process.WaitForExitAsync(cancellation).ConfigureAwait(false);
+			try
+			{
+				await process.WaitForExitAsync(cancellation).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+				// KILL THE CHILD, as RunStepAsync does. WaitForExitAsync only stops WAITING; the
+				// zig process carries on. On Windows the survivors keep handles open on the
+				// object files and the cache, so step 0's delete of the build directory fails
+				// with a sharing violation and the NEXT build cannot start either. On Linux the
+				// unlink succeeds regardless, which is why this only ever bites on Windows.
+				try
+				{
+					process.Kill(entireProcessTree: true);
+				}
+				catch (Exception)
+				{
+				}
+
+				return (-1, LogResult(-1, "cancelled"));
+			}
 
 			return (process.ExitCode, LogResult(process.ExitCode,
 				(await output.ConfigureAwait(false) + await errors.ConfigureAwait(false)).Trim()));
