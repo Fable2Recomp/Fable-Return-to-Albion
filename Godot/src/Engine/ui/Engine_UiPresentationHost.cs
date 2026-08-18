@@ -230,8 +230,12 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// <summary>Re-fits the current camera when the viewport has changed size.</summary>
 	protected void FitToViewport()
 	{
-		if (_canvasCamera is null || !IsInsideTree())
+		if (_canvasCamera is null || !IsInsideTree() ||
+			!GodotObject.IsInstanceValid(_canvasCamera))
 		{
+			// The previous screen's camera is disposed with its tree; the new screen's
+			// Show reassigns _canvasCamera. Until then there is nothing to fit — touching
+			// the stale reference would throw ObjectDisposedException per frame.
 			return;
 		}
 

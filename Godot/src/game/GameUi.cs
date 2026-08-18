@@ -2380,9 +2380,20 @@ public partial class GameUi : Node
 
 		if (shown > 0)
 		{
-			GD.Print(report.ToString());
+			// Change-gated: a screen that is mid-animation reports identical geometry every
+			// sample, and printing that at the sample rate buries the transitions that matter.
+			// The throttle above narrows it; this stops the identical repeats entirely.
+			string text = report.ToString();
+			if (text == _lastScrollReport)
+			{
+				return;
+			}
+			_lastScrollReport = text;
+			GD.Print(text);
 		}
 	}
+
+	private string _lastScrollReport = string.Empty;
 
 	/// <summary>
 	/// Where a drawn presentation's quads actually PAINT, and the largest hole in them.

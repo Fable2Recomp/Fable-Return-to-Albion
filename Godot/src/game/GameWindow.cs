@@ -299,6 +299,27 @@ public partial class GameWindow : Window
 			return;
 		}
 
+		// CHANGE-GATED: the load's resting state is static and the previous behaviour printed
+		// the same four lines once a second for the whole session. The signature quantises the
+		// values that legitimately jitter (the fence's submitted counter) so only a real state
+		// change re-reports.
+		string loadingKey = HostBridge.GetLoadingScreen() is { } ls
+			? $"{ls.Manager:X8}/{ls.Screen:X8}/{ls.Fade:F1}/{ls.Requested}/{ls.Done}"
+			: "none";
+		string ringKey = string.Empty;
+		foreach (HostBridge.SceneStream s in HostBridge.GetSceneStreams())
+		{
+			ringKey += $"{s.WriteCursor:X}:{s.ReaderConsumed:X};";
+		}
+		HostBridge.InitMarkers markers = HostBridge.GetInitMarkers();
+		string signature = $"{fence.Busy}/{fence.BlocksLevelLoad}/{fence.Submitted:F1}|{loadingKey}|{ringKey}|" +
+			$"{markers.GdbManager:X8}/{markers.InGame}/{markers.GameMode:X8}/{markers.FrontEndMode:X8}";
+		if (signature == _lastLoadTrace)
+		{
+			return;
+		}
+		_lastLoadTrace = signature;
+
 		// "deadline", not "retired". +176 is a render DEADLINE BARRIER with two writers — the
 		// ctor and sub_82388B48 — and it standing still while submitted climbs past it is the
 		// normal resting state, not a stall.
@@ -340,13 +361,13 @@ public partial class GameWindow : Window
 		// How far into starting a game the guest has got. Game_InitDatabases says nothing
 		// until its last statement, so without these it is indistinguishable from a guest
 		// with nothing to do.
-		HostBridge.InitMarkers markers = HostBridge.GetInitMarkers();
 		GD.Print($"[guest-init] gdbManager=0x{markers.GdbManager:X8} inGame={markers.InGame} " +
 			$"gameMode=0x{markers.GameMode:X8} frontEndMode=0x{markers.FrontEndMode:X8}");
 	}
 
 	private bool _wasInGame;
 	private int _fenceTicks;
+	private string _lastLoadTrace = string.Empty;
 
 	private void TraceFrontEnd()
 	{
