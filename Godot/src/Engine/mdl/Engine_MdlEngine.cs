@@ -457,7 +457,9 @@ public static class Engine_MdlEngine
 
         int idxListOff = r.Position;
         if (!r.Skip((int)(u16c * 2))) return false;
+        int edgePairOff = r.Position;
         if (!r.Skip((int)(n77 * 4))) return false;
+        int edgeParamOff = r.Position;
         if (!r.Skip((int)(n77 * 16))) return false;
 
         int flagOff = r.Position;
@@ -491,6 +493,9 @@ public static class Engine_MdlEngine
             BoneIdOffset = boneIdOff,
             WeightOffset = weightOff,
             FlagOffset = flagOff,
+            EdgePairOffset = edgePairOff,
+            EdgeParamOffset = edgeParamOff,
+            BoneVertexCount = boneVtxCount,
         });
 
         return true;

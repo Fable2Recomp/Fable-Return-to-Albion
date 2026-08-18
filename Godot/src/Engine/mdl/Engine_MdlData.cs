@@ -282,6 +282,12 @@ public sealed class MdlClothBlock
     public int WeightOffset { get; set; }
 
     public int FlagOffset { get; set; }
+
+    public int EdgePairOffset { get; set; }
+
+    public int EdgeParamOffset { get; set; }
+
+    public uint BoneVertexCount { get; set; }
 }
 
 public sealed class MdlMorphTarget

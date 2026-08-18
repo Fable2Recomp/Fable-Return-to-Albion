@@ -75,6 +75,30 @@ public static class Engine_HeroMorph
         _ => string.Empty,
     };
 
+    public static bool TopologyMatches(ArrayMesh neutral, ArrayMesh target)
+    {
+        int surfaces = neutral.GetSurfaceCount();
+        if (surfaces == 0 || target.GetSurfaceCount() != surfaces)
+        {
+            return false;
+        }
+
+        for (int s = 0; s < surfaces; s++)
+        {
+            int a = neutral.SurfaceGetArrays(s)[(int)Mesh.ArrayType.Vertex]
+                .AsVector3Array().Length;
+            int b = target.SurfaceGetArrays(s)[(int)Mesh.ArrayType.Vertex]
+                .AsVector3Array().Length;
+
+            if (a == 0 || a != b)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public static ArrayMesh? Blend(
         string neutralPath,
         IReadOnlyDictionary<HeroMorphKind, string> targets,

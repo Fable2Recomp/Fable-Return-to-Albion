@@ -16,6 +16,52 @@ public partial class Engine_BnkEntityLoader : ResourceFormatLoader
         path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase) &&
         path.EndsWith(Engine_EntityIndex.Extension, StringComparison.OrdinalIgnoreCase);
 
+    private static void AttachCloth(Engine_EntityInstance node, Engine_EntityResource resource)
+    {
+        var clothed = new System.Collections.Generic.List<string>();
+
+        foreach (string path in resource.ModelPaths)
+        {
+            if (Refii.Physics.Engine_PhysicsIndex.HasCloth(path))
+            {
+                clothed.Add(path);
+            }
+        }
+
+        if (clothed.Count == 0)
+        {
+            return;
+        }
+
+        var body = new Refii.Physics.Engine_ClothBody
+        {
+            Name = Refii.Physics.Engine_ClothBody.NodeName,
+        };
+
+        body.SetModelPaths(clothed);
+        node.AddChild(body);
+        body.Owner = node;
+    }
+
+    private static Refii.Hero.Engine_HeroInstance NewHeroInstance(
+        string virtualPath, Engine_EntityResource resource)
+    {
+        var node = new Refii.Hero.Engine_HeroInstance();
+
+        bool female = Refii.Hero.Engine_HeroCatalog.TryGet(
+            virtualPath, out Refii.Hero.HeroEntry entry) && entry.Female;
+
+        var body = new Godot.Collections.Array<string>();
+        foreach (string path in resource.ModelPaths)
+        {
+            body.Add(path);
+        }
+
+        node.SetMeta(Refii.Hero.Engine_HeroInstance.FemaleMeta, female);
+        node.SetMeta(Refii.Hero.Engine_HeroInstance.BodyModelsMeta, body);
+        return node;
+    }
+
     public override string[] _GetRecognizedExtensions() => new[] { "entity" };
 
     public override bool _RecognizePath(string path, StringName type) => Recognises(path);
@@ -53,11 +99,12 @@ public partial class Engine_BnkEntityLoader : ResourceFormatLoader
 
         resource.ResourceName = resource.EntityName;
 
-        var node = new Engine_EntityInstance
-        {
-            Name = resource.EntityName.Length != 0 ? resource.EntityName : "Entity",
-            Mesh = resource,
-        };
+        Engine_EntityInstance node = IsHero(virtualPath)
+            ? NewHeroInstance(virtualPath, resource)
+            : new Engine_EntityInstance();
+
+        node.Name = resource.EntityName.Length != 0 ? resource.EntityName : "Entity";
+        node.Mesh = resource;
 
         node.SetMeta(Engine_EntityInstance.NameMeta, resource.EntityName);
         node.SetMeta(Engine_EntityInstance.HashMeta, resource.EntityHash);
@@ -84,6 +131,8 @@ public partial class Engine_BnkEntityLoader : ResourceFormatLoader
 
         node.AddChild(animator);
         animator.Owner = node;
+
+        AttachCloth(node, resource);
 
         var scene = new PackedScene();
         Error packed = scene.Pack(node);
