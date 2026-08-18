@@ -922,6 +922,20 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
 
   const uint32_t screen = ResolveInGameLoadingScreen(base);
 
+  // THE PRESENT GATE, released EVERY step while the screen is up. The world update's frame
+  // construct (sub_82B4F400) waits on the loading screen's take-down event (+180) on every
+  // present; the render tick that signals it is off in this headless build, so a single
+  // finish pulse is consumed by the first waiter and the next frame blocks forever — the
+  // camera frozen on the sky. The event is auto-reset, so signalling it per step can only
+  // release a waiter, never stack. The stuck block below still supplies the render-side
+  // writes (fade -> 0, done) that let the guest's own teardown run.
+  if (screen != 0) {
+    const uint32_t event = LoadGuestU32(base, screen + 180u);
+    if (event != 0u) {
+      rex::kernel::xboxkrnl::xeNtSetEvent(event, nullptr);
+    }
+  }
+
   static uint32_t watched = 0;
   static uint32_t stuck_steps = 0;
 
@@ -958,11 +972,6 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
   StoreGuestU8(base, screen + 176u, 0u);
   StoreGuestU8(base, screen + 177u, 1u);
 
-  const uint32_t event = LoadGuestU32(base, screen + 180u);
-  if (event != 0u) {
-    rex::kernel::xboxkrnl::xeNtSetEvent(event, nullptr);
-  }
-
   watched = 0;
   stuck_steps = 0;
 
@@ -970,7 +979,7 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
   if (logged.fetch_add(1, std::memory_order_relaxed) < 8u) {
     REXLOG_INFO("Refii in-game loading screen finished from host step "
                 "(screen=0x{:08X} event=0x{:08X})",
-                screen, event);
+                screen, LoadGuestU32(base, screen + 180u));
   }
 }
 
