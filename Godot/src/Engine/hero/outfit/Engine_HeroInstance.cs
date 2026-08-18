@@ -24,6 +24,8 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
 
     private OutfitResult? _outfit;
 
+    private System.Collections.Generic.Dictionary<string, BoneMorphOffset>? _skeletal;
+
     public bool Female => HasMeta(FemaleMeta) && GetMeta(FemaleMeta).AsBool();
 
     public override void _Ready() => Rebuild();
@@ -49,6 +51,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
             }
         }
 
+        _skeletal = null;
         _outfit = Engine_HeroOutfit.Resolve(chosen, Female);
 
         var parts = new List<string>(BodyModels);
@@ -60,8 +63,22 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
             }
         }
 
-        ArrayMesh? mesh = Refii.Models.Engine_MdlComposite.Build(
-            parts, ResolvePart, out _, out _);
+        _textureMorphs = _morphs.Any
+            ? Engine_HeroTextureMorph.Active(_morphs)
+            : new System.Collections.Generic.Dictionary<uint, List<TextureMorphEntry>>();
+
+        Refii.Material.Engine_MdlMaterial.TextureOverride = MorphTexture;
+        Refii.Textures.Engine_TexLibrary.Invalidate();
+
+        ArrayMesh? mesh;
+        try
+        {
+            mesh = Refii.Models.Engine_MdlComposite.Build(parts, ResolvePart, out _, out _);
+        }
+        finally
+        {
+            Refii.Material.Engine_MdlMaterial.TextureOverride = null;
+        }
 
         if (mesh is not null)
         {
@@ -75,15 +92,45 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
         NotifyPropertyListChanged();
     }
 
+    private System.Collections.Generic.Dictionary<uint, List<TextureMorphEntry>>? _textureMorphs;
+
+    private Texture2D? MorphTexture(string name, Refii.Textures.TexSemantic semantic)
+    {
+        if (semantic != Refii.Textures.TexSemantic.Albedo || _textureMorphs is null ||
+            _textureMorphs.Count == 0)
+        {
+            return null;
+        }
+
+        return Engine_HeroTextureMorph.Resolve(name, _textureMorphs);
+    }
+
     private Mesh? ResolvePart(string path)
     {
         HeroMorphSet? set = MorphSetFor(path);
-        if (set is null || !_morphs.Any)
+
+        ArrayMesh? mesh = set is not null && _morphs.Any
+            ? Engine_HeroMorph.Blend(path, set.Targets, _morphs, Engine_PropStreamer.Resolve)
+            : Engine_PropStreamer.Resolve(path);
+
+        if (mesh is null || !_morphs.Any)
         {
-            return Engine_PropStreamer.Resolve(path);
+            return mesh;
         }
 
-        return Engine_HeroMorph.Blend(path, set.Targets, _morphs, Engine_PropStreamer.Resolve);
+        return ApplySkeletal(path, mesh) ?? mesh;
+    }
+
+    private ArrayMesh? ApplySkeletal(string path, ArrayMesh mesh)
+    {
+        _skeletal ??= Engine_SkeletalMorphs.Accumulate(_morphs, Female);
+        if (_skeletal.Count == 0)
+        {
+            return null;
+        }
+
+        byte[]? bytes = Refii.Models.Engine_BnkMeshLoader.ReadBytes(path);
+        return bytes is null ? null : Engine_HeroBodyMorph.Apply(bytes, mesh, _skeletal);
     }
 
     private HeroMorphSet? MorphSetFor(string path)
@@ -172,11 +219,9 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
         LoadSelection();
         LoadMorphs();
 
-        HeroMorphSet? morphs = BodyMorphs();
-        if (morphs is not null)
+        Group(list, "Morphs");
         {
-            Group(list, "Morphs");
-            foreach (HeroMorphSlider slider in Engine_HeroMorphSliders.Available(morphs))
+            foreach (HeroMorphSlider slider in Engine_HeroMorphSliders.All)
             {
                 list.Add(new Dictionary
                 {

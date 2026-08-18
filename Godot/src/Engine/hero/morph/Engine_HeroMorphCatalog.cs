@@ -21,7 +21,7 @@ public static class Engine_HeroMorphCatalog
 
     public const uint TypeFat = 4;
     public const uint TypeStrong = 5;
-    public const uint TypeEvil = 12;
+    public const uint TypeGoodPure = 10;
     public const uint TypeEvilPure = 13;
     public const uint TypeEvilImpure = 14;
     public const uint TypeImpure = 16;
@@ -60,8 +60,9 @@ public static class Engine_HeroMorphCatalog
     {
         TypeFat => HeroMorphKind.Fat,
         TypeStrong => HeroMorphKind.Strong,
+        TypeGoodPure => HeroMorphKind.GoodPure,
         TypeEvilPure => HeroMorphKind.EvilPure,
-        TypeEvil or TypeEvilImpure => HeroMorphKind.EvilImpure,
+        TypeEvilImpure => HeroMorphKind.EvilImpure,
         TypeImpure => HeroMorphKind.Impure,
         TypeYoung => HeroMorphKind.Young,
         TypeOld => HeroMorphKind.Old,
@@ -104,6 +105,7 @@ public static class Engine_HeroMorphCatalog
         HeroMorphKind.Impure => "impure",
         HeroMorphKind.EvilPure => "evilpure",
         HeroMorphKind.EvilImpure => "evilimpure",
+        HeroMorphKind.GoodPure => "goodpure",
         _ => string.Empty,
     };
 

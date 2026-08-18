@@ -408,6 +408,8 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Equipment.Engine_ClothingIndex.SetResolver(ResolveBytes);
         Refii.Physics.Engine_PhysicsIndex.SetResolver(ResolveBytes);
         Refii.Hero.Engine_HeroMorphCatalog.SetResolver(ResolveBytes);
+        Refii.Hero.Engine_SkeletalMorphs.SetSource(EnumerateAllPaths, ResolveBytes);
+        Refii.Hero.Engine_HeroTextureMorph.SetResolver(ResolveBytes);
         Refii.Animations.Engine_AnimCatalog.SetFileSource(EnumerateAllPaths);
         Refii.Hero.Engine_HeroCatalog.SetModelSource(EnumerateAllPaths);
 
@@ -490,6 +492,8 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Equipment.Engine_ClothingIndex.SetResolver(null);
         Refii.Physics.Engine_PhysicsIndex.SetResolver(null);
         Refii.Hero.Engine_HeroMorphCatalog.SetResolver(null);
+        Refii.Hero.Engine_SkeletalMorphs.SetSource(null, null);
+        Refii.Hero.Engine_HeroTextureMorph.SetResolver(null);
 
         if (_weaponLoader is not null)
         {

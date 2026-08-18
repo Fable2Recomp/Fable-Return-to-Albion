@@ -141,7 +141,7 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
             { "hint_string", string.Empty },
         });
 
-    public const int MultilineThreshold = 64;
+    public const int MultilineThreshold = 48;
 
     public static bool NeedsMultiline(string value) =>
         value.Length > MultilineThreshold ||

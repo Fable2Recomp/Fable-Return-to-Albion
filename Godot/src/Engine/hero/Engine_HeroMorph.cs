@@ -9,8 +9,11 @@ public enum HeroMorphKind
 {
     Strong,
     Fat,
+    Tall,
+    Will,
     Young,
     Old,
+    GoodPure,
     Impure,
     EvilPure,
     EvilImpure,
@@ -32,6 +35,12 @@ public sealed class HeroMorphWeights
 
     public float EvilImpure { get; set; }
 
+    public float Tall { get; set; }
+
+    public float Will { get; set; }
+
+    public float GoodPure { get; set; }
+
     public float this[HeroMorphKind kind] => kind switch
     {
         HeroMorphKind.Strong => Strong,
@@ -41,6 +50,9 @@ public sealed class HeroMorphWeights
         HeroMorphKind.Impure => Impure,
         HeroMorphKind.EvilPure => EvilPure,
         HeroMorphKind.EvilImpure => EvilImpure,
+        HeroMorphKind.Tall => Tall,
+        HeroMorphKind.Will => Will,
+        HeroMorphKind.GoodPure => GoodPure,
         _ => 0.0f,
     };
 
@@ -72,6 +84,7 @@ public static class Engine_HeroMorph
         HeroMorphKind.Impure => "morph_impure",
         HeroMorphKind.EvilPure => "morph_evilpure",
         HeroMorphKind.EvilImpure => "morph_evilimpure",
+        HeroMorphKind.GoodPure => "morph_goodpure",
         _ => string.Empty,
     };
 
@@ -136,7 +149,7 @@ public static class Engine_HeroMorph
 
         foreach (HeroMorphKind kind in Enum.GetValues<HeroMorphKind>())
         {
-            float weight = weights[kind];
+            float weight = Engine_HeroMorphState.VertexWeight(weights, kind);
             if (weight <= 0.0001f || !targets.TryGetValue(kind, out string? path))
             {
                 continue;

@@ -298,8 +298,26 @@ public static class Engine_MdlMaterial
         return result;
     }
 
-    private static Texture2D? TryLoad(string name, TexSemantic semantic, out bool hasAlpha) =>
-        Engine_TexLibrary.Get(name, semantic, Engine_BnkMeshLoader.ReadBytes, out hasAlpha);
+    public static Func<string, TexSemantic, Texture2D?>? TextureOverride { get; set; }
+
+    private static Texture2D? TryLoad(string name, TexSemantic semantic, out bool hasAlpha)
+    {
+        hasAlpha = false;
+
+        if (name.Length == 0)
+        {
+            return null;
+        }
+
+        if (TextureOverride is not null &&
+            TextureOverride(name, semantic) is Texture2D overridden)
+        {
+            return overridden;
+        }
+
+        return Engine_TexLibrary.Get(
+            name, semantic, Engine_BnkMeshLoader.ReadBytes, out hasAlpha);
+    }
 
     /// <summary>
     /// Queues one sampler's enhancement.
