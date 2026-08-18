@@ -29,9 +29,8 @@ public partial class ReinstallPanel : VBoxContainer
 	private HSeparator _progressSeparator = null!;
 	private bool _built;
 
-	private const string StatusGlyph = "✓";
-	private static readonly Color DoneColor = new(0.36f, 0.85f, 0.47f);
-	private static readonly Color PendingColor = new(0.55f, 0.55f, 0.55f);
+	private const string CheckGlyph = "✓";
+	private static readonly Color CheckFill = new(0.16f, 0.52f, 0.33f);
 
 	public event Action? ReinstallRequested;
 	public event Action? UnpackBanksRequested;
@@ -137,42 +136,6 @@ public partial class ReinstallPanel : VBoxContainer
 		Refresh(false, false);
 	}
 
-	private const float EdgeFadeFraction = 0.25f;
-
-	private static StyleBox EdgeFaded(Color color)
-	{
-		var gradient = new Gradient
-		{
-			Offsets = new[] { 0.0f, EdgeFadeFraction, 1.0f - EdgeFadeFraction, 1.0f },
-			Colors = new[]
-			{
-				new Color(color, 0.0f),
-				color,
-				color,
-				new Color(color, 0.0f),
-			},
-		};
-
-		var texture = new GradientTexture2D
-		{
-			Gradient = gradient,
-			Width = 256,
-			Height = 4,
-			Fill = GradientTexture2D.FillEnum.Linear,
-			FillFrom = new Vector2(0.0f, 0.0f),
-			FillTo = new Vector2(1.0f, 0.0f),
-		};
-
-		return new StyleBoxTexture
-		{
-			Texture = texture,
-			ContentMarginLeft = 0.0f,
-			ContentMarginRight = 0.0f,
-			ContentMarginTop = 0.0f,
-			ContentMarginBottom = 0.0f,
-		};
-	}
-
 	private Button AddAction(string text, Action onPressed)
 	{
 		Button button = MakeActionButton(text, onPressed);
@@ -180,20 +143,14 @@ public partial class ReinstallPanel : VBoxContainer
 		return button;
 	}
 
+	/// <summary>Action row with a native-style status check: an empty box while
+	/// the step is pending, a filled box with a check once it is done.</summary>
 	private Button AddTrackedAction(string text, Action onPressed, out Label status)
 	{
 		var row = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		row.AddThemeConstantOverride("separation", 6);
+		row.AddThemeConstantOverride("separation", 8);
 
-		status = new Label
-		{
-			Text = StatusGlyph,
-			CustomMinimumSize = new Vector2(20, 0),
-			HorizontalAlignment = HorizontalAlignment.Center,
-			VerticalAlignment = VerticalAlignment.Center,
-		};
-		status.AddThemeFontSizeOverride("font_size", _fontSize);
-		status.AddThemeColorOverride("font_color", PendingColor);
+		status = MakeCheckBox();
 		row.AddChild(status);
 
 		Button button = MakeActionButton(text, onPressed);
@@ -202,6 +159,41 @@ public partial class ReinstallPanel : VBoxContainer
 		return button;
 	}
 
+	private Label MakeCheckBox()
+	{
+		var box = new Label
+		{
+			Text = string.Empty,
+			CustomMinimumSize = new Vector2(22, 22),
+			HorizontalAlignment = HorizontalAlignment.Center,
+			VerticalAlignment = VerticalAlignment.Center,
+		};
+		box.AddThemeFontSizeOverride("font_size", Mathf.Max(12, _fontSize - 4));
+		box.AddThemeColorOverride("font_color", LauncherTokens.Cream);
+		box.AddThemeStyleboxOverride("normal", CheckFace(done: false));
+		return box;
+	}
+
+	private static StyleBox CheckFace(bool done)
+	{
+		var face = new StyleBoxFlat
+		{
+			BgColor = done ? CheckFill : new Color(0, 0, 0, 0),
+			BorderColor = done
+				? new Color(LauncherTokens.Gold, 0.4f)
+				: new Color(LauncherTokens.Gold, 0.6f),
+			ContentMarginLeft = 3,
+			ContentMarginRight = 3,
+			ContentMarginTop = 2,
+			ContentMarginBottom = 2,
+		};
+		face.SetCornerRadiusAll(4);
+		face.SetBorderWidthAll(1);
+		return face;
+	}
+
+	/// <summary>Designed action face matching the hero button: solid emerald fill,
+	/// gold hairline, cream label. The fade-to-transparent gradient is gone.</summary>
 	private Button MakeActionButton(string text, Action onPressed)
 	{
 		var button = new Button
@@ -214,19 +206,50 @@ public partial class ReinstallPanel : VBoxContainer
 		};
 		Apply(button);
 
-		button.AddThemeStyleboxOverride("normal", EdgeFaded(_style.Button));
-		button.AddThemeStyleboxOverride("hover", EdgeFaded(_style.ButtonHovered));
-		button.AddThemeStyleboxOverride("pressed", EdgeFaded(_style.ButtonActive));
-		button.AddThemeStyleboxOverride("focus", EdgeFaded(_style.ButtonHovered));
 		button.AddThemeStyleboxOverride(
-			"disabled", EdgeFaded(new Color(_style.Button, _style.Button.A * 0.45f)));
-		button.AddThemeColorOverride("font_color", _style.Text);
-		button.AddThemeColorOverride("font_hover_color", _style.Text);
-		button.AddThemeColorOverride("font_pressed_color", _style.Text);
-		button.AddThemeColorOverride("font_disabled_color", _style.TextDisabled);
+			"normal", ActionFace(_style.Button, new Color(LauncherTokens.Gold, 0.45f)));
+		button.AddThemeStyleboxOverride(
+			"hover", ActionFace(_style.ButtonHovered, new Color(LauncherTokens.Gold, 0.75f)));
+		button.AddThemeStyleboxOverride(
+			"pressed", ActionFace(_style.ButtonActive, new Color(LauncherTokens.Gold, 0.55f)));
+		button.AddThemeStyleboxOverride(
+			"disabled", ActionFace(new Color(LauncherTokens.OakDim, 0.9f), new Color(LauncherTokens.Gold, 0.2f)));
+		button.AddThemeStyleboxOverride("focus", ActionFocus());
+		button.AddThemeColorOverride("font_color", LauncherTokens.Cream);
+		button.AddThemeColorOverride("font_hover_color", LauncherTokens.Cream);
+		button.AddThemeColorOverride("font_pressed_color", LauncherTokens.Cream);
+		button.AddThemeColorOverride("font_disabled_color", new Color(LauncherTokens.Cream, 0.45f));
 
 		button.Pressed += onPressed;
 		return button;
+	}
+
+	private static StyleBox ActionFace(Color fill, Color border)
+	{
+		var face = new StyleBoxFlat
+		{
+			BgColor = fill,
+			BorderColor = border,
+			ContentMarginLeft = LauncherTokens.Sp4,
+			ContentMarginRight = LauncherTokens.Sp4,
+			ContentMarginTop = LauncherTokens.Sp1,
+			ContentMarginBottom = LauncherTokens.Sp1,
+		};
+		face.SetCornerRadiusAll(LauncherTokens.RadiusMd);
+		face.SetBorderWidthAll(1);
+		return face;
+	}
+
+	private static StyleBox ActionFocus()
+	{
+		var face = new StyleBoxFlat
+		{
+			BgColor = new Color(0, 0, 0, 0),
+			BorderColor = new Color(LauncherTokens.GoldBright, 0.9f),
+		};
+		face.SetCornerRadiusAll(LauncherTokens.RadiusMd);
+		face.SetBorderWidthAll(2);
+		return face;
 	}
 
 	public void Refresh(bool busy, bool gameIsRunning)
@@ -254,8 +277,11 @@ public partial class ReinstallPanel : VBoxContainer
 		SetStatus(_buildGameCodeStatus, !Recompile.GameCodeBuild.NeedsBuildCached(out _));
 	}
 
-	private static void SetStatus(Label label, bool done) =>
-		label.AddThemeColorOverride("font_color", done ? DoneColor : PendingColor);
+	private static void SetStatus(Label label, bool done)
+	{
+		label.Text = done ? CheckGlyph : string.Empty;
+		label.AddThemeStyleboxOverride("normal", CheckFace(done));
+	}
 
 	public void SetProgress(string operationLabel, string statusMessage, string errorMessage = "")
 	{
@@ -277,6 +303,10 @@ public partial class ReinstallPanel : VBoxContainer
 		}
 
 		control.AddThemeFontSizeOverride("font_size", _fontSize);
+		if (control is Button)
+		{
+			control.MouseDefaultCursorShape = CursorShape.PointingHand;
+		}
 	}
 
 	private Label MakeLabel(string text)

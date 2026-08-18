@@ -13,23 +13,22 @@ namespace Refii.Launcher;
 [Tool]
 public partial class LauncherApp : Control
 {
-	private const int TextFontSize = 18;
-	private const int ArtCreditFontSize = 17;
 	private const float ArtCreditHeight = 26.0f;
-	private const float WarningFadeFraction = 0.35f;
-	private const int TitleFontSize = 30;
 
-	private static readonly string[] InfoTabs =
+	private static readonly string[] NewsTabs =
 	{
-		"Change Log", "Credits", "Reinstall", "Modding", "Settings",
+		"Change Log", "Credits",
 	};
 
+	private static readonly string[] DebugTabs =
+	{
+		"Settings", "Modding", "Reinstall",
+	};
 	private static readonly string[] FileMenuItems =
 	{
 		"Set Install Folder", "Uninstall", "", "Verify Lua Workspace",
-		"Reset All Lua Files", "Reset Lua File...", "", "Close",
+		"Reset All Lua Files", "Reset Lua File...", "", "Show Announcements", "Show Debug Panel", "Close",
 	};
-
 	private static readonly string[] AboutMenuItems =
 	{
 		"Fable 2 Recompiled", "RexGlue",
@@ -80,6 +79,7 @@ public partial class LauncherApp : Control
 	private TextureRect _backgroundNext = null!;
 	private BackgroundManager _backgrounds = null!;
 	private Panel _menuBar = null!;
+	private RichTextLabel _wordmark = null!;
 	private MenuButton _fileMenu = null!;
 	private MenuButton _aboutMenu = null!;
 	private Panel _warningPanel = null!;
@@ -91,14 +91,21 @@ public partial class LauncherApp : Control
 	private TextureRect _progressFill = null!;
 	private Label _artCredit = null!;
 	private Panel _infoPanel = null!;
+	private Button _drawerClose = null!;
+	private Panel _settingsDrawer = null!;
+	private Button _settingsClose = null!;
+	private Label _settingsTitle = null!;
+	private TabBar _settingsTabs = null!;
+	private Button _infoTab = null!;
+	private Button _settingsTab = null!;
 	private Label _infoTitle = null!;
 	private TabBar _infoTabs = null!;
 	private RichTextLabel _infoBody = null!;
+	private ScrollContainer _bodyScroll = null!;
 	private SettingsPanel _settingsPanel = null!;
 	private ModdingPanel _moddingPanel = null!;
 	private ReinstallPanel _reinstallPanel = null!;
-
-	private float _menuBarHeight = 26.0f;
+	private float _menuBarHeight = 72.0f;
 
 	public override void _Ready()
 	{
@@ -149,6 +156,7 @@ public partial class LauncherApp : Control
 		Resized += ApplyLayout;
 		ApplyLayout();
 		RefreshState();
+		CallDeferred(MethodName.PlayEntrance);
 
 		if (!Engine.IsEditorHint())
 		{
@@ -156,14 +164,14 @@ public partial class LauncherApp : Control
 			StartUpdateCheck("Update check: ");
 		}
 	}
-
 	private void BindNodes()
 	{
 		_background = GetNode<TextureRect>("Background");
 		_backgroundNext = GetNode<TextureRect>("BackgroundNext");
 		_menuBar = GetNode<Panel>("MenuBar");
-		_fileMenu = GetNode<MenuButton>("MenuBar/MenuRow/FileMenu");
-		_aboutMenu = GetNode<MenuButton>("MenuBar/MenuRow/AboutMenu");
+		_wordmark = GetNode<RichTextLabel>("MenuBar/HeaderCol/Wordmark");
+		_fileMenu = GetNode<MenuButton>("MenuBar/HeaderCol/MenuRow/FileMenu");
+		_aboutMenu = GetNode<MenuButton>("MenuBar/HeaderCol/MenuRow/AboutMenu");
 		_warningPanel = GetNode<Panel>("WarningPanel");
 		_warningLabel = GetNode<Label>("WarningPanel/WarningLabel");
 		_actionPanel = GetNode<Panel>("ActionPanel");
@@ -174,12 +182,20 @@ public partial class LauncherApp : Control
 		_progressFill = GetNode<TextureRect>("ActionPanel/ProgressClip/ProgressFill");
 		_artCredit = GetNode<Label>("ArtCredit");
 		_infoPanel = GetNode<Panel>("InfoPanel");
+		_drawerClose = GetNode<Button>("InfoPanel/DrawerClose");
+		_settingsDrawer = GetNode<Panel>("SettingsDrawer");
+		_settingsClose = GetNode<Button>("SettingsDrawer/SettingsClose");
+		_settingsTitle = GetNode<Label>("SettingsDrawer/SettingsColumn/SettingsTitle");
+		_settingsTabs = GetNode<TabBar>("SettingsDrawer/SettingsColumn/SettingsTabs");
+		_infoTab = GetNode<Button>("InfoTab");
+		_settingsTab = GetNode<Button>("SettingsTab");
 		_infoTitle = GetNode<Label>("InfoPanel/InfoColumn/InfoTitle");
 		_infoTabs = GetNode<TabBar>("InfoPanel/InfoColumn/InfoTabs");
-		_infoBody = GetNode<RichTextLabel>("InfoPanel/InfoColumn/InfoBody");
-		_settingsPanel = GetNode<SettingsPanel>("InfoPanel/InfoColumn/SettingsPanel");
-		_moddingPanel = GetNode<ModdingPanel>("InfoPanel/InfoColumn/ModdingPanel");
-		_reinstallPanel = GetNode<ReinstallPanel>("InfoPanel/InfoColumn/ReinstallPanel");
+		_infoBody = GetNode<RichTextLabel>("InfoPanel/InfoColumn/BodyScroll/InfoBody");
+		_bodyScroll = GetNode<ScrollContainer>("InfoPanel/InfoColumn/BodyScroll");
+		_settingsPanel = GetNode<SettingsPanel>("SettingsDrawer/SettingsColumn/SettingsPanel");
+		_moddingPanel = GetNode<ModdingPanel>("SettingsDrawer/SettingsColumn/ModdingPanel");
+		_reinstallPanel = GetNode<ReinstallPanel>("SettingsDrawer/SettingsColumn/ReinstallPanel");
 	}
 
 	private static bool IsExportedBuild() => OS.HasFeature("template");
@@ -390,23 +406,27 @@ public partial class LauncherApp : Control
 
 	private Font? LoadLauncherFont()
 	{
-		var imported = ResourceLoader.Load<Font>("res://assets/launcher/fable2.ttf");
-		if (imported is not null)
+		Font? baseFont = ResourceLoader.Load<Font>("res://assets/launcher/fable2.ttf");
+		if (baseFont is null)
 		{
-			return imported;
-		}
-
-		string external = LauncherPaths.GetLauncherAssetPath("fable2.ttf");
-		if (File.Exists(external))
-		{
-			var font = new FontFile();
-			if (font.LoadDynamicFont(external) == Error.Ok)
+			string external = LauncherPaths.GetLauncherAssetPath("fable2.ttf");
+			if (File.Exists(external))
 			{
-				return font;
+				var fileFont = new FontFile();
+				if (fileFont.LoadDynamicFont(external) == Error.Ok)
+				{
+					baseFont = fileFont;
+				}
 			}
 		}
 
-		return null;
+		if (baseFont is null)
+		{
+			return null;
+		}
+
+		// Subtle glyph tracking makes the display face read as crafted at title sizes.
+		return new FontVariation { BaseFont = baseFont, SpacingGlyph = 1 };
 	}
 
 	private Texture2D? LoadBackgroundTexture()
@@ -514,32 +534,322 @@ public partial class LauncherApp : Control
 		return box;
 	}
 
-	private const int TabRounding = 4;
-
-	private StyleBoxFlat TabFill(Color color)
+	private StyleBoxFlat TabFill(Color underline, int underlineWidth)
 	{
-		var box = new StyleBoxFlat { BgColor = color };
-		box.BorderColor = _infoStyle.Border;
-		box.SetBorderWidthAll(1);
-		box.CornerRadiusTopLeft = TabRounding;
-		box.CornerRadiusTopRight = TabRounding;
-		box.CornerRadiusBottomLeft = 0;
-		box.CornerRadiusBottomRight = 0;
-		box.ContentMarginLeft = 8;
-		box.ContentMarginRight = 8;
-		box.ContentMarginTop = 3;
-		box.ContentMarginBottom = 3;
+		var box = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) };
+		box.BorderColor = underline;
+		box.BorderWidthBottom = underlineWidth;
+		box.ContentMarginLeft = LauncherTokens.Sp2;
+		box.ContentMarginRight = LauncherTokens.Sp2;
+		box.ContentMarginTop = LauncherTokens.Sp2;
+		box.ContentMarginBottom = 6;
 		return box;
 	}
 
-	private void ApplyFont(Control control, int size)
+	private static StyleBoxFlat ButtonFace(
+		Color bg, Color border, Color? glow = null, int glowSize = 10)
+	{
+		var box = new StyleBoxFlat { BgColor = bg, BorderColor = border };
+		box.SetBorderWidthAll(1);
+		box.SetCornerRadiusAll(LauncherTokens.RadiusSm);
+		box.ContentMarginLeft = LauncherTokens.Sp6;
+		box.ContentMarginRight = LauncherTokens.Sp6;
+		box.ContentMarginTop = LauncherTokens.Sp3;
+		box.ContentMarginBottom = LauncherTokens.Sp3;
+		if (glow is { } glowColor)
+		{
+			box.ShadowColor = glowColor;
+			box.ShadowSize = glowSize;
+			box.ShadowOffset = Vector2.Zero;
+		}
+
+		return box;
+	}
+
+	private void ApplyFont(Control control, int size, int tracking = 0)
 	{
 		if (_font is not null)
 		{
-			control.AddThemeFontOverride("font", _font);
+			if (tracking > 0)
+			{
+				control.AddThemeFontOverride("font", new FontVariation
+				{
+					BaseFont = _font,
+					SpacingGlyph = tracking,
+				});
+			}
+			else
+			{
+				control.AddThemeFontOverride("font", _font);
+			}
 		}
 
 		control.AddThemeFontSizeOverride("font_size", size);
+	}
+
+	private void ApplySystemFont(Control control, int size)
+	{
+		// Design language: the display face (fable2.ttf) is reserved for identity;
+		// body and controls use the system UI face for legibility at small sizes.
+		// Remove (not null) the override: null logs "rp_font is null" per call.
+		control.RemoveThemeFontOverride("font");
+		control.AddThemeFontSizeOverride("font_size", size);
+	}
+
+	/// <summary>
+	/// Fluid type + spacing: re-applies every font size from LauncherScale so the
+	/// whole UI scales like a responsive site. Runs on every resize.
+	/// </summary>
+	private void ApplyScale()
+	{
+		int body = LauncherScale.Font(LauncherTokens.BodySize);
+
+		ApplyFont(_wordmark, LauncherScale.Font(LauncherTokens.WordmarkSize), 2);
+		foreach (MenuButton menu in new[] { _fileMenu, _aboutMenu })
+		{
+			ApplySystemFont(menu, body);
+		}
+
+		ApplySystemFont(_warningLabel, LauncherScale.Font(LauncherTokens.CaptionSize + 1));
+		ApplyFont(_primaryButton, LauncherScale.Font(LauncherTokens.DisplaySize));
+		ApplySystemFont(_artCredit, LauncherScale.Font(LauncherTokens.CaptionSize));
+		ApplyFont(_infoTitle, LauncherScale.Font(LauncherTokens.InfoTitleSize));
+		ApplySystemFont(_infoTabs, LauncherScale.Font(13));
+		ApplySystemFont(_infoBody, body);
+
+		ApplyFont(_settingsTitle, LauncherScale.Font(LauncherTokens.InfoTitleSize));
+		ApplySystemFont(_settingsTabs, LauncherScale.Font(13));
+
+		_drawerClose.AddThemeFontSizeOverride("font_size", LauncherScale.Font(19));
+		_settingsClose.AddThemeFontSizeOverride("font_size", LauncherScale.Font(19));
+		_infoTab.AddThemeFontSizeOverride("font_size", LauncherScale.Font(16));
+		_settingsTab.AddThemeFontSizeOverride("font_size", LauncherScale.Font(16));
+
+		// Panel content (settings, modding, reinstall) is uniform body text:
+		// refresh the panels' stored size and re-apply to existing nodes.
+		_settingsPanel.Configure(null, body, _infoStyle);
+		_moddingPanel.Configure(null, body, _infoStyle);
+		_reinstallPanel.Configure(null, body, _infoStyle);
+		ScaleFonts(_settingsPanel, body);
+		ScaleFonts(_moddingPanel, body);
+		ScaleFonts(_reinstallPanel, body);
+	}
+
+	private static void ScaleFonts(Control root, int size)
+	{
+		root.AddThemeFontSizeOverride("font_size", size);
+		foreach (Node child in root.GetChildren())
+		{
+			if (child is Control control)
+			{
+				ScaleFonts(control, size);
+			}
+		}
+	}
+
+	/// <summary>
+	/// Micro-interactions for the primary action: a 2px hover lift, a dim press,
+	/// and a gold focus ring for keyboard users. All short, all one-shot.
+	/// </summary>
+	private void WirePrimaryButtonInteractions()
+	{
+		_primaryButton.AddThemeStyleboxOverride("focus", FocusFace());
+		_primaryButton.MouseEntered += () =>
+		{
+			if (_primaryButton.Disabled)
+			{
+				return;
+			}
+
+			_primaryButton.CreateTween()
+				.TweenProperty(_primaryButton, "position", new Vector2(0, -2), 0.14)
+				.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+		};
+		_primaryButton.MouseExited += () => _primaryButton.CreateTween()
+			.TweenProperty(_primaryButton, "position", Vector2.Zero, 0.14)
+			.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+		_primaryButton.ButtonDown += () => _primaryButton.CreateTween()
+			.TweenProperty(_primaryButton, "modulate", new Color(0.88f, 0.88f, 0.88f, 1f), 0.07);
+		_primaryButton.ButtonUp += () => _primaryButton.CreateTween()
+			.TweenProperty(_primaryButton, "modulate", Colors.White, 0.16);
+	}
+
+	private static StyleBoxFlat FocusFace()
+	{
+		var box = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) };
+		box.BorderColor = LauncherTokens.Gold;
+		box.SetBorderWidthAll(2);
+		box.SetCornerRadiusAll(LauncherTokens.RadiusSm + 2);
+		box.ExpandMarginLeft = 3;
+		box.ExpandMarginRight = 3;
+		box.ExpandMarginTop = 3;
+		box.ExpandMarginBottom = 3;
+		return box;
+	}
+
+	/// <summary>Edge tab that expands its drawer: a parchment glass tab protruding from
+	/// the screen border into the art, rounded on the inward-facing side.</summary>
+	private static void StyleTab(Button tab, string glyph, bool rightSide)
+	{
+		tab.Text = glyph;
+		tab.MouseDefaultCursorShape = CursorShape.PointingHand;
+
+		// Normal: Translucent parchment matching drawer surface with a gold hairline border
+		var normal = new StyleBoxFlat
+		{
+			BgColor = LauncherTokens.ParchmentGlass,
+			BorderColor = new Color(LauncherTokens.Gold, 0.55f),
+			ShadowColor = new Color(0, 0, 0, 0.35f),
+			ShadowSize = 8,
+		};
+		normal.SetCornerRadiusAll(0);
+		normal.SetBorderWidthAll(1);
+
+		if (rightSide)
+		{
+			// Right edge button: Flat on the right screen border (border_width_right = 0),
+			// curved on the left inward-facing side.
+			normal.BorderWidthRight = 0;
+			normal.CornerRadiusTopLeft = 14;
+			normal.CornerRadiusBottomLeft = 14;
+		}
+		else
+		{
+			// Left edge button: Flat on the left screen border (border_width_left = 0),
+			// curved on the right inward-facing side.
+			normal.BorderWidthLeft = 0;
+			normal.CornerRadiusTopRight = 14;
+			normal.CornerRadiusBottomRight = 14;
+		}
+
+		// Hover: slightly brighter parchment with stronger gold glow and shadow
+		var hover = new StyleBoxFlat
+		{
+			BgColor = LauncherTokens.ParchmentLit,
+			BorderColor = LauncherTokens.Gold,
+			ShadowColor = new Color(LauncherTokens.Gold, 0.40f),
+			ShadowSize = 12,
+		};
+		hover.SetCornerRadiusAll(0);
+		hover.SetBorderWidthAll(1);
+
+		if (rightSide)
+		{
+			hover.BorderWidthRight = 0;
+			hover.CornerRadiusTopLeft = 14;
+			hover.CornerRadiusBottomLeft = 14;
+		}
+		else
+		{
+			hover.BorderWidthLeft = 0;
+			hover.CornerRadiusTopRight = 14;
+			hover.CornerRadiusBottomRight = 14;
+		}
+
+		// Pressed: deeper parchment tone
+		var pressed = new StyleBoxFlat
+		{
+			BgColor = LauncherTokens.ParchmentRaised,
+			BorderColor = LauncherTokens.GoldBright,
+			ShadowColor = new Color(0, 0, 0, 0.5f),
+			ShadowSize = 4,
+		};
+		pressed.SetCornerRadiusAll(0);
+		pressed.SetBorderWidthAll(1);
+
+		if (rightSide)
+		{
+			pressed.BorderWidthRight = 0;
+			pressed.CornerRadiusTopLeft = 14;
+			pressed.CornerRadiusBottomLeft = 14;
+		}
+		else
+		{
+			pressed.BorderWidthLeft = 0;
+			pressed.CornerRadiusTopRight = 14;
+			pressed.CornerRadiusBottomRight = 14;
+		}
+
+		tab.AddThemeStyleboxOverride("normal", normal);
+		tab.AddThemeStyleboxOverride("hover", hover);
+		tab.AddThemeStyleboxOverride("pressed", pressed);
+		tab.AddThemeStyleboxOverride("focus", FocusFace());
+		tab.AddThemeColorOverride("font_color", LauncherTokens.Walnut);
+		tab.AddThemeColorOverride("font_hover_color", LauncherTokens.GoldInk);
+	}
+
+	/// <summary>Soft fade-and-rise entrance for both floating drawers and their
+	/// companions on first layout.</summary>
+	private void PlayEntrance()
+	{
+		_settingsDrawer.Modulate = new Color(1, 1, 1, 0);
+		_settingsDrawer.Position = _settingsDrawerBasePos + new Vector2(28, 0);
+		_infoPanel.Modulate = new Color(1, 1, 1, 0);
+		_infoPanel.Position = _drawerBasePos + new Vector2(-28, 0);
+		_primaryButton.Modulate = new Color(1, 1, 1, 0);
+		_primaryButton.Position = new Vector2(0, 10);
+		_warningPanel.Modulate = new Color(1, 1, 1, 0);
+		_warningPanel.Position = _warningBasePos + new Vector2(0, 8);
+
+		var tween = CreateTween();
+		tween.SetParallel(true);
+		TweenEntrance(tween, _settingsDrawer, _settingsDrawerBasePos, 0.30f, 0.0f);
+		TweenEntrance(tween, _infoPanel, _drawerBasePos, 0.30f, 0.03f);
+		TweenEntrance(tween, _primaryButton, Vector2.Zero, 0.30f, 0.06f);
+		TweenEntrance(tween, _warningPanel, _warningBasePos, 0.30f, 0.12f);
+	}
+
+	private static void TweenEntrance(
+		Tween tween, Control control, Vector2 target, float duration, float delay)
+	{
+		tween.TweenProperty(control, "modulate", Colors.White, duration)
+			.SetDelay(delay).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+		tween.TweenProperty(control, "position", target, duration)
+			.SetDelay(delay).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+	}
+
+	/// <summary>Fade-in for modal dialogs when they mount.</summary>
+	private static void AnimateIn(Control control)
+	{
+		control.Modulate = new Color(1, 1, 1, 0);
+		control.Position += new Vector2(0, 14);
+		var tween = control.CreateTween();
+		tween.SetParallel(true);
+		tween.TweenProperty(control, "modulate", Colors.White, 0.20)
+			.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+		tween.TweenProperty(control, "position", control.Position - new Vector2(0, 14), 0.20)
+			.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+	}
+
+	/// <summary>Quiet settle when switching tabs in either drawer.</summary>
+	private void FadeInTabContent()
+	{
+		Control target = _settingsTabs.CurrentTab switch
+		{
+			0 => _settingsPanel,
+			1 => _moddingPanel,
+			2 => _reinstallPanel,
+			_ => _settingsPanel,
+		};
+
+		if (target.Visible)
+		{
+			target.Modulate = new Color(1, 1, 1, 0.4f);
+			target.CreateTween()
+				.TweenProperty(target, "modulate", Colors.White, 0.18)
+				.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+		}
+	}
+
+	private void FadeInNewsContent()
+	{
+		if (_infoBody.Visible)
+		{
+			_infoBody.Modulate = new Color(1, 1, 1, 0.4f);
+			_infoBody.CreateTween()
+				.TweenProperty(_infoBody, "modulate", Colors.White, 0.18)
+				.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+		}
 	}
 
 	private void ApplyStyles()
@@ -547,79 +857,238 @@ public partial class LauncherApp : Control
 		_backgrounds = new BackgroundManager(_background, _backgroundNext);
 		_backgrounds.Initialize();
 
-		_menuBar.AddThemeStyleboxOverride("panel", Fill(_menuStyle.MenuBarBg));
+		// Toolbar: no bar at all. The artwork runs to the top of the window and
+		// the wordmark + menus float over it with a soft shadow for legibility.
+		_menuBar.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) });
+
+		_wordmark.BbcodeEnabled = true;
+		_wordmark.Text =
+			"[color=#e8dcc2]FABLE [/color][color=#daa520]2[/color][color=#e8dcc2] RECOMPILED[/color]";
+		_wordmark.MouseFilter = MouseFilterEnum.Ignore;
+		_wordmark.VerticalAlignment = VerticalAlignment.Center;
+		_wordmark.AddThemeColorOverride("font_shadow_color", new Color(0, 0, 0, 0.65f));
+		_wordmark.AddThemeConstantOverride("shadow_offset_x", 1);
+		_wordmark.AddThemeConstantOverride("shadow_offset_y", 2);
+
+		// Menu chips: a small dark glass background so the cream labels keep
+		// contrast no matter what artwork is behind them.
+		var menuNormal = new StyleBoxFlat
+		{
+			BgColor = LauncherTokens.InkGlass,
+			BorderColor = new Color(LauncherTokens.Gold, 0.35f),
+			ContentMarginLeft = 10,
+			ContentMarginRight = 10,
+			ContentMarginTop = 4,
+			ContentMarginBottom = 4,
+		};
+		menuNormal.SetCornerRadiusAll(LauncherTokens.RadiusSm);
+		menuNormal.SetBorderWidthAll(1);
+
+		var menuHover = new StyleBoxFlat
+		{
+			BgColor = new Color(LauncherTokens.Oak, 0.72f),
+			BorderColor = new Color(LauncherTokens.Gold, 0.7f),
+			ContentMarginLeft = 10,
+			ContentMarginRight = 10,
+			ContentMarginTop = 4,
+			ContentMarginBottom = 4,
+		};
+		menuHover.SetCornerRadiusAll(LauncherTokens.RadiusSm);
+		menuHover.SetBorderWidthAll(1);
+
 		foreach (MenuButton menu in new[] { _fileMenu, _aboutMenu })
 		{
-			ApplyFont(menu, TextFontSize);
-			menu.AddThemeColorOverride("font_color", _menuStyle.Text);
+			menu.MouseDefaultCursorShape = CursorShape.PointingHand;
+			menu.TextOverrunBehavior = TextServer.OverrunBehavior.NoTrimming;
+			menu.AddThemeColorOverride("font_color", LauncherTokens.Cream);
+			menu.AddThemeColorOverride("font_hover_color", LauncherTokens.GoldBright);
+			menu.AddThemeColorOverride("font_shadow_color", new Color(0, 0, 0, 0.6f));
+			menu.AddThemeConstantOverride("shadow_offset_x", 1);
+			menu.AddThemeConstantOverride("shadow_offset_y", 1);
+			menu.AddThemeStyleboxOverride("normal", menuNormal);
+			menu.AddThemeStyleboxOverride("hover", menuHover);
+			menu.AddThemeStyleboxOverride("pressed", menuHover);
+			menu.AddThemeStyleboxOverride("focus", FocusFace());
 		}
 
-		_warningPanel.AddThemeStyleboxOverride(
-			"panel",
-			HorizontalFade(
-				_warningStyle.WindowBg,
-				new[] { 0.0f, 1.0f - WarningFadeFraction, 1.0f },
-				new[] { 1.0f, 1.0f, 0.0f }));
+		// Quiet floating notice tag: dark glass pill, subtle text. It sits above
+		// the action, over the art, without shouting.
+		var noticeBox = new StyleBoxFlat { BgColor = LauncherTokens.InkGlass };
+		noticeBox.SetCornerRadiusAll(LauncherTokens.RadiusPill);
+		noticeBox.BorderColor = new Color(LauncherTokens.Gold, 0.18f);
+		noticeBox.SetBorderWidthAll(1);
+		noticeBox.ContentMarginLeft = LauncherTokens.Sp4;
+		noticeBox.ContentMarginRight = LauncherTokens.Sp4;
+		_warningPanel.AddThemeStyleboxOverride("panel", noticeBox);
 		_warningLabel.Text = LauncherTheme.WarningText;
-		ApplyFont(_warningLabel, TextFontSize);
-		_warningLabel.AddThemeColorOverride("font_color", _warningStyle.Text);
+		_warningLabel.HorizontalAlignment = HorizontalAlignment.Center;
+		_warningLabel.AddThemeColorOverride("font_color", new Color(LauncherTokens.Cream, 0.82f));
 
-		_actionPanel.AddThemeStyleboxOverride("panel", Fill(_buttonStyle.WindowBg, _buttonStyle.Border));
-		ApplyFont(_primaryButton, TitleFontSize);
-		_primaryButton.AddThemeStyleboxOverride("normal", EdgeFaded(_buttonStyle.Button));
-		_primaryButton.AddThemeStyleboxOverride("hover", EdgeFaded(_buttonStyle.ButtonHovered));
-		_primaryButton.AddThemeStyleboxOverride("pressed", EdgeFaded(_buttonStyle.ButtonActive));
-		_primaryButton.AddThemeStyleboxOverride("disabled", Fill(new Color(0, 0, 0, 0)));
+		// The action area is just a positioning pocket; the button floats.
+		_actionPanel.AddThemeStyleboxOverride("panel", Fill(new Color(0, 0, 0, 0)));
+		_primaryButton.MouseDefaultCursorShape = CursorShape.PointingHand;
+		_primaryButton.AddThemeStyleboxOverride(
+			"normal", ButtonFace(_buttonStyle.Button, new Color(LauncherTokens.Gold, 0.55f), new Color(LauncherTokens.Gold, 0.20f), 10));
+		_primaryButton.AddThemeStyleboxOverride(
+			"hover", ButtonFace(_buttonStyle.ButtonHovered, new Color(LauncherTokens.Gold, 0.8f), new Color(LauncherTokens.Gold, 0.38f), 14));
+		_primaryButton.AddThemeStyleboxOverride(
+			"pressed", ButtonFace(_buttonStyle.ButtonActive, new Color(LauncherTokens.Gold, 0.55f)));
+		_primaryButton.AddThemeStyleboxOverride(
+			"disabled", ButtonFace(new Color(LauncherTokens.OakDim, 0.85f), new Color(LauncherTokens.Gold, 0.35f)));
 		_progressTrack.Texture =
-			FadeTexture(new Color(0.3f, 0.3f, 0.3f, 0.5f), EdgeFadeOffsets, EdgeFadeAlphas);
+			FadeTexture(new Color(LauncherTokens.Gold, 0.18f), EdgeFadeOffsets, EdgeFadeAlphas);
 		_progressFill.Texture =
-			FadeTexture(_buttonStyle.Button, EdgeFadeOffsets, EdgeFadeAlphas);
-		_primaryButton.AddThemeColorOverride("font_color", _buttonStyle.Text);
-		_primaryButton.AddThemeColorOverride("font_disabled_color", _buttonStyle.Text);
+			FadeTexture(new Color(LauncherTokens.Gold, 0.85f), EdgeFadeOffsets, EdgeFadeAlphas);
+		_primaryButton.AddThemeColorOverride("font_color", LauncherTokens.Cream);
+		_primaryButton.AddThemeColorOverride("font_disabled_color", _infoStyle.TextDisabled);
+		_primaryButton.Pressed += OnPrimaryPressed;
+		WirePrimaryButtonInteractions();
 
-		ApplyFont(_artCredit, ArtCreditFontSize);
-		_artCredit.AddThemeColorOverride("font_color", _warningStyle.Text);
+		ApplySystemFont(_artCredit, LauncherScale.Font(LauncherTokens.CaptionSize));
+		_artCredit.AddThemeColorOverride("font_color", new Color(LauncherTokens.Cream, 0.72f));
 		_artCredit.AddThemeColorOverride("font_shadow_color", new Color(0, 0, 0, 0.75f));
 		_artCredit.AddThemeConstantOverride("shadow_offset_x", 1);
-		_artCredit.AddThemeConstantOverride("shadow_offset_y", 1);
-		_primaryButton.Pressed += OnPrimaryPressed;
 
-		_infoPanel.AddThemeStyleboxOverride("panel", Fill(_infoStyle.WindowBg, _infoStyle.Border));
-		ApplyFont(_infoTitle, TextFontSize);
+		// Announcements Drawer (Left Side):
+		var infoBox = new StyleBoxFlat { BgColor = LauncherTokens.ParchmentGlass };
+		infoBox.BorderColor = new Color(LauncherTokens.Gold, 0.45f);
+		infoBox.SetBorderWidthAll(1);
+		infoBox.SetCornerRadiusAll(LauncherTokens.RadiusMd);
+		infoBox.ShadowColor = new Color(0, 0, 0, 0.4f);
+		infoBox.ShadowSize = 18;
+		infoBox.ShadowOffset = new Vector2(0, 6);
+		infoBox.ContentMarginLeft = LauncherTokens.Sp6;
+		infoBox.ContentMarginRight = LauncherTokens.Sp6;
+		infoBox.ContentMarginTop = LauncherTokens.Sp4;
+		infoBox.ContentMarginBottom = LauncherTokens.Sp6;
+		_infoPanel.AddThemeStyleboxOverride("panel", infoBox);
+		_infoPanel.Visible = true; // Open by default (left side)
+
+		_drawerClose.MouseDefaultCursorShape = CursorShape.PointingHand;
+		_drawerClose.AddThemeColorOverride("font_color", LauncherTokens.SepiaInk);
+		_drawerClose.AddThemeColorOverride("font_hover_color", LauncherTokens.GoldInk);
+		_drawerClose.AddThemeStyleboxOverride("normal", new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) });
+		_drawerClose.AddThemeStyleboxOverride("hover", new StyleBoxFlat { BgColor = new Color(LauncherTokens.Gold, 0.22f) });
+		_drawerClose.AddThemeStyleboxOverride("pressed", new StyleBoxFlat { BgColor = new Color(LauncherTokens.Gold, 0.35f) });
+		_drawerClose.AddThemeStyleboxOverride("focus", FocusFace());
+		_drawerClose.Pressed += DismissDrawer;
+
 		_infoTitle.AddThemeColorOverride("font_color", _infoStyle.Text);
-		var titleBar = new StyleBoxFlat { BgColor = _infoStyle.TitleBg };
-		titleBar.ContentMarginLeft = 6;
-		titleBar.ContentMarginRight = 6;
-		titleBar.ContentMarginTop = 2;
-		titleBar.ContentMarginBottom = 2;
-		_infoTitle.AddThemeStyleboxOverride("normal", titleBar);
+		var titleRule = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) };
+		titleRule.BorderColor = _infoStyle.Border;
+		titleRule.BorderWidthBottom = 2;
+		titleRule.ContentMarginBottom = 4;
+		_infoTitle.AddThemeStyleboxOverride("normal", titleRule);
 
-		ApplyFont(_infoTabs, TextFontSize);
-		_infoTabs.AddThemeStyleboxOverride("tab_selected", TabFill(_infoStyle.TabSelected));
-		_infoTabs.AddThemeStyleboxOverride("tab_unselected", TabFill(_infoStyle.Tab));
-		_infoTabs.AddThemeStyleboxOverride("tab_hovered", TabFill(_infoStyle.TabHovered));
-		_infoTabs.AddThemeConstantOverride("h_separation", 4);
-		_infoTabs.AddThemeColorOverride("font_selected_color", _infoStyle.Text);
-		_infoTabs.AddThemeColorOverride("font_unselected_color", _infoStyle.Text);
-
-		ApplyFont(_infoBody, TextFontSize);
+		_infoTabs.MouseDefaultCursorShape = CursorShape.PointingHand;
+		_infoTabs.AddThemeStyleboxOverride("tab_selected", TabFill(LauncherTokens.Gold, 2));
+		_infoTabs.AddThemeStyleboxOverride("tab_unselected", TabFill(new Color(0, 0, 0, 0), 0));
+		_infoTabs.AddThemeStyleboxOverride("tab_hovered", TabFill(LauncherTokens.Sepia, 1));
+		_infoTabs.AddThemeConstantOverride("h_separation", LauncherTokens.Sp3);
+		_infoTabs.AddThemeColorOverride("font_selected_color", LauncherTokens.GoldInk);
+		_infoTabs.AddThemeColorOverride("font_unselected_color", LauncherTokens.SepiaInk);
+		// News Body:
+		var bodyCard = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) };
+		bodyCard.ContentMarginLeft = LauncherTokens.Sp1;
+		bodyCard.ContentMarginRight = LauncherTokens.Sp1;
+		bodyCard.ContentMarginTop = LauncherTokens.Sp2;
+		bodyCard.ContentMarginBottom = LauncherTokens.Sp2;
+		_bodyScroll.AddThemeStyleboxOverride("panel", bodyCard);
+		_bodyScroll.HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled;
+		_infoBody.FitContent = true;
 		_infoBody.AddThemeColorOverride("default_color", _infoStyle.Text);
+		_infoBody.AddThemeConstantOverride("line_separation", 5);
 
-		_settingsPanel.Configure(_font, TextFontSize, _infoStyle);
-		_moddingPanel.Configure(_font, TextFontSize, _infoStyle);
-		_reinstallPanel.Configure(_font, TextFontSize, _infoStyle);
+		// Complete Debug & System Drawer (Settings, Modding, Reinstall) - Default Open:
+		var settingsBox = new StyleBoxFlat { BgColor = LauncherTokens.ParchmentGlassStrong };
+		settingsBox.BorderColor = new Color(LauncherTokens.Gold, 0.55f);
+		settingsBox.SetBorderWidthAll(1);
+		settingsBox.SetCornerRadiusAll(LauncherTokens.RadiusMd);
+		settingsBox.ShadowColor = new Color(0, 0, 0, 0.45f);
+		settingsBox.ShadowSize = 20;
+		settingsBox.ShadowOffset = new Vector2(0, 6);
+		settingsBox.ContentMarginLeft = LauncherTokens.Sp6;
+		settingsBox.ContentMarginRight = LauncherTokens.Sp6;
+		settingsBox.ContentMarginTop = LauncherTokens.Sp4;
+		settingsBox.ContentMarginBottom = LauncherTokens.Sp6;
+		_settingsDrawer.AddThemeStyleboxOverride("panel", settingsBox);
+		_settingsDrawer.Visible = true; // Open by default (right side)
+
+		_settingsTitle.AddThemeColorOverride("font_color", _infoStyle.Text);
+		var settingsRule = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) };
+		settingsRule.BorderColor = _infoStyle.Border;
+		settingsRule.BorderWidthBottom = 2;
+		settingsRule.ContentMarginBottom = 4;
+		_settingsTitle.AddThemeStyleboxOverride("normal", settingsRule);
+		_settingsTabs.MouseDefaultCursorShape = CursorShape.PointingHand;
+		_settingsTabs.AddThemeStyleboxOverride("tab_selected", TabFill(LauncherTokens.Gold, 2));
+		_settingsTabs.AddThemeStyleboxOverride("tab_unselected", TabFill(new Color(0, 0, 0, 0), 0));
+		_settingsTabs.AddThemeStyleboxOverride("tab_hovered", TabFill(LauncherTokens.Sepia, 1));
+		_settingsTabs.AddThemeConstantOverride("h_separation", LauncherTokens.Sp3);
+		_settingsTabs.AddThemeColorOverride("font_selected_color", LauncherTokens.GoldInk);
+		_settingsTabs.AddThemeColorOverride("font_unselected_color", LauncherTokens.SepiaInk);
+
+		_settingsClose.MouseDefaultCursorShape = CursorShape.PointingHand;
+		_settingsClose.AddThemeColorOverride("font_color", LauncherTokens.SepiaInk);
+		_settingsClose.AddThemeColorOverride("font_hover_color", LauncherTokens.GoldInk);
+		_settingsClose.AddThemeStyleboxOverride("normal", new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) });
+		_settingsClose.AddThemeStyleboxOverride("hover", new StyleBoxFlat { BgColor = new Color(LauncherTokens.Gold, 0.22f) });
+		_settingsClose.AddThemeStyleboxOverride("pressed", new StyleBoxFlat { BgColor = new Color(LauncherTokens.Gold, 0.35f) });
+		_settingsClose.AddThemeStyleboxOverride("focus", FocusFace());
+		_settingsClose.Pressed += DismissSettingsDrawer;
+
+		// Drawer tabs on the window edges: grab handles that expand the drawer
+		// in. Hidden while their drawer is open.
+		StyleTab(_infoTab, "i", rightSide: false);
+		StyleTab(_settingsTab, "⚙", rightSide: true);
+		_infoTab.Pressed += ToggleInfoDrawer;
+		_settingsTab.Pressed += ToggleSettingsDrawer;
+		_infoTab.Visible = false; // hidden while info drawer is open
+		_settingsTab.Visible = false; // hidden while debug drawer is open
+
 		_reinstallPanel.ReinstallRequested += StartInstallFlow;
 		_reinstallPanel.UnpackBanksRequested += () => StartOps(ops => ops.ExtractGameBanks());
 		_reinstallPanel.BuildGameCodeRequested += StartGameCodeBuild;
 		_reinstallPanel.DecompileLuaRequested += () => StartOps(ops => ops.RebuildLuaWorkspace());
 		_reinstallPanel.CompileShadersRequested += () => StartOps(ops => ops.CompileShaders());
 		_reinstallPanel.BuildModernizedAssetsRequested += StartAssetPrebuild;
+
+		ApplyScale();
 	}
 
 	private void WireMenus()
 	{
 		PopulateMenu(_fileMenu, FileMenuItems, OnFileMenu);
 		PopulateMenu(_aboutMenu, AboutMenuItems, OnAboutMenu);
+		StylePopup(_fileMenu.GetPopup());
+		StylePopup(_aboutMenu.GetPopup());
+	}
+
+	private void StylePopup(PopupMenu popup)
+	{
+		var panel = new StyleBoxFlat { BgColor = _infoStyle.PopupBg };
+		panel.BorderColor = _infoStyle.Border;
+		panel.SetBorderWidthAll(1);
+		panel.ShadowColor = new Color(0, 0, 0, 0.4f);
+		panel.ShadowSize = 14;
+		panel.ContentMarginLeft = 4;
+		panel.ContentMarginRight = 4;
+		panel.ContentMarginTop = 4;
+		panel.ContentMarginBottom = 4;
+		popup.AddThemeStyleboxOverride("panel", panel);
+
+		var hover = new StyleBoxFlat { BgColor = _infoStyle.Header };
+		hover.ContentMarginLeft = LauncherTokens.Sp2;
+		hover.ContentMarginRight = LauncherTokens.Sp2;
+		hover.ContentMarginTop = 2;
+		hover.ContentMarginBottom = 2;
+		popup.AddThemeStyleboxOverride("hover", hover);
+
+		popup.AddThemeFontSizeOverride("font_size", LauncherScale.Font(LauncherTokens.BodySize));
+		popup.AddThemeColorOverride("font_color", _infoStyle.Text);
+		popup.AddThemeColorOverride("font_hover_color", _infoStyle.Text);
+		popup.AddThemeColorOverride("font_separator_color", _infoStyle.Separator);
+		popup.AddThemeColorOverride("font_disabled_color", _infoStyle.TextDisabled);
 	}
 
 	private static void PopulateMenu(MenuButton button, string[] items, Action<string> onSelected)
@@ -655,12 +1124,26 @@ public partial class LauncherApp : Control
 	private void WireTabs()
 	{
 		_infoTabs.ClearTabs();
-		foreach (string tab in InfoTabs)
+		foreach (string tab in NewsTabs)
 		{
 			_infoTabs.AddTab(tab);
 		}
+		_infoTabs.TabChanged += _ =>
+		{
+			RefreshInfoBody();
+			FadeInNewsContent();
+		};
 
-		_infoTabs.TabChanged += _ => RefreshInfoBody();
+		_settingsTabs.ClearTabs();
+		foreach (string tab in DebugTabs)
+		{
+			_settingsTabs.AddTab(tab);
+		}
+		_settingsTabs.TabChanged += _ =>
+		{
+			RefreshDebugDrawer();
+			FadeInTabContent();
+		};
 	}
 
 	private void OnFileMenu(string item)
@@ -688,6 +1171,15 @@ public partial class LauncherApp : Control
 
 			case "Reset Lua File...":
 				ShowResetLuaFileDialog();
+				break;
+
+			case "Show Info Panel":
+			case "Show Announcements":
+				ShowDrawer();
+				break;
+
+			case "Show Debug Panel":
+				ShowSettingsDrawer();
 				break;
 
 			case "Close":
@@ -750,37 +1242,148 @@ public partial class LauncherApp : Control
 		RefreshInfoBody();
 	}
 
+	private Vector2 _drawerBasePos;
+	private Vector2 _actionBasePos;
+	private Vector2 _warningBasePos;
+	private Vector2 _settingsDrawerBasePos;
+
 	private void ApplyLayout()
 	{
 		Vector2 viewport = Size;
+		LauncherScale.Update(viewport);
+		ApplyScale();
+
 		LauncherLayout layout = LauncherLayout.Build(Vector2.Zero, viewport, _menuBarHeight);
 
 		_menuBar.Position = Vector2.Zero;
 		_menuBar.Size = new Vector2(viewport.X, _menuBarHeight);
 
+		// Edge tabs: glued to their window edge, vertically centered.
+		_infoTab.OffsetTop = -LauncherScale.Px(44.0f);
+		_infoTab.OffsetBottom = LauncherScale.Px(44.0f);
+		_infoTab.OffsetRight = LauncherScale.Px(30.0f);
+		_settingsTab.OffsetTop = -LauncherScale.Px(44.0f);
+		_settingsTab.OffsetBottom = LauncherScale.Px(44.0f);
+		_settingsTab.OffsetLeft = -LauncherScale.Px(30.0f);
+
 		_artCredit.Position = new Vector2(
 			layout.WarningPos.X + 12.0f, layout.WarningPos.Y - ArtCreditHeight);
 		_artCredit.Size = new Vector2(layout.WarningSize.X - 24.0f, ArtCreditHeight);
 
-		_warningPanel.Position = layout.WarningPos;
+		// WarningPanel, button and label are absolute-positioned and placed
+		// here; nothing uses anchors so manual Position/Size tweening works.
+		_warningBasePos = layout.WarningPos;
+		_warningPanel.Position = _warningBasePos;
 		_warningPanel.Size = layout.WarningSize;
 		_warningLabel.Position = new Vector2(10.0f, 0.0f);
 		_warningLabel.Size = new Vector2(layout.WarningSize.X - 20.0f, layout.WarningSize.Y);
 
-		_actionPanel.Position = layout.ActionPos;
+		_actionBasePos = layout.ActionPos;
+		_actionPanel.Position = _actionBasePos;
 		_actionPanel.Size = layout.ActionSize;
-		_primaryButton.Position = new Vector2(
-			0, layout.ActionSize.Y - LauncherLayout.BottomPadding - LauncherLayout.PrimaryButtonHeight);
-		_primaryButton.Size = new Vector2(layout.ActionSize.X, LauncherLayout.PrimaryButtonHeight);
-		_progressTrack.Position = _primaryButton.Position;
-		_progressTrack.Size = _primaryButton.Size;
-		_progressClip.Position = _primaryButton.Position;
-		_progressClip.Size = new Vector2(0, _primaryButton.Size.Y);
+		_primaryButton.Position = Vector2.Zero;
+		_primaryButton.Size = layout.ActionSize;
+		_progressTrack.Position = Vector2.Zero;
+		_progressTrack.Size = layout.ActionSize;
+		_progressClip.Position = Vector2.Zero;
+		_progressClip.Size = new Vector2(0, layout.ActionSize.Y);
 		_progressFill.Position = Vector2.Zero;
 		_progressFill.Size = _primaryButton.Size;
 
-		_infoPanel.Position = layout.InfoPos;
+		_drawerBasePos = layout.InfoPos;
+		_infoPanel.Position = _drawerBasePos;
 		_infoPanel.Size = layout.InfoSize;
+
+		_settingsDrawerBasePos = layout.SettingsPos;
+		_settingsDrawer.Position = _settingsDrawerBasePos;
+		_settingsDrawer.Size = layout.SettingsSize;
+	}
+
+	/// <summary>Hide the info drawer (slides LEFT, off the left edge) and reveal
+	/// the anchor pills when both drawers are closed.</summary>
+	private void DismissDrawer()
+	{
+		var tween = CreateTween();
+		tween.SetParallel(true);
+		tween.TweenProperty(_infoPanel, "modulate", new Color(1, 1, 1, 0), 0.16)
+			.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
+		tween.TweenProperty(_infoPanel, "position", _drawerBasePos + new Vector2(-28, 0), 0.16)
+			.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
+		tween.TweenCallback(Callable.From(() =>
+		{
+			_infoPanel.Visible = false;
+			_infoTab.Visible = true;
+		}));
+	}
+
+	private void ShowDrawer()
+	{
+		_infoTab.Visible = false;
+		_infoPanel.Visible = true;
+		_infoPanel.Modulate = new Color(1, 1, 1, 0);
+		_infoPanel.Position = _drawerBasePos + new Vector2(-28, 0);
+		var tween = CreateTween();
+		tween.SetParallel(true);
+		tween.TweenProperty(_infoPanel, "modulate", Colors.White, 0.22)
+			.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+		tween.TweenProperty(_infoPanel, "position", _drawerBasePos, 0.22)
+			.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+	}
+
+	private void DismissSettingsDrawer()
+	{
+		_settingsPanel.SaveIfDirty();
+		var tween = CreateTween();
+		tween.SetParallel(true);
+		tween.TweenProperty(_settingsDrawer, "modulate", new Color(1, 1, 1, 0), 0.16)
+			.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
+		tween.TweenProperty(_settingsDrawer, "position", _settingsDrawerBasePos + new Vector2(24, 0), 0.16)
+			.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
+		tween.TweenCallback(Callable.From(() =>
+		{
+			_settingsDrawer.Visible = false;
+			_settingsTab.Visible = true;
+		}));
+	}
+
+	private void ShowSettingsDrawer()
+	{
+		_settingsTab.Visible = false;
+		_settingsDrawer.Visible = true;
+		_settingsDrawer.Modulate = new Color(1, 1, 1, 0);
+		_settingsDrawer.Position = _settingsDrawerBasePos + new Vector2(24, 0);
+		var tween = CreateTween();
+		tween.SetParallel(true);
+		tween.TweenProperty(_settingsDrawer, "modulate", Colors.White, 0.22)
+			.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+		tween.TweenProperty(_settingsDrawer, "position", _settingsDrawerBasePos, 0.22)
+			.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+	}
+
+	private void ToggleInfoDrawer()
+	{
+		if (_infoPanel.Visible)
+		{
+			DismissDrawer();
+		}
+		else
+		{
+			// Since the drawers live on opposite sides, they can both stay open.
+			ShowDrawer();
+		}
+	}
+
+	private void ToggleSettingsDrawer()
+	{
+		if (_settingsDrawer.Visible)
+		{
+			DismissSettingsDrawer();
+		}
+		else
+		{
+			// Since the drawers live on opposite sides, they can both stay open.
+			ShowSettingsDrawer();
+		}
 	}
 
 	private void RefreshState()
@@ -862,24 +1465,21 @@ public partial class LauncherApp : Control
 		_progressClip.Size = new Vector2(_primaryButton.Size.X * fraction, _primaryButton.Size.Y);
 		_progressFill.Position = Vector2.Zero;
 		_progressFill.Size = _primaryButton.Size;
-		ApplyFont(_primaryButton, compactFont ? TextFontSize : TitleFontSize);
+		ApplyFont(_primaryButton, compactFont
+			? LauncherScale.Font(LauncherTokens.BodySize)
+			: LauncherScale.Font(LauncherTokens.DisplaySize));
 
 		RefreshInfoBody();
 	}
 
-	private void RefreshInfoBody()
+	private void RefreshDebugDrawer()
 	{
-		// Log() calls through to here, and logging can happen before BindNodes() has
-		// run — anything in _Ready that reports a problem does exactly that. Without
-		// this guard the FIRST such message becomes a NullReferenceException that takes
-		// the whole launcher down, so the startup path is least able to report the
-		// startup problems it exists to report.
-		if (_infoTabs is null || _infoBody is null)
+		if (_settingsTabs is null)
 		{
 			return;
 		}
 
-		string tab = InfoTabs[Mathf.Clamp(_infoTabs.CurrentTab, 0, InfoTabs.Length - 1)];
+		string tab = DebugTabs[Mathf.Clamp(_settingsTabs.CurrentTab, 0, DebugTabs.Length - 1)];
 		bool isSettings = tab == "Settings";
 		bool isModding = tab == "Modding";
 		bool isReinstall = tab == "Reinstall";
@@ -887,16 +1487,12 @@ public partial class LauncherApp : Control
 		_settingsPanel.Visible = isSettings;
 		_moddingPanel.Visible = isModding;
 		_reinstallPanel.Visible = isReinstall;
-		_infoBody.Visible = !isSettings && !isModding && !isReinstall;
 
 		if (isReinstall)
 		{
 			_reinstallPanel.Refresh(
 				_installInProgress || _ops is not null || _prebuilding, _launch.GameIsRunning);
 
-			// THE PREBUILD REPORTS FIRST when it is running. It is the only one of these that is
-			// managed rather than native, so it does not flow through _ops — and without this the
-			// panel would show the last native operation's line for the whole run.
 			if (_prebuilding || _prebuildLabel.Length != 0)
 			{
 				_reinstallPanel.SetProgress(_prebuildLabel, _prebuildStatus);
@@ -909,12 +1505,16 @@ public partial class LauncherApp : Control
 					_ops is not null ? string.Empty : _installError);
 			}
 		}
+	}
 
-		if (isSettings || isModding || isReinstall)
+	private void RefreshInfoBody()
+	{
+		if (_infoTabs is null || _infoBody is null)
 		{
 			return;
 		}
 
+		string tab = NewsTabs[Mathf.Clamp(_infoTabs.CurrentTab, 0, NewsTabs.Length - 1)];
 		_infoBody.Text = tab switch
 		{
 			"Change Log" => BuildChangeLogText(),
@@ -927,25 +1527,31 @@ public partial class LauncherApp : Control
 	{
 		if (_commitsLoading)
 		{
-			return "Loading commits from GitHub...";
+			return "[color=#8c7b6b]Fetching latest updates from GitHub...[/color]";
 		}
 
 		if (!_commitsLoaded)
 		{
-			return "Failed to load commits from GitHub\n" +
-				   "Please check your internet connection and try restarting the application.";
+			return "[color=#900c3f]Failed to load news from GitHub.[/color]\n" +
+				   "[color=#8c7b6b]Check network connection or relaunch the launcher.[/color]";
 		}
 
 		if (_commits.Count == 0)
 		{
-			return "No commits found for this repository";
+			return "[color=#8c7b6b]No commits found for this repository.[/color]";
 		}
 
 		var builder = new System.Text.StringBuilder();
+		builder.Append("[color=#daa520][font_size=16]Latest Recomp Developments[/font_size][/color]\n\n");
 		foreach (GitCommit commit in _commits)
 		{
-			builder.Append("- [").Append(commit.Sha).Append("] ").Append(commit.Message).Append('\n');
-			builder.Append("    by ").Append(commit.Author).Append(" on ").Append(commit.Date).Append("\n\n");
+			builder.Append("[color=#2b221b][b]• ").Append(commit.Message).Append("[/b][/color]\n");
+			builder.Append("[color=#8c7b6b][font_size=11]   commit [color=#daa520]").Append(commit.Sha).Append("[/color] by ").Append(commit.Author);
+			if (!string.IsNullOrEmpty(commit.Date))
+			{
+				builder.Append(" on ").Append(commit.Date);
+			}
+			builder.Append("[/font_size][/color]\n\n");
 		}
 
 		return builder.ToString().TrimEnd();
@@ -955,32 +1561,31 @@ public partial class LauncherApp : Control
 	{
 		if (_contributorsLoading)
 		{
-			return "Loading contributors from GitHub...";
+			return "[color=#8c7b6b]Loading contributors from GitHub...[/color]";
 		}
 
 		if (!_contributorsLoaded)
 		{
-			return "Failed to load contributors from GitHub\n" +
-				   "Please check your internet connection and try restarting the application.";
+			return "[color=#900c3f]Failed to load contributors from GitHub.[/color]\n" +
+				   "[color=#8c7b6b]Check network connection or relaunch the launcher.[/color]";
 		}
 
 		if (_contributors.Count == 0)
 		{
-			return "No contributors found for this repository";
+			return "[color=#8c7b6b]No contributors found for this repository.[/color]";
 		}
 
 		var builder = new System.Text.StringBuilder();
-		builder.Append("Total Contributors: ").Append(_contributors.Count).Append('\n');
-		builder.Append(new string('-', 32)).Append('\n');
+		builder.Append("[color=#daa520][font_size=16]Heroes of the Guild (Contributors)[/font_size][/color]\n");
+		builder.Append("[color=#8c7b6b][font_size=12]").Append(_contributors.Count).Append(" developers and modders[/font_size][/color]\n\n");
 		foreach (GitContributor contributor in _contributors)
 		{
-			builder.Append('@').Append(contributor.Login);
+			builder.Append("[color=#2b221b][b]@").Append(contributor.Login).Append("[/b][/color]");
 			if (contributor.Name.Length != 0)
 			{
-				builder.Append(" (").Append(contributor.Name).Append(')');
+				builder.Append(" [color=#8c7b6b](").Append(contributor.Name).Append(")[/color]");
 			}
-
-			builder.Append("  ").Append(contributor.Contributions).Append(" contributions\n");
+			builder.Append(" [color=#daa520]•[/color] [color=#8c7b6b]").Append(contributor.Contributions).Append(" contributions[/color]\n");
 		}
 
 		return builder.ToString().TrimEnd();
@@ -1005,8 +1610,9 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		var window = new PatchesWindow(_patches, _font, TextFontSize, _patchesStyle);
+		var window = new PatchesWindow(_patches, null, LauncherScale.Font(LauncherTokens.BodySize), _patchesStyle);
 		AddChild(window);
+		AnimateIn(window);
 	}
 
 	private async void FetchGitHubData()
@@ -1358,7 +1964,7 @@ public partial class LauncherApp : Control
 
 	private void StartInstallFlow()
 	{
-		var dialog = new InstallDialog(_font, TextFontSize, _baseStyle);
+		var dialog = new InstallDialog(null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle);
 
 		// ISO/XEXP, then the one build decision, then the whole pipeline runs unattended:
 		// extract, generate, compile. Asking again afterwards would strand the install
@@ -1380,6 +1986,7 @@ public partial class LauncherApp : Control
 		var dialog = new BuildSpeedDialog(_font, TextFontSize, _baseStyle, heading);
 		dialog.Chosen += useAllCores => proceed(useAllCores);
 		AddChild(dialog);
+		AnimateIn(dialog);
 	}
 
 	private void ShowResetLuaFileDialog()
@@ -1419,9 +2026,10 @@ public partial class LauncherApp : Control
 		}
 
 		var dialog = new ResetLuaFileDialog(
-			probe.GetVerifyEntries(), _font, TextFontSize, _baseStyle);
+			probe.GetVerifyEntries(), null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle);
 		dialog.ResetRequested += path => StartOps(ops => ops.ResetLuaWorkspaceFile(path));
 		AddChild(dialog);
+		AnimateIn(dialog);
 	}
 
 	/// <summary>Set while the managed asset prebuild is running on its own thread.</summary>

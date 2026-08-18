@@ -14,8 +14,8 @@ public partial class SettingsPanel : VBoxContainer
 	private SmartStyle _style = SmartStyle.FromTheme(
 		new Color(0.02f, 0.1f, 0.2f, 1f), new Color(0.2f, 0.8f, 0.4f, 1f));
 
-	private const int NameColumnWidth = 150;
-	private const int DefaultColumnWidth = 60;
+	private const int NameColumnWidth = 145;
+	private const int DefaultColumnWidth = 75;
 
 	private Label _editingLabel = null!;
 	private Label _statusLabel = null!;
@@ -75,6 +75,10 @@ public partial class SettingsPanel : VBoxContainer
 		}
 
 		control.AddThemeFontSizeOverride("font_size", _fontSize);
+		if (control is Button or CheckBox or LineEdit or SpinBox)
+		{
+			control.MouseDefaultCursorShape = CursorShape.PointingHand;
+		}
 	}
 
 	private Label MakeLabel(string text)

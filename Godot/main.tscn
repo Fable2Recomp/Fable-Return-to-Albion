@@ -196,21 +196,38 @@ stretch_mode = 6
 [node name="MenuBar" type="Panel" parent="." unique_id=113473174]
 layout_mode = 0
 offset_right = 1280.0
-offset_bottom = 26.0
+offset_bottom = 72.0
 theme_override_styles/panel = SubResource("StyleBoxFlat_272bh")
 
-[node name="MenuRow" type="HBoxContainer" parent="MenuBar" unique_id=1290549344]
-layout_mode = 0
-offset_left = 6.0
-offset_right = 300.0
-offset_bottom = 26.0
-theme_override_constants/separation = 4
+[node name="HeaderCol" type="VBoxContainer" parent="MenuBar" unique_id=1290549344]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = 8.0
+offset_right = -16.0
+offset_bottom = -6.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 2
 
-[node name="FileMenu" type="MenuButton" parent="MenuBar/MenuRow" unique_id=1459756267]
+[node name="Wordmark" type="RichTextLabel" parent="MenuBar/HeaderCol" unique_id=1290549345]
 layout_mode = 2
+custom_minimum_size = Vector2(300, 26)
+mouse_filter = 2
+text = "FABLE 2 RECOMPILED"
+
+[node name="MenuRow" type="HBoxContainer" parent="MenuBar/HeaderCol" unique_id=1290549347]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="FileMenu" type="MenuButton" parent="MenuBar/HeaderCol/MenuRow" unique_id=1459756267]
+layout_mode = 2
+custom_minimum_size = Vector2(50, 0)
 theme_override_colors/font_color = Color(1, 1, 1, 1)
 theme_override_fonts/font = ExtResource("3_272bh")
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 13
 text = "File"
 item_count = 8
 popup/item_0/text = "Set Install Folder"
@@ -230,18 +247,18 @@ popup/item_6/separator = true
 popup/item_7/text = "Close"
 popup/item_7/id = 7
 
-[node name="AboutMenu" type="MenuButton" parent="MenuBar/MenuRow" unique_id=353850046]
+[node name="AboutMenu" type="MenuButton" parent="MenuBar/HeaderCol/MenuRow" unique_id=353850046]
 layout_mode = 2
+custom_minimum_size = Vector2(60, 0)
 theme_override_colors/font_color = Color(1, 1, 1, 1)
 theme_override_fonts/font = ExtResource("3_272bh")
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 13
 text = "About"
 item_count = 2
 popup/item_0/text = "Fable 2 Recompiled"
 popup/item_0/id = 0
 popup/item_1/text = "RexGlue"
 popup/item_1/id = 1
-
 [node name="ArtCredit" type="Label" parent="." unique_id=1900001001]
 visible = false
 modulate = Color(1, 1, 1, 0.06604195)
@@ -268,12 +285,12 @@ theme_override_styles/panel = SubResource("StyleBoxTexture_4c57u")
 [node name="WarningLabel" type="Label" parent="WarningPanel" unique_id=1313589438]
 layout_mode = 0
 offset_left = 10.0
-offset_right = 830.0
-offset_bottom = 44.0
+offset_right = -10.0
 theme_override_colors/font_color = Color(1, 1, 1, 1)
 theme_override_fonts/font = ExtResource("3_272bh")
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 13
 text = "Fable 2 Recompiled is not intended to be fully playable yet."
+horizontal_alignment = 1
 vertical_alignment = 1
 
 [node name="ActionPanel" type="Panel" parent="." unique_id=1159979176]
@@ -286,9 +303,6 @@ theme_override_styles/panel = SubResource("StyleBoxFlat_efxa6")
 [node name="ProgressTrack" type="TextureRect" parent="ActionPanel" unique_id=889204785]
 visible = false
 layout_mode = 0
-offset_top = 10.0
-offset_right = 840.0
-offset_bottom = 98.0
 mouse_filter = 2
 texture = SubResource("GradientTexture2D_ycdy4")
 stretch_mode = 1
@@ -296,24 +310,17 @@ stretch_mode = 1
 [node name="ProgressClip" type="Control" parent="ActionPanel" unique_id=656491887]
 visible = false
 clip_contents = true
-anchors_preset = 0
-offset_top = 10.0
-offset_bottom = 98.0
+layout_mode = 0
 mouse_filter = 2
 
 [node name="ProgressFill" type="TextureRect" parent="ActionPanel/ProgressClip" unique_id=249095801]
 layout_mode = 0
-offset_right = 840.0
-offset_bottom = 88.0
 mouse_filter = 2
 texture = SubResource("GradientTexture2D_vivmo")
 stretch_mode = 1
 
 [node name="PrimaryButton" type="Button" parent="ActionPanel" unique_id=452318710]
 layout_mode = 0
-offset_top = 10.0
-offset_right = 840.0
-offset_bottom = 98.0
 theme_override_colors/font_color = Color(1, 1, 1, 1)
 theme_override_colors/font_disabled_color = Color(1, 1, 1, 1)
 theme_override_fonts/font = ExtResource("3_272bh")
@@ -327,7 +334,7 @@ text = "Play Fable 2"
 [node name="InfoPanel" type="Panel" parent="." unique_id=238176640]
 layout_mode = 0
 offset_left = 840.0
-offset_top = 26.0
+offset_top = 40.0
 offset_right = 1280.0
 offset_bottom = 760.0
 theme_override_styles/panel = SubResource("StyleBoxFlat_lswn8")
@@ -337,63 +344,164 @@ layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = 10.0
-offset_top = 8.0
-offset_right = -10.0
-offset_bottom = -10.0
+offset_left = 24.0
+offset_top = 20.0
+offset_right = -24.0
+offset_bottom = -24.0
+theme_override_constants/separation = 12
 grow_horizontal = 2
 grow_vertical = 2
-theme_override_constants/separation = 6
 
 [node name="InfoTitle" type="Label" parent="InfoPanel/InfoColumn" unique_id=1029795349]
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 1, 1, 1)
 theme_override_fonts/font = ExtResource("3_272bh")
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 19
 theme_override_styles/normal = SubResource("StyleBoxFlat_a6jrf")
-text = "Launcher Info"
+text = "Announcements"
 
 [node name="InfoTabs" type="TabBar" parent="InfoPanel/InfoColumn" unique_id=194145473]
 layout_mode = 2
 theme_override_colors/font_selected_color = Color(1, 1, 1, 1)
 theme_override_colors/font_unselected_color = Color(1, 1, 1, 1)
-theme_override_constants/h_separation = 4
+theme_override_constants/h_separation = 16
 theme_override_fonts/font = ExtResource("3_272bh")
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 13
 theme_override_styles/tab_unselected = SubResource("StyleBoxFlat_xuqvo")
 theme_override_styles/tab_hovered = SubResource("StyleBoxFlat_qsp4k")
 theme_override_styles/tab_selected = SubResource("StyleBoxFlat_kq58d")
 current_tab = 0
-tab_count = 5
+tab_count = 2
 tab_0/title = "Change Log"
 tab_1/title = "Credits"
-tab_2/title = "Reinstall"
-tab_3/title = "Modding"
-tab_4/title = "Settings"
 
-[node name="InfoBody" type="RichTextLabel" parent="InfoPanel/InfoColumn" unique_id=806957867]
+[node name="BodyScroll" type="ScrollContainer" parent="InfoPanel/InfoColumn" unique_id=806957866]
 layout_mode = 2
 size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="InfoBody" type="RichTextLabel" parent="InfoPanel/InfoColumn/BodyScroll" unique_id=806957867]
+layout_mode = 2
+size_flags_horizontal = 3
 theme_override_colors/default_color = Color(1, 1, 1, 1)
+bbcode_enabled = true
 text = "Loading commits from GitHub..."
 
-[node name="SettingsPanel" type="VBoxContainer" parent="InfoPanel/InfoColumn" unique_id=527388159]
+[node name="DrawerClose" type="Button" parent="InfoPanel" unique_id=238176641]
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -50.0
+offset_top = 6.0
+offset_right = -10.0
+offset_bottom = 46.0
+grow_horizontal = 0
+mouse_default_cursor_shape = 2
+text = "✕"
+
+[node name="SettingsDrawer" type="Panel" parent="." unique_id=238176642]
 visible = false
+layout_mode = 0
+offset_left = 840.0
+offset_top = 40.0
+offset_right = 1280.0
+offset_bottom = 760.0
+
+[node name="SettingsColumn" type="VBoxContainer" parent="SettingsDrawer" unique_id=238176644]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 24.0
+offset_top = 20.0
+offset_right = -24.0
+offset_bottom = -24.0
+theme_override_constants/separation = 12
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="SettingsTitle" type="Label" parent="SettingsDrawer/SettingsColumn" unique_id=238176645]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_fonts/font = ExtResource("3_272bh")
+theme_override_font_sizes/font_size = 19
+text = "Configuration & Modding"
+
+[node name="SettingsTabs" type="TabBar" parent="SettingsDrawer/SettingsColumn" unique_id=238176649]
+layout_mode = 2
+theme_override_colors/font_selected_color = Color(1, 1, 1, 1)
+theme_override_colors/font_unselected_color = Color(1, 1, 1, 1)
+theme_override_constants/h_separation = 16
+theme_override_fonts/font = ExtResource("3_272bh")
+theme_override_font_sizes/font_size = 13
+theme_override_styles/tab_unselected = SubResource("StyleBoxFlat_xuqvo")
+theme_override_styles/tab_hovered = SubResource("StyleBoxFlat_qsp4k")
+theme_override_styles/tab_selected = SubResource("StyleBoxFlat_kq58d")
+current_tab = 0
+tab_count = 3
+tab_0/title = "Settings"
+tab_1/title = "Modding"
+tab_2/title = "Reinstall"
+
+[node name="SettingsPanel" type="VBoxContainer" parent="SettingsDrawer/SettingsColumn" unique_id=527388159]
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 6
 script = ExtResource("2_settings")
 
-[node name="ModdingPanel" type="VBoxContainer" parent="InfoPanel/InfoColumn" unique_id=1250263370]
+[node name="ModdingPanel" type="VBoxContainer" parent="SettingsDrawer/SettingsColumn" unique_id=1250263370]
 visible = false
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 6
 script = ExtResource("3_modding")
 
-[node name="ReinstallPanel" type="VBoxContainer" parent="InfoPanel/InfoColumn" unique_id=335484158]
+[node name="ReinstallPanel" type="VBoxContainer" parent="SettingsDrawer/SettingsColumn" unique_id=335484158]
 visible = false
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 8
 script = ExtResource("4_reinstall")
+
+[node name="SettingsClose" type="Button" parent="SettingsDrawer" unique_id=238176643]
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -50.0
+offset_top = 6.0
+offset_right = -10.0
+offset_bottom = 46.0
+grow_horizontal = 0
+mouse_default_cursor_shape = 2
+text = "✕"
+
+[node name="InfoTab" type="Button" parent="." unique_id=238176646]
+layout_mode = 1
+anchor_left = 0.0
+anchor_top = 0.5
+anchor_right = 0.0
+anchor_bottom = 0.5
+offset_top = -44.0
+offset_right = 30.0
+offset_bottom = 44.0
+grow_horizontal = 1
+grow_vertical = 2
+mouse_default_cursor_shape = 2
+text = "i"
+
+[node name="SettingsTab" type="Button" parent="." unique_id=238176648]
+layout_mode = 1
+anchors_preset = 4
+anchor_left = 1.0
+anchor_right = 1.0
+anchor_top = 0.5
+anchor_bottom = 0.5
+offset_left = -30.0
+offset_top = -44.0
+offset_bottom = 44.0
+grow_horizontal = 0
+grow_vertical = 2
+mouse_default_cursor_shape = 2
+text = "⚙"

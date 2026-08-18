@@ -27,38 +27,41 @@ public sealed class SmartStyle
 
     public static SmartStyle FromTheme(Color themeForeground, Color themeBackground)
     {
-        Color background = themeForeground;
-        Color foreground = themeBackground;
+        // The brand chrome is fixed by the design language: oak, parchment, gold,
+        // and Will Magic cyan as the hero action. The legacy config.cfg accent is
+        // retained as a parameter for source compatibility only.
 
         return new SmartStyle
         {
-            Text = new Color(1f, 1f, 1f, 1f),
-            TextDisabled = new Color(0.5f, 0.5f, 0.5f, 1f),
+            Text = LauncherTokens.Walnut,
+            TextDisabled = LauncherTokens.Sepia,
 
-            WindowBg = Variant(background, 0.35f, 0.8f, 0.54f),
-            ChildBg = Variant(background, 0.35f, 0.8f, 0.54f),
-            PopupBg = Variant(background, 0.15f, 0.9f, 0.94f),
+            WindowBg = LauncherTokens.Parchment,
+            ChildBg = LauncherTokens.ParchmentRaised,
+            PopupBg = LauncherTokens.ParchmentRaised,
 
-            Border = Variant(foreground, 0.6f, 1.0f, 0.50f),
+            Border = LauncherTokens.Gold,
 
-            FrameBg = Variant(background, 0.35f, 0.8f, 0.54f),
-            FrameBgHovered = Variant(foreground, 0.65f, 0.9f, 0.40f),
-            FrameBgActive = Variant(foreground, 0.75f, 1.0f, 0.67f),
+            FrameBg = LauncherTokens.Parchment,
+            FrameBgHovered = LauncherTokens.ParchmentRaised,
+            FrameBgActive = LauncherTokens.ParchmentLit,
 
-            TitleBg = Variant(background, 0.12f, 0.9f, 1.00f),
-            MenuBarBg = Variant(background, 0.15f, 0.9f, 1.00f),
+            TitleBg = new Color(LauncherTokens.Gold, 0.16f),
+            MenuBarBg = LauncherTokens.Oak,
 
-            Button = Variant(foreground, 0.70f, 0.9f, 0.40f),
-            ButtonHovered = Variant(foreground, 0.80f, 1.0f, 1.00f),
-            ButtonActive = Variant(foreground, 0.65f, 0.9f, 1.00f),
+            // Hero action: a muted, earthy green (the "Good" green of Albion),
+            // not the blinding tone. Gold does the trim; cream carries the label.
+            Button = LauncherTokens.Emerald,
+            ButtonHovered = LauncherTokens.EmeraldLit,
+            ButtonActive = Variant(LauncherTokens.Emerald, 0.82f, 1.0f, 1.0f),
 
-            Header = Variant(foreground, 0.55f, 0.9f, 0.31f),
-            Separator = Variant(foreground, 0.40f, 0.8f, 0.50f),
+            Header = new Color(LauncherTokens.Gold, 0.14f),
+            Separator = LauncherTokens.Sepia,
 
-            Tab = Variant(background, 0.45f, 0.8f, 0.86f),
-            TabHovered = Variant(foreground, 0.80f, 1.0f, 0.80f),
-            TabSelected = Variant(foreground, 0.58f, 0.9f, 1.00f),
-            TabDimmed = Variant(background, 0.15f, 0.7f, 0.97f),
+            Tab = LauncherTokens.Parchment,
+            TabHovered = LauncherTokens.ParchmentRaised,
+            TabSelected = LauncherTokens.Gold,
+            TabDimmed = LauncherTokens.Sepia,
         };
     }
 

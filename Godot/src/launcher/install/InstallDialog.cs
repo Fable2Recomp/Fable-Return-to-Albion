@@ -36,7 +36,7 @@ public partial class InstallDialog : Control
 		SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
 		MouseFilter = MouseFilterEnum.Stop;
 
-		var dim = new ColorRect { Color = new Color(0.8f, 0.8f, 0.8f, 0.35f) };
+		var dim = new ColorRect { Color = new Color(0.08f, 0.06f, 0.04f, 0.65f) };
 		dim.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
 		AddChild(dim);
 
@@ -45,27 +45,35 @@ public partial class InstallDialog : Control
 		AddChild(centre);
 
 		_frame = new PanelContainer { CustomMinimumSize = new Vector2(PopupWidth, 0) };
-		var box = new StyleBoxFlat { BgColor = _style.PopupBg };
-		box.BorderColor = _style.Border;
+		var box = new StyleBoxFlat
+		{
+			BgColor = LauncherTokens.ParchmentGlassStrong,
+			BorderColor = LauncherTokens.Gold,
+			ShadowColor = new Color(0, 0, 0, 0.55f),
+			ShadowSize = 24,
+			ShadowOffset = new Vector2(0, 8),
+		};
 		box.SetBorderWidthAll(1);
-		box.ContentMarginLeft = 10;
-		box.ContentMarginRight = 10;
-		box.ContentMarginTop = 6;
-		box.ContentMarginBottom = 8;
+		box.SetCornerRadiusAll(LauncherTokens.RadiusMd);
+		box.ContentMarginLeft = 24;
+		box.ContentMarginRight = 24;
+		box.ContentMarginTop = 18;
+		box.ContentMarginBottom = 20;
 		_frame.AddThemeStyleboxOverride("panel", box);
 		centre.AddChild(_frame);
 
 		var column = new VBoxContainer();
-		column.AddThemeConstantOverride("separation", 4);
+		column.AddThemeConstantOverride("separation", 10);
 		_frame.AddChild(column);
 
 		Label heading = MakeLabel("Install Fable 2");
-		var headingBar = new StyleBoxFlat { BgColor = _style.TitleBg };
-		headingBar.ContentMarginLeft = 4;
-		headingBar.ContentMarginRight = 4;
-		headingBar.ContentMarginTop = 2;
-		headingBar.ContentMarginBottom = 2;
+		var headingBar = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) };
+		headingBar.BorderColor = LauncherTokens.Gold;
+		headingBar.BorderWidthBottom = 2;
+		headingBar.ContentMarginBottom = 6;
 		heading.AddThemeStyleboxOverride("normal", headingBar);
+		heading.AddThemeFontSizeOverride("font_size", _fontSize + 4);
+		heading.AddThemeColorOverride("font_color", LauncherTokens.Walnut);
 		column.AddChild(heading);
 
 		Label intro = MakeLabel(
@@ -92,12 +100,12 @@ public partial class InstallDialog : Control
 		buttonRow.AddThemeConstantOverride("separation", 8);
 		column.AddChild(buttonRow);
 
-		_startButton = MakeButton("Start Install", 160);
+		_startButton = MakeButton("Start Install", 160, isPrimary: true);
 		_startButton.Disabled = true;
 		_startButton.Pressed += OnStartPressed;
 		buttonRow.AddChild(_startButton);
 
-		Button cancel = MakeButton("Cancel", 120);
+		Button cancel = MakeButton("Cancel", 110);
 		cancel.Pressed += Dismiss;
 		buttonRow.AddChild(cancel);
 
@@ -110,48 +118,122 @@ public partial class InstallDialog : Control
 		QueueFree();
 	}
 
-	private Button MakeButton(string text, int minimumWidth)
+	private Button MakeButton(string text, int minimumWidth, bool isPrimary = false)
 	{
 		var button = new Button
 		{
 			Text = text,
-			CustomMinimumSize = new Vector2(minimumWidth, 0),
+			CustomMinimumSize = new Vector2(minimumWidth, 38),
+			MouseDefaultCursorShape = CursorShape.PointingHand,
 		};
 		Apply(button);
-		button.AddThemeStyleboxOverride("normal", Fill(_style.Button));
-		button.AddThemeStyleboxOverride("hover", Fill(_style.ButtonHovered));
-		button.AddThemeStyleboxOverride("pressed", Fill(_style.ButtonActive));
-		button.AddThemeStyleboxOverride("disabled", Fill(new Color(0.3f, 0.3f, 0.3f, 0.5f)));
-		button.AddThemeColorOverride("font_color", _style.Text);
-		button.AddThemeColorOverride("font_disabled_color", _style.TextDisabled);
+
+		if (isPrimary)
+		{
+			var btnNormal = new StyleBoxFlat
+			{
+				BgColor = LauncherTokens.Emerald,
+				BorderColor = LauncherTokens.Gold,
+				ShadowColor = new Color(LauncherTokens.Gold, 0.25f),
+				ShadowSize = 8,
+			};
+			btnNormal.SetBorderWidthAll(1);
+			btnNormal.SetCornerRadiusAll(LauncherTokens.RadiusSm);
+			btnNormal.ContentMarginLeft = 14;
+			btnNormal.ContentMarginRight = 14;
+
+			var btnHover = new StyleBoxFlat
+			{
+				BgColor = LauncherTokens.EmeraldLit,
+				BorderColor = LauncherTokens.GoldBright,
+				ShadowColor = new Color(LauncherTokens.Gold, 0.4f),
+				ShadowSize = 12,
+			};
+			btnHover.SetBorderWidthAll(1);
+			btnHover.SetCornerRadiusAll(LauncherTokens.RadiusSm);
+			btnHover.ContentMarginLeft = 14;
+			btnHover.ContentMarginRight = 14;
+
+			button.AddThemeStyleboxOverride("normal", btnNormal);
+			button.AddThemeStyleboxOverride("hover", btnHover);
+			button.AddThemeStyleboxOverride("pressed", btnNormal);
+			button.AddThemeStyleboxOverride("disabled", Fill(new Color(0.2f, 0.2f, 0.2f, 0.35f)));
+			button.AddThemeColorOverride("font_color", LauncherTokens.Cream);
+			button.AddThemeColorOverride("font_disabled_color", LauncherTokens.Sepia);
+		}
+		else
+		{
+			var btnNormal = new StyleBoxFlat
+			{
+				BgColor = new Color(0, 0, 0, 0),
+				BorderColor = LauncherTokens.Sepia,
+			};
+			btnNormal.SetBorderWidthAll(1);
+			btnNormal.SetCornerRadiusAll(LauncherTokens.RadiusSm);
+			btnNormal.ContentMarginLeft = 14;
+			btnNormal.ContentMarginRight = 14;
+
+			var btnHover = new StyleBoxFlat
+			{
+				BgColor = new Color(LauncherTokens.Gold, 0.15f),
+				BorderColor = LauncherTokens.Gold,
+			};
+			btnHover.SetBorderWidthAll(1);
+			btnHover.SetCornerRadiusAll(LauncherTokens.RadiusSm);
+			btnHover.ContentMarginLeft = 14;
+			btnHover.ContentMarginRight = 14;
+
+			button.AddThemeStyleboxOverride("normal", btnNormal);
+			button.AddThemeStyleboxOverride("hover", btnHover);
+			button.AddThemeStyleboxOverride("pressed", btnHover);
+			button.AddThemeStyleboxOverride("disabled", Fill(new Color(0.3f, 0.3f, 0.3f, 0.35f)));
+			button.AddThemeColorOverride("font_color", LauncherTokens.Walnut);
+			button.AddThemeColorOverride("font_hover_color", LauncherTokens.GoldInk);
+			button.AddThemeColorOverride("font_disabled_color", LauncherTokens.Sepia);
+		}
 		return button;
 	}
 
 	private static StyleBoxFlat Fill(Color color)
 	{
 		var box = new StyleBoxFlat { BgColor = color };
-		box.ContentMarginLeft = 8;
-		box.ContentMarginRight = 8;
-		box.ContentMarginTop = 3;
-		box.ContentMarginBottom = 3;
+		box.SetCornerRadiusAll(LauncherTokens.RadiusSm);
+		box.ContentMarginLeft = 10;
+		box.ContentMarginRight = 10;
+		box.ContentMarginTop = 6;
+		box.ContentMarginBottom = 6;
 		return box;
 	}
 
 	private LineEdit AddPathRow(VBoxContainer column, Action onBrowse)
 	{
 		var row = new HBoxContainer();
-		row.AddThemeConstantOverride("separation", 6);
+		row.AddThemeConstantOverride("separation", 8);
 		column.AddChild(row);
 
-		var edit = new LineEdit { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+		var edit = new LineEdit
+		{
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+			CustomMinimumSize = new Vector2(0, 36),
+		};
 		Apply(edit);
-		edit.AddThemeStyleboxOverride("normal", Fill(_style.FrameBg));
-		edit.AddThemeStyleboxOverride("focus", Fill(_style.FrameBgActive));
-		edit.AddThemeColorOverride("font_color", _style.Text);
+		var editBox = new StyleBoxFlat
+		{
+			BgColor = LauncherTokens.ParchmentLit,
+			BorderColor = new Color(LauncherTokens.Gold, 0.4f),
+		};
+		editBox.SetBorderWidthAll(1);
+		editBox.SetCornerRadiusAll(LauncherTokens.RadiusSm);
+		editBox.ContentMarginLeft = 10;
+		editBox.ContentMarginRight = 10;
+
+		edit.AddThemeStyleboxOverride("normal", editBox);
+		edit.AddThemeStyleboxOverride("focus", editBox);
+		edit.AddThemeColorOverride("font_color", LauncherTokens.Walnut);
 		edit.TextChanged += _ => RefreshState();
 		row.AddChild(edit);
 
-		Button browse = MakeButton("Browse", 110);
+		Button browse = MakeButton("Browse...", 110);
 		browse.Pressed += onBrowse;
 		row.AddChild(browse);
 

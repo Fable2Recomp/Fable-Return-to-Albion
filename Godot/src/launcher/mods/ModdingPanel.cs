@@ -354,6 +354,10 @@ public partial class ModdingPanel : VBoxContainer
 		}
 
 		control.AddThemeFontSizeOverride("font_size", _fontSize);
+		if (control is Button or CheckBox)
+		{
+			control.MouseDefaultCursorShape = CursorShape.PointingHand;
+		}
 	}
 
 	private Label MakeLabel(string text)
