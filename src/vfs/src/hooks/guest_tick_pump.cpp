@@ -920,20 +920,27 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
     return;
   }
 
-  const uint32_t screen = ResolveInGameLoadingScreen(base);
-
-  // THE PRESENT GATE, released EVERY step while the screen is up. The world update's frame
-  // construct (sub_82B4F400) waits on the loading screen's take-down event (+180) on every
+  // THE PRESENT GATE, released EVERY step while the guest is in game. The world update's
+  // frame construct (sub_82B4F400) waits on the loading screen's take-down event on every
   // present; the render tick that signals it is off in this headless build, so a single
-  // finish pulse is consumed by the first waiter and the next frame blocks forever — the
-  // camera frozen on the sky. The event is auto-reset, so signalling it per step can only
-  // release a waiter, never stack. The stuck block below still supplies the render-side
-  // writes (fade -> 0, done) that let the guest's own teardown run.
+  // pulse is consumed by the first waiter and the next frame blocks forever — the camera
+  // frozen on the sky. The event is auto-reset, so signalling it per step can only release
+  // a waiter, never stack.
+  //
+  // THE HANDLE OUTLIVES THE SCREEN. The teardown clears the loading-screen chain (the
+  // resolve below goes quiet) while the present gate keeps waiting on the SAME event, so
+  // gating the signal on the screen resolving starves it. Remember the last handle and
+  // keep signalling it in-game; a stale handle is a no-op (INVALID_HANDLE).
+  static uint32_t last_event = 0;
+  const uint32_t screen = ResolveInGameLoadingScreen(base);
   if (screen != 0) {
     const uint32_t event = LoadGuestU32(base, screen + 180u);
     if (event != 0u) {
-      rex::kernel::xboxkrnl::xeNtSetEvent(event, nullptr);
+      last_event = event;
     }
+  }
+  if (LoadGuestU8(base, 0x83496A5Eu) != 0u && last_event != 0u) {
+    rex::kernel::xboxkrnl::xeNtSetEvent(last_event, nullptr);
   }
 
   static uint32_t watched = 0;
