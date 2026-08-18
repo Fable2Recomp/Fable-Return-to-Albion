@@ -1983,7 +1983,7 @@ public partial class LauncherApp : Control
 	/// <summary>Asks how many cores the compile may use, then proceeds.</summary>
 	private void AskBuildSpeed(string heading, Action<bool> proceed)
 	{
-		var dialog = new BuildSpeedDialog(_font, TextFontSize, _baseStyle, heading);
+		var dialog = new BuildSpeedDialog(null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle, heading);
 		dialog.Chosen += useAllCores => proceed(useAllCores);
 		AddChild(dialog);
 		AnimateIn(dialog);
