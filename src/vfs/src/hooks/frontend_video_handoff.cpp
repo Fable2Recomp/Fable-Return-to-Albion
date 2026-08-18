@@ -2382,6 +2382,14 @@ namespace {
 constexpr uint32_t kLhSuspendAckWaitLr = 0x823889FCu;
 constexpr uint32_t kLhResumeKickWaitLr = 0x823882E0u;
 constexpr uint32_t kLhResumeAckWaitLr = 0x82388A6Cu;
+// THE WORLD UPDATE'S PRESENT GATE. rex_lhRenderer_SyncThread (sub_82A3EC50)
+// polls a present-completion event with a bounded 1000ms wait (lr 0x82A3ECB0,
+// loop loc_82A3ECA0) and re-loops while the result is timeout. The render side
+// that signals it is off in this headless build, so the game thread parks here
+// forever after New Game — the camera frozen in the void (the world loads, the
+// guest is released, but the frame/camera pass never advances). Release it at
+// the call site: signal the event and return signalled so the loop exits.
+constexpr uint32_t kPresentGateWaitLr = 0x82A3ECB0u;
 constexpr uint32_t kLhResumeKickPulseLr = 0x82388A40u;
 constexpr uint32_t kLhEventSuspendAckEmbedOffset = 196u;
 constexpr uint32_t kLhEventResumeKickEmbedOffset = 328u;
@@ -2560,9 +2568,47 @@ REX_EXTERN(sub_822C9388) { // Lumen: PulseEvent
 REX_EXTERN(sub_82B4F400) {
   REX_FUNC_PROLOGUE();
 
+  const PPCContext original_ctx = ctx;
+
+  // THE WORLD UPDATE'S PRESENT GATE: rex_lhRenderer_SyncThread's bounded wait
+  // (lr 0x82A3ECB0) loops until the present-completion event signals, which the
+  // render side never does here — the game thread parks and the camera never
+  // advances after New Game. Release it at the call site, like the startup
+  // movies' frame handoff. The event object's OS handle lives at +128.
+  //
+  // GATED ON PAST-THE-BOOT: the STARTUP movies' present path runs through this
+  // same SyncThread wait, and releasing it there breaks the video handoff (the
+  // run died mid-movie). Both boot flags are clear through the movies, so the
+  // gate holds them untouched.
+  const bool present_gate_past_boot =
+      refii::vfs::LoadGuestU8(base, 0x83496AC4u) != 0u ||
+      refii::vfs::LoadGuestU8(base, 0x83496A5Eu) != 0u;
+  if (original_ctx.lr == kPresentGateWaitLr && present_gate_past_boot) {
+    const uint32_t present_obj = original_ctx.r3.u32;
+    const uint32_t present_handle =
+        present_obj != 0 ? refii::vfs::LoadGuestU32(base, present_obj + 128)
+                         : 0;
+    if (present_handle != 0) {
+      rex::kernel::xboxkrnl::xeNtSetEvent(present_handle, nullptr);
+    }
+    ctx.r3.u32 = kLhWaitResultSignalled;
+    return;
+  }
+
+  // lhRenderer suspend/resume handshake waits are emulated (bounded slices +
+  // authoritative-flag completion) so a lost PulseEvent cannot park the
+  // loading/render thread pair forever. This MUST run before the native
+  // passthrough: that macro returns early in the native backend, which would
+  // otherwise bypass the emulation and let the in-game suspend-ack wait
+  // (sub_823889A8) park the game thread forever — the "camera in the void"
+  // stall after New Game. Emulation is backend-independent; a lost pulse is a
+  // no-present hazard, not a loose-asset one.
+  if (TryEmulateLhRendererHandshakeWait(ctx, base, original_ctx)) {
+    return;
+  }
+
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4F400);
 
-  const PPCContext original_ctx = ctx;
   const bool native_startup_frame_wait = original_ctx.lr == 0x823889FCu;
   const uint32_t wait_object_guest = original_ctx.r3.u32;
   const uint32_t wait_handle_guest =
@@ -2603,12 +2649,9 @@ REX_EXTERN(sub_82B4F400) {
                 refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
   }
 
-  // lhRenderer suspend/resume handshake waits are emulated (bounded slices +
-  // authoritative-flag completion) so a lost PulseEvent cannot park the
-  // loading/render thread pair forever; every other wait is untouched.
-  if (!TryEmulateLhRendererHandshakeWait(ctx, base, original_ctx)) {
-    __imp__sub_82B4F400(ctx, base);
-  }
+  // Handshake waits were already handled (and returned) above; everything
+  // that reaches here is a plain wait, so hand it to the original.
+  __imp__sub_82B4F400(ctx, base);
   const int64_t wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::steady_clock::now() - begin)
                               .count();

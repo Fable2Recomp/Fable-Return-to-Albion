@@ -920,27 +920,48 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
     return;
   }
 
-  // THE PRESENT GATE, released EVERY step while the guest is in game. The world update's
+  // THE PRESENT GATE, released EVERY step the guest is past the boot. The world update's
   // frame construct (sub_82B4F400) waits on the loading screen's take-down event on every
   // present; the render tick that signals it is off in this headless build, so a single
-  // pulse is consumed by the first waiter and the next frame blocks forever — the camera
-  // frozen on the sky. The event is auto-reset, so signalling it per step can only release
-  // a waiter, never stack.
+  // pulse is consumed by the first waiter and the next frame blocks forever. The event is
+  // auto-reset, so signalling it per step can only release a waiter, never stack.
   //
-  // THE HANDLE OUTLIVES THE SCREEN. The teardown clears the loading-screen chain (the
-  // resolve below goes quiet) while the present gate keeps waiting on the SAME event, so
-  // gating the signal on the screen resolving starves it. Remember the last handle and
-  // keep signalling it in-game; a stale handle is a no-op (INVALID_HANDLE).
-  static uint32_t last_event = 0;
+  // GATED ON PAST-THE-BOOT, NOT in-game: the New Game flow's loading screen (sub_82361458,
+  // reached from the frontend loop sub_82319BE8) blocks on this event while the guest is
+  // still in the frontend — gating on byte_83496A5E starved exactly that phase. The frontend
+  // flag (0x83496AC4) is clear through the boot movies, so neither flag alone fires there.
+  //
+  // THE HANDLE OUTLIVES THE SCREEN, and MORE THAN ONE is live at once. The teardown clears
+  // the loading-screen chain while the present gate keeps waiting on the SAME event, so
+  // gating the signal on the screen resolving starves it — and a SINGLE remembered handle is
+  // wrong too: the frame object's wait handle is the PREVIOUS screen's event, so the newest
+  // screen's +180 overwrites the one the world update actually waits on (measured: the
+  // thread parked on 0xF8000188 while the finisher signalled 0xF80000A4). Keep a small ring
+  // and signal every entry; a stale handle is a no-op (INVALID_HANDLE).
+  static uint32_t event_ring[4] = {0, 0, 0, 0};
+  static uint32_t ring_count = 0;
   const uint32_t screen = ResolveInGameLoadingScreen(base);
   if (screen != 0) {
     const uint32_t event = LoadGuestU32(base, screen + 180u);
     if (event != 0u) {
-      last_event = event;
+      bool known = false;
+      for (uint32_t i = 0; i < ring_count; ++i) {
+        if (event_ring[i] == event) {
+          known = true;
+          break;
+        }
+      }
+      if (!known && ring_count < 4u) {
+        event_ring[ring_count++] = event;
+      }
     }
   }
-  if (LoadGuestU8(base, 0x83496A5Eu) != 0u && last_event != 0u) {
-    rex::kernel::xboxkrnl::xeNtSetEvent(last_event, nullptr);
+  const bool past_boot =
+      LoadGuestU8(base, 0x83496AC4u) != 0u || LoadGuestU8(base, 0x83496A5Eu) != 0u;
+  if (past_boot) {
+    for (uint32_t i = 0; i < ring_count; ++i) {
+      rex::kernel::xboxkrnl::xeNtSetEvent(event_ring[i], nullptr);
+    }
   }
 
   static uint32_t watched = 0;
