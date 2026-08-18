@@ -35,10 +35,14 @@ target_include_directories(refii_achievement_ui
     PUBLIC
         ${REFII_ACHIEVEMENT_INCLUDE_DIRS}
     PRIVATE
-        # stb from the ReXGlue SDK, which this target already builds against. It used to come
-        # from src/launcher/vendors/stb — a submodule of the ImGui launcher, retired 2026-08-18,
-        # which took the only copy of stb_image.h in the tree with it.
-        ${REFII_REXGLUE_SDK_SOURCE_DIR}/thirdparty/stb
+        # stb_image.h, vendored. It used to come from src/launcher/vendors/stb — a submodule of
+        # the ImGui launcher, retired 2026-08-18, which took the only copy in the tree with it.
+        # The SDK grew its own thirdparty/stb, but not until v0.10.0: the pin here is v0.8.0, so
+        # ${REFII_REXGLUE_SDK_SOURCE_DIR}/thirdparty/stb does not exist and this target cannot
+        # take it from there yet. thirdparty/stb/stb_image.h is the retired submodule's own file
+        # at its recorded pin (904aa67e, nothings/stb — see archive/retired-submodules.txt), so
+        # this is the same header the code was written against, not a newer one.
+        ${REFII_ACHIEVEMENT_ROOT}/thirdparty/stb
 )
 target_link_libraries(refii_achievement_ui
     PUBLIC

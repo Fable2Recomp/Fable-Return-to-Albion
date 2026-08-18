@@ -6,16 +6,28 @@
 
 cmake_minimum_required(VERSION 3.24)
 
-foreach(_required GODOT PRESET WORK_DIR APP_NAME OUT_BINARY ZIP_PATH PROJECT_DIR STAGING_ROOT)
+foreach(_required PRESET WORK_DIR APP_NAME OUT_BINARY ZIP_PATH PROJECT_DIR STAGING_ROOT)
     if(NOT ${_required})
         message(FATAL_ERROR "refii_run_godot_export: ${_required} not set")
     endif()
 endforeach()
 
-if(NOT EXISTS "${GODOT}")
+# The pinned editor, unless the developer named their own. Fetched HERE and not at configure
+# time for the same reason zig is: it is ~200 MB over the network, and only a package needs
+# it. Configuring, building and testing must not depend on being able to reach GitHub.
+if(NOT GODOT AND GODOT_SCRIPT AND EXISTS "${GODOT_SCRIPT}")
+    include("${GODOT_SCRIPT}")
+    refii_fetch_godot("${HOST_PLATFORM}" "${HOST_ARCH}"
+                      "${TOOL_PLATFORM}" "${TOOL_ARCH}"
+                      "${GODOT_DIR}" "${TOOL_CACHE}" GODOT)
+endif()
+
+if(NOT GODOT OR NOT EXISTS "${GODOT}")
     message(FATAL_ERROR
         "Godot binary not found at '${GODOT}'.\n"
-        "Set it once:  cmake -B <build> -DREFII_GODOT_EXECUTABLE=/path/to/Godot_v4.x-stable_mono_linux.x86_64\n"
+        "Leave REFII_GODOT_EXECUTABLE unset to fetch the pinned one (see "
+        "cmake/refii_fetch_godot.cmake), or set it:\n"
+        "  cmake -B <build> -DREFII_GODOT_EXECUTABLE=/path/to/Godot_v4.7.1-stable_mono_linux.x86_64\n"
         "It must be the MONO/.NET build — the standard build cannot export a C# project.")
 endif()
 

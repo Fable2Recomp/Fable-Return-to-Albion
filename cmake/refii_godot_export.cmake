@@ -16,16 +16,33 @@
 # the natives are per-arch and cannot be cross-staged. Building all four means configuring
 # for each and running this target in each.
 #
-# Not wired to ALL: it is slow, needs a Godot binary, and is a release action.
+# WIRED TO ALL. It is slow and it is a release action, which is why it was opt-in, but opt-in
+# meant the two ends of a build did not agree: a Linux tree with REFII_PACKAGE=ON in its cache
+# packaged on every build while a Windows tree configured from the same presets stopped after
+# staging and looked, in the log, exactly like a build that had finished. Nothing in the source
+# said which was right. The default is the answer to that; `-DREFII_PACKAGE=OFF` still turns it
+# off for a tree doing ordinary code iteration, where the export and the ~600 MB staging copy
+# are a real cost per build.
+#
+# It no longer needs a Godot binary to be installed first — refii_fetch_godot.cmake pins one.
 
 include_guard(GLOBAL)
 
+# Left empty, a pinned Godot is fetched into REFII_GODOT_DIR at package time — see
+# refii_fetch_godot.cmake. Set it to use a Godot you already have instead; it must be the
+# .NET build of the version that file pins, because the export templates are matched by
+# version and a mismatch is only discovered at the end of the export.
 set(REFII_GODOT_EXECUTABLE "" CACHE FILEPATH
     "Godot 4 editor binary (MONO/.NET build) used to export the game")
 
+# Outside the build tree on purpose: it is ~200 MB, it does not vary by build configuration,
+# and re-configuring or wiping a build directory should not mean fetching it again.
+set(REFII_GODOT_DIR "${CMAKE_SOURCE_DIR}/tools/godot" CACHE PATH
+    "Directory the pinned Godot editor and its export template are staged into")
+
 # ON makes a plain `cmake --build` produce the release zip, rather than needing a separate
 # `--target refii_package`. OFF still defines the target, so it stays available on demand.
-option(REFII_PACKAGE "Build the release package (export + stage + zip) as part of ALL" OFF)
+option(REFII_PACKAGE "Build the release package (export + stage + zip) as part of ALL" ON)
 
 # Zig, pinned and fetched for the TARGET architecture. It is the player's whole C++
 # toolchain — clang, lld and a redistributable libc — and the build driver, so this is
@@ -37,6 +54,15 @@ option(REFII_BUNDLE_ZIG "Ship pinned Zig inside the package" ON)
 # instead it would have redirected every artefact the build produces.
 set(REFII_RELEASE_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/out/package" CACHE PATH
     "Directory that packaged releases and their zips are written into")
+
+# NOT UNDER out/package. The downloaded toolchains are ~1.4 GB — Zig plus the Godot editor and
+# its export template — and out/ is output: it gets cleared to force a clean package, and a
+# developer clearing their own build output should not be signing up for a 1.4 GB re-download.
+# It lived there and that is exactly what happened. Here it sits beside tools/godot and
+# tools/vcpkg, which is where the other fetched toolchains already live and which nobody
+# deletes to clean a build.
+set(REFII_TOOL_CACHE_DIR "${CMAKE_SOURCE_DIR}/tools/cache" CACHE PATH
+    "Directory the pinned toolchain archives are downloaded into and cached")
 
 # The folder a tester unzips. Also the name inside the zip.
 set(REFII_PACKAGE_NAME "Fable 2 Return to Albion" CACHE STRING
@@ -70,6 +96,21 @@ function(refii_define_godot_export_target)
     set(_work "${REFII_RELEASE_PACKAGE_DIR}/${_platform}-${REFII_GODOT_ARCH}")
     set(_zip "${REFII_RELEASE_PACKAGE_DIR}/refii-${_platform}-${REFII_GODOT_ARCH}.zip")
 
+    # The HOST runs the editor; the target above is what gets packaged. They are usually the
+    # same machine, but not necessarily — the zig fetch below already exists because
+    # windows-arm64 can be packaged from an x86_64 Linux host, and the editor has to be the
+    # host's build while the export template has to be the target's.
+    if(CMAKE_HOST_WIN32)
+        set(_host_platform "windows")
+    else()
+        set(_host_platform "linux")
+    endif()
+    if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+        set(_host_arch "arm64")
+    else()
+        set(_host_arch "x86_64")
+    endif()
+
     # ALL only when asked: an export is slow and needs a Godot binary, so it must not be
     # dragged into every ordinary source build.
     set(_all "")
@@ -89,9 +130,13 @@ function(refii_define_godot_export_target)
             -DSTAGING_ROOT=${REFII_GODOT_BUILD_DIR}
             -DBUNDLE_ZIG=$<BOOL:${REFII_BUNDLE_ZIG}>
             -DZIG_SCRIPT=${CMAKE_SOURCE_DIR}/cmake/refii_fetch_zig.cmake
+            -DGODOT_SCRIPT=${CMAKE_SOURCE_DIR}/cmake/refii_fetch_godot.cmake
+            -DGODOT_DIR=${REFII_GODOT_DIR}
+            -DHOST_PLATFORM=${_host_platform}
+            -DHOST_ARCH=${_host_arch}
             -DTOOL_PLATFORM=${_platform}
             -DTOOL_ARCH=${REFII_GODOT_ARCH}
-            -DTOOL_CACHE=${REFII_RELEASE_PACKAGE_DIR}/toolcache
+            -DTOOL_CACHE=${REFII_TOOL_CACHE_DIR}
             -P "${CMAKE_SOURCE_DIR}/cmake/refii_run_godot_export.cmake"
         COMMENT "Packaging ${_platform}-${REFII_GODOT_ARCH} for release"
         USES_TERMINAL
@@ -118,10 +163,12 @@ function(refii_define_godot_export_target)
     # Kept as the name used before the zip step existed.
     add_custom_target(refii_godot_export DEPENDS refii_package)
 
-    # Caught at configure time rather than at the end of a long build.
-    if(REFII_PACKAGE AND NOT REFII_GODOT_EXECUTABLE)
-        message(FATAL_ERROR
-            "REFII_PACKAGE=ON needs REFII_GODOT_EXECUTABLE set to a Godot 4 MONO binary.")
+    if(REFII_GODOT_EXECUTABLE)
+        message(STATUS "Refii: packaging with the Godot at ${REFII_GODOT_EXECUTABLE}")
+    else()
+        message(STATUS
+            "Refii: packaging will fetch the pinned Godot into ${REFII_GODOT_DIR} "
+            "(set REFII_GODOT_EXECUTABLE to use your own)")
     endif()
 
     if(REFII_PACKAGE)

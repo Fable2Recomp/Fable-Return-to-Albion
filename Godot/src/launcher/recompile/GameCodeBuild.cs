@@ -285,6 +285,7 @@ public static class GameCodeBuild
 		//    HARD FAILURE, not best effort: if the old output cannot be removed then the build
 		//    that follows is partly the previous one, and that is the outcome this step exists
 		//    to make impossible.
+		LogPhase("clean");
 		progress(new Progress("Cleaning the previous game code build...", 0.02f));
 		try
 		{
@@ -406,6 +407,7 @@ public static class GameCodeBuild
 		//    the same header is parsed 148 times, about 15 minutes of pure CPU on a player's
 		//    machine. Precompiling takes a TU from 17.7s to 10.6s, a 40% cut, and the object
 		//    files come out byte-identical.
+		LogPhase("precompile");
 		progress(new Progress("Preparing the game code build...", 0.36f));
 
 		string header = Path.Combine(GeneratedDirectory, "refii_init.h");
@@ -460,6 +462,7 @@ public static class GameCodeBuild
 		}
 
 		// 4. Link.
+		LogPhase("link");
 		progress(new Progress("Linking the game module...", 0.95f));
 		Result linked = await LinkAsync(resolved, sources.Count, cancellation);
 		if (!linked.Ok)
@@ -486,6 +489,7 @@ public static class GameCodeBuild
 		{
 		}
 
+		LogPhase("done");
 		progress(new Progress("Game code ready.", 1.0f));
 		return new Result(true, string.Empty);
 	}
@@ -785,6 +789,20 @@ public static class GameCodeBuild
 		})
 		{
 			flags.Add("-U" + undefine);
+		}
+
+		// FORCE-INCLUDED AHEAD OF EVERYTHING. The SDK's chrono headers specialize
+		// std::chrono::clock_time_conversion, which libstdc++ declares and libc++ does not, and
+		// an explicit specialization of an undeclared template is an error rather than something
+		// the preprocessor can be talked out of. On Linux the build compiles against staged
+		// libstdc++ headers so it never arises; on Windows refii_stage_stdcxx.cmake stages
+		// nothing and zig supplies libc++, so it always does. The header self-guards on
+		// _LIBCPP_VERSION and costs a libstdc++ build one <version> include.
+		string chronoShim = Path.Combine(RecompileDirectory, "src", "libcxx_chrono_shim.h");
+		if (File.Exists(chronoShim))
+		{
+			flags.Add("-include");
+			flags.Add(chronoShim);
 		}
 
 		flags.Add("-I" + GeneratedDirectory);
@@ -1116,6 +1134,14 @@ public static class GameCodeBuild
 			UseShellExecute = false,
 			RedirectStandardOutput = true,
 			RedirectStandardError = true,
+
+			// NO CONSOLE WINDOW. Redirecting both streams is not enough on Windows: the
+			// launcher is a GUI-subsystem process and zig and rexglue are console ones, so
+			// each child gets a console allocated and flashed on screen even though nothing
+			// is ever drawn in it. The compile phase runs one per batch across ~150k
+			// functions, which is a window appearing and vanishing for the whole build.
+			// Meaningless on Linux, where there is no such thing to suppress.
+			CreateNoWindow = true,
 		};
 
 		// Both, because zig consults a global and a local cache and either would carry work
@@ -1129,29 +1155,103 @@ public static class GameCodeBuild
 			startInfo.ArgumentList.Add(argument);
 		}
 
+		Log(executable, arguments);
+
 		try
 		{
 			using var process = new Process { StartInfo = startInfo };
 			if (!process.Start())
 			{
-				return (-1, "could not start " + executable);
+				return (-1, LogResult(-1, "could not start " + executable));
 			}
 
 			Task<string> output = process.StandardOutput.ReadToEndAsync();
 			Task<string> errors = process.StandardError.ReadToEndAsync();
 			await process.WaitForExitAsync(cancellation).ConfigureAwait(false);
 
-			return (process.ExitCode,
-				(await output.ConfigureAwait(false) + await errors.ConfigureAwait(false)).Trim());
+			return (process.ExitCode, LogResult(process.ExitCode,
+				(await output.ConfigureAwait(false) + await errors.ConfigureAwait(false)).Trim()));
 		}
 		catch (OperationCanceledException)
 		{
-			return (-1, "cancelled");
+			return (-1, LogResult(-1, "cancelled"));
 		}
 		catch (Exception exception)
 		{
-			return (-1, exception.Message);
+			return (-1, LogResult(-1, exception.ToString()));
 		}
+	}
+
+	/// <summary>
+	/// The build's own log, because until now it had none.
+	/// </summary>
+	/// <remarks>
+	/// THIS RUNS ON THE PLAYER'S MACHINE and it can fail there for reasons no developer will
+	/// reproduce — a game image we have not seen, a full disk, an antivirus holding an object
+	/// file open. Every phase's real output used to exist only as a truncated line on the
+	/// progress bar and a string in a <see cref="Result"/>, so a failed install left NOTHING
+	/// behind to send back. LauncherPaths.GetLauncherLogPath() had been written for this and
+	/// was never called from anywhere.
+	///
+	/// BEST EFFORT, ALWAYS. Logging is a diagnostic, not a feature: if the path is
+	/// unwritable the build carries on rather than failing for want of somewhere to complain.
+	/// </remarks>
+	private static void LogWrite(string text)
+	{
+		try
+		{
+			string path = LauncherPaths.GetLauncherLogPath();
+			string? directory = Path.GetDirectoryName(path);
+			if (!string.IsNullOrEmpty(directory))
+			{
+				Directory.CreateDirectory(directory);
+			}
+
+			File.AppendAllText(path,
+				DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + text + Environment.NewLine);
+		}
+		catch (Exception)
+		{
+		}
+	}
+
+	/// <summary>Records a phase boundary, so a log shows how far a failed build reached.</summary>
+	internal static void LogPhase(string phase) => LogWrite("=== " + phase);
+
+	/// <summary>
+	/// Records the command line. Arguments are logged one per line rather than joined: the
+	/// compile invocations carry dozens of -isystem paths with spaces in them, and a joined
+	/// line cannot be pasted back into a shell to reproduce the failure by hand.
+	/// </summary>
+	private static void Log(string executable, IReadOnlyList<string> arguments)
+	{
+		var text = new StringBuilder();
+		text.Append("run: ").Append(executable);
+		foreach (string argument in arguments)
+		{
+			text.Append(Environment.NewLine).Append("       ").Append(argument);
+		}
+
+		LogWrite(text.ToString());
+	}
+
+	/// <summary>
+	/// Records an exit code, and the output only when it is not zero — a successful compile
+	/// of 150 translation units has nothing worth keeping and would bury the one that failed.
+	/// Returns its argument so call sites stay single-expression.
+	/// </summary>
+	private static string LogResult(int code, string output)
+	{
+		if (code == 0)
+		{
+			LogWrite("exit 0");
+		}
+		else
+		{
+			LogWrite("exit " + code + (output.Length > 0 ? Environment.NewLine + output : string.Empty));
+		}
+
+		return output;
 	}
 
 	private static async Task<Result> RunStepAsync(
@@ -1168,6 +1268,10 @@ public static class GameCodeBuild
 			UseShellExecute = false,
 			RedirectStandardOutput = true,
 			RedirectStandardError = true,
+
+			// Same as RunCaptureAsync: a GUI parent starting a console child on Windows
+			// gets a console window per invocation unless this says otherwise.
+			CreateNoWindow = true,
 		};
 
 		foreach (string argument in arguments)
@@ -1192,12 +1296,21 @@ public static class GameCodeBuild
 		// instead of only an exit code. Bounded: a failing compile can produce megabytes.
 		var recent = new Queue<string>();
 
+		// The WHOLE output, for the log. The 40-line tail above is what a person can be shown
+		// in a dialog; it is not enough to diagnose a generator that printed the real cause
+		// early and then kept going. Buffered and written once rather than appended per line,
+		// because this can be thousands of lines and reopening the file for each is slower
+		// than the generator itself.
+		var transcript = new StringBuilder();
+
 		void Record(string? line)
 		{
 			if (line is null)
 			{
 				return;
 			}
+
+			transcript.AppendLine(line);
 
 			recent.Enqueue(line);
 			while (recent.Count > 40)
@@ -1207,6 +1320,8 @@ public static class GameCodeBuild
 
 			onLine(line);
 		}
+
+		Log(executable, arguments);
 
 		try
 		{
@@ -1239,16 +1354,25 @@ public static class GameCodeBuild
 				return new Result(false, "cancelled");
 			}
 
+			// The transcript goes to the log whether this succeeded or not: a generator that
+			// exits 0 without writing sources.cmake is exactly the failure this pipeline has
+			// hit, and the reason is in the output, not the exit code.
+			LogWrite("output of " + Path.GetFileName(executable) + Environment.NewLine + transcript);
+
 			if (process.ExitCode != 0)
 			{
+				LogWrite("exit " + process.ExitCode);
 				return new Result(false,
 					"exit code " + process.ExitCode + "\n" + string.Join('\n', recent));
 			}
 
+			LogWrite("exit 0");
 			return new Result(true, string.Empty);
 		}
 		catch (Exception exception)
 		{
+			LogWrite("output of " + Path.GetFileName(executable) + Environment.NewLine + transcript);
+			LogWrite("threw: " + exception);
 			return new Result(false, exception.Message);
 		}
 	}

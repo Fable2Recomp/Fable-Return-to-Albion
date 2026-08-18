@@ -640,16 +640,20 @@ std::pair<uint32_t, uint32_t> EnsureRefiiResourceWrapperVTables(
             g_refii_resource_wrapper_interface_vtable};
   }
 
+  // NOT `interface`. That is a MACRO on Windows -- rpc.h has `#define interface struct`, and
+  // the payload reaches it through zig's any-windows-any headers -- so the declaration below
+  // expanded to `const uint32_t struct = ...` and produced ten parse errors in a row, none of
+  // which name the real cause. It compiled on Linux because nothing there defines it.
   const uint32_t primary =
       CallLhMalloc(ctx, base, kResourceWrapperVTableCopySize);
-  const uint32_t interface =
+  const uint32_t interface_vtable =
       CallLhMalloc(ctx, base, kResourceWrapperVTableCopySize);
-  if (primary == 0 || interface == 0) {
+  if (primary == 0 || interface_vtable == 0) {
     if (primary != 0) {
       CallLhFree(ctx, base, primary);
     }
-    if (interface != 0) {
-      CallLhFree(ctx, base, interface);
+    if (interface_vtable != 0) {
+      CallLhFree(ctx, base, interface_vtable);
     }
     REXLOG_WARN("Refii resource wrapper private vtable allocation failed; "
                 "falling back to native vtables");
@@ -660,7 +664,7 @@ std::pair<uint32_t, uint32_t> EnsureRefiiResourceWrapperVTables(
               rex::memory::GuestPtr<uint8_t*>(base, kResourceStreamWrapperVTable),
               kResourceWrapperVTableCopySize);
   std::memcpy(
-      rex::memory::GuestPtr<uint8_t*>(base, interface),
+      rex::memory::GuestPtr<uint8_t*>(base, interface_vtable),
       rex::memory::GuestPtr<uint8_t*>(base, kResourceStreamWrapperInterfaceVTable),
       kResourceWrapperVTableCopySize);
 
@@ -681,16 +685,16 @@ std::pair<uint32_t, uint32_t> EnsureRefiiResourceWrapperVTables(
   // zero; we initialise the refcount at wrapper+8, so it is already correct.
 
   g_refii_resource_wrapper_vtable = primary;
-  g_refii_resource_wrapper_interface_vtable = interface;
+  g_refii_resource_wrapper_interface_vtable = interface_vtable;
 
   if (VfsVerboseIoTracingEnabled()) {
     REXLOG_INFO("Refii resource wrapper private vtables primary=0x{:08X} "
                 "interface=0x{:08X} (native slot maps, identity copies only)",
                 primary,
-                interface);
+                interface_vtable);
   }
 
-  return {primary, interface};
+  return {primary, interface_vtable};
 }
 
 bool CallGuestVTableSlot(PPCContext& source_ctx,

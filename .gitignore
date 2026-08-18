@@ -39,6 +39,17 @@ bld/
 [Ll]ogs/
 tools/vcpkg/
 
+# Fetched toolchains, NOT untracked dependencies. What each one IS lives in git — the pinned
+# version and its SHA-256 are in cmake/refii_fetch_godot.cmake — and only the downloaded bytes
+# are ignored, because GitHub rejects any file over 100 MB and Godot's editor is 179 MB.
+#
+# The distinction matters: Godot/export_presets.cfg used to be ignored the OTHER way, with
+# nothing anywhere recording that the build needed it, so a second machine got a working
+# checkout that could not package and no way to find out why. Ignore the artefact, keep the
+# pin, and let the build say what it wanted.
+tools/godot/
+tools/cache/
+
 # Build results on 'Bin' directories
 **/[Bb]in/*
 # Uncomment if you have tasks that rely on *.refresh files to move binaries

@@ -45,12 +45,70 @@ function(_refii_zig_spec platform arch out_file out_sha)
     set(${out_sha} "${_s}" PARENT_SCOPE)
 endfunction()
 
+# Copies the unpacked toolchain into the package.
+#
+# THE WHOLE TREE, not just the binary. zig's lib/ carries the libc headers, the libc++
+# sources, compiler-rt and the MinGW CRT — that is the part which makes it a complete
+# toolchain rather than a compiler that needs one. Taking the binary alone produces something
+# that cannot compile hello world. The stamp is excluded: it is cache bookkeeping and has no
+# business in a release.
+function(_refii_zig_install unpacked dest platform)
+    file(REMOVE_RECURSE "${dest}")
+    file(MAKE_DIRECTORY "${dest}")
+    file(COPY "${unpacked}/" DESTINATION "${dest}"
+         PATTERN ".refii-zig-stamp" EXCLUDE)
+
+    set(_binary "${dest}/zig")
+    if(platform STREQUAL "windows")
+        set(_binary "${_binary}.exe")
+    endif()
+    if(NOT EXISTS "${_binary}")
+        message(FATAL_ERROR "Zig staged but ${_binary} is missing")
+    endif()
+
+    file(CHMOD "${_binary}"
+         PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                     GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+endfunction()
+
 # Stages Zig for one target into <dest>, which ends up as bin/recompile/zig.
 function(refii_fetch_zig platform arch dest cache_dir)
     _refii_zig_spec("${platform}" "${arch}" _file _sha)
 
     file(MAKE_DIRECTORY "${cache_dir}")
     set(_archive "${cache_dir}/${_file}")
+
+    # UNPACKED ONCE, INTO THE CACHE, then copied per package.
+    #
+    # The download was already cached; the UNPACK was not. The x86_64-windows archive is 93 MiB
+    # and becomes 346 MiB across 19,546 files — libc and libc++ headers, compiler-rt, the MinGW
+    # CRT — and every package run decompressed all of it again. The file COUNT is the cost here
+    # rather than the bytes: five figures of small files is where Windows is slowest, between
+    # per-file create overhead and on-access antivirus. It cannot be stamped at `dest` instead,
+    # because `dest` is inside the app folder and refii_run_godot_export.cmake wipes that on
+    # entry, deliberately, so a stale library cannot survive into a zip. So the durable copy
+    # lives here in the cache and only the copy out of it happens per run.
+    #
+    # The stamp records the PIN, not just "something is here", so bumping REFII_ZIG_VERSION or
+    # a hash re-extracts rather than leaving the previous toolchain in place.
+    set(_unpacked "${cache_dir}/zig-${REFII_ZIG_VERSION}-${platform}-${arch}")
+    set(_stamp "${_unpacked}/.refii-zig-stamp")
+    set(_want "${REFII_ZIG_VERSION} ${platform} ${arch} ${_sha}")
+
+    set(_have_unpacked FALSE)
+    if(EXISTS "${_stamp}")
+        file(READ "${_stamp}" _have_stamp)
+        string(STRIP "${_have_stamp}" _have_stamp)
+        if(_have_stamp STREQUAL _want)
+            set(_have_unpacked TRUE)
+        endif()
+    endif()
+
+    if(_have_unpacked)
+        _refii_zig_install("${_unpacked}" "${dest}" "${platform}")
+        message(STATUS "Bundled Zig ${REFII_ZIG_VERSION} for ${platform}-${arch} (cached unpack)")
+        return()
+    endif()
 
     if(EXISTS "${_archive}")
         file(SHA256 "${_archive}" _have)
@@ -86,26 +144,17 @@ function(refii_fetch_zig platform arch dest cache_dir)
         message(FATAL_ERROR "Unexpected layout inside ${_file}")
     endif()
 
-    # THE WHOLE TREE, not just the binary. zig's lib/ carries the libc headers, the libc++
-    # sources, compiler-rt and the MinGW CRT — that is the part which makes it a complete
-    # toolchain rather than a compiler that needs one. Taking the binary alone produces
-    # something that cannot compile hello world.
-    file(REMOVE_RECURSE "${dest}")
-    file(MAKE_DIRECTORY "${dest}")
-    file(COPY "${_root}/" DESTINATION "${dest}")
-
-    set(_binary "${dest}/zig")
-    if(platform STREQUAL "windows")
-        set(_binary "${_binary}.exe")
-    endif()
-    if(NOT EXISTS "${_binary}")
-        message(FATAL_ERROR "Zig staged but ${_binary} is missing")
-    endif()
-
-    file(CHMOD "${_binary}"
-         PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
-                     GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
-
+    # MOVED, not copied. Both paths are under cache_dir and so on one volume, which makes this
+    # a directory rename rather than a second pass over 19,546 files. Copying here and deleting
+    # the extract afterwards did the same work twice for no benefit.
+    file(REMOVE_RECURSE "${_unpacked}")
+    file(RENAME "${_root}" "${_unpacked}")
     file(REMOVE_RECURSE "${_work}")
+
+    # Written LAST, so an interrupted extract leaves no stamp and the next run redoes it
+    # rather than serving half a toolchain out of the cache for ever.
+    file(WRITE "${_stamp}" "${_want}\n")
+
+    _refii_zig_install("${_unpacked}" "${dest}" "${platform}")
     message(STATUS "Bundled Zig ${REFII_ZIG_VERSION} for ${platform}-${arch}")
 endfunction()

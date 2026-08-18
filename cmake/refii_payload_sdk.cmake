@@ -67,6 +67,7 @@ function(refii_stage_payload_sdk)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_sdk_dir}/lib" "${_sdk_dir}/src" "${_sdk_dir}/bin"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/src/payload/src/payload_export.cpp"
+            "${CMAKE_SOURCE_DIR}/src/payload/src/libcxx_chrono_shim.h"
             "${_sdk_dir}/src"
         # Staged VERBATIM. The launcher writes the effective manifest at install time with
         # absolute paths, because only it knows where the player put the game and where

@@ -67,8 +67,10 @@ uint32_t RequestedBinkVideoName(char* out, uint32_t capacity);
 uint32_t FinishCurrentBinkMovie(uint8_t* base);
 uint32_t BinkMovieState(uint8_t* base);
 
-// Defined in src/vfs/src/hooks/guest_tick_pump.cpp — the ONLY route from this thread onto
-// the guest's own tick thread. See that file for why a memory write cannot do this job.
+// Defined in src/vfs/src/core/guest_tick_pump_state.cpp — the ONLY route from this thread onto
+// the guest's own tick thread. See src/vfs/src/hooks/guest_tick_pump.cpp for why a memory
+// write cannot do this job, and that state file for why the queue is in refii_vfs and not
+// beside the pump hook that drains it.
 uint32_t PostGuestTickAction(const char* name);
 void GuestTickPumpCounters(uint64_t* out_ticks, uint64_t* out_drained,
                            uint32_t* out_queued);
