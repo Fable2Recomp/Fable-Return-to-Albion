@@ -99,6 +99,14 @@ public partial class GameUi : Node
 
 	private Engine_FrontEndMenuView? _menuView;
 
+	/// <summary>Debug stand-in for the main menu; replaces the Godot menu view while visible.</summary>
+	private Refii.Launcher.Tools.DebugMenu? _debugMenu;
+
+	/// <summary>The front end is up (Title/startup or MainMenu) per the last screen change.
+	/// Combined with <see cref="IsRevealed"/> per-frame — the reveal is not a screen change,
+	/// so the debug menu's visibility cannot be applied only inside the change handler.</summary>
+	private bool _frontendUp;
+
 	/// <summary>
 	/// The gender card "New Game" opens.
 	///
@@ -394,23 +402,31 @@ public partial class GameUi : Node
 		// This runs after EVERY ShowByName, not once, because ShowByName rebuilds the whole
 		// node tree — the guest's twelve row components come back with it each time, and a
 		// screen carrying both their menu and ours is the failure this prevents.
+		//
+		// Only the STATE is set here; the debug menu's visibility is applied per-frame in
+		// _Process, because the reveal after the boot movies is not a screen change and
+		// would otherwise never reach a gated ShowDebugMenu.
+		_frontendUp = screen != HostBridge.FrontEndScreen.None;
 		if (screen == HostBridge.FrontEndScreen.MainMenu)
 		{
 			AdoptMenu();
 		}
-		else if (_menuView is not null)
+		else
 		{
-			// Off the main menu — the title, or a screen we do not draw. The view is kept
-			// rather than freed so the highlight survives a trip out to the title and back,
-			// which is what the original does: leaving the menu does not reset the selection.
-			_menuView.Visible = false;
-
-			// The card goes with it. Unlike the highlight it does NOT survive: it is a question
-			// that was asked on a screen that is no longer up, and leaving it armed would put
-			// it back over whatever comes next.
-			if (_cardView is not null)
+			if (_menuView is not null)
 			{
-				_cardView.Visible = false;
+				// Off the main menu — the title, or a screen we do not draw. The view is kept
+				// rather than freed so the highlight survives a trip out to the title and back,
+				// which is what the original does: leaving the menu does not reset the selection.
+				_menuView.Visible = false;
+
+				// The card goes with it. Unlike the highlight it does NOT survive: it is a question
+				// that was asked on a screen that is no longer up, and leaving it armed would put
+				// it back over whatever comes next.
+				if (_cardView is not null)
+				{
+					_cardView.Visible = false;
+				}
 			}
 		}
 
@@ -757,6 +773,22 @@ public partial class GameUi : Node
 	/// is not a failure: the view falls back to text-only rows, which is honest about having
 	/// no art to source rather than inventing a tab.
 	/// </summary>
+	/// <summary>Debug stand-in for the main menu: shows the clickable DebugMenu instead of the
+	/// Godot menu view. Created on first use so a build without the debug fixture costs nothing.</summary>
+	private void ShowDebugMenu()
+	{
+		_debugMenu ??= new Refii.Launcher.Tools.DebugMenu { Name = "DebugMenu" };
+		if (!IsAncestorOf(_debugMenu))
+		{
+			AddChild(_debugMenu);
+		}
+		_debugMenu.Visible = true;
+		if (_menuView is not null)
+		{
+			_menuView.Visible = false;
+		}
+	}
+
 	private void AdoptMenu()
 	{
 		if (_presentation?.Theme is not { } theme)
@@ -1010,6 +1042,19 @@ public partial class GameUi : Node
 	/// </summary>
 	public override void _Process(double delta)
 	{
+		// THE DEBUG MENU'S VISIBILITY, applied every frame rather than on screen changes:
+		// the reveal after the boot movies is not a screen change, and the menu must never
+		// appear behind a bink or accept a click before the front end is ready. Frontend up
+		// AND the movies done.
+		bool showDebug = IsRevealed && _frontendUp;
+		if (showDebug && _debugMenu is null)
+		{
+			ShowDebugMenu();
+		}
+		if (_debugMenu is not null)
+		{
+			_debugMenu.Visible = showDebug;
+		}
 		// Visible as well as revealed. IsRevealed is the whole UI layer being on screen — it
 		// is false through the boot movies — and Visible is this menu being the screen that is
 		// up. Without the second test the highlight would keep moving under the title screen,

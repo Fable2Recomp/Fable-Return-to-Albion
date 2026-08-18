@@ -112,6 +112,17 @@ public partial class GameVideo : Node
 		var layer = new CanvasLayer { Name = "VideoLayer", Layer = 10 };
 		AddChild(layer);
 
+		// BLACK, not the window's clear colour, behind the letterboxed movie: the bars around a
+		// 16:9 bink in a non-16:9 window read as gray without it.
+		var backdrop = new ColorRect
+		{
+			Name = "VideoBackdrop",
+			Color = Colors.Black,
+		};
+		backdrop.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		layer.AddChild(backdrop);
+		_backdrop = backdrop;
+
 		_material = new ShaderMaterial
 		{
 			Shader = GD.Load<Shader>("res://src/Engine/video/bink_yuv.gdshader"),
@@ -158,6 +169,7 @@ public partial class GameVideo : Node
 
 	private SubViewport _embedded = null!;
 	private TextureRect _embeddedView = null!;
+	private ColorRect _backdrop = null!;
 
 	/// <summary>
 	/// Where the movie is going: an element ordinal, or -1 for the screen.
@@ -174,6 +186,10 @@ public partial class GameVideo : Node
 
 	public override void _Process(double delta)
 	{
+		// The letterbox backdrop follows the movie's own visibility — every site that toggles
+		// _view also owns this, but mirroring it here cannot miss one.
+		_backdrop.Visible = _view.Visible;
+
 		if (HostBridge.TryGetAbiVersion() is null)
 		{
 			return;

@@ -1,0 +1,18 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://src/game/GameSession.cs" id="1_game"]
+[ext_resource type="Script" path="res://src/tools/DebugMenu.cs" id="2_menu"]
+
+[node name="GameSession" type="Node"]
+script = ExtResource("1_game")
+
+[node name="DebugMenu" type="CanvasLayer" parent="."]
+
+[node name="Menu" type="Control" parent="DebugMenu"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("2_menu")
