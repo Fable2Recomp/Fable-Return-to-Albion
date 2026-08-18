@@ -206,10 +206,16 @@ public partial class FableFx : Node3D
         }
 
         Camera3D? camera = GetViewport()?.GetCamera3D();
+#if TOOLS
+        // EDITOR ONLY, and compiled out of an export rather than merely skipped.
+        // EditorInterface does not exist in an export template build, so referencing it
+        // unguarded fails the export even though IsEditorHint() is false there at runtime
+        // and this branch could never be taken. Same guard the addons use.
         if (camera is null && Engine.IsEditorHint())
         {
             camera = EditorInterface.Singleton.GetEditorViewport3D(0).GetCamera3D();
         }
+#endif
 
         if (camera is null)
         {

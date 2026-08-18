@@ -4,6 +4,7 @@
 #include "lua_script_paths.h"
 
 #include <algorithm>
+#include <cstring>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -655,7 +656,7 @@ std::string ReadGuestCString(uint8_t* base, uint32_t guest_ptr, size_t max_bytes
   return value;
 }
 
-std::string ReadGuestLuaStringLike(uint8_t* base, uint32_t guest_ptr, size_t max_bytes) {
+std::string ReadGuestLuaStringLikeImpl(uint8_t* base, uint32_t guest_ptr, size_t max_bytes) {
   const std::string direct = ReadGuestCString(base, guest_ptr, max_bytes);
   const std::string wrapped = ReadGuestWrappedString(base, guest_ptr, max_bytes);
   const std::string object = ReadGuestStringObject(base, guest_ptr, max_bytes);
@@ -712,7 +713,7 @@ std::string NormalizeLuaScriptKey(std::string key) {
   return key;
 }
 
-std::string ReadNativeLuaScriptKey(uint8_t* base, const NativeScriptRequest& request) {
+std::string ReadNativeLuaScriptKeyImpl(uint8_t* base, const NativeScriptRequest& request) {
   return ReadValidatedLuaScriptKey(base, request);
 }
 
@@ -735,7 +736,7 @@ NativeScriptHandler FindHandlerLocked(const std::string& script_key) {
 
 bool NativeLuaHooksEnabled() { return REXCVAR_GET(lua_use_native_handlers); }
 
-bool NativeLuaScriptLoadTracingEnabled() { return REXCVAR_GET(lua_trace_script_loads); }
+extern "C" int32_t refii_bridge_lua_native_script_load_tracing_enabled() { return REXCVAR_GET(lua_trace_script_loads); }
 
 bool NativeLuaForceLooseBanksEnabled() { return REXCVAR_GET(lua_force_loose_banks); }
 
@@ -823,11 +824,11 @@ bool LuaWorkspaceFileIsTrustworthy(const std::string& candidate) {
          entry->second == "aliased";
 }
 
-bool NativeLuaModOverridesEnabled() { return REXCVAR_GET(lua_use_mod_overrides); }
+extern "C" int32_t refii_bridge_lua_native_mod_overrides_enabled() { return REXCVAR_GET(lua_use_mod_overrides); }
 
-bool NativeLuaModOverrideTracingEnabled() { return REXCVAR_GET(lua_trace_mod_overrides); }
+extern "C" int32_t refii_bridge_lua_native_mod_override_tracing_enabled() { return REXCVAR_GET(lua_trace_mod_overrides); }
 
-std::filesystem::path ResolveLuaModOverridePath(std::string_view script_key) {
+std::filesystem::path ResolveLuaModOverridePathImpl(std::string_view script_key) {
   if (!NativeLuaModOverridesEnabled()) {
     return {};
   }
@@ -887,7 +888,7 @@ void RegisterNativeScriptHandler(std::string_view script_key, NativeScriptHandle
   GetHandlerMap()[NormalizeLuaScriptKey(std::string(script_key))] = handler;
 }
 
-NativeDispatchResult DispatchNativeScript(PPCContext& ppc, uint8_t* base,
+NativeDispatchResult DispatchNativeScriptImpl(PPCContext& ppc, uint8_t* base,
                                           const NativeScriptRequest& request) {
   static const bool kBuiltinHandlersRegistered = [] {
     RegisterBuiltinNativeScriptHandlers();
@@ -951,6 +952,56 @@ NativeDispatchResult DispatchNativeScript(PPCContext& ppc, uint8_t* base,
 
   return handled_successfully ? NativeDispatchResult::kHandledSuccess
                               : NativeDispatchResult::kHandledFailure;
+}
+
+
+// --- The payload/host C ABI ----------------------------------------------------------
+//
+// Entries for the inline wrappers in core/native_lua_hooks.h. The C++ implementations above
+// keep their shape for host callers; only the boundary is flattened. Strings go into the
+// CALLER's buffer with the needed length returned, so nothing allocated here is freed on
+// the other side. See core/lua_payload_bridge.h.
+
+namespace {
+
+size_t LuaCopyOut(const std::string& value, char* out, size_t capacity) {
+  if (out != nullptr && capacity > 0) {
+    size_t take = value.size() < capacity ? value.size() : capacity;
+    std::memcpy(out, value.data(), take);
+  }
+  return value.size();
+}
+
+}  // namespace
+
+extern "C" size_t refii_bridge_lua_read_guest_lua_string_like(uint8_t* base, uint32_t guest_ptr,
+                                                              size_t max_bytes, char* out,
+                                                              size_t capacity) {
+  return LuaCopyOut(ReadGuestLuaStringLikeImpl(base, guest_ptr, max_bytes), out, capacity);
+}
+
+extern "C" size_t refii_bridge_lua_read_native_script_key(uint8_t* base,
+                                                          const NativeScriptRequest* request,
+                                                          char* out, size_t capacity) {
+  if (request == nullptr) {
+    return 0;
+  }
+  return LuaCopyOut(ReadNativeLuaScriptKeyImpl(base, *request), out, capacity);
+}
+
+extern "C" size_t refii_bridge_lua_resolve_mod_override_path(const char* script_key,
+                                                             size_t length, char* out,
+                                                             size_t capacity) {
+  return LuaCopyOut(ResolveLuaModOverridePathImpl(std::string_view(script_key, length)).string(),
+                    out, capacity);
+}
+
+extern "C" int32_t refii_bridge_lua_dispatch_native_script(PPCContext* ppc, uint8_t* base,
+                                                           const NativeScriptRequest* request) {
+  if (ppc == nullptr || request == nullptr) {
+    return static_cast<int32_t>(NativeDispatchResult::kUnhandled);
+  }
+  return static_cast<int32_t>(DispatchNativeScriptImpl(*ppc, base, *request));
 }
 
 }  // namespace refii::lua

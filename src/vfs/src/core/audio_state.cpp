@@ -256,7 +256,11 @@ void SetHostAudioDriverInstalled(bool installed) {
 // Stage 2
 // ---------------------------------------------------------------------------------
 
-void NoteVoiceCreated(uint32_t handle, uint32_t sample_rate, uint32_t channels) {
+// C linkage, per core/payload_bridge.h: the callers are hooks inside the payload, which is
+// built by the player's compiler. refii::vfs::NoteVoice* still exists as an inline wrapper
+// in core/audio_state.h, so call sites are unchanged.
+extern "C" void refii_bridge_note_voice_created(uint32_t handle, uint32_t sample_rate,
+                                                uint32_t channels) {
     if (handle == 0) {
         return;
     }
@@ -297,7 +301,7 @@ void NoteVoiceCreated(uint32_t handle, uint32_t sample_rate, uint32_t channels) 
     }
 }
 
-void NoteVoiceDestroyed(uint32_t handle) {
+extern "C" void refii_bridge_note_voice_destroyed(uint32_t handle) {
     auto& table = Voices();
     std::lock_guard<std::mutex> guard(table.mutex);
     if (VoiceSlot* slot = FindSlot(table, handle)) {
@@ -306,7 +310,7 @@ void NoteVoiceDestroyed(uint32_t handle) {
     }
 }
 
-void NoteVoiceStarted(uint32_t handle) {
+extern "C" void refii_bridge_note_voice_started(uint32_t handle) {
     auto& table = Voices();
     std::lock_guard<std::mutex> guard(table.mutex);
     if (VoiceSlot* slot = FindSlot(table, handle)) {
@@ -314,7 +318,7 @@ void NoteVoiceStarted(uint32_t handle) {
     }
 }
 
-void NoteVoiceStopped(uint32_t handle, bool immediate) {
+extern "C" void refii_bridge_note_voice_stopped(uint32_t handle, int32_t immediate) {
     auto& table = Voices();
     std::lock_guard<std::mutex> guard(table.mutex);
     VoiceSlot* slot = FindSlot(table, handle);
@@ -336,7 +340,7 @@ void NoteVoiceStopped(uint32_t handle, bool immediate) {
     }
 }
 
-void NoteVoiceVolume(uint32_t handle, float linear_volume) {
+extern "C" void refii_bridge_note_voice_volume(uint32_t handle, float linear_volume) {
     auto& table = Voices();
     std::lock_guard<std::mutex> guard(table.mutex);
     if (VoiceSlot* slot = FindSlot(table, handle)) {
@@ -344,7 +348,7 @@ void NoteVoiceVolume(uint32_t handle, float linear_volume) {
     }
 }
 
-void NoteVoicePitchOctaves(uint32_t handle, float octaves) {
+extern "C" void refii_bridge_note_voice_pitch_octaves(uint32_t handle, float octaves) {
     auto& table = Voices();
     std::lock_guard<std::mutex> guard(table.mutex);
     if (VoiceSlot* slot = FindSlot(table, handle)) {
@@ -355,7 +359,8 @@ void NoteVoicePitchOctaves(uint32_t handle, float octaves) {
     }
 }
 
-void NoteVoiceChannelVolumes(uint32_t handle, const float* gains, uint32_t count) {
+extern "C" void refii_bridge_note_voice_channel_volumes(uint32_t handle, const float* gains,
+                                                        uint32_t count) {
     if (gains == nullptr || count == 0) {
         return;
     }
@@ -381,7 +386,8 @@ void NoteVoiceChannelVolumes(uint32_t handle, const float* gains, uint32_t count
     }
 }
 
-void NoteVoicePcm(uint32_t handle, const void* pcm, uint32_t byte_count) {
+extern "C" void refii_bridge_note_voice_pcm(uint32_t handle, const void* pcm,
+                                            uint32_t byte_count) {
     if (pcm == nullptr || byte_count == 0) {
         return;
     }

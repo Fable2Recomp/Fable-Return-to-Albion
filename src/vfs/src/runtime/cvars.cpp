@@ -1,4 +1,6 @@
 #include "loose_asset_hooks.h"
+#include <cstdint>
+
 #include "runtime/cvars.h"
 
 #include <algorithm>
@@ -182,33 +184,33 @@ bool LooseAssetOverridesEnabled() {
   return g_cached_refii_backend.load(std::memory_order_acquire);
 }
 
-bool LooseAssetOverrideTracingEnabled() {
+extern "C" int32_t refii_bridge_vfs_loose_asset_override_tracing_enabled() {
   EnsureVfsCvarCache();
   return g_cached_refii_backend.load(std::memory_order_acquire) &&
          g_cached_trace_loose_assets.load(std::memory_order_acquire);
 }
 
-bool VfsTracingEnabled() {
+extern "C" int32_t refii_bridge_vfs_tracing_enabled() {
   EnsureVfsCvarCache();
   return g_cached_refii_backend.load(std::memory_order_acquire) &&
          g_cached_trace_vfs.load(std::memory_order_acquire);
 }
 
-bool VfsVerboseIoTracingEnabled() {
+extern "C" int32_t refii_bridge_vfs_verbose_io_tracing_enabled() {
   EnsureVfsCvarCache();
   return g_cached_refii_backend.load(std::memory_order_acquire) &&
          g_cached_trace_verbose_io.load(std::memory_order_acquire);
 }
 
-bool LooseGameFaceBinaryOverridesEnabled() {
+extern "C" int32_t refii_bridge_vfs_loose_gameface_binary_overrides_enabled() {
   return RefiiLooseAssetBackendEnabled();
 }
 
-bool LooseBankEntryOverridesEnabled() {
+extern "C" int32_t refii_bridge_vfs_loose_bank_entry_overrides_enabled() {
   return RefiiLooseAssetBackendEnabled();
 }
 
-bool NativeBankParseProbeEnabled() {
+extern "C" int32_t refii_bridge_vfs_native_bank_parse_probe_enabled() {
   return RefiiLooseAssetBackendEnabled() &&
          REXCVAR_GET(vfs_native_bank_parse_probe);
 }
@@ -221,28 +223,28 @@ bool BabelCsvOverridesEnabled() {
   return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_babel_csv_overrides);
 }
 
-bool AutoPressStartEnabled() {
+extern "C" int32_t refii_bridge_vfs_auto_press_start_enabled() {
   return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_auto_press_start);
 }
 
-bool FrontendSyntheticHandoffEnabled() {
+extern "C" int32_t refii_bridge_vfs_frontend_synthetic_handoff_enabled() {
   return RefiiLooseAssetBackendEnabled() &&
          REXCVAR_GET(vfs_frontend_synthetic_handoff);
 }
 
-bool ForceRetailUpdateModeEnabled() {
+extern "C" int32_t refii_bridge_vfs_force_retail_update_mode_enabled() {
   return RefiiLooseAssetBackendEnabled() &&
          REXCVAR_GET(vfs_force_retail_update_mode);
 }
 
-bool SkipStartupVideosEnabled() {
+extern "C" int32_t refii_bridge_vfs_skip_startup_videos_enabled() {
   return LooseAssetOverridesEnabled() &&
          GetLooseAssetBackend() == LooseAssetBackend::kRefii &&
          REXCVAR_GET(vfs_skip_startup_videos) &&
          !REXCVAR_GET(vfs_force_startup_video_sequence);
 }
 
-int StartupVideoMinimumPlaybackMs() {
+extern "C" int32_t refii_bridge_vfs_startup_video_minimum_playback_ms() {
   return std::max(0, REXCVAR_GET(vfs_startup_video_minimum_playback_ms));
 }
 
@@ -253,7 +255,7 @@ LooseAssetBackend GetLooseAssetBackend() {
              : LooseAssetBackend::kNative;
 }
 
-bool RefiiLooseAssetBackendEnabled() {
+extern "C" int32_t refii_bridge_vfs_refii_loose_asset_backend_enabled() {
   return LooseAssetOverridesEnabled();
 }
 

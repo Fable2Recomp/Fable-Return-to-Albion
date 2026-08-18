@@ -180,6 +180,10 @@ public static class Engine_NativeLibraries
 			// the architecture this process is actually running as is searched — picking
 			// up the wrong one would fail at load with a confusing "not a valid Win32
 			// application" rather than "library not found".
+			// The app root's bin/ first — the one location that is the same in a dev tree
+			// and an export, and the only one an installed player has.
+			AddSearchPath(Engine_AppRoot.BinDirectory);
+
 			AddSearchPath(StagedBinDirectory(projectDir));
 			AddSearchPath(System.IO.Path.Combine(projectDir, "build", ArchFolder));
 

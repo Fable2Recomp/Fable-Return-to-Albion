@@ -53,6 +53,10 @@ public partial class LauncherApp : Control
 	private int _installTotalFiles;
 	private string _installCurrentFile = string.Empty;
 	private bool _installExtractingIso;
+
+	// Set while the game code is being generated and compiled. The byte-based fraction
+	// cannot describe that phase — nothing is being copied — so it reports its own.
+	private float _installStepFraction = -1.0f;
 	private ManagedDownloadProgress? _downloadProgress;
 	private LauncherOps? _ops;
 	private string _opsStatus = string.Empty;
@@ -100,6 +104,13 @@ public partial class LauncherApp : Control
 	{
 		LauncherPaths.OverrideLauncherDirectory = ResolveLauncherDirectory();
 		Platform.RuntimeDirectoryOverride = ResolveRuntimeDirectory();
+
+		// The recompiled game module has to land where the runtime looks for it, which is
+		// beside the other native libraries — the per-architecture staging root, the one
+		// location that survives an export. Same convention Engine_TexEnhance uses for the
+		// upscaler weights.
+		Refii.Core.Engine_AppRoot.EnsureLayout();
+		Recompile.GameCodeBuild.BinDirectory = Refii.Core.Engine_AppRoot.BinDirectory;
 		if (!Engine.IsEditorHint())
 		{
 			LauncherOps.Initialize(LauncherPaths.OverrideLauncherDirectory);
@@ -185,25 +196,12 @@ public partial class LauncherApp : Control
 			return explicitDir!.TrimEnd(Path.DirectorySeparatorChar);
 		}
 
-		if (IsExportedBuild())
-		{
-			return GetHostExecutableDirectory();
-		}
-
-		string projectDir = ProjectSettings.GlobalizePath("res://");
-		string staged = Path.Combine(projectDir, "build");
-		if (Installer.HasBanks(Path.Combine(staged, "assets", "game")))
-		{
-			return staged.TrimEnd(Path.DirectorySeparatorChar);
-		}
-
-		string repoRoot = Path.GetFullPath(Path.Combine(projectDir, ".."));
-		if (Directory.Exists(Path.Combine(repoRoot, "assets")))
-		{
-			return repoRoot.TrimEnd(Path.DirectorySeparatorChar);
-		}
-
-		return AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+		// One anchor for the whole app. The heuristics that used to live here — probe
+		// Godot/build for banks, else the repo root, else the managed assembly directory —
+		// each answered "where is the app" differently from the guest and from the native
+		// library search, which is how the install, the config and the runtime ended up in
+		// three separate trees.
+		return Refii.Core.Engine_AppRoot.Path;
 	}
 
 	private void MountGameAssets()
@@ -612,6 +610,7 @@ public partial class LauncherApp : Control
 		_reinstallPanel.Configure(_font, TextFontSize, _infoStyle);
 		_reinstallPanel.ReinstallRequested += StartInstallFlow;
 		_reinstallPanel.UnpackBanksRequested += () => StartOps(ops => ops.ExtractGameBanks());
+		_reinstallPanel.BuildGameCodeRequested += StartGameCodeBuild;
 		_reinstallPanel.DecompileLuaRequested += () => StartOps(ops => ops.RebuildLuaWorkspace());
 		_reinstallPanel.CompileShadersRequested += () => StartOps(ops => ops.CompileShaders());
 		_reinstallPanel.BuildModernizedAssetsRequested += StartAssetPrebuild;
@@ -825,8 +824,19 @@ public partial class LauncherApp : Control
 		}
 		else if (!assetsExist)
 		{
+			// The whole install runs from here: extract the ISO, copy the XEXP, generate
+			// the game code and compile it.
 			label = "Install " + gameTitle;
 		}
+		else if (Recompile.GameCodeBuild.NeedsBuildCached(out _))
+		{
+			label = "Build Game Code";
+			compactFont = true;
+		}
+		// AFTER the two above, and last, because this one is no longer about the player's
+		// install at all — it means refii's OWN runtime is missing, which is a broken
+		// package. Ordered first, it hid "Install Fable 2" behind a dead end that no
+		// action in the launcher could clear.
 		else if (!installedBuildExists && canDownloadBuild)
 		{
 			label = "Download " + Platform.ExecutableName;
@@ -1038,6 +1048,13 @@ public partial class LauncherApp : Control
 			return;
 		}
 
+		if (Recompile.GameCodeBuild.NeedsBuild(out string gameCodeReason))
+		{
+			Log(gameCodeReason + " Building it now.");
+			StartGameCodeBuild();
+			return;
+		}
+
 		if (ManagedDownloads.HasDownloadSource() &&
 			(!Installer.InstalledBuildExists() || _updates.UpdateAvailable))
 		{
@@ -1160,12 +1177,89 @@ public partial class LauncherApp : Control
 			return;
 		}
 
+		// The game code, generated and compiled from the executable just installed. This is
+		// the longest part of an install by a wide margin — it is a compiler building
+		// roughly 150,000 functions — but it is not optional: the recompiled guest is
+		// derived from the player's own image and cannot ship with the app.
+		if (!await BuildGameCodeAsync())
+		{
+			return;
+		}
+
 		_installInProgress = false;
 		_installLabel = string.Empty;
 		_installStatus = string.Empty;
 		_installError = string.Empty;
 		Log("Installation complete.");
 		RefreshState();
+	}
+
+	/// <summary>Runs the game code build on its own, from the Reinstall tab.</summary>
+	private void StartGameCodeBuild()
+	{
+		if (_installInProgress || _ops is not null)
+		{
+			return;
+		}
+
+		AskBuildSpeed("Build Game Code", useAllCores =>
+		{
+			Recompile.GameCodeBuild.UseAllCores = useAllCores;
+			RunGameCodeBuild();
+		});
+	}
+
+	private async void RunGameCodeBuild()
+	{
+
+		_installInProgress = true;
+		_installError = string.Empty;
+
+		bool ok = await BuildGameCodeAsync();
+
+		Recompile.GameCodeBuild.InvalidateStatus();
+
+		if (ok)
+		{
+			_installInProgress = false;
+			_installLabel = string.Empty;
+			_installStatus = string.Empty;
+			Log("Game code build complete.");
+		}
+
+		RefreshState();
+	}
+
+	/// <summary>
+	/// Generates and compiles the game code, reporting into the install progress UI.
+	/// </summary>
+	/// <returns>False when it failed and the install has already been marked failed.</returns>
+	private async System.Threading.Tasks.Task<bool> BuildGameCodeAsync()
+	{
+		_installLabel = "Building game code";
+		_installStatus = "Preparing game code...";
+		_installStepFraction = 0.0f;
+		RefreshState();
+		Log("Building the recompiled game module from the installed executable.");
+
+		var result = await Recompile.GameCodeBuild.RunAsync(
+			progress =>
+			{
+				_installStatus = progress.Status;
+				_installStepFraction = progress.Fraction;
+			},
+			CancellationToken.None);
+
+		_installStepFraction = -1.0f;
+
+		if (!result.Ok)
+		{
+			FailInstall("Building game code failed.", result.Error);
+			return false;
+		}
+
+		Log("Game code built: " + Recompile.GameCodeBuild.ModulePath);
+		return true;
 	}
 
 	private void UpdateArtCredit()
@@ -1220,6 +1314,11 @@ public partial class LauncherApp : Control
 
 	private float InstallProgressFraction()
 	{
+		if (_installStepFraction >= 0.0f)
+		{
+			return Mathf.Clamp(_installStepFraction, 0.0f, 1.0f);
+		}
+
 		if (_ops is not null)
 		{
 			return ParseCountedFraction(_ops.StatusMessage);
@@ -1260,8 +1359,26 @@ public partial class LauncherApp : Control
 	private void StartInstallFlow()
 	{
 		var dialog = new InstallDialog(_font, TextFontSize, _baseStyle);
-		dialog.InstallRequested += StartInstall;
 
+		// ISO/XEXP, then the one build decision, then the whole pipeline runs unattended:
+		// extract, generate, compile. Asking again afterwards would strand the install
+		// half-done behind a second button nobody knows to press.
+		dialog.InstallRequested += (iso, xexp) => AskBuildSpeed(
+			"Install " + Installer.GetGameTitle(),
+			useAllCores =>
+			{
+				Recompile.GameCodeBuild.UseAllCores = useAllCores;
+				StartInstall(iso, xexp);
+			});
+
+		AddChild(dialog);
+	}
+
+	/// <summary>Asks how many cores the compile may use, then proceeds.</summary>
+	private void AskBuildSpeed(string heading, Action<bool> proceed)
+	{
+		var dialog = new BuildSpeedDialog(_font, TextFontSize, _baseStyle, heading);
+		dialog.Chosen += useAllCores => proceed(useAllCores);
 		AddChild(dialog);
 	}
 

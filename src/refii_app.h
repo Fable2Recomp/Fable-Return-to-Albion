@@ -5,7 +5,14 @@
 
 #pragma once
 
-#include "generated/refii_init.h"
+// NOT generated/refii_init.h. That header is emitted from the player's own game image and
+// does not exist on a build machine; the payload's image descriptor arrives through the
+// loader instead.
+#include "refii_payload/payload.h"
+
+// RefiiGetAppRoot — the install directory the host states, rather than the executable
+// folder the SDK would otherwise infer.
+#include "refii_host.h"
 
 #include <achievement/achievement_imgui.h>
 #include <achievement/achievement_xdbf.h>
@@ -376,7 +383,7 @@ public:
   static std::unique_ptr<rex::ui::WindowedApp>
   Create(rex::ui::WindowedAppContext &ctx) {
     return std::unique_ptr<RefiiApp>(
-        new RefiiApp(ctx, "refii", PPCImageConfig));
+        new RefiiApp(ctx, "refii", refii::payload::ImageConfig()));
   }
 
   void OnPreSetup(rex::RuntimeConfig &config) override {
@@ -547,6 +554,22 @@ public:
   // Accept both `<game_root>/` and `<game_root>/game` to keep launch args
   // forgiving.
   void OnConfigurePaths(rex::PathConfig &paths) override {
+    // WHAT THE HOST STATED WINS, and it is checked first for that reason. Hosted by
+    // Godot, GetExecutableFolder() is Godot's directory: the SDK's defaults put the
+    // config, the saves and the cache beside whatever binary is hosting us, which in a
+    // dev tree is the user's Godot install. The launcher writes refii.toml at the app
+    // root and the guest has to read that same file.
+    if (const std::filesystem::path &appRoot = RefiiGetAppRoot(); !appRoot.empty()) {
+      paths.config_path = appRoot / "refii.toml";
+      if (paths.user_data_root.empty()) {
+        paths.user_data_root = appRoot / "assets" / "save";
+      }
+      if (paths.cache_root.empty()) {
+        paths.cache_root = appRoot / "cache";
+      }
+      RefiiEnsureDirectoryExists(paths.config_path.parent_path());
+    }
+
     if (const std::filesystem::path runtimeRoot =
             RefiiGetPackagedLinuxRuntimeRoot();
         !runtimeRoot.empty()) {

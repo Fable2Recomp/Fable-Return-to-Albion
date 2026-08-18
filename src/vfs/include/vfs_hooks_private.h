@@ -63,19 +63,27 @@
 #include <rex/system/xtypes.h>
 #include <tracy/Tracy.hpp>
 
+#include "core/payload_bridge.h"
+
 #if !defined(REX_FUNC_PROLOGUE)
 #define REX_FUNC_PROLOGUE() ((void)0)
 #endif
 
 namespace refii::vfs {
-// Bink video frame capture — defined in src/hooks/bink_frame_capture.cpp.
-void NoteBinkMovieOpen(uint32_t player, uint8_t* base_for_open = nullptr);
+// Bink video frame capture — defined in src/core/bink_frame_state.cpp, which links into
+// librefii_vfs. These two hooks compile into the payload instead, so they cross to it
+// through the C entries in core/payload_bridge.h rather than by C++ symbol.
+inline void NoteBinkMovieOpen(uint32_t player, uint8_t* base_for_open = nullptr) {
+  refii_bridge_note_bink_movie_open(player, base_for_open);
+}
 uint32_t BinkFrameBuffersGuestAddress();
 
 /// The movie the guest last handed to BinkOpen. The argument is EITHER a pointer to the
 /// already-loaded .bik in guest memory OR a pointer to its path — the title opens the
 /// startup logos from a preloaded buffer and later movies by name.
-void NoteBinkVideoRequested(uint8_t* base, uint32_t data_guest);
+inline void NoteBinkVideoRequested(uint8_t* base, uint32_t data_guest) {
+  refii_bridge_note_bink_video_requested(base, data_guest);
+}
 void RequestedBinkVideo(uint32_t* out_address, uint32_t* out_size,
                         uint32_t* out_generation, uint32_t* out_swapped);
 

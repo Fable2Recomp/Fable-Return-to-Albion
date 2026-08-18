@@ -8,6 +8,8 @@
 
 #include <rex/logging.h>
 
+#include "core/payload_bridge.h"
+
 // Where the guest's Bink frame buffers live.
 //
 // THIS FILE MUST BE IN librefii_vfs, NOT IN THE PPC HOOK SET. The hook that writes this
@@ -138,7 +140,8 @@ uint32_t RequestedBinkVideoName(char* out, uint32_t capacity) {
 /// install has an extra "data" level, and no second read of a file the guest has already
 /// paid to load. The length comes from the container's own header — file_size at +4,
 /// which the format stores as the total minus the 8 bytes ahead of it.
-void NoteBinkVideoRequested(uint8_t* base, uint32_t data_guest) {
+// C linkage, per core/payload_bridge.h — the caller is a hook inside the payload.
+extern "C" void refii_bridge_note_bink_video_requested(uint8_t* base, uint32_t data_guest) {
   if (base == nullptr || data_guest == 0) {
     return;
   }
@@ -401,7 +404,7 @@ uint32_t FinishCurrentBinkMovie(uint8_t* base) {
 ///
 /// BINKFRAMEBUFFERS is inline at player+68 — sub_82A42D20 does
 /// `v2 = a1 + 68; memset(a1 + 68, 0, 0x78); BinkGetFrameBuffersInfo(*(a1 + 64), v2)`.
-void NoteBinkMovieOpen(uint32_t player, uint8_t* base_for_open) {
+extern "C" void refii_bridge_note_bink_movie_open(uint32_t player, uint8_t* base_for_open) {
   if (player == 0) {
     return;
   }

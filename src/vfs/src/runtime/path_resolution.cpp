@@ -4,6 +4,7 @@
 #include "runtime/cvars.h"
 
 #include <algorithm>
+#include <cstring>
 #include <cctype>
 #include <filesystem>
 #include <chrono>
@@ -679,7 +680,7 @@ std::vector<std::filesystem::path> BuildLooseAssetSearchRoots() {
 
 }  // namespace
 
-std::filesystem::path GetLooseAssetRoot() {
+std::filesystem::path GetLooseAssetRootImpl() {
   std::filesystem::path root;
   const std::string configured_root = ConfiguredLooseAssetRoot();
   if (!configured_root.empty()) {
@@ -694,7 +695,7 @@ std::filesystem::path GetLooseAssetRoot() {
   return NormalizeLooseAssetPath(std::move(root));
 }
 
-std::vector<std::filesystem::path> GetLooseAssetSearchRoots() {
+std::vector<std::filesystem::path> GetLooseAssetSearchRootsImpl() {
   // Rebuilding the root list reads several cvars, stats enabled.txt, and
   // allocates a handful of paths -- and resolve paths call this for every
   // lookup. Cache with a short TTL so launcher-side mod toggles and cvar
@@ -738,7 +739,7 @@ std::string BuildLooseAssetOpenPath(const std::filesystem::path& loose_path) {
   return loose_path.lexically_normal().generic_string();
 }
 
-std::string NormalizeLooseAssetKey(std::string_view asset_path) {
+std::string NormalizeLooseAssetKeyImpl(std::string_view asset_path) {
   std::string key(asset_path);
   std::replace(key.begin(), key.end(), '\\', '/');
 
@@ -771,7 +772,7 @@ std::filesystem::path ResolveLooseAssetOverridePath(std::string_view asset_path)
   return {};
 }
 
-bool ResolveLooseAssetOverride(std::string_view asset_path,
+bool ResolveLooseAssetOverrideImpl(std::string_view asset_path,
                                LooseAssetResolution* out_resolution) {
   const std::vector<std::filesystem::path> roots = GetLooseAssetSearchRoots();
   if (roots.empty()) {
@@ -843,7 +844,7 @@ bool ResolveLooseAssetOverride(std::string_view asset_path,
   return false;
 }
 
-bool ShouldDeferLooseBankContainer(std::string_view asset_path) {
+bool ShouldDeferLooseBankContainerImpl(std::string_view asset_path) {
   const std::vector<std::filesystem::path> roots = GetLooseAssetSearchRoots();
   if (roots.empty()) {
     return false;
@@ -871,6 +872,82 @@ bool ShouldDeferLooseBankContainer(std::string_view asset_path) {
     }
   }
   return false;
+}
+
+
+// --- The payload/host C ABI ----------------------------------------------------------
+//
+// These are the entries the inline wrappers in loose_asset_hooks.h call. The C++
+// implementations above keep their shape for host callers; only the boundary is flattened.
+// Strings are written into the CALLER's buffer and the needed length returned, so nothing
+// allocated here is ever freed on the other side. See core/payload_bridge.h.
+
+namespace {
+
+size_t CopyOut(const std::string& value, char* out, size_t capacity) {
+  if (out != nullptr && capacity > 0) {
+    size_t take = value.size() < capacity ? value.size() : capacity;
+    std::memcpy(out, value.data(), take);
+  }
+  return value.size();
+}
+
+}  // namespace
+
+extern "C" size_t refii_bridge_vfs_loose_asset_root(char* out, size_t capacity) {
+  return CopyOut(GetLooseAssetRootImpl().string(), out, capacity);
+}
+
+extern "C" size_t refii_bridge_vfs_normalize_loose_asset_key(const char* key, size_t length,
+                                                             char* out, size_t capacity) {
+  return CopyOut(NormalizeLooseAssetKeyImpl(std::string_view(key, length)), out, capacity);
+}
+
+extern "C" uint32_t refii_bridge_vfs_loose_asset_search_root_count(void) {
+  return static_cast<uint32_t>(GetLooseAssetSearchRootsImpl().size());
+}
+
+extern "C" size_t refii_bridge_vfs_loose_asset_search_root(uint32_t index, char* out,
+                                                            size_t capacity) {
+  std::vector<std::filesystem::path> roots = GetLooseAssetSearchRootsImpl();
+  if (index >= roots.size()) {
+    return 0;
+  }
+  return CopyOut(roots[index].string(), out, capacity);
+}
+
+extern "C" int32_t refii_bridge_vfs_should_defer_loose_bank_container(const char* path,
+                                                                      size_t length) {
+  return ShouldDeferLooseBankContainerImpl(std::string_view(path, length)) ? 1 : 0;
+}
+
+extern "C" int32_t refii_bridge_vfs_resolve_loose_asset_override(
+    const char* path, size_t length,
+    char* host_path, size_t host_path_capacity, size_t* out_host_path_length,
+    char* normalized_key, size_t normalized_key_capacity, size_t* out_normalized_key_length,
+    char* provider_relative, size_t provider_relative_capacity,
+    size_t* out_provider_relative_length) {
+  LooseAssetResolution resolution;
+  if (!ResolveLooseAssetOverrideImpl(std::string_view(path, length), &resolution)) {
+    return 0;
+  }
+
+  size_t host_length = CopyOut(resolution.host_path.string(), host_path, host_path_capacity);
+  size_t key_length =
+      CopyOut(resolution.normalized_key, normalized_key, normalized_key_capacity);
+  size_t relative_length = CopyOut(resolution.provider_relative_path, provider_relative,
+                                   provider_relative_capacity);
+
+  if (out_host_path_length != nullptr) {
+    *out_host_path_length = host_length;
+  }
+  if (out_normalized_key_length != nullptr) {
+    *out_normalized_key_length = key_length;
+  }
+  if (out_provider_relative_length != nullptr) {
+    *out_provider_relative_length = relative_length;
+  }
+  return 1;
 }
 
 }  // namespace refii::vfs

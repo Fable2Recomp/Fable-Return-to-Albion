@@ -45,7 +45,7 @@ public enum TexCacheCost : byte
 ///
 /// The layout is §5's, with an epoch level and a shard level added:
 ///
-///     user://cache/textures/v&lt;converter&gt;/&lt;first two hex&gt;/&lt;hash&gt;.rftx
+///     &lt;app&gt;/cache/textures/v&lt;converter&gt;/&lt;first two hex&gt;/&lt;hash&gt;.rftx
 ///
 /// Neither is cosmetic. The shard is because a region's worth of textures is thousands of
 /// entries and some filesystems degrade badly on a single directory that size; the epoch is what
@@ -65,7 +65,19 @@ public static class Engine_TexCache
 	/// </remarks>
 	public const int ConverterVersion = 1;
 
-	private const string CacheRoot = "user://cache/textures";
+	/// <summary>Where converted textures live: <c>&lt;app&gt;/cache/textures</c>.</summary>
+	/// <remarks>
+	/// THE APP'S OWN CACHE CONTAINER, NOT <c>user://</c> and NOT under assets/save. user:// put it
+	/// in Godot's per-app data directory, outside the install entirely; assets/save put
+	/// regenerable data inside the one folder a player can never regenerate. Anchored on
+	/// <see cref="Refii.Core.Engine_AppRoot.CacheDirectory"/> it is <c>&lt;app&gt;/cache</c>, so
+	/// deleting that one folder clears everything derived and touches no save.
+	///
+	/// Absolute rather than a Godot virtual path: FileAccess and DirAccess take OS paths, and
+	/// GlobalizePath returns an absolute path unchanged, so every existing call site still works.
+	/// </remarks>
+	private static string CacheRoot =>
+		System.IO.Path.Combine(Refii.Core.Engine_AppRoot.CacheDirectory, "textures");
 
 	/// <summary>
 	/// The epoch directory: everything the current decode pipeline produced.
@@ -81,7 +93,7 @@ public static class Engine_TexCache
 	///
 	/// With it, a bump is one directory to delete.
 	/// </remarks>
-	private static string Root => $"{CacheRoot}/v{ConverterVersion}";
+	private static string Root => $"{CacheRoot.Replace('\\', '/')}/v{ConverterVersion}";
 
 	private const uint Magic = 0x58544652u; // 'RFTX' little endian
 

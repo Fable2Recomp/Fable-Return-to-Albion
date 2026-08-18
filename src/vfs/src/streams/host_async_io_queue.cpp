@@ -74,7 +74,12 @@ void ShutdownRefiiIoQueue(RefiiIoQueue& queue) {
 }
 
 void RefiiIoWorkerLoop(uint32_t worker_index) {
+  // Guarded: this file compiles into the payload, where Tracy is deliberately absent, and a
+  // direct tracy:: call is a C++ symbol crossing to the host. The macro forms elsewhere in
+  // this file compile away on their own; this one was called by name.
+#ifdef TRACY_ENABLE
   tracy::SetThreadName("Refii VFS I/O");
+#endif
   RefiiIoQueue& queue = RefiiIoWorkQueue();
   for (;;) {
     RefiiIoJob job;

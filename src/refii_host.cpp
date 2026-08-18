@@ -648,6 +648,14 @@ int RunEmbeddedOnPosix(std::vector<std::string> ownedArguments) {
 
 }  // namespace
 
+namespace {
+std::filesystem::path g_refii_app_root;
+}  // namespace
+
+void RefiiSetAppRoot(const std::filesystem::path& root) { g_refii_app_root = root; }
+
+const std::filesystem::path& RefiiGetAppRoot() { return g_refii_app_root; }
+
 std::unique_ptr<rex::ui::WindowedApp> CreateRefiiApp(rex::ui::WindowedAppContext& app_context) {
 #if defined(_WIN32)
     InstallWindowsCrashRecorder();

@@ -3,6 +3,10 @@
 #include "../vfs_hooks_private.h"
 #include <rex/ppc/context.h>
 
+// Every translation unit that includes this header is compiled INTO the payload — the
+// hook sources are listed in REFII_VFS_HOOK_INTERNAL_SOURCES, not in refii_vfs itself —
+// so these are ordinary externs the linker resolves within the module.
+
 #if !defined(PPC_EXTERN_FUNC)
 #if defined(REX_EXTERN)
 #define PPC_EXTERN_FUNC(symbol) REX_EXTERN(symbol)

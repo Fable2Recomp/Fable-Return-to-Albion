@@ -56,6 +56,10 @@ public static class Engine_GameData
 		if (!string.IsNullOrEmpty(fromEnv))
 			yield return fromEnv!;
 
+		// The app root's assets/game first: that is where the installer writes and where an
+		// exported build keeps the player's data. Everything below is a dev-tree fallback.
+		yield return Path.Combine(Engine_AppRoot.AssetsDirectory, "game");
+
 		string projectDir = ProjectSettings.GlobalizePath("res://");
 		string repoRoot = Path.GetFullPath(Path.Combine(projectDir, ".."));
 

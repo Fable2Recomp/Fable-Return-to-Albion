@@ -120,6 +120,9 @@ cmake_dependent_option(
 
 include(cmake/refii_rexglue.cmake)
 include(cmake/refii_vcpkg.cmake)
+include(cmake/refii_payload_sdk.cmake)
+include(cmake/refii_godot_export.cmake)
+include(cmake/refii_optimize_rexglue.cmake)
 # Visible to every refii target (renderer, host, ...) so sources can adapt to
 # the API differences between the stable and netplay SDK trees.
 add_compile_definitions(REFII_REXGLUE_NETPLAY=$<BOOL:${REFII_REXGLUE_NETPLAY}>)
@@ -128,6 +131,12 @@ refii_rexglue_generate_sources_if_missing()
 include(generated/rexglue.cmake)
 add_subdirectory(src/achievement)
 refii_rexglue_apply_shadow_overrides()
+
+# Immediately after the SDK's targets exist: the guest's runtime stays optimised whatever
+# configuration refii is built in, matching the recompiled payload. It is also what gets
+# staged for the install-time build and shipped, and a player should never receive a debug
+# runtime.
+refii_optimize_rexglue_targets("${CMAKE_BINARY_DIR}/rexglue-sdk-shadow")
 
 # Bink VIDEO decoding, for playing the game's .bik files in Godot without the guest.
 #
@@ -223,7 +232,6 @@ function(refii_stage_d3d12_agility_runtime target_name)
     )
 endfunction()
 
-option(REFII_BUILD_LAUNCHER "Build the launcher executable" ON)
 option(REFII_BUILD_NATIVE_LUA "Build the native Lua runtime and Lua tools" ON)
 option(REFII_BUILD_SHADER_PIPELINE "Build shader SBK extraction/compilation pipeline tooling" ON)
 
@@ -235,10 +243,6 @@ if(REFII_BUILD_NATIVE_LUA)
 endif()
 if(REFII_BUILD_SHADER_PIPELINE)
     add_subdirectory(src/shader)
-endif()
-if(REFII_BUILD_LAUNCHER)
-    set(REFII_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
-    add_subdirectory(src/launcher)
 endif()
 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
@@ -362,6 +366,24 @@ function(refii_apply_generated_payload_compile_options target_name)
     if(UNIX AND NOT APPLE)
         target_compile_options("${target_name}" PRIVATE -mcmodel=large)
     endif()
+
+    # The generated code logs too — ppc_trap is the one function in it that does, and it is
+    # what pulls spdlog and fmt into the payload. Same bridge as the hooks: see the shadowed
+    # rex/logging/macros.h.
+    target_compile_definitions("${target_name}" PRIVATE REFII_PAYLOAD_LOG_BRIDGE=1)
+
+    # fmt LINKED IN, not imported. The bridge formats payload-side, so fmt has to resolve
+    # inside the module rather than crossing to the host — it is a pure formatter with no
+    # shared state, so a private copy is safe in a way a second spdlog registry would not be.
+    if(TARGET fmt::fmt)
+        target_link_libraries("${target_name}" PRIVATE fmt::fmt)
+    endif()
+
+    # Same as the hooks: the profiler is not part of a shipped payload, and TRACY_ENABLE
+    # comes in as an interface define that only -U can undo.
+    if(NOT MSVC)
+        target_compile_options("${target_name}" PRIVATE "-UTRACY_ENABLE" "-UTRACY_MANUAL_LIFETIME" "-UTRACY_DELAYED_INIT" "-UTRACY_ON_DEMAND" "-UTRACY_FIBERS" "-UTRACY_IMPORTS" "-UREXGLUE_ENABLE_PROFILING")
+    endif()
 endfunction()
 
 set(REFII_PACKAGE_EXTERNAL_LIB_TARGETS
@@ -379,23 +401,18 @@ set(REFII_PACKAGE_EXTERNAL_LIB_TARGETS
     Microsoft::DXIL
 )
 
-option(REFII_BUILD_STANDALONE "Build the standalone refii executable" ON)
 option(REFII_BUILD_NATIVE_HOOKS "Build native hook sources into refii_generated" ON)
 option(REFII_BUILD_VFS_HOOKS "Build the native VFS runtime and hook sources" ON)
-# OFF by default: Godot renders, so the guest never draws. This target is the
-# whole D3D9 replacement — Plume, its D3D12/Vulkan/Metal bridges, and the
-# native/"xenia" backend that renders through rexglue's own Vulkan instance.
-# It is 86% of the build (1880 targets down to 277 without it) and `refii`
-# links with no reference to it.
+# The neural texture upscaler (§8).
 #
-# The renderer is kept, not deleted: it survives as the reference instrument
-# that proves a converted asset or a reconstructed transform is right. Turn
-# this ON to build it for that.
-option(REFII_BUILD_RENDERER_HOOKS "Build the native renderer runtime and hook sources" OFF)
-
-# The neural texture upscaler (§8). OFF for the same reason the renderer hooks are: ncnn plus
-# glslang is a large build, and the pipeline works without it — Engine_TexRealEsrgan declines when
-# the library is absent and the classical resampler takes over.
+# OFF HERE BECAUSE IT DOES NOT BELONG HERE. librefii_upscaler links ncnn and libc and nothing
+# else — no ReXGlue, no guest, no renderer — so it is a Godot-side texture tool that happens to
+# live in this repo. It is built in its own directory (out/build/upscaler) and stages itself
+# into Godot/build/<arch>/bin; see src/upscaler/CMakeLists.txt.
+#
+# Turning it ON here also fails outright: ncnn vendors its own glslang and the ReXGlue SDK
+# already defines SPIRV, glslang and OSDependent, so configure dies on duplicate targets. That
+# collision is a reason not to merge the two builds, not a problem to solve.
 option(REFII_BUILD_UPSCALER "Build the Real-ESRGAN texture upscaler (ncnn + Vulkan)" OFF)
 
 # The C ABI Godot P/Invokes to host the guest in its own process, rather than spawning
@@ -411,71 +428,10 @@ option(REFII_BUILD_EXTRACTOR
     ON
 )
 
-option(REFII_BUILD_PACKAGES_IN_ALL
-    "Include Linux package targets in the default all target"
-    OFF
-)
-option(REFII_BUILD_APPIMAGE_IN_ALL
-    "Include the Linux AppImage target in the default all target"
-    ON
-)
-
-set(REFII_CAN_BUILD_LINUX_PACKAGES OFF)
 if(UNIX AND NOT APPLE)
     set(REFII_CAN_BUILD_LINUX_PACKAGES ON)
 endif()
 
-if(REFII_CAN_BUILD_LINUX_PACKAGES)
-    option(REFII_BUILD_APPIMAGE
-        "Enable Linux AppImage packaging targets"
-        ON
-    )
-
-    option(REFII_BUILD_FLATPAK
-        "Enable Linux Flatpak packaging targets"
-        OFF
-    )
-else()
-    set(
-        REFII_BUILD_APPIMAGE
-        OFF
-        CACHE BOOL
-        "Enable Linux AppImage packaging targets"
-        FORCE
-    )
-    set(
-        REFII_BUILD_FLATPAK
-        OFF
-        CACHE BOOL
-        "Enable Linux Flatpak packaging targets"
-        FORCE
-    )
-endif()
-
-set(
-    REFII_BUILD_APPIMAGE_OUTPUT_ROOT
-    "${CMAKE_SOURCE_DIR}/out/appimage"
-    CACHE PATH
-    "Directory where AppImage artifacts are emitted"
-)
-set(_REFII_APPIMAGE_LEGACY_OUTPUT_ROOT "${CMAKE_SOURCE_DIR}/appimage")
-if(REFII_BUILD_APPIMAGE_OUTPUT_ROOT STREQUAL "${_REFII_APPIMAGE_LEGACY_OUTPUT_ROOT}")
-    set(
-        REFII_BUILD_APPIMAGE_OUTPUT_ROOT
-        "${CMAKE_SOURCE_DIR}/out/appimage"
-        CACHE PATH
-        "Directory where AppImage artifacts are emitted"
-        FORCE
-    )
-endif()
-unset(_REFII_APPIMAGE_LEGACY_OUTPUT_ROOT)
-
-set(
-    REFII_BUILD_FLATPAK_OUTPUT_ROOT
-    "${CMAKE_SOURCE_DIR}/out/flatpak"
-    CACHE PATH
-    "Directory where Flatpak artifacts are emitted"
-)
 
 set(
     _REFII_PACKAGE_ICON_SOURCE_DEFAULT
@@ -512,50 +468,6 @@ if(EXISTS "${REFII_PACKAGE_ICON_SOURCE}")
 endif()
 set(REFII_PACKAGE_ICON_TARGET)
 
-set(
-    REFII_APPIMAGE_ARCH
-    "auto"
-    CACHE STRING
-    "Target architecture for AppImage packaging (auto|x86_64|aarch64|amd64|arm64)"
-)
-set_property(CACHE REFII_APPIMAGE_ARCH PROPERTY STRINGS auto x86_64 aarch64 amd64 arm64)
-
-set(
-    REFII_FLATPAK_RUNTIME
-    "org.freedesktop.Platform"
-    CACHE STRING
-    "Flatpak runtime used in generated fallback manifest"
-)
-
-set(
-    REFII_FLATPAK_SDK
-    "org.freedesktop.Sdk"
-    CACHE STRING
-    "Flatpak SDK used in generated fallback manifest"
-)
-
-set(
-    REFII_FLATPAK_RUNTIME_VERSION
-    "24.08"
-    CACHE STRING
-    "Flatpak runtime version used in generated fallback manifest"
-)
-
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
-    set(_REFII_FLATPAK_ARCH_GUESS "aarch64")
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
-    set(_REFII_FLATPAK_ARCH_GUESS "x86_64")
-else()
-    set(_REFII_FLATPAK_ARCH_GUESS "x86_64")
-endif()
-set(
-    REFII_FLATPAK_ARCH
-    "${_REFII_FLATPAK_ARCH_GUESS}"
-    CACHE STRING
-    "Flatpak architecture (x86_64 or aarch64)"
-)
-set_property(CACHE REFII_FLATPAK_ARCH PROPERTY STRINGS x86_64 aarch64)
-unset(_REFII_FLATPAK_ARCH_GUESS)
 
 # The shader pipeline's input/output/workspace/translator cache knobs used to
 # live here, from when CMake drove extraction and translation.  It no longer
@@ -598,11 +510,9 @@ unset(REFII_SHADER_DEFAULT_VALIDATION_TARGETS)
 # artifacts are actually owned:
 #   * refii::shader::VerifyTranslatedShaderCoverage()
 #     (src/shader/src/shader_sbk_pipeline.cpp)
-#   * launcher install path      -> src/launcher/src/installer/installer.cpp
 #   * refii-shader-sbk CLI       -> src/shader/src/refii_shader_sbk_cli_main.cpp
-# REFII_SHADER_VALIDATION_TARGETS above survives because it seeds the
-# launcher's compile-time default target list (src/launcher/CMakeLists.txt),
-# not because anything in the build validates against it.
+# REFII_SHADER_VALIDATION_TARGETS above survives because it seeds a compile-time default
+# target list, not because anything in the build validates against it.
 
 set(REFII_VFS_LIBRARIES)
 set(REFII_RENDERER_LIBRARIES)
@@ -651,14 +561,15 @@ if(TARGET refii-default-xex-icon-extractor
     set(REFII_PACKAGE_ICON_TARGET refii-extract-default-xex-icons)
 endif()
 
+# Before src/vfs and refii_core: both reach the recompiled guest through this loader
+# rather than linking it, so that a release can be built on a machine that has no game
+# image and therefore no payload.
+add_subdirectory(src/payload)
+
 if(REFII_BUILD_VFS_HOOKS)
     add_subdirectory(src/vfs)
 endif()
 
-if(REFII_BUILD_RENDERER_HOOKS)
-    refii_ensure_windows_vcpkg_packages()
-    add_subdirectory(src/renderer)
-endif()
 
 if(TARGET refii_vfs AND TARGET refii_renderer)
     target_include_directories(refii_vfs
@@ -690,6 +601,9 @@ set(REFII_CORE_SOURCES
 set(REFII_GENERATED_SOURCES
     ${GENERATED_SOURCES}
     ${REFII_HOOK_OBJECTS}
+    # The host ABI entry point, compiled in here exactly as the install-time project
+    # compiles it on the player's machine.
+    ${REFII_PAYLOAD_EXPORT_SOURCE}
 )
 
 # refii_core is the RexGlue runtime layer.
@@ -729,13 +643,15 @@ if(WIN32)
     )
 endif()
 
-# refii_generated is the replaceable recomp/codegen payload. Linux keeps it
-# shared for the replaceable payload flow; Windows links it statically to avoid
-# exporting tens of thousands of generated PPC symbols through an import lib.
+# refii_generated is the recomp/codegen payload, and it is SHARED on every platform
+# because it is built on the PLAYER'S machine from their own game image — a static
+# payload cannot be replaced after the app ships.
+#
+# Windows was static here to avoid exporting tens of thousands of generated PPC symbols
+# through an import lib. It no longer has to: nothing links this target. The host reaches
+# it through refii_payload, which resolves the ~50 symbols our own code names, so the
+# export list is that set plus one entry point rather than the whole image.
 set(REFII_GENERATED_LIBRARY_TYPE SHARED)
-if(WIN32)
-    set(REFII_GENERATED_LIBRARY_TYPE STATIC)
-endif()
 add_library(refii_generated ${REFII_GENERATED_LIBRARY_TYPE} ${REFII_GENERATED_SOURCES})
 target_include_directories(refii_generated
     PUBLIC
@@ -792,6 +708,27 @@ if(REFII_OPTIMIZE_GENERATED)
     message(STATUS "refii_generated: optimised (-O2) even in Debug; set REFII_OPTIMIZE_GENERATED=OFF to disable")
 endif()
 
+# The generated header, precompiled — the single biggest cost in rebuilding this target.
+#
+# refii_init.h is ~61,000 lines and EVERY generated translation unit includes it. Measured
+# (clang 20, one 2 MB source): 6.25s of each TU's 17.7s is parsing that one header, and
+# there are ~148 of them, so it is parsed 148 times for about 15 minutes of pure CPU.
+# Precompiling takes a TU to 10.6s — a 40% cut on the target that dominates a full build.
+#
+# Byte-identical objects, verified by compiling the same TU both ways and comparing, so
+# this buys time and changes nothing about the result. The TUs already include the header;
+# once precompiled that include is free.
+#
+# Deliberately NOT applied to refii_hooks: those are our own sources with a different
+# include set, and they are a handful of files rather than 148.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/refii_init.h")
+    target_precompile_headers(refii_generated
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/generated/refii_init.h"
+    )
+    message(STATUS "refii_generated: precompiling generated/refii_init.h (~40% faster rebuilds)")
+endif()
+
 unset(REFII_GENERATED_LIBRARY_TYPE)
 add_library(refii_host STATIC
     src/refii_host.cpp
@@ -834,10 +771,13 @@ target_compile_definitions(refii_host
         REFII_SDL3_WINDOW_ENABLED=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>
         REFII_REXGLUE_NETPLAY=$<BOOL:${REFII_REXGLUE_NETPLAY}>
 )
+# refii_generated is deliberately absent: the payload is built on the player's machine,
+# so linking it here would make a release unbuildable on any machine without a game
+# image. refii_payload loads it by name instead.
 target_link_libraries(refii_host
     PUBLIC
         refii_core
-        refii_generated
+        refii_payload
         ${REFII_RENDERER_LIBRARIES}
     PRIVATE
         refii_achievement_ui
@@ -858,6 +798,19 @@ if(REFII_BUILD_HOST_BRIDGE)
     add_subdirectory(src/hostbridge)
 endif()
 
+# The renderer was the one host-side library that called guest functions by name, so it linked
+# the payload directly. It was retired 2026-08-18 (archive/renderer-*.zip) and the guard is kept
+# only so a restored src/renderer still links: everything in the shipping configuration reaches
+# the payload through refii_payload.
+if(TARGET refii_renderer)
+    target_link_libraries(refii_renderer PUBLIC refii_generated)
+endif()
+
+# After every library the payload links: the staging target copies each one, and
+# `if(TARGET ...)` only sees targets that already exist.
+refii_stage_payload_sdk()
+
+
 if(UNIX AND NOT APPLE)
     target_link_options(refii_core
         PRIVATE
@@ -872,145 +825,6 @@ refii_apply_recompiled_module_compile_options(refii_core)
 refii_apply_generated_payload_compile_options(refii_generated)
 refii_apply_generated_payload_compile_options(refii_hooks)
 
-if(REFII_BUILD_STANDALONE)
-    set(REFII_SOURCES src/main.cpp)
-
-    # The netplay SDK replaced the per-platform entry points with a single
-    # SDL3 one; the stable tree still uses windowed_app_main_win/posix.
-    if(REFII_REXGLUE_NETPLAY)
-        refii_rexglue_shadow_source(
-            REFII_WINDOWED_APP_MAIN_SOURCE
-            "src/ui/windowed_app_main_sdl.cpp"
-        )
-    elseif(WIN32)
-        refii_rexglue_shadow_source(
-            REFII_WINDOWED_APP_MAIN_SOURCE
-            "src/ui/windowed_app_main_win.cpp"
-        )
-    else()
-        refii_rexglue_shadow_source(
-            REFII_WINDOWED_APP_MAIN_SOURCE
-            "src/ui/windowed_app_main_posix.cpp"
-        )
-    endif()
-    list(APPEND REFII_SOURCES ${REFII_WINDOWED_APP_MAIN_SOURCE})
-    if(WIN32)
-        # Opt in to Win32 long paths; extracted asset paths reach ~194 chars
-        # below the install root. MSVC embeds .manifest sources via mt.exe;
-        # the clang++/lld-link toolchain needs the linker flags below instead.
-        if(MSVC)
-            list(APPEND REFII_SOURCES
-                "${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/refii_long_paths.manifest")
-        endif()
-        add_executable(refii WIN32 ${REFII_SOURCES})
-        if(NOT MSVC)
-            refii_embed_long_paths_manifest(refii)
-        endif()
-    else()
-        add_executable(refii ${REFII_SOURCES})
-    endif()
-
-    target_link_libraries(refii PRIVATE refii_host)
-    if(EXISTS "${REFII_REXGLUE_SHADOW_DIR}/include")
-        target_include_directories(refii PRIVATE "${REFII_REXGLUE_SHADOW_DIR}/include")
-    endif()
-    target_compile_definitions(refii
-        PRIVATE
-            REX_UI_HAS_SDL_WINDOW=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>
-            REX_UI_HAS_WAYLAND_WINDOW=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>
-    )
-    set_target_properties(refii PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${REFII_RUNTIME_OUTPUT_DIR}"
-        BUILD_RPATH "$ORIGIN/../lib"
-        INSTALL_RPATH "$ORIGIN/../lib"
-    )
-    if(REFII_PACKAGE_ICON_AVAILABLE)
-        if(REFII_PACKAGE_ICON_TARGET)
-            add_dependencies(refii "${REFII_PACKAGE_ICON_TARGET}")
-        endif()
-        add_custom_command(TARGET refii POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:refii>/assets/launcher/assets"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${REFII_PACKAGE_ICON_SOURCE}"
-                "$<TARGET_FILE_DIR:refii>/assets/launcher/assets/icon.png"
-            VERBATIM
-        )
-    endif()
-
-    # NOTE: the build deliberately stages no shader workspace.  Shader
-    # extraction and translation are the LAUNCHER's job, and the launcher writes
-    # its workspace directly to <launcher exe dir>/assets/unpacked/shaders
-    # (Installer::GetLuaWorkspacePath()) -- the runtime directory.  A build-time
-    # copy from the source tree into that same directory could only overwrite the
-    # authoritative output, so there is none.
-
-    if(WIN32)
-        refii_stage_windows_runtime_dlls(refii)
-        refii_stage_d3d12_agility_runtime(refii)
-        if(TARGET rex::gpu-xenos)
-            # Netplay SDK GPU plugin: the loader dlopens it from the exe folder.
-            add_custom_command(TARGET refii POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "$<TARGET_FILE:rex::gpu-xenos>"
-                    "$<TARGET_FILE_DIR:refii>"
-                VERBATIM
-            )
-        endif()
-
-        if(REFII_STAGE_GODOT_BUILD)
-            add_custom_command(TARGET refii POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_GODOT_BUILD_BIN_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "$<TARGET_FILE:refii>" "${REFII_GODOT_BUILD_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "$<TARGET_RUNTIME_DLLS:refii>" "${REFII_GODOT_BUILD_DIR}"
-                COMMENT "Staging refii runtime into Godot/build"
-                COMMAND_EXPAND_LISTS
-                VERBATIM
-            )
-        endif()
-    else()
-        set(REFII_STAGE_EXTERNAL_LIBS_STAMP "${REFII_PACKAGE_STAMP_DIR}/refii_stage_external_libs.stamp")
-        set(_refii_stage_external_lib_commands
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_LIBRARY_OUTPUT_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_PACKAGE_STAMP_DIR}"
-        )
-        # The netplay SDK's GPU plugin loader dlopens the plugin from the
-        # executable's own folder, so stage it into bin/ as well as lib/.
-        refii_append_stage_library_command(
-            _refii_stage_external_lib_commands
-            rex::gpu-xenos
-            "${REFII_RUNTIME_OUTPUT_DIR}/"
-        )
-        set(_refii_stage_external_lib_dependencies)
-        foreach(_refii_external_lib_target IN LISTS REFII_PACKAGE_EXTERNAL_LIB_TARGETS)
-            if(TARGET "${_refii_external_lib_target}")
-                list(APPEND _refii_stage_external_lib_dependencies "${_refii_external_lib_target}")
-            endif()
-            refii_append_stage_library_command(
-                _refii_stage_external_lib_commands
-                "${_refii_external_lib_target}"
-                "${REFII_LIBRARY_OUTPUT_DIR}/"
-            )
-        endforeach()
-        list(APPEND _refii_stage_external_lib_commands
-            COMMAND ${CMAKE_COMMAND} -E touch "${REFII_STAGE_EXTERNAL_LIBS_STAMP}"
-        )
-        add_custom_command(
-            OUTPUT "${REFII_STAGE_EXTERNAL_LIBS_STAMP}"
-            ${_refii_stage_external_lib_commands}
-            DEPENDS ${_refii_stage_external_lib_dependencies}
-            COMMAND_EXPAND_LISTS
-            VERBATIM
-        )
-        add_custom_target(refii-stage-external-libs DEPENDS "${REFII_STAGE_EXTERNAL_LIBS_STAMP}")
-        add_dependencies(refii refii-stage-external-libs)
-        unset(_refii_stage_external_lib_commands)
-        unset(_refii_stage_external_lib_dependencies)
-        unset(_refii_external_lib_target)
-    endif()
-endif()
 
 if(TARGET refii-launcher AND TARGET refii-stage-external-libs)
     add_dependencies(refii-launcher refii-stage-external-libs)
@@ -1036,7 +850,6 @@ foreach(_refii_origin_rpath_target
 endforeach()
 unset(_refii_origin_rpath_target)
 
-set(REFII_PACKAGE_TARGETS)
 if(UNIX AND NOT APPLE)
     find_program(REFII_LDD_EXECUTABLE
         NAMES ldd
@@ -1165,488 +978,10 @@ set(REFII_PACKAGE_RUNTIME_SEARCH_DIRS
     "$<TARGET_FILE_DIR:rex::TracyClient>"
     "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/lib/x64"
 )
-set(REFII_FLATPAK_RUNTIME_EXCLUDE_REGEXES
-    ".*/libc\\.so\\..*$"
-    ".*/libm\\.so\\..*$"
-    ".*/libpthread\\.so\\..*$"
-    ".*/librt\\.so\\..*$"
-    ".*/libdl\\.so\\..*$"
-    ".*/libutil\\.so\\..*$"
-    ".*/libresolv\\.so\\..*$"
-    ".*/libgcc_s\\.so\\..*$"
-    ".*/libstdc\\+\\+\\.so\\..*$"
-    ".*/ld-linux[^/]*\\.so.*$"
-)
-set(REFII_APPIMAGE_RUNTIME_EXCLUDE_REGEXES
-    ".*/libc\\.so\\..*$"
-    ".*/libm\\.so\\..*$"
-    ".*/libpthread\\.so\\..*$"
-    ".*/librt\\.so\\..*$"
-    ".*/libdl\\.so\\..*$"
-    ".*/libutil\\.so\\..*$"
-    ".*/libresolv\\.so\\..*$"
-    ".*/ld-linux[^/]*\\.so.*$"
 
-    # The display and graphics client libraries must come from the host, never
-    # from the build machine. AppRun puts the bundled lib directory first on
-    # LD_LIBRARY_PATH, so anything shipped here also shadows the host copy for
-    # libraries the host loads later. That breaks Wayland in particular: GLFW
-    # dlopens libwayland-cursor/libwayland-egl/libxkbcommon and the GL vendor
-    # loads libEGL from the host, and those all bind back to whichever
-    # libwayland-client/libGLdispatch is visible. Bundling half of a set that
-    # has to match exactly leaves the other half mismatched. X11 tends to
-    # survive it because it goes through GLX instead of EGL, which is why this
-    # only showed up on a Wayland session.
-    ".*/libwayland-[^/]*\\.so\\..*$"
-    ".*/libxkbcommon[^/]*\\.so\\..*$"
-    ".*/libdecor-[^/]*\\.so\\..*$"
-    ".*/libX11[^/]*\\.so\\..*$"
-    ".*/libxcb[^/]*\\.so\\..*$"
-    ".*/libXau\\.so\\..*$"
-    ".*/libXdmcp\\.so\\..*$"
-    ".*/libXext\\.so\\..*$"
-    ".*/libXi\\.so\\..*$"
-    ".*/libXfixes\\.so\\..*$"
-    ".*/libXrender\\.so\\..*$"
-    ".*/libXrandr\\.so\\..*$"
-    ".*/libXcursor\\.so\\..*$"
-    ".*/libXinerama\\.so\\..*$"
-    ".*/libGL\\.so\\..*$"
-    ".*/libGLX[^/]*\\.so\\..*$"
-    ".*/libGLdispatch\\.so\\..*$"
-    ".*/libOpenGL\\.so\\..*$"
-    ".*/libEGL[^/]*\\.so\\..*$"
-    ".*/libGLESv[0-9][^/]*\\.so\\..*$"
-    ".*/libgbm\\.so\\..*$"
-    ".*/libdrm[^/]*\\.so\\..*$"
-    ".*/libvulkan\\.so\\..*$"
-)
 
-if(REFII_BUILD_APPIMAGE)
-    if(NOT UNIX OR APPLE)
-        message(FATAL_ERROR "REFII_BUILD_APPIMAGE currently supports Linux builds only.")
-    endif()
-    if(NOT EXISTS "${REFII_PACKAGE_ICON_SOURCE}" AND NOT TARGET "${REFII_PACKAGE_ICON_TARGET}")
-        message(FATAL_ERROR "REFII_BUILD_APPIMAGE requires REFII_PACKAGE_ICON_SOURCE to point to an existing PNG file.")
-    endif()
-    if(NOT REFII_BUILD_LAUNCHER)
-        message(FATAL_ERROR "REFII_BUILD_APPIMAGE requires REFII_BUILD_LAUNCHER=ON.")
-    endif()
-    if(NOT REFII_BUILD_STANDALONE)
-        message(FATAL_ERROR "REFII_BUILD_APPIMAGE requires REFII_BUILD_STANDALONE=ON.")
-    endif()
-    if(NOT TARGET refii)
-        message(FATAL_ERROR "REFII_BUILD_APPIMAGE requires target `refii` to exist.")
-    endif()
-
-    if(REFII_APPIMAGE_ARCH STREQUAL "auto")
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
-            set(_REFII_APPIMAGE_TOOL_ARCH "aarch64")
-        elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
-            set(_REFII_APPIMAGE_TOOL_ARCH "x86_64")
-        else()
-            set(_REFII_APPIMAGE_TOOL_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
-        endif()
-    elseif(REFII_APPIMAGE_ARCH STREQUAL "amd64")
-        set(_REFII_APPIMAGE_TOOL_ARCH "x86_64")
-    elseif(REFII_APPIMAGE_ARCH STREQUAL "arm64")
-        set(_REFII_APPIMAGE_TOOL_ARCH "aarch64")
-    else()
-        set(_REFII_APPIMAGE_TOOL_ARCH "${REFII_APPIMAGE_ARCH}")
-    endif()
-
-    if(_REFII_APPIMAGE_TOOL_ARCH STREQUAL "x86_64")
-        set(_REFII_APPIMAGE_OUTPUT_ARCH "x86_64")
-    elseif(_REFII_APPIMAGE_TOOL_ARCH STREQUAL "aarch64")
-        set(_REFII_APPIMAGE_OUTPUT_ARCH "aarch64")
-    else()
-        set(_REFII_APPIMAGE_OUTPUT_ARCH "${_REFII_APPIMAGE_TOOL_ARCH}")
-    endif()
-
-    set(REFII_APPIMAGE_APPRUN_SOURCE "${CMAKE_SOURCE_DIR}/packaging/appimage/AppRun")
-    if(NOT EXISTS "${REFII_APPIMAGE_APPRUN_SOURCE}")
-        set(REFII_APPIMAGE_APPRUN_SOURCE "${REFII_PACKAGE_GENERATED_DIR}/refii_appimage_AppRun")
-        file(
-            WRITE "${REFII_APPIMAGE_APPRUN_SOURCE}"
-            "#!/usr/bin/env sh\n"
-            "SELF=\"$(readlink -f \"$0\")\"\n"
-            "APPDIR=\"$(dirname \"$SELF\")\"\n"
-            "# Stash the host's own search paths before they get bundled ones\n"
-            "# prepended. Helper programs we spawn (zenity, kdialog, xdg-open)\n"
-            "# are host binaries and must not load our bundled libraries.\n"
-            "export REFII_HOST_ENV_SAVED=1\n"
-            "export REFII_HOST_PATH=\"\${PATH-}\"\n"
-            "export REFII_HOST_LD_LIBRARY_PATH=\"\${LD_LIBRARY_PATH-}\"\n"
-            "export PATH=\"$APPDIR/usr/bin\${PATH:+:$PATH}\"\n"
-            "export LD_LIBRARY_PATH=\"$APPDIR/usr/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"\n"
-            "LAUNCHER=\"$APPDIR/usr/bin/refii-launcher\"\n"
-            "exec \"$LAUNCHER\" \"$@\"\n"
-        )
-        file(CHMOD "${REFII_APPIMAGE_APPRUN_SOURCE}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
-    endif()
-
-    set(REFII_APPIMAGE_DESKTOP_SOURCE "${CMAKE_SOURCE_DIR}/packaging/appimage/refii.desktop")
-    if(NOT EXISTS "${REFII_APPIMAGE_DESKTOP_SOURCE}")
-        set(REFII_APPIMAGE_DESKTOP_SOURCE "${REFII_PACKAGE_GENERATED_DIR}/refii_appimage.desktop")
-        file(
-            WRITE "${REFII_APPIMAGE_DESKTOP_SOURCE}"
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            "Name=Refii\n"
-            "Comment=Fable II launcher\n"
-            "Exec=refii-launcher\n"
-            "Icon=refii\n"
-            "Terminal=false\n"
-            "Categories=Game;\n"
-        )
-    endif()
-
-    set(APPIMAGETOOL_LOCAL_PATH "${CMAKE_SOURCE_DIR}/packaging/appimage/appimagetool-${_REFII_APPIMAGE_TOOL_ARCH}.AppImage")
-    if(EXISTS "${APPIMAGETOOL_LOCAL_PATH}")
-        set(APPIMAGETOOL_EXECUTABLE "${APPIMAGETOOL_LOCAL_PATH}")
-    else()
-        find_program(APPIMAGETOOL_EXECUTABLE
-            NAMES
-                appimagetool
-                appimagetool-x86_64.AppImage
-                appimagetool-aarch64.AppImage
-            DOC "Path to appimagetool."
-        )
-    endif()
-    if(NOT APPIMAGETOOL_EXECUTABLE)
-        message(FATAL_ERROR "REFII_BUILD_APPIMAGE is ON, but appimagetool was not found. Install it and re-run CMake.")
-    endif()
-    find_program(DD_EXECUTABLE
-        NAMES dd
-        DOC "Path to dd."
-    )
-    if(NOT DD_EXECUTABLE)
-        message(FATAL_ERROR "REFII_BUILD_APPIMAGE is ON, but dd was not found. Install it and re-run CMake.")
-    endif()
-    find_program(CHMOD_EXECUTABLE
-        NAMES chmod
-        DOC "Path to chmod."
-    )
-    if(NOT CHMOD_EXECUTABLE)
-        message(FATAL_ERROR "REFII_BUILD_APPIMAGE is ON, but chmod was not found. Install it and re-run CMake.")
-    endif()
-    execute_process(
-        COMMAND ${APPIMAGETOOL_EXECUTABLE} --appimage-offset
-        OUTPUT_VARIABLE REFII_APPIMAGE_RUNTIME_OFFSET
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-    )
-    if(NOT REFII_APPIMAGE_RUNTIME_OFFSET MATCHES "^[0-9]+$")
-        message(FATAL_ERROR
-            "REFII_BUILD_APPIMAGE could not determine the embedded runtime offset from `${APPIMAGETOOL_EXECUTABLE}`."
-        )
-    endif()
-
-    set(REFII_APPIMAGE_STAGING_DIR "${CMAKE_BINARY_DIR}/package/appimage")
-    set(REFII_APPIMAGE_APPDIR "${REFII_APPIMAGE_STAGING_DIR}/AppDir")
-    set(REFII_APPIMAGE_RUNTIME_FILE "${REFII_APPIMAGE_STAGING_DIR}/runtime-${_REFII_APPIMAGE_OUTPUT_ARCH}")
-    set(REFII_APPIMAGE_OUTPUT "${REFII_BUILD_APPIMAGE_OUTPUT_ROOT}/refii-${CMAKE_SYSTEM_NAME}-${_REFII_APPIMAGE_OUTPUT_ARCH}.AppImage")
-
-    add_custom_command(
-        OUTPUT "${REFII_APPIMAGE_OUTPUT}"
-        COMMAND ${CMAKE_COMMAND} -E rm -rf "${REFII_APPIMAGE_APPDIR}"
-        COMMAND ${CMAKE_COMMAND} -E remove -f "${REFII_APPIMAGE_OUTPUT}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_BUILD_APPIMAGE_OUTPUT_ROOT}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "${REFII_APPIMAGE_APPDIR}/usr/bin"
-            "${REFII_APPIMAGE_APPDIR}/usr/lib"
-            "${REFII_APPIMAGE_APPDIR}/usr/share/applications"
-            "${REFII_APPIMAGE_APPDIR}/usr/share/icons/hicolor/64x64/apps"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:refii-launcher>"
-            "${REFII_APPIMAGE_APPDIR}/usr/bin/"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:refii>"
-            "${REFII_APPIMAGE_APPDIR}/usr/bin/"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${REFII_LIBRARY_OUTPUT_DIR}"
-            "${REFII_APPIMAGE_APPDIR}/usr/lib"
-        COMMAND ${CMAKE_COMMAND}
-            "-DREFII_PACKAGE_EXECUTABLE_DIR=${REFII_APPIMAGE_APPDIR}/usr/bin"
-            "-DREFII_PACKAGE_LIBRARY_DIR=${REFII_APPIMAGE_APPDIR}/usr/lib"
-            "-DREFII_RUNTIME_SEARCH_DIRS=${REFII_PACKAGE_RUNTIME_SEARCH_DIRS}"
-            "-DREFII_RUNTIME_EXCLUDE_REGEXES=${REFII_APPIMAGE_RUNTIME_EXCLUDE_REGEXES}"
-            -P "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT}"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${REFII_RUNTIME_DATA_DIR}/launcher/assets"
-            "${REFII_APPIMAGE_APPDIR}/usr/bin/assets/launcher/assets"
-        # Per-title metadata. The seeding in refii_app.h reads
-        # <exe>/assets/metadata and returns silently when it is absent, so a
-        # package that omits this runs with shard opt-in, advertised_title_id
-        # and presence mappings all inactive.
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_SOURCE_DIR}/assets/metadata"
-            "${REFII_APPIMAGE_APPDIR}/usr/bin/assets/metadata"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_APPIMAGE_APPRUN_SOURCE}"
-            "${REFII_APPIMAGE_APPDIR}/AppRun"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_APPIMAGE_DESKTOP_SOURCE}"
-            "${REFII_APPIMAGE_APPDIR}/usr/share/applications/refii.desktop"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_APPIMAGE_DESKTOP_SOURCE}"
-            "${REFII_APPIMAGE_APPDIR}/refii.desktop"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_PACKAGE_ICON_SOURCE}"
-            "${REFII_APPIMAGE_APPDIR}/refii.png"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_PACKAGE_ICON_SOURCE}"
-            "${REFII_APPIMAGE_APPDIR}/.DirIcon"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_PACKAGE_ICON_SOURCE}"
-            "${REFII_APPIMAGE_APPDIR}/usr/share/icons/hicolor/64x64/apps/refii.png"
-        COMMAND ${CHMOD_EXECUTABLE} +x "${REFII_APPIMAGE_APPDIR}/AppRun"
-        COMMAND ${CHMOD_EXECUTABLE} +x "${APPIMAGETOOL_EXECUTABLE}"
-        COMMAND ${DD_EXECUTABLE}
-            if=${APPIMAGETOOL_EXECUTABLE}
-            of=${REFII_APPIMAGE_RUNTIME_FILE}
-            bs=1
-            count=${REFII_APPIMAGE_RUNTIME_OFFSET}
-        COMMAND ${CHMOD_EXECUTABLE} +x "${REFII_APPIMAGE_RUNTIME_FILE}"
-        COMMAND /usr/bin/env APPIMAGE_EXTRACT_AND_RUN=1 ${APPIMAGETOOL_EXECUTABLE}
-            --runtime-file
-            "${REFII_APPIMAGE_RUNTIME_FILE}"
-            "${REFII_APPIMAGE_APPDIR}"
-            "${REFII_APPIMAGE_OUTPUT}"
-        DEPENDS
-            refii-launcher
-            refii
-            refii_core
-            refii_generated
-            ${REFII_PACKAGE_ICON_TARGET}
-            "${APPIMAGETOOL_EXECUTABLE}"
-            "${REFII_APPIMAGE_APPRUN_SOURCE}"
-            "${REFII_APPIMAGE_DESKTOP_SOURCE}"
-            "${REFII_PACKAGE_ICON_SOURCE}"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-        COMMENT "Packaging AppImage with appimagetool"
-        VERBATIM
-    )
-
-    if(REFII_BUILD_APPIMAGE_IN_ALL OR REFII_BUILD_PACKAGES_IN_ALL)
-        add_custom_target(refii-appimage ALL DEPENDS "${REFII_APPIMAGE_OUTPUT}")
-    else()
-        add_custom_target(refii-appimage DEPENDS "${REFII_APPIMAGE_OUTPUT}")
-    endif()
-    list(APPEND REFII_PACKAGE_TARGETS refii-appimage)
-
-    unset(_REFII_APPIMAGE_TOOL_ARCH)
-    unset(_REFII_APPIMAGE_OUTPUT_ARCH)
-    unset(APPIMAGETOOL_LOCAL_PATH)
-    unset(CHMOD_EXECUTABLE)
-    unset(DD_EXECUTABLE)
-    unset(REFII_APPIMAGE_RUNTIME_OFFSET)
-endif()
-
-if(REFII_BUILD_FLATPAK)
-    if(NOT UNIX OR APPLE)
-        message(FATAL_ERROR "REFII_BUILD_FLATPAK currently supports Linux builds only.")
-    endif()
-    if(NOT EXISTS "${REFII_PACKAGE_ICON_SOURCE}" AND NOT TARGET "${REFII_PACKAGE_ICON_TARGET}")
-        message(FATAL_ERROR "REFII_BUILD_FLATPAK requires REFII_PACKAGE_ICON_SOURCE to point to an existing PNG file.")
-    endif()
-    if(NOT REFII_BUILD_LAUNCHER)
-        message(FATAL_ERROR "REFII_BUILD_FLATPAK requires REFII_BUILD_LAUNCHER=ON.")
-    endif()
-    if(NOT REFII_BUILD_STANDALONE)
-        message(FATAL_ERROR "REFII_BUILD_FLATPAK requires REFII_BUILD_STANDALONE=ON.")
-    endif()
-    if(NOT TARGET refii)
-        message(FATAL_ERROR "REFII_BUILD_FLATPAK requires target `refii` to exist.")
-    endif()
-
-    find_program(FLATPAK_EXECUTABLE
-        NAMES flatpak
-        DOC "Path to flatpak."
-    )
-    if(NOT FLATPAK_EXECUTABLE)
-        message(FATAL_ERROR "REFII_BUILD_FLATPAK is ON, but flatpak was not found. Install it and re-run CMake.")
-    endif()
-
-    find_program(FLATPAK_BUILDER_EXECUTABLE
-        NAMES flatpak-builder
-        DOC "Path to flatpak-builder."
-    )
-    if(NOT FLATPAK_BUILDER_EXECUTABLE)
-        message(FATAL_ERROR "REFII_BUILD_FLATPAK is ON, but flatpak-builder was not found. Install it and re-run CMake.")
-    endif()
-    find_program(OSTREE_EXECUTABLE
-        NAMES ostree
-        DOC "Path to ostree."
-    )
-    if(NOT OSTREE_EXECUTABLE)
-        message(FATAL_ERROR "REFII_BUILD_FLATPAK is ON, but ostree was not found. Install it and re-run CMake.")
-    endif()
-
-    set(REFII_FLATPAK_DESKTOP_SOURCE "${CMAKE_SOURCE_DIR}/packaging/appimage/refii.desktop")
-    if(NOT EXISTS "${REFII_FLATPAK_DESKTOP_SOURCE}")
-        set(REFII_FLATPAK_DESKTOP_SOURCE "${REFII_PACKAGE_GENERATED_DIR}/refii_flatpak.desktop")
-        file(
-            WRITE "${REFII_FLATPAK_DESKTOP_SOURCE}"
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            "Name=Refii\n"
-            "Comment=Fable II launcher\n"
-            "Exec=refii-launcher\n"
-            "Icon=com.refii.refii\n"
-            "Terminal=false\n"
-            "Categories=Game;\n"
-        )
-    endif()
-
-    set(REFII_FLATPAK_LAUNCHER_WRAPPER_SOURCE "${REFII_PACKAGE_GENERATED_DIR}/refii_flatpak_launcher")
-    file(
-        WRITE "${REFII_FLATPAK_LAUNCHER_WRAPPER_SOURCE}"
-        "#!/usr/bin/env sh\n"
-        "export PATH=\"/app/bin\${PATH:+:$PATH}\"\n"
-        "export LD_LIBRARY_PATH=\"/app/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"\n"
-        "exec /app/bin/refii-launcher.bin \"$@\"\n"
-    )
-    file(CHMOD "${REFII_FLATPAK_LAUNCHER_WRAPPER_SOURCE}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
-
-    set(REFII_FLATPAK_MANIFEST_SOURCE "${CMAKE_SOURCE_DIR}/packaging/flatpak/refii.json")
-    if(NOT EXISTS "${REFII_FLATPAK_MANIFEST_SOURCE}")
-        set(REFII_FLATPAK_MANIFEST_SOURCE "${REFII_PACKAGE_GENERATED_DIR}/refii_flatpak_refii.json")
-        file(
-            WRITE "${REFII_FLATPAK_MANIFEST_SOURCE}"
-            "{\n"
-            "  \"app-id\": \"com.refii.refii\",\n"
-            "  \"runtime\": \"${REFII_FLATPAK_RUNTIME}\",\n"
-            "  \"runtime-version\": \"${REFII_FLATPAK_RUNTIME_VERSION}\",\n"
-            "  \"sdk\": \"${REFII_FLATPAK_SDK}\",\n"
-            "  \"command\": \"refii-launcher\",\n"
-            "  \"finish-args\": [\n"
-            "    \"--socket=wayland\",\n"
-            "    \"--socket=fallback-x11\",\n"
-            "    \"--share=network\",\n"
-            "    \"--share=ipc\",\n"
-            "    \"--device=dri\"\n"
-            "  ],\n"
-            "  \"modules\": [\n"
-            "    {\n"
-            "      \"name\": \"refii\",\n"
-            "      \"buildsystem\": \"simple\",\n"
-            "      \"sources\": [\n"
-            "        {\"type\": \"dir\", \"path\": \"payload\"}\n"
-            "      ],\n"
-            "      \"build-commands\": [\n"
-            "        \"mkdir -p /app/bin /app/lib /app/share/applications /app/share/icons/hicolor/64x64/apps\",\n"
-            "        \"cp -a bin/. /app/bin/\",\n"
-            "        \"cp -a lib/. /app/lib/\",\n"
-            "        \"cp -a share/. /app/share/\"\n"
-            "      ]\n"
-            "    }\n"
-            "  ]\n"
-            "}\n"
-        )
-    endif()
-
-    set(REFII_FLATPAK_STAGING_DIR "${CMAKE_BINARY_DIR}/package/flatpak")
-    set(REFII_FLATPAK_PAYLOAD_DIR "${REFII_FLATPAK_STAGING_DIR}/payload")
-    set(REFII_FLATPAK_MANIFEST_PATH "${REFII_FLATPAK_STAGING_DIR}/refii.json")
-    set(REFII_FLATPAK_BUILD_DIR "${REFII_FLATPAK_STAGING_DIR}/build")
-    set(REFII_FLATPAK_REPO_DIR "${REFII_FLATPAK_STAGING_DIR}/repo")
-    set(REFII_FLATPAK_OUTPUT "${REFII_BUILD_FLATPAK_OUTPUT_ROOT}/refii.flatpak")
-
-    add_custom_command(
-        OUTPUT "${REFII_FLATPAK_OUTPUT}"
-        COMMAND ${CMAKE_COMMAND} -E rm -rf "${REFII_FLATPAK_STAGING_DIR}"
-        COMMAND ${CMAKE_COMMAND} -E remove -f "${REFII_FLATPAK_OUTPUT}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_BUILD_FLATPAK_OUTPUT_ROOT}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "${REFII_FLATPAK_PAYLOAD_DIR}/bin"
-            "${REFII_FLATPAK_PAYLOAD_DIR}/lib"
-            "${REFII_FLATPAK_PAYLOAD_DIR}/share/applications"
-            "${REFII_FLATPAK_PAYLOAD_DIR}/share/icons/hicolor/64x64/apps"
-            "${REFII_FLATPAK_BUILD_DIR}"
-            "${REFII_FLATPAK_REPO_DIR}"
-        COMMAND ${OSTREE_EXECUTABLE}
-            init
-            --repo=${REFII_FLATPAK_REPO_DIR}
-            --mode=archive-z2
-        COMMAND ${OSTREE_EXECUTABLE}
-            config
-            --repo=${REFII_FLATPAK_REPO_DIR}
-            --group=core
-            set
-            min-free-space-percent
-            0
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_FLATPAK_LAUNCHER_WRAPPER_SOURCE}"
-            "${REFII_FLATPAK_PAYLOAD_DIR}/bin/refii-launcher"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:refii-launcher>"
-            "${REFII_FLATPAK_PAYLOAD_DIR}/bin/refii-launcher.bin"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:refii>"
-            "${REFII_FLATPAK_PAYLOAD_DIR}/bin/refii"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${REFII_LIBRARY_OUTPUT_DIR}"
-            "${REFII_FLATPAK_PAYLOAD_DIR}/lib"
-        COMMAND ${CMAKE_COMMAND}
-            "-DREFII_PACKAGE_EXECUTABLE_DIR=${REFII_FLATPAK_PAYLOAD_DIR}/bin"
-            "-DREFII_PACKAGE_LIBRARY_DIR=${REFII_FLATPAK_PAYLOAD_DIR}/lib"
-            "-DREFII_RUNTIME_SEARCH_DIRS=${REFII_PACKAGE_RUNTIME_SEARCH_DIRS}"
-            "-DREFII_RUNTIME_EXCLUDE_REGEXES=${REFII_FLATPAK_RUNTIME_EXCLUDE_REGEXES}"
-            -P "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT}"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${REFII_RUNTIME_DATA_DIR}/launcher/assets"
-            "${REFII_FLATPAK_PAYLOAD_DIR}/bin/assets/launcher/assets"
-        # Per-title metadata; see the AppImage staging above.
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_SOURCE_DIR}/assets/metadata"
-            "${REFII_FLATPAK_PAYLOAD_DIR}/bin/assets/metadata"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_FLATPAK_DESKTOP_SOURCE}"
-            "${REFII_FLATPAK_PAYLOAD_DIR}/share/applications/com.refii.refii.desktop"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_PACKAGE_ICON_SOURCE}"
-            "${REFII_FLATPAK_PAYLOAD_DIR}/share/icons/hicolor/64x64/apps/com.refii.refii.png"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_FLATPAK_MANIFEST_SOURCE}"
-            "${REFII_FLATPAK_MANIFEST_PATH}"
-        COMMAND ${FLATPAK_BUILDER_EXECUTABLE}
-            --state-dir=${REFII_FLATPAK_STAGING_DIR}/state
-            --force-clean
-            --disable-rofiles-fuse
-            --arch=${REFII_FLATPAK_ARCH}
-            --repo=${REFII_FLATPAK_REPO_DIR}
-            "${REFII_FLATPAK_BUILD_DIR}"
-            "${REFII_FLATPAK_MANIFEST_PATH}"
-        COMMAND ${FLATPAK_EXECUTABLE}
-            build-bundle
-            "${REFII_FLATPAK_REPO_DIR}"
-            "${REFII_FLATPAK_OUTPUT}"
-            "com.refii.refii"
-        DEPENDS
-            refii-launcher
-            refii
-            refii_core
-            refii_generated
-            ${REFII_PACKAGE_ICON_TARGET}
-            "${REFII_FLATPAK_LAUNCHER_WRAPPER_SOURCE}"
-            "${REFII_FLATPAK_DESKTOP_SOURCE}"
-            "${REFII_FLATPAK_MANIFEST_SOURCE}"
-            "${REFII_PACKAGE_ICON_SOURCE}"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-        COMMENT "Packaging Flatpak with flatpak-builder"
-        VERBATIM
-    )
-
-    add_custom_target(refii-flatpak DEPENDS "${REFII_FLATPAK_OUTPUT}")
-    list(APPEND REFII_PACKAGE_TARGETS refii-flatpak)
-    unset(OSTREE_EXECUTABLE)
-endif()
-
-if(REFII_PACKAGE_TARGETS)
-    if(REFII_BUILD_PACKAGES_IN_ALL)
-        add_custom_target(refii-packages ALL DEPENDS ${REFII_PACKAGE_TARGETS})
-    else()
-        add_custom_target(refii-packages DEPENDS ${REFII_PACKAGE_TARGETS})
-    endif()
-endif()
+# LAST, deliberately. The packaging target depends on every target that writes into
+# Godot/build/<arch>, and `if(TARGET ...)` only sees targets that already exist — declared
+# earlier it silently missed refii-stage-external-libs (defined further down) and would have
+# packaged a build without them.
+refii_define_godot_export_target()

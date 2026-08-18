@@ -7,6 +7,15 @@ public static class LauncherPaths
 {
     public static string? OverrideLauncherDirectory { get; set; }
 
+    /// <summary>
+    /// The app root — see <see cref="Refii.Core.Engine_AppRoot"/>.
+    /// </summary>
+    /// <remarks>
+    /// NOT <c>AppContext.BaseDirectory</c>, which is where the managed assemblies live: in
+    /// the editor that is <c>.godot/mono/temp/bin/Debug</c>, so the launcher wrote the
+    /// runtime config, the install and the save data into a build-intermediate directory
+    /// that the guest never reads and a clean rebuild deletes.
+    /// </remarks>
     public static string GetLauncherDirectory()
     {
         if (!string.IsNullOrEmpty(OverrideLauncherDirectory))
@@ -14,7 +23,7 @@ public static class LauncherPaths
             return OverrideLauncherDirectory!;
         }
 
-        return AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+        return Refii.Core.Engine_AppRoot.Path;
     }
 
     public static string GetBundledLauncherDataDirectory() =>

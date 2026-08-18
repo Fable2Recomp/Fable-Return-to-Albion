@@ -41,8 +41,24 @@ if (-not (Test-Path $ExportDir)) {
 # The staging root already has the layout the runtime expects: loose DLLs at the top and
 # the Godot-loaded natives under bin/. Copy it wholesale so nothing has to be enumerated
 # here and kept in sync with the CMake staging lists.
+#
+# EXCEPT bin/recompile — the generator, headers and import libraries used to build the game
+# code on the player's machine. That is ~600 MB, it is only ever read from the
+# build/<arch>/bin copy below (which is where Engine_NativeLibraries resolves natives and so
+# where GameCodeBuild anchors), and copying it here too would double it in the release for
+# nothing.
 Write-Host "Staging $Arch natives: $stagingRoot -> $ExportDir"
 Copy-Item -Path (Join-Path $stagingRoot '*') -Destination $ExportDir -Recurse -Force
+
+# Drop the flat copy's bin/recompile: the generator, headers and import libraries used to
+# build the game code on the player's machine are ~600 MB, and they are only ever read from
+# the build/<arch>/bin copy below — that is where Engine_NativeLibraries resolves natives
+# and so where GameCodeBuild anchors. Removed after the fact rather than filtered out of the
+# copy, because -Exclude matches top-level names and this sits under bin/.
+$flatRecompile = Join-Path $ExportDir "bin\recompile"
+if (Test-Path $flatRecompile) {
+    Remove-Item -Path $flatRecompile -Recurse -Force
+}
 
 # Engine_NativeLibraries searches build/<arch>/bin relative to the project directory, which
 # in an exported game is the directory holding the executable. Preserving that layout means

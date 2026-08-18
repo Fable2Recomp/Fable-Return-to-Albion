@@ -25,7 +25,13 @@ public static class Engine_SwfAssets
 
     public const string PathPrefix = "game://";
 
-    public const string CacheDirectory = "user://swf_cache";
+    /// <summary>Converted SWF assets: <c>&lt;app&gt;/cache/swf</c>.</summary>
+    /// <remarks>
+    /// In the app's cache container, not <c>user://</c> — this is derived data like every other
+    /// cache, and everything regenerable belongs in one folder inside the install.
+    /// </remarks>
+    public static string CacheDirectory =>
+        System.IO.Path.Combine(Refii.Core.Engine_AppRoot.CacheDirectory, "swf");
 
     private static readonly string BuildStamp =
         typeof(Engine_SwfAssets).Assembly.ManifestModule.ModuleVersionId.ToString("N")[..8];

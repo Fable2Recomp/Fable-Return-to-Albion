@@ -309,6 +309,11 @@ add_library(refii_lua ${REFII_LUA_LIBRARY_TYPE}
 target_include_directories(refii_lua
     PUBLIC
         ${REFII_LUA_INCLUDE_DIRS}
+        # For core/payload_bridge_string.h — the caller-buffer helper both bridge ABIs use.
+        # An include path only; refii_lua does not link refii_vfs. Copying the helper here
+        # instead would be a second implementation of the one thing that must behave
+        # identically on both sides of the boundary.
+        ${CMAKE_CURRENT_LIST_DIR}/../vfs/include
 )
 target_link_libraries(refii_lua
     PUBLIC

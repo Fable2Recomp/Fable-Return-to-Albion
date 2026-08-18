@@ -17,10 +17,12 @@ public partial class ReinstallPanel : VBoxContainer
 	private Button _unpackBanks = null!;
 	private Button _decompileLua = null!;
 	private Button _compileShaders = null!;
+	private Button _buildGameCode = null!;
 	private Button _buildAssets = null!;
 	private Label _unpackBanksStatus = null!;
 	private Label _decompileLuaStatus = null!;
 	private Label _compileShadersStatus = null!;
+	private Label _buildGameCodeStatus = null!;
 	private Label _operationLabel = null!;
 	private Label _statusLabel = null!;
 	private Label _errorLabel = null!;
@@ -35,6 +37,17 @@ public partial class ReinstallPanel : VBoxContainer
 	public event Action? UnpackBanksRequested;
 	public event Action? DecompileLuaRequested;
 	public event Action? CompileShadersRequested;
+
+	/// <summary>
+	/// Generate and compile the game code again.
+	/// </summary>
+	/// <remarks>
+	/// Separately runnable because it is the one install step that can be invalidated by
+	/// something outside the launcher: the module is built from a specific game executable,
+	/// and replacing that executable leaves a module whose every function address belongs
+	/// to a different binary.
+	/// </remarks>
+	public event Action? BuildGameCodeRequested;
 
 	/// <summary>
 	/// Build every modernized texture and material now, rather than during play.
@@ -90,9 +103,15 @@ public partial class ReinstallPanel : VBoxContainer
 		_compileShaders = AddTrackedAction("Compile Shaders",
 			() => CompileShadersRequested?.Invoke(), out _compileShadersStatus);
 
+		// Tracked on the MODULE, not on a marker file, because it is the module the runtime
+		// loads — and its tick has to go out when the installed executable changes, which is
+		// something no "did this step run" flag can notice.
+		_buildGameCode = AddTrackedAction("Build Game Code",
+			() => BuildGameCodeRequested?.Invoke(), out _buildGameCodeStatus);
+
 		// UNTRACKED, unlike the three above. Their tick comes from
 		// Installer.GetReinstallStepStatus, which reports on files the native installer writes;
-		// this one fills a cache under user:// that the installer knows nothing about, and a tick
+		// this one fills the app's own texture cache, which the installer knows nothing about, and a tick
 		// driven by "has anything been cached" would show complete after a single texture.
 		_buildAssets = AddAction(
 			"Build Modernized Assets", () => BuildModernizedAssetsRequested?.Invoke());
@@ -221,6 +240,7 @@ public partial class ReinstallPanel : VBoxContainer
 		_unpackBanks.Disabled = !moddingEnabled;
 		_decompileLua.Disabled = !moddingEnabled;
 		_compileShaders.Disabled = !moddingEnabled;
+		_buildGameCode.Disabled = !reinstallEnabled;
 
 		// GATED ON THE ASSETS EXISTING, like the other three, because there is nothing to build
 		// from without them — and on the game not running, because the prebuild and a live session
@@ -231,6 +251,7 @@ public partial class ReinstallPanel : VBoxContainer
 		SetStatus(_unpackBanksStatus, status.Banks);
 		SetStatus(_decompileLuaStatus, status.Lua);
 		SetStatus(_compileShadersStatus, status.Shaders);
+		SetStatus(_buildGameCodeStatus, !Recompile.GameCodeBuild.NeedsBuildCached(out _));
 	}
 
 	private static void SetStatus(Label label, bool done) =>

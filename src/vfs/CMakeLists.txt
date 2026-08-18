@@ -27,9 +27,16 @@ set(REFII_VFS_RUNTIME_SOURCES
     # the Stage 2 voice hooks (refii_generated), the Stage 1 driver (refii_host) and the
     # host bridge all link refii_vfs, so this is the one place they can agree.
     ${REFII_VFS_ROOT}/src/core/audio_state.cpp
+    # Host side of the payload's log bridge. Must be in refii_vfs, which the payload links,
+    # and NOT in the hook set: the hooks compile into the payload, which is the caller.
+    ${REFII_VFS_ROOT}/src/core/log_bridge.cpp
+    ${REFII_VFS_ROOT}/src/core/rex_bridge_host.cpp
 )
 
 set(REFII_VFS_HOOK_INTERNAL_SOURCES
+    # Payload-side definitions of the rex:: symbols the generated code calls, forwarding to
+    # the C entries in core/rex_payload_bridge.h. PAYLOAD ONLY — see the file header.
+    ${REFII_VFS_ROOT}/src/core/rex_bridge_payload.cpp
     ${REFII_VFS_ROOT}/src/core/internal_state_guest.cpp
     ${REFII_VFS_ROOT}/src/streams/host_stream_records.cpp
     ${REFII_VFS_ROOT}/src/streams/host_disk_stream_objects.cpp

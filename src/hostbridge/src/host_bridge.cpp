@@ -856,7 +856,21 @@ extern "C" {
 ///    can follow the guest's own choice instead of re-deriving it from inputs it would have to
 ///    guess at. The velocity/control pair it tests against is NOT included, and deliberately:
 ///    that context is a stack temporary built per tick in sub_8228D058 and is not resident.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 56; }
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 57; }
+
+/// States which directory owns this install, before the guest is brought up.
+///
+/// Embedded, the guest cannot work this out for itself: GetExecutableFolder() is the
+/// HOST's directory — Godot's — so its refii.toml, saves and cache land beside whatever
+/// binary is hosting it. In a dev tree that is the user's Godot install, a file the
+/// launcher never writes, so every setting the player changed was read from a config the
+/// guest had never seen. Godot knows where the app lives; this is it saying so.
+///
+/// Must be called BEFORE RefiiHostInitialize: paths are resolved once, during startup.
+REFII_HOST_ABI_EXPORT void RefiiHostSetAppRoot(const char* root) {
+    RefiiSetAppRoot(root != nullptr && root[0] != '\0' ? std::filesystem::path{root}
+                                                       : std::filesystem::path{});
+}
 
 // ---------------------------------------------------------------------------------
 // Audio

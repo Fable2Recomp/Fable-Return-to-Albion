@@ -1,6 +1,7 @@
 #include "runtime/replacement_paths.h"
 
 #include <algorithm>
+#include <cstring>
 #include <cctype>
 #include <filesystem>
 #include <string>
@@ -256,7 +257,7 @@ bool SelectReplacementRoot(std::string_view asset_path,
 
 }  // namespace
 
-bool ResolveRefiiReplacementPath(
+bool ResolveRefiiReplacementPathImpl(
     std::string_view asset_path,
     RefiiReplacementPathResolution* out_resolution) {
   if (!RefiiLooseAssetBackendEnabled() || out_resolution == nullptr) {
@@ -341,6 +342,59 @@ bool ResolveRefiiReplacementPath(
     }
   }
   return true;
+}
+
+
+// --- The payload/host C ABI ----------------------------------------------------------
+//
+// RefiiReplacementPathResolution flattened into its four strings and two flags. See
+// core/payload_bridge.h: strings go into the caller's buffer, nothing crosses owned.
+
+namespace {
+
+size_t ReplacementCopyOut(const std::string& value, char* out, size_t capacity) {
+  if (out != nullptr && capacity > 0) {
+    size_t take = value.size() < capacity ? value.size() : capacity;
+    std::memcpy(out, value.data(), take);
+  }
+  return value.size();
+}
+
+}  // namespace
+
+extern "C" int32_t refii_bridge_vfs_resolve_refii_replacement_path(
+    const char* path, size_t length,
+    char* host_path, size_t host_path_capacity, size_t* out_host_path_length,
+    char* normalized_key, size_t normalized_key_capacity, size_t* out_normalized_key_length,
+    char* provider_relative, size_t provider_relative_capacity,
+    size_t* out_provider_relative_length,
+    char* root_name, size_t root_name_capacity, size_t* out_root_name_length,
+    int32_t* out_exists, int32_t* out_is_directory) {
+  RefiiReplacementPathResolution resolution;
+  if (!ResolveRefiiReplacementPathImpl(std::string_view(path, length), &resolution)) {
+    return 0;
+  }
+
+  size_t host_length =
+      ReplacementCopyOut(resolution.resolution.host_path.string(), host_path,
+                         host_path_capacity);
+  size_t key_length = ReplacementCopyOut(resolution.resolution.normalized_key,
+                                         normalized_key, normalized_key_capacity);
+  size_t relative_length =
+      ReplacementCopyOut(resolution.resolution.provider_relative_path, provider_relative,
+                         provider_relative_capacity);
+  size_t root_length =
+      ReplacementCopyOut(resolution.root_name, root_name, root_name_capacity);
+
+  if (out_host_path_length != nullptr) { *out_host_path_length = host_length; }
+  if (out_normalized_key_length != nullptr) { *out_normalized_key_length = key_length; }
+  if (out_provider_relative_length != nullptr) {
+    *out_provider_relative_length = relative_length;
+  }
+  if (out_root_name_length != nullptr) { *out_root_name_length = root_length; }
+  if (out_exists != nullptr) { *out_exists = resolution.exists ? 1 : 0; }
+  if (out_is_directory != nullptr) { *out_is_directory = resolution.is_directory ? 1 : 0; }
+  return 1;
 }
 
 }  // namespace refii::vfs

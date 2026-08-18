@@ -220,13 +220,16 @@ public static class Engine_TexEnhance
 				// once it is a player may have no suitable Vulkan device — asking for the neural
 				// model and getting nothing at all would be worse than getting the classical one,
 				// so the log says which arrived.
-				// BESIDE THE BUILD, which is where the native library is staged and where the
-				// weights are documented to live. res:// is the project, not the build output.
-				// Per-architecture, matching where the native build stages this arch's
-				// closure — a flat build/bin cannot hold an x86_64 and an ARM64 copy of
-				// the same DLL at once.
-				string weightsDirectory = Refii.Core.Engine_NativeLibraries.StagedBinDirectory(
-					ProjectSettings.GlobalizePath("res://"));
+				// BESIDE THE NATIVE LIBRARY THAT LOADS THEM, resolved from the app root.
+				//
+				// NOT res://. Exported, res:// globalizes to the executable's own directory, so
+				// StagedBinDirectory asked for <app>/build/<arch>/bin — and an exported app has no
+				// build/ directory at all, which made the neural backend unreachable in every
+				// shipped build while declining silently to the classical resampler.
+				// Engine_AppRoot.BinDirectory is Godot/build/<arch>/bin in the editor and
+				// <app>/bin exported: the same directory librefii_upscaler is staged into, in
+				// both layouts.
+				string weightsDirectory = Refii.Core.Engine_AppRoot.BinDirectory;
 
 				ITexUpscaler? neural = Engine_TexRealEsrgan.TryCreate(
 					weightsDirectory, Engine_TexSettings.Weights);

@@ -62,7 +62,20 @@ target_link_libraries(refii_upscaler PRIVATE ncnn)
 # The directory is a cache variable so this component can be configured STANDALONE — building it
 # on its own avoids running the main project's rexglue codegen, which writes into the source tree
 # and must not run concurrently with somebody else's build.
-set(REFII_UPSCALER_STAGE_DIR "${CMAKE_SOURCE_DIR}/Godot/build/bin"
+# PER-ARCHITECTURE, matching where every other native is staged and where
+# Engine_AppRoot.BinDirectory looks. The old default was the pre-split flat Godot/build/bin;
+# once the rest moved to Godot/build/<arch>/bin this kept staging one directory over, so the
+# library and its weights sat somewhere nothing loaded from and the neural backend declined
+# with the classical resampler taking over silently.
+if(NOT REFII_GODOT_ARCH)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+        set(REFII_GODOT_ARCH "arm64")
+    else()
+        set(REFII_GODOT_ARCH "x86_64")
+    endif()
+endif()
+
+set(REFII_UPSCALER_STAGE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../Godot/build/${REFII_GODOT_ARCH}/bin"
     CACHE PATH "Where refii_upscaler is staged for Godot to load")
 
 add_custom_command(TARGET refii_upscaler POST_BUILD

@@ -11,8 +11,17 @@ public static class Installer
     public static string GetInstalledExecutablePath() =>
         Path.Combine(Platform.GetExecutableDirectory(), Platform.ExecutableName);
 
+    /// <summary>
+    /// The runtime config, at the app root.
+    /// </summary>
+    /// <remarks>
+    /// The guest resolves this same file, so it cannot hang off the standalone
+    /// executable's directory: under the Godot host there is no standalone executable, and
+    /// in a dev tree that search picked whichever build output it found first — writing
+    /// settings into a config the running guest never reads.
+    /// </remarks>
     public static string GetRuntimeConfigPath() =>
-        Path.Combine(Platform.GetExecutableDirectory(), "refii.toml");
+        Refii.Core.Engine_AppRoot.ConfigPath;
 
     public static string GetGameDataDirectoryName() =>
         Ini.GetString("GameDataDirectory", "game", "Game");
@@ -170,6 +179,28 @@ public static class Installer
     public static string GetLuaWorkspacePath() =>
         Path.Combine(GetWorkspaceBasePath(GetActiveGameDataDirectoryPath()), "unpacked");
 
+    /// <summary>
+    /// The game executable the recompiler reads, inside the installed game data.
+    /// </summary>
+    public static string GetGameExecutablePath() =>
+        Path.Combine(GetActiveGameDataDirectoryPath(), "default.xex");
+
+    /// <summary>
+    /// Where the generator writes the recompiled C++, beside the installed game data.
+    /// </summary>
+    /// <remarks>
+    /// A SIBLING of <c>game</c> and <c>unpacked</c>, resolved the same way they are, because
+    /// it is derived from the same install and has to follow it. Anchoring this on the
+    /// native library directory instead put it under <c>build/&lt;arch&gt;/bin</c> while the
+    /// installer wrote the game to <c>assets/game</c> — two different roots, so the build
+    /// looked for an executable nothing had written. It also has to follow the install on a
+    /// packaged Linux build, where the data root is under XDG rather than beside the app.
+    ///
+    /// Deleted once the module is built; nothing may be kept here.
+    /// </remarks>
+    public static string GetGeneratedCodeDirectoryPath() =>
+        Path.Combine(GetWorkspaceBasePath(GetActiveGameDataDirectoryPath()), "generated");
+
     public readonly record struct ReinstallStepStatus(bool Banks, bool Lua, bool Shaders);
 
     private const long StepStatusTtlMs = 1000;
@@ -278,7 +309,25 @@ public static class Installer
 
     public static bool AssetsExist() => ResolveGameDataDirectory().Length > 0;
 
-    public static bool InstalledBuildExists() => File.Exists(GetInstalledExecutablePath());
+    /// <summary>
+    /// Whether refii's own runtime is present — NOT whether the game is installed.
+    /// </summary>
+    /// <remarks>
+    /// THE HOST BRIDGE IS THE RUNTIME. This used to test for a standalone <c>refii</c>
+    /// executable beside the app, which no longer ships: Godot hosts the guest in its own
+    /// process, so there is no second binary to find. An exported build therefore always
+    /// failed the test and reported "Missing Runtime Files" while being perfectly intact.
+    ///
+    /// A false answer here means the APP is broken — a bad package, a missing native — and
+    /// installing the game cannot fix it. Whether the player's game is installed is
+    /// <see cref="AssetsExist"/>, and whether its code is built is
+    /// <c>GameCodeBuild.NeedsBuild</c>.
+    /// </remarks>
+    public static bool InstalledBuildExists() =>
+        File.Exists(Path.Combine(
+            Refii.Core.Engine_AppRoot.BinDirectory,
+            Refii.Core.Engine_NativeLibraries.FileNameFor("refii_hostbridge"))) ||
+        File.Exists(GetInstalledExecutablePath());
 
     public static bool UninstallManagedFiles(out string log)
     {

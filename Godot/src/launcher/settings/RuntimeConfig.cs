@@ -156,6 +156,23 @@ public static class RuntimeConfig
             }
         }
 
+        // ONE CACHE CONTAINER, STATED RATHER THAN DERIVED.
+        //
+        // cache_root is a real cvar — rex_app.cpp reads it and uses it when non-empty — but
+        // nothing ever WROTE it, so the SDK fell back to deriving it from user_data_root and the
+        // guest cached into assets/save/cache. That put regenerable data inside the one directory
+        // a player can never regenerate, and split the app's cache in two: the guest's under
+        // save, the managed side's somewhere else entirely.
+        //
+        // Anchored on the same Engine_AppRoot.CacheDirectory the texture cache uses, so the guest
+        // and Godot agree and clearing derived data is one folder. UpdateDefaultPath leaves a
+        // value the player set themselves alone.
+        changed |= UpdateDefaultPath(
+            values,
+            "cache_root",
+            ToGeneric(Path.Combine(Installer.GetInstallBasePath(), "assets", "save", "cache")),
+            ToGeneric(Refii.Core.Engine_AppRoot.CacheDirectory));
+
         return changed ? WriteValues(configPath, values, out error) : true;
     }
 

@@ -1,0 +1,16 @@
+# Submodules retired 2026-08-18 with src/launcher and src/renderer.
+# Pins and URLs as of 98ba332d, so the archived trees can be rebuilt.
+#
+# Restore a path with:
+#   git checkout <that-commit> -- .gitmodules
+#   git submodule update --init --recursive <path>
+
+PATH                                                     PINNED COMMIT                              URL
+src/launcher/vendors/glfw                                fdd14e65b1c29e4e6df875fb5669ec00d6793531   https://github.com/glfw/glfw.git
+src/launcher/vendors/imgui                               60d7fb207eeb46d6363dd4bde10b35991bae0ce7   https://github.com/ocornut/imgui.git
+src/launcher/vendors/stb                                 904aa67e1e2d1dec92959df63e700b166d5c1022   https://github.com/nothings/stb.git
+src/renderer/thirdparty/plume/contrib/D3D12MemoryAllocator 9ef66bc14edd10dee0de3a545b98578363552f66   https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator
+src/renderer/thirdparty/plume/contrib/Vulkan-Headers     2fa203425eb4af9dfc6b03f97ef72b0b5bcb8350   https://github.com/KhronosGroup/Vulkan-Headers
+src/renderer/thirdparty/plume/contrib/VulkanMemoryAllocator 29b35ea4232688c0f42cdff0c10848290760a417   https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+src/renderer/thirdparty/plume/contrib/volk               be3dbd49bf77052665e96b6c7484af855e7e5f67   https://github.com/zeux/volk
+src/renderer/thirdparty/renderdoc                        a9bafd27237262a7ae1e0cff6729573e917f1c4b   https://github.com/baldurk/renderdoc

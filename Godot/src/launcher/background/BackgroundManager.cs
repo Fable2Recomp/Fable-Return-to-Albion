@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using Godot;
 using Refii.Launcher.Core;
@@ -88,9 +89,28 @@ public sealed class BackgroundManager
 		string entry = dir.GetNext();
 		while (entry.Length != 0)
 		{
-			if (!dir.CurrentIsDir() && IsImage(entry))
+			if (!dir.CurrentIsDir())
 			{
-				names.Add(entry);
+				// An EXPORT packs the imported resource, not the source image: the
+				// directory lists "foo.png.import" (and ".remap" where a resource was
+				// remapped), while ResourceLoader still wants the original path. Stripping
+				// the suffix is what makes this work in an exported build — rejecting
+				// ".import" outright, as IsImage does, finds every background in the editor
+				// and none once shipped.
+				string name = entry;
+				if (name.EndsWith(".import", StringComparison.OrdinalIgnoreCase))
+				{
+					name = name[..^".import".Length];
+				}
+				else if (name.EndsWith(".remap", StringComparison.OrdinalIgnoreCase))
+				{
+					name = name[..^".remap".Length];
+				}
+
+				if (IsImage(name) && !names.Contains(name, StringComparer.OrdinalIgnoreCase))
+				{
+					names.Add(name);
+				}
 			}
 
 			entry = dir.GetNext();

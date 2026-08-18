@@ -90,6 +90,25 @@ PPC_EXTERN_FUNC(sub_826DFD58);
 // `XGetOverlappedResult(..., bWait=1)`. Asking them before the user has been through a device
 // picker returns a confident zero. `sub_82443308` asks the question directly and is why the
 // guest's own Load Game guard uses it rather than the vector it fills later.
+// The STORAGE DEVICE PICKER, and the only writer of the save manager's device map.
+//
+// Decompiled from the TU image (0.0.1.26), not taken from a summary:
+//
+//   82441d88  j_XamShowDeviceSelectorUI(userIndex, 1, 0, size, &deviceId, ov)
+//   82441d98  XGetOverlappedResult(ov, 0, 1)        ; bWait=1 — IT BLOCKS
+//   82441dac  slot = sub_8244A0C8(saveMgr + 2028, &userIndex)   ; 2028 = 0x7EC
+//   82441dbc  *slot = deviceId
+//   82441dcc  return deviceId != 0
+//
+// `saveMgr + 0x7EC` is measured from the FIRST ARGUMENT, which the guest builds at 0x826E008C
+// as `*(*(0x83496AC0 + 0xC) + 0x28)`. Every "how many saves are there" sibling except
+// `sub_82443308` reads that map, so without this call they answer a confident zero.
+//
+// Safe to block here: our XamShowDeviceSelectorUI returns X_ERROR_IO_PENDING and completes on
+// the KERNEL DISPATCH thread via CompleteOverlappedDeferred, not on this one. Costs the
+// dispatcher's fixed 100ms, once, at New Game.
+PPC_EXTERN_FUNC(sub_82441CB8);
+
 PPC_EXTERN_FUNC(sub_82443308);
 
 // Frontend_SetStartGameTarget — the LOAD commit, and it commits by itself.
@@ -193,6 +212,15 @@ void RefreshGuestSavedGameCount() {
 /// while the front end is down is a fault, not a no-op.
 constexpr uint32_t kFrontEndState = 0x83496AC0u;
 
+/// The signed-in user index, and the mask of which pads are signed in. Read exactly as the
+/// guest's own New Game guard reads them at 0x826E0064/0x826E0068.
+constexpr uint32_t kSignedInUserIndex = 0x83496AF8u;
+constexpr uint32_t kSignedInUserMask = 0x83496A70u;
+
+/// saveMgr = *(*(kFrontEndState + 0xC) + 0x28), per 0x826E0084..0x826E008C.
+constexpr uint32_t kGameStateOffset = 0x0Cu;
+constexpr uint32_t kSaveManagerOffset = 0x28u;
+
 /// The interned `BOY_SELECTED` / `GIRL_SELECTED` event ids.
 ///
 /// Interned at static init as `sub_82189140(literal) & 0x7FFFFFFF` and stored here, so the
@@ -248,10 +276,72 @@ constexpr uint32_t kEventGirlSelected = 0x8349B5A4u;
 /// `stw r11, 0x18(r3)`, so passing a junk r3 with one of those ids would corrupt the screen.
 ///
 /// Returns false when the front end is not up, leaving the action queued.
+/// Runs the guest's own storage-device selection, so the game that starts can be saved.
+///
+/// GODOT OWNS THE CARD, NOT THE GUARDS. `StartNewGame` goes straight to the commit because
+/// `GUI_FrontendRoot_MenuActionDispatch`'s "New Game" branch only reaches the gender card —
+/// but that branch is also where the guest's three guards live, and the second one
+/// (0x826E0094) is this call. Skipping the dispatcher skipped the picker, so the device map at
+/// `saveMgr+0x7EC` stayed empty and the resulting game could never write a save: no
+/// XamShowDeviceSelectorUI and no XamContentCreate appeared in a whole session's log, while
+/// Load Game enumerated zero for ever.
+///
+/// Only the DEVICE guard is reproduced. The sign-in test is cheap and is repeated here because
+/// the picker is pointless without it; the slot-cap test is the guest's own business on the
+/// commit path and is not duplicated.
+///
+/// Idempotent in effect: the guest calls this on its own Load Game branch too (0x826E03A0), and
+/// re-running it just re-selects the same device.
+bool SelectStorageDevice(PPCContext& ctx, uint8_t* base) {
+  const uint32_t game = LoadGuestU32(base, kFrontEndState);
+  if (game == 0) {
+    return false;
+  }
+
+  const uint32_t userIndex = LoadGuestU32(base, kSignedInUserIndex);
+  const uint32_t signedIn = LoadGuestU32(base, kSignedInUserMask);
+  if (((1u << userIndex) & signedIn) == 0) {
+    // GUARD 1, 0x826E0078. Nobody is signed in, so there is no profile to pick a device for.
+    return false;
+  }
+
+  const uint32_t state = LoadGuestU32(base, game + kGameStateOffset);
+  if (state == 0) {
+    return false;
+  }
+  const uint32_t saveManager = LoadGuestU32(base, state + kSaveManagerOffset);
+  if (saveManager == 0) {
+    return false;
+  }
+
+  // Our own gap on the guest stack, for the same reason StartNewGame claims one: the callee
+  // frames below r1 and this is a call the function we are riding never made here.
+  const PPCContext saved = ctx;
+  ctx.r1.u32 = (ctx.r1.u32 - 0x40u) & ~0xFu;
+  ctx.r3.u32 = saveManager;
+  ctx.r4.u32 = userIndex;
+  ctx.r5.u32 = 1u;  // a3: compute the required size, as the guest passes at 0x826E0080
+
+  sub_82441CB8(ctx, base);
+
+  const bool selected = (ctx.r3.u32 & 0xFFu) != 0;
+  ctx = saved;
+  return selected;
+}
+
 bool StartNewGame(PPCContext& ctx, uint8_t* base, bool female) {
   const uint32_t frontend = LoadGuestU32(base, kFrontEndState);
   if (frontend == 0) {
     return false;
+  }
+
+  // BEFORE THE COMMIT, because the save manager records the device against the user and the
+  // new game reads it the first time it tries to write. Not fatal when it fails: a player with
+  // no writable device still gets to play, exactly as the guest allows, and the first save is
+  // where they find out — which is the guest's own behaviour, not ours.
+  if (!SelectStorageDevice(ctx, base)) {
+    REXLOG_WARN(
+        "Refii: no storage device selected; this game will not be able to save");
   }
 
   const uint32_t event =

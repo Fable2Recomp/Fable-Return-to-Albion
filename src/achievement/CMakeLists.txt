@@ -35,7 +35,10 @@ target_include_directories(refii_achievement_ui
     PUBLIC
         ${REFII_ACHIEVEMENT_INCLUDE_DIRS}
     PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/launcher/vendors/stb
+        # stb from the ReXGlue SDK, which this target already builds against. It used to come
+        # from src/launcher/vendors/stb — a submodule of the ImGui launcher, retired 2026-08-18,
+        # which took the only copy of stb_image.h in the tree with it.
+        ${REFII_REXGLUE_SDK_SOURCE_DIR}/thirdparty/stb
 )
 target_link_libraries(refii_achievement_ui
     PUBLIC

@@ -21,6 +21,8 @@
 
 #include <cstdint>
 
+#include "core/payload_bridge.h"
+
 namespace refii::vfs {
 
 // ---------------------------------------------------------------------------------
@@ -125,16 +127,35 @@ struct VoiceRecord {
 /// section (unk_832F0464, taken by every 0x82CD9xxx shim), so the guest never calls them
 /// concurrently with each other — but the HOST reads on its own thread, so the state
 /// itself is still synchronised.
-void NoteVoiceCreated(uint32_t handle, uint32_t sample_rate, uint32_t channels);
-void NoteVoiceDestroyed(uint32_t handle);
-void NoteVoiceStarted(uint32_t handle);
-void NoteVoiceStopped(uint32_t handle, bool immediate);
-void NoteVoiceVolume(uint32_t handle, float linear_volume);
-void NoteVoicePitchOctaves(uint32_t handle, float octaves);
+///
+/// These forward to the C entries in core/payload_bridge.h: the hooks calling them compile
+/// into librefii_generated.so on the player's machine, and a C++ symbol crossing that
+/// boundary would pin the payload to our exact compiler and standard library. Inline, so
+/// the call site emits the same cross-module call it always did.
+inline void NoteVoiceCreated(uint32_t handle, uint32_t sample_rate, uint32_t channels) {
+    refii_bridge_note_voice_created(handle, sample_rate, channels);
+}
+inline void NoteVoiceDestroyed(uint32_t handle) {
+    refii_bridge_note_voice_destroyed(handle);
+}
+inline void NoteVoiceStarted(uint32_t handle) {
+    refii_bridge_note_voice_started(handle);
+}
+inline void NoteVoiceStopped(uint32_t handle, bool immediate) {
+    refii_bridge_note_voice_stopped(handle, immediate ? 1 : 0);
+}
+inline void NoteVoiceVolume(uint32_t handle, float linear_volume) {
+    refii_bridge_note_voice_volume(handle, linear_volume);
+}
+inline void NoteVoicePitchOctaves(uint32_t handle, float octaves) {
+    refii_bridge_note_voice_pitch_octaves(handle, octaves);
+}
 
 /// The guest's six speaker gains, in XAudio's order (fl, fr, fc, lfe, bl, br). Folded to
 /// a stereo balance here so every consumer gets the same answer.
-void NoteVoiceChannelVolumes(uint32_t handle, const float* gains, uint32_t count);
+inline void NoteVoiceChannelVolumes(uint32_t handle, const float* gains, uint32_t count) {
+    refii_bridge_note_voice_channel_volumes(handle, gains, count);
+}
 
 /// Copies submitted PCM into the voice's ring. The guest reuses its buffers as its own
 /// retire callback drains them, so holding the pointer would be a use-after-free; this
@@ -144,7 +165,9 @@ void NoteVoiceChannelVolumes(uint32_t handle, const float* gains, uint32_t count
 /// drains these rings, so collecting with playback off fills them and then reports the
 /// overflow as a fault. The lifecycle calls above stay on regardless; they cost a table
 /// entry, not a copy per submit.
-void NoteVoicePcm(uint32_t handle, const void* pcm, uint32_t byte_count);
+inline void NoteVoicePcm(uint32_t handle, const void* pcm, uint32_t byte_count) {
+    refii_bridge_note_voice_pcm(handle, pcm, byte_count);
+}
 
 /// Snapshots every live voice. Returns how many were written; pass a null buffer to
 /// count. Slots whose `retired` has been read are freed by this call.

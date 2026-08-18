@@ -31,7 +31,7 @@ public static class HostBridge
 	/// the game does not limp, it stops, and it stops before anything has written a guest log
 	/// segment to look in. Adding export 33 without touching this line is what that looks like.
 	/// </summary>
-	public const int ExpectedAbiVersion = 56;
+	public const int ExpectedAbiVersion = 57;
 
 	private const int MessageCapacity = 512;
 
@@ -290,6 +290,11 @@ public static class HostBridge
 
 		try
 		{
+			// BEFORE the guest comes up: paths are resolved once during its startup. Without
+			// this the guest reads its refii.toml beside the Godot binary rather than beside
+			// the app, so nothing the launcher writes reaches it.
+			RefiiHostSetAppRoot(Refii.Core.Engine_AppRoot.Path);
+
 			int ok = RefiiHostInitialize(gameDirectory, packed, message, (nuint)message.Length);
 			if (ok == 1)
 			{
@@ -2961,6 +2966,10 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern int RefiiHostJoin(byte[] message, nuint capacity);
+
+	[DllImport(Library, CharSet = CharSet.Ansi)]
+	private static extern void RefiiHostSetAppRoot(
+		[MarshalAs(UnmanagedType.LPUTF8Str)] string root);
 
 	[DllImport(Library, CharSet = CharSet.Ansi)]
 	private static extern int RefiiHostInitialize(
