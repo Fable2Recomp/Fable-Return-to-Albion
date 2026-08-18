@@ -401,6 +401,7 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Level.Engine_BnkTerrainMaterialLoader.SetResolver(ResolveBytes);
         Refii.Level.Engine_BnkTerrainMaterialLoader.SetNameLookup(FindByFileName);
         Refii.Level.Engine_Clouds.SetTexturePathSource(EnumerateTexturePaths);
+        Refii.Textures.Engine_TexPathIndex.SetPathSource(EnumerateTexturePaths);
         Refii.Level.Engine_PropModelIndex.SetModelSource(EnumerateModelAssets);
         Refii.Level.Engine_StreamingCandidates.SetHintSource(EnumerateStreamingHints);
         Refii.Entities.Engine_EntityIndex.SetResolver(ResolveBytes);
@@ -573,6 +574,7 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Level.Engine_BnkTerrainMaterialLoader.SetNameLookup(null);
         Refii.Animations.Engine_AnimCatalog.SetFileSource(null);
         Refii.Hero.Engine_HeroCatalog.SetModelSource(null);
+        Refii.Textures.Engine_TexPathIndex.SetPathSource(null);
         _byFileName = null;
     }
 

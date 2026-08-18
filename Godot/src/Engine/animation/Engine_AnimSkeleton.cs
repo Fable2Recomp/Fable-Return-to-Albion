@@ -64,17 +64,22 @@ public static class Engine_AnimSkeleton
         }
 
         Skeleton3D skeleton = Build(rig.Names, rig.Parents);
-        var transform = new float[Engine_MdlMesh.BoneRestStride];
+        ApplyRests(skeleton, rig);
+        return skeleton;
+    }
 
-        for (int i = 0; i < rig.BoneCount; i++)
+    public static void ApplyRests(Skeleton3D skeleton, Engine_MdlRig rig)
+    {
+        var transform = new float[Engine_MdlMesh.BoneRestStride];
+        int count = System.Math.Min(rig.BoneCount, skeleton.GetBoneCount());
+
+        for (int i = 0; i < count; i++)
         {
             System.Array.Copy(
                 rig.Rest, i * Engine_MdlMesh.BoneRestStride, transform, 0, transform.Length);
 
             ApplyRest(skeleton, i, transform);
         }
-
-        return skeleton;
     }
 
     private static Skeleton3D Build(IReadOnlyList<string> names, IReadOnlyList<int> parents)

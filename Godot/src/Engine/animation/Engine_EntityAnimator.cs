@@ -295,17 +295,53 @@ public partial class Engine_EntityAnimator : Node3D
 		surface.Skeleton = surface.GetPathTo(skeleton);
 	}
 
-	private static string? RootBone(Skeleton3D skeleton)
+	public void Rebind()
+	{
+		Skeleton3D? skeleton = Skeleton;
+		if (skeleton is null || GetParent() is not MeshInstance3D surface)
+		{
+			return;
+		}
+
+		if (Engine_MdlRig.TryFrom(surface.Mesh) is not Engine_MdlRig rig ||
+			rig.BoneCount != skeleton.GetBoneCount())
+		{
+			Bind(skeleton);
+			return;
+		}
+
+		int root = RootIndex(skeleton);
+		Vector3 before = root >= 0 ? skeleton.GetBoneRest(root).Origin : Vector3.Zero;
+
+		Engine_AnimSkeleton.ApplyRests(skeleton, rig);
+
+		if (root >= 0 && !skeleton.GetBoneRest(root).Origin.IsEqualApprox(before))
+		{
+			Clear();
+			Build();
+			return;
+		}
+
+		Bind(skeleton);
+	}
+
+	private static int RootIndex(Skeleton3D skeleton)
 	{
 		for (int bone = 0; bone < skeleton.GetBoneCount(); bone++)
 		{
 			if (skeleton.GetBoneParent(bone) < 0)
 			{
-				return skeleton.GetBoneName(bone);
+				return bone;
 			}
 		}
 
-		return null;
+		return -1;
+	}
+
+	private static string? RootBone(Skeleton3D skeleton)
+	{
+		int root = RootIndex(skeleton);
+		return root < 0 ? null : skeleton.GetBoneName(root);
 	}
 
 	private static bool FullySkinned(Mesh mesh)

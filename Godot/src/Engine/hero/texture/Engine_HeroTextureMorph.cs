@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Godot;
 using Refii.Gdb;
 using Refii.Level;
+using Refii.Textures;
 
 namespace Refii.Hero;
 
@@ -21,9 +22,25 @@ public static class Engine_HeroTextureMorph
 
     public const float OverlayMinWeight = 0.05f;
 
+    private sealed class DecodedTexture
+    {
+        public int Width { get; set; }
+
+        public int Height { get; set; }
+
+        public bool HasAlpha { get; set; }
+
+        public bool Ok { get; set; }
+
+        public byte[] Rgba { get; set; } = Array.Empty<byte>();
+    }
+
     private static readonly object MorphLock = new();
 
     private static readonly Dictionary<string, ImageTexture> Composited =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly Dictionary<string, DecodedTexture> DecodedCache =
         new(StringComparer.OrdinalIgnoreCase);
 
     private static Func<string, byte[]?>? _resolver;
@@ -37,6 +54,7 @@ public static class Engine_HeroTextureMorph
             _resolver = resolver;
             _pairs = null;
             Composited.Clear();
+            DecodedCache.Clear();
         }
     }
 
@@ -46,6 +64,7 @@ public static class Engine_HeroTextureMorph
         {
             _pairs = null;
             Composited.Clear();
+            DecodedCache.Clear();
         }
     }
 
@@ -72,7 +91,8 @@ public static class Engine_HeroTextureMorph
         }
 
         List<TextureMorphPair> built = Engine_GdbTextureMorphs.Build(GdbMulti.Build(blobs));
-        GD.Print($"[morph] {built.Count} texture morph pair(s)");
+        GD.Print($"[morph] {built.Count} texture morph pair(s), " +
+            $"{Engine_TexPathIndex.Count} texture(s) indexed");
 
         lock (MorphLock)
         {
@@ -133,7 +153,7 @@ public static class Engine_HeroTextureMorph
             return null;
         }
 
-        uint hash = Engine_PropModelIndex.PathHash(textureName);
+        uint hash = Engine_TexPathIndex.PathHash(textureName);
         if (!active.TryGetValue(hash, out List<TextureMorphEntry>? entries))
         {
             return null;
@@ -144,29 +164,24 @@ public static class Engine_HeroTextureMorph
 
         foreach (TextureMorphEntry entry in entries)
         {
-            string? target = Engine_PropModelIndex.Resolve(
-                entry.MorphHash, Array.Empty<string>());
-
+            string? target = Engine_TexPathIndex.Resolve(entry.MorphHash);
             if (target is null)
             {
                 continue;
             }
 
-            Image? decoded = Decode(target);
+            DecodedTexture decoded = Decode(target);
             int quantized = Quantize(entry.Weight);
 
-            if (decoded is null)
+            if (!decoded.Ok)
             {
                 if (entry.Weight >= ReplaceThreshold)
                 {
                     baseName = target;
                     overlays.Clear();
                 }
-
-                continue;
             }
-
-            if (!HasAlpha(decoded) && quantized >= 4)
+            else if (!decoded.HasAlpha && quantized >= 4)
             {
                 baseName = target;
                 overlays.Clear();
@@ -177,19 +192,18 @@ public static class Engine_HeroTextureMorph
             }
         }
 
-        if (overlays.Count == 0)
+        if (overlays.Count == 0 &&
+            baseName.Equals(textureName, StringComparison.OrdinalIgnoreCase))
         {
-            return baseName.Equals(textureName, StringComparison.OrdinalIgnoreCase)
-                ? null
-                : Load(baseName);
+            return null;
         }
 
         var key = new System.Text.StringBuilder();
-        key.Append(Engine_PropModelIndex.PathHash(baseName).ToString("x8"));
+        key.Append(Engine_TexPathIndex.PathHash(baseName).ToString("x8"));
         foreach ((string path, int quantized) in overlays)
         {
             key.Append('_')
-                .Append(Engine_PropModelIndex.PathHash(path).ToString("x8"))
+                .Append(Engine_TexPathIndex.PathHash(path).ToString("x8"))
                 .Append('q')
                 .Append(quantized);
         }
@@ -204,107 +218,141 @@ public static class Engine_HeroTextureMorph
             }
         }
 
-        Image? composed = Decode(baseName);
-        if (composed is null)
+        DecodedTexture source = Decode(baseName);
+        if (!source.Ok)
         {
             return null;
         }
 
-        composed.Decompress();
-        composed.Convert(Image.Format.Rgba8);
-
-        int width = composed.GetWidth();
-        int height = composed.GetHeight();
+        int width = source.Width;
+        int height = source.Height;
+        byte[] output = (byte[])source.Rgba.Clone();
 
         foreach ((string path, int quantized) in overlays)
         {
-            Image? over = Decode(path);
-            if (over is null)
+            DecodedTexture over = Decode(path);
+            if (!over.Ok)
             {
                 continue;
             }
-
-            over.Decompress();
-            over.Convert(Image.Format.Rgba8);
 
             float amount = quantized * 0.25f;
-            int overWidth = over.GetWidth();
-            int overHeight = over.GetHeight();
-
-            if (overWidth <= 0 || overHeight <= 0)
-            {
-                continue;
-            }
 
             for (int y = 0; y < height; y++)
             {
-                int sy = overHeight == height
+                int sy = over.Height == height
                     ? y
-                    : Math.Min(overHeight - 1, y * overHeight / height);
+                    : Math.Min(over.Height - 1, y * over.Height / height);
 
                 for (int x = 0; x < width; x++)
                 {
-                    int sx = overWidth == width
+                    int sx = over.Width == width
                         ? x
-                        : Math.Min(overWidth - 1, x * overWidth / width);
+                        : Math.Min(over.Width - 1, x * over.Width / width);
 
-                    Color src = over.GetPixel(sx, sy);
-                    float alpha = src.A * amount;
+                    int src = ((sy * over.Width) + sx) * 4;
+                    float alpha = (over.Rgba[src + 3] / 255.0f) * amount;
                     if (alpha <= 0.0f)
                     {
                         continue;
                     }
 
-                    Color dst = composed.GetPixel(x, y);
-                    composed.SetPixel(x, y, new Color(
-                        (dst.R * (1.0f - alpha)) + (src.R * alpha),
-                        (dst.G * (1.0f - alpha)) + (src.G * alpha),
-                        (dst.B * (1.0f - alpha)) + (src.B * alpha),
-                        dst.A));
+                    int dst = ((y * width) + x) * 4;
+                    for (int k = 0; k < 3; k++)
+                    {
+                        output[dst + k] = (byte)(
+                            (output[dst + k] * (1.0f - alpha)) +
+                            (over.Rgba[src + k] * alpha) + 0.5f);
+                    }
                 }
             }
         }
 
-        ImageTexture texture = ImageTexture.CreateFromImage(composed);
+        ImageTexture texture = ImageTexture.CreateFromImage(
+            Image.CreateFromData(width, height, false, Image.Format.Rgba8, output));
 
         lock (MorphLock)
         {
             Composited[cacheKey] = texture;
         }
 
-        GD.Print($"[morph] composited {overlays.Count} overlay(s) onto {baseName}");
+        GD.Print(overlays.Count != 0
+            ? $"[morph] composited {overlays.Count} overlay(s) onto {baseName}"
+            : $"[morph] swapped {textureName} for {baseName}");
+
         return texture;
     }
 
-    private static bool HasAlpha(Image image)
+    private static DecodedTexture Decode(string path)
     {
-        Image.Format format = image.GetFormat();
-        return format is Image.Format.Rgba8 or Image.Format.Rgba4444 or
-            Image.Format.Dxt3 or Image.Format.Dxt5 && image.DetectAlpha() !=
-            Image.AlphaMode.None;
-    }
+        string key = path.Replace('\\', '/');
 
-    private static Image? Decode(string path)
-    {
+        lock (MorphLock)
+        {
+            if (DecodedCache.TryGetValue(key, out DecodedTexture? cached))
+            {
+                return cached;
+            }
+        }
+
+        var value = new DecodedTexture();
         byte[]? bytes = Refii.Models.Engine_BnkMeshLoader.ReadBytes(path);
-        if (bytes is null)
+
+        if (bytes is not null)
         {
-            return null;
+            try
+            {
+                Image? image = Engine_TexImage.TryCreateImage(bytes, out bool hasAlpha, out _);
+
+                if (image is not null)
+                {
+                    value.HasAlpha = hasAlpha;
+                    Fill(value, image);
+                }
+            }
+            catch (Exception)
+            {
+                value.Ok = false;
+            }
         }
 
-        try
+        lock (MorphLock)
         {
-            return Refii.Textures.Engine_TexImage.TryCreateImage(bytes, out _);
+            DecodedCache[key] = value;
         }
-        catch (Exception)
-        {
-            return null;
-        }
+
+        return value;
     }
 
-    private static Texture2D? Load(string path)
+    private static void Fill(DecodedTexture value, Image image)
     {
-        Image? image = Decode(path);
-        return image is null ? null : ImageTexture.CreateFromImage(image);
+        if (image.IsCompressed())
+        {
+            image.Decompress();
+        }
+
+        if (image.GetFormat() != Image.Format.Rgba8)
+        {
+            image.Convert(Image.Format.Rgba8);
+        }
+
+        int width = image.GetWidth();
+        int height = image.GetHeight();
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        byte[] data = image.GetData();
+        int needed = width * height * 4;
+        if (data.Length < needed)
+        {
+            return;
+        }
+
+        value.Width = width;
+        value.Height = height;
+        value.Rgba = data.Length == needed ? data : data[..needed];
+        value.Ok = true;
     }
 }

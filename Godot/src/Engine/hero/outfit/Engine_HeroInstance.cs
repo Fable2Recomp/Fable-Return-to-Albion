@@ -67,8 +67,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
             ? Engine_HeroTextureMorph.Active(_morphs)
             : new System.Collections.Generic.Dictionary<uint, List<TextureMorphEntry>>();
 
-        Refii.Material.Engine_MdlMaterial.TextureOverride = MorphTexture;
-        Refii.Textures.Engine_TexLibrary.Invalidate();
+        Refii.Models.Engine_MdlMaterial.TextureOverride = MorphTexture;
 
         ArrayMesh? mesh;
         try
@@ -77,14 +76,17 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
         }
         finally
         {
-            Refii.Material.Engine_MdlMaterial.TextureOverride = null;
+            Refii.Models.Engine_MdlMaterial.TextureOverride = null;
         }
 
         if (mesh is not null)
         {
-            Mesh = mesh;
+            Mesh = Skeletal(mesh) ?? mesh;
             Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
                 this, Engine_SkyEnvironmentNode.Current?.Lighting);
+
+            GetNodeOrNull<Refii.Animations.Engine_EntityAnimator>(
+                Refii.Animations.Engine_EntityAnimator.NodeName)?.Rebind();
         }
 
         StoreSelection();
@@ -96,8 +98,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
 
     private Texture2D? MorphTexture(string name, Refii.Textures.TexSemantic semantic)
     {
-        if (semantic != Refii.Textures.TexSemantic.Albedo || _textureMorphs is null ||
-            _textureMorphs.Count == 0)
+        if (_textureMorphs is null || _textureMorphs.Count == 0)
         {
             return null;
         }
@@ -105,32 +106,57 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
         return Engine_HeroTextureMorph.Resolve(name, _textureMorphs);
     }
 
-    private Mesh? ResolvePart(string path)
+    private ArrayMesh? Skeletal(ArrayMesh mesh)
     {
-        HeroMorphSet? set = MorphSetFor(path);
-
-        ArrayMesh? mesh = set is not null && _morphs.Any
-            ? Engine_HeroMorph.Blend(path, set.Targets, _morphs, Engine_PropStreamer.Resolve)
-            : Engine_PropStreamer.Resolve(path);
-
-        if (mesh is null || !_morphs.Any)
-        {
-            return mesh;
-        }
-
-        return ApplySkeletal(path, mesh) ?? mesh;
-    }
-
-    private ArrayMesh? ApplySkeletal(string path, ArrayMesh mesh)
-    {
-        _skeletal ??= Engine_SkeletalMorphs.Accumulate(_morphs, Female);
-        if (_skeletal.Count == 0)
+        if (!_morphs.Any)
         {
             return null;
         }
 
+        _skeletal ??= Engine_SkeletalMorphs.Accumulate(_morphs, Female);
+
+        if (_skeletal.Count == 0 ||
+            Refii.Models.Engine_MdlRig.TryFrom(mesh) is not Refii.Models.Engine_MdlRig rig)
+        {
+            return null;
+        }
+
+        MorphedRig? morphed = Engine_HeroBodyMorph.Build(rig, _skeletal);
+        if (morphed is null)
+        {
+            return null;
+        }
+
+        ArrayMesh? baked = Engine_HeroBodyMorph.Apply(mesh, morphed);
+        if (baked is null)
+        {
+            return null;
+        }
+
+        baked.SetMeta(Refii.Models.Engine_MdlMesh.BoneRestMeta, morphed.Rest);
+        return baked;
+    }
+
+    private ArrayMesh? DecodePart(string path)
+    {
+        if (_textureMorphs is null || _textureMorphs.Count == 0)
+        {
+            return Engine_PropStreamer.Resolve(path);
+        }
+
         byte[]? bytes = Refii.Models.Engine_BnkMeshLoader.ReadBytes(path);
-        return bytes is null ? null : Engine_HeroBodyMorph.Apply(bytes, mesh, _skeletal);
+        return bytes is null
+            ? null
+            : Refii.Models.Engine_MdlMesh.TryCreateMesh(bytes, path, out _, out _);
+    }
+
+    private Mesh? ResolvePart(string path)
+    {
+        HeroMorphSet? set = MorphSetFor(path);
+
+        return set is not null && _morphs.Any
+            ? Engine_HeroMorph.Blend(path, set.Targets, _morphs, DecodePart)
+            : DecodePart(path);
     }
 
     private HeroMorphSet? MorphSetFor(string path)

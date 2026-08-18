@@ -36,6 +36,7 @@ public static class Engine_AnimBuilder
 
         var rotationTrack = new int[map.Length];
         var positionTrack = new int[map.Length];
+        var positionRest = new Vector3[map.Length];
 
         for (int i = 0; i < map.Length; i++)
         {
@@ -56,6 +57,7 @@ public static class Engine_AnimBuilder
 
             if (skeleton.GetBoneParent(map[i]) < 0)
             {
+                positionRest[i] = skeleton.GetBoneRest(map[i]).Origin;
                 positionTrack[i] = animation.AddTrack(Animation.TrackType.Position3D);
                 animation.TrackSetPath(positionTrack[i], path);
                 animation.TrackSetInterpolationType(
@@ -104,10 +106,11 @@ public static class Engine_AnimBuilder
                 }
 
                 animation.PositionTrackInsertKey(
-                    positionTrack[i], time, Engine_AnimSkeleton.ToYUp(new Vector3(
-                        pose.BoneTrans[i * 3 + 0],
-                        pose.BoneTrans[i * 3 + 1],
-                        pose.BoneTrans[i * 3 + 2])));
+                    positionTrack[i], time, positionRest[i] + Engine_AnimSkeleton.ToYUp(
+                        new Vector3(
+                            pose.BoneTrans[i * 3 + 0],
+                            pose.BoneTrans[i * 3 + 1],
+                            pose.BoneTrans[i * 3 + 2])));
             }
         }
 
