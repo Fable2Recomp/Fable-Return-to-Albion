@@ -24,17 +24,37 @@ public sealed class Banking
     public Banking(PubGame game)
     {
         _game = game;
-        Player? human = game.PlayerInfo.GetPlayer(0);
+        Snapshot();
+    }
+
+    /// <summary>
+    /// Takes the balance the session is measured against.
+    /// </summary>
+    /// <remarks>
+    /// TAKEN AFTER THE BUY-IN, NOT BEFORE, and the SWF is what says so: <c>OverlayManager::Init</c>
+    /// reads <c>startingChips</c>, <c>startingGold</c> and <c>startingDebt</c> off player 0, and
+    /// <c>PubGame::Run</c> calls it AFTER <c>Chips += buyIn</c> and <c>Debt += buyIn</c>. Snapping
+    /// it a moment earlier leaves <c>TotalBorrowed</c> — the "you borrowed N" line on the cash-out
+    /// card — overstated by exactly the buy-in, because that term already adds <c>BuyIn</c> back on
+    /// its own and would then be counting it twice.
+    ///
+    /// <c>TotalWinnings</c> survives the early snapshot by luck rather than design: it subtracts
+    /// the starting chips and adds back the starting debt, and the buy-in moves both by the same
+    /// amount. That is not a reason to take it early.
+    /// </remarks>
+    public void Snapshot()
+    {
+        Player? human = _game.PlayerInfo.GetPlayer(0);
         StartingChips = human?.Chips ?? 0;
         StartingGold = human?.Gold ?? 0;
         StartingDebt = human?.Debt ?? 0;
     }
 
-    public int StartingChips { get; }
+    public int StartingChips { get; private set; }
 
-    public int StartingGold { get; }
+    public int StartingGold { get; private set; }
 
-    public int StartingDebt { get; }
+    public int StartingDebt { get; private set; }
 
     public int TotalWinnings()
     {

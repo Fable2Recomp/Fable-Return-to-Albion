@@ -256,6 +256,11 @@ public abstract class PubGame
         }
 
         AllowPoints = !Tournament && !Tutorial && !TrialVersion;
+
+        // AFTER THE BUY-IN. `PubGame::Run` calls `overlayManager.Init()` here, once the chips have
+        // been lent and the matching debt taken, so the bank it snapshots is the one the player is
+        // actually sitting down with.
+        OverlayManager?.Init();
         CallbackManager.ResetTimer();
         Host.Command(PubCommand.Running, null);
     }

@@ -61,6 +61,7 @@ public partial class MageDiceHost : Node, IPubGameSession
     private int _fpsFrames;
     private double _fps;
     private bool _ready;
+    private bool _failed;
 
     public MageDice Game => _game;
 
@@ -82,6 +83,7 @@ public partial class MageDiceHost : Node, IPubGameSession
             _status.Text = message;
             _status.Visible = true;
             GD.PushWarning($"[pubgame] {message}");
+            _failed = true;
             return;
         }
 
@@ -111,6 +113,7 @@ public partial class MageDiceHost : Node, IPubGameSession
         LoadLocalization(set, game);
         List<string> applied = ApplySettings(set, game);
         GD.Print($"[pubgame] settings: {string.Join(", ", applied)}");
+        WarnIfTableMissing(applied);
 
         _human = _game.CreatePlayerObject(0, false, "Hero", StartingGold, 0, 1, 0, 0);
         _game.PlayerInfo.AddPlayer(0, _human);
@@ -215,6 +218,27 @@ public partial class MageDiceHost : Node, IPubGameSession
         }
 
         return applied;
+    }
+
+    /// <summary>
+    /// Says so, loudly, when the table the guest named is not in the file.
+    /// </summary>
+    /// <remarks>
+    /// A VARIATION THAT DOES NOT RESOLVE IS A TABLE WITH THE WRONG STAKES, not a missing label.
+    /// See <see cref="PubGameConfig.VariantMissing"/> — the guest hands the name over verbatim,
+    /// and what it hands over is whatever the village's GDB holds.
+    /// </remarks>
+    private static void WarnIfTableMissing(List<string> applied)
+    {
+        foreach (string entry in applied)
+        {
+            if (entry.EndsWith(PubGameConfig.VariantMissing, StringComparison.Ordinal))
+            {
+                GD.PushWarning(
+                    $"[pubgame] {entry[..^PubGameConfig.VariantMissing.Length]} is not a table in " +
+                    "this game's settings.xml; playing the file's defaults instead");
+            }
+        }
     }
 
     private ulong ResolveSeed() => Seed != 0 ? Seed : (ulong)DateTime.UtcNow.Ticks;
@@ -331,6 +355,8 @@ public partial class MageDiceHost : Node, IPubGameSession
     }
 
     public bool IsFinished => _ready && _commands.GameOverIssued;
+
+    public bool Failed => _failed;
 
     public long FinalGold => _human?.Gold ?? 0;
 

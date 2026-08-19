@@ -147,6 +147,20 @@ public partial class GamePubGames : Node
 			return;
 		}
 
+		// THE BOARD NEVER CAME UP. A host whose Load failed never finishes and never reports a
+		// balance, and the guest waits at state 2 for as long as it takes — so leaving it alone is
+		// a permanent hang in front of a black screen, which is exactly the shape of failure an
+		// untested game reaches first. Settle UNCHANGED, the same answer an unrecognised game gets.
+		if (_session is { Failed: true })
+		{
+			Report(
+				$"[pubgame] '{pub.Game}' could not open its board — " +
+				"returning the player's balance unchanged");
+			HostBridge.SetPubGameResult(pub.Gold, pub.Debt);
+			Teardown();
+			return;
+		}
+
 		if (_session is null || !_session.IsFinished)
 		{
 			return;

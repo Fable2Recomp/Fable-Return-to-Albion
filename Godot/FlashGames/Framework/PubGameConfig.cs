@@ -9,6 +9,22 @@ public static class PubGameConfig
     public const string DefaultsSection = "defaults";
     public const string GlobalSection = "globalsettings";
 
+    /// <summary>
+    /// Marks an applied-settings entry whose variation the file did not hold.
+    /// </summary>
+    /// <remarks>
+    /// WORTH A WARNING RATHER THAN A LINE OF TRACE, and the guest is why. The variation the guest
+    /// hands over is the string the village's GDB holds, and unlike the game name the guest does
+    /// NOT lowercase it — <c>sub_824679F8</c> stores arg 2 verbatim while running arg 1 through
+    /// <c>GetAsLowerCase</c>. A variation that does not resolve is not a cosmetic miss either: it
+    /// falls through to the file's &lt;defaults&gt;, and Mage Dice's defaults state no
+    /// <c>buyIn</c> at all, so the player sits down at a table with no stakes.
+    ///
+    /// The match here is deliberately case-INSENSITIVE — more forgiving than the guest — so a hit
+    /// on this marker means the name genuinely is not in the file rather than merely mis-cased.
+    /// </remarks>
+    public const string VariantMissing = "(NOT IN FILE)";
+
     public static Dictionary<string, PubGameSetting> Apply(
         PubGame game, PubGameSettings? shared, PubGameSettings? own, List<string> applied)
     {
@@ -35,7 +51,7 @@ public static class PubGameConfig
             }
 
             applied.Add(variation.Count == 0
-                ? $"variant:{game.VariantName}(NOT IN FILE)"
+                ? $"variant:{game.VariantName}{VariantMissing}"
                 : $"variant:{game.VariantName}({variation.Count})");
         }
 

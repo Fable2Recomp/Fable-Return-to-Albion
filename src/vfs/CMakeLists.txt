@@ -45,6 +45,10 @@ set(REFII_VFS_HOOK_INTERNAL_SOURCES
     # the C entries in core/rex_payload_bridge.h. PAYLOAD ONLY — see the file header.
     ${REFII_VFS_ROOT}/src/core/rex_bridge_payload.cpp
     ${REFII_VFS_ROOT}/src/core/internal_state_guest.cpp
+    # Back-off policy for the guest's SwitchToThread spin waits. PAYLOAD-side, with the
+    # hook that calls it: the payload must not import a C++ symbol from refii_vfs, which
+    # on Windows is MSVC-built and does not resolve against the MinGW-driver payload link.
+    ${REFII_VFS_ROOT}/src/core/guest_yield_backoff.cpp
     ${REFII_VFS_ROOT}/src/streams/host_stream_records.cpp
     ${REFII_VFS_ROOT}/src/streams/host_disk_stream_objects.cpp
     ${REFII_VFS_ROOT}/src/streams/host_async_io_queue.cpp

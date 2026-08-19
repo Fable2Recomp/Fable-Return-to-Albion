@@ -66,6 +66,21 @@ public abstract class OverlayManager : IPubOverlayManager, IPubTutorialOverlays
             ?? root.CreateEmptyMovieClip("overlays", OverlaysDepth);
         _overlays.SwapDepths(root.GetNextHighestDepth());
         Bank = new Banking(game);
+    }
+
+    /// <summary>
+    /// Opens the session: takes the balance it is measured against, and fades the board in.
+    /// </summary>
+    /// <remarks>
+    /// SEPARATE FROM THE CONSTRUCTOR because the SWF keeps them separate and the gap between them
+    /// is where the buy-in happens. <c>PubGame</c>'s constructor creates the overlay manager;
+    /// <c>PubGame::Run</c> lends the player their chips and only then calls <c>Init</c>. Folding
+    /// this into the constructor snapshots a bank that has not bought in yet — see
+    /// <see cref="Banking.Snapshot"/>.
+    /// </remarks>
+    public void Init()
+    {
+        Bank.Snapshot();
         ActivateFade();
     }
 

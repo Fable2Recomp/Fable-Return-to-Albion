@@ -248,7 +248,21 @@ public sealed partial class WizardsTower : PubGame, IWizardsTowerView
 
     public override bool EndGameWarning()
     {
-        if ((!Tournament && (VGame!.CurrentRow == 1 || VPlayers[0].Out))
+        // THE TABLE IS NULL FOR THE FIRST FRAMES, and pressing Back is what reaches this.
+        // `PostInitialize` ends in `ResetGameRules` -> `DisposeGameView`, which clears `VGame` and
+        // empties `VPlayers`; `InitGameView` only fills them on a later `GameLoop` tick. The host
+        // sets itself ready the moment `Run` returns, so there is a real window in which `Back`
+        // arrives with nothing built — and the `VGame!` that used to stand here threw through
+        // `EndGame`, taking the session and the player's stake with it.
+        //
+        // WHAT THE ORIGINAL DID IN THAT STATE, kept term for term: AS2 read `undefined.CurrentRow`,
+        // which is neither 1 nor `Out`, so this half of the test was false and a cash game warned.
+        // Answering "nothing is staked" instead would be the tidier reading and it is not the one
+        // the shipped game gives.
+        bool nothingDealt = VGame is not null && VPlayers.Count > 0 &&
+            (VGame.CurrentRow == 1 || VPlayers[0].Out);
+
+        if ((!Tournament && nothingDealt)
             || (Tournament && TournamentOver)
             || Tutorial)
         {

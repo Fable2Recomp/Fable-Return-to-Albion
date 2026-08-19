@@ -1,9 +1,11 @@
 #include "vfs_hooks_private.h"
 
 #include <atomic>
+#include <chrono>
 #include <bit>
 #include <cstdlib>
 
+#include "core/guest_yield_backoff.h"
 #include "hooks/ppc_externs.h"
 #if REFII_VFS_HAS_RENDERER_RUNTIME
 #include "renderer_runtime.h"
@@ -1478,60 +1480,44 @@ REX_EXTERN(sub_82378F00) {
 REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
   REX_FUNC_PROLOGUE();
 
-  // SPIN PROBE (temporary, 2026-07-27). We are ~4 fps with the GPU doing
-  // 0.277 ms/frame and the present pump BLOCKED on the guest thread, hitting a
-  // 250 ms heartbeat timeout 111 times in 120 samples. Four attempts to find
-  // the cost in our own host code failed.
+  // Spend a long wait sleeping instead of yielding. Placed ahead of everything else in
+  // this hook, including the native-passthrough early out, so the policy is not
+  // conditional on the loose-asset backend.
+  refii::vfs::MaybeBackOffBeforeGuestYield(ctx.lr);
+
+  // PACING GLOBALS (IDA-proven, 2026-07-29). The drain spin's overdue test and its escape
+  // budget both divide by flt_8336035C (XVIDEO_MODE.RefreshRate) and multiply by
+  // dword_83360358 (PresentationInterval). Their ONLY writer is guest CreateDevice
+  // (sub_82B6F6C0 @0x82b6f8f0/0x82b6f90c), which runs only when the front-buffer texture
+  // creation in Render_InitPresentationAndFirstSwap succeeds — a region our port is
+  // suspected to skip. RefreshRate==0.0 makes the overdue threshold +inf AND the budget
+  // +inf simultaneously: the exact unbounded spin measured in runs 437/439 (13.9M-51.8M
+  // yields). Diagnose from live guest memory and, if poisoned, write what the guest's own
+  // code would have written (values from the same VdQueryVideoMode the guest copy reads).
+  // Idempotent: if CreateDevice later runs, it rewrites the same values.
   //
-  // IDA says guest Present (0x82B6F1D0) contains a two-frame throttle at
-  // ~0x82B6F39C-0x82B6F3F8 that spins on SwitchToThread while
-  // (submitted - completed) > 1. `submitted` is bumped by Present itself;
-  // `completed` advances ONLY via a GPU completion callback that our port never
-  // invokes (we never write 0x83491DA8 and do not emulate D3D_InsertCallback).
-  // If that is what is happening, the guest is spinning here and no amount of
-  // host-side optimisation will ever help.
-  //
-  // Counting by CALLER (lr) rather than in total, because "SwitchToThread is
-  // hot" alone would not distinguish the present throttle from ordinary thread
-  // yielding elsewhere in the title.
+  // TIME-GATED, NOT COUNTED. This used to ride the spin probe's one-in-100,000 branch,
+  // and the back-off above cuts that rate by two orders of magnitude — a heal that first
+  // arrives 50 s into a run is no heal at all.
   {
-    static std::atomic<uint64_t> total{0};
-    static std::atomic<uint64_t> from_present_throttle{0};
-    const uint32_t lr = ctx.lr;
-    const bool present_throttle = lr >= 0x82B6F380u && lr <= 0x82B6F410u;
-    if (present_throttle) {
-      from_present_throttle.fetch_add(1, std::memory_order_relaxed);
-    }
-    const uint64_t n = total.fetch_add(1, std::memory_order_relaxed) + 1;
-    if ((n % 100000ull) == 0ull) {
-      REXLOG_INFO("Refii guest SwitchToThread spin probe total={} "
-                  "from_present_throttle={} last_lr=0x{:08X}",
-                  static_cast<unsigned long long>(n),
-                  static_cast<unsigned long long>(
-                      from_present_throttle.load(std::memory_order_relaxed)),
-                  lr);
-      // Pacing-globals check + heal (IDA-proven, 2026-07-29). The drain
-      // spin's overdue test and its escape budget both divide by
-      // flt_8336035C (XVIDEO_MODE.RefreshRate) and multiply by
-      // dword_83360358 (PresentationInterval). Their ONLY writer is guest
-      // CreateDevice (sub_82B6F6C0 @0x82b6f8f0/0x82b6f90c), which runs only
-      // when the front-buffer texture creation in
-      // Render_InitPresentationAndFirstSwap succeeds — a region our port is
-      // suspected to skip. RefreshRate==0.0 makes the overdue threshold
-      // +inf AND the budget +inf simultaneously: the exact unbounded spin
-      // measured in runs 437/439 (13.9M-51.8M yields). Diagnose from live
-      // guest memory and, if poisoned, write what the guest's own code
-      // would have written (values from the same VdQueryVideoMode the
-      // guest copy reads). Idempotent: if CreateDevice later runs, it
-      // rewrites the same values.
-      {
+    static std::atomic<bool> pacing_globals_settled{false};
+    static std::atomic<bool> pacing_globals_healed{false};
+    static std::atomic<uint64_t> pacing_globals_next_check_us{0};
+
+    if (!pacing_globals_settled.load(std::memory_order_relaxed)) {
+      const uint64_t now_us = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now().time_since_epoch())
+              .count());
+      uint64_t due = pacing_globals_next_check_us.load(std::memory_order_relaxed);
+      if (now_us >= due &&
+          pacing_globals_next_check_us.compare_exchange_strong(
+              due, now_us + 100000ull, std::memory_order_relaxed)) {
         constexpr uint32_t kGuestRefreshRateFloat = 0x8336035Cu;
         constexpr uint32_t kGuestPresentInterval = 0x83360358u;
         constexpr uint32_t kGuestDisplayPairW = 0x834A5FE8u;
         const uint32_t refresh_bits =
             refii::vfs::LoadGuestU32(base, kGuestRefreshRateFloat);
-        static std::atomic<bool> pacing_globals_logged{false};
-        static std::atomic<bool> pacing_globals_healed{false};
         if (refresh_bits == 0u &&
             !pacing_globals_healed.exchange(true, std::memory_order_relaxed)) {
           rex::system::X_VIDEO_MODE mode;
@@ -1550,9 +1536,7 @@ REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
               refii::vfs::LoadGuestU32(base, kGuestPresentInterval),
               refii::vfs::LoadGuestU32(base, kGuestDisplayPairW),
               refii::vfs::LoadGuestU32(base, kGuestDisplayPairW + 4u));
-        } else if (refresh_bits != 0u &&
-                   !pacing_globals_logged.exchange(
-                       true, std::memory_order_relaxed)) {
+        } else if (refresh_bits != 0u) {
           REXLOG_INFO(
               "Refii pacing globals OK refresh_bits=0x{:08X} ({}) "
               "interval={} display_pair=0x{:08X}/0x{:08X}",
@@ -1560,8 +1544,47 @@ REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
               refii::vfs::LoadGuestU32(base, kGuestPresentInterval),
               refii::vfs::LoadGuestU32(base, kGuestDisplayPairW),
               refii::vfs::LoadGuestU32(base, kGuestDisplayPairW + 4u));
+          pacing_globals_settled.store(true, std::memory_order_relaxed);
         }
       }
+    }
+  }
+
+  // SPIN PROBE. The instrument the yield back-off is measured with, and the record of
+  // what the yields turned out to be.
+  //
+  // Run 011 (2026-08-19, 817.8 s): 2,359,000,000 yields, 2.88 M/s, from exactly two
+  // threads — 52.5% at lr=0x822DFF2C (the stream-drain wait in sub_822DFE08) and 46.2%
+  // at lr=0x82277348 (the "no game tick due yet" wait in the main loop sub_82276D10).
+  // At a measured 449 ns per sched_yield that is ~1.3 cores spent on nothing.
+  //
+  // BOTH ORIGINAL HYPOTHESES ARE DEAD, and the counters are what killed them:
+  // from_present_throttle stayed 0, so the two-frame Present throttle at 0x82B6F380 is
+  // not involved; and the pacing globals read back RefreshRate 60 / interval 2, so the
+  // +inf-budget unbounded spin of runs 437/439 is not happening either. These are
+  // ordinary waits that the 360 could afford to burn a hardware thread on and a host
+  // cannot.
+  //
+  // Counting by CALLER (lr), because "SwitchToThread is hot" on its own would not
+  // separate one waiting loop from another.
+  {
+    static std::atomic<uint64_t> total{0};
+    static std::atomic<uint64_t> from_present_throttle{0};
+    const uint32_t lr = ctx.lr;
+    const bool present_throttle = lr >= 0x82B6F380u && lr <= 0x82B6F410u;
+    if (present_throttle) {
+      from_present_throttle.fetch_add(1, std::memory_order_relaxed);
+    }
+    const uint64_t n = total.fetch_add(1, std::memory_order_relaxed) + 1;
+    if ((n % 100000ull) == 0ull) {
+      REXLOG_INFO("Refii guest SwitchToThread spin probe total={} "
+                  "from_present_throttle={} backoff_sleeps={} last_lr=0x{:08X}",
+                  static_cast<unsigned long long>(n),
+                  static_cast<unsigned long long>(
+                      from_present_throttle.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long long>(
+                      refii::vfs::GuestYieldBackoffSleepCount()),
+                  lr);
       // Slot autopsy for the stream-drain spin (0x822DFF2C, inside
       // sub_822DFE08): IDA-proven r31 = the command-stream slot being
       // drained. The spin ends only when the OWNING guest thread (tid at

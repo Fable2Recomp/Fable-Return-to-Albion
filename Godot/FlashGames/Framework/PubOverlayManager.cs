@@ -2,6 +2,9 @@ namespace Refii.FlashGames.Framework;
 
 public interface IPubOverlayManager
 {
+    /// <summary>Opens the session — see <c>OverlayManager.Init</c>.</summary>
+    void Init();
+
     void ActivateNeedChipsAlert();
 
     void ActivateStarRatingDialog(

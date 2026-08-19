@@ -73,6 +73,7 @@ public partial class KeystoneHost : Node, IPubGameSession
     private int _fpsFrames;
     private double _fps;
     private bool _ready;
+    private bool _failed;
     private bool _rolling;
     private Phase _phase = Phase.ArchBetting;
 
@@ -113,6 +114,7 @@ public partial class KeystoneHost : Node, IPubGameSession
 
             _status.Visible = true;
             GD.PushWarning($"[pubgame] {message}");
+            _failed = true;
             return;
         }
 
@@ -138,6 +140,7 @@ public partial class KeystoneHost : Node, IPubGameSession
         LoadLocalization(set, game);
         List<string> applied = ApplySettings(set, game);
         GD.Print($"[pubgame] settings: {string.Join(", ", applied)}");
+        WarnIfTableMissing(applied);
 
         if (SwfUiForced() || !LoadSceneUi(root))
         {
@@ -188,9 +191,16 @@ public partial class KeystoneHost : Node, IPubGameSession
             }
         }
 
+        // THE BUY-IN IS LENT, NOT GIVEN. `PubGame::Run` writes BOTH halves — `Chips += buyIn` and
+        // `Debt += buyIn` — and `PubGame::GameOver` settles by netting the chips against the debt.
+        // Taking only the chips means the debt is zero at the end, so `debt - chips` goes negative
+        // and the whole stack is paid out as gold: every session handed the player its buy-in for
+        // free, 100 gold at Standard1 and 2000 at Standard5. This host builds the table by hand
+        // rather than calling Run, which is how the second half went missing.
         _human = new KeystonePlayer(0, false, "Hero", StartingGold, 0, 1, 0, 0)
         {
             Chips = _keystone.BuyIn,
+            Debt = _keystone.BuyIn,
         };
         _keystone.PlayerInfo.AddPlayer(0, _human);
         _keystone.BoardInfos[0].SetPlayer(0, _human);
@@ -232,6 +242,11 @@ public partial class KeystoneHost : Node, IPubGameSession
 
         _overlays = new KeystoneOverlayManager(_keystone, _root);
         _keystone.OverlayManager = _overlays;
+
+        // WHAT `PubGame::Run` WOULD HAVE CALLED. This host never runs it, so the session's opening
+        // — the bank snapshot and the board fade — has to be stated here or the cash-out card
+        // reports a session that never started.
+        _overlays.Init();
 
         if (_keystone.Tutorial)
         {
@@ -362,6 +377,27 @@ public partial class KeystoneHost : Node, IPubGameSession
         }
 
         return applied;
+    }
+
+    /// <summary>
+    /// Says so, loudly, when the table the guest named is not in the file.
+    /// </summary>
+    /// <remarks>
+    /// A VARIATION THAT DOES NOT RESOLVE IS A TABLE WITH THE WRONG STAKES, not a missing label.
+    /// See <see cref="PubGameConfig.VariantMissing"/> — the guest hands the name over verbatim,
+    /// and what it hands over is whatever the village's GDB holds.
+    /// </remarks>
+    private static void WarnIfTableMissing(List<string> applied)
+    {
+        foreach (string entry in applied)
+        {
+            if (entry.EndsWith(PubGameConfig.VariantMissing, StringComparison.Ordinal))
+            {
+                GD.PushWarning(
+                    $"[pubgame] {entry[..^PubGameConfig.VariantMissing.Length]} is not a table in " +
+                    "this game's settings.xml; playing the file's defaults instead");
+            }
+        }
     }
 
     private ulong ResolveSeed() =>
@@ -614,6 +650,8 @@ public partial class KeystoneHost : Node, IPubGameSession
     }
 
     public bool IsFinished => _ready && _commands.GameOverIssued;
+
+    public bool Failed => _failed;
 
     public long FinalGold => _human?.Gold ?? 0;
 
