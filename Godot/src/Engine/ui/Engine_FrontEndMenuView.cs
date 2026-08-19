@@ -837,6 +837,25 @@ public partial class Engine_FrontEndMenuView : Node3D
 		ApplyPoses(t);
 	}
 
+	/// <summary>True when any sibling of this item carries the guest's emphasis marker.</summary>
+	private bool SiblingEmphasised(Engine_FrontEndMenu.Item item)
+	{
+		if (Menu is null)
+		{
+			return false;
+		}
+
+		foreach (Engine_FrontEndMenu.Item other in Menu.Visible)
+		{
+			if (!ReferenceEquals(other, item) && other.Parent == item.Parent && other.Emphasised)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	/// <summary>Writes every visible row at a point on its own from/to interpolation.</summary>
 	private void ApplyPoses(float t)
 	{
@@ -852,7 +871,23 @@ public partial class Engine_FrontEndMenuView : Node3D
 			_rows[r].Position = new Vector3(pose.X, pose.Y, 0f);
 			_rows[r].Scale = new Vector3(pose.Scale, pose.Scale, 1f);
 
-			var tint = new Color(LabelColour.R, LabelColour.G, LabelColour.B, pose.Opacity / 100f);
+			// EMPHASIS, RENDERED AS CONTRAST. The guest marks the current choice of a chooser
+			// submenu with `g_Menu:SetItemEmphasis(1)` (subtitles arm, current language); every
+			// row here already draws in SetGhosting's live gold, so the marked row cannot be
+			// brightened. Instead its rivals give way: siblings of an emphasised item dim to
+			// the authored ghost-heading opacity. Rows outside a chooser are untouched — the
+			// scale only ever applies where one sibling is emphasised, which is the guest's own
+			// precondition for the marker meaning anything. The treatment is OURS (the authored
+			// Lua visual is unverified); the STATE is the guest's.
+			float emphasisScale = 1f;
+			if (_rowItem[r] is { Emphasised: false } plain && SiblingEmphasised(plain))
+			{
+				emphasisScale = GhostedHeadingOpacity / 100f;
+			}
+
+			var tint = new Color(
+				LabelColour.R, LabelColour.G, LabelColour.B,
+				pose.Opacity / 100f * emphasisScale);
 			Engine_UiTheme.Retint(_labels[r], tint);
 
 			// The frame fades with the label. The scripts set opacity on the row COMPONENT, so

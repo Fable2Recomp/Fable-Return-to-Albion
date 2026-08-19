@@ -20,6 +20,25 @@ public static class Engine_MdlMesh
     public static ArrayMesh? TryCreateMesh(byte[] data, out string error) =>
         TryCreateMesh(data, string.Empty, out error);
 
+    /// <summary>
+    /// The furthest a vertex may sit from a model's own origin before its depth can overflow.
+    /// </summary>
+    /// <remarks>
+    /// DELIBERATELY LOOSE, and matched to <c>Engine_EhfPatches.IsSane</c> and
+    /// <c>MaxInstanceReach</c> rather than to <c>ModelReach</c> (64). This exists ONLY to stop
+    /// a value that would overflow to +inf when squared for a distance and become NaN a
+    /// subtraction later; it is not a judgement about whether the geometry looks right.
+    ///
+    /// A tight bound would be the wrong tool. A merely wrong-but-finite vertex draws as visibly
+    /// broken geometry — which is diagnosable, and which the editor viewers exist to show. Only
+    /// NaN and Inf hang the process, so only they are refused here. Rejecting more would hide
+    /// models from the viewers and the game alike, and a missing model teaches nothing.
+    /// </remarks>
+    private const float MaxVertexReach = 1_000_000f;
+
+    /// <summary>Surfaces refused for a non-finite or absurd vertex. Run total.</summary>
+    public static int NonFiniteSurfaces;
+
     public static ArrayMesh? TryCreateMesh(byte[] data, string virtualPath, out string error) =>
         TryCreateMesh(data, virtualPath, out error, out _);
 
@@ -88,6 +107,28 @@ public static class Engine_MdlMesh
             var normals = new Vector3[geo.VertexCount];
             var uvs = new Vector2[geo.VertexCount];
 
+            // A NON-FINITE VERTEX HANGS THE PROCESS, and this is the chokepoint every surface
+            // passes through on its way to Godot.
+            //
+            // Godot derives an ArrayMesh's AABB from these positions, and an instance's render
+            // depth from that AABB. One NaN makes the depth NaN, and Godot sorts its render list
+            // with std::sort, whose final pass in libstdc++ is __unguarded_linear_insert: no
+            // bounds check, relying on the minimum sitting in the first partition. EVERY
+            // comparison against NaN is false, so the invariant dies, the insert walks off the
+            // FRONT of the array, dereferences what lies below it and faults — and the fault
+            // re-executes forever. Observed live: a core pinned, no frames, SIGTERM ignored.
+            //
+            // WHERE THE NaN COMES FROM. MdlReader.HalfToFloat reproduces IEEE specials exactly,
+            // as it must, so 2,048 of the 65,536 half words (3.125%) decode to NaN or +/-Inf —
+            // every half whose leading byte is 0x7C..0x7F or 0xFC..0xFF. Those bytes are what
+            // padding, 0xFFFF strip-restart sentinels and unparsed table data are made of, so a
+            // buffer offset that is off by anything decodes a run of them straight into
+            // positions. The decode is not wrong; trusting it blind is.
+            //
+            // REFUSED, NOT REPAIRED. Clamping would hand Godot geometry we know we mis-read, and
+            // it would draw as a spike to the origin. The name in the log is the diagnostic:
+            // it says WHICH asset, which is what a silent clamp would cost us.
+            bool finite = true;
             for (int v = 0; v < geo.VertexCount; ++v)
             {
                 vertices[v] = new Vector3(
@@ -95,6 +136,22 @@ public static class Engine_MdlMesh
                 normals[v] = new Vector3(
                     geo.Normals[v * 3], geo.Normals[v * 3 + 1], geo.Normals[v * 3 + 2]);
                 uvs[v] = new Vector2(geo.Uvs[v * 2], geo.Uvs[v * 2 + 1]);
+
+                if (!vertices[v].IsFinite() || vertices[v].Length() > MaxVertexReach)
+                {
+                    finite = false;
+                    break;
+                }
+            }
+
+            if (!finite)
+            {
+                ++NonFiniteSurfaces;
+                GD.PushWarning(
+                    $"[mdl] surface '{geo.Name}' of '{virtualPath}' has a non-finite vertex; " +
+                    "the surface is dropped rather than handed to the renderer, which would " +
+                    "hang on the depth sort.");
+                continue;
             }
 
             // Winding reversed per triangle: the guest's front faces are the other way round.

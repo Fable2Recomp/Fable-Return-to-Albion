@@ -536,6 +536,16 @@ public sealed class Engine_UiLiveValues
 	/// </summary>
 	private static void SetFillWidth(Node3D node, float fill)
 	{
+		// `Mathf.Clamp` IS NOT A GUARD. Godot's is `v < min ? min : v > max ? max : v`, and
+		// every comparison against NaN is false, so a NaN percent falls through both branches
+		// unchanged and arrives here looking clamped. The value comes from the guest's meter
+		// snapshot, and it ends up in a basis column — a NaN basis gives the bar a NaN AABB,
+		// which gives it a NaN render depth, which hangs Godot's render-list sort outright.
+		if (!float.IsFinite(fill))
+		{
+			return;
+		}
+
 		Transform3D transform = node.Transform;
 		Basis basis = transform.Basis;
 
@@ -544,7 +554,11 @@ public sealed class Engine_UiLiveValues
 		// A degenerate pair means the artist left this piece with no orientation to preserve —
 		// the canvas x-axis is the only defensible answer, and it is what every authored bar
 		// resolves to anyway.
-		axis = axis.LengthSquared() > 0.000001f ? axis.Normalized() : new Vector3(1f, 0f, 0f);
+		// Same NaN-false trap as the clamp above: a length test reports the degenerate case
+		// and admits NaN, so the finiteness of the axis is asked for positively.
+		axis = axis.IsFinite() && axis.LengthSquared() > 0.000001f
+			? axis.Normalized()
+			: new Vector3(1f, 0f, 0f);
 
 		basis.X = axis * fill;
 		node.Transform = new Transform3D(basis, transform.Origin);

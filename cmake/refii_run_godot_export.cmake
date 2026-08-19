@@ -83,6 +83,7 @@ endif()
 message(STATUS "Staging natives: ${STAGING_ROOT} -> ${_app}")
 file(COPY "${STAGING_ROOT}/" DESTINATION "${_app}"
     PATTERN "librefii_generated.so" EXCLUDE
+    PATTERN "dev-skip-rebuild" EXCLUDE
     PATTERN "librefii_generated.dylib" EXCLUDE
     PATTERN "refii_generated.dll" EXCLUDE
     PATTERN "build-info.json" EXCLUDE
@@ -133,7 +134,8 @@ endforeach()
 
 foreach(_forbidden
         "${_app}/bin/librefii_generated.so"
-        "${_app}/bin/refii_generated.dll")
+        "${_app}/bin/refii_generated.dll"
+        "${_app}/bin/recompile/dev-skip-rebuild")
     if(EXISTS "${_forbidden}")
         message(FATAL_ERROR
             "The recompiled game module reached the package (${_forbidden}). It is derived "

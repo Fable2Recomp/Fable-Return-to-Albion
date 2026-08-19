@@ -17,6 +17,16 @@ public partial class Engine_FxDisplacement : Node
     private ColorRect _rect = null!;
     private ShaderMaterial? _apply;
     private Viewport? _host;
+
+    /// <summary>True only when the host window is BOTH assigned and still alive.</summary>
+    /// <remarks>
+    /// A FREED GODOT OBJECT IS NOT NULL. The C# wrapper outlives the native object, so
+    /// `_host is null` is false for a window that has already been torn down and the next
+    /// call throws ObjectDisposedException — 90 times in one run here, every frame after a
+    /// level change took the window away. `IsInstanceValid` is the only test that sees it,
+    /// and it is what the entity code already uses on its own nodes.
+    /// </remarks>
+    private bool HostAlive => _host is not null && GodotObject.IsInstanceValid(_host);
     private Vector2I _size;
 
     public static float Strength = 1f;
@@ -83,8 +93,8 @@ public partial class Engine_FxDisplacement : Node
 
     private void Resize()
     {
-        if (_host is null) return;
-        Vector2 v = _host.GetVisibleRect().Size;
+        if (!HostAlive) return;
+        Vector2 v = _host!.GetVisibleRect().Size;
         var size = new Vector2I((int)MathF.Ceiling(v.X), (int)MathF.Ceiling(v.Y));
         if (size.X <= 0 || size.Y <= 0) return;
         if (size == _size) return;
@@ -96,9 +106,9 @@ public partial class Engine_FxDisplacement : Node
 
     public override void _Process(double delta)
     {
-        if (_host is null || _apply is null) return;
+        if (!HostAlive || _apply is null) return;
         Resize();
-        Camera3D? main = _host.GetCamera3D();
+        Camera3D? main = _host!.GetCamera3D();
         if (main is null)
         {
             _rect.Visible = false;

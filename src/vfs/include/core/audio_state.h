@@ -164,7 +164,8 @@ inline void NoteVoiceChannelVolumes(uint32_t handle, const float* gains, uint32_
 /// **Does nothing unless VoiceCaptureOwnsOutput()** — only the host playing voices ever
 /// drains these rings, so collecting with playback off fills them and then reports the
 /// overflow as a fault. The lifecycle calls above stay on regardless; they cost a table
-/// entry, not a copy per submit.
+/// entry, not a copy per submit — and with playback off that entry is released by
+/// NoteVoiceDestroyed rather than held for a TakeVoiceRecords that will never come.
 inline void NoteVoicePcm(uint32_t handle, const void* pcm, uint32_t byte_count) {
     refii_bridge_note_voice_pcm(handle, pcm, byte_count);
 }

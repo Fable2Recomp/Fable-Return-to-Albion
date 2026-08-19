@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 using Refii.Core;
@@ -19,6 +20,101 @@ public static class Engine_TexImage
 		TexSurfaceFormat.Rgba8 => Image.Format.Rgba8,
 		_ => Image.Format.Dxt1,
 	};
+
+	/// <summary>
+	/// Block-compresses an image IN PLACE with our own encoder, mip chain and all.
+	/// </summary>
+	/// <remarks>
+	/// GODOT'S BC COMPRESSOR IS EDITOR-ONLY. In an exported build `_image_compress_bc_func` is
+	/// null and <see cref="Image.Compress"/> fails, so every ORM and every enhanced texture was
+	/// kept, cached and uploaded as RGBA8. Measured on the 2026-08-19 cache: 1,485 of 3,576
+	/// entries were RGBA8 and held 2.90 GB of the 3.13 GB total — 42% of the entries for 93% of
+	/// the bytes, ~2 MB each against ~70 KB for the ones that did compress.
+	///
+	/// <see cref="Engine_BcEncoder"/> was already in the tree for the mip-tail synthesis below;
+	/// this is the same encoder pointed at the whole chain instead of the missing tail.
+	///
+	/// FORMAT BY CONTENT, the way Godot's own does it: a normal map goes to BC5, which keeps two
+	/// channels at full precision rather than putting DXT's 5:6:5 banding into the smooth
+	/// gradients a normal map is made of. Anything with alpha goes to BC3 — including BINARY
+	/// alpha, which DXT1 can nominally carry but this encoder does not emit, so honouring it
+	/// costs the larger block and losing it would punch holes in the image.
+	///
+	/// Runs on a worker, never the frame thread — the encoder is per-block C# and a 2048² chain
+	/// is hundreds of milliseconds. Stateless, so concurrent callers do not interact.
+	/// </remarks>
+	/// <returns>False if nothing was changed, so the caller can report it.</returns>
+	public static bool CompressBlocks(Image image, bool isNormalMap)
+	{
+		if (image.GetWidth() < 1 || image.GetHeight() < 1)
+		{
+			return false;
+		}
+
+		TexSurfaceFormat target = isNormalMap
+			? TexSurfaceFormat.Bc5
+			: image.DetectAlpha() == Image.AlphaMode.None
+				? TexSurfaceFormat.Bc1
+				: TexSurfaceFormat.Bc3;
+
+		// The encoder reads four bytes a texel and nothing else.
+		if (image.GetFormat() != Image.Format.Rgba8)
+		{
+			image.Convert(Image.Format.Rgba8);
+			if (image.GetFormat() != Image.Format.Rgba8)
+			{
+				return false;
+			}
+		}
+
+		int width = image.GetWidth();
+		int height = image.GetHeight();
+		bool mipmaps = image.HasMipmaps();
+
+		// COUNTED FROM THE DIMENSIONS, not from GetMipmapCount(): GenerateMipmaps always writes
+		// the full chain down to 1x1, and FullChainLength is the same walk the rest of this file
+		// sizes chains with, so the two cannot disagree about how many levels there are.
+		int levels = mipmaps ? FullChainLength(width, height) : 1;
+
+		byte[] source = image.GetData();
+		var parts = new List<byte[]>(levels);
+		int offset = 0;
+
+		for (int level = 0; level < levels; ++level)
+		{
+			int levelWidth = Math.Max(1, width >> level);
+			int levelHeight = Math.Max(1, height >> level);
+			int levelBytes = levelWidth * levelHeight * 4;
+
+			if (offset + levelBytes > source.Length)
+			{
+				return false;
+			}
+
+			var rgba = new byte[levelBytes];
+			Buffer.BlockCopy(source, offset, rgba, 0, levelBytes);
+			offset += levelBytes;
+
+			byte[]? blocks = Engine_BcEncoder.Encode(rgba, levelWidth, levelHeight, target);
+			if (blocks is null || blocks.Length != BlockBytesFor(levelWidth, levelHeight, target))
+			{
+				return false;
+			}
+
+			parts.Add(blocks);
+		}
+
+		var packed = new byte[parts.Sum(part => part.Length)];
+		int cursor = 0;
+		foreach (byte[] part in parts)
+		{
+			Buffer.BlockCopy(part, 0, packed, cursor, part.Length);
+			cursor += part.Length;
+		}
+
+		image.SetData(width, height, mipmaps, ToGodotFormat(target), packed);
+		return image.GetFormat() == ToGodotFormat(target);
+	}
 
 	public static int FullChainLength(int width, int height)
 	{

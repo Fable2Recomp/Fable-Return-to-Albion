@@ -208,7 +208,18 @@ public partial class GameFx : Node3D
                 AddChild(node);
             }
 
-            node.Transform = ToGodot(fx.Position, fx.Rows);
+            // Guest FX positions are three raw words bit-cast with no publish barrier — the
+            // same shape GameEntities hardened its placements for. A NaN here becomes a NaN
+            // render depth, and one of those hangs Godot's whole render-list sort. FX nodes
+            // carry no CustomAabb, so nothing downstream would catch it.
+            if (fx.Position.IsFinite() && fx.Position.Length() < MaxFxReach)
+            {
+                node.Transform = ToGodot(fx.Position, fx.Rows);
+            }
+            else
+            {
+                ++NonFiniteFx;
+            }
         }
 
         if (_draw)
@@ -296,13 +307,23 @@ public partial class GameFx : Node3D
 
         var basis = new Basis(ToGodot(rows[0]), ToGodot(rows[2]), -ToGodot(rows[1]));
         float determinant = basis.Determinant();
-        if (determinant is < 0.01f and > -0.01f)
+
+        // `determinant is < 0.01f and > -0.01f` is a RANGE test, and every comparison against
+        // NaN is false — so it reports a degenerate basis and waves a NaN one straight
+        // through. An infinite row survives the same way and turns to NaN in Normalized().
+        if (!float.IsFinite(determinant) || determinant is < 0.01f and > -0.01f)
         {
             return new Transform3D(Basis.Identity, ToGodot(position));
         }
 
         return new Transform3D(basis, ToGodot(position));
     }
+
+    /// <summary>Furthest an FX emitter may sit from the origin before its depth can overflow.</summary>
+    private const float MaxFxReach = 1_000_000f;
+
+    /// <summary>FX placements refused as not finite. Run total.</summary>
+    public static int NonFiniteFx;
 
     private static Vector3 ToGodot(Vector3 guest) => new(-guest.X, guest.Z, guest.Y);
 }

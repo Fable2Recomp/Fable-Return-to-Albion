@@ -196,6 +196,18 @@ public static class Engine_MdlComposite
             anchor = eye;
 
             Vector3 offset = ToMeshSpace(GlobalOrigin(eye, parents, rest));
+
+            // NaN COMPARES UNEQUAL TO EVERYTHING, so a non-finite offset passes the test below
+            // and is then added to EVERY vertex of the part — one bad bone rest translation
+            // becomes a whole surface of NaN, and a NaN vertex hangs Godot's render-list sort.
+            // This path bypasses the guard in Engine_MdlMesh: those vertices were accepted
+            // there and are being MOVED afterwards. GlobalOrigin only checks quaternion length;
+            // the translation it reads is a raw f32 straight off disk.
+            if (!offset.IsFinite())
+            {
+                offset = Vector3.Zero;
+            }
+
             if (offset != Vector3.Zero)
             {
                 for (int v = 0; v < vertices.Length; v++)

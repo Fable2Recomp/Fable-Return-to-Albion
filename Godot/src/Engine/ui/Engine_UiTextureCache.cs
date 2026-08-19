@@ -71,17 +71,27 @@ public sealed class Engine_UiTextureCache
 		// string would hold both and a loader keyed on one would miss the other.
 		string virtualPath = relativePath.Replace('\\', '/');
 
+		// ASKED OF THE BANK BEFORE ResourceLoader, not after. A path the bank does not hold
+		// still walks Godot's whole loader chain, and ResourceFormatLoaderBinary answers it by
+		// running FileAccess::open and logging `Cannot open file '…'`. Callers that probe two
+		// spellings — GameLoadingScreen.Resolve tries the bare path then the prefixed one —
+		// therefore logged an error for every probe, every frame, for art that was present all
+		// along. Same lookup Engine_BnkTextureLoader's own resolver uses, so the two cannot
+		// disagree about what "the bank has it" means.
+		if (!_banks.TryGetFile(virtualPath, out BnkFile probe))
+		{
+			_failures[relativePath] = "not in the bank under this path";
+			return null;
+		}
+
 		var texture = ResourceLoader.Load<Texture2D>(
 			Engine_BnkTextureLoader.PathPrefix + virtualPath);
 		if (texture is null)
 		{
-			// Says which side failed. ResourceLoader answers a miss with a bare "Cannot open
-			// file" whether our loader was consulted or not, so record what the bank itself
-			// thinks of the same path — a hit here means the asset is present and the loader
-			// route is the fault, a miss means the path never resolves.
-			_failures[relativePath] = _banks.TryGetFile(virtualPath, out BnkFile probe)
-				? $"bank has it ({probe.Size} bytes) but the loader returned null"
-				: "not in the bank under this path";
+			// The bank HAS the bytes and the load still failed, so the fault is the loader
+			// route or the decode — not a missing asset.
+			_failures[relativePath] =
+				$"bank has it ({probe.Size} bytes) but the loader returned null";
 			return null;
 		}
 

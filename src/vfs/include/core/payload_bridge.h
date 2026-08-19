@@ -49,6 +49,9 @@ void refii_bridge_note_bink_video_requested(uint8_t* base, uint32_t data_guest);
 // The host POSTS and the payload DRAINS, so the queue and the counters live in refii_vfs
 // (src/core/guest_tick_pump_state.cpp) and the payload reaches them here. Observe returns the
 // tick count BEFORE the increment, so the pump's first tick is 0.
+/// The front end's subtitles setting as the guest last stated it: 1 on, 0 off, -1 unknown.
+void refii_bridge_front_end_note_subtitles(int32_t state);
+
 uint64_t refii_bridge_guest_tick_pump_observe_tick(void);
 uint64_t refii_bridge_guest_tick_pump_drained(void);
 void refii_bridge_guest_tick_pump_note_ran(void);

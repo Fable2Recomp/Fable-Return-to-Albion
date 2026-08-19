@@ -173,6 +173,14 @@ public sealed class Engine_UiTheme
 			? matches[variant]
 			: null;
 
+	/// <summary>Every live instance of a named element — the screens ship a 4:3 AND a 16:9
+	/// copy of their furniture, so a caller hiding "the" element by one lookup hides one
+	/// layout's and leaves the other painting.</summary>
+	public System.Collections.Generic.IReadOnlyList<Node3D> ArtSourceNodes(string name) =>
+		_art.TryGetValue(name, out List<Node3D>? matches)
+			? matches
+			: System.Array.Empty<Node3D>();
+
 	/// <summary>
 	/// A tag to its display string, through the game's own book.
 	///

@@ -6,6 +6,32 @@ public static class Engine_MdlBuffers
 {
     private const int VertexStride = 28;
 
+    /// <summary>
+    /// The largest VERTEX count a part can legitimately carry.
+    /// </summary>
+    /// <remarks>
+    /// From the guest (IDA, 2026-08-19): every index buffer is created with `Format = 1`, two
+    /// bytes per index, and `0xFFFF` is the strip-restart sentinel — `sub_82B26460` skips it
+    /// when computing a batch's max index, and `sub_82B229B8` sizes its instance replication as
+    /// `0xFFFE / vertexCount`. So an index can address 0..0xFFFE and a part cannot hold more
+    /// than 65535 vertices. A larger count means the cursor is misaligned, not that the model is
+    /// big.
+    ///
+    /// `&gt;` and not `&gt;=`: an exactly-65535-vertex part is legal and the old rule rejected it.
+    /// </remarks>
+    private const uint MaxVertexCount = 65_535u;
+
+    /// <summary>
+    /// The largest INDEX count, which is NOT bounded the same way.
+    /// </summary>
+    /// <remarks>
+    /// Index VALUES are 16-bit; the index COUNT is not. A strip length may exceed 65535 freely,
+    /// and the old rule capped it there — rejecting legitimate geometry. This is the sanity
+    /// bound the guest-derived <c>Engine_MdlEngine</c> uses, so the two parsers agree on what
+    /// "absurd" means.
+    /// </remarks>
+    private const uint MaxIndexCount = 4_000_000u;
+
     public static void ParseStandardBuffers(MdlReader r, MdlInfo info)
     {
         if (!ReadBuffer(r, info, 0))
@@ -163,19 +189,26 @@ public static class Engine_MdlBuffers
                 });
             }
 
-            if (vertexCount > 0 && vertexCount < 65535u)
+            // Same correction as the standard path above: the offsets are always assigned when
+            // the buffer is read, so the decoder can never be pointed at the model header.
+            if (vertexCount > MaxVertexCount || indexCount > MaxIndexCount)
+            {
+                return;
+            }
+
+            if (vertexCount > 0)
             {
                 buffer.VertexOffset = r.Position;
                 if (!r.Skip((int)(vertexCount * AltVertexStride))) return;
             }
 
-            if (indexCount > 0 && indexCount < 65535u)
+            if (indexCount > 0)
             {
                 buffer.FaceOffset = r.Position;
                 if (!r.Skip((int)(indexCount * 2))) return;
             }
 
-            if (vertexCount > 0 && vertexCount < 65535u)
+            if (vertexCount > 0)
             {
                 int secondary = (int)(vertexCount * 16) + 4;
                 bool lastMesh = mi + 1 == info.MeshCount;
@@ -342,19 +375,43 @@ public static class Engine_MdlBuffers
             }
         }
 
-        if (vertexCount > 0 && vertexCount < 65535u)
+        // 65535 WAS NEVER A FORMAT RULE.
+        //
+        // It arrived as a Python `_bounded_count(x, 0, 65535)` helper written for BONE and
+        // MATERIAL counts while the format was being scanned, and was copy-pasted onto vertex
+        // and index counts when the buffer parser was ported to C++ and then to C#. The one
+        // parser in this tree derived from the guest's OWN loader bounds at 4,000,000
+        // (Engine_MdlEngine), and 0xFFFF's real role in this format is the strip-restart index,
+        // not a count limit — a STRIP LENGTH can legitimately exceed 65535.
+        //
+        // What the old rule actually did was skip the OFFSET assignment while still storing the
+        // count and adding the buffer, leaving VertexOffset at its default of 0. The decoder's
+        // own check is `0 + count*stride <= data.Length`, which PASSES on any large enough file,
+        // so positions were decoded from byte 0 — the model HEADER — as big-endian half-floats.
+        // Header bytes land in 0x7C..0x7F / 0xFC..0xFF often, and those decode to NaN, which
+        // hangs Godot's render-list sort outright.
+        //
+        // So the offsets are now always assigned when the buffer is read, and a count that is
+        // genuinely absurd aborts rather than silently desyncing the reader — which is what the
+        // engine-format parser already does with the same bound.
+        if (vertexCount > MaxVertexCount || indexCount > MaxIndexCount)
+        {
+            return false;
+        }
+
+        if (vertexCount > 0)
         {
             buffer.VertexOffset = r.Position;
             if (!r.Skip((int)(vertexCount * VertexStride))) return false;
         }
 
-        if (indexCount > 0 && indexCount < 65535u)
+        if (indexCount > 0)
         {
             buffer.FaceOffset = r.Position;
             if (!r.Skip((int)(indexCount * 2))) return false;
         }
 
-        if (vertexCount > 0 && vertexCount < 65535u)
+        if (vertexCount > 0)
         {
             if (!r.Skip((int)(vertexCount * 16))) return false;
         }

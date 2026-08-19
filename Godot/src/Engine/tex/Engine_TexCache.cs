@@ -63,7 +63,14 @@ public static class Engine_TexCache
 	/// come out for the same input. It is the "conversion version" of §5's key, and it is the
 	/// reason a decode fix does not need the cache directory deleted by hand.
 	/// </remarks>
-	public const int ConverterVersion = 1;
+	/// <remarks>
+	/// 2 (2026-08-19): block compression moved off Godot's editor-only compressor onto
+	/// <see cref="Engine_BcEncoder"/>. Every v1 entry an exported build wrote for an ORM or an
+	/// enhanced texture is RGBA8, because Image.Compress had been failing silently — 1,485 of
+	/// 3,576 entries holding 2.90 GB of 3.13 GB. Serving those would mean the new encoder never
+	/// ran for anything already cached, so the version moves and v1 is simply not read.
+	/// </remarks>
+	public const int ConverterVersion = 2;
 
 	/// <summary>Where converted textures live: <c>&lt;app&gt;/cache/textures</c>.</summary>
 	/// <remarks>

@@ -812,6 +812,10 @@ public partial class GameUi : Node
 			// model holds the list and the highlight, which are the player's place in a menu
 			// and survive a trip out to the title and back — as they do in the original.
 			_menu ??= Engine_FrontEndMenu.BuildRoot();
+
+			// Every time the menu comes up, not once: the pump's first sample may land after
+			// the first build, and the player can change the setting and come back.
+			ApplySubtitlesEmphasis();
 			_menuView = new Engine_FrontEndMenuView
 			{
 				Name = "FrontEndMenu",
@@ -852,6 +856,45 @@ public partial class GameUi : Node
 		{
 			group.Visible = false;
 		}
+
+		// AND ITS HIGHLIGHT, for the same reason. The cursor template above is a CLONE of
+		// `MenuHighlight`; the guest's original is a SIBLING of the row group, not a child,
+		// so hiding the group left it painting at its authored spot — a green A badge and its
+		// red rim cut off at the top of the screen, one stray per instance, while our clone
+		// tracked the real highlight. Same two-step order: cloned first, hidden second.
+		// EVERY instance, not "the" instance. The screen ships its furniture twice — the
+		// authored 4:3 layout and the 16:9 copy on a marker child — so the single-lookup
+		// version of this hid one MenuHighlight and left the other's green A painting at the
+		// top of the screen through a rebuilt package, which read as "is Godot rebuilding?".
+		// Counted in the takeover line so a silent miss cannot happen a third time.
+		int highlightsHidden = 0;
+		foreach (Engine_UiTheme catalogue in new[] { _presentation?.Templates, theme })
+		{
+			if (catalogue is null)
+			{
+				continue;
+			}
+
+			foreach (Node3D instance in catalogue.ArtSourceNodes("MenuHighlight"))
+			{
+				if (instance.Visible)
+				{
+					instance.Visible = false;
+					++highlightsHidden;
+				}
+			}
+		}
+
+		if (highlightsHidden != 0)
+		{
+			GD.Print($"[game-ui] hid {highlightsHidden} guest MenuHighlight instance(s) — " +
+				"our cloned cursor is the only highlight now");
+		}
+
+		// And REGISTERED, so the hide survives the per-state-change rebuild — the two hides
+		// above cover the tree standing NOW; the registration covers every tree after it.
+		_presentation!.SuppressedElementNames.Add("MenuHighlight");
+		_presentation.SuppressedElementNames.Add(Engine_FrontEndMenuView.RowGroupName);
 
 		// NOT WHILE ANY MODAL PANEL IS UP, and the list of them has to be complete here.
 		//
@@ -1029,6 +1072,12 @@ public partial class GameUi : Node
 		// front-end model out of it.
 		_menu.ApplyAvailability(model, HostBridge.GetSaveState(),
 			languages: HostBridge.GetLanguages());
+
+		// HERE, not only at view creation: the pump's first subtitles sample lands on its own
+		// schedule, and a marker applied once from an unsampled bridge stays blank for the
+		// whole session. This path already runs on every front-end state change for exactly
+		// this class of late answer.
+		ApplySubtitlesEmphasis();
 		_menuView?.Refresh();
 	}
 
@@ -1194,6 +1243,27 @@ public partial class GameUi : Node
 		}
 
 		string? action = _menuView.Activate();
+
+		// The guest confirms through the pump's next sample; flipping now keeps the marker on
+		// the row the player just chose instead of one sample behind their press.
+		if (action is "SubtitlesOn" or "SubtitlesOff")
+		{
+			ApplySubtitlesEmphasis(action == "SubtitlesOn");
+		}
+
+		// HOST-OWNED, deliberately. The guest's branch is XamShowMarketplaceUI — a stubbed
+		// XAM surface that draws nothing here, measured: the pump ran the dispatch twice and
+		// the screen never changed. Dispatching into a stub is worse than answering
+		// ourselves, and this menu's future is host menus anyway (RexNet, mod management).
+		if (action == "Downloadable Content")
+		{
+			_menu?.RaiseWarning(
+				"Downloadable content is not available here yet — " +
+				"mods and RexNet features will live in this menu.");
+			GD.Print("[game-ui] 'Downloadable Content' answered by the host — " +
+				"the guest's branch is a stubbed marketplace");
+			return;
+		}
 
 		// A REFUSAL, before either of the two outcomes below. The guest's New Game branch runs
 		// its storage guards ahead of the gender card, so an entry can decline to open the very
@@ -1493,6 +1563,34 @@ public partial class GameUi : Node
 	/// A name the guest has no action for is dropped by the pump with a log line rather than
 	/// silently, so an entry that does nothing says so.
 	/// </summary>
+	/// <summary>
+	/// Marks the current subtitles arm the way `sub_826E2220` does with SetItemEmphasis.
+	/// </summary>
+	/// <param name="known">The setting, or null to ask the bridge for the guest's answer.</param>
+	private void ApplySubtitlesEmphasis(bool? known = null)
+	{
+		if (_menu is null)
+		{
+			return;
+		}
+
+		bool? on = known ?? HostBridge.GetSubtitles();
+		if (on is null)
+		{
+			return;  // not sampled yet — leave both unmarked rather than guess
+		}
+
+		if (_menu.Find("SubtitlesOn") is { } onItem)
+		{
+			onItem.Emphasised = on.Value;
+		}
+
+		if (_menu.Find("SubtitlesOff") is { } offItem)
+		{
+			offItem.Emphasised = !on.Value;
+		}
+	}
+
 	private void Post(string action, string from)
 	{
 		PendingAction = action;
@@ -2140,7 +2238,15 @@ public partial class GameUi : Node
 			return;
 		}
 
-		if (screen.Nodes.Length > cap)
+		// The two front-end screens are exempt from the cap while their rendering is under
+		// investigation: stray A-prompt glyphs and missing page furniture cannot be named
+		// without the element-by-element state, and these are the screens the report exists
+		// for. Over the cap the print is restricted to elements that made it into the BUILT
+		// tree — that is where a stray glyph lives, it is a few dozen lines instead of 3,812,
+		// and the missing-furniture side is carried by the count of unbuilt elements.
+		bool investigating = _scanning is "frontendmainmenu" or "frontendstartupscreen";
+
+		if (screen.Nodes.Length > cap && !investigating)
 		{
 			GD.Print($"[game-ui] inventory of '{_scanning}' SKIPPED — {screen.Nodes.Length} " +
 				$"elements, over the {cap} cap");
@@ -2190,6 +2296,9 @@ public partial class GameUi : Node
 		var line = new System.Text.StringBuilder(
 			$"[game-ui] inventory of '{_scanning}' ({screen.Nodes.Length} authored element(s))");
 
+		bool builtOnly = screen.Nodes.Length > cap;
+		int unbuilt = 0;
+
 		for (int i = 0; i < screen.Nodes.Length; ++i)
 		{
 			UiNode authored = screen.Nodes[i];
@@ -2198,11 +2307,39 @@ public partial class GameUi : Node
 				? "quad"
 				: authored.Text is not null ? $"text \"{authored.Text.Display}\"" : "group";
 
-			line.Append($"\n    {name} [{kind}] " +
-				(found.TryGetValue(name, out string? state) ? state : "NOT IN THE BUILT TREE"));
+			if (!found.TryGetValue(name, out string? state))
+			{
+				++unbuilt;
+				if (builtOnly)
+				{
+					continue;
+				}
+
+				state = "NOT IN THE BUILT TREE";
+			}
+
+			line.Append($"\n    {name} [{kind}] {state}");
 		}
 
-		GD.Print(line.ToString());
+		if (builtOnly)
+		{
+			line.Append($"\n    (+ {unbuilt} authored element(s) not in the built tree, elided)");
+		}
+
+		// CHUNKED, because one print of a whole screen is silently truncated — the menu's
+		// 3,812-element run lost its tail, including the elided-count line that says whether
+		// the print is even complete. ~60 rows per print stays far inside the cap.
+		string[] rows = line.ToString().Split('\n');
+		var chunk = new System.Text.StringBuilder();
+		for (int i = 0; i < rows.Length; ++i)
+		{
+			chunk.Append(rows[i]).Append('\n');
+			if ((i + 1) % 60 == 0 || i == rows.Length - 1)
+			{
+				GD.Print(chunk.ToString().TrimEnd('\n'));
+				chunk.Clear();
+			}
+		}
 	}
 
 	/// <summary>

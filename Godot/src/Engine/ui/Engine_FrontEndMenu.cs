@@ -46,6 +46,13 @@ public sealed class Engine_FrontEndMenu
 		public bool Available { get; set; } = true;
 
 		/// <summary>
+		/// The guest's "current choice" marker — <c>g_Menu:SetItemEmphasis()</c>, which
+		/// `sub_826E2220` puts on the active subtitles arm and `sub_826E1C98` on the current
+		/// language. Never a disable: the front end omits entries it cannot offer.
+		/// </summary>
+		public bool Emphasised { get; set; }
+
+		/// <summary>
 		/// Host-only entries are never dispatched to the guest. This is how "Multiplayer" can
 		/// sit in the menu without the guest knowing it exists.
 		/// </summary>
@@ -231,6 +238,13 @@ public sealed class Engine_FrontEndMenu
 	public string? Warning { get; private set; }
 
 	/// <summary>The pending refusal, cleared by reading it.</summary>
+	/// <summary>
+	/// Raises a warning from the HOST side, through the same pipe the guest's own refusals
+	/// use. The tag may be a Babel tag or plain text — resolution falls back to verbatim, so
+	/// a host-authored message renders as written.
+	/// </summary>
+	public void RaiseWarning(string tag) => Warning = tag;
+
 	public string? TakeWarning()
 	{
 		string? warning = Warning;
@@ -312,7 +326,15 @@ public sealed class Engine_FrontEndMenu
 			};
 		}
 
-		Saves = saves;
+		// LAST KNOWN STATE WINS OVER UNKNOWN. The bridge answers "unknown" (count -1) when a
+		// sample lands badly, and an unknown sample overwriting a known 6/6 let a New Game
+		// press slip past the save-limit refusal — the gender card opened OVER the warning,
+		// and every input after that went to the card. A menu that knew the truth one frame
+		// ago must not forget it because one read went soft.
+		if (saves.Count >= 0 || Saves.Count < 0)
+		{
+			Saves = saves;
+		}
 
 		PopulateLanguages(languages);
 		Rebuild();
@@ -355,8 +377,17 @@ public sealed class Engine_FrontEndMenu
 			language.Children.Add(new Item(installed.Name, installed.Name, "Language")
 			{
 				Command = $"Language:{installed.Index}",
+
+				// `sub_826E1C98` marks the current language with SetItemEmphasis(1).
+				Emphasised = installed.IsCurrent,
 			});
 		}
+
+		// Availability is NOT decided here. ApplyAvailability already set it from the guest's
+		// own statement (`model.HasLanguageEntry`, the bridge's read of the same
+		// `dword_83319934 > 1` condition `sub_826E2220` uses) — and a second writer here,
+		// keyed on a host-side list that can legitimately be empty at this moment, was
+		// overwriting a correct answer with a timing artefact. One flag, one owner.
 	}
 
 	/// <summary>Recomputes the visible list and keeps the highlight on something real.</summary>

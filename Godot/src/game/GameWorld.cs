@@ -13,6 +13,12 @@ namespace Refii.Game;
 /// </summary>
 public partial class GameWorld : Node3D
 {
+	/// <summary>Furthest the camera may sit from the origin before its depths can overflow.</summary>
+	private const float MaxCameraReach = 1_000_000f;
+
+	/// <summary>Camera snapshots refused as not finite. Run total; a torn read is expected at some rate.</summary>
+	public static int NonFiniteCameras;
+
 	private Camera3D _camera = null!;
 	private bool _reported;
 
@@ -61,8 +67,25 @@ public partial class GameWorld : Node3D
 		Vector3 forward = ToGodot(camera.Forward).Normalized();
 		Vector3 up = ToGodot(camera.Up);
 
-		if (forward.IsZeroApprox())
+		// A NON-FINITE CAMERA POISONS EVERY DEPTH AT ONCE, which is worse than any one object
+		// doing it: Godot sorts its render list with std::sort, and libstdc++'s final pass has
+		// no bounds check because it trusts the ordering. Every comparison against NaN is
+		// false, so the sort walks off the front of the array, faults, and re-executes the
+		// fault forever — a pinned core and a frozen picture.
+		//
+		// THE OLD GUARDS COULD NOT CATCH IT. `IsZeroApprox()` is a magnitude test, and every
+		// comparison against NaN is false, so it REPORTS ZERO AS THE ONLY PROBLEM and admits
+		// NaN untouched. An infinite forward is worse still: it passes, and `Normalized()`
+		// turns it into NaN one line later.
+		//
+		// The snapshot this reads is explicitly unsynchronised — HostBridge documents five
+		// separate stores with no publish barrier — so a read landing mid-write is expected,
+		// not exceptional. Keeping the last good camera for a frame is invisible; a NaN is a
+		// hang.
+		if (!position.IsFinite() || !forward.IsFinite() || !up.IsFinite() ||
+			position.Length() > MaxCameraReach || forward.IsZeroApprox())
 		{
+			++NonFiniteCameras;
 			return;
 		}
 
@@ -71,8 +94,13 @@ public partial class GameWorld : Node3D
 		// holding FORWARD fixed.
 		Vector3 basisZ = -forward;
 		Vector3 basisY = (up - basisZ * up.Dot(basisZ)).Normalized();
-		if (basisY.IsZeroApprox())
+
+		// Gram-Schmidt can hand back NaN from finite inputs when up is parallel to forward:
+		// the subtraction cancels to zero and Normalized() divides by it. Same reason as
+		// above, IsZeroApprox alone would not see it.
+		if (!basisY.IsFinite() || basisY.IsZeroApprox())
 		{
+			++NonFiniteCameras;
 			return;
 		}
 
@@ -80,7 +108,23 @@ public partial class GameWorld : Node3D
 			new Basis(basisY.Cross(basisZ), basisY, basisZ), position);
 
 		// The guest stores a HORIZONTAL field of view; Godot wants the vertical one.
-		_camera.Fov = camera.VerticalFovDegrees;
+		//
+		// THE FOV IS ITS OWN WHOLE-FRAME POISONER and the transform guard above does not cover
+		// it. Camera3D.set_fov's own check is `fov < 1 || fov > 179`, and every comparison
+		// against NaN is false, so it STORES a NaN — which makes the projection matrix
+		// non-finite and therefore every depth in the frame NaN at once, not just one object's.
+		// VerticalFovDegrees is Atan(Tan(h * 0.5)), so an infinite horizontal FOV arrives as
+		// NaN too.
+		float fov = camera.VerticalFovDegrees;
+		if (float.IsFinite(fov) && fov >= 1f && fov <= 179f)
+		{
+			_camera.Fov = fov;
+		}
+		else
+		{
+			++NonFiniteCameras;
+		}
+
 		_camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
 
 		if (!_reported)
@@ -835,10 +879,39 @@ public partial class GameWorld : Node3D
 		// whole turn after a parser defect that did not exist.
 		int withModel = 0;
 		int resolved = 0;
+
+		// WHAT THE MODELLESS ONES ACTUALLY ARE, rather than the assumption above.
+		//
+		// The comment says a modelless entity "is a trigger or a marker and was never going to
+		// draw", and that has never been checked. It matters more than it reads: those entities
+		// are the ENTIRE justification for building a second, static copy of the region from
+		// the `.save`, which is what Engine_StaticTwins then spends the whole session hiding —
+		// 1310 of 1674 copies in the measured region — and what leaves a ghost standing when
+		// the guest destroys its live one. If they are markers, the static layer is carrying
+		// nothing and can go. If they carry a graphic component we do not read, they are the
+		// naked-hero bug again: geometry the guest states through a route we have not learned.
+		//
+		// Tallied by COMPONENT ID because that is what the guest states and what the class
+		// registry names. Presence only — the pointer half is deliberately not followed.
+		var modellessComponents = new System.Collections.Generic.Dictionary<byte, int>();
+		int modellessSampled = 0;
+
 		foreach (HostBridge.GuestEntity entity in entities)
 		{
 			if (entity.ModelHash == 0)
 			{
+				// Capped: this is one bridge call per entity and the answer saturates long
+				// before the population does.
+				if (modellessSampled < 512)
+				{
+					++modellessSampled;
+					foreach (byte id in HostBridge.GetEntityComponents(entity.Address))
+					{
+						modellessComponents.TryGetValue(id, out int seen);
+						modellessComponents[id] = seen + 1;
+					}
+				}
+
 				continue;
 			}
 
@@ -861,6 +934,25 @@ public partial class GameWorld : Node3D
 		GD.Print($"[guest-entities] live={entities.Count} unknownPlacement={unknown} " +
 			$"withModel={withModel} (noModel={entities.Count - withModel}) " +
 			$"resolved={resolved}/{withModel}{vtables}");
+
+		if (modellessSampled != 0)
+		{
+			var byCount = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<byte, int>>(
+				modellessComponents);
+			byCount.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+			var top = new System.Collections.Generic.List<string>();
+			for (int i = 0; i < byCount.Count && i < 16; i++)
+			{
+				// A component on EVERY sampled entity is structural and says nothing; one on a
+				// subset is what separates the classes.
+				top.Add($"{byCount[i].Key}x{byCount[i].Value}");
+			}
+
+			GD.Print($"[guest-entities] modelless sample {modellessSampled} entity(s), " +
+				$"{modellessComponents.Count} distinct component id(s) — most common: " +
+				string.Join(" ", top));
+		}
 
 		TracePoses(entities);
 

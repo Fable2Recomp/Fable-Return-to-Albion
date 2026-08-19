@@ -389,7 +389,8 @@ public static class Engine_TexLibrary
 
 		GD.Print(
 			$"[tex] library {live:N0} live, {enhanced:N0} enhanced, {queued:N0} queued, " +
-			$"backend {Engine_TexEnhance.BackendId}");
+			$"{System.Threading.Volatile.Read(ref _compressFailures):N0} uncompressed " +
+			$"(BC unavailable), backend {Engine_TexEnhance.BackendId}");
 		Engine_TexCache.Report();
 	}
 
@@ -783,7 +784,7 @@ public static class Engine_TexLibrary
 		}
 
 		packed.GenerateMipmaps();
-		packed.Compress(Image.CompressMode.S3Tc, Image.CompressSource.Generic);
+		CompressOrReport(packed, isNormalMap: false, "orm");
 
 		// The alpha carries the derived height when there is one, so it is no longer always
 		// opaque — the cache record has to say so or a reload would report the wrong thing.
@@ -792,6 +793,37 @@ public static class Engine_TexLibrary
 		Engine_TexCache.Store(key, packed, withHeight, TexCacheCost.Derived);
 		return packed;
 	}
+
+	/// <summary>Block-compresses in place, and reports it ONCE if it cannot.</summary>
+	/// <remarks>
+	/// OUR ENCODER, NEVER GODOT'S, and not as a fallback either. Godot's BC compressor is
+	/// editor-only: in an exported build `_image_compress_bc_func` is null, `Image.Compress`
+	/// fails, and because both callers used to discard its return value every ORM and every
+	/// enhanced texture was kept, cached and uploaded as RGBA8 — 2.90 GB of one 3.13 GB cache.
+	///
+	/// Using Godot's where it exists and ours where it does not would put TWO encoders behind
+	/// one cache key, so the same texture would carry different bytes depending on whether the
+	/// editor or the shipped game produced it, at the same <see cref="Engine_TexCache"/>
+	/// ConverterVersion. One encoder everywhere is the same rule BuildOrmImage already follows
+	/// for the prebuild and the live path.
+	/// </remarks>
+	private static void CompressOrReport(Image image, bool isNormalMap, string what)
+	{
+		if (Engine_TexImage.CompressBlocks(image, isNormalMap))
+		{
+			return;
+		}
+
+		int n = System.Threading.Interlocked.Increment(ref _compressFailures);
+		if (n == 1)
+		{
+			GD.PushWarning(
+				$"[tex] block compression failed ({what} {image.GetWidth()}x{image.GetHeight()} " +
+				$"{image.GetFormat()}); it stays uncompressed, which costs 4-8x the memory.");
+		}
+	}
+
+	private static int _compressFailures;
 
 	private static readonly Dictionary<string, Cubemap?> LiveCubes = new(StringComparer.Ordinal);
 
@@ -1143,14 +1175,10 @@ public static class Engine_TexLibrary
 		{
 			upscaled.GenerateMipmaps();
 
-			// A Normal map IS compressed as A Normal map. Godot routes CompressSource.Normal to
-			// RGTC, which stores two channels at full precision, rather than to DXT — and DXT's
-			// 5:6:5 endpoints put visible banding into exactly the smooth gradients a normal map
-			// is made of.
-			Image.CompressSource compressSource = semantic == TexSemantic.Normal
-				? Image.CompressSource.Normal
-				: Image.CompressSource.Generic;
-			upscaled.Compress(Image.CompressMode.S3Tc, compressSource);
+			// A Normal map IS compressed as A Normal map: BC5 keeps two channels at full
+			// precision, where DXT's 5:6:5 endpoints put visible banding into exactly the smooth
+			// gradients a normal map is made of.
+			CompressOrReport(upscaled, semantic == TexSemantic.Normal, "enhanced");
 		}
 
 		// Enhanced: hundreds of milliseconds to rebuild, so the sweep keeps it longest.

@@ -86,7 +86,7 @@ public static class Engine_MdlGeometry
                 continue;
             }
 
-            if (smooth_normals && (mb.IsEngineRigid || mb.IsEngineSkinned))
+            if (smooth_normals && (mb.IsEngineRigid || mb.IsEngineSkinned || mb.IsEngineTree))
             {
                 normals = null;
             }
@@ -269,7 +269,7 @@ public static class Engine_MdlGeometry
             return Engine_MdlFoliage.TryDecodeVertices(data, mb, out positions, out uvs, out normals);
         }
 
-        if (mb.IsEngineRigid || mb.IsEngineSkinned)
+        if (mb.IsEngineRigid || mb.IsEngineSkinned || mb.IsEngineTree)
         {
             return TryDecodeEngineVertices(data, mb,
                 out positions, out uvs, out normals, out tangents,
@@ -306,8 +306,14 @@ public static class Engine_MdlGeometry
         out float[] positions, out float[] uvs, out float[] normals,
         out float[] tangents, out int[]? boneIds, out float[]? boneWeights)
     {
+        // STRIDES AND OFFSETS ARE THE GUEST'S, read out of its vertex declaration builders
+        // (sub_82A8B0E0 rigid, sub_82A750E8 skinned, sub_82A70510 tree) against the D3DDECLTYPE
+        // table at 0x83316CC0. Tree is the rigid layout with three wind lanes appended —
+        // POSITION1 at +20, COLOR1 at +28, COLOR2 at +32 — so its UV and tangent sit where the
+        // rigid ones do and only the stride differs.
         bool skinned = mb.IsEngineSkinned;
-        int stride = skinned ? 28 : 20;
+        bool tree = mb.IsEngineTree;
+        int stride = skinned ? 28 : tree ? 36 : 20;
         int uvOff = skinned ? 20 : 12;
         int tangentOff = skinned ? 24 : 16;
 

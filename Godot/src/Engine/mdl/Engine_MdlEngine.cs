@@ -149,7 +149,20 @@ public static class Engine_MdlEngine
             if (!r.U32(out uint ex52)) return false;
             if (!r.U32(out uint ex240)) return false;
             if (mc > 100000u || rigid > 100000u || skinned > 100000u) return false;
-            if (ex52 != 0 || ex240 != 0) return false;
+            // TypeC (instanced, 52-byte parts) is still refused, and NOT because its part
+            // record is hard — it is 18 bytes then vertices then indices, same shape as TypeD.
+            // The blocker is upstream: sub_82AB1868 gates the MATERIAL class on countC, and when
+            // countC > 0 every material becomes a 192-byte class (off_820029D0) whose body parse
+            // is a different vtable entry. The material walk below is the countC == 0 tag-switch
+            // form, so an instanced model would desync in the materials long before the parts.
+            // Decoding that class is the prerequisite; until then, refusing is honest.
+            //
+            // TypeD (tree/foliage, 240-byte parts) has no such gate and is now read properly.
+            // It used to be refused here, which sent every tree model to the marker-scanning
+            // fallback parser — the one that guesses at structure in a format the guest reads
+            // strictly sequentially, with no seek, no offset table and no padding. A guess that
+            // lands one field early decodes the next field's bytes as vertex positions.
+            if (ex52 != 0) return false;
 
             if (lod == 0)
             {
@@ -313,6 +326,18 @@ public static class Engine_MdlEngine
                 if (capture) allRecords.Add(rec);
             }
 
+            // D BEFORE C, which is the guest's order and NOT the order the counts are read in.
+            // sub_82AB1868 reads countA, countB, countC, countD and then runs its loops at
+            // 0x82AB25D0, 0x82AB2664, 0x82AB26F0, 0x82AB277C — A, B, D, C. Parsing in count
+            // order silently mis-slices any model carrying both, which is the whole file from
+            // that point on.
+            for (uint i = 0; i < ex240; i++)
+            {
+                if (!ReadTreeRecord(r, sh4, out EngRecord rec)) return false;
+                vtxAccum += rec.VertexCount;
+                if (capture) allRecords.Add(rec);
+            }
+
             if (flag != 0)
             {
                 if (!r.Skip((int)(vtxAccum * 4))) return false;
@@ -344,7 +369,8 @@ public static class Engine_MdlEngine
                 FaceOffset = rec.IndexOffset,
                 MeshIndex = rec.MeshIdx,
                 IsEngineSkinned = rec.Skinned,
-                IsEngineRigid = !rec.Skinned,
+                IsEngineRigid = !rec.Skinned && !rec.Tree,
+                IsEngineTree = rec.Tree,
             };
 
             foreach (EngSubMesh esm in rec.Submeshes)
@@ -387,6 +413,9 @@ public static class Engine_MdlEngine
     {
         public string MeshName { get; set; } = string.Empty;
         public bool Skinned { get; set; }
+
+        /// <summary>A TypeD tree/foliage part: stride 36, no batches.</summary>
+        public bool Tree { get; set; }
         public uint IndexCount { get; set; }
         public uint VertexCount { get; set; }
         public uint MeshIdx { get; set; }
@@ -545,6 +574,62 @@ public static class Engine_MdlEngine
             if (!ReadClothBlock(r, info, recIndex)) return false;
         }
         else if (ext1 != 0) return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Reads one TypeD (tree/foliage) part — <c>sub_82B352A8</c>.
+    /// </summary>
+    /// <remarks>
+    /// THE SIMPLEST OF THE FOUR PART CLASSES: an 18-byte prologue, the vertex blob, the index
+    /// blob, and an optional second stream. It has NO name string, NO bounding box, NO submesh
+    /// batch array and NONE of the trailing cloth/extra flags that TypeA and TypeB carry — and
+    /// those absences are exactly what a marker-scanning parser goes looking for and never
+    /// finds, which is how tree models used to end up decoded from the wrong offset.
+    ///
+    /// Prologue, in stream order:
+    ///   +0x00 u8   consumed and discarded by the guest
+    ///   +0x01 u8   flag -> obj+224
+    ///   +0x02 u32  material index
+    ///   +0x06 u32  unknown, 4 bytes
+    ///   +0x0A u32  index count
+    ///   +0x0E u32  vertex count
+    ///
+    /// There is no batch array, so the whole index buffer is ONE draw: the guest hard-codes
+    /// primitive 4 at 0x82B35738, which is TRIANGLELIST on this hardware (Xbox 360 inverts the
+    /// PC D3D9 values — strip is 6 there, which is why `? 4 : 6` reads as list/strip
+    /// throughout this engine).
+    ///
+    /// The second stream is the shared one: 16 bytes per vector, <paramref name="sh4"/> vectors
+    /// per vertex, present only when the model declared any.
+    /// </remarks>
+    private static bool ReadTreeRecord(MdlReader r, uint sh4, out EngRecord rec)
+    {
+        rec = new EngRecord { Tree = true };
+
+        if (!r.U8(out _)) return false;
+        if (!r.U8(out _)) return false;
+
+        if (!r.U32(out uint matIdx) || !r.U32(out _) ||
+            !r.U32(out uint idxCount) || !r.U32(out uint vtxCount)) return false;
+
+        rec.MeshIdx = matIdx;
+        rec.IndexCount = idxCount;
+        rec.VertexCount = vtxCount;
+
+        // The same bounds the rigid and skinned readers use: a vertex count cannot exceed the
+        // 16-bit index space below the 0xFFFF restart sentinel, while an index COUNT is not
+        // bounded that way at all.
+        if (vtxCount > 65_535u || idxCount > 4_000_000u) return false;
+
+        rec.VertexOffset = r.Position;
+        if (!r.Skip((int)(vtxCount * 36))) return false;
+
+        rec.IndexOffset = r.Position;
+        if (!r.Skip((int)(idxCount * 2))) return false;
+
+        if (!r.Skip((int)(vtxCount * 16 * sh4))) return false;
 
         return true;
     }

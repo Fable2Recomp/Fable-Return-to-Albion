@@ -138,6 +138,7 @@ PPC_EXTERN_FUNC(sub_821F7800); // Lumen: LHString::CCharString::CCharString(void
 PPC_EXTERN_FUNC(__imp__sub_8286FDB0);
 PPC_EXTERN_FUNC(__imp__sub_828D4110);
 PPC_EXTERN_FUNC(__imp__sub_822C9388); // Lumen: PulseEvent
+PPC_EXTERN_FUNC(__imp__sub_82382558); // subtitles state: self-gated getter incl. the first-boot non-en-uk default
 PPC_EXTERN_FUNC(__imp__sub_82B4F400);
 PPC_EXTERN_FUNC(__imp__sub_82374728);
 PPC_EXTERN_FUNC(__imp__sub_82377980);

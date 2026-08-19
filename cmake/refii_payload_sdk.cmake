@@ -63,6 +63,23 @@ function(refii_stage_payload_sdk)
     # refii_stage_hook_sources.cmake for why an archive cannot work on Windows.
     refii_stage_hook_sources(refii_hooks "${_sdk_dir}" "${CMAKE_SOURCE_DIR}")
 
+    # DEV ONLY — see REFII_DEV_SKIP_GAMECODE_REBUILD in the top-level CMakeLists. Written and
+    # REMOVED here rather than only written, so turning the option back off takes effect on the
+    # next configure instead of leaving a marker nobody remembers dropping.
+    set(_dev_marker "${_sdk_dir}/dev-skip-rebuild")
+    if(REFII_DEV_SKIP_GAMECODE_REBUILD)
+        file(WRITE "${_dev_marker}"
+             "Written by REFII_DEV_SKIP_GAMECODE_REBUILD=ON.\n"
+             "The launcher will run the CMake-built module instead of recompiling from the\n"
+             "installed game image. This must never reach a player: the module here was built\n"
+             "from THIS machine's image, not theirs.\n")
+        message(WARNING
+            "REFII_DEV_SKIP_GAMECODE_REBUILD is ON — the launcher will not rebuild the game "
+            "module. Packaging refuses to run while this is set.")
+    elseif(EXISTS "${_dev_marker}")
+        file(REMOVE "${_dev_marker}")
+    endif()
+
     set(_commands
         # lib/ IS EMPTIED FIRST, because copy_if_different only ever adds. A tree configured
         # RelWithDebInfo and then Debug ends up holding rexruntimerd.dll AND rexruntimed.dll,

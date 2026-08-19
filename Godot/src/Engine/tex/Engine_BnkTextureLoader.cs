@@ -34,7 +34,15 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 		}
 
 		_registered = new Engine_BnkTextureLoader();
-		ResourceLoader.AddResourceFormatLoader(_registered);
+
+		// AT THE FRONT. Godot tries format loaders in registration order and moves on to the
+		// next one whenever a loader returns null, so appending put ResourceFormatLoaderBinary
+		// ahead of this: it ran FileAccess::open on every `game://…` path, failed, and logged
+		// `Cannot open file '…'` (resource_format_binary.cpp:1156) before this loader was even
+		// consulted. The texture still arrived, which is why it read as a missing asset and was
+		// not one — 70 distinct paths in one run, and 28 per frame from the loading screen,
+		// each costing a failed open first.
+		ResourceLoader.AddResourceFormatLoader(_registered, atFront: true);
 	}
 
 	public static bool Recognises(string path) =>

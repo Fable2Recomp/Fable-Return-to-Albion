@@ -72,6 +72,46 @@ public sealed class Engine_StaticTwins
     /// <summary>Records currently hidden. Membership IS the state; nothing is destroyed.</summary>
     private readonly HashSet<uint> _hidden = new();
 
+    /// <summary>
+    /// The placement UID the guest gave each record, learned from its own live entities.
+    /// </summary>
+    /// <remarks>
+    /// THE JOIN THE DESTROYED SET NEEDS. The guest keys DeadEntities by placement UID, and this
+    /// class keys everything by record hash — different values written from different sources.
+    /// The `.save` does carry the UID, but not as a named attribute: the guest reads it through
+    /// a reader slot rather than by name, so parsing it out of the XML would mean guessing.
+    ///
+    /// The bridge already states both halves together for every live entity, so the mapping is
+    /// learned rather than derived. Kept once seen: it is exactly the records whose entity has
+    /// GONE that need it, and by then the guest is no longer reporting them.
+    /// </remarks>
+    private readonly Dictionary<uint, ulong> _uidOf = new();
+
+    /// <summary>Records held hidden because the guest says the placement is destroyed.</summary>
+    public int HiddenAsDestroyed { get; private set; }
+
+    /// <summary>Records the record-to-UID join for a live entity the guest is reporting.</summary>
+    public void NoteUid(uint record, ulong uid)
+    {
+        if (record == 0 || uid == 0)
+        {
+            return;
+        }
+
+        _uidOf[record] = uid;
+    }
+
+    /// <summary>
+    /// Node names of the records left standing as the only copy, most-repeated first.
+    /// </summary>
+    /// <remarks>
+    /// THE ONLY MEASURE OF WHAT THE STATIC LAYER IS FOR. Every other record here is built and
+    /// then hidden, so these are the whole return on maintaining a second copy of the region
+    /// and the whole reason a ghost can be left behind. Names rather than record hashes because
+    /// the question is what CLASS of thing the guest never gives us geometry for.
+    /// </remarks>
+    public IReadOnlyList<string> StandingSample { get; private set; } = System.Array.Empty<string>();
+
     /// <summary>Distinct `.save` records the region drew something for.</summary>
     public int Records => _byRecord.Count;
 
@@ -378,6 +418,14 @@ public sealed class Engine_StaticTwins
         GatedButLive = 0;
         LiveWasTruncated = !liveIsComplete;
         LayerGateRan = layerIsDeactivated is not null && _layerOf.Count != 0;
+        HiddenAsDestroyed = 0;
+
+        // READ FRESH EVERY PASS, never cached. Deactivating a layer purges that layer's entries
+        // from the guest's set, which is how broken props legitimately come back when a layer
+        // cycles; a cached copy would keep them hidden for the rest of the session.
+        var destroyed = new HashSet<ulong>(Refii.Host.HostBridge.GetDeadEntities());
+
+        var standing = new Dictionary<string, int>();
 
         foreach (KeyValuePair<uint, List<Twin>> pair in _byRecord)
         {
@@ -400,13 +448,25 @@ public sealed class Engine_StaticTwins
             // not return. `live` is no longer consulted for visibility at all — only `drawn` is,
             // and that is a positive statement that we put geometry on screen for this record.
             bool gated = GatedOff(pair.Key, layerIsDeactivated);
-            bool shouldShow = !ours && !gated;
+
+            // THE THIRD TERM. "The guest has no live entity for this record" is not "show the
+            // region's copy" — destroying a breakable produces exactly that state, and the copy
+            // reappearing where the smashed one stood is the ghost. The guest states destruction
+            // outright and persists it to its own save, so this asks rather than infers.
+            bool gone = destroyed.Count != 0 &&
+                _uidOf.TryGetValue(pair.Key, out ulong uid) && destroyed.Contains(uid);
+
+            bool shouldShow = !ours && !gated && !gone;
 
             if (!shouldShow)
             {
                 if (ours)
                 {
                     ++HiddenForLive;
+                }
+                else if (gone)
+                {
+                    ++HiddenAsDestroyed;
                 }
                 else
                 {
@@ -430,6 +490,19 @@ public sealed class Engine_StaticTwins
                 continue;
             }
 
+            // Standing: shown, and thus the only copy of this record on screen.
+            foreach (Twin twin in pair.Value)
+            {
+                if (!GodotObject.IsInstanceValid(twin.Node))
+                {
+                    continue;
+                }
+
+                string name = twin.Node.Name;
+                standing.TryGetValue(name, out int seen);
+                standing[name] = seen + 1;
+            }
+
             if (_hidden.Remove(pair.Key))
             {
                 // THE GUEST GAVE ONE BACK. Counted loudly: a non-zero Restored is a layer
@@ -439,6 +512,16 @@ public sealed class Engine_StaticTwins
                 Show(pair.Value);
             }
         }
+
+        var ranked = new List<KeyValuePair<string, int>>(standing);
+        ranked.Sort((a, b) => b.Value.CompareTo(a.Value));
+        var sample = new List<string>();
+        for (int i = 0; i < ranked.Count && i < 12; i++)
+        {
+            sample.Add($"{ranked[i].Key}x{ranked[i].Value}");
+        }
+
+        StandingSample = sample;
     }
 
     private void Hide(uint record)

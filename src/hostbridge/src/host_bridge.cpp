@@ -9,7 +9,9 @@
 // approach is dead and we should find out in seconds rather than after wiring a window,
 // an input pump and a frame loop.
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -20,10 +22,13 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -77,6 +82,7 @@ void GuestTickPumpCounters(uint64_t* out_ticks, uint64_t* out_drained,
 int32_t GuestSavedGameCount();
 void RefreshGuestSavedGameCount();
 void FinishStuckInGameLoadingScreenFromHost(uint8_t* base);
+int32_t FrontEndSubtitles();
 }  // namespace refii::vfs
 #include "refii_host.h"
 
@@ -858,7 +864,19 @@ extern "C" {
 ///    can follow the guest's own choice instead of re-deriving it from inputs it would have to
 ///    guess at. The velocity/control pair it tests against is NOT included, and deliberately:
 ///    that context is a stack temporary built per tick in sub_8228D058 and is not resident.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 57; }
+/// 61 adds RefiiHostGetPauseState and RefiiHostPauseTabSelect — the owned pause menu's read
+///    and its dispatch. The dispatch is the guest's own lever: a pure write the per-tick GUI
+///    update polls, after which the guest calls `sub_826B89E0` itself.
+/// 60 adds RefiiHostGetSubtitles — the front-end subtitles setting as the guest's own reader
+///    (`sub_82382558`) last answered on the tick thread, so the menu can mark the current
+///    choice the way `sub_826E2220` does with SetItemEmphasis.
+/// 59 adds RefiiHostGetDeadEntities — the guest's own DeadEntities set, so a destroyed
+///    placement is not resurrected as the region's build-time copy standing in its place.
+/// 58 adds RefiiHostGetEntityMeshParts — the mesh list on CECGraphicAppearanceStaticMultipleMesh
+///    (component 5). Buildings and multi-part scenery keep their geometry there, not in the
+///    single ModelFile slot, so an entity carrying one read as "names no model" and the region's
+///    build-time copy was the only thing drawing it.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 61; }
 
 /// States which directory owns this install, before the guest is brought up.
 ///
@@ -3749,6 +3767,307 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLocomotion(uint32_t entity, uin
 ///
 /// All offsets are measured from the COMPONENT POINTER. Writes up to `max_hashes` model
 /// resource-name hashes and returns how many were written.
+/// The pause-menu gate, so the owned view knows when it may stand in and when it must yield.
+///
+/// `out_screen_id` = `*(*(GUI+56)+4)` — the ACTIVE screen's id; **0 is the pause root**
+/// (`sub_826A2C88` pushes id 0 at 0x826a2cd0). `out_modal_id` = `*(*(GUI+28)+44)` — the
+/// pending query-box id, written only by the opener `sub_8236FA68` and reset to 0 by
+/// `sub_8236FF58`; the pause modals are ids 23/24/25/28. `out_current_tab` = tabObj+4.
+/// Returns 0 when the GUI object is not up.
+REFII_HOST_ABI_EXPORT int RefiiHostGetPauseState(uint32_t* out_screen_id, uint32_t* out_modal_id,
+                                                 uint32_t* out_current_tab) {
+    if (out_screen_id != nullptr) *out_screen_id = 0xFFFFFFFFu;
+    if (out_modal_id != nullptr) *out_modal_id = 0u;
+    if (out_current_tab != nullptr) *out_current_tab = 0u;
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) return 0;
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) return 0;
+
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const uint32_t gui = read32(0x83496B08u);
+    if (!plausible(gui)) return 0;
+
+    const uint32_t screen = read32(gui + 56u);
+    if (out_screen_id != nullptr && plausible(screen)) *out_screen_id = read32(screen + 4u);
+
+    const uint32_t mgr = read32(gui + 28u);
+    if (out_modal_id != nullptr && plausible(mgr)) *out_modal_id = read32(mgr + 44u);
+
+    const uint32_t tab = read32(gui + 76u);
+    if (out_current_tab != nullptr && plausible(tab)) *out_current_tab = read32(tab + 4u);
+
+    return 1;
+}
+
+/// Selects a pause tab THE GUEST'S OWN WAY — the lever `sub_8229ABD8` polls every GUI tick:
+///
+///   8229ace8  lwz r31, 0x4C(r11)     ; tabObj = *(GUI+76)
+///   8229acf4  bl  sub_828C3748       ; fires when BYTE tabObj+13 set and FLOAT tabObj+20 <= now
+///   8229ad0c  lwz r3, 8(r31)         ; requested (+8)
+///   8229ad10  lwz r11, 4(r31)        ; current   (+4)
+///   8229ad1c  bl  sub_826B89E0       ; the GUEST pushes the screen itself
+///
+/// So: `+8 = tab, +13 = 1, +20 = 0.0f` and nothing else — no deferred call, no thread hop.
+/// Tabs: 1 root list, 2 map, 3 abilities, 4 items, 5 weapons, 6 clothing, 7 logbook,
+/// 8 options (`sub_826B89E0`'s switch).
+///
+/// Refused (returns 0) unless the pause ROOT is the active screen (id 0) with no modal
+/// pending — the same window in which the guest's own LB/RB nav runs. Availability
+/// (`sub_826B83D0`: unlock flags and childhood) is the CALLER's job: `sub_826B89E0` does not
+/// re-check it, so the host must not offer a tab the guest would ghost.
+REFII_HOST_ABI_EXPORT int RefiiHostPauseTabSelect(uint32_t tab) {
+    if (tab < 1u || tab > 8u) return 0;
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) return 0;
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) return 0;
+
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const uint32_t gui = read32(0x83496B08u);
+    if (!plausible(gui)) return 0;
+
+    const uint32_t screen = read32(gui + 56u);
+    if (!plausible(screen) || read32(screen + 4u) != 0u) return 0;   // pause root only
+
+    const uint32_t mgr = read32(gui + 28u);
+    if (!plausible(mgr) || read32(mgr + 44u) != 0u) return 0;        // no modal pending
+
+    const uint32_t tab_object = read32(gui + 76u);
+    if (!plausible(tab_object)) return 0;
+
+    const uint32_t requested = __builtin_bswap32(tab);
+    StoreGuest(base, tab_object + 8u, &requested, sizeof(requested));
+    const uint32_t zero_float = 0u;                                  // 0.0f, endian-free
+    StoreGuest(base, tab_object + 20u, &zero_float, sizeof(zero_float));
+    const uint8_t armed = 1u;
+    StoreGuest(base, tab_object + 13u, &armed, sizeof(armed));       // the flag LAST
+
+    return 1;
+}
+
+/// The subtitles setting: 1 on, 0 off, -1 not sampled yet (front end not up, or too early).
+REFII_HOST_ABI_EXPORT int RefiiHostGetSubtitles(void) {
+    return refii::vfs::FrontEndSubtitles();
+}
+
+/// The UIDs the guest considers DEAD — destroyed placements it will not respawn.
+///
+/// WHY THIS EXISTS. We draw the region's build-time copy of a placement and hide it while the
+/// guest has a live entity for that record. Smash a barrel and the guest drops its entity, so
+/// the copy comes back and stands where the smashed one was — a ghost. "No live entity" is not
+/// "should be visible"; the missing term is the guest's own statement that the placement is
+/// gone, and it keeps one.
+///
+/// `sub_82366088` inserts on every destroy. Verified in the disassembly, offsets measured from
+/// the ENTITY and the ENTITY MANAGER respectively:
+///
+///   8236627c  ld   r11, 0x14(r31)   ; r31 = entity  -> the 64-bit UID, the map KEY
+///   8236628c  lwz  r11, 0x84(r31)   ; LayerHash, the map VALUE
+///   82366298  addi r4, r30, 0x94    ; r30 = EntityManager -> the map at +148
+///
+/// And the node layout from the save writer `sub_82367398`, which walks the same tree:
+/// `_Myhead` at map+4 (mgr+152), iteration ends when the node equals it, key `__int64` at
+/// node+12, LayerHash at node+20. MSVC `_Tree`: node+0 `_Left`, +4 `_Parent`, +8 `_Right`,
+/// +24 `_Color`, +25 `_Isnil`.
+///
+/// It PERSISTS — written to the save as `DeadEntities`/`DeadEntity` and read back on load — and
+/// deactivating a layer purges that layer's entries (`sub_82366A30`), so entries disappearing
+/// is meaningful rather than stale: a layer cycling off and on legitimately restores its broken
+/// props, exactly as the guest does for itself.
+///
+/// Writes up to `max_uids`; returns how many were written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDeadEntities(uint64_t* out_uids, uint32_t max_uids) {
+    if (out_uids == nullptr || max_uids == 0u) {
+        return 0u;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    constexpr uint32_t kEntityManagerGlobal = 0x83496B28u;
+    const uint32_t manager = read32(kEntityManagerGlobal);
+    if (!plausible(manager)) {
+        return 0u;
+    }
+
+    const uint32_t head = read32(manager + 152u);   // map+4, the end sentinel
+    if (!plausible(head)) {
+        return 0u;
+    }
+
+    const uint32_t stated = read32(manager + 156u); // _Mysize
+
+    // WALKED WITH AN EXPLICIT STACK AND A HARD CAP. This is a live guest tree read without a
+    // lock, so a rotation in flight can hand back a cycle; a recursive or unbounded walk would
+    // hang the caller rather than return something merely wrong. The cap is the size the
+    // container states, bounded again so a torn `_Mysize` cannot widen it.
+    constexpr uint32_t kMaxNodes = 8192u;
+    uint32_t budget = stated < kMaxNodes ? stated + 1u : kMaxNodes;
+
+    uint32_t stack[64];
+    uint32_t depth = 0u;
+    uint32_t written = 0u;
+
+    const uint32_t root = read32(head + 4u);        // _Myhead->_Parent
+    if (plausible(root) && root != head) {
+        stack[depth++] = root;
+    }
+
+    while (depth != 0u && written < max_uids && budget-- != 0u) {
+        const uint32_t node = stack[--depth];
+        if (!plausible(node) || node == head) {
+            continue;
+        }
+
+        // The sentinel is the only node flagged nil; anything else carries a live pair.
+        if (GuestByteAt(base, node + 25u) == 0u) {
+            const uint64_t hi = read32(node + 12u);
+            const uint64_t lo = read32(node + 16u);
+            out_uids[written++] = (hi << 32) | lo;
+        }
+
+        const uint32_t left = read32(node + 0u);
+        const uint32_t right = read32(node + 8u);
+        if (depth + 2u <= 64u) {
+            if (plausible(left) && left != head) {
+                stack[depth++] = left;
+            }
+            if (plausible(right) && right != head) {
+                stack[depth++] = right;
+            }
+        }
+    }
+
+    return written;
+}
+
+/// The meshes a `CECGraphicAppearanceStaticMultipleMesh` (component 5) draws.
+///
+/// THE MISSING GEOMETRY ROUTE. `RefiiHostGetEntities` reports one model hash per entity, taken
+/// from the single-slot appearance components (4 `+0x18`, 6 `+0x20`, 10/11 `+0x14`). Component 5
+/// has no such slot — it holds a VECTOR of mesh records — so every entity using one reported
+/// zero and read as "not drawable". That is what buildings use: the standing static copies in a
+/// region are named `… interior` / `… exterior`, which are two records of one MeshRecords list.
+///
+/// Verified in `sub_828F9BA0` (component 5's InitialiseFromDefinition), offsets measured from
+/// the COMPONENT pointer and from the RECORD pointer respectively:
+///
+///   comp5+0x10  vector object      comp5+0x14 begin, +0x18 end, +0x1C capacity
+///   stride 64                      `(end - begin) >> 6` in both the init and the draw walk
+///   record+0x00 render handle, initialised to -1
+///   record+0x04 `Mesh`             <- what this returns
+///   record+0x08 `ShadowMesh`
+///   record+0x3C `Interior` flag    (`*(_BYTE *)(rec + 60)` in the draw walk `sub_828F9F90`)
+///
+/// Each record's hash comes from a GDB entry resolved per `MeshRecords` element, so it is a
+/// lower-cased resource-name hash exactly like `ModelFile` — the same index resolves it.
+///
+/// Writes up to `max_hashes`; returns how many were written. `out_total` receives the record
+/// count the component states, which may exceed what was written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMeshParts(uint32_t entity, uint32_t* out_hashes,
+                                      uint32_t max_hashes, uint32_t* out_total) {
+    if (out_total != nullptr) {
+        *out_total = 0u;
+    }
+
+    if (out_hashes == nullptr || max_hashes == 0u) {
+        return 0u;
+    }
+
+    auto* memory = rex::system::kernel_memory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    if (!plausible(entity)) {
+        return 0u;
+    }
+
+    constexpr uint8_t kStaticMultipleMeshId = 5u;
+
+    if (((read32(entity + 0x24u + (kStaticMultipleMeshId / 32u) * 4u) >>
+          (kStaticMultipleMeshId % 32u)) & 1u) == 0u) {
+        return 0u;
+    }
+
+    const uint32_t components = read32(entity + 0x48u);
+    const uint32_t components_end = read32(entity + 0x4Cu);
+    const uint32_t accelerator = read32(entity + 0x8Cu);
+
+    uint32_t component = 0u;
+    if (plausible(accelerator) && plausible(components)) {
+        component = read32(components + 8u * read8(accelerator + kStaticMultipleMeshId) + 4u);
+    } else if (plausible(components) && components_end > components) {
+        for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
+            if (read32(at) == kStaticMultipleMeshId) {
+                component = read32(at + 4u);
+                break;
+            }
+        }
+    }
+
+    if (!plausible(component)) {
+        return 0u;
+    }
+
+    // CHECKED AS A TRIPLE, for the reason the morph list is: a vector that grows publishes its
+    // pointers one at a time, so `begin <= end <= capacity` is the only statement that a pair
+    // cannot satisfy by accident mid-write.
+    const uint32_t begin = read32(component + 0x14u);
+    const uint32_t end = read32(component + 0x18u);
+    const uint32_t capacity = read32(component + 0x1Cu);
+
+    if (!plausible(begin) || end <= begin || capacity < end ||
+        ((end - begin) % 64u) != 0u || ((capacity - begin) % 64u) != 0u ||
+        (end - begin) > 0x10000u) {
+        return 0u;
+    }
+
+    if (out_total != nullptr) {
+        *out_total = (end - begin) / 64u;
+    }
+
+    uint32_t written = 0u;
+    for (uint32_t at = begin; at + 64u <= end && written < max_hashes; at += 64u) {
+        const uint32_t hash = read32(at + 4u);
+        if (hash != 0u) {
+            out_hashes[written++] = hash;
+        }
+    }
+
+    return written;
+}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uint32_t* out_hashes,
                                       uint32_t max_hashes, uint32_t* out_built) {
     if (out_built != nullptr) {
@@ -3809,15 +4128,73 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
         return 0u;
     }
 
-    // The BUILT list, reported only. Stride 24, first dword is the same hash.
+    // THE BUILT LIST IS THE DRESSED CHARACTER, AND IT IS THE ONE TO READ.
+    //
+    // The source list at +0x28 holds ONLY what the CharacterCreationRecord named — head, torso,
+    // legs, eyes. Worn clothing is never in it and never can be: `sub_8217EDE0` appends garments
+    // straight into the BUILT vector, reading them from a different component entirely —
+    // id 15, `CECAppearanceModifierManager`, whose applied-modifier list at +0x10..+0x14 is the
+    // outfit. Equipping does not touch the source list; `sub_824BECF8` only marks
+    // CECGraphicAppearance dirty and the next rebuild picks it up.
+    //
+    // This used to return the source list on the reasoning that our guest never draws, so the
+    // built list might never be filled. THAT IS MEASURED FALSE: we see 147-245 built records
+    // against 84 source parts. The difference is the clothes, and the hero was rendering naked.
+    // The rebuild is BUILD-ON-DEMAND, not per-frame: `sub_8220DE88` calls `sub_8217FA50` only
+    // when the render-instance vector at comp+0x48..+0x4C is empty (what the clear
+    // `sub_825B8C70` leaves behind, 0x825b8cd0) or when its caller sets bit 0x40 of ctx+0x30
+    // — every other trigger is a discrete appearance change, so gear changes are when this
+    // list moves, not movement or streaming.
+    //
+    // ORDER IS FREE. The rebuild ends in `sub_825BC9C8(...)`, a sort by record+0x10
+    // (ClusterSortLayer) — body parts author -100 so they sort first — so reading the vector in
+    // array order already gives the guest's own draw order.
+    //
+    // Record layout, 24 bytes: +0x00 model hash, +0x10 i32 sort layer, +0x14 u8 isBodyPart
+    // (0 = GARMENT), +0x15 u8 has displacement mesh, +0x16 u8 authored-source flag.
+    // +0x04..+0x0F IS NOT INLINE DATA — it is an MSVC `_Tree` (std::set<string>) of the body
+    // clusters the garment hides: +0x08 is `_Myhead`, a pointer to a heap sentinel node.
+    // DO NOT DEREFERENCE IT from here; reading those names means walking a red-black tree of
+    // guest heap nodes that the rebuild frees.
     const uint32_t built_begin = read32(morph + 0x38u);
     const uint32_t built_end = read32(morph + 0x3Cu);
-    if (out_built != nullptr && plausible(built_begin) && built_end > built_begin &&
-        ((built_end - built_begin) % 24u) == 0u && (built_end - built_begin) <= 0x4000u) {
-        *out_built = (built_end - built_begin) / 24u;
+    const uint32_t built_capacity = read32(morph + 0x40u);
+
+    // THE TRIPLE IS CHECKED AS A TRIPLE. `sub_824C6CC0` grows the vector by freeing the old
+    // block, publishing `begin` (0x824c6e2c), then `capacity` (0x824c6e4c), then `end`
+    // (0x824c6e54) — eleven instructions in which `begin` addresses the new block while `end`
+    // still addresses the freed one, so `end - begin` is the difference of two unrelated heap
+    // pointers and can be any size or sign. `begin <= end <= capacity` is the container's own
+    // invariant at rest, so a triple that breaks it is torn by definition.
+    const bool built_usable = plausible(built_begin) && built_end > built_begin &&
+                              built_capacity >= built_end &&
+                              ((built_end - built_begin) % 24u) == 0u &&
+                              ((built_capacity - built_begin) % 24u) == 0u &&
+                              (built_end - built_begin) <= 0x18000u;
+
+    if (built_usable) {
+        const uint32_t count = (built_end - built_begin) / 24u;
+        if (out_built != nullptr) {
+            *out_built = count;
+        }
+
+        uint32_t written = 0u;
+        for (uint32_t at = built_begin; at + 24u <= built_end && written < max_hashes;
+             at += 24u) {
+            const uint32_t hash = read32(at);
+            if (hash != 0u) {
+                out_hashes[written++] = hash;
+            }
+        }
+
+        if (written != 0u) {
+            return written;
+        }
     }
 
-    // The SOURCE list, returned. Stride 4.
+    // FALLBACK: the source list, stride 4. Reached when the draw path has not run for this
+    // entity yet, which is a real state on the frame a character is spawned — the naked body is
+    // a better answer than nothing, and the next frame carries the clothes.
     const uint32_t begin = read32(morph + 0x28u);
     const uint32_t end = read32(morph + 0x2Cu);
     if (!plausible(begin) || end <= begin || ((end - begin) % 4u) != 0u ||
@@ -7378,6 +7755,87 @@ REFII_HOST_ABI_EXPORT int RefiiHostStatus(char* out, std::size_t capacity) {
 /// the previous arrangement (guest on a worker) left that unresolved.
 ///
 /// Returns 1 when the guest is initialised and ready to be stepped.
+#ifdef __linux__
+/// Unlinks guest memory arenas whose process is gone.
+///
+/// `rex::system::Memory::Initialize` backs the guest's 4 GB + 512 MB address space with a POSIX
+/// shared-memory object named `xenia_memory_<host tick count>` (system/xmemory.cpp). /dev/shm is
+/// RAM, and an shm object outlives its creator: a run that aborts or is killed never unlinks its
+/// arena, so every crashed session permanently costs whatever that arena had touched. Measured
+/// 2026-08-19 — 16 abandoned arenas, 5.9 GB resident, on a machine that had pushed 26 GB into
+/// swap by then. The symptom is not "a leak", it is the next run stuttering and dying.
+///
+/// ONLY THE UNMAPPED ONES. Running a second instance is legitimate, so an arena goes only when
+/// no live process maps it — /proc/<pid>/maps names the object. If /proc cannot be read, nothing
+/// is removed: this must never guess a live arena is dead.
+void ReclaimAbandonedGuestArenas() {
+    static constexpr std::string_view kArenaPrefix = "xenia_memory_";
+
+    std::error_code error;
+    std::filesystem::directory_iterator shm{"/dev/shm", error};
+    if (error) {
+        return;
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    for (const std::filesystem::directory_entry& entry : shm) {
+        if (entry.path().filename().string().rfind(kArenaPrefix, 0) == 0) {
+            candidates.push_back(entry.path());
+        }
+    }
+    if (candidates.empty()) {
+        return;
+    }
+
+    std::error_code proc_error;
+    std::filesystem::directory_iterator processes{"/proc", proc_error};
+    if (proc_error) {
+        return;
+    }
+
+    std::set<std::string> live;
+    for (const std::filesystem::directory_entry& process : processes) {
+        const std::string pid = process.path().filename().string();
+        if (pid.empty() || !std::all_of(pid.begin(), pid.end(),
+                                        [](unsigned char c) { return std::isdigit(c) != 0; })) {
+            continue;
+        }
+        std::ifstream maps{process.path() / "maps"};
+        if (!maps) {
+            continue;  // exited between the listing and the open, or not ours to read
+        }
+        std::string line;
+        while (std::getline(maps, line)) {
+            const std::size_t at = line.find(kArenaPrefix);
+            if (at == std::string::npos) {
+                continue;
+            }
+            std::size_t end = line.find_first_of(" \t", at);
+            if (end == std::string::npos) {
+                end = line.size();
+            }
+            live.insert(line.substr(at, end - at));
+        }
+    }
+
+    std::size_t reclaimed = 0;
+    for (const std::filesystem::path& candidate : candidates) {
+        if (live.count(candidate.filename().string()) != 0) {
+            continue;
+        }
+        std::error_code remove_error;
+        if (std::filesystem::remove(candidate, remove_error)) {
+            ++reclaimed;
+        }
+    }
+
+    if (reclaimed != 0) {
+        std::fprintf(stderr, "[refii] reclaimed %zu abandoned guest memory arena(s) in /dev/shm\n",
+                     reclaimed);
+    }
+}
+#endif  // __linux__
+
 REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const char* arguments,
                         char* out, std::size_t capacity) {
     HostedGuest& hosted = Hosted();
@@ -7400,6 +7858,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
     }
 
     try {
+#ifdef __linux__
+        ReclaimAbandonedGuestArenas();
+#endif
         ApplyEmbeddedEnvironment();
 
         // argv[0] then the flags. The game directory goes as an explicit flag, not

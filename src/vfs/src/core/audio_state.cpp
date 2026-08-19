@@ -304,10 +304,30 @@ extern "C" void refii_bridge_note_voice_created(uint32_t handle, uint32_t sample
 extern "C" void refii_bridge_note_voice_destroyed(uint32_t handle) {
     auto& table = Voices();
     std::lock_guard<std::mutex> guard(table.mutex);
-    if (VoiceSlot* slot = FindSlot(table, handle)) {
-        slot->record.retired = 1;
-        slot->record.started = 0;
+    VoiceSlot* slot = FindSlot(table, handle);
+    if (slot == nullptr) {
+        return;
     }
+
+    // WITH NO CONSUMER, RETIRED MEANS FREE.
+    //
+    // TakeVoiceRecords is the only thing that reclaims a slot, and the only caller is
+    // Godot's PumpVoices, which returns immediately unless per-voice playback is on. With
+    // it off -- the default -- `retired` is set here and read by nobody, so every
+    // destroyed voice holds its slot for the life of the process and the table fills with
+    // corpses. Measured across five sessions: the live count climbed monotonically with
+    // not one decrease, reaching 256/256 plus 2304 refused voices after eight minutes.
+    //
+    // Freeing here is only correct BECAUSE nothing is reading: the deferred reclaim in
+    // TakeVoiceRecords exists so the host always sees the end of a voice it saw the start
+    // of, and a host that never looks cannot miss one.
+    if (!g_voice_capture_owns_output.load(std::memory_order_acquire)) {
+        *slot = VoiceSlot{};
+        return;
+    }
+
+    slot->record.retired = 1;
+    slot->record.started = 0;
 }
 
 extern "C" void refii_bridge_note_voice_started(uint32_t handle) {

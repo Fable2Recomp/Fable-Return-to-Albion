@@ -336,6 +336,25 @@ public sealed class Engine_UiSceneBuilder
 				continue;
 			}
 
+			// EVERY NUMBER IN THIS TRANSFORM IS A RAW GUEST WORD. LiveAttribute.AsFloat is a
+			// bit-cast of whatever sits in the attribute slot, so an unset, freed or
+			// mid-write slot is a NaN with no decoding error to notice. Nothing upstream of
+			// here tests it: the only checks in the chain are `LengthSquared() <= 1e-6f`
+			// axis-direction tests, and every comparison against NaN is false, so they admit
+			// exactly the value they look like they reject.
+			//
+			// UI is the WORST place to let one through. These quads share one orthographic
+			// camera and write no depth, so their order on screen is decided purely by the
+			// render-list sort — and a NaN in that sort walks libstdc++ off the front of the
+			// array into an endless fault. Keeping the previous transform costs one frame of
+			// staleness on one element.
+			if (!origin.IsFinite() || !basis.X.IsFinite() ||
+				!basis.Y.IsFinite() || !basis.Z.IsFinite())
+			{
+				++NonFiniteLiveTransforms;
+				continue;
+			}
+
 			node.Transform = after;
 
 			// The MERGED position, not the authored one — the guest stops stating an axis when
@@ -369,10 +388,31 @@ public sealed class Engine_UiSceneBuilder
 
 	private Node3D? BuildNode(UiNode n)
 	{
-		// Material and texture elements carry parameters for the quad on their parent
-		// node; they are folded in there rather than emitted.
+		// Material and texture elements carry parameters for the quad on their parent node;
+		// the PARAMETERS are folded in there rather than emitted. But the ELEMENT is not
+		// always a leaf: the nine-slice dialogs author real geometry INSIDE their material
+		// elements — `querybox`'s and the title dialog's `paperA/B/C` groups and `middle`
+		// quads live under `Material574/590` — and `return null` here dropped those whole
+		// subtrees, which is why every dialog drew corner and edge pieces but no fill. A
+		// childless material stays un-emitted exactly as before; one with children becomes a
+		// bare pass-through node so its subtree builds, while the parameter folding (done by
+		// the PARENT reading its material children) is untouched.
 		if (n.Type is BgfElementType.Material or BgfElementType.Texture)
-			return null;
+		{
+			if (n.Children.Count == 0)
+				return null;
+
+			var passthrough = new Node3D { Name = SanitizeName(n.Name) };
+			passthrough.SetMeta("element_type", "Material");
+			foreach (UiNode materialChild in n.Children)
+			{
+				Node3D? builtChild = BuildNode(materialChild);
+				if (builtChild is not null)
+					passthrough.AddChild(builtChild);
+			}
+
+			return passthrough.GetChildCount() != 0 ? passthrough : null;
+		}
 
 		if (n.Type == BgfElementType.Behavior && !IncludeBehaviors)
 			return null;
@@ -553,6 +593,9 @@ public sealed class Engine_UiSceneBuilder
 	/// (see <see cref="BuildText"/>); a host-authored screen can fade a label by passing
 	/// less, which is what the front-end menu's gutter slots need.
 	/// </summary>
+	/// <summary>Live UI transforms refused as not finite. Run total.</summary>
+	public static int NonFiniteLiveTransforms;
+
 	public static ShaderMaterial TextMaterial(Color colour, Texture2D? atlas)
 	{
 		var material = new ShaderMaterial { Shader = TextShader };

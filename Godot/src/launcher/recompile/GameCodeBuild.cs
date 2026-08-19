@@ -162,6 +162,21 @@ public static class GameCodeBuild
 			return true;
 		}
 
+		// DEV ONLY, and deliberately AFTER the module-exists test so it can never conjure a
+		// module that is not there. Written by REFII_DEV_SKIP_GAMECODE_REBUILD=ON; packaging
+		// excludes it and the export refuses to zip a tree containing it, so it cannot reach a
+		// player. Announced every launch, because a silently-skipped rebuild is exactly the
+		// failure the input fingerprint below exists to prevent.
+		if (File.Exists(Path.Combine(RecompileDirectory, "dev-skip-rebuild")))
+		{
+			Godot.GD.Print(
+				"[gamecode] dev-skip-rebuild is present: using the module already in bin/ " +
+				"without checking it against the installed game or the shipped sources. " +
+				"Turn REFII_DEV_SKIP_GAMECODE_REBUILD off to restore the real check.");
+			reason = string.Empty;
+			return false;
+		}
+
 		if (!File.Exists(BuildInfoPath))
 		{
 			reason = "The recompiled game module has no build record beside it.";
@@ -169,6 +184,7 @@ public static class GameCodeBuild
 		}
 
 		string recordedHash;
+		string recordedInputs;
 		try
 		{
 			using FileStream stream = File.OpenRead(BuildInfoPath);
@@ -176,6 +192,10 @@ public static class GameCodeBuild
 			recordedHash = document.RootElement.TryGetProperty("game_hash", out JsonElement value)
 				? value.GetString() ?? string.Empty
 				: string.Empty;
+			recordedInputs =
+				document.RootElement.TryGetProperty("build_inputs", out JsonElement inputs)
+					? inputs.GetString() ?? string.Empty
+					: string.Empty;
 		}
 		catch (Exception exception)
 		{
@@ -196,8 +216,119 @@ public static class GameCodeBuild
 			return true;
 		}
 
+		// OUR OWN CODE, which the game hash cannot see. A record with no `build_inputs` at all
+		// was written by a build from before this check existed, and there is no way to know
+		// what it compiled — so it rebuilds rather than being assumed current. That costs one
+		// rebuild, once, on the update that introduces this.
+		if (recordedInputs.Length == 0)
+		{
+			reason = "The build record does not say what sources the module was built from.";
+			return true;
+		}
+
+		string currentInputs = HashBuildInputs();
+		if (currentInputs.Length == 0)
+		{
+			reason = "The build inputs beside the module could not be read.";
+			return true;
+		}
+
+		if (!string.Equals(recordedInputs, currentInputs, StringComparison.OrdinalIgnoreCase))
+		{
+			reason = "The shipped game code has changed since the module was built — " +
+				"unpacking an update over an install is exactly this, and running the old " +
+				"module would silently keep every fix in that update out of the game.";
+			return true;
+		}
+
 		reason = string.Empty;
 		return false;
+	}
+
+	/// <summary>
+	/// A fingerprint of everything the module is COMPILED FROM, computed off the disk.
+	/// </summary>
+	/// <remarks>
+	/// THE GAME HASH ALONE CANNOT SEE OUR OWN UPDATES. It catches a different disc or a title
+	/// update, and nothing else — so a player who unpacked a new build over an old install kept
+	/// running the module the OLD sources produced, silently, with no version anywhere that
+	/// disagreed. Every fix we ship that touches a hook or a header was simply absent for them.
+	///
+	/// MEASURED, NOT STAMPED. A version written at package time would only describe what
+	/// packaging believed it wrote; this hashes what is actually present, so it is right however
+	/// the install got there — a zip over the top, a partial copy, a hand-edited header in a dev
+	/// tree. Content only, never timestamps: unpacking a zip rewrites every mtime and would
+	/// otherwise force a rebuild on every update whether or not anything changed.
+	///
+	/// Measured at ~0.8 s over 2,825 files. Paid once per launch, and only when there is already
+	/// a module to judge.
+	/// </remarks>
+	public static string HashBuildInputs()
+	{
+		try
+		{
+			var files = new List<string>();
+
+			foreach (string relative in new[] { "hooks", "include", "stdcxx" })
+			{
+				string directory = Path.Combine(RecompileDirectory, relative);
+				if (Directory.Exists(directory))
+				{
+					files.AddRange(Directory.EnumerateFiles(
+						directory, "*", SearchOption.AllDirectories));
+				}
+			}
+
+			foreach (string name in new[] { "hook_sources.cmake", "include_dirs.cmake" })
+			{
+				string file = Path.Combine(RecompileDirectory, name);
+				if (File.Exists(file))
+				{
+					files.Add(file);
+				}
+			}
+
+			if (files.Count == 0)
+			{
+				return string.Empty;
+			}
+
+			// Sorted by the path RELATIVE to the recompile directory, and ordinally, so the
+			// fingerprint does not move when the install does or when a different filesystem
+			// hands the enumeration back in another order.
+			files.Sort((a, b) => string.CompareOrdinal(
+				Path.GetRelativePath(RecompileDirectory, a).Replace('\\', '/'),
+				Path.GetRelativePath(RecompileDirectory, b).Replace('\\', '/')));
+
+			using var sha = SHA256.Create();
+			var buffer = new byte[64 * 1024];
+
+			foreach (string file in files)
+			{
+				// The PATH is hashed as well as the bytes: renaming a header, or the include
+				// renumbering that moved src/vfs/include from slot 15 to 16, changes what the
+				// compiler resolves without changing any file's contents.
+				byte[] name = Encoding.UTF8.GetBytes(
+					Path.GetRelativePath(RecompileDirectory, file).Replace('\\', '/') + "\n");
+				sha.TransformBlock(name, 0, name.Length, null, 0);
+
+				using FileStream stream = File.OpenRead(file);
+				int read;
+				while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+				{
+					sha.TransformBlock(buffer, 0, read, null, 0);
+				}
+			}
+
+			sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+			return Convert.ToHexString(sha.Hash ?? Array.Empty<byte>());
+		}
+		catch (Exception)
+		{
+			// Deliberately NOT a silent pass: an unreadable input tree returns empty, and the
+			// caller treats empty as "cannot prove it is current", which rebuilds.
+			return string.Empty;
+		}
 	}
 
 	public static string HashGameExecutable()
@@ -1293,6 +1424,7 @@ public static class GameCodeBuild
 			var record = new Dictionary<string, string>
 			{
 				["game_hash"] = HashGameExecutable(),
+				["build_inputs"] = HashBuildInputs(),
 				["compiler"] = "zig " + Toolchain.Version(zig),
 				["platform"] = RuntimeInformation.RuntimeIdentifier,
 				["built_utc"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),

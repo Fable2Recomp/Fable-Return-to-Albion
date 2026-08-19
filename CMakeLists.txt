@@ -54,6 +54,21 @@ endfunction()
 
 option(REFII_STAGE_GODOT_BUILD "Stage the runtime and native DLLs into Godot/build" ON)
 
+# DEV ONLY. Lets a dev tree run the game code the CMake build just produced instead of making
+# the launcher recompile it from the installed image first — a ~5 minute wait between a source
+# change and seeing it, paid on every iteration.
+#
+# It writes a marker beside the staged SDK; the launcher honours it ONLY when a module is
+# already present, and says so loudly in its log so a run can never be mistaken for a player's.
+# The marker is excluded from a package and the export additionally refuses to zip a tree that
+# contains either it or the module, so it cannot escape a dev machine.
+#
+# OFF by default and it must stay that way: the whole point of install-time codegen is that the
+# module is built from the player's OWN game image, and a module built here is built from this
+# machine's.
+option(REFII_DEV_SKIP_GAMECODE_REBUILD
+       "DEV ONLY: let the launcher use the CMake-built game module instead of rebuilding" OFF)
+
 # Staging is per-architecture, because Godot exports one build per architecture and each
 # needs its OWN native closure. With a single Godot/build the x86_64 and ARM64 builds
 # overwrite each other's DLLs, so only whichever ran last could ever be exported — and the

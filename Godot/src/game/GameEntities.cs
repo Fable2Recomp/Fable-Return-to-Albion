@@ -50,6 +50,48 @@ public partial class GameEntities : Node3D
 
     private int _reports;
 
+    /// <summary>
+    /// Meshes are built OFF THIS THREAD, and land in the caches above a frame or two later.
+    /// </summary>
+    /// <remarks>
+    /// THE ENTITY LOOP USED TO BUILD SYNCHRONOUSLY, and a cache miss is the whole asset chain:
+    /// mesh decode, material create, then an ORM whose height channel is a 24-pass least-squares
+    /// solve over the entire texture (<see cref="Refii.Textures.Engine_TexHeight"/>, Passes = 24).
+    /// One batch of new NPCs was therefore one frame's work. Measured on the 2026-08-19 freeze:
+    /// the Godot main thread sat at 98% of a core in userspace for over four minutes with RSS
+    /// flat to the byte, `godot.log` silent, while the guest stayed healthy and the last frame
+    /// stayed on screen. The same mechanism at a smaller batch size is the stutter.
+    ///
+    /// The seam is that <see cref="Refii.Models.Engine_MdlComposite.Build"/> takes nothing but a
+    /// list of PATHS. Reading which parts an entity wears is a live guest read and stays here;
+    /// turning those paths into a mesh is pure asset work and does not.
+    ///
+    /// LEGAL FOR THE SAME REASON THE REGION BUILD IS: this creates RESOURCES, never nodes, and
+    /// touches no scene tree. The caches it reaches through — the bank reader, the material
+    /// texture cache, the model index — were already locked when Engine_LevelScene.Build moved
+    /// to a worker, and a level change already puts two builders in them at once.
+    /// </remarks>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<System.Action> _completions =
+        new();
+
+    /// <summary>Composite keys currently being built, so a miss queues once and not per frame.</summary>
+    private readonly HashSet<string> _compositeJobs = new(System.StringComparer.Ordinal);
+
+    /// <summary>Model hashes currently being built, for the same reason.</summary>
+    private readonly HashSet<uint> _meshJobs = new();
+
+    /// <summary>
+    /// Builds allowed in flight at once.
+    /// </summary>
+    /// <remarks>
+    /// Small on purpose. These threads meet in the bank reader, whose file position and read are
+    /// one locked operation, so past a handful they queue on that lock instead of working — and
+    /// every one of them is competing with the guest, which is the simulation.
+    /// </remarks>
+    private const int MaxInFlightBuilds = 3;
+
+    private int _inFlight;
+
     public override void _Process(double delta)
     {
         if (HostBridge.TryGetAbiVersion() is null || !Visible)
@@ -60,6 +102,16 @@ public partial class GameEntities : Node3D
         // BEFORE the early-out, because the clocks beat whether or not this frame had anything
         // to draw, and a sampler that only runs on populated frames measures the population.
         SampleSimClock();
+
+        // BEFORE the early-out on an empty entity list, and before anything that can return.
+        // A finished build releases its in-flight slot here; draining only on populated frames
+        // would leave the slots held through a level change and stall every later build.
+        // Draining is a dictionary store apiece, so it needs no budget — the cost this used to
+        // have is now on the worker.
+        while (_completions.TryDequeue(out System.Action? apply))
+        {
+            apply();
+        }
 
         List<HostBridge.GuestEntity> entities =
             HostBridge.GetEntities(out uint unknown, out HostBridge.UnknownPlacement[] unknownVtables);
@@ -77,11 +129,14 @@ public partial class GameEntities : Node3D
         // divides into.
         _withModel = 0;
         _noMesh = 0;
+        _awaitingBuild = 0;
 
         // Reset for the same reason, and beside the two above so the whole report is on one
         // clock — a mix of run totals and per-frame counts in one line multiplies the totals
         // by however many frames have passed.
         _composites = 0;
+        _multiMesh = 0;
+        _multiMeshParts = 0;
         _builtParts = 0;
         _compositePartsUnresolved = 0;
         Refii.Entities.Engine_EntitySkeleton.BeginFrame();
@@ -99,18 +154,45 @@ public partial class GameEntities : Node3D
                 // branches straight past. Their geometry is layered on component 17 instead —
                 // a head, a torso, legs, eyes and accessories — so it is assembled here rather
                 // than resolved from one hash.
-                if (ResolveComposite(entity.Address) is not { } composite)
+                // TWO ROUTES, NOT ONE. Component 17 layers a character; component 5
+                // (`CECGraphicAppearanceStaticMultipleMesh`) holds a VECTOR of mesh records and
+                // is what buildings and multi-part scenery use. Neither states a hash in the
+                // single-slot appearance components the entity walk reads, so both arrive here
+                // as `ModelHash == 0`. Missing the second is why a region's build-time copy
+                // looked load-bearing: its standing records were named `… interior` / `…
+                // exterior`, which are two records of ONE MeshRecords list.
+                if (ResolveComposite(entity.Address) is { } composite)
+                {
+                    mesh = composite;
+                    ++_withModel;
+                    ++_composites;
+                }
+                else if (ResolveMultiMesh(entity.Address) is { } multiple)
+                {
+                    mesh = multiple;
+                    ++_withModel;
+                    ++_multiMesh;
+                }
+                else
                 {
                     continue;
                 }
-
-                mesh = composite;
-                ++_withModel;
-                ++_composites;
             }
             else
             {
                 ++_withModel;
+
+                // A miss returns null and queues; the entity draws once the build lands. Counted
+                // apart from _noMesh, which is the asset-fault signal ("a hash that resolves to a
+                // PATH is not a model that loads") and must not absorb entities that are merely
+                // early.
+                if (!_meshes.ContainsKey(entity.ModelHash))
+                {
+                    ++_awaitingBuild;
+                    Resolve(entity.ModelHash);
+                    continue;
+                }
+
                 mesh = Resolve(entity.ModelHash);
             }
 
@@ -171,7 +253,38 @@ public partial class GameEntities : Node3D
                 LightEntity(node);
             }
 
-            node.Transform = ToGodot(entity.Position, entity.Rotation);
+            // A NON-FINITE ORIGIN TAKES GODOT'S RENDERER DOWN, not just this entity.
+            //
+            // The render list is sorted by depth with std::sort, whose final pass in libstdc++
+            // is __unguarded_linear_insert — no bounds check, relying on the minimum already
+            // sitting in the first partition. EVERY comparison against NaN is false, so one NaN
+            // depth destroys that invariant: the insert walks off the FRONT of the array,
+            // dereferences whatever lies below it and faults. The fault re-executes the same
+            // instruction forever, so the process pins a core, stops drawing, ignores SIGTERM
+            // and has to be SIGKILLed.
+            //
+            // Caught live under gdb (2026-08-19): 437 surfaces, key bytes all 128 so the
+            // tie-break float decided every comparison, slots 0..30 correctly ordered
+            // 346.3 -> 300.0, and slot 33 carrying depth=nan.
+            //
+            // The ROTATION above was hardened against exactly this class and the position was
+            // left open. The guest publishes both by writing in place with no publish step, so
+            // a read landing mid-update is the same fault in a different field.
+            //
+            // The bound is not decoration. A depth is a squared distance, and 1e20 squared is
+            // +inf, which subtracts to NaN a step later with every component still "finite".
+            //
+            // KEEPS THE LAST GOOD TRANSFORM rather than zeroing: a torn read is one frame's
+            // noise and the next read is usually clean, where snapping to the origin would be
+            // a visible teleport.
+            if (IsUsablePlacement(entity.Position))
+            {
+                node.Transform = ToGodot(entity.Position, entity.Rotation);
+            }
+            else
+            {
+                ++NonFinitePlacements;
+            }
 
             // The rig, after the placement: the pose is relative to the entity, so the
             // skeleton rides whatever transform the placement just set.
@@ -256,6 +369,12 @@ public partial class GameEntities : Node3D
                 if (entity.RecordHash != 0)
                 {
                     _liveRecords.Add(entity.RecordHash);
+
+                    // LEARNED WHILE IT IS STILL ALIVE, because that is the only time the guest
+                    // states both halves together. The destroyed set is keyed by placement UID
+                    // and the twins are keyed by record hash; once an entity is gone the guest
+                    // reports neither, so the join has to be remembered before it is needed.
+                    Twins?.NoteUid(entity.RecordHash, entity.UniqueId);
                 }
             }
 
@@ -313,7 +432,8 @@ public partial class GameEntities : Node3D
 
         // Path resolution and mesh loading are DIFFERENT NUMBERS: a hash that resolves to a
         // path still has to find a mesh, so "resolved 1030/1030" is not "1030 drawable".
-        GD.Print($"[game-entities] of {_withModel} with a model hash, {_noMesh} loaded NO MESH " +
+        GD.Print($"[game-entities] {_awaitingBuild} entity(s) waiting on an off-thread build; " +
+            $"of {_withModel} with a model hash, {_noMesh} loaded NO MESH " +
             "(header-only stub or not in a mounted bank)" +
             // SPLIT BY WHY, from the loader that actually knows. A stub is a body in an unmounted
             // bank and should drain as streaming banks come up; an undecodable model never will.
@@ -338,6 +458,10 @@ public partial class GameEntities : Node3D
             $"hash(es) not in the index this frame); guest built-part records this frame = " +
             $"{_builtParts} — non-zero means the guest's DRAW path runs here and comp17+0x38 " +
             "is populated, which was NOT the assumption");
+
+        GD.Print($"[game-entities] multi-mesh appearances: {_multiMesh} entity(s) drawn this " +
+            $"frame from component 5, {_multiMeshParts} mesh record(s) stated — these used to " +
+            "read as \"names no model\" and were drawn only by the region's static copy");
 
         // DO THE PARTS AGREE ON THE SKELETON THEY SHARE?
         //
@@ -427,7 +551,23 @@ public partial class GameEntities : Node3D
                 (NonUnitRotations == 0
                     ? " — every entity handed us a real rotation"
                     : " — that many transforms fell back to identity because what the bridge " +
-                      "returned was not a rotation"));
+                      "returned was not a rotation") +
+
+                // EVERY REFUSAL IN ONE LINE, and reported from here because this is the only
+                // periodic report that runs the whole time the world is up. They were being
+                // counted and never printed, which made them useless as the thing they exist
+                // for: saying WHICH source produced a non-finite value. A guard nobody can read
+                // the result of is just a silent drop.
+                //
+                // All zero is the answer we want. Any one of them moving names the culprit —
+                // and `surfaces` in particular means a DECODE bug, not bad data, because the
+                // .mdl bytes are read natively from the bank and should never yield a NaN.
+                $"\n    refused as NOT FINITE — placements: {NonFinitePlacements}, " +
+                $"camera: {Refii.Game.GameWorld.NonFiniteCameras}, " +
+                $"fx: {Refii.Game.GameFx.NonFiniteFx}, " +
+                $"ui transforms: {Refii.Ui.Engine_UiSceneBuilder.NonFiniteLiveTransforms}, " +
+                $"prop instances: {Refii.Level.Engine_LevelProps.NonFiniteInstances}, " +
+                $"mesh surfaces: {Refii.Models.Engine_MdlMesh.NonFiniteSurfaces}");
         }
 
         // THE GHOST COUNT, and the proof that the two sides are keyed on the same thing.
@@ -470,6 +610,19 @@ public partial class GameEntities : Node3D
             GD.Print($"[game-entities] {twins.Unmatched} live record(s) the region drew nothing " +
                 $"for, {twins.NoRecord} live draw(s) with no record hash, {twins.Restored} " +
                 "record(s) restored after the guest gave one up");
+
+            if (twins.HiddenAsDestroyed != 0)
+            {
+                GD.Print($"[game-entities] {twins.HiddenAsDestroyed} record(s) held hidden " +
+                    "because the guest's DeadEntities set says the placement is destroyed — " +
+                    "without this the region's build-time copy stands where the smashed one was");
+            }
+
+            if (twins.StandingSample.Count != 0)
+            {
+                GD.Print("[game-entities] the static layer's whole return — records standing as " +
+                    "the only copy: " + string.Join(" ", twins.StandingSample));
+            }
         }
 
         // WHERE THE MISSING RIGS WENT. The guest reports 138 characters and we build 109
@@ -944,6 +1097,9 @@ public partial class GameEntities : Node3D
 
     private int _noMesh;
 
+    /// <summary>Entities waiting on a build that is running off this thread. Not a fault.</summary>
+    private int _awaitingBuild;
+
     /// <summary>
     /// Applies the region's current lighting to one live entity.
     ///
@@ -981,7 +1137,32 @@ public partial class GameEntities : Node3D
         }
 
         _builtParts += built;
+        return ComposeParts(parts);
+    }
 
+    /// <summary>
+    /// The assembled mesh for a multi-mesh appearance component (id 5), or null.
+    /// </summary>
+    /// <remarks>
+    /// Same assembly as a composite character and deliberately so — both are "N models drawn as
+    /// one entity", and the cache keys on the part list, so a street of identical townhouses
+    /// shares a single built mesh. What differs is only where the hashes come from.
+    /// </remarks>
+    private Mesh? ResolveMultiMesh(uint address)
+    {
+        uint[] parts = HostBridge.GetEntityMeshParts(address, out int total);
+        if (parts.Length == 0)
+        {
+            return null;
+        }
+
+        _multiMeshParts += total;
+        return ComposeParts(parts);
+    }
+
+    /// <summary>Resolves part hashes to paths and returns the cached assembly, queueing it once.</summary>
+    private Mesh? ComposeParts(uint[] parts)
+    {
         var paths = new List<string>(parts.Length);
         foreach (uint part in parts)
         {
@@ -1007,23 +1188,79 @@ public partial class GameEntities : Node3D
             return cached;
         }
 
-        ArrayMesh? assembled = Refii.Models.Engine_MdlComposite.Build(
-            paths,
-            path => ResourceLoader.Load<Mesh>(
-                Refii.Models.Engine_BnkMeshLoader.PathPrefix + path, "Mesh"),
-            out int resolved,
-            out int missing);
+        // Not built yet. Queue it and draw nothing this frame; the completion stores it and the
+        // next frame is a cache hit.
+        ++_awaitingBuild;
+        QueueCompositeBuild(key, paths);
+        return null;
+    }
 
-        _compositePartsDrawn += resolved;
-        _compositePartsMissing += missing;
-        _composed[key] = assembled;
-        return assembled;
+    /// <summary>Builds one composite off this thread, once.</summary>
+    private void QueueCompositeBuild(string key, List<string> paths)
+    {
+        // Already building, or the pipe is full and this retries next frame. NOT added to the
+        // job set in the full case: leaving it out is what makes the retry possible.
+        if (_compositeJobs.Contains(key) || _inFlight >= MaxInFlightBuilds)
+        {
+            return;
+        }
+
+        _compositeJobs.Add(key);
+        ++_inFlight;
+
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            ArrayMesh? assembled = null;
+            int resolved = 0;
+            int missing = 0;
+            string? error = null;
+
+            try
+            {
+                assembled = Refii.Models.Engine_MdlComposite.Build(
+                    paths,
+                    path => ResourceLoader.Load<Mesh>(
+                        Refii.Models.Engine_BnkMeshLoader.PathPrefix + path, "Mesh"),
+                    out resolved,
+                    out missing);
+            }
+            catch (System.Exception e)
+            {
+                // CARRIED BACK, never left to the Task. An exception here does not stop the game:
+                // it is stored in the Task and discarded unobserved, so the character would simply
+                // never appear with nothing in the log to say why.
+                error = $"{e.GetType().Name}: {e.Message}";
+            }
+
+            _completions.Enqueue(() =>
+            {
+                _compositeJobs.Remove(key);
+                --_inFlight;
+
+                if (error is not null)
+                {
+                    GD.PushWarning($"[game-entities] composite build failed ({error}): {key}");
+                }
+
+                // Cached even when null, exactly as the synchronous path did: a part list whose
+                // models do not assemble will not assemble on the next frame either.
+                _composed[key] = assembled;
+                _compositePartsDrawn += resolved;
+                _compositePartsMissing += missing;
+            });
+        });
     }
 
     /// <summary>Assembled composite meshes, keyed by their part list — a crowd shares parts.</summary>
     private readonly Dictionary<string, Mesh?> _composed = new();
 
     private int _composites;
+
+    /// <summary>Entities drawn this tick from a multi-mesh appearance component (id 5).</summary>
+    private int _multiMesh;
+
+    /// <summary>Mesh records those components stated this tick.</summary>
+    private int _multiMeshParts;
 
     private int _builtParts;
 
@@ -1040,33 +1277,76 @@ public partial class GameEntities : Node3D
             return cached;
         }
 
-        Mesh? mesh = null;
+        // The index lookup stays here: it is a dictionary hit, and a hash that names no path is
+        // an answer, not work. Cached as null so it is asked once.
         if (Refii.Level.Engine_PropModelIndex.Resolve(
-                modelHash, System.Array.Empty<string>()) is string path)
+                modelHash, System.Array.Empty<string>()) is not string path)
         {
-            mesh = ResourceLoader.Load<Mesh>(
-                Refii.Models.Engine_BnkMeshLoader.PathPrefix + path, "Mesh");
-
-            // A MESH WITH NO SURFACES IS NOT A MESH, and it is not null either.
-            //
-            // `Engine_BnkMeshLoader` hands back an empty `ArrayMesh` when a model is a stub —
-            // a header whose body is in no mounted bank — because a loader that returns an
-            // error makes Godot log a resource failure for something that is expected mid
-            // level-change. The cost was paid here: the null check below passed, a node was
-            // created, and `Twins.Claim` hid the region's own copy for an entity that draws
-            // nothing. That is the exact failure the comment on `Claim` says it is avoiding,
-            // defeated by a non-null answer.
-            //
-            // Not cached as a failure: the body pages in from a streaming bank, so the next
-            // frame's ask can legitimately succeed. Only a resolved, surfaced mesh is kept.
-            if (mesh is not null && mesh.GetSurfaceCount() == 0)
-            {
-                return null;
-            }
+            _meshes[modelHash] = null;
+            return null;
         }
 
-        _meshes[modelHash] = mesh;
-        return mesh;
+        QueueMeshBuild(modelHash, path);
+        return null;
+    }
+
+    /// <summary>Loads one model off this thread, once.</summary>
+    private void QueueMeshBuild(uint modelHash, string path)
+    {
+        if (_meshJobs.Contains(modelHash) || _inFlight >= MaxInFlightBuilds)
+        {
+            return;
+        }
+
+        _meshJobs.Add(modelHash);
+        ++_inFlight;
+
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            Mesh? mesh = null;
+            string? error = null;
+
+            try
+            {
+                mesh = ResourceLoader.Load<Mesh>(
+                    Refii.Models.Engine_BnkMeshLoader.PathPrefix + path, "Mesh");
+            }
+            catch (System.Exception e)
+            {
+                error = $"{e.GetType().Name}: {e.Message}";
+            }
+
+            _completions.Enqueue(() =>
+            {
+                _meshJobs.Remove(modelHash);
+                --_inFlight;
+
+                if (error is not null)
+                {
+                    GD.PushWarning($"[game-entities] mesh load failed ({error}): {path}");
+                    return;
+                }
+
+                // A MESH WITH NO SURFACES IS NOT A MESH, and it is not null either.
+                //
+                // `Engine_BnkMeshLoader` hands back an empty `ArrayMesh` when a model is a stub —
+                // a header whose body is in no mounted bank — because a loader that returns an
+                // error makes Godot log a resource failure for something that is expected mid
+                // level-change. The cost was paid here: the null check at the call site passed, a
+                // node was created, and `Twins.Claim` hid the region's own copy for an entity
+                // that draws nothing.
+                //
+                // NOT CACHED as a failure, and so not marked done either: the body pages in from
+                // a streaming bank, so a later frame's ask can legitimately succeed. Only a
+                // resolved, surfaced mesh is kept.
+                if (mesh is not null && mesh.GetSurfaceCount() == 0)
+                {
+                    return;
+                }
+
+                _meshes[modelHash] = mesh;
+            });
+        });
     }
 
     /// <summary>
@@ -1523,4 +1803,22 @@ public partial class GameEntities : Node3D
     /// some entity's orientation source is still returning something that is not a rotation.
     /// </summary>
     public static int NonUnitRotations;
+
+    /// <summary>
+    /// Entity placements whose ORIGIN was not usable and was refused. Run total.
+    ///
+    /// Non-zero is not automatically a fault — a torn read of a position the guest is midway
+    /// through writing is expected at some rate. A rate that CLIMBS is the fault, and one that
+    /// reaches the renderer is a hang rather than a wrong pixel.
+    /// </summary>
+    public static int NonFinitePlacements;
+
+    /// <summary>Squares to 1e18, three orders inside float's range, so a depth cannot overflow.</summary>
+    private const float MaxPlacementCoordinate = 1e9f;
+
+    private static bool IsUsablePlacement(Vector3 position) =>
+        position.IsFinite() &&
+        System.Math.Abs(position.X) < MaxPlacementCoordinate &&
+        System.Math.Abs(position.Y) < MaxPlacementCoordinate &&
+        System.Math.Abs(position.Z) < MaxPlacementCoordinate;
 }

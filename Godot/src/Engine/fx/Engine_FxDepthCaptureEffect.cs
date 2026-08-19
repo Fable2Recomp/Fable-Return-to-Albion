@@ -22,10 +22,30 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
     private Vector2I _targetSize;
     private bool _ready;
 
+    /// <summary>
+    /// Publishes the depth capture's two globals.
+    /// </summary>
+    /// <remarks>
+    /// THE NAMES ARE DECLARED IN project.godot's [shader_globals], and must be. Setting a global
+    /// that was never declared does not create it — it fails, and every shader referencing the
+    /// name then reports "was removed at some point. Material will not display correctly". That
+    /// was happening 259 times a run, on both displacement shaders, in the editor and the game.
+    ///
+    /// NOT PROBED FIRST. Every reader — GlobalShaderParameterGetList, ...Get and ...GetType —
+    /// is EDITOR-ONLY: outside the editor each one ERR_FAILs with "This function should never
+    /// be used outside the editor, it can severely damage performance" and returns empty. A
+    /// probe therefore reports "not declared" in every game build, however well the globals
+    /// are working, and returning on it skipped the Sets below. Measured: the run warned here
+    /// and logged that ERR once, while the 259 "was removed at some point" material warnings
+    /// the declaration was added to fix stayed at zero — the globals were fine, the check was
+    /// not. If a name really is missing, Godot says so accurately on the Set, as
+    /// `Condition "!global_shader_uniforms.variables.has(p_name)" is true`.
+    /// </remarks>
     public static void RegisterGlobals()
     {
         if (_globalsRegistered) return;
         _globalsRegistered = true;
+
         _texture ??= new Texture2Drd();
         RenderingServer.GlobalShaderParameterSet(GlobalTextureName, _texture);
         RenderingServer.GlobalShaderParameterSet(GlobalValidName, 0.0f);
@@ -75,6 +95,61 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
             RenderingServer.GlobalShaderParameterSet(GlobalTextureName, _texture);
             RenderingServer.GlobalShaderParameterSet(GlobalValidName, 1.0f);
         }).CallDeferred();
+    }
+
+    /// <summary>
+    /// Releases the rendering-device objects this effect owns, before the device goes.
+    /// </summary>
+    /// <remarks>
+    /// NOTHING FREED THESE. The shader, pipeline, sampler and target were created once and left
+    /// to the process, and the static <c>Texture2Drd</c> holding the target's RID outlives every
+    /// node — it is published as a global shader parameter, so the rendering server keeps a
+    /// reference to it too. At exit the device is torn down first and those references are
+    /// dangling, which is the shape of the shutdown fault: `viewport_remove_canvas` reporting a
+    /// null viewport and `_disconnect` reporting a connection that is already gone, then a
+    /// segfault inside Godot's own teardown on the main thread with the tree already emptied.
+    ///
+    /// `NotificationPredelete` rather than `_ExitTree` because a CompositorEffect is a Resource
+    /// and never enters the tree. The global parameter is cleared FIRST: dropping the texture
+    /// while the server still points at it is the same bug one step later.
+    /// </remarks>
+    public override void _Notification(int what)
+    {
+        if (what != NotificationPredelete)
+        {
+            return;
+        }
+
+        if (_globalsRegistered)
+        {
+            RenderingServer.GlobalShaderParameterSet(GlobalValidName, 0.0f);
+            RenderingServer.GlobalShaderParameterSet(GlobalTextureName, default(Variant));
+        }
+
+        if (_texture is not null)
+        {
+            _texture.TextureRdRid = default;
+            _texture = null;
+        }
+
+        if (_rd is null)
+        {
+            return;
+        }
+
+        // Freed in creation order's reverse, and each guarded: a device that has already gone
+        // leaves every RID invalid, and freeing an invalid one is its own error.
+        if (_target.IsValid) _rd.FreeRid(_target);
+        if (_sampler.IsValid) _rd.FreeRid(_sampler);
+        if (_pipeline.IsValid) _rd.FreeRid(_pipeline);
+        if (_shader.IsValid) _rd.FreeRid(_shader);
+
+        _target = default;
+        _sampler = default;
+        _pipeline = default;
+        _shader = default;
+        _ready = false;
+        _rd = null;
     }
 
     public override void _RenderCallback(int effectCallbackType, RenderData renderData)

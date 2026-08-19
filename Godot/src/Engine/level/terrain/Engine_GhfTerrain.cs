@@ -102,6 +102,16 @@ public static class Engine_GhfTerrain
 
         float originX = ReadF32(raw, 0x00);
         float originZ = ReadF32(raw, 0x04);
+
+        // The origin lands in every vertex of the largest mesh in the region, and a non-finite
+        // vertex gives the ArrayMesh a non-finite AABB — which is a non-finite render depth,
+        // which hangs Godot's render-list sort in an endless fault. Refused here rather than
+        // sanitised: a header we cannot read is not a heightfield we should be guessing at.
+        if (!IsSane(originX) || !IsSane(originZ))
+        {
+            error = $"implausible origin ({originX}, {originZ})";
+            return false;
+        }
         uint width = ReadU32(raw, 0x0C);
         uint height = ReadU32(raw, 0x10);
 
@@ -123,9 +133,18 @@ public static class Engine_GhfTerrain
         float min = float.PositiveInfinity;
         float max = float.NegativeInfinity;
 
+        // NOTE THE MIN/MAX TRAP BELOW: `value < min` and `value > max` are both false for NaN,
+        // so a NaN never updates either and the reported range looks perfectly clean while the
+        // data is not. That is why the check is explicit rather than inferred from the range.
         for (long i = 0; i < cells; i++)
         {
             float value = ReadF32(raw, (int)(HeaderSize + (i * CellStride)));
+            if (!IsSane(value))
+            {
+                error = $"cell {i:N0} of {cells:N0} is {value}";
+                return false;
+            }
+
             values[i] = value;
             if (value < min) min = value;
             if (value > max) max = value;
@@ -269,6 +288,16 @@ public static class Engine_GhfTerrain
     private static uint ReadU32(byte[] data, int at) =>
         ((uint)data[at] << 24) | ((uint)data[at + 1] << 16) |
         ((uint)data[at + 2] << 8) | data[at + 3];
+
+    /// <summary>
+    /// Finite AND bounded, the same predicate the .ehf decoder already uses.
+    /// </summary>
+    /// <remarks>
+    /// The bound is not decoration: a render depth is a squared distance, so a merely enormous
+    /// height overflows to +inf when squared and becomes NaN one subtraction later, with every
+    /// component still passing a plain finiteness test.
+    /// </remarks>
+    private static bool IsSane(float v) => float.IsFinite(v) && MathF.Abs(v) < 1_000_000f;
 
     private static float ReadF32(byte[] data, int at) =>
         BitConverter.Int32BitsToSingle(unchecked((int)ReadU32(data, at)));

@@ -484,6 +484,14 @@ bool LoadSavedGame(PPCContext& ctx, uint8_t* base, uint32_t index) {
 /// nothing.
 constexpr uint32_t kCommandNone = 0u;
 constexpr uint32_t kCommandSetLanguage = 302u;
+// The dispatcher's ordinary item activation: `switch (a2[1])` case 2 string-compares the item
+// NAME (`GUI_FrontendRoot_MenuActionDispatch`, 0x826DFD58). Every root entry spawns with this
+// id — `sub_826E2220` passes 2 for all of them.
+constexpr uint32_t kCommandActivateItem = 2u;
+
+// Subtitles sampling edges — see the sampler at the end of OnGuestTick.
+uint32_t g_last_menu_screen = 0;
+bool g_sample_subtitles_after_drain = false;
 constexpr uint32_t kCommandSlideMenuUp = 140u;
 constexpr uint32_t kCommandSlideMenuDown = 141u;
 
@@ -616,6 +624,17 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       }
 
       ran = LoadSavedGame(ctx, base, static_cast<uint32_t>(value));
+    } else if (name == "SubtitlesOn" || name == "SubtitlesOff" ||
+               name == "Downloadable Content") {
+      // THROUGH THE GUEST'S OWN DISPATCHER, not a hand-built call. Its id-2 branch compares
+      // the item name and does the whole job itself: the subtitle arms write the setting
+      // (`sub_82443820`) and swap the emphasis, and Downloadable Content raises its own
+      // no-profile dialog when nothing is signed in — the exact behaviours the entries owe.
+      // These three were the menu's dead rows: they posted here and were dropped.
+      ran = DispatchByName(ctx, base, name, kCommandActivateItem, 0u);
+      if (ran && name[0] == 'S') {
+        g_sample_subtitles_after_drain = true;
+      }
     } else if (name == kActionSlideUp) {
       // Name empty on purpose: the switch takes the id before the name chain is reached, so
       // the string is never dereferenced on this path.
@@ -700,11 +719,20 @@ void MaybeFinishInGameLoadingScreen(PPCContext& ctx, uint8_t* base) {
     g_finished_loading_screen.store(0, std::memory_order_relaxed);
     return;
   }
-  if (g_finished_loading_screen.load(std::memory_order_relaxed) == screen) {
+  // REQUESTED IS THE EDGE. NOT `done`, AND NOT THE OBJECT ADDRESS.
+  //
+  // `+176` is the only field that falls back to 0 between loads: `sub_82361458` sets it per
+  // shutdown and the completion clears it (`sub_8235E5A0`, 0x8235E7CC, and the latch below).
+  // `+177` is write-once — nothing outside the constructor `sub_8235CA90` ever clears it — and
+  // the screen OBJECT IS REUSED across loads (0x42161910 recurred all session), so a latch on
+  // either one stands this down permanently after the first level load. Measured: a live run
+  // parked at `fade=1 requested=True done=True` with the world up, both finishers declining to
+  // act and the game thread still inside `sub_82361458`'s WaitForSingleObjectEx.
+  if (LoadGuestU8(base, screen + 176u) == 0) {
+    g_finished_loading_screen.store(0, std::memory_order_relaxed);
     return;
   }
-  if (LoadGuestU8(base, screen + 177u) != 0) {
-    g_finished_loading_screen.store(screen, std::memory_order_relaxed);
+  if (g_finished_loading_screen.load(std::memory_order_relaxed) == screen) {
     return;
   }
 
@@ -850,6 +878,27 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   // After the drain, so a "New Game" that just ran is reflected in the next answer rather than
   // the one before it.
   SampleSavedGameCount(ctx, base);
+
+  // The subtitles setting, republished so the host's menu can mark the current choice.
+  //
+  // ON EDGES ONLY, NEVER PER TICK. The first version called the guest's reader
+  // (`sub_82382558` -> the profile-settings machinery) on every tick the menu screen
+  // existed — including the tick a LoadSave had just started a load on. A profile read
+  // colliding with the load path wedged the tick thread: `ran 'LoadSave:0'` was the pump's
+  // last line while the action queue grew 2..9 with nothing draining, and the load never
+  // finished. The reader is the guest's own and stays (it owns the first-boot non-en-uk
+  // default); what changed is WHEN — once when the menu screen appears, and once after a
+  // subtitles action actually ran. Both are quiet moments on this same thread.
+  const uint32_t menu_screen = MainMenuScreen(base);
+  const bool entered_menu = menu_screen != 0 && g_last_menu_screen == 0;
+  g_last_menu_screen = menu_screen;
+
+  if (entered_menu || (g_sample_subtitles_after_drain && menu_screen != 0)) {
+    g_sample_subtitles_after_drain = false;
+    PPCContext subtitles_ctx = ctx;
+    __imp__sub_82382558(subtitles_ctx, base);
+    refii_bridge_front_end_note_subtitles(static_cast<int32_t>(subtitles_ctx.r3.u32));
+  }
 }
 
 }  // namespace refii::vfs

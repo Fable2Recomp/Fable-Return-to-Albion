@@ -153,6 +153,16 @@ public sealed class MdlMeshBuffer
 
     public bool IsEngineRigid { get; set; }
 
+    /// <summary>
+    /// A TypeD (tree/foliage) part: stride 36, and no submesh batches.
+    /// </summary>
+    /// <remarks>
+    /// The guest's fourth part class (sub_82B352A8). Stream 0 is the 20-byte rigid layout plus
+    /// POSITION1 at +20, COLOR1 at +28 and COLOR2 at +32 — the wind lanes — and the declaration
+    /// builder emits all seven elements unconditionally, so 36 is not a variant.
+    /// </remarks>
+    public bool IsEngineTree { get; set; }
+
     public List<MdlSubMesh> SubMeshes { get; } = new();
 }
 

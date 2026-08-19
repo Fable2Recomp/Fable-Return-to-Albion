@@ -103,6 +103,9 @@ uint32_t BinkMovieState(uint8_t* base);
 /// post-cutscene teardown wait and the pump can no longer fire.
 void FinishStuckInGameLoadingScreenFromHost(uint8_t* base);
 
+/// The subtitles setting the pump last sampled from the guest: 1 on, 0 off, -1 unknown.
+int32_t FrontEndSubtitles();
+
 // The guest tick pump's shared state — defined in src/core/guest_tick_pump_state.cpp, which
 // links into librefii_vfs. The HOST posts and the PAYLOAD drains, so the queue cannot live
 // beside the pump hook; see that file. The pump compiles into the payload, so it crosses

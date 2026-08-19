@@ -610,11 +610,25 @@ public static class Engine_LevelProps
                 InstanceCount = batched.Count,
             };
 
+            // THE AABB IS SET BEFORE THE FIRST TRANSFORM, and that ordering is the whole point.
+            //
+            // The mesh arrives later, from Engine_PropStreamer. Writing an instance transform
+            // marks the multimesh's bounds dirty, and on the next frame Godot recomputes them
+            // from the mesh unless a custom AABB was set — `_multimesh_re_create_aabb`
+            // (mesh_storage.cpp:1836), which opens `ERR_FAIL_COND(multimesh->mesh.is_null())`.
+            // Setting the bounds afterwards is too late: the dirty flag is already up. Bounds
+            // are therefore measured in their own pass first, which costs one extra walk of a
+            // list already in memory.
             var bounds = new Aabb(block.Instances[batched[0]].Origin, Vector3.Zero);
             for (int i = 0; i < batched.Count; i++)
             {
-                multiMesh.SetInstanceTransform(i, block.Instances[batched[i]]);
                 bounds = bounds.Expand(block.Instances[batched[i]].Origin);
+            }
+            multiMesh.CustomAabb = bounds.Grow(ModelReach);
+
+            for (int i = 0; i < batched.Count; i++)
+            {
+                multiMesh.SetInstanceTransform(i, block.Instances[batched[i]]);
             }
 
             // ONE PROBE SAMPLE PER INSTANCE, not one per block.
@@ -641,8 +655,6 @@ public static class Engine_LevelProps
 
             bool coloured = Refii.Lighting.Engine_LevelBakedLighting.ApplyMultiMeshProbes(
                 multiMesh, batchedTransforms, probes);
-
-            multiMesh.CustomAabb = bounds.Grow(ModelReach);
 
             var node = new MultiMeshInstance3D
             {
@@ -1305,8 +1317,34 @@ public static class Engine_LevelProps
         /// </remarks>
         public List<ulong> InstanceBakeKeys { get; } = new();
 
+        /// <summary>
+        /// Records one instance, refusing any transform that is not finite.
+        /// </summary>
+        /// <remarks>
+        /// THE CHOKEPOINT, guarded here because six callers reach it and the builders they come
+        /// from harden the basis and the scale while leaving the ORIGIN bare — the .lev type-2
+        /// and type-21 loop1 readers take positions as raw f32 with no test at all.
+        ///
+        /// These origins seed the block's MultiMesh CustomAabb through Expand(), so ONE bad
+        /// instance in a ten-thousand-instance foliage block poisons the whole box. A
+        /// non-finite box is a non-finite render depth, and Godot sorts its render list with
+        /// std::sort, whose final pass has no bounds check: every comparison against NaN is
+        /// false, the sort walks off the front of the array and faults, and the fault
+        /// re-executes forever. Load-time data, so unlike a torn guest read this one is
+        /// PERMANENT — the level freezes the same way every time it is entered.
+        /// </remarks>
         public void AddInstance(Transform3D transform, uint hash = 0, ulong bakeKey = 0)
         {
+            if (!transform.Origin.IsFinite() ||
+                transform.Origin.Length() > MaxInstanceReach ||
+                !transform.Basis.X.IsFinite() ||
+                !transform.Basis.Y.IsFinite() ||
+                !transform.Basis.Z.IsFinite())
+            {
+                ++NonFiniteInstances;
+                return;
+            }
+
             Instances.Add(transform);
             InstanceHashes.Add(hash);
             InstanceBakeKeys.Add(bakeKey);
@@ -1453,6 +1491,12 @@ public static class Engine_LevelProps
     /// <see cref="BuildStaticPlacementTransform"/>. They used to, and it silently threw away
     /// every prop's real orientation.
     /// </summary>
+    /// <summary>Furthest a prop instance may sit from the level origin.</summary>
+    private const float MaxInstanceReach = 1_000_000f;
+
+    /// <summary>Prop/foliage instances refused as not finite. Run total.</summary>
+    public static int NonFiniteInstances;
+
     public static Transform3D BuildFoliageTransform(float[] values) =>
         BuildFoliageTransform(values, null);
 
@@ -1475,7 +1519,11 @@ public static class Engine_LevelProps
 
         var origin = new Vector3(values[0], values[2], values[1]);
 
-        if (rotation is not { } q || !float.IsFinite(q.X) || !float.IsFinite(q.W))
+        // X AND W ARE NOT THE WHOLE QUATERNION. Y and Z come from the same four half-float
+        // reads and are just as able to be NaN; the lengthSquared test below cannot catch them
+        // because every comparison against NaN is false.
+        if (rotation is not { } q || !float.IsFinite(q.X) || !float.IsFinite(q.Y) ||
+            !float.IsFinite(q.Z) || !float.IsFinite(q.W))
         {
             return new Transform3D(YawScaleBasis(values[6], values[7], sx, sy, sz), origin);
         }

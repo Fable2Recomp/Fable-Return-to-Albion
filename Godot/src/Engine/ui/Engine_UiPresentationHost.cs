@@ -626,7 +626,49 @@ public partial class Engine_UiPresentationHost : Node3D
 	}
 
 	/// <summary>Builds the presentation at <paramref name="index"/> and mounts it.</summary>
-	public void Show(int index)
+	/// <summary>
+	/// Element names hidden after every rebuild — the guest widgets a host-owned stand-in
+	/// replaces (menu rows, its highlight). Registered by the stand-in's owner; cleared when
+	/// the stand-in goes away.
+	/// </summary>
+	public readonly System.Collections.Generic.HashSet<string> SuppressedElementNames = new();
+
+	private void ApplySuppressions(Node root)
+	{
+		if (SuppressedElementNames.Count == 0)
+		{
+			return;
+		}
+
+		int hidden = 0;
+		void Walk(Node node)
+		{
+			if (node is Node3D spatial && SuppressedElementNames.Contains(node.Name))
+			{
+				if (spatial.Visible)
+				{
+					spatial.Visible = false;
+					++hidden;
+				}
+
+				return;  // the subtree goes with its root
+			}
+
+			foreach (Node child in node.GetChildren())
+			{
+				Walk(child);
+			}
+		}
+
+		Walk(root);
+		if (hidden != 0)
+		{
+			GD.Print($"[game-ui] suppressed {hidden} guest element instance(s) after rebuild " +
+				$"({string.Join(", ", SuppressedElementNames)})");
+		}
+	}
+
+		public void Show(int index)
 	{
 		if (_loadScreen is null || index < 0 || index >= _screens.Count)
 			return;
@@ -662,6 +704,13 @@ public partial class Engine_UiPresentationHost : Node3D
 		Built = builder.Build(screen);
 		AddChild(Built);
 		Engine_UiSceneBuilder.ApplyCameraAiming(Built);
+
+		// Applied on EVERY rebuild, which is the whole point. The tree is torn down and
+		// rebuilt per guest state change, and a suppression done once from outside came back
+		// visible with the next rebuild — measured as "hid 2" then "hid 1" MenuHighlight
+		// instances across one session while the badge kept painting. The owner of a stand-in
+		// registers the name once; this host keeps the promise for as long as it is showing.
+		ApplySuppressions(Built);
 
 		// The art a host-authored screen can borrow is whatever is standing up RIGHT NOW, so
 		// the catalogue is rebuilt here rather than once at load. Cataloguing every screen up

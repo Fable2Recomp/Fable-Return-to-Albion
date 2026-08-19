@@ -31,7 +31,7 @@ public static class HostBridge
 	/// the game does not limp, it stops, and it stops before anything has written a guest log
 	/// segment to look in. Adding export 33 without touching this line is what that looks like.
 	/// </summary>
-	public const int ExpectedAbiVersion = 57;
+	public const int ExpectedAbiVersion = 61;
 
 	private const int MessageCapacity = 512;
 
@@ -1066,6 +1066,127 @@ public static class HostBridge
 
 	private static uint[]? _componentPairs;
 
+	/// <summary>The pause-menu gate: active screen id, pending modal id, current tab.</summary>
+	/// <remarks>
+	/// Screen id 0 is the pause ROOT — the window in which the owned menu may stand in and
+	/// tab selection is accepted. A non-zero modal id (23/24/25/28 are the pause query boxes)
+	/// means a dialog owns input. Null when the GUI object is not up at all.
+	/// </remarks>
+	public readonly record struct PauseState(uint ScreenId, uint ModalId, uint CurrentTab)
+	{
+		public bool RootActive => ScreenId == 0 && ModalId == 0;
+	}
+
+	public static PauseState? GetPauseState()
+	{
+		if (TryGetAbiVersion() is null ||
+			RefiiHostGetPauseState(out uint screen, out uint modal, out uint tab) == 0)
+		{
+			return null;
+		}
+
+		return new PauseState(screen, modal, tab);
+	}
+
+	/// <summary>
+	/// Selects a pause tab through the guest's own lever — a pure write its GUI tick polls,
+	/// after which the guest pushes the screen itself (`sub_826B89E0`).
+	/// </summary>
+	/// <remarks>
+	/// Tabs: 1 root, 2 map, 3 abilities, 4 items, 5 weapons, 6 clothing, 7 logbook,
+	/// 8 options. The bridge refuses outside the pause root or under a modal — the same
+	/// window the guest's own LB/RB nav runs in. AVAILABILITY IS OURS TO RESPECT: the
+	/// guest's push does not re-check the unlock flags, so a ghosted entry must never
+	/// reach this call.
+	/// </remarks>
+	public static bool PauseTabSelect(uint tab) =>
+		TryGetAbiVersion() is not null && RefiiHostPauseTabSelect(tab) != 0;
+
+	/// <summary>
+	/// The subtitles setting the guest last stated: true/false, or null before the first
+	/// sample. Sampled by the tick pump through the guest's own reader while the front end
+	/// is up, so the first-boot default (non-en-uk forces subtitles on) is the guest's rule,
+	/// not ours.
+	/// </summary>
+	public static bool? GetSubtitles()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		return RefiiHostGetSubtitles() switch { 1 => true, 0 => false, _ => null };
+	}
+
+	/// <summary>
+	/// The UIDs the guest holds in its DeadEntities set — placements it will not respawn.
+	/// </summary>
+	/// <remarks>
+	/// The guest's own answer to "is this placement destroyed?", and the same set it consults
+	/// before spawning a placement and persists to the save. Read fresh: deactivating a layer
+	/// purges that layer's entries, so an entry vanishing means the props legitimately come
+	/// back, and a cached copy would keep them hidden forever.
+	/// </remarks>
+	public static ulong[] GetDeadEntities()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return System.Array.Empty<ulong>();
+		}
+
+		_deadUids ??= new ulong[MaxDeadEntities];
+		uint written = RefiiHostGetDeadEntities(_deadUids, MaxDeadEntities);
+		if (written == 0)
+		{
+			return System.Array.Empty<ulong>();
+		}
+
+		var uids = new ulong[written];
+		System.Array.Copy(_deadUids, uids, written);
+		return uids;
+	}
+
+	private const uint MaxDeadEntities = 4096;
+
+	private static ulong[]? _deadUids;
+
+	/// <summary>
+	/// The meshes a multi-mesh appearance component (id 5) draws, or empty.
+	/// </summary>
+	/// <remarks>
+	/// THE ROUTE THAT WAS MISSING, and the reason the region's build-time copy of a level looked
+	/// load-bearing. `GetEntities` reports ONE model hash, taken from the single-slot appearance
+	/// components; component 5 keeps a vector of mesh records instead, so anything using one
+	/// reported no model at all and only the static copy drew it. Buildings are the case in
+	/// point — a region's standing static copies are named `… interior` / `… exterior`, which
+	/// are two records of one `MeshRecords` list.
+	///
+	/// The hashes are lower-cased resource-name hashes, identical in kind to `ModelFile`, so the
+	/// same model index resolves them.
+	/// </remarks>
+	public static uint[] GetEntityMeshParts(uint entity, out int totalParts)
+	{
+		totalParts = 0;
+		if (TryGetAbiVersion() is null)
+		{
+			return System.Array.Empty<uint>();
+		}
+
+		_meshParts ??= new uint[MaxMorphParts];
+		uint written = RefiiHostGetEntityMeshParts(
+			entity, _meshParts, MaxMorphParts, out uint total);
+		totalParts = (int)total;
+
+		if (written == 0)
+		{
+			return System.Array.Empty<uint>();
+		}
+
+		var hashes = new uint[written];
+		System.Array.Copy(_meshParts, hashes, written);
+		return hashes;
+	}
+
 	/// <summary>
 	/// The model hashes a COMPOSITE character is assembled from, or empty for anything else.
 	///
@@ -1075,9 +1196,13 @@ public static class HostBridge
 	/// is that list.
 	///
 	/// <paramref name="builtParts"/> is the length of the component's OTHER, built list, which
-	/// the guest fills in its draw virtual. It is reported rather than used: our guest never
-	/// draws, so that list is expected to be empty here, and a non-zero value would mean the
-	/// draw path runs after all and the richer 24-byte records are available too.
+	/// the guest fills in its draw virtual.
+	///
+	/// MEASURED, AND THE OLD READING WAS WRONG. This used to say the built list would be empty
+	/// because our guest never draws. It is not: 147-245 records a frame against 84 source
+	/// parts. The bridge now returns the BUILT list, which is the only one that carries WORN
+	/// CLOTHING — garments are appended to it from CECAppearanceModifierManager (component 15)
+	/// and never appear in the source list at all, which is why the hero rendered naked.
 	/// </summary>
 	public static uint[] GetEntityMorphParts(uint entity, out int builtParts)
 	{
@@ -1109,6 +1234,7 @@ public static class HostBridge
 	private const uint MaxMorphParts = 64;
 
 	private static uint[]? _morphParts;
+	private static uint[]? _meshParts;
 
 	/// <summary>
 	/// The front end as a MODEL — which entries exist and which screen is up — for a menu
@@ -2164,7 +2290,11 @@ public static class HostBridge
 	{
 		var languages = new System.Collections.Generic.List<Language>();
 
-		if (TryGetAbiVersion() is null || !IsRunning)
+		// IsGuestUp, NOT IsRunning — the recorded trap: IsRunning is false once the guest is
+		// past its boot, which is precisely when the front end asks. This gate returned an
+		// empty list on every refresh, so the Language entry never grew children and
+		// activating it posted a name the guest has no branch for.
+		if (TryGetAbiVersion() is null || !IsGuestUp)
 		{
 			return languages;
 		}
@@ -2691,6 +2821,23 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityMorphParts(
 		uint entity, uint[] outHashes, uint maxHashes, out uint outBuilt);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityMeshParts(
+		uint entity, uint[] outHashes, uint maxHashes, out uint outTotal);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetDeadEntities(ulong[] outUids, uint maxUids);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetSubtitles();
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetPauseState(
+		out uint screenId, out uint modalId, out uint currentTab);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostPauseTabSelect(uint tab);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostGetSceneStreams(uint[] outWords);
