@@ -82,6 +82,8 @@ public sealed class EngineLevelFile
     /// <summary>The level's heightfields, in file order, each with its lightmap id.</summary>
     public List<EngineLevelHeightfield> Heightfields { get; } = new();
 
+    public List<string> MistPaths { get; } = new();
+
     public int Type21Blocks { get; set; }
 
     public int Type21Instances { get; set; }
@@ -198,6 +200,10 @@ public static class Engine_EngineLevelFile
                             Path = assetPath,
                             LightmapKey = lightmapKey,
                         });
+                    }
+                    else if (type == 32 && assetPath.Length != 0)
+                    {
+                        file.MistPaths.Add(assetPath);
                     }
 
                     break;

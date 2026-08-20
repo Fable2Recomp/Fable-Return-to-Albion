@@ -24,6 +24,14 @@ public sealed class ClothingEntry
 
     public string FemaleModelPath { get; set; } = string.Empty;
 
+    public string MaleOpenModelPath { get; set; } = string.Empty;
+
+    public string FemaleOpenModelPath { get; set; } = string.Empty;
+
+    public uint MaleOpenModelHash { get; set; }
+
+    public uint FemaleOpenModelHash { get; set; }
+
     public bool MaleOnly { get; set; }
 
     public bool FemaleOnly { get; set; }
@@ -33,6 +41,38 @@ public sealed class ClothingEntry
 
     public string ModelPathFor(bool female) =>
         female && FemaleModelPath.Length != 0 ? FemaleModelPath : MaleModelPath;
+
+    private bool WearsFemaleModel(bool female) => female && FemaleModelPath.Length != 0;
+
+    public string OpenModelPathFor(bool female) =>
+        WearsFemaleModel(female) ? FemaleOpenModelPath : MaleOpenModelPath;
+
+    public uint OpenModelHashFor(bool female) =>
+        WearsFemaleModel(female) ? FemaleOpenModelHash : MaleOpenModelHash;
+
+    public bool HasOpenVariant(bool female) => OpenModelPathFor(female).Length != 0;
+
+    public string ModelPathFor(bool female, bool open)
+    {
+        if (!open)
+        {
+            return ModelPathFor(female);
+        }
+
+        string variant = OpenModelPathFor(female);
+        return variant.Length != 0 ? variant : ModelPathFor(female);
+    }
+
+    public uint ModelHashFor(bool female, bool open)
+    {
+        if (!open)
+        {
+            return ModelHashFor(female);
+        }
+
+        uint variant = OpenModelHashFor(female);
+        return variant != 0 ? variant : ModelHashFor(female);
+    }
 
     public bool WornBy(bool female) => female ? !MaleOnly : !FemaleOnly;
 }
@@ -87,6 +127,7 @@ public static class Engine_ClothingIndex
         _entries = null;
         _byFileName = null;
         _generation++;
+        Engine_OpenVariants.Invalidate();
     }
 
     public static IReadOnlyList<ClothingEntry> Entries
@@ -252,8 +293,18 @@ public static class Engine_ClothingIndex
         _byFileName = map;
         _entries = entries;
 
+        int openable = 0;
+        foreach (ClothingEntry entry in entries)
+        {
+            if (entry.MaleOpenModelPath.Length != 0 || entry.FemaleOpenModelPath.Length != 0)
+            {
+                openable++;
+            }
+        }
+
         GD.Print($"[clothes] indexed {entries.Count} garment(s) across " +
-            $"{Slots().Count} slot(s) from {multi.Views.Count} database(s)");
+            $"{Slots().Count} slot(s) from {multi.Views.Count} database(s), " +
+            $"{openable} with an open variant");
     }
 
     private static void ResolveModels(ClothingEntry entry, ItemDetail detail)
@@ -270,6 +321,20 @@ public static class Engine_ClothingIndex
         if (entry.MaleModelPath.Length == 0 && entry.FemaleModelPath.Length != 0)
         {
             entry.FemaleOnly = true;
+        }
+
+        entry.MaleOpenModelPath = Engine_OpenVariants.Resolve(entry.MaleModelPath);
+        entry.FemaleOpenModelPath = Engine_OpenVariants.Resolve(entry.FemaleModelPath);
+
+        if (entry.MaleOpenModelPath.Length != 0)
+        {
+            entry.MaleOpenModelHash = Engine_PropModelIndex.PathHash(entry.MaleOpenModelPath);
+        }
+
+        if (entry.FemaleOpenModelPath.Length != 0)
+        {
+            entry.FemaleOpenModelHash =
+                Engine_PropModelIndex.PathHash(entry.FemaleOpenModelPath);
         }
     }
 

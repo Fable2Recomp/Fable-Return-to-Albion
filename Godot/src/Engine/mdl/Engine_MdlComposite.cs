@@ -21,6 +21,10 @@ namespace Refii.Models;
 /// </summary>
 public static class Engine_MdlComposite
 {
+    public const string PartPathsMeta = "mdl_part_paths";
+
+    public const string PartSpansMeta = "mdl_part_spans";
+
     /// <summary>
     /// Concatenates the surfaces of every part that resolves, or null when none of them do.
     /// </summary>
@@ -63,6 +67,10 @@ public static class Engine_MdlComposite
             new List<(Godot.Collections.Array Arrays, Mesh.PrimitiveType Primitive,
                 string Name, Material Material, string? Bare)>();
 
+        var partPaths = new List<string>();
+        var partSpans = new List<int>();
+        int partVertexBase = 0;
+
         foreach (string path in parts)
         {
             if (path.Length == 0 || resolve(path) is not ArrayMesh part ||
@@ -73,6 +81,18 @@ public static class Engine_MdlComposite
             }
 
             ++resolved;
+
+            int partVertices = 0;
+            for (int surface = 0; surface < part.GetSurfaceCount(); surface++)
+            {
+                partVertices += part.SurfaceGetArrays(surface)[(int)Mesh.ArrayType.Vertex]
+                    .AsVector3Array().Length;
+            }
+
+            partPaths.Add(path);
+            partSpans.Add(partVertexBase);
+            partSpans.Add(partVertices);
+            partVertexBase += partVertices;
 
             Engine_MdlRig? rig = Engine_MdlRig.TryFrom(part);
             int[]? remap = rig is { } table ? Absorb(table, boneIndex, names, parents, rest) : null;
@@ -160,6 +180,12 @@ public static class Engine_MdlComposite
             mesh.SetMeta(Engine_MdlMesh.BoneNamesMeta, names.ToArray());
             mesh.SetMeta(Engine_MdlMesh.BoneParentsMeta, parents.ToArray());
             mesh.SetMeta(Engine_MdlMesh.BoneRestMeta, rest.ToArray());
+        }
+
+        if (partPaths.Count != 0)
+        {
+            mesh.SetMeta(PartPathsMeta, partPaths.ToArray());
+            mesh.SetMeta(PartSpansMeta, partSpans.ToArray());
         }
 
         return mesh;

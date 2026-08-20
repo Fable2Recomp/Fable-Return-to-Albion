@@ -283,6 +283,9 @@ public static class Engine_LevelScene
         AddWater(level, source, findByName, root);
         Mark("water");
 
+        bool hasMist = AddMist(level, source, root);
+        Mark("mist");
+
         LightmapContainer? bakedLightmaps = null;
         LightProbeField? probeField = null;
         string bakedGdbPath = string.Empty;
@@ -449,6 +452,11 @@ public static class Engine_LevelScene
                     if (sky is not null)
                     {
                         Engine_LevelLighting.ConfigureEnvironment(sky.Environment, lightingFrame);
+
+                        if (hasMist)
+                        {
+                            sky.Environment.VolumetricFogEnabled = true;
+                        }
                     }
 
                     if (sky is Engine_SkyEnvironmentNode skyNode)
@@ -950,6 +958,113 @@ public static class Engine_LevelScene
         if (level.HeightfieldPath.Length != 0)
         {
             yield return ReplaceExtension(level.HeightfieldPath, ".water");
+        }
+    }
+
+    private static bool AddMist(
+        LevelEntry level,
+        Func<string, byte[]?>? source,
+        Node3D root)
+    {
+        if (source is null)
+        {
+            return false;
+        }
+
+        byte[]? bytes = null;
+        foreach (string candidate in MistCandidates(level))
+        {
+            bytes = source(candidate);
+            if (bytes is not null && bytes.Length > 8)
+            {
+                break;
+            }
+
+            bytes = null;
+        }
+
+        if (bytes is null)
+        {
+            return false;
+        }
+
+        if (!Engine_MistFile.TryParse(bytes, out MistScene scene, out string why))
+        {
+            GD.Print($"[mist] {level}: {why}");
+            return false;
+        }
+
+        if (scene.Volumes.Count == 0)
+        {
+            return false;
+        }
+
+        var container = new Node3D { Name = "Mist" };
+        int emitted = 0;
+
+        for (int i = 0; i < scene.Volumes.Count; i++)
+        {
+            MistVolume vol = scene.Volumes[i];
+
+            float sizeX = MathF.Abs(vol.BoxSize[0]);
+            float sizeY = MathF.Abs(vol.BoxSize[1]);
+            float sizeZ = MathF.Abs(vol.BoxSize[2]);
+            if (sizeX < 0.01f && sizeY < 0.01f && sizeZ < 0.01f)
+            {
+                continue;
+            }
+
+            float centreX = vol.BoxMin[0] + vol.BoxSize[0] * 0.5f;
+            float centreY = vol.BoxMin[1] + vol.BoxSize[1] * 0.5f;
+            float centreZ = vol.BoxMin[2] + vol.BoxSize[2] * 0.5f;
+
+            var material = new FogMaterial();
+            material.Density = vol.Density;
+            material.Albedo = new Color(vol.Colour[0], vol.Colour[1], vol.Colour[2]);
+
+            var fog = new FogVolume
+            {
+                Name = $"MistVolume{i}",
+                Position = new Vector3(centreX, centreY, centreZ),
+                Size = new Vector3(sizeX, sizeY, sizeZ),
+                Shape = RenderingServer.FogVolumeShape.Box,
+                Material = material,
+            };
+
+            container.AddChild(fog);
+            emitted++;
+        }
+
+        if (emitted == 0)
+        {
+            container.QueueFree();
+            return false;
+        }
+
+        root.AddChild(container);
+        container.Owner = root;
+
+        foreach (Node child in container.GetChildren())
+        {
+            child.Owner = root;
+        }
+
+        GD.Print(
+            $"[mist] {level}: {emitted} volume(s) from {scene.Volumes.Count} record(s)");
+
+        return true;
+    }
+
+    private static IEnumerable<string> MistCandidates(LevelEntry level)
+    {
+        if (level.MainEhfPath.Length != 0)
+        {
+            yield return ReplaceExtension(level.MainEhfPath, ".mist");
+        }
+
+        if (level.HeightfieldPath.Length != 0)
+        {
+            yield return ReplaceExtension(level.HeightfieldPath, ".mist");
         }
     }
 

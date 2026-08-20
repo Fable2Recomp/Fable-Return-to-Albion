@@ -13,9 +13,14 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
     public const string FemaleMeta = "hero_female";
     public const string BodyModelsMeta = "hero_body_models";
     public const string OutfitMeta = "hero_outfit";
+    public const string OutfitOpenMeta = "hero_outfit_open";
     public const string MorphMeta = "hero_morph";
 
+    public const string OpenSuffix = " Open";
+
     private readonly System.Collections.Generic.Dictionary<ClothingSlot, int> _selection = new();
+
+    private readonly System.Collections.Generic.HashSet<ClothingSlot> _open = new();
 
     private readonly HeroMorphWeights _morphs = new();
 
@@ -52,7 +57,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
         }
 
         _skeletal = null;
-        _outfit = Engine_HeroOutfit.Resolve(chosen, Female);
+        _outfit = Engine_HeroOutfit.Resolve(chosen, Female, _open);
 
         var parts = new List<string>(BodyModels);
         foreach (string path in _outfit.ModelPaths)
@@ -81,7 +86,14 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
 
         if (mesh is not null)
         {
-            Mesh = Skeletal(mesh) ?? mesh;
+            ArrayMesh? baked = Skeletal(mesh);
+            if (baked is not null)
+            {
+                CarryPartSpans(mesh, baked);
+            }
+
+            Mesh = baked ?? mesh;
+            RefreshCloth();
             Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
                 this, Engine_SkyEnvironmentNode.Current?.Lighting);
 
@@ -90,8 +102,69 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
         }
 
         StoreSelection();
+        StoreOpen();
         StoreMorphs();
         NotifyPropertyListChanged();
+    }
+
+    private static void CarryPartSpans(ArrayMesh from, ArrayMesh to)
+    {
+        if (from.HasMeta(Refii.Models.Engine_MdlComposite.PartPathsMeta))
+        {
+            to.SetMeta(
+                Refii.Models.Engine_MdlComposite.PartPathsMeta,
+                from.GetMeta(Refii.Models.Engine_MdlComposite.PartPathsMeta));
+        }
+
+        if (from.HasMeta(Refii.Models.Engine_MdlComposite.PartSpansMeta))
+        {
+            to.SetMeta(
+                Refii.Models.Engine_MdlComposite.PartSpansMeta,
+                from.GetMeta(Refii.Models.Engine_MdlComposite.PartSpansMeta));
+        }
+    }
+
+    private void RefreshCloth()
+    {
+        var clothed = new List<string>();
+        if (_outfit is not null)
+        {
+            foreach (string path in _outfit.ModelPaths)
+            {
+                if (Refii.Physics.Engine_PhysicsIndex.HasCloth(path))
+                {
+                    clothed.Add(path);
+                }
+            }
+        }
+
+        var body = GetNodeOrNull<Refii.Physics.Engine_ClothBody>(
+            Refii.Physics.Engine_ClothBody.NodeName);
+
+        if (clothed.Count == 0)
+        {
+            if (body is not null)
+            {
+                RemoveChild(body);
+                body.QueueFree();
+            }
+
+            return;
+        }
+
+        if (body is null)
+        {
+            body = new Refii.Physics.Engine_ClothBody
+            {
+                Name = Refii.Physics.Engine_ClothBody.NodeName,
+            };
+
+            AddChild(body);
+            body.Owner = Owner ?? this;
+        }
+
+        body.SetModelPaths(clothed);
+        body.Bind();
     }
 
     private System.Collections.Generic.Dictionary<uint, List<TextureMorphEntry>>? _textureMorphs;
@@ -214,6 +287,48 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
         }
     }
 
+    public ClothingEntry? SelectedEntry(ClothingSlot slot)
+    {
+        if (!_selection.TryGetValue(slot, out int index) || index <= 0)
+        {
+            return null;
+        }
+
+        List<WardrobeOption> options = Engine_HeroWardrobe.OptionsFor(slot, Female);
+        return index < options.Count ? options[index].Entry : null;
+    }
+
+    private bool CanOpen(ClothingSlot slot) =>
+        SelectedEntry(slot)?.HasOpenVariant(Female) == true;
+
+    private void StoreOpen()
+    {
+        var stored = new Dictionary();
+        foreach (ClothingSlot slot in _open)
+        {
+            stored[(int)slot] = true;
+        }
+
+        SetMeta(OutfitOpenMeta, stored);
+    }
+
+    private void LoadOpen()
+    {
+        if (_open.Count != 0 || !HasMeta(OutfitOpenMeta))
+        {
+            return;
+        }
+
+        Dictionary stored = GetMeta(OutfitOpenMeta).AsGodotDictionary();
+        foreach (Variant key in stored.Keys)
+        {
+            if (stored[key].AsBool())
+            {
+                _open.Add((ClothingSlot)key.AsInt32());
+            }
+        }
+    }
+
     private void StoreSelection()
     {
         var stored = new Dictionary();
@@ -243,6 +358,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
     {
         Array<Dictionary> list = base._GetPropertyList();
         LoadSelection();
+        LoadOpen();
         LoadMorphs();
 
         Group(list, "Morphs");
@@ -272,6 +388,16 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
                 { "hint", (int)PropertyHint.Enum },
                 { "hint_string", Engine_HeroWardrobe.HintFor(options) },
             });
+
+            if (CanOpen(slot))
+            {
+                list.Add(new Dictionary
+                {
+                    { "name", Engine_ClothingSlots.LabelOf(slot) + OpenSuffix },
+                    { "type", (int)Variant.Type.Bool },
+                    { "usage", (int)PropertyUsageFlags.Default },
+                });
+            }
         }
 
         if (_outfit is not null && _outfit.Layers.Count != 0)
@@ -308,6 +434,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
     {
         string name = property.ToString();
         LoadSelection();
+        LoadOpen();
         LoadMorphs();
 
         if (Engine_HeroMorphSliders.TryFind(name, out HeroMorphKind morphKind))
@@ -321,6 +448,11 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
             {
                 return _selection.TryGetValue(slot, out int index) ? index : 0;
             }
+
+            if (Engine_ClothingSlots.LabelOf(slot) + OpenSuffix == name)
+            {
+                return _open.Contains(slot);
+            }
         }
 
         if (_outfit is not null)
@@ -328,8 +460,9 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
             if (TryIndexed("Layer ", name, _outfit.Layers.Count, out int layer))
             {
                 OutfitLayer worn = _outfit.Layers[layer];
-                return $"{Engine_ClothingSlots.LabelOf(worn.Slot)}: {worn.Name}  " +
-                    $"(layer {worn.SortLayer}, areas 0x{worn.BodyAreasCovered:X}, " +
+                return $"{Engine_ClothingSlots.LabelOf(worn.Slot)}: {worn.Name}" +
+                    (worn.Open ? " [open]" : string.Empty) +
+                    $"  (layer {worn.SortLayer}, areas 0x{worn.BodyAreasCovered:X}, " +
                     $"{worn.ClustersCovered.Count} cluster(s))";
             }
 
@@ -360,6 +493,21 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
 
         foreach (ClothingSlot slot in Engine_HeroWardrobe.SlotsFor(Female))
         {
+            if (Engine_ClothingSlots.LabelOf(slot) + OpenSuffix == name)
+            {
+                if (value.AsBool())
+                {
+                    _open.Add(slot);
+                }
+                else
+                {
+                    _open.Remove(slot);
+                }
+
+                Rebuild();
+                return true;
+            }
+
             if (Engine_ClothingSlots.LabelOf(slot) != name)
             {
                 continue;

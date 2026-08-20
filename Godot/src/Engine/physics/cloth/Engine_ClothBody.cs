@@ -18,9 +18,18 @@ public partial class Engine_ClothBody : Node3D
 
     private readonly List<ClothInstance> _instances = new();
 
+    private readonly List<ClothPiece> _pieces = new();
+
+    private ClothPatch? _patch;
+
+    private MeshInstance3D? _target;
+
     private float _accumulator;
 
     private bool _bound;
+
+    public static readonly PhysVec4 GravityDown =
+        new(0.0f, ClothInstance.DefaultGravityZ, 0.0f, 0.0f);
 
     [Export]
     public bool Simulate { get; set; } = true;
@@ -47,6 +56,17 @@ public partial class Engine_ClothBody : Node3D
         SetPhysicsProcess(true);
     }
 
+    public MeshInstance3D? Target()
+    {
+        if (_target is not null && GodotObject.IsInstanceValid(_target))
+        {
+            return _target;
+        }
+
+        _target = GetParent() as MeshInstance3D;
+        return _target;
+    }
+
     public void Bind()
     {
         if (_bound)
@@ -56,23 +76,70 @@ public partial class Engine_ClothBody : Node3D
 
         _bound = true;
         _instances.Clear();
+        _pieces.Clear();
+        _patch = null;
 
-        foreach (string path in ModelPaths())
+        MeshInstance3D? target = Target();
+        if (target?.Mesh is not ArrayMesh source)
         {
-            foreach (ClothAsset asset in Engine_PhysicsIndex.AssetsFor(path))
+            return;
+        }
+
+        ClothPatch? patch = ClothPatch.Capture(source);
+        if (patch is null)
+        {
+            return;
+        }
+
+        {
+            foreach (ClothPiece piece in Engine_ClothPieces.ForMesh(
+                         ModelPaths(), source, Refii.Level.Engine_PropStreamer.Resolve))
             {
+                if (piece.ClothVertexOf.Length != patch.VertexCount)
+                {
+                    continue;
+                }
+
                 ClothInstance instance = ClothInstance.Create();
+                instance.GravityDirWorld = GravityDown;
                 instance.XformCur = Engine_PhysicsMatrix.FromTransform3D(GlobalTransform);
                 instance.XformPrev = instance.XformCur;
-                instance.Bind(asset);
+                instance.Bind(piece.Asset);
+
+                patch.MarkDriven(piece.ClothVertexOf);
+                _pieces.Add(piece);
                 _instances.Add(instance);
             }
         }
 
-        if (_instances.Count != 0)
+        if (_instances.Count == 0)
         {
-            GD.Print($"[physics] {Name}: {_instances.Count} cloth piece(s) bound");
+            return;
         }
+
+        _patch = patch;
+        patch.RecomputeNormals();
+        patch.Rebuild();
+        target.Mesh = patch.Built;
+
+        GD.Print($"[physics] {Name}: {_instances.Count} cloth piece(s) bound, driving " +
+            $"{patch.DrivenSurfaceCount()} surface(s) of {patch.VertexCount} vertices");
+    }
+
+    public void Publish()
+    {
+        if (_patch is null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < _pieces.Count && i < _instances.Count; i++)
+        {
+            _patch.Apply(_pieces[i], _instances[i].PosCur);
+        }
+
+        _patch.RecomputeNormals();
+        _patch.Rebuild();
     }
 
     public string[] ModelPaths() =>
@@ -107,10 +174,17 @@ public partial class Engine_ClothBody : Node3D
 
         PhysMat4 world = Engine_PhysicsMatrix.FromTransform3D(GlobalTransform);
 
+        bool stepped = false;
         while (_accumulator >= FixedStep)
         {
             _accumulator -= FixedStep;
             Step(FixedStep, world);
+            stepped = true;
+        }
+
+        if (stepped)
+        {
+            Publish();
         }
     }
 
@@ -138,6 +212,9 @@ public partial class Engine_ClothBody : Node3D
         {
             instance.ResetToSkinned();
         }
+
+        _patch?.ResetToRest();
+        Publish();
     }
 
     public override Array<Dictionary> _GetPropertyList()

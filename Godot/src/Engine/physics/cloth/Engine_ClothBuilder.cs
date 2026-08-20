@@ -7,7 +7,11 @@ public static class Engine_ClothBuilder
 {
     public const int FreeAttribute = 64;
 
-    public static ClothAsset? Build(byte[] bytes, MdlClothBlock block, string sourcePath)
+    public static ClothAsset? Build(byte[] bytes, MdlClothBlock block, string sourcePath) =>
+        Build(bytes, block, sourcePath, null);
+
+    public static ClothAsset? Build(
+        byte[] bytes, MdlClothBlock block, string sourcePath, PhysVec4[]? bind)
     {
         int vertexCount = (int)block.SimVertexCount;
         int edgeCount = (int)block.EdgeCount;
@@ -24,7 +28,10 @@ public static class Engine_ClothBuilder
             SimParams = block.SimParams,
         };
 
-        asset.BindPos = ReadPositions(bytes, block.RestPosOffset, vertexCount);
+        asset.BindPos = bind is not null && bind.Length == vertexCount
+            ? bind
+            : ReadPositions(bytes, block.RestPosOffset, vertexCount);
+
         if (asset.BindPos.Length == 0)
         {
             return null;

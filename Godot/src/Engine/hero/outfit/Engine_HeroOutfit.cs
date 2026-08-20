@@ -17,6 +17,8 @@ public sealed class OutfitLayer
 
     public uint BodyAreasCovered { get; init; }
 
+    public bool Open { get; init; }
+
     public List<string> ClustersCovered { get; } = new();
 }
 
@@ -36,7 +38,13 @@ public sealed class OutfitResult
 public static class Engine_HeroOutfit
 {
     public static OutfitResult Resolve(
-        IReadOnlyDictionary<ClothingSlot, ClothingEntry> chosen, bool female)
+        IReadOnlyDictionary<ClothingSlot, ClothingEntry> chosen, bool female) =>
+        Resolve(chosen, female, null);
+
+    public static OutfitResult Resolve(
+        IReadOnlyDictionary<ClothingSlot, ClothingEntry> chosen,
+        bool female,
+        IReadOnlySet<ClothingSlot>? open)
     {
         var worn = new List<ClothingEntry>();
 
@@ -64,8 +72,11 @@ public static class Engine_HeroOutfit
                 continue;
             }
 
-            string path = entry.ModelPathFor(female);
-            uint hash = entry.ModelHashFor(female);
+            bool wantsOpen =
+                open is not null && open.Contains(entry.Slot) && entry.HasOpenVariant(female);
+
+            string path = entry.ModelPathFor(female, wantsOpen);
+            uint hash = entry.ModelHashFor(female, wantsOpen);
 
             if (path.Length == 0)
             {
@@ -88,6 +99,7 @@ public static class Engine_HeroOutfit
                 ModelPath = path,
                 SortLayer = entry.Detail.ClusterSortLayer,
                 BodyAreasCovered = entry.Detail.BodyAreasCovered,
+                Open = wantsOpen,
             };
 
             layer.ClustersCovered.AddRange(
