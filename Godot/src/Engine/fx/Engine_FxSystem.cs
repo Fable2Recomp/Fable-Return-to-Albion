@@ -42,10 +42,11 @@ public sealed class Engine_FxSystem
         public int LoopIter;
         public float Rot;
         public float Spin;
+        public float SpinNext;
         public float Seed;
         public float FlickX = 1f;
         public float FlickY = 1f;
-        public int FlickFrame;
+        public float[] TexFrame = new float[4];
         public float[] Axis = new float[3];
         public float[][] Hist = new float[TrailHistory][];
         public int HistCount;
@@ -71,6 +72,7 @@ public sealed class Engine_FxSystem
         public float Delay;
         public int DelayFrames;
         public float InvSpan;
+        public int TexSlot;
 
         public bool HasRotation;
         public float RotSpeed;
@@ -167,6 +169,8 @@ public sealed class Engine_FxSystem
         public int Mode = 1;
         public bool Ribbon;
         public bool Frozen;
+        public int[] SlotFrames = new int[4];
+        public bool[] SlotRandom = new bool[4];
         public List<VisualRuntime> TrailVisuals { get; } = new();
         public float TrailLife = -1f;
         public float LifeFrames = -1f;
@@ -201,6 +205,8 @@ public sealed class Engine_FxSystem
         public float Time;
         public float DtAccum;
         public int Frame;
+        public int Step = 1;
+        public float DtSec = 1f / 30f;
         public float SharedRand = -1f;
         public List<EmitterRuntime> Emitters { get; } = new();
         public List<AttractorRuntime> Attractors { get; } = new();
@@ -384,7 +390,7 @@ public sealed class Engine_FxSystem
                 {
                     case 3:
                     {
-                        node.Angle += d.AngularRotationRate;
+                        node.Angle += inst.Step * d.AngularRotationRate;
                         if (node.Angle >= TwoPi) node.Angle -= TwoPi;
                         if (node.Angle <= -TwoPi) node.Angle += TwoPi;
                         var zax = new float[3];
@@ -405,7 +411,7 @@ public sealed class Engine_FxSystem
                         float tt = node.T;
                         if (d.SplineRandomGenerator) tt = Frand();
                         SplineEval(d.SplinePoints, d.SplineLooped, d.SplineStraight, tt, lp);
-                        node.T += d.SplineRate * node.Dir;
+                        node.T += inst.Step * d.SplineRate * node.Dir;
                         if (node.T < 0f || node.T > 1f)
                         {
                             if (d.SplineReverseFlow) node.Dir = -node.Dir; else node.T = 0f;
@@ -561,6 +567,8 @@ public sealed class Engine_FxSystem
 
             FxEffect? eff = bank.FindByHash(p.EffectHash);
             if (eff is null) continue;
+            inst.Step = eff.UpdateFrequency >= 1 ? 1 : 2;
+            inst.DtSec = eff.UpdateFrequency >= 1 ? 1f / 30f : 1f / 15f;
 
             var chain = new List<ChainNode>();
             int curChain = -1;
@@ -623,6 +631,24 @@ public sealed class Engine_FxSystem
                     if (sysd.ChildCount < 2) { chain.Add(node); continue; }
                     rt.LifeFrames = sysd.LastStartFrames;
                     BuildVisuals(sysd, sc, rt.RotW, rt.Visuals);
+                    var slots = new List<string>();
+                    foreach (VisualRuntime v in rt.Visuals)
+                    {
+                        if (v.IsMesh || v.Texture.Length == 0) { v.TexSlot = 0; continue; }
+                        int si = slots.IndexOf(v.Texture);
+                        if (si < 0)
+                        {
+                            si = slots.Count;
+                            if (si < 4)
+                            {
+                                slots.Add(v.Texture);
+                                rt.SlotFrames[si] = Math.Max(1, v.Cols) * Math.Max(1, v.Rows);
+                                rt.SlotRandom[si] = v.RandomFrame;
+                            }
+                        }
+
+                        v.TexSlot = Math.Min(si, 3);
+                    }
                 }
 
                 if (em.ReleaseTrail && part.TrailSystem >= 0 && part.TrailSystem < bank.Systems.Count)
@@ -707,6 +733,8 @@ public sealed class Engine_FxSystem
 
     private void StepParticle(InstanceState inst, EmitterRuntime rt, ParticleState pt, bool hasAttractors, bool hasP14, bool hasVec0)
     {
+        float step = inst.Step;
+        float dts = inst.DtSec;
         pt.Vel[0] += rt.WindDisp[0]; pt.Vel[1] += rt.WindDisp[1]; pt.Vel[2] += rt.WindDisp[2];
         if (hasAttractors)
         {
@@ -725,7 +753,7 @@ public sealed class Engine_FxSystem
                     if (dist < 1e-8f) { dv[0] = Srand2(); dv[1] = Srand2(); dv[2] = Srand2(); }
                     if (VNorm(dv, 1e-4f))
                     {
-                        float k = -s * Dt * Dt;
+                        float k = -s * dts * dts;
                         pt.Vel[0] += dv[0] * k; pt.Vel[1] += dv[1] * k; pt.Vel[2] += dv[2] * k;
                     }
                 }
@@ -733,17 +761,83 @@ public sealed class Engine_FxSystem
         }
 
         pt.Vel[0] *= rt.VelMul[0]; pt.Vel[1] *= rt.VelMul[1]; pt.Vel[2] *= rt.VelMul[2];
+        float vpx = pt.Vel[0], vpy = pt.Vel[1], vpz = pt.Vel[2];
         if (hasP14)
         {
             FxEmitter d = rt.Def!;
             int pf = (int)pt.Age;
-            float k = 1f - (1f - d.Generic[14].EvalFrame(pf));
+            float k = 1f - ((1f - d.Generic[14].EvalFrame(pf)) * (1f / step));
             if (hasVec0) k *= k;
             (float v1x, float v1y, float v1z) = d.Vec1.EvalFrame(pf);
+            float invStep = 1f / step;
+            vpx = pt.Vel[0] * invStep; vpy = pt.Vel[1] * invStep; vpz = pt.Vel[2] * invStep;
             pt.Vel[0] *= v1x * k; pt.Vel[1] *= v1y * k; pt.Vel[2] *= v1z * k;
         }
 
-        pt.Pos[0] += pt.Vel[0]; pt.Pos[1] += pt.Vel[1]; pt.Pos[2] += pt.Vel[2];
+        pt.Pos[0] += vpx; pt.Pos[1] += vpy; pt.Pos[2] += vpz;
+    }
+
+    private void RollSize(VisualRuntime v0, ParticleState pt)
+    {
+        if (v0.IsMesh)
+        {
+            pt.FlickX = v0.RsMin + (Frand() * v0.RsRange);
+            pt.FlickY = pt.FlickX;
+            return;
+        }
+
+        float r1 = Frand();
+        pt.FlickX = v0.FlickerBaseX + (r1 * v0.FlickerSpreadX);
+        float r2 = v0.FlickerShared ? r1 : Frand();
+        pt.FlickY = v0.FlickerBaseY + (r2 * v0.FlickerSpreadY);
+    }
+
+    private void InitParticleVisual(EmitterRuntime rt, ParticleState pt, float step)
+    {
+        pt.Seg = 0;
+        pt.LoopIter = 0;
+        pt.Rot = 0f;
+        pt.Spin = 0f;
+        pt.SpinNext = 0f;
+        pt.FlickX = 1f;
+        pt.FlickY = 1f;
+        for (int j = 0; j < 4; j++) pt.TexFrame[j] = 0f;
+        pt.Seed = Frand();
+        VisualRuntime? v0 = rt.Visuals.Count == 0 ? null : rt.Visuals[0];
+        if (v0 is null) return;
+        if (v0.IsMesh)
+        {
+            pt.Rot = v0.OrRandAngle ? Frand() * TwoPi : 0f;
+            if (v0.OrRandAxis)
+            {
+                float ax, ay, az, l2;
+                do { ax = Srand2(); ay = Srand2(); az = Srand2(); l2 = (ax * ax) + (ay * ay) + (az * az); } while (l2 > 1f || l2 < 1e-8f);
+                float il = 1f / MathF.Sqrt(l2);
+                pt.Axis[0] = ax * il; pt.Axis[1] = ay * il; pt.Axis[2] = az * il;
+            }
+            else
+            {
+                var al = new[] { v0.OrAxis[0], v0.OrAxis[1], v0.OrAxis[2] };
+                if (!VNorm(al, 1e-4f)) { al[0] = 0; al[1] = 0; al[2] = 1; }
+                MatVec(rt.RotW, al, pt.Axis);
+            }
+
+            pt.FlickX = v0.HasRandScale ? v0.RsMin + (Frand() * v0.RsRange) : 1f;
+            pt.FlickY = pt.FlickX;
+            float w = (step * v0.OrSpeed) + (Frand() * v0.OrSpread);
+            pt.Spin = w;
+            pt.SpinNext = w;
+            return;
+        }
+
+        float r = Frand();
+        for (int j = 0; j < 4; j++) pt.TexFrame[j] = rt.SlotRandom[j] ? rt.SlotFrames[j] * r : 0f;
+        pt.Rot = v0.RotInitialRandom ? Frand() * TwoPi : 0f;
+        if (v0.HasFlicker) RollSize(v0, pt);
+        float rr = Frand();
+        float sp = (step * v0.RotSpeed) + ((rr * v0.RotSpread) - (v0.RotSpread * 0.5f));
+        pt.Spin = sp;
+        pt.SpinNext = sp;
     }
 
     private void SpawnOne(InstanceState inst, EmitterRuntime rt, float frac)
@@ -779,10 +873,11 @@ public sealed class Engine_FxSystem
         for (int k = 0; k < 3; k++) pt.Pos[k] = (off[k] * rt.Scale) + ((rt.PosW[k] - rt.PrevPos[k]) * frac) + rt.PrevPos[k];
 
         int f = (int)rt.Age;
+        float dts = inst.DtSec;
         float speed = d.Generic[4].EvalFrame(f) + (Frand() * d.Generic[5].EvalFrame(f));
-        pt.Vel[0] = dirw[0] * speed * Dt;
-        pt.Vel[1] = dirw[1] * speed * Dt;
-        pt.Vel[2] = dirw[2] * speed * Dt;
+        pt.Vel[0] = dirw[0] * speed * dts;
+        pt.Vel[1] = dirw[1] * speed * dts;
+        pt.Vel[2] = dirw[2] * speed * dts;
 
         bool hasAttr = rt.Attractors.Count != 0;
         bool hasP14 = !d.Generic[14].IsEmpty;
@@ -790,43 +885,7 @@ public sealed class Engine_FxSystem
         StepParticle(inst, rt, pt, hasAttr, hasP14, hasVec0);
         pt.Life = rt.LoopCount == -1 ? (d.UseLife ? d.LifetimeFrames : -1f) : rt.LifeFrames;
 
-        VisualRuntime? v0 = rt.Visuals.Count == 0 ? null : rt.Visuals[0];
-        if (v0 is not null && v0.IsMesh)
-        {
-            pt.Rot = v0.OrRandAngle ? Frand() * TwoPi : 0f;
-            pt.Spin = v0.OrSpeed + ((Frand() - 0.5f) * v0.OrSpread);
-            if (v0.OrRandAxis)
-            {
-                float ax, ay, az, l2;
-                do { ax = Srand2(); ay = Srand2(); az = Srand2(); l2 = (ax * ax) + (ay * ay) + (az * az); } while (l2 > 1f || l2 < 1e-4f);
-                float il = 1f / MathF.Sqrt(l2);
-                pt.Axis[0] = ax * il; pt.Axis[1] = ay * il; pt.Axis[2] = az * il;
-            }
-            else
-            {
-                var al = new[] { v0.OrAxis[0], v0.OrAxis[1], v0.OrAxis[2] };
-                if (!VNorm(al, 1e-4f)) { al[0] = 0; al[1] = 0; al[2] = 1; }
-                MatVec(rt.RotW, al, pt.Axis);
-            }
-        }
-        else if (v0 is not null && v0.HasRotation)
-        {
-            pt.Rot = v0.RotInitialRandom ? Frand() * TwoPi : 0f;
-            pt.Spin = v0.RotSpeed + ((Frand() - 0.5f) * v0.RotSpread);
-        }
-
-        pt.Seed = Frand();
-        pt.FlickX = 1f; pt.FlickY = 1f;
-        if (v0 is not null && v0.IsMesh && v0.HasRandScale) pt.FlickX = v0.RsMin + (Frand() * v0.RsRange);
-        else if (v0 is not null && v0.HasFlicker)
-        {
-            float r1 = Frand();
-            pt.FlickX = v0.FlickerBaseX + (r1 * v0.FlickerSpreadX);
-            float r2 = v0.FlickerShared ? r1 : Frand();
-            pt.FlickY = v0.FlickerBaseY + (r2 * v0.FlickerSpreadY);
-        }
-
-        pt.FlickFrame = 0;
+        InitParticleVisual(rt, pt, inst.Step);
         pt.HistCount = 0;
         if (rt.Trail)
         {
@@ -881,12 +940,12 @@ public sealed class Engine_FxSystem
         rt.BeamJerkTimer = 0f;
     }
 
-    private void BeamTick(EmitterRuntime rt)
+    private void BeamTick(InstanceState inst, EmitterRuntime rt)
     {
         FxEmitter d = rt.Def!;
         int n = rt.BeamPts.Count;
         if (n < 2) return;
-        if (rt.BeamJerkTimer > 0f) rt.BeamJerkTimer -= Dt;
+        if (rt.BeamJerkTimer > 0f) rt.BeamJerkTimer -= inst.DtSec;
         switch (d.AnimationMode)
         {
             case 1:
@@ -931,10 +990,9 @@ public sealed class Engine_FxSystem
         while (rt.Particles.Count > n) rt.Particles.RemoveAt(rt.Particles.Count - 1);
         while (rt.Particles.Count < n)
         {
-            var pt = new ParticleState { Seg = 1, Age = 0f, Seed = Frand() };
+            var pt = new ParticleState { Age = 0f };
             pt.Life = rt.LoopCount == -1 ? (d.UseLife ? d.LifetimeFrames : -1f) : rt.LifeFrames;
-            VisualRuntime? v0 = rt.Visuals.Count == 0 ? null : rt.Visuals[0];
-            if (v0 is not null && v0.HasRotation) { pt.Rot = v0.RotInitialRandom ? Frand() * TwoPi : 0f; pt.Spin = v0.RotSpeed + ((Frand() - 0.5f) * v0.RotSpread); }
+            InitParticleVisual(rt, pt, inst.Step);
             rt.Particles.Add(pt);
             TotalSpawned++;
         }
@@ -952,19 +1010,22 @@ public sealed class Engine_FxSystem
 
     private void Tick(InstanceState inst)
     {
-        inst.Frame++;
+        int istep = inst.Step;
+        float step = istep;
+        float dts = inst.DtSec;
+        inst.Frame += istep;
         if (inst.SharedRand < 0f) inst.SharedRand = Frand();
 
         var rotTmp = new float[9];
         foreach (AttractorRuntime at in inst.Attractors)
         {
-            at.Age += 1f;
+            at.Age += step;
             UpdateChain(at.Chain, inst, inst.PlacePos, inst.PlaceRot, inst.Scale, at.WorldPos, rotTmp);
         }
 
         foreach (LightRuntime lt in inst.Lights)
         {
-            lt.Age += 1f;
+            lt.Age += step;
             UpdateChain(lt.Chain, inst, inst.PlacePos, inst.PlaceRot, inst.Scale, lt.WorldPos, rotTmp);
         }
 
@@ -973,37 +1034,47 @@ public sealed class Engine_FxSystem
         foreach (EmitterRuntime rt in inst.Emitters)
         {
             FxEmitter d = rt.Def!;
-            rt.Age += 1f;
-            int f = (int)rt.Age;
+            int fOld = (int)rt.Age;
 
             Array.Copy(rt.PosW, rt.PrevPos, 3);
             UpdateChain(rt.Chain, inst, rt.PlacePos, rt.PlaceRot, rt.Scale, rt.PosW, rt.RotW);
             if (rt.FirstFrame) Array.Copy(rt.PosW, rt.PrevPos, 3);
 
-            (float v1x, float v1y, float v1z) = d.Vec1.EvalFrame(f);
-            float m12 = d.Generic[12].EvalFrame(f);
-            float m13 = d.Generic[13].EvalFrame(f);
+            (float v1x, float v1y, float v1z) = d.Vec1.EvalFrame(fOld);
+            float m12 = d.Generic[12].EvalFrame(fOld);
+            float m13 = d.Generic[13].EvalFrame(fOld);
             rt.VelMul[0] = m13 * v1x * m12; rt.VelMul[1] = m13 * v1y * m12; rt.VelMul[2] = m13 * v1z * m12;
 
-            (v0l[0], v0l[1], v0l[2]) = d.Vec0.EvalFrame(f);
+            (v0l[0], v0l[1], v0l[2]) = d.Vec0.EvalFrame(fOld);
             MatVec(rt.RotW, v0l, v0w);
-            float g6 = d.Generic[6].EvalFrame(f);
-            float g7 = d.Generic[7].EvalFrame(f);
+            float g6 = d.Generic[6].EvalFrame(fOld);
+            float g7 = d.Generic[7].EvalFrame(fOld);
             var acc = new[] { v0w[0] * g6, v0w[1] * g6, (v0w[2] * g6) + (Gravity * g7) };
-            for (int k = 0; k < 3; k++) rt.WindDisp[k] = acc[k] * rt.Scale * Dt * Dt;
+            for (int k = 0; k < 3; k++) rt.WindDisp[k] = acc[k] * rt.Scale * dts * dts;
+
+            rt.Age += step;
+            int f = (int)rt.Age;
 
             bool windowOpen = !d.UseLife || rt.Age <= d.LifetimeFrames;
+            bool infLoop = rt.LoopCount == -1;
+            bool useLife = d.UseLife;
+            float lifeFrames = d.LifetimeFrames;
             int nvis = rt.Visuals.Count;
-            rt.Particles.RemoveAll(p => p.Life >= 0f && p.Age >= p.Life);
+            rt.Particles.RemoveAll(p =>
+            {
+                if (!infLoop) return p.Age >= p.Life;
+                if (!useLife) return false;
+                return lifeFrames <= (p.LoopIter + 1) * p.Age;
+            });
             if (rt.Beam)
             {
-                BeamTick(rt);
+                BeamTick(inst, rt);
                 rt.FirstFrame = false;
                 foreach (ParticleState pt in rt.Particles)
                 {
-                    while (pt.Seg < nvis && pt.Age >= (int)rt.Visuals[pt.Seg].DelayFrames + 0.5f) pt.Seg++;
+                    while (pt.Seg < nvis && pt.Age >= rt.Visuals[pt.Seg].DelayFrames) pt.Seg++;
                     pt.KeyAge = pt.Age;
-                    pt.Age += 1f;
+                    pt.Age += step;
                 }
 
                 continue;
@@ -1011,8 +1082,11 @@ public sealed class Engine_FxSystem
 
             if (windowOpen)
             {
-                float rate = d.Generic[2].EvalFrame(f) + (Frand() * d.Generic[3].EvalFrame(f));
-                rt.Accum += MathF.Max(rate, 0f);
+                float spread = d.Generic[3].EvalFrame(f) * step;
+                float r = Frand() * spread;
+                float rate = d.Generic[2].EvalFrame(f);
+                if (rt.Mode != 3) { r *= step; rate *= step; }
+                rt.Accum += rate + r;
                 int count = rt.Particles.Count;
                 int n = (int)rt.Accum;
                 int maxActive = (int)d.MaxActive;
@@ -1040,6 +1114,7 @@ public sealed class Engine_FxSystem
             bool hasAttr = rt.Attractors.Count != 0;
             bool hasP14 = !d.Generic[14].IsEmpty;
             bool hasVec0 = !d.Vec0.IsEmpty;
+            VisualRuntime? v0 = nvis > 0 ? rt.Visuals[0] : null;
             foreach (ParticleState pt in rt.Particles)
             {
                 if (rt.LoopCount != 0 && rt.LoopEnd <= pt.Age)
@@ -1049,16 +1124,49 @@ public sealed class Engine_FxSystem
                 }
 
                 bool crossed = false;
-                while (pt.Seg < nvis && pt.Age >= (int)rt.Visuals[pt.Seg].DelayFrames + 0.5f) { pt.Seg++; crossed = true; }
-                if (crossed && nvis != 0)
+                while (pt.Seg < nvis && pt.Age >= rt.Visuals[pt.Seg].DelayFrames) { pt.Seg++; crossed = true; }
+                int kb = nvis <= 1 ? 0 : Math.Clamp(pt.Seg, 1, nvis - 1);
+                int ka = Math.Max(kb - 1, 0);
+                float t = 0f;
+                if (nvis > 1 && kb > ka)
                 {
-                    VisualRuntime vv = rt.Visuals[Math.Min(pt.Seg, nvis - 1)];
-                    if (vv.IsMesh) pt.Spin = vv.OrSpeed + ((Frand() - 0.5f) * vv.OrSpread);
-                    else if (vv.HasRotation) pt.Spin = vv.RotSpeed + ((Frand() - 0.5f) * vv.RotSpread);
+                    t = (pt.Age - rt.Visuals[ka].DelayFrames) * rt.Visuals[kb].InvSpan;
+                    t = Math.Clamp(t, 0f, 1f);
+                }
+
+                if (crossed && v0 is not null && nvis > 1)
+                {
+                    VisualRuntime vp = rt.Visuals[ka];
+                    VisualRuntime vk = rt.Visuals[kb];
+                    if (vk.IsMesh)
+                    {
+                        pt.Spin = pt.SpinNext;
+                        pt.SpinNext = (step * vk.OrSpeed) + (Frand() * vk.OrSpread);
+                    }
+                    else if (vp.RotSpeed != vk.RotSpeed)
+                    {
+                        pt.Spin = pt.SpinNext;
+                        pt.SpinNext = (step * vk.RotSpeed) + ((Frand() * vk.RotSpread) - (vk.RotSpread * 0.5f));
+                    }
                 }
 
                 if (!rt.Frozen) StepParticle(inst, rt, pt, hasAttr, hasP14, hasVec0);
-                pt.Rot += pt.Spin;
+                float ang = pt.Rot + (pt.Spin + ((pt.SpinNext - pt.Spin) * t));
+                if (v0 is not null && v0.IsMesh) pt.Rot = ang;
+                else pt.Rot = ang - (TwoPi * MathF.Round(ang / TwoPi));
+
+                if (v0 is not null && !v0.IsMesh && nvis > 0)
+                {
+                    float fcsA = rt.Visuals[ka].FrameSpeed;
+                    float fcsB = rt.Visuals[kb].FrameSpeed;
+                    float fade = fcsA + ((fcsB - fcsA) * t);
+                    for (int j = 0; j < 4; j++)
+                    {
+                        float fr = pt.TexFrame[j] + fade;
+                        pt.TexFrame[j] = fr < rt.SlotFrames[j] ? fr : 0f;
+                    }
+                }
+
                 if (rt.Trail)
                 {
                     int hn = Math.Min(pt.HistCount + 1, TrailHistory);
@@ -1068,22 +1176,16 @@ public sealed class Engine_FxSystem
                 }
 
                 pt.KeyAge = pt.Age;
-                pt.Age += 1f;
+                pt.Age += step;
 
-                if (nvis != 0)
+                if (v0 is not null)
                 {
-                    VisualRuntime vv = rt.Visuals[Math.Min(Math.Max(pt.Seg - 1, 0), nvis - 1)];
-                    pt.FlickFrame++;
-                    if (vv.IsMesh)
+                    int rsFrames = v0.IsMesh ? v0.RsFrames : v0.FlickerFrames;
+                    bool rsOn = v0.IsMesh ? v0.HasRandScale : v0.HasFlicker;
+                    if (rsOn && rsFrames > 0)
                     {
-                        if (vv.HasRandScale && vv.RsFrames > 0 && pt.FlickFrame % vv.RsFrames == 0) pt.FlickX = vv.RsMin + (Frand() * vv.RsRange);
-                    }
-                    else if (vv.HasFlicker && vv.FlickerFrames > 0 && pt.FlickFrame % vv.FlickerFrames == 0)
-                    {
-                        float r1 = Frand();
-                        pt.FlickX = vv.FlickerBaseX + (r1 * vv.FlickerSpreadX);
-                        float r2 = vv.FlickerShared ? r1 : Frand();
-                        pt.FlickY = vv.FlickerBaseY + (r2 * vv.FlickerSpreadY);
+                        int clk = (int)MathF.Floor(pt.Age + 0.5f);
+                        if (clk % rsFrames == 0) RollSize(v0, pt);
                     }
                 }
             }
@@ -1322,10 +1424,11 @@ public sealed class Engine_FxSystem
                         pts.Clear(); ages.Clear();
                         for (int k = 0; k < pt.HistCount; k++)
                         {
-                            if (rt.TrailLife > 0f && k >= rt.TrailLife) break;
+                            float hage = k * inst.Step;
+                            if (rt.TrailLife > 0f && hage >= rt.TrailLife) break;
                             float[]? h = pt.Hist[k];
                             if (h is null) break;
-                            pts.Add(ToGodot(h)); ages.Add(k);
+                            pts.Add(ToGodot(h)); ages.Add(hage);
                         }
 
                         EmitRibbon(Sink, rt, rt.TrailVisuals, pts, ages, cameraPosition, false, inst.Lit);
@@ -1489,8 +1592,7 @@ public sealed class Engine_FxSystem
         float u0 = 0f, v0 = 0f, u1 = 1f, v1 = 1f;
         if (frames > 1)
         {
-            int f = vis.FrameSpeed > 0f ? (int)(pt.KeyAge * vis.FrameSpeed) : (int)(tLife * frames);
-            if (vis.RandomFrame) f += (int)(pt.Seed * frames);
+            int f = (int)pt.TexFrame[Math.Clamp(vis.TexSlot, 0, 3)];
             f = ((f % frames) + frames) % frames;
             int fx = f % cols, fy = f / cols;
             u0 = (float)fx / cols; u1 = (float)(fx + 1) / cols;
