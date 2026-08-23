@@ -293,7 +293,8 @@ public static class Engine_CelestialElements
                         sunTint[0] * element[13],
                         sunTint[1] * element[13],
                         sunTint[2] * element[13], 1f));
-                    mesh.Visible = sunActive && element[13] >= IntensityGate;
+                    mesh.Visible = sunActive && element[13] >= IntensityGate &&
+                        !Refii.Lighting.Engine_PostFxParams.ChainActive;
                     break;
                 case "SunDisc":
                     material.SetShaderParameter("element_dir", sun);
@@ -411,7 +412,7 @@ public static class Engine_CelestialElements
         };
     }
 
-    private static ArrayMesh QuadMesh(string name, float u0, float u1)
+    public static ArrayMesh QuadMesh(string name, float u0, float u1)
     {
         var corners = new Vector3[]
         {

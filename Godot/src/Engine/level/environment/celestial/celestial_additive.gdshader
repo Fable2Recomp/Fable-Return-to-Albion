@@ -42,6 +42,7 @@ void vertex() {
 // contribution is just the product, and subtracting an estimated background from it removes
 // light the blend never double-counted.
 void fragment() {
-	ALBEDO = texture(element_tex, UV).rgb * v_colour;
+	vec3 rgb = max(texture(element_tex, UV).rgb * v_colour, vec3(0.0));
+	ALBEDO = rgb * rgb;
 	ALPHA = 1.0;
 }

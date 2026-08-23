@@ -221,31 +221,7 @@ public static class Engine_SkyAtmosphere
     /// </remarks>
     public const float FogColourFactor = 1.0f;
 
-    /// <summary>
-    /// The scale the sky dome's in-scatter is drawn at, and therefore the one the fog shares.
-    /// </summary>
-    /// <remarks>
-    /// ONE, BECAUSE THE ATMOSPHERE IS NOT EXPOSED SEPARATELY FROM THE WORLD. It was 10, which is
-    /// where a whole class of "the lighting looks wrong" came from and is worth writing down.
-    ///
-    /// The guest builds one linear HDR frame and exposes it once:
-    ///
-    ///     surface = albedo * light        sky = (1 - T) * InScatter        fog = InScatter
-    ///
-    /// Nothing multiplies the atmosphere on its own. A gain applied to the dome and the fog but
-    /// NOT to surfaces does not brighten the sky — `Engine_ExposureEffect` measures the frame it
-    /// is given and normalises it, so the ten went into the sky and the exposure loop took it back
-    /// out of everything. The result is the signature of one inflated term under a global
-    /// auto-exposure: a blown-out horizon, surfaces two stops too dark, and a fog that washes the
-    /// picture at a blend fraction of ten percent because what it is blending toward is an order
-    /// of magnitude hotter than what it is blending over.
-    ///
-    /// It stays as a named constant rather than disappearing because the dome, the water and the
-    /// fog all have to carry the SAME value — a surface at MaxFogDistance is replaced by the very
-    /// in-scatter the sky is painting behind it, so if they ever diverge the world meets the
-    /// horizon at a seam.
-    /// </remarks>
-    public const float DomeExposure = 1.0f;
+    public const float DomeExposure = 10.0f;
 
     public const float Epsilon = 0.000099999997f;
 

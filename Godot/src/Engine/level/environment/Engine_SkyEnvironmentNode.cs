@@ -44,6 +44,10 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// </summary>
     public LightingFrame? Lighting { get; private set; }
 
+    public ToneMapTheme? ToneMap => _toneMapTheme;
+
+    public SkyFrame? Frame => _frame;
+
     /// <summary>
     /// The environment node for the world currently standing, or null before one is loaded.
     ///
@@ -75,6 +79,12 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     public override void _Ready()
     {
         Current = this;
+        Engine_PostFxEffect.RegisterGlobals();
+        if (Engine_PostFxParams.SunSourcesRequested)
+        {
+            Engine_PostFxSunSources.Ensure(this);
+        }
+
         Reevaluate();
     }
 
@@ -84,6 +94,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         {
             Current = null;
         }
+
+        DetachEditorCompositor();
     }
 
     /// <summary>
@@ -113,6 +125,13 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         FollowGuestClock();
         AnimateSky((float)delta);
+        if (Engine_PostFxParams.SunSourcesRequested)
+        {
+            Engine_PostFxSunSources.Ensure(this);
+        }
+
+        PublishPostFx();
+        SyncEditorCompositor();
     }
 
     /// <summary>
@@ -312,6 +331,13 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         _frame = frame;
 
+        if (LightingGdbs.Count != 0 &&
+            Engine_ThemeTimeline.TryExtractToneMapBlended(
+                LightingGdbs, _dayFraction, out ToneMapTheme toneMapTheme))
+        {
+            _toneMapTheme = toneMapTheme;
+        }
+
         if (LightingGdbs.Count == 0 ||
             !Engine_ThemeTimeline.TryExtractLightingBlended(
                 LightingGdbs, _dayFraction, out LightingTheme lightingTheme))
@@ -405,9 +431,76 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     private CloudTheme? _cloudTheme;
     private SkyFrame? _frame;
+    private ToneMapTheme? _toneMapTheme;
+
     private readonly float[] _cloudUvX = new float[4];
     private readonly float[] _cloudUvY = new float[4];
     private readonly Dictionary<int, (byte[] Alpha, int W, int H)> _cloudAlpha = new();
+
+    private Godot.Compositor? _editorCompositor;
+    private Camera3D? _editorCamera;
+
+    private void PublishPostFx()
+    {
+        Engine_PostFxParams.Publish(_toneMapTheme, Theme, _frame, ResolveCamera());
+    }
+
+    private void SyncEditorCompositor()
+    {
+        if (!Engine.IsEditorHint())
+        {
+            return;
+        }
+
+        Camera3D? camera = ResolveCamera();
+        if (camera is null || !GodotObject.IsInstanceValid(camera))
+        {
+            return;
+        }
+
+        if (_editorCamera is not null && !ReferenceEquals(camera, _editorCamera))
+        {
+            DetachEditorCompositor();
+        }
+
+        _editorCompositor ??= Engine_LevelLighting.BuildCompositor();
+        if (_editorCompositor is null)
+        {
+            return;
+        }
+
+        if (camera.Compositor != _editorCompositor)
+        {
+            camera.Compositor = _editorCompositor;
+        }
+
+        _editorCamera = camera;
+    }
+
+    private void DetachEditorCompositor()
+    {
+        if (_editorCamera is not null &&
+            GodotObject.IsInstanceValid(_editorCamera) &&
+            _editorCamera.Compositor == _editorCompositor)
+        {
+            _editorCamera.Compositor = null;
+        }
+
+        _editorCamera = null;
+        _editorCompositor = null;
+    }
+
+    private Camera3D? ResolveCamera()
+    {
+        Camera3D? camera = GetViewport()?.GetCamera3D();
+#if TOOLS
+        if (camera is null && Engine.IsEditorHint())
+        {
+            camera = EditorInterface.Singleton.GetEditorViewport3D(0).GetCamera3D();
+        }
+#endif
+        return camera;
+    }
 
     private void AnimateSky(float delta)
     {
@@ -426,17 +519,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             return;
         }
 
-        Camera3D? camera = GetViewport()?.GetCamera3D();
-#if TOOLS
-        // EDITOR ONLY, and compiled out of an export rather than merely skipped.
-        // EditorInterface does not exist in an export template build, so referencing it
-        // unguarded fails the export even though IsEditorHint() is false there at runtime
-        // and this branch could never be taken. Same guard the addons use.
-        if (camera is null && Engine.IsEditorHint())
-        {
-            camera = EditorInterface.Singleton.GetEditorViewport3D(0).GetCamera3D();
-        }
-#endif
+        Camera3D? camera = ResolveCamera();
 
         Vector3 right = camera?.GlobalTransform.Basis.X ?? Vector3.Right;
         Vector3 up = camera?.GlobalTransform.Basis.Y ?? Vector3.Up;

@@ -70,6 +70,8 @@ void fragment() {
 		// raw here for exactly that reason; do not "fix" it to match the material shaders.
 		rgb = ((lighting * light_colour.rgb) + vec3(layer_params.y)) *
 		      vec3(layer_params.z) * centre.rgb * cloud_globals.x;
+		rgb = rgb / (vec3(1.0) + rgb);
+		rgb = rgb * rgb;
 	}
 
 	ALBEDO = rgb;

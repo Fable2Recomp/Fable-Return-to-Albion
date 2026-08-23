@@ -64,10 +64,13 @@ void vertex() {
 void fragment() {
 	vec4 texel = texture(element_tex, UV);
 	if (element_mode == 0) {
-		ALBEDO = texel.rgb * v_colour.rgb;
+		vec3 rgb = max(texel.rgb * v_colour.rgb, vec3(0.0));
+		ALBEDO = rgb * rgb;
 		ALPHA = texel.a * v_colour.a;
 	} else {
-		ALBEDO = texel.rgb * v_colour.rgb * texel.a * element_exposure;
+		vec3 rgb = texel.rgb * v_colour.rgb * texel.a * element_exposure;
+		rgb = rgb / (vec3(1.0) + rgb);
+		ALBEDO = rgb * rgb;
 		ALPHA = element_mode == 2 ? texel.a * v_colour.a : texel.a;
 	}
 }

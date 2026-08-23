@@ -106,9 +106,6 @@ void fragment() {
 
 	vec3 lit = albedo * ((s1 * v_front) + (ambient_scale * v_ambient) + (s2 * v_back * transmit));
 
-	// NO TONEMAP AND NO GAMMA HERE. Verified across all forty-four tails: the last operation on
-	// oC0.xyz is a plain multiply by brightness and the material colour. The display curve belongs
-	// downstream — see Engine_ExposureEffect, which is the one tonemap in the renderer.
 	vec3 colour = global_brightness * material_colour * lit * tint_colour;
 
 	// LAST, because it attenuates everything above it.

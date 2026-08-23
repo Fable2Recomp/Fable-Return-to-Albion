@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dsrhx6ygugiax"
+path="res://.godot/imported/fable_postfx_histogram.glsl-21d96009c4e71c34f2055f9852f04f05.res"
+
+[deps]
+
+source_file="res://src/Engine/Lighting/fable_postfx_histogram.glsl"
+dest_files=["res://.godot/imported/fable_postfx_histogram.glsl-21d96009c4e71c34f2055f9852f04f05.res"]
+
+[params]
+

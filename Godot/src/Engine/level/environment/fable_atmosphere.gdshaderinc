@@ -99,7 +99,10 @@ bool fable_atmosphere_terms(
 	vec3 world_dir = normalize((inv_view * vec4(view_vertex, 0.0)).xyz);
 	float sun_dot = clamp(
 		dot(normalize(atmos_sun), vec3(world_dir.x, world_dir.z, world_dir.y)), 0.0, 1.0);
-	vec3 sky = texture(atmos_inscatter, vec2(sun_dot, 0.5)).rgb * atmos_range.w;
+	vec3 sky_hdr = texture(atmos_inscatter, vec2(sun_dot, 0.5)).rgb * atmos_range.w;
+	vec3 sky = sky_hdr / (vec3(1.0) + sky_hdr);
+	sky *= sky;
+	vec3 close_fog = atmos_close_fog * atmos_close_fog;
 
 	// CLAMPED IN DISTANCE, NOT IN THE RATIO. The guest's LUT spans a fixed 2000 units and its
 	// clamp addressing freezes the curve past the end — but the ratio the power is taken of is
@@ -120,7 +123,7 @@ bool fable_atmosphere_terms(
 	// apply below is a plain lerp and no caller has to know the algebra.
 	vec3 raw = exp(-atmos_beta * optical_depth);
 	transmittance = vec3(1.0) - (atmos_factors.x * (vec3(1.0) - raw));
-	fog_colour = mix(atmos_close_fog, sky, clamp(d * atmos_range.z, 0.0, 1.0)) * atmos_factors.y;
+	fog_colour = mix(close_fog, sky, clamp(d * atmos_range.z, 0.0, 1.0)) * atmos_factors.y;
 	return true;
 }
 

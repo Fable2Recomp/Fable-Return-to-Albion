@@ -34,6 +34,7 @@ public static class Engine_ThemeTimeline
         public readonly Dictionary<float, SkyTheme> Sky = new();
         public readonly Dictionary<float, LightingTheme> Lighting = new();
         public readonly Dictionary<float, CloudTheme> Clouds = new();
+        public readonly Dictionary<float, ToneMapTheme> ToneMap = new();
     }
 
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, Memo>
@@ -86,6 +87,23 @@ public static class Engine_ThemeTimeline
         if (ok)
         {
             memo.Clouds[time] = theme;
+        }
+
+        return ok;
+    }
+
+    private static bool CachedToneMap(IReadOnlyList<byte[]> gdbs, float time, out ToneMapTheme theme)
+    {
+        Memo memo = MemoFor(gdbs);
+        if (memo.ToneMap.TryGetValue(time, out theme!))
+        {
+            return true;
+        }
+
+        bool ok = Engine_EnvironmentTheme.TryExtractToneMap(gdbs, time, out theme);
+        if (ok)
+        {
+            memo.ToneMap[time] = theme;
         }
 
         return ok;
@@ -217,6 +235,45 @@ public static class Engine_ThemeTimeline
         theme = BlendLighting(a, b, bracket.Weight);
         theme.SourceTimeOfDay = targetTime - MathF.Floor(targetTime);
         return true;
+    }
+
+    public static bool TryExtractToneMapBlended(
+        IReadOnlyList<byte[]> gdbs, float targetTime, out ToneMapTheme theme)
+    {
+        if (!CachedTimes(gdbs, out List<float> times) ||
+            times.Count < 2)
+        {
+            return Engine_EnvironmentTheme.TryExtractToneMap(gdbs, targetTime, out theme);
+        }
+
+        Bracket bracket = Resolve(times, targetTime);
+        bool okA = CachedToneMap(gdbs, bracket.TimeA, out ToneMapTheme a);
+        bool okB = CachedToneMap(gdbs, bracket.TimeB, out ToneMapTheme b);
+        if (!okA || !okB)
+        {
+            theme = okA ? a : b;
+            return okA || okB;
+        }
+
+        theme = BlendToneMap(a, b, bracket.Weight);
+        theme.SourceTimeOfDay = targetTime - MathF.Floor(targetTime);
+        return true;
+    }
+
+    public static ToneMapTheme BlendToneMap(ToneMapTheme a, ToneMapTheme b, float w)
+    {
+        var o = new ToneMapTheme
+        {
+            HasAny = a.HasAny || b.HasAny,
+        };
+
+        for (int i = 0; i < ToneMapTheme.ParamCount; i++)
+        {
+            o.V[i] = Lerp(a.V[i], b.V[i], w);
+            o.Present[i] = a.Present[i] || b.Present[i];
+        }
+
+        return o;
     }
 
     public static SkyTheme BlendSky(SkyTheme a, SkyTheme b, float w)

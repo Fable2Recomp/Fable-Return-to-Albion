@@ -95,6 +95,7 @@ float geometry_visibility(mat4 view_matrix, mat4 projection_matrix) {
 void fragment() {
 	float geom = geometry_visibility(VIEW_MATRIX, PROJECTION_MATRIX);
 	float vis = clamp(geom * element_vis, 0.0, 1.0);
-	ALBEDO = texture(element_tex, UV).rgb * v_colour * (vis * vis);
+	vec3 rgb = max(texture(element_tex, UV).rgb * v_colour * (vis * vis), vec3(0.0));
+	ALBEDO = rgb * rgb;
 	ALPHA = 1.0;
 }

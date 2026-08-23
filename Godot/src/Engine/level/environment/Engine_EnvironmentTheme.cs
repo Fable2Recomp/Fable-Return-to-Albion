@@ -214,6 +214,8 @@ public static class EnvHash
     public const uint Wind = 0xBE284853;
     public const uint GroundMist = 0x65AA790F;
     public const uint SunRecord = 0x2620C36D;
+    public const uint ToneMappingRecord = 0xE35DE525;
+    public const uint DepthOfFieldRecord = 0x745C80F1;
 
     public const uint Red = 0x3A232172;
     public const uint Green = 0x608C9792;
@@ -359,6 +361,23 @@ public static class Engine_EnvironmentTheme
 
         extractor.TargetTime = targetTime;
         return extractor.ExtractClouds(theme);
+    }
+
+    public static bool TryExtractToneMap(IReadOnlyList<byte[]> gdbs, out ToneMapTheme theme) =>
+        TryExtractToneMap(gdbs, 0.5f, out theme);
+
+    public static bool TryExtractToneMap(
+        IReadOnlyList<byte[]> gdbs, float targetTime, out ToneMapTheme theme)
+    {
+        theme = new ToneMapTheme();
+        var extractor = Extractor.Create(gdbs);
+        if (extractor is null)
+        {
+            return false;
+        }
+
+        extractor.TargetTime = targetTime;
+        return extractor.ExtractToneMap(theme);
     }
 
     public static bool TryGetDaySetTimes(
@@ -520,6 +539,117 @@ public static class Engine_EnvironmentTheme
             theme.LayerCount = count;
             theme.HasAny = applied;
             return applied;
+        }
+
+        public bool ExtractToneMap(ToneMapTheme theme)
+        {
+            bool applied = RunChain(
+                theme,
+                (t, r) => ApplyToneMapThemeRecord(r, (ToneMapTheme)t),
+                (t, owner, hash) =>
+                {
+                    RecordRef target = ResolveRecordField(owner, hash);
+                    return target.Valid && ApplyToneMapThemeRecord(target, (ToneMapTheme)t);
+                },
+                time => theme.SourceTimeOfDay = time);
+
+            theme.HasAny = applied;
+            return applied;
+        }
+
+        private bool ApplyToneMapThemeRecord(RecordRef themeRecord, ToneMapTheme theme)
+        {
+            if (!themeRecord.Valid)
+            {
+                return false;
+            }
+
+            bool any = false;
+            RecordRef tone = ResolveRecordField(themeRecord, EnvHash.ToneMappingRecord);
+            if (tone.Valid)
+            {
+                any |= ApplyToneMapRecord(tone, theme);
+            }
+
+            RecordRef dof = ResolveRecordField(themeRecord, EnvHash.DepthOfFieldRecord);
+            if (dof.Valid)
+            {
+                any |= ApplyToneMapRecord(dof, theme);
+            }
+
+            if (!any)
+            {
+                any = ApplyToneMapRecord(themeRecord, theme);
+            }
+
+            return any;
+        }
+
+        private bool ApplyToneMapRecord(RecordRef root, ToneMapTheme theme)
+        {
+            if (!root.Valid)
+            {
+                return false;
+            }
+
+            bool any = false;
+            for (int i = 0; i < ToneMapTheme.ParamCount; i++)
+            {
+                if (ReadFloatDeep(root, ToneMapTheme.FieldHashes[i], out float value, 2))
+                {
+                    theme.V[i] = value;
+                    theme.Present[i] = true;
+                    any = true;
+                }
+            }
+
+            return any;
+        }
+
+        private bool ReadFloatDeep(RecordRef record, uint fieldHash, out float value, int depth)
+        {
+            value = 0f;
+            if (!record.Valid || record.Db >= _views.Count)
+            {
+                return false;
+            }
+
+            if (ReadFloat(record, fieldHash, out value))
+            {
+                return true;
+            }
+
+            if (depth <= 0)
+            {
+                return false;
+            }
+
+            foreach (GdbField field in _views[record.Db].Fields(record.Index))
+            {
+                if (field.Hash == GdbView.HashParent)
+                {
+                    continue;
+                }
+
+                byte type = (byte)field.Type;
+                if (type != 4 && type != 6 && type != 7)
+                {
+                    continue;
+                }
+
+                RecordRef child = FieldToRecord(field);
+                if (!child.Valid || (child.Db == record.Db && child.Index == record.Index))
+                {
+                    continue;
+                }
+
+                if (ReadFloatDeep(child, fieldHash, out value, depth - 1))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private bool ApplyCloudThemeRecord(RecordRef themeRecord, CloudTheme theme)

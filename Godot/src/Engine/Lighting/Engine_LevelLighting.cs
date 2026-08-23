@@ -146,12 +146,6 @@ public static class Engine_LevelLighting
 	/// </remarks>
 	public static CameraAttributesPractical BuildCameraAttributes() => new()
 	{
-		// OFF, because we run the guest's loop instead — see `Engine_AutoExposure`. Godot's
-		// control loop targets a plain AVERAGE, and on a frame with a large bright sky the average
-		// is dominated by the sky, so the exposure stays low and the street underneath never
-		// lifts. The guest avoids exactly that by taking PERCENTILE thresholds off a histogram and
-		// subtracting the adapted minimum, and by flooring the average at 0.3 whatever the frame
-		// contains. Two loops fighting over the same frame is worse than either alone.
 		AutoExposureEnabled = false,
 	};
 
@@ -171,14 +165,21 @@ public static class Engine_LevelLighting
 			return null;
 		}
 
-		return new Compositor
+		var effects = new Godot.Collections.Array<CompositorEffect>
 		{
-			CompositorEffects = new Godot.Collections.Array<CompositorEffect>
-			{
-				new Refii.Fx.Engine_FxDepthCaptureEffect(),
-				new Engine_ExposureEffect(),
-			},
+			new Refii.Fx.Engine_FxDepthCaptureEffect(),
 		};
+
+		if (Engine_PostFxParams.ChainRequested)
+		{
+			effects.Add(new Engine_PostFxEffect());
+		}
+		else
+		{
+			GD.Print($"[lighting] {Engine_PostFxParams.ModeEnvironment}=off; the post-process chain is not attached");
+		}
+
+		return new Compositor { CompositorEffects = effects };
 	}
 
 	public static void ConfigureEnvironment(Godot.Environment environment, LightingFrame frame)
@@ -188,68 +189,6 @@ public static class Engine_LevelLighting
 			return;
 		}
 
-		// EXTENDED REINHARD, because that is the guest's curve family.
-		//
-		// sub_8217E428 builds each LUT entry as `((v18*x + 1.0) * x) / (x + 1.0)` at
-		// 0x8217E59C — that is `x * (1 + x/W^2) / (1 + x)` with v18 = 1/W^2, extended Reinhard
-		// with a white point, which is what Godot's Reinhardt tonemapper and its TonemapWhite
-		// are. Chosen from the decompile rather than because it flattered the image.
-		//
-		// Without it the region is rendered linearly against white = 1.0, and the theme states
-		// values well past that — this level's main light alone is 1.58 — so every lit surface
-		// clipped while everything else stayed crushed.
-		//
-		// What is NOT reproduced, and is the reason a scene can still read too dark or too
-		// bright: the guest AUTO-EXPOSES, and the curve is rebuilt against that exposure every
-		// frame rather than being a fixed transfer. sub_822767E0 resolves the frame through
-		// CONVERTTOLUMINANCE, sub_822AA9A0 bins it into a CPU histogram and takes percentile
-		// thresholds, and the whole 512-entry curve is then smoothed toward the new one per
-		// entry (0x8217E560) at a blend of `1 - (1 - ExposureSpeed)^(dt * 30)` — frame-rate
-		// independent, normalised to 30 Hz, with ExposureSpeed 0.01.
-		//
-		// Both of the curve's own parameters come out of that histogram, so neither survives
-		// as a constant: the white point is adaptedMax - adaptedMin and the key is
-		// middleGray / (adaptedAvg - adaptedMin). Closing this needs a luminance pass of our
-		// own over the rendered frame, not a better constant.
-		//
-		// THIS IS THE ONLY TONEMAP IN THE RENDERER, and it has to stay that way. The guest
-		// tonemaps once for the whole frame, in the post-processing material — every surface
-		// shader upstream of it writes linear HDR and applies no transfer at all. That was
-		// checked against the shipped microcode across the whole sky and water set: 0111
-		// skycolour, 0114 clouds, 0117/0118/0119/0120/0121 for the sun and moon, 0055 and 0057
-		// for water. Not one of them contains a divide-by-one-plus, a sqrt, a pow output stage
-		// or an sRGB constant; each ends on a single multiply. A surface that tonemaps itself
-		// gets compressed twice, once by its own curve and again by this one.
-		//
-		// AND THE DISPLAY CURVE IS A PURE 2.2 POWER, NOT sRGB. The post material's last act is
-		// `pow(colour, g_GlobalGammaAdjustment.x)`, built as log2/multiply/exp2, and it runs in
-		// the no-tonemap variant 0499 as well, so it belongs to the output stage rather than to
-		// the curve. The exponent is not tunable: `0x821E640C` loads flt_82000C9C = 0x3EE8BA2E,
-		// which is bit-exactly `1.0f / 2.2f`, multiplies it by the post object's +0xB0 — set to
-		// 1.0 once in the defaults initialiser sub_82A7C6E8 and never written again — and sends
-		// it to binding 98, `g_GlobalGammaAdjustment`. The brightness slider is a DIFFERENT
-		// uniform, binding 1 `g_ActualFramebufferBrightness` at +0x41AC, which is the one that
-		// does change per frame.
-		//
-		// We do not reproduce that curve, and should not: Godot owns the output transform and
-		// encodes sRGB. Pure 2.2 and sRGB agree to well under a percent except in the deep
-		// shadows, where sRGB's linear toe lifts black slightly. It is far the smaller of the
-		// two divergences on this path — the auto-exposure above is the one that matters.
-		// LINEAR, BECAUSE WE TONEMAP OURSELVES NOW. `Engine_ExposureEffect` runs the guest's own
-		// curve on the HDR buffer at post-transparent, against a white point and a key MEASURED
-		// from the frame's luminance histogram rather than guessed at.
-		//
-		// Leaving Godot's Reinhardt on would compress the frame a second time, and the fixed
-		// numbers it was given are precisely what broke: `TonemapWhite = 4.0` is the histogram's
-		// DOMAIN BOUND, not a white point, and the shipped themes author SunIntensity high enough
-		// that a perfectly ordinary sky sat on the white point and clipped to paper white, dragging
-		// the water that reflects it along with it. The measured white point lands between about
-		// 0.6 and 3.8.
-		//
-		// Measured over the 308 records of environmentthemes.gdb that state SunIntensity: median
-		// 3.68, mean 4.49, range 0..30, with 73% at or above 2.0 — enough to put every channel of
-		// the dome above 1.0. The per-region value is still unmeasured: theme records in the shared
-		// GDB carry no region naming, which lives in the level GDB inside levels.bnk.
 		environment.TonemapMode = Godot.Environment.ToneMapper.Linear;
 
 		if (frame.HasAmbient)

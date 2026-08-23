@@ -4,6 +4,7 @@ using Godot.Collections;
 
 namespace Refii.Fx;
 
+[Tool]
 [GlobalClass]
 public partial class Engine_FxDepthCaptureEffect : CompositorEffect
 {

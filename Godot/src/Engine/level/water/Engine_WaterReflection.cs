@@ -3,37 +3,6 @@ using Godot;
 
 namespace Refii.Level;
 
-/// <summary>
-/// The guest's planar water reflection, rebuilt natively.
-///
-/// THE GUEST RENDERS THE SCENE AGAIN, MIRRORED — not a cubemap, not a screen-space trace, not the
-/// sky dome bent through a wave. The offscreen water renderer (`sub_82B394C8`, vtable
-/// `off_820F9468`) builds two 256x256 targets named "ReflectionTile" and "RefractionTile":
-///
-///     82b39500  *(a1+12) = 256
-///     82b396c4  XGSurfaceSize(256, 256, ...)
-///     82b397e0/e4/f0/00  *(a1+256) = *(a1+260) = *(a1+284) = *(a1+288) = 256
-///
-/// and `sub_82B39A18` draws the world into them with a user clip plane at the water surface. The
-/// mirror itself is a true Householder reflection about the plane, `sub_82AA22B0`:
-///
-///     82aa238c  vand    v1, v4, v0        ; (-2,-2,-2,0)
-///     82aa23f8  vmaddfp v13, v28, v30, v0 ; row_i = e_i - 2*n_i*n
-///
-/// The guest's world is Z-up, so its plane normal is (0,0,1) and its mirror is `z' = 2h - z`. Ours
-/// is Y-up, so the same reflection is `y' = 2h - y` — the axis changes, the maths does not.
-///
-/// ONE VIEWPORT PER BODY, AND THAT IS EXACTLY VALID HERE. A planar reflection is only correct for a
-/// plane, and every water body IS one: `Engine_WaterMesh.BuildBody` writes a single `BaseHeight`
-/// into the Y of every vertex of every tile, and reports `MinHeight == MaxHeight`. Different bodies
-/// may sit at different heights, so each needs its own mirror. A region ships 3-5 of them.
-///
-/// THE REFLECTION MUST NOT BE TONE-MAPPED. `Engine_ExposureEffect` runs the guest's curve as a
-/// compositor effect on the main camera, and the water surface is composed into that frame before
-/// it runs. Giving the reflection camera its own copy would tone-map the reflection once and then
-/// again with the frame that contains it. So these cameras deliberately carry NO compositor: they
-/// render linear HDR, which is the space the water shader composes in.
-/// </summary>
 public sealed partial class Engine_WaterReflection : Node
 {
     public const string NodeName = "WaterReflections";

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cmkp68nhbhwuu"
+path="res://.godot/imported/fable_postfx_composite.glsl-1284743a1e22a864676fe221b269412e.res"
+
+[deps]
+
+source_file="res://src/Engine/Lighting/fable_postfx_composite.glsl"
+dest_files=["res://.godot/imported/fable_postfx_composite.glsl-1284743a1e22a864676fe221b269412e.res"]
+
+[params]
+

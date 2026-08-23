@@ -46,5 +46,7 @@ vec3 fable_sky_inscatter(
 
 	vec3 tau = (beta_rayleigh + beta_mie) * dist;
 	vec3 extinction = exp2(-tau * 1.4427);
-	return (vec3(1.0) - extinction) * scatter * dome_exposure;
+	vec3 hdr = (vec3(1.0) - extinction) * scatter * dome_exposure;
+	vec3 display = hdr / (vec3(1.0) + hdr);
+	return display * display;
 }
