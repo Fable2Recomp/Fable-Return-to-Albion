@@ -14,8 +14,6 @@ public static class Engine_Clouds
 
     public const float AlphaTestThreshold = 5f / 255f;
 
-    public const float Exposure = 10.0f / 3.0f;
-
     public delegate byte[]? ReadAsset(string virtualPath);
 
     public delegate string? FindByName(string fileName);
@@ -87,7 +85,7 @@ public static class Engine_Clouds
                 0f));
 
             material.SetShaderParameter("cloud_globals",
-                new Vector4(Exposure, 0f, AlphaTestThreshold, 0f));
+                new Vector4(0f, 0f, AlphaTestThreshold, 0f));
 
             material.SetShaderParameter("light_colour", new Vector4(
                 mainLightColour[0], mainLightColour[1], mainLightColour[2], 1f));

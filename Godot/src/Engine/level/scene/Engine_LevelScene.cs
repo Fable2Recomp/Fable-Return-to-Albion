@@ -341,6 +341,12 @@ public static class Engine_LevelScene
                     lightingFrame = Engine_LightingFrame.Evaluate(
                         lightingSky, lightingTheme, lightingSkyFrame);
                 }
+
+                if (Engine_ThemeTimeline.TryExtractWaterBlended(
+                        lightingGdbs, lightingTod, out WaterTheme waterTheme))
+                {
+                    ApplyWaterTheme(root, waterTheme);
+                }
             }
         }
 
@@ -946,6 +952,24 @@ public static class Engine_LevelScene
 
         GD.Print(
             $"[water] {level}: {emitted} body(s), {scene.TileCount} tiles");
+    }
+
+    private static void ApplyWaterTheme(Node3D root, WaterTheme theme)
+    {
+        Node3D? water = root.GetNodeOrNull<Node3D>(WaterNodeName);
+        if (water is null)
+        {
+            return;
+        }
+
+        foreach (Node child in water.GetChildren())
+        {
+            if (child is MeshInstance3D mesh &&
+                mesh.MaterialOverride is ShaderMaterial material)
+            {
+                Engine_WaterMaterial.Apply(material, theme);
+            }
+        }
     }
 
     private static IEnumerable<string> WaterCandidates(LevelEntry level)

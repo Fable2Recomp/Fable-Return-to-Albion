@@ -7,9 +7,6 @@ public static class Engine_WaterMaterial
 {
     public const string ShaderPath = "res://src/Engine/level/water/water.gdshader";
 
-    /// <summary>WATER_MAX_REFRACTION_DISTANCE's engine default, in world units.</summary>
-    private const float MaxRefractionDistanceDefault = 75.0f;
-
     public delegate byte[]? ReadAsset(string virtualPath);
 
     public delegate string? FindByName(string fileName);
@@ -49,89 +46,7 @@ public static class Engine_WaterMaterial
                     : "[water] no normal map bound; the body states no NormalMapPath at all");
         }
 
-        // w: WATER_MAX_REFRACTION_DISTANCE, the distance the refraction has faded out by.
-        //
-        // A THEME PARAMETER WITH NO PER-BODY SLOT — the body block below ends at
-        // WATER_GLITTERING_POWER, and `sub_821E4C88` sources this one from the day-set theme only.
-        // The guest uploads its RECIPROCAL (`821E5054  fdivs f5, f13, f6`, f13 = 1.0) and the
-        // shader multiplies by camera distance; the reciprocal is taken in the shader here instead
-        // so the stated distance stays in world units on this side.
-        //
-        // 75.0 is the engine's own default (`sub_82B2EDE0`) and is exactly where this shader's
-        // former hardcoded `1.0 / 75.0` came from. It stays a constant until the theme's `Water`
-        // category is read, at which point it moves with time of day like everything else here.
-        material.SetShaderParameter("w_bias", new Vector4(
-            body.Param(WaterParam.FresnelBias, 0.2f),
-            body.Param(WaterParam.ReflectionBias, 0f),
-            body.Param(WaterParam.NormalScale, 0.05f),
-            MaxRefractionDistanceDefault));
-
-        material.SetShaderParameter("w_speed", new Vector4(
-            body.Param(WaterParam.NormalSpeed0X, 0.052f),
-            body.Param(WaterParam.NormalSpeed0Y, 0.011f),
-            body.Param(WaterParam.NormalSpeed1X, -0.019f),
-            body.Param(WaterParam.NormalSpeed1Y, 0.019f)));
-
-        // ONE SCALE PER LAYER, NOT AN X/Y PAIR. WATER_NORMAL_MAP_SCALE0 and _SCALE1 are single
-        // scalars that the guest SPLATS into both components of g_WaterConstants(4) and (5), so
-        // the two slots the body block carries always hold the same number. Reading both is
-        // harmless and honours the file; the defaults were not.
-        //
-        // The engine's defaults are 0.047 and 0.055 (`sub_82B2EDE0`, reaching the block through
-        // `sub_82B31B28`). The 0.188 / 0.220 that stood here are about four times finer, so a lake
-        // wore roughly sixteen times as many wavelets as the game states and read as noise rather
-        // than as swell — which is most of why the surface looked wrong before the sun even
-        // reached it.
-        float normalScale0 = body.Param(WaterParam.NormalScale0X, 0.047f);
-        float normalScale1 = body.Param(WaterParam.NormalScale1X, 0.055f);
-        material.SetShaderParameter("w_scale", new Vector4(
-            normalScale0, normalScale0, normalScale1, normalScale1));
-
-        float surfaceR = body.Param(WaterParam.SurfaceR, 0f);
-        float surfaceG = body.Param(WaterParam.SurfaceG, 0f);
-        float surfaceB = body.Param(WaterParam.SurfaceB, 0f);
-        float deepR = body.Param(WaterParam.DeepR, 0f);
-        float deepG = body.Param(WaterParam.DeepG, 0f);
-        float deepB = body.Param(WaterParam.DeepB, 0f);
-
-        if (surfaceR + surfaceG + surfaceB + deepR + deepG + deepB <= 0.0005f)
-        {
-            surfaceR = 0.28f;
-            surfaceG = 0.42f;
-            surfaceB = 0.44f;
-            deepR = 0.04f;
-            deepG = 0.11f;
-            deepB = 0.15f;
-        }
-
-        // w: DiffuseAbsorption, and NOTHING READS IT — here or in the shipped game. It is one of
-        // the four body parameters (indices 30..33, the absorption and specular trio) that land in
-        // g_WaterConstants(16..19), and the per-frame theme upload FORCES ALL FOUR TO ZERO before
-        // any draw sees them:
-        //
-        //     821E5128  stfs f0, 0x100(r11)      ; WC(16).x = 0
-        //     821E512C  stfs f0, 0x110(r11)      ; WC(17).x = 0
-        //     821E5130  stfs f0, 0x120(r11)      ; WC(18).x = 0
-        //     821E5134  stfs f0, 0x130(r11)      ; WC(19).x = 0
-        //
-        // So their authored values are dead in the retail game and a shader that consumed them
-        // would diverge from it. Kept in the vector only because the slot is free.
-        material.SetShaderParameter("w_surface", new Vector4(
-            surfaceR, surfaceG, surfaceB,
-            body.Param(WaterParam.DiffuseAbsorption, 0.1f)));
-
-        material.SetShaderParameter("w_deep", new Vector4(
-            deepR, deepG, deepB,
-            body.Param(WaterParam.ReflectionStrength, 0.75f)));
-
-        material.SetShaderParameter("w_reflp", new Vector4(
-            body.Param(WaterParam.ReflectionScaleX, 2f),
-            body.Param(WaterParam.RefractionScaleX, 2f),
-            body.Param(WaterParam.GlitterBend, 0.3f),
-            body.Param(WaterParam.GlitterStrength, 5f)));
-
-        material.SetShaderParameter("w_glit", new Vector4(
-            body.Param(WaterParam.GlitterPower, 128f), 0f, 0f, 0f));
+        Apply(material, WaterTheme.Default);
 
         // THE SHORELINE. Built once here rather than per frame: the coverage is authored geometry
         // and never moves, so only the ramp that reads it moves with time of day.
@@ -154,6 +69,51 @@ public static class Engine_WaterMaterial
         // takes and the same light Engine_LevelLighting.UpdateSun aims — see the shader for the
         // upload that proves the water draw reads that light and no other.
         return material;
+    }
+
+    public static void Apply(ShaderMaterial material, WaterTheme theme)
+    {
+        material.SetShaderParameter("w_bias", new Vector4(
+            theme[WaterThemeParam.FresnelBias],
+            theme[WaterThemeParam.ReflectionBias],
+            theme[WaterThemeParam.NormalScale],
+            theme[WaterThemeParam.MaxRefractionDistance]));
+
+        material.SetShaderParameter("w_speed", new Vector4(
+            theme[WaterThemeParam.NormalMapSpeed0X],
+            theme[WaterThemeParam.NormalMapSpeed0Y],
+            theme[WaterThemeParam.NormalMapSpeed1X],
+            theme[WaterThemeParam.NormalMapSpeed1Y]));
+
+        float normalScale0 = theme[WaterThemeParam.NormalMapScale0];
+        float normalScale1 = theme[WaterThemeParam.NormalMapScale1];
+        material.SetShaderParameter("w_scale", new Vector4(
+            normalScale0, normalScale0, normalScale1, normalScale1));
+
+        material.SetShaderParameter("w_surface", new Vector4(
+            theme[WaterThemeParam.ShallowR],
+            theme[WaterThemeParam.ShallowG],
+            theme[WaterThemeParam.ShallowB],
+            0f));
+
+        material.SetShaderParameter("w_deep", new Vector4(
+            theme[WaterThemeParam.DeepR],
+            theme[WaterThemeParam.DeepG],
+            theme[WaterThemeParam.DeepB],
+            theme[WaterThemeParam.ReflectionStrength]));
+
+        material.SetShaderParameter("w_reflp", new Vector4(
+            theme[WaterThemeParam.ReflectionScale],
+            theme[WaterThemeParam.RefractionScale],
+            theme[WaterThemeParam.GlitterBend],
+            theme[WaterThemeParam.GlitterStrength]));
+
+        material.SetShaderParameter("w_glit", new Vector4(
+            theme[WaterThemeParam.GlitterPower],
+            theme[WaterThemeParam.ShadowScaleBias],
+            0f, 0f));
+
+        material.SetShaderParameter("w_edge", Engine_WaterTheme.EdgeBlend(theme));
     }
 
     private static Texture2D? LoadTexture(string path, ReadAsset read, FindByName? findByName)

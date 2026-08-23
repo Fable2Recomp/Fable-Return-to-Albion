@@ -183,35 +183,6 @@ public static class Engine_SkyAtmosphere
     /// <inheritdoc cref="DefaultNearDistance"/>
     public const float DefaultFarDensity = 0.3f;
 
-    /// <inheritdoc cref="DefaultNearDistance"/>
-    public const float DefaultCloseFogMaxDistance = 100.0f;
-
-    /// <summary>
-    /// The guest's <c>g_AtmosphericFactors.x</c> — how much of the fog blend is applied.
-    /// </summary>
-    /// <remarks>
-    /// THE GUEST WRITES 1.0, and so do we — this was 0.5 for one turn, to damp a fog that turned
-    /// out not to be too thick. The measurement is worth keeping: at the Bowerstone Market theme
-    /// the blend fraction is 4% at 100 units and 10% at 200, which is mild, and the picture looked
-    /// heavy because <see cref="DomeExposure"/> was inflating the colour being blended toward.
-    /// Damping the fog would have hidden that rather than fixed it.
-    ///
-    /// There are exactly two `stfs` sites for pixel c28 in the whole image
-    /// (`device + 0x1780 + 16*28` = `+0x1940`), and between them the register only ever takes
-    /// `(1, 1, 0, 0)`, `(1, 0, 0, 0)` or `(0, 0, 0, 0)`:
-    ///
-    ///   - `sub_82214FB0` builds `{ (float)a1, (float)a2, 0, 0 }` and all nine callers pass a1 = 1
-    ///     except one gate.
-    ///   - That gate, `sub_82214F10`, passes (0, 0) only when `ctx+0x703` or `ctx+0x704` is set.
-    ///     `+0x704` is never written non-zero anywhere; `+0x703` is set only by
-    ///     `Render_BloomDownsamplePass_INFERRED` around its own render target. So atmospherics are
-    ///     suppressed while filling the bloom source and nowhere else.
-    ///   - `.y` drops to 0 on the 2nd..nth pass of a multi-pass material (`drawScope+0x54 != 0`),
-    ///     which stops an additive pass re-adding the fog colour it has already added.
-    ///
-    /// Neither deviation applies to us: Godot owns bloom, and we do not run the guest's multi-pass
-    /// material loop. So this is a faithful 1.0 with nothing left to discover.
-    /// </remarks>
     public const float FogBlendFactor = 1.0f;
 
     /// <summary>The guest's <c>g_AtmosphericFactors.y</c> — a scale on the fog colour alone.</summary>
@@ -220,8 +191,6 @@ public static class Engine_SkyAtmosphere
     /// repeat passes of a multi-pass one, a loop we do not run.
     /// </remarks>
     public const float FogColourFactor = 1.0f;
-
-    public const float DomeExposure = 10.0f;
 
     public const float Epsilon = 0.000099999997f;
 
@@ -275,12 +244,7 @@ public static class Engine_SkyAtmosphere
                 ? MathF.Max(theme.FoggingStart, 0f)
                 : UnfoggedStart,
 
-            // NOT `max(x, 0)`. Zero here is "the record did not state it", and the guest's guard
-            // turns that into a reciprocal of 1.0 rather than into "no close fog" — see the remark
-            // on DefaultNearDistance for why that one substitution wrecks the picture.
-            CloseFogMaxDistance = theme.CloseFogMaxDistance > 0f
-                ? theme.CloseFogMaxDistance
-                : DefaultCloseFogMaxDistance,
+            CloseFogMaxDistance = MathF.Max(theme.CloseFogMaxDistance, 0f),
 
             // ALWAYS. The guest has no "is there fog" flag — every theme carries the block, and a
             // theme that states nothing gets a FoggingStart of a million, which is how absence is
@@ -536,13 +500,6 @@ public static class Engine_SkyAtmosphere
 
         return outRgba;
     }
-
-    // `EvaluateDomeDisplay` used to sit here: a host-side evaluation of the dome for one direction,
-    // with its own copy of the horizon-distance curve, its own extinction and its own hardcoded
-    // exposure of 10 followed by a Reinhard of its own. It had no callers anywhere in the tree, and
-    // it was a THIRD implementation of arithmetic that `sky_dome.gdshaderinc` already warns about
-    // carrying twice. Deleted rather than updated alongside DomeExposure — a dead copy that
-    // disagrees with the live one is worse than no copy at all.
 
     public static float SunElevationAngle(float[] sunDirection)
     {

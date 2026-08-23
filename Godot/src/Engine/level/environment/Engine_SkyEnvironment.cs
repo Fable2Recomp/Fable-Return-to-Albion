@@ -137,7 +137,6 @@ public static class Engine_SkyEnvironment
             -frame.SunDirection[0], frame.SunDirection[2], frame.SunDirection[1]));
         material.SetShaderParameter("horizon_distance",
             Engine_SkyAtmosphere.HorizonDistance);
-        material.SetShaderParameter("dome_exposure", Engine_SkyAtmosphere.DomeExposure);
     }
 
     /// <summary>
@@ -184,7 +183,7 @@ public static class Engine_SkyEnvironment
             state.ScatteringMisc[0],
             Engine_SkyAtmosphere.MaxFogDistance,
             state.ScatteringMisc[2],
-            Engine_SkyAtmosphere.DomeExposure));
+            0f));
 
         RenderingServer.GlobalShaderParameterSet("atmos_curve", new Vector3(
             state.FogOpticalDepthAtFar, state.FogRecipFarRange, state.FogExponent));

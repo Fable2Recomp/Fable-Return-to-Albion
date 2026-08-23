@@ -286,15 +286,12 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Engine_LevelScene.WaterNodeName);
         if (water is not null)
         {
-            // Read once, not per body — every body in a region shares the level's theme, and this
-            // walks the gdb chain.
-            Engine_WaterTheme.EdgeBlend edge =
+            WaterTheme waterTheme =
                 LightingGdbs.Count != 0 &&
-                Engine_WaterTheme.TryRead(LightingGdbs, _dayFraction, out var read)
-                    ? read
-                    : Engine_WaterTheme.EdgeBlend.Default;
-
-            var edgeParam = new Vector4(edge.Min, edge.Max, edge.Bias, 0f);
+                Engine_ThemeTimeline.TryExtractWaterBlended(
+                    LightingGdbs, _dayFraction, out WaterTheme blendedWater)
+                    ? blendedWater
+                    : WaterTheme.Default;
 
             foreach (Node child in water.GetChildren())
             {
@@ -303,7 +300,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 {
                     Engine_SkyEnvironment.ApplyWaterFrame(
                         waterMaterial, frame, domeState, domeLut);
-                    waterMaterial.SetShaderParameter("w_edge", edgeParam);
+                    Engine_WaterMaterial.Apply(waterMaterial, waterTheme);
                 }
             }
         }

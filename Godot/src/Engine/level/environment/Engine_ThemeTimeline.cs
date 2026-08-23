@@ -35,6 +35,7 @@ public static class Engine_ThemeTimeline
         public readonly Dictionary<float, LightingTheme> Lighting = new();
         public readonly Dictionary<float, CloudTheme> Clouds = new();
         public readonly Dictionary<float, ToneMapTheme> ToneMap = new();
+        public readonly Dictionary<float, WaterTheme> Water = new();
     }
 
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, Memo>
@@ -104,6 +105,23 @@ public static class Engine_ThemeTimeline
         if (ok)
         {
             memo.ToneMap[time] = theme;
+        }
+
+        return ok;
+    }
+
+    private static bool CachedWater(IReadOnlyList<byte[]> gdbs, float time, out WaterTheme theme)
+    {
+        Memo memo = MemoFor(gdbs);
+        if (memo.Water.TryGetValue(time, out theme!))
+        {
+            return true;
+        }
+
+        bool ok = Engine_WaterTheme.TryExtract(gdbs, time, out theme);
+        if (ok)
+        {
+            memo.Water[time] = theme;
         }
 
         return ok;
@@ -258,6 +276,47 @@ public static class Engine_ThemeTimeline
         theme = BlendToneMap(a, b, bracket.Weight);
         theme.SourceTimeOfDay = targetTime - MathF.Floor(targetTime);
         return true;
+    }
+
+    public static bool TryExtractWaterBlended(
+        IReadOnlyList<byte[]> gdbs, float targetTime, out WaterTheme theme)
+    {
+        if (!CachedTimes(gdbs, out List<float> times) ||
+            times.Count < 2)
+        {
+            return Engine_WaterTheme.TryExtract(gdbs, targetTime, out theme);
+        }
+
+        Bracket bracket = Resolve(times, targetTime);
+        bool okA = CachedWater(gdbs, bracket.TimeA, out WaterTheme a);
+        bool okB = CachedWater(gdbs, bracket.TimeB, out WaterTheme b);
+        if (!okA || !okB)
+        {
+            theme = okA ? a : b;
+            return okA || okB;
+        }
+
+        theme = BlendWater(a, b, bracket.Weight);
+        theme.SourceTimeOfDay = targetTime - MathF.Floor(targetTime);
+        return true;
+    }
+
+    public static WaterTheme BlendWater(WaterTheme a, WaterTheme b, float w)
+    {
+        var o = new WaterTheme
+        {
+            HasAny = a.HasAny || b.HasAny,
+        };
+
+        for (int i = 0; i < WaterThemeParam.Count; i++)
+        {
+            o.Stated[i] = a.Stated[i] || b.Stated[i];
+            o.Values[i] = o.Stated[i]
+                ? LerpStated(a.Stated[i], a.Values[i], b.Stated[i], b.Values[i], w)
+                : WaterTheme.Defaults[i];
+        }
+
+        return o;
     }
 
     public static ToneMapTheme BlendToneMap(ToneMapTheme a, ToneMapTheme b, float w)

@@ -66,14 +66,7 @@ uniform vec3 beta_rayleigh = vec3(0.001, 0.0015, 0.004);
 uniform vec3 beta_mie = vec3(0.0056, 0.0064, 0.0105);
 uniform vec3 sun_engine = vec3(1.0, 0.0, 0.0);
 uniform float horizon_distance = 1900.0;
-uniform float dome_exposure = 0.0;
 
-/// Whether the atmosphere uniforms above have been filled in yet.
-///
-/// A FLAG, NOT A THRESHOLD ON THE EXPOSURE. This used to be `dome_exposure > 0.5`, which worked
-/// only because the exposure happened to be 10 — it is now 1.0, and any future value under 0.5
-/// would have silently swapped every water body's sky reflection for a flat constant with nothing
-/// to indicate why.
 uniform bool has_dome = false;
 
 varying vec3 v_local;
@@ -99,8 +92,7 @@ vec3 dome_reflect(vec3 r) {
 		in_scatter_lut,
 		beta_rayleigh,
 		beta_mie,
-		horizon_distance,
-		dome_exposure);
+		horizon_distance);
 }
 
 void fragment() {
@@ -158,12 +150,12 @@ void fragment() {
 	// Rf — the guest folds the shadow mask in as `shadow * ShadowScaleBias + (1 - ShadowScaleBias)`
 	// (`g_WaterConstants(23)`, built as the pair `(v, 1-v)` at `821E5014`). We have no water shadow
 	// mask yet, so shadow_f is 1.0 and the term is the identity.
-	vec3 Rf = (planar_reflection
+	vec3 Rf = min(planar_reflection
 		? texture(reflection_tex, clamp(refl_uv, vec2(0.0), vec2(1.0))).rgb
-		: dome) * shadow_f;
+		: dome, vec3(1.0)) * shadow_f;
 
 	vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y);
-	vec3 Rr = texture(screen_tex, refr_uv).rgb;
+	vec3 Rr = min(texture(screen_tex, refr_uv).rgb, vec3(1.0));
 
 	// THE GUEST'S COMPOSITION, IN ITS OWN ORDER — 0057 pshader_ocean_water:
 	//
@@ -178,9 +170,9 @@ void fragment() {
 	vec3 far_col = mix(watercol, Rf, refl_str);
 	vec3 col = mix(near_col, far_col, distf);
 
-	vec3 g = normalize(vec3(Nf.x, -max(w_reflp.z, 0.0) * Nf.y, Nf.z));
+	vec3 g = normalize(vec3(Nf.x, w_reflp.z * Nf.y, Nf.z));
 	vec3 L = normalize(v_sun_local);
-	vec3 Rl = L - (2.0 * dot(L, g) * g);
+	vec3 Rl = (2.0 * dot(L, g) * g) - L;
 	float spec = clamp(dot(V, Rl), 0.0, 1.0);
 	float glint = pow(max(spec, 1e-6), max(w_glit.x, 1.0));
 	col += sun_colour.rgb * (glint * max(w_reflp.w, 0.0));
