@@ -50,11 +50,15 @@ void main() {
 
 	vec3 c = imageLoad(quarter_image, coord).rgb;
 	float l = dot(max(c, vec3(0.0)), LUMINANCE_WEIGHTS);
+	// BRIGHTNESSCUTOFF (blob 0163): cut = saturate(L * scale - threshold), where the guest
+	// uploads the pair as one float2 in `sub_821B6730` — scale is literally 1/post+0x41A8, the
+	// exposure scalar, and threshold is min(white*f, mid*f) mirrored to post+208.
 	float inv_exposure = 1.0 / max(state.v[S_EXPOSURE_FRAME], 1e-4);
 	float cut = clamp(l * inv_exposure - state.v[S_THRESHOLD], 0.0, 1.0);
 	vec3 bright = c * (cut / max(l, 1e-5));
 	vec3 rays = imageLoad(rays_image, coord).rgb;
 	vec3 occl = imageLoad(occl_image, coord).rgb;
-	vec3 o = bright * params.bloom.y + rays * (6.0 * params.bloom.z) + occl;
+	vec3 o = bright * params.bloom.y + rays * params.bloom.z + occl;
+	// 0.5 = 1/g_BloomRescaleFactor; the guest uploads 2.0 (flt_8209B480) to const 21.
 	imageStore(dst_image, coord, vec4(o * 0.5, 1.0));
 }

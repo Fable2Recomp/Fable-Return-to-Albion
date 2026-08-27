@@ -130,6 +130,15 @@ uniform float wind_speed : hint_range(0.1, 8.0) = 1.0;
 /// already have.
 uniform bool foliage = false;
 
+/// How much of a canopy's gradient comes from the sun rather than from the sky hemisphere.
+/// 0 is the old up-only behaviour; 1 is sun alone. OURS, not the guest's — its split is two
+/// interpolated vertex colours we have not decoded.
+uniform float foliage_sun_mix : hint_range(0.0, 1.0) = 0.5;
+
+/// How dark a canopy's unlit side gets. Was a fixed 0.8, which is a 20% range across the whole
+/// canopy and reads as flat.
+uniform float foliage_floor : hint_range(0.0, 1.0) = 0.62;
+
 void vertex() {
     // GUARDED BY AN `if`, NOT AN EARLY `return`. Godot rejects the latter outright — "Using
     // 'return' in the 'vertex' processor function is incorrect" — and the shader then fails to
@@ -292,8 +301,19 @@ void fragment() {
         // stops a canopy reading as one flat tone without inventing a deep shadow the guest does
         // not have. It errs toward the shipped look, which is the right direction to err in for a
         // number nobody measured.
-        float wrap = dot(world_normal, vec3(0.0, 1.0, 0.0)) * 0.5 + 0.5;
-        darken = vec3(mix(0.8, 1.0, wrap));
+        // TWO TERMS, SUN AND SKY — the shape the guest's canopy actually has. Its vertex
+        // shader builds `sun * r4.z + sky * r4.w` and wraps the result, so a leaf facing the
+        // sun is brighter than one facing away. An up-only wrap has no sun in it at all, which
+        // is what collapsed a canopy to one flat tone whatever the time of day.
+        //
+        // `atmos_sun` is the same global the fog samples, in dome axes — swapping y and z is
+        // its own inverse and puts it back in world. The DIRECTION is measured; the two weights
+        // and the floor below are still ours, which is why they are uniforms.
+        vec3 sun_world = normalize(vec3(atmos_sun.x, atmos_sun.z, atmos_sun.y));
+        float sun_wrap = dot(world_normal, sun_world) * 0.5 + 0.5;
+        float sky_wrap = dot(world_normal, vec3(0.0, 1.0, 0.0)) * 0.5 + 0.5;
+        float wrap = mix(sky_wrap, sun_wrap, foliage_sun_mix);
+        darken = vec3(mix(foliage_floor, 1.0, wrap));
 
         // THE GUEST'S SHADOW FLOOR IS DELIBERATELY NOT REPRODUCED HERE. Its canopy applies
         // `shadow * 0.6 + 0.4` to a 0..1 scalar from the screen shadow map, so a shadowed canopy

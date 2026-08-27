@@ -133,8 +133,7 @@ public static class Engine_SkyEnvironment
             state.BetaRayleigh[0], state.BetaRayleigh[1], state.BetaRayleigh[2]));
         material.SetShaderParameter("beta_mie", new Vector3(
             state.BetaMie[0], state.BetaMie[1], state.BetaMie[2]));
-        material.SetShaderParameter("sun_engine", new Vector3(
-            -frame.SunDirection[0], frame.SunDirection[2], frame.SunDirection[1]));
+        material.SetShaderParameter("sun_engine", Engine_SkyFrame.ToDome(frame.SunDirection));
         material.SetShaderParameter("horizon_distance",
             Engine_SkyAtmosphere.HorizonDistance);
     }
@@ -170,8 +169,8 @@ public static class Engine_SkyEnvironment
 
         // The same axes and the same X flip `ApplyDomeUniforms` sends the dome, because the fog
         // samples the dome's table and has to agree with it about where the sun is.
-        RenderingServer.GlobalShaderParameterSet("atmos_sun", new Vector3(
-            -frame.SunDirection[0], frame.SunDirection[2], frame.SunDirection[1]));
+        RenderingServer.GlobalShaderParameterSet("atmos_sun",
+            Engine_SkyFrame.ToDome(frame.SunDirection));
 
         // Off the STATE, which has already resolved it against the guest's default of white —
         // reading `theme.FogColour` here instead would let SkyTheme's own blue-grey stand-in
@@ -287,10 +286,7 @@ public static class Engine_SkyEnvironment
         ApplyDomeUniforms(material, frame, state, lut);
         material.SetShaderParameter("has_dome", true);
 
-        var sun = new Vector3(
-            -frame.SunDirection[0],
-            frame.SunDirection[1],
-            frame.SunDirection[2]);
+        Vector3 sun = Engine_SkyFrame.ToGodot(frame.SunDirection);
         if (sun.LengthSquared() > 1e-8f)
         {
             sun = sun.Normalized();

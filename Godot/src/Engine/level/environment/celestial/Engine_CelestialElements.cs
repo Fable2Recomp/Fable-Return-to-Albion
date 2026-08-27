@@ -305,7 +305,11 @@ public static class Engine_CelestialElements
                         element[8] * element[7],
                         element[9] * element[7],
                         element[10] * element[7], 1f));
-                    mesh.Visible = sunActive && element[7] >= IntensityGate;
+                    // The post-FX draws its own disc into the occlusion buffer while the chain
+                    // is up (`SunSource(sun.Disc, ...)`), exactly as it does the beams above, so
+                    // the mesh stands down or the sun is drawn twice.
+                    mesh.Visible = sunActive && element[7] >= IntensityGate &&
+                        !Refii.Lighting.Engine_PostFxParams.ChainActive;
                     break;
                 case "SunGlare":
                     material.SetShaderParameter("element_dir", sun);
@@ -356,8 +360,17 @@ public static class Engine_CelestialElements
         }
     }
 
+    /// <summary>
+    /// The direction for a celestial element, in WORLD space.
+    ///
+    /// The elements are billboards placed by `celestial.gdshader`, whose vertex stage does
+    /// `VIEW_MATRIX * vec4(element_dir, 0)` — world to view. It never touches MODEL_MATRIX, so
+    /// the region root's Scale(-1, 1, 1) does NOT apply to this direction and it must not be
+    /// pre-compensated for it. Feeding region-local here mirrored the disc away from the
+    /// post-FX glow and drew two suns.
+    /// </summary>
     private static Vector3 ToGodot(float[] direction) =>
-        new(-direction[0], direction[1], direction[2]);
+        Refii.Level.Engine_SkyFrame.ToGodot(direction);
 
     private static Vector3 Scaled(float[] rgb, float scale) =>
         new(rgb[0] * scale, rgb[1] * scale, rgb[2] * scale);

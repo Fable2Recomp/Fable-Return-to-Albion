@@ -124,6 +124,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         FollowGuestClock();
+        TrackBodies();
         AnimateSky((float)delta);
         if (Engine_PostFxParams.SunSourcesRequested)
         {
@@ -178,6 +179,48 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// thing that decides what time it is — it fast-forwards for sleep, it stops for cutscenes,
     /// and script sets it outright. Ticking our own would drift within one night's sleep.
     /// </remarks>
+    private LightingTheme? _lightingTheme;
+
+    /// <summary>
+    /// Moves the sun, the moon and the light EVERY FRAME.
+    ///
+    /// <see cref="Reevaluate"/> only runs on a five-game-minute step because the theme extract and
+    /// the dome's scatter table are expensive — but that cadence is also what the bodies moved on,
+    /// so they stepped instead of travelling. Everything here is arithmetic on the theme already
+    /// in hand: the orbit is trigonometry and the light is a basis, so it costs nothing to do per
+    /// frame. The scatter LUT is deliberately NOT rebuilt here; it changes slowly and the coarse
+    /// pass still owns it.
+    /// </summary>
+    private void TrackBodies()
+    {
+        if (Theme is null || !float.IsFinite(_dayFraction))
+        {
+            return;
+        }
+
+        SkyFrame frame = Engine_SkyFrame.Evaluate(Theme, _dayFraction);
+
+        Vector3 dome = Engine_SkyFrame.ToDome(frame.SunDirection);
+        if (Environment?.Sky?.SkyMaterial is ShaderMaterial material)
+        {
+            material.SetShaderParameter("sun_engine", dome);
+        }
+
+        RenderingServer.GlobalShaderParameterSet("atmos_sun", dome);
+
+        if (GetParent()?.GetNodeOrNull<Node3D>(Engine_CelestialElements.NodeName) is { } celestial)
+        {
+            Engine_CelestialElements.Update(celestial, Theme, frame);
+        }
+
+        if (_lightingTheme is { } lightingTheme && ResolveSun() is { } sun)
+        {
+            LightingFrame lighting = Engine_LightingFrame.Evaluate(Theme, lightingTheme, frame);
+            Lighting = lighting;
+            Engine_LevelLighting.UpdateSun(sun, lighting);
+        }
+    }
+
     private void FollowGuestClock()
     {
         if (HostBridge.TimeOfDay() is not { } clock)
@@ -201,6 +244,23 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         _lastEvaluated = _dayFraction;
+        GD.Print($"[sky-clock] tod={_dayFraction * 24f:0.00}h (fraction {_dayFraction:0.000}) " +
+            $"day {clock.DayCount}{(clock.Frozen ? ", FROZEN" : string.Empty)}");
+
+        // WHERE THE SUN IS, in world space — the one direction every consumer takes.
+        //
+        // The celestial billboards read it through `VIEW_MATRIX` (world, no MODEL_MATRIX, so the
+        // region root's mirror does not apply); the post-FX projects the same vector through the
+        // camera; the light is the only node-parented consumer and pre-compensates the mirror
+        // itself. Measuring the disc mesh's GlobalPosition here was wrong — it is placed in the
+        // shader and its node never moves.
+        if (Theme is { } probeTheme)
+        {
+            SkyFrame probe = Engine_SkyFrame.Evaluate(probeTheme, _dayFraction);
+            Vector3 world = Engine_SkyFrame.ToGodot(probe.SunDirection).Normalized();
+            GD.Print($"[sky-sun] world ({world.X:0.00},{world.Y:0.00},{world.Z:0.00}) " +
+                $"elevation {Mathf.RadToDeg(MathF.Asin(Mathf.Clamp(world.Y, -1f, 1f))):0.0}deg");
+        }
 
         // TIMED, because "it stutters about once a second" and "Reevaluate is expensive" are two
         // different claims and only one of them is measured. If this is not the cost, the number
@@ -342,6 +402,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             return;
         }
 
+        _lightingTheme = lightingTheme;
         LightingFrame lighting = Engine_LightingFrame.Evaluate(Theme, lightingTheme, frame);
         Lighting = lighting;
 
@@ -524,8 +585,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         if (celestial.GetNodeOrNull<MeshInstance3D>("MoonGlare") is
                 { MaterialOverride: ShaderMaterial moonGlare })
         {
-            var moonDir = new Vector3(
-                -frame.MoonDirection[0], frame.MoonDirection[1], frame.MoonDirection[2]);
+            Vector3 moonDir = Engine_SkyFrame.ToGodot(frame.MoonDirection);
             float vis = CloudVisibility(clouds, cloudTheme, moonDir, right, up);
             moonGlare.SetShaderParameter("element_vis", vis);
         }
@@ -533,8 +593,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         if (celestial.GetNodeOrNull<MeshInstance3D>("SunGlare") is
                 { MaterialOverride: ShaderMaterial sunGlare })
         {
-            var sunDir = new Vector3(
-                -frame.SunDirection[0], frame.SunDirection[1], frame.SunDirection[2]);
+            Vector3 sunDir = Engine_SkyFrame.ToGodot(frame.SunDirection);
             float vis = CloudVisibility(clouds, cloudTheme, sunDir, right, up);
             sunGlare.SetShaderParameter("element_vis", vis);
         }

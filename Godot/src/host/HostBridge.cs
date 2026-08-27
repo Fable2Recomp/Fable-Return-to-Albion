@@ -1670,7 +1670,12 @@ public static class HostBridge
 	{
 		try
 		{
-			if (RefiiHostIsRunning() != 1)
+			// IsGuestUp, NOT IsRunning. IsRunning reports false for the whole of in-game play
+			// (the debug overlay prints "guest running: False" beside "inGame=True"), so gating
+			// on it made this return null every frame and the sky held its load-time sun for
+			// the entire session. The native reader validates its own chain by vtable, so an
+			// unbuilt world still answers 0.
+			if (!IsGuestUp)
 			{
 				return null;
 			}

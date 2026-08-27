@@ -40,8 +40,8 @@ layout(push_constant, std430) uniform Params {
 } push;
 
 const int S_APPLIED_FRAME = 16;
-const int S_LUT = 544;
-const int CURVE_SIZE = 512;
+const int S_CURVE_SCALE = 29;
+const int S_INV_WHITE_SQ = 30;
 const vec3 LUMINANCE_WEIGHTS = vec3(0.2125, 0.7154, 0.0721);
 
 float linear_depth(float z) {
@@ -59,7 +59,15 @@ void main() {
 	}
 
 	vec4 texel = imageLoad(color_image, coord);
-	vec3 c = texel.rgb * state.v[S_APPLIED_FRAME];
+	// THE EXPOSURE IS A BRIGHTNESS AFTER THE CURVE, NOT A SCALE BEFORE IT.
+	//
+	// The curve entry is built as `curve(L*key/prevExposure)`, so feeding it an already-exposed
+	// luminance cancels that divide and rolls the shoulder off `exposure` times earlier in
+	// luminance — highlights clip, mids compress, and the frame reads flat and milky. Applying
+	// the scalar after the curve restores the headroom, which is what the pre-rewrite
+	// `fable_exposure_apply` did as `texel.rgb * gain * state.v[7]`.
+	float applied = max(state.v[S_APPLIED_FRAME], 1e-4);
+	vec3 c = texel.rgb;
 	vec2 uv = (vec2(coord) + 0.5) / vec2(push.size);
 
 	if (params.bits.y > 0.5) {
@@ -69,21 +77,28 @@ void main() {
 		float far_w = min(max((d - params.dof.z) * params.dof.w, 0.0), params.dof2.x);
 		float w = (d < params.dof.y) ? near_w : ((d > params.dof.z) ? far_w : 0.0);
 		w *= 1.0 - clamp(d - 2550.0, 0.0, 1.0);
-		vec3 blurred = texture(dof_tex, uv).rgb;
+		vec3 blurred = texture(dof_tex, uv).rgb / applied;
 		c = mix(c, blurred, w);
 	}
 
 	vec3 col = c;
 	if (params.bits.x > 0.5) {
 		float l = dot(c, LUMINANCE_WEIGHTS);
-		int i0 = clamp(int(l * params.misc.w * float(CURVE_SIZE)), 0, CURVE_SIZE - 1);
-		float gain = state.v[S_LUT + i0];
-		col = vec3(l) + clamp(l * params.misc.x, 0.0, 1.0) * (c - vec3(l));
-		col = clamp(gain * params.sat.y * col, 0.0, 1.0);
+		float x = l * state.v[S_CURVE_SCALE];
+		float mapped = ((x * state.v[S_INV_WHITE_SQ]) + 1.0) * x / (x + 1.0);
+		float gain = l > 1e-6 ? mapped / l : 1.0;
+		// AGAINST DISPLAY LUMINANCE, NOT SCENE LUMINANCE. ColourSensitivityThreshold is 0.15 —
+		// a display-space number, like the 0.1/0.3/0.6 bounds and a middle grey of 0.36 — and
+		// the shader keeps chroma in proportion to saturate(L/threshold). Measuring a
+		// scene-referred L against it strips most of the colour out of the whole frame, since
+		// a lit exterior meters around 0.02 before the exposure scalar is applied.
+		float s = clamp(l * applied * params.misc.x, 0.0, 1.0);
+		col = vec3(l) + s * (c - vec3(l));
+		col = clamp(gain * params.sat.y * applied * col, 0.0, 1.0);
 		vec3 bloom = clamp(texture(bloom_tex, uv).rgb * params.composite.x, 0.0, 1.0);
 		col = col + bloom * (1.0 - col);
 	} else {
-		col = clamp(c, 0.0, 1.0);
+		col = clamp(c * applied, 0.0, 1.0);
 	}
 
 	if (params.bits.z > 0.5) {

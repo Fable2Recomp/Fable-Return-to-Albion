@@ -69,8 +69,11 @@ const int S_HIST_IDX_LAST = 25;
 const int S_HIST_AVG_PCT = 26;
 const int S_HIST_LAST = 27;
 const int S_MATERIAL_EXPOSURE = 28;
+const int S_CURVE_SCALE = 29;
+const int S_INV_WHITE_SQ = 30;
 const int S_CURVE = 32;
 const int S_LUT = 544;
+const int S_CDF = 1056;
 
 shared float s_cdf[512];
 shared float s_curve[512];
@@ -150,20 +153,30 @@ void main() {
 			}
 		}
 
+		// SmMid is always below SmWhite, so the avg term is the one that governs and the cut
+		// lands near 0.14 of scene luminance on the shipped themes. `composite.w` trims it —
+		// raising it blooms only the brighter parts of the frame.
 		state.v[S_THRESHOLD] = min(
 			state.v[S_SM_WHITE] * params.contrast.w,
-			state.v[S_SM_MID] * params.bloom.x);
+			state.v[S_SM_MID] * params.bloom.x) * max(params.composite.w, 1e-4);
 
 		float prev_exp = max(state.v[S_PREV], 1e-4);
 		float bin_to_lum = RANGE / (prev_exp * float(CURVE_SIZE));
 		float knee_n = params.pct.w / max(state.v[S_SM_MID] - state.v[S_SM_BLACK], 1e-4);
 		float wb = max(state.v[S_SM_WHITE] - state.v[S_SM_BLACK], 1e-4);
+		// The composite evaluates the curve directly from these two terms rather than sampling
+		// the 512-entry table: the table spans [0, 4] and a scene-referred frame lives in its
+		// first handful of bins, where entry 0 is a hard zero and the quantisation posterises
+		// every dark surface.
+		state.v[S_CURVE_SCALE] = knee_n / prev_exp;
+		state.v[S_INV_WHITE_SQ] = 1.0 / (wb * wb);
 		s_scalar[0] = bin_to_lum * knee_n;
-		s_scalar[1] = max(state.v[S_SM_P99] - 0.2, 0.0) * params.contrast.z;
+		s_scalar[1] = max(state.v[S_SM_P99], 0.2) * params.contrast.z;
 		s_scalar[2] = max((float(CURVE_SIZE) / RANGE) * state.v[S_SM_P99] * prev_exp, 256.0);
 		s_scalar[3] = 1.0 / (wb * wb);
 		s_scalar[4] = state.v[S_CURVE_VALID] > 0.5 ? fade : 1.0;
 		s_scalar[5] = state.v[S_CURVE_VALID];
+		s_scalar[6] = params.frame.z > 0.5 ? 1.0 : 0.0;
 	}
 
 	memoryBarrierShared();
@@ -176,8 +189,16 @@ void main() {
 		float value = reinhard;
 		float k1 = params.contrast.x;
 		if (k1 > 0.0) {
+			// `sub_8217E428`: the CDF is clamped to a band (1-c)*c*max(p99,0.2)*maxDeviation
+			// around the linear ramp, so the band closes to zero at both ends of the curve.
+			float cdf = state.v[S_CDF + i];
+			if (s_scalar[6] > 0.5) {
+				cdf += (s_cdf[i] - cdf) * s_scalar[4];
+				state.v[S_CDF + i] = cdf;
+			}
 			float t = min(float(i) / s_scalar[2], 1.0);
-			float eq = clamp(s_cdf[i], t - s_scalar[1], t + s_scalar[1]);
+			float dev = (1.0 - t) * t * s_scalar[1];
+			float eq = clamp(cdf, t - dev, t + dev);
 			bool is_square = abs(params.contrast.y - 2.0) < 0.003;
 			float pw = is_square ? eq * eq : pow(max(eq, 0.0), params.contrast.y);
 			value = reinhard + (pw - reinhard) * k1;
@@ -195,7 +216,7 @@ void main() {
 	for (int pass = 0; pass < 2; pass++) {
 		int i = int(tid) + pass * THREADS;
 		int j = min(i, CURVE_SIZE - 2);
-		float c = 0.5 * (s_curve[j] + s_curve[j + 1]);
+		float c = s_curve[j];
 		float lum = ((float(i) + 0.5) / float(CURVE_SIZE)) * RANGE;
 		state.v[S_LUT + i] = c / max(lum, 1e-6);
 	}

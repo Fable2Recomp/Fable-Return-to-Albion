@@ -54,6 +54,35 @@ public static class Engine_PostFxReport
             $"last {state[Engine_PostFxState.HistIdxLast]:0}) " +
             $"total={state[Engine_PostFxState.HistTotal]:0}").Append('\n');
 
+        // WHAT THE BLOOM ACTUALLY COVERS. The bright pass cuts at
+        // `clamp(l/exposure - threshold, 0, 1)`, so a bin blooms when its luminance clears
+        // `threshold * exposure`. Coverage is the fraction of the frame feeding the screen
+        // blend, and mean_cut is how hard: together they say whether the wash is a broad, weak
+        // pedestal or a few genuinely bright sources, which the bounds alone cannot.
+        int scanned = Math.Min(bins.Length, Engine_PostFxModel.Bins);
+        float cutExposure = Math.Max(state[Engine_PostFxState.ExposureFrame], 1e-4f);
+        float cutThreshold = state[Engine_PostFxState.Threshold];
+        long cutTotal = 0;
+        long cutAbove = 0;
+        double cutWeighted = 0.0;
+        for (int i = 0; i < scanned; i++)
+        {
+            long count = bins[i];
+            cutTotal += count;
+            float cut = Math.Clamp((i * BucketWidth) / cutExposure - cutThreshold, 0.0f, 1.0f);
+            if (cut > 0.0f)
+            {
+                cutAbove += count;
+                cutWeighted += cut * count;
+            }
+        }
+
+        text.Append(
+            $"[postfx]   bloom cut>{cutThreshold * cutExposure:0.0000} " +
+            $"coverage={(cutTotal > 0 ? 100.0 * cutAbove / cutTotal : 0.0):0.00}% " +
+            $"mean_cut={(cutTotal > 0 ? cutWeighted / cutTotal : 0.0):0.0000} " +
+            $"peak_cut={(cutAbove > 0 ? cutWeighted / cutAbove : 0.0):0.0000}").Append('\n');
+
         long total = 0;
         double weighted = 0.0;
         int counted = Math.Min(bins.Length, Engine_PostFxModel.Bins);

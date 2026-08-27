@@ -31,6 +31,8 @@ void main() {
 		}
 	}
 
+	// The bright pass and the histogram both measure the EXPOSED image: the adapted bounds are
+	// floored at 0.1/0.3/0.6 around a middle grey of 0.36, which are display-space numbers.
 	float applied = state.v[S_APPLIED_FRAME];
 	imageStore(quarter_image, coord, vec4(total * (1.0 / 16.0) * applied, 1.0));
 }

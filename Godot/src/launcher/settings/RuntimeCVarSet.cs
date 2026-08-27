@@ -24,6 +24,10 @@ public static class RuntimeCVarsGodot
 {
     public const string Category = "Textures";
 
+    public const string DeveloperCategory = "Developer";
+
+    public const string LightingCategory = "Lighting";
+
     public static readonly IReadOnlyList<RuntimeCVarDefinition> Definitions =
         new List<RuntimeCVarDefinition>
         {
@@ -77,6 +81,19 @@ public static class RuntimeCVarsGodot
                 "but slower to load — Keystone measures 4.6 s and 109 MB at 100, and 11.9 s " +
                 "and 348 MB at 250, because the artwork is drawn on the CPU. Ignored unless " +
                 "pubgame_vector_shapes is off."),
+            new("developer_menu_enabled", DeveloperCategory, RuntimeCVarType.Bool, "false",
+                "Show the Refii debug overlay in game \u2014 guest state, the save loader and "
+                + "the Lua console. Off is the shipping default; the overlay is a development "
+                + "fixture and draws over the game's own UI."),
+            new("sun_shadows", LightingCategory, RuntimeCVarType.Bool, "true",
+                "Let the sun and moon cast dynamic shadows. Fable 2 gates this on the day-set's "
+                + "MainLightShadowed, which ships as 0 for most themes \u2014 the shadowing is "
+                + "baked into the lightmaps instead. On is the remastered default; off follows "
+                + "the shipped theme exactly."),
+            new("postfx_dump_period", DeveloperCategory, RuntimeCVarType.Int, "0",
+                "Print the tone-mapping histogram, the adapted bounds, the exposure and the "
+                + "bloom coverage every N frames. 0 is off. This reads back from the GPU and "
+                + "stalls the device, so it is a diagnostic, not something to leave on."),
         };
 }
 

@@ -35,7 +35,7 @@ public static class Engine_LevelLighting
 		light.LightColor = new Color(frame.SunColour[0], frame.SunColour[1], frame.SunColour[2]);
 		light.LightEnergy = frame.SunEnergy;
 		light.ShadowEnabled = frame.SunShadow;
-		light.Transform = new Transform3D(SunBasis(frame.SunDirection), Vector3.Zero);
+		light.Transform = new Transform3D(SunBasis(frame.LightDirection), Vector3.Zero);
 	}
 
 	/// <summary>
@@ -236,7 +236,12 @@ public static class Engine_LevelLighting
 	/// </summary>
 	private static Basis SunBasis(float[] direction)
 	{
-		var forward = new Vector3(direction[0], -direction[1], -direction[2]);
+		// LOCAL, UNDER A MIRRORED ROOT. The light hangs off the region root, whose
+		// Scale = (-1, 1, 1) mirrors X again on the way to world space. The world travel we want
+		// is -ToGodot(d) = (d0, -d1, -d2); the root maps local (a, b, c) to world (-a, b, c);
+		// so the local basis has to be (-d0, -d1, -d2). Taking (d0, -d1, -d2) here — the world
+		// answer handed to a mirrored parent — put the light on the wrong side of the sky.
+		var forward = -Refii.Level.Engine_SkyFrame.ToRegionLocal(direction);
 		if (forward.LengthSquared() < 1e-8f)
 		{
 			forward = Vector3.Down;

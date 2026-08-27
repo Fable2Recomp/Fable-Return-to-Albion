@@ -139,7 +139,7 @@ public partial class Engine_PostFxSunSources : Node
         AtmosphereState state = Engine_SkyAtmosphere.Compute(Engine_SkyAtmosphere.FromFrame(frame, sky));
         float[] tint = state.SunElementColour;
 
-        var sun = new Vector3(-frame.SunDirection[0], frame.SunDirection[1], frame.SunDirection[2]);
+        Vector3 sun = Refii.Level.Engine_SkyFrame.ToGodot(frame.SunDirection);
         _sunDirection = sun.LengthSquared() > 1e-12f ? sun.Normalized() : Vector3.Up;
         bool sunActive = frame.SkyParams[0] >= Engine_CelestialElements.IntensityGate;
 

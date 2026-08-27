@@ -36,6 +36,13 @@ public static class Engine_PostFxParams
 
     public static float BloomGain { get; set; } = 1.0f;
 
+    /// <summary>
+    /// Where bloom cuts in, as a multiple of white in EXPOSED space. 1.0 is white — what the
+    /// exposed image clips — which is where the guest's bright pass cuts. Below 1 blooms more
+    /// of the frame, above 1 only the brightest highlights.
+    /// </summary>
+    public static float BloomThresholdScale { get; set; } = 1.0f;
+
     public static bool MaterialExposureFollowsApplied { get; set; } = true;
 
     public const string ModeEnvironment = "REFII_POSTFX";
@@ -85,7 +92,7 @@ public static class Engine_PostFxParams
             Frame = frame;
 
             Vector3 sunDirection = frame is not null
-                ? new Vector3(-frame.SunDirection[0], frame.SunDirection[1], frame.SunDirection[2])
+                ? Refii.Level.Engine_SkyFrame.ToGodot(frame.SunDirection)
                 : Vector3.Up;
             if (sunDirection.LengthSquared() > 1e-12f)
             {

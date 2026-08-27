@@ -46,15 +46,22 @@ void main() {
 	float decay = (params.radial.z - 1.0) * K + 1.0;
 	float zstep = (params.radial.w - 1.0) * K + 1.0;
 	vec2 dir = uv - center;
+	// NORMALISED BY THE ACCUMULATED WEIGHT, not by the constant K. The taps are weighted
+	// 0.5 * decay^t, so their sum depends entirely on decay: at decay 1.0 it is 7.0, and
+	// scaling by K = 4/7 left the pass with a 4x gain that washed the frame out. Dividing by
+	// the sum makes it unity gain for any falloff, and the ray strength is then what
+	// RadialFactor * RayGain states at composite time. K still remaps the two parameters.
 	vec3 accum = vec3(0.0);
+	float total = 0.0;
 	float weight = 0.5;
 	float scale = 1.0;
 	for (int t = 0; t < 14; t++) {
 		vec2 tap = center + dir * scale;
 		accum += texture(src_tex, tap).rgb * weight;
+		total += weight;
 		scale *= zstep;
 		weight *= decay;
 	}
 
-	imageStore(dst_image, coord, vec4(accum * K, 1.0));
+	imageStore(dst_image, coord, vec4(accum / max(total, 1e-4), 1.0));
 }

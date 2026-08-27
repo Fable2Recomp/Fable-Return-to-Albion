@@ -33,13 +33,14 @@ public static class Engine_PostFxState
     public const int HistAvgPct = 26;
     public const int HistLast = 27;
     public const int MaterialExposure = 28;
-    public const int Reserved29 = 29;
-    public const int Reserved30 = 30;
+    public const int CurveScale = 29;
+    public const int InvWhiteSq = 30;
     public const int Reserved31 = 31;
     public const int Header = 32;
     public const int Curve = 32;
     public const int Lut = Curve + Engine_PostFxModel.CurveSize;
-    public const int Floats = Lut + Engine_PostFxModel.CurveSize;
+    public const int Cdf = Lut + Engine_PostFxModel.CurveSize;
+    public const int Floats = Cdf + Engine_PostFxModel.CurveSize;
     public const int Bytes = Floats * sizeof(float);
 
     public static readonly string[] FieldNames =
@@ -48,7 +49,7 @@ public static class Engine_PostFxState
         "RawBlack", "RawMean", "RawWhite", "RawExp", "FadeK", "HasHistory", "CurveValid",
         "Threshold", "ExposureFrame", "AppliedFrame", "HistMinPct", "HistMean", "HistMaxPct",
         "HistExposureUsed", "HistTotal", "HistIdxMin", "HistIdxAvg", "HistIdxMax", "HistIdxLast",
-        "HistAvgPct", "HistLast", "MaterialExposure", "Reserved29", "Reserved30", "Reserved31",
+        "HistAvgPct", "HistLast", "MaterialExposure", "CurveScale", "InvWhiteSq", "Reserved31",
     };
 
     public static float[] Seed()

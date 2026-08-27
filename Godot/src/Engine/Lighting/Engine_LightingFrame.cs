@@ -9,6 +9,13 @@ public sealed class LightingFrame
 
 	public float[] SunDirection { get; } = new float[3];
 
+	/// <summary>
+	/// What the scene's directional light is aimed along — the sun while it is up, the moon
+	/// once it is not. Separate from <see cref="SunDirection"/>, which stays the SUN: the
+	/// post-FX places the sun disc and the ray centre from that, and must not follow the moon.
+	/// </summary>
+	public float[] LightDirection { get; } = new float[3];
+
 	public float[] SunColour { get; } = { 1.0f, 1.0f, 1.0f };
 
 	public float SunEnergy { get; set; } = 1.0f;
@@ -34,6 +41,33 @@ public static class Engine_LightingFrame
 {
 	public const float EnergyCeiling = 16.0f;
 
+	/// <summary>Sine of the elevation over which a body fades in at the horizon (~4.6 degrees).</summary>
+	private const float HorizonFade = 0.08f;
+
+	private static bool? _sunShadows;
+
+	/// <summary>The launcher's `sun_shadows` setting; on is the remastered default.</summary>
+	private static bool SunShadowsModernized
+	{
+		get
+		{
+			if (_sunShadows is null)
+			{
+				try
+				{
+					_sunShadows = Refii.Core.Engine_RefiiConfig.Bool(
+						Refii.Core.Engine_RefiiConfig.Read(out _), "sun_shadows", true);
+				}
+				catch (Exception)
+				{
+					_sunShadows = true;
+				}
+			}
+
+			return _sunShadows.Value;
+		}
+	}
+
 	public static LightingFrame Evaluate(SkyTheme sky, LightingTheme lighting, SkyFrame frame)
 	{
 		var result = new LightingFrame
@@ -51,12 +85,51 @@ public static class Engine_LightingFrame
 
 		float[] sunRgb = lighting.HasMainLightColour ? lighting.MainLightColour : frame.MainLightColour;
 		Split(sunRgb, result.SunColour, out float sunEnergy);
-		result.SunEnergy = sunEnergy;
-		// STRICTLY GREATER THAN 0.5, and NOT true-when-unstated. The guest turns the theme's float
-		// into a bool with `fcmpu cr6, f3, f28` against 0.5 followed by `bgt` (0x821DFC34), and it
-		// never defaults the slot — so an unstated field is the zero the theme was constructed
-		// with, and zero means no shadow. See the remark on LightingTheme.MainLightShadowed.
-		result.SunShadow = lighting.MainLightShadowed > 0.5f;
+
+		// THE HORIZON GATE, AND THE HANDOVER TO THE MOON.
+		//
+		// OURS, NOT THE GUEST'S. `sub_821DF670` publishes the rig direction and its negation and
+		// a `> 0.5` boolean, but which of those the light object consumes after dark is not
+		// established — see the note in Engine_SkyFrame. What IS certain is the requirement: a
+		// directional light left on a set sun rakes the terrain from below and lights the
+		// undersides of the world. So the sun's contribution is faded out across the last few
+		// degrees and is exactly zero once its elevation is negative.
+		//
+		// Component [1] is the elevation term — the orbit is built as
+		// (cos(E)*axisX, sin(E), cos(E)*axisY) — so [1] > 0 is "above the horizon".
+		Array.Copy(result.SunDirection, result.LightDirection, 3);
+		float sunUp = result.SunDirection[1];
+		float moonUp = frame.MoonDirection[1];
+		if (sunUp > 0f)
+		{
+			result.SunEnergy = sunEnergy * MathF.Min(sunUp / HorizonFade, 1f);
+		}
+		else
+		{
+			// The moon carries the night on its own orbit and its own intensity. When it is down
+			// too, nothing directional remains and the scene is ambient alone, which is what a
+			// moonless night is.
+			Array.Copy(frame.MoonDirection, result.LightDirection, 3);
+			float moonScale = sky.HasMoonParams ? sky.MoonIntensity : 1.0f;
+			result.SunEnergy = moonUp > 0f
+				? sunEnergy * moonScale * MathF.Min(moonUp / HorizonFade, 1f)
+				: 0f;
+		}
+
+		// THE THEME FIELD IS THE GUEST'S SHADOW GATE, AND 0 REALLY MEANS NO SUN SHADOW.
+		//
+		// `MainLightShadowed` is theme field 1, so it sits at themeBlock + 0x10 + 1*0x10.
+		// `sub_821DF670` reads it there (`lvx128 v18, r26, 0x20`), thresholds it at 0.5
+		// (`fcmpu cr6, f3, f28` / `bgt`, 0x821DFC34) and publishes it as command id 30, whose
+		// handler stores the byte at light+336 (`822d88a0 stb r11, 0x150(r31)`). The shadow-caster
+		// selection in `sub_821D1CA0` then requires light+336 alongside a non-black colour, so a
+		// theme that states 0 casts nothing and its shadowing lives in the baked lightmaps.
+		//
+		// The colour test is the guest's too: |MainLightColour|^2 > 1e-4 (`vmsum3fp128` at
+		// 0x821D1F30). Modernised, we keep that test and drop the authored flag.
+		result.SunShadow = sunEnergy > 0.01f
+			&& (SunShadowsModernized || (lighting.HasMainLightShadowed
+				&& lighting.MainLightShadowed > 0.5f));
 
 		if (lighting.HasAmbientColour)
 		{

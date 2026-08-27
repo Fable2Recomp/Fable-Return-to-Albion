@@ -162,7 +162,21 @@ public partial class Engine_PostFxEffect : CompositorEffect
     {
         EffectCallbackType = EffectCallbackTypeEnum.PostTransparent;
 
-        if (int.TryParse(OS.GetEnvironment("REFII_EXPOSURE_DUMP"), out int period) && period > 0)
+        if (!int.TryParse(OS.GetEnvironment("REFII_EXPOSURE_DUMP"), out int period) || period <= 0)
+        {
+            try
+            {
+                period = Refii.Core.Engine_RefiiConfig.Int(
+                    Refii.Core.Engine_RefiiConfig.Read(out _), "postfx_dump_period", 0);
+            }
+            catch (System.Exception e)
+            {
+                GD.PrintErr($"[postfx] could not read postfx_dump_period: {e.Message}");
+                period = 0;
+            }
+        }
+
+        if (period > 0)
         {
             _dumpPeriod = period;
             GD.Print($"[postfx] dumping the histogram and state every {period} frame(s); " +
@@ -762,10 +776,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Projection inverse = camProjection.Inverse();
         Set(p, 11, inverse.Z.Z, inverse.W.Z, inverse.Z.W, inverse.W.W);
         Set(p, 12,
-            2.0f * d.BloomFactor,
+            d.BloomFactor * Engine_PostFxParams.BloomGain,
             d.RadialFactor,
             Engine_PostFxParams.MaterialExposureFollowsApplied ? 1.0f : 0.0f,
-            0.0f);
+            Engine_PostFxParams.BloomThresholdScale);
 
         System.Buffer.BlockCopy(p, 0, _paramsBytes, 0, ParamsBytes);
         _rd!.BufferUpdate(_paramsBuffer, 0, ParamsBytes, _paramsBytes);

@@ -1,4 +1,5 @@
 using System;
+using Godot;
 
 namespace Refii.Level;
 
@@ -42,6 +43,30 @@ public sealed class SkyFrame
 
 public static class Engine_SkyFrame
 {
+    /// <summary>
+    /// A sky direction in WORLD space.
+    ///
+    /// The region root carries `Scale = (-1, 1, 1)` (Engine_LevelScene), so the world the player
+    /// sees is X-mirrored relative to the guest's own axes. Shader uniforms — the dome, the fog,
+    /// the post-FX sun UV — are consumed in world space and take this directly. Anything placed
+    /// as a NODE under that root must not: its local basis is mirrored again on the way out, so
+    /// it needs the un-mirrored vector. See <see cref="ToRegionLocal"/>.
+    /// </summary>
+    public static Vector3 ToGodot(float[] d) => new(-d[0], d[1], d[2]);
+
+    /// <summary>The same direction in the dome/fog shader space, which swaps Godot Y and Z.</summary>
+    public static Vector3 ToDome(float[] d)
+    {
+        Vector3 g = ToGodot(d);
+        return new Vector3(g.X, g.Z, g.Y);
+    }
+
+    /// <summary>
+    /// The direction to hand a node that lives UNDER the region root, whose `Scale = (-1, 1, 1)`
+    /// mirrors X again. Composed with that mirror it yields <see cref="ToGodot"/>.
+    /// </summary>
+    public static Vector3 ToRegionLocal(float[] d) => new(d[0], d[1], d[2]);
+
     public static SkyFrame Evaluate(SkyTheme theme, float timeOfDay)
     {
         var frame = new SkyFrame();
@@ -144,24 +169,26 @@ public static class Engine_SkyFrame
 
         if (theme.HasMoonAxis)
         {
-            // UNCHANGED, and deliberately. The guest builds the moon the same way it builds the
-            // sun, with -MoonAxisElevation — but which rotation parameters feed its chain was
-            // not established, so this keeps the old construction rather than assuming the sun's
-            // corrections carry across. Its own locals, so the two no longer share state.
-            float moonTheta = ((time * timeFactor) - 0.5f) * twoPi;
-            float cosTheta = MathF.Cos(moonTheta);
-            float groundZ = MathF.Sin(moonTheta);
-            float moonElevation = theme.MoonAxisElevation * toRadians;
-            float moonPhi = (theme.MoonAxisZOffset + theme.MoonAxisXyRotation) * toRadians;
-            float moonGroundX = cosTheta * MathF.Cos(moonElevation);
-            float moonUp = cosTheta * MathF.Sin(moonElevation);
-            float cosMoonPhi = MathF.Cos(moonPhi);
-            float sinMoonPhi = MathF.Sin(moonPhi);
+            // THE MOON IS THE SUN'S CHAIN WITH A NEGATED ELEVATION, and no phase offset.
+            // `sub_821DF670` builds three orbits from the SAME azimuth `v40 = f * 2pi`; the
+            // moon's differs only in that `sub_821C1E38` is passed -(elevation) and in its own
+            // rotation offset. A half-day offset was our invention and put the moon in the
+            // wrong quarter of the sky.
+            float mb = -theme.MoonAxisElevation * toRadians;
+            // MoonAxisXyRotation PLUS THE RIG ROTATION, as the guest's third chain does:
+            // `Rz(a) . R(-MoonAxisElevation) . Rz(theme[1040] + theme[928])`, where 1040 is the
+            // moon's own XY rotation and 928 is LightRigXYRotation — the same term the sun's two
+            // chains end on. MoonAxisZOffset is a VERTICAL offset and belongs only on the Z
+            // component below; using it as a rotation put the moon a few degrees off its bearing
+            // and dropped the rig rotation entirely.
+            float mc = (theme.MoonAxisXyRotation + theme.LightRigXyRotation) * toRadians;
+            float cmb = MathF.Cos(mb), smb = MathF.Sin(mb);
+            float cmc = MathF.Cos(mc), smc = MathF.Sin(mc);
 
             Normalise(
-                -((moonGroundX * cosMoonPhi) - (groundZ * sinMoonPhi)),
-                -moonUp,
-                -((moonGroundX * sinMoonPhi) + (groundZ * cosMoonPhi)),
+                (ca * cmb * cmc) - (sa * smc),
+                (-ca * smb) + theme.MoonAxisZOffset,
+                (ca * cmb * smc) + (sa * cmc),
                 frame.MoonDirection);
         }
         else

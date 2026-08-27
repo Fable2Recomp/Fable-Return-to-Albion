@@ -788,6 +788,30 @@ public partial class GameUi : Node
 		_showingVisible = null;
 	}
 
+	private bool? _developerMenu;
+
+	/// <summary>Whether the launcher's `developer_menu_enabled` setting asks for the overlay.</summary>
+	private bool DeveloperMenuEnabled
+	{
+		get
+		{
+			if (_developerMenu is null)
+			{
+				try
+				{
+					_developerMenu = Refii.Core.Engine_RefiiConfig.Bool(
+						Refii.Core.Engine_RefiiConfig.Read(out _), "developer_menu_enabled", false);
+				}
+				catch (System.Exception)
+				{
+					_developerMenu = false;
+				}
+			}
+
+			return _developerMenu.Value;
+		}
+	}
+
 	/// <summary>Debug stand-in for the main menu: shows the clickable DebugMenu instead of the
 	/// Godot menu view. Created on first use so a build without the debug fixture costs nothing.</summary>
 	private void ShowDebugMenu()
@@ -3051,7 +3075,10 @@ public partial class GameUi : Node
 		// the reveal after the boot movies is not a screen change, and the menu must never
 		// appear behind a bink or accept a click before the front end is ready. Frontend up
 		// AND the movies done.
-		bool showDebug = IsRevealed && _frontendUp;
+		// GATED ON A LAUNCHER SETTING. The overlay is a development fixture that draws over the
+		// game's own UI, so it is off unless `developer_menu_enabled` says otherwise. Read once —
+		// the file is not watched, and a per-frame read would open it every frame.
+		bool showDebug = IsRevealed && DeveloperMenuEnabled;
 		if (showDebug && _debugMenu is null)
 		{
 			ShowDebugMenu();

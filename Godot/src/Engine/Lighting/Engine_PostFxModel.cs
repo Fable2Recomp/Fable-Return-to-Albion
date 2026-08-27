@@ -354,10 +354,6 @@ public static class Engine_PostFxModel
         }
     }
 
-    public static float BloomThreshold(State s, Derived d)
-    {
-        return MathF.Min(s.SmWhite * d.WhiteFactor, s.SmMid * d.BloomThresholdAvg);
-    }
 
     public static void BuildToneCurve(State s, Derived d, float[] lut)
     {
