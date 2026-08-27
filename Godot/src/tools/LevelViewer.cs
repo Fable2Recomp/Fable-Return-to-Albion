@@ -217,7 +217,7 @@ public partial class LevelViewer : Node3D
 
 		// Rec.709, the same weights the histogram bins with, so this number and the histogram's
 		// luminances are in one space and can be held against each other directly.
-		float sunLuminance = Refii.Lighting.Engine_AutoExposure.Luminance(
+		float sunLuminance = Refii.Lighting.Engine_PostFxModel.Luminance(
 			authored.X, authored.Y, authored.Z);
 
 		GD.Print($"[sun] tod={sky.TimeOfDay:0.00}h  rig={direction}  elevation={elevation:0.0}deg  " +
