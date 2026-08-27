@@ -17,6 +17,10 @@
 #endif
 #endif
 
+PPC_EXTERN_FUNC(__imp__rex_lhResourceManager_OpenInternal);
+PPC_EXTERN_FUNC(__imp__rex_lhResourceManager_FindAndCreateStream);
+PPC_EXTERN_FUNC(__imp__sub_82B48CB8);
+PPC_EXTERN_FUNC(__imp__sub_82B72430);
 PPC_EXTERN_FUNC(__imp__sub_82B53438);
 PPC_EXTERN_FUNC(__imp__sub_82B504D8);
 PPC_EXTERN_FUNC(__imp__sub_82B5AD98);
@@ -128,6 +132,30 @@ PPC_EXTERN_FUNC(__imp__sub_823BEDC0);
 // some entries and thunks are shared between different natives.
 PPC_EXTERN_FUNC(__imp__sub_823CE420);
 
+// Value-returning GUI thunks, hooked so the host can answer a predicate in place of the guest:
+//   sub_822AA418  no args -> BOOLEAN: top = *(L+8); top[1] = 1 (LUA_TBOOLEAN); top[0] = value;
+//                 *(L+8) += 8; return 1
+//   sub_82197FF0  no args -> FLOAT (lua_Number is float): *(float*)top = value;
+//                 *(u32*)(top+4) = 3 (LUA_TNUMBER); return 1
+// `sub_82309EE8` (one string -> boolean) is absent: its answer depends on the argument.
+PPC_EXTERN_FUNC(__imp__sub_822AA418);
+PPC_EXTERN_FUNC(__imp__sub_82197FF0);
+
+// Expression-meter void thunks, hooked so a host-owned native can be suppressed. All six
+// return zero Lua results, so the hook sets r3 = 0 and returns.
+//   sub_82309D48  no arguments          TurnOn/TurnOffExpressionMeter
+//   sub_822B7BB8  1 number              StartBarJobFill
+//   sub_823C00C8  (int, int, int)       SetLow/Med/HighFillColour
+//   sub_8230A760  (number, number)      SetFillColourPercentages
+//   sub_8230A7F0  inline, 5 arguments   TurnOnExpressionStaticFill
+//   sub_8230A8C8  inline, 4 arguments   TurnOnExpressionDynamicFill
+PPC_EXTERN_FUNC(__imp__sub_82309D48);
+PPC_EXTERN_FUNC(__imp__sub_822B7BB8);
+PPC_EXTERN_FUNC(__imp__sub_823C00C8);
+PPC_EXTERN_FUNC(__imp__sub_8230A760);
+PPC_EXTERN_FUNC(__imp__sub_8230A7F0);
+PPC_EXTERN_FUNC(__imp__sub_8230A8C8);
+
 PPC_EXTERN_FUNC(__imp__sub_82A41B48);
 PPC_EXTERN_FUNC(__imp__sub_82C6EA48);
 PPC_EXTERN_FUNC(__imp__sub_82C6EA80);
@@ -177,6 +205,21 @@ PPC_EXTERN_FUNC(__imp__sub_82379088);
 PPC_EXTERN_FUNC(__imp__sub_82379170);
 // The guest's once-per-tick thunk, on its own "GameThread" — see guest_tick_pump.cpp.
 PPC_EXTERN_FUNC(__imp__sub_822C1BD0);
+// Menu spawn and list boundary: `sub_826CE8D0` is `g_Menu:CreateMenuItem`'s C++ side (name,
+// parent, id, event type in r4/r7/r8/r9); `sub_826CE110` wraps `DeleteAllSpawnedMenuItems`.
+PPC_EXTERN_FUNC(__imp__sub_826CE8D0);
+PPC_EXTERN_FUNC(__imp__sub_826CE110);
+// The front end's emitter: `sub_826E4798` is `sub_826CE8D0` against `dword_83496AC0` rather
+// than the in-game GUI manager `dword_83496B08`.
+PPC_EXTERN_FUNC(__imp__sub_826E4798);
+// Six inline list boundaries (world map / abilities / shop / logbook / gift-gold / front end):
+// they fire `"g_Menu:DeleteAllSpawnedMenuItems()"` through the GUI Lua exec, not `sub_826CE110`.
+PPC_EXTERN_FUNC(__imp__sub_829A2F40);
+PPC_EXTERN_FUNC(__imp__sub_829A45A0);
+PPC_EXTERN_FUNC(__imp__sub_82994218);
+PPC_EXTERN_FUNC(__imp__sub_829B8648);
+PPC_EXTERN_FUNC(__imp__sub_82430468);
+PPC_EXTERN_FUNC(__imp__sub_826E1F70);
 PPC_EXTERN_FUNC(sub_823DCB10);
 PPC_EXTERN_FUNC(sub_823DCC70);
 PPC_EXTERN_FUNC(__imp__sub_82426470);

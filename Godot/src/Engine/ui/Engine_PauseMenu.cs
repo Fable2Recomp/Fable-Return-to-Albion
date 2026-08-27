@@ -4,30 +4,42 @@ namespace Refii.Ui;
 /// The pause menu's item list, built the way the guest builds its own.
 /// </summary>
 /// <remarks>
-/// THE LIST IS THE GUEST'S; the layout, highlight and navigation are ours — the same split as
-/// <see cref="Engine_FrontEndMenu"/>, because the end state is menus we can author in an
-/// editor, including ones the guest never had.
+/// The list is the guest's; layout, highlight and navigation are ours — the same split as
+/// <see cref="Engine_FrontEndMenu"/>.
 ///
-/// Source of truth: `sub_8298DF98`, the hero variant of the builder `sub_826A2C88` runs when
-/// it pushes screen id 0. Items spawn through the same GUI-var stager as the front end's
-/// (`sub_826CE8D0` -> `g_Menu:SpawnButton()`); names, tags, order and conditions below are
-/// that function's, decompiled 2026-08-20. The co-op variants are NOT here yet: the henchman
-/// list (`sub_8298EDE0`) and the network-only `Kick` entry belong to sessions this build
-/// cannot reach today, and inventing their conditions would be worse than omitting them.
+/// Source: `sub_8298DF98`, the hero variant of the builder `sub_826A2C88` runs when it pushes
+/// screen id 0. Items spawn through the same GUI-var stager as the front end's
+/// (`sub_826CE8D0` -> `g_Menu:SpawnButton()`), whose argument mapping is `String1` = item NAME,
+/// `String2` = display TEXT, `String3` = icon, `String4` = parent, `Float3` = the command. The
+/// co-op henchman list (`sub_8298EDE0`) is not here, nor is the hero list's `Kick` entry —
+/// `0x8298EC64` spawns it only when `*(*(dword_83496AB8+12)+284) == 1` and its label is a `%1`
+/// substitution of the henchman's name.
 ///
-/// DISPATCH IS THE TAB LEVER, not the pump: each screen entry names the tab
-/// `sub_826B89E0`'s switch maps to its screen, and the host writes the guest's own
-/// pending-tab fields (see HostBridge.PauseTabSelect). One known quirk carried over from the
-/// guest itself: the tab path to Abilities omits the mode call the ITEM path makes
-/// (`vfn+32(screen14, 0)`), so it inherits whatever mode the screen last had — the guest's
-/// own LB/RB has the identical behaviour, so following it is faithful, not lazy.
+/// The Saving children are named by their own displayed text: `sub_826CE848` takes a tag alone,
+/// `sub_8230E0E8` localises it, `sub_82B3F898` narrows it to bytes, and the narrowed text is
+/// passed as `String1` — so their identity is "Save and Continue", a string in the text bank
+/// rather than an identifier in the image.
 ///
-/// The Saving group's children dispatch by EVENT (type 2, param 0/1/2 -> query boxes
-/// 23/24/25), which the tab lever cannot express — they stay unwired until the pause event
-/// path exists, and are marked unavailable so they cannot appear to work.
+/// Dispatch is the tab lever, not the pump: each screen entry names the tab `sub_826B89E0`'s
+/// switch maps to its screen, and the host writes the guest's pending-tab fields (see
+/// Engine_UiSource.Current.PauseTabSelect). The tab path to Abilities omits the mode call the
+/// ITEM path makes (`vfn+32(screen14, 0)`) and so inherits the screen's last mode — the guest's
+/// own LB/RB behaves identically.
+///
+/// The Saving group's children dispatch by EVENT — {type 2, param} alone, per `sub_826A5FC0`:
+/// param 0/1/2 open query boxes 23/24/25 (param 2 quits immediately when `sub_82448900` says
+/// there is no unsaved progress). The tab lever cannot express that, so these go through the
+/// guest-tick pump ("PauseSaving:<param>") and the guest's own query box takes the confirm.
 /// </remarks>
 public static class Engine_PauseMenu
 {
+	/// <summary>Command prefix a tab entry dispatches with; the suffix is the tab id.</summary>
+	public const string TabCommandPrefix = "PauseTab:";
+
+	/// <summary>Command prefix of a Saving child; the suffix is the guest's event param —
+	/// 0 save-and-continue, 1 save-and-quit, 2 quit-without-saving.</summary>
+	public const string SavingCommandPrefix = "PauseSaving:";
+
 	/// <summary>Tab ids as `sub_826B89E0`'s switch numbers them.</summary>
 	public const uint TabMap = 2;
 	public const uint TabAbilities = 3;
@@ -37,37 +49,154 @@ public static class Engine_PauseMenu
 	public const uint TabLogbook = 7;
 	public const uint TabOptions = 8;
 
-	/// <summary>Builds the hero pause list in the guest's own order.</summary>
-	public static Engine_FrontEndMenu BuildHero()
+	/// <summary>
+	/// Builds the hero pause list from the TEMPLATE — `sub_8298DF98`'s spawn list as data: same
+	/// names, same event params on the Saving children, same tab ids, and the guest's own
+	/// SetInitiallySelectedItem(2). A `user://ui/templates.json` override replaces the record.
+	/// </summary>
+	public static Engine_FrontEndMenu BuildHero() =>
+		Engine_UiTemplates.Menu("pause-root")?.Build() ?? new Engine_FrontEndMenu();
+
+	/// <summary>
+	/// Applies the bridge's availability mask (bit N = tab N available) to the tab entries.
+	/// True when anything changed, so the caller knows to refresh its view.
+	///
+	/// The mask is `sub_826B83D0`, the predicate the guest's LB/RB nav loops, read out of the
+	/// hero's restriction flags. The push lever never re-checks it, so a ghosted entry must
+	/// never dispatch.
+	///
+	/// Ghosted, not removed: `sub_8298F648` spawns every tab then calls
+	/// `sub_823DF660(0, name, ghost, 1)` (`SetItemGhosting`) for Map, Abilities, Items, Weapons,
+	/// Clothing and Logbook from the hero's bytes +52/+51/+45 and the childhood test. The tab
+	/// cycler skips a ghosted row; the list does not.
+	/// </summary>
+	public static bool ApplyTabAvailability(Engine_FrontEndMenu menu, uint mask)
 	{
-		var menu = new Engine_FrontEndMenu();
-
-		// Float3=301: the parent expands in Lua only — no C++ handler exists for "Saving"
-		// itself. Its children are event-dispatched (params 0/1/2), which the tab lever
-		// cannot carry; Available=false keeps them visibly ghosted rather than silently dead.
-		var saving = new Engine_FrontEndMenu.Item("Saving", "GUI_SCREEN_PAUSE_SAVING");
-		saving.Children.Add(new Engine_FrontEndMenu.Item(
-			"SaveAndContinue", "GUI_SCREEN_PAUSE_SAVE_AND_CONTINUE", "Saving")
-		{ Available = false });
-		saving.Children.Add(new Engine_FrontEndMenu.Item(
-			"SaveAndQuit", "GUI_SCREEN_PAUSE_SAVE_AND_QUIT", "Saving")
-		{ Available = false });
-		saving.Children.Add(new Engine_FrontEndMenu.Item(
-			"QuitDontSave", "GUI_SCREEN_PAUSE_QUIT_DONT_SAVE", "Saving")
-		{ Available = false });
-		menu.Add(saving);
-
-		menu.Add(Tab("Map", "GUI_SCREEN_PAUSE_WORLD_MAP", TabMap));
-		menu.Add(Tab("Abilities", "GUI_SCREEN_PAUSE_ABILITIES", TabAbilities));
-		menu.Add(Tab("Items", "GUI_SCREEN_PAUSE_ITEMS", TabItems));
-		menu.Add(Tab("Weapons", "GUI_SCREEN_PAUSE_WEAPONS", TabWeapons));
-		menu.Add(Tab("Clothing", "GUI_SCREEN_PAUSE_CLOTHING", TabClothing));
-		menu.Add(Tab("Logbook", "GUI_SCREEN_PAUSE_LOGBOOK", TabLogbook));
-		menu.Add(Tab("Options", "GUI_SCREEN_PAUSE_OPTIONS", TabOptions));
-
-		return menu;
+		bool changed = false;
+		changed |= menu.SetGhosted("Map", (mask & (1u << (int)TabMap)) == 0);
+		changed |= menu.SetGhosted("Abilities", (mask & (1u << (int)TabAbilities)) == 0);
+		changed |= menu.SetGhosted("Items", (mask & (1u << (int)TabItems)) == 0);
+		changed |= menu.SetGhosted("Weapons", (mask & (1u << (int)TabWeapons)) == 0);
+		changed |= menu.SetGhosted("Clothing", (mask & (1u << (int)TabClothing)) == 0);
+		changed |= menu.SetGhosted("Logbook", (mask & (1u << (int)TabLogbook)) == 0);
+		changed |= menu.SetGhosted("Options", (mask & (1u << (int)TabOptions)) == 0);
+		return changed;
 	}
 
-	private static Engine_FrontEndMenu.Item Tab(string name, string tag, uint tab) =>
-		new(name, tag) { Command = $"PauseTab:{tab}" };
+	/// <summary>
+	/// Takes each row's label from the guest's own button pool. True when anything changed.
+	///
+	/// The Babel tags all resolve, but only to the bare noun: the guest composes the live
+	/// decoration before it writes the row — "Abilities" becomes
+	/// `Abilities &lt;s4&gt;(2)&lt;/s4&gt;` when there are points to spend, Items and Clothing
+	/// pick up `&lt;exclamation.img&gt;` when something inside is new — and that exists nowhere
+	/// but in the string.
+	///
+	/// Matched by ORDER: both lists come from the same builder, `sub_8298DF98` spawns in the
+	/// order <see cref="BuildHero"/> transcribes, and an unavailable tab is dropped from both
+	/// (<see cref="ApplyTabAvailability"/>). The guest's buttons carry the finished label, not
+	/// the identity, so a name join is unavailable and a count mismatch is a real disagreement —
+	/// the shorter list wins and the caller reports the gap.
+	/// </summary>
+	public static bool ApplyStatedLabels(
+		Engine_FrontEndMenu menu,
+		System.Collections.Generic.IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons,
+		System.Collections.Generic.IReadOnlyList<Engine_UiMenuModel.Row> stated)
+	{
+		var filled = new System.Collections.Generic.List<string>();
+		foreach (Engine_ExpandableMenuItems.Button button in buttons)
+		{
+			if (button.IsFilled && button.Text is { } text)
+			{
+				filled.Add(text);
+			}
+		}
+
+		var offered = new System.Collections.Generic.List<Engine_UiExpandableMenu.Item>();
+		foreach (Engine_UiExpandableMenu.Item root in menu.Roots)
+		{
+			if (root.Available)
+			{
+				offered.Add(root);
+			}
+		}
+
+		// An empty read is no news, not no labels: a sample taken between the guest tearing the
+		// pause list down for a tab change and building it again looks identical to "the guest
+		// offers no rows", so neither may be acted on.
+		if (filled.Count == 0 && stated.Count == 0)
+		{
+			return false;
+		}
+
+		// By name, from the C++'s own statements: `SpawnButton`'s String2 is the localised label
+		// with decorations (unspent ability count, new-item marker) already appended at spawn
+		// time. Taken from the capture, so it needs no VM read or pool join and arrives before
+		// the guest has laid anything out.
+		var byName = new System.Collections.Generic.Dictionary<string, string>(
+			System.StringComparer.Ordinal);
+		foreach (Engine_UiMenuModel.Row row in stated)
+		{
+			if (row.Name.Length != 0 && row.IsRoot && row.Label.Length != 0)
+			{
+				byName[row.Name] = row.Label;
+			}
+		}
+
+		bool changed = false;
+		var named = new System.Collections.Generic.HashSet<Engine_UiExpandableMenu.Item>();
+		foreach (Engine_UiExpandableMenu.Item item in offered)
+		{
+			if (!byName.TryGetValue(item.Name, out string? label))
+			{
+				continue;
+			}
+
+			named.Add(item);
+			if (!string.Equals(item.StatedLabel, label, System.StringComparison.Ordinal))
+			{
+				item.StatedLabel = label;
+				changed = true;
+			}
+		}
+
+		if (named.Count == offered.Count)
+		{
+			return changed;
+		}
+
+		// The positional fallback, for rows the tree did not name — a pause list read before its
+		// Lua is up, or a template entry the guest never spawned. Rows the name join settled are
+		// skipped so the two cannot disagree.
+		int at = 0;
+		foreach (Engine_UiExpandableMenu.Item item in offered)
+		{
+			if (named.Contains(item))
+			{
+				++at;
+				continue;
+			}
+
+			if (at < filled.Count)
+			{
+				if (!string.Equals(item.StatedLabel, filled[at], System.StringComparison.Ordinal))
+				{
+					item.StatedLabel = filled[at];
+					changed = true;
+				}
+			}
+			else if (stated.Count != 0 && item.StatedLabel is not null)
+			{
+				// The tree is up and does not carry this row, so its label belongs to a list that
+				// no longer exists. Cleared only on that evidence, never on an empty read.
+				item.StatedLabel = null;
+				changed = true;
+			}
+
+			++at;
+		}
+
+		return changed;
+	}
+
 }

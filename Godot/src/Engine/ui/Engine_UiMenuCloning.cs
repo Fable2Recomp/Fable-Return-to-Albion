@@ -95,13 +95,18 @@ public static class Engine_UiMenuCloning
 	/// Arrow elements left at their authored position because no <see cref="FolderMetrics"/>
 	/// was supplied.
 	/// </param>
+	/// <param name="TintsCleared">
+	/// <c>TintingAmount</c> clears applied across the frame's nine cells — the guest's own
+	/// pre-clone reset, which this pass makes rather than merely counts.
+	/// </param>
 	/// <param name="TintWritesDropped">
-	/// Writes of <c>TintingAmount</c> and <c>diffuse.a</c> the guest makes and we do not — see
+	/// Writes the guest makes and we still do not — currently only <c>diffuse.a = 103</c> on the
+	/// Highlight's material, which needs a colour-alpha lane the quad does not carry. See
 	/// <see cref="Apply"/>.
 	/// </param>
 	public readonly record struct Report(
 		bool TemplateFound, int Items, int Dressed, int Cloned,
-		int Folders, int ArrowsUnplaced, int TintWritesDropped);
+		int Folders, int ArrowsUnplaced, int TintWritesDropped, int TintsCleared);
 
 	/// <summary>
 	/// Places the template and copies it into every item. Returns what it touched.
@@ -112,10 +117,11 @@ public static class Engine_UiMenuCloning
 	/// layout. Their ordinals stay -1 and the array only grows at the end, so indexing live
 	/// guest state by ordinal is unaffected.
 	///
-	/// The Lua's <c>TintingAmount</c> clear across the frame's nine cells and its
-	/// <c>diffuse.a</c> = 103 on the highlight are not applied: a <see cref="UiNode"/> has no
-	/// attribute store, and forcing the quad tint would discard the .fac's authored colour.
-	/// Both are counted instead.
+	/// The Lua's <c>TintingAmount</c> clear across the frame's nine cells is applied, hoisted to
+	/// the parent quad as <see cref="Engine_UiScreen.ApplyLiveTint"/> hoists the live one. Its
+	/// <c>diffuse.a</c> = 103 on the highlight is only counted: that is a material colour alpha
+	/// and <see cref="UiQuad"/> carries no fourth lane; the wheel animation drives it separately
+	/// as <c>highlight_opacity</c>.
 	///
 	/// Never throws.
 	/// </summary>
@@ -132,7 +138,7 @@ public static class Engine_UiMenuCloning
 		}
 
 		var created = new List<UiNode>();
-		var report = new Report(TemplateFound: true, 0, 0, 0, 0, 0, 0);
+		var report = new Report(TemplateFound: true, 0, 0, 0, 0, 0, 0, 0);
 
 		report = PlaceTemplateElementsAtDefaultPositions(template, metrics, report);
 
@@ -277,8 +283,11 @@ public static class Engine_UiMenuCloning
 		{
 			Place(highlight, 0f, 0f);
 
-			// `setAttribute(GetTableWithFirstChild(highlight).element, 'diffuse.a', 103)`.
-			if (highlight.Children.Count > 0)
+			// Two levels down — `menucloning.dis main.2 pc97..107`:
+			// `setAttribute(GetTableWithFirstChild(
+			//      GetTableWithFirstChild(highlight).element).element, 'diffuse.a', 103)`.
+			// Highlight's first child is the quad, whose first child carries the alpha.
+			if (FirstChild(FirstChild(highlight)) is not null)
 			{
 				report = report with { TintWritesDropped = report.TintWritesDropped + 1 };
 			}
@@ -299,7 +308,7 @@ public static class Engine_UiMenuCloning
 		{
 			report = report with
 			{
-				TintWritesDropped = report.TintWritesDropped + CountFrameTintWrites(frame),
+				TintsCleared = report.TintsCleared + CountFrameTintWrites(frame),
 			};
 		}
 
@@ -336,11 +345,19 @@ public static class Engine_UiMenuCloning
 	}
 
 	/// <summary>
-	/// How many <c>TintingAmount</c> writes the guest's nine-cell walk would make.
+	/// Clears <c>TintingAmount</c> across the frame's nine cells, and reports how many landed.
 	///
 	/// Each cell is tested down two branches — its first child's first child, and its second
 	/// child's first child — and the Lua's <c>hasAttribute</c> means only a descendant carrying
 	/// the attribute is written.
+	///
+	/// The clear is `menucloning.dis main.1 pc87..145`, run on the TEMPLATE before it is copied;
+	/// skipping it copies the template's last weight into every item's frame cells. The
+	/// attribute sits on a material descendant and the quad is on its PARENT, so the write
+	/// hoists as <see cref="Engine_UiScreen.ApplyLiveTint"/> hoists the guest's live one.
+	///
+	/// The colour is untouched — the Lua writes only the weight, and `rgb -= (1 - tint) * amount`
+	/// means a zero weight already neutralises the authored colour.
 	/// </summary>
 	private static int CountFrameTintWrites(UiNode frame)
 	{
@@ -355,8 +372,23 @@ public static class Engine_UiMenuCloning
 		return writes;
 	}
 
-	private static int TintWritesUnder(UiNode? branch) =>
-		FirstChild(branch) is { } target && HasAttribute(target, "TintingAmount") ? 1 : 0;
+	private static int TintWritesUnder(UiNode? branch)
+	{
+		if (FirstChild(branch) is not { } target || !HasAttribute(target, "TintingAmount"))
+		{
+			return 0;
+		}
+
+		// The quad is on the parent; the element carrying the attribute never has one.
+		UiQuad? quad = target.Quad ?? target.Parent?.Quad;
+		if (quad is null)
+		{
+			return 0;
+		}
+
+		quad.TintAmount = 0f;
+		return 1;
+	}
 
 	private static UiNode? FirstChild(UiNode? node) =>
 		node is { Children.Count: > 0 } ? node.Children[0] : null;
@@ -580,6 +612,11 @@ public static class Engine_UiMenuCloning
 		{
 			line += $", {report.ArrowsUnplaced} arrow(s) left at the authored position " +
 				"(no FolderConst supplied)";
+		}
+
+		if (report.TintsCleared > 0)
+		{
+			line += $", {report.TintsCleared} frame tint(s) cleared";
 		}
 
 		if (report.TintWritesDropped > 0)

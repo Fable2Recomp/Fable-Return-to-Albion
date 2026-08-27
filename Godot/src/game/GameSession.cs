@@ -10,15 +10,9 @@ using Refii.Ui;
 namespace Refii.Game;
 
 /// <summary>
-/// One running game: the mounted assets, the hosted guest, and the world Godot builds.
-///
-/// This is where the plan's split lives. The guest simulates and never draws; Godot owns
-/// the window, the frame loop and everything visual. So this node holds both halves —
-/// it mounts the banks the world is built from, initialises the guest, and advances it
-/// once per frame from <see cref="_Process"/>.
-///
-/// It is deliberately NOT the launcher. The launcher opens one of these when the user
-/// presses Play; until then nothing here has run and no asset has been read.
+/// One running game: mounts the assets, boots the guest, and steps it from <see cref="_Process"/>.
+/// The guest simulates and never draws; Godot owns the window and the frame loop. Opened by the
+/// launcher on Play, never before.
 /// </summary>
 public partial class GameSession : Node
 {
@@ -31,10 +25,7 @@ public partial class GameSession : Node
 	/// <summary>Game directory override. Empty resolves by the shared convention.</summary>
 	[Export(PropertyHint.GlobalDir)] public string GameDirectory { get; set; } = string.Empty;
 
-	/// <summary>
-	/// Boot the guest as well as mounting assets. Off gives the world-building half on
-	/// its own, which is how the importer and the editor are worked on without a guest.
-	/// </summary>
+	/// <summary>Boot the guest as well as mounting assets; off gives the world half alone.</summary>
 	[Export] public bool StartGuest { get; set; } = true;
 
 	private bool _driving;
@@ -42,8 +33,16 @@ public partial class GameSession : Node
 
 	public bool IsDriving => _driving;
 
+	/// <summary>
+	/// The running session, so a host surface can reach the simulation clock (static: the UI is
+	/// mounted under the window, not the session). Null before start and after leaving the tree.
+	/// </summary>
+	public static GameSession? Current { get; private set; }
+
 	public override void _Ready()
 	{
+		Current = this;
+
 		string directory = Directory(GameDirectory);
 		if (directory.Length == 0)
 		{
@@ -53,17 +52,13 @@ public partial class GameSession : Node
 
 		GD.Print($"[game] assets: {directory}");
 
-		// BEFORE the mount, because the first texture request follows it immediately and a
-		// backend registered after that point does not retroactively enhance what already
-		// resolved. Off unless REFII_TEX_UPSCALE says otherwise.
+		// Before the mount: a backend registered later does not enhance what already resolved.
+		// Off unless REFII_TEX_UPSCALE says otherwise.
 		Engine_TexEnhance.RegisterDefault();
 
-		// Stale epochs and the size budget, on a worker. Started here rather than after the
-		// mount so it overlaps the bank walk instead of adding to it.
+		// Stale epochs and the size budget, on a worker; overlaps the bank walk.
 		Engine_TexCache.Maintain();
 
-		// Mount HERE, not in the launcher. The world is built from these, so the session
-		// is the thing that needs them.
 		Engine_GameAssets? assets = Engine_GameAssets.Instance;
 		if (assets is null)
 		{
@@ -82,6 +77,24 @@ public partial class GameSession : Node
 			return;
 		}
 
+		// The mount must finish before the guest starts, or its first asset lookups miss.
+		// `Mount`'s worker publishes under the mount lock, so blocking here without pumping a
+		// frame is safe.
+		if (assets.IsMounting)
+		{
+			GD.Print("[game] waiting for the asset mount before starting the guest...");
+			var waited = System.Diagnostics.Stopwatch.StartNew();
+			while (assets.IsMounting && waited.Elapsed < System.TimeSpan.FromSeconds(120))
+			{
+				System.Threading.Thread.Sleep(10);
+			}
+
+			GD.Print(assets.IsMounted
+				? $"[game] assets mounted in {waited.ElapsedMilliseconds} ms — starting the guest"
+				: $"[game] the mount did not finish in {waited.ElapsedMilliseconds} ms; " +
+				  "starting the guest anyway, and its early asset lookups will miss");
+		}
+
 		int? abi = HostBridge.TryGetRawAbiVersion();
 		if (abi != HostBridge.ExpectedAbiVersion)
 		{
@@ -90,9 +103,7 @@ public partial class GameSession : Node
 			return;
 		}
 
-		// Synchronous and stalls this frame by a second or two: it loads the XEX and runs
-		// the guest's init. On the MAIN thread deliberately — SDL wants it, and running
-		// the guest on a worker left that unresolved.
+		// Synchronous (loads the XEX, runs guest init) and on the main thread: SDL requires it.
 		GD.Print("[game] initialising guest...");
 		HostBridge.ProbeResult init = HostBridge.Initialize(directory);
 		GD.Print($"[game] {init.Message}");
@@ -103,14 +114,14 @@ public partial class GameSession : Node
 			return;
 		}
 
-		// Input starts only once the guest is actually running, so a failed boot does not
-		// leave a node publishing controller frames at a runtime that never came up.
+		// Only after a successful boot: a failed init leaves the UI on the authored stand-in.
+		Refii.Host.HostUiSource.Install();
+		GD.Print("[game] the UI reads the live guest now (Engine_UiSource -> HostUiSource)");
+
+		// Input starts only once the guest is running.
 		AddChild(new GameInput { Name = "GameInput" });
 
-		// THE PUB GAMES WATCH THE GUEST, they are not launched from here. It publishes a state when
-		// the player sits at a table and then waits for whoever draws the game; this node is that
-		// somebody. Added alongside the input for the same reason — a failed boot must not leave
-		// something polling a runtime that never came up.
+		// The pub games watch the guest's published table state; they are not launched from here.
 		_pubGames = new GamePubGames { Name = "GamePubGames" };
 		AddChild(_pubGames);
 
@@ -120,70 +131,108 @@ public partial class GameSession : Node
 
 	private GamePubGames? _pubGames;
 
+	/// <summary>
+	/// The guest's simulation rate in steps per second: bone poses at 30 Hz, game tick at 15.
+	/// Independent of the display rate.
+	/// </summary>
+	public const double StepsPerSecond = 30.0;
+
+	/// <summary>
+	/// Catch-up ceiling: a stall loses time instead of replaying every missed step at once.
+	/// </summary>
+	private const int MaxCatchUpSteps = 4;
+
+	/// <summary>
+	/// Halts the simulation without stopping it: the UI still draws and the bridge still reads.
+	/// </summary>
+	public bool Paused { get; set; }
+
+	private double _accumulated;
+
 	public override void _Process(double delta)
 	{
 		if (!_driving)
 			return;
 
-		// One slice of the guest's loop per Godot frame. This is what "the guest is a
-		// simulation server" means in practice.
-		if (!HostBridge.Step())
+		if (Paused)
 		{
-			_driving = false;
-			string reason = HostBridge.HostedStatus;
-			GD.Print($"[game] guest stopped after {_steps:N0} steps: {reason}");
-
-			// AFTER the status is read, because latching makes the bridge refuse. A guest that
-			// has ended is as unreadable as one that never started, and the nodes polling it have
-			// no other way to find out — `Stopped` reaches only `GameWindow`.
-			HostBridge.MarkUnusable($"the guest stopped: {reason}");
-			EmitSignal(SignalName.Stopped, reason);
+			// The accumulator does not advance while paused; resuming replays nothing.
 			return;
 		}
 
-		_steps++;
+		_accumulated += delta;
 
-		// Enhanced textures that finished on a background worker get swapped in HERE, on the main
-		// thread, and budgeted so a warm cache completing hundreds of entries at once does not
-		// trade a background cost for a visible hitch. It is a no-op with no upscaler registered.
+		double period = 1.0 / StepsPerSecond;
+		int steps = 0;
+		while (_accumulated >= period && steps < MaxCatchUpSteps)
+		{
+			_accumulated -= period;
+			++steps;
+		}
+
+		if (_accumulated > period * MaxCatchUpSteps)
+		{
+			_accumulated = 0.0;
+		}
+
+		for (int i = 0; i < steps; ++i)
+		{
+			if (!StepGuest())
+			{
+				return;
+			}
+		}
+
+		if (steps == 0)
+		{
+			return;
+		}
+
+		// Swap in enhanced textures on the main thread, budgeted; no-op without an upscaler.
 		Engine_TexLibrary.Pump();
 
-		// Evidence on a good run, not only a bad one, and often enough that a kill or a crash
-		// still leaves some. It prints only when the counters have moved.
+		// Periodic report; prints only when the counters have moved.
 		if (_steps % 600 == 0)
 		{
 			Engine_TexLibrary.ReportIfChanged();
 			Refii.Models.Engine_MdlMaterial.ReportIfChanged();
 		}
 
-		// AFTER the step, so the state read is the one this frame's guest tick produced rather than
-		// the previous frame's. The pub-game manager is written by that tick.
+		// After the step: the pub-game manager is written by this frame's guest tick.
 		_pubGames?.Poll();
 
 		TraceCamera();
 	}
 
+	/// <summary>One slice of the guest's loop. False once it has stopped.</summary>
+	private bool StepGuest()
+	{
+		if (!HostBridge.Step())
+		{
+			_driving = false;
+			string reason = HostBridge.HostedStatus;
+			GD.Print($"[game] guest stopped after {_steps:N0} steps: {reason}");
+
+			// Latch after the status is read: it makes the bridge refuse, which is what stops
+			// every polling node other than `GameWindow`.
+			HostBridge.MarkUnusable($"the guest stopped: {reason}");
+			EmitSignal(SignalName.Stopped, reason);
+			return false;
+		}
+
+		_steps++;
+		return true;
+	}
+
 	/// <summary>
-	/// Logs the guest camera when it MOVES.
-	///
-	/// The question this was added for — whether the snapshot at 0x8331A230 still updates
-	/// when the guest never draws — is SETTLED, and the answer is yes. It is a pull cache
-	/// refreshed by sub_82211598 only when the sim generation counter dword_83319650 has
-	/// moved, and all ten callers are Lua natives ("IsPositionInCameraFrustrum",
-	/// "IsSphereInCameraFrustrum", "IsEntityInCameraFrustrumWithMultiplier"), AI path gates
-	/// and effect ticks. Not one of them contains a device call, so none of them needs the
-	/// render path to run.
-	///
-	/// It is still a copy of a copy, and a laggy one: sub_82211598 reads it through
-	/// sub_821DD3B0 -> sub_82265F90, whose own memo at cameraManager+0xD0 is stamped with
-	/// KeTickCount and so refreshes at most once a millisecond. The camera manager's PUSHED
-	/// block is the better source — cameraManager+0xE0 position, +0xF0 up, +0x100 forward,
-	/// +0x110 fov, +0x114 bool, written by sub_821B8FD8 (the stvx128 at 0x821B917C, then
-	/// sub_822BDD10 for the two basis vectors) and driven with force=1 once per sim tick
-	/// from sub_8233B6B0. Reaching it needs the manager pointer, which is a pure memory
-	/// walk: Game = *(0x83496AB8+12), then a binary search of the 12-byte entries between
-	/// *(Game+0x9C)+8 and +12 for key 1 (key 2 when *(Game+0x8C)+0x34 and +0x36 say split
-	/// screen), taking *(entry+4) and then *(view+4).
+	/// Logs the guest camera when it moves. The snapshot at 0x8331A230 is a pull cache refreshed
+	/// by sub_82211598 when dword_83319650 (sim generation) moves, via sub_821DD3B0 ->
+	/// sub_82265F90 whose memo at cameraManager+0xD0 is KeTickCount-stamped (at most once per ms).
+	/// Preferred source is the camera manager's pushed block:
+	/// cameraManager+0xE0 position, +0xF0 up, +0x100 forward, +0x110 fov, +0x114 bool, written by
+	/// sub_821B8FD8 once per sim tick from sub_8233B6B0. Manager pointer: Game = *(0x83496AB8+12),
+	/// binary-search the 12-byte entries between *(Game+0x9C)+8 and +12 for key 1 (key 2 when
+	/// *(Game+0x8C)+0x34 and +0x36 say split screen), then *(entry+4), then *(view+4).
 	/// </summary>
 	private void TraceCamera()
 	{
@@ -214,17 +263,17 @@ public partial class GameSession : Node
 
 	public override void _ExitTree()
 	{
+		if (ReferenceEquals(Current, this))
+		{
+			Current = null;
+		}
+
 		Engine_TexLibrary.Report();
 		Refii.Models.Engine_MdlMaterial.ReportIfChanged();
 
-		// Always. Leaving the guest's threads live at process exit aborts the process.
-		//
-		// THE RAW VERSION, NOT `TryGetAbiVersion`. That one now also reports the refusal latch,
-		// and the latch is set precisely when the guest STOPPED — so gating teardown on it would
-		// skip the shutdown in the one case that most needs it, and turn a clean exit into the
-		// abort this line exists to prevent. Refusing to READ a dead guest and refusing to TEAR
-		// IT DOWN are opposite things; only the library being absent or the wrong version can
-		// excuse the second.
+		// Guest threads left live at process exit abort the process. Raw version, not
+		// `TryGetAbiVersion`: that one reports the refusal latch, set exactly when the guest
+		// stopped. Only a missing or wrong-version library excuses skipping teardown.
 		if (HostBridge.TryGetRawAbiVersion() == HostBridge.ExpectedAbiVersion)
 		{
 			GD.Print($"[game] shutdown: {HostBridge.Shutdown().Message}");
@@ -236,19 +285,8 @@ public partial class GameSession : Node
 		System.IO.Directory.Exists(configured) ? configured : Engine_GameData.Resolve();
 
 	/// <summary>
-	/// Abandons the boot, and makes every OTHER node stop asking the guest questions.
-	///
-	/// THE SIGNAL ALONE WAS NOT ENOUGH, and the comment that said this stops the game was wrong.
-	/// `Stopped` is handled by `GameWindow.OnSessionStopped`, which deliberately leaves the window
-	/// up so the reason is readable — the UI stands on shipped assets and does not need a guest.
-	/// But `GameUi`, `GameAudio` and `GameInput` went on running, and `GameUi._Process` polls the
-	/// loading screen through the bridge before any of its own guards. So a boot that had already
-	/// given up spent every frame reading a guest that was never created.
-	///
-	/// Latching the bridge is what actually stops it, and it stops all of them at once rather
-	/// than relying on each to remember. It also covers the case the ABI check cannot see: a boot
-	/// that fails AFTER the version matched still leaves every `TryGetAbiVersion() is null` guard
-	/// passing, which is most of them.
+	/// Abandons the boot. `Stopped` only reaches `GameWindow`; latching the bridge is what stops
+	/// every other node polling the guest.
 	/// </summary>
 	private void Fail(string reason)
 	{

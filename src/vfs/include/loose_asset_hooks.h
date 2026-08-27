@@ -10,11 +10,6 @@
 
 namespace refii::vfs {
 
-enum class LooseAssetBackend {
-  kRefii,
-  kNative,
-};
-
 // THE CROSSED ONES ARE INLINE WRAPPERS over the C entries in core/payload_bridge.h.
 //
 // Everything below that the payload calls has to reach librefii_vfs without a C++ symbol:
@@ -24,7 +19,6 @@ enum class LooseAssetBackend {
 // before. See src/vfs/include/core/payload_bridge.h for the contract.
 //
 // The rest stay plain declarations: nothing in the payload calls them.
-bool LooseAssetOverridesEnabled();
 inline bool LooseAssetOverrideTracingEnabled() {
   return refii_bridge_vfs_loose_asset_override_tracing_enabled() != 0;
 }
@@ -56,15 +50,15 @@ inline bool SkipStartupVideosEnabled() {
 inline int StartupVideoMinimumPlaybackMs() {
   return static_cast<int>(refii_bridge_vfs_startup_video_minimum_playback_ms());
 }
-LooseAssetBackend GetLooseAssetBackend();
-inline bool RefiiLooseAssetBackendEnabled() {
-  return refii_bridge_vfs_refii_loose_asset_backend_enabled() != 0;
-}
 
 struct LooseAssetResolution {
   std::filesystem::path host_path;
   std::string normalized_key;
   std::string provider_relative_path;
+
+  /// True when Godot holds the bytes and there is no host path to open; `normalized_key` is
+  /// then the virtual path Godot's reader takes.
+  bool host_served = false;
 };
 
 inline std::filesystem::path GetLooseAssetRoot() {

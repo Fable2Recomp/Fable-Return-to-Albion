@@ -64,8 +64,7 @@ bool ShouldLogNativeStartupPlaybackAudit(std::string_view key,
                                          uint32_t interval) {
   if (!refii::vfs::kTraceFrontendHandoffDiagnostics ||
       !refii::vfs::VfsTracingEnabled() ||
-      !refii::vfs::VfsVerboseIoTracingEnabled() ||
-      !refii::vfs::RefiiLooseAssetBackendEnabled()) {
+      !refii::vfs::VfsVerboseIoTracingEnabled()) {
     return false;
   }
   if (refii::vfs::RefiiStartupVideosPlaybackCriticalActive()) {
@@ -81,10 +80,8 @@ bool ShouldLogNativeStartupPlaybackAudit(std::string_view key,
          (interval != 0 && (next_count % interval) == 0);
 }
 
+// The startup audit's own rate limit.
 bool ShouldLogNativeStartupBikAudit(std::string_view key, uint32_t limit) {
-  if (refii::vfs::RefiiLooseAssetBackendEnabled()) {
-    return false;
-  }
   if (refii::vfs::RefiiStartupVideosPlaybackCriticalActive()) {
     return false;
   }
@@ -238,127 +235,52 @@ REX_EXTERN(sub_82377A00) {
   REX_FUNC_PROLOGUE();
 
   const PPCContext original_ctx = ctx;
-  if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {
-    const bool native_startup_audit =
-        !NativeStartupUpdateHasActiveMovie(base, original_ctx.r3.u32) &&
-        ShouldLogNativeStartupBikAudit("NativeStartupUpdate_82377A00", 24);
-    if (native_startup_audit) {
-      REXLOG_INFO("Refii VFS native startup update enter sub_82377A00 "
-                  "lr=0x{:08X} update_timing=[{}] owner_slot=[{}] args=[{}]",
-                  original_ctx.lr,
-                  refii::vfs::FormatStartupVideoUpdateTimingState(
-                      base, original_ctx.r3.u32),
-                  FormatNativeStartupMovieOwnerSlot(base),
-                  refii::vfs::FormatPostVideoBoundaryArgs(base,
-                                                          original_ctx));
-    }
 
-    __imp__sub_82377A00(ctx, base);
-    refii::renderer::NotifyFableStartupVideoPumpRunComplete(
-        original_ctx.r3.u32);
-
-    refii::vfs::RecordRefiiStartupUpdateSnapshot(base,
-                                                 original_ctx.r3.u32,
-                                                 original_ctx.lr,
-                                                 ctx.r3.u32);
-    MaybeLogCompactStartupVideoProgress(base,
-                                        original_ctx.r3.u32,
-                                        original_ctx.lr,
-                                        ctx.r3.u32);
-    if (native_startup_audit) {
-      REXLOG_INFO("Refii VFS native startup update exit sub_82377A00 "
-                  "lr=0x{:08X} result=0x{:08X} update_after=[{}] "
-                  "owner_slot_after=[{}] args_after=[{}]",
-                  original_ctx.lr,
-                  ctx.r3.u32,
-                  refii::vfs::FormatStartupVideoUpdateTimingState(
-                      base, original_ctx.r3.u32),
-                  FormatNativeStartupMovieOwnerSlot(base),
-                  refii::vfs::FormatPostVideoBoundaryArgs(base, ctx));
-    }
-    return;
-  }
-
-  const bool native_startup_audit = ShouldLogNativeStartupPlaybackAudit(
-      "NativeStartupUpdate_82377A00", 4, 120);
-  const bool trace = refii::vfs::ShouldTraceStartupVideoLoopProbe(
-      "StartupVideoUpdate_82377A00", original_ctx.lr, 24);
-  if (trace || native_startup_audit) {
-    REXLOG_INFO("VFS trace startup video update enter sub_82377A00 "
-                "lr=0x{:08X} update_timing=[{}] args=[{}] handoff=[{}] "
-                "main_menu=[{}]",
+  // The native startup update — the guest's own boot-movie pump, run and returned. This is the
+  // path that runs; falling through to the synthetic path below leaves the boot-movie thread
+  // silent once the videos end, so `sub_82378618` never runs and no presentation is bound.
+  const bool native_startup_audit =
+      !NativeStartupUpdateHasActiveMovie(base, original_ctx.r3.u32) &&
+      ShouldLogNativeStartupBikAudit("NativeStartupUpdate_82377A00", 24);
+  if (native_startup_audit) {
+    REXLOG_INFO("Refii VFS native startup update enter sub_82377A00 "
+                "lr=0x{:08X} update_timing=[{}] owner_slot=[{}] args=[{}]",
                 original_ctx.lr,
                 refii::vfs::FormatStartupVideoUpdateTimingState(
                     base, original_ctx.r3.u32),
-                refii::vfs::FormatPostVideoBoundaryArgs(base, original_ctx),
-                refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
+                FormatNativeStartupMovieOwnerSlot(base),
+                refii::vfs::FormatPostVideoBoundaryArgs(base, original_ctx));
   }
 
   __imp__sub_82377A00(ctx, base);
-  refii::renderer::NotifyFableStartupVideoPumpRunComplete(
-      original_ctx.r3.u32);
+  refii::renderer::NotifyFableStartupVideoPumpRunComplete(original_ctx.r3.u32);
 
-  if (refii::vfs::SkipStartupVideosEnabled()) {
-    refii::vfs::ApplyRefiiSkipStartupVideoReadyPatch(
-        base, original_ctx.r3.u32, "startup_update_exit");
-  }
   refii::vfs::RecordRefiiStartupUpdateSnapshot(base,
-                                                   original_ctx.r3.u32,
-                                                   original_ctx.lr,
-                                                   ctx.r3.u32);
+                                               original_ctx.r3.u32,
+                                               original_ctx.lr,
+                                               ctx.r3.u32);
   MaybeLogCompactStartupVideoProgress(base,
                                       original_ctx.r3.u32,
                                       original_ctx.lr,
                                       ctx.r3.u32);
-
-  if (trace || (refii::vfs::kTraceFrontendHandoffDiagnostics &&
-                refii::vfs::VfsTracingEnabled() &&
-                refii::vfs::RefiiStartupVideosReadyForMenuHandoff())) {
-    refii::vfs::RecordRefiiPostVideoUiEvent("StartupVideoUpdate_82377A00",
-                                                original_ctx.lr,
-                                                ctx.r3.u32,
-                                                original_ctx.r3.u32,
-                                                original_ctx.r4.u32,
-                                                original_ctx.r5.u32);
-  }
-
-  if (trace) {
-    REXLOG_INFO("VFS trace startup video update exit sub_82377A00 "
-                "lr=0x{:08X} result=0x{:08X} update_timing_after=[{}] "
-                "args_after=[{}] handoff=[{}] "
-                "main_menu=[{}]",
-                original_ctx.lr,
-                ctx.r3.u32,
-                refii::vfs::FormatStartupVideoUpdateTimingState(
-                    base, original_ctx.r3.u32),
-                refii::vfs::FormatPostVideoBoundaryArgs(base, ctx),
-                refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-  }
-  if (native_startup_audit && !trace) {
-    REXLOG_INFO("Refii VFS native startup update audit sub_82377A00 "
+  if (native_startup_audit) {
+    REXLOG_INFO("Refii VFS native startup update exit sub_82377A00 "
                 "lr=0x{:08X} result=0x{:08X} update_after=[{}] "
-                "handoff=[{}] main_menu=[{}]",
+                "owner_slot_after=[{}] args_after=[{}]",
                 original_ctx.lr,
                 ctx.r3.u32,
                 refii::vfs::FormatStartupVideoUpdateTimingState(
                     base, original_ctx.r3.u32),
-                refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
+                FormatNativeStartupMovieOwnerSlot(base),
+                refii::vfs::FormatPostVideoBoundaryArgs(base, ctx));
   }
-  refii::vfs::MaybeLogRefiiPostVideoHashOnlyBlocker(
-      original_ctx.lr, "StartupVideoUpdate_82377A00", base);
-  refii::vfs::MaybeLogRefiiStartupReadyGateTextureOpenVerdict(
-      original_ctx.lr, "StartupVideoUpdate_82377A00", base);
-  refii::vfs::MaybeLogRefiiStartupVideoReadyNoFinalizerBlocker(
-      original_ctx.lr, "StartupVideoUpdate_82377A00", base);
 }
 
 REX_EXTERN(sub_82377980) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82377980);
+
 
   const PPCContext original_ctx = ctx;
   const bool native_completion_audit = ShouldLogNativeStartupPlaybackAudit(
@@ -406,8 +328,7 @@ REX_EXTERN(sub_82377980) {
                 "menu_texture_needs_prime={} completion=native",
                 original_ctx.lr,
                 original_ctx.r3.u32,
-                refii::vfs::RefiiLooseAssetBackendEnabled() ? "true"
-                                                                : "false",
+                "true",
                 update_guest_valid ? "true" : "false",
                 update_complete ? "true" : "false",
                 refii::vfs::RefiiMainMenuTraceIsTextureOwnedButNotOpened()
@@ -418,7 +339,7 @@ REX_EXTERN(sub_82377980) {
                 menu_texture_refii_owned ? "true" : "false",
                 menu_texture_needs_prime ? "true" : "false");
   }
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() && update_complete &&
+  if (update_complete &&
       menu_texture_refii_owned && !refii::vfs::SkipStartupVideosEnabled() &&
       !startup_videos_settled && refii::vfs::VfsTracingEnabled() &&
       refii::vfs::ShouldLogRepeatedVfsTraceOperation(
@@ -443,8 +364,7 @@ REX_EXTERN(sub_82377980) {
                 "main_menu=[{}]",
                 original_ctx.lr,
                 original_ctx.r3.u32,
-                refii::vfs::RefiiLooseAssetBackendEnabled() ? "true"
-                                                                : "false",
+                "true",
                 update_guest_valid ? "true" : "false",
                 update_complete ? "true" : "false",
                 refii::vfs::RefiiMainMenuTraceIsTextureOwnedButNotOpened()
@@ -510,38 +430,6 @@ REX_EXTERN(sub_82377980) {
     const uint32_t request_guest = original_ctx.r3.u32;                        \
     const bool tracked_request =                                               \
         refii::vfs::IsNativeVfsScheduledRequest(base, request_guest);      \
-    if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {                       \
-      const bool native_startup_audit =                                        \
-          tracked_request &&                                                   \
-          ShouldLogNativeStartupBikAudit(label, 24);                           \
-      std::string before_state;                                                \
-      if (native_startup_audit) {                                              \
-        before_state = refii::vfs::FormatNativeVfsAsyncRequestState(       \
-            base, request_guest);                                              \
-        REXLOG_INFO("Refii VFS native scheduled request enter " label          \
-                    " lr=0x{:08X} ctr=0x{:08X} r4=0x{:08X} state=[{}]",       \
-                    original_ctx.lr,                                           \
-                    original_ctx.ctr.u32,                                      \
-                    original_ctx.r4.u32,                                       \
-                    before_state);                                             \
-      }                                                                        \
-                                                                               \
-      imp_name(ctx, base);                                                     \
-      NotifyRendererStartupVideoPumpInitIfNeeded(label, base, request_guest);  \
-                                                                               \
-      if (native_startup_audit) {                                              \
-        REXLOG_INFO("Refii VFS native scheduled request exit " label           \
-                    " lr=0x{:08X} result=0x{:08X} before=[{}] after=[{}]",    \
-                    original_ctx.lr,                                           \
-                    ctx.r3.u32,                                                \
-                    before_state,                                              \
-                    log_after_state                                            \
-                        ? refii::vfs::FormatNativeVfsAsyncRequestState(    \
-                              base, request_guest)                             \
-                        : std::string{"<skipped_after_destructor>"});         \
-      }                                                                        \
-      return;                                                                  \
-    }                                                                          \
     const bool trace =                                                         \
         refii::vfs::VfsTracingEnabled() &&                                 \
         tracked_request &&                                                     \
@@ -770,6 +658,7 @@ REX_EXTERN(sub_8231A368) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8231A368);
 
+
   if (refii::vfs::AutoPressStartEnabled() && base != nullptr &&
       refii::vfs::LoadGuestU8(base, 0x8331960Fu) == 0) {
     const uint32_t state_obj = ctx.r3.u32;
@@ -808,6 +697,7 @@ REX_EXTERN(sub_82378618) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82378618);
+
 
   const PPCContext original_ctx = ctx;
   const bool context_active =
@@ -963,6 +853,7 @@ REX_EXTERN(sub_826D5E48) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_826D5E48);
 
+
   const PPCContext original_ctx = ctx;
   const bool active = refii::vfs::FrontendTextureConsumerTraceActive();
   const bool trace =
@@ -1026,6 +917,7 @@ REX_EXTERN(sub_821DE2E8) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_821DE2E8);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t descriptor_guest = original_ctx.r3.u32;
@@ -1384,6 +1276,7 @@ REX_EXTERN(sub_82379D78) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82379D78);
 
+
   const PPCContext original_ctx = ctx;
   const bool active = refii::vfs::FrontendTextureConsumerTraceActive();
   const bool verbose =
@@ -1432,6 +1325,7 @@ REX_EXTERN(sub_82378F00) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82378F00);
 
+
   const PPCContext original_ctx = ctx;
   const bool active = refii::vfs::FrontendTextureConsumerTraceActive();
   const bool verbose =
@@ -1478,7 +1372,10 @@ REX_EXTERN(sub_82378F00) {
 }
 
 REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
+  // Every guest thread yields here sooner or later; one thread_local test per call.
+  refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
+
 
   // Spend a long wait sleeping instead of yielding. Placed ahead of everything else in
   // this hook, including the native-passthrough early out, so the policy is not
@@ -1499,6 +1396,33 @@ REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
   // TIME-GATED, NOT COUNTED. This used to ride the spin probe's one-in-100,000 branch,
   // and the back-off above cuts that rate by two orders of magnitude — a heal that first
   // arrives 50 s into a run is no heal at all.
+  // Release the D3D device-ownership guard: nothing owns a device that does not exist.
+  //
+  // `Render_D3DDeviceOwnership_WaitAndReclaim` (0x82B6EDE0 — refii_config misnames it
+  // `rex_lhRenderer_SetupFrame`) gates on `dword_83360350`:
+  //
+  //     if (dword_83360350 == -1 || dword_83360350 == KeGetCurrentThreadId()) { proceed }
+  //     else { while (dword_83360350 != -1) SwitchToThread(); }
+  //
+  // `-1` is unowned (`sub_82A1AE18` writes it on teardown), but the image ships the word as 0
+  // and no thread has id 0, so every non-owner spins from boot; guest `CreateDevice`, which
+  // would initialise it, does not fully run headless — the same cause as the pacing globals
+  // below at `0x83360358`/`0x8336035C`. Healed here because the spin's own yield is this hook.
+  // Once only, and only from 0: a real owner id is left alone.
+  {
+    static std::atomic<bool> device_guard_healed{false};
+    if (!device_guard_healed.load(std::memory_order_relaxed)) {
+      constexpr uint32_t kGuestD3DOwnershipGuard = 0x83360350u;
+      if (refii::vfs::LoadGuestU32(base, kGuestD3DOwnershipGuard) == 0u &&
+          !device_guard_healed.exchange(true, std::memory_order_relaxed)) {
+        refii::vfs::StoreGuestU32(base, kGuestD3DOwnershipGuard, 0xFFFFFFFFu);
+        REXLOG_INFO("Refii D3D device-ownership guard RELEASED: dword_83360350 shipped as 0 "
+                    "and guest CreateDevice never initialised it, so every non-owner spun in "
+                    "Render_D3DDeviceOwnership_WaitAndReclaim. Set to -1 (unowned).");
+      }
+    }
+  }
+
   {
     static std::atomic<bool> pacing_globals_settled{false};
     static std::atomic<bool> pacing_globals_healed{false};
@@ -1614,16 +1538,39 @@ REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
           uint64_t owner_hook_age_us = 0;
           refii::renderer::QueryRendererHookThreadTelemetry(
               owner_tid, &owner_last_hook, &owner_hook_age_us);
+          // Presents vs swap completions. The spin is bounded — `sub_822DFE08` gives up
+          // after one presentation period (timeout branch 0x822DFF24 into the epilogue at
+          // 0x822E1694) — so a hung run's yields are cumulative over many doomed calls.
+          // The drain's frame deadline comes from `sub_82B6FCE8` = `presented - completed + 1`;
+          // `Render_PresentFrame_INFERRED` bumps g_PresentFrameCount at 0x82B6F290 and only the
+          // swap-completion callback advances the completed count, so a widening gap means the
+          // deadline is running ahead of the stream clock.
+          //
+          // Read the record, not the selector: 0x83497124 is the frame-sync SLOT INDEX, 0 or 1
+          // (`Render_FrameCompletionCallback` 0x82B90160 publishes it one bit wide). The real
+          // count is `*(u32*)(0x83491D98 + 24*index + 0x10)`.
+          const uint32_t presented =
+              refii::vfs::LoadGuestU32(base, 0x83497120u);
+          const uint32_t frame_sync_index =
+              refii::vfs::LoadGuestU32(base, 0x83497124u);
+          const uint32_t completed =
+              frame_sync_index < 2u
+                  ? refii::vfs::LoadGuestU32(
+                        base, 0x83491D98u + frame_sync_index * 24u + 0x10u)
+                  : 0u;
           REXLOG_INFO(
               "Refii guest stream-drain spin slot=0x{:08X} owner_tid=0x{:08X} "
               "read=0x{:08X} wptr_snap=0x{:08X} shared_wptr=0x{:08X} "
-              "owner_last_hook={} owner_hook_age_us={}",
+              "owner_last_hook={} owner_hook_age_us={} "
+              "presented={} completed={} skew={} sync_slot={}",
               slot, owner_tid, read_cursor, wptr_snapshot, shared_wptr,
-              owner_last_hook, owner_hook_age_us);
+              owner_last_hook, owner_hook_age_us, presented, completed,
+              static_cast<int32_t>(presented - completed), frame_sync_index);
         }
       }
     }
   }
+
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82CC38E8);
 
@@ -1737,6 +1684,7 @@ REX_EXTERN(sub_822F3B20) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_822F3B20);
 
+
   const PPCContext original_ctx = ctx;
   const bool trace = refii::vfs::ShouldTraceStartupVideoLoopProbe(
       "StartupVideoLoop_ReadyPoll_822F3B20", original_ctx.lr, 12);
@@ -1819,6 +1767,7 @@ REX_EXTERN(rex_Sleep) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_Sleep);
 
+
   const PPCContext original_ctx = ctx;
   const bool trace = refii::vfs::ShouldTraceStartupVideoLoopProbe(
       "StartupVideoLoop_Sleep", original_ctx.lr, 1);
@@ -1864,6 +1813,7 @@ REX_EXTERN(sub_821E2C08) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_821E2C08);
+
 
   const PPCContext original_ctx = ctx;
   const bool trace =
@@ -1923,6 +1873,7 @@ REX_EXTERN(sub_82377DC8) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82377DC8);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t callback_guest = original_ctx.r4.u32;
@@ -1985,6 +1936,7 @@ REX_EXTERN(sub_82B49028) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B49028);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t queue_guest = original_ctx.r3.u32;
   const uint32_t request_guest = original_ctx.r4.u32;
@@ -2030,6 +1982,7 @@ REX_EXTERN(sub_82B49220) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B49220);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t queue_guest = original_ctx.r3.u32;
   const bool trace =
@@ -2067,6 +2020,7 @@ REX_EXTERN(sub_8244B978) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8244B978);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t scheduler_guest = original_ctx.r3.u32;
@@ -2142,6 +2096,7 @@ REX_EXTERN(sub_8244BA28) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8244BA28);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t scheduler_guest = original_ctx.r3.u32;
   const uint32_t request_guest = original_ctx.r4.u32;
@@ -2183,6 +2138,7 @@ REX_EXTERN(sub_8244BAD8) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8244BAD8);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t scheduler_guest = original_ctx.r3.u32;
@@ -2227,6 +2183,7 @@ REX_EXTERN(sub_8244BED0) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8244BED0);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t scheduler_guest = original_ctx.r3.u32;
@@ -2280,6 +2237,7 @@ REX_EXTERN(sub_82B49D80) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B49D80);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t list_guest = original_ctx.r3.u32;
@@ -2548,6 +2506,7 @@ REX_EXTERN(sub_822C9388) { // Lumen: PulseEvent
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_822C9388);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t event_handle_guest = original_ctx.r3.u32;
   // Resume-kick ledger (see TryEmulateLhRendererHandshakeWait): the resume
@@ -2591,7 +2550,28 @@ REX_EXTERN(sub_822C9388) { // Lumen: PulseEvent
 REX_EXTERN(sub_82B4F400) {
   REX_FUNC_PROLOGUE();
 
+
   const PPCContext original_ctx = ctx;
+
+  // Names every unbounded wait once per caller. This is the guest's WaitForSingleObjectEx
+  // wrapper, so a thread that parks forever parks here and only `lr` says which wait it was —
+  // hence keying on the caller rather than a call count. `r4 == -1` is INFINITE; bounded waits
+  // are not reported.
+  if (original_ctx.r4.u32 == 0xFFFFFFFFu) {
+    static std::mutex infinite_wait_mutex;
+    static std::unordered_set<uint32_t> infinite_wait_callers;
+    const uint32_t caller = static_cast<uint32_t>(original_ctx.lr);
+    bool first = false;
+    {
+      std::lock_guard<std::mutex> lock(infinite_wait_mutex);
+      first = infinite_wait_callers.insert(caller).second;
+    }
+    if (first) {
+      REXLOG_INFO("Refii boot: INFINITE wait entered lr=0x{:08X} object=0x{:08X} "
+                  "— if the run stalls, this is a candidate for where",
+                  caller, original_ctx.r3.u32);
+    }
+  }
 
   // A COMMAND-STREAM FENCE WAIT, not a present-completion event.
   //
@@ -2631,6 +2611,7 @@ REX_EXTERN(sub_82B4F400) {
   if (TryEmulateLhRendererHandshakeWait(ctx, base, original_ctx)) {
     return;
   }
+
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4F400);
 
@@ -2761,6 +2742,7 @@ REX_EXTERN(sub_82388A18) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82388A18);
 
+
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
   if (refii::vfs::ShouldRecordPostVideoWaitSnapshot(
@@ -2853,6 +2835,7 @@ REX_EXTERN(sub_82A41B00) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82A41B00);
+
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();

@@ -70,7 +70,7 @@ public static class Engine_TexCache
 	/// 3,576 entries holding 2.90 GB of 3.13 GB. Serving those would mean the new encoder never
 	/// ran for anything already cached, so the version moves and v1 is simply not read.
 	/// </remarks>
-	public const int ConverterVersion = 2;
+	public const int ConverterVersion = 3;
 
 	/// <summary>Where converted textures live: <c>&lt;app&gt;/cache/textures</c>.</summary>
 	/// <remarks>

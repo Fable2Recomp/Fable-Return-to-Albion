@@ -372,7 +372,7 @@ bool AugmentRequestManagerHashTable(PPCContext& ctx,
                                     uint8_t* base,
                                     uint32_t manager_guest,
                                     std::string_view api) {
-  if (!RefiiLooseAssetBackendEnabled() || base == nullptr ||
+  if (base == nullptr ||
       manager_guest == 0) {
     return false;
   }
@@ -1076,7 +1076,7 @@ void RerunKnownRequestManagerHashAugmentation(PPCContext& ctx,
                                               std::string_view api,
                                               uint32_t resource_hash,
                                               std::string_view name) {
-  if (!RefiiLooseAssetBackendEnabled() || base == nullptr) {
+  if (base == nullptr) {
     return;
   }
 
@@ -1112,7 +1112,7 @@ void RegisterRefiiOwnedTextureHashContribution(PPCContext& ctx,
                                                uint32_t resource_hash,
                                                std::string_view name,
                                                uint32_t caller_lr) {
-  if (!RefiiLooseAssetBackendEnabled() || resource_hash == 0 ||
+  if (resource_hash == 0 ||
       !IsTextureAssetCandidate(name)) {
     return;
   }
@@ -1354,7 +1354,7 @@ void RegisterRefiiOwnedResourceHashContribution(PPCContext& ctx,
                                                 uint32_t resource_hash,
                                                 std::string_view name,
                                                 uint32_t caller_lr) {
-  if (!RefiiLooseAssetBackendEnabled() || resource_hash == 0 ||
+  if (resource_hash == 0 ||
       name.empty() || IsTextureAssetCandidate(name)) {
     return;
   }

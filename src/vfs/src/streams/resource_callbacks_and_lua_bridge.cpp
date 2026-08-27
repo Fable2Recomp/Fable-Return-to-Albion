@@ -439,7 +439,7 @@ bool IsLuaScriptAssetKey(std::string_view asset_path) {
 }
 
 bool LuaVfsBridgeEnabled() {
-  return RefiiLooseAssetBackendEnabled();
+  return true;
 }
 
 bool LooseLuaOverridesEnabled() {

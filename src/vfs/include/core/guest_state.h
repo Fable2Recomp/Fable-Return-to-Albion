@@ -167,6 +167,14 @@ std::string FormatGuestAsciiBytes(uint8_t* base,
 std::string ReadBestEffortGuestString(uint8_t* base,
                                       uint32_t string_guest,
                                       uint32_t max_chars);
+
+/// The characters behind an LHString handle — EXACTLY TWO HOPS, never a search.
+///
+/// The guest takes these as `char***` and reaches the bytes with two dereferences and one
+/// guard (`sub_826B9510`): `if (*a2) v10 = **a2;`. See the implementation for why an earlier
+/// version that probed one to three levels for "something printable" put a pointer's bytes on
+/// screen as a menu label.
+std::string ReadGuestLhString(uint8_t* base, uint32_t handle);
 std::string FormatGuestObjectVTable(uint8_t* base,
                                     uint32_t object_guest,
                                     uint32_t slot_count);

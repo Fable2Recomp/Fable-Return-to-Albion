@@ -9,16 +9,9 @@ using Refii.Video;
 namespace Refii.Game;
 
 /// <summary>
-/// Plays the game's Bink videos — decoded by GODOT, driven by the guest.
-///
-/// The guest still decides WHEN a video plays and WHICH one: the movie-open hook reports
-/// the file it asked BinkOpen for, and this plays that file. But the decoding is ours,
-/// with FFmpeg, so nothing here depends on the guest reaching its render path, on the
-/// double-buffered planes it decodes into, or on the render thread that is currently
-/// parked in sub_822DFE08. Scraping those planes worked, but only while all three held.
-///
-/// Planes go to the GPU untouched and a shader converts them, which is cheaper than a CPU
-/// conversion and gives chroma real filtering rather than nearest-neighbour steps.
+/// Plays the game's Bink videos: the guest states when and which (the movie-open hook reports
+/// the file it passed BinkOpen), Godot decodes with FFmpeg. Nothing here depends on the guest
+/// reaching its render path. YUV planes go to the GPU untouched; a shader converts them.
 /// </summary>
 public partial class GameVideo : Node
 {
@@ -48,17 +41,11 @@ public partial class GameVideo : Node
 		OS.GetEnvironment("REFII_VIDEO_FOLLOW_SKIP") != "0";
 
 	/// <summary>
-	/// Ends the movie on screen NOW, as if it had reached its last frame.
-	///
-	/// Godot owns playback, so a skip is Godot stopping the picture and then telling the
-	/// guest — in that order. The guest is told through the SAME byte its own
-	/// <c>Render_DrawBinkMovieFrame</c> writes when a movie runs out
-	/// (<c>bink+221</c>, via <see cref="HostBridge.FinishMovie"/>), which is why a skip needs
-	/// no separate mechanism and cannot leave the guest's startup sequence waiting: to the
-	/// guest, a skipped movie and a finished one are the same event.
-	///
-	/// NOT a decision about whether skipping is ALLOWED. That is the guest's contract and the
-	/// caller's business; this only carries it out. Returns false when nothing was playing.
+	/// Ends the movie on screen now, as if it had reached its last frame: stop the picture,
+	/// then tell the guest through the same byte its <c>Render_DrawBinkMovieFrame</c> writes on
+	/// a natural end (<c>bink+221</c>, via <see cref="HostBridge.FinishMovie"/>) — to the guest
+	/// a skipped and a finished movie are one event. Does not decide whether skipping is
+	/// allowed; that is the guest's contract. Returns false when nothing was playing.
 	/// </summary>
 	public bool Skip(string reason)
 	{
@@ -89,11 +76,8 @@ public partial class GameVideo : Node
 	private double _frameClock;
 
 	/// <summary>
-	/// Most frames decoded in one host frame while catching up.
-	///
-	/// Bounded so a long stall cannot turn into a decode spiral that makes the next host
-	/// frame longer still. Four is roughly a 7 fps floor against a 30 fps movie; below that
-	/// the clock is reset rather than chased.
+	/// Most frames decoded in one host frame while catching up, so a stall cannot spiral.
+	/// Four is roughly a 7 fps floor against a 30 fps movie; below that the clock is reset.
 	/// </summary>
 	private const int MaxCatchUpFrames = 4;
 
@@ -112,8 +96,8 @@ public partial class GameVideo : Node
 		var layer = new CanvasLayer { Name = "VideoLayer", Layer = 10 };
 		AddChild(layer);
 
-		// BLACK, not the window's clear colour, behind the letterboxed movie: the bars around a
-		// 16:9 bink in a non-16:9 window read as gray without it.
+		// Black, not the window's clear colour: the bars around a 16:9 bink in a non-16:9
+		// window read as gray without it.
 		var backdrop = new ColorRect
 		{
 			Name = "VideoBackdrop",
@@ -140,9 +124,8 @@ public partial class GameVideo : Node
 		_view.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		layer.AddChild(_view);
 
-		// THE SAME DECODE, A SECOND DESTINATION: the same YUV planes and material, drawn into a
-		// UI element's rect instead of the screen. The SubViewport makes it a sampleable
-		// Texture2D.
+		// Second destination for the same planes and material: a UI element's rect instead of
+		// the screen. The SubViewport makes it a sampleable Texture2D.
 		_embedded = new SubViewport
 		{
 			Name = "VideoEmbed",
@@ -154,7 +137,7 @@ public partial class GameVideo : Node
 		};
 		AddChild(_embedded);
 
-		// STRETCHED, never letterboxed: the guest's draw (0x82A41F10) never reads the movie's
+		// Stretched, never letterboxed: the guest's draw (0x82A41F10) never reads the movie's
 		// own width or height.
 		_embeddedView = new TextureRect
 		{
@@ -172,13 +155,31 @@ public partial class GameVideo : Node
 	private ColorRect _backdrop = null!;
 
 	/// <summary>
-	/// Where the movie is going: an element ordinal, or -1 for the screen.
-	///
-	/// Set by <see cref="Refii.Game.GameUi"/> from the guest's own statement — a sprite whose
-	/// `Movie` string is non-empty hosts the movie in its own rect — because the presentation
-	/// and its ordinal map live there and not here.
+	/// Where the movie is going: an element ordinal, or -1 for the screen. Set by
+	/// <see cref="Refii.Game.GameUi"/> — a sprite with a non-empty `Movie` string hosts it.
 	/// </summary>
 	public int EmbedOrdinal { get; set; } = -1;
+
+	/// <summary>
+	/// Whether the guest asked for this movie to cover the screen, from the rect it states after
+	/// every open (`sub_82A41E30`, via <see cref="HostBridge.GetMovieRect"/>) — known on the
+	/// first frame, unlike <see cref="EmbedOrdinal"/>, which the presentation follower only
+	/// samples a few times a second. Judged by WIDTH against the guest's 2D screen space:
+	/// fullscreen owners state the full width and letterbox the HEIGHT to 1/8..7/8 in 4:3, so
+	/// height cannot be the test. No rect yet answers true rather than blanking the movie.
+	/// </summary>
+	private bool StatedFullscreen()
+	{
+		if (HostBridge.GetMovieRect() is not { } rect || rect.Size.X <= 0f)
+		{
+			return true;
+		}
+
+		return rect.Size.X >= GuestScreenWidth * 0.75f;
+	}
+
+	/// <summary>The guest's 2D screen space, which its own UI is authored against.</summary>
+	private const float GuestScreenWidth = 1280f;
 
 	/// <summary>The decoded frame as a texture a UI quad can sample, or null when not playing.</summary>
 	public Texture2D? FrameTexture =>
@@ -186,8 +187,7 @@ public partial class GameVideo : Node
 
 	public override void _Process(double delta)
 	{
-		// The letterbox backdrop follows the movie's own visibility — every site that toggles
-		// _view also owns this, but mirroring it here cannot miss one.
+		// Mirrored here so no site that toggles _view can miss the backdrop.
 		_backdrop.Visible = _view.Visible;
 
 		if (HostBridge.TryGetAbiVersion() is null)
@@ -200,13 +200,15 @@ public partial class GameVideo : Node
 		{
 			_lastRequest = generation;
 
-			// A request carries EITHER the loaded file or its path. The logos come as
-			// bytes the guest already read; everything after them is opened by name, and
-			// the guest never reads those itself — so the host resolves them.
-			if (requested is null)
+			// A request carries either the loaded file or its path; the name wins wherever
+			// there is one and the guest's buffer is only the fallback. `Engine_VideoLibrary`
+			// indexes `art/videos` and every `.bik` ships loose, so the host can resolve
+			// anything the guest can — and a failed `BinkOpen` leaves a null handle the guest
+			// derefs twice a frame (`BinkDoFrame` 0x82A41F34, and 0x82A42244).
+			string path = HostBridge.GetRequestedVideoName(out _);
+			if (path.Length != 0 && ResolveMovie(path) is { } byName)
 			{
-				string path = HostBridge.GetRequestedVideoName(out _);
-				requested = path.Length == 0 ? null : ResolveMovie(path);
+				requested = byName;
 			}
 
 			StartVideo(requested);
@@ -216,12 +218,9 @@ public partial class GameVideo : Node
 	}
 
 	/// <summary>
-	/// Reads a movie the guest named rather than loaded.
-	///
-	/// Through the same library the editor's Videos folder uses, so a movie the guest
-	/// asks for and a movie browsed by hand resolve identically. The guest's path is a
-	/// console one — "game:\data\art\videos\x.bik" — and the library keys on the file
-	/// name, so neither the device prefix nor the separators have to be translated.
+	/// Reads a movie the guest named rather than loaded, through the same library the editor
+	/// uses. The guest path is a console one ("game:\data\art\videos\x.bik"); the library keys
+	/// on the file name, so neither the device prefix nor the separators are translated.
 	/// </summary>
 	private byte[]? ResolveMovie(string guestPath)
 	{
@@ -244,9 +243,7 @@ public partial class GameVideo : Node
 	private Engine_VideoLibrary? _library;
 
 	/// <summary>
-	/// Plays the .bik the guest just opened. The bytes come straight from guest memory —
-	/// the game loads the file itself and hands BinkOpen a buffer, so there is no path to
-	/// resolve and no second read of a file already loaded.
+	/// Plays the .bik the guest just opened, from the buffer it handed BinkOpen.
 	/// </summary>
 	private void StartVideo(byte[]? requested)
 	{
@@ -298,44 +295,19 @@ public partial class GameVideo : Node
 			return;
 		}
 
-		// DRAIN the clock, do not consume one frame from it.
-		//
-		// Decoding exactly one frame per host frame and subtracting one frame's worth cannot
-		// keep time. Whenever a host frame takes longer than a movie frame — a 30 fps movie
-		// and any dip below 30 fps, which streaming a region reliably causes — the accumulator
-		// grows and never shrinks, so the movie plays SLOWER THAN REAL TIME and drifts further
-		// behind for as long as it runs, with no path that decodes two frames in one.
-		//
-		// That drift is the Bink desync. The guest decodes the same movie on ITS own wall
-		// clock to decide when its startup sequence may continue — this class then reports
-		// the movie finished, and a picture running late reports late. The guest was waiting
-		// on our clock, and our clock was slow.
-		//
-		// So: decode until caught up, and upload only the frame that actually lands on
-		// screen. Intermediate frames are dropped, which is what a video player does when it
-		// is behind; showing every frame late is the one option that keeps the audio, the
-		// guest and the picture disagreeing.
+		// Drain the clock, do not consume one frame from it: decoding one frame per host frame
+		// makes the movie play slower than real time whenever a host frame outlasts a movie
+		// frame, and the guest gates its startup sequence on this clock. Decode until caught
+		// up and upload only the frame that lands on screen; intermediate frames are dropped.
 		int chromaWidth = 0;
 		int chromaHeight = 0;
 		int decoded = 0;
 		bool ended = false;
 
-		// THE GUEST MAY HAVE ENDED THIS MOVIE ALREADY, and a skip is how.
-		//
-		// Skippability is the GUEST's to decide and it already does: the player carries a
-		// threshold and an elapsed accumulator, and its own skip sites set the flag when the
-		// button is pressed and enough of the movie has run — five seconds for the startup
-		// logos, immediately for the attract clip, and never for an in-game cutscene, which
-		// has no such field at all. Since Godot feeds the real button press through XInput,
-		// all of that enforcement happens without the host deciding anything.
-		//
-		// What the host has to do is NOTICE. Godot owns the picture, so a movie the guest has
-		// retired keeps playing over whatever it moved on to unless we stop. This is that
-		// stop — and it deliberately does not consult a filename or a duration of our own.
-		// REVERSIBLE ON PURPOSE. This is new, and "the world is showing where the movie should
-		// be" is exactly what a spurious end looks like — so it can be turned off in one run
-		// rather than argued about. REFII_VIDEO_FOLLOW_SKIP=0 leaves Godot ending movies only
-		// when its own decode runs out, which is the behaviour that was working before.
+		// The guest decides skippability itself (its player holds a threshold and an elapsed
+		// accumulator; its skip sites set the flag) and Godot feeds the real button through
+		// XInput, so the host only has to notice: a movie the guest retired would otherwise
+		// keep playing. REFII_VIDEO_FOLLOW_SKIP=0 ends movies on our decode alone.
 		if (FollowGuestSkip && HostBridge.MovieState() == HostBridge.MoviePlayback.EndedByGuest)
 		{
 			Skip("the guest skipped it");
@@ -354,9 +326,8 @@ public partial class GameVideo : Node
 			++decoded;
 		}
 
-		// A pause long enough to exceed the catch-up cap — a level load, a breakpoint — must
-		// not leave the clock holding seconds of debt that then plays out as a fast-forward.
-		// Dropping the remainder resynchronises to now, which is where the guest already is.
+		// A pause past the catch-up cap must not leave debt that plays out as a fast-forward;
+		// dropping the remainder resynchronises to now, where the guest already is.
 		if (_frameClock >= _decoder.FrameSeconds)
 		{
 			_frameClock = 0.0;
@@ -370,10 +341,8 @@ public partial class GameVideo : Node
 			_view.Visible = false;
 			++MoviesFinished;
 
-			// Tell the guest, or it never advances. Its startup sequence blocks until every
-			// movie has played and decides that from its OWN Bink decode — output nobody
-			// sees now, on a clock that drifts from this one. Retiring the movie here is
-			// what keeps the sequence in step with the picture.
+			// Tell the guest, or it never advances: its startup sequence blocks until every
+			// movie has played, and it would otherwise decide that from its own Bink decode.
 			uint retired = HostBridge.FinishMovie();
 			GD.Print($"[game-video] finished" +
 				(retired != 0 ? $"; retired the guest's player 0x{retired:X8}" : string.Empty));
@@ -397,12 +366,11 @@ public partial class GameVideo : Node
 		_chromaV!.Update(_chromaVImage);
 
 		// An embedded movie must not also paint the screen — the two share one material.
+		// Either statement keeps it off: the guest's rect, or the UI's hosting ordinal.
 		_embeddedView.Texture = _luma;
-		_view.Visible = EmbedOrdinal < 0;
+		_view.Visible = EmbedOrdinal < 0 && StatedFullscreen();
 
-		// Deterministic capture: save once, a little way into playback, rather than
-		// guessing a wall-clock moment. The startup videos begin at a time that moves
-		// between runs, and timed shots kept landing on the gap between them.
+		// Deterministic capture: keyed on frame count, not a wall-clock moment.
 		++_shownFrames;
 		string shot = OS.GetEnvironment("REFII_VIDEO_FRAME_SHOT");
 		if (shot.Length != 0 && _shownFrames == 40)
@@ -424,10 +392,8 @@ public partial class GameVideo : Node
 
 	private void Allocate(Engine_BinkDecoder decoder)
 	{
-		// Buffers sized EXACTLY to their planes. Image.SetData requires the byte count to
-		// match the image's own dimensions, so an over-sized chroma buffer is rejected and
-		// the texture silently stays black — which renders as a pure green picture, since
-		// zero chroma drives red and blue to the clamp and lifts green.
+		// Buffers sized exactly to their planes: Image.SetData requires the byte count to match
+		// the image's dimensions, and an over-sized chroma buffer is rejected silently.
 		int chromaWidth = (decoder.Width + 1) / 2;
 		int chromaHeight = (decoder.Height + 1) / 2;
 

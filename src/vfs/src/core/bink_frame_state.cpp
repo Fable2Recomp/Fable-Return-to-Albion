@@ -275,6 +275,39 @@ extern "C" void refii_bridge_note_bink_video_requested(uint8_t* base, uint32_t d
 ///
 /// Returns 0 when no movie is live, 1 while the guest still wants it, 2 once the guest
 /// has ended it.
+/// The destination rect the guest stated for the live movie, in its own 2D screen space —
+/// fullscreen vs embedded, stated at open, not inferred. `sub_82A41E30(bink, rect, z,
+/// rotation, ...)` stores it as four big-endian floats measured from the bink player:
+///   bink+8 x0, bink+12 y0, bink+16 x1, bink+20 y1 (bink+24 z, bink+28 rotation)
+/// and the draw `sub_82A41F10` builds its quad corners from those four. Returns 0 when no
+/// movie is live.
+uint32_t BinkMovieDestRect(uint8_t* base, float* out_x0, float* out_y0,
+                           float* out_x1, float* out_y1) {
+  if (base == nullptr) {
+    return 0;
+  }
+
+  const uint32_t player = g_bink_player.load(std::memory_order_relaxed);
+  if (player == 0) {
+    return 0;
+  }
+
+  const auto read_float = [base, player](uint32_t offset) {
+    uint32_t word = 0;
+    std::memcpy(&word, base + player + offset, sizeof(word));
+    word = __builtin_bswap32(word);
+    float value = 0.0f;
+    std::memcpy(&value, &word, sizeof(value));
+    return value;
+  };
+
+  if (out_x0 != nullptr) *out_x0 = read_float(8u);
+  if (out_y0 != nullptr) *out_y0 = read_float(12u);
+  if (out_x1 != nullptr) *out_x1 = read_float(16u);
+  if (out_y1 != nullptr) *out_y1 = read_float(20u);
+  return 1;
+}
+
 uint32_t BinkMovieState(uint8_t* base) {
   if (base == nullptr) {
     return 0;

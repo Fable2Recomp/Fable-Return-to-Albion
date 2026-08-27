@@ -122,4 +122,62 @@ public sealed class GdbMulti
 
         return string.Empty;
     }
+
+    /// <summary>
+    /// Every property visible on a record, inherited included (`sub_82A00990`): ancestors first, a
+    /// redefined name yielding the most derived value at its first position (`sub_82A00738` at
+    /// 0x82A00B90); the `parent` link is excluded.
+    /// </summary>
+    public IEnumerable<(uint Hash, GdbFieldType Type, uint Raw)> InheritedFields(GdbCursor start)
+    {
+        if (!start.Valid)
+        {
+            yield break;
+        }
+
+        // Root-most first: the guest fills its array back-to-front (0x82A00A98), then iterates forward.
+        var chain = new List<GdbCursor>();
+        var seen = new HashSet<uint>();
+        GdbCursor current = start;
+        for (int depth = 0; depth < 64 && current.Valid; depth++)
+        {
+            chain.Add(current);
+            if (!current.View.TryFindLocalRaw(
+                    current.Record, GdbView.HashParent, 6, out uint parent, out _) ||
+                parent == 0 || parent == GdbHash.Null ||
+                !seen.Add(parent) ||
+                !TryLookup(parent, out current))
+            {
+                break;
+            }
+        }
+
+        chain.Reverse();
+
+        var emitted = new HashSet<uint>();
+        foreach (GdbCursor at in chain)
+        {
+            foreach ((uint hash, GdbFieldType type, uint raw) in at.View.RawFields(at.Record))
+            {
+                if (hash == GdbView.HashParent || !emitted.Add(hash))
+                {
+                    continue;
+                }
+
+                // The deepest definition wins.
+                (GdbFieldType Type, uint Raw) value = (type, raw);
+                for (int i = chain.Count - 1; i > 0; i--)
+                {
+                    if (chain[i].View.TryFindLocalRaw(
+                            chain[i].Record, hash, -1, out uint over, out GdbFieldType overType))
+                    {
+                        value = (overType, over);
+                        break;
+                    }
+                }
+
+                yield return (hash, value.Type, value.Raw);
+            }
+        }
+    }
 }

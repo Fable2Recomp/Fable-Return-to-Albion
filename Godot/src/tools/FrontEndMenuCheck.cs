@@ -6,20 +6,10 @@ using Refii.Ui;
 namespace Refii.Launcher.Tools;
 
 /// <summary>
-/// Drives <see cref="Engine_FrontEndMenuView"/> from the keyboard, with no guest.
-///
-/// The layout and the navigation FEEL are the two things this exists to expose, and neither
-/// is checkable from a static screenshot of the running game. The slot table bows the column
-/// toward the highlight and fades the two end slots to nothing; the auto-repeat starts at a
-/// quarter second and accelerates to 0.14. Both are read out of shipped Lua rather than
-/// chosen, so both are things we can get subtly wrong and not notice — a fixed repeat rate
-/// and a straight column both look plausible in a still.
-///
-/// It subclasses <see cref="Engine_UiPresentationHost"/> for the banks, the fonts and the
-/// texture cache. That is the whole reason: mounting the game data, finding
-/// <c>language/en-uk/fonts</c> and registering the <c>game://</c> texture resolver are the
-/// same work whether a screen or a menu is being stood up, and doing it again here would be
-/// the second implementation the engine rules forbid.
+/// Drives <see cref="Engine_FrontEndMenuView"/> from the keyboard, with no guest, to expose
+/// layout and navigation feel: the slot table bows the column toward the highlight and fades
+/// the two end slots out; the auto-repeat starts at 0.25s and accelerates to 0.14.
+/// Subclasses <see cref="Engine_UiPresentationHost"/> for the banks, fonts and texture cache.
 ///
 /// Keys:
 /// <list type="bullet">
@@ -32,14 +22,12 @@ namespace Refii.Launcher.Tools;
 /// under the highlight</item>
 /// </list>
 ///
-/// <c>REFII_MENU_SCREEN</c> names a presentation to stand up behind the menu — set it to
-/// <c>frontendmainmenu</c> to see the rows against the real front end and to have the row
-/// frame art AND the boy/girl cards cloned out of it. Unset, the view draws labels only and
-/// the card draws stand-ins, which is the honest picture of what they can source on their own.
+/// <c>REFII_MENU_SCREEN</c> names a presentation to stand up behind the menu (e.g.
+/// <c>frontendmainmenu</c>), which is also where the row frame art and the boy/girl cards are
+/// cloned from; unset, the view draws labels only and the card draws stand-ins.
 ///
 /// <c>REFII_MENU_OPEN=card</c> opens the gender card straight away and
-/// <c>REFII_MENU_SHOT=&lt;path&gt;</c> writes the viewport and quits, so the panel's layout can be
-/// looked at without a guest and without a human at the keyboard. The path must be outside
+/// <c>REFII_MENU_SHOT=&lt;path&gt;</c> writes the viewport and quits. The path must be outside
 /// the repository — a render of the game's own card art is derived data.
 /// </summary>
 public partial class FrontEndMenuCheck : Engine_UiPresentationHost
@@ -52,9 +40,8 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 
 	public override void _Ready()
 	{
-		// The base mounts the banks and calls OnLoaded on success. On failure it reports and
-		// returns, and the menu still has something to show — the layout does not need game
-		// data, only the labels do — so the harness starts either way.
+		// The base mounts the banks and calls OnLoaded on success; on failure it just reports,
+		// and the harness starts anyway since only the labels need game data.
 		base._Ready();
 		Start();
 	}
@@ -78,20 +65,16 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 				? $"[menu-check] '{backdrop}' is up but carries no 'Buttons' component group — rows will be text only"
 				: $"[menu-check] cloning row art from '{template.Name}' under {backdrop}");
 
-			// THE SHIPPED ROWS GO AWAY, as they do in the game — GameUi.AdoptMenu hides this
-			// same group after every rebuild. Without it the harness draws two menus: ours, and
-			// the twelve components the presentation ships with their authored placeholder
-			// labels ("DEFAULT_TEXT_ID") sitting across ours. That is a harness that disagrees
-			// with the thing it exists to check.
+			// The shipped rows go away, as GameUi.AdoptMenu hides this group after every
+			// rebuild; otherwise the harness draws two menus.
 			if (Engine_UiTheme.FindByName(Built, Engine_FrontEndMenuView.RowGroupName)
 				is Node3D shipped)
 			{
 				shipped.Visible = false;
 			}
 
-			// WHERE THE FILE PUTS THE MENU, in depth. The view anchors itself at z 0, which is
-			// a number nobody read — and it decides whether the rows are drawn over or under
-			// the gender card, whose own poses reach z -134.
+			// Where the file puts the menu in depth: the view anchors at z 0, which decides
+			// whether the rows draw over or under the gender card (its poses reach z -134).
 			for (Node? n = template; n is Node3D s; n = n.GetParent())
 			{
 				GD.Print($"[menu-check]   menu chain {s.Name} z={s.Position.Z:F1} worldZ={s.GlobalPosition.Z:F1}");
@@ -103,15 +86,251 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			Engine_UiSceneBuilder.ActivateCamera(this);
 		}
 
-		_menu = BuildMenu();
-		_view = new Engine_FrontEndMenuView
+		// The document's shape: which subtrees are chrome, which are content, where the text
+		// lives. Depth-limited.
+		if (System.Environment.GetEnvironmentVariable("REFII_MENU_DUMP_DOC") is { } docName &&
+			docName.Length > 0)
 		{
-			Name = "FrontEndMenuView",
-			Theme = Theme,
-			RowTemplate = template,
-		};
-		AddChild(_view);
-		_view.Bind(_menu);
+			Engine_UiScreen? doc = DocumentFor(docName);
+			if (doc is null)
+			{
+				GD.Print($"[menu-check] no document for '{docName}'");
+			}
+			else
+			{
+				// The animation table, proving the section parse against a real file.
+				GD.Print($"[doc] {doc.Document.Animations.Length} animation track(s), " +
+					$"section {doc.Document.AnimationSectionSize} bytes, counts " +
+					string.Join(",", doc.Document.MemoryCounts));
+
+				// The first track's target element attribute table, to identify the animation
+				// id space by intersection.
+				if (doc.Document.Animations.Length > 0)
+				{
+					BgfAnimation first = doc.Document.Animations[0];
+					if (first.ElementOrdinal >= 0 && first.ElementOrdinal < doc.Nodes.Length)
+					{
+						var ids = new System.Collections.Generic.List<string>();
+						foreach (BgfAttribute attr in doc.Nodes[first.ElementOrdinal]
+							.Element.Attributes)
+						{
+							ids.Add($"0x{attr.Id:X}:{attr.Type}" +
+								(attr.Id == first.AttributeId ? "<==MATCH" : ""));
+						}
+
+						GD.Print($"[doc]   target element attrs: {string.Join(" ", ids)}");
+					}
+				}
+				int shown = 0;
+				foreach (BgfAnimation animation in doc.Document.Animations)
+				{
+					if (++shown > 8)
+					{
+						break;
+					}
+
+					string element = animation.ElementOrdinal >= 0 &&
+						animation.ElementOrdinal < doc.Nodes.Length
+							? doc.Nodes[animation.ElementOrdinal].Name
+							: $"#{animation.ElementOrdinal}";
+					GD.Print($"[doc]   anim on '{element}' attr=0x{animation.AttributeId:X} " +
+						$"keys={animation.Keys.Length} active={animation.ActiveOnLoad} " +
+						$"dyn={animation.Dynamic}" +
+						(animation.Keys.Length == 0
+							? string.Empty
+							: $" t[{animation.Keys[0].Time:0}..{animation.Keys[^1].Time:0}] " +
+							  $"v[{animation.Keys[0].Value:0.##}..{animation.Keys[^1].Value:0.##}]"));
+				}
+				void Walk(UiNode node, string indent, int depth)
+				{
+					string extra = node.Quad is not null
+						? $" QUAD tex='{node.Quad.TexturePath}'"
+						: node.Text is not null ? $" TEXT '{node.Text.Tag}'" : string.Empty;
+					GD.Print($"[doc] {indent}{node.Name} [{node.Type}] ord={node.Ordinal} " +
+						$"pos=({node.PositionX:0.#},{node.PositionY:0.#},{node.PositionZ:0.#}) " +
+						$"scale=({node.ScaleX:0.##},{node.ScaleY:0.##}){extra}");
+					if (depth <= 0)
+					{
+						if (node.Children.Count > 0)
+						{
+							GD.Print($"[doc] {indent}  ... {node.Children.Count} child(ren)");
+						}
+						return;
+					}
+
+					foreach (UiNode child in node.Children)
+					{
+						Walk(child, indent + "  ", depth - 1);
+					}
+				}
+
+				foreach (UiNode root in doc.Nodes)
+				{
+					if (root.Parent is null)
+					{
+						Walk(root, string.Empty, 14);
+					}
+				}
+			}
+		}
+
+		// The row's own depths, for the label-behind-the-face defect: everything in a row is
+		// alpha-blended with no depth write, so cover order is decided purely by Z, and the
+		// view parks its label at z 0.
+		if (template is not null &&
+			System.Environment.GetEnvironmentVariable("REFII_MENU_DUMP_ROWS") == "1")
+		{
+			void Depths(Node node, string indent)
+			{
+				if (node is Node3D spatial)
+				{
+					string type = node.HasMeta("element_type")
+						? (string)node.GetMeta("element_type")
+						: node.GetType().Name;
+					GD.Print($"[menu-check] row-depth {indent}{node.Name} [{type}] " +
+						$"z={spatial.Position.Z:F2} pos=({spatial.Position.X:F1},{spatial.Position.Y:F1})");
+				}
+
+				foreach (Node child in node.GetChildren())
+				{
+					Depths(child, indent + "  ");
+				}
+			}
+
+			Depths(template, string.Empty);
+		}
+
+		// REFII_MENU_PAUSE=1 constructs the view the way GameUi.AdoptPauseMenu does — the
+		// pattern book's theme and template, the BuildHero model, the authored anchor and
+		// cursor pose, the half-slab z lift — instead of the harness's own way (host theme,
+		// template out of the built tree, z 0). The two paths should be equivalent.
+		if (System.Environment.GetEnvironmentVariable("REFII_MENU_PAUSE") == "1" &&
+			backdrop.Length > 0)
+		{
+			Engine_UiTheme? book = PatternBookFor(backdrop);
+			Node3D? pattern = book?.ArtSourceNode(Engine_FrontEndMenuView.RowGroupName);
+			Node3D? bookTemplate = pattern is null
+				? null
+				: Engine_FrontEndMenuView.RowTemplateIn(pattern);
+
+			var anchor = Vector2.Zero;
+			if (pattern is not null)
+			{
+				Vector3 origin = Engine_UiTheme.CanvasTransform(pattern).Origin;
+				anchor = new Vector2(origin.X, origin.Y);
+			}
+
+			Transform3D? cursorPose = null;
+			if (book?.ArtSourceNode("MenuHighlight") is { } highlightSource)
+			{
+				Transform3D authored = Engine_UiTheme.CanvasTransform(highlightSource);
+				authored.Origin -= new Vector3(anchor.X, anchor.Y, 0f);
+				cursorPose = authored;
+			}
+
+			_menu = Engine_PauseMenu.BuildHero();
+			_view = new Engine_FrontEndMenuView
+			{
+				Name = "PauseMenu",
+				Theme = book,
+				RowTemplate = bookTemplate,
+				CursorTemplate = book?.Art("MenuHighlight"),
+				CursorPose = cursorPose,
+			};
+			AddChild(_view);
+			_view.Bind(_menu);
+			_view.Position = new Vector3(anchor.X, anchor.Y, 500f);
+
+			// The pool's mask binding, for the owned view's clip.
+			if (DocumentFor(backdrop) is { } maskDoc &&
+				Engine_ExpandableMenuItems.FindGroup(maskDoc) is { } maskPool)
+			{
+				int mask = maskPool.Ordinal < maskDoc.MaskByOrdinal.Length
+					? maskDoc.MaskByOrdinal[maskPool.Ordinal]
+					: -1;
+				if (mask >= 0 && mask < maskDoc.Nodes.Length)
+				{
+					UiNode m = maskDoc.Nodes[mask];
+					float mx = 0f, my = 0f;
+					for (UiNode? at = m; at is not null; at = at.Parent)
+					{
+						mx += at.PositionX;
+						my += at.PositionY;
+					}
+
+					GD.Print($"[menu-check] pool mask: '{m.Name}' ord={mask} " +
+						$"centre=({mx:0},{my:0}) size=({100f * m.ScaleX:0}x{100f * m.ScaleY:0})");
+				}
+				else
+				{
+					GD.Print("[menu-check] pool mask: NONE");
+				}
+			}
+
+			GD.Print($"[menu-check] PAUSE MODE: book={(book is null ? "NULL" : "built")} " +
+				$"template={(bookTemplate is null ? "NULL" : "cloned")} anchor=({anchor.X},{anchor.Y}) " +
+				$"cursor={(cursorPose is null ? "fallback" : "authored")} " +
+				$"fonts={(book?.Fonts is null ? "MISSING" : "bound")} " +
+				$"strings={(book?.Strings is null ? "MISSING" : "bound")}");
+
+			// REFII_MENU_BOOK=1: the owned pause book instead of the mirrored backdrop. No live
+			// values here, so text elements keep their authored placeholders.
+			if (System.Environment.GetEnvironmentVariable("REFII_MENU_BOOK") == "1")
+			{
+				if (Built is not null)
+				{
+					Built.Visible = false;
+				}
+
+				var pauseBook = new Engine_UiOwnedBook
+				{
+					Name = "PauseBook",
+					Book = book,
+					Document = DocumentFor(backdrop),
+					Position = new Vector3(0f, 0f, 400f),
+				};
+				pauseBook.Build();
+				AddChild(pauseBook);
+
+				// Live stand-ins through the real seam: ordinals from the document, as the game
+				// feeds it.
+				if (DocumentFor(backdrop) is { } doc)
+				{
+					var texts = new string?[doc.Nodes.Length];
+					void Put(string path, string value)
+					{
+						if (Engine_UiScreenPanel.Resolve(doc, path) is { } node)
+						{
+							texts[node.Ordinal] = value;
+						}
+					}
+
+					Put("Contents.CurrentQuest", "The Journey Begins");
+					Put("Contents.Time", "01:34 am");
+					Put("Contents.Renown", "Renown: 250");
+					Put("experienceorbs.Strength.valueText", "1234");
+					Put("experienceorbs.Skill.valueText", "567");
+					Put("experienceorbs.Will.valueText", "89");
+					Put("experienceorbs.General.valueText", "999");
+					Put("Legend.CurrentObjective", "Find the abbot in Oakfield.");
+					Put("Money.Text", "2000138");
+					Put("Money.Back.Select", "Back");
+					pauseBook.SetLive(texts, null, null);
+				}
+			}
+		}
+		else
+		{
+			_menu = BuildMenu();
+			_view = new Engine_FrontEndMenuView
+			{
+				Name = "FrontEndMenuView",
+				Theme = Theme,
+				RowTemplate = template,
+			};
+			AddChild(_view);
+			_view.Bind(_menu);
+		}
 
 		BuildCardChoice();
 		BuildSaveCards();
@@ -119,11 +338,9 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 		GD.Print(Theme?.Describe() ?? "[menu-check] no theme — the host never loaded game data");
 		GD.Print(_view.Describe());
 
-		// REFII_MENU_OPEN=card puts the gender card up immediately, so a screenshot run does
-		// not have to synthesise a keypress to reach it. `card-boy` and `card-girl` then move
-		// the choice THROUGH THE VIEW'S OWN NAVIGATION rather than through a setter — the three
-		// poses are the thing being checked, and a capture that placed them directly would pass
-		// whether or not left and right reach them.
+		// REFII_MENU_OPEN=card puts the gender card up immediately. `card-boy`/`card-girl` move
+		// the choice through the view's own navigation rather than a setter, so the capture
+		// also exercises left and right.
 		string open = System.Environment.GetEnvironmentVariable("REFII_MENU_OPEN") ?? string.Empty;
 		if (open.StartsWith("card", System.StringComparison.Ordinal))
 		{
@@ -145,21 +362,17 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 		}
 		else if (open == "saves")
 		{
-			// The fan, straight away. `REFII_MENU_SAVES=<n>` decides how many cards are on it —
-			// see BuildSaveCards for why a count is the whole of what a stand-in save needs.
+			// The fan, straight away. `REFII_MENU_SAVES=<n>` decides how many cards are on it.
 			OpenSaveCards();
 
-			// STEPPED THROUGH THE VIEW'S OWN NAVIGATION rather than set, for the reason the
-			// gender card's capture path gives: the raise table is the thing being checked, and a
-			// capture that placed the cursor directly would pass whether or not left and right
-			// reach it.
+			// Stepped through the view's own navigation rather than set, so the capture also
+			// exercises left and right.
 			if (int.TryParse(System.Environment.GetEnvironmentVariable("REFII_MENU_SAVE_NAV"),
 					out int right))
 			{
 				for (int i = 0; i < right; ++i)
 				{
-					// A whole second apart, so the auto-repeat interval has always elapsed and
-					// each call is one move rather than a swallowed repeat.
+					// A whole second apart, so each call is one move, not a swallowed repeat.
 					_saveCards?.Navigate(1, 1.0);
 					_saveCards?.Navigate(0, 1.0);
 				}
@@ -169,13 +382,9 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 		}
 
 		// REFII_MENU_NAV=<n> steps the highlight down n times before the capture, so a still can
-		// catch the column MID-SLIDE. The capture waits two frames, which is ~33ms into a 150ms
-		// tween — far enough in to see rows between slots, and the only way a screenshot can say
-		// anything about an animation at all.
-		// REFII_MENU_BACKDROP=0 keeps the presentation mounted as the ART SOURCE and stops it
-		// being the picture. With no guest, nothing hides the six pages the screen is not on, so
-		// the backdrop draws the load-game cards, the friends page and a full-screen dialog over
-		// whatever is being looked at.
+		// catch the column mid-slide (the capture waits two frames, ~33ms into a 150ms tween).
+		// REFII_MENU_BACKDROP=0 keeps the presentation mounted as the art source and stops it
+		// being the picture: with no guest nothing hides the pages the screen is not on.
 		if (System.Environment.GetEnvironmentVariable("REFII_MENU_BACKDROP") == "0" &&
 			Built is not null)
 		{
@@ -186,17 +395,15 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 		{
 			for (int i = 0; i < steps; ++i)
 			{
-				// A whole second per step, so the model's auto-repeat interval has always
-				// elapsed and each call is one move rather than a swallowed repeat.
+				// A whole second per step, so each call is one move, not a swallowed repeat.
 				_view.Navigate(1, 1.0);
 			}
 
 			GD.Print($"[menu-check] stepped down {steps}x — {_view.Describe()}");
 		}
 
-		// REFII_MENU_ACTIVATE=1 presses A after the steps, so a capture can catch an EXPANDED
-		// submenu. The child rows are the only place the red tab face and the child indent are
-		// visible at all, and neither can be checked from a screenshot of the root list.
+		// REFII_MENU_ACTIVATE=1 presses A after the steps, so a capture can catch an expanded
+		// submenu — the only place the red tab face and the child indent are visible.
 		if (System.Environment.GetEnvironmentVariable("REFII_MENU_ACTIVATE") == "1")
 		{
 			string? dispatched = _view.Activate();
@@ -207,27 +414,22 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 	}
 
 	/// <summary>
-	/// Stands the gender card up beside the menu, from whatever the backdrop carries.
-	///
-	/// Sourced the same way the game sources it — clones out of the built `choosecard` group —
-	/// so a stand-in here means the same thing it means in the game: this presentation does not
-	/// carry the art, rather than the panel being broken.
+	/// Stands the gender card up beside the menu, sourced as the game sources it: clones out of
+	/// the built `choosecard` group, so a stand-in means the presentation carries no art.
 	/// </summary>
 	private void BuildCardChoice()
 	{
 		Node3D? group = Built is null ? null : Engine_FrontEndCardChoice.FindGroup(Built);
 
-		// The same factory the game uses, deliberately — see its remarks. A harness that built
-		// the panel its own way would be evidence about the harness.
+		// The same factory the game uses; a harness that built the panel its own way would be
+		// evidence about the harness.
 		_cards = Engine_FrontEndCardChoice.FromPresentation(group);
 		AddChild(_cards);
 		GD.Print($"[menu-check] {_cards.Describe()}" +
 			$"{(group is null ? " (no 'choosecard' group in the backdrop)" : string.Empty)}");
 
-		// EACH FACE AND ITS DEPTH. A card is two quads at one place — a portrait and a
-		// `cardback` — and which of them the player sees is decided by z, not by anything this
-		// view sets. Reading that off the screenshot is guessing at a 0.1-unit difference; the
-		// numbers say it outright.
+		// Each face and its depth: a card is two quads at one place (a portrait and a
+		// `cardback`), and which one the player sees is decided by z.
 		DumpFaces(_cards.BoyTemplate, "boy");
 		DumpFaces(_cards.GirlTemplate, "girl");
 	}
@@ -243,15 +445,10 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 		{
 			if (node is Node3D spatial)
 			{
-				// LOCAL z says how the artist stacked the two faces; GLOBAL z says which one
-				// the camera actually sees. They disagree the moment anything up the chain
-				// turns the card over, and a card flipped 180 degrees about Y puts its front
-				// face behind its back — which looks exactly like a depth-sort fault and is
-				// not one.
-				// Reads the quad's opacity through the builder rather than casting: a card face
-				// is a shader-driven quad now, and the old StandardMaterial3D cast reported an
-				// empty string for every one of them — which read as "this node has no
-				// material" on exactly the nodes the check exists to describe.
+				// Local z says how the artist stacked the two faces; global z says which one the
+				// camera sees. They disagree once anything up the chain turns the card over.
+				// Opacity comes through the builder, not a StandardMaterial3D cast: a card face
+				// is a shader-driven quad.
 				string material = spatial is MeshInstance3D m
 					? $"alpha={Engine_UiSceneBuilder.QuadOpacity(m):F2} " +
 					  $"prio={m.MaterialOverride?.RenderPriority ?? 0} vis={m.Visible}"
@@ -273,10 +470,7 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 	}
 
 	/// <summary>
-	/// Stands the Load Game fan up beside the menu, from whatever the backdrop carries.
-	///
-	/// Same factory the game uses, for the same reason the gender card's is shared: a harness
-	/// that built the panel its own way would be evidence about the harness.
+	/// Stands the Load Game fan up beside the menu, through the same factory the game uses.
 	/// </summary>
 	private void BuildSaveCards()
 	{
@@ -291,18 +485,10 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 	}
 
 	/// <summary>
-	/// Puts the fan up with <c>REFII_MENU_SAVES</c> stand-in saves, three by default.
-	///
-	/// THE SAVES ARE STAND-INS AND SAY SO. With no guest there is nothing to enumerate — the
-	/// count comes from a live `XamContentCreateEnumerator` on the guest's side, which is a call
-	/// rather than a read — so the descriptions are numbered placeholders. What the harness is
-	/// for is the LAYOUT: the fan, the raise, and whether the description text lands under it,
-	/// and none of those needs a real save behind it.
-	///
-	/// THE GAME DOES NOT OPEN IT THIS WAY, and that difference is the harness's, not a shortcut.
-	/// There, "Load Game" dispatches to the guest, the guest enumerates and enters substate 5,
-	/// and only then does the fan go up — because the enumeration is the guest's to do. Here
-	/// there is no substate 5 to wait for, so the keypress stands in for it.
+	/// Puts the fan up with <c>REFII_MENU_SAVES</c> stand-in saves, three by default. The saves
+	/// are placeholders: the real count comes from a live `XamContentCreateEnumerator` on the
+	/// guest's side. In the game "Load Game" dispatches to the guest, which enumerates and
+	/// enters substate 5 before the fan goes up; here the keypress stands in for that.
 	/// </summary>
 	private void OpenSaveCards()
 	{
@@ -329,10 +515,9 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			_view.Visible = false;
 		}
 
-		// THE BACKDROP GOES AWAY WHILE THE FAN IS UP, for exactly the reason OpenCards gives:
-		// with no guest nothing hides the pages the presentation is not on, and the cards — which
-		// the file parks at z -10 through -100 — end up behind the dialog box and the friends
-		// page. The presentation stays mounted as the ART SOURCE and stops being the picture.
+		// The backdrop goes away while the fan is up: with no guest nothing hides the pages the
+		// presentation is not on, and the cards (z -10 through -100) end up behind them. The
+		// presentation stays mounted as the art source.
 		if (Built is not null)
 		{
 			Built.Visible = false;
@@ -370,24 +555,15 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 		_cards.Reset();
 		_cards.Visible = true;
 
-		// The rows down while the card is up, as the game does it — see GameUi's remarks for
-		// why that is ours rather than the original's.
+		// The rows down while the card is up, as the game does it.
 		if (_view is not null)
 		{
 			_view.Visible = false;
 		}
 
-		// THE BACKDROP GOES AWAY WHILE THE CARD IS UP, and that is not cheating.
-		//
-		// With no guest, nothing hides the six pages the presentation is NOT on, so the
-		// harness draws the load-game cards, the friends page and a full-screen dialog box all
-		// at once — and the gender card, which the file parks at z -4 and -134, ends up behind
-		// every one of them. In the game that never happens: the guest's globalactive hides the
-		// other pages, so the panel is the only thing there.
-		//
-		// So the presentation stays mounted as the ART SOURCE and stops being the picture. That
-		// is the same relationship the game has with it once the card is up, and it is the only
-		// way this harness can answer the question it exists for — where the cards sit.
+		// The backdrop goes away while the card is up: with no guest nothing hides the pages the
+		// presentation is not on (the guest's globalactive does that in game), and the gender
+		// card sits at z -4 and -134, behind them. It stays mounted as the art source.
 		if (Built is not null)
 		{
 			Built.Visible = false;
@@ -416,11 +592,8 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 	}
 
 	/// <summary>
-	/// Writes the viewport to <c>REFII_MENU_SHOT</c> and quits.
-	///
-	/// The layout is the whole point of this harness and it cannot be asserted on: the slot
-	/// bow, the card poses and the tint are all things that read correctly in a log and wrongly
-	/// on screen. A PNG outside the repository is the only check that catches those.
+	/// Writes the viewport to <c>REFII_MENU_SHOT</c> and quits. The slot bow, card poses and
+	/// tint cannot be asserted on from a log.
 	/// </summary>
 	private async void CaptureIfRequested()
 	{
@@ -443,20 +616,16 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 	/// <summary>Stands in for the guest's sign-in state. Toggled with 2.</summary>
 	private bool _signedIn;
 
-	/// <summary>Stands in for storage. The model takes the save count from the HOST, not the guest.</summary>
+	/// <summary>Stands in for storage; the model takes the save count from the host.</summary>
 	private int _saveCount;
 
 	/// <summary>Installed languages. "Language" spawns only above one — toggled with 4.</summary>
 	private uint _languageCount = 1;
 
 	/// <summary>
-	/// The root menu, then availability applied BY HAND through the model's own API.
-	///
-	/// The starting state is the interesting one rather than the default: signed out with no
-	/// saves, so "Load Game" is gone, and one language installed, so "Language" is gone too.
-	/// That is what a first boot looks like, and it exercises the part of the model that keeps
-	/// the highlight on the ENTRY rather than on the index — press 2 to sign in while the
-	/// highlight is below the gap and the selection must not shift.
+	/// The root menu, with availability applied through the model's own API. Starts signed out
+	/// with no saves and one language, so "Load Game" and "Language" are absent — which
+	/// exercises the model keeping the highlight on the entry rather than on the index.
 	/// </summary>
 	private Engine_FrontEndMenu BuildMenu()
 	{
@@ -467,51 +636,38 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 	}
 
 	/// <summary>
-	/// A screen the original never had, to prove the custom-screen path actually works.
-	///
-	/// This is the thing the theme exists for, and it is here rather than in the game because
-	/// a demonstration entry does not belong in the shipped menu. What it demonstrates is
-	/// three claims that are otherwise just API:
-	///
+	/// A screen the original never had, exercising the custom-screen path:
 	/// <list type="bullet">
-	/// <item><b>A host-only entry never reaches the guest.</b> <c>HostOnly</c> makes
-	/// <see cref="Engine_FrontEndMenu.Activate"/> return null, so the strcmp chain in the
-	/// guest's dispatcher — which has never heard of "Extras" — is never given the chance to
-	/// fall through it.</item>
-	/// <item><b>A submenu REPLACES the list</b> rather than expanding under it, and B returns
-	/// to exactly where the player was. Compare with "Subtitles", two rows up, which expands
-	/// in place: both behaviours on one screen, which is the only way to see that they differ.
-	/// </item>
-	/// <item><b>Literal labels work.</b> These strings are not in <c>book.babel</c> and never
-	/// will be. The tag falls through the lookup verbatim, which is the engine's own
-	/// behaviour, so a custom entry needs no localisation to render — and gets the game's
-	/// fonts, colour and slot layout regardless, because those come from the theme.</item>
+	/// <item><c>HostOnly</c> makes <see cref="Engine_FrontEndMenu.Activate"/> return null, so
+	/// the entry never reaches the guest's dispatcher.</item>
+	/// <item>A submenu replaces the list rather than expanding under it, and B returns where
+	/// the player was; "Subtitles" two rows up expands in place instead.</item>
+	/// <item>A label not in <c>book.babel</c> falls through the lookup verbatim, and still gets
+	/// the theme's fonts, colour and slot layout.</item>
 	/// </list>
 	/// </summary>
-	private static Engine_FrontEndMenu.Item BuildCustomScreen()
+	private static Engine_UiExpandableMenu.Item BuildCustomScreen()
 	{
-		var extras = new Engine_FrontEndMenu.Item("Extras", "Extras") { HostOnly = true };
-
-		var submenu = new Engine_FrontEndMenu();
-		submenu.Add(new Engine_FrontEndMenu.Item("Renderer", "Renderer"));
-		submenu.Add(new Engine_FrontEndMenu.Item("Mods", "Mods"));
-		submenu.Add(new Engine_FrontEndMenu.Item("Multiplayer", "Multiplayer"));
-		extras.Submenu = submenu;
+		// Children, not a second menu: the shipped model nests through children and `IsOpen`
+		// at any depth.
+		var extras = new Engine_UiExpandableMenu.Item("Extras", "Extras") { HostOnly = true };
+		foreach (string name in new[] { "Renderer", "Mods", "Multiplayer" })
+		{
+			var child = new Engine_UiExpandableMenu.Item(name, name) { Parent = extras };
+			extras.Children.Add(child);
+		}
 
 		return extras;
 	}
 
 	/// <summary>
-	/// Feeds the model a synthetic <see cref="HostBridge.FrontEndModel"/>.
-	///
-	/// Constructing the guest's own record rather than poking <c>Item.Available</c> is what
-	/// makes this a test of the real path: <c>ApplyAvailability</c> is the only public entry
-	/// that both rules on the guest's spawn conditions AND rebuilds the visible list, so
-	/// setting the flags directly would exercise neither.
+	/// Feeds the model a synthetic <see cref="Engine_UiModel.FrontEndModel"/> rather than poking
+	/// <c>Item.Available</c>: <c>ApplyAvailability</c> is the only entry that both rules on the
+	/// guest's spawn conditions and rebuilds the visible list.
 	/// </summary>
 	private void ApplyAvailability(Engine_FrontEndMenu menu) =>
 		menu.ApplyAvailability(
-			new HostBridge.FrontEndModel(
+			new Engine_UiModel.FrontEndModel(
 				SignedIn: _signedIn,
 				UserIndex: 0,
 				LanguageCount: _languageCount,
@@ -525,7 +681,7 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 				EnumeratedSaves: (uint)_saveCount),
 			// Limit 6, which is what `sub_82378618` stores over `dword_83319620` before the menu
 			// can dispatch — not the 150 that sits in the image.
-			new HostBridge.SaveState(_signedIn, _saveCount, Engine_FrontEndMenu.DefaultSaveLimit));
+			new Engine_UiModel.SaveState(_signedIn, _saveCount, Engine_FrontEndMenu.DefaultSaveLimit));
 
 	public override void _Process(double delta)
 	{
@@ -534,9 +690,7 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			return;
 		}
 
-		// The card owns the input while it is up, exactly as it does in the game — the harness
-		// and GameUi must not disagree about that, or the thing being eyeballed here is not
-		// the thing that ships.
+		// The card owns the input while it is up, as it does in the game.
 		if (_cards is { Visible: true })
 		{
 			int sideways = 0;
@@ -557,10 +711,9 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			return;
 		}
 
-		// The fan owns the input while it is up, for the same reason the gender card does. It
-		// takes a DELTA as well as a direction, unlike the card: its left and right are relative
-		// — the cursor walks up to six saves — so it auto-repeats on the guest's own curve, where
-		// the card's two sides are absolute and edge-triggered.
+		// The fan owns the input while it is up. It takes a delta as well as a direction,
+		// unlike the card: its left and right are relative and auto-repeat on the guest's
+		// curve, where the card's two sides are absolute and edge-triggered.
 		if (_saveCards is { Visible: true })
 		{
 			int sideways = 0;
@@ -581,9 +734,8 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			return;
 		}
 
-		// The direction is sampled every frame and handed to the model, which owns the whole
-		// repeat curve. Reading it here as discrete key events instead would put the timing in
-		// the harness, which is exactly the value we are trying to look at.
+		// Sampled every frame and handed to the model, which owns the repeat curve; discrete
+		// key events would put the timing in the harness instead.
 		int direction = 0;
 		if (Input.IsKeyPressed(Key.Down))
 		{
@@ -697,11 +849,9 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 	}
 
 	/// <summary>
-	/// Flips one root entry's availability, in the order <c>BuildRoot</c> spawns them.
-	///
-	/// Two of the four go through the guest's CONDITION rather than through the entry —
-	/// "Load Game" needs a sign-in and a save, "Language" needs a second language — because
-	/// that is how the model decides them and toggling the flag underneath would not test it.
+	/// Flips one root entry's availability, in the order <c>BuildRoot</c> spawns them. Two go
+	/// through the guest's condition rather than the entry: "Load Game" needs a sign-in and a
+	/// save, "Language" needs a second language.
 	/// </summary>
 	private void Toggle(int index)
 	{

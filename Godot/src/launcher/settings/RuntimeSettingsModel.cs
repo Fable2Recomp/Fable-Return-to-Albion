@@ -142,7 +142,7 @@ public sealed class RuntimeSettingsModel
         name is "resolution" or "video_mode_width" or "video_mode_height";
 
     private static bool IsPrimaryBackendSelector(RuntimeCVarDefinition definition) =>
-        definition.Name is "renderer_backend" or "vfs_loose_asset_backend";
+        definition.Name is "renderer_backend";
 
     public static string FormatDisplayName(RuntimeCVarDefinition definition)
     {

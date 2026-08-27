@@ -117,6 +117,11 @@ public partial class Engine_GameAssets : Node
 
 			previous?.Dispose();
 
+			if (mounted is not null)
+			{
+				// The guest's asset reader is bound in EnsureTextureLoader (main thread, deferred).
+			}
+
 			int count = mounted?.FileCount ?? 0;
 			if (mounted is null)
 			{
@@ -147,9 +152,18 @@ public partial class Engine_GameAssets : Node
 		Refii.Models.Engine_BnkMeshLoader.SetResolver(ReadAllBytes);
 		Refii.Models.Engine_BnkMeshLoader.SetExistsProbe(p => TryGetFile(p, out _));
 
-		// The locomotion state machine is READ from the player's own gamescripts bank rather
-		// than transcribed into this repo, so it needs the mount before it can answer anything.
+		// Read from the player's gamescripts bank, never transcribed into the repo.
 		Refii.Animations.Engine_LocomotionStates.SetResolver(ReadAllBytes);
+
+		// The game's GDB for the owned detail pages; bound here AND in addons/bnk_mount.
+		Refii.Gdb.Engine_GameGdb.SetResolver(ReadAllBytes);
+
+		// The guest reads through this same mount.
+		Refii.Host.HostBridge.SetAssetReader(ReadAllBytes, FileSize);
+
+		// Guest texture requests carry a 32-bit hash and no path; the index is a view of this mount.
+		Refii.Bnk.AssetHashIndex.Build(EnumerateAllFiles());
+		Refii.Host.HostBridge.SetAssetNameResolver(Refii.Bnk.AssetHashIndex.PathForHash);
 		if (_meshLoader is null)
 		{
 			_meshLoader = new Refii.Models.Engine_BnkMeshLoader();
@@ -189,15 +203,7 @@ public partial class Engine_GameAssets : Node
 			ResourceLoader.AddResourceFormatLoader(_terrainMaterialLoader);
 		}
 
-		// EVERYTHING BELOW WAS REGISTERED ONLY BY THE EDITOR PLUGIN, so the running game had
-		// none of it. That is why a level built with correct terrain and nothing standing on
-		// it: Engine_PropModelIndex had no model source, so its index never built and all 2748
-		// of BWSSlums's placements resolved to nothing (instances=0, unresolved=2335,
-		// nomodel=413). The entity index was empty the same way — 7 creatures, 0 placed.
-		//
-		// The two lists are the same list and have to stay that way. addons/bnk_mount's
-		// EnsureLoaders is the other copy; anything added there belongs here too, and the
-		// failure mode is silent — the game renders, just emptier than the editor.
+		// Mirrors addons/bnk_mount's EnsureLoaders; a missing binding fails silently.
 		Refii.Audio.Engine_BnkAudioLoader.SetResolver(ReadAllBytes);
 		Refii.Gdb.Engine_BnkGdbLoader.SetResolver(ReadAllBytes);
 		Refii.Level.Engine_Clouds.SetTexturePathSource(EnumerateTexturePaths);
@@ -218,10 +224,6 @@ public partial class Engine_GameAssets : Node
 			ResourceLoader.AddResourceFormatLoader(_fxLoader);
 		}
 
-		// Audio was the last instance of the bug the comment above describes: the resolver
-		// was set but the loader never registered here, only in addons/bnk_mount. So a sound
-		// could be opened in the Godot editor and nowhere else — not in the editor we package
-		// outside Godot, and not by the running game. One registration, three contexts.
 		if (_audioLoader is null)
 		{
 			_audioLoader = new Refii.Audio.Engine_BnkAudioLoader();
@@ -284,10 +286,7 @@ public partial class Engine_GameAssets : Node
 		}
 	}
 
-	/// <summary>
-	/// Paths that came out of a STREAMING bank, which is what marks a model as one the game
-	/// pages in rather than one that ships resident.
-	/// </summary>
+	/// <summary>Paths from a streaming bank: models the game pages in rather than ships resident.</summary>
 	private IEnumerable<string> EnumerateStreamingHints()
 	{
 		BnkFileSystem? fs = Snapshot();
@@ -305,34 +304,14 @@ public partial class Engine_GameAssets : Node
 		}
 	}
 
-	/// <summary>
-	/// Builds the region the GUEST named, through the SAME construction path the editor
-	/// uses — <see cref="Refii.Level.Engine_LevelScene.TryBuild"/>.
-	///
-	/// It lives here rather than in the game code because everything it needs is already
-	/// here: the mounted banks, the byte reader and the name lookup the terrain materials
-	/// resolve through. Reaching into those from outside would mean a second way to build a
-	/// level, and the editor and the running game executing different construction paths is
-	/// exactly what this project is arranged to prevent.
-	/// </summary>
 	/// <summary>The scenario a new game starts in. `sub_82379628` writes it at 0x8237972C.</summary>
 	public const string DefaultScenario = "defaultscenario";
 
-	/// <summary>
-	/// The scenario the guest is in for this level. Defaults to DefaultScenario, which is both
-	/// the guest's own fallback when its map has no entry and what a new game sets.
-	///
-	/// NOT YET READ FROM THE GUEST. The live value is a world-manager map keyed by
-	/// FNV-1(world + level), written by the Lua binding `Layers.ActivateScenario`, and reaching
-	/// it needs a host-bridge field that does not exist yet. Until it does this is right for a
-	/// new game and wrong the moment a quest moves the story on, so it is a named constant
-	/// rather than a silent assumption.
-	/// </summary>
+	/// <summary>The scenario for this level; the guest's live value is a world-manager map keyed
+	/// FNV-1(world + level), written by `Layers.ActivateScenario`.</summary>
 	public string CurrentScenario { get; set; } = DefaultScenario;
 
-	/// <summary>
-	/// Picks the level variant whose heightfield the scenario's own manifest names.
-	/// </summary>
+	/// <summary>Picks the level variant whose heightfield the scenario's manifest names.</summary>
 	private bool TryResolveByScenario(
 		List<Refii.Level.LevelEntry> candidates, string world, string name,
 		out Refii.Level.LevelEntry picked)
@@ -375,10 +354,7 @@ public partial class Engine_GameAssets : Node
 		return false;
 	}
 
-	/// <summary>
-	/// Builds a level and SAVES it as a scene. The editor's path — see
-	/// <see cref="BuildLevelNode"/> for the game's.
-	/// </summary>
+	/// <summary>Builds a level and saves it as a scene (editor path; the game uses <see cref="BuildLevelNode"/>).</summary>
 	public bool TryBuildLevel(string world, string name, out string scenePath, out string error)
 	{
 		scenePath = string.Empty;
@@ -391,13 +367,7 @@ public partial class Engine_GameAssets : Node
 			entry, ReadAllBytes, FindByFileName, out scenePath, out error);
 	}
 
-	/// <summary>
-	/// Builds a level and hands back the live node, with no trip through the disk.
-	///
-	/// THE GAME'S PATH. The same construction the editor uses, minus the save and reload —
-	/// `res://` is read-only in an exported build, so a game that mounts a level by saving a
-	/// `.tscn` and loading it back only works from the project.
-	/// </summary>
+	/// <summary>Builds a level and returns the live node; no disk trip (`res://` is read-only when exported).</summary>
 	public Node3D? BuildLevelNode(string world, string name, out string error)
 	{
 		if (!TryResolveLevel(world, name, out Refii.Level.LevelEntry entry, out error))
@@ -408,10 +378,7 @@ public partial class Engine_GameAssets : Node
 		return Refii.Level.Engine_LevelScene.Build(entry, ReadAllBytes, FindByFileName, out error);
 	}
 
-	/// <summary>
-	/// Picks WHICH level entry the guest means. Scenario first, then the dev override, then the
-	/// level name with the world as a tiebreak.
-	/// </summary>
+	/// <summary>Resolves the guest's level: scenario first, then the dev override, then name with world as tiebreak.</summary>
 	private bool TryResolveLevel(
 		string world, string name, out Refii.Level.LevelEntry resolvedEntry, out string error)
 	{
@@ -427,31 +394,12 @@ public partial class Engine_GameAssets : Node
 
 		_levels ??= Refii.Level.Engine_LevelIndex.Discover(fs);
 
-		// THE GUEST NAMES A PATH, NOT ALWAYS A LEAF.
-		//
-		// Walking into a cave, the guest states its level as `Caves\GargoylesCave` — a nested
-		// path in the guest's own separator, which `World_ComputeWorldLevelFnv1Key` normalises
-		// to backslash. The index stores the full path in `LevelPath` and only the LAST segment
-		// in `Name`, so matching `Name` against the whole thing found nothing and the region
-		// never built: "no level named 'Caves\GargoylesCave'" while 83 levels sat under Albion.
-		//
-		// A grey screen with a correct camera is the symptom, which reads as a renderer fault
-		// rather than a lookup miss — the same trap the world-tiebreak comment below describes.
-		//
-		// Normalise the separator and keep BOTH forms: the full path is the specific answer and
-		// the leaf is the fallback, so a level stated either way resolves to the same entry.
+		// The guest may state a nested path (`Caves\GargoylesCave`, backslash-normalised by
+		// `World_ComputeWorldLevelFnv1Key`); `LevelPath` holds the full path, `Name` the leaf.
 		string wanted = name.Replace('\\', '/');
 		string leaf = wanted[(wanted.LastIndexOf('/') + 1)..];
 
-		// EVERY variant that answers to this name, named out loud.
-		//
-		// A level ships several heightfields — chapters, seasons, story states — and we pick by
-		// name and take the first. That is a guess wearing the clothes of a lookup: it is how
-		// Bowerstone Slums came up as `ch2_heightfield_posh` for a childhood entrance, which is a
-		// different chapter of the same place and reads as the wrong season.
-		// The FULL PATH wins when the guest gives one. Only if nothing answers to it do we fall
-		// back to the leaf, because two worlds can each hold a `GargoylesCave` and taking the
-		// leaf first would pick whichever was discovered earliest.
+		// Full path wins; the leaf is a fallback — two worlds can each hold a `GargoylesCave`.
 		var candidates = new List<Refii.Level.LevelEntry>();
 		foreach (Refii.Level.LevelEntry entry in _levels)
 		{
@@ -478,22 +426,9 @@ public partial class Engine_GameAssets : Node
 				string.Join(", ", candidates.ConvertAll(c => c.Variant)));
 		}
 
-		// THE SCENARIO PICKS THE HEIGHTFIELD. Not the name, not the chapter, not the entrance.
-		//
-		// The guest builds `Data\Worlds\<World>\<Level>\<Scenario>\<Scenario>.list` in
-		// Level_BuildDataWorldsFilePath (0x8250EED0) and loads every .ghf that manifest names,
-		// with no further filtering — Level_LoadHeightfieldGhfEntry (0x8250ECE0) just opens
-		// what it is given. The scenario comes from the world manager's {fnv1(world+level) ->
-		// name} map and defaults to "DefaultScenario"; a new game sets exactly that, at
-		// 0x8237972C.
-		//
-		// Matching on the level name and taking the first of five is what put a CHILDHOOD
-		// entrance in chapter 2's Bowerstone — a different chapter of the same place, which
-		// reads as the wrong season because the seasons ARE the variants. scenarios.list
-		// states them: albion\bwsslums has defaultscenario, chapter3slums, chapter3posh,
-		// chapter2slums and chapter2posh, against heightfields new_heightfield_9,
-		// ch3_heightfield_slums, ch3_heightfield_posh, ch2_heightfield_slums and
-		// ch2_heightfield_posh.
+		// The scenario picks the heightfield: `Data\Worlds\<World>\<Level>\<Scenario>\<Scenario>.list`
+		// (Level_BuildDataWorldsFilePath 0x8250EED0) names every .ghf loaded unfiltered
+		// (Level_LoadHeightfieldGhfEntry 0x8250ECE0). Default "DefaultScenario", set at 0x8237972C.
 		if (candidates.Count > 1 &&
 			TryResolveByScenario(candidates, world, name, out Refii.Level.LevelEntry scenarioPick))
 		{
@@ -501,9 +436,7 @@ public partial class Engine_GameAssets : Node
 			return true;
 		}
 
-		// REFII_LEVEL_VARIANT is a DEV OVERRIDE for looking at a variant directly. It runs after
-		// the scenario lookup so it can only ever override a resolved answer, never stand in for
-		// one.
+		// REFII_LEVEL_VARIANT is a dev override; it runs after the scenario lookup.
 		string forced = System.Environment.GetEnvironmentVariable("REFII_LEVEL_VARIANT") ?? string.Empty;
 		if (forced.Length != 0)
 		{
@@ -521,25 +454,12 @@ public partial class Engine_GameAssets : Node
 		}
 
 
-		// THE LEVEL NAME IS THE KEY; the world is only a tiebreak.
-		//
-		// The guest states a world/level pair, and it is tempting to require both. It does not
-		// hold: starting a new game the guest says "Travel_TheWell/BWSSlums" with entrance
-		// "QC010_ChildhoodStart", and Travel_TheWell is not a world in the bank layout at all —
-		// the banks register worlds/albion/..., and BWSSlums (Bowerstone Slums) lives there.
-		// That slot carries a travel-node name, not a bank world.
-		//
-		// Requiring both matched nothing, so the guest walked into a region that was never
-		// built and Godot drew an empty world through a perfectly good camera — which reads as
-		// "the renderer is broken" rather than "the lookup missed".
-		//
-		// So: prefer an exact world match when the guest does name a real world, otherwise take
-		// the level name on its own. Names repeat only across variants of the SAME level, which
-		// the first-match behaviour already handled.
+		// The level name is the key; the world is only a tiebreak. The guest's world slot can
+		// carry a travel-node name ("Travel_TheWell/BWSSlums") that is not a bank world.
 		Refii.Level.LevelEntry? fallback = null;
 		foreach (Refii.Level.LevelEntry level in _levels)
 		{
-			// Same two forms as the candidate scan above: the guest may state a nested path.
+			// Same two forms as the candidate scan above.
 			if (!level.LevelPath.Replace('\\', '/').Equals(wanted, StringComparison.OrdinalIgnoreCase) &&
 				!level.Name.Equals(leaf, StringComparison.OrdinalIgnoreCase))
 			{
@@ -557,8 +477,6 @@ public partial class Engine_GameAssets : Node
 
 		if (fallback is { } resolved)
 		{
-			// Named, not silent: resolving across a world mismatch is a real assumption, and if
-			// it ever picks the wrong region this line is what says why.
 			GD.Print($"[assets] the guest asked for {world}/{name}; the banks register it under " +
 				$"{resolved.World}/{resolved.Name} — building that");
 
@@ -650,6 +568,18 @@ public partial class Engine_GameAssets : Node
 		TryGetFile(virtualPath, out BnkFile file) ? file.ReadAllBytes() : null;
 
 	public bool FileExists(string virtualPath) => TryGetFile(virtualPath, out _);
+
+	/// <summary>The asset's length without reading it, or -1 if absent. Files with alternates
+	/// (`.mdl`, `.tex`) must be read: <see cref="BnkFile.ReadAllBytes"/> concatenates them.</summary>
+	public long FileSize(string virtualPath)
+	{
+		if (!TryGetFile(virtualPath, out BnkFile file))
+		{
+			return -1;
+		}
+
+		return file.HasAlternates ? file.ReadAllBytes().LongLength : file.Size;
+	}
 
 	public bool DirectoryExists(string virtualDirectory) =>
 		Snapshot()?.DirectoryExists(Strip(virtualDirectory)) ?? false;

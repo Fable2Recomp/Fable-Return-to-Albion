@@ -1,45 +1,80 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 
 using Refii.Core;
 
 namespace Refii.Ui;
 
 /// <summary>
-/// Runs <see cref="Engine_UiFrame"/> over a loaded screen, so the frames in it are actually laid
-/// out instead of merely being layoutable.
+/// Runs <see cref="Engine_UiFrame"/> over a loaded screen. <see cref="Engine_UiFrame"/> is the
+/// shipped Lua as arithmetic and knows nothing about <see cref="UiNode"/>; this knows about both
+/// and nothing about layout.
 ///
-/// THIS IS THE SEAM BETWEEN A PORTED SCRIPT AND OUR SCENE. <see cref="Engine_UiFrame"/> is the
-/// shipped Lua turned into arithmetic and knows nothing about <see cref="UiNode"/>; this knows
-/// about both and nothing about layout. Keeping the split means a wrong answer is attributable:
-/// if a panel is the wrong SIZE the passes are wrong, and if it is the right size in the wrong
-/// PLACE the application is.
+/// Runs after <see cref="Engine_UiScreen"/> has read the file and before the scene is built,
+/// writing into the <see cref="UiNode"/> fields the builder consumes — so nothing here touches
+/// Godot and the editor, viewers and game share one path.
 ///
-/// WHEN IT RUNS: after <see cref="Engine_UiScreen"/> has read the file and before the scene is
-/// built, writing straight into the <see cref="UiNode"/> fields the builder already consumes.
-/// That is why nothing here touches Godot — laying out into the authored model rather than into
-/// the built one means the editor, the viewers and the game all get the same result from the one
-/// path, and no second application of the same numbers exists to drift.
-///
-/// DEEPEST FRAME FIRST. A frame that contains another reads the inner one's size as
-/// <c>FrameWidth</c>/<c>FrameHeight</c> — see <see cref="Engine_UiFrame.Item"/> — and the inner
-/// one has to have computed it by then. Sorting by depth descending is what makes a nested
-/// panel size its parent instead of being sized by it.
+/// Deepest frame FIRST: a frame containing another reads the inner one's size as
+/// <c>FrameWidth</c>/<c>FrameHeight</c> (see <see cref="Engine_UiFrame.Item"/>), so the inner one
+/// must have computed it already.
 /// </summary>
 public static class Engine_UiFrameDriver
 {
 	/// <summary>
-	/// The four attributes <c>FrameInitialise</c> fetches. Their PRESENCE is also how a frame is
-	/// recognised: the shipped Lua knows which behaviours are frames because the file binds the
-	/// frame script to them, and that binding is not something our reader keeps — but only a
-	/// frame carries these.
+	/// The four attributes <c>FrameInitialise</c> fetches. Their PRESENCE identifies a frame: the
+	/// file's frame-script binding is not kept by our reader, and only a frame carries these.
 	/// </summary>
 	private static readonly uint BorderSizeId = Engine_GameHash.AttributeId("BorderSize");
 
+	/// <summary>
+	/// `FrameRemoveInappropriateContents`' verdict on one item — <c>frame.dis main.2 pc12..39</c>.
+	/// The nesting is not flat and the order is load-bearing: a <c>text</c> element reaches only
+	/// the <c>textstring == ''</c> test (pc16..25), while <c>active == false</c> sits in the arm
+	/// for elements that are neither text nor behaviour (pc33..39) — so an inactive but written
+	/// label is KEPT.
+	///
+	/// The behaviour arm (pc26..32) compares against <c>'behavior'</c>, which
+	/// <c>getElementType</c> never returns (see <see cref="Engine_UiFrame.KindBehaviour"/>); ours
+	/// branches on the element type, so the arm is live here and dead there.
+	///
+	/// Text is an element that HAS a text record, tested on the finished string
+	/// (<c>getAttribute(item, 'textstring')</c>); <c>active</c> is <see cref="UiNode.Visible"/>.
+	/// </summary>
+	private static bool Displayed(UiNode node)
+	{
+		if (node.Text is { } text)
+		{
+			return text.Display.Length != 0;
+		}
+
+		if (node.Type == BgfElementType.Behavior)
+		{
+			return false;
+		}
+
+		return node.Visible;
+	}
+
 	private static readonly uint SizeToContentId = Engine_GameHash.AttributeId("SizeToContent");
 
+	/// <summary>
+	/// Each frame's state, which lives as long as the frame does. `FrameUpdate` reads
+	/// <c>self.State.FramesUntilStopUpdating</c> and <c>self.State.HaveClonedBorderElements</c>
+	/// off the component instance (`frame.dis main.0 pc0..21`), and `FrameCloneBorderElements`
+	/// returns on a second call (`framecloning.dis main.0 pc8..24`) — a frame clones its border
+	/// set exactly once. Weakly keyed on the frame element, so it goes with the document.
+	/// </summary>
+	private static readonly ConditionalWeakTable<UiNode, Engine_UiFrame.State> States = new();
+
 	/// <summary>The nine border slices, by the names the Lua looks them up under.</summary>
+	/// <summary>
+	/// The nine cell names per style — `theme/themeframes.lua` declares both sets and
+	/// `frame/framecloning.lua`'s `FrameCloneBeamBasedBorderElements` /
+	/// `FrameCloneBlockBasedBorderElements` are the two branches. Style 1 calls its edges beams,
+	/// style 2 blocks; nine cells either way, four corners and a Middle shared.
+	/// </summary>
 	private static readonly (Engine_UiFrame.Slot Slot, string Name)[] SlotNames =
 	{
 		(Engine_UiFrame.Slot.UpperLeftCorner, "UpperLeftCorner"),
@@ -58,12 +93,28 @@ public static class Engine_UiFrameDriver
 		int Frames, int Contents, int Slots, int Blocks, int WithoutBorder);
 
 	/// <summary>
-	/// Lays out every frame in the screen. Returns what it touched.
-	///
-	/// Never throws. A screen whose frames cannot be laid out should still put its art up — that
-	/// is what it did before this existed, and it is a far better failure than a black menu.
+	/// Lays out every frame in the screen and returns what it touched. Never throws: a screen
+	/// whose frames cannot be laid out still puts its art up.
 	/// </summary>
-	public static Report Apply(Engine_UiScreen screen)
+	public static Report Apply(Engine_UiScreen screen) => Apply(screen, null, null);
+
+	/// <summary>
+	/// The same drive, with two per-frame taps for a consumer holding live art. The document has
+	/// no border slices — the original clones them from the theme at runtime (`framecloning.lua`,
+	/// ported in <see cref="Engine_UiFrameCloning"/>):
+	///
+	/// <list type="bullet">
+	/// <item><paramref name="onClone"/> runs BEFORE the arrange, because `FrameUpdate` calls
+	/// `FrameCloneBorderElements` before `FrameArrangeItems` (`frame.dis main.0 pc12..21`) and
+	/// pass 7 is gated on the flag the clone sets.</item>
+	/// <item><paramref name="onPlace"/> runs after, with the computed border — pass 7's output
+	/// landing on the nodes the clone produced.</item>
+	/// </list>
+	/// </summary>
+	public static Report Apply(
+		Engine_UiScreen screen,
+		Action<UiNode, Engine_UiFrame.State>? onClone,
+		Action<UiNode, Engine_UiFrame.State, Engine_UiFrame.BorderLayout>? onPlace)
 	{
 		var frames = screen.Nodes.Where(IsFrame).ToList();
 		if (frames.Count == 0)
@@ -80,21 +131,24 @@ public static class Engine_UiFrameDriver
 
 		foreach (UiNode frame in frames)
 		{
-			var state = new Engine_UiFrame.State();
+			Engine_UiFrame.State state = States.GetValue(frame, _ => new Engine_UiFrame.State());
 			Engine_UiFrame.Initialise(state, tree, frame);
 
-			// THE DIMENSIONS QUAD IS NEVER DRAWN. `FrameInitialise` ends by zeroing its opacity
-			// on every path it can take, including the ones that discard the reference.
+			// The dimensions quad is never drawn: `FrameInitialise` zeroes its opacity on every
+			// path, including the ones that discard the reference.
 			if (tree.NamedObject(frame, Engine_UiFrame.DimensionsElement) is UiNode dimensions)
 			{
 				dimensions.Opacity = 0f;
 			}
 
-			// DisplayedContents is Contents after the page has filtered it. We have no page yet,
-			// so everything the frame owns is displayed — except elements the slide baseline has
-			// switched OFF, because the engine skips an inactive node and its whole subtree and
-			// laying one out would reserve space for something that never draws.
-			var displayed = state.Contents.Cast<UiNode>().Where(n => n.Visible).ToList();
+			// The clone step comes first: `FrameUpdate` clones then arranges
+			// (`frame.dis main.0 pc12..21`), and pass 7 draws nothing without the clone's flag.
+			onClone?.Invoke(frame, state);
+
+			// `FrameRemoveInappropriateContents`: the list is rebuilt from scratch every pass
+			// (`frame.dis main.2 pc1..2`, NEWTABLE into `State.DisplayedContents`) and every
+			// surviving item appended in order (pc40..47).
+			var displayed = state.Contents.Cast<UiNode>().Where(Displayed).ToList();
 
 			var items = displayed.Select(n => Measure(tree, n)).ToList();
 			var alignments = displayed
@@ -107,15 +161,21 @@ public static class Engine_UiFrameDriver
 			Engine_UiFrame.CalcBorders(state);
 			Engine_UiFrame.CalcOuterSize(state);
 
-			// The frame's own size, published for whatever frame contains it. Keyed by the
-			// frame's PARENT because that is the element an outer frame sees as its content —
-			// the behaviour itself is filtered out of every Contents list.
-			if (frame.Parent is { } owner)
+			// The frame's own size, published for whatever frame contains it, keyed by the
+			// frame's PARENT — the behaviour itself is filtered out of every Contents list.
+			// Only onto a `group` parent: `frame.dis main.1 pc24..40` gates both setAttribute
+			// calls on `getElementType(self.parent) == 'group'`, and `Attribute` below consults
+			// this map before the authored attributes, so an ungated publish would shadow a
+			// parent's own `FrameWidth`.
+			if (frame.Parent is { } owner && tree.TypeOf(owner) == Engine_UiFrame.KindGroup)
 			{
 				sizes[owner] = (state.Width, state.Height);
 			}
 
-			state.HaveClonedBorderElements = FindSlices(frame, out var slices);
+			// A document that AUTHORED its slices stands in for the clone step; a screen whose
+			// tap cloned already carries the flag and needs no search.
+			state.HaveClonedBorderElements =
+				FindSlices(frame, out var slices) || state.HaveClonedBorderElements;
 			if (!state.HaveClonedBorderElements)
 			{
 				report = report with { WithoutBorder = report.WithoutBorder + 1 };
@@ -148,6 +208,8 @@ public static class Engine_UiFrameDriver
 				};
 			}
 
+			onPlace?.Invoke(frame, state, border);
+
 			IReadOnlyList<Engine_UiFrame.Placement> placed =
 				Engine_UiFrame.PlaceContents(state, alignments);
 
@@ -164,11 +226,8 @@ public static class Engine_UiFrameDriver
 	}
 
 	/// <summary>
-	/// A frame is an element carrying the attributes only a frame carries.
-	///
-	/// The file binds the frame SCRIPT to a behaviour and our reader does not keep that binding,
-	/// so the attributes stand in for it. `BorderSize` and `SizeToContent` are both fetched by
-	/// `FrameInitialise` and neither appears on anything else, so either is sufficient; both are
+	/// A frame is an element carrying the attributes only a frame carries. `BorderSize` and
+	/// `SizeToContent` are both fetched by `FrameInitialise` and appear on nothing else; both are
 	/// tested because a frame with no border still has to be laid out.
 	/// </summary>
 	private static bool IsFrame(UiNode node) =>
@@ -188,14 +247,10 @@ public static class Engine_UiFrameDriver
 	}
 
 	/// <summary>
-	/// Measures one item the three ways <c>FrameCalcLengthAndMaxBreadth</c> measures them.
-	///
-	/// The bounding-box arm is the one that is ours rather than the original's: the engine calls
-	/// <c>calculateBoundingBox</c>, which walks the element's real geometry. A TEXT element's box
-	/// is authored on it and is used directly; anything else falls back to the quad convention of
-	/// <c>scale * 100</c>, which is exact for a quad and an approximation for a group of them.
-	/// Stated rather than hidden, because it is the one number in this file that is not the
-	/// shipped arithmetic.
+	/// Measures one item the three ways <c>FrameCalcLengthAndMaxBreadth</c> does. The
+	/// bounding-box arm is ours, not the original's <c>calculateBoundingBox</c>: a TEXT element's
+	/// authored box is used directly, anything else falls back to <c>scale * 100</c> — exact for
+	/// a quad, an approximation for a group.
 	/// </summary>
 	private static Engine_UiFrame.Item Measure(Tree tree, UiNode node)
 	{
@@ -225,14 +280,10 @@ public static class Engine_UiFrameDriver
 	}
 
 	/// <summary>
-	/// Finds the nine border slices among the frame's siblings, by name.
-	///
-	/// Returns whether ALL of them were found, which becomes
-	/// <see cref="Engine_UiFrame.State.HaveClonedBorderElements"/> — the original's gate on a
-	/// runtime cloning step we do not perform. A partial set is treated as no set on purpose: a
-	/// frame with four corners and no beams drawn at its computed size looks like a bug in the
-	/// layout rather than a missing step, and the whole point of the flag is to not write
-	/// positions onto elements the frame does not own.
+	/// Finds the nine border slices among the frame's siblings, by name. Returns whether ALL were
+	/// found, which becomes <see cref="Engine_UiFrame.State.HaveClonedBorderElements"/>. A
+	/// partial set counts as no set, so positions are never written onto elements the frame does
+	/// not own.
 	/// </summary>
 	private static bool FindSlices(UiNode frame,
 		out Dictionary<Engine_UiFrame.Slot, UiNode> slices)
@@ -264,9 +315,8 @@ public static class Engine_UiFrameDriver
 	}
 
 	/// <summary>
-	/// Applies one edge's blocks, which are named with a 1-based suffix. Absent blocks are
-	/// skipped rather than reported as an error — the pool is authored per screen and a frame
-	/// that never grows past four blocks does not ship thirty.
+	/// Applies one edge's blocks, named with a 1-based suffix. Absent blocks are skipped, not
+	/// errors — the pool is authored per screen.
 	/// </summary>
 	private static int ApplyBlocks(UiNode frame, string prefix,
 		IReadOnlyList<Engine_UiFrame.BlockPlacement> blocks)
@@ -284,8 +334,8 @@ public static class Engine_UiFrameDriver
 				continue;
 			}
 
-			// A hidden block is faded and NOT moved, which is what the original does — it writes
-			// opacity 0 and nothing else on the arm that skips.
+			// A hidden block is faded and NOT moved: the original writes opacity 0 and nothing
+			// else on the arm that skips.
 			node.Opacity = block.Opacity;
 			if (block.Opacity > 0f)
 			{
@@ -305,15 +355,11 @@ public static class Engine_UiFrameDriver
 			c.HasAuthoredName && string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
 
 	/// <summary>
-	/// <see cref="Engine_UiFrame.IFrameTree"/> over our authored model.
-	///
-	/// THE TYPE MAPPING IS THE PART THAT MATTERS. The Lua branches on four strings and our
-	/// reader has an enum, and the two do not line up one to one: the engine calls a drawable
-	/// quad a "model" and a bare container a "group", and both of those are
-	/// <see cref="BgfElementType.Node"/> here. Carrying a quad is what separates them, and it is
-	/// the right test rather than a convenient one — the "model" arm measures
-	/// <c>scale * 100</c>, which IS a quad's size, and the "group" arm asks for a nested frame's
-	/// dimensions, which only a container can have.
+	/// <see cref="Engine_UiFrame.IFrameTree"/> over our authored model. The type mapping is not
+	/// one to one: the engine calls a drawable quad a "model" and a bare container a "group", and
+	/// both are <see cref="BgfElementType.Node"/> here, separated by whether they carry a quad —
+	/// the "model" arm measures <c>scale * 100</c> and the "group" arm asks for a nested frame's
+	/// dimensions.
 	/// </summary>
 	private sealed class Tree : Engine_UiFrame.IFrameTree
 	{
@@ -338,8 +384,8 @@ public static class Engine_UiFrameDriver
 		{
 			var node = (UiNode)element;
 
-			// A nested frame's size is not an authored attribute — it is what that frame worked
-			// out a moment ago, published under the name the outer frame reads it by.
+			// A nested frame's size is not authored — it is what that frame just computed,
+			// published under the name the outer frame reads it by.
 			if (_sizes.TryGetValue(node, out (float Width, float Height) size))
 			{
 				if (name == "FrameWidth")

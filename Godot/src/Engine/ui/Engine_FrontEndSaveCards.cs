@@ -6,97 +6,51 @@ namespace Refii.Ui;
 /// <summary>
 /// Fable 2's Load Game card fan, drawn in Godot from the game's own card art.
 ///
-/// WHY THIS EXISTS. The front-end menu is Godot's now, and "Load Game" was the one root entry
-/// that still had nowhere to go: <see cref="Engine_FrontEndMenu"/> dispatches the name, the
-/// guest enumerates its saves and puts its own carousel up, and Godot mirrored the RESULT
-/// without being able to move it — the same half-state the row menu was in before it was
-/// taken over. This is the other half.
-///
-/// IT IS THE GENDER CARD'S CONTRACT, NOT A NEW ONE, and that is what makes it safe to own.
 /// `frontendmainmenu.bgf` ships a `loadgame` component under `Component_0/Layer`, beside
-/// `choosecard` and `dialog`, and the shipped Lua contributes exactly two behaviours to it:
+/// `choosecard` and `dialog`. The Lua contributes only two Behavior elements that answer back
+/// to C++ (`behaviorloadcard.lua` fires `LOAD_CARD_ACTIVE`, `behaviorloadselected.lua` fires
+/// `LOAD_CARD_SELECTED`); nothing in the 587 shipped chunks enumerates a slot or lays a card
+/// out. The layout is in the FILE, read from the slide table.
 ///
-/// <code>
-/// behaviorloadcard.lua      onDeactivate -> fireEvent('LOAD_CARD_ACTIVE',   parent)
-/// behaviorloadselected.lua  onDeactivate -> fireEvent('LOAD_CARD_SELECTED', parent)
-/// </code>
+/// Six cards, hard-authored, matching `sub_82378618`'s save cap of 6 stored over
+/// `dword_83319620` on front-end entry.
 ///
-/// That is the same shape as `BOY_ACTIVE` / `BOY_SELECTED`: the presentation's own Behavior
-/// elements answer BACK to C++, and nothing in Lua enumerates a slot, lays a card out, or
-/// counts anything. A sweep of all 587 shipped chunks finds no reference to `Card1`..`Card6`,
-/// `SaveGameDescription`, `LoadingCardBack` or `cardback` anywhere. So — unlike the row menu,
-/// whose every number came out of `expandablemenuformatting.lua` — the layout here is in the
-/// FILE, and this class reads it from the slide table rather than from a script.
-///
-/// SIX CARDS, HARD-AUTHORED, which is the save cap agreeing with itself from the other side:
-/// `sub_82378618` stores 6 over `dword_83319620` on front-end entry, and the artist drew six
-/// card components. A seventh save has nowhere to be drawn because there cannot be one.
-///
-/// WHAT THE SLIDES SAY. The `loadgame` component carries three slides and each card carries
-/// three of its own, and the two tiers do different jobs:
-///
+/// Two tiers of slide:
 /// <list type="bullet">
-/// <item>The PAGE's Slide1 parks all six cards at <c>position.y -598</c> with the description
-/// and the tint at opacity 0 — off the bottom of the canvas. That is the closed state, and
-/// its own duration is 764 ms.</item>
-/// <item>The PAGE's Slide2 states the fan outright — every card's position, yaw and roll, the
-/// description at opacity 100 and the tint at 50 — over 508 ms. That is <see cref="Fan"/>,
-/// read rather than chosen.</item>
-/// <item>EACH CARD's Slide1 and Slide2 move its inner <c>Group</c>: Slide1 to the origin,
-/// Slide2 up and out of the arc by 118 to 199 units. Their durations are 250-257 ms, which is
-/// one authored value with the artist's jitter on it.</item>
+/// <item>The PAGE's Slide1 parks all six at <c>position.y -598</c> with description and tint at
+/// opacity 0 — the closed state, 764 ms.</item>
+/// <item>The PAGE's Slide2 states the fan outright — every card's position, yaw and roll,
+/// description opacity 100, tint 50 — over 508 ms. That is <see cref="Fan"/>.</item>
+/// <item>EACH CARD's Slide1/Slide2 move its inner <c>Group</c>: Slide1 parks it at the origin
+/// and its tracks raise it 118..199 units over 250 ticks; Slide2 parks it raised and lowers it
+/// back. Durations 250-257 ms.</item>
 /// </list>
 ///
-/// THE SELECTED CARD IS THE ONE THAT DOES NOT LIFT, and reading it the other way round is the
-/// obvious mistake here — a raised card looks like a highlighted one. The guest says otherwise
-/// outright. `sub_826E0BE0` is its cursor mover and it re-slides exactly two cards:
+/// The cursor mover `sub_826E0BE0` re-slides exactly two cards — the one being left to slide 2
+/// (826e0c8c) and the one moved to slide 1 (826e0c9c); a guest slide index is 1-based over the
+/// NON-master slides. A slide's COMMANDS are the tween's START and its activated TRACKS are the
+/// motion, so the card moved to lifts and the card left drops back into the arc.
 ///
-/// <code>
-/// 826e0c8c  sub_82426CA8(v7,  a1[5], 2);   // the card being LEFT   -> slide 2
-/// 826e0c9c  sub_82426CA8(v10, a1[5], 1);   // the card being MOVED TO -> slide 1
-/// </code>
+/// The two tiers compose because they write different nodes: the arc is on the card component,
+/// the lift on the <c>Group</c> inside it.
 ///
-/// A guest slide index is 1-based over the NON-master slides — the convention
-/// <see cref="Engine_BgfDocument.SetElementSlides"/> already mirrors live state through — so
-/// slide 1 is `Slide1`, the origin, and slide 2 is `Slide2`, the lift. The selection therefore
-/// sits at its arc position and everything else is held up above it.
-///
-/// The geometry agrees once it is read that way. Adding each card's lift to its own place in
-/// the arc puts the five unselected cards at y 170, 174, 170, 189, 199 and 211 — a rough ROW
-/// across the top — while the selected one alone drops back into the arc at y 0 to 55, over
-/// the `SaveGameDescription` box the artist put at y -195. That is also why the lift is
-/// per-card rather than one offset: card 1 starts at y 0 and needs 199 to reach the row, card
-/// 3 starts at y 55 and needs 134. Under the inverted reading those six numbers mean nothing.
-///
-/// The two tiers compose because they write different nodes: the arc is on the card component
-/// and the lift is on the <c>Group</c> INSIDE it, so a card can be placed and lifted at once
-/// without either pose overwriting the other.
-///
-/// WHAT THIS DOES NOT OWN: which saves exist, or what they are called. Enumerating a save is a
-/// live `XamContentCreateEnumerator` on the guest's side — a CALL, not a read — so the list
-/// arrives from the caller as <see cref="Save"/> records and this draws whatever it is handed.
-/// A view that went and asked would be a view that cannot be stood up without a guest, which
-/// is the mistake <see cref="Engine_FrontEndMenu.PopulateLanguages"/> already had to undo.
+/// This does not own which saves exist — enumerating one is a live
+/// `XamContentCreateEnumerator` CALL on the guest side — so the list arrives from the caller as
+/// <see cref="Save"/> records.
 /// </summary>
 public partial class Engine_FrontEndSaveCards : Node3D
 {
 	/// <summary>
-	/// One save, as much of it as a card shows.
-	///
-	/// <see cref="Description"/> is what goes in `SaveGameDescription`, already resolved — the
-	/// element is a plain text box (20pt, centred, wrapped into 411x96) and the guest writes a
-	/// finished string into it rather than a tag.
+	/// One save, as much of it as a card shows. <see cref="Description"/> goes into
+	/// `SaveGameDescription` already resolved — a plain text box (20pt, centred, wrapped into
+	/// 411x96) the guest writes a finished string into, not a tag.
 	/// </summary>
 	public readonly record struct Save(string Description, Texture2D? Portrait = null);
 
 	/// <summary>
-	/// The quad inside a card that carries its portrait.
-	///
-	/// AUTHORED AS A PLACEHOLDER. Every one of the six ships pointing at
-	/// `art\gui\questscreenshots\loadingcardback.tex`, and the real picture is chosen at load
-	/// time from the save's own quest: `sub_826E1408` derives a texture hash from the record's
-	/// QuestName and stamps it into the element's record at `+512`. So a card drawn straight
-	/// from the file shows six identical backs — which is exactly what a run showed — and the
+	/// The quad inside a card that carries its portrait. Authored as a placeholder — all six
+	/// point at `art\gui\questscreenshots\loadingcardback.tex`; `sub_826E1408` derives the real
+	/// texture hash from the save record's QuestName and stamps it at element `+512`, so the
 	/// portrait has to come from the guest.
 	/// </summary>
 	public const string PortraitName = "screenshot";
@@ -129,16 +83,10 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	}
 
 	/// <summary>
-	/// The open fan — the <c>loadgame</c> component's Slide2, verbatim.
-	///
-	/// CARD 1 IS NOT PART OF THE ARC and that is the file's, not a transcription slip. Cards
-	/// 2..6 run x -200, -100, 0, 100, 200 with y 38, 55, 52, 38, 0 and a constant yaw of
-	/// -0.3491 (-20 degrees); card 1 sits further out at x -335 with y 0 and NO yaw at all, so
-	/// it faces the reader flat while the rest are turned. The rolls are symmetric across all
-	/// six — ±0.4538, ±0.2094, ±0.0698 — which is what makes it read as one spread anyway.
-	///
-	/// Only card 1's slide states a scale (0.65 on x and y); the other five inherit the
-	/// authored transform, which is the same 0.65. <see cref="CardScale"/> holds it once.
+	/// The open fan — the <c>loadgame</c> component's Slide2, verbatim. Card 1 is not part of the
+	/// arc: it sits further out at x -335, y 0 with NO yaw, while cards 2..6 carry a constant
+	/// -0.3491 rad. Rolls are symmetric across all six. Only card 1's slide states a scale;
+	/// the rest inherit the same 0.65 — see <see cref="CardScale"/>.
 	/// </summary>
 	public static readonly Pose[] Fan =
 	{
@@ -154,12 +102,9 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	public const float CardScale = 0.65f;
 
 	/// <summary>
-	/// Where a card sits when it is NOT the selection — each card's own Slide2, applied to its
-	/// inner <c>Group</c>.
-	///
-	/// See the class remarks: this is the row the five unselected cards are held up in, not a
-	/// highlight. The selected card's Slide1 puts its group back at the origin, so this table is
-	/// the whole of the difference between the two states.
+	/// Where a card sits when it is NOT the selection — each card's own Slide2 applied to its
+	/// inner <c>Group</c>. The selected card's Slide1 returns its group to the origin, so this
+	/// table is the whole difference between the two states.
 	/// </summary>
 	public static readonly Vector3[] Row =
 	{
@@ -172,10 +117,9 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	};
 
 	/// <summary>
-	/// The roll the row adds, in radians, on top of the card's own place in the arc. Cards 4, 5
-	/// and 6 DO NOT ROTATE — their slides carry 13 commands where cards 1..3 carry 16, and the
-	/// three missing ones are exactly the rotation writes. A table that gave them a roll would
-	/// be inventing one.
+	/// The roll the row adds, in radians, on top of the card's place in the arc. Cards 4, 5 and 6
+	/// do not rotate — their slides carry 13 commands to cards 1..3's 16, the three missing ones
+	/// being the rotation writes.
 	/// </summary>
 	public static readonly float[] RowRoll = { -0.1396f, 0.0873f, 0.0873f, 0f, 0f, 0f };
 
@@ -187,10 +131,8 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	public const int CloseMilliseconds = 764;
 
 	/// <summary>
-	/// How long a card takes to move between the row and the arc. The six cards' own slides are
-	/// 250, 251, 252, 253, 254 and 257 — one intended value with the artist's hand on it, so
-	/// this is the round number rather than a per-card table that would imply a distinction
-	/// nobody made.
+	/// How long a card takes to move between the row and the arc. The six cards' slides are
+	/// 250..257 ms; this is the round number rather than a per-card table.
 	/// </summary>
 	public const int MoveMilliseconds = 250;
 
@@ -208,20 +150,17 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	public const string BackgroundName = "Background";
 
 	/// <summary>
-	/// How many cards the page ships, and the most this can ever draw.
-	///
-	/// SIX FROM BOTH SIDES. The artist drew six card components, and the guest's own cursor
-	/// mover clamps to the same number independently of the art — `sub_826E0BE0` at 0x826E0C20
-	/// rejects an index at or past <c>min(count, 6)</c>:
+	/// How many cards the page ships, and the most this can draw. Six from both sides: the artist
+	/// drew six components, and `sub_826E0BE0` at 0x826E0C20 rejects an index at or past
+	/// <c>min(count, 6)</c>:
 	///
 	/// <code>
 	/// v4 = a1[22] - a1[21];                                    // end - begin, the filename vector
 	/// if ( a2 &lt; 0 || a2 &gt;= ((((v4 &gt;&gt; 2) - 6) &gt;&gt; 31) &amp; ((v4 &gt;&gt; 2) - 6)) + 6 )
 	/// </code>
 	///
-	/// which is <c>min(count - 6, 0) + 6</c>. So a seventh save could be enumerated and still
-	/// could not be reached, and the cap agreeing with `sub_82378618`'s save limit of 6 is not a
-	/// coincidence to be tidied into one constant — they are two different mechanisms.
+	/// A seventh save could be enumerated and still not reached. Separate mechanism from
+	/// `sub_82378618`'s save limit of 6 — do not fold them into one constant.
 	/// </summary>
 	public const int MaxCards = 6;
 
@@ -241,15 +180,8 @@ public partial class Engine_FrontEndSaveCards : Node3D
 
 	/// <summary>
 	/// Which of the six card slots the first save is drawn on, 1-based — the guest's
-	/// `screen+76`, and the reason a short list is CENTRED rather than left-aligned.
-	///
-	/// Without it the fan is wrong in the most ordinary case there is. The arc runs x -335,
-	/// -200, -100, 0, 100 and 200, so three saves laid on cards 1..3 bunch into the left third
-	/// of the screen with the right two thirds empty — which is exactly what the first capture
-	/// of this panel showed.
-	///
-	/// The guest computes it from the count alone, at 0x826E0660..0x826E0698, and this is that
-	/// branch verbatim:
+	/// `screen+76`, which is what centres a short list instead of left-aligning it. The guest
+	/// computes it from the count alone at 0x826E0660..0x826E0698, transcribed here:
 	///
 	/// <code>
 	/// 826e0670  cmplwi cr6, r11, 2       ; r11 = (screen+88 - screen+84) >> 2
@@ -260,19 +192,15 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	/// 826e0684  li     r11, 2            ; count is 3 or 4
 	/// </code>
 	///
-	/// COMPUTED HERE RATHER THAN READ, even though the bridge reports the guest's value too.
-	/// It is a pure function of a count this class already has, and the alternative is a panel
-	/// that cannot lay itself out without a guest — which is the same objection that moved the
-	/// language list and the save count out of <see cref="Engine_FrontEndMenu"/>. The guest's
-	/// own number is carried alongside so a run where the two disagree can say so.
+	/// Computed rather than read so the panel lays itself out without a guest; the guest's own
+	/// number is carried alongside so a disagreement can be reported.
 	/// </summary>
 	public static int BaseSlotFor(int count) => count switch
 	{
 		2 => 3,
 		3 or 4 => 2,
-		// One save never reaches the carousel at all — that path commits directly at
-		// 0x826E0470 — and five or six must start at card 1 or the last one would index a
-		// seventh card that does not exist.
+		// One save never reaches the carousel (that path commits directly at 0x826E0470); five
+		// or six must start at card 1 or the last would index a seventh card.
 		_ => 1,
 	};
 
@@ -340,31 +268,22 @@ public partial class Engine_FrontEndSaveCards : Node3D
 
 		for (int i = 0; i < MaxCards; i++)
 		{
-			// THE AUTHORED TRANSFORM GOES, because every slide states each card's position,
-			// rotation and scale outright — the artist's placement is a starting frame the
-			// runtime overwrites, and keeping it would fight the fan table.
+			// The authored transform goes: every slide states each card's position, rotation and
+			// scale outright, so keeping it would fight the fan table.
 			panel.CardTemplates[i] = Clone(page, CardName(i), keepTransform: false);
 		}
 
-		// THE DESCRIPTION AND THE TINT KEEP THEIRS, and that split is the file's. Not one slide
-		// touches either element's transform — they set only opacity — so the authored transform
-		// IS the layout: it is what puts the text box under the fan and what stretches the tint
-		// across the screen.
+		// The description and the tint keep theirs: no slide touches either element's transform,
+		// only its opacity, so the authored transform IS their layout.
 		panel.DescriptionTemplate = Clone(page, DescriptionName, keepTransform: true);
 		panel.BackgroundTemplate = Clone(page, BackgroundName, keepTransform: true);
 
 		if (page is not null)
 		{
-			// The page's own place on the canvas, taken from the built node rather than
-			// hardcoded: the slide table is expressed in the page's LOCAL space, and the page is
-			// a child of `Layer` rather than of the screen root.
-			//
-			// ONLY IF IT IS IN THE TREE. The caller may hand us the PATTERN BOOK's copy — a
-			// detached tree kept as an art source — and `GlobalTransform` on a node outside the
-			// scene tree is an engine error that returns identity. It logged one per rebuild,
-			// which is noise over a real fault rather than a fault itself: `GameUi` overwrites
-			// this with the LIVE page's transform straight afterwards. Silence here is right
-			// because the detached case genuinely has no global transform to offer.
+			// The page's place on the canvas, from the built node: the slide table is in the
+			// page's LOCAL space and the page is a child of `Layer`, not the screen root.
+			// Only when in the tree — the caller may hand us the pattern book's detached copy,
+			// and `GlobalTransform` outside the tree is an engine error returning identity.
 			if (page.IsInsideTree())
 			{
 				panel.Transform = page.GlobalTransform;
@@ -383,9 +302,8 @@ public partial class Engine_FrontEndSaveCards : Node3D
 			return null;
 		}
 
-		// Duplicated rather than reparented, for the reason Engine_UiTheme.Art gives: the
-		// original stays live inside the screen it belongs to, and that screen is rebuilt from
-		// the file on every guest state change.
+		// Duplicated rather than reparented: the original stays live inside its own screen,
+		// which is rebuilt from the file on every guest state change.
 		var clone = (Node3D)found.Duplicate();
 		if (!keepTransform)
 		{
@@ -397,11 +315,8 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	}
 
 	/// <summary>
-	/// Builds the tint, the six cards and the description once.
-	///
-	/// Persistent nodes rather than rebuilt per change, for the reason the row menu keeps its
-	/// twelve slots: the raise is a tween, and a tween has to hang off a node that survives the
-	/// change it is animating.
+	/// Builds the tint, the six cards and the description once. Persistent nodes, not rebuilt per
+	/// change: the raise is a tween and must hang off a node that survives it.
 	/// </summary>
 	private void Build()
 	{
@@ -440,16 +355,11 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	}
 
 	/// <summary>
-	/// One card node: the shipped art if we were handed it, otherwise a flat stand-in.
-	///
-	/// A stand-in rather than nothing, for the reason the gender card gives — "the fan is up
-	/// with no art" and "the fan never opened" are different faults that look identical when a
-	/// missing clone draws nothing. The size is the tarot frame's own footprint: the card quads
-	/// are authored at scale 3.2 x 5.2 over the builder's 100-unit base quad, so a card is 320
-	/// by 520 before the fan's own 0.65.
-	///
-	/// A stand-in still gets a <c>Group</c> child, because that is the node the raise moves and
-	/// a panel whose selection does not visibly lift is not testable.
+	/// One card node: the shipped art when handed it, otherwise a flat stand-in, so "no art" and
+	/// "never opened" stay distinguishable. The stand-in's size is the tarot frame's footprint —
+	/// the card quads are authored at scale 3.2 x 5.2 over the builder's 100-unit base quad, so
+	/// 320 by 520 before the fan's 0.65. It still gets a <c>Group</c> child, the node the raise
+	/// moves.
 	/// </summary>
 	private static Node3D CardNode(Node3D? template, string name)
 	{
@@ -482,12 +392,9 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	private const float StandInHeight = 520f;
 
 	/// <summary>
-	/// Puts a list of saves on the fan and selects the first.
-	///
-	/// MORE THAN SIX IS TRUNCATED rather than refused, and it says so in <see cref="Describe"/>.
-	/// The guest cannot produce a seventh — its own write path returns 0 once six exist — so a
-	/// longer list means the caller's storage query disagrees with the guest's cap, and drawing
-	/// six of them is a better answer than drawing none.
+	/// Puts a list of saves on the fan and selects the first. More than six is truncated rather
+	/// than refused, and <see cref="Describe"/> says so — the guest's write path returns 0 once
+	/// six exist, so a longer list means the caller's storage query disagrees with its cap.
 	/// </summary>
 	public void SetSaves(IReadOnlyList<Save> saves)
 	{
@@ -499,19 +406,15 @@ public partial class Engine_FrontEndSaveCards : Node3D
 
 		BaseSlot = BaseSlotFor(_saves.Count);
 		Cursor = 0;
-		_held = 0;
+		_lockLeft = _lockRight = 0.0;
 		ApplyPortraits();
 		Refresh();
 	}
 
 	/// <summary>
-	/// Puts each save's portrait on the card it is drawn on.
-	///
-	/// The texture goes on the material rather than replacing the mesh, because the quad's UV
-	/// window is the artist's — the atlas rectangle rides on `Uv1Scale`/`Uv1Offset` and a
-	/// portrait is a whole texture, so only the albedo changes. A save with no portrait keeps
-	/// the authored `loadingcardback`, which is the right picture for a card whose quest has no
-	/// screenshot of its own.
+	/// Puts each save's portrait on the card it is drawn on. Only the albedo changes — the atlas
+	/// rectangle rides on `Uv1Scale`/`Uv1Offset` and a portrait is a whole texture. A save with
+	/// no portrait keeps the authored `loadingcardback`.
 	/// </summary>
 	private void ApplyPortraits()
 	{
@@ -527,74 +430,59 @@ public partial class Engine_FrontEndSaveCards : Node3D
 
 			if (Engine_UiTheme.FindByName(card, PortraitName) is MeshInstance3D quad)
 			{
-				// The clone already owns its material — `CloneFace` duplicates the node and the
-				// builder gives each quad its own material — so writing the texture here cannot
-				// leak onto the shipped card the art came from.
+				// The clone owns its own material (`CloneFace` duplicates the node, the builder
+				// gives each quad its own), so this cannot leak onto the shipped card.
 				Engine_UiSceneBuilder.SetQuadTexture(quad, portrait);
 			}
 		}
 	}
 
-	/// <summary>The direction currently held, and the auto-repeat clock behind it.</summary>
-	private int _held;
-
-	private double _sinceNavigate;
-
-	private double _navigateInterval = Engine_FrontEndMenu.FirstNavigateInterval;
-
-	private int _navigateCount;
-
 	/// <summary>
-	/// Moves the selection. <paramref name="direction"/> is -1 left, +1 right, 0 released.
+	/// One frame of the fan's left/right, returning true when the selection moved.
 	///
-	/// AUTO-REPEATING, unlike the gender card and for the reason that panel's remarks give from
-	/// the other side: there, LEFT and RIGHT name the two cards absolutely and a repeat has
-	/// nothing left to do. Here they are RELATIVE — the cursor walks a list of up to six — so
-	/// the same curve the row menu uses applies, and it is the same curve because it comes from
-	/// the same place: `guistateandconstants.lua`'s <c>GUI.Timing</c>, which is GUI-wide rather
-	/// than the expandable menu's own.
-	///
-	/// It CLAMPS at both ends rather than wrapping, matching the row menu. Returns true when the
-	/// selection moved.
+	/// The fan is C++, not the list's Lua clock: `sub_826DEE40` (state 5, codes 30/31) keeps a
+	/// lockout float per direction at `screen+212` (left) and `+216` (right). A code is honoured
+	/// only while its lockout is at or below zero; a move that succeeded (`sub_826E0BE0`
+	/// returned 1) writes 0.25 to its own and ZERO to the other's; a move refused at the edge
+	/// writes 0.5. No first/subsequent interval and no count — the stick translator re-emits the
+	/// code while held.
 	/// </summary>
 	public bool Navigate(int direction, double delta)
 	{
+		_lockLeft = System.Math.Max(0.0, _lockLeft - delta);
+		_lockRight = System.Math.Max(0.0, _lockRight - delta);
 		if (direction == 0)
 		{
-			_held = 0;
-			_navigateCount = 0;
-			_navigateInterval = Engine_FrontEndMenu.FirstNavigateInterval;
-			_sinceNavigate = 0.0;
 			return false;
 		}
 
-		if (_held != direction)
-		{
-			_held = direction;
-			_navigateCount = 0;
-			_navigateInterval = Engine_FrontEndMenu.FirstNavigateInterval;
-			_sinceNavigate = 0.0;
-			return Move(direction);
-		}
-
-		_sinceNavigate += delta;
-		if (_sinceNavigate < _navigateInterval)
+		ref double own = ref direction < 0 ? ref _lockLeft : ref _lockRight;
+		ref double other = ref direction < 0 ? ref _lockRight : ref _lockLeft;
+		if (own > 0.0)
 		{
 			return false;
 		}
 
-		_sinceNavigate = 0.0;
-		if (_navigateCount < Engine_FrontEndMenu.InputIntervalClamp)
+		if (Move(direction))
 		{
-			++_navigateCount;
-			double t = (double)_navigateCount / Engine_FrontEndMenu.InputIntervalClamp;
-			_navigateInterval = Engine_FrontEndMenu.FirstNavigateInterval +
-				((Engine_FrontEndMenu.SubsequentNavigateInterval -
-					Engine_FrontEndMenu.FirstNavigateInterval) * t);
+			own = MoveLockout;
+			other = 0.0;
+			return true;
 		}
 
-		return Move(direction);
+		own = EdgeLockout;
+		return false;
 	}
+
+	/// <summary>`screen+212/216 = 0.25` after a move that happened.</summary>
+	private const double MoveLockout = 0.25;
+
+	/// <summary>`screen+212/216 = 0.5` after a move the edge refused.</summary>
+	private const double EdgeLockout = 0.5;
+
+	private double _lockLeft;
+
+	private double _lockRight;
 
 	private bool Move(int direction)
 	{
@@ -610,44 +498,32 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	}
 
 	/// <summary>
-	/// Confirms the selected card and returns the index to load, or -1 when there is nothing on
-	/// the fan.
-	///
-	/// AN INDEX, NOT A NAME, because that is the join the guest itself uses: it identifies a
-	/// save by the ADDRESS of its handle slot inside its own vector — `Frontend_SetStartGameTarget`
-	/// takes `*(screen+84) + 4*i` — so sending text would mean finding it again on the guest's
-	/// side and trusting two orderings to agree.
+	/// Confirms the selected card and returns the index to load, or -1 when the fan is empty.
+	/// An index, not a name: the guest identifies a save by the address of its handle slot in its
+	/// own vector — `Frontend_SetStartGameTarget` takes `*(screen+84) + 4*i`.
 	/// </summary>
 	public int Activate() => _saves.Count == 0 ? -1 : Cursor;
 
 	/// <summary>
-	/// Puts the panel back to the state it opens in.
-	///
-	/// Called on the way IN rather than out, for the reason the gender card gives: the guest
-	/// re-enters through the same slide every time, whatever the player did last.
+	/// Puts the panel back to the state it opens in. Called on the way IN, not out: the guest
+	/// re-enters through the same slide every time.
 	/// </summary>
 	public void Reset()
 	{
 		Cursor = 0;
-		_held = 0;
-		_navigateCount = 0;
-		_navigateInterval = Engine_FrontEndMenu.FirstNavigateInterval;
+		_lockLeft = _lockRight = 0.0;
 		Refresh();
 	}
 
 	/// <summary>
-	/// Shows the cards the save list reaches, hides the rest, and starts the move tween.
-	///
-	/// A CARD WITH NO SAVE IS HIDDEN, NOT PARKED. The page's closed slide puts every card at
-	/// y -598, and reusing that for an unused slot would leave a stack of blank cards below the
-	/// canvas that a later open-tween would fly in — which is the empty-slot behaviour the file
-	/// does not have, because the file has no concept of an empty slot at all.
+	/// Shows the cards the save list reaches, hides the rest, and starts the move tween. A card
+	/// with no save is HIDDEN, not parked: reusing the closed slide's y -598 would stack blank
+	/// cards below the canvas for a later open-tween to fly in.
 	/// </summary>
 	public void Refresh()
 	{
-		// VISIBILITY IS BY SLOT, NOT BY SAVE INDEX. With three saves the base slot is 2, so
-		// cards 2, 3 and 4 draw and 1, 5 and 6 do not — testing `i < _saves.Count` here is the
-		// left-aligned fan the centring exists to avoid.
+		// Visibility is by SLOT, not by save index: with three saves the base slot is 2, so
+		// cards 2, 3 and 4 draw. Testing `i < _saves.Count` gives the left-aligned fan.
 		int first = BaseSlot - 1;
 		for (int i = 0; i < MaxCards; i++)
 		{
@@ -696,14 +572,9 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	}
 
 	/// <summary>
-	/// Writes every card's inner group at a point on its own interpolation.
-	///
-	/// THE SELECTED CARD GOES TO THE ORIGIN and every other one to <see cref="Row"/> — see the
-	/// class remarks for why that is the way round the guest states it, and why the opposite
-	/// reading is the natural mistake.
-	///
-	/// A plain clamped lerp, which is what the engine does — the same interpolation
-	/// <c>UpdateAnimations</c> runs for the row menu, with no easing curve to miss.
+	/// Writes every card's inner group at a point on its own interpolation. The selected card
+	/// goes to the origin and every other one to <see cref="Row"/>. A plain clamped lerp, as the
+	/// engine does — no easing curve.
 	/// </summary>
 	private void ApplyPoses(float t)
 	{
@@ -714,9 +585,13 @@ public partial class Engine_FrontEndSaveCards : Node3D
 				continue;
 			}
 
+			// The selected card rises: `sub_826E0BE0` puts the new card on Slide1 and the one it
+			// left on Slide2. Slide1's commands park `Group` at the origin and its tracks
+			// (records 2741..2746) carry it to (25, 199, roll -0.14) over 250 ticks; Slide2 runs
+			// them back. Cards never selected sit on the master slide, at the origin.
 			bool selected = _saves.Count > 0 && i == SlotOf(Cursor);
-			Vector3 to = selected ? Vector3.Zero : Row[i];
-			float roll = selected ? 0f : RowRoll[i];
+			Vector3 to = selected ? Row[i] : Vector3.Zero;
+			float roll = selected ? RowRoll[i] : 0f;
 
 			group.Position = _groupFrom[i].Lerp(to, t);
 			group.Rotation = new Vector3(0f, 0f,
@@ -725,11 +600,9 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	}
 
 	/// <summary>
-	/// Re-texts <c>SaveGameDescription</c> in place, keeping every piece of layout the file
-	/// authored — the same mechanism <see cref="Engine_FrontEndWarning.Show"/> uses, and for the
-	/// same reason: the scene builder stamps the artist's point size, alignment, wrap mode and
-	/// box onto the node, so regenerating the glyphs from those values reproduces the layout
-	/// exactly. Choosing them here would be inventing a layout next to one that already exists.
+	/// Re-texts <c>SaveGameDescription</c> in place, keeping the file's layout — the scene builder
+	/// stamps the artist's point size, alignment, wrap mode and box onto the node, so
+	/// regenerating the glyphs from those values reproduces it exactly.
 	/// </summary>
 	private void SetDescription(string display)
 	{
@@ -749,15 +622,10 @@ public partial class Engine_FrontEndSaveCards : Node3D
 		// alpha with 1.0.
 		var opaque = new Color(colour.R, colour.G, colour.B, 1f);
 
-		(ArrayMesh? mesh, Texture2D? atlas) = Theme.Glyphs(
-			display, size, opaque,
+		Theme.Paint(
+			node, display, size, opaque,
 			horizontalAlign: horizontal, verticalAlign: vertical,
 			boxWidth: box.X, boxHeight: box.Y, wrapMode: wrap);
-
-		node.Mesh = mesh;
-		node.MaterialOverride = mesh is null
-			? null
-			: Engine_UiSceneBuilder.TextMaterial(opaque, atlas);
 	}
 
 	/// <summary>Finds the shipped page inside a built presentation. Null means it is not there.</summary>
@@ -765,12 +633,9 @@ public partial class Engine_FrontEndSaveCards : Node3D
 		Engine_UiTheme.FindByName(root, PageName) as Node3D;
 
 	/// <summary>
-	/// A one-line description of what is on screen, for a check tool's log.
-	///
-	/// It reports where the selected card ACTUALLY ended up, in world space, rather than where
-	/// the table says it should be — those differ whenever the page's own transform is not what
-	/// was assumed, and "a card behind something else" and "a card nowhere near the canvas" look
-	/// identical in a screenshot.
+	/// A one-line description of what is on screen. Reports where the selected card actually
+	/// ended up in world space, not where the table says — the two differ whenever the page's own
+	/// transform is not what was assumed.
 	/// </summary>
 	public string Describe()
 	{

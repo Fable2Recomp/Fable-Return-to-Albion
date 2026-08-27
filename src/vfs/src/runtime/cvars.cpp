@@ -43,11 +43,6 @@ REXCVAR_DEFINE_INT32(vfs_startup_video_minimum_playback_ms, 0, "VFS",
                      "observed playback gate.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(vfs_loose_asset_backend, "native", "VFS",
-                      "VFS backend: refii for loose asset overrides, native "
-                      "for the original Fable 2 VFS.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 REXCVAR_DEFINE_STRING(vfs_loose_asset_root, "", "VFS",
                       "Optional host path to loose asset overrides. Defaults to "
                       "<assets_root>/unpacked.")
@@ -136,7 +131,6 @@ bool EqualsAsciiCaseInsensitive(std::string_view left, std::string_view right) {
 // of total process cycles. Cache the decisions in atomics and refresh them
 // through the cvar change callbacks so hot-reload semantics are preserved at
 // zero steady-state cost.
-std::atomic<bool> g_cached_refii_backend{false};
 std::atomic<bool> g_cached_trace_vfs{false};
 std::atomic<bool> g_cached_trace_loose_assets{false};
 std::atomic<bool> g_cached_trace_verbose_io{false};
@@ -144,9 +138,7 @@ std::once_flag g_cvar_cache_once;
 std::atomic<bool> g_cvar_cache_ready{false};
 
 void RefreshVfsCvarCache() {
-  const std::string backend = REXCVAR_GET(vfs_loose_asset_backend);
-  g_cached_refii_backend.store(EqualsAsciiCaseInsensitive(backend, "refii"),
-                               std::memory_order_release);
+  // REFII'S VFS IS THE ONLY ONE — there is nothing to select, so nothing is cached about it.
   g_cached_trace_vfs.store(REXCVAR_GET(vfs_trace_vfs),
                            std::memory_order_release);
   g_cached_trace_loose_assets.store(REXCVAR_GET(vfs_trace_loose_assets),
@@ -161,7 +153,6 @@ void InitializeVfsCvarCacheSlow() {
     const auto refresh = [](std::string_view, std::string_view) {
       RefreshVfsCvarCache();
     };
-    rex::cvar::RegisterChangeCallback("vfs_loose_asset_backend", refresh);
     rex::cvar::RegisterChangeCallback("vfs_trace_vfs", refresh);
     rex::cvar::RegisterChangeCallback("vfs_trace_loose_assets", refresh);
     rex::cvar::RegisterChangeCallback("vfs_trace_vfs_verbose_io", refresh);
@@ -179,84 +170,63 @@ inline void EnsureVfsCvarCache() {
 
 }  // namespace
 
-bool LooseAssetOverridesEnabled() {
-  EnsureVfsCvarCache();
-  return g_cached_refii_backend.load(std::memory_order_acquire);
-}
-
 extern "C" int32_t refii_bridge_vfs_loose_asset_override_tracing_enabled() {
   EnsureVfsCvarCache();
-  return g_cached_refii_backend.load(std::memory_order_acquire) &&
-         g_cached_trace_loose_assets.load(std::memory_order_acquire);
+  return g_cached_trace_loose_assets.load(std::memory_order_acquire);
 }
 
 extern "C" int32_t refii_bridge_vfs_tracing_enabled() {
   EnsureVfsCvarCache();
-  return g_cached_refii_backend.load(std::memory_order_acquire) &&
-         g_cached_trace_vfs.load(std::memory_order_acquire);
+  return g_cached_trace_vfs.load(std::memory_order_acquire);
 }
 
 extern "C" int32_t refii_bridge_vfs_verbose_io_tracing_enabled() {
   EnsureVfsCvarCache();
-  return g_cached_refii_backend.load(std::memory_order_acquire) &&
-         g_cached_trace_verbose_io.load(std::memory_order_acquire);
+  return g_cached_trace_verbose_io.load(std::memory_order_acquire);
 }
 
 extern "C" int32_t refii_bridge_vfs_loose_gameface_binary_overrides_enabled() {
-  return RefiiLooseAssetBackendEnabled();
+  return true;
 }
 
 extern "C" int32_t refii_bridge_vfs_loose_bank_entry_overrides_enabled() {
-  return RefiiLooseAssetBackendEnabled();
+  return true;
 }
 
 extern "C" int32_t refii_bridge_vfs_native_bank_parse_probe_enabled() {
-  return RefiiLooseAssetBackendEnabled() &&
-         REXCVAR_GET(vfs_native_bank_parse_probe);
+  return REXCVAR_GET(vfs_native_bank_parse_probe);
 }
 
 bool GdbCsvOverridesEnabled() {
-  return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_gdb_csv_overrides);
+  return REXCVAR_GET(vfs_gdb_csv_overrides);
 }
 
 bool BabelCsvOverridesEnabled() {
-  return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_babel_csv_overrides);
+  return REXCVAR_GET(vfs_babel_csv_overrides);
 }
 
 extern "C" int32_t refii_bridge_vfs_auto_press_start_enabled() {
-  return RefiiLooseAssetBackendEnabled() && REXCVAR_GET(vfs_auto_press_start);
+  return REXCVAR_GET(vfs_auto_press_start);
 }
 
 extern "C" int32_t refii_bridge_vfs_frontend_synthetic_handoff_enabled() {
-  return RefiiLooseAssetBackendEnabled() &&
-         REXCVAR_GET(vfs_frontend_synthetic_handoff);
+  return REXCVAR_GET(vfs_frontend_synthetic_handoff);
 }
 
 extern "C" int32_t refii_bridge_vfs_force_retail_update_mode_enabled() {
-  return RefiiLooseAssetBackendEnabled() &&
-         REXCVAR_GET(vfs_force_retail_update_mode);
+  return REXCVAR_GET(vfs_force_retail_update_mode);
 }
 
 extern "C" int32_t refii_bridge_vfs_skip_startup_videos_enabled() {
-  return LooseAssetOverridesEnabled() &&
-         GetLooseAssetBackend() == LooseAssetBackend::kRefii &&
-         REXCVAR_GET(vfs_skip_startup_videos) &&
+  // The two backend terms that used to lead this are gone with the switch. They were both
+  // false in every shipped run, so this answered false regardless of the cvar; it still does,
+  // because `vfs_skip_startup_videos` itself defaults false.
+  return REXCVAR_GET(vfs_skip_startup_videos) &&
          !REXCVAR_GET(vfs_force_startup_video_sequence);
 }
 
 extern "C" int32_t refii_bridge_vfs_startup_video_minimum_playback_ms() {
   return std::max(0, REXCVAR_GET(vfs_startup_video_minimum_playback_ms));
-}
-
-LooseAssetBackend GetLooseAssetBackend() {
-  EnsureVfsCvarCache();
-  return g_cached_refii_backend.load(std::memory_order_acquire)
-             ? LooseAssetBackend::kRefii
-             : LooseAssetBackend::kNative;
-}
-
-extern "C" int32_t refii_bridge_vfs_refii_loose_asset_backend_enabled() {
-  return LooseAssetOverridesEnabled();
 }
 
 inline namespace detail {

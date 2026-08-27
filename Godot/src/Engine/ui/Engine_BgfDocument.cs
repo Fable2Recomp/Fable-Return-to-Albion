@@ -124,20 +124,126 @@ public readonly struct BgfSlideEntry
 	public bool Active { get; init; }
 
 	/// <summary>
-	/// Attribute writes this slide applies to the element, in file order.
-	///
-	/// These are NOT decoration. A component's slides are how one authored superset
-	/// becomes several concrete layouts: the slide switches some pieces off AND moves
-	/// and resizes the survivors. menubox's <c>type5</c> switches 23 of 90 elements on
-	/// and carries 27 of these. Skipping them renders every enabled piece at its
-	/// superset position, which shows up as a nine-slice box with its edge and middle
-	/// tiles missing and holes where they should have been.
+	/// Attribute writes this slide applies to the element, in file order. A slide switches
+	/// pieces off AND moves and resizes the survivors (menubox's <c>type5</c> switches 23 of 90
+	/// elements on and carries 27 writes), so skipping these renders every enabled piece at its
+	/// authored superset position.
 	/// </summary>
 	public BgfAttribute[] Commands { get; init; }
 
 	public int CommandCount => Commands?.Length ?? 0;
 
 	public int EventCount { get; init; }
+
+	/// <summary>Animation indices this entry switches on; -1 for a pair whose flag is clear.</summary>
+	public int[]? ActivatedAnimations { get; init; }
+}
+
+/// <summary>
+/// One keyframe: the value at <paramref name="Time"/>, plus the cubic-Bezier control pair of
+/// the segment LEAVING this key (<c>C2</c> pairs with the NEXT key's time/value). Times share
+/// the element-timeline unit — 1000 ticks per timeline, the meter's 0..100 times ten.
+/// </summary>
+public readonly record struct BgfAnimationKey(
+	float Time, float Value, float C1Time, float C1Value, float C2Time, float C2Value);
+
+/// <summary>
+/// One animation track: keyframes over ONE attribute of ONE element, scrubbed by the
+/// element's inherited timeline. Active tracks evaluate every frame in the engine
+/// (`sub_822846B0`); slides toggle the active bit; DYNAMIC tracks are rebased from the live
+/// attribute value on slide entry.
+/// </summary>
+public sealed class BgfAnimation
+{
+	public int ElementOrdinal;
+	public uint AttributeId;
+	public bool ActiveOnLoad;
+	public bool Dynamic;
+	public BgfAnimationKey[] Keys = Array.Empty<BgfAnimationKey>();
+
+	/// <summary>
+	/// The track's value at time <paramref name="t"/> — the engine's own evaluation
+	/// (`sub_82284448`): clamped to the end keys; per segment either linear in time (both
+	/// outgoing control TIMES zero) or the time-Bezier solved for the parameter, then the
+	/// cubic value blend.
+	/// </summary>
+	public float Evaluate(float t)
+	{
+		if (Keys.Length == 0)
+		{
+			return 0f;
+		}
+
+		if (Keys.Length < 2 || t <= Keys[0].Time)
+		{
+			return Keys[0].Value;
+		}
+
+		if (t >= Keys[^1].Time)
+		{
+			return Keys[^1].Value;
+		}
+
+		int next = 1;
+		while (next < Keys.Length && Keys[next].Time <= t)
+		{
+			++next;
+		}
+
+		BgfAnimationKey k0 = Keys[next - 1];
+		BgfAnimationKey k1 = Keys[next];
+		if (k1.Time <= k0.Time)
+		{
+			return k1.Value;
+		}
+
+		float u = k0.C1Time == 0f && k0.C2Time == 0f
+			? (t - k0.Time) / (k1.Time - k0.Time)
+			: SolveTimeBezier(k0.Time, k0.C1Time, k0.C2Time, k1.Time, t);
+		if (u <= 0f)
+		{
+			return k0.Value;
+		}
+
+		if (u >= 1f)
+		{
+			return k1.Value;
+		}
+
+		float inv = 1f - u;
+		return (inv * inv * inv * k0.Value) +
+			(3f * u * inv * inv * k0.C1Value) +
+			(3f * u * u * inv * k0.C2Value) +
+			(u * u * u * k1.Value);
+	}
+
+	/// <summary>
+	/// Solves the time Bezier <c>B(u; t0, c1, c2, t1) = t</c> for <c>u</c> — bisection,
+	/// which is exact enough for a 1000-tick timeline and cannot diverge on the degenerate
+	/// control layouts artists produce.
+	/// </summary>
+	private static float SolveTimeBezier(float t0, float c1, float c2, float t1, float t)
+	{
+		float lo = 0f;
+		float hi = 1f;
+		for (int i = 0; i < 24; i++)
+		{
+			float mid = (lo + hi) * 0.5f;
+			float inv = 1f - mid;
+			float at = (inv * inv * inv * t0) + (3f * mid * inv * inv * c1) +
+				(3f * mid * mid * inv * c2) + (mid * mid * mid * t1);
+			if (at < t)
+			{
+				lo = mid;
+			}
+			else
+			{
+				hi = mid;
+			}
+		}
+
+		return (lo + hi) * 0.5f;
+	}
 }
 
 /// <summary>
@@ -161,13 +267,9 @@ public sealed class BgfSlide
 }
 
 /// <summary>
-/// The result of applying slides: which elements draw, and the attribute writes the
-/// slides made on top of each element's own.
-///
-/// The two halves have to travel together. A slide switches pieces of a component off
-/// AND repositions the survivors, so honouring only the visibility half renders every
-/// surviving piece at its authored superset position — a nine-slice box with its edges
-/// missing and holes where they belonged.
+/// The result of applying slides: which elements draw, and the attribute writes the slides made
+/// on top of each element's own. Both halves travel together — honouring only visibility leaves
+/// every surviving piece at its authored superset position.
 /// </summary>
 public sealed class BgfSlideState
 {
@@ -250,6 +352,12 @@ public sealed class Engine_BgfDocument
 	/// <summary>The 19 allocation counts. Indices used here: 0/1 element counts, 2 attributes, 3 contracts, 6 strings.</summary>
 	public uint[] MemoryCounts = Array.Empty<uint>();
 
+	/// <summary>The keyframe tracks value channels scrub. See the Animation section parse.</summary>
+	public BgfAnimation[] Animations = Array.Empty<BgfAnimation>();
+
+	/// <summary>The Animation section's byte size, kept for the parse diagnosis.</summary>
+	public int AnimationSectionSize;
+
 	public string[] Strings = Array.Empty<string>();
 	public BgfElement[] Elements = Array.Empty<BgfElement>();
 	public BgfContract[] Contracts = Array.Empty<BgfContract>();
@@ -258,12 +366,9 @@ public sealed class Engine_BgfDocument
 	public BgfSlide[] Slides = Array.Empty<BgfSlide>();
 
 	/// <summary>
-	/// The state the screen shows once its slides are applied — see
-	/// <see cref="ComputeSlideState"/>.
-	///
-	/// This is what separates a screen's real appearance from its authored superset:
-	/// the file ships every variant stacked (menubox carries 20 <c>staron</c> quads
-	/// where 5 stars belong), and a slide selects among them.
+	/// The state the screen shows once its slides are applied (see
+	/// <see cref="ComputeSlideState"/>). The file ships every variant stacked — menubox carries
+	/// 20 <c>staron</c> quads where 5 stars belong — and a slide selects among them.
 	/// </summary>
 	public BgfSlideState SlideState = BgfSlideState.Empty;
 
@@ -364,8 +469,94 @@ public sealed class Engine_BgfDocument
 		}
 		Expect(r.Pos, conEnd, "Contract");
 
-		// 5-7. Animation, Logic, Params — framed and skipped.
-		for (int i = 0; i < 3; i++)
+		// 5. Animation — the keyframe tracks a value channel scrubs. Layout from the
+		// engine's own parser (`sub_82BC8688`): per record `{u32 elementIndex, u32 attrId,
+		// u8 activeOnLoad, u8 dynamic, u16 keyframeCount}` (12 bytes), then EVERY record's
+		// keyframes as six 4-byte fields each — time, value, then the cubic-Bezier control
+		// pair of the outgoing segment — ALL read as floats (the engine converts the integer
+		// times with fcfid+frsp).
+		//
+		// The two pool counts live in the Memory manifest but their INDICES are not pinned,
+		// so they are solved against the section size (12·A + 24·K) and the parse validates:
+		// the per-record keyframe counts must sum to K and land exactly on the section end.
+		// A file that fails the solve keeps an empty table rather than a wrong one.
+		{
+			int animSize = checked((int)r.U32());
+			int animEnd = r.Pos + animSize;
+			doc.Animations = Array.Empty<BgfAnimation>();
+			doc.AnimationSectionSize = animSize;
+
+			if (animSize > 0)
+			{
+				int solvedRecords = -1;
+				for (int i = 0; i < doc.MemoryCounts.Length && solvedRecords < 0; i++)
+				{
+					for (int j = 0; j < doc.MemoryCounts.Length; j++)
+					{
+						long a = doc.MemoryCounts[i];
+						long k = doc.MemoryCounts[j];
+						if (a > 0 && (12 * a) + (24 * k) == animSize)
+						{
+							solvedRecords = (int)a;
+							break;
+						}
+					}
+				}
+
+				// Interleaved: each 12-byte record is followed immediately by its own
+				// keyframes (hud.bgf: 1472 records, 3464 keys, landing on the section end).
+				if (solvedRecords > 0)
+				{
+					var animations = new BgfAnimation[solvedRecords];
+					bool valid = true;
+					for (int i = 0; i < solvedRecords; i++)
+					{
+						if (r.Pos + 12 > animEnd)
+						{
+							valid = false;
+							break;
+						}
+
+						var animation = new BgfAnimation
+						{
+							ElementOrdinal = unchecked((int)r.U32()),
+							AttributeId = r.U32(),
+							ActiveOnLoad = d[r.Pos++] == 1,
+							Dynamic = d[r.Pos++] == 1,
+						};
+
+						int keyCount = r.U16();
+						if (r.Pos + (24L * keyCount) > animEnd)
+						{
+							valid = false;
+							break;
+						}
+
+						animation.Keys = new BgfAnimationKey[keyCount];
+						for (int k = 0; k < keyCount; k++)
+						{
+							animation.Keys[k] = new BgfAnimationKey(
+								r.TimeF32(), r.F32(), r.TimeF32(), r.F32(),
+								r.TimeF32(), r.F32());
+						}
+
+						animations[i] = animation;
+					}
+
+					// The walk must land the section EXACTLY, or the solve picked the wrong
+					// count pair — keep nothing rather than garbage.
+					if (valid && r.Pos == animEnd)
+					{
+						doc.Animations = animations;
+					}
+				}
+			}
+
+			r.Pos = animEnd;
+		}
+
+		// 6-7. Logic, Params — framed and skipped.
+		for (int i = 0; i < 2; i++)
 		{
 			int size = checked((int)r.U32());
 			r.Pos += size;
@@ -397,16 +588,24 @@ public sealed class Engine_BgfDocument
 				int ordinal = unchecked((int)r.U32());
 				bool active = d[r.Pos++] != 0;
 
-				// Commands are attribute records — byte for byte the same 8-byte
-				// `packed id + value` pair an element carries, so they go through the
-				// same decode rather than a second reader.
+				// Commands are attribute records — the same 8-byte `packed id + value` pair
+				// an element carries, so they use the same decode.
 				int cmdCount = checked((int)r.U32());
 				var commands = new BgfAttribute[cmdCount];
 				for (int c = 0; c < cmdCount; c++)
 					commands[c] = ReadAttribute(ref r);
 
+				// The tracks this slide activates: `(flag, animationIndex)` u16 pairs. A slide
+				// switches on a SUBSET of its element's tracks (`TurnOn` and `TurnOffFast` on
+				// one fader are one track each) — see Engine_HudView.BindTracks.
 				int evtCount = checked((int)r.U32());
-				r.Pos += evtCount * 4;
+				var activated = new int[evtCount];
+				for (int e = 0; e < evtCount; e++)
+				{
+					int flag = r.U16();
+					int index = r.U16();
+					activated[e] = flag != 0 ? index : -1;
+				}
 
 				s.Entries[j] = new BgfSlideEntry
 				{
@@ -414,6 +613,7 @@ public sealed class Engine_BgfDocument
 					Active = active,
 					Commands = commands,
 					EventCount = evtCount,
+					ActivatedAnimations = activated,
 				};
 			}
 			doc.Slides[i] = s;
@@ -429,39 +629,25 @@ public sealed class Engine_BgfDocument
 	}
 
 	/// <summary>
-	/// The screen's state after applying, per owning element, its master slide followed
-	/// by one named slide — the order <c>sub_82BB5760</c> uses (master as baseline, then
-	/// the target).
+	/// The screen's state after applying, per owning element, its master slide then one named
+	/// slide — the order <c>sub_82BB5760</c> uses. The master alone is not a renderable state:
+	/// across all 52 screens it switches 100% of elements off, so a static render needs both.
+	/// Each entry's attribute COMMANDS are applied along with its active bit.
 	///
-	/// The master slide alone is NOT a renderable state: measured across all 52 screens
-	/// it switches 100% of elements off. It is a clean slate that a named slide then
-	/// turns back on, so a static render needs both.
-	///
-	/// Each entry carries attribute COMMANDS as well as its active bit, and both halves
-	/// are applied. A component's slides are how one authored superset becomes several
-	/// concrete layouts, and the layout half lives entirely in those commands.
-	///
-	/// <b>Which named slide is correct is not derivable from the file.</b> Nothing in the
-	/// binary applies a slide at load; the choice is made by script, and Fable also
-	/// drives <c>active</c> directly from C++ at ~30 call sites. <paramref name="choose"/>
-	/// picks per owner; null takes the first non-master, which is a heuristic for
-	/// previewing, not a reproduction of what the game shows.
+	/// Which named slide is correct is not derivable from the file: nothing in the binary applies
+	/// one at load, the choice is script's, and Fable also drives <c>active</c> from C++ at ~30
+	/// call sites. <paramref name="choose"/> picks per owner; null takes the first non-master, a
+	/// preview heuristic.
 	/// </summary>
 	/// <summary>
-	/// Recomputes the slide state, choosing a specific slide on the SCENE owner.
+	/// Recomputes the slide state, choosing a specific slide on the SCENE owner. The front end's
+	/// Lua keeps a scene-level slide index — <c>FrontEnd.SLIDE = {PressStart=1, Title=2,
+	/// NewGame=3, LoadGame=4, Option=5, Multiplayer=6, Debug=7}</c> — navigated with
+	/// <c>goToSlide(SCENE, n)</c>; <c>frontendmainmenu.bgf</c> has exactly seven slides on owner
+	/// 0. Without it the preview heuristic guesses per owner and draws all seven pages at once.
 	///
-	/// The front end is driven by exactly one number. Its Lua keeps a scene-level slide
-	/// index — <c>FrontEnd.SLIDE = {PressStart=1, Title=2, NewGame=3, LoadGame=4,
-	/// Option=5, Multiplayer=6, Debug=7}</c> — and navigates with
-	/// <c>goToSlide(SCENE, n)</c>, testing it with <c>getCurrentSlide(SCENE)</c>. The
-	/// shipped <c>frontendmainmenu.bgf</c> has exactly seven slides on owner 0, matching
-	/// that set.
-	///
-	/// Without this the preview heuristic applies every owner's guess independently, so a
-	/// screen with seven mutually-exclusive pages draws all seven at once.
-	///
-	/// <paramref name="sceneSlide"/> is 1-based, as the Lua counts. Out of range leaves
-	/// the scene owner on the heuristic rather than blanking the screen.
+	/// <paramref name="sceneSlide"/> is 1-based, as the Lua counts. Out of range leaves the scene
+	/// owner on the heuristic.
 	/// </summary>
 	public void SetSceneSlide(int sceneSlide)
 	{
@@ -490,18 +676,12 @@ public sealed class Engine_BgfDocument
 	/// <summary>
 	/// Applies the LIVE slide of every element, as read from the running guest.
 	///
-	/// Indexed by element ORDINAL, not by name. The runtime walks its tree depth-first —
-	/// child, then sibling — and that order is byte-for-byte the order the elements appear
-	/// in this file: 77 of 77 agreed on the title screen. So position is an exact key.
+	/// Indexed by element ORDINAL, not by name: the runtime walks depth-first (child, then
+	/// sibling) in exactly the order elements appear in this file. A name hash is not a key — a
+	/// screen has far more elements than distinct names (3812 elements, 289 names on the main
+	/// menu), so hashing forces every "Group" onto one widget's state.
 	///
-	/// The name hash is NOT: a screen has far more elements than distinct names (77
-	/// elements, 47 names on the title screen; 3812 and 289 on the main menu), so keying
-	/// by hash forces every "Group" and every "Icon" onto one widget's state. That is what
-	/// made the first attempt render a coherent but wrong screen.
-	///
-	/// A length mismatch means the guest is on a different presentation than the one being
-	/// built, and nothing is applied — a positional join against the wrong tree is worse
-	/// than no live data at all.
+	/// A length mismatch means the guest is on a different presentation, and nothing is applied.
 	/// </summary>
 	public bool SetElementSlides(IReadOnlyList<int> slidesByOrdinal)
 	{
@@ -534,11 +714,8 @@ public sealed class Engine_BgfDocument
 
 	public BgfSlideState ComputeSlideState(Func<int, BgfSlide[], BgfSlide?>? choose)
 	{
-		// Start from the element's OWN authored state, not from "everything visible".
-		//
-		// Slides then turn things on and off from there. Assuming all-visible means any
-		// element no slide happens to mention is drawn — which is how a dialog panel that
-		// ships inactive ended up on top of the main menu.
+		// Start from the element's OWN authored state, not "everything visible": slides turn
+		// things on and off from there, and an element no slide mentions keeps its own bit.
 		var active = new bool[Elements.Length];
 		for (int i = 0; i < Elements.Length; ++i)
 		{
@@ -556,9 +733,8 @@ public sealed class Engine_BgfDocument
 
 		foreach ((int owner, List<BgfSlide> owned) in byOwner)
 		{
-			// The master is identified by name, not by position: nothing in the format
-			// promises it is stored first, and taking owned[0] on faith would silently
-			// apply a named slide as the baseline.
+			// The master is identified by name, not position — nothing in the format promises
+			// it is stored first.
 			BgfSlide? master = owned.FirstOrDefault(s => s.IsMaster);
 			if (master is not null)
 				Apply(master);
@@ -585,41 +761,47 @@ public sealed class Engine_BgfDocument
 					var map = overrides[e.ElementOrdinal] ??= new Dictionary<uint, BgfAttribute>();
 					map[a.Id] = a;
 				}
+
+				// A command is a tween's START, not its pose: `ShowPages` commands
+				// `Pages.position.x = 405` and activates the track running 405 → 0 over 400
+				// ticks, so the slide's resting pose is the track's LAST key.
+				foreach (int index in e.ActivatedAnimations ?? Array.Empty<int>())
+				{
+					if (index < 0 || index >= Animations.Length)
+						continue;
+
+					BgfAnimation track = Animations[index];
+					if (track.Keys.Length == 0 || track.ElementOrdinal < 0 ||
+						track.ElementOrdinal >= active.Length)
+						continue;
+
+					var map = overrides[track.ElementOrdinal] ??= new Dictionary<uint, BgfAttribute>();
+					map[track.AttributeId] = new BgfAttribute(
+						track.AttributeId, BgfValueType.Float,
+						BitConverter.SingleToUInt32Bits(track.Keys[^1].Value));
+				}
 			}
 		}
 	}
 
 	/// <summary>
-	/// Default slide for a static preview: the first non-master that is not authored to
-	/// be invisible.
+	/// Default slide for a static preview: the first non-master that is not authored to be
+	/// invisible. The plain first non-master is often an <c>Intro</c> — the animation's START,
+	/// e.g. menubox writing its <c>Group</c> to <c>opacity 0, position.y -600</c> where
+	/// <c>Outro</c> carries the resting <c>opacity 100, position.y 30</c>.
 	///
-	/// Taking the first non-master outright is wrong in a specific, common way. A screen
-	/// whose owner ships <c>Intro</c> and <c>Outro</c> has them in that order, and
-	/// <c>Intro</c> is the animation's START — menubox's writes its <c>Group</c> to
-	/// <c>opacity 0, position.y -600</c>, i.e. transparent and 600 units below frame.
-	/// <c>Outro</c> carries the resting values (<c>opacity 100, position.y 30</c>). So
-	/// "first" previews the state the screen is authored NOT to be seen in, and the
-	/// symptom is a screen that renders correctly just outside the camera.
-	///
-	/// The test is the data, not the name, and it has two parts:
+	/// Scored on the data, in two parts:
 	///
 	/// <list type="number">
-	/// <item>Count the entries this slide switches ON and then writes <c>opacity 0</c>
-	///   to. Fewest wins. That is what rejects an <c>Intro</c>.</item>
-	/// <item>On a tie, prefer the smallest total positional displacement. A slide that
-	///   parks its subtree hundreds of units off the canvas — <c>abilitiesscreen</c>'s
-	///   <c>ShowPages</c> writes <c>position.x 405</c> where <c>HidePages</c> writes 0 —
-	///   is one the player never sees in that state either, and on the busy screens it
-	///   is what pushes most of the content outside the authored camera.</item>
+	/// <item>Fewest entries switched ON and then written <c>opacity 0</c>.</item>
+	/// <item>On a tie, smallest total positional displacement — <c>abilitiesscreen</c>'s
+	///   <c>ShowPages</c> writes <c>position.x 405</c> where <c>HidePages</c> writes 0.</item>
 	/// </list>
 	///
-	/// Ordinary pairs are left alone: a button's <c>Unselected</c>/<c>Selected</c> both
-	/// score zero on both counts, so file order still decides.
-	///
-	/// It remains a preview heuristic. Which slide the GAME shows is script's decision;
-	/// pass a chooser to <see cref="ComputeSlideState"/> when you know better.
+	/// Ordinary pairs score zero on both, so file order still decides for them. A preview
+	/// heuristic only: pass a chooser to <see cref="ComputeSlideState"/> when you know better.
 	/// </summary>
-	private static BgfSlide? PickForPreview(List<BgfSlide> owned)
+	private BgfSlide? PickForPreview(List<BgfSlide> owned)
 	{
 		BgfSlide? best = null;
 		int bestHidden = int.MaxValue;
@@ -638,21 +820,38 @@ public sealed class Engine_BgfDocument
 				if (!e.Active)
 					continue;
 
+				// Score the slide's END pose, not its start: a command is where a tween begins
+				// and an activated track where it ends — `Outro` commands the menu on canvas at
+				// -400 and runs it to -800; `on` commands the dialog to opacity 0 and runs it
+				// to 100.
+				var pose = new Dictionary<uint, float>();
 				foreach (BgfAttribute a in e.Commands)
 				{
-					if (a.Type != BgfValueType.Float)
-						continue;
+					if (a.Type == BgfValueType.Float)
+						pose[a.Id] = a.AsFloat();
+				}
 
-					if (a.Id == OpacityId && a.AsFloat() <= 0f)
+				foreach (int index in e.ActivatedAnimations ?? Array.Empty<int>())
+				{
+					if (index >= 0 && index < Animations.Length &&
+						Animations[index].Keys.Length > 0 &&
+						Animations[index].ElementOrdinal == e.ElementOrdinal)
+					{
+						pose[Animations[index].AttributeId] = Animations[index].Keys[^1].Value;
+					}
+				}
+
+				foreach ((uint id, float value) in pose)
+				{
+					if (id == OpacityId && value <= 0f)
 						hidden++;
-					else if (a.Id == PositionXId || a.Id == PositionYId)
-						displacement += Math.Abs(a.AsFloat());
+					else if (id == PositionXId || id == PositionYId)
+						displacement += Math.Abs(value);
 				}
 			}
 
-			// Two rules, in order. Both exist because a slide that hides the screen or
-			// parks it off the side of the canvas is one the player never sees, so it
-			// cannot be what a static preview should show.
+			// Two rules in order: reject a slide that hides the screen, then one that parks it
+			// off the canvas.
 			if (hidden < bestHidden || (hidden == bestHidden && displacement < bestDisplacement))
 			{
 				bestHidden = hidden;
@@ -669,9 +868,8 @@ public sealed class Engine_BgfDocument
 	private static readonly uint PositionYId = Engine_GameHash.AttributeId("position.y");
 
 	/// <summary>
-	/// Reads one 8-byte attribute record: a packed descriptor then the value word. Used
-	/// for both element attributes and slide commands — they are the same record, and
-	/// reading them with one function is what keeps that true.
+	/// Reads one 8-byte attribute record: a packed descriptor then the value word. Element
+	/// attributes and slide commands are the same record.
 	/// </summary>
 	private static BgfAttribute ReadAttribute(ref Reader r)
 	{
@@ -723,5 +921,12 @@ public sealed class Engine_BgfDocument
 			Pos += 2;
 			return _be ? BinaryPrimitives.ReadUInt16BigEndian(s) : BinaryPrimitives.ReadUInt16LittleEndian(s);
 		}
+
+		/// <summary>A float stored as its bit pattern.</summary>
+		public float F32() => BitConverter.UInt32BitsToSingle(U32());
+
+		/// <summary>An INTEGER time field, as the engine reads it — converted to float at load
+		/// (`fcfid`+`frsp` in the shipped parser).</summary>
+		public float TimeF32() => U32();
 	}
 }

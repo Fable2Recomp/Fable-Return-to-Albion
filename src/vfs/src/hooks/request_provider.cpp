@@ -54,13 +54,14 @@ REX_EXTERN(rex_lhVFS_RequestManager_FindStream) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_RequestManager_FindStream);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t manager_guest = ctx.r4.u32;
   const uint32_t name_guest = ctx.r5.u32;
   const uint32_t mode = ctx.r6.u32;
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled()) {
+  {
     const std::string asset_path =
         refii::vfs::ReadGuestWideStringObject(base, name_guest, 4096);
     if (!asset_path.empty()) {
@@ -199,12 +200,13 @@ REX_EXTERN(rex_lhVFS_RequestManager_BuildHashTable) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_RequestManager_BuildHashTable);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t manager_guest = original_ctx.r3.u32;
 
   __imp__rex_lhVFS_RequestManager_BuildHashTable(ctx, base);
 
-  if (ctx.r3.s32 >= 0 && refii::vfs::RefiiLooseAssetBackendEnabled()) {
+  if (ctx.r3.s32 >= 0) {
     refii::vfs::RecordKnownRequestManagerGuest(
         manager_guest, "RequestManager_BuildHashTable");
     PPCContext augment_ctx = original_ctx;
@@ -242,6 +244,7 @@ REX_EXTERN(sub_82B45F70) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B45F70);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t manager_guest = original_ctx.r3.u32;
   const uint32_t provider_guest = original_ctx.r4.u32;
@@ -258,7 +261,7 @@ REX_EXTERN(sub_82B45F70) {
   const bool should_augment_provider_hash =
       provider_build_chain_complete &&
       (provider_count != 1 || provider_is_known_request_manager);
-  if (ctx.r3.s32 >= 0 && refii::vfs::RefiiLooseAssetBackendEnabled()) {
+  if (ctx.r3.s32 >= 0) {
     refii::vfs::RecordKnownRequestManagerGuest(
         manager_guest, "RequestManager_BuildProviderHash");
     if (should_augment_provider_hash) {
@@ -299,6 +302,7 @@ REX_EXTERN(sub_82B456D8) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B456D8);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = original_ctx.r3.u32;
@@ -342,7 +346,7 @@ REX_EXTERN(sub_82B456D8) {
         "request_manager_hash_entry", resource_hash, runtime_names);
   }
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() && resource_hash != 0 &&
+  if (resource_hash != 0 &&
       refii::vfs::g_suppress_request_manager_hash_entry_loose_streams == 0 &&
       !pass_through_hash) {
     refii::vfs::RefiiVfsOpenResult open_result;
@@ -475,6 +479,7 @@ REX_EXTERN(rex_lhVFS_Provider_FindStreamByHash) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_Provider_FindStreamByHash);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t provider_guest = ctx.r4.u32;
@@ -508,7 +513,7 @@ REX_EXTERN(rex_lhVFS_Provider_FindStreamByHash) {
                      return refii::vfs::IsTraceInterestingAsset(name);
                    }));
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() && resource_hash != 0) {
+  if (resource_hash != 0) {
     refii::vfs::RefiiVfsOpenResult open_result;
     refii::vfs::TryOpenRefiiVfsAsset(
         ctx,
@@ -620,6 +625,7 @@ REX_EXTERN(rex_lhVFS_Provider_OpenStream) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhVFS_Provider_OpenStream);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t provider_guest = ctx.r4.u32;
@@ -640,8 +646,7 @@ REX_EXTERN(rex_lhVFS_Provider_OpenStream) {
       refii::vfs::ShouldLogFileApiPath("Provider_OpenStream", name);
   refii::vfs::RefiiVfsOwnershipDecision ownership;
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      out_guest != 0 && !asset_candidates.empty()) {
+  if (out_guest != 0 && !asset_candidates.empty()) {
     refii::vfs::RefiiVfsOpenResult open_result;
     std::string opened_asset_path;
     for (const std::string& candidate : asset_candidates) {
@@ -787,14 +792,14 @@ REX_EXTERN(rex_lhBank_OpenStreamByName) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_OpenStreamByName);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t bank_guest = ctx.r4.u32;
   const uint32_t name_guest = ctx.r5.u32;
   const uint32_t mode = ctx.r6.u32;
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      refii::vfs::LooseBankEntryOverridesEnabled()) {
+  if (refii::vfs::LooseBankEntryOverridesEnabled()) {
     const std::string entry_name =
         refii::vfs::ReadGuestWideStringObject(base, name_guest, 4096);
     const std::string bank_name =

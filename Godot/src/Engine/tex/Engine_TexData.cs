@@ -368,10 +368,15 @@ public static class Engine_TexData
 		{
 			Engine_Xbox360Tiling.SwapWords16(payload);
 		}
-		else
+		else if (format != TexSurfaceFormat.Rgba8)
 		{
 			Engine_Xbox360Tiling.SwapWords32(payload);
 		}
+
+		// A8R8G8B8 / X8R8G8B8 ARE ALREADY A,R,G,B PER TEXEL in the bank, and the untile moves
+		// whole texels — swapping the dwords first handed the swizzle B,G,R,A, so a 64x64
+		// button icon came out as a dark olive disc at alpha 73 with a faint core: every
+		// uncompressed 32-bit GUI texture was drawn with its channels rotated.
 
 		byte[] data = Engine_Xbox360Tiling.Untile(payload, unitsWide, unitsHigh, blockBytes);
 

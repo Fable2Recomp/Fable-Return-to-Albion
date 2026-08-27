@@ -6,12 +6,11 @@ bool IsNativeStartupBikCursorCaller(uint32_t link_register) {
   return link_register == 0x82377C98u || link_register == 0x822F4FC8u;
 }
 
+} // namespace
+
+// The BIK-cursor audit's rate limit.
 bool ShouldLogNativeStartupVideoNativeMiscAudit(std::string_view key,
                                                 uint32_t limit) {
-  if (refii::vfs::RefiiLooseAssetBackendEnabled()) {
-    return false;
-  }
-
   static std::mutex mutex;
   static std::unordered_map<std::string, uint32_t> counts;
 
@@ -20,12 +19,11 @@ bool ShouldLogNativeStartupVideoNativeMiscAudit(std::string_view key,
   return next_count <= limit;
 }
 
-} // namespace
-
 REX_EXTERN(sub_82C6E8F0) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6E8F0);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t object_guest = original_ctx.r3.u32;
@@ -90,144 +88,53 @@ REX_EXTERN(sub_82C6EAD8) {
   const uint32_t stream_guest =
       object_guest != 0 ? refii::vfs::LoadGuestU32(base, object_guest + 8)
                         : 0;
-  if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {
-    const bool startup_loop_cursor =
-        IsNativeStartupBikCursorCaller(original_ctx.lr);
-    const bool audit =
-        startup_loop_cursor ||
-        ShouldLogNativeStartupVideoNativeMiscAudit("NativeBikCursorAny", 8);
-    if (audit) {
-      REXLOG_INFO("Refii VFS native BIK cursor enter "
-                  "lr=0x{:08X} object=0x{:08X} stream=0x{:08X} "
-                  "startup_loop={} object_words={} stream_words={} {}",
-                  original_ctx.lr,
-                  object_guest,
-                  stream_guest,
-                  startup_loop_cursor,
-                  refii::vfs::FormatGuestWordsIfPointer(base, object_guest, 8),
-                  refii::vfs::FormatGuestWords(base, stream_guest, 12),
-                  refii::vfs::FormatGuestObjectVTable(
-                      base, stream_guest, 12));
-    }
-    const auto cursor_started_at = std::chrono::steady_clock::now();
-    __imp__sub_82C6EAD8(ctx, base);
-    const auto cursor_elapsed_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - cursor_started_at)
-            .count();
-    if (startup_loop_cursor) {
-      refii::vfs::RecordRefiiStartupVideoCursor(
-          base, object_guest, stream_guest, ctx.r3.u32);
-    }
-    if (audit) {
-      REXLOG_INFO("Refii VFS native BIK cursor exit "
-                  "lr=0x{:08X} object=0x{:08X} stream=0x{:08X} "
-                  "result=0x{:08X} elapsed_ms={} startup_loop={}",
-                  original_ctx.lr,
-                  object_guest,
-                  stream_guest,
-                  ctx.r3.u32,
-                  cursor_elapsed_ms,
-                  startup_loop_cursor);
-    }
-    return;
-  }
-
-  const bool trace_cursor =
-      refii::vfs::ShouldTraceBikPpcShape(
-          base, stream_guest, "BIKPpcCursor", 8);
-  const bool startup_bik_cursor =
-      refii::vfs::IsBikLooseStreamTraceAsset(base, stream_guest);
-  if (startup_bik_cursor &&
-      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "StartupBikCursorCompactEnter", 12)) {
-    REXLOG_INFO("Refii VFS startup BIK cursor enter "
+  // The startup video's BIK cursor step, run by the guest.
+  const bool startup_loop_cursor =
+      IsNativeStartupBikCursorCaller(original_ctx.lr);
+  const bool audit =
+      startup_loop_cursor ||
+      ShouldLogNativeStartupVideoNativeMiscAudit("NativeBikCursorAny", 8);
+  if (audit) {
+    REXLOG_INFO("Refii VFS native BIK cursor enter "
                 "lr=0x{:08X} object=0x{:08X} stream=0x{:08X} "
-                "stream_summary=[{}]",
+                "startup_loop={} object_words={} stream_words={} {}",
                 original_ctx.lr,
                 object_guest,
                 stream_guest,
-                refii::vfs::FormatBikPpcStreamSummary(base, stream_guest));
-  }
-  if (trace_cursor) {
-    REXLOG_INFO("VFS trace BIK cursor enter lr=0x{:08X} object=0x{:08X} "
-                "stream=0x{:08X} object_words={} object_vtable={} "
-                "stream_summary=[{}] handoff=[{}]",
-                original_ctx.lr,
-                object_guest,
-                stream_guest,
+                startup_loop_cursor,
                 refii::vfs::FormatGuestWordsIfPointer(base, object_guest, 8),
-                refii::vfs::FormatGuestObjectVTableSlots(
-                    base, object_guest, 8),
-                refii::vfs::FormatBikPpcStreamSummary(base, stream_guest),
-                refii::vfs::FormatRefiiPostVideoHandoffTraceForLog());
+                refii::vfs::FormatGuestWords(base, stream_guest, 12),
+                refii::vfs::FormatGuestObjectVTable(
+                    base, stream_guest, 12));
   }
-
   const auto cursor_started_at = std::chrono::steady_clock::now();
   __imp__sub_82C6EAD8(ctx, base);
   const auto cursor_elapsed_ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - cursor_started_at)
           .count();
-  refii::vfs::RecordRefiiStartupVideoCursor(
-      base, object_guest, stream_guest, ctx.r3.u32);
-  if (startup_bik_cursor &&
-      refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-          "StartupBikCursorCompactExit", 12)) {
-    REXLOG_INFO("Refii VFS startup BIK cursor exit "
+  if (startup_loop_cursor) {
+    refii::vfs::RecordRefiiStartupVideoCursor(
+        base, object_guest, stream_guest, ctx.r3.u32);
+  }
+  if (audit) {
+    REXLOG_INFO("Refii VFS native BIK cursor exit "
                 "lr=0x{:08X} object=0x{:08X} stream=0x{:08X} "
-                "result=0x{:08X} elapsed_ms={}",
+                "result=0x{:08X} elapsed_ms={} startup_loop={}",
                 original_ctx.lr,
                 object_guest,
                 stream_guest,
                 ctx.r3.u32,
-                cursor_elapsed_ms);
+                cursor_elapsed_ms,
+                startup_loop_cursor);
   }
-  if (IsNativeStartupBikCursorCaller(original_ctx.lr)) {
-    const bool trace_loop =
-        refii::vfs::ShouldTraceStartupVideoLoopProbe(
-            "StartupVideoLoop_CursorPoll", original_ctx.lr, 12);
-    if (trace_loop) {
-      refii::vfs::RecordRefiiPostVideoUiEvent("StartupVideoCursorPoll",
-                                                  original_ctx.lr,
-                                                  ctx.r3.u32,
-                                                  original_ctx.r3.u32,
-                                                  original_ctx.r4.u32,
-                                                  original_ctx.r5.u32);
-      REXLOG_INFO("VFS trace startup video loop cursor poll "
-                  "lr=0x{:08X} object=0x{:08X} stream=0x{:08X} "
-                  "result=0x{:08X} elapsed_ms={} stream_summary=[{}] "
-                  "handoff=[{}] main_menu=[{}]",
-                  original_ctx.lr,
-                  object_guest,
-                  stream_guest,
-                  ctx.r3.u32,
-                  cursor_elapsed_ms,
-                  refii::vfs::FormatBikPpcStreamSummary(base, stream_guest),
-                  refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
-                  refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
-    }
-  }
-
-  if (trace_cursor) {
-    REXLOG_INFO("VFS trace BIK cursor exit lr=0x{:08X} object=0x{:08X} "
-                "stream=0x{:08X} result=0x{:08X} object_words={} handoff=[{}]",
-                original_ctx.lr,
-                object_guest,
-                stream_guest,
-                ctx.r3.u32,
-                refii::vfs::FormatGuestWordsIfPointer(base, object_guest, 8),
-                refii::vfs::FormatRefiiPostVideoHandoffTraceForLog());
-  }
-  refii::vfs::MaybeLogRefiiPostVideoHashOnlyBlocker(original_ctx.lr,
-                                                        "BIKCursorExit",
-                                                        base);
 }
 
 REX_EXTERN(sub_82C6EA48) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6EA48);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t object_guest = original_ctx.r3.u32;
@@ -273,6 +180,7 @@ REX_EXTERN(sub_82C6EA80) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82C6EA80);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t object_guest = original_ctx.r3.u32;
   const uint32_t stream_guest =
@@ -311,7 +219,9 @@ REX_EXTERN(sub_82C6EA80) {
 REX_EXTERN(sub_82C8C718) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C8C718);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t parser_guest = original_ctx.r3.u32;
@@ -358,6 +268,7 @@ REX_EXTERN(rex_lhGameInit_SetupAudio) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhGameInit_SetupAudio);
 
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceFrontendHandoffDiagnostics &&
       refii::vfs::VfsTracingEnabled() &&
@@ -402,6 +313,7 @@ REX_EXTERN(rex_lhRefCounted_ReturnMinusOne) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRefCounted_ReturnMinusOne);
 
+
   const uint32_t object_guest = ctx.r3.u32;
   refii::vfs::LooseStreamRecord record;
   std::string match;
@@ -435,6 +347,7 @@ REX_EXTERN(sub_82A20EE8) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82A20EE8);
 
+
   const PPCContext original_ctx = ctx;
   const bool mesh_reader_trace =
       refii::vfs::kTraceMeshModelAudioDiagnostics &&
@@ -466,6 +379,7 @@ REX_EXTERN(rex_lhRefCounted_Release) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRefCounted_Release);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t object_guest = ctx.r3.u32;
@@ -507,7 +421,9 @@ REX_EXTERN(rex_lhRefCounted_Release) {
 REX_EXTERN(sub_822C72E8) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_822C72E8);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   const uint32_t object_guest = ctx.r3.u32;
   if (refii::vfs::TryHandleRefiiReadRequestRelease(
@@ -529,7 +445,9 @@ REX_EXTERN(sub_822C72E8) {
 REX_EXTERN(sub_822CBB98) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_822CBB98);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiReadRequestAddRef(
           ctx, base, ctx.r3.u32)) {
@@ -542,7 +460,9 @@ REX_EXTERN(sub_822CBB98) {
 REX_EXTERN(sub_8290DD10) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_8290DD10);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiReadRequestGetStatus(
           ctx, base, ctx.r3.u32, "ReadRequest_GetStatus")) {
@@ -555,7 +475,9 @@ REX_EXTERN(sub_8290DD10) {
 REX_EXTERN(sub_82B54D28) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B54D28);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiResourceWrapperDtor(
           ctx, base, ctx.r3.u32, ctx.r4.u32)) {
@@ -568,7 +490,9 @@ REX_EXTERN(sub_82B54D28) {
 REX_EXTERN(sub_82B54250) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B54250);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiResourceWrapperWait(
           ctx, base, ctx.r3.u32, "ResourceWrapper_Wait")) {
@@ -581,7 +505,9 @@ REX_EXTERN(sub_82B54250) {
 REX_EXTERN(sub_82B54268) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B54268);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = original_ctx.r3.u32;
@@ -627,7 +553,9 @@ REX_EXTERN(sub_82B54268) {
 REX_EXTERN(sub_82B542D8) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B542D8);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t wrapper_guest = original_ctx.r3.u32;
@@ -665,7 +593,9 @@ REX_EXTERN(sub_82B542D8) {
 REX_EXTERN(sub_82B542F0) { // Lumen: LHVFS::CBasicBufferedRequest::GetDevice(void)
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B542F0);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiResourceWrapperSlot36(
           ctx, base, ctx.r3.u32, ctx.r4.u32)) {
@@ -678,7 +608,9 @@ REX_EXTERN(sub_82B542F0) { // Lumen: LHVFS::CBasicBufferedRequest::GetDevice(voi
 REX_EXTERN(sub_82C0EE10) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C0EE10);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t wrapper_guest = original_ctx.r3.u32;
@@ -716,7 +648,9 @@ REX_EXTERN(sub_82C0EE10) {
 REX_EXTERN(sub_82B5BFF8) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5BFF8);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiReadRequestWait(
           ctx, base, ctx.r3.u32, "ReadRequest_Wait")) {
@@ -729,7 +663,9 @@ REX_EXTERN(sub_82B5BFF8) {
 REX_EXTERN(sub_82B5C0C0) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C0C0);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiReadRequestGetBytes(
           ctx, base, ctx.r3.u32, ctx.r4.u32)) {
@@ -742,7 +678,9 @@ REX_EXTERN(sub_82B5C0C0) {
 REX_EXTERN(sub_82B5C0D8) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C0D8);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiReadRequestGetOffset(ctx, ctx.r3.u32)) {
     return;
@@ -754,7 +692,9 @@ REX_EXTERN(sub_82B5C0D8) {
 REX_EXTERN(sub_82B5C0E0) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C0E0);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiReadRequestReturnSuccess(
           ctx, base, ctx.r3.u32, "ReadRequest_Notify")) {
@@ -767,7 +707,9 @@ REX_EXTERN(sub_82B5C0E0) {
 REX_EXTERN(sub_82B5C110) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C110);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiReadRequestReturnSuccess(
           ctx, base, ctx.r3.u32, "ReadRequest_SetCallback")) {
@@ -782,6 +724,7 @@ REX_EXTERN(sub_82B5C148) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C148);
 
+
   __imp__sub_82B5C148(ctx, base);
 }
 
@@ -790,13 +733,16 @@ REX_EXTERN(sub_82B5C160) { // Lumen: LHVFS::CWin32Request::GetDevice(void)
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B5C160);
 
+
   __imp__sub_82B5C160(ctx, base);
 }
 
 REX_EXTERN(sub_8252AA18) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_8252AA18);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiReadRequestSmartPtrAssign(
           ctx, base, ctx.r3.u32, ctx.r4.u32)) {
@@ -811,6 +757,7 @@ REX_EXTERN(sub_82B4EC30) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4EC30);
 
+
   if (refii::vfs::TryHandleRefiiStreamReaderFlush(
           ctx, base, ctx.r3.u32, "StreamReader_FlushPage")) {
     return;
@@ -823,6 +770,7 @@ REX_EXTERN(sub_82B4E6D0) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4E6D0);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t reader_guest = original_ctx.r3.u32;
@@ -877,6 +825,7 @@ REX_EXTERN(sub_82B4E8E0) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4E8E0);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t reader_guest = original_ctx.r3.u32;
   const uint32_t destination_guest = original_ctx.r4.u32;
@@ -928,7 +877,9 @@ REX_EXTERN(sub_82B4E8E0) {
 REX_EXTERN(sub_82B4ED70) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4ED70);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   if (refii::vfs::TryHandleRefiiStreamReaderRefill(
           ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u64)) {
@@ -989,6 +940,7 @@ REX_EXTERN(sub_82190728) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82190728);
 
+
   const PPCContext original_ctx = ctx;
   static std::atomic<uint32_t> job_pump_trace_count{0};
   const uint32_t trace_count =
@@ -1024,7 +976,9 @@ REX_EXTERN(sub_82190728) {
 REX_EXTERN(sub_82C51CA0) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82C51CA0);
+  // No native passthrough macro: it returns before the check that recognises Refii-owned
+  // objects. The call to the original at the end is the passthrough for the guest's own.
+
 
   const PPCContext original_ctx = ctx;
   const bool interesting =
@@ -1059,6 +1013,7 @@ REX_EXTERN(sub_82C51EC0) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82C51EC0);
+
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::kTraceMeshModelAudioDiagnostics &&

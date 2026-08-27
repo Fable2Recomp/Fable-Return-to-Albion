@@ -1,15 +1,16 @@
 #include "vfs_hooks_private.h"
+#include "gui/gui_menu_chunks.h"
 
 REX_EXTERN(rex_lhResourceManager_Open) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_Open);
 
+
   const PPCContext original_ctx = ctx;
   refii::vfs::RecordFrontendTextureConsumerResourceBoundary(
       "ResourceManager_Open", original_ctx.r3.u32, 0);
-  if (refii::vfs::kDirectResourceManagerOpenOverride &&
-      refii::vfs::RefiiLooseAssetBackendEnabled()) {
+  if (refii::vfs::kDirectResourceManagerOpenOverride) {
     const uint32_t resource_hash = original_ctx.r3.u32;
     const uint32_t out_guest = original_ctx.r4.u32;
     PPCContext boot_ctx = original_ctx;
@@ -81,6 +82,38 @@ REX_EXTERN(rex_lhResourceManager_Open) {
 
   __imp__rex_lhResourceManager_Open(ctx, base);
 
+  // Log the returned object with its vtable: complete proxy 0x82002A04, buffered wrapper
+  // 0x820F9DA8, else a fail-path object.
+  {
+    static std::atomic<uint32_t> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 8u) {
+      const uint32_t out_object =
+          original_ctx.r4.u32 != 0
+              ? refii::vfs::LoadGuestU32(base, original_ctx.r4.u32)
+              : 0u;
+      const uint32_t vtable =
+          out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object) : 0u;
+      const uint32_t inner =
+          out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object + 12u) : 0u;
+      REXLOG_INFO("Refii Open RETURNED: result={} out=0x{:08X} object=0x{:08X} "
+                  "vtable=0x{:08X} words=[{:08X} {:08X} {:08X} {:08X} {:08X} {:08X}] "
+                  "inner=0x{:08X} inner_vtbl=0x{:08X} inner[+124]=0x{:08X} "
+                  "inner[+128]={} inner[+200]={}",
+                  ctx.r3.u32, original_ctx.r4.u32, out_object, vtable,
+                  out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object + 4u) : 0u,
+                  out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object + 8u) : 0u,
+                  out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object + 12u) : 0u,
+                  out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object + 16u) : 0u,
+                  out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object + 20u) : 0u,
+                  out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object + 24u) : 0u,
+                  inner,
+                  inner != 0 ? refii::vfs::LoadGuestU32(base, inner) : 0u,
+                  inner != 0 ? refii::vfs::LoadGuestU32(base, inner + 124u) : 0u,
+                  inner != 0 ? refii::vfs::LoadGuestU32(base, inner + 128u) : 0u,
+                  inner != 0 ? refii::vfs::LoadGuestU32(base, inner + 200u) : 0u);
+    }
+  }
+
   if (refii::vfs::ShouldLogVfsTraceOperation("ResourceManager_Open")) {
     REXLOG_INFO("VFS trace ResourceManager_Open exit lr=0x{:08X} "
                 "result=0x{:08X}",
@@ -89,12 +122,32 @@ REX_EXTERN(rex_lhResourceManager_Open) {
   }
 }
 
+// Open → OpenInternal → FindAndCreateStream → Submit each have silent fail paths ending in a
+// NULL manifest; these hooks log each stage's verdict.
+
+REX_EXTERN(sub_82B48CB8) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t mgr = ctx.r3.u32;
+  const uint32_t item = ctx.r4.u32;
+  const uint32_t shutdown =
+      mgr != 0 ? (refii::vfs::LoadGuestU32(base, mgr + 152u) >> 24) : 0xFFu;
+  __imp__sub_82B48CB8(ctx, base);
+  static std::atomic<uint32_t> logged{0};
+  if (logged.fetch_add(1, std::memory_order_relaxed) < 8u) {
+    REXLOG_INFO("Refii RequestManager Submit: mgr=0x{:08X} shutdown_byte={} item=0x{:08X} "
+                "item_vtbl=0x{:08X} -> result=0x{:08X}",
+                mgr, shutdown, item,
+                item != 0 ? refii::vfs::LoadGuestU32(base, item) : 0u,
+                ctx.r3.u32);
+  }
+}
+
 REX_EXTERN(sub_82B6DB20) {
   REX_FUNC_PROLOGUE();
 
-  // Native path replicates REFII_VFS_NATIVE_PASSTHROUGH but keeps the pool
-  // stream-in outcome log (the macro's early return made it dead code).
-  if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {
+  // Replicates REFII_VFS_NATIVE_PASSTHROUGH but keeps the outcome log, which the macro's early
+  // return would skip.
+  {
     const uint32_t native_item = ctx.r3.u32;
     __imp__sub_82B6DB20(ctx, base);
     const uint32_t success_byte =
@@ -121,193 +174,42 @@ REX_EXTERN(sub_82B6DB20) {
     }
     return;
   }
-
-  const PPCContext original_ctx = ctx;
-  const uint32_t texture_guest = original_ctx.r3.u32;
-  const bool refii_enabled =
-      refii::vfs::RefiiLooseAssetBackendEnabled() && texture_guest != 0;
-
-  const bool trace_texture =
-      refii::vfs::VfsTracingEnabled() && texture_guest != 0;
-  const uint32_t original_texture_wrapper =
-      texture_guest == 0
-          ? 0
-          : refii::vfs::NormalizeRefiiResourceStreamWrapper(
-                base, refii::vfs::LoadGuestU32(base, texture_guest + 100));
-  if (trace_texture &&
-      refii::vfs::ShouldLogRepeatedVfsTraceOperation("TextureCallerDB20",
-                                                         64)) {
-    REXLOG_INFO("VFS trace TextureCaller DB20 enter lr=0x{:08X} "
-                "texture=0x{:08X} hash=0x{:08X} active_count={} "
-                "flags=0x{:08X} current_wrapper=0x{:08X} "
-                "texture_words={}",
-                original_ctx.lr,
-                texture_guest,
-                refii::vfs::LoadGuestU32(base, texture_guest + 4),
-                refii::vfs::LoadGuestU32(base, texture_guest + 16),
-                refii::vfs::LoadGuestU32(base, texture_guest + 28),
-                original_texture_wrapper,
-                refii::vfs::FormatGuestWords(base, texture_guest, 32));
-  }
-
-  if (refii_enabled && refii::vfs::kDirectTextureCallerOverride) {
-    const uint32_t active_count =
-        refii::vfs::LoadGuestU32(base, texture_guest + 16);
-    const uint32_t flags = refii::vfs::LoadGuestU32(base, texture_guest + 28);
-    const bool use_resource_offset_path =
-        active_count > 0 && ((flags & 0x1FU) & 0xFFFFFFF1U) != 0;
-
-    if (!use_resource_offset_path) {
-      const uint32_t resource_hash =
-          refii::vfs::LoadGuestU32(base, texture_guest + 4);
-      refii::vfs::LooseAssetResolution resolution;
-      std::string name;
-      std::string candidate;
-      std::string source;
-      if (refii::vfs::ResolveRefiiOwnedTextureDescriptorHash(
-              "TextureCallerDB20",
-              resource_hash,
-              0x82B6DBE0,
-              &resolution,
-              &name,
-              &candidate,
-              &source)) {
-        refii::vfs::MaybeUpgradeResourceManagerTextureResolution(
-            resource_hash,
-            name.empty() ? candidate : name,
-            0x82B6DBE0,
-            &resolution,
-            &candidate);
-
-        PPCContext commit_ctx = original_ctx;
-        const bool committed =
-            refii::vfs::TryCommitRefiiFrontendTextureWrapper(
-                commit_ctx,
-                base,
-                texture_guest,
-                resource_hash,
-                resolution,
-                name,
-                candidate,
-                source,
-                0x82B6DBE0,
-                "TextureCallerDB20");
-        if (refii::vfs::VfsTracingEnabled() ||
-            refii::vfs::IsMainMenuTextureTraceAsset(
-                resolution.provider_relative_path)) {
-          REXLOG_INFO("Refii texture caller DBE0 helper commit lr=0x{:08X} "
-                      "texture=0x{:08X} hash=0x{:08X} candidate={} "
-                      "source={} committed={} provider={} host={}",
-                      original_ctx.lr,
-                      texture_guest,
-                      resource_hash,
-                      candidate,
-                      source,
-                      committed,
-                      refii::vfs::NormalizeLooseAssetKey(
-                          resolution.provider_relative_path),
-                      resolution.host_path.string());
-        }
-        if (committed) {
-          refii::vfs::LogRefiiVfsChainVerdict(
-              "texture_parser",
-              static_cast<uint32_t>(original_ctx.lr),
-              candidate,
-              candidate,
-              resolution.provider_relative_path,
-              "Refii_resource_wrapper",
-              "DB20_wrapper_assigned",
-              "TraceOnce",
-              "C340_or_TextureStreamBuild");
-          ctx = original_ctx;
-          ctx.r3.u32 = texture_guest;
-          return;
-        }
-      } else if (refii::vfs::VfsTracingEnabled()) {
-        REXLOG_INFO("Refii texture caller DBE0 no Refii resolution "
-                    "texture=0x{:08X} hash=0x{:08X} active_count={} "
-                    "flags=0x{:08X}",
-                    texture_guest,
-                    resource_hash,
-                    active_count,
-                    flags);
-      }
-    }
-  }
-
-  __imp__sub_82B6DB20(ctx, base);
-
-  // Pool stream-in outcome (native-VFS diagnosable: VfsTracingEnabled is
-  // hard-disabled without the loose backend). item+116 == 0 after execution
-  // means rex_lhResourceManager_Open rejected this pool page — the title
-  // logo/loading-screen family's reads die here.
-  {
-    const uint32_t success_byte =
-        refii::vfs::LoadGuestU32(base, texture_guest + 116u) >> 24;
-    static std::atomic<uint32_t> logged_pool_open_outcomes{0};
-    const uint32_t outcome_count =
-        logged_pool_open_outcomes.fetch_add(1, std::memory_order_relaxed) + 1u;
-    if (outcome_count <= 32u) {
-      REXLOG_INFO(
-          "Refii pool stream-in exec #{} item=0x{:08X} success={} "
-          "hash=0x{:08X} off8=0x{:08X} sz12=0x{:08X} sz16=0x{:08X} "
-          "off20=0x{:08X} flags28=0x{:08X} mode104={} sel112={} "
-          "off48=0x{:08X}",
-          outcome_count, texture_guest, success_byte,
-          refii::vfs::LoadGuestU32(base, texture_guest + 4u),
-          refii::vfs::LoadGuestU32(base, texture_guest + 8u),
-          refii::vfs::LoadGuestU32(base, texture_guest + 12u),
-          refii::vfs::LoadGuestU32(base, texture_guest + 16u),
-          refii::vfs::LoadGuestU32(base, texture_guest + 20u),
-          refii::vfs::LoadGuestU32(base, texture_guest + 28u),
-          refii::vfs::LoadGuestU32(base, texture_guest + 104u),
-          refii::vfs::LoadGuestU32(base, texture_guest + 112u),
-          refii::vfs::LoadGuestU32(base, texture_guest + 48u));
-    }
-  }
-
-  if (trace_texture) {
-    const uint32_t next_texture_wrapper =
-        refii::vfs::NormalizeRefiiResourceStreamWrapper(
-            base, refii::vfs::LoadGuestU32(base, texture_guest + 100));
-    const uint32_t wrapper_inner =
-        next_texture_wrapper == 0
-            ? 0
-            : refii::vfs::LoadGuestU32(base, next_texture_wrapper + 16);
-    const std::string provider =
-        next_texture_wrapper == 0
-            ? std::string{}
-            : refii::vfs::GetRefiiResourceWrapperProviderKey(
-                  base, next_texture_wrapper, wrapper_inner);
-    if (next_texture_wrapper != 0) {
-      refii::vfs::RecordRefiiTextureWrapperOwner(next_texture_wrapper,
-                                                     texture_guest);
-    }
-    if (next_texture_wrapper != original_texture_wrapper ||
-        refii::vfs::IsMainMenuTextureTraceAsset(provider) ||
-        refii::vfs::ShouldLogRepeatedVfsTraceOperation(
-            "TextureCallerDB20Exit", 32)) {
-      REXLOG_INFO("VFS trace TextureCaller DB20 exit lr=0x{:08X} "
-                  "texture=0x{:08X} result=0x{:08X} wrapper=0x{:08X} "
-                  "previous_wrapper=0x{:08X} provider={} wrapper_words={} "
-                  "texture_words={}",
-                  original_ctx.lr,
-                  texture_guest,
-                  ctx.r3.u32,
-                  next_texture_wrapper,
-                  original_texture_wrapper,
-                  refii::vfs::NormalizeLooseAssetKey(provider),
-                  refii::vfs::FormatGuestWords(
-                      base, next_texture_wrapper, 12),
-                  refii::vfs::FormatGuestWords(base, texture_guest, 32));
-    }
-  }
 }
 
 REX_EXTERN(rex_lhResourceManager_OpenInternal) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_OpenInternal);
+  // Passthrough with the verdict stated — see the chain note above FindAndCreateStream.
+  {
+    const PPCContext entry_ctx = ctx;
+    __imp__rex_lhResourceManager_OpenInternal(ctx, base);
+    static std::atomic<uint32_t> chain_logged{0};
+    if (chain_logged.fetch_add(1, std::memory_order_relaxed) < 8u) {
+      const uint32_t out_object =
+          entry_ctx.r6.u32 != 0 ? refii::vfs::LoadGuestU32(base, entry_ctx.r6.u32) : 0u;
+      // The proxy's inner is what every slot forwards to.
+      const uint32_t inner =
+          out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object + 12u) : 0u;
+      REXLOG_INFO("Refii OpenInternal: manifest=0x{:08X} size_arg=0x{:08X} out=0x{:08X} "
+                  "result={} object=0x{:08X} vtable=0x{:08X} words=[{:08X} {:08X} {:08X}] "
+                  "inner=0x{:08X} inner_vtbl=0x{:08X} inner[+24]={} inner[+124]=0x{:08X} "
+                  "inner[+128]={} inner[+200]={}",
+                  entry_ctx.r3.u32, entry_ctx.r5.u32, entry_ctx.r6.u32,
+                  ctx.r3.u32, out_object,
+                  out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object) : 0u,
+                  out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object + 4u) : 0u,
+                  out_object != 0 ? refii::vfs::LoadGuestU32(base, out_object + 8u) : 0u,
+                  inner,
+                  inner,
+                  inner != 0 ? refii::vfs::LoadGuestU32(base, inner) : 0u,
+                  inner != 0 ? refii::vfs::LoadGuestU32(base, inner + 24u) : 0u,
+                  inner != 0 ? refii::vfs::LoadGuestU32(base, inner + 124u) : 0u,
+                  inner != 0 ? refii::vfs::LoadGuestU32(base, inner + 128u) : 0u,
+                  inner != 0 ? refii::vfs::LoadGuestU32(base, inner + 200u) : 0u);
+    }
+    return;
+  }
+
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::ShouldLogVfsTraceOperation(
@@ -348,6 +250,23 @@ REX_EXTERN(sub_82426470) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82426470);
 
+  // Capture the chunk before anything else touches it: this runner is the arrival point for the
+  // whole `g_Menu:` vocabulary, paired with the stagers in gui_menu_hooks.cpp.
+  {
+    const std::string chunk =
+        refii::vfs::ReadMaybeGuestString(base, ctx.r3.u32, 512);
+    if (chunk.find("g_Menu") != std::string::npos) {
+      refii::vfs::RunMenuChunk(chunk, ctx.r4.u32);
+
+      // The list boundary. Only pause, gift and equipment repopulate through the `sub_826CE110`
+      // wrapper; every other screen fires this exec inline, so it must be cleared here.
+      if (chunk.find("g_Menu:DeleteAllSpawnedMenuItems") != std::string::npos) {
+        refii_bridge_menu_spawn_begin();
+      }
+    }
+  }
+
+
   const PPCContext original_ctx = ctx;
   std::string command =
       refii::vfs::ReadMaybeGuestString(base, original_ctx.r3.u32, 512);
@@ -356,6 +275,8 @@ REX_EXTERN(sub_82426470) {
   if (command.empty()) {
     command = known_command;
   }
+
+  // The list boundary is handled above the native passthrough — see the note there.
   const bool gameface_command =
       command.find("GUI:") != std::string::npos ||
       command.find("GameFace") != std::string::npos ||
@@ -434,6 +355,7 @@ REX_EXTERN(sub_82372500) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82372500);
+
 
   const PPCContext original_ctx = ctx;
   const std::string command =

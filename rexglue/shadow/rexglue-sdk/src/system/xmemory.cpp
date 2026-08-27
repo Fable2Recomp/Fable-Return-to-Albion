@@ -1177,7 +1177,13 @@ bool BaseHeap::AllocRange(uint32_t low_address, uint32_t high_address, uint32_t 
 
   uint32_t available_page_count = high_page_number - low_page_number + 1;
   if (!page_count || page_count > available_page_count) {
-    REXSYS_ERROR("BaseHeap::Alloc page count too big for requested range");
+    // Diagnostic only; no behavioural change to the heap.
+    REXSYS_ERROR(
+        "BaseHeap::Alloc page count too big for requested range: size={:#x} pages={} "
+        "available={} range={:#x}..{:#x} (pages {}..{}) alignment={:#x} page_size={:#x} "
+        "type={:#x} protect={:#x} top_down={}",
+        size, page_count, available_page_count, low_address, high_address, low_page_number,
+        high_page_number, alignment, page_size_, allocation_type, protect, top_down ? 1 : 0);
     return false;
   }
 

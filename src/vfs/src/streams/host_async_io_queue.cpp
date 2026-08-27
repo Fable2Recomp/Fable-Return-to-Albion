@@ -217,16 +217,47 @@ void StartRefiiReadRequestAsync(
     return;
   }
 
-  auto completion = std::make_shared<std::promise<void>>();
-  std::shared_future<void> async_read = completion->get_future().share();
-  {
-    std::lock_guard<std::mutex> lock(record->mutex);
-    record->async_read = async_read;
+  // Runs on the caller's (guest's) thread: `CompleteRefiiReadRequest` runs guest functions to
+  // signal the request's event, so it must never run on a host worker. `record->async_read` is
+  // left invalid so `WaitForRefiiReadRequest` skips the wait. A request whose destination is a
+  // stream descriptor arrives before the guest has filled it in (base word still 0), so it is
+  // deferred until the guest asks for the result — see PerformRefiiReadRequestNow.
+  if (record->uses_stream_destination &&
+      LoadGuestU32(base, record->buffer_guest) == 0u) {
+    // A deferred request must be collected later — the release path completes it; otherwise the
+    // guest's refill loop (`sub_82A20EE8`, back edge at 0x82A2101C) spins forever.
+    {
+      std::lock_guard<std::mutex> lock(record->mutex);
+      record->deferred_for_destination = true;
+    }
+    REXLOG_WARN("Refii read DEFERRED: request=0x{:08X} stream=0x{:08X} offset={} "
+                "requested={} — the destination descriptor at 0x{:08X} is still null. If no "
+                "collect follows, the guest reader will spin.",
+                record_guest, record->stream_guest, record->offset,
+                record->requested_bytes, record->buffer_guest);
+    return;
   }
 
-  if (!EnqueueRefiiIoRead(ctx, base, record_guest, record, completion)) {
-    FinishRefiiIoJobPromise(completion);
+  PerformRefiiReadRequestNow(ctx, base, record, record_guest);
+}
+
+void PerformRefiiReadRequestNow(
+    PPCContext& ctx,
+    uint8_t* base,
+    const std::shared_ptr<RefiiReadRequestRecord>& record,
+    uint32_t record_guest) {
+  if (base == nullptr || record == nullptr || record_guest == 0) {
+    return;
   }
+  {
+    std::lock_guard<std::mutex> lock(record->mutex);
+    if (record->completed) {
+      return;
+    }
+  }
+
+  const uint32_t read = ReadRefiiHostStreamForReadRequest(ctx, base, record);
+  CompleteRefiiReadRequest(ctx, base, record, record_guest, read);
 }
 
 bool WaitForRefiiReadRequest(

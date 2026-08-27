@@ -12,7 +12,7 @@ log_verbose = false
 # Enable noisy high-frequency logs.
 log_noisy = false
 # Periodic log flush interval in seconds.
-log_flush_interval = 0
+log_flush_interval = 1
 # Maximum log file size before rotation.
 log_max_file_size_mb = 5
 # Maximum rotated log files to keep.
@@ -40,7 +40,6 @@ lua_trace_native_handlers = false
 
 # VFS
 # VFS backend: refii for loose asset overrides, native for the original Fable 2 VFS.
-vfs_loose_asset_backend = "native"
 
 # Renderer
 # Renderer backend: plume for the Refii RHI path, xenia for the original Fable 2 renderer.

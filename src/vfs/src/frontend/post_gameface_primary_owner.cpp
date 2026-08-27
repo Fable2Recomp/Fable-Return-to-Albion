@@ -159,9 +159,6 @@ bool TryPublishRefiiPostGameFacePrimaryOwner(
     log_skip("base_null");
     return false;
   }
-  if (!RefiiLooseAssetBackendEnabled()) {
-    return false;
-  }
   const bool native_fallback_package =
       (package_mask & 0x7u) != 0x7u &&
       RefiiPostGameFacePackageNativeFallbackReady() &&
@@ -526,7 +523,7 @@ bool TryRunRefiiPostGameFacePrimaryOwnerNativeFromTrace(
     const PPCContext& source_ctx,
     uint8_t* base,
     std::string_view source_api) {
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       !RefiiPostGameFacePackageHandoffSignalEmitted() ||
       !RefiiStartupVideosReadyForMenuHandoff()) {
     return false;
@@ -784,7 +781,7 @@ bool TryCompleteRefiiPostLoadingFrontendRenderProducer(
     }
   };
 
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled()) {
+  if (base == nullptr) {
     return false;
   }
   if (!LooksLikeGuestPointer(owner_guest) ||
@@ -965,7 +962,7 @@ bool TryAttachRefiiPostGameFaceRenderHandoffToActiveFrame(
     const PPCContext& source_ctx,
     uint8_t* base,
     std::string_view source_api) {
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       !RefiiStartupVideosReadyForMenuHandoff() ||
       !RefiiPostGameFacePackageHandoffSignalEmitted() ||
       !RefiiPostVideoFrontendChainConsumed() ||
@@ -1398,7 +1395,7 @@ bool TryPublishRefiiPostLoadingFrontendCompletionState(
     std::string_view source_api,
     uint32_t request_guest,
     uint32_t primary_owner) {
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       !IsNativeFrontendRenderRequest(base, request_guest)) {
     return false;
   }
@@ -1534,7 +1531,7 @@ bool TryFinalizeRefiiPostLoadingFrontendGeneratedState(
     std::string_view source_api,
     bool clear_render_handoff,
     bool preserve_post_gameface_primary_allowed) {
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       !RefiiPostGameFacePackageHandoffSignalEmitted() ||
       !RefiiStartupVideosReadyForMenuHandoff()) {
     return false;
@@ -2176,7 +2173,7 @@ bool TryRunRefiiPostLoadingFrontendRenderRequestNativeFromTrace(
     }
   };
 
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       !RefiiPostGameFacePackageHandoffSignalEmitted() ||
       !RefiiStartupVideosReadyForMenuHandoff()) {
     log_skip("gate_not_ready");
@@ -3000,7 +2997,7 @@ bool MaybeRefreshRefiiPostGameFaceFollowupBoundary(
     uint32_t stream_guest,
     std::string_view skip_reason,
     uint32_t package_mask_after) {
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       !RefiiPostGameFacePackageHandoffSignalEmitted()) {
     return false;
   }

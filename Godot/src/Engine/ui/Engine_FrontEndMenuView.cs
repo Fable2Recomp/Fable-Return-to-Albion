@@ -5,101 +5,52 @@ using Godot;
 namespace Refii.Ui;
 
 /// <summary>
-/// Draws an <see cref="Engine_FrontEndMenu"/> the way Fable 2's expandable menu draws itself.
-///
-/// THE LAYOUT IS NOT A DESIGN CHOICE. Every number below is read out of the shipped Lua in
-/// <c>scripts/gameface/expandablemenu/</c>, disassembled with <c>tools/lua51dis.py</c>. The
-/// model owns what the menu CONTAINS; this owns where it goes, and the original states that
-/// plainly enough that inventing it would be the wrong call twice over.
-///
-/// WHAT THE SCRIPTS SAY, and where:
+/// Draws an <see cref="Engine_FrontEndMenu"/> the way Fable 2's expandable menu draws itself. The
+/// model owns what the menu CONTAINS; this owns where it goes, and every number is read out of the
+/// shipped Lua in <c>scripts/gameface/expandablemenu/</c> (<c>tools/lua51dis.py</c>):
 ///
 /// <list type="bullet">
-/// <item><b>Twelve fixed slots, not a pitch.</b> <c>expandablemenuformatting.lua</c> builds
-/// <c>g_MenuPositionSlots</c> as twelve literal <c>{position={x,y,z}, opacity_scale_index}</c>
-/// records and then rebases every one by <c>x + 345, y - 185</c> in a loop at chunk load. The
-/// column is not straight: x runs -345, -323, -303, -289 … -289, -295, -303, -323, -345, so
-/// the list BOWS toward the reader around the highlight and falls away at both ends. A
-/// constant row pitch reproduces none of that.</item>
-///
-/// <item><b>The highlight does not move; the list does.</b> <c>HIGHLIGHT_INDEX = 4</c>, and
-/// <c>forceReset</c> assigns <c>VisibleIndex = DisplayIndex + 3 - CurrentHighlightIdx + 1</c>
-/// — i.e. slot = displayIndex - highlight + 4. The selected entry is pinned to slot 4 with at
-/// most two entries above it, and everything else slides underneath. <c>onScrollUp</c> and
-/// <c>onScrollDown</c> exist precisely to animate that slide.</item>
-///
-/// <item><b>Slots 1 and 12 are gutters.</b> Their <c>opacity_scale_index</c> is 1, and
-/// <c>g_MenuOpacityScaleSlots[1]</c> is <c>{scale = 0.65, opacity = 0}</c> — invisible. Slots
-/// 2 and 11 are 50% at 0.75 scale, 3 and 10 are 75% at 0.85, and 4..9 are full. So ten slots
-/// carry content (matching <c>g_Menu.Const.NUM_VISIBLE = 10</c> in
-/// <c>expandablemenustateandconstants.lua</c>) and the two ends are where rows fade in and
-/// out of existence.</item>
-///
-/// <item><b>Depth is an indent, and a heading is a root entry.</b>
-/// <c>GetMenuItemTabOffset</c> returns <c>-65 - 5*(depth-1)</c>, plus 24 when
-/// <c>IsHeading</c>; <c>IsHeading(item)</c> is <c>item.ParentItem == g_Menu.MenuRoot</c>, and
-/// <c>GetMenuItemDepth</c> counts parent links, so a root entry is depth 1. A root row
-/// therefore sits at slot.x - 41 and an expanded child at slot.x - 70. The label moves too:
-/// <c>SetAttributesToVisibleIndex</c> puts <c>Icon.Title</c> at position.x -54 for a heading
-/// and -30 for a child.</item>
-///
-/// <item><b>Headings are slightly larger than their children.</b> <c>onInitialize</c> sets
-/// <c>HEADER_SCALE = 1.025</c> and <c>DEFAULT_SCALE = 0.925</c>, and
-/// <c>GetMenuItemScaleDelta</c> returns that minus one, ADDED to the slot's own scale. So a
-/// root row in slot 4 draws at 1.025 and a submenu row at 0.925 — the submenu visibly recedes
-/// under its parent.</item>
-///
-/// <item><b>The text colour.</b> <c>SetGhosting</c> writes textcolor (255, 224, 128) at
-/// opacity 100 for a live entry. A ghosted heading keeps the colour at opacity 40; a ghosted
-/// child goes black at 90. Point size is 18 in every style record, which is exactly the
-/// GUI_Normal bucket boundary in <see cref="Engine_UiFontLibrary.SelectFor"/>.</item>
+/// <item>Twelve fixed slots, not a pitch: <c>g_MenuPositionSlots</c>, rebased at chunk load by
+/// <c>x + 345, y - 185</c>. The column bows — x runs -345, -323, -303, -289 … -289, -295, -303,
+/// -323, -345.</item>
+/// <item>The highlight does not move; the list does. <c>HIGHLIGHT_INDEX = 4</c> and
+/// <c>forceReset</c> gives slot = displayIndex - highlight + 4, at most two entries above.</item>
+/// <item>Slots 1 and 12 are gutters (<c>{scale 0.65, opacity 0}</c>); 2 and 11 are 50% at 0.75,
+/// 3 and 10 are 75% at 0.85, 4..9 full — ten slots carry content.</item>
+/// <item>Depth is an indent: <c>GetMenuItemTabOffset</c> = <c>-65 - 5*(depth-1)</c>, +24 when
+/// <c>IsHeading</c> (<c>item.ParentItem == g_Menu.MenuRoot</c>, a root entry being depth 1).
+/// <c>Icon.Title</c> sits at position.x -54 for a heading, -30 for a child.</item>
+/// <item><c>HEADER_SCALE</c> 1.025 / <c>DEFAULT_SCALE</c> 0.925, added to the slot's own scale
+/// minus one. Live label colour (255, 224, 128) at opacity 100, point size 18 in every style.</item>
+/// <item>The slide is a plain clamped lerp over <c>ANIMATE_TIME</c> 0.15, no easing; what moves is
+/// the COMPONENT, so rows here are keyed by ENTRY and change slot.</item>
 /// </list>
 ///
-/// WHAT THIS DOES NOT REPRODUCE, and why:
+/// Not reproduced: truncation (<see cref="Engine_UiTextMesh"/> has no truncate mode, so an
+/// over-long label overhangs).
 ///
-/// THE SLIDE IS REPRODUCED, and it is read rather than chosen. <c>ANIMATE_TIME</c> is 0.15,
-/// set as a global at the top of <c>expandablemenuformatting.lua</c> beside
-/// <c>HIGHLIGHT_INDEX = 4</c> and <c>NUM_VIS_SLOTS = 12</c>; the interpolation in
-/// <c>UpdateAnimations</c> is a plain clamped lerp — <c>t = (now - start_time) / duration</c>,
-/// clamped at 1, then <c>start_val + (end_val - start_val) * t</c> — with no easing curve, so a
-/// straight interpolation is faithful here rather than a simplification. What moves is the
-/// COMPONENT, not the slot: <c>AnimatePropertiesToIndex(comp, index)</c> takes a component to a
-/// slot index, which is why the rows below are keyed by ENTRY and change slot, rather than
-/// keyed by slot and changing text.
-///
-/// <list type="bullet">
-/// <item>The <b>spawn and removal</b> animation. <c>ANIMATE_IN_TIME</c> and
-/// <c>ANIMATE_OUT_TIME</c> are both 0.08 in <c>expandablemenustateandconstants.lua</c> and
-/// belong to an item entering or leaving the LIST, which is a different event from one changing
-/// slot. An entry arriving in the window here simply slides in from one slot beyond the
-/// edge.</item>
-/// <item><b>Truncation.</b> Each style carries a <c>truncate</c> width (200/210/240/305) and
-/// the engine clips a long label to it. <see cref="Engine_UiTextMesh"/> has no truncate mode —
-/// wrap mode 0 is a single line it does not fold — so an over-long label overhangs here.</item>
-/// <item><b>Ghosting</b>, because <see cref="Engine_FrontEndMenu.Item"/> has no ghosted flag.
-/// Its model drops an unavailable entry entirely rather than showing it greyed, which is the
-/// front end's own behaviour — the guest's spawn conditions decide whether "Load Game" EXISTS.
-/// The ghost colours are kept as constants so the flag can be wired without re-reading the
-/// scripts.</item>
-/// </list>
-///
-/// THE FRAME ART comes from the presentation, not from here — and it is NOT cloned at
-/// runtime. <c>expandablemenucloning.lua</c> is an empty chunk (one RETURN), unlike the wheel
-/// menu's <c>menucloning.lua</c> which really does clone from a template. Instead
-/// <c>g_MenuFormatter:onInitialize</c> collects components the presentation already ships:
-/// <c>getChildren(getElement('Buttons', self.parent))</c>, keeping each child whose
-/// <c>getElementType</c> is <c>component</c>, and stores them as <c>MenuItems</c> — one per
-/// slot, which is why there are twelve. Each carries <c>Tab.InnerBrown</c> (root rows) or
-/// <c>Tab.InnerRed</c> (submenu rows) plus an <c>Icon.Title</c> text element; see
-/// <c>UpdateTabInnerTexture</c>, which picks between them on <c>IsHeading</c>.
-///
-/// So <see cref="RowTemplate"/> takes one of those built nodes and this duplicates it per
-/// slot, which reaches the same picture from a Godot tree that has no component instancing.
-/// Leave it null and rows are text only — honest about having no art, rather than inventing a
-/// tab that would then have to be un-invented.
+/// The frame art comes from the presentation and is NOT cloned in the original —
+/// <c>expandablemenucloning.lua</c> is an empty chunk; <c>g_MenuFormatter:onInitialize</c> keeps
+/// the twelve <c>component</c> children of <c>getElement('Buttons', self.parent)</c>, each carrying
+/// both tab faces (<c>Tab.InnerBrown</c>, <c>Tab.InnerRed</c>) and an <c>Icon.Title</c>.
+/// <see cref="RowTemplate"/> takes one such node and this duplicates it per slot, Godot having no
+/// component instancing; null gives text-only rows.
 /// </summary>
 public partial class Engine_FrontEndMenuView : Node3D
 {
+	/// <summary>
+	/// The rating states read out of this screen's own document; null on a screen whose button pool
+	/// carries no rating art, which is most of them.
+	/// </summary>
+	public Engine_UiRowRating? Ratings { get; set; }
+
+	/// <summary>
+	/// The `Buttons` group's live opacity, 0..1 — the focus dim. `ExpandableMenu.LoseFocus` runs
+	/// `Buttons.opacity` 100 → 10 over 500 ticks and `GetFocus` runs it back; the guest still plays
+	/// both, so the host reads the value off the element and multiplies every row by it.
+	/// </summary>
+	public float FocusOpacity { get; set; } = 1f;
+
 	/// <summary>One of the twelve authored positions, in the menu component's own space.</summary>
 	public readonly struct Slot
 	{
@@ -143,54 +94,59 @@ public partial class Engine_FrontEndMenuView : Node3D
 	/// <c>g_MenuPositionSlots</c>, already carrying the <c>x + 345, y - 185</c> rebase the
 	/// chunk applies at load — these are the values the running script actually indexes.
 	/// </summary>
-	public static readonly Slot[] Slots =
+	public static readonly Slot[] Slots = BuildSlots();
+
+	/// <summary>Taken from <see cref="Engine_UiMenuConstants.Slots"/> rather than transcribed again.</summary>
+	private static Slot[] BuildSlots()
 	{
-		new(0f, 85f, 1),
-		new(22f, 69f, 2),
-		new(42f, 15f, 3),
-		new(56f, -45f, 4),
-		new(56f, -106f, 4),
-		new(56f, -164f, 4),
-		new(56f, -222f, 4),
-		new(56f, -280f, 4),
-		new(50f, -338f, 4),
-		new(42f, -396f, 3),
-		new(22f, -454f, 2),
-		new(0f, -475f, 1),
-	};
+		var slots = new Slot[Engine_UiMenuConstants.Slots.Length];
+		for (int i = 0; i < slots.Length; ++i)
+		{
+			Engine_UiMenuConstants.SlotRecord record = Engine_UiMenuConstants.Slots[i];
+			slots[i] = new Slot(record.Position.X, record.Position.Y, record.StyleIndex);
+		}
+
+		return slots;
+	}
 
 	/// <summary>
 	/// <c>g_MenuOpacityScaleSlots</c>. Entries 1 and 5 are identical; only 1 is reachable from
 	/// the slot table as shipped, 5 being what <c>FadeOutTopItemEarly</c> and
 	/// <c>FadeOutBottomItemEarly</c> retarget slots 2 and 11 to at the ends of a long list.
 	/// </summary>
-	public static readonly Style[] Styles =
+	public static readonly Style[] Styles = BuildStyles();
+
+	private static Style[] BuildStyles()
 	{
-		new(0.65f, 0f, 18, 200f),
-		new(0.75f, 50f, 18, 210f),
-		new(0.85f, 75f, 18, 240f),
-		new(1.00f, 100f, 18, 305f),
-		new(0.65f, 0f, 18, 200f),
-	};
+		var styles = new Style[Engine_UiMenuConstants.Styles.Length];
+		for (int i = 0; i < styles.Length; ++i)
+		{
+			Engine_UiMenuConstants.Style record = Engine_UiMenuConstants.Styles[i];
+			styles[i] = new Style(record.Scale, record.Opacity, record.FontSize, record.Truncate);
+		}
+
+		return styles;
+	}
 
 	/// <summary>The slot the highlighted entry is pinned to — <c>HIGHLIGHT_INDEX</c>, 1-based.</summary>
-	public const int HighlightSlot = 4;
+	public const int HighlightSlot = Engine_UiExpandableMenu.HighlightSlot;
 
-	/// <summary>How many entries the window may hold — <c>g_Menu.Const.NUM_VISIBLE</c>.</summary>
-	public const int WindowSize = 10;
+	/// <summary>How many entries the window may hold — <c>g_Menu.Const.NUM_VISIBLE</c>.
+	/// TEN, not the twelve of <c>NUM_VIS_SLOTS</c>: slots 1 and 12 are the fade gutters.</summary>
+	public const int WindowSize = Engine_UiExpandableMenu.NumVisible;
 
 	/// <summary><c>GetMenuItemTabOffset</c>: the base, the per-depth step, and the heading bonus.</summary>
-	public const float TabOffset = -65f;
-	public const float TabOffsetPerDepth = -5f;
-	public const float HeadingTabBonus = 24f;
+	public const float TabOffset = Engine_UiMenuConstants.TabOffset;
+	public const float TabOffsetPerDepth = Engine_UiMenuConstants.TabOffsetPerDepth;
+	public const float HeadingTabBonus = Engine_UiMenuConstants.HeadingTabBonus;
 
 	/// <summary><c>Icon.Title</c>'s position.x, from <c>SetAttributesToVisibleIndex</c>.</summary>
-	public const float HeadingLabelX = -54f;
-	public const float ChildLabelX = -30f;
+	public const float HeadingLabelX = Engine_UiMenuConstants.HeadingLabelX;
+	public const float ChildLabelX = Engine_UiMenuConstants.ChildLabelX;
 
 	/// <summary><c>HEADER_SCALE</c> / <c>DEFAULT_SCALE</c> from <c>g_MenuFormatter:onInitialize</c>.</summary>
-	public const float HeaderScale = 1.025f;
-	public const float DefaultScale = 0.925f;
+	public const float HeaderScale = Engine_UiMenuConstants.HeaderScale;
+	public const float DefaultScale = Engine_UiMenuConstants.DefaultScale;
 
 	/// <summary>The live entry colour written by <c>SetGhosting</c> — (255, 224, 128).</summary>
 	public static readonly Color LabelColour = new(1f, 224f / 255f, 128f / 255f);
@@ -203,14 +159,19 @@ public partial class Engine_FrontEndMenuView : Node3D
 	public const float GhostedChildOpacity = 90f;
 
 	/// <summary>
-	/// Where the menu component sits on the screen.
-	///
-	/// The slot table above is component-local because of the load-time rebase; undoing it puts
-	/// the rows back in the authored 1280x720 canvas of <c>frontendmainmenu</c>, which is where
-	/// a standalone view wants them. Mounted UNDER a real ExpandableMenu node, set this to zero
-	/// — the parent already supplies it.
+	/// Where the menu component sits on the screen. The slot table is component-local because of the
+	/// load-time rebase; undoing it puts the rows back in <c>frontendmainmenu</c>'s authored
+	/// 1280x720 canvas. Mounted under a real ExpandableMenu node, set this to zero.
 	/// </summary>
 	public static readonly Vector3 CanvasAnchor = new(-345f, 185f, 0f);
+
+	/// <summary>
+	/// Where this view sits on the canvas — the AUTHORED Buttons-group origin of the screen whose
+	/// art it draws, when the adopter has a pattern book to read it from. Each screen parks the
+	/// group where it wants (both shipped menus compose ExpandableMenu(-400,0) + Buttons(63,210) =
+	/// (-337,210)); <see cref="CanvasAnchor"/> is the fallback for a caller with no book.
+	/// </summary>
+	public Vector3 Anchor { get; set; } = CanvasAnchor;
 
 	/// <summary>
 	/// Row pitch through the full-size band, derived from the slot table rather than assumed:
@@ -219,39 +180,32 @@ public partial class Engine_FrontEndMenuView : Node3D
 	public static float RowPitch => Slots[4].Y - Slots[5].Y;
 
 	/// <summary>
-	/// The shipped look this draws with — fonts, strings and the text material.
-	///
-	/// One property rather than the three it used to hold separately, because every one of
-	/// them is the same question: what does the GAME look like. A screen that sources two of
-	/// the three and invents the third is the failure mode worth designing out.
-	///
-	/// Without it a row still takes its position from the slot table, so the layout is
-	/// checkable with no game data at all — the labels are simply absent, and
-	/// <see cref="LabelsWithoutGlyphs"/> says so.
+	/// The shipped look this draws with — fonts, strings and the text material. Without it rows
+	/// still take their positions from the slot table and the labels are absent, which
+	/// <see cref="LabelsWithoutGlyphs"/> reports.
 	/// </summary>
 	public Engine_UiTheme? Theme { get; set; }
 
-	/// <summary>
-	/// A built row component to duplicate per slot, or null for text-only rows.
-	///
-	/// The original does not duplicate — it reuses the twelve components the presentation
-	/// already ships. Duplicating one of them gets to the same picture from a tree that has no
-	/// component instancing; see the class remarks.
-	/// </summary>
+	/// <summary>A built row component to duplicate per slot, or null for text-only rows.</summary>
 	public Node3D? RowTemplate { get; set; }
 
 	/// <summary>
-	/// The highlight cursor to place at <see cref="HighlightSlot"/>, or null for the stand-in.
-	///
-	/// The scripts never move this: <c>UpdateCursorColor</c> only sets the opacity of
-	/// <c>Group.green_top</c> and <c>Group.green_top_translucent</c> inside the
-	/// <c>MenuHighlight</c> element, and its position is authored in the <c>.bgf</c>. So the
-	/// slot-4 placement used for the stand-in is inferred from the pinning rule, not read.
+	/// The highlight cursor to place at <see cref="HighlightSlot"/>, or null for the stand-in. The
+	/// scripts never move it — <c>UpdateCursorColor</c> only sets the opacity of
+	/// <c>Group.green_top</c> and <c>Group.green_top_translucent</c> inside <c>MenuHighlight</c>,
+	/// its position being authored in the <c>.bgf</c> — so the stand-in's slot-4 placement is
+	/// inferred from the pinning rule, not read.
 	/// </summary>
 	public Node3D? CursorTemplate { get; set; }
 
 	/// <summary>The model being drawn. Null until <see cref="Bind"/>.</summary>
 	public Engine_FrontEndMenu? Menu { get; private set; }
+
+	/// <summary>
+	/// How deep into open submenus the highlighted row sits, 0 at the root, read off the TREE:
+	/// `expandablemenu.lua` has no second menu object, only children and `IsOpen`.
+	/// </summary>
+	public int Depth => Menu?.Highlighted is { } item ? item.Depth - 1 : 0;
 
 	/// <summary>Rows currently on screen, for a caller that wants to assert on the layout.</summary>
 	public int RowsDrawn { get; private set; }
@@ -260,15 +214,11 @@ public partial class Engine_FrontEndMenuView : Node3D
 	public int LabelsWithoutGlyphs { get; private set; }
 
 	/// <summary>
-	/// How long a row takes to reach its new slot — <c>ANIMATE_TIME</c>, set as a global at the
-	/// top of <c>expandablemenuformatting.lua</c> alongside <c>HIGHLIGHT_INDEX = 4</c> and
-	/// <c>NUM_VIS_SLOTS = 12</c>.
-	///
-	/// NOT the same number as <c>ANIMATE_IN_TIME</c> / <c>ANIMATE_OUT_TIME</c>, which are both
-	/// 0.08 in <c>expandablemenustateandconstants.lua</c> and belong to an item being spawned
-	/// into or removed from the list rather than to one changing slot.
+	/// How long a row takes to reach its new slot — <c>ANIMATE_TIME</c>, a global in
+	/// <c>expandablemenuformatting.lua</c>. Not <c>ANIMATE_IN_TIME</c> / <c>ANIMATE_OUT_TIME</c>,
+	/// both 0.08, which belong to an item entering or leaving the list.
 	/// </summary>
-	public const double AnimateTime = 0.15;
+	public const double AnimateTime = Engine_UiMenuConstants.AnimateTime;
 
 	/// <summary>Where a row is: the four properties a slide interpolates.</summary>
 	private readonly struct RowPose
@@ -280,24 +230,46 @@ public partial class Engine_FrontEndMenuView : Node3D
 		/// <summary>Authored 0..100, as the slot table states it.</summary>
 		public readonly float Opacity;
 
+		/// <summary>The same pose moved along x — a flying-in row's start.</summary>
+		public RowPose ShiftedX(float dx) => new(X + dx, Y, Scale, Opacity)
+		{
+			LabelColour = LabelColour,
+			LabelOpacity = LabelOpacity,
+		};
+
 		public RowPose(float x, float y, float scale, float opacity)
 		{
 			X = x;
 			Y = y;
 			Scale = scale;
 			Opacity = opacity;
+			LabelColour = Engine_UiMenuConstants.LiveTextColour;
+			LabelOpacity = 100f;
 		}
 
 		/// <summary>
-		/// A plain clamped lerp, which is what the engine does — <c>UpdateAnimations</c>
-		/// computes <c>t = (now - start_time) / duration</c>, clamps it at 1 and writes
-		/// <c>start_val + (end_val - start_val) * t</c>. There is no easing curve to miss.
+		/// The label's colour and opacity — `SetGhosting` (main.21) writes only on `Icon.Title`,
+		/// never the tab. Live is (255, 224, 128) at 100; a ghosted heading keeps that colour at 40,
+		/// a ghosted child goes black at 90.
+		/// </summary>
+		public Color LabelColour { get; init; }
+
+		public float LabelOpacity { get; init; }
+
+		/// <summary>
+		/// A plain clamped lerp, as <c>UpdateAnimations</c> does: <c>t = (now - start_time) /
+		/// duration</c> clamped at 1, then <c>start_val + (end_val - start_val) * t</c>. No easing.
 		/// </summary>
 		public static RowPose Lerp(RowPose from, RowPose to, float t) => new(
 			from.X + ((to.X - from.X) * t),
 			from.Y + ((to.Y - from.Y) * t),
 			from.Scale + ((to.Scale - from.Scale) * t),
-			from.Opacity + ((to.Opacity - from.Opacity) * t));
+			from.Opacity + ((to.Opacity - from.Opacity) * t))
+		{
+			// The ghost treatment is the DESTINATION's, not a blend: a row arrives ghosted or live.
+			LabelColour = to.LabelColour,
+			LabelOpacity = to.LabelOpacity,
+		};
 	}
 
 	private readonly Node3D[] _rows = new Node3D[Slots.Length];
@@ -305,21 +277,113 @@ public partial class Engine_FrontEndMenuView : Node3D
 	private readonly string[] _labelText = new string[Slots.Length];
 	private readonly int[] _labelSize = new int[Slots.Length];
 
+	/// <summary>The truncate width each label was last laid out against.</summary>
+	private readonly float[] _labelTruncate = new float[Slots.Length];
+
+	/// <summary>
+	/// The label's depth WITHIN its row — the authored z of the template's own <c>Icon.Title</c>,
+	/// read before the clone is stripped of it. Must not be 0: the row is alpha-blended with no
+	/// depth write, so z alone decides cover order, and the shipped component authors its faces at
+	/// 0/-1/-2, decorations at +1 and the Title at +3. A z tie has no defined winner.
+	/// </summary>
+	private float _labelLift;
+
+	/// <summary>
+	/// The canvas-space band rows may draw in, or null for no clip — the screen's own MASK rect,
+	/// resolved by the adopter from the file's `MaskName` binding. The original clips the pool with
+	/// a mask element, so its faded slots 11 and 12 are cut by the page edge. Only Y matters, and a
+	/// row is cut whole rather than sliced.
+	/// </summary>
+	public Rect2? ClipRect { get; set; }
+
+	/// <summary>Which screen this list belongs to, when the caller knows. Only the end-fade reads it.</summary>
+	public uint? ScreenId { get; set; }
+
+	/// <summary>
+	/// Whether slot 2 / slot 11 take the zero-opacity style. The end fade is per-screen and not Lua:
+	/// `FadeOutTopItemEarly` / `FadeOutBottomItemEarly` (`expandablemenuformatting.dis main.0` /
+	/// `main.1`) have no Lua callers; the C++ runs them as `DoString` source (literals at
+	/// `0x820CD420` and `0x820CD3F4`) from thirteen screen contract vtables. Two ask for one end
+	/// only — Options (id 18, `0x826D9D40`) TOP, real estate (id 28, `0x82998300`) BOTTOM — and the
+	/// front end calls neither (`sub_826E1F70`), so with no ScreenId both ends stay at 50%.
+	/// </summary>
+	private bool FadesTopEnd => ScreenId is { } id && id != RealEstateScreenId;
+
+	private bool FadesBottomEnd => ScreenId is { } id && id != OptionsScreenId;
+
+	/// <summary>Options — the one screen that fades only the TOP end.</summary>
+	private const uint OptionsScreenId = 18;
+
+	/// <summary>Real estate — the one screen that fades only the BOTTOM end.</summary>
+	private const uint RealEstateScreenId = 28;
+
 	/// <summary>Which entry each row node is currently drawing. Null means the node is free.</summary>
-	private readonly Engine_FrontEndMenu.Item?[] _rowItem =
-		new Engine_FrontEndMenu.Item?[Slots.Length];
+	private readonly Engine_UiExpandableMenu.Item?[] _rowItem =
+		new Engine_UiExpandableMenu.Item?[Slots.Length];
+
+	/// <summary>The entry and emphasis each row's tab face was last built for.</summary>
+	private readonly Engine_UiExpandableMenu.Item?[] _rowFaced =
+		new Engine_UiExpandableMenu.Item?[Slots.Length];
+
+	private readonly int[] _rowEmphasis = new int[Slots.Length];
+
+	/// <summary>The rating value each row's strip was last built for.</summary>
+	private readonly int[] _rowRating = new int[Slots.Length];
 
 	private readonly RowPose[] _from = new RowPose[Slots.Length];
 	private readonly RowPose[] _to = new RowPose[Slots.Length];
 
+	/// <summary>
+	/// Each row's start delay on the running slide — `time_delay` on its animation set. A fold flies
+	/// rows in from the left: `onExpandMenuItem` (`expandablemenuformatting.dis main.7` pc126..132)
+	/// runs `AnimateComponentIn(child, ANIMATE_IN_TIME / n)`, which writes `position.x` to
+	/// `slot.x - 500` before tweening (`main.8` pc26..30); `CollapseMenuAndHighlight` (`main.39`
+	/// pc162..174) does the same from below. The delay is ONE value for the whole batch —
+	/// `ANIMATE_IN_TIME` over the batch size, capped at the eight slots below the highlight — not a
+	/// per-row stagger. A plain scroll never sets it.
+	/// </summary>
+	private readonly double[] _delay = new double[Slots.Length];
+
+	/// <summary>`slot.x - 500` — where a flying-in row starts.</summary>
+	private const float FlyInDistance = 500f;
+
+	/// <summary>The folder open when the rows were last laid out, to tell a fold from a scroll.</summary>
+	private Engine_UiExpandableMenu.Item? _lastExpanded;
+
+	/// <summary>Where one row is on its own from/to interpolation, its delay honoured.</summary>
+	private float RowT(int row)
+	{
+		if (!_sliding || AnimateTime <= 0.0)
+		{
+			return 1f;
+		}
+
+		return Mathf.Clamp((float)((_elapsed - _delay[row]) / AnimateTime), 0f, 1f);
+	}
+
+	/// <summary>
+	/// An entry's <c>g_Menu.EmphasisConst</c> value. The model carries it as a flag because the
+	/// guest raises it one way only: <c>sub_826E2220</c> and <c>sub_826E1C98</c> both call
+	/// <c>SetItemEmphasis(1)</c> (<c>eEMPHASIS_PRIMARY_QUEST</c>).
+	/// </summary>
+	private static int Emphasis(Engine_UiExpandableMenu.Item item) =>
+		item.Emphasised ? EmphasisPrimaryQuest : EmphasisNone;
+
 	private double _elapsed;
+
+	/// <summary>
+	/// Rows are mid-slide. This is the TWEEN; <see cref="Animating"/> is the PRESS GATE, and they
+	/// are separate: a plain cursor move slides the column but never blocks A (its delay is 0),
+	/// while a fold cascade does both.
+	/// </summary>
+	private bool _sliding;
 	private bool _animating;
 
 	private Node3D? _cursor;
 
 	public override void _Ready()
 	{
-		Position = CanvasAnchor;
+		Position = Anchor;
 		BuildRows();
 		Refresh();
 	}
@@ -335,25 +399,9 @@ public partial class Engine_FrontEndMenuView : Node3D
 	}
 
 	/// <summary>
-	/// The menus this one was opened from, innermost last. Empty at the root.
-	///
-	/// A stack rather than a parent pointer on the model, because the same model can be
-	/// reachable from more than one place — a "Controls" page opened from both the front end
-	/// and the pause menu should return to whichever one opened it, and a parent pointer
-	/// would send it to whichever opened it last.
-	/// </summary>
-	private readonly Stack<Engine_FrontEndMenu> _opened = new();
-
-	/// <summary>How deep into submenus the view currently is. 0 at the root menu.</summary>
-	public int Depth => _opened.Count;
-
-	/// <summary>
-	/// Advances the highlight, on whichever model is currently BOUND.
-	///
-	/// Through the view rather than straight to a model the caller is holding, because once
-	/// submenus exist those are two different objects: a caller that kept a reference to the
-	/// root menu and navigated it would move the selection on a list that is not on screen,
-	/// and the visible one would sit frozen. Returns true when the highlight moved.
+	/// Advances the highlight on whichever model is currently BOUND — navigate through the view, not
+	/// a model reference the caller kept, which may be a list that is no longer on screen. True when
+	/// the highlight moved.
 	/// </summary>
 	public bool Navigate(int direction, double delta)
 	{
@@ -367,18 +415,10 @@ public partial class Engine_FrontEndMenuView : Node3D
 	}
 
 	/// <summary>
-	/// Activates the highlighted entry, opening a submenu if that is what it carries.
-	///
-	/// The single entry point for "the player pressed A", so the game and the harness cannot
-	/// disagree about what that means. Returns the NAME to dispatch to the guest, or null when
-	/// the press was fully handled here — an expand, a collapse, a submenu opening, a SCREEN
-	/// opening, or a host-only entry the guest was never shipped with.
-	///
-	/// A screen is the one of those this view cannot finish on its own: it is not a list, so
-	/// there is nothing here that could draw it. The name is latched into
-	/// <see cref="TakeOpenedScreen"/> for whoever owns it, and the menu stays exactly where it
-	/// is — which is also what the original does, since its gender card is drawn OVER the menu
-	/// rather than in place of it.
+	/// Activates the highlighted entry — the single entry point for "the player pressed A". Returns
+	/// the NAME to dispatch to the guest, or null when the press was handled here (expand, collapse,
+	/// submenu, screen opening, host-only entry). A screen name is latched into
+	/// <see cref="TakeOpenedScreen"/> and the menu stays put, as the original leaves it.
 	/// </summary>
 	public string? Activate()
 	{
@@ -387,17 +427,14 @@ public partial class Engine_FrontEndMenuView : Node3D
 			return null;
 		}
 
-		// The model first: it owns expand/collapse and decides whether the press is the
-		// guest's business. Only then is the submenu considered, because an entry with BOTH
-		// children and a submenu is a modelling mistake and expanding is the shipped
-		// behaviour — following the original where the two disagree.
-		Engine_FrontEndMenu.Item? item = Menu.Highlighted;
+		// The model first: it owns expand/collapse and decides whether the press is the guest's
+		// business. An entry with both children and a submenu expands, as the original does.
+		Engine_UiExpandableMenu.Item? item = Menu.Highlighted;
 		string? dispatch = Menu.Activate();
 
 		if (dispatch is null && item?.Opens is { } screen)
 		{
-			// A refused entry opens nothing. The model latched the reason as a text tag and the
-			// owner takes it — see Engine_FrontEndMenu.NewGameRefusal.
+			// A refused entry opens nothing; the model latched the reason as a text tag.
 			if (Menu.Warning is null)
 			{
 				_openedScreen = screen;
@@ -406,24 +443,11 @@ public partial class Engine_FrontEndMenuView : Node3D
 			return null;
 		}
 
-		if (dispatch is null && item?.Submenu is { } submenu && item.Children.Count == 0)
-		{
-			_opened.Push(Menu);
-			Bind(submenu);
-			return null;
-		}
-
 		Refresh();
 		return dispatch;
 	}
 
-	/// <summary>
-	/// The screen the last <see cref="Activate"/> asked for, cleared by reading it.
-	///
-	/// Latched rather than returned, because <see cref="Activate"/> already has one return
-	/// value with a settled meaning — the name to dispatch — and a caller that ignores this
-	/// gets a menu entry that does nothing rather than a wrong screen.
-	/// </summary>
+	/// <summary>The screen the last <see cref="Activate"/> asked for, cleared by reading it.</summary>
 	public string? TakeOpenedScreen()
 	{
 		string? screen = _openedScreen;
@@ -434,11 +458,8 @@ public partial class Engine_FrontEndMenuView : Node3D
 	private string? _openedScreen;
 
 	/// <summary>
-	/// Backs out one level: collapses an expanded entry, else closes a submenu.
-	///
-	/// Returns false only when there is nothing left to back out of — at the root menu with
-	/// nothing expanded — which is the caller's signal that B means "leave this screen"
-	/// rather than "go up".
+	/// Backs out one level: collapses an expanded entry, else closes a submenu. False means nothing
+	/// was left to back out of, which is the caller's signal that B means "leave this screen".
 	/// </summary>
 	public bool Back()
 	{
@@ -453,24 +474,23 @@ public partial class Engine_FrontEndMenuView : Node3D
 			return true;
 		}
 
-		if (_opened.Count == 0)
-		{
-			return false;
-		}
-
-		Bind(_opened.Pop());
-		return true;
+		return false;
 	}
 
 	/// <summary>
-	/// Builds twelve persistent row nodes once.
-	///
-	/// Persistent rather than rebuilt per frame because a slot's identity is what the original
-	/// animates — <c>onScrollDown</c> moves the SAME component from one slot to the next — so a
-	/// view that discards and recreates nodes has nowhere to hang the tween when it is added.
+	/// Builds twelve persistent row nodes once — persistent because the original moves the SAME
+	/// component between slots (<c>onScrollDown</c>), which is what the tween hangs off.
 	/// </summary>
 	private void BuildRows()
 	{
+		// Read from the TEMPLATE (the clone is about to lose its text), and only when there is art
+		// to sit above: a text-only view keeps z 0 because there is nothing to tie with.
+		_labelLift = 0f;
+		if (RowTemplate is not null && FindText(RowTemplate) is { } authoredTitle)
+		{
+			_labelLift = authoredTitle.Position.Z;
+		}
+
 		for (int i = 0; i < Slots.Length; i++)
 		{
 			var row = new Node3D { Name = $"Slot{i + 1:00}", Visible = false };
@@ -482,25 +502,20 @@ public partial class Engine_FrontEndMenuView : Node3D
 				var frame = (Node3D)RowTemplate.Duplicate();
 				frame.Name = "Frame";
 				// The template was authored at its own place in the presentation; the slot
-				// supplies the position, so the clone contributes art and nothing else.
+				// supplies the position.
 				frame.Position = Vector3.Zero;
 				row.AddChild(frame);
 
-				// ART AND NOTHING ELSE, which this did not previously deliver. A shipped
-				// `MenuItemButton` carries its own `Icon.Title` text element, and the artist
-				// left the authored placeholder in it — so every cloned row drew
-				// "DEFAULT_TEXT_ID" underneath the label this view had just laid out. It goes
-				// unnoticed in the running game only because the guest's live state happens to
-				// leave that element invisible, which is not a thing to depend on: the view
-				// owns the label, so the clone must not bring one.
+				// Art and nothing else: a shipped `MenuItemButton` carries its own `Icon.Title`
+				// with the authored placeholder still in it, and the view owns the label.
 				StripText(frame);
 
-				// EACH ROW NEEDS ITS OWN MATERIALS. Node.Duplicate copies the node but SHARES
-				// its sub-resources, so all twelve clones and the shipped original hold one
-				// StandardMaterial3D per quad. Fading a row would fade every row and the
-				// presentation's own component with it — and a row's opacity is per-slot (the
-				// two gutters are 0), so they cannot share.
-				OwnMaterials(frame);
+				// Each row needs its OWN materials: Node.Duplicate shares sub-resources, and a
+				// row's opacity is per-slot (the two gutters are 0). This also records every
+				// quad's authored alpha over the whole subtree, which `FadeArt` requires — it
+				// skips any mesh with no recorded alpha, and the script writes the slot opacity
+				// on the row COMPONENT, so it must accumulate down the whole row.
+				Engine_UiSceneBuilder.OwnSubtreeMaterials(frame);
 			}
 
 			var label = new MeshInstance3D { Name = "Label" };
@@ -513,11 +528,31 @@ public partial class Engine_FrontEndMenuView : Node3D
 	}
 
 	/// <summary>
-	/// Removes the TEXT a cloned row component brings with it.
-	///
-	/// Keyed on the element TYPE the scene builder recorded, not on the name: the scripts call
-	/// the element `Icon.Title`, but a row is being taken for its frame and its star, and any
-	/// text inside it is a label this view is about to draw itself.
+	/// The first TEXT element in a row subtree — the authored <c>Icon.Title</c>, keyed on the
+	/// element type the scene builder recorded rather than the name.
+	/// </summary>
+	private static Node3D? FindText(Node node)
+	{
+		foreach (Node child in node.GetChildren())
+		{
+			if (child is Node3D spatial && child.HasMeta("element_type") &&
+				(string)child.GetMeta("element_type") == "Text")
+			{
+				return spatial;
+			}
+
+			if (FindText(child) is { } inner)
+			{
+				return inner;
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// Removes the TEXT a cloned row component brings with it, keyed on the element type rather
+	/// than the name: the row is taken for its frame and star, and the view draws the label.
 	/// </summary>
 	private static void StripText(Node node)
 	{
@@ -534,54 +569,88 @@ public partial class Engine_FrontEndMenuView : Node3D
 		}
 	}
 
-	/// <summary>
-	/// Gives every mesh under a cloned row a private copy of its material, and records the
-	/// authored alpha so a later fade is relative to the artist's value rather than to 1.
-	/// </summary>
-	private static void OwnMaterials(Node node)
-	{
-		if (node is MeshInstance3D mesh && Engine_UiSceneBuilder.OwnQuadMaterial(mesh))
-		{
-			mesh.SetMeta(AuthoredAlphaMeta, Engine_UiSceneBuilder.QuadOpacity(mesh));
-		}
-
-		foreach (Node child in node.GetChildren())
-		{
-			OwnMaterials(child);
-		}
-	}
-
 	/// <summary>Where a row quad's authored alpha is kept, so fading never compounds.</summary>
 	private const string AuthoredAlphaMeta = "authored_alpha";
 
 	/// <summary>
-	/// The two alternative tab faces a row component ships with — brown for a root entry, red
-	/// for a submenu one, chosen by <see cref="SetTabFace"/>.
+	/// The two alternative tab faces a row component ships with, and the three border pieces each
+	/// carries. The border names differ between the faces — that is the file's own spelling.
 	/// </summary>
-	public const string HeadingTabFace = "InnerBrown";
-	public const string ChildTabFace = "InnerRed";
+	public const string BrownTabFace = "InnerBrown";
+	public const string RedTabFace = "InnerRed";
+	private static readonly string[] BrownBorders = Engine_UiMenuConstants.BrownBorders;
+	private static readonly string[] RedBorders = Engine_UiMenuConstants.RedBorders;
+
+	/// <summary><c>g_Menu.EmphasisConst</c>, from <c>expandablemenustateandconstants.lua</c>.</summary>
+	public const int EmphasisNone = (int)Engine_UiMenuConstants.Emphasis.None;
+	public const int EmphasisPrimaryQuest = (int)Engine_UiMenuConstants.Emphasis.PrimaryQuest;
+	public const int EmphasisActiveQuest = (int)Engine_UiMenuConstants.Emphasis.ActiveQuest;
+	public const int EmphasisSuggestedMenuItem = (int)Engine_UiMenuConstants.Emphasis.SuggestedMenuItem;
 
 	/// <summary>
-	/// Picks the tab face this entry's depth calls for, the way the scripts pick it.
+	/// Puts the tab face and border tint this entry calls for on a row. The face is chosen by
+	/// EMPHASIS, not depth: `UpdateTabInnerTexture` (`main.24`) splits on <c>IsHeading</c> and the
+	/// halves do not mirror.
 	///
-	/// <c>UpdateTabInnerTextureMenu</c> is two <c>setAttribute(group, 'opacity', 0|100)</c>
-	/// calls — on the GROUPS, never on their quads — so this re-runs exactly that. Without it
-	/// every row wears the file's default face, which is the red one, and the root entries look
-	/// like submenu rows.
+	/// <list type="bullet">
+	/// <item>A root row (<c>UpdateTabInnerTextureMenu</c>, `main.22`) wears <c>InnerRed</c> at
+	/// opacity 100 with untinted borders, and swaps to <c>InnerBrown</c> tinted 0.9 toward
+	/// (10, 10, 40) only WHEN EMPHASISED — brown is the mark, not the default.</item>
+	/// <item>A submenu row (<c>UpdateTabInnerTextureSubMenu</c>, `main.23`) is always
+	/// <c>InnerBrown</c> and its emphasis picks the border tint: none 0.9 toward (30, 30, 30),
+	/// primary quest 0.9 toward (40, 40, 120), active quest 0.9 toward (10, 10, 40), suggested
+	/// item untinted.</item>
+	/// </list>
 	///
-	/// It is NOT the same as forcing the quads opaque, which is what I tried first: the brown
-	/// group carries a full-bleed backing plate whose authored alpha is only zero because the
-	/// GROUP is, and lifting the leaves directly puts that plate on screen at full strength.
+	/// The opacity goes on the GROUPS, never their quads — that is all
+	/// `setAttribute(group, 'opacity', …)` does, and the brown group's full-bleed backing plate is
+	/// zero only because the group is. The tint goes on the BORDERS, through
+	/// <c>SetTintingAmountAndDiffuseColour(GetFirstChild(border), amount, r, g, b)</c>; our builder
+	/// folds that `material` element into its parent's quad, so it lands on the border node.
 	/// </summary>
-	private void SetTabFace(int row, bool heading)
+	private void SetTabFace(int row, bool heading, int emphasis)
 	{
 		if (_rows[row].GetNodeOrNull<Node3D>("Frame") is not { } frame)
 		{
 			return;
 		}
 
-		Face(HeadingTabFace, heading ? 1f : 0f);
-		Face(ChildTabFace, heading ? 0f : 1f);
+		// A root row shows the brown face only as the emphasis mark; a submenu row is brown
+		// unconditionally.
+		bool brown = !heading || emphasis != EmphasisNone;
+
+		(float amount, Color colour) = heading
+			? Engine_UiMenuConstants.HeadingTint(brown)
+			: Engine_UiMenuConstants.SubmenuTint((Engine_UiMenuConstants.Emphasis)emphasis);
+
+		Face(BrownTabFace, brown ? 1f : 0f);
+		Face(RedTabFace, brown ? 0f : 1f);
+
+		if (Engine_UiTheme.FindByName(frame, brown ? BrownTabFace : RedTabFace) is Node3D face)
+		{
+			foreach (string border in brown ? BrownBorders : RedBorders)
+			{
+				if (Engine_UiTheme.FindByName(face, border) is Node3D piece)
+				{
+					Tint(piece, colour, amount);
+				}
+			}
+		}
+
+		static Color Rgb(float r, float g, float b) => new(r / 255f, g / 255f, b / 255f);
+
+		static void Tint(Node node, Color colour, float amount)
+		{
+			if (node is MeshInstance3D mesh)
+			{
+				Engine_UiSceneBuilder.SetQuadTint(mesh, colour, amount);
+			}
+
+			foreach (Node child in node.GetChildren())
+			{
+				Tint(child, colour, amount);
+			}
+		}
 
 		void Face(string name, float opacity)
 		{
@@ -591,15 +660,14 @@ public partial class Engine_FrontEndMenuView : Node3D
 			}
 		}
 
-		// The group's own factor is REPLACED; everything below it keeps the artist's. That is
-		// the whole of what setAttribute on a group does.
+		// The group's own factor is REPLACED; everything below keeps the artist's — what
+		// setAttribute on a group does.
 		static void Recompute(Node node, float accumulated)
 		{
 			if (node is MeshInstance3D mesh)
 			{
-				// Written to the fade baseline rather than to the material, because the slot
-				// opacity is applied on top of it every frame — see ApplyPoses. Setting the
-				// material here would last exactly until the next frame.
+				// Written to the fade baseline rather than the material: the slot opacity is
+				// applied on top of it every frame.
 				mesh.SetMeta(AuthoredAlphaMeta, accumulated);
 			}
 
@@ -617,8 +685,13 @@ public partial class Engine_FrontEndMenuView : Node3D
 	}
 
 	/// <summary>Scales a whole row's art by a slot opacity, from its authored alpha.</summary>
-	private static void FadeArt(Node node, float opacity)
+	private static void FadeArt(Node node, float opacity, Node? skip = null)
 	{
+		if (ReferenceEquals(node, skip))
+		{
+			return;
+		}
+
 		if (node is MeshInstance3D mesh && mesh.HasMeta(AuthoredAlphaMeta))
 		{
 			float authored = (float)mesh.GetMeta(AuthoredAlphaMeta);
@@ -627,8 +700,27 @@ public partial class Engine_FrontEndMenuView : Node3D
 
 		foreach (Node child in node.GetChildren())
 		{
-			FadeArt(child, opacity);
+			FadeArt(child, opacity, skip);
 		}
+	}
+
+	/// <summary>
+	/// The cursor's pose in VIEW space, from the source art's authored transform chain. The shipped
+	/// `MenuHighlight` is not centred art — its visuals live in an inner wrapper authored 210 up
+	/// from the root at x0.8 root scale — so a clone with a zeroed root paints the badge ~168 above
+	/// where it is parked. Null keeps the pinned-slot fallback for a stand-in cursor.
+	/// </summary>
+	public Transform3D? CursorPose { get; set; }
+
+	private static int CountQuads(Node root)
+	{
+		int n = root is MeshInstance3D { Mesh: not null } ? 1 : 0;
+		foreach (Node child in root.GetChildren())
+		{
+			n += CountQuads(child);
+		}
+
+		return n;
 	}
 
 	private void BuildCursor()
@@ -637,12 +729,44 @@ public partial class Engine_FrontEndMenuView : Node3D
 		{
 			_cursor = (Node3D)CursorTemplate.Duplicate();
 			_cursor.Name = "Cursor";
+
+			// `UpdateCursorColor` (`expandablemenuformatting.dis main.16` pc22-31) writes
+			// opacity 100 to BOTH `Group.green_top` and `Group.green_top_translucent` on every
+			// highlight change; the second is authored at 0.
+			int raised = 0;
+			foreach (string layer in new[] { "green_top", "green_top_translucent" })
+			{
+				if (Engine_UiTheme.FindByName(_cursor, layer) is Node3D top)
+				{
+					foreach (Node child in top.GetChildren())
+					{
+						if (child is MeshInstance3D quad && Engine_UiSceneBuilder.SetQuadOpacity(quad, 1f))
+						{
+							++raised;
+						}
+					}
+
+					if (top is MeshInstance3D own && Engine_UiSceneBuilder.SetQuadOpacity(own, 1f))
+					{
+						++raised;
+					}
+				}
+			}
+
+			if (CursorPose is { } pose)
+			{
+				_cursor.Transform = pose;
+				AddChild(_cursor);
+				GD.Print($"[menu-view] {Name} cursor: shipped art at view-local " +
+					$"({pose.Origin.X:F0}, {pose.Origin.Y:F0}, {pose.Origin.Z:F0}) scale {pose.Basis.Scale.X:F2}, " +
+					$"{raised} green layer(s) raised, {CountQuads(_cursor)} quad(s)");
+				return;
+			}
 		}
 		else
 		{
-			// A STAND-IN, not the shipped cursor. Sized off the table rather than by eye —
-			// the widest style's truncate width by the full-band row pitch — so it marks the
-			// slot the highlight is pinned to without pretending to be art.
+			// A stand-in, not the shipped cursor: sized off the table — the widest style's
+			// truncate width by the full-band row pitch.
 			_cursor = new MeshInstance3D
 			{
 				Name = "CursorStandIn",
@@ -658,15 +782,12 @@ public partial class Engine_FrontEndMenuView : Node3D
 		}
 
 		Slot slot = Slots[HighlightSlot - 1];
-		// Behind the label in the painter's sense: the canvas camera is orthographic looking
-		// down -Z, so a smaller Z is further away.
+		// Behind the label: the canvas camera looks down -Z, so a smaller Z is further away.
 		_cursor.Position = new Vector3(slot.X + TabOffset + HeadingTabBonus, slot.Y, -1f);
 		AddChild(_cursor);
 	}
 
-	/// <summary>
-	/// Lays the visible window out across the slots. Call after any change to the model.
-	/// </summary>
+	/// <summary>Lays the visible window out across the slots. Call after any change to the model.</summary>
 	public void Refresh()
 	{
 		RowsDrawn = 0;
@@ -686,6 +807,7 @@ public partial class Engine_FrontEndMenuView : Node3D
 			}
 
 			System.Array.Clear(_rowItem);
+			System.Array.Clear(_rowFaced);
 
 			if (_cursor is not null)
 			{
@@ -702,21 +824,21 @@ public partial class Engine_FrontEndMenuView : Node3D
 		(int first, int last) = Window(Menu.HighlightIndex + 1, Menu.Visible.Count);
 		int highlight = Menu.HighlightIndex + 1;
 
-		// WHICH SLOT EACH ENTRY IS HEADED FOR. Computed before anything is assigned, because a
-		// row is matched to the node ALREADY DRAWING THAT ENTRY — that is what makes a scroll a
-		// movement rather than a repaint.
+
+		// Which slot each entry is headed for, computed before anything is assigned: a row is
+		// matched to the node ALREADY DRAWING THAT ENTRY, which makes a scroll a movement.
 		var wanted = new int[_rows.Length];
-		var entry = new Engine_FrontEndMenu.Item?[_rows.Length];
+		var entry = new Engine_UiExpandableMenu.Item?[_rows.Length];
 		int count = 0;
 
 		for (int display = first; display <= last && count < _rows.Length; display++)
 		{
-			int slot = display - highlight + HighlightSlot;
+			// `Engine_UiMenuFormatter.SlotFor` is the one statement of `forceReset`'s arithmetic.
+			int slot = Engine_UiMenuFormatter.SlotFor(display, highlight);
 			if (slot < 1 || slot > Slots.Length)
 			{
-				// Cannot happen for a window this rule produced; skipping rather than
-				// clamping keeps a future off-by-one visible as a missing row instead of
-				// two entries stacked in one slot.
+				// Skipping rather than clamping keeps an off-by-one visible as a missing row
+				// instead of two entries stacked in one slot.
 				continue;
 			}
 
@@ -725,11 +847,33 @@ public partial class Engine_FrontEndMenuView : Node3D
 			++count;
 		}
 
-		// Each entry keeps the node it was already on. The original does the same thing from
-		// the other end — `AnimatePropertiesToIndex(comp, index)` moves a COMPONENT to a slot,
-		// so the component is the persistent thing and the slot is what changes. A slot-keyed
-		// view would have to retext every node on every press, and would have nothing whose
-		// position could be tweened.
+		// Each entry keeps the node it was already on: `AnimatePropertiesToIndex(comp, index)`
+		// moves a COMPONENT to a slot, so the component persists and the slot changes.
+		// Which entries were on screen before this pass decides whether the press gate arms.
+		var drawnBefore = new System.Collections.Generic.HashSet<Engine_UiExpandableMenu.Item>(
+			ReferenceEqualityComparer.Instance as
+				System.Collections.Generic.IEqualityComparer<Engine_UiExpandableMenu.Item>);
+		foreach (Engine_UiExpandableMenu.Item? was in _rowItem)
+		{
+			if (was is not null)
+			{
+				drawnBefore.Add(was);
+			}
+		}
+
+		bool cascade = false;
+		for (int i = 0; i < count; ++i)
+		{
+			if (!drawnBefore.Remove(entry[i]!))
+			{
+				cascade = true;
+			}
+		}
+
+		// Anything left in the set was drawn a moment ago and is not now: a component animating
+		// OUT counts as much as one animating in.
+		cascade |= drawnBefore.Count > 0;
+
 		var taken = new bool[_rows.Length];
 		var assigned = new int[count];
 		for (int i = 0; i < count; ++i)
@@ -771,8 +915,41 @@ public partial class Engine_FrontEndMenuView : Node3D
 			{
 				_rows[r].Visible = false;
 				_rowItem[r] = null;
+				_rowRating[r] = int.MinValue;
+				_delay[r] = 0.0;
 			}
 		}
+
+		// Was this list on screen at all a moment ago? Asked once, before any row is touched; the
+		// entering pose below needs it and the per-row answer cannot give it.
+		bool listWasOnScreen = false;
+		for (int r = 0; r < _rows.Length; ++r)
+		{
+			if (_rowItem[r] is not null && _rows[r].Visible)
+			{
+				listWasOnScreen = true;
+				break;
+			}
+		}
+
+		// A fold, not a scroll: the open folder changed, so the arriving rows fly in from the left.
+		// Counted before any row is touched, so the batch delay is one number for all of them.
+		bool foldChanged = !ReferenceEquals(_lastExpanded, Menu.Expanded);
+		_lastExpanded = Menu.Expanded;
+		int arriving = 0;
+		for (int i = 0; i < count; ++i)
+		{
+			int r = assigned[i];
+			if (r >= 0 && entry[i]!.Depth > 1 && !(_rowItem[r] is not null && _rows[r].Visible))
+			{
+				++arriving;
+			}
+		}
+
+		double flyDelay = foldChanged && arriving > 0
+			? Engine_UiMenuConstants.AnimateInTime /
+				System.Math.Max(1, System.Math.Min(arriving, Slots.Length - HighlightSlot))
+			: 0.0;
 
 		for (int i = 0; i < count; ++i)
 		{
@@ -784,80 +961,146 @@ public partial class Engine_FrontEndMenuView : Node3D
 
 			bool wasDrawn = _rowItem[row] is not null && _rows[row].Visible;
 
-			// AN ENTRY ARRIVING STARTS ONE SLOT FURTHER OUT, which is what "the list slides"
-			// means: the window moved by one, so an entry entering it was, a moment ago, just
-			// past the edge. Slots 1 and 12 are the zero-opacity gutters, so an entry sliding in
-			// from beyond them fades up on its way rather than appearing at full strength.
-			_from[row] = wasDrawn
-				? _to[row]
-				: PoseFor(System.Math.Clamp(wanted[i] + (wanted[i] <= HighlightSlot ? -1 : 1),
-					1, Slots.Length), entry[i]!);
+			// An arriving entry starts one slot further out: the window moved by one, and slots 1
+			// and 12 are the zero-opacity gutters, so it fades up on the way in.
+			//
+			// A row already drawn starts from WHERE IT IS, not from its previous target —
+			// `AnimatePropertiesToIndex` reads every `start_val` with `getAttribute`, so an
+			// interrupted slide continues from the pose on screen instead of snapping forward.
+			//
+			// A list that was not on screen at all is not scrolling, it is arriving: the
+			// one-slot-out offset is signed about the highlight, so applying it to every row tears
+			// the column in half. The original slides the whole assembly in from x −800 as ONE
+			// group, rows already in their places.
+			RowPose resting = PoseFor(wanted[i], entry[i]!);
+			_delay[row] = 0.0;
+			if (wasDrawn)
+			{
+				_from[row] = RowPose.Lerp(_from[row], _to[row], RowT(row));
+			}
+			else if (listWasOnScreen && foldChanged && entry[i]!.Depth > 1)
+			{
+				// Children only: `main.39` pc143..155 adds a newly placed component to the fly-in
+				// batch only when `ParentItem ~= g_Menu.MenuRoot`; a root row coming up on a
+				// collapse scrolls from the gutter slot instead (pc156..160).
+				_from[row] = resting.ShiftedX(-FlyInDistance);
+				_delay[row] = flyDelay;
+			}
+			else if (listWasOnScreen)
+			{
+				_from[row] = PoseFor(System.Math.Clamp(
+					wanted[i] + (wanted[i] <= HighlightSlot ? -1 : 1), 1, Slots.Length), entry[i]!);
+			}
+			else
+			{
+				_from[row] = resting;
+			}
 
-			_to[row] = PoseFor(wanted[i], entry[i]!);
+			_to[row] = resting;
 
 			if (!ReferenceEquals(_rowItem[row], entry[i]))
 			{
 				_rowItem[row] = entry[i];
-				SetLabel(row, entry[i]!);
+				_rowRating[row] = int.MinValue;
+			}
+
+			// The label is keyed on the STRING, not the entry: `ApplyStatedLabels` writes the
+			// spawn-time decorations (unspent ability count, new-item marker) onto the same Item
+			// objects the rows already hold, so a reference test would never see them. Cheap every
+			// pass — SetLabel returns immediately when the string and size are unchanged.
+			SetLabel(row, entry[i]!, wanted[i]);
+
+			// The rating is keyed on the VALUE, not the entry: a row's stars change while the row
+			// stays put. Every row, no screen-level gate — `UpdateStarRating`
+			// (`expandablemenuformatting.dis` main.30) ends on `goToSlide(Tab.Stars, slide)` with
+			// slide 11 for anything outside 1..10, so a command row wears the EMPTY slide. A pool
+			// with no Stars art resolves to null and there is nothing to drive.
+			if (Ratings is not null && _rowRating[row] != entry[i]!.RatingSlide)
+			{
+				_rowRating[row] = entry[i]!.RatingSlide;
+				if (_rows[row].GetNodeOrNull<Node3D>("Frame") is { } rated)
+				{
+					Ratings.Apply(rated, Engine_UiMenuFormatter.RatingFor(entry[i]!));
+				}
+			}
+
+			// The face follows emphasis, which changes without the row changing (the subtitles
+			// chooser moves its mark between two rows that stay put), so it is keyed on the value
+			// actually applied.
+			int emphasis = Emphasis(entry[i]!);
+			if (_rowEmphasis[row] != emphasis || !ReferenceEquals(_rowFaced[row], entry[i]))
+			{
+				_rowEmphasis[row] = emphasis;
+				_rowFaced[row] = entry[i];
+				SetTabFace(row, IsHeading(entry[i]!), emphasis);
 			}
 
 			_rows[row].Visible = true;
 			RowsDrawn++;
 		}
 
-		// One clock for every row, because they all move together: the whole column slides by
-		// one slot on a press. `ANIMATE_TIME` is 0.15, set as a global in
-		// `expandablemenuformatting.lua`, and the interpolation is a plain clamped lerp with no
-		// easing — `UpdateAnimations` computes `t = (now - start) / duration`, clamps it at 1
-		// and writes `start + (end - start) * t`, which is the whole of it.
+		// One clock for every row: the whole column slides one slot per press.
 		_elapsed = 0.0;
-		_animating = true;
-		ApplyPoses(0f);
+		_sliding = count > 0;
+
+		// The press gate arms only for a cascade. `WaitForInput` (`expandablemenuinput.dis main.4`)
+		// blocks on a set's `time_delay`, never its duration (`pc17 LT R7 &lt; R6`), and
+		// `ProcessAnimationList` stamps `start_time` only on a set whose delay is non-zero
+		// (`expandablemenuanimation.dis main.3 pc7..13`). The two scroll call sites pass three
+		// arguments (`formatting main.12 pc86..89`, `main.13 pc108..111`) and
+		// `AnimatePropertiesToIndex` defaults the delay to 0 (`animation main.7 pc45..47 TESTSET`),
+		// so a plain cursor move never blocks A; only `AnimateComponentIn`/`Out` passes a delay.
+		Animating = cascade;
+		ApplyPoses();
 	}
 
 	/// <summary>
-	/// Advances the slide. Rows move only here, so the tween runs at the display rate rather
-	/// than at whatever rate the caller happens to poll navigation.
+	/// Advances the slide. Rows move only here, so the tween runs at the display rate rather than
+	/// at whatever rate the caller polls navigation.
 	/// </summary>
 	public override void _Process(double delta)
 	{
-		if (!_animating)
+		if (!_sliding)
 		{
 			return;
 		}
 
 		_elapsed += delta;
-		float t = AnimateTime <= 0.0 ? 1f : (float)(_elapsed / AnimateTime);
-		if (t >= 1f)
+		double longest = 0.0;
+		for (int r = 0; r < _rows.Length; ++r)
 		{
-			t = 1f;
-			_animating = false;
+			longest = System.Math.Max(longest, _delay[r]);
 		}
 
-		ApplyPoses(t);
+		if (AnimateTime <= 0.0 || _elapsed >= AnimateTime + longest)
+		{
+			_sliding = false;
+			Animating = false;
+		}
+
+		ApplyPoses();
 	}
 
-	/// <summary>True when any sibling of this item carries the guest's emphasis marker.</summary>
-	private bool SiblingEmphasised(Engine_FrontEndMenu.Item item)
+	/// <summary>
+	/// Whether a row is mid-slide — `g_Menu:WaitForInput()`. Published to the model, which
+	/// implements `SelectMenuItem`'s first line, `if self:WaitForInput() then return end`; the
+	/// drawing surface is the only thing here that knows.
+	/// </summary>
+	private bool Animating
 	{
-		if (Menu is null)
+		get => _animating;
+		set
 		{
-			return false;
-		}
-
-		foreach (Engine_FrontEndMenu.Item other in Menu.Visible)
-		{
-			if (!ReferenceEquals(other, item) && other.Parent == item.Parent && other.Emphasised)
+			_animating = value;
+			if (Menu is not null)
 			{
-				return true;
+				Menu.Model.Animating = value;
 			}
 		}
-
-		return false;
 	}
 
-	/// <summary>Writes every visible row at a point on its own from/to interpolation.</summary>
-	private void ApplyPoses(float t)
+	/// <summary>Writes every visible row at its own point on its from/to interpolation.</summary>
+	private void ApplyPoses()
 	{
 		for (int r = 0; r < _rows.Length; ++r)
 		{
@@ -866,57 +1109,92 @@ public partial class Engine_FrontEndMenuView : Node3D
 				continue;
 			}
 
-			RowPose pose = RowPose.Lerp(_from[r], _to[r], t);
+			RowPose pose = RowPose.Lerp(_from[r], _to[r], RowT(r));
+
+			// The mask, before anything is drawn at this pose: a row outside the page band hides
+			// whole. Checked per frame because the slide animates rows across the edge.
+			if (ClipRect is { } clip)
+			{
+				float rowY = Position.Y + pose.Y;
+				if (rowY < clip.Position.Y || rowY > clip.End.Y)
+				{
+					_rows[r].Visible = false;
+					continue;
+				}
+
+				_rows[r].Visible = true;
+			}
+
+			_rows[r].Visible = true;
 
 			_rows[r].Position = new Vector3(pose.X, pose.Y, 0f);
 			_rows[r].Scale = new Vector3(pose.Scale, pose.Scale, 1f);
 
-			// EMPHASIS, RENDERED AS CONTRAST. The guest marks the current choice of a chooser
-			// submenu with `g_Menu:SetItemEmphasis(1)` (subtitles arm, current language); every
-			// row here already draws in SetGhosting's live gold, so the marked row cannot be
-			// brightened. Instead its rivals give way: siblings of an emphasised item dim to
-			// the authored ghost-heading opacity. Rows outside a chooser are untouched — the
-			// scale only ever applies where one sibling is emphasised, which is the guest's own
-			// precondition for the marker meaning anything. The treatment is OURS (the authored
-			// Lua visual is unverified); the STATE is the guest's.
-			float emphasisScale = 1f;
-			if (_rowItem[r] is { Emphasised: false } plain && SiblingEmphasised(plain))
-			{
-				emphasisScale = GhostedHeadingOpacity / 100f;
-			}
-
+			// Emphasis is not drawn here: `UpdateTabInnerTexture` states it as the tab FACE and its
+			// border tint, which SetTabFace applies. Dimming as well would apply the mark twice.
+			// The slot's opacity and the row's ghosting MULTIPLY — the script writes them on
+			// different elements, the component and `Icon.Title`, so they compose.
 			var tint = new Color(
-				LabelColour.R, LabelColour.G, LabelColour.B,
-				pose.Opacity / 100f * emphasisScale);
+				pose.LabelColour.R, pose.LabelColour.G, pose.LabelColour.B,
+				pose.Opacity / 100f * (pose.LabelOpacity / 100f) * FocusOpacity);
 			Engine_UiTheme.Retint(_labels[r], tint);
 
-			// The frame fades with the label. The scripts set opacity on the row COMPONENT, so
-			// the tab and its text carry one value — and without this the two gutter slots
-			// would slide a fully opaque tab in under a label that had already faded to
-			// nothing.
-			if (_rows[r].GetNodeOrNull<Node3D>("Frame") is { } frame)
-			{
-				FadeArt(frame, pose.Opacity / 100f);
-			}
+			// The frame fades with the label: the scripts set opacity on the row COMPONENT, so tab
+			// and text carry one value. The WHOLE row, not a child called `Frame` — screen rows do
+			// not keep their art under that name. The label is excluded because it carries the
+			// ghost tint and was written just above; fading it here would apply the slot twice.
+			FadeArt(_rows[r], pose.Opacity / 100f * FocusOpacity, _labels[r]);
 		}
 	}
 
 	/// <summary>Where a given entry sits when it is resting in a given slot.</summary>
-	private static RowPose PoseFor(int slot, Engine_FrontEndMenu.Item item)
+	private RowPose PoseFor(int slot, Engine_UiExpandableMenu.Item item)
 	{
 		Slot placement = Slots[slot - 1];
 		Style style = Styles[placement.StyleIndex - 1];
 
-		// A root entry is a heading; depth counts parent links, so the model's two levels are
-		// depth 1 and 2. Deeper nesting would need the model to expose a real chain.
-		bool heading = item.Parent is null;
-		int depth = heading ? 1 : 2;
+		// The end-slot fade, from `expandablemenuformatting.lua`:
+		//
+		//   main.0 FadeOutTopItemEarly()    g_MenuPositionSlots[2].opacity_scale_index  = 5
+		//   main.1 FadeOutBottomItemEarly() g_MenuPositionSlots[11].opacity_scale_index = 5
+		//
+		// Style 5 is the zero-opacity one. Both are called from a screen's POPULATE, so they are a
+		// standing property of the laid-out column, not a per-scroll condition. The list edge is an
+		// opacity treatment; the pools have no mask.
+		if ((slot == 2 && FadesTopEnd) || (slot == 11 && FadesBottomEnd))
+		{
+			style = Styles[4];
+		}
 
-		float tab = TabOffset + (TabOffsetPerDepth * (depth - 1)) + (heading ? HeadingTabBonus : 0f);
+		// The TREE states the indent, not the guest's laid-out row: `Engine_UiMenuFormatter`
+		// computes the tab offset and the heading face forward from the row's depth, the direction
+		// the script computes them. A stated x is absent before the guest lays the pool out, stale
+		// for a frame after it moves, and wrong for any row parked in a gutter.
+		bool heading = item.IsHeading;
+		float tab = Engine_UiMenuFormatter.TabOffsetFor(item.Depth, heading);
 		float scale = style.Scale + ((heading ? HeaderScale : DefaultScale) - 1f);
 
-		return new RowPose(placement.X + tab, placement.Y, scale, style.Opacity);
+		// `SetGhosting` — the label's colour and opacity, the visible cue that a category cannot
+		// be entered.
+		return new RowPose(placement.X + tab, placement.Y, scale, style.Opacity)
+		{
+			LabelColour = item.IsGhosted && !heading
+				? Engine_UiMenuConstants.GhostedChildColour
+				: Engine_UiMenuConstants.LiveTextColour,
+			LabelOpacity = item.IsGhosted
+				? heading
+					? Engine_UiMenuConstants.GhostedHeadingOpacity
+					: Engine_UiMenuConstants.GhostedChildOpacity
+				: 100f,
+		};
 	}
+
+	/// <summary>
+	/// Whether an entry draws as a heading — <c>IsHeading(item)</c> is
+	/// <c>item.ParentItem == g_Menu.MenuRoot</c>, answered from the tree. It picks the tab FACE as
+	/// well as the indent and label position.
+	/// </summary>
+	private static bool IsHeading(Engine_UiExpandableMenu.Item item) => item.IsHeading;
 
 	/// <summary>
 	/// The window of entries on screen, 1-based and inclusive — <c>GetVisibleIndices()</c> in
@@ -928,121 +1206,102 @@ public partial class Engine_FrontEndMenuView : Node3D
 	/// last  = first + count - 1
 	/// </code>
 	///
-	/// The second term is what keeps the window from running past slot 11: while the highlight
-	/// is still in the first two entries it has fewer than two rows above it, and the cap
-	/// shrinks by exactly that shortfall.
+	/// The second term keeps the window off slot 11: while the highlight is in the first two
+	/// entries it has fewer than two rows above it, and the cap shrinks by that shortfall.
 	/// </summary>
-	public static (int First, int Last) Window(int highlight, int total)
-	{
-		if (total <= 0)
-		{
-			return (1, 0);
-		}
-
-		int first = Math.Max(highlight - 2, 1);
-		int span = total - first + 1;
-		int cap = WindowSize - (2 - (highlight - first));
-		int count = Math.Min(span, cap);
-		return (first, first + count - 1);
-	}
+	public static (int First, int Last) Window(int highlight, int total) =>
+		Engine_UiExpandableMenu.Window(highlight, total);
 
 	/// <summary>
-	/// Puts an entry's LABEL on a row node. Called only when the row changes which entry it
-	/// draws, which a scroll does not — the entry keeps its node and moves with it.
-	///
-	/// The glyph mesh is the one thing here that costs anything, and this is what keeps it off
-	/// the per-frame path: the position, scale and opacity that change every frame of a slide
-	/// are a transform and a material write, and the text is not one of them.
+	/// Puts an entry's LABEL on a row node. The glyph mesh is the one costly thing here, so it is
+	/// kept off the per-frame path — a slide writes only transforms and materials.
 	/// </summary>
-	private void SetLabel(int row, Engine_FrontEndMenu.Item item)
+	private void SetLabel(int row, Engine_UiExpandableMenu.Item item, int slot)
 	{
-		bool heading = item.Parent is null;
-		SetTabFace(row, heading);
-
+		bool heading = IsHeading(item);
 		MeshInstance3D label = _labels[row];
-		label.Position = new Vector3(heading ? HeadingLabelX : ChildLabelX, 0f, 0f);
+		label.Position = new Vector3(heading ? HeadingLabelX : ChildLabelX, 0f, _labelLift);
 
-		string display = Resolve(item.TextTag);
+		// The guest's own string wins: its rows carry more than the tag resolves to — an unspent
+		// ability count, the new-item marker — composed at spawn time.
+		string display = item.StatedLabel ?? Resolve(item.TextTag);
 
-		// The point size is the same in every style record — 18 across all five — so a row
-		// changing slot never re-lays its glyphs. Taken from the table rather than written as
-		// 18 so a style that ever differs is honoured instead of silently ignored.
-		int size = Styles[3].FontSize;
+		// The SLOT's own style, not slot 4's for everything: `SetAttributesToVisibleIndex`
+		// (`expandablemenuformatting.dis main.33` pc67..92) writes `Icon.Title.size` and, where the
+		// element has it, `Icon.Title.truncate` from the style the CURRENT slot names, and the
+		// truncate widths differ per slot (200 / 210 / 240 / 305).
+		//
+		// The RESTING slot, not the animated one: the shipped code tweens `titletexttruncate`, but
+		// re-meshing the string every frame would cost more than the effect is worth. The point
+		// size is 18 in every style record; it is taken from the table anyway.
+		Style rowStyle = Styles[Slots[System.Math.Clamp(slot, 1, Slots.Length) - 1].StyleIndex - 1];
+		int size = rowStyle.FontSize;
+		float truncate = rowStyle.Truncate;
 
-		if (_labelText[row] == display && _labelSize[row] == size)
+		if (_labelText[row] == display && _labelSize[row] == size &&
+			_labelTruncate[row] == truncate)
 		{
 			return;
 		}
 
 		_labelText[row] = display;
 		_labelSize[row] = size;
+		_labelTruncate[row] = truncate;
 
-		// Built opaque; ApplyPoses carries the slot's own opacity every frame. Engine_UiSceneBuilder
-		// deliberately forces authored text alpha to 1 because the engine overwrites the .fac's
-		// own alpha, and the slot opacity is a different value — the scripts set it on the row
-		// COMPONENT, and the two gutters are 0.
+		// Built opaque; ApplyPoses carries the slot's opacity every frame. Engine_UiSceneBuilder
+		// forces authored text alpha to 1 because the engine overwrites the .fac's own alpha.
 		var opaque = new Color(LabelColour.R, LabelColour.G, LabelColour.B, 1f);
 
-		// Left-aligned and vertically centred on the slot. The row's x offsets are negative and
-		// its truncate width positive, so the string runs rightward from the anchor — but
-		// Icon.Title's own authored alignment is in the .fac rather than in the scripts, so this
-		// is the one placement value here that is inferred.
-		//
-		// Wrap mode 0 is the engine's single-line, truncate-don't-fold mode. The truncate width
-		// itself is not applied; see the class remarks.
-		(ArrayMesh? mesh, Texture2D? atlas) = Theme?.Glyphs(
-			display, size, opaque,
+		// Left-aligned and vertically centred on the slot: the row's x offsets are negative and its
+		// truncate width positive, so the string runs rightward from the anchor. Icon.Title's own
+		// alignment is in the .fac rather than the scripts, so this placement is inferred.
+		// Wrap mode 0 is the engine's single-line, truncate-don't-fold mode; the truncate width
+		// itself is not applied.
+		bool drew = Theme?.Paint(
+			label, display, size, opaque,
 			horizontalAlign: 0, verticalAlign: 1,
-			boxWidth: Styles[3].Truncate, boxHeight: 0f, wrapMode: 0) ?? (null, null);
+			boxWidth: truncate, boxHeight: 0f, wrapMode: 0) ?? false;
 
-		label.Mesh = mesh;
-		label.MaterialOverride = mesh is null
-			? null
-			: Engine_UiSceneBuilder.TextMaterial(opaque, atlas);
-
-		if (mesh is null)
+		if (!drew)
 		{
 			LabelsWithoutGlyphs++;
 		}
 	}
 
 	/// <summary>
-	/// A tag to its display string, through the theme's book.
-	///
-	/// An unresolved tag is shown VERBATIM rather than blanked, which is what the engine does
-	/// too — <see cref="Engine_UiScreen"/> falls back the same way, and it is how a missing
-	/// entry announces itself instead of leaving an empty row.
+	/// A tag to its display string, through the theme's book. An unresolved tag is shown VERBATIM
+	/// rather than blanked, as <see cref="Engine_UiScreen"/> falls back too. An EMPTY result is not
+	/// a resolved one — `Engine_UiTheme.Resolve` hands back whatever the book held, "" included,
+	/// and an empty string meshes no glyphs. The shipped code cannot reach that state:
+	/// `CreateMenuItem` defaults an absent tag to `'_no tag_'` (`expandablemenu.dis main.9 pc13..16`).
 	/// </summary>
-	public string Resolve(string tag) => Theme?.Resolve(tag) ?? tag;
+	public string Resolve(string tag)
+	{
+		if (Theme?.Resolve(tag) is { Length: > 0 } resolved)
+		{
+			return resolved;
+		}
+
+		return tag;
+	}
 
 	/// <summary>
-	/// Finds a row component to clone inside a built presentation.
-	///
-	/// The names are the scripts', not ours: <c>g_MenuFormatter:onInitialize</c> reads
-	/// <c>getElement('Buttons', self.parent)</c> and keeps every child whose
-	/// <c>getElementType</c> is <c>component</c>. <see cref="Engine_UiSceneBuilder"/> records
-	/// the element type as metadata, so the same test runs here.
-	///
-	/// Returns null when the group is absent, which is not a failure — it means this
-	/// presentation is not the one carrying the menu.
+	/// Finds a row component to clone inside a built presentation, by the script's own test:
+	/// <c>g_MenuFormatter:onInitialize</c> reads <c>getElement('Buttons', self.parent)</c> and keeps
+	/// every child whose <c>getElementType</c> is <c>component</c>. Null means this presentation is
+	/// not the one carrying the menu.
 	/// </summary>
 	public static Node3D? FindRowTemplate(Node root) =>
 		Engine_UiTheme.FindByName(root, RowGroupName) is { } group ? RowTemplateIn(group) : null;
 
 	/// <summary>
 	/// The group the shipped row components hang off — <c>getElement('Buttons', self.parent)</c>.
-	/// Named rather than inlined because the game also needs to HIDE this group: Godot draws
-	/// the rows now, and leaving the guest's twelve components in the tree puts two menus on
-	/// one screen.
+	/// Also what the game HIDES: Godot draws the rows, so leaving the guest's twelve components in
+	/// the tree puts two menus on one screen.
 	/// </summary>
 	public const string RowGroupName = "Buttons";
 
-	/// <summary>
-	/// A row component to clone, taken from an already-located group.
-	///
-	/// Split from <see cref="FindRowTemplate"/> so a caller that reached the group through the
-	/// theme's catalogue does not have to search the tree for it a second time.
-	/// </summary>
+	/// <summary>A row component to clone, taken from an already-located group.</summary>
 	public static Node3D? RowTemplateIn(Node group)
 	{
 		foreach (Node child in group.GetChildren())
@@ -1057,7 +1316,11 @@ public partial class Engine_FrontEndMenuView : Node3D
 		return null;
 	}
 
-	/// <summary>A one-line description of what is on screen, for a check tool's log.</summary>
+	/// <summary>
+	/// A one-line description of what this view PUT ON SCREEN, row by row, walking the row NODES
+	/// rather than the model: which entry each took, what it resolved to, whether that produced a
+	/// glyph mesh, and where the node ended up.
+	/// </summary>
 	public string Describe()
 	{
 		if (Menu is null)
@@ -1065,18 +1328,32 @@ public partial class Engine_FrontEndMenuView : Node3D
 			return "[menu-view] no model bound";
 		}
 
-		(int first, int last) = Window(Menu.HighlightIndex + 1, Menu.Visible.Count);
 		var parts = new List<string>();
-		for (int display = first; display <= last; display++)
+		int blank = 0;
+		for (int r = 0; r < _rows.Length; ++r)
 		{
-			int slot = display - Menu.HighlightIndex - 1 + HighlightSlot;
-			Engine_FrontEndMenu.Item item = Menu.Visible[display - 1];
-			string mark = display == Menu.HighlightIndex + 1 ? ">" : " ";
-			parts.Add($"{mark}slot{slot}:{item.Name}");
+			if (_rows[r] is not { Visible: true } row || _rowItem[r] is not { } item)
+			{
+				continue;
+			}
+
+			bool glyphs = _labels[r].Mesh is not null;
+			if (!glyphs)
+			{
+				++blank;
+			}
+
+			string mark = ReferenceEquals(item, Menu.Highlighted) ? ">" : " ";
+			Vector3 at = row.Position;
+			parts.Add($"{mark}{row.Name}:{item.Name}='{_labelText[r]}'" +
+				$"{(glyphs ? string.Empty : " NO-MESH")}" +
+				$"@({at.X:0},{at.Y:0}) op={_to[r].Opacity:0}");
 		}
 
-		return $"[menu-view] highlight={Menu.HighlightIndex + 1}/{Menu.Visible.Count} " +
-			$"window={first}..{last} rows={RowsDrawn} no-glyphs={LabelsWithoutGlyphs} | " +
+		return $"[menu-view] {Name} highlight={Menu.HighlightIndex + 1}/{Menu.Visible.Count} " +
+			$"rows={RowsDrawn} no-glyphs={LabelsWithoutGlyphs} blank={blank} " +
+			$"theme={(Theme is null ? "MISSING" : "bound")} " +
+			$"template={(RowTemplate is null ? "MISSING" : "cloned")} lift={_labelLift:0.#} | " +
 			string.Join("  ", parts);
 	}
 }

@@ -318,7 +318,7 @@ bool IsRefiiFrontEndAudioTerminalBank(std::string_view bank_name) {
 
 void RecordRefiiFrontEndAudioBankLateBind(std::string_view bank_name,
                                           uint32_t lr) {
-  if (bank_name.empty() || !RefiiLooseAssetBackendEnabled()) {
+  if (bank_name.empty()) {
     return;
   }
   const std::string normalized = NormalizeFrontEndAudioBankName(bank_name);
@@ -430,7 +430,7 @@ bool TrySignalRefiiCompletedNativeVfsWorkerWait(
       RefiiPostLoadingFrontendFinalHandoffWakeEmitted() &&
       RefiiPostGameFacePackageHandoffSignalEmitted() &&
       RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload();
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       (!RefiiPostVfsChainReadyForLoadingOwnerRelease() &&
        !post_loading_final_handoff_ready)) {
     return false;
@@ -550,7 +550,7 @@ bool TryReleaseRefiiCompletedNativeVfsFinalizerExit(
     uint8_t* base,
     std::string_view source_api,
     bool trace) {
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled()) {
+  if (base == nullptr) {
     return false;
   }
 
@@ -662,7 +662,7 @@ bool MaybeSignalRefiiPostVideoGeneratedWaitBeforeNative(
     uint32_t wait_object_guest,
     uint32_t wait_handle_guest) {
   const uint32_t lr = static_cast<uint32_t>(original_ctx.lr);
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       RefiiStartupVideosPlaybackCriticalActive() ||
       !IsPostVideoGeneratedWaitLr(lr) || wait_object_guest == 0) {
     return false;
@@ -880,7 +880,7 @@ bool TryRunRefiiPostVideoGeneratedFrameTailFromCompletedWait(
     const PPCContext& source_ctx,
     uint8_t* base,
     std::string_view source_api) {
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       !RefiiStartupVideosReadyForMenuHandoff() ||
       !RefiiPostVideoFrontendChainConsumed() ||
       !RefiiPostGameFacePackageHandoffSignalEmitted() ||
@@ -1010,7 +1010,7 @@ bool TrySignalRefiiCompletedPostGameFacePackageHandoffFromTrace(
     uint32_t wait_object_guest,
     uint32_t wait_handle_guest,
     bool trace) {
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       !RefiiStartupVideosReadyForMenuHandoff() ||
       !RefiiPostVideoFrontendChainConsumed()) {
     return false;
@@ -1212,7 +1212,7 @@ bool TryCollapseRefiiCompletedLoadingOwnerWorkerWait(
     bool trace) {
   const bool initial_owner_release_ready =
       RefiiPostVideoInitialLoadingOwnerReleaseReady();
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       original_ctx.lr != 0x82B48B08u || original_ctx.r4.u32 != 0x1F4u ||
       original_ctx.r5.u32 != 1u || wait_object_guest == 0 ||
       !RefiiStartupVideosReadyForMenuHandoff() ||
@@ -1863,7 +1863,7 @@ bool TryCollapseRefiiCompletedFrontEndAudioSyncWait(
     uint32_t wait_handle_guest,
     bool trace) {
   const uint32_t lr = static_cast<uint32_t>(original_ctx.lr);
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       lr != 0x82A3ECB0u || original_ctx.r4.u32 != 1000u ||
       original_ctx.r5.u32 != 0u || wait_object_guest == 0 ||
       !RefiiStartupVideosSettledForMenuHandoff() ||
@@ -1997,8 +1997,7 @@ bool ShouldTracePostVideoGeneratedEventWait(uint32_t lr,
 }
 
 bool ShouldRecordPostVideoWaitSnapshot(uint32_t lr) {
-  return RefiiLooseAssetBackendEnabled() &&
-         (lr == 0x82377D1C || lr == 0x823891C8 || lr == 0x82389308 ||
+  return (lr == 0x82377D1C || lr == 0x823891C8 || lr == 0x82389308 ||
           lr == 0x82389390);
 }
 

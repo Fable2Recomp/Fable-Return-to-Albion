@@ -33,17 +33,12 @@ public sealed class UiQuad
 	public float TintAmount;
 
 	/// <summary>
-	/// True when the atlas rectangle has no area. 442 of the 15,790 shipped quads are
-	/// like this — 249 with zero U extent, 251 with zero V, and 36 outright negative.
-	///
-	/// THESE ARE NINE-SLICE EDGE CELLS. The zero axis is always the axis that edge is
-	/// stretched ALONG — <c>UpperMiddle</c>/<c>LowerMiddle</c> have du=0, <c>Left</c>/
-	/// <c>Right</c> dv=0, <c>Middle</c> both — and the four CORNERS are never degenerate.
-	/// A single texel line smeared down an edge; the runtime drives it with
-	/// <c>scale.x</c>/<c>scale.y</c>, never <c>scaleu</c>/<c>scalev</c>.
-	///
-	/// Keep them and expect them to render; the builder's half-texel inset skips the zero axis
-	/// for this reason.
+	/// True when the atlas rectangle has no area — 442 of the 15,790 shipped quads. These are
+	/// nine-slice edge cells: the zero axis is the one the edge stretches along
+	/// (<c>UpperMiddle</c>/<c>LowerMiddle</c> du=0, <c>Left</c>/<c>Right</c> dv=0,
+	/// <c>Middle</c> both; corners never), driven by <c>scale.x</c>/<c>scale.y</c>, never
+	/// <c>scaleu</c>/<c>scalev</c>. Keep them and expect them to render; the builder's half-texel
+	/// inset skips the zero axis.
 	/// </summary>
 	public bool IsDegenerate => UMax - UMin <= 0f || VMax - VMin <= 0f;
 
@@ -95,11 +90,9 @@ public sealed class UiNode
 	public string Name = string.Empty;
 
 	/// <summary>
-	/// False when the element carried no <c>name</c> attribute. 15 of the 52 shipped
-	/// screens are exported this way — the prototypes plus a handful of small ones like
-	/// <c>coopquit</c> and <c>holdbutton</c> — so a consumer cannot rely on names being
-	/// present. The element's own hash field is still <c>sdbm32</c> of the original name,
-	/// so it remains a stable identity even when the string is gone.
+	/// False when the element carried no <c>name</c> attribute — 15 of the 52 shipped screens
+	/// export this way, so names cannot be relied on. The element's hash field is still
+	/// <c>sdbm32</c> of the original name and stays a stable identity.
 	/// </summary>
 	public bool HasAuthoredName;
 
@@ -130,12 +123,10 @@ public sealed class UiNode
 	public BgfElement Element = null!;
 
 	/// <summary>
-	/// True when <see cref="Engine_UiMenuCloning"/> produced this node rather than the file.
-	///
-	/// A clone has <see cref="Ordinal"/> -1 because it has no element in the document, so it
-	/// takes no live state — every live array is indexed by document ordinal. It carries the
-	/// source's <see cref="Element"/>, so an attribute read on a clone answers with the
-	/// template's authored value.
+	/// True when <see cref="Engine_UiMenuCloning"/> produced this node rather than the file. A
+	/// clone has <see cref="Ordinal"/> -1 and so takes no live state (every live array is indexed
+	/// by document ordinal); it carries the source's <see cref="Element"/>, so an attribute read
+	/// answers with the template's authored value.
 	/// </summary>
 	public bool IsClone;
 
@@ -147,16 +138,11 @@ public sealed class UiNode
 
 /// <summary>
 /// A screen assembled from its <c>.bgf</c> presentation and <c>.fac</c> sidecar, with
-/// textures and localised strings resolved.
+/// textures and localised strings resolved. The converter's input model — no engine types.
 ///
-/// This is the converter's input model: everything joined and named, with no engine
-/// types involved, so it can be inspected and tested before anything emits a scene.
-///
-/// Joining is by <see cref="BgfElement.ObjectId"/>. Two quirks are handled rather than
-/// asserted away — <c>LIGHT</c> records address the <c>.bsg</c> scene graph and never
-/// match an element, and a couple of shipped <c>UV</c> records are stale exporter
-/// leftovers pointing at deleted elements. Both are counted in
-/// <see cref="UnmatchedFacRecords"/> rather than throwing.
+/// Joined by <see cref="BgfElement.ObjectId"/>. <c>LIGHT</c> records address the <c>.bsg</c>
+/// scene graph and never match an element, and a few shipped <c>UV</c> records point at deleted
+/// ones; both are counted in <see cref="UnmatchedFacRecords"/> rather than throwing.
 /// </summary>
 public sealed class Engine_UiScreen
 {
@@ -170,6 +156,28 @@ public sealed class Engine_UiScreen
 	public bool IsLive;
 
 	public UiNode[] Nodes = Array.Empty<UiNode>();
+
+	/// <summary>
+	/// The element carrying a given <see cref="UiNode.ObjectId"/>, or null. The id is the stable
+	/// join between a built node and its element: the builder stamps it as metadata and Godot's
+	/// `Duplicate()` carries metadata, so a clone still says which element drives it. Lazy.
+	/// </summary>
+	public UiNode? NodeForObjectId(uint objectId)
+	{
+		if (_byObjectId is null)
+		{
+			_byObjectId = new Dictionary<uint, UiNode>(Nodes.Length);
+			foreach (UiNode node in Nodes)
+			{
+				// First wins: ids are unique in every shipped file.
+				_byObjectId.TryAdd(node.ObjectId, node);
+			}
+		}
+
+		return _byObjectId.TryGetValue(objectId, out UiNode? found) ? found : null;
+	}
+
+	private Dictionary<uint, UiNode>? _byObjectId;
 	public UiNode[] Roots = Array.Empty<UiNode>();
 
 	/// <summary>Exported entry points the game calls into, e.g. <c>OnPressA</c>.</summary>
@@ -217,12 +225,9 @@ public sealed class Engine_UiScreen
 	{
 		var doc = Engine_BgfDocument.Parse(bgfBytes);
 
-		// Before anything reads MasterActive or an override: node visibility and every
-		// attribute lookup are resolved against the slide state, so choosing slides
-		// afterwards would leave a screen built from the previous ones.
-		//
-		// The guest's own per-element slides win when we have them; the single scene
-		// slide is the fallback for a preview with no guest attached.
+		// Before anything reads MasterActive or an override: visibility and every attribute
+		// lookup resolve against the slide state. The guest's per-element slides win when
+		// present; the single scene slide is the no-guest fallback.
 		bool live = liveSlides is { Count: > 0 } && doc.SetElementSlides(liveSlides);
 		if (!live && sceneSlide > 0)
 		{
@@ -232,8 +237,8 @@ public sealed class Engine_UiScreen
 		BsgSceneNode[]? sceneNodes = null;
 		if (bsgBytes is not null)
 		{
-			// A malformed sidecar must not take the screen down with it — the .bgf
-			// alone still renders, just without the base layer.
+			// A malformed sidecar must not take the screen down; the .bgf alone still renders,
+			// without the base layer.
 			try
 			{
 				sceneNodes = Engine_BsgDocument.Parse(bsgBytes).Nodes;
@@ -268,21 +273,16 @@ public sealed class Engine_UiScreen
 				Element = e,
 			};
 
-			// The .bgf is an OVERRIDE layer: sub_82188D10 writes only the attributes an
-			// element actually carries, and everything else keeps its .bsg base. About
-			// 1.3% of spatial elements omit a transform component, so without this they
-			// silently fall back to 0/1 instead of their authored base.
+			// The .bgf is an OVERRIDE layer: sub_82188D10 writes only the attributes an element
+			// carries; the rest keep the .bsg base. ~1.3% of spatial elements omit one.
 			BsgSceneNode? b = null;
 			if (IsSpatial(e.Type) && sceneNodes is not null && spatialIndex < sceneNodes.Length)
 				b = sceneNodes[spatialIndex];
 			if (IsSpatial(e.Type))
 				spatialIndex++;
 
-			// Three layers, lowest first: the .bsg base, the .bgf element's own
-			// attributes, then the applied slide's commands. The slide is the engine's
-			// LAST write — the element's attributes go on at load and a slide's on
-			// switch — so it wins, and dropping that layer leaves a component's pieces
-			// at their superset positions instead of the layout the slide builds.
+			// Three layers, lowest first: the .bsg base, the element's own attributes, then the
+			// applied slide's commands. The slide is the engine's LAST write and wins.
 			float Attr(string name, float fallback) => Float(doc, i, e, name, fallback);
 
 			n.PositionX = Attr("position.x", b?.PositionX ?? 0f);
@@ -332,26 +332,19 @@ public sealed class Engine_UiScreen
 		if (facBytes is not null)
 			screen.AttachFac(Engine_FacDocument.Parse(facBytes), textures, strings);
 
-		// THE VIDEO SLOTS, read off the file so the host knows which elements can host one
-		// before the guest ever names a movie. A sprite whose `Movie` string is non-empty
-		// draws a Bink movie into its own rect INSTEAD of a texture; the shipped value on the
-		// abilities card is the placeholder `testability.bik`, which does not exist on disk,
-		// and the guest restates it with the real path from the ability's GDB record.
+		// Video slots, read off the file before the guest names a movie. A sprite whose `Movie`
+		// string is non-empty draws a Bink movie into its rect INSTEAD of a texture; the shipped
+		// value is a placeholder the guest restates from the ability's GDB record.
 		screen.FindMovieSlots();
 		screen.ResolveMasks();
 
-		// Last, over everything the file said: what the element ACTUALLY holds right now.
-		//
-		// The shipped presentation carries placeholders — the dialog panel authors
-		// "DEFAULT_TEXT_ID" — and some tags resolve through a table that is not the Babel
-		// book (GUI_CONTINUE_WITHOUT_SAVING is in neither, under any of the engine's hash
-		// variants). Both are moot if we take the string the game is displaying.
+		// Last, over everything the file said: what the element holds right now. The shipped
+		// presentation carries placeholders (`DEFAULT_TEXT_ID`) and some tags resolve through a
+		// table that is not the Babel book.
 		screen.IsLive = live;
 
-		// The screen's Lua hides and moves elements at runtime with setAttribute, and none
-		// of that is in the file — Page.Initialize sets DimensionsImage opacity to 0, the
-		// display boxes hide themselves the same way. Applying the live value is what stops
-		// a hidden dialog drawing over the menu.
+		// The screen's Lua hides and moves elements with setAttribute and none of that is in the
+		// file — Page.Initialize zeroes DimensionsImage opacity, display boxes hide themselves.
 		if (live && liveVisible is { Count: > 0 })
 		{
 			screen.ApplyLiveVisibility(liveVisible);
@@ -360,9 +353,8 @@ public sealed class Engine_UiScreen
 		{
 			screen.ApplyLiveOpacity(liveOpacity);
 		}
-		// AFTER the slide state is resolved, because a slide's own move is an attribute write
-		// too: whatever the guest currently has on the element is the final word, and it
-		// already includes anything the slide did.
+		// After the slide state: a slide's move is an attribute write too, so what the guest
+		// currently holds already includes it and is the final word.
 		if (live && liveTransform is { Count: > 0 })
 		{
 			screen.ApplyLiveTransform(liveTransform);
@@ -372,17 +364,16 @@ public sealed class Engine_UiScreen
 			screen.ApplyLiveText(liveText);
 		}
 
-		// AFTER the quads exist — AttachFac builds them — and after the slide baseline, so a
-		// swap lands on the quad the screen is actually going to draw.
+		// After the quads exist (AttachFac builds them) and after the slide baseline, so a swap
+		// lands on the quad the screen will draw.
 		if (live && liveTextures is { Count: > 0 })
 		{
 			screen.LiveTexturesRead = true;
 			screen.ApplyLiveTextures(liveTextures, textures);
 		}
 
-		// Same reason, same place: the tint WEIGHT is a live attribute the guest raises and
-		// lowers, and the file's copy is only where it starts. Applied after the quads exist
-		// because it lands on a quad, not on an element.
+		// The tint WEIGHT is a live attribute; the file's copy is only where it starts. After the
+		// quads exist, because it lands on a quad rather than an element.
 		if (live && liveTint is { Count: > 0 })
 		{
 			screen.ApplyLiveTint(liveTint);
@@ -394,20 +385,16 @@ public sealed class Engine_UiScreen
 		screen.MenuCloning = Engine_UiMenuCloning.Apply(screen);
 
 		// Last: the frame engine sizes a panel from what its contents measure and which are
-		// switched on, so it needs the slide baseline applied and the quads built, both done
-		// above. Every screen goes through this one call site — the map, logbook, shop and pause
-		// menu are the same widget.
+		// switched on, so it needs the slide baseline and the quads, both done above. Every
+		// screen goes through this one call site.
 		screen.FrameLayout = Engine_UiFrameDriver.Apply(screen);
 
 		return screen;
 	}
 
 	/// <summary>
-	/// What the frame engine did to this screen, for the caller that wants to report it.
-	///
-	/// Zero frames is a real answer rather than a failure — a screen can legitimately have none —
-	/// but zero frames on the map or the pause menu means the detection missed, and that is worth
-	/// being able to see without a debugger.
+	/// What the frame engine did to this screen. Zero frames is a real answer — a screen may have
+	/// none — but zero on the map or the pause menu means the detection missed.
 	/// </summary>
 	public Engine_UiFrameDriver.Report FrameLayout { get; private set; }
 
@@ -419,12 +406,9 @@ public sealed class Engine_UiScreen
 	public Engine_UiMenuCloning.Report MenuCloning { get; private set; }
 
 	/// <summary>
-	/// An element that can host a Bink movie, and the path the FILE authored on it.
-	///
-	/// The authored path is a placeholder on every slot that matters — `testability.bik` on
-	/// the abilities card — and the guest overwrites it at runtime. It is kept because its
-	/// PRESENCE is what marks the slot, and because a slot whose authored path is still what
-	/// is playing means the guest never restated it.
+	/// An element that can host a Bink movie, and the path the FILE authored on it. The authored
+	/// path is a placeholder the guest overwrites; its presence is what marks the slot, and a
+	/// slot still playing it means the guest never restated it.
 	/// </summary>
 	public readonly record struct MovieSlot(int Ordinal, string Name, string AuthoredPath);
 
@@ -443,14 +427,11 @@ public sealed class Engine_UiScreen
 	public readonly List<int> MaskElements = new();
 
 	/// <summary>
-	/// Resolves every element's clip mask, following the guest's own lookup.
-	///
-	/// THE EMPTY STRING MEANS INHERIT, NOT "UNBOUND": `sub_82427188` recurses to the parent
-	/// until it finds a non-empty `MaskName` or reaches the root, which is what makes a tagged
-	/// element clip its whole subtree.
-	///
-	/// The value is a `.`-separated path resolved against the element named <c>Layer</c>
-	/// (`sub_824265A0`). Every shipped value is a single name, so this takes the LEAF.
+	/// Resolves every element's clip mask, following the guest's lookup. An empty `MaskName`
+	/// means INHERIT, not unbound: `sub_82427188` recurses to the parent until it finds a
+	/// non-empty one or reaches the root. The value is a `.`-separated path resolved against the
+	/// element named <c>Layer</c> (`sub_824265A0`); every shipped value is a single name, so this
+	/// takes the leaf.
 	/// </summary>
 	private void ResolveMasks()
 	{
@@ -469,8 +450,7 @@ public sealed class Engine_UiScreen
 				MaskElements.Add(i);
 			}
 
-			// Last writer wins is fine: a mask is named uniquely within its own presentation,
-			// which is what makes a by-name binding workable at all.
+			// Last writer wins: a mask is named uniquely within its own presentation.
 			byName[Nodes[i].Name] = i;
 		}
 
@@ -507,13 +487,9 @@ public sealed class Engine_UiScreen
 	}
 
 	/// <summary>
-	/// Finds every element the file marks as a movie host.
-	///
-	/// Both the Node and its Material child carry the attribute — `abilitiesscreen` authors it
-	/// on 137 `tarot_card_frame` and 138 `Material5566` — and only the NODE has a quad to draw
-	/// into, so a consumer wanting somewhere to put pixels should prefer the one whose
-	/// <see cref="UiNode.Quad"/> is non-null. Both are listed rather than filtered here,
-	/// because which one the guest restates is its business and not ours to assume.
+	/// Finds every element the file marks as a movie host. Both the Node and its Material child
+	/// carry the attribute and only the NODE has a quad, so a consumer wanting pixels should
+	/// prefer the one whose <see cref="UiNode.Quad"/> is non-null. Both are listed.
 	/// </summary>
 	private void FindMovieSlots()
 	{
@@ -570,38 +546,15 @@ public sealed class Engine_UiScreen
 	}
 
 	/// <summary>
-	/// Replaces each text node's string with the one the running guest holds, keyed by
-	/// the element's sdbm name hash.
-	///
-	/// A node the guest did not report keeps whatever the file resolved to, so a partial
-	/// read degrades to the authored text rather than blanking the screen.
-	/// </summary>
-	/// <summary>
-	/// Replaces each node's opacity with the one the running guest holds.
-	///
-	/// Indexed by element ordinal, like the slides — the runtime walk order and the file
-	/// order are the same. A node the guest did not report keeps the authored value.
-	/// </summary>
-	/// <summary>
-	/// Replaces each node's visibility with the guest's own <c>globalactive</c>.
-	///
-	/// This overrides the slide-derived state entirely. The file gives what the .bgf authored
-	/// plus its slides, but the screens' Lua then moves things with setAttribute and none of
-	/// that is in the file. The guest derives globalactive every frame as
-	/// <c>active AND in-time-range AND parent's globalactive</c> and gates drawing on it.
-	///
-	/// The parent chain is folded in guest-side, so an element whose ancestor is off arrives
-	/// false and the builder drops its subtree.
-	///
-	/// A node the guest did not report keeps the file's answer, so a short read degrades rather
-	/// than blanking the screen.
+	/// Replaces each node's visibility with the guest's own <c>globalactive</c>, overriding the
+	/// slide-derived state entirely. The guest derives it every frame as
+	/// <c>active AND in-time-range AND parent's globalactive</c> and gates drawing on it; the
+	/// parent chain is folded in guest-side, so an element whose ancestor is off arrives false
+	/// and the builder drops its subtree. A node the guest did not report keeps the file's answer.
 	/// </summary>
 	private void ApplyLiveVisibility(IReadOnlyList<bool> liveVisible)
 	{
-		// Keep what the FILE said before overwriting it. The two disagreeing is the whole
-		// justification for reading the guest's value, so being able to measure the
-		// disagreement is worth one array — otherwise "we now follow the guest" is a claim
-		// with no evidence behind it.
+		// Keep what the file said before overwriting it, so the disagreement is measurable.
 		_fileVisible = new bool[Nodes.Length];
 		for (int i = 0; i < Nodes.Length; ++i)
 		{
@@ -626,17 +579,14 @@ public sealed class Engine_UiScreen
 			? _fileVisible[index]
 			: index >= 0 && index < Nodes.Length && Nodes[index].Visible;
 
-	/// <summary>
-	/// Applies the guest's <c>TintingAmount</c> to each quad that has one.
-	///
-	/// A null entry means the guest states no amount for that element and the authored lane
-	/// stands — the same "unstated is not zero" rule the transform read follows. Elements
-	/// with no quad are skipped rather than counted: the attribute is legal on any element,
-	/// but only a quad has a colour to weight.
-	/// </summary>
 	/// <summary>The guest's live tint for one element: a weight, and the colour it weights.</summary>
 	public readonly record struct LiveTint(float Amount, float? R, float? G, float? B);
 
+	/// <summary>
+	/// Applies the guest's <c>TintingAmount</c> to each quad that has one. A null entry means the
+	/// guest states no amount and the authored lane stands — unstated is not zero. Elements with
+	/// no quad are skipped: the attribute is legal anywhere, but only a quad has a colour.
+	/// </summary>
 	private void ApplyLiveTint(IReadOnlyList<LiveTint?> liveTint)
 	{
 		for (int i = 0; i < Nodes.Length && i < liveTint.Count; ++i)
@@ -676,6 +626,10 @@ public sealed class Engine_UiScreen
 	/// <summary>Quads whose tint weight the guest stated. Zero on a screen it never tints.</summary>
 	public int LiveTintsApplied;
 
+	/// <summary>
+	/// Replaces each node's opacity with the guest's. Indexed by element ordinal like the
+	/// slides; a node the guest did not report keeps the authored value.
+	/// </summary>
 	private void ApplyLiveOpacity(IReadOnlyList<float?> liveOpacity)
 	{
 		for (int i = 0; i < Nodes.Length && i < liveOpacity.Count; ++i)
@@ -688,15 +642,9 @@ public sealed class Engine_UiScreen
 	}
 
 	/// <summary>
-	/// Applies the guest's live transform attributes over the ones the file authored.
-	///
-	/// A slide moves an element by writing its attributes — `setAttribute(el, 'position.x', …)`
-	/// — and the shipped Lua does the same directly for anything it lays out itself. The
-	/// expandable menu is the clear case: twelve row components authored at one spot and
-	/// positioned apart at runtime, so without this they stay stacked.
-	///
-	/// A null entry means the guest states no such attribute on that element, the normal case,
-	/// and the file's value stands.
+	/// Applies the guest's live transform attributes over the file's. A slide moves an element by
+	/// writing attributes (`setAttribute(el, 'position.x', …)`) and the shipped Lua does the same
+	/// for anything it lays out. A null entry means the guest states none and the file stands.
 	/// </summary>
 	private void ApplyLiveTransform(IReadOnlyList<float?[]?> liveTransform)
 	{
@@ -718,16 +666,11 @@ public sealed class Engine_UiScreen
 	}
 
 	/// <summary>
-	/// Replaces each quad's texture with the one the running guest has put on that element.
-	///
-	/// The file's texture is a placeholder for a whole class of widget. The dpad's four
-	/// quick-slots are authored on `art\gui\expressions\empty.tex` because what belongs there
-	/// is whatever the player equipped, and the HUD's twenty-four `WorldIcons` slots share one
-	/// icon because the guest decides per icon whether it is a quest marker, a shop or the dog.
-	///
-	/// A zero hash means the guest states nothing for that element, the common case, and the
-	/// file's texture stands. A hash that resolves to no path is also left alone rather than
-	/// blanking the quad — an unknown name is a gap in the name table.
+	/// Replaces each quad's texture with the one the guest has put on that element. The file's
+	/// texture is a placeholder for a whole class of widget — the dpad quick-slots are authored
+	/// on `art\gui\expressions\empty.tex`, the HUD's `WorldIcons` slots share one icon. A zero
+	/// hash means the guest states nothing and the file stands; a hash that resolves to no path
+	/// is also left alone, being a gap in the name table.
 	/// </summary>
 	private void ApplyLiveTextures(IReadOnlyList<uint> liveTextures, Engine_TextureNameTable? textures)
 	{
@@ -762,12 +705,9 @@ public sealed class Engine_UiScreen
 			{
 				++LiveTexturesUnresolved;
 
-				// NAMED, not just counted. An unresolved hash is either a gap in the name
-				// table or a surface the guest RENDERS INTO rather than loads — a Bink video
-				// target being the case that matters — and those need opposite work. A count
-				// cannot tell them apart, and finding which element of 4,434 carries it by
-				// any other means is a search rather than a read. Capped, because a genuine
-				// table gap would otherwise print thousands.
+				// Named, not just counted: an unresolved hash is either a gap in the name table
+				// or a surface the guest RENDERS INTO (a Bink target), and those need opposite
+				// work. Capped — a genuine table gap would print thousands.
 				if (UnresolvedTextures.Count < 8)
 				{
 					UnresolvedTextures.Add($"{Nodes[i].Name}#{i}=0x{hash:X8}");
@@ -786,12 +726,9 @@ public sealed class Engine_UiScreen
 	public int LiveTexturesApplied;
 
 	/// <summary>
-	/// Elements for which the guest stated ANY texture, applied or not.
-	///
-	/// The three counters below exist because "0 swapped" has four causes that need different
-	/// work: the host never read the array at all, the guest states nothing, it states exactly
-	/// what the file already says, or it names a texture our table cannot resolve. Only the
-	/// last is a bug on our side, and a single zero cannot tell them apart.
+	/// Elements for which the guest stated ANY texture, applied or not. The counters below split
+	/// the four causes of "0 swapped": array never read, guest states nothing, guest states what
+	/// the file already says, or a hash the name table cannot resolve — only the last is ours.
 	/// </summary>
 	public int LiveTexturesStated;
 
@@ -805,9 +742,8 @@ public sealed class Engine_UiScreen
 	public readonly List<string> UnresolvedTextures = new();
 
 	/// <summary>
-	/// Stated textures on an element we built no quad for — the fourth bucket, so the
-	/// breakdown adds up. Not a defect by itself: the guest holds texture references on
-	/// Material and Texture elements too, and those never draw.
+	/// Stated textures on an element with no quad. Not a defect: the guest holds texture
+	/// references on Material and Texture elements too, and those never draw.
 	/// </summary>
 	public int LiveTexturesNotAQuad;
 
@@ -815,11 +751,8 @@ public sealed class Engine_UiScreen
 	public bool LiveTexturesRead;
 
 	/// <summary>
-	/// One line describing the texture-swap pass.
-	///
-	/// Deliberately not silent when nothing happened: an array read that comes back entirely
-	/// zero is a different state from one never read, and a texture read chasing the wrong
-	/// pointer chain is indistinguishable from a game that never swaps a texture otherwise.
+	/// One line describing the texture-swap pass. Not silent when nothing happened: an array read
+	/// back entirely zero is a different state from one never read.
 	/// </summary>
 	public string DescribeLiveTextures()
 	{
@@ -844,6 +777,10 @@ public sealed class Engine_UiScreen
 				: string.Empty);
 	}
 
+	/// <summary>
+	/// Replaces each text node's string with the guest's, keyed by the element's sdbm name hash.
+	/// A node the guest did not report keeps whatever the file resolved to.
+	/// </summary>
 	private void ApplyLiveText(IReadOnlyList<string?> liveText)
 	{
 		for (int i = 0; i < Nodes.Length && i < liveText.Count; ++i)
@@ -876,8 +813,8 @@ public sealed class Engine_UiScreen
 		if (t.IsEmpty)
 			return ui;
 
-		// The engine tries the tag first and falls back to displaying the authored
-		// string verbatim, which is how literals like "Ready to Quit ?" get on screen.
+		// The engine tries the tag first and falls back to the authored string verbatim, which is
+		// how literals like "Ready to Quit ?" reach the screen.
 		if (strings is not null && strings.TryGetString(t.Text, out var localised))
 		{
 			ui.Display = localised;
@@ -891,29 +828,22 @@ public sealed class Engine_UiScreen
 	}
 
 	/// <summary>
-	/// Element kinds that occupy a slot in the <c>.bsg</c> scene graph. Material,
-	/// Texture and Behavior do not — which is what makes the sequential mapping work.
-	/// Verified across all 52 screens: the count matches every file and all 26,153
-	/// parent links validate.
+	/// Element kinds that occupy a slot in the <c>.bsg</c> scene graph. Material, Texture and
+	/// Behavior do not, which is what makes the sequential mapping work.
 	/// </summary>
 	public static bool IsSpatial(BgfElementType type) => type is
 		BgfElementType.Node or BgfElementType.Camera or BgfElementType.Light or
 		BgfElementType.Text or BgfElementType.Component;
 
 	/// <summary>
-	/// A float attribute for element <paramref name="ordinal"/>, with the applied
-	/// slide's write taking precedence over the element's own.
+	/// A float attribute for element <paramref name="ordinal"/>, the applied slide's write taking
+	/// precedence over the element's own.
 	///
-	/// A slide command overwrites an existing attribute record; it never creates one.
-	/// <c>sub_82284798</c> — the same entry point Lua's <c>element:setAttribute()</c>
-	/// uses — calls <c>sub_822848E0</c> to find the record by id and returns doing
-	/// nothing when there is none (<c>beq</c> at 0x822847C8). So a command naming an
-	/// attribute the element does not carry is silently dropped by the engine, and
-	/// honouring it here would move elements the game leaves alone.
-	///
-	/// The element's record also keeps its own type — the applier forwards only the id
-	/// and the raw value word (0x82BB6934), so the element is the authority on how the
-	/// value word is read, not the command.
+	/// A slide command overwrites an existing attribute record and never creates one:
+	/// <c>sub_82284798</c> (Lua's <c>element:setAttribute()</c> entry point) calls
+	/// <c>sub_822848E0</c> to find the record by id and returns doing nothing when there is none
+	/// (<c>beq</c> at 0x822847C8). The element's record keeps its own TYPE — the applier forwards
+	/// only the id and the raw value word (0x82BB6934).
 	/// </summary>
 	private static float Float(Engine_BgfDocument doc, int ordinal, BgfElement e, string attribute,
 		float fallback)
@@ -926,6 +856,47 @@ public sealed class Engine_UiScreen
 		return doc.SlideState.TryGetOverride(ordinal, id, out BgfAttribute o)
 			? o.AsFloat()
 			: a.AsFloat();
+	}
+
+	/// <summary>
+	/// One element's float attribute UNDER A GIVEN SLIDE STATE — the layered read against a slide
+	/// selection chosen at runtime rather than the one this screen was parsed with.
+	///
+	/// A slide is not only a visibility mask: its commands are ATTRIBUTE WRITES, and most of them
+	/// reposition. The front end's menu assembly is authored at x −800, off canvas, and every root
+	/// slide slides it in — a pattern-book tree is parsed with the preview slide and must be told.
+	///
+	/// Three answers, in order:
+	/// <list type="number">
+	/// <item>the live slide wrote this attribute — that is the value;</item>
+	/// <item>it did not, but the PARSE-TIME slide did — so the parsed node carries a value from a
+	/// slide that is not the one showing, and the element's OWN attribute is the honest base;</item>
+	/// <item>neither wrote it — the parsed node's value already is the answer, `.bsg` base
+	/// included, and that is the only layer this class does not keep separately.</item>
+	/// </list>
+	/// </summary>
+	public float AttributeUnder(BgfSlideState live, int ordinal, string attribute, float parsed)
+	{
+		if (ordinal < 0 || ordinal >= Document.Elements.Length)
+		{
+			return parsed;
+		}
+
+		uint id = Engine_GameHash.AttributeId(attribute);
+		if (live.TryGetOverride(ordinal, id, out BgfAttribute slid) &&
+			slid.Type == BgfValueType.Float)
+		{
+			return slid.AsFloat();
+		}
+
+		if (Document.SlideState.TryGetOverride(ordinal, id, out _) &&
+			Document.Elements[ordinal].TryGetAttribute(id, out BgfAttribute own) &&
+			own.Type == BgfValueType.Float)
+		{
+			return own.AsFloat();
+		}
+
+		return parsed;
 	}
 
 	/// <summary>Depth-first walk from the roots.</summary>

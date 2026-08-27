@@ -12,7 +12,7 @@ namespace Refii.Ui;
 /// the only thing that knows the hero's health — but it states every bit of it as a named
 /// percentage, and states which element draws which name in the file itself. So neither side
 /// has to guess: <see cref="Engine_UiBindings"/> reads the binding out of `hud.bgf`,
-/// <c>HostBridge.GetHudMeters</c> reads the values out of the guest, and this joins them on a
+/// <c>Engine_UiSource.Current.GetHudMeters</c> reads the values out of the guest, and this joins them on a
 /// hash both sides computed from the same string.
 ///
 /// WHAT A METER ACTUALLY DOES, and the one place this class knowingly approximates it.
@@ -511,28 +511,9 @@ public sealed class Engine_UiLiveValues
 	/// <summary>
 	/// Sets a bar piece's width to <paramref name="fill"/>, leaving its thickness alone.
 	///
-	/// NEVER THROUGH <c>Node3D.Scale</c>, and this is a Godot trap worth stating outright
-	/// because it fails in the direction that looks like success. A bar piece is authored
-	/// <c>scale.x = 0</c> — an empty bar — so its basis has a ZERO X COLUMN and is singular.
-	/// Godot's scale getter is
-	///
-	/// <code>
-	/// Vector3 Basis::get_scale() const {
-	///     real_t det_sign = SIGN(determinant());   // SIGN(0) is 0
-	///     return det_sign * get_scale_abs();
-	/// }
-	/// </code>
-	///
-	/// so reading <c>.Scale</c> off that node returns <c>(0, 0, 0)</c> for EVERY axis, not just
-	/// the zero one. The obvious `node.Scale = new Vector3(fill, node.Scale.Y, node.Scale.Z)`
-	/// therefore writes the artist's 0.24 thickness as ZERO, and the bar collapses to a line of
-	/// nothing. It reads back correctly afterwards — `.Scale.X` really is the value asked for —
-	/// which is why a run showed a perfect fill percentage and two byte-identical screenshots.
-	///
-	/// So the columns are written directly, where the lengths are honest whatever the
-	/// determinant is. The X DIRECTION comes from the other two rather than being assumed:
-	/// for an orthogonal basis the x-axis is <c>Y × Z</c>, which is <c>(1,0,0)</c> for every bar
-	/// in the file and stays correct for one the artist ever rotates.
+	/// NEVER THROUGH <c>Node3D.Scale</c> — a bar authored <c>scale.x = 0</c> has a singular
+	/// basis, and Godot's scale getter answers (0,0,0) for every axis when it does. See
+	/// <see cref="Engine_UiBasisScale"/>, which is the one implementation of the cure.
 	/// </summary>
 	private static void SetFillWidth(Node3D node, float fill)
 	{
@@ -546,22 +527,7 @@ public sealed class Engine_UiLiveValues
 			return;
 		}
 
-		Transform3D transform = node.Transform;
-		Basis basis = transform.Basis;
-
-		Vector3 axis = basis.Y.Cross(basis.Z);
-
-		// A degenerate pair means the artist left this piece with no orientation to preserve —
-		// the canvas x-axis is the only defensible answer, and it is what every authored bar
-		// resolves to anyway.
-		// Same NaN-false trap as the clamp above: a length test reports the degenerate case
-		// and admits NaN, so the finiteness of the axis is asked for positively.
-		axis = axis.IsFinite() && axis.LengthSquared() > 0.000001f
-			? axis.Normalized()
-			: new Vector3(1f, 0f, 0f);
-
-		basis.X = axis * fill;
-		node.Transform = new Transform3D(basis, transform.Origin);
+		Engine_UiBasisScale.SetX(node, fill);
 	}
 
 	/// <summary>
@@ -592,15 +558,10 @@ public sealed class Engine_UiLiveValues
 		// alpha with 1.0, and the element's accumulated opacity is applied separately.
 		var opaque = new Color(colour.R, colour.G, colour.B, 1f);
 
-		(ArrayMesh? mesh, Texture2D? atlas) = Theme.Glyphs(
-			display, size, opaque,
+		Theme.Paint(
+			node, display, size, opaque,
 			horizontalAlign: horizontal, verticalAlign: vertical,
 			boxWidth: box.X, boxHeight: box.Y, wrapMode: wrap);
-
-		node.Mesh = mesh;
-		node.MaterialOverride = mesh is null
-			? null
-			: Engine_UiSceneBuilder.TextMaterial(opaque, atlas);
 	}
 
 	/// <summary>

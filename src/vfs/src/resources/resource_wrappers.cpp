@@ -141,7 +141,7 @@ bool EnsureRefiiResourceWrapperMaterialized(PPCContext& ctx,
   const uint32_t stream_guest = LoadGuestU32(base, wrapper_guest + 16);
   if (const auto request = FindRefiiReadRequestRecord(stream_guest)) {
     EnsureRefiiReadRequestCompleted(
-        base, request, request->request_guest, "ResourceWrapper_Materialize");
+        ctx, base, request, request->request_guest, "ResourceWrapper_Materialize");
     uint32_t bytes_read = 0;
     {
       std::lock_guard<std::mutex> lock(request->mutex);
@@ -184,11 +184,21 @@ bool EnsureRefiiResourceWrapperMaterialized(PPCContext& ctx,
   }
 
   auto* destination = rex::memory::GuestPtr<uint8_t*>(base, buffer_guest);
-  record->file.clear();
-  record->file.seekg(0, std::ios::beg);
-  record->file.read(reinterpret_cast<char*>(destination),
-                    static_cast<std::streamsize>(byte_count));
-  const uint32_t read = static_cast<uint32_t>(record->file.gcount());
+  uint32_t read = 0;
+  if (record->host_served) {
+    // GODOT'S BYTES ARE ALREADY ON THE RECORD — there is no stream to rewind. Reached through
+    // the same short-read check below, so a truncated host answer fails exactly as a truncated
+    // file does rather than materialising a half-filled buffer.
+    read = static_cast<uint32_t>(
+        std::min<size_t>(byte_count, record->bytes.size()));
+    std::memcpy(destination, record->bytes.data(), read);
+  } else {
+    record->file.clear();
+    record->file.seekg(0, std::ios::beg);
+    record->file.read(reinterpret_cast<char*>(destination),
+                      static_cast<std::streamsize>(byte_count));
+    read = static_cast<uint32_t>(record->file.gcount());
+  }
   if (read != byte_count) {
     REXLOG_WARN("Refii resource wrapper materialize failed: short read "
                 "wrapper=0x{:08X} stream=0x{:08X} requested={} read={} path={}",
@@ -567,8 +577,10 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
       }
       return false;
     }
-    std::ifstream header_file(header_resolution.host_path, std::ios::binary);
-    if (!header_file) {
+    std::vector<uint8_t> header_source;
+    if (!ReadResolutionBytes(header_resolution,
+                             static_cast<uint32_t>(header_bytes.size()),
+                             header_source)) {
       REXLOG_WARN("Refii VFS split texture wrapper header open failed "
                   "api={} wrapper=0x{:08X} owner=0x{:08X} provider={} host={}",
                   api,
@@ -578,9 +590,11 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
                   header_resolution.host_path.string());
       return false;
     }
-    header_file.read(reinterpret_cast<char*>(header_bytes.data()),
-                     static_cast<std::streamsize>(header_bytes.size()));
-    const uint32_t header_read = static_cast<uint32_t>(header_file.gcount());
+    std::copy_n(header_source.begin(),
+                std::min(header_source.size(), header_bytes.size()),
+                header_bytes.begin());
+    const uint32_t header_read = static_cast<uint32_t>(
+        std::min(header_source.size(), header_bytes.size()));
     if (header_read != header_bytes.size()) {
       REXLOG_WARN("Refii VFS split texture wrapper header short read "
                   "api={} wrapper=0x{:08X} owner=0x{:08X} provider={} "
@@ -595,7 +609,7 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
       return false;
     }
     const std::array<uint32_t, 4> header_words =
-        ReadHostFileFirstWords(header_resolution.host_path);
+        ReadHostFileFirstWords(header_resolution);
     expected_payload_size = header_words[1];
     if (header_words[0] != 0xFFFFFFFEu) {
       REXLOG_WARN("Refii VFS split texture wrapper header rejected "
@@ -651,7 +665,7 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
   if (use_payload_file) {
     std::error_code file_size_error;
     const uint64_t payload_size64 =
-        std::filesystem::file_size(payload_resolution.host_path, file_size_error);
+        HostFileSize(payload_resolution);
     if (file_size_error || payload_size64 == 0 ||
         payload_size64 > std::numeric_limits<uint32_t>::max() ||
         payload_size64 != expected_payload_size) {
@@ -708,8 +722,10 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
       std::memcpy(combined, header_bytes.data(), header_size);
     }
 
-    std::ifstream payload_file(payload_resolution.host_path, std::ios::binary);
-    if (!payload_file) {
+    std::vector<uint8_t> payload_source;
+    if (!ReadResolutionBytes(payload_resolution,
+                             static_cast<uint32_t>(payload_size),
+                             payload_source)) {
       REXLOG_WARN("Refii VFS split texture wrapper payload open failed "
                   "api={} wrapper=0x{:08X} owner=0x{:08X} provider={} host={}",
                   api,
@@ -720,9 +736,10 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
       CallLhFree(ctx, base, combined_guest);
       return false;
     }
-    payload_file.read(reinterpret_cast<char*>(combined + header_size),
-                      static_cast<std::streamsize>(payload_size));
-    const uint32_t payload_read = static_cast<uint32_t>(payload_file.gcount());
+    std::memcpy(combined + header_size, payload_source.data(),
+                std::min<size_t>(payload_source.size(), payload_size));
+    const uint32_t payload_read = static_cast<uint32_t>(
+        std::min<size_t>(payload_source.size(), payload_size));
     if (payload_read != payload_size) {
       REXLOG_WARN("Refii VFS split texture wrapper payload short read "
                   "api={} wrapper=0x{:08X} owner=0x{:08X} provider={} "

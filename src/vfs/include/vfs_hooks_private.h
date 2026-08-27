@@ -5,6 +5,7 @@
 #include "banks/manifest_resolution.h"
 #include "banks/synthetic_bank_runtime.h"
 #include "core/guest_state.h"
+#include "core/host_asset_reader.h"
 #include "frontend/loading_sequence.h"
 #include "frontend/post_gameface.h"
 #include "frontend/post_loading.h"
@@ -69,6 +70,61 @@
 #define REX_FUNC_PROLOGUE() ((void)0)
 #endif
 
+// Logs each vtable call the guest makes on a stream object we handed it, keyed by
+// (object, slot). `slot` is the vtable byte offset dispatched through, or -1 if unknown.
+inline void NoteRefiiStreamMethod(std::string_view api,
+                                  uint32_t stream_guest,
+                                  int32_t slot = -1) {
+  static std::mutex mutex;
+  static std::unordered_map<uint64_t, uint32_t> seen;
+  const uint64_t key =
+      (static_cast<uint64_t>(stream_guest) << 32) |
+      static_cast<uint32_t>(slot);
+  uint32_t nth = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    nth = ++seen[key];
+    if (seen.size() > 4096u) {
+      seen.clear();
+    }
+  }
+
+  // First four calls, then powers of two, so the count stays readable as a frequency.
+  if (nth <= 4u || (nth & (nth - 1u)) == 0u) {
+    if (slot >= 0) {
+      REXLOG_INFO("Refii stream 0x{:08X}: guest called slot +{} ({}) — call #{}",
+                  stream_guest, slot, api, nth);
+    } else {
+      REXLOG_INFO("Refii stream 0x{:08X}: guest called {} — call #{}",
+                  stream_guest, api, nth);
+    }
+  }
+}
+
+/// Logs a stream open: the object handed back and the vtable it advertises, which decides
+/// every later dispatch.
+inline void NoteRefiiStreamOpened(std::string_view api,
+                                  uint32_t stream_guest,
+                                  uint32_t vtable_guest,
+                                  uint64_t size,
+                                  std::string_view asset,
+                                  uint32_t caller_lr) {
+  static std::atomic<uint32_t> opened{0};
+  const uint32_t nth = opened.fetch_add(1, std::memory_order_relaxed) + 1u;
+  if (nth <= 32u || (nth & (nth - 1u)) == 0u) {
+    REXLOG_INFO("Refii stream OPENED #{} api={} object=0x{:08X} vtable=0x{:08X} size={} "
+                "caller_lr=0x{:08X} asset={}",
+                nth, api, stream_guest, vtable_guest, size, caller_lr, asset);
+  }
+}
+
+// Runs the guest's own function and returns; the hook body below it is not reached.
+#define REFII_VFS_NATIVE_PASSTHROUGH(function_name) \
+  do {                                              \
+    __imp__##function_name(ctx, base);              \
+    return;                                         \
+  } while (false)
+
 namespace refii::vfs {
 // Bink video frame capture — defined in src/core/bink_frame_state.cpp, which links into
 // librefii_vfs. These two hooks compile into the payload instead, so they cross to it
@@ -98,6 +154,10 @@ uint32_t FinishCurrentBinkMovie(uint8_t* base);
 /// 0 no movie, 1 the guest still wants it, 2 the guest has ended it (done or skipped).
 uint32_t BinkMovieState(uint8_t* base);
 
+/// The destination rect the guest stated for the live movie (bink+8/+12/+16/+20).
+uint32_t BinkMovieDestRect(uint8_t* base, float* out_x0, float* out_y0,
+                           float* out_x1, float* out_y1);
+
 /// Brings a stuck in-game loading screen down from the host step thread — defined in
 /// src/core/guest_tick_pump_state.cpp. Runs when the guest game thread is parked in its own
 /// post-cutscene teardown wait and the pump can no longer fire.
@@ -105,6 +165,15 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base);
 
 /// The subtitles setting the pump last sampled from the guest: 1 on, 0 off, -1 unknown.
 int32_t FrontEndSubtitles();
+
+// The hero's derived state lives in core/hero_derived.h.
+
+/// One captured menu row; returns the TOTAL row count. Every out parameter is optional;
+/// `out_generation` is bumped on every spawn.
+uint32_t MenuRowLabel(uint32_t index, char* out_label, size_t label_capacity);
+uint32_t MenuRows(uint32_t index, char* out_name, size_t name_capacity, char* out_parent,
+                  size_t parent_capacity, uint32_t* out_id, int32_t* out_event_type,
+                  uint64_t* out_generation, int32_t* out_rating);
 
 // The guest tick pump's shared state — defined in src/core/guest_tick_pump_state.cpp, which
 // links into librefii_vfs. The HOST posts and the PAYLOAD drains, so the queue cannot live
@@ -121,6 +190,9 @@ inline uint64_t GuestTickPumpObserveTick() {
   return refii_bridge_guest_tick_pump_observe_tick();
 }
 inline uint64_t GuestTickPumpDrained() { return refii_bridge_guest_tick_pump_drained(); }
+
+/// Gives the calling thread an alternate signal stack, once (guest_tick_pump_state.cpp).
+void EnsureAlternateSignalStack();
 inline void GuestTickPumpNoteRan() { refii_bridge_guest_tick_pump_note_ran(); }
 
 /// Takes the whole queue aside and answers how many actions came with it.
@@ -160,10 +232,3 @@ inline void GuestTickPumpRequestSaveCount() {
 }
 }  // namespace refii::vfs
 
-#define REFII_VFS_NATIVE_PASSTHROUGH(function_name) \
-  do {                                              \
-    if (!refii::vfs::RefiiLooseAssetBackendEnabled()) { \
-      __imp__##function_name(ctx, base);            \
-      return;                                       \
-    }                                               \
-  } while (false)

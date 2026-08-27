@@ -1,221 +1,147 @@
 using System.Collections.Generic;
 
+using Item = Refii.Ui.Engine_UiExpandableMenu.Item;
+
 namespace Refii.Ui;
 
 /// <summary>
-/// The front end's root menu, owned by GODOT.
+/// The front end's root menu, owned by Godot.
 ///
 /// The guest's menu has no C++ item list and no C++ highlight — items, order, nesting and the
-/// highlight all live in the shipped Lua `g_Menu`, and the C++ side only spawns into it and
-/// receives an activation back. So there is nothing to mirror: a native menu has to own its
-/// own model, and this is it.
+/// highlight all live in the shipped Lua `g_Menu`, and C++ only spawns into it and receives an
+/// activation back, so there is nothing to mirror.
 ///
-/// WHAT STILL COMES FROM THE GUEST is the part a host list cannot invent — whether an entry
-/// exists at all. "Load Game" appears only when signed in with at least one save; "Language"
-/// only when more than one language is installed. Those are the guest's own spawn conditions,
-/// and a list that disagrees offers an entry the guest will not honour.
+/// What still comes from the guest is whether an entry exists at all: "Load Game" only when
+/// signed in with at least one save, "Language" only above one installed language.
 ///
-/// ACTIVATION IS BY NAME. The guest dispatches on the item's name string — a strcmp chain over
-/// "New Game", "Load Game", "Downloadable Content", "SubtitlesOn", "SubtitlesOff" — not on an
-/// index and not through a table. That is what makes this two-way: a host-authored entry can
-/// trigger a guest action by naming it, an entry we relabel keeps working, and an entry the
-/// guest never had simply never dispatches.
+/// Activation is BY NAME — the guest dispatches on the item's name string (a strcmp chain over
+/// "New Game", "Load Game", "Downloadable Content", "SubtitlesOn", "SubtitlesOff"), never an
+/// index, so a host-authored entry triggers a guest action by naming it and an entry the guest
+/// never had simply never dispatches.
 /// </summary>
 public sealed class Engine_FrontEndMenu
 {
-	/// <summary>One entry. <see cref="Name"/> is the identity the guest dispatches on.</summary>
-	public sealed class Item
-	{
-		public Item(string name, string textTag, string? parent = null)
-		{
-			Name = name;
-			TextTag = textTag;
-			Parent = parent;
-		}
-
-		/// <summary>The guest's identity for this entry — never shown, never localised.</summary>
-		public string Name { get; }
-
-		/// <summary>The localisation tag for the label. Overridable by the host.</summary>
-		public string TextTag { get; set; }
-
-		/// <summary>Parent entry name, or null for a root entry.</summary>
-		public string? Parent { get; }
-
-		/// <summary>False when the guest's own spawn condition excludes it.</summary>
-		public bool Available { get; set; } = true;
-
-		/// <summary>
-		/// The guest's "current choice" marker — <c>g_Menu:SetItemEmphasis()</c>, which
-		/// `sub_826E2220` puts on the active subtitles arm and `sub_826E1C98` on the current
-		/// language. Never a disable: the front end omits entries it cannot offer.
-		/// </summary>
-		public bool Emphasised { get; set; }
-
-		/// <summary>
-		/// Host-only entries are never dispatched to the guest. This is how "Multiplayer" can
-		/// sit in the menu without the guest knowing it exists.
-		/// </summary>
-		public bool HostOnly { get; set; }
-
-		public List<Item> Children { get; } = new();
-
-		/// <summary>
-		/// A front-end SCREEN this entry opens instead of dispatching, or null.
-		///
-		/// This is the guest's own shape, not an abstraction over it. Its "New Game" entry does
-		/// not start a game: `GUI_FrontendRoot_MenuActionDispatch`'s branch at `0x826E0200` sets
-		/// slide 1 on the `choosecard` element and writes `screen+24 = 2`, which is the gender
-		/// card, and the game is committed later by an event the presentation fires. So an entry
-		/// that opens a screen and an entry that dispatches an action are two different things on
-		/// the guest side too, and collapsing them is exactly the mistake that made every new
-		/// game a boy.
-		///
-		/// Unlike <see cref="Submenu"/>, the screen is not a list and this class knows nothing
-		/// about it — the view hands the name to whoever owns that screen.
-		/// </summary>
-		public string? Opens { get; set; }
-
-		/// <summary>
-		/// The action this entry performs when the guest dispatches on a COMMAND rather than on
-		/// a name, or null when the name is the identity.
-		///
-		/// The language entries are the case that forces this to exist. The guest spawns one per
-		/// installed language with command 302 and the table row index, and its dispatcher takes
-		/// that pair from `a2+4`/`a2+8` before the name chain is ever reached — so the entries
-		/// have no name the guest would recognise, and naming "Language" reached nothing at all.
-		/// </summary>
-		public string? Command { get; set; }
-
-		/// <summary>
-		/// A whole other menu this entry OPENS, as opposed to <see cref="Children"/>, which
-		/// expand underneath it in place.
-		///
-		/// The distinction is the shipped menu's own. "Subtitles" expands — its two options
-		/// appear indented below it and the rest of the list stays put — because that is what
-		/// <c>expandablemenu.lua</c> does with a nested item. A screen like an options page or
-		/// a mod list is not that: it REPLACES the list, and coming back restores what was
-		/// there. Modelling both as children would put an options page's forty entries inline
-		/// under the root menu.
-		///
-		/// This is also the seam for screens the original never had. The guest dispatches on
-		/// the entry NAME and knows nothing it was not shipped with, so a host-only entry with
-		/// a submenu is a complete custom screen that the guest never sees and never has to.
-		/// </summary>
-		public Engine_FrontEndMenu? Submenu { get; set; }
-	}
 
 	/// <summary>
-	/// Fable 2's own navigation feel, read out of the shipped `guistateandconstants.lua`
-	/// rather than chosen.
-	///
-	/// The first repeat waits a quarter second, then repeats accelerate toward 0.14s. A menu
-	/// that repeats at one fixed rate does not feel like this one, and the difference is
-	/// immediately obvious to anyone who has played it — which is exactly the sort of thing
-	/// that is invisible in the binary and plain in the scripts.
+	/// The navigation cadence from the shipped `guistateandconstants.lua`: the first repeat waits
+	/// 0.25s, every one after 0.14s. Aliased onto <see cref="Engine_UiGuiConstants"/>, the
+	/// translation of record — one copy, not two.
 	/// </summary>
-	public const double FirstNavigateInterval = 0.25;
+	public const double FirstNavigateInterval = Engine_UiGuiConstants.FirstNavigateInterval;
 
-	public const double SubsequentNavigateInterval = 0.14;
+	public const double SubsequentNavigateInterval =
+		Engine_UiGuiConstants.SubsequentNavigateInterval;
 
 	public const double MinimumNavigateInterval = 0.20;
 
-	/// <summary>How many accelerating steps before the interval stops shrinking.</summary>
+	/// <summary>
+	/// `INPUT_INTERVAL_CLAMP` — a ceiling on the input accumulators, in SECONDS, not a step
+	/// count. `uicontractlib.dis main.1` tests it against elapsed time (`pc21` for
+	/// `TimeSinceNavigate`, `pc39` for `TimeSinceAdjust`) and stops accumulating past it, so a
+	/// parked clock does not fire a burst on the next press. There is no ramp anywhere.
+	/// </summary>
 	public const int InputIntervalClamp = 10;
 
 	/// <summary>
-	/// Below this magnitude the stick counts as released — `THUMBSTICK_RELEASE_THRESHOLD`.
-	///
-	/// It is HALF of a hysteresis pair, which is easy to miss because only one of the two ever
-	/// gets quoted. See <see cref="ThumbstickPushThreshold"/>.
+	/// Below this magnitude the stick counts as released — `THUMBSTICK_RELEASE_THRESHOLD`, half
+	/// of a hysteresis pair with <see cref="ThumbstickPushThreshold"/>.
 	/// </summary>
 	public const double ThumbstickReleaseThreshold = 0.65;
 
 	/// <summary>
-	/// Above this magnitude the stick counts as pushed — `THUMBSTICK_PUSH_THRESHOLD`, 0.70.
-	///
-	/// The gap between the two is deliberate and is why `guistateandconstants.lua` also keeps
-	/// four `Pushing*Held` booleans: a direction ENGAGES at 0.70 and does not release until the
-	/// stick falls back under 0.65. Using one threshold for both — which this did, at 0.65 —
-	/// makes a stick resting in that band read as a push the original would have ignored, and a
-	/// stick wobbling across the line chatter between held and released.
+	/// Above this magnitude the stick counts as pushed — `THUMBSTICK_PUSH_THRESHOLD`. A direction
+	/// engages at 0.70 and does not release until the stick falls back under 0.65, which is why
+	/// `guistateandconstants.lua` also keeps four `Pushing*Held` booleans. Never use one
+	/// threshold for both.
 	/// </summary>
 	public const double ThumbstickPushThreshold = 0.70;
 
-	private readonly List<Item> _roots = new();
+	/// <summary>
+	/// The one model. This class holds only the FRONT END's state around it — the storage guards,
+	/// the save enumeration, the refusal tags — and never a second menu.
+	/// </summary>
+	public Engine_UiExpandableMenu Model { get; } = new();
 
-	private double _timeSinceLastNavigate;
+	private List<Item> _roots => Model.MenuRoot.Children;
 
-	private double _navigateInterval = FirstNavigateInterval;
+	/// <summary>
+	/// The root entries in spawn order, expanded children excluded. <see cref="Visible"/> cannot
+	/// stand in: expanding a group splices its children inline, and the guest's own button pool
+	/// never carries them.
+	/// </summary>
+	public IReadOnlyList<Item> Roots => _roots;
 
-	private int _navigationCount;
-
-	private int _held;
+	/// <summary>
+	/// The shipped repeat (<see cref="Engine_UiNavigationClock"/>): no ramp — `DoNavigate` swaps
+	/// to `SUBSEQUENT_NAVIGATE_INTERVAL` the moment `NavigationCount` passes 1.
+	/// </summary>
+	private readonly Engine_UiNavigationClock _clock = new();
 
 	/// <summary>The entries currently on screen, in order — roots plus any expanded children.</summary>
-	public List<Item> Visible { get; } = new();
+	public IReadOnlyList<Item> Visible => Model.Visible;
 
 	/// <summary>Index into <see cref="Visible"/>.</summary>
-	public int HighlightIndex { get; private set; }
+	public int HighlightIndex => Model.CurrentHighlightIdx - 1;
 
 	/// <summary>The highlighted entry, or null when the menu is empty.</summary>
 	public Item? Highlighted =>
 		HighlightIndex >= 0 && HighlightIndex < Visible.Count ? Visible[HighlightIndex] : null;
 
-	/// <summary>The entry whose children are expanded, or null.</summary>
-	public Item? Expanded { get; private set; }
-
 	/// <summary>
-	/// Builds the root menu the way the guest builds it — same entries, same order.
+	/// The entry whose children are showing, or null.
 	///
-	/// The order is the guest's spawn order in `sub_826E2220` and is not incidental: the
-	/// activation the guest sends back is keyed by name, but a player reads the list top to
-	/// bottom and every screenshot of the original has this sequence.
+	/// Derived rather than stored: openness is per item (`IsOpen`), the way the script keeps it,
+	/// so a nested list can have several levels open at once and this names the outermost.
 	/// </summary>
-	public static Engine_FrontEndMenu BuildRoot()
+	/// <summary>
+	/// True when B would actually collapse something — the cursor is INSIDE an open folder. Not
+	/// the same question as <see cref="Expanded"/>: `CloseMenuItem` (`expandablemenuinput.dis
+	/// main.6`) guards on the highlighted row having a non-root parent, so a folder left open
+	/// with the cursor back out on a root tab collapses nothing and B must reach the guest.
+	/// </summary>
+	public bool CanCollapse =>
+		Highlighted is { Parent: { } parent } && !ReferenceEquals(parent, Model.MenuRoot);
+
+	public Item? Expanded
 	{
-		var menu = new Engine_FrontEndMenu();
+		get
+		{
+			foreach (Item root in _roots)
+			{
+				if (root.IsOpen && root.Children.Count > 0)
+				{
+					return root;
+				}
+			}
 
-		// NEW GAME OPENS THE GENDER CARD; it does not start a game.
-		//
-		// The guest's own entry does not either. Its dispatcher sets slide 1 on `choosecard`
-		// and puts the screen in substate 2, and the game is committed much later, by
-		// `sub_826E0D60`, when the presentation's own Behavior element fires BOY_SELECTED or
-		// GIRL_SELECTED. The host route into a new game takes that EVENT directly, so posting
-		// a bare "New Game" consumes the answer to a question nobody asked and starts a male
-		// hero every time, silently.
-		//
-		// So the entry names the screen and stops there. Godot asks, Godot names the answer,
-		// and the guest gets the event it was always going to get — see
-		// <see cref="Engine_FrontEndCardChoice"/>.
-		var newGame = new Item("New Game", "GUI_SCREEN_FRONT_END_NEW_GAME") { Opens = HeroCardScreen };
-		menu.Add(newGame);
-		menu.Add(new Item("Load Game", "GUI_SCREEN_FRONT_END_LOAD_GAME"));
-		menu.Add(new Item("Downloadable Content", "GUI_DOWNLOADABLE_CONTENT"));
-		menu.Add(new Item("Language", "GUI_SCREEN_FRONT_END_LANGUAGE"));
-
-		var subtitles = new Item("Subtitles", "GUI_SCREEN_OPTIONS_SUBTITLES");
-		subtitles.Children.Add(new Item("SubtitlesOn", "GUI_CONTROLS_ON", "Subtitles"));
-		subtitles.Children.Add(new Item("SubtitlesOff", "GUI_CONTROLS_OFF", "Subtitles"));
-		menu.Add(subtitles);
-
-		return menu;
+			return null;
+		}
 	}
 
 	/// <summary>
-	/// The gender card <c>New Game</c> opens — <see cref="Engine_FrontEndCardChoice"/>.
-	///
-	/// A name rather than a reference because this class holds the MODEL and knows nothing
-	/// about node trees; whoever owns the front end recognises it and puts the panel up.
+	/// Builds the root menu the way the guest builds it — same entries, in `sub_826E2220`'s own
+	/// spawn order.
+	/// </summary>
+	/// <summary>
+	/// Builds the root menu from its TEMPLATE — `sub_826E2220`'s spawn order as data, with
+	/// "New Game" OPENING the gender card rather than dispatching (posting the bare name
+	/// consumes the boy/girl answer unasked and starts a male hero silently — see
+	/// <see cref="Engine_FrontEndCardChoice"/>). A `user://ui/templates.json` override
+	/// replaces the record whole, which is how a mod extends the front end without code.
+	/// </summary>
+	public static Engine_FrontEndMenu BuildRoot() =>
+		Engine_UiTemplates.Menu("frontend-root")?.Build() ?? new Engine_FrontEndMenu();
+
+	/// <summary>
+	/// The gender card <c>New Game</c> opens — <see cref="Engine_FrontEndCardChoice"/>. A name
+	/// rather than a reference: this class is the model and knows nothing about node trees.
 	/// </summary>
 	public const string HeroCardScreen = "HeroCard";
 
 	/// <summary>
-	/// The saved-game slot cap, for a caller with no guest to read it from.
-	///
-	/// SIX, not the 150 that sits in the image at `dword_83319620`. `sub_82378618` — the
-	/// front-end enter, vtable slot 0x820A9260 — stores 6 over it unconditionally, and that
-	/// runs before the menu can dispatch, so 150 is a value the game never decides with.
+	/// The saved-game slot cap, for a caller with no guest to read it from. Six, not the 150 at
+	/// `dword_83319620`: `sub_82378618` (front-end enter, vtable slot 0x820A9260) stores 6 over
+	/// it unconditionally before the menu can dispatch.
 	/// </summary>
 	public const int DefaultSaveLimit = 6;
 
@@ -226,14 +152,11 @@ public sealed class Engine_FrontEndMenu
 	public const string SaveLimitWarning = "GUI_REACHED_SAVE_GAME_LIMIT_WARNING";
 
 	/// <summary>What the storage layer last said, as <see cref="ApplyAvailability"/> was told.</summary>
-	public Refii.Host.HostBridge.SaveState Saves { get; private set; } = new(false, -1, 0);
+	public Engine_UiModel.SaveState Saves { get; private set; } = new(false, -1, 0);
 
 	/// <summary>
-	/// A refusal the last <see cref="Activate"/> produced, as a text tag, or null.
-	///
-	/// Latched rather than thrown or returned, because a refusal is not a dispatch and not a
-	/// screen — the two things <see cref="Activate"/> already distinguishes — and a caller that
-	/// ignores it gets an entry that does nothing rather than one that acts wrongly.
+	/// A refusal the last <see cref="Activate"/> produced, as a text tag, or null. Latched, not
+	/// thrown: a refusal is neither a dispatch nor a screen, the two things Activate returns.
 	/// </summary>
 	public string? Warning { get; private set; }
 
@@ -253,32 +176,23 @@ public sealed class Engine_FrontEndMenu
 	}
 
 	/// <summary>
-	/// The guest's own New Game guards, in its own order — `sub_826DFD58` from 0x826E0040.
-	///
-	/// TWO OF THE THREE. The guest checks, in order:
+	/// The guest's own New Game guards — `sub_826DFD58` from 0x826E0040 — two of its three:
 	///
 	///   0x826E0078  `(1 &lt;&lt; *0x83496AF8) &amp; *0x83496A70` — a profile is signed in.
 	///   0x826E0094  `sub_82441CB8(saveMgr, user, 1)` — a storage device is selected.
 	///   0x826E0148  `sub_824431E8(...) &lt; *0x83319620` — a slot is free.
 	///
-	/// THE MIDDLE ONE IS DELIBERATELY ABSENT and this is the place to say so. It is not a test:
-	/// `sub_82441CB8` calls `j_XamShowDeviceSelectorUI` and then blocks on
-	/// `XGetOverlappedResult(..., bWait=1)` — it PUTS UP the console's device picker and waits
-	/// for an answer. There is one device here and no picker to show, so reproducing it would
-	/// mean reproducing a console affordance that has nothing to choose between. Its failure
-	/// text, GUI_NO_DEVICE_SELECTED_WARNING, is for a state this port cannot enter.
+	/// The middle one is deliberately absent: `sub_82441CB8` puts up the console device picker
+	/// (`j_XamShowDeviceSelectorUI` then a blocking `XGetOverlappedResult(bWait=1)`), and its
+	/// failure text GUI_NO_DEVICE_SELECTED_WARNING names a state this port cannot enter.
 	///
-	/// THE COUNT IS A SUBSTITUTION and this is the place to admit it. The guest's third guard
-	/// calls `sub_824431E8`, which enumerates the SELECTED device; our sample comes from
-	/// `sub_82443308`, which enumerates ALL of them. They are different queries and only agree
-	/// where there is one device — which is the case here, and is a consequence of skipping the
-	/// device picker above rather than an independent choice. `sub_824431E8` is not available
-	/// to us: it reads a DeviceID out of a map that only the blocking picker ever writes, so it
-	/// would return a confident zero and let a full profile start a game that cannot be saved.
+	/// The count is a substitution: the third guard uses `sub_824431E8`, which enumerates the
+	/// SELECTED device, and our sample comes from `sub_82443308`, which enumerates all of them.
+	/// They agree only with one device, which follows from skipping the picker. `sub_824431E8`
+	/// reads a DeviceID only the blocking picker ever writes, so it would return zero.
 	///
-	/// The third guard is why the limit matters: the guest compares against 6, and the WRITE
-	/// side (`sub_82445050` at 0x82445108) makes the same comparison and returns 0 silently.
-	/// This dialog is the only thing that ever tells the player why nothing happened.
+	/// The limit matters because the write side (`sub_82445050` at 0x82445108) makes the same
+	/// comparison against 6 and returns 0 silently; this dialog is the only feedback.
 	/// </summary>
 	private string? NewGameRefusal()
 	{
@@ -292,45 +206,51 @@ public sealed class Engine_FrontEndMenu
 
 	public void Add(Item item)
 	{
+		item.Parent = Model.MenuRoot;
 		_roots.Add(item);
+		foreach (Item child in item.Children)
+		{
+			child.Parent = item;
+		}
+
 		Rebuild();
 	}
 
 	/// <summary>
+	/// Empties the list — for a model whose contents are the guest's and repopulate under it with
+	/// no event to say so. A built-once menu never needs this.
+	/// </summary>
+	public void Clear() => Model.Clear();
+
+	/// <summary>
 	/// Applies the guest's own availability rules.
 	///
-	/// LOAD GAME IS THE ONE THAT NEEDED A CALL, and getting that wrong is what kept it off the
-	/// menu. The guest's spawn guard at 0x826E2264 is `signedIn &amp;&amp; sub_82443308() != 0`
-	/// — a live XamContentCreateEnumerator over content type 1, DeviceID 0. The vector of save
-	/// names at the front-end screen's +84/+88 is NOT that answer: it is filled only inside the
-	/// dispatcher's own "Load Game" branch (`sub_82443048` at 0x826E03CC), so at menu-build time
-	/// it is always empty and gating on it suppressed the entry unconditionally.
+	/// Load Game's spawn guard at 0x826E2264 is `signedIn &amp;&amp; sub_82443308() != 0` — a live
+	/// XamContentCreateEnumerator over content type 1, DeviceID 0. The save-name vector at the
+	/// front-end screen's +84/+88 is NOT that answer: it is filled only inside the dispatcher's
+	/// "Load Game" branch (`sub_82443048` at 0x826E03CC) and is empty at menu-build time.
 	///
-	/// <paramref name="saves"/> therefore carries the pump's sample, and carries "not asked yet"
-	/// distinctly from "none" — see <see cref="Refii.Host.HostBridge.SaveState"/>. Everything
-	/// else comes straight off the model.
+	/// <paramref name="saves"/> therefore carries the pump's sample and distinguishes "not asked
+	/// yet" from "none" — see <see cref="Engine_UiModel.SaveState"/>.
 	/// </summary>
 	public void ApplyAvailability(
-		Refii.Host.HostBridge.FrontEndModel model, Refii.Host.HostBridge.SaveState saves,
-		System.Collections.Generic.IReadOnlyList<Refii.Host.HostBridge.Language>? languages = null)
+		Engine_UiModel.FrontEndModel model, Engine_UiModel.SaveState saves,
+		System.Collections.Generic.IReadOnlyList<Engine_UiModel.Language>? languages = null)
 	{
 		foreach (Item item in _roots)
 		{
 			item.Available = item.Name switch
 			{
-				// Held back until the pump has answered. Drawing it absent and adding it a frame
-				// later is the lesser evil against asserting a profile has no saves.
+				// Held back until the pump has answered, rather than asserting no saves.
 				"Load Game" => saves.CanLoad,
 				"Language" => model.HasLanguageEntry,
 				_ => item.Available,
 			};
 		}
 
-		// LAST KNOWN STATE WINS OVER UNKNOWN. The bridge answers "unknown" (count -1) when a
-		// sample lands badly, and an unknown sample overwriting a known 6/6 let a New Game
-		// press slip past the save-limit refusal — the gender card opened OVER the warning,
-		// and every input after that went to the card. A menu that knew the truth one frame
-		// ago must not forget it because one read went soft.
+		// Last known state wins over unknown: the bridge answers count -1 when a sample lands
+		// badly, and letting that overwrite a known 6/6 slips a New Game press past the
+		// save-limit refusal.
 		if (saves.Count >= 0 || Saves.Count < 0)
 		{
 			Saves = saves;
@@ -341,26 +261,19 @@ public sealed class Engine_FrontEndMenu
 	}
 
 	/// <summary>
-	/// Fills "Language" with one child per installed language, as the guest fills it.
+	/// Fills "Language" with one child per installed language, as `sub_826E1C98` does: it walks
+	/// the guest's 96-byte-stride table and spawns display NAME as the item name, group
+	/// "Language", command 302, index = the row.
 	///
-	/// `sub_826E1C98` walks the guest's own 96-byte-stride table and spawns an entry per row —
-	/// display NAME as the item name, group "Language", command 302, index = the row. So the
-	/// list is the guest's, and the only thing invented here is the order of the two calls.
+	/// The guest's own asymmetry: children spawn whenever the table has entries, but the
+	/// "Language" PARENT only appears above one installed language, so a single-language install
+	/// has an unreachable child list — <see cref="ApplyAvailability"/> reproduces that.
 	///
-	/// NOTE THE ASYMMETRY, which is the guest's and not a mistake: the children are spawned
-	/// whenever the table has entries, but the "Language" PARENT only appears above one
-	/// installed language. A single-language install therefore has a child list nobody can
-	/// reach, which is exactly what <see cref="ApplyAvailability"/> reproduces by leaving the
-	/// parent unavailable.
-	///
-	/// THE LIST IS THE CALLER'S, for the same reason the save state is: reading it
-	/// means reading GUEST memory, and this class must work without a guest. It called
-	/// `HostBridge.GetLanguages()` itself and segfaulted the menu harness, which builds the very
-	/// same model with no guest behind it — a model that can only be constructed next to a
-	/// running game is not a model.
+	/// The list is the caller's, like the save state: reading it means reading guest memory, and
+	/// this class must be constructible with no guest behind it.
 	/// </summary>
 	private void PopulateLanguages(
-		System.Collections.Generic.IReadOnlyList<Refii.Host.HostBridge.Language>? languages)
+		System.Collections.Generic.IReadOnlyList<Engine_UiModel.Language>? languages)
 	{
 		if (languages is null || Find("Language") is not { } language)
 		{
@@ -369,11 +282,10 @@ public sealed class Engine_FrontEndMenu
 
 		language.Children.Clear();
 
-		foreach (Refii.Host.HostBridge.Language installed in languages)
+		foreach (Engine_UiModel.Language installed in languages)
 		{
-			// The NAME is the guest's display string and doubles as the text tag: the front end
-			// puts it through Babel, and an unresolved tag renders verbatim, which is the same
-			// fallback the engine takes.
+			// The NAME is the guest's display string and doubles as the text tag; the front end
+			// puts it through Babel and an unresolved tag renders verbatim.
 			language.Children.Add(new Item(installed.Name, installed.Name, "Language")
 			{
 				Command = $"Language:{installed.Index}",
@@ -383,131 +295,100 @@ public sealed class Engine_FrontEndMenu
 			});
 		}
 
-		// Availability is NOT decided here. ApplyAvailability already set it from the guest's
-		// own statement (`model.HasLanguageEntry`, the bridge's read of the same
-		// `dword_83319934 > 1` condition `sub_826E2220` uses) — and a second writer here,
-		// keyed on a host-side list that can legitimately be empty at this moment, was
-		// overwriting a correct answer with a timing artefact. One flag, one owner.
+		// Availability is NOT decided here: ApplyAvailability owns it, from the guest's own
+		// statement (`model.HasLanguageEntry`, the same `dword_83319934 > 1` condition
+		// `sub_826E2220` uses). One flag, one owner.
 	}
 
 	/// <summary>Recomputes the visible list and keeps the highlight on something real.</summary>
+	/// <summary>
+	/// Re-derives the visible list, following the ENTRY rather than the index: availability
+	/// changes under the menu (signing in adds "Load Game" above the highlight). The model
+	/// splices and filters; this only restores the cursor.
+	/// </summary>
 	private void Rebuild()
 	{
 		Item? was = Highlighted;
-		Visible.Clear();
+		Model.DirtyLayout();
+		Ghost();
 
-		foreach (Item root in _roots)
+		if (was is null)
 		{
-			if (!root.Available)
-			{
-				continue;
-			}
-
-			Visible.Add(root);
-			if (!ReferenceEquals(root, Expanded))
-			{
-				continue;
-			}
-
-			foreach (Item child in root.Children)
-			{
-				if (child.Available)
-				{
-					Visible.Add(child);
-				}
-			}
+			return;
 		}
 
-		// Follow the entry the player was on rather than the index it happened to occupy.
-		// Availability can change under the menu — signing in adds "Load Game" above the
-		// highlight — and holding the index would silently move the selection.
-		int index = was is null ? 0 : Visible.IndexOf(was);
-		HighlightIndex = index >= 0 ? index : 0;
+		int index = Model.VisibleIndexOf(was);
+		Model.Highlight(index >= 1 ? index : 1);
 	}
+
+	/// <summary>
+	/// Recomputes the automatic ghosting — `UpdateAllGhosting`, run with every layout, and from
+	/// <see cref="Add"/> too: an arriving entry can make a category stop being empty.
+	/// </summary>
+	private void Ghost() => Model.UpdateAllGhosting();
 
 	/// <summary>
 	/// Advances the auto-repeat and returns how many steps to move this frame.
 	///
-	/// <paramref name="direction"/> is -1 up, +1 down, 0 released. The curve is the guest's:
-	/// act immediately on a fresh press, then wait <see cref="FirstNavigateInterval"/>, then
-	/// accelerate toward <see cref="SubsequentNavigateInterval"/> over
-	/// <see cref="InputIntervalClamp"/> steps.
+	/// <paramref name="direction"/> is -1 up, +1 down, 0 released. The cadence is the guest's,
+	/// and it is a STEP rather than a curve: act immediately on a fresh press, wait
+	/// <see cref="FirstNavigateInterval"/> for the second, then
+	/// <see cref="SubsequentNavigateInterval"/> for every one after — `DoNavigate`
+	/// (`guiinput.dis main.8 pc13..20`) swaps the interval once, on `1 < NavigationCount`, and
+	/// never touches it again.
 	/// </summary>
 	public int Navigate(int direction, double delta)
 	{
-		if (direction == 0)
+		int steps = Repeat(direction, delta);
+		for (int i = 0; i < steps; ++i)
 		{
-			// Released: back to a standing start, so the next press is instant rather than
-			// inheriting the accelerated rate from the last hold.
-			_held = 0;
-			_navigationCount = 0;
-			_navigateInterval = FirstNavigateInterval;
-			_timeSinceLastNavigate = 0.0;
-			return 0;
-		}
-
-		if (_held != direction)
-		{
-			_held = direction;
-			_navigationCount = 0;
-			_navigateInterval = FirstNavigateInterval;
-			_timeSinceLastNavigate = 0.0;
 			Move(direction);
-			return 1;
 		}
 
-		_timeSinceLastNavigate += delta;
-		if (_timeSinceLastNavigate < _navigateInterval)
-		{
-			return 0;
-		}
-
-		_timeSinceLastNavigate = 0.0;
-		if (_navigationCount < InputIntervalClamp)
-		{
-			++_navigationCount;
-			double t = (double)_navigationCount / InputIntervalClamp;
-			_navigateInterval = FirstNavigateInterval +
-				((SubsequentNavigateInterval - FirstNavigateInterval) * t);
-		}
-
-		Move(direction);
-		return 1;
+		return steps;
 	}
 
 	/// <summary>
-	/// Moves the highlight. It CLAMPS at both ends — it does not wrap.
-	///
-	/// The shipped `expandablemenuinput.lua` guards both directions —
-	/// `ScrollUp` acts only while `1 &lt; CurrentHighlightIdx` and `ScrollDown` only while
-	/// `CurrentHighlightIdx &lt; #VisibleElements` — so the top and bottom entries are dead ends.
-	///
-	/// It matters more than it looks. With the highlight pinned to a fixed slot and the LIST
-	/// sliding underneath it, wrapping would throw the window from one end of the menu to the
-	/// other in a single press, which is a completely different feel from stopping.
+	/// The auto-repeat curve alone — how many steps this frame, without moving anything, for a
+	/// list whose cursor is not ours: in-game screens commit against Lua's own
+	/// <c>CurrentHighlightIdx</c>, so moving this model too would draw a highlight one row ahead.
+	/// </summary>
+	public int Repeat(int direction, double delta)
+	{
+		_clock.FirstInterval = FirstNavigateInterval;
+		_clock.SubsequentInterval = SubsequentNavigateInterval;
+		return _clock.Steps(direction, delta);
+	}
+
+
+	/// <summary>
+	/// Moves the highlight. It CLAMPS at both ends and does not wrap: `expandablemenuinput.lua`
+	/// guards `ScrollUp` on `1 &lt; CurrentHighlightIdx` and `ScrollDown` on
+	/// `CurrentHighlightIdx &lt; #VisibleElements`.
+	/// </summary>
+	/// <summary>
+	/// One step. CLAMPS at both ends and never wraps — `ScrollUp` stops at 1 and `ScrollDown`
+	/// at the last entry, which is the script's own behaviour.
 	/// </summary>
 	private void Move(int direction)
 	{
-		int next = HighlightIndex + direction;
-		if (next >= 0 && next < Visible.Count)
+		if (direction < 0)
 		{
-			HighlightIndex = next;
+			Model.ScrollUp();
+		}
+		else if (direction > 0)
+		{
+			Model.ScrollDown();
 		}
 	}
 
 	/// <summary>
-	/// Activates the highlighted entry.
+	/// Activates the highlighted entry. Returns the NAME to dispatch to the guest, or null when
+	/// the press is not a dispatch — expanding a submenu, opening one, opening a screen, or a
+	/// host-only entry; the caller tells them apart by the entry it activated.
 	///
-	/// Returns the NAME to dispatch to the guest, or null when the press is NOT a dispatch —
-	/// expanding a submenu, opening one, opening a screen, or a host-only entry the guest knows
-	/// nothing about. The caller distinguishes those by looking at the entry it activated.
-	///
-	/// AN ENTRY THAT OPENS SOMETHING MUST NOT ALSO DISPATCH, and it used to. Only
-	/// <see cref="Item.Children"/> returned null here, so an entry carrying a
-	/// <see cref="Item.Submenu"/> or an <see cref="Item.Opens"/> fell through to the last line
-	/// and was sent to the guest — which meant the view's submenu branch, guarded on a null
-	/// return, could never run. "New Game" went straight to the pump and started a male hero
-	/// without the gender card ever appearing.
+	/// An entry that opens something must not also dispatch: <see cref="Item.Submenu"/> and
+	/// <see cref="Item.Opens"/> return null too, not just <see cref="Item.Children"/>.
 	/// </summary>
 	public string? Activate()
 	{
@@ -518,16 +399,23 @@ public sealed class Engine_FrontEndMenu
 
 		if (item.Children.Count > 0)
 		{
-			Expanded = ReferenceEquals(Expanded, item) ? null : item;
+			// Through the model, never a re-implemented toggle: `Select()` is the port of
+			// `SelectMenuItem` whole — the mid-animation swallow, the ghost test, the identity
+			// push, auto-collapse and the cursor step. A null answer is the swallow and must
+			// not fall through to a dispatch.
+			if (Model.Select() is null)
+			{
+				return null;
+			}
+
 			Rebuild();
 			return null;
 		}
 
-		if (item.Opens is not null || item.Submenu is not null)
+		if (item.Opens is not null)
 		{
-			// The guest runs its storage guards BEFORE the card appears, not after the choice —
-			// 0x826E01FC, the switch to the `choosecard` element, is the SUCCESS arm of the
-			// third guard. Refusing here rather than at the commit is following that order.
+			// The guest runs its storage guards BEFORE the card appears: 0x826E01FC, the switch
+			// to the `choosecard` element, is the success arm of the third guard.
 			if (item.Opens == HeroCardScreen)
 			{
 				Warning = NewGameRefusal();
@@ -546,29 +434,70 @@ public sealed class Engine_FrontEndMenu
 	}
 
 	/// <summary>Collapses an expanded submenu. True when it consumed the press.</summary>
-	public bool Back()
+	/// <summary>
+	/// Backs out one level — `CloseParent`, which closes the highlighted row's PARENT and puts
+	/// the cursor on it. False at the root, signalling that B is the guest's to answer.
+	/// </summary>
+	public bool Back() => Model.CloseParent();
+
+	/// <summary>
+	/// Puts the highlight on a named visible entry — for a menu whose INITIAL selection is the
+	/// guest's own statement rather than the first row (the pause list opens on its second
+	/// entry, `SetInitiallySelectedItem(2)`). No-op when the name is not currently visible.
+	/// </summary>
+	public void Highlight(string name)
 	{
-		if (Expanded is null)
+		for (int i = 0; i < Visible.Count; ++i)
+		{
+			if (Visible[i].Name == name)
+			{
+				Model.Highlight(i + 1);
+				return;
+			}
+		}
+	}
+
+	/// <summary>
+	/// Sets one root entry's availability and rebuilds. True when it changed — for lists whose
+	/// availability is a live guest statement (the pause tabs follow the hero's restriction
+	/// flags per frame) rather than a build-time condition.
+	/// </summary>
+	public bool SetAvailable(string name, bool available)
+	{
+		Item? item = Find(name);
+		if (item is null || item.Available == available)
 		{
 			return false;
 		}
 
-		Expanded = null;
+		item.Available = available;
 		Rebuild();
 		return true;
 	}
 
-	/// <summary>Finds a root entry by the guest's name, for host overrides.</summary>
-	public Item? Find(string name)
+	/// <summary>
+	/// Sets one entry's ghosting and rebuilds. True when it changed.
+	///
+	/// `SetItemGhosting` — the row stays in the list, drawn dim (heading opacity 40) and inert.
+	/// The pause tabs arrive this way: `sub_8298F648` spawns all of them and then ghosts
+	/// Map/Abilities/Items/Weapons/Clothing/Logbook from the hero's restriction bytes.
+	/// </summary>
+	public bool SetGhosted(string name, bool ghosted)
 	{
-		foreach (Item item in _roots)
+		Item? item = Find(name);
+		if (item is null || item.Ghosted == ghosted)
 		{
-			if (item.Name == name)
-			{
-				return item;
-			}
+			return false;
 		}
 
-		return null;
+		item.Ghosted = ghosted;
+		Rebuild();
+		return true;
 	}
+
+	/// <summary>
+	/// The entry with this name, anywhere in the tree — the whole tree, not just the roots, or
+	/// <see cref="SetAvailable"/> silently no-ops on every nested entry.
+	/// </summary>
+	public Item? Find(string name) => Model.Find(name);
 }

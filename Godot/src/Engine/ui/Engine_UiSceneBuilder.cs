@@ -33,18 +33,16 @@ public sealed class Engine_UiSceneBuilder
 	public Func<string, Texture2D?>? TextureResolver;
 
 	/// <summary>
-	/// Supplies the bitmap font for a text element's point size. Return null and the
-	/// text element still builds, carrying its placement metadata but drawing nothing —
-	/// which is what the builder did for every string before fonts were wired in.
+	/// Supplies the bitmap font for a text element's point size. Return null and the text element
+	/// still builds, carrying its placement metadata but drawing nothing.
 	/// </summary>
 	public Func<int, (UiFont Font, float Scale)?>? FontResolver;
 
 	/// <summary>
-	/// Authored rotations are treated as degrees. Anark's tooling authored in degrees and
-	/// the shipped values are consistent with that, but it has not been confirmed against
-	/// a rendered frame — if screens come out rotated oddly, this is the first thing to try.
+	/// Authored rotations are RADIANS: every non-zero rotation in the shipped `.bgf` is a
+	/// multiple of π/4, and the guest's transform build (`sub_821E52F8`) feeds the raw floats to
+	/// `sin`/`cos` with no π/180 anywhere.
 	/// </summary>
-	public bool RotationsAreDegrees = true;
 
 	/// <summary>Emit <see cref="BgfElementType.Behavior"/> elements as marker nodes.</summary>
 	public bool IncludeBehaviors = true;
@@ -55,6 +53,14 @@ public sealed class Engine_UiSceneBuilder
 	/// which is useful for seeing what a screen contains but is not what the game shows.
 	/// </summary>
 	public bool ApplySlideVisibility = true;
+
+	/// <summary>
+	/// Keep slide-inactive subtrees in the tree — built, hidden, marked `slide_inactive` —
+	/// instead of dropping them. For the pattern book, which is a catalogue: owned screens take
+	/// their art from the file-only build, so a parked element must still have a bearer. The kept
+	/// subtree is invisible, so a drawn consumer that ignores the flag renders identically.
+	/// </summary>
+	public bool KeepInactiveForCatalogue;
 
 	/// <summary>
 	/// Authored scales are relative to a 100-unit quad — it spans -50..+50 — not a unit
@@ -69,40 +75,31 @@ public sealed class Engine_UiSceneBuilder
 	///
 	/// giving extents [-25.6, 0], [0, 25.6], [25.6, 51.2] — exactly edge to edge.
 	///
-	/// This holds ONLY with the pivot term in <see cref="BuildTransform"/>. Without it
-	/// the slices overlap at 100, and a base of 50 appears to fix them because halving
-	/// the quad happens to cancel the missing pivot offset for this band. That is a
-	/// coincidence, not a derivation, and it fails as soon as a pivot is not ±50.
+	/// Holds only with the pivot term in <see cref="BuildTransform"/>; a base of 50 without it
+	/// only cancels the missing pivot offset for this band and fails for any pivot but ±50.
 	/// </summary>
 	public const float QuadBaseSize = 100f;
 
 	private static readonly ArrayMesh SharedQuad = BuildQuadMesh(QuadBaseSize);
 
 	/// <summary>
-	/// The one shader every Gameface quad draws through, loaded once.
-	///
-	/// Shared rather than per-material because a Shader is the program and a ShaderMaterial
-	/// is the parameter set — 15,790 copies of the same program would compile 15,790 times.
+	/// The one shader every Gameface quad draws through, loaded once — a Shader is the program,
+	/// a ShaderMaterial the parameter set, so per-material copies would each compile.
 	/// </summary>
 	private static readonly Shader QuadShader =
 		GD.Load<Shader>("res://src/Engine/ui/ui_quad.gdshader");
 
 	/// <summary>
-	/// Builds the shared quad. A plain one: U increases with +X, V downward from the
-	/// top-left, normal toward +Z where <see cref="BuildTransform"/> puts the viewer.
-	///
-	/// No mirror is baked in here. Compensating in the mesh for a camera whose screen-right
-	/// points at world -X fixes textures and leaves GEOMETRY mirrored: menubox's A/B prompts
-	/// render bottom-LEFT, and the two halves of a paper panel swap so both their outer
-	/// borders meet in the middle as a dark seam. The handedness belongs in the transform,
-	/// once.
+	/// Builds the shared quad: U increases with +X, V downward from the top-left, normal toward
+	/// +Z where <see cref="BuildTransform"/> puts the viewer. No mirror is baked in — the
+	/// handedness belongs in the transform, once; compensating here fixes textures and leaves
+	/// geometry mirrored.
 	/// </summary>
 	private static ArrayMesh BuildQuadMesh(float size)
 	{
 		float h = size * 0.5f;
 
-		// Wound counter-clockwise as seen from +Z, so the front face is the one the
-		// viewer is on. Materials disable culling anyway; this keeps normals honest.
+		// Wound counter-clockwise as seen from +Z, so the front face is the viewer's.
 		var vertices = new[]
 		{
 			new Vector3(-h, +h, 0f),
@@ -154,14 +151,8 @@ public sealed class Engine_UiSceneBuilder
 
 	/// <summary>
 	/// The built node for each element ORDINAL, or null where the slide baseline dropped one.
-	///
-	/// This is what lets a live screen be UPDATED rather than rebuilt. Everything the guest
-	/// states arrives keyed by ordinal — slides, visibility, opacity, transforms — and without a
-	/// way back from an ordinal to its node, the only way to apply any of it was to build the
-	/// whole tree again. That is why a presentation which merely MOVES never moved: the change
-	/// test could not afford to notice, because noticing meant rebuilding 3812 elements.
-	///
-	/// Empty until <see cref="Build"/> has run.
+	/// Everything the guest states arrives keyed by ordinal, so this is what lets a live screen
+	/// be updated rather than rebuilt. Empty until <see cref="Build"/> has run.
 	/// </summary>
 	public Node3D?[] ByOrdinal { get; private set; } = System.Array.Empty<Node3D?>();
 
@@ -169,12 +160,9 @@ public sealed class Engine_UiSceneBuilder
 	public Vector3[] PivotByOrdinal { get; private set; } = System.Array.Empty<Vector3>();
 
 	/// <summary>
-	/// Writes a live X and/or Y POSITION onto a built element, pivot term included.
-	///
-	/// For anything outside this class that overrides where an element sits — the widescreen
-	/// layout is the one such caller. It exists so that "a position is not an origin" is
-	/// stated once: a second writer that assigns `transform.Origin.X` directly reintroduces
-	/// exactly the displacement <see cref="ApplyLiveTransform"/> was fixed to stop.
+	/// Writes a live X and/or Y POSITION onto a built element, pivot term included. The only
+	/// route for outside writers (the widescreen layout): assigning `transform.Origin` directly
+	/// drops the pivot term and displaces the element by `basis * pivot`.
 	/// </summary>
 	public bool SetLivePosition(int ordinal, float? x, float? y)
 	{
@@ -235,19 +223,10 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
-	/// Writes the guest's live transforms onto a tree that is already built, and reports how
-	/// many elements actually moved.
-	///
-	/// THIS IS WHY THE BACKGROUND DID NOT SCROLL. The front end's backdrop is animated by the
-	/// guest every frame — `sub_82990730` advances the `Foreground.Book` sub-object, and the
-	/// ambient presentation's `"Scrolling"` element is driven the same way — and every one of
-	/// those is an attribute write, not a slide or a visibility change. The only way we had to
-	/// pick up a moved element was to rebuild the presentation, so the change test deliberately
-	/// ignored transforms and a screen that merely moved never did.
-	///
-	/// Rebuilding is the wrong tool for it anyway: the tree is identical apart from a handful of
-	/// transforms, and rebuilding 94 nodes sixty times a second to slide a backdrop — or 3431 to
-	/// nudge a HUD counter — is work with nothing to show for it.
+	/// Writes the guest's live transforms onto an already-built tree and reports how many
+	/// elements moved. Animation such as `sub_82990730`'s `Foreground.Book` advance and the
+	/// ambient presentation's `"Scrolling"` element arrives as attribute writes, not slides or
+	/// visibility changes, so this is the only path that picks them up short of a rebuild.
 	///
 	/// <paramref name="transform"/> is keyed by ordinal, with a null row where the guest states
 	/// nothing for that element, in which case the file's own transform stands.
@@ -273,38 +252,26 @@ public sealed class Engine_UiSceneBuilder
 
 			Transform3D before = node.Transform;
 
-			// THE POSITION, NOT THE ORIGIN. `BuildTransform` stores
-			// `origin = position - basis * pivot`, so writing a stated position straight into
-			// the origin displaces every element with a non-zero pivot by `basis * pivot`.
+			// The position, not the origin: `BuildTransform` stores
+			// `origin = position - basis * pivot`.
 			Vector3 position = PositionByOrdinal[i];
 			Vector3 pivot = PivotByOrdinal[i];
 
 			if (values.Length > 0 && values[0] is { } x) position.X = x;
 			if (values.Length > 1 && values[1] is { } y) position.Y = y;
 
-			// THROUGH THE HANDEDNESS FLIP, as BuildTransform builds it. Fable authors UI
-			// left-handed (+Z away), so a raw z inverts the DEPTH of every element the guest
-			// restates a position for.
+			// Through the handedness flip, as BuildTransform builds it: Fable authors UI
+			// left-handed (+Z away), so a raw z inverts depth.
 			if (values.Length > 2 && values[2] is { } z) position.Z = ToGodotZ(z);
 
-			// SCALE THROUGH THE BASIS COLUMNS, never through `node.Scale`.
+			// Scale through the basis COLUMNS, never through `node.Scale`: `Basis.Scale` is
+			// derived and lies on a singular basis — one zero column makes the determinant zero,
+			// so it reports (0,0,0) for all three axes and a read-modify-write flattens the two
+			// axes the guest did not state. Every meter bar in `hud.bgf` is authored
+			// `scale.x = 0`, so this is live here.
 			//
-			// `Basis.Scale` is derived, and on a SINGULAR basis it lies: Godot recovers each
-			// axis length and multiplies by the determinant's sign, so a basis with one zero
-			// column reports (0,0,0) for ALL THREE axes — the determinant is zero and
-			// `Mathf.Sign(0)` is 0. Read-modify-write of that property therefore takes the two
-			// axes the guest did NOT state down to zero along with it, and the property reads
-			// back the value just written, so the collapse is invisible to a log.
-			//
-			// This is not hypothetical on this screen set. Every meter bar in `hud.bgf` is
-			// authored `scale.x = 0` — an empty bar the fill animation opens — so any of them
-			// receiving a live scale on one axis had the other two flattened. The same trap has
-			// already cost this project two turns elsewhere; `Engine_UiWidescreen.SetScaleX`
-			// writes columns for exactly this reason.
-			//
-			// A zero column also has no direction left to scale along, so the axis is rebuilt
-			// from the cross product of the other two — which keeps the basis right-handed
-			// rather than picking an arbitrary unit vector.
+			// A zero column has no direction to scale along, so rebuild the axis from the cross
+			// product of the other two, keeping the basis right-handed.
 			Basis basis = before.Basis;
 			bool scaled = false;
 			for (int axis = 0; axis < 3; ++axis)
@@ -326,8 +293,7 @@ public sealed class Engine_UiSceneBuilder
 				scaled = true;
 			}
 
-			// Rebuilt from the CURRENT basis: a live scale changes the term as surely as a
-			// position does, which is the purpose of a ±50 pivot on a frame slice.
+			// Rebuilt from the CURRENT basis — a live scale changes the pivot term too.
 			Vector3 origin = position - basis * pivot;
 
 			var after = new Transform3D(basis, origin);
@@ -336,18 +302,11 @@ public sealed class Engine_UiSceneBuilder
 				continue;
 			}
 
-			// EVERY NUMBER IN THIS TRANSFORM IS A RAW GUEST WORD. LiveAttribute.AsFloat is a
-			// bit-cast of whatever sits in the attribute slot, so an unset, freed or
-			// mid-write slot is a NaN with no decoding error to notice. Nothing upstream of
-			// here tests it: the only checks in the chain are `LengthSquared() <= 1e-6f`
-			// axis-direction tests, and every comparison against NaN is false, so they admit
-			// exactly the value they look like they reject.
-			//
-			// UI is the WORST place to let one through. These quads share one orthographic
-			// camera and write no depth, so their order on screen is decided purely by the
-			// render-list sort — and a NaN in that sort walks libstdc++ off the front of the
-			// array into an endless fault. Keeping the previous transform costs one frame of
-			// staleness on one element.
+			// Every number here is a raw guest word — `LiveAttribute.AsFloat` bit-casts the
+			// attribute slot, so an unset, freed or mid-write slot is a NaN, and the
+			// `LengthSquared() <= 1e-6f` tests above admit it (every NaN comparison is false).
+			// A NaN reaching the render-list sort walks libstdc++ off the array into an endless
+			// fault; keeping the previous transform costs one stale frame on one element.
 			if (!origin.IsFinite() || !basis.X.IsFinite() ||
 				!basis.Y.IsFinite() || !basis.Z.IsFinite())
 			{
@@ -357,8 +316,8 @@ public sealed class Engine_UiSceneBuilder
 
 			node.Transform = after;
 
-			// The MERGED position, not the authored one — the guest stops stating an axis when
-			// it settles, and the authored value would snap it back.
+			// The merged position, not the authored one: the guest stops stating an axis once it
+			// settles, and the authored value would snap it back.
 			PositionByOrdinal[i] = position;
 			++moved;
 		}
@@ -367,36 +326,105 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
+	/// Applies stated opacity changes to the BUILT tree, without a rebuild — a stated opacity is
+	/// a material parameter, so it is applied as one.
+	///
+	/// Opacity is a chain (see <see cref="_inheritedOpacity"/>): a change on one element
+	/// re-derives its whole subtree's accumulated product. The chain state lives in metas —
+	/// `opacity` (authored own), `opacity_live` (stated own, written here), `live_accum` (the
+	/// product as applied) — and ordinals are document order, parents first.
+	///
+	/// Returns how many elements' stated value CHANGED, not how many nodes were retinted.
+	/// </summary>
+	public int ApplyLiveOpacity(System.Collections.Generic.IReadOnlyList<float?> opacity)
+	{
+		int changed = 0;
+		for (int i = 0; i < ByOrdinal.Length && i < opacity.Count; ++i)
+		{
+			if (ByOrdinal[i] is not { } node || opacity[i] is not { } stated ||
+				!float.IsFinite(stated))
+			{
+				continue;
+			}
+
+			float own = Mathf.Clamp(stated / 100f, 0f, 1f);
+			float applied = node.HasMeta("opacity_live")
+				? (float)node.GetMeta("opacity_live")
+				: node.HasMeta("opacity") ? (float)node.GetMeta("opacity") : 1f;
+			if (Mathf.IsEqualApprox(own, applied))
+			{
+				continue;
+			}
+
+			node.SetMeta("opacity_live", own);
+			ReapplyOpacityChain(node, ParentAccumulated(node));
+			++changed;
+		}
+
+		return changed;
+	}
+
+	/// <summary>The accumulated opacity ABOVE a node — live where a live value has been applied.</summary>
+	private static float ParentAccumulated(Node node) =>
+		node.GetParent() is { } parent
+			? (parent.HasMeta("live_accum")
+				? (float)parent.GetMeta("live_accum")
+				: parent.HasMeta("opacity_accumulated")
+					? (float)parent.GetMeta("opacity_accumulated")
+					: 1f)
+			: 1f;
+
+	/// <summary>Recomputes one subtree's accumulated products and writes them to the materials.</summary>
+	private static void ReapplyOpacityChain(Node node, float parentAccumulated)
+	{
+		float own = node.HasMeta("opacity_live")
+			? (float)node.GetMeta("opacity_live")
+			: node.HasMeta("opacity") ? (float)node.GetMeta("opacity") : 1f;
+		float accumulated = parentAccumulated * own;
+		node.SetMeta("live_accum", accumulated);
+
+		if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material)
+		{
+			if (material.Shader == QuadShader)
+			{
+				material.SetShaderParameter("opacity", accumulated);
+			}
+			else if (material.Shader == TextShader)
+			{
+				Color colour = material.GetShaderParameter("colour").AsColor();
+				material.SetShaderParameter(
+					"colour", new Color(colour.R, colour.G, colour.B, accumulated));
+			}
+		}
+
+		foreach (Node child in node.GetChildren())
+		{
+			ReapplyOpacityChain(child, accumulated);
+		}
+	}
+
+	/// <summary>
 	/// Opacity accumulated from the root down to the element being built, 0..1.
 	///
-	/// OPACITY IS A CHAIN, not a per-element value, and treating it as one is how a hidden HUD
-	/// stays on screen. The engine multiplies down the tree — <c>sub_8229E250</c> takes the
-	/// parent frame's accumulated value, multiplies by this element's own <c>opacity/100</c>,
-	/// and stores the product on the render association — so an element at 100 under a group at
-	/// 0 draws at 0.
+	/// Opacity is a chain, not a per-element value: <c>sub_8229E250</c> multiplies the parent
+	/// frame's accumulated value by this element's own <c>opacity/100</c> and stores the product
+	/// on the render association, so an element at 100 under a group at 0 draws at 0. That is how
+	/// <c>hud.lua</c>'s <c>Enable</c>/<c>Disable</c> hides the whole HUD with one
+	/// <c>setAttribute(getElement('Scene.Layer'), 'opacity', 100 | 0)</c>.
 	///
-	/// That is exactly how the game hides the whole HUD: <c>hud.lua</c>'s <c>Enable</c>/
-	/// <c>Disable</c> is <c>setAttribute(getElement('Scene.Layer'), 'opacity', 100 | 0)</c> on
-	/// ONE group, and every element beneath it must go with it.
-	///
-	/// It is NOT a visibility gate, which is the other half of the trap. The traversal
-	/// <c>sub_822849A0</c> never reads opacity, so at 0 the subtree is still walked, still
-	/// reports <c>globalactive</c> true, and is still submitted — just at alpha 0. Collapsing
-	/// it to <c>Visible = false</c> would give the right pixels and the wrong element state.
+	/// Not a visibility gate: the traversal <c>sub_822849A0</c> never reads opacity, so at 0 the
+	/// subtree is still walked, still reports <c>globalactive</c> true and is still submitted.
+	/// Collapsing it to <c>Visible = false</c> gives the right pixels and the wrong element state.
 	/// </summary>
 	private float _inheritedOpacity = 1f;
 
 	private Node3D? BuildNode(UiNode n)
 	{
-		// Material and texture elements carry parameters for the quad on their parent node;
-		// the PARAMETERS are folded in there rather than emitted. But the ELEMENT is not
-		// always a leaf: the nine-slice dialogs author real geometry INSIDE their material
-		// elements — `querybox`'s and the title dialog's `paperA/B/C` groups and `middle`
-		// quads live under `Material574/590` — and `return null` here dropped those whole
-		// subtrees, which is why every dialog drew corner and edge pieces but no fill. A
-		// childless material stays un-emitted exactly as before; one with children becomes a
-		// bare pass-through node so its subtree builds, while the parameter folding (done by
-		// the PARENT reading its material children) is untouched.
+		// Material and texture elements carry parameters folded into the parent's quad rather
+		// than emitted — but they are not always leaves: the nine-slice dialogs author real
+		// geometry inside them (`querybox`'s and the title dialog's `paperA/B/C` groups and
+		// `middle` quads under `Material574/590`). A childless material stays un-emitted; one
+		// with children becomes a bare pass-through node so its subtree builds.
 		if (n.Type is BgfElementType.Material or BgfElementType.Texture)
 		{
 			if (n.Children.Count == 0)
@@ -417,10 +445,10 @@ public sealed class Engine_UiSceneBuilder
 		if (n.Type == BgfElementType.Behavior && !IncludeBehaviors)
 			return null;
 
-		// An inactive element takes its whole subtree with it. sub_8229E400 tests the
-		// cached globalactive byte and branches straight to the next SIBLING, so no
-		// descendant is ever visited — returning null here reproduces that exactly.
-		if (ApplySlideVisibility && !n.Visible)
+		// An inactive element takes its whole subtree with it: sub_8229E400 tests the cached
+		// globalactive byte and branches straight to the next SIBLING.
+		bool parked = ApplySlideVisibility && !n.Visible;
+		if (parked && !KeepInactiveForCatalogue)
 		{
 			SkippedInactive++;
 			return null;
@@ -447,22 +475,31 @@ public sealed class Engine_UiSceneBuilder
 		}
 
 		node.SetMeta("object_id", n.ObjectId);
+
+		// A clone inherits its pivot and nothing restates it: `framecloning.dis main.1/main.2`
+		// call clone(source, self.parent) and set nothing, and the placement pass writes only
+		// position.x/y, opacity, scale.x/y (`framesizeandpositioning.dis main.6` constant table).
+		// Duplicate() carries this meta across.
+		node.SetMeta("pivot", new Vector3(n.PivotX, n.PivotY, ToGodotZ(n.PivotZ)));
+
 		node.SetMeta("element_type", n.Type.ToString());
 		if (!n.HasAuthoredName)
 			node.SetMeta("name_synthesised", true);
+		if (parked)
+		{
+			// Present for the catalogue, absent from the frame — see KeepInactiveForCatalogue.
+			node.SetMeta("slide_inactive", true);
+			node.Visible = false;
+		}
 		if (n.Opacity < 100f)
 			node.SetMeta("opacity", n.Opacity / 100f);
-		// The accumulated value too, and separately: a consumer asking "why is this invisible"
-		// needs to tell "this element is transparent" from "something above it is".
+		// The accumulated value, separately: a consumer must tell "this element is transparent"
+		// from "something above it is".
 		if (_inheritedOpacity < 1f)
 			node.SetMeta("opacity_accumulated", _inheritedOpacity);
-		// And what was inherited FROM ABOVE, which is the one of the three that cannot be
-		// derived from the other two. The scripts set opacity on a GROUP —
-		// `setAttribute(Tab.InnerRed, 'opacity', 100)` is how a row picks its face, and
-		// `hud.lua` disables a whole layer the same way — so a host that owns a screen has to be
-		// able to re-run that. Recomputing a subtree needs the factor above the group, and
-		// dividing the accumulated by the group's own value cannot recover it: the case worth
-		// changing is precisely the one where the group sits at zero.
+		// What was inherited FROM ABOVE — the one of the three that cannot be derived from the
+		// other two, since dividing the accumulated by the group's own value fails exactly when
+		// the group sits at zero. A host re-running a group opacity write needs it.
 		if (parentOpacity < 1f)
 			node.SetMeta("opacity_inherited", parentOpacity);
 
@@ -473,16 +510,15 @@ public sealed class Engine_UiSceneBuilder
 				node.AddChild(built);
 		}
 
-		// Restore on the way back up. The walk is depth-first over siblings, so leaving this
-		// at the child's value would make every later sibling inherit its transparency.
+		// Restore on the way back up, or later siblings inherit the child's transparency.
 		_inheritedOpacity = parentOpacity;
 		return node;
 	}
 
 	private Node3D CreateNodeFor(UiNode n)
 	{
-		// A MASK PUBLISHES A RECT AND DRAWS NOTHING — `sub_8286E748` returns at 0x8286E784
-		// before emitting the quad. The NODE is still built: RefreshClips reads its transform.
+		// A mask publishes a rect and draws nothing — `sub_8286E748` returns at 0x8286E784
+		// before emitting the quad. The node is still built: RefreshClips reads its transform.
 		if (_screen is { } screen && n.Ordinal >= 0 &&
 			n.Ordinal < screen.MaskByOrdinal.Length && screen.MaskElements.Contains(n.Ordinal))
 		{
@@ -505,8 +541,6 @@ public sealed class Engine_UiSceneBuilder
 					cam.Projection = Camera3D.ProjectionType.Orthogonal;
 
 				// Cameras are aimed by an explicit look-at point, not by their own rotation.
-				// Without this the camera keeps Godot's default -Z heading and faces away
-				// from the content, which renders an empty frame.
 				if (TryReadVector(n, "lookatpoint", out Vector3 target))
 					cam.SetMeta("lookatpoint", new Vector3(target.X, target.Y, ToGodotZ(target.Z)));
 
@@ -541,8 +575,8 @@ public sealed class Engine_UiSceneBuilder
 		UiText text = n.Text;
 		TextsBuilt++;
 
-		// A MeshInstance3D even when nothing draws, so the metadata always hangs off the
-		// same node type and a consumer need not special-case the empty string.
+		// A MeshInstance3D even when nothing draws, so the metadata always hangs off the same
+		// node type.
 		var node = new MeshInstance3D();
 		node.SetMeta("text", text.Display);
 		node.SetMeta("text_tag", text.Tag);
@@ -558,16 +592,34 @@ public sealed class Engine_UiSceneBuilder
 			return node;
 
 		(UiFont font, float scale) = selection;
-		ArrayMesh? mesh = Engine_UiTextMesh.Build(text, font.Font, scale, out int lines);
+		Engine_UiTextMesh.Built built = Engine_UiTextMesh.Build(text, font.Font, scale);
+		int lines = built.LineCount;
+
+		// Icons first: a string can carry them with no glyphs at all (a lone `<gold_img>` is a
+		// legitimate label), so an early return on a null mesh would drop them.
+		foreach (Engine_UiTextMesh.IconPlacement icon in built.Icons)
+		{
+			if (TextureResolver?.Invoke(icon.Tag.Texture + ".tex") is not { } art)
+				continue;
+
+			var quad = new MeshInstance3D
+			{
+				Name = "InlineIcon",
+				Mesh = Engine_UiTheme.IconQuad(icon.Size),
+				Position = new Vector3(icon.TopLeft.X, icon.TopLeft.Y, 0f),
+				MaterialOverride = Engine_UiTheme.IconMaterial(art, _inheritedOpacity),
+			};
+			node.AddChild(quad);
+		}
+
+		ArrayMesh? mesh = built.Mesh;
 		if (mesh is null)
 			return node;
 
 		node.Mesh = mesh;
-		// The AUTHORED alpha is overwritten with 1.0 by the engine — a .bgf's own text colour
-		// is always opaque. The opacity CHAIN is a different value and does apply: it is
-		// accumulated on the render association, which text elements have like any other, so a
-		// label under a group faded to 0 fades with it. Conflating the two is what left HUD
-		// text on screen after the game had hidden the HUD.
+		// The authored alpha is overwritten with 1.0 by the engine — a .bgf's text colour is
+		// always opaque. The opacity CHAIN is a separate value and does apply, so a label under
+		// a group faded to 0 fades with it.
 		var textMaterial =
 			TextMaterial(new Color(text.R, text.G, text.B, _inheritedOpacity), font.Atlas);
 		ApplyClip(textMaterial, n);
@@ -579,19 +631,12 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
-	/// The material every piece of UI text is drawn with, whether it came out of a
-	/// <c>.bgf</c> or was authored natively.
+	/// The material every piece of UI text is drawn with, `.bgf` or native. Unshaded, because a
+	/// glyph atlas is emissive art and shading it against the screen's lights leaves the text
+	/// black; alpha SCISSOR rather than blending, because the atlas is padded with transparent
+	/// black and the bilinear tail of the neighbouring cell shows as a halo otherwise.
 	///
-	/// Shared rather than repeated because the two halves of it are not free choices and a
-	/// second copy drifts. Unshaded, because a glyph atlas is emissive art and shading it
-	/// against the screen's authored lights leaves the text black. And an alpha SCISSOR
-	/// rather than plain alpha blending, because the atlas is padded with transparent black:
-	/// without the clip, the bilinear tail of the neighbouring glyph cell shows as a halo
-	/// around every character.
-	///
-	/// <paramref name="colour"/> carries its own alpha. The scene builder always passes 1
-	/// (see <see cref="BuildText"/>); a host-authored screen can fade a label by passing
-	/// less, which is what the front-end menu's gutter slots need.
+	/// <paramref name="colour"/> carries its own alpha; the scene builder passes 1.
 	/// </summary>
 	/// <summary>Live UI transforms refused as not finite. Run total.</summary>
 	public static int NonFiniteLiveTransforms;
@@ -637,12 +682,11 @@ public sealed class Engine_UiSceneBuilder
 
 		var mesh = new MeshInstance3D { Mesh = SharedQuad };
 
-		// ONE SHADER FOR EVERY QUAD, as the guest has: a single `guiquad` with a
-		// `g_DetailMapped` branch. See ui_quad.gdshader for the contract.
+		// One shader for every quad, as the guest has: a single `guiquad` with a `g_DetailMapped`
+		// branch. See ui_quad.gdshader for the contract.
 		var mat = new ShaderMaterial { Shader = QuadShader };
 
-		// The ACCUMULATED alpha, not this element's own. _inheritedOpacity already has
-		// n.Opacity folded in by BuildNode, so this is the product down the whole chain.
+		// The accumulated alpha: BuildNode has already folded n.Opacity into _inheritedOpacity.
 		mat.SetShaderParameter("opacity", _inheritedOpacity);
 		mat.SetShaderParameter("quad_base_size", QuadBaseSize);
 
@@ -666,37 +710,21 @@ public sealed class Engine_UiSceneBuilder
 				mat.SetShaderParameter("diffuse_tex", tex);
 				TexturesResolved++;
 
-				// HALF A TEXEL OFF EVERY EDGE — the seams that clamping cannot close.
+				// Inset half a texel off every edge. Frame art is CELLS of a shared atlas
+				// (`frames_elements.tex`, `frames_04.tex`) selected by a sub-rect, so a bilinear
+				// tap on a cell boundary reaches into the neighbouring cell and no wrap mode
+				// helps — the sampler never leaves the texture. Skipped for a degenerate rect.
 				//
-				// Clamping fixed the panorama, whose panels each own a whole texture. The
-				// frames do not: the pillars, rims and tabs are CELLS of a shared atlas
-				// (`frames_elements.tex`, `frames_04.tex`), selected by a sub-rect. A bilinear
-				// tap on the boundary row of a cell reaches into the cell NEXT to it, so every
-				// piece of frame art draws a hairline of its neighbour down the join — and no
-				// wrap mode helps, because the sampler never leaves the texture.
-				//
-				// Insetting to texel CENTRES is the standard remedy and costs half a texel of
-				// the cell's outermost row, which at these sizes is well under a screen pixel.
-				// Skipped for a degenerate rect, where there is no inside to move into.
-				// READ AT BUILD TIME, and the texture can grow afterwards: an enhanced UI texture
-				// has its image replaced in place, so a material built at 512 keeps an inset sized
-				// for 512 while sampling 1024. That over-insets by half an ORIGINAL texel — it
-				// crops very slightly more of the cell rather than letting the neighbour bleed in,
-				// so it errs the safe way and is well under a screen pixel either way. Worth
-				// knowing before anyone measures a cell edge and finds it half a texel tight.
-				//
-				// Nothing else here depends on the texture's size. The quad is the shared mesh
-				// scaled by the node transform, so an enhancement changes resolution and not
-				// layout.
+				// Sized at build time: an enhanced texture replaces its image in place, so a
+				// material built at 512 over-insets by half an original texel when sampling 1024,
+				// which crops rather than bleeds. Layout is unaffected — the quad is the shared
+				// mesh scaled by the node transform.
 				float du = 0.5f / Mathf.Max(tex.GetWidth(), 1);
 				float dv = 0.5f / Mathf.Max(tex.GetHeight(), 1);
 
-				// Per axis, because a nine-slice's edge cells are zero-extent on ONE axis only.
-				// `UpperMiddle/Rim` is authored u[0.5..0.5] v[0.25..0.5]: a single atlas column
-				// meant to be stretched along the top edge. Testing both axes together skipped
-				// the inset for all of them, leaving u sitting exactly on the boundary between
-				// two cells — where the bilinear tap returns the neighbour and the strip draws
-				// as a flat block of whatever is next to it.
+				// Per axis: a nine-slice's edge cells are zero-extent on ONE axis only —
+				// `UpperMiddle/Rim` is authored u[0.5..0.5] v[0.25..0.5], a single atlas column
+				// stretched along the top edge.
 				(float uOffset, float uScale) = InsetAxis(q.UMin, q.UMax, du);
 				(float vOffset, float vScale) = InsetAxis(q.VMin, q.VMax, dv);
 
@@ -714,16 +742,14 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
-	/// A built quad's material, or null when the node is not one. Every caller that touches a
-	/// built quad's appearance goes through these helpers rather than casting.
+	/// A built quad's material, or null when the node is not one.
 	/// </summary>
 	private static ShaderMaterial? QuadMaterial(MeshInstance3D mesh) =>
 		mesh.MaterialOverride is ShaderMaterial m && m.Shader == QuadShader ? m : null;
 
 	/// <summary>
-	/// A built label's material, or null when the node is not one. THE SHADER IS THE
-	/// DISCRIMINATOR — text and quads are both ShaderMaterial, and they declare different
-	/// uniforms, so a bare type test matches the wrong one.
+	/// A built label's material, or null when the node is not one. The SHADER discriminates —
+	/// text and quads are both ShaderMaterial with different uniforms.
 	/// </summary>
 	private static ShaderMaterial? LabelMaterial(MeshInstance3D mesh) =>
 		mesh.MaterialOverride is ShaderMaterial m && m.Shader == TextShader ? m : null;
@@ -736,9 +762,8 @@ public sealed class Engine_UiSceneBuilder
 			return false;
 		}
 
-		// The Shader itself is deliberately NOT duplicated — Duplicate copies the parameter
-		// set and keeps pointing at the one compiled program, which is the whole reason the
-		// shader is a shared static.
+		// The Shader itself is not duplicated: Duplicate copies the parameter set and keeps
+		// pointing at the one compiled program.
 		mesh.MaterialOverride = (ShaderMaterial)shared.Duplicate();
 		return true;
 	}
@@ -756,8 +781,7 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
-	/// What a built mesh will actually paint. The one reader for it, so the material's type is
-	/// known in a single place and a scanner cannot silently miss a kind it does not expect.
+	/// What a built mesh will actually paint — the one reader that knows every material kind.
 	/// </summary>
 	/// <param name="Painted">False when the mesh cannot draw at all — no material, or fully transparent.</param>
 	/// <param name="Texture">The primary texture, or null for an untextured quad.</param>
@@ -785,7 +809,7 @@ public sealed class Engine_UiSceneBuilder
 				shader.GetShaderParameter("detail_mapped").AsBool());
 		}
 
-		// A LABEL, which carries its colour and coverage rather than a tint and an atlas rect.
+		// A label carries its colour and coverage rather than a tint and an atlas rect.
 		if (LabelMaterial(mesh) is { } label)
 		{
 			Color c = label.GetShaderParameter("colour").AsColor();
@@ -805,8 +829,60 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>A built quad's accumulated opacity, or 1 when it is not one of ours.</summary>
+	/// <summary>Where a cloned quad's authored alpha is kept, so fading never compounds.</summary>
+	public const string AuthoredAlphaMeta = "authored_alpha";
+
+	/// <summary>
+	/// Gives every mesh in a cloned subtree a private material and records its authored alpha, so
+	/// a later <see cref="FadeSubtree"/> is relative to the artist's value and cannot restyle the
+	/// pattern book the clone came from.
+	/// </summary>
+	public static void OwnSubtreeMaterials(Node node)
+	{
+		if (node is MeshInstance3D mesh && OwnQuadMaterial(mesh))
+		{
+			mesh.SetMeta(AuthoredAlphaMeta, QuadOpacity(mesh));
+		}
+
+		foreach (Node child in node.GetChildren())
+		{
+			OwnSubtreeMaterials(child);
+		}
+	}
+
+	/// <summary>Scales a whole subtree's art by an opacity, from each quad's authored alpha.
+	/// Meshes without the recorded alpha are skipped — they were never owned.</summary>
+	public static void FadeSubtree(Node node, float opacity)
+	{
+		if (node is MeshInstance3D mesh && mesh.HasMeta(AuthoredAlphaMeta))
+		{
+			SetQuadOpacity(mesh, (float)mesh.GetMeta(AuthoredAlphaMeta) * opacity);
+		}
+
+		foreach (Node child in node.GetChildren())
+		{
+			FadeSubtree(child, opacity);
+		}
+	}
+
 	public static float QuadOpacity(MeshInstance3D mesh) =>
 		QuadMaterial(mesh)?.GetShaderParameter("opacity").AsSingle() ?? 1f;
+
+	/// <summary>
+	/// Writes a built quad's tint — the pair `SetTintingAmountAndDiffuseColour` writes. Both
+	/// together: the subtract is `rgb -= (1 - tint) * amount`.
+	/// </summary>
+	public static bool SetQuadTint(MeshInstance3D mesh, Color colour, float amount)
+	{
+		if (QuadMaterial(mesh) is not { } material)
+		{
+			return false;
+		}
+
+		material.SetShaderParameter("tint_rgb", new Vector3(colour.R, colour.G, colour.B));
+		material.SetShaderParameter("tint_amount", amount);
+		return true;
+	}
 
 	/// <summary>Scales a built quad's opacity.</summary>
 	public static bool SetQuadOpacity(MeshInstance3D mesh, float opacity)
@@ -821,12 +897,10 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
-	/// The detail map, keyed by the <c>.fac</c> record's secondary-texture slot.
-	///
-	/// THE SLOT IS AN INDEX INTO A THEME TABLE, not a texture name. `sub_8286F578` reads
-	/// `[[0x83496B08+48] + 36]` as a row selector into a 3-theme by 3-slot table. Row 0 ships —
-	/// its only other writer is the debug command "CYCLE the Theme". Any slot but 1/2/3 takes
-	/// the default, as the guest does.
+	/// The detail map, keyed by the <c>.fac</c> record's secondary-texture slot. The slot is an
+	/// index into a theme table, not a texture name: `sub_8286F578` reads `[[0x83496B08+48]+36]`
+	/// as a row selector into a 3-theme by 3-slot table, and row 0 ships. Any slot but 1/2/3
+	/// takes the default, as the guest does.
 	/// </summary>
 	private static string DetailMapPath(int slot) => slot switch
 	{
@@ -837,11 +911,10 @@ public sealed class Engine_UiSceneBuilder
 	};
 
 	/// <summary>
-	/// Points a quad's material at its detail map, when the record asks for one.
-	///
-	/// FOUR IS THE ONLY VALUE THAT ACTS — `if (v17 == 4)` at 0x8286E4B4; 0/1/2/3 fall through.
-	/// The branch's write of `buttondetailmap`'s hash to `+0x20C` is a dead store, overwritten
-	/// by `sub_8286F578` three instructions later. The SLOT alone chooses the texture.
+	/// Points a quad's material at its detail map, when the record asks for one. Mode 4 is the
+	/// only value that acts — `if (v17 == 4)` at 0x8286E4B4; 0/1/2/3 fall through. That branch's
+	/// write of `buttondetailmap`'s hash to `+0x20C` is a dead store overwritten by
+	/// `sub_8286F578`, so the slot alone chooses the texture.
 	/// </summary>
 	private void ApplyDetailMap(ShaderMaterial mat, UiQuad q, UiNode n)
 	{
@@ -966,14 +1039,11 @@ public sealed class Engine_UiSceneBuilder
 	public int DetailMapsMissing;
 
 	/// <summary>
-	/// Insets one axis of an atlas rect to texel centres, returning its offset and scale.
-	///
-	/// Three cases. A rect wider than a texel is pulled in half a texel each side, signed so a
-	/// flipped rect (max &lt; min) insets inward rather than widening into its neighbours. A
-	/// zero-extent rect — a nine-slice stretch strip — keeps a scale of 0 but moves to the
-	/// centre of the texel starting at <paramref name="min"/>, so it samples that column
-	/// instead of the seam. A rect narrower than a texel but not zero is left alone, since
-	/// there is no inside to move into.
+	/// Insets one axis of an atlas rect to texel centres, returning its offset and scale. A rect
+	/// wider than a texel is pulled in half a texel each side, signed so a flipped rect
+	/// (max &lt; min) insets inward. A zero-extent rect (a nine-slice stretch strip) keeps scale
+	/// 0 and moves to the centre of the texel at <paramref name="min"/>. Anything narrower than
+	/// a texel is left alone.
 	/// </summary>
 	private static (float Offset, float Scale) InsetAxis(float min, float max, float half)
 	{
@@ -994,47 +1064,30 @@ public sealed class Engine_UiSceneBuilder
 		if (n.RotationX != 0f || n.RotationY != 0f || n.RotationZ != 0f)
 		{
 			float sx = n.RotationX, sy = n.RotationY, sz = n.RotationZ;
-			if (RotationsAreDegrees)
-			{
-				sx = Mathf.DegToRad(sx);
-				sy = Mathf.DegToRad(sy);
-				sz = Mathf.DegToRad(sz);
-			}
 			// Handedness, half one: conjugating a rotation by diag(1,1,-1) negates the
 			// angles about X and Y and leaves the one about Z alone.
 			basis = Basis.FromEuler(new Vector3(-sx, -sy, sz));
 		}
 		basis = basis.Scaled(new Vector3(n.ScaleX, n.ScaleY, n.ScaleZ));
 
-		// The engine's local transform is  ((p - pivot) * scale) * R + position  —
-		// sub_8229E4B8 seeds the matrix translation with -(scale * pivot) BEFORE
-		// concatenating the rotation, then adds position after. In column-vector form
-		// that is  T(position) * R * S * T(-pivot), i.e. the origin carries an extra
-		// -(R*S)*pivot term.
-		//
-		// Dropping it displaces every element by pivot*scale in accumulated space.
-		// Because the shipped slices have pivot.x = 0 with a non-zero pivot.y, the
-		// symptom is specifically perfect horizontal tiling with vertical gaps.
+		// The engine's local transform is ((p - pivot) * scale) * R + position — sub_8229E4B8
+		// seeds the matrix translation with -(scale * pivot) BEFORE concatenating the rotation,
+		// then adds position. In column-vector form T(position) * R * S * T(-pivot), so the
+		// origin carries an extra -(R*S)*pivot term; dropping it displaces by pivot*scale.
 		var pivot = new Vector3(n.PivotX, n.PivotY, ToGodotZ(n.PivotZ));
 		var origin = new Vector3(n.PositionX, n.PositionY, ToGodotZ(n.PositionZ)) - basis * pivot;
 		return new Transform3D(basis, origin);
 	}
 
 	/// <summary>
-	/// Handedness, half two: Fable authors UI in a LEFT-handed space — X right, Y up, Z
-	/// away from the viewer — which is why every screen's camera sits at negative Z and
-	/// looks toward +Z. Godot is right-handed, so the conversion is to negate Z.
+	/// Fable authors UI left-handed (X right, Y up, +Z away from the viewer); Godot is
+	/// right-handed, so negate Z — not X, which renders mirrored. Applied per node rather than
+	/// as one flip on the root, so no transform ends with a negative determinant.
 	///
-	/// Negating Z rather than X is what keeps the screen the right way round. Reflecting
-	/// through the other axis also produces a camera that can see the content — it
-	/// renders, it just renders mirrored, and a symmetric panel gives that away only at
-	/// the details: the A/B prompts on the wrong side, and a two-piece paper panel
-	/// showing both its outer borders down the middle.
-	///
-	/// Applied per node rather than as one flip on the root, so no transform in the tree
-	/// ends up with a negative determinant.
+	/// Public because the clone path needs the same flip: an owned book writes the guest's
+	/// stated transforms onto cloned nodes and must convert depth exactly as the build did.
 	/// </summary>
-	private static float ToGodotZ(float fableZ) => -fableZ;
+	public static float ToGodotZ(float fableZ) => -fableZ;
 
 	/// <summary>Reads an <c>x/y/z</c> attribute triple, if all three are present.</summary>
 	public static bool TryReadVector(UiNode n, string prefix, out Vector3 value)
@@ -1056,19 +1109,13 @@ public sealed class Engine_UiSceneBuilder
 	/// </summary>
 	public static void ApplyCameraAiming(Node root)
 	{
-		// NOT WHILE DETACHED, because the aim is computed from GLOBAL transforms and a
-		// detached node's global transform is the identity. `BuildDetached` calls this on a
-		// tree that is by definition not in the scene yet, which logged an
-		// `!is_inside_tree()` error per camera per build — 310 in one run — and aimed every
-		// camera it did not skip against a parent transform of identity. The caller that
-		// attaches the tree calls this again afterwards; this early return is what makes the
-		// first call harmless rather than wrong.
+		// Not while detached: the aim comes from GLOBAL transforms and a detached node's is the
+		// identity. `BuildDetached` calls this before attaching; the attaching caller calls it
+		// again.
 		if (root is Camera3D cam && cam.HasMeta("lookatpoint") && cam.IsInsideTree())
 		{
-			// The look-at point is authored in the camera's own parent space, so it has
-			// to ride through the parent's global transform — including the root's
-			// handedness flip. Using it as a global position directly aims the camera
-			// away from the content and renders an empty frame.
+			// The look-at point is authored in the camera's parent space, so it rides through
+			// the parent's global transform, handedness flip included.
 			var local = (Vector3)cam.GetMeta("lookatpoint");
 			Vector3 target = cam.GetParent() is Node3D parent
 				? parent.GlobalTransform * local
@@ -1082,13 +1129,9 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
-	/// Makes one camera current, so the tree actually renders. Building and aiming a
-	/// camera is not enough — Godot renders through whichever camera is <c>Current</c>,
-	/// and every camera built from screen data starts off.
-	///
-	/// Returns the camera that was activated. When the screen ships none, a framing
-	/// camera is added under <paramref name="root"/> instead so the content is still
-	/// visible.
+	/// Makes one camera current — every camera built from screen data starts off. Returns the
+	/// camera activated; when the screen ships none, a framing camera is added under
+	/// <paramref name="root"/>.
 	/// </summary>
 	public static Camera3D ActivateCamera(Node3D root, bool preferFraming = false)
 	{
@@ -1101,69 +1144,41 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
-	/// The reference height a Gameface screen is RENDERED against — a fixed 720, and
-	/// deliberately not the presentation's own authored canvas.
+	/// The reference height a Gameface screen is RENDERED against — a fixed 720, not the
+	/// presentation's own authored canvas (960x720 on 40 shipped presentations, 1280x720 on 8,
+	/// 800x450 on 4; all scale-mode 1 "Fixed", so the aspect-fit branch at 0x82BB89B0 is dead).
 	///
-	/// The two are easy to conflate and are different things. The authored canvas is what
-	/// Lua's getScreenInfo hands back, and it varies: across the 52 shipped presentations it
-	/// is 960x720 on 40, 1280x720 on 8 (frontendmainmenu and frontendstartupscreen among
-	/// them) and 800x450 on 4 — the last being HUD widgets rather than full screens. All 52
-	/// carry scale-mode 1, "Fixed", so getScreenInfo returns that authored pair verbatim and
-	/// the aspect-fit branch at 0x82BB89B0 is dead code for shipped content.
-	///
-	/// The RENDER scale ignores all of that and divides by a literal 720: sub_822271A0 stores
-	/// screenHeight * (1/720) — flt_82000BD4 — into both axis scales immediately before the
-	/// draw (0x822272DC / 0x822272E4), and sub_826D6878 computes the same ratio at
-	/// 0x826D697C-0x826D699C. So a screen authored at 800x450 is not scaled up to fill the
-	/// height; it simply occupies 450 of the same 720 units, which is what makes it a HUD
-	/// overlay rather than a page.
-	///
-	/// That is why this is one constant and not a per-screen value.
+	/// The render scale divides by a literal 720: sub_822271A0 stores screenHeight * (1/720)
+	/// (flt_82000BD4) into both axis scales before the draw (0x822272DC / 0x822272E4), and
+	/// sub_826D6878 computes the same ratio at 0x826D697C-0x826D699C. A screen authored at
+	/// 800x450 occupies 450 of the same 720 units, which is what makes it an overlay.
 	/// </summary>
 	public const float CanvasHeight = 720f;
 
 	/// <summary>
-	/// The projection the GUEST uses, which is not the one the screens are authored with.
+	/// The guest ignores the authored camera: sub_82226DE0 hands the layer's camera and fov to
+	/// SetCamera at vtable+0x20, which for the Gameface renderer (vtable 0x82006CC0) is
+	/// 0x82B96E78 — <c>nullsub_1</c>, a single <c>blr</c>. clipnear/clipfar (0x834BE554 /
+	/// 0x834BE558) have no readers at all.
 	///
-	/// A .bgf carries a camera element with fov, orthographic, clipnear and clipfar, and
-	/// using it is the obvious thing to do. The guest does not. sub_82226DE0 reads the
-	/// layer's camera element and fov and hands them to the renderer's SetCamera at
-	/// vtable+0x20 — and for the Gameface renderer (vtable 0x82006CC0) that slot is
-	/// 0x82B96E78, which is <c>nullsub_1</c>: a single <c>blr</c>. The authored camera is
-	/// read, passed and dropped. clipnear and clipfar (0x834BE554 / 0x834BE558) have no
-	/// readers anywhere in the image at all.
-	///
-	/// What happens instead is a uniform scale by HEIGHT. sub_822271A0 recomputes both axis
-	/// scales from the screen height alone immediately before the draw — 0x8222726C loads
-	/// the height, 0x82227268 loads 1/720, and 0x822272DC / 0x822272E4 store the same
-	/// product into +0xB0 and +0xAC. The constructor's aspect-corrected X scale is
-	/// overwritten there, so there is no letterbox, no pillarbox and no stretch: 720 units
-	/// fill the viewport height and a wider window simply sees more.
-	///
-	/// An orthographic camera of size 720 with Godot's default KeepAspect.Height is exactly
-	/// that, so this is a replacement of the stated contract rather than an approximation of
-	/// it. It also drops the perspective foreshortening the previous fov-60 canvas camera
-	/// introduced, which the guest never had — elements at different position.z were being
-	/// scaled by their depth.
+	/// Instead it scales uniformly by HEIGHT: sub_822271A0 stores screenHeight * (1/720) into
+	/// both axis scales (+0xB0, +0xAC) before the draw, overwriting the constructor's
+	/// aspect-corrected X. No letterbox, pillarbox or stretch — 720 units fill the viewport
+	/// height and a wider window sees more. An orthographic camera of size 720 with
+	/// KeepAspect.Height is that contract, with no perspective foreshortening by position.z.
 	/// </summary>
 	/// <summary>
-	/// The widescreen design box the shipped screens actually paint into.
-	///
-	/// The <c>.bgf</c> canvas field says 960x720 — the 4:3 authoring canvas — but the 16:9 art
-	/// reaches ±640: `pausemainmenu`'s backdrop is exactly 1280 wide and its outermost frames
-	/// end at ±636. Measured, not assumed. Some screens overscan deliberately beyond it
-	/// (`giftgivingscreen`'s backdrop is 1472) which is what makes an ULTRA-wide window safe.
+	/// The widescreen design box the shipped screens paint into. The <c>.bgf</c> canvas field
+	/// says 960x720, but the 16:9 art reaches ±640 (`pausemainmenu`'s backdrop is 1280 wide, its
+	/// outermost frames end at ±636). Some screens overscan beyond it (`giftgivingscreen`'s
+	/// backdrop is 1472), which is what makes an ultra-wide window safe.
 	/// </summary>
 	public const float DesignWidth = 1280f;
 
 	/// <summary>
 	/// Sizes a canvas camera so the whole <see cref="DesignWidth"/> x <see cref="CanvasHeight"/>
-	/// box is visible, whatever the window is.
-	///
-	/// A DELIBERATE STEP PAST THE GUEST: `sub_822271A0` scales both axes from screen HEIGHT
-	/// alone, so a narrower window loses the sides. Fitting shrinks rather than crops, and at
-	/// exactly 16:9 the two are identical. Pin the height when the window fits 1280, else the
-	/// width.
+	/// box is visible. A deliberate step past the guest, whose `sub_822271A0` scales both axes
+	/// from screen height alone and so loses the sides on a narrow window; identical at 16:9.
 	/// </summary>
 	public static void FitCanvasCamera(Camera3D camera, Vector2 viewport)
 	{
@@ -1172,7 +1187,12 @@ public sealed class Engine_UiSceneBuilder
 			return;
 		}
 
-		if (viewport.X / viewport.Y >= DesignWidth / CanvasHeight)
+		// Height is the anchor until the display is narrower than the authored 4:3 box. Both
+		// layouts are 720 tall (in-game 960x720, front end 1280x720, widescreen markers moving
+		// in-game furniture out to 1280 at 16:9), so pinning height gives 960 units at 4:3,
+		// 1280 at 16:9, 1680 at 21:9. Below 4:3 pin the WIDTH instead, or authored content is
+		// cropped; the slack goes vertical.
+		if (viewport.X / viewport.Y >= MinimumWidth / CanvasHeight)
 		{
 			camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
 			camera.Size = CanvasHeight;
@@ -1180,9 +1200,16 @@ public sealed class Engine_UiSceneBuilder
 		else
 		{
 			camera.KeepAspect = Camera3D.KeepAspectEnum.Width;
-			camera.Size = DesignWidth;
+			camera.Size = MinimumWidth;
 		}
 	}
+
+	/// <summary>
+	/// The narrowest canvas the game authors — 960x720, the 4:3 layout 31 of the 36 shipped
+	/// presentations are built on (the other five are the 1280-wide front end and co-op screens).
+	/// Below this aspect the camera pins width instead of revealing more.
+	/// </summary>
+	public const float MinimumWidth = 960f;
 
 	private static Camera3D AddCanvasCamera(Node3D root)
 	{
@@ -1203,8 +1230,7 @@ public sealed class Engine_UiSceneBuilder
 
 		root.AddChild(camera);
 
-		// Sized from the viewport rather than left at the 16:9 default, so a window that is
-		// not 16:9 is right on the first frame instead of after the first resize.
+		// Sized from the viewport, so a non-16:9 window is right on the first frame.
 		if (root.IsInsideTree())
 		{
 			FitCanvasCamera(camera, root.GetViewport().GetVisibleRect().Size);
@@ -1214,9 +1240,8 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
-	/// Adds an orthographic camera that frames every quad in the tree. Orthographic
-	/// because a UI screen is authored flat; a perspective fallback would splay the
-	/// panel and make it hard to compare against the original.
+	/// Adds an orthographic camera that frames every quad in the tree — orthographic because a
+	/// UI screen is authored flat.
 	/// </summary>
 	private static Camera3D AddFramingCamera(Node3D root)
 	{
@@ -1290,9 +1315,12 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
-	/// Godot node names cannot contain <c>. : @ / " %</c>, and the authored names do —
-	/// e.g. <c>Material3228</c> is fine but slide names are not.
+	/// The node name a document element is built under — Godot node names cannot contain
+	/// <c>. : @ / " %</c> and authored names do. Public because a caller joining a built subtree
+	/// back to the document must key on the same string.
 	/// </summary>
+	public static string NodeNameFor(string name) => SanitizeName(name);
+
 	private static string SanitizeName(string name)
 	{
 		if (name.Length == 0)
@@ -1308,8 +1336,7 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
-	/// Packs a built tree into a scene file. Godot does the serialising, so the
-	/// <c>.tscn</c> format never has to be written by hand.
+	/// Packs a built tree into a scene file; Godot does the serialising.
 	/// </summary>
 	public static Error SaveAsScene(Node3D root, string path)
 	{

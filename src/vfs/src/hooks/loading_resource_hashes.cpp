@@ -15,24 +15,7 @@
       #function_name, refii::renderer::RendererHookKind::kGeneral,           \
       renderer_args, base, renderer_hook_desc)
 
-#define REFII_RENDERER_OBSERVER_DISABLED_GUEST_RETURN(function_name)          \
-  do {                                                                       \
-    if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {                      \
-      if (refii::renderer::ShouldRunGuestRendererHook(                       \
-              #function_name, refii::renderer::RendererHookKind::kGeneral,   \
-              renderer_args, base, renderer_hook_desc)) {                    \
-        __imp__##function_name(ctx, base);                                   \
-        refii::renderer::OnRendererGuestHookExit(                            \
-            #function_name, refii::renderer::RendererHookKind::kGeneral,     \
-            renderer_args, ctx, base, renderer_hook_desc);                   \
-      } else {                                                               \
-        refii::renderer::OnRendererGuestHookSuppressedForPlume(              \
-            #function_name, refii::renderer::RendererHookKind::kGeneral,     \
-            renderer_args, ctx, base, renderer_hook_desc);                   \
-      }                                                                      \
-      return;                                                                \
-    }                                                                        \
-  } while (false)
+#define REFII_RENDERER_OBSERVER_DISABLED_GUEST_RETURN(function_name) ((void)0)
 
 #define REFII_RENDERER_OBSERVER_EXIT(function_name)                          \
   refii::renderer::OnRendererGuestHookExit(                                  \
@@ -83,6 +66,7 @@ REX_EXTERN(sub_8237AC80) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8237AC80);
 
+
   const PPCContext original_ctx = ctx;
   const bool trace =
       RefiiShouldTraceLoadingResourceLookup(original_ctx.lr) &&
@@ -121,6 +105,7 @@ REX_EXTERN(sub_8237AA98) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_8237AA98);
+
 
   const PPCContext original_ctx = ctx;
   const bool trace =
@@ -178,6 +163,7 @@ REX_EXTERN(sub_822B88A8) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_822B88A8);
+
 
   const PPCContext original_ctx = ctx;
   const bool trace =
@@ -744,6 +730,7 @@ REX_EXTERN(sub_82180418) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82180418);
 
+
   const PPCContext original_ctx = ctx;
   const bool trace = refii::vfs::VfsTracingEnabled() &&
                      refii::vfs::RefiiPostGameFacePackageHandoffSignalEmitted() &&
@@ -783,6 +770,7 @@ REX_EXTERN(sub_82360300) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82360300);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t loading_owner = original_ctx.r3.u32;
@@ -926,6 +914,7 @@ REX_EXTERN(rex_lhResourceName_ComputeHash) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceName_ComputeHash);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t resource_name_guest = original_ctx.r3.u32;
   std::string name;
@@ -984,6 +973,7 @@ REX_EXTERN(rex_lhResourceName_ComputeHashFromName) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceName_ComputeHashFromName);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t name_guest = original_ctx.r3.u32;
@@ -1045,6 +1035,7 @@ REX_EXTERN(sub_82374728) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82374728);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t owner_guest = original_ctx.r3.u32;
@@ -1113,8 +1104,7 @@ REX_EXTERN(sub_82374728) {
                 refii::vfs::FormatGuestWords(base, resolved_name_guest, 8));
   }
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      localized_video_alias) {
+  if (localized_video_alias) {
     refii::vfs::LooseAssetResolution resolution;
     std::string candidate;
     // Localized video aliases are emitted for every known locale/DLC variant.
@@ -1237,8 +1227,7 @@ REX_EXTERN(sub_82374728) {
     return;
   }
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      !localized_video_alias) {
+  if (!localized_video_alias) {
     const bool resolved_optional_miss =
         refii::vfs::IsCachedOptionalSyntheticVfsMiss(resolved_key);
     const bool requested_optional_miss =
@@ -1524,6 +1513,7 @@ REX_EXTERN(sub_82B54E58) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B54E58);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t resource_stream_guest = ctx.r4.u32;
@@ -1538,8 +1528,7 @@ REX_EXTERN(sub_82B54E58) {
       refii::vfs::VfsTracingEnabled() ||
       refii::vfs::LooseAssetOverrideTracingEnabled();
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      resource_stream_guest != 0 &&
+  if (resource_stream_guest != 0 &&
       refii::vfs::LoadGuestU32(base, resource_stream_guest) == 0x820F9EA4) {
     uint32_t helper_resource_hash = 0;
     bool pass_through_hash = false;

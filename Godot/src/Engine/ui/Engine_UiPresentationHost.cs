@@ -11,22 +11,12 @@ using Refii.Textures;
 namespace Refii.Ui;
 
 /// <summary>
-/// Stands up a Fable 2 Gameface presentation and keeps it on screen.
-///
-/// This is the ONE place a <c>.bgf</c> becomes Godot nodes. Mounting the banks, building
-/// the texture name table, loading the bitmap fonts and the Babel database, parsing a
-/// screen and handing it to <see cref="Engine_UiSceneBuilder"/> are all the same work
-/// whether the screen is being eyeballed in the viewer or drawn by the running game, so
-/// they live here and both go through it.
-///
-/// It lives here rather than in the viewer so the game does not reach its front end by
-/// instantiating a development harness. That is not a tidiness point: the harness cycles
-/// presentations on the arrow keys, so a direction pressed in the running game would flip the
-/// front end to whichever of the 52 screens sorted next.
-///
-/// Subclasses get the loaded resources through the protected members and a
-/// <see cref="OnScreenShown"/> hook; see <c>UiScreenViewer</c>, which is now only the
-/// diagnostics and the keyboard.
+/// Stands up a Fable 2 Gameface presentation and keeps it on screen — the one place a
+/// <c>.bgf</c> becomes Godot nodes. Mounting the banks, the texture name table, the bitmap
+/// fonts, the Babel database, parsing a screen and handing it to
+/// <see cref="Engine_UiSceneBuilder"/> all live here; the viewer and the running game go
+/// through it. Subclasses take the loaded resources off the protected members and the
+/// <see cref="OnScreenShown"/> hook.
 /// </summary>
 public partial class Engine_UiPresentationHost : Node3D
 {
@@ -37,16 +27,12 @@ public partial class Engine_UiPresentationHost : Node3D
 	[Export] public string StartScreen { get; set; } = string.Empty;
 
 	/// <summary>
-	/// Ignore the screen's own camera and frame the content instead. Separates a
-	/// layout fault from a framing one — if the pieces sit correctly under this and
-	/// wrongly under the authored camera, the camera is what needs work.
+	/// Ignore the screen's own camera and frame the content instead — separates a layout fault
+	/// from a framing one.
 	/// </summary>
 	[Export] public bool UseFramingCamera { get; set; }
 
-	/// <summary>
-	/// The shipped <c>data</c> directory to stream banks from. Setting this in the
-	/// Inspector is the whole configuration — no environment variables needed.
-	/// </summary>
+	/// <summary>The shipped <c>data</c> directory to stream banks from.</summary>
 	[Export(PropertyHint.GlobalDir)] public string GameDataRoot { get; set; } = string.Empty;
 
 	/// <summary>Screen names, in display order. How one is fetched is <see cref="_loadScreen"/>'s job.</summary>
@@ -59,22 +45,14 @@ public partial class Engine_UiPresentationHost : Node3D
 	private Engine_TextureNameTable? _names;
 
 	/// <summary>
-	/// The hash-to-path table the screens were built with, for a caller that gets a texture
-	/// HASH from the guest rather than a path.
-	///
-	/// The load-game cards are why this is public. Their portraits are chosen at runtime — the
-	/// artist authored a placeholder and the guest stamps the real one's hash into the element
-	/// — so the only way to draw the right picture is to invert that hash, and this is the
-	/// table that already knows how.
+	/// The hash-to-path table the screens were built with, for a caller holding a texture HASH
+	/// from the guest rather than a path — the load-game card portraits, for one.
 	/// </summary>
 	public Engine_TextureNameTable? TextureNames => _names;
 
 	/// <summary>
-	/// Loads a texture by its game-relative path, through the same cache the screens use.
-	///
-	/// Exposed for a caller resolving a texture the FILE does not name — the load-game card
-	/// portraits, chosen by the guest at runtime. Going through this rather than a second cache
-	/// is the engine rule: one texture reaches the screen one way, whoever asked for it.
+	/// Loads a texture by its game-relative path through the same cache the screens use — for a
+	/// caller resolving a texture the file does not name. Never open a second cache.
 	/// </summary>
 	public Texture2D? LoadTexture(string relativePath) => Textures?.Load(relativePath);
 
@@ -88,49 +66,25 @@ public partial class Engine_UiPresentationHost : Node3D
 	public Engine_UiFontLibrary? Fonts { get; private set; }
 
 	/// <summary>
-	/// The localised string database, for anything that has a TAG but no presentation.
-	///
-	/// Exposed rather than private because a host-authored screen resolves its labels through
-	/// the same book — a Godot-owned menu holds text tags in its MODEL, not in a <c>.bgf</c>,
-	/// so it has no element to read a string off. It was private, and the menu harness reached
-	/// around it by loading <c>book.babel</c> a second time; that is the second implementation
-	/// the engine rules forbid, and it would have drifted the moment either side learned about
-	/// a language override.
+	/// The localised string database, for anything holding a TAG but no presentation — a
+	/// Godot-owned menu keeps its tags in the model, not in a <c>.bgf</c>. Never load
+	/// <c>book.babel</c> a second time.
 	/// </summary>
 	public Engine_BabelDatabase? Strings { get; private set; }
 
 	/// <summary>
-	/// The shipped look, for anything drawn ALONGSIDE the presentation rather than out of it.
-	///
-	/// Built here because this is where the fonts, the strings and the standing screen already
-	/// are: a Godot-owned menu laid over the front end, or a screen the original never had,
-	/// needs exactly those three and has no business opening banks of its own to get them.
-	/// Re-catalogued on every <see cref="Show"/>, so the art it hands out always comes from
-	/// the presentation currently up.
-	///
-	/// Null until loading succeeds — a host that never found the game data has no look to
-	/// offer, and a caller should fall back to text or to nothing rather than to invented art.
+	/// The shipped look, for anything drawn alongside the presentation rather than out of it.
+	/// Re-catalogued on every <see cref="Show"/>, so its art comes from the presentation
+	/// currently up. Null until loading succeeds.
 	/// </summary>
 	public Engine_UiTheme? Theme { get; private set; }
 
 	/// <summary>
-	/// Art as the FILE authors it, with nothing the guest has done to it applied.
-	///
-	/// TWO CATALOGUES, BECAUSE THERE ARE TWO QUESTIONS. <see cref="Theme"/> is the screen that is
-	/// on the wall: it carries the guest's live slides, visibility, transforms and opacity,
-	/// because that is what the player is looking at. This is the pattern book — what the artist
-	/// drew — and a host-authored screen wants that one.
-	///
-	/// The distinction is not academic; it was a bug. `Engine_UiScreen.ApplyLiveOpacity`
-	/// OVERWRITES an element's authored opacity with the guest's, and the builder bakes the
-	/// accumulated result into each material. The expandable menu's twelve row components sit
-	/// faded out in a running front end — Godot owns the menu, so the guest's own `g_Menu` never
-	/// populates or fades them in — so a row tab cloned from the live tree came out invisible.
-	/// The tabs drew in the harness, which has no guest, and vanished in the game, which was the
-	/// whole tell.
-	///
-	/// Built once per screen NAME and kept. The tree is never added to the scene, so it costs
-	/// memory and nothing else: a Godot node does not have to be in the tree to be duplicated.
+	/// Art as the FILE authors it, with nothing the guest has done applied — the pattern book a
+	/// host-authored screen clones from. <see cref="Theme"/> is the other catalogue: the live
+	/// screen, carrying the guest's slides, visibility, transforms and opacity. Cloning from
+	/// that one picks up `ApplyLiveOpacity`'s baked result, so a row the guest never faded in
+	/// comes out invisible. Built once per screen NAME and kept out of the scene tree.
 	/// </summary>
 	public Engine_UiTheme? Templates { get; private set; }
 
@@ -138,6 +92,14 @@ public partial class Engine_UiPresentationHost : Node3D
 
 	/// <summary>The node tree currently mounted, or null before the first screen is shown.</summary>
 	protected Node3D? Built { get; private set; }
+
+	/// <summary>
+	/// The mounted tree, for a caller that owns this screen and needs the mirror out of the way.
+	/// The tree is still built — it is where the live art catalogue comes from and where owned
+	/// views take their placement (`group.GlobalTransform`); an owner takes away only the
+	/// DRAWING, restated every frame (see <c>GameUi.DriveOwnedBook</c>).
+	/// </summary>
+	public Node3D? MirrorTree => Built;
 
 	/// <summary>The presentation currently built, for diagnostics.</summary>
 	public Engine_UiScreen? CurrentScreen { get; private set; }
@@ -152,12 +114,9 @@ public partial class Engine_UiPresentationHost : Node3D
 	public bool IsLoaded => _loadScreen is not null;
 
 	/// <summary>
-	/// Which scene-level slide to build, 1-based, or 0 for the preview heuristic.
-	///
-	/// The front-end screens are one page per slide — see
-	/// <see cref="Engine_BgfDocument.SetSceneSlide"/>. Changing this takes effect on the next
-	/// <see cref="ShowByName(string,int)"/>, because visibility and attribute overrides
-	/// are resolved while the screen is being built.
+	/// Which scene-level slide to build, 1-based, or 0 for the preview heuristic. Front-end
+	/// screens are one page per slide (<see cref="Engine_BgfDocument.SetSceneSlide"/>). Takes
+	/// effect on the next <see cref="ShowByName(string,int)"/> — overrides resolve at build.
 	/// </summary>
 	public int SceneSlide { get; set; }
 
@@ -175,11 +134,9 @@ public partial class Engine_UiPresentationHost : Node3D
 	public IReadOnlyList<float?>? LiveOpacity { get; set; }
 
 	/// <summary>
-	/// Per-element <c>globalactive</c> read from the running guest, by element ordinal.
-	///
-	/// The guest's own draw gate. When present it REPLACES the slide-derived visibility, which
-	/// can only reproduce what the file authored — the screens change it at runtime through
-	/// Lua and the file knows nothing about that.
+	/// Per-element <c>globalactive</c> read from the running guest, by element ordinal — the
+	/// guest's own draw gate. When present it REPLACES the slide-derived visibility, which can
+	/// only reproduce what the file authored.
 	/// </summary>
 	public IReadOnlyList<bool>? LiveVisible { get; set; }
 
@@ -188,10 +145,8 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// <c>{position.x, position.y, position.z, scale.x, scale.y, scale.z}</c>, any of which
 	/// may be null when the guest holds no such attribute on that element.
 	///
-	/// Without this every element sits where the FILE put it, and anything the game lays out
-	/// at runtime collapses onto one spot — a menu's rows are twelve components authored at
-	/// the same place and moved apart by script, so ignoring this drew them all on top of each
-	/// other and read as garbled text.
+	/// Without this everything laid out at runtime collapses onto one spot — a menu's twelve
+	/// row components are authored at the same place and moved apart by script.
 	/// </summary>
 	public IReadOnlyList<float?[]?>? LiveTransform { get; set; }
 
@@ -199,29 +154,23 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// Per-element live TEXTURE HASH read from the guest, by element ordinal; 0 where the
 	/// guest states none.
 	///
-	/// The file's texture is only a placeholder wherever the game decides the picture at
-	/// runtime — the dpad's quick-slots are all authored on a grey `empty.tex`, the HUD's
-	/// twenty-four world-icon slots all on one icon — so without this every slot of a set
-	/// draws the same wrong image.
+	/// The file's texture is a placeholder wherever the game picks the picture at runtime — the
+	/// dpad quick-slots are all authored on a grey `empty.tex`, the HUD's twenty-four world-icon
+	/// slots all on one icon.
 	/// </summary>
 	public IReadOnlyList<uint>? LiveTextures { get; set; }
 
 	/// <summary>
-	/// The guest's <c>TintingAmount</c> per element, or null where it states none.
-	///
-	/// The WEIGHT of the vertex tint, not the tint. The guest never multiplies by the colour;
-	/// it subtracts <c>(1 - tint)</c> scaled by this, and this starts at zero on most quads —
-	/// so a screen read without it draws every tinted surface untinted.
+	/// The guest's <c>TintingAmount</c> per element, or null where it states none — the WEIGHT of
+	/// the vertex tint, not the tint. The guest subtracts <c>(1 - tint)</c> scaled by it rather
+	/// than multiplying by the colour; it starts at zero on most quads.
 	/// </summary>
 	public IReadOnlyList<Engine_UiScreen.LiveTint?>? LiveTint { get; set; }
 
 	/// <summary>
-	/// The camera the current screen renders through, so a window resize can re-fit it.
-	///
-	/// A canvas camera is sized against the window's ASPECT (see
-	/// <see cref="Engine_UiSceneBuilder.FitCanvasCamera"/>), and a camera sized once at build
-	/// time is right until the player drags the window — after which the design box is either
-	/// cropped or floating in a gap, with nothing in any log to say so.
+	/// The camera the current screen renders through, so a window resize can re-fit it. A canvas
+	/// camera is sized against the window's ASPECT — see
+	/// <see cref="Engine_UiSceneBuilder.FitCanvasCamera"/>.
 	/// </summary>
 	private Camera3D? _canvasCamera;
 
@@ -233,9 +182,8 @@ public partial class Engine_UiPresentationHost : Node3D
 		if (_canvasCamera is null || !IsInsideTree() ||
 			!GodotObject.IsInstanceValid(_canvasCamera))
 		{
-			// The previous screen's camera is disposed with its tree; the new screen's
-			// Show reassigns _canvasCamera. Until then there is nothing to fit — touching
-			// the stale reference would throw ObjectDisposedException per frame.
+			// The previous screen's camera is disposed with its tree and Show reassigns
+			// _canvasCamera; touching the stale reference throws ObjectDisposedException.
 			return;
 		}
 
@@ -247,9 +195,8 @@ public partial class Engine_UiPresentationHost : Node3D
 
 		_fittedTo = size;
 
-		// The FRAMING camera is not a canvas camera — it is fitted to the tree's bounds for a
-		// screen that ships no camera of its own, and re-sizing it against the design box would
-		// throw that framing away.
+		// The framing camera is fitted to the tree's bounds for a screen that ships no camera;
+		// re-sizing it against the design box would throw that framing away.
 		if (_canvasCamera.Name == "CanvasCamera")
 		{
 			Engine_UiSceneBuilder.FitCanvasCamera(_canvasCamera, size);
@@ -260,9 +207,8 @@ public partial class Engine_UiPresentationHost : Node3D
 
 	public override void _Ready()
 	{
-		// Streaming from the shipped banks is the real path — no extraction, and the
-		// same parser the guest's VFS uses. The extracted-tree branch below stays only
-		// as a fallback for a checkout without the game data.
+		// Streaming from the shipped banks is the real path; the extracted-tree branch below is
+		// a fallback for a checkout without the game data.
 		if (TryStartFromBanks())
 			return;
 
@@ -283,10 +229,8 @@ public partial class Engine_UiPresentationHost : Node3D
 		if (data.Length == 0)
 			return false;
 
-		// One mount for everything. The engine's bank filesystem indexes every bank
-		// under the game directory and stitches the header/payload halves a .tex is
-		// split across, so screens and textures come from the same handle rather than
-		// from three separately-opened banks.
+		// One mount for everything: the bank filesystem indexes every bank under the game
+		// directory and stitches the header/payload halves a .tex is split across.
 		BnkFileSystem banks;
 		try
 		{
@@ -294,8 +238,8 @@ public partial class Engine_UiPresentationHost : Node3D
 		}
 		catch (Exception ex)
 		{
-			// A mount that is present but unreadable is worth surfacing rather than
-			// silently falling through to the extracted tree.
+			// A mount that is present but unreadable is surfaced rather than silently falling
+			// through to the extracted tree.
 			Report($"Bank streaming unavailable: {ex.Message}");
 			return false;
 		}
@@ -393,12 +337,9 @@ public partial class Engine_UiPresentationHost : Node3D
 		banks.TryGetFile(virtualPath, out BnkFile file) ? file.ReadAllBytes() : null;
 
 	/// <summary>
-	/// Loads the bitmap fonts and the localised string database.
-	///
-	/// Both are LOOSE FILES under <c>language/</c>, not bank entries, so they are found
-	/// from the data root rather than through the mounted banks. Neither is fatal: a
-	/// screen without fonts still renders its art, and without Babel the authored tag is
-	/// displayed verbatim — which is what the engine falls back to as well.
+	/// Loads the bitmap fonts and the localised string database. Both are LOOSE FILES under
+	/// <c>language/</c>, not bank entries, so they come from the data root. Neither is fatal:
+	/// without Babel the authored tag displays verbatim, as the engine falls back too.
 	/// </summary>
 	private void LoadTextResources(string dataRoot)
 	{
@@ -425,11 +366,9 @@ public partial class Engine_UiPresentationHost : Node3D
 			}
 		}
 
-		// Built on EVERY path out of here, including the two failures above. A theme with no
-		// string book still carries the fonts and the art, and a label showing its raw tag is
-		// a better outcome than a host-authored screen with no theme at all — which cannot
-		// tell "the game data is missing" from "nobody built one".
-		Theme = new Engine_UiTheme { Fonts = Fonts, Strings = Strings };
+		// Built on every path out of here, including the two failures above: a theme with no
+		// string book still carries the fonts and the art.
+		Theme = new Engine_UiTheme { Fonts = Fonts, Strings = Strings, Textures = LoadTexture };
 	}
 
 	/// <summary>
@@ -454,12 +393,9 @@ public partial class Engine_UiPresentationHost : Node3D
 	}
 
 	/// <summary>
-	/// Finds the shipped game data.
-	///
-	/// The <see cref="GameDataRoot"/> export is an explicit override and nothing more;
-	/// everything else defers to the shared convention. This used to carry its own copy of
-	/// the search order, which is precisely how a viewer ends up reading a different install
-	/// from the plugin and the exporter.
+	/// Finds the shipped game data. <see cref="GameDataRoot"/> is an explicit override;
+	/// everything else defers to <see cref="Engine_GameData.Resolve"/> — never a second copy of
+	/// the search order.
 	/// </summary>
 	private string ResolveGameDataRoot()
 	{
@@ -525,34 +461,21 @@ public partial class Engine_UiPresentationHost : Node3D
 
 	/// <summary>
 	/// Builds a screen and hands it back WITHOUT mounting it, so a caller can hold several at
-	/// once.
-	///
-	/// <see cref="Show"/> owns exactly one screen: it frees the last one before building the
-	/// next. That matches a viewer flipping through presentations and does NOT match the game,
-	/// where the guest keeps several standing up together — a HUD under a pause menu under a
-	/// menu cycler, or a main menu over a scrolling background. Drawing one of those at a time
-	/// is why the others were missing, and picking "the important one" is not available either:
-	/// the guest hides what it does not want with per-element <c>globalactive</c>, so a
-	/// presentation being live says nothing about whether it is showing anything.
-	///
-	/// Everything else is shared — the same banks, texture cache, fonts and string book — so
-	/// holding five screens costs five node trees and not five mounts.
-	///
-	/// Set <see cref="LiveSlides"/> and friends before calling; they are read while the screen
-	/// is parsed. Returns null when the name is not among the shipped presentations.
+	/// once — the guest keeps several standing together, and it hides what it does not want with
+	/// per-element <c>globalactive</c>, so a presentation being live says nothing about whether
+	/// it is showing anything. <see cref="Show"/> owns exactly one screen instead. Banks, texture
+	/// cache, fonts and string book are shared. Set <see cref="LiveSlides"/> and friends first;
+	/// they are read while the screen is parsed. Null when the name is not shipped.
 	/// </summary>
 	public Node3D? BuildDetached(string name, out Engine_UiScreen? screen) =>
 		BuildDetached(name, out screen, out _);
 
 	/// <summary>
-	/// As above, and reports what was actually built.
-	///
-	/// The counts matter because a screen whose textures did not resolve still BUILDS: the
-	/// quads are there, they just draw with no albedo, which is a white rectangle. "It built"
-	/// and "it looks right" are different claims and this is what separates them.
+	/// As above, and reports what was built. A screen whose textures did not resolve still
+	/// builds — the quads draw with no albedo — so the counts are what separate the two.
 	/// </summary>
 	public Node3D? BuildDetached(string name, out Engine_UiScreen? screen,
-		out Engine_UiSceneBuilder? stats)
+		out Engine_UiSceneBuilder? stats, bool keepInactiveForCatalogue = false)
 	{
 		screen = null;
 		stats = null;
@@ -582,6 +505,10 @@ public partial class Engine_UiPresentationHost : Node3D
 		{
 			TextureResolver = rel => Textures?.Load(rel),
 			FontResolver = size => Fonts?.For(size),
+
+			// The CATALOGUE build keeps slide-parked art, hidden and marked; a drawn build
+			// never does — see Engine_UiSceneBuilder.KeepInactiveForCatalogue.
+			KeepInactiveForCatalogue = keepInactiveForCatalogue,
 		};
 
 		Node3D built = builder.Build(screen);
@@ -591,18 +518,10 @@ public partial class Engine_UiPresentationHost : Node3D
 	}
 
 	/// <summary>
-	/// Takes the mounted screen down and forgets it.
-	///
-	/// <see cref="Show"/> only ever frees the old screen on its way to a NEW one, which is
-	/// right for a viewer flipping through presentations and wrong for a game: when the guest
-	/// leaves the front end there is no next screen, so the last one stayed mounted. It does
-	/// not stay hidden either — the layer is concealed only while the guest has NO live UI at
-	/// all, so the first in-game presentation to stand up brings the whole dead front end back
-	/// with it, over the running game.
-	///
-	/// The art catalogue goes with it. Every entry points at a node inside the tree being
-	/// freed, and a caller asking the theme for art afterwards would be handed a dangling
-	/// reference. Clones already taken out of it are unaffected — that is why they are clones.
+	/// Takes the mounted screen down and forgets it. <see cref="Show"/> frees the old screen
+	/// only on its way to a new one, so a guest leaving the front end needs this. The art
+	/// catalogue goes with it — every entry points into the tree being freed. Clones already
+	/// taken out of it are unaffected.
 	/// </summary>
 	public void ClearScreen()
 	{
@@ -625,7 +544,6 @@ public partial class Engine_UiPresentationHost : Node3D
 			Show(CurrentIndex);
 	}
 
-	/// <summary>Builds the presentation at <paramref name="index"/> and mounts it.</summary>
 	/// <summary>
 	/// Element names hidden after every rebuild — the guest widgets a host-owned stand-in
 	/// replaces (menu rows, its highlight). Registered by the stand-in's owner; cleared when
@@ -668,6 +586,7 @@ public partial class Engine_UiPresentationHost : Node3D
 		}
 	}
 
+		/// <summary>Builds the presentation at <paramref name="index"/> and mounts it.</summary>
 		public void Show(int index)
 	{
 		if (_loadScreen is null || index < 0 || index >= _screens.Count)
@@ -705,29 +624,23 @@ public partial class Engine_UiPresentationHost : Node3D
 		AddChild(Built);
 		Engine_UiSceneBuilder.ApplyCameraAiming(Built);
 
-		// Applied on EVERY rebuild, which is the whole point. The tree is torn down and
-		// rebuilt per guest state change, and a suppression done once from outside came back
-		// visible with the next rebuild — measured as "hid 2" then "hid 1" MenuHighlight
-		// instances across one session while the badge kept painting. The owner of a stand-in
-		// registers the name once; this host keeps the promise for as long as it is showing.
+		// On EVERY rebuild: the tree is torn down per guest state change, so a suppression done
+		// once from outside comes back visible. The stand-in's owner registers the name once.
 		ApplySuppressions(Built);
 
-		// The art a host-authored screen can borrow is whatever is standing up RIGHT NOW, so
-		// the catalogue is rebuilt here rather than once at load. Cataloguing every screen up
-		// front would mean building all 52 presentations to find one tab.
+		// The catalogue describes whatever is standing up now, so it is rebuilt here rather than
+		// once at load — cataloguing up front would build all 52 presentations.
 		Theme?.Catalogue(Built, name);
 		CatalogueTemplates(name);
 
-		// Building a camera is not enough — one has to be made current or the viewport
-		// renders through Godot's default camera and the screen looks empty.
+		// A camera has to be made CURRENT or the viewport renders through Godot's default one.
 		Camera3D camera = Engine_UiSceneBuilder.ActivateCamera(Built, UseFramingCamera);
 		_canvasCamera = camera;
 		FitToViewport();
 
-		// WHAT THE FRAME ENGINE DID, per screen. Reported rather than left silent because its
-		// two failure modes look identical on screen and want opposite fixes: no frames found
-		// means the detection missed, and frames found with no border slices means the screen
-		// expects the runtime cloning step the original does and we do not.
+		// What the frame engine did, per screen. Its two failure modes look identical on screen:
+		// no frames found is a detection miss; frames with no border slices means the screen
+		// expects the original's runtime cloning step.
 		Engine_UiFrameDriver.Report layout = screen.FrameLayout;
 		if (layout.Frames > 0)
 		{
@@ -743,20 +656,73 @@ public partial class Engine_UiPresentationHost : Node3D
 	}
 
 	/// <summary>
-	/// Catalogues <see cref="Templates"/> from a FILE-ONLY build of a screen.
-	///
-	/// The live inputs are withheld for the duration and put back afterwards, which is the whole
-	/// trick: the same parser and the same builder produce the artist's version when they are
-	/// given nothing from the guest. No second implementation, and no way for the two to drift.
-	///
-	/// Built once per name. A screen is rebuilt on every guest state change and the pattern book
-	/// does not change with it, so doing this per rebuild would double the cost of the thing
-	/// that already dominates a front-end frame.
+	/// Catalogues <see cref="Templates"/> from a FILE-ONLY build of a screen: the live inputs are
+	/// withheld for the duration and restored after, so the same parser and builder produce the
+	/// artist's version. Built once per name — the pattern book does not change per rebuild.
 	/// </summary>
 	private void CatalogueTemplates(string name)
 	{
+		Node3D? tree = TemplateTree(name);
+		if (tree is null)
+		{
+			return;
+		}
+
+		Templates ??= new Engine_UiTheme { Fonts = Fonts, Strings = Strings, Textures = LoadTexture };
+		Templates.Catalogue(tree, name);
+	}
+
+	/// <summary>
+	/// A CLONE of a screen's whole file-only build, for a host that owns a small presentation
+	/// outright — the pause banner, whose element names are synthesized so the by-name art
+	/// catalogue cannot address its pieces. The clone shares the template's materials, which
+	/// is safe while the template itself is never drawn.
+	/// </summary>
+	public Node3D? CloneTemplateTree(string name) =>
+		TemplateTree(name) is { } tree ? (Node3D)tree.Duplicate() : null;
+
+	/// <summary>
+	/// A pattern book for ONE screen, as its own catalogue. <see cref="Templates"/> is
+	/// re-catalogued per shown screen; a host-owned panel needing art from a screen that is never
+	/// shown by name takes it from here instead of clobbering that book.
+	/// </summary>
+	public Engine_UiTheme? PatternBookFor(string name)
+	{
+		Node3D? tree = TemplateTree(name);
+		if (tree is null)
+		{
+			return null;
+		}
+
+		var book = new Engine_UiTheme { Fonts = Fonts, Strings = Strings, Textures = LoadTexture };
+		book.Catalogue(tree, name);
+		return book;
+	}
+
+	/// <summary>
+	/// The parsed DOCUMENT of a screen, from the same file-only build the pattern book uses —
+	/// for a host-owned panel that joins live state read off the bridge by ordinal, and needs
+	/// the authored structure (names, ordinals, element count) to do it. Built (and cached)
+	/// with the live inputs withheld, so a stale live array from the last mirrored screen can
+	/// never leak into the parse.
+	/// </summary>
+	public Engine_UiScreen? DocumentFor(string name)
+	{
+		TemplateTree(name);
+		return _templateScreens.TryGetValue(name, out Engine_UiScreen? screen) ? screen : null;
+	}
+
+	private readonly Dictionary<string, Engine_UiScreen> _templateScreens =
+		new(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>The cached FILE-ONLY build of a screen — the artist's version.</summary>
+	private Node3D? TemplateTree(string name)
+	{
 		if (!_templateTrees.TryGetValue(name, out Node3D? tree))
 		{
+			// A pattern book is a whole detached build with inactive subtrees KEPT (the world map
+			// is 4125 elements), built synchronously on the frame the screen is first shown.
+			long began = System.Diagnostics.Stopwatch.GetTimestamp();
 			IReadOnlyList<int>? slides = LiveSlides;
 			IReadOnlyList<string?>? text = LiveText;
 			IReadOnlyList<float?>? opacity = LiveOpacity;
@@ -776,15 +742,17 @@ public partial class Engine_UiPresentationHost : Node3D
 				LiveTextures = null;
 				LiveTint = null;
 
-				// THE SCENE SLIDE GOES TOO, and forgetting it is what left the pattern book
-				// empty. A screen is built on ONE page, and the builder drops an inactive
-				// element's whole subtree — so cataloguing on the guest's current page (1, the
-				// menu's Intro) threw away the very components a host-owned screen wants to
-				// borrow: the row tabs, the highlight cursor, the gender cards. Zero is the
-				// preview heuristic, which takes each owner's first real slide and is the
-				// closest thing the file has to "everything the artist drew".
+				// The scene slide goes too: a screen is built on ONE page and the builder drops
+				// an inactive element's whole subtree, so cataloguing on the guest's current page
+				// throws away the components a host-owned screen borrows. Zero is the preview
+				// heuristic — each owner's first real slide.
 				SceneSlide = 0;
-				tree = BuildDetached(name, out _);
+				tree = BuildDetached(name, out Engine_UiScreen? screen, out _,
+					keepInactiveForCatalogue: true);
+				if (screen is not null)
+				{
+					_templateScreens[name] = screen;
+				}
 			}
 			finally
 			{
@@ -800,14 +768,22 @@ public partial class Engine_UiPresentationHost : Node3D
 
 			if (tree is null)
 			{
-				return;
+				return null;
 			}
 
 			_templateTrees[name] = tree;
+
+			double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - began) * 1000.0
+				/ System.Diagnostics.Stopwatch.Frequency;
+			int elements = _templateScreens.TryGetValue(name, out Engine_UiScreen? built)
+				? built.Nodes.Length
+				: 0;
+			Report($"[ui-host] pattern book '{name}' built in {ms:0.0}ms — {elements} element(s); " +
+				$"{_templateTrees.Count} book(s) now resident, never released until the host " +
+				"leaves the tree");
 		}
 
-		Templates ??= new Engine_UiTheme { Fonts = Fonts, Strings = Strings };
-		Templates.Catalogue(tree, name);
+		return tree;
 	}
 
 	/// <summary>
@@ -834,6 +810,7 @@ public partial class Engine_UiPresentationHost : Node3D
 		foreach (Node3D tree in _templateTrees.Values)
 			tree.QueueFree();
 		_templateTrees.Clear();
+		_templateScreens.Clear();
 
 		foreach (IDisposable owned in _owned)
 			owned.Dispose();

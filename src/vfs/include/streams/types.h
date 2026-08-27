@@ -7,6 +7,7 @@
 #include <future>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace refii::vfs {
 
@@ -27,6 +28,16 @@ struct RefiiHostStreamRecord {
   uint64_t read_calls = 0;
   uint64_t read_bytes = 0;
   std::ifstream file;
+
+  /// GODOT'S BYTES, WHEN GODOT IS THE ONE HOLDING THEM.
+  ///
+  /// A resolution that reports `host_served` has no host path to open, so `file` stays shut
+  /// and every read is served from here instead. The payload is fetched once at open: the
+  /// guest's stream object is a handle it may read in any order, and re-asking Godot per read
+  /// would make a seek cost a whole transfer.
+  std::vector<uint8_t> bytes;
+  bool host_served = false;
+
   std::mutex mutex;
 };
 
@@ -40,6 +51,9 @@ struct RefiiResourceWrapperView {
 };
 
 struct RefiiReadRequestRecord {
+  /// Set when the read was postponed because the destination was not resolved yet.
+  bool deferred_for_destination = false;
+
   uint32_t request_guest = 0;
   uint32_t stream_guest = 0;
   uint32_t buffer_guest = 0;

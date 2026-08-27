@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using Godot;
 
 using Refii.Core;
@@ -13,15 +12,19 @@ namespace Refii.Ui;
 
 /// <summary>
 /// Lays a <see cref="UiText"/> out against its bitmap font and builds one mesh of glyph
-/// quads for it.
+/// quads for it, plus the placements of any inline ICONS the string asked for.
 ///
-/// One mesh per text element, not one per glyph: a screen carries up to a few hundred
-/// strings and a node each would swamp the tree the editor has to show.
+/// One mesh per text element, not one per glyph.
 ///
-/// UNITS: one font pixel is one world unit. The authoring canvas is 960x720 and the
-/// authored cameras frame close to 720 units of height at the content plane, so a point
-/// size means the same thing in both spaces. Y is up, as everywhere else in the built
-/// tree, so the pen walks DOWN in -Y.
+/// Icons are QUADS, not glyphs, and come back as placements rather than in the mesh: the font
+/// atlas is single-channel coverage (<see cref="Engine_BitmapFont.AtlasBlocks"/> is BC4), so the
+/// text shader reads only `texel.a` and takes its colour from a uniform, while an icon is
+/// full-colour art in its own `.tex`. The guest splits them the same way, into two draw-node
+/// types (`off_820015A0` text, `off_820F4520` image).
+///
+/// Units: one font pixel is one world unit — the authoring canvas is 960x720 and the authored
+/// cameras frame close to 720 units of height at the content plane. Y is up, so the pen walks
+/// down in -Y.
 /// </summary>
 public static class Engine_UiTextMesh
 {
@@ -31,60 +34,100 @@ public static class Engine_UiTextMesh
 	/// </summary>
 	private static bool IsBreakSpace(char c) => c is '\t' or '\r' or ' ' or '　';
 
-	/// <summary>A laid-out line and the width it measured to.</summary>
+	/// <summary>Where one inline icon lands, in the mesh's own space and already scaled.</summary>
+	/// <param name="Tag">The tag, which names the art and whether it is double width.</param>
+	/// <param name="TopLeft">Top-left corner. Y is up, so this is the largest Y of the quad.</param>
+	/// <param name="Size">Drawn size — see <see cref="Engine_UiTextMarkup.DrawSize"/>.</param>
+	public readonly record struct IconPlacement(
+		Engine_UiTextMarkup.Tag Tag, Vector2 TopLeft, Vector2 Size);
+
+	/// <summary>What one layout produced.</summary>
+	public readonly record struct Built(
+		ArrayMesh? Mesh, int LineCount, IReadOnlyList<IconPlacement> Icons);
+
+	/// <summary>
+	/// One laid-out atom: a glyph or an icon. Both advance the pen; only glyphs reach the mesh.
+	/// One advance, not two — the guest bills an icon at the bare line height in its wrap pass
+	/// (`sub_82802F80`) and one more than that when drawing, so its wrap disagrees with its
+	/// placement. Here the wrap uses what is drawn.
+	/// </summary>
+	private readonly struct Cell
+	{
+		public readonly char Char;
+		public readonly Engine_UiTextMarkup.Tag? Icon;
+		public readonly Color? Colour;
+		public readonly float Advance;
+
+		public Cell(char c, Engine_UiTextMarkup.Tag? icon, Color? colour, float advance)
+		{
+			Char = c;
+			Icon = icon;
+			Colour = colour;
+			Advance = advance;
+		}
+
+		public bool IsIcon => Icon is not null;
+	}
+
+	/// <summary>
+	/// A laid-out line and the width it covers, icons INCLUDED. The guest's `sub_82870318`, which
+	/// computes the line-start X for centre and right alignment, sums only text and colour spans
+	/// and skips icons (`0x828703DC`); layout is ours, so a centred prompt is centred here.
+	/// </summary>
 	private readonly struct Line
 	{
-		public readonly string Text;
+		public readonly List<Cell> Cells;
 		public readonly float Width;
 
-		public Line(string text, float width)
+		public Line(List<Cell> cells, float width)
 		{
-			Text = text;
+			Cells = cells;
 			Width = width;
 		}
 	}
 
 	/// <summary>
-	/// Builds the glyph mesh, or null when there is nothing to draw.
+	/// Builds the glyph mesh and the icon placements, or an empty result when there is
+	/// nothing to draw.
 	/// </summary>
 	/// <param name="scale">
 	/// The residual scale from <see cref="Engine_UiFontLibrary.SelectFor"/> — a point size that
 	/// does not sit on a bucket boundary draws its bucket's font scaled.
 	/// </param>
-	public static ArrayMesh? Build(UiText text, Engine_BitmapFont font, float scale, out int lineCount)
+	public static Built Build(UiText text, Engine_BitmapFont font, float scale)
 	{
-		lineCount = 0;
+		List<List<Cell>> paragraphs = Cells(text.Display, font);
+		if (paragraphs.Count == 0)
+		{
+			return new Built(null, 0, Array.Empty<IconPlacement>());
+		}
 
-		string content = StripMarkup(text.Display);
-		if (content.Length == 0)
-			return null;
-
-		// boxwidth only ever enters layout as the WRAP width — the engine passes it as
-		// the rect {0, 0, boxwidth, 10000} to the wrap pass. It is not the box the text
-		// is aligned inside; see below.
+		// boxwidth only enters layout as the WRAP width — the engine passes the rect
+		// {0, 0, boxwidth, 10000} to the wrap pass. It is not the alignment box.
 		float wrapWidth = text.BoxWidth / Mathf.Max(scale, 0.0001f);
-		List<Line> lines = Wrap(content, font, text.WrapMode == 1 ? wrapWidth : 0f);
-		lineCount = lines.Count;
+		List<Line> lines = Wrap(paragraphs, text.WrapMode == 1 ? wrapWidth : 0f);
 		if (lines.Count == 0)
-			return null;
+		{
+			return new Built(null, 0, Array.Empty<IconPlacement>());
+		}
 
-		// ALIGNMENT ANCHORS ON THE MEASURED EXTENT, NOT ON boxwidth/boxheight.
-		// sub_828720D8 seeds an empty AABB, grows it by +/- half the text object's
-		// MEASURED width and height, then shifts it by that same half extent: code 0
-		// puts the near edge on the origin, 2 the far edge, anything else centres it.
-		// boxwidth/boxheight are OUTPUTS the element publishes, not inputs — reading
-		// them as the alignment box places short strings inside a wide box instead of
-		// against the origin, which reads as text drifting off its anchor.
+		// Alignment anchors on the MEASURED extent, not on boxwidth/boxheight: sub_828720D8
+		// seeds an empty AABB, grows it by ± half the measured width and height, then shifts it
+		// by that same half extent — code 0 puts the near edge on the origin, 2 the far edge,
+		// anything else centres. boxwidth/boxheight are outputs the element publishes.
 		//
-		// The measure pass counts lineHeight + 1 per line while the draw pass advances
-		// lineHeight, so the two differ by one pixel per line. Both are reproduced.
-		float lineAdvance = font.LineHeight;
+		// Both passes advance lineHeight + 1: the measure loop `sub_82B714A0` does
+		// `lwz r10, 0x18(r25); addi r6, r10, 1` at `0x82B714EC` and on every U+000A
+		// (`0x82B71538`), and the draw's only break path — the `<br>` case at `0x8226F1B4`,
+		// `sub_82802DB8` having rewritten `\n` to `<br>` — subtracts the same
+		// `(lineHeight + 1) * scale`.
+		float lineAdvance = font.LineHeight + 1;
 		float quadHeight = font.LineHeight + 1;
 
 		float measuredWidth = 0f;
 		foreach (Line line in lines)
 			measuredWidth = Mathf.Max(measuredWidth, line.Width);
-		float measuredHeight = lines.Count * (font.LineHeight + 1);
+		float measuredHeight = lines.Count * quadHeight;
 
 		float left = text.HorzAlign switch
 		{
@@ -102,7 +145,9 @@ public static class Engine_UiTextMesh
 		var vertices = new List<Vector3>();
 		var uvs = new List<Vector2>();
 		var normals = new List<Vector3>();
+		var colours = new List<Color>();
 		var indices = new List<int>();
+		var icons = new List<IconPlacement>();
 
 		for (int i = 0; i < lines.Count; i++)
 		{
@@ -118,22 +163,38 @@ public static class Engine_UiTextMesh
 			};
 			float lineTop = top - i * lineAdvance;
 
-			foreach (char c in line.Text)
+			foreach (Cell cell in line.Cells)
 			{
-				BitmapGlyph g = font.GetGlyph(c);
+				if (cell.Icon is { } tag)
+				{
+					Vector2I size = Engine_UiTextMarkup.DrawSize(tag, font.LineHeight);
+					icons.Add(new IconPlacement(
+						tag,
+						new Vector2(penX, lineTop) * scale,
+						new Vector2(size.X, size.Y) * scale));
+					penX += cell.Advance;
+					continue;
+				}
+
+				BitmapGlyph g = font.GetGlyph(cell.Char);
 				float glyphLeft = penX + g.LeftBearing;
 				penX = glyphLeft + g.PostAdvance;
 
 				if (g.DrawWidth <= 0)
 					continue;
 
-				Append(vertices, uvs, normals, indices,
-					glyphLeft, lineTop, g.DrawWidth, quadHeight, g);
+				Append(vertices, uvs, normals, colours, indices,
+					glyphLeft, lineTop, g.DrawWidth, quadHeight, g,
+					// White multiplies to the element's own colour, which is what an
+					// unmarked run gets and what keeps Engine_UiTheme.Retint working.
+					cell.Colour ?? Colors.White);
 			}
 		}
 
 		if (indices.Count == 0)
-			return null;
+		{
+			return new Built(null, lines.Count, icons);
+		}
 
 		if (!Mathf.IsEqualApprox(scale, 1f))
 			for (int i = 0; i < vertices.Count; i++)
@@ -144,56 +205,56 @@ public static class Engine_UiTextMesh
 		arrays[(int)Mesh.ArrayType.Vertex] = vertices.ToArray();
 		arrays[(int)Mesh.ArrayType.TexUV] = uvs.ToArray();
 		arrays[(int)Mesh.ArrayType.Normal] = normals.ToArray();
+		arrays[(int)Mesh.ArrayType.Color] = colours.ToArray();
 		arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
 
 		var mesh = new ArrayMesh();
 		mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-		return mesh;
+		return new Built(mesh, lines.Count, icons);
 	}
 
 	/// <summary>
-	/// Removes the inline markup, turning <c>&lt;br&gt;</c> into a newline.
-	///
-	/// The delimiters are <c>&lt;</c> and <c>&gt;</c> and the characters between them
-	/// emit no glyphs — the tag vocabulary is 46 entries of button-icon and size/style
-	/// switches (<c>b</c>, <c>s1</c>..<c>s4</c>, <c>a_img</c>, <c>dpad.img</c>, …), and
-	/// the engine substitutes <c>&lt;br&gt;</c> for a newline before laying out at all.
-	///
-	/// Icons are NOT drawn yet. Each occupies a square of lineHeight (double for one
-	/// group of ids), so a string containing one lays out slightly narrow here. Emitting
-	/// the tag text verbatim instead would be worse — it would put "&lt;a_img&gt;" on
-	/// screen.
+	/// Turns a string into one cell list per paragraph, running the markup tokeniser first. An
+	/// icon advances by what it draws — the `lineHeight + 1` box, doubled in width for the five
+	/// stars.
 	/// </summary>
-	public static string StripMarkup(string value)
+	private static List<List<Cell>> Cells(string display, Engine_BitmapFont font)
 	{
-		if (value.IndexOf('<') < 0)
-			return value;
+		var paragraphs = new List<List<Cell>>();
+		var current = new List<Cell>();
 
-		var output = new StringBuilder(value.Length);
-		for (int i = 0; i < value.Length; i++)
+		foreach (Engine_UiTextMarkup.Run run in Engine_UiTextMarkup.Split(display))
 		{
-			if (value[i] != '<')
+			if (run.Break)
 			{
-				output.Append(value[i]);
+				paragraphs.Add(current);
+				current = new List<Cell>();
 				continue;
 			}
 
-			int close = value.IndexOf('>', i + 1);
-			if (close < 0)
+			if (run.Tag is { } icon)
 			{
-				// Unterminated: the engine would swallow the rest of the string, but
-				// showing it is more useful than silently losing it.
-				output.Append(value, i, value.Length - i);
-				break;
+				current.Add(new Cell(
+					'\0', icon, run.Colour,
+					Engine_UiTextMarkup.DrawSize(icon, font.LineHeight).X));
+				continue;
 			}
 
-			if (string.Equals(value.Substring(i + 1, close - i - 1), "br", StringComparison.OrdinalIgnoreCase))
-				output.Append('\n');
-
-			i = close;
+			foreach (char c in run.Text)
+			{
+				current.Add(new Cell(c, null, run.Colour, font.GetGlyph(c).Advance));
+			}
 		}
 
-		return output.ToString();
+		paragraphs.Add(current);
+
+		// An entirely empty string has one empty paragraph and nothing to draw.
+		if (paragraphs.Count == 1 && paragraphs[0].Count == 0)
+		{
+			paragraphs.Clear();
+		}
+
+		return paragraphs;
 	}
 
 	/// <summary>
@@ -201,7 +262,8 @@ public static class Engine_UiTextMesh
 	/// counter-clockwise seen from +Z, V increasing downward from the top-left.
 	/// </summary>
 	private static void Append(List<Vector3> vertices, List<Vector2> uvs, List<Vector3> normals,
-		List<int> indices, float left, float top, float width, float height, in BitmapGlyph g)
+		List<Color> colours, List<int> indices,
+		float left, float top, float width, float height, in BitmapGlyph g, Color colour)
 	{
 		int b = vertices.Count;
 		float right = left + width;
@@ -218,73 +280,95 @@ public static class Engine_UiTextMesh
 		uvs.Add(new Vector2(g.U1, g.V0));
 
 		for (int i = 0; i < 4; i++)
+		{
 			normals.Add(new Vector3(0f, 0f, 1f));
+			colours.Add(colour);
+		}
 
 		indices.Add(b + 0); indices.Add(b + 1); indices.Add(b + 2);
 		indices.Add(b + 0); indices.Add(b + 2); indices.Add(b + 3);
 	}
 
 	/// <summary>
-	/// Splits into lines. Explicit newlines always break; wrapping happens only when
-	/// <paramref name="maxWidth"/> is positive — mode 0 is a single line the engine
+	/// Splits into lines. Paragraphs are already split on <c>&lt;br&gt;</c>; wrapping happens
+	/// only when <paramref name="maxWidth"/> is positive — mode 0 is a single line the engine
 	/// truncates rather than folding.
 	///
-	/// Width accumulates by <see cref="BitmapGlyph.Advance"/>, never by the draw width.
-	/// The break search runs backwards from the overflow point to the last breakable
-	/// space and falls back to breaking mid-word when the line holds no space at all,
-	/// so a long token degrades instead of looping.
+	/// Width accumulates by <see cref="Cell.Advance"/>. The break search runs backwards from the
+	/// overflow point to the last breakable space and falls back to breaking mid-word when the
+	/// line holds none, so a long token degrades instead of looping. An icon is never a break
+	/// point.
 	/// </summary>
-	private static List<Line> Wrap(string content, Engine_BitmapFont font, float maxWidth)
+	private static List<Line> Wrap(List<List<Cell>> paragraphs, float maxWidth)
 	{
 		var lines = new List<Line>();
 
-		foreach (string paragraph in content.Replace("\r\n", "\n").Split('\n'))
+		foreach (List<Cell> paragraph in paragraphs)
 		{
-			if (maxWidth <= 0f)
+			if (maxWidth <= 0f || paragraph.Count == 0)
 			{
-				lines.Add(new Line(paragraph, font.MeasureWidth(paragraph)));
-				continue;
-			}
-
-			if (paragraph.Length == 0)
-			{
-				lines.Add(new Line(string.Empty, 0f));
+				lines.Add(new Line(paragraph, Measure(paragraph, 0, paragraph.Count)));
 				continue;
 			}
 
 			int start = 0;
-			while (start < paragraph.Length)
+			while (start < paragraph.Count)
 			{
-				int take = FitCount(font, paragraph, start, maxWidth);
-				string line = paragraph.Substring(start, take).TrimEnd();
-				lines.Add(new Line(line, font.MeasureWidth(line)));
+				int take = FitCount(paragraph, start, maxWidth);
+
+				// TrimEnd, over cells: trailing breakable space does not count toward the
+				// line's measured width.
+				int end = start + take;
+				while (end > start && !paragraph[end - 1].IsIcon &&
+					IsBreakSpace(paragraph[end - 1].Char))
+				{
+					end--;
+				}
+
+				lines.Add(new Line(
+					paragraph.GetRange(start, end - start), Measure(paragraph, start, end)));
 
 				start += take;
-				while (start < paragraph.Length && IsBreakSpace(paragraph[start]))
+				while (start < paragraph.Count && !paragraph[start].IsIcon &&
+					IsBreakSpace(paragraph[start].Char))
+				{
 					start++;
+				}
 			}
 		}
 
 		return lines;
 	}
 
-	/// <summary>How many characters from <paramref name="start"/> fit in <paramref name="maxWidth"/>.</summary>
-	private static int FitCount(Engine_BitmapFont font, string s, int start, float maxWidth)
+	/// <summary>A run of cells' width.</summary>
+	private static float Measure(List<Cell> cells, int from, int to)
+	{
+		float width = 0f;
+		for (int i = from; i < to; i++)
+		{
+			width += cells[i].Advance;
+		}
+
+		return width;
+	}
+
+	/// <summary>How many cells from <paramref name="start"/> fit in <paramref name="maxWidth"/>.</summary>
+	private static int FitCount(List<Cell> cells, int start, float maxWidth)
 	{
 		float width = 0f;
 		int lastBreak = -1;
 
-		for (int i = start; i < s.Length; i++)
+		for (int i = start; i < cells.Count; i++)
 		{
-			width += font.GetGlyph(s[i]).Advance;
+			width += cells[i].Advance;
 
-			if (IsBreakSpace(s[i]))
+			if (!cells[i].IsIcon && IsBreakSpace(cells[i].Char))
 				lastBreak = i;
 
 			if (width > maxWidth && i > start)
 				return lastBreak > start ? lastBreak - start : i - start;
 		}
 
-		return s.Length - start;
+		return cells.Count - start;
 	}
 }

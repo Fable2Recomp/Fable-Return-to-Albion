@@ -2,25 +2,29 @@
 
 namespace {
 
-bool ShouldLogNativeResourceBikAudit(std::string_view key, uint32_t limit) {
-  if (refii::vfs::RefiiLooseAssetBackendEnabled()) {
-    return false;
-  }
-
-  static std::mutex mutex;
-  static std::unordered_map<std::string, uint32_t> counts;
-
-  std::lock_guard<std::mutex> lock(mutex);
-  const uint32_t next_count = ++counts[std::string(key)];
-  return next_count <= limit;
-}
-
 } // namespace
 
 REX_EXTERN(rex_lhResourceManager_FindAndCreateStream) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_FindAndCreateStream);
+  // Passthrough logging one stage of the Open→OpenInternal→FindAndCreateStream→Submit chain
+  // (see resource_manager_open.cpp).
+  {
+    const PPCContext entry_ctx = ctx;
+    __imp__rex_lhResourceManager_FindAndCreateStream(ctx, base);
+    static std::atomic<uint32_t> chain_logged{0};
+    if (chain_logged.fetch_add(1, std::memory_order_relaxed) < 8u) {
+      const uint32_t produced =
+          entry_ctx.r3.u32 != 0 ? refii::vfs::LoadGuestU32(base, entry_ctx.r3.u32) : 0u;
+      REXLOG_INFO("Refii FindAndCreateStream: file=0x{:08X} offset=0x{:08X} size=0x{:08X} "
+                  "a6=0x{:08X} mode={} -> manifest=0x{:08X} vtable=0x{:08X}",
+                  entry_ctx.r4.u32, entry_ctx.r5.u32, entry_ctx.r6.u32,
+                  entry_ctx.r8.u32, entry_ctx.r9.u32, produced,
+                  produced != 0 ? refii::vfs::LoadGuestU32(base, produced) : 0u);
+    }
+    return;
+  }
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
@@ -63,8 +67,7 @@ REX_EXTERN(rex_lhResourceManager_FindAndCreateStream) {
                     base, resource_manager_guest, 12));
   }
 
-  if (refii::vfs::kDirectResourceManagerWrapperOverride &&
-      refii::vfs::RefiiLooseAssetBackendEnabled()) {
+  if (refii::vfs::kDirectResourceManagerWrapperOverride) {
     uint32_t resource_hash = 0;
     if (name.empty() && resource_manager_guest != 0 &&
         refii::vfs::LoadGuestU32(base, resource_manager_guest) ==
@@ -157,43 +160,13 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
   const uint32_t mode = ctx.r6.u32;
   const std::string name =
       refii::vfs::ReadBestEffortGuestString(base, name_guest, 4096);
-  if (!refii::vfs::RefiiLooseAssetBackendEnabled()) {
-    const bool startup_bik = refii::vfs::IsStartupBikAssetName(name);
-    const bool audit =
-        startup_bik || (!name.empty() && name.find(".bik") != std::string::npos &&
-                        ShouldLogNativeResourceBikAudit(
-                            "NativeGetCachedBikAny", 16));
-    if (audit) {
-      REXLOG_INFO("Refii VFS native GetCached enter "
-                  "lr=0x{:08X} ctr=0x{:08X} out=0x{:08X} "
-                  "manager=0x{:08X} name_obj=0x{:08X} name={} "
-                  "mode=0x{:08X} startup_bik={}",
-                  original_ctx.lr,
-                  original_ctx.ctr.u32,
-                  out_guest,
-                  resource_manager_guest,
-                  name_guest,
-                  name.empty() ? "unknown" : name,
-                  original_ctx.r6.u32,
-                  startup_bik);
-    }
+
+  // Startup videos stay on the guest's own path: a `.bik` is owned by the guest's Bink player,
+  // whose completion field (`player+233`, written by Bink decode) advances the movie index, and
+  // until the index reaches the count `sub_822F4CE8` never returns a next state. Keyed on the
+  // boot path's startup-movie predicate, not on a caller address.
+  if (refii::vfs::IsStartupBikAssetName(name)) {
     __imp__rex_lhResourceManager_GetCached(ctx, base);
-    const uint32_t stream_guest =
-        out_guest != 0 ? refii::vfs::TryReadOutputPointer(base, out_guest) : 0;
-    if (audit) {
-      REXLOG_INFO("Refii VFS native GetCached exit "
-                  "lr=0x{:08X} result=0x{:08X} name={} out=0x{:08X} "
-                  "out_stream=0x{:08X} startup_bik={} stream_words={} {}",
-                  original_ctx.lr,
-                  ctx.r3.u32,
-                  name.empty() ? "unknown" : name,
-                  out_guest,
-                  stream_guest,
-                  startup_bik,
-                  refii::vfs::FormatGuestWords(base, stream_guest, 12),
-                  refii::vfs::FormatGuestObjectVTable(
-                      base, stream_guest, 12));
-    }
     return;
   }
 
@@ -227,7 +200,7 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
                 caller_resource_hash);
   }
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() && !name.empty()) {
+  if (!name.empty()) {
     refii::vfs::RefiiVfsOpenResult open_result;
     const bool bik_object_open_stream =
         original_ctx.lr == 0x82C6F534u &&
@@ -378,6 +351,7 @@ REX_EXTERN(rex_lhResourceManager_vtbl_FindStream) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_vtbl_FindStream);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t resource_manager_guest = ctx.r3.u32;

@@ -30,11 +30,18 @@ void fragment() {
 
 	vec4 texel = texture(atlas, UV);
 
+	// PER-RUN TINT RIDES THE VERTEX COLOUR, as a multiplier over the element's own. Inline
+	// `<b>`/`<s1>`..`<s4>` colour the run they enclose, and they can appear several times in
+	// one label — so the tint cannot be a uniform without splitting the mesh per colour. An
+	// unmarked run is white and multiplies to nothing, which is what leaves `colour` as the
+	// live channel Engine_UiTheme.Retint writes.
+	vec4 tint = colour * COLOR;
+
 	// The scissor.
-	if (texel.a * colour.a < 0.01) {
+	if (texel.a * tint.a < 0.01) {
 		discard;
 	}
 
-	ALBEDO = colour.rgb;
-	ALPHA = texel.a * colour.a;
+	ALBEDO = tint.rgb;
+	ALPHA = texel.a * tint.a;
 }

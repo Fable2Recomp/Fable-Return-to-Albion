@@ -18,6 +18,10 @@ target_link_libraries(refii_hostbridge
         refii_host
         refii_vfs
         rex::runtime
+        # The achievement RUNTIME only — never refii_achievement_ui. The runtime is the
+        # guest-facing half (it records the guest's writes, tracks unlocks, holds the XDBF
+        # definitions and icons); the _ui half is the ImGui toast, which Godot replaces.
+        refii_achievement
 )
 
 # SDL headers: the stepped loop drains the event queue itself rather than handing a
@@ -25,6 +29,16 @@ target_link_libraries(refii_hostbridge
 # is only for the declarations.
 if(TARGET SDL3::SDL3)
     target_link_libraries(refii_hostbridge PRIVATE SDL3::SDL3)
+endif()
+
+# NO DANGLING SYMBOLS. This library is dlopen'd by .NET with lazy binding, so a reference
+# the link could not resolve is not a link error — it is `ld.so` ending the whole process
+# with "symbol lookup error" (exit 127) the first time that call executes, with no signal,
+# no handler and nothing in any log. That was four "crashes to desktop" in one afternoon.
+# Resolve everything at link time instead; a weak reference (the renderer's optional
+# ImGui hook) still resolves to null and is allowed.
+if(NOT WIN32)
+    target_link_options(refii_hostbridge PRIVATE -Wl,--no-undefined)
 endif()
 
 # ABI version bump reminder lives in host_bridge.cpp.

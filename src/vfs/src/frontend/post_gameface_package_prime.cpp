@@ -37,7 +37,7 @@ bool MaybeRecordRefiiPostGameFacePackageOptionalMiss(
     std::string_view asset_path,
     std::string_view api) {
   const std::string normalized_asset = NormalizeLooseAssetKey(asset_path);
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       !IsGameFaceBinaryAssetKey(normalized_asset)) {
     return false;
   }
@@ -118,7 +118,7 @@ bool MaybeSignalRefiiPostGameFacePackageHandoff(
       RefiiGameFacePackageKeyForAssetKey(normalized_asset);
   uint32_t package_mask_after = 0;
   bool package_complete_after_update = false;
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       stream_guest == 0 ||
       (!font_boundary && !IsGameFaceBinaryAssetKey(normalized_asset))) {
     return false;

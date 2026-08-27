@@ -1,5 +1,7 @@
 #include "vfs_hooks_private.h"
 
+#include "core/host_asset_reader.h"
+
 namespace refii::vfs {
 inline namespace detail {
 
@@ -51,6 +53,72 @@ std::array<uint32_t, 4> ReadHostFileFirstWords(
     words[word] = LoadBigEndianU32(bytes.data() + word * 4);
   }
   return words;
+}
+
+uint64_t HostFileSize(const LooseAssetResolution& resolution) {
+  if (resolution.host_served) {
+    uint32_t size = 0;
+    return HostAssetSize(resolution.normalized_key, size) ? size : 0;
+  }
+
+  // The path overload — typed local so this cannot become a recursive call.
+  const std::filesystem::path& disk_path = resolution.host_path;
+  return HostFileSize(disk_path);
+}
+
+std::array<uint32_t, 4> ReadHostFileFirstWords(
+    const LooseAssetResolution& resolution) {
+  if (!resolution.host_served) {
+    // The path overload — typed local, see HostFileSize.
+    const std::filesystem::path& disk_path = resolution.host_path;
+    return ReadHostFileFirstWords(disk_path);
+  }
+
+  std::array<uint32_t, 4> words{};
+  std::vector<uint8_t> prefix;
+  if (!ReadHostAssetPrefix(resolution.normalized_key, 16u, prefix)) {
+    return words;
+  }
+
+  // Short is not an error: a file smaller than the window leaves the remaining words zero,
+  // as the disk path does.
+  for (size_t word = 0; word < words.size(); ++word) {
+    if (prefix.size() < (word + 1) * 4) {
+      break;
+    }
+    words[word] = LoadBigEndianU32(prefix.data() + word * 4);
+  }
+
+  return words;
+}
+
+bool ReadResolutionBytes(const LooseAssetResolution& resolution, uint32_t count,
+                         std::vector<uint8_t>& out) {
+  out.clear();
+
+  if (resolution.host_served) {
+    return count == 0u
+               ? ReadHostAsset(resolution.normalized_key, out)
+               : ReadHostAssetPrefix(resolution.normalized_key, count, out);
+  }
+
+  std::ifstream input(resolution.host_path, std::ios::binary);
+  if (!input) {
+    return false;
+  }
+
+  if (count == 0u) {
+    out.assign(std::istreambuf_iterator<char>(input),
+               std::istreambuf_iterator<char>());
+    return true;
+  }
+
+  out.resize(count);
+  input.read(reinterpret_cast<char*>(out.data()), count);
+
+  // Short is not a failure; the caller decides, same as the host-served side.
+  out.resize(static_cast<size_t>(input.gcount()));
+  return true;
 }
 
 std::string FormatHostFileFirstWords(const std::array<uint32_t, 4>& words) {
@@ -214,8 +282,8 @@ void ScoreResourceManagerTextureCandidate(ResolvedVfsHashCandidate* candidate) {
     return;
   }
 
-  candidate->first_words = ReadHostFileFirstWords(candidate->resolution.host_path);
-  candidate->file_size = HostFileSize(candidate->resolution.host_path);
+  candidate->first_words = ReadHostFileFirstWords(candidate->resolution);
+  candidate->file_size = HostFileSize(candidate->resolution);
   if (IsKnownFullResourceTextureCandidate(candidate->candidate) &&
       LooksLikeResourceWrapperHeader(candidate->first_words)) {
     candidate->score = 0;

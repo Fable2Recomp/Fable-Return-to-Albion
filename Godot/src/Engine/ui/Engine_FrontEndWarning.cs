@@ -63,7 +63,7 @@ public partial class Engine_FrontEndWarning : Node3D
 	/// is instruction-for-instruction the SUCCESS branch at 0x826E01FC. So accepting any New
 	/// Game warning goes on to the gender card; the one-button form simply has no other key.
 	///
-	/// Carried as a screen name for the same reason <see cref="Engine_FrontEndMenu.Item.Opens"/>
+	/// Carried as a screen name for the same reason <see cref="Engine_UiExpandableMenu.Item.Opens"/>
 	/// is — this class knows nothing about who draws what.
 	/// </summary>
 	public string? AcceptOpens { get; set; }
@@ -152,39 +152,12 @@ public partial class Engine_FrontEndWarning : Node3D
 	/// </summary>
 	private static string SetText(Engine_UiTheme? theme, Node3D? group, string name, string display)
 	{
-		if (group is null || Engine_UiTheme.FindByName(group, name) is not MeshInstance3D node)
-		{
-			return $"'{name}' NOT FOUND";
-		}
-
 		if (theme is null)
 		{
 			return $"'{name}' has no theme";
 		}
 
-		int size = node.HasMeta("text_size") ? (int)node.GetMeta("text_size") : 18;
-		int horizontal = node.HasMeta("text_halign") ? (int)node.GetMeta("text_halign") : 0;
-		int vertical = node.HasMeta("text_valign") ? (int)node.GetMeta("text_valign") : 1;
-		int wrap = node.HasMeta("text_wrap") ? (int)node.GetMeta("text_wrap") : 0;
-		Vector2 box = node.HasMeta("text_box") ? (Vector2)node.GetMeta("text_box") : Vector2.Zero;
-		Color colour = node.HasMeta("text_colour") ? (Color)node.GetMeta("text_colour") : Colors.White;
-
-		// Opaque, as Engine_UiSceneBuilder builds text: the engine overwrites a .bgf's own text
-		// alpha with 1.0, and the accumulated opacity belongs to the render association rather
-		// than to the glyphs.
-		var opaque = new Color(colour.R, colour.G, colour.B, 1f);
-
-		(ArrayMesh? mesh, Texture2D? atlas) = theme.Glyphs(
-			display, size, opaque,
-			horizontalAlign: horizontal, verticalAlign: vertical,
-			boxWidth: box.X, boxHeight: box.Y, wrapMode: wrap);
-
-		node.Mesh = mesh;
-		node.MaterialOverride = mesh is null
-			? null
-			: Engine_UiSceneBuilder.TextMaterial(opaque, atlas);
-
-		return mesh is null ? $"'{name}' has no glyphs" : $"'{name}' set ({display.Length} chars)";
+		return group is null ? $"'{name}' NOT FOUND" : theme.SetMeshText(group, name, display);
 	}
 
 	private static void SetShown(Node3D? group, string name, bool shown)

@@ -486,8 +486,7 @@ bool TryRunRefiiFrontendRenderRequestInline(PPCContext& source_ctx,
   // game thread inside the frontend texture consumer (the "lionhead loop":
   // videos read fully, then the game hangs in post-video frontend loading and
   // never reaches the menu). Native advances this flow on its own.
-  if (!RefiiLooseAssetBackendEnabled() ||
-      !FrontendSyntheticHandoffEnabled() ||
+  if (!FrontendSyntheticHandoffEnabled() ||
       !IsNativeFrontendRenderRequest(base, request_guest) ||
       !RefiiStartupVideosReadyForMenuHandoff()) {
     return false;

@@ -14,7 +14,7 @@ uint32_t TryAllocateRefiiFrontendTextureObject(PPCContext& source_ctx,
   }
 
   const std::array<uint32_t, 4> first_words =
-      ReadHostFileFirstWords(resolution.host_path);
+      ReadHostFileFirstWords(resolution);
   const bool split_texture_header = LooksLikeTextureHeaderDescriptor(first_words);
   const bool full_resource_texture = LooksLikeResourceWrapperHeader(first_words);
   if (!split_texture_header && !full_resource_texture) {
@@ -32,9 +32,11 @@ uint32_t TryAllocateRefiiFrontendTextureObject(PPCContext& source_ctx,
 
   std::array<uint32_t, 21> header_words{};
   {
-    std::ifstream input(resolution.host_path, std::ios::binary);
     std::array<uint8_t, 84> bytes{};
-    if (!input.read(reinterpret_cast<char*>(bytes.data()), bytes.size())) {
+    std::vector<uint8_t> header;
+    if (!ReadResolutionBytes(resolution, static_cast<uint32_t>(bytes.size()),
+                             header) ||
+        header.size() < bytes.size()) {
       if (VfsTracingEnabled() || LooseAssetOverrideTracingEnabled()) {
         REXLOG_WARN("Refii VFS frontend texture object header read failed "
                     "api={} hash=0x{:08X} candidate={} provider={} host={}",
@@ -46,6 +48,8 @@ uint32_t TryAllocateRefiiFrontendTextureObject(PPCContext& source_ctx,
       }
       return 0;
     }
+
+    std::copy(header.begin(), header.begin() + bytes.size(), bytes.begin());
     for (size_t index = 0; index < header_words.size(); ++index) {
       header_words[index] = LoadBigEndianU32(bytes.data() + index * 4);
     }
@@ -73,7 +77,7 @@ uint32_t TryAllocateRefiiFrontendTextureObject(PPCContext& source_ctx,
                     header_words[index]);
     }
   } else {
-    const uint64_t host_size = HostFileSize(resolution.host_path);
+    const uint64_t host_size = HostFileSize(resolution);
     StoreGuestU32(base, texture_guest + 16, 0);
     StoreGuestU32(base, texture_guest + 20, static_cast<uint32_t>(
                                              std::min<uint64_t>(

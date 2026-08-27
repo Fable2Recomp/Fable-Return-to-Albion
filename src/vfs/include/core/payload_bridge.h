@@ -52,6 +52,18 @@ void refii_bridge_note_bink_video_requested(uint8_t* base, uint32_t data_guest);
 /// The front end's subtitles setting as the guest last stated it: 1 on, 0 off, -1 unknown.
 void refii_bridge_front_end_note_subtitles(int32_t state);
 
+// Menu spawn capture: a row's identity goes into a Lua table the host cannot read, so it is
+// copied from `sub_826CE8D0`'s registers. `begin` runs on `DeleteAllSpawnedMenuItems`, rows
+// follow in spawn order; both on the guest tick thread, host reads under the action-queue lock.
+void refii_bridge_menu_spawn_begin(void);
+void refii_bridge_menu_spawn_row(const char* name, const char* parent, uint32_t id,
+                                 int32_t event_type, int32_t rating);
+
+// Labelled form: String2 (display text) decoded from UTF-16BE at capture.
+void refii_bridge_menu_spawn_row_labelled(const char* name, const char* parent, uint32_t id,
+                                          int32_t event_type, int32_t rating,
+                                          const char* label);
+
 uint64_t refii_bridge_guest_tick_pump_observe_tick(void);
 uint64_t refii_bridge_guest_tick_pump_drained(void);
 void refii_bridge_guest_tick_pump_note_ran(void);
@@ -62,6 +74,10 @@ void refii_bridge_guest_tick_pump_note_ran(void);
 // indefinitely, and so no host mutex is held across guest code. Read each by index with the
 // usual measure-then-fill convention, defer the ones that could not run yet, and End puts the
 // deferred ones back at the FRONT so a later post cannot overtake them.
+// Menu capture settle bracket: `spawn_begin` marks the rows partial, `_settle` clears it.
+void refii_bridge_menu_settle(void);
+int32_t refii_bridge_menu_populating(void);
+
 uint32_t refii_bridge_guest_tick_pump_begin_drain(void);
 size_t refii_bridge_guest_tick_pump_taken_action(uint32_t index, char* out, size_t capacity);
 void refii_bridge_guest_tick_pump_defer_action(const char* name, size_t length);
@@ -96,7 +112,6 @@ int32_t refii_bridge_vfs_force_retail_update_mode_enabled(void);
 int32_t refii_bridge_vfs_frontend_synthetic_handoff_enabled(void);
 int32_t refii_bridge_vfs_auto_press_start_enabled(void);
 int32_t refii_bridge_vfs_skip_startup_videos_enabled(void);
-int32_t refii_bridge_vfs_refii_loose_asset_backend_enabled(void);
 int32_t refii_bridge_vfs_startup_video_minimum_playback_ms(void);
 
 // STRINGS ARE WRITTEN INTO A CALLER BUFFER, never returned.

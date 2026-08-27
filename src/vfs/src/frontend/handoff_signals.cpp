@@ -123,7 +123,7 @@ bool MaybeSignalRefiiPostFrontendConsumerHandoff(
     uint8_t* base,
     const ActiveFrontendTextureConsumerTraceContext& consumer_trace,
     std::string_view mode) {
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       mode != "collapsed_descriptor_bundle" || !consumer_trace.any_refii_owned ||
       !consumer_trace.texture_parser_seen ||
       !consumer_trace.followon_frame_list_committed ||

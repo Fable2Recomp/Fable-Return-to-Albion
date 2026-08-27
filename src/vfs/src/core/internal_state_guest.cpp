@@ -1328,6 +1328,32 @@ std::string FormatGuestAsciiBytes(uint8_t* base,
   return value;
 }
 
+std::string ReadGuestLhString(uint8_t* base, uint32_t handle) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  if (base == nullptr || !plausible(handle)) {
+    return std::string();
+  }
+
+  // Exactly two hops, never a search: the guest takes these as `char***` and reaches the
+  // characters with two dereferences and one guard (`sub_826B9510`), storing with length -1,
+  // i.e. NUL-terminated. `sub_826CE8D0` declares all four of its string arguments the same
+  // way. Probing one to three levels returns the pointer bytes whenever they are printable.
+  // A zero inner pointer is an empty string, not a failure: the guest substitutes its own
+  // empty literal there.
+  const uint32_t inner = LoadGuestU32(base, handle);
+  if (inner == 0 || !plausible(inner)) {
+    return std::string();
+  }
+
+  const uint32_t characters = LoadGuestU32(base, inner);
+  if (!plausible(characters)) {
+    return std::string();
+  }
+
+  return FormatGuestAsciiBytes(base, characters, 256u);
+}
+
 std::string ReadBestEffortGuestString(uint8_t* base,
                                       uint32_t guest,
                                       uint32_t max_chars) {

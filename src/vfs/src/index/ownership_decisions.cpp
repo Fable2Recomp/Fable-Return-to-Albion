@@ -1,5 +1,7 @@
 #include "vfs_hooks_private.h"
 
+#include "core/host_asset_reader.h"
+
 namespace refii::vfs {
 inline namespace detail {
 
@@ -33,152 +35,64 @@ RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForName(
       decision.normalized,
       resource_hash,
       caller_lr);
+
+  // The wrapper shape the resource manager uses — an extension classification, not a source.
   decision.native_shaped = IsRefiiNativeShapeSensitiveAsset(decision.normalized);
   decision.reason =
       decision.native_shaped
           ? std::string(GetResourceManagerCachedDirectBypassReason(decision.normalized))
           : std::string{};
 
-  if (!RefiiLooseAssetBackendEnabled() || decision.normalized.empty()) {
+  if (decision.normalized.empty()) {
     decision.kind = RefiiVfsOwnershipKind::Unresolved;
-    decision.reason = decision.reason.empty() ? "backend_disabled_or_empty"
-                                             : decision.reason;
+    decision.reason = decision.reason.empty() ? "empty_request" : decision.reason;
     return decision;
   }
 
-  auto claim = [&](std::string source,
-                   LooseAssetResolution resolution,
-                   std::string candidate) {
-    decision.kind = RefiiVfsOwnershipKind::RefiiOwned;
-    decision.source = std::move(source);
-    decision.resolution = std::move(resolution);
-    decision.candidate =
-        candidate.empty() ? decision.normalized : NormalizeLooseAssetKey(candidate);
-    decision.has_resolution = true;
-    LooseStats().refii_owned_decisions.fetch_add(
-        1, std::memory_order_relaxed);
-    if (decision.native_shaped) {
-      LooseStats().refii_owned_native_shaped.fetch_add(
-          1, std::memory_order_relaxed);
+  // Godot's mount is the VFS; an asset it does not hold is absent. Startup movies are the one
+  // exception: a `.bik` goes to the guest's own Bink player, whose completion field advances the
+  // boot movie index, and served from the mount that index never reaches the movie count.
+  if (!IsStartupBikAssetName(decision.normalized)) {
+    uint32_t host_size = 0;
+    if (HostAssetSize(decision.normalized, host_size)) {
+      LooseAssetResolution resolution;
+      resolution.normalized_key = decision.normalized;
+      resolution.provider_relative_path = decision.normalized;
+      resolution.host_served = true;
+
+      decision.kind = RefiiVfsOwnershipKind::RefiiOwned;
+      decision.source = "godot_mount";
+      decision.resolution = std::move(resolution);
+      decision.candidate = decision.normalized;
+      decision.has_resolution = true;
+      LooseStats().refii_owned_decisions.fetch_add(1, std::memory_order_relaxed);
+      if (decision.native_shaped) {
+        LooseStats().refii_owned_native_shaped.fetch_add(1, std::memory_order_relaxed);
+      }
+
+      static std::atomic<uint32_t> owned_by_godot{0};
+      const uint32_t nth = owned_by_godot.fetch_add(1, std::memory_order_relaxed) + 1u;
+      if (nth <= 8u || (nth & (nth - 1u)) == 0u) {
+        REXLOG_INFO("Refii VFS: GODOT serves '{}' ({} byte(s)) — #{} so far.",
+                    decision.normalized, host_size, nth);
+      }
+      return decision;
     }
-  };
-
-  LooseAssetResolution resolution;
-  std::string candidate;
-  std::string lua_source;
-  if (IsLuaScriptAssetKey(decision.normalized) &&
-      ResolveRefiiLuaScriptAsset(
-          decision.normalized, &resolution, &candidate, &lua_source)) {
-    claim(lua_source.empty() ? "lua_extracted_source" : std::move(lua_source),
-          std::move(resolution),
-          std::move(candidate));
-    return decision;
   }
 
-  if (IsGameFaceBinaryAssetKey(decision.normalized) &&
-      ResolveExactGameFaceBinaryCarrierLooseAsset(
-          decision.normalized, &resolution, &candidate)) {
-    claim("gameface_carrier", std::move(resolution), std::move(candidate));
-    return decision;
-  }
-  if (IsGameFaceBinaryAssetKey(decision.normalized)) {
-    decision.kind = RefiiVfsOwnershipKind::NativeOnly;
-    decision.reason = decision.reason.empty() ? "gameface_binary_native_cache"
-                                             : decision.reason;
-    LooseStats().refii_native_fallbacks.fetch_add(
-        1, std::memory_order_relaxed);
-    return decision;
-  }
-
-  const std::string_view native_skip =
-      GetLooseNativeAssetSkipReason(decision.normalized);
-  if (!native_skip.empty()) {
-    decision.kind = RefiiVfsOwnershipKind::NativeOnly;
-    decision.reason = std::string(native_skip);
-    LooseStats().refii_native_fallbacks.fetch_add(
-        1, std::memory_order_relaxed);
-    return decision;
-  }
-
-  if (ResolveExactTypedBankManifestLooseAsset(
-          decision.normalized, &resolution, &candidate)) {
-    claim("typed_bank_manifest", std::move(resolution), std::move(candidate));
-    return decision;
-  }
-
-  if (ResolveSyntheticBankManifestLooseAsset(
-          decision.normalized, &resolution, &candidate)) {
-    claim("synthetic_bank_manifest", std::move(resolution), std::move(candidate));
-    return decision;
-  }
-
-  if (ResolveLooseAssetOverride(decision.normalized, &resolution)) {
-    claim("loose_override", std::move(resolution), decision.normalized);
-    return decision;
-  }
-
-  bool resolved = false;
-  if (prefer_resource_manager_texture_shape &&
-      IsTextureAssetCandidate(decision.normalized)) {
-    resolved = ResolveVfsDatabaseAliasLooseAssetForResourceManager(
-        decision.normalized, caller_lr, &resolution, &candidate);
-  }
-  if (!resolved) {
-    resolved = ResolveVfsDatabaseExactAliasLooseAsset(
-        decision.normalized, &resolution, &candidate);
-  }
-  if (!resolved) {
-    resolved = ResolveVfsDatabaseAliasLooseAsset(
-        decision.normalized, &resolution, &candidate);
-  }
-  if (resolved) {
-    if (prefer_resource_manager_texture_shape) {
-      const uint32_t texture_hash =
-          resource_hash != 0 ? resource_hash
-                             : ComputeResourceNameHash(decision.normalized);
-      MaybeUpgradeResourceManagerTextureResolution(texture_hash,
-                                                   decision.normalized,
-                                                   caller_lr,
-                                                   &resolution,
-                                                   &candidate);
-    }
-    claim("database_alias", std::move(resolution), std::move(candidate));
-    return decision;
-  }
-
-  if (resource_hash != 0 &&
-      ResolveResourceHashLooseAsset(resource_hash,
-                                    &resolution,
-                                    &candidate,
-                                    prefer_resource_manager_texture_shape,
-                                    caller_lr)) {
-    claim("resource_hash", std::move(resolution), std::move(candidate));
-    return decision;
-  }
-
-  if (ResolveSyntheticBankEntryLooseAsset(
-          decision.normalized, &resolution, &candidate)) {
-    claim("synthetic_bank_entry", std::move(resolution), std::move(candidate));
-    return decision;
-  }
-
-  if (ResolveOriginalGameDataAsset(decision.normalized, &resolution, &candidate)) {
-    claim("original_game_data", std::move(resolution), std::move(candidate));
-    return decision;
-  }
-
+  // The title patch, the `update:` mount and the TU bank do not ship in a base install; the
+  // guest probes for all three and "miss" is the correct answer.
   if (IsCachedOptionalSyntheticVfsMiss(decision.normalized) ||
       IsOptionalSyntheticVfsProbe(decision.normalized) ||
       IsKnownAbsentBootProbe(decision.normalized)) {
     decision.kind = RefiiVfsOwnershipKind::OptionalMiss;
-    decision.reason = decision.reason.empty() ? "known_optional_probe"
-                                             : decision.reason;
+    decision.reason = decision.reason.empty() ? "known_optional_probe" : decision.reason;
     LooseStats().refii_optional_misses.fetch_add(1, std::memory_order_relaxed);
     return decision;
   }
 
   decision.kind = RefiiVfsOwnershipKind::Unresolved;
-  decision.reason = decision.reason.empty() ? "not_owned" : decision.reason;
+  decision.reason = decision.reason.empty() ? "not_mounted" : decision.reason;
   return decision;
 }
 
@@ -187,38 +101,26 @@ RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForHash(
     bool prefer_resource_manager_texture_shape,
     uint32_t caller_lr) {
   RefiiVfsOwnershipDecision decision;
-  if (!RefiiLooseAssetBackendEnabled() || resource_hash == 0) {
+  if (resource_hash == 0) {
     decision.kind = RefiiVfsOwnershipKind::Unresolved;
-    decision.reason = "backend_disabled_or_zero_hash";
+    decision.reason = "zero_hash";
     return decision;
   }
 
-  if (ResolveResourceHashLooseAsset(resource_hash,
-                                    &decision.resolution,
-                                    &decision.candidate,
-                                    prefer_resource_manager_texture_shape,
-                                    caller_lr)) {
-    decision.kind = RefiiVfsOwnershipKind::RefiiOwned;
-    decision.source = "resource_hash";
-    decision.normalized = NormalizeLooseAssetKey(decision.candidate);
-    decision.has_resolution = true;
-    decision.native_shaped = IsRefiiNativeShapeSensitiveAsset(decision.normalized);
-    decision.reason =
-        decision.native_shaped
-            ? std::string(GetResourceManagerCachedDirectBypassReason(
-                  decision.normalized))
-            : std::string{};
-    LooseStats().refii_owned_decisions.fetch_add(
-        1, std::memory_order_relaxed);
-    if (decision.native_shaped) {
-      LooseStats().refii_owned_native_shaped.fetch_add(
-          1, std::memory_order_relaxed);
-    }
+  // Reached only after the name form failed. The hash is resolved by Godot's mount, which owns
+  // the files; below the join it is the ordinary name path.
+  const std::string name = HostAssetNameForHash(resource_hash);
+  if (name.empty()) {
+    decision.kind = RefiiVfsOwnershipKind::Unresolved;
+    decision.reason = "hash_not_mounted";
     return decision;
   }
 
-  decision.kind = RefiiVfsOwnershipKind::Unresolved;
-  decision.reason = "hash_not_owned";
+  decision = DecideRefiiVfsOwnershipForName(
+      name, resource_hash, prefer_resource_manager_texture_shape, caller_lr);
+  if (decision.kind == RefiiVfsOwnershipKind::RefiiOwned) {
+    decision.source = "godot_hash_index";
+  }
   return decision;
 }
 
@@ -303,7 +205,7 @@ uint32_t ResolveRefiiStreamExpectedSize(uint8_t* base,
   if (ownership.has_resolution && !ownership.resolution.host_path.empty()) {
     std::error_code error;
     const uint64_t file_size =
-        std::filesystem::file_size(ownership.resolution.host_path, error);
+        HostFileSize(ownership.resolution);
     if (!error && file_size != 0) {
       return static_cast<uint32_t>(
           std::min<uint64_t>(file_size, std::numeric_limits<uint32_t>::max()));
@@ -608,13 +510,13 @@ void LogRefiiOwnedTextureResolution(std::string_view api,
 
   uint64_t header_size = 0;
   uint64_t payload_size = 0;
-  uint64_t combined_size = HostFileSize(resolution.host_path);
+  uint64_t combined_size = HostFileSize(resolution);
   bool split = false;
   std::string payload_candidate;
   if (IsTextureHeaderCandidate(provider_key) ||
       IsTextureHeaderCandidate(normalized_candidate)) {
     split = true;
-    header_size = HostFileSize(resolution.host_path);
+    header_size = HostFileSize(resolution);
     LooseAssetResolution payload_resolution;
     std::string paired_candidate;
     const std::string header_key =
@@ -622,14 +524,14 @@ void LogRefiiOwnedTextureResolution(std::string_view api,
                                                : normalized_candidate;
     if (ResolvePairedTexturePayloadForHeader(
             header_key, &payload_resolution, &paired_candidate)) {
-      payload_size = HostFileSize(payload_resolution.host_path);
+      payload_size = HostFileSize(payload_resolution);
       payload_candidate = paired_candidate;
       combined_size = header_size + payload_size;
     }
   }
 
   const std::array<uint32_t, 4> first_words =
-      ReadHostFileFirstWords(resolution.host_path);
+      ReadHostFileFirstWords(resolution);
   REXLOG_INFO("Refii VFS texture ownership verdict api={} lr=0x{:08X} "
               "hash=0x{:08X} request={} kind=RefiiOwned source={} "
               "candidate={} provider_relative={} host={} split={} "

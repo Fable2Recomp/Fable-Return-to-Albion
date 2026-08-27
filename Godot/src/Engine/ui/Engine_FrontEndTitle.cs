@@ -80,9 +80,19 @@ public sealed class Engine_FrontEndTitle
 	/// it fades whatever meshes hang off a node called <see cref="FlashName"/>, whenever one
 	/// exists — no screen-name test, and no assumption about the catalogue's node type.
 	/// </summary>
-	public void Advance(Engine_UiTheme? theme, double delta)
+	public void Advance(Engine_UiTheme? theme, double delta) =>
+		Advance(theme?.ArtSourceNode(FlashName), delta);
+
+	/// <summary>
+	/// The flash node in hand, for a caller that OWNS the title screen rather than mirroring it.
+	///
+	/// With the owned book drawing the title, the catalogue above describes a tree nobody is
+	/// looking at — fading it would fade the hidden mirror while the white plate stayed on screen
+	/// in the clone. The book knows which of its nodes came from `White`; this takes that one.
+	/// </summary>
+	public void Advance(Node? flash, double delta)
 	{
-		if (theme?.ArtSourceNode(FlashName) is not Node3D flash)
+		if (flash is null)
 		{
 			LastReport = $"'{FlashName}' is not in this screen's catalogue";
 			return;

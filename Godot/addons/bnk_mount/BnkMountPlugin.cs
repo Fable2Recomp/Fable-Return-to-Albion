@@ -410,6 +410,10 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Level.Engine_PropModelIndex.SetModelSource(EnumerateModelAssets);
         Refii.Level.Engine_StreamingCandidates.SetHintSource(EnumerateStreamingHints);
         Refii.Entities.Engine_EntityIndex.SetResolver(ResolveBytes);
+        // The shared runtime database the owned detail pages read. Bound here as well as in
+        // Engine_GameAssets so the editor and the running game answer the same, which is the
+        // parity the comment in that file is about.
+        Refii.Gdb.Engine_GameGdb.SetResolver(ResolveBytes);
         Refii.Equipment.Engine_WeaponIndex.SetResolver(ResolveBytes);
         Refii.Equipment.Engine_ClothingIndex.SetResolver(ResolveBytes);
         Refii.Equipment.Engine_ItemIndex.SetResolver(ResolveBytes);
@@ -501,6 +505,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private void RemoveLoaders()
     {
         Refii.Entities.Engine_EntityIndex.SetResolver(null);
+        Refii.Gdb.Engine_GameGdb.SetResolver(null);
         Refii.Equipment.Engine_WeaponIndex.SetResolver(null);
         Refii.Equipment.Engine_ClothingIndex.SetResolver(null);
         Refii.Equipment.Engine_ItemIndex.SetResolver(null);

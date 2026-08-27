@@ -1,4 +1,6 @@
 #include "vfs_hooks_private.h"
+
+#include "core/host_asset_reader.h"
 #include "runtime/replacement_paths.h"
 
 #include <rex/system/xthread.h>
@@ -56,10 +58,6 @@ void RecordRefiiVfsOpenDecisionAudit(
     const RefiiVfsOwnershipDecision& ownership,
     std::string_view candidate,
     std::string_view provider_relative) {
-  if (!RefiiLooseAssetBackendEnabled()) {
-    return;
-  }
-
   static std::mutex audit_mutex;
   static std::unordered_map<std::string, uint64_t> decision_counts;
   static std::unordered_set<std::string> unresolved_once;
@@ -241,7 +239,7 @@ RefiiVfsOpenDisposition TryOpenResolvedRefiiVfsAsset(
     const std::string normalized_candidate = NormalizeLooseAssetKey(
         request.candidate.empty() ? request.request_name : request.candidate);
     const std::array<uint32_t, 4> wrapper_first_words =
-        ReadHostFileFirstWords(wrapper_resolution.host_path);
+        ReadHostFileFirstWords(wrapper_resolution);
     const bool full_resource_texture =
         IsTextureAssetCandidate(normalized_provider) &&
         !IsTextureHeaderCandidate(normalized_provider) &&
@@ -259,7 +257,7 @@ RefiiVfsOpenDisposition TryOpenResolvedRefiiVfsAsset(
                     request.resource_hash,
                     normalized_provider,
                     request.resource_size,
-                    HostFileSize(wrapper_resolution.host_path),
+                    HostFileSize(wrapper_resolution),
                     FormatHostFileFirstWords(wrapper_first_words));
       }
     }
@@ -268,7 +266,7 @@ RefiiVfsOpenDisposition TryOpenResolvedRefiiVfsAsset(
          IsTextureHeaderCandidate(normalized_candidate))) {
       std::error_code header_size_error;
       const uint64_t header_size =
-          std::filesystem::file_size(resolution.host_path, header_size_error);
+          HostFileSize(resolution);
       LooseAssetResolution payload_resolution;
       std::string payload_candidate;
       const std::string header_key =
@@ -316,7 +314,7 @@ RefiiVfsOpenDisposition TryOpenResolvedRefiiVfsAsset(
         base,
         request.out_guest,
         request.mode == 0 ? 1 : request.mode,
-        wrapper_resolution.host_path,
+        wrapper_resolution,
         wrapper_provider,
         static_cast<uint8_t>(request.resource_flags & 0xFF),
         wrapper_offset,
@@ -327,7 +325,7 @@ RefiiVfsOpenDisposition TryOpenResolvedRefiiVfsAsset(
                                request.out_guest,
                                request.manager_guest,
                                request.mode,
-                               resolution.host_path,
+                               resolution,
                                resolution.provider_relative_path);
   }
 
@@ -412,10 +410,6 @@ RefiiVfsOpenDisposition TryOpenRefiiVfsAsset(
     }
     return disposition;
   };
-
-  if (!RefiiLooseAssetBackendEnabled()) {
-    return finish(RefiiVfsOpenDisposition::Miss);
-  }
 
   if (shape == RefiiVfsOpenShape::SyntheticBank) {
     const std::string bank_name(request.request_name);
@@ -533,14 +527,7 @@ RefiiVfsOpenDisposition TryOpenRefiiVfsAsset(
                          : result.ownership.candidate;
   result.source = result.ownership.source;
 
-  if (request.prefer_resource_manager_texture_shape) {
-    MaybeUpgradeResourceManagerTextureResolution(
-        request.resource_hash,
-        request.request_name.empty() ? result.candidate : request.request_name,
-        caller_lr,
-        &result.resolution,
-        &result.candidate);
-  }
+  // With the mount as the only source there is one resolution per asset; nothing to upgrade to.
   LogRefiiOwnedTextureResolution(request.api,
                                  caller_lr,
                                  request.resource_hash,
@@ -631,7 +618,7 @@ RefiiVfsOpenDisposition TryOpenRefiiBankEntryAsset(
     return disposition;
   };
 
-  if (!RefiiLooseAssetBackendEnabled() || request.out_guest == 0 ||
+  if (request.out_guest == 0 ||
       request.entry_name.empty()) {
     return finish(RefiiVfsOpenDisposition::Miss);
   }
@@ -641,12 +628,15 @@ RefiiVfsOpenDisposition TryOpenRefiiBankEntryAsset(
       TraceLuaVfsBridgeResolution(request.lua_trace_tag, 0, request.entry_name);
     }
     LooseAssetResolution resolution;
-    std::string candidate;
-    std::string source = "lua_extracted_source";
-    if (!ResolveRefiiLuaScriptAsset(
-            request.entry_name, &resolution, &candidate, &source)) {
+    std::string candidate = std::string(request.entry_name);
+    const std::string source = "godot_mount";
+    uint32_t lua_size = 0;
+    if (!HostAssetSize(request.entry_name, lua_size)) {
       return finish(RefiiVfsOpenDisposition::Miss);
     }
+    resolution.normalized_key = candidate;
+    resolution.provider_relative_path = candidate;
+    resolution.host_served = true;
     PPCContext loose_ctx = original_ctx;
     const RefiiVfsOpenDisposition disposition = TryOpenResolvedRefiiVfsAsset(
         loose_ctx,
@@ -686,18 +676,16 @@ RefiiVfsOpenDisposition TryOpenRefiiBankEntryAsset(
 
   LooseAssetResolution resolution;
   std::string candidate;
-  const bool resolved =
-      request.manifest_entry != nullptr
-          ? ResolveManifestEntryLooseAsset(
-                request.manifest_entry->manifest_root,
-                request.manifest_entry->relative_path,
-                &resolution,
-                &candidate,
-                request.manifest_entry->host_relative_path)
-          : ResolveBankLooseAssetOverride(request.bank_name,
-                                          request.entry_name,
-                                          &resolution,
-                                          &candidate);
+
+  // Godot expands every archive at mount time, so a bank entry is indexed under its stored name.
+  uint32_t entry_size = 0;
+  const bool resolved = HostAssetSize(request.entry_name, entry_size);
+  if (resolved) {
+    candidate = std::string(request.entry_name);
+    resolution.normalized_key = candidate;
+    resolution.provider_relative_path = candidate;
+    resolution.host_served = true;
+  }
   if (!resolved) {
     if (log_lookup_detail || VfsTracingEnabled() ||
         LooseAssetOverrideTracingEnabled()) {
@@ -723,8 +711,7 @@ RefiiVfsOpenDisposition TryOpenRefiiBankEntryAsset(
           .api = request.api,
           .request_name = request.entry_name,
           .candidate = candidate,
-          .source = request.manifest_entry != nullptr ? "bank_manifest"
-                                                      : "bank_override",
+          .source = "godot_mount",
           .out_guest = request.out_guest,
           .manager_guest = request.manager_guest,
           .mode = request.mode,
@@ -758,10 +745,6 @@ bool ResolveRefiiOwnedTextureResolution(
     LooseAssetResolution* out_resolution,
     std::string* out_candidate,
     std::string* out_source) {
-  if (!RefiiLooseAssetBackendEnabled()) {
-    return false;
-  }
-
   const std::string normalized_request = NormalizeLooseAssetKey(request_name);
   const bool texture_request =
       IsTextureAssetCandidate(normalized_request) ||
@@ -1262,7 +1245,7 @@ bool ResolveRefiiVirtualFileSystemProbe(std::string_view asset_path,
                                         bool* out_is_directory,
                                         LooseAssetResolution* out_resolution,
                                         std::string* out_candidate) {
-  if (!RefiiLooseAssetBackendEnabled() || asset_path.empty()) {
+  if (asset_path.empty()) {
     return false;
   }
 
@@ -1321,34 +1304,17 @@ bool ResolveRefiiVirtualFileSystemProbe(std::string_view asset_path,
     }
     return true;
   }
-  if (IsGameFaceBoundaryPath(normalized)) {
-    if (should_probe_file_aliases && IsLuaScriptAssetKey(normalized)) {
-      resolved = ResolveRefiiLuaScriptAsset(
-          normalized, &resolution, &candidate);
-    }
-    if (!resolved && should_probe_file_aliases) {
-      for (const std::string& gameface_candidate :
-           BuildGameFaceRedirectCandidates(normalized)) {
-        if (ResolveVfsDatabaseAliasLooseAsset(
-                gameface_candidate, &resolution, &candidate)) {
-          resolved = true;
-          break;
-        }
-      }
-    }
-  }
-  if (!ShouldSkipLooseNativeAsset(normalized, "filesystem_probe")) {
-    if (!resolved) {
-      resolved = ResolveSyntheticBankManifestLooseAsset(
-          normalized, &resolution, &candidate);
-    }
-    if (!resolved && should_probe_file_aliases) {
-      resolved = ResolveVfsDatabaseAliasLooseAsset(
-          normalized, &resolution, &candidate);
-    }
-    if (!resolved && should_probe_file_aliases) {
-      resolved = ResolveSyntheticBankEntryLooseAsset(
-          normalized, &resolution, &candidate);
+  // `file_size`, `exists` and `is_directory` on a game path are all answered from the mount that
+  // serves the bytes, so presence and readability cannot disagree.
+  if (should_probe_file_aliases) {
+    uint32_t host_size = 0;
+    if (HostAssetSize(normalized, host_size)) {
+      resolution = LooseAssetResolution{};
+      resolution.normalized_key = normalized;
+      resolution.provider_relative_path = normalized;
+      resolution.host_served = true;
+      candidate = normalized;
+      resolved = true;
     }
   }
 
@@ -1455,6 +1421,33 @@ bool ResolveRefiiVirtualFileSystemProbe(std::string_view asset_path,
     }
     if (out_candidate != nullptr) {
       *out_candidate = replacement.resolution.provider_relative_path;
+    }
+    return true;
+  }
+
+  // A host-served resolution carries no path (`host_served`); `HostFileSize` and
+  // `ReadHostFileFirstWords` dispatch on it. Presence is a size query against the bank entry.
+  uint32_t host_size = 0;
+  if (HostAssetSize(normalized, host_size)) {
+    if (out_is_directory != nullptr) {
+      *out_is_directory = false;
+    }
+    if (out_resolution != nullptr) {
+      out_resolution->host_path.clear();
+      out_resolution->normalized_key = normalized;
+      out_resolution->provider_relative_path = normalized;
+      out_resolution->host_served = true;
+    }
+    if (out_candidate != nullptr) {
+      *out_candidate = normalized;
+    }
+    // Always on, rate-limited (first eight, then powers of two) — not behind VFS tracing.
+    static std::atomic<uint32_t> served{0};
+    const uint32_t nth = served.fetch_add(1, std::memory_order_relaxed) + 1u;
+    if (nth <= 8u || (nth & (nth - 1u)) == 0u) {
+      REXLOG_INFO("Refii VFS: served '{}' from GODOT's mount ({} byte(s)) — #{} so far; the "
+                  "native index does not have it.",
+                  normalized, host_size, nth);
     }
     return true;
   }
@@ -1601,7 +1594,7 @@ bool TryCreateRefiiPrivateFileHandle(std::string_view path,
   if (out_replacement_claimed != nullptr) {
     *out_replacement_claimed = false;
   }
-  if (out_handle == nullptr || !RefiiLooseAssetBackendEnabled()) {
+  if (out_handle == nullptr) {
     return false;
   }
   LogRefiiVfsRuntimePolicyOnce();
@@ -1644,6 +1637,22 @@ bool TryCreateRefiiPrivateFileHandle(std::string_view path,
     SetRefiiWin32LastError(kRefiiWin32ErrorAlreadyExists);
     return false;
   }
+  // A bank entry has no path, and the mount is read-only — the player's shipped data.
+  std::vector<uint8_t> host_bytes;
+  bool host_backed = false;
+  if (!replacement.exists && !writable) {
+    const std::string host_key =
+        resolution.normalized_key.empty()
+            ? NormalizeLooseAssetKey(path)
+            : resolution.normalized_key;
+    if (ReadHostAsset(host_key, host_bytes)) {
+      host_backed = true;
+      replacement.exists = true;
+      resolution.normalized_key = host_key;
+      resolution.host_served = true;
+    }
+  }
+
   if ((creation_disposition == kOpenExisting ||
        creation_disposition == kTruncateExisting ||
        creation_disposition == 0) &&
@@ -1689,16 +1698,22 @@ bool TryCreateRefiiPrivateFileHandle(std::string_view path,
       mode |= std::ios::trunc;
     }
   }
-  record->file.open(record->path, mode);
-  if (!record->file) {
-    SetRefiiWin32LastError(kRefiiWin32ErrorAccessDenied);
-    return false;
-  }
-  std::error_code error;
-  record->size = std::filesystem::file_size(record->path, error);
-  if (error) {
-    SetRefiiWin32LastError(kRefiiWin32ErrorFileNotFound);
-    return false;
+  if (host_backed) {
+    record->host_backed = true;
+    record->size = host_bytes.size();
+    record->bytes = std::move(host_bytes);
+  } else {
+    record->file.open(record->path, mode);
+    if (!record->file) {
+      SetRefiiWin32LastError(kRefiiWin32ErrorAccessDenied);
+      return false;
+    }
+    std::error_code error;
+    record->size = std::filesystem::file_size(record->path, error);
+    if (error) {
+      SetRefiiWin32LastError(kRefiiWin32ErrorFileNotFound);
+      return false;
+    }
   }
 
   *out_handle = RegisterRefiiPrivateFileHandle(record);
@@ -1716,7 +1731,7 @@ bool TryCreateRefiiPrivateDirectoryHandle(std::string_view path,
                                           uint32_t creation_disposition,
                                           uint32_t* out_handle,
                                           std::string* out_candidate) {
-  if (out_handle == nullptr || !RefiiLooseAssetBackendEnabled()) {
+  if (out_handle == nullptr) {
     return false;
   }
   LogRefiiVfsRuntimePolicyOnce();
@@ -1796,8 +1811,11 @@ uint32_t ReadRefiiPrivateFileHandleBytes(uint8_t* base,
   const uint32_t original_requested_bytes = requested_bytes;
   requested_bytes = static_cast<uint32_t>(
       std::min<uint64_t>(requested_bytes, record->size - offset));
-  record->file.clear();
-  record->file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+  // A host-backed handle has no stream to seek; the page-splitting copy below is shared.
+  if (!record->host_backed) {
+    record->file.clear();
+    record->file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+  }
 
   uint32_t total_read = 0;
   std::array<uint8_t, 64 * 1024> scratch{};
@@ -1805,10 +1823,22 @@ uint32_t ReadRefiiPrivateFileHandleBytes(uint8_t* base,
     const uint32_t remaining = requested_bytes - total_read;
     const uint32_t chunk_size =
         std::min<uint32_t>(remaining, static_cast<uint32_t>(scratch.size()));
-    record->file.read(reinterpret_cast<char*>(scratch.data()),
-                      static_cast<std::streamsize>(chunk_size));
-    const uint32_t read =
-        static_cast<uint32_t>(std::max<std::streamsize>(record->file.gcount(), 0));
+
+    uint32_t read = 0;
+    if (record->host_backed) {
+      const uint64_t at = offset + total_read;
+      if (at < record->bytes.size()) {
+        read = static_cast<uint32_t>(
+            std::min<uint64_t>(chunk_size, record->bytes.size() - at));
+        std::memcpy(scratch.data(), record->bytes.data() + at, read);
+      }
+    } else {
+      record->file.read(reinterpret_cast<char*>(scratch.data()),
+                        static_cast<std::streamsize>(chunk_size));
+      read =
+          static_cast<uint32_t>(std::max<std::streamsize>(record->file.gcount(), 0));
+    }
+
     if (read == 0) {
       break;
     }
@@ -2199,9 +2229,6 @@ bool TryDeleteRefiiPrivateFile(PPCContext& ctx,
                                std::string_view path,
                                LooseAssetResolution* out_resolution,
                                std::string* out_candidate) {
-  if (!RefiiLooseAssetBackendEnabled()) {
-    return false;
-  }
   RefiiReplacementPathResolution replacement;
   if (!ResolveRefiiReplacementPath(path, &replacement)) {
     return false;
@@ -3303,7 +3330,7 @@ void AddRefiiLocaleRootEntries(std::vector<RefiiPrivateFindEntry>* entries,
 }
 
 bool RefiiStartupLanguageEnumerationDeferralActive() {
-  if (!RefiiLooseAssetBackendEnabled() || SkipStartupVideosEnabled() ||
+  if (SkipStartupVideosEnabled() ||
       RefiiStartupVideosSettledForMenuHandoff()) {
     return false;
   }
@@ -3561,9 +3588,6 @@ bool TryFindFirstRefiiPrivate(PPCContext& ctx,
                               uint8_t* base,
                               std::string_view path,
                               uint32_t find_data_guest) {
-  if (!RefiiLooseAssetBackendEnabled()) {
-    return false;
-  }
   LogRefiiVfsRuntimePolicyOnce();
   const std::string normalized = NormalizeLooseAssetKey(path);
 

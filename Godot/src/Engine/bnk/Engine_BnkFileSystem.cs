@@ -156,7 +156,14 @@ public sealed class BnkFileSystem : IDisposable
             }
         }
 
-        filesystem.IndexLoose(gameDirectory, looseExtensions ?? DefaultLooseExtensions);
+        if (looseExtensions is null)
+        {
+            filesystem.IndexAllLoose(gameDirectory);
+        }
+        else
+        {
+            filesystem.IndexLoose(gameDirectory, looseExtensions);
+        }
 
         Refii.FlashGames.Engine_SwfAssets.Index(filesystem, gameDirectory);
         return filesystem;
@@ -196,6 +203,128 @@ public sealed class BnkFileSystem : IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// Every loose file on disk, no extension list; skips `.bnk` (indexed by contents) and the
+    /// xex/patch. Loose wins over a bank entry of the same name (<c>preferNew</c>).
+    /// </summary>
+    private void IndexAllLoose(string gameDirectory)
+    {
+        IEnumerable<string> matches;
+        try
+        {
+            matches = Directory.EnumerateFiles(
+                gameDirectory, "*", SearchOption.AllDirectories).ToList();
+        }
+        catch (Exception exception)
+        {
+            _failures.Add($"{gameDirectory} (loose): {exception.Message}");
+            return;
+        }
+
+        foreach (string path in matches.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+        {
+            if (path.EndsWith(".bnk", StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith(".xex", StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith(".xexp", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string relative;
+            long size;
+            try
+            {
+                relative = Path.GetRelativePath(gameDirectory, path);
+                size = new FileInfo(path).Length;
+            }
+            catch (Exception exception)
+            {
+                _failures.Add($"{path}: {exception.Message}");
+                continue;
+            }
+
+            string normalized = Normalize(relative);
+            if (normalized.Length == 0)
+            {
+                continue;
+            }
+
+            var entry = new BnkEntry
+            {
+                RelativePath = normalized,
+                Size = (uint)Math.Min(size, uint.MaxValue),
+                StoredSize = (uint)Math.Min(size, uint.MaxValue),
+            };
+
+            string diskPath = path;
+            Insert(
+                normalized,
+                new BnkFile(diskPath, entry, normalized, _ => File.ReadAllBytes(diskPath), true),
+                preferNew: true);
+
+            // Alias without the `data/` prefix: the guest requests `language/.../gui_small.bft`,
+            // the loose key is `data/language/...`. The full path stays registered too.
+            const string dataPrefix = "data/";
+            if (normalized.StartsWith(dataPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                string alias = normalized[dataPrefix.Length..];
+                if (alias.Length != 0)
+                {
+                    var aliasEntry = new BnkEntry
+                    {
+                        RelativePath = alias,
+                        Size = entry.Size,
+                        StoredSize = entry.StoredSize,
+                    };
+                    Insert(
+                        alias,
+                        new BnkFile(diskPath, aliasEntry, alias, _ => File.ReadAllBytes(diskPath), true),
+                        preferNew: false);
+
+                    // Alias without the locale: `GameInit_MountDataFileSystems` mounts `language`
+                    // over the active culture's directory, so the guest asks for
+                    // `language\text\book.babel` (fonts compose the locale themselves).
+                    // Lowest precedence (`preferNew: false`): a real `language/...` file wins.
+                    const string languagePrefix = "language/";
+                    if (alias.StartsWith(languagePrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        int localeEnd = alias.IndexOf('/', languagePrefix.Length);
+                        if (localeEnd > languagePrefix.Length)
+                        {
+                            string locale = alias[languagePrefix.Length..localeEnd];
+                            if (IsCultureFolder(locale))
+                            {
+                                string localeless =
+                                    languagePrefix + alias[(localeEnd + 1)..];
+                                var localeEntry = new BnkEntry
+                                {
+                                    RelativePath = localeless,
+                                    Size = entry.Size,
+                                    StoredSize = entry.StoredSize,
+                                };
+                                Insert(
+                                    localeless,
+                                    new BnkFile(
+                                        diskPath, localeEntry, localeless,
+                                        _ => File.ReadAllBytes(diskPath), true),
+                                    preferNew: false);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The one culture whose files also answer to their locale-less spelling; `en-uk` is the
+    /// title's own fallback culture.
+    /// </summary>
+    public static string ActiveCulture { get; set; } = "en-uk";
+
+    private static bool IsCultureFolder(string segment) =>
+        string.Equals(segment, ActiveCulture, StringComparison.OrdinalIgnoreCase);
 
     private void IndexLoose(string gameDirectory, IReadOnlyList<string> extensions)
     {
@@ -499,23 +628,16 @@ public sealed class BnkFile
 
     internal List<BnkFile> Alternates { get; } = new();
 
+    /// <summary>Whether this name is served by more than one bank entry; see ReadAllBytes.</summary>
+    public bool HasAlternates => Alternates.Count != 0;
+
     internal byte[] ReadOwn() => _read(Entry);
 
     /// <summary>
-    /// The file's bytes, with a header entry and a payload entry rejoined when the format keeps
-    /// them apart.
-    ///
-    /// A .mdl and a .tex each ship as TWO bank entries under ONE name: a small header, always in
-    /// a `*_headers.bnk`, and a payload in a models/textures bank — usually a region's, nested
-    /// inside `streaming.bnk`. The guest never sees the split. It opens one logical file by name
-    /// hash and byte-ranges into it: LOD i of a model is read at 104 + the sum of the preceding
-    /// LOD sizes, for the length the header states (`sub_82AB4868`). So a caller has to be given
-    /// the concatenation, in that order, or every offset in the file is 104 bytes wrong.
-    ///
-    /// Which of the two entries won the shadow contest in <see cref="BnkFileSystem.Insert"/> is
-    /// not something this can rest on — that picks the larger, and "larger" is a property of the
-    /// data rather than of the format. The header is identified by its magic and joined in front
-    /// whichever side it arrived on.
+    /// The file's bytes, header entry + payload entry rejoined. A .mdl/.tex ships as two entries
+    /// under one name (header in `*_headers.bnk`, payload in a models/textures bank); the guest
+    /// byte-ranges one logical file, LOD i at 104 + preceding LOD sizes (`sub_82AB4868`).
+    /// The header is identified by magic, not by which entry won <see cref="BnkFileSystem.Insert"/>.
     /// </summary>
     public byte[] ReadAllBytes()
     {
@@ -562,8 +684,7 @@ public sealed class BnkFile
 
             if (isHeader(other) == ownIsHeader)
             {
-                // Two headers, or two payloads: the same file shipped in several banks, not the
-                // two halves of one. Nothing to join.
+                // Two headers or two payloads: the same file in several banks, nothing to join.
                 continue;
             }
 
@@ -690,9 +811,8 @@ public sealed class BnkFile
     }
 
     /// <summary>
-    /// A model file header. "DefMeshF" is the build's placeholder for a mesh that failed to
-    /// export; the guest tests for it FIRST, warns, and parses it as an ordinary header
-    /// (<c>sub_82AB4DC8</c> at 0x82AB4E74), so it is a header here too.
+    /// A model file header. "DefMeshF" is the failed-export placeholder; the guest parses it as
+    /// an ordinary header (<c>sub_82AB4DC8</c> at 0x82AB4E74).
     /// </summary>
     private static bool HasMeshFileMagic(byte[] d) =>
         HasMagic(d, "MeshFile") || HasMagic(d, "DefMeshF");

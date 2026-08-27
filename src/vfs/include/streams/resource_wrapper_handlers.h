@@ -11,7 +11,8 @@ struct PPCContext;
 namespace refii::vfs {
 inline namespace detail {
 
-bool EnsureRefiiReadRequestCompleted(uint8_t* base,
+bool EnsureRefiiReadRequestCompleted(PPCContext& ctx,
+                                     uint8_t* base,
                                      const std::shared_ptr<RefiiReadRequestRecord>& record,
                                      uint32_t record_guest,
                                      std::string_view api);
@@ -32,7 +33,8 @@ bool TryHandleRefiiHostDiskStreamRead(PPCContext& ctx,
                                       uint32_t stream_guest,
                                       uint32_t buffer_guest,
                                       uint64_t offset,
-                                      uint32_t requested_bytes);
+                                      uint32_t requested_bytes,
+                                      uint32_t transfer_out_guest);
 bool TryHandleRefiiHostDiskStreamDirectRead(PPCContext& ctx,
                                             uint8_t* base,
                                             uint32_t stream_guest,

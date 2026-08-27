@@ -18,6 +18,15 @@ inline namespace detail {
 uint32_t LoadBigEndianU32(const uint8_t* bytes);
 bool IsRegularHostFile(const std::filesystem::path& path);
 uint64_t HostFileSize(const std::filesystem::path& path);
+
+/// Size and first words of a resolution, whichever side (disk or Godot mount) owns its bytes.
+uint64_t HostFileSize(const LooseAssetResolution& resolution);
+std::array<uint32_t, 4> ReadHostFileFirstWords(
+    const LooseAssetResolution& resolution);
+
+/// The first `count` bytes of a resolution, whichever side owns it; `count` 0 means everything.
+bool ReadResolutionBytes(const LooseAssetResolution& resolution, uint32_t count,
+                         std::vector<uint8_t>& out);
 std::array<uint32_t, 4> ReadHostFileFirstWords(
     const std::filesystem::path& path);
 std::string FormatHostFileFirstWords(const std::array<uint32_t, 4>& words);

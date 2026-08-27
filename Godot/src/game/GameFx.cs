@@ -6,52 +6,18 @@ using Refii.Host;
 namespace Refii.Game;
 
 /// <summary>
-/// Draws the effects the GUEST is playing — the ones Godot did not place for itself.
-///
-/// The level's ambient effects come out of the GDB: <see cref="Refii.Level.Engine_LevelFx"/>
-/// resolves a torch's flame from its own placement and spawns a native particle system for it.
-/// That covers a region standing still and nothing else. Every effect the guest starts at
-/// RUNTIME — a spell cast, a weapon impact, a fire catching, a creature's aura — had no route to
-/// the screen at all, which is why the game looked right in a quiet street and empty in a fight.
-///
-/// THIS IS A MIRROR, and it is only possible because the particle update is on the SIM path:
-/// `sub_82319BE8` (the wall-clock main loop) -> `sub_821DC270` -> `sub_821DFDD0` ->
-/// `sub_83234C38` -> per instance `sub_8322D988`. Nothing in that chain touches a present or the
-/// render thread, so the guest keeps simulating particles perfectly well with our no-GPU latch
-/// set and never drawing a pixel.
-///
-/// THE OVERLAP WITH THE STATIC PASS IS NOT YET RESOLVED, and it is the known risk here. The guest
-/// owns the level's ambient effects too — a torch is an entity with a particle-attacher component,
-/// and loading a region spawns those attachers — so the live list is expected to contain effects
-/// <see cref="Refii.Level.Engine_LevelFx"/> has already placed, and drawing both means drawing
-/// some flames twice. <see cref="GameEntities"/> solves exactly this for entities with its static
-/// twins: it retires the region's build ONE RECORD AT A TIME as each live equivalent appears,
-/// rather than guessing a dedup rule up front.
-///
-/// The same treatment belongs here and is not written yet. Until it is, <c>fx_live_effects</c>
-/// draws the live feed on top of the static pass, and <c>fx_live_report</c> logs the census that
-/// says how big the double actually is. If flames turn out to double, the fix is the twin
-/// retirement, not a proximity test.
-///
-/// A SIBLING OF THE REGION, not a child — the feed reports guest world space and carries the
-/// whole guest-to-Godot map itself, exactly as <see cref="GameEntities"/> and the camera do.
-/// Inheriting the region's own mirror instead would put every effect in the level's internal
-/// space, which is the world reflected through X.
+/// Mirrors the runtime effects the guest is playing (spells, impacts, auras); ambient level
+/// effects come from the GDB via <see cref="Refii.Level.Engine_LevelFx"/>. The particle update
+/// is on the sim path (`sub_82319BE8` -> `sub_821DC270` -> `sub_821DFDD0` -> `sub_83234C38` ->
+/// per instance `sub_8322D988`), so it runs with no GPU. Must be a sibling of the region, not a
+/// child: the feed is guest world space and carries the guest-to-Godot map itself.
 /// </summary>
 public partial class GameFx : Node3D
 {
-    /// <summary>
-    /// <c>refii.toml</c>'s key for drawing the mirror. ON by default.
-    ///
-    /// A SETTING, NOT AN ENVIRONMENT VARIABLE. The game is launched from Godot and from the
-    /// launcher, and neither offers anywhere to put one — a feature reachable only by exporting a
-    /// shell variable is a feature nobody can turn on. This is the same route
-    /// <see cref="GameWindowSettings"/> takes for the window: the launcher writes
-    /// <c>refii.toml</c>, the settings panel edits it, and the engine reads it.
-    /// </summary>
+    /// <summary><c>refii.toml</c> key for drawing the mirror; on by default.</summary>
     public const string DrawSettingKey = "fx_live_effects";
 
-    /// <summary>Whether to log the census. Off by default; it is a diagnostic, not a feature.</summary>
+    /// <summary>Whether to log the census. Off by default.</summary>
     public const string ReportSettingKey = "fx_live_report";
 
     /// <summary>
@@ -77,7 +43,7 @@ public partial class GameFx : Node3D
     /// <summary>Whether the guest has ever reported a live effect.</summary>
     private bool _everSawAny;
 
-    /// <summary>Roughly ten seconds at 60fps, long enough to be in-world and settled.</summary>
+    /// <summary>Roughly ten seconds at 60fps.</summary>
     private const int SilenceTicks = 600;
 
     private int _ticks;
@@ -94,7 +60,7 @@ public partial class GameFx : Node3D
         _draw = Refii.Core.Engine_RefiiConfig.Bool(config, DrawSettingKey, true);
         _report = Refii.Core.Engine_RefiiConfig.Bool(config, ReportSettingKey, false);
 
-        // The environment still wins, because a headless harness may have no config at all.
+        // The environment wins: a headless harness may have no config.
         string forced = OS.GetEnvironment(DrawEnvironmentVariable);
         if (forced == "1" || forced == "0")
         {
@@ -121,14 +87,7 @@ public partial class GameFx : Node3D
             _peakLive = live.Count;
         }
 
-        // FIRST CONTACT, AND THE SILENCE THAT MEANS FAILURE — both unconditional, neither behind
-        // the census setting.
-        //
-        // The first run of this feed produced one line saying it was up and drawing, and then
-        // nothing whatsoever: the native walk was rejecting every instance pointer against a
-        // wrong address range and returning an empty list, which looks exactly like a quiet
-        // street. A feed that cannot say "I found things" or "I have found nothing for a while"
-        // cannot be debugged from a log, and that cost a whole run.
+        // Logged unconditionally: an empty list is indistinguishable from nothing playing.
         if (live.Count != 0 && !_everSawAny)
         {
             _everSawAny = true;
@@ -147,42 +106,33 @@ public partial class GameFx : Node3D
 
         foreach (HostBridge.ActiveFx fx in live)
         {
-            // The guest's own has-work predicate. An instance that is neither emitting nor
-            // holding particles is on its way out this same tick — the retire pass runs last in
-            // the manager update — so following it would flicker a node in and straight back out.
+            // The guest's has-work predicate; a dead instance is retired this same tick.
             if (!fx.Alive)
             {
                 continue;
             }
 
-            // ONE NODE PER EFFECT, NOT PER INSTANCE. An effect is many instances — one per entity
-            // in each type-vector plus a synthetic root for each — so the beehive's six
-            // (spline, emitter) vectors arrive as eighteen entries naming one effect. Keying on
-            // the instance would build the whole effect eighteen times over.
+            // One node per effect, not per instance: an effect is many instances (one per entity
+            // per type-vector plus a synthetic root each).
             uint key = fx.Handle != 0 ? fx.Handle : fx.Instance;
             if (!_seen.Add(key))
             {
                 continue;
             }
 
-            // The instance names its TYPE, not its effect, and the two live in different
-            // registries with different key spaces — asking the bank for the type hash directly
-            // matched zero of forty on the first working run. The bank holds the join.
+            // The instance names its type, not its effect; the bank holds the type->effect join.
             uint effect = bank?.EffectForType(fx.NameHash) ?? 0u;
             bool known = effect != 0 && bank?.FindByHash(effect) is not null;
             if (!known)
             {
-                // The synthetic root the guest builds per type-vector belongs to no effect and is
-                // not a miss — counting it as one would make a healthy feed look broken.
+                // The synthetic per-type-vector root belongs to no effect; not a miss.
                 if (fx.NameHash == FxBank.ReservedRootType)
                 {
                     continue;
                 }
 
-                // A node name that is not a bank effect is expected: the guest's list holds every
-                // particle NODE, and the emitters, attractors and spline nodes inside one effect
-                // are named too. Counted rather than warned about, because the interesting number
-                // is what fraction of the list we can draw, not each individual miss.
+                // The list holds every particle node (emitters, attractors, splines), not only
+                // effects; counted, not warned.
                 _unresolved.Add(fx.NameHash);
                 continue;
             }
@@ -194,32 +144,39 @@ public partial class GameFx : Node3D
                 continue;
             }
 
+            // Positions are three raw words with no publish barrier; a NaN render depth hangs
+            // Godot's render-list sort. Tested before the node exists so an effect with no good
+            // position yet is not parked at the world origin.
+            bool finite = fx.Position.IsFinite();
+            if (!finite || fx.Position.Length() >= MaxFxReach)
+            {
+                // Counted apart: non-finite is a torn read, out-of-reach is a distrusted value.
+                if (finite)
+                {
+                    ++OutOfReachFx;
+                }
+                else
+                {
+                    ++NonFiniteFx;
+                }
+
+                continue;
+            }
+
             if (!_nodes.TryGetValue(key, out FableFx? node))
             {
                 node = new FableFx
                 {
                     Name = $"LiveFx_{key:X8}",
 
-                    // FableFx already understands the hash token form, which is what we have —
-                    // the guest stores only the FNV-1 of the name, never the text.
+                    // Hash token form: the guest stores only the FNV-1 of the name.
                     EffectName = $"FX_{effect:X8}",
                 };
                 _nodes[key] = node;
                 AddChild(node);
             }
 
-            // Guest FX positions are three raw words bit-cast with no publish barrier — the
-            // same shape GameEntities hardened its placements for. A NaN here becomes a NaN
-            // render depth, and one of those hangs Godot's whole render-list sort. FX nodes
-            // carry no CustomAabb, so nothing downstream would catch it.
-            if (fx.Position.IsFinite() && fx.Position.Length() < MaxFxReach)
-            {
-                node.Transform = ToGodot(fx.Position, fx.Rows);
-            }
-            else
-            {
-                ++NonFiniteFx;
-            }
+            node.Transform = ToGodot(fx.Position, fx.Rows);
         }
 
         if (_draw)
@@ -231,11 +188,8 @@ public partial class GameFx : Node3D
     }
 
     /// <summary>
-    /// Drops the nodes whose guest instance is gone.
-    ///
-    /// Keyed on the instance POINTER because the guest retires by swapping with the last element
-    /// and popping, so an effect's index in that vector changes when an unrelated effect ends.
-    /// Keying on the index would have live effects swap places with each other.
+    /// Drops the nodes whose guest instance is gone. Keyed on the instance pointer: the guest
+    /// retires by swap-and-pop, so vector indices are not stable.
     /// </summary>
     private void Retire()
     {
@@ -264,13 +218,7 @@ public partial class GameFx : Node3D
         }
     }
 
-    /// <summary>
-    /// The census, printed only when it MOVES.
-    ///
-    /// The number that matters is not how many effects are live — that rises and falls with the
-    /// fight — but how many DISTINCT effects the guest has asked for that we could not draw. A
-    /// feed reporting hundreds of instances is worthless if none of their hashes is a bank entry.
-    /// </summary>
+    /// <summary>The census, printed only when the distinct-effect count moves.</summary>
     private void Report()
     {
         if (!_report || _ticks % 300 != 0 || _census.Count == _lastReportedDistinct)
@@ -286,17 +234,9 @@ public partial class GameFx : Node3D
     }
 
     /// <summary>
-    /// Guest world space to Godot's.
-    ///
-    /// THE SAME MAP <see cref="GameEntities"/> USES, and it is not the one the region's own
-    /// contents use: a node standing beside the region needs the X negation, one built inside it
-    /// does not. The two differ by the whole world reflected through X, which reads as a level
-    /// that is subtly, consistently wrong rather than as an obvious fault.
-    ///
-    /// The rows arrive normalised and in guest axes — row 0 is the image of the guest's local X,
-    /// row 1 of its Y, row 2 of its Z — so the basis is rebuilt from them the same way the entity
-    /// feed rebuilds an entity's: Godot's Y comes from the guest's Z, and its Z is the negated
-    /// guest Y, which is what carries the handedness flip the X negation introduces.
+    /// Guest world space to Godot's, the same map <see cref="GameEntities"/> uses (a sibling of
+    /// the region needs the X negation; the region's contents do not). Rows are normalised guest
+    /// axes: row 0 = local X, row 1 = Y, row 2 = Z; Godot Y = guest Z, Godot Z = -guest Y.
     /// </summary>
     private static Transform3D ToGodot(Vector3 position, Vector3[] rows)
     {
@@ -308,9 +248,7 @@ public partial class GameFx : Node3D
         var basis = new Basis(ToGodot(rows[0]), ToGodot(rows[2]), -ToGodot(rows[1]));
         float determinant = basis.Determinant();
 
-        // `determinant is < 0.01f and > -0.01f` is a RANGE test, and every comparison against
-        // NaN is false — so it reports a degenerate basis and waves a NaN one straight
-        // through. An infinite row survives the same way and turns to NaN in Normalized().
+        // The range test is false for NaN, so a NaN or infinite basis needs its own check.
         if (!float.IsFinite(determinant) || determinant is < 0.01f and > -0.01f)
         {
             return new Transform3D(Basis.Identity, ToGodot(position));
@@ -324,6 +262,9 @@ public partial class GameFx : Node3D
 
     /// <summary>FX placements refused as not finite. Run total.</summary>
     public static int NonFiniteFx;
+
+    /// <summary>Effects with a finite position beyond <see cref="MaxFxReach"/>. Run total.</summary>
+    public static int OutOfReachFx;
 
     private static Vector3 ToGodot(Vector3 guest) => new(-guest.X, guest.Z, guest.Y);
 }

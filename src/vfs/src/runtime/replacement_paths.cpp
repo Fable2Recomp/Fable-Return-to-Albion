@@ -260,7 +260,7 @@ bool SelectReplacementRoot(std::string_view asset_path,
 bool ResolveRefiiReplacementPathImpl(
     std::string_view asset_path,
     RefiiReplacementPathResolution* out_resolution) {
-  if (!RefiiLooseAssetBackendEnabled() || out_resolution == nullptr) {
+  if (out_resolution == nullptr) {
     return false;
   }
 

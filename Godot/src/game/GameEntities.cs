@@ -567,7 +567,11 @@ public partial class GameEntities : Node3D
                 $"fx: {Refii.Game.GameFx.NonFiniteFx}, " +
                 $"ui transforms: {Refii.Ui.Engine_UiSceneBuilder.NonFiniteLiveTransforms}, " +
                 $"prop instances: {Refii.Level.Engine_LevelProps.NonFiniteInstances}, " +
-                $"mesh surfaces: {Refii.Models.Engine_MdlMesh.NonFiniteSurfaces}");
+                $"mesh surfaces: {Refii.Models.Engine_MdlMesh.NonFiniteSurfaces}" +
+
+                // Reported beside them but NOT as one of them: an out-of-reach effect carries a
+                // real number and is a range judgement of ours, not evidence of a torn read.
+                $"; fx out of reach: {Refii.Game.GameFx.OutOfReachFx}");
         }
 
         // THE GHOST COUNT, and the proof that the two sides are keyed on the same thing.

@@ -24,9 +24,17 @@ public partial class DebugMenu : Control
 
 	public override void _Ready()
 	{
+		// OUT OF THE HUD'S CORNER. This sat at the top LEFT, which is exactly where the health
+		// bar anchors — so every in-game screenshot showed "no HUD" when the HUD was drawing
+		// underneath the panel. The right edge is the one corner the single-player HUD leaves
+		// free (co-op health lives there, and there is none in single player).
 		var panel = new PanelContainer();
-		panel.OffsetLeft = 24;
-		panel.OffsetTop = 24;
+		panel.AnchorLeft = 1f;
+		panel.AnchorRight = 1f;
+		panel.GrowHorizontal = GrowDirection.Begin;
+		panel.OffsetLeft = -300f;
+		panel.OffsetRight = -24f;
+		panel.OffsetTop = 24f;
 
 		var vbox = new VBoxContainer();
 		vbox.AddChild(new Label { Text = "Refii Debug Menu" });

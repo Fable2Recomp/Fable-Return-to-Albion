@@ -392,7 +392,7 @@ bool TryCreateSyntheticBank(PPCContext& ctx,
                             uint32_t out_guest,
                             std::string_view bank_name,
                             std::string_view api) {
-  if (!RefiiLooseAssetBackendEnabled() || base == nullptr || out_guest == 0 ||
+  if (base == nullptr || out_guest == 0 ||
       bank_name.empty()) {
     return false;
   }
@@ -633,7 +633,7 @@ void EnsureRefiiBootBankTemplates(PPCContext& ctx,
                                   std::string_view api) {
   (void)ctx;
   (void)base;
-  if (!RefiiLooseAssetBackendEnabled() || base == nullptr) {
+  if (base == nullptr) {
     return;
   }
 

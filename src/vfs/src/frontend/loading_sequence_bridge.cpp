@@ -22,7 +22,7 @@ bool TryResolveRefiiLoadingAnimationSequenceHandle(PPCContext& source_ctx,
     return true;
   }
 
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled()) {
+  if (base == nullptr) {
     return false;
   }
 
@@ -607,7 +607,7 @@ bool TryFinishRefiiLoadingScreenOwnerFromCollapsedPipeline(
                   supported_finish_source ? "true" : "false",
                   sequence_ready ? "true" : "false",
                   sequence_handle,
-                  RefiiLooseAssetBackendEnabled() ? "true" : "false",
+                  "true",
                   RefiiStartupVideosReadyForMenuHandoff() ? "true" : "false",
                   RefiiPostGameFacePackageHandoffSignalEmitted() ? "true"
                                                                  : "false",
@@ -634,10 +634,6 @@ bool TryFinishRefiiLoadingScreenOwnerFromCollapsedPipeline(
   }
   if (source_result == 0) {
     log_skip("source_result_zero");
-    return false;
-  }
-  if (!RefiiLooseAssetBackendEnabled()) {
-    log_skip("backend_disabled");
     return false;
   }
   if (!RefiiStartupVideosReadyForMenuHandoff()) {
@@ -1100,8 +1096,7 @@ bool RefiiPostVideoInitialLoadingOwnerReleaseReady() {
   // The first loading-owner release is the handoff that lets the native
   // frontend/GameFace follow-on work begin. Requiring that follow-on work to
   // have already signalled creates a circular wait in the Refii VFS path.
-  return RefiiLooseAssetBackendEnabled() &&
-         RefiiStartupVideosReadyForMenuHandoff() &&
+  return RefiiStartupVideosReadyForMenuHandoff() &&
          RefiiMainMenuTraceHasParsedTextureForGeneratedReadyPayload() &&
          !RefiiMainMenuTraceNeedsTexturePrime() &&
          !RefiiPostGameFacePackageHandoffSignalEmitted() &&

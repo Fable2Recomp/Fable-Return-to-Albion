@@ -17,6 +17,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 config/name="Fable 2 Launcher"
 config/description="Rebuild of the refii launcher. Dependencies remain native DLLs."
 run/main_scene="res://main.tscn"
+run/flush_stdout_on_print=true
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 config/icon="res://assets/launcher/icon.png"
 
@@ -46,7 +47,7 @@ project/assembly_name="refii-launcher"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/bnk_mount/plugin.cfg")
+enabled=PackedStringArray("res://addons/bnk_mount/plugin.cfg", "res://addons/hud_editor/plugin.cfg")
 
 [refii]
 

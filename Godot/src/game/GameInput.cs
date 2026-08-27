@@ -1,16 +1,13 @@
+using Refii.Ui;
 using Godot;
 using Refii.Host;
 
 namespace Refii.Game;
 
 /// <summary>
-/// Feeds Godot's controller state to the guest, once per frame.
-///
-/// Godot owns input the same way it owns the window and the world. The guest asks for
-/// controllers through XInput; this reads the real device through Godot and publishes a
-/// snapshot the guest's driver serves from. Translation happens ONCE, here, into the
-/// Xbox's own vocabulary, because the guest is the consumer and converting on every read
-/// would be both slower and lossier.
+/// Feeds Godot's controller state to the guest, once per frame: reads the real device and
+/// publishes a snapshot the guest's XInput driver serves from. Translation into the Xbox's
+/// vocabulary happens once, here.
 /// </summary>
 public partial class GameInput : Node
 {
@@ -38,10 +35,7 @@ public partial class GameInput : Node
 
 	public override void _Process(double delta)
 	{
-		// NOTHING IS PUBLISHED TO A GUEST THAT IS NOT THERE. This node is only added once
-		// `Initialize` has succeeded, so the ordinary case never sees this — but the guest can
-		// END while it is up, and then every frame would go on writing controller state into a
-		// runtime that has torn down.
+		// The guest can end while this node is up; nothing is published into a torn-down runtime.
 		if (HostBridge.TryGetAbiVersion() is null)
 		{
 			return;
@@ -49,9 +43,7 @@ public partial class GameInput : Node
 
 		// Everything goes to pad 0; the rest report disconnected. The front end latches the
 		// pad that pressed A (dword_83496AF8, 0x826E30DC) and ignores every other one
-		// (0x826DEE64), so input split across devices is input the guest discards. Device
-		// index cannot pick the right one either — Godot's joypad 0 here is the keyboard's
-		// mouse interface, and the real pad is joypad 1.
+		// (0x826DEE64), so input split across devices is input the guest discards.
 		Publish0();
 
 		for (int pad = 1; pad < MaxControllers; ++pad)
@@ -61,10 +53,8 @@ public partial class GameInput : Node
 	}
 
 	/// <summary>
-	/// Pad 0: the keyboard and every connected joypad, merged.
-	///
-	/// Buttons are OR'd, triggers and sticks take whichever device is pushing hardest, so a
-	/// pad at rest never cancels one being used.
+	/// Pad 0: the keyboard and every connected joypad, merged. Buttons are OR'd; triggers and
+	/// sticks take whichever device is pushing hardest, so a pad at rest never cancels one in use.
 	/// </summary>
 	private static void Publish0()
 	{
@@ -81,63 +71,81 @@ public partial class GameInput : Node
 			rightTrigger = System.Math.Max(rightTrigger, Trigger(pad, JoyAxis.TriggerRight));
 
 			leftX = Dominant(leftX, Axis(pad, JoyAxis.LeftX));
-			// NEGATED. Godot's stick Y is screen-space — down is positive — and the Xbox's
-			// is up-positive. Miss this and the character walks backwards, which reads as a
-			// broken control scheme rather than a sign error.
+			// Negated: Godot's stick Y is screen-space (down positive), the Xbox's is up-positive.
 			leftY = Dominant(leftY, -Axis(pad, JoyAxis.LeftY));
 			rightX = Dominant(rightX, Axis(pad, JoyAxis.RightX));
 			rightY = Dominant(rightY, -Axis(pad, JoyAxis.RightY));
 		}
 
-		// DIAGNOSTIC: a synthetic stick deflection, so the whole input chain can be exercised
-		// without a human holding a controller. `REFII_FAKE_STICK=1` pushes the left stick
-		// forward permanently, which is enough to make the hero walk and — if the camera really
-		// does follow the hero — to make the camera move. It answers "is the camera frozen
-		// because nothing is driving it, or because the camera itself is stuck?" in one run.
+		LeftStick = new Vector2(leftX / 32767f, leftY / 32767f);
+
+		// Diagnostic: `REFII_FAKE_STICK=1` holds the left stick forward so the input chain can
+		// be exercised with nobody at the controller.
 		if (System.Environment.GetEnvironmentVariable("REFII_FAKE_STICK") == "1")
 		{
 			leftY = 24000;
 		}
 
-		// TWO CONSUMERS, AND ONLY ONE OF THEM OWNS THE MENU.
-		//
-		// The guest gets a filtered set; the host-owned menu below gets the real one. See
-		// <see cref="WithoutMenuInput"/> — the guest is still running its own front-end menu,
-		// and handing it the same press drives two menus at once.
+		// Logged on the threshold crossing only (30/255, the XInput convention).
+		uint triggersHeld = (leftTrigger > 30 ? 1u : 0u) | (rightTrigger > 30 ? 2u : 0u);
+		if (triggersHeld != _reportedTriggers)
+		{
+			_reportedTriggers = triggersHeld;
+			GD.Print($"[input] triggers LT={leftTrigger} RT={rightTrigger}");
+		}
+
+		// Two consumers: the guest gets a filtered set, the host-owned menu below gets the real
+		// one. The guest still runs its own front-end menu — see <see cref="WithoutMenuInput"/>.
 		bool masked = MaskMenuInput;
+		bool pauseMasked = !masked && MaskPauseInput;
+		bool queryMasked = !masked && !pauseMasked && MaskPauseQueryInput;
+		// The card's mask keeps the sticks and the D-pad live: its screen does not pause the
+		// game, so the stick-zeroing below must not apply to it.
+		bool cardMasked = !masked && !pauseMasked && !queryMasked && MaskReceiveItemsInput;
+		bool boxMasked = !masked && !pauseMasked && !queryMasked && !cardMasked &&
+			MaskMenuBoxInput;
+		bool listMasked = !masked && !pauseMasked && !queryMasked && !cardMasked &&
+			!boxMasked && MaskScreenMenuInput;
+		bool menuMask = masked || pauseMasked || queryMasked || boxMasked || listMasked;
 		HostBridge.SetControllerState(
-			0, connected: true, masked ? WithoutMenuInput(buttons) : buttons,
+			0, connected: true,
+			masked ? WithoutMenuInput(buttons)
+			: pauseMasked ? WithoutPauseInput(buttons)
+			: queryMasked ? WithoutQueryInput(buttons)
+			: cardMasked ? WithoutCardInput(buttons)
+			: boxMasked ? WithoutQueryInput(buttons)
+			: listMasked ? WithoutQueryInput(buttons)
+			: buttons,
 			leftTrigger, rightTrigger,
-			// The STICK is masked with the buttons, not separately. `sub_826E39C0` dead-zones
-			// the left stick against ±0.75 and emits the very same button codes the D-pad does
-			// — 28/29 for Y at 0x826E3C04/0x826E3C58 and 30/31 for X at 0x826E3B50/0x826E3BAC
-			// — so leaving it live would move the guest's highlight with the D-pad blocked.
-			masked ? 0 : leftX, masked ? 0 : leftY, rightX, rightY);
+			// The stick is masked with the buttons: `sub_826E39C0` dead-zones the left stick
+			// against ±0.75 and emits the same codes the D-pad does — 28/29 for Y at
+			// 0x826E3C04/0x826E3C58, 30/31 for X at 0x826E3B50/0x826E3BAC.
+			menuMask ? 0 : leftX, menuMask ? 0 : leftY,
+			rightX, rightY);
+
+		// The deadzone is ours here: `page.lua` reads `GUI.State.RightThumbStickY` raw (page.dis
+		// main.1 pc18..21) because the guest has already dead-zoned it before firing the contract
+		// event, and our page reads the pad instead. XInput's right-thumb constant is 8689 of
+		// 32767, rescaled so travel starts at zero on the deadzone edge.
+		const float RightThumbDeadzone = 8689f;
+		float magnitude = System.Math.Abs(rightY);
+		RightStickY = magnitude <= RightThumbDeadzone
+			? 0f
+			: System.Math.Sign(rightY) *
+				((magnitude - RightThumbDeadzone) / (32767f - RightThumbDeadzone));
 
 		PublishToHost(buttons, leftX, leftY);
 	}
 
 	/// <summary>
 	/// Whether the guest's own front-end menu should be shielded from this frame's input.
-	///
-	/// TRUE WHILE THE GUEST'S ACTIVE SCREEN IS THE MAIN MENU, because that is the screen Godot
-	/// took over. Nothing else is masked: the TITLE screen keeps every button, since A there is
-	/// the guest's own documented contract (`if (a2 == 36 &amp;&amp; *(BYTE*)(a1+80))` at 0x826E3078)
-	/// and it is how the front end is reached at all.
-	///
-	/// AND ONLY IN ITS ROOT SUBSTATE, which is the guest telling us the list is what is up.
-	/// `screen+24` is 0 for the menu list and anything else means the guest owns the screen: 1
-	/// is its own "swallow all input" lock, 2/3/4 the gender card, 5 the load-game carousel,
-	/// 6/7 a modal. Masking through those would be a deadlock rather than a nuisance — every
-	/// failure path in `sub_826DFD58` raises a modal that parks the screen in substate 1 until
-	/// an A press arrives, and DLC with no profile signed in raises one immediately. Hold A back
-	/// there and the dialog can never be dismissed.
-	///
-	/// THE VTABLE CHECK IS LOAD-BEARING, not belt and braces. `dword_83496B08` has two writers
-	/// through the same base ctor, and once the game has taken over it holds a BASE-ONLY object
-	/// whose +180/+184/+188 are not screen pointers — so `screen` is then decoded from fields
-	/// that mean nothing and can read as MainMenu at any moment. Masking on that would take the
-	/// D-pad and the left stick away from the player in the middle of the game.
+	/// True only while the guest's active screen is MainMenu in its root substate; the title
+	/// keeps every button (A there is the guest's contract, `a2 == 36 &amp;&amp;
+	/// *(BYTE*)(a1+80)` at 0x826E3078). `screen+24` is 0 for the menu list; 1 is the guest's own
+	/// input lock, 2/3/4 the gender card, 5 the load-game carousel, 6/7 a modal — masking
+	/// through those deadlocks, since a modal parks the screen in substate 1 until an A press.
+	/// The vtable check is load-bearing: `dword_83496B08` has two writers through the same base
+	/// ctor, and the game's base-only object has no screen pointers at +180/+184/+188.
 	/// </summary>
 	private static bool MaskMenuInput
 	{
@@ -145,23 +153,13 @@ public partial class GameInput : Node
 		{
 			bool wouldMask =
 				HostBridge.FrontEndGuiIsUp &&
-				HostBridge.TryGetFrontEnd(out HostBridge.FrontEndScreen screen, out uint state,
+				HostBridge.TryGetFrontEnd(out Engine_UiModel.FrontEndScreen screen, out uint state,
 					out _, out _, out _, out _) &&
-				screen == HostBridge.FrontEndScreen.MainMenu && state == MenuRootState;
+				screen == Engine_UiModel.FrontEndScreen.MainMenu && state == MenuRootState;
 
-			// NEVER MASK ONCE A WORLD IS UP, whatever the front-end decode says.
-			//
-			// The paragraph above documents the hazard and then trusts a vtable check to hold it
-			// off: in game, `dword_83496B08` holds a BASE-ONLY object whose +180/+184/+188 are
-			// not screen pointers, so `screen` is decoded from fields that mean nothing and can
-			// read as MainMenu at any moment. If it does, this masks the D-pad AND ZEROES THE
-			// LEFT STICK — the player cannot walk, and because the camera follows the hero, the
-			// camera freezes too. That is indistinguishable from "the camera is broken".
-			//
-			// Masking only ever exists to stop Godot's main menu and the guest's own menu acting
-			// on one press. A live world means the main menu is not what is on screen, so there
-			// is nothing to protect and every reason not to take the controls away. Cheap,
-			// unambiguous, and it cannot be fooled by a misdecoded screen.
+			// Never mask once a world is up, whatever the front-end decode says: masking exists
+			// only to stop Godot's main menu and the guest's from acting on one press, and a
+			// misdecoded MainMenu here would zero the left stick and freeze the player.
 			if (wouldMask && (HostBridge.IsInGame || HostBridge.WorldIsActive()))
 			{
 				if (!_reportedInGameMask)
@@ -181,6 +179,104 @@ public partial class GameInput : Node
 
 	private static bool _reportedInGameMask;
 
+	/// <summary>Set while the owned pause menu has a group expanded: B then collapses the
+	/// group instead of reaching the guest, whose own B on the pause root resumes the game.</summary>
+	public static bool PauseMenuSwallowsBack { get; set; }
+
+	/// <summary>
+	/// Set while the owned front end answers B itself — a folder open in the list, or the gender
+	/// card or warning box up. The guest's B on the root list leaves for the title, and its Lua
+	/// highlight always reads "at root" here (28/29 are masked), so B must not reach it.
+	/// </summary>
+	public static bool FrontEndSwallowsBack { get; set; }
+
+	/// <summary>
+	/// The right stick's Y, −1..1, up positive — what `page.lua` scrolls a book page with
+	/// (`Page.onUpdate` reads `GUI.State.RightThumbStickY`, page.dis main.1 pc18..21).
+	/// </summary>
+	public static float RightStickY { get; private set; }
+
+	/// <summary>
+	/// Set by the <c>GameUi</c> modal-box drives while an owned box view is standing (query box,
+	/// message box, numeric adjuster). A, B and the adjuster's D-pad are then the box's
+	/// vocabulary, dispatched through the guest's router; the guest must not also see the press
+	/// or the box answers twice. Re-derived every frame, and ANDed with the guest's own state.
+	/// </summary>
+	public static bool ModalBoxOwnsInput { get; set; }
+
+	/// <summary>Masks the box's buttons only while the guest still says a modal dialog is
+	/// pending (the mode latch, over ANY screen — the openers never change the screen id).
+	/// Fails open.</summary>
+	private static bool MaskPauseQueryInput =>
+		ModalBoxOwnsInput && HostBridge.GetPauseState() is { ModalUp: true };
+
+	/// <summary>
+	/// Set by <c>GameUi.DriveReceiveItems</c> while the owned received-item card is standing.
+	/// The card does not pause the game, so only A (done) and Y (flip) are taken.
+	/// </summary>
+	public static bool ReceiveItemsOwnsInput { get; set; }
+
+	private static bool MaskReceiveItemsInput =>
+		ReceiveItemsOwnsInput &&
+		HostBridge.GetPauseState() is { ScreenId: 8, ModalMode: 1 };
+
+	private static uint WithoutCardInput(uint buttons) => buttons & ~(ButtonA | ButtonY);
+
+	/// <summary>
+	/// Set by <c>GameUi.DriveMenuBox</c> while the owned option list is standing. Its whole
+	/// vocabulary is taken: the D-pad moves the guest's selection through our lever, so a press
+	/// the guest also saw would double every step.
+	/// </summary>
+	public static bool MenuBoxOwnsInput { get; set; }
+
+	private static bool MaskMenuBoxInput => MenuBoxOwnsInput;
+
+	/// <summary>
+	/// Set by <c>GameUi.DriveScreenMenu</c> while the owned in-game list is standing. The whole
+	/// vocabulary goes, stick included: every press is forwarded to the guest as its own lever
+	/// (a direction becomes <c>g_Menu:ScrollUp/ScrollDown()</c>, A/B become action codes 36/37),
+	/// and `sub_826E39C0` turns the left stick into the same 28..31 codes the D-pad emits.
+	/// Re-derived every frame and ANDed with the guest's own state. Fails open.
+	/// </summary>
+	public static bool ScreenMenuOwnsInput { get; set; }
+
+	private static bool MaskScreenMenuInput =>
+		ScreenMenuOwnsInput && HostBridge.GetPauseState() is { ModalMode: 1, ScreenId: not 0 };
+
+	/// <summary>The buttons with the owned query box's whole vocabulary taken out — A and B
+	/// both, unlike the pause root where B is the guest's resume.</summary>
+	private static uint WithoutQueryInput(uint buttons) =>
+		buttons & ~(DpadUp | DpadDown | DpadLeft | DpadRight | ButtonA | ButtonB);
+
+	/// <summary>
+	/// Whether the guest's own pause menu should be shielded from this frame's input. Gated on
+	/// the guest's own statement, not the UI's: the mask engages the frame the guest says the
+	/// pause root is the active screen (id 0, no modal pending), because the owned view appears
+	/// only on the mirror's sampling cadence. The bridge admits only the in-game GUI object
+	/// (vtable 0x82001610), so this can never read "pause root" over the front end. Every pause
+	/// modal changes the screen id or sets the modal id (query boxes 23/24/25/28), so a dialog
+	/// unmasks the frame it opens. Fails open: no pause state, no mask.
+	/// </summary>
+	private static bool MaskPauseInput =>
+		HostBridge.GetPauseState() is { RootActive: true };
+
+	/// <summary>
+	/// The buttons with the pause menu's navigation taken out: the guest's pause list is still
+	/// populated and `expandablemenuinput.lua` still binds A. LB/RB stay through — the guest's
+	/// own tab switch is the lever our tab entries write. B is conditional, see
+	/// <see cref="PauseMenuSwallowsBack"/>.
+	/// </summary>
+	private static uint WithoutPauseInput(uint buttons)
+	{
+		uint filtered = buttons & ~(DpadUp | DpadDown | DpadLeft | DpadRight | ButtonA);
+		if (PauseMenuSwallowsBack)
+		{
+			filtered &= ~ButtonB;
+		}
+
+		return filtered;
+	}
+
 	/// <summary>
 	/// `screen+24` while the menu LIST is the thing on screen. Every other value is a substate
 	/// the guest drives itself — see <see cref="MaskMenuInput"/>.
@@ -188,38 +284,28 @@ public partial class GameInput : Node
 	private const uint MenuRootState = 0;
 
 	/// <summary>
-	/// The buttons with the front end's navigation taken out.
-	///
-	/// WHY THIS EXISTS. Godot owns the main menu — its list, its order and its highlight — and
-	/// dispatches the result to the guest BY NAME, which is the guest's own contract. But the
-	/// guest never stopped running its own menu: its shipped `g_Menu` Lua still holds a list and
-	/// a highlight, and `sub_826DEE40` still forwards A and B to it through `OnPressA` /
-	/// `OnPressB` while `screen+24` is 0. Feeding it the same press ran both menus, and their
-	/// highlights are not the same object — a press on Godot's "Downloadable Content" put the
-	/// guest into substate 5, its LOAD-GAME carousel, because that is what ITS list had
-	/// selected. Two menus acting on one press is not a cosmetic problem: the guest was also
-	/// setting slides on `choosecard` behind the panel Godot had just put up.
-	///
-	/// B IS DELIBERATELY LEFT THROUGH. On the root menu it is the guest's business — B there
-	/// leaves for the title screen, and that path runs entirely inside the guest. Masking it
-	/// would need a host route back to the title that does not exist yet, so the entry that
-	/// works today keeps working.
+	/// The buttons with the front end's navigation taken out. Godot owns the main menu and
+	/// dispatches by name, but the guest never stopped running its own: `sub_826DEE40` still
+	/// forwards A and B to `g_Menu` through `OnPressA`/`OnPressB` while `screen+24` is 0, and
+	/// the two highlights are different objects. B is left through at the root, where it is the
+	/// guest's own path to the title; elsewhere <see cref="FrontEndSwallowsBack"/> masks it.
 	/// </summary>
-	private static uint WithoutMenuInput(uint buttons) =>
-		buttons & ~(DpadUp | DpadDown | DpadLeft | DpadRight | ButtonA);
+	private static uint WithoutMenuInput(uint buttons)
+	{
+		uint filtered = buttons & ~(DpadUp | DpadDown | DpadLeft | DpadRight | ButtonA);
+		if (FrontEndSwallowsBack)
+		{
+			filtered &= ~ButtonB;
+		}
+
+		return filtered;
+	}
 
 	/// <summary>
-	/// The same frame's input, in the terms a HOST-OWNED menu needs.
-	///
-	/// Godot draws the front end itself now, so the highlight lives on this side and something
-	/// here has to read the stick and the d-pad. This deliberately reuses the buttons already
-	/// gathered for the guest rather than polling the devices a second time: two readers of
-	/// one pad drift apart the moment either grows a deadzone or a repeat rule, and then the
-	/// menu and the guest disagree about what the player did.
-	///
-	/// The stick is folded into the direction using the SHIPPED threshold — Fable 2's own
-	/// `THUMBSTICK_RELEASE_THRESHOLD` is 0.65, out of `guistateandconstants.lua`, and it is
-	/// high on purpose: a low threshold makes a resting stick creep through a menu.
+	/// The same frame's input, in the terms a host-owned menu needs. Reuses the buttons already
+	/// gathered for the guest rather than polling the devices a second time, so the two readers
+	/// cannot drift. The stick folds into the direction on the shipped threshold —
+	/// `THUMBSTICK_RELEASE_THRESHOLD` 0.65, from `guistateandconstants.lua`.
 	/// </summary>
 	private static void PublishToHost(uint buttons, int leftX, int leftY)
 	{
@@ -249,14 +335,11 @@ public partial class GameInput : Node
 
 		MenuDirection = direction;
 
-		// The same fold across X, for the panels the front end navigates SIDEWAYS — the gender
-		// card and the load-game carousel. The guest reads one stick for both axes and turns
-		// each into its own button code: `sub_826E39C0` compares the dead-zoned X against
-		// ±0.75 at 0x826E3B3C / 0x826E3B98 and emits code 30 for left and 31 for right, exactly
-		// as it emits 28 and 29 off Y. Its threshold is 0.75 rather than the scripts' 0.65,
-		// which is the guest's own number for a stick-as-button and not the menu's — but using
-		// two different thresholds on one stick is how a diagonal push scrolls a menu and
-		// flips a card at the same time, so the shipped menu threshold governs both here.
+		// The same fold across X, for the panels navigated sideways (gender card, load-game
+		// carousel). `sub_826E39C0` compares the dead-zoned X against ±0.75 at
+		// 0x826E3B3C/0x826E3B98 and emits code 30 left, 31 right, as it emits 28/29 off Y. Its
+		// 0.75 is a stick-as-button threshold; one threshold governs both axes here, or a
+		// diagonal push scrolls a menu and flips a card at once.
 		int horizontal = 0;
 		if ((buttons & DpadLeft) != 0)
 		{
@@ -281,25 +364,40 @@ public partial class GameInput : Node
 
 		MenuHorizontal = horizontal;
 
-		// EDGE-detected, because a menu acts on a press and the guest edge-detects the same
-		// way. Holding A must not activate the highlighted entry every frame.
+		// Edge-detected, as the guest does: holding A must not activate the entry every frame.
 		bool a = (buttons & ButtonA) != 0;
 		bool b = (buttons & ButtonB) != 0;
+		bool y = (buttons & ButtonY) != 0;
+		bool lb = (buttons & LeftShoulder) != 0;
+		bool rb = (buttons & RightShoulder) != 0;
+		bool wheel = (buttons & Back) != 0;
+		bool x = (buttons & ButtonX) != 0;
 		MenuAcceptPressed = a && !_acceptWasDown;
+		MenuAcceptReleased = !a && _acceptWasDown;
 		MenuBackPressed = b && !_backWasDown;
+		MenuFlipPressed = y && !_flipWasDown;
+		MenuTabPrevPressed = lb && !_tabPrevWasDown;
+		MenuTabNextPressed = rb && !_tabNextWasDown;
+		MenuEquipPressed = x && !_equipWasDown;
+		QuickWheelPressed = wheel && !_wheelWasDown;
+		QuickWheelReleased = !wheel && _wheelWasDown;
+		QuickWheelHeld = wheel;
 		_acceptWasDown = a;
 		_backWasDown = b;
+		_flipWasDown = y;
+		_tabPrevWasDown = lb;
+		_tabNextWasDown = rb;
+		_wheelWasDown = wheel;
+		_equipWasDown = x;
 	}
 
 	/// <summary>
-	/// One direction's stick hysteresis, as `guistateandconstants.lua` states it.
-	///
-	/// <paramref name="magnitude"/> is the stick along that direction, already signed so that
-	/// pushing THIS way is positive. The direction engages above
-	/// `THUMBSTICK_PUSH_THRESHOLD` (0.70) and stays engaged until the stick falls back under
-	/// `THUMBSTICK_RELEASE_THRESHOLD` (0.65) — which is why the shipped script keeps a
-	/// `Pushing<Direction>Held` boolean per direction rather than recomputing from one cutoff.
+	/// One direction's stick hysteresis, as `guistateandconstants.lua` states it: engages above
+	/// `THUMBSTICK_PUSH_THRESHOLD` (0.70), stays engaged until below
+	/// `THUMBSTICK_RELEASE_THRESHOLD` (0.65), hence one held flag per direction.
 	/// </summary>
+	/// <param name="magnitude">The stick along that direction, signed so pushing this way is
+	/// positive.</param>
 	private static bool Held(ref bool held, double magnitude)
 	{
 		held = held
@@ -323,12 +421,58 @@ public partial class GameInput : Node
 	/// <summary>True on the frame A went down.</summary>
 	public static bool MenuAcceptPressed { get; private set; }
 
+	/// <summary>True on the frame A came up — the expression wheel's held-expression end.</summary>
+	public static bool MenuAcceptReleased { get; private set; }
+
+	/// <summary>
+	/// The left stick in the Xbox frame (x right, y UP, ±1) — the raw vector the expression
+	/// wheel's cursor is computed from.
+	/// </summary>
+	public static Vector2 LeftStick { get; private set; }
+
 	/// <summary>True on the frame B went down.</summary>
 	public static bool MenuBackPressed { get; private set; }
+
+	/// <summary>
+	/// True on the frame LB / RB went down — the tab cycle. Forwarded as action codes 72/73 by
+	/// the owned drives, because the guest's route from the shoulder bits to those codes is the
+	/// GDB-driven action-consumer chain, which does not fire here. The screen handler keeps its
+	/// own gates: an open submenu eats the cycle (`screen+420`), `sub_826B83D0` skips
+	/// unavailable tabs.
+	/// </summary>
+	public static bool MenuTabPrevPressed { get; private set; }
+
+	public static bool MenuTabNextPressed { get; private set; }
+
+	private static bool _tabPrevWasDown;
+	private static bool _tabNextWasDown;
+
+	/// <summary>True on the frame Y went down — the received-item card's flip.</summary>
+	public static bool MenuFlipPressed { get; private set; }
+
+	/// <summary>True on the frame X went down — the received-item card's equip (code 75).</summary>
+	public static bool MenuEquipPressed { get; private set; }
+
+	private static bool _equipWasDown;
 
 	private static bool _acceptWasDown;
 
 	private static bool _backWasDown;
+
+	private static bool _flipWasDown;
+
+	/// <summary>
+	/// The expression wheel's hold — GameAction 40 on press, 41 on release. A host binding: the
+	/// shipped control scheme binds GameAction 40 to `XboxButton` code 15, and that code →
+	/// button table is not decoded, so the wheel rides the pad's Back button and keyboard Q.
+	/// </summary>
+	public static bool QuickWheelPressed { get; private set; }
+
+	public static bool QuickWheelReleased { get; private set; }
+
+	public static bool QuickWheelHeld { get; private set; }
+
+	private static bool _wheelWasDown;
 
 	/// <summary>Whichever axis is further from centre — a pad at rest reads 0 and loses.</summary>
 	private static int Dominant(int a, int b) =>
@@ -337,6 +481,9 @@ public partial class GameInput : Node
 	/// <summary>Triggers are 0..1 in Godot and 0..255 on the Xbox.</summary>
 	private static uint Trigger(int pad, JoyAxis axis) => (uint)Mathf.Clamp(
 		Mathf.RoundToInt(Input.GetJoyAxis(pad, axis) * 255.0f), 0, 255);
+
+	/// <summary>Which triggers were last reported held.</summary>
+	private static uint _reportedTriggers;
 
 	private static uint JoypadButtons(int pad)
 	{
@@ -359,10 +506,8 @@ public partial class GameInput : Node
 	}
 
 	/// <summary>
-	/// The keyboard, in Xbox terms. Always live, whatever else is plugged in.
-	///
-	/// The bindings are the conventional ones for a console front end: Enter/Space is A,
-	/// Escape/Backspace is B, the arrows are the D-pad.
+	/// The keyboard, in Xbox terms. Always live: Enter/Space is A, Escape/Backspace is B,
+	/// the arrows are the D-pad.
 	/// </summary>
 	private static uint KeyboardButtons()
 	{
@@ -374,21 +519,14 @@ public partial class GameInput : Node
 		if (Input.IsKeyPressed(Key.Enter) || Input.IsKeyPressed(Key.Space)) buttons |= ButtonA;
 		if (Input.IsKeyPressed(Key.Escape) || Input.IsKeyPressed(Key.Backspace)) buttons |= ButtonB;
 		if (Input.IsKeyPressed(Key.Tab)) buttons |= Start;
+		if (Input.IsKeyPressed(Key.Q)) buttons |= Back;
 		return buttons;
 	}
 
 	/// <summary>
-	/// The unattended A press, for runs with nobody at the keyboard.
-	///
-	/// Held for a few frames and then RELEASED, because the guest edge-detects: it compares
-	/// the current buttons against the previous frame's, so a permanently-held button is
-	/// one press and never repeats.
-	///
-	/// It presses whenever the title says it will accept A, not once. A single press is not
-	/// enough — the title screen has its own idle timeout into attract mode, so a run that
-	/// pressed once and stopped kept sliding back to the attract movie and never reached
-	/// the menu. The cooldown keeps it from hammering: one press, then a pause long enough
-	/// for the screen to act on it.
+	/// The unattended A press, for runs with nobody at the keyboard. Held a few frames then
+	/// released, because the guest edge-detects. Repeats on a cooldown rather than pressing
+	/// once: the title has an idle timeout into attract mode.
 	/// </summary>
 	private static uint AutoStartButtons()
 	{
@@ -408,23 +546,20 @@ public partial class GameInput : Node
 			return 0;
 		}
 
-		if (!HostBridge.TryGetFrontEnd(out HostBridge.FrontEndScreen screen,
+		if (!HostBridge.TryGetFrontEnd(out Engine_UiModel.FrontEndScreen screen,
 				out uint state, out bool canPressA, out uint cursor,
 				out int slide, out _))
 		{
 			return 0;
 		}
 
-		// The TITLE takes A only when it is idle and armed.
-		// The MAIN MENU has no such flag, and it does not start on its first page — it comes
-		// up on slide 1 (PressStart) and needs a press to reach the menu proper, then another
-		// to take the highlighted item. So it is pressed on a cooldown until the front end
-		// hands over, which is the guest telling us the sequence is done: the active screen
-		// stops being one of the two front-end screens.
+		// The title takes A only when idle and armed. The main menu has no such flag and comes
+		// up on slide 1 (PressStart), needing a press to reach the menu and another to take the
+		// highlighted item, so it is pressed on a cooldown until the front end hands over.
 		bool ready = screen switch
 		{
-			HostBridge.FrontEndScreen.Title => canPressA && state == TitleIdleState,
-			HostBridge.FrontEndScreen.MainMenu => true,
+			Engine_UiModel.FrontEndScreen.Title => canPressA && state == TitleIdleState,
+			Engine_UiModel.FrontEndScreen.MainMenu => true,
 			_ => false,
 		};
 
@@ -441,18 +576,11 @@ public partial class GameInput : Node
 	}
 
 	/// <summary>
-	/// The title screen's idle state.
-	///
-	/// What actually gates A is the ARMED BYTE, `titleScreen+80`, which is what
-	/// <c>canPressA</c> reports: `if (a2 == 36 &amp;&amp; *(BYTE *)(a1 + 80))` at 0x826E3078, armed
-	/// only by the presentation's CAN_PRESS_A event at 0x826E2E38. States 0, 9, 10 and 11
-	/// all reach that branch — they are self-limiting only because the byte is 0 in the
-	/// others. So this is not "the only state that starts the game".
-	///
-	/// It is still the state to wait for, because of the ONE state that takes A somewhere
-	/// else: in state 8 the attract movie is up and A goes down a different branch
-	/// (0x826E3030) that only sets the movie's skip flag and can never start anything.
-	/// Waiting for idle keeps every press on the branch that starts the game.
+	/// The title screen's idle state. A is gated by the armed byte `titleScreen+80` (what
+	/// <c>canPressA</c> reports): `a2 == 36 &amp;&amp; *(BYTE *)(a1 + 80)` at 0x826E3078, armed by
+	/// the presentation's CAN_PRESS_A event at 0x826E2E38; states 0, 9, 10 and 11 all reach it.
+	/// Waiting for state 0 avoids state 8, where the attract movie takes A down 0x826E3030 and
+	/// only sets its skip flag.
 	/// </summary>
 	private const uint TitleIdleState = 0;
 
@@ -465,9 +593,8 @@ public partial class GameInput : Node
 		Input.IsJoyButtonPressed(pad, button) ? mask : 0u;
 
 	/// <summary>
-	/// Godot reports -1..1; the guest wants -32768..32767. Scaled by 32767 in both
-	/// directions rather than 32768 downward, so a full deflection is symmetric and can
-	/// never overflow the positive end.
+	/// Godot reports -1..1; the guest wants -32768..32767. Scaled by 32767 both ways so a full
+	/// deflection is symmetric and cannot overflow the positive end.
 	/// </summary>
 	private static int Axis(int pad, JoyAxis axis) =>
 		Mathf.Clamp(Mathf.RoundToInt(Input.GetJoyAxis(pad, axis) * 32767.0f), -32767, 32767);

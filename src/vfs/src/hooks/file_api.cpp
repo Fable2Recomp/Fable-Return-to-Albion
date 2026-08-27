@@ -7,6 +7,7 @@ REX_EXTERN(rex_CreateFileA) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_CreateFileA);
 
+
   const PPCContext original_ctx = ctx;
   const std::string path =
       refii::vfs::FormatGuestAsciiBytes(base, ctx.r3.u32, 4096);
@@ -94,8 +95,7 @@ REX_EXTERN(rex_CreateFileA) {
     return;
   }
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      (refii::vfs::IsCachedOptionalSyntheticVfsMiss(path) ||
+  if ((refii::vfs::IsCachedOptionalSyntheticVfsMiss(path) ||
        refii::vfs::IsOptionalSyntheticVfsProbe(path) ||
        refii::vfs::IsKnownAbsentBootProbe(path))) {
     refii::vfs::SetRefiiWin32LastError(
@@ -128,6 +128,7 @@ REX_EXTERN(rex_ReadFile) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_ReadFile);
+
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32) &&
@@ -173,6 +174,7 @@ REX_EXTERN(rex_ReadFileAsync) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_ReadFileAsync);
 
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32) &&
       refii::vfs::TryReadRefiiPrivateFileHandle(ctx,
@@ -215,6 +217,7 @@ REX_EXTERN(rex_WriteFile) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_WriteFile);
 
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32)) {
     if (refii::vfs::TryWriteRefiiPrivateFileHandle(ctx,
@@ -252,6 +255,7 @@ REX_EXTERN(rex_GetFileSizeEx) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileSizeEx);
 
+
   const PPCContext original_ctx = ctx;
   uint64_t size = 0;
   if (refii::vfs::TryGetRefiiPrivateFileSize(original_ctx.r3.u32, &size)) {
@@ -279,6 +283,7 @@ REX_EXTERN(rex_GetFileSize) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileSize);
+
 
   const PPCContext original_ctx = ctx;
   uint64_t size = 0;
@@ -309,6 +314,7 @@ REX_EXTERN(rex_GetFileInformation) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileInformation);
 
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::TryGetRefiiPrivateFileInformation(
           base, original_ctx.r3.u32, original_ctx.r4.u32)) {
@@ -336,6 +342,7 @@ REX_EXTERN(rex_GetFileSectorInfo) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileSectorInfo);
 
+
   const PPCContext original_ctx = ctx;
   uint32_t sector_size = 0;
   if (refii::vfs::TryGetRefiiPrivateFileSectorInfo(original_ctx.r3.u32,
@@ -362,6 +369,7 @@ REX_EXTERN(rex_GetFileTime) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileTime);
+
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::TryGetRefiiPrivateFileTimes(base,
@@ -395,6 +403,7 @@ REX_EXTERN(rex_SetFilePointer) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_SetFilePointer);
 
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::TrySetRefiiPrivateFilePointer(ctx,
                                                     base,
@@ -426,6 +435,7 @@ REX_EXTERN(rex_SetEndOfFile) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_SetEndOfFile);
 
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32)) {
     if (refii::vfs::TrySetEndOfRefiiPrivateFile(ctx, original_ctx.r3.u32)) {
@@ -452,6 +462,7 @@ REX_EXTERN(rex_FlushFileBuffers) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_FlushFileBuffers);
 
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32)) {
     if (refii::vfs::TryFlushRefiiPrivateFileHandle(ctx, original_ctx.r3.u32)) {
@@ -477,6 +488,7 @@ REX_EXTERN(rex_CloseHandle) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_CloseHandle);
+
 
   const PPCContext original_ctx = ctx;
   if (refii::vfs::IsRefiiPrivateHandle(original_ctx.r3.u32)) {
@@ -508,6 +520,7 @@ REX_EXTERN(rex_DeleteFileA) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_DeleteFileA);
+
 
   const PPCContext original_ctx = ctx;
   const std::string path =
@@ -552,6 +565,7 @@ REX_EXTERN(rex_GetFileAttributesA) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_GetFileAttributesA);
 
+
   const PPCContext original_ctx = ctx;
   const std::string path =
       refii::vfs::FormatGuestAsciiBytes(base, ctx.r3.u32, 4096);
@@ -566,6 +580,32 @@ REX_EXTERN(rex_GetFileAttributesA) {
     refii::vfs::SetRefiiWin32LastError(
         refii::vfs::kRefiiWin32ErrorSuccess);
     ctx.r3.u64 = is_directory ? 0x00000010u : 0x00000081u;
+
+    // An unservable movie must answer "not there": `sub_8286E91C` gates BinkOpen on these
+    // attributes, and on a failed open `sub_82A41B48` stores the null handle unconditionally
+    // (`stw r3, 0x40(r30)` at 0x82A41BFC) and uses it twice a frame (`BinkDoFrame` at 0x82A41F34,
+    // `lwz r10, 0xBC(r10)` at 0x82A42244). Scoped to `.bik` with no host file — videos ship loose,
+    // so only for them does a missing host path mean unservable.
+    if (!is_directory && path.size() >= 4u &&
+        path.compare(path.size() - 4u, 4u, ".bik") == 0) {
+      std::error_code missing_ec;
+      // A host-served asset has no path to stat; its presence is Godot's answer.
+      const bool servable =
+          resolution.host_served
+              ? HostFileSize(resolution) > 0
+              : (!resolution.host_path.empty() &&
+                 std::filesystem::exists(resolution.host_path, missing_ec));
+      if (!servable) {
+        refii::vfs::SetRefiiWin32LastError(refii::vfs::kRefiiWin32ErrorFileNotFound);
+        ctx.r3.u32 = 0xFFFFFFFFu;
+        REXLOG_INFO("Refii VFS: '{}' probes as present but has no servable file — answering "
+                    "NOT FOUND so the guest never opens it. Claiming it exists makes BinkOpen "
+                    "return 0, which the guest stores unchecked and dereferences at 0x82A42244.",
+                    path);
+        return;
+      }
+    }
+
     if (trace) {
       REXLOG_INFO("Refii VFS GetFileAttributesA hit lr=0x{:08X} path={} "
                   "candidate={} kind={} attributes=0x{:08X} host={}",
@@ -617,6 +657,7 @@ REX_EXTERN(rex_FindNextFileA) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_FindNextFileA);
 
+
   const PPCContext original_ctx = ctx;
   if (refii::vfs::VfsTracingEnabled() &&
       refii::vfs::ShouldLogRepeatedVfsTraceOperation("FindNextFileA", 16)) {
@@ -659,6 +700,7 @@ REX_EXTERN(rex_FindFirstFileA) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_FindFirstFileA);
+
 
   const PPCContext original_ctx = ctx;
   const std::string path =
@@ -707,6 +749,7 @@ REX_EXTERN(rex_lh_OpenDiscFile) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lh_OpenDiscFile);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t provider_guest = ctx.r4.u32;
@@ -726,8 +769,7 @@ REX_EXTERN(rex_lh_OpenDiscFile) {
       refii::vfs::ShouldLogFileApiPath("OpenDiscFile", name) ||
       refii::vfs::ShouldLogFileApiPath("OpenDiscFile", provider);
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      refii::vfs::g_suppress_request_manager_hash_entry_loose_streams == 0 &&
+  if (refii::vfs::g_suppress_request_manager_hash_entry_loose_streams == 0 &&
       out_guest != 0 && !asset_candidates.empty()) {
     refii::vfs::RefiiVfsOpenResult open_result;
     std::string opened_asset_path;
@@ -842,6 +884,7 @@ REX_EXTERN(rex_lhFile_IsOpen) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_IsOpen);
 
+
   const uint32_t file_guest = ctx.r3.u32;
   if (refii::vfs::IsRefiiOwnedLhFileStream(base, file_guest, 8) ||
       refii::vfs::IsRefiiOwnedLhFileStream(base, file_guest, 12)) {
@@ -866,6 +909,7 @@ REX_EXTERN(rex_lhFile_GetSize) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_GetSize);
+
 
   const uint32_t file_guest = ctx.r3.u32;
   uint32_t size = 0;
@@ -895,6 +939,7 @@ REX_EXTERN(rex_lhFile_GetTotalSize) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_GetTotalSize);
 
+
   const uint32_t file_guest = ctx.r3.u32;
   uint32_t size = 0;
   if (refii::vfs::TryGetRefiiOwnedLhFileStreamSize(base,
@@ -921,7 +966,9 @@ REX_EXTERN(rex_lhFile_GetTotalSize) {
 REX_EXTERN(rex_lhFile_ResolveAndOpen) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhFile_ResolveAndOpen);
+  // No native passthrough macro: it would return before the Refii-owned check. The call to the
+  // original at the end is the passthrough for the guest's own objects.
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t file_guest = ctx.r3.u32;
@@ -953,7 +1000,7 @@ REX_EXTERN(rex_lhFile_ResolveAndOpen) {
                 refii::vfs::FormatGuestWords(base, original_ctx.r4.u32, 8));
   }
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() && file_guest != 0 &&
+  if (file_guest != 0 &&
       !path.empty()) {
     PPCContext open_ctx = original_ctx;
     const uint32_t out_guest = refii::vfs::CallLhMalloc(open_ctx, base, 4);

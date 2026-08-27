@@ -4,12 +4,6 @@ namespace refii::modding {
 
 const std::vector<RuntimeSettingDefinition>& GetRuntimeSettingDefinitions() {
   static const std::vector<RuntimeSettingDefinition> definitions = {
-      {"vfs_loose_asset_backend",
-       "VFS",
-       RuntimeSettingType::String,
-       "native",
-       "VFS backend: refii enables loose asset and mod overlays, native uses the original Fable 2 VFS.",
-       "native,refii"},
       {"vfs_mods_root",
        "VFS",
        RuntimeSettingType::String,

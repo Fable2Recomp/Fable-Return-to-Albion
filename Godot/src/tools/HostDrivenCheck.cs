@@ -93,6 +93,11 @@ public partial class HostDrivenCheck : Node
 			return;
 		}
 
+		// A LIVE-GUEST TOOL, so it points the engine UI at the guest the same way the game
+		// does. Without this it would read the authored stand-in and report an empty screen
+		// while a real one was up.
+		Refii.Host.HostUiSource.Install();
+
 		_driving = true;
 	}
 
@@ -150,12 +155,6 @@ public partial class HostDrivenCheck : Node
 
 	private double _lastPresentationReport;
 
-	/// <summary>sdbm of "opacity", masked the way the runtime stores an attribute id.</summary>
-	private static readonly uint[] OpacityIds =
-	{
-		Engine_GameHash.Sdbm("opacity") & Engine_GameHash.AttributeIdMask,
-	};
-
 	/// <summary>
 	/// What UI the guest has actually STOOD UP, from the one registry that holds every live
 	/// presentation.
@@ -166,20 +165,20 @@ public partial class HostDrivenCheck : Node
 	/// </summary>
 	private static void ReportPresentations(string when)
 	{
-		System.Collections.Generic.List<HostBridge.Presentation> live =
+		System.Collections.Generic.List<Engine_UiModel.Presentation> live =
 			HostBridge.GetPresentations();
 
 		GD.Print($"[presentation] {when}: {live.Count} live " +
 			$"(inGame={HostBridge.IsInGame})");
-		foreach (HostBridge.Presentation p in live)
+		foreach (Engine_UiModel.Presentation p in live)
 		{
 			// Opacity is only read for a screen we would actually draw — it costs a full
 			// element walk, and a parked menu's answer is stale anyway.
 			string opacity = string.Empty;
 			if (p.IsShowing)
 			{
-				HostBridge.LiveAttribute[,]? attrs =
-					HostBridge.GetUiAttributes(OpacityIds, p.Address);
+				Engine_UiModel.LiveAttribute[,]? attrs =
+					HostBridge.GetUiAttributes(Engine_UiLiveAttributes.OpacityIds, p.Address);
 				if (attrs is null)
 				{
 					opacity = " opacity=NONE";
@@ -190,9 +189,9 @@ public partial class HostDrivenCheck : Node
 					int zero = 0;
 					for (int i = 0; i < attrs.GetLength(0); ++i)
 					{
-						if (!attrs[i, 0].Present) continue;
+						if (!attrs[i, Engine_UiLiveAttributes.OpacitySlot].Present) continue;
 						++reported;
-						if (attrs[i, 0].AsFloat <= 0.001f) ++zero;
+						if (attrs[i, Engine_UiLiveAttributes.OpacitySlot].AsFloat <= 0.001f) ++zero;
 					}
 
 					opacity = $" opacity={reported} reported/{zero} at zero";

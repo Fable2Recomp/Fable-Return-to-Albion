@@ -34,6 +34,15 @@ set(REFII_VFS_RUNTIME_SOURCES
     # RTLD_GLOBAL, unresolvable in a Windows DLL, and against refii_payload/payload.h either
     # way.
     ${REFII_VFS_ROOT}/src/core/guest_tick_pump_state.cpp
+    ${REFII_VFS_ROOT}/src/core/host_asset_reader.cpp
+    # The UI cut's arrival queue: the intercepted `GUI.*` calls and their arguments. Same rule
+    # as the pump's queue above and for the same direction of travel — the PAYLOAD posts (the
+    # luaD_precall hook compiles into refii_generated) and the HOST BRIDGE drains, so a copy in
+    # each library would have the hook filling one queue while the bridge reads another empty
+    # one. That is not a link error on Linux, which is what makes it worth stating here.
+    ${REFII_VFS_ROOT}/src/gui/gui_native_calls.cpp
+    ${REFII_VFS_ROOT}/src/gui/gui_menu_chunks.cpp
+    ${REFII_VFS_ROOT}/src/gui/gui_element_state.cpp
     # Host side of the payload's log bridge. Must be in refii_vfs, which the payload links,
     # and NOT in the hook set: the hooks compile into the payload, which is the caller.
     ${REFII_VFS_ROOT}/src/core/log_bridge.cpp
@@ -88,6 +97,9 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/texture_parser.cpp
     ${REFII_VFS_ROOT}/src/hooks/boot_lifecycle.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_natives.cpp
+    ${REFII_VFS_ROOT}/src/hooks/gui_menu_hooks.cpp
+    ${REFII_VFS_ROOT}/src/hooks/gui_element_hooks.cpp
+    ${REFII_VFS_ROOT}/src/hooks/babel_text_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/guest_tick_pump.cpp
     ${REFII_VFS_ROOT}/src/hooks/game_init_trace.cpp
     ${REFII_VFS_ROOT}/src/hooks/frontend_video_handoff.cpp

@@ -24,6 +24,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#ifndef _WIN32
+#include <signal.h>
+#endif
 #include <string>
 #include <vector>
 
@@ -32,8 +35,35 @@
 #include <rex/system/xmemory.h>
 
 #include "core/payload_bridge.h"
+#include "core/hero_derived.h"
 
 namespace refii::vfs {
+
+/// An alternate signal stack for the calling thread, once. A fault on a thread whose stack has
+/// overflowed cannot have a handler frame pushed onto it, so the kernel kills the process with
+/// no handler run and no dmesg line. Guest threads are created without one; the tick pump and
+/// the SwitchToThread hook call this so each gets its own.
+void EnsureAlternateSignalStack() {
+#ifndef _WIN32
+  thread_local bool installed = false;
+  if (installed) {
+    return;
+  }
+  installed = true;
+  stack_t current{};
+  if (::sigaltstack(nullptr, &current) == 0 && (current.ss_flags & SS_DISABLE) == 0 &&
+      current.ss_sp != nullptr) {
+    return;  // .NET (or someone) already gave this thread one
+  }
+  constexpr std::size_t kAltStackBytes = 256u * 1024u;
+  stack_t alt{};
+  alt.ss_sp = std::malloc(kAltStackBytes);
+  alt.ss_size = kAltStackBytes;
+  if (alt.ss_sp != nullptr && ::sigaltstack(&alt, nullptr) != 0) {
+    std::free(alt.ss_sp);
+  }
+#endif
+}
 
 namespace {
 
@@ -262,6 +292,164 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
   }
 }
 
+/// One spawned menu row, as `sub_826CE8D0` was handed it.
+struct MenuRow {
+  std::string name;
+  std::string parent;
+
+  // String2 — the already-localised display text, decorations included. UTF-16BE in the
+  // guest; decoded at capture.
+  std::string label;
+  uint32_t id = 0;
+  int32_t event_type = 0;
+
+  // Star or pip rating from `sub_826CE230`, SpawnButton's ninth argument (first stack slot,
+  // caller_SP+0x54). Bimodal by magnitude: below 100 a star slide (2 x the GDB "Rating", so
+  // 0..10, 11 meaning empty); 100 and above a five-digit base-10 pip word, each digit 1 for an
+  // empty augment slot and 2 for a filled one.
+  int32_t rating = 0;
+};
+
+std::mutex g_menu_mutex;
+
+/// The list being built by the population currently running.
+std::vector<MenuRow> g_menu_building;
+
+/// The last published copy — what the host reads.
+std::vector<MenuRow> g_menu_rows;
+
+/// Bumped on every row, so a host can tell "still the same list" from "read it again".
+std::atomic<uint64_t> g_menu_generation{0};
+
+/// True from `DeleteAllSpawnedMenuItems` until the next guest tick — the window in which the
+/// capture is partial. There is no end marker: the in-game lists never call
+/// `UpdateAfterSpawning`. A population runs to completion inside the GUI update that began it,
+/// so the next guest tick is the first moment the list is whole; hence cleared from the tick,
+/// not from a row.
+std::atomic<bool> g_menu_populating{false};
+
+// The hero's derived state, sampled on the guest's own thread. The logbook's numbers are
+// accessor returns, not fields: morality is `sub_8223D320` (raw + GDB script constants +
+// real-estate and worship terms), renown `sub_821C7D30` (field + modifier 10, clamped), and
+// the personality bands at 0.375/0.625 name the wrong title if fed the raw field. The host
+// bridge runs on Godot's thread and cannot call them; the pump is already on the guest tick
+// thread, so it samples and stashes the answer here.
+
+namespace {
+
+std::mutex g_hero_mutex;
+HeroDerived g_hero;
+
+std::mutex g_region_mutex;
+WorldMapRegion g_region;
+std::atomic<uint32_t> g_region_wanted{0};
+
+std::mutex g_quest_mutex;
+QuestEntry g_quests[kMaxCompletedQuests];
+uint32_t g_quest_count = 0;
+
+}  // namespace
+
+void PublishHeroDerived(const HeroDerived& sampled) {
+  std::lock_guard<std::mutex> lock(g_hero_mutex);
+  g_hero = sampled;
+}
+
+HeroDerived HeroDerivedSnapshot() {
+  std::lock_guard<std::mutex> lock(g_hero_mutex);
+  return g_hero;
+}
+
+void RequestWorldMapRegion(uint32_t index) { g_region_wanted.store(index); }
+
+uint32_t RequestedWorldMapRegion() { return g_region_wanted.load(); }
+
+void PublishWorldMapRegion(const WorldMapRegion& region) {
+  std::lock_guard<std::mutex> lock(g_region_mutex);
+  g_region = region;
+}
+
+WorldMapRegion WorldMapRegionSnapshot() {
+  std::lock_guard<std::mutex> lock(g_region_mutex);
+  return g_region;
+}
+
+void PublishQuests(const QuestEntry* entries, uint32_t count) {
+  std::lock_guard<std::mutex> lock(g_quest_mutex);
+  g_quest_count = count < kMaxCompletedQuests ? count : kMaxCompletedQuests;
+  for (uint32_t i = 0; i < g_quest_count; ++i) {
+    g_quests[i] = entries[i];
+  }
+}
+
+uint32_t QuestSnapshot(QuestEntry* out, uint32_t capacity) {
+  std::lock_guard<std::mutex> lock(g_quest_mutex);
+  const uint32_t copied = capacity < g_quest_count ? capacity : g_quest_count;
+  for (uint32_t i = 0; i < copied; ++i) {
+    out[i] = g_quests[i];
+  }
+
+  // The total, not the copied count: a caller sizes its buffer from the first call.
+  return g_quest_count;
+}
+
+uint32_t MenuRowLabel(uint32_t index, char* out_label, size_t label_capacity) {
+  std::lock_guard<std::mutex> lock(g_menu_mutex);
+  if (out_label != nullptr && label_capacity > 0) {
+    out_label[0] = '\0';
+    if (index < g_menu_rows.size()) {
+      const std::string& label = g_menu_rows[index].label;
+      const size_t take =
+          label.size() < label_capacity - 1 ? label.size() : label_capacity - 1;
+      std::memcpy(out_label, label.data(), take);
+      out_label[take] = '\0';
+    }
+  }
+
+  return static_cast<uint32_t>(g_menu_rows.size());
+}
+
+uint32_t MenuRows(uint32_t index, char* out_name, size_t name_capacity, char* out_parent,
+                  size_t parent_capacity, uint32_t* out_id, int32_t* out_event_type,
+                  uint64_t* out_generation, int32_t* out_rating) {
+  std::lock_guard<std::mutex> lock(g_menu_mutex);
+  if (out_generation != nullptr) {
+    *out_generation = g_menu_generation.load(std::memory_order_relaxed);
+  }
+
+  if (index >= g_menu_rows.size()) {
+    return static_cast<uint32_t>(g_menu_rows.size());
+  }
+
+  const MenuRow& row = g_menu_rows[index];
+  if (out_name != nullptr && name_capacity > 0) {
+    const size_t take = row.name.size() < name_capacity - 1 ? row.name.size() : name_capacity - 1;
+    std::memcpy(out_name, row.name.data(), take);
+    out_name[take] = '\0';
+  }
+
+  if (out_parent != nullptr && parent_capacity > 0) {
+    const size_t take =
+        row.parent.size() < parent_capacity - 1 ? row.parent.size() : parent_capacity - 1;
+    std::memcpy(out_parent, row.parent.data(), take);
+    out_parent[take] = '\0';
+  }
+
+  if (out_id != nullptr) {
+    *out_id = row.id;
+  }
+
+  if (out_rating != nullptr) {
+    *out_rating = row.rating;
+  }
+
+  if (out_event_type != nullptr) {
+    *out_event_type = row.event_type;
+  }
+
+  return static_cast<uint32_t>(g_menu_rows.size());
+}
+
 }  // namespace refii::vfs
 
 // --- The payload's side. C only; see core/payload_bridge.h. --------------------------------
@@ -270,6 +458,62 @@ extern "C" {
 
 void refii_bridge_front_end_note_subtitles(int32_t state) {
   refii::vfs::g_subtitles.store(state, std::memory_order_relaxed);
+}
+
+void refii_bridge_menu_spawn_begin(void) {
+  std::lock_guard<std::mutex> lock(refii::vfs::g_menu_mutex);
+  refii::vfs::g_menu_building.clear();
+
+  // The published copy goes too: `DeleteAllSpawnedMenuItems` runs before every repopulation
+  // and publication is per row, so clearing only the builder leaves the host reading the
+  // previous screen's population in full. Empty is the honest answer for that window — an
+  // unnamed row falls back to the guest's own A press.
+  refii::vfs::g_menu_rows.clear();
+  refii::vfs::g_menu_generation.fetch_add(1, std::memory_order_relaxed);
+
+  // Mark it partial from here: "empty" and "this screen has no rows" are otherwise the same
+  // value, and a consumer would rebuild its model from a list it is about to be given again.
+  refii::vfs::g_menu_populating.store(true, std::memory_order_release);
+}
+
+/// Clears the partial-population flag. Called once per guest tick.
+void refii_bridge_menu_settle(void) {
+  refii::vfs::g_menu_populating.store(false, std::memory_order_release);
+}
+
+/// True while a population is in flight and the captured rows are not yet whole.
+int32_t refii_bridge_menu_populating(void) {
+  return refii::vfs::g_menu_populating.load(std::memory_order_acquire) ? 1 : 0;
+}
+
+void refii_bridge_menu_spawn_row(const char* name, const char* parent, uint32_t id,
+                                 int32_t event_type, int32_t rating) {
+  refii_bridge_menu_spawn_row_labelled(name, parent, id, event_type, rating, nullptr);
+}
+
+void refii_bridge_menu_spawn_row_labelled(const char* name, const char* parent, uint32_t id,
+                                          int32_t event_type, int32_t rating,
+                                          const char* label) {
+  refii::vfs::MenuRow row;
+  row.name = name != nullptr ? name : "";
+  row.parent = parent != nullptr ? parent : "";
+  row.label = label != nullptr ? label : "";
+  row.id = id;
+  row.event_type = event_type;
+  row.rating = rating;
+
+  std::lock_guard<std::mutex> lock(refii::vfs::g_menu_mutex);
+
+  // Ceiling: nothing tells the payload a population has finished, so a screen that spawns
+  // without ever clearing would grow this without bound. The guest's pool is 26 buttons.
+  if (refii::vfs::g_menu_building.size() < 104u) {
+    refii::vfs::g_menu_building.push_back(std::move(row));
+  }
+
+  // Published per row, not at the end: the in-game lists never call `UpdateAfterSpawning`,
+  // so there is no end marker to wait for.
+  refii::vfs::g_menu_rows = refii::vfs::g_menu_building;
+  refii::vfs::g_menu_generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 uint64_t refii_bridge_guest_tick_pump_observe_tick(void) {

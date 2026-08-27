@@ -885,7 +885,11 @@ public partial class GameLoadingScreen : Node
 	/// </summary>
 	private string LevelDisplayName(string levelKey)
 	{
-		if (_levelNames is null)
+		// A FAILED LOAD IS NOT CACHED. The first banner can ask before the bank resolver is
+		// registered, and caching that miss showed raw level keys for the whole session while
+		// every later ask would have succeeded. Success is cached; failure retries on the
+		// next banner, which is at most once per loading screen.
+		if (_levelNames is null || _levelNames.Failure.Length > 0)
 		{
 			_levelNames = Refii.Text.Engine_LevelNames.Load(
 				Refii.Gdb.Engine_BnkGdbLoader.ReadBytes);

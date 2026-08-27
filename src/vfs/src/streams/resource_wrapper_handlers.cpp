@@ -364,7 +364,8 @@ bool TryHandleRefiiHostDiskStreamRead(PPCContext& ctx,
                                       uint32_t stream_guest,
                                       uint32_t buffer_guest,
                                       uint64_t offset,
-                                      uint32_t requested_bytes) {
+                                      uint32_t requested_bytes,
+                                      uint32_t transfer_out_guest) {
   if (!IsRefiiHostDiskStream(base, stream_guest)) {
     return false;
   }
@@ -378,11 +379,34 @@ bool TryHandleRefiiHostDiskStreamRead(PPCContext& ctx,
   const bool window_in_range =
       stream_record != nullptr && offset <= stream_record->size &&
       requested_bytes <= stream_record->size - offset;
+
+  // Logged unconditionally: the rejection below sits behind `ShouldLogLooseStreamOperation`,
+  // false with tracing off, and a refused read returns a NULL request the guest loops on.
+  {
+    // The first eight calls overall, not per stream: the second ask is the refusable one.
+    static std::atomic<uint32_t> asked{0};
+    const uint32_t nth = asked.fetch_add(1, std::memory_order_relaxed) + 1u;
+    if (nth <= 8u) {
+      REXLOG_INFO("Refii ReadAsync #{} on stream 0x{:08X}: out=0x{:08X} transfer_out=0x{:08X} "
+                  "memspec=0x{:08X} offset={} requested={} stream_size={} -> {}",
+                  nth, stream_guest, out_guest, transfer_out_guest, buffer_guest, offset,
+                  requested_bytes, stream_record != nullptr ? stream_record->size : 0,
+                  window_in_range ? "SERVING" : "REFUSED (out of range)");
+    }
+  }
+
   if (!window_in_range) {
     if (out_guest != 0) {
       StoreGuestU32(base, out_guest, 0);
     }
+    if (transfer_out_guest != 0) {
+      StoreGuestU32(base, transfer_out_guest, 0);
+    }
     ctx.r3.u32 = out_guest;
+    REXLOG_WARN("Refii read REFUSED: stream=0x{:08X} offset={} requested={} size={} — the "
+                "guest gets a NULL request and its reader will spin.",
+                stream_guest, offset, requested_bytes,
+                stream_record != nullptr ? stream_record->size : 0);
     if (ShouldLogLooseStreamOperation(
             "RefiiHostStream_ReadOutOfRange", stream_guest, 16)) {
       REXLOG_WARN("Refii host loose stream read rejected like native "
@@ -402,6 +426,16 @@ bool TryHandleRefiiHostDiskStreamRead(PPCContext& ctx,
       ctx, base, stream_guest, buffer_guest, offset, requested_bytes, true);
   if (out_guest != 0) {
     StoreGuestU32(base, out_guest, request_guest);
+  }
+
+  // ReadAsync returns two interfaces of one request: the base through the sret, the transfer
+  // (request+4) through r9 (`sub_82B54E58` writes `*a7 = request + 4` at 0x82B54F24). A null
+  // transfer is the fail path — `rex_lhResourceManager_FindAndCreateStream` null-checks both at
+  // 0x82B53DC4-0x82B53DD0. The guest Releases both on its way out (0x82B540CC and LABEL_38), so
+  // the refcount must carry one count per handed-out interface.
+  if (request_guest != 0 && transfer_out_guest != 0) {
+    StoreGuestU32(base, transfer_out_guest, request_guest + 4);
+    StoreGuestU32(base, request_guest + 8, 2);
   }
   ctx.r3.u32 = out_guest;
   RecordRefiiStartupVideoReadQueued(
@@ -651,7 +685,8 @@ bool TryHandleRefiiStreamReaderRefill(PPCContext& ctx,
   return true;
 }
 
-bool EnsureRefiiReadRequestCompleted(uint8_t* base,
+bool EnsureRefiiReadRequestCompleted(PPCContext& ctx,
+                                     uint8_t* base,
                                      const std::shared_ptr<RefiiReadRequestRecord>& record,
                                      uint32_t record_guest,
                                      std::string_view api) {
@@ -669,6 +704,11 @@ bool EnsureRefiiReadRequestCompleted(uint8_t* base,
       record->buffer_guest == 0) {
     return false;
   }
+
+  // The read runs here, on the guest's thread — the first point where a stream destination is
+  // guaranteed filled in (its base word is still 0 at creation). Idempotent: a completed request
+  // returns above and PerformRefiiReadRequestNow rechecks under the record's lock.
+  PerformRefiiReadRequestNow(ctx, base, record, record_guest);
 
   WaitForRefiiReadRequest(record);
 
@@ -747,9 +787,8 @@ bool TryHandleRefiiReadRequestWait(PPCContext& ctx,
     return false;
   }
 
-  ctx.r3.u32 = EnsureRefiiReadRequestCompleted(base, record, record_guest, api)
-                   ? 1
-                   : 0;
+  ctx.r3.u32 =
+      EnsureRefiiReadRequestCompleted(ctx, base, record, record_guest, api) ? 1 : 0;
   uint32_t bytes_read = 0;
   bool completed = false;
   {
@@ -1205,6 +1244,10 @@ bool TryHandleRefiiReadRequestGetBytes(PPCContext& ctx,
                                        uint8_t* base,
                                        uint32_t out_guest,
                                        uint32_t request_guest) {
+  // `GetDataBuffer`, slot +20, returns a struct: the guest's implementation (0x82B5C0C0) is
+  // sret = { *(this+124), *(this+128) } — data pointer and length, never a byte count. This only
+  // serves a read deferred at creation, then returns false so the guest's accessor answers.
+  (void)out_guest;
   uint32_t record_guest = 0;
   const auto record = FindRefiiReadRequestRecord(request_guest, &record_guest);
   if (record == nullptr) {
@@ -1212,47 +1255,17 @@ bool TryHandleRefiiReadRequestGetBytes(PPCContext& ctx,
   }
 
   EnsureRefiiReadRequestCompleted(
-      base, record, record_guest, "ReadRequest_GetBytes");
-  uint32_t bytes_read = 0;
-  {
-    std::lock_guard<std::mutex> lock(record->mutex);
-    bytes_read = record->bytes_read;
-  }
-  if (out_guest != 0) {
-    StoreGuestU32(base, out_guest, bytes_read);
-    StoreGuestU32(base, out_guest + 4, 0);
-  }
-  ctx.r3.u32 = out_guest;
-  if (LooseAssetOverrideTracingEnabled() ||
-      ShouldLogLooseStreamOperation("ReadRequest_GetBytes", record_guest, 16)) {
-    REXLOG_INFO("Refii read request bytes request=0x{:08X} record=0x{:08X} "
-                "out=0x{:08X} bytes={}",
-                request_guest,
-                record_guest,
-                out_guest,
-                bytes_read);
-  }
-  return true;
+      ctx, base, record, record_guest, "ReadRequest_GetDataBuffer");
+  return false;
 }
 
 bool TryHandleRefiiReadRequestGetOffset(PPCContext& ctx,
                                         uint32_t request_guest) {
-  uint32_t record_guest = 0;
-  const auto record = FindRefiiReadRequestRecord(request_guest, &record_guest);
-  if (record == nullptr) {
-    return false;
-  }
-
-  ctx.r3.u32 = static_cast<uint32_t>(record->offset);
-  if (LooseAssetOverrideTracingEnabled() ||
-      ShouldLogLooseStreamOperation("ReadRequest_GetOffset", record_guest, 16)) {
-    REXLOG_INFO("Refii read request offset request=0x{:08X} record=0x{:08X} "
-                "offset={}",
-                request_guest,
-                record_guest,
-                record->offset);
-  }
-  return true;
+  // Slot +24 (0x82B5C0D8) is `return *(this+200)` — the byte count of the completed read, not an
+  // offset; the guest reads the field itself.
+  (void)ctx;
+  (void)request_guest;
+  return false;
 }
 
 bool TryHandleRefiiReadRequestReturnSuccess(PPCContext& ctx,

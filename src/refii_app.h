@@ -348,15 +348,13 @@ inline void RefiiLogRuntimeBackendSplit() {
   }
   logged = true;
 
+  // THE VFS IS NO LONGER A SPLIT. Godot owns the whole file system, so there is one
+  // implementation and nothing to report about which was chosen — only the renderer still has
+  // a backend worth naming.
   const std::string renderer_backend =
       RefiiGetLowerRuntimeCVar("renderer_backend");
-  const std::string vfs_backend =
-      RefiiGetLowerRuntimeCVar("vfs_loose_asset_backend");
-  REXLOG_INFO(
-      "Refii runtime backend split: renderer_backend={} plume_renderer={} "
-      "vfs_loose_asset_backend={} refii_vfs={}",
-      renderer_backend, renderer_backend == "plume" ? "true" : "false",
-      vfs_backend, vfs_backend == "refii" ? "true" : "false");
+  REXLOG_INFO("Refii runtime backend: renderer_backend={} plume_renderer={} refii_vfs=true",
+              renderer_backend, renderer_backend == "plume" ? "true" : "false");
 }
 
 inline void

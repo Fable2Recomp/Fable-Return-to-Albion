@@ -15,6 +15,7 @@ REX_EXTERN(sub_82B6C340) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B6C340);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t texture_guest = original_ctx.r3.u32;
   uint32_t wrapper_guest = 0;
@@ -139,6 +140,7 @@ REX_EXTERN(sub_82B8BA38) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8BA38);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = original_ctx.r3.u32;
   const uint32_t descriptor_guest = original_ctx.r4.u32;
@@ -190,6 +192,7 @@ REX_EXTERN(sub_82B8C158) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8C158);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t target_guest = original_ctx.r3.u32;
@@ -248,6 +251,7 @@ REX_EXTERN(sub_82B8C5F0) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8C5F0);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t target_guest = original_ctx.r3.u32;
@@ -317,6 +321,7 @@ REX_EXTERN(sub_82B8CAC0) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8CAC0);
 
+
   const PPCContext original_ctx = ctx;
   const bool trace_texture_parser =
       refii::vfs::ShouldTraceTextureParserProbeCall(base, original_ctx);
@@ -362,6 +367,7 @@ REX_EXTERN(sub_82176018) { // Lumen: LHFile::CDataInputStream::SetPosition(uint)
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82176018);
+
 
   const PPCContext original_ctx = ctx;
   const bool trace_texture_parser =
@@ -420,6 +426,7 @@ REX_EXTERN(sub_82B8CDF8) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8CDF8);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t target_guest = original_ctx.r3.u32;
@@ -529,6 +536,7 @@ REX_EXTERN(sub_82B8CEE0) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8CEE0);
 
+
   const PPCContext original_ctx = ctx;
   const bool trace_texture_parser =
       refii::vfs::ShouldTraceTextureParserProbeCall(base, original_ctx);
@@ -585,6 +593,7 @@ REX_EXTERN(sub_82B8D028) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8D028);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t descriptor_guest = original_ctx.r5.u32;
@@ -649,6 +658,7 @@ REX_EXTERN(sub_82B8D170) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B8D170);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t descriptor_guest = original_ctx.r4.u32;
   const bool trace_texture_parser =
@@ -709,6 +719,7 @@ REX_EXTERN(sub_82B96220) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B96220);
+
 
   const PPCContext original_ctx = ctx;
   const bool trace_texture_parser =
@@ -835,6 +846,7 @@ REX_EXTERN(sub_82B504D8) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82B504D8);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;

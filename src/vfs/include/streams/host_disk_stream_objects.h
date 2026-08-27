@@ -1,5 +1,6 @@
 #pragma once
 
+#include "loose_asset_hooks.h"
 #include "streams/types.h"
 
 #include <cstdint>
@@ -21,12 +22,18 @@ uint32_t CreateRefiiHostDiskStream(
     uint32_t mode,
     const std::filesystem::path& loose_path,
     std::string_view provider_relative_path);
+uint32_t CreateRefiiHostMemoryStream(
+    PPCContext& ctx,
+    uint8_t* base,
+    uint32_t mode,
+    std::string_view asset_key,
+    std::string_view provider_relative_path);
 bool TryOpenLooseAssetResourceWrapper(
     PPCContext& ctx,
     uint8_t* base,
     uint32_t out_guest,
     uint32_t mode,
-    const std::filesystem::path& loose_path,
+    const LooseAssetResolution& resolution,
     std::string_view provider_relative_path,
     uint8_t resource_flags,
     uint64_t read_offset,
@@ -36,7 +43,7 @@ bool TryOpenLooseAsset(PPCContext& ctx,
                        uint32_t out_guest,
                        uint32_t manager_guest,
                        uint32_t mode,
-                       const std::filesystem::path& loose_path,
+                       const LooseAssetResolution& resolution,
                        std::string_view provider_relative_path);
 bool TryHandleRefiiHostDiskStreamGetSize(PPCContext& ctx,
                                          uint8_t* base,

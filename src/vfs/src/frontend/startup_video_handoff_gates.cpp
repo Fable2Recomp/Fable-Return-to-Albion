@@ -6,7 +6,7 @@ inline namespace detail {
 bool MaybeSeedRefiiGeneratedRenderReadyPayload(const PPCContext& source_ctx,
                                                uint8_t* base,
                                                uint32_t ready_object_guest) {
-  if (base == nullptr || !RefiiLooseAssetBackendEnabled() ||
+  if (base == nullptr ||
       !LooksLikeGuestPointer(ready_object_guest) ||
       !IsGeneratedPostVideoRenderReadyPollLr(source_ctx.lr)) {
     return false;
@@ -121,10 +121,6 @@ bool MaybeSeedRefiiGeneratedRenderReadyPayload(const PPCContext& source_ctx,
 }
 
 bool RefiiMainMenuTextureKnownOwnedByVfsIndex() {
-  if (!RefiiLooseAssetBackendEnabled()) {
-    return false;
-  }
-
   const auto* owned_hashes =
       GetRefiiVfsRuntimeOwnedHashes(GetLooseAssetRoot());
   return owned_hashes != nullptr && owned_hashes->contains(0x73BCB48Fu);
@@ -649,7 +645,7 @@ bool RefiiStartupVideosSettledForPostVideoHandoffLocked(
 }
 
 bool RefiiStartupVideosPlaybackCriticalActive() {
-  if (!RefiiLooseAssetBackendEnabled() || SkipStartupVideosEnabled()) {
+  if (SkipStartupVideosEnabled()) {
     return false;
   }
 
@@ -680,7 +676,7 @@ bool RefiiStartupReadyGateFalseLongEnoughForDebugAccelerator(
   if (false_age_ms_out != nullptr) {
     *false_age_ms_out = -1;
   }
-  if (!RefiiLooseAssetBackendEnabled() || SkipStartupVideosEnabled()) {
+  if (SkipStartupVideosEnabled()) {
     return false;
   }
 
@@ -726,7 +722,7 @@ bool RefiiStartupHandoffTimerLongEnoughForVfsAccelerator(
   }
   const bool menu_chain_can_advance =
       RefiiMainMenuTraceAllowsPostVideoReadyAdvance();
-  if (!RefiiLooseAssetBackendEnabled() || SkipStartupVideosEnabled() ||
+  if (SkipStartupVideosEnabled() ||
       !RefiiStartupVideosReadyForMenuHandoff() ||
       (for_ready_gate_patch && !menu_chain_can_advance)) {
     return false;

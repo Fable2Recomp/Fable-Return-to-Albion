@@ -38,6 +38,7 @@ REX_EXTERN(rex_lhBank_Open) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_Open);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t provider_guest = ctx.r4.u32;
@@ -57,8 +58,7 @@ REX_EXTERN(rex_lhBank_Open) {
   const std::string bank_name =
       refii::vfs::ReadMaybeGuestString(base, name_guest);
   std::string optional_bank_asset;
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      refii::vfs::IsKnownOptionalBankOpenMiss(
+  if (refii::vfs::IsKnownOptionalBankOpenMiss(
           base, provider_guest, bank_name, &optional_bank_asset)) {
     refii::vfs::IsCachedOptionalSyntheticVfsMiss(optional_bank_asset);
     refii::vfs::TryOpenRefiiVfsAsset(
@@ -93,8 +93,7 @@ REX_EXTERN(rex_lhBank_Open) {
     return;
   }
   std::string concrete_bank_candidate;
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      ShouldUseNativeConcreteBankContainer(bank_name, &concrete_bank_candidate)) {
+  if (ShouldUseNativeConcreteBankContainer(bank_name, &concrete_bank_candidate)) {
     if (refii::vfs::ShouldLogVfsTraceOperation("Bank_Open")) {
       REXLOG_INFO("Refii VFS native concrete bank api=Bank_Open name={} "
                   "candidate={} out=0x{:08X}; using generated bank parser",
@@ -120,8 +119,7 @@ REX_EXTERN(rex_lhBank_Open) {
           }) == refii::vfs::RefiiVfsOpenDisposition::Opened) {
     return;
   }
-  const bool synthetic_bank_miss =
-      refii::vfs::RefiiLooseAssetBackendEnabled() && !bank_name.empty();
+  const bool synthetic_bank_miss = !bank_name.empty();
   if (synthetic_bank_miss &&
       refii::vfs::ShouldLogVfsTraceOperation("Bank_Open")) {
     REXLOG_INFO("Refii synthetic bank miss api=Bank_Open name={} out=0x{:08X}; "
@@ -149,6 +147,7 @@ REX_EXTERN(rex_lhBank_OpenWithManifest) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_OpenWithManifest);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t provider_guest = ctx.r4.u32;
@@ -168,8 +167,7 @@ REX_EXTERN(rex_lhBank_OpenWithManifest) {
   const std::string normalized_bank_name =
       refii::vfs::NormalizeLooseAssetKey(bank_name);
   std::string concrete_bank_candidate;
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      ShouldUseNativeConcreteBankContainer(bank_name, &concrete_bank_candidate)) {
+  if (ShouldUseNativeConcreteBankContainer(bank_name, &concrete_bank_candidate)) {
     if (refii::vfs::ShouldLogVfsTraceOperation("Bank_OpenWithManifest")) {
       REXLOG_INFO("Refii VFS native concrete bank api=Bank_OpenWithManifest "
                   "name={} candidate={} out=0x{:08X}; using generated bank "
@@ -201,8 +199,7 @@ REX_EXTERN(rex_lhBank_OpenWithManifest) {
   if (disposition == refii::vfs::RefiiVfsOpenDisposition::Opened) {
     return;
   }
-  const bool synthetic_bank_miss =
-      refii::vfs::RefiiLooseAssetBackendEnabled() && !bank_name.empty() &&
+  const bool synthetic_bank_miss = !bank_name.empty() &&
       open_shape == refii::vfs::RefiiVfsOpenShape::SyntheticBank;
   if (synthetic_bank_miss &&
       refii::vfs::ShouldLogVfsTraceOperation("Bank_OpenWithManifest")) {
@@ -231,6 +228,7 @@ REX_EXTERN(rex_lhBank_ParseHeader) {
   REX_FUNC_PROLOGUE();
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_ParseHeader);
+
 
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
@@ -286,8 +284,7 @@ REX_EXTERN(rex_lhBank_ParseHeader) {
     return;
   }
   std::string concrete_bank_candidate;
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      ShouldUseNativeConcreteBankContainer(synthetic_bank_name,
+  if (ShouldUseNativeConcreteBankContainer(synthetic_bank_name,
                                            &concrete_bank_candidate)) {
     if (refii::vfs::ShouldLogVfsTraceOperation("Bank_ParseHeader")) {
       REXLOG_INFO("Refii VFS native concrete bank api=Bank_ParseHeader "
@@ -335,7 +332,6 @@ REX_EXTERN(rex_lhBank_ParseHeader) {
     return;
   }
   const bool synthetic_bank_miss =
-      refii::vfs::RefiiLooseAssetBackendEnabled() &&
       (!bank_name.empty() || !synthetic_bank_name.empty());
   if (synthetic_bank_miss &&
       refii::vfs::ShouldLogVfsTraceOperation("Bank_ParseHeader")) {
@@ -371,6 +367,7 @@ REX_EXTERN(rex_lhBank_DirectoryIterator_Ctor) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirectoryIterator_Ctor);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t iterator_guest = ctx.r3.u32;
   const uint32_t bank_guest = ctx.r4.u32;
@@ -379,8 +376,7 @@ REX_EXTERN(rex_lhBank_DirectoryIterator_Ctor) {
 
   __imp__rex_lhBank_DirectoryIterator_Ctor(ctx, base);
 
-  if (!refii::vfs::RefiiLooseAssetBackendEnabled() ||
-      iterator_guest == 0) {
+  if (iterator_guest == 0) {
     return;
   }
 
@@ -419,6 +415,7 @@ REX_EXTERN(rex_lhBank_DirIter_FindStreamNext) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirIter_FindStreamNext);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t iterator_guest = ctx.r4.u32;
@@ -426,8 +423,7 @@ REX_EXTERN(rex_lhBank_DirIter_FindStreamNext) {
   const uint32_t mode = ctx.r6.u32;
   const auto iterator_record =
       refii::vfs::FindSyntheticBankIteratorRecord(iterator_guest);
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      iterator_record != nullptr && iterator_record->bank_record != nullptr &&
+  if (iterator_record != nullptr && iterator_record->bank_record != nullptr &&
       iterator_record->bank_record->bank_template != nullptr) {
     const std::string filter =
         refii::vfs::ReadGuestWideStringObject(base, filter_guest, 4096);
@@ -542,6 +538,7 @@ REX_EXTERN(rex_lhBank_DirIter_GetName) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirIter_GetName);
 
+
   const PPCContext original_ctx = ctx;
   __imp__rex_lhBank_DirIter_GetName(ctx, base);
   if (refii::vfs::VfsTracingEnabled() &&
@@ -561,14 +558,14 @@ REX_EXTERN(rex_lhBank_OpenStreamByIndex) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_OpenStreamByIndex);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t bank_guest = ctx.r4.u32;
   const uint32_t entry_index = ctx.r5.u32;
   const uint32_t mode = ctx.r6.u32;
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      refii::vfs::LooseBankEntryOverridesEnabled()) {
+  if (refii::vfs::LooseBankEntryOverridesEnabled()) {
     const std::string bank_name =
         refii::vfs::ReadBankNameForLookup(base, bank_guest);
     refii::vfs::BankManifestEntry synthetic_entry;
@@ -724,6 +721,7 @@ REX_EXTERN(rex_lhBank_DirIter_FindStreamByIndex) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBank_DirIter_FindStreamByIndex);
 
+
   const PPCContext original_ctx = ctx;
   const uint32_t out_guest = ctx.r3.u32;
   const uint32_t iterator_guest = ctx.r4.u32;
@@ -768,8 +766,7 @@ REX_EXTERN(rex_lhBank_DirIter_FindStreamByIndex) {
     }
   }
 
-  if (refii::vfs::RefiiLooseAssetBackendEnabled() &&
-      refii::vfs::LooseBankEntryOverridesEnabled()) {
+  if (refii::vfs::LooseBankEntryOverridesEnabled()) {
     const std::string bank_name =
         synthetic_bank != nullptr
             ? synthetic_bank->bank_name

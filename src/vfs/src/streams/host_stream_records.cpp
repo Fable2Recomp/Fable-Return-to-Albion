@@ -765,5 +765,43 @@ uint32_t RefiiReaderPageEntry(uint8_t* base,
 }
 
 
+// Serves every read on this stream that was postponed for an unresolved destination.
+//
+// Called from the stream's destructor, which is the last moment the request can still be
+// honoured. A read that is never served is not a dropped read from the guest's point of view —
+// it is a buffer that never fills, and the reader loops on it for ever with nothing logged.
+void CompleteRefiiDeferredReadsForStream(PPCContext& ctx, uint8_t* base,
+                                         uint32_t stream_guest) {
+  if (base == nullptr || stream_guest == 0) {
+    return;
+  }
+
+  std::vector<std::pair<uint32_t, std::shared_ptr<RefiiReadRequestRecord>>> pending;
+  {
+    std::lock_guard<std::mutex> lock(RefiiReadRequestRecordsMutex());
+    for (const auto& [record_guest, record] : RefiiReadRequestRecords()) {
+      if (record == nullptr || record->stream_guest != stream_guest) {
+        continue;
+      }
+      pending.emplace_back(record_guest, record);
+    }
+  }
+
+  for (const auto& [record_guest, record] : pending) {
+    bool deferred = false;
+    {
+      std::lock_guard<std::mutex> lock(record->mutex);
+      deferred = record->deferred_for_destination && !record->completed;
+    }
+    if (!deferred) {
+      continue;
+    }
+    REXLOG_WARN("Refii read deferred to stream teardown: request=0x{:08X} stream=0x{:08X} "
+                "requested={} — serving it now rather than leaving the guest's buffer empty.",
+                record_guest, stream_guest, record->requested_bytes);
+    PerformRefiiReadRequestNow(ctx, base, record, record_guest);
+  }
+}
+
 }  // namespace detail
 }  // namespace refii::vfs

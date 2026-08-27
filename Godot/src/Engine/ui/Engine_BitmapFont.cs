@@ -46,11 +46,14 @@ public readonly struct BitmapGlyph
 /// Fable <c>.tex</c> header and a DXT1 atlas payload.
 ///
 /// Layout is entirely runtime — nothing is baked — so a renderer must reproduce
-/// the pen arithmetic itself. Two off-by-one quirks in the original are worth
-/// knowing, because matching them is what makes text line up:
-/// the measure pass advances <c>LineHeight + 1</c> per line while the draw pass
-/// advances <c>LineHeight</c>; and each glyph quad is drawn <c>LineHeight + 1</c>
-/// tall regardless of the stored cell height.
+/// the pen arithmetic itself. Each glyph quad is drawn <c>LineHeight + 1</c> tall
+/// regardless of the stored cell height.
+///
+/// BOTH passes advance <c>LineHeight + 1</c>: the measure loop <c>sub_82B714A0</c> does
+/// <c>lwz r10, 0x18(r25); addi r6, r10, 1</c> at <c>0x82B714EC</c> and again on every
+/// U+000A at <c>0x82B71538</c>, and the draw's only line break — the <c>&lt;br&gt;</c>
+/// case at <c>0x8226F1B4</c>, reached because <c>sub_82802DB8</c> rewrites <c>\n</c> to
+/// <c>&lt;br&gt;</c> before parsing — subtracts the same <c>(LineHeight + 1) * scale</c>.
 /// </summary>
 public sealed class Engine_BitmapFont
 {
@@ -87,9 +90,8 @@ public sealed class Engine_BitmapFont
 	public readonly ReadOnlyMemory<byte> AtlasBlocks;
 
 	/// <summary>
-	/// Family-constant header field — 400 in the GUI fonts, 100 in the debug fonts.
-	/// No reader for it was found in the engine and it is not needed to render;
-	/// most likely a GDI font weight left by the generator. Exposed for completeness.
+	/// Family-constant header field — 400 in the GUI fonts, 100 in the debug fonts. No engine
+	/// reader for it; not needed to render.
 	/// </summary>
 	public readonly uint WeightHint;
 

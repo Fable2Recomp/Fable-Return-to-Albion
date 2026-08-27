@@ -16,6 +16,11 @@ struct RefiiPrivateFileHandleRecord {
   std::filesystem::path path;
   std::string virtual_path;
   std::fstream file;
+
+  /// The asset's bytes when Godot serves it (then `file` is closed). `host_backed` is the
+  /// discriminator, not `bytes.empty()`: an empty asset must read as zero bytes at EOF.
+  std::vector<uint8_t> bytes;
+  bool host_backed = false;
   uint64_t position = 0;
   uint64_t size = 0;
   uint32_t desired_access = 0;

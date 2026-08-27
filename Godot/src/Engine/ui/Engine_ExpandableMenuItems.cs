@@ -5,31 +5,21 @@ namespace Refii.Ui;
 /// <summary>
 /// Reads the live contents of a Fable 2 <c>ExpandableMenu</c> out of a presentation.
 ///
-/// THE ITEM LIST IS THE GUEST'S, AND IT IS NOT IN THE FILE. The pause menu's
-/// <c>ExpandableMenu</c> element carries <c>MenuPopulationScript = "PauseMenu"</c>, and the
-/// shipped <c>expandablemenupopulationscript.lua</c> answers that name with an EMPTY table —
-/// <c>g_Menu.PopulationTable = { HighlightIdx = 2 }</c>, zero entries — where the same
-/// function builds real lists for <c>OptionsMenu</c>, <c>LogbookMenu</c>, <c>CrimeMenu</c> and
-/// the rest. So unlike every static menu in the game, what the pause menu CONTAINS is decided
-/// at runtime: <c>expandablemenuspawning.lua</c> registers a <c>SpawnButton</c> handler that
-/// takes <c>g_Param.String1..String4</c> / <c>Float1..Float4</c> and calls
-/// <c>g_Menu:CreateMenuItem</c>, and the entries arrive that way.
+/// The item list is the guest's and is not in the file: the pause menu's widget carries
+/// <c>MenuPopulationScript = "PauseMenu"</c>, which
+/// <c>expandablemenupopulationscript.lua</c> answers with an empty table, and entries arrive at
+/// runtime through <c>expandablemenuspawning.lua</c>'s <c>SpawnButton</c> handler
+/// (<c>g_Param.String1..String4</c>/<c>Float1..Float4</c> into <c>g_Menu:CreateMenuItem</c>).
 ///
-/// WHICH MAKES THE ELEMENT TREE THE PLACE TO READ THEM. Every one of those spawn and refresh
-/// handlers ends the same way — <c>setAttribute(getElement('Icon.Title', ref), 'TextID', tag)</c>
-/// — so an item's label is written onto a real element of the presentation, and the live
-/// element state we already pull per frame carries it. That is the guest STATING its menu,
-/// which is the thing to follow; scraping it back out of the Lua VM is not something the
-/// bridge can do, and a host-side list of what a pause menu ought to contain would be exactly
-/// the invention this project keeps deleting.
+/// Every spawn and refresh handler ends with
+/// <c>setAttribute(getElement('Icon.Title', ref), 'TextID', tag)</c>, so the label lands on a
+/// real element and the per-frame live element state carries it — read the menu there.
 ///
-/// THE BUTTON POOL IS AUTHORED, THE ENTRIES ARE NOT. <c>pausemainmenu.bgf</c> ships 26
-/// <c>MenuItemButtonN</c> components under <c>ExpandableMenu/Buttons</c>, all authored at the
-/// SAME position — x[-444..-20], y[176..242] — because <c>expandablemenuformatting.lua</c>
-/// moves them onto its twelve position slots at runtime. Built straight from the file they
-/// stack into what looks like one gold bar in the top-left corner, which is precisely what a
-/// screenshot of our pause menu showed. So a button existing means nothing; a button carrying
-/// TEXT is an entry.
+/// The button pool is authored, the entries are not: <c>pausemainmenu.bgf</c> ships 26
+/// <c>MenuItemButtonN</c> components under <c>ExpandableMenu/Buttons</c>, all at the same
+/// authored position (x[-444..-20], y[176..242]) until
+/// <c>expandablemenuformatting.lua</c> moves them onto its twelve slots. A button existing
+/// means nothing; a button carrying TEXT is an entry.
 /// </summary>
 public static class Engine_ExpandableMenuItems
 {
@@ -37,11 +27,9 @@ public static class Engine_ExpandableMenuItems
 	public const string MenuElementName = "ExpandableMenu";
 
 	/// <summary>
-	/// The group holding the button pool.
-	///
-	/// Named exactly as the formatter reaches it: <c>g_MenuFormatter:onInitialize</c> does
-	/// <c>getChildren(getElement('Buttons', self.parent))</c> and keeps each child whose
-	/// element type is <c>component</c>, storing them as <c>MenuItems</c>.
+	/// The group holding the button pool, as the formatter reaches it:
+	/// <c>g_MenuFormatter:onInitialize</c> does <c>getChildren(getElement('Buttons', self.parent))</c>
+	/// and keeps each <c>component</c> child as <c>MenuItems</c>.
 	/// </summary>
 	public const string ButtonGroupName = "Buttons";
 
@@ -66,34 +54,21 @@ public static class Engine_ExpandableMenuItems
 		bool Active, int Slide)
 	{
 		/// <summary>
-		/// True when the guest has actually put an entry in this button.
-		///
-		/// TEXT, NOT THE ACTIVE BIT. The pool's buttons carry their authored active state
-		/// before anything is spawned into them, so gating on the draw gate counts 26 entries
-		/// on a menu that has none. A label is written only by a spawn or a refresh.
+		/// True when the guest has put an entry in this button. Gated on TEXT, not the active
+		/// bit — the pool carries its authored active state before anything is spawned. Text
+		/// alone is not enough either: every button is authored carrying <c>DEFAULT_TEXT_ID</c>
+		/// and the guest hands that tag back for the ones it never spawned into, so the label is
+		/// compared against the file's own placeholder rather than a hardcoded string.
 		/// </summary>
-		///
-		/// AND NOT MERELY "HAS TEXT" EITHER. Every button in the pool is authored carrying
-		/// <c>DEFAULT_TEXT_ID</c>, and the guest hands that same tag straight back for the
-		/// buttons it never spawned into — so a bare emptiness test reported the pause menu as
-		/// "26 of 26 filled" when eight were real and eighteen were the placeholder, and the
-		/// real estate screen as "18 of 18" for one entry. Comparing against what the FILE put
-		/// there is the test that separates them, and it takes the placeholder from the
-		/// presentation rather than naming it here — a hardcoded "DEFAULT_TEXT_ID" would be a
-		/// host-side guess about a string the file already states.
 		public bool IsFilled =>
 			!string.IsNullOrEmpty(Text) &&
 			!string.Equals(Text, Authored, System.StringComparison.Ordinal);
 	}
 
 	/// <summary>
-	/// Finds the button pool and reads each button's live label.
-	///
-	/// The live arrays are the ones <c>GameUi</c> already builds per presentation, indexed by
-	/// the same ordinal join the slides go through — passed as plain lists rather than the
-	/// host's element record so the engine keeps no dependency on the bridge. A null array is
-	/// treated as "the guest said nothing", not as an error: this is also called against a
-	/// screen built with no guest attached.
+	/// Finds the button pool and reads each button's live label. The live arrays are indexed by
+	/// the same ordinal join the slides use, passed as plain lists so the engine keeps no
+	/// dependency on the bridge; a null array means "the guest said nothing", not an error.
 	/// </summary>
 	public static IReadOnlyList<Button> Read(Engine_UiScreen? screen,
 		IReadOnlyList<string?>? text, IReadOnlyList<bool>? active, IReadOnlyList<int>? slides)
@@ -119,9 +94,8 @@ public static class Engine_ExpandableMenuItems
 				child.Name,
 				titleOrdinal,
 				titleOrdinal >= 0 ? At(text, titleOrdinal) : null,
-				// The authored tag, not the displayed string: `Display` has already had the
-				// guest's live text folded into it by the time this runs, so comparing against
-				// that would compare the label with itself.
+				// The authored tag, not `Display` — the guest's live text has already been
+				// folded into that, so the comparison would be against itself.
 				title?.Text?.Tag ?? string.Empty,
 				At(active, child.Ordinal),
 				AtInt(slides, child.Ordinal)));
@@ -131,11 +105,43 @@ public static class Engine_ExpandableMenuItems
 	}
 
 	/// <summary>
-	/// The <c>ExpandableMenu/Buttons</c> group, or null when this screen carries no list.
-	///
-	/// Found by walking from the named widget rather than by searching for a node called
-	/// "Buttons" anywhere: the name is generic enough that a screen could reuse it for
-	/// something that is not a menu, and the widget is what the formatter anchors to.
+	/// The `MenuPopulationScript` this screen's `ExpandableMenu` names, or empty. The attribute
+	/// is authored on the widget element and `expandablemenupopulationscript.lua` is one switch
+	/// on it (`LOADK 'MenuPopulationScript'` then `SETTABLE 'PopulationTable'`), so it is the
+	/// join from a running screen to <see cref="Engine_UiMenuPopulation"/>.
+	/// </summary>
+	public static string PopulationScriptOf(Engine_UiScreen? screen)
+	{
+		if (screen?.Document is not { } document)
+		{
+			return string.Empty;
+		}
+
+		foreach (UiNode node in screen.Nodes)
+		{
+			if (!string.Equals(node.Name, MenuElementName, System.StringComparison.Ordinal) ||
+				node.Ordinal < 0 || node.Ordinal >= document.Elements.Length)
+			{
+				continue;
+			}
+
+			if (document.Elements[node.Ordinal].TryGetAttribute(
+					PopulationScriptAttribute, out BgfAttribute attr) &&
+				attr.Type == BgfValueType.String)
+			{
+				return document.GetString(attr.AsStringIndex());
+			}
+		}
+
+		return string.Empty;
+	}
+
+	/// <summary>The attribute the widget carries — see <see cref="PopulationScriptOf"/>.</summary>
+	public const string PopulationScriptAttribute = "MenuPopulationScript";
+
+	/// <summary>
+	/// The <c>ExpandableMenu/Buttons</c> group, or null when this screen carries no list. Walked
+	/// from the named widget the formatter anchors to, not searched for by name anywhere.
 	/// </summary>
 	public static UiNode? FindGroup(Engine_UiScreen screen)
 	{
@@ -181,10 +187,8 @@ public static class Engine_ExpandableMenuItems
 	}
 
 	/// <summary>
-	/// One line saying what the guest has put in the menu, for the build report.
-	///
-	/// Prints the FILLED entries and the pool size separately, because "26 buttons" and "0
-	/// entries" is the interesting state and a count alone cannot tell the two apart.
+	/// One line saying what the guest has put in the menu. Prints filled entries and pool size
+	/// separately — "26 buttons, 0 entries" is a state a single count cannot express.
 	/// </summary>
 	public static string Describe(IReadOnlyList<Button> buttons)
 	{
@@ -209,15 +213,10 @@ public static class Engine_ExpandableMenuItems
 	}
 
 	/// <summary>
-	/// One line saying whether the guest's own formatter has laid the pool out.
-	///
-	/// THE POOL IS AUTHORED STACKED. Every <c>MenuItemButtonN</c> in <c>pausemainmenu.bgf</c>
-	/// sits at the same authored position, and <c>expandablemenuformatting.lua</c> is what
-	/// separates them — <c>AnimatePropertiesToIndex</c> writes <c>position.x</c> and
-	/// <c>position.y</c> onto each component to move it to one of the twelve slots. Those are
-	/// attributes the host already reads per frame, so a pool that is still stacked is a pool
-	/// the formatter has not touched, and that distinguishes "the guest never populated this
-	/// menu" from "it did and we are drawing it wrong" — which look identical on screen.
+	/// One line saying whether the guest's formatter has laid the pool out. The pool is authored
+	/// stacked; <c>expandablemenuformatting.lua</c>'s <c>AnimatePropertiesToIndex</c> writes
+	/// <c>position.x</c>/<c>position.y</c> onto each component to move it to one of the twelve
+	/// slots, so a still-stacked pool is one the formatter has not touched.
 	/// </summary>
 	/// <param name="transform">
 	/// Per-element live transform, six entries per row in the order position x/y/z then scale
@@ -253,11 +252,76 @@ public static class Engine_ExpandableMenuItems
 				"so the pool is still authored stacked";
 		}
 
-		return distinct.Count <= 1
-			? $"{stated} button(s) state a position but they are ALL THE SAME — the formatter " +
-			  "has not spread the pool"
-			: $"{stated} button(s) state a position, {distinct.Count} distinct — the guest's " +
-			  "formatter has laid the pool out";
+		if (distinct.Count <= 1)
+		{
+			return $"{stated} button(s) state a position but they are ALL THE SAME — the " +
+				"formatter has not spread the pool";
+		}
+
+		// Where each filled one landed. `onAddChild` sets
+		// `VisibleIndex = HIGHLIGHT_INDEX + DisplayIndex - CurrentHighlightIdx`, so the y the
+		// guest writes IS its slot, and the slots say which entry the guest believes is
+		// highlighted — the value its own A press commits against.
+		var placed = new List<string>();
+		int display = 0;
+		var highlights = new HashSet<int>();
+		foreach (Button button in buttons)
+		{
+			if (!button.IsFilled)
+			{
+				continue;
+			}
+
+			++display;
+			if (button.Ordinal < 0 || button.Ordinal >= transform.Count ||
+				transform[button.Ordinal] is not { } row)
+			{
+				continue;
+			}
+
+			int slot = SlotAt(row[1]);
+			placed.Add($"{button.Text}@slot{(slot > 0 ? slot.ToString() : "?")}" +
+				$"({row[0]?.ToString("F0") ?? "-"},{row[1]?.ToString("F0") ?? "-"})");
+
+			// Every row solves for the same highlight. Collected as a SET, not taken from the
+			// first row: a mid-slide sample has rows in transit and they will disagree.
+			if (slot > 0)
+			{
+				highlights.Add(display - slot + Engine_FrontEndMenuView.HighlightSlot);
+			}
+		}
+
+		string solved = highlights.Count == 1
+			? $"; the guest's CurrentHighlightIdx is {System.Linq.Enumerable.First(highlights)}"
+			: highlights.Count == 0
+				? "; no row landed on a known slot"
+				: "; rows disagree on the highlight — sampled mid-slide";
+
+		return $"{stated} button(s) state a position, {distinct.Count} distinct — the guest's " +
+			$"formatter has laid the pool out: {string.Join(' ', placed)}{solved}";
+	}
+
+	/// <summary>
+	/// Which of the twelve authored slots a stated y lands on, or 0. The y identifies it alone —
+	/// <c>g_MenuPositionSlots</c> gives each slot a distinct one, written verbatim. The tolerance
+	/// is half the tightest gap, so a mid-slide row reads as "not on a slot".
+	/// </summary>
+	private static int SlotAt(float? y)
+	{
+		if (y is not { } value)
+		{
+			return 0;
+		}
+
+		for (int i = 0; i < Engine_FrontEndMenuView.Slots.Length; ++i)
+		{
+			if (System.Math.Abs(Engine_FrontEndMenuView.Slots[i].Y - value) < 8f)
+			{
+				return i + 1;
+			}
+		}
+
+		return 0;
 	}
 
 	private static string? At(IReadOnlyList<string?>? values, int index) =>

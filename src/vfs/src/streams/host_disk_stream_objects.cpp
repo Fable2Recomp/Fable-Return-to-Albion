@@ -5,7 +5,18 @@ inline namespace detail {
 
 namespace {
 constexpr uint32_t kCreateEvent = 0x82CC2CE0u;
-constexpr uint32_t kSetEvent = 0x822C9388u;
+// `0x822C9388` is PulseEvent, not SetEvent (no SetEvent symbol exists in the image). The guest
+// signals request completion with PulseEvent too (`sub_82B5BC20`), but PulseEvent releases only
+// threads already blocked, and the guest's waiter `sub_82B5BFF8` waits before it checks
+// completion:
+//
+//     82b5c064  bl sub_82B4F400    ; wait
+//     82b5c078  bctrl              ; IsComplete()
+//     82b5c080  beq loc_82B5C058   ; loop
+//
+// Synchronous reads can therefore pulse before anyone waits; safe only because
+// `TryHandleRefiiReadRequestWait` intercepts that waiter for our requests and never blocks.
+constexpr uint32_t kPulseEvent = 0x822C9388u;
 constexpr uint32_t kCloseHandle = 0x82CC27B0u;
 
 uint32_t CreateReadRequestEvent(PPCContext& source_ctx, uint8_t* base) {
@@ -27,13 +38,13 @@ void SignalReadRequestEvent(PPCContext& source_ctx,
                             uint8_t* base,
                             uint32_t request_guest) {
   const uint32_t event = LoadGuestU32(base, request_guest + 332);
-  PPCFunc* function = event != 0 ? FindGuestFunction(kSetEvent) : nullptr;
+  PPCFunc* function = event != 0 ? FindGuestFunction(kPulseEvent) : nullptr;
   if (function == nullptr) {
     return;
   }
   PPCContext call_ctx = source_ctx;
   call_ctx.r3.u32 = event;
-  call_ctx.ctr.u32 = kSetEvent;
+  call_ctx.ctr.u32 = kPulseEvent;
   function(call_ctx, base);
 }
 }  // namespace
@@ -71,10 +82,6 @@ uint32_t CreateRefiiHostDiskStream(PPCContext& ctx,
                                    std::string_view provider_relative_path) {
   ZoneScopedN("RefiiVFS/CreateHostDiskStream");
   ConfigureRefiiVfsTracyPlots();
-  if (!RefiiLooseAssetBackendEnabled()) {
-    return 0;
-  }
-
   const uint32_t open_mode = mode == 0 ? 1 : mode;
   if (!IsSupportedRefiiLooseOpenMode(open_mode)) {
     if (VfsTracingEnabled() || LooseAssetOverrideTracingEnabled()) {
@@ -140,6 +147,62 @@ uint32_t CreateRefiiHostDiskStream(PPCContext& ctx,
   return stream_guest;
 }
 
+uint32_t CreateRefiiHostMemoryStream(PPCContext& ctx,
+                                     uint8_t* base,
+                                     uint32_t mode,
+                                     std::string_view asset_key,
+                                     std::string_view provider_relative_path) {
+  ZoneScopedN("RefiiVFS/CreateHostMemoryStream");
+  ConfigureRefiiVfsTracyPlots();
+  const uint32_t open_mode = mode == 0 ? 1 : mode;
+  if (!IsSupportedRefiiLooseOpenMode(open_mode)) {
+    REXLOG_WARN("Refii Godot asset open skipped: unsupported mode={} asset={}",
+                open_mode,
+                asset_key);
+    return 0;
+  }
+
+  auto record = std::make_shared<RefiiHostStreamRecord>();
+  // The whole payload, once — see RefiiHostStreamRecord::bytes for why this is not per-read.
+  if (!ReadHostAsset(asset_key, record->bytes)) {
+    REXLOG_WARN("Refii Godot asset open failed: the host mount refused '{}'",
+                asset_key);
+    return 0;
+  }
+
+  record->host_served = true;
+  record->open_mode = open_mode;
+  record->size = record->bytes.size();
+
+  const uint32_t stream_guest =
+      CallLhMalloc(ctx, base, kRefiiHostDiskStreamSize);
+  if (stream_guest == 0) {
+    REXLOG_WARN("Refii Godot asset open failed: could not allocate DiskStream "
+                "object asset={}",
+                asset_key);
+    return 0;
+  }
+
+  StoreRefiiHostDiskStreamObject(base, stream_guest, record->size);
+  StoreRefiiHostStreamRecord(stream_guest, record);
+  RecordLooseStream(base,
+                    stream_guest,
+                    std::filesystem::path(),
+                    "godot",
+                    std::string(provider_relative_path));
+
+  // Deliberately not behind `ShouldLogLooseStreamOperation`, which is false unless a tracing
+  // cvar is on: every stream states its open outcome.
+  NoteRefiiStreamOpened("RefiiGodotStream_Open",
+                        stream_guest,
+                        LoadGuestU32(base, stream_guest),
+                        record->size,
+                        asset_key,
+                        static_cast<uint32_t>(ctx.lr));
+
+  return stream_guest;
+}
+
 uint32_t ReadRefiiHostStreamBytes(uint8_t* base,
                                   uint32_t stream_guest,
                                   uint32_t buffer_guest,
@@ -179,18 +242,41 @@ bool TryHandleRefiiReadRequestRelease(PPCContext& ctx,
                                       uint8_t* base,
                                       uint32_t request_guest);
 
+void PerformRefiiReadRequestNow(
+    PPCContext& ctx,
+    uint8_t* base,
+    const std::shared_ptr<RefiiReadRequestRecord>& record,
+    uint32_t record_guest);
+
 bool EnsureRefiiReadRequestCompleted(
+    PPCContext& ctx,
     uint8_t* base,
     const std::shared_ptr<RefiiReadRequestRecord>& record,
     uint32_t record_guest,
     std::string_view api);
+
+// Opens whichever side holds the bytes: a resolution reporting `host_served` has no host path,
+// so opening it from disk fails even though the asset resolved.
+uint32_t CreateRefiiHostStreamForResolution(
+    PPCContext& ctx,
+    uint8_t* base,
+    uint32_t mode,
+    const LooseAssetResolution& resolution,
+    std::string_view provider_relative_path) {
+  if (resolution.host_served) {
+    return CreateRefiiHostMemoryStream(
+        ctx, base, mode, resolution.normalized_key, provider_relative_path);
+  }
+  return CreateRefiiHostDiskStream(
+      ctx, base, mode, resolution.host_path, provider_relative_path);
+}
 
 bool TryOpenLooseAssetResourceWrapper(
     PPCContext& ctx,
     uint8_t* base,
     uint32_t out_guest,
     uint32_t mode,
-    const std::filesystem::path& loose_path,
+    const LooseAssetResolution& resolution,
     std::string_view provider_relative_path,
     uint8_t resource_flags,
     uint64_t read_offset = 0,
@@ -199,8 +285,9 @@ bool TryOpenLooseAssetResourceWrapper(
     return false;
   }
 
-  const uint32_t stream_guest = CreateRefiiHostDiskStream(
-      ctx, base, mode, loose_path, provider_relative_path);
+  const std::filesystem::path& loose_path = resolution.host_path;
+  const uint32_t stream_guest = CreateRefiiHostStreamForResolution(
+      ctx, base, mode, resolution, provider_relative_path);
   if (stream_guest == 0) {
     return false;
   }
@@ -406,15 +493,19 @@ uint32_t CreateCompletedReadRequest(PPCContext& ctx,
   StoreGuestU32(base, request_guest + 20, 1);
   // The read-request waiter returns field +24; decompression treats value 1 as
   // a completed successful read.
+  // Fields the guest's accessors read, measured from the request: +124/+128 are what
+  // `GetDataBuffer` (0x82B5C0C0) hands back as { pointer, length }; +200 is what slot +24
+  // (0x82B5C0D8) returns as the byte count. +28 is the status — a completed read is not
+  // IO_PENDING (997).
   StoreGuestU32(base, request_guest + 24, 1);
-  StoreGuestU32(base, request_guest + 28, 997);
-  StoreGuestU32(base, request_guest + 124, bytes_read);
-  StoreGuestU32(base, request_guest + 128, 0);
+  StoreGuestU32(base, request_guest + 28, 0);
+  StoreGuestU32(base, request_guest + 124, buffer_guest);
+  StoreGuestU32(base, request_guest + 128, bytes_read);
   StoreGuestU32(base, request_guest + 168, 5);
   StoreGuestU32(base, request_guest + 172, 0);
   StoreGuestU32(base, request_guest + 176, bytes_read);
   StoreGuestU64(base, request_guest + 192, requested_bytes);
-  StoreGuestU32(base, request_guest + 200, static_cast<uint32_t>(offset));
+  StoreGuestU32(base, request_guest + 200, bytes_read);
   StoreGuestU32(base, request_guest + 332,
                 CreateReadRequestEvent(ctx, base));
   StoreGuestU32(base, request_guest + 340, 0);
@@ -487,15 +578,96 @@ uint32_t CreateDeferredReadRequest(PPCContext& ctx,
   StoreGuestU32(base, request_guest + 12, stream_guest);
   AddRefGuestObject(ctx, base, stream_guest);
   StoreGuestU32(base, request_guest + 20, 1);
-  StoreGuestU32(base, request_guest + 24, 0);
-  StoreGuestU32(base, request_guest + 28, 997);
-  StoreGuestU32(base, request_guest + 124, 0);
-  StoreGuestU32(base, request_guest + 128, 0);
+
+  // Serve the bytes now and state them in the fields the guest reads. The object is a
+  // `CWin32Request` (vtable at +0, interface vtable at +4, 344 bytes), so the guest's own
+  // methods operate on it directly, offsets from the request:
+  //
+  //     +24   IsComplete()     -> `sub_8290DD10`: `return *(this+24)`
+  //     +124  GetDataBuffer()  -> `sub_82B5C0C0`: sret = { *(this+124), *(this+128) }
+  //     +200  bytes read       -> `sub_82B5C0D8`: `return *(this+200)`
+  //
+  // `rex_lhResourceManager_FindAndCreateStream` branches on that data pointer
+  // (`0x82B53DF0 lwz r9, 0(r3)` / `0x82B53DF8 beq`): non-null builds the inert 16-byte
+  // `CBasicCompleteRequest`, which forwards GetDataBuffer straight back to ours; null builds
+  // the 28-byte `CBasicBufferedRequest`, which drives an asynchronous read through an operation
+  // object we never supply and so waits for a completion that cannot arrive.
+  //
+  // The memspec is { buffer pointer, length }, and a non-null pointer is the caller's buffer:
+  // the native ctor (`sub_82B5BCF0`) hands it to SetTargetBuffer (0x82B5C5F0), which does
+  // `if (memspec.ptr) { *(QWORD*)(req+124) = memspec; arm the read }`. A null pointer means
+  // "allocate one for me". So a supplied buffer is served in place and IS the data pointer;
+  // only an unnamed one gets a payload of ours.
+  uint32_t destination_ptr = 0;
+  uint32_t destination_len = 0;
+  if (uses_stream_destination && buffer_guest != 0) {
+    destination_ptr = LoadGuestU32(base, buffer_guest);
+    destination_len = LoadGuestU32(base, buffer_guest + 4);
+  }
+
+  uint32_t payload_guest = 0;
+  uint32_t served = 0;
+  if (destination_ptr != 0) {
+    // The caller's length bounds the copy, never the request size alone: writing past a buffer
+    // the guest sized is heap corruption, and an over-large ask gets a short read as natively.
+    const uint32_t to_serve =
+        destination_len != 0 ? std::min(requested_bytes, destination_len) : requested_bytes;
+    served = ReadRefiiHostStreamBytes(base, stream_guest, destination_ptr, offset, to_serve);
+    payload_guest = destination_ptr;
+    static std::atomic<uint32_t> in_place{0};
+    const uint32_t nth = in_place.fetch_add(1, std::memory_order_relaxed) + 1u;
+    if (nth <= 8u || (nth & (nth - 1u)) == 0u) {
+      REXLOG_INFO("Refii read request #{} served IN PLACE: stream=0x{:08X} caller buffer=0x{:08X} "
+                  "len={} requested={} served={}",
+                  nth, stream_guest, destination_ptr, destination_len, requested_bytes, served);
+    }
+  } else {
+    const uint32_t payload_bytes = requested_bytes != 0 ? requested_bytes : 1u;
+    payload_guest = CallLhMalloc(ctx, base, payload_bytes);
+    if (payload_guest != 0) {
+      served = ReadRefiiHostStreamBytes(base, stream_guest, payload_guest, offset,
+                                        requested_bytes);
+    }
+  }
+
+  StoreGuestU32(base, request_guest + 24, served != 0 ? 1u : 0u);
+  StoreGuestU32(base, request_guest + 28, served != 0 ? 0u : 997u);
+  StoreGuestU32(base, request_guest + 124, served != 0 ? payload_guest : 0u);
+  StoreGuestU32(base, request_guest + 128, served);
   StoreGuestU32(base, request_guest + 168, 5);
   StoreGuestU32(base, request_guest + 172, 0);
   StoreGuestU32(base, request_guest + 176, 0);
   StoreGuestU64(base, request_guest + 192, requested_bytes);
-  StoreGuestU32(base, request_guest + 200, static_cast<uint32_t>(offset));
+  StoreGuestU32(base, request_guest + 200, served);
+
+  if (served != requested_bytes) {
+    REXLOG_WARN("Refii read request SHORT: request=0x{:08X} stream=0x{:08X} offset={} "
+                "wanted={} served={} — a short read leaves the guest's refill loop asking "
+                "for the remainder for ever.",
+                request_guest, stream_guest, offset, requested_bytes, served);
+  }
+
+  // Dumps what the guest will parse, read back through the same base+VA the guest uses rather
+  // than from our own buffer, so a wrong mapping shows up here too.
+  {
+    static std::atomic<uint32_t> dumped{0};
+    if (dumped.fetch_add(1, std::memory_order_relaxed) < 4u) {
+      uint32_t w[8] = {};
+      for (uint32_t i = 0; i < 8; ++i) {
+        w[i] = LoadGuestU32(base, payload_guest + i * 4u);
+      }
+      REXLOG_INFO("Refii read request PAYLOAD: request=0x{:08X} payload=0x{:08X} served={} "
+                  "words[0..7]={:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} "
+                  "dword@21=0x{:08X} req[+24]={} req[+124]=0x{:08X} req[+128]={} req[+200]={}",
+                  request_guest, payload_guest, served,
+                  w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7],
+                  LoadGuestU32(base, payload_guest + 21u),
+                  LoadGuestU32(base, request_guest + 24u),
+                  LoadGuestU32(base, request_guest + 124u),
+                  LoadGuestU32(base, request_guest + 128u),
+                  LoadGuestU32(base, request_guest + 200u));
+    }
+  }
   StoreGuestU32(base, request_guest + 332,
                 CreateReadRequestEvent(ctx, base));
   StoreGuestU32(base, request_guest + 340, 0);
@@ -508,10 +680,21 @@ uint32_t CreateDeferredReadRequest(PPCContext& ctx,
   read_record->requested_bytes = requested_bytes;
   read_record->bytes_read = 0;
   read_record->uses_stream_destination = uses_stream_destination;
-  read_record->completed = false;
+
+  // Already served above into the buffer `GetDataBuffer` reports. Marking the record complete
+  // stops the async path running a second read, or deferring one nobody will collect.
+  read_record->completed = served != 0;
+  read_record->attempted = served != 0;
+  read_record->bytes_read = served;
   read_record->queued_at = std::chrono::steady_clock::now();
+  read_record->started_at = read_record->queued_at;
+  if (served != 0) {
+    read_record->completed_at = read_record->queued_at;
+  }
   StoreRefiiReadRequestRecord(request_guest, read_record);
-  StartRefiiReadRequestAsync(ctx, base, request_guest, read_record);
+  if (served == 0) {
+    StartRefiiReadRequestAsync(ctx, base, request_guest, read_record);
+  }
 
   if (LooseAssetOverrideTracingEnabled() ||
       ShouldLogLooseStreamOperation("RefiiHostReadRequest_Defer",
@@ -559,21 +742,18 @@ bool TryOpenLooseAsset(PPCContext& ctx,
                        uint32_t out_guest,
                        uint32_t manager_guest,
                        uint32_t mode,
-                       const std::filesystem::path& loose_path,
+                       const LooseAssetResolution& resolution,
                        std::string_view provider_relative_path = {}) {
   (void)manager_guest;
-
-  if (!RefiiLooseAssetBackendEnabled()) {
-    return false;
-  }
 
   const uint32_t open_mode = mode == 0 ? 1 : mode;
   if (base == nullptr || out_guest == 0) {
     return false;
   }
 
-  const uint32_t stream_guest = CreateRefiiHostDiskStream(
-      ctx, base, open_mode, loose_path, provider_relative_path);
+  const std::filesystem::path& loose_path = resolution.host_path;
+  const uint32_t stream_guest = CreateRefiiHostStreamForResolution(
+      ctx, base, open_mode, resolution, provider_relative_path);
   if (stream_guest == 0) {
     return false;
   }
@@ -640,6 +820,28 @@ uint32_t ReadRefiiHostStreamBytes(uint8_t* base,
   if (requested_bytes == 0) {
     record->position = offset;
     return 0;
+  }
+
+  // Godot's bytes are already resident — no file to seek. Copied page by page because a guest
+  // buffer is only guaranteed contiguous within a page.
+  if (record->host_served) {
+    uint32_t copied = 0;
+    while (copied < requested_bytes) {
+      const uint32_t guest = buffer_guest + copied;
+      const uint32_t page_remaining = 0x1000u - (guest & 0x0FFFu);
+      const uint32_t copy_size =
+          std::min<uint32_t>(requested_bytes - copied, page_remaining);
+      std::memcpy(rex::memory::GuestPtr<uint8_t*>(base, guest),
+                  record->bytes.data() + offset + copied,
+                  copy_size);
+      copied += copy_size;
+    }
+    record->position = offset + copied;
+    ++record->read_calls;
+    record->read_bytes += copied;
+    ZoneValue(copied);
+    TracyPlot("Refii VFS Read Completed Bytes", static_cast<int64_t>(copied));
+    return copied;
   }
 
   record->file.clear();
@@ -786,9 +988,20 @@ void CompleteRefiiReadRequest(PPCContext& ctx,
     }
   }
 
+  // Fields the guest reads back, offsets from the request: `GetDataBuffer` (0x82B5C0C0) returns
+  // { *(this+124), *(this+128) } — pointer and length — and slot +24 (0x82B5C0D8) returns
+  // *(this+200) as the byte count. The pointer is wherever ReadRefiiHostStreamForReadRequest
+  // put the bytes: the caller's buffer, or the base of the destination it was asked to fill.
+  uint32_t data_guest = record->buffer_guest;
+  if (record->uses_stream_destination && record->buffer_guest != 0) {
+    data_guest = LoadGuestU32(base, record->buffer_guest);
+  }
   StoreGuestU32(base, record_guest + 24, completed ? 1 : 0);
-  StoreGuestU32(base, record_guest + 124, bytes_read);
+  StoreGuestU32(base, record_guest + 28, completed ? 0 : 997);
+  StoreGuestU32(base, record_guest + 124, completed ? data_guest : 0u);
+  StoreGuestU32(base, record_guest + 128, bytes_read);
   StoreGuestU32(base, record_guest + 176, bytes_read);
+  StoreGuestU32(base, record_guest + 200, bytes_read);
   SignalReadRequestEvent(ctx, base, record_guest);
 
   if (completed) {

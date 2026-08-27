@@ -107,8 +107,26 @@ public partial class LauncherApp : Control
 	private ReinstallPanel _reinstallPanel = null!;
 	private float _menuBarHeight = 72.0f;
 
+	/// <summary>
+	/// The two ways the whole app can end without a crash record: the window manager closing the
+	/// launcher's own window (auto-accepted quit) and a tree quit. Named in the log so a "closed
+	/// to desktop" with a clean tail is not mistaken for a fault.
+	/// </summary>
+	public override void _Notification(int what)
+	{
+		if (what == NotificationWMCloseRequest)
+		{
+			GD.PrintErr("[launcher] WM close request on the launcher window — the app is quitting");
+		}
+		else if (what == NotificationPredelete)
+		{
+			GD.PrintErr("[launcher] the launcher root is being deleted — the app is quitting");
+		}
+	}
+
 	public override void _Ready()
 	{
+		CrashReporting.Install();
 		LauncherPaths.OverrideLauncherDirectory = ResolveLauncherDirectory();
 		Platform.RuntimeDirectoryOverride = ResolveRuntimeDirectory();
 

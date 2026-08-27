@@ -24,7 +24,6 @@ public static class RuntimeCVars
             new("lua_force_loose_banks", "Lua", RuntimeCVarType.Bool, "false", "Force loose-script mode for Lua workspace iteration.", null),
             new("lua_trace_script_loads", "Lua", RuntimeCVarType.Bool, "false", "Log script source paths at load time.", null),
             new("lua_trace_native_handlers", "Lua", RuntimeCVarType.Bool, "false", "Log native Lua dispatch matches and fallbacks.", null),
-            new("vfs_loose_asset_backend", "VFS", RuntimeCVarType.String, "native", "VFS backend: refii for loose asset overrides, native for the original Fable 2 VFS.", "native,refii"),
             new("vfs_log_folder", "VFS", RuntimeCVarType.String, "refii_vfs", "When the Refii VFS backend is selected, route run logs to this automatic log subfolder. Empty disables the VFS-specific log folder.", null),
             new("vfs_trace_loose_assets", "VFS", RuntimeCVarType.Bool, "false", "Log loose asset override matches and fallbacks.", null),
             new("vfs_trace_vfs", "VFS", RuntimeCVarType.Bool, "false", "Log Fable 2 VFS/resource manager/bank stream flow.", null),

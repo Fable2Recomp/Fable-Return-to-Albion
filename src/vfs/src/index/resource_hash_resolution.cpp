@@ -1,5 +1,7 @@
 #include "vfs_hooks_private.h"
 
+#include "core/host_asset_reader.h"
+
 namespace refii::vfs {
 inline namespace detail {
 
@@ -131,7 +133,7 @@ bool MaybeUpgradeResourceManagerTextureResolution(
     const std::array<uint32_t, 4> original_words =
         ReadHostFileFirstWords(inout_resolution->host_path);
     const std::array<uint32_t, 4> selected_words =
-        ReadHostFileFirstWords(selected_resolution.host_path);
+        ReadHostFileFirstWords(selected_resolution);
     REXLOG_INFO("Refii VFS ResourceManager texture final shape "
                 "hash=0x{:08X} caller_lr=0x{:08X} request={} "
                 "previous={} previous_words={} selected={} "
@@ -155,7 +157,7 @@ bool MaybeUpgradeResourceManagerTextureResolution(
     const std::string selected_words =
         VfsTracingEnabled()
             ? FormatHostFileFirstWords(
-                  ReadHostFileFirstWords(selected_resolution.host_path))
+                  ReadHostFileFirstWords(selected_resolution))
             : std::string{"suppressed"};
     RecordRefiiMainMenuBlockerEvent(
         "texture_selection",
@@ -278,6 +280,30 @@ bool ResolveIndexedResourceHashLooseAsset(
       resolved = ResolveSyntheticBankEntryLooseAsset(
           candidate, &resolution, &synthetic_candidate);
     }
+
+    // The hash has already been turned back into candidate names and Godot's mount is keyed by
+    // those names. Size only — reading here would inflate a bank entry per candidate.
+    if (!resolved) {
+      uint32_t host_size = 0;
+      if (HostAssetSize(candidate, host_size)) {
+        static std::atomic<uint32_t> served_by_hash{0};
+        const uint32_t nth =
+            served_by_hash.fetch_add(1, std::memory_order_relaxed) + 1u;
+        if (nth <= 8u || (nth & (nth - 1u)) == 0u) {
+          REXLOG_INFO("Refii VFS: hash 0x{:08X} served as '{}' from GODOT's mount "
+                      "({} byte(s)) — #{} so far.",
+                      resource_hash, candidate, host_size, nth);
+        }
+
+        resolution.host_path.clear();
+        resolution.normalized_key = candidate;
+        resolution.provider_relative_path = candidate;
+        resolution.host_served = true;
+        synthetic_candidate = candidate;
+        resolved = true;
+      }
+    }
+
     if (!resolved) {
       continue;
     }

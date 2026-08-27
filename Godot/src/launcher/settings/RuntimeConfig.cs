@@ -216,15 +216,16 @@ public static class RuntimeConfig
 
         string rendererBackend = GetValue(values, "renderer_backend", "xenia").ToLowerInvariant();
         string plumeApi = GetValue(values, "renderer_plume_api", "vulkan").ToLowerInvariant();
-        string vfsBackend = GetValue(values, "vfs_loose_asset_backend", "native").ToLowerInvariant();
 
         bool isNativeBackend = rendererBackend is "native" or "xenia";
         bool isPlumeBackend = rendererBackend == "plume";
-        bool isRefiiVfsBackend = vfsBackend == "refii";
 
+        // EVERY VFS SETTING IS LIVE. They used to be gated behind picking the refii backend;
+        // there is only one VFS now, so gating them hid working settings behind a switch that
+        // no longer exists.
         if (category == "VFS")
         {
-            return name == "vfs_loose_asset_backend" || isRefiiVfsBackend;
+            return true;
         }
 
         if (category == "Renderer")

@@ -328,7 +328,7 @@ public partial class SettingsPanel : VBoxContainer
 		_model.Save();
 		_statusLabel.Text = _model.StatusMessage;
 
-		if (definition.Name is "renderer_backend" or "renderer_plume_api" or "vfs_loose_asset_backend")
+		if (definition.Name is "renderer_backend" or "renderer_plume_api")
 		{
 			Rebuild();
 		}
