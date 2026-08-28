@@ -54,6 +54,12 @@ endfunction()
 
 option(REFII_STAGE_GODOT_BUILD "Stage the runtime and native DLLs into Godot/build" ON)
 
+option(REFII_WINDOWS_INSTALL_INPUTS_ONLY
+       "Build the Windows Godot install inputs without game-derived sources" OFF)
+if(REFII_WINDOWS_INSTALL_INPUTS_ONLY AND NOT WIN32)
+    message(FATAL_ERROR "REFII_WINDOWS_INSTALL_INPUTS_ONLY is Windows-only")
+endif()
+
 # DEV ONLY. Lets a dev tree run the game code the CMake build just produced instead of making
 # the launcher recompile it from the installed image first — a ~5 minute wait between a source
 # change and seeing it, paid on every iteration.
@@ -142,7 +148,9 @@ include(cmake/refii_optimize_rexglue.cmake)
 # the API differences between the stable and netplay SDK trees.
 add_compile_definitions(REFII_REXGLUE_NETPLAY=$<BOOL:${REFII_REXGLUE_NETPLAY}>)
 refii_rexglue_configure_sdk()
-refii_rexglue_generate_sources_if_missing()
+if(NOT REFII_WINDOWS_INSTALL_INPUTS_ONLY)
+    refii_rexglue_generate_sources_if_missing()
+endif()
 include(generated/rexglue.cmake)
 add_subdirectory(src/achievement)
 refii_rexglue_apply_shadow_overrides()
@@ -187,7 +195,9 @@ add_subdirectory(src/binkdecode)
 # config override enables.
 add_subdirectory(src/xmadecode)
 refii_define_rexglue_build_target()
-refii_define_rexglue_codegen_bootstrap_target()
+if(NOT REFII_WINDOWS_INSTALL_INPUTS_ONLY)
+    refii_define_rexglue_codegen_bootstrap_target()
+endif()
 
 # Must stay above the bootstrap return() below: rexcore's memory.cpp uses
 # SSSE3 intrinsics unconditionally, so the bootstrap build (which compiles
@@ -279,13 +289,18 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/generated/sources.cmake"
 )
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/sources.cmake")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/sources.cmake" AND
+   NOT REFII_WINDOWS_INSTALL_INPUTS_ONLY)
     message(STATUS
         "generated/sources.cmake is missing; configuring bootstrap build. "
         "Build once to build ReXGlue and generate sources, then CMake can "
         "regenerate with the full Refii source list."
     )
     return()
+endif()
+if(REFII_WINDOWS_INSTALL_INPUTS_ONLY)
+    message(STATUS
+        "Refii: configuring Windows install inputs without game-derived sources")
 endif()
 if(TARGET TracyClient AND NOT TARGET rex::TracyClient)
     add_library(rex::TracyClient ALIAS TracyClient)
@@ -629,14 +644,6 @@ set(REFII_CORE_SOURCES
     ${REFII_REX_APP_SOURCE}
 )
 
-set(REFII_GENERATED_SOURCES
-    ${GENERATED_SOURCES}
-    ${REFII_HOOK_OBJECTS}
-    # The host ABI entry point, compiled in here exactly as the install-time project
-    # compiles it on the player's machine.
-    ${REFII_PAYLOAD_EXPORT_SOURCE}
-)
-
 # refii_core is the RexGlue runtime layer.
 add_library(refii_core SHARED ${REFII_CORE_SOURCES})
 target_compile_definitions(refii_core
@@ -673,6 +680,15 @@ if(WIN32)
         WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
 endif()
+
+if(NOT REFII_WINDOWS_INSTALL_INPUTS_ONLY)
+    set(REFII_GENERATED_SOURCES
+        ${GENERATED_SOURCES}
+        ${REFII_HOOK_OBJECTS}
+        # The host ABI entry point, compiled in here exactly as the install-time project
+        # compiles it on the player's machine.
+        ${REFII_PAYLOAD_EXPORT_SOURCE}
+    )
 
 # refii_generated is the recomp/codegen payload, and it is SHARED on every platform
 # because it is built on the PLAYER'S machine from their own game image — a static
@@ -761,6 +777,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/refii_init.h")
 endif()
 
 unset(REFII_GENERATED_LIBRARY_TYPE)
+else()
+    if(NOT TARGET refii_hooks)
+        message(FATAL_ERROR
+            "Windows install-input staging requires the refii_hooks target")
+    endif()
+    set(REFII_PAYLOAD_INCLUDE_TARGET refii_hooks)
+endif()
 add_library(refii_host STATIC
     src/refii_host.cpp
     # Godot-fed controller input. Lives here rather than in the host bridge because
@@ -833,7 +856,7 @@ endif()
 # the payload directly. It was retired 2026-08-18 (archive/renderer-*.zip) and the guard is kept
 # only so a restored src/renderer still links: everything in the shipping configuration reaches
 # the payload through refii_payload.
-if(TARGET refii_renderer)
+if(TARGET refii_renderer AND TARGET refii_generated)
     target_link_libraries(refii_renderer PUBLIC refii_generated)
 endif()
 
@@ -1016,3 +1039,36 @@ set(REFII_PACKAGE_RUNTIME_SEARCH_DIRS
 # earlier it silently missed refii-stage-external-libs (defined further down) and would have
 # packaged a build without them.
 refii_define_godot_export_target()
+
+if(REFII_WINDOWS_INSTALL_INPUTS_ONLY)
+    foreach(_required_target refii_payload_sdk refii_stage_godot)
+        if(NOT TARGET "${_required_target}")
+            message(FATAL_ERROR
+                "Windows install-input target is unavailable: ${_required_target}")
+        endif()
+    endforeach()
+
+    add_custom_target(refii_windows_install_inputs
+        COMMAND ${CMAKE_COMMAND}
+            -DSTAGING_BIN=${REFII_GODOT_BUILD_BIN_DIR}
+            -DTARGET_ARCH=${REFII_GODOT_ARCH}
+            -DTOOL_CACHE=${REFII_TOOL_CACHE_DIR}
+            -DZIG_SCRIPT=${CMAKE_SOURCE_DIR}/cmake/refii_fetch_zig.cmake
+            -P "${CMAKE_SOURCE_DIR}/cmake/refii_finalize_windows_install_inputs.cmake"
+        COMMENT "Preparing the Windows install-time game-code inputs"
+        USES_TERMINAL
+        VERBATIM
+    )
+    foreach(_dependency
+            refii_payload_sdk
+            refii_stage_godot
+            refii_binkdecode
+            refii_xmadecode
+            refii-stage-external-libs)
+        if(TARGET "${_dependency}")
+            add_dependencies(refii_windows_install_inputs "${_dependency}")
+        endif()
+    endforeach()
+    unset(_dependency)
+    unset(_required_target)
+endif()

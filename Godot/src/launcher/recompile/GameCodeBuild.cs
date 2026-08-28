@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -345,6 +346,476 @@ public static class GameCodeBuild
 		}
 	}
 
+	private static readonly SemaphoreSlim WindowsInstallInputsGate = new(1, 1);
+
+	private readonly record struct WindowsBootstrapTools(
+		string CMake, string Ninja, string CCompiler, string CxxCompiler,
+		IReadOnlyList<string> SearchDirectories);
+
+	private static bool WindowsInstallInputsMissing()
+	{
+		string recompile = RecompileDirectory;
+		string libraries = Path.Combine(recompile, "lib");
+
+		return !File.Exists(Path.Combine(BinDirectory,
+				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_hostbridge"))) ||
+			!File.Exists(Path.Combine(BinDirectory,
+				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_core"))) ||
+			!File.Exists(Path.Combine(BinDirectory,
+				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_vfs"))) ||
+			!File.Exists(Path.Combine(BinDirectory,
+				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_binkdecode"))) ||
+			!File.Exists(Path.Combine(BinDirectory,
+				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_xmadecode"))) ||
+			!AnyFileExists(BinDirectory,
+				"rexruntime.dll", "rexruntimed.dll", "rexruntimerd.dll",
+				"librexruntime.dll", "librexruntimed.dll", "librexruntimerd.dll") ||
+			!File.Exists(Path.Combine(recompile, "bin", "rexglue.exe")) ||
+			FindLibrary(libraries, "rexruntime").Length == 0 ||
+			FindLibrary(libraries, "refii_core").Length == 0 ||
+			FindLibrary(libraries, "refii_vfs").Length == 0 ||
+			!DirectoryHasFiles(Path.Combine(recompile, "hooks")) ||
+			!DirectoryHasFiles(Path.Combine(recompile, "include")) ||
+			!File.Exists(Path.Combine(recompile, "include_dirs.cmake")) ||
+			!File.Exists(Path.Combine(recompile, "hook_sources.cmake")) ||
+			!File.Exists(Path.Combine(recompile, "refii_manifest.toml")) ||
+			!File.Exists(Path.Combine(recompile, "refii_config.toml")) ||
+			!File.Exists(Path.Combine(recompile, "src", "payload_export.cpp")) ||
+			!File.Exists(Path.Combine(recompile, "zig", "zig.exe")) ||
+			!Directory.Exists(Path.Combine(recompile, "zig", "lib"));
+	}
+
+	private static bool WindowsInstallInputsModeEnabled(string buildDirectory)
+	{
+		try
+		{
+			string cache = Path.Combine(buildDirectory, "CMakeCache.txt");
+			foreach (string line in File.ReadLines(cache))
+			{
+				if (!line.StartsWith("REFII_WINDOWS_INSTALL_INPUTS_ONLY:",
+						StringComparison.Ordinal))
+				{
+					continue;
+				}
+
+				int separator = line.IndexOf('=');
+				return separator >= 0 && string.Equals(
+					line[(separator + 1)..].Trim(), "ON", StringComparison.OrdinalIgnoreCase);
+			}
+		}
+		catch (Exception)
+		{
+		}
+
+		return false;
+	}
+
+	private static bool AnyFileExists(string directory, params string[] names)
+	{
+		foreach (string name in names)
+		{
+			if (File.Exists(Path.Combine(directory, name)))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static bool DirectoryHasFiles(string directory)
+	{
+		try
+		{
+			return Directory.Exists(directory) && Directory.EnumerateFiles(
+				directory, "*", SearchOption.AllDirectories).Any();
+		}
+		catch (Exception)
+		{
+			return false;
+		}
+	}
+
+	private static async Task<Result> EnsureWindowsInstallInputsAsync(
+		Action<Progress> progress, CancellationToken cancellation)
+	{
+		bool acquired = false;
+		try
+		{
+			await WindowsInstallInputsGate.WaitAsync(cancellation).ConfigureAwait(false);
+			acquired = true;
+
+			if (!TryResolveWindowsSourceRoot(out string sourceRoot, out string sourceError))
+			{
+				return new Result(false, sourceError);
+			}
+
+			if (!TryResolveWindowsBootstrapTools(out WindowsBootstrapTools tools,
+					out string toolsError))
+			{
+				return new Result(false, toolsError);
+			}
+
+			string arch = Refii.Core.Engine_AppRoot.ArchFolder;
+			string buildDirectory = Path.Combine(
+				sourceRoot, "out", "build", "windows-godot-install-inputs-" + arch);
+
+			var configureArguments = new List<string>
+			{
+				"-S", sourceRoot,
+				"-B", buildDirectory,
+				"-G", "Ninja Multi-Config",
+				"-DCMAKE_MAKE_PROGRAM=" + tools.Ninja,
+				"-DCMAKE_C_COMPILER=" + tools.CCompiler,
+				"-DCMAKE_CXX_COMPILER=" + tools.CxxCompiler,
+				"-DCMAKE_CONFIGURATION_TYPES=RelWithDebInfo",
+				"-DREFII_WINDOWS_INSTALL_INPUTS_ONLY=ON",
+				"-DREFII_PACKAGE=OFF",
+				"-DREFII_RENDERER_PLUME_D3D12_AGILITY_SDK_ENABLED=ON",
+			};
+			if (string.Equals(arch, "x86_64", StringComparison.OrdinalIgnoreCase))
+			{
+				configureArguments.Add("-DCMAKE_C_FLAGS=-march=x86-64-v3");
+				configureArguments.Add("-DCMAKE_CXX_FLAGS=-march=x86-64-v3");
+			}
+			else if (string.Equals(arch, "arm64", StringComparison.OrdinalIgnoreCase))
+			{
+				configureArguments.Add("-DREFII_VCPKG_TRIPLET=arm64-windows");
+			}
+
+			LogPhase("prepare-windows-install-inputs");
+			progress(new Progress("Preparing the Windows game-code components...", 0.005f));
+			Result configured = default;
+			for (int attempt = 0; attempt < 2; attempt++)
+			{
+				configured = await RunStepAsync(
+					tools.CMake,
+					configureArguments,
+					sourceRoot,
+					line => ReportBootstrapLine(
+						progress, "Configuring Windows components", line, 0.008f),
+					cancellation,
+					tools.SearchDirectories).ConfigureAwait(false);
+				if (!configured.Ok)
+				{
+					return new Result(false,
+						"Could not configure the Windows game-code components automatically.\n\n" +
+						configured.Error);
+				}
+
+				if (WindowsInstallInputsModeEnabled(buildDirectory))
+				{
+					break;
+				}
+
+				progress(new Progress(
+					"Finalizing the Windows game-code configuration...", 0.009f));
+			}
+			if (!WindowsInstallInputsModeEnabled(buildDirectory))
+			{
+				return new Result(false,
+					"CMake did not retain the Windows install-input build mode in " +
+					Path.Combine(buildDirectory, "CMakeCache.txt") + ".");
+			}
+
+			var buildArguments = new List<string>
+			{
+				"--build", buildDirectory,
+				"--config", "RelWithDebInfo",
+				"--target", "refii_windows_install_inputs",
+				"--parallel", JobCount().ToString(),
+			};
+			progress(new Progress("Building the Windows game-code components...", 0.01f));
+			Result built = await RunStepAsync(
+				tools.CMake,
+				buildArguments,
+				sourceRoot,
+				line => ReportBootstrapLine(progress, "Building Windows components", line, 0.015f),
+				cancellation,
+				tools.SearchDirectories).ConfigureAwait(false);
+			if (!built.Ok)
+			{
+				return new Result(false,
+					"Could not build the Windows game-code components automatically.\n\n" +
+					built.Error);
+			}
+
+			if (WindowsInstallInputsMissing())
+			{
+				return new Result(false,
+					"The Windows component build finished, but the install-time game-code " +
+					"inputs were not completely staged at " + RecompileDirectory + ".");
+			}
+
+			return new Result(true, string.Empty);
+		}
+		catch (OperationCanceledException)
+		{
+			return new Result(false, "cancelled");
+		}
+		finally
+		{
+			if (acquired)
+			{
+				WindowsInstallInputsGate.Release();
+			}
+		}
+	}
+
+	private static void ReportBootstrapLine(
+		Action<Progress> progress, string phase, string line, float fraction)
+	{
+		string status = line.Trim();
+		if (status.Length == 0)
+		{
+			return;
+		}
+		if (status.Length > 180)
+		{
+			status = status[..177] + "...";
+		}
+
+		progress(new Progress(phase + "...\n" + status, fraction));
+	}
+
+	private static bool TryResolveWindowsSourceRoot(out string sourceRoot, out string error)
+	{
+		sourceRoot = string.Empty;
+		error = string.Empty;
+
+		try
+		{
+			string projectDirectory = Path.TrimEndingDirectorySeparator(
+				Path.GetFullPath(Godot.ProjectSettings.GlobalizePath("res://")));
+			string? parent = Directory.GetParent(projectDirectory)?.FullName;
+			if (string.IsNullOrEmpty(parent))
+			{
+				error = "Could not resolve the source checkout above the Godot project.";
+				return false;
+			}
+
+			string expectedBin = Path.Combine(
+				projectDirectory, "build", Refii.Core.Engine_AppRoot.ArchFolder, "bin");
+			if (!string.Equals(Path.GetFullPath(BinDirectory), Path.GetFullPath(expectedBin),
+					StringComparison.OrdinalIgnoreCase))
+			{
+				error = "The Windows install inputs are missing, but this editor run is not " +
+					"using the source checkout's Godot/build staging directory.";
+				return false;
+			}
+
+			foreach (string required in new[]
+			         {
+				         "CMakeLists.txt", "CMakePresets.json",
+				         Path.Combine("cmake", "refii_finalize_windows_install_inputs.cmake"),
+				         Path.Combine("rexglue", "rexglue-sdk", "CMakeLists.txt"),
+				         Path.Combine("src", "extractor", "thirdparty", "zlib", "CMakeLists.txt"),
+			         })
+			{
+				if (!File.Exists(Path.Combine(parent!, required)))
+				{
+					error = "This clean Windows run needs the complete refii source checkout; " +
+						"missing " + Path.Combine(parent!, required) + ".";
+					return false;
+				}
+			}
+
+			sourceRoot = parent!;
+			return true;
+		}
+		catch (Exception exception)
+		{
+			error = "Could not resolve the Windows source checkout: " + exception.Message;
+			return false;
+		}
+	}
+
+	private static bool TryResolveWindowsBootstrapTools(
+		out WindowsBootstrapTools tools, out string error)
+	{
+		tools = default;
+		error = string.Empty;
+
+		var visualStudioRoots = FindVisualStudioRoots();
+		string cmake = FindOnPath("cmake.exe");
+		if (cmake.Length == 0)
+		{
+			foreach (string root in visualStudioRoots)
+			{
+				string candidate = Path.Combine(root, "Common7", "IDE", "CommonExtensions",
+					"Microsoft", "CMake", "CMake", "bin", "cmake.exe");
+				if (File.Exists(candidate))
+				{
+					cmake = candidate;
+					break;
+				}
+			}
+		}
+
+		string ninja = FindOnPath("ninja.exe");
+		if (ninja.Length == 0 && cmake.Length != 0)
+		{
+			string? cmakeDirectory = Path.GetDirectoryName(cmake);
+			if (!string.IsNullOrEmpty(cmakeDirectory))
+			{
+				string candidate = Path.GetFullPath(
+					Path.Combine(cmakeDirectory!, "..", "..", "Ninja", "ninja.exe"));
+				if (File.Exists(candidate))
+				{
+					ninja = candidate;
+				}
+			}
+		}
+		if (ninja.Length == 0)
+		{
+			foreach (string root in visualStudioRoots)
+			{
+				string candidate = Path.Combine(root, "Common7", "IDE", "CommonExtensions",
+					"Microsoft", "CMake", "Ninja", "ninja.exe");
+				if (File.Exists(candidate))
+				{
+					ninja = candidate;
+					break;
+				}
+			}
+		}
+
+		var compilerDirectories = new List<string>();
+		foreach (string root in visualStudioRoots)
+		{
+			compilerDirectories.Add(Path.Combine(root, "VC", "Tools", "Llvm", "x64", "bin"));
+			compilerDirectories.Add(Path.Combine(root, "VC", "Tools", "Llvm", "bin"));
+		}
+		string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+		if (programFiles.Length != 0)
+		{
+			compilerDirectories.Add(Path.Combine(programFiles, "LLVM", "bin"));
+		}
+
+		string clang = string.Empty;
+		string clangxx = string.Empty;
+		foreach (string directory in compilerDirectories)
+		{
+			string candidateC = Path.Combine(directory, "clang.exe");
+			string candidateCxx = Path.Combine(directory, "clang++.exe");
+			if (File.Exists(candidateC) && File.Exists(candidateCxx))
+			{
+				clang = candidateC;
+				clangxx = candidateCxx;
+				break;
+			}
+		}
+		if (clang.Length == 0)
+		{
+			string pathClang = FindOnPath("clang.exe");
+			string pathClangxx = FindOnPath("clang++.exe");
+			if (!pathClang.Contains("mingw", StringComparison.OrdinalIgnoreCase) &&
+					!pathClangxx.Contains("mingw", StringComparison.OrdinalIgnoreCase))
+			{
+				clang = pathClang;
+				clangxx = pathClangxx;
+			}
+		}
+
+		var missing = new List<string>();
+		if (cmake.Length == 0) missing.Add("CMake");
+		if (ninja.Length == 0) missing.Add("Ninja");
+		if (clang.Length == 0 || clangxx.Length == 0) missing.Add("MSVC-compatible Clang");
+		if (missing.Count != 0)
+		{
+			error = "The clean Windows checkout needs " + string.Join(", ", missing) +
+				" to prepare its native game-code components, and they could not be found. " +
+				"Install the Visual Studio C++ CMake tools and LLVM, then run the build again.";
+			return false;
+		}
+
+		var searchDirectories = new List<string>();
+		foreach (string executable in new[] { cmake, ninja, clang, clangxx })
+		{
+			string? directory = Path.GetDirectoryName(executable);
+			if (!string.IsNullOrEmpty(directory) &&
+					!searchDirectories.Exists(item => string.Equals(
+						item, directory, StringComparison.OrdinalIgnoreCase)))
+			{
+				searchDirectories.Add(directory!);
+			}
+		}
+
+		tools = new WindowsBootstrapTools(cmake, ninja, clang, clangxx, searchDirectories);
+		return true;
+	}
+
+	private static List<string> FindVisualStudioRoots()
+	{
+		var result = new List<string>();
+		var programRoots = new List<string>
+		{
+			Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+			Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+		};
+
+		foreach (string programRoot in programRoots)
+		{
+			if (programRoot.Length == 0)
+			{
+				continue;
+			}
+			string visualStudio = Path.Combine(programRoot, "Microsoft Visual Studio");
+			foreach (string version in SafeEnumerateDirectories(visualStudio))
+			{
+				foreach (string edition in SafeEnumerateDirectories(version))
+				{
+					if (!result.Exists(item => string.Equals(
+							item, edition, StringComparison.OrdinalIgnoreCase)))
+					{
+						result.Add(edition);
+					}
+				}
+			}
+		}
+
+		return result;
+	}
+
+	private static IReadOnlyList<string> SafeEnumerateDirectories(string directory)
+	{
+		try
+		{
+			return Directory.Exists(directory)
+				? Directory.GetDirectories(directory)
+				: Array.Empty<string>();
+		}
+		catch (Exception)
+		{
+			return Array.Empty<string>();
+		}
+	}
+
+	private static string FindOnPath(string executable)
+	{
+		string searchPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+		foreach (string rawDirectory in searchPath.Split(Path.PathSeparator))
+		{
+			string directory = rawDirectory.Trim().Trim('"');
+			if (directory.Length == 0)
+			{
+				continue;
+			}
+			try
+			{
+				string candidate = Path.Combine(directory, executable);
+				if (File.Exists(candidate))
+				{
+					return Path.GetFullPath(candidate);
+				}
+			}
+			catch (Exception)
+			{
+			}
+		}
+
+		return string.Empty;
+	}
+
 	/// <summary>
 	/// Runs the whole pipeline. Reports progress as a status line and a 0..1 fraction.
 	/// </summary>
@@ -361,6 +832,16 @@ public static class GameCodeBuild
 			return new Result(false,
 				"No game executable at " + GameExecutablePath +
 				". Install the game before building its code.");
+		}
+
+		if (OperatingSystem.IsWindows() && !Refii.Core.Engine_AppRoot.IsExported)
+		{
+			Result prepared = await EnsureWindowsInstallInputsAsync(
+				progress, cancellation).ConfigureAwait(false);
+			if (!prepared.Ok)
+			{
+				return prepared;
+			}
 		}
 
 		// EVERYTHING missing, in one message. Reported one at a time this takes a build
@@ -1639,7 +2120,8 @@ public static class GameCodeBuild
 		IReadOnlyList<string> arguments,
 		string workingDirectory,
 		Action<string> onLine,
-		CancellationToken cancellation)
+		CancellationToken cancellation,
+		IReadOnlyList<string>? additionalPathDirectories = null)
 	{
 		var startInfo = new ProcessStartInfo
 		{
@@ -1668,9 +2150,22 @@ public static class GameCodeBuild
 			? "PATH"
 			: OperatingSystem.IsMacOS() ? "DYLD_LIBRARY_PATH" : "LD_LIBRARY_PATH";
 		string existing = Environment.GetEnvironmentVariable(variable) ?? string.Empty;
-		startInfo.Environment[variable] = existing.Length == 0
-			? libraryDirectory
-			: libraryDirectory + Path.PathSeparator + existing;
+		if (additionalPathDirectories is null || additionalPathDirectories.Count == 0)
+		{
+			startInfo.Environment[variable] = existing.Length == 0
+				? libraryDirectory
+				: libraryDirectory + Path.PathSeparator + existing;
+		}
+		else
+		{
+			var searchDirectories = new List<string> { libraryDirectory };
+			searchDirectories.AddRange(additionalPathDirectories);
+			if (existing.Length != 0)
+			{
+				searchDirectories.Add(existing);
+			}
+			startInfo.Environment[variable] = string.Join(Path.PathSeparator, searchDirectories);
+		}
 
 		// The tail of the output, kept so a failure can say what actually went wrong
 		// instead of only an exit code. Bounded: a failing compile can produce megabytes.

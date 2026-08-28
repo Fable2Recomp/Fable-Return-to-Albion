@@ -45,14 +45,20 @@ function(refii_stage_payload_sdk)
         return()
     endif()
 
-    if(NOT TARGET refii_generated)
-        message(FATAL_ERROR "refii_stage_payload_sdk() must run after refii_generated exists")
+    set(_payload_include_target refii_generated)
+    if(REFII_PAYLOAD_INCLUDE_TARGET)
+        set(_payload_include_target "${REFII_PAYLOAD_INCLUDE_TARGET}")
+    endif()
+    if(NOT TARGET "${_payload_include_target}")
+        message(FATAL_ERROR
+            "refii_stage_payload_sdk() cannot find its payload include target: "
+            "${_payload_include_target}")
     endif()
 
     set(_sdk_dir "${REFII_GODOT_BUILD_BIN_DIR}/recompile")
     set(_include_manifest "${CMAKE_BINARY_DIR}/payload_include_dirs.txt")
 
-    refii_write_payload_include_manifest(refii_generated "${_include_manifest}")
+    refii_write_payload_include_manifest("${_payload_include_target}" "${_include_manifest}")
 
     # The C++ standard library headers the payload is compiled against. Zig ships libc++,
     # which our own SDK headers do not parse under and whose std:: mangling would not match
@@ -148,4 +154,6 @@ function(refii_stage_payload_sdk)
             add_dependencies(refii_payload_sdk ${_dependency})
         endif()
     endforeach()
+
+    unset(_payload_include_target)
 endfunction()

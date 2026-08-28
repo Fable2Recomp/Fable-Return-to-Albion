@@ -156,7 +156,7 @@ extern "C" int32_t refii_bridge_rex_cvar_register(
       return getter(owned_name.c_str(), out, capacity);
     });
   };
-  entry.command_callback = [](std::string_view) {};
+  entry.command_callback = [](auto&&...) {};
   entry.lifecycle = static_cast<::rex::cvar::Lifecycle>(lifecycle);
   entry.default_value = default_value != nullptr ? default_value : "";
   entry.is_debug_only = is_debug_only != 0;
