@@ -39,6 +39,8 @@ public sealed class MdlGeometry
     /// </remarks>
     public int[] SourceVertices { get; set; } = Array.Empty<int>();
 
+    public bool AuthoredNormals { get; set; }
+
     public int VertexCount => Positions.Length / 3;
 
     public int TriangleCount => Indices.Length / 3;
@@ -159,6 +161,7 @@ public static class Engine_MdlGeometry
                 Indices = indices.ToArray(),
                 Normals = normals ??
                           MdlReader.ComputeSmoothNormals((int)mb.VertexCount, indices, positions),
+                AuthoredNormals = normals is not null,
                 Tangents = tangents ?? Array.Empty<float>(),
                 BoneIds = boneIds ?? Array.Empty<int>(),
                 BoneWeights = boneWeights ?? Array.Empty<float>(),
@@ -558,6 +561,7 @@ public static class Engine_MdlGeometry
                 Indices = subIndices.ToArray(),
                 Normals = subNormals ??
                           MdlReader.ComputeSmoothNormals((int)used, subIndices, subPositions),
+                AuthoredNormals = subNormals is not null,
                 Tangents = subTangents ?? Array.Empty<float>(),
                 BoneIds = subBoneIds ?? Array.Empty<int>(),
                 BoneWeights = subBoneWeights ?? Array.Empty<float>(),

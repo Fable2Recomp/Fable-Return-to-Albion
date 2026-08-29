@@ -17,8 +17,8 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 config/name="Fable 2 Launcher"
 config/description="Rebuild of the refii launcher. Dependencies remain native DLLs."
 run/main_scene="res://main.tscn"
-run/flush_stdout_on_print=true
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
+run/flush_stdout_on_print=true
 config/icon="res://assets/launcher/icon.png"
 
 [audio]
@@ -57,27 +57,10 @@ banks/game_data_root="res://../out/build/linux-amd64-debug/bin/assets/game/data"
 
 [rendering]
 
-; SIX `instance uniform vec4` PER INSTANCE (probe_r/g/b, lightmap_colour, ambient_colour,
-; darkening_colour in fable_lighting.gdshaderinc), and Godot reserves a fixed block per
-; instance out of ONE pool it also shares with [shader_globals] above. The default pool runs
-; out a few thousand instances in, and a level here is 2,694 live guest entities on top of the
-; region's own props — run 018 logged the refusal 1,019 times, plus 250 failed
-; instance_buffer_pos lookups. An instance that misses out silently keeps the uniform
-; DEFAULTS, so it is lit as though it had no probe, no lightmap and no ambient: wrong, not
-; absent, which is why this reads as a lighting bug rather than an allocation one.
 limits/global_shader_variables/buffer_size=262144
 
 [shader_globals]
 
-; DECLARED HERE, NOT AT RUNTIME. Engine_FxDepthCaptureEffect.RegisterGlobals only ever called
-; RenderingServer.GlobalShaderParameterSet, and Set on a name that was never DECLARED fails —
-; `Condition "!global_shader_uniforms.variables.has(p_name)" is true` — so the parameter never
-; came into existence. Every shader that then referenced it reported "was removed at some point.
-; Material will not display correctly": 259 times in one run, on both fx displacement shaders.
-;
-; A project setting is the right home because it exists in the EDITOR too, so the material
-; previews and the fx viewer show the same thing the game does instead of silently losing the
-; depth-driven displacement.
 fx_scene_depth={
 "type": "sampler2D",
 "value": ""
@@ -117,4 +100,12 @@ atmos_fog_on={
 atmos_factors={
 "type": "vec2",
 "value": Vector2(1, 1)
+}
+fable_exposure_tex={
+"type": "sampler2D",
+"value": ""
+}
+fable_exposure_valid={
+"type": "float",
+"value": 0.0
 }

@@ -77,6 +77,39 @@ public static class Engine_MdlMaterial
         shader.SetShaderParameter("wind_direction", WindDirection);
     }
 
+    public static void ApplyVegetation(
+        Material material, Refii.Models.MdlInfo info, bool authoredNormals)
+    {
+        if (material is not ShaderMaterial shader || !IsVegetationDrawPath(info))
+        {
+            return;
+        }
+
+        shader.SetShaderParameter("premultiplied_alpha", true);
+        if (authoredNormals)
+        {
+            shader.SetShaderParameter("foliage_normals", true);
+        }
+    }
+
+    private static bool IsVegetationDrawPath(Refii.Models.MdlInfo info)
+    {
+        if (info.MeshKind is 1 or 4)
+        {
+            return true;
+        }
+
+        foreach (Refii.Models.MdlMeshBuffer mb in info.MeshBuffers)
+        {
+            if (mb.IsFoliagePath || mb.IsEngineTree)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public const string ShaderPath =
         "res://src/Engine/material/standard_material.gdshader";
 

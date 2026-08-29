@@ -63,6 +63,10 @@ uniform float parallax_scale : hint_range(0.0, 0.1) = 0.02;
 uniform bool alpha_scissor_on = false;
 uniform float alpha_scissor_threshold = 0.25;
 
+uniform bool premultiplied_alpha = false;
+
+uniform bool foliage_normals = false;
+
 /// The exponent where the specular map's alpha is 0 and 1: the shader's c24.x and c24.y.
 ///
 /// THE SHIPPED DATA STATES ONE PAIR AND ONLY ONE: (1, 100) on every single one of the 9,293
@@ -194,6 +198,11 @@ void fragment() {
     // Gamma 2.0 by squaring, exactly as the guest's pixel shader does it. Alpha stays raw —
     // it was tested above as the artist authored it.
     alb.rgb *= alb.rgb;
+
+    if (premultiplied_alpha) {
+        alb.rgb /= max(alb.a * alb.a, 1e-6);
+    }
+
     ALBEDO = alb.rgb;
 
     // TWO-SIDED GEOMETRY NEEDS A TWO-SIDED NORMAL, and this shader is `cull_disabled`.
@@ -207,8 +216,10 @@ void fragment() {
     //
     // Flipped before the bake below as well, because the probe SH is evaluated for a direction
     // too and a back face was sampling the wrong lobe of it.
-    NORMAL = FRONT_FACING ? NORMAL : -NORMAL;
-    BINORMAL = FRONT_FACING ? BINORMAL : -BINORMAL;
+    if (!foliage_normals) {
+        NORMAL = FRONT_FACING ? NORMAL : -NORMAL;
+        BINORMAL = FRONT_FACING ? BINORMAL : -BINORMAL;
+    }
 
     // THE BAKE IS DARKENED WHERE A MAPPED NORMAL TURNS AWAY, and this surface was the only lit
     // one not doing it. Terrain has applied the term since it landed; a normal-mapped prop

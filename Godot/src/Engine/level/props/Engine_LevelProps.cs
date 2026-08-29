@@ -516,6 +516,11 @@ public static class Engine_LevelProps
                 Transform = block.Instances[index],
             };
 
+            if (block.Foliage)
+            {
+                single.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+            }
+
             single.SetMeta(Engine_PropStreamer.ModelPathMeta, block.ModelPath);
 
             uint hash = index < block.InstanceHashes.Count ? block.InstanceHashes[index] : 0;
@@ -661,6 +666,11 @@ public static class Engine_LevelProps
                 Name = UniqueName(container, block.Label),
                 Multimesh = multiMesh,
             };
+
+            if (block.Foliage)
+            {
+                node.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+            }
 
             node.SetMeta(Engine_PropStreamer.ModelPathMeta, block.ModelPath);
 
@@ -1288,6 +1298,8 @@ public static class Engine_LevelProps
 
         public string Label { get; }
 
+        public bool Foliage { get; set; }
+
         public List<Transform3D> Instances { get; } = new();
 
         /// <summary>
@@ -1453,7 +1465,10 @@ public static class Engine_LevelProps
 
             if (!merged.TryGetValue(modelPath, out PropBlockBuild? build))
             {
-                build = new PropBlockBuild(modelPath, $"foliage {NameOf(modelPath)}");
+                build = new PropBlockBuild(modelPath, $"foliage {NameOf(modelPath)}")
+                {
+                    Foliage = true,
+                };
                 merged[modelPath] = build;
                 mergedOrder.Add(modelPath);
             }
@@ -1476,6 +1491,22 @@ public static class Engine_LevelProps
             stats.FoliageBlocks++;
             stats.FoliageInstances += build.Instances.Count;
             stats.Instances += build.Instances.Count;
+        }
+
+        if (OS.GetEnvironment("REFII_DUMP_FOLIAGE").Length != 0)
+        {
+            foreach (string modelPath in mergedOrder)
+            {
+                PropBlockBuild build = merged[modelPath];
+                if (build.Instances.Count == 0)
+                {
+                    continue;
+                }
+
+                Vector3 o = build.Instances[0].Origin;
+                GD.Print($"[foliage] {NameOf(modelPath)} x{build.Instances.Count} " +
+                    $"first=({o.X:0.#},{o.Y:0.#},{o.Z:0.#})");
+            }
         }
     }
 

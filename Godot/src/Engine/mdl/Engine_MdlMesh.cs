@@ -227,6 +227,7 @@ public static class Engine_MdlMesh
                 // src/tools/WindGate.cs. A material cannot know this; the surface it is applied to
                 // can.
                 Engine_MdlMaterial.ApplyWind(material, info);
+                Engine_MdlMaterial.ApplyVegetation(material, info, geo.AuthoredNormals);
                 mesh.SurfaceSetMaterial(added, material);
             }
 

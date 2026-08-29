@@ -356,6 +356,8 @@ public static class Engine_MdlFoliage
             return true;
         }
 
+        normals = new float[mb.VertexCount * 3];
+        int unit = 0;
         for (uint v = 0; v < mb.VertexCount; ++v)
         {
             int p = mb.VertexOffset + (int)(v * stride);
@@ -364,6 +366,29 @@ public static class Engine_MdlFoliage
             positions[(v * 3) + 2] = ReadHalf(data, p + 4);
             uvs[v * 2] = ReadHalf(data, p + 12);
             uvs[(v * 2) + 1] = ReadHalf(data, p + 14);
+
+            var (nx, ny, nz) = MdlReader.DecodeNormal_11_11_10(MdlReader.ReadU32BE(data, p + 8));
+            float len = MathF.Sqrt((nx * nx) + (ny * ny) + (nz * nz));
+            if (len > 0.8f && len < 1.2f)
+            {
+                unit++;
+            }
+
+            if (len > 1e-6f)
+            {
+                nx /= len;
+                ny /= len;
+                nz /= len;
+            }
+
+            normals[v * 3] = nx;
+            normals[(v * 3) + 1] = ny;
+            normals[(v * 3) + 2] = nz;
+        }
+
+        if (unit < (mb.VertexCount * 9) / 10)
+        {
+            normals = null;
         }
 
         return true;
