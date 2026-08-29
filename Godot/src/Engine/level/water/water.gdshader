@@ -5,10 +5,15 @@ render_mode blend_mix, cull_disabled, depth_draw_never, unshaded;
 
 uniform sampler2D normal_map : filter_linear_mipmap, repeat_enable;
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear;
+uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
 
-// The mirrored render of the world — Engine_WaterReflection's SubViewport, one per body. Until it
-// is mounted `planar_reflection` stays false and the sky dome stands in, which is what every path
-// that builds water without a live camera (the viewers, headless) gets.
+uniform bool guest_water = false;
+
+// The mirrored render of the world — Engine_WaterReflection's SubViewport, one per body, mounted
+// only in guest mode. Until it is mounted `planar_reflection` stays false and the sky dome stands
+// in, which is what every path that builds water without a live camera (the viewers, headless)
+// gets. The tile is sampled at 1-u: our mirror camera is a proper rotation, so its image is
+// horizontally flipped against the guest's improper-basis render that screen-space lookup assumes.
 uniform sampler2D reflection_tex : filter_linear, repeat_disable;
 uniform bool planar_reflection = false;
 
@@ -35,6 +40,21 @@ uniform vec4 w_deep;
 uniform vec4 w_reflp;
 uniform vec4 w_glit;
 uniform vec3 sky_constant = vec3(0.58, 0.62, 0.57);
+
+uniform float wave_amp = 0.12;
+uniform float wave_slope = 1.5;
+uniform float wave_len = 1.0;
+uniform float wave_speed = 0.35;
+uniform float wave_fade_depth = 0.8;
+uniform float foam_width = 1.1;
+uniform float beach_slope = 0.5;
+
+uniform sampler2D terrain_height_tex : filter_linear, repeat_disable;
+uniform vec4 terrain_bounds = vec4(0.0, 0.0, 1.0, 1.0);
+uniform bool has_terrain_height = false;
+
+uniform vec4 w_body_bounds = vec4(0.0);
+uniform bool has_body_bounds = false;
 
 // THE SUN GLINT IS LIT BY THE LEVEL'S MAIN DIRECTIONAL LIGHT, and it used to be lit by a
 // hardcoded direction that never moved. The water draw's own upload settles it: the offscreen
@@ -73,6 +93,84 @@ varying vec3 v_local;
 varying vec3 v_eye_local;
 varying vec3 v_sun_local;
 
+float body_edge(vec2 p) {
+	if (!has_body_bounds) {
+		return 1.0;
+	}
+	float d = min(min(p.x - w_body_bounds.x, p.y - w_body_bounds.y),
+		min(w_body_bounds.z - p.x, w_body_bounds.w - p.y));
+	return clamp(d / 1.5, 0.0, 1.0);
+}
+
+float terrain_probe(vec2 p, float y, out vec2 shore_dir, out float slope, out float beach) {
+	shore_dir = vec2(0.0);
+	slope = 0.0;
+	beach = 0.0;
+	if (!has_terrain_height) {
+		return 4.0;
+	}
+
+	vec2 tuv = clamp((p - terrain_bounds.xy) * terrain_bounds.zw, vec2(0.0), vec2(1.0));
+	vec2 duv = terrain_bounds.zw * 1.5;
+	float h = textureLod(terrain_height_tex, tuv, 0.0).r;
+	float hpx = textureLod(terrain_height_tex,
+		clamp(tuv + vec2(duv.x, 0.0), vec2(0.0), vec2(1.0)), 0.0).r;
+	float hnx = textureLod(terrain_height_tex,
+		clamp(tuv - vec2(duv.x, 0.0), vec2(0.0), vec2(1.0)), 0.0).r;
+	float hpz = textureLod(terrain_height_tex,
+		clamp(tuv + vec2(0.0, duv.y), vec2(0.0), vec2(1.0)), 0.0).r;
+	float hnz = textureLod(terrain_height_tex,
+		clamp(tuv - vec2(0.0, duv.y), vec2(0.0), vec2(1.0)), 0.0).r;
+
+	vec2 grad = vec2(hpx - hnx, hpz - hnz) / 3.0;
+	slope = length(grad);
+	if (slope > 1e-4) {
+		shore_dir = grad / slope;
+	}
+	beach = 1.0 - smoothstep(beach_slope * 0.8, beach_slope * 1.6, slope);
+	float hs = ((h * 4.0) + hpx + hnx + hpz + hnz) * 0.125;
+	return y - hs;
+}
+
+float wave_zone(float sd, float slope) {
+	float reach = wave_amp * 2.0;
+	float band = smoothstep(-reach, -reach * 0.35, sd) *
+		(1.0 - smoothstep(wave_fade_depth, wave_fade_depth * 2.5, sd));
+	float low = 1.0 - smoothstep(beach_slope * 0.6, beach_slope * 1.2, slope);
+	return band * low;
+}
+
+float roller_shape(float ph, float steep) {
+	float s = ph < 0.5 ? ph : ph - 1.0;
+	float k = s > 0.0 ? 2.0 : -2.0 * (1.0 + (2.5 * steep));
+	float dc = s * k;
+	return exp(-dc * dc * 4.5);
+}
+
+float roller_vary(vec2 p, float phase) {
+	float n = textureLod(normal_map, (p * 0.021) + vec2(fract(floor(phase) * 0.173)), 0.0).x;
+	return 0.4 + (1.1 * n);
+}
+
+const vec2 WAVE_DIR[5] = {
+	vec2(0.995, 0.100), vec2(-0.665, 0.747), vec2(0.138, -0.990),
+	vec2(0.780, 0.625), vec2(-0.502, 0.865) };
+const float WAVE_LEN[5] = { 13.0, 7.9, 4.8, 2.9, 1.8 };
+const float WAVE_LEN_SUM = 30.4;
+
+vec3 wave_field(vec2 p, float t) {
+	vec2 slope = vec2(0.0);
+	float height = 0.0;
+	for (int i = 0; i < 5; i++) {
+		float k = TAU / WAVE_LEN[i];
+		float amp = wave_amp * (WAVE_LEN[i] / WAVE_LEN_SUM);
+		float phase = (dot(p, WAVE_DIR[i]) * k) - (sqrt(9.8 * k) * t);
+		slope += sin(phase) * (k * amp) * WAVE_DIR[i];
+		height += cos(phase) * amp;
+	}
+	return vec3(slope, height);
+}
+
 void vertex() {
 	v_local = VERTEX;
 	v_eye_local = (inverse(MODEL_MATRIX) * vec4(CAMERA_POSITION_WORLD, 1.0)).xyz;
@@ -80,6 +178,21 @@ void vertex() {
 	// The glint is built against `v_local` and `v_eye_local`, so the sun has to be in the same
 	// space as they are. w = 0 — this is a direction, and the body's translation must not reach it.
 	v_sun_local = (inverse(MODEL_MATRIX) * vec4(sun_direction.xyz, 0.0)).xyz;
+
+	if (!guest_water) {
+		vec2 sdir;
+		float slope;
+		float beach;
+		float dt = terrain_probe(VERTEX.xz, VERTEX.y, sdir, slope, beach);
+		float env = wave_zone(dt, slope);
+		if (env > 0.002) {
+			float phase = (dt + (TIME * wave_speed)) / max(wave_len, 0.05);
+			float shoal = 1.0 - clamp(dt / max(wave_fade_depth, 0.05), 0.0, 1.0);
+			float lift = roller_shape(fract(phase), shoal) * wave_amp * (0.7 + (0.9 * shoal))
+				* env * roller_vary(VERTEX.xz, phase);
+			VERTEX.y += lift * body_edge(VERTEX.xz);
+		}
+	}
 }
 
 // The reflected sky is THE SAME DOME the sky shader draws, so it comes from the same function.
@@ -95,18 +208,57 @@ vec3 dome_reflect(vec3 r) {
 		horizon_distance);
 }
 
+float linear_depth(vec2 uv, mat4 inv_proj) {
+	float d = texture(depth_tex, uv).r;
+	vec4 v = inv_proj * vec4((uv * 2.0) - 1.0, d, 1.0);
+	return -v.z / v.w;
+}
+
 void fragment() {
+	float w_surge = 0.0;
+	float w_low = 0.0;
+	float w_roller = 0.0;
+	vec2 w_wave_n = vec2(0.0);
+	vec2 w_warp = vec2(0.0);
+	if (!guest_water) {
+		vec2 sdir;
+		float slope;
+		float beach;
+		float dt = terrain_probe(v_local.xz, v_local.y, sdir, slope, beach);
+		float env = wave_zone(dt, slope);
+		vec3 wf = wave_field(v_local.xz, TIME);
+		w_warp = wf.xy * 4.0;
+		w_surge = clamp(wf.z / max(wave_amp, 0.001), -1.0, 1.0);
+		if (has_terrain_height) {
+			w_low = 1.0 - smoothstep(beach_slope * 0.6, beach_slope * 1.2, slope);
+		}
+		if (env > 0.002) {
+			float phase = (dt + (TIME * wave_speed)) / max(wave_len, 0.05);
+			float ph = fract(phase);
+			float shoal = 1.0 - clamp(dt / max(wave_fade_depth, 0.05), 0.0, 1.0);
+			float vary = roller_vary(v_local.xz, phase);
+			float sh = roller_shape(ph, shoal);
+			float amp_l = wave_amp * (0.7 + (0.9 * shoal));
+			float shd = (roller_shape(fract(ph + 0.02), shoal) - sh) / 0.02;
+			w_wave_n = sdir * clamp(
+				slope * shd * amp_l * env * vary * wave_slope / max(wave_len, 0.05),
+				-0.6, 0.6);
+			float burst = (1.0 - smoothstep(0.0, 0.35, abs(dt))) * smoothstep(0.3, 0.8, sh);
+			w_roller = env * burst * vary;
+		}
+	}
+
 	vec2 phase01 = fract(TIME * w_speed.xy);
 	vec2 phase23 = fract(TIME * w_speed.zw);
 
-	vec2 uv0 = (v_local.xz * w_scale.xy) + phase01;
-	vec2 uv1 = (v_local.xz * w_scale.zw) + phase23;
+	vec2 uv0 = ((v_local.xz + w_warp) * w_scale.xy) + phase01;
+	vec2 uv1 = ((v_local.xz + w_warp) * w_scale.zw) + phase23;
 
 	vec2 n0 = (texture(normal_map, uv0).xy * 2.0) - 1.0;
 	vec2 n1 = (texture(normal_map, uv1).xy * 2.0) - 1.0;
 	float z0 = sqrt(clamp(1.0 - dot(n0, n0), 0.0, 1.0));
 	float z1 = sqrt(clamp(1.0 - dot(n1, n1), 0.0, 1.0));
-	vec2 nxy = n0 + n1;
+	vec2 nxy = n0 + n1 + w_wave_n;
 	float nz = z0 + z1;
 
 	vec3 view = v_eye_local - v_local;
@@ -118,80 +270,142 @@ void fragment() {
 
 	vec3 watercol = mix(w_deep.rgb, w_surface.rgb, fres);
 
-	float shadow_f = 1.0;
-	float frefl = clamp(fres + w_bias.y, 0.0, 1.0);
 	float refl_str = clamp(w_deep.w, 0.0, 1.0);
 
-	// saturate(distance / MaxRefractionDistance) — the guest's `g_WaterConstants(24).x` is the
-	// reciprocal, taken on the CPU at `821E5054`; w_bias.w carries the stated distance instead.
-	float distf = clamp(dist / max(w_bias.w, 0.001), 0.0, 1.0);
-
-	// THE REFLECTION IS A MIRRORED RENDER OF THE WORLD, sampled in SCREEN SPACE.
-	//
-	// The guest renders the scene a second time from a camera mirrored about the water plane into a
-	// 256x256 "ReflectionTile" (`sub_82B394C8` / `sub_82B39A18`) and fetches it with the screen
-	// coordinate, displaced by the wave:
-	//
-	//     r7.xy   = g_WaterConstants(13).yx * 0.5 * r2.yx   ; 0.5 * ReflectionScale * n
-	//     r7.xyzw = r1.zwzw + r7.xywz                       ; added to the screen UV
-	//     r3.xyz  = tfetch2D(g_ReflectionSampler, r7.yx)
-	//
-	// Screen space is the correct lookup precisely BECAUSE the mirrored camera keeps the main
-	// projection: a point on the surface projects to the same pixel in both views.
-	//
-	// The dome stays as the fallback for the frame before the viewport has rendered, and for any
-	// path that mounts water without a reflection (the model viewer, a headless build).
-	vec2 refl_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.x);
-	vec3 Nr = normalize(vec3(nxy.x * w_reflp.x * 0.5, 1.0, nxy.y * w_reflp.x * 0.5));
-	vec3 R = reflect(-V, Nr);
-	R.y = abs(R.y);
-	vec3 dome = has_dome ? dome_reflect(R) : sky_constant;
-
-	// Rf — the guest folds the shadow mask in as `shadow * ShadowScaleBias + (1 - ShadowScaleBias)`
-	// (`g_WaterConstants(23)`, built as the pair `(v, 1-v)` at `821E5014`). We have no water shadow
-	// mask yet, so shadow_f is 1.0 and the term is the identity.
-	vec3 Rf = min(planar_reflection
-		? texture(reflection_tex, clamp(refl_uv, vec2(0.0), vec2(1.0))).rgb
-		: dome, vec3(1.0)) * shadow_f;
-
-	vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y);
-	vec3 Rr = min(texture(screen_tex, refr_uv).rgb, vec3(1.0));
-
-	// THE GUEST'S COMPOSITION, IN ITS OWN ORDER — 0057 pshader_ocean_water:
-	//
-	//     near   = lerp(W, lerp(Rr, Rf, f), s)
-	//     far    = lerp(W, Rf, s)
-	//     colour = lerp(near, far, t)
-	//
-	// with W the fresnel-blended body colour, f = fresnel + ReflectionBias, s = ReflectionStrength
-	// and t = distance/MaxRefractionDistance. Refraction fades out with distance and reflection
-	// does not, which is what the two endpoints encode.
-	vec3 near_col = mix(watercol, mix(Rr, Rf, frefl), refl_str);
-	vec3 far_col = mix(watercol, Rf, refl_str);
-	vec3 col = mix(near_col, far_col, distf);
-
-	vec3 g = normalize(vec3(Nf.x, w_reflp.z * Nf.y, Nf.z));
+	vec3 col;
 	vec3 L = normalize(v_sun_local);
-	vec3 Rl = (2.0 * dot(L, g) * g) - L;
-	float spec = clamp(dot(V, Rl), 0.0, 1.0);
-	float glint = pow(max(spec, 1e-6), max(w_glit.x, 1.0));
-	col += sun_colour.rgb * (glint * max(w_reflp.w, 0.0));
 
-	// LINEAR, LIKE THE SHIPPED WATER. 0055 pshader_waterpatch composes reflection and
-	// refraction with a straight fresnel lerp and writes it —
-	//
-	//     oC0.xyz = r1.xyzz * r0.yyyy + r0.xzww;   // lerp(refraction, reflection, fresnel)
-	//     oC0.w   = 1.0
-	//
-	// with no transfer function and not even a brightness multiply. 0057 ocean_water is longer
-	// (screen-space reflection and refraction fetches, a water body colour, a pow() sun glint
-	// and an extinction/in-scatter LUT pair) and still ends the same way, on a single
-	// `* g_GlobalAmbientAndBrightness.www`. The one x*x in either shader is normal-Z
-	// reconstruction after a *2-1 unpack, not a gamma decode.
-	//
-	// Both the screen texture and the reflection viewport are linear HDR — the reflection camera
-	// deliberately carries no exposure effect, so this composes in one space and the main camera's
-	// tone curve runs once over the result.
+	if (guest_water) {
+		// THE GUEST'S COMPOSITION, IN ITS OWN ORDER — 0057 pshader_ocean_water:
+		//
+		//     near   = lerp(W, lerp(Rr, Rf, f), s)
+		//     far    = lerp(W, Rf, s)
+		//     colour = lerp(near, far, t)
+		//
+		// with W the fresnel-blended body colour, f = fresnel + ReflectionBias,
+		// s = ReflectionStrength and t = distance/MaxRefractionDistance. The reflection and
+		// refraction tiles are 8-bit in the guest, so both fetches clip at 1.0. The glint is the
+		// guest's own Phong against the bent normal, `saturate(dot(V, 2(g.S)g - S))^power`.
+		float frefl = clamp(fres + w_bias.y, 0.0, 1.0);
+		float distf = clamp(dist / max(w_bias.w, 0.001), 0.0, 1.0);
+
+		vec2 raw_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.x);
+		vec2 refl_uv = vec2(1.0 - raw_uv.x, raw_uv.y);
+		vec3 Ng = normalize(vec3(nxy.x * w_reflp.x * 0.5, 1.0, nxy.y * w_reflp.x * 0.5));
+		vec3 Rg = reflect(-V, Ng);
+		Rg.y = abs(Rg.y);
+		vec3 dome = has_dome ? dome_reflect(Rg) : sky_constant;
+
+		vec3 Rf = min(planar_reflection
+			? texture(reflection_tex, clamp(refl_uv, vec2(0.0), vec2(1.0))).rgb
+			: dome, vec3(1.0));
+
+		vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y);
+		vec3 Rr = min(texture(screen_tex, refr_uv).rgb, vec3(1.0));
+
+		vec3 near_col = mix(watercol, mix(Rr, Rf, frefl), refl_str);
+		vec3 far_col = mix(watercol, Rf, refl_str);
+		col = mix(near_col, far_col, distf);
+
+		vec3 g = normalize(vec3(Nf.x, w_reflp.z * Nf.y, Nf.z));
+		vec3 Rl = (2.0 * dot(L, g) * g) - L;
+		float spec = clamp(dot(V, Rl), 0.0, 1.0);
+		float glint = pow(max(spec, 1e-6), max(w_glit.x, 1.0));
+		col += sun_colour.rgb * (glint * max(w_reflp.w, 0.0));
+	} else {
+		float distort = clamp(w_reflp.x * 0.25, 0.05, 1.0);
+		vec3 Nr = normalize(vec3(nxy.x * distort, nz, nxy.y * distort));
+		float ndv = clamp(dot(V, Nr), 0.0, 1.0);
+		float fres_s = 0.02 + (0.98 * pow(1.0 - ndv, 5.0));
+
+		float water_lin = -VERTEX.z;
+		float depth_here = max(linear_depth(SCREEN_UV, INV_PROJECTION_MATRIX) - water_lin, 0.0);
+
+		vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y * clamp(depth_here, 0.0, 1.0));
+		float refr_lin = linear_depth(refr_uv, INV_PROJECTION_MATRIX);
+		if (refr_lin < water_lin) {
+			refr_uv = SCREEN_UV;
+			refr_lin = linear_depth(SCREEN_UV, INV_PROJECTION_MATRIX);
+		}
+		vec3 Rr = texture(screen_tex, refr_uv).rgb;
+
+		float depth_w = max(refr_lin - water_lin, 0.0);
+		float absorb = 1.0 - exp(-depth_w * (6.0 / max(w_bias.w, 1.0)));
+		vec3 under = mix(Rr, watercol, absorb);
+
+		vec3 R = reflect(-V, Nr);
+		R.y = abs(R.y);
+		vec3 refl_col = has_dome ? dome_reflect(R) : sky_constant;
+
+		float F = clamp(fres_s * refl_str, 0.0, 1.0);
+		if (F > 0.004) {
+			vec3 world_n = normalize((MODEL_MATRIX * vec4(Nr, 0.0)).xyz);
+			vec3 view_n = normalize((VIEW_MATRIX * vec4(world_n, 0.0)).xyz);
+			vec3 ro = VERTEX;
+			vec3 rd = normalize(reflect(normalize(ro), view_n));
+
+			float hit = 0.0;
+			vec2 hit_uv = vec2(0.0);
+			float t_ray = 0.35;
+			for (int i = 0; i < 24; i++) {
+				vec3 pos = ro + (rd * t_ray);
+				vec4 clip = PROJECTION_MATRIX * vec4(pos, 1.0);
+				if (clip.w <= 0.01) {
+					break;
+				}
+
+				vec2 uv = ((clip.xy / clip.w) * 0.5) + 0.5;
+				if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+					break;
+				}
+
+				float scene = linear_depth(uv, INV_PROJECTION_MATRIX);
+				float ray = -pos.z;
+				if (scene < ray && (ray - scene) < (0.12 + (t_ray * 0.35))) {
+					vec2 b = min(uv, 1.0 - uv);
+					float edge = smoothstep(0.0, 0.08, min(b.x, b.y));
+					hit = edge;
+					hit_uv = uv;
+					break;
+				}
+
+				t_ray *= 1.28;
+			}
+
+			if (hit > 0.0) {
+				refl_col = mix(refl_col, texture(screen_tex, hit_uv).rgb, hit);
+			}
+		}
+
+		col = mix(under, refl_col, F);
+
+		vec3 H = normalize(L + V);
+		vec3 g = normalize(vec3(Nf.x, Nf.y * max(w_reflp.z, 0.05), Nf.z));
+		float ndh = clamp(dot(g, H), 0.0, 1.0);
+		float power = max(w_glit.x, 8.0);
+		float glare = pow(ndh, power) + (0.04 * pow(ndh, power * 0.1));
+		float corridor = pow(clamp(dot(reflect(-V, vec3(0.0, 1.0, 0.0)), L), 0.0, 1.0), 16.0);
+		col += sun_colour.rgb * max(w_reflp.w, 0.0) * glare * corridor *
+			clamp(L.y * 6.0, 0.0, 1.0);
+
+		float lap = 0.6 + (0.4 * w_surge);
+		float shore_foam = (1.0 - clamp(depth_here / max(foam_width, 0.05), 0.0, 1.0)) * lap
+			* (1.0 - w_low);
+		float band = max(shore_foam, w_roller);
+		if (band > 0.003) {
+			float f0 = texture(normal_map,
+				(v_local.xz * 0.33) + vec2(TIME * 0.020, TIME * 0.012)).x;
+			float f1 = texture(normal_map,
+				(v_local.xz * 0.19) - vec2(TIME * 0.016, TIME * 0.010)).y;
+			float pattern = mix(f1, f0, clamp((band - 0.4) / 0.4, 0.0, 1.0));
+			float foam = smoothstep(0.45, 0.95, band * (0.35 + (0.95 * pattern)));
+
+			vec3 zen = has_dome ? dome_reflect(vec3(0.0, 1.0, 0.0)) : sky_constant;
+			vec3 foam_col = (zen * 0.75) + (sun_colour.rgb * 0.30 * clamp(L.y * 2.0, 0.0, 1.0));
+			col = mix(col, foam_col, foam * 0.75);
+		}
+	}
+
 	ALBEDO = col;
 
 	// THE SHORELINE, from the authored coverage mask.
@@ -229,4 +443,5 @@ void fragment() {
 	} else {
 		ALPHA = 1.0;
 	}
+	ALPHA = max(ALPHA, min(w_roller, 1.0));
 }

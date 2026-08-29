@@ -901,6 +901,26 @@ public static class Engine_LevelScene
         var container = new Node3D { Name = WaterNodeName };
         int emitted = 0;
 
+        ImageTexture? terrainTexture = null;
+        var terrainBounds = Vector4.Zero;
+        if (!Engine_WaterMaterial.GuestMode &&
+            level.HeightfieldPath.Length != 0 &&
+            source(level.HeightfieldPath) is { } ghfBytes &&
+            Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out _) &&
+            heights.Width > 1 && heights.Height > 1)
+        {
+            var data = new byte[heights.Values.Length * sizeof(float)];
+            Buffer.BlockCopy(heights.Values, 0, data, 0, data.Length);
+            Image image = Image.CreateFromData(
+                heights.Width, heights.Height, false, Image.Format.Rf, data);
+            terrainTexture = ImageTexture.CreateFromImage(image);
+            terrainBounds = new Vector4(
+                heights.OriginX,
+                heights.OriginZ,
+                1f / ((heights.Width - 1) * Engine_GhfTerrain.CellSize),
+                1f / ((heights.Height - 1) * Engine_GhfTerrain.CellSize));
+        }
+
         for (int i = 0; i < scene.Bodies.Count; i++)
         {
             WaterBody body = scene.Bodies[i];
@@ -929,6 +949,21 @@ public static class Engine_LevelScene
             }
             else
             {
+                if (terrainTexture is not null)
+                {
+                    material.SetShaderParameter("terrain_height_tex", terrainTexture);
+                    material.SetShaderParameter("terrain_bounds", terrainBounds);
+                    material.SetShaderParameter("has_terrain_height", true);
+                }
+
+                Aabb bodyAabb = node.Mesh.GetAabb();
+                material.SetShaderParameter("w_body_bounds", new Vector4(
+                    bodyAabb.Position.X,
+                    bodyAabb.Position.Z,
+                    bodyAabb.Position.X + bodyAabb.Size.X,
+                    bodyAabb.Position.Z + bodyAabb.Size.Z));
+                material.SetShaderParameter("has_body_bounds", true);
+
                 node.MaterialOverride = material;
             }
 

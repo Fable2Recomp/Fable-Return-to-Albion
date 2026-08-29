@@ -7,6 +7,9 @@ public static class Engine_WaterMaterial
 {
     public const string ShaderPath = "res://src/Engine/level/water/water.gdshader";
 
+    public static bool GuestMode =>
+        OS.GetEnvironment("REFII_WATER").Equals("guest", System.StringComparison.OrdinalIgnoreCase);
+
     public delegate byte[]? ReadAsset(string virtualPath);
 
     public delegate string? FindByName(string fileName);
@@ -24,6 +27,11 @@ public static class Engine_WaterMaterial
         }
 
         var material = new ShaderMaterial { Shader = shader };
+
+        if (GuestMode)
+        {
+            material.SetShaderParameter("guest_water", true);
+        }
 
         Texture2D? normalMap = LoadTexture(body.NormalMapPath, read, findByName);
         if (normalMap is not null)

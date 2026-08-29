@@ -150,7 +150,9 @@ public sealed partial class Engine_WaterReflection : Node
     /// Reflecting the FORWARD and UP vectors and rebuilding through LookingAt gives the identical
     /// mirrored view with a proper rotation, because `cross(mirror(a), mirror(b))` is
     /// `-mirror(cross(a, b))` — the two sign flips cancel and the frame comes back right-handed.
-    /// Winding is then untouched and no cull state has to change.
+    /// Winding is then untouched and no cull state has to change. The image is therefore
+    /// horizontally flipped against the guest's improper-basis render, and the shader samples the
+    /// tile at 1-u to undo it.
     /// </summary>
     private static Transform3D Mirror(Transform3D eye, float height)
     {
