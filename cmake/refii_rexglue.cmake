@@ -254,7 +254,15 @@ function(refii_rexglue_prepare_shadow_sdk out_var)
         return()
     endif()
 
+    # CONFIGURE_DEPENDS ON THE GLOB ITSELF, not only on the files it found. The plain
+    # file-list dependency below tracks EDITS to shadow files that existed at configure
+    # time, but a file list cannot see a NEW shadow file — it did not exist when the list
+    # was captured, so nothing dirtied the configure, the stage never refreshed, and a fix
+    # added as a new shadow sat uncompiled while the build button reported nothing to do.
+    # The verified glob makes ninja re-evaluate the file SET before every build and
+    # reconfigure when it changes.
     file(GLOB_RECURSE _refii_rexglue_shadow_inputs
+        CONFIGURE_DEPENDS
         LIST_DIRECTORIES FALSE
         "${REFII_REXGLUE_SHADOW_DIR}/*"
     )

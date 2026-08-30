@@ -35,11 +35,13 @@ void fragment() {
 	vec3 rgb = vec3(0.0);
 
 	if (alpha > 0.001) {
+		// One-texel offsets — 0114's gradient taps are `tfetch2D(..., float2(1, 0))` etc.; a
+		// two-texel baseline halves the slope and softens every cloud normal.
 		vec2 texel = 1.0 / vec2(textureSize(cloud_density, 0));
-		float plus_x = texture(cloud_density, uv + vec2(2.0 * texel.x, 0.0)).a;
-		float plus_y = texture(cloud_density, uv + vec2(0.0, 2.0 * texel.y)).a;
-		float minus_x = texture(cloud_density, uv - vec2(2.0 * texel.x, 0.0)).a;
-		float minus_y = texture(cloud_density, uv - vec2(0.0, 2.0 * texel.y)).a;
+		float plus_x = texture(cloud_density, uv + vec2(texel.x, 0.0)).a;
+		float plus_y = texture(cloud_density, uv + vec2(0.0, texel.y)).a;
+		float minus_x = texture(cloud_density, uv - vec2(texel.x, 0.0)).a;
+		float minus_y = texture(cloud_density, uv - vec2(0.0, texel.y)).a;
 
 		float gradient_x = plus_x - minus_x;
 		float gradient_y = plus_y - minus_y;
@@ -54,8 +56,11 @@ void fragment() {
 		float facing_pow = pow(grazing, 32.0);
 		float back = clamp(dot(light_dir, -normal), 0.0, 1.0);
 		float front = clamp(dot(light_dir, normal), 0.0, 1.0);
+		// The back term is weighted by (1 - DENSITY) — `ps = c254.w - r2.x` in 0114, where
+		// r2.x is the sampled alpha. Thin edges transmit; dense cores do not. Weighting by the
+		// view term instead made transmission a function of camera angle.
 		float lighting = (front * (1.0 + facing_pow)) +
-		                 (back * back * (1.0 - facing_pow));
+		                 (back * back * (1.0 - density));
 
 		// Linear out, no Reinhard and no encode. 0114 pshader_clouds ends
 		//

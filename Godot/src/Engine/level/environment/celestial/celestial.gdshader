@@ -9,7 +9,6 @@ uniform vec4 element_colour = vec4(1.0, 1.0, 1.0, 1.0);
 uniform float element_facing_power = 0.0;
 uniform float element_depth_bias = 0.000001;
 uniform int element_mode = 0;
-uniform float element_exposure = 3.3333333;
 
 varying vec4 v_colour;
 
@@ -61,16 +60,18 @@ void vertex() {
 //
 // So the equivalent of `g_GlobalAmbientAndBrightness.w` goes out raw and Godot's environment
 // tonemapper stands in for the guest's global one, which is where it belongs.
+// ONE MULTIPLY CHAIN, NOTHING ELSE. 0118 sundisc is
+// `texel.rgb * g_SunDiscColour.rgb * texel.a * c20.w`, 0119 moondisc the same with MoonColour —
+// no Reinhard, no squaring, no per-element exposure. The celestial set is the family that
+// squares NOTHING (0114's asymmetry note), and c20.w's equivalent is the composite's global
+// exposure, so it does not belong here either.
 void fragment() {
 	vec4 texel = texture(element_tex, UV);
 	if (element_mode == 0) {
-		vec3 rgb = max(texel.rgb * v_colour.rgb, vec3(0.0));
-		ALBEDO = rgb * rgb;
+		ALBEDO = max(texel.rgb * v_colour.rgb, vec3(0.0));
 		ALPHA = texel.a * v_colour.a;
 	} else {
-		vec3 rgb = texel.rgb * v_colour.rgb * texel.a * element_exposure;
-		rgb = rgb / (vec3(1.0) + rgb);
-		ALBEDO = rgb * rgb;
+		ALBEDO = max(texel.rgb * v_colour.rgb * texel.a, vec3(0.0));
 		ALPHA = element_mode == 2 ? texel.a * v_colour.a : texel.a;
 	}
 }

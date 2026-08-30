@@ -469,6 +469,35 @@ REX_EXTERN(rex_lhScopedLock_Acquire) {
   }
 }
 
+// D3D_InitializeRingBuffer, 0x82BA2830 — the no-GPU latch is armed IN-LINE, on the guest's
+// own thread, the moment ring setup completes. The boot race this kills: with no GPU,
+// `VdEnableRingBufferRPtrWriteBack` is a no-op, and the first latch-clear reader commits the
+// device to GPU-completion waits that never finish — `D3D_CDevice_KickOff` (0x821e8f70) parks
+// in `D3D_CDevice_BlockOnFence`, and `D3D_CDevice_SetFence` (0x822986ec) silently skips the
+// completion write-back for any fence issued while the bit is down. The host's step-loop arm
+// polls at 30 Hz and lost that race roughly half of one day's launches.
+//
+// This site is provably early enough: the wait gate also requires `dword_83497144`
+// (HSIO-training-failed, 0x82ba6be0), which is still 0 until the device-init tail — after this
+// function returns and after this write. So no wait-capable reader can ever see the bit clear.
+// Re-runs on a device reset re-arm the same byte; the OR is idempotent. The hostbridge's own
+// arm (`ArmGuestNoGpuMode`) stays as the belt for any path that skips ring init.
+REX_EXTERN(sub_82BA2830) {
+  REX_FUNC_PROLOGUE();
+
+  const uint32_t device = ctx.r3.u32;
+  __imp__sub_82BA2830(ctx, base);
+
+  if (device != 0u) {
+    const uint8_t before = base[device + 0x2ABDu];
+    base[device + 0x2ABDu] = static_cast<uint8_t>(before | 0x02u);
+    REXLOG_INFO(
+        "Refii boot: no-GPU latch armed in-line after ring-buffer init "
+        "(device=0x{:08X}, 0x{:02X} -> 0x{:02X})",
+        device, before, before | 0x02u);
+  }
+}
+
 REX_EXTERN(sub_8218FA68) {
   REX_FUNC_PROLOGUE();
 

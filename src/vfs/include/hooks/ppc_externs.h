@@ -95,6 +95,7 @@ PPC_EXTERN_FUNC(__imp__sub_82C0EE10);
 PPC_EXTERN_FUNC(__imp__sub_82B456D8);
 PPC_EXTERN_FUNC(__imp__sub_82B45F70);
 PPC_EXTERN_FUNC(__imp__sub_8218FA68);
+PPC_EXTERN_FUNC(__imp__sub_82BA2830);
 PPC_EXTERN_FUNC(__imp__sub_82C6E8F0);
 
 // Render_DrawBinkMovieFrame — the game's own call into Bink, hooked to capture the BINK

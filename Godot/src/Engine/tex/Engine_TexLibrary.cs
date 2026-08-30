@@ -605,7 +605,8 @@ public static class Engine_TexLibrary
 		float powerMax,
 		Func<string, byte[]?> read)
 	{
-		if (!Engine_TexSettings.OrmEnabled || string.IsNullOrWhiteSpace(specularPath))
+		if (!Engine_TexSettings.OrmEnabled ||
+			(string.IsNullOrWhiteSpace(specularPath) && string.IsNullOrWhiteSpace(normalPath)))
 		{
 			return false;
 		}
@@ -623,11 +624,12 @@ public static class Engine_TexLibrary
 			$"me{metallicStrength:F2}-h{(withHeight ? 1 : 0)}-{normal}";
 
 		return BuildOrmImage(
-			path, normal, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight, read)
+			path, normal, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight, read,
+			out _)
 			is not null;
 	}
 
-	private static readonly Dictionary<string, ImageTexture?> LiveOrm =
+	private static readonly Dictionary<string, (ImageTexture? Texture, bool HasHeight)> LiveOrm =
 		new(StringComparer.Ordinal);
 
 	/// <summary>
@@ -648,9 +650,15 @@ public static class Engine_TexLibrary
 		string normalPath,
 		float powerMin,
 		float powerMax,
-		Func<string, byte[]?> read)
+		Func<string, byte[]?> read,
+		out bool hasHeight)
 	{
-		if (!Engine_TexSettings.OrmEnabled || string.IsNullOrWhiteSpace(specularPath))
+		hasHeight = false;
+
+		// A specular OR a normal map is enough — AO and height derive from the normal alone,
+		// and roughly a third of the asset set names a normal without a specular.
+		if (!Engine_TexSettings.OrmEnabled ||
+			(string.IsNullOrWhiteSpace(specularPath) && string.IsNullOrWhiteSpace(normalPath)))
 		{
 			return null;
 		}
@@ -672,44 +680,76 @@ public static class Engine_TexLibrary
 
 		lock (Gate)
 		{
-			if (LiveOrm.TryGetValue(memKey, out ImageTexture? cached))
+			if (LiveOrm.TryGetValue(memKey, out (ImageTexture? Texture, bool HasHeight) cached))
 			{
-				return cached;
+				hasHeight = cached.HasHeight;
+				return cached.Texture;
 			}
 		}
 
-		ImageTexture? built = ResolveOrm(
-			path, normal, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight, read);
+		Image? packed = BuildOrmImage(
+			path, normal, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight,
+			read, out bool packedHeight);
+		ImageTexture? built = packed is null ? null : ImageTexture.CreateFromImage(packed);
 
 		lock (Gate)
 		{
-			if (LiveOrm.TryGetValue(memKey, out ImageTexture? raced))
+			if (LiveOrm.TryGetValue(memKey, out (ImageTexture? Texture, bool HasHeight) raced))
 			{
-				return raced;
+				hasHeight = raced.HasHeight;
+				return raced.Texture;
 			}
 
-			LiveOrm[memKey] = built;
+			LiveOrm[memKey] = (built, packedHeight);
 		}
 
+		hasHeight = packedHeight;
 		return built;
 	}
 
-	private static ImageTexture? ResolveOrm(
-		string path,
-		string normalPath,
-		string id,
+	/// <summary>
+	/// Packs an ORM straight from already-resolved textures, bypassing the path-keyed cache.
+	/// </summary>
+	/// <remarks>
+	/// For sources that do not live in a bank — the hero's morphed specular and normal. The
+	/// path-keyed cache would pack the UNMORPHED bytes under the same identity, so a morphed
+	/// material would bind maps and an ORM that disagree. Uncached on purpose: the hero is a
+	/// handful of materials rebuilt when the morph changes, which is exactly when the ORM must
+	/// change too.
+	/// </remarks>
+	public static ImageTexture? BuildOrmFromTextures(
+		Texture2D? specular,
+		Texture2D? normal,
 		float powerMin,
 		float powerMax,
-		float aoStrength,
-		float metallicStrength,
-		bool withHeight,
-		Func<string, byte[]?> read)
+		out bool hasHeight)
 	{
-		Image? packed = BuildOrmImage(
-			path, normalPath, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight,
-			read);
+		hasHeight = false;
+		if (!Engine_TexSettings.OrmEnabled)
+		{
+			return null;
+		}
 
-		return packed is null ? null : ImageTexture.CreateFromImage(packed);
+		Image? spec = specular?.GetImage();
+		Image? norm = normal?.GetImage();
+		if (spec is null && norm is null)
+		{
+			return null;
+		}
+
+		Image? packed = Engine_TexOrm.TryPack(
+			spec, norm, powerMin, powerMax,
+			Engine_TexSettings.OrmAoStrength, Engine_TexSettings.OrmMetallicStrength,
+			Engine_TexSettings.OrmHeight, out bool packedHeight);
+		if (packed is null)
+		{
+			return null;
+		}
+
+		packed.GenerateMipmaps();
+		CompressOrReport(packed, isNormalMap: false, "orm");
+		hasHeight = packedHeight;
+		return ImageTexture.CreateFromImage(packed);
 	}
 
 	/// <summary>
@@ -730,54 +770,67 @@ public static class Engine_TexLibrary
 		float aoStrength,
 		float metallicStrength,
 		bool withHeight,
-		Func<string, byte[]?> read)
+		Func<string, byte[]?> read,
+		out bool hasHeight)
 	{
-		byte[]? source;
+		hasHeight = false;
+
+		byte[]? source = null;
+		byte[]? normalBytes = null;
 		try
 		{
-			source = read(path);
+			if (path.Length > 0)
+			{
+				source = read(path);
+			}
+
+			// Read whenever any derivation wants it — the height solve needs it with AO off.
+			if ((aoStrength > 0.0f || withHeight) && normalPath.Length > 0)
+			{
+				normalBytes = read(normalPath);
+			}
 		}
 		catch (Exception e)
 		{
 			// A bank read can throw on a pairing fault; without this the caller only sees
 			// Godot's bare "Cannot open file".
-			GD.PushWarning($"[tex] {path}: read threw {e.GetType().Name}: {e.Message}");
+			GD.PushWarning($"[tex] {path} orm: read threw {e.GetType().Name}: {e.Message}");
 			return null;
 		}
 
-		if (source is null)
+		// The key rides on whichever source actually exists — for a normal-only ORM that is the
+		// normal map's bytes. (Version 2: the height channel became mean-anchored and the
+		// specular became optional, so version-1 entries answer with the old packing.)
+		byte[]? keySource = source ?? normalBytes;
+		if (keySource is null)
 		{
 			return null;
 		}
 
-		string key = Engine_TexCache.Key(source, TexSemantic.Orm, id, 1);
+		string key = Engine_TexCache.Key(keySource, TexSemantic.Orm, id, 2);
 
-		Image? cached = Engine_TexCache.TryLoad(key, out _);
+		Image? cached = Engine_TexCache.TryLoad(key, out bool cachedAlpha);
 		if (cached is not null)
 		{
+			hasHeight = cachedAlpha;
 			return cached;
 		}
 
-		Image? specular = Engine_TexImage.TryCreateImage(source, out _, out _);
-		if (specular is null)
+		Image? specular = source is null
+			? null
+			: Engine_TexImage.TryCreateImage(source, out _, out _);
+		if (specular is null && source is not null)
 		{
 			return null;
 		}
 
-		// Read whenever either derivation wants it. It used to be fetched only for the cavity, so
-		// turning AO off would have silently taken the height with it.
-		Image? normal = null;
-		if ((aoStrength > 0.0f || withHeight) && normalPath.Length > 0)
-		{
-			byte[]? normalBytes = read(normalPath);
-			if (normalBytes is not null)
-			{
-				normal = Engine_TexImage.TryCreateImage(normalBytes, out _, out _);
-			}
-		}
+		Image? normal = normalBytes is null
+			? null
+			: Engine_TexImage.TryCreateImage(normalBytes, out _, out _);
 
 		Image? packed = Engine_TexOrm.TryPack(
-			specular, normal, powerMin, powerMax, aoStrength, metallicStrength, withHeight);
+			specular, normal, powerMin, powerMax, aoStrength, metallicStrength, withHeight,
+			out bool packedHeight);
 		if (packed is null)
 		{
 			return null;
@@ -786,11 +839,13 @@ public static class Engine_TexLibrary
 		packed.GenerateMipmaps();
 		CompressOrReport(packed, isNormalMap: false, "orm");
 
-		// The alpha carries the derived height when there is one, so it is no longer always
-		// opaque — the cache record has to say so or a reload would report the wrong thing.
+		// The alpha carries the derived height WHEN ONE WAS ACTUALLY SOLVED — `withHeight` is the
+		// request, `packedHeight` the outcome, and storing the request lied whenever TrySolve
+		// declined. The flag drives the shader's parallax gate, so a wrong true is texture swim.
 		// DERIVED: cheaper than an upscale but far dearer than a decode — the height channel alone
 		// is a Poisson solve over the whole image.
-		Engine_TexCache.Store(key, packed, withHeight, TexCacheCost.Derived);
+		Engine_TexCache.Store(key, packed, packedHeight, TexCacheCost.Derived);
+		hasHeight = packedHeight;
 		return packed;
 	}
 

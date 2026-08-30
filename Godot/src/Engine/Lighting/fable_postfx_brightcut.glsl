@@ -58,7 +58,10 @@ void main() {
 	vec3 bright = c * (cut / max(l, 1e-5));
 	vec3 rays = imageLoad(rays_image, coord).rgb;
 	vec3 occl = imageLoad(occl_image, coord).rgb;
-	vec3 o = bright * params.bloom.y + rays * params.bloom.z + occl;
+	// The rays ride at 6.0 * RadialBlurFactor (0163: c255.w = 6.0 multiplies the radial tap
+	// before the factor) — the 6 lives in bloom.z. The guest's radial source is the RAW scene
+	// where our quarter is exposure-scaled, so the term unexposes to match its space.
+	vec3 o = bright * params.bloom.y + rays * inv_exposure * params.bloom.z + occl;
 	// 0.5 = 1/g_BloomRescaleFactor; the guest uploads 2.0 (flt_8209B480) to const 21.
 	imageStore(dst_image, coord, vec4(o * 0.5, 1.0));
 }

@@ -191,28 +191,36 @@ public static class Engine_TexHeight
 			(field, next) = (next, field);
 		}
 
-		// NORMALISED BY ITS OWN RANGE, not by an assumed one. The solve has an arbitrary additive
-		// constant — Poisson fixes the gradient, not the level — so an absolute scale would be
-		// meaningless, and the useful thing to preserve is the relief's shape.
+		// ANCHORED ON THE MEAN, not stretched min-to-max. The solve has an arbitrary additive
+		// constant — Poisson fixes the gradient, not the level — and the consumer treats 0.5 as
+		// the plane that does not move. A min/max stretch put that plane wherever the relief's
+		// shape happened to land it: a texture that is mostly flat with a few deep pits ended
+		// near 1.0 across its flat majority and the whole surface displaced constantly. Mapping
+		// the mean to 128 and scaling by the larger excursion keeps the shape, keeps both tails
+		// in range, and pins the typical texel to zero offset.
 		float min = float.MaxValue;
 		float max = float.MinValue;
+		float sum = 0.0f;
 		foreach (float value in field)
 		{
 			min = Math.Min(min, value);
 			max = Math.Max(max, value);
+			sum += value;
 		}
 
-		float span = max - min;
-		if (span <= 1e-6f)
+		if (max - min <= 1e-6f)
 		{
 			return null;
 		}
+
+		float mean = sum / texels;
+		float scale = 127.0f / Math.Max(max - mean, mean - min);
 
 		var result = new byte[texels];
 		for (var i = 0; i < texels; ++i)
 		{
 			result[i] = (byte)Math.Clamp(
-				MathF.Round((field[i] - min) / span * 255.0f), 0.0f, 255.0f);
+				MathF.Round(128.0f + ((field[i] - mean) * scale)), 0.0f, 255.0f);
 		}
 
 		return result;

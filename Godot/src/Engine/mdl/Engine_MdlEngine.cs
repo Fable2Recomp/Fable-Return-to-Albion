@@ -340,7 +340,28 @@ public static class Engine_MdlEngine
 
             if (flag != 0)
             {
-                if (!r.Skip((int)(vtxAccum * 4))) return false;
+                // The flag-gated tail IS the amb3 lightmap UV channel: FLOAT16_2 per rigid and
+                // tree vertex, model-global order, absolute [0,1] over the object's own 64x64
+                // lightmap. Skinned records are excluded from vtxAccum by the format itself, so
+                // the channel is only trusted downstream when the model has no skinned parts.
+                if (capture && vtxAccum > 0)
+                {
+                    var lightmapUvs = new float[vtxAccum * 2];
+                    for (uint v = 0; v < vtxAccum; v++)
+                    {
+                        if (!r.U16(out ushort hu) || !r.U16(out ushort hv)) return false;
+                        lightmapUvs[v * 2] =
+                            (float)System.BitConverter.UInt16BitsToHalf(hu);
+                        lightmapUvs[(v * 2) + 1] =
+                            (float)System.BitConverter.UInt16BitsToHalf(hv);
+                    }
+
+                    info.LightmapUvs = lightmapUvs;
+                }
+                else if (!r.Skip((int)(vtxAccum * 4)))
+                {
+                    return false;
+                }
             }
 
             if (r.Position != (int)secEnd) return false;

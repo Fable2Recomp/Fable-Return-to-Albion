@@ -109,6 +109,45 @@ public static class Engine_TexOrm
 	}
 
 	/// <summary>
+	/// Cavity for a TILING source, straight from decoded RGBA bytes.
+	/// </summary>
+	/// <remarks>
+	/// The terrain's layer textures repeat across the whole ground, so the neighbourhood WRAPS —
+	/// the clamped variant above is right for a prop's unwrapped UVs and puts a visible seam line
+	/// at every tile boundary here, repeated over the entire region. Same divergence, same
+	/// strength semantics, different topology.
+	/// </remarks>
+	public static byte[] CavityFromTilingNormal(
+		byte[] rgba, int width, int height, float strength)
+	{
+		var cavity = new byte[width * height];
+
+		for (int y = 0; y < height; ++y)
+		{
+			int ym = ((y - 1) + height) % height;
+			int yp = (y + 1) % height;
+
+			for (int x = 0; x < width; ++x)
+			{
+				int xm = ((x - 1) + width) % width;
+				int xp = (x + 1) % width;
+
+				float nxLeft = Decode(rgba, (y * width) + xm, 0);
+				float nxRight = Decode(rgba, (y * width) + xp, 0);
+				float nyUp = Decode(rgba, (ym * width) + x, 1);
+				float nyDown = Decode(rgba, (yp * width) + x, 1);
+
+				float divergence = (nxRight - nxLeft) + (nyDown - nyUp);
+				float occlusion = Math.Clamp(1.0f + (divergence * strength), 0.0f, 1.0f);
+				cavity[(y * width) + x] =
+					(byte)Math.Clamp(MathF.Round(occlusion * 255.0f), 0.0f, 255.0f);
+			}
+		}
+
+		return cavity;
+	}
+
+	/// <summary>
 	/// Metallic, derived from the specular map's colour. §25 phase 5.
 	/// </summary>
 	/// <remarks>
@@ -186,31 +225,55 @@ public static class Engine_TexOrm
 	/// compresses and mips it like any other derived texture.
 	/// </remarks>
 	public static Image? TryPack(
-		Image specular,
+		Image? specular,
 		Image? normal,
 		float powerMin,
 		float powerMax,
 		float aoStrength,
 		float metallicStrength,
-		bool withHeight)
+		bool withHeight,
+		out bool packedHeight)
 	{
-		var source = (Image)specular.Duplicate();
-		source.ClearMipmaps();
-		if (source.IsCompressed())
+		packedHeight = false;
+
+		// A NORMAL MAP ALONE IS ENOUGH: two of the four channels — AO and height — derive from
+		// it and need no specular at all. The census says 57.5% of records name a specular but
+		// 89.8% name a normal, so gating the whole pack on the specular silently cost a third of
+		// the asset set its occlusion and parallax. Without a specular the roughness and metallic
+		// stay at the shader's own no-specular values (1.0 and 0), so behaviour is unchanged
+		// where it was already right.
+		byte[]? pixels = null;
+		int width;
+		int height;
+		if (specular is not null)
 		{
-			source.Decompress();
+			var source = (Image)specular.Duplicate();
+			source.ClearMipmaps();
+			if (source.IsCompressed())
+			{
+				source.Decompress();
+			}
+
+			source.Convert(Image.Format.Rgba8);
+			width = source.GetWidth();
+			height = source.GetHeight();
+			pixels = source.GetData();
+		}
+		else if (normal is not null)
+		{
+			width = normal.GetWidth();
+			height = normal.GetHeight();
+		}
+		else
+		{
+			return null;
 		}
 
-		source.Convert(Image.Format.Rgba8);
-
-		int width = source.GetWidth();
-		int height = source.GetHeight();
 		if (width <= 0 || height <= 0)
 		{
 			return null;
 		}
 
-		byte[] pixels = source.GetData();
 		var orm = new byte[width * height * 4];
 
 		// AO comes from the NORMAL map when there is one and the player asked for it. Without
@@ -230,21 +293,41 @@ public static class Engine_TexOrm
 		byte[]? relief = normal is not null && withHeight
 			? Engine_TexHeight.TrySolve(normal, width, height)
 			: null;
+		packedHeight = relief is not null;
 
-		for (int i = 0; i + 3 < pixels.Length && i + 3 < orm.Length; i += 4)
+		if (cavity is null && relief is null && pixels is null)
 		{
-			// ALPHA is the exponent selector. The RGB beside it is specular colour and has no
-			// place in ORM, which is exactly why the specular texture still has to be bound.
-			float alpha = pixels[i + 3] / 255.0f;
-			float power = powerMin + ((powerMax - powerMin) * alpha);
-			float roughness = Math.Clamp(MathF.Sqrt(2.0f / (power + 2.0f)), 0.0f, 1.0f);
+			// Nothing derivable: an ORM of four constants carries no information.
+			return null;
+		}
 
+		for (int i = 0; i + 3 < orm.Length; i += 4)
+		{
 			orm[i] = cavity is null ? (byte)255 : cavity[i / 4];  // AO: derived, or absent
-			orm[i + 1] = (byte)Math.Clamp(
-				MathF.Round(roughness * 255.0f), 0.0f, 255.0f); // roughness
-			orm[i + 2] = Metallic(
-				pixels[i] / 255.0f, pixels[i + 1] / 255.0f, pixels[i + 2] / 255.0f,
-				metallicStrength);
+
+			if (pixels is not null && i + 3 < pixels.Length)
+			{
+				// ALPHA is the exponent selector. The RGB beside it is specular colour and has
+				// no place in ORM, which is exactly why the specular texture still has to be
+				// bound.
+				float alpha = pixels[i + 3] / 255.0f;
+				float power = powerMin + ((powerMax - powerMin) * alpha);
+				float roughness = Math.Clamp(MathF.Sqrt(2.0f / (power + 2.0f)), 0.0f, 1.0f);
+
+				orm[i + 1] = (byte)Math.Clamp(
+					MathF.Round(roughness * 255.0f), 0.0f, 255.0f); // roughness
+				orm[i + 2] = Metallic(
+					pixels[i] / 255.0f, pixels[i + 1] / 255.0f, pixels[i + 2] / 255.0f,
+					metallicStrength);
+			}
+			else
+			{
+				// The shader's own no-specular values, so a normal-only ORM changes nothing
+				// the specular path had already settled.
+				orm[i + 1] = 255;
+				orm[i + 2] = 0;
+			}
+
 			orm[i + 3] = relief is null ? (byte)255 : relief[i / 4];
 		}
 

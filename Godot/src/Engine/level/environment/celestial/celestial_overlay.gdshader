@@ -95,7 +95,8 @@ float geometry_visibility(mat4 view_matrix, mat4 projection_matrix) {
 void fragment() {
 	float geom = geometry_visibility(VIEW_MATRIX, PROJECTION_MATRIX);
 	float vis = clamp(geom * element_vis, 0.0, 1.0);
-	vec3 rgb = max(texture(element_tex, UV).rgb * v_colour * (vis * vis), vec3(0.0));
-	ALBEDO = rgb * rgb;
+	// No output squaring — the celestial family squares nothing. The vis^2 falloff stays: the
+	// occlusion is OUR stand-in for the guest's offscreen resolve, not part of its shader.
+	ALBEDO = max(texture(element_tex, UV).rgb * v_colour * (vis * vis), vec3(0.0));
 	ALPHA = 1.0;
 }

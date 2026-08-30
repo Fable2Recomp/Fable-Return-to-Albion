@@ -190,14 +190,24 @@ public partial class FableFx : Node3D
             light.LightColor = state.Colour;
             light.LightEnergy = energy * ExposureScale;
 
-            // FadeDistance is the CAMERA's distance, not a second radius — the fixtures state a
-            // range of a few metres against a fade of tens, so reading it as a falloff would
-            // start a ramp far outside the light it belongs to.
-            if (state.FadeDistance > 0f)
+            // THE GUEST REACHES ZERO AT Cutoff, ramping over the Ramp metres inside it —
+            // intensity × clamp((min(Cutoff, 1000) − dist) / Ramp, 0, 1) in `sub_821F0A50`
+            // (0x821f0d38) — the same window shape as the placed fixtures, so the same Godot
+            // mapping: begin = cutoff − ramp, length = ramp. The modern model doubles the
+            // reach because its live lights carry what the bakes used to.
+            if (state.Cutoff > 0f)
             {
+                float cutoff = MathF.Min(state.Cutoff, 1000f);
+                float ramp = MathF.Max(state.Ramp, 0.01f);
+                if (Refii.Lighting.Engine_LightingFrame.ModernModel)
+                {
+                    cutoff *= 2f;
+                    ramp = MathF.Max(ramp * 2f, cutoff * 0.5f);
+                }
+
                 light.DistanceFadeEnabled = true;
-                light.DistanceFadeBegin = state.FadeDistance;
-                light.DistanceFadeLength = MathF.Max(state.FadeRange, 0.01f);
+                light.DistanceFadeBegin = MathF.Max(cutoff - ramp, 0f);
+                light.DistanceFadeLength = ramp;
             }
             else
             {
@@ -381,6 +391,7 @@ public partial class FableFx : Node3D
 
         // THE EFFECT'S LIGHTS, built once. Their colour, range and energy are all timelines and
         // move every frame, but how MANY there are is fixed by the bank.
+        bool anyHalo = false;
         for (int i = 0; i < _system.LightCount; i++)
         {
             var light = new OmniLight3D
@@ -397,6 +408,23 @@ public partial class FableFx : Node3D
             };
             _lights.Add(light);
             AddChild(light);
+
+            // THE GLOW LAYER. The guest gives every in-range, in-frustum, non-black light a
+            // glow quad, gated on a per-light texture key the shipped FX data never states —
+            // with a runtime-built default texture set as the holder's fallback. Fable mode
+            // follows the data (no keys, no glows); the modern model runs the mechanism with
+            // the procedural disc standing in for the default provider.
+            uint halo = _system.HaloAt(i);
+            if (halo != 0 || Refii.Lighting.Engine_LightingFrame.ModernModel)
+            {
+                Engine_PostFxHalos.Register(light, halo);
+                anyHalo = true;
+            }
+        }
+
+        if (anyHalo)
+        {
+            Engine_PostFxHalos.Ensure(this);
         }
 
         _built = true;

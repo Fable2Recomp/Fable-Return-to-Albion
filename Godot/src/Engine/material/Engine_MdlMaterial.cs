@@ -222,11 +222,13 @@ public static class Engine_MdlMaterial
         }
 
         Texture2D? albedo = TryLoad(material.Diffuse, TexSemantic.Albedo, out bool albedoHasAlpha);
-        Texture2D? normal = TryLoad(material.Normal, TexSemantic.Normal, out _);
+        Texture2D? normal = TryLoad(
+            material.Normal, TexSemantic.Normal, out _, out bool normalOverridden);
         Texture2D? emissive =
             TryLoad(material.SelfIllumination, TexSemantic.SelfIllumination, out _);
 
-        Texture2D? specular = TryLoad(material.Specular, TexSemantic.Specular, out _);
+        Texture2D? specular = TryLoad(
+            material.Specular, TexSemantic.Specular, out _, out bool specularOverridden);
 
         // The environment cube. 526 of the 8,931 shipped material records name one and none of
         // them were rendering it, because the decoder could not read a cube .tex at all until
@@ -289,21 +291,42 @@ public static class Engine_MdlMaterial
             Interlocked.Increment(ref _withEnvmap);
         }
 
-        // The packed ORM, when the player has asked for it. Derived from the SPECULAR map and the
-        // material's own exponent range, so it is only meaningful where there is a specular map to
-        // derive it from.
-        if (specular is not null)
+        // The packed ORM, when the player has asked for it. The specular map feeds roughness and
+        // metallic; the NORMAL map feeds AO and height — so either is enough, and a material
+        // naming only a normal (a third of the asset set) still gets its occlusion and parallax.
+        if (specular is not null || normal is not null)
         {
-            ImageTexture? orm = Engine_TexLibrary.GetOrm(
-                material.Specular,
-                material.Normal,
-                material.SpecularPowerMin,
-                material.SpecularPowerMax,
-                Engine_BnkMeshLoader.ReadBytes);
+            ImageTexture? orm;
+            bool ormHeight;
+            if (specularOverridden || normalOverridden)
+            {
+                // A morphed source (the hero) — the path-keyed cache would pack the UNMORPHED
+                // banks' bytes and hand back roughness and AO that disagree with the maps bound
+                // beside them, so the ORM is built from the very textures this material carries.
+                orm = Engine_TexLibrary.BuildOrmFromTextures(
+                    specular, normal,
+                    material.SpecularPowerMin, material.SpecularPowerMax, out ormHeight);
+            }
+            else
+            {
+                orm = Engine_TexLibrary.GetOrm(
+                    material.Specular,
+                    material.Normal,
+                    material.SpecularPowerMin,
+                    material.SpecularPowerMax,
+                    Engine_BnkMeshLoader.ReadBytes,
+                    out ormHeight);
+            }
+
             if (orm is not null)
             {
                 result.SetShaderParameter("orm_tex", orm);
                 result.SetShaderParameter("has_orm", true);
+
+                // Whether a height was actually SOLVED into the alpha. The heightless sentinel
+                // is opaque white — half a texel of permanent positive relief if the shader ever
+                // read it — so parallax stays off unless this says the channel is real.
+                result.SetShaderParameter("has_height", ormHeight);
                 Interlocked.Increment(ref _withOrm);
             }
         }
@@ -333,9 +356,14 @@ public static class Engine_MdlMaterial
 
     public static Func<string, TexSemantic, Texture2D?>? TextureOverride { get; set; }
 
-    private static Texture2D? TryLoad(string name, TexSemantic semantic, out bool hasAlpha)
+    private static Texture2D? TryLoad(string name, TexSemantic semantic, out bool hasAlpha) =>
+        TryLoad(name, semantic, out hasAlpha, out _);
+
+    private static Texture2D? TryLoad(
+        string name, TexSemantic semantic, out bool hasAlpha, out bool overridden)
     {
         hasAlpha = false;
+        overridden = false;
 
         if (name.Length == 0)
         {
@@ -343,9 +371,10 @@ public static class Engine_MdlMaterial
         }
 
         if (TextureOverride is not null &&
-            TextureOverride(name, semantic) is Texture2D overridden)
+            TextureOverride(name, semantic) is Texture2D replacement)
         {
-            return overridden;
+            overridden = true;
+            return replacement;
         }
 
         return Engine_TexLibrary.Get(

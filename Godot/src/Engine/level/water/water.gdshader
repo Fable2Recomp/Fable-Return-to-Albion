@@ -2,6 +2,7 @@ shader_type spatial;
 render_mode blend_mix, cull_disabled, depth_draw_never, unshaded;
 
 #include "res://src/Engine/level/environment/sky_dome.gdshaderinc"
+#include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 
 uniform sampler2D normal_map : filter_linear_mipmap, repeat_enable;
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear;
@@ -404,6 +405,19 @@ void fragment() {
 			vec3 foam_col = (zen * 0.75) + (sun_colour.rgb * 0.30 * clamp(L.y * 2.0, 0.0, 1.0));
 			col = mix(col, foam_col, foam * 0.75);
 		}
+	}
+
+	// THE ATMOSPHERE TAIL — 0057 runs the full extinction/in-scatter pair over the composed
+	// colour, after the glint and before its exposure multiply:
+	//
+	//     r2 = (fogC*(1-T)*AtmFactors.y - colour*(1-T))*AtmFactors.x + colour
+	//
+	// Applied to both compositions (this surface is unshaded, one value carries everything)
+	// with the in-scatter added back at full weight, matching the guest's own placement.
+	vec3 fog_t;
+	vec3 fog_c;
+	if (fable_atmosphere_terms(VERTEX, INV_VIEW_MATRIX, fog_t, fog_c)) {
+		col = col * fog_t + (vec3(1.0) - fog_t) * fog_c;
 	}
 
 	ALBEDO = col;

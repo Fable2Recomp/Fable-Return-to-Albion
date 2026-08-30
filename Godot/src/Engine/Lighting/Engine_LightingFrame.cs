@@ -1,4 +1,5 @@
 using System;
+using Godot;
 using Refii.Level;
 
 namespace Refii.Lighting;
@@ -44,6 +45,57 @@ public static class Engine_LightingFrame
 	/// <summary>Sine of the elevation over which a body fades in at the horizon (~4.6 degrees).</summary>
 	private const float HorizonFade = 0.08f;
 
+	/// <summary>
+	/// Sky-to-ambient conversion for the modern model, calibrated against the authored data
+	/// (ThemeSweep calibration columns, chapter2posh). Two constraints
+	/// fix it: at NIGHT the modern ambient must land on the guest's authored night ambient —
+	/// at 0.2, (0.05, 0.10, 0.33) against the authored (0.065, 0.075, 0.35) — and by DAY every
+	/// channel of the ambient half must sit at or below the sun's so shadows read; the worst
+	/// case (blue at 09h, blue-heavy bake under a blue sky) reaches parity at 0.2 and inverts
+	/// above it. 0.3 was the pre-measurement guess.
+	/// </summary>
+	public const float ModernAmbientLevel = 0.2f;
+
+	/// <summary>
+	/// How far every exterior bake (probes, vertex bakes, the terrain lightmap) is pulled
+	/// toward the live sky ambient in the modern model (`fable_sky_ambient.w`). Bakes keep
+	/// 1-this of their authored locality while the sky sets the level and the tint. 0.6 is
+	/// measured: at midday in chapter2posh the theme's LightmapColour factor is (4.6, 5.1, 7.1),
+	/// and below 0.6 the terrain's ambient blue sits above the sun's, so no shadow can show in
+	/// that channel.
+	/// </summary>
+	public const float ModernProbeSkyBlend = 0.6f;
+
+	private static bool? _modernAmbient;
+
+	/// <summary>
+	/// The `lighting_model` switch: "modern" derives ambient from the live sky dome (the
+	/// remaster default); "fable" reads the theme's authored day-set ambient exactly. Public
+	/// because the model is one decision, not one file's — the light fade reach follows it too.
+	/// </summary>
+	public static bool ModernModel
+	{
+		get
+		{
+			if (_modernAmbient is null)
+			{
+				try
+				{
+					_modernAmbient = !Refii.Core.Engine_RefiiConfig.Read(out _)
+						.TryGetValue("lighting_model", out string? model) ||
+						!model.Trim().Trim('"').Equals(
+							"fable", StringComparison.OrdinalIgnoreCase);
+				}
+				catch (Exception)
+				{
+					_modernAmbient = true;
+				}
+			}
+
+			return _modernAmbient.Value;
+		}
+	}
+
 	private static bool? _sunShadows;
 
 	/// <summary>The launcher's `sun_shadows` setting; on is the remastered default.</summary>
@@ -75,13 +127,38 @@ public static class Engine_LightingFrame
 			TimeOfDay = frame.TimeOfDay,
 		};
 
-		// THE RIG, NOT THE DISC. `sub_821DF670` sends the main light's direction to the same
-		// object as MainLightColour and MainLightShadowed (`lwz r3, 8(r31)` three times), while
-		// the sun and moon axes go to the sky object at `*(a1+0x10)`. Taking SkyFrame.SunDirection
-		// here — which is the disc — aimed the shadows at the wrong point of the sky by
-		// SunAxisXYRotationOffset, and gave them the orbit's height instead of the authored
-		// elevation arc.
+		// THE RIG, NOT THE DISC — in FABLE mode. `sub_821DF670` sends the main light's direction
+		// to the same object as MainLightColour and MainLightShadowed (`lwz r3, 8(r31)` three
+		// times), while the sun and moon axes go to the sky object at `*(a1+0x10)`. The two are
+		// deliberately different in the shipped data: across the themes they disagree on 209 of
+		// 348 samples, worst case 156.5 degrees — invisible on the 360, whose shadowing was
+		// baked, so nothing ever revealed where the rig pointed.
 		Array.Copy(frame.MainLightDirection, result.SunDirection, 3);
+
+		// THE MODERN MODEL LIGHTS FROM THE VISIBLE SUN. The remaster's live shadows made the
+		// authored rig/disc disagreement legible for the first time — shadows falling away from
+		// the sun the player can SEE reads as a bug, whatever the data says.
+		//
+		// THE VISIBLE disc's world direction is `Engine_SkyFrame.ToGodot(frame.SunDirection)`
+		// — proven at the consumer, not assumed: the celestial shader transforms `element_dir`
+		// by VIEW_MATRIX alone (celestial.gdshader:16), so the uniform IS a world vector, and
+		// the uniform is set from exactly that conversion. ToGodot only negates X ([1] stays
+		// the elevation). A first version copied the frame RAW and lit every level from the
+		// east/west MIRROR of its visible sun — near-right when the sun's X was small, plainly
+		// wrong when it was not, which read as "levels out of sync". UpdateSun consumes this as
+		// a GLOBAL transform, the same world space. The rig's authored colour, energy and
+		// shadow gate are kept; only the AIM follows the disc.
+		if (ModernModel)
+		{
+			Vector3 disc = Refii.Level.Engine_SkyFrame.ToGodot(frame.SunDirection);
+			if (disc.LengthSquared() > 1e-8f)
+			{
+				disc = disc.Normalized();
+				result.SunDirection[0] = disc.X;
+				result.SunDirection[1] = disc.Y;
+				result.SunDirection[2] = disc.Z;
+			}
+		}
 
 		float[] sunRgb = lighting.HasMainLightColour ? lighting.MainLightColour : frame.MainLightColour;
 		Split(sunRgb, result.SunColour, out float sunEnergy);
@@ -131,7 +208,25 @@ public static class Engine_LightingFrame
 			&& (SunShadowsModernized || (lighting.HasMainLightShadowed
 				&& lighting.MainLightShadowed > 0.5f));
 
-		if (lighting.HasAmbientColour)
+		if (ModernModel)
+		{
+			// THE MODERN MODEL'S AMBIENT: derived live from the sky dome rather than read from
+			// the theme's baked-era table. The theme ambient is one authored value per day-set
+			// entry — a fossil of the bake — while this tracks whatever the visible sky is
+			// doing, so a rock under a golden sunset goes golden with it and every surface
+			// (probe-lit, baked or bare) breathes with one source. Cosine-weighted toward the
+			// zenith because that is where a horizontal world mostly looks.
+			var skyAmbient = new float[3];
+			for (int i = 0; i < 3; i++)
+			{
+				skyAmbient[i] = (frame.SkyTop[i] * 0.65f) + (frame.SkyBottom[i] * 0.35f);
+			}
+
+			Split(skyAmbient, result.AmbientColour, out float skyEnergy);
+			result.AmbientEnergy = skyEnergy * ModernAmbientLevel;
+			result.HasAmbient = result.AmbientEnergy > 0f;
+		}
+		else if (lighting.HasAmbientColour)
 		{
 			Split(lighting.AmbientColour, result.AmbientColour, out float ambientEnergy);
 			result.AmbientEnergy = ambientEnergy;

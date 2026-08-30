@@ -52,8 +52,10 @@ public sealed class MdlGeometry
 
 public static class Engine_MdlGeometry
 {
-    public static bool smooth_normals = true;
-
+    // THE FILE'S NORMALS ARE THE CONTRACT. Every engine layout states a HEND3N NORMAL0 at +8
+    // (sub_82A8B0E0 / sub_82A750E8 / sub_82A70510) and it is outward on props and characters
+    // alike; the winding-derived recompute is inverted against that winding and is only a
+    // fallback for buffers that carry no normal.
     private const int VertexStride = 28;
     private const int UvOffset = 20;
 
@@ -86,11 +88,6 @@ public static class Engine_MdlGeometry
                     out float[]? tangents, out int[]? boneIds, out float[]? boneWeights))
             {
                 continue;
-            }
-
-            if (smooth_normals && (mb.IsEngineRigid || mb.IsEngineSkinned || mb.IsEngineTree))
-            {
-                normals = null;
             }
 
             if (boneIds is not null && boneWeights is not null)
@@ -367,29 +364,12 @@ public static class Engine_MdlGeometry
                 boneIds[v * 4 + 2] = data[p + 14];
                 boneIds[v * 4 + 3] = data[p + 15];
 
-                // INDEX k PAIRS WITH WEIGHT k, IN MEMORY ORDER. Measured, not reasoned.
-                //
-                // This used to rotate the weights one slot, on the argument that BLENDINDICES
-                // is UBYTE4 while BLENDWEIGHT is D3DCOLOR (0xAARRGGBB delivered as R,G,B,A),
-                // which in a big-endian buffer would put the alpha byte first and influence 0's
-                // weight at +17. That argument is WRONG, and the shipped data refutes it
-                // outright.
-                //
-                // The test that settles it is a single-influence vertex: exactly one weight
-                // byte is 255, and it must line up with the slot holding the real bone. Every
-                // rotation passes a "weights sum to 1" check, which is why this survived so
-                // long. Across `ch_herochild_male`, `ch_heromale_morph_body` and
-                // `chickenblack` — 12,045 such vertices, ZERO counterexamples — every one reads
-                //
-                //     indices[+12..+15] = [0, 0, 0, X]      weights[+16..+19] = [0, 0, 0, 255]
-                //
-                // the real bone in the LAST slot and its full weight in the LAST byte.
-                //
-                // Rotating that gave influence 2 the weight of 1.0 — and influence 2's index is
-                // 0, the `*_Rig_Asset` wrapper root, which the guest never poses. So EVERY
-                // single-influence vertex in the game was pinned to a bone that never moves
-                // while the rest of the body animated away from it: 97% of a character's
-                // vertices anchored in bind, dragged out into flat sheets of triangles.
+                // INDEX k PAIRS WITH WEIGHT k, IN MEMORY ORDER. BLENDINDICES is UBYTE4 and
+                // BLENDWEIGHT D3DCOLOR, but the shipped data pairs them straight: every
+                // single-influence vertex (12,045 across ch_herochild_male,
+                // ch_heromale_morph_body and chickenblack, no counterexamples) holds its bone
+                // at +15 and its 255 at +19. Rotating the weights pins those vertices to
+                // bone 0, the `*_Rig_Asset` root the guest never poses.
                 boneWeights![v * 4] = data[p + 16] / 255f;
                 boneWeights[v * 4 + 1] = data[p + 17] / 255f;
                 boneWeights[v * 4 + 2] = data[p + 18] / 255f;

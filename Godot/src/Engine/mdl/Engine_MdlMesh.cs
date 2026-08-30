@@ -181,6 +181,27 @@ public static class Engine_MdlMesh
             arrays[(int)Mesh.ArrayType.TexUV] = uvs;
             arrays[(int)Mesh.ArrayType.Index] = indices;
 
+            // The amb3 lightmap UVs, routed by the SAME per-file-vertex map the vertex bakes
+            // use — never a running cursor, because split/merge re-orders emitted vertices.
+            // Skinned models are excluded: the tail's vertex order skips skinned records, so
+            // the file indices would misalign.
+            if (info.LightmapUvs.Length > 0 && info.SkinnedCount == 0 &&
+                geo.SourceVertices.Length == geo.VertexCount)
+            {
+                var lightmapUv = new Vector2[geo.VertexCount];
+                for (int v = 0; v < geo.VertexCount; v++)
+                {
+                    int at = geo.SourceVertices[v] * 2;
+                    if (at >= 0 && at + 1 < info.LightmapUvs.Length)
+                    {
+                        lightmapUv[v] = new Vector2(
+                            info.LightmapUvs[at], info.LightmapUvs[at + 1]);
+                    }
+                }
+
+                arrays[(int)Mesh.ArrayType.TexUV2] = lightmapUv;
+            }
+
             if (geo.HasTangents)
             {
                 var tangents = new float[geo.VertexCount * 4];

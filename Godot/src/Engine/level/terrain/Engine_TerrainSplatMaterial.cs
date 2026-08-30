@@ -102,6 +102,25 @@ public static class Engine_TerrainSplatMaterial
             material.SetShaderParameter("lod_normal_array", baseNormalArray);
             material.SetShaderParameter("lod_detail_normal_array", detailNormalArray);
             material.SetShaderParameter("has_normals", normalCount != 0);
+
+            // The ground's share of the ORM: per-layer cavity derived from the same normal
+            // slices, base in R and cliff in G, sampled with the colour's own tiling. The
+            // authored terrain lightmap is a different frequency band entirely — one texel per
+            // heightfield CELL, metres across — so texture-scale cavity occludes nothing the
+            // bake already encodes, which is why the props' authored-bake exemption does not
+            // apply here.
+            if (normalCount != 0 &&
+                Engine_TexSettings.OrmEnabled && Engine_TexSettings.OrmAoStrength > 0.0f)
+            {
+                Texture2DArray? aoArray = BuildCavityArray(
+                    data, Engine_TexSettings.OrmAoStrength, out bool hasHeight);
+                if (aoArray is not null)
+                {
+                    material.SetShaderParameter("lod_ao_array", aoArray);
+                    material.SetShaderParameter("has_ao", true);
+                    material.SetShaderParameter("has_height", hasHeight);
+                }
+            }
         }
 
         material.SetShaderParameter(
@@ -162,19 +181,24 @@ public static class Engine_TerrainSplatMaterial
         var materials = new List<SplatMaterial>(parsed.Lods.Count);
 
         var unique = new List<string>();
+        var normalPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (EhfLodEntry lod in parsed.Lods)
         {
-            foreach (string path in new[]
-                     {
-                         lod.BaseDiffuse, lod.DetailDiffuse, lod.BaseNormal, lod.DetailNormal,
-                     })
+            string[] slots = { lod.BaseDiffuse, lod.DetailDiffuse, lod.BaseNormal, lod.DetailNormal };
+            for (int slot = 0; slot < slots.Length; slot++)
             {
+                string path = slots[slot];
                 if (string.IsNullOrEmpty(path))
                 {
                     continue;
                 }
 
                 string normalized = path.Replace('\\', '/').Trim('/');
+                if (slot >= 2)
+                {
+                    normalPaths.Add(normalized);
+                }
+
                 if (!cache.ContainsKey(normalized))
                 {
                     cache[normalized] = default;
@@ -186,7 +210,7 @@ public static class Engine_TerrainSplatMaterial
         var decoded = new (byte[] Rgba, int Width, int Height)[unique.Count];
         System.Threading.Tasks.Parallel.For(0, unique.Count, i =>
         {
-            decoded[i] = DecodeShared(unique[i], read, findByName);
+            decoded[i] = DecodeShared(unique[i], read, findByName, normalPaths.Contains(unique[i]));
         });
 
         for (int i = 0; i < unique.Count; i++)
@@ -197,13 +221,13 @@ public static class Engine_TerrainSplatMaterial
         foreach (EhfLodEntry lod in parsed.Lods)
         {
             (byte[] baseRgba, int baseWidth, int baseHeight) =
-                LoadTexture(lod.BaseDiffuse, read, findByName, cache);
+                LoadTexture(lod.BaseDiffuse, read, findByName, cache, false);
             (byte[] detailRgba, int detailWidth, int detailHeight) =
-                LoadTexture(lod.DetailDiffuse, read, findByName, cache);
+                LoadTexture(lod.DetailDiffuse, read, findByName, cache, false);
             (byte[] baseNormal, int baseNormalWidth, int baseNormalHeight) =
-                LoadTexture(lod.BaseNormal, read, findByName, cache);
+                LoadTexture(lod.BaseNormal, read, findByName, cache, true);
             (byte[] detailNormal, int detailNormalWidth, int detailNormalHeight) =
-                LoadTexture(lod.DetailNormal, read, findByName, cache);
+                LoadTexture(lod.DetailNormal, read, findByName, cache, true);
 
             if (baseRgba.Length != 0 || detailRgba.Length != 0)
             {
@@ -237,7 +261,8 @@ public static class Engine_TerrainSplatMaterial
         string path,
         ReadAsset read,
         FindByName? findByName,
-        Dictionary<string, (byte[], int, int)> cache)
+        Dictionary<string, (byte[], int, int)> cache,
+        bool normalMap)
     {
         if (string.IsNullOrEmpty(path))
         {
@@ -251,7 +276,7 @@ public static class Engine_TerrainSplatMaterial
             return hit;
         }
 
-        (byte[], int, int) result = DecodeTexture(normalized, read, findByName);
+        (byte[], int, int) result = DecodeTexture(normalized, read, findByName, normalMap);
         cache[normalized] = result;
         return result;
     }
@@ -264,7 +289,7 @@ public static class Engine_TerrainSplatMaterial
     private static long _sharedBytes;
 
     private static (byte[] Rgba, int Width, int Height) DecodeShared(
-        string normalized, ReadAsset read, FindByName? findByName)
+        string normalized, ReadAsset read, FindByName? findByName, bool normalMap)
     {
         lock (Shared)
         {
@@ -274,7 +299,8 @@ public static class Engine_TerrainSplatMaterial
             }
         }
 
-        (byte[] Rgba, int Width, int Height) result = DecodeTexture(normalized, read, findByName);
+        (byte[] Rgba, int Width, int Height) result =
+            DecodeTexture(normalized, read, findByName, normalMap);
         if (result.Rgba.Length == 0)
         {
             return result;
@@ -298,7 +324,7 @@ public static class Engine_TerrainSplatMaterial
     }
 
     private static (byte[] Rgba, int Width, int Height) DecodeTexture(
-        string normalized, ReadAsset read, FindByName? findByName)
+        string normalized, ReadAsset read, FindByName? findByName, bool normalMap)
     {
         byte[]? bytes = read(normalized) ?? read("data/" + normalized);
 
@@ -317,14 +343,28 @@ public static class Engine_TerrainSplatMaterial
 
         if (bytes is not null)
         {
-            Image? image = Engine_TexImage.TryCreateImage(bytes, out string why);
+            Image? image = Engine_TexImage.TryCreateImage(bytes, out bool hasAlpha, out string why);
             if (image is null)
             {
                 GD.Print($"[terrain] {normalized}: {why}");
             }
             else
             {
-                result = ToRgba(image, normalized);
+                // THE SAME ENHANCEMENT EVERY PROP TEXTURE GETS. The splat arrays resample all
+                // slices to CommonLodSize regardless, so feeding the upscaled result costs no
+                // VRAM — it swaps a bilinear stretch up to 1024 for a minified sharp 2048.
+                // `compress: true` (the default) keeps the cache entry IDENTICAL to the prop
+                // pipeline's, so the boot sweep and the props share this artefact; ToRgba
+                // decompresses for the CPU-side array assembly. Synchronous by design: the
+                // arrays are built once at level load and cannot swap a texture in later.
+                // `texture_upscaling_when` governs this like every texture: "off" makes
+                // EnhanceDecoded a no-op, "play" pays here per region, "boot" hits the
+                // sweep's cache.
+                Image? enhanced = Engine_TexLibrary.EnhanceDecoded(
+                    bytes, image,
+                    normalMap ? TexSemantic.Normal : TexSemantic.Albedo,
+                    hasAlpha, normalized);
+                result = ToRgba(enhanced ?? image, normalized);
             }
         }
 
@@ -399,6 +439,84 @@ public static class Engine_TerrainSplatMaterial
             }
 
             images.Add(image);
+        }
+
+        var array = new Texture2DArray();
+        return array.CreateFromImages(images) == Error.Ok ? array : null;
+    }
+
+    /// <summary>
+    /// Per-layer cavity, derived from the layer normal slices: base occlusion in R, the cliff
+    /// projection's in G. One two-channel slice per material, mip-mapped like the colours.
+    /// </summary>
+    /// <remarks>
+    /// The TILING derivation, not the prop one — these textures repeat across the whole ground,
+    /// so the divergence neighbourhood wraps; the clamped filter would print a seam at every
+    /// tile boundary. A layer that shipped no normal map has a flat slice, whose divergence is
+    /// zero everywhere, and its cavity comes out a uniform 1 — neutral by construction.
+    /// </remarks>
+    private static Texture2DArray? BuildCavityArray(
+        TerrainSplatData data, float strength, out bool hasHeight)
+    {
+        hasHeight = false;
+        byte[][] baseSlices = data.BaseNormalSlices;
+        byte[][] detailSlices = data.DetailNormalSlices;
+        int size = data.SliceSize;
+        if (baseSlices.Length == 0 || detailSlices.Length != baseSlices.Length || size <= 0)
+        {
+            return null;
+        }
+
+        // B carries the ground layer's HEIGHT, solved from the same tiling normal by the same
+        // wrapped Poisson the props' ORM alpha uses — the ground's share of the parallax the
+        // cobbles already take. A layer whose normal states no relief gets the flat 128, the
+        // value the shader's (h - 0.5) turns into exactly no offset.
+        bool solveHeight = Engine_TexSettings.OrmHeight;
+        var anyHeight = new bool[baseSlices.Length];
+        var built = new Image[baseSlices.Length];
+        System.Threading.Tasks.Parallel.For(0, baseSlices.Length, i =>
+        {
+            byte[] baseCavity = Engine_TexOrm.CavityFromTilingNormal(
+                baseSlices[i], size, size, strength);
+            byte[] detailCavity = Engine_TexOrm.CavityFromTilingNormal(
+                detailSlices[i], size, size, strength);
+
+            byte[]? height = null;
+            if (solveHeight)
+            {
+                Image normal = Image.CreateFromData(
+                    size, size, false, Image.Format.Rgba8, baseSlices[i]);
+                height = Engine_TexHeight.TrySolve(normal, size, size);
+                anyHeight[i] = height is not null;
+            }
+
+            var rgb = new byte[size * size * 3];
+            for (int t = 0; t < baseCavity.Length; t++)
+            {
+                rgb[t * 3] = baseCavity[t];
+                rgb[(t * 3) + 1] = detailCavity[t];
+                rgb[(t * 3) + 2] = height is null ? (byte)128 : height[t];
+            }
+
+            Image image = Image.CreateFromData(size, size, false, Image.Format.Rgb8, rgb);
+            image.GenerateMipmaps();
+            built[i] = image;
+        });
+
+        var images = new Godot.Collections.Array<Image>();
+        foreach (Image image in built)
+        {
+            if (image is null)
+            {
+                return null;
+            }
+
+            images.Add(image);
+        }
+
+        foreach (bool solved in anyHeight)
+        {
+            hasHeight |= solved;
         }
 
         var array = new Texture2DArray();

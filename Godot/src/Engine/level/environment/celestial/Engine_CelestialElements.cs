@@ -34,6 +34,10 @@ public static class Engine_CelestialElements
 
     public const float SunDiscSizeScale = 300.0f;
 
+    /// <summary>Blob 0121 sunbeams: `texel.rgb * (1/6) * g_SunColour.rgb` — the attenuation is
+    /// the shader's own literal, carried here because our shader does not have it.</summary>
+    public const float SunBeamsColourScale = 1.0f / 6.0f;
+
     public const float SunBeamsDistance = 1900.0f;
 
     public const float SunBeamsSizeScale = 600.0f;
@@ -52,9 +56,11 @@ public static class Engine_CelestialElements
 
     public const float StarPhaseRate = 2.5f;
 
-    public const float Exposure = 10.0f / 3.0f;
 
-    public const float MoonGlareFixedScale = 0.025f;
+    /// <summary>Blob 0120 moonbloom: `texel.rgb * 0.2 * texel.a` — the 0.2 is the shader's own
+    /// literal. 0.025 was tuned against the old squared output and is 8x dim against the
+    /// de-squared chain.</summary>
+    public const float MoonGlareFixedScale = 0.2f;
 
     public const int DefaultMoonPhase = 4;
 
@@ -289,12 +295,16 @@ public static class Engine_CelestialElements
                     material.SetShaderParameter("element_half", new Vector2(
                         element[11] * SunBeamsSizeScale,
                         element[12] * SunBeamsSizeScale));
+                    float beams = element[13] * SunBeamsColourScale;
                     material.SetShaderParameter("element_colour", new Vector4(
-                        sunTint[0] * element[13],
-                        sunTint[1] * element[13],
-                        sunTint[2] * element[13], 1f));
-                    mesh.Visible = sunActive && element[13] >= IntensityGate &&
-                        !Refii.Lighting.Engine_PostFxParams.ChainActive;
+                        sunTint[0] * beams,
+                        sunTint[1] * beams,
+                        sunTint[2] * beams, 1f));
+                    // ALWAYS WHEN LIT — the billboard is the scene's sun, and the post-FX
+                    // rays are a radial blur OF THE SCENE, so this is their source. Standing it
+                    // down while the chain ran left the rays with nothing real to streak and
+                    // the chain synthesized a source instead, which drew through cave walls.
+                    mesh.Visible = sunActive && element[13] >= IntensityGate;
                     break;
                 case "SunDisc":
                     material.SetShaderParameter("element_dir", sun);
@@ -305,11 +315,7 @@ public static class Engine_CelestialElements
                         element[8] * element[7],
                         element[9] * element[7],
                         element[10] * element[7], 1f));
-                    // The post-FX draws its own disc into the occlusion buffer while the chain
-                    // is up (`SunSource(sun.Disc, ...)`), exactly as it does the beams above, so
-                    // the mesh stands down or the sun is drawn twice.
-                    mesh.Visible = sunActive && element[7] >= IntensityGate &&
-                        !Refii.Lighting.Engine_PostFxParams.ChainActive;
+                    mesh.Visible = sunActive && element[7] >= IntensityGate;
                     break;
                 case "SunGlare":
                     material.SetShaderParameter("element_dir", sun);
@@ -413,7 +419,6 @@ public static class Engine_CelestialElements
             new Vector4(colour.X, colour.Y, colour.Z, alpha));
         material.SetShaderParameter("element_facing_power", facingPower);
         material.SetShaderParameter("element_mode", mode);
-        material.SetShaderParameter("element_exposure", Exposure);
 
         return new MeshInstance3D
         {

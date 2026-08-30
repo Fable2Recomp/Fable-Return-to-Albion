@@ -5,6 +5,8 @@ render_mode cull_disabled, ambient_light_disabled, specular_disabled;
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 
+global uniform int fable_light_debug;
+
 uniform bool has_lightmap = false;
 
 uniform sampler2DArray lod_array : filter_linear_mipmap_anisotropic, repeat_enable;
@@ -17,6 +19,19 @@ uniform sampler2DArray lod_detail_array : filter_linear_mipmap_anisotropic, repe
 uniform sampler2DArray lod_normal_array : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray lod_detail_normal_array : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool has_normals = false;
+
+// The ground's share of the ORM: per-layer cavity derived from the normal slices — base
+// occlusion in R, the cliff projection's in G — sampled with the colour's own tiling. Linear
+// data, no source_color. It darkens only the AMBIENT half below, like the props' ao does.
+uniform sampler2DArray lod_ao_array : filter_linear_mipmap_anisotropic, repeat_enable;
+uniform bool has_ao = false;
+
+// The ground's PARALLAX — the same offset-mapping the props run, from a height the same
+// wrapped Poisson solved out of each layer's tiling normal, packed in lod_ao_array's B.
+// Same formula, same default scale as standard_material, so a cobble prop and the cobbled
+// ground displace identically.
+uniform bool has_height = false;
+uniform float parallax_scale : hint_range(0.0, 0.1) = 0.02;
 
 uniform sampler2DArray material_weight : filter_linear, repeat_disable;
 
@@ -65,6 +80,13 @@ uniform sampler2D lightmap : source_color, filter_linear, repeat_disable, hint_d
 
 const float FABLE_LIGHTMAP_GAMMA = 1.3;
 
+// The remaster's bake weight, SHARED WITH EVERY AUTHORED PROP BAKE through the global — one
+// weight, one rule, so the bridge, the rocks and the ground it meets scale together. The
+// terrain lightmap is a full lighting solution (the sun pre-painted at a theme factor of five
+// to seven in daylight); weighting it hands the ground's daylight to the real-time sun and
+// its shadows. The flat GlobalAmbient floor is never scaled. `baked_light_weight` in the
+// launcher; 1.0 is the shipped balance exactly. Declared in fable_lighting.gdshaderinc.
+
 uniform vec4 chunk_origin_extent;
 
 uniform vec4 chunk_grid_size;
@@ -107,7 +129,7 @@ void cliff_projection(
 	w = vec2(wx, wz) / (wx + wz + 0.0001);
 }
 
-vec3 sample_material(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w) {
+vec3 sample_material(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, vec2 par_dir) {
 	int max_slice = max(int(chunk_grid_size.z) - 1, 0);
 	int s = min(max(slice, 0), max_slice);
 	vec4 mp = material_params[s];
@@ -124,7 +146,15 @@ vec3 sample_material(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w
 	vec2 pw;
 	cliff_projection(local, n, cliff_scale, uv_x, uv_z, pw);
 
-	vec3 base = texture(lod_array, vec3(world_xy * base_scale, float(s))).rgb;
+	// One-tap offset mapping in this layer's own UV space, exactly the props' line. The cliff
+	// projections stay unoffset — a near-vertical face under the ground's tangent frame would
+	// smear, not displace.
+	vec2 buv = world_xy * base_scale;
+	if (dot(par_dir, par_dir) > 0.0) {
+		buv += par_dir * (texture(lod_ao_array, vec3(buv, float(s))).b - 0.5);
+	}
+
+	vec3 base = texture(lod_array, vec3(buv, float(s))).rgb;
 	vec3 cliff =
 		texture(lod_detail_array, vec3(uv_x, float(s))).rgb * pw.x +
 		texture(lod_detail_array, vec3(uv_z, float(s))).rgb * pw.y;
@@ -151,7 +181,7 @@ vec3 sample_material(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w
 /// decodes `n.xy = sample.xy * 2 - 1` and then `n.z = sqrt(1 - x*x - y*y)` — and reconstructing
 /// gives the same answer for a three-channel map, so this is correct either way and does not
 /// depend on knowing which compressed format a given .tex shipped in.
-vec3 sample_material_normal(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w) {
+vec3 sample_material_normal(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, vec2 par_dir) {
 	int max_slice = max(int(chunk_grid_size.z) - 1, 0);
 	int s = min(max(slice, 0), max_slice);
 	vec4 mp = material_params[s];
@@ -166,7 +196,14 @@ vec3 sample_material_normal(int slice, vec2 world_xy, vec3 local, vec3 n, float 
 	vec2 pw;
 	cliff_projection(local, n, cliff_scale, uv_x, uv_z, pw);
 
-	vec2 base_xy = texture(lod_normal_array, vec3(world_xy * base_scale, float(s))).xy;
+	// The same displaced coordinate the colour used — a normal sampled off its own colour's
+	// texel slides the shading off the relief.
+	vec2 buv = world_xy * base_scale;
+	if (dot(par_dir, par_dir) > 0.0) {
+		buv += par_dir * (texture(lod_ao_array, vec3(buv, float(s))).b - 0.5);
+	}
+
+	vec2 base_xy = texture(lod_normal_array, vec3(buv, float(s))).xy;
 	vec2 cliff_xy =
 		texture(lod_detail_normal_array, vec3(uv_x, float(s))).xy * pw.x +
 		texture(lod_detail_normal_array, vec3(uv_z, float(s))).xy * pw.y;
@@ -176,7 +213,41 @@ vec3 sample_material_normal(int slice, vec2 world_xy, vec3 local, vec3 n, float 
 	return vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
 }
 
+/// This layer's cavity, through the SAME projections and weights as its colour and normal —
+/// the R channel rides the ground's downward projection, the G channel the cliff's two planes.
+float sample_material_ao(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w) {
+	int max_slice = max(int(chunk_grid_size.z) - 1, 0);
+	int s = min(max(slice, 0), max_slice);
+	vec4 mp = material_params[s];
+
+	float base_scale = mp.x > 0.0 ? mp.x : splat_params.y;
+	float cliff_scale = mp.y > 0.0 ? mp.y : base_scale;
+
+	vec2 uv_x;
+	vec2 uv_z;
+	vec2 pw;
+	cliff_projection(local, n, cliff_scale, uv_x, uv_z, pw);
+
+	float base = texture(lod_ao_array, vec3(world_xy * base_scale, float(s))).r;
+	float cliff =
+		texture(lod_ao_array, vec3(uv_x, float(s))).g * pw.x +
+		texture(lod_ao_array, vec3(uv_z, float(s))).g * pw.y;
+
+	float cliff_w = slope_w * clamp(mp.z, 0.0, 1.0);
+	return mix(base, cliff, cliff_w);
+}
+
 void fragment() {
+	// TWO-SIDED, LIKE THE PROPS — AND THIS LINE IS WHY THE GROUND TOOK NO LIGHT. The level
+	// root carries Scale(-1, 1, 1), which flips the winding of everything under it, so the
+	// terrain's TOP rasterises as a BACK face and Godot hands fragment NORMAL through
+	// un-flipped — pointing into the ground. Every NdotL in light() — the sun's AND every
+	// lamp's — clamped to zero, while the shadow term (no NdotL) stayed perfect, which is
+	// exactly the year of "shadows received but never seen". standard_material has carried
+	// this pair since the beginning; the splat never did.
+	NORMAL = FRONT_FACING ? NORMAL : -NORMAL;
+	BINORMAL = FRONT_FACING ? BINORMAL : -BINORMAL;
+
 	vec2 mesh_xy = vec2(v_local.x, v_local.z);
 	vec2 world_xy = (mesh_xy * mesh_xform.xy) + mesh_xform.zw;
 
@@ -191,8 +262,19 @@ void fragment() {
 	vec3 geom_normal = normalize(v_local_normal);
 	float slope_w = clamp((0.90 - abs(geom_normal.y)) / 0.10, 0.0, 1.0);
 
+	// The view direction in the mesh's tangent frame, once per fragment — the analytic frame
+	// ToArrayMesh emits (T = local +X, B = local +Z via w = -1) maps tangent xy straight onto
+	// the ground UV's axes, so this IS the props' offset-mapping line on the ground's UVs.
+	vec2 par_dir = vec2(0.0);
+	if (has_height && parallax_scale > 0.0) {
+		vec3 tangent_view = normalize(vec3(
+			dot(VIEW, TANGENT), dot(VIEW, BINORMAL), dot(VIEW, NORMAL)));
+		par_dir = tangent_view.xy * parallax_scale / max(tangent_view.z, 0.4);
+	}
+
 	vec3 final = vec3(0.0);
 	vec3 mapped_normal = vec3(0.0);
+	float ao = 0.0;
 	float weight_sum = 0.0;
 
 	vec2 inv_weight_size = weight_size.zw;
@@ -210,9 +292,13 @@ void fragment() {
 			continue;
 		}
 
-		final += sample_material(mat, world_xy, v_local, geom_normal, slope_w) * w;
+		final += sample_material(mat, world_xy, v_local, geom_normal, slope_w, par_dir) * w;
 		if (has_normals) {
-			mapped_normal += sample_material_normal(mat, world_xy, v_local, geom_normal, slope_w) * w;
+			mapped_normal += sample_material_normal(
+				mat, world_xy, v_local, geom_normal, slope_w, par_dir) * w;
+		}
+		if (has_ao) {
+			ao += sample_material_ao(mat, world_xy, v_local, geom_normal, slope_w) * w;
 		}
 		weight_sum += w;
 	}
@@ -220,11 +306,19 @@ void fragment() {
 	if (weight_sum > 0.001) {
 		final /= weight_sum;
 		mapped_normal /= weight_sum;
+		ao /= weight_sum;
 	} else {
-		final = sample_material(0, world_xy, v_local, geom_normal, slope_w);
+		final = sample_material(0, world_xy, v_local, geom_normal, slope_w, par_dir);
 		mapped_normal = has_normals
-			? sample_material_normal(0, world_xy, v_local, geom_normal, slope_w)
+			? sample_material_normal(0, world_xy, v_local, geom_normal, slope_w, par_dir)
 			: vec3(0.0, 0.0, 1.0);
+		ao = has_ao
+			? sample_material_ao(0, world_xy, v_local, geom_normal, slope_w)
+			: 1.0;
+	}
+
+	if (!has_ao) {
+		ao = 1.0;
 	}
 
 	mapped_normal = has_normals ? normalize(mapped_normal) : vec3(0.0, 0.0, 1.0);
@@ -305,7 +399,16 @@ void fragment() {
 	// So the bake spans the heightfield's extent one texel per cell, and the normalised
 	// heightfield coordinate below IS that projection. Nothing per-patch is involved: the
 	// patches carry no id of their own, and one lightmap covers a landscape's whole grid.
-	vec2 lm_uv = clamp(chunk_co / vec2(cw, ch), vec2(0.000001), vec2(0.999999));
+	// THE GUEST'S EXACT MAPPING (sub_82A8EA50, 0x82A8EB18): uv = cell / lightmapTexDim, where
+	// the divisor is the LIGHTMAP TEXTURE'S OWN DIMENSIONS — 1/(GetDimensions × metresPerCell)
+	// against (world − heightfield origin) — with NO half-texel offset and CLAMP addressing
+	// (engine defaults, 0x82B76290). Dividing by the cell count instead (32 × chunks) matched
+	// only while a bake really was one texel per cell; any other .lmp size smeared the baked
+	// shadows linearly across the region — "the shadows don't line up". `repeat_disable` on
+	// the sampler is the guest's CLAMP; texel i owns cell span [i, i+1), corner-aligned, so
+	// bilinear at cell/dim needs no +0.5 — adding one would shift the bake half a cell.
+	vec2 lm_dim = vec2(textureSize(lightmap, 0));
+	vec2 lm_uv = (chunk_clamped * 32.0) / max(lm_dim, vec2(1.0));
 	vec3 bake = has_lightmap
 		? pow(max(texture(lightmap, lm_uv).rgb, vec3(0.0)), vec3(FABLE_LIGHTMAP_GAMMA))
 		: vec3(0.0);
@@ -313,8 +416,26 @@ void fragment() {
 	// darken = lerp(DarkeningColour, 1, saturate(dot(Nbent, Nmapped))^2). The square is the
 	// guest's, and the theme's darkening colour arrives through `darkening_colour` — it is the
 	// one lighting colour registered as type 1 rather than type 2, so it carries no Factor.
-	float ndotn = clamp(mapped_normal.z, 0.0, 1.0);
-	vec3 darken = mix(darkening_colour.rgb, vec3(1.0), ndotn * ndotn);
+	//
+	// THE SAME BENT NORMAL THE PROPS USE: standard_material bends toward the sun (blob 0245:
+	// t = 0.5·(dot(N, AmbRef)+1); bent = lerp(N, AmbRef, t)), and the ground's ambient darkens
+	// by the same rule as the bridge standing on it. The tangent frame is the analytic one
+	// ToArrayMesh emits:
+	// T = local +X, B = cross(N, T) × w with w = −1.
+	vec3 darken = vec3(1.0);
+	if (has_normals) {
+		vec3 world_geom = normalize((MODEL_MATRIX * vec4(geom_normal, 0.0)).xyz);
+		vec3 world_t = normalize((MODEL_MATRIX * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
+		vec3 world_b = cross(world_geom, world_t) * -1.0;
+		vec3 mapped_world = normalize(
+			(world_t * mapped_normal.x) + (world_b * mapped_normal.y) +
+			(world_geom * mapped_normal.z));
+		vec3 amb_ref = normalize(vec3(atmos_sun.x, atmos_sun.z, atmos_sun.y));
+		float bend = 0.5 * (dot(world_geom, amb_ref) + 1.0);
+		vec3 bent = normalize(mix(world_geom, amb_ref, bend));
+		float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
+		darken = mix(darkening_colour.rgb, vec3(1.0), nb * nb);
+	}
 
 	// The theme's LightmapFactor, applied now that it has the operand the guest authored it
 	// against. `fable_ambient` adds the flat GlobalAmbient on top, so this line is the guest's
@@ -339,7 +460,28 @@ void fragment() {
 	// MULTI-PASS, both this ambient term and the atmosphere block below have to be gated off on
 	// every pass after the first, or the region gains one extra ambient and one extra in-scatter
 	// per layer.
-	EMISSION = final * fable_ambient(bake * lightmap_colour.rgb * darken);
+	// CAVITY DARKENS THE WHOLE AMBIENT HALF, the authored bake included — no double count: the
+	// terrain lightmap is one texel per heightfield cell, metres across, so it cannot carry
+	// texture-scale occlusion. The direct half is untouched, same as the props' ao.
+	float authored_weight = fable_bake_weight <= 0.0 ? 1.0 : fable_bake_weight;
+	vec3 authored = bake * lightmap_colour.rgb * darken * authored_weight;
+
+	// THE TERRAIN'S SKY TETHER — the SAME plain mix the probe field takes in `fable_bake`,
+	// deliberately NOT a chroma-only retint. The painted lightmap carries the 360's baked sun
+	// and shadows at full amplitude, and that amplitude is what made the ground a different
+	// lighting world from the bridge beside it: the live sun's term (and therefore its
+	// SHADOWS) modulated a small fraction of the total and read as nothing, while the props'
+	// moderate vertex bakes let their direct share show. Pulling the bake toward the flat sky
+	// ambient hands the ground's modelling to the live sun, its shadows and the lamps — the
+	// bridge look. A first chroma-only version kept the painted amplitude and changed nothing
+	// the eye could see. `fable_sky_ambient.w` is 0 in the fable model: authored, untouched.
+	authored = fable_sky_tether(authored);
+
+	// AO ON THE BAKE HALF ONLY, exactly where standard_material puts it: the flat GlobalAmbient
+	// floor stays unoccluded, as it does on the props beside the ground. The cavity still
+	// occludes the terrain bake itself: the lightmap is metres-per-texel and cannot carry
+	// texture-scale occlusion.
+	EMISSION = final * fable_ambient(authored * ao);
 
 	// LAST, because it attenuates everything above it. Exact here: the ground is
 	// `specular_disabled`, so ALBEDO and EMISSION between them carry the whole surface, and the
@@ -350,6 +492,36 @@ void fragment() {
 	if (fable_atmosphere_terms(VERTEX, INV_VIEW_MATRIX, fog_t, fog_c)) {
 		fable_atmosphere_apply(fog_t, fog_c, 1.0, ALBEDO, EMISSION);
 	}
+
+	// THE LIGHTING DEBUG VIEWS — `lighting_debug_view` in the launcher, global
+	// `fable_light_debug`. ALBEDO = 0 kills the diffuse light term (Godot multiplies
+	// DIFFUSE_LIGHT by ALBEDO after light()), so each mode isolates one half of
+	// `albedo * (direct + bake)`: 1 = bake only, 2 = direct only, 3 = raw albedo,
+	// 4 = the normal-map darken term. Specular still rides modes 1/3/4 — minor.
+	if (fable_light_debug == 1) {
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 2) {
+		EMISSION = vec3(0.0);
+	} else if (fable_light_debug == 3) {
+		EMISSION = final;
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 4) {
+		EMISSION = darken;
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 5) {
+		// Terrain has one bake source: cyan = its lightmap texture is bound, red = missing.
+		EMISSION = has_lightmap ? vec3(0.1, 1.0, 1.0) : vec3(1.0, 0.1, 0.1);
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 6 || fable_light_debug == 7) {
+		// 6: the directional shadow term alone; 7: SIGNED NdotL (0.5 = grazing, white =
+		// facing the sun, black = facing away) — see the same views in standard_material.
+		EMISSION = vec3(0.0);
+		ALBEDO = vec3(1.0);
+	} else if (fable_light_debug == 8) {
+		// The VIEW-SPACE NORMAL as colour, straight from the fragment.
+		EMISSION = (NORMAL * 0.5) + 0.5;
+		ALBEDO = vec3(0.0);
+	}
 }
 
 void light() {
@@ -357,6 +529,25 @@ void light() {
 	// readable, so terrain keeping Godot's curve while the wall beside it took the guest's would
 	// be the two-lighting-models problem this file's header warns about, in a new place.
 	// No ALBEDO argument: Godot multiplies DIFFUSE_LIGHT by it after this function returns.
-	DIFFUSE_LIGHT += fable_direct(
-		NORMAL, LIGHT, fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL), LIGHT_COLOR);
+	// The landscape's direct term carries a second gate the props do not:
+	// `saturate(dot(N, PrimaryLightDirection) * 8.0)` (blob 0189, c255.x = 8.0) — a hard
+	// shutter over the last ~7 degrees before the terminator, multiplied with plain NdotL.
+	// For the directional light LIGHT is that primary direction, so the gate reuses it.
+	if (fable_light_debug == 6) {
+		// VIEW 6 — the raw directional shadow term; see standard_material's light().
+		if (LIGHT_IS_DIRECTIONAL) {
+			DIFFUSE_LIGHT = vec3(clamp(ATTENUATION, 0.0, 1.0));
+		}
+	} else if (fable_light_debug == 7) {
+		// VIEW 7 — SIGNED NdotL, the term view 2 cannot separate from the rest.
+		if (LIGHT_IS_DIRECTIONAL) {
+			DIFFUSE_LIGHT = vec3((dot(NORMAL, LIGHT) * 0.5) + 0.5);
+		}
+	} else {
+		float gate = LIGHT_IS_DIRECTIONAL
+			? clamp(8.0 * dot(NORMAL, LIGHT), 0.0, 1.0)
+			: 1.0;
+		DIFFUSE_LIGHT += gate * fable_direct(
+			NORMAL, LIGHT, fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL), LIGHT_COLOR);
+	}
 }

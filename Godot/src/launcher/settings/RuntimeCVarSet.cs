@@ -48,6 +48,13 @@ public static class RuntimeCVarsGodot
                 "realesr-general-x4v3",
                 "Base name of the neural weights beside the build (.param/.bin). The scale is " +
                 "read from this name."),
+            new("texture_upscaling_when", Category, RuntimeCVarType.String, "boot",
+                "When textures are enhanced — all of them: props, UI and terrain alike. "
+                + "'boot' prepares the whole game behind the start-up screen, so everything "
+                + "is sharp from the first frame; 'play' spreads the cost through play — "
+                + "props and menus sharpen moments after they appear, terrain pays a longer "
+                + "FIRST load per region; 'off' turns enhancement off everywhere.",
+                "boot,play,off"),
             new("texture_orm_enabled", Category, RuntimeCVarType.Bool, "true",
                 "Modernized materials: occlusion, roughness, metallic and height packed into one " +
                 "ORM texture, all four derived from the shipped maps. Off falls back to the " +
@@ -90,6 +97,49 @@ public static class RuntimeCVarsGodot
                 + "MainLightShadowed, which ships as 0 for most themes \u2014 the shadowing is "
                 + "baked into the lightmaps instead. On is the remastered default; off follows "
                 + "the shipped theme exactly."),
+            new("sun_light_scale", LightingCategory, RuntimeCVarType.Double, "1.35",
+                "Multiplier on the sun and moon's light energy. The shipped balance keeps the "
+                + "direct sun mild against the baked lighting, so people and ground barely "
+                + "react to it — raising this makes characters and terrain visibly sun-lit "
+                + "and deepens their shadows. 1.0 follows the shipped energy exactly."),
+            new("placed_light_shadows", LightingCategory, RuntimeCVarType.Bool, "true",
+                "Every torch, lamp and fixture casts shadows, so its light cannot pass "
+                + "through walls or objects. The authored data mostly ships fixtures "
+                + "shadowless — on the 360 the bakes hid the leak. Off follows the "
+                + "authored flags exactly; on costs shadow-map renders per visible fixture."),
+            new("placed_light_scale", LightingCategory, RuntimeCVarType.Double, "1.5",
+                "Multiplier on torch, lamp and fixture light intensity. The authored fixtures "
+                + "throw modest pools — a tall lamp post barely reaches the ground — "
+                + "so the remaster brightens them. 1.0 follows the shipped data exactly."),
+            new("lighting_model", LightingCategory, RuntimeCVarType.String, "modern",
+                "Where the world's ambient light comes from. 'modern' derives it live from "
+                + "the sky dome, so every surface breathes with the visible sky — golden at "
+                + "sunset, blue at night — one source for baked, probe-lit and bare objects "
+                + "alike. 'fable' reads the authored day-set ambient exactly as the 360 did."),
+            new("ambient_light_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Lifts the probe-field and theme ambient — the light every UNBAKED object "
+                + "stands in (rocks, barrels, doors, characters; the artists left them "
+                + "movable, so they carry no painted bake). The sky tether now carries that "
+                + "population, so the default follows the shipped level; raise it only if "
+                + "movables still read dark beside baked surfaces."),
+            new("baked_light_weight", LightingCategory, RuntimeCVarType.Double, "0.45",
+                "One weight on every AUTHORED exterior bake — the terrain lightmap and prop "
+                + "vertex colours — so adjacent surfaces scale together. Lower hands the look "
+                + "to the live sun, lamps and their shadows, which is what makes their "
+                + "shadows READ; 1.0 is the shipped richness exactly. In the modern model "
+                + "interior lightmaps ignore this (they have no live sun to fall back on), "
+                + "and the probe ambient and flat ambient floor are never scaled."),
+            new("shader_warmup_enabled", DeveloperCategory, RuntimeCVarType.Bool, "true",
+                "Compile every shader pipeline behind a preparation screen before the guest "
+                + "boots. Skipping it lets pipeline compilation stall the main thread during "
+                + "guest boot, which can hang the launch after any shader change."),
+            new("lighting_debug_view", DeveloperCategory, RuntimeCVarType.Int, "0",
+                "Isolate one lighting term on every lit surface: 0 off, 1 bake/ambient only, "
+                + "2 direct light only, 3 raw albedo, 4 normal-map darkening, 5 bake MODE "
+                + "(red flat, yellow probe, green vertex bake, blue texture lightmap, cyan "
+                + "terrain), 6 the sun's raw shadow term (white lit, black shadowed), 7 signed "
+                + "NdotL against the sun, 8 the view-space normal as colour. A diagnostic "
+                + "for attributing a bad colour to the term carrying it."),
             new("postfx_dump_period", DeveloperCategory, RuntimeCVarType.Int, "0",
                 "Print the tone-mapping histogram, the adapted bounds, the exposure and the "
                 + "bloom coverage every N frames. 0 is off. This reads back from the GPU and "

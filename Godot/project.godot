@@ -59,6 +59,15 @@ banks/game_data_root="res://../out/build/linux-amd64-debug/bin/assets/game/data"
 
 limits/global_shader_variables/buffer_size=262144
 
+; ARCHITECTURE-SCALE SHADOWS MUST READ AS ARCHITECTURE. The default 4096 directional map
+; spread over the remaster's 450 m reach leaves a clocktower's silhouette a soft blob on the
+; square below it — present, but not legible as a shadow of anything. 8192 with the higher
+; filter puts a crisp edge on building shadows; the positional atlas doubles alongside so the
+; budgeted lamp shadows share the gain.
+lights_and_shadows/directional_shadow/size=8192
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
+lights_and_shadows/positional_shadow/atlas_size=8192
+
 [shader_globals]
 
 fx_scene_depth={
@@ -101,6 +110,14 @@ atmos_factors={
 "type": "vec2",
 "value": Vector2(1, 1)
 }
+fable_light_debug={
+"type": "int",
+"value": 0
+}
+fable_bake_weight={
+"type": "float",
+"value": 1.0
+}
 fable_exposure_tex={
 "type": "sampler2D",
 "value": ""
@@ -108,4 +125,12 @@ fable_exposure_tex={
 fable_exposure_valid={
 "type": "float",
 "value": 0.0
+}
+fable_sky_ambient={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+fable_prop_lightmaps={
+"type": "sampler2D",
+"value": ""
 }

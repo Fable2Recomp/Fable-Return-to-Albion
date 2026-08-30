@@ -45,6 +45,7 @@ public static class Engine_TexSettings
 	private static float _ormMetallicStrength = 1.0f;
 
 	private static bool _ormHeight = true;
+	private static string _upscaleWhen = "boot";
 
 	private static bool _modernized = true;
 
@@ -102,7 +103,10 @@ public static class Engine_TexSettings
 		}
 	}
 
-	/// <summary>Whether the player has asked for upscaling at all.</summary>
+	/// <summary>
+	/// Whether the player has asked for upscaling at all. `texture_upscaling_when` = "off" is
+	/// the same answer through the other switch — one policy governs every texture.
+	/// </summary>
 	public static bool UpscaleEnabled
 	{
 		get
@@ -110,7 +114,25 @@ public static class Engine_TexSettings
 			Load();
 			lock (Gate)
 			{
-				return _upscaleEnabled;
+				return _upscaleEnabled && _upscaleWhen != "off";
+			}
+		}
+	}
+
+	/// <summary>
+	/// WHEN textures are enhanced — ALL of them: props, UI and terrain alike. "boot" prebuilds
+	/// the whole game behind the warm-up screen; "play" pays as textures are met (async swap
+	/// for props and UI, a longer first level load for terrain); "off" disables enhancement
+	/// everywhere. Anything unrecognised reads as "boot".
+	/// </summary>
+	public static string UpscaleWhen
+	{
+		get
+		{
+			Load();
+			lock (Gate)
+			{
+				return _upscaleWhen is "off" or "play" ? _upscaleWhen : "boot";
 			}
 		}
 	}
@@ -225,7 +247,8 @@ public static class Engine_TexSettings
 	/// Scaling the output down as well would only wash out the fifth of textures that genuinely do
 	/// describe metal.
 	///
-	/// Only consulted when <see cref="OrmEnabled"/> is on, which is off by default.
+	/// Only consulted when <see cref="OrmEnabled"/> is on, which follows the modernized
+	/// default — ON.
 	/// </remarks>
 	public static float OrmMetallicStrength
 	{
@@ -264,6 +287,7 @@ public static class Engine_TexSettings
 			}
 		}
 	}
+
 
 	/// <summary>
 	/// Whether the pub games draw their Flash artwork as geometry rather than rasterizing it.
@@ -459,6 +483,8 @@ public static class Engine_TexSettings
 			_ormMetallicStrength =
 				Engine_RefiiConfig.Int(values, "texture_orm_metallic_strength_percent", 100) / 100.0f;
 			_ormHeight = Engine_RefiiConfig.Bool(values, "texture_orm_height_enabled", true);
+			_upscaleWhen = Engine_RefiiConfig.String(
+				values, "texture_upscaling_when", "boot").Trim().Trim('"').ToLowerInvariant();
 			_pubGameRasterScale =
 				Engine_RefiiConfig.Int(values, "pubgame_raster_scale_percent", 100) / 100.0f;
 			_pubGameVectorShapes =

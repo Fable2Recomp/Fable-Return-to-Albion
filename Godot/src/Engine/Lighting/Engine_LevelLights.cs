@@ -256,6 +256,70 @@ public static class Engine_LevelLights
 	/// component's own light vector by the dummy's index — so a twin-headed lamp post is two
 	/// lights, and collapsing it to one loses half of them.
 	/// </remarks>
+	/// <summary>
+	/// Every placed light, for the FX system's lit term. The guest's particle vertex shader
+	/// lights a particle as `ambient + Σ point lights` (blob 0038, slots 1..N of
+	/// `g_GlobalLightParamsVS`) — smoke beside a torch is torch-coloured. Registered at spawn,
+	/// validated at query, because a level change frees the nodes without telling anyone.
+	/// </summary>
+	private static readonly List<Light3D> FxRegistry = new();
+
+	/// <summary>Copies the live placed lights into <paramref name="into"/>, pruning dead ones.</summary>
+	public static void SnapshotLights(List<Light3D> into)
+	{
+		into.Clear();
+		lock (FxRegistry)
+		{
+			for (int i = FxRegistry.Count - 1; i >= 0; i--)
+			{
+				if (!GodotObject.IsInstanceValid(FxRegistry[i]))
+				{
+					FxRegistry.RemoveAt(i);
+					continue;
+				}
+
+				into.Add(FxRegistry[i]);
+			}
+		}
+	}
+
+	/// <summary>Sum of nearby placed lights at a WORLD position, linear falloff, into `lit`.</summary>
+	public static void AddLightsAt(Vector3 world, float[] lit)
+	{
+		lock (FxRegistry)
+		{
+			for (int i = FxRegistry.Count - 1; i >= 0; i--)
+			{
+				Light3D node = FxRegistry[i];
+				if (!GodotObject.IsInstanceValid(node) || !node.IsInsideTree())
+				{
+					FxRegistry.RemoveAt(i);
+					continue;
+				}
+
+				float range = node is SpotLight3D spot ? spot.SpotRange
+					: node is OmniLight3D omni ? omni.OmniRange : 0f;
+				if (range <= 0f)
+				{
+					continue;
+				}
+
+				float d = node.GlobalPosition.DistanceTo(world);
+				float atten = 1f - (d / range);
+				if (atten <= 0f)
+				{
+					continue;
+				}
+
+				Color c = node.LightColor;
+				float e = node.LightEnergy * atten;
+				lit[0] += c.R * e;
+				lit[1] += c.G * e;
+				lit[2] += c.B * e;
+			}
+		}
+	}
+
 	public static int Spawn(
 		Node3D container,
 		GdbView levelView,
@@ -274,6 +338,10 @@ public static class Engine_LevelLights
 			Light3D node = Build(placement, at, name, index);
 			container.AddChild(node);
 			flicker.Add(node, placement);
+			lock (FxRegistry)
+			{
+				FxRegistry.Add(node);
+			}
 		}
 
 		foreach (GdbPlacement placement in placements)
@@ -337,11 +405,81 @@ public static class Engine_LevelLights
 			flicker.QueueFree();
 		}
 
+		// The shadow budget rides along whenever any light spawned — it is what turns
+		// ShadowEnabled on, so without it no fixture would ever cast.
+		if (spawned != 0)
+		{
+			container.AddChild(new Engine_LightShadowBudget { Name = Engine_LightShadowBudget.NodeName });
+		}
+
 		return spawned;
 	}
 
 	/// <summary>How many same-named attachment points to look for before giving up.</summary>
 	private const int DummyScanLimit = 8;
+
+	/// <summary>Meta key on a placed light holding the data's own CastShadows flag.</summary>
+	public const string AuthoredShadowMeta = "authored_shadow";
+
+	private static float? _placedScale;
+
+	private static float PlacedScale
+	{
+		get
+		{
+			if (_placedScale is null)
+			{
+				try
+				{
+					_placedScale = Math.Clamp(
+						Refii.Core.Engine_RefiiConfig.Float(
+							Refii.Core.Engine_RefiiConfig.Read(out _),
+							"placed_light_scale", 1.5f),
+						0.0f, 4.0f);
+				}
+				catch (Exception)
+				{
+					_placedScale = 1.5f;
+				}
+			}
+
+			return _placedScale.Value;
+		}
+	}
+
+	private static bool? _placedShadows;
+
+	/// <summary>
+	/// The remaster's `placed_light_shadows`: the authored fixtures mostly ship
+	/// CastShadows = 0 — on the 360 their light simply passed through walls and the bakes hid
+	/// most of it. With real dynamic light on them, a lamp shining through a building reads as
+	/// a bug, so the remaster turns shadowing on for every fixture; the authored flag returns
+	/// when this is off.
+	/// </summary>
+	/// <summary>The `placed_light_shadows` switch, exposed for the shadow budget.</summary>
+	public static bool PlacedShadowsEnabled => PlacedShadows;
+
+	private static bool PlacedShadows
+	{
+		get
+		{
+			if (_placedShadows is null)
+			{
+				try
+				{
+					_placedShadows = Refii.Core.Engine_RefiiConfig.Bool(
+						Refii.Core.Engine_RefiiConfig.Read(out _),
+						"placed_light_shadows", true);
+				}
+				catch (Exception)
+				{
+					_placedShadows = true;
+				}
+			}
+
+			return _placedShadows.Value;
+		}
+	}
 
 	private static Light3D Build(
 		LightPlacement light, Transform3D at, string? entityName, int index)
@@ -383,8 +521,18 @@ public static class Engine_LevelLights
 
 		node.Name = $"Light_{entityName ?? "?"}_{index}";
 		node.LightColor = colour;
-		node.LightEnergy = light.Intensity;
-		node.ShadowEnabled = light.CastShadows;
+
+		// The remaster's `placed_light_scale`: the authored fixtures throw modest pools — a
+		// lamp on a tall post barely reaches the ground it stands on. 1.0 is the shipped data.
+		node.LightEnergy = light.Intensity * PlacedScale;
+
+		// SHADOWS ARE A BUDGET, NOT A FLAG. Enabling every fixture's shadow blew past Godot's
+		// positional shadow atlas — with ~190 shadow-enabled omnis in a town the atlas serves a
+		// few dozen and silently drops the rest, exactly where the lamps are densest. The
+		// authored flag is recorded here; Engine_LightShadowBudget hands live shadow maps to
+		// the nearest few fixtures each frame instead.
+		node.ShadowEnabled = false;
+		node.SetMeta(AuthoredShadowMeta, light.CastShadows);
 		node.Transform = at;
 
 		// FADEDISTANCE IS THE CAMERA'S, NOT THE LIGHT'S, and reading it as a second radius is the
@@ -393,12 +541,31 @@ public static class Engine_LevelLights
 		// a light that ends at 8. It is the distance at which the light stops being drawn at all —
 		// `sub_82A49D08` takes Range, FadeDistance and FadeRange as three separate arguments — and
 		// Godot's distance fade is the same control.
+		// THE GUEST REACHES ZERO AT FadeDistance, NOT AT FadeDistance + FadeRange. Its live
+		// update computes clamp((min(FadeDistance, 1000) − dist) / FadeRange, 0, 1) × intensity
+		// (`sub_821F0A50`, fdivs at 0x821f0d38), so the ramp STARTS at FadeDistance − FadeRange
+		// and the draw-skip (`sub_821FFB30`) cuts at the same FadeDistance. Godot's begin+length
+		// therefore maps as begin = FadeDistance − FadeRange, length = FadeRange. Godot also
+		// CULLS entirely past begin+length, so a zero FadeRange is a hard pop — authentic in
+		// fable mode.
+		//
+		// The modern model doubles the cutoff and ramps over at least half of it: the authored
+		// reach was balanced for the 360, where the BAKES carried lamplight at distance; we run
+		// the bakes at a residual weight and hand that job to the live light.
 		if (light.FadeDistance > 0.0f)
 		{
+			float cutoff = MathF.Min(light.FadeDistance, 1000.0f);
+			float ramp = MathF.Max(light.FadeRange, 0.01f);
+			if (Engine_LightingFrame.ModernModel)
+			{
+				cutoff *= 2.0f;
+				ramp = MathF.Max(light.FadeRange * 2.0f, cutoff * 0.5f);
+			}
+
 			node.DistanceFadeEnabled = true;
-			node.DistanceFadeBegin = light.FadeDistance;
-			node.DistanceFadeLength = MathF.Max(light.FadeRange, 0.01f);
-			node.DistanceFadeShadow = light.FadeDistance;
+			node.DistanceFadeBegin = MathF.Max(cutoff - ramp, 0.0f);
+			node.DistanceFadeLength = ramp;
+			node.DistanceFadeShadow = cutoff;
 		}
 
 		return node;

@@ -29,6 +29,27 @@ instance uniform vec4 probe_b = vec4(0.0);
 // by having no transfer at all.
 instance uniform vec4 lightmap_colour = vec4(1.0, 1.0, 1.0, 0.0);
 
+/// The region's object lightmaps in one texture (the amb3 interiors), published by
+/// Engine_LevelBakedLighting when the container's atlas builds.
+global uniform sampler2D fable_prop_lightmaps;
+
+/// This instance's window into the atlas: offset.xy, scale.zw. Zero size = no texture bake.
+instance uniform vec4 lightmap_rect = vec4(0.0);
+
+/// THE REMASTER'S BAKE WEIGHT (`baked_light_weight` in the launcher; 1.0 = shipped balance).
+/// Applied to the AUTHORED bakes only — vertex colours, instance colours, texture lightmaps —
+/// never to the probe field or the flat GlobalAmbient. Scaling only the terrain's bake left
+/// the bridge glowing its full golden bake beside a weighted ground and probe-lit rocks:
+/// three adjacent surfaces in three different lighting worlds. One weight, every painted bake.
+global uniform float fable_bake_weight;
+
+/// The modern model's SKY TETHER for the probe field. rgb = the live sky-derived ambient (the
+/// same value ambient_colour carries, in the same ambient_light_scale space); w = how far the
+/// probe bake is pulled toward it. The probes are a baked-era snapshot — authored locality
+/// (interiors dark, under-canopy dim) worth keeping, level and tint worth retiring — so the
+/// blend keeps their shape at 1-w while the sky sets the tone. w = 0 in the fable model.
+global uniform vec4 fable_sky_ambient;
+
 const float FABLE_BAKE_NONE = 0.0;
 const float FABLE_BAKE_PROBE = 1.0;
 const float FABLE_BAKE_COLOR_SINGLE = 2.0;
@@ -114,22 +135,57 @@ vec3 fable_probe_bake(vec3 world_normal) {
 /// produced oColor0 — it raises whatever arrived by `g_LightmapFactorAndSRGBGamma.w` and moves
 /// on — so the exponent is not a property of the bake's storage. Mode 2 used to return its colour
 /// raw, which is the one reading the microcode does not support.
-vec3 fable_bake(vec3 world_normal, vec4 vertex_colour) {
+vec3 fable_bake(vec3 world_normal, vec4 vertex_colour, vec2 lightmap_uv) {
 	float mode = lightmap_colour.w;
+
+	// The remaster weight rides the AUTHORED bakes (modes 2/3/4). The probe field stays at
+	// full strength — it is the ambient a dynamic thing stands in, not a painted picture of
+	// sunlight, and dimming it blacked out every character at night.
+	float authored = fable_bake_weight <= 0.0 ? 1.0 : fable_bake_weight;
+
+	if (mode > 3.5) {
+		// The amb3 TEXTURE bake — the mesh's own TexUV2 channel, absolute over the object's
+		// 64x64 lightmap (remapped into the region atlas). Single 1.3 decode: the amb3 vertex
+		// shader applies no 2.2, unlike amb1's vertex colours.
+		//
+		// NO SKY TETHER AND NO RESIDUAL WEIGHT HERE, alone of the lit modes: amb3 lightmaps
+		// are INTERIORS-ONLY in the shipped data. A windowless room must not tint toward a sky
+		// it cannot see, and it has no live sun to hand its look to — the modern model's lower
+		// bake weight would simply darken it. The tether being active IS the modern signal, so
+		// interiors ride at full authored strength there; fable mode keeps the dial for both.
+		float interior = fable_sky_ambient.w > 0.0 ? 1.0 : authored;
+		vec2 at = lightmap_rect.xy + lightmap_uv * lightmap_rect.zw;
+		return interior * pow(max(texture(fable_prop_lightmaps, at).rgb, vec3(0.0)),
+			vec3(FABLE_BAKE_GAMMA));
+	}
+
 	if (mode > 2.5) {
 		// The vertex-colour bake, decoded twice: 2.2 in the AMB1 vertex shader, then 1.3 here.
-		return pow(
+		return authored * pow(
 			max(vertex_colour.rgb, vec3(0.0)),
 			vec3(FABLE_VERTEX_BAKE_GAMMA * FABLE_BAKE_GAMMA));
 	}
 	if (mode > 1.5) {
-		return pow(max(vertex_colour.rgb, vec3(0.0)), vec3(FABLE_BAKE_GAMMA));
+		return authored * pow(max(vertex_colour.rgb, vec3(0.0)), vec3(FABLE_BAKE_GAMMA));
 	}
 	if (mode > 0.5) {
 		// The PRT probe, which its own vertex shader (AMB2) hands over undecoded.
 		return pow(fable_probe_bake(world_normal), vec3(FABLE_BAKE_GAMMA));
 	}
 	return vec3(0.0);
+}
+
+/// THE SKY TETHER, ONE RULE FOR EVERY EXTERIOR BAKE — and it runs on the FINISHED ambient
+/// half, AFTER LightmapColour. Mixing inside fable_bake put the sky target UNDER the theme's
+/// lightmap factor, and that factor is enormous and blue — (4.6, 5.1, 7.1) at midday in
+/// chapter2posh, the 360's way of pushing skylight into its bakes — so the "sky" the props
+/// blended toward arrived five-to-seven-fold too strong and deep blue, while terrain mixed
+/// after the factor: a wash AND a seam. Tethering the probes alone was the previous seam
+/// (probe-lit bridge segments tracking a red sunset beside untethered vertex-baked ones), so
+/// the rule covers modes 1/2/3; mode 4 (amb3, interiors-only) never calls this — a windowless
+/// room must not tint toward a sky it cannot see. `fable_sky_ambient.w` is 0 in fable mode.
+vec3 fable_sky_tether(vec3 ambient_half) {
+	return mix(ambient_half, fable_sky_ambient.rgb, fable_sky_ambient.w);
 }
 
 /// Baked irradiance plus the theme's flat ambient — the second half of the guest's line.
@@ -304,17 +360,13 @@ vec3 fable_direct(vec3 normal, vec3 light, float attenuation, vec3 light_colour)
 
 /// How much the guest's NdotL gate opens per unit of NdotL: `g_NormalMapLightAngleConstants.w`.
 ///
-/// NOT RECOVERED FROM THE BINARY, and it is the one number in this file that is ours rather than
-/// the game's. The constant lives at pixel register c23 (`packoffset(c23)` in the recompiled
-/// microcode), and c23 reaches the GPU only through the shader binding table — which is `.data`,
-/// is entirely zero in the image, and is populated at shader-load time from each shader's own
-/// constant table. An exhaustive scan for a direct store to its shadow slot found none, exactly as
-/// for c20. It cannot be read statically; it needs a runtime observation.
-///
-/// 1.0 is the NEUTRAL choice, not a tuned one: it collapses `saturate(k * NdotL)` to `saturate(NdotL)`,
-/// the plain geometric term, so the gate neither sharpens nor softens anything until the real value
-/// is measured. Raising it makes the specular reach further round the terminator.
-const float FABLE_SPEC_ANGLE_GATE = 1.0;
+/// The writer is `sub_821B16F8`'s tail via `sub_821B1B08`, descriptor
+/// `unk_8331AD90` (register 23). It uploads { -mainLightDirection.xyz, w = 4.0f } — the w is the
+/// literal `flt_8209B46C`. So the guest's gate is `saturate(4.0 * NdotL)`: fully open by
+/// NdotL = 0.25, a soft-but-quick shutter at the terminator rather than a slope. The constant
+/// bypasses the binding table and is stored straight into the device's PS shadow at
+/// device+0x1780+16*23.
+const float FABLE_SPEC_ANGLE_GATE = 4.0;
 
 /// The material's own specular highlight — the guest's `_sp1` and `_sp2` permutations.
 ///

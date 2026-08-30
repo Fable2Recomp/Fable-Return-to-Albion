@@ -33,6 +33,16 @@ public sealed class LightmapContainer
 
     public Dictionary<ulong, byte[]> ObjectLightmapBlobs { get; } = new();
 
+    /// <summary>The region's object lightmaps packed into one texture; built on first use by
+    /// <see cref="Engine_LevelBakedLighting.TryGetObjectLightmapRect"/>. The guest binds one
+    /// 64x64 texture per object per draw; an atlas plus a per-instance rect is the same data
+    /// under Godot's shared-material design, the way Phase 0 streams banks in place.</summary>
+    public Godot.ImageTexture? ObjectAtlas { get; set; }
+
+    public Dictionary<ulong, Godot.Rect2> ObjectAtlasRects { get; } = new();
+
+    public bool ObjectAtlasBuilt { get; set; }
+
     public Dictionary<ulong, uint[]> VertexBakes { get; } = new();
 
     public Dictionary<ulong, uint[]> U32Arrays { get; } = new();

@@ -14,23 +14,54 @@ public static class Engine_LevelMesh
         var normals = new Vector3[count];
         var uvs = new Vector2[count];
 
+        // THE TANGENT FRAME, WITHOUT WHICH THE NORMAL MAPS DO NOTHING. The splat shader writes
+        // NORMAL_MAP, and Godot applies that through TANGENT and BINORMAL — with no tangent
+        // array the frame degenerates and the perturbed normal collapses back to the geometric
+        // one, so every layer normal map was decoded, blended and then thrown away before
+        // light() ran. The frame is analytic because the projection is: u runs along local +X
+        // and v along local +Z (Engine_GhfTerrain.BuildMesh), so the tangent is +X everywhere,
+        // and w = -1 makes Godot's `cross(NORMAL, TANGENT) * w` come out +Z to match v.
+        //
+        // THE HANDEDNESS IS PROVEN, NOT GUESSED — against the guest's own landscape vertex
+        // shader (blob 0173): it builds T = Gram-Schmidt(+X), B = T x n = guest -Y, and its
+        // ground V is ALSO negated (v = -worldY), so the invariant is "+sample.y tilts toward
+        // +v". Our v runs along +Z with B along +Z — the same invariant, mirrored consistently
+        // with the co-sampled diffuse. The broken combination is v and B disagreeing.
+        var tangents = new float[count * 4];
+
         for (int v = 0; v < count; v++)
         {
             vertices[v] = new Vector3(
                 terrain.Positions[(v * 3) + 0],
                 terrain.Positions[(v * 3) + 1],
                 terrain.Positions[(v * 3) + 2]);
-            normals[v] = new Vector3(
+            var normal = new Vector3(
                 terrain.Normals[(v * 3) + 0],
                 terrain.Normals[(v * 3) + 1],
                 terrain.Normals[(v * 3) + 2]);
+            normals[v] = normal;
             uvs[v] = new Vector2(terrain.Uvs[(v * 2) + 0], terrain.Uvs[(v * 2) + 1]);
+
+            // GRAM-SCHMIDT PER VERTEX, exactly the guest's own construction (blob 0173 builds
+            // T = Gram-Schmidt(+X) against the vertex normal). A constant (1, 0, 0) is NOT
+            // orthogonal to a sloped normal, and Godot's compressed vertex format encodes the
+            // normal+tangent PAIR on the assumption that it is — a non-orthogonal tangent
+            // corrupts the shared encoding, which surfaced as garbage view-space normals on
+            // every mirrored terrain instance (the level root's Scale(-1,1,1)) and killed the
+            // ground's NdotL for every light in the game.
+            Vector3 tangent = new Vector3(1f, 0f, 0f) - (normal * normal.X);
+            tangent = tangent.LengthSquared() > 1e-8f ? tangent.Normalized() : new Vector3(1f, 0f, 0f);
+            tangents[(v * 4) + 0] = tangent.X;
+            tangents[(v * 4) + 1] = tangent.Y;
+            tangents[(v * 4) + 2] = tangent.Z;
+            tangents[(v * 4) + 3] = -1f;
         }
 
         var arrays = new Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);
         arrays[(int)Mesh.ArrayType.Vertex] = vertices;
         arrays[(int)Mesh.ArrayType.Normal] = normals;
+        arrays[(int)Mesh.ArrayType.Tangent] = tangents;
         arrays[(int)Mesh.ArrayType.TexUV] = uvs;
         arrays[(int)Mesh.ArrayType.Index] = terrain.Indices;
 

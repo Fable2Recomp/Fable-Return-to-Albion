@@ -214,15 +214,25 @@ public sealed class FxEmitter
     public FxVectorTimeline LightColour = new();
 
     /// <summary>
-    /// Generic parameter 15 — the light's RANGE, the first of three floats handed to the
-    /// descriptor builder (`sub_8323FA50` at 0x8323faa8, passed as arg 1 at 0x8323fc14).
-    ///
-    /// Named by matching that argument order against the placed-light path, which this engine
-    /// already decoded: <c>sub_82A49D08</c> takes Range, FadeDistance and FadeRange in that
-    /// order. The shipped values agree — 1.2 to 40 with a median of 5, which is the radius a
-    /// torch or a brazier wants.
+    /// Generic parameter 15 — the light's FALLOFF RADIUS: it lands in live+0x140, the slot the
+    /// shader's attenuation coefficient inverts (1/(scale × +0x140) at 0x82a6cec0 / 0x8223b254).
+    /// Point path: `li r4,0xF` at 0x8323fb98, passed f1 at the vcall. Spot path: `fmr f2,f30`
+    /// at 0x8323f420 → desc+0x90 at 0x82a439c0. Shipped values 1.2–40, median 5. The two FX
+    /// light classes (point off_82005968 / spot off_820F2440) have separate register files;
+    /// param 17 is the cutoff, not the radius.
     /// </summary>
     public FxTimeline LightRange = new();
+
+    /// <summary>
+    /// Generic parameter 24 — the SPOT-CONE HALF-ANGLE in radians, SPOT entities only
+    /// (`li r4,0x18` / `fmr f27,f1` at 0x8323f2e0/f0, passed as f1 at the vcall 0x8323f440 →
+    /// desc+0x94 at 0x82a439bc → live+0x144). The FX packer takes cos(+0x144) and 1/(1−cos)
+    /// as the cone constants (0x82a6cf7c–0x82a6cfb8); fov = 2× clamped to π (0x8228e35c). The
+    /// spot AIMS along its node's world-matrix ROW 1 — the local +Y axis (row 1 loaded at
+    /// 0x8323f404, negated into the cone-direction constant at 0x82a6ce5c). Point entities
+    /// have no cone; empty here.
+    /// </summary>
+    public FxTimeline LightConeAngle = new();
 
     /// <summary>
     /// Generic parameter 16 — the intensity the colour is scaled by. `sub_8323FA50` multiplies
@@ -231,11 +241,30 @@ public sealed class FxEmitter
     /// </summary>
     public FxTimeline LightIntensity = new();
 
-    /// <summary>Generic parameter 17 — where the light stops being drawn, a CAMERA distance.</summary>
-    public FxTimeline LightFadeDistance = new();
+    /// <summary>
+    /// Generic parameter 17 — the CAMERA distance at which the light reaches ZERO, capped at
+    /// 1000: intensity × clamp((min(+0x148, 1000) − dist) / rampWidth, 0, 1) in the live
+    /// update (0x821f0cd8–0x821f0d7c), and the renderer's selection test skips the light
+    /// beyond the same radius (`sub_821FFB30`, 0x821ffb34). Shipped house value 64.
+    /// </summary>
+    public FxTimeline LightCutoff = new();
 
-    /// <summary>Generic parameter 18 — the length of that fade.</summary>
-    public FxTimeline LightFadeRange = new();
+    /// <summary>
+    /// Generic parameter 18 — the WIDTH of that intensity ramp, in metres INSIDE the cutoff:
+    /// the light is full at cutoff − this and zero at cutoff (+0x14C read at 0x821f0cd0; a
+    /// width ≤ 0 skips the ramp — then the selection test hard-cuts). Shipped house value 50,
+    /// so a typical FX light fades from 14 m out to nothing at 64 m.
+    /// </summary>
+    public FxTimeline LightFadeRamp = new();
+
+    /// <summary>
+    /// The HALO sprite this light entity draws around itself — the texture the guest renders
+    /// into its half-res glow layer (the one that reaches the frame ONLY through bloom), and
+    /// the data-driven identity of a glow sprite. Zero = the entity states none. Parsed by
+    /// Engine_FxBankXex for years and dropped before reaching this record; the glow layer is
+    /// why it finally travels.
+    /// </summary>
+    public uint HaloTextureHash;
 
     /// <summary>
     /// This entity is a <c>CParticleAttractorType</c> — it pulls the effect's particles toward
@@ -720,8 +749,9 @@ public static class Engine_FxBank
                     e.LightColour = ToVecTimeline(l.Vec[3], 3);
                     e.LightRange = e.Generic[15];
                     e.LightIntensity = e.Generic[16];
-                    e.LightFadeDistance = e.Generic[17];
-                    e.LightFadeRange = e.Generic[18];
+                    e.LightCutoff = e.Generic[17];
+                    e.LightFadeRamp = e.Generic[18];
+                    e.HaloTextureHash = l.HaloTextureHash;
                     break;
                 }
 
@@ -730,11 +760,14 @@ public static class Engine_FxBank
                     Xex.XexSpotLightEntityType l = x.SpotLights[reference.Index];
                     FillEntityCommon(l, e);
                     e.PositionalInteractable = l.PositionalInteractable;
+                    e.IsLight = true;
                     e.LightColour = ToVecTimeline(l.Vec[3], 3);
                     e.LightRange = e.Generic[15];
                     e.LightIntensity = e.Generic[16];
-                    e.LightFadeDistance = e.Generic[17];
-                    e.LightFadeRange = e.Generic[18];
+                    e.LightCutoff = e.Generic[17];
+                    e.LightFadeRamp = e.Generic[18];
+                    e.LightConeAngle = e.Generic[24];
+                    e.HaloTextureHash = l.HaloTextureHash;
                     break;
                 }
 

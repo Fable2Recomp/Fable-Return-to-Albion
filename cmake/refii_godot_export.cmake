@@ -118,6 +118,30 @@ function(refii_define_godot_export_target)
         set(_all ALL)
     endif()
 
+    # THE SHADER CHECK. `dotnet build` does not look at .gdshader files and Godot only compiles
+    # one when something loads it, so a syntax error ships with a green build and shows up as
+    # every affected mesh falling back to the default material — an untextured world, no error
+    # anywhere but the run log. This target compiles all of them up front.
+    #
+    # It needs a REAL rendering driver: under --headless Godot uses the dummy renderer, which
+    # reports success on a shader that cannot compile.
+    set(_shader_check_all "")
+    if(REFII_CHECK_SHADERS)
+        set(_shader_check_all ALL)
+    endif()
+
+    # The binary goes through `cmake -E env` rather than a target ENVIRONMENT property, which
+    # only applies to tests and would silently do nothing here.
+    add_custom_target(refii_shader_check ${_shader_check_all}
+        COMMAND ${CMAKE_COMMAND} -E env
+            "REFII_GODOT_EXECUTABLE=${REFII_GODOT_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tools/check_godot_shaders.sh"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Compiling Godot shaders"
+        USES_TERMINAL
+        VERBATIM
+    )
+
     add_custom_target(refii_package ${_all}
         COMMAND ${CMAKE_COMMAND}
             -DGODOT=${REFII_GODOT_EXECUTABLE}
@@ -159,6 +183,8 @@ function(refii_define_godot_export_target)
             add_dependencies(refii_package ${_dependency})
         endif()
     endforeach()
+
+    add_dependencies(refii_package refii_shader_check)
 
     # Kept as the name used before the zip step existed.
     add_custom_target(refii_godot_export DEPENDS refii_package)

@@ -89,6 +89,14 @@ public static class Engine_RefiiConfig
             ? parsed
             : fallback;
 
+    public static float Float(
+        IReadOnlyDictionary<string, string> values, string key, float fallback) =>
+        values.TryGetValue(key, out string? raw) &&
+        float.TryParse(raw.Trim().Trim('"'), NumberStyles.Float, CultureInfo.InvariantCulture,
+            out float parsed) && float.IsFinite(parsed)
+            ? parsed
+            : fallback;
+
     /// <summary>
     /// A boolean, where anything the file does not clearly say is <c>false</c> counts as true.
     /// </summary>

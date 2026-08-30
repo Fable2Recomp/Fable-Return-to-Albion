@@ -16,6 +16,15 @@ public static class Engine_PostFxParams
 
     public static bool Bloom { get; set; } = true;
 
+    /// <summary>
+    /// ON, against the real source at last. The guest's rays are a radial blur of its SUN
+    /// LAYER — off_8331A9A8, the depth-tested sun/moon disc draws in a half-res [0,1] UNORM
+    /// target — DOWNSCALE2X'd then RADIALBLUR'd twice (decoded from sub_821CB750's frame
+    /// segment; the glow-sprite layer at off_8331A9CC is a SEPARATE buffer and feeds bloom,
+    /// not the rays). Engine_PostFxEffect.SunLayer synthesizes that source with the guest's
+    /// own per-pixel Z test. The guest's constants (4/7 pass gain, 6.0 x RadialBlurFactor)
+    /// are stated against this layer.
+    /// </summary>
     public static bool Rays { get; set; } = true;
 
     public static bool Dof { get; set; } = true;

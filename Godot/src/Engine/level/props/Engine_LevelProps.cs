@@ -194,7 +194,7 @@ public static class Engine_LevelProps
 
         AppendEngineLevelBlocks(
             read, Engine_LevelGdb.EngineLevelPath(level, read, gdbPath),
-            blocks, order, transformKeys, stats);
+            blocks, order, transformKeys, stats, bakes);
 
         bool hasExplicitClocktowerBase = false;
         uint clocktowerBaseHash = Engine_PropModelIndex.PathHash(ClocktowerBasePath);
@@ -486,6 +486,23 @@ public static class Engine_LevelProps
             {
                 bakeKeys.Add(bake.Key);
             }
+
+            // Texture-baked placements (the amb3 interiors) carry the same composed key in the
+            // object-lightmap map; without this they never got a BakeKeyMeta and the blobs sat
+            // parsed but unconsumed.
+            foreach (KeyValuePair<ulong, byte[]> bake in bakes.ObjectLightmapBlobs)
+            {
+                bakeKeys.Add(bake.Key);
+            }
+
+            // The 48-byte ambient blocks cover essentially every placement — they are the
+            // guest's per-object ambient, and the fallback for props the probe field has no
+            // cell for. Without these keys 694 of one region's props carried no lighting
+            // identity at all and rendered as flat global ambient.
+            foreach (KeyValuePair<ulong, byte[]> ambient in bakes.Blocks48)
+            {
+                bakeKeys.Add(ambient.Key);
+            }
         }
 
         var container = new Engine_PropStreamer { Name = NodeName };
@@ -545,8 +562,23 @@ public static class Engine_LevelProps
                     Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, (long)bakeKey);
             }
 
-            Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(
-                single, block.Instances[index].Origin, probes);
+            // An authored per-instance colour outranks the probe field — same precedence the
+            // guest gives amb1 over PRT. It rides the probe channel as a flat sample: L0 is
+            // scaled so the shader's basis multiply recovers pow(c, 2.2), and its 1.3 then
+            // completes the vertex-bake compose.
+            uint bakeColour = index < block.InstanceBakeColours.Count
+                ? block.InstanceBakeColours[index]
+                : 0;
+            if (bakeColour != 0)
+            {
+                Refii.Lighting.Engine_LevelBakedLighting.StoreFlatBakeColour(
+                    single, bakeColour);
+            }
+            else
+            {
+                Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(
+                    single, block.Instances[index].Origin, probes);
+            }
 
             if (inspect is not null && hash != 0)
             {
@@ -658,8 +690,21 @@ public static class Engine_LevelProps
                 batchedTransforms.Add(block.Instances[index]);
             }
 
+            var batchedBakeKeys = new List<ulong>(batched.Count);
+            var batchedBakeColours = new List<uint>(batched.Count);
+            foreach (int index in batched)
+            {
+                batchedBakeKeys.Add(index < block.InstanceBakeKeys.Count
+                    ? block.InstanceBakeKeys[index]
+                    : 0);
+                batchedBakeColours.Add(index < block.InstanceBakeColours.Count
+                    ? block.InstanceBakeColours[index]
+                    : 0);
+            }
+
             bool coloured = Refii.Lighting.Engine_LevelBakedLighting.ApplyMultiMeshProbes(
-                multiMesh, batchedTransforms, probes);
+                multiMesh, batchedTransforms, probes, bakes, batchedBakeKeys,
+                batchedBakeColours);
 
             var node = new MultiMeshInstance3D
             {
@@ -1330,6 +1375,13 @@ public static class Engine_LevelProps
         public List<ulong> InstanceBakeKeys { get; } = new();
 
         /// <summary>
+        /// The instance's authored bake as a D3DCOLOR (the .lmp u32-array entry for a type-21
+        /// foliage placement), or 0 for none. Gamma-encoded like a per-vertex bake — the
+        /// consumer decodes by 2.2 and the shader's 1.3 completes the guest's 2.86 compose.
+        /// </summary>
+        public List<uint> InstanceBakeColours { get; } = new();
+
+        /// <summary>
         /// Records one instance, refusing any transform that is not finite.
         /// </summary>
         /// <remarks>
@@ -1345,7 +1397,8 @@ public static class Engine_LevelProps
         /// re-executes forever. Load-time data, so unlike a torn guest read this one is
         /// PERMANENT — the level freezes the same way every time it is entered.
         /// </remarks>
-        public void AddInstance(Transform3D transform, uint hash = 0, ulong bakeKey = 0)
+        public void AddInstance(
+            Transform3D transform, uint hash = 0, ulong bakeKey = 0, uint bakeColour = 0)
         {
             if (!transform.Origin.IsFinite() ||
                 transform.Origin.Length() > MaxInstanceReach ||
@@ -1360,6 +1413,7 @@ public static class Engine_LevelProps
             Instances.Add(transform);
             InstanceHashes.Add(hash);
             InstanceBakeKeys.Add(bakeKey);
+            InstanceBakeColours.Add(bakeColour);
         }
     }
 
@@ -1369,7 +1423,8 @@ public static class Engine_LevelProps
         Dictionary<string, PropBlockBuild> blocks,
         List<string> order,
         HashSet<string> transformKeys,
-        PropBuildStats stats)
+        PropBuildStats stats,
+        Refii.Lighting.LightmapContainer? bakes)
     {
         // THE WHOLE FILE, INCLUDING ALL THE FOLIAGE, rides on this read — so a miss is said.
         //
@@ -1424,7 +1479,11 @@ public static class Engine_LevelProps
                     continue;
                 }
 
-                build.AddInstance(transform);
+                // The instance's own 64-bit id IS the bake key: chapter2posh's 90 type-2
+                // instances all resolve in the .lmp with it verbatim — 28 in the vertex-bake
+                // map (the Bowerstone structures), 62 in the 48-byte ambient map. No composed
+                // model-hash key exists for this population; the file states the join directly.
+                build.AddInstance(transform, bakeKey: instance.Hash);
                 emitted++;
             }
 
@@ -1441,7 +1500,7 @@ public static class Engine_LevelProps
             stats.EngineLevelBlocks++;
         }
 
-        AppendFoliageBlocks(file, blocks, order, transformKeys, stats);
+        AppendFoliageBlocks(file, blocks, order, transformKeys, stats, bakes);
     }
 
     private static void AppendFoliageBlocks(
@@ -1449,7 +1508,8 @@ public static class Engine_LevelProps
         Dictionary<string, PropBlockBuild> blocks,
         List<string> order,
         HashSet<string> transformKeys,
-        PropBuildStats stats)
+        PropBuildStats stats,
+        Refii.Lighting.LightmapContainer? bakes)
     {
         var merged = new Dictionary<string, PropBlockBuild>();
         var mergedOrder = new List<string>();
@@ -1473,11 +1533,20 @@ public static class Engine_LevelProps
                 mergedOrder.Add(modelPath);
             }
 
-            foreach (EngineLevelInstance instance in block.Instances)
+            // THE BLOCK'S U32 ARRAY IS ITS BAKE — one D3DCOLOR per loop1 instance, keyed by
+            // the block's own hash. All 158 of chapter2posh's type-21 blocks join its 158
+            // arrays with the array length equal to the loop1 count exactly. Instances past
+            // the array (the loop2 tail) carry no authored colour and keep the probe sample.
+            uint[]? authored = null;
+            bakes?.U32Arrays.TryGetValue(block.Hash, out authored);
+
+            for (int i = 0; i < block.Instances.Count; i++)
             {
+                EngineLevelInstance instance = block.Instances[i];
                 Transform3D transform =
                     BuildFoliageTransform(instance.Values, instance.Rotation);
-                build.AddInstance(transform);
+                build.AddInstance(transform, bakeColour:
+                    authored is not null && i < authored.Length ? authored[i] : 0);
                 transformKeys.Add(TransformKey(transform, modelPath));
             }
         }

@@ -174,6 +174,183 @@ public static class Engine_TexPrebuild
 		return final;
 	}
 
+	/// <summary>
+	/// The TEXTURE sweep alone — every material texture decoded and enhanced into the cache,
+	/// boot-safe: unlike <see cref="Run"/> it never touches the global resolver
+	/// (<see cref="Engine_TexLibrary.PrebuildTexture"/> reads only through the delegate).
+	/// Runs only when enhancement is on — with it off, the base decodes are cheap enough to
+	/// leave to the live path, and a boot spent decoding for nothing is a boot the player
+	/// waits on.
+	/// </summary>
+	public static Progress RunTextures(
+		string gameDirectory,
+		Action<Progress>? report = null,
+		CancellationToken cancel = default)
+	{
+		if (gameDirectory.Length == 0 || !System.IO.Directory.Exists(gameDirectory))
+		{
+			return new Progress(0, 0, 0, 0, "no game data");
+		}
+
+		if (!Engine_TexEnhance.Enabled)
+		{
+			return new Progress(0, 0, 0, 0, "enhancement off");
+		}
+
+		using BnkFileSystem banks = BnkFileSystem.Mount(gameDirectory);
+		Func<string, byte[]?> read =
+			path => banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null;
+
+		List<Item> items = Enumerate(banks, out _);
+		int total = items.Count;
+
+		var done = 0;
+		var built = 0;
+		var failed = 0;
+		string current = string.Empty;
+
+		var options = new System.Threading.Tasks.ParallelOptions
+		{
+			MaxDegreeOfParallelism = Math.Max(1, Engine_TexSettings.Workers),
+			CancellationToken = CancellationToken.None,
+		};
+
+		System.Threading.Tasks.Parallel.ForEach(items, options, item =>
+		{
+			if (cancel.IsCancellationRequested)
+			{
+				return;
+			}
+
+			var ok = false;
+			try
+			{
+				ok = Engine_TexLibrary.PrebuildTexture(item.Path, item.Semantic, read);
+			}
+			catch (Exception)
+			{
+				// One unreadable asset must not end the sweep.
+			}
+
+			lock (Gate)
+			{
+				++done;
+				if (ok)
+				{
+					++built;
+				}
+				else
+				{
+					++failed;
+				}
+
+				current = item.Path;
+			}
+
+			if (report is not null && done % 32 == 0)
+			{
+				report(Snapshot(done, total, built, failed, current));
+			}
+		});
+
+		Progress final = Snapshot(done, total, built, failed, current);
+		report?.Invoke(final);
+		return final;
+	}
+
+	/// <summary>
+	/// The ORM sweep alone — the boot screen's share of the prebuild.
+	/// </summary>
+	/// <remarks>
+	/// The full <see cref="Run"/> is the launcher's deliberate build-everything offer; this is
+	/// the piece the game cannot healthily defer. An ORM built on demand is a Poisson solve on
+	/// a streaming worker, and a cache-version bump means EVERY material in a region pays it in
+	/// the same minute — which presents as the game freezing right after a level loads. Run once
+	/// behind the warm-up screen it is the same cost made visible, and on every later boot the
+	/// sweep is enumerate-and-hit in seconds.
+	///
+	/// IT NEVER TOUCHES THE GLOBAL RESOLVER. <see cref="Run"/> repoints
+	/// <see cref="Engine_BnkMeshLoader"/> at a bank filesystem it disposes on return, which is
+	/// survivable from the launcher but poison mid-boot — the game's own mount must keep the
+	/// resolver it installed.
+	/// </remarks>
+	public static Progress RunOrm(
+		string gameDirectory,
+		Action<Progress>? report = null,
+		CancellationToken cancel = default)
+	{
+		if (gameDirectory.Length == 0 || !System.IO.Directory.Exists(gameDirectory))
+		{
+			return new Progress(0, 0, 0, 0, "no game data");
+		}
+
+		if (!Engine_TexSettings.OrmEnabled)
+		{
+			return new Progress(0, 0, 0, 0, "orm disabled");
+		}
+
+		using BnkFileSystem banks = BnkFileSystem.Mount(gameDirectory);
+		Func<string, byte[]?> read =
+			path => banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null;
+
+		Enumerate(banks, out List<OrmItem> orm);
+		int total = orm.Count;
+
+		var done = 0;
+		var built = 0;
+		var failed = 0;
+		string current = string.Empty;
+
+		var options = new System.Threading.Tasks.ParallelOptions
+		{
+			MaxDegreeOfParallelism = Math.Max(1, Engine_TexSettings.Workers),
+			CancellationToken = CancellationToken.None,
+		};
+
+		System.Threading.Tasks.Parallel.ForEach(orm, options, item =>
+		{
+			if (cancel.IsCancellationRequested)
+			{
+				return;
+			}
+
+			var ok = false;
+			try
+			{
+				ok = Engine_TexLibrary.PrebuildOrm(
+					item.Specular, item.Normal, item.Min, item.Max, read);
+			}
+			catch (Exception)
+			{
+				// One unreadable asset must not end the sweep.
+			}
+
+			lock (Gate)
+			{
+				++done;
+				if (ok)
+				{
+					++built;
+				}
+				else
+				{
+					++failed;
+				}
+
+				current = item.Specular.Length != 0 ? item.Specular : item.Normal;
+			}
+
+			if (report is not null && done % 16 == 0)
+			{
+				report(Snapshot(done, total, built, failed, current));
+			}
+		});
+
+		Progress final = Snapshot(done, total, built, failed, current);
+		report?.Invoke(final);
+		return final;
+	}
+
 	private static readonly object Gate = new();
 
 	private static Progress Snapshot(int done, int total, int built, int failed, string current)
@@ -250,14 +427,17 @@ public static class Engine_TexPrebuild
 					Add(material.Specular, TexSemantic.Specular);
 					Add(material.SelfIllumination, TexSemantic.SelfIllumination);
 
+					// A normal map alone still packs an ORM (AO and height derive from it), so
+					// the prebuild sweeps the same set the live path now builds.
 					if (!Engine_TexSettings.OrmEnabled ||
-						string.IsNullOrWhiteSpace(material.Specular))
+						(string.IsNullOrWhiteSpace(material.Specular) &&
+						string.IsNullOrWhiteSpace(material.Normal)))
 					{
 						continue;
 					}
 
 					var pair = new OrmItem(
-						material.Specular,
+						material.Specular ?? string.Empty,
 						material.Normal ?? string.Empty,
 						material.SpecularPowerMin,
 						material.SpecularPowerMax);

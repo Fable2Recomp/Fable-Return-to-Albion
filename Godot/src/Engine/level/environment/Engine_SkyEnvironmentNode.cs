@@ -79,6 +79,28 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     public override void _Ready()
     {
         Current = this;
+        Refii.Fx.Engine_FxSystem.BindAmbientToScene();
+
+        try
+        {
+            System.Collections.Generic.IReadOnlyDictionary<string, string> config =
+                Refii.Core.Engine_RefiiConfig.Read(out _);
+            RenderingServer.GlobalShaderParameterSet("fable_light_debug",
+                Refii.Core.Engine_RefiiConfig.Int(config, "lighting_debug_view", 0));
+
+            // ONE bake weight for every authored bake — terrain lightmap, vertex colours,
+            // instance colours, interior textures — so the bridge, the rocks and the ground
+            // they meet scale together instead of drifting into separate lighting worlds.
+            RenderingServer.GlobalShaderParameterSet("fable_bake_weight",
+                System.Math.Clamp(
+                    Refii.Core.Engine_RefiiConfig.Float(config, "baked_light_weight", 0.45f),
+                    0.05f, 2.0f));
+        }
+        catch (System.Exception e)
+        {
+            GD.PrintErr($"[lighting] lighting cvars unreadable: {e.Message}");
+        }
+
         Engine_PostFxEffect.RegisterGlobals();
         if (Engine_PostFxParams.SunSourcesRequested)
         {

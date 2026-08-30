@@ -16,6 +16,8 @@ render_mode blend_mix, depth_draw_opaque, cull_disabled, ambient_light_disabled;
 //
 // Note the swizzle in the guest's line: rgb only. Alpha is left alone, which matters because
 // it is the scissor threshold.
+global uniform int fable_light_debug;
+
 uniform sampler2D albedo_tex : hint_default_white, filter_linear_mipmap_anisotropic;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic;
 uniform sampler2D emission_tex : filter_linear_mipmap_anisotropic;
@@ -113,11 +115,13 @@ void fragment() {
     // that reconstructed z is exactly the dot product the guest then takes. Godot's NORMAL_MAP
     // reconstructs z the same way, which is why the map can still be handed over whole.
     float ndotn = 1.0;
+    vec3 mapped_view = NORMAL;
     if (has_normal) {
         vec3 nm = texture(normal_tex, UV).rgb;
         NORMAL_MAP = nm;
         vec2 nxy = (nm.xy * 2.0) - 1.0;
         ndotn = sqrt(max(1.0 - dot(nxy, nxy), 0.0));
+        mapped_view = normalize(TANGENT * nxy.x + BINORMAL * nxy.y + NORMAL * ndotn);
     }
 
     // SQUARED LIKE THE ALBEDO, and by the same line — the guest reads the specular map raw and
@@ -128,8 +132,19 @@ void fragment() {
     v_specular_power = mix(spec_power_min, spec_power_max, spec.a);
 
     vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
-    vec3 bake = fable_bake(world_normal, COLOR);
-    vec3 darken = mix(darkening_colour.rgb, vec3(1.0), ndotn * ndotn);
+    vec3 bake = fable_bake(world_normal, COLOR, UV2);
+
+    // The guest's bent-normal darken, same as standard_material: AmbRef = the main light's
+    // direction (VS c19), factor = saturate(dot(bent, mappedN))^2; nrm0 takes no darkening.
+    vec3 darken = vec3(1.0);
+    if (has_normal) {
+        vec3 amb_ref = normalize(vec3(atmos_sun.x, atmos_sun.z, atmos_sun.y));
+        float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
+        vec3 bent = normalize(mix(world_normal, amb_ref, bend));
+        vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
+        float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
+        darken = mix(darkening_colour.rgb, vec3(1.0), nb * nb);
+    }
 
     // `bake * LightmapFactor * darkening + GlobalAmbient`, the guest's line for this family.
     EMISSION = alb.rgb * fable_ambient(bake * lightmap_colour.rgb * darken);
@@ -155,6 +170,34 @@ void fragment() {
         fable_atmosphere_apply(fog_t, fog_c, alb.a, ALBEDO, EMISSION);
         v_specular *= fog_t;
     }
+
+	// THE LIGHTING DEBUG VIEWS — `lighting_debug_view` in the launcher, global
+	// `fable_light_debug`. ALBEDO = 0 kills the diffuse light term (Godot multiplies
+	// DIFFUSE_LIGHT by ALBEDO after light()), so each mode isolates one half of
+	// `albedo * (direct + bake)`: 1 = bake only, 2 = direct only, 3 = raw albedo,
+	// 4 = the normal-map darken term. Specular still rides modes 1/3/4 — minor.
+	if (fable_light_debug == 1) {
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 2) {
+		EMISSION = vec3(0.0);
+	} else if (fable_light_debug == 3) {
+		EMISSION = alb.rgb;
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 4) {
+		EMISSION = darken;
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 5) {
+		// WHICH BAKE MODE THIS SURFACE TOOK: red = flat ambient (0), yellow = probe (1),
+		// magenta = mode 2, green = vertex bake (3), blue = texture lightmap (4).
+		float m = lightmap_colour.w;
+		vec3 tag = m > 3.5 ? vec3(0.1, 0.3, 1.0)
+			: m > 2.5 ? vec3(0.1, 1.0, 0.1)
+			: m > 1.5 ? vec3(1.0, 0.1, 1.0)
+			: m > 0.5 ? vec3(1.0, 1.0, 0.1)
+			: vec3(1.0, 0.1, 0.1);
+		EMISSION = tag;
+		ALBEDO = vec3(0.0);
+	}
 }
 
 void light() {

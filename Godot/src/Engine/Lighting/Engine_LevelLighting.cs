@@ -8,9 +8,20 @@ public static class Engine_LevelLighting
 {
 	public const string SunNodeName = "Sun";
 
-	public const float SunFarDepth = 120.0f;
+	/// <summary>
+	/// The shadow map's reach. 120 m let a horizon-low sun or moon SHINE THROUGH THE LANDSCAPE:
+	/// a directional occluder outside every cascade casts nothing, so any hill more than 120 m
+	/// out stopped existing to the light and grazing moonlight flooded terrain it could never
+	/// reach. 450 m with four cascades keeps the near split where the two-split setup had it, so
+	/// close-range shadow quality is unchanged while the landscape itself starts occluding.
+	/// </summary>
+	public const float SunFarDepth = 450.0f;
 
 	public const float CascadeSplitNear = 35.0f;
+
+	public const float CascadeSplitMid = 110.0f;
+
+	public const float CascadeSplitFar = 240.0f;
 
 	public const float NearSlopeBias = 2.0f;
 
@@ -19,9 +30,16 @@ public static class Engine_LevelLighting
 		var light = new DirectionalLight3D
 		{
 			Name = SunNodeName,
-			DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel2Splits,
+			DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel4Splits,
 			DirectionalShadowMaxDistance = SunFarDepth,
 			DirectionalShadowSplit1 = CascadeSplitNear / SunFarDepth,
+			DirectionalShadowSplit2 = CascadeSplitMid / SunFarDepth,
+			DirectionalShadowSplit3 = CascadeSplitFar / SunFarDepth,
+
+			// Cascade boundaries otherwise print as a hard band across the landscape where
+			// the shadow resolution steps — the "seam that does not match up" tracking the
+			// camera's distance rather than any geometry. The blend dithers across it.
+			DirectionalShadowBlendSplits = true,
 			ShadowNormalBias = NearSlopeBias,
 			ShadowBias = 0.03f,
 		};
@@ -30,12 +48,94 @@ public static class Engine_LevelLighting
 		return light;
 	}
 
+	private static float? _sunScale;
+
+	/// <summary>
+	/// The remaster's `sun_light_scale`. The shipped balance keeps the direct sun mild against
+	/// the bakes — people and ground barely react to it — and the user asked for the opposite.
+	/// 1.0 is the shipped energy exactly.
+	/// </summary>
+	private static float SunScale
+	{
+		get
+		{
+			if (_sunScale is null)
+			{
+				try
+				{
+					_sunScale = Math.Clamp(
+						Refii.Core.Engine_RefiiConfig.Float(
+							Refii.Core.Engine_RefiiConfig.Read(out _), "sun_light_scale", 1.35f),
+						0.0f, 4.0f);
+				}
+				catch (Exception)
+				{
+					_sunScale = 1.35f;
+				}
+			}
+
+			return _sunScale.Value;
+		}
+	}
+
 	public static void UpdateSun(DirectionalLight3D light, LightingFrame frame)
 	{
 		light.LightColor = new Color(frame.SunColour[0], frame.SunColour[1], frame.SunColour[2]);
-		light.LightEnergy = frame.SunEnergy;
+		light.LightEnergy = frame.SunEnergy * SunScale;
 		light.ShadowEnabled = frame.SunShadow;
-		light.Transform = new Transform3D(SunBasis(frame.LightDirection), Vector3.Zero);
+
+		// IN WORLD SPACE, because the node sits under the level root's Scale(-1, 1, 1). A local
+		// transform inherits that mirror, and the sun's world aim came out with its X flipped —
+		// the agreement diagnostic printed rigDot = -0.888 where -1.0 is correct, travel
+		// negating Y and Z but not X — so the light and its shadows arrived from the wrong
+		// east/west side of everything the frame stated. Assigning the GLOBAL transform
+		// composes the parent chain away, mirror included; before the node enters the tree the
+		// local assignment stands in (its parent applies the same mirror to the region, so the
+		// first configured frame corrects it).
+		var aimed = new Transform3D(SunBasis(frame.LightDirection), Vector3.Zero);
+		if (light.IsInsideTree())
+		{
+			light.GlobalTransform = aimed;
+		}
+		else
+		{
+			light.Transform = aimed;
+		}
+
+		ReportSun(frame);
+	}
+
+	private static float _reportedEnergy = float.NaN;
+	private static bool _reportedShadow;
+	private static float _reportedAmbient = float.NaN;
+
+	/// <summary>
+	/// Prints the directional light and the ambient floor whenever either moves materially.
+	/// Self-limiting rather than periodic: the interesting question is what the values ARE, and
+	/// they only change as the day does. `direct` and `ambient` are the two halves of the guest's
+	/// `albedo * (direct + bake)` — if a street reads black, this says which half is missing.
+	/// </summary>
+	private static void ReportSun(LightingFrame frame)
+	{
+		float ambient = frame.HasAmbient ? frame.AmbientEnergy : 0f;
+		bool moved = float.IsNaN(_reportedEnergy)
+			|| MathF.Abs(frame.SunEnergy - _reportedEnergy) > 0.05f
+			|| MathF.Abs(ambient - _reportedAmbient) > 0.02f
+			|| frame.SunShadow != _reportedShadow;
+		if (!moved)
+		{
+			return;
+		}
+
+		_reportedEnergy = frame.SunEnergy;
+		_reportedAmbient = ambient;
+		_reportedShadow = frame.SunShadow;
+		GD.Print(
+			$"[lighting] tod={frame.TimeOfDay:0.00}h sun=({frame.SunColour[0]:0.000}, " +
+			$"{frame.SunColour[1]:0.000}, {frame.SunColour[2]:0.000}) energy={frame.SunEnergy:0.000} " +
+			$"shadow={frame.SunShadow} dir=({frame.LightDirection[0]:0.00}, " +
+			$"{frame.LightDirection[1]:0.00}, {frame.LightDirection[2]:0.00})  " +
+			$"ambient={(frame.HasAmbient ? $"({frame.AmbientColour[0]:0.000}, {frame.AmbientColour[1]:0.000}, {frame.AmbientColour[2]:0.000}) x{frame.AmbientEnergy:0.000}" : "NONE")}");
 	}
 
 	/// <summary>
@@ -198,6 +298,20 @@ public static class Engine_LevelLighting
 				frame.AmbientColour[0], frame.AmbientColour[1], frame.AmbientColour[2]);
 			environment.AmbientLightEnergy = frame.AmbientEnergy;
 		}
+
+		// THE PROBE FIELD'S SKY TETHER. Published in ambient_light_scale space because the
+		// probe L0 it mixes with carries the same scale. Every caller that moves the lighting
+		// frame comes through here, so the global tracks the day exactly as the theme does.
+		// Weight 0 (the fable model, or a theme with no ambient) leaves the probes authored.
+		float tether = Engine_LightingFrame.ModernModel && frame.HasAmbient
+			? Engine_LightingFrame.ModernProbeSkyBlend
+			: 0f;
+		float ambientScale = Engine_LevelBakedLighting.AmbientScale;
+		RenderingServer.GlobalShaderParameterSet("fable_sky_ambient", new Vector4(
+			frame.AmbientColour[0] * frame.AmbientEnergy * ambientScale,
+			frame.AmbientColour[1] * frame.AmbientEnergy * ambientScale,
+			frame.AmbientColour[2] * frame.AmbientEnergy * ambientScale,
+			tether));
 
 		// OFF, EXPLICITLY, not merely left alone. Five of the saved level scenes carry
 		// `fog_enabled = true` inside their Environment sub-resource from when this function set

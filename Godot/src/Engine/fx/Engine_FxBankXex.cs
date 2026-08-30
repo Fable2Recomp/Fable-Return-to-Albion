@@ -724,6 +724,11 @@ public static class XexBankParser
                 case XexTag.DiffuseAlpha: m.Alpha = s.F32(); break;
                 case XexTag.DiffuseColor:
                     s.Vec3(m.ColorFile);
+                    // THE GUEST SQUARES HERE TOO, exactly once, at bank load:
+                    // CMaterialParamDiffuseColor::ReadStream (sub_8321AC90) does
+                    // `vmulfp128 v12, v13, v0` on the authored colour and the squared store wins
+                    // at param+16; the upload to g_KeyFrameColors (sub_821CA108 -> binding 0x151)
+                    // is verbatim from there. Only the colour class squares - scalars store raw.
                     for (int k = 0; k < 3; k++) m.ColorSq[k] = m.ColorFile[k] * m.ColorFile[k];
                     break;
                 case XexTag.DiffuseTexture:

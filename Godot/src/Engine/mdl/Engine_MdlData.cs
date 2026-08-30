@@ -180,6 +180,14 @@ public sealed class MdlInfo
 
     public uint MeshCount { get; set; }
 
+    /// <summary>
+    /// The lightmap UV channel — the LOD prologue's flag-gated tail: one FLOAT16_2 per rigid
+    /// vertex, appended after the last part, in the same model-global vertex order the bake
+    /// buffers use. Two floats per vertex; empty when the model does not carry the channel.
+    /// Only building interiors ship it (the amb3 texture-lightmap surfaces).
+    /// </summary>
+    public float[] LightmapUvs { get; set; } = System.Array.Empty<float>();
+
     public List<MdlMesh> Meshes { get; } = new();
 
     public List<MdlMeshBuffer> MeshBuffers { get; } = new();

@@ -39,6 +39,9 @@ public partial class GameSession : Node
 	/// </summary>
 	public static GameSession? Current { get; private set; }
 
+	private bool _booted;
+	private string _bootDirectory = string.Empty;
+
 	public override void _Ready()
 	{
 		Current = this;
@@ -74,6 +77,24 @@ public partial class GameSession : Node
 		if (!StartGuest)
 		{
 			GD.Print("[game] StartGuest is off — assets only, no guest.");
+			return;
+		}
+
+		// THE GUEST WAITS FOR THE SHADER WARM-UP. Pipeline compilation happens on the main
+		// thread the first time a material draws, and the step pump lives on that thread —
+		// letting the storm land while the guest is mid-boot is how a shader edit became five
+		// straight failed launches. The warm-up screen renders every shader first, overlapping
+		// the asset mount's worker; _Process starts the boot once both are done.
+		_bootDirectory = directory;
+		Refii.Models.Engine_ShaderWarmup.Begin(this);
+	}
+
+	private void Boot()
+	{
+		string directory = _bootDirectory;
+		Engine_GameAssets? assets = Engine_GameAssets.Instance;
+		if (assets is null)
+		{
 			return;
 		}
 
@@ -149,8 +170,106 @@ public partial class GameSession : Node
 
 	private double _accumulated;
 
+	/// <summary>Set once the ORM sweep's worker has been started.</summary>
+	private bool _ormStarted;
+
+	/// <summary>Written by the sweep's worker thread when it finishes; read from _Process.</summary>
+	private volatile bool _ormDone;
+
+	/// <summary>The sweep's latest status line. Reference assignment, so no lock.</summary>
+	private volatile string _ormStatus = "Preparing materials...";
+
 	public override void _Process(double delta)
 	{
+		if (!_booted)
+		{
+			if (_bootDirectory.Length == 0 || !Refii.Models.Engine_ShaderWarmup.Done)
+			{
+				return;
+			}
+
+			// THE ORM SWEEP RUNS BEHIND THE WARM-UP SCREEN, NOT DURING PLAY. Built on demand,
+			// an ORM is a Poisson solve on a streaming worker, and a cache-version bump makes a
+			// region's first load pay hundreds of them in one burst — which looks like the game
+			// freezing. Behind this screen the same cost is a progress line; on a warm cache the
+			// sweep is enumerate-and-hit and adds seconds.
+			if (!_ormStarted)
+			{
+				_ormStarted = true;
+				string directory = _bootDirectory;
+				var worker = new System.Threading.Thread(() =>
+				{
+					try
+					{
+						Refii.Textures.Engine_TexPrebuild.Progress result =
+							Refii.Textures.Engine_TexPrebuild.RunOrm(directory, progress =>
+								_ormStatus = progress.Total == 0
+									? "Preparing materials..."
+									: $"Preparing materials... {progress.Done:N0} of " +
+									  $"{progress.Total:N0}");
+						GD.Print($"[game] orm sweep: {result.Built} built, " +
+							$"{result.Failed} failed of {result.Total}");
+
+						// THE UPSCALE SWEEPS, when `texture_upscaling_when` says boot: every
+						// material texture, then every terrain layer, into the shared cache
+						// behind this same screen — so play never pays an enhancement and the
+						// terrain's synchronous build is enumerate-and-hit. "play" defers both
+						// to their live paths; "off" makes both no-ops.
+						if (Refii.Textures.Engine_TexSettings.UpscaleWhen == "boot")
+						{
+							Refii.Textures.Engine_TexPrebuild.Progress sharp =
+								Refii.Textures.Engine_TexPrebuild.RunTextures(directory, progress =>
+									_ormStatus = progress.Total == 0
+										? "Enhancing textures..."
+										: $"Enhancing textures... {progress.Done:N0} of " +
+										  $"{progress.Total:N0}");
+							GD.Print($"[game] texture sweep: {sharp.Built} prepared, " +
+								$"{sharp.Failed} failed of {sharp.Total}");
+
+							Refii.Level.Engine_TerrainPrebuild.Progress ground =
+								Refii.Level.Engine_TerrainPrebuild.Run(directory, progress =>
+									_ormStatus = progress.Total == 0
+										? "Preparing terrain..."
+										: $"Preparing terrain... {progress.Done:N0} of " +
+										  $"{progress.Total:N0}");
+							GD.Print($"[game] terrain sweep: {ground.Built} enhanced, " +
+								$"{ground.Failed} unreadable of {ground.Total}");
+						}
+					}
+					catch (Exception e)
+					{
+						// The sweep is an optimisation; a failure means the live path pays
+						// per-texture instead, never that the boot stops.
+						GD.Print($"[game] orm sweep failed: {e.Message}");
+					}
+					finally
+					{
+						_ormDone = true;
+					}
+				})
+				{
+					IsBackground = true,
+					Name = "orm-prebuild",
+				};
+				worker.Start();
+				return;
+			}
+
+			if (!_ormDone)
+			{
+				Refii.Models.Engine_ShaderWarmup.SetStatus(_ormStatus);
+				return;
+			}
+
+			_booted = true;
+			Refii.Models.Engine_ShaderWarmup.SetStatus("Preparing Albion...");
+			Boot();
+			// Only now: the guest is initialised (or Fail said why), so the videos that follow
+			// have something real behind them instead of a grey gap.
+			Refii.Models.Engine_ShaderWarmup.ReleaseScreen();
+			return;
+		}
+
 		if (!_driving)
 			return;
 

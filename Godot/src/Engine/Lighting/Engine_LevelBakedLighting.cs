@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System;
 using Godot;
 using Refii.Level;
@@ -115,6 +116,59 @@ public static class Engine_LevelBakedLighting
 		{
 			sample.R, sample.G, sample.B,
 		});
+	}
+
+	/// <summary>
+	/// Stores an authored per-instance bake (a .lmp u32-array D3DCOLOR) as a flat probe sample.
+	///
+	/// The L0 term is scaled so the shader's basis multiply (× <see cref="ShBand0"/>) recovers
+	/// <c>pow(c, 2.2)</c>, and the pixel side's 1.3 then completes the guest's 2.86 vertex-bake
+	/// compose. The directional bands stay zero — the source is one colour, not a field.
+	/// </summary>
+	public static void StoreFlatBakeColour(Node node, uint d3dColour)
+	{
+		float r = Mathf.Pow(((d3dColour >> 16) & 0xFF) / 255.0f, 2.2f) / ShBand0;
+		float g = Mathf.Pow(((d3dColour >> 8) & 0xFF) / 255.0f, 2.2f) / ShBand0;
+		float b = Mathf.Pow((d3dColour & 0xFF) / 255.0f, 2.2f) / ShBand0;
+
+		node.SetMeta(ProbeMeta, new Godot.Collections.Array<Vector4>
+		{
+			new Vector4(r, 0f, 0f, 0f), new Vector4(g, 0f, 0f, 0f), new Vector4(b, 0f, 0f, 0f),
+		});
+	}
+
+	private static float? _ambientScale;
+
+	/// <summary>
+	/// The remaster's `ambient_light_scale`: lifts the probe field's flat band and the theme
+	/// ambient — the light the UNBAKED population stands in (rocks, barrels, doors, characters
+	/// — everything the artists left movable and therefore probe-lit). It is what brings that
+	/// population into the same warmth as the baked bridge beside it. 1.0 = shipped level.
+	/// Public because the sky-ambient global the probes blend toward must sit in the same
+	/// scaled space as the probe L0 it mixes with.
+	/// </summary>
+	public static float AmbientScale
+	{
+		get
+		{
+			if (_ambientScale is null)
+			{
+				try
+				{
+					_ambientScale = System.Math.Clamp(
+						Refii.Core.Engine_RefiiConfig.Float(
+							Refii.Core.Engine_RefiiConfig.Read(out _),
+							"ambient_light_scale", 1.0f),
+						0.1f, 4.0f);
+				}
+				catch (System.Exception)
+				{
+					_ambientScale = 1.0f;
+				}
+			}
+
+			return _ambientScale.Value;
+		}
 	}
 
 	/// <summary>Metadata key holding the placement id whose authored bake this node owns.</summary>
@@ -317,9 +371,13 @@ public static class Engine_LevelBakedLighting
 	public static bool ApplyMultiMeshProbes(
 		MultiMesh multiMesh,
 		System.Collections.Generic.IReadOnlyList<Transform3D> instances,
-		LightProbeField? probes)
+		LightProbeField? probes,
+		LightmapContainer? bakes = null,
+		System.Collections.Generic.IReadOnlyList<ulong>? bakeKeys = null,
+		System.Collections.Generic.IReadOnlyList<uint>? authoredColours = null)
 	{
-		if (probes is null || !probes.HasData)
+		bool haveField = probes is not null && probes.HasData;
+		if (!haveField && bakes is null && authoredColours is null)
 		{
 			return false;
 		}
@@ -327,9 +385,38 @@ public static class Engine_LevelBakedLighting
 		bool any = false;
 		for (int i = 0; i < instances.Count; i++)
 		{
+			// AN AUTHORED COLOUR OUTRANKS THE PROBE FIELD — the .lmp's per-instance foliage
+			// bake, same precedence the guest gives amb1 over PRT. Stored with the vertex
+			// shader's 2.2 applied so the pixel side's 1.3 completes the 2.86 compose, which
+			// is exactly the mode-2 contract the instance-colour path already speaks.
+			if (authoredColours is not null && i < authoredColours.Count &&
+				authoredColours[i] != 0)
+			{
+				uint c = authoredColours[i];
+				multiMesh.SetInstanceColor(i, new Color(
+					Mathf.Pow(((c >> 16) & 0xFF) / 255.0f, 2.2f),
+					Mathf.Pow(((c >> 8) & 0xFF) / 255.0f, 2.2f),
+					Mathf.Pow((c & 0xFF) / 255.0f, 2.2f),
+					1f));
+				any = true;
+				continue;
+			}
+
 			Vector3 godotPosition = instances[i].Origin;
 			var gamePosition = new Vector3(godotPosition.X, godotPosition.Z, godotPosition.Y);
-			ProbeSample sample = probes.Sample(gamePosition);
+			ProbeSample sample = haveField ? probes!.Sample(gamePosition) : default;
+
+			// THE SPARSE-FIELD FALLBACK, per instance: the guest's per-object ambient block
+			// (the .lmp 48-byte payload) answers where the probe field has no cell, looked up
+			// by the instance's own bake key.
+			if (sample.R.LengthSquared() + sample.G.LengthSquared() +
+				sample.B.LengthSquared() <= 0f &&
+				bakes is not null && bakeKeys is not null && i < bakeKeys.Count &&
+				TryGetObjectAmbient(bakes, bakeKeys[i],
+					out Vector4 ar, out Vector4 ag, out Vector4 ab))
+			{
+				sample = new ProbeSample { R = ar, G = ag, B = ab };
+			}
 
 			// The flat band only, SCALED BY THE BAND-0 CONSTANT. The three that follow it are
 			// directional and there is nowhere on a MultiMesh instance to put them.
@@ -339,8 +426,11 @@ public static class Engine_LevelBakedLighting
 			// stored straight into an instance colour is 3.5x hotter than the same bake taken
 			// the other way. With the theme's factor of ~3.5 on top of it, every tree in the
 			// region came out white and the grass turned teal.
+			// The same ambient scale the singles take in ApplyInstanceLighting — one rule for
+			// the whole probe-lit population, batched or not.
+			float band = ShBand0 * AmbientScale;
 			var colour = new Color(
-				sample.R.X * ShBand0, sample.G.X * ShBand0, sample.B.X * ShBand0, 1f);
+				sample.R.X * band, sample.G.X * band, sample.B.X * band, 1f);
 			if (colour.R > 0f || colour.G > 0f || colour.B > 0f)
 			{
 				any = true;
@@ -374,9 +464,15 @@ public static class Engine_LevelBakedLighting
 			if (sample.Count == 3)
 			{
 				probeValid = true;
-				node.SetInstanceShaderParameter("probe_r", sample[0]);
-				node.SetInstanceShaderParameter("probe_g", sample[1]);
-				node.SetInstanceShaderParameter("probe_b", sample[2]);
+				// The remaster's ambient scale rides the L0 band only: scaling the directional
+				// L1 bands too would exaggerate the field's tilt, not its level.
+				float probeScale = AmbientScale;
+				node.SetInstanceShaderParameter("probe_r",
+					new Vector4(sample[0].X * probeScale, sample[0].Y, sample[0].Z, sample[0].W));
+				node.SetInstanceShaderParameter("probe_g",
+					new Vector4(sample[1].X * probeScale, sample[1].Y, sample[1].Z, sample[1].W));
+				node.SetInstanceShaderParameter("probe_b",
+					new Vector4(sample[2].X * probeScale, sample[2].Y, sample[2].Z, sample[2].W));
 			}
 		}
 
@@ -394,9 +490,10 @@ public static class Engine_LevelBakedLighting
 		float ar = 0f, ag = 0f, ab = 0f;
 		if (frame is not null && frame.HasAmbient)
 		{
-			ar = frame.AmbientColour[0] * frame.AmbientEnergy;
-			ag = frame.AmbientColour[1] * frame.AmbientEnergy;
-			ab = frame.AmbientColour[2] * frame.AmbientEnergy;
+			float ambientScale = AmbientScale;
+			ar = frame.AmbientColour[0] * frame.AmbientEnergy * ambientScale;
+			ag = frame.AmbientColour[1] * frame.AmbientEnergy * ambientScale;
+			ab = frame.AmbientColour[2] * frame.AmbientEnergy * ambientScale;
 		}
 
 		node.SetInstanceShaderParameter("ambient_colour", new Vector4(ar, ag, ab, 1f));
@@ -465,6 +562,137 @@ public static class Engine_LevelBakedLighting
 				yield return grandchild;
 			}
 		}
+	}
+
+	public const string GlobalPropLightmapsName = "fable_prop_lightmaps";
+
+	/// <summary>
+	/// The atlas rect for one object's texture lightmap (the amb3 path — building interiors:
+	/// 106 blobs game-wide, all 64x64). Builds the region atlas on first call and publishes it
+	/// as the `fable_prop_lightmaps` global; the caller hands the rect to the instance as
+	/// `lightmap_rect` and raises bake mode 4.
+	/// </summary>
+	public static bool TryGetObjectLightmapRect(
+		LightmapContainer? container, ulong key, out Rect2 rect)
+	{
+		rect = default;
+		if (container is null || container.ObjectLightmapBlobs.Count == 0)
+		{
+			return false;
+		}
+
+		if (!container.ObjectAtlasBuilt)
+		{
+			BuildObjectAtlas(container);
+		}
+
+		if (container.ObjectAtlas is null ||
+			!container.ObjectAtlasRects.TryGetValue(key, out rect))
+		{
+			return false;
+		}
+
+		RenderingServer.GlobalShaderParameterSet(
+			GlobalPropLightmapsName, container.ObjectAtlas);
+		return true;
+	}
+
+	private static void BuildObjectAtlas(LightmapContainer container)
+	{
+		container.ObjectAtlasBuilt = true;
+
+		var decoded = new List<(ulong Key, Image Image)>();
+		int cellW = 1;
+		int cellH = 1;
+		foreach (KeyValuePair<ulong, byte[]> entry in container.ObjectLightmapBlobs)
+		{
+			ImageTexture? texture = DecodeTexture(entry.Value);
+			Image? image = texture?.GetImage();
+			if (image is null)
+			{
+				GD.PushWarning($"[bake] object lightmap {entry.Key:X16} failed to decode");
+				continue;
+			}
+
+			cellW = Math.Max(cellW, image.GetWidth());
+			cellH = Math.Max(cellH, image.GetHeight());
+			decoded.Add((entry.Key, image));
+		}
+
+		if (decoded.Count == 0)
+		{
+			return;
+		}
+
+		int columns = (int)Math.Ceiling(Math.Sqrt(decoded.Count));
+		int rows = (decoded.Count + columns - 1) / columns;
+		var atlas = Image.CreateEmpty(
+			columns * cellW, rows * cellH, false, Image.Format.Rgba8);
+
+		float atlasW = columns * cellW;
+		float atlasH = rows * cellH;
+		for (int i = 0; i < decoded.Count; i++)
+		{
+			Image source = decoded[i].Image;
+			if (source.GetFormat() != Image.Format.Rgba8)
+			{
+				source.Convert(Image.Format.Rgba8);
+			}
+
+			int x = (i % columns) * cellW;
+			int y = (i / columns) * cellH;
+			atlas.BlitRect(source,
+				new Rect2I(0, 0, source.GetWidth(), source.GetHeight()),
+				new Vector2I(x, y));
+
+			container.ObjectAtlasRects[decoded[i].Key] = new Rect2(
+				x / atlasW, y / atlasH,
+				source.GetWidth() / atlasW, source.GetHeight() / atlasH);
+		}
+
+		container.ObjectAtlas = ImageTexture.CreateFromImage(atlas);
+		GD.Print($"[bake] object lightmap atlas: {decoded.Count} texture(s), " +
+			$"{columns * cellW}x{rows * cellH}");
+	}
+
+	/// <summary>
+	/// The per-object ambient the guest ships for EVERY placement — the .lmp's 48-byte blocks
+	/// (guest container map +0x34): three float4 vectors the runtime then converges toward
+	/// placed lights. Their shape matches our probe SH-L1 uniforms exactly (one vec4 per
+	/// channel), so a prop the probe FIELD cannot answer for — movable crates, rocks, shelves,
+	/// 694 of them in one region — takes its authored ambient instead of flat black.
+	///
+	/// LAYOUT HYPOTHESIS, marked honestly: file order is taken as the R, G and B channel
+	/// vectors with the guest's (constant, x, y, z) coefficient order our basis already
+	/// expects. If the guest orders coefficients differently the DIRECTIONAL part tilts, but
+	/// the constant term — which carries the ambient level — is position-independent either
+	/// way. Verify against a lit scene; do not silently retune.
+	/// </summary>
+	public static bool TryGetObjectAmbient(
+		LightmapContainer? container, ulong key,
+		out Vector4 r, out Vector4 g, out Vector4 b)
+	{
+		r = default;
+		g = default;
+		b = default;
+		if (container is null || !container.Blocks48.TryGetValue(key, out byte[]? block) ||
+			block.Length < 48)
+		{
+			return false;
+		}
+
+		Span<float> f = stackalloc float[12];
+		for (int i = 0; i < 12; i++)
+		{
+			f[i] = BitConverter.Int32BitsToSingle(
+				System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(
+					block.AsSpan(i * 4)));
+		}
+
+		r = new Vector4(f[0], f[1], f[2], f[3]);
+		g = new Vector4(f[4], f[5], f[6], f[7]);
+		b = new Vector4(f[8], f[9], f[10], f[11]);
+		return r.LengthSquared() + g.LengthSquared() + b.LengthSquared() > 0f;
 	}
 
 	public static ImageTexture? DecodeTexture(byte[] blob)

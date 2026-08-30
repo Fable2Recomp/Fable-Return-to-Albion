@@ -60,6 +60,12 @@ if(REFII_WINDOWS_INSTALL_INPUTS_ONLY AND NOT WIN32)
     message(FATAL_ERROR "REFII_WINDOWS_INSTALL_INPUTS_ONLY is Windows-only")
 endif()
 
+# OFF by default because it needs a Godot binary AND a real rendering driver — the dummy renderer
+# under --headless compiles nothing and passes everything. Turn it on for any build you intend to
+# run: a shader that fails to compile is silent apart from the run log, and the meshes using it
+# render with the default material.
+option(REFII_CHECK_SHADERS "Compile every .gdshader as part of the build" OFF)
+
 # DEV ONLY. Lets a dev tree run the game code the CMake build just produced instead of making
 # the launcher recompile it from the installed image first — a ~5 minute wait between a source
 # change and seeing it, paid on every iteration.

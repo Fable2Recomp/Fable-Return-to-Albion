@@ -331,7 +331,35 @@ public sealed class Engine_FxSystem
 
     private static Vector3 ToGodot(float[] game) => new(game[0], game[2], game[1]);
 
+    /// <summary>
+    /// Fills a spawned instance's `Lit` colour from the scene. The guest's particle vertex
+    /// shader lights a particle as `lerp(g_GlobalAmbient + point lights, keyframeColour,
+    /// selfIllum)` (blob 0038) — left unbound, `Lit` stays (1,1,1) and every particle with
+    /// selfIllum &lt; 1 lerps toward WHITE instead of toward scene light, which reads as smoke,
+    /// dust and spell debris all glowing. Bound by <see cref="BindAmbientToScene"/>.
+    /// </summary>
     public static Action<float[], float[]>? AmbientProvider;
+
+    /// <summary>The guest's full lit term: theme ambient plus nearby placed lights.</summary>
+    public static void BindAmbientToScene()
+    {
+        AmbientProvider = static (pos, lit) =>
+        {
+            Refii.Lighting.LightingFrame? frame =
+                Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting;
+            if (frame is not null && frame.HasAmbient)
+            {
+                lit[0] = frame.AmbientColour[0] * frame.AmbientEnergy;
+                lit[1] = frame.AmbientColour[1] * frame.AmbientEnergy;
+                lit[2] = frame.AmbientColour[2] * frame.AmbientEnergy;
+            }
+
+            // Game (x, y, z) to Godot world (-x, z, y) — the region root's mirror composed with
+            // the axis swap, the same mapping every placement takes.
+            Refii.Lighting.Engine_LevelLights.AddLightsAt(
+                new Godot.Vector3(-pos[0], pos[2], pos[1]), lit);
+        };
+    }
 
     public static bool DebugEmit;
 
@@ -1331,7 +1359,13 @@ public sealed class Engine_FxSystem
         _detachedParticles = false;
     }
 
-    public readonly record struct FxLightState(Vector3 Position, Color Colour, float Range, float Energy, float FadeDistance, float FadeRange);
+    /// <summary>
+    /// Range is the falloff radius (param 15); Cutoff the camera distance at which the guest's
+    /// intensity reaches zero (param 17, capped 1000); Ramp the width of that fade inside the
+    /// cutoff (param 18); ConeAngle the spot half-angle in radians (param 24, spots only —
+    /// zero means no cone).
+    /// </summary>
+    public readonly record struct FxLightState(Vector3 Position, Color Colour, float Range, float Energy, float Cutoff, float Ramp, float ConeAngle);
 
     public int LightCount
     {
@@ -1355,12 +1389,31 @@ public sealed class Engine_FxSystem
                     new Color(r, g, b),
                     MathF.Max(0f, d.LightRange.EvalFrame(f)) * light.Scale,
                     energy,
-                    d.LightFadeDistance.EvalFrame(f),
-                    d.LightFadeRange.EvalFrame(f));
+                    d.LightCutoff.EvalFrame(f),
+                    d.LightFadeRamp.EvalFrame(f),
+                    d.LightConeAngle.EvalFrame(f));
             }
         }
 
         return default;
+    }
+
+    /// <summary>
+    /// The halo texture the light at <paramref name="index"/> states, or 0 — the same walk as
+    /// <see cref="LightAt"/>, so the indices agree with the lights FableFx built.
+    /// </summary>
+    public uint HaloAt(int index)
+    {
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (LightRuntime light in inst.Lights)
+            {
+                if (index-- != 0) continue;
+                return light.Def?.HaloTextureHash ?? 0;
+            }
+        }
+
+        return 0;
     }
 
     public sealed class MeshInstanceData

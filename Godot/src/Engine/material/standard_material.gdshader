@@ -48,6 +48,11 @@ uniform bool has_envmap = false;
 uniform sampler2D orm_tex : filter_linear_mipmap_anisotropic;
 uniform bool has_orm = false;
 
+// Whether the ORM's alpha carries a SOLVED height. The heightless sentinel is opaque white —
+// read as relief it is +0.5 everywhere, a permanent view-dependent UV shift on surfaces with no
+// relief at all — so parallax runs only when the packer says the channel is real.
+uniform bool has_height = false;
+
 /// How far the ORM's height channel displaces the texture coordinates.
 ///
 /// PARALLAX IS THE CONSUMER THE HEIGHT WAS BUILT FOR. Engine_TexHeight solves a height field out of
@@ -126,22 +131,21 @@ uniform float wind_speed : hint_range(0.1, 8.0) = 1.0;
 ///     r7.xyz = r4.zzz * g_GlobalLightParamsVS(7).xyz + r6.xyz // sun colour  x term + sky
 ///     r1.xyz = saturate(-r7.xzy + c253.www)                   // WRAPPED, not clamped at zero
 ///
-/// — two hemisphere terms, sky and sun, wrapped rather than hard `dot(L, N)`.
-///
-/// THAT IS WHY A CANOPY DRAWN AS A SOLID GOES FLAT. A leaf card's normal is a poor description of a
-/// canopy, so every card takes roughly the same hard `dot(L, N)` and the whole thing collapses to
-/// one tone. Wrapping restores the gradient the guest gets per vertex, from the same normal we
-/// already have.
+/// — a per-light WRAP diffuse, `saturate((N.L + w)/(1 + w))`, decoded from tree VS blob 0524.
+global uniform int fable_light_debug;
+
 uniform bool foliage = false;
 
-/// How much of a canopy's gradient comes from the sun rather than from the sky hemisphere.
-/// 0 is the old up-only behaviour; 1 is sun alone. OURS, not the guest's — its split is two
-/// interpolated vertex colours we have not decoded.
-uniform float foliage_sun_mix : hint_range(0.0, 1.0) = 0.5;
+/// The canopy wrap amount `g_StandardMaterialVSConstants.w` (VS c50.w). Runtime material data
+/// with no CTAB default anywhere in the corpus — 0.5 is a placeholder until a live capture
+/// reads it. The FORMULA is the guest's; this number is not yet.
+uniform float foliage_wrap : hint_range(0.0, 1.0) = 0.5;
 
-/// How dark a canopy's unlit side gets. Was a fixed 0.8, which is a 20% range across the whole
-/// canopy and reads as flat.
-uniform float foliage_floor : hint_range(0.0, 1.0) = 0.62;
+/// THE SPECULAR TERMS, HANDED TO `light()`. Godot's `light()` cannot reach a fragment local, and
+/// the guest's specular is Phong over the material's own maps, so the colour and the exponent
+/// travel as varyings — the same arrangement `standard_material_phong` uses.
+varying vec3 v_specular;
+varying float v_specular_power;
 
 void vertex() {
     // GUARDED BY AN `if`, NOT AN EARLY `return`. Godot rejects the latter outright — "Using
@@ -175,7 +179,7 @@ void fragment() {
     // runs on every surface in the world; the march buys self-occlusion at a cost this does not
     // need to pay for what is fundamentally a derived, band-limited height.
     vec2 uv = UV;
-    if (has_orm && parallax_scale > 0.0) {
+    if (has_orm && has_height && parallax_scale > 0.0) {
         // The view direction in TANGENT space. Godot gives VIEW in view space, and the tangent
         // frame beside it, so the three dots are the change of basis.
         vec3 tangent_view = normalize(vec3(
@@ -244,11 +248,13 @@ void fragment() {
     // that reconstructed z is exactly the dot product the guest then takes. Godot's NORMAL_MAP
     // reconstructs z the same way, which is why the map can still be handed over whole.
     float ndotn = 1.0;
+    vec3 mapped_view = NORMAL;
     if (has_normal) {
         vec3 nm = texture(normal_tex, uv).rgb;
         NORMAL_MAP = nm;
         vec2 nxy = (nm.xy * 2.0) - 1.0;
         ndotn = sqrt(max(1.0 - dot(nxy, nxy), 0.0));
+        mapped_view = normalize(TANGENT * nxy.x + BINORMAL * nxy.y + NORMAL * ndotn);
     }
 
     METALLIC = 0.0;
@@ -262,6 +268,7 @@ void fragment() {
     // that slot is transparent black, so r2 is zero and the cube contributes nothing however
     // bright it is.
     vec3 spec_colour = vec3(0.0);
+    float spec_power = spec_power_min;
 
     if (has_specular) {
         // SQUARED LIKE THE ALBEDO, and by the same line — the guest reads the specular map raw
@@ -270,9 +277,9 @@ void fragment() {
         // than a colour.
         vec4 spec = texture(specular_tex, uv);
         spec_colour = spec.rgb * spec.rgb;
-        float power = mix(spec_power_min, spec_power_max, spec.a);
+        spec_power = mix(spec_power_min, spec_power_max, spec.a);
 
-        ROUGHNESS = clamp(sqrt(2.0 / (power + 2.0)), 0.0, 1.0);
+        ROUGHNESS = clamp(sqrt(2.0 / (spec_power + 2.0)), 0.0, 1.0);
         SPECULAR = clamp(dot(spec_colour, LUMA), 0.0, 1.0);
     } else {
         ROUGHNESS = 1.0;
@@ -289,42 +296,46 @@ void fragment() {
         METALLIC = orm.b;
     }
 
+    // ORM HAS NOWHERE TO PUT A SPECULAR COLOUR, so the pair is reconstructed from what it does
+    // carry: the exponent inverts the `sqrt(2 / (power + 2))` mapping above, and the colour is
+    // the dielectric/metal split. Ours, not the guest's — it has no packed path.
+    v_specular = spec_colour;
+    v_specular_power = spec_power;
+    // GATED ON THE SPECULAR TOO: the reconstruction only replaces values a specular fetch
+    // produced. A normal-only ORM has no exponent to invert, and the 0.04 dielectric floor
+    // would hand a specular lobe to a material the guest renders with NONE — its fallback
+    // sampler is transparent black.
+    if (has_orm && has_specular) {
+        v_specular_power = clamp(2.0 / max(ROUGHNESS * ROUGHNESS, 1e-4) - 2.0, 1.0, 4096.0);
+        v_specular = mix(vec3(0.04), alb.rgb, METALLIC);
+    }
+
     vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
-    vec3 bake = fable_bake(world_normal, COLOR);
-    vec3 darken = mix(darkening_colour.rgb, vec3(1.0), ndotn * ndotn);
+    vec3 bake = fable_bake(world_normal, COLOR, UV2);
+
+    // THE GUEST'S BENT NORMAL, exactly (blob 0245 lines 1248-1294, and 0335's use of it):
+    // t = 0.5*(dot(N, AmbRef)+1); bent = lerp(N, AmbRef, t); factor = saturate(dot(bent,
+    // mappedN))^2. AmbRef is VS c19 = the main light's direction (`sub_821B16F8` writes it
+    // beside the 1.3 gamma) — the same toward-the-sun vector the foliage wrap uses, NOT world
+    // up. Dotting the map against the geometric normal instead under-darkened every wall.
+    // nrm0 surfaces take no darkening, as shipped — the term is the nrm1 permutation's.
+    vec3 darken = vec3(1.0);
+    if (has_normal) {
+        vec3 amb_ref = normalize(vec3(atmos_sun.x, atmos_sun.z, atmos_sun.y));
+        float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
+        vec3 bent = normalize(mix(world_normal, amb_ref, bend));
+        vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
+        float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
+        darken = mix(darkening_colour.rgb, vec3(1.0), nb * nb);
+    }
 
     if (foliage) {
-        // WRAPPED, because the guest's canopy term is `saturate(const - x)` rather than a clamp at
-        // zero: light does not stop dead where the surface turns away, which is what stops a
-        // canopy reading as a cardboard cut-out.
-        //
-        // The normal-map darkening is dropped with it. It exists to shade a solid surface's
-        // relief, and a canopy has no relief to shade — keeping it would put the flat tone back by
-        // another route.
-        // THE FLOOR IS AN APPROXIMATION AND IT IS MINE, not the guest's. Its canopy blends two
-        // interpolated colours built in the tree vertex shader from `g_GlobalLightParamsVS(7)` and
-        // `(8)` — a sun term and a sky term — and until that split is decoded there is no derived
-        // number to put here. A wrap against world up has the right SHAPE (top lit, underside
-        // shaded, no hard terminator) but its depth is a choice.
-        //
-        // 0.55 was the first choice and it was too dark: foreground foliage in Bower Lake went
-        // near-black while everything around it was correctly lit. 0.8 keeps the gradient that
-        // stops a canopy reading as one flat tone without inventing a deep shadow the guest does
-        // not have. It errs toward the shipped look, which is the right direction to err in for a
-        // number nobody measured.
-        // TWO TERMS, SUN AND SKY — the shape the guest's canopy actually has. Its vertex
-        // shader builds `sun * r4.z + sky * r4.w` and wraps the result, so a leaf facing the
-        // sun is brighter than one facing away. An up-only wrap has no sun in it at all, which
-        // is what collapsed a canopy to one flat tone whatever the time of day.
-        //
-        // `atmos_sun` is the same global the fog samples, in dome axes — swapping y and z is
-        // its own inverse and puts it back in world. The DIRECTION is measured; the two weights
-        // and the floor below are still ours, which is why they are uniforms.
-        vec3 sun_world = normalize(vec3(atmos_sun.x, atmos_sun.z, atmos_sun.y));
-        float sun_wrap = dot(world_normal, sun_world) * 0.5 + 0.5;
-        float sky_wrap = dot(world_normal, vec3(0.0, 1.0, 0.0)) * 0.5 + 0.5;
-        float wrap = mix(sky_wrap, sun_wrap, foliage_sun_mix);
-        darken = vec3(mix(foliage_floor, 1.0, wrap));
+        // NO SUN TERM HERE ANY MORE — foliage is lit in `light()` by the guest's per-light wrap,
+        // which covers the sun AND the lamps (blob 0524 runs the same formula over every slot).
+        // Modulating the bake by a sun wrap as well counted the sun twice and the lamps never:
+        // a hedge beside a lantern stayed pitch dark at night. The bake keeps only the relief
+        // exemption: a canopy has none to shade.
+        darken = vec3(1.0);
 
         // THE GUEST'S SHADOW FLOOR IS DELIBERATELY NOT REPRODUCED HERE. Its canopy applies
         // `shadow * 0.6 + 0.4` to a 0..1 scalar from the screen shadow map, so a shadowed canopy
@@ -339,7 +350,20 @@ void fragment() {
     // AO multiplies the BAKE, the same place the normal-map darkening goes — the guest's flat
     // global ambient is added after and is never occluded, and folding occlusion into it would
     // give every crevice a floor of zero.
-    EMISSION = alb.rgb * fable_ambient(bake * lightmap_colour.rgb * darken * ao);
+    // AO IS OURS (the generated ORM; the guest has none) and it must never occlude an
+    // AUTHORED bake — a baked term already contains its occlusion, and occluding it twice is
+    // what split the bridge from the terrain beside it. The probe and flat modes are synthetic
+    // ambient with no baked occlusion, so the modernized AO stays legitimate there.
+    float bake_ao = lightmap_colour.w > 2.5 ? 1.0 : ao;
+    vec3 ambient_half = bake * lightmap_colour.rgb * darken * bake_ao;
+
+    // The sky tether runs POST-LightmapColour (see fable_sky_tether) on every exterior mode;
+    // mode 4's amb3 lightmaps are interiors-only and stay authored.
+    if (lightmap_colour.w < 3.5) {
+        ambient_half = fable_sky_tether(ambient_half);
+    }
+
+    EMISSION = alb.rgb * fable_ambient(ambient_half);
     if (has_emission) {
         // Squared for the same reason, and by the same line: the guest's self-illumination
         // fetch is followed by `r3.xyz = r3.xyz * r3.xyz` before it is added in.
@@ -401,5 +425,82 @@ void fragment() {
         // luma the channel was built with above, which is the closest a single number gets to a
         // per-channel extinction.
         SPECULAR *= dot(fog_t, LUMA);
+    }
+
+	// THE LIGHTING DEBUG VIEWS — `lighting_debug_view` in the launcher, global
+	// `fable_light_debug`. ALBEDO = 0 kills the diffuse light term (Godot multiplies
+	// DIFFUSE_LIGHT by ALBEDO after light()), so each mode isolates one half of
+	// `albedo * (direct + bake)`: 1 = bake only, 2 = direct only, 3 = raw albedo,
+	// 4 = the normal-map darken term. Specular still rides modes 1/3/4 — minor.
+	if (fable_light_debug == 1) {
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 2) {
+		EMISSION = vec3(0.0);
+	} else if (fable_light_debug == 3) {
+		EMISSION = alb.rgb;
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 4) {
+		EMISSION = darken;
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 5) {
+		// WHICH BAKE MODE THIS SURFACE TOOK: red = flat ambient (0), yellow = probe (1),
+		// magenta = mode 2, green = vertex bake (3), blue = texture lightmap (4).
+		float m = lightmap_colour.w;
+		vec3 tag = m > 3.5 ? vec3(0.1, 0.3, 1.0)
+			: m > 2.5 ? vec3(0.1, 1.0, 0.1)
+			: m > 1.5 ? vec3(1.0, 0.1, 1.0)
+			: m > 0.5 ? vec3(1.0, 1.0, 0.1)
+			: vec3(1.0, 0.1, 0.1);
+		EMISSION = tag;
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 6 || fable_light_debug == 7) {
+		// 6: the directional SHADOW TERM alone; 7: signed NdotL — light() writes them into
+		// DIFFUSE_LIGHT, and a white albedo with no emission lets them through unscaled.
+		EMISSION = vec3(0.0);
+		ALBEDO = vec3(1.0);
+	} else if (fable_light_debug == 8) {
+		// The VIEW-SPACE NORMAL as colour — the terrain-parity diagnostic.
+		EMISSION = (NORMAL * 0.5) + 0.5;
+		ALBEDO = vec3(0.0);
+	}
+}
+
+/// THE GUEST'S MODEL, so every family shades by the same rules.
+///
+/// There is no separate main-light constant in the shipped microcode: every light — sun, moon, torch, lantern — is a
+/// slot in `g_GlobalLightParamsPS`, and the distance term is a LINEAR ramp rather than an inverse
+/// square, which is what `fable_attenuation` restores. The sun reaches it as a slot with
+/// `Type = 0` and `InvRadii = 0`, so its attenuation collapses to the shadow term alone.
+///
+/// FOLIAGE TAKES THE WRAP, NOT LAMBERT. The canopy vertex shader (blob 0524) runs
+/// `saturate((N.L + w)/(1 + w))` over EVERY light slot — the sun and the lamps alike — with the
+/// same linear attenuation, and no specular.
+///
+/// GUARDED, NOT RETURNED FROM. Godot rejects `return` in the `light` processor outright —
+/// "Using 'return' in the 'light' processor function is incorrect" — and a shader that fails to
+/// compile falls back to a default material, which strips every texture in the scene.
+void light() {
+    // VIEW 6: the directional light's RAW shadow term, greyscale, on every surface — white
+    // is unshadowed, black fully shadowed. The one view that separates "the shadow map does
+    // not reach this surface" from "the direct term is too weak for the shadow to show".
+    if (fable_light_debug == 6) {
+        if (LIGHT_IS_DIRECTIONAL) {
+            DIFFUSE_LIGHT = vec3(clamp(ATTENUATION, 0.0, 1.0));
+        }
+    } else if (fable_light_debug == 7) {
+        // SIGNED NdotL — the terrain-parity diagnostic; see terrain_splat's view 7.
+        if (LIGHT_IS_DIRECTIONAL) {
+            DIFFUSE_LIGHT = vec3((dot(NORMAL, LIGHT) * 0.5) + 0.5);
+        }
+    } else {
+        float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL);
+        if (foliage) {
+            float wrap = clamp((dot(NORMAL, LIGHT) + foliage_wrap) / (1.0 + foliage_wrap), 0.0, 1.0);
+            DIFFUSE_LIGHT += wrap * atten * (LIGHT_COLOR / PI);
+        } else {
+            DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, atten, LIGHT_COLOR);
+            SPECULAR_LIGHT += fable_specular(
+                NORMAL, LIGHT, VIEW, atten, LIGHT_COLOR, v_specular, v_specular_power);
+        }
     }
 }

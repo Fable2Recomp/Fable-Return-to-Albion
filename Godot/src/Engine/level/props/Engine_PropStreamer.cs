@@ -345,7 +345,25 @@ public partial class Engine_PropStreamer : Node3D
         if (!_reported)
         {
             _reported = true;
-            GD.Print($"[props] vertex bakes applied={_bakeApplied} misfit={_bakeMisfit}");
+            GD.Print($"[props] bakes applied={_bakeApplied} (texture={_bakeTextured}) ambient={_bakeAmbient} misfit={_bakeMisfit} keyless={_bakeKeyless}");
+
+            if (_keylessByModel.Count != 0)
+            {
+                var worst = new List<KeyValuePair<string, int>>(_keylessByModel);
+                worst.Sort((a, b) => b.Value.CompareTo(a.Value));
+                var line = new System.Text.StringBuilder("[props] keyless by model:");
+                for (int i = 0; i < worst.Count && i < 16; i++)
+                {
+                    line.Append($" {worst[i].Key}x{worst[i].Value}");
+                }
+
+                if (worst.Count > 16)
+                {
+                    line.Append($" (+{worst.Count - 16} more models)");
+                }
+
+                GD.Print(line.ToString());
+            }
             GD.Print($"[props] streamed {_loaded} model(s)" +
                 (_failed == 0
                     ? string.Empty
@@ -423,29 +441,98 @@ public partial class Engine_PropStreamer : Node3D
             node.GetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta)
                 is not { VariantType: Variant.Type.Int } stored)
         {
+            // No bake key at all. If the probe sample also failed this node renders at mode 0 —
+            // flat global ambient, the blue-grey slab in every dawn screenshot. Aggregated by
+            // model rather than naming the first eight: the summary needs the SHAPE of the
+            // population (which models, how many of each) to say which appender is dropping
+            // keys, and eight arbitrary names could not.
+            _bakeKeyless++;
+            string keylessModel = node.GetMeta(ModelPathMeta, string.Empty).AsString();
+            int slash = keylessModel.LastIndexOf('/');
+            string leaf = slash >= 0 ? keylessModel[(slash + 1)..] : keylessModel;
+            _keylessByModel.TryGetValue(leaf, out int seen);
+            _keylessByModel[leaf] = seen + 1;
+
             return;
         }
 
         string gdbPath = GetMeta(
             Refii.Lighting.Engine_LevelBakedLighting.LevelGdbMeta, string.Empty).AsString();
 
-        ArrayMesh? baked = Refii.Lighting.Engine_LevelBakedLighting.TryBuildVertexBake(
-            Refii.Lighting.Engine_LevelBakedLighting.ContainerFor(gdbPath),
-            (ulong)stored.AsInt64(),
-            mesh);
+        Refii.Lighting.LightmapContainer? container =
+            Refii.Lighting.Engine_LevelBakedLighting.ContainerFor(gdbPath);
+        ulong key = (ulong)stored.AsInt64();
 
-        if (baked is null)
+        ArrayMesh? baked = Refii.Lighting.Engine_LevelBakedLighting.TryBuildVertexBake(
+            container, key, mesh);
+
+        if (baked is not null)
         {
-            ++_bakeMisfit;
+            node.Mesh = baked;
+            node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeModeMeta, 3);
+            ++_bakeApplied;
             return;
         }
 
-        node.Mesh = baked;
-        node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeModeMeta, 3);
-        ++_bakeApplied;
+        // THE TEXTURE BAKE — the amb3 path, building interiors. One 64x64 per object in the
+        // .lmp, served from the region atlas with a per-instance rect; the UVs are the mesh's
+        // own TexUV2 channel. Vertex bake outranks it, matching the guest's packet ctor
+        // (`sub_82219978`: mode 1, else 3, else 2) — for this key the maps are disjoint anyway.
+        if (Refii.Lighting.Engine_LevelBakedLighting.TryGetObjectLightmapRect(
+                container, key, out Godot.Rect2 rect))
+        {
+            node.SetInstanceShaderParameter("lightmap_rect",
+                new Godot.Vector4(rect.Position.X, rect.Position.Y, rect.Size.X, rect.Size.Y));
+            node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeModeMeta, 4);
+            ++_bakeApplied;
+            ++_bakeTextured;
+            return;
+        }
+
+        // THE THIRD RUNG: the guest's per-object ambient (the .lmp 48-byte blocks). This is
+        // what lights a movable crate or rock — the artists never baked those, and the probe
+        // FIELD is sparse, so without this they fell to flat global ambient (the mode-0 red
+        // population in the bake-mode debug view). It rides the existing probe uniforms:
+        // ApplyInstanceLighting below turns the meta into shader state as mode 1.
+        if (Refii.Lighting.Engine_LevelBakedLighting.TryGetObjectAmbient(
+                container, key,
+                out Godot.Vector4 ar, out Godot.Vector4 ag, out Godot.Vector4 ab))
+        {
+            node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMeta,
+                new Godot.Collections.Array<Godot.Vector4> { ar, ag, ab });
+            ++_bakeAmbient;
+            return;
+        }
+
+        if (_bakeMisfit++ < 8)
+        {
+            // THE TWO COUNTS, because "misfit" alone cannot distinguish a bake authored for a
+            // DIFFERENT model (counts a world apart) from a splitting detail (counts a few
+            // vertices apart) — the facade eight have sat unexplained for exactly this lack.
+            int bakeLength = container is not null &&
+                container.VertexBakes.TryGetValue(key, out uint[]? colours)
+                ? colours.Length
+                : -1;
+            int meshTotal = mesh.GetMeta(
+                Refii.Models.Engine_MdlMesh.SourceVertexTotalMeta, default) is
+                { VariantType: Godot.Variant.Type.Int } totalMeta
+                ? totalMeta.AsInt32()
+                : -1;
+            GD.Print($"[props] BAKE MISFIT: key=0x{key:X16} bake={bakeLength} " +
+                $"model_verts={meshTotal} '{node.Name}' model=" +
+                $"'{node.GetMeta(ModelPathMeta, string.Empty).AsString()}'");
+        }
     }
 
     private int _bakeApplied;
+
+    private int _bakeKeyless;
+
+    private readonly Dictionary<string, int> _keylessByModel = new();
+
+    private int _bakeTextured;
+
+    private int _bakeAmbient;
 
     private int _bakeMisfit;
 
@@ -515,6 +602,33 @@ public partial class Engine_PropStreamer : Node3D
             {
                 single.Mesh = mesh;
                 ApplyVertexBake(single, mesh);
+            }
+
+            // A SWAYING PLANT CASTS NO SUN SHADOW. Its leaf cards are alpha-tested slivers
+            // under a wind bend, sub-texel in the shadow cascades — what they cast is not a
+            // shadow but temporal noise that FLASHES across themselves and the ground as the
+            // bend moves. The guest never had this: its foliage cast nothing (the sun shadow
+            // is the remaster's). Trees are unaffected — they do not sway (mode 2 holds still
+            // until treematerial exists) and their canopy shadows are stable and worth having.
+            if (SwaysInWind(mesh))
+            {
+                instance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+            }
+
+            static bool SwaysInWind(ArrayMesh candidate)
+            {
+                for (int s = 0; s < candidate.GetSurfaceCount(); s++)
+                {
+                    // `wind_amplitude` is only ever SET on mode-1 plants with an authored
+                    // amplitude (Engine_MdlMaterial.ApplyWind); everything else reads back nil.
+                    if (candidate.SurfaceGetMaterial(s) is ShaderMaterial shader &&
+                        shader.GetShaderParameter("wind_amplitude").AsSingle() > 0f)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
             }
 
             // LIGHT IT NOW, not at build time. Until this line the node had no material, and

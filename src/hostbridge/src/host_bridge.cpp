@@ -970,8 +970,12 @@ constexpr uint8_t kDeviceNoGpuFlagBit = 0x02u;         // "GPU is dead" latch
 constexpr uint32_t kDeviceDebugConsumer = 0x541Cu;     // dev+0x541C, NULL in retail
 constexpr uint32_t kDeviceOutstandingIbs = 0x2B00u;    // dev+0x2B00
 
-bool g_no_gpu_armed = false;
-uint32_t g_guest_device = 0;
+// Atomics: written by the fast-arm watcher thread below as well as the step thread.
+std::atomic<bool> g_no_gpu_armed{false};
+std::atomic<uint32_t> g_guest_device{0};
+
+std::atomic<bool> g_arm_watcher_stop{false};
+std::thread g_arm_watcher;
 
 /// Puts Fable 2's own D3D into the "no GPU present" mode it ships with.
 ///
@@ -11608,6 +11612,22 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
 
         hosted.initialized = true;
         InstallLastResortFaultHandler();
+
+        // THE FAST-ARM WATCHER. The guest's D3D device creation reads the no-GPU latch ONCE,
+        // tens of milliseconds after publishing the device pointer; armed first, boot proceeds —
+        // read first, the guest takes the "a GPU exists" path and parks in a ring wait forever.
+        // Polled only from the 30 Hz step, the arm lands up to a frame late and loses that race
+        // roughly half the time (observed 5 losses / 8 launches in one day). A 1 ms poll on its
+        // own thread wins it by construction; the thread exits the moment the latch is armed.
+        g_arm_watcher = std::thread([]() {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(3);
+            while (!g_arm_watcher_stop.load(std::memory_order_relaxed) &&
+                   !g_no_gpu_armed.load(std::memory_order_relaxed) &&
+                   std::chrono::steady_clock::now() < deadline) {
+                ArmGuestNoGpuMode();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        });
         hosted.status = "running";
         WriteOut("initialized; drive it with RefiiHostStep", out, capacity);
         return 1;
@@ -11699,6 +11719,11 @@ REFII_HOST_ABI_EXPORT int RefiiHostHostedStatus(char* out, std::size_t capacity)
 /// is what produced the abort on teardown.
 REFII_HOST_ABI_EXPORT int RefiiHostShutdown(char* out, std::size_t capacity) {
     HostedGuest& hosted = Hosted();
+
+    g_arm_watcher_stop = true;
+    if (g_arm_watcher.joinable()) {
+        g_arm_watcher.join();
+    }
 
     if (!hosted.initialized) {
         WriteOut("not initialized", out, capacity);

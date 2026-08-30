@@ -19,7 +19,6 @@ public partial class Engine_PostFxSunSources : Node
         public Vector3 Colour;
         public Vector2 Half;
         public float Distance;
-        public float Exposure;
         public int Mode;
         public bool Active;
     }
@@ -155,7 +154,6 @@ public partial class Engine_PostFxSunSources : Node
                 element[11] * Engine_CelestialElements.SunBeamsSizeScale,
                 element[12] * Engine_CelestialElements.SunBeamsSizeScale),
             Distance = Engine_CelestialElements.SunBeamsDistance,
-            Exposure = 1.0f,
             Mode = BeamsMode,
         };
 
@@ -170,7 +168,6 @@ public partial class Engine_PostFxSunSources : Node
                 element[6] * Engine_CelestialElements.SunDiscSizeScale,
                 element[6] * Engine_CelestialElements.SunDiscSizeScale),
             Distance = Engine_CelestialElements.SunDiscDistance,
-            Exposure = Engine_CelestialElements.Exposure,
             Mode = DiscMode,
         };
     }

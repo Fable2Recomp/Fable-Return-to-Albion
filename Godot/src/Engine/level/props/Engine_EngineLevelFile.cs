@@ -34,6 +34,15 @@ public sealed class EngineLevelBlock
 
     public uint Type { get; set; }
 
+    /// <summary>
+    /// The block's 64-bit id (type-21 only; type-2 carries one per instance instead).
+    ///
+    /// This is the join into the <c>.lmp</c>: chapter2posh's 158 type-21 blocks match its 158
+    /// u32-array entries key-for-key, and each array holds exactly one D3DCOLOR per loop1
+    /// instance — the authored per-instance foliage bake.
+    /// </summary>
+    public ulong Hash { get; set; }
+
     public string ModelPath { get; set; } = string.Empty;
 
     public string ShadowModelPath { get; set; } = string.Empty;
@@ -304,11 +313,13 @@ public static class Engine_EngineLevelFile
         block.ModelPath = modelPath;
         block.LodModelPath = lodPath;
 
-        if (!reader.Skip(8 + 1 + 1))
+        if (!reader.U64(out ulong blockHash) || !reader.Skip(1 + 1))
         {
             file.Error = "truncated reading type-21 hash+flags";
             return false;
         }
+
+        block.Hash = blockHash;
 
         if (!reader.U32(out uint loop1Count))
         {
