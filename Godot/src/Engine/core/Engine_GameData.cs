@@ -8,13 +8,11 @@ namespace Refii.Core;
 /// <summary>
 /// Where the UI tools look for the game data.
 ///
-/// The engine's own answer comes first and is the one that matters — the addon resolves
-/// <c>&lt;project&gt;/build/assets/game</c>, staged there by <c>REFII_STAGE_GODOT_BUILD</c>,
-/// falling back to <c>&lt;repo&gt;/assets/game</c>. This mirrors that, then adds the
-/// locations a DEV tree actually has, because in a source checkout neither of the
-/// engine's two locations is populated: nothing has been staged into
-/// <c>Godot/build</c>, and <c>assets/game</c> carries no banks. The data lives under a
-/// build output.
+/// The shared resolution, used by the bnk_mount addon and the UI tools alike: the
+/// per-arch app root first, then the legacy flat <c>&lt;project&gt;/build/assets/game</c>
+/// and <c>&lt;repo&gt;/assets/game</c>, then the locations a DEV tree actually has,
+/// because in a source checkout none of the shipped locations is populated. The data
+/// lives under a build output.
 ///
 /// The test is "carries banks", not "exists": an empty <c>assets/game</c> would
 /// otherwise win over a populated staged copy and mount nothing.

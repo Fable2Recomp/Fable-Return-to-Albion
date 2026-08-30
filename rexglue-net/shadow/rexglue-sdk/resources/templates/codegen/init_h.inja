@@ -41,6 +41,7 @@
 #include <cassert>
 #include <csetjmp>
 #include <cstdlib>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
@@ -244,18 +245,30 @@ extern PPCFuncMapping PPCFuncMappings[];
 // Setjmp/Longjmp
 //=============================================================================
 
-inline std::unordered_map<u32, jmp_buf>& get_jmp_buf_map() {
-  static thread_local std::unordered_map<u32, jmp_buf> map;
+struct RexJmpBufSlot {
+  alignas(64) jmp_buf buf;
+};
+
+inline std::unordered_map<u32, std::unique_ptr<RexJmpBufSlot>>& get_jmp_buf_map() {
+  static thread_local std::unordered_map<u32, std::unique_ptr<RexJmpBufSlot>> map;
   return map;
 }
 
-#define ppc_setjmp(guest_buf_addr) (setjmp(::get_jmp_buf_map()[(guest_buf_addr)]))
+inline jmp_buf& get_jmp_buf(u32 guest_buf_addr) {
+  auto& slot = get_jmp_buf_map()[guest_buf_addr];
+  if (!slot) {
+    slot.reset(new RexJmpBufSlot());
+  }
+  return slot->buf;
+}
+
+#define ppc_setjmp(guest_buf_addr) (setjmp(::get_jmp_buf(guest_buf_addr)))
 
 [[noreturn]] inline void ppc_longjmp(u32 guest_buf_addr, int val) {
   auto& map = get_jmp_buf_map();
   auto it = map.find(guest_buf_addr);
-  if (it != map.end()) {
-    longjmp(it->second, val);
+  if (it != map.end() && it->second) {
+    longjmp(it->second->buf, val);
   }
   std::abort();
 }

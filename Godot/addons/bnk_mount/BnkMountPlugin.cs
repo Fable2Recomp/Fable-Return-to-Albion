@@ -2251,13 +2251,13 @@ public partial class BnkMountPlugin : EditorPlugin
 
     private static string ResolveGameDirectory()
     {
-        string projectDir = ProjectSettings.GlobalizePath("res://");
-        string staged = Path.Combine(projectDir, "build", "assets", "game");
-        if (Directory.Exists(staged))
+        string resolved = Refii.Core.Engine_GameData.Resolve();
+        if (resolved.Length != 0)
         {
-            return staged;
+            return resolved;
         }
 
+        string projectDir = ProjectSettings.GlobalizePath("res://");
         string repoRoot = Path.GetFullPath(Path.Combine(projectDir, ".."));
         return Path.Combine(repoRoot, "assets", "game");
     }
