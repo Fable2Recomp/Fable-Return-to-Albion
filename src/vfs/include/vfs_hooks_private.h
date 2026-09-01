@@ -192,7 +192,9 @@ inline uint64_t GuestTickPumpObserveTick() {
 inline uint64_t GuestTickPumpDrained() { return refii_bridge_guest_tick_pump_drained(); }
 
 /// Gives the calling thread an alternate signal stack, once (guest_tick_pump_state.cpp).
-void EnsureAlternateSignalStack();
+inline void EnsureAlternateSignalStack() {
+  refii_bridge_ensure_alternate_signal_stack();
+}
 inline void GuestTickPumpNoteRan() { refii_bridge_guest_tick_pump_note_ran(); }
 
 /// Takes the whole queue aside and answers how many actions came with it.

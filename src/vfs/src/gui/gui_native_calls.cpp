@@ -49,7 +49,13 @@ constexpr std::size_t kMaxPending = 512u;
 
 }  // namespace
 
-void NoteGuiNativeRegistration(uint32_t implementation, std::string name) {
+extern "C" void refii_bridge_note_gui_native_registration(uint32_t implementation,
+                                                          const char* name_data,
+                                                          size_t name_length) {
+    std::string name = name_data != nullptr && name_length != 0u
+                           ? std::string(name_data, name_length)
+                           : std::string();
+
     if (implementation == 0 || name.empty()) {
         return;
     }
@@ -80,17 +86,35 @@ void NoteGuiNativeRegistration(uint32_t implementation, std::string name) {
     g_registered.store(true, std::memory_order_release);
 }
 
-const std::string* GuiNativeNameFor(uint32_t implementation) {
+extern "C" int32_t refii_bridge_gui_native_name_for(uint32_t implementation, char* out,
+                                                    size_t capacity, size_t* out_length) {
+    if (out_length != nullptr) {
+        *out_length = 0;
+    }
     if (implementation == 0 || !g_registered.load(std::memory_order_acquire)) {
-        return nullptr;
+        return 0;
     }
 
     std::lock_guard<std::mutex> lock(NamesMutex());
     auto found = Names().find(implementation);
-    return found == Names().end() || found->second.empty() ? nullptr : &found->second.front();
+    if (found == Names().end() || found->second.empty()) {
+        return 0;
+    }
+
+    const std::string& name = found->second.front();
+    if (out_length != nullptr) {
+        *out_length = name.size();
+    }
+    if (out != nullptr && capacity != 0u) {
+        const size_t copy = capacity < name.size() ? capacity : name.size();
+        std::memcpy(out, name.data(), copy);
+    }
+    return 1;
 }
 
-bool GuiNativesRegistered() { return g_registered.load(std::memory_order_acquire); }
+extern "C" int32_t refii_bridge_gui_natives_registered() {
+    return g_registered.load(std::memory_order_acquire) ? 1 : 0;
+}
 
 namespace {
 
@@ -132,20 +156,23 @@ void SetGuiNativeAnswer(const std::string& name, GuiNativeAnswerKind kind, uint3
     answer.bits = bits;
 }
 
-GuiNativeAnswerKind GuiNativeAnswerFor(uint32_t implementation, uint32_t* out_bits) {
+extern "C" uint32_t refii_bridge_gui_native_answer_for(uint32_t implementation,
+                                                       uint32_t* out_bits) {
+    const uint32_t none = static_cast<uint32_t>(GuiNativeAnswerKind::kNone);
+
     if (implementation == 0 || !g_registered.load(std::memory_order_acquire)) {
-        return GuiNativeAnswerKind::kNone;
+        return none;
     }
 
     std::lock_guard<std::mutex> names(NamesMutex());
     auto found = Names().find(implementation);
     if (found == Names().end()) {
-        return GuiNativeAnswerKind::kNone;
+        return none;
     }
 
     std::lock_guard<std::mutex> lock(AnswersMutex());
     if (Answers().empty()) {
-        return GuiNativeAnswerKind::kNone;
+        return none;
     }
 
     // Every name bound to this implementation: aliases are one function and the call cannot
@@ -156,18 +183,25 @@ GuiNativeAnswerKind GuiNativeAnswerFor(uint32_t implementation, uint32_t* out_bi
             if (out_bits != nullptr) {
                 *out_bits = answer->second.bits;
             }
-            return answer->second.kind;
+            return static_cast<uint32_t>(answer->second.kind);
         }
     }
 
-    return GuiNativeAnswerKind::kNone;
+    return none;
 }
 
-void NoteGuiNativeEntry(uint32_t implementation) { t_entry = implementation; }
+extern "C" void refii_bridge_note_gui_native_entry(uint32_t implementation) {
+    t_entry = implementation;
+}
 
-uint32_t CurrentGuiNativeEntry() { return t_entry; }
+extern "C" uint32_t refii_bridge_current_gui_native_entry() { return t_entry; }
 
-void PostGuiNativeCall(GuiNativeCall call) {
+extern "C" void refii_bridge_post_gui_native_call(const uint8_t* data, size_t length) {
+    GuiNativeCall call;
+    if (!blob::ReadCall(data, length, call)) {
+        return;
+    }
+
     call.sequence = g_intercepted.fetch_add(1, std::memory_order_relaxed) + 1u;
 
     std::lock_guard<std::mutex> lock(PendingMutex());

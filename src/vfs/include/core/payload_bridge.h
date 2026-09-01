@@ -150,6 +150,41 @@ int32_t refii_bridge_vfs_resolve_refii_replacement_path(
     char* root_name, size_t root_name_capacity, size_t* out_root_name_length,
     int32_t* out_exists, int32_t* out_is_directory);
 
+//
+int32_t refii_bridge_read_host_asset(const char* path, size_t length,
+                                     uint8_t* out, uint32_t capacity, uint32_t* out_size);
+int32_t refii_bridge_read_host_asset_prefix(const char* path, size_t length, uint32_t count,
+                                            uint8_t* out, uint32_t capacity,
+                                            uint32_t* out_size);
+int32_t refii_bridge_host_asset_size(const char* path, size_t length, uint32_t* out_size);
+size_t refii_bridge_host_asset_name_for_hash(uint32_t hash, char* out, size_t capacity);
+
+//
+void refii_bridge_publish_hero_derived(const void* sampled);
+void refii_bridge_hero_derived_snapshot(void* out);
+void refii_bridge_publish_quests(const void* entries, uint32_t count);
+uint32_t refii_bridge_requested_world_map_region(void);
+void refii_bridge_publish_world_map_region(const void* region);
+
+void refii_bridge_note_gui_native_registration(uint32_t implementation,
+                                               const char* name, size_t length);
+int32_t refii_bridge_gui_native_name_for(uint32_t implementation,
+                                         char* out, size_t capacity, size_t* out_length);
+int32_t refii_bridge_gui_natives_registered(void);
+uint32_t refii_bridge_gui_native_answer_for(uint32_t implementation, uint32_t* out_bits);
+void refii_bridge_note_gui_native_entry(uint32_t implementation);
+uint32_t refii_bridge_current_gui_native_entry(void);
+
+void refii_bridge_post_gui_native_call(const uint8_t* blob, size_t length);
+
+void refii_bridge_note_gui_element_change(const void* change);
+
+void refii_bridge_stage_menu_attribute(const char* name, size_t name_length,
+                                       const char* text, size_t text_length,
+                                       float number, int32_t is_number);
+
+void refii_bridge_ensure_alternate_signal_stack(void);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

@@ -1,7 +1,9 @@
 #include "core/host_asset_reader.h"
 
 #include <atomic>
+#include <cstring>
 #include <string>
+#include <vector>
 
 #include <rex/logging.h>
 
@@ -26,6 +28,39 @@ constexpr uint32_t kMaxAssetBytes = 256u * 1024u * 1024u;
 
 /// Stack-sized path buffer; a name that does not fit is reported as a miss.
 constexpr uint32_t kMaxAssetNameBytes = 512u;
+
+std::string Terminated(const char* path, size_t length) {
+  if (path == nullptr || length == 0u) {
+    return {};
+  }
+  return std::string(path, length);
+}
+
+HostAssetReaderFn ReaderOrCount() {
+  const HostAssetReaderFn reader = g_reader.load(std::memory_order_acquire);
+  if (reader == nullptr) {
+    g_asks_before_ready.fetch_add(1, std::memory_order_relaxed);
+  }
+  return reader;
+}
+
+bool QuerySize(HostAssetReaderFn reader, const std::string& path, uint32_t& out_size) {
+  out_size = 0;
+  if (reader == nullptr || path.empty()) {
+    return false;
+  }
+
+  uint32_t size = 0;
+  if (reader(path.c_str(), nullptr, 0u, &size) == 0) {
+    return false;
+  }
+  if (size > kMaxAssetBytes) {
+    return false;
+  }
+
+  out_size = size;
+  return true;
+}
 
 }  // namespace
 
@@ -66,14 +101,136 @@ void SetHostAssetNameResolver(HostAssetNameForHashFn resolver) {
   }
 }
 
-std::string HostAssetNameForHash(uint32_t hash) {
+bool HostAssetReaderReady() {
+  return g_reader.load(std::memory_order_acquire) != nullptr;
+}
+
+extern "C" int32_t refii_bridge_host_asset_size(const char* path, size_t length,
+                                                uint32_t* out_size) {
+  uint32_t size = 0;
+  const bool ok = QuerySize(ReaderOrCount(), Terminated(path, length), size);
+  if (out_size != nullptr) {
+    *out_size = size;
+  }
+  return ok ? 1 : 0;
+}
+
+extern "C" int32_t refii_bridge_read_host_asset(const char* path, size_t length,
+                                                uint8_t* out, uint32_t capacity,
+                                                uint32_t* out_size) {
+  if (out_size != nullptr) {
+    *out_size = 0;
+  }
+
+  const HostAssetReaderFn reader = ReaderOrCount();
+  const std::string terminated = Terminated(path, length);
+  uint32_t size = 0;
+  if (!QuerySize(reader, terminated, size)) {
+    return 0;
+  }
+
+  if (size == 0u) {
+    return 1;
+  }
+
+  if (out == nullptr || capacity == 0u) {
+    if (out_size != nullptr) {
+      *out_size = size;
+    }
+    return 1;
+  }
+
+  uint32_t written = 0;
+  if (capacity >= size) {
+    if (reader(terminated.c_str(), out, size, &written) == 0) {
+      return 0;
+    }
+    if (written > size) {
+      return 0;
+    }
+  } else {
+    std::vector<uint8_t> whole(size);
+    if (reader(terminated.c_str(), whole.data(), size, &written) == 0) {
+      return 0;
+    }
+    if (written > size) {
+      return 0;
+    }
+    if (written > capacity) {
+      written = capacity;
+    }
+    std::memcpy(out, whole.data(), written);
+  }
+
+  if (out_size != nullptr) {
+    *out_size = written;
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_bridge_read_host_asset_prefix(const char* path, size_t length,
+                                                       uint32_t count, uint8_t* out,
+                                                       uint32_t capacity,
+                                                       uint32_t* out_size) {
+  if (out_size != nullptr) {
+    *out_size = 0;
+  }
+
+  if (count == 0u) {
+    return HostAssetReaderReady() ? 1 : 0;
+  }
+
+  const HostAssetReaderFn reader = ReaderOrCount();
+  const std::string terminated = Terminated(path, length);
+  uint32_t size = 0;
+  if (!QuerySize(reader, terminated, size)) {
+    return 0;
+  }
+
+  // Shorter than asked is not a failure: a sniff on a file smaller than the window is a real
+  // answer.
+  const uint32_t take = count < size ? count : size;
+  if (take == 0u) {
+    return 1;
+  }
+
+  if (out == nullptr || capacity == 0u) {
+    if (out_size != nullptr) {
+      *out_size = take;
+    }
+    return 1;
+  }
+
+  std::vector<uint8_t> whole(size);
+  uint32_t written = 0;
+  if (reader(terminated.c_str(), whole.data(), size, &written) == 0) {
+    return 0;
+  }
+  if (written > size) {
+    return 0;
+  }
+
+  uint32_t copy = written < take ? written : take;
+  if (copy > capacity) {
+    copy = capacity;
+  }
+  std::memcpy(out, whole.data(), copy);
+
+  if (out_size != nullptr) {
+    *out_size = copy;
+  }
+  return 1;
+}
+
+extern "C" size_t refii_bridge_host_asset_name_for_hash(uint32_t hash, char* out,
+                                                        size_t capacity) {
   const HostAssetNameForHashFn resolver = g_name_for_hash.load(std::memory_order_acquire);
   if (resolver == nullptr) {
     g_hash_asks_before_ready.fetch_add(1, std::memory_order_relaxed);
-    return {};
+    return 0;
   }
   if (hash == 0u) {
-    return {};
+    return 0;
   }
 
   char name[kMaxAssetNameBytes];
@@ -81,103 +238,15 @@ std::string HostAssetNameForHash(uint32_t hash) {
 
   // A length that fills the buffer is a miss, not a name: half a path names a different file.
   if (written == 0u || written >= kMaxAssetNameBytes) {
-    return {};
+    return 0;
   }
 
-  return std::string(name, written);
-}
-
-bool HostAssetReaderReady() {
-  return g_reader.load(std::memory_order_acquire) != nullptr;
-}
-
-bool ReadHostAsset(std::string_view path, std::vector<uint8_t>& out) {
-  out.clear();
-
-  const HostAssetReaderFn reader = g_reader.load(std::memory_order_acquire);
-  if (reader == nullptr) {
-    g_asks_before_ready.fetch_add(1, std::memory_order_relaxed);
-    return false;
-  }
-  if (path.empty()) {
-    return false;
+  if (out != nullptr && capacity != 0u) {
+    const size_t copy = capacity < written ? capacity : written;
+    std::memcpy(out, name, copy);
   }
 
-  // NUL-terminated, because the boundary is a C ABI and `string_view` is not.
-  const std::string terminated(path);
-
-  // Size first. A zero-length asset is a real answer: success with nothing in `out`.
-  uint32_t size = 0;
-  if (reader(terminated.c_str(), nullptr, 0u, &size) == 0) {
-    return false;
-  }
-
-  if (size == 0u) {
-    return true;
-  }
-
-  if (size > kMaxAssetBytes) {
-    return false;
-  }
-
-  out.resize(size);
-  uint32_t written = 0;
-  if (reader(terminated.c_str(), out.data(), size, &written) == 0) {
-    out.clear();
-    return false;
-  }
-
-  // Shorter is not a failure (the mount changed between the two reads); longer cannot be
-  // trusted at all.
-  if (written > size) {
-    out.clear();
-    return false;
-  }
-
-  out.resize(written);
-  return true;
-}
-
-bool HostAssetSize(std::string_view path, uint32_t& out_size) {
-  out_size = 0;
-
-  const HostAssetReaderFn reader = g_reader.load(std::memory_order_acquire);
-  if (reader == nullptr) {
-    g_asks_before_ready.fetch_add(1, std::memory_order_relaxed);
-    return false;
-  }
-  if (path.empty()) {
-    return false;
-  }
-
-  const std::string terminated(path);
-  uint32_t size = 0;
-  if (reader(terminated.c_str(), nullptr, 0u, &size) == 0) {
-    return false;
-  }
-
-  out_size = size;
-  return true;
-}
-
-bool ReadHostAssetPrefix(std::string_view path, uint32_t count,
-                         std::vector<uint8_t>& out) {
-  out.clear();
-  if (count == 0u) {
-    return HostAssetReaderReady();
-  }
-
-  std::vector<uint8_t> whole;
-  if (!ReadHostAsset(path, whole)) {
-    return false;
-  }
-
-  // Shorter than asked is not a failure: a sniff on a file smaller than the window is a real
-  // answer.
-  const uint32_t take =
-      count < whole.size() ? count : static_cast<uint32_t>(whole.size());
-  out.assign(whole.begin(), whole.begin() + take);
-  return true;
+  return written;
 }
 
 }  // namespace refii::vfs

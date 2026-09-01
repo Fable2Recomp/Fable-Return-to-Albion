@@ -43,7 +43,7 @@ namespace refii::vfs {
 /// overflowed cannot have a handler frame pushed onto it, so the kernel kills the process with
 /// no handler run and no dmesg line. Guest threads are created without one; the tick pump and
 /// the SwitchToThread hook call this so each gets its own.
-void EnsureAlternateSignalStack() {
+extern "C" void refii_bridge_ensure_alternate_signal_stack() {
 #ifndef _WIN32
   thread_local bool installed = false;
   if (installed) {
@@ -350,23 +350,34 @@ uint32_t g_quest_count = 0;
 
 }  // namespace
 
-void PublishHeroDerived(const HeroDerived& sampled) {
+extern "C" void refii_bridge_publish_hero_derived(const void* sampled) {
+  if (sampled == nullptr) {
+    return;
+  }
   std::lock_guard<std::mutex> lock(g_hero_mutex);
-  g_hero = sampled;
+  g_hero = *static_cast<const HeroDerived*>(sampled);
 }
 
-HeroDerived HeroDerivedSnapshot() {
+extern "C" void refii_bridge_hero_derived_snapshot(void* out) {
+  if (out == nullptr) {
+    return;
+  }
   std::lock_guard<std::mutex> lock(g_hero_mutex);
-  return g_hero;
+  *static_cast<HeroDerived*>(out) = g_hero;
 }
 
 void RequestWorldMapRegion(uint32_t index) { g_region_wanted.store(index); }
 
-uint32_t RequestedWorldMapRegion() { return g_region_wanted.load(); }
+extern "C" uint32_t refii_bridge_requested_world_map_region() {
+  return g_region_wanted.load();
+}
 
-void PublishWorldMapRegion(const WorldMapRegion& region) {
+extern "C" void refii_bridge_publish_world_map_region(const void* region) {
+  if (region == nullptr) {
+    return;
+  }
   std::lock_guard<std::mutex> lock(g_region_mutex);
-  g_region = region;
+  g_region = *static_cast<const WorldMapRegion*>(region);
 }
 
 WorldMapRegion WorldMapRegionSnapshot() {
@@ -374,11 +385,16 @@ WorldMapRegion WorldMapRegionSnapshot() {
   return g_region;
 }
 
-void PublishQuests(const QuestEntry* entries, uint32_t count) {
+extern "C" void refii_bridge_publish_quests(const void* entries, uint32_t count) {
+  const QuestEntry* typed = static_cast<const QuestEntry*>(entries);
   std::lock_guard<std::mutex> lock(g_quest_mutex);
   g_quest_count = count < kMaxCompletedQuests ? count : kMaxCompletedQuests;
+  if (typed == nullptr) {
+    g_quest_count = 0;
+    return;
+  }
   for (uint32_t i = 0; i < g_quest_count; ++i) {
-    g_quests[i] = entries[i];
+    g_quests[i] = typed[i];
   }
 }
 

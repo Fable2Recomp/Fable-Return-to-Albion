@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "core/payload_bridge.h"
+
 namespace refii::vfs {
 
 /// One state change, as its writer stated it.
@@ -36,7 +38,9 @@ struct GuiElementChange {
 };
 
 /// Records one change. Called from the writers, on the guest's own thread.
-void NoteGuiElementChange(GuiElementChange change);
+inline void NoteGuiElementChange(GuiElementChange change) {
+  refii_bridge_note_gui_element_change(&change);
+}
 
 /// Takes every recorded change. Empties the queue.
 std::vector<GuiElementChange> TakeGuiElementChanges();

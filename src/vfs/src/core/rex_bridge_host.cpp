@@ -10,6 +10,8 @@
 // std::string on THIS side's heap, which is where rex::cvar's getter has to return one.
 #include "core/payload_bridge_string.h"
 
+#include <cstring>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -80,6 +82,29 @@ extern "C" int32_t refii_bridge_rex_mmio_check_store(void* handler, uint32_t add
 
 extern "C" void* refii_bridge_rex_runtime_instance(void) { return ::rex::Runtime::instance(); }
 
+extern "C" size_t refii_bridge_rex_runtime_root(uint32_t kind, char* out, size_t capacity) {
+  const ::rex::Runtime* runtime = ::rex::Runtime::instance();
+  if (runtime == nullptr) {
+    return 0;
+  }
+
+  const std::filesystem::path* root = nullptr;
+  switch (kind) {
+    case 0: root = &runtime->game_data_root(); break;
+    case 1: root = &runtime->user_data_root(); break;
+    case 2: root = &runtime->update_data_root(); break;
+    case 3: root = &runtime->cache_root(); break;
+    default: return 0;
+  }
+
+  const std::u8string utf8 = root->u8string();
+  if (out != nullptr && capacity != 0u) {
+    const size_t copy = capacity < utf8.size() ? capacity : utf8.size();
+    std::memcpy(out, utf8.data(), copy);
+  }
+  return utf8.size();
+}
+
 extern "C" void* refii_bridge_rex_kernel_state(void) { return ::rex::system::kernel_state(); }
 
 extern "C" void* refii_bridge_rex_xthread_current(void) {
@@ -121,6 +146,18 @@ extern "C" void refii_bridge_rex_logger_flush(void* logger) {
 
 extern "C" void* refii_bridge_rex_global_critical_region_mutex(void) {
   return &::rex::thread::global_critical_region::mutex();
+}
+
+extern "C" void refii_bridge_rex_global_critical_region_lock(void) {
+  ::rex::thread::global_critical_region::mutex().lock();
+}
+
+extern "C" int32_t refii_bridge_rex_global_critical_region_try_lock(void) {
+  return ::rex::thread::global_critical_region::mutex().try_lock() ? 1 : 0;
+}
+
+extern "C" void refii_bridge_rex_global_critical_region_unlock(void) {
+  ::rex::thread::global_critical_region::mutex().unlock();
 }
 
 // CVAR REGISTRATION FOR THE PAYLOAD. Its cvars have to reach the same registry the launcher

@@ -6,6 +6,8 @@
 
 #include <cstdint>
 
+#include "core/payload_bridge.h"
+
 namespace refii::vfs {
 
 
@@ -100,18 +102,36 @@ struct HeroDerived {
 };
 
 /// Published by the pump on the guest thread; read by the host bridge on Godot's.
-void PublishHeroDerived(const HeroDerived& sampled);
-HeroDerived HeroDerivedSnapshot();
+inline void PublishHeroDerived(const HeroDerived& sampled) {
+  refii_bridge_publish_hero_derived(&sampled);
+}
+
+inline HeroDerived HeroDerivedSnapshot() {
+  HeroDerived out;
+  refii_bridge_hero_derived_snapshot(&out);
+  return out;
+}
 
 /// The completed-quest list, same contract; the store is fixed-size.
 constexpr uint32_t kMaxCompletedQuests = 256;
-void PublishQuests(const QuestEntry* entries, uint32_t count);
+
+inline void PublishQuests(const QuestEntry* entries, uint32_t count) {
+  refii_bridge_publish_quests(entries, count);
+}
+
 uint32_t QuestSnapshot(QuestEntry* out, uint32_t capacity);
 
 /// Which region the host wants sampled; the pump answers for that one only.
 void RequestWorldMapRegion(uint32_t index);
-uint32_t RequestedWorldMapRegion();
-void PublishWorldMapRegion(const WorldMapRegion& region);
+
+inline uint32_t RequestedWorldMapRegion() {
+  return refii_bridge_requested_world_map_region();
+}
+
+inline void PublishWorldMapRegion(const WorldMapRegion& region) {
+  refii_bridge_publish_world_map_region(&region);
+}
+
 WorldMapRegion WorldMapRegionSnapshot();
 
 }  // namespace refii::vfs

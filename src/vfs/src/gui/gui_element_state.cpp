@@ -43,7 +43,12 @@ constexpr std::size_t kMaxPending = 65536u;
 
 }  // namespace
 
-void NoteGuiElementChange(GuiElementChange change) {
+extern "C" void refii_bridge_note_gui_element_change(const void* changed) {
+    if (changed == nullptr) {
+        return;
+    }
+    GuiElementChange change = *static_cast<const GuiElementChange*>(changed);
+
     std::lock_guard<std::mutex> lock(Mutex());
     g_recorded.fetch_add(1, std::memory_order_relaxed);
 

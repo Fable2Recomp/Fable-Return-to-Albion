@@ -37,7 +37,17 @@ constexpr std::size_t kMaxStaged = 64u;
 
 }  // namespace
 
-void StageMenuAttribute(std::string name, std::string text, float number, bool is_number) {
+extern "C" void refii_bridge_stage_menu_attribute(const char* name_data, size_t name_length,
+                                                  const char* text_data, size_t text_length,
+                                                  float number, int32_t is_number_flag) {
+    std::string name = name_data != nullptr && name_length != 0u
+                           ? std::string(name_data, name_length)
+                           : std::string();
+    std::string text = text_data != nullptr && text_length != 0u
+                           ? std::string(text_data, text_length)
+                           : std::string();
+    const bool is_number = is_number_flag != 0;
+
     if (name.empty()) {
         return;
     }

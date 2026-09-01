@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "core/payload_bridge.h"
+
 namespace refii::vfs {
 
 /// One staged attribute, as the C++ handed it to the stager.
@@ -35,7 +37,11 @@ struct MenuChunkCall {
 };
 
 /// Records a staged attribute. Called from the two stagers.
-void StageMenuAttribute(std::string name, std::string text, float number, bool is_number);
+inline void StageMenuAttribute(std::string name, std::string text, float number,
+                               bool is_number) {
+  refii_bridge_stage_menu_attribute(name.data(), name.size(), text.data(), text.size(),
+                                    number, is_number ? 1 : 0);
+}
 
 /// Records a chunk and consumes the staged bag; a leftover would attach to the next chunk.
 void RunMenuChunk(std::string chunk, uint32_t presentation);

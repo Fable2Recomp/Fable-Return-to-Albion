@@ -3,6 +3,9 @@
 #include "core/native_lua_rexglue_compat.h"
 #include "lua_script_paths.h"
 
+#include "core/payload_bridge_string.h"
+#include "core/rex_payload_bridge.h"
+
 #include <algorithm>
 #include <cstring>
 #include <cctype>
@@ -94,6 +97,12 @@ BytecodeHashMap& GetBytecodeHashMap() {
 std::once_flag& GetBytecodeHashMapInitFlag() {
   static std::once_flag init_flag;
   return init_flag;
+}
+
+///
+std::string PathToUtf8(const std::filesystem::path& path) {
+  const std::u8string utf8 = path.generic_u8string();
+  return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
 }
 
 bool StartsWith(std::string_view value, std::string_view prefix) {
@@ -209,7 +218,7 @@ std::filesystem::path ResolveCaseInsensitivePath(const std::filesystem::path& ro
     const std::string lowered_component = NormalizeLuaScriptKey(std::string(component));
     for (std::filesystem::directory_iterator iterator(current, error), end; iterator != end;
          iterator.increment(error)) {
-      if (NormalizeLuaScriptKey(iterator->path().filename().string()) == lowered_component) {
+      if (NormalizeLuaScriptKey(PathToUtf8(iterator->path().filename())) == lowered_component) {
         match = iterator->path();
         break;
       }
@@ -352,16 +361,21 @@ std::string ReadLuaBytecodeSourcePath(uint8_t* base, const NativeScriptRequest& 
 
 std::filesystem::path GetLuaModWorkspaceRoot() {
   auto get_default_workspace_base = []() -> std::filesystem::path {
-    const auto* runtime = rex::Runtime::instance();
-    if (runtime == nullptr) {
+    const std::string encoded = refii::bridge::TakeString([](char* out, size_t capacity) {
+      return refii_bridge_rex_runtime_root(0u, out, capacity);
+    });
+    if (encoded.empty()) {
       return {};
     }
 
-    std::filesystem::path base = runtime->game_data_root();
-    if (NormalizeLuaScriptKey(base.filename().generic_string()) == "data") {
+    std::u8string utf8(encoded.size(), u8'\0');
+    std::memcpy(utf8.data(), encoded.data(), encoded.size());
+    std::filesystem::path base(utf8);
+
+    if (NormalizeLuaScriptKey(PathToUtf8(base.filename())) == "data") {
       base = base.parent_path();
     }
-    if (NormalizeLuaScriptKey(base.filename().generic_string()) == "game") {
+    if (NormalizeLuaScriptKey(PathToUtf8(base.filename())) == "game") {
       base = base.parent_path();
     }
     return base;
@@ -782,7 +796,7 @@ const std::unordered_map<std::string, std::string>& GetLuaWorkspaceManifest() {
     }
 
     REXLOG_INFO("Refii Lua workspace manifest: {} entries from {}", entries.size(),
-                (root / "_manifest.tsv").string());
+                PathToUtf8(root / "_manifest.tsv"));
     return entries;
   }();
   return manifest;
@@ -992,7 +1006,7 @@ extern "C" size_t refii_bridge_lua_read_native_script_key(uint8_t* base,
 extern "C" size_t refii_bridge_lua_resolve_mod_override_path(const char* script_key,
                                                              size_t length, char* out,
                                                              size_t capacity) {
-  return LuaCopyOut(ResolveLuaModOverridePathImpl(std::string_view(script_key, length)).string(),
+  return LuaCopyOut(PathToUtf8(ResolveLuaModOverridePathImpl(std::string_view(script_key, length))),
                     out, capacity);
 }
 
