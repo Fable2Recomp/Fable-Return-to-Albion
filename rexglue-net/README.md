@@ -2,7 +2,7 @@
 
 **Status 2026-07-19: the shadow rebase described below is DONE.** `shadow/`
 now targets the netplay SDK; select this tree with
-`-DREFII_REXGLUE_NETPLAY=ON` (see "Building against this tree" below).
+This is the only ReXGlue tree the build uses (see "Building against this tree" below).
 Highlights of the rebase:
 
 - The 6 colliding shadow files were 3-way merged (RexNet options/overlay/
@@ -20,7 +20,7 @@ Highlights of the rebase:
   the SDK `AchievementManager` (refii ships its own system in
   `src/achievement/`).
 
-Same layout as `rexglue/`, but carrying the **netplay** SDK so the Fable 2
+Carrying the **netplay** SDK so the Fable 2
 shadow changes can be adapted against it without touching the working
 v0.8.0 setup:
 
@@ -85,7 +85,7 @@ One switch selects the tree (it repoints the SDK/shadow cache vars, defaults
 `REXGLUE_ENABLE_REXNET=ON`, and uses the SDL entry point):
 
 ```
-cmake ... -DREFII_REXGLUE_NETPLAY=ON
+cmake ... # rexglue-net/ is the bundled tree; no switch needed
 ```
 
 Flipping the switch on an existing build dir is supported — the shadow

@@ -33,8 +33,8 @@ public static class Platform
 	/// </summary>
 	public static string DevelopmentExecutableRelativePath =>
 		OperatingSystem.IsWindows()
-			? "out/build/win-amd64-relwithdebinfo/refii.exe"
-			: "out/build/linux-amd64-debug/bin/refii";
+			? "out/build/win-amd64-relwithdebinfo-netplay/refii.exe"
+			: "out/build/linux-amd64-debug-netplay/bin/refii";
 
 	public static string? RuntimeDirectoryOverride { get; set; }
 

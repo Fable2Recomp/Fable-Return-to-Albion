@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <string>
 
 #include <rex/input/input.h>
 
@@ -108,9 +109,28 @@ HostInputDriver::~HostInputDriver() = default;
 
 rex::X_STATUS HostInputDriver::Setup() { return X_STATUS_SUCCESS; }
 
-rex::X_RESULT HostInputDriver::GetCapabilities(uint32_t user_index, uint32_t flags,
-                                          rex::input::X_INPUT_CAPABILITIES* out_caps) {
+uint32_t HostInputDriver::SlotOf(rex::input::DeviceId id) {
+    const uint64_t raw = static_cast<uint64_t>(id);
+    return raw >= 1u && raw <= kMaxControllers ? static_cast<uint32_t>(raw - 1u) : kMaxControllers;
+}
+
+void HostInputDriver::EnumerateDevices(std::vector<rex::input::DeviceInfo>& out) {
+    // Every slot, every time, in slot order — see the header. Ordinals are the input
+    // system's to assign; they are left at zero.
+    for (uint32_t slot = 0; slot < kMaxControllers; ++slot) {
+        rex::input::DeviceInfo info;
+        info.id = static_cast<rex::input::DeviceId>(static_cast<uint64_t>(slot) + 1u);
+        info.name = "Host pad " + std::to_string(slot);
+        info.guid = "refii-host-pad-" + std::to_string(slot);
+        info.synthetic = false;
+        out.push_back(std::move(info));
+    }
+}
+
+rex::X_RESULT HostInputDriver::GetDeviceCapabilities(rex::input::DeviceId id, uint32_t flags,
+                                                     rex::input::X_INPUT_CAPABILITIES* out_caps) {
     (void)flags;
+    const uint32_t user_index = SlotOf(id);
     if (user_index >= kMaxControllers || out_caps == nullptr) {
         return X_ERROR_BAD_ARGUMENTS;
     }
@@ -139,8 +159,9 @@ rex::X_RESULT HostInputDriver::GetCapabilities(uint32_t user_index, uint32_t fla
     return X_ERROR_SUCCESS;
 }
 
-rex::X_RESULT HostInputDriver::GetState(uint32_t user_index,
-                                   rex::input::X_INPUT_STATE* out_state) {
+rex::X_RESULT HostInputDriver::GetDeviceState(rex::input::DeviceId id,
+                                              rex::input::X_INPUT_STATE* out_state) {
+    const uint32_t user_index = SlotOf(id);
     if (user_index >= kMaxControllers || out_state == nullptr) {
         return X_ERROR_BAD_ARGUMENTS;
     }
@@ -162,8 +183,9 @@ rex::X_RESULT HostInputDriver::GetState(uint32_t user_index,
     return X_ERROR_SUCCESS;
 }
 
-rex::X_RESULT HostInputDriver::SetState(uint32_t user_index,
-                                   rex::input::X_INPUT_VIBRATION* vibration) {
+rex::X_RESULT HostInputDriver::SetDeviceVibration(rex::input::DeviceId id,
+                                                  rex::input::X_INPUT_VIBRATION* vibration) {
+    const uint32_t user_index = SlotOf(id);
     if (user_index >= kMaxControllers || vibration == nullptr) {
         return X_ERROR_BAD_ARGUMENTS;
     }
@@ -182,17 +204,17 @@ rex::X_RESULT HostInputDriver::SetState(uint32_t user_index,
     return X_ERROR_SUCCESS;
 }
 
-rex::X_RESULT HostInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
-                                       rex::input::X_INPUT_KEYSTROKE* out_keystroke) {
+rex::X_RESULT HostInputDriver::GetDeviceKeystroke(rex::input::DeviceId id, uint32_t flags,
+                                                  rex::input::X_INPUT_KEYSTROKE* out_keystroke) {
     (void)flags;
     if (out_keystroke == nullptr) {
         return X_ERROR_BAD_ARGUMENTS;
     }
 
     // No keystroke translation. This is the pad-to-virtual-key path the dashboard and
-    // text entry use; the guest polls GetState for gameplay. X_ERROR_EMPTY is "nothing
+    // text entry use; the guest polls the state for gameplay. X_ERROR_EMPTY is "nothing
     // queued", which is true and is what the title expects when idle.
-    if (user_index != 0xFF && user_index >= kMaxControllers) {
+    if (SlotOf(id) >= kMaxControllers) {
         return X_ERROR_BAD_ARGUMENTS;
     }
 

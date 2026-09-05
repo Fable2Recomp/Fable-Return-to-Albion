@@ -32,6 +32,8 @@ class WindowSDL final : public Window {
   ~WindowSDL() override;
 
   void* GetNativeWindowHandle() const override;
+  bool SetRelativeMouseMode(bool enable) override;
+  bool WarpMouseToCenter(int32_t& x_out, int32_t& y_out) override;
 
   // Refii shadow addition: Plume's SDL-Vulkan output path needs the raw
   // SDL_Window* to create its surface (native handles are not enough there).
@@ -56,6 +58,7 @@ class WindowSDL final : public Window {
   void ApplyNewMouseCapture() override;
   void ApplyNewMouseRelease() override;
   void ApplyNewCursorVisibility(CursorVisibility old_cursor_visibility) override;
+  void ApplyNewTextInputActive() override;
   void FocusImpl() override;
 
   std::unique_ptr<Surface> CreateSurfaceImpl(Surface::TypeFlags allowed_types) override;
@@ -73,7 +76,12 @@ class WindowSDL final : public Window {
   void DestroySDLWindow();
 
   void ApplyCursorVisibilityNow();
+  void ApplyTextInputActiveNow();
   void RearmCursorAutoHideTimer();
+
+  // Ratio between SDL window coordinates and the physical pixels listeners
+  // expect. Never zero.
+  float GetPixelDensity() const;
 
   SDL_Window* sdl_window_ = nullptr;
   SDL_WindowID sdl_window_id_ = 0;

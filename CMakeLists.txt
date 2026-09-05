@@ -81,6 +81,14 @@ option(REFII_CHECK_SHADERS "Compile every .gdshader as part of the build" OFF)
 option(REFII_DEV_SKIP_GAMECODE_REBUILD
        "DEV ONLY: let the launcher use the CMake-built game module instead of rebuilding" OFF)
 
+# THE PAYLOAD IS THE LAUNCHER'S. It runs codegen and compiles the module with zig from the
+# player's own image on every install, so this build never needs generated/ at all. ON compiles
+# whatever generated/ holds into librefii_generated as a dev instrument (it is what
+# REFII_DEV_SKIP_GAMECODE_REBUILD hands the launcher); it requires a generated/sources.cmake
+# produced by the SAME SDK version as rexglue-net/, or the recomp TUs will not compile.
+option(REFII_BUILD_GENERATED_PAYLOAD
+       "DEV ONLY: compile generated/ into librefii_generated here instead of leaving it to the launcher" OFF)
+
 # Staging is per-architecture, because Godot exports one build per architecture and each
 # needs its OWN native closure. With a single Godot/build the x86_64 and ARM64 builds
 # overwrite each other's DLLs, so only whichever ran last could ever be exported — and the
@@ -150,9 +158,6 @@ include(cmake/refii_vcpkg.cmake)
 include(cmake/refii_payload_sdk.cmake)
 include(cmake/refii_godot_export.cmake)
 include(cmake/refii_optimize_rexglue.cmake)
-# Visible to every refii target (renderer, host, ...) so sources can adapt to
-# the API differences between the stable and netplay SDK trees.
-add_compile_definitions(REFII_REXGLUE_NETPLAY=$<BOOL:${REFII_REXGLUE_NETPLAY}>)
 refii_rexglue_configure_sdk()
 if(NOT REFII_WINDOWS_INSTALL_INPUTS_ONLY)
     refii_rexglue_generate_sources_if_missing()
@@ -295,7 +300,8 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/generated/sources.cmake"
 )
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/sources.cmake" AND
+if(REFII_BUILD_GENERATED_PAYLOAD AND
+   NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/sources.cmake" AND
    NOT REFII_WINDOWS_INSTALL_INPUTS_ONLY)
     message(STATUS
         "generated/sources.cmake is missing; configuring bootstrap build. "
@@ -687,7 +693,7 @@ if(WIN32)
     )
 endif()
 
-if(NOT REFII_WINDOWS_INSTALL_INPUTS_ONLY)
+if(REFII_BUILD_GENERATED_PAYLOAD AND NOT REFII_WINDOWS_INSTALL_INPUTS_ONLY)
     set(REFII_GENERATED_SOURCES
         ${GENERATED_SOURCES}
         ${REFII_HOOK_OBJECTS}
@@ -763,30 +769,27 @@ endif()
 
 # The generated header, precompiled — the single biggest cost in rebuilding this target.
 #
-# refii_init.h is ~61,000 lines and EVERY generated translation unit includes it. Measured
-# (clang 20, one 2 MB source): 6.25s of each TU's 17.7s is parsing that one header, and
-# there are ~148 of them, so it is parsed 148 times for about 15 minutes of pure CPU.
-# Precompiling takes a TU to 10.6s — a 40% cut on the target that dominates a full build.
-#
-# Byte-identical objects, verified by compiling the same TU both ways and comparing, so
-# this buys time and changes nothing about the result. The TUs already include the header;
-# once precompiled that include is free.
+# Every recomp TU includes generated/refii_pch.h (config, SDK headers and the function
+# macros) plus its own per-file declaration header; refii_init.h is the full surface for
+# the init/register TUs and our hooks. Precompiling the pch header takes a TU from 17.7s to
+# 10.6s (clang 20, measured on the old single-header layout) with byte-identical objects.
+# rexglue_apply_recomp_settings() also pins REXGLUE_RECOMP_OPTIONS on the target so the
+# PCH is built in the same EH mode as the TUs that include it.
 #
 # Deliberately NOT applied to refii_hooks: those are our own sources with a different
 # include set, and they are a handful of files rather than 148.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/refii_init.h")
-    target_precompile_headers(refii_generated
-        PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/generated/refii_init.h"
-    )
-    message(STATUS "refii_generated: precompiling generated/refii_init.h (~40% faster rebuilds)")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/refii_pch.h" AND COMMAND rexglue_apply_recomp_settings)
+    rexglue_apply_recomp_settings(refii_generated "${CMAKE_CURRENT_SOURCE_DIR}/generated/refii_pch.h")
+    message(STATUS "refii_generated: precompiling generated/refii_pch.h (~40% faster rebuilds)")
 endif()
 
 unset(REFII_GENERATED_LIBRARY_TYPE)
 else()
+    # No payload built here: the launcher's install-time build takes its include list from
+    # the hooks target, which carries the same payload-shaped include set.
     if(NOT TARGET refii_hooks)
         message(FATAL_ERROR
-            "Windows install-input staging requires the refii_hooks target")
+            "Payload input staging requires the refii_hooks target")
     endif()
     set(REFII_PAYLOAD_INCLUDE_TARGET refii_hooks)
 endif()
@@ -829,7 +832,6 @@ endif()
 target_compile_definitions(refii_host
     PUBLIC
         REFII_SDL3_WINDOW_ENABLED=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>
-        REFII_REXGLUE_NETPLAY=$<BOOL:${REFII_REXGLUE_NETPLAY}>
 )
 # refii_generated is deliberately absent: the payload is built on the player's machine,
 # so linking it here would make a release unbuildable on any machine without a game
@@ -840,6 +842,12 @@ target_link_libraries(refii_host
         refii_payload
         ${REFII_RENDERER_LIBRARIES}
 )
+
+# ReXGlue v0.10's rex/ui/imgui_drawer.h includes rex/ui/style.h, which includes imgui.h — so
+# every TU that reaches rex_app.h needs imgui's headers. The include path only: imgui is an
+# OBJECT library already compiled into rexui, and linking it here would duplicate its objects.
+target_include_directories(refii_host PUBLIC
+    $<TARGET_PROPERTY:imgui,INTERFACE_INCLUDE_DIRECTORIES>)
 
 # host_audio.cpp keeps its ring in refii_vfs so the host bridge reads the same one. The
 # link is PUBLIC because refii_vfs exports its include directories and the standalone
@@ -880,7 +888,9 @@ if(UNIX AND NOT APPLE)
 endif()
 
 refii_apply_recompiled_module_compile_options(refii_core)
-refii_apply_generated_payload_compile_options(refii_generated)
+if(TARGET refii_generated)
+    refii_apply_generated_payload_compile_options(refii_generated)
+endif()
 refii_apply_generated_payload_compile_options(refii_hooks)
 
 

@@ -1850,6 +1850,11 @@ public partial class LauncherApp : Control
 			_installStatus = string.Empty;
 			Log("Game code build complete.");
 		}
+		else if (Unattended)
+		{
+			_unattendedHalted = true;
+			Log("Unattended: the game code build failed; not pressing again.");
+		}
 
 		RefreshState();
 	}
@@ -2030,7 +2035,7 @@ public partial class LauncherApp : Control
 
 		// THE WINDOW IS IN THIS PROCESS, so `GameIsRunning` — which watches for a spawned
 		// executable — never becomes true and cannot end the loop. Ask the window itself.
-		if (Refii.Game.GameWindow.IsOpen)
+		if (Refii.Game.GameWindow.IsOpen || _unattendedHalted)
 		{
 			return;
 		}
@@ -2051,6 +2056,13 @@ public partial class LauncherApp : Control
 
 	/// <summary>Long enough that a state change settles before the next press is considered.</summary>
 	private const double AutoPressInterval = 3.0;
+
+	/// <summary>
+	/// Set when a game-code build fails. Pressing again would only re-run the same generator
+	/// on the same inputs and fail the same way (b170 spun through four zig compiles before
+	/// anyone looked), so an unattended run stops here and leaves the failure on screen.
+	/// </summary>
+	private bool _unattendedHalted;
 
 	private void AskBuildSpeed(string heading, Action<bool> proceed)
 	{

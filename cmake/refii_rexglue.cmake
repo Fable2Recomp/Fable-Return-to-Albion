@@ -1,21 +1,9 @@
 include_guard(GLOBAL)
 
-# Selects which bundled ReXGlue tree the build uses:
-#   OFF - rexglue/     (stable v0.8.0 tree, no online play)
-#   ON  - rexglue-net/ (experimental netplay tree with the RexNet module)
-# The netplay SDK needs a Rust toolchain (corrosion/cargo) and Clang 20+ on
-# Linux; see rexglue-net/README.md.
-option(
-    REFII_REXGLUE_NETPLAY
-    "Build against the experimental netplay ReXGlue SDK (rexglue-net/) instead of the stable tree (rexglue/)"
-    OFF
-)
-
-if(REFII_REXGLUE_NETPLAY)
-    set(_refii_rexglue_tree_root "${CMAKE_CURRENT_SOURCE_DIR}/rexglue-net")
-else()
-    set(_refii_rexglue_tree_root "${CMAKE_CURRENT_SOURCE_DIR}/rexglue")
-endif()
+# The bundled ReXGlue tree is rexglue-net/: the netplay SDK (upstream v0.10 plus the
+# RexNet module). It needs a Rust toolchain (corrosion/cargo) and Clang 20+ on Linux;
+# see rexglue-net/README.md.
+set(_refii_rexglue_tree_root "${CMAKE_CURRENT_SOURCE_DIR}/rexglue-net")
 
 set(REFII_REXGLUE_SDK_SOURCE_DIR
     "${_refii_rexglue_tree_root}/rexglue-sdk"
@@ -41,14 +29,12 @@ set(REFII_REXGLUE_SHADOW_BUILD_DIR
     "Build-local ReXGlue SDK source tree with Refii shadow files overlaid"
 )
 
-# Reconfiguring an existing build dir with a different REFII_REXGLUE_NETPLAY
-# value repoints the (cached) tree paths and rebuilds the shadow overlay from
-# scratch. Note this overrides any explicit -DREFII_REXGLUE_*_DIR passed in
-# the same invocation as the flip; pass those on a follow-up configure.
+# A build dir configured against the old two-tree layout still caches paths under
+# rexglue/; repoint them and rebuild the shadow overlay from scratch.
 if(DEFINED CACHE{REFII_REXGLUE_SELECTED_TREE} AND
    NOT REFII_REXGLUE_SELECTED_TREE STREQUAL _refii_rexglue_tree_root)
     message(STATUS
-        "ReXGlue tree switched to ${_refii_rexglue_tree_root}; "
+        "ReXGlue tree moved to ${_refii_rexglue_tree_root}; "
         "repointing SDK/shadow paths and resetting the shadow overlay"
     )
     set(REFII_REXGLUE_SDK_SOURCE_DIR
@@ -72,17 +58,15 @@ set(REFII_REXGLUE_SELECTED_TREE
     "ReXGlue tree the build dir was last configured against"
 )
 
-if(REFII_REXGLUE_NETPLAY)
-    # Default the RexNet module on; -DREXGLUE_ENABLE_REXNET=OFF still works for
-    # a netplay-SDK build without the networking module.
-    set(REXGLUE_ENABLE_REXNET ON CACHE BOOL "Build the RexNet netplay module")
-    if(NOT WIN32 AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "20.0")
-        message(WARNING
-            "The netplay ReXGlue SDK is known to need Clang 20+ on Linux "
-            "(std::expected); found ${CMAKE_CXX_COMPILER_VERSION}. Pass "
-            "-DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20."
-        )
-    endif()
+# Default the RexNet module on; -DREXGLUE_ENABLE_REXNET=OFF still works for a build
+# without the networking module.
+set(REXGLUE_ENABLE_REXNET ON CACHE BOOL "Build the RexNet netplay module")
+if(NOT WIN32 AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "20.0")
+    message(WARNING
+        "The ReXGlue SDK needs Clang 20+ on Linux (std::expected); found "
+        "${CMAKE_CXX_COMPILER_VERSION}. Pass "
+        "-DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20."
+    )
 endif()
 unset(_refii_rexglue_tree_root)
 
@@ -288,102 +272,6 @@ function(refii_rexglue_prepare_shadow_sdk out_var)
         "${REFII_REXGLUE_SHADOW_BUILD_DIR}"
     )
 
-    # The netplay SDK ships SDL3 windowing natively; the Win32/GTK-to-SDL
-    # surgery below only applies to the stable v0.8.0 tree.
-    if(REFII_SDL3_WINDOW_ENABLED AND NOT REFII_REXGLUE_NETPLAY)
-        refii_rexglue_shadow_copy_mutable_sdk_file("src/ui/presenter.cpp")
-        refii_rexglue_shadow_copy_mutable_sdk_file("include/rex/ui/presenter.h")
-        refii_rexglue_shadow_copy_mutable_sdk_file("src/input/mnk/mnk_input_driver.cpp")
-
-        set(_refii_rexglue_removed_native_window_files
-            include/rex/ui/window_gtk.h
-            include/rex/ui/window_win.h
-            include/rex/ui/windowed_app_context_gtk.h
-            include/rex/ui/windowed_app_context_win.h
-            src/ui/window_gtk.cpp
-            src/ui/window_win.cpp
-            src/ui/windowed_app_context_gtk.cpp
-            src/ui/windowed_app_context_win.cpp
-        )
-        foreach(_refii_rexglue_removed_native_window_file
-                IN LISTS _refii_rexglue_removed_native_window_files)
-            file(REMOVE
-                "${REFII_REXGLUE_SHADOW_BUILD_DIR}/${_refii_rexglue_removed_native_window_file}"
-            )
-        endforeach()
-
-        set(_refii_rexglue_presenter_cpp
-            "${REFII_REXGLUE_SHADOW_BUILD_DIR}/src/ui/presenter.cpp"
-        )
-        if(EXISTS "${_refii_rexglue_presenter_cpp}")
-            file(READ "${_refii_rexglue_presenter_cpp}" _refii_rexglue_presenter_source)
-            string(REPLACE
-                "#include <rex/ui/window_win.h>"
-                "#include <rex/ui/window_sdl.h>"
-                _refii_rexglue_presenter_source
-                "${_refii_rexglue_presenter_source}"
-            )
-            string(REPLACE
-                "HWND hwnd = static_cast<const Win32Window*>(window_)->hwnd();"
-                "HWND hwnd = static_cast<HWND>(static_cast<const SDLWindow*>(window_)->GetNativeWindowHandle());"
-                _refii_rexglue_presenter_source
-                "${_refii_rexglue_presenter_source}"
-            )
-            refii_rexglue_write_file_if_different(
-                "${_refii_rexglue_presenter_cpp}"
-                "${_refii_rexglue_presenter_source}"
-            )
-            unset(_refii_rexglue_presenter_source)
-        endif()
-        unset(_refii_rexglue_presenter_cpp)
-
-        set(_refii_rexglue_presenter_h
-            "${REFII_REXGLUE_SHADOW_BUILD_DIR}/include/rex/ui/presenter.h"
-        )
-        if(EXISTS "${_refii_rexglue_presenter_h}")
-            file(READ "${_refii_rexglue_presenter_h}" _refii_rexglue_presenter_header)
-            string(REPLACE
-                "class Win32Window;"
-                "class SDLWindow;"
-                _refii_rexglue_presenter_header
-                "${_refii_rexglue_presenter_header}"
-            )
-            refii_rexglue_write_file_if_different(
-                "${_refii_rexglue_presenter_h}"
-                "${_refii_rexglue_presenter_header}"
-            )
-            unset(_refii_rexglue_presenter_header)
-        endif()
-        unset(_refii_rexglue_presenter_h)
-
-        set(_refii_rexglue_mnk_input_cpp
-            "${REFII_REXGLUE_SHADOW_BUILD_DIR}/src/input/mnk/mnk_input_driver.cpp"
-        )
-        if(EXISTS "${_refii_rexglue_mnk_input_cpp}")
-            file(READ "${_refii_rexglue_mnk_input_cpp}" _refii_rexglue_mnk_input_source)
-            string(REPLACE
-                "#include <rex/ui/window_win.h>\n#include <Windows.h>"
-                "#include <Windows.h>"
-                _refii_rexglue_mnk_input_source
-                "${_refii_rexglue_mnk_input_source}"
-            )
-            string(REPLACE
-                "  auto* win32_window = dynamic_cast<rex::ui::Win32Window*>(attached_window_);\n  if (win32_window && win32_window->hwnd()) {\n    POINT pt = {static_cast<LONG>(cx), static_cast<LONG>(cy)};\n    ClientToScreen(win32_window->hwnd(), &pt);\n    SetCursorPos(pt.x, pt.y);\n  }"
-                "  HWND hwnd = static_cast<HWND>(attached_window_->GetNativeWindowHandle());\n  if (hwnd) {\n    POINT pt = {static_cast<LONG>(cx), static_cast<LONG>(cy)};\n    ClientToScreen(hwnd, &pt);\n    SetCursorPos(pt.x, pt.y);\n  }"
-                _refii_rexglue_mnk_input_source
-                "${_refii_rexglue_mnk_input_source}"
-            )
-            refii_rexglue_write_file_if_different(
-                "${_refii_rexglue_mnk_input_cpp}"
-                "${_refii_rexglue_mnk_input_source}"
-            )
-            unset(_refii_rexglue_mnk_input_source)
-        endif()
-        unset(_refii_rexglue_mnk_input_cpp)
-
-        unset(_refii_rexglue_removed_native_window_file)
-        unset(_refii_rexglue_removed_native_window_files)
-    endif()
 
     set(_refii_rexglue_submodule_marker_dirs
         thirdparty/FFmpeg

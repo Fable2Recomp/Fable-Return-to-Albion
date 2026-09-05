@@ -85,6 +85,7 @@ void FlushLogging();
 #include <set>
 #include <utility>
 #ifdef REXGLUE_ENABLE_PROFILING
+#include <tracy/Tracy.hpp>
 #include <tracy/TracyC.h>
 #endif
 
@@ -7785,15 +7786,22 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPerfSnapshots(int64_t* out_values, ch
 /// Tracy from the HOST side, so Godot's phases share the guest threads' timeline. All four are
 /// no-ops in a build without profiling. Zone contexts cross the ABI packed as
 /// id | (active << 32); plot names are interned because Tracy keeps the pointer.
+///
+/// AND NO-OPS WHILE THE PROFILER IS NOT STARTED. The SDK builds Tracy with
+/// TRACY_MANUAL_LIFETIME: rex::perf::Profiler::Startup() starts it on demand, and until then
+/// the C emit functions assert on the missing profiler data (b171: every payload zone came
+/// through here and the first one aborted the process). The host-side macros carry
+/// TracyIsStarted as their active flag; this is the same gate for the C path. An inactive
+/// zone context (active = 0) is what ___tracy_emit_zone_end already ignores.
 #ifdef REXGLUE_ENABLE_PROFILING
 REFII_HOST_ABI_EXPORT void RefiiHostTraceMessage(const char* text) {
-    if (text != nullptr) {
+    if (text != nullptr && TracyIsStarted) {
         ___tracy_emit_message(text, std::strlen(text), 0);
     }
 }
 
 REFII_HOST_ABI_EXPORT uint64_t RefiiHostTraceZoneBegin(const char* name) {
-    if (name == nullptr) return 0;
+    if (name == nullptr || !TracyIsStarted) return 0;
     const uint64_t srcloc = ___tracy_alloc_srcloc_name(
         0, "host", 4, "godot", 5, name, std::strlen(name), 0);
     const TracyCZoneCtx zone = ___tracy_emit_zone_begin_alloc(srcloc, 1);
@@ -7801,6 +7809,7 @@ REFII_HOST_ABI_EXPORT uint64_t RefiiHostTraceZoneBegin(const char* name) {
 }
 
 REFII_HOST_ABI_EXPORT void RefiiHostTraceZoneEnd(uint64_t packed) {
+    if (packed == 0) return;
     TracyCZoneCtx zone;
     zone.id = static_cast<uint32_t>(packed);
     zone.active = static_cast<int>(packed >> 32);
@@ -7808,7 +7817,7 @@ REFII_HOST_ABI_EXPORT void RefiiHostTraceZoneEnd(uint64_t packed) {
 }
 
 REFII_HOST_ABI_EXPORT void RefiiHostTracePlot(const char* name, double value) {
-    if (name == nullptr) return;
+    if (name == nullptr || !TracyIsStarted) return;
     static std::mutex names_mutex;
     static std::set<std::string>* interned = new std::set<std::string>();
     const char* stable;

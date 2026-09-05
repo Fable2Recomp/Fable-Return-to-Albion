@@ -607,7 +607,7 @@ public static class GameCodeBuild
 			         {
 				         "CMakeLists.txt", "CMakePresets.json",
 				         Path.Combine("cmake", "refii_finalize_windows_install_inputs.cmake"),
-				         Path.Combine("rexglue", "rexglue-sdk", "CMakeLists.txt"),
+				         Path.Combine("rexglue-net", "rexglue-sdk", "CMakeLists.txt"),
 				         Path.Combine("src", "extractor", "thirdparty", "zlib", "CMakeLists.txt"),
 			         })
 			{
@@ -1022,8 +1022,17 @@ public static class GameCodeBuild
 		LogPhase("precompile");
 		progress(new Progress("Preparing the game code build...", 0.36f));
 
-		string header = Path.Combine(GeneratedDirectory, "refii_init.h");
-		string pch = Path.Combine(BuildDirectory, "refii_init.pch");
+		// ReXGlue 0.10 splits the surface: every recomp TU includes refii_pch.h (config, SDK
+		// headers, the function macros) plus a per-file declaration header, and refii_init.h
+		// is the full surface only the init/register TUs and our hooks take. The pch header
+		// is what precompiles; refii_init.h stays as the fallback for an older generator.
+		string header = Path.Combine(GeneratedDirectory, "refii_pch.h");
+		if (!File.Exists(header))
+		{
+			header = Path.Combine(GeneratedDirectory, "refii_init.h");
+		}
+
+		string pch = Path.Combine(BuildDirectory, Path.GetFileNameWithoutExtension(header) + ".pch");
 		string pchUsed = string.Empty;
 
 		if (File.Exists(header))
@@ -1451,6 +1460,13 @@ public static class GameCodeBuild
 		if (!OperatingSystem.IsWindows())
 		{
 			flags.Add("-mcmodel=large");
+		}
+		else
+		{
+			// Guest SEH scopes emit __try/__except, which traps hardware faults only under
+			// asynchronous EH; the SDK's own recomp targets set the same flag (REXGLUE_RECOMP_OPTIONS
+			// in generated/rexglue.cmake). zig c++ is clang, so it is the GNU spelling.
+			flags.Add("-fasync-exceptions");
 		}
 
 		// MATCHED TO THE PAYLOAD TARGETS IN OUR OWN BUILD. The hook sources now compile

@@ -34,6 +34,7 @@
 #include <rex/audio/sdl/sdl_audio_system.h>
 #include <rex/input/input_system.h>
 #include <rex/kernel/init.h>
+#include <rex/string/numeric.h>
 #include <rex/system.h>
 #include <rex/system/achievement_manager.h>
 #include <rex/system/gpu_plugin.h>
@@ -339,20 +340,22 @@ std::filesystem::path metadata_dir;
   }
 
   OnPostInitLogging();
+  if (std::filesystem::exists(config_path_))
+    REXLOG_DEBUG("Loaded config: {}", config_path_.filename().string());
 
-  REXLOG_INFO("{} starting", GetName());
+  REXLOG_DEBUG("{} starting", GetName());
   if (!game_data_root_.empty()) {
-    REXLOG_INFO("  Game directory: {}", game_data_root_.string());
+    REXLOG_DEBUG("  Game directory: {}", game_data_root_.string());
   }
   if (!user_data_root_.empty()) {
-    REXLOG_INFO("  User data:      {}", user_data_root_.string());
+    REXLOG_DEBUG("  User data:      {}", user_data_root_.string());
   }
   if (!update_data_root_.empty()) {
-    REXLOG_INFO("  Update data:    {}", update_data_root_.string());
+    REXLOG_DEBUG("  Update data:    {}", update_data_root_.string());
   }
-  REXLOG_INFO("  Cache root:     {}", cache_root_.string());
+  REXLOG_DEBUG("  Cache root:     {}", cache_root_.string());
   if (!metadata_root_.empty()) {
-    REXLOG_INFO("  Metadata root:  {}", metadata_root_.string());
+    REXLOG_DEBUG("  Metadata root:  {}", metadata_root_.string());
   }
 
   return true;
@@ -587,7 +590,10 @@ SetupOverlays(presenter, immediate_drawer_.get());
 
 void ReXApp::SetupOverlays(rex::ui::Presenter* presenter, rex::ui::ImmediateDrawer* drawer) {
   imgui_drawer_ = std::make_unique<rex::ui::ImGuiDrawer>(
-      window_.get(), 64, [this](ImFontAtlas* atlas) { OnConfigureFonts(atlas); });
+      window_.get(), 64, [this](ImFontAtlas* atlas) { OnConfigureFonts(atlas); },
+      [this](ImGuiStyle& imgui_style, rex::ui::Style& ui_style) {
+        OnConfigureStyle(imgui_style, ui_style);
+      });
   // presenter is nullptr in detached mode; ImGuiDrawer tolerates that and the
   // gated eager font upload in SetImmediateDrawer is skipped (font uploads
   // lazily on the first Draw instead).

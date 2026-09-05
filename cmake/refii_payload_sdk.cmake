@@ -123,10 +123,12 @@ function(refii_stage_payload_sdk)
         endif()
     endforeach()
 
+    # Under its fixed name: the SDK postfixes Debug binaries (rexglued), and the launcher
+    # resolves the generator as bin/rexglue.
     if(TARGET rex::rexglue)
         list(APPEND _commands
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:rex::rexglue>" "${_sdk_dir}/bin"
+                "$<TARGET_FILE:rex::rexglue>" "${_sdk_dir}/bin/rexglue${CMAKE_EXECUTABLE_SUFFIX}"
         )
     endif()
 

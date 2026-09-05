@@ -12,7 +12,9 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
+#include <rex/input/device.h>
 #include <rex/input/input_driver.h>
 
 namespace refii::host {
@@ -53,13 +55,26 @@ public:
 
     rex::X_STATUS Setup() override;
 
-    rex::X_RESULT GetCapabilities(uint32_t user_index, uint32_t flags,
-                             rex::input::X_INPUT_CAPABILITIES* out_caps) override;
-    rex::X_RESULT GetState(uint32_t user_index, rex::input::X_INPUT_STATE* out_state) override;
-    rex::X_RESULT SetState(uint32_t user_index,
-                      rex::input::X_INPUT_VIBRATION* vibration) override;
-    rex::X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags,
-                          rex::input::X_INPUT_KEYSTROKE* out_keystroke) override;
+    // THE DEVICE API (ReXGlue v0.10): the input system assigns each physical device an
+    // ordinal in enumeration order, and the default SlotAssignment feeds device ordinal N to
+    // guest user N. This driver therefore enumerates its four host slots ALWAYS — connected
+    // or not, in slot order — so slot N keeps ordinal N and the guest's user index still
+    // names the slot the host published (pad 0 is not the controller here; the index
+    // matters). A slot that is not connected answers DEVICE_NOT_CONNECTED like a pad
+    // that is plugged in and asleep. Ids are slot+1: DeviceId 0 is kInvalid.
+    void EnumerateDevices(std::vector<rex::input::DeviceInfo>& out) override;
+    rex::X_RESULT GetDeviceState(rex::input::DeviceId id,
+                                 rex::input::X_INPUT_STATE* out_state) override;
+    rex::X_RESULT GetDeviceCapabilities(rex::input::DeviceId id, uint32_t flags,
+                                        rex::input::X_INPUT_CAPABILITIES* out_caps) override;
+    rex::X_RESULT SetDeviceVibration(rex::input::DeviceId id,
+                                     rex::input::X_INPUT_VIBRATION* vibration) override;
+    rex::X_RESULT GetDeviceKeystroke(rex::input::DeviceId id, uint32_t flags,
+                                     rex::input::X_INPUT_KEYSTROKE* out_keystroke) override;
+
+private:
+    /// The host slot behind a device id, or kMaxControllers when the id is not ours.
+    static uint32_t SlotOf(rex::input::DeviceId id);
 };
 
 }  // namespace refii::host

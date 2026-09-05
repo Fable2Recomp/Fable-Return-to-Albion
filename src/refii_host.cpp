@@ -49,14 +49,8 @@
 
 namespace {
 
-// The stable-tree shadow context names the loop RunMainSDLLoop; the netplay
-// SDK's own SDL context names it RunMainMessageLoop.
 int RunHostMainLoop(rex::ui::SDLWindowedAppContext& appContext) {
-#if defined(REFII_REXGLUE_NETPLAY) && REFII_REXGLUE_NETPLAY
     return appContext.RunMainMessageLoop();
-#else
-    return appContext.RunMainSDLLoop();
-#endif
 }
 
 #if !defined(_WIN32)

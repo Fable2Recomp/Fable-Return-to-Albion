@@ -22,6 +22,7 @@
 #include <rex/rex_app.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/user_module.h>
+#include <rex/input/device_assignment.h>
 #include <rex/input/input_system.h>
 #include <rex/input/nop/nop_input_driver.h>
 
@@ -430,6 +431,11 @@ public:
 
         input->AddDriver(
             std::make_unique<rex::input::nop::NopInputDriver>(nullptr, 1));
+        // THE POLICY IS NOT OPTIONAL. The v0.10 InputSystem answers every query
+        // DEVICE_NOT_CONNECTED until an assignment maps device ordinals to guest users;
+        // the SDK's own factory ends the same way. SlotAssignment: ordinal N feeds
+        // user N, which is the contract HostInputDriver enumerates for.
+        input->SetDeviceAssignment(std::make_unique<rex::input::SlotAssignment>());
         return input;
       };
       REXLOG_INFO("Refii: embedded — host-fed controller input installed");
@@ -487,18 +493,16 @@ public:
 #endif  // REFII_HAS_RENDERER_RUNTIME
 
     if (!RefiiShouldSuppressReXGlueRenderer()) {
-#if defined(REFII_REXGLUE_NETPLAY) && REFII_REXGLUE_NETPLAY
-      // The netplay SDK ships its Xenia-derived GPU emulation as an opt-in
-      // plugin (empty gpu_plugin cvar = no graphics system = blank window).
+      // The SDK ships its Xenia-derived GPU emulation as an opt-in plugin
+      // (empty gpu_plugin cvar = no graphics system = blank window).
       // backend=xenia means the user wants exactly that system, so default it.
       if (config.gpu_plugin.empty()) {
         config.gpu_plugin = "xenos";
         REXLOG_INFO(
-            "Refii renderer backend is {}; defaulting the netplay SDK GPU "
-            "plugin to 'xenos'",
+            "Refii renderer backend is {}; defaulting the SDK GPU plugin to "
+            "'xenos'",
             RefiiGetLowerRuntimeCVar("renderer_backend"));
       }
-#endif
       return;
     }
 
