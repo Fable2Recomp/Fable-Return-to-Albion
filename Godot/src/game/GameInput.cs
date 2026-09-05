@@ -33,38 +33,97 @@ public partial class GameInput : Node
 	private const uint ButtonX = 0x4000;
 	private const uint ButtonY = 0x8000;
 
+	/// <summary>Whether A is down on any source this frame, as published to the guest.</summary>
+	public static bool AHeld { get; private set; }
+
+	public static bool YHeld { get; private set; }
+
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gameinput");
 		// The guest can end while this node is up; nothing is published into a torn-down runtime.
 		if (HostBridge.TryGetAbiVersion() is null)
 		{
 			return;
 		}
 
+		// INPUT REACHES THE GUEST ONLY WHILE THE GAME WINDOW HAS FOCUS.
+		//
+		// Godot polls joypads from the DEVICE, not from window events — so an unfocused game
+		// still saw every stick and button, and a controller left alone on the desk drove the
+		// hero while its owner was in another application. The keyboard does not have this
+		// problem (no focus, no key events), which is why it only ever showed up as the pad.
+		//
+		// Unfocused publishes a NEUTRAL pad rather than nothing. Skipping the publish would
+		// leave the guest holding whatever was last sent — a stick mid-push stays pushed, a
+		// held button stays down — and the guest edge-detects, so it would never see the
+		// release. Same rule as the menu stick: every press must get its release.
+		//
+		// The DEVICES are what focus gates — the keyboard and the joypads. The scripted
+		// sources (the debug channel's presses, sticks and replay tapes, the auto driver) are
+		// not devices and reach the guest focused or not: an unattended run is driven by them
+		// with nobody at the keyboard and a window that may never take focus, and a
+		// controller playing another game must not steer this one meanwhile.
+		//
 		// Everything goes to pad 0; the rest report disconnected. The front end latches the
 		// pad that pressed A (dword_83496AF8, 0x826E30DC) and ignores every other one
 		// (0x826DEE64), so input split across devices is input the guest discards.
-		Publish0();
+		Publish0(devices: HasInputFocus());
 
 		for (int pad = 1; pad < MaxControllers; ++pad)
 		{
 			HostBridge.SetControllerState(pad, connected: false, 0, 0, 0, 0, 0, 0, 0);
 		}
+
 	}
 
 	/// <summary>
-	/// Pad 0: the keyboard and every connected joypad, merged. Buttons are OR'd; triggers and
-	/// sticks take whichever device is pushing hardest, so a pad at rest never cancels one in use.
+	/// Whether the DEVICES reach the guest this frame. No exemption for unattended runs: they
+	/// are driven by the scripted sources, which <see cref="Publish0"/> publishes regardless.
 	/// </summary>
-	private static void Publish0()
+	private bool HasInputFocus()
 	{
-		uint buttons = KeyboardButtons() | AutoStartButtons();
+		// `GetWindow()` is the nearest Window ancestor — the game's own window, not the
+		// launcher's, so a focused launcher does not count as a focused game.
+		Window? window = IsInsideTree() ? GetWindow() : null;
+		return window is null || window.HasFocus();
+	}
+
+	/// <summary>Said once per focus change, not once per frame.</summary>
+	private static bool _reportedUnfocused;
+
+	/// <summary>
+	/// Pad 0: the keyboard and every connected joypad, merged, plus the scripted sources.
+	/// Buttons are OR'd; triggers and sticks take whichever device is pushing hardest, so a pad
+	/// at rest never cancels one in use. With <paramref name="devices"/> false the keyboard and
+	/// joypads are muted (the window is unfocused) and the pad is still published every frame,
+	/// so anything a device held is released exactly once and stays released — the guest
+	/// edge-detects, and a publish skipped would leave a stick mid-push forever.
+	/// </summary>
+	private static void Publish0(bool devices)
+	{
+		if (devices == _reportedUnfocused)
+		{
+			_reportedUnfocused = !devices;
+			GD.Print(devices
+				? "[input] the game window has focus — the devices reach the guest again"
+				: "[input] the game window lost focus — the devices are muted; only the debug channel and the auto driver reach the guest");
+		}
+
+		// NO AUTO-DRIVER. The debug channel (the MCP) presses the pad when a run has to be
+		// driven; the title-to-world and menu-walking scripts that lived here are gone.
+		uint buttons = (devices ? KeyboardButtons() : 0u) | GameDebugServer.Buttons();
 		uint leftTrigger = 0;
 		uint rightTrigger = 0;
 		int leftX = 0, leftY = 0, rightX = 0, rightY = 0;
 
 		foreach (int pad in Input.GetConnectedJoypads())
 		{
+			if (!devices)
+			{
+				break;
+			}
+
 			buttons |= JoypadButtons(pad);
 
 			leftTrigger = System.Math.Max(leftTrigger, Trigger(pad, JoyAxis.TriggerLeft));
@@ -77,14 +136,40 @@ public partial class GameInput : Node
 			rightY = Dominant(rightY, -Axis(pad, JoyAxis.RightY));
 		}
 
-		LeftStick = new Vector2(leftX / 32767f, leftY / 32767f);
-
-		// Diagnostic: `REFII_FAKE_STICK=1` holds the left stick forward so the input chain can
-		// be exercised with nobody at the controller.
-		if (System.Environment.GetEnvironmentVariable("REFII_FAKE_STICK") == "1")
+		// The debug channel's held sticks and triggers merge like one more device.
+		if (GameDebugServer.Sticks(out int debugLX, out int debugLY, out int debugRX,
+				out int debugRY, out uint debugLT, out uint debugRT))
 		{
-			leftY = 24000;
+			leftX = Dominant(leftX, debugLX);
+			leftY = Dominant(leftY, debugLY);
+			rightX = Dominant(rightX, debugRX);
+			rightY = Dominant(rightY, debugRY);
+			leftTrigger = System.Math.Max(leftTrigger, debugLT);
+			rightTrigger = System.Math.Max(rightTrigger, debugRT);
 		}
+
+		// A replay tape overrides the devices wholesale; the state masks below still apply,
+		// because they are the game's, not the recording's.
+		if (GameDebugServer.ReplayFrame(out GameDebugServer.PadFrame replay))
+		{
+			buttons |= replay.Buttons;
+			leftTrigger = replay.Lt;
+			rightTrigger = replay.Rt;
+			leftX = replay.Lx;
+			leftY = replay.Ly;
+			rightX = replay.Rx;
+			rightY = replay.Ry;
+		}
+
+		GameDebugServer.RecordInputFrame(
+			buttons, leftTrigger, rightTrigger, leftX, leftY, rightX, rightY);
+
+		// The mask as the guest receives it, for host widgets that run their own hold timers
+		// (the TopBox's hold-to-accept) — every source folded, focus gate included.
+		AHeld = (buttons & ButtonA) != 0;
+		YHeld = (buttons & ButtonY) != 0;
+
+		LeftStick = new Vector2(leftX / 32767f, leftY / 32767f);
 
 		// Logged on the threshold crossing only (30/255, the XInput convention).
 		uint triggersHeld = (leftTrigger > 30 ? 1u : 0u) | (rightTrigger > 30 ? 2u : 0u);
@@ -133,6 +218,12 @@ public partial class GameInput : Node
 			? 0f
 			: System.Math.Sign(rightY) *
 				((magnitude - RightThumbDeadzone) / (32767f - RightThumbDeadzone));
+
+		float sideways = System.Math.Abs(rightX);
+		RightStickX = sideways <= RightThumbDeadzone
+			? 0f
+			: System.Math.Sign(rightX) *
+				((sideways - RightThumbDeadzone) / (32767f - RightThumbDeadzone));
 
 		PublishToHost(buttons, leftX, leftY);
 	}
@@ -191,10 +282,30 @@ public partial class GameInput : Node
 	public static bool FrontEndSwallowsBack { get; set; }
 
 	/// <summary>
+	/// What the front end GODOT DRAWS is showing, for the unattended driver.
+	///
+	/// The driver used to read the guest's scene slide and treat slide 1 as "PressStart, the row
+	/// list is not up yet". That slide never leaves 1 on this build, so the driver pressed A on
+	/// a list it could see perfectly well — re-opening `New Game` and the gender card once every
+	/// cooldown, for ever, fighting anything else driving the run.
+	///
+	/// It is the wrong question to ask the guest at all. Godot owns this menu: it builds the
+	/// rows, holds the highlight and decides whether the card or the warning stands. So the
+	/// driver asks the thing that draws it, by ROW NAME rather than by counted steps.
+	/// </summary>
+	public readonly record struct FrontEndDriveState(
+		bool ListUp, bool CardUp, bool WarningUp, string Highlighted);
+
+	public static FrontEndDriveState FrontEndDrive { get; set; }
+
+	/// <summary>
 	/// The right stick's Y, −1..1, up positive — what `page.lua` scrolls a book page with
 	/// (`Page.onUpdate` reads `GUI.State.RightThumbStickY`, page.dis main.1 pc18..21).
 	/// </summary>
 	public static float RightStickY { get; private set; }
+
+	/// <summary>The right stick's X, −1..1, right positive, dead-zoned like Y — the item preview's spin.</summary>
+	public static float RightStickX { get; private set; }
 
 	/// <summary>
 	/// Set by the <c>GameUi</c> modal-box drives while an owned box view is standing (query box,
@@ -524,58 +635,6 @@ public partial class GameInput : Node
 	}
 
 	/// <summary>
-	/// The unattended A press, for runs with nobody at the keyboard. Held a few frames then
-	/// released, because the guest edge-detects. Repeats on a cooldown rather than pressing
-	/// once: the title has an idle timeout into attract mode.
-	/// </summary>
-	private static uint AutoStartButtons()
-	{
-		if (OS.GetEnvironment("REFII_AUTO_START") != "1")
-		{
-			return 0;
-		}
-
-		if (_autoStartHeld > 0)
-		{
-			return --_autoStartHeld > 0 ? ButtonA : 0;
-		}
-
-		if (_autoStartCooldown > 0)
-		{
-			--_autoStartCooldown;
-			return 0;
-		}
-
-		if (!HostBridge.TryGetFrontEnd(out Engine_UiModel.FrontEndScreen screen,
-				out uint state, out bool canPressA, out uint cursor,
-				out int slide, out _))
-		{
-			return 0;
-		}
-
-		// The title takes A only when idle and armed. The main menu has no such flag and comes
-		// up on slide 1 (PressStart), needing a press to reach the menu and another to take the
-		// highlighted item, so it is pressed on a cooldown until the front end hands over.
-		bool ready = screen switch
-		{
-			Engine_UiModel.FrontEndScreen.Title => canPressA && state == TitleIdleState,
-			Engine_UiModel.FrontEndScreen.MainMenu => true,
-			_ => false,
-		};
-
-		if (!ready)
-		{
-			return 0;
-		}
-
-		GD.Print($"[game-input] pressing A on {screen} (state {state} slide {slide} " +
-			$"cursor {cursor})");
-		_autoStartHeld = AutoStartFrames;
-		_autoStartCooldown = AutoStartCooldownFrames;
-		return ButtonA;
-	}
-
-	/// <summary>
 	/// The title screen's idle state. A is gated by the armed byte `titleScreen+80` (what
 	/// <c>canPressA</c> reports): `a2 == 36 &amp;&amp; *(BYTE *)(a1 + 80)` at 0x826E3078, armed by
 	/// the presentation's CAN_PRESS_A event at 0x826E2E38; states 0, 9, 10 and 11 all reach it.
@@ -584,10 +643,12 @@ public partial class GameInput : Node
 	/// </summary>
 	private const uint TitleIdleState = 0;
 
-	private const int AutoStartFrames = 8;
-	private const int AutoStartCooldownFrames = 120;
-	private static int _autoStartHeld;
-	private static int _autoStartCooldown;
+	/// <summary>
+	/// `PressStart` — the main menu's opening slide, where the row list is not up yet and A is
+	/// the only button that does anything. The row sequence waits for the slide to leave it.
+	/// </summary>
+	private const int PressStartSlide = 1;
+
 
 	private static uint Bit(int pad, JoyButton button, uint mask) =>
 		Input.IsJoyButtonPressed(pad, button) ? mask : 0u;

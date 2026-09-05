@@ -132,6 +132,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// </summary>
     public override void _Process(double delta)
     {
+    	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("skyenvironmentnode");
         if (Lighting is null && _attempts <= MountAttempts)
         {
             if (++_attempts > MountAttempts)

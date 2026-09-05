@@ -46,6 +46,23 @@ public partial class GameSession : Node
 	{
 		Current = this;
 
+		// THE DEBUG CHANNEL COMES UP FIRST, BEFORE ANYTHING SLOW.
+		//
+		// It was attached after a successful guest boot, which is precisely when it is least
+		// needed: everything before that point — the texture sweep, the shader warm-up, the
+		// asset mount, the guest init itself — is a long silent phase with no diagnostic but a
+		// CPU counter. On the run that proved it, the game spent fifteen minutes rebuilding an
+		// invalidated texture cache while I measured thread CPU and reasoned about whether it
+		// had hung; the screen said "Enhancing textures" the whole time and nothing could ask
+		// it. A channel that only works once everything works is not a debug channel.
+		//
+		// It needs no guest: `shot` photographs the window whatever is on it, and `state`
+		// reports the bridge as down rather than failing.
+		if (GameDebugServer.Wanted)
+		{
+			AddChild(new GameDebugServer { Name = "GameDebugServer" });
+		}
+
 		string directory = Directory(GameDirectory);
 		if (directory.Length == 0)
 		{
@@ -181,6 +198,14 @@ public partial class GameSession : Node
 
 	public override void _Process(double delta)
 	{
+		using (Refii.Core.Engine_FramePhases.Measure("session_process"))
+		{
+			session_processBody(delta);
+		}
+	}
+
+	private void session_processBody(double delta)
+	{
 		if (!_booted)
 		{
 			if (_bootDirectory.Length == 0 || !Refii.Models.Engine_ShaderWarmup.Done)
@@ -294,11 +319,19 @@ public partial class GameSession : Node
 			_accumulated = 0.0;
 		}
 
-		for (int i = 0; i < steps; ++i)
+		// One Tracy frame boundary and perf-counter flip per host frame. The renderer that
+		// used to own Profiler::Flip() is compiled out, so without this the timeline has no
+		// frames and the per-frame counter snapshots never rotate.
+		Refii.Host.HostBridge.FrameMark();
+
+		using (new Refii.Host.HostBridge.TraceZone("guest-steps"))
 		{
-			if (!StepGuest())
+			for (int i = 0; i < steps; ++i)
 			{
-				return;
+				if (!StepGuest())
+				{
+					return;
+				}
 			}
 		}
 

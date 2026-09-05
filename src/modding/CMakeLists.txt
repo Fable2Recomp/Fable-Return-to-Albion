@@ -3,7 +3,6 @@
 set(REFII_MODDING_ROOT ${CMAKE_CURRENT_LIST_DIR})
 
 add_library(refii_modding STATIC
-    ${REFII_MODDING_ROOT}/src/mod_workspace.cpp
     ${REFII_MODDING_ROOT}/src/runtime_settings.cpp
 )
 

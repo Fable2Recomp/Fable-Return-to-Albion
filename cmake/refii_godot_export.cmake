@@ -42,6 +42,15 @@ set(REFII_GODOT_DIR "${CMAKE_SOURCE_DIR}/tools/godot" CACHE PATH
 
 # ON makes a plain `cmake --build` produce the release zip, rather than needing a separate
 # `--target refii_package`. OFF still defines the target, so it stays available on demand.
+# The modding SDK's pins, staged into the package as sdk/pins.json. Only a FLOOR: the editor a
+# player opens is the latest stable at or above it, because the plugins are plugins and a C#
+# project has a lowest Godot it opens in rather than a highest. The exact pin the build itself
+# uses lives in refii_fetch_godot.cmake and is a separate question.
+set(REFII_GODOT_FLOOR "4.7" CACHE STRING
+    "Lowest Godot the modding SDK opens in; must match project.godot's feature tag")
+set(REFII_DOTNET_MAJOR "8" CACHE STRING
+    "The .NET major the launcher assembly targets, for the modding editor's SDK check")
+
 option(REFII_PACKAGE "Build the release package (export + stage + zip) as part of ALL" ON)
 
 # Zig, pinned and fetched for the TARGET architecture. It is the player's whole C++
@@ -149,6 +158,9 @@ function(refii_define_godot_export_target)
             -DWORK_DIR=${_work}
             -DAPP_NAME=${REFII_PACKAGE_NAME}
             -DOUT_BINARY=${_binary}
+            -DREFII_GODOT_FLOOR=${REFII_GODOT_FLOOR}
+            -DREFII_GODOT_FLAVOUR=${REFII_GODOT_FLAVOUR}
+            -DREFII_DOTNET_MAJOR=${REFII_DOTNET_MAJOR}
             -DZIP_PATH=${_zip}
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/Godot
             -DSTAGING_ROOT=${REFII_GODOT_BUILD_DIR}

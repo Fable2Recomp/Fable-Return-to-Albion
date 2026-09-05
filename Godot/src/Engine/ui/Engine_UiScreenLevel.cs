@@ -27,26 +27,29 @@ public sealed class Engine_UiScreenLevel
 		for (int step = _vertical.Steps(input.Direction, input.Delta);
 			step > 0; --step)
 		{
-			Engine_UiSource.Current.ScreenAction(input.Direction < 0
-				? Engine_UiScreenInput.Up
-				: Engine_UiScreenInput.Down);
+			Send(input.Direction < 0 ? Engine_UiScreenInput.Up : Engine_UiScreenInput.Down);
 		}
 
 		for (int step = _horizontal.Steps(input.Horizontal, input.Delta);
 			step > 0; --step)
 		{
-			Engine_UiSource.Current.ScreenAction(input.Horizontal < 0
-				? Engine_UiScreenInput.Left
-				: Engine_UiScreenInput.Right);
+			Send(input.Horizontal < 0 ? Engine_UiScreenInput.Left : Engine_UiScreenInput.Right);
 		}
 
 		if (input.Accept)
 		{
-			Engine_UiSource.Current.ScreenAction(Engine_UiScreenInput.Select);
+			Send(Engine_UiScreenInput.Select);
 		}
 		else if (input.Back)
 		{
-			Engine_UiSource.Current.ScreenAction(Engine_UiScreenInput.Back);
+			Send(Engine_UiScreenInput.Back);
 		}
+	}
+
+	/// <summary>To the guest, and to the host's own record of the page's pending choices.</summary>
+	private static void Send(uint code)
+	{
+		Engine_UiSource.Current.ScreenAction(code);
+		Engine_UiOptionsPending.Track(code);
 	}
 }

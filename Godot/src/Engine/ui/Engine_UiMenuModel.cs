@@ -66,6 +66,14 @@ public sealed class Engine_UiMenuModel
 		public int InitiallySelected;
 
 		/// <summary>
+		/// The population script this menu was last switched to, from
+		/// `RepopulateMenuFromPopulationScript`'s own argument. Empty until one is stated.
+		/// Several screens never put a `MenuPopulationScript` attribute on their widget, so this
+		/// is the only statement of which list they are.
+		/// </summary>
+		public string PopulationScript = string.Empty;
+
+		/// <summary>
 		/// `TurnOffAutomaticGhostingOnSubmenus` clears this; default on. Second term of
 		/// `UpdateAllGhosting`'s `ghost = item.Ghosted or (EventType == Submenu and
 		/// #ChildItems == 0 and AutomaticGhostingOnSubmenus)`.
@@ -79,6 +87,13 @@ public sealed class Engine_UiMenuModel
 
 		/// <summary>Bumped on every change, so a view can skip untouched frames.</summary>
 		public ulong Generation;
+
+		/// <summary>
+		/// `SetItemGhosting` by row NAME, kept whether or not this model holds the row — see the
+		/// case. A list Godot builds from the template reads its ghosting here.
+		/// </summary>
+		public readonly Dictionary<string, bool> Ghosting =
+			new(System.StringComparer.Ordinal);
 
 		public Row? Find(string name) =>
 			Rows.Find(row => string.Equals(row.Name, name, System.StringComparison.Ordinal));
@@ -121,6 +136,23 @@ public sealed class Engine_UiMenuModel
 	}
 
 	/// <summary>Applies one statement.</summary>
+	/// <summary>
+	/// The first single-quoted argument in a chunk, or empty. The guest builds these with
+	/// `sprintf("... '%s' ...")`, so the quotes are the delimiter and there is no escaping to
+	/// handle.
+	/// </summary>
+	private static string QuotedArgument(string chunk)
+	{
+		int open = chunk.IndexOf('\'');
+		if (open < 0)
+		{
+			return string.Empty;
+		}
+
+		int close = chunk.IndexOf('\'', open + 1);
+		return close < 0 ? string.Empty : chunk[(open + 1)..close].Trim();
+	}
+
 	public void Apply(Engine_UiModel.MenuChunk chunk)
 	{
 		Menu menu = For(chunk.Presentation);
@@ -134,20 +166,74 @@ public sealed class Engine_UiMenuModel
 
 			case "DeleteAllSpawnedMenuItems":
 				// The list boundary: rows, settle marker and initial selection all go, because
-				// the next population states its own.
+				// the next population states its own. The shipped Lua drains
+				// `g_Menu.SpawnedItems` one at a time (`expandablemenuspawning`), so its scope
+				// is exactly the rows this model holds.
 				menu.Rows.Clear();
+				menu.Ghosting.Clear();
 				menu.Settled = false;
 				menu.InitiallySelected = 0;
 				break;
 
-			case "SetItemGhosting":
-				if (menu.Find(chunk.Attribute("String1")) is { } ghosting)
+			case "RepopulateMenuFromPopulationScript":
+				// A SECOND, WIDER LIST BOUNDARY — and the one that was missing. The shipped Lua
+				// is three statements:
+				//
+				//   setAttribute(parent, "MenuPopulationScript", scriptName)
+				//   g_Menu:RemoveAllChildren()
+				//   g_Menu:RepopulateFromPopulationTable()
+				//
+				// `RemoveAllChildren` clears EVERYTHING (not just `SpawnedItems`, which is all
+				// `DeleteAllSpawnedMenuItems` touches) and it happens INSIDE Lua, so it never
+				// arrives as a chunk of its own. Without this the model keeps every previous
+				// population on the presentation: the gift screen accumulated 98 rows and drew
+				// 32 clothing items beside its nine categories, orphans of a list that had been
+				// replaced.
+				//
+				// The rows it then creates come from `CreateMenuItem`/`AddChild` in Lua, NOT
+				// `SpawnButton`, so they never reach this model at all — which is exactly why
+				// the fixed menus have to be built from our own transcription of the population
+				// table rather than waited for here.
+				menu.Rows.Clear();
+				menu.Ghosting.Clear();
+				menu.Settled = false;
+				menu.InitiallySelected = 0;
+
+				// The script it is switching to. The name is the chunk's own quoted argument —
+				// `sub_829B2A20` builds the text with
+				// `"g_Menu:RepopulateMenuFromPopulationScript( '%s' )"` — and it is the only
+				// place some screens ever state it: the gift family's widget carries no
+				// `MenuPopulationScript` attribute for us to read.
+				if (QuotedArgument(chunk.Chunk) is { Length: > 0 } script)
 				{
-					// The guest's own test: `Float1 == 0` is false, anything else true.
-					ghosting.Ghosted = chunk.Number("Float1") != 0f;
+					menu.PopulationScript = script;
 				}
 
 				break;
+
+			case "SetItemGhosting":
+			{
+				// RECORDED BY NAME WHETHER OR NOT THE MODEL HOLDS THE ROW. It usually does not:
+				// the fixed menus are built by `CreateMenuItem` inside Lua and never reach this
+				// model, so a ghosting statement about one of their rows had nowhere to land and
+				// was dropped — the guest's only channel for "this option is unavailable right
+				// now" was being discarded for exactly the lists Godot builds itself.
+				string named = chunk.Attribute("String1");
+
+				// The guest's own test: `Float1 == 0` is false, anything else true.
+				bool ghost = chunk.Number("Float1") != 0f;
+				if (named.Length != 0)
+				{
+					menu.Ghosting[named] = ghost;
+				}
+
+				if (menu.Find(named) is { } ghosting)
+				{
+					ghosting.Ghosted = ghost;
+				}
+
+				break;
+			}
 
 			case "SetItemEmphasis":
 				if (menu.Find(chunk.Attribute("String1")) is { } emphasised)

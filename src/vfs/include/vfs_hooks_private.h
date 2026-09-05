@@ -132,6 +132,12 @@ namespace refii::vfs {
 inline void NoteBinkMovieOpen(uint32_t player, uint8_t* base_for_open = nullptr) {
   refii_bridge_note_bink_movie_open(player, base_for_open);
 }
+
+/// The guest is closing this BINK object. Its caller frees the player immediately afterwards,
+/// so the host must stop reading through it — see the note in `refii_bridge_note_bink_movie_closed`.
+inline void NoteBinkMovieClosed(uint32_t player) {
+  refii_bridge_note_bink_movie_closed(player);
+}
 uint32_t BinkFrameBuffersGuestAddress();
 
 /// The movie the guest last handed to BinkOpen. The argument is EITHER a pointer to the
@@ -171,6 +177,14 @@ int32_t FrontEndSubtitles();
 /// One captured menu row; returns the TOTAL row count. Every out parameter is optional;
 /// `out_generation` is bumped on every spawn.
 uint32_t MenuRowLabel(uint32_t index, char* out_label, size_t label_capacity);
+
+/// The screen the published capture belongs to, or 0xFFFFFFFF for none.
+uint32_t MenuScreenId();
+
+/// The in-game GUI's roots, or false when no in-game screen is up. Defined in
+/// hooks/guest_tick_pump.cpp; shared so a menu boundary in another TU can key its population by
+/// the screen the guest states rather than publishing it as belonging to none.
+bool InGameScreenRoots(uint8_t* base, uint32_t* out_owner, uint32_t* out_screen_id);
 uint32_t MenuRows(uint32_t index, char* out_name, size_t name_capacity, char* out_parent,
                   size_t parent_capacity, uint32_t* out_id, int32_t* out_event_type,
                   uint64_t* out_generation, int32_t* out_rating);
@@ -196,6 +210,11 @@ inline void EnsureAlternateSignalStack() {
   refii_bridge_ensure_alternate_signal_stack();
 }
 inline void GuestTickPumpNoteRan() { refii_bridge_guest_tick_pump_note_ran(); }
+
+/// Records a debug-call/debug-lua outcome where the host's RefiiHostGetDebugCallResult reads it.
+inline void NoteDebugCallResult(uint32_t addr, uint64_t r3, const std::string& note) {
+  refii_bridge_guest_tick_pump_note_result(addr, r3, note.c_str(), note.size());
+}
 
 /// Takes the whole queue aside and answers how many actions came with it.
 inline uint32_t GuestTickPumpBeginDrain() {

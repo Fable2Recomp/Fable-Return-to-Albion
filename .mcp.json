@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "refii-live": {
+      "command": "python3",
+      "args": ["tools/refii_mcp/__main__.py"]
+    }
+  }
+}

@@ -2,7 +2,8 @@ using System.Collections.Generic;
 using System.IO;
 using Godot;
 using Refii.Launcher.Core;
-using Refii.Launcher.Modding;
+using Refii.Launcher.Editing;
+using Refii.Mods;
 
 namespace Refii.Launcher;
 
@@ -19,12 +20,14 @@ public partial class ModdingPanel : VBoxContainer
 	private VBoxContainer _list = null!;
 	private bool _built;
 
+	private Button _editorButton = null!;
+	private bool _editorBusy;
 	private string _modsRoot = string.Empty;
 	private string _statusMessage = string.Empty;
 	private List<ModInstall> _mods = new();
-	private List<string> _enabledMods = new();
-	private readonly Dictionary<string, ModAssetSummary> _summaries = new();
-	private readonly Dictionary<string, int> _conflictCounts = new();
+	private ModLoadOrder _order = new();
+	private readonly Dictionary<string, int> _fileCounts = new();
+	private readonly Dictionary<string, ModTally> _tallies = new();
 
 	public void Configure(Font? font, int fontSize, SmartStyle style)
 	{
@@ -60,12 +63,11 @@ public partial class ModdingPanel : VBoxContainer
 		AddChild(_rootLabel);
 
 		Label help = MakeLabel(
-			"Install loose-file mods as folders here. A mod can place files " +
-			"directly in its folder, or under a files folder. Enabled mods " +
-			"override matching game files; a mod that ships " +
-			"refii_vfs/banks/<bank>/_manifest.tsv replaces that bank's contents. " +
-			"Higher mods in the list win conflicts. Changes apply the next time " +
-			"the game starts.");
+			"Install mods as folders here. A mod places files directly in its folder or " +
+			"under a files folder, and may ship them packed as a .bnk instead. Enabled mods " +
+			"override matching game files; higher in the list wins a conflict. Pack turns a " +
+			"mod into a bank you can hand to someone. Changes apply the next time the game " +
+			"starts.");
 		help.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		AddChild(help);
 
@@ -86,6 +88,13 @@ public partial class ModdingPanel : VBoxContainer
 			RefreshState();
 		};
 		row.AddChild(refresh);
+
+		// THE EDITOR OPENS THIS INSTALL. It is the same project the game ships as, pointed at
+		// the player's own `assets/`, so a mod exported there is the mod listed above.
+		_editorButton = new Button();
+		Apply(_editorButton);
+		_editorButton.Pressed += OnEditor;
+		row.AddChild(_editorButton);
 
 		_statusLabel = MakeLabel(string.Empty);
 		_statusLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
@@ -124,51 +133,33 @@ public partial class ModdingPanel : VBoxContainer
 		return ModWorkspace.GetDefaultModsRoot(Installer.GetInstallBasePath());
 	}
 
+	/// <summary>
+	/// Rereads the folder and folds the enabled mods' manifests.
+	///
+	/// THE SAME FOLD THE GAME RUNS, over manifests rather than a mount — the panel cannot mount,
+	/// and a walk of every mod folder on every refresh answered a different question from the
+	/// one the game answers at boot. `ModIndex.Predict` applies the same order and the same
+	/// pins, so what this shows is what the mount will do.
+	/// </summary>
 	private void RefreshState()
 	{
 		_modsRoot = ResolveModsRoot();
 		_mods = ModWorkspace.DiscoverModInstalls(_modsRoot);
-		_enabledMods = ModWorkspace.ReadEnabledModNames(_modsRoot);
-		_summaries.Clear();
-		_conflictCounts.Clear();
+		_order = ModLoadOrder.Read(_modsRoot);
+		_fileCounts.Clear();
+		_tallies.Clear();
 
-		var ownersByPath = new Dictionary<string, List<string>>();
-		foreach (string name in _enabledMods)
+		foreach (ModInstall mod in _mods)
 		{
-			ModInstall? mod = _mods.Find(installed => installed.Name == name);
-			if (mod is null)
+			if (_order.Enabled.Contains(mod.Name))
 			{
-				continue;
+				_fileCounts[mod.Name] = ModManifest.EnsureCurrent(mod).Entries.Count;
 			}
-
-			ModAssetSummary summary = ModWorkspace.SummarizeModAssets(
-				ModWorkspace.GetModAssetRoot(mod));
-			foreach (string path in summary.NormalizedPaths)
-			{
-				if (!ownersByPath.TryGetValue(path, out List<string>? owners))
-				{
-					owners = new List<string>();
-					ownersByPath[path] = owners;
-				}
-
-				owners.Add(name);
-			}
-
-			_summaries[name] = summary;
 		}
 
-		foreach ((string _, List<string> owners) in ownersByPath)
+		foreach ((string name, ModTally tally) in ModIndex.Tally(ModIndex.Predict(_order, _mods)))
 		{
-			if (owners.Count < 2)
-			{
-				continue;
-			}
-
-			foreach (string owner in owners)
-			{
-				_conflictCounts.TryGetValue(owner, out int count);
-				_conflictCounts[owner] = count + 1;
-			}
+			_tallies[name] = tally;
 		}
 
 		Rebuild();
@@ -176,9 +167,75 @@ public partial class ModdingPanel : VBoxContainer
 
 	private void SaveEnabledMods()
 	{
-		_statusMessage = ModWorkspace.WriteEnabledModNames(_modsRoot, _enabledMods, out string error)
+		_statusMessage = _order.Write(_modsRoot, out string error)
 			? "Updated enabled mods."
 			: "Failed to update enabled mods: " + error;
+		RefreshState();
+	}
+
+	private void OnPack(ModInstall mod)
+	{
+		_statusMessage = ModExport.ToBank(mod, _modsRoot, out string packed, out string error)
+			? $"Packed '{mod.Name}' into {packed.Replace('\\', '/')}. Enable it in place of the " +
+			  "loose mod to test it."
+			: $"Failed to pack '{mod.Name}': {error}";
+		RefreshState();
+	}
+
+	/// <summary>
+	/// Installs the editor if it is not here, otherwise opens it.
+	///
+	/// The install runs off the UI thread — it downloads and unpacks ~180 MB — and reports back
+	/// through <see cref="ReportEditor"/>, which is deferred so the label is only ever touched
+	/// on the main thread.
+	/// </summary>
+	private void OnEditor()
+	{
+		if (_editorBusy)
+		{
+			return;
+		}
+
+		EditorReadiness readiness = EditorWorkspace.Readiness(out string missing);
+		if (readiness is EditorReadiness.NoGame or EditorReadiness.NoSdk or EditorReadiness.NoDotnet)
+		{
+			_statusMessage = missing;
+			Rebuild();
+			return;
+		}
+
+		if (readiness == EditorReadiness.Ready)
+		{
+			_statusMessage = EditorWorkspace.Launch(out string error)
+				? "Opening the editor..."
+				: "The editor did not start: " + error;
+			Rebuild();
+			return;
+		}
+
+		_editorBusy = true;
+		_statusMessage = "Preparing the editor...";
+		Rebuild();
+
+		_ = System.Threading.Tasks.Task.Run(async () =>
+		{
+			(bool ok, string error) = await EditorInstall.RunAsync(
+				status => CallDeferred(nameof(ReportEditor), status, false));
+			CallDeferred(
+				nameof(ReportEditor),
+				ok ? "The editor is installed. Press Open Editor to start it." : error,
+				true);
+		});
+	}
+
+	private void ReportEditor(string message, bool finished)
+	{
+		_statusMessage = message;
+		if (finished)
+		{
+			_editorBusy = false;
+		}
+
 		RefreshState();
 	}
 
@@ -201,6 +258,7 @@ public partial class ModdingPanel : VBoxContainer
 	{
 		_rootLabel.Text = "Mod folder: " + _modsRoot.Replace('\\', '/');
 		_statusLabel.Text = _statusMessage;
+		UpdateEditorButton();
 
 		foreach (Node child in _list.GetChildren())
 		{
@@ -214,7 +272,7 @@ public partial class ModdingPanel : VBoxContainer
 		}
 
 		var ordered = new List<ModInstall>();
-		foreach (string name in _enabledMods)
+		foreach (string name in _order.Enabled)
 		{
 			ModInstall? mod = _mods.Find(installed => installed.Name == name);
 			if (mod is not null)
@@ -225,19 +283,20 @@ public partial class ModdingPanel : VBoxContainer
 
 		foreach (ModInstall mod in _mods)
 		{
-			if (!_enabledMods.Contains(mod.Name))
+			if (!_order.Enabled.Contains(mod.Name))
 			{
 				ordered.Add(mod);
 			}
 		}
 
-		var grid = new GridContainer { Columns = 6 };
+		var grid = new GridContainer { Columns = 7 };
 		grid.AddThemeConstantOverride("h_separation", 8);
 		grid.AddThemeConstantOverride("v_separation", 3);
 		grid.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 		_list.AddChild(grid);
 
-		foreach (string header in new[] { "Enabled", "Order", "Mod", "Files", "Conflicts", "Path" })
+		foreach (string header in
+			new[] { "Enabled", "Order", "Mod", "Files", "Conflicts", "Pack", "Path" })
 		{
 			Label label = MakeLabel(header);
 			label.AddThemeColorOverride("font_color", _style.TabSelected);
@@ -252,7 +311,7 @@ public partial class ModdingPanel : VBoxContainer
 
 	private void AddRow(GridContainer grid, ModInstall mod)
 	{
-		int position = _enabledMods.IndexOf(mod.Name);
+		int position = _order.Enabled.IndexOf(mod.Name);
 		bool enabled = position >= 0;
 
 		var check = new CheckBox { ButtonPressed = enabled };
@@ -262,14 +321,14 @@ public partial class ModdingPanel : VBoxContainer
 		{
 			if (pressed)
 			{
-				if (!_enabledMods.Contains(captured.Name))
+				if (!_order.Enabled.Contains(captured.Name))
 				{
-					_enabledMods.Add(captured.Name);
+					_order.Enabled.Add(captured.Name);
 				}
 			}
 			else
 			{
-				_enabledMods.Remove(captured.Name);
+				_order.Enabled.Remove(captured.Name);
 			}
 
 			SaveEnabledMods();
@@ -287,19 +346,19 @@ public partial class ModdingPanel : VBoxContainer
 			int upIndex = position;
 			up.Pressed += () =>
 			{
-				(_enabledMods[upIndex], _enabledMods[upIndex - 1]) =
-					(_enabledMods[upIndex - 1], _enabledMods[upIndex]);
+				(_order.Enabled[upIndex], _order.Enabled[upIndex - 1]) =
+					(_order.Enabled[upIndex - 1], _order.Enabled[upIndex]);
 				SaveEnabledMods();
 			};
 			orderBox.AddChild(up);
 
-			var down = new Button { Text = "v", Disabled = position + 1 >= _enabledMods.Count };
+			var down = new Button { Text = "v", Disabled = position + 1 >= _order.Enabled.Count };
 			Apply(down);
 			int downIndex = position;
 			down.Pressed += () =>
 			{
-				(_enabledMods[downIndex], _enabledMods[downIndex + 1]) =
-					(_enabledMods[downIndex + 1], _enabledMods[downIndex]);
+				(_order.Enabled[downIndex], _order.Enabled[downIndex + 1]) =
+					(_order.Enabled[downIndex + 1], _order.Enabled[downIndex]);
 				SaveEnabledMods();
 			};
 			orderBox.AddChild(down);
@@ -330,20 +389,68 @@ public partial class ModdingPanel : VBoxContainer
 		nameLabel.TooltipText = tooltip;
 		grid.AddChild(nameLabel);
 
-		string files = _summaries.TryGetValue(mod.Name, out ModAssetSummary? summary)
-			? summary.FileCount.ToString()
+		string files = _fileCounts.TryGetValue(mod.Name, out int fileCount)
+			? fileCount.ToString()
 			: "-";
 		grid.AddChild(MakeLabel(files));
 
-		string conflicts = _conflictCounts.TryGetValue(mod.Name, out int count)
-			? count.ToString()
-			: "0";
-		grid.AddChild(MakeLabel(conflicts));
+		// CONFLICTS, AND HOW MANY OF THEM THIS MOD LOST — the count alone says two mods touch a
+		// file, not which one the player will actually see.
+		Label conflictLabel = MakeLabel(
+			_tallies.TryGetValue(mod.Name, out ModTally? tally)
+				? tally.Conflicts == 0 ? "0" : $"{tally.Conflicts} ({tally.Lost} lost)"
+				: "0");
+		if (tally is not null && tally.Lost != 0)
+		{
+			conflictLabel.TooltipText =
+				$"{tally.Lost} file(s) another enabled mod owns instead. Move '{mod.Name}' up " +
+				"to win them.";
+		}
+
+		grid.AddChild(conflictLabel);
+
+		var pack = new Button { Text = "Pack" };
+		Apply(pack);
+		pack.TooltipText = "Write this mod as a .bnk you can hand to someone.";
+		ModInstall packed = mod;
+		pack.Pressed += () => OnPack(packed);
+		grid.AddChild(pack);
 
 		Label pathLabel = MakeLabel(mod.Root.Replace('\\', '/'));
 		pathLabel.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
 		pathLabel.TooltipText = mod.Root;
 		grid.AddChild(pathLabel);
+	}
+
+	/// <summary>
+	/// The button says what pressing it does, and is disabled with a reason when it cannot.
+	/// </summary>
+	private void UpdateEditorButton()
+	{
+		if (_editorButton is null)
+		{
+			return;
+		}
+
+		if (_editorBusy)
+		{
+			_editorButton.Text = "Installing Editor...";
+			_editorButton.Disabled = true;
+			return;
+		}
+
+		EditorReadiness readiness = EditorWorkspace.Readiness(out string missing);
+		_editorButton.Disabled = readiness is EditorReadiness.NoGame or EditorReadiness.NoSdk;
+		_editorButton.Text = readiness switch
+		{
+			EditorReadiness.Ready => "Open Editor",
+			EditorReadiness.NoEditor => "Install Editor",
+			EditorReadiness.NoDotnet => "Open Editor",
+			_ => "Editor Unavailable",
+		};
+		_editorButton.TooltipText = readiness == EditorReadiness.Ready
+			? "Opens this install in Godot, with the mod tools loaded."
+			: missing;
 	}
 
 	private void Apply(Control control)

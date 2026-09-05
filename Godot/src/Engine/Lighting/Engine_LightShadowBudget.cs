@@ -21,17 +21,27 @@ public partial class Engine_LightShadowBudget : Node
 	public const string NodeName = "LightShadowBudget";
 
 	/// <summary>Live shadow maps at once. Comfortably inside the default 4096 atlas.</summary>
-	public const int Budget = 8;
+	/// <summary>Shadowed placed lights at once; a live lever through the debug channel.</summary>
+	public static int Budget = 4;
+
+	/// <summary>Placed lights kept VISIBLE at once — the nearest that can still reach the eye.
+	/// Measured 2026-09-04: 190 visible lights cost 13 ms of draw with every shadow off.</summary>
+	public static int LightBudget = 48;
+
+	/// <summary>Debug lever: false hides every placed light regardless of the budget.</summary>
+	public static bool LightsEnabled = true;
 
 	/// <summary>Seconds between reassignments — shadow churn is visible, so not per-frame.</summary>
 	private const double Interval = 0.25;
 
 	private readonly List<Light3D> _lights = new();
 	private readonly List<(float DistanceSq, Light3D Light)> _ranked = new();
+	private readonly List<(float DistanceSq, Light3D Light)> _reach = new();
 	private double _since = double.MaxValue;
 
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("lightshadowbudget");
 		_since += delta;
 		if (_since < Interval)
 		{
@@ -55,12 +65,40 @@ public partial class Engine_LightShadowBudget : Node
 		bool forceAll = Engine_LevelLights.PlacedShadowsEnabled;
 		Vector3 eye = camera.GlobalPosition;
 
+		// VISIBILITY FIRST: a light whose fade has ended before the eye lights nothing on
+		// screen and still costs its cull and cluster work. Keep the nearest LightBudget of
+		// those that can reach; hide the rest until the eye comes back.
+		_reach.Clear();
+		foreach (Light3D light in _lights)
+		{
+			if (!light.IsInsideTree())
+			{
+				continue;
+			}
+
+			float range = light is OmniLight3D omni ? omni.OmniRange : light is SpotLight3D spot ? spot.SpotRange : 0f;
+			float fadeEnd = light.DistanceFadeEnabled ? light.DistanceFadeBegin + light.DistanceFadeLength : float.MaxValue;
+			float distance = eye.DistanceTo(light.GlobalPosition);
+			bool reaches = LightsEnabled && distance <= fadeEnd + range;
+			_reach.Add((reaches ? distance : float.MaxValue, light));
+		}
+
+		_reach.Sort((a, b) => a.DistanceSq.CompareTo(b.DistanceSq));
+		for (int i = 0; i < _reach.Count; i++)
+		{
+			bool show = _reach[i].DistanceSq != float.MaxValue && i < LightBudget;
+			if (_reach[i].Light.Visible != show)
+			{
+				_reach[i].Light.Visible = show;
+			}
+		}
+
 		_ranked.Clear();
 		foreach (Light3D light in _lights)
 		{
-			bool eligible = forceAll ||
+			bool eligible = light.Visible && (forceAll ||
 				(light.HasMeta(Engine_LevelLights.AuthoredShadowMeta) &&
-					light.GetMeta(Engine_LevelLights.AuthoredShadowMeta).AsBool());
+					light.GetMeta(Engine_LevelLights.AuthoredShadowMeta).AsBool()));
 			if (!eligible || !light.IsInsideTree())
 			{
 				if (light.ShadowEnabled)

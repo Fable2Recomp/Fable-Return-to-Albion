@@ -216,6 +216,165 @@ public sealed class Engine_EntitySkeleton
 		_guestBones = guestBones;
 		Mapped = mapped;
 		GuestOnly = guestBones - mapped;
+
+		// The rig's reach at rest: how far any bone sits from the root. A live pose is bounded
+		// by it — no animation carries a bone past roughly twice the rig's own extent.
+		float reach = 0f;
+		for (int m = 0; m < skeleton.GetBoneCount(); ++m)
+		{
+			reach = Mathf.Max(reach, skeleton.GetBoneGlobalRest(m).Origin.Length());
+		}
+
+		_restReach = Mathf.Max(reach, 0.25f);
+	}
+
+	private readonly float _restReach;
+
+	/// <summary>Poses refused because a bone lay outside any reach the rig can have.</summary>
+	public static int ImplausiblePoses;
+
+	private static int _refusalsLogged;
+	private static int _stuckLogged;
+	private static int _jumpsLogged;
+	private int _localReads;
+
+	/// <summary>Consecutive local reads after which a rig counts as stuck local (reported).</summary>
+	private const int LocalStuckFrames = 300;
+
+	/// <summary>Rigs that read local for LocalStuckFrames in a row — props, in practice.</summary>
+	public static int LocalStuckRigs;
+
+	/// <summary>Poses held because the array still read local (see LocalVotes).</summary>
+	public static int LocalPosesHeld;
+
+	/// <summary>Poses whose flag said local while the data was model space — applied.</summary>
+	public static int FlagLocalDataModel;
+
+	/// <summary>Poses held because the array was half converted (a split in guest order).</summary>
+	public static int MixedPosesHeld;
+
+	/// <summary>Bones that moved more than 1.5 m between two accepted poses.</summary>
+	public static int PoseJumps;
+
+	/// <summary>Accepted poses that differed from the rig's previous one, and all applies —
+	/// their ratio is how often the guest's animation actually moves per sample.</summary>
+	public static int PoseChanges;
+	public static int PoseApplies;
+
+	private int _myChanges;
+	private int _myApplies;
+	private Vector3[]? _lastTranslation;
+	private bool _lastTranslationValid;
+
+	/// <summary>This rig's own change ratio, for the per-rig report.</summary>
+	public (int Changes, int Applies) ChangeCounts => (_myChanges, _myApplies);
+
+	/// <summary>Consecutive local reads held right now.</summary>
+	public int LocalReads => _localReads;
+
+	/// <summary>Called when a frame skips this rig (off camera): the next accepted pose is a
+	/// fresh baseline, not a jump, and the blend restarts from it.</summary>
+	public void ForgetLastPose()
+	{
+		_lastTranslationValid = false;
+		_havePrevious = false;
+	}
+
+	/// <summary>
+	/// Whether a pose could be this rig's. The double-read tear detector in the bridge catches
+	/// a write that lands BETWEEN its two copies; garbage that reads identically twice is what
+	/// this catches: a bone beyond twice the rest reach, a non-finite lane, or a rotation far
+	/// from unit length is not a pose of this rig.
+	/// </summary>
+	private bool Plausible(in HostBridge.BonePose pose)
+	{
+		float limit = _restReach * 2f + 0.5f;
+		for (int m = 0; m < _modelToGuest.Length; ++m)
+		{
+			int g = _modelToGuest[m];
+			if (g < 0)
+			{
+				continue;
+			}
+
+			Vector3 t = pose.Translation(g);
+			Quaternion q = pose.Rotation(g);
+			Vector3 sc = pose.Scale(g);
+			string? why = null;
+			if (!t.IsFinite() || !q.IsFinite() || !sc.IsFinite())
+			{
+				why = "not finite";
+			}
+			else if (t.Length() > limit)
+			{
+				why = "beyond reach";
+			}
+			else if (q.LengthSquared() is < 0.5f or > 2f)
+			{
+				why = "rotation not unit";
+			}
+
+			if (why is null)
+			{
+				continue;
+			}
+
+			if (_refusalsLogged < 12)
+			{
+				++_refusalsLogged;
+				GD.Print($"[rig-refuse] '{_skeleton.Name}' bone {g} '{BoneName(m)}': {why} |t|={t.Length():0.000} limit={limit:0.000} reach={_restReach:0.000} |q|²={q.LengthSquared():0.000} scale={sc}");
+			}
+
+			return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// Per-bone votes on whether the array is LOCAL (bones at their local rest lengths, the
+	/// array before the guest's in-place conversion) or MODEL (bones at their root distances),
+	/// and whether the votes SPLIT in guest bone order — a converted head and a local tail is
+	/// a converter preempted part-way. The flag at comp+0x14 is wrong both ways; the data is
+	/// not. Never compose a local array with this reader: its element layout differs
+	/// (translation first), which is the door's axis swap in the jump log.
+	/// </summary>
+	private (int Local, int Model, bool Split) LocalVotes(in HostBridge.BonePose pose)
+	{
+		int local = 0;
+		int model = 0;
+		int lastModelGuest = -1;
+		int firstLocalGuest = int.MaxValue;
+		for (int m = 0; m < _modelToGuest.Length; ++m)
+		{
+			int g = _modelToGuest[m];
+			if (g < 0)
+			{
+				continue;
+			}
+
+			float raw = pose.Translation(g).Length();
+			float localRest = _rig.Translation(m).Length();
+			float globalRest = _skeleton.GetBoneGlobalRest(m).Origin.Length();
+			if (Mathf.Abs(globalRest - localRest) < 0.05f)
+			{
+				continue;  // says nothing either way
+			}
+
+			if (Mathf.Abs(raw - localRest) <= Mathf.Abs(raw - globalRest))
+			{
+				++local;
+				firstLocalGuest = Mathf.Min(firstLocalGuest, g);
+			}
+			else
+			{
+				++model;
+				lastModelGuest = Mathf.Max(lastModelGuest, g);
+			}
+		}
+
+		bool split = local >= 2 && model >= 2 && firstLocalGuest > lastModelGuest;
+		return (local, model, split);
 	}
 
 	/// <summary>The node to parent a skinned mesh under.</summary>
@@ -233,6 +392,52 @@ public sealed class Engine_EntitySkeleton
 	/// </summary>
 	public bool IsPosed(int modelBone) =>
 		modelBone >= 0 && modelBone < _modelToGuest.Length && _modelToGuest[modelBone] >= 0;
+
+	/// <summary>The guest's bone index for each model bone, -1 where the model bone has none.</summary>
+	public int[] ModelToGuest => _modelToGuest;
+
+	/// <summary>This rig's model bone with that name, matched the way the skeleton was built.</summary>
+	public bool TryBone(string name, out int bone)
+	{
+		for (int m = 0; m < _rig.BoneCount; ++m)
+		{
+			if (string.Equals(_rig.Names[m], name, System.StringComparison.OrdinalIgnoreCase))
+			{
+				bone = m;
+				return true;
+			}
+		}
+
+		bone = -1;
+		return false;
+	}
+
+	/// <summary>
+	/// The GUEST's own pose for one bone, in this skeleton's space — a one-off read, for
+	/// solving something the guest stated against its own pose. Never a per-frame path: the
+	/// host plays the animation, and this is here to recover a constant, not to follow.
+	///
+	/// Refuses a torn or local-space sample rather than composing one: the caller can try again
+	/// next frame, and a wrong answer here becomes a permanently wrong offset.
+	/// </summary>
+	public bool TryGuestBoneGlobal(uint entity, int modelBone, out Transform3D global)
+	{
+		global = Transform3D.Identity;
+		if (modelBone < 0 || modelBone >= _modelToGuest.Length)
+		{
+			return false;
+		}
+
+		int g = _modelToGuest[modelBone];
+		if (g < 0 || HostBridge.GetEntityPose(entity) is not { } pose ||
+			pose.Torn || !pose.IsModelSpace || g >= pose.BoneCount)
+		{
+			return false;
+		}
+
+		global = ToGodot(pose.Rotation(g), pose.Translation(g), pose.Scale(g));
+		return global.Origin.IsFinite();
+	}
 
 	/// <summary>The model's name for a bone, for diagnostics that have to be actionable.</summary>
 	public string BoneName(int modelBone) =>
@@ -408,9 +613,28 @@ public sealed class Engine_EntitySkeleton
 		// the renderer indexes a skin past its end. Naming them by index instead cannot fail,
 		// and Godot never needs the real names anyway: the name is only the key that matches
 		// the guest's rig to this one, and that map is built below, in our own dictionary.
+		// THE MODEL'S NAMES, MADE LEGAL. The clips (Engine_AnimBuilder) map their tracks to
+		// bones BY NAME, and a skeleton named bone_0.. matched only its root — every other bone
+		// of every clip-driven rig fell to rest (2026-09-05). A name is sanitised of the
+		// characters Godot rejects, given a suffix only when it would repeat, and replaced by
+		// the index form only when empty; the count check below still guards the skin.
+		var used = new HashSet<string>(rig.BoneCount);
 		for (int i = 0; i < rig.BoneCount; ++i)
 		{
-			skeleton.AddBone($"bone_{i}");
+			string name = i < rig.Names.Length ? rig.Names[i] : string.Empty;
+			name = name.Replace(':', '_').Replace('/', '_').Trim();
+			if (name.Length == 0)
+			{
+				name = $"bone_{i}";
+			}
+
+			if (!used.Add(name))
+			{
+				name = $"{name}_{i}";
+				used.Add(name);
+			}
+
+			skeleton.AddBone(name);
 		}
 
 		// Believe nothing — the count is the whole safety property. If it ever disagrees the
@@ -517,6 +741,12 @@ public sealed class Engine_EntitySkeleton
 	/// </summary>
 	public void Follow(uint entity)
 	{
+		FollowInner(entity);
+		WriteBlended();
+	}
+
+	private void FollowInner(uint entity)
+	{
 		// REFII_RIG_BIND_ONLY=1 freezes every rig in its bind pose.
 		//
 		// A bisect, not a feature. When a character renders wrongly there are two halves that
@@ -573,6 +803,46 @@ public sealed class Engine_EntitySkeleton
 		{
 			++NeverPosed;
 			return;  // never posed — leave it in bind rather than invent one
+		}
+
+		// BY THE DATA, NOT THE FLAG (see LocalVotes). A split array is held; a wholly local
+		// array is held until the guest's converter has run; a rig that never converts is a
+		// prop holding its reference pose, logged once so it can be identified.
+		(int localVotes, int modelVotes, bool split) = LocalVotes(pose);
+		if (split)
+		{
+			++MixedPosesHeld;
+			return;
+		}
+
+		bool looksLocal = localVotes > modelVotes
+			|| (localVotes == 0 && modelVotes == 0 && pose.Space == 1);
+		if (looksLocal)
+		{
+			++LocalPosesHeld;
+			if (++_localReads == LocalStuckFrames)
+			{
+				++LocalStuckRigs;
+				if (_stuckLogged < 24)
+				{
+					++_stuckLogged;
+					GD.Print($"[rig-stuck] entity 0x{entity:X8} '{_skeleton.Name}' rig '{_rig.Names[0]}' bones {_guestBones} has read LOCAL for {LocalStuckFrames} frames (space={pose.Space}, votes local {localVotes} model {modelVotes})");
+				}
+			}
+
+			return;
+		}
+
+		_localReads = 0;
+		if (pose.Space == 1)
+		{
+			++FlagLocalDataModel;
+		}
+
+		if (!Plausible(pose))
+		{
+			++ImplausiblePoses;
+			return;  // hold last frame's pose, as for a torn read
 		}
 
 		Classify(pose);
@@ -726,6 +996,13 @@ public sealed class Engine_EntitySkeleton
 		// IN THE MODEL'S ORDER, parents before children — see _modelToGuest. Bones the guest
 		// does not have keep their rest, which is right for the wrapper and the attachment
 		// dummies: they carry no skinning weight and nothing animates them.
+		// POSE JUMPS AND CHANGES, IN DATA. A bone that moves more than 1.5 m between two
+		// accepted poses is logged with the guest's values; whether the pose changed at all
+		// feeds the per-rig rate the report prints.
+		_lastTranslation ??= new Vector3[HostBridge.MaxBones];
+		bool changed = false;
+		++PoseApplies;
+		++_myApplies;
 		for (int m = 0; m < _modelToGuest.Length; ++m)
 		{
 			int g = _modelToGuest[m];
@@ -734,9 +1011,121 @@ public sealed class Engine_EntitySkeleton
 				continue;
 			}
 
-			_skeleton.SetBoneGlobalPose(m, modelSpace
+			Vector3 now = pose.Translation(g);
+			if (_lastTranslationValid && !changed && now.DistanceSquaredTo(_lastTranslation[g]) > 1e-8f)
+			{
+				changed = true;
+				++PoseChanges;
+				++_myChanges;
+			}
+
+			if (_lastTranslationValid && now.DistanceTo(_lastTranslation[g]) > 1.5f)
+			{
+				++PoseJumps;
+				if (_jumpsLogged < 12)
+				{
+					++_jumpsLogged;
+					GD.Print($"[rig-jump] '{_skeleton.Name}' bone {g} '{BoneName(m)}' {_lastTranslation[g]} -> {now} torn={pose.Torn} space={pose.Space} tick={HostBridge.SimTick}");
+				}
+			}
+
+			_lastTranslation[g] = now;
+		}
+
+		bool first = !_lastTranslationValid;
+		_lastTranslationValid = true;
+
+		// TWO POSES AND A CLOCK. The guest evaluates animation on its own tick (measured
+		// 2026-09-04: ~22 poses/s for the hero against 24–60 drawn frames), so a display that
+		// samples the newest pose repeats one every few frames — the beat the entities report
+		// calls out, and its answer is interpolation. An accepted pose that DIFFERS from the
+		// newest becomes the newest of two, stamped with the host clock; WriteBlended() draws
+		// the blend between the two on every drawn frame, one guest interval behind.
+		_newest ??= new Transform3D[_rig.BoneCount];
+		_previous ??= new Transform3D[_rig.BoneCount];
+		if (!changed && !first && _haveNewest)
+		{
+			return;  // the same pose again: the blend keeps moving on the clock
+		}
+
+		(_previous, _newest) = (_newest, _previous);
+		_previousUsec = _newestUsec;
+		_newestUsec = Godot.Time.GetTicksUsec();
+		_havePrevious = _haveNewest;
+		_haveNewest = true;
+		for (int m = 0; m < _modelToGuest.Length; ++m)
+		{
+			int g = _modelToGuest[m];
+			if (g < 0)
+			{
+				continue;
+			}
+
+			_newest[m] = modelSpace
 				? ToGodot(pose.Rotation(g), pose.Translation(g), pose.Scale(g))
-				: _composed![g]);
+				: _composed![g];
+		}
+	}
+
+	private Transform3D[]? _globals;
+	private Transform3D[]? _newest;
+	private Transform3D[]? _previous;
+	private ulong _newestUsec;
+	private ulong _previousUsec;
+	private bool _haveNewest;
+	private bool _havePrevious;
+
+	/// <summary>
+	/// Writes the drawn pose: the blend of the two newest accepted poses at the host clock,
+	/// every drawn frame — the display owns the clock, the guest's poses are its keyframes.
+	/// LOCAL POSES, ONE PARENT INVERSE PER BONE: SetBoneGlobalPose recomputes the chain per
+	/// call (quadratic per skeleton, ~25 ms of draw with every rig on screen). Unmapped bones
+	/// keep their rest, composed under their parents so the inverses stay right.
+	/// </summary>
+	private void WriteBlended()
+	{
+		if (!_haveNewest || _newest is null || _previous is null)
+		{
+			return;
+		}
+
+		float alpha = 1f;
+		if (_havePrevious && _newestUsec > _previousUsec)
+		{
+			double interval = (_newestUsec - _previousUsec) * 1e-6;
+			double since = (Godot.Time.GetTicksUsec() - _newestUsec) * 1e-6;
+			// A stale newest (the rig stopped moving, or was off camera) is drawn as is.
+			alpha = interval > 0.25 ? 1f : (float)System.Math.Clamp(since / interval, 0.0, 1.0);
+		}
+
+		_globals ??= new Transform3D[_rig.BoneCount];
+		for (int m = 0; m < _modelToGuest.Length; ++m)
+		{
+			int parent = _rig.Parents[m];
+			Transform3D parentGlobal = parent >= 0 && parent < m ? _globals[parent] : Transform3D.Identity;
+			int g = _modelToGuest[m];
+			Transform3D global;
+			if (g >= 0)
+			{
+				global = _havePrevious && alpha < 1f
+					? _previous[m].InterpolateWith(_newest[m], alpha)
+					: _newest[m];
+			}
+			else
+			{
+				global = parentGlobal * ToGodot(_rig.Rotation(m), _rig.Translation(m), _rig.Scale(m));
+			}
+
+			_globals[m] = global;
+			if (g < 0)
+			{
+				continue;
+			}
+
+			Transform3D local = parentGlobal.AffineInverse() * global;
+			_skeleton.SetBonePosePosition(m, local.Origin);
+			_skeleton.SetBonePoseRotation(m, local.Basis.GetRotationQuaternion());
+			_skeleton.SetBonePoseScale(m, local.Basis.Scale);
 		}
 	}
 

@@ -58,6 +58,9 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// object is standing; a hash that resolves to no indexed model leaves the panel empty rather
 	/// than substituting art.
 	/// </summary>
+	/// <summary>The preview mesh's node name — how the paint probe recognises it.</summary>
+	public const string MeshName = "PreviewModel";
+
 	public bool Show(uint modelHash, Placement placement)
 	{
 		if (modelHash == ModelHash)
@@ -104,7 +107,7 @@ public partial class Engine_UiPreviewObject : Node3D
 			return false;
 		}
 
-		_mesh = new MeshInstance3D { Name = "PreviewModel", Mesh = mesh };
+		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh };
 		int textured = Present(_mesh, mesh);
 		AddChild(_mesh);
 		LastReport = $"{path} ({textured}/{mesh.GetSurfaceCount()} surface(s) textured)";
@@ -132,7 +135,18 @@ public partial class Engine_UiPreviewObject : Node3D
 
 			var flat = new StandardMaterial3D
 			{
-				ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel,
+				// Unlit, as stated above: the UI viewport has no environment, and a lone key
+				// light inside the clone's mirrored basis read every item as a flat grey ball.
+				ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+				// OVER THE PAGE. The guest drew its preview as a real entity in its own pass,
+				// so it always sat on top of the book; here the anchor lies 350 canvas units
+				// BEHIND the parchment (`model_proxy.model` z 1900, `frames_page` z 2249) and
+				// the depth test buried the model under the page. Depth is off and the
+				// priority high, with back faces culled so the mesh still reads as a solid.
+				NoDepthTest = true,
+				RenderPriority = 100,
+				// NO CULLING: the anchor's basis is mirrored (see the light note above), so a
+				// back-face cull removes the faces the player sees.
 				CullMode = BaseMaterial3D.CullModeEnum.Disabled,
 				AlbedoTexture = albedo,
 				AlbedoColor = albedo is null ? new Color(0.62f, 0.60f, 0.56f) : Colors.White,
@@ -149,16 +163,47 @@ public partial class Engine_UiPreviewObject : Node3D
 		return textured;
 	}
 
-	/// <summary>The spin, taken from the anchor element the guest writes it on.</summary>
-	public void Spin(Vector3 rotationDegrees)
+	/// <summary>The player's turn of the model about the panel's vertical, in degrees.</summary>
+	public void Spin(float yawDegrees)
 	{
-		if (_mesh is not null)
+		if (_mesh is null)
 		{
-			_mesh.RotationDegrees = _placedRotation + rotationDegrees;
+			return;
 		}
+
+		// About the panel's vertical, as the guest's spinner writes the anchor's `rotation.y`
+		// (`sub_829B5678` → `sub_824254C8`), over the record's own orientation.
+		Basis turned = new Basis(Vector3.Up, Mathf.DegToRad(yawDegrees)) *
+			Basis.FromEuler(_placedRotation * (Mathf.Pi / 180f));
+		_mesh.Basis = turned.Scaled(_mesh.Scale);
+		Centre();
 	}
 
 	private Vector3 _placedRotation;
+
+	/// <summary>The stated offset from the anchor, in canvas units (x, screen-vertical).</summary>
+	private Vector3 _placedOffset;
+
+	/// <summary>The mesh's own bounds centre, in model units.</summary>
+	private Vector3 _meshCentre;
+
+	/// <summary>
+	/// THE ITEM'S CENTRE SITS AT THE ANCHOR, NOT ITS ORIGIN. Worn items are modelled in body
+	/// space — the soldier helmet's geometry is at head height beside the origin, so hung by
+	/// its origin it landed 400 canvas units below the ring (the paint probe: node at
+	/// (230, 30), box at (−149..−19, −495..−364)). The bounds centre is carried through the
+	/// current basis (rotation, spin and scale) and subtracted, so the geometry's middle is
+	/// what sits at the anchor plus the stated offset, whichever way it is turned.
+	/// </summary>
+	private void Centre()
+	{
+		if (_mesh is null)
+		{
+			return;
+		}
+
+		_mesh.Position = _placedOffset - _mesh.Basis * _meshCentre;
+	}
 
 	private void Apply(Placement placement)
 	{
@@ -194,7 +239,13 @@ public partial class Engine_UiPreviewObject : Node3D
 			}
 		}
 
-		_mesh.Position = placement.Translation;
+		// THE OFFSET IS CANVAS-SPACE AND SWIZZLED. `sub_828C3C78` sums the anchor chain's
+		// `position.x/y/z` into (x, z, y) lanes, adds `GUIScreenTranslationOffset` lane-wise
+		// (0x828c3fb4), and `sub_822A89C0` maps lane 2 to world Z, which is UP — so the
+		// offset's third component is screen-vertical and its second is depth. The Rusty
+		// Longsword's (0, 0, -54.5) hangs it 54.5 canvas units below its anchor.
+		_placedOffset = new Vector3(placement.Translation.X, placement.Translation.Z, 0f);
+		_meshCentre = _mesh.Mesh?.GetAabb().GetCenter() ?? Vector3.Zero;
 		_mesh.Scale = Vector3.One * (fitted / inherited);
 		// Radians in the record — the bridge passes the floats raw. `GUIScreenRotationOffset` is
 		// (0, 0, -1.482) for the tomb seal, i.e. -85 degrees.
@@ -202,6 +253,7 @@ public partial class Engine_UiPreviewObject : Node3D
 			Mathf.RadToDeg(placement.Rotation.X), Mathf.RadToDeg(placement.Rotation.Y),
 			Mathf.RadToDeg(placement.Rotation.Z));
 		_mesh.RotationDegrees = _placedRotation;
+		Centre();
 
 		// The guest lights the object with the presentation's own key light. The UI viewport owns
 		// its world, so a light here reaches nothing else.

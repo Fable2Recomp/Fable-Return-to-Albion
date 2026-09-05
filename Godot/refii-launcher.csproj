@@ -8,5 +8,19 @@
     <AssemblyName>refii-launcher</AssemblyName>
     <Optimize>true</Optimize>
     <DebugType>portable</DebugType>
+
+    <!--
+      THE ROSLYN BUILD SERVER HANGS AN AUTOMATED PACKAGE BUILD.
+
+      Godot's export runs `dotnet publish`, which starts VBCSCompiler as a persistent daemon.
+      The daemon inherits the build's stdout pipe and then idles waiting for more work, so
+      ninja's poll never sees EOF: the package was written and zipped at 19:28 and ninja was
+      still sitting in do_sys_poll ten minutes later with a zombie `sh` for a child. Nothing
+      was compiling; the build simply could not tell it had finished.
+
+      Off ONLY when the driver asks for it, so an interactive build keeps the warm server and
+      its speed. `~/.cache/refii-scratch/run.sh` sets the variable.
+    -->
+    <UseSharedCompilation Condition="'$(REFII_NO_SHARED_COMPILATION)' == '1'">false</UseSharedCompilation>
   </PropertyGroup>
 </Project>

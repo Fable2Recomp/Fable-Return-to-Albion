@@ -108,7 +108,15 @@ public sealed class MdlReader
                 }
 
                 f &= 0x3FF;
-                bigE = (uint)(127 - 15 - t);
+
+                // A HALF DENORMAL IS f x 2^-24. Shifting left t times to put the implicit bit at
+                // 0x400 leaves 1.xxx x 2^(-14 - t), so the biased float exponent is 127 - 14 - t.
+                // This read `127 - 15 - t`, one too small, and returned every denormal at HALF its
+                // value — caught by round-tripping all 65,536 halves through the writer, where
+                // 4,088 of them came back one step lower. The affected values are all below the
+                // smallest normal half (~6.1e-5), so nothing on screen moved; the reader was
+                // simply not the inverse of anything.
+                bigE = (uint)(127 - 14 - t);
                 bigF = f << 13;
             }
         }

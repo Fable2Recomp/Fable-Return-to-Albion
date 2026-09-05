@@ -12,10 +12,10 @@
 // Disable warnings about unused parameters for kernel functions
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
-#include <achievement/achievement_xdbf.h>
 
 #include <cstring>
 
+#include <achievement/achievement_runtime.h>
 #include <rex/cvar.h>
 #include <rex/kernel/xam/private.h>
 #include <rex/logging.h>
@@ -629,9 +629,11 @@ u32 XamUserCreateAchievementEnumerator_entry(u32 title_id, u32 user_index, u32 x
   if (db.is_valid()) {
     const XLanguage language =
         db.GetExistingLanguage(static_cast<XLanguage>(REXCVAR_GET(user_language)));
-    refii::achievement::CacheAchievementsFromXdbf(db, util::XdbfSection::kImage, language);
-
     const std::vector<util::XdbfAchievementTableEntry> achievement_list = db.GetAchievements();
+
+    // ACHIEVED | ACHIEVED_ONLINE — the flags the game tests to consider an achievement earned.
+    // Unlocks are what Godot states through the seam plus anything the guest wrote this session.
+    constexpr uint32_t kAchievedFlags = 0x00030000;
 
     for (const util::XdbfAchievementTableEntry& entry : achievement_list) {
       auto item = XStaticAchievementEnumerator::AchievementDetails{
@@ -643,6 +645,12 @@ u32 XamUserCreateAchievementEnumerator_entry(u32 title_id, u32 user_index, u32 x
           entry.gamerscore,
           {0, 0},
           entry.flags};
+
+      if (const uint64_t ft = refii::achievement::GetAchievementUnlockTime(entry.id); ft != 0) {
+        item.flags |= kAchievedFlags;
+        item.unlock_time.unk_0 = static_cast<uint32_t>(ft & 0xFFFF'FFFF);
+        item.unlock_time.unk_4 = static_cast<uint32_t>(ft >> 32);
+      }
 
       e->AppendItem(item);
     }

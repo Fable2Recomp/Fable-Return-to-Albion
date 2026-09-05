@@ -26,7 +26,6 @@ public sealed class Engine_UiSpellAssignSet
 	public const string WheelPresentation = "hud";
 
 	/// <summary>The owned assignment widget, one per host — the blade and the quick wheel.</summary>
-	private Engine_UiSpellAssign? _blade;
 	private Engine_UiSpellAssign? _wheel;
 
 	/// <summary>This frame's assignment sample, taken once and shared by both hosts.</summary>
@@ -88,21 +87,11 @@ public sealed class Engine_UiSpellAssignSet
 
 		_spells = Engine_UiSource.Current.GetSpellAssign();
 
-		bool bladeUp = _spells.AbilitiesMode == 1;
-		if (bladeUp && (_blade is null || !GodotObject.IsInstanceValid(_blade)))
-		{
-			_blade = Ensure(Engine_UiScreenInput.AbilitiesPresentation);
-		}
-
-		if (_blade is not null && GodotObject.IsInstanceValid(_blade))
-		{
-			_blade.Visible = bladeUp;
-			if (bladeUp)
-			{
-				_blade.SetLive(_spells);
-			}
-		}
-
+		// THE BLADE IS THE GUEST'S. Its widget (`screen14+200`, bound by `sub_826C2480` at
+		// 0x826c2510) writes every slide, icon texture and adjuster position onto the live
+		// presentation, and the abilities book's clone follows those statements; the host only
+		// forwards the levers (DriveBlade). The wheel below has no presentation of its own to
+		// follow, so that one stays drawn here.
 		// The wheel opens over the running game with no screen behind it, so it is gated on its
 		// own flag, never a screen id. Both are suppressed inside their books, so one copy draws.
 		bool wheelUp = _spells.WheelOpen;
@@ -132,38 +121,32 @@ public sealed class Engine_UiSpellAssignSet
 
 	/// <summary>One frame of the blade: up/down move the slot, left/right move the carousel and
 	/// commit, A propagates, B closes the level through the guest's own mode byte.</summary>
-	public void Drive(Engine_UiSurfaceInput input)
+	/// <summary>
+	/// Forwards the blade's levers to the guest's own handler: `sub_826C2958` routes 28/29 to
+	/// the row, 30/31 to the carousel (which commits as it moves, `sub_826B5330`), 36 to the
+	/// copy-down (`sub_826B4EF8`) and 37 to the close — and the widget repaints the presentation
+	/// the book's clone follows. Repeat cadence is the page clock's, as for every held direction.
+	/// </summary>
+	public void DriveBlade(Engine_UiSurfaceInput input)
 	{
-		if (_blade is null || !GodotObject.IsInstanceValid(_blade))
-		{
-			return;
-		}
-
 		_vertical ??= PageClock();
 		_horizontal ??= PageClock();
 
-		// The blade's row index runs UPWARD where `GameInput.Direction` is a list direction (up
-		// -1, down +1): `abilitiesscreen.bgf` and `hud.bgf` both author `Spell1` at y -160 and
-		// `Spell5` at y +160, so slot 0 is the bottom and `Place` puts the frame at
-		// `-160 + 80*Row`. `spellassigning.dis` agrees — main.3 onUp `row + 1`, main.4 onDown
-		// `row - 1`. Negated here, not in `Move`, whose sign is already the blade's.
-		int vertical = -input.Direction;
-		for (int step = _vertical.Steps(input.Direction, input.Delta);
-			step > 0; --step)
+		for (int step = _vertical.Steps(input.Direction, input.Delta); step > 0; --step)
 		{
-			_blade.Move(vertical);
+			Engine_UiSource.Current.ScreenAction(
+				input.Direction < 0 ? Engine_UiScreenInput.Up : Engine_UiScreenInput.Down);
 		}
 
-		int horizontal = input.Horizontal;
-		for (int step = _horizontal.Steps(horizontal, input.Delta);
-			step > 0; --step)
+		for (int step = _horizontal.Steps(input.Horizontal, input.Delta); step > 0; --step)
 		{
-			_blade.Choose(horizontal);
+			Engine_UiSource.Current.ScreenAction(
+				input.Horizontal < 0 ? Engine_UiScreenInput.Left : Engine_UiScreenInput.Right);
 		}
 
 		if (input.Accept)
 		{
-			_blade.Propagate();
+			Engine_UiSource.Current.ScreenAction(Engine_UiScreenInput.Select);
 		}
 		else if (input.Back)
 		{

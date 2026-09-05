@@ -1,0 +1,22 @@
+# The title screen contract: the run arms, A lands, the main menu's rows come up.
+# The starter example — one contract per decoded screen is the phase-4 regression net.
+
+[[step]]
+wait = "frontend-armed"
+timeout = 420
+
+[[step]]
+expect = { op = "frontend", path = "canPressA", equals = "True" }
+
+[[step]]
+press = ["a"]
+
+[[step]]
+wait = "frontend"
+timeout = 30
+
+[[step]]
+expect = { op = "frontend", path = "up", equals = "True" }
+
+[[step]]
+shot = "main-menu"

@@ -75,14 +75,22 @@ public sealed class GdbView
     private readonly byte[] _bytes;
     private readonly int[] _recordOffsets;
 
-    private GdbView(byte[] bytes, int[] recordOffsets, int schemaBase, int hashBase, int offsetBase)
+    private GdbView(byte[] bytes, int[] recordOffsets, int schemaBase, int hashBase,
+        int offsetBase, int aliasBase, int aliasCount)
     {
         _bytes = bytes;
         _recordOffsets = recordOffsets;
         SchemaBase = schemaBase;
         HashBase = hashBase;
         OffsetBase = offsetBase;
+        AliasBase = aliasBase;
+        AliasCount = aliasCount;
     }
+
+    /// <summary>Where the alias pairs start, and how many there are. See <see cref="TryLookup"/>.</summary>
+    public int AliasBase { get; }
+
+    public int AliasCount { get; }
 
     public int RecordCount => _recordOffsets.Length;
 
@@ -158,12 +166,26 @@ public sealed class GdbView
         uint count = ReadU32(bytes, 0x04);
         uint sizeA = ReadU32(bytes, 0x08);
         uint sizeB = ReadU32(bytes, 0x0C);
+        uint aliasCount = ReadU32(bytes, 0x10);
+
+        // THE ALIAS TABLE, which nothing here read before. Half the names the guest spawns rows
+        // with are ALIASES, not entry ids — `AbilityHeavyWeaponsBase` is alias `0x064A4B7E` for
+        // entry `0x19F1B0CD` — so a lookup by name found nothing and every ability reported
+        // "IS NOT A GDB RECORD".
+        //
+        // It sits at the END of the payload, and the payload carries a two-byte alignment pad
+        // for an odd entry count. Miss that pad and the pairs read two bytes out and decode as
+        // plausible-looking rubbish.
+        long payload = (long)sizeA + sizeB +
+            (2 * ((3 * (long)count) + (count & 1) + (4 * (long)aliasCount)));
+        long aliasBase = HeaderSize + payload - (8L * aliasCount);
 
         long schemaBase = HeaderSize + (long)sizeA;
         long hashBase = schemaBase + sizeB;
         long offsetBase = hashBase + (long)count * 4;
 
-        if (schemaBase > bytes.Length || offsetBase + (long)count * 2 > bytes.Length)
+        if (schemaBase > bytes.Length || offsetBase + (long)count * 2 > bytes.Length ||
+            aliasBase < 0 || aliasBase + (8L * aliasCount) > bytes.Length)
         {
             error = "declared region sizes run past the end of the file";
             return false;
@@ -199,7 +221,9 @@ public sealed class GdbView
             cursor += (int)entrySize;
         }
 
-        view = new GdbView(bytes, offsets, (int)schemaBase, (int)hashBase, (int)offsetBase);
+        view = new GdbView(
+            bytes, offsets, (int)schemaBase, (int)hashBase, (int)offsetBase,
+            (int)aliasBase, (int)aliasCount);
         LoadMetadata(bytes, view, count);
         return true;
     }
@@ -212,6 +236,81 @@ public sealed class GdbView
         RecordNames.TryGetValue(RecordHash(index), out string? name) ? name : string.Empty;
 
     public bool TryLookup(uint hash, out int index)
+    {
+        int lo = 0;
+        int hi = RecordCount;
+        while (lo < hi)
+        {
+            int mid = lo + ((hi - lo) / 2);
+            uint value = ReadU32(_bytes, HashBase + mid * 4);
+            if (value < hash)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+
+        index = lo;
+        if (lo < RecordCount && ReadU32(_bytes, HashBase + lo * 4) == hash)
+        {
+            return true;
+        }
+
+        // NOT A RECORD — TRY THE ALIAS TABLE. `AbilityHeavyWeaponsBase` is not an entry id at
+        // all; it is an alias for the entry that actually carries `Type`, `NameTextTag` and the
+        // rest. Resolved once, never chained: the shipped tables map an alias straight to an
+        // entry, and following a result that is itself an alias would invite a cycle.
+        return TryResolveAlias(hash, out uint target) && TryLookupEntry(target, out index);
+    }
+
+    /// <summary>The entry an alias names, by binary search — the pairs are sorted by alias.</summary>
+    public bool TryResolveAlias(uint alias, out uint target)
+    {
+        target = 0;
+        int lo = 0;
+        int hi = AliasCount;
+        while (lo < hi)
+        {
+            int mid = lo + ((hi - lo) / 2);
+            uint value = ReadU32(_bytes, AliasBase + (mid * 8));
+            if (value < alias)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+
+        if (lo >= AliasCount || ReadU32(_bytes, AliasBase + (lo * 8)) != alias)
+        {
+            return false;
+        }
+
+        target = ReadU32(_bytes, AliasBase + (lo * 8) + 4);
+        return true;
+    }
+
+    /// <summary>
+    /// Every alias pair as stored — FNV-1(name) to entry hash. The table is the only bridge from
+    /// a record's NAME to its entry: the strings for most pairs are absent, so an alias can never
+    /// be reconstructed by hashing a name. <see cref="GdbMulti"/> indexes these at build.
+    /// </summary>
+    public IEnumerable<(uint Alias, uint Target)> AliasPairs()
+    {
+        for (int i = 0; i < AliasCount; i++)
+        {
+            int at = AliasBase + (i * 8);
+            yield return (ReadU32(_bytes, at), ReadU32(_bytes, at + 4));
+        }
+    }
+
+    /// <summary>The record lookup alone, with no alias fallback — what breaks the recursion.</summary>
+    private bool TryLookupEntry(uint hash, out int index)
     {
         int lo = 0;
         int hi = RecordCount;
@@ -300,6 +399,30 @@ public sealed class GdbView
         int index, uint fieldHash, int expectedType, out uint raw, out GdbFieldType type)
     {
         raw = 0;
+        if (!TryFindValueSlot(index, fieldHash, expectedType, out int slot, out type))
+        {
+            return false;
+        }
+
+        raw = ReadU32(_bytes, slot);
+        return true;
+    }
+
+    /// <summary>
+    /// WHERE a record's own value for <paramref name="fieldHash"/> lives, as a byte offset.
+    ///
+    /// A record is a schema pointer followed by one u32 per property, in the schema's sorted-hash
+    /// order — so the value is at <c>record + 4 + i * 4</c> for the i'th hash. Exposing the offset
+    /// rather than the value is what lets the overlay writer PATCH a property in place, which it
+    /// cannot do from a read alone.
+    ///
+    /// LOCAL, deliberately: an inherited property lives on the ancestor that declares it, and
+    /// writing it here would silently edit the wrong record.
+    /// </summary>
+    public bool TryFindValueSlot(
+        int index, uint fieldHash, int expectedType, out int slot, out GdbFieldType type)
+    {
+        slot = -1;
         type = default;
 
         if (index < 0 || index >= RecordCount)
@@ -330,13 +453,13 @@ public sealed class GdbView
                 return false;
             }
 
-            int slot = record + 4 + (i * 4);
-            if (slot + 4 > BodyEnd)
+            int at = record + 4 + (i * 4);
+            if (at + 4 > BodyEnd)
             {
                 return false;
             }
 
-            raw = ReadU32(_bytes, slot);
+            slot = at;
             type = found;
             return true;
         }

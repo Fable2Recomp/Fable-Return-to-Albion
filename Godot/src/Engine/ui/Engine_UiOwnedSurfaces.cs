@@ -546,6 +546,7 @@ public sealed class Engine_UiStatedSurface : Engine_UiSurface<Engine_UiStatedPan
 		{
 			Presentation = "intermissionbox",
 			Groups = new[] { "Group" },
+			HudStyle = true,
 			Texts = new[] { new Engine_UiStatedPanel.TextBinding("Group", "Text") },
 		},
 		veto: null,
@@ -568,6 +569,7 @@ public sealed class Engine_UiStatedSurface : Engine_UiSurface<Engine_UiStatedPan
 		{
 			Presentation = "displaybox",
 			Groups = new[] { "DefaultGroup" },
+			HudStyle = true,
 			Texts = new[]
 			{
 				new Engine_UiStatedPanel.TextBinding(

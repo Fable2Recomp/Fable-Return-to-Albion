@@ -13,6 +13,14 @@ public partial class GameWindow : Window
 {
 	private static GameWindow? _current;
 
+	/// <summary>
+	/// Whether a game window is already up. Exposed so an unattended launcher can tell "the
+	/// window opened" from "the press did nothing" — <see cref="Open"/> answers null for both a
+	/// refusal and an existing window, which had the auto-driver pressing the primary action
+	/// ninety-odd times into an already-running game.
+	/// </summary>
+	public static bool IsOpen => _current is not null && GodotObject.IsInstanceValid(_current);
+
 	private GameSession? _session;
 	private GameUi? _ui;
 	private GameVideo? _video;
@@ -91,7 +99,12 @@ public partial class GameWindow : Window
 		// preview plays inside the card, and concealing would hide the screen it belongs to.
 		_video.MovieStarted += _ =>
 		{
-			if (!_ui.HasEmbeddedMovie)
+			// The guest states the rect right after the open (`sub_82A41E30`), so the answer is
+			// known here; an ability preview states its 301x233 frame and must not conceal.
+			// The video's own EmbedOrdinal is checked as well as the slot map: `PlayEmbedded`
+			// sets it before this signal fires, where the slot registration once lost the race
+			// and a preview concealed the whole UI viewport for the rest of the session.
+			if (_video.EmbedOrdinal < 0 && !_ui.HasEmbeddedMovie && _video.StatedFullscreen())
 			{
 				_ui.Conceal("a full-screen movie started over it");
 			}
@@ -120,6 +133,7 @@ public partial class GameWindow : Window
 	/// </summary>
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gamewindow");
 		TraceFrontEnd();
 		StepShots();
 

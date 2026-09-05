@@ -696,7 +696,7 @@ function(refii_define_rexglue_codegen_bootstrap_target)
     # target in this bootstrap graph is finished first so two build processes
     # never write the same objects concurrently.
     foreach(_refii_rexglue_prior_target IN ITEMS
-            refii_rexglue_sdk refii_achievement refii_achievement_ui)
+            refii_rexglue_sdk refii_achievement)
         if(TARGET "${_refii_rexglue_prior_target}")
             add_dependencies(refii_codegen_if_empty "${_refii_rexglue_prior_target}")
         endif()

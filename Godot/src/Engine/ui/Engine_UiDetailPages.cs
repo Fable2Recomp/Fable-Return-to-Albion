@@ -10,53 +10,38 @@ namespace Refii.Ui;
 /// — `screen+624` on abilities, its own offset on each of the others. Godot owns the cursor, so
 /// none of those keys ever move and the guest's fill never runs.
 ///
-/// A screen is a PROVIDER, not a branch in the caller: `GameUi` asks this one question for
-/// whichever screen is up, so adding a screen is a case here and a class beside it.
+/// A screen is a PROVIDER, and the TEMPLATE names it. This file used to switch on the screen id
+/// six times over — `Owns`, `Values`, `Textures`, `Active`, `Positions`, `Slides` — so one
+/// screen's behaviour was spread across six places and each screen could break its own way.
+/// Now every screen takes the same path and adding one is a template record.
 /// </summary>
 public static class Engine_UiDetailPages
 {
-	/// <summary>
-	/// The item-book family: items, clothing/equipment, gift giving, furniture upgrade and
-	/// decoration. Five ids over three `.bgf` files, one skeleton, one provider.
-	/// </summary>
-	/// 22 (the shop) is here too: it is the same item record behind different element paths,
-	/// which <see cref="Engine_UiItemPage"/> carries as a second set of keys.
-	private static readonly uint[] ItemBooks = { 15u, 16u, 22u, 25u, 26u, 27u };
-
-	/// <summary>The logbook — subject-named pages, and only its expression detail is ours.</summary>
-	private const uint LogbookScreenId = 17u;
-
-	/// <summary>The crime screen — not cursor-driven, but ours to draw all the same.</summary>
-	private const uint CrimeScreenId = 21u;
-
 	/// <summary>The world map — its region page is sampled a tick ahead, see the provider.</summary>
 	public const uint WorldMapScreenId = 23u;
 
 	/// <summary>The options screen — all four pages; 3 and 4 place pips as well as text.</summary>
 	public const uint OptionsScreenId = 18u;
 
+	/// <summary>The provider this screen's template names, or null when it names none.</summary>
+	private static Engine_UiPageProvider? Provider(uint screenId) =>
+		Engine_UiTemplates.Screen(screenId) is { } template && template.Provider.Length != 0
+			? Engine_UiPageProviders.Find(template.Provider)
+			: null;
+
 	/// <summary>Screens whose detail page Godot fills.</summary>
-	public static bool Owns(uint screenId)
-	{
-		if (screenId == Engine_UiScreenInput.AbilitiesScreenId ||
-			screenId == LogbookScreenId ||
-			screenId == CrimeScreenId ||
-			screenId == WorldMapScreenId ||
-			screenId == OptionsScreenId)
-		{
-			return true;
-		}
+	public static bool Owns(uint screenId) => Provider(screenId) is not null;
 
-		foreach (uint id in ItemBooks)
-		{
-			if (id == screenId)
-			{
-				return true;
-			}
-		}
+	/// <summary>Whether this screen's provider needs the guest's option sliders this frame.</summary>
+	public static bool NeedsOptionSliders(uint screenId) =>
+		Provider(screenId)?.NeedsOptionSliders ?? false;
 
-		return false;
-	}
+	/// <summary>
+	/// Lets this screen's provider ask the host for what its fill will need. Called before the
+	/// values are gathered, on whatever screen is up.
+	/// </summary>
+	public static void Prepare(uint screenId, Engine_UiExpandableMenu.Item? row) =>
+		Provider(screenId)?.Prepare(Row(screenId, row));
 
 	/// <summary>
 	/// The host-owned field values for this screen's detail page, as final display text. Empty
@@ -75,41 +60,10 @@ public static class Engine_UiDetailPages
 		Refii.Text.Engine_BabelDatabase? strings,
 		bool optionsPageOpen = false)
 	{
-		if (screenId == Engine_UiScreenInput.AbilitiesScreenId)
-		{
-			return Engine_UiAbilityPage.Values(
-				row, vitals.AbilityLevels, vitals.ExperienceAvailable, hero.SpellDamage, strings);
-		}
-
-		if (screenId == LogbookScreenId)
-		{
-			return Engine_UiLogbookPage.Values(row, hero, quests, strings);
-		}
-
-		if (screenId == CrimeScreenId)
-		{
-			return Engine_UiCrimePage.Values(crime, strings);
-		}
-
-		if (screenId == WorldMapScreenId)
-		{
-			return Engine_UiWorldMapPage.Values(row, worldMap);
-		}
-
-		if (screenId == OptionsScreenId)
-		{
-			return Engine_UiOptionsPage.Values(options, sliders, strings, optionsPageOpen);
-		}
-
-		foreach (uint id in ItemBooks)
-		{
-			if (id == screenId)
-			{
-				return Engine_UiItemPage.Values(row, strings);
-			}
-		}
-
-		return EmptyValues;
+		Engine_UiPageContext page = Context(
+			screenId, row, vitals, hero, quests, crime, worldMap, options, sliders, strings,
+			optionsPageOpen, false);
+		return Provider(screenId)?.Values(page) ?? Engine_UiPageProviders.NoValues;
 	}
 
 	/// <summary>
@@ -118,19 +72,64 @@ public static class Engine_UiDetailPages
 	/// </summary>
 	public static IReadOnlyDictionary<string, uint> Textures(
 		uint screenId, Engine_UiExpandableMenu.Item? row) =>
-		screenId == Engine_UiScreenInput.AbilitiesScreenId
-			? Engine_UiAbilityPage.Textures(row)
-			: EmptyTextures;
+		Provider(screenId)?.Textures(Row(screenId, row)) ?? Engine_UiPageProviders.NoTextures;
+
+	/// <summary>
+	/// Elements this screen's provider switches on or off outright — see
+	/// <see cref="Engine_UiOwnedBook.HostActive"/>. Empty for a screen with none.
+	/// </summary>
+	public static IReadOnlyDictionary<string, bool> Active(
+		uint screenId, Engine_UiExpandableMenu.Item? row) =>
+		Provider(screenId)?.Active(Row(screenId, row)) ?? Engine_UiPageProviders.NoActive;
 
 	/// <summary>
 	/// Elements this screen's provider PLACES itself — see
 	/// <see cref="Engine_UiOwnedBook.HostPositions"/>. Empty for a screen with none.
 	/// </summary>
 	public static IReadOnlyDictionary<string, Godot.Vector3> Positions(
-		uint screenId, Refii.Host.HostBridge.OptionSliders sliders) =>
-		screenId == OptionsScreenId
-			? Engine_UiOptionsPage.Positions(sliders)
-			: EmptyPositions;
+		uint screenId, Refii.Host.HostBridge.OptionSliders sliders,
+		Engine_UiExpandableMenu.Item? row = null)
+	{
+		// The row reaches the placements too: the options provider pins the picked page's
+		// contents by it (without it every page pinned Page1 and the Controls/Video/Audio
+		// pages stayed parked at x 430 / −400, off the leaf), the logbook its subject page.
+		Engine_UiPageContext page = Row(screenId, row) with { Sliders = sliders };
+		IReadOnlyDictionary<string, Godot.Vector3> stated =
+			Provider(screenId)?.Positions(page) ?? Engine_UiPageProviders.NoPositions;
+
+		// THE PAGE STACK IS PLACED FROM THE SCREEN RECORD, here so every screen gets it
+		// without each provider forwarding it. The books disagree about where the stack is
+		// authored — x = 0 (on the leaf) in the item family, x = 400 (off a 960-wide canvas)
+		// in abilities, shop, world map and logbook — so a screen whose record states
+		// `PageStackAt` has it placed, and one that states none keeps its file's own layout.
+		// A modded screen states its own; nothing here is a table of shipped books.
+		if (Engine_UiTemplates.Screen(screenId) is not { PageStackAt: { } at } screen ||
+			screen.PageRootUnit.Length == 0)
+		{
+			return stated;
+		}
+
+		var placed = new Dictionary<string, Godot.Vector3>(stated.Count + 1);
+		foreach ((string path, Godot.Vector3 position) in stated)
+		{
+			placed[path] = position;
+		}
+
+		placed[$"Foreground.Book.{screen.PageRootUnit}"] = at;
+		return placed;
+	}
+
+	/// <summary>
+	/// The MOVIE this screen's page wants playing, or empty when it wants none. Only the
+	/// abilities page states one — see <see cref="Engine_UiAbilityPage.MovieFor"/>.
+	/// </summary>
+	public static string Movie(
+		uint screenId,
+		Engine_UiExpandableMenu.Item? row,
+		Refii.Host.HostBridge.HeroVitals vitals) =>
+		Engine_UiTemplates.Screen(screenId)?.Provider == Engine_UiPageProviders.Abilities
+			? Engine_UiAbilityPage.MovieFor(row, vitals.AbilityLevels)
+			: string.Empty;
 
 	/// <summary>
 	/// Components this screen's provider SWITCHES itself — see
@@ -139,23 +138,37 @@ public static class Engine_UiDetailPages
 	public static IReadOnlyDictionary<string, int> Slides(
 		uint screenId,
 		Engine_UiExpandableMenu.Item? row,
-		Refii.Host.HostBridge.WorldMapRegion worldMap)
+		Refii.Host.HostBridge.WorldMapRegion worldMap,
+		bool hostRows,
+		Refii.Host.HostBridge.HeroVitals vitals = default,
+		Refii.Host.HostBridge.HeroDerived hero = default)
 	{
+		// The vitals ride along because the abilities page's orb slides are a function of the
+		// hero's levels and unspent experience, not of the row alone; the derived sample because
+		// the logbook's dog star groups are goToSlide(level) off the dog's stats component.
+		Engine_UiPageContext page = Row(screenId, row) with
+		{
+			WorldMap = worldMap,
+			HostRows = hostRows,
+			Vitals = vitals,
+			Hero = hero,
+		};
+
 		IReadOnlyDictionary<string, int> own =
-			screenId == WorldMapScreenId
-				? Engine_UiWorldMapPage.Slides(row, worldMap)
-				: screenId == ShopScreenId
-					? ShopStarSlides(row)
-					: EmptySlides;
-		if (!Owns(screenId))
+			Provider(screenId)?.Slides(page) ?? Engine_UiPageProviders.NoSlides;
+
+		// The book's pages show for a leaf and hide for a folder — `sub_826C3C78` at 0x826c3d0c:
+		// Float3 of the highlighted item 301 (submenu) or 23 (spell assign) -> `HidePages`
+		// (slide 2), anything else -> `ShowPages` (slide 1). THE GUEST STATES THIS for every row
+		// its own highlight reaches — its tick plays the slide and the clone follows it. Only a
+		// HOST-ONLY row (attached from the capture, never laid out by the pool) has no guest
+		// highlight to key on, and only then does the rule run here. It is the BOOK's rule, not
+		// any one screen's, so it stays outside the provider.
+		if (!Owns(screenId) || !hostRows)
 		{
 			return own;
 		}
 
-		// The book's pages show for a leaf and hide for a folder — `sub_826C3C78` at 0x826c3d0c:
-		// Float3 of the highlighted item 301 (submenu) or 23 (spell assign) → `HidePages`
-		// (slide 2), anything else → `ShowPages` (slide 1). Keyed on the guest's highlight there,
-		// on ours here.
 		var slides = new Dictionary<string, int>(own);
 		slides["Foreground.Book"] =
 			row is not null && row.EventType != SubmenuEventType && row.EventType != SpellAssignEventType
@@ -167,44 +180,40 @@ public static class Engine_UiDetailPages
 	private const int SubmenuEventType = 301;
 	private const int SpellAssignEventType = 23;
 
-	private const uint ShopScreenId = 22;
+	/// <summary>A context carrying only what the row-keyed questions need.</summary>
+	private static Engine_UiPageContext Row(uint screenId, Engine_UiExpandableMenu.Item? row) =>
+		Context(
+			screenId, row, default, default, EmptyQuests, default, default, default, default,
+			null, false, false);
 
-	/// <summary>
-	/// The shop's `StarRating` components — one per page, five slides `1star`..`5star` after the
-	/// master in `shopscreen.bgf`. The row's `RatingSlide` is the same number in half-star units
-	/// (1..10), so the whole-star slide is half of it, rounded.
-	/// </summary>
-	private static readonly string[] ShopStarRatings =
-	{
-		"FrontPage.Contents.StarRating",
-		"Page1.Contents.StarRating",
-		"Page2.Contents.StarRating",
-		"Page3.Contents.StarRating",
-	};
-
-	private static IReadOnlyDictionary<string, int> ShopStarSlides(Engine_UiExpandableMenu.Item? row)
-	{
-		if (row is null || row.RatingSlide < Engine_UiMenuConstants.OneStarEmptyRatingSlide ||
-			row.RatingSlide > Engine_UiMenuConstants.FiveStarFullRatingSlide)
+	private static Engine_UiPageContext Context(
+		uint screenId,
+		Engine_UiExpandableMenu.Item? row,
+		Refii.Host.HostBridge.HeroVitals vitals,
+		Refii.Host.HostBridge.HeroDerived hero,
+		List<Refii.Host.HostBridge.CompletedQuest> quests,
+		Refii.Host.HostBridge.CrimeScreen crime,
+		Refii.Host.HostBridge.WorldMapRegion worldMap,
+		Refii.Host.HostBridge.GameOptions options,
+		Refii.Host.HostBridge.OptionSliders sliders,
+		Refii.Text.Engine_BabelDatabase? strings,
+		bool optionsPageOpen,
+		bool hostRows) =>
+		new()
 		{
-			return EmptySlides;
-		}
+			ScreenId = screenId,
+			Row = row,
+			Vitals = vitals,
+			Hero = hero,
+			Quests = quests,
+			Crime = crime,
+			WorldMap = worldMap,
+			Options = options,
+			Sliders = sliders,
+			Strings = strings,
+			OptionsPageOpen = optionsPageOpen,
+			HostRows = hostRows,
+		};
 
-		int stars = System.Math.Clamp((row.RatingSlide + 1) / 2, 1, 5);
-		var slides = new Dictionary<string, int>(ShopStarRatings.Length);
-		foreach (string path in ShopStarRatings)
-		{
-			slides[path] = stars;
-		}
-
-		return slides;
-	}
-
-	private static readonly Dictionary<string, int> EmptySlides = new();
-
-	private static readonly Dictionary<string, Godot.Vector3> EmptyPositions = new();
-
-	private static readonly Dictionary<string, string> EmptyValues = new();
-
-	private static readonly Dictionary<string, uint> EmptyTextures = new();
+	private static readonly List<Refii.Host.HostBridge.CompletedQuest> EmptyQuests = new();
 }

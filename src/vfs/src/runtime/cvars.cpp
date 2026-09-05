@@ -48,11 +48,6 @@ REXCVAR_DEFINE_STRING(vfs_loose_asset_root, "", "VFS",
                       "<assets_root>/unpacked.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(vfs_mod_roots, "", "VFS",
-                      "Optional semicolon-separated mod asset roots. Each root "
-                      "uses the same game-relative layout as unpacked.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 REXCVAR_DEFINE_BOOL(vfs_auto_press_start, false, "VFS",
                     "Testing aid: emulate the player pressing Start once at "
                     "the interactive title screen (drives the exact native "
@@ -98,18 +93,6 @@ REXCVAR_DEFINE_BOOL(vfs_babel_csv_overrides, true, "VFS",
                     "Refii backend.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(vfs_mods_root, "", "VFS",
-                      "Folder that holds installed mod packages. Defaults to "
-                      "<assets_root>/mods.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(vfs_enabled_mods, "", "VFS",
-                      "Optional semicolon-separated enabled mod folder names "
-                      "under vfs_mods_root. Merged with "
-                      "<vfs_mods_root>/enabled.txt; list order is search "
-                      "priority.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 bool EqualsAsciiCaseInsensitive(std::string_view left, std::string_view right) {
   if (left.size() != right.size()) {
     return false;
@@ -123,7 +106,6 @@ bool EqualsAsciiCaseInsensitive(std::string_view left, std::string_view right) {
   }
   return true;
 }
-
 
 // The backend/trace checks below run on every hooked guest call (hundreds of
 // thousands of times per second on the render thread). REXCVAR_GET on a
@@ -233,18 +215,6 @@ inline namespace detail {
 
 std::string ConfiguredLooseAssetRoot() {
   return REXCVAR_GET(vfs_loose_asset_root);
-}
-
-std::string ConfiguredModAssetRoots() {
-  return REXCVAR_GET(vfs_mod_roots);
-}
-
-std::string ConfiguredModsRootSetting() {
-  return REXCVAR_GET(vfs_mods_root);
-}
-
-std::string ConfiguredEnabledModsSetting() {
-  return REXCVAR_GET(vfs_enabled_mods);
 }
 
 }  // namespace detail

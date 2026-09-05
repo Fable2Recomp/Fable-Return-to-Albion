@@ -81,6 +81,9 @@ public sealed class Engine_UiBindings
 
 		/// <summary>An element faded between slides.</summary>
 		SlideFader,
+
+		/// <summary>`SlideFader2Name` — the second fader channel (registry 3): 2 in, 3 out fast, 4 out slow.</summary>
+		SlideFader2,
 	}
 
 	/// <summary>One element's binding: what it is, and the name it answers to.</summary>
@@ -102,6 +105,7 @@ public sealed class Engine_UiBindings
 		(Kind.Text, "TextName"),
 		(Kind.SlideToggle, "SlideToggleName"),
 		(Kind.SlideFader, "SlideFaderName"),
+		(Kind.SlideFader2, "SlideFader2Name"),
 	};
 
 	private readonly List<Binding> _bindings = new();

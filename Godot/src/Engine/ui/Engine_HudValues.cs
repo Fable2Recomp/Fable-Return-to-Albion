@@ -151,6 +151,30 @@ public sealed class Engine_HudValues
     /// <param name="slide">1 in, 2 out fast, 3 out slow — the `SlideFaderName` index.</param>
     public void StateFade(uint elementHash, int slide) => _faded[elementHash] = slide;
 
+    /// <summary>Every stated toggle, for the view to fold as slides (true → 2, false → 1, as `sub_823FE848`).</summary>
+    public IEnumerable<(uint Hash, bool Visible)> Toggles
+    {
+        get
+        {
+            foreach ((uint hash, bool visible) in _toggled)
+            {
+                yield return (hash, visible);
+            }
+        }
+    }
+
+    /// <summary>Every stated fade, as the `SlideFaderName` index (1 in, 2 out fast, 3 out slow).</summary>
+    public IEnumerable<(uint Hash, int Slide)> Fades
+    {
+        get
+        {
+            foreach ((uint hash, int slide) in _faded)
+            {
+                yield return (hash, slide);
+            }
+        }
+    }
+
     /// <summary>Whether the guest has hidden an element, or null when it never said.</summary>
     public bool? Visible(Handle handle) =>
         _toggled.TryGetValue(handle.Hash, out bool visible) ? visible : null;

@@ -174,6 +174,27 @@ void GuestTickPumpCounters(uint64_t* out_ticks, uint64_t* out_drained, uint32_t*
   }
 }
 
+/// The last debug-call/debug-lua result the pump recorded. One slot, not a ring: calls are
+/// serialized on the tick thread and the host polls the sequence number, so a caller that
+/// posts, then waits for seq to advance, reads its own answer.
+namespace {
+std::mutex g_debug_result_mutex;
+uint64_t g_debug_result_seq = 0;
+uint32_t g_debug_result_addr = 0;
+uint64_t g_debug_result_r3 = 0;
+std::string g_debug_result_note;
+}  // namespace
+
+uint32_t DebugCallResult(uint64_t* out_seq, uint32_t* out_addr, uint64_t* out_r3,
+                         char* out_note, uint32_t note_capacity) {
+  std::lock_guard<std::mutex> lock(g_debug_result_mutex);
+  if (out_seq != nullptr) *out_seq = g_debug_result_seq;
+  if (out_addr != nullptr) *out_addr = g_debug_result_addr;
+  if (out_r3 != nullptr) *out_r3 = g_debug_result_r3;
+  WriteOut(g_debug_result_note, out_note, note_capacity);
+  return g_debug_result_seq != 0 ? 1u : 0u;
+}
+
 /// The subtitles setting as the guest last stated it. -1 until the pump's first sample.
 int32_t FrontEndSubtitles() { return g_subtitles.load(std::memory_order_relaxed); }
 
@@ -292,6 +313,10 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
   }
 }
 
+/// "No screen states this population" — the front end, or a boundary that could not read one.
+/// Deliberately not 0: 0 is the pause root, a real screen id.
+constexpr uint32_t kMenuScreenUnknown = 0xFFFFFFFFu;
+
 /// One spawned menu row, as `sub_826CE8D0` was handed it.
 struct MenuRow {
   std::string name;
@@ -318,6 +343,19 @@ std::vector<MenuRow> g_menu_building;
 /// The last published copy — what the host reads.
 std::vector<MenuRow> g_menu_rows;
 
+/// The screen the published capture belongs to, or `kMenuScreenUnknown`.
+///
+/// THE CAPTURE IS ONE LIST AND IT NEEDED A KEY. A menu template sourced `capture:Root` was
+/// handed whatever was spawned last, whoever spawned it: binding the real-estate screen that
+/// way put the FRONT END's `New Game`, `Continue`, `Language` and `Subtitles` above its own
+/// `Sell` and `Adjust Prices`. `MenuRow` carries no screen, so a consumer had no way to tell.
+///
+/// The key is the guest's own: `manager+4` off the in-game GUI is the id of the screen whose
+/// population is running, read at the boundary that clears the list. The FRONT END has a
+/// different GUI object, so it reads `kMenuScreenUnknown` and an in-game screen rejects it —
+/// which is the whole point.
+uint32_t g_menu_screen_id = kMenuScreenUnknown;
+
 /// Bumped on every row, so a host can tell "still the same list" from "read it again".
 std::atomic<uint64_t> g_menu_generation{0};
 
@@ -342,11 +380,27 @@ HeroDerived g_hero;
 
 std::mutex g_region_mutex;
 WorldMapRegion g_region;
+std::mutex g_estate_mutex;
+RealEstate g_estate;
+std::mutex g_journey_mutex;
+QuestTravel g_journey;
+std::atomic<uint32_t> g_journey_wanted{0};
+
+std::mutex g_shop_price_mutex;
+ShopPrice g_shop_price;
+
+/// Ticket in the low 31 bits, the sell flag in the top — one atomic, so the pump can never
+/// read a ticket paired with the other operation's flag.
+std::atomic<uint32_t> g_shop_price_wanted{0};
 std::atomic<uint32_t> g_region_wanted{0};
 
 std::mutex g_quest_mutex;
 QuestEntry g_quests[kMaxCompletedQuests];
 uint32_t g_quest_count = 0;
+
+std::mutex g_family_mutex;
+FamilyMember g_family[kMaxFamilyMembers];
+uint32_t g_family_count = 0;
 
 }  // namespace
 
@@ -366,6 +420,42 @@ extern "C" void refii_bridge_hero_derived_snapshot(void* out) {
   *static_cast<HeroDerived*>(out) = g_hero;
 }
 
+void RequestQuestTravel(uint32_t record) { g_journey_wanted.store(record); }
+
+uint32_t RequestedQuestTravel() { return g_journey_wanted.load(); }
+
+void PublishQuestTravel(const QuestTravel& travel) {
+  std::lock_guard<std::mutex> lock(g_journey_mutex);
+  g_journey = travel;
+}
+
+QuestTravel QuestTravelSnapshot() {
+  std::lock_guard<std::mutex> lock(g_journey_mutex);
+  return g_journey;
+}
+
+void RequestShopPrice(uint32_t ticket, bool sell) {
+  g_shop_price_wanted.store((ticket & 0x7FFFFFFFu) | (sell ? 0x80000000u : 0u));
+}
+
+uint32_t RequestedShopPrice(bool* sell) {
+  const uint32_t wanted = g_shop_price_wanted.load();
+  if (sell != nullptr) {
+    *sell = (wanted & 0x80000000u) != 0u;
+  }
+  return wanted & 0x7FFFFFFFu;
+}
+
+void PublishShopPrice(const ShopPrice& price) {
+  std::lock_guard<std::mutex> lock(g_shop_price_mutex);
+  g_shop_price = price;
+}
+
+ShopPrice ShopPriceSnapshot() {
+  std::lock_guard<std::mutex> lock(g_shop_price_mutex);
+  return g_shop_price;
+}
+
 void RequestWorldMapRegion(uint32_t index) { g_region_wanted.store(index); }
 
 extern "C" uint32_t refii_bridge_requested_world_map_region() {
@@ -383,6 +473,16 @@ extern "C" void refii_bridge_publish_world_map_region(const void* region) {
 WorldMapRegion WorldMapRegionSnapshot() {
   std::lock_guard<std::mutex> lock(g_region_mutex);
   return g_region;
+}
+
+void PublishRealEstate(const RealEstate& estate) {
+  std::lock_guard<std::mutex> lock(g_estate_mutex);
+  g_estate = estate;
+}
+
+RealEstate RealEstateSnapshot() {
+  std::lock_guard<std::mutex> lock(g_estate_mutex);
+  return g_estate;
 }
 
 extern "C" void refii_bridge_publish_quests(const void* entries, uint32_t count) {
@@ -407,6 +507,30 @@ uint32_t QuestSnapshot(QuestEntry* out, uint32_t capacity) {
 
   // The total, not the copied count: a caller sizes its buffer from the first call.
   return g_quest_count;
+}
+
+void PublishFamily(const FamilyMember* members, uint32_t count) {
+  std::lock_guard<std::mutex> lock(g_family_mutex);
+  g_family_count = count < kMaxFamilyMembers ? count : kMaxFamilyMembers;
+  for (uint32_t i = 0; i < g_family_count; ++i) {
+    g_family[i] = members[i];
+  }
+}
+
+uint32_t FamilySnapshot(FamilyMember* out, uint32_t capacity) {
+  std::lock_guard<std::mutex> lock(g_family_mutex);
+  const uint32_t copied = capacity < g_family_count ? capacity : g_family_count;
+  for (uint32_t i = 0; i < copied; ++i) {
+    out[i] = g_family[i];
+  }
+
+  return g_family_count;
+}
+
+/// The screen the published capture belongs to. See `g_menu_screen_id`.
+uint32_t MenuScreenId() {
+  std::lock_guard<std::mutex> lock(g_menu_mutex);
+  return g_menu_screen_id;
 }
 
 uint32_t MenuRowLabel(uint32_t index, char* out_label, size_t label_capacity) {
@@ -476,9 +600,10 @@ void refii_bridge_front_end_note_subtitles(int32_t state) {
   refii::vfs::g_subtitles.store(state, std::memory_order_relaxed);
 }
 
-void refii_bridge_menu_spawn_begin(void) {
+void refii_bridge_menu_spawn_begin_for(uint32_t screen_id) {
   std::lock_guard<std::mutex> lock(refii::vfs::g_menu_mutex);
   refii::vfs::g_menu_building.clear();
+  refii::vfs::g_menu_screen_id = screen_id;
 
   // The published copy goes too: `DeleteAllSpawnedMenuItems` runs before every repopulation
   // and publication is per row, so clearing only the builder leaves the host reading the
@@ -490,6 +615,14 @@ void refii_bridge_menu_spawn_begin(void) {
   // Mark it partial from here: "empty" and "this screen has no rows" are otherwise the same
   // value, and a consumer would rebuild its model from a list it is about to be given again.
   refii::vfs::g_menu_populating.store(true, std::memory_order_release);
+}
+
+/// The boundary hooks that cannot read a screen — the Lua-exec string match, and the front
+/// end, whose GUI object is not the in-game one. An unknown key is not a missing key: it
+/// says "this population belongs to no in-game screen", which is exactly what makes an
+/// in-game template reject it.
+void refii_bridge_menu_spawn_begin(void) {
+  refii_bridge_menu_spawn_begin_for(refii::vfs::kMenuScreenUnknown);
 }
 
 /// Clears the partial-population flag. Called once per guest tick.
@@ -589,6 +722,16 @@ void refii_bridge_guest_tick_pump_clear_save_count_request(void) {
 
 void refii_bridge_guest_tick_pump_note_save_count(int32_t count) {
   refii::vfs::g_save_count.store(count, std::memory_order_relaxed);
+}
+
+void refii_bridge_guest_tick_pump_note_result(uint32_t addr, uint64_t r3, const char* note,
+                                              size_t length) {
+  std::lock_guard<std::mutex> lock(refii::vfs::g_debug_result_mutex);
+  ++refii::vfs::g_debug_result_seq;
+  refii::vfs::g_debug_result_addr = addr;
+  refii::vfs::g_debug_result_r3 = r3;
+  refii::vfs::g_debug_result_note.assign(note != nullptr ? note : "",
+                                         note != nullptr ? length : 0);
 }
 
 void refii_bridge_guest_tick_pump_request_save_count(void) {

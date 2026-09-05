@@ -64,6 +64,38 @@ public sealed partial class Engine_HudView : Node3D
     public bool[]? ElementActive { get; set; }
 
     /// <summary>
+    /// The guest's stated slide per element — the same list the resolve folds. A group whose
+    /// current slide is authored `Off` or `TurnOff…` has been switched OFF by the guest's slide
+    /// toggle (`sub_823FE848` → GotoSlide), whatever the fold reads for its opacity: the fade-out
+    /// slides COMMAND opacity 100 and animate it to 0, and a rebuilt group has no timeline to
+    /// finish that on, so the quest box sat at 100/50 as a dark band across the top for good.
+    /// </summary>
+    public IReadOnlyList<int>? LiveSlides { get; set; }
+
+    /// <summary>The name of the slide the guest states for an element, or empty.</summary>
+    private string LiveSlideName(int ordinal)
+    {
+        if (Screen is not { } screen || LiveSlides is null || ordinal < 0 ||
+            ordinal >= LiveSlides.Count || LiveSlides[ordinal] <= 0)
+        {
+            return string.Empty;
+        }
+
+        // Slide 0 is the master; the guest's numbering counts the rest from one.
+        int wanted = LiveSlides[ordinal];
+        int seen = 0;
+        foreach (BgfSlide slide in screen.Document.Slides)
+        {
+            if (slide.OwnerElement == ordinal && !slide.IsMaster && ++seen == wanted)
+            {
+                return slide.Name;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    /// <summary>
     /// The parsed document, for the playhead tracks. Bars, fills and slide-ins are authored
     /// animations — keyframes over position/scale/opacity — scrubbed by a meter value:
     /// t = value x 10 on the element's 0..1000-tick timeline.
@@ -73,7 +105,7 @@ public sealed partial class Engine_HudView : Node3D
     /// <summary>What one animation track drives on one clone node.</summary>
     private enum TrackTarget
     {
-        PositionX, PositionY, ScaleX, ScaleY, Opacity, Other,
+        PositionX, PositionY, ScaleX, ScaleY, RotationZ, Opacity, UvScaleV, Other,
     }
 
     /// <summary>One playhead track bound to a node of a piece's clone.</summary>
@@ -98,6 +130,19 @@ public sealed partial class Engine_HudView : Node3D
 
     private static readonly uint OpacityId =
         Engine_GameHash.Sdbm("opacity") & Engine_GameHash.AttributeIdMask;
+
+    // The timing meter's sweet spot is a WEDGE: ExpressionFillPos swings `fill size` ±1.222 rad
+    // and ExpressionFillSize swings the two bar groups from ±1.222 toward 0 (hud.bgf owners
+    // 1498/1499) — rotation tracks, which the scrub dropped as 'Other' and drew the bars
+    // wherever the master left them.
+    private static readonly uint RotationZId =
+        Engine_GameHash.Sdbm("rotation.z") & Engine_GameHash.AttributeIdMask;
+
+    // The wedge's bars are the arc art itself: ExpressionFillSize scrubs each bar's height
+    // 0.16→1.28 AND its image's `scalev` 0.063→0.5 in step, so the quad reveals a taller
+    // band of the same atlas cell. Dropped, the image stayed a 16-row sliver of nothing.
+    private static readonly uint ScaleVId =
+        Engine_GameHash.Sdbm("scalev") & Engine_GameHash.AttributeIdMask;
 
     /// <summary>One built piece, with what it needs to be driven and placed.</summary>
     private sealed class Built
@@ -299,6 +344,267 @@ public sealed partial class Engine_HudView : Node3D
 
     private Engine_UiBindings? _bindings;
 
+    /// <summary>The HUD document's name bindings, read once — the fold of stated toggles needs them.</summary>
+    public Engine_UiBindings? Bindings
+    {
+        get
+        {
+            if (_bindings is null && Screen is { } screen)
+            {
+                _bindings = Engine_UiBindings.Read(screen.Document);
+            }
+
+            return _bindings;
+        }
+    }
+
+    /// <summary>
+    /// The timing meter's pip: which anchor element carries it and its x offset in canvas units,
+    /// or null while no pip travels. See <see cref="Engine_UiHudExpressionMeter"/>.
+    /// </summary>
+    public (string Anchor, float Offset)? ExpressionPip { get; set; }
+
+    /// <summary>The meter's colour band while it is on (0 low, 1 medium, 2 high), else -1.</summary>
+    public int ExpressionBand { get; set; } = -1;
+
+    private const string PipRestMeta = "pip_rest_x";
+
+    /// <summary>The arc's radius about the meter group's origin, in canvas units — measured off the authored arc art (halves 160 wide, ends at ±65°).</summary>
+    private const float PipRadius = 165f;
+
+    /// <summary>
+    /// Shows the travelling pip on its anchor: the anchor's own art, authored at opacity 0, is
+    /// lit and moved by the guest's offset; the other two anchors stay dark. Applied after the
+    /// clone binding, which writes the guest's stated opacity 0 back every frame.
+    /// </summary>
+    private void DrivePip(Built built)
+    {
+        // The sweet-spot bars take the band's colour: white art, tinted as the guest tints
+        // it (`SetTintingAmountAndDiffuseColour` at amount 1).
+        if (ExpressionBand >= 0)
+        {
+            Color band = ExpressionBand switch { 0 => new Color(0f, 1f, 0f), 1 => new Color(1f, 1f, 0f), _ => new Color(1f, 0f, 0f) };
+            foreach (string bar in new[] { "barleft", "barright" })
+            {
+                if (Engine_UiTheme.FindByName(built.Node, bar) is Node3D barNode)
+                {
+                    TintSubtree(barNode, band);
+                }
+            }
+        }
+
+        foreach (string name in new[]
+            {
+                Engine_UiHudExpressionMeter.HeroPip, Engine_UiHudExpressionMeter.HenchmanPip,
+                Engine_UiHudExpressionMeter.BothPip,
+            })
+        {
+            if (Engine_UiTheme.FindByName(built.Node, name) is not Node3D anchor)
+            {
+                continue;
+            }
+
+            bool lit = ExpressionPip is { } pip && pip.Anchor == name;
+            if (!anchor.HasMeta(PipRestMeta))
+            {
+                anchor.SetMeta(PipRestMeta, anchor.Position.X);
+            }
+
+            // THE OFFSET IS AN ANGLE. `sub_823D0F10` computes (pos·0.01·130 − 65) and multiplies
+            // it by flt_82100ED4 = 0.017453 (π/180) before `sub_82B4FC60` builds the rotation:
+            // the pip swings ±65° about the anchor, which sits at the arc's centre — the arc
+            // art is a circle of radius ~165 canvas units about the group origin, its ends at
+            // ±65°. The anchor rides that circle and tilts with it.
+            float rest = (float)anchor.GetMeta(PipRestMeta);
+            if (lit)
+            {
+                float degrees = ExpressionPip!.Value.Offset;
+                float theta = Mathf.DegToRad(degrees);
+                anchor.Position = new Vector3(
+                    rest + PipRadius * Mathf.Sin(theta), PipRadius * Mathf.Cos(theta), anchor.Position.Z);
+                anchor.Rotation = new Vector3(0f, 0f, -theta);
+            }
+            else
+            {
+                anchor.Position = new Vector3(rest, 0f, anchor.Position.Z);
+                anchor.Rotation = Vector3.Zero;
+            }
+
+            LightSubtree(anchor, lit ? 1f : 0f);
+        }
+    }
+
+    // ================= THE MODERN PANELS =====================================================
+    //
+    // The shipped HUD backs its text with black-tinted slabs (`Material655`, diffuse 0/0/0,
+    // TintingAmount 1 over the `hud` blur image) — the TopBox's 780-unit bar, the counters'
+    // boxes. The remaster replaces them with rounded translucent panels fitted to the text the
+    // guest actually states, refit every frame, so a longer objective gets a longer panel.
+    // The authored slab nodes are hidden AFTER the clone binding, which re-shows what the
+    // guest's state says is drawn.
+
+    private readonly Dictionary<string, Engine_UiRoundedPanel> _panels = new();
+
+    // The TopBox slab: the Bar and the blur/edge pieces authored beside it.
+    private static readonly string[] SlabNames = { "Bar", "blur", "left", "right", "top", "bottom" };
+
+    private void DrawModernPanels()
+    {
+        var used = new HashSet<string>();
+        foreach (Built built in _built)
+        {
+            if (!built.Node.Visible)
+            {
+                continue;
+            }
+
+            if (built.Piece.Id == "group.QuestBox.TopBox")
+            {
+                HideSlabs(built.Node);
+                Rect2? bounds = null;
+                foreach ((MeshInstance3D label, int _) in built.LiveTextNodes)
+                {
+                    Engine_UiHudTextStyle.Capture(label);
+                    bounds = Union(bounds, TextBounds(label));
+                }
+
+                float behind = 1.5f;
+                foreach ((MeshInstance3D label, int _) in built.LiveTextNodes)
+                {
+                    if (GodotObject.IsInstanceValid(label))
+                    {
+                        behind = System.Math.Min(behind, label.GlobalPosition.Z - 0.5f);
+                    }
+                }
+
+                FitPanel("topbox", bounds, used, behind);
+            }
+            else if (built.Piece.Id.StartsWith("slidetoggle.Counter", System.StringComparison.Ordinal) ||
+                built.Piece.Id.EndsWith(".CornerBox", System.StringComparison.Ordinal) ||
+                built.Piece.Id.StartsWith("meter.CornerX.", System.StringComparison.Ordinal) ||
+                built.Piece.Id.StartsWith("meter.CornerY.", System.StringComparison.Ordinal) ||
+                built.Piece.Id.StartsWith("meter.SubtitlesX.", System.StringComparison.Ordinal) ||
+                built.Piece.Id.StartsWith("meter.SubtitlesY.", System.StringComparison.Ordinal) ||
+                built.Piece.Id == "slidefader2.Subtitles.Subtitles")
+            {
+                // The counters' strings sit in the CornerBox — a black nine-slice (`Group`#616:
+                // BoxMiddle, corners, sides) sized by the CornerX/CornerY meters — and the
+                // counter containers carry the flash overlay; all of it is the slab look, and
+                // the strings are separate text pieces, so these pieces go whole.
+                built.Node.Visible = false;
+            }
+            else if ((built.Piece.Id.StartsWith("text.Counter", System.StringComparison.Ordinal) ||
+                built.Piece.Id == "text.Subtitles.Text") &&
+                built.Node is MeshInstance3D label)
+            {
+                FitPanel(built.Piece.Id, TextBounds(label), used, label.GlobalPosition.Z - 0.5f);
+            }
+        }
+
+        foreach ((string key, Engine_UiRoundedPanel panel) in _panels)
+        {
+            if (!used.Contains(key))
+            {
+                panel.Visible = false;
+            }
+        }
+    }
+
+    /// <summary>A visible, non-empty label's bounds in the HUD's space, or null.</summary>
+    private static Rect2? TextBounds(MeshInstance3D label)
+    {
+        if (!GodotObject.IsInstanceValid(label) || label.Mesh is null || !label.IsVisibleInTree())
+        {
+            return null;
+        }
+
+        // An unset uniform reads back as nil, which is the shader's default 1 — a freshly
+        // painted label has never had its opacity written and is fully visible.
+        if (label.MaterialOverride is ShaderMaterial m &&
+            m.GetShaderParameter("opacity") is { VariantType: Variant.Type.Float } op &&
+            op.AsSingle() < 0.05f)
+        {
+            return null;
+        }
+
+        Aabb box = label.GlobalTransform * label.Mesh.GetAabb();
+        if (box.Size.X <= 0f || box.Size.Y <= 0f)
+        {
+            return null;
+        }
+
+        return new Rect2(box.Position.X, box.Position.Y, box.Size.X, box.Size.Y);
+    }
+
+    private static Rect2? Union(Rect2? a, Rect2? b) =>
+        a is null ? b : b is null ? a : a.Value.Merge(b.Value);
+
+    private void FitPanel(string key, Rect2? bounds, HashSet<string> used, float z)
+    {
+        if (bounds is not { } rect)
+        {
+            return;
+        }
+
+        if (!_panels.TryGetValue(key, out Engine_UiRoundedPanel? panel))
+        {
+            panel = new Engine_UiRoundedPanel { Name = "panel_" + key.Replace('.', '_') };
+            AddChild(panel);
+            _panels[key] = panel;
+        }
+
+        // Just behind the text it backs; the world sits far below every HUD depth.
+        panel.Fit(rect, z);
+        used.Add(key);
+    }
+
+    private static void HideSlabs(Node node)
+    {
+        foreach (Node child in node.GetChildren())
+        {
+            if (child is Node3D spatial && System.Array.IndexOf(SlabNames, child.Name.ToString()) >= 0)
+            {
+                spatial.Visible = false;
+                continue;
+            }
+
+            HideSlabs(child);
+        }
+    }
+
+    private static void TintSubtree(Node node, Color colour)
+    {
+        if (node is MeshInstance3D mesh)
+        {
+            Engine_UiSceneBuilder.SetQuadTint(mesh, colour, 1f);
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            TintSubtree(child, colour);
+        }
+    }
+
+    private static void LightSubtree(Node node, float opacity)
+    {
+        // The anchors are authored at opacity 0, so the clone binding's draw gate hides every
+        // node under them each frame; the lit anchor is re-shown here, after the binding.
+        if (node is Node3D spatial)
+        {
+            spatial.Visible = opacity > 0f;
+        }
+
+        if (node is MeshInstance3D mesh)
+        {
+            Engine_UiSceneBuilder.SetQuadOpacity(mesh, opacity);
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            LightSubtree(child, opacity);
+        }
+    }
+
     private void BindTracks(Built built)
     {
         if (Screen is not { } screen || built.Piece.ElementOrdinal < 0)
@@ -385,17 +691,37 @@ public sealed partial class Engine_HudView : Node3D
                 : animation.AttributeId == ScaleXId ? TrackTarget.ScaleX
                 : animation.AttributeId == ScaleYId ? TrackTarget.ScaleY
                 : animation.AttributeId == OpacityId ? TrackTarget.Opacity
+                : animation.AttributeId == RotationZId ? TrackTarget.RotationZ
+                : animation.AttributeId == ScaleVId ? TrackTarget.UvScaleV
                 : TrackTarget.Other;
             if (target == TrackTarget.Other)
             {
                 continue;
             }
 
+            // BY ORDINAL through the clone binding, which joined every node of the clone to its
+            // element: a name is ambiguous inside a widget — the timing meter's sweet-spot
+            // rotation track targets a `Group` UNDER `fill size`, and the by-name search found
+            // the meter's outer `Group` first and turned the whole arc.
             bool isRoot = animation.ElementOrdinal == built.Piece.ElementOrdinal;
             Node3D? node = isRoot
                 ? built.Node
-                : Engine_UiTheme.FindByName(
-                    built.Node, screen.Nodes[animation.ElementOrdinal].Name) as Node3D;
+                : built.Binding.NodeFor(animation.ElementOrdinal) ??
+                    Engine_UiTheme.FindByName(
+                        built.Node, screen.Nodes[animation.ElementOrdinal].Name) as Node3D;
+
+            // An image element folds into its owner's quad and has no node of its own — the
+            // wedge's `scalev` track targets `expressionmeter` UNDER `barleft`, and the bar
+            // is the mesh. A UV track climbs to the nearest bound ancestor.
+            if (node is null && target == TrackTarget.UvScaleV)
+            {
+                for (UiNode? up = screen.Nodes[animation.ElementOrdinal].Parent;
+                    up is not null && node is null; up = up.Parent)
+                {
+                    node = built.Binding.NodeFor(up.Ordinal);
+                }
+            }
+
             if (node is null)
             {
                 continue;
@@ -452,8 +778,64 @@ public sealed partial class Engine_HudView : Node3D
         return false;
     }
 
+    /// <summary>The live HUD, for the debug channel.</summary>
+    public static Engine_HudView? Current { get; private set; }
+
+    /// <summary>
+    /// Every built piece whose id contains <paramref name="match"/>: where it is, how big, whether
+    /// it is drawn, and what text it shows — the readout for "small and misaligned".
+    /// </summary>
+    public List<Dictionary<string, object?>> Describe(string match)
+    {
+        var rows = new List<Dictionary<string, object?>>();
+        foreach (Built built in _built)
+        {
+            if (match.Length != 0 &&
+                !built.Piece.Id.Contains(match, System.StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!GodotObject.IsInstanceValid(built.Node))
+            {
+                continue;
+            }
+
+            Aabb? bounds = null;
+            foreach ((MeshInstance3D label, int _) in built.LiveTextNodes)
+            {
+                if (GodotObject.IsInstanceValid(label) && label.Mesh is not null && label.IsVisibleInTree())
+                {
+                    Aabb box = label.GlobalTransform * label.Mesh.GetAabb();
+                    bounds = bounds is null ? box : bounds.Value.Merge(box);
+                }
+            }
+
+            var texts = new List<string>();
+            foreach ((int _, string text) in built.ShownTexts)
+            {
+                texts.Add(text);
+            }
+
+            rows.Add(new Dictionary<string, object?>
+            {
+                ["id"] = built.Piece.Id,
+                ["visible"] = built.Node.IsVisibleInTree(),
+                ["position"] = new[] { built.Node.GlobalPosition.X, built.Node.GlobalPosition.Y, built.Node.GlobalPosition.Z },
+                ["scale"] = new[] { built.Node.Scale.X, built.Node.Scale.Y },
+                ["textBounds"] = bounds is { } b ? new[] { b.Position.X, b.Position.Y, b.Size.X, b.Size.Y } : null,
+                ["texts"] = texts,
+                ["children"] = built.Node.GetChildCount(),
+            });
+        }
+
+        return rows;
+    }
+
     public override void _Process(double delta)
     {
+        Current = this;
+    	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("hudview");
         if (_built.Count == 0)
         {
             return;
@@ -482,6 +864,25 @@ public sealed partial class Engine_HudView : Node3D
 
         foreach (Built built in _built)
         {
+            // The slide toggle first, for a group: its authored `Off`/`TurnOff…` slide is the
+            // guest's statement that the box is down, and the fold cannot say so on its own.
+            // A GROUP IS DOWN WHEN ITS ROOT RESOLVES DARK, not when its slide is NAMED Off: the
+            // timing meter's root carries the FlashExpressionMeter toggle, whose slide 1 is
+            // 'Off' and only stops the flash — the meter's own visibility is the frame's toggle
+            // beneath it. The name test hid the meter for every job. The fold and the played-
+            // slide release make the root's opacity say what the slide meant.
+            if (built.Piece.ElementOrdinal >= 0 &&
+                built.Piece.Id.StartsWith("group.", System.StringComparison.Ordinal) &&
+                Resolve is { } rootResolve && built.Piece.ElementOrdinal < rootResolve.Opacity.Length &&
+                rootResolve.Opacity[built.Piece.ElementOrdinal] <= 0.001f)
+            {
+                built.Node.Visible = false;
+                ++_hiddenByState;
+                Note(built, $"element {built.Piece.ElementOrdinal} resolves dark on slide " +
+                    $"'{LiveSlideName(built.Piece.ElementOrdinal)}'");
+                continue;
+            }
+
             // The state gate first: the guest says whether this piece exists right now, and an
             // off piece takes no drive at all.
             if (built.Piece.ElementOrdinal >= 0 &&
@@ -518,6 +919,13 @@ public sealed partial class Engine_HudView : Node3D
             if (Resolve is { } resolved)
             {
                 built.Binding.Apply(resolved, LiveTextures, LiveTransform);
+            }
+
+            // By piece ID: the flash container for the same element is also Art 'ExpressionMeter',
+            // and lighting the pip in that hollow clone put a white dot at the screen's centre.
+            if (built.Piece.Id == "group.ExpressionMeter.ExpressionMeter")
+            {
+                DrivePip(built);
             }
 
             // The guest's own strings on the wheel's titles, applied only when they change: it
@@ -633,6 +1041,8 @@ public sealed partial class Engine_HudView : Node3D
             _publishedReported = published;
             GD.Print($"{Layout.Describe(extent)}; {published}");
         }
+
+        DrawModernPanels();
 
         // Who is actually on screen, named by id on change.
         var visible = new List<string>();
@@ -799,11 +1209,44 @@ public sealed partial class Engine_HudView : Node3D
                     Engine_UiBasisScale.SetY(track.Node, evaluated);
                     break;
 
+                case TrackTarget.RotationZ:
+                    // Radians, sign as authored — Engine_UiSceneBuilder.BuildTransform keeps
+                    // rotation.z's sign in its Euler basis. The Rotation setter keeps the scale.
+                    track.Node.Rotation = track.Node.Rotation with { Z = evaluated };
+                    break;
+
                 case TrackTarget.Opacity:
                     SetOpacity(track.Node, evaluated * 0.01f);
                     break;
+
+                case TrackTarget.UvScaleV:
+                    SetUvScaleV(track.Node, evaluated);
+                    break;
             }
         }
+    }
+
+    /// <summary>Writes a scrubbed vertical UV extent onto a quad, keeping the builder's
+    /// half-texel inset (Engine_UiSceneBuilder.InsetAxis) so the band's edges do not bleed.</summary>
+    private static void SetUvScaleV(Node node, float extent)
+    {
+        if (node is not MeshInstance3D mesh || mesh.MaterialOverride is not ShaderMaterial material)
+        {
+            return;
+        }
+
+        // The strip is ANCHORED at its far edge: the bar's authored rect is v [0.939, 0.998]
+        // for `scalev` 0.063 (the atlas's bottom rows, empty), and the guest's scrub to 0.5
+        // grows it upward into the arc art. Hold the far edge, move the near one.
+        Vector2 scale = material.GetShaderParameter("uv1_scale").AsVector2();
+        Vector2 offset = material.GetShaderParameter("uv1_offset").AsVector2();
+        float inset = material.GetShaderParameter("diffuse_tex").As<Texture2D>() is { } tex
+            ? 1f / Mathf.Max(tex.GetHeight(), 1)
+            : 0f;
+        float far = offset.Y + scale.Y;
+        float span = Mathf.Max(extent - inset, 0f);
+        material.SetShaderParameter("uv1_offset", new Vector2(offset.X, far - span));
+        material.SetShaderParameter("uv1_scale", new Vector2(scale.X, span));
     }
 
     /// <summary>Writes a scrubbed opacity onto a node's own quads — materials are per-piece

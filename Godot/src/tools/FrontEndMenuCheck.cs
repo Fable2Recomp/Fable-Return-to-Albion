@@ -232,6 +232,7 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			_view = new Engine_FrontEndMenuView
 			{
 				Name = "PauseMenu",
+				ScreenId = 0,
 				Theme = book,
 				RowTemplate = bookTemplate,
 				CursorTemplate = book?.Art("MenuHighlight"),
@@ -239,7 +240,8 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			};
 			AddChild(_view);
 			_view.Bind(_menu);
-			_view.Position = new Vector3(anchor.X, anchor.Y, 500f);
+			// The book's own slab: rows z 0, cover +10, badge +11, Back bar +15 as authored.
+			_view.Position = new Vector3(anchor.X, anchor.Y, 400f);
 
 			// The pool's mask binding, for the owned view's clip.
 			if (DocumentFor(backdrop) is { } maskDoc &&
@@ -358,6 +360,64 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			if (_cards is not null && open != "card")
 			{
 				GD.Print($"[menu-check] {_cards.Describe()}");
+			}
+		}
+		else if (open == "achievements")
+		{
+			// The achievements page over a file-backed seam: `REFII_ACHIEVEMENTS_XDBF` is a title
+			// XDBF (or a synthetic one), `REFII_ACHIEVEMENTS_STORE` the unlock file to read, and
+			// `REFII_ACHIEVEMENTS_NAV=<n>` steps the cursor down n times before the capture.
+			Refii.Ui.Engine_UiSource.Current = new FileAchievementSource(
+				System.Environment.GetEnvironmentVariable("REFII_ACHIEVEMENTS_XDBF") ?? string.Empty);
+			Refii.Achievements.Engine_Achievements.StorePathOverride =
+				System.Environment.GetEnvironmentVariable("REFII_ACHIEVEMENTS_STORE");
+			Refii.Achievements.Engine_Achievements.Drive();
+			GD.Print($"[menu-check] achievements: {Refii.Achievements.Engine_Achievements.Report}");
+			foreach (Refii.Achievements.AchievementDefinition definition in
+				Refii.Achievements.Engine_Achievements.Definitions)
+			{
+				GD.Print($"[menu-check]   #{definition.Id} '{definition.Name}' {definition.Gamerscore}G " +
+					$"image={definition.ImageId} unlocked={Refii.Achievements.Engine_Achievements.IsUnlocked(definition.Id)} " +
+					$"icon={(Refii.Achievements.Engine_Achievements.Icon(definition.Id) is null ? "none" : "png")}");
+			}
+
+			GD.Print($"[menu-check] achievements: {Refii.Achievements.Engine_Achievements.UnlockedCount} of " +
+				$"{Refii.Achievements.Engine_Achievements.TotalCount} unlocked");
+
+			// With REFII_MENU_BOOK=1 over the logbook: the owned book takes the achievement page
+			// for one row — `REFII_ACHIEVEMENTS_ROW=<id>`, or the folder itself when unset —
+			// through the same three host channels the game feeds it.
+			if (GetNodeOrNull<Engine_UiOwnedBook>("PauseBook") is { } logbook &&
+				DocumentFor(backdrop) is { } logbookDoc)
+			{
+				string rowSpec = System.Environment.GetEnvironmentVariable("REFII_ACHIEVEMENTS_ROW") ?? string.Empty;
+				Engine_UiExpandableMenu.Item row;
+				if (uint.TryParse(rowSpec, out uint id))
+				{
+					row = new Engine_UiExpandableMenu.Item($"Achievement:{id}", $"Achievement {id}")
+					{
+						EventType = Engine_UiAchievementPage.EventType,
+						IdLow = (int)(id & 0xFFFFu),
+						IdHigh = (int)((id >> 16) & 0xFFFFu),
+					};
+				}
+				else
+				{
+					row = new Engine_UiExpandableMenu.Item(Engine_UiAchievementPage.FolderRowName, "Achievements")
+					{
+						EventType = Engine_UiAchievementPage.EventType,
+					};
+				}
+
+				logbook.HostValues = Engine_UiAchievementPage.Values(row);
+				logbook.HostTextures = Engine_UiAchievementPage.Textures(row);
+				logbook.HostActive = Engine_UiAchievementPage.Active(row);
+				var allActive = new bool[logbookDoc.Nodes.Length];
+				System.Array.Fill(allActive, true);
+				logbook.SetLive(null, null, null, allActive, null, null);
+				GD.Print($"[menu-check] achievement page for '{row.Name}': " +
+					$"{logbook.HostValues.Count} value(s), {logbook.HostTextures.Count} texture(s), " +
+					$"{logbook.HostActive.Count} switch(es)");
 			}
 		}
 		else if (open == "saves")
@@ -892,4 +952,19 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 		_view.Refresh();
 		GD.Print($"[menu-check] toggled '{name}'\n{_view.Describe()}");
 	}
+}
+
+/// <summary>The achievement seam read from files, for the harness: an XDBF and no guest.</summary>
+public sealed class FileAchievementSource : Engine_UiSource
+{
+	private readonly byte[]? _xdbf;
+
+	public FileAchievementSource(string xdbfPath)
+	{
+		_xdbf = xdbfPath.Length != 0 && System.IO.File.Exists(xdbfPath)
+			? System.IO.File.ReadAllBytes(xdbfPath)
+			: null;
+	}
+
+	public override byte[]? GetTitleXdbf() => _xdbf;
 }

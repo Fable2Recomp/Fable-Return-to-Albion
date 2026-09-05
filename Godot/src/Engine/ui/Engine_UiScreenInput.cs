@@ -36,6 +36,17 @@ public static class Engine_UiScreenInput
 	public const uint TabNext = 73;
 
 	/// <summary>
+	/// The item books' PAGE TURN. `sub_82990E48` answers 26 and 27 on the page widget — the
+	/// furniture screens' input handler shows the shape plainly
+	/// (`case 26/27: sub_829907F0(widget, code, 1, lua)`) — and it is the only way `Page2` is
+	/// ever reached: the two pages are authored on the same right-hand leaf and the guest slides
+	/// one out as it slides the other in.
+	/// </summary>
+	public const uint PageNext = 26;
+
+	public const uint PagePrev = 27;
+
+	/// <summary>
 	/// The directional presses. List screens swallow 28..35 (their scrolling is Lua's `onUpdate`
 	/// polling `GUI:IsPushingUp()`, hence <c>Engine_UiSource.Current.MenuScroll</c>); only the
 	/// options page answers natively — page object on 28/29, row object on 30/31.

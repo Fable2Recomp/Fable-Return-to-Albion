@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 96;
+	public const int ExpectedAbiVersion = 118;
 
 	private const int MessageCapacity = 512;
 
@@ -261,6 +261,146 @@ public static class HostBridge
 	/// <summary>
 	/// Tears the guest down. Idempotent; call from <c>_ExitTree</c> so guest threads are not live at exit.
 	/// </summary>
+	/// <summary>One clip leaf of the guest's stated blend tree for a rig.</summary>
+	/// <param name="Key">The animation TOC key (the guest's clip hash).</param>
+	/// <param name="Time">The guest's current clip time, seconds, as of its last tick.</param>
+	/// <param name="PreviousTime">The clip time at the tick before.</param>
+	/// <param name="Weight">The product of the weights down the tree.</param>
+	/// <param name="Overlay">
+	/// From the controller's second list: composited per bone through <paramref name="Mask"/>
+	/// onto the primaries' pose, never a primary itself.
+	/// </param>
+	/// <param name="Mask">The guest mask node above this leaf (0 = whole body); see GetAnimMask.</param>
+	/// <param name="PriorityMask">The record's priority bitmask; an overlay plays only when it ANDs with the top primary's priority.</param>
+	public readonly record struct GuestAnimLeaf(
+		uint Key, float Time, float PreviousTime, float Weight, bool Loop, bool Additive,
+		int Priority, int Track, uint Uid, float BlendIn, float BlendOut,
+		bool Overlay, uint Mask, uint PriorityMask);
+
+	private const int AnimLeafWords = 10;
+
+	/// <summary>
+	/// One overlay's per-bone weights, 0..255 by LIVE (guest) bone index, from the mask node
+	/// the leaf names. Empty when the node is not a mask.
+	/// </summary>
+	public static byte[] GetAnimMask(uint node, out uint skeletonId)
+	{
+		skeletonId = 0;
+		if (node == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return System.Array.Empty<byte>();
+		}
+
+		var bytes = new byte[MaxBones];
+		uint count = RefiiHostGetAnimMask(node, bytes, (uint)bytes.Length, out skeletonId);
+		if (count == 0)
+		{
+			return System.Array.Empty<byte>();
+		}
+
+		System.Array.Resize(ref bytes, (int)count);
+		return bytes;
+	}
+
+	/// <summary>
+	/// One attachment the guest has STATED: <paramref name="Child"/> hangs on
+	/// <paramref name="Parent"/>'s dummy <paramref name="Dummy"/>.
+	/// </summary>
+	/// <param name="Index">The ordinal among equally-named dummies on the parent model.</param>
+	/// <param name="Ticket">The attachment's id; it changes when the child is re-attached.</param>
+	public readonly record struct GuestAttachment(
+		uint Child, uint Parent, int Index, uint Ticket, string Dummy);
+
+	/// <summary>How many attachments one read brings back. A busy street is well under this.</summary>
+	private const int MaxAttachments = 512;
+
+	private const int AttachmentWords = 4;
+
+	private const int AttachmentNameBytes = 64;
+
+	private static uint[]? _attachmentWords;
+
+	private static byte[]? _attachmentNames;
+
+	/// <summary>
+	/// Every live attachment in the world (see RefiiHostGetAttachments). The guest places an
+	/// attached entity from ITS OWN pose; the host reads the statement instead and hangs the
+	/// child off its own bone.
+	/// </summary>
+	public static int GetAttachments(List<GuestAttachment> into)
+	{
+		into.Clear();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+
+		_attachmentWords ??= new uint[MaxAttachments * AttachmentWords];
+		_attachmentNames ??= new byte[MaxAttachments * AttachmentNameBytes];
+		uint count = RefiiHostGetAttachments(
+			_attachmentWords, MaxAttachments, _attachmentNames);
+
+		for (uint i = 0; i < count; ++i)
+		{
+			int at = (int)(i * AttachmentWords);
+			int nameAt = (int)(i * AttachmentNameBytes);
+			int length = 0;
+			while (length < AttachmentNameBytes && _attachmentNames[nameAt + length] != 0)
+			{
+				++length;
+			}
+
+			into.Add(new GuestAttachment(
+				_attachmentWords[at],
+				_attachmentWords[at + 1],
+				(int)_attachmentWords[at + 2],
+				_attachmentWords[at + 3],
+				System.Text.Encoding.ASCII.GetString(_attachmentNames, nameAt, length)));
+		}
+
+		return into.Count;
+	}
+
+	private static uint[]? _animWords;
+
+	/// <summary>
+	/// The guest's stated animation for one rig: the clip leaves of its controller's blend
+	/// tree (see RefiiHostGetEntityAnimState). Empty when the entity has no active controller.
+	/// <paramref name="flags"/>: bit0 controller active, bit1 a procedural IK component is
+	/// present, bit2 the tree is netplay-replicated and was not walked.
+	/// </summary>
+	public static int GetEntityAnimState(uint entity, List<GuestAnimLeaf> into, out uint flags)
+	{
+		into.Clear();
+		flags = 0;
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+
+		_animWords ??= new uint[AnimLeafWords * 64];
+		uint leaves = RefiiHostGetEntityAnimState(entity, _animWords, (uint)_animWords.Length, out flags);
+		for (int i = 0; i < leaves; ++i)
+		{
+			int at = i * AnimLeafWords;
+			uint f = _animWords[at + 4];
+			into.Add(new GuestAnimLeaf(
+				_animWords[at],
+				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 1]),
+				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 2]),
+				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 3]),
+				(f & 1) != 0, (f & 2) != 0, (int)((f >> 8) & 0xFF), (int)((f >> 16) & 0xFF),
+				_animWords[at + 5],
+				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 6]),
+				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 7]),
+				(f & 4) != 0,
+				_animWords[at + 8],
+				_animWords[at + 9]));
+		}
+
+		return (int)leaves;
+	}
+
 	public static ProbeResult Shutdown()
 	{
 		var message = new byte[MessageCapacity];
@@ -310,11 +450,26 @@ public static class HostBridge
 	/// Copies the .bik buffer the guest handed to BinkOpen (the startup logos). Movies opened by
 	/// name return null here; see <see cref="GetRequestedVideoName"/>.
 	/// </summary>
-	public static byte[]? GetRequestedVideo(out uint generation)
+	public static byte[]? GetRequestedVideo(out uint generation) =>
+		GetRequestedVideo(out generation, uint.MaxValue);
+
+	/// <summary>
+	/// The requested movie's bytes, or null without a copy when its generation is still
+	/// <paramref name="unlessGeneration"/>. The guest keeps stating the last request after the
+	/// movie ends, and copying a whole .bik out of guest memory every frame cost 25 ms and tens
+	/// of megabytes of garbage per frame in the world (measured 2026-09-04).
+	/// </summary>
+	public static byte[]? GetRequestedVideo(out uint generation, uint unlessGeneration)
 	{
 		uint size = 0;
 		uint gen = 0;
 		if (RefiiHostGetRequestedVideo(null, 0, out size, out gen) == 0 || size == 0)
+		{
+			generation = gen;
+			return null;
+		}
+
+		if (gen == unlessGeneration)
 		{
 			generation = gen;
 			return null;
@@ -2140,6 +2295,24 @@ public static class HostBridge
 	/// of its identity: a second `SetItemEmphasis`/`SetItemGhosting` with different semantics
 	/// exists for the non-expandable menu.
 	/// </remarks>
+	/// <summary>
+	/// What the `g_Menu:` capture has actually SEEN — recorded, still pending, and dropped to
+	/// the ceiling. Nothing read this until a run showed zero statements crossing in 6,777 log
+	/// lines, which is indistinguishable from "the guest states no menus" without it: recorded
+	/// climbing means the hook fires and the crossing is at fault, recorded stuck at zero means
+	/// the guest's populations never reach `sub_82426470` and the hook is on the wrong function.
+	/// </summary>
+	public static (ulong Recorded, uint Pending, ulong Dropped) MenuChunkCounters()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return (0UL, 0u, 0UL);
+		}
+
+		RefiiHostMenuChunkCounters(out ulong recorded, out uint pending, out ulong dropped);
+		return (recorded, pending, dropped);
+	}
+
 	public static System.Collections.Generic.List<Engine_UiModel.MenuChunk> TakeMenuChunks()
 	{
 		var chunks = new System.Collections.Generic.List<Engine_UiModel.MenuChunk>();
@@ -2348,7 +2521,7 @@ public static class HostBridge
 	public static uint PostFrontEndAction(string name) =>
 		RefiiHostPostFrontEndAction(name);
 
-	/// <summary>Unlocks newer than <paramref name="afterSequence"/>, oldest first.</summary>
+	/// <summary>The guest's achievement writes newer than <paramref name="afterSequence"/>, oldest first.</summary>
 	public static AchievementUnlock[] GetAchievementUnlocks(ulong afterSequence, int max = 16)
 	{
 		if (TryGetAbiVersion() is null || max <= 0)
@@ -2357,8 +2530,9 @@ public static class HostBridge
 		}
 
 		var ids = new uint[max];
+		var users = new uint[max];
 		var sequences = new ulong[max];
-		uint count = RefiiHostGetAchievementUnlocks(afterSequence, ids, sequences, (uint)max);
+		uint count = RefiiHostGetAchievementUnlocks(afterSequence, ids, users, sequences, (uint)max);
 		if (count == 0)
 		{
 			return System.Array.Empty<AchievementUnlock>();
@@ -2367,57 +2541,45 @@ public static class HostBridge
 		var unlocks = new AchievementUnlock[System.Math.Min(count, (uint)max)];
 		for (int i = 0; i < unlocks.Length; ++i)
 		{
-			unlocks[i] = new AchievementUnlock(ids[i], sequences[i]);
+			unlocks[i] = new AchievementUnlock(users[i], ids[i], sequences[i]);
 		}
 
 		return unlocks;
 	}
 
-	public static AchievementDefinition? GetAchievementDefinition(uint achievementId)
+	/// <summary>The title's XDBF resource — sized with a null buffer first — or null before the module has launched.</summary>
+	public static byte[]? GetTitleXdbf()
 	{
 		if (TryGetAbiVersion() is null)
 		{
 			return null;
 		}
 
-		var name = new System.Text.StringBuilder(256);
-		var unlocked = new System.Text.StringBuilder(512);
-		var locked = new System.Text.StringBuilder(512);
-		if (RefiiHostGetAchievementDefinition(
-				achievementId, out uint score, out uint flags,
-				name, (uint)name.Capacity,
-				unlocked, (uint)unlocked.Capacity,
-				locked, (uint)locked.Capacity) == 0)
-		{
-			return null;
-		}
-
-		return new AchievementDefinition(
-			achievementId, score, flags,
-			name.ToString(), unlocked.ToString(), locked.ToString());
-	}
-
-	/// <summary>
-	/// The achievement's icon as PNG bytes, or null when the title ships none. Sized first with
-	/// a null buffer.
-	/// </summary>
-	public static byte[]? GetAchievementIconPng(uint achievementId)
-	{
-		if (TryGetAbiVersion() is null)
-		{
-			return null;
-		}
-
-		uint size = RefiiHostGetAchievementIconPng(achievementId, null, 0);
+		uint size = RefiiHostGetTitleXdbf(null, 0);
 		if (size == 0)
 		{
 			return null;
 		}
 
 		var bytes = new byte[size];
-		uint written = RefiiHostGetAchievementIconPng(achievementId, bytes, size);
+		uint written = RefiiHostGetTitleXdbf(bytes, size);
 		return written == 0 ? null : bytes;
 	}
+
+	/// <summary>States the unlocked set for the guest's own achievement enumerator.</summary>
+	public static void SetAchievementUnlocks(uint[] ids, ulong[] unlockFiletimes)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		RefiiHostSetAchievementUnlocks(ids, unlockFiletimes, (uint)System.Math.Min(ids.Length, unlockFiletimes.Length));
+	}
+
+	/// <summary>How many times the guest has called `XamShowAchievementsUI` this session.</summary>
+	public static uint GetAchievementsUiRequests() =>
+		TryGetAbiVersion() is null ? 0u : RefiiHostGetAchievementsUiRequests();
 
 	/// <summary>
 	/// Presses or releases a direction on whichever in-game screen is up — an EDGE, not a step.
@@ -2479,6 +2641,445 @@ public static class HostBridge
 	/// the element tree instead. <paramref name="generation"/> is bumped on every spawn, so an
 	/// unchanged value means the same list.
 	/// </summary>
+	/// <summary>
+	/// The screen the captured rows belong to, or `Engine_UiMenuSources.AnyScreen` when none —
+	/// the front end, or before the guest is up. See the native side for why the key exists.
+	/// </summary>
+	/// <summary>Raw guest words — the debug channel's microscope. Empty when unreadable.</summary>
+	public static uint[] Peek(uint addr, uint count)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp || count == 0 || count > 64)
+		{
+			return System.Array.Empty<uint>();
+		}
+
+		var words = new uint[count];
+		try
+		{
+			uint got = RefiiHostPeek(addr, words, count);
+			if (got < count)
+			{
+				System.Array.Resize(ref words, (int)got);
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return System.Array.Empty<uint>();
+		}
+
+		return words;
+	}
+
+	// =================== ReXGlue runtime introspection (debug channel) ===================
+
+	/// <summary>One kernel-registered thread, with the live r1/lr its backtrace starts from.</summary>
+	public readonly record struct GuestThreadInfo(
+		uint Tid, bool IsGuestThread, bool IsMainThread, bool Running,
+		int Priority, uint Cpu, uint R1, uint Lr, string Name);
+
+	private const uint IntrospectStride = 96;
+	private const uint IntrospectCapacity = 128;
+
+	private static string SlotString(byte[] buffer, int index, uint stride)
+	{
+		int start = index * (int)stride;
+		int length = 0;
+		while (length < stride && buffer[start + length] != 0)
+		{
+			++length;
+		}
+
+		return Encoding.UTF8.GetString(buffer, start, length);
+	}
+
+	/// <summary>
+	/// Every thread the kernel knows, guest-created and host-side both. r1/lr are read from the
+	/// live context without stopping the thread — exact for a parked thread, torn at worst for a
+	/// running one, and the parked ones are the ones a freeze asks about.
+	/// </summary>
+	public static System.Collections.Generic.List<GuestThreadInfo> GetGuestThreads()
+	{
+		var threads = new System.Collections.Generic.List<GuestThreadInfo>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return threads;
+		}
+
+		var tids = new uint[IntrospectCapacity];
+		var flags = new uint[IntrospectCapacity];
+		var priority = new int[IntrospectCapacity];
+		var cpu = new uint[IntrospectCapacity];
+		var r1 = new uint[IntrospectCapacity];
+		var lr = new uint[IntrospectCapacity];
+		var names = new byte[IntrospectCapacity * IntrospectStride];
+		uint count = RefiiHostGetGuestThreads(
+			tids, flags, priority, cpu, r1, lr, names, IntrospectStride, IntrospectCapacity);
+		for (int i = 0; i < count; ++i)
+		{
+			threads.Add(new GuestThreadInfo(
+				tids[i], (flags[i] & 1u) != 0, (flags[i] & 2u) != 0, (flags[i] & 4u) != 0,
+				priority[i], cpu[i], r1[i], lr[i], SlotString(names, i, IntrospectStride)));
+		}
+
+		return threads;
+	}
+
+	/// <summary>
+	/// Guest return addresses for one thread, innermost first. Frame 0 is the context's LR —
+	/// a leaf's return address exists nowhere else — and the rest walk the back chain the
+	/// title's own ABI maintains (32-bit back chain at [r1], saved LR at back-chain − 8;
+	/// verified in the binary, see RefiiHostGuestBacktrace).
+	/// </summary>
+	public static uint[] GetGuestBacktrace(uint tid, int max = 48)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp || max < 1)
+		{
+			return System.Array.Empty<uint>();
+		}
+
+		var frames = new uint[max];
+		uint count = RefiiHostGuestBacktrace(tid, frames, (uint)max);
+		System.Array.Resize(ref frames, (int)count);
+		return frames;
+	}
+
+	/// <summary>One entry of the kernel handle table. Type is rex XObject::Type.</summary>
+	public readonly record struct KernelObjectInfo(uint Handle, uint Type, string Name);
+
+	public static System.Collections.Generic.List<KernelObjectInfo> GetKernelObjects(
+		out uint total)
+	{
+		total = 0;
+		var objects = new System.Collections.Generic.List<KernelObjectInfo>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return objects;
+		}
+
+		const uint Capacity = 512;
+		var handles = new uint[Capacity];
+		var types = new uint[Capacity];
+		var names = new byte[Capacity * IntrospectStride];
+		uint count = RefiiHostGetKernelObjects(
+			handles, types, names, IntrospectStride, Capacity, out total);
+		for (int i = 0; i < count; ++i)
+		{
+			objects.Add(new KernelObjectInfo(
+				handles[i], types[i], SlotString(names, i, IntrospectStride)));
+		}
+
+		return objects;
+	}
+
+	/// <summary>
+	/// Every rex::perf counter, LIVE values — run totals or gauges, never per-frame rates:
+	/// the snapshot rotation lives in the renderer, which this build compiles out. Rates are
+	/// deltas between two reads.
+	/// </summary>
+	public static System.Collections.Generic.List<(string Name, long Value)> GetPerfCounters()
+	{
+		var counters = new System.Collections.Generic.List<(string, long)>();
+		if (TryGetAbiVersion() is null)
+		{
+			return counters;
+		}
+
+		const uint Capacity = 64;
+		var values = new long[Capacity];
+		var names = new byte[Capacity * IntrospectStride];
+		uint count = RefiiHostGetPerfCounters(values, names, IntrospectStride, Capacity);
+		for (int i = 0; i < count; ++i)
+		{
+			counters.Add((SlotString(names, i, IntrospectStride), values[i]));
+		}
+
+		return counters;
+	}
+
+	/// <summary>One kernel export, named "module!Name". No call counts: the runtime's
+	/// call_count field is dead in recompiled builds.</summary>
+	public readonly record struct KernelExportInfo(
+		string Name, uint Ordinal, bool Implemented, bool IsVariable);
+
+	public static System.Collections.Generic.List<KernelExportInfo> GetKernelExports(
+		uint first, bool onlyUnimplemented, out uint total)
+	{
+		total = 0;
+		var exports = new System.Collections.Generic.List<KernelExportInfo>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return exports;
+		}
+
+		const uint Capacity = 256;
+		var ordinals = new uint[Capacity];
+		var flags = new uint[Capacity];
+		var names = new byte[Capacity * IntrospectStride];
+		uint count = RefiiHostGetKernelExports(
+			first, onlyUnimplemented ? 1u : 0u, ordinals, flags, names, IntrospectStride,
+			Capacity, out total);
+		for (int i = 0; i < count; ++i)
+		{
+			exports.Add(new KernelExportInfo(
+				SlotString(names, i, IntrospectStride), ordinals[i],
+				(flags[i] & 1u) != 0, (flags[i] & 2u) != 0));
+		}
+
+		return exports;
+	}
+
+	/// <summary>One cvar. Type is rex FlagType (Boolean..Command), Lifecycle 0=init-only
+	/// 1=hot-reload 2=requires-restart.</summary>
+	public readonly record struct CvarInfo(
+		string Name, string Value, string Default, string Category,
+		uint Type, uint Lifecycle, bool Modified, bool DebugOnly);
+
+	public static int GetCvarCount() =>
+		TryGetAbiVersion() is null ? 0 : RefiiHostGetCvarCount();
+
+	public static CvarInfo? GetCvar(int index)
+	{
+		if (TryGetAbiVersion() is null || index < 0)
+		{
+			return null;
+		}
+
+		var name = new byte[128];
+		var value = new byte[256];
+		var fallback = new byte[256];
+		var category = new byte[64];
+		if (RefiiHostGetCvarInfo((uint)index, name, (uint)name.Length, value,
+				(uint)value.Length, fallback, (uint)fallback.Length, category,
+				(uint)category.Length, out uint type, out uint lifecycle, out uint flags) == 0)
+		{
+			return null;
+		}
+
+		return new CvarInfo(
+			Decode(name), Decode(value), Decode(fallback), Decode(category),
+			type, lifecycle, (flags & 1u) != 0, (flags & 2u) != 0);
+	}
+
+	/// <summary>Set one cvar through the registry's own validator; false means it refused.</summary>
+	public static bool SetCvar(string name, string value) =>
+		TryGetAbiVersion() is not null && RefiiHostSetCvar(name, value) != 0;
+
+	/// <summary>Where one guest path actually lands in the live VFS.</summary>
+	public readonly record struct VfsResolution(
+		bool Found, bool RootIsLink, string AbsolutePath, string LinkTarget,
+		ulong Size, uint Attributes);
+
+	public static VfsResolution? VfsResolve(string guestPath)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp || string.IsNullOrEmpty(guestPath))
+		{
+			return null;
+		}
+
+		var absolute = new byte[1024];
+		var link = new byte[256];
+		uint result = RefiiHostVfsResolve(
+			guestPath, absolute, (uint)absolute.Length, link, (uint)link.Length,
+			out ulong size, out uint attributes);
+		return new VfsResolution(
+			(result & 1u) != 0, (result & 2u) != 0, Decode(absolute), Decode(link),
+			size, attributes);
+	}
+
+	/// <summary>Every socket in the kernel handle table.</summary>
+	public static System.Collections.Generic.List<(uint Handle, uint Port, ulong NativeHandle)>
+		GetGuestSockets()
+	{
+		var sockets = new System.Collections.Generic.List<(uint, uint, ulong)>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return sockets;
+		}
+
+		const uint Capacity = 64;
+		var handles = new uint[Capacity];
+		var ports = new uint[Capacity];
+		var native = new ulong[Capacity];
+		uint count = RefiiHostGetGuestSockets(handles, ports, native, Capacity);
+		for (int i = 0; i < count; ++i)
+		{
+			sockets.Add((handles[i], ports[i], native[i]));
+		}
+
+		return sockets;
+	}
+
+
+	// ======================= Debug instrumentation batch (ABI 113) =======================
+
+	/// <summary>One Tracy FrameMark + perf counter flip per presented frame. Also rotates the
+	/// per-frame counter snapshots and feeds the perf_log_csv writer when that cvar is set.</summary>
+	public static void FrameMark()
+	{
+		if (TryGetAbiVersion() is not null)
+		{
+			RefiiHostFrameMark();
+		}
+	}
+
+	/// <summary>Per-frame counter snapshots — the LAST frame's accumulators and gauges.
+	/// Meaningful only while FrameMark runs each frame.</summary>
+	public static System.Collections.Generic.List<(string Name, long Value)> GetPerfSnapshots()
+	{
+		var counters = new System.Collections.Generic.List<(string, long)>();
+		if (TryGetAbiVersion() is null)
+		{
+			return counters;
+		}
+
+		const uint Capacity = 64;
+		var values = new long[Capacity];
+		var names = new byte[Capacity * IntrospectStride];
+		uint count = RefiiHostGetPerfSnapshots(values, names, IntrospectStride, Capacity);
+		for (int i = 0; i < count; ++i)
+		{
+			counters.Add((SlotString(names, i, IntrospectStride), values[i]));
+		}
+
+		return counters;
+	}
+
+	/// <summary>A message on the Tracy timeline. No-op in unprofiled builds.</summary>
+	public static void TraceMessage(string text)
+	{
+		if (TryGetAbiVersion() is not null && !string.IsNullOrEmpty(text))
+		{
+			RefiiHostTraceMessage(text);
+		}
+	}
+
+	/// <summary>A named Tracy zone; dispose ends it. Zero-cost when no profiler is attached.</summary>
+	public readonly struct TraceZone : System.IDisposable
+	{
+		private readonly ulong _zone;
+		public TraceZone(string name) =>
+			_zone = TryGetAbiVersion() is not null ? RefiiHostTraceZoneBegin(name) : 0;
+		public void Dispose()
+		{
+			if (_zone != 0)
+			{
+				RefiiHostTraceZoneEnd(_zone);
+			}
+		}
+	}
+
+	public static void TracePlot(string name, double value)
+	{
+		if (TryGetAbiVersion() is not null)
+		{
+			RefiiHostTracePlot(name, value);
+		}
+	}
+
+	/// <summary>Which heap owns an address and its protection — the pointer-validity check.</summary>
+	public static (uint HeapBase, uint HeapSize, uint PageSize, uint Protect)? HeapLookup(uint addr)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		if (RefiiHostHeapLookup(addr, out uint heapBase, out uint heapSize, out uint page,
+				out uint protect) == 0)
+		{
+			return null;
+		}
+
+		return (heapBase, heapSize, page, protect);
+	}
+
+	/// <summary>One deliberate guest word write. Refused on unwritable or untracked pages.</summary>
+	public static bool Poke(uint addr, uint value) =>
+		TryGetAbiVersion() is not null && IsGuestUp && RefiiHostPoke(addr, value) != 0;
+
+	/// <summary>Arms a recording probe on a guest function start. Slot, or a negative refusal:
+	/// -1 all slots used, -2 not a recompiled function start, -3 no runtime.</summary>
+	public static int ProbeSet(uint addr) =>
+		TryGetAbiVersion() is null || !IsGuestUp ? -3 : RefiiHostProbeSet(addr);
+
+	public static bool ProbeClear(int slot) =>
+		TryGetAbiVersion() is not null && RefiiHostProbeClear(slot) != 0;
+
+	public readonly record struct ProbeState(
+		uint Addr, ulong Hits, uint LastLr, ulong[] LastArgs);
+
+	public static ProbeState? ProbeRead(int slot)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		var args = new ulong[6];
+		if (RefiiHostProbeRead(slot, out uint addr, out ulong hits, out uint lastLr, args,
+				(uint)args.Length) == 0)
+		{
+			return null;
+		}
+
+		return new ProbeState(addr, hits, lastLr, args);
+	}
+
+	/// <summary>The last debug-call/debug-lua outcome the tick pump recorded, with the
+	/// sequence number a poster compares to know its own call finished.</summary>
+	public static (ulong Seq, uint Addr, ulong R3, string Note)? DebugCallResult()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		var note = new byte[192];
+		RefiiHostGetDebugCallResult(out ulong seq, out uint addr, out ulong r3, note,
+			(uint)note.Length);
+		return (seq, addr, r3, Decode(note));
+	}
+
+	/// <summary>
+	/// The guest arena's identity for OUT-OF-PROCESS readers: the shared-memory object backing
+	/// all of guest memory (bare name — /dev/shm/&lt;name&gt; on Linux, Local\&lt;name&gt; on
+	/// Windows) and the host virtual base its views are mapped at (what ReadProcessMemory
+	/// needs). Published into the handshake so a FROZEN run — the one state the debug channel
+	/// cannot answer from — can still be read.
+	/// </summary>
+	public static (string Name, ulong Membase)? GetGuestArenaInfo()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		var name = new byte[256];
+		if (RefiiHostGetGuestArenaInfo(name, (uint)name.Length, out ulong membase) == 0)
+		{
+			return null;
+		}
+
+		return (Decode(name), membase);
+	}
+
+	public static uint GetMenuScreenId()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return Refii.Ui.Engine_UiMenuSources.AnyScreen;
+		}
+
+		try
+		{
+			return RefiiHostGetMenuScreenId();
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return Refii.Ui.Engine_UiMenuSources.AnyScreen;
+		}
+	}
+
 	public static System.Collections.Generic.List<MenuRow> GetMenuRows(out ulong generation)
 	{
 		var rows = new System.Collections.Generic.List<MenuRow>();
@@ -2644,6 +3245,7 @@ public static class HostBridge
 		string TitleTag,
 		float[] Attractiveness, float AttractivenessTotal,
 		bool DogKnown, int DogCombat, int DogSearching, int DogState, string DogName,
+		uint DogNameKey,
 		uint[] DogTrickIds,
 		int[] Stats, bool StatsKnown,
 		float[] SpellDamage)
@@ -3036,6 +3638,85 @@ public static class HostBridge
 	}
 
 	/// <summary>
+	/// Screen 28's one building. The screen's left column is a list of COMMANDS, not of
+	/// properties: there is a single building, resolved when it opens, and nothing to select.
+	///
+	/// Every number is the guest's own answer, because each walks something the host has no
+	/// business reproducing — a prosperity term off a world component, a GDB adjustment array
+	/// matched against <see cref="TypeMask"/>, an occupant-opinion term weighted over five
+	/// personality axes. The PRESENTATION is entirely ours: the star bin, the gold prefix, the
+	/// negative recolour, which Variable row stands and which legend Page 2 carries.
+	///
+	/// <paramref name="Record"/> is the GDB record the text hangs off — NOT the building
+	/// entity's own record. `sub_821DA3B0` takes the entity's def handle, then a property named
+	/// after the component's class, and the entry-ref that yields is this hash.
+	/// </summary>
+	public readonly record struct RealEstate(
+		bool Known, uint Record, uint TypeMask, bool Owned, bool HasTenant,
+		int Value, int Economy, int Decoration, int Income, int SalePrice, int SellingFees,
+		int NotVacant, int OwnerKilled, int HeroOpinion, uint BonusesRecord, string Occupant)
+	{
+		/// <summary>The guest's own "is a business" test — `mask &amp; 0xEFE` at 0x82999CF8.
+		/// Every type but HOME and UNIQUE.</summary>
+		public bool IsBusiness => (TypeMask & 0xEFEu) != 0u;
+
+		/// <summary>Which BuildingType this is: the FIRST set bit, as `sub_8299A550` decodes it.
+		/// 0 HOME, 1 DOCK, 2 FARM, 3 TOWNHALL, 4 WAREHOUSE, 5 SHOP, 6 BAR, 7 BORDELLO, 8 UNIQUE,
+		/// 9 STALL, 10 HOUSE, 11 TEMPLE; -1 when nothing is set.</summary>
+		public int Type
+		{
+			get
+			{
+				for (int bit = 0; bit < 12; ++bit)
+				{
+					if ((TypeMask & (1u << bit)) != 0u)
+					{
+						return bit;
+					}
+				}
+
+				return -1;
+			}
+		}
+
+		/// <summary>`sub_8299AF88`'s bins, over the building's current value.</summary>
+		public int Stars => Value <= 0 ? 0
+			: Value < 5000 ? 1
+			: Value < 12000 ? 2
+			: Value < 26000 ? 3
+			: Value < 55000 ? 4
+			: 5;
+	}
+
+	/// <summary>Reads screen 28's building. See <see cref="RealEstate"/>.</summary>
+	public static RealEstate GetRealEstate()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		uint[] words = new uint[14];
+		var occupant = new byte[128];
+		uint known;
+		try
+		{
+			known = RefiiHostGetRealEstate(words, (uint)words.Length,
+				occupant, (uint)occupant.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		return new RealEstate(
+			known != 0u, words[0], words[1], words[2] != 0u, words[3] != 0u,
+			(int)words[4], (int)words[5], (int)words[6], (int)words[7], (int)words[8],
+			(int)words[9], (int)words[10], (int)words[11], (int)words[12], words[13],
+			Utf8(occupant));
+	}
+
+	/// <summary>
 	/// The crime screen's arrest notice. Both strings are already localised — the guest's opener
 	/// composed them through Babel — so they are drawn verbatim, not resolved again.
 	/// </summary>
@@ -3108,6 +3789,110 @@ public static class HostBridge
 		return quests;
 	}
 
+	/// <summary>
+	/// The guest's expression/job timing meter object (`*(*(GUI+32)+44)`), read for drawing —
+	/// the guest runs it and judges it. <see cref="Known"/> is false with no meter reachable.
+	/// </summary>
+	public readonly record struct ExpressionMeter(
+		bool Known, bool On, int Mode, bool ArmedA, bool ArmedB, bool Latched,
+		float Position, float Speed, bool HitA, bool HitB, bool Dynamic, int Band)
+	{
+		/// <summary>Whether a pip is travelling: modes 1 and 2 with a latched start.</summary>
+		public bool PipRunning => Known && Mode is 1 or 2 && Latched && (ArmedA || ArmedB);
+	}
+
+	/// <summary>
+	/// The TopBox manager's front record — see the bridge export. <see cref="Present"/> is false
+	/// with no record up; <see cref="Known"/> is false with no manager reachable.
+	/// </summary>
+	public readonly record struct TopBoxFront(
+		bool Known, bool Present, uint TitleTag, bool ShowA, bool HoldA, bool ShowY, bool HoldY,
+		int Channel, uint NameHash, int LifetimeMs);
+
+	/// <summary>
+	/// The front TopBox record's body provider, as data: <paramref name="Class"/> 0 Babel key,
+	/// 1 key with %1/%2/%3 numbers, 2 key with %s/%1/%2 keys, 3 a literal; see the native.
+	/// </summary>
+	public readonly record struct TopBoxBody(
+		bool Known, bool Present, int Class, uint Key, uint Second, uint Third, uint Fourth,
+		uint TitleTag, uint NameHash, string Literal);
+
+	private static byte[]? _topBoxLiteral;
+
+	public static TopBoxBody GetTopBoxBody()
+	{
+		var words = new uint[8];
+		_topBoxLiteral ??= new byte[1024];
+		uint count;
+		try
+		{
+			count = RefiiHostGetTopBoxBody(words, (uint)words.Length, _topBoxLiteral, (uint)_topBoxLiteral.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		if (count < 8u)
+		{
+			return default;
+		}
+
+		int length = System.Array.IndexOf(_topBoxLiteral, (byte)0);
+		string literal = length > 0
+			? System.Text.Encoding.UTF8.GetString(_topBoxLiteral, 0, length)
+			: string.Empty;
+		return new TopBoxBody(true, words[0] != 0u, (int)words[1], words[2], words[3], words[4],
+			words[5], words[6], words[7], literal);
+	}
+
+	public static TopBoxFront GetTopBoxFront()
+	{
+		var words = new uint[9];
+		uint count;
+		try
+		{
+			count = RefiiHostGetTopBoxFront(words, (uint)words.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		if (count < 9u)
+		{
+			return default;
+		}
+
+		return new TopBoxFront(
+			true, words[0] != 0u, words[1], words[2] != 0u, words[3] != 0u, words[4] != 0u,
+			words[5] != 0u, (int)words[6], words[7], unchecked((int)words[8]));
+	}
+
+	public static ExpressionMeter GetExpressionMeter()
+	{
+		var values = new float[11];
+		uint count;
+		try
+		{
+			count = RefiiHostGetExpressionMeter(values, (uint)values.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		if (count < 11u)
+		{
+			return default;
+		}
+
+		return new ExpressionMeter(
+			true, values[0] != 0f, (int)values[1], values[2] != 0f, values[3] != 0f,
+			values[4] != 0f, values[5], values[6], values[7] != 0f, values[8] != 0f,
+			values[9] != 0f, (int)values[10]);
+	}
+
 	/// <summary>Reads the hero's derived state. See <see cref="HeroDerived"/>.</summary>
 	public static HeroDerived GetHeroDerived()
 	{
@@ -3118,7 +3903,7 @@ public static class HostBridge
 
 		// Nine words: the bridge fills slots 0..8 and clamps to the capacity given, so a
 		// shorter buffer silently drops the trick count and the flags read below.
-		var words = new uint[9];
+		var words = new uint[10];
 		var values = new float[26];
 		var title = new byte[64];
 		var dog = new byte[64];
@@ -3157,7 +3942,7 @@ public static class HostBridge
 			attractiveness, values[17],
 			words[2] != 0u,
 			unchecked((int)words[5]), unchecked((int)words[6]),
-			unchecked((int)words[3]), Utf8(dog),
+			unchecked((int)words[3]), Utf8(dog), words[9],
 			Trim(tricks, words[7]),
 			stats, words[8] != 0u,
 			spell);
@@ -3237,6 +4022,523 @@ public static class HostBridge
 	/// `GetNumberOfItems` returns). `RecordId` is not unique either — two records share one id
 	/// whenever the first still holds instance data.
 	/// </summary>
+	/// <summary>
+	/// The active sales and shortages — the world map's `Sales`. `NameKey` is FNV-1 of the
+	/// event's text tag, taken from the record as a raw hash, so nothing but numbers crosses.
+	/// </summary>
+	/// <summary>
+	/// One sale or shortage, as its page needs it. The three keys are Babel key HASHES, not
+	/// tags — the guest hashed them when the sale activated — so they resolve through the book
+	/// by key rather than by name. <paramref name="DaysLeft"/> is the guest's own
+	/// `Duration - today + activationDay`, and <paramref name="Multiplier"/> is signed against
+	/// 1.0: below is a sale, above a shortage, and the page shows `(m - 1) * 100` as a percent.
+	/// </summary>
+	public readonly record struct Sale(
+		uint NameKey, uint DescriptionKey, uint RegionKey, int DaysLeft, float Multiplier)
+	{
+		public bool IsShortage => Multiplier > 1f;
+	}
+
+	/// <summary>Every live sale and shortage, in the guest's own order — sales first.</summary>
+	public static List<Sale> GetSaleDetails()
+	{
+		var sales = new List<Sale>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return sales;
+		}
+
+		const int max = 32;
+		const int stride = 5;
+		uint[] words = new uint[max * stride];
+		uint found;
+		try
+		{
+			found = RefiiHostGetSales(words, (uint)words.Length);
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return sales;
+		}
+
+		for (uint i = 0; i < found && i < max; ++i)
+		{
+			uint at = i * stride;
+			sales.Add(new Sale(
+				words[at], words[at + 1], words[at + 2], (int)words[at + 3],
+				System.BitConverter.Int32BitsToSingle((int)words[at + 4])));
+		}
+
+		return sales;
+	}
+
+	public static List<(uint NameKey, bool IsShortage)> GetSales()
+	{
+		var sales = new List<(uint, bool)>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return sales;
+		}
+
+		const int max = 32;
+		const int stride = 5;
+		uint[] words = new uint[max * stride];
+		uint found;
+		try
+		{
+			found = RefiiHostGetSales(words, (uint)words.Length);
+		}
+		catch (System.DllNotFoundException)
+		{
+			return sales;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return sales;
+		}
+
+		for (uint i = 0; i < found && i < max; ++i)
+		{
+			float multiplier =
+				System.BitConverter.Int32BitsToSingle((int)words[(i * stride) + 4]);
+			sales.Add((words[i * stride], multiplier > 1f));
+		}
+
+		return sales;
+	}
+
+	/// <summary>
+	/// The fast-travel regions that have at least one active stop — the world map's `Regions`.
+	/// Each is FNV-1 of the region's NAME, which is its own Babel key, so no string crosses the
+	/// boundary and a misread name resolves to nothing rather than to rubbish.
+	/// </summary>
+	/// <summary>
+	/// The fast-travel regions with an active stop, each with the ORDINAL that identifies it.
+	///
+	/// The ordinal, not the name, is the identity: event 41's handler `sub_826C7E90` takes the
+	/// row's `Float1`, subtracts the 999 the spawner added, and indexes the guest's own walk of
+	/// the region container with it. That walk counts every non-null entry, so a region with no
+	/// active stop still consumes an ordinal even though no row is ever spawned for it.
+	/// </summary>
+	/// <summary>
+	/// The inventory screen's mode — 1 Items, 3 Weapons, 4 Clothing, 0 when unknown.
+	///
+	/// Screen 15 is one screen with three lists, chosen by a word at `screen+372` that
+	/// `sub_829B0A58` branches on. Without it the screen cannot be bound to a menu template by
+	/// its id alone: the weapons list would come up holding the item categories.
+	/// </summary>
+	public static uint GetInventoryScreenMode()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0u;
+		}
+
+		try
+		{
+			return RefiiHostGetInventoryScreenMode();
+		}
+		catch (System.DllNotFoundException)
+		{
+			return 0u;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return 0u;
+		}
+	}
+
+	public static List<(uint NameHash, uint Ordinal)> GetFastTravelRegions()
+	{
+		var regions = new List<(uint, uint)>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return regions;
+		}
+
+		const int max = 64;
+		uint[] words = new uint[max * 2];
+		uint found;
+		try
+		{
+			found = RefiiHostGetFastTravelRegions(words, (uint)words.Length);
+		}
+		catch (System.DllNotFoundException)
+		{
+			return regions;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return regions;
+		}
+
+		for (uint i = 0; i < found && i < max; ++i)
+		{
+			regions.Add((words[i * 2], words[(i * 2) + 1]));
+		}
+
+		return regions;
+	}
+
+	/// <summary>One entry in the hero's quest log. `RecordId` is the quest DEFINITION's GDB key —
+	/// the same currency the item lists use — and the flags are the guest's own state bytes.</summary>
+	/// <summary>
+	/// One quest as the world map's pages need it. Every number is a plain field on the quest
+	/// object, named by the save serialiser `sub_825237C8`: `Rating` at +28 (the star strip's
+	/// slide, written unclamped), `RewardRenown` +32, `RewardMoney` +36,
+	/// `CurrentObjectiveParameter` +40 (the `%1` every task line substitutes) and
+	/// `DaysRemaining` +44.
+	///
+	/// <paramref name="Primary"/> and <paramref name="Active"/> choose the banner the quest
+	/// page opens with; <paramref name="TaskCount"/> is the length of the task vector at
+	/// +104/+108, whose tags come across separately — see <see cref="GetQuestTasks"/>.
+	/// </summary>
+	public readonly record struct QuestEntry(
+		uint RecordId, bool Unlocked, bool Completed, bool Failed, bool OnWorldMap, bool Viewed,
+		bool Primary, bool Active,
+		int Rating, int RewardRenown, int RewardMoney, int ObjectiveParameter,
+		float DaysRemaining, int TaskCount);
+
+	/// <summary>
+	/// One job's journey — distance and travel time, already worded by the guest's own
+	/// providers. <paramref name="Record"/> says which quest the answer is FOR: the pump replies
+	/// a tick after the ask, so a page that has moved on must not draw the previous row's numbers.
+	/// An empty <paramref name="Travel"/> is a real answer for a job under an hour away.
+	/// </summary>
+	public readonly record struct QuestJourney(
+		bool Known, uint Record, string Distance, string Travel, string Region, string Prompt,
+		string Days)
+	{
+		public bool IsFor(uint record) => Known && Record == record && record != 0u;
+	}
+
+	/// <summary>Names the quest whose journey the pump should answer for next.</summary>
+	public static void SetQuestTravel(uint record)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostSetQuestTravel(record);
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>Reads back the journey — see <see cref="QuestJourney"/>.</summary>
+	public static QuestJourney GetQuestTravel()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		var distance = new byte[64];
+		var travel = new byte[64];
+		var region = new byte[64];
+		var prompt = new byte[64];
+		var days = new byte[64];
+		try
+		{
+			uint known = RefiiHostGetQuestTravel(
+				out uint record, distance, (uint)distance.Length, travel, (uint)travel.Length,
+				region, (uint)region.Length, prompt, (uint)prompt.Length, days, (uint)days.Length);
+			return new QuestJourney(
+				known != 0u, record, Utf8(distance), Utf8(travel), Utf8(region), Utf8(prompt),
+			Utf8(days));
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return default;
+		}
+	}
+
+	/// <summary>
+	/// One quest's task lines, as Babel TAGS in the guest's own order — the LAST is the current
+	/// task and everything before it is completed. Position is what decides that; the
+	/// `Succeeded` byte beside each tag is stored and never read by the page.
+	/// </summary>
+	public static List<string> GetQuestTasks(uint recordId)
+	{
+		var tasks = new List<string>();
+		if (TryGetAbiVersion() is null || !IsGuestUp || recordId == 0u)
+		{
+			return tasks;
+		}
+
+		var packed = new byte[2048];
+		try
+		{
+			if (RefiiHostGetQuestTasks(recordId, packed, (uint)packed.Length) == 0u)
+			{
+				return tasks;
+			}
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return tasks;
+		}
+
+		foreach (string tag in Utf8(packed).Split('\t'))
+		{
+			if (tag.Length != 0)
+			{
+				tasks.Add(tag);
+			}
+		}
+
+		return tasks;
+	}
+
+	/// <summary>
+	/// The hero's quest log. The world map's Quests and Jobs are this one list filtered
+	/// differently — the split is the definition's GDB `Type` (5 is a Job), which the caller
+	/// resolves because the host has no GDB. Empty when the walk saw the container move.
+	/// </summary>
+	public static List<QuestEntry> GetQuestLog()
+	{
+		var quests = new List<QuestEntry>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return quests;
+		}
+
+		const int max = 256;
+		const int stride = 8;
+		uint[] words = new uint[max * stride];
+		uint found;
+		try
+		{
+			found = RefiiHostGetQuestLog(words, (uint)words.Length);
+		}
+		catch (System.DllNotFoundException)
+		{
+			return quests;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return quests;
+		}
+
+		for (uint i = 0; i < found && i < max; ++i)
+		{
+			uint at = i * stride;
+			uint flags = words[at + 1];
+			quests.Add(new QuestEntry(
+				words[at],
+				(flags & 1u) != 0u,
+				(flags & 2u) != 0u,
+				(flags & 4u) != 0u,
+				(flags & 8u) != 0u,
+				(flags & 16u) != 0u,
+				(flags & 32u) != 0u,
+				(flags & 64u) != 0u,
+				(int)words[at + 2],
+				(int)words[at + 3],
+				(int)words[at + 4],
+				(int)words[at + 5],
+				System.BitConverter.Int32BitsToSingle((int)words[at + 6]),
+				(int)words[at + 7]));
+		}
+
+		return quests;
+	}
+
+	/// <summary>
+	/// The items the hero is WEARING, by GDB record id — what a clothing list must not offer
+	/// again. Empty when nothing is worn, when the guest is down, and also when the walk saw the
+	/// container move under it (a push reallocates); see the native side.
+	/// </summary>
+	/// <summary>
+	/// One shop row's ASKING PRICE — what the shop charges, which is not the item's worth.
+	/// </summary>
+	public readonly record struct ShopPrice(bool Known, uint Ticket, int Price)
+	{
+		public bool IsFor(uint ticket) => Known && Ticket == ticket && ticket != 0u;
+	}
+
+	/// <summary>Names the row whose price the pump should answer for next.</summary>
+	public static void SetShopPrice(uint ticket, bool sell)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostSetShopPrice(ticket, sell ? 1u : 0u);
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>Reads back the asking price — see <see cref="ShopPrice"/>.</summary>
+	public static ShopPrice GetShopPrice()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		try
+		{
+			uint known = RefiiHostGetShopPrice(out uint ticket, out int price);
+			return new ShopPrice(known != 0u, ticket, price);
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return default;
+		}
+	}
+
+	/// <summary>
+	/// ONE family member's page, in the guest's own field order.
+	///
+	/// Ten of the eleven are already-formatted text the collector wrote into the record —
+	/// `sub_829B04E0` sets them with `sub_82425DD0`, which takes formatted text rather than a
+	/// tag — so they are shown as they arrive. <see cref="Region"/> is the exception and IS a
+	/// Babel tag, because the page sets it with `sub_82425F40`.
+	/// </summary>
+	public readonly record struct FamilyDetails(
+		bool Known, string Name, string Children, string Region, string Distance, string Travel,
+		string Note, string DailyUpkeep, string TotalUpkeep, string Happiness,
+		string HomeHappiness, string UpkeepHappiness, string Prompt);
+
+	/// <summary>
+	/// The page for the family member at <paramref name="index"/> — the row's own id, which is
+	/// the ordinal the guest's page indexes by.
+	/// </summary>
+	public static FamilyDetails GetFamilyDetails(uint index)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		const int fields = 12;
+		const int stride = 192;
+		byte[] block = new byte[fields * stride];
+		uint found;
+		try
+		{
+			found = RefiiHostGetFamilyDetails(index, block, stride, fields);
+		}
+		catch (System.DllNotFoundException)
+		{
+			return default;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		if (found == 0u)
+		{
+			return default;
+		}
+
+		string Field(int at)
+		{
+			if (at >= found)
+			{
+				return string.Empty;
+			}
+
+			int start = at * stride;
+			int end = System.Array.IndexOf(block, (byte)0, start, stride);
+			int length = (end < 0 ? start + stride : end) - start;
+			return length > 0 ? Encoding.UTF8.GetString(block, start, length) : string.Empty;
+		}
+
+		return new FamilyDetails(
+			true, Field(0), Field(1), Field(2), Field(3), Field(4), Field(5), Field(6),
+			Field(7), Field(8), Field(9), Field(10), Field(11));
+	}
+
+	/// <summary>
+	/// The world map's family members, in the order the guest's own collector produced them.
+	///
+	/// Sampled by the pump while the world map is up (`sub_8246F020`, freed with
+	/// `sub_826C9450`) rather than walked here — the read goes through an entity-UID map and a
+	/// component-20 name fallback, and the guest already has the function for it.
+	/// </summary>
+	public static List<string> GetFamily()
+	{
+		var family = new List<string>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return family;
+		}
+
+		const int max = 32;
+		const int stride = 64;
+		byte[] names = new byte[max * stride];
+		uint found;
+		try
+		{
+			found = RefiiHostGetFamily(names, stride, max);
+		}
+		catch (System.DllNotFoundException)
+		{
+			return family;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return family;
+		}
+
+		for (uint i = 0; i < found && i < max; ++i)
+		{
+			int start = (int)i * stride;
+			int end = System.Array.IndexOf(names, (byte)0, start, stride);
+			int length = (end < 0 ? start + stride : end) - start;
+			if (length > 0)
+			{
+				family.Add(Encoding.UTF8.GetString(names, start, length));
+			}
+		}
+
+		return family;
+	}
+
+	public static List<(uint RecordId, int Category)> GetWornItems()
+	{
+		var worn = new List<(uint, int)>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return worn;
+		}
+
+		const int max = 64;
+		uint[] words = new uint[max * 2];
+		uint found;
+		try
+		{
+			found = RefiiHostGetWornItems(words, (uint)words.Length);
+		}
+		catch (System.DllNotFoundException)
+		{
+			return worn;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return worn;
+		}
+
+		for (uint i = 0; i < found && i < max; ++i)
+		{
+			worn.Add((words[i * 2], (int)words[(i * 2) + 1]));
+		}
+
+		return worn;
+	}
+
 	public static List<InventoryRecord> GetHeroInventory()
 	{
 		var records = new List<InventoryRecord>();
@@ -3865,7 +5167,14 @@ public static class HostBridge
 	private static extern uint RefiiHostGetHudMeters([Out] uint[]? hashes, [Out] float[]? values, uint capacity);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetExpressionMeter([Out] float[] values, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetTopBoxFront([Out] uint[] words, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetHudPulsers([Out] uint[]? hashes, [Out] float[]? phases, uint capacity);
+
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHudTexts([Out] uint[]? hashes, uint capacity, [Out] byte[]? text, uint textCapacity);
@@ -3895,6 +5204,38 @@ public static class HostBridge
 		byte[] outUtf8, uint utf8Capacity, byte[] outKinds, uint kindsCapacity, uint maxRecords);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetWornItems(uint[] outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetFamily([Out] byte[]? outNames, uint stride, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetFamilyDetails(
+		uint index, [Out] byte[] outFields, uint stride, uint count);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetShopPrice(uint ticket, uint sell);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetShopPrice(out uint outTicket, out int outPrice);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetInventoryScreenMode();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetQuestLog(uint[] outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetFastTravelRegions([Out] uint[]? outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetSales(uint[] outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostMenuChunkCounters(
+		out ulong outRecorded, out uint outPending, out ulong outDropped);
+
+	[DllImport(Library)]
 	private static extern int RefiiHostMenuPopulating();
 
 	[DllImport(Library)]
@@ -3908,6 +5249,103 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetMenuRowLabel(
 		uint index, [Out] byte[]? outLabel, uint labelCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetMenuScreenId();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostPeek(uint addr, [Out] uint[] outWords, uint count);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetGuestThreads(
+		[Out] uint[] outTids, [Out] uint[] outFlags, [Out] int[] outPriority, [Out] uint[] outCpu,
+		[Out] uint[] outR1, [Out] uint[] outLr, [Out] byte[] outNames, uint nameStride,
+		uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGuestBacktrace(uint tid, [Out] uint[] outFrames,
+		uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetKernelObjects(
+		[Out] uint[] outHandles, [Out] uint[] outTypes, [Out] byte[] outNames, uint nameStride,
+		uint capacity, out uint total);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetPerfCounters(
+		[Out] long[] outValues, [Out] byte[] outNames, uint nameStride, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetKernelExports(
+		uint first, uint onlyUnimplemented, [Out] uint[] outOrdinals, [Out] uint[] outFlags,
+		[Out] byte[] outNames, uint nameStride, uint capacity, out uint total);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetCvarCount();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCvarInfo(
+		uint index, [Out] byte[] outName, uint nameCapacity, [Out] byte[] outValue,
+		uint valueCapacity, [Out] byte[] outDefault, uint defaultCapacity,
+		[Out] byte[] outCategory, uint categoryCapacity, out uint type, out uint lifecycle,
+		out uint flags);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostSetCvar(string name, string value);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostVfsResolve(
+		string guestPath, [Out] byte[] outAbsolute, uint absoluteCapacity, [Out] byte[] outLink,
+		uint linkCapacity, out ulong size, out uint attributes);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetGuestSockets(
+		[Out] uint[] outHandles, [Out] uint[] outPorts, [Out] ulong[] outNative, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetGuestArenaInfo(
+		[Out] byte[] outName, uint nameCapacity, out ulong membase);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostFrameMark();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetPerfSnapshots(
+		[Out] long[] outValues, [Out] byte[] outNames, uint nameStride, uint capacity);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostTraceMessage(string text);
+
+	[DllImport(Library)]
+	private static extern ulong RefiiHostTraceZoneBegin(string name);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostTraceZoneEnd(ulong zone);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostTracePlot(string name, double value);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostHeapLookup(
+		uint addr, out uint heapBase, out uint heapSize, out uint pageSize, out uint protect);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostPoke(uint addr, uint value);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostProbeSet(uint addr);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostProbeClear(int slot);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostProbeRead(
+		int slot, out uint addr, out ulong hits, out uint lastLr, [Out] ulong[] outArgs,
+		uint argsCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetDebugCallResult(
+		out ulong seq, out uint addr, out ulong r3, [Out] byte[] outNote, uint noteCapacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHudScriptMeters([Out] uint[]? hashes, [Out] float[]? ratios, uint capacity);
@@ -4082,6 +5520,22 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetWorldMapRegion(uint index);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetQuestTasks(uint recordId, byte[] packed, uint capacity);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetQuestTravel(uint record);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetQuestTravel(
+		out uint outRecord, byte[] distance, uint distanceCapacity, byte[] travel,
+		uint travelCapacity, byte[] region, uint regionCapacity, byte[] prompt,
+		uint promptCapacity, byte[] days, uint daysCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetRealEstate(
+		uint[] words, uint wordCapacity, byte[] occupant, uint occupantCapacity);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetOptions(
@@ -4324,18 +5778,18 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetAchievementUnlocks(
-		ulong afterSequence, [Out] uint[] ids, [Out] ulong[] sequences, uint maxUnlocks);
-
-	[DllImport(Library, CharSet = CharSet.Ansi)]
-	private static extern int RefiiHostGetAchievementDefinition(
-		uint achievementId, out uint gamerscore, out uint flags,
-		System.Text.StringBuilder name, uint nameCapacity,
-		System.Text.StringBuilder unlocked, uint unlockedCapacity,
-		System.Text.StringBuilder locked, uint lockedCapacity);
+		ulong afterSequence, [Out] uint[] ids, [Out] uint[] users, [Out] ulong[] sequences,
+		uint maxUnlocks);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetAchievementIconPng(
-		uint achievementId, [Out] byte[]? bytes, uint capacity);
+	private static extern uint RefiiHostGetTitleXdbf([Out] byte[]? bytes, uint capacity);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetAchievementUnlocks(
+		uint[] ids, ulong[] unlockFiletimes, uint count);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetAchievementsUiRequests();
 
 	[DllImport(Library)]
 	private static extern int RefiiHostShutdown(byte[] message, nuint capacity);
@@ -4591,6 +6045,21 @@ public static class HostBridge
 
 		[DllImport("refii_hostbridge")]
 		private static extern uint RefiiHostGetEntityLocomotion(uint entity, uint[] outWords, uint wordCount, byte[] outName, uint nameCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityAnimState(uint entity, [Out] uint[] outWords, uint wordCapacity, out uint outFlags);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetTopBoxBody(
+		[Out] uint[] outWords, uint capacity, [Out] byte[] outText, uint textCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetAnimMask(
+		uint node, [Out] byte[] outBytes, uint capacity, out uint outSkeletonId);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetAttachments(
+		[Out] uint[] outWords, uint maxRecords, [Out] byte[] outNames);
 
 		[DllImport("refii_hostbridge")]
 		private static extern int RefiiHostGetInGameScreen(uint[] outWords);

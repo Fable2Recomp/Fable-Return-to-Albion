@@ -371,6 +371,7 @@ public sealed class Engine_UiCloneBinding
 			{
 				bound.Faded = alpha;
 				material.SetShaderParameter("opacity", alpha);
+				Engine_UiTheme.FadeInlineIcons(mesh, alpha);
 			}
 
 			// A hash of zero is "unstated", not a change: the guest drops a stated hash to zero
@@ -478,10 +479,10 @@ public sealed class Engine_UiCloneBinding
 				: null;
 			if (values is not null)
 			{
-				if (values.Length > 0 && values[0] is { } x) position.X = x;
-				if (values.Length > 1 && values[1] is { } y) position.Y = y;
-				if (values.Length > 3 && values[3] is { } sx) scale.X = sx;
-				if (values.Length > 4 && values[4] is { } sy) scale.Y = sy;
+				if (values.Length > 0 && values[0] is { } x && !float.IsNaN(x)) position.X = x;
+				if (values.Length > 1 && values[1] is { } y && !float.IsNaN(y)) position.Y = y;
+				if (values.Length > 3 && values[3] is { } sx && !float.IsNaN(sx)) scale.X = sx;
+				if (values.Length > 4 && values[4] is { } sy && !float.IsNaN(sy)) scale.Y = sy;
 			}
 
 			return (position, scale);
@@ -538,16 +539,19 @@ public sealed class Engine_UiCloneBinding
 
 		if (values is not null)
 		{
-			if (values.Length > 0 && values[0] is { } x) position.X = x;
-			if (values.Length > 1 && values[1] is { } y) position.Y = y;
-			if (values.Length > 2 && values[2] is { } z)
+			// A NaN in the stated transform is never a pose — the guest's frozen mirror carries
+			// them (the item book's paper backdrop stated `x = NaN` and vanished), and one NaN
+			// poisons the basis. Each axis falls back to the slide/authored value instead.
+			if (values.Length > 0 && values[0] is { } x && !float.IsNaN(x)) position.X = x;
+			if (values.Length > 1 && values[1] is { } y && !float.IsNaN(y)) position.Y = y;
+			if (values.Length > 2 && values[2] is { } z && !float.IsNaN(z))
 			{
 				position.Z = Engine_UiSceneBuilder.ToGodotZ(z);
 			}
 
-			if (values.Length > 3 && values[3] is { } sx) scale.X = sx;
-			if (values.Length > 4 && values[4] is { } sy) scale.Y = sy;
-			if (values.Length > 5 && values[5] is { } sz) scale.Z = sz;
+			if (values.Length > 3 && values[3] is { } sx && !float.IsNaN(sx)) scale.X = sx;
+			if (values.Length > 4 && values[4] is { } sy && !float.IsNaN(sy)) scale.Y = sy;
+			if (values.Length > 5 && values[5] is { } sz && !float.IsNaN(sz)) scale.Z = sz;
 		}
 
 		// Scale through the basis columns, never `node.Scale`: `Basis.Scale` reports (0,0,0) on a

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace Refii.Ui;
@@ -88,6 +89,11 @@ public static class Engine_UiOptionsPage
 	private const float PipOrigin = 210.0f;
 
 	/// <summary>The slider row captions, and the speaker modes.</summary>
+	/// <summary>
+	/// The Babel tag each slider's caption carries, kept for when we can place them: the guest
+	/// writes these into the slider WIDGET (`sub_829C08B8` and its two siblings), so they are not
+	/// reachable by element path — see Values.
+	/// </summary>
 	private static readonly (string Path, string Tag)[] SliderLabels =
 	{
 		(Gamma, "GUI_SCREEN_OPTIONS_GAMMA"),
@@ -116,6 +122,10 @@ public static class Engine_UiOptionsPage
 		{
 			return places;
 		}
+
+		// While a page is open the pips follow the PENDING values the guest's widget is
+		// editing (see Engine_UiOptionsPending), not the committed fields the export reads.
+		sliders = Engine_UiOptionsPending.Pending(sliders);
 
 		Place(places, Gamma, sliders.Gamma);
 		Place(places, Sfx, sliders.Sfx);
@@ -162,15 +172,47 @@ public static class Engine_UiOptionsPage
 			values[Speaker] = string.Empty;
 		}
 
-		// The slider labels are ours to write, unlike page 1's: `sub_829C08B8` and its two
-		// siblings assign Babel tags to these four captions.
-		foreach ((string path, string tag) in SliderLabels)
-		{
-			values[path + TextChild] = Babel(strings, tag);
-		}
+		// THE FOUR SLIDER CAPTIONS ARE NOT OURS TO WRITE, and writing them was reaching nothing:
+		// a real run reported `4 key(s) MATCHED NO ELEMENT` on this screen, one per slider.
+		//
+		// `sub_829C08B8` resolves `GUI_SCREEN_OPTIONS_GAMMA` through Babel and hands it to
+		// `sub_82881EF0` on a slider WIDGET — the object `sub_829C18B8(…, screen+28, n)` returns
+		// — not to an element the way the pickbox captions are written. `slider1.grp.text` was an
+		// invention by analogy with `..._pickbox.grp.text`, and there is no such element, so the
+		// caption these four wrote landed nowhere at all.
+		//
+		// Removing them changes nothing on screen and removes a false signal from the channel
+		// report. Painting them properly means reaching whatever element the widget composes its
+		// caption into, which needs the screen's own document rather than a guessed path.
 
 		if (pageOpen)
 		{
+			// THE PAGE'S OWN CHOICES, not yet committed — see Engine_UiOptionsPending. The
+			// guest's captions are a direct element write the clone never sees, so the host
+			// paints them from the same tables at the index the page is on.
+			if (Engine_UiOptionsPending.Open)
+			{
+				switch (Engine_UiOptionsPending.Page)
+				{
+					case "Game":
+						values[Subtitles] = Toggle(strings, Engine_UiOptionsPending.IndexOf(0) != 0);
+						values[Breadcrumb] = Babel(strings, BreadcrumbSizes[
+							Math.Clamp(Engine_UiOptionsPending.IndexOf(1), 0, BreadcrumbSizes.Length - 1)].Tag);
+						values[TutorialBoxes] = Toggle(strings, Engine_UiOptionsPending.IndexOf(2) != 0);
+						values[MultiplayerOrbs] = Babel(strings, OrbModes[
+							Math.Clamp(Engine_UiOptionsPending.IndexOf(3), 0, OrbModes.Length - 1)]);
+						values[AutoJoinable] = Toggle(strings, Engine_UiOptionsPending.IndexOf(4) != 0);
+						break;
+					case "Controls":
+						values[InvertCamera] = Toggle(strings, Engine_UiOptionsPending.IndexOf(0) != 0);
+						break;
+					case "Audio":
+						values[Speaker] = Babel(strings, SpeakerModes[
+							Math.Clamp(Engine_UiOptionsPending.IndexOf(3), 0, SpeakerModes.Length - 1)]);
+						break;
+				}
+			}
+
 			return values;
 		}
 

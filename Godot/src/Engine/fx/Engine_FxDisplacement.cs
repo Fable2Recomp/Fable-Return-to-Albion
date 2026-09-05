@@ -33,6 +33,13 @@ public partial class Engine_FxDisplacement : Node
 
     public static Engine_FxDisplacement? Current => _current;
 
+    /// <summary>Live lever: stop or resume the displacement pass.</summary>
+    public void SetEnabled(bool on)
+    {
+        if (_viewport is not null) _viewport.RenderTargetUpdateMode = on ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
+        if (_layer is not null) _layer.Visible = on;
+    }
+
     private static ulong _activeFrame;
 
     public static void NotifyActive() => _activeFrame = Engine.GetProcessFrames();
@@ -106,6 +113,7 @@ public partial class Engine_FxDisplacement : Node
 
     public override void _Process(double delta)
     {
+    	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("fxdisplacement");
         if (!HostAlive || _apply is null) return;
         Resize();
         Camera3D? main = _host!.GetCamera3D();

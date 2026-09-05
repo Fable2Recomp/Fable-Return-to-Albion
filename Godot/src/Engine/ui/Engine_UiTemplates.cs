@@ -19,6 +19,18 @@ public sealed class Engine_UiMenuEntry
 	public bool HostOnly;
 
 	/// <summary>
+	/// A row the GUEST spawns that we do not show. The population tables are the guest's own
+	/// spawn lists, so an authored list is not free to simply omit a row — the row arrives from
+	/// the guest's `g_Menu` statements whatever the template says. This is the statement that it
+	/// goes: `Engine_UiScreenMenu` runs `RemoveChild` on it, the guest's own call, and the row
+	/// and everything under it leave the list.
+	///
+	/// Use it for a row whose action belonged to the console rather than to the game — the
+	/// logbook's `Achievements`, whose answer was `XamShowAchievementsUI`.
+	/// </summary>
+	public bool Drop;
+
+	/// <summary>
 	/// The row's icon texture, as `SpawnButton` takes it — a `.tex` path relative to the game's
 	/// art root, or empty for a row that draws none.
 	/// </summary>
@@ -45,6 +57,18 @@ public sealed class Engine_UiMenuEntry
 	/// </summary>
 	public string Source = string.Empty;
 
+	/// <summary>
+	/// Whether this category's caption carries `" (N)"` for how many rows it holds.
+	///
+	/// The guest has TWO header spawners and the difference is exactly this field.
+	/// `sub_826CF098` takes a pointer to the category's count pair and appends
+	/// `" (" .. count .. ")"` when the first is above zero (0x826CF0D8), plus a second marker when
+	/// the second is; `sub_826CF020` takes no count at all. The clothing screen calls the first
+	/// for its seven garment slots and the second for `Suits` — which is why the real screen
+	/// reads `Headgear (6)` but plain `Outfits`.
+	/// </summary>
+	public bool Counted = true;
+
 	public List<Engine_UiMenuEntry> Children = new();
 }
 
@@ -59,7 +83,64 @@ public sealed class Engine_UiMenuTemplate
 	/// lives on the root item, which is never drawn and outlives every repopulation.
 	/// </summary>
 	public string Title = string.Empty;
+
+	/// <summary>
+	/// Where the ROOT's rows come from at runtime, or empty for a hand-authored list — the same
+	/// contract as <see cref="Engine_UiMenuEntry.Source"/> one level up. A host-owned list screen
+	/// is a list, not a folder: its rows are headings, so a source hung on an entry would nest
+	/// them one level too deep and make the whole screen a fold.
+	///
+	/// Authored entries and a source compose, the authored ones first.
+	/// </summary>
+	public string Source = string.Empty;
+
 	public List<Engine_UiMenuEntry> Entries = new();
+
+	/// <summary>
+	/// A host action every SOURCED row on this menu performs, unless the row names its own.
+	///
+	/// Some screens do not answer a row by its identity at all. The furniture screens are the
+	/// case: their rows carry event type 0, and the press handler at the screen's `vtable+20`
+	/// (`sub_826B65F0`) has cases for 140 and 141 and falls straight out of everything else — an
+	/// identity push there does nothing whatever. The commit runs from the INPUT handler on code
+	/// 36 instead, which reads the highlighted row out of Lua
+	/// (`sub_826C1B50` -&gt; `g_Menu:GetHighlightedMenuItemData()`) rather than off the event.
+	///
+	/// So the row's action is "press A on the screen", stated once for the whole menu.
+	/// </summary>
+	public string RowCommand = string.Empty;
+
+	/// <summary>The authored entry with this name, at any depth, or null when none is authored.</summary>
+	public Engine_UiMenuEntry? Entry(string name)
+	{
+		foreach (Engine_UiMenuEntry entry in Entries)
+		{
+			if (Entry(entry, name) is { } found)
+			{
+				return found;
+			}
+		}
+
+		return null;
+	}
+
+	private static Engine_UiMenuEntry? Entry(Engine_UiMenuEntry entry, string name)
+	{
+		if (string.Equals(entry.Name, name, System.StringComparison.Ordinal))
+		{
+			return entry;
+		}
+
+		foreach (Engine_UiMenuEntry child in entry.Children)
+		{
+			if (Entry(child, name) is { } found)
+			{
+				return found;
+			}
+		}
+
+		return null;
+	}
 
 	/// <summary>
 	/// Re-syncs every SOURCED row against what its source says now. True when anything moved.
@@ -75,18 +156,26 @@ public sealed class Engine_UiMenuTemplate
 		bool changed = false;
 		foreach (Engine_UiMenuEntry entry in Entries)
 		{
-			changed |= RefreshEntry(menu, entry);
+			changed |= RefreshEntry(menu, entry, RowCommand);
+		}
+
+		if (Source.Length != 0)
+		{
+			changed |= RefreshUnder(
+				menu, menu.Model.MenuRoot, Engine_UiExpandableMenu.RootName, Source, Name,
+				RowCommand);
 		}
 
 		return changed;
 	}
 
-	private static bool RefreshEntry(Engine_FrontEndMenu menu, Engine_UiMenuEntry entry)
+	private static bool RefreshEntry(
+		Engine_FrontEndMenu menu, Engine_UiMenuEntry entry, string rowCommand)
 	{
 		bool changed = false;
 		foreach (Engine_UiMenuEntry child in entry.Children)
 		{
-			changed |= RefreshEntry(menu, child);
+			changed |= RefreshEntry(menu, child, rowCommand);
 		}
 
 		if (entry.Source.Length == 0 || menu.Find(entry.Name) is not { } item)
@@ -94,8 +183,25 @@ public sealed class Engine_UiMenuTemplate
 			return changed;
 		}
 
-		IReadOnlyList<Engine_UiMenuSources.Row> rows =
-			Engine_UiMenuSources.Rows(entry.Source, entry.Name);
+		return changed |
+			RefreshUnder(menu, item, entry.Name, entry.Source, entry.Name, rowCommand);
+	}
+
+	/// <summary>
+	/// Re-syncs the sourced rows directly under one parent — an entry or the root. Only rows
+	/// carrying <see cref="Engine_UiExpandableMenu.Item.Sourced"/> are touched, so an authored
+	/// sibling keeps its place and the parent's fold survives.
+	/// </summary>
+	private static bool RefreshUnder(
+		Engine_FrontEndMenu menu,
+		Engine_UiExpandableMenu.Item item,
+		string parentName,
+		string source,
+		string argument,
+		string rowCommand)
+	{
+		List<Engine_UiMenuSources.Row> rows =
+			Expanded(Engine_UiMenuSources.Rows(source, argument));
 
 		var current = new List<Engine_UiExpandableMenu.Item>();
 		foreach (Engine_UiExpandableMenu.Item child in item.Children)
@@ -108,7 +214,7 @@ public sealed class Engine_UiMenuTemplate
 
 		if (Same(current, rows))
 		{
-			return changed;
+			return false;
 		}
 
 		foreach (Engine_UiExpandableMenu.Item stale in current)
@@ -117,18 +223,89 @@ public sealed class Engine_UiMenuTemplate
 			menu.Model.Forget(stale);
 		}
 
+		SpawnSourced(menu, rows, parentName, rowCommand);
+		menu.Model.UpdateAfterSpawning();
+		return true;
+	}
+
+	/// <summary>
+	/// Spawns a source's rows under <paramref name="parentName"/>, creating a HEADER row for each
+	/// distinct <see cref="Engine_UiMenuSources.Row.Group"/> as it is first seen.
+	///
+	/// A group header is a submenu row exactly like an authored category, so the fold, the
+	/// ghosting and the cursor all behave the same — the only difference is that it exists
+	/// because the data had rows for it rather than because a template listed it. Groups appear
+	/// in first-seen order, which for the inventory is the order the guest's own list walks.
+	/// </summary>
+	internal static void SpawnSourced(
+		Engine_FrontEndMenu menu,
+		IReadOnlyList<Engine_UiMenuSources.Row> rows,
+		string parentName,
+		string rowCommand = "")
+	{
 		foreach (Engine_UiMenuSources.Row row in rows)
 		{
+			string under = row.Group.Length != 0 && !row.IsHeader ? row.Group : parentName;
+
 			Engine_UiExpandableMenu.Item sourced = menu.Model.SpawnButton(
 				row.Name, row.Label, row.Icon, row.EventType,
 				idLow: (int)(row.Id & 0xFFFF), idHigh: (int)((row.Id >> 16) & 0xFFFF),
-				row.Rating, entry.Name);
-			sourced.StatedLabel = row.Label;
+				row.Rating, under);
+			sourced.StatedLabel = row.IsHeader ? null : row.Label;
 			sourced.Committable = row.Committable;
 			sourced.Sourced = true;
+			sourced.Ghosted = row.Ghosted;
+			sourced.Emphasised = row.Emphasised;
+			sourced.Counted = row.Counted;
+			sourced.Unviewed = row.Unviewed;
+			// The row's own action wins; the menu's stands in for a screen whose rows all commit
+			// the same way — see `Engine_UiMenuTemplate.RowCommand`. Never on a HEADER: a header
+			// folds, it does not activate.
+			sourced.Command = row.Command ??
+				(!row.IsHeader && rowCommand.Length != 0 ? rowCommand : null);
+		}
+	}
+
+	/// <summary>
+	/// A source's rows with a HEADER inserted before the first row of each group, in first-seen
+	/// order. One sequence, used both to spawn and to decide whether anything changed — if the
+	/// two disagreed the list would rebuild every frame, because what is in the model after a
+	/// spawn is this and not the source's rows.
+	///
+	/// A header is a submenu row with the group's Babel tag and no stated label, so the view
+	/// resolves the tag exactly as it does for an authored category.
+	/// </summary>
+	private static List<Engine_UiMenuSources.Row> Expanded(
+		IReadOnlyList<Engine_UiMenuSources.Row> rows)
+	{
+		var seen = new HashSet<string>(System.StringComparer.Ordinal);
+		var expanded = new List<Engine_UiMenuSources.Row>(rows.Count);
+
+		foreach (Engine_UiMenuSources.Row row in rows)
+		{
+			if (row.Group.Length != 0 && seen.Add(row.Group))
+			{
+				expanded.Add(new Engine_UiMenuSources.Row(
+					Name: row.Group,
+					Label: row.GroupTag.Length != 0 ? row.GroupTag : row.Group,
+					Icon: string.Empty,
+					EventType: (int)Engine_UiMenuConstants.EventType.Submenu,
+					Id: 0u,
+					Rating: Engine_UiMenuConstants.EmptyRatingSlide,
+
+					// A header carries no identity of the guest's and performs nothing itself.
+					Committable: false,
+					Ghosted: false,
+					Command: null,
+					Group: row.Group,
+					GroupTag: row.GroupTag,
+					IsHeader: true));
+			}
+
+			expanded.Add(row);
 		}
 
-		return true;
+		return expanded;
 	}
 
 	private static bool Same(
@@ -142,8 +319,13 @@ public sealed class Engine_UiMenuTemplate
 
 		for (int i = 0; i < rows.Count; ++i)
 		{
+			// Against what the SPAWN would have set, not against the row's own label: a group
+			// header is spawned with no stated label so the view resolves its Babel tag, and
+			// comparing that null to the tag would report a difference on every sample and
+			// rebuild the list — cursor, fold and all — every frame.
+			string? spawned = rows[i].IsHeader ? null : rows[i].Label;
 			if (!string.Equals(current[i].Name, rows[i].Name, System.StringComparison.Ordinal) ||
-				!string.Equals(current[i].StatedLabel, rows[i].Label, System.StringComparison.Ordinal))
+				!string.Equals(current[i].StatedLabel, spawned, System.StringComparison.Ordinal))
 			{
 				return false;
 			}
@@ -160,10 +342,32 @@ public sealed class Engine_UiMenuTemplate
 	public Engine_FrontEndMenu Build()
 	{
 		var menu = new Engine_FrontEndMenu();
+		BuildInto(menu, committable: false);
+		return menu;
+	}
+
+	/// <summary>
+	/// The same construction into an EXISTING model — for a list whose view is already bound to
+	/// it, which cannot be handed a new object.
+	/// </summary>
+	/// <param name="committable">
+	/// Whether these rows carry a guest identity. FALSE for a hand-authored list, where
+	/// `(EventType, 0)` would resolve row zero and the row must dispatch by name or command.
+	/// TRUE for a POPULATION table, where the name and the event type are transcribed from the
+	/// guest's own spawn script and `(name, type, 0)` is exactly what its `SelectMenuItem`
+	/// pushes — so the row commits by identity like any row the guest spawned itself.
+	/// </param>
+	public void BuildInto(Engine_FrontEndMenu menu, bool committable)
+	{
+		menu.Clear();
 		foreach (Engine_UiMenuEntry entry in Entries)
 		{
 			Spawn(entry, Engine_UiExpandableMenu.RootName);
 		}
+
+		// The ROOT's own source, after the authored entries so a fixed row keeps the top.
+		SpawnSourced(menu, Expanded(Engine_UiMenuSources.Rows(Source, Name)),
+			Engine_UiExpandableMenu.RootName, RowCommand);
 
 		// `UpdateAfterSpawning` — the population is complete, so the visible list and the
 		// automatic ghosting are recomputed once rather than per entry.
@@ -181,8 +385,6 @@ public sealed class Engine_UiMenuTemplate
 		{
 			menu.Highlight(Highlight);
 		}
-
-		return menu;
 
 		void Spawn(Engine_UiMenuEntry entry, string parent)
 		{
@@ -203,9 +405,9 @@ public sealed class Engine_UiMenuTemplate
 			item.Opens = entry.Opens;
 			item.HostOnly = entry.HostOnly;
 
-			// A host-authored row has no guest identity: its `(type, 0)` would resolve row zero,
-			// so it dispatches by name or by command instead.
-			item.Committable = false;
+			// See the `committable` parameter: a hand-authored row has no guest identity, a
+			// population-table row is the guest's own.
+			item.Committable = committable;
 
 			foreach (Engine_UiMenuEntry child in entry.Children)
 			{
@@ -214,20 +416,12 @@ public sealed class Engine_UiMenuTemplate
 
 			// Then whatever the source supplies, after the authored children so a fixed row keeps
 			// its place at the top. A source resolving to nothing leaves the entry as authored.
-			foreach (Engine_UiMenuSources.Row row in
-				Engine_UiMenuSources.Rows(entry.Source, entry.Name))
-			{
-				Engine_UiExpandableMenu.Item sourced = menu.Model.SpawnButton(
-					row.Name, row.Label, row.Icon, row.EventType,
-					idLow: (int)(row.Id & 0xFFFF), idHigh: (int)((row.Id >> 16) & 0xFFFF),
-					row.Rating, entry.Name);
-
-				// A sourced row carries the guest's own identity — the pair its dispatcher
-				// strcmps and switches on — so unlike an authored one it IS committable.
-				sourced.StatedLabel = row.Label;
-				sourced.Committable = row.Committable;
-				sourced.Sourced = true;
-			}
+			// ONE SPAWN PATH FOR EVERY SOURCE, so a row that declares a GROUP gets its header
+			// wherever it was sourced from, and the identity, ghosting and command channels
+			// cannot drift between the three call sites — they already had, this one carrying a
+			// `Command` the other two dropped.
+			SpawnSourced(menu, Expanded(Engine_UiMenuSources.Rows(entry.Source, entry.Name)),
+				entry.Name, RowCommand);
 		}
 	}
 }
@@ -245,6 +439,30 @@ public sealed class Engine_UiScreenTemplate
 
 	/// <summary>Whether Godot owns this screen's ExpandableMenu list.</summary>
 	public bool OwnsList;
+
+	/// <summary>
+	/// The menu template this screen's list is built from when the WIDGET NAMES NONE.
+	///
+	/// Most screens state a `MenuPopulationScript` and the list is looked up by that name. The
+	/// gift family does not: `sub_82430468` builds screen 15's rows in native C++ and the only
+	/// Lua it issues is `g_Menu:DeleteAllSpawnedMenuItems()` and `g_Menu:SpawnButton()`, so
+	/// neither the attribute nor the `RepopulateMenuFromPopulationScript` fallback has anything
+	/// to offer and the list dropped onto the raw model. This is the third way to say it, and it
+	/// is a template field so a mod can rebind a screen without a rebuild.
+	/// </summary>
+	public string MenuScript = string.Empty;
+
+	/// <summary>
+	/// The menu template per SCREEN MODE, for a screen that is really several lists behind one
+	/// id. Keyed by the guest's own mode value; <see cref="MenuScript"/> stands in when the mode
+	/// is unknown or unlisted.
+	///
+	/// Screen 15 is the case and the only one: `sub_829B0A58` reads `screen+372` and spawns the
+	/// item headers on 1, the `Melee`/`Ranged` pair on 3, and the shared row builder then keeps
+	/// only the bucket that matches. Binding the id to one script would put the item categories
+	/// on the weapons list.
+	/// </summary>
+	public Dictionary<int, string> MenuScriptByMode = new();
 
 	/// <summary>
 	/// How far the owned row view stands in FRONT of the mirrored tree, in Z — per screen,
@@ -296,6 +514,32 @@ public sealed class Engine_UiScreenTemplate
 	public string PageRootUnit = string.Empty;
 
 	/// <summary>
+	/// THE RIGHT-HAND PAGES THIS SCREEN HAS, as element paths — the set one of which is shown
+	/// and the rest switched off.
+	///
+	/// A RECORD, NOT A CONSTANT, because the books do not agree and a mod's book agrees with
+	/// none of them. The shipped ones alone run Page1+Page2, Page1+Page2+Page3 (shop),
+	/// Page1+Page2+Page4 (abilities — there is no Page3) and Page1..Page4 (options).
+	/// Omitting a page is not neutral: one nobody switches off keeps drawing over whichever is
+	/// up.
+	/// </summary>
+	public List<string> Pages = new();
+
+	/// <summary>
+	/// Where the page stack sits when a page is up, or null to leave it where the file put it.
+	///
+	/// THE BOOKS DISAGREE, and it cost a whole debugging pass: `Foreground.Book.Pages` is
+	/// authored at x = 0 in `giftgivingscreen` and `equipmentscreen` — already on the leaf — but
+	/// at **x = 400** in `abilitiesscreen`, `shopscreen` and `worldmapscreen`, which is off a
+	/// 960-wide canvas whose right edge is 480. Identical, correct page-selection code therefore
+	/// showed a page on the items screen and an empty leaf on the abilities screen.
+	///
+	/// Godot owns the layout, so this is stated per screen rather than recovered from the file's
+	/// own slides — and a modder's screen states its own.
+	/// </summary>
+	public Vector3? PageStackAt;
+
+	/// <summary>
 	/// A full-canvas backdrop tint to stand behind the book, by art name. Empty for none. Cloned
 	/// OVERSIZED: the shipped quad is exactly 1280x720 and leaves the revealed edges untinted at
 	/// any other aspect.
@@ -314,11 +558,111 @@ public sealed class Engine_UiScreenTemplate
 	/// </summary>
 	public List<string> OwnedElsewhere = new();
 
+	/// <summary>
+	/// Units whose TEXT the host takes from the guest's own live writes, as data. The owned
+	/// books keep the guest out of the text path on purpose (a field the guest stopped
+	/// writing went quietly stale); a unit named here is one the guest fills natively, once,
+	/// at its screen's show — the shop's front page — and the host has nothing better than
+	/// what the guest computed. A host value on a field under the unit still wins.
+	/// </summary>
+	public List<string> GuestTextUnits = new();
+
 	/// <summary>Live text fields an owned build re-meshes in place, dotted paths.</summary>
 	public List<string> LiveTexts = new();
 
 	/// <summary>The static menu this screen offers, or empty when the guest supplies rows.</summary>
 	public string Menu = string.Empty;
+
+	/// <summary>
+	/// The guest stat ids this screen's page shows, each with the element path it fills.
+	///
+	/// PURE DATA, and it was a 93-entry array inside the page class. It is the screen's own
+	/// content — which stat appears where — so it belongs with the screen, where the editor can
+	/// see it and a new row is a record rather than a recompile.
+	/// </summary>
+	public List<(int Id, string Path)> StatFields = new();
+
+	/// <summary>
+	/// Whether this screen takes input directly once revealed, rather than through the row list.
+	/// The one-off panels do — they are reached only through the GameAction chain, which is dead
+	/// under Godot's cursor.
+	/// </summary>
+	public bool OwnsRevealedInput;
+
+	/// <summary>The action the accept button runs while revealed — see
+	/// <see cref="Engine_UiScreenActions"/>. Empty for a screen with none.</summary>
+	public string RevealedAccept = string.Empty;
+
+	/// <summary>The action the back button runs while revealed.</summary>
+	public string RevealedBack = string.Empty;
+
+	/// <summary>
+	/// The action the flip button runs on this screen. Abilities is the one that has one: its
+	/// flip unlearns the highlighted ability.
+	/// </summary>
+	public string FlipAction = string.Empty;
+
+	/// <summary>Whether this screen carries the spell-assignment blade.</summary>
+	public bool HasSpellBlade;
+
+	/// <summary>
+	/// The screen's SCROLL REGION, as `sub_828C3250` registers one: a content group whose rows
+	/// the right stick slides, the mask element whose band is the window, and the scrollbar
+	/// element whose arrows and thumb say where the view stands. Empty means no region.
+	/// The guest's own scroll (`sub_829ED788`) moves each registered row's Y inside the mask's
+	/// clip; the owned book moves the group, which is the same transform.
+	/// </summary>
+	public string ScrollContent = string.Empty;
+
+	public string ScrollMask = string.Empty;
+
+	public string ScrollBar = string.Empty;
+
+	/// <summary>
+	/// The measured-text REFLOW, as `sub_829AB8A8` runs one: the element whose wrapped height is
+	/// measured, the authored base marking where the block below starts, and every element that
+	/// moves by the overflow delta. The guest never clips or shortens the measured text — the
+	/// rows below it move down.
+	/// </summary>
+	public string FlowMeasured = string.Empty;
+
+	public string FlowBase = string.Empty;
+
+	public List<string> FlowMoved = new();
+
+	/// <summary>
+	/// The reflow's tail — `0x829abcdc`: the rows here stand at the anchor row's Y, less 30
+	/// while the anchor itself draws (Mystery Island's gargoyle line over the silver keys).
+	/// </summary>
+	public string FlowTailAnchor = string.Empty;
+
+	public List<string> FlowTailMoved = new();
+
+	/// <summary>
+	/// Whether the row list fades its TOP end. Per-screen and not Lua: `FadeOutTopItemEarly`
+	/// (`expandablemenuformatting.dis main.0`) is run as `DoString` source from the screen
+	/// contract vtables, and options (18, `0x826D9D40`) is the one screen that asks for the top
+	/// end only — so real estate is the one that does NOT fade its top.
+	/// </summary>
+	public bool FadesTopEnd = true;
+
+	/// <summary>
+	/// Whether the row list fades its BOTTOM end. Real estate (28, `0x82998300`) asks for the
+	/// bottom end only, so options is the one that does NOT fade its bottom.
+	/// </summary>
+	public bool FadesBottomEnd = true;
+
+	/// <summary>
+	/// The detail-page provider this screen uses, by name — see
+	/// <see cref="Engine_UiPageProviders"/>. Empty means the screen has no host-filled page and
+	/// every field stays on the guest's own channel.
+	///
+	/// THIS IS WHAT MAKES A SCREEN DATA. It used to be six switch statements on the screen id in
+	/// `Engine_UiDetailPages`, one per question asked of a page, so a screen's behaviour was
+	/// spread across six places and each screen could break its own way. Naming the provider here
+	/// puts every screen on one path.
+	/// </summary>
+	public string Provider = string.Empty;
 }
 
 /// <summary>
@@ -483,13 +827,29 @@ public static class Engine_UiTemplates
 		return false;
 	}
 
-	/// <summary>The screen drawn from a given `.bgf`; null when no template names it, and null
-	/// when several do — an ambiguous file cannot say which screen is up.</summary>
+	/// <summary>
+	/// The screen drawn from a given `.bgf`; null when no template names it, and null when
+	/// several GUEST screens do — an ambiguous file cannot say which screen is up.
+	///
+	/// A HOST-ONLY record never makes a guest file ambiguous. This is asked of a LIVE
+	/// presentation — "the guest has this document up, whose screen is it" — and a host-only
+	/// surface is one Godot stands for itself out of the file-only pattern book; it is never
+	/// what the guest put in the registry. The achievements screen borrows `logbookscreen`, and
+	/// without this rule adding it would have made the logbook itself answer "ambiguous" and go
+	/// bookless on any frame the guest did not state its id.
+	///
+	/// So: a single guest-range record wins outright; a host-only one answers only when no guest
+	/// screen names the file at all, which is how the front end's three (1010-1012) resolve.
+	/// </summary>
 	public static Engine_UiScreenTemplate? ScreenFor(string presentation)
 	{
 		EnsureLoaded();
 
-		Engine_UiScreenTemplate? found = null;
+		Engine_UiScreenTemplate? guest = null;
+		Engine_UiScreenTemplate? owned = null;
+		bool guestAmbiguous = false;
+		bool ownedAmbiguous = false;
+
 		foreach (Engine_UiScreenTemplate template in _screens!.Values)
 		{
 			if (!string.Equals(template.Presentation, presentation,
@@ -498,16 +858,37 @@ public static class Engine_UiTemplates
 				continue;
 			}
 
-			if (found is not null)
+			if (template.ScreenId >= Engine_UiBookSet.HostOnlyScreenId)
 			{
-				return null;
+				ownedAmbiguous |= owned is not null;
+				owned = template;
 			}
-
-			found = template;
+			else
+			{
+				guestAmbiguous |= guest is not null;
+				guest = template;
+			}
 		}
 
-		return found;
+		if (guest is not null)
+		{
+			return guestAmbiguous ? null : guest;
+		}
+
+		return ownedAmbiguous ? null : owned;
 	}
+
+	/// <summary>
+	/// One row a menu template drops, by BOTH the identities a live list can carry.
+	///
+	/// <see cref="Name"/> is the guest's spawn identity and is what the STATED build has. The
+	/// position solve usually has no name at all — the logbook joined 0 of 5 rows against the
+	/// spawn capture in a real run, leaving every row called `Row{n}` — and there the only
+	/// identity is the DISPLAYED TEXT. <see cref="Tag"/> is the Babel tag the population table
+	/// gives the row, which resolves to exactly that text in whatever language is installed, so
+	/// matching on it is a join rather than a guess at an English string.
+	/// </summary>
+	public readonly record struct DroppedRow(string Name, string Tag);
 
 	/// <summary>A named menu template, or null.</summary>
 	public static Engine_UiMenuTemplate? Menu(string name)
@@ -515,6 +896,50 @@ public static class Engine_UiTemplates
 		EnsureLoaded();
 		return _menus!.TryGetValue(name, out Engine_UiMenuTemplate? menu) ? menu : null;
 	}
+
+	/// <summary>
+	/// Row names a menu template says the guest may spawn but we do not show — see
+	/// <see cref="Engine_UiMenuEntry.Drop"/>. Empty for a template that drops nothing, and empty
+	/// for a name no template carries.
+	///
+	/// Keyed by the MENU's name, which for a guest list is its `MenuPopulationScript`: every
+	/// population table is registered as a template under that name, so any list the guest builds
+	/// is addressable here whether or not Godot authored it.
+	/// </summary>
+	public static IReadOnlyList<DroppedRow> DroppedRows(string menuName)
+	{
+		EnsureLoaded();
+
+		if (_dropped!.TryGetValue(menuName, out List<DroppedRow>? cached))
+		{
+			return cached;
+		}
+
+		var rows = new List<DroppedRow>();
+		if (_menus!.TryGetValue(menuName, out Engine_UiMenuTemplate? menu))
+		{
+			Collect(menu.Entries);
+		}
+
+		_dropped[menuName] = rows;
+		return rows;
+
+		void Collect(List<Engine_UiMenuEntry> entries)
+		{
+			foreach (Engine_UiMenuEntry entry in entries)
+			{
+				if (entry.Drop && (entry.Name.Length != 0 || entry.Tag.Length != 0))
+				{
+					rows.Add(new DroppedRow(entry.Name, entry.Tag));
+				}
+
+				Collect(entry.Children);
+			}
+		}
+	}
+
+	/// <summary>Memoised <see cref="DroppedRows"/>, cleared whenever the templates reload.</summary>
+	private static Dictionary<string, List<DroppedRow>>? _dropped;
 
 	private static void EnsureLoaded()
 	{
@@ -525,6 +950,7 @@ public static class Engine_UiTemplates
 
 		_screens = new Dictionary<uint, Engine_UiScreenTemplate>();
 		_menus = new Dictionary<string, Engine_UiMenuTemplate>();
+		_dropped = new Dictionary<string, List<DroppedRow>>(System.StringComparer.Ordinal);
 		BuildDefaults();
 		int overridden = ApplyOverrides(OverridePath);
 		SaveSnapshot(SnapshotPath);
@@ -579,13 +1005,183 @@ public static class Engine_UiTemplates
 				menu.Highlight = menu.Entries[table.HighlightIndex - 1].Name;
 			}
 
+			// EVERY MENU DECLARES WHERE ITS ROWS COME FROM. A table with no authored entries is
+			// one the guest populates at runtime — the item, clothing, quest and region lists —
+			// and its rows are the guest's DATA, not its layout. Naming `capture:Root` here says
+			// that in the template rather than in a branch in the list builder: the assembly is
+			// the same for every menu and only the SOURCE differs, so a screen that breaks
+			// breaks the way all of them would.
+			//
+			// `capture` is the spawn capture, which is where those rows live today. Pointing a
+			// menu at a real data-area provider later is an edit to this one field.
+			if (menu.Entries.Count == 0)
+			{
+				menu.Source = "capture:" + Engine_UiExpandableMenu.RootName;
+			}
+
+			// A CATEGORY WITH NO AUTHORED CHILDREN TAKES THEM FROM THE CAPTURE. The population
+			// script declares the category and the guest fills it at runtime — the logbook's
+			// `Expressions` and `CompletedQuests`, the equipment screen's slots — so an entry
+			// that is a submenu and authors nothing under itself is not an empty menu, it is one
+			// whose children are data.
+			//
+			// It has to say so, because `UpdateAllGhosting` auto-ghosts a submenu with zero
+			// children (`AutomaticGhostingOnSubmenus`) and a ghosted row refuses its own press.
+			// Without this the logbook built three categories that were greyed out and could not
+			// be opened at all.
+			foreach (Engine_UiMenuEntry entry in menu.Entries)
+			{
+				SourceChildlessSubmenus(entry);
+			}
+
 			_menus![table.Script] = menu;
+		}
+	}
+
+	/// <summary>`sub_829A4680` and its three siblings — all four abilities rows share it.</summary>
+	private const string AbilityHeaderIcon =
+		@"Art\GUI\WheelIcons\Abilities\icon_strength.tga";
+
+	/// <summary>One abilities category — its children read from the GDB and the hero's levels.</summary>
+	private static Engine_UiMenuEntry AbilityCategory(string name, string tag) =>
+		new()
+		{
+			Name = name,
+			Tag = tag,
+			Icon = AbilityHeaderIcon,
+			EventType = (int)Engine_UiMenuConstants.EventType.Submenu,
+			Source = Engine_UiAbilitySource.SourceName + ":" + name,
+		};
+
+	/// <summary>
+	/// The gift screen's gold row event — `sub_82430468` spawns it with 7 in both the packed
+	/// Float1/Float2 slot and the event type, and `sub_826C45C8` branches on the type alone.
+	/// </summary>
+	private const int GiftGoldEventType = 7;
+
+	/// <summary>
+	/// One shop group row — `sub_82994218` states this icon for all six
+	/// (`dword_8349D040`). Children come from the capture; see the call site.
+	/// </summary>
+	private static Engine_UiMenuEntry ShopCategory(string name, string tag) => new()
+	{
+		Name = name,
+		Tag = tag,
+		Icon = @"Art\GUI\WheelIcons\icon_items.tga",
+		EventType = (int)Engine_UiMenuConstants.EventType.Submenu,
+
+		// The capture's rows with the transaction stamped on — see Engine_UiMenuSources.ShopRows.
+		// Without a command a shop row falls back to an identity push, and the shop's buy and
+		// sell are reached through the screen's own dispatcher, which takes a ticket rather than
+		// anything an identity names.
+		Source = Engine_UiMenuSources.ShopSource + ":" + name,
+	};
+
+	/// <summary>One weapons-screen category row, its half of the category from the data areas.</summary>
+	private static Engine_UiMenuEntry WeaponCategory(string name, string tag, string half) => new()
+	{
+		Name = name,
+		Tag = tag,
+
+		// `dword_8349D930` again — the shared category icon.
+		Icon = @"Art\GUI\WheelIcons\icon_world_map.tga",
+		EventType = (int)Engine_UiMenuConstants.EventType.Submenu,
+		Source = Engine_UiInventorySource.WeaponsSource + ":" + half,
+	};
+
+	/// <summary>One world-map category row — a submenu, its children from the named source.</summary>
+	private static Engine_UiMenuEntry WorldMapCategory(string name, string tag, string source) =>
+		new()
+		{
+			Name = name,
+			Tag = tag,
+
+			// `dword_8349D354` — every world-map child row states this icon.
+			Icon = @"Art\GUI\WheelIcons\icon_logbook.tga",
+			EventType = (int)Engine_UiMenuConstants.EventType.Submenu,
+			Source = source,
+		};
+
+	/// <summary>The entry, with its caption's `" (N)"` suppressed — see `Engine_UiMenuEntry.Counted`.</summary>
+	private static Engine_UiMenuEntry Uncounted(Engine_UiMenuEntry entry)
+	{
+		entry.Counted = false;
+		return entry;
+	}
+
+	/// <summary>One item-screen category row: a submenu whose children are the data areas.</summary>
+	/// <summary>
+	/// The category rows' shared tag prefix. All eighteen resolve in the shipped `book.babel`,
+	/// checked before use — and note the display text is NOT the internal name: `..._TOOLS` is
+	/// 'Miscellaneous', `..._BOOKS` is 'Books &amp; Documents', `..._SHIRTS` is 'Upper Body'.
+	/// </summary>
+	private const string CategoryTag = "GUI_SCREEN_INVENTORY_CATEGORIES_";
+
+	private static Engine_UiMenuEntry ItemCategory(string name, string tag, params int[] categories) =>
+		ItemCategory(name, tag, string.Empty, categories);
+
+	/// <summary>
+	/// One category row whose children are the data areas, and what activating one of them DOES.
+	/// The operation rides on the source because it needs each row's own record hash.
+	/// </summary>
+	private static Engine_UiMenuEntry ItemCategory(
+		string name, string tag, string operation, params int[] categories) =>
+		new()
+		{
+			Name = name,
+			Tag = tag,
+
+			// `dword_8349D930` — every one of the nine states the same icon.
+			Icon = @"Art\GUI\WheelIcons\icon_world_map.tga",
+			EventType = (int)Engine_UiMenuConstants.EventType.Submenu,
+			Source = Engine_UiInventorySource.SourceName + ":" +
+				(operation.Length == 0 ? string.Empty : operation + ":") +
+				string.Join(",", categories),
+		};
+
+	/// <summary>
+	/// Points a childless submenu entry at the spawn capture for its children, recursively. See
+	/// the call site for why an authored category must declare this.
+	/// </summary>
+	private static void SourceChildlessSubmenus(Engine_UiMenuEntry entry)
+	{
+		foreach (Engine_UiMenuEntry child in entry.Children)
+		{
+			SourceChildlessSubmenus(child);
+		}
+
+		if (entry.Children.Count == 0 && entry.Source.Length == 0 && entry.Name.Length != 0 &&
+			entry.EventType == (int)Engine_UiMenuConstants.EventType.Submenu)
+		{
+			entry.Source = "capture:" + entry.Name;
 		}
 	}
 
 	private static void BuildDefaults()
 	{
 		RegisterPopulationTables();
+
+		// THE LOGBOOK DOES NOT OFFER `Achievements`. The guest spawns the row — it is in its own
+		// population table — and its action is `XamShowAchievementsUI` (`sub_826D9620` case 150),
+		// the console's guide blade, which on this platform opens nothing at all. Every press of
+		// it was a press that did nothing.
+		//
+		// The achievements are their own screen now, on their own pause tab; see
+		// `Engine_UiAchievementScreen`. This is the statement that the dead row goes, and it is a
+		// TEMPLATE RECORD rather than a special case in the list builder, so any other row on any
+		// other guest menu can be dropped the same way — and put back, from
+		// `user://ui/templates.json`, without a rebuild.
+		if (_menus!.TryGetValue("LogbookMenu", out Engine_UiMenuTemplate? logbook))
+		{
+			foreach (Engine_UiMenuEntry entry in logbook.Entries)
+			{
+				if (string.Equals(entry.Name, Engine_UiAchievementPage.FolderRowName,
+						System.StringComparison.Ordinal))
+				{
+					entry.Drop = true;
+				}
+			}
+		}
 
 		// The pause root — `sub_8298DF98`'s spawn list verbatim: names are the identities its
 		// dispatch recognises, the Saving children dispatch by EVENT PARAM ({type 2, param}),
@@ -600,8 +1196,10 @@ public static class Engine_UiTemplates
 				{
 					Name = "Saving", Tag = "GUI_SCREEN_PAUSE_SAVING",
 
-					// `spawn`, not the Gameface VM. Safe here only: see the Tab() note below.
-					Source = "spawn",
+					// AUTHORED, NOT SOURCED. `sub_8298DF98` spawns these three under "Saving"
+					// once (0x8298E0F8/E138/E178, EventType 2, String1 = the localised label);
+					// sourcing them as well seats the same rows twice, and only the authored
+					// ones carry the `PauseSaving:N` commands.
 					Children =
 					{
 						new Engine_UiMenuEntry
@@ -630,7 +1228,314 @@ public static class Engine_UiTemplates
 				Tab("Weapons", "GUI_SCREEN_PAUSE_WEAPONS", Engine_PauseMenu.TabWeapons),
 				Tab("Clothing", "GUI_SCREEN_PAUSE_CLOTHING", Engine_PauseMenu.TabClothing),
 				Tab("Logbook", "GUI_SCREEN_PAUSE_LOGBOOK", Engine_PauseMenu.TabLogbook),
+
+				// ACHIEVEMENTS — a host tab, sitting between Logbook and Options because THIS
+				// LIST IS THE ORDER. It used to be pinned last on the theory that the seven
+				// rows the guest spawns had to keep their indices; they do not. The row's
+				// position here is the position on screen, and `HostOnly` is what makes that
+				// safe: it keeps the entry out of the label join against the guest's button
+				// pool and out of the availability mask, neither of which has a row for it, so
+				// the guest's own rows still join by NAME wherever they end up.
+				//
+				// Its command names the SCREEN rather than a tab id — `sub_826B89E0`'s switch
+				// has no case to select — which is what lets it sit anywhere at all.
+				//
+				// The tag is a LITERAL: the shipped text bank has no achievements string —
+				// the console's own guide supplied that label — so there is nothing to
+				// localise against and inventing a tag would resolve to nothing.
+				new Engine_UiMenuEntry
+				{
+					Name = "Achievements", Tag = "Achievements", HostOnly = true,
+					Command =
+						$"{Engine_PauseMenu.OwnedCommandPrefix}{Engine_UiAchievementPage.ScreenId}",
+				},
+
 				Tab("Options", "GUI_SCREEN_PAUSE_OPTIONS", Engine_PauseMenu.TabOptions),
+			},
+		};
+
+		// THE ITEM SCREEN'S NINE CATEGORY ROWS, from the guest's own spawn order in
+		// `sub_829B1578` (0x829B15E4 .. 0x829B1886): KeyItems, Books, Food and Drink, Potions,
+		// Gifts, Trophies, Augmentations, Dyes, Furniture. Every one carries the same icon
+		// (`dword_8349D930`) and event type 301, and every one is parented to `Root`.
+		//
+		// FIXED, NOT DERIVED FROM WHAT THE HERO CARRIES: the guest spawns all nine and GHOSTS the
+		// empty ones rather than dropping them — a real run showed `Food ghosted` and
+		// `Trophies ghosted` sitting between populated rows. Our own automatic submenu ghosting
+		// reproduces that for free once the children come from the source below.
+		//
+		// The children are the DATA AREAS, not the guest's spawn stream: each row names the
+		// category integers it holds and `Engine_UiInventorySource` reads the hero's inventory
+		// and `globals.gdb` for them. `KeyItems` takes eight integers because the guest folds
+		// 9..14 and 26 onto it — which is why hairstyles and makeup are filed there.
+		// THE ABILITIES SCREEN — `sub_829A45A0`'s four root rows, which it spawns with direct
+		// `sub_826CE8D0` calls rather than through `sub_826CF098`. All four state the SAME icon
+		// (`Art\GUI\WheelIcons\Abilities\icon_strength.tga`) and an empty `String2`; the
+		// captions arrive later through `g_Menu:RefreshButton()` in `sub_829A5398`.
+		//
+		// `SpellAssigning` is NOT a category — it has no children and event type 23, and
+		// activating it hands the screen to the spell-assignment widget at `screen+200` in place
+		// (`sub_826C2480`). Its Babel tag reads 'Spell Selector', which is the row observed live.
+		_menus!["AbilitiesMenu"] = new Engine_UiMenuTemplate
+		{
+			Name = "AbilitiesMenu",
+			Entries =
+			{
+				AbilityCategory(Engine_UiAbilitySource.Strength,
+					"GUI_SCREEN_ABILITIES_LEARN_STRENGTH"),
+				AbilityCategory(Engine_UiAbilitySource.Skill,
+					"GUI_SCREEN_ABILITIES_LEARN_SKILL"),
+				AbilityCategory(Engine_UiAbilitySource.Will,
+					"GUI_SCREEN_ABILITIES_LEARN_WILL"),
+				new Engine_UiMenuEntry
+				{
+					Name = "SpellAssigning",
+					Tag = "GUI_SCREEN_ABILITIES_SPELL_ASSIGNER",
+					Icon = AbilityHeaderIcon,
+
+					// 23 — the spell-assign event, which the screen answers itself.
+					EventType = (int)Engine_UiMenuConstants.EventType.AssignSpellsAbilityItem,
+				},
+			},
+		};
+
+		// THE WORLD MAP'S FIVE CATEGORY ROWS — `sub_829A2F40`'s spawn order, with the internal
+		// names it files children under (`dword_8349D340..350`): Regions, Quests, Jobs, Sales,
+		// Family. Note the key is `Family` while the tag reads 'Families'.
+		//
+		// All five now read the data areas — see Engine_UiQuestSource. Quests and Jobs are ONE
+		// list split by the definition's GDB `Type`; Sales, Regions and Family have their own.
+		_menus!["WorldMapMenu"] = new Engine_UiMenuTemplate
+		{
+			Name = "WorldMapMenu",
+			Entries =
+			{
+				WorldMapCategory("Quests", "GUI_SCREEN_WORLD_MAP_QUESTS",
+					Engine_UiQuestSource.QuestsSource),
+				WorldMapCategory("Jobs", "GUI_SCREEN_WORLD_MAP_JOBS",
+					Engine_UiQuestSource.JobsSource),
+
+				// No source named: `SourceChildlessSubmenus` gives each of these
+				// `capture:<name>`, which is where their rows come from today.
+				WorldMapCategory("Sales", "GUI_SCREEN_WORLD_MAP_SALES",
+					Engine_UiQuestSource.SalesSource),
+				WorldMapCategory("Family", "GUI_SCREEN_WORLD_MAP_FAMILY",
+					Engine_UiQuestSource.FamilySource),
+				WorldMapCategory("Regions", "GUI_SCREEN_WORLD_MAP_REGIONS",
+					Engine_UiQuestSource.RegionsSource),
+			},
+		};
+
+		// THE THREE CONDITIONAL LISTS — real estate and the two furniture screens.
+		//
+		// Each names no population script and each spawns rows that depend on state we do not
+		// read: `sub_82998300` walks a decision tree over the property record and emits only the
+		// applicable actions, and `sub_8299D5B0` branches on whether the target has component 68
+		// (upgrade) or 239 (replace). Authoring their rows would show actions the game has
+		// disabled, so the rows come from the capture — but the MENU is a template record now,
+		// so a row can be dropped, renamed or reordered from `templates.json` exactly as on
+		// every other screen, and all of them go through one assembly path.
+		// REAL ESTATE AND THE TWO FURNITURE LISTS STAY UNBOUND, and that is a retraction.
+		//
+		// I bound all three to templates sourced `capture:Root`, and it bled: the real-estate
+		// screen came up showing `New Game`, `Continue`, `Downloadable Content`, `Language` and
+		// `Subtitles` above its own two rows. The spawn capture is ONE GLOBAL LIST —
+		// `Engine_UiSource.GetMenuRows` returns the last population with a generation and
+		// `Engine_UiModel.MenuRow` carries no presentation — so `capture:Root` hands back
+		// whatever was spawned under `Root` most recently, and the front end's rows were still
+		// in it.
+		//
+		// That is harmless for a screen whose parent names are its own (the shop's `BuyItems`,
+		// the weapons screen's `Melee`) and fatal for one asking for the bare root. These three
+		// ask for the root, so they keep the per-presentation model path they had — which was
+		// working — until the capture is keyed by presentation.
+		//
+		// COST OF THE RETRACTION: the furniture press fix goes with it. Those rows carry event
+		// type 0 and `sub_826B65F0` handles only 140/141, so an identity push does nothing; the
+		// commit is the A press through the input handler (`sub_826B6A18` / `sub_826B7550`),
+		// which is what `Engine_UiScreenActions.ScreenSelect` and the template's `RowCommand`
+		// were for. Both remain, unused by these two screens, for when the capture is scoped.
+
+		// THE SHOP'S SIX GROUPS — `sub_82994218`'s own spawn order, each a counted header
+		// through `sub_826CF098` and each emitted only when its own count is non-zero (the guest
+		// then greys it with `sub_826D01B8`). The internal names are the globals at
+		// `0x8349D048..D05C`, and they are what the rows are filed under as `String4`.
+		//
+		// The rows stay on the CAPTURE, for the same reason the weapons rows do and one more: a
+		// shop row's identity is a per-population ticket from `sub_82880AC8`, and the buy and
+		// sell handlers are reached through the shop screen's own dispatcher rather than through
+		// anything that takes a record. Authoring the six groups makes the SHAPE editable —
+		// rename them, reorder them, drop the sell half — without touching the rows.
+		//
+		// All six tags checked against the shipped book before use.
+		_menus!["ShopMenu"] = new Engine_UiMenuTemplate
+		{
+			Name = "ShopMenu",
+			Entries =
+			{
+				ShopCategory("BuyItems", "GUI_SCREEN_SHOP_BUY_ITEMS"),
+				ShopCategory("SellItems", "GUI_SCREEN_SHOP_SELL_ITEMS"),
+				ShopCategory("BuyWeapons", "GUI_SCREEN_SHOP_BUY_WEAPONS"),
+				ShopCategory("SellWeapons", "GUI_SCREEN_SHOP_SELL_WEAPONS"),
+				ShopCategory("BuyClothing", "GUI_SCREEN_SHOP_BUY_CLOTHING"),
+				ShopCategory("SellClothing", "GUI_SCREEN_SHOP_SELL_CLOTHING"),
+			},
+		};
+
+		// THE WEAPONS LIST — screen 15 in mode 3, `sub_829B1890`'s two headers over
+		// `sub_829B1968`'s rows.
+		//
+		// THE ROWS ARE OURS, AND SO IS THE EQUIP. `screen+396` turned out to be a 16-byte item
+		// HANDLE, not a scalar — the screen's Update refills it every frame from
+		// `g_Menu:GetHighlightedMenuItemData()`, so the guest's own answer to event 3 equips
+		// whatever ITS cursor is on and an identity push is right only while the two cursors
+		// agree. `sub_826C9AB8` takes that handle by address and reads nothing else, so naming
+		// the record and building the handle from the hero's component 13 removes the cursor from
+		// the path altogether.
+		//
+		// Both tags checked against the shipped book before use.
+		_menus!["WeaponsMenu"] = new Engine_UiMenuTemplate
+		{
+			Name = "WeaponsMenu",
+			Entries =
+			{
+				// `sub_829B1890` spawns both through `sub_826CF098`, so both carry a count.
+				WeaponCategory("Melee", CategoryTag + "MELEE_WEAPONS", "melee"),
+				WeaponCategory("Ranged", CategoryTag + "RANGED_WEAPONS", "ranged"),
+			},
+		};
+
+		// THE GIFT SCREEN IS THE INVENTORY, GROUPED, FILTERED BY `CanBeGift`.
+		//
+		// It has no population script of its own — screen 15 is built natively by `sub_82430468`,
+		// which is why this template names the rows rather than adopting a table. That builder
+		// walks 27 category slots and emits a header only where the count is non-zero
+		// (`sub_826CF098`), which is exactly what a null category list plus grouping does here.
+		//
+		// The filter is `sub_8242FB28`: `CanBeGift` off the item's own `GiftComponent`, category
+		// 25 rejected outright, and a worn or wielded item rejected when the stack holds only
+		// one. All three are gift rules and live behind the `gift` operation — see
+		// `Engine_UiInventorySource.Listable` for what happened when they were applied globally.
+		//
+		// THE GOLD ROW IS THE GUEST'S OWN, and it needs nothing of ours. `sub_82430468` appends
+		// it after the categories with `sub_826CE848(a1, "GUI_SCREEN_GIFT_GOLD", icon_gold_coin,
+		// "Root", 7, 7, lua, 0)` — an event type of 7 and no item behind it. Pressing it lands in
+		// `sub_826C45C8`, which latches the type at `guiMgr+84` and, because it is 7, opens the
+		// amount picker (`sub_8236FCA8` with `min(gold, 10)`) instead of the yes/no box; the
+		// answer is then spent by `sub_826C5258` -> `sub_8242E578`. All of that is the guest's,
+		// so the row is authored here and committed by its event type alone. The id it carries
+		// is never read on this path — only `*(msg + 4)`, the type, decides.
+		_menus!["GiftGivingMenu"] = new Engine_UiMenuTemplate
+		{
+			Name = "GiftGivingMenu",
+
+			// No categories named: every one, and the headers follow the data.
+			Source = Engine_UiInventorySource.SourceName + ":gift:",
+			Entries =
+			{
+				new Engine_UiMenuEntry
+				{
+					Name = "Gold",
+					Tag = "GUI_SCREEN_GIFT_GOLD",
+					Icon = @"Art\GUI\WheelIcons\icon_gold_coin.tga",
+					EventType = GiftGoldEventType,
+				},
+			},
+		};
+
+		foreach (string itemScript in new[] { "ItemsMenu" })
+		{
+			_menus![itemScript] = new Engine_UiMenuTemplate
+			{
+				Name = itemScript,
+				Entries =
+				{
+					ItemCategory("KeyItems", CategoryTag + "TOOLS", "use",
+						Engine_UiInventorySource.Category.KeyItemsFold),
+					ItemCategory("Books", CategoryTag + "BOOKS", "use",
+						Engine_UiInventorySource.Category.Books),
+					ItemCategory("Food and Drink", CategoryTag + "FOOD", "use",
+						Engine_UiInventorySource.Category.Food),
+					ItemCategory("Potions", CategoryTag + "POTIONS", "use",
+						Engine_UiInventorySource.Category.Potions),
+					ItemCategory("Gifts", CategoryTag + "GIFTS", "use",
+						Engine_UiInventorySource.Category.Gifts),
+					ItemCategory("Trophies", CategoryTag + "TROPHIES", "use",
+						Engine_UiInventorySource.Category.Trophies),
+					ItemCategory("Augmentations", CategoryTag + "AUGMENTATIONS", "use",
+						Engine_UiInventorySource.Category.Augmentations),
+					ItemCategory("Dyes", CategoryTag + "DYES", "use",
+						Engine_UiInventorySource.Category.Dyes),
+					ItemCategory("Furniture", CategoryTag + "FURNITURE", "use",
+						Engine_UiInventorySource.Category.Furniture),
+				},
+			};
+		}
+
+		// THE CLOTHING SCREEN'S EIGHT ROWS — `sub_829B3340`'s seven plus `Outfits` above them,
+		// which is the read a real run gives: Outfits, Headgear (6), Coats (5), Upper Body (3),
+		// Hands (4), Lower Body (5), Feet (6), Masks (2). The counts array is indexed the same
+		// way, `16 * Category`, for 17..23.
+		//
+		// `Outfits` is category 25 (Suits) — the one the ITEM list excludes outright and this
+		// one is entirely about, which is why the exclusion is per-request rather than global.
+		// `EquipmentMenu` is the name the screen's widget actually states — confirmed in a run,
+		// which reported `population script 'EquipmentMenu'` and the eight rows in exactly this
+		// order. `ClothingMenu` is registered too but is not what screen 16 asks for.
+		_menus!["EquipmentMenu"] = new Engine_UiMenuTemplate
+		{
+			Name = "EquipmentMenu",
+			Entries =
+			{
+				// `sub_829B2D58` spawns this header through `sub_826CF020`, which takes no count
+				// — the only one of the eight that does.
+				Uncounted(ItemCategory("Suits", CategoryTag + "SUITS", "wear",
+					Engine_UiInventorySource.Category.Suits)),
+				ItemCategory("Hats", CategoryTag + "HATS", "wear",
+					Engine_UiInventorySource.Category.Hats),
+				ItemCategory("Coats", CategoryTag + "COATS", "wear",
+					Engine_UiInventorySource.Category.Coats),
+				ItemCategory("Shirts", CategoryTag + "SHIRTS", "wear",
+					Engine_UiInventorySource.Category.Shirts),
+				ItemCategory("Gloves", CategoryTag + "GLOVES", "wear",
+					Engine_UiInventorySource.Category.Gloves),
+				ItemCategory("Pants", CategoryTag + "PANTS", "wear",
+					Engine_UiInventorySource.Category.Pants),
+				ItemCategory("Shoes", CategoryTag + "SHOES", "wear",
+					Engine_UiInventorySource.Category.Shoes),
+
+				// Internal name `Accessories`, Babel tag `..._MASKS` — the two disagree and the
+				// tag is the one that draws.
+				ItemCategory("Accessories", CategoryTag + "MASKS", "wear",
+					Engine_UiInventorySource.Category.Accessories,
+					Engine_UiInventorySource.Category.Dog),
+			},
+		};
+
+		// THE ACHIEVEMENTS SCREEN'S LIST — one authored summary row, then one row per
+		// achievement straight from the title's own XDBF (`Engine_Achievements`).
+		//
+		// The source hangs on the ROOT, not on the summary row: these are headings on a list
+		// screen, and nesting them under the summary would make the whole screen a fold that has
+		// to be opened before anything shows.
+		//
+		// The summary row is authored and host-only — it carries no achievement of its own, it
+		// is where the tally is read — and it starts highlighted so the screen opens on the
+		// count rather than on whichever achievement happens to be first.
+		_menus!["achievements-root"] = new Engine_UiMenuTemplate
+		{
+			Name = "achievements-root",
+			Highlight = Engine_UiAchievementPage.FolderRowName,
+			Source = Engine_UiAchievementPage.SourceName,
+			Entries =
+			{
+				new Engine_UiMenuEntry
+				{
+					Name = Engine_UiAchievementPage.FolderRowName,
+					Tag = "Achievements",
+					EventType = Engine_UiAchievementPage.EventType,
+					HostOnly = true,
+				},
 			},
 		};
 
@@ -696,33 +1601,69 @@ public static class Engine_UiTemplates
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages",
 			BackdropUnit = "BackgroundTint",
+			// WHAT THE GUEST STILL WRITES HERE, and nothing more.
+			//
+			// Renown, the clock, the purse and the four orb readouts came off this list too —
+			// re-meshed from whatever the mirrored tree last said, which is right only while
+			// the guest keeps writing them. They are plain reads off the hero the host already
+			// samples, so `Engine_UiPausePage` states them and they are gone from here.
+			//
+			// The quest lines and the nine legend captions stay for now: they want sources of
+			// their own, and replacing a stale string with an invented one is worse.
 			LiveTexts =
 			{
-				"Contents.CurrentQuest", "Contents.Time", "Contents.Renown",
-				"experienceorbs.Strength.valueText", "experienceorbs.Skill.valueText",
-				"experienceorbs.Will.valueText", "experienceorbs.General.valueText",
+				"Contents.CurrentQuest",
 				"Legend.CurrentObjective",
 				"Legend.Fixed.KeyName1", "Legend.Fixed.KeyName2", "Legend.Fixed.KeyName3",
 				"Legend.Fixed.KeyName4", "Legend.Fixed.KeyName5", "Legend.Fixed.KeyName6",
 				"Legend.Fixed.KeyName7", "Legend.Fixed.KeyName8", "Legend.Fixed.KeyName9",
-				"Money.Text", "Money.Back.Select",
+				"Money.Back.Select",
 			},
 		});
+
+		// THE ITEM-BOOK FAMILY, which had no template records at all — items, clothing, gift
+		// giving, furniture upgrade and decoration. They were five bare ids in a `uint[]` inside
+		// the dispatcher, so they were the one part of the screen set that no template described
+		// and the editor could never see. Three `.bgf` files, one skeleton, one provider; the
+		// shop (22) is the same family and is recorded with its own art above.
+		// ONE REGISTRATION PER ID. There were two passes over 15/16/25/26/27 and `AddScreen`
+		// overwrites, so everything the first pass set was discarded before anything read it —
+		// twice over. It cost the list binding once, and it cost these five screens their PAGE
+		// PROVIDER for far longer: `Provider` was set only on the pass that lost, so
+		// `Engine_UiDetailPages.Owns` was false for the whole item-book family and the right
+		// page was left entirely to the guest, which fills it on a highlight-change edge keyed
+		// off ITS Lua cursor — a cursor that stops moving the moment Godot owns the list. That
+		// is the "the page appears and then hides, and is never consistent" report: whatever the
+		// guest last wrote stayed until something else overwrote it.
+		//
+		// The surviving pass is below and now carries the provider.
 
 		// The ABILITIES panel. `AbilityCost` carries the parameterised
 		// `GUI_SCREEN_ABLITY_EXPERIENCE_COST` — the typo is the shipped binary's, not ours.
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 14, Name = "abilities", OwnsList = true,
+			Provider = Engine_UiPageProviders.Abilities,
+			HasSpellBlade = true,
+			FlipAction = Engine_UiScreenActions.ScreenUnlearn,
 			Presentation = "abilitiesscreen",
 			ChromeUnits = { "Foreground" },
 
 			// Godot owns the row list and its cursor; the rest of the assembly is guest art,
-			// riding in on the guest's stated position for `ExpandableMenu`. The assignment
-			// blade too: `SpellAssigning` sits on the book's fourth page and
-			// Engine_UiSpellAssign draws it, so leaving it in the book would double it.
-			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight", "SpellAssigning" },
+			// riding in on the guest's stated position for `ExpandableMenu` — the assignment
+			// blade included: `sub_826C2480` binds `SpellAssigning` on the LIVE presentation and
+			// the guest's own widget writes every slide, icon texture and adjuster position
+			// there, so the book's clone follows it and the host only forwards the levers.
+			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages", BackdropUnit = "background_red",
+
+			// Page4, not Page3 — the abilities book skips one. Its stack parks at x = 400.
+			Pages =
+			{
+				"Foreground.Book.Pages.Page1", "Foreground.Book.Pages.Page2",
+				"Foreground.Book.Pages.Page4",
+			},
+			PageStackAt = Vector3.Zero,
 			PanelFields =
 			{
 				new("Foreground.Book.Pages.Page1.Contents.AbilityName"),
@@ -741,11 +1682,55 @@ public static class Engine_UiTemplates
 			AddScreen(new Engine_UiScreenTemplate
 			{
 				ScreenId = id, OwnsList = true,
+
+				// Two pages, authored ON the leaf (x = 0) in every book of this family —
+				// `giftgivingscreen`, `equipmentscreen` and `upgradefurniture` — so no
+				// PageStackAt. (`upgradefurniture` also authors `Page1_Background`, which is
+				// Page1's backdrop, not a selectable page.)
+				Pages =
+				{
+					"Foreground.Book.Pages.Page1", "Foreground.Book.Pages.Page2",
+				},
 				Name = id switch
 				{
 					15 => "items", 16 => "clothing", 25 => "gift",
 					26 => "upgradefurniture", _ => "decoration",
 				},
+
+				// Three `.bgf` files, one skeleton, ONE PROVIDER — the right-hand page of all
+				// five, and of the shop, which records the same provider with its own art.
+				Provider = Engine_UiPageProviders.ItemBook,
+
+				// WHICH LIST EACH OF THESE IS, because not one of them names a population
+				// script — `sub_82430468` (gift) and `sub_829B0A58` (inventory) build their rows
+				// in native C++ and issue no `RepopulateMenuFromPopulationScript` at all, so
+				// both the attribute and the captured-statement fallback come up empty and the
+				// list dropped onto the raw model.
+				//
+				// A run settled which id is which: screen 15 came up holding exactly the nine
+				// item categories — KeyItems, Books, Food, Potions (7), Gifts, Trophies,
+				// Augments, Dyes, Furniture — with X and Y reading 'Use' and 'Remove'. The
+				// 'Gift' title on the same presentation is the shared file's authored default,
+				// not the screen's claim: 15, 25 and 27 are all `GiftGivingScreen.bgf`.
+				// 26 AND 27 ARE DELIBERATELY UNBOUND — see the conditional-list note below.
+				MenuScript = id switch
+				{
+					15 => "ItemsMenu",
+					25 => "GiftGivingMenu",
+					_ => string.Empty,
+				},
+
+				// SCREEN 15 HAS TWO LISTS, NOT THREE. Its mode word at `screen+372` only ever
+				// holds 1 (Items) or 3 (Weapons): the pause dispatcher `sub_826B89E0` writes
+				// `*(screen15 + 372) = 1` for tab 4 and `= 3` for tab 5, and for tab 6 it takes
+				// a DIFFERENT screen — `*(screen16 + 220) = 4`. Clothing is screen 16.
+				//
+				// The `[4] = ClothingMenu` entry here could therefore never fire. (Mode 2 is
+				// also real but transient: screen 16's back handler writes it when returning
+				// from dye, and screen 15's activate coerces it straight back to 1.)
+				MenuScriptByMode = id == 15
+					? new Dictionary<int, string> { [1] = "ItemsMenu", [3] = "WeaponsMenu" }
+					: new Dictionary<int, string>(),
 				Presentation = id switch
 				{
 					16 => "equipmentscreen", 26 => "upgradefurniture", _ => "giftgivingscreen",
@@ -760,12 +1745,24 @@ public static class Engine_UiTemplates
 				OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 				PageRootUnit = "Pages",
 
+				// THE PAGE STACK IS PINNED ON THE LEAF. The Book's own fold slides move `Pages`
+				// (`ShowPages` x = 405, `HidePages` x = 0) on the guest's highlight edge, which
+				// no longer fires — so which of the two `Pages` sat at depended on where the
+				// guest's mirror froze, and at 405 every page's content lay past the right edge
+				// (the potion pages drew nothing). Godot owns the page: it stays where the
+				// content fits.
+				PageStackAt = Vector3.Zero,
+
 				// The backdrop is a LEAF name, never "Background" — that name has 27 bearers,
 				// every earlier one a menu row's icon plate. UpgradeFurniture is grey where the
 				// gift and equipment books are green, so this is per-id.
 				BackdropUnit = id == 26 ? "background_grey" : "background_green",
 				PanelFields = new List<Engine_UiScreenPanel.Field>(itemFields),
-				PreviewAnchor = "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
+				// Same skeleton, different parent for the proxy: equipmentscreen.bgf parks it
+				// under TypeSpecific, the gift and furniture books under ModelHider.
+				PreviewAnchor = id == 16
+					? "Foreground.Book.Pages.Page1.Contents.TypeSpecific.model_proxy.model"
+					: "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
 			});
 		}
 
@@ -777,6 +1774,96 @@ public static class Engine_UiTemplates
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 17, Name = "logbook", OwnsList = true,
+
+			// The logbook's pages are named by SUBJECT, not numbered — its provider switches
+			// them — but its stack parks at x = 400 like the abilities book's, so it is placed.
+			PageStackAt = Vector3.Zero,
+			Provider = Engine_UiPageProviders.Logbook,
+
+			// THE STATS PAGE IS ONE 3300-UNIT COLUMN on a single `FullPage` slide (eight
+			// categories, Combat at y 190 down to Time Played at y −3100) behind the page's
+			// Layer-level `Mask` (500×440 at (208, −6)); the guest's `sub_829BAEB8` scrolls it
+			// with the right stick and its `Scrollbar` is a stick-prompt row with Up/Down arrows
+			// and the stick glyph — the same region contract the region page ships on screen 23.
+			// The Renown page scrolls the same way (`sub_828C3250(…, "Foreground.Mask",
+			// "…RenownPage")`): its last two expression rows sit below the mask's band.
+			ScrollContent =
+				"Foreground.Book.Pages.StatsPage.Contents.LogBook.Stats|" +
+				"Foreground.Book.Pages.RenownPage.Contents.LogBook.Renown",
+			ScrollMask = "Mask|Mask",
+			ScrollBar =
+				"Foreground.Book.Pages.StatsPage.Contents.LogBook.Scrollbar|" +
+				"Foreground.Book.Pages.RenownPage.Contents.LogBook.Scrollbar",
+
+			// The Expressions page hangs its effects block under the measured description
+			// (`sub_829BD340`: `Effects.y = Description.y − wrapped height`). With the block as
+			// its own base the reflow's delta lands it exactly there.
+			FlowMeasured = "Foreground.Book.Pages.ExpressionsPage.Contents.Description",
+			FlowBase = "Foreground.Book.Pages.ExpressionsPage.Contents.Effects",
+			FlowMoved = { "Foreground.Book.Pages.ExpressionsPage.Contents.Effects" },
+
+			// Lifted verbatim from `Engine_UiLogbookPage.StatRows`.
+			StatFields =
+			{
+		// combat
+		(2,"combat.DecapitationValue"),(3,"combat.GroinshotsValue"),(4,"combat.EnemiesDisarmedValue"),
+		(5,"combat.ReversalsValue"),(6,"combat.DamageDealtValue"),(7,"combat.TotalManaSpentValue"),
+		(8,"combat.DamageTakenValue"),(9,"combat.DeathsValue"),(11,"combat.ResurrectionPhialsValue"),
+		(13,"combat.HitsTakenValue"),(14,"combat.AttacksBlockedValue"),(15,"combat.FlourishesDoneValue"),
+		(16,"combat.CoopStrikesValue"),
+		// kills
+		(109,"kills.TotalValue"),(110,"kills.BansheesKilledValue"),(111,"kills.BalverinesKilledValue"),
+		(112,"kills.BanditsKilledValue"),(113,"kills.BeetlesKilledValue"),(114,"kills.TrollsKilledValue"),
+		(115,"kills.ShardsKilledValue"),(116,"kills.ShadowsKilledValue"),
+		(117,"kills.HollowmenKilledValue"),(118,"kills.GuardsKilledValue"),
+		(119,"kills.LucienGuardsKilledValue"),(120,"kills.LucienSoldiersKilledValue"),
+		(121,"kills.HobbesKilledValue"),(122,"kills.VillagersKilledValue"),
+		(123,"kills.HighwayMenKilledValue"),
+		// money
+		(17,"money.MoneyPropertiesOwnedValue"),(18,"money.MoneyEarnedValue"),(19,"money.MoneySpentValue"),
+		(20,"money.MoneyRightNowValue"),(22,"money.MoneyMadeMageDiceValue"),
+		(23,"money.MoneyMadeBartendingValue"),(24,"money.MoneyMadeWoodchoppingValue"),
+		(25,"money.MoneyMadeBlacksmithingValue"),(27,"money.MoneyMadeKeystoneValue"),
+		(28,"money.MoneyMadeWizardsTowerValue"),(29,"money.MoneyMadeRealEstateValue"),
+		(30,"money.MoneyMadeAssasinationsValue"),(31,"money.MoneyMadeBountyHuntsValue"),
+		(32,"money.MoneyMadeSlaveryValue"),
+		// adventure
+		(33,"adventure.TotalRenownValue"),(106,"adventure.MostTrophyRenownValue"),
+		(35,"adventure.GoldDonatedToTempleValue"),(36,"adventure.PeopleSacrificedToEvilValue"),
+		(37,"adventure.AssassinationsCompletedValue"),(38,"adventure.BountiesCollectedValue"),
+		(39,"adventure.SlavesRescuedValue"),(40,"adventure.PeoplePutIntoSlaveryValue"),
+		(41,"adventure.MostGoodPointsValue"),(42,"adventure.MostEvilPointsValue"),
+		(43,"adventure.MostNobilityPointsValue"),(44,"adventure.MostCorruptionPointsValue"),
+		(45,"adventure.TotalExpEarnedValue"),(46,"adventure.TotalStrengthExpEarnedValue"),
+		(47,"adventure.TotalSkillExpEarnedValue"),(48,"adventure.TotalWillExpEarnedValue"),
+
+		// `Genearal` is the SHIPPED SPELLING. The element in `logbookscreen.bgf` carries the
+		// typo, so correcting it here would resolve to nothing at all.
+		(49,"adventure.TotalGenearalExpEarnedValue"),
+
+		// games — note 83 is registered LAST despite its lower id
+		(50,"games.TopScoreWestcliffShootingValue"),(96,"games.BiggestWinMageDiceValue"),
+		(97,"games.BiggestWinKeystoneValue"),(98,"games.BiggestWinWizardsTowerValue"),
+		(83,"games.BestFullCrucibleTimeValue"),
+		// relationships
+		(54,"relationships.NumPeopleFallenInLoveWithYouValue"),(55,"relationships.TimesMarriedValue"),
+		(56,"relationships.TimesDivorcedValue"),(57,"relationships.TimesWidowedValue"),
+		(58,"relationships.NumChildrenValue"),(59,"relationships.MostLoveEarnedValue"),
+		(60,"relationships.MostHumourEarnedValue"),(61,"relationships.MostFearEarnedValue"),
+		(62,"relationships.MostHateEarnedValue"),(63,"relationships.TimesMaritalSexValue"),
+		(64,"relationships.TimesExtraMaritalSexValue"),(65,"relationships.TimesPaidForSexValue"),
+		(66,"relationships.NumNpcRewardsCollectedValue"),
+		(67,"relationships.MostCoopExpressionBonusesValue"),
+		// crime
+		(69,"crime.NumCrimesCommitedValue"),(70,"crime.CrimeFinesLeviedValue"),
+		(71,"crime.CrimeFinesPaidValue"),(72,"crime.CrimeFinesPaidCommunityServiceValue"),
+		// other
+		(74,"other.TotalFoodDrinkConsumedValue"),(75,"other.TotalAlcoholConsumedValue"),
+		(76,"other.TotalPotionsConsumedValue"),(77,"other.AmountOfTimeDrunkValue"),
+		(78,"other.TotalVomitsValue"),(79,"other.TotalDistanceTraveledValue"),
+		(80,"other.NumChickensKickedValue"),(81,"other.FurthestChickenKickValue"),
+		(0,"other.ExpressionsValue"),(84,"other.STDsValue"),(1,"other.TimePlayedValue"),
+			},
 			Presentation = "logbookscreen",
 
 			// `Money` has two bearers here; the money bar is the second — bearer 0 is a stats
@@ -803,6 +1890,10 @@ public static class Engine_UiTemplates
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 18, Name = "options", OwnsList = true,
+			// Four pages; the stack is authored on the leaf already.
+			Pages = { "Foreground.Book.Pages.Page1", "Foreground.Book.Pages.Page2", "Foreground.Book.Pages.Page3", "Foreground.Book.Pages.Page4" },
+			Provider = Engine_UiPageProviders.Options,
+			FadesBottomEnd = false,
 			Presentation = "optionsscreen",
 			ChromeUnits = { "Foreground" },
 
@@ -810,6 +1901,8 @@ public static class Engine_UiTemplates
 			// riding in on the guest's stated position for `ExpandableMenu`.
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages", BackdropUnit = "background_purple",
+			// The stack is authored at x 405 — off the leaf — like the logbook's.
+			PageStackAt = Vector3.Zero,
 			PageElement = "Foreground.ExpandableMenu",
 			PageSlide = 2,
 		});
@@ -819,6 +1912,9 @@ public static class Engine_UiTemplates
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 21, Name = "crime", OwnsList = true,
+			// Three pages, one per row; the stack is authored on the leaf.
+			Pages = { "Foreground.Book.Pages.Page1", "Foreground.Book.Pages.Page2", "Foreground.Book.Pages.Page3" },
+			Provider = Engine_UiPageProviders.Crime,
 			Presentation = "crimescreen",
 			ChromeUnits = { "Foreground" },
 
@@ -840,6 +1936,14 @@ public static class Engine_UiTemplates
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 22, Name = "shop", OwnsList = true,
+			// Three pages, and the stack parks at x = 400 — off the canvas — so it is placed.
+			Pages = { "Foreground.Book.Pages.Page1", "Foreground.Book.Pages.Page2", "Foreground.Book.Pages.Page3" },
+			PageStackAt = Vector3.Zero,
+
+			// `ShopMenu` is not a string in the binary — `sub_82994218` builds the list natively
+			// and names no population script, exactly as the gift and inventory screens do.
+			MenuScript = "ShopMenu",
+			Provider = Engine_UiPageProviders.ItemBook,
 			Presentation = "shopscreen",
 
 			// The shop hoists its page paper OUT of the pages: `FrontPage`, `PageTextureFar` and
@@ -850,6 +1954,11 @@ public static class Engine_UiTemplates
 			// riding in on the guest's stated position for `ExpandableMenu`.
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages", BackdropUnit = "background_green",
+
+			// The front page (name, anecdote, keeper, owner, opinions, sale, discount, wealth)
+			// is written natively by `sub_82991800` at the screen's show and never again —
+			// see [[refii-shop-front-page]]. The host reads those writes as data.
+			GuestTextUnits = { "Foreground.FrontPage" },
 			PanelFields =
 			{
 				new("Foreground.Book.Pages.Page1.Contents.ItemName"),
@@ -868,6 +1977,10 @@ public static class Engine_UiTemplates
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 23, Name = "worldmap", OwnsList = true,
+			// Two numbered pages (the named category pages are the provider's); the stack parks at 400.
+			Pages = { "Foreground.Book.Pages.Page1", "Foreground.Book.Pages.Page2" },
+			PageStackAt = Vector3.Zero,
+			Provider = Engine_UiPageProviders.WorldMap,
 			Presentation = "worldmapscreen",
 
 			// NO TINT BACKDROP — the world map's ground is six map tiles, so they are chrome
@@ -883,6 +1996,43 @@ public static class Engine_UiTemplates
 			// riding in on the guest's stated position for `ExpandableMenu`.
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages",
+
+			// The region page scrolls — `sub_829AB060` registers `Page1.Contents.Text` under
+			// `MaskPage2` with the page's own scrollbar, and `sub_826C63C8` code 27 (the right
+			// stick) drives it.
+			ScrollContent = "Foreground.Book.Pages.Page1.Contents.Text",
+			ScrollMask = "MaskPage2",
+			ScrollBar = "Foreground.Book.Pages.Page1.Contents.Scrollbar",
+
+			// And it reflows — `sub_829AB8A8` measures the wrapped merchants list and moves
+			// every row below it by the overflow, silver keys taking the gargoyle row's place
+			// everywhere but Mystery Island. The list is the guest's own move list, verbatim.
+			FlowMeasured = "Foreground.Book.Pages.Page1.Contents.Text.MerchantsList",
+			FlowBase = "Foreground.Book.Pages.Page1.Contents.Text.MerchantListBase",
+			FlowMoved =
+			{
+				"Foreground.Book.Pages.Page1.Contents.Text.OwnedAmount",
+				"Foreground.Book.Pages.Page1.Contents.Text.BuildingsOwned",
+				"Foreground.Book.Pages.Page1.Contents.Text.ChestAmount",
+				"Foreground.Book.Pages.Page1.Contents.Text.ChestsOpened",
+				"Foreground.Book.Pages.Page1.Contents.Text.DigspotAmount",
+				"Foreground.Book.Pages.Page1.Contents.Text.DigspotsDug",
+				"Foreground.Book.Pages.Page1.Contents.Text.Lines.line10",
+				"Foreground.Book.Pages.Page1.Contents.Text.Lines.line11",
+				"Foreground.Book.Pages.Page1.Contents.Text.DivespotsSearchedAmount",
+				"Foreground.Book.Pages.Page1.Contents.Text.DivespotsSearched",
+				"Foreground.Book.Pages.Page1.Contents.Text.GargoylesDestroyedAmount",
+				"Foreground.Book.Pages.Page1.Contents.Text.GargoylesDestroyed",
+				"Foreground.Book.Pages.Page1.Contents.Text.Lines.line12",
+				"Foreground.Book.Pages.Page1.Contents.Text.Lines.line13",
+				"Foreground.Book.Pages.Page1.Contents.Text.Lines.line14",
+			},
+			FlowTailAnchor = "Foreground.Book.Pages.Page1.Contents.Text.GargoylesDestroyedAmount",
+			FlowTailMoved =
+			{
+				"Foreground.Book.Pages.Page1.Contents.Text.SilverKeysFoundAmount",
+				"Foreground.Book.Pages.Page1.Contents.Text.SilverKeysFound",
+			},
 			PanelFields =
 			{
 				new("Foreground.Book.Pages.Page1.Contents.PageTitle"),
@@ -905,7 +2055,13 @@ public static class Engine_UiTemplates
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 28, Name = "realestate", Presentation = "realestatescreen",
+			// Two pages describing the one building; the stack is authored on the leaf.
+			Pages = { "Foreground.Book.Pages.Page1", "Foreground.Book.Pages.Page2" },
+			Provider = Engine_UiPageProviders.RealEstate,
 			OwnsList = true,
+
+			// DELIBERATELY UNBOUND — see the conditional-list note in BuildDefaults.
+			FadesTopEnd = false,
 			ChromeUnits = { "Foreground" },
 
 			// Godot owns the row list and its cursor; the rest of the assembly is guest art,
@@ -967,6 +2123,8 @@ public static class Engine_UiTemplates
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 5, Name = "questrepeatable", Presentation = "questrepeatable",
+			OwnsRevealedInput = true,
+			RevealedAccept = Engine_UiScreenActions.BoxDismiss,
 			ChromeUnits = { "PaperBackground", "Buttons", "Stars", "DetailsGroup" },
 			PanelSubtrees = { "elements" },
 		});
@@ -974,16 +2132,28 @@ public static class Engine_UiTemplates
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 11, Name = "minigamecompleted", Presentation = "minigamecompleted",
+			OwnsRevealedInput = true,
+			RevealedAccept = Engine_UiScreenActions.ScreenDismiss,
 
 			// `Select` has two bearers — the button GROUP is 0, its label Text is 1 — so the
 			// bare name is right here and the label comes through the text sweep.
-			ChromeUnits = { "paperbox", "Select", "Motif", "Amounts" },
+			// `Title` too: un-cloned it had no node, and the tally drew with no heading.
+			ChromeUnits = { "paperbox", "Select", "Motif", "Amounts", "Title" },
 			PanelSubtrees = { "Component" },
+
+			// EVERY STRING IS THE GUEST'S: `TurnOnMiniGameComplete` publishes MiniGameTitle and
+			// MiniGameButton, `AddAmountToMiniGameComplete` MiniGameName%d/Amount%d, and the
+			// tally's own tick republishes the amounts as they count up — all through TextName
+			// registry 6 onto these elements. Without this unit the book showed the file's
+			// placeholders ('Money earned', '0000001') on every row and no title.
+			GuestTextUnits = { "Component" },
 		});
 
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 12, Name = "questcompletion", Presentation = "questcompletion",
+			OwnsRevealedInput = true,
+			RevealedAccept = Engine_UiScreenActions.ScreenDismiss,
 
 			// `Component` is the paperbox; `frame2` is a SECOND, hand-authored ten-piece frame
 			// whose parts collide by name with the paperbox's, which is why the units are named
@@ -1008,6 +2178,8 @@ public static class Engine_UiTemplates
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 10, Name = "query", Presentation = "queryscreen",
+			OwnsRevealedInput = true,
+			RevealedBack = Engine_UiScreenActions.ScreenBack,
 			ChromeUnits = { "elements" },
 			PanelSubtrees = { "elements" },
 		});
@@ -1068,6 +2240,47 @@ public static class Engine_UiTemplates
 			// The scroll is the guest's own statement: it moves `Group` leftwards and the clone
 			// binding writes every stated transform, so the wrap copy rides in with it. A host
 			// rate would be a second clock against the one the title's music and fade run on.
+		});
+
+		// THE ACHIEVEMENTS SCREEN — host-only id 1013, on the logbook's own furniture.
+		//
+		// The guest has no screen for these. Its answer to the logbook's `Achievements` row is
+		// `XamShowAchievementsUI` (`sub_826D9620` case 150), the console's guide blade, which on
+		// this platform opens nothing at all — so there is no guest screen id to borrow and no
+		// tab for `sub_826B89E0`'s switch to map. It is ours end to end.
+		//
+		// On `logbookscreen` because the shape already fits: a full-height row list on the left
+		// and a subject page laying out a title, a 64-unit picture and a paragraph on the right,
+		// which is exactly an achievement. Nothing about that art is logbook-specific — the book
+		// is cloned from the FILE-ONLY pattern book, so this record needs no live presentation of
+		// the guest's and stands whether or not the logbook has ever been opened.
+		//
+		// `PanelSubtrees` carries the whole page stack rather than `ExpressionsPage` alone: the
+		// provider switches seven of the eight off and the panel must know the fields it is
+		// hiding, the same statement screen 17 makes.
+		AddScreen(new Engine_UiScreenTemplate
+		{
+			ScreenId = Engine_UiAchievementPage.ScreenId, Name = "achievements", OwnsList = true,
+			Provider = Engine_UiPageProviders.Achievements,
+			Presentation = "logbookscreen",
+			ChromeUnits = { "Foreground" },
+
+			// Godot owns the row list and its cursor. On a host-only screen it owns the anchor
+			// too — there is no guest `ExpandableMenu` position to ride in on, so the view sits
+			// at the pool's authored spot.
+			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
+			PageRootUnit = "Pages", BackdropUnit = "background_yellow",
+			PanelSubtrees =
+			{
+				"Foreground.Book.Pages.MoralityPage",
+				"Foreground.Book.Pages.ExpressionsPage",
+				"Foreground.Book.Pages.CompletedQuestsPage",
+				"Foreground.Book.Pages.RenownPage",
+				"Foreground.Book.Pages.AttractivenessPage",
+				"Foreground.Book.Pages.StatsPage",
+				"Foreground.Book.Pages.DogPage",
+				"Foreground.Book.Pages.HelpPage",
+			},
 		});
 
 		// Screen 8 — the receive-items card, owned elsewhere; recorded for its preview anchor.
@@ -1181,6 +2394,12 @@ public static class Engine_UiTemplates
 			Title = record.TryGetValue("title", out Variant title)
 				? title.AsString()
 				: string.Empty,
+			RowCommand = record.TryGetValue("rowCommand", out Variant rowCommand)
+				? rowCommand.AsString()
+				: string.Empty,
+			Source = record.TryGetValue("source", out Variant rootSource)
+				? rootSource.AsString()
+				: string.Empty,
 		};
 
 		if (record.TryGetValue("entries", out Variant entries) &&
@@ -1196,6 +2415,39 @@ public static class Engine_UiTemplates
 		}
 
 		return menu;
+	}
+
+	/// <summary>`{"1": "ItemsMenu", ...}` — see `Engine_UiScreenTemplate.MenuScriptByMode`.</summary>
+	private static Dictionary<int, string> ParseScriptModes(Godot.Collections.Dictionary record)
+	{
+		var modes = new Dictionary<int, string>();
+		if (!record.TryGetValue("menuScriptByMode", out Variant value) ||
+			value.VariantType != Variant.Type.Dictionary)
+		{
+			return modes;
+		}
+
+		foreach (var pair in value.AsGodotDictionary())
+		{
+			if (int.TryParse(pair.Key.AsString(), out int mode) &&
+				pair.Value.AsString() is { Length: > 0 } script)
+			{
+				modes[mode] = script;
+			}
+		}
+
+		return modes;
+	}
+
+	private static Godot.Collections.Dictionary ScriptModesJson(Dictionary<int, string> modes)
+	{
+		var record = new Godot.Collections.Dictionary();
+		foreach ((int mode, string script) in modes)
+		{
+			record[mode.ToString(System.Globalization.CultureInfo.InvariantCulture)] = script;
+		}
+
+		return record;
 	}
 
 	private static Engine_UiMenuEntry? ParseEntry(Variant value)
@@ -1215,6 +2467,7 @@ public static class Engine_UiTemplates
 				: null,
 			Opens = record.TryGetValue("opens", out Variant opens) ? opens.AsString() : null,
 			HostOnly = record.TryGetValue("hostOnly", out Variant host) && host.AsBool(),
+			Drop = record.TryGetValue("drop", out Variant drop) && drop.AsBool(),
 			Source = record.TryGetValue("source", out Variant source)
 				? source.AsString()
 				: string.Empty,
@@ -1223,6 +2476,7 @@ public static class Engine_UiTemplates
 			Rating = record.TryGetValue("rating", out Variant rating)
 				? rating.AsInt32()
 				: Engine_UiMenuConstants.EmptyRatingSlide,
+			Counted = !record.TryGetValue("counted", out Variant counted) || counted.AsBool(),
 		};
 
 		if (entry.Name.Length == 0)
@@ -1258,6 +2512,10 @@ public static class Engine_UiTemplates
 			ScreenId = id,
 			Name = record.TryGetValue("name", out Variant name) ? name.AsString() : $"screen{id}",
 			OwnsList = record.TryGetValue("ownsList", out Variant owns) && owns.AsBool(),
+			MenuScriptByMode = ParseScriptModes(record),
+			MenuScript = record.TryGetValue("menuScript", out Variant menuScript)
+				? menuScript.AsString()
+				: string.Empty,
 			PreviewAnchor = record.TryGetValue("previewAnchor", out Variant preview)
 				? preview.AsString()
 				: string.Empty,
@@ -1268,6 +2526,42 @@ public static class Engine_UiTemplates
 				? (int)slide.AsDouble()
 				: 0,
 			Menu = record.TryGetValue("menu", out Variant menu) ? menu.AsString() : string.Empty,
+			Provider = record.TryGetValue("provider", out Variant provider)
+				? provider.AsString()
+				: string.Empty,
+			OwnsRevealedInput =
+				record.TryGetValue("ownsRevealedInput", out Variant revealed) && revealed.AsBool(),
+			RevealedAccept = record.TryGetValue("revealedAccept", out Variant accept)
+				? accept.AsString()
+				: string.Empty,
+			RevealedBack = record.TryGetValue("revealedBack", out Variant back)
+				? back.AsString()
+				: string.Empty,
+			FlipAction = record.TryGetValue("flipAction", out Variant flip)
+				? flip.AsString()
+				: string.Empty,
+			HasSpellBlade = record.TryGetValue("hasSpellBlade", out Variant blade) && blade.AsBool(),
+			ScrollContent = record.TryGetValue("scrollContent", out Variant scroll)
+				? scroll.AsString()
+				: string.Empty,
+			ScrollMask = record.TryGetValue("scrollMask", out Variant scrollMask)
+				? scrollMask.AsString()
+				: string.Empty,
+			ScrollBar = record.TryGetValue("scrollBar", out Variant scrollBar)
+				? scrollBar.AsString()
+				: string.Empty,
+			FlowMeasured = record.TryGetValue("flowMeasured", out Variant flowMeasured)
+				? flowMeasured.AsString()
+				: string.Empty,
+			FlowBase = record.TryGetValue("flowBase", out Variant flowBase)
+				? flowBase.AsString()
+				: string.Empty,
+			FlowTailAnchor = record.TryGetValue("flowTailAnchor", out Variant flowTail)
+				? flowTail.AsString()
+				: string.Empty,
+			FadesTopEnd = !record.TryGetValue("fadesTopEnd", out Variant fadesTop) || fadesTop.AsBool(),
+			FadesBottomEnd =
+				!record.TryGetValue("fadesBottomEnd", out Variant fadesBottom) || fadesBottom.AsBool(),
 			Presentation = record.TryGetValue("presentation", out Variant file)
 				? file.AsString()
 				: string.Empty,
@@ -1277,12 +2571,21 @@ public static class Engine_UiTemplates
 			BackdropUnit = record.TryGetValue("backdropUnit", out Variant backdrop)
 				? backdrop.AsString()
 				: string.Empty,
+
+			// How far the owned row view stands in FRONT of the book. Editable because it is
+			// what decides whether the rows draw behind the left cover or over it, and the right
+			// value is a property of the screen's own art rather than something derivable.
+			ListLift = record.TryGetValue("listLift", out Variant lift)
+				? (float)lift.AsDouble()
+				: Engine_UiPresentationDepth.BookOffset,
 		};
 
 		Strings(record, "chrome", screen.ChromeUnits);
 		Strings(record, "panelSubtrees", screen.PanelSubtrees);
 		Strings(record, "ownedElsewhere", screen.OwnedElsewhere);
 		Strings(record, "liveTexts", screen.LiveTexts);
+		Strings(record, "flowMoved", screen.FlowMoved);
+		Strings(record, "flowTailMoved", screen.FlowTailMoved);
 
 		if (record.TryGetValue("panelFields", out Variant fields) &&
 			fields.VariantType == Variant.Type.Array)
@@ -1347,6 +2650,8 @@ public static class Engine_UiTemplates
 			{
 				["highlight"] = menu.Highlight,
 				["title"] = menu.Title,
+				["source"] = menu.Source,
+				["rowCommand"] = menu.RowCommand,
 				["entries"] = entries,
 			};
 		}
@@ -1369,13 +2674,32 @@ public static class Engine_UiTemplates
 			{
 				["name"] = screen.Name,
 				["ownsList"] = screen.OwnsList,
+				["menuScript"] = screen.MenuScript,
+				["menuScriptByMode"] = ScriptModesJson(screen.MenuScriptByMode),
 				["previewAnchor"] = screen.PreviewAnchor,
 				["pageElement"] = screen.PageElement,
 				["pageSlide"] = screen.PageSlide,
 				["menu"] = screen.Menu,
+				["provider"] = screen.Provider,
+				["ownsRevealedInput"] = screen.OwnsRevealedInput,
+				["revealedAccept"] = screen.RevealedAccept,
+				["revealedBack"] = screen.RevealedBack,
+				["flipAction"] = screen.FlipAction,
+				["hasSpellBlade"] = screen.HasSpellBlade,
+				["scrollContent"] = screen.ScrollContent,
+				["scrollMask"] = screen.ScrollMask,
+				["scrollBar"] = screen.ScrollBar,
+				["flowMeasured"] = screen.FlowMeasured,
+				["flowBase"] = screen.FlowBase,
+				["flowMoved"] = ToArray(screen.FlowMoved),
+				["flowTailAnchor"] = screen.FlowTailAnchor,
+				["flowTailMoved"] = ToArray(screen.FlowTailMoved),
+				["fadesTopEnd"] = screen.FadesTopEnd,
+				["fadesBottomEnd"] = screen.FadesBottomEnd,
 				["presentation"] = screen.Presentation,
 				["pageRootUnit"] = screen.PageRootUnit,
 				["backdropUnit"] = screen.BackdropUnit,
+				["listLift"] = screen.ListLift,
 				["chrome"] = ToArray(screen.ChromeUnits),
 				["panelSubtrees"] = ToArray(screen.PanelSubtrees),
 				["ownedElsewhere"] = ToArray(screen.OwnedElsewhere),
@@ -1417,6 +2741,11 @@ public static class Engine_UiTemplates
 			record["source"] = entry.Source;
 		}
 
+		if (entry.Drop)
+		{
+			record["drop"] = true;
+		}
+
 		if (entry.HostOnly)
 		{
 			record["hostOnly"] = true;
@@ -1436,6 +2765,11 @@ public static class Engine_UiTemplates
 		if (entry.Rating != Engine_UiMenuConstants.EmptyRatingSlide)
 		{
 			record["rating"] = entry.Rating;
+		}
+
+		if (!entry.Counted)
+		{
+			record["counted"] = false;
 		}
 
 		if (entry.Children.Count != 0)

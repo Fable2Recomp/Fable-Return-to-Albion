@@ -441,46 +441,23 @@ public partial class GameUi
 
 		// ---- THE EXPRESSION METER ------------------------------------------------------------
 		//
-		// Fourteen natives, one widget, and it runs a clock: each states a target and a RATE,
-		// and the bar and pip then travel on their own. Arithmetic in Engine_UiGuiWidgets.
-		_guiNatives.Register("TurnOnExpressionMeter", _ => _widgets.TurnOnExpressionMeter());
-		_guiNatives.Register("TurnOffExpressionMeter", _ => _widgets.TurnOffExpressionMeter());
-
-		// `StartExpressionMeterPip(position, speed, isHero)` — the third argument is a BOOLEAN.
-		_guiNatives.Register("StartExpressionMeterPip", call =>
-			_widgets.StartExpressionPip(
-				call.Argument(0).Number, call.Argument(1).Number, call.Argument(2).Boolean));
-
-		_guiNatives.Register("StartBarJobFill", call =>
-			_widgets.StartBarJobFill(call.Argument(0).Number));
-
-		// `TurnOnExpressionStaticFill(position, size, r, g, b)` — two numbers then three INTS.
-		_guiNatives.Register("TurnOnExpressionStaticFill", call =>
-			_widgets.StartStaticFill(
-				call.Argument(0).Number, call.Argument(1).Number,
-				(byte)call.Argument(2).Number, (byte)call.Argument(3).Number,
-				(byte)call.Argument(4).Number));
-
-		// `TurnOnExpressionDynamicFill(from, to, position, rate)`.
-		_guiNatives.Register("TurnOnExpressionDynamicFill", call =>
-			_widgets.StartDynamicFill(
-				call.Argument(0).Number, call.Argument(1).Number,
-				call.Argument(2).Number, call.Argument(3).Number));
-
-		// The three band colours do NOT repaint: the new colour lands at the next band
-		// application — the next start or the next threshold crossing.
-		_guiNatives.Register("SetLowFillColour", call => _widgets.SetBandColour(0,
-			(byte)call.Argument(0).Number, (byte)call.Argument(1).Number,
-			(byte)call.Argument(2).Number));
-		_guiNatives.Register("SetMedFillColour", call => _widgets.SetBandColour(1,
-			(byte)call.Argument(0).Number, (byte)call.Argument(1).Number,
-			(byte)call.Argument(2).Number));
-		_guiNatives.Register("SetHighFillColour", call => _widgets.SetBandColour(2,
-			(byte)call.Argument(0).Number, (byte)call.Argument(1).Number,
-			(byte)call.Argument(2).Number));
-
-		_guiNatives.Register("SetFillColourPercentages", call =>
-			_widgets.SetBandThresholds(call.Argument(0).Number, call.Argument(1).Number));
+		// OBSERVED, NOT OWNED. The meter is the guest's: `StartExpressionMeterPip` and the fill
+		// starters write the object at `*(*(GUI+32)+44)`, the GUI tick advances the pip
+		// (`sub_822ACBF8`), the guest's own A press judges it (`sub_823D21C0`) and the four
+		// predicates answer from it. A host copy here judged nothing and answered nothing; the
+		// HUD draws the object instead — RefiiHostGetExpressionMeter and
+		// Engine_UiHudExpressionMeter.
+		foreach (string meterNative in new[]
+			{
+				"TurnOnExpressionMeter", "TurnOffExpressionMeter", "StartExpressionMeterPip",
+				"StartBarJobFill", "TurnOnExpressionStaticFill", "TurnOnExpressionDynamicFill",
+				"SetLowFillColour", "SetMedFillColour", "SetHighFillColour",
+				"SetFillColourPercentages",
+			})
+		{
+			_guiNatives.Observe(meterNative,
+				"the meter object is the guest's and is read back for drawing");
+		}
 
 		// ---- THE GOLF SWING METER ------------------------------------------------------------
 		//

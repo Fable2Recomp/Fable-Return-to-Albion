@@ -119,8 +119,22 @@ public static class Engine_MdlGeometry
                 continue;
             }
 
+            // THE SECTION STATES ITS PRIMITIVE TYPE; INFERRING IT IS A GUESS THAT CAN BE WRONG.
+            //
+            // The file's section record carries a strip flag — 0 is a triangle list, non-zero a
+            // strip — and the shipped data backs it exactly: of 339 buffers whose sections all
+            // say list, 339 have `indexCount == 3 x primCount` and NONE contains a restart index.
+            // Deciding from the data instead ("no restart, therefore a list") is right almost
+            // always and wrong where a single strip section happens to carry no restart:
+            // `OB_PotionBottle_Java.mdl` is such a file, and reading it as a list shreds the mesh
+            // (no edge is shared by two triangles, against half of them when read as a strip).
+            //
+            // A buffer with no section at all keeps the old inference — there is nothing to follow.
+            bool statedList = mb.SubMeshes.Count == 1 && mb.SubMeshes[0].PrimitiveType == 0;
+            bool asList = mb.SubMeshes.Count == 1 ? statedList : !hasRestart;
+
             var indices = new List<uint>();
-            if (hasRestart)
+            if (!asList)
             {
                 MdlReader.BuildTrianglesFromStrip(strip, indices);
             }
@@ -433,9 +447,17 @@ public static class Engine_MdlGeometry
             var slice = new ushort[end - start];
             Array.Copy(strip, start, slice, 0, slice.Length);
 
+            // Same rule as the single-section path above: the section says which it is.
             bool sliceHasRestart = Array.IndexOf(slice, (ushort)0xFFFF) >= 0;
-            bool triangleList = !sliceHasRestart && sub.FaceCount > 0 &&
-                                slice.Length == sub.FaceCount * 3;
+            bool triangleList = sub.PrimitiveType == 0
+                ? sub.FaceCount > 0 && slice.Length >= sub.FaceCount * 3
+                : false;
+            if (sub.PrimitiveType != 0 && !sliceHasRestart && sub.FaceCount > 0 &&
+                slice.Length == sub.FaceCount * 3 && sub.FaceCount == 1)
+            {
+                // A one-triangle section is three indices either way.
+                triangleList = true;
+            }
 
             var subIndices = new List<uint>();
             if (triangleList)

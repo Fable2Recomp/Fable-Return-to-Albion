@@ -199,6 +199,23 @@ public sealed partial class Engine_UiScreenPanel : Node3D
 			Place(field.Path, built);
 		}
 
+		// THE BUILT NODE'S INLINE ICONS GO WITH ITS TEXT. The builder hangs an `InlineIcon`
+		// quad under a text element for every glyph token in its AUTHORED string (the
+		// logbook's expression description is authored as the apologise text, which carries
+		// a D-pad); this panel draws the live string on its own label and never repaints the
+		// built node, so those quads outlived every description written here.
+		// `built` is the book's ROOT; the field's own node is found by path, as Place does.
+		if (built is not null && Engine_UiTheme.FindByPath(built, field.Path) is { } own)
+		{
+			foreach (Node child in own.GetChildren())
+			{
+				if (child is Node3D icon && Engine_UiTheme.IsInlineIcon(icon))
+				{
+					icon.Visible = false;
+				}
+			}
+		}
+
 		if (live.Length == 0)
 		{
 			label.Mesh = null;

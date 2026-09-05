@@ -1,0 +1,25 @@
+# Named pointer chains — the project's verified deref recipes as data.
+#
+# THE RULE FOR THIS FILE: a chain goes in ONLY with its verification named. Every entry is an
+# offset sequence someone already paid to establish in IDA; an unverified guess in here would
+# launder itself into looking established, which is exactly the wrong-base trap this file
+# exists to kill. base is hex without 0x; deref is walked left to right, each offset added to
+# the cursor and the word there loaded (so [0] means "the global holds a POINTER — deref it").
+
+[game-root]
+base = "83496AB8"
+deref = [0]
+note = "The game root object. The raw global holds a pointer; every root-relative offset is measured AFTER this deref."
+verified = "memory refii-game-root-needs-a-deref; repeated decompiles against *(0x83496AB8)"
+
+[game-p]
+base = "83496AB8"
+deref = [0, 0x0C]
+note = "The object 'p' that owns the gameflow (at p+0x80). NOT the root itself — the +0x80 is measured from HERE."
+verified = "World_RequestLevelChange 0x82350B20 inline chain, quoted in host_bridge.cpp level-change comment"
+
+[gameflow-queue-head]
+base = "83496AB8"
+deref = [0, 0x0C, 0x80, 4, 4, 4, 8]
+note = "The gameflow command at the head of the queue. Hops: root, p(+0xC), v19(+0x80), gf(+4), sentinel(+4), node(+4), cmd(+8). If the node hop equals the sentinel hop the queue is EMPTY and the final value is garbage — read the hop list, not just the tail."
+verified = "World_RequestLevelChange 0x82350B20; the same walk RefiiHostGetLevelChange ships"

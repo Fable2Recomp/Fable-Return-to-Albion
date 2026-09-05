@@ -4,22 +4,7 @@ namespace refii::modding {
 
 const std::vector<RuntimeSettingDefinition>& GetRuntimeSettingDefinitions() {
   static const std::vector<RuntimeSettingDefinition> definitions = {
-      {"vfs_mods_root",
-       "VFS",
-       RuntimeSettingType::String,
-       "mods",
-       "Assets-root mod folder containing installable loose-file mods. The default resolves to <assets_root>/mods."},
-      {"vfs_enabled_mods",
-       "VFS",
-       RuntimeSettingType::String,
-       "",
-       "Optional semicolon-separated enabled mod folder names under vfs_mods_root; mods/enabled.txt is also read."},
-      {"vfs_mod_roots",
-       "VFS",
-       RuntimeSettingType::String,
-       "",
-       "Developer override: semicolon-separated absolute or relative mod asset roots. Normal mod installs live under <assets_root>/mods."},
-      {"lua_use_mod_overrides",
+                        {"lua_use_mod_overrides",
        "Lua",
        RuntimeSettingType::Bool,
        "true",

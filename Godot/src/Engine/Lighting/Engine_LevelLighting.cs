@@ -15,7 +15,7 @@ public static class Engine_LevelLighting
 	/// reach. 450 m with four cascades keeps the near split where the two-split setup had it, so
 	/// close-range shadow quality is unchanged while the landscape itself starts occluding.
 	/// </summary>
-	public const float SunFarDepth = 450.0f;
+	public const float SunFarDepth = 300.0f;
 
 	public const float CascadeSplitNear = 35.0f;
 
@@ -24,6 +24,18 @@ public static class Engine_LevelLighting
 	public const float CascadeSplitFar = 240.0f;
 
 	public const float NearSlopeBias = 2.0f;
+
+	/// <summary>A live lever: null follows the day set, true/false forces the sun's shadow.</summary>
+	public static bool? SunShadowOverride;
+
+	/// <summary>Live lever: 2 or 4 cascades regardless of the sun's energy; null follows it.</summary>
+	public static int? SunSplitsOverride;
+
+	/// <summary>Below this energy the light is the moon and gets the night cascades.</summary>
+	public const float NightEnergy = 0.35f;
+
+	/// <summary>Shadow depth for the night cascades.</summary>
+	public const float NightFarDepth = 150.0f;
 
 	public static DirectionalLight3D BuildSun(LightingFrame frame)
 	{
@@ -82,7 +94,16 @@ public static class Engine_LevelLighting
 	{
 		light.LightColor = new Color(frame.SunColour[0], frame.SunColour[1], frame.SunColour[2]);
 		light.LightEnergy = frame.SunEnergy * SunScale;
-		light.ShadowEnabled = frame.SunShadow;
+		light.ShadowEnabled = SunShadowOverride ?? frame.SunShadow;
+
+		// CASCADES BY STRENGTH. The moon at energy 0.2 cast the same four cascades over the
+		// whole market as the noon sun: 5,000 draw calls of shadow for a light nobody can see
+		// the shadows of. Two splits over a shorter depth at night; the day keeps four.
+		int splits = SunSplitsOverride ?? (frame.SunEnergy < NightEnergy ? 2 : 4);
+		light.DirectionalShadowMode = splits <= 2
+			? DirectionalLight3D.ShadowMode.Parallel2Splits
+			: DirectionalLight3D.ShadowMode.Parallel4Splits;
+		light.DirectionalShadowMaxDistance = splits <= 2 ? NightFarDepth : SunFarDepth;
 
 		// IN WORLD SPACE, because the node sits under the level root's Scale(-1, 1, 1). A local
 		// transform inherits that mirror, and the sun's world aim came out with its X flipped —

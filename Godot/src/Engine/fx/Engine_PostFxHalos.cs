@@ -137,6 +137,7 @@ public partial class Engine_PostFxHalos : Node
 
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("postfxhalos");
 		_live.Clear();
 		lock (Gate)
 		{

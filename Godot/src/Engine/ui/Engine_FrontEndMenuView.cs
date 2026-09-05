@@ -307,15 +307,15 @@ public partial class Engine_FrontEndMenuView : Node3D
 	/// only — Options (id 18, `0x826D9D40`) TOP, real estate (id 28, `0x82998300`) BOTTOM — and the
 	/// front end calls neither (`sub_826E1F70`), so with no ScreenId both ends stay at 50%.
 	/// </summary>
-	private bool FadesTopEnd => ScreenId is { } id && id != RealEstateScreenId;
+	/// THE SCREEN STATES IT. This was two id comparisons here; it is `FadesTopEnd` /
+	/// `FadesBottomEnd` on the screen's template now, so a screen's fade is authored with the
+	/// rest of it rather than found in this file. With no ScreenId the front end fades neither
+	/// end, which is what `sub_826E1F70` does.
+	private bool FadesTopEnd =>
+		ScreenId is { } id && (Engine_UiTemplates.Screen(id)?.FadesTopEnd ?? true);
 
-	private bool FadesBottomEnd => ScreenId is { } id && id != OptionsScreenId;
-
-	/// <summary>Options — the one screen that fades only the TOP end.</summary>
-	private const uint OptionsScreenId = 18;
-
-	/// <summary>Real estate — the one screen that fades only the BOTTOM end.</summary>
-	private const uint RealEstateScreenId = 28;
+	private bool FadesBottomEnd =>
+		ScreenId is { } id && (Engine_UiTemplates.Screen(id)?.FadesBottomEnd ?? true);
 
 	/// <summary>Which entry each row node is currently drawing. Null means the node is free.</summary>
 	private readonly Engine_UiExpandableMenu.Item?[] _rowItem =
@@ -1060,6 +1060,7 @@ public partial class Engine_FrontEndMenuView : Node3D
 	/// </summary>
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("frontendmenuview");
 		if (!_sliding)
 		{
 			return;

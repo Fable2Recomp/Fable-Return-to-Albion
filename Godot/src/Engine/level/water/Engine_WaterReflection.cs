@@ -32,6 +32,19 @@ public sealed partial class Engine_WaterReflection : Node
 
     private Camera3D? _view;
 
+    /// <summary>Beyond this, a mirror is a few pixels of sky: leave its last frame.</summary>
+    private const float ReachMetres = 160f;
+
+    /// <summary>How far a reflection camera sees. Not the main camera's range — see its use.</summary>
+    private const float ReflectionFar = 80f;
+
+    private int _turn;
+    private int _frame;
+
+    /// <summary>Live levers: off, or one mirror every <see cref="Cadence"/> frames.</summary>
+    public static bool Enabled = true;
+    public static int Cadence = 3;
+
     /// <summary>
     /// Mounts one mirrored viewport per water body. `water` is the container `Engine_LevelScene`
     /// builds; `view` is the camera the frame is drawn from.
@@ -65,9 +78,15 @@ public sealed partial class Engine_WaterReflection : Node
                 // SHARED WORLD, which is the opposite of what the front end's viewport wants. The
                 // UI sets OwnWorld3D so its cameras cannot see the world; a reflection is nothing
                 // BUT the world, so it must render into the same World3D the main camera does.
-                RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
+                RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled,
                 RenderTargetClearMode = SubViewport.ClearMode.Always,
                 TransparentBg = false,
+
+                // NO POSITIONAL SHADOWS IN A REFLECTION. Each viewport re-renders the region's
+                // eight shadowed lamps for a 256-pixel mirror; measured 2026-09-04 in the
+                // market at night, three reflections drew 230M of the frame's 328M primitives
+                // and held the game at 8 fps with no water on screen.
+                PositionalShadowAtlasSize = 0,
                 GuiDisableInput = true,
                 HandleInputLocally = false,
                 Msaa3D = Viewport.Msaa.Disabled,
@@ -79,7 +98,14 @@ public sealed partial class Engine_WaterReflection : Node
                 // reflection, and every other body into it too.
                 CullMask = ~WaterLayer,
                 Near = view.Near,
-                Far = view.Far,
+
+                // A 256-PIXEL MIRROR DOES NOT NEED THE HORIZON. Inheriting the main camera's
+                // far plane made every reflection a full-range scene traversal: measured in the
+                // market, one 256x256 mirror drew 8.6M visible primitives and 26M shadow
+                // primitives, because the sun's cascades cover whatever the view frustum covers.
+                // Everything a player can actually make out in a rippling 256-pixel reflection
+                // is within a few dozen metres of the water.
+                Far = Mathf.Min(view.Far, ReflectionFar),
                 KeepAspect = Camera3D.KeepAspectEnum.Height,
                 Current = true,
 
@@ -111,28 +137,78 @@ public sealed partial class Engine_WaterReflection : Node
 
     public override void _Process(double delta)
     {
+    	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("waterreflection");
         if (_view is null || _bodies.Count == 0)
+        {
+            return;
+        }
+
+        if (!Enabled || (++_frame % System.Math.Max(Cadence, 1)) != 0)
         {
             return;
         }
 
         Transform3D eye = _view.GlobalTransform;
         float fov = _view.Fov;
+        Godot.Collections.Array<Plane> frustum = _view.GetFrustum();
 
-        foreach (Body body in _bodies)
+        // ONE MIRROR PER FRAME, and only one that is in view and in reach. Each is a full
+        // scene traversal with the sun's cascades; a region carries several bodies, and
+        // rendering them all every frame cost more than the frame itself. `Once` renders on
+        // the next frame and keeps the texture, so the others show their last mirror.
+        int candidates = 0;
+        Body? chosen = null;
+        for (int i = 0; i < _bodies.Count; ++i)
         {
-            // SKIP WHAT NOBODY CAN SEE. Each of these is a full scene traversal, and a region
-            // carries several. `Always` keeps the target live only while we leave it that way.
-            if (!body.Surface.IsVisibleInTree())
+            Body body = _bodies[(_turn + i) % _bodies.Count];
+            if (!body.Surface.IsVisibleInTree() || !InView(body.Surface, frustum, eye.Origin))
             {
-                body.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
                 continue;
             }
 
-            body.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
-            body.Camera.Fov = fov;
-            body.Camera.GlobalTransform = Mirror(eye, body.Height);
+            ++candidates;
+            chosen ??= body;
         }
+
+        _turn = candidates == 0 ? _turn : (_turn + 1) % _bodies.Count;
+        if (chosen is null)
+        {
+            return;
+        }
+
+        chosen.Camera.Fov = fov;
+        chosen.Camera.GlobalTransform = Mirror(eye, chosen.Height);
+        chosen.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Once;
+    }
+
+    /// <summary>Whether a surface's world bounds touch the frustum and lie within reach.</summary>
+    private static bool InView(MeshInstance3D surface, Godot.Collections.Array<Plane> frustum, Vector3 eye)
+    {
+        Aabb bounds = surface.GlobalTransform * surface.GetAabb();
+        Vector3 nearest = eye.Clamp(bounds.Position, bounds.End);
+        if (nearest.DistanceTo(eye) > ReachMetres)
+        {
+            return false;
+        }
+
+        foreach (Plane plane in frustum)
+        {
+            bool allOutside = true;
+            for (int c = 0; c < 8 && allOutside; ++c)
+            {
+                if (!plane.IsPointOver(bounds.GetEndpoint(c)))
+                {
+                    allOutside = false;
+                }
+            }
+
+            if (allOutside)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

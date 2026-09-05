@@ -169,8 +169,10 @@ public static class Engine_HeroCatalog
 
         Add(entry, adult);
         Add(entry, BestBody(models, gender, "morph_thin"));
-        Add(entry, ByLeafSide(models, "ch_eyecase_adult", left: true));
-        Add(entry, ByLeafSide(models, "ch_eyecase_adult", left: false));
+
+        // NO EYE CASES — the guest reads `RightEyeCaseModel`/`LeftEyeCaseModel` and discards
+        // them (`sub_825B5160` at 0x825B56E0/0x825B56F4, no store after either call), so it
+        // never draws one. See Engine_EntityModels.PartFields.
         Add(entry, Eye(models, left: true));
         Add(entry, Eye(models, left: false));
         return entry;

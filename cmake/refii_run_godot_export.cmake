@@ -6,6 +6,17 @@
 
 cmake_minimum_required(VERSION 3.24)
 
+# The modding SDK's pins. Defaulted here rather than required so an older caller still works.
+if(NOT DEFINED REFII_GODOT_FLOOR OR REFII_GODOT_FLOOR STREQUAL "")
+    set(REFII_GODOT_FLOOR "4.7")
+endif()
+if(NOT DEFINED REFII_GODOT_FLAVOUR OR REFII_GODOT_FLAVOUR STREQUAL "")
+    set(REFII_GODOT_FLAVOUR "mono")
+endif()
+if(NOT DEFINED REFII_DOTNET_MAJOR OR REFII_DOTNET_MAJOR STREQUAL "")
+    set(REFII_DOTNET_MAJOR "8")
+endif()
+
 foreach(_required PRESET WORK_DIR APP_NAME OUT_BINARY ZIP_PATH PROJECT_DIR STAGING_ROOT)
     if(NOT ${_required})
         message(FATAL_ERROR "refii_run_godot_export: ${_required} not set")
@@ -156,6 +167,49 @@ if(NOT EXISTS "${_app}/bin")
     message(FATAL_ERROR "Staging produced no bin/ in ${_app}; the package would not run.")
 endif()
 
+# THE MODDING EDITOR IS THIS PROJECT, so the package carries a copy of it.
+#
+# The plugins are C# inside the launcher's own assembly and lean on Refii.* throughout: there is
+# nothing to extract into a standalone add-on, and no reason to, because the project holds no
+# game assets. `sdk/` is that project, at the commit this binary was built from, so
+# HostBridge.ExpectedAbiVersion and the staged natives agree by construction.
+#
+# WITHOUT THE BUILD OUTPUT. `.godot/` is an editor cache, `build/` is the native staging tree
+# (per-arch, ~600 MB, and already staged into bin/), and an exported binary left in the project
+# would ship twice.
+message(STATUS "Staging the modding SDK -> ${_app}/sdk")
+file(REMOVE_RECURSE "${_app}/sdk")
+file(
+    COPY "${PROJECT_DIR}/"
+    DESTINATION "${_app}/sdk"
+    PATTERN ".godot" EXCLUDE
+    PATTERN "build" EXCLUDE
+    PATTERN "bin" EXCLUDE
+    PATTERN "obj" EXCLUDE
+    PATTERN "*.x86_64" EXCLUDE
+    PATTERN "*.exe" EXCLUDE
+    PATTERN "*.pck" EXCLUDE
+)
+
+if(NOT EXISTS "${_app}/sdk/project.godot")
+    message(FATAL_ERROR
+        "The modding SDK staged without a project.godot; the editor button would have nothing "
+        "to open. Expected it under ${PROJECT_DIR}.")
+endif()
+
+# ONLY A FLOOR IS PINNED. The plugins are plugins and a C# project has a lowest Godot it opens
+# in, not a highest, so the launcher fetches the latest stable at or above this. The build keeps
+# its own exact pin in refii_fetch_godot.cmake for reproducible exports; these are what a
+# player's machine needs.
+file(WRITE "${_app}/sdk/pins.json"
+"{\n"
+"  \"godotFloor\": \"${REFII_GODOT_FLOOR}\",\n"
+"  \"flavour\": \"${REFII_GODOT_FLAVOUR}\",\n"
+"  \"dotnetMajor\": \"${REFII_DOTNET_MAJOR}\",\n"
+"  \"checksumAsset\": \"SHA512-SUMS.txt\"\n"
+"}\n"
+)
+
 # One file to hand over. Zipped from the work directory so the archive contains the app
 # FOLDER rather than loose files — unzipping in Downloads should not scatter 1 GB of
 # libraries across it.
@@ -179,5 +233,5 @@ math(EXPR _zip_mb "${_zip_size} / 1048576")
 message(STATUS "")
 message(STATUS "Packaged: ${ZIP_PATH} (${_zip_mb} MB)")
 message(STATUS "  folder:  ${_app}")
-message(STATUS "  contents: ${OUT_BINARY}, bin/ (natives + recompile)")
+message(STATUS "  contents: ${OUT_BINARY}, bin/ (natives + recompile), sdk/ (modding editor)")
 message(STATUS "  the player's game, its recompiled code and refii.toml are created on first run")

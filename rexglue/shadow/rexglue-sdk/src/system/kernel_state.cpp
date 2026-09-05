@@ -987,12 +987,12 @@ void KernelState::CompleteOverlappedEx(uint32_t overlapped_ptr, X_RESULT result,
   if (event_handle) {
     auto ev = object_table()->LookupObject<XEvent>(event_handle);
     if (!ev) {
-      // REFII SHADOW: a DEFERRED completion can outlive the event. XamContentClose defers
-      // its overlapped (a pre_callback sleeps before completing), and the guest is free to
-      // close the event handle in the meantime - handle numbers recycle, so the lookup then
-      // legitimately finds nothing. The null path is already handled one line down; the old
-      // assert_not_null turned this benign ordering into a SIGABRT crash-to-desktop on every
-      // save load that hit the window. Nothing waits on an event it has already closed.
+      // REFII SHADOW: the old assert_not_null here was a SIGABRT crash-to-desktop. The
+      // lookup failing is NOT benign: it meant the event the guest is WAITING on was closed
+      // under it - the content manager used to force-release guest file handles on package
+      // close, the freed numbers recycled into this event, and the guest's own stale close
+      // then killed it (fixed in the content_manager.cpp shadow). If this fires again, a
+      // waiter is about to hang forever in XGetOverlappedResult; treat it as a bug.
       REXSYS_WARN(
           "CompleteOverlappedEx: event handle {:08X} no longer resolves; the guest closed it "
           "before the deferred completion ran - skipping the signal",

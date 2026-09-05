@@ -239,6 +239,16 @@ public sealed class Engine_UiSceneBuilder
 		_ => new Vector3(0f, 0f, 1f),
 	};
 
+	/// <summary>Meta name for a host scale factor a node keeps through every live transform.</summary>
+	public const string RemasterScaleMeta = "remaster_scale";
+
+	/// <summary>Scales a node by a factor the live transform will keep applying.</summary>
+	public static void RemasterScale(Node3D node, float factor)
+	{
+		node.SetMeta(RemasterScaleMeta, factor);
+		node.Scale *= factor;
+	}
+
 	public int ApplyLiveTransform(System.Collections.Generic.IReadOnlyList<float?[]?> transform)
 	{
 		int moved = 0;
@@ -291,6 +301,15 @@ public sealed class Engine_UiSceneBuilder
 					? column.Normalized() * length
 					: UnitAxis(axis) * length;
 				scaled = true;
+			}
+
+			// A REMASTER SCALE RIDES OVER THE GUEST'S: a node marked `remaster_scale` keeps
+			// that factor however the guest restates its columns (the menu box's option labels,
+			// authored at seven pixels).
+			if (scaled && node.HasMeta(RemasterScaleMeta))
+			{
+				float factor = (float)node.GetMeta(RemasterScaleMeta);
+				basis = basis.Scaled(new Vector3(factor, factor, factor));
 			}
 
 			// Rebuilt from the CURRENT basis — a live scale changes the pivot term too.
@@ -382,6 +401,11 @@ public sealed class Engine_UiSceneBuilder
 			: node.HasMeta("opacity") ? (float)node.GetMeta("opacity") : 1f;
 		float accumulated = parentAccumulated * own;
 		node.SetMeta("live_accum", accumulated);
+
+		if (Engine_UiTheme.SetIconOpacity(node, accumulated))
+		{
+			return;
+		}
 
 		if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material)
 		{
@@ -475,6 +499,7 @@ public sealed class Engine_UiSceneBuilder
 		}
 
 		node.SetMeta("object_id", n.ObjectId);
+		node.SetMeta("ordinal", n.Ordinal);
 
 		// A clone inherits its pivot and nothing restates it: `framecloning.dis main.1/main.2`
 		// call clone(source, self.parent) and set nothing, and the placement pass writes only
@@ -602,13 +627,12 @@ public sealed class Engine_UiSceneBuilder
 			if (TextureResolver?.Invoke(icon.Tag.Texture + ".tex") is not { } art)
 				continue;
 
-			var quad = new MeshInstance3D
+			var quad = Engine_UiTheme.MarkInlineIcon(new MeshInstance3D
 			{
-				Name = "InlineIcon",
 				Mesh = Engine_UiTheme.IconQuad(icon.Size),
 				Position = new Vector3(icon.TopLeft.X, icon.TopLeft.Y, 0f),
 				MaterialOverride = Engine_UiTheme.IconMaterial(art, _inheritedOpacity),
-			};
+			});
 			node.AddChild(quad);
 		}
 
@@ -670,6 +694,7 @@ public sealed class Engine_UiSceneBuilder
 		}
 
 		m.SetShaderParameter("colour", colour);
+		Engine_UiTheme.FadeInlineIcons(label, colour.A);
 		return true;
 	}
 
@@ -1176,9 +1201,20 @@ public sealed class Engine_UiSceneBuilder
 	public const float DesignWidth = 1280f;
 
 	/// <summary>
-	/// Sizes a canvas camera so the whole <see cref="DesignWidth"/> x <see cref="CanvasHeight"/>
-	/// box is visible. A deliberate step past the guest, whose `sub_822271A0` scales both axes
-	/// from screen height alone and so loses the sides on a narrow window; identical at 16:9.
+	/// The canvas scale. The console's is UI camera desc B (`sub_821A5F20`): fovY 10.2° at
+	/// y -4000 over a 1280x720 backbuffer, one unit = 360 / (4000 · tan 5.1°) = 1.00843 px, a
+	/// visible 16:9 canvas of 1269.3 units — and the in-game books are authored -636..+633, so
+	/// even at the console's scale the narrower right cover stops 1.7 px short of the edge,
+	/// hidden there by overscan. The remaster has no overscan: the scale is set so the +633
+	/// side meets the edge exactly (640 / 633), which crops 3 px of leather on the left.
+	/// </summary>
+	public const float PixelsPerUnit = 640f / 633f;
+
+	/// <summary>
+	/// Sizes a canvas camera to the console's scale: <see cref="CanvasHeight"/> units of height
+	/// at <see cref="PixelsPerUnit"/>, so the width the display shows follows its aspect. A
+	/// deliberate step past the guest's `sub_822271A0`, which scales both axes from screen
+	/// height alone and loses the sides on a narrow window; identical at 16:9.
 	/// </summary>
 	public static void FitCanvasCamera(Camera3D camera, Vector2 viewport)
 	{
@@ -1195,12 +1231,12 @@ public sealed class Engine_UiSceneBuilder
 		if (viewport.X / viewport.Y >= MinimumWidth / CanvasHeight)
 		{
 			camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
-			camera.Size = CanvasHeight;
+			camera.Size = CanvasHeight / PixelsPerUnit;
 		}
 		else
 		{
 			camera.KeepAspect = Camera3D.KeepAspectEnum.Width;
-			camera.Size = MinimumWidth;
+			camera.Size = MinimumWidth / PixelsPerUnit;
 		}
 	}
 

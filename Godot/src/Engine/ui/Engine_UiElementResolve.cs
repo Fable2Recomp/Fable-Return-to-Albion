@@ -112,6 +112,11 @@ public sealed class Engine_UiElementResolve
 	private readonly float[] _slidOpacity;
 	private int[] _slidesShown = System.Array.Empty<int>();
 
+	/// <summary>When each owner's stated slide last changed — the order the fold applies them in.</summary>
+	private int[] _slideStamp = System.Array.Empty<int>();
+
+	private int _slideStampCounter;
+
 	/// <summary>
 	/// Each element's position and scale after the live slide's own attribute writes. A consumer
 	/// driving cloned art must base on these, not the authored values — the clone came from a
@@ -161,7 +166,8 @@ public sealed class Engine_UiElementResolve
 	public void Apply(
 		IReadOnlyList<int>? slides,
 		IReadOnlyList<bool>? active,
-		IReadOnlyList<float?>? opacity)
+		IReadOnlyList<float?>? opacity,
+		IReadOnlyList<bool>? switchedOn = null)
 	{
 		UiNode[] nodes = _screen.Nodes;
 
@@ -189,7 +195,7 @@ public sealed class Engine_UiElementResolve
 				}
 
 				return null;
-			});
+			}, owner => owner >= 0 && owner < _slideStamp.Length ? _slideStamp[owner] : 0);
 
 			for (int i = 0; i < nodes.Length; ++i)
 			{
@@ -222,7 +228,13 @@ public sealed class Engine_UiElementResolve
 
 			bool own = active is null || i >= active.Count || active[i];
 			Active[i] = own;
-			Drawn[i] = own && _slid[i] && parentDraws;
+
+			// ONE BIT IN THE ENGINE. `goToSlide` writes an entry's active INTO the element's
+			// active bit, and a later `setActive` overwrites it — the logbook's fold slide
+			// names every subject page inactive and the guest then lit the chosen one. A host
+			// switch ON is that later write, so it is not gated by the slide's entry.
+			bool forced = switchedOn is not null && i < switchedOn.Count && switchedOn[i];
+			Drawn[i] = own && (_slid[i] || forced) && parentDraws;
 
 			bool fromGuest = opacity is not null && i < opacity.Count && opacity[i] is not null;
 			float stated = fromGuest
@@ -240,6 +252,7 @@ public sealed class Engine_UiElementResolve
 		if (_slidesShown.Length != slides.Count)
 		{
 			_slidesShown = new int[slides.Count];
+			_slideStamp = new int[slides.Count];
 			for (int i = 0; i < slides.Count; ++i)
 			{
 				_slidesShown[i] = slides[i];
@@ -254,6 +267,9 @@ public sealed class Engine_UiElementResolve
 			if (_slidesShown[i] != slides[i])
 			{
 				_slidesShown[i] = slides[i];
+				// A change within one sample is ordered by ordinal — the engine's own call
+				// order is unknowable there and parents-first is the only stable choice.
+				_slideStamp[i] = ++_slideStampCounter;
 				changed = true;
 			}
 		}

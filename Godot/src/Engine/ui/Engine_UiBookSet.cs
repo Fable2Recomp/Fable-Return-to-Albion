@@ -128,6 +128,12 @@ public sealed class Engine_UiBookSet
 		}
 
 		book.Visible = true;
+
+		// The guest's mirror is still fed whole: its transform carries the CHROME's layout (the
+		// screen is laid out once at open, before the highlight froze) and dropping it took the
+		// book frame off the screen. What IS stale in it — the per-element state of fields the
+		// HOST drives — is dropped inside the book, per channel, for exactly the elements the
+		// host writes (Opaqued / Positioned).
 		book.SetLive(
 			drawn.Texts, drawn.Textures, drawn.LastTransform,
 			drawn.Visible, drawn.Opacity, drawn.Slides);

@@ -98,7 +98,16 @@ public partial class Engine_GameAssets : Node
 			string failure = string.Empty;
 			try
 			{
-				mounted = BnkFileSystem.Mount(GameDirectory);
+				// THE MODS ARE PART OF THE MOUNT. Resolving them here, on the worker, keeps one
+				// answer to "what is installed": the tree the guest reads through
+				// `host_asset_reader.h` and the tree Godot's own loaders read are the same one,
+				// mods included, because there is only one of them.
+				var overlays = Refii.Mods.ModIndex.ResolveOverlays(
+					ModsRoot, out Refii.Mods.ModLoadOrder order);
+				mounted = BnkFileSystem.Mount(
+					GameDirectory,
+					overlays: Refii.Mods.ModIndex.ToMountOverlays(overlays));
+				ApplyModOrder(mounted, overlays, order);
 			}
 			catch (Exception exception)
 			{
@@ -132,6 +141,115 @@ public partial class Engine_GameAssets : Node
 				CallDeferred(nameof(ReportMounted), count);
 			}
 		});
+	}
+
+	/// <summary>
+	/// Installed mods, beside the player's game data.
+	///
+	/// By convention rather than by config: <c>&lt;app root&gt;/assets/mods</c>, the folder the
+	/// launcher's panel already writes to.
+	/// </summary>
+	public static string ModsRoot =>
+		Refii.Mods.ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_AppRoot.AssetsDirectory);
+
+	/// <summary>Where the fold's report is written for the panel and for a reader of a run.</summary>
+	public static string ResolvedReportPath =>
+		ProjectSettings.GlobalizePath("user://mods/" + Refii.Mods.ModIndex.ReportFilename);
+
+	/// <summary>
+	/// Applies pins, then states what the fold decided.
+	///
+	/// The report is DERIVED from the finished mount, so it describes what the game will
+	/// actually serve rather than what the load order intended.
+	/// </summary>
+	private static void ApplyModOrder(
+		BnkFileSystem mounted,
+		IReadOnlyList<Refii.Mods.ModOverlay> overlays,
+		Refii.Mods.ModLoadOrder order)
+	{
+		if (overlays.Count == 0)
+		{
+			return;
+		}
+
+		foreach ((string path, string owner) in order.Pins)
+		{
+			if (!mounted.Promote(path, owner))
+			{
+				GD.PushWarning(
+					$"[mods] pin '{path}' -> '{owner}' matched nothing; '{owner}' does not " +
+					"contribute that file.");
+			}
+		}
+
+		// ROWS AFTER PINS, because a row overlay edits whatever the file fold left in place: a
+		// mod that replaces `globals.gdb` outright and another that edits one of its rows compose
+		// in the obvious order.
+		var merges = Refii.Mods.ModRowOverlays.Apply(mounted, overlays);
+		foreach (Refii.Mods.RowMerge merge in merges)
+		{
+			GD.Print($"[mods] rows {Refii.Mods.ModRowOverlays.Describe(merge)}");
+			foreach (string refused in merge.Errors)
+			{
+				GD.PushWarning($"[mods] {refused}");
+			}
+		}
+
+		// IMAGES BEFORE THE REPORT, so a converted texture is attributed like everything else.
+		// After the row fold because both add virtual files and neither reads the other's.
+		foreach (Refii.Mods.ImageConversion conversion in
+			Refii.Mods.ModImageOverlays.Apply(mounted, overlays))
+		{
+			if (conversion.Ok)
+			{
+				GD.Print($"[mods] image {Refii.Mods.ModImageOverlays.Describe(conversion)}");
+			}
+			else
+			{
+				GD.PushWarning($"[mods] {Refii.Mods.ModImageOverlays.Describe(conversion)}");
+			}
+		}
+
+		// MODELS AFTER IMAGES, for the same reason images come after rows: each adds virtual
+		// files and none reads another's.
+		foreach (Refii.Mods.MeshConversion conversion in
+			Refii.Mods.ModMeshOverlays.Apply(mounted, overlays))
+		{
+			if (conversion.Ok)
+			{
+				GD.Print($"[mods] model {Refii.Mods.ModMeshOverlays.Describe(conversion)}");
+			}
+			else
+			{
+				GD.PushWarning($"[mods] {Refii.Mods.ModMeshOverlays.Describe(conversion)}");
+			}
+		}
+
+		var entries = Refii.Mods.ModIndex.Build(mounted);
+		if (!Refii.Mods.ModIndex.WriteReport(
+				ResolvedReportPath, Instance?.GameDirectory ?? string.Empty, overlays, entries,
+				merges, out string error))
+		{
+			GD.PushWarning($"[mods] the resolved index could not be written: {error}");
+		}
+
+		int overrides = 0;
+		int additions = 0;
+		foreach (Refii.Mods.ResolvedEntry entry in entries)
+		{
+			if (entry.Kind == Refii.Mods.ResolvedEntry.KindAddition)
+			{
+				additions++;
+			}
+			else
+			{
+				overrides++;
+			}
+		}
+
+		GD.Print(
+			$"[mods] {overlays.Count} enabled, {overrides} override(s), {additions} addition(s) " +
+			$"— see {ResolvedReportPath}");
 	}
 
 	private void ReportMounted(int fileCount)
@@ -578,7 +696,7 @@ public partial class Engine_GameAssets : Node
 			return -1;
 		}
 
-		return file.HasAlternates ? file.ReadAllBytes().LongLength : file.Size;
+		return file.HasAlternates && !file.IsOverride ? file.ReadAllBytes().LongLength : file.Size;
 	}
 
 	public bool DirectoryExists(string virtualDirectory) =>

@@ -19,7 +19,63 @@ public static class Engine_UiMenuSources
 		int EventType,
 		uint Id,
 		int Rating,
-		bool Committable);
+		bool Committable,
+		bool Ghosted = false,
+
+		/// <summary>
+		/// A HOST ACTION this row performs instead of dispatching to the guest — see
+		/// <see cref="Engine_UiScreenActions"/>. A data-area row carries its own, because the
+		/// operation is a property of the item and the screen, not of a template entry.
+		/// </summary>
+		string? Command = null,
+
+		/// <summary>
+		/// A GROUP this row belongs under, or empty to sit directly beneath the entry that
+		/// sourced it. The builder creates a header row per distinct group, in first-seen order,
+		/// and only for groups that actually have rows.
+		///
+		/// This is the guest's own shape: `sub_826CE8D0` files an item under the category name it
+		/// passes as `String4`, and the headers are spawned separately by `sub_826CF098`. A list
+		/// whose categories depend on what the player is carrying — the gift screen, whose
+		/// generic builder `sub_82430468` walks 27 slots and emits a header only where the count
+		/// is non-zero — cannot be authored as fixed entries, and this is how it is expressed.
+		/// </summary>
+		string Group = "",
+
+		/// <summary>The group header's Babel tag, used only when this row creates the header.</summary>
+		string GroupTag = "",
+
+		/// <summary>True for a header the builder synthesised for a group, not a real row.</summary>
+		bool IsHeader = false,
+
+		/// <summary>
+		/// The row draws with `g_Menu.EmphasisConst` set rather than plain — the guest's
+		/// `SetItemEmphasis` (`sub_823DFA98`, which states `String1 = name`, `Float1 = 1` and
+		/// runs `g_Menu:SetItemEmphasis()`).
+		///
+		/// The clothing screen uses it to mark the CURRENT state of a slot: `sub_829B3340`
+		/// emphasises the slot's `None` row when nothing is worn there, and clears that emphasis
+		/// (`sub_826D0EF8`) when something is.
+		/// </summary>
+		bool Emphasised = false,
+
+		/// <summary>
+		/// Whether this row is one of the things its category's header COUNTS.
+		///
+		/// The guest's count is not "how many rows are under this header" — it comes from a
+		/// separate array `sub_826CF6A8` fills by walking the inventory, so it counts INVENTORY
+		/// RECORDS. The clothing screen's `None` row is not one, and counting it put every
+		/// equipment header exactly one above the guest's (`Headgear (7)` against `(6)`).
+		/// </summary>
+		bool Counted = true,
+
+		/// <summary>
+		/// The row is a thing the player has not looked at yet — `*(item + 20) == 0`. A header
+		/// whose category holds any of these carries `&lt;exclamation.img&gt;` after its count, which
+		/// is `sub_826CF098`'s second suffix (`word_820AEFF0`, appended when the count pair's
+		/// `[1]` is above zero, and `[1]` counts exactly these).
+		/// </summary>
+		bool Unviewed = false);
 
 	/// <summary>A provider: given the source's argument, the rows it supplies.</summary>
 	public delegate IReadOnlyList<Row> Provider(string argument);
@@ -29,7 +85,83 @@ public static class Engine_UiMenuSources
 		{
 			["capture"] = CaptureRows,
 			["spawn"] = SpawnRows,
+			[Engine_UiAchievementPage.SourceName] = Engine_UiAchievementPage.Rows,
+
+			// THE FIRST DATA-AREA SOURCE. `capture` and `spawn` both watch the guest build its
+			// own menu; this one reads the hero's inventory and the shipped GDB directly, so the
+			// rows exist without a Gameface screen ever having been built.
+			[Engine_UiInventorySource.SourceName] = Engine_UiInventorySource.Rows,
+
+			// The weapons screen's two halves — one category, split by the item's WeaponType.
+			[Engine_UiInventorySource.WeaponsSource] = Engine_UiInventorySource.Weapons,
+
+			// The world map's two halves of one list — see Engine_UiQuestSource.
+			[Engine_UiQuestSource.QuestsSource] = Engine_UiQuestSource.Quests,
+			[Engine_UiQuestSource.JobsSource] = Engine_UiQuestSource.Jobs,
+			[Engine_UiQuestSource.RegionsSource] = Engine_UiQuestSource.Regions,
+			[Engine_UiQuestSource.SalesSource] = Engine_UiQuestSource.Sales,
+			[Engine_UiQuestSource.FamilySource] = Engine_UiQuestSource.Family,
+			[Engine_UiAbilitySource.SourceName] = Engine_UiAbilitySource.Rows,
+
+			// The shop's six groups — the capture's rows with the TRANSACTION stamped on.
+			[ShopSource] = ShopRows,
 		};
+
+	/// <summary>`shop:<group>` — the capture under that group, each row carrying its commit.</summary>
+	public const string ShopSource = "shop";
+
+	/// <summary>
+	/// The shop's rows are the capture's, with one thing added: WHICH TRANSACTION THE ROW IS.
+	///
+	/// A shop row's identity is a per-population TICKET, not a record hash — `sub_82880AC8`
+	/// files the item behind a monotonic number and `sub_82880BC0` is the only way back. The
+	/// ticket is what the guest puts in the row's `Float1|Float2`, which is exactly the pair
+	/// the spawn capture already reads as `Id`, so the row arrives holding everything the
+	/// commit needs.
+	///
+	/// Buy or sell is the GROUP, not the row: `sub_82994218` spawns into six parents whose
+	/// names begin `Buy` or `Sell`, and the guest's own UI codes are 30 Buy / 31 Sell against
+	/// the same split. So the command is stamped here rather than guessed at commit time.
+	/// </summary>
+	private static IReadOnlyList<Row> ShopRows(string group)
+	{
+		IReadOnlyList<Row> captured = CaptureRows(group);
+		if (captured.Count == 0)
+		{
+			return captured;
+		}
+
+		bool selling = group.StartsWith("Sell", System.StringComparison.OrdinalIgnoreCase);
+		var rows = new List<Row>(captured.Count);
+		foreach (Row row in captured)
+		{
+			// A row with no ticket cannot be committed — ticket 0 is never issued
+			// (`sub_82880AC8` pre-increments), so it stays a plain row rather than one whose
+			// commit would be dropped by the pump with a puzzling message.
+			rows.Add(row.Id == 0u
+				? row
+				: row with { Command = $"Shop:{(selling ? "sell" : "buy")}:{row.Id}" });
+		}
+
+		return rows;
+	}
+
+	/// <summary>
+	/// Rows of a STATED list (one read off the guest's own `g_Menu`) that unfold into a source's
+	/// rows here, keyed by population script and row name: the guest's row is a leaf whose action
+	/// the console's guide answered, and the host answers it in the book instead.
+	///
+	/// EMPTY, and that is not a gap. The logbook's `Achievements` row was the one entry; the
+	/// achievements are their own screen now (<see cref="Engine_UiAchievementPage.ScreenId"/>),
+	/// reached from their own pause tab, because there are far more of them than a fold inside
+	/// a screen the guest also drives can carry. The mechanism stays for the next stated leaf
+	/// whose answer the console owned.
+	/// </summary>
+	private static readonly Dictionary<(string Script, string Row), string> StatedFolders = new();
+
+	/// <summary>The source a stated row unfolds from, or null when it stays a leaf.</summary>
+	public static string? StatedFolderSource(string populationScript, string rowName) =>
+		StatedFolders.TryGetValue((populationScript, rowName), out string? source) ? source : null;
 
 	private static readonly HashSet<string> Unknown = new(System.StringComparer.OrdinalIgnoreCase);
 
@@ -73,9 +205,63 @@ public static class Engine_UiMenuSources
 	/// </summary>
 	public static uint StatedPresentation { get; set; }
 
+	/// <summary>"No screen" — a caller that does not know which screen it is sourcing for, and
+	/// the capture's own answer when the population belongs to no in-game screen (the front
+	/// end). Deliberately not 0: 0 is the pause root, a real screen id.</summary>
+	public const uint AnyScreen = 0xFFFFFFFFu;
+
+	/// <summary>
+	/// The screen the rows being sourced are FOR; set per sample by the owning drive and left
+	/// at <see cref="AnyScreen"/> by callers that have no screen (the front end).
+	///
+	/// THIS IS THE KEY THE CAPTURE WAS MISSING. `capture:Root` asks for every row spawned under
+	/// `Root`, and the capture is one list — so binding the real-estate screen that way put the
+	/// front end's `New Game`, `Continue`, `Language` and `Subtitles` above its own `Sell` and
+	/// `Adjust Prices`. The payload now records which screen the guest was populating
+	/// (`manager+4`, read at the boundary that clears the list), and a bound screen takes only
+	/// its own population.
+	/// </summary>
+	public static uint BoundScreen { get; set; } = AnyScreen;
+
+	private static readonly HashSet<(uint Bound, uint Capture)> ReportedMismatch = new();
+
+	/// <summary>
+	/// Whether the published capture is the population <see cref="BoundScreen"/> asked for.
+	///
+	/// CONSERVATIVE ON PURPOSE: a caller with no screen takes anything, which is what the front
+	/// end and every already-working `capture:&lt;own-name&gt;` binding rely on. Only a bound
+	/// screen reading a population that states a DIFFERENT screen is refused.
+	/// </summary>
+	private static bool CaptureIsOurs()
+	{
+		if (BoundScreen == AnyScreen)
+		{
+			return true;
+		}
+
+		uint captured = Engine_UiSource.Current.MenuScreenId();
+		if (captured == BoundScreen)
+		{
+			return true;
+		}
+
+		// Said once per pair: a screen that silently sources nothing is indistinguishable from
+		// one whose list is genuinely empty, and that ambiguity cost a whole turn once already.
+		if (ReportedMismatch.Add((BoundScreen, captured)))
+		{
+			Godot.GD.Print($"[menu-source] screen {BoundScreen} asked for the capture, which " +
+				$"states screen {(captured == AnyScreen ? "none (front end)" : captured.ToString())}" +
+				" — supplying nothing rather than another screen's rows.");
+		}
+
+		return false;
+	}
+
 	/// <summary>`capture`: the children the guest states for <paramref name="parent"/> (raw capture, no hold).</summary>
 	private static IReadOnlyList<Row> CaptureRows(string parent) =>
-		SpawnRows(parent, Engine_UiSource.Current.GetMenuRows(out _));
+		CaptureIsOurs()
+			? SpawnRows(parent, Engine_UiSource.Current.GetMenuRows(out _))
+			: None;
 
 	/// <summary>The last population seen whole, held across the partial window.</summary>
 	private static List<Engine_UiModel.MenuRow>? _wholeSpawn;
@@ -87,6 +273,11 @@ public static class Engine_UiMenuSources
 	/// </summary>
 	private static IReadOnlyList<Row> SpawnRows(string parent)
 	{
+		if (!CaptureIsOurs())
+		{
+			return None;
+		}
+
 		List<Engine_UiModel.MenuRow> spawned = SpawnedRows();
 
 		// `DeleteAllSpawnedMenuItems` clears the capture before every repopulation with no end

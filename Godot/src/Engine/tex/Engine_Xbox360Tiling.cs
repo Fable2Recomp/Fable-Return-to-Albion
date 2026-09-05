@@ -39,6 +39,60 @@ public static class Engine_Xbox360Tiling
 		return output;
 	}
 
+	/// <summary>
+	/// The exact inverse of <see cref="Untile"/>: linear blocks in, the console's tiled layout out.
+	///
+	/// A texture a mod authors has to be written the way a shipped one is, because the reader
+	/// untiles unconditionally — hand it linear data and every block lands somewhere else. The
+	/// two share <see cref="TiledBlockIndex"/> rather than deriving the address twice, so the
+	/// round trip is the same arithmetic run in both directions.
+	///
+	/// The result can be LARGER than the linear input: tiling addresses within a 32-block aligned
+	/// width, so the tail of the last macro-tile is padding no reader looks at. It is zero here,
+	/// where the console left whatever the allocator had.
+	/// </summary>
+	public static byte[] Tile(ReadOnlySpan<byte> linear, int widthBlocks, int heightBlocks,
+		int blockBytes)
+	{
+		if (widthBlocks <= 0 || heightBlocks <= 0)
+			return Array.Empty<byte>();
+		if (blockBytes != 1 && blockBytes != 2 && blockBytes != 4 && blockBytes != 8 && blockBytes != 16)
+			throw new ArgumentOutOfRangeException(nameof(blockBytes), blockBytes,
+				"block size must be a power of two from 1 to 16");
+
+		int log2BlockBytes = System.Numerics.BitOperations.TrailingZeroCount((uint)blockBytes);
+		int alignedWidth = (widthBlocks + 31) & ~31;
+
+		int size = 0;
+		for (int y = 0; y < heightBlocks; y++)
+		{
+			for (int x = 0; x < widthBlocks; x++)
+			{
+				int end = (TiledBlockIndex(x, y, alignedWidth, log2BlockBytes) + 1) * blockBytes;
+				if (end > size)
+					size = end;
+			}
+		}
+
+		var output = new byte[size];
+
+		for (int y = 0; y < heightBlocks; y++)
+		{
+			for (int x = 0; x < widthBlocks; x++)
+			{
+				int destination = TiledBlockIndex(x, y, alignedWidth, log2BlockBytes) * blockBytes;
+				int source = (y * widthBlocks + x) * blockBytes;
+
+				if (source + blockBytes > linear.Length)
+					continue;
+
+				linear.Slice(source, blockBytes).CopyTo(output.AsSpan(destination, blockBytes));
+			}
+		}
+
+		return output;
+	}
+
 	public static void SwapWords16(Span<byte> data)
 	{
 		for (int i = 0; i + 1 < data.Length; i += 2)

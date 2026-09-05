@@ -127,6 +127,12 @@ public sealed class Engine_HudLayout
         // → `sub_82307050`) writes their positions onto the elements, so they only move inside a
         // unit that follows every element beneath it.
         (ExpressionMeterName, "ExpressionMeter", null, 0.5f),
+
+        // The job chain multiplier (`Layer/JobMultiplier`), a whole unit with no binding: the
+        // guest's `SetJobMultiplierLevel` (`sub_823CAC20`) writes `<gold_img>%d` onto
+        // `Group.Text` and plays the root's slides (1 from off, 2 up, 3 down, 4/5 off) itself, so
+        // following its live element state is the whole job.
+        ("JobMultiplier", "JobMultiplier", null, 0.5f),
     };
 
     private readonly List<Piece> _pieces = new();
@@ -180,13 +186,15 @@ public sealed class Engine_HudLayout
             return new Vector2(DesignWidth, DesignHeight);
         }
 
-        // The same switch the camera makes — a disagreement insets every edge piece by the
-        // difference. Height is pinned down to the authored 4:3 box (960x720), width below that.
+        // The same switch and the same scale the camera uses — a disagreement insets every
+        // edge piece by the difference. Height is pinned down to the authored 4:3 box (960x720),
+        // width below that, and both at the console's 1.00843 px per unit.
         float aspect = window.X / window.Y;
-        return aspect >= Engine_UiSceneBuilder.MinimumWidth / DesignHeight
+        Vector2 extent = aspect >= Engine_UiSceneBuilder.MinimumWidth / DesignHeight
             ? new Vector2(DesignHeight * aspect, DesignHeight)
             : new Vector2(Engine_UiSceneBuilder.MinimumWidth,
                 Engine_UiSceneBuilder.MinimumWidth / aspect);
+        return extent / Engine_UiSceneBuilder.PixelsPerUnit;
     }
 
     /// <summary>
@@ -197,9 +205,27 @@ public sealed class Engine_HudLayout
     /// offset. The result is the starting arrangement and is meant to be edited.
     /// </summary>
     public static Engine_HudLayout FromBindings(
-        Engine_UiScreen screen, Engine_UiBindings bindings)
+        Engine_UiScreen screen, Engine_UiBindings bindings, Engine_UiWidescreen? wide = null)
     {
         var layout = new Engine_HudLayout();
+
+        // THE WIDE LAYOUT DECIDES THE ANCHORS. Every position in `hud.bgf` is the 4:3 one; the
+        // 16:9 arrangement rides beside it as the parent's `widescreenXPos/YPos/WidescreenXWidth`
+        // (`hud/widescreenadapter.lua`), and a piece anchored from the 4:3 position lands a
+        // third of the way in from the edge it belongs on — the dpad at 280 px for its authored
+        // -360 where the wide layout says -512. Substituted into the ancestor walk here, once,
+        // for every piece the layout derives.
+        _wide = null;
+        if (wide is { Count: > 0 })
+        {
+            _wide = new Dictionary<int, Engine_UiWidescreen.Override>();
+            foreach (Engine_UiWidescreen.Override over in wide.Overrides)
+            {
+                _wide[over.ParentOrdinal] = over;
+            }
+        }
+
+        layout.Wide = _wide;
 
         // Which bound elements are ANCESTORS of another bound element.
         var bound = new HashSet<int>();
@@ -259,7 +285,7 @@ public sealed class Engine_HudLayout
 
             UiNode at = screen.Nodes[binding.ElementOrdinal];
             int group = at.Parent?.Ordinal ?? -1;
-            Vector2 where = Engine_UiElementResolve.CanvasPosition(at);
+            Vector2 where = CanvasPositionWide(at);
 
             groupSum[group] = groupSum.TryGetValue(group, out Vector2 sum) ? sum + where : where;
             groupCount[group] = groupCount.TryGetValue(group, out int seen) ? seen + 1 : 1;
@@ -299,7 +325,7 @@ public sealed class Engine_HudLayout
                 continue;
             }
 
-            Vector2 canvas = Engine_UiElementResolve.CanvasPosition(node);
+            Vector2 canvas = CanvasPositionWide(node);
             Anchor anchor = groupAnchor.TryGetValue(node.Parent?.Ordinal ?? -1, out Anchor shared)
                 ? shared
                 : SnapAnchor(canvas);
@@ -360,7 +386,7 @@ public sealed class Engine_HudLayout
                     continue;
                 }
 
-                Vector2 canvas = Engine_UiElementResolve.CanvasPosition(node);
+                Vector2 canvas = CanvasPositionWide(node);
                 Anchor anchor = fixedAnchor ?? SnapAnchor(canvas);
                 string id = $"group.{label}.{name}";
                 Vector2 offset = OffsetFrom(anchor, canvas);
@@ -449,8 +475,10 @@ public sealed class Engine_HudLayout
         {
             // The quest banner's two lines, which the file parks together at the group origin.
 
-            // The subtitle line, likewise — its box states a place, the text inside it does not.
-            ["text.Subtitles.Text"] = (Anchor.BottomCentre, new Vector2(0f, -34f)),
+            // The subtitle line is NOT here: the guest writes its position as an absolute
+            // presentation position onto the Text element itself (`sub_823FC8F0`, per line), so
+            // it is placed by the stated delta alone — an anchor here was added on top of it and
+            // put the line off the bottom of the screen.
         };
 
     /// <summary>
@@ -548,10 +576,58 @@ public sealed class Engine_HudLayout
 
         for (UiNode? up = screen.Nodes[element].Parent; up is not null; up = up.Parent)
         {
-            scale *= new Vector2(up.ScaleX == 0f ? 1f : up.ScaleX, up.ScaleY == 0f ? 1f : up.ScaleY);
+            float sx = up.ScaleX;
+            if (_wide is not null && _wide.TryGetValue(up.Ordinal, out Engine_UiWidescreen.Override over) &&
+                over.ScaleX is { } wideX)
+            {
+                sx = wideX;
+            }
+
+            scale *= new Vector2(sx == 0f ? 1f : sx, up.ScaleY == 0f ? 1f : up.ScaleY);
         }
 
         return scale;
+    }
+
+    /// <summary>The wide layout's overrides by parent ordinal, for the build in progress and the layout it made.</summary>
+    [System.ThreadStatic]
+    private static Dictionary<int, Engine_UiWidescreen.Override>? _wide;
+
+    public IReadOnlyDictionary<int, Engine_UiWidescreen.Override>? Wide { get; private set; }
+
+    /// <summary>
+    /// <see cref="Engine_UiElementResolve.CanvasPosition"/> with each ancestor's position and
+    /// x-scale taken from the wide layout where it states one — absolute values, per attribute,
+    /// exactly as `widescreenadapter.lua` writes them onto the parent.
+    /// </summary>
+    private static Vector2 CanvasPositionWide(UiNode node)
+    {
+        Vector2 at = Local(node);
+        for (UiNode? up = node.Parent; up is not null; up = up.Parent)
+        {
+            Vector2 local = Local(up);
+            float sx = up.ScaleX;
+            if (_wide is not null && _wide.TryGetValue(up.Ordinal, out Engine_UiWidescreen.Override over) &&
+                over.ScaleX is { } wideX)
+            {
+                sx = wideX;
+            }
+
+            at = new Vector2(local.X + (sx * at.X), local.Y + (up.ScaleY * at.Y));
+        }
+
+        return at;
+
+        static Vector2 Local(UiNode n)
+        {
+            var local = new Vector2(n.PositionX, n.PositionY);
+            if (_wide is not null && _wide.TryGetValue(n.Ordinal, out Engine_UiWidescreen.Override over))
+            {
+                local = new Vector2(over.X ?? local.X, over.Y ?? local.Y);
+            }
+
+            return local;
+        }
     }
 
     /// <summary>Whether <paramref name="ancestor"/> is at or above <paramref name="element"/>.</summary>

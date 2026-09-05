@@ -65,14 +65,40 @@ public static class Engine_MdlComposite
 
         var pending =
             new List<(Godot.Collections.Array Arrays, Mesh.PrimitiveType Primitive,
-                string Name, Material Material, string? Bare)>();
+                string Name, Material Material, string? Bare, bool? Left)>();
 
         var partPaths = new List<string>();
         var partSpans = new List<int>();
         int partVertexBase = 0;
 
+        // EYES ARE POSITIONAL, NOT NAMED. The guest hangs the model at comp7+0x18 on
+        // `Shadow_R_Eye` and the one at +0x28 on `Shadow_L_Eye`; with `BodgeEyes` the left
+        // slot HOLDS THE RIGHT MODEL, so both eyeballs are the same `.mdl` and its `_r` suffix
+        // would put both on the right bone and leave the left socket empty. The bridge appends
+        // them right then left; when two eye parts share a path the side comes from that order.
+        var eyeSides = new Dictionary<int, bool>();  // part index -> left
+        {
+            var eyeParts = new List<int>();
+            for (int i = 0; i < parts.Count; i++)
+            {
+                if (IsEyePart(parts[i]))
+                {
+                    eyeParts.Add(i);
+                }
+            }
+
+            if (eyeParts.Count == 2 && string.Equals(
+                    parts[eyeParts[0]], parts[eyeParts[1]], StringComparison.OrdinalIgnoreCase))
+            {
+                eyeSides[eyeParts[0]] = false;
+                eyeSides[eyeParts[1]] = true;
+            }
+        }
+
+        int partIndex = -1;
         foreach (string path in parts)
         {
+            ++partIndex;
             if (path.Length == 0 || resolve(path) is not ArrayMesh part ||
                 part.GetSurfaceCount() == 0)
             {
@@ -148,16 +174,20 @@ public static class Engine_MdlComposite
                     part.SurfaceGetPrimitiveType(surface),
                     part.SurfaceGetName(surface),
                     part.SurfaceGetMaterial(surface),
-                    skinned ? null : path));
+                    skinned ? null : path,
+                    eyeSides.TryGetValue(partIndex, out bool left) ? left : null));
             }
         }
 
         foreach ((Godot.Collections.Array arrays, Mesh.PrimitiveType primitive, string name,
-                  Material material, string? bare) in pending)
+                  Material material, string? bare, bool? forcedLeft) in pending)
         {
-            if (bare is not null)
+            if (bare is not null && !Anchor(arrays, boneIndex, parents, rest, bare, forcedLeft))
             {
-                Anchor(arrays, boneIndex, parents, rest, bare);
+                // AN EYE WITH NO EYE BONE IS NOT DRAWN. The guest creates no eye instance when
+                // `Shadow_L_Eye`/`Shadow_R_Eye` is missing from the rig (`sub_82209480` bails
+                // at 0x8220A0BC/0x8220A0C8); anchored to bone 0 it would sit at the feet.
+                continue;
             }
 
             mesh.AddSurfaceFromArrays(primitive, arrays);
@@ -191,33 +221,55 @@ public static class Engine_MdlComposite
         return mesh;
     }
 
+    /// <summary>
+    /// The bones an eye mesh can hang from, best first.
+    ///
+    /// `shadow_l_eye` / `shadow_r_eye` ARE THE NAMES THE GUEST USES. It resolves them by name on
+    /// component 6 (`sub_82209480` at 0x8220A078/0x8220A094, the globals dword_8349C248 and
+    /// dword_8349C24C), and creates no eye instance at all when either is missing — `Shadow_` is
+    /// this rig's prefix for every bone, not a creature namespace. Without them in this list an
+    /// eye part matched no bone and was anchored to bone 0, which puts the eyeballs at the
+    /// character's origin.
+    /// </summary>
     private static readonly string[] LeftEyeBones =
-        { "l_eye", "left_eye", "lefteye", "character_focal_eye_left", "focal_eye_dummyobject1" };
+        { "shadow_l_eye", "l_eye", "left_eye", "lefteye", "character_focal_eye_left",
+          "focal_eye_dummyobject1" };
 
     private static readonly string[] RightEyeBones =
-        { "r_eye", "right_eye", "righteye", "character_focal_eye_right", "focal_eye_dummyobject" };
+        { "shadow_r_eye", "r_eye", "right_eye", "righteye", "character_focal_eye_right",
+          "focal_eye_dummyobject" };
 
-    private static void Anchor(
+    /// <summary>
+    /// Binds an unskinned part rigidly to one bone. False means the part must not be drawn:
+    /// it is an eye and the rig has no eye bone to hang it on.
+    /// </summary>
+    private static bool Anchor(
         Godot.Collections.Array arrays,
         Dictionary<string, int> boneIndex,
         IReadOnlyList<int> parents,
         IReadOnlyList<float> rest,
-        string path)
+        string path,
+        bool? forcedLeft = null)
     {
         if (arrays.Count <= (int)Mesh.ArrayType.Vertex ||
             arrays[(int)Mesh.ArrayType.Vertex].VariantType != Variant.Type.PackedVector3Array)
         {
-            return;
+            return true;
         }
 
         Vector3[] vertices = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
         if (vertices.Length == 0 || boneIndex.Count == 0)
         {
-            return;
+            return true;
         }
 
         int anchor = 0;
-        if (TryEyeBone(boneIndex, path, out int eye))
+        if (IsEyePart(path) && !TryEyeBone(boneIndex, path, out _, forcedLeft))
+        {
+            return false;
+        }
+
+        if (TryEyeBone(boneIndex, path, out int eye, forcedLeft))
         {
             anchor = eye;
 
@@ -256,6 +308,22 @@ public static class Engine_MdlComposite
 
         arrays[(int)Mesh.ArrayType.Bones] = bones;
         arrays[(int)Mesh.ArrayType.Weights] = weights;
+        return true;
+    }
+
+    /// <summary>An eye model by its file name: the leaf names a side, and `eye` without `eyecase`.</summary>
+    private static bool IsEyePart(string path)
+    {
+        string leaf = path.Replace('\\', '/').ToLowerInvariant();
+        int slash = leaf.LastIndexOf('/');
+        if (slash >= 0)
+        {
+            leaf = leaf[(slash + 1)..];
+        }
+
+        return leaf.Contains("eye", StringComparison.Ordinal) &&
+            !leaf.Contains("eyecase", StringComparison.Ordinal) &&
+            !leaf.Contains("eyelash", StringComparison.Ordinal);
     }
 
     private static Vector3 GlobalOrigin(
@@ -301,7 +369,7 @@ public static class Engine_MdlComposite
     private static Vector3 ToMeshSpace(Vector3 origin) => new(origin.X, origin.Z, -origin.Y);
 
     private static bool TryEyeBone(
-        Dictionary<string, int> boneIndex, string path, out int bone)
+        Dictionary<string, int> boneIndex, string path, out int bone, bool? forcedLeft = null)
     {
         bone = 0;
 
@@ -317,13 +385,14 @@ public static class Engine_MdlComposite
             return false;
         }
 
-        bool left = leaf.Contains("left", StringComparison.Ordinal) ||
+        bool left = forcedLeft ?? (leaf.Contains("left", StringComparison.Ordinal) ||
             leaf.EndsWith("_l", StringComparison.Ordinal) ||
-            leaf.Contains("_l.", StringComparison.Ordinal);
+            leaf.Contains("_l.", StringComparison.Ordinal));
 
-        bool right = leaf.Contains("right", StringComparison.Ordinal) ||
+        bool right = forcedLeft.HasValue ? !forcedLeft.Value :
+            (leaf.Contains("right", StringComparison.Ordinal) ||
             leaf.EndsWith("_r", StringComparison.Ordinal) ||
-            leaf.Contains("_r.", StringComparison.Ordinal);
+            leaf.Contains("_r.", StringComparison.Ordinal));
 
         if (!left && !right)
         {

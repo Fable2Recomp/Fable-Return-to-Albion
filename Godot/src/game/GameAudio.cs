@@ -175,6 +175,7 @@ public partial class GameAudio : Node
 
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gameaudio");
 		if (_output is null || !_output.IsReady || _floatsPerFrame == 0)
 		{
 			return;

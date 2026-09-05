@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 namespace Refii.Ui;
@@ -33,6 +34,13 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	/// `rex_lhResourceName_ComputeHash` computes). Written into the guest's stated-texture array.
 	/// </summary>
 	public System.Collections.Generic.IReadOnlyDictionary<string, uint>? HostTextures { get; set; }
+
+	/// <summary>
+	/// Elements the host switches ON or OFF outright — a subject page the guest would have
+	/// selected had it known the row, and the pages it would have shut. Applied after
+	/// <see cref="HostValues"/> lights its fields, so a page can be revealed as well as filled.
+	/// </summary>
+	public System.Collections.Generic.IReadOnlyDictionary<string, bool>? HostActive { get; set; }
 
 	/// <summary>
 	/// Elements the host places outright, keyed by document path, as a canvas position — e.g. a
@@ -111,6 +119,9 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 
 	private Node3D? _pages;
+
+	/// <summary>The guest's slide sample last fed, for the page-stack probe.</summary>
+	private IReadOnlyList<int>? _lastSlides;
 
 	/// <summary>The screen template naming this book's parts (<see cref="Engine_UiTemplates"/>, screen 0 by default).</summary>
 	public Engine_UiScreenTemplate? Template { get; set; }
@@ -271,8 +282,9 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 				Node = mesh,
 				Authored = Document.Nodes[ordinal].Text?.Tag ?? string.Empty,
 
-				// The guest re-states the tag on some elements and the Babel string on others; both
-				// forms count as the placeholder.
+				// The FILE's own resolved caption — the fallback for any element the host does
+				// not state. A document whose tag and display are the same string never
+				// resolved through Babel, and that is what marks a placeholder.
 				AuthoredDisplay = Document.Nodes[ordinal].Text?.Display ?? string.Empty,
 			});
 		}
@@ -342,11 +354,18 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		}
 
 		// One resolve for the whole document: position, visibility, opacity.
-		_resolve ??= new Engine_UiElementResolve(Document);
-		_resolve.Apply(Slid(slides), Activated(active), opacity);
+		if (_resolve is null)
+		{
+			_resolve = new Engine_UiElementResolve(Document);
+			RegisterLive();
+		}
+		_lastSlides = slides;
+		_resolve.Apply(Slid(slides), Activated(active), Opaqued(opacity), SwitchedOn());
 
 		// Draw gate, accumulated opacity and stated art for every node, in one pass.
-		_binding.ResolveTexture = ResolveTexture;
+		// Host-supplied textures first (a registry key), the guest's path hashes otherwise.
+		_binding.ResolveTexture = hash =>
+			Engine_UiHostTextures.TryGet(hash) ?? ResolveTexture?.Invoke(hash);
 		_binding.Apply(_resolve, Textured(textures), Positioned(transform));
 
 		// The page arranges every frame (`NeedToUpdateState` is set once in `Initialize`, page.dis
@@ -364,7 +383,21 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		{
 			// Frames re-measure on the text edge (`TilStopUpdating` cadence).
 			DriveFrames();
+
+			// And the masks re-paint: a field re-meshed after the build's one-time mask pass
+			// carries no `clip_rect`, so its glyphs drew outside the window — the region page's
+			// amounts leaking under the mask while their captions clipped.
+			if (Document is not null)
+			{
+				_masked = _binding.ApplyMasks(Document);
+			}
 		}
+
+		// The template-declared reflow and scroll region, after the binding and the text pass
+		// have both stood everything at its stated place — these move nodes directly, exactly as
+		// the page widgets above do, so per frame the deltas start from authored, never compound.
+		FlowMeasuredText();
+		DriveScrollRegion();
 
 		ReportHostChannels();
 		ReportDark();
@@ -484,9 +517,23 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 					(inside ? "CONTAINS it" : "EXCLUDES it");
 			}
 
+			// The guest's stated slide for the page and where its Contents resolved to — the
+			// two numbers that say whether a page the guest never pushed is parked or over the
+			// one that is up.
+			int slide = ordinal >= 0 && _lastSlides is not null && ordinal < _lastSlides.Count
+				? _lastSlides[ordinal]
+				: -1;
+			int contentsOrdinal = page.GetNodeOrNull<Node3D>("Contents") is { } contents
+				? _binding.OrdinalOf(contents)
+				: -1;
+			float contentsX = contentsOrdinal >= 0 && contentsOrdinal < _resolve.SlidPosition.Length
+				? _resolve.SlidPosition[contentsOrdinal].X
+				: float.NaN;
+
 			key.Append(page.Name).Append(drawn ? '+' : '-')
 				.Append(opacity.ToString("0.00")).Append(own.ToString("0.000"))
-				.Append(stated ? 'g' : 'f').Append(clip).Append(';');
+				.Append(stated ? 'g' : 'f').Append(clip)
+				.Append(" s").Append(slide).Append(" cx").Append(contentsX.ToString("0")).Append(';');
 
 			line.Append(line.Length == 0 ? string.Empty : "  ")
 				.Append(shows ? '*' : ' ')
@@ -499,7 +546,9 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 				.Append(" at=(").Append(at.X.ToString("0")).Append(',')
 				.Append(at.Y.ToString("0")).Append(',')
 				.Append(at.Z.ToString("0")).Append(") ")
-				.Append(clip);
+				.Append(clip)
+				.Append(" slide=").Append(slide)
+				.Append(" contents.x=").Append(contentsX.ToString("0"));
 		}
 
 		// The change key excludes the position: the scrolling backdrop moves every frame.
@@ -558,8 +607,9 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	}
 
 	/// <summary>
-	/// The guest's stated textures with the host's overrides written over them. Copy-on-write: the
-	/// array belongs to the caller and is reused across books.
+	/// The guest's stated textures with the host's overrides written over them, on EVERY bearer
+	/// of the key (see <see cref="OrdinalsForPath"/>). Copy-on-write: the array belongs to the
+	/// caller and is reused across books.
 	/// </summary>
 	private uint[]? Textured(uint[]? stated)
 	{
@@ -571,18 +621,21 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		uint[]? patched = null;
 		foreach (var pair in HostTextures)
 		{
-			if (pair.Value == 0u || OrdinalForPath(pair.Key) is not { } ordinal)
+			if (pair.Value == 0u)
 			{
 				continue;
 			}
 
-			patched ??= stated is null
-				? new uint[Document.Nodes.Length]
-				: (uint[])stated.Clone();
-
-			if (ordinal < patched.Length)
+			foreach (int ordinal in OrdinalsForPath(pair.Key))
 			{
-				patched[ordinal] = pair.Value;
+				patched ??= stated is null
+					? new uint[Document.Nodes.Length]
+					: (uint[])stated.Clone();
+
+				if (ordinal >= 0 && ordinal < patched.Length)
+				{
+					patched[ordinal] = pair.Value;
+				}
 			}
 		}
 
@@ -590,52 +643,145 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	}
 
 	/// <summary>
-	/// The guest's stated transforms with the host's placements written over them. Copy-on-write.
-	/// An entry is six slots (x, y, z, three scales); only the position terms are touched.
+	/// The guest's stated transforms with the host's placements written over them, on every
+	/// bearer. Copy-on-write. An entry is six slots (x, y, z, three scales).
 	/// </summary>
 	private IReadOnlyList<float?[]?>? Positioned(IReadOnlyList<float?[]?>? stated)
 	{
-		if (HostPositions is null || HostPositions.Count == 0 || Document is null)
+		bool values = HostValues is { Count: > 0 };
+		bool textures = HostTextures is { Count: > 0 };
+		bool positions = HostPositions is { Count: > 0 };
+		bool slid = HostSlides is { Count: > 0 };
+		if ((!values && !textures && !positions && !slid) || Document is null)
 		{
 			return stated;
 		}
 
 		List<float?[]?>? patched = null;
-		foreach (var pair in HostPositions)
+
+		// GODOT OWNS THE POSE OF ANYTHING GODOT WRITES — the transform twin of the opacity rule
+		// in Opaqued. The guest's stated transform for a field it used to fill is frozen at its
+		// stuck highlight, and it moved the item picture to a different corner each run;
+		// dropping the whole entry lets the AUTHORED pose (plus any host position) stand. The
+		// chrome's transforms are untouched: the guest laid the screen out once at open and
+		// those are real.
+		void DropEntry(int ordinal)
 		{
-			if (OrdinalForPath(pair.Key) is not { } ordinal)
+			if (ordinal < 0 || ordinal >= (stated?.Count ?? 0) || stated![ordinal] is null)
 			{
-				continue;
+				return;
 			}
 
-			if (patched is null)
+			patched ??= new List<float?[]?>(stated);
+			patched[ordinal] = null;
+		}
+
+		if (values)
+		{
+			foreach (var pair in HostValues!)
 			{
-				patched = new List<float?[]?>(Document.Nodes.Length);
-				for (int i = 0; i < Document.Nodes.Length; ++i)
+				if (pair.Value.Length == 0)
 				{
-					patched.Add(stated is not null && i < stated.Count ? stated[i] : null);
+					continue;
+				}
+
+				foreach (int ordinal in OrdinalsForPath(pair.Key))
+				{
+					DropEntry(ordinal);
 				}
 			}
+		}
 
-			if (ordinal < 0 || ordinal >= patched.Count)
+		if (textures)
+		{
+			foreach (var pair in HostTextures!)
 			{
-				continue;
+				if (pair.Value == 0u)
+				{
+					continue;
+				}
+
+				foreach (int ordinal in OrdinalsForPath(pair.Key))
+				{
+					DropEntry(ordinal);
+				}
+			}
+		}
+
+		// A HOST SLIDE OWNS ITS SUBTREE'S SCALE, for the same reason it owns the opacity (see
+		// Opaqued): `Engine_UiCloneBinding.ApplyTransform` starts from the slide's `SlidScale`
+		// but the guest's stated transform overrides `scale.x/y/z` whenever it states them, and
+		// the guest's is FROZEN at its stuck highlight — so the abilities orbs never grew for
+		// the lit discipline (On is scale 0.8, Off 0.6). Nulling the guest's stated scale
+		// (transform slots 3..5) for exactly the elements the chosen slide writes a `scale.*` command on lets
+		// the slide's own scale decide;
+		// position (0..2) is left alone, so a host that also places the element still wins.
+		void DropScale(int ordinal)
+		{
+			if (ordinal < 0 || ordinal >= (stated?.Count ?? 0) || stated![ordinal] is not { } entry)
+			{
+				return;
 			}
 
-			float?[] slots = patched[ordinal] is { } existing
-				? (float?[])existing.Clone()
-				: new float?[6];
-			if (slots.Length < 6)
+			if (entry.Length <= 3 || (entry[3] is null && entry[4] is null && entry[5] is null))
 			{
-				var widened = new float?[6];
-				CopyInto(slots, widened);
-				slots = widened;
+				return;
 			}
 
-			slots[0] = pair.Value.X;
-			slots[1] = pair.Value.Y;
-			slots[2] = pair.Value.Z;
+			patched ??= new List<float?[]?>(stated);
+			float?[] slots = (float?[])entry.Clone();
+			slots[3] = null;
+			slots[4] = null;
+			slots[5] = null;
 			patched[ordinal] = slots;
+		}
+
+		// Only the elements the chosen slide writes a `scale.*` command on — see the opacity
+		// pass. A slide that scales nothing (the page fold) leaves every element's guest scale
+		// alone, which is what the item detail pages need.
+		if (slid)
+		{
+			ForEachSlideCommand(ScaleId, DropScale);
+		}
+
+		if (!positions)
+		{
+			return patched ?? stated;
+		}
+
+		foreach (var pair in HostPositions!)
+		{
+			foreach (int ordinal in OrdinalsForPath(pair.Key))
+			{
+				if (patched is null)
+				{
+					patched = new List<float?[]?>(Document.Nodes.Length);
+					for (int i = 0; i < Document.Nodes.Length; ++i)
+					{
+						patched.Add(stated is not null && i < stated.Count ? stated[i] : null);
+					}
+				}
+
+				if (ordinal < 0 || ordinal >= patched.Count)
+				{
+					continue;
+				}
+
+				float?[] slots = patched[ordinal] is { } existing
+					? (float?[])existing.Clone()
+					: new float?[6];
+				if (slots.Length < 6)
+				{
+					var widened = new float?[6];
+					CopyInto(slots, widened);
+					slots = widened;
+				}
+
+				slots[0] = pair.Value.X;
+				slots[1] = pair.Value.Y;
+				slots[2] = pair.Value.Z;
+				patched[ordinal] = slots;
+			}
 		}
 
 		return patched ?? stated;
@@ -649,7 +795,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		}
 	}
 
-	/// <summary>The guest's stated slides with the host's switches written over them. Copy-on-write.</summary>
+	/// <summary>The guest's stated slides with the host's switches written over them, on every bearer. Copy-on-write.</summary>
 	private IReadOnlyList<int>? Slid(IReadOnlyList<int>? stated)
 	{
 		if (HostSlides is null || HostSlides.Count == 0 || Document is null)
@@ -660,23 +806,26 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		List<int>? patched = null;
 		foreach (var pair in HostSlides)
 		{
-			if (pair.Value <= 0 || OrdinalForPath(pair.Key) is not { } ordinal)
+			if (pair.Value <= 0)
 			{
 				continue;
 			}
 
-			if (patched is null)
+			foreach (int ordinal in OrdinalsForPath(pair.Key))
 			{
-				patched = new List<int>(Document.Nodes.Length);
-				for (int i = 0; i < Document.Nodes.Length; ++i)
+				if (patched is null)
 				{
-					patched.Add(stated is not null && i < stated.Count ? stated[i] : 0);
+					patched = new List<int>(Document.Nodes.Length);
+					for (int i = 0; i < Document.Nodes.Length; ++i)
+					{
+						patched.Add(stated is not null && i < stated.Count ? stated[i] : 0);
+					}
 				}
-			}
 
-			if (ordinal >= 0 && ordinal < patched.Count)
-			{
-				patched[ordinal] = pair.Value;
+				if (ordinal >= 0 && ordinal < patched.Count)
+				{
+					patched[ordinal] = pair.Value;
+				}
 			}
 		}
 
@@ -684,25 +833,24 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	}
 
 	/// <summary>
-	/// The guest's stated draw gates with every host-supplied field switched on. Cannot reveal a
-	/// shut page: `Drawn[i]` is `parentDraws &amp;&amp; active[i]`.
+	/// The guest's stated draw gates with the host's fields lit, its switches applied and its
+	/// slides' own entry actives stated. Cannot reveal a shut page: `Drawn[i]` is
+	/// `parentDraws &amp;&amp; active[i]`.
 	/// </summary>
 	private IReadOnlyList<bool>? Activated(IReadOnlyList<bool>? stated)
 	{
-		if (HostValues is null || HostValues.Count == 0 || Document is null)
+		bool values = HostValues is { Count: > 0 };
+		bool switches = HostActive is { Count: > 0 };
+		bool slid = HostSlides is { Count: > 0 };
+		if ((!values && !switches && !slid) || Document is null)
 		{
 			return stated;
 		}
 
 		List<bool>? patched = null;
-		foreach (var pair in HostValues)
-		{
-			// An empty value is not a statement; do not light it.
-			if (pair.Value.Length == 0 || OrdinalForPath(pair.Key) is not { } ordinal)
-			{
-				continue;
-			}
 
+		List<bool> Patched()
+		{
 			if (patched is null)
 			{
 				patched = new List<bool>(Document.Nodes.Length);
@@ -712,36 +860,362 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 				}
 			}
 
-			if (ordinal >= 0 && ordinal < patched.Count)
+			return patched;
+		}
+
+		if (values)
+		{
+			foreach (var pair in HostValues!)
 			{
-				patched[ordinal] = true;
+				// An empty value is not a statement; do not light it.
+				if (pair.Value.Length == 0)
+				{
+					continue;
+				}
+
+				foreach (int ordinal in OrdinalsForPath(pair.Key))
+				{
+					List<bool> lit = Patched();
+					if (ordinal >= 0 && ordinal < lit.Count)
+					{
+						lit[ordinal] = true;
+					}
+				}
+			}
+		}
+
+		// A HOST SLIDE STATES ITS OWN ENTRIES' ACTIVES. `goToSlide` rewrites exactly the bits
+		// the slide's entry list names, so the guest's stale copy of them — its own last fill of
+		// the component — must not gate the new slide: that intersection is how the region
+		// page's star strip showed one lit and one dark star (stale `1star` actives over a host
+		// `4star` slide). ONLY the named entries: a first cut forced the whole subtree true,
+		// and `Foreground.Book` is a host-slid component on every book screen — the force
+		// overrode the page switches above and drew all seven world-map pages at once.
+		if (slid && Document.Document is { } file)
+		{
+			foreach (var pair in HostSlides!)
+			{
+				if (pair.Value <= 0)
+				{
+					continue;
+				}
+
+				foreach (int owner in OrdinalsForPath(pair.Key))
+				{
+					int seen = 0;
+					foreach (BgfSlide slide in file.Slides)
+					{
+						if (slide.OwnerElement != owner || slide.IsMaster)
+						{
+							continue;
+						}
+
+						if (++seen != pair.Value)
+						{
+							continue;
+						}
+
+						List<bool> active = Patched();
+						foreach (BgfSlideEntry entry in slide.Entries)
+						{
+							if (entry.ElementOrdinal >= 0 && entry.ElementOrdinal < active.Count)
+							{
+								active[entry.ElementOrdinal] = entry.Active;
+							}
+						}
+
+						break;
+					}
+				}
+			}
+		}
+
+		// THE HOST'S SWITCHES WIN, so they go LAST. The fold slide on `Foreground.Book`
+		// (`ShowPages`) names every page as active — Page1 AND Page2, and on the world map all
+		// seven — so applying the slide's entries after the switches put back every page the
+		// switch had just shut: the items book drew both pages over each other ("3 up") and
+		// the world map buried its quest page under six others. A switch is the host's
+		// decision about THIS row; a slide entry is the artist's default.
+		if (switches)
+		{
+			// A SWITCH ON RELEASES ITS SUBTREE. The guest's mirror of a page it never opened
+			// carries every descendant inactive (the logbook's MoralityPage, its Contents and
+			// all below); the host opening that page owns the whole page, so the descendants
+			// fall back to the slide state and the authored defaults — the resolver's own
+			// gate — rather than the guest's stale bits. Subtrees first, so a descendant the
+			// host switches OFF in the same statement still wins below.
+			foreach (var pair in HostActive!)
+			{
+				if (!pair.Value)
+				{
+					continue;
+				}
+
+				foreach (int ordinal in OrdinalsForPath(pair.Key))
+				{
+					List<bool> released = Patched();
+					for (int i = ordinal + 1; i < Document.Nodes.Length; ++i)
+					{
+						if (IsUnder(Document.Nodes[i], ordinal))
+						{
+							released[i] = true;
+						}
+					}
+				}
+			}
+
+			foreach (var pair in HostActive!)
+			{
+				foreach (int ordinal in OrdinalsForPath(pair.Key))
+				{
+					List<bool> switched = Patched();
+					if (ordinal >= 0 && ordinal < switched.Count)
+					{
+						switched[ordinal] = pair.Value;
+					}
+				}
 			}
 		}
 
 		return patched ?? stated;
 	}
 
-	/// <summary>What the host's four channels landed on; a key matching no element is otherwise silent.</summary>
+	private static bool IsUnder(UiNode node, int ancestor)
+	{
+		for (UiNode? up = node.Parent; up is not null; up = up.Parent)
+		{
+			if (up.Ordinal == ancestor)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// The elements the host switched ON, for the resolver: a switch is a later write of the
+	/// same bit a slide entry wrote, so it is not gated by that entry.
+	/// </summary>
+	private IReadOnlyList<bool>? SwitchedOn()
+	{
+		if (HostActive is not { Count: > 0 } || Document is null)
+		{
+			return null;
+		}
+
+		bool[]? on = null;
+		foreach (var pair in HostActive)
+		{
+			if (!pair.Value)
+			{
+				continue;
+			}
+
+			foreach (int ordinal in OrdinalsForPath(pair.Key))
+			{
+				if (ordinal >= 0 && ordinal < Document.Nodes.Length)
+				{
+					on ??= new bool[Document.Nodes.Length];
+					on[ordinal] = true;
+				}
+			}
+		}
+
+		return on;
+	}
+
+	/// <summary>
+	/// The guest's stated opacity with the host's ownership honoured: an element the host
+	/// writes (a value, a texture, a switch ON, a slide command) drops the guest's stated value
+	/// and falls back to the slide/authored opacity — see the notes inside.
+	/// </summary>
+	private IReadOnlyList<float?>? Opaqued(IReadOnlyList<float?>? stated)
+	{
+		bool values = HostValues is { Count: > 0 };
+		bool textures = HostTextures is { Count: > 0 };
+		bool switches = HostActive is { Count: > 0 };
+		bool slid = HostSlides is { Count: > 0 };
+		if ((!values && !textures && !switches && !slid) || stated is null || Document is null)
+		{
+			return stated;
+		}
+
+		List<float?>? patched = null;
+
+		void Drop(int ordinal)
+		{
+			if (ordinal >= 0 && ordinal < stated.Count && stated[ordinal] is not null)
+			{
+				patched ??= new List<float?>(stated);
+				patched[ordinal] = null;
+			}
+		}
+
+		// GODOT OWNS THE OPACITY OF ANYTHING GODOT WRITES. The resolve reads an element's
+		// opacity from the GUEST's stated mirror whenever it has one, and the guest's is frozen
+		// at its stuck highlight — so an element the host FILLS (an item name, its picture) drew
+		// at whatever opacity the guest last left it: 1.0 for the item its highlight froze on,
+		// but 0.0 for the rest, which is why the item detail page showed for one weapon and was
+		// blank for the next. Dropping the guest opacity where the host writes a value or a
+		// texture lets it fall to the element's authored/slide opacity (full), so a host-written
+		// field is always visible. An empty value is skipped — it blanks the text, not the box.
+		if (values)
+		{
+			foreach (var pair in HostValues!)
+			{
+				if (pair.Value.Length == 0)
+				{
+					continue;
+				}
+
+				foreach (int ordinal in OrdinalsForPath(pair.Key))
+				{
+					Drop(ordinal);
+				}
+			}
+		}
+
+		if (textures)
+		{
+			foreach (var pair in HostTextures!)
+			{
+				if (pair.Value == 0u)
+				{
+					continue;
+				}
+
+				foreach (int ordinal in OrdinalsForPath(pair.Key))
+				{
+					Drop(ordinal);
+				}
+			}
+		}
+
+		if (switches)
+		{
+			foreach (var pair in HostActive!)
+			{
+				if (!pair.Value)
+				{
+					continue;
+				}
+
+				foreach (int ordinal in OrdinalsForPath(pair.Key))
+				{
+					Drop(ordinal);
+				}
+			}
+		}
+
+		// A HOST SLIDE OWNS ONLY THE OPACITY IT COMMANDS. The resolve takes an element's opacity
+		// from the GUEST's stated value whenever it has one (`fromGuest` in
+		// Engine_UiElementResolve), and the guest's is frozen at its stuck highlight — the
+		// abilities orbs stayed lit on the first ability's discipline because the guest's own
+		// On-slide opacity outvoted the host's Off slide. So drop the guest opacity for exactly
+		// the elements the chosen slide writes an `opacity` command on — NOT the whole subtree:
+		// the PAGE-FOLD slide sits on `Foreground.Book`, whose subtree is the entire detail
+		// page, and claiming all of it blanked every item book (the guest's per-element opacity
+		// the detail contents rely on was dropped, with no slide command to replace it).
+		if (slid)
+		{
+			ForEachSlideCommand(OpacityId, Drop);
+		}
+
+		return patched ?? stated;
+	}
+
+	private static readonly uint OpacityAttr = Refii.Core.Engine_GameHash.AttributeId("opacity");
+	private static readonly uint ScaleXAttr = Refii.Core.Engine_GameHash.AttributeId("scale.x");
+	private static readonly uint ScaleYAttr = Refii.Core.Engine_GameHash.AttributeId("scale.y");
+	private static readonly uint ScaleZAttr = Refii.Core.Engine_GameHash.AttributeId("scale.z");
+
+	private static readonly System.Func<uint, bool> OpacityId = id => id == OpacityAttr;
+
+	private static readonly System.Func<uint, bool> ScaleId =
+		id => id == ScaleXAttr || id == ScaleYAttr || id == ScaleZAttr;
+
+	/// <summary>
+	/// For every element the host's chosen slide writes a matching attribute command on, runs
+	/// <paramref name="onOrdinal"/>. The RESOLVE reads an element's opacity and scale from the
+	/// GUEST's stated mirror whenever it has one, and the guest's is frozen at its stuck
+	/// highlight — so a host slide's own opacity/scale never took (the abilities orbs). Dropping
+	/// the guest value lets the host slide decide, but ONLY for the attributes the slide actually
+	/// writes: a slide that just moves a page (the page fold on `Foreground.Book`) must not have
+	/// the guest opacity/scale of the WHOLE detail page dropped under it, which blanked the item
+	/// books.
+	/// </summary>
+	private void ForEachSlideCommand(System.Func<uint, bool> matches, System.Action<int> onOrdinal)
+	{
+		if (HostSlides is null || Document?.Document is not { } file)
+		{
+			return;
+		}
+
+		foreach (var pair in HostSlides)
+		{
+			if (pair.Value <= 0)
+			{
+				continue;
+			}
+
+			foreach (int owner in OrdinalsForPath(pair.Key))
+			{
+				int seen = 0;
+				foreach (BgfSlide slide in file.Slides)
+				{
+					if (slide.OwnerElement != owner || slide.IsMaster)
+					{
+						continue;
+					}
+
+					if (++seen != pair.Value)
+					{
+						continue;
+					}
+
+					foreach (BgfSlideEntry entry in slide.Entries)
+					{
+						foreach (BgfAttribute command in entry.Commands)
+						{
+							if (matches(command.Id))
+							{
+								onOrdinal(entry.ElementOrdinal);
+								break;
+							}
+						}
+					}
+
+					break;
+				}
+			}
+		}
+	}
+
+	/// <summary>What the host's channels landed on; a key matching no element is otherwise silent.</summary>
 	private void ReportHostChannels()
 	{
-		int values = Landed(HostValues?.Keys, out int valuesLost);
-		int textures = Landed(HostTextures?.Keys, out int texturesLost);
-		int positions = Landed(HostPositions?.Keys, out int positionsLost);
-		int slides = Landed(HostSlides?.Keys, out int slidesLost);
-		if (values + textures + positions + slides +
-			valuesLost + texturesLost + positionsLost + slidesLost == 0)
+		var lostKeys = new List<string>();
+		int values = Landed(HostValues?.Keys, out int valuesLost, lostKeys);
+		int textures = Landed(HostTextures?.Keys, out int texturesLost, lostKeys);
+		int positions = Landed(HostPositions?.Keys, out int positionsLost, lostKeys);
+		int slides = Landed(HostSlides?.Keys, out int slidesLost, lostKeys);
+		int switches = Landed(HostActive?.Keys, out int switchesLost, lostKeys);
+		if (values + textures + positions + slides + switches +
+			valuesLost + texturesLost + positionsLost + slidesLost + switchesLost == 0)
 		{
 			return;
 		}
 
 		string report = $"{values} value(s), {textures} texture(s), {positions} position(s), " +
-			$"{slides} slide(s) bound";
+			$"{slides} slide(s), {switches} switch(es) bound";
 		int lost = valuesLost + texturesLost + positionsLost + slidesLost;
 		if (lost != 0)
 		{
 			report += $" — {lost} key(s) MATCHED NO ELEMENT" +
 				$" (values {valuesLost}, textures {texturesLost}, " +
-				$"positions {positionsLost}, slides {slidesLost})";
+				$"positions {positionsLost}, slides {slidesLost}): " +
+				string.Join(", ", lostKeys);
 		}
 
 		if (report == _channelsShown)
@@ -753,8 +1227,9 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		GD.Print($"[owned-book] '{Template?.Name}' host channels: {report}");
 	}
 
-	/// <summary>How many of these paths resolve, and how many name nothing at all.</summary>
-	private int Landed(System.Collections.Generic.IEnumerable<string>? paths, out int lost)
+	/// <summary>How many of these paths resolve, how many name nothing at all, and which.</summary>
+	private int Landed(System.Collections.Generic.IEnumerable<string>? paths, out int lost,
+		List<string>? lostKeys = null)
 	{
 		lost = 0;
 		if (paths is null)
@@ -772,6 +1247,10 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			else
 			{
 				++lost;
+				if (lostKeys is not null && !lostKeys.Contains(path))
+				{
+					lostKeys.Add(path);
+				}
 			}
 		}
 
@@ -782,6 +1261,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 	/// <summary>Every node's dotted path to its ordinal, built once.</summary>
 	private Dictionary<string, int>? _pathOrdinals;
+
 
 	/// <summary>The ordinal of the node a key names, matched on trailing whole segments.</summary>
 	private int? OrdinalForPath(string key)
@@ -814,6 +1294,40 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		return null;
 	}
+
+	/// <summary>
+	/// EVERY element the key names. The value pass has always written all bearers — a page-less
+	/// key like `Contents.experienceorbs.Will` deliberately serves the Page1 and Page2 copies
+	/// both — but the slide, switch, texture and position channels resolved a single ordinal,
+	/// so they landed on whichever copy the dictionary iterated first: the invisible one, on
+	/// the abilities book, which left the visible orb strip on the guest's stale slide.
+	/// </summary>
+	private IEnumerable<int> OrdinalsForPath(string key)
+	{
+		if (OrdinalForPath(key) is null)
+		{
+			yield break;
+		}
+
+		foreach (var pair in _pathOrdinals!)
+		{
+			if (PathNames(pair.Key, key))
+			{
+				yield return pair.Value;
+			}
+		}
+	}
+
+	/// <summary>The first bearer of a key, for a host driver that owns one element by path (the
+	/// abilities preview quad). Null when nothing in the document is named so.</summary>
+	public int? OrdinalOf(string key) => OrdinalForPath(key);
+
+	/// <summary>The document path of an element by ordinal — the key a host texture for that
+	/// quad is filed under (the abilities preview frame). Null when out of range.</summary>
+	public string? PathOfOrdinal(int ordinal) =>
+		Document is not null && ordinal >= 0 && ordinal < Document.Nodes.Length
+			? DocumentPath(Document.Nodes[ordinal])
+			: null;
 
 	/// <summary>
 	/// The element's dotted path from its authored ancestors (<c>Foreground.Book.Pages.Page1.Contents.AbilityName</c>);
@@ -853,6 +1367,11 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		bool changed = false;
 
+		// THE GUEST IS NOT IN THE TEXT PATH — except for the units a template names in
+		// `GuestTextUnits`, read below as data. `texts` is its mirrored element sample; the
+		// same call carries the art, the transforms and the draw gate, which ARE the guest's
+		// statements.
+
 		foreach (Field field in _fields)
 		{
 			if (!GodotObject.IsInstanceValid(field.Node))
@@ -862,40 +1381,63 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 			string display;
 
-			string? owned = null;
+			// TWO SOURCES, IN THIS ORDER: what the host states for this element, and otherwise
+			// what the FILE authored. The guest's mirrored text used to sit in second place, and
+			// that one line was the biggest remaining hole in "Godot owns the UI":
+			//
+			//   - It made an empty host value mean "leave the guest's text alone", so roughly a
+			//     hundred and eighty-five blanking statements the page classes already write
+			//     were silently discarded. `Engine_UiAbilityPage` clears `Target`/`Range` on
+			//     every fill precisely so the previous ability's line cannot stand, and it never
+			//     took effect — which is exactly how "Brutal Style 2: Flourishes" came to sit
+			//     under Physique.
+			//   - A field with no host source showed whatever the guest last wrote, so it was
+			//     right until the guest stopped writing and then quietly wrong. That is the same
+			//     failure as the ability movie and the region page, spread across every book.
+			//
+			// The authored string keeps every STATIC caption working without the guest: the
+			// `.bgf` carries them, and they are captions, not state. An unresolved tag still
+			// shows nothing — `NO_DATA`, `DEFAULT_TEXT_ID` and the literal 'Text' are
+			// placeholders, and a document whose tag and display are identical never resolved.
+			bool owned = false;
+			display = string.Empty;
 			if (HostValues is not null)
 			{
 				foreach (var pair in HostValues)
 				{
 					if (PathNames(field.Path, pair.Key))
 					{
-						// An empty host value is not a blanking order; the guest's text stands.
-						owned = pair.Value.Length == 0 ? null : pair.Value;
+						// AN EMPTY HOST VALUE IS NOW A BLANKING ORDER — the page said this
+						// element has nothing to show, and that is an answer.
+						owned = true;
+						display = pair.Value;
 						break;
 					}
 				}
 			}
 
-			if (owned is not null)
+			// A GUEST-TEXT UNIT: the guest's own live write for this field, when the template
+			// names its unit and the guest has written one. Read as data, not as a channel —
+			// see Engine_UiScreenTemplate.GuestTextUnits.
+			if (!owned && texts is not null && Template is { GuestTextUnits.Count: > 0 } template &&
+				field.Ordinal >= 0 && field.Ordinal < texts.Length &&
+				texts[field.Ordinal] is { Length: > 0 } guest)
 			{
-				// Host-owned text is already through Babel; do not resolve it again.
-				display = owned;
+				foreach (string unit in template.GuestTextUnits)
+				{
+					if (PathNames(field.Path, unit) || field.Path.Contains("." + unit + ".", System.StringComparison.Ordinal) ||
+						field.Path.StartsWith(unit + ".", System.StringComparison.Ordinal))
+					{
+						owned = true;
+						display = guest;
+						break;
+					}
+				}
 			}
-			else
-			{
-				string? stated = texts is not null && field.Ordinal < texts.Length
-					? texts[field.Ordinal]
-					: null;
 
-				// A placeholder is an authored tag that did not resolve (`NO_DATA`,
-				// `DEFAULT_TEXT_ID`, literal 'Text'); a tag Babel resolved is real content.
-				bool placeholder =
-					string.Equals(stated, field.Authored, System.StringComparison.Ordinal) ||
-					(string.Equals(stated, field.AuthoredDisplay, System.StringComparison.Ordinal) &&
-					 string.Equals(field.Authored, field.AuthoredDisplay, System.StringComparison.Ordinal));
-				display = stated is null || stated.Length == 0 || placeholder
-					? string.Empty
-					: Book.Resolve(stated);
+			if (!owned)
+			{
+				display = IsPlaceholder(field) ? string.Empty : field.AuthoredDisplay;
 			}
 
 			if (display == field.Shown)
@@ -911,8 +1453,509 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		return changed;
 	}
 
+	private static readonly (string Name, uint Id)[] KnownAttributes =
+		new[] { "opacity", "position.x", "position.y", "position.z", "scale.x", "scale.y", "scale.z",
+			"rotation.x", "rotation.y", "rotation.z", "globalactive", "active" }
+		.Select(name => (name, Refii.Core.Engine_GameHash.AttributeId(name))).ToArray();
+
+	private static string AttributeNameOf(uint id)
+	{
+		foreach ((string name, uint known) in KnownAttributes)
+		{
+			if (known == id)
+			{
+				return name;
+			}
+		}
+
+		return $"attr:{id:X}";
+	}
+
+	/// <summary>Every book that has resolved at least once, for the live debug channel.</summary>
+	private static readonly List<Engine_UiOwnedBook> LiveBooks = new();
+
+	private void RegisterLive()
+	{
+		if (!LiveBooks.Contains(this))
+		{
+			LiveBooks.Add(this);
+		}
+	}
+
+	/// <summary>One quad per painting mesh under <paramref name="node"/> whose box covers the point.</summary>
+	private static void CollectPaint(Node node, Engine_UiOwnedBook book, string bookName, float px, float py,
+		List<(float Z, string What)> over)
+	{
+		foreach (Node child in node.GetChildren())
+		{
+			CollectPaint(child, book, bookName, px, py, over);
+		}
+
+		if (node is not MeshInstance3D mesh || !mesh.IsVisibleInTree())
+		{
+			return;
+		}
+
+		// The 3D preview model hangs under the page's anchor and is not a quad: it is reported
+		// wherever it is, painting or not, because "is the item in the ring" is the question.
+		bool previewModel = mesh.Name == Engine_UiPreviewObject.MeshName;
+		Engine_UiSceneBuilder.QuadPaint paint = previewModel
+			? default
+			: Engine_UiSceneBuilder.DescribeQuad(mesh);
+		if (!previewModel && !paint.Painted)
+		{
+			return;
+		}
+
+		Aabb box = mesh.GlobalTransform * mesh.GetAabb();
+		if (!previewModel &&
+			(px < box.Position.X || px > box.End.X || py < box.Position.Y || py > box.End.Y))
+		{
+			return;
+		}
+
+		var path = new System.Text.StringBuilder(mesh.Name);
+		for (Node? up = mesh.GetParent(); up is not null && up != book; up = up.GetParent())
+		{
+			path.Insert(0, '.').Insert(0, up.Name);
+		}
+
+		if (previewModel)
+		{
+			over.Add((box.Position.Z,
+				$"[{bookName}] {path} <3D PREVIEW visible={mesh.IsVisibleInTree()} scale={mesh.Scale.X:0.###} " +
+				$"pos=({mesh.GlobalPosition.X:0},{mesh.GlobalPosition.Y:0},{mesh.GlobalPosition.Z:0})> " +
+				$"box=({box.Position.X:0},{box.Position.Y:0},{box.Position.Z:0})..({box.End.X:0},{box.End.Y:0},{box.End.Z:0})"));
+			return;
+		}
+
+		string texture = paint.Texture is { } albedo
+			? (albedo.ResourcePath.GetFile() is { Length: > 0 } file ? file : "runtime")
+			: "NO-TEXTURE";
+		over.Add((box.Position.Z,
+			$"[{bookName}] {path} <{texture} op={paint.Opacity:0.00} tint={paint.Tint.R:F2},{paint.Tint.G:F2},{paint.Tint.B:F2}@{paint.TintAmount:F2}{(paint.DetailMapped ? " detail" : string.Empty)}> box=({box.Position.X:0},{box.Position.Y:0})..({box.End.X:0},{box.End.Y:0})"));
+	}
+
+	/// <summary>
+	/// The RESOLVED state of every element whose path contains <paramref name="match"/>, across
+	/// every live book — active, drawn, accumulated opacity, the bound node's position, and for
+	/// a text element its authored tag, its display and any host value. The ground truth a
+	/// bound-but-ineffective channel write is caught against.
+	/// </summary>
+	public static List<string> DescribeLive(string match, int limit)
+	{
+		var lines = new List<string>();
+		LiveBooks.RemoveAll(book => !GodotObject.IsInstanceValid(book));
+
+		// `paint:X,Y` — WHAT PAINTS AT A CANVAS POINT, nearest first, across every live book: each
+		// painting quad whose box covers the point, with its texture, tint and z. The question
+		// the resolved state cannot answer — an element drawn at opacity 1 that the player
+		// still cannot see is behind something, and this names it.
+		if (match.StartsWith("paint:", System.StringComparison.Ordinal))
+		{
+			string[] at = match["paint:".Length..].Split(',');
+			if (at.Length != 2 ||
+				!float.TryParse(at[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float px) ||
+				!float.TryParse(at[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float py))
+			{
+				lines.Add("paint: expects X,Y in canvas units");
+				return lines;
+			}
+
+			var over = new List<(float Z, string What)>();
+			foreach (Engine_UiOwnedBook book in LiveBooks)
+			{
+				if (!book.IsInsideTree() || !book.IsVisibleInTree())
+				{
+					continue;
+				}
+
+				string bookName = book.Template?.Name ?? "?";
+				CollectPaint(book, book, bookName, px, py, over);
+			}
+
+			over.Sort((a, b) => b.Z.CompareTo(a.Z));
+			foreach ((float z, string what) in over)
+			{
+				if (lines.Count >= limit)
+				{
+					break;
+				}
+
+				lines.Add($"z{z:0} {what}");
+			}
+
+			if (lines.Count == 0)
+			{
+				lines.Add($"NOTHING PAINTS at ({px:0},{py:0})");
+			}
+
+			return lines;
+		}
+
+		// `slides:<owner path fragment>` — the authored slides of every matching owner: the
+		// entries' actives, their direct commands and each activated track's LAST key, i.e.
+		// exactly what the resolver folds in. The other channel of the same document.
+		if (match.StartsWith("slides:", System.StringComparison.Ordinal))
+		{
+			string want = match["slides:".Length..];
+			foreach (Engine_UiOwnedBook book in LiveBooks)
+			{
+				if (book.Document?.Document is not { } file)
+				{
+					continue;
+				}
+
+				string bookName = book.Template?.Name ?? "?";
+				var ordinalOfSlide = new Dictionary<int, int>();
+				foreach (BgfSlide slide in file.Slides)
+				{
+					if (lines.Count >= limit)
+					{
+						return lines;
+					}
+
+					if (slide.OwnerElement < 0 || slide.OwnerElement >= book.Document.Nodes.Length)
+					{
+						continue;
+					}
+
+					string owner = DocumentPath(book.Document.Nodes[slide.OwnerElement]);
+					if (!$"[{bookName}] {owner}".Contains(want, System.StringComparison.Ordinal))
+					{
+						continue;
+					}
+
+					int index = slide.IsMaster ? 0 : (ordinalOfSlide[slide.OwnerElement] = ordinalOfSlide.GetValueOrDefault(slide.OwnerElement) + 1);
+					var entries = new System.Text.StringBuilder();
+					foreach (BgfSlideEntry entry in slide.Entries)
+					{
+						if (entry.ElementOrdinal < 0 || entry.ElementOrdinal >= book.Document.Nodes.Length)
+						{
+							continue;
+						}
+
+						UiNode target = book.Document.Nodes[entry.ElementOrdinal];
+						entries.Append("  ").Append(target.HasAuthoredName ? target.Name : $"#{entry.ElementOrdinal}")
+							.Append(entry.Active ? " on" : " OFF");
+						foreach (BgfAttribute command in entry.Commands)
+						{
+							entries.Append(' ').Append(AttributeNameOf(command.Id))
+								.Append('=').Append(command.Type == BgfValueType.Float ? command.AsFloat().ToString("0.##") : command.RawValue.ToString());
+						}
+
+						foreach (int animation in entry.ActivatedAnimations ?? System.Array.Empty<int>())
+						{
+							if (animation < 0 || animation >= file.Animations.Length)
+							{
+								continue;
+							}
+
+							BgfAnimation track = file.Animations[animation];
+							if (track.Keys.Length == 0)
+							{
+								continue;
+							}
+
+							string trackTarget = track.ElementOrdinal >= 0 && track.ElementOrdinal < book.Document.Nodes.Length
+								? book.Document.Nodes[track.ElementOrdinal].Name
+								: $"#{track.ElementOrdinal}";
+							entries.Append(' ').Append(trackTarget).Append('.')
+								.Append(AttributeNameOf(track.AttributeId))
+								.Append('~').Append(track.Keys[0].Value.ToString("0.##")).Append('→').Append(track.Keys[^1].Value.ToString("0.##"));
+						}
+					}
+
+					lines.Add($"[{bookName}] slide {index}{(slide.IsMaster ? " (master)" : string.Empty)} '{slide.Name}' on {owner}: {slide.Entries.Length} entry(ies){entries}");
+				}
+			}
+
+			return lines;
+		}
+		foreach (Engine_UiOwnedBook book in LiveBooks)
+		{
+			if (book.Document is null || book._resolve is null)
+			{
+				continue;
+			}
+
+			string name = book.Template?.Name ?? "?";
+			foreach (UiNode node in book.Document.Nodes)
+			{
+				if (lines.Count >= limit)
+				{
+					return lines;
+				}
+
+				string path = DocumentPath(node);
+				// The match sees the line's own prefix too, so `[options]` narrows to one book.
+				if (!$"[{name}] {path}".Contains(match, System.StringComparison.Ordinal))
+				{
+					continue;
+				}
+
+				int i = node.Ordinal;
+				bool active = i >= 0 && i < book._resolve.Active.Length && book._resolve.Active[i];
+				bool drawn = i >= 0 && i < book._resolve.Drawn.Length && book._resolve.Drawn[i];
+				float op = i >= 0 && i < book._resolve.Opacity.Length ? book._resolve.Opacity[i] : -1f;
+				int slide = book._lastSlides is { } slid && i >= 0 && i < slid.Count ? slid[i] : 0;
+
+				string at = "(unbound)";
+				if (book._binding.NodeFor(i) is { } bound && GodotObject.IsInstanceValid(bound))
+				{
+					Vector3 p = bound.IsInsideTree() ? bound.GlobalPosition : bound.Position;
+					at = $"({p.X:0},{p.Y:0},{p.Z:0})";
+				}
+
+				string says = string.Empty;
+				if (node.Text is { } text)
+				{
+					string live = book.HostValues is { } host && host.TryGetValue(path, out string? written)
+						? written
+						: string.Empty;
+					says = $" tag='{Short(text.Tag)}' shows='{Short(text.Display)}'" +
+						(live.Length != 0 ? $" host='{Short(live)}'" : string.Empty);
+				}
+
+				lines.Add($"[{name}] #{i} {path} active={active} drawn={drawn} op={op:0.00} auth={node.Opacity:0.##} slide={slide} at={at}{says}");
+			}
+		}
+
+		return lines;
+
+		static string Short(string s) => s.Length > 48 ? s[..48] + "…" : s;
+	}
+
 	/// <summary>Seconds since the last sample, for the page scroll (`SCROLL_SPEED` is per second: page.dis main.1 pc15..27).</summary>
 	public double ScrollDelta { get; set; } = 1.0 / 30.0;
+
+	/// <summary>Canvas units the scroll region's content is slid up from authored; 0 at the top.</summary>
+	private float _scrollOffset;
+
+	/// <summary>Canvas units of scrollable overflow the last frame measured; 0 = fits.</summary>
+	private float _scrollRange;
+
+	private string _scrollReport = string.Empty;
+
+	/// <summary>The scroll region driving now, by its content path; a change resets the offset.</summary>
+	private string _scrollContentPath = string.Empty;
+
+	/// <summary>The bound clone for a template path, through the same trailing-segment match
+	/// every host channel uses.</summary>
+	private Node3D? NodeByPath(string path) =>
+		OrdinalForPath(path) is { } ordinal && ordinal >= 0 ? _binding.NodeFor(ordinal) : null;
+
+	/// <summary>A node's stated `position.y` — origin plus the pivot term, as the page widget
+	/// recovers it.</summary>
+	private float StatedYOf(Node3D node) =>
+		node.Position.Y + (node.Transform.Basis * _binding.PivotOf(node)).Y;
+
+	private void SetStatedYOf(Node3D node, float y)
+	{
+		Vector3 pivot = _binding.PivotOf(node);
+		Basis basis = node.Transform.Basis;
+		Vector3 stated = node.Position + (basis * pivot);
+		stated.Y = y;
+		node.Position = stated - (basis * pivot);
+	}
+
+	/// <summary>
+	/// THE MEASURED-TEXT REFLOW — `sub_829AB8A8`. The guest never clips or shortens the measured
+	/// element: it re-measures the wrapped text, takes the overflow past the authored base mark,
+	/// and moves every row the template names by that delta; the tail rows stand at the anchor
+	/// row's Y, less 30 while the anchor itself draws. Deltas are applied against the positions
+	/// the binding just rewrote, so nothing compounds.
+	/// </summary>
+	private void FlowMeasuredText()
+	{
+		if (Template is not { FlowMeasured.Length: > 0, FlowBase.Length: > 0 } template ||
+			Document is null)
+		{
+			return;
+		}
+
+		if (NodeByPath(template.FlowMeasured) is not MeshInstance3D measured ||
+			OrdinalForPath(template.FlowBase) is not { } baseOrdinal ||
+			baseOrdinal < 0 || baseOrdinal >= Document.Nodes.Length)
+		{
+			return;
+		}
+
+		// The wrapped height the guest's re-measure reads (component+184). Aabb is in canvas
+		// units — the text mesh is built unscaled, as the page widget already relies on.
+		float height = measured.Mesh is not null && measured.Visible
+			? measured.GetAabb().Size.Y
+			: 0f;
+		float bottom = StatedYOf(measured) - height;
+		float delta = bottom - Document.Nodes[baseOrdinal].PositionY;
+
+		foreach (string path in template.FlowMoved)
+		{
+			if (NodeByPath(path) is { } row)
+			{
+				SetStatedYOf(row, StatedYOf(row) + delta);
+			}
+		}
+
+		if (template.FlowTailAnchor.Length == 0 ||
+			NodeByPath(template.FlowTailAnchor) is not { } anchor ||
+			OrdinalForPath(template.FlowTailAnchor) is not { } anchorOrdinal)
+		{
+			return;
+		}
+
+		bool standing = _resolve is not null && anchorOrdinal >= 0 &&
+			anchorOrdinal < _resolve.Drawn.Length && _resolve.Drawn[anchorOrdinal];
+		float tail = StatedYOf(anchor) - (standing ? 30f : 0f);
+		foreach (string path in template.FlowTailMoved)
+		{
+			if (NodeByPath(path) is { } row)
+			{
+				SetStatedYOf(row, tail);
+			}
+		}
+	}
+
+	/// <summary>The guest's scroll rate — `sub_828C30A8` feeds ~3 canvas units per 30 Hz tick at
+	/// full stick through the deadzone scale, ~100/s; a little faster reads better at 60.</summary>
+	private const float ScrollUnitsPerSecond = 150f;
+
+	/// <summary>
+	/// THE SCROLL REGION — `sub_828C3250`/`sub_829ED788`. The right stick slides the content
+	/// group inside the mask's band; the clip is the mask's and already painted on the content
+	/// by the binding. The guest moves each registered row; moving the group is the same
+	/// transform. Arrows dim at their limit (slide 1 of 2) and the thumb rides the fraction.
+	/// </summary>
+	private void DriveScrollRegion()
+	{
+		if (Template is not { ScrollContent.Length: > 0 } template || Document is null)
+		{
+			return;
+		}
+
+		// ONE REGION PER PAGE. A book may author a scroll region on several of its pages
+		// (the logbook's Stats and Renown pages, each behind the same `Mask`); the template
+		// lists them `|`-separated, index-parallel across content, mask and bar, and the one
+		// whose content is on screen drives. Changing region drops the offset.
+		string[] contents = template.ScrollContent.Split('|');
+		string[] masks = template.ScrollMask.Split('|');
+		string[] bars = template.ScrollBar.Split('|');
+		Node3D? content = null;
+		string maskPath = string.Empty;
+		string barPath = string.Empty;
+		for (int i = 0; i < contents.Length; ++i)
+		{
+			if (NodeByPath(contents[i]) is { } candidate && candidate.IsInsideTree() &&
+				candidate.IsVisibleInTree())
+			{
+				content = candidate;
+				maskPath = i < masks.Length ? masks[i] : masks[0];
+				barPath = i < bars.Length ? bars[i] : (bars.Length > 0 ? bars[0] : string.Empty);
+				if (_scrollContentPath != contents[i])
+				{
+					_scrollContentPath = contents[i];
+					_scrollOffset = 0f;
+				}
+				break;
+			}
+		}
+
+		if (content is null)
+		{
+			return;
+		}
+
+		// Both bands in CANVAS space: content from its meshes through the book's own transform,
+		// the mask from its authored quad (100 units by its scale) — the masks live at Layer
+		// level, outside every cloned unit, so the document is their one source.
+		Transform3D toCanvas = GlobalTransform.AffineInverse();
+		float lowest = float.MaxValue;
+		bool any = false;
+		Measure(content);
+
+		void Measure(Node node)
+		{
+			if (node is MeshInstance3D mesh && mesh.Mesh is not null && mesh.Visible &&
+				mesh.HasMeta("text"))
+			{
+				Aabb box = mesh.GetAabb();
+				float canvasY = (toCanvas * mesh.GlobalPosition).Y;
+				lowest = Mathf.Min(lowest, canvasY + box.Position.Y);
+				any = true;
+			}
+
+			foreach (Node child in node.GetChildren())
+			{
+				Measure(child);
+			}
+		}
+
+		float range = 0f;
+		if (any && OrdinalForPath(maskPath) is { } maskOrdinal &&
+			maskOrdinal >= 0 && maskOrdinal < Document.Nodes.Length)
+		{
+			UiNode mask = Document.Nodes[maskOrdinal];
+			float maskBottom = mask.PositionY - (0.5f * 100f * mask.ScaleY);
+
+			// How far the content runs past the window's lower edge. The binding just rewrote
+			// every stated position, so the measure is of the authored (plus reflow) layout —
+			// this frame's offset has not been applied yet.
+			range = Mathf.Max(0f, maskBottom - lowest);
+		}
+
+		_scrollRange = range;
+		float stick = Refii.Game.GameInput.RightStickY;
+		_scrollOffset = Mathf.Clamp(
+			_scrollOffset - (stick * ScrollUnitsPerSecond * (float)ScrollDelta), 0f, range);
+
+		if (_scrollOffset != 0f)
+		{
+			SetStatedYOf(content, StatedYOf(content) + _scrollOffset);
+		}
+
+		if (barPath.Length != 0 && NodeByPath(barPath) is { } bar)
+		{
+			bool scrollable = range > 1f;
+			bar.Visible = scrollable;
+			if (scrollable)
+			{
+				// The guest HIDES the bar at registration (`sub_828C33F0` → opacity ÷ 1024)
+				// and its own scroll object shows it when the content overflows; that hide is
+				// what the mirror carries, so the whole bar comes back to its authored alpha
+				// here before the arrows dim at their limits.
+				Engine_UiSceneBuilder.FadeSubtree(bar, 1f);
+				float fraction = _scrollOffset / range;
+				var up = Engine_UiTheme.FindByName(bar, "UpArrow") as Node3D;
+				var down = Engine_UiTheme.FindByName(bar, "DownArrow") as Node3D;
+				var icon = Engine_UiTheme.FindByName(bar, "Icon") as Node3D;
+
+				// Slide 1 is at-limit, slide 2 active (`sub_828C3488`) — expressed as a fade on
+				// the clone, the same stand-in the menu box uses for a disabled row.
+				if (up is not null)
+				{
+					Engine_UiSceneBuilder.FadeSubtree(up, fraction > 0.01f ? 1f : 0.35f);
+				}
+
+				if (down is not null)
+				{
+					Engine_UiSceneBuilder.FadeSubtree(down, fraction < 0.99f ? 1f : 0.35f);
+				}
+
+				if (icon is not null && up is not null && down is not null)
+				{
+					SetStatedYOf(icon,
+						Mathf.Lerp(StatedYOf(up), StatedYOf(down), fraction));
+				}
+			}
+		}
+
+		string report = $"range {range:0} offset {_scrollOffset:0}";
+		if (report != _scrollReport)
+		{
+			_scrollReport = report;
+			GD.Print($"[owned-book] '{Template.Name}' scroll region: {report}");
+		}
+	}
 
 	private readonly List<Engine_UiPage> _pageWidgets = new();
 
@@ -1055,5 +2098,65 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		return best;
 	}
+
+	/// <summary>
+	/// Whether a field the host does not state is still showing an AUTHORED PLACEHOLDER, and
+	/// so must not be drawn.
+	///
+	/// THE OLD TEST WAS "the tag equals its display", i.e. Babel did not translate it. That is
+	/// true of every LITERAL caption in every book — `Hero`, `Dog`, `Melee`, a legend entry —
+	/// because a literal has nothing to translate, so it blanked them all. The pause minimap
+	/// lost its legend and the equipment pages lost their captions, and the emptier a page got
+	/// the more it looked like missing DATA rather than a drawing rule.
+	///
+	/// A placeholder is an UNRESOLVED BABEL KEY or one of the authored dummies — never prose.
+	/// Babel keys are upper-case, underscore-joined and never contain a space, which is what
+	/// separates `GUI_SCREEN_SHOP_VALUE` from `Hero`.
+	/// </summary>
+	private static bool IsPlaceholder(Field field)
+	{
+		if (field.AuthoredDisplay.Length == 0)
+		{
+			return true;
+		}
+
+		// Resolved through Babel — real text by definition.
+		if (!string.Equals(field.Authored, field.AuthoredDisplay, System.StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		foreach (string dummy in AuthoredDummies)
+		{
+			if (string.Equals(field.AuthoredDisplay, dummy, System.StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		// An unresolved KEY: upper-case, underscore-joined, no spaces.
+		bool underscored = false;
+		foreach (char c in field.AuthoredDisplay)
+		{
+			if (c == '_')
+			{
+				underscored = true;
+				continue;
+			}
+
+			if (!char.IsUpper(c) && !char.IsDigit(c))
+			{
+				return false;
+			}
+		}
+
+		return underscored;
+	}
+
+	/// <summary>The dummies the books author into an unwritten field.</summary>
+	private static readonly string[] AuthoredDummies =
+	{
+		"Text", "000000", "NO_DATA", "0", "XXX", "TBD",
+	};
 
 }

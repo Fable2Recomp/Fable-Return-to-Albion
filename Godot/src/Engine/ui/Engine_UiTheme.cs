@@ -152,10 +152,12 @@ public sealed class Engine_UiTheme
 			return null;
 		}
 
+		// By the element's ORDINAL, which the builder stamps; `object_id` is the file's object id
+		// and never equalled an ordinal, so this lookup fell back to the first bearer of the name.
 		for (int variant = 0; variant < matches.Count; ++variant)
 		{
-			if (matches[variant].HasMeta("object_id") &&
-				(int)(uint)matches[variant].GetMeta("object_id") == ordinal)
+			if (matches[variant].HasMeta("ordinal") &&
+				(int)matches[variant].GetMeta("ordinal") == ordinal)
 			{
 				return Art(name, variant, keepAuthoredBasis);
 			}
@@ -239,19 +241,52 @@ public sealed class Engine_UiTheme
 		// rather than to the glyphs.
 		var opaque = new Color(colour.R, colour.G, colour.B, 1f);
 
-		(ArrayMesh? mesh, Texture2D? atlas) = Glyphs(
-			display, size, opaque,
-			horizontalAlign: horizontal, verticalAlign: vertical,
-			boxWidth: box.X, boxHeight: box.Y, wrapMode: wrap);
+		// ICONS GO WITH THE STRING. A re-mesh that only swapped the glyphs left the node's
+		// inline-icon quads from its LAST string standing — the logbook's expression page is
+		// authored as the apologise description, whose D-pad glyph then sat on every
+		// expression and achievement page — and never drew the icons the new string carries
+		// (`<gold_img>`, the tutorial's button glyphs). Same contract as Paint.
+		foreach (Node child in node.GetChildren())
+		{
+			if (IsInlineIcon(child))
+			{
+				node.RemoveChild(child);
+				child.QueueFree();
+			}
+		}
 
 		// The clip and the fade ride the material, so a re-mesh must carry them over or a masked
-		// list loses its `clip_rect` on the first text write.
+		// list loses its `clip_rect` on the first text write. Read first: the new icons take the
+		// same fade, or a faded label re-texted would flash its glyphs at full alpha.
 		Variant? clip = null;
 		Variant? opacity = null;
 		if (node.MaterialOverride is ShaderMaterial previous)
 		{
 			clip = previous.GetShaderParameter("clip_rect");
 			opacity = previous.GetShaderParameter("opacity");
+		}
+
+		float iconAlpha = opacity is { } carried && carried.VariantType == Variant.Type.Float
+			? carried.AsSingle()
+			: 1f;
+
+		Engine_UiTextMesh.Built built = Layout(
+			display, size, opaque, horizontal, vertical, box.X, box.Y, wrap,
+			out Texture2D? atlas);
+		ArrayMesh? mesh = built.Mesh;
+		foreach (Engine_UiTextMesh.IconPlacement icon in built.Icons)
+		{
+			if (Textures?.Invoke(icon.Tag.Texture + ".tex") is not { } art)
+			{
+				continue;
+			}
+
+			node.AddChild(MarkInlineIcon(new MeshInstance3D
+			{
+				Mesh = IconQuad(icon.Size),
+				Position = new Vector3(icon.TopLeft.X, icon.TopLeft.Y, 0f),
+				MaterialOverride = IconMaterial(art, iconAlpha),
+			}));
 		}
 
 		node.Mesh = mesh;
@@ -337,8 +372,26 @@ public sealed class Engine_UiTheme
 	/// </summary>
 	public System.Func<string, Texture2D?>? Textures { get; init; }
 
-	/// <summary>The child name every inline icon quad is given, so a repaint can clear them.</summary>
-	private const string IconChild = "InlineIcon";
+	/// <summary>The inline icon quad's node name — the builder and the panels agree on it.</summary>
+	public const string InlineIconName = "InlineIcon";
+
+	/// <summary>
+	/// The mark every inline-icon quad carries. BY META, NOT BY NAME: Godot renames same-named
+	/// siblings (`InlineIcon`, `InlineIcon2`, `@InlineIcon@7`), so a name test matched only the
+	/// first icon of a string — the rest survived every re-mesh and the help pages filled with
+	/// the glyphs of every description shown before.
+	/// </summary>
+	private const string InlineIconMeta = "inline_icon";
+
+	public static bool IsInlineIcon(Node node) => node.HasMeta(InlineIconMeta);
+
+	/// <summary>Names and marks a freshly built icon quad.</summary>
+	public static MeshInstance3D MarkInlineIcon(MeshInstance3D icon)
+	{
+		icon.Name = InlineIconName;
+		icon.SetMeta(InlineIconMeta, true);
+		return icon;
+	}
 
 	/// <summary>
 	/// Draws a string onto an existing label node — mesh, material AND its inline icons. The one
@@ -356,7 +409,7 @@ public sealed class Engine_UiTheme
 	{
 		foreach (Node child in label.GetChildren())
 		{
-			if (child.Name == IconChild)
+			if (IsInlineIcon(child))
 			{
 				label.RemoveChild(child);
 				child.QueueFree();
@@ -378,14 +431,13 @@ public sealed class Engine_UiTheme
 				continue;
 			}
 
-			var quad = new MeshInstance3D
+			var quad = MarkInlineIcon(new MeshInstance3D
 			{
-				Name = IconChild,
 				Mesh = IconQuad(icon.Size),
 				// Top-left anchored, drawing down in -Y, matching the glyph cells.
 				Position = new Vector3(icon.TopLeft.X, icon.TopLeft.Y, 0f),
 				MaterialOverride = IconMaterial(art, colour.A),
-			};
+			});
 
 			label.AddChild(quad);
 		}
@@ -414,6 +466,38 @@ public sealed class Engine_UiTheme
 		NoDepthTest = true,
 		TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
 	};
+
+	/// <summary>
+	/// Fades one inline-icon quad, or answers false for anything else. The icons ride a
+	/// StandardMaterial3D, not the text shader, so every fade that reaches a label's material
+	/// — a retint, an opacity chain, a clone's fade — has to reach its icon children too, or a
+	/// scrolled-away menu row leaves its `<exclamation.img>` standing at full alpha.
+	/// </summary>
+	public static bool SetIconOpacity(Node node, float alpha)
+	{
+		if (node is not MeshInstance3D icon || !IsInlineIcon(icon) ||
+			icon.MaterialOverride is not StandardMaterial3D material)
+		{
+			return false;
+		}
+
+		Color albedo = material.AlbedoColor;
+		if (!Mathf.IsEqualApprox(albedo.A, alpha))
+		{
+			material.AlbedoColor = new Color(albedo.R, albedo.G, albedo.B, alpha);
+		}
+
+		return true;
+	}
+
+	/// <summary>Fades every inline-icon quad directly under a label.</summary>
+	public static void FadeInlineIcons(Node label, float alpha)
+	{
+		foreach (Node child in label.GetChildren())
+		{
+			SetIconOpacity(child, alpha);
+		}
+	}
 
 	public static ArrayMesh IconQuad(Vector2 size)
 	{

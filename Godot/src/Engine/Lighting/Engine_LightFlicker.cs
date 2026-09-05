@@ -113,6 +113,7 @@ public partial class Engine_LightFlicker : Node
 
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("lightflicker");
 		float step = (float)delta * RateNormaliser;
 		if (step <= 0.0f)
 		{

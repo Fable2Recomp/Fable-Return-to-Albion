@@ -40,6 +40,14 @@ public static class Engine_PauseMenu
 	/// 0 save-and-continue, 1 save-and-quit, 2 quit-without-saving.</summary>
 	public const string SavingCommandPrefix = "PauseSaving:";
 
+	/// <summary>
+	/// Command prefix of a tab the HOST owns outright; the suffix is the host-only screen id it
+	/// stands (<see cref="Engine_UiBookSet.HostOnlyScreenId"/> and up). The tab lever cannot
+	/// express these — `sub_826B89E0`'s switch has no case for a screen the guest never had —
+	/// so they never reach the bridge and the guest's pause root stays exactly where it is.
+	/// </summary>
+	public const string OwnedCommandPrefix = "PauseOwned:";
+
 	/// <summary>Tab ids as `sub_826B89E0`'s switch numbers them.</summary>
 	public const uint TabMap = 2;
 	public const uint TabAbilities = 3;
@@ -98,10 +106,17 @@ public static class Engine_PauseMenu
 	/// the identity, so a name join is unavailable and a count mismatch is a real disagreement —
 	/// the shorter list wins and the caller reports the gap.
 	/// </summary>
+	/// <param name="positionalFallback">
+	/// Whether a row the NAME join did not reach may take a label by its index in the guest's
+	/// pool. True for the pause list, which is built to match the guest's one for one. FALSE for
+	/// any list that deliberately differs from the guest's — a template list that drops a row is
+	/// shorter, and then every row past the gap takes its predecessor's label.
+	/// </param>
 	public static bool ApplyStatedLabels(
 		Engine_FrontEndMenu menu,
 		System.Collections.Generic.IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons,
-		System.Collections.Generic.IReadOnlyList<Engine_UiMenuModel.Row> stated)
+		System.Collections.Generic.IReadOnlyList<Engine_UiMenuModel.Row> stated,
+		bool positionalFallback = true)
 	{
 		var filled = new System.Collections.Generic.List<string>();
 		foreach (Engine_ExpandableMenuItems.Button button in buttons)
@@ -112,10 +127,13 @@ public static class Engine_PauseMenu
 			}
 		}
 
+		// HOST-ONLY ROWS ARE NOT IN THE GUEST'S LIST AND MUST NOT BE COUNTED AGAINST IT. The
+		// guest spawns seven tabs plus Saving; a host tab makes ours longer, and the positional
+		// fallback below would then hand every row after it the label of its predecessor.
 		var offered = new System.Collections.Generic.List<Engine_UiExpandableMenu.Item>();
 		foreach (Engine_UiExpandableMenu.Item root in menu.Roots)
 		{
-			if (root.Available)
+			if (root.Available && !root.HostOnly)
 			{
 				offered.Add(root);
 			}
@@ -160,7 +178,7 @@ public static class Engine_PauseMenu
 			}
 		}
 
-		if (named.Count == offered.Count)
+		if (named.Count == offered.Count || !positionalFallback)
 		{
 			return changed;
 		}

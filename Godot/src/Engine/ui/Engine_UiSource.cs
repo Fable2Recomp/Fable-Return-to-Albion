@@ -48,6 +48,13 @@ public abstract class Engine_UiSource
 		return new List<Engine_UiModel.MenuRow>();
 	}
 
+	/// <summary>
+	/// The screen the captured rows belong to, or <see cref="Engine_UiMenuSources.AnyScreen"/>
+	/// when no in-game screen states one. The capture is a single list; this is what says whose
+	/// population it is. See <see cref="Engine_UiMenuSources.BoundScreen"/>.
+	/// </summary>
+	public virtual uint MenuScreenId() => Engine_UiMenuSources.AnyScreen;
+
 	/// <summary>The Lua-opened option box, or null when none is open.</summary>
 	public virtual Engine_UiModel.MenuBoxState? GetMenuBox() => null;
 
@@ -72,6 +79,7 @@ public abstract class Engine_UiSource
 	/// <summary>Text values by FNV-1 name hash.</summary>
 	public virtual Dictionary<uint, string> GetHudTexts() => new();
 
+
 	/// <summary>The Lua-owned text channel — the other of the HUD's two.</summary>
 	public virtual Dictionary<uint, uint> GetHudScriptTexts() => new();
 
@@ -87,17 +95,21 @@ public abstract class Engine_UiSource
 	public virtual List<Engine_UiModel.Language> GetLanguages() =>
 		new List<Engine_UiModel.Language>();
 
-	/// <summary>Unlocks newer than <paramref name="afterSequence"/>, oldest first.</summary>
+	/// <summary>The guest's achievement writes newer than <paramref name="afterSequence"/>, oldest first.</summary>
 	public virtual Engine_UiModel.AchievementUnlock[] GetAchievementUnlocks(
 		ulong afterSequence, int max = 16) =>
 		System.Array.Empty<Engine_UiModel.AchievementUnlock>();
 
-	/// <summary>One achievement's definition, or null when the id is not registered.</summary>
-	public virtual Engine_UiModel.AchievementDefinition? GetAchievementDefinition(
-		uint achievementId) => null;
+	/// <summary>The title's XDBF resource, or null before the module has launched.</summary>
+	public virtual byte[]? GetTitleXdbf() => null;
 
-	/// <summary>An achievement's icon as PNG bytes, or null.</summary>
-	public virtual byte[]? GetAchievementIconPng(uint achievementId) => null;
+	/// <summary>States the unlocked set (ids with unlock FILETIMEs) for the guest's own enumerator.</summary>
+	public virtual void SetAchievementUnlocks(uint[] ids, ulong[] unlockFiletimes)
+	{
+	}
+
+	/// <summary>How many times the guest has called `XamShowAchievementsUI` this session.</summary>
+	public virtual uint GetAchievementsUiRequests() => 0;
 
 	// ---- THE UI CUT --------------------------------------------------------------------
 

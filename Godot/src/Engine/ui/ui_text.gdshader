@@ -16,6 +16,15 @@ uniform vec4 colour = vec4(1.0);
 // Same contract as ui_quad.gdshader: min.xy, max.xy in the laid-out UI space.
 uniform vec4 clip_rect = vec4(-1e9, -1e9, 1e9, 1e9);
 
+// The element's RESOLVED opacity, written by the clone binding exactly as it writes the quads'.
+//
+// TEXT IGNORED THE RESOLVE UNTIL THIS EXISTED. The binding sets `opacity` on every bound
+// mesh's material, but this shader had no such uniform, so the write was a silent no-op and a
+// text element at accumulated opacity 0 rendered fully opaque — four button prompts drawn over
+// each other with only one icon visible (the icons are quads, which do honour it), and hidden
+// pages' text bleeding through wherever a book selects pages by opacity.
+uniform float opacity = 1.0;
+
 varying vec2 clip_world;
 
 void vertex() {
@@ -38,10 +47,10 @@ void fragment() {
 	vec4 tint = colour * COLOR;
 
 	// The scissor.
-	if (texel.a * tint.a < 0.01) {
+	if (texel.a * tint.a * opacity < 0.01) {
 		discard;
 	}
 
 	ALBEDO = tint.rgb;
-	ALPHA = texel.a * tint.a;
+	ALPHA = texel.a * tint.a * opacity;
 }

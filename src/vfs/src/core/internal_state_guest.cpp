@@ -1354,6 +1354,50 @@ std::string ReadGuestLhString(uint8_t* base, uint32_t handle) {
   return FormatGuestAsciiBytes(base, characters, 256u);
 }
 
+std::string ReadGuestWideString(uint8_t* base, uint32_t handle) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  if (base == nullptr || !plausible(handle)) {
+    return std::string();
+  }
+
+  // THE GUEST HAS TWO STRING CLASSES AND THEY ARE NOT INTERCHANGEABLE.
+  //
+  // Element PATHS are narrow `CCharString`; DISPLAY TEXT is wide UTF-16 `LHString`. Same
+  // one-word handle, same refcount at inner+12, different character width — and different
+  // destructors, which is how a call site tells them apart: a narrow string is released with
+  // `sub_82214DD8`, a wide one with `LHString_CCharString_CCharString_0` (0x821C67F8).
+  //
+  // Reading a wide string with the ASCII reader does not return mojibake, it returns NOTHING:
+  // UTF-16 big-endian puts a zero high byte first, so the very first byte terminates. The
+  // world map's eleven region fields read empty for exactly this reason while the region NAME
+  // beside them read fine — that one really is narrow, being what `sub_82519DF8` hands to
+  // `strcmpi`.
+  const uint32_t inner = LoadGuestU32(base, handle);
+  if (inner == 0 || !plausible(inner)) {
+    return std::string();
+  }
+
+  const uint32_t characters = LoadGuestU32(base, inner);
+  if (!plausible(characters)) {
+    return std::string();
+  }
+
+  // Big-endian, NUL-terminated. Anything outside ASCII becomes '?' rather than being dropped:
+  // a field that is present but unrenderable must not read as an absent field.
+  std::string value;
+  for (uint32_t i = 0; i < 256u; ++i) {
+    const uint32_t at = characters + i * 2u;
+    const uint16_t unit = static_cast<uint16_t>(
+        (static_cast<uint32_t>(LoadGuestU8(base, at)) << 8) | LoadGuestU8(base, at + 1u));
+    if (unit == 0u) {
+      break;
+    }
+    value.push_back(unit < 0x80u ? static_cast<char>(unit) : '?');
+  }
+  return value;
+}
+
 std::string ReadBestEffortGuestString(uint8_t* base,
                                       uint32_t guest,
                                       uint32_t max_chars) {

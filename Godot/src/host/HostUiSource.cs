@@ -38,6 +38,8 @@ public sealed class HostUiSource : Engine_UiSource
 	public override List<Engine_UiModel.MenuRow> GetMenuRows(out ulong generation) =>
 		HostBridge.GetMenuRows(out generation);
 
+	public override uint MenuScreenId() => HostBridge.GetMenuScreenId();
+
 	public override Engine_UiModel.MenuBoxState? GetMenuBox() => HostBridge.GetMenuBox();
 
 	public override Engine_UiModel.PauseState? GetPauseState() => HostBridge.GetPauseState();
@@ -65,11 +67,12 @@ public sealed class HostUiSource : Engine_UiSource
 		ulong afterSequence, int max = 16) =>
 		HostBridge.GetAchievementUnlocks(afterSequence, max);
 
-	public override Engine_UiModel.AchievementDefinition? GetAchievementDefinition(
-		uint achievementId) => HostBridge.GetAchievementDefinition(achievementId);
+	public override byte[]? GetTitleXdbf() => HostBridge.GetTitleXdbf();
 
-	public override byte[]? GetAchievementIconPng(uint achievementId) =>
-		HostBridge.GetAchievementIconPng(achievementId);
+	public override void SetAchievementUnlocks(uint[] ids, ulong[] unlockFiletimes) =>
+		HostBridge.SetAchievementUnlocks(ids, unlockFiletimes);
+
+	public override uint GetAchievementsUiRequests() => HostBridge.GetAchievementsUiRequests();
 
 	public override List<Engine_UiModel.GuiNativeCall> TakeGuiNativeCalls() =>
 		HostBridge.TakeGuiNativeCalls();

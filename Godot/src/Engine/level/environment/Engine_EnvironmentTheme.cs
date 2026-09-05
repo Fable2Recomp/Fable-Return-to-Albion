@@ -380,6 +380,19 @@ public static class Engine_EnvironmentTheme
         return extractor.ExtractToneMap(theme);
     }
 
+    /// <summary>
+    /// Every record in the chain that carries an <c>EnvironmentThemeDaySet</c>, with its name,
+    /// its record type hash and the day set's entry times. The sweep prints it; the runtime
+    /// selects the loaded level's own record rather than the first one found.
+    /// </summary>
+    public static List<(string Owner, uint Type, List<float> Times)> ListDaySetOwners(IReadOnlyList<byte[]> gdbs)
+    {
+        var rows = new List<(string, uint, List<float>)>();
+        var extractor = Extractor.Create(gdbs);
+        extractor?.CollectDaySetOwners(rows);
+        return rows;
+    }
+
     public static bool TryGetDaySetTimes(
         IReadOnlyList<byte[]> gdbs, out List<float> times)
     {
@@ -1156,6 +1169,50 @@ public static class Engine_EnvironmentTheme
             }
 
             return found;
+        }
+
+        public void CollectDaySetOwners(List<(string, uint, List<float>)> rows)
+        {
+            for (int db = 0; db < _views.Count; db++)
+            {
+                foreach (RecordRef level in LookupAllInDb(EnvHash.LevelData, db))
+                {
+                    rows.Add(($"db{db}:LevelData:{_views[db].RecordName(level.Index)}",
+                        _views[db].RecordHash(level.Index),
+                        new List<float> { ResolveRecordField(level, EnvHash.EnvironmentThemeDaySet).Valid ? 1f : 0f }));
+                }
+
+                for (int record = 0; record < _views[db].RecordCount; record++)
+                {
+                    var owner = new RecordRef(db, record, true);
+                    if (!FindLocalField(owner, EnvHash.EnvironmentThemeDaySet, 0xFF, out _))
+                    {
+                        continue;
+                    }
+
+                    RecordRef daySet = ResolveRecordField(owner, EnvHash.EnvironmentThemeDaySet);
+                    var times = new List<float>();
+                    if (daySet.Valid)
+                    {
+                        foreach (GdbField field in _views[daySet.Db].Fields(daySet.Index))
+                        {
+                            byte type = (byte)field.Type;
+                            if (type != 4 && type != 6 && type != 7)
+                            {
+                                continue;
+                            }
+
+                            RecordRef entry = FieldToRecord(field);
+                            if (entry.Valid && ReadFloat(entry, EnvHash.TimeOfDay, out float t))
+                            {
+                                times.Add(ToLinearInput(t));
+                            }
+                        }
+                    }
+
+                    rows.Add(($"db{db}:{_views[db].RecordName(record)}", _views[db].RecordHash(record), times));
+                }
+            }
         }
 
         private RecordRef FindDaySet(bool levelOnly)

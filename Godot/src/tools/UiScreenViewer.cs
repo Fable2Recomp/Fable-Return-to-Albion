@@ -623,6 +623,22 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 
 				foreach (BgfSlideEntry e in s.Entries)
 				{
+					// The tracks a slide activates — a fade's END POSE lives in the last key, not
+					// in the command, which only holds the value the tween starts from.
+					foreach (int index in e.ActivatedAnimations ?? System.Array.Empty<int>())
+					{
+						if (index < 0 || index >= doc.Animations.Length)
+							continue;
+
+						BgfAnimation track = doc.Animations[index];
+						string trackTarget = track.ElementOrdinal >= 0 && track.ElementOrdinal < screen.Nodes.Length
+							? screen.Nodes[track.ElementOrdinal].Name
+							: $"<{track.ElementOrdinal}>";
+						string keys = string.Join(" ", track.Keys.Select(k => $"{k.Time:0.###}:{k.Value:0.###}"));
+						GD.Print($"          {(e.Active ? "on " : "off")} {trackTarget,-18} " +
+							$"{Engine_BgfAttributeNames.Describe(track.AttributeId),-16} track      [{keys}]");
+					}
+
 					if (e.CommandCount == 0)
 						continue;
 

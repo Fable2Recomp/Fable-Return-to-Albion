@@ -1,0 +1,87 @@
+using System.Collections.Generic;
+using Godot;
+
+namespace Refii.Ui;
+
+/// <summary>Everything a detail page can be filled from, gathered once per ask.</summary>
+public readonly struct Engine_UiPageContext
+{
+	public required uint ScreenId { get; init; }
+
+	public required Engine_UiExpandableMenu.Item? Row { get; init; }
+
+	public required Refii.Host.HostBridge.HeroVitals Vitals { get; init; }
+
+	public required Refii.Host.HostBridge.HeroDerived Hero { get; init; }
+
+	public required List<Refii.Host.HostBridge.CompletedQuest> Quests { get; init; }
+
+	public required Refii.Host.HostBridge.CrimeScreen Crime { get; init; }
+
+	public required Refii.Host.HostBridge.WorldMapRegion WorldMap { get; init; }
+
+	public required Refii.Host.HostBridge.GameOptions Options { get; init; }
+
+	public required Refii.Host.HostBridge.OptionSliders Sliders { get; init; }
+
+	public required Refii.Text.Engine_BabelDatabase? Strings { get; init; }
+
+	public bool OptionsPageOpen { get; init; }
+
+	/// <summary>Whether the rows on screen are the host's rather than the guest's pool.</summary>
+	public bool HostRows { get; init; }
+}
+
+/// <summary>
+/// ONE SHAPE FOR EVERY DETAIL PAGE.
+///
+/// A screen used to be six cases: `Owns`, `Values`, `Textures`, `Active`, `Positions` and
+/// `Slides` each switched on the screen id in `Engine_UiDetailPages`, so a screen's behaviour was
+/// spread over six places and every screen could be wrong in a different way. A provider is that
+/// screen's whole answer, and the template names it — so adding a screen is a template record,
+/// and a fault in the shared fill breaks every screen identically instead of one obscurely.
+///
+/// Every member has a default, so a provider states only what its screen actually has.
+/// </summary>
+public interface Engine_UiPageProvider
+{
+	/// <summary>Field values as final display text, by dotted element path.</summary>
+	IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page) =>
+		Engine_UiPageProviders.NoValues;
+
+	/// <summary>Quads the provider textures itself, by element path to texture id.</summary>
+	IReadOnlyDictionary<string, uint> Textures(in Engine_UiPageContext page) =>
+		Engine_UiPageProviders.NoTextures;
+
+	/// <summary>Elements the provider switches on or off outright.</summary>
+	IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
+		Engine_UiPageProviders.NoActive;
+
+	/// <summary>Elements the provider places itself.</summary>
+	IReadOnlyDictionary<string, Vector3> Positions(in Engine_UiPageContext page) =>
+		Engine_UiPageProviders.NoPositions;
+
+	/// <summary>Components the provider switches to a stated slide.</summary>
+	IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page) =>
+		Engine_UiPageProviders.NoSlides;
+
+	/// <summary>
+	/// Whether this screen needs the guest's option sliders read this frame.
+	///
+	/// ASKING COSTS A TREE WALK. `GetOptionSliders` walks the guest's LIVE screen map from
+	/// Godot's thread, and on a screen that has no sliders it walks the whole thing to answer
+	/// "not present" — every frame. Only the screen that has them says so.
+	/// </summary>
+	bool NeedsOptionSliders => false;
+
+	/// <summary>
+	/// A chance to ask the host for what this screen's fill will need, before it is filled.
+	///
+	/// The world map is why this exists: the region pump samples on its own thread and answers a
+	/// tick later, so naming the region now is what makes the NEXT frame's answer this cursor's.
+	/// That was a screen-id branch in `GameUi`; it is the screen's own business.
+	/// </summary>
+	void Prepare(in Engine_UiPageContext page)
+	{
+	}
+}

@@ -126,6 +126,7 @@ public partial class Engine_ShaderWarmup : Node
 
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("shaderwarmup");
 		if (Done)
 		{
 			_spinner?.QueueRedraw();

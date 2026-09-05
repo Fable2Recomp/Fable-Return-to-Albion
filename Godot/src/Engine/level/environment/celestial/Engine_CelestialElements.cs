@@ -311,10 +311,17 @@ public static class Engine_CelestialElements
                     material.SetShaderParameter("element_half", new Vector2(
                         element[6] * SunDiscSizeScale,
                         element[6] * SunDiscSizeScale));
+                    // THE ATMOSPHERE IS A FACTOR OF THE DISC. The guest's pixel constant for
+                    // the disc is `sky[144] * SUN_DISC_COLOUR * SUN_DISC_INTENSITY`
+                    // (`Render_QueryGatedEffectDraw_INFERRED_2`, 0x821D8658), and sky[144] is the
+                    // sun colour after `sub_82263570`'s Rayleigh/Mie attenuation by the sun's
+                    // zenith angle — the same tint the beams and glare take here. Without it
+                    // the disc is the authored colour at full intensity whenever it is above
+                    // the horizon: the huge flat white ball in the night sky.
                     material.SetShaderParameter("element_colour", new Vector4(
-                        element[8] * element[7],
-                        element[9] * element[7],
-                        element[10] * element[7], 1f));
+                        sunTint[0] * element[8] * element[7],
+                        sunTint[1] * element[9] * element[7],
+                        sunTint[2] * element[10] * element[7], 1f));
                     mesh.Visible = sunActive && element[7] >= IntensityGate;
                     break;
                 case "SunGlare":

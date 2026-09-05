@@ -1,40 +1,28 @@
 #!/usr/bin/env bash
 # Unattended run + verdict for the packaged game.
 #
-#   tools/refii_smoke.sh [seconds] [--walk] [--no-autostart] [--drop-core] [--gdb]
+#   tools/refii_smoke.sh [seconds] [--drop-core] [--gdb]
 #
 # Drives a run with nobody at the keyboard and classifies how it ended. It does NOT build:
 # it runs whatever is in out/package, so a stale package silently tests old code — the
 # preflight prints the package's build time for exactly that reason.
 #
-# The two levers are the game's own, not new ones: REFII_AUTO_START=1 presses A through the
-# title and main menu until the front end hands over, and REFII_FAKE_STICK=1 holds the left
-# stick forward so the hero walks.
-#
-# WALKING IS OPT-IN (`--walk`). It was the default while the crash under investigation only
-# appeared once NPCs were repathing, and it made the game unusable to drive by hand — the hero
-# runs off on his own the moment you take over. Ask for it when the thing being tested needs
-# the world moving; leave it off to watch a scene, reproduce something manually, or hand the
-# controls back.
-set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PKG="$ROOT/out/package/Fable 2 Return to Albion"
+# The packaged tree to run. The export's output path has moved before (it is now under
+# out/package/<platform>/), and a stale tree tests old code silently — so this is overridable
+# rather than fixed, and the preflight prints the build time it actually found.
+PKG="${REFII_SMOKE_PKG:-$ROOT/out/package/Fable 2 Return to Albion}"
 EXE="$PKG/Fable 2 Return to Albion.x86_64"
 GUEST_LOGS="$PKG/logs"
 GODOT_LOG="$HOME/.local/share/godot/app_userdata/Fable 2 Launcher/logs/godot.log"
 OUT="$HOME/.cache/refii-scratch/smoke"      # NEVER the root partition
 SECONDS_BUDGET=180
-WALK=0
-AUTOSTART=1
 DROP_CORE=0
 UNDER_GDB=0
 
 for arg in "$@"; do
   case "$arg" in
-    --walk)         WALK=1 ;;
-    --no-walk)      WALK=0 ;;
-    --no-autostart) AUTOSTART=0 ;;
     --drop-core)    DROP_CORE=1 ;;
     --gdb)          UNDER_GDB=1 ;;
     ''|*[!0-9]*)    echo "unknown argument: $arg" >&2; exit 2 ;;
@@ -48,6 +36,26 @@ REPORT="$OUT/$STAMP.txt"
 exec > >(tee "$REPORT") 2>&1
 
 say() { printf '%s\n' "$*"; }
+
+# THE PIDS OF ACTUAL GAMES, resolved through /proc/PID/exe rather than matched on a command
+# line.
+#
+# `pgrep -f 'Albion[.]x86_64'` matches any process whose ARGUMENTS contain that text — and the
+# package build's own cmake invocation carries `-DOUT_BINARY=Fable 2 Return to Albion.x86_64`,
+# so a build in progress reads as a running game. The preflight would then refuse to start,
+# or the runner would take cmake's pid for the game's and watch the wrong process.
+#
+# Same family as the `pkill` whose pattern matched its own command line and left a real game
+# running for twenty minutes. Match on what a process IS, not on what its arguments say.
+game_pids() {
+  local pid exe
+  for pid in $(pgrep -f 'Albion' 2>/dev/null); do
+    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null) || continue
+    case "$exe" in
+      */"Fable 2 Return to Albion.x86_64") printf '%s\n' "$pid" ;;
+    esac
+  done
+}
 rule() { printf -- '---- %s\n' "$*"; }
 
 # utime+stime+cutime+cstime for a pid. The comm field is parenthesised AND contains spaces
@@ -82,10 +90,10 @@ fi
 # finish tearing down its window and its guest, and back-to-back invocations were failing
 # preflight against a process that was already on its way out.
 for _ in $(seq 1 12); do
-  pgrep -f 'Albion[.]x86_64' >/dev/null || break
+  [ -n "$(game_pids)" ] || break
   sleep 2
 done
-if pgrep -f 'Albion[.]x86_64' >/dev/null; then
+if [ -n "$(game_pids)" ]; then
   say "FAIL: an instance is still running after 24s; not starting a second"
   exit 2
 fi
@@ -101,11 +109,18 @@ fi
 CORES_BEFORE=$(coredumpctl list --no-pager 2>/dev/null | grep -c 'Albion' || true)
 
 # ---------------------------------------------------------------- run
-rule "run (${SECONDS_BUDGET}s budget, walk=$WALK autostart=$AUTOSTART)"
+rule "run (${SECONDS_BUDGET}s budget)"
 
-ENVV=()
-[ "$AUTOSTART" = 1 ] && ENVV+=("REFII_AUTO_START=1")
-[ "$WALK" = 1 ]      && ENVV+=("REFII_FAKE_STICK=1")
+# REFII_AUTO_LAUNCH drives the LAUNCHER — it presses the primary action until a game window
+# opens, which installs the assets and builds the game code on the way if either is missing.
+# Without it an unattended run stops on "Build Game Code" with nobody to click it, and reports
+# `never-reached-gameplay` for a reason that has nothing to do with the code under test.
+ENVV=("REFII_AUTO_LAUNCH=1")
+
+# The live debug channel (GameDebugServer): a loopback JSON socket on the first free port, whose
+# {pid, port, boot} the game publishes to a handshake file. On unless a run opts out, because a
+# run nobody can question while it is up has to be repeated to ask anything of it.
+[ "${REFII_NO_DEBUG_PORT:-0}" = 1 ] || ENVV+=("REFII_DEBUG_PORT=1")
 
 # Under gdb the game is gdb's CHILD, which is the only way to get a stack while
 # /proc/sys/kernel/yama/ptrace_scope is 1.
@@ -117,7 +132,7 @@ else
 fi
 RUNNER=$!
 sleep 2
-GAME_PID=$(pgrep -f 'Albion[.]x86_64' | head -1)
+GAME_PID=$(game_pids | head -1)
 say "pid ${GAME_PID:-unknown}"
 
 # CODEGEN IS NOT A STALL. When the payload fingerprint changes — which an overlay install
@@ -241,7 +256,7 @@ if [ "$VERDICT" = "hang" ]; then
 fi
 
 if [ -n "$SETTLED" ]; then
-  say "RESULT: reached-gameplay (walk=$WALK) over ${SECONDS_BUDGET}s"
+  say "RESULT: reached-gameplay over ${SECONDS_BUDGET}s"
   exit 0
 fi
 

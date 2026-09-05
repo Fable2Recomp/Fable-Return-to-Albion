@@ -214,6 +214,55 @@ public sealed class Engine_GmdSkeleton
     }
 
     /// <summary>
+    /// The NODE a stated dummy hangs from, without composing anything — the answer for a model
+    /// that is being posed, where the node's ancestors are live bones rather than bind-pose
+    /// transforms.
+    ///
+    /// <paramref name="index"/> is the guest's dummy index: `sub_822650A0` lower-bounds the
+    /// name's CRC in the sorted table and then steps <c>index</c> records forward, so it selects
+    /// WITHIN the run of equally-named dummies rather than among all of them.
+    ///
+    /// Returns -1 in <paramref name="node"/> for a dummy that hangs from the model root.
+    /// </summary>
+    public bool TryResolveNode(string dummy, int index, out int node)
+    {
+        node = -1;
+        if (dummy.Length == 0)
+        {
+            return false;
+        }
+
+        int seen = 0;
+        foreach (GmdAttachment attachment in Attachments)
+        {
+            if (!attachment.Name.Equals(dummy, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (seen++ < index)
+            {
+                continue;
+            }
+
+            node = attachment.Node;
+            return true;
+        }
+
+        // The dummy IS a node. The guest has this case too: with no `.gmd` record it looks the
+        // name up in the skeleton's own CRC map, and the dummy is then coincident with its bone.
+        int named = Array.FindIndex(
+            Names, n => n.Equals(dummy, StringComparison.OrdinalIgnoreCase));
+        if (named < 0)
+        {
+            return false;
+        }
+
+        node = named;
+        return true;
+    }
+
+    /// <summary>
     /// A node's transform in model space — its own local with every ancestor's applied outside
     /// it, which is what makes a dummy hanging off bone 4 land at the lamp's head rather than at
     /// its foot.

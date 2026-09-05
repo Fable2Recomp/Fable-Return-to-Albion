@@ -1999,8 +1999,68 @@ public partial class LauncherApp : Control
 	}
 
 	/// <summary>Asks how many cores the compile may use, then proceeds.</summary>
+	/// <summary>
+	/// UNATTENDED MODE — `REFII_AUTO_LAUNCH=1`. Drives the launcher with nobody at the keyboard:
+	/// the primary button is pressed until a game window opens, and every dialog that would wait
+	/// for a person answers itself.
+	///
+	/// It is the SAME path a player takes, not a shortcut around it. `OnPrimaryPressed` already
+	/// is the whole flow — install the assets, generate and compile the game code, download a
+	/// missing runtime, then open the window — so unattended mode presses that one button and
+	/// lets it decide. Copying a prebuilt `librefii_generated.so` into the tree instead would
+	/// test an install nobody performed.
+	/// </summary>
+	private static readonly bool Unattended =
+		System.Environment.GetEnvironmentVariable("REFII_AUTO_LAUNCH") == "1";
+
+	/// <summary>Seconds since unattended mode last pressed the button; it must not spam.</summary>
+	private double _autoPressAge;
+
+	/// <summary>
+	/// Presses the primary action when nothing is in flight. Gated on the same three latches the
+	/// button's own enable uses, so it can never re-enter a build or an install that is running.
+	/// </summary>
+	private void DriveUnattended(double delta)
+	{
+		_autoPressAge += delta;
+		if (_autoPressAge < AutoPressInterval)
+		{
+			return;
+		}
+
+		// THE WINDOW IS IN THIS PROCESS, so `GameIsRunning` — which watches for a spawned
+		// executable — never becomes true and cannot end the loop. Ask the window itself.
+		if (Refii.Game.GameWindow.IsOpen)
+		{
+			return;
+		}
+
+		if (_installInProgress || _ops is not null || _prebuilding || _launch.GameIsRunning ||
+			_downloadProgress is not null)
+		{
+			// Something is running. Hold the clock at zero so the next press waits a full
+			// interval after it finishes rather than firing the instant it does.
+			_autoPressAge = 0.0;
+			return;
+		}
+
+		_autoPressAge = 0.0;
+		Log("Unattended: pressing the primary action.");
+		OnPrimaryPressed();
+	}
+
+	/// <summary>Long enough that a state change settles before the next press is considered.</summary>
+	private const double AutoPressInterval = 3.0;
+
 	private void AskBuildSpeed(string heading, Action<bool> proceed)
 	{
+		// Nobody is here to choose. All cores is what an unattended run wants anyway.
+		if (Unattended)
+		{
+			proceed(true);
+			return;
+		}
+
 		var dialog = new BuildSpeedDialog(null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle, heading);
 		dialog.Chosen += useAllCores => proceed(useAllCores);
 		AddChild(dialog);
@@ -2216,6 +2276,7 @@ public partial class LauncherApp : Control
 
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("launcherapp");
 		_backgrounds.Update((float)delta);
 		UpdateArtCredit();
 
@@ -2235,6 +2296,11 @@ public partial class LauncherApp : Control
 		if (_downloadProgress is not null || _launch.GameIsRunning != _primaryButton.Disabled)
 		{
 			RefreshState();
+		}
+
+		if (Unattended)
+		{
+			DriveUnattended(delta);
 		}
 	}
 }

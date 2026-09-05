@@ -14,11 +14,22 @@ public static class Engine_EntityModels
     public const uint LegsAccessories = 0x3D7B3380;
     public const uint TorsoAccessories = 0xF5B074D4;
 
+    /// <summary>
+    /// The model fields a character's parts come from.
+    ///
+    /// NO EYE CASES. `RightEyeCaseModel` (0xFB479147) and `LeftEyeCaseModel` (0xCF68CC70) were
+    /// in this list and are the reason NPC eyes read as a flat, featureless patch: the guest
+    /// READS both fields and throws the results away — `sub_825B5160` stores `RightEyeModel`
+    /// through `sub_8259D380` and `LeftEyeModel` through `sub_8259D3F8` (0x825B56AC, 0x825B56CC)
+    /// and then calls `sub_82783418` for the two case fields at 0x825B56E0 and 0x825B56F4 with
+    /// no store after either. Component 7's case slots (comp7+0x1C, +0x2C) therefore stay 0 and
+    /// no case instance is ever created. Drawing them puts an opaque lens over the iris.
+    /// </summary>
     private static readonly uint[] PartFields =
     {
         0x05294B89, 0x547DDA3E, 0xD622E5AD,
         0x139ADC04, 0x926B168B, 0x8D09F54F, 0x8D09F551, 0x8D09F56E,
-        0x6503BD45, 0x6503BD5B, 0xCF68CC70, 0xFB479147,
+        0x6503BD45, 0x6503BD5B,
         0xA0CFEC37,
         0x017CDC23, 0x017CDC24, 0x017CDC25, 0x017CDC26, 0x017CDC27,
     };

@@ -1,3 +1,7 @@
+#include <chrono>
+#include <cstring>
+#include <cstdlib>
+#include <thread>
 #include "vfs_hooks_private.h"
 
 #if REFII_VFS_HAS_RENDERER_RUNTIME
@@ -1682,22 +1686,43 @@ REX_EXTERN(sub_82A41B48) {
   REX_FUNC_PROLOGUE();
 
 
-  // Bink movie open. Capture the frame-buffer block BEFORE the passthrough below, which
-  // returns early whenever the loose-asset backend is off — i.e. always, in a bank
-  // build — so anything after it never runs.
-  //
-  // BINKFRAMEBUFFERS is inline at player+68 (sub_82A42D20: `v2 = a1 + 68;
-  // memset(a1 + 68, 0, 0x78); BinkGetFrameBuffersInfo(*(a1 + 64), v2)`), so the ADDRESS
-  // is valid on entry even though the contents are filled during the call. The host
-  // polls, so it picks the contents up on a later frame.
-  refii::vfs::NoteBinkMovieOpen(ctx.r3.u32, base);
-
   // r4 is the file name handed to BinkOpen (`sub_832BB4B8(a2, *(a1 + 224))`). Capturing
   // it is what lets the host play the video itself rather than scraping the guest's
-  // decoded planes — no dependence on the guest's render path or its frame timing.
+  // decoded planes — no dependence on the guest's render path or its frame timing. Read
+  // BEFORE the call, which is free to clobber the argument registers.
   refii::vfs::NoteBinkVideoRequested(base, ctx.r4.u32);
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82A41B48);
+  // Bink movie open. r3 is B, the BINK object; saved now because the call returns its own
+  // value in r3.
+  const uint32_t bink_object = ctx.r3.u32;
+
+  // BINKFRAMEBUFFERS is inline at player+68 (sub_82A42D20: `v2 = a1 + 68;
+  // memset(a1 + 68, 0, 0x78); BinkGetFrameBuffersInfo(*(a1 + 64), v2)`), so the ADDRESS is
+  // valid on entry even though the contents are filled during the call.
+  //
+  // PUBLISHED AFTER THE CALL, NOT BEFORE, and that ordering is the whole point.
+  //
+  // Publishing the player is what makes `BinkMovieDestRect` start answering — it reports a
+  // rect the moment `g_bink_player` is non-zero. But the guest has not stated the rect yet
+  // at this point and will not until AFTER this function returns: the startup queue's
+  // constructor `sub_82389040` calls us at 0x8238910C and only then builds
+  // `{0, 0, BackBufferWidth, BackBufferHeight}` on its stack and hands it to
+  // `sub_82A41E30` at 0x82389148, which writes the four floats at B+8/+12/+16/+20
+  // (0x82a41e58 / e78 / e98 / eb8).
+  //
+  // Until that write those sixteen bytes are UNINITIALISED HEAP. The player is a raw
+  // 248-byte allocation and the constructor's own zeroing loop covers B+188..B+219 only —
+  // it never touches B+8. So a host that publishes on entry exposes a window as wide as
+  // the Bink file open itself, and a poll landing in it reads a destination rect the guest
+  // never stated. Godot then judged the movie non-fullscreen, stopped drawing it, and left
+  // it playing over the title. Moving the publish here narrows that window to the handful
+  // of instructions between this return and 0x82389148, with no I/O in it.
+  //
+  // Note this does NOT make the rect atomic with the open — it cannot, they are two guest
+  // calls. It removes the part of the window that is wide enough to hit.
+  __imp__sub_82A41B48(ctx, base);
+  refii::vfs::NoteBinkMovieOpen(bink_object, base);
+  return;
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
@@ -3079,5 +3104,190 @@ REX_EXTERN(rex_lhFile_CloseAndRelease) {
     REXLOG_INFO("VFS trace GameData file close/release exit lr=0x{:08X} "
                 "result=0x{:08X}",
                 original_ctx.lr, ctx.r3.u32);
+  }
+}
+
+// ============================================================================================
+// PRESENT PACING — the vblank the null device does not have.
+//
+// On hardware every swap waited for a vblank (presentation interval 2 at 60 Hz = 30 fps) and
+// the CPU felt it through the swap fence in `D3DDevice_Swap`. The no-GPU latch makes every
+// fence pass at once, so the 3D Engine thread presented ~186 times a second into nothing,
+// two cores spinning (measured 2026-09-04) and Godot's main thread starved on a 16-core box
+// at load 22. `rex_lhRenderer_EndScene` (0x82B6F1D0, `Render_PresentFrame`) is the guest's
+// present; after it returns this thread sleeps until the next 1/REFII_PRESENT_HZ boundary,
+// the wait a vblank would have imposed. The completion publisher stamps completions in real
+// time, so the sim clock (`sub_82B6FCE8` from the completion stamp) sees a steady 30 Hz.
+// REFII_PRESENT_HZ=0 leaves the guest unthrottled.
+// ============================================================================================
+namespace {
+
+std::chrono::steady_clock::duration PresentPeriod() {
+  static const std::chrono::steady_clock::duration period = [] {
+    const char* value = std::getenv("REFII_PRESENT_HZ");
+    int hz = 30;
+    if (value != nullptr) {
+      hz = std::atoi(value);
+    }
+    if (hz <= 0) {
+      return std::chrono::steady_clock::duration::zero();
+    }
+    return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(1.0 / hz));
+  }();
+  return period;
+}
+
+void PaceGuestPresent() {
+  const auto period = PresentPeriod();
+  if (period == std::chrono::steady_clock::duration::zero()) {
+    return;
+  }
+
+  static std::chrono::steady_clock::time_point next{};
+  const auto now = std::chrono::steady_clock::now();
+  if (next < now - period) {
+    next = now;  // fell behind (a load, a stall): resume from now rather than catch up
+  }
+
+  if (next > now) {
+    std::this_thread::sleep_until(next);
+  }
+
+  next += period;
+}
+
+}  // namespace
+
+REX_EXTERN(rex_lhRenderer_EndScene) {
+  REX_FUNC_PROLOGUE();
+  __imp__rex_lhRenderer_EndScene(ctx, base);
+  PaceGuestPresent();
+}
+
+// ============================================================================================
+// THE NULL RENDER FRAME. Godot renders; the guest's 3D Engine thread still walked its scene,
+// built every draw and handed it to a device that discards it — ~30% of a core after pacing,
+// two cores before. `Render_SubPassOrchestrator_INFERRED` (sub_821C3C60) is the whole draw:
+// material/sampler setup, the render context and frustum, shader constants, the opaque pass,
+// the transparent/post pass, the fullscreen effects. Both call sites in `sub_821C3858`
+// (0x821C3B38, 0x821C3B4C) branch past its result. Everything the rest of the game reads
+// back happens OUTSIDE it and still runs: the ring replay and fence that the GameThread waits
+// on (`sub_822DFE08`, opcode 17), view create/destroy, the preload gate → `IsEnginePreLoading`,
+// fades, camera keyframes, the loading-screen state machine and its PulseEvent, the Bink and
+// pub-game state machines, the engine's rendered-time stamp, the present. REFII_GUEST_RENDER=1
+// restores the guest's draw (a reference instrument, like the renderer build).
+// ============================================================================================
+namespace {
+
+// The guest's draw is OFF: Godot renders. REFII_GUEST_RENDER=1 is a diagnostic only.
+bool GuestRenderWanted() {
+  static const bool wanted = [] {
+    const char* value = std::getenv("REFII_GUEST_RENDER");
+    return value != nullptr && std::string_view(value) == "1";
+  }();
+  return wanted;
+}
+
+}  // namespace
+
+REX_EXTERN(sub_821C3C60) {
+  REX_FUNC_PROLOGUE();
+  if (GuestRenderWanted()) {
+    __imp__sub_821C3C60(ctx, base);
+    return;
+  }
+
+  // THE TWO QUESTIONS THE DRAW USED TO ANSWER, ANSWERED BY THE HOST. Nothing in the guest
+  // draws any more, so "are this view's textures resident?" has one honest answer: yes,
+  // Godot has them. Two readers ask it: the pre-warm `sub_82A54500` (evaluates every layer
+  // node's readiness and sets the view's warmed byte at +3692, else waits out a timeout at
+  // +3704 — the level load sat 6 minutes on that) and the texture holders' boxes (`box+8`,
+  // written by `sub_82A67188` from the resident mip; the front-end tick waits on two and
+  // parks the title in state 9). Both readiness paths needed the draw to REQUEST the
+  // textures first (`*(tex+132)` wanted mips), so calling them here produced nothing.
+  //
+  // Views: the table `dword_8349F79C..dword_8349F7A0` (128 slots), each V with +3692 the
+  // warmed byte and the object container at V+3412: sorted 24-byte nodes from `*(list+4)`
+  // to `*(list+8)`, node+0 the object tag, node+12..+16 the object pointer array
+  // (`sub_82A8B998`, `sub_821D4F60`). Tag 46 = texture holder (`sub_82A41680`: +80 box).
+  // Verified live 2026-09-04 against the front end (2218 holders) and the level view.
+  const auto load32 = [base](uint32_t at) {
+    uint32_t raw;
+    std::memcpy(&raw, base + at, sizeof(raw));
+    return __builtin_bswap32(raw);
+  };
+  const auto store32 = [base](uint32_t at, uint32_t value) {
+    const uint32_t raw = __builtin_bswap32(value);
+    std::memcpy(base + at, &raw, sizeof(raw));
+  };
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xE0000000u; };
+
+  static uint32_t frames = 0, warmed = 0, boxes = 0;
+  ++frames;
+
+  // THE COMPLETION DRAIN STAYS. Streamed-texture reads complete in `sub_82191F50` (each
+  // pending entry's vtable +20 → `sub_82A7AF68`, `--dword_83496E78`), which the draw called
+  // from its post pass and nothing else calls while a view is up. The level's declared
+  // textures (the preload list `dword_8349FB5C`, processed by `sub_82181828`) are read
+  // regardless of drawing and their completions gate `IsEnginePreLoading`: without this
+  // call the fence monitor showed "streamed-texture residency BLOCKS the level load" for
+  // five minutes (2026-09-04, build131).
+  __imp__sub_82191F50(ctx, base);
+
+  const uint32_t table_begin = load32(0x8349F79Cu);
+  const uint32_t table_end = load32(0x8349F7A0u);
+  if (!plausible(table_begin) || table_end < table_begin || table_end - table_begin > 4u * 1024u) {
+    return;
+  }
+
+  for (uint32_t slot = table_begin; slot + 4u <= table_end; slot += 4u) {
+    const uint32_t view = load32(slot);
+    if (!plausible(view)) {
+      continue;
+    }
+
+    if (base[view + 3692u] == 0u) {
+      base[view + 3692u] = 1u;
+      ++warmed;
+    }
+
+    const uint32_t list = view + 3412u;
+    const uint32_t nodes_begin = load32(list + 4u);
+    const uint32_t nodes_end = load32(list + 8u);
+    if (!plausible(nodes_begin) || nodes_end < nodes_begin || (nodes_end - nodes_begin) % 24u != 0u ||
+        nodes_end - nodes_begin > 24u * 256u) {
+      continue;
+    }
+
+    for (uint32_t node = nodes_begin; node + 24u <= nodes_end; node += 24u) {
+      if (load32(node) != 46u) {
+        continue;
+      }
+
+      const uint32_t objects_begin = load32(node + 12u);
+      const uint32_t objects_end = load32(node + 16u);
+      if (!plausible(objects_begin) || objects_end < objects_begin ||
+          objects_end - objects_begin > 4u * 4096u) {
+        continue;
+      }
+
+      for (uint32_t at = objects_begin; at + 4u <= objects_end; at += 4u) {
+        const uint32_t holder = load32(at);
+        if (!plausible(holder) || load32(holder + 4u) != 46u) {
+          continue;
+        }
+
+        const uint32_t box = load32(holder + 80u);
+        if (plausible(box) && load32(box + 8u) == 0u) {
+          store32(box + 8u, 1u);
+          ++boxes;
+        }
+      }
+    }
+  }
+
+  if (frames % 300u == 1u) {
+    REXLOG_INFO("Refii null-frame: frames={} views warmed={} boxes stated={}", frames, warmed, boxes);
   }
 }

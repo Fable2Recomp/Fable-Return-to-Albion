@@ -14,16 +14,16 @@
 // folder the SDK would otherwise infer.
 #include "refii_host.h"
 
-#include <achievement/achievement_imgui.h>
-#include <achievement/achievement_xdbf.h>
+#include <achievement/achievement_runtime.h>
+#include <fmt/format.h>
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 #include <rex/system/kernel_state.h>
+#include <rex/system/user_module.h>
 #include <rex/input/input_system.h>
 #include <rex/input/nop/nop_input_driver.h>
-#include <rex/system/util/xdbf_utils.h>
 
 #include "host_audio.h"
 #include "host_input.h"
@@ -38,6 +38,7 @@
 #endif
 
 #include <algorithm>
+#include <span>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
@@ -357,19 +358,31 @@ inline void RefiiLogRuntimeBackendSplit() {
               renderer_backend, renderer_backend == "plume" ? "true" : "false");
 }
 
-inline void
-RefiiCacheAchievementMetadata(rex::system::KernelState *kernel_state) {
+// The title's XDBF resource — the section named by the title id inside the executable
+// module — handed to the achievement seam once, for Godot to parse. The definitions, the
+// strings and the icons are all in it; nothing native reads them any more.
+inline void RefiiPublishTitleXdbf(rex::system::KernelState *kernel_state) {
   if (kernel_state == nullptr) {
     return;
   }
 
-  const rex::system::util::XdbfGameData db = kernel_state->title_xdbf();
-  if (!db.is_valid()) {
+  const rex::system::object_ref<rex::system::UserModule> module =
+      kernel_state->GetExecutableModule();
+  if (!module) {
     return;
   }
 
-  refii::achievement::CacheAchievementsFromXdbf(
-      db, rex::system::util::XdbfSection::kImage, db.default_language());
+  uint32_t resource_data = 0;
+  uint32_t resource_size = 0;
+  if (XFAILED(module->GetSection(fmt::format("{:08X}", module->title_id()).c_str(),
+                                 &resource_data, &resource_size)) ||
+      resource_data == 0 || resource_size == 0) {
+    return;
+  }
+
+  const uint8_t *bytes = kernel_state->memory()->TranslateVirtual(resource_data);
+  refii::achievement::SetTitleXdbf(
+      std::span<const uint8_t>(bytes, static_cast<size_t>(resource_size)));
 }
 
 } // namespace
@@ -522,23 +535,14 @@ public:
 #endif
   }
 
-  void OnConfigureFonts(ImFontAtlas *atlas) override {
-    refii::achievement::ConfigureAchievementFonts(atlas);
-  }
-
-  void OnCreateDialogs(rex::ui::ImGuiDrawer *drawer) override {
-    refii::achievement::RegisterAchievementImGui(drawer, immediate_drawer());
-  }
-
   void OnPostLaunchModule(rex::system::XThread *thread) override {
     (void)thread;
     if (runtime() != nullptr) {
-      RefiiCacheAchievementMetadata(runtime()->kernel_state());
+      RefiiPublishTitleXdbf(runtime()->kernel_state());
     }
   }
 
   void OnShutdown() override {
-    refii::achievement::UnregisterAchievementImGui();
 #if REFII_HAS_RENDERER_RUNTIME
     refii::renderer::ShutdownRendererPresentPump();
     refii::renderer::DetachPlumeImGuiFromReXGlue();

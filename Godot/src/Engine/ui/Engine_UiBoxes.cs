@@ -28,6 +28,9 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 	/// <summary>The authored option cap — the guest refuses a seventh.</summary>
 	public const int MaxOptions = 6;
 
+	/// <summary>The remaster's readability bump on the option labels — see FromPatternBook.</summary>
+	private const float ChoiceTextScale = 2f;
+
 	public const string GroupName = "Group";
 
 	public Engine_UiTheme? Theme { get; set; }
@@ -97,6 +100,24 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 			// option, and a shared material would fade the pattern book.
 			Engine_UiSceneBuilder.OwnSubtreeMaterials(clone);
 
+			// REMASTER: the option labels are authored at node scale 0.4 over an 18pt face —
+			// about seven pixels at the original 720 canvas, and the shipped game showed them
+			// that small too. The frame band around each row is ~24 units tall, so doubling the
+			// label still sits inside it. Only the TEXT scales; the art keeps its layout.
+			for (int i = 0; i < MaxOptions; ++i)
+			{
+				// The shipped file frames the label: `Choice1/Frame/Choice1`.
+				Node3D? label =
+					clone.GetNodeOrNull<Node3D>(
+						$"Choices/Multiplayer_Button{i + 1}/Choice1/Frame/Choice1") ??
+					clone.GetNodeOrNull<Node3D>(
+						$"Choices/Multiplayer_Button{i + 1}/Choice1/Choice1");
+				if (label is not null)
+				{
+					label.Scale *= ChoiceTextScale;
+				}
+			}
+
 			panel.AddChild(clone);
 			panel._group = clone;
 			panel.HasShippedArt = true;
@@ -142,7 +163,8 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 			}
 
 			if (labels[i] is { Length: > 0 } label &&
-				button.GetNodeOrNull<MeshInstance3D>("Choice1/Choice1") is { } labelNode)
+				(button.GetNodeOrNull<MeshInstance3D>("Choice1/Frame/Choice1") ??
+				 button.GetNodeOrNull<MeshInstance3D>("Choice1/Choice1")) is { } labelNode)
 			{
 				Theme.SetMeshText(labelNode, label);
 			}
@@ -877,7 +899,17 @@ public partial class Engine_UiStatedPanel : Node3D, IUiSurfaceView
 		public string[] Groups = System.Array.Empty<string>();
 
 		public TextBinding[] Texts = System.Array.Empty<TextBinding>();
+
+		/// <summary>
+		/// Wear the HUD TopBox's look: the authored slab art is hidden, the texts take the
+		/// TopBox's sizes and colours (<see cref="Engine_UiHudTextStyle"/>; a binding whose
+		/// path ends in `Title` is the title, the rest are body), and a rounded panel is fitted
+		/// behind them. One style for every in-game notice.
+		/// </summary>
+		public bool HudStyle;
 	}
+
+	private Engine_UiRoundedPanel? _panel;
 
 	/// <summary>Document ordinals for the config's texts, in the same order.</summary>
 	public sealed class Joins
@@ -952,7 +984,108 @@ public partial class Engine_UiStatedPanel : Node3D, IUiSurfaceView
 
 		panel.HasShippedArt = cloned == config.Groups.Length;
 		panel.LastReport = $"{cloned}/{config.Groups.Length} authored groups cloned";
+		if (config.HudStyle)
+		{
+			panel.HideArtExceptTexts();
+		}
+
 		return panel;
+	}
+
+	/// <summary>
+	/// Hides every mesh of the cloned art that is not one of the bound texts — the slab, its
+	/// frame and corners. The texts stay where the presentation authored them.
+	/// </summary>
+	private void HideArtExceptTexts()
+	{
+		if (_config is null)
+		{
+			return;
+		}
+
+		var keep = new System.Collections.Generic.HashSet<MeshInstance3D>();
+		foreach (TextBinding binding in _config.Texts)
+		{
+			if (_groups.TryGetValue(binding.Group, out Node3D? group) &&
+				group.GetNodeOrNull<MeshInstance3D>(binding.Path) is { } node)
+			{
+				keep.Add(node);
+			}
+		}
+
+		foreach (Node3D group in _groups.Values)
+		{
+			HideMeshes(group, keep);
+		}
+	}
+
+	private static void HideMeshes(Node node, System.Collections.Generic.HashSet<MeshInstance3D> keep)
+	{
+		if (node is MeshInstance3D mesh && !keep.Contains(mesh))
+		{
+			mesh.Visible = false;
+		}
+
+		foreach (Node child in node.GetChildren())
+		{
+			HideMeshes(child, keep);
+		}
+	}
+
+	/// <summary>Fits the rounded panel behind whatever text is currently showing.</summary>
+	private void FitHudPanel()
+	{
+		if (_config is null)
+		{
+			return;
+		}
+
+		Rect2? bounds = null;
+		float behind = 1.5f;
+		foreach (TextBinding binding in _config.Texts)
+		{
+			if (!_groups.TryGetValue(binding.Group, out Node3D? group) ||
+				group.GetNodeOrNull<MeshInstance3D>(binding.Path) is not { } node ||
+				!node.Visible || node.Mesh is null)
+			{
+				continue;
+			}
+
+			Aabb box = node.GlobalTransform * node.Mesh.GetAabb();
+			if (box.Size.X <= 0f || box.Size.Y <= 0f)
+			{
+				continue;
+			}
+
+			var rect = new Rect2(box.Position.X, box.Position.Y, box.Size.X, box.Size.Y);
+			bounds = bounds is null ? rect : bounds.Value.Merge(rect);
+			behind = System.Math.Min(behind, node.GlobalPosition.Z - 0.5f);
+		}
+
+		if (bounds is not { } fit)
+		{
+			if (_panel is not null)
+			{
+				_panel.Visible = false;
+			}
+
+			return;
+		}
+
+		if (_panel is null)
+		{
+			_panel = new Engine_UiRoundedPanel { Name = "hud_panel" };
+			AddChild(_panel);
+		}
+
+		// The panel is a child of this node; Fit positions it in the parent's space, and the
+		// bounds above are global — so the parent's transform is taken back out.
+		Transform3D inverse = GlobalTransform.AffineInverse();
+		Vector3 a = inverse * new Vector3(fit.Position.X, fit.Position.Y, behind);
+		Vector3 b = inverse * new Vector3(fit.End.X, fit.End.Y, behind);
+		var local = new Rect2(new Vector2(Mathf.Min(a.X, b.X), Mathf.Min(a.Y, b.Y)),
+			new Vector2(Mathf.Abs(b.X - a.X), Mathf.Abs(b.Y - a.Y)));
+		_panel.Fit(local, a.Z);
 	}
 
 	/// <summary>Puts the guest's stated strings on the followed elements, in config order.
@@ -981,6 +1114,13 @@ public partial class Engine_UiStatedPanel : Node3D, IUiSurfaceView
 					node.SetMeta("text_colour", colour);
 				}
 
+				if (_config.HudStyle)
+				{
+					bool isTitle = _config.Texts[i].Path.EndsWith("Title", System.StringComparison.OrdinalIgnoreCase);
+					node.SetMeta("text_size", isTitle ? Engine_UiHudTextStyle.TitleSize : Engine_UiHudTextStyle.BodySize);
+					node.SetMeta("text_colour", isTitle ? Engine_UiHudTextStyle.TitleColour : Engine_UiHudTextStyle.BodyColour);
+				}
+
 				if (_config.Texts[i].BoxWidth is { } width)
 				{
 					Vector2 box = node.HasMeta("text_box") ? (Vector2)node.GetMeta("text_box") : Vector2.Zero;
@@ -992,6 +1132,10 @@ public partial class Engine_UiStatedPanel : Node3D, IUiSurfaceView
 		}
 
 		Visible = true;
+		if (_config.HudStyle)
+		{
+			FitHudPanel();
+		}
 	}
 
 	/// <summary>Finds a named node anywhere under the roots — shared by every owned view's

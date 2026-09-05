@@ -2834,6 +2834,12 @@ REX_EXTERN(sub_82388A18) {
 REX_EXTERN(sub_82A41B00) {
   REX_FUNC_PROLOGUE();
 
+  // BinkClose. r3 is B, the same handle the open hook publishes — and the caller frees the
+  // player right after this returns (`sub_82389210`: close at 0x8238930C, free at 0x82389314,
+  // manager slot nulled at 0x82389318). Retire the host's handle FIRST, before the passthrough
+  // below, which returns straight out in a bank build.
+  refii::vfs::NoteBinkMovieClosed(ctx.r3.u32);
+
   REFII_VFS_NATIVE_PASSTHROUGH(sub_82A41B00);
 
 

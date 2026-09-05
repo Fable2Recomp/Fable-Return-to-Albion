@@ -373,11 +373,18 @@ uint32_t BinkMovieState(uint8_t* base) {
   // The flags dword the guest hands BinkOpen, set by whichever constructor built the player.
   // A stated value, not an address or a filename — which is what lets the host tell the
   // three shapes apart without a whitelist.
-  constexpr uint32_t kStartupQueue = 0x04000400u;  // sub_82389040, skippable after 5s
-  constexpr uint32_t kAttract = 0x00000400u;       // sub_82388ED0, skippable immediately
-  constexpr uint32_t kCutscene = 0x00004400u;      // sub_823C1658, 228 bytes, NO skip field
+  [[maybe_unused]] constexpr uint32_t kStartupQueue = 0x04000400u;  // sub_82389040
+  [[maybe_unused]] constexpr uint32_t kAttract = 0x00000400u;       // sub_82388ED0
+  [[maybe_unused]] constexpr uint32_t kCutscene = 0x00004400u;      // sub_823C1658
 
-  const bool has_skip_field = flags == kStartupQueue || flags == kAttract;
+  // THE OWNER BYTE DECIDES, NOT THE FLAGS. The opener `sub_82A41B48` stores its fourth
+  // argument at B+223 (`stb r6, 0xDF(r30)`, 0x82A41B64): 0 from the two front-end wrappers
+  // (startup queue 0x82389100, attract 0x82388F98 — 248-byte players carrying the skip flag
+  // at B+232), 1 from the standalone 228-byte objects (cutscene 0x823C19D0, and the UI
+  // sprite's movie item 0x82A83E88 — the ability preview) which END four bytes before +232.
+  // The flags word cannot tell attract from the UI item: both open with 0x400, and reading
+  // +232 on the item returned a heap neighbour and skipped the preview 11 ms in.
+  const bool has_skip_field = base[player + 223u] == 0u;
   if (!has_skip_field) {
     // Cutscene, or a shape we do not recognise. Report playing and touch nothing else: an
     // unrecognised flags value is exactly when reading past a smaller block would happen.
@@ -433,6 +440,30 @@ uint32_t FinishCurrentBinkMovie(uint8_t* base) {
   return player;
 }
 
+/// Called from the Bink CLOSE hook (`sub_82A41B00`) with the same BINK handle the open
+/// published.
+///
+/// THE PLAYER DIES A FEW INSTRUCTIONS LATER. `sub_82389210` calls BinkClose at 0x8238930C,
+/// frees the 248-byte player at 0x82389314 (`Render_FreeD3DObject`) and nulls the manager's
+/// slot at 0x82389318. `BinkMovieDestRect` and `BinkMovieState` both read straight off
+/// `g_bink_player` with no validity test beyond "non-zero", so a handle that outlives the
+/// object hands the host freed heap — and freed heap read as a destination rect is a movie
+/// the host then believes is not fullscreen.
+///
+/// Compare-exchange rather than a store: a close arriving for a player that is no longer the
+/// live one must not clear a NEWER movie's publish. The startup sequence builds one player per
+/// movie (a fresh `Render_AllocD3DObject(0xF8)` at 0x82377CB0 for each of the two logos), and
+/// the allocator hands back the same block, so "the same address" is not "the same movie" —
+/// only the current publish may be cleared.
+extern "C" void refii_bridge_note_bink_movie_closed(uint32_t player) {
+  if (player == 0) {
+    return;
+  }
+
+  uint32_t expected = player;
+  g_bink_player.compare_exchange_strong(expected, 0u, std::memory_order_relaxed);
+}
+
 /// Called from the Bink movie-open hook with the player pointer.
 ///
 /// BINKFRAMEBUFFERS is inline at player+68 — sub_82A42D20 does
@@ -456,11 +487,15 @@ extern "C" void refii_bridge_note_bink_movie_open(uint32_t player, uint8_t* base
         open_flags = __builtin_bswap32(open_flags);
     }
 
+    // +223 is the owner byte the opener stores (0 front-end wrapper with a skip field at
+    // +232, 1 standalone 228-byte object with none); +232 is only in bounds for the former.
+    const uint8_t owner = base_for_open == nullptr ? 0xFFu : base_for_open[player + 223u];
     REXLOG_INFO("Refii Bink movie open: bink=0x{:08X} player=0x{:08X} frame_buffers=0x{:08X} "
-                "class(+224)=0x{:08X} at-open done(+221)={} skip(+232)={}",
-                player, player - 12u, player + 68u, open_flags,
+                "class(+224)=0x{:08X} owner(+223)={} sound(+222)={} at-open done(+221)={} skip(+232)={}",
+                player, player - 12u, player + 68u, open_flags, owner,
+                base_for_open == nullptr ? 0xFFu : base_for_open[player + 222u],
                 base_for_open == nullptr ? 0xFFu : base_for_open[player + 221u],
-                base_for_open == nullptr ? 0xFFu : base_for_open[player + 232u]);
+                owner == 0u ? base_for_open[player + 232u] : 0xFFu);
   }
 
   SetBinkFrameBuffersGuestAddress(player + 68u);

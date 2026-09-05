@@ -162,13 +162,28 @@ public partial class GameVideo : Node
 
 	/// <summary>
 	/// Whether the guest asked for this movie to cover the screen, from the rect it states after
-	/// every open (`sub_82A41E30`, via <see cref="HostBridge.GetMovieRect"/>) — known on the
-	/// first frame, unlike <see cref="EmbedOrdinal"/>, which the presentation follower only
-	/// samples a few times a second. Judged by WIDTH against the guest's 2D screen space:
-	/// fullscreen owners state the full width and letterbox the HEIGHT to 1/8..7/8 in 4:3, so
-	/// height cannot be the test. No rect yet answers true rather than blanking the movie.
+	/// every open (`sub_82A41E30`, via <see cref="HostBridge.GetMovieRect"/>).
+	///
+	/// The rect is LEFT, TOP, RIGHT, BOTTOM — four ints converted to floats at B+8/+12/+16/+20
+	/// (0x82a41e58 / e78 / e98 / eb8) — not x/y/w/h. Judged by WIDTH, because height cannot be
+	/// the test: the two front-end owners both state the full backbuffer WIDTH and differ only
+	/// in the height they letterbox to. The startup queue's constructor `sub_82389040` states
+	/// `{0, 0, BackBufferWidth, BackBufferHeight}` unconditionally at 0x82389148, with no
+	/// widescreen branch at all; the attract movie's `sub_82388ED0` states
+	/// `{0, H/8, W, 7H/8}` in 4:3 and `{0, 0, W, H}` in widescreen. Only the cutscene player
+	/// and the UI sprite's movie item state a sub-rect, and those are the embedded cases.
+	///
+	/// KNOWN LIMIT: the threshold is a fraction of the guest's 2D screen space while the rect
+	/// is in BACKBUFFER units. They agree because the guest's canvas IS the backbuffer, but a
+	/// backbuffer narrower than 960 would read every fullscreen movie as embedded. The guest
+	/// rounds its width up to a multiple of 160 (`sub_82B6EBC0`), so this is a real edge rather
+	/// than an impossible one.
+	///
+	/// No rect yet answers true rather than blanking the movie — and note the rect is written a
+	/// few instructions AFTER the open, so "no rect yet" is not the only way to read one the
+	/// guest has not stated; see the ordering note in the `sub_82A41B48` hook.
 	/// </summary>
-	private bool StatedFullscreen()
+	public bool StatedFullscreen()
 	{
 		if (HostBridge.GetMovieRect() is not { } rect || rect.Size.X <= 0f)
 		{
@@ -187,6 +202,7 @@ public partial class GameVideo : Node
 
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gamevideo");
 		// Mirrored here so no site that toggles _view can miss the backdrop.
 		_backdrop.Visible = _view.Visible;
 
@@ -195,7 +211,7 @@ public partial class GameVideo : Node
 			return;
 		}
 
-		byte[]? requested = HostBridge.GetRequestedVideo(out uint generation);
+		byte[]? requested = HostBridge.GetRequestedVideo(out uint generation, _lastRequest);
 		if (generation != _lastRequest)
 		{
 			_lastRequest = generation;
@@ -215,7 +231,99 @@ public partial class GameVideo : Node
 		}
 
 		AdvanceVideo(delta);
+
+		// The host of an embedded movie is gone — the sprite no longer states a movie, or its
+		// presentation is down — so the decoder goes with it; a fullscreen movie ends on its own.
+		bool embedded = EmbedOrdinal >= 0;
+		if (_wasEmbedded && !embedded && _decoder is not null && !StatedFullscreen())
+		{
+			GD.Print("[game-video] the element hosting the movie is gone — stopped");
+			StopVideo();
+		}
+
+		_wasEmbedded = embedded;
 	}
+
+	private bool _wasEmbedded;
+
+	/// <summary>
+	/// PLAYS A MOVIE THE HOST CHOSE, on the element the host names.
+	///
+	/// The abilities page needs this because the guest cannot answer for it any more. Its slot-3
+	/// tick only swaps the `.bik` on a frame where the packed row hash at `screen+624` changed,
+	/// and that hash is the guest's OWN highlight — which stops moving the moment Godot owns the
+	/// cursor. So the guest picked exactly one movie, the first row's, and every other ability
+	/// kept showing it.
+	///
+	/// Naming the file is the page's job (`Engine_UiAbilityPage.MovieFor`); opening it goes
+	/// through the same library that resolves a movie the guest names, so there is one reader.
+	/// Re-asking with the same path is free — the decoder is only replaced when the name changes.
+	/// </summary>
+	public void PlayEmbedded(string path, int ordinal)
+	{
+		if (path.Length == 0)
+		{
+			return;
+		}
+
+		// The SAME ask never reopens — playing OR already played. The original plays a
+		// preview once per showing and hands the still back; a decoder-gated latch reopened
+		// the film every time it ended, which looped it. A row change is a different path
+		// and opens fresh.
+		if (string.Equals(path, _hostMovie, System.StringComparison.OrdinalIgnoreCase))
+		{
+			EmbedOrdinal = ordinal;
+			return;
+		}
+
+		if (ResolveMovie(path) is not { } bytes)
+		{
+			// Remembered anyway: a name that is not in the library will not be there next frame
+			// either, and retrying it every frame would log the same warning at frame rate.
+			_hostMovie = path;
+			return;
+		}
+
+		_hostMovie = path;
+		EmbedOrdinal = ordinal;
+		StartVideo(bytes);
+		_view.Visible = false;
+	}
+
+	/// <summary>Drops the host's movie when the page that asked for it is gone.</summary>
+	public void StopEmbedded()
+	{
+		if (_hostMovie.Length == 0)
+		{
+			return;
+		}
+
+		_hostMovie = string.Empty;
+		EmbedOrdinal = -1;
+		StopVideo();
+	}
+
+	/// <summary>
+	/// DETACH the host preview without disposing anything: the latch is cleared so a return to
+	/// the screen replays it, and the ordinal is dropped so GameVideo's own _Process notices
+	/// (`EmbedOrdinal < 0`) and runs the single, owning `StopVideo`. GameUi calls this instead
+	/// of `StopEmbedded` so the decoder is freed in exactly one place — see the heap-corruption
+	/// note in GameUi._Process.
+	/// </summary>
+	public void DetachHostMovie()
+	{
+		_hostMovie = string.Empty;
+		EmbedOrdinal = -1;
+	}
+
+	/// <summary>Which movie the host last asked for, so an unchanged ask costs no reopen.</summary>
+	private string _hostMovie = string.Empty;
+
+	/// <summary>True while the HOST's own embedded ask stands — playing, or finished and
+	/// latched on its still. What the orphan teardown in GameUi tests (so it never touches a
+	/// guest-named movie), and what clears the latch on leaving the screen so a return
+	/// showing plays the preview once again.</summary>
+	public bool HasHostMovie => _hostMovie.Length != 0;
 
 	/// <summary>
 	/// Reads a movie the guest named rather than loaded, through the same library the editor
@@ -247,6 +355,17 @@ public partial class GameVideo : Node
 	/// </summary>
 	private void StartVideo(byte[]? requested)
 	{
+		// A movie the guest replaced before we finished showing it. `FinishMovie` is deliberately
+		// NOT called: the open has already republished `g_bink_player`, so it would retire the
+		// movie starting rather than the one being cut. Said out loud because it is otherwise
+		// invisible — one run played three movies and logged one finish, and two of those were
+		// this, not a movie left running.
+		if (_decoder is not null)
+		{
+			GD.Print($"[game-video] movie {MoviesRequested} was cut short — the guest opened " +
+				"another before this one reached its last frame");
+		}
+
 		_decoder?.Dispose();
 		_decoder = null;
 		_view.Visible = false;
@@ -333,6 +452,52 @@ public partial class GameVideo : Node
 			_frameClock = 0.0;
 		}
 
+		if (ended && HasHostMovie)
+		{
+			// THE HOST'S PREVIEW PLAYS ONCE and hands the still back — the original's own
+			// behaviour on the abilities page. `_hostMovie` stays latched so the per-frame
+			// ask does not reopen it; a row change names a different path and does.
+			// `FinishMovie` is deliberately NOT sent: there is no guest player to retire and
+			// the startup bookkeeping is not this movie's.
+			_decoder.Dispose();
+			_decoder = null;
+			_view.Visible = false;
+			GD.Print("[game-video] embedded preview finished — the still stands");
+			return;
+		}
+
+		if (ended && EmbedOrdinal >= 0)
+		{
+			// AN EMBEDDED MOVIE LOOPS. The UI sprite's movie item never reads the done byte
+			// (`B+221` has no reader in the UI path) and Bink wraps at the last frame, so the
+			// ability preview plays until the item is destroyed — a selection change or leaving
+			// the screen, both of which arrive here as the host losing the movie.
+			//
+			// ONLY AN EMBEDDED ONE. This used to loop on `!StatedFullscreen()` as well, as an
+			// early stand-in for "embedded" — the rect is known on the first frame while
+			// `EmbedOrdinal` is only sampled a few times a second. It is not the same statement,
+			// and the failure was not symmetric: a FULLSCREEN movie that took this branch never
+			// ended at all. It never called `FinishMovie`, so the guest's player stayed live, and
+			// it kept decoding over the title and the menu. Three of six runs left a startup logo
+			// unfinished that way.
+			//
+			// And the rect could not have said "embedded" for a startup logo anyway. The queue's
+			// constructor `sub_82389040` states `{left 0, top 0, right BackBufferWidth, bottom
+			// BackBufferHeight}` unconditionally at 0x82389148 — the full backbuffer, with no
+			// widescreen branch — so a sub-width rect for one of these is never the guest
+			// speaking. It is a rect read before the guest wrote it; see StatedFullscreen.
+			//
+			// Dropping the stand-in costs an embedded movie that reaches its last frame before
+			// the follower has named its element: it stops instead of wrapping. That window is
+			// well under a second against previews several seconds long, and the wrong answer
+			// there is a preview that does not loop rather than a screen that will not clear.
+			ReportLoop();
+
+			_decoder.Rewind();
+			_frameClock = 0.0;
+			return;
+		}
+
 		if (ended)
 		{
 			// End of the movie: stop drawing rather than freezing on the last frame.
@@ -382,6 +547,33 @@ public partial class GameVideo : Node
 	}
 
 	private int _shownFrames;
+
+	/// <summary>
+	/// Says WHY a movie went round again, the first time each movie does it — the rect the
+	/// guest stated, whether a UI element is hosting it, and the guest's own playback state.
+	/// One line, on the frame the decision is made, so a looping startup logo is not something
+	/// that has to be inferred from a missing "finished".
+	/// </summary>
+	private void ReportLoop()
+	{
+		if (_reportedLoop == MoviesRequested)
+		{
+			return;
+		}
+
+		_reportedLoop = MoviesRequested;
+		Rect2? rect = HostBridge.GetMovieRect();
+		GD.Print($"[game-video] movie {MoviesRequested} reached its last frame and LOOPED — " +
+			$"embedOrdinal {EmbedOrdinal}, " +
+			(rect is { } stated
+				? $"stated rect {stated.Position.X},{stated.Position.Y} " +
+				  $"{stated.Size.X}x{stated.Size.Y} (fullscreen needs width >= " +
+				  $"{GuestScreenWidth * 0.75f})"
+				: "NO STATED RECT (no live guest player)") +
+			$", guest says {HostBridge.MovieState()}");
+	}
+
+	private int _reportedLoop = -1;
 
 	private void SaveShot(string path)
 	{

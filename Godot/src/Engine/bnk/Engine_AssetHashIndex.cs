@@ -8,19 +8,12 @@ namespace Refii.Bnk;
 public static class AssetHashIndex
 {
 	/// <summary>
-	/// FNV-1 32-bit (multiply then xor, not FNV-1a), the guest's <c>0x822CA588</c>: h = 0x811C9DC5,
-	/// k = 0x01000193, over the low byte of each UTF-16 unit (<c>clrlwi r8, r10, 24</c> at 822ca65c).
+	/// FNV-1 32-bit (multiply then xor, not FNV-1a), the guest's <c>0x822CA588</c>. One
+	/// implementation, in <see cref="Refii.Core.Engine_GameHash"/>: the guest hashes the low byte
+	/// of each UTF-16 unit (<c>clrlwi r8, r10, 24</c> at 822ca65c), which for the ASCII paths the
+	/// game ships is the same walk as over UTF-8 bytes.
 	/// </summary>
-	public static uint Hash(string value)
-	{
-		uint hash = 0x811C9DC5u;
-		foreach (char ch in value)
-		{
-			hash = (hash * 0x01000193u) ^ (byte)ch;
-		}
-
-		return hash;
-	}
+	public static uint Hash(string value) => Refii.Core.Engine_GameHash.Fnv1(value);
 
 	private static Dictionary<uint, string>? _byHash;
 

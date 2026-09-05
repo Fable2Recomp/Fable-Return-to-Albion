@@ -1,0 +1,279 @@
+using System.Collections.Generic;
+using Refii.Core;
+using Refii.Gdb;
+
+namespace Refii.Ui;
+
+/// <summary>
+/// THE ABILITIES SCREEN'S FOURTEEN ABILITIES, from the shipped GDB and the hero's own levels.
+///
+/// This one needs no new bridge export at all: the levels are already in
+/// `HostBridge.GetHeroVitals().AbilityLevels` (component 57 at `stats + 0x110 + 4*Type`, the
+/// guest's `4 * (Type + 68)`), and everything else is in `globals.gdb`.
+///
+/// The set of fourteen and their categories are HARDCODED IN THE GUEST — `sub_824E45F8` is a bare
+/// 14-case jump table from Type to a base record name, and the category membership is written out
+/// three separate times in C++ (`sub_829A45A0`'s literal lists, `sub_826CFA00`'s 1-3 / 4-6 / 7-14
+/// count ranges, `sub_829A5C28`'s XP-pool switch). There is no table in the data to read, so
+/// transcribing it is following the guest rather than inventing.
+///
+/// The DISPLAY NAME is per LEVEL, not per ability. `sub_829A4FE8` takes the base record's
+/// `AbilityGroupRecords`, indexes it to the level being offered — `isMaxed ? maxLevel : level + 1`
+/// — and reads that level record's `NameTextTag`, which Babel then resolves. A maxed ability has
+/// the tag's LAST CHARACTER overwritten with '6' (`li r10, 0x36 ; stb r10, -1(r8)`), and those
+/// `..._06` tags exist in the shipped book.
+/// </summary>
+public static class Engine_UiAbilitySource
+{
+	public const string SourceName = "abilities";
+
+	/// <summary>
+	/// Type to base record name, from `sub_824E45F8`'s jump table, and the category each belongs
+	/// under — Strength 1..3, Skill 4..6, Will 7..14.
+	/// </summary>
+	private static readonly (int Type, string Record, string Category)[] Abilities =
+	{
+		(1, "AbilityHeavyWeaponsBase", Strength),
+		(2, "AbilityPhysiqueBase", Strength),
+		(3, "AbilityToughnessBase", Strength),
+		(4, "AbilityRangedWeaponsBase", Skill),
+		(5, "AbilityAccuracyBase", Skill),
+		(6, "AbilitySpeedBase", Skill),
+		(7, "AbilityLightningBase", Will),
+		(8, "AbilityFireballBase", Will),
+		(9, "AbilitySlowTimeBase", Will),
+		(10, "AbilitySwordsBase", Will),
+		(11, "AbilityVortexBase", Will),
+		(12, "AbilityChaosBase", Will),
+		(13, "AbilityForcePushBase", Will),
+		(14, "AbilityDeadRisingBase", Will),
+	};
+
+	/// <summary>The three category rows' internal names, as `sub_829A45A0` spawns them.</summary>
+	public const string Strength = "Strength";
+
+	public const string Skill = "Skill";
+
+	public const string Will = "Will";
+
+	/// <summary>`sub_829A4790` / `0x829A48BC` / `0x829A49F0` — the event type is the CATEGORY,
+	/// not the ability: 20 Strength, 21 Skill, 22 Will.</summary>
+	private static readonly Dictionary<string, int> CategoryEvent = new()
+	{
+		[Strength] = 20,
+		[Skill] = 21,
+		[Will] = 22,
+	};
+
+	/// <summary>`dword_8349D3AC` — every one of the fourteen states this icon.</summary>
+	private const string AbilityIcon = @"Art\GUI\WheelIcons\icon_abilities.tga";
+
+	private static readonly uint GroupRecordsField = Engine_GameHash.Fnv1("AbilityGroupRecords");
+	private static readonly uint NameTextTagField = Engine_GameHash.Fnv1("NameTextTag");
+
+	/// <summary>The action prefix the guest-tick pump answers — see `DispatchAbilityAction`.</summary>
+	public const string AbilityAction = "Ability:";
+
+	private static readonly List<Engine_UiMenuSources.Row> None = new();
+
+	public static string Report { get; private set; } = "not read yet";
+
+	/// <summary>The abilities of one category — `abilities:Strength` and its two siblings.</summary>
+	public static IReadOnlyList<Engine_UiMenuSources.Row> Rows(string category)
+	{
+		if (category.Length == 0 || !CategoryEvent.TryGetValue(category, out int eventType))
+		{
+			return None;
+		}
+
+		Refii.Host.HostBridge.HeroVitals vitals = Refii.Host.HostBridge.GetHeroVitals();
+		if (!vitals.Known || vitals.AbilityLevels is not { Length: > 14 } levels)
+		{
+			Report = "the hero states no ability levels";
+			return None;
+		}
+
+		var rows = new List<Engine_UiMenuSources.Row>();
+		int unnamed = 0;
+
+		foreach ((int type, string record, string owner) in Abilities)
+		{
+			if (owner != category)
+			{
+				continue;
+			}
+
+			int level = levels[type];
+			string label = LabelOf(record, level, out bool named);
+			if (!named)
+			{
+				++unnamed;
+			}
+
+			// THE RANK PIPS ARE `Float4`, and we were sending EmptyRatingSlide for every row —
+			// so no ability ever showed its rank. `sub_829A4FE8` at 0x829A5210 states the rule:
+			//
+			//     *a4 = 2 * v25;                       // v25 = owned levels
+			//     if (!maxed) *a4 = 2 * v25 + 1;
+			//     if (maxed && (id == 1 || id == 4)) *a4 = 8;
+			//
+			// The artwork each index selects is authored in the `.bgf`; the index is the whole
+			// of the guest's statement.
+			int maxLevel = Refii.Gdb.Engine_AbilityRecords.MaxLevel(record);
+			bool maxed = maxLevel > 0 && level >= maxLevel;
+			int rating = maxed
+				? (type == HeavyWeapons || type == RangedWeapons ? MaxedStylesSlide : 2 * level)
+				: (2 * level) + 1;
+
+			// AND WHETHER IT COUNTS TOWARD ITS CATEGORY'S CAPTION. The guest's header does not
+			// say how many abilities a discipline HAS — `sub_829A5398` labels it through
+			// `sub_829A52F8(tag, n, out)` where n is `sub_826CFA00`'s count of abilities that
+			// can be bought RIGHT NOW: not maxed, and next level's `ExperienceCost` within
+			// reach of this pool plus General (`sub_824E4E28`). Ours read "how many are under
+			// it", which is a different and much less useful number.
+			//
+			// Expressed through the row's own `Counted` flag rather than a special case in the
+			// menu, because that flag already means exactly this.
+			bool upgradeable = !maxed &&
+				Refii.Gdb.Engine_AbilityRecords.TryCost(record, level, out int next) &&
+				next <= Affordable(vitals, category);
+
+			rows.Add(new Engine_UiMenuSources.Row(
+				// The guest's own `String1` is the base record name, and so is ours — which also
+				// makes the label join find it.
+				Name: record,
+				Label: label,
+				Icon: AbilityIcon,
+				EventType: eventType,
+
+				// The guest's id is the FNV-1 of the LEVEL record currently displayed, so it
+				// changes as the ability levels up. Ours is the ability Type, which does not —
+				// these rows act host-side and never commit by the guest's identity.
+				Id: (uint)type,
+				Rating: rating,
+				Committable: false,
+				Counted: upgradeable,
+
+				// A MAXED ABILITY HAS NOTHING TO BUY. `sub_824E4E28` returns 0 the moment the
+				// current level reaches `sub_824E2D40`'s count, and the guest's own answer to a
+				// press then is the `GUI_SCREEN_ABILITIES_MAXED` box. The row stays live because
+				// the guest leaves it live — only `AbilitySlowTimeBase` and `AbilityDeadRisingBase`
+				// are ever ghosted, on flags we cannot read yet (see below).
+				Ghosted: false,
+
+				// THE PURCHASE, straight at the simulation. `sub_8246C970` (Strength and Skill)
+				// and `sub_8246CF48` (Will) take the ability index and a hero selector and read
+				// NOTHING from the screen, the menu or Lua — see the pump's DispatchAbilityAction.
+				Command: $"{AbilityAction}learn:{type}"));
+		}
+
+		int buyable = 0;
+		foreach (Engine_UiMenuSources.Row made in rows)
+		{
+			if (made.Counted)
+			{
+				++buyable;
+			}
+		}
+
+		Report = $"{rows.Count} {category} abilit(y/ies), {buyable} upgradeable now" +
+			(unnamed == 0 ? string.Empty : $", {unnamed} with no NameTextTag");
+		Godot.GD.Print($"[ability-source] {Report}");
+		return rows;
+	}
+
+	/// <summary>
+	/// The pool an ability of this discipline can spend: its OWN orbs plus GENERAL. That sum is
+	/// the guest's, at 0x824E4E28 —
+	///
+	///     cost &lt;= (int)*(float *)(4*a3 + *(_DWORD*)(v6+16))   // orbs[category]
+	///           + (int)**(float **)(v6 + 16);                  // + orbs[General]
+	///
+	/// truncated per term, not on the sum, which is why this truncates each one too.
+	/// </summary>
+	private static int Affordable(Refii.Host.HostBridge.HeroVitals vitals, string category)
+	{
+		if (vitals.ExperienceAvailable is not { Length: > 3 } orbs)
+		{
+			return 0;
+		}
+
+		int pool = category switch
+		{
+			Strength => 1,
+			Skill => 2,
+			Will => 3,
+			_ => 0,
+		};
+
+		return (int)orbs[pool] + (int)orbs[0];
+	}
+
+	/// <summary>The two "styles" abilities, whose maxed pip index is 8 rather than `2 × level`.</summary>
+	private const int HeavyWeapons = 1;
+
+	private const int RangedWeapons = 4;
+
+	private const int MaxedStylesSlide = 8;
+
+	/// <summary>
+	/// The name of the level this ability is OFFERING — `level + 1`, or the top level when it is
+	/// already maxed, with the maxed tag's last character forced to '6'.
+	/// </summary>
+	private static string LabelOf(string record, int level, out bool named)
+	{
+		named = false;
+		if (Engine_UiInventorySource.Globals is not { } globals ||
+			!globals.TryLookup(Engine_GameHash.Fnv1(record), out GdbCursor baseRecord) ||
+			!globals.TryFindInherited(baseRecord, GroupRecordsField,
+				(int)GdbFieldType.Reference, out _, out uint group, out _) ||
+			!globals.TryLookup(group, out GdbCursor levels))
+		{
+			return record;
+		}
+
+		// The level entries are named `Record1`..`RecordN`. THE LEVEL IS IN THE FIELD NAME, not
+		// the position: the GDB stores fields in HASH order, so walking them positionally hands
+		// out level 4 first. Their type is ResourceReference (7), unlike the type-6 reference that
+		// reached this record.
+		int maxLevel = 0;
+		for (int at = 1; at <= 16; ++at)
+		{
+			if (!globals.TryFindInherited(levels, Engine_GameHash.Fnv1($"Record{at}"),
+					(int)GdbFieldType.ResourceReference, out _, out _, out _))
+			{
+				break;
+			}
+
+			maxLevel = at;
+		}
+
+		if (maxLevel == 0)
+		{
+			return record;
+		}
+
+		bool maxed = level >= maxLevel;
+		int offering = maxed ? maxLevel : System.Math.Clamp(level + 1, 1, maxLevel);
+
+		if (!globals.TryFindInherited(levels, Engine_GameHash.Fnv1($"Record{offering}"),
+				(int)GdbFieldType.ResourceReference, out _, out uint levelRecord, out _) ||
+			!globals.TryLookup(levelRecord, out GdbCursor cursor) ||
+			!globals.TryFindInherited(cursor, NameTextTagField, (int)GdbFieldType.String,
+				out _, out uint tagHash, out _) ||
+			!cursor.View.Names.TryGetValue(tagHash, out string? tag) || tag.Length == 0)
+		{
+			return record;
+		}
+
+		// `..._LEVEL_05` becomes `..._LEVEL_06` when maxed — the guest overwrites the last
+		// character rather than looking up a different tag, and those tags exist.
+		string wanted = maxed ? tag[..^1] + "6" : tag;
+		named = true;
+
+		return Engine_UiInventorySource.Strings is { } book &&
+			book.TryGetString(wanted, out string resolved) && resolved.Length != 0
+				? resolved
+				: wanted;
+	}
+}

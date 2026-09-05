@@ -554,6 +554,7 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	/// </summary>
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("frontendsavecards");
 		if (!_animating)
 		{
 			return;

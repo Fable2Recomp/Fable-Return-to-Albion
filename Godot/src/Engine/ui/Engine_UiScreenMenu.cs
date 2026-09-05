@@ -63,6 +63,22 @@ public sealed class Engine_UiScreenMenu
 	/// </summary>
 	public string PopulationScript { get; private set; } = string.Empty;
 
+	/// <summary>
+	/// Which in-game screen this list belongs to, set by the caller from the screen manager's own
+	/// presentation-to-id map. 0 when it is not one of the manager's screens.
+	///
+	/// Only used to find a template for a widget that names no population script — see
+	/// <see cref="Engine_UiScreenTemplate.MenuScript"/>.
+	/// </summary>
+	public uint ScreenId { get; set; }
+
+	/// <summary>
+	/// <see cref="ScreenId"/> as a capture key: 0 means "not one of the manager's screens" here,
+	/// so it becomes <see cref="Engine_UiMenuSources.AnyScreen"/> rather than the pause root,
+	/// which really is screen 0. A list with no screen takes the capture as it always did.
+	/// </summary>
+	private uint CaptureKey => ScreenId != 0 ? ScreenId : Engine_UiMenuSources.AnyScreen;
+
 	/// <summary>The presentation this list's Lua lives in — one `lua_State` per `.bgf`.</summary>
 	public uint Presentation { get; private set; }
 
@@ -133,6 +149,271 @@ public sealed class Engine_UiScreenMenu
 	/// explicit flag OR an empty submenu while automatic submenu ghosting is on. The pool ordinal
 	/// is left −1: it exists only for the position solve, and this path owns the cursor.
 	/// </remarks>
+	/// <summary>
+	/// Builds the list from its POPULATION TEMPLATE and joins the guest's live state onto it.
+	/// True when anything changed.
+	/// </summary>
+	/// <remarks>
+	/// The row set, its order and its nesting are the template's; nothing here reads a live
+	/// position or a pool button to decide WHAT the list contains. What the guest still supplies
+	/// is what only it knows: the decorated label (`Abilities &lt;s4&gt;(2)&lt;/s4&gt;` when
+	/// there are points to spend, `&lt;exclamation.img&gt;` when something inside is new) and the
+	/// ghosting. Both are joined by <see cref="Engine_PauseMenu.ApplyStatedLabels"/>, which is
+	/// the same authored-list-against-the-guest's-pool join the pause menu has always used —
+	/// name first, then position, and an empty read treated as no news rather than no rows.
+	///
+	/// A row here IS committable: see <see cref="Engine_UiMenuTemplate.BuildInto"/>.
+	/// </remarks>
+	private bool RebuildFromTemplate(
+		Engine_UiMenuTemplate template,
+		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons)
+	{
+		// WHOSE POPULATION THE CAPTURE HOLDS. `capture:Root` asks for every row spawned under
+		// `Root` and the capture is one list, so without this a screen took whatever was
+		// populated last — the front end's rows once came up on the real-estate screen. Set for
+		// the whole build so every source this template resolves is answered for THIS screen.
+		uint boundWas = Engine_UiMenuSources.BoundScreen;
+		Engine_UiMenuSources.BoundScreen = CaptureKey;
+		try
+		{
+			return BuildBound(template, buttons);
+		}
+		finally
+		{
+			Engine_UiMenuSources.BoundScreen = boundWas;
+		}
+	}
+
+	private bool BuildBound(
+		Engine_UiMenuTemplate template,
+		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons)
+	{
+		// Built once and then only re-joined: the row set cannot change, so rebuilding it every
+		// sample would throw the fold and the cursor away for nothing.
+		bool built = false;
+		if (_authoredFrom != template)
+		{
+			// THE FOLD AND THE CURSOR SURVIVE A CHANGE OF SOURCE. A list first built from the
+			// g_Menu model (its id not yet known) is rebuilt from the template the moment the
+			// id lands; the rows are the same rows under the same names, so what the player
+			// had open and highlighted is carried across by name — the weapons book was
+			// snapping shut on that rebuild.
+			var open = new HashSet<string>(System.StringComparer.Ordinal);
+			foreach (Engine_UiExpandableMenu.Item was in Script.SpawnedItems)
+			{
+				if (was.IsOpen && was.Children.Count > 0 && was.Name.Length != 0)
+				{
+					open.Add(was.Name);
+				}
+			}
+
+			string? highlighted = Script.Highlighted?.Name;
+
+			_authoredFrom = template;
+			template.BuildInto(Menu, committable: true);
+			PruneAuthoredDrops();
+			Script.UpdateAfterSpawning();
+			Script.UpdateAllGhosting();
+
+			if (open.Count != 0)
+			{
+				foreach (Engine_UiExpandableMenu.Item now in Script.SpawnedItems)
+				{
+					if (now.Children.Count > 0 && open.Contains(now.Name))
+					{
+						now.IsOpen = true;
+					}
+				}
+
+				Script.UpdateAfterSpawning();
+			}
+
+			if (!string.IsNullOrEmpty(highlighted))
+			{
+				IReadOnlyList<Engine_UiExpandableMenu.Item> visible = Script.Visible;
+				for (int i = 0; i < visible.Count; ++i)
+				{
+					if (string.Equals(visible[i].Name, highlighted, System.StringComparison.Ordinal))
+					{
+						Script.Highlight(i + 1);
+						break;
+					}
+				}
+			}
+
+			built = true;
+		}
+		else if (template.RefreshSources(Menu))
+		{
+			// A sourced row set that has changed — the guest's data arriving, or changing under
+			// us. Authored rows are untouched, so the fold and the cursor survive.
+			PruneAuthoredDrops();
+			Script.UpdateAfterSpawning();
+			Script.UpdateAllGhosting();
+			built = true;
+		}
+
+		// The guest's own decorated labels and ghosting over our rows. The stated rows are the
+		// spawn capture where there is one; with none, the join falls back to the pool by
+		// position, which is exactly what the pause menu does before its Lua is up.
+		IReadOnlyList<Engine_UiMenuModel.Row> stated =
+			Model?.For(Presentation)?.Rows ?? NoStatedRows;
+
+		// BY NAME ONLY. The positional fallback exists for the pause list, whose rows match the
+		// guest's one for one; a template list need not. The logbook drops the guest's dead
+		// `Achievements` row, so ours is four against the guest's five — and the fallback then
+		// handed our fourth row (Help) the guest's fourth label, putting "Achievements" back on
+		// screen with Help's identity underneath it. A template row carries a real name and its
+		// own Babel tag, so an unmatched row has a correct label already.
+		bool moved = Engine_PauseMenu.ApplyStatedLabels(
+			Menu, buttons, stated, positionalFallback: false);
+
+		// THE CATEGORY COUNTS ARE OURS NOW. `sub_826CF098` decorates a category header with
+		// `" (" .. count .. ")"` when the count is non-zero, and the guest's own labels carried
+		// that — `Headgear (6)`. Those labels reach us only through the spawn capture, and the
+		// capture files its statements under the presentation the CHUNK carried, which is not
+		// always the screen's: the equipment screen's rows were nowhere in the model, so the
+		// name join found nothing and the headers read as bare `Hats`.
+		//
+		// A list built from the data areas does not need to be told: the count IS the number of
+		// children we just sourced. So the decoration is applied here, by the guest's rule, and
+		// the join is left to supply only what we genuinely cannot compute.
+		foreach (Engine_UiExpandableMenu.Item row in Script.SpawnedItems)
+		{
+			if (row.EventType != (int)Engine_UiMenuConstants.EventType.Submenu ||
+				row.TextTag is not { Length: > 0 } tag || Strings is null)
+			{
+				continue;
+			}
+
+			// A category the template says carries no count — the clothing screen's `Outfits`,
+			// whose header the guest spawns through the countless `sub_826CF020`.
+			if (template.Entry(row.Name) is { Counted: false })
+			{
+				continue;
+			}
+
+			// `Counted`, not merely `Sourced`: the guest's number comes from a separate array
+			// that walks the INVENTORY, so a row standing for no inventory record — the clothing
+			// screen's `None` — is not in it. Counting those put every equipment header one
+			// above the guest's own, which is how the discrepancy was finally pinned.
+			int sourcedChildren = 0;
+			bool anyUnviewed = false;
+			foreach (Engine_UiExpandableMenu.Item child in row.Children)
+			{
+				if (!child.Sourced || !child.Counted)
+				{
+					continue;
+				}
+
+				++sourcedChildren;
+				anyUnviewed |= child.Unviewed;
+			}
+
+			if (sourcedChildren == 0 || !Strings.TryGetString(tag, out string caption) ||
+				caption.Length == 0)
+			{
+				continue;
+			}
+
+			// The second suffix, `sub_826CF098`'s `word_820AEFF0` — appended when the count
+			// pair's `[1]` is above zero, and that is the number of unviewed items.
+			string decorated = $"{caption} ({sourcedChildren})" +
+				(anyUnviewed ? "<exclamation.img>" : string.Empty);
+			if (!string.Equals(row.StatedLabel, decorated, System.StringComparison.Ordinal))
+			{
+				row.StatedLabel = decorated;
+				moved = true;
+			}
+		}
+
+		// THE GUEST'S IDENTITY FOR A DATA-AREA ROW, by name — A BRIDGE, NOT THE DESTINATION.
+		//
+		// A row built from the data areas has no `(EventType, id)` of its own, and the guest's id
+		// is a per-population TICKET (`sub_82880AC8` hands out a counter and resets it on every
+		// repopulate), so it cannot be derived — only borrowed. Our row and the guest's carry the
+		// SAME NAME, because both are the item's `NameTag`, which is what makes the borrow safe.
+		//
+		// This exists so the lists stay usable while the host actions that replace it are built.
+		// `Engine_UiMenuEntry.Command` is checked BEFORE any identity commit, so a row that gains
+		// a real host action stops using this without anything here changing.
+		if (stated.Count != 0)
+		{
+			foreach (Engine_UiMenuModel.Row row in stated)
+			{
+				if (row.Name.Length == 0 || Menu.Find(row.Name) is not { Sourced: true } sourced ||
+					sourced.Committable)
+				{
+					continue;
+				}
+
+				sourced.EventType = row.EventType;
+				sourced.IdLow = (int)(row.Id & 0xFFFFu);
+				sourced.IdHigh = (int)((row.Id >> 16) & 0xFFFFu);
+				sourced.Committable = true;
+				moved = true;
+			}
+		}
+
+		// THE GUEST'S EXPLICIT GHOSTING, by name — its only statement that a row is unavailable
+		// right now (the childhood restrictions on the pause tabs, an empty category, a shop
+		// item you cannot afford). Applied to `Ghosted`, never to `AutoGhosted`: the two are
+		// separate channels and a recompute owns the second.
+		if (Model?.For(Presentation)?.Ghosting is { Count: > 0 } ghosting)
+		{
+			foreach ((string named, bool ghost) in ghosting)
+			{
+				if (Menu.Find(named) is { } row && row.Ghosted != ghost)
+				{
+					row.Ghosted = ghost;
+					moved = true;
+				}
+			}
+		}
+
+		if (!built && !moved)
+		{
+			return false;
+		}
+
+		_labels.Clear();
+		_ordinals.Clear();
+		_indents.Clear();
+		foreach (Engine_UiExpandableMenu.Item shown in Script.Visible)
+		{
+			_labels.Add(shown.StatedLabel ?? shown.Name);
+			_ordinals.Add(shown.Ordinal);
+			_indents.Add(null);
+		}
+
+		Script.Highlight(System.Math.Clamp(Script.CurrentHighlightIdx, 1,
+			System.Math.Max(1, Script.Visible.Count)));
+		return true;
+	}
+
+	private static readonly List<Engine_UiMenuModel.Row> NoStatedRows = new();
+
+	/// <summary>The template this list was built from, so it is built once and then only joined.</summary>
+	private Engine_UiMenuTemplate? _authoredFrom;
+
+	/// <summary>True while the row set is the TEMPLATE's rather than a read of the guest.</summary>
+	private bool _authored;
+
+	private bool _saidAuthored;
+
+	private bool _saidTemplateDry;
+
+	private bool _saidStatedScript;
+
+	private string _boundScript = string.Empty;
+
+	private int _saidMode = -1;
+
+	private uint _saidUnbound = uint.MaxValue;
+
+	/// <summary>The last orphan report, so it prints on change rather than per rebuild.</summary>
+	private string? _orphanReported;
+
 	private bool RebuildFromModel(Engine_UiMenuModel.Menu menu, Engine_UiScreen? screen)
 	{
 		var signature = new System.Collections.Generic.List<string>(menu.Rows.Count);
@@ -185,11 +466,42 @@ public sealed class Engine_UiScreenMenu
 
 			if (placedThisWave == 0)
 			{
+				// ORPHANS ARE DROPPED, NOT ROOTED — the shipped Lua's own behaviour.
+				//
+				// `g_Menu:AddChild(item, parent)` (expandablemenu main.6) looks the parent up by
+				// name and, when `GetMenuItem` returns nothing, prints
+				// "Somethings broken with GetMenuItem...!" and returns WITHOUT linking: the item
+				// keeps no `ParentItem` and is in nobody's `ChildItems`, so it is in
+				// `SpawnedItems` and in no visible list. Only a nil parent becomes ROOTNAME
+				// (pc13-14) — a NAMED parent that does not resolve is not a root row.
+				//
+				// Rooting them instead put 32 outfit rows on the gift screen beside its nine
+				// categories: the guest spawns them naming `Suits`, a category that screen never
+				// spawns a header for, and the original therefore never shows them.
+				var orphaned = new Dictionary<string, int>(System.StringComparer.Ordinal);
 				foreach (Engine_UiMenuModel.Row row in next)
 				{
-					Engine_UiExpandableMenu.Item item = Script.Add(row.Name, parent: null);
-					byName[row.Name] = item;
-					placed.Add((row, item));
+					string named = row.Parent.Length == 0 ? "<none>" : row.Parent;
+					orphaned[named] = orphaned.TryGetValue(named, out int seen) ? seen + 1 : 1;
+				}
+
+				if (orphaned.Count != 0)
+				{
+					var parts = new List<string>();
+					foreach ((string named, int count) in orphaned)
+					{
+						parts.Add($"'{named}' x{count}");
+					}
+
+					parts.Sort();
+					string line = $"{next.Count} row(s) name a parent that was never spawned: " +
+						string.Join(", ", parts);
+					if (line != _orphanReported)
+					{
+						_orphanReported = line;
+						GD.Print($"[screen-menu] '{PopulationScript}' {line} — DROPPED, as " +
+							"`AddChild` drops them");
+					}
 				}
 
 				break;
@@ -200,9 +512,24 @@ public sealed class Engine_UiScreenMenu
 
 		foreach ((Engine_UiMenuModel.Row row, Engine_UiExpandableMenu.Item item) in placed)
 		{
-			// `String2` is already the resolved, decorated string; there is no tag to resolve.
-			item.StatedLabel = row.Label.Length != 0 ? row.Label : row.Name;
-			item.TextTag = item.StatedLabel;
+			// `String2` is the resolved, decorated string WHERE THE GUEST SUPPLIED ONE. It does
+			// not always: the item lists spawn with `String1` set to the item's BABEL TAG and no
+			// `String2` at all, leaving the Lua to resolve it — which is why the gift screen
+			// showed 32 rows reading `INV_ITEM_CLOTHES_POOR_FEMALE_SUIT_NAME` verbatim. Leave
+			// the tag on `TextTag` and no stated label, and the view resolves it through the
+			// same book every other tag goes through (`INV_ITEM_CLOTHES_POOR_FEMALE_SUIT_NAME`
+			// → 'Female Lower Class Outfit', checked against the shipped book.babel).
+			if (row.Label.Length != 0)
+			{
+				item.StatedLabel = row.Label;
+				item.TextTag = row.Label;
+			}
+			else
+			{
+				item.StatedLabel = null;
+				item.TextTag = row.Name;
+			}
+
 			item.Ordinal = -1;
 			item.HeadingOverride = null;
 			item.EventType = row.EventType;
@@ -214,6 +541,9 @@ public sealed class Engine_UiScreenMenu
 			item.Emphasis = row.Emphasis;
 			item.IsOpen = _open.Contains(Engine_UiScreenMenuSpawn.PathOf(item));
 		}
+
+		AttachSourcedFolders();
+		PruneAuthoredDrops();
 
 		Script.UpdateAfterSpawning();
 		Script.UpdateAllGhosting();
@@ -251,12 +581,134 @@ public sealed class Engine_UiScreenMenu
 	{
 		PopulationScript = Engine_ExpandableMenuItems.PopulationScriptOf(screen);
 
+		// THE WIDGET DOES NOT ALWAYS SAY WHICH LIST IT IS. The gift family's states no
+		// `MenuPopulationScript` attribute at all, which left it with no template to look up and
+		// dropped it onto the raw model. The guest states it a second way — the argument of
+		// `RepopulateMenuFromPopulationScript`, which the shipped Lua also writes onto the
+		// element — so the captured statement stands in when the attribute is silent.
+		if (PopulationScript.Length == 0 &&
+			Model?.For(presentation)?.PopulationScript is { Length: > 0 } stated)
+		{
+			PopulationScript = stated;
+			if (!_saidStatedScript)
+			{
+				_saidStatedScript = true;
+				GD.Print($"[screen-menu] presentation 0x{presentation:X8} states no " +
+					$"MenuPopulationScript attribute — taking '{stated}' from the guest's own " +
+					"RepopulateMenuFromPopulationScript statement");
+			}
+		}
+
+		// AND THE GIFT FAMILY STATES IT NEITHER WAY. `sub_82430468` spawns screen 15's rows from
+		// native C++ and issues no `RepopulateMenuFromPopulationScript` at all, so the screen's
+		// own template names the list instead.
+		if (PopulationScript.Length == 0 && ScreenId != 0 &&
+			Engine_UiTemplates.Screen(ScreenId) is { } screenTemplate)
+		{
+			// A SCREEN CAN BE SEVERAL LISTS. Screen 15 is one id over Items, Weapons and
+			// Clothing, chosen by the mode word `sub_829B0A58` reads at `screen+372`; binding it
+			// to a single script would put the item categories on the weapons list. The mode is
+			// asked for only when the template says the screen has modes.
+			string bound = screenTemplate.MenuScript;
+			if (screenTemplate.MenuScriptByMode.Count != 0)
+			{
+				int mode = (int)Refii.Host.HostBridge.GetInventoryScreenMode();
+				if (screenTemplate.MenuScriptByMode.TryGetValue(mode, out string? byMode))
+				{
+					bound = byMode;
+				}
+				else if (mode != _saidMode)
+				{
+					_saidMode = mode;
+					GD.Print($"[screen-menu] screen {ScreenId} is in mode {mode}, which its " +
+						$"template does not name a list for — falling back to '{bound}'");
+				}
+			}
+
+			if (bound.Length > 0 && !string.Equals(bound, _boundScript, System.StringComparison.Ordinal))
+			{
+				_boundScript = bound;
+				GD.Print($"[screen-menu] screen {ScreenId} names no population script — its " +
+					$"template binds it to '{bound}'");
+			}
+
+			PopulationScript = bound;
+		}
+
 		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons =
 			Engine_ExpandableMenuItems.Read(screen, text, active, slides);
 
 		Presentation = presentation;
 
-		// The model first where it has rows: its rows are the C++'s own `g_Menu` statements, and
+		// THE TEMPLATE FIRST, WHERE IT HAS ROWS. This list is Godot's: the rows come from the
+		// population table the guest's own script declares, not from reading back what the guest
+		// has laid out. Only the LIVE parts — the decorated label, the ghosting — are still the
+		// guest's, joined on afterwards.
+		//
+		// THE SPLIT IS ALREADY IN THE DATA, which is why this needs no per-screen flag.
+		// `Engine_UiMenuPopulation` gives eight tables real entries — HenchmanPauseMenu,
+		// OptionsMenu, LogbookMenu, LogbookMenuOrb, CrimeMenu, ExpressionsMenu, AugmentMenu,
+		// DyeMenu — and registers thirteen more as names alone: PauseMenu (its rows are the
+		// C++'s, and `Engine_PauseMenu` builds them from `pause-root`), AbilitiesMenu,
+		// EquipmentMenu, ItemsMenu, ClothingMenu, WorldMapMenu and the rest, which are populated
+		// at runtime from the save. Those rows genuinely ARE the guest's data and still arrive
+		// through the capture below, until they are read from the data areas instead.
+		if (Engine_UiTemplates.Menu(PopulationScript) is { } authored &&
+			(authored.Entries.Count != 0 || authored.Source.Length != 0))
+		{
+			bool changed = RebuildFromTemplate(authored, buttons);
+			if (Script.Visible.Count != 0)
+			{
+				if (!_saidAuthored)
+				{
+					_saidAuthored = true;
+					GD.Print($"[screen-menu] '{PopulationScript}' is GODOT'S — " +
+						$"{Script.Visible.Count} row(s) built from the population template" +
+						(authored.Source.Length == 0
+							? string.Empty
+							: $" (source '{authored.Source}')") +
+						", committing by identity; the guest supplies labels and ghosting only");
+				}
+
+				_stated = false;
+				_authored = true;
+				_lastButtons = buttons;
+				_lastScreen = screen;
+				_lastActive = active;
+				return changed;
+			}
+
+			// THE TEMPLATE PRODUCED NOTHING, so its source is dry — for the runtime menus that
+			// means the `g_Menu` capture has no rows, which is a DEAD DATA HOOK and not a menu
+			// with no entries. Said once per list, because the fallback below hides it: reading
+			// the rows back out of the button pool's geometry looks like it works right up until
+			// a row is mid-tween or its identity is needed.
+			if (!_saidTemplateDry)
+			{
+				_saidTemplateDry = true;
+				GD.Print($"[screen-menu] '{PopulationScript}' has a template but it yielded NO " +
+					$"rows (source '{authored.Source}') — falling back to reading the guest's " +
+					"pool. This is the data hook, not the menu.");
+			}
+		}
+
+		// NO SCRIPT AND NO BINDING — the list is nobody's template, so say which screen it was.
+		//
+		// The fallback below reads rows out of the button pool's geometry and looks like it
+		// works, so an unowned screen is invisible unless it names itself. Every screen that
+		// reaches this line is one still to be bound, and the id is the only handle on it: these
+		// are exactly the screens whose widgets state no `MenuPopulationScript`.
+		if (PopulationScript.Length == 0 && _saidUnbound != ScreenId)
+		{
+			_saidUnbound = ScreenId;
+			GD.Print($"[screen-menu] screen {ScreenId} names NO population script and its " +
+				"template binds none — the list is not owned by a template yet");
+		}
+
+		_authored = false;
+		_authoredFrom = null;
+
+		// The model next where it has rows: its rows are the C++'s own `g_Menu` statements, and
 		// this path never touches the Gameface VM. Below it is the older position solve.
 		if (Model?.For(presentation) is { Rows.Count: > 0 } modelled)
 		{
@@ -292,20 +744,92 @@ public sealed class Engine_UiScreenMenu
 		// under their parent. Sort by the slot the guest laid each row on — `VisibleIndex` is
 		// strictly increasing in the display index, so slot order IS display order. Ties (rows
 		// parked in the zero-opacity gutter) keep pool order; an unlaid-out row sorts last.
-		var rows = new List<(string Label, int Ordinal, float? Indent, int Slot, int Pool)>();
+		// THE PAGE BAND IS A TIE-BREAK, NOT A FILTER.
+		//
+		// It exists because one pool can hold two lists — the gift screen keeps its category
+		// list and the open category's item list in the same 26 buttons, about a page apart in
+		// x — and reading both as one makes every row disagree about the highlight.
+		//
+		// Applied as a filter it also deletes rows that are merely MOVING. `ExpandableMenu` is
+		// authored off canvas and slid in, and every fold and page change re-tweens it, so a
+		// sample taken during that motion finds each row far from its slot's authored x and
+		// drops it — the list loses entries for no reason but timing. Worse than losing them:
+		// these rows commit through the guest's own A press against ITS highlight index, so a
+		// list that is one row short is a list where the wrong option is activated.
+		//
+		// The band only ever had to answer "which of these two is this slot's row". So collect
+		// every filled button, group by the slot the guest laid it on, and let the band decide
+		// only where a slot actually has more than one claimant. A slot with a single claimant
+		// takes it wherever it currently sits.
+		var claims = new Dictionary<int, List<(string Label, int Ordinal, float? Indent, int Slot, int Pool)>>();
 		int pool = 0;
 		foreach (Engine_ExpandableMenuItems.Button button in buttons)
 		{
-			// On this page only (see PageBand): a row of the list underneath is also a filled
-			// button with real text, and taking it would put two lists in one.
-			if (button.IsFilled && OnPage(button.Ordinal, transform))
+			if (button.IsFilled)
 			{
 				int slot = SlotOf(button.Ordinal, transform);
-				rows.Add((button.Text!, button.Ordinal, IndentOf(button.Ordinal, transform),
-					slot == 0 ? int.MaxValue : slot, pool));
+				int key = slot == 0 ? int.MaxValue : slot;
+				if (!claims.TryGetValue(key, out var sharing))
+				{
+					sharing = new List<(string, int, float?, int, int)>();
+					claims[key] = sharing;
+				}
+
+				sharing.Add((button.Text!, button.Ordinal, IndentOf(button.Ordinal, transform),
+					key, pool));
 			}
 
 			++pool;
+		}
+
+		// Contention is the whole read's property, not one slot's. A second list in the pool
+		// claims the SAME slots as the first — they share one slot table — so it shows up as
+		// slots with two claimants. Deciding per slot would then admit the second list's tail
+		// wherever it runs longer than the first and no slot is contested; deciding for the
+		// read keeps the two apart exactly as before.
+		int contested = 0;
+		foreach ((int key, var sharing) in claims)
+		{
+			if (key != int.MaxValue && sharing.Count > 1)
+			{
+				++contested;
+			}
+		}
+
+		var rows = new List<(string Label, int Ordinal, float? Indent, int Slot, int Pool)>();
+		foreach ((int key, var sharing) in claims)
+		{
+			// One list in the pool: every filled button is a row of it, wherever the tween has
+			// currently put it. The unlaid-out rows (slot 0) were always kept.
+			if (contested == 0 || key == int.MaxValue)
+			{
+				rows.AddRange(sharing);
+				continue;
+			}
+
+			bool anyOnPage = false;
+			foreach (var claim in sharing)
+			{
+				if (OnPage(claim.Ordinal, transform))
+				{
+					rows.Add(claim);
+					anyOnPage = true;
+				}
+			}
+
+			// Every claimant off its slot means the assembly is moving, not that a second list
+			// is in front: keep the first in pool order rather than emptying the slot.
+			if (!anyOnPage)
+			{
+				rows.Add(sharing[0]);
+			}
+		}
+
+		if (contested != 0 && !_saidContested)
+		{
+			_saidContested = true;
+			GD.Print($"[screen-menu] '{PopulationScript}' has {contested} slot(s) claimed by more " +
+				"than one filled button — two lists in one pool, so the page band decides this read");
 		}
 
 		rows.Sort((a, b) => a.Slot != b.Slot ? a.Slot.CompareTo(b.Slot) : a.Pool.CompareTo(b.Pool));
@@ -495,6 +1019,9 @@ public sealed class Engine_UiScreenMenu
 			}
 		}
 
+		AttachSourcedFolders();
+		PruneAuthoredDrops();
+
 		// What the join reached, whenever it did not reach everything: a row without an identity
 		// still draws and navigates, so a partial join is otherwise invisible. The capture's
 		// shape rides along — an empty capture is a population not yet seen, a full one that
@@ -587,6 +1114,184 @@ public sealed class Engine_UiScreenMenu
 	/// called `Row{n}`, which is its position and moves when the list changes length.</summary>
 	private static string FoldKey(Engine_UiExpandableMenu.Item item) =>
 		$"{item.Name}\u0000{item.StatedLabel ?? string.Empty}";
+
+	/// <summary>
+	/// A leaf the host unfolds — the logbook's Achievements row, whose action the console's
+	/// guide answered. Its children are ours (Ordinal -1), in the source's order, re-attached on
+	/// every rebuild so a list that arrived after the row did still lands. The row is named by
+	/// its own identity where the model or the capture gave one; a pool solved from positions
+	/// names its rows `RowN`, and then the population script's root order names them — the
+	/// guest's list IS that table while no folder is open, which is when a root can be pressed.
+	/// </summary>
+	/// <summary>
+	/// Drops the rows this list's TEMPLATE says the guest may spawn but we do not show — see
+	/// <see cref="Engine_UiMenuEntry.Drop"/>.
+	///
+	/// Through `RemoveChild`, the guest's own call (<see cref="Engine_UiExpandableMenu.Remove"/>):
+	/// the row leaves its parent's children and the spawn list, everything under it goes with it,
+	/// and the recompute clamps the cursor. Applied AFTER the sourced folders so a dropped row
+	/// takes its attached children with it either way.
+	///
+	/// Keyed on the population script, which is what names the template — so this reaches the
+	/// STATED build and the position solve alike. The position solve can only drop a row whose
+	/// identity it joined; one that fell back to `Row{n}` has no name to match, and that is the
+	/// same limit every other name-keyed rule on that path has.
+	/// </summary>
+	private void PruneAuthoredDrops()
+	{
+		if (PopulationScript.Length == 0)
+		{
+			return;
+		}
+
+		IReadOnlyList<Engine_UiTemplates.DroppedRow> dropped =
+			Engine_UiTemplates.DroppedRows(PopulationScript);
+		if (dropped.Count == 0)
+		{
+			return;
+		}
+
+		int gone = 0;
+		var how = new List<string>();
+		foreach (Engine_UiTemplates.DroppedRow drop in dropped)
+		{
+			// BY NAME, which is what a STATED build carries.
+			while (drop.Name.Length != 0 && Script.Find(drop.Name) is { } named)
+			{
+				Detach(named);
+				++gone;
+				how.Add($"{drop.Name} (by name)");
+			}
+
+			// BY DISPLAYED TEXT, which is all the POSITION SOLVE carries. It joined 0 of the
+			// logbook's 5 rows against the spawn capture in a real run — every row was called
+			// `Row{n}` — so a name-only drop reaches nothing on the screen this exists for.
+			// The tag resolves through the guest's own string table, so this is the same text
+			// the player is reading, in whatever language is installed.
+			if (drop.Tag.Length == 0 || Strings is null ||
+				!Strings.TryGetString(drop.Tag, out string label) || label.Length == 0)
+			{
+				continue;
+			}
+
+			while (FindByLabel(label) is { } shown)
+			{
+				Detach(shown);
+				++gone;
+				how.Add($"'{label}' (by text, tag {drop.Tag})");
+			}
+		}
+
+		if (gone != 0 && !_saidDrops)
+		{
+			_saidDrops = true;
+			GD.Print($"[screen-menu] '{PopulationScript}' drops {gone} authored row(s): " +
+				string.Join(", ", how));
+		}
+
+		void Detach(Engine_UiExpandableMenu.Item item)
+		{
+			// `RemoveChild`: out of the parent's children and out of the spawn list, subtree
+			// and all. Done by ITEM rather than by name because a row matched on its text has
+			// no usable name to look up again.
+			item.Parent?.Children.Remove(item);
+			Script.Forget(item);
+		}
+	}
+
+	/// <summary>
+	/// A row by the text it is DISPLAYING. Prefix rather than equality: the guest appends live
+	/// decoration to a label before it writes the row — `Abilities &lt;s4&gt;(2)&lt;/s4&gt;` when
+	/// there are points to spend — and that exists nowhere but in the string.
+	/// </summary>
+	private Engine_UiExpandableMenu.Item? FindByLabel(string label)
+	{
+		foreach (Engine_UiExpandableMenu.Item item in Script.SpawnedItems)
+		{
+			if (item.StatedLabel is { } shown &&
+				shown.StartsWith(label, System.StringComparison.Ordinal))
+			{
+				return item;
+			}
+		}
+
+		return null;
+	}
+
+	private bool _saidDrops;
+
+	/// <summary>Said once when a slot really is claimed twice — see the page-band note.</summary>
+	private bool _saidContested;
+
+	private void AttachSourcedFolders()
+	{
+		// Bound the same way the template build is — a folded source reads the same capture.
+		uint boundWas = Engine_UiMenuSources.BoundScreen;
+		Engine_UiMenuSources.BoundScreen = CaptureKey;
+		try
+		{
+			AttachSourcedFoldersBound();
+		}
+		finally
+		{
+			Engine_UiMenuSources.BoundScreen = boundWas;
+		}
+	}
+
+	private void AttachSourcedFoldersBound()
+	{
+		var roots = new List<Engine_UiExpandableMenu.Item>();
+		foreach (Engine_UiExpandableMenu.Item item in Script.SpawnedItems)
+		{
+			if (item.Parent is null || ReferenceEquals(item.Parent, Script.MenuRoot))
+			{
+				roots.Add(item);
+			}
+		}
+
+		var tableRoots = new List<string>();
+		if (Engine_UiMenuPopulation.For(PopulationScript) is { } table)
+		{
+			foreach (Engine_UiMenuPopulation.Entry entry in table.Entries)
+			{
+				if (entry.Parent.Length == 0)
+				{
+					tableRoots.Add(entry.Name);
+				}
+			}
+		}
+
+		for (int i = 0; i < roots.Count; ++i)
+		{
+			Engine_UiExpandableMenu.Item item = roots[i];
+			string key = item.Name;
+			if (key.StartsWith("Row", System.StringComparison.Ordinal) && tableRoots.Count == roots.Count)
+			{
+				key = tableRoots[i];
+			}
+
+			if (Engine_UiMenuSources.StatedFolderSource(PopulationScript, key) is not { } source)
+			{
+				continue;
+			}
+
+			foreach (Engine_UiMenuSources.Row sourced in Engine_UiMenuSources.Rows(source, key))
+			{
+				Engine_UiExpandableMenu.Item child = Script.Add(sourced.Name, item);
+				child.StatedLabel = sourced.Label;
+				child.TextTag = sourced.Label;
+				child.Ordinal = -1;
+				child.HeadingOverride = false;
+				child.EventType = sourced.EventType;
+				child.IdLow = (int)(sourced.Id & 0xFFFFu);
+				child.IdHigh = (int)((sourced.Id >> 16) & 0xFFFFu);
+				child.Committable = sourced.Committable;
+				child.Ghosted = sourced.Ghosted;
+				child.IsOpen = false;
+				++_hostChildren;
+			}
+		}
+	}
 
 	/// <summary>Every open row in the tree, by <see cref="FoldKey"/>, before the model is cleared.</summary>
 	private static void CollectOpen(
@@ -775,6 +1480,14 @@ public sealed class Engine_UiScreenMenu
 			}
 
 			int candidate = i + 1 - slot + Engine_FrontEndMenuView.HighlightSlot;
+
+			// A row alone on a far slot mid-scroll solves to an index off either end of the
+			// list; that is "no answer", not a cursor of -6.
+			if (candidate < 1 || candidate > _ordinals.Count)
+			{
+				continue;
+			}
+
 			if (answer == 0)
 			{
 				answer = candidate;
@@ -897,6 +1610,34 @@ public sealed class Engine_UiScreenMenu
 
 
 	/// <summary>
+	/// Runs a row's own <see cref="Engine_UiMenuEntry.Command"/>, if it names one that is
+	/// implemented. True when the row is fully answered and nothing should reach the guest.
+	///
+	/// A row with a host action needs no guest identity — that is the whole point of having one —
+	/// so this is tried ahead of both the identity push and `Committable`.
+	/// </summary>
+	private static bool RunHostAction(Engine_UiExpandableMenu.Item row, string label)
+	{
+		if (row.Command is not { Length: > 0 } action)
+		{
+			return false;
+		}
+
+		if (Engine_UiScreenActions.Run(action))
+		{
+			GD.Print($"[screen-menu] '{label}' ran the HOST action '{action}' — " +
+				"nothing was pushed to the guest");
+			return true;
+		}
+
+		// Named but unknown: say so rather than silently falling through to the guest, which
+		// would look like it worked while doing something else entirely.
+		GD.Print($"[screen-menu] '{label}' names host action '{action}' but nothing " +
+			"implements it — falling through");
+		return false;
+	}
+
+	/// <summary>
 	/// Commits the highlighted row BY IDENTITY, naming the row so our cursor is the only one — a
 	/// plain A press commits whatever `g_Menu:GetHighlightedMenuItemData()` has as current.
 	/// Ghosted rows are refused here: the script's early return lives in `SelectMenuItem` and the
@@ -937,6 +1678,21 @@ public sealed class Engine_UiScreenMenu
 				return true;
 			}
 
+			// THE ROW'S OWN ACTION FIRST, and this branch used to skip it entirely.
+			//
+			// A row with no guest ordinal left here by the identity commit below without ever
+			// consulting `Command`, so every sourced row that performs something host-side —
+			// an ability purchase, an unequip — pushed a `(name, event, id)` at the guest's
+			// dispatcher instead of doing the thing. A run showed it plainly: pressing Physique
+			// logged `host commit BY IDENTITY` and bought nothing.
+			//
+			// The identity push stays as the fallback for rows that genuinely have no action of
+			// their own, which is most of them.
+			if (RunHostAction(row, label))
+			{
+				return true;
+			}
+
 			uint hostId = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
 			GD.Print($"[screen-menu] host commit BY IDENTITY: '{label}' " +
 				$"({row.Name}, type {row.EventType}, id 0x{hostId:X8})");
@@ -960,6 +1716,14 @@ public sealed class Engine_UiScreenMenu
 		// When the model is stated the fold is the guest's: `SelectMenuItem` runs its own gate
 		// and toggle on the tree it owns and the next read carries both, so toggling here too
 		// would be a second flip of one switch.
+		//
+		// THE CURSOR AS IT STOOD WHEN A WAS PRESSED. `Select()` opens a folder by putting the
+		// cursor on its first child (`main.7 pc14..22`), and the guest's highlight is compared
+		// against the row that was pressed, not the row the fold moved to — compared afterwards,
+		// every folder press read as a disagreement and went out as a type-301 identity event
+		// no handler owns, so the guest's highlight stayed on the heading and every page writer
+		// keyed on it (`sub_826D1698`, `sub_826D2F80`, `sub_826C3C78`, `sub_826D9168`) stayed dark.
+		int pressed = Script.CurrentHighlightIdx;
 		if (!_stated && Script.Select() is null)
 		{
 			GD.Print($"[screen-menu] '{label}' — the press landed mid-slide and SelectMenuItem " +
@@ -1038,10 +1802,10 @@ public sealed class Engine_UiScreenMenu
 			return true;
 		}
 
-		if (!_stated && GuestHighlight == Script.CurrentHighlightIdx)
+		if (!_stated && GuestHighlight == pressed)
 		{
 			GD.Print($"[screen-menu] selecting '{label}' through the guest's own SelectMenuItem " +
-				$"— cursor {Script.CurrentHighlightIdx}/{Script.Visible.Count}, " +
+				$"— cursor {pressed}/{Script.Visible.Count}, " +
 				$"({row.Name}, type {row.EventType})" +
 				(row.EventType == (int)Engine_UiMenuConstants.EventType.Submenu
 					? " — a SUBMENU row, so the fold is the whole action"
@@ -1062,6 +1826,18 @@ public sealed class Engine_UiScreenMenu
 					"tostring(i.Ghosted)..\" c=\"..tostring(#i.ChildItems)..\" o=\"..tostring(i.IsOpen))");
 			}
 
+			return true;
+		}
+
+		// A HOST ACTION FIRST, AND IT NEVER REACHES THE GUEST'S DISPATCHER. A template row may
+		// name what activating it DOES (`Engine_UiMenuEntry.Command`), and that is the seam by
+		// which a menu stops needing the guest's UI at all: the row is ours, the action is ours,
+		// and nothing is pushed into `PushButtonEvent` for a screen class to interpret.
+		//
+		// It is checked before `Committable` on purpose — a row with a host action needs no
+		// guest identity, which is the whole point of having one.
+		if (RunHostAction(row, label))
+		{
 			return true;
 		}
 
@@ -1097,14 +1873,18 @@ public sealed class Engine_UiScreenMenu
 			quoted.Add((_labels[i].Length == 0 ? "<EMPTY>" : $"'{_labels[i]}'") + indent);
 		}
 
+		// `Count` is the finished list; the quoted names are the READ it was built from, which a
+		// template drop can leave shorter. Named so the two cannot be mistaken for each other.
 		return $"{Count} row(s)" +
-			(_stated ? " [STATED by g_Menu]" : " [solved from positions]") +
+			(_authored
+				? " [GODOT'S, from the population template]"
+				: _stated ? " [STATED by g_Menu]" : " [solved from positions]") +
 			(_hostChildren == 0
 				? string.Empty
 				: $" (+{_hostChildren} host child(ren), folded)") +
 			", guest highlight " +
 			$"{(GuestHighlight == 0 ? "unsolved" : GuestHighlight.ToString())}" +
-			(Count == 0 ? string.Empty : $": {string.Join(", ", quoted)}") +
+			(_labels.Count == 0 ? string.Empty : $", read: {string.Join(", ", quoted)}") +
 			$"  [script model: {Script.Describe()}]" +
 			(PopulationScript.Length == 0
 				? ", the widget names no population script"

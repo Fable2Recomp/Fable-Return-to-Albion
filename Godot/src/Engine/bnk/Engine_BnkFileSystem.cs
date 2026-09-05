@@ -119,10 +119,18 @@ public sealed class BnkFileSystem : IDisposable
     public static readonly string[] DefaultLooseExtensions =
         { ".gdb", ".list", ".animation_toc", ".animation_data" };
 
+    /// <summary>
+    /// Mounts the game's data, then each enabled mod over it.
+    ///
+    /// <paramref name="overlays"/> is LOWEST PRIORITY FIRST: entries insert last-wins, so the
+    /// panel's highest-first list is reversed exactly once, in <c>ModIndex.ResolveOverlays</c>,
+    /// and never again here.
+    /// </summary>
     public static BnkFileSystem Mount(
         string gameDirectory,
         bool expandNested = true,
-        IReadOnlyList<string>? looseExtensions = null)
+        IReadOnlyList<string>? looseExtensions = null,
+        IReadOnlyList<(string Name, string AssetRoot)>? overlays = null)
     {
         var filesystem = new BnkFileSystem();
         if (string.IsNullOrEmpty(gameDirectory) || !Directory.Exists(gameDirectory))
@@ -166,10 +174,130 @@ public sealed class BnkFileSystem : IDisposable
         }
 
         Refii.FlashGames.Engine_SwfAssets.Index(filesystem, gameDirectory);
+
+        // MODS LAST, so a mod can override anything the game shipped — the pub games' extracted
+        // assets added just above included.
+        if (overlays is not null)
+        {
+            foreach ((string name, string assetRoot) in overlays)
+            {
+                filesystem.IndexOverlay(name, assetRoot, expandNested);
+            }
+        }
+
         return filesystem;
     }
 
-    public void AddVirtualFile(string virtualPath, string sourcePath, long size, Func<byte[]> read)
+    /// <summary>
+    /// One mod's assets, over everything already mounted.
+    ///
+    /// A mod-shipped `.bnk` is parsed and expanded exactly as the game's are, so a mod may be
+    /// developed loose and shipped packed with no change to what the mount sees. The mod's own
+    /// loose files still shadow its bank — the rule the game's data already follows.
+    /// </summary>
+    private void IndexOverlay(string name, string assetRoot, bool expandNested)
+    {
+        if (string.IsNullOrEmpty(assetRoot) || !Directory.Exists(assetRoot))
+        {
+            return;
+        }
+
+        IEnumerable<string> banks;
+        try
+        {
+            banks = EnumerateByExtension(assetRoot, ".bnk").ToList();
+        }
+        catch (Exception exception)
+        {
+            _failures.Add($"{name}: {exception.Message}");
+            return;
+        }
+
+        foreach (string bank in banks.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+        {
+            if (BnkArchive.TryOpen(bank, out BnkArchive? archive, out string error) &&
+                archive is not null)
+            {
+                _archives.Add(archive);
+                BnkArchive owner = archive;
+                Index(archive, entry => owner.ReadEntryBytes(entry), 0, expandNested, name);
+            }
+            else
+            {
+                _failures.Add($"{name}/{Path.GetFileName(bank)}: {error}");
+            }
+        }
+
+        IndexAllLoose(assetRoot, name);
+    }
+
+    /// <summary>
+    /// Gives one path to one mod, whatever the load order said.
+    ///
+    /// A pin is the one resolution order cannot express, so it is applied after the fold: the
+    /// pinned mod's file is swapped into the winner's slot and the previous winner becomes an
+    /// alternate. False when that mod contributed nothing at that path — a stale pin is a no-op,
+    /// not an error.
+    /// </summary>
+    public bool Promote(string virtualPath, string modName)
+    {
+        if (string.IsNullOrEmpty(modName) || !TryGetFile(virtualPath, out BnkFile winner))
+        {
+            return false;
+        }
+
+        if (string.Equals(winner.SourceMod, modName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        BnkFile? promoted = null;
+        foreach (BnkFile alternate in winner.Alternates)
+        {
+            if (string.Equals(alternate.SourceMod, modName, StringComparison.OrdinalIgnoreCase))
+            {
+                promoted = alternate;
+                break;
+            }
+        }
+
+        if (promoted is null)
+        {
+            return false;
+        }
+
+        string normalized = Normalize(virtualPath);
+        int split = normalized.LastIndexOf('/');
+        Node? node = Resolve(split < 0 ? string.Empty : normalized[..split]);
+        if (node is null)
+        {
+            return false;
+        }
+
+        var shadowed = new List<BnkFile> { winner };
+        foreach (BnkFile alternate in winner.Alternates)
+        {
+            if (!ReferenceEquals(alternate, promoted))
+            {
+                shadowed.Add(alternate);
+            }
+        }
+
+        winner.Alternates.Clear();
+        promoted.Alternates.Clear();
+        promoted.Alternates.AddRange(shadowed);
+        node.Files[split < 0 ? normalized : normalized[(split + 1)..]] = promoted;
+        return true;
+    }
+
+    /// <summary>
+    /// Adds a file the mount serves from memory rather than from disk.
+    ///
+    /// <paramref name="sourceMod"/> attributes it, so a table merged from several mods' rows is
+    /// reported as theirs rather than as the game's own data.
+    /// </summary>
+    public void AddVirtualFile(
+        string virtualPath, string sourcePath, long size, Func<byte[]> read, string sourceMod = "")
     {
         string normalized = Normalize(virtualPath);
         if (normalized.Length == 0)
@@ -184,7 +312,24 @@ public sealed class BnkFileSystem : IDisposable
             StoredSize = (uint)Math.Min(size, uint.MaxValue),
         };
 
-        Insert(normalized, new BnkFile(sourcePath, entry, normalized, _ => read(), true), preferNew: true);
+        Insert(
+            normalized,
+            new BnkFile(sourcePath, entry, normalized, _ => read(), true, sourceMod),
+            preferNew: true);
+
+        foreach (string alias in AliasesFor(normalized))
+        {
+            var aliasEntry = new BnkEntry
+            {
+                RelativePath = alias,
+                Size = entry.Size,
+                StoredSize = entry.StoredSize,
+            };
+            Insert(
+                alias,
+                new BnkFile(sourcePath, aliasEntry, alias, _ => read(), true, sourceMod),
+                preferNew: true);
+        }
     }
 
     private static IEnumerable<string> EnumerateByExtension(string root, params string[] extensions)
@@ -208,7 +353,7 @@ public sealed class BnkFileSystem : IDisposable
     /// Every loose file on disk, no extension list; skips `.bnk` (indexed by contents) and the
     /// xex/patch. Loose wins over a bank entry of the same name (<c>preferNew</c>).
     /// </summary>
-    private void IndexAllLoose(string gameDirectory)
+    private void IndexAllLoose(string gameDirectory, string sourceMod = "")
     {
         IEnumerable<string> matches;
         try
@@ -227,6 +372,13 @@ public sealed class BnkFileSystem : IDisposable
             if (path.EndsWith(".bnk", StringComparison.OrdinalIgnoreCase) ||
                 path.EndsWith(".xex", StringComparison.OrdinalIgnoreCase) ||
                 path.EndsWith(".xexp", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // A mod's own bookkeeping is not one of its assets. Only reachable when the mod
+            // keeps its files in its root rather than under `files/`.
+            if (sourceMod.Length != 0 && IsModBookkeeping(Path.GetFileName(path)))
             {
                 continue;
             }
@@ -260,59 +412,24 @@ public sealed class BnkFileSystem : IDisposable
             string diskPath = path;
             Insert(
                 normalized,
-                new BnkFile(diskPath, entry, normalized, _ => File.ReadAllBytes(diskPath), true),
+                new BnkFile(
+                    diskPath, entry, normalized, _ => File.ReadAllBytes(diskPath), true, sourceMod),
                 preferNew: true);
 
-            // Alias without the `data/` prefix: the guest requests `language/.../gui_small.bft`,
-            // the loose key is `data/language/...`. The full path stays registered too.
-            const string dataPrefix = "data/";
-            if (normalized.StartsWith(dataPrefix, StringComparison.OrdinalIgnoreCase))
+            foreach (string alias in AliasesFor(normalized))
             {
-                string alias = normalized[dataPrefix.Length..];
-                if (alias.Length != 0)
+                var aliasEntry = new BnkEntry
                 {
-                    var aliasEntry = new BnkEntry
-                    {
-                        RelativePath = alias,
-                        Size = entry.Size,
-                        StoredSize = entry.StoredSize,
-                    };
-                    Insert(
-                        alias,
-                        new BnkFile(diskPath, aliasEntry, alias, _ => File.ReadAllBytes(diskPath), true),
-                        preferNew: false);
-
-                    // Alias without the locale: `GameInit_MountDataFileSystems` mounts `language`
-                    // over the active culture's directory, so the guest asks for
-                    // `language\text\book.babel` (fonts compose the locale themselves).
-                    // Lowest precedence (`preferNew: false`): a real `language/...` file wins.
-                    const string languagePrefix = "language/";
-                    if (alias.StartsWith(languagePrefix, StringComparison.OrdinalIgnoreCase))
-                    {
-                        int localeEnd = alias.IndexOf('/', languagePrefix.Length);
-                        if (localeEnd > languagePrefix.Length)
-                        {
-                            string locale = alias[languagePrefix.Length..localeEnd];
-                            if (IsCultureFolder(locale))
-                            {
-                                string localeless =
-                                    languagePrefix + alias[(localeEnd + 1)..];
-                                var localeEntry = new BnkEntry
-                                {
-                                    RelativePath = localeless,
-                                    Size = entry.Size,
-                                    StoredSize = entry.StoredSize,
-                                };
-                                Insert(
-                                    localeless,
-                                    new BnkFile(
-                                        diskPath, localeEntry, localeless,
-                                        _ => File.ReadAllBytes(diskPath), true),
-                                    preferNew: false);
-                            }
-                        }
-                    }
-                }
+                    RelativePath = alias,
+                    Size = entry.Size,
+                    StoredSize = entry.StoredSize,
+                };
+                Insert(
+                    alias,
+                    new BnkFile(
+                        diskPath, aliasEntry, alias, _ => File.ReadAllBytes(diskPath), true,
+                        sourceMod),
+                    preferNew: sourceMod.Length != 0);
             }
         }
     }
@@ -322,6 +439,87 @@ public sealed class BnkFileSystem : IDisposable
     /// title's own fallback culture.
     /// </summary>
     public static string ActiveCulture { get; set; } = "en-uk";
+
+    /// <summary>
+    /// The other names a path answers to.
+    ///
+    /// ONE DEFINITION, because everything that puts a file into the mount needs the same one.
+    /// The guest asks by the aliased spelling — `language\text\book.babel`, not
+    /// `data\language\en-uk\text\book.babel` — so a file registered under its full path alone
+    /// is invisible to it. A merged text book installed without these was served on the full
+    /// path and the shipped book on every spelling the guest actually uses.
+    ///
+    /// `data/` comes off because the archives never had it; the locale comes off because
+    /// `GameInit_MountDataFileSystems` mounts `language` over the active culture's directory.
+    /// </summary>
+    public static IEnumerable<string> AliasesFor(string normalized)
+    {
+        const string dataPrefix = "data/";
+        if (!normalized.StartsWith(dataPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            yield break;
+        }
+
+        string alias = normalized[dataPrefix.Length..];
+        if (alias.Length == 0)
+        {
+            yield break;
+        }
+
+        yield return alias;
+
+        const string languagePrefix = "language/";
+        if (!alias.StartsWith(languagePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            yield break;
+        }
+
+        int localeEnd = alias.IndexOf('/', languagePrefix.Length);
+        if (localeEnd <= languagePrefix.Length)
+        {
+            yield break;
+        }
+
+        if (IsCultureFolder(alias[languagePrefix.Length..localeEnd]))
+        {
+            yield return languagePrefix + alias[(localeEnd + 1)..];
+        }
+    }
+
+    /// <summary>
+    /// What a mod ships that is NOT an asset: its own bookkeeping, and the sources the overlay
+    /// systems compile.
+    ///
+    /// A `.gdb.csv`, `.babel.csv`, `.tex.png` or `.mdl.glb` is an INPUT — the mount turns it into
+    /// the asset it names and adds that. Indexing the source as well put six phantom files into
+    /// the first real run's resolved index, each reported as an addition the mod had made. They
+    /// were harmless to the game, which never asks for them, and they were still a lie about what
+    /// the mod contains.
+    /// </summary>
+    private static bool IsModBookkeeping(string leaf)
+    {
+        if (leaf.Equals(Refii.Mods.ModWorkspace.ModMetadataFilename, StringComparison.OrdinalIgnoreCase) ||
+            leaf.Equals(Refii.Mods.ModWorkspace.ModManifestFilename, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        foreach (string suffix in ModSourceSuffixes)
+        {
+            if (leaf.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Authored inputs the overlay systems compile into the assets they name.</summary>
+    private static readonly string[] ModSourceSuffixes =
+    {
+        ".gdb.csv", ".babel.csv", ".tex.png", ".mdl.glb", ".mdl.gltf",
+    };
 
     private static bool IsCultureFolder(string segment) =>
         string.Equals(segment, ActiveCulture, StringComparison.OrdinalIgnoreCase);
@@ -381,7 +579,11 @@ public sealed class BnkFileSystem : IDisposable
     }
 
     private void Index(
-        BnkArchive archive, Func<BnkEntry, byte[]> read, int depth, bool expandNested)
+        BnkArchive archive,
+        Func<BnkEntry, byte[]> read,
+        int depth,
+        bool expandNested,
+        string sourceMod = "")
     {
         foreach (BnkEntry entry in archive.Entries)
         {
@@ -394,13 +596,16 @@ public sealed class BnkFileSystem : IDisposable
             bool isNestedBank = normalized.EndsWith(".bnk", StringComparison.OrdinalIgnoreCase);
             if (isNestedBank && expandNested && depth < MaxNestingDepth)
             {
-                if (TryExpandNested(archive, entry, read, depth, normalized))
+                if (TryExpandNested(archive, entry, read, depth, normalized, sourceMod))
                 {
                     continue;
                 }
             }
 
-            Insert(normalized, new BnkFile(archive.ArchivePath, entry, normalized, read));
+            Insert(
+                normalized,
+                new BnkFile(archive.ArchivePath, entry, normalized, read, sourceMod: sourceMod),
+                preferNew: sourceMod.Length != 0);
         }
     }
 
@@ -409,7 +614,8 @@ public sealed class BnkFileSystem : IDisposable
         BnkEntry entry,
         Func<BnkEntry, byte[]> read,
         int depth,
-        string normalized)
+        string normalized,
+        string sourceMod = "")
     {
         byte[] bytes;
         try
@@ -442,14 +648,18 @@ public sealed class BnkFileSystem : IDisposable
                     normalized,
                     nestedEntry,
                     Normalize(nestedEntry.RelativePath),
-                    nestedRead));
+                    nestedRead,
+                    sourceMod: sourceMod));
             }
 
             _containers[normalized] = new BnkContainer(normalized, archive.ArchivePath, contents);
-            Index(nested, nestedRead, depth + 1, true);
+            Index(nested, nestedRead, depth + 1, true, sourceMod);
         }
 
-        Insert(normalized, new BnkFile(archive.ArchivePath, entry, normalized, read));
+        Insert(
+            normalized,
+            new BnkFile(archive.ArchivePath, entry, normalized, read, sourceMod: sourceMod),
+            preferNew: sourceMod.Length != 0);
         return true;
     }
 
@@ -605,18 +815,29 @@ public sealed class BnkFile
         BnkEntry entry,
         string virtualPath,
         Func<BnkEntry, byte[]> read,
-        bool isLoose = false)
+        bool isLoose = false,
+        string sourceMod = "")
     {
         SourceArchivePath = sourceArchivePath;
         Entry = entry;
         VirtualPath = virtualPath;
         _read = read;
         IsLoose = isLoose;
+        SourceMod = sourceMod;
     }
 
     public string SourceArchivePath { get; }
 
     public bool IsLoose { get; }
+
+    /// <summary>The mod that contributed this file, or empty for the game's own data.</summary>
+    public string SourceMod { get; }
+
+    /// <summary>
+    /// Whether this file BEAT something rather than being part of the shipped set: a loose file
+    /// over a bank entry, or anything a mod contributed. See <see cref="ReadAllBytes"/>.
+    /// </summary>
+    public bool IsOverride => IsLoose || SourceMod.Length != 0;
 
     public string SourceArchiveName => Path.GetFileName(SourceArchivePath);
 
@@ -631,6 +852,9 @@ public sealed class BnkFile
     /// <summary>Whether this name is served by more than one bank entry; see ReadAllBytes.</summary>
     public bool HasAlternates => Alternates.Count != 0;
 
+    /// <summary>Everything this file shadows, nearest first. The master list reads it.</summary>
+    public IReadOnlyList<BnkFile> Shadowed => Alternates;
+
     internal byte[] ReadOwn() => _read(Entry);
 
     /// <summary>
@@ -641,6 +865,16 @@ public sealed class BnkFile
     /// </summary>
     public byte[] ReadAllBytes()
     {
+        // AN OVERRIDE REPLACES; IT NEVER REJOINS. The join below reunites a header entry with a
+        // payload entry, which is a BANK-PACKING artefact — one logical file stored as two. A
+        // loose file or a mod's file is a whole asset that beat those entries, so joining it to
+        // the bank's payload hands back the SHIPPED texture and drops the override, which reads
+        // as "my mod does nothing" with no error anywhere.
+        if (IsOverride)
+        {
+            return ReadOwn();
+        }
+
         if (Alternates.Count != 0 &&
             VirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) &&
             TryReadTexture(out byte[] texture))

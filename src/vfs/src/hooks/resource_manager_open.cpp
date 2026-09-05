@@ -248,23 +248,64 @@ REX_EXTERN(rex_lhResourceManager_OpenInternal) {
 REX_EXTERN(sub_82426470) {
   REX_FUNC_PROLOGUE();
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82426470);
-
-  // Capture the chunk before anything else touches it: this runner is the arrival point for the
-  // whole `g_Menu:` vocabulary, paired with the stagers in gui_menu_hooks.cpp.
+  // THE CAPTURE RUNS BEFORE THE PASSTHROUGH. It used to sit after it, and
+  // `REFII_VFS_NATIVE_PASSTHROUGH` runs the guest's function and RETURNS — so the whole block
+  // below was dead code and not one menu statement was ever recorded. A 6,777-line run that
+  // opened the logbook, options, equipment, world map and abilities produced zero, which is
+  // indistinguishable from "the guest states no menus": every screen silently fell back to
+  // reading its rows out of the button pool's geometry.
+  //
+  // WHAT THIS FUNCTION IS. Not `dostring` — a DISPATCHER. `lbz r10, 0x64(r11)` at 0x82426498
+  // on the GUI manager (`dword_83496B08`) decides: non-zero runs the chunk now through
+  // `sub_82372500`, zero QUEUES it into the `std::map<presentation, list<LHString>>` at
+  // `g_Gui+0x58`, flushed later by `sub_821738A0`. The manager's constructor sets +0x64 = 1
+  // (0x8237119C) and the first `Update` clears it (0x8228716C) and never sets it back, so in
+  // practice every chunk after the first tick is deferred.
+  //
+  // Capturing on ENTRY is deliberate: it sees every chunk in SUBMISSION order, which is the
+  // order the statements were made, and it pairs with the attribute stagers in
+  // gui_menu_hooks.cpp — `sub_826CE8D0` writes String1..Float4 and only then submits
+  // "g_Menu:SpawnButton()" (0x826CEB3C). Do not expect the guest's Lua side effects to exist
+  // yet at this point; they happen at the flush.
   {
-    const std::string chunk =
-        refii::vfs::ReadMaybeGuestString(base, ctx.r3.u32, 512);
-    if (chunk.find("g_Menu") != std::string::npos) {
-      refii::vfs::RunMenuChunk(chunk, ctx.r4.u32);
+    // r4 == 0 is a chunk the guest DISCARDS outright (`beq cr6` at 0x82426488), and it is the
+    // key the model files the statement under. Recording it would invent a menu at address 0.
+    if (ctx.r4.u32 != 0) {
+      // r3 is an LHString handle — `char***`, reached with exactly two dereferences, the way
+      // `sub_82372500` does it (`lwz r11, 0(r30)` / `lwz r6, 0(r11)`). The best-effort reader
+      // used before probes one to three levels and returns pointer bytes whenever they happen
+      // to be printable, so it could not read these reliably. The permissive reader stays as a
+      // fallback for a caller shape we have not enumerated; the `g_Menu` test filters it.
+      std::string chunk = refii::vfs::ReadGuestLhString(base, ctx.r3.u32);
+      if (chunk.empty()) {
+        chunk = refii::vfs::ReadMaybeGuestString(base, ctx.r3.u32, 512);
+      }
 
-      // The list boundary. Only pause, gift and equipment repopulate through the `sub_826CE110`
-      // wrapper; every other screen fires this exec inline, so it must be cleared here.
-      if (chunk.find("g_Menu:DeleteAllSpawnedMenuItems") != std::string::npos) {
-        refii_bridge_menu_spawn_begin();
+      if (chunk.find("g_Menu") != std::string::npos) {
+        refii::vfs::RunMenuChunk(chunk, ctx.r4.u32);
+
+        // The list boundary. `sub_826CE110` is the class-level "clear the menu" helper and only
+        // the pause and inventory paths reach it; the logbook submits
+        // `g_Menu:RepopulateMenuFromPopulationScript('...')` inline (0x826D8E34), so the
+        // boundary has to be taken from the chunk text here.
+        if (chunk.find("g_Menu:DeleteAllSpawnedMenuItems") != std::string::npos) {
+          // KEYED BY THE SCREEN THE GUEST STATES, like the other boundaries.
+          //
+          // This one published the population as belonging to NO screen, and it is the boundary
+          // most of the in-game lists actually come through — the weapons list was captured
+          // with its rows correct (`Melee (3)<exclamation.img>`, `Ranged (2)`) while screen 15
+          // was up, and reported as screen 0xFFFFFFFF. Any screen bound to a `capture:` source
+          // would then refuse its OWN rows, which is worse than the bleed the key was added to
+          // stop.
+          uint32_t screen_id = 0;
+          refii_bridge_menu_spawn_begin_for(
+              refii::vfs::InGameScreenRoots(base, nullptr, &screen_id) ? screen_id : 0xFFFFFFFFu);
+        }
       }
     }
   }
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_82426470);
 
 
   const PPCContext original_ctx = ctx;

@@ -74,6 +74,7 @@ public partial class GameFx : Node3D
 
     public override void _Process(double delta)
     {
+    	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gamefx");
         if (HostBridge.TryGetAbiVersion() is null)
         {
             return;

@@ -103,6 +103,8 @@ PPC_EXTERN_FUNC(sub_82379838);
 // guiOwner ctor `sub_8236D078`, which maps screen id 0 to the pause main menu handler
 // (ctor `sub_826A1818`, vtable 0x820CDE18).
 PPC_EXTERN_FUNC(sub_8236FFC0);
+PPC_EXTERN_FUNC(sub_82426518);  // the presentation's scene-root element
+PPC_EXTERN_FUNC(sub_82426BA8);  // goToSlide(element, presentation, index)
 
 // The pause handler's event method — vtable slot +20 of 0x820CDE18, `(this, event)`.
 //
@@ -231,6 +233,13 @@ PPC_EXTERN_FUNC(sub_8222CED0);
 /// anything else is refused. Vtable `0x820CF4BC`: `+16` `0x826C23A8` (per-frame update), `+20`
 /// `0x826C2660` (this), `+24` `0x826C2958` (ScreenAction).
 PPC_EXTERN_FUNC(sub_82214DD8);
+PPC_EXTERN_FUNC(sub_8246F020);   // the family collector — see SampleFamily
+PPC_EXTERN_FUNC(sub_826C9450);   // and its destructor; the two must be called as a pair
+PPC_EXTERN_FUNC(sub_824F1C90);   // inventory record -> item handle, BY RECORD HASH
+PPC_EXTERN_FUNC(sub_82764DC0);   // release an item handle taken by sub_824F1C90
+PPC_EXTERN_FUNC(sub_823E0FF8);   // use an item, by handle
+PPC_EXTERN_FUNC(sub_823F2718);   // give a gift, by handle
+PPC_EXTERN_FUNC(sub_826C9AB8);   // ACTIVATE an item by handle — the guest's own category switch
 PPC_EXTERN_FUNC(sub_8223D320);   // GetMorality — the DISPLAYED value
 PPC_EXTERN_FUNC(sub_8223D910);   // GetPurity   — the DISPLAYED value
 PPC_EXTERN_FUNC(sub_821C7D30);   // GetRenown   — the DISPLAYED value
@@ -238,7 +247,10 @@ PPC_EXTERN_FUNC(sub_824C3570);   // appearance-modifier term, by kind
 PPC_EXTERN_FUNC(sub_824C3AF8);   // preference term, by axis
 PPC_EXTERN_FUNC(sub_824C3940);   // home bonus
 PPC_EXTERN_FUNC(sub_824C4030);   // purity/corruption opinion
+PPC_EXTERN_FUNC(sub_821C67F8);   // ~LHString — the WIDE release, what the filler uses on
+                                 // every provider output (`sub_82214DD8` is the narrow one)
 PPC_EXTERN_FUNC(sub_823C9000);   // region distance
+PPC_EXTERN_FUNC(sub_823C9228);   // days remaining, ALREADY WORDED (takes a float in f1)
 PPC_EXTERN_FUNC(sub_823C8BE0);   // region travel time
 PPC_EXTERN_FUNC(sub_823C6C18);   // region fine
 PPC_EXTERN_FUNC(sub_823C6E50);   // region merchants
@@ -249,6 +261,15 @@ PPC_EXTERN_FUNC(sub_823C7988);   // region dive spots
 PPC_EXTERN_FUNC(sub_823C7690);   // region gargoyles
 PPC_EXTERN_FUNC(sub_823C7BC8);   // region silver keys
 PPC_EXTERN_FUNC(sub_8246FE20);   // region economy, as a STAR COUNT
+PPC_EXTERN_FUNC(sub_82518490);   // the region that OWNS a level, by level name
+PPC_EXTERN_FUNC(sub_824707E8);   // can this quest be fast-travelled to
+PPC_EXTERN_FUNC(sub_82470F80);   // is a trail already running
+PPC_EXTERN_FUNC(sub_82471438);   // has the world no trail destination
+PPC_EXTERN_FUNC(sub_82B3DE48);   // LHString CCharString operator!= -- NEGATED, see below
+PPC_EXTERN_FUNC(sub_82470FE8);   // is the trail already pointing at this family member
+PPC_EXTERN_FUNC(sub_82470CD0);   // a member's fast-travel stop, from GAMEDATA
+PPC_EXTERN_FUNC(sub_8246BB10);   // and from the live region registry, when GAMEDATA has none
+PPC_EXTERN_FUNC(sub_822651A0);   // CCharString assign
 PPC_EXTERN_FUNC(sub_826C2660);   // 14 abilities
 PPC_EXTERN_FUNC(sub_826A26E8);   //  0 pause root
 PPC_EXTERN_FUNC(sub_826D1800);   // 15 items
@@ -679,6 +700,15 @@ constexpr const char* kActionQueryAnswerPrefix = "QueryAnswer:";
 /// problem: `SelectMenuItem`'s early return is bypassed here.
 constexpr const char* kActionMenuEventPrefix = "MenuEvent:";
 
+/// `Inventory:<op>:<recordHash>` — see DispatchInventoryAction.
+constexpr const char* kActionInventoryPrefix = "Inventory:";
+
+/// `Ability:learn:<index>` — spend experience on one of the fourteen abilities.
+constexpr const char* kActionAbilityPrefix = "Ability:";
+
+/// `Shop:<buy|sell>:<ticket>` — see DispatchShopAction.
+constexpr const char* kActionShopPrefix = "Shop:";
+
 /// The SHIPPED commit — `g_Menu:SelectMenuItem()`, whole: an event AND A TOGGLE. It pushes the
 /// highlighted row's `(Name, EventType, IDLow, IDHigh)` and, when the row has children, flips
 /// `IsOpen` and fires the expand event that makes the Lua menu spawn that category's rows.
@@ -1072,6 +1102,79 @@ bool InGameScreenRoots(uint8_t* base, uint32_t* out_owner, uint32_t* out_screen_
   return true;
 }
 
+/// Shows the HUD again on the edges where the guest's own machine would have.
+///
+/// THE HUD'S VISIBILITY IS A MODE OBJECT, `M = *(GUI + 68)`, played by `sub_821764D8` each GUI
+/// tick: every in-game screen open (`sub_8236E630` -> `sub_82405678`) puts the HUD root on
+/// slide 2 and stores `*M = 4, M+5 = 0`; the guest's own screen EXIT (`sub_8236ED98`,
+/// 0x8236f0a0..0x8236f0bc) stores `*M = 3, M+5 = 1`, and three ticks later the machine plays
+/// root slide 1 — `sub_82426BA8(sub_82426518(pres), pres, 1)` on `pres = *(*(GUI+32)+4)`
+/// (0x82176770..84) — and sets `M+4 = M+5`. Nothing on the level-load path writes M, and the
+/// level's fresh HUD instance comes up on its authored (hidden) pose while M still reads
+/// "shown, idle" (peeked live: *M 0, M+4 1, M+5 1 with UpperElements dark). Godot owns the
+/// in-game screens, so the exit never runs for us either. Hence EDGES, not M: a screen just
+/// closed, or the HUD presentation is a new instance — then the root slide is played the
+/// guest's way and M is left exactly as its machine leaves it. The machine's own fade wait
+/// (`sub_82387CE0`, a SleepEx loop) is not entered.
+void ArmHudShow(PPCContext& ctx, uint8_t* base) {
+  constexpr uint32_t kNoScreen = 31u;
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  static uint32_t last_screen = kNoScreen;
+  static uint32_t last_presentation = 0u;
+
+  uint32_t owner = 0;
+  uint32_t screen_id = 0;
+  if (!InGameScreenRoots(base, &owner, &screen_id)) {
+    return;
+  }
+
+  const bool closed = last_screen != kNoScreen && screen_id == kNoScreen;
+  last_screen = screen_id;
+  if (screen_id != kNoScreen) {
+    return;
+  }
+
+  const uint32_t gui = LoadGuestU32(base, kGuiObject);
+  const uint32_t hud = plausible(gui) ? LoadGuestU32(base, gui + 32u) : 0u;
+  const uint32_t presentation = plausible(hud) ? LoadGuestU32(base, hud + 4u) : 0u;
+  const uint32_t mode = plausible(gui) ? LoadGuestU32(base, gui + 68u) : 0u;
+  if (!plausible(presentation) || !plausible(mode)) {
+    return;
+  }
+
+  const bool fresh = presentation != last_presentation;
+  last_presentation = presentation;
+  if (!closed && !fresh) {
+    return;
+  }
+
+  if (static_cast<int32_t>(LoadGuestU32(base, mode)) > 0) {
+    return;  // the guest's own transition is playing; it will land on its own
+  }
+
+  PPCContext call = ctx;
+  call.r3.u32 = presentation;
+  sub_82426518(call, base);
+  const uint32_t root = call.r3.u32;
+  if (!plausible(root)) {
+    REXLOG_INFO("Refii guest-tick pump: HUD show — the HUD presentation names no root element");
+    return;
+  }
+
+  call = ctx;
+  call.r3.u32 = root;
+  call.r4.u32 = presentation;
+  call.r5.u32 = 1u;
+  sub_82426BA8(call, base);
+
+  StoreGuestU32(base, mode, 0u);
+  StoreGuestU8(base, mode + 4u, 1u);
+  StoreGuestU8(base, mode + 5u, 1u);
+  REXLOG_INFO("Refii guest-tick pump: HUD shown — root slide 1 played on HUD presentation 0x{:08X} "
+              "({}), mode object left shown/idle",
+              presentation, closed ? "a screen closed" : "a fresh HUD instance");
+}
+
 /// The guest's directional action codes — `sub_824047E8`'s cases. 0x1C..0x1F are the presses
 /// ("held") and 0x20..0x23 the matching releases, same Up/Down/Left/Right order. Send BOTH: the
 /// Lua stick state is a latch, so a press with no release scrolls for ever.
@@ -1273,7 +1376,10 @@ bool DispatchSpellAssign(PPCContext& ctx, uint8_t* base, uint32_t slot, uint32_t
     return true;
   }
 
-  const uint32_t game = LoadGuestU32(base, kGameRoot + 12u);
+  // `dword_83496AB8` is IDA's name for the WORD AT 0x83496AB8 — the game root is behind one
+  // load, and `+12` is measured from that (the rule every other reader here follows).
+  const uint32_t root = LoadGuestU32(base, kGameRoot);
+  const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
   const uint32_t holder = plausible(game) ? LoadGuestU32(base, game + 88u) : 0u;
   const uint32_t party = plausible(holder) ? LoadGuestU32(base, holder + 4u) : 0u;
   const uint32_t roster = plausible(party) ? LoadGuestU32(base, party) : 0u;
@@ -1589,6 +1695,473 @@ void WriteParameterString(PPCContext& ctx, uint8_t* base, uint32_t frame, const 
 
 uint32_t PlayerObject(uint8_t* base);
 
+/// Both are defined further down this file; the inventory dispatch below needs them here.
+uint32_t HeroEntity(uint8_t* base);
+uint32_t HeroComponent(uint8_t* base, uint32_t entity, uint32_t id);
+std::string ReadStatedWideLhString(uint8_t* base, uint32_t handle);
+
+/// `Inventory:<op>:<recordHash>` — WEAR, GIFT or USE an item the hero already has, by its GDB record
+/// hash, with the guest's menus taking no part at all.
+///
+/// This is the seam that lets Godot own the item lists outright. Everything else on this screen
+/// goes through `GUI:PushButtonEvent` into the current screen's `vtable+20`, which means the
+/// guest's Gameface menu has to exist and have been populated first. These two do not: they are
+/// the guest's own SCRIPT-COMMAND level entry points, bound as `AddAndReplaceItemOfRecordID` and
+/// `Player:GiveGift`, and both are self-contained. Decompiled and verified rather than taken on
+/// report:
+///
+///   sub_824BF068(comp15, hash)   `sub_821DA348` GDB lookup (0x824BF080), binary search for
+///                                component 13 (0x824BF11C), `sub_824F1C90` -> EntityRef
+///                                (0x824BF1B8), `sub_824BECF8` wear (0x824BF1D0),
+///                                `sub_82764DC0` release (0x824BF1E4)
+///   sub_823F32A0(comp33, hash)   the same shape via `sub_824F1C18` (0x823F33DC) and
+///                                `sub_823F2718` give (0x823F33E8)
+///
+/// Both take the component and the hash and manage the refcounted handle themselves, so the host
+/// supplies only what it already reads during its inventory walk. The record hash is a LOOKUP KEY
+/// INTO THE HERO'S OWN INVENTORY, not a spawn — it cannot conjure an item the hero lacks.
+///
+/// Runs on the pump, i.e. on the guest's tick thread, because everything below it does.
+bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& body) {
+  const std::size_t colon = body.rfind(':');
+  if (colon == std::string::npos) {
+    REXLOG_INFO("Refii guest-tick pump: 'Inventory:{}' is not op:hash — dropped", body);
+    return true;
+  }
+
+  const std::string op = body.substr(0, colon);
+  char* end = nullptr;
+  const unsigned long hash = std::strtoul(body.c_str() + colon + 1, &end, 10);
+  if (end == body.c_str() + colon + 1 || *end != '\0' || hash == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: 'Inventory:{}' has no record hash — dropped", body);
+    return true;
+  }
+
+  // TAKING SOMETHING OFF IS A CATEGORY, NOT A RECORD, and it resolves everything itself.
+  //
+  // The clothing screen spawns one `INV_ITEM_CLOTHES_NONE_<CAT>` row per slot with event types
+  // 90..97 (`sub_829B3340`, `sub_829B2D58`), and answers a press on one through
+  // `sub_826D3F40` -> `sub_826CC430(_, eventType)`. That call reads NOTHING from the screen:
+  // it takes the hero out of `dword_83496AB8`, turns the event type into a category through
+  // `sub_826CC340`'s jump table (0x826CC4DC), binary-searches component 15 and hands both to
+  // `sub_824BF4D8` (0x826CC5FC). Its first argument is never read — the decompile assigns r3
+  // and uses it nowhere — so 0 is as good as the manager the guest passes.
+  //
+  // The screen calls around it (`sub_826D48F0`, `sub_826D7F90`) drive the 3D preview and the
+  // presentation; both are Godot's now.
+  if (op == "unequip") {
+    PPCFunc* unequip = FindGuestFunction(0x826CC430u);
+    if (unequip == nullptr) {
+      REXLOG_INFO("Refii guest-tick pump: Inventory:unequip — 0x826CC430 is not callable here");
+      return true;
+    }
+
+    const PPCContext saved_unequip = ctx;
+    ctx.r3.u32 = 0u;
+    ctx.r4.u32 = static_cast<uint32_t>(hash);
+    ctx.ctr.u32 = 0x826CC430u;
+    unequip(ctx, base);
+    ctx = saved_unequip;
+    REXLOG_INFO("Refii guest-tick pump: Inventory:unequip ran sub_826CC430(event type {})", hash);
+    return true;
+  }
+
+  // ONLY `wear` TAKES A RECORD HASH. This was one call for all three and two of them were wrong.
+  //
+  // `sub_824BF068` (wear) hands r4 straight to `sub_821DA348`, which stores it and looks it up
+  // with `GDBManager_FindEntryByHash` (0x821DA394) — a hash. But `sub_823E1370` (use) and
+  // `sub_823F32A0` (gift) both go through `sub_824F1C18`, whose third argument is a `void***`
+  // that `sub_823FE8B8` dereferences TWICE to reach characters before calling
+  // `NGDB_CRecord_Get_int` (0x823FE948) — a NAME. Passing a hash there dereferences the hash as
+  // a pointer, and an FNV-1 value sits squarely inside the guest's plausible address range, so
+  // it reads whatever is at 0x959C9372 and resolves nothing. Silently.
+  //
+  // Both name-taking wrappers exist only to turn the name into a hash and then reach the SAME
+  // inner pair, so this calls the inner pair directly:
+  //
+  //   `sub_824F1C90(&handle, component13, hash)` walks the inventory list at `+16` matching
+  //   `*(item + 4) == hash` (0x824F1CE4) — the item's own record hash — and takes a reference
+  //   with `sub_82764D00`. Release it with `sub_82764DC0`, as both wrappers do.
+  //   Then `sub_823E0FF8(entity, &handle, "")` uses it, or `sub_823F2718(component33, &handle)`
+  //   gives it. `sub_823F2718` resolves the RECIPIENT itself, off the giver's property 77 and
+  //   that object's vtable+68, so no target has to be supplied.
+  const uint32_t hero = HeroEntity(base);
+  if (hero == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:{} — no hero", body);
+    return true;
+  }
+
+  if (op == "wear") {
+    const uint32_t appearance = HeroComponent(base, hero, 15u);
+    PPCFunc* wear = FindGuestFunction(0x824BF068u);
+    if (appearance == 0u || wear == nullptr) {
+      REXLOG_INFO("Refii guest-tick pump: Inventory:wear — no component 15, or 0x824BF068 is "
+                  "not callable here");
+      return true;
+    }
+
+    const PPCContext saved = ctx;
+    ctx.r3.u32 = appearance;
+    ctx.r4.u32 = static_cast<uint32_t>(hash);
+    ctx.ctr.u32 = 0x824BF068u;
+    wear(ctx, base);
+    ctx = saved;
+    REXLOG_INFO("Refii guest-tick pump: Inventory:wear ran sub_824BF068(component 0x{:08X}, "
+                "record 0x{:08X})", appearance, static_cast<uint32_t>(hash));
+    return true;
+  }
+
+  if (op != "use" && op != "gift" && op != "equip") {
+    REXLOG_INFO("Refii guest-tick pump: inventory op '{}' is not one this knows", op);
+    return true;
+  }
+
+  // Component 13 is the inventory the handle is looked up in; component 33 is what the gift
+  // itself is performed against, and `sub_823E0FF8` wants the owning ENTITY rather than either.
+  const uint32_t inventory = HeroComponent(base, hero, 13u);
+  const uint32_t giving = op == "gift" ? HeroComponent(base, hero, 33u) : 0u;
+  if (inventory == 0u || (op == "gift" && giving == 0u)) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:{} — no hero component 13/33 (hero 0x{:08X})",
+                body, hero);
+    return true;
+  }
+
+  // `equip` is the guest's OWN activation switch, and it covers more than weapons:
+  // `sub_826C9AB8` reads the item's `Category` and routes it — 1 to `sub_826CA098` (the weapon
+  // slots), 5/6 and the key-item set to `sub_826CA170` (use), 17..23 to `sub_826CB218` (wear).
+  // It reads no screen, no menu and no Lua: its first argument is the object at
+  // `*(gameRoot + 52)`, which holds the two equipped-weapon handles at `+0` and `+16`, and both
+  // of the guest's own callers fetch it from exactly that global.
+  //
+  // This matters beyond convenience. The screen's own answer to event 3 (`sub_826D1800`) does
+  // NOT act on the row it was handed — it reads `screen+396`, a handle the screen's Update
+  // refills every frame from `g_Menu:GetHighlightedMenuItemData()`. So the guest equips whatever
+  // ITS cursor is on, and pushing an identity at it equips the right thing only while the two
+  // cursors agree. Naming the record removes that dependency entirely.
+  const uint32_t activate = 0x826C9AB8u;
+  PPCFunc* find = FindGuestFunction(0x824F1C90u);
+  PPCFunc* release = FindGuestFunction(0x82764DC0u);
+  PPCFunc* act = FindGuestFunction(
+      op == "gift" ? 0x823F2718u : (op == "equip" ? activate : 0x823E0FF8u));
+  if (find == nullptr || release == nullptr || act == nullptr) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:{} — the handle pair is not callable here",
+                body);
+    return true;
+  }
+
+  // Claimed by lowering r1 so a callee frames below the handle it is passed, not over it.
+  const PPCContext saved = ctx;
+  const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
+  const uint32_t handle = frame + 0x20u;
+  const uint32_t text = frame + 0x40u;
+  for (uint32_t word = 0; word < 4u; ++word) {
+    StoreGuestU32(base, handle + (word * 4u), 0u);
+  }
+
+  ctx = saved;
+  ctx.r1.u32 = frame;
+  ctx.r3.u32 = handle;
+  ctx.r4.u32 = inventory;
+  ctx.r5.u32 = static_cast<uint32_t>(hash);
+  find(ctx, base);
+  ctx = saved;
+
+  const uint32_t item = LoadGuestU32(base, handle);
+  if (item == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:{} — record 0x{:08X} is not in the hero's "
+                "inventory", body, static_cast<uint32_t>(hash));
+    return true;
+  }
+
+  if (op == "equip") {
+    const uint32_t root = LoadGuestU32(base, 0x83496B08u);
+    const uint32_t slots = root != 0u ? LoadGuestU32(base, root + 52u) : 0u;
+
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = slots;
+    ctx.r4.u32 = handle;
+    ctx.r5.u32 = 1u;  // picks the local hero's weak-ref slot inside sub_826CA170
+    act(ctx, base);
+    ctx = saved;
+  } else if (op == "gift") {
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = giving;
+    ctx.r4.u32 = handle;
+    act(ctx, base);
+    ctx = saved;
+  } else {
+    // The empty reason string `sub_823E1370` builds at 0x823E14CC before the use.
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = text;
+    ctx.r4.u32 = 0x82000CA0u;   // byte_82000CA0, the empty literal
+    ctx.r5.u32 = 0xFFFFFFFFu;   // -1 = NUL-terminated
+    sub_8222CED0(ctx, base);
+    ctx = saved;
+
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = LoadGuestU32(base, inventory + 4u);  // the owning entity
+    ctx.r4.u32 = handle;
+    ctx.r5.u32 = text;
+    act(ctx, base);
+    ctx = saved;
+
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = text;
+    sub_82214DD8(ctx, base);
+    ctx = saved;
+  }
+
+  ctx = saved;
+  ctx.r1.u32 = frame;
+  ctx.r3.u32 = LoadGuestU32(base, handle);
+  ctx.r4.u32 = handle;
+  release(ctx, base);
+  ctx = saved;
+
+  REXLOG_INFO("Refii guest-tick pump: Inventory:{} ran on item 0x{:08X} (record 0x{:08X}) — no "
+              "GUI event, no screen", op, item, static_cast<uint32_t>(hash));
+  return true;
+}
+
+/// BUYING AN ABILITY LEVEL — `Ability:learn:<1..14>`.
+///
+/// The abilities screen answers a press on one of its rows through `sub_826C2660`'s switch:
+/// event types 20 and 21 reach `sub_826C2D40`, event type 22 reaches `sub_826C2E68`, and each
+/// calls one two-argument function that does the whole transaction:
+///
+///   `sub_8246C970(index, whichHero)`   Strength and Skill (indices 1..6)
+///   `sub_8246CF48(index, whichHero)`   Will (indices 7..14)
+///
+/// Both read NOTHING from the screen, the menu, Lua or `g_Param` — the hero comes out of
+/// `dword_83496AB8`, and everything else off the hero's own components (57 abilities,
+/// 164 experience). Inside, they take the max level from `sub_824E2D40`, test affordability
+/// with `sub_824E4E28`, read `ExperienceCost` (GDB type 1) off the next level's record through
+/// `sub_824E49D0`, spend it with `sub_8256E2F0` and raise the level with `sub_824E2F28` — which
+/// is also where the morph recompute, the spell-slot rebuild and the stat writes happen. Calling
+/// the outer function rather than the five primitives is what keeps all of that.
+///
+/// `whichHero` IS 1, NOT 0, and the difference is the whole call. The screen computes it as
+/// `screen+4 == 0` — `lwz r11, 4(r31); cntlzw r10, r11; extrwi r29, r10, 1,26` at 0x826C2D58,
+/// which is the "player index is zero" BIT, not the index. `sub_8246C970` then branches
+/// `if (a2) hero = sub_8222C1B8(...) else hero = sub_828E5A78(...)`, so 0 would fetch the other
+/// hero entirely.
+///
+/// The guest puts up its own result box (`sub_8236FA68`, `guiMgr+40 = 2`) either way — the
+/// tutorial text on success, `GUI_SCREEN_ABILITY_YOU_DO_NOT_HAVE_ENOUGH_EXPERIENCE` or
+/// `GUI_SCREEN_ABILITIES_MAXED` on refusal. That is the feedback, and it arrives through the
+/// message-box path the host already mirrors.
+bool DispatchAbilityAction(PPCContext& ctx, uint8_t* base, const std::string& body) {
+  const std::size_t colon = body.rfind(':');
+  if (colon == std::string::npos || body.compare(0, colon, "learn") != 0) {
+    REXLOG_INFO("Refii guest-tick pump: 'Ability:{}' is not learn:<index> — dropped", body);
+    return true;
+  }
+
+  char* end = nullptr;
+  const unsigned long index = std::strtoul(body.c_str() + colon + 1, &end, 10);
+  if (end == body.c_str() + colon + 1 || *end != '\0' || index < 1u || index > 14u) {
+    REXLOG_INFO("Refii guest-tick pump: 'Ability:{}' names no ability 1..14 — dropped", body);
+    return true;
+  }
+
+  // Strength 1..3 and Skill 4..6 share one entry point; Will 7..14 has its own.
+  const uint32_t entry = index <= 6u ? 0x8246C970u : 0x8246CF48u;
+  PPCFunc* function = FindGuestFunction(entry);
+  if (function == nullptr) {
+    REXLOG_INFO("Refii guest-tick pump: Ability:learn:{} — 0x{:08X} is not callable here",
+                index, entry);
+    return true;
+  }
+
+  const PPCContext saved = ctx;
+  ctx.r3.u32 = static_cast<uint32_t>(index);
+  ctx.r4.u32 = 1u;
+  ctx.ctr.u32 = entry;
+  function(ctx, base);
+  const bool bought = (ctx.r3.u32 & 0xFFu) != 0u;
+  ctx = saved;
+
+  REXLOG_INFO("Refii guest-tick pump: Ability:learn:{} ran 0x{:08X}(index {}, hero 1) — {}",
+              index, entry, index,
+              bought ? "bought" : "refused (maxed, or not enough experience)");
+  return true;
+}
+
+/// The screen object the in-game GUI holds for `screen_id`, or 0 — READ ONLY.
+///
+/// `sub_8243BD60`, the guest's own lookup, **INSERTS** a default entry when the key is absent,
+/// so calling it to ask a question would change the map. The map is `std::map<int, CScreen*>`
+/// at `owner+68`: `owner+72` is the header node and each node is
+/// {left +0, parent +4, right +8, key +12, value +16}. Descend left while the wanted id is
+/// below the key, right otherwise; reaching the header again means "not open".
+uint32_t ScreenObjectRO(uint8_t* base, uint32_t screen_id) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  const uint32_t gui = LoadGuestU32(base, kGuiObject);
+  if (!plausible(gui) || LoadGuestU32(base, gui) != 0x82001610u) {
+    return 0u;
+  }
+
+  const uint32_t owner = LoadGuestU32(base, gui + 28u);
+  const uint32_t end_node = plausible(owner) ? LoadGuestU32(base, owner + 72u) : 0u;
+  if (!plausible(end_node)) {
+    return 0u;
+  }
+
+  uint32_t node = LoadGuestU32(base, end_node + 4u);
+  for (uint32_t step = 0; step < 64u && plausible(node) && node != end_node; ++step) {
+    const uint32_t key = LoadGuestU32(base, node + 12u);
+    if (key == screen_id) {
+      const uint32_t screen = LoadGuestU32(base, node + 16u);
+      return plausible(screen) ? screen : 0u;
+    }
+
+    node = LoadGuestU32(base, node + (screen_id < key ? 0u : 8u));
+  }
+
+  return 0u;
+}
+
+/// `Shop:<buy|sell>:<ticket>` — the guest's own transaction, run on its own thread.
+///
+/// THE ROW'S IDENTITY IS A TICKET, NOT A RECORD HASH. `sub_82880AC8` hands every populated row
+/// a monotonic ticket and files the item behind it in a map; the ticket rides Gameface as two
+/// 16-bit halves and comes back here whole. `sub_82880BC0` is the only way back to the item,
+/// and it wants the MAP, `registry + 4` — verified at the guest's own call site
+/// `sub_826AFF48`: `sub_82880BC0(*(*(dword_83496B08 + 28) + 60) + 4, ticket, out)`. It
+/// `__trap()`s on a map that is not its own, so the derivation is not somewhere to guess.
+///
+/// THE GUARDS ARE OURS. `sub_82872A68`/`sub_82872D70` check nothing — no gold, no stock, no
+/// sellability. Worse, a buyer with no `CECMoney` gets the item FREE: the transfer sits outside
+/// that branch and `sub_8242E578` only clamps, it never refuses. So affordability is checked
+/// first, through the guest's own `sub_8246DB30`, whose whole purpose that is.
+bool DispatchShopAction(PPCContext& ctx, uint8_t* base, const std::string& body) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  const std::size_t colon = body.rfind(':');
+  const std::string op = colon == std::string::npos ? std::string() : body.substr(0, colon);
+  if (colon == std::string::npos || (op != "buy" && op != "sell")) {
+    REXLOG_INFO("Refii guest-tick pump: 'Shop:{}' is not buy|sell:<ticket> — dropped", body);
+    return true;
+  }
+
+  char* end = nullptr;
+  const unsigned long ticket = std::strtoul(body.c_str() + colon + 1, &end, 10);
+  if (end == body.c_str() + colon + 1 || *end != '\0' || ticket == 0u) {
+    // Ticket 0 is never issued: `sub_82880AC8` pre-increments before it files the item.
+    REXLOG_INFO("Refii guest-tick pump: 'Shop:{}' names no ticket — dropped", body);
+    return true;
+  }
+
+  // The shopkeeper: `screen+400..407` is ONE weak handle and the entity is behind TWO
+  // dereferences (`sub_824692D8`). `screen+400` is the handle's tag, not a component.
+  const uint32_t screen = ScreenObjectRO(base, 22u);
+  const uint32_t holder = plausible(screen) ? LoadGuestU32(base, screen + 404u) : 0u;
+  const uint32_t shopkeeper = plausible(holder) ? LoadGuestU32(base, holder) : 0u;
+  if (!plausible(shopkeeper)) {
+    REXLOG_INFO("Refii guest-tick pump: Shop:{} — screen 22 states no shopkeeper "
+                "(screen 0x{:08X})", body, screen);
+    return true;
+  }
+
+  if ((LoadGuestU8(base, shopkeeper + 144u) & 0x40u) == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Shop:{} — the shopkeeper entity is not live", body);
+    return true;
+  }
+
+  // `CECShopkeeper` is component 27, looked up on the ENTITY every time — the shop screen
+  // never stores it.
+  const uint32_t shop_component = HeroComponent(base, shopkeeper, 27u);
+  const uint32_t hero = HeroEntity(base);
+  if (shop_component == 0u || !plausible(hero)) {
+    REXLOG_INFO("Refii guest-tick pump: Shop:{} — no CECShopkeeper(27) or no hero", body);
+    return true;
+  }
+
+  const uint32_t root = LoadGuestU32(base, 0x83496B08u);
+  const uint32_t owner = plausible(root) ? LoadGuestU32(base, root + 28u) : 0u;
+  const uint32_t registry = plausible(owner) ? LoadGuestU32(base, owner + 60u) : 0u;
+  if (!plausible(registry)) {
+    REXLOG_INFO("Refii guest-tick pump: Shop:{} — the row registry is not up", body);
+    return true;
+  }
+
+  PPCFunc* lookup = FindGuestFunction(0x82880BC0u);
+  PPCFunc* affordable = FindGuestFunction(0x8246DB30u);
+  PPCFunc* commit = FindGuestFunction(op == "buy" ? 0x82872A68u : 0x82872D70u);
+  if (lookup == nullptr || commit == nullptr || (op == "buy" && affordable == nullptr)) {
+    REXLOG_INFO("Refii guest-tick pump: Shop:{} — the transaction pair is not callable here",
+                body);
+    return true;
+  }
+
+  // Claimed by lowering r1 so a callee frames BELOW the scratch it is passed, not over it.
+  const PPCContext saved = ctx;
+  const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
+  const uint32_t item = frame + 0x20u;   // the ItemRef the ticket resolves to (four words)
+  const uint32_t bought = frame + 0x40u; // buy's out parameter
+  for (uint32_t word = 0; word < 4u; ++word) {
+    StoreGuestU32(base, item + (word * 4u), 0u);
+    StoreGuestU32(base, bought + (word * 4u), 0u);
+  }
+
+  ctx = saved;
+  ctx.r1.u32 = frame;
+  ctx.r3.u32 = registry + 4u;
+  ctx.r4.u32 = static_cast<uint32_t>(ticket);
+  ctx.r5.u32 = item;
+  lookup(ctx, base);
+  const bool found = (ctx.r3.u32 & 0xFFu) != 0u;
+  ctx = saved;
+
+  if (!found || LoadGuestU32(base, item) == 0u) {
+    // A stale ticket is the normal case for a list repopulated since the row was drawn.
+    REXLOG_INFO("Refii guest-tick pump: Shop:{} — ticket {} is not in this population", body,
+                ticket);
+    return true;
+  }
+
+  if (op == "buy") {
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = shop_component;
+    ctx.r4.u32 = item;
+    affordable(ctx, base);
+    const bool can_afford = (ctx.r3.u32 & 0xFFu) != 0u;
+    ctx = saved;
+
+    if (!can_afford) {
+      REXLOG_INFO("Refii guest-tick pump: Shop:buy:{} — the hero cannot afford it; "
+                  "no transaction", ticket);
+      return true;
+    }
+  }
+
+  ctx = saved;
+  ctx.r1.u32 = frame;
+  ctx.r3.u32 = shop_component;
+  ctx.r4.u32 = item;
+  if (op == "buy") {
+    ctx.r5.u32 = bought;
+    ctx.r6.u32 = hero;
+  } else {
+    ctx.r5.u32 = hero;
+  }
+
+  commit(ctx, base);
+  ctx = saved;
+
+  REXLOG_INFO("Refii guest-tick pump: Shop:{}:{} ran 0x{:08X}(comp 0x{:08X}, item 0x{:08X}, "
+              "hero 0x{:08X})", op, ticket, op == "buy" ? 0x82872A68u : 0x82872D70u,
+              shop_component, LoadGuestU32(base, item), hero);
+  return true;
+}
+
 /// See kActionRegisterPlayer.
 bool DispatchRegisterPlayer(PPCContext& ctx, uint8_t* base) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
@@ -1770,6 +2343,23 @@ bool DispatchMenuEventDirect(PPCContext& ctx, uint8_t* base, const std::string& 
     return false;
   }
 
+  // THE BOX-ID LATCH GATES EVERY SCREEN HANDLER. `sub_826C2660` (and its siblings) returns
+  // before reading the event unless `*(owner+44)` — the active box id — is zero. The guest
+  // pairs it with the mode byte: the openers (`sub_8236FA68`/`sub_8236FCA8`) set both, and the
+  // one clear site (`sub_8236E630` at 0x8236e71c) stores `+44 = 0; +40 = 1` together on the
+  // screen change a box teardown causes. Godot owns the box lifecycle, so that screen change
+  // never runs: the mode came back to 1 but the id stayed, and every identity commit after the
+  // first box — the spell selector's type 23 included — was swallowed unread. A MenuEvent is
+  // only sent while the host has no box up, so the id is stale by definition here; finish the
+  // guest's own clear before dispatching.
+  const uint32_t stale_box = LoadGuestU32(base, owner + 44u);
+  if (stale_box != 0u) {
+    StoreGuestU32(base, owner + 44u, 0u);
+    REXLOG_INFO("Refii guest-tick pump: cleared stale box id {} at owner+44 before '{}' — "
+                "the guest's own clear (sub_8236E630) runs on a screen change the host replaced",
+                stale_box, name);
+  }
+
   PPCContext probe = ctx;
   probe.r3.u32 = owner;
   probe.r4.u32 = screen_id;
@@ -1800,6 +2390,17 @@ bool DispatchMenuEventDirect(PPCContext& ctx, uint8_t* base, const std::string& 
   // `Float3`, `String1`, `String2`). The DoString is deferred and never lands, so the host
   // writes those five parameters itself and then sends the 36.
   if (slot == 0x826B65F0u && (screen_id == 26u || screen_id == 27u)) {
+    return CommitThroughParameters(ctx, base, screen_id, name, type, id);
+  }
+
+  // OPTIONS (18) opens its category page the same way. Its events body `sub_826DA038`
+  // answers only 140/141 (the two scroll sounds); the page opens in the input handler
+  // `sub_826DA228`'s 36 arm, which reads the row through `sub_826C1B50` and takes the page as
+  // `Float3 - 70` (0x826da404) — the row's own EventType, 70..73 — then sets `screen+24`,
+  // disables the expandable menu, puts the book and `Foreground.Book.Pages.PageN` on their
+  // open slides and `Foreground.ExpandableMenu` on slide 2 (`sub_826D9FC8`). The arm runs
+  // only while `screen+24` is 0, which is the list level the host is on when it commits.
+  if (slot == 0x826DA038u && screen_id == 18u && type >= 70u && type <= 73u) {
     return CommitThroughParameters(ctx, base, screen_id, name, type, id);
   }
 
@@ -1876,24 +2477,57 @@ bool DispatchMenuEventDirect(PPCContext& ctx, uint8_t* base, const std::string& 
   return true;
 }
 
-/// The hero entity, or 0 — the walk `DispatchSpellAssign` already does, named once.
+/// The hero entity, or 0 — the same walk the host bridge's `ResolvePlayerHero` runs, which the
+/// renown, orb and quest-log reads prove live every frame. The old chain here skipped the
+/// GAME-ROOT DEREF — `0x83496AB8` holds a POINTER, `*(root)+12` is the game — and read twelve
+/// bytes past the global instead, so every sampler gated on it published nothing (a run named
+/// the gate: "quest travel … refused at hero").
 uint32_t HeroEntity(uint8_t* base) {
   constexpr uint32_t kGameRoot = 0x83496AB8u;
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
-  const uint32_t game = LoadGuestU32(base, kGameRoot + 12u);
-  const uint32_t holder = plausible(game) ? LoadGuestU32(base, game + 88u) : 0u;
-  const uint32_t party = plausible(holder) ? LoadGuestU32(base, holder + 4u) : 0u;
-  const uint32_t roster = plausible(party) ? LoadGuestU32(base, party) : 0u;
-  const uint32_t entry = plausible(roster) ? LoadGuestU32(base, roster + 108u) : 0u;
-  const uint32_t hero = plausible(entry) ? LoadGuestU32(base, entry) : 0u;
-
-  if (!plausible(hero) || (LoadGuestU8(base, hero + 144u) & 0x40u) == 0u ||
-      (LoadGuestU8(base, hero + 40u) & 0x01u) == 0u) {
+  const uint32_t root = LoadGuestU32(base, kGameRoot);
+  const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
+  if (!plausible(game)) {
     return 0u;
   }
 
-  return hero;
+  const uint32_t session = LoadGuestU32(base, game + 0x8Cu);
+  if (!plausible(session)) {
+    return 0u;
+  }
+
+  const uint32_t player_key =
+      (LoadGuestU8(base, session + 0x34u) != 0u && LoadGuestU8(base, session + 0x35u) != 0u)
+          ? 1u
+          : 2u;
+
+  const uint32_t player_map = LoadGuestU32(base, game + 0x9Cu);
+  if (!plausible(player_map)) {
+    return 0u;
+  }
+
+  uint32_t entry = LoadGuestU32(base, player_map + 8u);
+  const uint32_t entries_end = LoadGuestU32(base, player_map + 12u);
+  if (!plausible(entry) || entries_end < entry || (entries_end - entry) > 12u * 64u) {
+    return 0u;
+  }
+
+  uint32_t record = 0u;
+  for (; entry < entries_end; entry += 12u) {
+    if (LoadGuestU32(base, entry) == player_key) {
+      record = LoadGuestU32(base, entry + 4u);
+      break;
+    }
+  }
+
+  if (!plausible(record)) {
+    return 0u;
+  }
+
+  const uint32_t control = LoadGuestU32(base, record + 16u);
+  const uint32_t hero = plausible(control) ? LoadGuestU32(base, control) : 0u;
+  return plausible(hero) ? hero : 0u;
 }
 
 /// One component of an entity, by id, or 0.
@@ -1944,7 +2578,11 @@ uint32_t PlayerObject(uint8_t* base) {
   constexpr uint32_t kGameRoot = 0x83496AB8u;
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
-  const uint32_t game = LoadGuestU32(base, kGameRoot + 12u);
+  // Root first: `*(0x83496AB8)`, then `+12` — read without the load this chain ended in
+  // zeros and the dog page stayed blank (`SampleDog` said no dog while the guest's own
+  // trick ticks were on screen; the live walk reaches the dog with the load, 2026-09-03).
+  const uint32_t root = LoadGuestU32(base, kGameRoot);
+  const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
   const uint32_t holder = plausible(game) ? LoadGuestU32(base, game + 88u) : 0u;
   const uint32_t party = plausible(holder) ? LoadGuestU32(base, holder + 4u) : 0u;
   const uint32_t player = plausible(party) ? LoadGuestU32(base, party) : 0u;
@@ -1977,6 +2615,22 @@ void SampleDog(uint8_t* base, HeroDerived& sampled) {
 
   const uint32_t state = LoadGuestU32(base, stats + 276u);
   sampled.dog_state = state >= 8u ? 0 : static_cast<int32_t>(state);
+
+  // THE TITLE IS THE DOG'S NAME. `sub_829BC750` hands component 20 to `sub_823A8148`, which
+  // copies the LHString at `c20+52` when its block has a length and otherwise resolves the
+  // Babel key at `c20+48` through the text manager. Both go across; the host resolves the key.
+  constexpr uint32_t kDogNamingComponent = 20u;
+  sampled.dog_name[0] = '\0';
+  sampled.dog_name_key = 0u;
+  const uint32_t naming = HeroComponent(base, dog, kDogNamingComponent);
+  if (naming != 0u) {
+    const uint32_t custom = LoadGuestU32(base, naming + 52u);
+    if (plausible(custom) && LoadGuestU32(base, custom + 4u) != 0u) {
+      std::snprintf(sampled.dog_name, sizeof(sampled.dog_name), "%s",
+                    ReadStatedWideLhString(base, naming + 52u).c_str());
+    }
+    sampled.dog_name_key = LoadGuestU32(base, naming + 48u);
+  }
 
   // The trick vector stores GDB record IDs, not name hashes: `sub_8219C5E8` runs `FNV1(name)`
   // through `NGDB_CRecord_Get_int(mgr, hash, 4)` first, so the stored key is that lookup's
@@ -2040,6 +2694,239 @@ void SampleSpellDamage(uint8_t* base, uint32_t hero, HeroDerived& sampled) {
 ///
 /// Gated on the map being up, because these allocate (`sub_821F0240` takes a temp string ref per
 /// call). One region per sample, the one the host asked for.
+/// THE WORLD MAP'S `Family` LIST, through the guest's own collector.
+///
+/// `sub_8246F020(vector)` is what `sub_829A42C8` calls before it spawns a single row, and it is
+/// the whole read: hero out of `dword_83496AB8`, component 136, the intrusive list at
+/// `comp136+16`, a 64-bit entity UID per node resolved against the entity registry, and the name
+/// off component 20 of the live entity (`sub_823A8148`: the LH string at `comp20+52` when it has
+/// a length, else `TextManager` on the tag at `comp20+48`) — with the record's own stored name as
+/// the fallback for a member who is not resident. Walking that ourselves would be four guessed
+/// offsets and a red-black tree; calling it is one function and the guest's own answer.
+///
+/// The vector it fills is 16 bytes: `[1]` begin, `[2]` end, `[3]` capacity, records of 52 bytes.
+/// `sub_829A42C8` reads `(end - begin) / 52` (`divw` against `li r10, 0x34` at 0x829A4304) and
+/// starts at `begin + 8`, stepping 13 dwords — so the display name is the LH string handle at
+/// `record+8`, and it is the only field the list uses.
+///
+/// IT ALLOCATES, so it is paired with `sub_826C9450` on every path and gated on the world map
+/// being up. That destructor runs `sub_8246FBD8` over each record and frees the block, which is
+/// exactly what the screen does at 0x829A4520.
+/// One Fable "LH string" of 16-bit characters at a handle whose LAYOUT IS KNOWN.
+///
+/// `handle` holds a block pointer; the block is `{ const wchar_t* chars, int length }`. That is
+/// the shape `sub_82B3F898` reads — `v4 = *a2; length = *(v4 + 4); chars = *(wchar_t**)*a2`,
+/// then `*(_WORD *)&chars[i]` per character at 0x82B3F910.
+///
+/// Distinct from `ReadGuestWideLhString` below, and deliberately: that one PROBES, chasing up to
+/// three hops and rejecting a hop whose first units are not Latin, because it is handed labels
+/// whose indirection depth is not known in advance. Here the depth is stated by the function
+/// that built the record, so guessing it would only add ways to be wrong — and the length is
+/// read rather than scanned for a NUL. `ReadGuestLhString` is the ASCII reader for the same two
+/// hops and would return the high bytes as text.
+std::string ReadStatedWideLhString(uint8_t* base, uint32_t handle) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  if (base == nullptr || !plausible(handle)) {
+    return std::string();
+  }
+
+  const uint32_t block = LoadGuestU32(base, handle);
+  if (!plausible(block)) {
+    return std::string();
+  }
+
+  const uint32_t chars = LoadGuestU32(base, block);
+  const uint32_t length = LoadGuestU32(base, block + 4u);
+  if (!plausible(chars) || length == 0u || length > 256u) {
+    return std::string();
+  }
+
+  std::string value;
+  value.reserve(length);
+  for (uint32_t i = 0; i < length; ++i) {
+    const uint16_t unit = LoadGuestU16(base, chars + (i * 2u));
+    if (unit == 0) {
+      break;
+    }
+
+    if (unit < 0x80u) {
+      value.push_back(static_cast<char>(unit));
+    } else if (unit < 0x800u) {
+      value.push_back(static_cast<char>(0xC0u | (unit >> 6)));
+      value.push_back(static_cast<char>(0x80u | (unit & 0x3Fu)));
+    } else {
+      value.push_back(static_cast<char>(0xE0u | (unit >> 12)));
+      value.push_back(static_cast<char>(0x80u | ((unit >> 6) & 0x3Fu)));
+      value.push_back(static_cast<char>(0x80u | (unit & 0x3Fu)));
+    }
+  }
+
+  return value;
+}
+
+void SampleFamily(PPCContext& ctx, uint8_t* base) {
+  constexpr uint32_t kWorldMapScreenId = 23u;
+
+  uint32_t owner = 0;
+  uint32_t screen_id = 0;
+  if (!InGameScreenRoots(base, &owner, &screen_id) || screen_id != kWorldMapScreenId) {
+    return;
+  }
+
+
+  // Claimed by lowering r1, so the collector's own frames land below the vector it is handed.
+  const PPCContext saved = ctx;
+  const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
+  const uint32_t vector = frame + 0x20u;
+  for (uint32_t word = 0; word < 4u; ++word) {
+    StoreGuestU32(base, vector + (word * 4u), 0u);
+  }
+
+  ctx = saved;
+  ctx.r1.u32 = frame;
+  ctx.r3.u32 = vector;
+  sub_8246F020(ctx, base);
+  ctx = saved;
+
+  const uint32_t begin = LoadGuestU32(base, vector + 4u);
+  const uint32_t end = LoadGuestU32(base, vector + 8u);
+
+  FamilyMember members[kMaxFamilyMembers];
+  uint32_t count = 0;
+  if (begin != 0u && end > begin && ((end - begin) % 52u) == 0u &&
+      (end - begin) <= (52u * kMaxFamilyMembers)) {
+    const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+    // `root+12 -> +88 -> +4 -> +8 -> +4` is the travel system; the region container hangs off
+    // its `+12` and the current level's handle ADDRESS off `+36 -> +4`, then `+ 172` OUTSIDE
+    // the last dereference. Same chain the job page walks — see SampleQuestTravel.
+    uint32_t travel_system = LoadGuestU32(base, 0x83496AB8u);
+    for (const uint32_t hop : {12u, 88u, 4u, 8u, 4u}) {
+      travel_system = plausible(travel_system) ? LoadGuestU32(base, travel_system + hop) : 0u;
+    }
+
+    const uint32_t manager =
+        plausible(travel_system) ? LoadGuestU32(base, travel_system + 12u) : 0u;
+
+    uint32_t current_level = travel_system;
+    for (const uint32_t hop : {36u, 4u}) {
+      current_level = plausible(current_level) ? LoadGuestU32(base, current_level + hop) : 0u;
+    }
+    current_level = plausible(current_level) ? current_level + 172u : 0u;
+
+    for (uint32_t at = begin; at < end && count < kMaxFamilyMembers; at += 52u) {
+      FamilyMember& member = members[count];
+
+      // Wide, not ASCII: the guest hands `record+8` to `sub_82B3F898`, which reads `_WORD`s.
+      // The page filler `sub_829B04E0` sets all ten of these with `sub_82425DD0`, the setter
+      // that takes an ALREADY FORMATTED string — so they are read, never rebuilt.
+      const auto field = [&](uint32_t offset, char* into, std::size_t cap) {
+        std::snprintf(into, cap, "%s", ReadStatedWideLhString(base, at + offset).c_str());
+      };
+
+      field(8u, member.name, sizeof(member.name));
+      field(12u, member.children, sizeof(member.children));
+      field(20u, member.distance, sizeof(member.distance));
+      field(24u, member.travel, sizeof(member.travel));
+      field(28u, member.note, sizeof(member.note));
+      field(32u, member.daily_upkeep, sizeof(member.daily_upkeep));
+      field(36u, member.total_upkeep, sizeof(member.total_upkeep));
+      field(40u, member.happiness, sizeof(member.happiness));
+      field(44u, member.home_happiness, sizeof(member.home_happiness));
+      field(48u, member.upkeep_happiness, sizeof(member.upkeep_happiness));
+
+      // THE HOME/TRAVEL PROMPT. `sub_829B08A8` builds the member's fast-travel STOP name, then
+      // runs `sub_82470A78`'s tree over it. That tree is the FAMILY one and is not the jobs
+      // page's: it tests `sub_82470FE8` (is the trail already on this member) where
+      // `sub_824708D8` tests `sub_82470F80`, and it takes the row id as its last argument.
+      //
+      // `sub_829B08A8` passes 0 there, which makes one whole branch dead — the guest asks
+      // `id != 0 && id == 0`. That is shipped behaviour on this page, not an omission, so the
+      // branch is left out rather than reproduced with a value the family page never supplies.
+      //
+      // The stop name comes from GAMEDATA first and the live region registry only when that is
+      // empty, exactly as the filler orders them.
+      {
+        const uint32_t name = at + 16u;
+        const uint32_t stop = frame + 0x40u;
+        const uint32_t spare = frame + 0x50u;
+        StoreGuestU32(base, stop, 0u);
+        StoreGuestU32(base, spare, 0u);
+
+        const auto call2 = [&](void (*fn)(PPCContext&, uint8_t*), uint32_t r3, uint32_t r4) {
+          ctx = saved;
+          ctx.r1.u32 = frame;
+          ctx.r3.u32 = r3;
+          ctx.r4.u32 = r4;
+          fn(ctx, base);
+          const uint32_t answer = ctx.r3.u32;
+          ctx = saved;
+          return answer;
+        };
+
+        call2(sub_82470CD0, stop, name);
+
+        const uint32_t built = LoadGuestU32(base, stop);
+        if (built == 0u || LoadGuestU32(base, built + 4u) == 0u) {
+          call2(sub_8246BB10, spare, name);
+          call2(sub_822651A0, stop, spare);
+          call2(sub_82214DD8, spare, 0u);
+        }
+
+        const bool travels = (call2(sub_824707E8, name, stop) & 0xFFu) != 0u;
+        const bool on_trail = (call2(sub_82470FE8, at, 0u) & 0xFFu) != 0u;
+        const bool no_destination = (call2(sub_82471438, 0u, 0u) & 0xFFu) != 0u;
+
+        // `sub_82B3DE48` is `operator!=` — it returns the NEGATION of the equality test. Read
+        // as `==` this inverts both halves of the tree.
+        const bool differs = plausible(current_level)
+                                 ? (call2(sub_82B3DE48, name, current_level) & 0xFFu) != 0u
+                                 : false;
+
+        call2(sub_82214DD8, stop, 0u);
+
+        const char* tag = nullptr;
+        if (travels) {
+          tag = (on_trail || (!no_destination && differs))
+                    ? "GUI_SCREEN_WORLD_MAP_MISC_TRAVEL"
+                    : "GUI_SCREEN_WORLD_MAP_MISC_TRAIL_AND_TRAVEL";
+        } else if (!on_trail && !(!no_destination && differs)) {
+          tag = "GUI_SCREEN_WORLD_MAP_MISC_TRAIL";
+        }
+
+        if (tag != nullptr) {
+          std::snprintf(member.prompt, sizeof(member.prompt), "%s", tag);
+        }
+      }
+
+      // The region is the only field the record does not carry: `sub_829B04E0` asks which
+      // region owns the member's level at `record+16`, and sets the element BY TAG.
+      if (plausible(manager)) {
+        ctx = saved;
+        ctx.r1.u32 = frame;
+        ctx.r3.u32 = manager;
+        ctx.r4.u32 = at + 16u;
+        sub_82518490(ctx, base);
+        const uint32_t region = ctx.r3.u32;
+        ctx = saved;
+
+        std::snprintf(member.region, sizeof(member.region), "%s",
+                      ReadGuestLhString(base, region).c_str());
+      }
+
+      ++count;
+    }
+  }
+
+  PublishFamily(members, count);
+
+  ctx = saved;
+  ctx.r1.u32 = frame;
+  ctx.r3.u32 = vector;
+  sub_826C9450(ctx, base);
+  ctx = saved;
+}
+
 void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kWorldMapScreenId = 23u;
   constexpr uint32_t kGameRoot = 0x83496AB8u;
@@ -2052,21 +2939,55 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
   }
 
   // party -> region manager -> the level list, exactly the chain `sub_823C9000` walks.
-  const uint32_t game = LoadGuestU32(base, kGameRoot + 12u);
+  //
+  // THE FIRST DEREFERENCE IS THE GLOBAL'S OWN. `dword_83496AB8` HOLDS the app pointer; the
+  // guest's own prologue is `lwz r11, dword_83496AB8 ; lwz r11, 0xC(r11)`, so the chain starts
+  // at `*(0x83496AB8)` and only then takes `+12`. This read `*(0x83496AB8 + 12)` — the dword at
+  // 0x83496AC4, a different global entirely — and every offset after it was measured from
+  // whatever that happened to be. `RefiiHostGetFastTravelRegions` walks the same container the
+  // correct way and returns seven named regions, which is what this has to agree with: the host
+  // asks for a region BY THE ORDINAL that export hands out, so the two walks must be one walk.
+
+  // WHY A SILENT BAIL IS BANNED HERE: the host read `count 0 / known false` for a whole
+  // session and could not say WHICH of the seven reads below was refusing — every one of them
+  // returns identically. One line per distinct failure, once each per run.
+  static std::atomic<uint32_t> bail_said{0};
+  const auto say_bail = [&](uint32_t which, uint32_t at, uint32_t value) {
+    const uint32_t bit = 1u << which;
+    if ((bail_said.fetch_or(bit) & bit) == 0u) {
+      REXLOG_INFO("Refii world-map sample: bail {} at 0x{:08X} value 0x{:08X}", which, at,
+                  value);
+    }
+  };
+
+  const uint32_t root = LoadGuestU32(base, kGameRoot);
+  const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
   const uint32_t holder = plausible(game) ? LoadGuestU32(base, game + 88u) : 0u;
   const uint32_t party = plausible(holder) ? LoadGuestU32(base, holder + 4u) : 0u;
   const uint32_t regions = plausible(party) ? LoadGuestU32(base, party + 8u) : 0u;
   const uint32_t inner = plausible(regions) ? LoadGuestU32(base, regions + 4u) : 0u;
   const uint32_t list = plausible(inner) ? LoadGuestU32(base, inner + 12u) : 0u;
   if (!plausible(list)) {
+    if (!plausible(root)) say_bail(0, kGameRoot, root);
+    else if (!plausible(game)) say_bail(1, root + 12u, game);
+    else if (!plausible(holder)) say_bail(2, game + 88u, holder);
+    else if (!plausible(party)) say_bail(3, holder + 4u, party);
+    else if (!plausible(regions)) say_bail(4, party + 8u, regions);
+    else if (!plausible(inner)) say_bail(5, regions + 4u, inner);
+    else say_bail(6, inner + 12u, list);
     return;
   }
 
-  // `sub_82518330` walks [list+8, list+12) with stride 8 keeping non-null first dwords; walked
-  // here instead so no vector is allocated.
+  // `sub_82518330` walks [list+8, list+12) with stride 8 keeping NON-NULL first dwords; walked
+  // here instead so no vector is allocated. Non-null, not plausible — an entry that is neither
+  // still consumes an output index in the guest's walk, and this counter is compared against an
+  // ordinal produced by that same rule.
   const uint32_t begin = LoadGuestU32(base, list + 8u);
   const uint32_t end = LoadGuestU32(base, list + 12u);
-  if (!plausible(begin) || end <= begin || (end - begin) > 0x4000u) {
+  if (!plausible(begin) || end <= begin || (end - begin) > 0x4000u ||
+      ((end - begin) % 8u) != 0u) {
+    say_bail(7, list + 8u, begin);
+    say_bail(8, list + 12u, end);
     return;
   }
 
@@ -2075,13 +2996,18 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
   uint32_t seen = 0;
   uint32_t name_handle = 0;
   for (uint32_t at = begin; at < end; at += 8u) {
-    const uint32_t entry = LoadGuestU32(base, at);
-    if (!plausible(entry)) {
+    if (LoadGuestU32(base, at) == 0u) {
       continue;
     }
 
     if (seen == wanted) {
-      name_handle = at;  // the HANDLE's address, which is what an LHString* argument is
+      // THE SLOT IS TWO DEREFERENCES FROM THE CHARACTERS, and this captured the slot's own
+      // address — every read downstream was one level short, so the sample published with an
+      // empty name while the walk itself was fine. `*slot` is the region object; its word 0
+      // is the name handle, so `**slot` is the characters pointer — which is how
+      // `sub_82519DF8` matches a region, `strcmpi(**v5, **a2)`. The providers do not take
+      // this string at all; see the level lookup below.
+      name_handle = LoadGuestU32(base, at);
     }
 
     ++seen;
@@ -2098,34 +3024,91 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
   std::snprintf(region.name, sizeof(region.name), "%s",
                 ReadGuestLhString(base, name_handle).c_str());
 
+  // THE PROVIDERS DO NOT TAKE THE REGION. They take the region's FIRST LEVEL, as an
+  // `LHString*` — the address of a one-word handle, not the handle's value.
+  //
+  // `sub_829AB0E0` is the shipped region-page filler and it says so in two steps:
+  //
+  //     if ( v13 && ((*(v13 + 20) - *(v13 + 16)) >> 3) )      // the level vector, stride 8
+  //     {
+  //       sub_821F0240(&v65, **(_DWORD **)(v13 + 16));        // v65 = level[0]'s name
+  //       ...
+  //       sub_823C9000(&v67, &v65);                           // every provider takes &v65
+  //
+  // `sub_821F0240(dst, src)` is `*dst = *src` plus a refcount bump at `*src + 12`, so `src`
+  // is a HANDLE ADDRESS; the value it is handed here, `*(*(v13 + 16))`, is therefore the
+  // level object, whose word 0 is its name handle. Passing the object pointer straight
+  // through is the same read without owning a reference.
+  //
+  // Two bugs died here at once. The argument was `*name_handle` — the region's own INNER,
+  // one level too deep, so `*a2` came back as a characters pointer and `**a2` as the first
+  // four bytes of text reinterpreted as an address; and it was the region's name at all,
+  // when `sub_823C9000` feeds its argument to `World_ComputeWorldLevelFnv1Key` and wants a
+  // LEVEL. Eleven fields read empty for it.
+  const uint32_t levels = LoadGuestU32(base, name_handle + 16u);
+  const uint32_t levels_end = LoadGuestU32(base, name_handle + 20u);
+  if (!plausible(levels) || levels_end <= levels) {
+    say_bail(9, name_handle + 16u, levels);
+    PublishWorldMapRegion(region);
+    return;
+  }
+
+  const uint32_t level = LoadGuestU32(base, levels);
+  if (!plausible(level)) {
+    say_bail(10, levels, level);
+    PublishWorldMapRegion(region);
+    return;
+  }
+
   // Claimed by lowering r1 so a callee's frame cannot land on the string it is handed.
   const uint32_t sp = ctx.r1.u32;
   const uint32_t frame = (sp - 0x200u) & ~0xFu;
   const uint32_t out = frame + 0x20u;
   const PPCContext saved = ctx;
 
-  const auto provider = [&](void (*call)(PPCContext&, uint8_t*), char* into, std::size_t cap) {
+  const auto provider = [&](void (*call)(PPCContext&, uint8_t*), char* into, std::size_t cap,
+                           uint32_t r5 = 0u) {
     StoreGuestU32(base, out, 0u);
 
     ctx = saved;
     ctx.r1.u32 = frame;
     ctx.r3.u32 = out;
-    ctx.r4.u32 = name_handle;
-    ctx.r5.u32 = 0u;  // travel time's "emit 0 hours" flag (sub_823C8CE0 via r5); the others ignore r5
+    ctx.r4.u32 = level;
+    ctx.r5.u32 = r5;
     call(ctx, base);
 
-    const std::string value = ReadGuestLhString(base, out);
+    // WIDE, not ASCII. `out` holds the inner and the characters hang off inner+0 — that part
+    // was right — but this is the guest's DISPLAY-TEXT class, UTF-16 big-endian, and the ASCII
+    // reader stops on the first character's zero high byte. Eleven fields read empty for that
+    // while the region NAME beside them read fine, because the name really is narrow: it is
+    // what `sub_82519DF8` hands to `strcmpi`. The filler agrees — it releases these outputs
+    // with `LHString_CCharString_CCharString_0` and its narrow paths with `sub_82214DD8`.
+    //
+    // `sub_823C90F8` proves the output is never empty when the call succeeds: below 1.01 miles
+    // it is Babel's `GUI_SHARED_1_MILE`, otherwise `GUI_SHARED_X_MILES` formatted with the
+    // number. An empty read was a read, not an answer.
+    std::string value = ReadGuestWideString(base, out);
+
+    // One raw look per run: the two words at `out`, so the convention question never has to
+    // be re-argued from a blank page again.
+    static std::atomic<bool> out_said{false};
+    if (!out_said.exchange(true)) {
+      REXLOG_INFO("Refii world-map provider out: [0]=0x{:08X} [1]=0x{:08X} read='{}'",
+                  LoadGuestU32(base, out), LoadGuestU32(base, out + 4u), value);
+    }
+
     std::snprintf(into, cap, "%s", value.c_str());
 
     ctx = saved;
     ctx.r1.u32 = frame;
     ctx.r3.u32 = out;
-    sub_82214DD8(ctx, base);
+    sub_821C67F8(ctx, base);
     ctx = saved;
   };
 
   provider(sub_823C9000, region.distance, sizeof(region.distance));
-  provider(sub_823C8BE0, region.travel, sizeof(region.travel));
+  // `sub_823C8BE0(&v67, &v65, 1)` in the filler — the third argument is 1, not 0.
+  provider(sub_823C8BE0, region.travel, sizeof(region.travel), 1u);
   provider(sub_823C6C18, region.fine, sizeof(region.fine));
   provider(sub_823C7030, region.owned, sizeof(region.owned));
   provider(sub_823C7250, region.chests, sizeof(region.chests));
@@ -2136,17 +3119,520 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
   provider(sub_823C6E50, region.merchants, sizeof(region.merchants));
 
   // The economy is a STAR COUNT, not a string, so it cannot go through `provider`:
-  // `sub_8246FE20` takes the region name in r3 and RETURNS the rating there (`bl` at
+  // `sub_8246FE20` takes the same level `LHString*` in r3 and RETURNS the rating there (`bl` at
   // 0x829AB364, then `addi r5, r3, 1` to make it a slide index). It must be called — there is
   // no per-region rating field; the number is averaged over the region's villages on every ask.
   ctx = saved;
   ctx.r1.u32 = frame;
-  ctx.r3.u32 = name_handle;
+  ctx.r3.u32 = level;
   sub_8246FE20(ctx, base);
   region.stars = static_cast<int32_t>(ctx.r3.u32);
   ctx = saved;
 
   PublishWorldMapRegion(region);
+}
+
+/// ONE JOB'S DISTANCE AND TRAVEL TIME — the world map's job page.
+///
+/// The two providers are the region page's own, and they take an `LHString*`. The quest's
+/// `ObjectiveLevel` is INLINE on the quest object at `+132`, so `quest+132` is already the
+/// handle address — no extra hop, unlike the region walk where the level had to be found under
+/// the region record.
+///
+/// `sub_823C8BE0`'s third argument is **0** here where the region page passes 1
+/// (`sub_829B02A0` at 0x829b0310). With 0 and a whole-hour count of zero, `sub_823C8CE0`
+/// appends nothing at all — so a job less than an hour away shows an empty travel time. That is
+/// the shipped behaviour and is kept rather than "corrected" into "0 hours".
+void SampleQuestTravel(PPCContext& ctx, uint8_t* base) {
+  constexpr uint32_t kWorldMapScreenId = 23u;
+  constexpr uint32_t kQuestLogComponent = 102u;
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  uint32_t owner = 0;
+  uint32_t screen_id = 0;
+  if (!InGameScreenRoots(base, &owner, &screen_id) || screen_id != kWorldMapScreenId) {
+    return;
+  }
+
+  const uint32_t wanted = RequestedQuestTravel();
+  QuestTravel journey;
+  journey.record = wanted;
+  if (wanted == 0u) {
+    PublishQuestTravel(journey);
+    return;
+  }
+
+  // A refused ask names its gate, once per requested record — a blank journey block on the
+  // jobs page cannot otherwise say which premise failed.
+  static uint32_t reported = 0u;
+  const auto refuse = [&](const char* gate, uint32_t detail) {
+    if (reported != wanted) {
+      reported = wanted;
+      REXLOG_INFO("Refii guest-tick pump: quest travel 0x{:08X} refused at {} (0x{:08X})",
+                  wanted, gate, detail);
+    }
+    PublishQuestTravel(journey);
+  };
+
+  const uint32_t hero = HeroEntity(base);
+  const uint32_t log = HeroComponent(base, hero, kQuestLogComponent);
+  const uint32_t begin = plausible(log) ? LoadGuestU32(base, log + 0x10u) : 0u;
+  const uint32_t end = plausible(log) ? LoadGuestU32(base, log + 0x14u) : 0u;
+  if (!plausible(begin) || end <= begin || ((end - begin) % 12u) != 0u ||
+      (end - begin) > 0x2000u) {
+    refuse(hero == 0u ? "hero" : log == 0u ? "component 102" : "log vector", log);
+    return;
+  }
+
+  uint32_t quest = 0;
+  for (uint32_t at = begin; at < end; at += 12u) {
+    const uint32_t candidate = LoadGuestU32(base, at + 4u);
+    if (plausible(candidate) && LoadGuestU32(base, candidate + 4u) == wanted) {
+      quest = candidate;
+      break;
+    }
+  }
+
+  if (quest == 0u) {
+    refuse("record match", (end - begin) / 12u);
+    return;
+  }
+
+  // The level handle is inline; an unset one is an empty string, not a failure.
+  const uint32_t level = quest + 132u;
+  if (LoadGuestU32(base, level) == 0u) {
+    refuse("objective level", quest);
+    return;
+  }
+
+  const uint32_t sp = ctx.r1.u32;
+  const uint32_t frame = (sp - 0x200u) & ~0xFu;
+  const uint32_t out = frame + 0x20u;
+  const PPCContext saved = ctx;
+
+  const auto provider = [&](void (*call)(PPCContext&, uint8_t*), char* into, std::size_t cap,
+                            uint32_t r5) {
+    StoreGuestU32(base, out, 0u);
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = out;
+    ctx.r4.u32 = level;
+    ctx.r5.u32 = r5;
+    call(ctx, base);
+
+    // WIDE, like every display string the guest builds — see ReadGuestWideString.
+    std::snprintf(into, cap, "%s", ReadGuestWideString(base, out).c_str());
+
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = out;
+    sub_821C67F8(ctx, base);
+    ctx = saved;
+  };
+
+  provider(sub_823C9000, journey.distance, sizeof(journey.distance), 0u);
+  provider(sub_823C8BE0, journey.travel, sizeof(journey.travel), 0u);
+
+  // "Time Remaining", WORDED BY THE GUEST. This one takes a FLOAT in f1 rather than a string
+  // pointer in r4, so it cannot go through `provider` — and it must not be reproduced here:
+  // `GUI_SHARED_X_DAYS` is a printf format string that `sub_82B3F250` fills, so a host-side
+  // `%1` substitution finds no token and leaves the format itself on screen. Below 1.01 days
+  // the guest answers `GUI_SHARED_1_DAY` instead, and it makes that choice too.
+  {
+    const uint32_t bits = LoadGuestU32(base, quest + 44u);
+    float remaining = 0.0f;
+    std::memcpy(&remaining, &bits, sizeof(remaining));
+
+    StoreGuestU32(base, out, 0u);
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = out;
+    ctx.f1.f64 = static_cast<double>(remaining);
+    sub_823C9228(ctx, base);
+    std::snprintf(journey.days, sizeof(journey.days), "%s",
+                  ReadGuestWideString(base, out).c_str());
+
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = out;
+    sub_821C67F8(ctx, base);
+    ctx = saved;
+  }
+
+  // THE REGION IS A LOOKUP, NOT A FIELD. The job page's own filler `sub_829AFE58` asks the
+  // region container which region owns the objective level:
+  //
+  //     v23 = sub_82518490(*(*(*(*(*(*(dword_83496AB8 + 12) + 88) + 4) + 8) + 4) + 12),
+  //                        v10 + 132);
+  //     sub_821F0240(&v35, v23);      // *dst = *src -> v23 is the region OBJECT
+  //     sub_82425F40(v22, &v35);      // set-by-TAG, so the tag is what crosses
+  //
+  // `sub_82518490` walks the container in pairs of 8 (`v3 += 2`) testing each entry with
+  // `sub_82516E48(entry, levelName)` and returns the matching region, or the empty-string
+  // singleton `dword_834A5E78` when nothing owns the level. The tag is the region object's
+  // word 0 — the same shape `ReadGuestLhString` already reads for the region page's name,
+  // and the same BORROW: the filler takes its own reference with `sub_821F0240` and releases
+  // that; reading through without one owes nothing.
+  //
+  // `root+12 -> +88 -> +4` is the prefix the sales list and the game clock already walk, so
+  // only the last three hops are new.
+  uint32_t manager = LoadGuestU32(base, 0x83496AB8u);
+  for (const uint32_t hop : {12u, 88u, 4u, 8u, 4u, 12u}) {
+    manager = plausible(manager) ? LoadGuestU32(base, manager + hop) : 0u;
+  }
+
+  if (plausible(manager)) {
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = manager;
+    ctx.r4.u32 = level;
+    sub_82518490(ctx, base);
+
+    const uint32_t region = ctx.r3.u32;
+    ctx = saved;
+
+    // NARROW. The filler releases it with `sub_82214DD8`, not the wide destructor.
+    std::snprintf(journey.region, sizeof(journey.region), "%s",
+                  ReadGuestLhString(base, region).c_str());
+  }
+
+  // THE A-BUTTON PROMPT IS A DECISION, NOT A STRING. `sub_824708D8` picks between three tags
+  // and a hidden button, and every input is guest travel state — whether a fast-travel marker
+  // resolves, whether a trail is already running, whether the world has a trail destination at
+  // all. Those are walks over the region and trail managers; reproducing them here would be
+  // emulation. The pump calls the guest's own predicates and applies the guest's own tree:
+  //
+  //     if ( sub_824707E8(quest+132, quest+144) )                       // travel is offered
+  //       (!Primary || sub_82470F80()) && (sub_82471438() || !differs)  -> TRAIL_AND_TRAVEL
+  //                                                           else     -> TRAVEL
+  //     else
+  //       Primary && !sub_82470F80()                                    -> hidden
+  //       !sub_82471438() && differs                                    -> hidden
+  //                                                           else     -> TRAIL
+  //
+  // `differs` compares `quest+132` against the current level at `E+36 -> +4 -> +172`, off the
+  // same object the region container hangs from.
+  //
+  // IT IS `operator!=`, NOT `operator==`. `sub_82B3DE48` computes equality and then RETURNS ITS
+  // NEGATION — `clrlwi/cntlzw/extrwi` yields bit 5 of the leading-zero count, which is 1 exactly
+  // when the equality test failed, and IDA names the symbol
+  // `LHString::CCharString::operator!=`. Reading it as `==` inverts both branches below.
+  const auto call_bool = [&](void (*fn)(PPCContext&, uint8_t*), uint32_t r3, uint32_t r4) {
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = r3;
+    ctx.r4.u32 = r4;
+    fn(ctx, base);
+    const bool answer = (ctx.r3.u32 & 0xFFu) != 0u;
+    ctx = saved;
+    return answer;
+  };
+
+  uint32_t travel_system = LoadGuestU32(base, 0x83496AB8u);
+  for (const uint32_t hop : {12u, 88u, 4u, 8u, 4u}) {
+    travel_system = plausible(travel_system) ? LoadGuestU32(base, travel_system + hop) : 0u;
+  }
+
+  uint32_t current_level = travel_system;
+  for (const uint32_t hop : {36u, 4u}) {
+    current_level = plausible(current_level) ? LoadGuestU32(base, current_level + hop) : 0u;
+  }
+  current_level = plausible(current_level) ? current_level + 172u : 0u;
+
+  if (plausible(current_level)) {
+    const bool travels = call_bool(sub_824707E8, level, quest + 144u);
+    const bool primary = LoadGuestU8(base, quest + 20u) != 0u;
+    const bool trailing = call_bool(sub_82470F80, 0u, 0u);
+    const bool no_destination = call_bool(sub_82471438, 0u, 0u);
+    // BOTH ARGUMENTS ARE HANDLE ADDRESSES. In `sub_824708D8` the `+ 172` sits OUTSIDE the
+    // last dereference, so the comparison takes `G + 172` itself — the same shape as
+    // `quest + 132` beside it. `sub_824707E8` reads the value there and compares it against
+    // `*(quest + 132)`, which is the same test one level down.
+    //
+    // The result is "these are DIFFERENT", not "these are the same" — see above.
+    const bool differs = call_bool(sub_82B3DE48, level, current_level);
+
+    const char* tag = nullptr;
+    if (travels) {
+      tag = (!primary || trailing) && (no_destination || !differs)
+                ? "GUI_SCREEN_WORLD_MAP_MISC_TRAIL_AND_TRAVEL"
+                : "GUI_SCREEN_WORLD_MAP_MISC_TRAVEL";
+    } else if (!(primary && !trailing) && !(!no_destination && differs)) {
+      tag = "GUI_SCREEN_WORLD_MAP_MISC_TRAIL";
+    }
+
+    if (tag != nullptr) {
+      std::snprintf(journey.prompt, sizeof(journey.prompt), "%s", tag);
+    }
+  }
+
+  journey.known = true;
+  if (reported != wanted) {
+    reported = wanted;
+    REXLOG_INFO("Refii guest-tick pump: quest travel 0x{:08X} answered — distance '{}', days "
+                "'{}', region '{}'", wanted, journey.distance, journey.days, journey.region);
+  }
+  PublishQuestTravel(journey);
+}
+
+/// ONE SHOP ROW'S ASKING PRICE — screen 22.
+///
+/// The item book shows an item's WORTH; a shop shows what it charges, and the two are different
+/// numbers. `sub_82992F90` is the guest's own price display and states the whole contract:
+///
+///     screen 22 -> **(screen + 404)      the shopkeeper ENTITY, two dereferences
+///     entity + 144 & 0x40                live
+///     component 27                       CECShopkeeper, looked up every time
+///     sell ? sub_828727B8 : sub_82872910 the price
+///
+/// Both weight a base price by the shopkeeper's `CECOpinionReaction` axes and the shop's
+/// wealth (buy multiplies where sell divides), so there is no ratio to reproduce here — the
+/// number is asked for.
+///
+/// The row is named by TICKET, resolved exactly as DispatchShopAction resolves it. A stale
+/// ticket is the ordinary case for a list repopulated since the row was drawn, and answers
+/// nothing rather than a wrong price.
+void SampleShopPrice(PPCContext& ctx, uint8_t* base) {
+  constexpr uint32_t kShopScreenId = 22u;
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  uint32_t owner_screen = 0;
+  uint32_t screen_id = 0;
+  if (!InGameScreenRoots(base, &owner_screen, &screen_id) || screen_id != kShopScreenId) {
+    return;
+  }
+
+  bool sell = false;
+  const uint32_t ticket = RequestedShopPrice(&sell);
+
+  ShopPrice answer;
+  answer.ticket = ticket;
+  if (ticket == 0u) {
+    PublishShopPrice(answer);
+    return;
+  }
+
+  const uint32_t screen = ScreenObjectRO(base, kShopScreenId);
+  const uint32_t holder = plausible(screen) ? LoadGuestU32(base, screen + 404u) : 0u;
+  const uint32_t shopkeeper = plausible(holder) ? LoadGuestU32(base, holder) : 0u;
+  if (!plausible(shopkeeper) || (LoadGuestU8(base, shopkeeper + 144u) & 0x40u) == 0u) {
+    PublishShopPrice(answer);
+    return;
+  }
+
+  const uint32_t shop_component = HeroComponent(base, shopkeeper, 27u);
+  const uint32_t root = LoadGuestU32(base, 0x83496B08u);
+  const uint32_t owner = plausible(root) ? LoadGuestU32(base, root + 28u) : 0u;
+  const uint32_t registry = plausible(owner) ? LoadGuestU32(base, owner + 60u) : 0u;
+  if (shop_component == 0u || !plausible(registry)) {
+    PublishShopPrice(answer);
+    return;
+  }
+
+  PPCFunc* lookup = FindGuestFunction(0x82880BC0u);
+  PPCFunc* price = FindGuestFunction(sell ? 0x828727B8u : 0x82872910u);
+  if (lookup == nullptr || price == nullptr) {
+    PublishShopPrice(answer);
+    return;
+  }
+
+  const PPCContext saved = ctx;
+  const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
+  const uint32_t item = frame + 0x20u;
+  for (uint32_t word = 0; word < 4u; ++word) {
+    StoreGuestU32(base, item + (word * 4u), 0u);
+  }
+
+  ctx = saved;
+  ctx.r1.u32 = frame;
+  ctx.r3.u32 = registry + 4u;
+  ctx.r4.u32 = ticket;
+  ctx.r5.u32 = item;
+  lookup(ctx, base);
+  const bool found = (ctx.r3.u32 & 0xFFu) != 0u;
+  ctx = saved;
+
+  if (!found || LoadGuestU32(base, item) == 0u) {
+    PublishShopPrice(answer);
+    return;
+  }
+
+  ctx = saved;
+  ctx.r1.u32 = frame;
+  ctx.r3.u32 = shop_component;
+  ctx.r4.u32 = item;
+  price(ctx, base);
+  answer.price = static_cast<int32_t>(ctx.r3.u32);
+  ctx = saved;
+
+  answer.known = true;
+  PublishShopPrice(answer);
+}
+
+/// SCREEN 28'S ONE BUILDING — the real estate page's data, called rather than reproduced.
+///
+/// The screen's left column is a list of COMMANDS, not of properties: one building, resolved
+/// when the screen opens, no selection-change event. So this samples a single record while the
+/// screen stands and the host draws both pages off it.
+///
+/// The chain is the shipped filler's own (`sub_82998FB0`, verified instruction by instruction
+/// rather than taken on report):
+///
+///     lwz r10, 0x34(r11) ; extrwi r9, r10, 1,17   -> hero-object component 142
+///     bl  sub_8229EE78                            -> the building ENTITY
+///     lwz r11, 0x2C(r29) ; extrwi r10, r11, 1,28  -> its component 67, the CECBuilding
+///
+/// (`entity+0x34` with bit 14 is id 128+14 = 142; `BE+0x2C` with bit 3 is 64+3 = 67 — the same
+/// presence bitmap `HeroComponent` already implements.) Neither filler reads `screen+164` or
+/// `screen+168`: both re-derive from globals every call, and the ctor only zeroes those fields.
+///
+/// EVERY NUMBER IS THE GUEST'S ANSWER. Value, economy, income, the sale floor, the purchase
+/// price and the three not-owned deltas each walk something we have no business reproducing —
+/// a prosperity term off a world component, a GDB adjustment array matched against the
+/// building-type mask, an occupant-opinion term weighted over five personality axes. The host
+/// gets the numbers and owns the presentation.
+void SampleRealEstate(PPCContext& ctx, uint8_t* base) {
+  constexpr uint32_t kRealEstateScreenId = 28u;
+  constexpr uint32_t kPropertiesComponent = 69u;   // the hero's ownership list
+  constexpr uint32_t kSiteComponent = 77u;         // the "what am I standing at" component
+  constexpr uint32_t kBuildingHandleComponent = 142u;
+  constexpr uint32_t kBuildingComponent = 67u;
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  uint32_t owner_screen = 0;
+  uint32_t screen_id = 0;
+  if (!InGameScreenRoots(base, &owner_screen, &screen_id) ||
+      screen_id != kRealEstateScreenId) {
+    return;
+  }
+
+  RealEstate estate;
+
+  const uint32_t hero = HeroEntity(base);
+  const uint32_t site = HeroComponent(base, hero, kSiteComponent);
+  if (!plausible(site)) {
+    PublishRealEstate(estate);
+    return;
+  }
+
+  // Claimed low so a callee's frame cannot land on an out-parameter it is handed.
+  const uint32_t sp = ctx.r1.u32;
+  const uint32_t frame = (sp - 0x200u) & ~0xFu;
+  const uint32_t out = frame + 0x20u;
+  const PPCContext saved = ctx;
+
+  const auto call = [&](PPCFunc* fn, uint32_t r3, uint32_t r4) -> uint32_t {
+    if (fn == nullptr) {
+      return 0u;
+    }
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = r3;
+    ctx.r4.u32 = r4;
+    fn(ctx, base);
+    const uint32_t result = ctx.r3.u32;
+    ctx = saved;
+    return result;
+  };
+
+  // `comp77->vtbl[0x44]()` — the site's own "which entity is this" accessor. Indirect because
+  // the concrete class is chosen at runtime; the slot is not.
+  const uint32_t site_vtable = LoadGuestU32(base, site);
+  const uint32_t accessor = plausible(site_vtable) ? LoadGuestU32(base, site_vtable + 0x44u) : 0u;
+  const uint32_t entity = call(FindGuestFunction(accessor), site, 0u);
+  if (!plausible(entity) || (LoadGuestU8(base, entity + 0x90u) & 0x40u) == 0u) {
+    PublishRealEstate(estate);
+    return;
+  }
+
+  const uint32_t handle = HeroComponent(base, entity, kBuildingHandleComponent);
+  const uint32_t building_entity = call(FindGuestFunction(0x8229EE78u), handle, 0u);
+  const uint32_t building = HeroComponent(base, building_entity, kBuildingComponent);
+  if (!plausible(building)) {
+    PublishRealEstate(estate);
+    return;
+  }
+
+  const uint32_t properties = HeroComponent(base, hero, kPropertiesComponent);
+
+  estate.known = true;
+  estate.type_mask = LoadGuestU32(base, building + 28u);
+
+  // Both walk the ownership list at `properties+28` comparing the 64-bit entity id at
+  // `BE+20`/`BE+24`, taking and releasing a reference per node — called, not reproduced,
+  // because reproducing it would mean touching those refcounts by hand.
+  estate.owned = call(FindGuestFunction(0x828D14E8u), properties, building_entity) != 0u;
+  estate.has_tenant = call(FindGuestFunction(0x828D2800u), properties, building_entity) != 0u;
+
+  estate.value = static_cast<int32_t>(call(FindGuestFunction(0x8282AEB0u), building, 0u));
+  estate.economy = static_cast<int32_t>(call(FindGuestFunction(0x8282C1C0u), building, 0u));
+  estate.income = static_cast<int32_t>(call(FindGuestFunction(0x8282C110u), building, 0u));
+
+  const int32_t floor_price =
+      static_cast<int32_t>(call(FindGuestFunction(0x8282BCA0u), building, 0u));
+  estate.sale_price = estate.owned
+      ? floor_price
+      : static_cast<int32_t>(call(FindGuestFunction(0x8282BA48u), building, 0u));
+  estate.selling_fees = floor_price - estate.value;
+
+  estate.not_vacant = static_cast<int32_t>(call(FindGuestFunction(0x8282C470u), building, 0u));
+  estate.owner_killed = static_cast<int32_t>(call(FindGuestFunction(0x8282C870u), building, 0u));
+  estate.hero_opinion = static_cast<int32_t>(call(FindGuestFunction(0x8282C610u), building, 0u));
+
+  // DECORATION HAS NO FUNCTION — the filler computes it inline at 0x82999804 as the furniture
+  // value scaled by the building's decoration multiplier, so this is the one number the host
+  // side has to do itself.
+  {
+    const int32_t furniture = static_cast<int32_t>(LoadGuestU32(base, building + 44u));
+    const uint32_t bits = LoadGuestU32(base, building + 116u);
+    float multiplier = 0.0f;
+    std::memcpy(&multiplier, &bits, sizeof(multiplier));
+    estate.decoration = static_cast<int32_t>(static_cast<float>(furniture) * multiplier);
+  }
+
+  // The GDB record the page's text hangs off. `sub_821DA3B0` fills a `{hash, cachedPtr}` pair;
+  // only the hash crosses, and the host resolves BuildingName, BuildingAddress,
+  // BuildingAnecdotes, BasicSalePrice and CanSellOncePurchased from its own GDB.
+  StoreGuestU32(base, out, 0u);
+  StoreGuestU32(base, out + 4u, 0u);
+  call(FindGuestFunction(0x821DA3B0u), out, building);
+  estate.record = LoadGuestU32(base, out);
+
+  // The bonuses hang off a DIFFERENT record. `sub_82917F60` runs the same `sub_821DA3B0`
+  // indirection over component 184 and reads its `Bonuses` array, so the building's own record
+  // does not carry them; both hashes have to cross.
+  {
+    constexpr uint32_t kBonusComponent = 184u;
+    const uint32_t bonuses = HeroComponent(base, building_entity, kBonusComponent);
+    if (plausible(bonuses)) {
+      StoreGuestU32(base, out, 0u);
+      StoreGuestU32(base, out + 4u, 0u);
+      call(FindGuestFunction(0x821DA3B0u), out, bonuses);
+      estate.bonuses_record = LoadGuestU32(base, out);
+    }
+  }
+
+  // WHOEVER IS IN IT: the tenant when there is one, otherwise the owner. `sub_823C8510` takes
+  // the entity in r4 — a lost argument in the decompile, explicit in the filler's own
+  // `mr r4, r3` after the resolve — and answers a WIDE string.
+  {
+    const uint32_t occupant = estate.has_tenant
+        ? call(FindGuestFunction(0x8282D5D8u), building, 0u)
+        : call(FindGuestFunction(0x8282D410u), building, 0u);
+    if (plausible(occupant)) {
+      StoreGuestU32(base, out, 0u);
+      call(FindGuestFunction(0x823C8510u), out, occupant);
+      std::snprintf(estate.occupant, sizeof(estate.occupant), "%s",
+                    ReadGuestWideString(base, out).c_str());
+      ctx = saved;
+      ctx.r1.u32 = frame;
+      ctx.r3.u32 = out;
+      sub_821C67F8(ctx, base);
+      ctx = saved;
+    }
+  }
+
+  PublishRealEstate(estate);
 }
 
 /// The completed-quest list the logbook's page indexes into.
@@ -2343,6 +3829,7 @@ void SampleHeroDerived(PPCContext& ctx, uint8_t* base) {
   SampleDog(base, sampled);
   SampleQuests(base, hero);
   SampleWorldMapRegion(ctx, base);
+  SampleFamily(ctx, base);
   SampleSpellDamage(base, hero, sampled);
 
   // The attractiveness block only while the logbook is up: it is the one sampler that allocates
@@ -2585,6 +4072,57 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
         REXLOG_INFO("Refii guest-tick pump: MenuSelect with no live presentation — dropped");
         ran = true;
       }
+    } else if (name.rfind("debug-call:", 0) == 0) {
+      // `debug-call:ADDR[:r3[:r4[:r5[:r6]]]]` — one guest function, called on the guest's own
+      // tick thread with the registers stated, result r3 recorded for the host. The debug
+      // channel's REPL primitive; only the loopback channel posts these.
+      std::vector<uint64_t> values;
+      std::size_t from = std::strlen("debug-call:");
+      bool parsed = true;
+      while (from <= name.size()) {
+        const std::size_t colon = name.find(':', from);
+        const std::string part = name.substr(
+            from, colon == std::string::npos ? std::string::npos : colon - from);
+        char* end = nullptr;
+        values.push_back(std::strtoull(part.c_str(), &end, 16));
+        if (end == part.c_str() || *end != '\0') {
+          parsed = false;
+          break;
+        }
+        if (colon == std::string::npos) {
+          break;
+        }
+        from = colon + 1;
+      }
+
+      if (!parsed || values.empty() || values.size() > 5) {
+        NoteDebugCallResult(0, 0, "debug-call needs ADDR[:r3[:r4[:r5[:r6]]]], all hex");
+      } else {
+        const uint32_t target = static_cast<uint32_t>(values[0]);
+        PPCFunc* function = FindGuestFunction(target);
+        if (function == nullptr) {
+          NoteDebugCallResult(target, 0, "no recompiled function at that address");
+        } else {
+          const PPCContext saved = ctx;
+          if (values.size() > 1) ctx.r3.u64 = values[1];
+          if (values.size() > 2) ctx.r4.u64 = values[2];
+          if (values.size() > 3) ctx.r5.u64 = values[3];
+          if (values.size() > 4) ctx.r6.u64 = values[4];
+          function(ctx, base);
+          const uint64_t result = ctx.r3.u64;
+          ctx = saved;
+          NoteDebugCallResult(target, result, "ok");
+        }
+      }
+      ran = true;
+    } else if (name.rfind("debug-lua:", 0) == 0) {
+      // Arbitrary Lua against the live GUI state, result noted for the host. GuiLua: predates
+      // this and stays; this variant exists so the caller can SEE whether the chunk ran.
+      const std::string chunk = name.substr(std::strlen("debug-lua:"));
+      const bool luaRan = RunGuestLua(ctx, base, chunk);
+      NoteDebugCallResult(0, luaRan ? 1u : 0u,
+                          luaRan ? "ok" : "no live presentation to run Lua in");
+      ran = true;
     } else if (name.rfind(kActionGuiLuaPrefix, 0) == 0) {
       const std::string chunk = name.substr(std::strlen(kActionGuiLuaPrefix));
       ran = RunGuestLua(ctx, base, chunk);
@@ -2621,6 +4159,14 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
                               static_cast<uint32_t>(type), static_cast<uint32_t>(id));
     } else if (name.rfind(kActionQuickWheelPrefix, 0) == 0) {
       ran = DispatchQuickWheel(ctx, base, name.substr(std::strlen(kActionQuickWheelPrefix)));
+    } else if (name.rfind(kActionInventoryPrefix, 0) == 0) {
+      ran = DispatchInventoryAction(ctx, base,
+                                    name.substr(std::strlen(kActionInventoryPrefix)));
+    } else if (name.rfind(kActionAbilityPrefix, 0) == 0) {
+      ran = DispatchAbilityAction(ctx, base,
+                                  name.substr(std::strlen(kActionAbilityPrefix)));
+    } else if (name.rfind(kActionShopPrefix, 0) == 0) {
+      ran = DispatchShopAction(ctx, base, name.substr(std::strlen(kActionShopPrefix)));
     } else if (name == kActionRegisterPlayer) {
       ran = DispatchRegisterPlayer(ctx, base);
     } else if (name.rfind(kActionPauseSavingPrefix, 0) == 0) {
@@ -3010,6 +4556,7 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   // The hero sample, on a cadence — see SampleHeroDerived.
   if ((tick % 15u) == 0u) {
     SampleHeroDerived(ctx, base);
+    ArmHudShow(ctx, base);
   }
 
   // The present loop that would normally fade the in-game loading screen out is off in this
@@ -3153,6 +4700,33 @@ REX_EXTERN(sub_822C1BD0) {
   __imp__sub_822C1BD0(ctx, base);
 }
 
+// THE PAUSE HAS ITS OWN HEARTBEAT, AND THE PAUSE-SCREEN SAMPLERS MUST RIDE IT.
+//
+// `sub_822C1BD0` — the game-loop tick every sampler used to hang off — STOPS while the pause
+// book is open: the pump's tick counter sat frozen at 1546 across eight seconds of an open
+// world map. So a sampler gated on "screen 23 is up" could never fire — its precondition only
+// holds while its carrier is stopped — and the region and family pages read blank forever
+// while the hero and quest data (sampled in gameplay, before the pause) looked fine beside
+// them.
+//
+// `sub_8229ABD8` is the pause-tab lever poller, run every GUI tick — the heartbeat that beats
+// exactly when the game-loop tick does not. Cadenced: these samplers call guest providers, and
+// every 8th GUI tick is twice a second at 15 Hz.
+REX_EXTERN(sub_8229ABD8) {
+  REX_FUNC_PROLOGUE();
+
+  static std::atomic<uint32_t> gui_ticks{0};
+  if ((gui_ticks.fetch_add(1, std::memory_order_relaxed) % 8u) == 0u) {
+    refii::vfs::SampleWorldMapRegion(ctx, base);
+    refii::vfs::SampleFamily(ctx, base);
+    refii::vfs::SampleRealEstate(ctx, base);
+    refii::vfs::SampleQuestTravel(ctx, base);
+    refii::vfs::SampleShopPrice(ctx, base);
+  }
+
+  __imp__sub_8229ABD8(ctx, base);
+}
+
 // The spawn, captured — the IN-GAME one, against GUI manager `dword_83496B08`.
 REX_EXTERN(sub_826CE8D0) {
   REX_FUNC_PROLOGUE();
@@ -3178,10 +4752,20 @@ REX_EXTERN(sub_826E4798) {
 // arguments; it is the one marker both the in-game and front-end populations share. The END is
 // not markable — only front-end lists call `UpdateAfterSpawning` — so the capture publishes per
 // row rather than waiting for one.
+
+/// The screen whose population is starting, as the GUEST states it: `manager+4` off the
+/// in-game GUI. The FRONT END is a different GUI object, so `InGameScreenRoots` refuses it and
+/// the capture is keyed "no in-game screen" — which is what stops front-end rows being handed
+/// to an in-game template. See `refii_bridge_menu_spawn_begin_for`.
+static uint32_t PopulatingScreenId(uint8_t* base) {
+  uint32_t screen_id = 0;
+  return refii::vfs::InGameScreenRoots(base, nullptr, &screen_id) ? screen_id : 0xFFFFFFFFu;
+}
+
 REX_EXTERN(sub_826CE110) {
   REX_FUNC_PROLOGUE();
 
-  refii_bridge_menu_spawn_begin();
+  refii_bridge_menu_spawn_begin_for(PopulatingScreenId(base));
 
   __imp__sub_826CE110(ctx, base);
 }
@@ -3191,11 +4775,11 @@ REX_EXTERN(sub_826CE110) {
 // shop sub_82994218, logbook sub_829B8648, gift-gold sub_82430468, front end sub_826E1F70.
 // Without them a screen's rows join onto the previous population's. The string match in the
 // exec hook (resource_manager_open.cpp) is the net for any emitter not listed here.
-#define REFII_MENU_BOUNDARY_HOOK(fn)      \
-  REX_EXTERN(fn) {                        \
-    REX_FUNC_PROLOGUE();                  \
-    refii_bridge_menu_spawn_begin();      \
-    __imp__##fn(ctx, base);               \
+#define REFII_MENU_BOUNDARY_HOOK(fn)                                            \
+  REX_EXTERN(fn) {                                                             \
+    REX_FUNC_PROLOGUE();                                                       \
+    refii_bridge_menu_spawn_begin_for(PopulatingScreenId(base));               \
+    __imp__##fn(ctx, base);                                                    \
   }
 
 REFII_MENU_BOUNDARY_HOOK(sub_829A2F40)

@@ -16,6 +16,148 @@ namespace Refii.Ui;
 /// </summary>
 public static class Engine_UiLogbookPage
 {
+	/// <summary>
+	/// The subject page for a row, as `sub_826D9168`'s page table selects it — 60/64 morality,
+	/// 61 expressions, 62 completed quests, 65 renown, 66 attractiveness, 67 stats, 68 dog,
+	/// 69 help — by switching the pages' `active` attribute. The guest keys that on its own
+	/// highlight, which never moves on this host-driven list, so the selection is stated here:
+	/// the row's page on, the other seven off; a heading (a folder) shows none.
+	/// </summary>
+	public static IReadOnlyDictionary<string, bool> Active(Engine_UiExpandableMenu.Item? row)
+	{
+		var active = new Dictionary<string, bool>();
+		foreach (string page in SubjectPages)
+		{
+			active[page] = false;
+		}
+
+		if (row is not null && SubjectPageOf(row.EventType) is { } shown)
+		{
+			active[shown] = true;
+		}
+
+		// The description's inline D-pad glyph is placed by the guest's text layout for a
+		// description that carries the markup; the host writes the description itself, and
+		// the placeholder otherwise sits at its authored spot over the effects rows.
+		active["Foreground.Book.Pages.ExpressionsPage.Contents.Description.InlineIcon"] = false;
+
+		// Effect slots beyond the expression's count are HIDDEN (`sub_82426260(…, 0)`), and
+		// the `Stats` heading with its rule goes with them when there are none (`0x829bd278`).
+		int count = EffectCountOf(row);
+		for (int slot = 0; slot < EffectSlots; ++slot)
+		{
+			bool filled = slot < count;
+			active[$"Foreground.Book.Pages.ExpressionsPage.Contents.Effects.Effect{slot + 1}"] = filled;
+			active[$"Foreground.Book.Pages.ExpressionsPage.Contents.Effects.EffectValue{slot + 1}"] = filled;
+		}
+
+		active["Foreground.Book.Pages.ExpressionsPage.Contents.Effects.Stats"] = count > 0;
+		active["Foreground.Book.Pages.ExpressionsPage.Contents.Effects.line"] = count > 0;
+
+		return active;
+	}
+
+	/// <summary>
+	/// The shown subject page's OPEN pose. Every subject page's master leaves `Contents`
+	/// inactive and its first slide lights it — the guest's `goToSlide` on its own highlight
+	/// edge, which no longer fires under an owned cursor. The Stats page that rendered was the
+	/// one the guest had left at slide 1; the rest sat at 0 with a bare parchment.
+	/// </summary>
+	public static IReadOnlyDictionary<string, int> Slides(
+		Engine_UiExpandableMenu.Item? row, Refii.Host.HostBridge.HeroDerived hero)
+	{
+		var slides = new Dictionary<string, int>(6);
+
+		// THE DOG'S TWO LEVELS ARE SLIDES, NOT TEXT: `sub_829BC750` runs `goToSlide(level)` on
+		// `Dog.CombatAmount` (c97+188, the fighter level) and `Dog.SearchingAmount` (c97+184,
+		// the hunter level) — five-star groups whose slide N lights N stars.
+		if (hero.DogKnown)
+		{
+			slides["Foreground.Book.Pages.DogPage.Contents.LogBook.Dog.CombatAmount"] =
+				System.Math.Max(0, hero.DogCombat);
+			slides["Foreground.Book.Pages.DogPage.Contents.LogBook.Dog.SearchingAmount"] =
+				System.Math.Max(0, hero.DogSearching);
+		}
+		if (row is not null && SubjectPageOf(row.EventType) is { } shown)
+		{
+			slides[shown] = OpenSlide;
+		}
+
+		// THE METERS. The Alignment page's two sliders (Evil–Good, Corrupt–Pure) and the
+		// Attractiveness page's one (Ugly–Attractive) author `unselected` (1: group on, full
+		// opacity), `selected` (2: frame fades in), `disabled` (3: half opacity) and
+		// `selected2unselected` (4); their masters leave the group OFF. The guest shows them
+		// read-only on `unselected` from its own activate fill, which no longer runs under
+		// the owned cursor; the pips already sit where the guest's fill left them.
+		slides["Foreground.Book.Pages.MoralityPage.Contents.LogBook.Morality.slider"] = MeterSlide;
+		slides["Foreground.Book.Pages.MoralityPage.Contents.LogBook.Morality.slider2"] = MeterSlide;
+		slides["Foreground.Book.Pages.AttractivenessPage.Contents.LogBook.slider"] = MeterSlide;
+
+		// The Stats page's stick-prompt row (`Scrollbar`: one slide lights it); the region
+		// driver fades its arrows at the limits and rides the glyph on the fraction.
+		slides["Foreground.Book.Pages.StatsPage.Contents.LogBook.Scrollbar"] = OpenSlide;
+		slides["Foreground.Book.Pages.RenownPage.Contents.LogBook.Scrollbar"] = OpenSlide;
+
+		return slides;
+	}
+
+	/// <summary>`unselected` — the read-only pose of the logbook's meters.</summary>
+	private const int MeterSlide = 1;
+
+	/// <summary>The shown page's contents on the leaf, whatever its open slide parks them at.</summary>
+	public static IReadOnlyDictionary<string, Godot.Vector3> Positions(
+		Engine_UiExpandableMenu.Item? row, Refii.Host.HostBridge.HeroDerived hero)
+	{
+		var places = new Dictionary<string, Godot.Vector3>(4);
+		if (row is not null && SubjectPageOf(row.EventType) is { } shown)
+		{
+			places[$"{shown}.Contents"] = Godot.Vector3.Zero;
+		}
+
+		// THE METER PIPS — `sub_82881E38`: `<slider>.grp.pip` position = (v·440 − 210, 0, −1),
+		// v clamped to [0, 1]. The Alignment sliders take the morality and purity fractions
+		// (`sub_829B91F0`); the Attractiveness slider takes the clamped sum of its rows through
+		// `(total + 100)·0.005` (`sub_829BA860`).
+		if (hero.Known)
+		{
+			places["Foreground.Book.Pages.MoralityPage.Contents.LogBook.Morality.slider.grp.pip"] =
+				Pip(hero.MoralityFraction);
+			places["Foreground.Book.Pages.MoralityPage.Contents.LogBook.Morality.slider2.grp.pip"] =
+				Pip(hero.PurityFraction);
+			float total = Godot.Mathf.Clamp(hero.AttractivenessTotal, -100f, 100f);
+			places["Foreground.Book.Pages.AttractivenessPage.Contents.LogBook.slider.grp.pip"] =
+				Pip((total + 100f) * 0.005f);
+		}
+
+		return places;
+	}
+
+	private static Godot.Vector3 Pip(float value) =>
+		new(Godot.Mathf.Clamp(value, 0f, 1f) * 440f - 210f, 0f, -1f);
+
+	private const int OpenSlide = 1;
+
+	private static readonly string[] SubjectPages =
+	{
+		"Foreground.Book.Pages.MoralityPage", "Foreground.Book.Pages.ExpressionsPage",
+		"Foreground.Book.Pages.CompletedQuestsPage", "Foreground.Book.Pages.RenownPage",
+		"Foreground.Book.Pages.AttractivenessPage", "Foreground.Book.Pages.StatsPage",
+		"Foreground.Book.Pages.DogPage", "Foreground.Book.Pages.HelpPage",
+	};
+
+	private static string? SubjectPageOf(int eventType) => eventType switch
+	{
+		60 or 64 => "Foreground.Book.Pages.MoralityPage",
+		61 => "Foreground.Book.Pages.ExpressionsPage",
+		62 => "Foreground.Book.Pages.CompletedQuestsPage",
+		65 => "Foreground.Book.Pages.RenownPage",
+		66 => "Foreground.Book.Pages.AttractivenessPage",
+		67 => "Foreground.Book.Pages.StatsPage",
+		68 => "Foreground.Book.Pages.DogPage",
+		69 => "Foreground.Book.Pages.HelpPage",
+		_ => null,
+	};
+
 
 	/// <summary>
 	/// The help page's sixteen tutorial subjects, in table order — index-parallel `_NAME` and
@@ -89,67 +231,15 @@ public static class Engine_UiLogbookPage
 	/// slot) and not off global address order (money key 22 is out of sequence). Each global's
 	/// string comes from its own static initialiser (`sub_8222CED0(&global, ".Suffix")`).
 	/// </summary>
-	private static readonly (int Id, string Path)[] StatRows =
-	{
-		// combat
-		(2,"combat.DecapitationValue"),(3,"combat.GroinshotsValue"),(4,"combat.EnemiesDisarmedValue"),
-		(5,"combat.ReversalsValue"),(6,"combat.DamageDealtValue"),(7,"combat.TotalManaSpentValue"),
-		(8,"combat.DamageTakenValue"),(9,"combat.DeathsValue"),(11,"combat.ResurrectionPhialsValue"),
-		(13,"combat.HitsTakenValue"),(14,"combat.AttacksBlockedValue"),(15,"combat.FlourishesDoneValue"),
-		(16,"combat.CoopStrikesValue"),
-		// kills
-		(109,"kills.TotalValue"),(110,"kills.BansheesKilledValue"),(111,"kills.BalverinesKilledValue"),
-		(112,"kills.BanditsKilledValue"),(113,"kills.BeetlesKilledValue"),(114,"kills.TrollsKilledValue"),
-		(115,"kills.ShardsKilledValue"),(116,"kills.ShadowsKilledValue"),
-		(117,"kills.HollowmenKilledValue"),(118,"kills.GuardsKilledValue"),
-		(119,"kills.LucienGuardsKilledValue"),(120,"kills.LucienSoldiersKilledValue"),
-		(121,"kills.HobbesKilledValue"),(122,"kills.VillagersKilledValue"),
-		(123,"kills.HighwayMenKilledValue"),
-		// money
-		(17,"money.MoneyPropertiesOwnedValue"),(18,"money.MoneyEarnedValue"),(19,"money.MoneySpentValue"),
-		(20,"money.MoneyRightNowValue"),(22,"money.MoneyMadeMageDiceValue"),
-		(23,"money.MoneyMadeBartendingValue"),(24,"money.MoneyMadeWoodchoppingValue"),
-		(25,"money.MoneyMadeBlacksmithingValue"),(27,"money.MoneyMadeKeystoneValue"),
-		(28,"money.MoneyMadeWizardsTowerValue"),(29,"money.MoneyMadeRealEstateValue"),
-		(30,"money.MoneyMadeAssasinationsValue"),(31,"money.MoneyMadeBountyHuntsValue"),
-		(32,"money.MoneyMadeSlaveryValue"),
-		// adventure
-		(33,"adventure.TotalRenownValue"),(106,"adventure.MostTrophyRenownValue"),
-		(35,"adventure.GoldDonatedToTempleValue"),(36,"adventure.PeopleSacrificedToEvilValue"),
-		(37,"adventure.AssassinationsCompletedValue"),(38,"adventure.BountiesCollectedValue"),
-		(39,"adventure.SlavesRescuedValue"),(40,"adventure.PeoplePutIntoSlaveryValue"),
-		(41,"adventure.MostGoodPointsValue"),(42,"adventure.MostEvilPointsValue"),
-		(43,"adventure.MostNobilityPointsValue"),(44,"adventure.MostCorruptionPointsValue"),
-		(45,"adventure.TotalExpEarnedValue"),(46,"adventure.TotalStrengthExpEarnedValue"),
-		(47,"adventure.TotalSkillExpEarnedValue"),(48,"adventure.TotalWillExpEarnedValue"),
+	/// <summary>
+	/// The stat rows this page shows — stated by the screen's template, not held here. See
+	/// <see cref="Engine_UiScreenTemplate.StatFields"/>.
+	/// </summary>
+	private static IReadOnlyList<(int Id, string Path)> StatRows =>
+		Engine_UiTemplates.Screen(LogbookScreenId)?.StatFields ??
+		(IReadOnlyList<(int Id, string Path)>)System.Array.Empty<(int, string)>();
 
-		// `Genearal` is the SHIPPED SPELLING. The element in `logbookscreen.bgf` carries the
-		// typo, so correcting it here would resolve to nothing at all.
-		(49,"adventure.TotalGenearalExpEarnedValue"),
-
-		// games — note 83 is registered LAST despite its lower id
-		(50,"games.TopScoreWestcliffShootingValue"),(96,"games.BiggestWinMageDiceValue"),
-		(97,"games.BiggestWinKeystoneValue"),(98,"games.BiggestWinWizardsTowerValue"),
-		(83,"games.BestFullCrucibleTimeValue"),
-		// relationships
-		(54,"relationships.NumPeopleFallenInLoveWithYouValue"),(55,"relationships.TimesMarriedValue"),
-		(56,"relationships.TimesDivorcedValue"),(57,"relationships.TimesWidowedValue"),
-		(58,"relationships.NumChildrenValue"),(59,"relationships.MostLoveEarnedValue"),
-		(60,"relationships.MostHumourEarnedValue"),(61,"relationships.MostFearEarnedValue"),
-		(62,"relationships.MostHateEarnedValue"),(63,"relationships.TimesMaritalSexValue"),
-		(64,"relationships.TimesExtraMaritalSexValue"),(65,"relationships.TimesPaidForSexValue"),
-		(66,"relationships.NumNpcRewardsCollectedValue"),
-		(67,"relationships.MostCoopExpressionBonusesValue"),
-		// crime
-		(69,"crime.NumCrimesCommitedValue"),(70,"crime.CrimeFinesLeviedValue"),
-		(71,"crime.CrimeFinesPaidValue"),(72,"crime.CrimeFinesPaidCommunityServiceValue"),
-		// other
-		(74,"other.TotalFoodDrinkConsumedValue"),(75,"other.TotalAlcoholConsumedValue"),
-		(76,"other.TotalPotionsConsumedValue"),(77,"other.AmountOfTimeDrunkValue"),
-		(78,"other.TotalVomitsValue"),(79,"other.TotalDistanceTraveledValue"),
-		(80,"other.NumChickensKickedValue"),(81,"other.FurthestChickenKickValue"),
-		(0,"other.ExpressionsValue"),(84,"other.STDsValue"),(1,"other.TimePlayedValue"),
-	};
+	private const uint LogbookScreenId = 17u;
 
 	private static readonly string[] AttractivenessRows =
 	{
@@ -220,7 +310,101 @@ public static class Engine_UiLogbookPage
 		values[ExpressionDescription] =
 			Babel(strings, Text(multi, at, "ExpressionDescriptionTextTag"));
 
+		// THE EFFECT ROWS — `sub_829BCF98`: the definition's `Effects` component carries 21
+		// opinion floats; every non-zero one is a row (`sub_824706A0`), four slots shown, the
+		// name the matching `GUI_SCREEN_APPEARANCE_*` tag and the value `(int)(v·100)` with a
+		// percent sign (`L"%d%%"`, no rounding, negatives as-is). Unused slots are hidden, not
+		// blanked — see <see cref="Active"/>.
+		List<(string Tag, float Value)> effects = ExpressionEffects(multi, at, id);
+		for (int slot = 0; slot < EffectSlots; ++slot)
+		{
+			string name = slot < effects.Count ? Babel(strings, effects[slot].Tag) : string.Empty;
+			string amount = slot < effects.Count
+				? $"{(int)(effects[slot].Value * 100f)}%"
+				: string.Empty;
+			values[$"ExpressionsPage.Contents.Effects.Effect{slot + 1}"] = name;
+			values[$"ExpressionsPage.Contents.Effects.EffectValue{slot + 1}"] = amount;
+		}
+
 		return values;
+	}
+
+	private const int EffectSlots = 4;
+
+	/// <summary>The 21 opinion fields of an expression's `Effects` component, with their display tags (`0x83253A88` / `0x83253C68`, same order).</summary>
+	private static readonly (string Field, string Tag)[] OpinionFields =
+	{
+		("Attractiveness", "GUI_SCREEN_APPEARANCE_ATTRACTIVENESS"),
+		("Poshness", "GUI_SCREEN_APPEARANCE_POSHNESS"),
+		("Friendliness", "GUI_SCREEN_APPEARANCE_FRIENDLINESS"),
+		("Politeness", "GUI_SCREEN_APPEARANCE_POLITENESS"),
+		("Ridiculousness", "GUI_SCREEN_APPEARANCE_RIDICULOUSNESS"),
+		("Entertainment", "GUI_SCREEN_APPEARANCE_ENTERTAINMENT"),
+		("Romance", "GUI_SCREEN_APPEARANCE_ROMANCE"),
+		("Extroversion", "GUI_SCREEN_APPEARANCE_EXTROVERSION"),
+		("Morality", "GUI_SCREEN_APPEARANCE_MORALITY"),
+		("Scariness", "GUI_SCREEN_APPEARANCE_SCARINESS"),
+		("Crudeness", "GUI_SCREEN_APPEARANCE_CRUDENESS"),
+		("Raunchiness", "GUI_SCREEN_APPEARANCE_RAUNCHINESS"),
+		("Purity", "GUI_SCREEN_APPEARANCE_PURITY"),
+		("Funny", "GUI_SCREEN_APPEARANCE_FUNNY"),
+		("Aggressiveness", "GUI_SCREEN_APPEARANCE_AGGRESSIVENESS"),
+		("Childishness", "GUI_SCREEN_APPEARANCE_CHILDISHNESS"),
+		("MoralityGood", "GUI_SCREEN_APPEARANCE_MORALITYGOOD"),
+		("MoralityEvil", "GUI_SCREEN_APPEARANCE_MORALITYEVIL"),
+		("Rudeness", "GUI_SCREEN_APPEARANCE_RUDENESS"),
+		("Ugliness", "GUI_SCREEN_APPEARANCE_UGLINESS"),
+		("Transvestism", "GUI_SCREEN_APPEARANCE_TRANSVESTISM"),
+	};
+
+	private static readonly uint EffectsComponent = Refii.Core.Engine_GameHash.Fnv1("Effects");
+
+	/// <summary>The last expression's effects, keyed by its record hash — `Active` asks per frame.</summary>
+	private static (uint Id, List<(string Tag, float Value)> Effects) _effectsCache;
+
+	private static List<(string Tag, float Value)> ExpressionEffects(GdbMulti multi, GdbCursor definition, uint id)
+	{
+		if (_effectsCache.Id == id && _effectsCache.Effects is not null)
+		{
+			return _effectsCache.Effects;
+		}
+
+		var effects = new List<(string, float)>();
+		if (multi.TryFindInherited(definition, EffectsComponent, 6, out _, out uint link, out _) &&
+			multi.TryLookup(link, out GdbCursor component))
+		{
+			foreach ((string field, string tag) in OpinionFields)
+			{
+				if (multi.TryFindInherited(component, Refii.Core.Engine_GameHash.Fnv1(field), 3, out _, out uint raw, out _))
+				{
+					float value = System.BitConverter.Int32BitsToSingle((int)raw);
+					if (value != 0f)
+					{
+						effects.Add((tag, value));
+					}
+				}
+			}
+		}
+
+		_effectsCache = (id, effects);
+		return effects;
+	}
+
+	/// <summary>How many effect rows the highlighted expression fills (0 when it is not an expression row).</summary>
+	private static int EffectCountOf(Engine_UiExpandableMenu.Item? row)
+	{
+		if (row is null || row.EventType != ExpressionsEventType || Engine_GameGdb.Database is not { } multi)
+		{
+			return 0;
+		}
+
+		uint id = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
+		if (_effectsCache.Id == id && _effectsCache.Effects is not null)
+		{
+			return _effectsCache.Effects.Count;
+		}
+
+		return multi.TryLookup(id, out GdbCursor at) ? ExpressionEffects(multi, at, id).Count : 0;
 	}
 
 	/// <summary>
@@ -477,10 +661,35 @@ public static class Engine_UiLogbookPage
 		values["RenownPage.Contents.LogBook.Renown.CurrentStateValue"] =
 			hero.Renown.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
+		// THE SIX REGION ROWS — `sub_829B9960`/`sub_824E6168`: each shows the Babel tag
+		// `GUI_SCREEN_PERSONALITY_RENOWN_LEVEL_<n>`, n = how many of the GDB
+		// `RegionRenownBands` lie below the hero's renown plus that region's own bonus (the
+		// per-region map at c57+168, which the sample does not carry — taken as 0), and blank
+		// once the renown clears every band.
+		string level = RenownLevelTag(hero.Renown);
+		string levelText = level.Length == 0 ? string.Empty : Babel(strings, level);
+		foreach (string region in RenownRegionRows)
+		{
+			values[$"RenownPage.Contents.LogBook.Renown.{region}"] = levelText;
+		}
+
 		values["AttractivenessPage.Contents.LogBook.Title"] = title;
 		values["StatsPage.Contents.LogBook.Title"] = title;
-		values["DogPage.Contents.LogBook.Title"] =
-			hero.DogKnown ? hero.DogName ?? string.Empty : string.Empty;
+		// The dog's name, or the Babel key the guest resolves in its place (`sub_823A8148`):
+		// 'Dog' on an unnamed dog. Left on the authored tag when neither resolves.
+		if (hero.DogKnown && !string.IsNullOrEmpty(hero.DogName))
+		{
+			values["DogPage.Contents.LogBook.Title"] = hero.DogName;
+		}
+		else if (hero.DogKnown && strings is not null &&
+			strings.TryGetString(hero.DogNameKey, out string dogName))
+		{
+			values["DogPage.Contents.LogBook.Title"] = dogName;
+		}
+		else
+		{
+			values.Remove("DogPage.Contents.LogBook.Title");
+		}
 
 		if (hero.StatsKnown)
 		{
@@ -510,6 +719,57 @@ public static class Engine_UiLogbookPage
 						System.Globalization.CultureInfo.InvariantCulture)
 					: string.Empty;
 		}
+	}
+
+	private static readonly string[] RenownRegionRows =
+	{
+		"BowerstoneValue", "RavenscarValue", "WestcliffValue",
+		"BloodstoneValue", "FairfaxValue", "BowerlakeValue",
+	};
+
+	/// <summary>
+	/// The `RegionRenownBands` record's numeric fields, ascending — read once. Every numeric
+	/// field of the record is a band; the guest walks them sorted (`sub_824E6168`).
+	/// </summary>
+	private static float[]? _renownBands;
+
+	private static string RenownLevelTag(int renown)
+	{
+		if (_renownBands is null)
+		{
+			var bands = new List<float>();
+			if (Refii.Gdb.Engine_GameGdb.Database is { } multi &&
+				multi.TryLookup(Refii.Core.Engine_GameHash.Fnv1("RegionRenownBands"), out Refii.Gdb.GdbCursor cursor))
+			{
+				foreach ((uint _, Refii.Gdb.GdbFieldType type, uint raw) in multi.InheritedFields(cursor))
+				{
+					switch (type)
+					{
+						case Refii.Gdb.GdbFieldType.Float:
+							bands.Add(System.BitConverter.Int32BitsToSingle((int)raw));
+							break;
+						case Refii.Gdb.GdbFieldType.Int:
+							bands.Add((int)raw);
+							break;
+					}
+				}
+			}
+
+			bands.Sort();
+			_renownBands = bands.ToArray();
+			Godot.GD.Print($"[logbook] RegionRenownBands: {(_renownBands.Length == 0 ? "NOT FOUND" : string.Join(", ", _renownBands))}");
+		}
+
+		int index = 0;
+		foreach (float band in _renownBands)
+		{
+			if (renown > band)
+			{
+				++index;
+			}
+		}
+
+		return index >= _renownBands.Length ? string.Empty : $"GUI_SCREEN_PERSONALITY_RENOWN_LEVEL_{index}";
 	}
 
 	/// <summary>

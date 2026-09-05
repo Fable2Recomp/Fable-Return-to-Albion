@@ -47,6 +47,7 @@ public partial class Engine_PropStreamer : Node3D
     private int _done;
 
     private PrefetchJob? _prefetch;
+    private int _requeueRounds;
 
     private int _loaded;
 
@@ -60,7 +61,17 @@ public partial class Engine_PropStreamer : Node3D
 
     private bool _reported;
 
-    public const double DefaultMsPerFrame = 25.0;
+    /// <summary>
+    /// How long a frame may spend streaming props.
+    ///
+    /// THE BUDGET IS A FRAME'S SHARE, NOT A DEADLINE TO FILL. At 25 ms it was most of the
+    /// frame: the phase averaged 101 ms in the market with a 104 ms peak, because the budget is
+    /// tested AFTER a step and one step can be tens of milliseconds. Streaming then owned the
+    /// frame for as long as props kept arriving, which is the hitching a player feels while
+    /// walking into a new part of a region. Six leaves the rest of the frame to the game and
+    /// costs only more frames to finish, which nothing is waiting on.
+    /// </summary>
+    public const double DefaultMsPerFrame = 6.0;
 
     [Export] public double MillisecondsPerFrame { get; set; } = DefaultMsPerFrame;
 
@@ -274,6 +285,7 @@ public partial class Engine_PropStreamer : Node3D
 
     public override void _Process(double delta)
     {
+    	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("propstreamer");
         if (!Enabled)
         {
             return;
@@ -306,6 +318,26 @@ public partial class Engine_PropStreamer : Node3D
                 {
                     Step(instance, ready, knownFailure);
                     settled = true;
+                }
+                else if (poolDone && _requeueRounds < 1)
+                {
+                    // NOT INLINE. The fallback decoded the prop on the main thread — a single
+                    // Step measured 172 ms in the market, the hitch a player feels as stutter.
+                    // Everything the pool missed goes back to it once; only what it still
+                    // cannot deliver is decoded here.
+                    ++_requeueRounds;
+                    var again = new List<string>();
+                    foreach (GeometryInstance3D pending in _remaining)
+                    {
+                        if (GodotObject.IsInstanceValid(pending) && pending.Visible)
+                        {
+                            again.Add(pending.GetMeta(ModelPathMeta).AsString());
+                        }
+                    }
+
+                    _prefetch = PrefetchModels(again, () => _prefetchStop);
+                    PublishProgress();
+                    return;
                 }
                 else if (poolDone)
                 {

@@ -45,25 +45,54 @@ public static class Engine_AbilityRecords
 			return false;
 		}
 
-		// `Type` keys every other lookup (stat, discipline, level slot in component 57); the guest
-		// (`sub_82896EA8`) leaves `+0` unwritten when the property is absent.
-		if (!TryInt(multi, at, "Type", out int type) || type <= 0)
+		// THE BASE RECORD CARRIES EVERYTHING — `Type`, `NameTextTag`, `DescriptionTextTag`,
+		// both paths and `AbilityGroupRecords`. An earlier note here claimed the opposite and
+		// was simply wrong; the shipped database says so plainly:
+		//
+		//     #19f1b0cd,Type,int,1
+		//     #19f1b0cd,NameTextTag,string,GUI_SCREEN_ABILITIES_BRUTAL_STYLES_NAME_01
+		//     #19f1b0cd,VideoFilePathAndName,string,art\videos\brutal
+		//
+		// What actually failed was the LOOKUP: `AbilityHeavyWeaponsBase` is not an entry id at
+		// all, it is ALIAS `0x064A4B7E` for entry `0x19F1B0CD`, and the reader did not read the
+		// alias table. Every ability reported "IS NOT A GDB RECORD" for that one reason.
+		//
+		// The level record is still preferred where it states its own value, because a level
+		// names itself (`..._NAME_01`); it inherits the rest from the base through `parent`, so
+		// this reads the same values either way rather than depending on which side has them.
+		GdbCursor from = at;
+		if (TryLevelRecord(recordName, 1, out GdbCursor levelOne))
+		{
+			from = levelOne;
+		}
+
+		// The base is still tried, so a record that DOES state its own type keeps working and a
+		// modded ability may put the properties wherever it likes.
+		if ((!TryInt(multi, from, "Type", out int type) || type <= 0) &&
+			(!TryInt(multi, at, "Type", out type) || type <= 0))
 		{
 			return false;
 		}
 
 		ability = new Ability(
 			type,
-			TryText(multi, at, "NameTextTag"),
-			TryText(multi, at, "DescriptionTextTag"),
+			Text(multi, from, at, "NameTextTag"),
+			Text(multi, from, at, "DescriptionTextTag"),
 			recordName,
 
 			// Base paths, no extension: the guest appends `.tex` to the image and builds the
 			// movie as `GAME:\data\` + video + level suffix. See Engine_UiAbilityPage.
-			TryText(multi, at, "ImageFilePathAndName"),
-			TryText(multi, at, "VideoFilePathAndName"));
+			Text(multi, from, at, "ImageFilePathAndName"),
+			Text(multi, from, at, "VideoFilePathAndName"));
 
 		return true;
+	}
+
+	/// <summary>A string property off the level record, falling back to the base.</summary>
+	private static string Text(GdbMulti multi, GdbCursor level, GdbCursor root, string property)
+	{
+		string found = TryText(multi, level, property);
+		return found.Length != 0 ? found : TryText(multi, root, property);
 	}
 
 	/// <summary>
@@ -86,6 +115,88 @@ public static class Engine_AbilityRecords
 		return $"{prefix}{LevelInfix}{level}";
 	}
 
+	/// <summary>
+	/// HOW MANY LEVELS THIS ABILITY HAS — the element count of the base record's
+	/// `AbilityGroupRecords` list, which is exactly what `sub_824E2D40` returns:
+	///
+	///     824e2d70  addi r7, r11, aAbilitygroupre@l   ; "AbilityGroupRecords"
+	///     824e2d7c  bl sub_822A99E8                   ; property lookup -> child list
+	///     824e2d9c  lwz r3, var_1C(r1)                ; return its size
+	///
+	/// The entries are named `Record1`..`RecordN` and the GDB stores fields in HASH order, so
+	/// the level is in the NAME, never the position — walking positionally hands out level 4
+	/// first. Zero when the record states no list.
+	/// </summary>
+	public static int MaxLevel(string baseRecord)
+	{
+		GdbMulti? multi = Database;
+		if (multi is null || baseRecord.Length == 0 ||
+			!multi.TryLookup(Engine_GameHash.Fnv1(baseRecord), out GdbCursor at) ||
+			!multi.TryFindInherited(at, Engine_GameHash.Fnv1(GroupRecordsProperty),
+				(int)GdbFieldType.Reference, out _, out uint group, out _) ||
+			!multi.TryLookup(group, out GdbCursor levels))
+		{
+			return 0;
+		}
+
+		int max = 0;
+		for (int at1 = 1; at1 <= 16; ++at1)
+		{
+			if (!multi.TryFindInherited(levels, Engine_GameHash.Fnv1($"Record{at1}"),
+					(int)GdbFieldType.ResourceReference, out _, out _, out _))
+			{
+				break;
+			}
+
+			max = at1;
+		}
+
+		return max;
+	}
+
+	private const string GroupRecordsProperty = "AbilityGroupRecords";
+
+	/// <summary>
+	/// THE LEVEL RECORD AT `n`, following `AbilityGroupRecords`. Entries are `Record1..RecordN`
+	/// and the GDB stores fields in HASH order, so the level is in the NAME — indexing
+	/// positionally hands out level 4 first.
+	/// </summary>
+	public static bool TryLevelRecord(string baseRecord, int level, out GdbCursor cursor)
+	{
+		cursor = default;
+		GdbMulti? multi = Database;
+		return multi is not null && baseRecord.Length != 0 && level >= 1 &&
+			multi.TryLookup(Engine_GameHash.Fnv1(baseRecord), out GdbCursor at) &&
+			multi.TryFindInherited(at, Engine_GameHash.Fnv1(GroupRecordsProperty),
+				(int)GdbFieldType.Reference, out _, out uint group, out _) &&
+			multi.TryLookup(group, out GdbCursor levels) &&
+			multi.TryFindInherited(levels,
+				Engine_GameHash.Fnv1($"Record{level.ToString(CultureInfo.InvariantCulture)}"),
+				(int)GdbFieldType.ResourceReference, out _, out uint record, out _) &&
+			multi.TryLookup(record, out cursor);
+	}
+
+	/// <summary>
+	/// The ability's preview-video path. READ OFF THE LEVEL-1 RECORD, not the base —
+	/// `sub_82896EA8` @0x82896F6C walks `AbilityGroupRecords` first. Taking it off the base
+	/// found it only for the abilities that happen to inherit it, so every other ability named
+	/// no movie and the previous one kept playing.
+	/// </summary>
+	public static string VideoPathOf(string baseRecord)
+	{
+		GdbMulti? multi = Database;
+		if (multi is null || !TryLevelRecord(baseRecord, 1, out GdbCursor level))
+		{
+			return string.Empty;
+		}
+
+		return multi.TryFindInherited(level, Engine_GameHash.Fnv1("VideoFilePathAndName"),
+				(int)GdbFieldType.String, out _, out uint hash, out _) &&
+			level.View.Names.TryGetValue(hash, out string? path)
+				? path
+				: string.Empty;
+	}
+
 	/// <summary>Whether a record exists (absent next level = maxed).</summary>
 	public static bool Exists(string recordName)
 	{
@@ -95,59 +206,28 @@ public static class Engine_AbilityRecords
 	}
 
 	/// <summary>
-	/// The next level's experience cost, walked as `sub_824E48F8` does: the `level`-th entry
-	/// under the base's `AbilityGroupRecords`, else the base's own `ExperienceCost` (guards at
-	/// `0x824e4960`/`0x824e4974`). Unresolved is false, never a number.
+	/// The NEXT level's experience cost — `Record{level+1}`'s `ExperienceCost`, else the base's
+	/// own (`sub_824E48F8`'s fallback guards at `0x824e4960`/`0x824e4974`). BY NAME, never by
+	/// position: the level entries are stored in HASH order, and a positional walk handed back
+	/// whichever record hashes first — every Learn button quoted level 1's price.
 	/// </summary>
 	public static bool TryCost(string baseRecord, int level, out int cost)
 	{
 		cost = 0;
 		GdbMulti? multi = Database;
-		if (multi is null || baseRecord.Length == 0 ||
-			!multi.TryLookup(Engine_GameHash.Fnv1(baseRecord), out GdbCursor at))
+		if (multi is null || baseRecord.Length == 0)
 		{
 			return false;
 		}
 
-		if (TryGroupEntry(multi, at, level, out GdbCursor entry) &&
-			TryInt(multi, entry, "ExperienceCost", out cost))
+		if (TryLevelRecord(baseRecord, level + 1, out GdbCursor next) &&
+			TryInt(multi, next, "ExperienceCost", out cost))
 		{
 			return true;
 		}
 
-		return TryInt(multi, at, "ExperienceCost", out cost);
-	}
-
-	/// <summary>The `level`-th entry under the base record's `AbilityGroupRecords`.</summary>
-	private static bool TryGroupEntry(
-		GdbMulti multi, GdbCursor at, int level, out GdbCursor entry)
-	{
-		entry = default;
-		if (level < 0 ||
-			!multi.TryFindInherited(
-				at, Engine_GameHash.Fnv1("AbilityGroupRecords"),
-				(int)GdbFieldType.Reference, out GdbCursor owner, out uint group, out _) ||
-			!owner.Valid || !multi.TryLookup(group, out GdbCursor groupAt))
-		{
-			return false;
-		}
-
-		// The `parent` link is a reference field too; excluding it keeps the index unshifted.
-		int index = 0;
-		foreach ((uint hash, GdbFieldType type, uint raw) in groupAt.View.RawFields(groupAt.Record))
-		{
-			if (type != GdbFieldType.Reference || hash == GdbView.HashParent)
-			{
-				continue;
-			}
-
-			if (index++ == level && multi.TryLookup(raw, out entry))
-			{
-				return true;
-			}
-		}
-
-		return false;
+		return multi.TryLookup(Engine_GameHash.Fnv1(baseRecord), out GdbCursor at) &&
+			TryInt(multi, at, "ExperienceCost", out cost);
 	}
 
 	/// <summary>
@@ -192,6 +272,18 @@ public static class Engine_AbilityRecords
 			: 0f;
 	}
 
+	/// <summary>
+	/// A whole-number property on a cursor, authored as `Int` OR `Enum`, 0 when absent. The
+	/// shipped database mixes the two inside one family — `Category` on an inventory component
+	/// is an ENUM while `Rating` beside it is an INT — and <see cref="IntOn"/> reads only the
+	/// latter, which is how every weapon's stats block came back empty.
+	/// </summary>
+	public static int IntOrEnumOn(GdbCursor at, string property)
+	{
+		GdbMulti? multi = Engine_GameGdb.Database;
+		return multi is not null && TryInt(multi, at, property, out int value) ? value : 0;
+	}
+
 	/// <summary>An int property on a cursor, 0 when absent.</summary>
 	public static int IntOn(GdbCursor at, string property)
 	{
@@ -234,12 +326,20 @@ public static class Engine_AbilityRecords
 	}
 
 	/// <summary>An int property on a cursor, following the parent chain.</summary>
+	/// <summary>
+	/// A whole-number property, WHICHEVER of the two numeric types it was authored as.
+	///
+	/// `Int` and `Enum` are both a plain u32 in the container and the shipped database mixes
+	/// them inside one record: `Type` on an ability is `int` while `ExperienceCost` beside it is
+	/// `enum`. A single-type read fails SILENTLY on the other, which is why every ability
+	/// costed 0 and none was ever reported upgradeable.
+	/// </summary>
 	private static bool TryInt(GdbMulti multi, GdbCursor at, string property, out int value)
 	{
 		value = 0;
-		if (!multi.TryFindInherited(
-				at, Engine_GameHash.Fnv1(property), (int)GdbFieldType.Int,
-				out _, out uint raw, out _))
+		uint field = Engine_GameHash.Fnv1(property);
+		if (!multi.TryFindInherited(at, field, (int)GdbFieldType.Int, out _, out uint raw, out _) &&
+			!multi.TryFindInherited(at, field, (int)GdbFieldType.Enum, out _, out raw, out _))
 		{
 			return false;
 		}

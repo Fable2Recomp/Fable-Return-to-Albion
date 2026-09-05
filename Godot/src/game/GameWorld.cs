@@ -49,6 +49,14 @@ public partial class GameWorld : Node3D
 
 	public override void _Process(double delta)
 	{
+		using (Refii.Core.Engine_FramePhases.Measure("world_process"))
+		{
+			world_processBody(delta);
+		}
+	}
+
+	private void world_processBody(double delta)
+	{
 		if (HostBridge.TryGetAbiVersion() is null)
 		{
 			return;
@@ -104,8 +112,28 @@ public partial class GameWorld : Node3D
 			return;
 		}
 
-		_camera.GlobalTransform = new Transform3D(
-			new Basis(basisY.Cross(basisZ), basisY, basisZ), position);
+		// THE CAMERA STEPS ON THE SIM TICK TOO. Traced 2026-09-05 while running: it moved
+		// 8-30 cm a frame and exactly 0 on every frame the tick did not advance, applied raw
+		// — a hold and a jump against a body drawn 1.5 ticks behind on a smooth path. Same
+		// timeline, same latency, and the two no longer move against each other. Nothing in
+		// the guest or its Lua is touched.
+		var stated = new Transform3D(new Basis(basisY.Cross(basisZ), basisY, basisZ), position);
+		double now = Godot.Time.GetTicksUsec();
+		uint tick = HostBridge.SimTick;
+		if (_cameraTimeline.Empty ||
+			_cameraTimeline.Newest.Origin.DistanceTo(position) > 8f ||
+			(tick > _cameraTimeline.NewestTick && tick - _cameraTimeline.NewestTick > 8))
+		{
+			_cameraTimeline.Reset(tick, stated);
+		}
+		else if (_cameraTimeline.Newest.Origin.DistanceSquaredTo(position) > 1e-8f ||
+			!_cameraTimeline.Newest.Basis.IsEqualApprox(stated.Basis))
+		{
+			_cameraTimeline.Push(tick, stated, now);
+		}
+
+		_camera.GlobalTransform = _cameraTimeline.Sample(now);
+		SampleCameraTrace(_camera.GlobalTransform.Origin);
 
 		// The guest stores a HORIZONTAL field of view; Godot wants the vertical one.
 		//
@@ -209,6 +237,43 @@ public partial class GameWorld : Node3D
 			GD.Print($"[game-world] {_standing} finished streaming its props after " +
 				$"{_propHoldFrames} frame(s) — releasing the guest");
 		}
+	}
+
+	private readonly Refii.Core.Engine_TickTimeline _cameraTimeline = new();
+
+	private int _cameraTraceRemaining;
+	private readonly System.Collections.Generic.List<(ulong Usec, uint Tick, Vector3 Position)> _cameraTrace = new();
+
+	/// <summary>Records the guest camera per frame, for the debug channel's stutter analysis.</summary>
+	public void BeginCameraTrace(int frames)
+	{
+		_cameraTraceRemaining = frames;
+		_cameraTrace.Clear();
+	}
+
+	public System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object?>> CameraTraceReport()
+	{
+		var rows = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object?>>();
+		foreach ((ulong usec, uint tick, Vector3 p) in _cameraTrace)
+		{
+			rows.Add(new System.Collections.Generic.Dictionary<string, object?>
+			{
+				["usec"] = usec, ["tick"] = tick, ["pos"] = new[] { p.X, p.Y, p.Z },
+			});
+		}
+
+		return rows;
+	}
+
+	private void SampleCameraTrace(Vector3 position)
+	{
+		if (_cameraTraceRemaining <= 0)
+		{
+			return;
+		}
+
+		--_cameraTraceRemaining;
+		_cameraTrace.Add((Godot.Time.GetTicksUsec(), HostBridge.SimTick, position));
 	}
 
 	private const double HeldStreamMsPerFrame = 100.0;
@@ -705,6 +770,13 @@ public partial class GameWorld : Node3D
 		SetStreamBudget(region, HeldStreamMsPerFrame);
 
 		MountWaterReflections(region);
+
+		// The sun's far cascades exist for the landscape; this stops every crate in 300 metres
+		// riding along in them.
+		region.AddChild(new Refii.Lighting.Engine_ShadowReach
+		{
+			Name = Refii.Lighting.Engine_ShadowReach.NodeName,
+		});
 
 		// NOT RELEASED HERE. Mounting is not the same as being ready to look at.
 		//
@@ -1296,6 +1368,14 @@ public partial class GameWorld : Node3D
 	/// Because the net map is a rotation and not a mirror, rebuilding the basis below as
 	/// X = Y x Z lands on the correct right-handed camera rather than a reflected one.
 	/// </summary>
-	private static Vector3 ToGodot(Vector3 fable) =>
-		new(-fable.X, fable.Z, fable.Y);
+	private static Vector3 ToGodot(Vector3 fable) => GuestToGodot(fable);
+
+	/// <summary>
+	/// THE ONE WORLD CONVERSION: a guest world point (Z up, X mirrored against Godot) to this
+	/// world's space — the same map the entities, the camera and the sun take. Every host path
+	/// that turns a guest world position into a Godot one goes through here; the world sprites
+	/// used the MODEL handedness `(x, y, -z)` instead and sent the guest's up-lift into depth,
+	/// which is why a prompt floated off its target as the camera moved.
+	/// </summary>
+	public static Vector3 GuestToGodot(Vector3 fable) => new(-fable.X, fable.Z, fable.Y);
 }

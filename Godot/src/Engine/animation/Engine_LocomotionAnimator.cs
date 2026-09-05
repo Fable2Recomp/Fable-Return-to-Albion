@@ -144,6 +144,7 @@ public partial class Engine_LocomotionAnimator : Node3D
 
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("locomotionanimator");
 		if (Engine.IsEditorHint())
 		{
 			return;

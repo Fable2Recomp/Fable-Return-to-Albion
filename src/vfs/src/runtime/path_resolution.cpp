@@ -16,7 +16,6 @@
 
 #include <rex/runtime.h>
 
-#include "modding/mod_workspace.h"
 
 namespace refii::vfs {
 namespace {
@@ -523,157 +522,12 @@ void AddUniqueRoot(std::vector<std::filesystem::path>* roots,
   }
 }
 
-std::vector<std::filesystem::path> GetLooseAssetModRoots(
-    const std::filesystem::path& game_root) {
-  std::vector<std::filesystem::path> roots;
-  const std::string configured_roots = ConfiguredModAssetRoots();
-  size_t start = 0;
-  while (start <= configured_roots.size()) {
-    const size_t separator = configured_roots.find(';', start);
-    std::string_view token(configured_roots.data() + start,
-                           separator == std::string::npos
-                               ? configured_roots.size() - start
-                               : separator - start);
-    while (!token.empty() &&
-           std::isspace(static_cast<unsigned char>(token.front())) != 0) {
-      token.remove_prefix(1);
-    }
-    while (!token.empty() &&
-           std::isspace(static_cast<unsigned char>(token.back())) != 0) {
-      token.remove_suffix(1);
-    }
-    AddUniqueRoot(&roots, ResolveConfiguredAssetRoot(token, game_root));
-    if (separator == std::string::npos) {
-      break;
-    }
-    start = separator + 1;
-  }
-  return roots;
-}
-
-std::filesystem::path ResolveModsRoot(const std::filesystem::path& game_root) {
-  const std::string configured = ConfiguredModsRootSetting();
-  if (!configured.empty()) {
-    return ResolveConfiguredAssetRoot(configured, game_root);
-  }
-  if (game_root.empty()) {
-    return {};
-  }
-  return NormalizeLooseAssetPath(
-      refii::modding::GetDefaultModsRoot(game_root));
-}
-
-std::vector<std::string> SplitEnabledModSetting(std::string_view setting) {
-  std::vector<std::string> names;
-  size_t start = 0;
-  while (start <= setting.size()) {
-    const size_t separator = setting.find(';', start);
-    std::string_view token = setting.substr(
-        start,
-        separator == std::string_view::npos ? std::string_view::npos
-                                            : separator - start);
-    while (!token.empty() &&
-           std::isspace(static_cast<unsigned char>(token.front())) != 0) {
-      token.remove_prefix(1);
-    }
-    while (!token.empty() &&
-           std::isspace(static_cast<unsigned char>(token.back())) != 0) {
-      token.remove_suffix(1);
-    }
-    if (!token.empty()) {
-      names.emplace_back(token);
-    }
-    if (separator == std::string_view::npos) {
-      break;
-    }
-    start = separator + 1;
-  }
-  return names;
-}
-
-// Enabled mod folders under the mods root, resolved to asset roots in search
-// order (list order is priority; a mod's files/ folder wins over its root).
-// The launcher owns enabled.txt, so the result is cached against that file's
-// identity plus the cvar values and refreshed when either changes.
-std::vector<std::filesystem::path> GetEnabledModAssetRoots(
-    const std::filesystem::path& game_root) {
-  const std::filesystem::path mods_root = ResolveModsRoot(game_root);
-  if (mods_root.empty()) {
-    return {};
-  }
-
-  const std::string enabled_setting = ConfiguredEnabledModsSetting();
-  const std::filesystem::path enabled_file =
-      mods_root / refii::modding::kEnabledModsFilename;
-  std::error_code stat_error;
-  const std::filesystem::file_time_type enabled_time =
-      std::filesystem::last_write_time(enabled_file, stat_error);
-
-  struct Cache {
-    std::string mods_root_key;
-    std::string enabled_setting;
-    std::filesystem::file_time_type enabled_time{};
-    bool enabled_file_exists = false;
-    std::vector<std::filesystem::path> roots;
-    bool loaded = false;
-  };
-  static std::mutex mutex;
-  static Cache cache;
-
-  const std::string mods_root_key = mods_root.generic_string();
-  const bool enabled_file_exists = !stat_error;
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    if (cache.loaded && cache.mods_root_key == mods_root_key &&
-        cache.enabled_setting == enabled_setting &&
-        cache.enabled_file_exists == enabled_file_exists &&
-        cache.enabled_time == enabled_time) {
-      return cache.roots;
-    }
-  }
-
-  std::vector<std::string> names = SplitEnabledModSetting(enabled_setting);
-  for (std::string& name : refii::modding::ReadEnabledModNames(mods_root)) {
-    if (std::find(names.begin(), names.end(), name) == names.end()) {
-      names.push_back(std::move(name));
-    }
-  }
-
-  std::vector<std::filesystem::path> roots;
-  for (const std::string& name : names) {
-    if (!refii::modding::IsSafeModFolderName(name)) {
-      continue;
-    }
-    const std::filesystem::path mod_root = mods_root / name;
-    std::error_code error;
-    if (!std::filesystem::is_directory(mod_root, error)) {
-      continue;
-    }
-    const std::filesystem::path files_root =
-        mod_root / refii::modding::kModFilesFolderName;
-    error.clear();
-    AddUniqueRoot(&roots,
-                  std::filesystem::is_directory(files_root, error)
-                      ? files_root
-                      : mod_root);
-  }
-
-  std::lock_guard<std::mutex> lock(mutex);
-  cache.mods_root_key = mods_root_key;
-  cache.enabled_setting = enabled_setting;
-  cache.enabled_time = enabled_time;
-  cache.enabled_file_exists = enabled_file_exists;
-  cache.roots = roots;
-  cache.loaded = true;
-  return roots;
-}
-
+// GODOT OWNS THE MODS. The loose search roots used to begin with every enabled mod's folder,
+// fed from `mods/enabled.txt` through `refii::modding`. Godot's mount now overlays mods itself —
+// one fold, one resolved index, one report — and the launcher writes `loadorder.toml`, which
+// nothing here ever read. What was left resolved a folder no longer consulted.
 std::vector<std::filesystem::path> BuildLooseAssetSearchRoots() {
-  const std::filesystem::path game_root = GetDefaultGameRoot();
-  std::vector<std::filesystem::path> roots = GetLooseAssetModRoots(game_root);
-  for (std::filesystem::path& mod_root : GetEnabledModAssetRoots(game_root)) {
-    AddUniqueRoot(&roots, std::move(mod_root));
-  }
+  std::vector<std::filesystem::path> roots;
   AddUniqueRoot(&roots, GetLooseAssetRoot());
   return roots;
 }

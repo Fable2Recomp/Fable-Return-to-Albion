@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 namespace Refii.Ui;
@@ -130,9 +131,27 @@ public sealed class Engine_HudArt
 
         art.Name = piece.Id.Replace('.', '_');
 
+        // A group cut whole with nothing under it is the layout naming an element whose subtree
+        // the book does not hold — reported with what the book has, since the piece then draws
+        // as a bare node and looks like a guest that never lit it.
+        if (piece.Id.StartsWith("group.", System.StringComparison.Ordinal) && art.GetChildCount() == 0)
+        {
+            int bearers = Shipped?.ArtSourceNodes(piece.Art).Count ?? 0;
+            string bearerChildren = string.Join(",", (Shipped?.ArtSourceNodes(piece.Art) ?? System.Array.Empty<Node3D>())
+                .Select(n => $"{(n.HasMeta("ordinal") ? n.GetMeta("ordinal").AsInt32() : -1)}:{n.GetChildCount()}"));
+            GD.Print($"[hud-art] group '{piece.Id}' (element {piece.ElementOrdinal}) cloned with NO children — " +
+                $"{bearers} bearer(s) of '{piece.Art}' in the book, ordinal:children = [{bearerChildren}]");
+        }
+
         // Authored text goes too: the artist leaves "Text" placeholders in the button and prompt
-        // components. A piece showing live text is Drive.Text and draws its own label.
-        StripText(art);
+        // components. A piece showing live text is Drive.Text and draws its own label — except a
+        // GROUP painting the guest's strings onto its own text elements (the wheel's titles, the
+        // TopBox's title and body), which needs those nodes kept: stripped, the clone binding
+        // found nothing to paint and the quest box drew as a bare slab.
+        if (!piece.LiveText)
+        {
+            StripText(art);
+        }
 
         // A container keeps its own art (the health bar's surround, the quest box's parchment)
         // but not the authored copies of bound children the HUD draws itself.

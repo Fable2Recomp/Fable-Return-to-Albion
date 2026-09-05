@@ -42,6 +42,7 @@ void refii_bridge_note_voice_pcm(uint32_t handle, const void* pcm, uint32_t byte
 
 // Bink movie state. Wrappers: refii::vfs::NoteBink* in vfs_hooks_private.h.
 void refii_bridge_note_bink_movie_open(uint32_t player, uint8_t* base_for_open);
+void refii_bridge_note_bink_movie_closed(uint32_t player);
 void refii_bridge_note_bink_video_requested(uint8_t* base, uint32_t data_guest);
 
 // Guest tick pump. Wrappers: refii::vfs::GuestTickPump* in vfs_hooks_private.h.
@@ -59,6 +60,12 @@ void refii_bridge_menu_spawn_begin(void);
 void refii_bridge_menu_spawn_row(const char* name, const char* parent, uint32_t id,
                                  int32_t event_type, int32_t rating);
 
+// Keyed form. The capture is ONE list, so without a key a template sourced `capture:Root`
+// takes whatever was spawned last, whoever spawned it — the front end's rows once appeared on
+// the real-estate screen. `screen_id` is `manager+4` off the in-game GUI, read at the
+// boundary; 0xFFFFFFFF means "no in-game screen states this population" (the front end).
+void refii_bridge_menu_spawn_begin_for(uint32_t screen_id);
+
 // Labelled form: String2 (display text) decoded from UTF-16BE at capture.
 void refii_bridge_menu_spawn_row_labelled(const char* name, const char* parent, uint32_t id,
                                           int32_t event_type, int32_t rating,
@@ -67,6 +74,8 @@ void refii_bridge_menu_spawn_row_labelled(const char* name, const char* parent, 
 uint64_t refii_bridge_guest_tick_pump_observe_tick(void);
 uint64_t refii_bridge_guest_tick_pump_drained(void);
 void refii_bridge_guest_tick_pump_note_ran(void);
+void refii_bridge_guest_tick_pump_note_result(uint32_t addr, uint64_t r3,
+                                              const char* note, size_t length);
 
 // The drain protocol, and ONLY from the guest tick thread. Begin takes the whole queue aside
 // under the lock and answers how many it took — swapped rather than popped one at a time so

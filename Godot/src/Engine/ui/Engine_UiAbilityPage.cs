@@ -32,10 +32,66 @@ public static class Engine_UiAbilityPage
 	private const string Page1TotalXp = "Foreground.Book.Pages.Page1.Contents.TotalXP";
 
 	/// <summary>
+	/// The "N experience to learn" line on page 4. The template has listed this element all
+	/// along and no provider wrote it — `sub_829A9D50` fills it every frame from the level
+	/// record's `ExperienceCost`, which the Learn label already computes here.
+	/// </summary>
+	private const string AbilityCost = "Page4.Contents.AbilityCost";
+
+	/// <summary>The cost caption. The typo is the shipped binary's, not ours.</summary>
+	private const string CostTag = "GUI_SCREEN_ABLITY_EXPERIENCE_COST";
+
+	/// <summary>
+	/// Page1's one stat line, under the tarot card. `sub_829A5F68` HIDES all four of these
+	/// first and then refills per ability — so leaving them alone keeps the previous ability's
+	/// line standing, which is how "Brutal Style 2: Flourishes" ended up under Physique.
+	/// </summary>
+	private const string Page1Target = "Page1.Contents.Target";
+
+	private const string Page1TargetValue = "Page1.Contents.TargetValue";
+
+	private const string Page1Range = "Page1.Contents.Range";
+
+	private const string Page1RangeValue = "Page1.Contents.RangeValue";
+
+	/// <summary>
+	/// The two "styles" abilities name their level instead of a number —
+	/// `GUI_SCREEN_ABILITIES_LEVELS_{BRUTAL,SKILL}_STYLES_01..04`, `sub_829A6330` /
+	/// `sub_829A6500`.
+	/// </summary>
+	private static readonly Dictionary<int, string> StyleLevelPrefix = new()
+	{
+		[1] = "GUI_SCREEN_ABILITIES_LEVELS_BRUTAL_STYLES_0",
+		[4] = "GUI_SCREEN_ABILITIES_LEVELS_SKILL_STYLES_0",
+	};
+
+	/// <summary>
 	/// The wallet readouts, keyed without a page so one entry serves both: the guest writes them
 	/// in a `do { … } while (v88 &lt;= 2)` over pages 1 and 2, and
 	/// <see cref="Engine_UiOwnedBook.HostValues"/> matches on trailing whole segments.
 	/// </summary>
+	/// <summary>
+	/// The four orb GROUPS, in the same order as their value texts. These carry a SLIDE, not
+	/// text: `sub_826C3C10(pres, path, flag)` is `sub_82426BA8(elem, pres, flag ? 2 : 1)`.
+	/// </summary>
+	private static readonly string[] OrbGroupPaths =
+	{
+		"Contents.experienceorbs.General",
+		"Contents.experienceorbs.Strength",
+		"Contents.experienceorbs.Skill",
+		"Contents.experienceorbs.Will",
+	};
+
+	/// <summary>
+	/// The lit orb's slide. The guest calls `goToSlide(2)` — `TransitionOn`, a 200ms slide
+	/// whose end time CHAINS to slide 3 `On` (orb at 100, scale 0.8, full halo) in the shipped
+	/// runtime. The book plays no slide chains, so sitting on the transition left every orb
+	/// half-faded; the settled state is what the player of the original saw.
+	/// </summary>
+	private const int OrbHighlighted = 3;
+
+	private const int OrbPlain = 1;
+
 	private static readonly string[] OrbValuePaths =
 	{
 		"Contents.experienceorbs.General.valueText",
@@ -168,6 +224,7 @@ public static class Engine_UiAbilityPage
 			[Page1TotalXp] = string.Empty,
 			[LearnLabel] = string.Empty,
 			[UnlearnLabel] = string.Empty,
+			[AbilityCost] = string.Empty,
 		};
 
 		// The wallet is the player's, not the row's: on screen whatever the cursor is over, so it
@@ -193,6 +250,9 @@ public static class Engine_UiAbilityPage
 			values[Page1Name] = row.StatedLabel ?? string.Empty;
 			values[Page2Name] = values[Page1Name];
 			Stats(values, strings, default, 0, string.Empty, known: false, damage: 1f);
+			Report($"'{row.Name}' IS NOT A GDB RECORD — the page keeps only the row's own " +
+				$"label ('{values[Page1Name]}'); every other field is empty and the guest's " +
+				"last text stands in its place");
 			return values;
 		}
 
@@ -229,13 +289,87 @@ public static class Engine_UiAbilityPage
 		values[UnlearnLabel] = Button(
 			strings, level > 0 ? DiscardWithParametersTag : DiscardTag,
 			level, priced ? cost / 2 : 0, level > 0 && priced);
+
+		// `%1` is the next level's cost; a maxed ability has none and the line goes.
+		values[AbilityCost] = priced
+			? Babel(strings, CostTag).Replace(StatToken,
+				cost.ToString(CultureInfo.InvariantCulture), System.StringComparison.Ordinal)
+			: string.Empty;
 		// The multiplier is indexed by level, slot 0 unused. A missing sample answers 1.0, as
 		// `sub_82541B30` does when its table has not loaded.
 		float damage = spellDamage is not null && level >= 0 && level < spellDamage.Length
 			? spellDamage[level]
 			: 1f;
 		Stats(values, strings, ability, level, nextRecord, known: true, damage);
+		Target(values, strings, ability, level, nextRecord, maxed);
+
+		// ONE LINE PER ROW, change-keyed — because "33 values bound" and a blank page are not
+		// contradictory statements and only this tells them apart. A key can land on a real
+		// element and still show nothing: `ApplyText` treats an empty host value as "leave the
+		// guest's text alone", so an unresolved record and a page we never wrote look identical
+		// from the outside. Says which branch ran and what came out of it.
+		Report($"'{row.Name}' -> {ability.BaseRecord} type {ability.Type} level {level}" +
+			$"{(maxed ? " MAXED" : string.Empty)} | name '{values[Page1Name]}'" +
+			$" | xp '{values[Page1TotalXp]}' | learn '{values[LearnLabel]}'" +
+			$" | target '{values[Page1Target]}' | movie '{MovieFor(row, levels)}'");
 		return values;
+	}
+
+	/// <summary>The last line printed, so an unchanged row costs nothing.</summary>
+	private static string _reported = string.Empty;
+
+	private static void Report(string line)
+	{
+		if (_reported == line)
+		{
+			return;
+		}
+
+		_reported = line;
+		Godot.GD.Print($"[ability-page] {line}");
+	}
+
+	/// <summary>
+	/// PAGE 1'S OWN LINE, under the tarot card. `sub_829A5F68` hides `Target`, `TargetValue`,
+	/// `Range` and `RangeValue` before writing anything, then refills per ability — so a page
+	/// that never writes them shows the LAST ability's line. That is how "Brutal Style 2:
+	/// Flourishes" came to stand under Physique.
+	///
+	/// The two styles name their level (`sub_829A6330` / `sub_829A6500`); Physique, Toughness,
+	/// Accuracy and Speed show the same stat their description substitutes; the eight spells
+	/// have per-spell writers whose numbers already appear in the Page 2 stats block, so their
+	/// line stays blank rather than half-filled.
+	/// </summary>
+	private static void Target(
+		Dictionary<string, string> values, Refii.Text.Engine_BabelDatabase? strings,
+		Engine_AbilityRecords.Ability ability, int level, string nextRecord, bool maxed)
+	{
+		values[Page1Target] = string.Empty;
+		values[Page1TargetValue] = string.Empty;
+		values[Page1Range] = string.Empty;
+		values[Page1RangeValue] = string.Empty;
+
+		if (StyleLevelPrefix.TryGetValue(ability.Type, out string? prefix))
+		{
+			// The level NAMED is the one on offer, matching the title line beside it.
+			int shown = System.Math.Clamp(maxed ? level : level + 1, 1, 4);
+			values[Page1Target] = Babel(
+				strings, prefix + shown.ToString(CultureInfo.InvariantCulture));
+			return;
+		}
+
+		if (!StatRowTag.TryGetValue(ability.Type, out string? tag) ||
+			!StatProperty.TryGetValue(ability.Type, out string? property) ||
+			nextRecord.Length == 0 ||
+			!Engine_AbilityRecords.TryFloat(nextRecord, property, out float value))
+		{
+			return;
+		}
+
+		values[Page1Target] = Babel(strings, tag);
+		values[Page1TargetValue] = ability.Type == DeltaStatType
+			? FormatStat((int)value)
+			: FormatStat(value);
 	}
 
 	/// <summary>
@@ -587,7 +721,9 @@ public static class Engine_UiAbilityPage
 
 
 	/// <summary>The tarot card quad — one element carries both the still and the movie.</summary>
-	private const string TarotFrame = "Contents.tarot.tarot_card_frame";
+	/// <summary>The tarot card's quad — the still lands here, and the preview movie paints
+	/// over the same element when no guest sprite names one.</summary>
+	public const string TarotFrame = "Contents.tarot.tarot_card_frame";
 
 	/// <summary>
 	/// The tarot card's texture, by document path. The still only: the guest puts the `.tex` up
@@ -643,4 +779,128 @@ public static class Engine_UiAbilityPage
 	/// </summary>
 	private static bool IsCategory(Engine_UiExpandableMenu.Item row) =>
 		row.EventType == SubmenuEventType || row.EventType == SpellAssignEventType;
+
+	/// <summary>
+	/// WHICH ORB GROUP IS LIT. Every group was left on its authored slide, so none of them ever
+	/// answered to the highlighted ability and they all read the same whatever folder you were
+	/// in. `sub_826C2F98` states the rule, once per page, for pages 1 and 2:
+	///
+	///   - Strength/Skill/Will take slide 2 when the ability's own discipline matches,
+	///   - General takes slide 2 while it holds anything at all (`(int)orbs[0] &gt; 0`),
+	///   - and a MAXED ability puts every group back to slide 1 — there is nothing to spend on.
+	///
+	/// The value texts beside them are written unconditionally and are already in `Values`.
+	/// What slides 1 and 2 look like is `.bgf`-authored and not ours to decide.
+	/// </summary>
+	public static IReadOnlyDictionary<string, int> Slides(
+		Engine_UiExpandableMenu.Item? row, int[]? levels, float[]? orbs)
+	{
+		var slides = new Dictionary<string, int>(OrbGroupPaths.Length);
+		for (int at = 0; at < OrbGroupPaths.Length; ++at)
+		{
+			slides[OrbGroupPaths[at]] = OrbPlain;
+		}
+
+		if (row is null || orbs is not { Length: > 3 } ||
+			!Refii.Gdb.Engine_AbilityRecords.TryGet(row.Name,
+				out Refii.Gdb.Engine_AbilityRecords.Ability ability))
+		{
+			return slides;
+		}
+
+		int level = levels is { Length: > 14 } && ability.Type is > 0 and < 15
+			? levels[ability.Type]
+			: 0;
+		int max = Refii.Gdb.Engine_AbilityRecords.MaxLevel(ability.BaseRecord);
+		if (max > 0 && level >= max)
+		{
+			return slides;
+		}
+
+		// 1..3 Strength, 4..6 Skill, 7..14 Will — `sub_824E4DD8`.
+		int discipline = ability.Type switch
+		{
+			>= 1 and <= 3 => 1,
+			>= 4 and <= 6 => 2,
+			>= 7 and <= 14 => 3,
+			_ => 0,
+		};
+
+		if (discipline > 0)
+		{
+			slides[OrbGroupPaths[discipline]] = OrbHighlighted;
+		}
+
+		if ((int)orbs[0] > 0)
+		{
+			slides[OrbGroupPaths[0]] = OrbHighlighted;
+		}
+
+		return slides;
+	}
+
+	/// <summary>
+	/// THE PREVIEW MOVIE, chosen HERE rather than read back off the guest.
+	///
+	/// `sub_829A56F8` builds the name and the slot-3 tick opens it — but only on a frame where
+	/// the packed row hash at `screen+624` changed, and that hash is the guest's own highlight,
+	/// which stops moving the moment Godot owns the cursor. So the guest chose exactly one movie
+	/// — the first row's, Brutal Styles — and every other ability kept showing it.
+	///
+	///     if (Type == 1 || Type == 4) {                       // the two "styles"
+	///         name = "GAME:\data\" + VideoFilePathAndName + "_";
+	///         name += (level &gt;= max) ? "ALL" : str(level + 1);
+	///     } else  name = "GAME:\data\" + VideoFilePathAndName;
+	///     name += ".bik";
+	///
+	/// Empty when the row is a category or states no video — the guest leaves the last movie
+	/// standing there, and so do we.
+	/// </summary>
+	public static string MovieFor(Engine_UiExpandableMenu.Item? row, int[]? levels)
+	{
+		if (row is null ||
+			!Refii.Gdb.Engine_AbilityRecords.TryGet(row.Name,
+				out Refii.Gdb.Engine_AbilityRecords.Ability ability))
+		{
+			return string.Empty;
+		}
+
+		// OFF THE LEVEL-1 RECORD. `sub_82896EA8` walks `AbilityGroupRecords` before reading
+		// `VideoFilePathAndName`; the base record only carries it for the abilities that happen
+		// to inherit one, which is why Brutal Styles found a movie and Physique did not — and a
+		// blank name leaves the previous ability's movie standing.
+		string video = Refii.Gdb.Engine_AbilityRecords.VideoPathOf(ability.BaseRecord);
+		if (video.Length == 0)
+		{
+			video = ability.VideoPath;
+		}
+
+		if (video.Length == 0)
+		{
+			return string.Empty;
+		}
+
+		if (ability.Type is not (HeavyWeapons or RangedWeapons))
+		{
+			return video + MovieExtension;
+		}
+
+		int level = levels is { Length: > 14 } && ability.Type is > 0 and < 15
+			? levels[ability.Type]
+			: 0;
+		int max = Refii.Gdb.Engine_AbilityRecords.MaxLevel(ability.BaseRecord);
+		string suffix = max > 0 && level >= max
+			? MovieAllSuffix
+			: (level + 1).ToString(CultureInfo.InvariantCulture);
+		return video + "_" + suffix + MovieExtension;
+	}
+
+	/// <summary>The two abilities whose movie is per-level — `sub_829A56F8`'s `Type == 1 || 4`.</summary>
+	private const int HeavyWeapons = 1;
+
+	private const int RangedWeapons = 4;
+
+	private const string MovieAllSuffix = "ALL";
+
+	private const string MovieExtension = ".bik";
 }

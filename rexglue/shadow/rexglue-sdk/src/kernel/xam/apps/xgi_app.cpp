@@ -10,7 +10,6 @@
  */
 
 #include <achievement/achievement_runtime.h>
-#include <achievement/achievement_xdbf.h>
 #include <rex/kernel/xam/apps/xgi_app.h>
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
@@ -28,16 +27,6 @@ using namespace rex::system;
 using namespace rex::system::xam;
 namespace apps {
 using namespace rex::system;
-
-namespace {
-
-void CacheAchievementsFromTitleXex(KernelState *kernel_state) {
-  const util::XdbfGameData db = kernel_state->title_xdbf();
-  refii::achievement::CacheAchievementsFromXdbf(db, util::XdbfSection::kImage,
-                                                db.default_language());
-}
-
-} // namespace
 
 XgiApp::XgiApp(KernelState *kernel_state) : App(kernel_state, 0xFB) {}
 
@@ -77,7 +66,6 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
     uint32_t achievements_ptr = memory::load_and_swap<uint32_t>(buffer + 4);
     REXKRNL_DEBUG("XGIUserWriteAchievements({:08X}, {:08X})", achievement_count,
                   achievements_ptr);
-    CacheAchievementsFromTitleXex(kernel_state_);
     std::vector<refii::achievement::AchievementWrite> writes;
     if (achievement_count && achievements_ptr) {
       writes.reserve(achievement_count);

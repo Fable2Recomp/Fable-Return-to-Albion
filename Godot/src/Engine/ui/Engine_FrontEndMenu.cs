@@ -426,7 +426,10 @@ public sealed class Engine_FrontEndMenu
 
 		if (item.HostOnly)
 		{
-			return null;
+			// A host-only entry still dispatches its COMMAND. The flag says the guest has no
+			// `(EventType, id)` to commit this row against, not that activating it does nothing:
+			// the achievements tab is host-owned end to end and reaches its screen this way.
+			return item.Command;
 		}
 
 		// A command entry dispatches on its COMMAND, not its name — see Item.Command.

@@ -55,6 +55,22 @@ public sealed class GdbMulti
             }
         }
 
+        // THE NAME ALIASES, second so a real record hash always wins. A record's hash is NOT the
+        // hash of its name — the GDB carries a pair table mapping FNV-1(name) to the entry hash,
+        // and `TryLookup(Fnv1("AbilityPhysiqueBase"))` finds nothing without it: every by-name
+        // lookup in the game (abilities, item records, level records) rides this table.
+        foreach (GdbView view in multi._views)
+        {
+            foreach ((uint alias, uint target) in view.AliasPairs())
+            {
+                if (alias != 0 && alias != GdbHash.Null &&
+                    multi._index.TryGetValue(target, out GdbCursor cursor))
+                {
+                    multi._index.TryAdd(alias, cursor);
+                }
+            }
+        }
+
         return multi;
     }
 

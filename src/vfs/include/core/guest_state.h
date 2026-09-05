@@ -175,6 +175,10 @@ std::string ReadBestEffortGuestString(uint8_t* base,
 /// version that probed one to three levels for "something printable" put a pointer's bytes on
 /// screen as a menu label.
 std::string ReadGuestLhString(uint8_t* base, uint32_t handle);
+
+/// The same handle shape read as WIDE UTF-16 — the guest's display-text class. See the
+/// implementation for why reading one with the other returns an empty string rather than noise.
+std::string ReadGuestWideString(uint8_t* base, uint32_t handle);
 std::string FormatGuestObjectVTable(uint8_t* base,
                                     uint32_t object_guest,
                                     uint32_t slot_count);

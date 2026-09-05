@@ -291,6 +291,79 @@ public sealed class Chain
         return (hours * (1.0f / 24.0f)) + (minutes * (1.0f / 60.0f) * (1.0f / 24.0f));
     }
 
+    /// <summary>
+    /// Every LevelData record with a day set, by name — the levels a region's gdb carries and
+    /// what each one is lit by. For the sweep; the runtime selects by the loaded level's name.
+    /// </summary>
+    public List<(string Level, RecordRef DaySet, List<float> Times)> ListLevelDaySets()
+    {
+        var rows = new List<(string, RecordRef, List<float>)>();
+        for (int db = 0; db < _views.Count; db++)
+        {
+            foreach (RecordRef level in LookupAllInDb(EnvHash.LevelData, db))
+            {
+                RecordRef daySet = ResolveRecordField(level, EnvHash.EnvironmentThemeDaySet);
+                var times = new List<float>();
+                if (daySet.Valid)
+                {
+                    foreach (GdbField field in _views[daySet.Db].Fields(daySet.Index))
+                    {
+                        byte type = (byte)field.Type;
+                        if (type != 4 && type != 6 && type != 7)
+                        {
+                            continue;
+                        }
+
+                        RecordRef entry = FieldToRecord(field);
+                        if (entry.Valid && ReadFloat(entry, EnvHash.TimeOfDay, out float t))
+                        {
+                            times.Add(NormalizeTimeOfDay(t));
+                        }
+                    }
+                }
+
+                rows.Add((_views[db].RecordName(level.Index), daySet, times));
+            }
+        }
+
+        // The record type is not always LevelData: list every record that carries the field.
+        for (int db = 0; db < _views.Count; db++)
+        {
+            for (int record = 0; record < _views[db].RecordCount; record++)
+            {
+                var owner = new RecordRef(db, record, true);
+                if (!FindLocalField(owner, EnvHash.EnvironmentThemeDaySet, 0xFF, out _))
+                {
+                    continue;
+                }
+
+                RecordRef daySet = ResolveRecordField(owner, EnvHash.EnvironmentThemeDaySet);
+                var times = new List<float>();
+                if (daySet.Valid)
+                {
+                    foreach (GdbField field in _views[daySet.Db].Fields(daySet.Index))
+                    {
+                        byte type = (byte)field.Type;
+                        if (type != 4 && type != 6 && type != 7)
+                        {
+                            continue;
+                        }
+
+                        RecordRef entry = FieldToRecord(field);
+                        if (entry.Valid && ReadFloat(entry, EnvHash.TimeOfDay, out float t))
+                        {
+                            times.Add(NormalizeTimeOfDay(t));
+                        }
+                    }
+                }
+
+                rows.Add(($"db{db}:{_views[db].RecordName(record)}", daySet, times));
+            }
+        }
+
+        return rows;
+    }
+
     private RecordRef FindDaySet()
     {
         for (int db = 0; db < _views.Count; db++)

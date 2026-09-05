@@ -712,7 +712,19 @@ public sealed class Engine_BgfDocument
 		return true;
 	}
 
-	public BgfSlideState ComputeSlideState(Func<int, BgfSlide[], BgfSlide?>? choose)
+	public BgfSlideState ComputeSlideState(Func<int, BgfSlide[], BgfSlide?>? choose) =>
+		ComputeSlideState(choose, null);
+
+	/// <summary>
+	/// THE LATER goToSlide WINS. The engine keeps ONE active bit per element and every
+	/// `goToSlide` writes its entries into it, so when two owners name the same element (a
+	/// pickbox's `unselected` turns its `frame` OFF; the frame's own opener turns it on) the
+	/// call made LAST is the state on screen. <paramref name="order"/> ranks owners by when
+	/// their stated slide last changed; owners are applied ascending, so the most recent
+	/// write lands last. Null keeps document order.
+	/// </summary>
+	public BgfSlideState ComputeSlideState(
+		Func<int, BgfSlide[], BgfSlide?>? choose, Func<int, int>? order)
 	{
 		// Start from the element's OWN authored state, not "everything visible": slides turn
 		// things on and off from there, and an element no slide mentions keeps its own bit.
@@ -731,7 +743,10 @@ public sealed class Engine_BgfDocument
 			list.Add(s);
 		}
 
-		foreach ((int owner, List<BgfSlide> owned) in byOwner)
+		IEnumerable<KeyValuePair<int, List<BgfSlide>>> owners = order is null
+			? byOwner
+			: byOwner.OrderBy(pair => order(pair.Key)).ThenBy(pair => pair.Key);
+		foreach ((int owner, List<BgfSlide> owned) in owners)
 		{
 			// The master is identified by name, not position — nothing in the format promises
 			// it is stored first.

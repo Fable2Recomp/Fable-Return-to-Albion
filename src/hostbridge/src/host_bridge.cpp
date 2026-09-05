@@ -31,6 +31,7 @@
 #include <ctime>
 #endif
 #include <cstring>
+#include <span>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -75,6 +76,22 @@ void FlushLogging();
 #include <rex/ui/windowed_app.h>
 #include <rex/ui/windowed_app_context_sdl.h>
 
+// Runtime introspection for the debug channel — see the ReXGlue section beside RefiiHostPeek.
+#include <rex/filesystem/entry.h>
+#include <rex/filesystem/vfs.h>
+#include <rex/perf/counter.h>
+#include <rex/runtime.h>
+#include <rex/system/thread_state.h>
+#include <rex/system/xsocket.h>
+#include <rex/system/xthread.h>
+
+#include <array>
+#include <set>
+#include <utility>
+#ifdef REXGLUE_ENABLE_PROFILING
+#include <tracy/TracyC.h>
+#endif
+
 #include "../../host_input.h"
 
 #if defined(_WIN32)
@@ -105,6 +122,8 @@ uint32_t BinkMovieDestRect(uint8_t* base, float* out_x0, float* out_y0,
 // write cannot do this job, and that state file for why the queue is in refii_vfs and not
 // beside the pump hook that drains it.
 uint32_t PostGuestTickAction(const char* name);
+uint32_t DebugCallResult(uint64_t* out_seq, uint32_t* out_addr, uint64_t* out_r3,
+                         char* out_note, uint32_t note_capacity);
 void GuestTickPumpCounters(uint64_t* out_ticks, uint64_t* out_drained,
                            uint32_t* out_queued);
 int32_t GuestSavedGameCount();
@@ -119,6 +138,9 @@ int32_t FrontEndSubtitles();
 // the store lives with the pump's other state, not beside the hook. Capacities are size_t to
 // match the definition exactly; widening them here would be a silent ODR mismatch.
 uint32_t MenuRowLabel(uint32_t index, char* out_label, size_t label_capacity);
+
+/// The screen the published capture belongs to — the key that says whose population it is.
+uint32_t MenuScreenId();
 uint32_t MenuRows(uint32_t index, char* out_name, size_t name_capacity, char* out_parent,
                   size_t parent_capacity, uint32_t* out_id, int32_t* out_event_type,
                   uint64_t* out_generation, int32_t* out_rating);
@@ -435,6 +457,54 @@ std::string ReadGuestString(const uint8_t* base, uint32_t handle, std::size_t ca
     return out;
 }
 
+/// FNV-1 over a name, the hash Babel keys on — multiply then xor, 32-bit.
+uint32_t RefiiFnv1(const std::string& text) {
+    uint32_t hash = 0x811C9DC5u;
+    for (const char c : text) {
+        hash = (hash * 0x01000193u) ^ static_cast<uint8_t>(c);
+    }
+
+    return hash;
+}
+
+/// Whether a fast-travel region has any stop that is ACTIVE and states a destination — the test
+/// `sub_82518380` makes (`lbz r11, 0(r31)` at 0x8251841C, `lwz r11, 8(r31)` at 0x82518404) and the
+/// one that decides whether the region gets a row at all.
+bool RefiiRegionHasActiveStop(const uint8_t* base, uint32_t region) {
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const uint32_t levels = GuestWordAt(base, region + 16u);
+    const uint32_t levelsEnd = GuestWordAt(base, region + 20u);
+    if (!plausible(levels) || !plausible(levelsEnd) || levelsEnd < levels ||
+        ((levelsEnd - levels) % 4u) != 0u || ((levelsEnd - levels) / 4u) > 256u) {
+        return false;
+    }
+
+    for (uint32_t levelSlot = levels; levelSlot < levelsEnd; levelSlot += 4u) {
+        const uint32_t level = GuestWordAt(base, levelSlot);
+        if (!plausible(level)) {
+            continue;
+        }
+
+        const uint32_t stops = GuestWordAt(base, level + 8u);
+        const uint32_t stopsEnd = GuestWordAt(base, level + 12u);
+        if (!plausible(stops) || !plausible(stopsEnd) || stopsEnd < stops ||
+            ((stopsEnd - stops) % 4u) != 0u || ((stopsEnd - stops) / 4u) > 256u) {
+            continue;
+        }
+
+        for (uint32_t stopSlot = stops; stopSlot < stopsEnd; stopSlot += 4u) {
+            const uint32_t stop = GuestWordAt(base, stopSlot);
+            if (plausible(stop) && GuestByteAt(base, stop) != 0u &&
+                !ReadGuestString(base, stop + 8u).empty()) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 /// Stores `size` bytes into guest memory, or returns false when the page is not there. The
 /// few host-side writes are latches on objects the guest handed over, so a miss is a stale
 /// pointer, not a reason to fault.
@@ -516,6 +586,46 @@ void DescribeAddress(int fd, uintptr_t pc) {
     Append(fd, buffer);
 }
 
+/// The faulting thread's GUEST stack, when it has one. ThreadState::Get() is the null-safe
+/// TLS read; the walk is the title's own back chain (32-bit word at [r1], saved LR at
+/// back-chain - 8, verified in the binary), pure loads against the always-mapped arena, so it
+/// is as signal-safe as the host backtrace below it.
+void DescribeGuestThread(int fd) {
+    rex::runtime::ThreadState* state = rex::runtime::ThreadState::Get();
+    rex::memory::Memory* memory = SafeKernelMemory();
+    if (state == nullptr || state->context() == nullptr || memory == nullptr) {
+        return;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return;
+    }
+
+    PPCContext* context = state->context();
+    char buffer[96];
+    std::snprintf(buffer, sizeof(buffer), "  guest tid=%u r1=%08X lr=%08X\n",
+                  state->thread_id(), context->r1.u32, static_cast<uint32_t>(context->lr));
+    Append(fd, buffer);
+    uint32_t sp = context->r1.u32;
+    for (int frame = 0; frame < 32 && sp >= 0x10000u && sp < 0xC0000000u; ++frame) {
+        uint32_t back = 0;
+        std::memcpy(&back, base + sp, sizeof(back));
+        back = __builtin_bswap32(back);
+        if (back == 0u || back <= sp || back >= 0xC0000000u) {
+            break;
+        }
+        uint32_t lr = 0;
+        std::memcpy(&lr, base + back - 8u, sizeof(lr));
+        lr = __builtin_bswap32(lr);
+        if (lr == 0u) {
+            break;
+        }
+        std::snprintf(buffer, sizeof(buffer), "  guest frame %08X\n", lr);
+        Append(fd, buffer);
+        sp = back;
+    }
+}
+
 /// One record: a stamped header, the pc named, and the calling thread's backtrace.
 void WriteRecord(const char* line, uintptr_t pc) {
     const int fd = g_path[0] != '\0'
@@ -535,6 +645,7 @@ void WriteRecord(const char* line, uintptr_t pc) {
     if (pc != 0) {
         DescribeAddress(fd, pc);
     }
+    DescribeGuestThread(fd);
     void* frames[64];
     const int count = ::backtrace(frames, 64);
     ::backtrace_symbols_fd(frames, count, fd);
@@ -977,6 +1088,16 @@ std::atomic<uint32_t> g_guest_device{0};
 std::atomic<bool> g_arm_watcher_stop{false};
 std::thread g_arm_watcher;
 
+/// The completion publisher's own thread. Published from the host's render loop, a present
+/// waited up to a whole host frame for its completion, and the guest's frame became
+/// present + host-frame: measured 14.4 guest frames/s under a 27 fps host (2026-09-04). A
+/// 1 ms poll answers each present as the GPU would have, and the guest paces itself.
+/// REFII_COMPLETION_THREAD=0 keeps the once-per-step publishing for comparison.
+std::atomic<bool> g_completion_stop{false};
+std::thread g_completion_thread;
+std::mutex g_completion_mutex;
+uint32_t g_completions_by_thread = 0;
+
 /// Puts Fable 2's own D3D into the "no GPU present" mode it ships with.
 ///
 /// THE PROBLEM. With no GPU behind it, the guest boots, initialises its ring buffer,
@@ -1279,6 +1400,9 @@ void SignalGuestFrameCompletions() {
         return;
     }
 
+    // Two publishers (the step and the completion thread) must not race the double buffer.
+    std::lock_guard<std::mutex> publishers(g_completion_mutex);
+
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) {
         return;
@@ -1476,6 +1600,9 @@ extern "C" {
 ///    that context is a stack temporary built per tick in sub_8228D058 and is not resident.
 /// 67 adds RefiiHostGetUiPreviewObject — the model hash and placement of the 3D object a menu
 ///    panel shows.
+/// 97 moves ACHIEVEMENTS to Godot: RefiiHostGetTitleXdbf, RefiiHostSetAchievementUnlocks and
+///    RefiiHostGetAchievementsUiRequests join RefiiHostGetAchievementUnlocks; the definition and
+///    icon exports are gone with the native store. See Engine_Achievements.
 /// 68 adds the ACHIEVEMENT exports — unlocks, definitions and icon PNGs. The runtime half
 ///    stays native: it is guest-facing and owns the XDBF. See Engine_AchievementToast.
 /// 66 adds RefiiHostGetWorldIcons — the world-icon queue and its two gates, the channel
@@ -1533,6 +1660,27 @@ extern "C" {
 ///    later) and RefiiHostGetOptions (pages 1 and 2).
 /// 92 adds RefiiHostSetAssetNameResolver — Godot's hash index, the other half of 90; the guest
 ///    names most resources by a 32-bit hash rather than by path.
+/// 101 adds RefiiHostGetSales — the SalesAndShortages list off the world, as {NameTagHash,
+///    isShortage}. `record+20` is a raw FNV-1 text key, so again no string crosses.
+/// 100 adds RefiiHostGetFastTravelRegions — the regions with an active stop, as FNV-1 of their
+///    names, which are their own Babel keys. No string crosses the boundary.
+/// 104 adds RefiiHostGetInventoryScreenMode — screen 15 is ONE screen with a mode word at
+///     `screen+372` (1 Items, 3 Weapons, 4 Clothing), so its list cannot be bound by id alone.
+/// 103 widens RefiiHostGetFastTravelRegions to {nameHash, ordinal} pairs and fixes its stride.
+///     The container is pairs, not pointers — `sub_82518330` steps 8 — and event 41's handler
+///     `sub_826C7E90` identifies a region by `Float1 - 999` indexed into that walk, never by
+///     name, so the ordinal has to cross.
+/// 102 adds RefiiHostGetFamily — the world map's `Family` names. The pump calls the guest's own
+///     collector `sub_8246F020` while screen 23 is up and frees it with `sub_826C9450`; this
+///     export only reads the shared store. Walking it here would mean reproducing an entity-UID
+///     map lookup and a component-20 name fallback we have no reason to own.
+/// 99 adds RefiiHostGetQuestLog — component 102's flat map at +0x10/+0x14, stride 12, `Quest*`
+///    at element+4; RecordID at quest+4 and the five state bytes packed into one word. Quests and
+///    Jobs are this one list split by the definition's GDB `Type`.
+/// 98 adds RefiiHostGetWornItems — the hero's worn vector at component 15 + 16..20, stride 24,
+///    element[0] an Entity* whose +4 is the GDB record hash and +16 the category. Nothing
+///    synchronises it and a push reallocates, so the walk re-reads begin/end and discards a
+///    torn read.
 /// 90 adds RefiiHostSetAssetReader — the first call that goes the other way, handing the guest
 ///    Godot's asset reader so one mount serves both sides.
 /// 89 widens RefiiHostGetWorldMapRegion by the region's ECONOMY. Not a field: `sub_8246FE20`
@@ -1545,7 +1693,52 @@ extern "C" {
 /// 85 adds RefiiHostSetGuiPredicate — suppression: the thunk writes the host's value onto the
 ///    Lua stack and returns without calling through. Opt-in by name, because fifteen of the
 ///    twenty predicates read state the guest's own setters maintain.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 96; }
+/// 106 adds RefiiHostGetRealEstate — screen 28's one building. Its left column is a list of
+///     COMMANDS, not properties, so there is nothing to select and nothing to key on: one
+///     record, sampled while the screen stands. The guest's own value functions answer every
+///     number because each of them walks a prosperity term, a GDB adjustment array or a
+///     five-axis opinion weighting; the host owns all of the presentation.
+/// 107 widens RefiiHostGetQuestLog to EIGHT words — the star rating, both rewards, the
+///     objective's `%1` parameter, the days remaining and the task count, all plain fields on
+///     the quest object — and adds RefiiHostGetQuestTasks, which crosses one quest's task
+///     lines as Babel TAGS. The world map's quest and job pages are blank without them: the
+///     quest page is a single concatenated string and the task lines are most of it.
+/// 108 was to have added HUD slide and image registry readers and does not: neither has a
+///     readable address. See the note above RefiiHostGetHudTexts — the writers are
+///     write-through into a runtime slide controller, and the image hash lives on the live node
+///     rather than on the binding record this file's walker returns. Slides and textures
+///     already cross per element through the ordinary element walk.
+/// 109 widens RefiiHostGetSales to FIVE words — the description and region Babel key hashes,
+///     the days left (`Duration - today + activationDay`) and the raw price multiplier. Two
+///     words were enough to build the ROW and left the sales PAGE entirely blank.
+/// 110 adds RefiiHostSet/GetQuestTravel — a job's distance and travel time. The two providers
+///     are the region page's own and take an `LHString*`; the quest's `ObjectiveLevel` is inline
+///     at `quest+132`, so no extra hop. The travel provider takes 0 here where the region page
+///     takes 1, and under an hour it appends nothing — an empty travel time is shipped behaviour.
+/// 111 widens RefiiHostGetQuestTravel by the objective level's REGION and the A-button
+///     PROMPT. Neither is a field on the quest. The region is a lookup — `sub_829AFE58` asks
+///     the region container which region owns the level (`sub_82518490`) and sets the element
+///     by TAG. The prompt is a DECISION over four guest predicates (`sub_824707E8`,
+///     `sub_82470F80`, `sub_82471438` and a level comparison), so the pump runs the guest's
+///     own tests and crosses the tag it lands on, or nothing when the button is hidden.
+///     Both lines were declared in the page and never assigned. It also adds
+///     RefiiHostGetFamilyDetails — the FamilyPage had no provider at all, and it needed no new
+///     walk: the pump already collects the 52-byte records for the row list, and ten of the
+///     page's eleven elements are formatted strings sitting in them. And
+///     RefiiHostSet/GetShopPrice — the shop's `PriceValue`, which the item book could never
+///     answer because what a shop CHARGES is not what an item is WORTH.
+/// 116 adds RefiiHostGetAttachments — every stated parent/child/dummy attachment, so Godot can
+///     hang a weapon off ITS OWN bone. The guest recomputes an attached entity's placement from
+///     its own pose every update; with the host playing the animation, that placement no longer
+///     describes the body the child is attached to.
+/// 117 widens RefiiHostGetEntityAnimState to TEN words a leaf — overlay membership, the mask
+///     node and the priority bitmask — and adds RefiiHostGetAnimMask, so the host composites
+///     overlays per bone the way `sub_8220CB18` does instead of folding them as primaries.
+///     It also appends component 7's two eye models to RefiiHostGetEntityMorphParts.
+/// 118 adds RefiiHostGetTopBoxBody — the front TopBox record's body as its provider object
+///     states it, so the host composes the box the way `sub_821787D0` does instead of reading a
+///     registry string that outlives its record.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 118; }
 
 /// Answers one `GUI` predicate from the host, by name.
 ///
@@ -2124,6 +2317,56 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldMapRegion(uint32_t* out_index,
     return region.count;
 }
 
+/// SCREEN 28'S ONE BUILDING — the real estate page, as data.
+///
+/// One record rather than a list: the screen's left column is a list of COMMANDS and there is a
+/// single building, resolved when it opens. The pump samples it on the GUI tick while the screen
+/// stands (`SampleRealEstate`); this only reads the shared store.
+///
+/// The numbers arrive already answered by the guest — value, economy, income, sale price and the
+/// three not-owned price deltas each average or walk something the host has no business
+/// reproducing. What the host does with them is entirely its own: the star bin, the
+/// `&lt;gold_img&gt;` prefix, the negative recolour, which of the four Variable rows stands, and the
+/// HOUSE-versus-SHOP legend are all decided from these fields.
+///
+/// `out_words` takes fourteen: record hash, type mask, owned, hasTenant, value, economy,
+/// decoration, income, salePrice, sellingFees, notVacant, ownerKilled, heroOpinion and the
+/// BONUSES record — a different record, off component 184. Returns 1 when a building resolved.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetRealEstate(uint32_t* out_words, uint32_t word_capacity,
+                                                     char* occupant, uint32_t occupant_capacity) {
+    const refii::vfs::RealEstate estate = refii::vfs::RealEstateSnapshot();
+
+    WriteOut(estate.occupant, occupant, occupant_capacity);
+
+    const uint32_t words[] = {
+        estate.record,
+        estate.type_mask,
+        estate.owned ? 1u : 0u,
+        estate.has_tenant ? 1u : 0u,
+        static_cast<uint32_t>(estate.value),
+        static_cast<uint32_t>(estate.economy),
+        static_cast<uint32_t>(estate.decoration),
+        static_cast<uint32_t>(estate.income),
+        static_cast<uint32_t>(estate.sale_price),
+        static_cast<uint32_t>(estate.selling_fees),
+        static_cast<uint32_t>(estate.not_vacant),
+        static_cast<uint32_t>(estate.owner_killed),
+        static_cast<uint32_t>(estate.hero_opinion),
+        estate.bonuses_record,
+    };
+
+    if (out_words != nullptr) {
+        const uint32_t count =
+            word_capacity < (sizeof(words) / sizeof(words[0])) ? word_capacity
+                                                               : sizeof(words) / sizeof(words[0]);
+        for (uint32_t i = 0; i < count; ++i) {
+            out_words[i] = words[i];
+        }
+    }
+
+    return estate.known ? 1u : 0u;
+}
+
 /// The OPTIONS screen's settings — pages 1 and 2, all of it plain loads.
 ///
 /// Nothing here needs the guest thread: page 1's three accessors are each a field read behind
@@ -2367,6 +2610,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetHeroDerived(uint32_t* words, uint32_t word
     word(6, static_cast<uint32_t>(hero.dog_searching));
     word(7, hero.dog_trick_count);
     word(8, hero.stats_known ? 1u : 0u);
+    word(9, hero.dog_name_key);
 
     for (uint32_t i = 0; i < 6u; ++i) {
         real(20u + i, hero.spell_damage[i]);
@@ -2572,6 +2816,644 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroInventory(uint32_t* words, uint32
         }
 
         node = GuestWordAt(base, node);
+    }
+
+    return found;
+}
+
+/// The active SALES AND SHORTAGES — the world map's `Sales` rows. Two words each:
+/// {nameTagHash, isShortage}.
+///
+/// `record+20` is `NameTagHash`, a RAW FNV-1 text key rather than a string — `sub_829A40C0`
+/// copies it to a stack dword and hands its address straight to `TextManager_GetString`. So this
+/// export hands across a hash, exactly like the regions one, and no string crosses the boundary.
+///
+/// THE CHAIN, verified in disassembly (`sub_8246EC10`, 0x8246EC54..0x8246EC78):
+///
+///     lwz r11, dword_83496AB8 ; lwz r11, 0xC(r11) ; lwz r10, 0x58(r11)
+///     lwz r9,  4(r10)         ; lwz r11, 0x64(r9)     the SalesAndShortages manager
+///     addi r30, r11, 0x14     ; lwz r8, 0x18(r11)     the list object and its sentinel
+///     lwz r31, 0(r8)                                  the first node; node+0 is `next`
+///
+/// The record is at `node+8`, 56 bytes, and its serializer `sub_82602CB8` names every field:
+/// `+20` NameTagHash, `+36` Active, `+40` PriceMultiplier, `+48` RecordId. Selection is
+/// `Active != 0` and the multiplier off 1.0 — BELOW is a sale, ABOVE a shortage, and the world
+/// map lists both (`sub_8246ECC4` / `sub_8246ED74` are the two passes).
+///
+/// The manager is destroyed and reallocated wholesale on level reset (`sub_8234EF58`), so the
+/// chain is re-walked every call and never cached; the walk is also bounded, because a torn
+/// `next` on an intrusive list would otherwise loop forever.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSales(uint32_t* words, uint32_t word_capacity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    static constexpr uint32_t kSalesHops[] = {0xCu, 0x58u, 0x4u, 0x64u};
+
+    uint32_t at = GuestWordAt(base, 0x83496AB8u);
+    for (const uint32_t hop : kSalesHops) {
+        if (!plausible(at)) {
+            return 0;
+        }
+
+        at = GuestWordAt(base, at + hop);
+    }
+
+    const uint32_t manager = at;
+    if (!plausible(manager)) {
+        return 0;
+    }
+
+    const uint32_t sentinel = GuestWordAt(base, manager + 0x18u);
+    if (!plausible(sentinel)) {
+        return 0;
+    }
+
+    constexpr uint32_t kMaxSales = 64u;
+
+    // FIVE WORDS, not two. The sales PAGE shows a description, a region and a countdown beside
+    // the title, and `sub_829AAB50` reads all of them off the same record: `+24` and `+28` are
+    // Babel key hashes like `+20`, and the days left is
+    // `Duration - currentDayCount + activationDay` — the day the sale started is at `+0` and
+    // its length at `+4`. Two words made the row but left the page blank.
+    constexpr uint32_t kWordsPerSale = 5u;
+
+    // The world's game-time manager, for the day the countdown is measured against.
+    uint32_t clock = GuestWordAt(base, 0x83496AB8u);
+    for (const uint32_t hop : {0xCu, 0x58u, 0x4u, 0x14u}) {
+        clock = plausible(clock) ? GuestWordAt(base, clock + hop) : 0u;
+    }
+
+    const uint32_t today = plausible(clock) ? GuestWordAt(base, clock + 8u) : 0u;
+
+    uint32_t found = 0;
+    uint32_t node = GuestWordAt(base, sentinel);
+
+    for (uint32_t step = 0; step < kMaxSales && plausible(node) && node != sentinel; ++step) {
+        const uint32_t record = node + 8u;
+
+        if (GuestByteAt(base, record + 36u) != 0u) {
+            const uint32_t raw = GuestWordAt(base, record + 40u);
+            float multiplier = 1.0f;
+            std::memcpy(&multiplier, &raw, sizeof(multiplier));
+
+            // Exactly off 1.0 is neither a sale nor a shortage and the guest lists neither.
+            if (multiplier != 1.0f) {
+                if (words != nullptr && (found * kWordsPerSale + 4u) < word_capacity) {
+                    uint32_t* row = words + found * kWordsPerSale;
+                    row[0] = GuestWordAt(base, record + 20u);   // NameTag key hash
+                    row[1] = GuestWordAt(base, record + 24u);   // DescriptionTag key hash
+                    row[2] = GuestWordAt(base, record + 28u);   // RegionTag key hash
+                    row[3] = GuestWordAt(base, record + 4u) - today +
+                             GuestWordAt(base, record);         // days left
+                    row[4] = raw;                               // PriceMultiplier, raw bits
+                }
+
+                ++found;
+            }
+        }
+
+        node = GuestWordAt(base, node);
+    }
+
+    return found;
+}
+
+/// The FAST-TRAVEL REGIONS that have at least one active stop — the world map's `Regions` rows.
+/// One word each: FNV-1 of the region's name, which IS its Babel key, so the caller resolves the
+/// display text against the shipped book and this never hands a string across the boundary. A
+/// name we read wrongly therefore resolves to nothing and draws nothing, rather than drawing
+/// rubbish.
+///
+/// THE CHAIN, verified in disassembly (`sub_829A3A30`, 0x829A3A4C..0x829A3A70):
+///
+///     lwz r11, dword_83496AB8   the app global
+///     lwz r10, 0xC(r11)         +12
+///     lwz r9,  0x58(r10)        +0x58
+///     lwz r8,  4(r9)            +4    the world manager
+///     lwz r25, 8(r8)            +8
+///     lwz r7,  4(r25)           +4    the current world
+///     lwz r3,  0xC(r7)          +0xC  the FastTravelManager
+///
+/// Below it: regions are `vector<Region*>` at FTM+8/+12 (stride 4 — a vector of POINTERS), a
+/// region's name handle is `Region+0` and its levels `vector<Level*>` at Region+16/+20; a level's
+/// stops are at Level+8/+12. A region is listed only when some stop is ACTIVE (`Stop+0` non-zero)
+/// and states a destination (`Stop+8` non-empty) — that is what "Regions (7)" counts, not the
+/// number of regions authored.
+///
+/// The topology is built once from `FastTravelList.txt` during boot and never grows again; only
+/// `Stop+0`, one byte, changes at runtime. So there is no reallocation hazard here — but the
+/// manager itself is released and replaced on level change (`sub_8231C358`, `sub_8234EF58`), so
+/// the chain is re-walked every call and never cached.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFastTravelRegions(uint32_t* words,
+                                                             uint32_t word_capacity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    // The six hops above, in order. Each is checked before it is followed, so a chain that is
+    // not up yet — between a level change releasing the manager and the next one building it —
+    // returns nothing instead of dereferencing whatever is there.
+    static constexpr uint32_t kFastTravelHops[] = {0xCu, 0x58u, 0x4u, 0x8u, 0x4u, 0xCu};
+
+    uint32_t at = GuestWordAt(base, 0x83496AB8u);
+    for (const uint32_t hop : kFastTravelHops) {
+        if (!plausible(at)) {
+            return 0;
+        }
+
+        at = GuestWordAt(base, at + hop);
+    }
+
+    const uint32_t manager = at;
+    if (!plausible(manager)) {
+        return 0;
+    }
+
+    // PAIRS, STRIDE 8 — this said "pointers, so stride 4" and it was wrong.
+    //
+    // `sub_82518330` is the guest's own walk of this container and it steps `v4 += 2` on a
+    // `_DWORD*` (0x8251836C), taking `*v4` when non-zero. A stride of 4 reads the second word of
+    // every pair as a region as well; those failed the plausibility test and were skipped, so the
+    // list came out right by accident rather than by construction.
+    const uint32_t begin = GuestWordAt(base, manager + 8u);
+    const uint32_t end = GuestWordAt(base, manager + 12u);
+    if (begin == 0u && end == 0u) {
+        return 0;
+    }
+
+    constexpr uint32_t kMaxRegions = 128u;
+    if (!plausible(begin) || !plausible(end) || end < begin ||
+        ((end - begin) % 8u) != 0u || ((end - begin) / 8u) > kMaxRegions) {
+        return 0;
+    }
+
+    // AND THE INDEX IS THE IDENTITY, not the name. `sub_826C7E90` — the handler for event 41 —
+    // takes the row's Float1, subtracts the 999 the spawner added, and indexes THIS container's
+    // walk output with it (`4 * v6 + v31`). It never looks at the name. So the ordinal a row
+    // carries has to be its position in the guest's own output, which counts every non-null
+    // entry — including regions with no active stop, which are walked but never spawned.
+    uint32_t found = 0;
+    uint32_t ordinal = 0;
+    for (uint32_t slot = begin; slot < end; slot += 8u) {
+        const uint32_t region = GuestWordAt(base, slot);
+        if (region == 0u) {
+            continue;
+        }
+
+        // Past the null test the entry is in the guest's output and has consumed an ordinal,
+        // whatever we go on to decide about it.
+        const uint32_t here = ordinal++;
+        if (!plausible(region) || !RefiiRegionHasActiveStop(base, region)) {
+            continue;
+        }
+
+        const std::string name = ReadGuestString(base, region);
+        if (name.empty()) {
+            continue;
+        }
+
+        if (words != nullptr && (found * 2u + 1u) < word_capacity) {
+            words[found * 2u] = RefiiFnv1(name);
+            words[found * 2u + 1u] = here;
+        }
+
+        ++found;
+    }
+
+    return found;
+}
+
+/// The hero's QUEST LOG — three words each: {recordId, flags, 0}.
+///
+/// `flags` bit 0 Unlocked, 1 Completed, 2 Failed, 3 AppearOnWorldMap, 4 Viewed. The world map's
+/// Quests and Jobs rows are the same container filtered differently, and the split between them is
+/// the quest definition's GDB `Type` (5 == Job), which the caller reads from `recordId` rather
+/// than here — the host has no GDB.
+///
+/// THE CONTAINER, verified in disassembly (`sub_8251CA50`):
+///
+///     lwz r31, 0x10(r30)   begin
+///     lwz r11, 0x14(r30)   end
+///     lwz r11, 4(r31)      the Quest*   -- element + 4
+///     addi r31, r31, 0xC   stride       -- 12 bytes per entry
+///
+/// It is a sorted flat map: element+0 is FNV-1 of the quest name, element+4 the `Quest*`,
+/// element+8 unread by anything. The guest SORTS its own rows by the GDB `DisplayPriority` of each
+/// quest afterwards (`sub_82529258` with comparator `sub_8251C9C0`), so container order is not
+/// display order.
+///
+/// The quest's own fields, from the serializer `sub_825237C8` which names them: `+4` RecordID (the
+/// GDB record hash — `sub_82522CB0` resolves it and reads `NameTag` off it), `+12` Unlocked, `+21`
+/// Completed, `+22` Failed, `+77` AppearOnWorldMap, `+78` Viewed.
+///
+/// A PLAIN VECTOR WITH NO LOCK: accepting or dropping a quest reallocates it. Same treatment as
+/// the worn vector — the bounds are re-read afterwards and a walk that saw them move is discarded.
+/// The world map's family members, newest sample first-to-last. `out_names` is a flat block of
+/// `stride`-byte NUL-terminated UTF-8 names; the return is the TOTAL the store holds, which may
+/// exceed `capacity` so a caller can size its buffer from the first call.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFamily(char* out_names, uint32_t stride,
+                                                  uint32_t capacity) {
+    if (out_names == nullptr || stride == 0u || capacity == 0u) {
+        return 0;
+    }
+
+    refii::vfs::FamilyMember members[refii::vfs::kMaxFamilyMembers];
+    const uint32_t total = refii::vfs::FamilySnapshot(members, refii::vfs::kMaxFamilyMembers);
+    const uint32_t copied = total < capacity ? total : capacity;
+    for (uint32_t i = 0; i < copied; ++i) {
+        std::snprintf(out_names + (static_cast<std::size_t>(i) * stride), stride, "%s",
+                      members[i].name);
+    }
+
+    return total;
+}
+
+/// ONE SHOP ROW'S ASKING PRICE, by ticket.
+///
+/// What a shop charges is NOT the item's worth, so the item book's `ValueValue` cannot answer
+/// for `PriceValue`. `sub_82992F90` — the guest's own price display — takes the shopkeeper off
+/// screen 22, its `CECShopkeeper` (27), and calls `sub_82872910` to buy or `sub_828727B8` to
+/// sell; both weight a base price by the shopkeeper's opinion axes and the shop's wealth, and
+/// buy multiplies where sell divides, so there is no ratio to reproduce.
+///
+/// Named by the row's per-population TICKET. The pump answers a tick later while screen 22
+/// stands, so the reply carries the ticket it is for and the page must check it.
+REFII_HOST_ABI_EXPORT void RefiiHostSetShopPrice(uint32_t ticket, uint32_t sell) {
+    refii::vfs::RequestShopPrice(ticket, sell != 0u);
+}
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetShopPrice(uint32_t* out_ticket, int32_t* out_price) {
+    const refii::vfs::ShopPrice answer = refii::vfs::ShopPriceSnapshot();
+
+    if (out_ticket != nullptr) {
+        *out_ticket = answer.ticket;
+    }
+
+    if (out_price != nullptr) {
+        *out_price = answer.price;
+    }
+
+    return answer.known ? 1u : 0u;
+}
+
+/// ONE FAMILY MEMBER'S PAGE, as eleven fixed-width strings.
+///
+/// `sub_829B04E0` is the family page and it is almost entirely a read: ten of its eleven text
+/// elements are already-formatted `LHString`s at fixed offsets in the 52-byte record
+/// `sub_8246F020` builds, set with `sub_82425DD0` (the setter that takes formatted text, not a
+/// tag). The eleventh, the region, is `sub_82518490(regionMgr, record+16)` and IS a tag.
+///
+/// The page picks its member BY ORDINAL into that vector — the same ordinal the row carries —
+/// so `index` is the row's id and nothing needs a key.
+///
+/// `out` is a flat block of `count` strings of `stride` bytes each, in this fixed order:
+///
+///     0 name              1 children          2 region (a TAG)    3 distance
+///     4 travel            5 note              6 daily upkeep      7 total upkeep
+///     8 happiness         9 home happiness   10 upkeep happiness  11 A-button (a TAG)
+///
+/// Field 11 is empty when the guest HIDES the button, which two of `sub_82470A78`'s branches do.
+///
+/// Returns how many fields were written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFamilyDetails(uint32_t index, char* out,
+                                                         uint32_t stride, uint32_t count) {
+    if (out == nullptr || stride == 0u || count == 0u) {
+        return 0;
+    }
+
+    refii::vfs::FamilyMember members[refii::vfs::kMaxFamilyMembers];
+    const uint32_t total = refii::vfs::FamilySnapshot(members, refii::vfs::kMaxFamilyMembers);
+    if (index >= total) {
+        return 0;
+    }
+
+    const refii::vfs::FamilyMember& member = members[index];
+    const char* const fields[] = {
+        member.name,      member.children,     member.region,
+        member.distance,  member.travel,       member.note,
+        member.daily_upkeep, member.total_upkeep, member.happiness,
+        member.home_happiness, member.upkeep_happiness, member.prompt,
+    };
+
+    const uint32_t fields_count = static_cast<uint32_t>(sizeof(fields) / sizeof(fields[0]));
+    const uint32_t written = count < fields_count ? count : fields_count;
+    for (uint32_t i = 0; i < written; ++i) {
+        std::snprintf(out + (static_cast<std::size_t>(i) * stride), stride, "%s", fields[i]);
+    }
+
+    return written;
+}
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetQuestLog(uint32_t* words, uint32_t word_capacity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const uint32_t hero = ResolvePlayerHero(base);
+    if (hero == 0u) {
+        return 0;
+    }
+
+    // 102 — QuestLog.
+    const uint32_t log = EntityComponent(base, hero, 102u);
+    if (log == 0u) {
+        return 0;
+    }
+
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const uint32_t begin = GuestWordAt(base, log + 0x10u);
+    const uint32_t end = GuestWordAt(base, log + 0x14u);
+    if (begin == 0u && end == 0u) {
+        return 0;  // an empty log, not a failure
+    }
+
+    if (!plausible(begin) || !plausible(end) || end < begin) {
+        return 0;
+    }
+
+    constexpr uint32_t kStride = 12u;
+    constexpr uint32_t kMaxQuests = 512u;
+
+    // EIGHT WORDS, not three. The world map's quest and job pages show a great deal more than
+    // "does this quest exist": the star rating, both rewards, the objective's `%1` parameter
+    // and the days remaining are all plain fields on the quest object, and the pages are blank
+    // without them. Every offset is from the save serialiser `sub_825237C8`, which names them.
+    constexpr uint32_t kWordsPerQuest = 8u;
+
+    const uint32_t span = end - begin;
+    if ((span % kStride) != 0u || (span / kStride) > kMaxQuests) {
+        return 0;
+    }
+
+    uint32_t found = 0;
+    for (uint32_t at = begin; at < end; at += kStride) {
+        const uint32_t quest = GuestWordAt(base, at + 4u);
+        if (!plausible(quest)) {
+            continue;
+        }
+
+        if (words != nullptr && (found * kWordsPerQuest + 7u) < word_capacity) {
+            uint32_t flags = 0u;
+            flags |= GuestByteAt(base, quest + 12u) != 0u ? 1u : 0u;
+            flags |= GuestByteAt(base, quest + 21u) != 0u ? 2u : 0u;
+            flags |= GuestByteAt(base, quest + 22u) != 0u ? 4u : 0u;
+            flags |= GuestByteAt(base, quest + 77u) != 0u ? 8u : 0u;
+            flags |= GuestByteAt(base, quest + 78u) != 0u ? 16u : 0u;
+
+            // `Primary` and `Active` pick the banner the quest page opens with.
+            flags |= GuestByteAt(base, quest + 20u) != 0u ? 32u : 0u;
+            flags |= GuestByteAt(base, quest + 13u) != 0u ? 64u : 0u;
+
+            uint32_t* row = words + found * kWordsPerQuest;
+            row[0] = GuestWordAt(base, quest + 4u);
+            row[1] = flags;
+            row[2] = GuestWordAt(base, quest + 28u);   // Rating — the star strip's slide
+            row[3] = GuestWordAt(base, quest + 32u);   // RewardRenown
+            row[4] = GuestWordAt(base, quest + 36u);   // RewardMoney
+            row[5] = GuestWordAt(base, quest + 40u);   // CurrentObjectiveParameter, the `%1`
+            row[6] = GuestWordAt(base, quest + 44u);   // DaysRemaining, raw float bits
+
+            // How many task lines it has. The vector at +104/+108 is stride 8,
+            // `{ LHString babelTag; u8 Succeeded; }`; the LAST entry is the current task and
+            // everything before it is a completed one. The tags themselves cross through
+            // RefiiHostGetQuestTasks, which only the highlighted quest ever needs.
+            const uint32_t tasks_begin = GuestWordAt(base, quest + 104u);
+            const uint32_t tasks_end = GuestWordAt(base, quest + 108u);
+            row[7] = plausible(tasks_begin) && tasks_end > tasks_begin &&
+                             ((tasks_end - tasks_begin) % 8u) == 0u &&
+                             (tasks_end - tasks_begin) <= 0x400u
+                         ? (tasks_end - tasks_begin) / 8u
+                         : 0u;
+        }
+
+        ++found;
+    }
+
+    if (GuestWordAt(base, log + 0x10u) != begin || GuestWordAt(base, log + 0x14u) != end) {
+        return 0;
+    }
+
+    return found;
+}
+
+/// ONE JOB'S JOURNEY — its distance and travel time, both already worded by the guest's own
+/// providers. `RefiiHostSetQuestTravel` names the quest; the pump answers a tick later while
+/// screen 23 stands, so the reply carries the record it is for and a page must check it.
+REFII_HOST_ABI_EXPORT void RefiiHostSetQuestTravel(uint32_t record) {
+    refii::vfs::RequestQuestTravel(record);
+}
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetQuestTravel(uint32_t* out_record, char* distance,
+                                                       uint32_t distance_capacity, char* travel,
+                                                       uint32_t travel_capacity, char* region,
+                                                       uint32_t region_capacity, char* prompt,
+                                                       uint32_t prompt_capacity, char* days,
+                                                       uint32_t days_capacity) {
+    const refii::vfs::QuestTravel journey = refii::vfs::QuestTravelSnapshot();
+
+    if (out_record != nullptr) {
+        *out_record = journey.record;
+    }
+
+    WriteOut(journey.distance, distance, distance_capacity);
+    WriteOut(journey.travel, travel, travel_capacity);
+    WriteOut(journey.region, region, region_capacity);
+    WriteOut(journey.prompt, prompt, prompt_capacity);
+    WriteOut(journey.days, days, days_capacity);
+    return journey.known ? 1u : 0u;
+}
+
+/// ONE QUEST'S TASK LINES, as tab-separated Babel TAGS.
+///
+/// The world map's quest page is one concatenated string and the task lines are most of it:
+/// `sub_829AFBC0` emits the LAST entry under "Current Task" and `sub_829AFCC0` bullets every
+/// entry before it under "Completed Tasks". The vector is at `quest+104`/`+108`, stride 8, each
+/// entry `{ LHString babelTag; u8 Succeeded; }` — and `Succeeded` is stored but never read by
+/// the page: POSITION is what makes a task current rather than completed.
+///
+/// Tags cross, not sentences: `sub_8230E268` Babel-resolves each one and substitutes `%1` with
+/// the quest's `CurrentObjectiveParameter`, and the host does both itself.
+///
+/// Keyed by RECORD ID rather than by index, because the list is rebuilt on every ask and an
+/// index taken from a previous walk names a different quest.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetQuestTasks(uint32_t record_id, char* out,
+                                                      uint32_t capacity) {
+    if (out != nullptr && capacity > 0u) {
+        out[0] = '\0';
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const uint32_t hero = ResolvePlayerHero(base);
+    const uint32_t log = hero != 0u ? EntityComponent(base, hero, 102u) : 0u;
+    if (log == 0u) {
+        return 0;
+    }
+
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const uint32_t begin = GuestWordAt(base, log + 0x10u);
+    const uint32_t end = GuestWordAt(base, log + 0x14u);
+    if (!plausible(begin) || !plausible(end) || end < begin || ((end - begin) % 12u) != 0u) {
+        return 0;
+    }
+
+    for (uint32_t at = begin; at < end; at += 12u) {
+        const uint32_t quest = GuestWordAt(base, at + 4u);
+        if (!plausible(quest) || GuestWordAt(base, quest + 4u) != record_id) {
+            continue;
+        }
+
+        const uint32_t tasks = GuestWordAt(base, quest + 104u);
+        const uint32_t tasks_end = GuestWordAt(base, quest + 108u);
+        if (!plausible(tasks) || tasks_end <= tasks || ((tasks_end - tasks) % 8u) != 0u ||
+            (tasks_end - tasks) > 0x400u) {
+            return 0;
+        }
+
+        std::string packed;
+        uint32_t count = 0;
+        for (uint32_t entry = tasks; entry < tasks_end; entry += 8u) {
+            if (count != 0u) {
+                packed.push_back('\t');
+            }
+
+            // The tag is a NARROW string — a Babel key, not display text. Read with this
+            // file's own local reader: the VFS library's is not exported, and calling it links
+            // as a dangling lazy PLT entry that ends the process with a symbol lookup error.
+            packed.append(ReadGuestString(base, entry));
+            ++count;
+        }
+
+        WriteOut(packed, out, capacity);
+        return count;
+    }
+
+    return 0;
+}
+
+/// The items the hero is currently WEARING, two words each — {recordId, category}.
+///
+/// Needed because a clothing list must not offer what is already on: the guest drops the worn
+/// garment from its own list when the stack holds only one (`sub_8242FB28`). Godot builds that
+/// list from the data areas now, so it needs the same fact.
+///
+/// THE CONTAINER, verified in disassembly rather than from the decompiler, which renders the
+/// walk misleadingly (`IsWearingItemOfType`, 0x824C4380):
+///
+///     lwz r11, 0x10(r3)   begin        -> component + 16
+///     lwz r7,  0x14(r3)   end          -> component + 20
+///     lwz r10, 0(r11)     the item     -> element + 0 is an Entity*
+///     lwz r10, 4(r10)     record hash  -> item + 4, the same field sub_824F1C90 matches
+///     addi r11, r11, 0x18 stride       -> 24 bytes per element
+///
+/// `component + 12` is the container OBJECT — the MSVC checked-iterator base word, whose address
+/// is the owner token in every `twui r0, 0x16` guard. It is never read for data and neither do
+/// we. Category is `item + 16` (`sub_824C4418`). There is a SECOND identical vector at
+/// `component + 28`, the pending list, which this must not walk.
+///
+/// NOTHING SYNCHRONISES THIS. No mutator or reader in the component takes a lock, so the guest
+/// assumes single-threaded access, and a push REALLOCATES: `sub_824C6878` allocates, destroys the
+/// old range and frees it before publishing the new pointers. A host walk interleaved with that
+/// dereferences freed memory. So the begin pointer is re-read after the copy and a walk that saw
+/// it move is discarded entirely rather than reported half-torn.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWornItems(uint32_t* words, uint32_t word_capacity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const uint32_t hero = ResolvePlayerHero(base);
+    if (hero == 0u) {
+        return 0;
+    }
+
+    // 15 — AppearanceModifierManager.
+    const uint32_t appearance = EntityComponent(base, hero, 15u);
+    if (appearance == 0u) {
+        return 0;
+    }
+
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const uint32_t begin = GuestWordAt(base, appearance + 16u);
+    const uint32_t end = GuestWordAt(base, appearance + 20u);
+    if (begin == 0u && end == 0u) {
+        return 0;  // an empty vector, not a failure
+    }
+
+    if (!plausible(begin) || !plausible(end) || end < begin) {
+        return 0;
+    }
+
+    constexpr uint32_t kStride = 24u;
+    constexpr uint32_t kMaxItems = 256u;
+    constexpr uint32_t kWordsPerItem = 2u;
+
+    const uint32_t span = end - begin;
+    if ((span % kStride) != 0u || (span / kStride) > kMaxItems) {
+        return 0;
+    }
+
+    uint32_t found = 0;
+    for (uint32_t at = begin; at < end; at += kStride) {
+        const uint32_t item = GuestWordAt(base, at);
+        if (!plausible(item)) {
+            continue;
+        }
+
+        if (words != nullptr && (found * kWordsPerItem + 1u) < word_capacity) {
+            words[found * kWordsPerItem] = GuestWordAt(base, item + 4u);
+            words[found * kWordsPerItem + 1u] = GuestWordAt(base, item + 16u);
+        }
+
+        ++found;
+    }
+
+    // The buffer moved under us — a push reallocated mid-walk, so everything above may have come
+    // out of freed memory. Report nothing rather than something wrong; the next poll is one frame
+    // away and a clothing list briefly offering a worn item is a far smaller fault than acting on
+    // garbage.
+    if (GuestWordAt(base, appearance + 16u) != begin ||
+        GuestWordAt(base, appearance + 20u) != end) {
+        return 0;
     }
 
     return found;
@@ -4845,9 +5727,78 @@ REFII_HOST_ABI_EXPORT void RefiiHostGetInitMarkers(uint32_t* out) {
 /// vtable word reads 0 is the under-construction case, and terminating on it buries every
 /// later entry. The per-vtable tally is what makes the list actionable: one address standing
 /// for 300 entities is a different decision from thirty standing for a dozen each.
+/// EVERY RIG ANIMATES. The guest's per-frame animation loop `sub_8220D1B8` skips an entity
+/// whose visibility predicate `sub_822142E8(comp3, radius)` fails, and that predicate is a
+/// cone test against the guest's own 4:3 camera (`sub_82294468`, `g_WidescreenMode` = 0),
+/// refreshed every fourth frame. Godot draws a wider view, so characters at its edges stood
+/// in their init pose — the skeleton reference copied LOCAL at component init — and walked
+/// about in it. The predicate's first line is `if (*(BYTE*)(comp3 + 202)) return 1;`
+/// (0x82214308): the shipped `SetAsAlwaysInView` script property. Set on every live entity
+/// that has the component; the guest then evaluates and converts each frame.
+/// REFII_ALWAYS_IN_VIEW=0 leaves the guest's cull alone.
+uint32_t g_always_in_view_set = 0;
+static void KeepAnimatedInView(uint8_t* base, uint32_t entity) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("REFII_ALWAYS_IN_VIEW");
+        return value == nullptr || std::string_view(value) != "0";
+    }();
+    if (!enabled) {
+        return;
+    }
+
+    constexpr uint8_t kVisibilityId = 3u;
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read8 = [base](uint32_t at) { return GuestByteAt(base, at); };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    if (((read32(entity + 0x24u) >> kVisibilityId) & 1u) == 0u) {
+        return;
+    }
+
+    const uint32_t components = read32(entity + 0x48u);
+    const uint32_t components_end = read32(entity + 0x4Cu);
+    const uint32_t accelerator = read32(entity + 0x8Cu);
+    uint32_t component = 0u;
+    if (plausible(accelerator) && plausible(components)) {
+        component = read32(components + 8u * read8(accelerator + kVisibilityId) + 4u);
+    } else if (plausible(components) && components_end > components) {
+        for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
+            if (read32(at) == kVisibilityId) {
+                component = read32(at + 4u);
+                break;
+            }
+        }
+    }
+
+    if (!plausible(component)) {
+        return;
+    }
+
+    // The radius at +40 is a finite positive float on this component (ctor default 10000);
+    // anything else is not the component and is left alone.
+    const uint32_t radius_bits = read32(component + 40u);
+    float radius;
+    std::memcpy(&radius, &radius_bits, sizeof(radius));
+    if (!(radius > 0.0f) || !std::isfinite(radius)) {
+        return;
+    }
+
+    if (read8(component + 202u) != 0u) {
+        return;
+    }
+
+    const uint8_t one = 1u;
+    StoreGuest(base, component + 202u, &one, sizeof(one));
+    ++g_always_in_view_set;
+}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_entities, uint32_t* out_unknown,
                               uint32_t* out_unknown_vtables, uint32_t max_unknown_vtables,
                               uint32_t* out_unknown_vtable_count) {
+    static uint32_t walk_serial = 0u;
+    ++walk_serial;
     constexpr uint32_t kEntityStride = 12u;
     constexpr uint16_t kNoDirect = 0xFFFFu;
 
@@ -5113,6 +6064,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
 
         if ((read8(entity + 0x90u) & 0x40u) == 0u) {
             continue;  // not LIVE
+        }
+
+        // Every thirtieth walk: the byte sticks once set, and a spawn waits a second at most.
+        if ((walk_serial % 30u) == 0u) {
+            KeepAnimatedInView(base, entity);
         }
 
         const uint32_t placement = read32(entity + 0x7Cu);
@@ -5495,6 +6451,501 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityComponents(uint32_t entity, uin
 
 /// How many words RefiiHostGetEntityLocomotion writes.
 #define REFII_LOCOMOTION_WORDS 7u
+
+/// How many words RefiiHostGetEntityAnimState writes per clip leaf.
+#define REFII_ANIM_LEAF_WORDS 10u
+
+/// THE BYTES OF ONE BONE MASK NODE — one per LIVE skeleton bone, 0..255, the weight the
+/// overlay applies to that bone (`sub_82B7E3F8` writes `int(w*255+0.5)`, the bool setter 255
+/// or 0; `sub_822A57D0` divides by 255 into the pose buffer's row2.W). Node layout
+/// (`sub_82761CE8`): +28 skeleton id, +36 begin, +40 end of the byte vector. Returns the byte
+/// count written (0 for a node that is not a mask or whose vector is not readable) and, when
+/// asked, the skeleton id the mask was built against.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimMask(uint32_t node, uint8_t* out_bytes, uint32_t capacity,
+                                                    uint32_t* out_skeleton_id) {
+    if (out_skeleton_id != nullptr) {
+        *out_skeleton_id = 0u;
+    }
+    if (out_bytes == nullptr || capacity == 0u) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xE0000000u;
+    };
+    if (!plausible(node) || GuestWordAt(base, node + 20u) != 4u) {
+        return 0u;
+    }
+    const uint32_t begin = GuestWordAt(base, node + 36u);
+    const uint32_t end = GuestWordAt(base, node + 40u);
+    if (!plausible(begin) || end < begin || end - begin > 1024u) {
+        return 0u;
+    }
+    if (out_skeleton_id != nullptr) {
+        *out_skeleton_id = GuestWordAt(base, node + 28u);
+    }
+    uint32_t written = 0u;
+    for (uint32_t at = begin; at < end && written < capacity; ++at) {
+        out_bytes[written++] = GuestByteAt(base, at);
+    }
+    return written;
+}
+
+/// The guest's STATED animation for one rig — the inputs to its own blend tree, so the host
+/// can play the clips itself and own animation the way it owns the UI.
+///
+/// The guest does not sample through Havok: component 19 (the animation controller, active
+/// when `comp19+148 == 3`) holds a std::list of LAYER RECORDS at `comp19+96` (sentinel at
+/// +100, size at +104; node{next +0, record +8}); a second list at +108/+112/+116 carries
+/// masked overlay tracks. Every offset below was decompiled for this export:
+///   record (`sub_821B7BA0`): +8 priority (128 = full override), +12 track, +16 mask,
+///     +20 weight, +24 previous weight, +28 state (0 live, 1 finishing, 2 dead), +36 node
+///   node (`sub_822DC980`): +16 weight, +20 type;
+///     0 clip leaf: +24 clip hash (rex_lhResourceName hash of the lower-cased name, the
+///       animation TOC's key), +28 previous time, +32 current time (seconds), +36 loop byte
+///     1 crossfade: +24 A, +28 B, +32 t          6 crossfade with per-child alphas +36/+40
+///     2 weighted set: vector +28..+32 of children, each weighted by child+16
+///     3 additive: +28 base, +24 additive layer (x child+16)   5 multiply: +28 base, +24 mult
+///     4 bone permute: +24 child
+///   top record (`sub_822013A8`): highest priority whose state != 2.
+/// The fold the guest applies (`sub_82211660`): a priority-128 record overrides everything;
+/// otherwise every live record contributes by its weight. This export FLATTENS each record's
+/// tree to its clip leaves with the product of the weights along the path, tagging additive
+/// leaves, and leaves the blend to the host.
+///
+/// TWO LISTS, TWO ROLES (`sub_82211660`, `sub_82232BF8`, `sub_8220CB18`): list 1 at +96 holds
+/// PRIMARIES — one wins by priority (ties: first in the list), and the guest crossfades it
+/// against the highest-weighted other primary by the winner's own weight; every bone the
+/// winner's clip lacks is the skeleton REST pose (`sub_822351B0`, skel+144). List 2 at +108
+/// holds OVERLAYS, sorted by track then priority, each gated by `(record+16 & top.priority)`
+/// (+16 is a PRIORITY BITMASK, not a bone mask) and composited PER BONE through the type-4
+/// mask node inside its own tree: `wb = mask[bone]/255 * weight`, rotation slerp, translation
+/// and scale lerp, a zero byte leaving the base bone untouched. Folding an overlay as a
+/// primary snaps every bone its clip does not cover to rest — the villager walking in a T pose
+/// while waving.
+///
+/// Out words, REFII_ANIM_LEAF_WORDS (10) per leaf: [0] clip hash, [1] current time bits,
+/// [2] previous time bits, [3] weight bits, [4] flags (bit0 loop, bit1 additive, bit2 OVERLAY,
+/// bits 8..15 record priority, bits 16..23 track), [5] record uid, [6] blend-in seconds
+/// bits, [7] blend-out seconds bits (the record's ramp objects at +40/+48: `+4` is the step
+/// per 15 Hz tick, 1/(seconds·15); 0 when absent), [8] the nearest mask node above the leaf
+/// (0 = none; read it with RefiiHostGetAnimMask), [9] the record's priority bitmask.
+/// Returns the leaf count (0 = no controller or nothing playing). `out_flags`, when given:
+/// bit0 controller active, bit1 has component 97 (dog paw/look IK, a procedural layer),
+/// bit2 replicated tree (netplay; +156 path, not walked).
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint32_t* out_words, uint32_t word_capacity,
+                                                            uint32_t* out_flags) {
+    if (out_flags != nullptr) {
+        *out_flags = 0u;
+    }
+    if (out_words == nullptr || word_capacity < REFII_ANIM_LEAF_WORDS) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xE0000000u;
+    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
+    const auto readf = [read32](uint32_t at) -> float {
+        const uint32_t raw = read32(at);
+        float value;
+        std::memcpy(&value, &raw, sizeof(value));
+        return value;
+    };
+    if (!plausible(entity)) {
+        return 0u;
+    }
+    const auto component = [&](uint32_t id) -> uint32_t {
+        const uint32_t word = read32(entity + 0x24u + ((id / 32u) * 4u));
+        if (((word >> (id % 32u)) & 1u) == 0u) {
+            return 0u;
+        }
+        const uint32_t begin = read32(entity + 0x48u);
+        const uint32_t end = read32(entity + 0x4Cu);
+        const uint32_t accelerator = read32(entity + 0x8Cu);
+        if (plausible(accelerator) && plausible(begin)) {
+            return read32(begin + (8u * read8(accelerator + id)) + 4u);
+        }
+        if (!plausible(begin) || end <= begin || (end - begin) > 0x4000u) {
+            return 0u;
+        }
+        for (uint32_t at = begin; at + 8u <= end; at += 8u) {
+            if (read32(at) == id) {
+                return read32(at + 4u);
+            }
+        }
+        return 0u;
+    };
+
+    const uint32_t controller = component(19u);
+    if (!plausible(controller)) {
+        return 0u;
+    }
+    uint32_t flags = 0u;
+    if (read32(controller + 148u) == 3u) {
+        flags |= 1u;
+    }
+    if (plausible(component(97u))) {
+        flags |= 2u;
+    }
+    if (read8(controller + 576u) != 0u) {
+        flags |= 4u;
+    }
+    if (out_flags != nullptr) {
+        *out_flags = flags;
+    }
+
+    const uint32_t max_leaves = word_capacity / REFII_ANIM_LEAF_WORDS;
+    uint32_t leaves = 0u;
+    uint32_t ramp_in_bits = 0u;
+    uint32_t ramp_out_bits = 0u;
+    const auto ramp_seconds = [&](uint32_t ramp) -> uint32_t {
+        if (!plausible(ramp)) {
+            return 0u;
+        }
+        const float step = readf(ramp + 4u);
+        float seconds = step > 1e-6f && std::isfinite(step) ? 1.0f / (step * 15.0f) : 0.0f;
+        if (!(seconds > 0.0f) || seconds > 5.0f) {
+            seconds = 0.0f;
+        }
+        uint32_t bits;
+        std::memcpy(&bits, &seconds, sizeof(bits));
+        return bits;
+    };
+
+    // Flatten one tree, depth-first, bounded against a torn read.
+    struct Frame {
+        uint32_t node;
+        float weight;
+        bool additive;
+        uint32_t mask;  // the nearest type-4 mask node above this one, 0 when none
+    };
+    Frame stack[64];
+    bool overlay_list = false;
+    uint32_t priority_mask = 0u;
+    const auto flatten = [&](uint32_t root, float weight, uint32_t priority, uint32_t track, uint32_t uid) {
+        int depth = 0;
+        stack[depth++] = Frame{root, weight, false, 0u};
+        int steps = 0;
+        while (depth > 0 && leaves < max_leaves && ++steps < 512) {
+            const Frame frame = stack[--depth];
+            if (!plausible(frame.node)) {
+                continue;
+            }
+            const uint32_t type = read32(frame.node + 20u);
+            const auto push = [&](uint32_t child, float w, bool add, uint32_t mask) {
+                if (depth < 64 && plausible(child)) {
+                    stack[depth++] = Frame{child, w, add, mask};
+                }
+            };
+            switch (type) {
+                case 0u: {
+                    uint32_t* out = out_words + (leaves * REFII_ANIM_LEAF_WORDS);
+                    out[0] = read32(frame.node + 24u);
+                    out[1] = read32(frame.node + 32u);
+                    out[2] = read32(frame.node + 28u);
+                    uint32_t weight_bits;
+                    std::memcpy(&weight_bits, &frame.weight, sizeof(weight_bits));
+                    out[3] = weight_bits;
+                    out[4] = (read8(frame.node + 36u) != 0u ? 1u : 0u) | (frame.additive ? 2u : 0u) |
+                             (overlay_list ? 4u : 0u) |
+                             ((priority & 0xFFu) << 8) | ((track & 0xFFu) << 16);
+                    out[5] = uid;
+                    out[6] = ramp_in_bits;
+                    out[7] = ramp_out_bits;
+                    out[8] = frame.mask;
+                    out[9] = priority_mask;
+                    ++leaves;
+                    break;
+                }
+                case 1u:
+                case 6u: {
+                    const float t = readf(frame.node + 32u);
+                    push(read32(frame.node + 24u), frame.weight * (1.0f - t), frame.additive, frame.mask);
+                    push(read32(frame.node + 28u), frame.weight * t, frame.additive, frame.mask);
+                    break;
+                }
+                case 2u: {
+                    const uint32_t begin = read32(frame.node + 28u);
+                    const uint32_t end = read32(frame.node + 32u);
+                    if (!plausible(begin) || end < begin || end - begin > 4u * 64u) {
+                        break;
+                    }
+                    float total = 0.0f;
+                    for (uint32_t at = begin; at + 4u <= end; at += 4u) {
+                        const uint32_t child = read32(at);
+                        if (plausible(child)) {
+                            total += readf(child + 16u);
+                        }
+                    }
+                    for (uint32_t at = begin; at + 4u <= end; at += 4u) {
+                        const uint32_t child = read32(at);
+                        if (plausible(child)) {
+                            const float w = readf(child + 16u);
+                            push(child, total > 1e-6f ? frame.weight * (w / total) : 0.0f, frame.additive, frame.mask);
+                        }
+                    }
+                    break;
+                }
+                case 3u: {
+                    push(read32(frame.node + 28u), frame.weight, frame.additive, frame.mask);
+                    const uint32_t layer = read32(frame.node + 24u);
+                    if (plausible(layer)) {
+                        push(layer, frame.weight * readf(layer + 16u), true, frame.mask);
+                    }
+                    break;
+                }
+                case 4u:
+                    // THE MASK NODE (`sub_82761CE8`): +24 child, +28 skeleton id, +36..+40 one
+                    // byte per live bone. Its child's leaves carry this node so the host can
+                    // fetch the bytes (RefiiHostGetAnimMask) and composite per bone.
+                    push(read32(frame.node + 24u), frame.weight, frame.additive, frame.node);
+                    break;
+                case 5u:
+                    push(read32(frame.node + 28u), frame.weight, frame.additive, frame.mask);
+                    break;
+                default:
+                    break;
+            }
+        }
+    };
+
+    const auto walk_list = [&](uint32_t list, bool overlay) {
+        const uint32_t sentinel = read32(list + 4u);
+        const uint32_t size = read32(list + 8u);
+        if (!plausible(sentinel) || size == 0u || size > 64u) {
+            return;
+        }
+        // Priority-128 override: only that record plays (`sub_82211824`).
+        uint32_t override_record = 0u;
+        uint32_t node = read32(sentinel);
+        for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
+            const uint32_t record = read32(node + 8u);
+            if (plausible(record) && read32(record + 28u) != 2u && read32(record + 8u) == 128u) {
+                override_record = record;
+            }
+            node = read32(node);
+        }
+        node = read32(sentinel);
+        for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
+            const uint32_t record = read32(node + 8u);
+            node = read32(node);
+            if (!plausible(record) || read32(record + 28u) == 2u) {
+                continue;
+            }
+            if (!overlay && override_record != 0u && record != override_record) {
+                continue;
+            }
+            const float weight = override_record != 0u && record == override_record ? 1.0f : readf(record + 20u);
+            if (weight <= 1e-4f) {
+                continue;
+            }
+            ramp_in_bits = ramp_seconds(read32(record + 40u));
+            ramp_out_bits = ramp_seconds(read32(record + 48u));
+            overlay_list = overlay;
+            priority_mask = read32(record + 16u);
+            flatten(read32(record + 36u), weight, read32(record + 8u), read32(record + 12u), read32(record + 32u));
+        }
+    };
+
+    // THE GUEST'S OWN CHOICE OF ROOT (`sub_82208D70` 0x82208DB4): the tree at +156 plays when
+    // it exists and either the layer list is empty or its highest priority is below 128;
+    // otherwise the layer lists play. Same node types either way.
+    const uint32_t root = read32(controller + 156u);
+    const bool list_empty = read32(controller + 104u) == 0u;
+    const bool root_wins = plausible(root) &&
+                           (list_empty || static_cast<int32_t>(read32(controller + 604u)) < 128);
+    if (root_wins) {
+        ramp_in_bits = 0u;
+        ramp_out_bits = 0u;
+        overlay_list = false;
+        priority_mask = 0xFFFFFFFFu;
+        flatten(root, 1.0f, 0u, 0u, 0u);
+        walk_list(controller + 108u, true);
+        return leaves;
+    }
+
+    walk_list(controller + 96u, false);
+    walk_list(controller + 108u, true);
+    return leaves;
+}
+
+/// How many words RefiiHostGetAttachments writes per attachment record.
+#define REFII_ATTACHMENT_WORDS 4u
+
+/// How many bytes of dummy name it writes per record.
+#define REFII_ATTACHMENT_NAME 64u
+
+/// EVERY LIVE ATTACHMENT THE GUEST HAS STATED — which entity hangs on which entity's dummy.
+///
+/// A weapon, a hat carried in the hand, a prop: each is an ENTITY of its own, and the guest
+/// re-derives its world placement every time the parent moves (`sub_825EBA10` ->
+/// `sub_825EBAA0` -> `sub_825ED2A0`, written into the child's own placement component through
+/// vtable slots +112/+116). That placement is computed from the GUEST's bone pose. Godot now
+/// plays the animation itself, so a child placed from the guest's pose swims against the body
+/// it is supposed to be attached to — the weapons "bounce around and do not match the
+/// character". The host has to hang the child off ITS OWN bone instead, and for that it needs
+/// the guest's STATEMENT of the attachment rather than its result.
+///
+/// The statement lives on the PARENT, component 22 `CECObjectAttachment` (ctor `sub_82635358`,
+/// records built by `sub_825EBBC8`):
+///     att+4          the owner entity
+///     att+16         the list sentinel; att+20 the count. Nodes are {next +0, record +8}.
+///     record+4       handle slot; `*slot` is the CHILD entity
+///     record+8       LHString dummy name on the PARENT, e.g. `Character.Carry.SheathWeaponBack`
+///     record+12      dummy index — the ordinal among equally-named dummies
+///     record+144     ticket, the id `CECDependantEntity` on the child joins back with
+///
+/// The name and index are all the host needs: the dummy is a record in the parent model's own
+/// `.mdl.gmd` attachment table, which Godot already parses, and the offsets the guest composes
+/// (the dummy's local transform and the child's own offset matrix at record+16/+80) are
+/// constant, so the host recovers them once from the guest's own stated result rather than
+/// re-deriving them through a convention it would have to guess.
+///
+/// Words per record: [0] child entity, [1] parent entity, [2] dummy index, [3] ticket.
+/// `out_names` takes REFII_ATTACHMENT_NAME bytes per record, NUL-padded. Returns the record
+/// count, capped at `max_records`.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint32_t max_records,
+                                                       char* out_names) {
+    if (out_words == nullptr || max_records == 0u) {
+        return 0u;
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    const uint32_t manager = GuestWordAt(base, 0x83496B28u);
+    if (!plausible(manager)) {
+        return 0u;
+    }
+
+    /// The entity's component by id — the accelerator byte table at +0x8C when it is there,
+    /// the sorted {id, pointer} pairs at +0x48..+0x4C otherwise. Same walk the entity feed uses.
+    const auto component = [&](uint32_t entity, uint32_t id) -> uint32_t {
+        const uint32_t word = read32(entity + 0x24u + ((id / 32u) * 4u));
+        if (((word >> (id % 32u)) & 1u) == 0u) {
+            return 0u;
+        }
+        const uint32_t begin = read32(entity + 0x48u);
+        const uint32_t end = read32(entity + 0x4Cu);
+        const uint32_t accelerator = read32(entity + 0x8Cu);
+        if (plausible(accelerator) && plausible(begin)) {
+            return read32(begin + (8u * read8(accelerator + id)) + 4u);
+        }
+        if (!plausible(begin) || end <= begin || (end - begin) > 0x4000u) {
+            return 0u;
+        }
+        for (uint32_t at = begin; at + 8u <= end; at += 8u) {
+            if (read32(at) == id) {
+                return read32(at + 4u);
+            }
+        }
+        return 0u;
+    };
+
+    uint32_t written = 0u;
+    uint32_t node = read32(manager + 8u);
+    const uint32_t counted = read32(manager + 0x10u);
+    const uint32_t guard = counted > 0u && counted < 65536u ? counted + 16u : 65536u;
+
+    for (uint32_t steps = 0u; plausible(node) && written < max_records && steps < guard;
+         ++steps) {
+        const uint32_t next = read32(node + 0u);
+        const uint32_t entity = read32(node + 8u);
+        node = next;
+
+        if (!plausible(entity)) {
+            break;
+        }
+
+        if ((read8(entity + 0x90u) & 0x40u) == 0u) {
+            continue;  // not LIVE
+        }
+
+        const uint32_t attachment = component(entity, 22u);
+        if (!plausible(attachment)) {
+            continue;
+        }
+
+        const uint32_t sentinel = read32(attachment + 16u);
+        if (!plausible(sentinel)) {
+            continue;
+        }
+
+        uint32_t link = read32(sentinel);
+        for (uint32_t depth = 0u; depth < 64u && written < max_records; ++depth) {
+            if (link == sentinel || !plausible(link)) {
+                break;
+            }
+
+            const uint32_t record = read32(link + 8u);
+            link = read32(link);
+            if (!plausible(record)) {
+                continue;
+            }
+
+            const uint32_t slot = read32(record + 4u);
+            const uint32_t child = plausible(slot) ? read32(slot) : 0u;
+            if (!plausible(child)) {
+                continue;  // the handle has been released — the record is on its way out
+            }
+
+            // The guest's own gate: `sub_825EBAA0` updates a record only for a child whose
+            // live bit is set, so a child that fails it is not being placed by the attachment.
+            if ((read8(child + 144u) & 0x40u) == 0u) {
+                continue;
+            }
+
+            uint32_t* words = out_words + (written * REFII_ATTACHMENT_WORDS);
+            words[0] = child;
+            words[1] = entity;
+            words[2] = read32(record + 12u);
+            words[3] = read32(record + 144u);
+
+            if (out_names != nullptr) {
+                char* slotName = out_names + (written * REFII_ATTACHMENT_NAME);
+                std::memset(slotName, 0, REFII_ATTACHMENT_NAME);
+                const std::string name = ReadGuestString(base, record + 8u);
+                const std::size_t copied =
+                    name.size() < (REFII_ATTACHMENT_NAME - 1u) ? name.size()
+                                                               : (REFII_ATTACHMENT_NAME - 1u);
+                std::memcpy(slotName, name.data(), copied);
+            }
+
+            ++written;
+        }
+    }
+
+    return written;
+}
 
 /// The locomotion state a character is IN, by name, plus the gates that state was chosen under.
 ///
@@ -5996,6 +7447,566 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMenuRow(uint32_t index, char* out_nam
                                 out_id, out_event_type, out_generation, out_rating);
 }
 
+/// The SCREEN the captured rows belong to, or 0xFFFFFFFF when no in-game screen states one.
+///
+/// The capture is one list, so a template sourced `capture:Root` used to take whatever was
+/// spawned last, whoever spawned it — the front end's `New Game` and `Continue` came up on the
+/// real-estate screen above its own rows. This is the key that was missing: `manager+4` off the
+/// in-game GUI, read by the payload at the boundary that clears the list. Compare it with the
+/// screen a template is bound to and reject a population that belongs to another.
+/// Raw guest words for the debug channel — the microscope of last resort.
+///
+/// Every deep UI bug this week ended at the same wall: a pointer chain whose next hop nobody
+/// could see without another native rebuild. The world-map provider's output sat at a live
+/// address holding live pointers, readable only by adding one more log and paying one more
+/// fifteen-minute cycle. This reads N words at an address so the question costs one call.
+/// Read-only, loopback-gated by the debug server; returns how many words were readable.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostPeek(uint32_t addr, uint32_t* out_words,
+                                             uint32_t count) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr || out_words == nullptr) return 0;
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) return 0;
+
+    if (count > 64u) count = 64u;
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t at = addr + i * 4u;
+        if (at < 0x10000u || at >= 0xC0000000u) return i;
+        out_words[i] = GuestWordAt(base, at);
+    }
+
+    return count;
+}
+
+// ========================= ReXGlue runtime introspection (debug channel) =========================
+//
+// The runtime the guest runs IN, exposed the same way RefiiHostPeek exposes its memory: read-only
+// answers for the debug channel, so a frozen run can name its own stuck thread instead of needing
+// gdb as a parent. Everything here reaches public rex:: API through Runtime::instance() — no
+// shadow edits, no kernel edits. RefiiHostSetCvar is the one write, and the cvar registry's own
+// lifecycle validation decides whether it lands.
+
+/// Fixed-stride string table: slot `index` of `out`, truncating. Stride includes the NUL.
+static void WriteSlot(char* out, uint32_t stride, uint32_t index, const std::string& text) {
+    if (out == nullptr || stride == 0u) return;
+    char* slot = out + static_cast<size_t>(index) * stride;
+    const size_t copied = text.size() < stride - 1u ? text.size() : stride - 1u;
+    std::memcpy(slot, text.data(), copied);
+    slot[copied] = '\0';
+}
+
+/// Every kernel-registered thread. Flags: bit0 guest-created, bit1 main thread, bit2 running.
+/// r1 and lr are read from the LIVE context without stopping the thread — torn values are
+/// possible on a running thread and exact on a parked one, which is the case that matters.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGuestThreads(
+    uint32_t* out_tids, uint32_t* out_flags, int32_t* out_priority, uint32_t* out_cpu,
+    uint32_t* out_r1, uint32_t* out_lr, char* out_names, uint32_t name_stride,
+    uint32_t capacity) {
+    rex::system::KernelState* state = rex::system::kernel_state();
+    if (state == nullptr) return 0;
+
+    auto threads =
+        state->object_table()->GetObjectsByType<rex::system::XThread>();
+    uint32_t written = 0;
+    for (const auto& thread : threads) {
+        if (written >= capacity) break;
+        if (out_tids != nullptr) out_tids[written] = thread->thread_id();
+        if (out_flags != nullptr) {
+            out_flags[written] = (thread->is_guest_thread() ? 1u : 0u) |
+                                 (thread->main_thread() ? 2u : 0u) |
+                                 (thread->is_running() ? 4u : 0u);
+        }
+        if (out_priority != nullptr) out_priority[written] = thread->priority();
+        if (out_cpu != nullptr) out_cpu[written] = thread->active_cpu();
+
+        PPCContext* context =
+            thread->thread_state() != nullptr ? thread->thread_state()->context() : nullptr;
+        if (out_r1 != nullptr) out_r1[written] = context != nullptr ? context->r1.u32 : 0u;
+        if (out_lr != nullptr)
+            out_lr[written] = context != nullptr ? static_cast<uint32_t>(context->lr) : 0u;
+
+        WriteSlot(out_names, name_stride, written,
+                  thread->thread() != nullptr ? thread->thread()->name() : std::string());
+        ++written;
+    }
+
+    return written;
+}
+
+/// Guest backtrace for one thread id, innermost first. Frame 0 is the context's own LR (a leaf's
+/// return address exists nowhere else); the rest walk the back chain.
+///
+/// The walk is the title's own ABI, verified in the binary: every one of 45313 frames is a
+/// 32-bit `stwu r1, -X(r1)` (zero stdu), so the back chain is a 4-byte word at [r1]; and both
+/// prologue conventions save LR at back-chain minus 8 — `stw r12, -8(r1)` at 0x82170CCC (plain)
+/// and 0x82CA9418 (__savegprlr_*), 24679 of 24715 `mflr r12` functions. So:
+///
+///     back = load32(r1);  lr = load32(back - 8);  r1 = back;  repeat
+///
+/// terminating on 0, a non-ascending chain, or an unreadable word.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestBacktrace(uint32_t tid, uint32_t* out_frames,
+                                                       uint32_t capacity) {
+    rex::system::KernelState* state = rex::system::kernel_state();
+    auto* memory = SafeKernelMemory();
+    if (state == nullptr || memory == nullptr || out_frames == nullptr || capacity == 0u) return 0;
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) return 0;
+
+    auto thread = state->GetThreadByID(tid);
+    if (!thread || thread->thread_state() == nullptr) return 0;
+    PPCContext* context = thread->thread_state()->context();
+    if (context == nullptr) return 0;
+
+    uint32_t written = 0;
+    out_frames[written++] = static_cast<uint32_t>(context->lr);
+
+    uint32_t sp = context->r1.u32;
+    while (written < capacity && sp >= 0x10000u && sp < 0xC0000000u) {
+        const uint32_t back = GuestWordAt(base, sp);
+        if (back == 0u || back <= sp) break;
+        const uint32_t lr = GuestWordAt(base, back - 8u);
+        if (lr == 0u) break;
+        out_frames[written++] = lr;
+        sp = back;
+    }
+
+    return written;
+}
+
+/// Every object in the kernel handle table: handle, type (rex::system::XObject::Type), name.
+/// `out_total` is the table's full population so a clamped read says it was clamped.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetKernelObjects(uint32_t* out_handles,
+                                                         uint32_t* out_types, char* out_names,
+                                                         uint32_t name_stride, uint32_t capacity,
+                                                         uint32_t* out_total) {
+    if (out_total != nullptr) *out_total = 0;
+    rex::system::KernelState* state = rex::system::kernel_state();
+    if (state == nullptr) return 0;
+
+    auto objects = state->object_table()->GetAllObjects();
+    if (out_total != nullptr) *out_total = static_cast<uint32_t>(objects.size());
+
+    uint32_t written = 0;
+    for (const auto& object : objects) {
+        if (written >= capacity) break;
+        if (out_handles != nullptr) out_handles[written] = object->handle();
+        if (out_types != nullptr) out_types[written] = static_cast<uint32_t>(object->type());
+        WriteSlot(out_names, name_stride, written, object->name());
+        ++written;
+    }
+
+    return written;
+}
+
+/// Every rex::perf counter, LIVE values. Snapshot counters are deliberately not used: they
+/// rotate in Profiler::Flip(), which lives in the command processor — compiled out with the
+/// renderer — so in this build they would read as an eternal zero. Live counters with no reset
+/// site are run totals; rates come from deltas between two reads, taken by the caller.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPerfCounters(int64_t* out_values, char* out_names,
+                                                        uint32_t name_stride, uint32_t capacity) {
+    const uint32_t count = static_cast<uint32_t>(rex::perf::CounterId::kCount);
+    uint32_t written = 0;
+    for (uint32_t i = 0; i < count && written < capacity; ++i) {
+        const auto id = static_cast<rex::perf::CounterId>(i);
+        if (out_values != nullptr) out_values[written] = rex::perf::GetCounter(id);
+        WriteSlot(out_names, name_stride, written, rex::perf::CounterName(id));
+        ++written;
+    }
+
+    return written;
+}
+
+/// A page of the kernel export tables, as "module!Name" plus ordinal and flags (bit0
+/// implemented, bit1 variable). `only_unimplemented` filters to the stubs the title could hit.
+/// `out_total` is the filtered population. Per-call counts are NOT available: Export carries a
+/// call_count field but nothing increments it in recompiled builds — do not report these as
+/// call frequencies.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetKernelExports(uint32_t first,
+                                                         uint32_t only_unimplemented,
+                                                         uint32_t* out_ordinals,
+                                                         uint32_t* out_flags, char* out_names,
+                                                         uint32_t name_stride, uint32_t capacity,
+                                                         uint32_t* out_total) {
+    if (out_total != nullptr) *out_total = 0;
+    rex::Runtime* runtime = rex::Runtime::instance();
+    if (runtime == nullptr || runtime->export_resolver() == nullptr) return 0;
+
+    uint32_t matched = 0;
+    uint32_t written = 0;
+    for (const auto& table : runtime->export_resolver()->tables()) {
+        for (const rex::runtime::Export* entry : table.exports_by_name()) {
+            if (entry == nullptr) continue;
+            if (only_unimplemented != 0u && entry->is_implemented()) continue;
+            const uint32_t index = matched++;
+            if (index < first || written >= capacity) continue;
+            if (out_ordinals != nullptr) out_ordinals[written] = entry->ordinal;
+            if (out_flags != nullptr) {
+                out_flags[written] =
+                    (entry->is_implemented() ? 1u : 0u) |
+                    (entry->type == rex::runtime::Export::Type::kVariable ? 2u : 0u);
+            }
+            WriteSlot(out_names, name_stride, written, table.module_name() + "!" + entry->name);
+            ++written;
+        }
+    }
+
+    if (out_total != nullptr) *out_total = matched;
+    return written;
+}
+
+/// One cvar by registry index: name, live value, default, category, type
+/// (rex::cvar::FlagType), lifecycle, flags (bit0 modified from default, bit1 debug-only).
+/// Returns 0 past the end. Commands have no value; their slots come back empty.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCvarInfo(uint32_t index, char* out_name,
+                                                    uint32_t name_capacity, char* out_value,
+                                                    uint32_t value_capacity, char* out_default,
+                                                    uint32_t default_capacity, char* out_category,
+                                                    uint32_t category_capacity,
+                                                    uint32_t* out_type, uint32_t* out_lifecycle,
+                                                    uint32_t* out_flags) {
+    const auto& registry = rex::cvar::GetRegistry();
+    if (index >= registry.size()) return 0;
+    const rex::cvar::FlagEntry& entry = registry[index];
+
+    WriteSlot(out_name, name_capacity, 0, entry.name);
+    WriteSlot(out_value, value_capacity, 0,
+              entry.getter ? entry.getter() : std::string());
+    WriteSlot(out_default, default_capacity, 0, entry.default_value);
+    WriteSlot(out_category, category_capacity, 0, entry.category);
+    if (out_type != nullptr) *out_type = static_cast<uint32_t>(entry.type);
+    if (out_lifecycle != nullptr) *out_lifecycle = static_cast<uint32_t>(entry.lifecycle);
+    if (out_flags != nullptr) {
+        *out_flags = (rex::cvar::HasNonDefaultValue(entry.name) ? 1u : 0u) |
+                     (entry.is_debug_only ? 2u : 0u);
+    }
+
+    return 1;
+}
+
+REFII_HOST_ABI_EXPORT int32_t RefiiHostGetCvarCount(void) {
+    return static_cast<int32_t>(rex::cvar::GetRegistry().size());
+}
+
+/// Sets one cvar through the registry's own validator — lifecycle, range and allowed-value
+/// checks are its, not ours. Returns 1 when the registry accepted the value.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostSetCvar(const char* name, const char* value) {
+    if (name == nullptr || value == nullptr) return 0;
+    return rex::cvar::SetFlagByName(name, value) ? 1u : 0u;
+}
+
+/// Resolves one guest path against the live VFS. Returns bit0 = an entry resolved (absolute
+/// path, size and attributes filled), bit1 = the path's root is a symbolic link (target
+/// filled) — so "the link exists but resolves to nothing" is distinguishable from "no such
+/// mount", which is the wrong-naming failure this project has already had.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostVfsResolve(const char* guest_path, char* out_absolute,
+                                                   uint32_t absolute_capacity, char* out_link,
+                                                   uint32_t link_capacity, uint64_t* out_size,
+                                                   uint32_t* out_attributes) {
+    if (out_size != nullptr) *out_size = 0;
+    if (out_attributes != nullptr) *out_attributes = 0;
+    if (guest_path == nullptr) return 0;
+    rex::Runtime* runtime = rex::Runtime::instance();
+    if (runtime == nullptr || runtime->file_system() == nullptr) return 0;
+
+    uint32_t result = 0;
+
+    std::string path(guest_path);
+    std::string link_target;
+    const size_t separator = path.find_first_of("\\/");
+    const std::string root = separator == std::string::npos ? path : path.substr(0, separator);
+    if (runtime->file_system()->FindSymbolicLink(root, link_target)) {
+        result |= 2u;
+        WriteSlot(out_link, link_capacity, 0, link_target);
+    }
+
+    rex::filesystem::Entry* entry = runtime->file_system()->ResolvePath(path);
+    if (entry != nullptr) {
+        result |= 1u;
+        WriteSlot(out_absolute, absolute_capacity, 0, entry->absolute_path());
+        if (out_size != nullptr) *out_size = entry->size();
+        if (out_attributes != nullptr) *out_attributes = entry->attributes();
+    }
+
+    return result;
+}
+
+/// The guest arena's identity, for OUT-OF-PROCESS memory readers — the gdb-equivalent path.
+///
+/// The whole guest address space is one named shared-memory object (`Memory::Initialize`
+/// backs 4GB+512MB with `xenia_memory_<tick>`), so any same-user process can read it without
+/// ptrace: on Linux it is a file in /dev/shm (and a crashed run's leak is a full post-mortem
+/// image); on Windows the mapping is named `Local\xenia_memory_<tick>` and
+/// ReadProcessMemory(membase + guest_address) reads through this process's own page tables.
+/// The name here is the BARE name — the reader adds the platform prefix. `out_membase` is the
+/// host virtual base of the guest's views, which is what ReadProcessMemory needs.
+///
+/// This must be readable while the game is FROZEN, which is exactly when the debug channel —
+/// served from the host's main thread — cannot answer. So the identity is published into the
+/// handshake file the moment the guest is up, and learned by readers BEFORE they need it.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGuestArenaInfo(char* out_name, uint32_t name_capacity,
+                                                          uint64_t* out_membase) {
+    if (out_membase != nullptr) *out_membase = 0;
+    rex::memory::Memory* memory = SafeKernelMemory();
+    if (memory == nullptr) return 0;
+
+    WriteSlot(out_name, name_capacity, 0, memory->file_name().string());
+    if (out_membase != nullptr) {
+        *out_membase = reinterpret_cast<uint64_t>(memory->virtual_membase());
+    }
+
+    return 1;
+}
+
+// ============================ Debug instrumentation batch (ABI 113) ============================
+
+/// One FrameMark per presented host frame. Profiler::Flip() is otherwise called only by the
+/// command processor, which this build compiles out — so without this the Tracy timeline has no
+/// frame boundaries and the perf snapshot counters never rotate. Calling it here makes
+/// GetSnapshotCounter mean "last frame" and arms the perf_log_csv cvar's per-frame writer.
+REFII_HOST_ABI_EXPORT void RefiiHostFrameMark(void) { rex::perf::Profiler::Flip(); }
+
+/// Per-frame counter snapshots — meaningful once RefiiHostFrameMark runs each frame.
+/// Accumulators are the LAST FRAME's count; gauges are their value at the last flip.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPerfSnapshots(int64_t* out_values, char* out_names,
+                                                         uint32_t name_stride, uint32_t capacity) {
+    const uint32_t count = static_cast<uint32_t>(rex::perf::CounterId::kCount);
+    uint32_t written = 0;
+    for (uint32_t i = 0; i < count && written < capacity; ++i) {
+        const auto id = static_cast<rex::perf::CounterId>(i);
+        if (out_values != nullptr) out_values[written] = rex::perf::GetSnapshotCounter(id);
+        WriteSlot(out_names, name_stride, written, rex::perf::CounterName(id));
+        ++written;
+    }
+
+    return written;
+}
+
+/// Tracy from the HOST side, so Godot's phases share the guest threads' timeline. All four are
+/// no-ops in a build without profiling. Zone contexts cross the ABI packed as
+/// id | (active << 32); plot names are interned because Tracy keeps the pointer.
+#ifdef REXGLUE_ENABLE_PROFILING
+REFII_HOST_ABI_EXPORT void RefiiHostTraceMessage(const char* text) {
+    if (text != nullptr) {
+        ___tracy_emit_message(text, std::strlen(text), 0);
+    }
+}
+
+REFII_HOST_ABI_EXPORT uint64_t RefiiHostTraceZoneBegin(const char* name) {
+    if (name == nullptr) return 0;
+    const uint64_t srcloc = ___tracy_alloc_srcloc_name(
+        0, "host", 4, "godot", 5, name, std::strlen(name), 0);
+    const TracyCZoneCtx zone = ___tracy_emit_zone_begin_alloc(srcloc, 1);
+    return static_cast<uint64_t>(zone.id) | (static_cast<uint64_t>(zone.active) << 32);
+}
+
+REFII_HOST_ABI_EXPORT void RefiiHostTraceZoneEnd(uint64_t packed) {
+    TracyCZoneCtx zone;
+    zone.id = static_cast<uint32_t>(packed);
+    zone.active = static_cast<int>(packed >> 32);
+    ___tracy_emit_zone_end(zone);
+}
+
+REFII_HOST_ABI_EXPORT void RefiiHostTracePlot(const char* name, double value) {
+    if (name == nullptr) return;
+    static std::mutex names_mutex;
+    static std::set<std::string>* interned = new std::set<std::string>();
+    const char* stable;
+    {
+        std::lock_guard<std::mutex> guard(names_mutex);
+        stable = interned->insert(name).first->c_str();
+    }
+    ___tracy_emit_plot(stable, value);
+}
+#else
+REFII_HOST_ABI_EXPORT void RefiiHostTraceMessage(const char*) {}
+REFII_HOST_ABI_EXPORT uint64_t RefiiHostTraceZoneBegin(const char*) { return 0; }
+REFII_HOST_ABI_EXPORT void RefiiHostTraceZoneEnd(uint64_t) {}
+REFII_HOST_ABI_EXPORT void RefiiHostTracePlot(const char*, double) {}
+#endif
+
+/// Which heap owns an address, and its protection — the validity check for a pointer chain,
+/// and the write-permission gate RefiiHostPoke enforces. Returns 0 when no heap covers it.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostHeapLookup(uint32_t addr, uint32_t* out_heap_base,
+                                                   uint32_t* out_heap_size, uint32_t* out_page,
+                                                   uint32_t* out_protect) {
+    if (out_heap_base != nullptr) *out_heap_base = 0;
+    if (out_heap_size != nullptr) *out_heap_size = 0;
+    if (out_page != nullptr) *out_page = 0;
+    if (out_protect != nullptr) *out_protect = 0;
+    rex::memory::Memory* memory = SafeKernelMemory();
+    if (memory == nullptr) return 0;
+    const rex::memory::BaseHeap* heap = memory->LookupHeap(addr);
+    if (heap == nullptr) return 0;
+    if (out_heap_base != nullptr) *out_heap_base = heap->heap_base();
+    if (out_heap_size != nullptr) *out_heap_size = heap->heap_size();
+    if (out_page != nullptr) *out_page = heap->page_size();
+    uint32_t protect = 0;
+    if (const_cast<rex::memory::BaseHeap*>(heap)->QueryProtect(addr, &protect) &&
+        out_protect != nullptr) {
+        *out_protect = protect;
+    }
+
+    return 1;
+}
+
+/// One deliberate guest word write — the flip-a-byte-and-look experiment. Refused unless the
+/// page is heap-tracked and WRITABLE (a write to protected text would fault on the spot), and
+/// only reachable through the loopback debug channel. Returns 1 on the write.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostPoke(uint32_t addr, uint32_t value) {
+    rex::memory::Memory* memory = SafeKernelMemory();
+    if (memory == nullptr || addr < 0x10000u || addr >= 0xC0000000u) return 0;
+    rex::memory::BaseHeap* heap =
+        const_cast<rex::memory::BaseHeap*>(memory->LookupHeap(addr));
+    uint32_t protect = 0;
+    if (heap == nullptr || !heap->QueryProtect(addr, &protect) ||
+        (protect & rex::memory::kMemoryProtectWrite) == 0) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) return 0;
+    const uint32_t swapped = __builtin_bswap32(value);
+    std::memcpy(base + addr, &swapped, sizeof(swapped));
+    return 1;
+}
+
+/// Dynamic probes: swap a guest function's dispatch slot for a recording thunk that counts the
+/// call, keeps the last arguments and LR, and runs the original. The pointer swap is one
+/// aligned store, so a racing call takes old or new whole — and `original` is written before
+/// the swap and never cleared, so an in-flight thunk always has a target. What this is NOT:
+/// a breakpoint. Nothing stops; the record is best-effort racy and that is the deal.
+extern "C++" {
+namespace probe {
+
+constexpr int kSlots = 16;
+
+struct Slot {
+    std::atomic<uint32_t> address{0};
+    PPCFunc* original = nullptr;
+    std::atomic<uint64_t> hits{0};
+    std::atomic<uint32_t> last_lr{0};
+    std::atomic<uint64_t> last_args[6] = {};
+};
+
+Slot g_slots[kSlots];
+
+template <int N>
+void Thunk(PPCContext& ctx, uint8_t* base) {
+    Slot& slot = g_slots[N];
+    slot.hits.fetch_add(1, std::memory_order_relaxed);
+    slot.last_lr.store(static_cast<uint32_t>(ctx.lr), std::memory_order_relaxed);
+    slot.last_args[0].store(ctx.r3.u64, std::memory_order_relaxed);
+    slot.last_args[1].store(ctx.r4.u64, std::memory_order_relaxed);
+    slot.last_args[2].store(ctx.r5.u64, std::memory_order_relaxed);
+    slot.last_args[3].store(ctx.r6.u64, std::memory_order_relaxed);
+    slot.last_args[4].store(ctx.r7.u64, std::memory_order_relaxed);
+    slot.last_args[5].store(ctx.r8.u64, std::memory_order_relaxed);
+    if (slot.original != nullptr) {
+        slot.original(ctx, base);
+    }
+}
+
+template <int... Is>
+constexpr std::array<PPCFunc*, kSlots> MakeThunks(std::integer_sequence<int, Is...>) {
+    return {&Thunk<Is>...};
+}
+
+const std::array<PPCFunc*, kSlots> kThunks = MakeThunks(std::make_integer_sequence<int, kSlots>{});
+
+}  // namespace probe
+}  // extern "C++"
+
+/// Arms a probe on a guest function START address. Returns the slot, -1 when all 16 are used,
+/// -2 when the address has no dispatch entry (not a recompiled function start), -3 with no
+/// runtime. Probing the same address twice returns its existing slot.
+REFII_HOST_ABI_EXPORT int32_t RefiiHostProbeSet(uint32_t addr) {
+    rex::Runtime* runtime = rex::Runtime::instance();
+    if (runtime == nullptr || runtime->function_dispatcher() == nullptr) return -3;
+    for (int i = 0; i < probe::kSlots; ++i) {
+        if (probe::g_slots[i].address.load(std::memory_order_relaxed) == addr) return i;
+    }
+
+    PPCFunc* original = runtime->function_dispatcher()->GetFunction(addr);
+    if (original == nullptr) return -2;
+    for (int i = 0; i < probe::kSlots; ++i) {
+        uint32_t expected = 0;
+        if (probe::g_slots[i].address.compare_exchange_strong(expected, addr)) {
+            probe::g_slots[i].original = original;
+            probe::g_slots[i].hits.store(0, std::memory_order_relaxed);
+            if (!runtime->function_dispatcher()->SetFunction(addr, probe::kThunks[i])) {
+                probe::g_slots[i].address.store(0, std::memory_order_relaxed);
+                return -2;
+            }
+
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+/// Restores the original dispatch entry. `original` stays set for any in-flight thunk.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostProbeClear(int32_t slot) {
+    if (slot < 0 || slot >= probe::kSlots) return 0;
+    const uint32_t addr = probe::g_slots[slot].address.load(std::memory_order_relaxed);
+    if (addr == 0) return 0;
+    rex::Runtime* runtime = rex::Runtime::instance();
+    if (runtime != nullptr && runtime->function_dispatcher() != nullptr) {
+        runtime->function_dispatcher()->SetFunction(addr, probe::g_slots[slot].original);
+    }
+
+    probe::g_slots[slot].address.store(0, std::memory_order_relaxed);
+    return 1;
+}
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostProbeRead(int32_t slot, uint32_t* out_addr,
+                                                  uint64_t* out_hits, uint32_t* out_last_lr,
+                                                  uint64_t* out_args, uint32_t args_capacity) {
+    if (slot < 0 || slot >= probe::kSlots) return 0;
+    const probe::Slot& held = probe::g_slots[slot];
+    if (out_addr != nullptr) *out_addr = held.address.load(std::memory_order_relaxed);
+    if (out_hits != nullptr) *out_hits = held.hits.load(std::memory_order_relaxed);
+    if (out_last_lr != nullptr) *out_last_lr = held.last_lr.load(std::memory_order_relaxed);
+    for (uint32_t i = 0; i < args_capacity && i < 6u; ++i) {
+        out_args[i] = held.last_args[i].load(std::memory_order_relaxed);
+    }
+
+    return 1;
+}
+
+/// The last debug-call / debug-lua result the tick pump recorded — see guest_tick_pump.cpp's
+/// drain. The sequence number says whether a posted call has finished yet.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDebugCallResult(uint64_t* out_seq, uint32_t* out_addr,
+                                                           uint64_t* out_r3, char* out_note,
+                                                           uint32_t note_capacity) {
+    return refii::vfs::DebugCallResult(out_seq, out_addr, out_r3, out_note, note_capacity);
+}
+
+/// Every socket in the kernel handle table: handle, bound guest port, host native handle.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGuestSockets(uint32_t* out_handles,
+                                                        uint32_t* out_ports,
+                                                        uint64_t* out_native,
+                                                        uint32_t capacity) {
+    rex::system::KernelState* state = rex::system::kernel_state();
+    if (state == nullptr) return 0;
+
+    auto sockets = state->object_table()->GetObjectsByType<rex::system::XSocket>();
+    uint32_t written = 0;
+    for (const auto& socket : sockets) {
+        if (written >= capacity) break;
+        if (out_handles != nullptr) out_handles[written] = socket->handle();
+        if (out_ports != nullptr) out_ports[written] = socket->bound_port();
+        if (out_native != nullptr) out_native[written] = socket->native_handle();
+        ++written;
+    }
+
+    return written;
+}
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMenuScreenId(void) {
+    return refii::vfs::MenuScreenId();
+}
+
 /// One captured row's DISPLAY LABEL — String2, the localised text with its decorations,
 /// decoded from the wide staging string at capture. Returns the same total count as
 /// RefiiHostGetMenuRow, so the two calls describe one list.
@@ -6275,6 +8286,47 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
         return 0u;
     }
 
+    // THE EYES ARE NOT MORPH PARTS. They are component 7 `CECGraphicAppearanceEyes`' own two
+    // render instances: the right eye model hash at comp7+0x18 (`sub_8259D380`, `result[6]`)
+    // and the left at comp7+0x28 (`sub_8259D3F8`, `result[10]`, which already holds the RIGHT
+    // model when `BodgeEyes` at comp7+81 is set). The eye-case fields the GDB also names are
+    // read and discarded by the guest (`sub_825B5160` 0x825B56E0/0x825B56F4) and are not
+    // here. Both are appended after the parts so the host can hang them on
+    // `Shadow_R_Eye`/`Shadow_L_Eye` the way the guest does (`sub_82209480`). Nothing is
+    // appended when the component is absent or its `Enabled` byte at +0x60 is clear.
+    constexpr uint8_t kEyesComponentId = 7u;
+    uint32_t eyes = 0u;
+    {
+        const uint32_t eyes_present = read32(entity + 0x24u + ((uint32_t)(kEyesComponentId) / 32u) * 4u);
+        if (((eyes_present >> (kEyesComponentId % 32u)) & 1u) != 0u) {
+            if (plausible(accelerator) && plausible(components)) {
+                eyes = read32(components + 8u * read8(accelerator + kEyesComponentId) + 4u);
+            } else if (plausible(components) && components_end > components) {
+                for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
+                    if (read32(at) == kEyesComponentId) {
+                        eyes = read32(at + 4u);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    const auto append_eyes = [&](uint32_t written) -> uint32_t {
+        if (!plausible(eyes) || read8(eyes + 0x60u) == 0u) {
+            return written;
+        }
+        const uint32_t right = read32(eyes + 0x18u);
+        const uint32_t left = read32(eyes + 0x28u);
+        if (right != 0u && written < max_hashes) {
+            out_hashes[written++] = right;
+        }
+        if (left != 0u && written < max_hashes) {
+            out_hashes[written++] = left;
+        }
+        return written;
+    };
+
     // THE BUILT LIST IS THE DRESSED CHARACTER, AND IT IS THE ONE TO READ.
     //
     // The source list at +0x28 holds ONLY what the CharacterCreationRecord named — head, torso,
@@ -6335,7 +8387,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
         }
 
         if (written != 0u) {
-            return written;
+            return append_eyes(written);
         }
     }
 
@@ -6357,7 +8409,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
         }
     }
 
-    return written;
+    return append_eyes(written);
 }
 
 /// One live character's SKELETON POSE, so Godot can drive a Skeleton3D from the guest.
@@ -8286,6 +10338,235 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudMeters(uint32_t* out_hashes, float
     return found;
 }
 
+/// The guest's expression/job timing meter object, `M = *(*(GUI+32)+44)`, as the fields the
+/// HUD needs to draw it. ABI 114. The guest RUNS the meter (its natives are observed, not
+/// suppressed: `StartExpressionMeterPip` → `sub_823D2120`, the pip tick `sub_822ACBF8`, the
+/// judge `sub_823D21C0` on the guest's own A press) and answers its own predicates from this
+/// object; the host only reads it. Layout from the decompile: +0 on, +4 mode (1 pip hero A,
+/// 2 pip hero B, 3 bar-job fill), +12/+13 pip armed A/B, +14 latched, +16 position 0..100,
+/// +20 speed %/s, +36/+37 hit A/B, +38 dynamic fill, +40 colour band (0 low, 1 med, 2 high).
+///
+/// values: [0] on, [1] mode, [2] armedA, [3] armedB, [4] latched, [5] position, [6] speed,
+/// [7] hitA, [8] hitB, [9] dynamic, [10] band. Returns the count written, 0 with no meter.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetExpressionMeter(float* out_values, uint32_t capacity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr || out_values == nullptr || capacity < 11u) {
+        return 0u;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
+    const uint32_t hud = plausible(gui) ? GuestWordAt(base, gui + 32u) : 0u;
+    const uint32_t meter = plausible(hud) ? GuestWordAt(base, hud + 44u) : 0u;
+    if (!plausible(meter)) {
+        return 0u;
+    }
+
+    const auto byte_at = [base](uint32_t addr) -> float {
+        const uint32_t word = GuestWordAt(base, addr & ~3u);
+        return static_cast<float>((word >> (8u * (3u - (addr & 3u)))) & 0xFFu);
+    };
+    const auto float_at = [base](uint32_t addr) -> float {
+        const uint32_t raw = GuestWordAt(base, addr);
+        float value;
+        std::memcpy(&value, &raw, sizeof(value));
+        return value;
+    };
+
+    out_values[0] = byte_at(meter + 0u);
+    out_values[1] = static_cast<float>(static_cast<int32_t>(GuestWordAt(base, meter + 4u)));
+    out_values[2] = byte_at(meter + 12u);
+    out_values[3] = byte_at(meter + 13u);
+    out_values[4] = byte_at(meter + 14u);
+    out_values[5] = float_at(meter + 16u);
+    out_values[6] = float_at(meter + 20u);
+    out_values[7] = byte_at(meter + 36u);
+    out_values[8] = byte_at(meter + 37u);
+    out_values[9] = byte_at(meter + 38u);
+    out_values[10] = static_cast<float>(static_cast<int32_t>(GuestWordAt(base, meter + 40u)));
+    return 11u;
+}
+
+/// The TopBox manager's FRONT record — the box the HUD's `TopBox` group is showing. ABI 115.
+///
+/// `mgr = *(*(GUI+32)+88)`; `sub_8230D4F0`: channels are a vector at `mgr+8..+12` of Channel*,
+/// each channel's records at `+4..+8` of Record*, and the front is the LAST non-null record of
+/// the FIRST non-empty channel. Record (32 bytes, filled by `sub_823033D0` at 0x82303640–a4):
+/// +0 FNV1(name), +4 title tag hash, +12 lifetime ms (−1 forever), +16 ShowA, +17 IsHoldA,
+/// +24 ShowY, +25 IsHoldY. Records enter through Lua natives AND natively (the quest objective,
+/// `sub_8251D818`), which is why the host reads the manager rather than its own copy of the calls.
+///
+/// words: [0] present, [1] title hash, [2] showA, [3] holdA, [4] showY, [5] holdY, [6] channel,
+/// [7] name hash, [8] lifetime ms as int. Returns 9, or 0 with no manager.
+/// The TopBox manager's FRONT record (`sub_8230D4F0`): the last record of the lowest-index
+/// non-empty channel. Returns 0 with `channel` untouched when the manager is not up; sets
+/// `manager_found` so a caller can tell "no manager" from "no record".
+static uint32_t TopBoxFrontRecord(const uint8_t* base, uint32_t& channel, bool& manager_found) {
+    const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+    manager_found = false;
+    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
+    const uint32_t hud = plausible(gui) ? GuestWordAt(base, gui + 32u) : 0u;
+    const uint32_t manager = plausible(hud) ? GuestWordAt(base, hud + 88u) : 0u;
+    if (!plausible(manager)) {
+        return 0u;
+    }
+    manager_found = true;
+
+    const uint32_t channels_begin = GuestWordAt(base, manager + 8u);
+    const uint32_t channels_end = GuestWordAt(base, manager + 12u);
+    if (!plausible(channels_begin) || channels_end < channels_begin ||
+        (channels_end - channels_begin) > 16u * 4u) {
+        return 0u;
+    }
+
+    channel = 0u;
+    for (uint32_t at = channels_begin; at < channels_end; at += 4u, ++channel) {
+        const uint32_t list = GuestWordAt(base, at);
+        if (!plausible(list)) {
+            continue;
+        }
+
+        const uint32_t begin = GuestWordAt(base, list + 4u);
+        const uint32_t end = GuestWordAt(base, list + 8u);
+        if (!plausible(begin) || end <= begin || ((end - begin) & ~3u) == 0u) {
+            continue;
+        }
+
+        const uint32_t last = GuestWordAt(base, end - 4u);
+        if (plausible(last)) {
+            return last;
+        }
+    }
+
+    return 0u;
+}
+
+/// THE FRONT RECORD'S BODY, as its provider states it — read, not called.
+///
+/// `sub_821787D0` composes the TopBox from the front record: title `TextManager_HasKey(rec+4)`,
+/// body from `(**(rec+8)+4)(&out)`. The object at rec+8 is one of four clones `sub_8230B648`
+/// makes by the provider's slot-0 type code, and every one of them is data the host can read:
+///   0  `off_820A4268`, 8 B:  body = Babel(obj+4)
+///   1  `off_820A4270`, 20 B: Babel(obj+4) with %1/%2/%3 <- decimal obj+8/+12/+16 (`sub_8230B298`)
+///   2  `off_820A4278`, 16 B: Babel(obj+4) with %s,%1 <- Babel(obj+8), %2 <- Babel(obj+12)
+///   3  `off_820A16F0`, 12 B: the literal LHString at obj+8 (`0x822EA510` copies the handle)
+/// Reading registry 6 instead is what showed the previous box's body under a new title: a
+/// record with no title and no body only sets ButtonOnly and never rewrites TopMain
+/// (0x82178A60), so the registry string outlives the record it belonged to.
+///
+/// Words: [0] present, [1] class 0..3 (0xFF = unrecognised vtable, treat as empty),
+/// [2] obj+4, [3] obj+8, [4] obj+12, [5] obj+16, [6] title key (rec+4), [7] record hash.
+/// `out_text` receives the class-3 literal as UTF-8, empty otherwise.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTopBoxBody(uint32_t* out_words, uint32_t capacity,
+                                                      char* out_text, uint32_t text_capacity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr || out_words == nullptr || capacity < 8u) {
+        return 0u;
+    }
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+    for (uint32_t i = 0; i < 8u; ++i) {
+        out_words[i] = 0u;
+    }
+    if (out_text != nullptr && text_capacity != 0u) {
+        out_text[0] = '\0';
+    }
+
+    const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+    uint32_t channel = 0u;
+    bool manager_found = false;
+    const uint32_t record = TopBoxFrontRecord(base, channel, manager_found);
+    if (!manager_found) {
+        return 0u;
+    }
+    if (record == 0u) {
+        return 8u;
+    }
+
+    out_words[0] = 1u;
+    out_words[6] = GuestWordAt(base, record + 4u);
+    out_words[7] = GuestWordAt(base, record + 0u);
+    const uint32_t provider = GuestWordAt(base, record + 8u);
+    if (!plausible(provider)) {
+        out_words[1] = 0xFFu;
+        return 8u;
+    }
+    const uint32_t vtable = GuestWordAt(base, provider);
+    uint32_t cls = 0xFFu;
+    switch (vtable) {
+        case 0x820A4268u: cls = 0u; break;
+        case 0x820A4270u: cls = 1u; break;
+        case 0x820A4278u: cls = 2u; break;
+        case 0x820A16F0u: cls = 3u; break;
+        default: break;
+    }
+    out_words[1] = cls;
+    if (cls == 0xFFu) {
+        return 8u;
+    }
+    out_words[2] = GuestWordAt(base, provider + 4u);
+    if (cls == 1u || cls == 2u) {
+        out_words[3] = GuestWordAt(base, provider + 8u);
+        out_words[4] = GuestWordAt(base, provider + 12u);
+    }
+    if (cls == 1u) {
+        out_words[5] = GuestWordAt(base, provider + 16u);
+    }
+    if (cls == 3u && out_text != nullptr) {
+        write_guest_wide_string(base, provider + 8u, out_text, text_capacity);
+    }
+    return 8u;
+}
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTopBoxFront(uint32_t* out_words, uint32_t capacity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr || out_words == nullptr || capacity < 9u) {
+        return 0u;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    for (uint32_t i = 0; i < 9u; ++i) {
+        out_words[i] = 0u;
+    }
+
+    uint32_t channel = 0u;
+    bool manager_found = false;
+    const uint32_t record = TopBoxFrontRecord(base, channel, manager_found);
+    if (!manager_found) {
+        return 0u;
+    }
+    if (record == 0u) {
+        return 9u;
+    }
+
+    const auto byte_at = [base](uint32_t addr) -> uint32_t {
+        const uint32_t word = GuestWordAt(base, addr & ~3u);
+        return (word >> (8u * (3u - (addr & 3u)))) & 0xFFu;
+    };
+
+    out_words[0] = 1u;
+    out_words[1] = GuestWordAt(base, record + 4u);
+    out_words[2] = byte_at(record + 16u);
+    out_words[3] = byte_at(record + 17u);
+    out_words[4] = byte_at(record + 24u);
+    out_words[5] = byte_at(record + 25u);
+    out_words[6] = channel;
+    out_words[7] = GuestWordAt(base, record + 0u);
+    out_words[8] = GuestWordAt(base, record + 12u);
+    return 9u;
+}
+
 /// Every live PULSER the in-game HUD is holding — registry 4, `PulserName` — as its PHASE.
 ///
 /// A pulser LOOPS the authored timeline: `sub_822C21E0` advances `rec+20` by `rec+24 · dt`
@@ -8322,6 +10603,32 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudPulsers(uint32_t* out_hashes, floa
 
     return found;
 }
+
+/// WHY THERE IS NO SLIDE OR IMAGE READER HERE, though the registries exist.
+///
+/// I wrote both and removed them: neither can work, and both returned a plausible number.
+///
+/// The SLIDE writers are WRITE-THROUGH. `sub_823FE848` (toggle) and `sub_828421F8` (fader and
+/// set) look the name up, walk the record's element vector and call `sub_82426CA8` /
+/// `sub_82426BA8` — storing nothing on the record. And `sub_82426BA8` does not store the index
+/// on the element either; it is
+///
+///     controller = presentation->vt[0x24]();
+///     controller->vt[0x08](controller, element, index, 1);
+///
+/// a virtual dispatch into the slide controller, whose concrete class is built through the GUI
+/// manager array and never named in the image. `AKElement_getCurrentSlide` reads it back the
+/// same way, through `vt[0x20]`. There is no address a host can read.
+///
+/// The IMAGE hash is real but is NOT on the registry record. `sub_8286DDC0` stores it at
+/// `+512` (with `+516` normal, `+520` parallax and `+548` dirty) on the LIVE NODE — the object
+/// that also carries the `Movie` string at `+564` — whereas this walker hands back the BINDING
+/// record, whose own fields are the string at `+16` and the pulser phase at `+20`. Reading
+/// `+512` off the binding record reads 512 bytes past a small struct.
+///
+/// Neither is needed. Slides and textures already cross PER ELEMENT through the ordinary
+/// element walk that feeds every owned book (`Slides`, `Textures`), which is the same statement
+/// arriving by a route that is actually addressable.
 
 /// Every live TEXT the in-game HUD is holding, keyed by the name each is published under.
 ///
@@ -10279,6 +12586,75 @@ REFII_HOST_ABI_EXPORT int RefiiHostSetPubGameResult(int64_t gold, int64_t debt, 
     return 1;
 }
 
+/// THE INVENTORY SCREEN'S MODE — 1 Items, 3 Weapons, 4 Clothing, 0 when unknown.
+///
+/// Screen 15 is not three screens, it is one with a mode word, and the whole list changes with
+/// it. `sub_829B0A58` reads it and branches: mode 1 spawns the item headers (`sub_829B1578`),
+/// mode 3 the `Melee`/`Ranged` pair (`sub_829B1890`), and the shared row builder
+/// `sub_829B1968` then buckets each item by category — `Category == 1 -> 3`, `<= 16 || > 24 ->
+/// 1`, else `4` — and keeps only the bucket matching the mode.
+///
+/// The guest reads it as `*(*sub_8243BD60(guiMgr + 68, &15) + 372)`. `sub_8243BD60` is
+/// `std::map<int, Screen*>::operator[]` — it INSERTS a default when the key is absent
+/// (`sub_8243C198` at 0x8243BE3C), so it must not be called from here. The descent is
+/// reproduced read-only instead: node `+0` left, `+4` parent, `+8` right, `+12` key, `+16`
+/// value, `+25` the nil byte, with the head at `map + 4` and the root at `head[1]`.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetInventoryScreenMode(void) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
+    const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t manager = plausible(gui) ? read32(gui + 28u) : 0u;
+    const uint32_t map = plausible(manager) ? manager + 68u : 0u;
+    const uint32_t head = map != 0u ? read32(map + 4u) : 0u;
+    if (!plausible(head)) {
+        return 0;
+    }
+
+    constexpr int32_t kInventoryScreenKey = 15;
+
+    // lower_bound, exactly the loop at 0x8243BD7C — descend left while the node's key is at or
+    // above the one wanted, remembering the last such node.
+    uint32_t candidate = head;
+    uint32_t node = read32(head + 4u);
+    for (int guard = 0; guard < 64 && plausible(node); ++guard) {
+        if (GuestByteAt(base, node + 25u) != 0u) {
+            break;
+        }
+
+        const int32_t key = static_cast<int32_t>(read32(node + 12u));
+        if (key >= kInventoryScreenKey) {
+            candidate = node;
+            node = read32(node);
+        } else {
+            node = read32(node + 8u);
+        }
+    }
+
+    // The guest would insert here; we simply have no answer.
+    if (candidate == head ||
+        static_cast<int32_t>(read32(candidate + 12u)) != kInventoryScreenKey) {
+        return 0;
+    }
+
+    const uint32_t screen = read32(candidate + 16u);
+    if (!plausible(screen)) {
+        return 0;
+    }
+
+    return read32(screen + 372u);
+}
+
 REFII_HOST_ABI_EXPORT int RefiiHostGetInGameScreen(uint32_t* out) {
     if (out == nullptr) {
         return 0;
@@ -10798,7 +13174,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiPreviewObject(uint32_t* out_model_h
     switch (screen_id) {
         case 8u: preview_offset = 96u; break;
         case 22u: preview_offset = 160u; break;
-        case 15u: case 25u: case 26u: case 27u: preview_offset = 128u; break;
+        // Clothing (16) keeps its preview at the same +128 as the gift family: its back
+        // handler `sub_826D2560` clears it with `sub_828C3FD8(screen + 128)` at 0x826d280c.
+        case 15u: case 16u: case 25u: case 26u: case 27u: preview_offset = 128u; break;
         default: return 0;  // this screen has no preview object
     }
 
@@ -11118,85 +13496,71 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldIcons(uint32_t* out_flags, uint3
 //----------------------------------------------------------------------------------
 // Achievements
 //
-// `refii_achievement` stays native because it is guest-facing: it records the guest's writes,
-// tracks unlocks, and holds the XDBF definitions and icons. These three exports carry the
-// MODEL across and nothing else; Godot draws the toast.
+// Godot owns achievements (Engine_Achievements): the definitions parsed from the title's XDBF,
+// the unlock store and its file, the toast and the page. `refii_achievement` is the guest-facing
+// seam only, and these four exports are its two directions: the guest's writes and its UI
+// requests come up; the XDBF comes up once; the unlocked set the host states goes down for the
+// guest's own enumerator to read back.
 //----------------------------------------------------------------------------------
 
-namespace {
-
-/// Copies a std::string into a caller buffer, always NUL-terminated. Returns the length the
-/// caller would need, so a truncated read is detectable rather than silent.
-uint32_t CopyOutString(const std::string& value, char* out, uint32_t capacity) {
-    if (out != nullptr && capacity != 0) {
-        const size_t take = value.size() < (capacity - 1u) ? value.size() : (capacity - 1u);
-        std::memcpy(out, value.data(), take);
-        out[take] = '\0';
-    }
-
-    return static_cast<uint32_t>(value.size());
-}
-
-}  // namespace
-
-/// Unlocks NEWER than `after_sequence`, oldest first. Returns how many were written.
+/// Writes NEWER than `after_sequence`, oldest first. Returns how many were written.
 ///
-/// A sequence, not a flushing queue: the runtime keeps the whole unlock set and stamps each
-/// with a monotonic sequence, so the read is idempotent and two readers cannot lose an unlock
-/// between them.
+/// A sequence, not a flushing queue: the seam keeps every write of the session stamped with a
+/// monotonic sequence, so the read is idempotent and two readers cannot lose one between them.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAchievementUnlocks(uint64_t after_sequence,
                                                              uint32_t* out_ids,
+                                                             uint32_t* out_users,
                                                              uint64_t* out_sequences,
                                                              uint32_t max_unlocks) {
-    const std::vector<refii::achievement::AchievementUnlock> unlocks =
-        refii::achievement::GetUnlockedAchievementsSnapshot();
+    const std::vector<refii::achievement::AchievementUnlock> writes =
+        refii::achievement::GetAchievementWritesSnapshot();
 
     uint32_t written = 0;
-    for (const auto& unlock : unlocks) {
-        if (unlock.sequence <= after_sequence) continue;
+    for (const auto& write : writes) {
+        if (write.sequence <= after_sequence) continue;
         if (written >= max_unlocks) break;
 
-        if (out_ids != nullptr) out_ids[written] = unlock.achievement_id;
-        if (out_sequences != nullptr) out_sequences[written] = unlock.sequence;
+        if (out_ids != nullptr) out_ids[written] = write.achievement_id;
+        if (out_users != nullptr) out_users[written] = write.user_index;
+        if (out_sequences != nullptr) out_sequences[written] = write.sequence;
         ++written;
     }
 
     return written;
 }
 
-/// One achievement's definition. Returns 0 when the id is not registered.
-REFII_HOST_ABI_EXPORT int RefiiHostGetAchievementDefinition(
-    uint32_t achievement_id, uint32_t* out_gamerscore, uint32_t* out_flags,
-    char* out_name, uint32_t name_capacity,
-    char* out_unlocked, uint32_t unlocked_capacity,
-    char* out_locked, uint32_t locked_capacity) {
-    const refii::achievement::AchievementDefinition definition =
-        refii::achievement::GetAchievementDefinitionSnapshot(achievement_id);
-
-    // The runtime answers a zeroed record for an unknown id rather than failing.
-    if (definition.achievement_id == 0) return 0;
-
-    if (out_gamerscore != nullptr) *out_gamerscore = definition.gamerscore;
-    if (out_flags != nullptr) *out_flags = definition.flags;
-    CopyOutString(definition.name, out_name, name_capacity);
-    CopyOutString(definition.unlocked_description, out_unlocked, unlocked_capacity);
-    CopyOutString(definition.locked_description, out_locked, locked_capacity);
-    return 1;
-}
-
-/// The achievement's icon as PNG bytes. Returns the byte count — call with a null buffer to
-/// size it first. Zero means the title shipped no icon for this id.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAchievementIconPng(uint32_t achievement_id,
-                                                             uint8_t* out_bytes,
-                                                             uint32_t capacity) {
-    const std::vector<uint8_t> png =
-        refii::achievement::GetAchievementIconPngSnapshot(achievement_id);
+/// The title's XDBF resource. Returns the byte count — call with a null buffer to size it
+/// first. Zero until the executable module has been launched.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTitleXdbf(uint8_t* out_bytes, uint32_t capacity) {
+    const std::vector<uint8_t> xdbf = refii::achievement::GetTitleXdbfSnapshot();
     if (out_bytes != nullptr && capacity != 0) {
-        const size_t take = png.size() < capacity ? png.size() : capacity;
-        std::memcpy(out_bytes, png.data(), take);
+        const size_t take = xdbf.size() < capacity ? xdbf.size() : capacity;
+        std::memcpy(out_bytes, xdbf.data(), take);
     }
 
-    return static_cast<uint32_t>(png.size());
+    return static_cast<uint32_t>(xdbf.size());
+}
+
+/// The unlocked set as the host's store has it — ids with unlock FILETIMEs — for the guest's
+/// `XamUserCreateAchievementEnumerator` to answer from. Replaces the previous statement.
+REFII_HOST_ABI_EXPORT void RefiiHostSetAchievementUnlocks(const uint32_t* ids,
+                                                          const uint64_t* unlock_filetimes,
+                                                          uint32_t count) {
+    if (ids == nullptr || count == 0) {
+        refii::achievement::SetUnlockedAchievements({}, {});
+        return;
+    }
+
+    refii::achievement::SetUnlockedAchievements(
+        std::span<const uint32_t>(ids, count),
+        unlock_filetimes == nullptr ? std::span<const uint64_t>()
+                                    : std::span<const uint64_t>(unlock_filetimes, count));
+}
+
+/// How many times the guest has called `XamShowAchievementsUI` this session; the host opens
+/// its page on every increment.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAchievementsUiRequests(void) {
+    return refii::achievement::GetAchievementsUiRequestCount();
 }
 
 /// Where the guest wants the live movie drawn — the rect it states for itself, so "fullscreen
@@ -11628,6 +13992,16 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         });
+        const char* completion_env = std::getenv("REFII_COMPLETION_THREAD");
+        if (completion_env == nullptr || std::string(completion_env) != "0") {
+            g_completion_thread = std::thread([]() {
+                while (!g_completion_stop.load(std::memory_order_relaxed)) {
+                    SignalGuestFrameCompletions();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            });
+        }
+
         hosted.status = "running";
         WriteOut("initialized; drive it with RefiiHostStep", out, capacity);
         return 1;
@@ -11719,6 +14093,11 @@ REFII_HOST_ABI_EXPORT int RefiiHostHostedStatus(char* out, std::size_t capacity)
 /// is what produced the abort on teardown.
 REFII_HOST_ABI_EXPORT int RefiiHostShutdown(char* out, std::size_t capacity) {
     HostedGuest& hosted = Hosted();
+
+    g_completion_stop = true;
+    if (g_completion_thread.joinable()) {
+        g_completion_thread.join();
+    }
 
     g_arm_watcher_stop = true;
     if (g_arm_watcher.joinable()) {

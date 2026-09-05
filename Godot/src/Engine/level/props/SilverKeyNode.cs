@@ -25,6 +25,7 @@ public partial class SilverKeyNode : MeshInstance3D
 
     public override void _Process(double delta)
     {
+    	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("silverkeynode");
         float dt = (float)delta;
         const float twoPi = Mathf.Pi * 2f;
 

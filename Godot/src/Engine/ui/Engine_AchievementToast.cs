@@ -69,13 +69,6 @@ public sealed partial class Engine_AchievementToast : Node3D
 	private readonly Queue<Queued> _pending = new();
 	private Queued? _current;
 	private float _age;
-	private ulong _seen;
-
-	/// <summary>
-	/// True once the first poll has run. The unlocks already on disk are not news — a save
-	/// carries every achievement ever earned, and the original's dialog primes the same way.
-	/// </summary>
-	private bool _primed;
 
 	/// <summary>
 	/// The canvas this is laid out in — the same 1280x720 space every presentation uses. The
@@ -90,56 +83,31 @@ public sealed partial class Engine_AchievementToast : Node3D
 	private MeshInstance3D? _subtitle;
 
 	/// <summary>Takes whatever the guest has unlocked since the last look.</summary>
+	/// <summary>
+	/// New unlocks come from <see cref="Refii.Achievements.Engine_Achievements"/>, which owns the
+	/// store: an unlock loaded from disk is not news, and a write the guest repeats for an
+	/// achievement already earned never reaches here.
+	/// </summary>
 	private void Poll()
 	{
-		Engine_UiModel.AchievementUnlock[] unlocks = Engine_UiSource.Current.GetAchievementUnlocks(_seen);
-		foreach (Engine_UiModel.AchievementUnlock unlock in unlocks)
+		foreach (uint achievementId in Refii.Achievements.Engine_Achievements.TakeNewUnlocks())
 		{
-			if (unlock.Sequence > _seen)
-			{
-				_seen = unlock.Sequence;
-			}
-
-			// Everything already earned when we first look is history, not an event.
-			if (!_primed)
-			{
-				continue;
-			}
-
-			_pending.Enqueue(Resolve(unlock.AchievementId));
+			_pending.Enqueue(Resolve(achievementId));
 		}
-
-		_primed = true;
 	}
 
-	/// <summary>
-	/// Turns an id into everything the toast needs, on ARRIVAL rather than per frame: the icon is
-	/// a PNG decode and the definition a bridge call, and neither changes while the toast is up.
-	/// </summary>
 	private static Queued Resolve(uint achievementId)
 	{
-		Engine_UiModel.AchievementDefinition? definition =
-			Engine_UiSource.Current.GetAchievementDefinition(achievementId);
+		Refii.Achievements.AchievementDefinition? definition =
+			Refii.Achievements.Engine_Achievements.Definition(achievementId);
 
-		// The original falls back to a bare "Achievement Unlocked" for an unregistered id rather
-		// than dropping the toast.
 		string name = definition?.Name is { Length: > 0 } stated ? stated : "Achievement Unlocked";
 		string description = definition?.UnlockedDescription ?? string.Empty;
-
-		Texture2D? icon = null;
-		if (Engine_UiSource.Current.GetAchievementIconPng(achievementId) is { Length: > 0 } png)
-		{
-			var image = new Image();
-			if (image.LoadPngFromBuffer(png) == Error.Ok)
-			{
-				icon = ImageTexture.CreateFromImage(image);
-			}
-		}
+		Texture2D? icon = Refii.Achievements.Engine_Achievements.Icon(achievementId);
 
 		return new Queued(achievementId, name, description, definition?.Gamerscore ?? 0, icon);
 	}
 
-	/// <summary>Runs the clock, retiring a finished toast and starting the next.</summary>
 	private void Advance(float delta)
 	{
 		if (_current is null)
@@ -164,6 +132,7 @@ public sealed partial class Engine_AchievementToast : Node3D
 
 	public override void _Process(double delta)
 	{
+		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("achievementtoast");
 		Poll();
 		Advance((float)delta);
 		Render();

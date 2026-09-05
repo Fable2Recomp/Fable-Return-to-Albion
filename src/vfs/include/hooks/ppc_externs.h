@@ -158,6 +158,10 @@ PPC_EXTERN_FUNC(__imp__sub_8230A7F0);
 PPC_EXTERN_FUNC(__imp__sub_8230A8C8);
 
 PPC_EXTERN_FUNC(__imp__sub_82A41B48);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderer_EndScene);
+PPC_EXTERN_FUNC(__imp__sub_821C3C60);
+PPC_EXTERN_FUNC(__imp__sub_82191F50);
+PPC_EXTERN_FUNC(__imp__sub_82A67188);
 PPC_EXTERN_FUNC(__imp__sub_82C6EA48);
 PPC_EXTERN_FUNC(__imp__sub_82C6EA80);
 PPC_EXTERN_FUNC(__imp__sub_82C6EAD8);
@@ -210,6 +214,12 @@ PPC_EXTERN_FUNC(__imp__sub_822C1BD0);
 // parent, id, event type in r4/r7/r8/r9); `sub_826CE110` wraps `DeleteAllSpawnedMenuItems`.
 PPC_EXTERN_FUNC(__imp__sub_826CE8D0);
 PPC_EXTERN_FUNC(__imp__sub_826CE110);
+
+// The pause-tab lever poller, run EVERY GUI TICK — the one heartbeat that beats while the
+// pause book is open (`sub_822C1BD0`, the game-loop tick, stops there). The pause-screen
+// samplers ride it: a sampler gated on "screen 23 is up" can never fire from a tick the
+// pause stops.
+PPC_EXTERN_FUNC(__imp__sub_8229ABD8);
 // The front end's emitter: `sub_826E4798` is `sub_826CE8D0` against `dword_83496AC0` rather
 // than the in-game GUI manager `dword_83496B08`.
 PPC_EXTERN_FUNC(__imp__sub_826E4798);

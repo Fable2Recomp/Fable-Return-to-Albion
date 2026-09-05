@@ -2178,6 +2178,14 @@ public static class GameCodeBuild
 		// than the generator itself.
 		var transcript = new StringBuilder();
 
+		// LOCKED, because two threads call this. `BeginOutputReadLine` and `BeginErrorReadLine`
+		// each raise their events on their own pool thread, and both land here — so `recent` and
+		// `transcript` were being mutated concurrently. A `Queue<T>` growing under that races on
+		// its backing array and throws `Destination array was not long enough` out of
+		// `SetCapacity`, on a pool thread, where nothing catches it: the whole app went down
+		// mid-codegen with the build half done.
+		object gate = new();
+
 		void Record(string? line)
 		{
 			if (line is null)
@@ -2185,14 +2193,19 @@ public static class GameCodeBuild
 				return;
 			}
 
-			transcript.AppendLine(line);
-
-			recent.Enqueue(line);
-			while (recent.Count > 40)
+			lock (gate)
 			{
-				recent.Dequeue();
+				transcript.AppendLine(line);
+
+				recent.Enqueue(line);
+				while (recent.Count > 40)
+				{
+					recent.Dequeue();
+				}
 			}
 
+			// Outside the lock: the callback draws progress, and holding a lock across it would
+			// let a slow paint stall the process's own output pipe.
 			onLine(line);
 		}
 
@@ -2232,13 +2245,23 @@ public static class GameCodeBuild
 			// The transcript goes to the log whether this succeeded or not: a generator that
 			// exits 0 without writing sources.cmake is exactly the failure this pipeline has
 			// hit, and the reason is in the output, not the exit code.
-			LogWrite("output of " + Path.GetFileName(executable) + Environment.NewLine + transcript);
+			//
+			// Read under the same lock the writers take — the reader threads are drained by
+			// WaitForExit() by now, but taking it costs nothing and keeps one rule for the pair.
+			string full;
+			string tail;
+			lock (gate)
+			{
+				full = transcript.ToString();
+				tail = string.Join('\n', recent);
+			}
+
+			LogWrite("output of " + Path.GetFileName(executable) + Environment.NewLine + full);
 
 			if (process.ExitCode != 0)
 			{
 				LogWrite("exit " + process.ExitCode);
-				return new Result(false,
-					"exit code " + process.ExitCode + "\n" + string.Join('\n', recent));
+				return new Result(false, "exit code " + process.ExitCode + "\n" + tail);
 			}
 
 			LogWrite("exit 0");
@@ -2246,7 +2269,13 @@ public static class GameCodeBuild
 		}
 		catch (Exception exception)
 		{
-			LogWrite("output of " + Path.GetFileName(executable) + Environment.NewLine + transcript);
+			string failed;
+			lock (gate)
+			{
+				failed = transcript.ToString();
+			}
+
+			LogWrite("output of " + Path.GetFileName(executable) + Environment.NewLine + failed);
 			LogWrite("threw: " + exception);
 			return new Result(false, exception.Message);
 		}

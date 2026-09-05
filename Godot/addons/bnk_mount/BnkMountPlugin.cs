@@ -254,7 +254,22 @@ public partial class BnkMountPlugin : EditorPlugin
             BnkFileSystem? mounted = null;
             try
             {
-                mounted = BnkFileSystem.Mount(gameDirectory);
+                // THE EDITOR BROWSES WHAT THE GAME WILL LOAD, mods included — same mount, same
+                // order. An editor that showed only the shipped assets would report a modded
+                // file as missing and export a mod against the wrong base.
+                var overlays = Refii.Mods.ModIndex.ResolveOverlays(
+                    Refii.Assets.Engine_GameAssets.ModsRoot, out Refii.Mods.ModLoadOrder order);
+                mounted = BnkFileSystem.Mount(
+                    gameDirectory,
+                    overlays: Refii.Mods.ModIndex.ToMountOverlays(overlays));
+                foreach ((string pinned, string owner) in order.Pins)
+                {
+                    mounted.Promote(pinned, owner);
+                }
+
+                Refii.Mods.ModRowOverlays.Apply(mounted, overlays);
+                Refii.Mods.ModImageOverlays.Apply(mounted, overlays);
+                Refii.Mods.ModMeshOverlays.Apply(mounted, overlays);
             }
             catch (Exception exception)
             {

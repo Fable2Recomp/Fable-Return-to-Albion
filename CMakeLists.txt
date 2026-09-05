@@ -839,8 +839,6 @@ target_link_libraries(refii_host
         refii_core
         refii_payload
         ${REFII_RENDERER_LIBRARIES}
-    PRIVATE
-        refii_achievement_ui
 )
 
 # host_audio.cpp keeps its ring in refii_vfs so the host bridge reads the same one. The

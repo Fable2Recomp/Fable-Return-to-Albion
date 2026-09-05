@@ -326,18 +326,14 @@ public static class Engine_UiModel
 	{
 	}
 
-	/// <summary>One achievement unlock the guest has recorded.</summary>
+	/// <summary>One achievement write the guest has made this session.</summary>
+	/// <param name="UserIndex">The pad slot that earned it, as the XGI write states.</param>
 	/// <param name="AchievementId">The title's own id, as the XDBF numbers it.</param>
 	/// <param name="Sequence">
-	/// Monotonic. The runtime keeps the whole unlock SET and stamps each entry, so the host holds N
-	/// and asks "what is new since N"; the read is safe to repeat, unlike a pop-style queue.
+	/// Monotonic. The seam keeps every write of the session stamped, so the host holds N and
+	/// asks "what is new since N"; the read is safe to repeat, unlike a pop-style queue.
 	/// </param>
-	public readonly record struct AchievementUnlock(uint AchievementId, ulong Sequence);
-
-	/// <summary>One achievement's definition, or null when the id is not registered.</summary>
-	public readonly record struct AchievementDefinition(
-		uint AchievementId, uint Gamerscore, uint Flags,
-		string Name, string UnlockedDescription, string LockedDescription);
+	public readonly record struct AchievementUnlock(uint UserIndex, uint AchievementId, ulong Sequence);
 
 	/// <summary>A direction on the menu stick, in the guest's own action order.</summary>
 	public enum MenuStick

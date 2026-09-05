@@ -12,7 +12,6 @@
  */
 
 #include <achievement/achievement_runtime.h>
-#include <achievement/achievement_xdbf.h>
 #include <rex/kernel/xam/apps/xgi_app.h>
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
@@ -39,16 +38,6 @@ using namespace rex::system;
 using namespace rex::system::xam;
 namespace apps {
 using namespace rex::system;
-
-namespace {
-
-void CacheAchievementsFromTitleXex(KernelState* kernel_state) {
-  const util::XdbfGameData db = kernel_state->title_xdbf();
-  refii::achievement::CacheAchievementsFromXdbf(db, util::XdbfSection::kImage,
-                                                db.default_language());
-}
-
-}  // namespace
 
 XgiApp::XgiApp(KernelState* kernel_state) : App(kernel_state, 0xFB) {}
 
@@ -243,10 +232,8 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
           REXKRNL_WARN("XGIUserWriteAchievements: ptr {:08X} OOB", achievements_ptr);
           return X_E_FAIL;
         }
-        // Refii owns achievements: record writes into refii's achievement
-        // runtime instead of the SDK's AchievementManager (its UI is disabled
-        // in the shadowed rex_app.cpp).
-        CacheAchievementsFromTitleXex(kernel_state_);
+        // Godot owns achievements: the write is recorded into the seam and read out by the
+        // host bridge (Engine_Achievements); the SDK's AchievementManager is not used.
         auto* base = memory_->TranslateVirtual(achievements_ptr);
         std::vector<refii::achievement::AchievementWrite> writes;
         writes.reserve(achievement_count);

@@ -76,6 +76,17 @@ public sealed class Engine_UiExpandableMenu
 		public bool Ghosted;
 
 		/// <summary>
+		/// Whether a parent's header counts this row — see `Engine_UiMenuSources.Row.Counted`.
+		/// </summary>
+		public bool Counted = true;
+
+		/// <summary>
+		/// The row is new to the player, so its parent's header takes `&lt;exclamation.img&gt;` — see
+		/// `Engine_UiMenuSources.Row.Unviewed`.
+		/// </summary>
+		public bool Unviewed;
+
+		/// <summary>
 		/// True when a template source put this row here rather than the template authoring it: it
 		/// is replaced wholesale on restate. Bookkeeping for the resync, never a behaviour test.
 		/// </summary>

@@ -14,10 +14,10 @@
 // Disable warnings about unused parameters for kernel functions
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
-#include <achievement/achievement_xdbf.h>
 
 #include <cstring>
 
+#include <achievement/achievement_runtime.h>
 #include <rex/cvar.h>
 #include <rex/kernel/xam/private.h>
 #include <rex/logging.h>
@@ -658,28 +658,18 @@ u32 XamUserCreateAchievementEnumerator_entry(u32 title_id, u32 user_index, u32 x
   // ACHIEVED | ACHIEVED_ONLINE flags the game checks to consider an achievement earned.
   constexpr uint32_t kAchievedFlags = 0x00030000;
 
+  // Unlocks are what Godot states (Engine_Achievements pushes its store through the bridge)
+  // plus anything the guest wrote this session — the seam, never the SDK's AchievementManager.
   auto fill_unlock = [](XStaticAchievementEnumerator::AchievementDetails& item, uint32_t id,
                         const rex::system::KernelState* ks) {
-    uint64_t ft = ks->GetAchievementUnlockTime(id);
+    (void)ks;
+    uint64_t ft = refii::achievement::GetAchievementUnlockTime(id);
     if (ft) {
       item.flags |= kAchievedFlags;
       item.unlock_time.unk_0 = static_cast<uint32_t>(ft & 0xFFFF'FFFF);
       item.unlock_time.unk_4 = static_cast<uint32_t>(ft >> 32);
     }
   };
-
-  // Refii keeps its own achievement runtime; warm its icon cache from the
-  // title XDBF whenever the game enumerates achievements, independent of
-  // which source feeds the enumerator below.
-  {
-    const util::XdbfGameData refii_db = REX_KERNEL_STATE()->title_xdbf();
-    if (refii_db.is_valid()) {
-      const XLanguage refii_language = refii_db.GetExistingLanguage(
-          static_cast<XLanguage>(REXCVAR_GET(user_language)));
-      refii::achievement::CacheAchievementsFromXdbf(refii_db, util::XdbfSection::kImage,
-                                                    refii_language);
-    }
-  }
 
   const auto* ks = REX_KERNEL_STATE();
 

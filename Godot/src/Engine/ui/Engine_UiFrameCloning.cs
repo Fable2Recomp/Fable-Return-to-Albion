@@ -468,6 +468,11 @@ public sealed class Engine_UiFrameCloning
 		/// </summary>
 		private static void Fade(Node node, float opacity)
 		{
+			if (Engine_UiTheme.SetIconOpacity(node, opacity / 100f))
+			{
+				return;
+			}
+
 			if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material)
 			{
 				material.SetShaderParameter("opacity", opacity / 100f);

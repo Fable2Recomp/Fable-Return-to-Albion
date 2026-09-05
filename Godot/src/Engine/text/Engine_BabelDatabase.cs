@@ -45,6 +45,81 @@ public sealed class Engine_BabelDatabase
 
 	public int Count => _keys.Length;
 
+	/// <summary>Where the post-block sections start — see the note at the assignment.</summary>
+	public int TailOffset { get; private set; }
+
+	/// <summary>The post-block sections, exactly as they were read.</summary>
+	public ReadOnlySpan<byte> Tail => _data.AsSpan(TailOffset);
+
+	/// <summary>
+	/// The largest block this file already uses, uncompressed.
+	///
+	/// The writer packs to this rather than to a constant: the guest inflates into one fixed
+	/// scratch buffer, and a block no larger than one the file already carries cannot overflow
+	/// a buffer that already reads this file.
+	/// </summary>
+	public int LargestBlock
+	{
+		get
+		{
+			int largest = 0;
+			foreach (int size in _blockUncompressedSize)
+			{
+				if (size > largest)
+				{
+					largest = size;
+				}
+			}
+
+			return largest;
+		}
+	}
+
+	/// <summary>
+	/// Every record, block by block, so the whole file is inflated once rather than once per
+	/// string. Ascending by key within a block; the writer re-sorts anyway.
+	/// </summary>
+	public IEnumerable<(uint Key, string Value)> Entries()
+	{
+		var byBlock = new Dictionary<int, List<int>>();
+		for (int i = 0; i < _keys.Length; i++)
+		{
+			if (_blockIndex[i] < 0)
+			{
+				continue;
+			}
+
+			if (!byBlock.TryGetValue(_blockIndex[i], out List<int>? records))
+			{
+				records = new List<int>();
+				byBlock[_blockIndex[i]] = records;
+			}
+
+			records.Add(i);
+		}
+
+		foreach ((int block, List<int> records) in byBlock)
+		{
+			byte[] bytes = GetBlock(block);
+			foreach (int i in records)
+			{
+				int p = checked((int)_offsets[i]);
+				if (p + 4 > bytes.Length)
+				{
+					continue;
+				}
+
+				int chars = checked((int)ReadU32(bytes, ref p));
+				if (chars <= 0 || p + (chars * 2) > bytes.Length)
+				{
+					continue;
+				}
+
+				yield return (_keys[i], ReadUtf16Be(bytes, ref p, chars));
+			}
+		}
+	}
+
 	private Engine_BabelDatabase(byte[] data, uint[] keys, int[] blockIndex, uint[] offsets,
 		int[] blockDataOffset, int[] blockCompressedSize, int[] blockUncompressedSize)
 	{
@@ -100,6 +175,11 @@ public sealed class Engine_BabelDatabase
 
 		var db = new Engine_BabelDatabase(data, keys, blockIndex, offsets,
 			dataOffset, compressed, uncompressed);
+
+		// EVERYTHING FROM HERE IS COPIED VERBATIM BY THE WRITER. Speech links, text groups and
+		// speaker names are read below but never rebuilt: an overlay changes strings, and a
+		// section it does not touch is safest carried across byte for byte.
+		db.TailOffset = p;
 
 		p += 4; // max-block-size hint; the engine stores it but never sizes anything from it
 

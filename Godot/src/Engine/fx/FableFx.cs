@@ -148,6 +148,7 @@ public partial class FableFx : Node3D
 
     public override void _Process(double delta)
     {
+    	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("fablefx");
         if (!Playing)
         {
             return;
@@ -156,6 +157,18 @@ public partial class FableFx : Node3D
         EnsureBuilt();
         if (!_built || _mesh is null || _system.IsEmpty)
         {
+            return;
+        }
+
+        // THE GUEST FREEZES WHAT THE CAMERA CANNOT SEE: `sub_83233EF0` tests each instance's
+        // distance against its stated cull radius and the view cone, and both update branches
+        // gate on the result — no simulation, no aging, lights left as they are (they are never
+        // view-culled). 209 systems in the market cost ~20 ms a frame simulating and rebuilding
+        // billboards for effects behind the camera. A frozen system keeps its last geometry.
+        Camera3D? cullCamera = GetViewport()?.GetCamera3D();
+        if (cullCamera is not null && !InView(cullCamera))
+        {
+            ++FrozenThisFrame;
             return;
         }
 
@@ -275,6 +288,36 @@ public partial class FableFx : Node3D
                 multi.SetInstanceColor(i, colour);
             }
         }
+    }
+
+    /// <summary>Systems frozen off-camera in the last frame; reset by the metrics reader.</summary>
+    public static int FrozenThisFrame;
+
+    /// <summary>Freeze reach: beyond this an effect is a few pixels and the guest would have
+    /// culled it by its radius.</summary>
+    public const float FreezeDistance = 160f;
+
+    /// <summary>A generous bounding sphere for the frustum test, so a wide plume at the edge
+    /// of the view keeps simulating.</summary>
+    public const float FreezeRadius = 14f;
+
+    private bool InView(Camera3D camera)
+    {
+        Vector3 origin = GlobalPosition;
+        if (origin.DistanceTo(camera.GlobalPosition) > FreezeDistance)
+        {
+            return false;
+        }
+
+        foreach (Plane plane in camera.GetFrustum())
+        {
+            if (plane.DistanceTo(origin) > FreezeRadius)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void ApplyLit()

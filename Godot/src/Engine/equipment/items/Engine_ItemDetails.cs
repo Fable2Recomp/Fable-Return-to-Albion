@@ -3,12 +3,28 @@ using System.Collections.Generic;
 using System.Globalization;
 using Refii.Entities;
 using Refii.Gdb;
+using Godot;
 
 namespace Refii.Equipment;
 
 public sealed class ItemDetail
 {
     public uint RecordHash { get; set; }
+
+    /// <summary>
+    /// The DEFINITION that owns this item — the record carrying `WeaponComponent`,
+    /// `ShopItemComponent`, `AugmentableComponent` and the `InventoryItemComponent` reference.
+    /// Equal to <see cref="RecordHash"/> when the row already resolved to it; otherwise the
+    /// record found by <c>InventoryItemComponent == RecordHash</c> (or an ancestor), because a
+    /// row that resolves by NAME TAG lands on the inventory COMPONENT, which knows its name,
+    /// description, icon and rating and nothing about damage, slots or price.
+    /// </summary>
+    public uint DefinitionHash { get; set; }
+
+    /// <summary>`ShopItemComponent.BasePrice` on the definition, −1 when unpriced — the number
+    /// the item page writes as `"$" + itoa(BasePrice)` (`sub_829B6B50`). <see cref="Money"/> is
+    /// the gold-bag amount, a different thing.</summary>
+    public int BasePrice { get; set; } = -1;
 
     public string InternalName { get; set; } = string.Empty;
 
@@ -46,6 +62,30 @@ public sealed class ItemDetail
 
     public string IconTex { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The MENU PREVIEW — the 3D object the item book's right page spins inside its ring.
+    ///
+    /// `GUIScreenMesh` is a model RESOURCE HASH used as it stands, not a name: it resolves to a
+    /// string in none of the seven shipped databases (0 of 399), exactly like `ModelFile`
+    /// (0 of 1234), which is how every model reference in this data is stored. So the raw value
+    /// is the currency `Engine_PropModelIndex` keys on.
+    ///
+    /// The two offsets are REFERENCES to a record carrying `X`/`Y`/`Z` floats, and those
+    /// components INHERIT — one shipped record states only `Z` and takes X and Y from its
+    /// parent — so each is read through the inheritance walk rather than locally.
+    /// </summary>
+    public uint PreviewMesh { get; set; }
+
+    public Vector3 PreviewTranslation { get; set; }
+
+    public Vector3 PreviewRotation { get; set; }
+
+    /// <summary>`GUIScreenScaleMultiplier`; 0 when the artist stated none.</summary>
+    public float PreviewScale { get; set; }
+
+    /// <summary>`GUIScreenRotationAxis`, stored as an enum; 0 when unstated.</summary>
+    public int PreviewRotationAxis { get; set; }
+
     public int Category { get; set; } = -1;
 
     public int WeaponType { get; set; }
@@ -82,6 +122,16 @@ public static class Engine_ItemDetails
     public const uint OverrideFemaleClustersCovered = 0xF736AC4A;
     public const uint ClusterSortLayer = 0x88FD2918;
     public const uint Augmentable = 0x9DC93C5B;
+
+    // The menu preview — see ItemDetail.PreviewMesh.
+    public const uint GUIScreenMesh = 0x0EE6E0A5;
+    public const uint GUIScreenTranslationOffset = 0x304AE802;
+    public const uint GUIScreenRotationOffset = 0x6C8C3F5D;
+    public const uint GUIScreenScaleMultiplier = 0xA1AB8D29;
+    public const uint GUIScreenRotationAxis = 0xD8A21E7F;
+    public const uint VectorX = 0x050C5D47;
+    public const uint VectorY = 0x050C5D46;
+    public const uint VectorZ = 0x050C5D45;
 
     public const string InventoryItemTagPrefix = "INV_ITEM_";
 
@@ -166,26 +216,67 @@ public static class Engine_ItemDetails
             InternalName = multi.NameOf(recordHash),
         };
 
+        // TWO RECORDS MAKE AN ITEM. The definition (`Weapon_LongswordSteel`-style) carries the
+        // components — `WeaponComponent`, `ShopItemComponent`, `AugmentableComponent` — and an
+        // `InventoryItemComponent` reference to the record that carries the name tag, the
+        // description tag, the icon and the rating. A DLC variant is a child of that component
+        // (its own `DescriptionTag`, `parent` → the base component) with a definition of its
+        // own pointing at it. The item books resolve a row by NAME TAG, which lands on the
+        // COMPONENT; every read that only walked `parent` from there found no damage, no slots
+        // and no price ("value unstated" on every weapon). So: find the definition that OWNS the
+        // component and read the components off it, keeping the row's own record for the tags.
+        GdbCursor owner = cursor;
+        uint ownerHash = recordHash;
+        bool cursorHasInventory =
+            multi.TryFindInherited(cursor, InventoryItemComponent, 6, out _, out uint ownRef, out _) &&
+            IsRef(ownRef);
+        if (!cursorHasInventory && TryDefinitionOf(multi, cursor, recordHash, out GdbCursor definition))
+        {
+            owner = definition;
+            ownerHash = definition.View.RecordHash(definition.Record);
+        }
+
+        detail.DefinitionHash = ownerHash;
+
         var info = new ContentsItem();
-        Engine_EntityContents.ReadItemInfo(multi, recordHash, info, false);
+        Engine_EntityContents.ReadItemInfo(multi, ownerHash, info, false);
         detail.Money = info.Money;
 
-        if (multi.TryFindInherited(cursor, MoneyComponent, 6, out _, out uint money, out _) &&
+        if (multi.TryFindInherited(owner, MoneyComponent, 6, out _, out uint money, out _) &&
             IsRef(money))
         {
             detail.IsMoney = true;
         }
 
-        ReadAppearance(multi, cursor, detail);
+        ReadAppearance(multi, owner, detail);
 
         GdbCursor inventoryComponent = default;
         bool hasInventory =
             multi.TryFindInherited(
-                cursor, InventoryItemComponent, 6, out _, out uint inventoryHash, out _) &&
+                owner, InventoryItemComponent, 6, out _, out uint inventoryHash, out _) &&
             IsRef(inventoryHash) &&
             multi.TryLookup(inventoryHash, out inventoryComponent);
 
+        // The row IS the component (a DLC variant carries the description override the
+        // definition's reference would miss): the tags come from it first.
+        if (!cursorHasInventory)
+        {
+            inventoryComponent = cursor;
+            hasInventory = true;
+        }
+
         detail.HasInventoryItem = hasInventory;
+
+        if (multi.TryFindInherited(
+                owner, ShopItemComponentField, 6, out _, out uint shop, out _) &&
+            IsRef(shop) && multi.TryLookup(shop, out GdbCursor shopComponent) &&
+            multi.TryFindInherited(
+                shopComponent, BasePriceField, -1, out _, out uint price,
+                out GdbFieldType priceType) &&
+            IsIntType(priceType))
+        {
+            detail.BasePrice = unchecked((int)price);
+        }
 
         if (hasInventory &&
             multi.TryFindInherited(
@@ -197,7 +288,7 @@ public static class Engine_ItemDetails
         }
 
         if (multi.TryFindInherited(
-                cursor, WeaponComponent, 6, out _, out uint weaponComponent, out _) &&
+                owner, WeaponComponent, 6, out _, out uint weaponComponent, out _) &&
             IsRef(weaponComponent))
         {
             detail.WeaponComponent = weaponComponent;
@@ -223,7 +314,9 @@ public static class Engine_ItemDetails
             detail.IconTex = multi.NameOf(icon);
         }
 
-        ReadModel(multi, cursor, detail);
+        ReadPreview(multi, cursor, inventoryComponent, hasInventory, detail);
+
+        ReadModel(multi, owner, detail);
 
         if (detail.ModelPath.Length == 0)
         {
@@ -252,20 +345,82 @@ public static class Engine_ItemDetails
         }
 
         var statSeen = new HashSet<uint>();
-        CollectScalars(multi, cursor, detail, statSeen);
+        CollectScalars(multi, owner, detail, statSeen);
 
         foreach (uint componentField in StatComponents)
         {
             if (multi.TryFindInherited(
-                    cursor, componentField, 6, out _, out uint component, out _) &&
+                    owner, componentField, 6, out _, out uint component, out _) &&
                 IsRef(component) && multi.TryLookup(component, out GdbCursor scoped))
             {
                 CollectScalars(multi, scoped, detail, statSeen);
             }
         }
 
-        CollectAugments(multi, cursor, detail);
+        CollectAugments(multi, owner, detail);
         return detail;
+    }
+
+    private static readonly uint ShopItemComponentField =
+        Refii.Core.Engine_GameHash.Fnv1("ShopItemComponent");
+
+    private static readonly uint BasePriceField = Refii.Core.Engine_GameHash.Fnv1("BasePrice");
+
+    private static Dictionary<uint, uint>? _definitionByComponent;
+
+    private static GdbMulti? _definitionIndexOf;
+
+    /// <summary>
+    /// The definition whose `InventoryItemComponent` names this component, or an ancestor of it
+    /// (a DLC variant's own definition names the variant; the base definition names the base).
+    /// One reverse index per database, built on first ask.
+    /// </summary>
+    private static bool TryDefinitionOf(
+        GdbMulti multi, GdbCursor component, uint componentHash, out GdbCursor definition)
+    {
+        definition = default;
+        if (!ReferenceEquals(_definitionIndexOf, multi) || _definitionByComponent is null)
+        {
+            var map = new Dictionary<uint, uint>();
+            foreach (GdbView view in multi.Views)
+            {
+                for (int i = 0; i < view.RecordCount; ++i)
+                {
+                    if (view.TryFindLocalRaw(i, InventoryItemComponent, 6, out uint target, out _) &&
+                        IsRef(target))
+                    {
+                        map.TryAdd(target, view.RecordHash(i));
+                    }
+                }
+            }
+
+            _definitionByComponent = map;
+            _definitionIndexOf = multi;
+        }
+
+        GdbCursor current = component;
+        uint hash = componentHash;
+        var visited = new HashSet<uint>();
+        for (int depth = 0; depth < WalkDepth && hash != 0; ++depth)
+        {
+            if (_definitionByComponent.TryGetValue(hash, out uint owner) &&
+                multi.TryLookup(owner, out definition))
+            {
+                return true;
+            }
+
+            if (!current.Valid ||
+                !current.View.TryFindLocalRaw(
+                    current.Record, GdbView.HashParent, 6, out uint parent, out _) ||
+                !IsRef(parent) || !visited.Add(parent) || !multi.TryLookup(parent, out current))
+            {
+                return false;
+            }
+
+            hash = parent;
+        }
+
+        return false;
     }
 
     private static void ReadAppearance(GdbMulti multi, GdbCursor cursor, ItemDetail detail)
@@ -377,6 +532,70 @@ public static class Engine_ItemDetails
 
         core = core.Replace("BASE", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
         return core.IndexOf('_') >= 0 ? core + ".mdl" : string.Empty;
+    }
+
+    /// <summary>The item book's spinning preview — see <see cref="ItemDetail.PreviewMesh"/>.</summary>
+    private static void ReadPreview(
+        GdbMulti multi, GdbCursor cursor, GdbCursor inventory, bool hasInventory, ItemDetail detail)
+    {
+        detail.PreviewMesh = FindTag(multi, cursor, inventory, hasInventory, GUIScreenMesh);
+
+        if (FindScalar(multi, cursor, inventory, hasInventory, GUIScreenScaleMultiplier,
+                out uint scale, out GdbFieldType scaleType) &&
+            scaleType == GdbFieldType.Float)
+        {
+            detail.PreviewScale = BitConverter.Int32BitsToSingle(unchecked((int)scale));
+        }
+
+        if (FindScalar(multi, cursor, inventory, hasInventory, GUIScreenRotationAxis,
+                out uint axis, out GdbFieldType axisType) &&
+            IsIntType(axisType))
+        {
+            detail.PreviewRotationAxis = unchecked((int)axis);
+        }
+
+        detail.PreviewTranslation =
+            ReadVector(multi, cursor, inventory, hasInventory, GUIScreenTranslationOffset);
+        detail.PreviewRotation =
+            ReadVector(multi, cursor, inventory, hasInventory, GUIScreenRotationOffset);
+    }
+
+    /// <summary>A referenced `X`/`Y`/`Z` record, each component INHERITED — see PreviewMesh.</summary>
+    private static Vector3 ReadVector(
+        GdbMulti multi, GdbCursor cursor, GdbCursor inventory, bool hasInventory, uint field)
+    {
+        if (!FindScalar(multi, cursor, inventory, hasInventory, field, out uint reference,
+                out GdbFieldType type) ||
+            type != GdbFieldType.Reference || !IsRef(reference) ||
+            !multi.TryLookup(reference, out GdbCursor vector))
+        {
+            return Vector3.Zero;
+        }
+
+        return new Vector3(
+            Component(multi, vector, VectorX),
+            Component(multi, vector, VectorY),
+            Component(multi, vector, VectorZ));
+
+        static float Component(GdbMulti multi, GdbCursor vector, uint axis) =>
+            multi.TryFindInherited(vector, axis, (int)GdbFieldType.Float, out _, out uint raw,
+                out _)
+                ? BitConverter.Int32BitsToSingle(unchecked((int)raw))
+                : 0f;
+    }
+
+    /// <summary>`FindTag` without the tag-type constraint: the entity first, then its component.</summary>
+    private static bool FindScalar(
+        GdbMulti multi, GdbCursor cursor, GdbCursor inventory, bool hasInventory, uint field,
+        out uint value, out GdbFieldType type)
+    {
+        if (multi.TryFindInherited(cursor, field, -1, out _, out value, out type))
+        {
+            return true;
+        }
+
+        return hasInventory &&
+            multi.TryFindInherited(inventory, field, -1, out _, out value, out type);
     }
 
     private static uint FindTag(
