@@ -59,10 +59,6 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
-namespace refii::vfs {
-void EnsureAlternateSignalStack();
-}  // namespace refii::vfs
-
 namespace rex {
 /// Defined in the runtime's logging.cpp and not declared by its header; the crash reporters
 /// need it, since a record left in spdlog's queue when the process dies is never written.
@@ -105,6 +101,11 @@ void FlushLogging();
 // kind of thing that goes wrong silently.
 #include "core/audio_state.h"
 #include "core/hero_derived.h"
+
+// The alternate signal stack lives in the vfs library behind a C entry point since the
+// payload-bridge change (adarec1994, 3f9784ae): `EnsureAlternateSignalStack` is now an inline
+// wrapper there, so this library — a separate .so — calls the entry point itself.
+extern "C" void refii_bridge_ensure_alternate_signal_stack(void);
 
 namespace refii::vfs {
 // Defined in src/vfs/src/core/bink_frame_state.cpp.
@@ -869,7 +870,7 @@ void Install() {
         return;
     }
     crash::ResolvePath();
-    refii::vfs::EnsureAlternateSignalStack();  // Godot's thread, the one that installs this
+    refii_bridge_ensure_alternate_signal_stack();  // Godot's thread, the one that installs this
     for (int sig : kSignals) {
         struct sigaction action{};
         action.sa_sigaction = LastResort;
