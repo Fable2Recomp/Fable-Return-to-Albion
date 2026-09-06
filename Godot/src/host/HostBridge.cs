@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 118;
+	public const int ExpectedAbiVersion = 119;
 
 	private const int MessageCapacity = 512;
 
@@ -283,6 +283,226 @@ public static class HostBridge
 	/// One overlay's per-bone weights, 0..255 by LIVE (guest) bone index, from the mask node
 	/// the leaf names. Empty when the node is not a mask.
 	/// </summary>
+	/// <summary>One item an entity wears: its GDB record hash, and whether the wearer is female
+	/// and whether the appearance component's open byte is set (the open-coat variants).</summary>
+	public readonly record struct GuestWornItem(uint Hash, bool Female, bool Open);
+
+	/// <summary>
+	/// The items the entity wears, from its appearance-modifier component. Empty when the
+	/// entity wears nothing or carries no such component.
+	/// </summary>
+	public static List<GuestWornItem> GetEntityWornItems(uint entity)
+	{
+		var result = new List<GuestWornItem>();
+		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return result;
+		}
+
+		var words = new uint[128];
+		uint count;
+		try
+		{
+			count = RefiiHostGetEntityWornItems(entity, words, (uint)words.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return result;
+		}
+
+		for (uint i = 0; i < count && 2 * i + 1 < words.Length; i++)
+		{
+			uint flags = words[2 * i + 1];
+			result.Add(new GuestWornItem(words[2 * i], (flags & 1) != 0, (flags & 2) != 0));
+		}
+
+		return result;
+	}
+
+	/// <summary>
+	/// One post-fold aim or look op: the record it belongs to, which chain (0 aim, 1 look),
+	/// the blend mode and weight, the record's weight, and one target rotation per chain bone.
+	/// </summary>
+	public readonly record struct GuestPostOp(uint RecordUid, int Kind, int Mode, float Weight,
+		float RecordWeight, Quaternion[] Targets);
+
+	/// <summary>The skeleton's aim and look chains plus every op the playing records carry.</summary>
+	public readonly record struct GuestPostOps(bool AimOn, bool LookOn, int[] AimBones, int[] LookBones,
+		List<GuestPostOp> Ops);
+
+	/// <summary>
+	/// The guest's post-fold aim and look records for the entity (`sub_822DC980` tail): per
+	/// chain bone, a target rotation the folded pose is blended toward. Null without a skeleton.
+	/// </summary>
+	public static GuestPostOps? GetAnimPostOps(uint entity)
+	{
+		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		var words = new uint[13 + 64 * 29];
+		uint count;
+		try
+		{
+			count = RefiiHostGetAnimPostOps(entity, words, (uint)words.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		if (words[0] == 0 && words[1] == 0 && words[2] == 0 && words[7] == 0)
+		{
+			return null;
+		}
+
+		var aim = new int[5];
+		var look = new int[6];
+		for (int i = 0; i < 5; i++)
+		{
+			aim[i] = (int)words[2 + i];
+		}
+
+		for (int i = 0; i < 6; i++)
+		{
+			look[i] = (int)words[7 + i];
+		}
+
+		var ops = new List<GuestPostOp>();
+		int at = 13;
+		for (uint i = 0; i < count; i++)
+		{
+			if (at + 5 > words.Length)
+			{
+				break;
+			}
+
+			int kind = (int)words[at + 1];
+			int bones = kind == 0 ? 5 : 6;
+			if (at + 5 + 4 * bones > words.Length)
+			{
+				break;
+			}
+
+			var targets = new Quaternion[bones];
+			for (int b = 0; b < bones; b++)
+			{
+				int q = at + 5 + 4 * b;
+				targets[b] = new Quaternion(
+					BitConverter.Int32BitsToSingle((int)words[q]),
+					BitConverter.Int32BitsToSingle((int)words[q + 1]),
+					BitConverter.Int32BitsToSingle((int)words[q + 2]),
+					BitConverter.Int32BitsToSingle((int)words[q + 3]));
+			}
+
+			ops.Add(new GuestPostOp(words[at], kind, (int)words[at + 2],
+				BitConverter.Int32BitsToSingle((int)words[at + 3]),
+				BitConverter.Int32BitsToSingle((int)words[at + 4]), targets));
+			at += 5 + 4 * bones;
+		}
+
+		return new GuestPostOps(words[0] != 0, words[1] != 0, aim, look, ops);
+	}
+
+	/// <summary>One built part of a composite character: its model hash, its cluster sort
+	/// layer, whether it is a body part, and the cluster names it covers.</summary>
+	public readonly record struct GuestPartHides(uint Hash, int Layer, bool Body, string[] Covers);
+
+	/// <summary>
+	/// The guest's per-part cluster sets and sort layers for a composite entity (component
+	/// 17's built vector). A part hides the union of the sets of every other part with a
+	/// strictly greater layer. Empty for a single-model entity.
+	/// </summary>
+	public static List<GuestPartHides> GetEntityPartHides(uint entity)
+	{
+		var result = new List<GuestPartHides>();
+		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return result;
+		}
+
+		var text = new byte[8192];
+		uint count;
+		try
+		{
+			count = RefiiHostGetEntityPartHides(entity, text, (uint)text.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return result;
+		}
+
+		if (count == 0)
+		{
+			return result;
+		}
+
+		int end = System.Array.IndexOf(text, (byte)0);
+		string all = System.Text.Encoding.ASCII.GetString(text, 0, end < 0 ? text.Length : end);
+		foreach (string line in all.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+		{
+			string[] fields = line.Split(' ');
+			if (fields.Length < 3 ||
+				!uint.TryParse(fields[0], System.Globalization.NumberStyles.HexNumber, null, out uint hash) ||
+				!int.TryParse(fields[1], out int layer))
+			{
+				continue;
+			}
+
+			string[] covers = fields.Length >= 4 && fields[3].Length != 0
+				? fields[3].Split(';', StringSplitOptions.RemoveEmptyEntries)
+				: System.Array.Empty<string>();
+			result.Add(new GuestPartHides(hash, layer, fields[2] == "1", covers));
+		}
+
+		return result;
+	}
+
+	/// <summary>One bone's skeletal morph: a translation offset and a scale, guest bone index.</summary>
+	public readonly record struct GuestBoneMorph(int Bone, Vector3 Offset, Vector3 Scale);
+
+	private const int BoneMorphWords = 7;
+
+	/// <summary>
+	/// The entity's combined skeletal morph record — what makes a fat villager fat in the rig.
+	/// Empty for an entity without a mesh component or a record.
+	/// </summary>
+	public static List<GuestBoneMorph> GetBoneMorph(uint entity)
+	{
+		var result = new List<GuestBoneMorph>();
+		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return result;
+		}
+
+		var words = new uint[BoneMorphWords * 256];
+		uint count;
+		try
+		{
+			count = RefiiHostGetBoneMorph(entity, words, (uint)words.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return result;
+		}
+
+		for (int i = 0; i < count; i++)
+		{
+			int at = i * BoneMorphWords;
+			result.Add(new GuestBoneMorph(
+				(int)words[at],
+				new Vector3(BitConverter.Int32BitsToSingle((int)words[at + 1]),
+					BitConverter.Int32BitsToSingle((int)words[at + 2]),
+					BitConverter.Int32BitsToSingle((int)words[at + 3])),
+				new Vector3(BitConverter.Int32BitsToSingle((int)words[at + 4]),
+					BitConverter.Int32BitsToSingle((int)words[at + 5]),
+					BitConverter.Int32BitsToSingle((int)words[at + 6]))));
+		}
+
+		return result;
+	}
+
 	public static byte[] GetAnimMask(uint node, out uint skeletonId)
 	{
 		skeletonId = 0;
@@ -3967,6 +4187,28 @@ public static class HostBridge
 	}
 
 	/// <summary>Reads the hero's vitals. See <see cref="HeroVitals"/>.</summary>
+	/// <summary>
+	/// The player hero's entity address, or 0 — the handle every hero read resolves first.
+	/// </summary>
+	public static uint HeroEntityAddress()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+
+		var words = new uint[17];
+		var values = new float[20];
+		try
+		{
+			return RefiiHostGetHeroVitals(words, (uint)words.Length, values, (uint)values.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0;
+		}
+	}
+
 	public static HeroVitals GetHeroVitals()
 	{
 		if (TryGetAbiVersion() is null || !IsGuestUp)
@@ -6052,6 +6294,18 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetTopBoxBody(
 		[Out] uint[] outWords, uint capacity, [Out] byte[] outText, uint textCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetBoneMorph(uint entity, [Out] uint[] outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetAnimPostOps(uint entity, [Out] uint[] outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityPartHides(uint entity, [Out] byte[] outText, uint textCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityWornItems(uint entity, [Out] uint[] outWords, uint wordCapacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetAnimMask(

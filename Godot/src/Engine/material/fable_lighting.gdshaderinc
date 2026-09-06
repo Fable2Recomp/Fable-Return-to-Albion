@@ -50,6 +50,14 @@ global uniform float fable_bake_weight;
 /// blend keeps their shape at 1-w while the sky sets the tone. w = 0 in the fable model.
 global uniform vec4 fable_sky_ambient;
 
+/// 1.0 in the modern model when the level has no sky (a cave, a windowless interior): the
+/// authored bakes are then the only light there was, and they ride at full strength instead of
+/// the modern bake weight, which was balanced for exteriors where the live sun carries the rest.
+global uniform float fable_interior = 0.0;
+
+/// The remaster's interior BAKE lift (`interior_bake_scale`), 1.0 where the level has a sky.
+global uniform float fable_interior_bake = 1.0;
+
 const float FABLE_BAKE_NONE = 0.0;
 const float FABLE_BAKE_PROBE = 1.0;
 const float FABLE_BAKE_COLOR_SINGLE = 2.0;
@@ -141,7 +149,9 @@ vec3 fable_bake(vec3 world_normal, vec4 vertex_colour, vec2 lightmap_uv) {
 	// The remaster weight rides the AUTHORED bakes (modes 2/3/4). The probe field stays at
 	// full strength — it is the ambient a dynamic thing stands in, not a painted picture of
 	// sunlight, and dimming it blacked out every character at night.
-	float authored = fable_bake_weight <= 0.0 ? 1.0 : fable_bake_weight;
+	float authored = fable_bake_weight > 1.0 ? fable_bake_weight
+		: (fable_interior > 0.5 || fable_bake_weight <= 0.0 ? 1.0 : fable_bake_weight);
+	authored *= fable_interior_bake;
 
 	if (mode > 3.5) {
 		// The amb3 TEXTURE bake — the mesh's own TexUV2 channel, absolute over the object's

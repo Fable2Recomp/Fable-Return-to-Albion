@@ -49,11 +49,23 @@ public sealed class ToneMapTheme
 {
     public const int ParamCount = (int)ToneMapParam.Count;
 
+    /// <summary>
+    /// The guest's own defaults, from `sub_82A45DD0` (the theme constructor that seeds the global
+    /// layer before the GDB overlay): ExposureSpeed flt_8209CB94 = 0.01, MiddleGray flt_8209B7A8
+    /// = 0.45, MinLumPct 0.001 / 0.5 / 0.999, MinLumUpperBound flt_8209B650 = 0.1,
+    /// AvgLumLowerBound flt_8209BE64 = 0.15, MaxLumLowerBound flt_8209B634 = 0.3,
+    /// ContrastClamping 1.0. Contrast and the three ContrastEnhancement fields are never seeded
+    /// and stay 0. `sub_821EC198` then scales the floors by ContrastClamping and forms the knee as
+    /// exp(10*MiddleGray - 6).
+    ///
+    /// THE FLOORS WERE DOUBLE THE GUEST'S (0.3 / 0.6) until 2026-09-06, which halved the key
+    /// `knee / (avg - min)` in every level that does not state them — the caves among them.
+    /// </summary>
     public static readonly float[] Defaults =
     {
-        0.01f, 0.49783f, 0.0f, 0.01f, 0.5f, 0.99f,
+        0.01f, 0.45f, 0.0f, 0.001f, 0.5f, 0.999f,
         0.0f, 2.0f, 32.0f, 1.0f,
-        0.1f, 0.3f, 0.6f,
+        0.1f, 0.15f, 0.3f,
         0.9f, 1.0f, 4.0f,
         0.2f, 0.01f, 0.0f,
         0.15f, 0.0f, 0.0f, 0.0f,

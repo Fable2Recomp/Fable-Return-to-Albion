@@ -1,0 +1,246 @@
+using System;
+using System.Collections.Generic;
+using Godot;
+
+namespace Refii.Lighting;
+
+/// <summary>
+/// The region's PAINTED day sets: the environment grid the guest samples at the hero, and the
+/// layer weights it blends those day sets in with.
+/// </summary>
+/// <remarks>
+/// THE CONTRACT, from the binary (verified 2026-09-05). The theme is a layer stack, not one day
+/// set per level: <c>sub_82547950</c> reads ONE level-wide day set from the first LevelData in
+/// load order at full load, and on top of it the level's <c>.genv</c> grids paint a day-set record
+/// hash per 4 m world cell. Every tick <c>sub_821ABFD8</c> samples the grid at the HERO's x,y
+/// (<c>sub_822D6A20</c>: level bounds at level+152..164, then the tile whose int bounds at
+/// tile+28..40 contain it; <c>sub_822D6BC8</c>: cell = (y − minY)/cell × width + (x − minX)/cell,
+/// read from the u32 vector at tile+16; 0xFFFFFFFF = unpainted). The set under the hero is the
+/// active layer; each layer's weight moves by target/(BlendTime × 15) per 15 Hz tick — up on
+/// PaintedThemeBlendInTime, down on PaintedThemeBlendOutTime, both LevelData fields defaulting
+/// to 5 s — and a layer is erased at zero. <c>sub_8218EAF8</c> then lerps each painted layer over
+/// the level day set by its weight. This is how a tavern inside Bowerstone Market gets its own
+/// ambient: its cells are painted (the market paints three day sets over 243 cells, one of them
+/// a 16 × 12 m patch), and there is no interior flag anywhere.
+///
+/// File layout (the asset browser writes the same): 12-byte header, be-u32 span x/y, be-u32
+/// width/height, f32 cell size, padded to 32 bytes, then width × height be-u32 hashes. The grid
+/// spans the heightfield from its origin, one cell per 4 m.
+/// </remarks>
+public sealed class Engine_PaintedDaySets
+{
+    public const uint None = 0xFFFFFFFFu;
+
+    public const float DefaultBlendSeconds = 5.0f;
+
+    /// <summary>One grid tile, in Godot world X/Z (the guest's x/y map straight onto them).</summary>
+    public sealed class Grid
+    {
+        public float OriginX;
+        public float OriginZ;
+        public float Cell = 4.0f;
+        public int Width;
+        public int Height;
+        public uint[] Cells = Array.Empty<uint>();
+
+        public float MaxX => OriginX + (Width * Cell);
+
+        public float MaxZ => OriginZ + (Height * Cell);
+
+        public uint Sample(float x, float z)
+        {
+            // The guest truncates the hero's coordinates to ints before the bounds test and the
+            // cell division; inside the bounds the offsets are non-negative, so truncation is floor.
+            int ix = (int)x;
+            int iz = (int)z;
+            int minX = (int)OriginX;
+            int minZ = (int)OriginZ;
+            if (ix < minX || ix >= (int)MaxX || iz < minZ || iz >= (int)MaxZ)
+            {
+                return None;
+            }
+
+            int cell = ((int)((iz - minZ) / Cell) * Width) + (int)((ix - minX) / Cell);
+            return cell >= 0 && cell < Cells.Length ? Cells[cell] : None;
+        }
+    }
+
+    public sealed class Layer
+    {
+        public uint Hash;
+        public float Weight;
+        public bool Active;
+    }
+
+    private readonly List<Grid> _grids = new();
+
+    private readonly List<Layer> _layers = new();
+
+    public float BlendInSeconds = DefaultBlendSeconds;
+
+    public float BlendOutSeconds = DefaultBlendSeconds;
+
+    public IReadOnlyList<Layer> Layers => _layers;
+
+    public bool Any => _layers.Count != 0;
+
+    public int GridCount => _grids.Count;
+
+    public int PaintedCells { get; private set; }
+
+    public float MaxWeight
+    {
+        get
+        {
+            float max = 0f;
+            foreach (Layer layer in _layers)
+            {
+                max = MathF.Max(max, layer.Weight);
+            }
+
+            return max;
+        }
+    }
+
+    public static bool TryParse(byte[] bytes, float originX, float originZ, out Grid grid, out string error)
+    {
+        grid = new Grid();
+        error = string.Empty;
+        if (bytes.Length < 32)
+        {
+            error = $"{bytes.Length} bytes is shorter than the 32-byte header";
+            return false;
+        }
+
+        int width = (int)ReadU32(bytes, 20);
+        int height = (int)ReadU32(bytes, 24);
+        float cell = BitConverter.Int32BitsToSingle((int)ReadU32(bytes, 28));
+        long expected = 32 + (4L * width * height);
+        if (width <= 0 || height <= 0 || width > 4096 || height > 4096 || !(cell > 0f) ||
+            bytes.Length < expected)
+        {
+            error = $"grid {width}x{height} cell {cell} needs {expected} bytes, file has {bytes.Length}";
+            return false;
+        }
+
+        var cells = new uint[width * height];
+        for (int i = 0; i < cells.Length; i++)
+        {
+            cells[i] = ReadU32(bytes, 32 + (4 * i));
+        }
+
+        grid = new Grid
+        {
+            OriginX = originX, OriginZ = originZ, Cell = cell,
+            Width = width, Height = height, Cells = cells,
+        };
+        return true;
+    }
+
+    public void Add(Grid grid)
+    {
+        _grids.Add(grid);
+        foreach (uint cell in grid.Cells)
+        {
+            if (cell != None)
+            {
+                PaintedCells++;
+            }
+        }
+    }
+
+    public uint Sample(Vector3 hero)
+    {
+        foreach (Grid grid in _grids)
+        {
+            uint hash = grid.Sample(hero.X, hero.Z);
+            if (hash != None)
+            {
+                return hash;
+            }
+
+            // The guest returns the FIRST tile whose bounds contain the point, painted or not.
+            if (hero.X >= grid.OriginX && hero.X < grid.MaxX && hero.Z >= grid.OriginZ && hero.Z < grid.MaxZ)
+            {
+                return None;
+            }
+        }
+
+        return None;
+    }
+
+    /// <summary>
+    /// One tick of the guest's blend at a real delta. Returns how much the weights moved,
+    /// plus 1.0 for every layer added or erased, so the caller can re-evaluate in steps.
+    /// </summary>
+    public float Tick(Vector3? hero, float deltaSeconds)
+    {
+        float moved = 0f;
+        foreach (Layer layer in _layers)
+        {
+            layer.Active = false;
+        }
+
+        if (hero is { } at)
+        {
+            uint here = Sample(at);
+            if (here != None)
+            {
+                Layer? found = null;
+                foreach (Layer layer in _layers)
+                {
+                    if (layer.Hash == here)
+                    {
+                        found = layer;
+                        break;
+                    }
+                }
+
+                if (found is null)
+                {
+                    found = new Layer { Hash = here };
+                    _layers.Add(found);
+                    moved += 1f;
+                    GD.Print($"[painted] entering day set 0x{here:X8} at ({at.X:0.0}, {at.Z:0.0})");
+                }
+
+                found.Active = true;
+            }
+        }
+
+        float stepIn = deltaSeconds / MathF.Max(BlendInSeconds, 1e-3f);
+        float stepOut = deltaSeconds / MathF.Max(BlendOutSeconds, 1e-3f);
+        for (int i = _layers.Count - 1; i >= 0; i--)
+        {
+            Layer layer = _layers[i];
+            float before = layer.Weight;
+            layer.Weight = layer.Active
+                ? MathF.Min(layer.Weight + stepIn, 1f)
+                : MathF.Max(layer.Weight - stepOut, 0f);
+            moved += MathF.Abs(layer.Weight - before);
+            if (!layer.Active && layer.Weight <= 0f)
+            {
+                GD.Print($"[painted] day set 0x{layer.Hash:X8} faded out");
+                _layers.RemoveAt(i);
+                moved += 1f;
+            }
+        }
+
+        return moved;
+    }
+
+    public string Describe()
+    {
+        var parts = new List<string>();
+        foreach (Layer layer in _layers)
+        {
+            parts.Add($"0x{layer.Hash:X8}={layer.Weight:0.00}{(layer.Active ? "*" : string.Empty)}");
+        }
+
+        return $"grids={_grids.Count} painted={PaintedCells} layers=[{string.Join(" ", parts)}] " +
+            $"blend in/out={BlendInSeconds:0.#}/{BlendOutSeconds:0.#}s";
+    }
+
+    private static uint ReadU32(byte[] d, int at) =>
+        ((uint)d[at] << 24) | ((uint)d[at + 1] << 16) | ((uint)d[at + 2] << 8) | d[at + 3];
+}

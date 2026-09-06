@@ -182,9 +182,10 @@ public partial class LightCheck : Node
 
 				// THE VALUES, not just the count. A count proves the walk reached something; only
 				// the numbers show it reached the LIGHT rather than a template's defaults.
-				if (samples.Count < 6)
+				if (samples.Count < 12)
 				{
-					samples.Add(
+					Vector3 origin = Engine_LevelProps.BuildTransform(placement).Origin;
+					samples.Add($"at ({origin.X:0.0}, {origin.Y:0.0}, {origin.Z:0.0}) " +
 						$"{placement.EntityName ?? "?"}: " +
 						$"{(light.Type == Engine_LevelLights.LightTypePoint ? "point" : "spot")} " +
 						$"rgb({light.ColourLinear.X:0.00},{light.ColourLinear.Y:0.00}," +

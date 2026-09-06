@@ -102,11 +102,22 @@ public static class RuntimeCVarsGodot
                 + "direct sun mild against the baked lighting, so people and ground barely "
                 + "react to it — raising this makes characters and terrain visibly sun-lit "
                 + "and deepens their shadows. 1.0 follows the shipped energy exactly."),
-            new("placed_light_shadows", LightingCategory, RuntimeCVarType.Bool, "true",
-                "Every torch, lamp and fixture casts shadows, so its light cannot pass "
-                + "through walls or objects. The authored data mostly ships fixtures "
-                + "shadowless — on the 360 the bakes hid the leak. Off follows the "
-                + "authored flags exactly; on costs shadow-map renders per visible fixture."),
+            new("placed_light_shadows", LightingCategory, RuntimeCVarType.Bool, "false",
+                "Developer lever. Off: no torch, lamp or fixture casts a shadow, as on the "
+                + "360, so every lamp reads the same from every angle. On: only the few "
+                + "nearest fixtures cast, which is inconsistent by construction, and all of "
+                + "them casting halved the frame rate in Bowerstone Market."),
+            new("modern_dark_lift", LightingCategory, RuntimeCVarType.Double, "1",
+                "Maximum lift for frames far darker than the original's average-luminance floor "
+                + "in the modern lighting model. The original pins a frame's mean at that floor, "
+                + "so a cave whose mean sits at a fortieth of it renders at 7% grey; the lift "
+                + "lowers the floor only for frames more than ten times darker than it, up to "
+                + "this factor, and leaves daylight and ordinary night alone. 1 follows the original."),
+            new("placed_light_range", LightingCategory, RuntimeCVarType.Double, "1.5",
+                "Multiplier on the reach of torch, lamp and fixture lights. The shipped torches "
+                + "light 5-6 m, balanced for the original's baked glow between them; the remaster "
+                + "widens the pools so a cave floor between two braziers is lit. 1.0 follows the "
+                + "shipped data."),
             new("placed_light_scale", LightingCategory, RuntimeCVarType.Double, "1.5",
                 "Multiplier on torch, lamp and fixture light intensity. The authored fixtures "
                 + "throw modest pools — a tall lamp post barely reaches the ground — "
@@ -122,6 +133,30 @@ public static class RuntimeCVarsGodot
                 + "movable, so they carry no painted bake). The sky tether now carries that "
                 + "population, so the default follows the shipped level; raise it only if "
                 + "movables still read dark beside baked surfaces."),
+            new("interior_ambient_scale", LightingCategory, RuntimeCVarType.Double, "3.0",
+                "Lifts the theme's flat ambient in levels with no sky — caves, crypts, "
+                + "windowless rooms — where it is the only light between the torches. The "
+                + "360 rendered those rooms far brighter than the shipped numbers alone "
+                + "give; 1.0 is the shipped value, higher is the remaster's cave look. "
+                + "Modern model only."),
+            new("interior_ambient_neutral", LightingCategory, RuntimeCVarType.Double, "0.6",
+                "How far the interior ambient lift is pulled toward neutral. The cave themes "
+                + "state a saturated orange ambient; lifted as-is it paints every surface "
+                + "orange. 0 keeps the theme's colour, 1 lifts with white."),
+            new("interior_bake_scale", LightingCategory, RuntimeCVarType.Double, "3.0",
+                "Lifts the authored vertex bakes in levels with no sky, so the room's own "
+                + "painted colour and shading carry part of the cave look instead of the "
+                + "flat ambient alone. 1.0 is the shipped strength. Modern model only."),
+            new("interior_dark_lift", LightingCategory, RuntimeCVarType.Double, "3.0",
+                "The tone floor divisor in levels with no sky. The original clamps the "
+                + "scene average to 0.15 before exposing, which renders any room far below "
+                + "that as a dark room; this lets the floor fall to 0.15 divided by the value "
+                + "for such a frame. 1.0 is the original behaviour. Outdoors uses "
+                + "modern_dark_lift. Modern model only."),
+            new("interior_fog_scale", LightingCategory, RuntimeCVarType.Double, "0.2",
+                "How much of the authored fog a level with no sky keeps. The cave records "
+                + "state a fog that walls off everything past ten metres; the 360 reference "
+                + "shows the far walls. 1.0 is the shipped fog, 0 removes it. Modern model only."),
             new("baked_light_weight", LightingCategory, RuntimeCVarType.Double, "0.45",
                 "One weight on every AUTHORED exterior bake — the terrain lightmap and prop "
                 + "vertex colours — so adjacent surfaces scale together. Lower hands the look "

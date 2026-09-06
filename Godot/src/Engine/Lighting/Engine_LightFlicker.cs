@@ -91,8 +91,12 @@ public partial class Engine_LightFlicker : Node
 		_lights.Add(new Flickering
 		{
 			Node = light,
-			BaseEnergy = placement.Intensity,
-			BaseRange = placement.Range,
+			// THE BUILT NODE'S VALUES, not the placement's. The node carries the remaster's
+			// placed_light_scale and placed_light_range; taking the authored numbers here
+			// silently undid both on every flickering fixture — which is every torch in a cave.
+			BaseEnergy = light.LightEnergy,
+			BaseRange = light is OmniLight3D omni ? omni.OmniRange
+				: light is SpotLight3D spot ? spot.SpotRange : placement.Range,
 			Rate = placement.FlickerRate,
 			BrightnessRange = placement.FlickerBrightnessRange,
 			RadiusRange = placement.FlickerRadiusRange,

@@ -44,6 +44,15 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// </summary>
     public LightingFrame? Lighting { get; private set; }
 
+    /// <summary>The region's painted day sets, sampled at the hero; null when it paints none.</summary>
+    public Refii.Lighting.Engine_PaintedDaySets? Painted { get; set; }
+
+    /// <summary>Weight movement since the last re-evaluate; a blend re-evaluates in steps.</summary>
+    private float _paintedMoved;
+
+    /// <summary>A 5 s fade in ten steps: each re-evaluate costs tens of milliseconds.</summary>
+    private const float PaintedStep = 0.1f;
+
     public ToneMapTheme? ToneMap => _toneMapTheme;
 
     public SkyFrame? Frame => _frame;
@@ -147,6 +156,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         FollowGuestClock();
+        TickPainted((float)delta);
         TrackBodies();
         AnimateSky((float)delta);
         if (Engine_PostFxParams.SunSourcesRequested)
@@ -162,6 +172,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// Frozen means the guest is not advancing time, so neither do we.
     /// </summary>
     private float _lastEvaluated = float.NegativeInfinity;
+
+    private readonly HashSet<uint> _paintedUnresolved = new();
 
     /// <summary>Report a re-evaluation that costs more than a frame at 144 Hz.</summary>
     private const double ReevaluateWarnMs = 6.9;
@@ -242,6 +254,37 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Lighting = lighting;
             Engine_LevelLighting.UpdateSun(sun, lighting);
         }
+    }
+
+    /// <summary>
+    /// The guest's painted-day-set blend, at the hero, on real time. Re-evaluates the theme
+    /// once per tenth of weight rather than per frame; see <see cref="PaintedStep"/>.
+    /// </summary>
+    private void TickPainted(float delta)
+    {
+        if (Painted is null || Lighting is null)
+        {
+            return;
+        }
+
+        // IN THE REGION'S OWN FRAME. The level root is scaled (-1, 1, 1) — the guest's x runs
+        // the other way along Godot's X — and the grid was laid out in the frame the terrain
+        // was built in, so a world-space hero at X = -135 reads outside a grid that starts at
+        // 0 (b176). The parent's inverse takes the hero back into that frame.
+        Vector3? hero = Refii.Game.GameEntities.HeroPosition;
+        if (hero is { } world && GetParent() is Node3D root)
+        {
+            hero = root.GlobalTransform.AffineInverse() * world;
+        }
+
+        _paintedMoved += Painted.Tick(hero, delta);
+        if (_paintedMoved < PaintedStep)
+        {
+            return;
+        }
+
+        _paintedMoved = 0f;
+        Reevaluate();
     }
 
     private void FollowGuestClock()
@@ -423,6 +466,29 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 LightingGdbs, _dayFraction, out LightingTheme lightingTheme))
         {
             return;
+        }
+
+        // THE PAINTED LAYERS, over the level day set by weight — the guest's fold
+        // (sub_8218EAF8). A hash the chain cannot resolve is said once and skipped.
+        if (Painted is { Any: true } painted)
+        {
+            foreach (Refii.Lighting.Engine_PaintedDaySets.Layer layer in painted.Layers)
+            {
+                if (layer.Weight <= 0f)
+                {
+                    continue;
+                }
+
+                if (Engine_ThemeTimeline.TryExtractLightingBlended(
+                        LightingGdbs, _dayFraction, layer.Hash, out LightingTheme paintedTheme))
+                {
+                    lightingTheme = Engine_LightingTheme.FoldPainted(lightingTheme, paintedTheme, layer.Weight);
+                }
+                else if (_paintedUnresolved.Add(layer.Hash))
+                {
+                    GD.Print($"[painted] day set 0x{layer.Hash:X8} is painted but no loaded gdb states it");
+                }
+            }
         }
 
         _lightingTheme = lightingTheme;

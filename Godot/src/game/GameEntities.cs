@@ -192,8 +192,16 @@ public partial class GameEntities : Node3D
         _compositePartsUnresolved = 0;
         Refii.Entities.Engine_EntitySkeleton.BeginFrame();
 
+        uint heroAddress = HostBridge.HeroEntityAddress();
         foreach (HostBridge.GuestEntity entity in entities)
         {
+            if (entity.Address == heroAddress && heroAddress != 0u && IsUsablePlacement(entity.Position))
+            {
+                // THE HERO'S STATED POSITION, in Godot space, for whatever samples the world at
+                // the hero the way the guest does (the painted day-set grid).
+                HeroPosition = ToGodot(entity.Position, entity.Rotation).Origin;
+            }
+
             Mesh? mesh;
             if (entity.ModelHash == 0)
             {
@@ -296,12 +304,21 @@ public partial class GameEntities : Node3D
                 {
                     _unrigged.Add(entity.Address);
                 }
+
+                Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
             }
             else if (node.Mesh != mesh)
             {
                 // An entity can change model — a door opening, a prop breaking.
                 node.Mesh = mesh;
                 LightEntity(node);
+                Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
+            }
+            else if (_ticks % ReconcileTicks == 0)
+            {
+                // Clothes change without the model changing: the hero dresses, an NPC's outfit
+                // is re-committed. The garment set is re-read on the reconcile cadence.
+                Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
             }
 
             // A NON-FINITE ORIGIN TAKES GODOT'S RENDERER DOWN, not just this entity.
@@ -332,6 +349,15 @@ public partial class GameEntities : Node3D
             {
                 Transform3D stated = ToGodot(entity.Position, entity.Rotation);
                 node.Transform = Smoothed(entity.Address, stated);
+
+                // LIT FROM THE LEVEL'S PROBE FIELD where it stands, as the guest lights every
+                // dynamic object; re-sampled on the reconcile cadence (it moves) and at once
+                // when it has no sample yet.
+                if (_ticks % ReconcileTicks == 0 ||
+                    !node.HasMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeAtMeta))
+                {
+                    RelightEntity(node);
+                }
 
                 // AN ATTACHED CHILD IS NOT PLACED BY ITS OWN TRANSFORM. The guest wrote that
                 // transform from ITS pose, which is not the pose being drawn; the child belongs
@@ -1288,6 +1314,20 @@ public partial class GameEntities : Node3D
         Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
             node, Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting);
 
+    /// <summary>Probe-lit at the entity's current place: the region root is the sky node's
+    /// parent, and the probe field is indexed in the region's own frame.</summary>
+    private static void RelightEntity(Node3D node)
+    {
+        Refii.Level.Engine_SkyEnvironmentNode? sky = Refii.Level.Engine_SkyEnvironmentNode.Current;
+        if (sky is null || sky.GetParent() is not Node3D root || node is not GeometryInstance3D geometry)
+        {
+            return;
+        }
+
+        Vector3 local = root.GlobalTransform.AffineInverse() * node.GlobalPosition;
+        Refii.Lighting.Engine_LevelBakedLighting.LightEntityAt(geometry, local, sky.Lighting);
+    }
+
     /// <summary>
     /// The mesh for a model hash, or null when it does not resolve or will not decode.
     ///
@@ -1341,12 +1381,14 @@ public partial class GameEntities : Node3D
     private Mesh? ComposeParts(uint[] parts)
     {
         var paths = new List<string>(parts.Length);
+        var hashes = new List<long>(parts.Length);
         foreach (uint part in parts)
         {
             if (Refii.Level.Engine_PropModelIndex.Resolve(
                     part, System.Array.Empty<string>()) is string path)
             {
                 paths.Add(path);
+                hashes.Add(part);
             }
             else
             {
@@ -1368,12 +1410,12 @@ public partial class GameEntities : Node3D
         // Not built yet. Queue it and draw nothing this frame; the completion stores it and the
         // next frame is a cache hit.
         ++_awaitingBuild;
-        QueueCompositeBuild(key, paths);
+        QueueCompositeBuild(key, paths, hashes);
         return null;
     }
 
     /// <summary>Builds one composite off this thread, once.</summary>
-    private void QueueCompositeBuild(string key, List<string> paths)
+    private void QueueCompositeBuild(string key, List<string> paths, List<long> hashes)
     {
         // Already building, or the pipe is full and this retries next frame. NOT added to the
         // job set in the full case: leaving it out is what makes the retry possible.
@@ -1421,6 +1463,9 @@ public partial class GameEntities : Node3D
 
                 // Cached even when null, exactly as the synchronous path did: a part list whose
                 // models do not assemble will not assemble on the next frame either.
+                // The part hashes, aligned with the paths the assembly walked, so a surface's
+                // part index resolves to the guest's built record (Engine_HiddenClusters).
+                assembled.SetMeta(Refii.Models.Engine_MdlComposite.PartHashesMeta, hashes.ToArray());
                 _composed[key] = assembled;
                 _compositePartsDrawn += resolved;
                 _compositePartsMissing += missing;
@@ -1762,6 +1807,9 @@ public partial class GameEntities : Node3D
 
     private readonly Dictionary<uint, Refii.Core.Engine_TickTimeline> _placements = new();
 
+    /// <summary>The hero's newest stated position in Godot space; null before the first walk.</summary>
+    public static Vector3? HeroPosition { get; private set; }
+
     /// <summary>The guest's sim tick as of this frame's walk, read once.</summary>
     private uint _tickNow;
 
@@ -1923,6 +1971,7 @@ public partial class GameEntities : Node3D
                 ["mostlyRestFrames"] = animator.MostlyRestFrames,
                 ["topClip"] = $"{animator.LastTopKey:X8}",
                 ["topShare"] = animator.LastTopShare,
+                ["postOps"] = animator.PostOpsApplied,
                 ["channels"] = animator.LastChannels,
                 ["overlays"] = animator.LastOverlays,
                 ["clips"] = animator.DescribeClips(),
@@ -1942,6 +1991,108 @@ public partial class GameEntities : Node3D
     /// The surfaces one drawn entity is made of, with the material each carries — the answer to
     /// "what is actually on this face", which a screenshot of a 40-pixel head cannot give.
     /// </summary>
+    /// <summary>
+    /// One entity's rig as GODOT holds it: every bone's current pose rotation and global
+    /// position, and whether the node that should follow it is visible and skinned. The
+    /// question this answers is "the animator drove the rig, so why did nothing move" — by
+    /// showing whether the bones moved and whether a mesh is bound to them at all.
+    /// </summary>
+    public Dictionary<string, object?>? DescribeBones(uint address)
+    {
+        if (!_nodes.TryGetValue(address, out MeshInstance3D? node))
+        {
+            return null;
+        }
+
+        var result = new Dictionary<string, object?>
+        {
+            ["visible"] = node.Visible && node.IsVisibleInTree(),
+            ["surfaces"] = node.Mesh?.GetSurfaceCount() ?? 0,
+            ["skinned"] = node.Skin is not null && !node.Skeleton.IsEmpty,
+            ["twinHidden"] = Twins?.IsHidden(node.GetMeta("entity_record", 0u).AsUInt32()),
+            ["position"] = $"({node.GlobalPosition.X:0.00},{node.GlobalPosition.Y:0.00},{node.GlobalPosition.Z:0.00})",
+        };
+
+        if (_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? skeleton))
+        {
+            Skeleton3D sk = skeleton.Node;
+            var bones = new List<string>();
+            for (int b = 0; b < sk.GetBoneCount(); b++)
+            {
+                Transform3D pose = sk.GetBonePose(b);
+                Vector3 e = pose.Basis.GetEuler() * (180f / Mathf.Pi);
+                Vector3 g = (sk.GlobalTransform * sk.GetBoneGlobalPose(b)).Origin;
+                Vector3 sc = sk.GetBonePoseScale(b);
+                string scale = (sc - Vector3.One).LengthSquared() > 1e-6f ? $" scale=({sc.X:0.000},{sc.Y:0.000},{sc.Z:0.000})" : string.Empty;
+                bones.Add($"{b} '{sk.GetBoneName(b)}' parent={sk.GetBoneParent(b)} rot=({e.X:0.0},{e.Y:0.0},{e.Z:0.0}) " +
+                    $"local=({pose.Origin.X:0.00},{pose.Origin.Y:0.00},{pose.Origin.Z:0.00}) global=({g.X:0.00},{g.Y:0.00},{g.Z:0.00}){scale}");
+            }
+
+            result["bones"] = bones;
+        }
+
+        // THE GUEST'S OWN MORPH RECORD for this entity, as exported: what the rig applies.
+        var morph = new List<string>();
+        foreach (HostBridge.GuestBoneMorph m in HostBridge.GetBoneMorph(address))
+        {
+            morph.Add($"bone {m.Bone} off=({m.Offset.X:0.000},{m.Offset.Y:0.000},{m.Offset.Z:0.000}) sc=({m.Scale.X:0.000},{m.Scale.Y:0.000},{m.Scale.Z:0.000})");
+        }
+
+        result["morph"] = morph;
+        List<HostBridge.GuestWornItem> worn = HostBridge.GetEntityWornItems(address);
+        var wornLines = new List<string>();
+        foreach (HostBridge.GuestWornItem item in worn)
+        {
+            string name = Refii.Gdb.Engine_GdbCatalog.All?.NameOf(item.Hash) ?? "?";
+            Refii.Equipment.ItemDetail? detail = Refii.Entities.Engine_HiddenClusters.DetailFor(item.Hash);
+            wornLines.Add($"{item.Hash:X8} '{name}'{(item.Female ? " female" : "")}{(item.Open ? " open" : "")} clusters=[{(detail is null ? "-" : string.Join(",", detail.ClustersCovered))}]");
+        }
+
+        result["worn"] = wornLines;
+        var partLines = new List<string>();
+        List<HostBridge.GuestPartHides> builtParts = HostBridge.GetEntityPartHides(address);
+        Dictionary<uint, HashSet<string>> hiddenPerPart = Refii.Entities.Engine_HiddenClusters.HiddenPerPart(builtParts);
+        foreach (HostBridge.GuestPartHides part in builtParts)
+        {
+            string hides = hiddenPerPart.TryGetValue(part.Hash, out HashSet<string>? set) ? string.Join(";", set) : "";
+            partLines.Add($"{part.Hash:X8} layer {part.Layer}{(part.Body ? " body" : "")} covers=[{string.Join(";", part.Covers)}] hidden=[{hides}]");
+        }
+
+        result["parts"] = partLines;
+        if (HostBridge.GetAnimPostOps(address) is { } post)
+        {
+            var opLines = new List<string>();
+            foreach (HostBridge.GuestPostOp op in post.Ops)
+            {
+                opLines.Add($"{(op.Kind == 0 ? "aim" : "look")} uid {op.RecordUid:X8} mode {op.Mode} w {op.Weight:0.000} rw {op.RecordWeight:0.000} q0=({op.Targets[0].X:0.00},{op.Targets[0].Y:0.00},{op.Targets[0].Z:0.00},{op.Targets[0].W:0.00})");
+            }
+
+            result["postOps"] = new Dictionary<string, object?>
+            {
+                ["aimOn"] = post.AimOn,
+                ["lookOn"] = post.LookOn,
+                ["aimBones"] = post.AimBones,
+                ["lookBones"] = post.LookBones,
+                ["ops"] = opLines,
+            };
+        }
+        if (_nodes.TryGetValue(address, out MeshInstance3D? owner) && owner.Mesh is ArrayMesh ownerMesh)
+        {
+            string[] regions = Refii.Models.Engine_MdlMesh.SurfaceRegions(ownerMesh);
+            var surfaceRegions = new List<string>();
+            for (int s = 0; s < ownerMesh.GetSurfaceCount(); s++)
+            {
+                string region = s < regions.Length ? regions[s] : string.Empty;
+                bool hidden = owner.GetSurfaceOverrideMaterial(s) is not null;
+                surfaceRegions.Add($"{s} '{ownerMesh.SurfaceGetName(s)}' region='{region}'{(hidden ? " HIDDEN" : "")}");
+            }
+
+            result["surfaceRegions"] = surfaceRegions;
+        }
+
+        return result;
+    }
+
     public List<Dictionary<string, object?>>? DescribeSurfaces(uint address)
     {
         if (!_nodes.TryGetValue(address, out MeshInstance3D? node) || node.Mesh is not { } mesh)

@@ -75,10 +75,107 @@ public sealed class LightingTheme
     public float MainLightShadowed { get; set; }
 
     public float SourceTimeOfDay { get; set; } = -1.0f;
+
+    /// <summary>
+    /// How much of this theme came from PAINTED day sets (the strongest layer's weight), for
+    /// the frame to know when the sky no longer describes where the hero stands.
+    /// </summary>
+    public float PaintedWeight { get; set; }
 }
 
 public static class Engine_LightingTheme
 {
+    /// <summary>
+    /// A painted day set folded over the running theme by its layer weight, the way
+    /// <c>sub_82197938</c> lerps each layer over the accumulated result. Fields the painted
+    /// theme does not state keep the base. Returns a NEW theme: the base may be a cached one.
+    /// </summary>
+    public static LightingTheme FoldPainted(LightingTheme into, LightingTheme painted, float weight)
+    {
+        float w = Math.Clamp(weight, 0f, 1f);
+        var o = new LightingTheme
+        {
+            HasAny = into.HasAny || painted.HasAny,
+            HasMainLightColour = into.HasMainLightColour || painted.HasMainLightColour,
+            HasMainLightShadowed = into.HasMainLightShadowed || painted.HasMainLightShadowed,
+            HasAmbientColour = into.HasAmbientColour || painted.HasAmbientColour,
+            HasLightmapColour = into.HasLightmapColour || painted.HasLightmapColour,
+            HasDarkeningColour = into.HasDarkeningColour || painted.HasDarkeningColour,
+            SourceTimeOfDay = into.SourceTimeOfDay,
+            PaintedWeight = MathF.Max(into.PaintedWeight, w),
+            MainLightShadowed = painted.HasMainLightShadowed
+                ? into.MainLightShadowed + ((painted.MainLightShadowed - into.MainLightShadowed) * w)
+                : into.MainLightShadowed,
+        };
+        Fold(into.MainLightColour, painted.MainLightColour, painted.HasMainLightColour, w, o.MainLightColour);
+        Fold(into.AmbientColour, painted.AmbientColour, painted.HasAmbientColour, w, o.AmbientColour);
+        Fold(into.LightmapColour, painted.LightmapColour, painted.HasLightmapColour, w, o.LightmapColour);
+        Fold(into.DarkeningColour, painted.DarkeningColour, painted.HasDarkeningColour, w, o.DarkeningColour);
+        return o;
+    }
+
+    private static void Fold(float[] a, float[] b, bool stated, float w, float[] target)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            target[i] = stated ? a[i] + ((b[i] - a[i]) * w) : a[i];
+        }
+    }
+
+    /// <summary>The lighting theme of ONE day set, by its record hash — a painted layer's.</summary>
+    public static bool TryExtract(IReadOnlyList<byte[]> gdbs, float targetTime, uint daySetHash, out LightingTheme theme)
+    {
+        theme = new LightingTheme();
+        var chain = Chain.Create(gdbs);
+        if (chain is null)
+        {
+            return false;
+        }
+
+        RecordRef daySet = chain.FindDaySetByHash(daySetHash);
+        float time = float.IsFinite(targetTime) && targetTime >= 0f ? targetTime : 0.5f;
+        if (!daySet.Valid || !chain.SelectThemeFrom(daySet, time, out RecordRef dayTheme, out float dayTime))
+        {
+            return false;
+        }
+
+        theme.SourceTimeOfDay = dayTime;
+        theme.HasAny = ApplyThemeRecord(chain, dayTheme, theme);
+        return theme.HasAny;
+    }
+
+    /// <summary>The keyframe times of one day set, as day fractions, sorted.</summary>
+    public static List<float> DaySetTimes(IReadOnlyList<byte[]> gdbs, uint daySetHash)
+    {
+        var chain = Chain.Create(gdbs);
+        var times = new List<float>();
+        if (chain is null)
+        {
+            return times;
+        }
+
+        RecordRef daySet = chain.FindDaySetByHash(daySetHash);
+        if (daySet.Valid)
+        {
+            chain.CollectTimes(daySet, times);
+            times.Sort();
+        }
+
+        return times;
+    }
+
+    /// <summary>
+    /// The level's painted blend times: LevelData → PaintedEnvironmentThemeBlendTimes →
+    /// PaintedThemeBlendInTime / PaintedThemeBlendOutTime, read the way <c>sub_82547950</c>
+    /// does (0x82547cb4..0x82547cec). Absent, the guest's defaults of 5 s stand.
+    /// </summary>
+    public static void ReadPaintedBlendTimes(IReadOnlyList<byte[]> gdbs, out float blendIn, out float blendOut)
+    {
+        blendIn = Engine_PaintedDaySets.DefaultBlendSeconds;
+        blendOut = Engine_PaintedDaySets.DefaultBlendSeconds;
+        var chain = Chain.Create(gdbs);
+        chain?.ReadPaintedBlendTimes(ref blendIn, ref blendOut);
+    }
     public static bool TryExtract(IReadOnlyList<byte[]> gdbs, float targetTime, out LightingTheme theme)
     {
         theme = new LightingTheme();
@@ -212,10 +309,82 @@ public sealed class Chain
         outTime = targetTime;
 
         RecordRef daySet = FindDaySet();
-        if (!daySet.Valid)
+        return daySet.Valid && SelectThemeFrom(daySet, targetTime, out outTheme, out outTime);
+    }
+
+    /// <summary>A day set by its record NAME hash — what a painted grid cell holds.</summary>
+    public RecordRef FindDaySetByHash(uint hash)
+    {
+        for (int db = 0; db < _views.Count; db++)
         {
-            return false;
+            int count = _views[db].RecordCount;
+            for (int record = 0; record < count; record++)
+            {
+                if (_views[db].RecordHash(record) == hash)
+                {
+                    return new RecordRef(db, record, true);
+                }
+            }
         }
+
+        return default;
+    }
+
+    /// <summary>Every keyframe time one day set states, as day fractions.</summary>
+    public void CollectTimes(RecordRef daySet, List<float> times)
+    {
+        foreach (GdbField field in _views[daySet.Db].Fields(daySet.Index))
+        {
+            byte type = (byte)field.Type;
+            if (type != 4 && type != 6 && type != 7)
+            {
+                continue;
+            }
+
+            RecordRef entry = FieldToRecord(field);
+            if (entry.Valid && ReadFloat(entry, EnvHash.TimeOfDay, out float t))
+            {
+                times.Add(NormalizeTimeOfDay(t));
+            }
+        }
+    }
+
+    public void ReadPaintedBlendTimes(ref float blendIn, ref float blendOut)
+    {
+        uint timesField = Refii.Core.Engine_GameHash.Fnv1("PaintedEnvironmentThemeBlendTimes");
+        uint inField = Refii.Core.Engine_GameHash.Fnv1("PaintedThemeBlendInTime");
+        uint outField = Refii.Core.Engine_GameHash.Fnv1("PaintedThemeBlendOutTime");
+        for (int db = 0; db < _views.Count; db++)
+        {
+            foreach (RecordRef level in LookupAllInDb(EnvHash.LevelData, db))
+            {
+                RecordRef times = ResolveRecordField(level, timesField);
+                RecordRef owner = times.Valid ? times : level;
+                bool any = false;
+                if (ReadFloat(owner, inField, out float readIn) && readIn > 0f)
+                {
+                    blendIn = readIn;
+                    any = true;
+                }
+
+                if (ReadFloat(owner, outField, out float readOut) && readOut > 0f)
+                {
+                    blendOut = readOut;
+                    any = true;
+                }
+
+                if (any)
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    public bool SelectThemeFrom(RecordRef daySet, float targetTime, out RecordRef outTheme, out float outTime)
+    {
+        outTheme = default;
+        outTime = targetTime;
 
         bool found = false;
         float bestDistance = float.MaxValue;

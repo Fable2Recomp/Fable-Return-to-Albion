@@ -29,14 +29,21 @@ public static class Engine_AnimBuilder
 
         var animation = new Animation
         {
-            Length = frameCount / clip.Fps,
+            // THE GUEST'S DURATION IS (frames - 1) / fps — the time of the LAST KEY
+            // (`sub_82283C30` stores exactly that at authoring-node +40), and its leaf times stop
+            // there. frames / fps put a phantom interval after the last key, and a one-shot
+            // playhead resting in it sampled Godot's loop interpolation back toward frame 0:
+            // a door held 97% closed at "fully open" (b179).
+            Length = MathF.Max(frameCount - 1, 1) / clip.Fps,
+            // LINEAR so a looping leaf's seam interpolates from its last key back to its first.
+            // The cost is that a sample taken at EXACTLY the length wraps to the first key,
+            // which is why the animator keeps a one-shot playhead short of it (EndMargin).
             LoopMode = Animation.LoopModeEnum.Linear,
             ResourceName = Engine_AnimNaming.CleanClipName(clip.Name),
         };
 
         var rotationTrack = new int[map.Length];
         var positionTrack = new int[map.Length];
-        var positionRest = new Vector3[map.Length];
 
         for (int i = 0; i < map.Length; i++)
         {
@@ -55,9 +62,17 @@ public static class Engine_AnimBuilder
             animation.TrackSetInterpolationType(
                 rotationTrack[i], Animation.InterpolationType.Linear);
 
-            if (skeleton.GetBoneParent(map[i]) < 0)
+            // EVERY BONE BUT THE ROOT GETS ITS TRANSLATION, and the root gets none — the
+            // guest's rule exactly. After sampling, `sub_82208040` (0x82208140..78) forces bone 0
+            // to identity and keeps every other bone's sampled LOCAL transform; the decoded
+            // translation is that transform, ABSOLUTE, not a delta from rest: the hip decodes at
+            // z = 1.036 in WalkFootstep (rest height) and 0.621 in SitHoldBeerLoop (seat height),
+            // and the spine segments decode at their constant bone lengths in every clip
+            // (anim_probe, 2026-09-05). This used to be the inverse — a track for the root only,
+            // composed onto rest — so no bone ever received a translation from a clip and every
+            // seated NPC sat at standing height.
+            if (skeleton.GetBoneParent(map[i]) >= 0)
             {
-                positionRest[i] = skeleton.GetBoneRest(map[i]).Origin;
                 positionTrack[i] = animation.AddTrack(Animation.TrackType.Position3D);
                 animation.TrackSetPath(positionTrack[i], path);
                 animation.TrackSetInterpolationType(
@@ -106,7 +121,7 @@ public static class Engine_AnimBuilder
                 }
 
                 animation.PositionTrackInsertKey(
-                    positionTrack[i], time, positionRest[i] + Engine_AnimSkeleton.ToYUp(
+                    positionTrack[i], time, Engine_AnimSkeleton.ToYUp(
                         new Vector3(
                             pose.BoneTrans[i * 3 + 0],
                             pose.BoneTrans[i * 3 + 1],

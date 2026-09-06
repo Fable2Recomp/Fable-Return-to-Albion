@@ -147,6 +147,7 @@ public static class Engine_PostFxModel
         public float RawMean;
         public float RawWhite;
         public float RawExp = 1.0f;
+        public float RawGain = 1.0f;
         public float FadeK = 1.0f;
         public bool HasHistory;
         public double LastTime;
@@ -336,14 +337,18 @@ public static class Engine_PostFxModel
 
     public static void UpdateBounds(State s, Derived d, Histogram h)
     {
-        float black = MathF.Min(h.MinPct, d.BlackMin);
-        float mid = MathF.Max(h.Mean, d.MidMin);
-        float white = MathF.Max(h.MaxPct, d.WhiteMin);
+        // The remaster's dark lift is a RAW GAIN (Engine_PostFxParams.RawGain): the statistics
+        // and the curve's input scale together, the guest's floors and curve stay as they are.
+        float gain = Engine_PostFxParams.RawGain(h.Mean, d.MidMin);
+        float black = MathF.Min(h.MinPct * gain, d.BlackMin);
+        float mid = MathF.Max(h.Mean * gain, d.MidMin);
+        float white = MathF.Max(h.MaxPct * gain, d.WhiteMin);
+        s.RawGain = gain;
         float k = s.FadeK;
         s.SmBlack += (black - s.SmBlack) * k;
         s.SmMid += (mid - s.SmMid) * k;
         s.SmWhite += (white - s.SmWhite) * k;
-        s.SmP99 += (h.MaxPct - s.SmP99) * k;
+        s.SmP99 += ((h.MaxPct * gain) - s.SmP99) * k;
         s.RawBlack = h.MinPct;
         s.RawMean = h.Mean;
         s.RawWhite = h.MaxPct;
@@ -367,7 +372,7 @@ public static class Engine_PostFxModel
         float midS = s.SmMid;
         float whiteS = s.SmWhite;
 
-        float binToLum = Range / (prevExp * CurveSize);
+        float binToLum = MathF.Max(s.RawGain, 1f) * Range / (prevExp * CurveSize);
         float shoulder = MathF.Max(maxS - 0.2f, 0.0f) * toe;
         float denom = MathF.Max((CurveSize / Range) * maxS * prevExp, 256.0f);
         float wb = MathF.Max(whiteS - blackS, 1e-4f);

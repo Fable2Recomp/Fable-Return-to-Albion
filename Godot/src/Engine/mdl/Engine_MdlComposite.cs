@@ -25,6 +25,12 @@ public static class Engine_MdlComposite
 
     public const string PartSpansMeta = "mdl_part_spans";
 
+    /// <summary>The index into the part list each surface came from, in surface order.</summary>
+    public const string SurfacePartsMeta = "mdl_surface_parts";
+
+    /// <summary>The part hashes the caller assembled from, in part order; set by the caller.</summary>
+    public const string PartHashesMeta = "mdl_part_hashes";
+
     /// <summary>
     /// Concatenates the surfaces of every part that resolves, or null when none of them do.
     /// </summary>
@@ -65,7 +71,9 @@ public static class Engine_MdlComposite
 
         var pending =
             new List<(Godot.Collections.Array Arrays, Mesh.PrimitiveType Primitive,
-                string Name, Material Material, string? Bare, bool? Left)>();
+                string Name, Material Material, string? Bare, bool? Left, string Region, int Part)>();
+        var surfaceRegions = new List<string>();
+        var surfaceParts = new List<int>();
 
         var partPaths = new List<string>();
         var partSpans = new List<int>();
@@ -123,6 +131,7 @@ public static class Engine_MdlComposite
             Engine_MdlRig? rig = Engine_MdlRig.TryFrom(part);
             int[]? remap = rig is { } table ? Absorb(table, boneIndex, names, parents, rest) : null;
 
+            string[] partRegions = Engine_MdlMesh.SurfaceRegions(part);
             for (int surface = 0; surface < part.GetSurfaceCount(); surface++)
             {
                 Godot.Collections.Array arrays = part.SurfaceGetArrays(surface);
@@ -175,12 +184,14 @@ public static class Engine_MdlComposite
                     part.SurfaceGetName(surface),
                     part.SurfaceGetMaterial(surface),
                     skinned ? null : path,
-                    eyeSides.TryGetValue(partIndex, out bool left) ? left : null));
+                    eyeSides.TryGetValue(partIndex, out bool left) ? left : null,
+                    surface < partRegions.Length ? partRegions[surface] : string.Empty,
+                    partIndex));
             }
         }
 
         foreach ((Godot.Collections.Array arrays, Mesh.PrimitiveType primitive, string name,
-                  Material material, string? bare, bool? forcedLeft) in pending)
+                  Material material, string? bare, bool? forcedLeft, string region, int fromPart) in pending)
         {
             if (bare is not null && !Anchor(arrays, boneIndex, parents, rest, bare, forcedLeft))
             {
@@ -195,6 +206,8 @@ public static class Engine_MdlComposite
             int added = mesh.GetSurfaceCount() - 1;
             mesh.SurfaceSetName(added, name);
             mesh.SurfaceSetMaterial(added, material);
+            surfaceRegions.Add(region);
+            surfaceParts.Add(fromPart);
         }
 
         if (mesh.GetSurfaceCount() == 0)
@@ -217,6 +230,9 @@ public static class Engine_MdlComposite
             mesh.SetMeta(PartPathsMeta, partPaths.ToArray());
             mesh.SetMeta(PartSpansMeta, partSpans.ToArray());
         }
+
+        mesh.SetMeta(Engine_MdlMesh.SurfaceRegionsMeta, surfaceRegions.ToArray());
+        mesh.SetMeta(SurfacePartsMeta, surfaceParts.ToArray());
 
         return mesh;
     }

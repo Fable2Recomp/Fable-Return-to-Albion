@@ -319,14 +319,32 @@ public static class Engine_LevelLighting
 				frame.AmbientColour[0], frame.AmbientColour[1], frame.AmbientColour[2]);
 			environment.AmbientLightEnergy = frame.AmbientEnergy;
 		}
+		else
+		{
+			// NONE MEANS NONE, not "whatever was here". The Environment outlives the region that
+			// last configured it, and a frame with no ambient used to leave the previous
+			// region's in place — a cave entered from a sunset kept the sunset (b175).
+			environment.AmbientLightSource = Godot.Environment.AmbientSource.Disabled;
+			environment.AmbientLightEnergy = 0f;
+		}
 
 		// THE PROBE FIELD'S SKY TETHER. Published in ambient_light_scale space because the
 		// probe L0 it mixes with carries the same scale. Every caller that moves the lighting
 		// frame comes through here, so the global tracks the day exactly as the theme does.
 		// Weight 0 (the fable model, or a theme with no ambient) leaves the probes authored.
+		// And it lets go where there is no sky to tether to: a cave whose theme states no main
+		// light, or a room painted with its own ambient (frame.SkylightWeight carries both).
 		float tether = Engine_LightingFrame.ModernModel && frame.HasAmbient
-			? Engine_LightingFrame.ModernProbeSkyBlend
+			? Engine_LightingFrame.ModernProbeSkyBlend * Math.Clamp(frame.SkylightWeight, 0f, 1f)
 			: 0f;
+		// NO SKY, MODERN MODEL: the bakes are the light. See fable_interior in the shader.
+		bool interior = Engine_LightingFrame.ModernModel && frame.SkylightWeight <= 0f;
+		Engine_LightingFrame.CurrentInterior = interior;
+		RenderingServer.GlobalShaderParameterSet("fable_interior", interior ? 1.0f : 0.0f);
+		RenderingServer.GlobalShaderParameterSet("fable_interior_fog",
+			interior ? Engine_LightingFrame.InteriorFogScale : 1.0f);
+		RenderingServer.GlobalShaderParameterSet("fable_interior_bake",
+			interior ? Engine_LightingFrame.InteriorBakeScale : 1.0f);
 		float ambientScale = Engine_LevelBakedLighting.AmbientScale;
 		RenderingServer.GlobalShaderParameterSet("fable_sky_ambient", new Vector4(
 			frame.AmbientColour[0] * frame.AmbientEnergy * ambientScale,

@@ -1740,7 +1740,10 @@ extern "C" {
 /// 118 adds RefiiHostGetTopBoxBody — the front TopBox record's body as its provider object
 ///     states it, so the host composes the box the way `sub_821787D0` does instead of reading a
 ///     registry string that outlives its record.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 118; }
+/// 119 adds RefiiHostGetBoneMorph — the entity's combined skeletal morph record (comp6+152):
+/// per-bone translation offsets and scales the guest applies after the animation fold — and
+/// RefiiHostGetEntityWornItems, the hero walk of ABI 98 for any entity, with gender and open flags.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 119; }
 
 /// Answers one `GUI` predicate from the host, by name.
 ///
@@ -6463,6 +6466,429 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityComponents(uint32_t entity, uin
 /// (`sub_82761CE8`): +28 skeleton id, +36 begin, +40 end of the byte vector. Returns the byte
 /// count written (0 for a node that is not a mask or whose vector is not readable) and, when
 /// asked, the skeleton id the mask was built against.
+/// WHAT ANY ENTITY WEARS — RefiiHostGetWornItems for an entity other than the hero. The hider
+/// the guest sends its mesh instance (`sub_82229BE0`) is built at commit time from the GDB, not
+/// stored: for every record of the appearance-modifier component (id 15, the same vector the
+/// hero walk reads) it merges (`sub_824C13A8`) the item's `ClustersCovered` property — or
+/// `OverrideFemaleClustersCovered` when the gender component (id 12) holds 1 at +12, or the
+/// `...Open...` variants when byte +61 of the component is set and the item's
+/// `BodyAreasCovered` carries 0x800 — into the set of body cluster names its draw-list builder
+/// (`sub_82274CE0`) skips. The host takes the worn hashes from here and the cluster names from
+/// its own copy of the GDB. Writes 2 words per item: the GDB hash and a flags word (bit 0
+/// female, bit 1 the component's open byte). Returns the item count; 0 on a torn walk.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityWornItems(uint32_t entity, uint32_t* out_words,
+                                                           uint32_t word_capacity) {
+    if (out_words == nullptr || word_capacity < 2u) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+    if (!plausible(entity)) {
+        return 0u;
+    }
+    const uint32_t appearance = EntityComponent(base, entity, 15u);
+    if (appearance == 0u) {
+        return 0u;
+    }
+    uint32_t flags = 0u;
+    const uint32_t gender = EntityComponent(base, entity, 12u);
+    if (gender != 0u && GuestWordAt(base, gender + 12u) == 1u) {
+        flags |= 1u;
+    }
+    if (GuestByteAt(base, appearance + 61u) != 0u) {
+        flags |= 2u;
+    }
+    const uint32_t begin = GuestWordAt(base, appearance + 16u);
+    const uint32_t end = GuestWordAt(base, appearance + 20u);
+    if (!plausible(begin) || !plausible(end) || end <= begin) {
+        return 0u;
+    }
+    constexpr uint32_t kStride = 24u;
+    const uint32_t span = end - begin;
+    if ((span % kStride) != 0u || (span / kStride) > 256u) {
+        return 0u;
+    }
+    uint32_t written = 0u;
+    for (uint32_t at = begin; at < end && written + 2u <= word_capacity; at += kStride) {
+        const uint32_t item = GuestWordAt(base, at);
+        if (!plausible(item)) {
+            continue;
+        }
+        const uint32_t hash = GuestWordAt(base, item + 4u);
+        if (hash == 0u) {
+            continue;
+        }
+        out_words[written++] = hash;
+        out_words[written++] = flags;
+    }
+    if (GuestWordAt(base, appearance + 16u) != begin || GuestWordAt(base, appearance + 20u) != end) {
+        return 0u;  // a push reallocated mid-walk
+    }
+    return written / 2u;
+}
+
+/// THE POST-FOLD AIM AND LOOK. After evaluating any animation node (`sub_822DC980`, the tail
+/// past the type switch) the guest rewrites two bone chains: when the skeleton's aim flag
+/// (+57) is set and the node carries a record at +8, each of the 5 bones listed at
+/// skeleton+60 is blended (`sub_822D9738`) from its folded rotation toward a per-bone target
+/// quaternion in the record (16 bytes each from +16) by the record's weight (+4) in the
+/// record's mode (+0); when the look flag (+58) is set and the node carries a record at +12,
+/// the same for the 6 bones at skeleton+80. The targets are the guest's IK solve — the head
+/// turning to the hero, the arm aiming a gun — stated per tick; the host takes them as
+/// data and applies the same blend after its own fold. The skeleton object is comp6+148.
+///
+/// Out words: [0] aim flag, [1] look flag, [2..6] aim bones, [7..12] look bones (guest
+/// indices), then per op: [record uid, kind (0 aim, 1 look), mode, weight bits, record weight
+/// bits, then 4 words per bone (x y z w bits) for 5 or 6 bones]. Returns the op count; the
+/// header is always written when the entity has a skeleton.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimPostOps(uint32_t entity, uint32_t* out_words,
+                                                       uint32_t word_capacity) {
+    if (out_words == nullptr || word_capacity < 13u) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+    const auto read32 = [&](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read8 = [&](uint32_t at) { return GuestByteAt(base, at); };
+    if (!plausible(entity)) {
+        return 0u;
+    }
+    const uint32_t mesh = EntityComponent(base, entity, 6u);
+    const uint32_t controller = EntityComponent(base, entity, 19u);
+    if (mesh == 0u || controller == 0u) {
+        return 0u;
+    }
+    const uint32_t skeleton = read32(mesh + 148u);
+    if (!plausible(skeleton)) {
+        return 0u;
+    }
+    out_words[0] = read8(skeleton + 57u);
+    out_words[1] = read8(skeleton + 58u);
+    for (uint32_t i = 0; i < 5u; ++i) {
+        out_words[2u + i] = read32(skeleton + 60u + 4u * i);
+    }
+    for (uint32_t i = 0; i < 6u; ++i) {
+        out_words[7u + i] = read32(skeleton + 80u + 4u * i);
+    }
+    uint32_t written = 13u;
+    uint32_t ops = 0u;
+    uint32_t record_uid = 0u;
+    uint32_t record_weight_bits = 0u;
+    const auto emit = [&](uint32_t kind, uint32_t record) {
+        const uint32_t bones = kind == 0u ? 5u : 6u;
+        const uint32_t words = 5u + 4u * bones;
+        if (!plausible(record) || written + words > word_capacity) {
+            return;
+        }
+        out_words[written++] = record_uid;
+        out_words[written++] = kind;
+        out_words[written++] = read32(record);
+        out_words[written++] = read32(record + 4u);
+        out_words[written++] = record_weight_bits;
+        for (uint32_t b = 0; b < bones; ++b) {
+            for (uint32_t k = 0; k < 4u; ++k) {
+                out_words[written++] = read32(record + 16u + 16u * b + 4u * k);
+            }
+        }
+        ++ops;
+    };
+    // Every node of every playing record's tree, in the shape the leaf export walks.
+    uint32_t stack[64];
+    const auto walk_tree = [&](uint32_t root) {
+        int depth = 0;
+        if (plausible(root)) {
+            stack[depth++] = root;
+        }
+        int steps = 0;
+        while (depth > 0 && ++steps < 512) {
+            const uint32_t node = stack[--depth];
+            if (!plausible(node)) {
+                continue;
+            }
+            if (out_words[0] != 0u) {
+                emit(0u, read32(node + 8u));
+            }
+            if (out_words[1] != 0u) {
+                emit(1u, read32(node + 12u));
+            }
+            const auto push = [&](uint32_t child) {
+                if (depth < 64 && plausible(child)) {
+                    stack[depth++] = child;
+                }
+            };
+            switch (read32(node + 20u)) {
+                case 1u:
+                case 6u:
+                    push(read32(node + 24u));
+                    push(read32(node + 28u));
+                    break;
+                case 2u: {
+                    const uint32_t begin = read32(node + 28u);
+                    const uint32_t end = read32(node + 32u);
+                    if (plausible(begin) && end >= begin && end - begin <= 4u * 64u) {
+                        for (uint32_t at = begin; at + 4u <= end; at += 4u) {
+                            push(read32(at));
+                        }
+                    }
+                    break;
+                }
+                case 3u:
+                    push(read32(node + 28u));
+                    push(read32(node + 24u));
+                    break;
+                case 4u:
+                    push(read32(node + 24u));
+                    break;
+                case 5u:
+                    push(read32(node + 28u));
+                    break;
+                default:
+                    break;
+            }
+        }
+    };
+    // The record lists at comp19+96 (primaries) and +108 (overlays): std::list nodes, record
+    // at node+8, tree root at record+36, weight at +20, uid at +32, state 2 = finished.
+    const auto walk_list = [&](uint32_t list) {
+        const uint32_t sentinel = read32(list + 4u);
+        const uint32_t size = read32(list + 8u);
+        if (!plausible(sentinel) || size == 0u || size > 64u) {
+            return;
+        }
+        uint32_t node = read32(sentinel);
+        for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
+            const uint32_t record = read32(node + 8u);
+            node = read32(node);
+            if (!plausible(record) || read32(record + 28u) == 2u) {
+                continue;
+            }
+            record_uid = read32(record + 32u);
+            record_weight_bits = read32(record + 20u);
+            walk_tree(read32(record + 36u));
+        }
+    };
+    const uint32_t root = read32(controller + 156u);
+    if (plausible(root)) {
+        record_uid = 0u;
+        record_weight_bits = 0x3F800000u;
+        walk_tree(root);
+    }
+    walk_list(controller + 96u);
+    walk_list(controller + 108u);
+    return ops;
+}
+
+/// WHAT EACH BUILT PART HIDES. The composite builder (`sub_8220DE88`, 0x8220E828..E8C0)
+/// hides, on every part, the union of the cluster sets of every OTHER part whose sort layer is
+/// strictly greater — a coat over a shirt, never a coat over itself. Both live on the
+/// GraphicAppearanceMorph component's built vector (id 17, +0x38..+0x3C, 24-byte records):
+/// model hash +0, an MSVC `std::set<LHString>` at +4 (head +8, size +12; nodes left/parent/
+/// right/value/colour/isnil, the value an LHString handle whose object holds chars +0 and
+/// length +4), the `ClusterSortLayer` +16 and the body-part byte +20. The guest built the
+/// sets from the GDB with the wearer's gender and open state already applied
+/// (`sub_8217EDE0`), so the host takes them as stated rather than re-deriving them.
+/// Writes one line per part into out_text: `hash layer body name;name;...` (hash hex,
+/// layer signed decimal, body 0/1), newline-separated. Returns the part count.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPartHides(uint32_t entity, char* out_text,
+                                                           uint32_t text_capacity) {
+    if (out_text == nullptr || text_capacity < 2u) {
+        return 0u;
+    }
+    out_text[0] = '\0';
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+    const auto read32 = [&](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read8 = [&](uint32_t at) { return GuestByteAt(base, at); };
+    if (!plausible(entity)) {
+        return 0u;
+    }
+    const uint32_t morph = EntityComponent(base, entity, 17u);
+    if (morph == 0u) {
+        return 0u;
+    }
+    const uint32_t begin = read32(morph + 0x38u);
+    const uint32_t end = read32(morph + 0x3Cu);
+    if (!plausible(begin) || end <= begin || ((end - begin) % 24u) != 0u || (end - begin) > 24u * 64u) {
+        return 0u;
+    }
+    uint32_t used = 0u;
+    const auto put = [&](const char* text, uint32_t length) -> bool {
+        if (used + length + 1u >= text_capacity) {
+            return false;
+        }
+        std::memcpy(out_text + used, text, length);
+        used += length;
+        out_text[used] = '\0';
+        return true;
+    };
+    uint32_t parts = 0u;
+    for (uint32_t record = begin; record + 24u <= end; record += 24u) {
+        char head_text[48];
+        const int head_length = std::snprintf(head_text, sizeof(head_text), "%08X %d %u", read32(record),
+                                              static_cast<int32_t>(read32(record + 16u)),
+                                              read8(record + 20u) != 0u ? 1u : 0u);
+        if (head_length <= 0 || !put(head_text, static_cast<uint32_t>(head_length))) {
+            break;
+        }
+        const uint32_t set_head = read32(record + 8u);
+        const uint32_t set_size = read32(record + 12u);
+        if (plausible(set_head) && set_size != 0u && set_size <= 64u) {
+            uint32_t stack[64];
+            uint32_t depth = 0u;
+            uint32_t budget = 256u;
+            const uint32_t root = read32(set_head + 4u);
+            if (plausible(root) && root != set_head) {
+                stack[depth++] = root;
+            }
+            bool first = true;
+            while (depth != 0u && budget-- != 0u) {
+                const uint32_t node = stack[--depth];
+                if (!plausible(node) || node == set_head) {
+                    continue;
+                }
+                if (read8(node + 17u) == 0u) {
+                    const uint32_t handle = read32(node + 12u);
+                    if (plausible(handle)) {
+                        const uint32_t chars = read32(handle);
+                        const uint32_t length = read32(handle + 4u);
+                        if (plausible(chars) && length != 0u && length < 96u) {
+                            char name[96];
+                            uint32_t n = 0u;
+                            for (; n < length; ++n) {
+                                const uint8_t c = read8(chars + n);
+                                if (c < 0x20u || c > 0x7Eu) {
+                                    break;
+                                }
+                                name[n] = static_cast<char>(c);
+                            }
+                            if (n == length) {
+                                put(first ? " " : ";", 1u);
+                                put(name, n);
+                                first = false;
+                            }
+                        }
+                    }
+                }
+                const uint32_t left = read32(node);
+                const uint32_t right = read32(node + 8u);
+                if (depth + 2u <= 64u) {
+                    if (plausible(left) && left != set_head) stack[depth++] = left;
+                    if (plausible(right) && right != set_head) stack[depth++] = right;
+                }
+            }
+        }
+        put("\n", 1u);
+        ++parts;
+    }
+    return parts;
+}
+
+/// How many words RefiiHostGetBoneMorph writes per entry: bone, offset xyz, scale xyz.
+#define REFII_BONE_MORPH_WORDS 7u
+
+/// THE BODY'S PROPORTIONS. After the fold the guest runs `sub_822BF9B8(pose, skel, tier, rec)`
+/// with the entity's combined skeletal morph record — the smart pointer at comp6+152 — whose
+/// entries (48 bytes: int bone @0, float4 offset @16, float4 scale @32; vector at rec+20..+24,
+/// bone count at rec+12 which `sub_822BF9B8` requires to equal the skeleton's parent table;
+/// sorted by bone, only bones that differ from identity) add a translation offset and a scale
+/// per bone: `t += off / parent.scale` (bone 1 with rec+36 > 0 scales x/y and adds off.z), then
+/// `s.xyz *= sc`. The record is rebuilt by the GraphicAppearanceMorph component's commit
+/// (`sub_825B9060`) from the GDB SkeletalMorphs weighted by the live strengths — fat, thin,
+/// strength, skill, will, morality, age — so it changes as the character does; it starts as
+/// the model's bind record (comp6+160) and is never null for a skinned model. The guest's
+/// model-space compose carries no scale (`sub_821F57D0` composes quat and translation only),
+/// so a bone's scale is ITS OWN, not inherited; `sub_821E5AC0` pre-multiplies each child's
+/// translation by its parent's scale instead. Words per entry: [0] bone index in the guest
+/// skeleton, [1..3] offset xyz bits, [4..6] scale xyz bits. Returns the entry count.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetBoneMorph(uint32_t entity, uint32_t* out_words,
+                                                     uint32_t word_capacity) {
+    if (out_words == nullptr || word_capacity < REFII_BONE_MORPH_WORDS) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xE0000000u;
+    };
+    const auto read32 = [&](uint32_t address) { return GuestWordAt(base, address); };
+    if (!plausible(entity)) {
+        return 0u;
+    }
+    // Component 6 by the entity's own lookup: presence bit, then the accelerator, then the
+    // vector — the same walk RefiiHostGetEntityAnimState makes for component 19.
+    constexpr uint32_t kMeshId = 6u;
+    if (((read32(entity + 0x24u) >> kMeshId) & 1u) == 0u) {
+        return 0u;
+    }
+    uint32_t mesh = 0u;
+    const uint32_t begin = read32(entity + 0x48u);
+    const uint32_t end = read32(entity + 0x4Cu);
+    const uint32_t accelerator = read32(entity + 0x8Cu);
+    if (plausible(accelerator) && plausible(begin)) {
+        mesh = read32(begin + (8u * GuestByteAt(base, accelerator + kMeshId)) + 4u);
+    } else if (plausible(begin) && end > begin && (end - begin) <= 0x4000u) {
+        for (uint32_t at = begin; at + 8u <= end; at += 8u) {
+            if (read32(at) == kMeshId) {
+                mesh = read32(at + 4u);
+                break;
+            }
+        }
+    }
+    if (!plausible(mesh)) {
+        return 0u;
+    }
+    const uint32_t record = read32(mesh + 152u);
+    if (!plausible(record)) {
+        return 0u;
+    }
+    const uint32_t entries = read32(record + 20u);
+    const uint32_t entries_end = read32(record + 24u);
+    if (!plausible(entries) || entries_end < entries || (entries_end - entries) > 48u * 512u) {
+        return 0u;
+    }
+    const uint32_t max_entries = word_capacity / REFII_BONE_MORPH_WORDS;
+    uint32_t written = 0u;
+    for (uint32_t at = entries; at + 48u <= entries_end && written < max_entries; at += 48u) {
+        uint32_t* out = out_words + (written * REFII_BONE_MORPH_WORDS);
+        out[0] = read32(at + 0u);
+        out[1] = read32(at + 16u);
+        out[2] = read32(at + 20u);
+        out[3] = read32(at + 24u);
+        out[4] = read32(at + 32u);
+        out[5] = read32(at + 36u);
+        out[6] = read32(at + 40u);
+        ++written;
+    }
+    return written;
+}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimMask(uint32_t node, uint8_t* out_bytes, uint32_t capacity,
                                                     uint32_t* out_skeleton_id) {
     if (out_skeleton_id != nullptr) {
@@ -6503,8 +6929,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimMask(uint32_t node, uint8_t* out_
 /// The guest's STATED animation for one rig — the inputs to its own blend tree, so the host
 /// can play the clips itself and own animation the way it owns the UI.
 ///
-/// The guest does not sample through Havok: component 19 (the animation controller, active
-/// when `comp19+148 == 3`) holds a std::list of LAYER RECORDS at `comp19+96` (sentinel at
+/// The guest does not sample through Havok: component 19 (the animation controller) holds a
+/// std::list of LAYER RECORDS at `comp19+96` (sentinel at
 /// +100, size at +104; node{next +0, record +8}); a second list at +108/+112/+116 carries
 /// masked overlay tracks. Every offset below was decompiled for this export:
 ///   record (`sub_821B7BA0`): +8 priority (128 = full override), +12 track, +16 mask,
@@ -6598,6 +7024,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     if (!plausible(controller)) {
         return 0u;
     }
+    // FLAG 1 IS THE GUEST'S BONE-COUNT TIER, NOT AN ACTIVE FLAG. `comp19+148` is 1 or 3:
+    // `sub_821F2688` sets 3 when the rig is within its LOD radius (`comp6+220`, 10 m by
+    // default) and recently visible, else 1, and `sub_8220D1B8` (0x8220D684) then SKIPS the
+    // guest's own pose update for a tier-1 non-hero rig — its list at +96 stays live and is
+    // read here regardless. The 360 froze far rigs; we hold the clips and need not.
     uint32_t flags = 0u;
     if (read32(controller + 148u) == 3u) {
         flags |= 1u;
@@ -6607,6 +7038,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     }
     if (read8(controller + 576u) != 0u) {
         flags |= 4u;
+    }
+    // FLAG 8: THE POSE IS PHYSICS'S, NOT THE LIST'S. `sub_8220D1B8` (0x8220D6E8) sets bit 2
+    // (value 4) of the spatial component's flags at comp3+144 while the entity's physics object
+    // is in state 3 or 4 — a ragdoll — and `sub_82204FF0` (0x822053AC..448) then overwrites the
+    // finished pose at comp6+44 from Havok (model space). The record list is not the source
+    // then; a host that keeps folding clips over a ragdoll blows the body apart.
+    const uint32_t spatial = component(3u);
+    if (plausible(spatial) && (read8(spatial + 144u) & 4u) != 0u) {
+        flags |= 8u;
     }
     if (out_flags != nullptr) {
         *out_flags = flags;

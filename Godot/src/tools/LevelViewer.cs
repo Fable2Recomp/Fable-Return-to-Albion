@@ -43,6 +43,8 @@ public partial class LevelViewer : Node3D
 	private bool _orbiting;
 
 	private string _shotPath = string.Empty;
+	private int _debugView = -1;
+	private float _bakeWeight = -1f;
 	private int _framesRendered;
 	private bool _requested;
 
@@ -150,6 +152,16 @@ public partial class LevelViewer : Node3D
 
 	public override void _Process(double delta)
 	{
+		if (_debugView >= 0)
+		{
+			RenderingServer.GlobalShaderParameterSet("fable_light_debug", _debugView);
+		}
+
+		if (_bakeWeight > 0f)
+		{
+			RenderingServer.GlobalShaderParameterSet("fable_bake_weight", _bakeWeight);
+		}
+
 		if (_region is null)
 		{
 			return;
@@ -315,6 +327,32 @@ public partial class LevelViewer : Node3D
 
 		Isolate(region);
 		Frame(region);
+
+		// REFII_LEVEL_DEBUG=<n> selects the shaders' lighting debug view (the lighting_debug_view
+		// cvar's numbering); REFII_LEVEL_BAKE=<w> overrides the bake weight. Both are globals the
+		// sky node publishes from refii.toml, so they are re-stated every frame (see _Process).
+		// The fixtures near the camera target, as built: what Godot was actually handed.
+		foreach (Node node in Descendants(region))
+		{
+			if (node is Light3D fixture && fixture is not DirectionalLight3D &&
+				fixture.GlobalPosition.DistanceTo(_target) < 6.0f)
+			{
+				float range = fixture is OmniLight3D omni ? omni.OmniRange : fixture is SpotLight3D spot ? spot.SpotRange : 0f;
+				GD.Print($"[level-viewer] fixture '{fixture.Name}' at {fixture.GlobalPosition} {fixture.GlobalPosition.DistanceTo(_target):0.0}m energy={fixture.LightEnergy:0.00} range={range:0.0} colour={fixture.LightColor} visible={fixture.Visible} fade={fixture.DistanceFadeEnabled}/{fixture.DistanceFadeBegin:0}+{fixture.DistanceFadeLength:0}");
+			}
+		}
+
+		if (int.TryParse(OS.GetEnvironment("REFII_LEVEL_DEBUG"), out int debugView))
+		{
+			_debugView = debugView;
+		}
+
+		if (float.TryParse(OS.GetEnvironment("REFII_LEVEL_BAKE"),
+				System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out float bakeWeight))
+		{
+			_bakeWeight = bakeWeight;
+		}
 		GD.Print($"[level-viewer] showing {scenePath}");
 	}
 
@@ -453,6 +491,36 @@ public partial class LevelViewer : Node3D
 
 		// The sky's share of the frame is a METERING choice, not a cosmetic one — a histogram taken
 		// over a frame that is mostly dome describes the dome. Steeper looks further down.
+		// REFII_LEVEL_DISTANCE / REFII_LEVEL_YAW / REFII_LEVEL_AT=x,y,z: put the camera INSIDE an
+		// interior. The default orbit frames the level's bounds from outside, which for a cave is
+		// the back of its shell.
+		if (float.TryParse(OS.GetEnvironment("REFII_LEVEL_DISTANCE"),
+				System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out float distance) && distance > 0f)
+		{
+			_distance = distance;
+		}
+
+		if (float.TryParse(OS.GetEnvironment("REFII_LEVEL_YAW"),
+				System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out float yaw))
+		{
+			_yaw = Mathf.DegToRad(yaw);
+		}
+
+		string at = OS.GetEnvironment("REFII_LEVEL_AT");
+		if (at.Length != 0)
+		{
+			string[] xyz = at.Split(',');
+			if (xyz.Length == 3 &&
+				float.TryParse(xyz[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float x) &&
+				float.TryParse(xyz[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float y) &&
+				float.TryParse(xyz[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float z))
+			{
+				_target = new Vector3(x, y, z);
+			}
+		}
+
 		if (float.TryParse(OS.GetEnvironment("REFII_LEVEL_PITCH"),
 				System.Globalization.NumberStyles.Float,
 				System.Globalization.CultureInfo.InvariantCulture, out float pitch))

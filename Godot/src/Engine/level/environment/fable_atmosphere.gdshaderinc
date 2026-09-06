@@ -62,6 +62,11 @@ global uniform vec3 atmos_curve;
 /// Whether the region's theme states a Fogging record at all.
 global uniform bool atmos_fog_on;
 
+/// The remaster's INTERIOR FOG SCALE (`interior_fog_scale`): 1.0 where the level has a sky,
+/// the cvar where it has none. Rides the guest's own blend factor below, so a scaled fog is
+/// the guest's line with a smaller Fx, not a different formula.
+global uniform float fable_interior_fog = 1.0;
+
 /// The guest's `g_AtmosphericFactors` — x scales the whole fog blend, y scales the fog colour.
 ///
 /// These are the only two components of that constant any shipped shader reads, and they are the
@@ -120,7 +125,7 @@ bool fable_atmosphere_terms(
 	// so the surface's factor is `1 - Fx*(1-T)` and the added term carries Fy. Written this way the
 	// apply below is a plain lerp and no caller has to know the algebra.
 	vec3 raw = exp(-atmos_beta * optical_depth);
-	transmittance = vec3(1.0) - (atmos_factors.x * (vec3(1.0) - raw));
+	transmittance = vec3(1.0) - (atmos_factors.x * fable_interior_fog * (vec3(1.0) - raw));
 	fog_colour = mix(close_fog, sky, clamp(d * atmos_range.z, 0.0, 1.0)) * atmos_factors.y;
 	return true;
 }

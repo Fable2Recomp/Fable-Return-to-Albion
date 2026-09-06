@@ -43,11 +43,21 @@ public static class Engine_PostFxReport
             $"fade_k={state[Engine_PostFxState.FadeK]:0.0000} " +
             $"history={state[Engine_PostFxState.HasHistory]:0} " +
             $"curve={state[Engine_PostFxState.CurveValid]:0}").Append('\n');
+        float[] tv = Engine_PostFxParams.Theme.V;
+        text.Append(
+            $"[postfx]   theme exposureSpeed={tv[(int)Refii.Level.ToneMapParam.ExposureSpeed]:0.000} " +
+            $"middleGray={tv[(int)Refii.Level.ToneMapParam.MiddleGray]:0.000} " +
+            $"minUB={tv[(int)Refii.Level.ToneMapParam.MinLumUpperBound]:0.000} " +
+            $"avgLB={tv[(int)Refii.Level.ToneMapParam.AvgLumLowerBound]:0.000} " +
+            $"maxLB={tv[(int)Refii.Level.ToneMapParam.MaxLumLowerBound]:0.000} " +
+            $"contrastClamp={tv[(int)Refii.Level.ToneMapParam.ContrastClamping]:0.000} " +
+            $"brightness={tv[(int)Refii.Level.ToneMapParam.Brightness]:0.000} " +
+            $"darkLift={Engine_PostFxParams.DarkLift:0.00} modern={Engine_LightingFrame.ModernModel}").Append('\n');
         text.Append(
             $"[postfx]   raw black={state[Engine_PostFxState.RawBlack]:0.0000} " +
             $"mean={state[Engine_PostFxState.RawMean]:0.0000} " +
             $"white={state[Engine_PostFxState.RawWhite]:0.0000} " +
-            $"exp={state[Engine_PostFxState.RawExp]:0.000}   " +
+            $"exp={state[Engine_PostFxState.RawExp]:0.000} gain={state[Engine_PostFxState.RawGain]:0.00}   " +
             $"hist idx=(min {state[Engine_PostFxState.HistIdxMin]:0} " +
             $"avg {state[Engine_PostFxState.HistIdxAvg]:0} " +
             $"max {state[Engine_PostFxState.HistIdxMax]:0} " +

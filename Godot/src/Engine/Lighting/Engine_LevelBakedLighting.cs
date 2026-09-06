@@ -63,6 +63,40 @@ public static class Engine_LevelBakedLighting
 	/// <summary>Metadata key holding a node's baked probe sample as three <c>Vector4</c>.</summary>
 	public const string ProbeMeta = "probe_sh";
 
+	/// <summary>Where a runtime entity last sampled the probe field (region-local Godot axes).</summary>
+	public const string ProbeAtMeta = "probe_at";
+
+	/// <summary>
+	/// The loaded level's light-probe field, kept for the entities that arrive after the build.
+	/// The guest lights every dynamic object from this field (`g_PRTConstants`, the amb2 vertex
+	/// path); a character that took only the theme's flat ambient stood as a black silhouette
+	/// in a torch-lit cave whose ambient is 0.048.
+	/// </summary>
+	public static LightProbeField? CurrentProbes { get; set; }
+
+	/// <summary>
+	/// Samples the probe field for a runtime entity at its current place and writes its
+	/// lighting. Re-samples once it has moved more than two metres from the last sample, and
+	/// always when it has none; the bake does not move, the entity does.
+	/// </summary>
+	public static void LightEntityAt(GeometryInstance3D node, Vector3 regionLocal, LightingFrame? frame)
+	{
+		LightProbeField? probes = CurrentProbes;
+		if (probes is not null && probes.HasData)
+		{
+			bool sampled = node.HasMeta(ProbeAtMeta) &&
+				node.GetMeta(ProbeAtMeta) is { VariantType: Variant.Type.Vector3 } at &&
+				at.AsVector3().DistanceSquaredTo(regionLocal) < 4f;
+			if (!sampled)
+			{
+				StoreProbeSample(node, regionLocal, probes);
+				node.SetMeta(ProbeAtMeta, regionLocal);
+			}
+		}
+
+		ApplyInstanceLighting(node, frame);
+	}
+
 	/// <summary>
 	/// Metadata key holding WHICH bake this node carries, matching the shader's selector:
 	/// 0 none, 1 probe SH, 2 linear COLOR, 3 gamma-encoded COLOR.
@@ -164,6 +198,16 @@ public static class Engine_LevelBakedLighting
 				catch (System.Exception)
 				{
 					_ambientScale = 1.0f;
+				}
+
+				// Diagnostic override, unclamped: REFII_AMBIENT_SCALE=<f>. The clamp above is the
+				// launcher's range; an instrument run needs to go past it to find the level.
+				if (float.TryParse(OS.GetEnvironment("REFII_AMBIENT_SCALE"),
+						System.Globalization.NumberStyles.Float,
+						System.Globalization.CultureInfo.InvariantCulture, out float forced) &&
+					forced > 0f)
+				{
+					_ambientScale = forced;
 				}
 			}
 
@@ -278,6 +322,14 @@ public static class Engine_LevelBakedLighting
 				vertexColours[v] = from >= 0 && from < colours.Length
 					? FromD3DColour(colours[from])
 					: new Color(1f, 1f, 1f, 1f);
+				if (from >= 0 && from < colours.Length)
+				{
+					Color c = vertexColours[v];
+					float lum = 0.2125f * c.R + 0.7154f * c.G + 0.0721f * c.B;
+					VertexBakeSamples++;
+					VertexBakeSum += lum;
+					VertexBakeMax = MathF.Max(VertexBakeMax, lum);
+				}
 			}
 
 			arrays[(int)Mesh.ArrayType.Color] = vertexColours;
@@ -368,6 +420,12 @@ public static class Engine_LevelBakedLighting
 	/// stays inside ±0.27. Returns whether anything was written, so the caller knows whether
 	/// the block still needs a single node-level sample as a fallback.
 	/// </summary>
+	/// <summary>Diagnostics: the applied vertex bake luminance (as stored, before the shader's
+	/// decode) over every vertex baked since the counters were last read.</summary>
+	public static long VertexBakeSamples;
+	public static double VertexBakeSum;
+	public static float VertexBakeMax;
+
 	public static bool ApplyMultiMeshProbes(
 		MultiMesh multiMesh,
 		System.Collections.Generic.IReadOnlyList<Transform3D> instances,

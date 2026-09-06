@@ -764,7 +764,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
             d.DofNearFocal,
             d.DofFarFocal,
             1.0f / MathF.Max(d.DofFarPlane - d.DofFarFocal, 1e-4f));
-        Set(p, 7, d.DofFarBlur, d.DofNearBlur, dofOn ? 1.0f : 0.0f, 0.0f);
+        Set(p, 7, d.DofFarBlur, d.DofNearBlur, dofOn ? 1.0f : 0.0f, Engine_PostFxParams.DarkLift);
+        Set(p, 13, Engine_PostFxParams.DarkLiftOnsetNow, 0.0f, 0.0f, 0.0f);
         Set(p, 8, d.Saturation, d.Brightness + 1.0f, d.SaturationMasked, d.BrightnessMasked);
 
         float gammaRatio = d.Gamma > 0.0f && MathF.Abs(d.Gamma - 1.0f) > 1e-4f ? d.Gamma : 0.0f;

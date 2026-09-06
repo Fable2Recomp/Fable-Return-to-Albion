@@ -60,6 +60,13 @@ public sealed class ItemDetail
 
     public List<string> FemaleClustersCovered { get; } = new();
 
+    /// <summary>The clusters covered while the garment is worn OPEN (`OverrideOpenClustersCovered`);
+    /// the guest reads it only when `BodyAreasCovered` carries 0x800 and the wearer's open byte is set.</summary>
+    public List<string> OpenClustersCovered { get; } = new();
+
+    /// <summary>`OverrideFemaleOpenClustersCovered`: the open list for a female wearer.</summary>
+    public List<string> FemaleOpenClustersCovered { get; } = new();
+
     public string IconTex { get; set; } = string.Empty;
 
     /// <summary>
@@ -120,6 +127,8 @@ public static class Engine_ItemDetails
     public const uint ClustersCovered = 0x194C174A;
     public const uint BodyAreasCovered = 0xB3ADD081;
     public const uint OverrideFemaleClustersCovered = 0xF736AC4A;
+    public const uint OverrideOpenClustersCovered = 0x621729A6;
+    public const uint OverrideFemaleOpenClustersCovered = 0xD4D501F6;
     public const uint ClusterSortLayer = 0x88FD2918;
     public const uint Augmentable = 0x9DC93C5B;
 
@@ -453,6 +462,36 @@ public static class Engine_ItemDetails
             detail.FemaleWornModelPath = femalePath;
         }
 
+        ReadModifierLists(multi, modifier, detail);
+    }
+
+    /// <summary>
+    /// The detail of ONE record by hash: an item record (its appearance-modifier component is
+    /// followed) or the modifier record itself, which is what the guest's worn-item handles
+    /// name (`sub_824C13A8` reads `ClustersCovered` straight off the entry). Null when the
+    /// hash is in no database.
+    /// </summary>
+    public static ItemDetail? DetailForRecord(GdbMulti multi, uint hash)
+    {
+        if (!multi.TryLookup(hash, out GdbCursor cursor))
+        {
+            return null;
+        }
+
+        var detail = new ItemDetail { RecordHash = hash };
+        ReadAppearance(multi, cursor, detail);
+        if (detail.ClustersCovered.Count == 0 && detail.FemaleClustersCovered.Count == 0 &&
+            detail.BodyAreasCovered == 0)
+        {
+            ReadModifierLists(multi, cursor, detail);
+        }
+
+        return detail;
+    }
+
+    /// <summary>The cluster and body-area lists on an appearance-modifier record.</summary>
+    private static void ReadModifierLists(GdbMulti multi, GdbCursor modifier, ItemDetail detail)
+    {
         if (multi.TryFindInherited(
                 modifier, ClusterSortLayer, -1, out _, out uint layer,
                 out GdbFieldType layerType) &&
@@ -479,6 +518,20 @@ public static class Engine_ItemDetails
                 out uint femaleClusters, out _) && IsRef(femaleClusters))
         {
             detail.FemaleClustersCovered.AddRange(CollectNameList(multi, femaleClusters));
+        }
+
+        if (multi.TryFindInherited(
+                modifier, OverrideOpenClustersCovered, 6, out _,
+                out uint openClusters, out _) && IsRef(openClusters))
+        {
+            detail.OpenClustersCovered.AddRange(CollectNameList(multi, openClusters));
+        }
+
+        if (multi.TryFindInherited(
+                modifier, OverrideFemaleOpenClustersCovered, 6, out _,
+                out uint femaleOpenClusters, out _) && IsRef(femaleOpenClusters))
+        {
+            detail.FemaleOpenClustersCovered.AddRange(CollectNameList(multi, femaleOpenClusters));
         }
     }
 

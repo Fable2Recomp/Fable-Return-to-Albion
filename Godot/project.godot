@@ -126,6 +126,18 @@ fable_exposure_valid={
 "type": "float",
 "value": 0.0
 }
+fable_interior={
+"type": "float",
+"value": 0.0
+}
+fable_interior_fog={
+"type": "float",
+"value": 1.0
+}
+fable_interior_bake={
+"type": "float",
+"value": 1.0
+}
 fable_sky_ambient={
 "type": "vec4",
 "value": Vector4(0, 0, 0, 0)

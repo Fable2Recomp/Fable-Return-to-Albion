@@ -567,6 +567,20 @@ public static class Engine_EnvironmentTheme
                 time => theme.SourceTimeOfDay = time);
 
             theme.HasAny = applied;
+
+            if (Godot.OS.GetEnvironment("REFII_FOG_TRACE") == "1")
+            {
+                var sb = new System.Text.StringBuilder("[tone-trace] stated:");
+                for (int i = 0; i < ToneMapTheme.ParamCount; i++)
+                {
+                    if (theme.Present[i])
+                    {
+                        sb.Append(' ').Append((ToneMapParam)i).Append('=').Append(theme.V[i].ToString("0.####"));
+                    }
+                }
+                Godot.GD.Print(sb.ToString());
+            }
+
             return applied;
         }
 
@@ -979,6 +993,18 @@ public static class Engine_EnvironmentTheme
             any |= Param(fog, EnvHash.FarDensity, v => { theme.FarDensity = v; theme.HasFarFog = true; });
             any |= Param(fog, EnvHash.CloseFogMaxDistance, v => theme.CloseFogMaxDistance = v);
             any |= Param(fog, EnvHash.FoggingStart, v => { theme.FoggingStart = v; theme.HasFoggingStart = true; });
+
+            if (Godot.OS.GetEnvironment("REFII_FOG_TRACE") == "1")
+            {
+                Godot.GD.Print("[fog-trace] Fogging record states:" +
+                    (ReadFloat(fog, EnvHash.NearDistance, out float nd) ? $" NearDistance={nd}" : " NearDistance=-") +
+                    (ReadFloat(fog, EnvHash.NearDensity, out float nn) ? $" NearDensity={nn}" : " NearDensity=-") +
+                    (ReadFloat(fog, EnvHash.FarDistance, out float fd) ? $" FarDistance={fd}" : " FarDistance=-") +
+                    (ReadFloat(fog, EnvHash.FarDensity, out float fn) ? $" FarDensity={fn}" : " FarDensity=-") +
+                    (ReadFloat(fog, EnvHash.FoggingStart, out float fs) ? $" FoggingStart={fs}" : " FoggingStart=-") +
+                    (ReadFloat(fog, EnvHash.CloseFogMaxDistance, out float cm) ? $" CloseFogMaxDistance={cm}" : " CloseFogMaxDistance=-") +
+                    (theme.HasFogColour ? $" CloseFogColour=({theme.FogColour[0]:0.000},{theme.FogColour[1]:0.000},{theme.FogColour[2]:0.000})" : " CloseFogColour=-"));
+            }
 
             return any;
         }

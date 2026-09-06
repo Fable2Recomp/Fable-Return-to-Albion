@@ -71,6 +71,7 @@ const int S_HIST_LAST = 27;
 const int S_MATERIAL_EXPOSURE = 28;
 const int S_CURVE_SCALE = 29;
 const int S_INV_WHITE_SQ = 30;
+const int S_RAW_GAIN = 31;
 const int S_CURVE = 32;
 const int S_LUT = 544;
 const int S_CDF = 1056;
@@ -125,13 +126,24 @@ void main() {
 			float last = float(idx_last) * lum_per_bin * inv_exp;
 			float mean = (total > 0.0 ? weighted * lum_per_bin / total : 0.5) * inv_exp;
 
-			float black = min(min_pct, params.bounds.y);
-			float mid = max(mean, params.bounds.z);
-			float white = max(max_pct, params.bounds.w);
+			// THE REMASTER'S DARK LIFT IS A RAW GAIN (params.dof2.w = the cap, reserved0.x = the
+			// onset: 10 outdoors, 1 with no sky). A frame whose mean sits under floor/onset is
+			// treated as if it had been lit `gain` times brighter — its statistics AND the
+			// curve's input scale together, capped at the lift — and the guest's floors and
+			// curve are then applied unchanged. Lowering the floor instead broke the curve's
+			// shape: the shoulder is set by the white bound, and the highlights clipped.
+			// The exposure loop keeps the UNGAINED statistics so its histogram precision holds.
+			float lift = max(params.dof2.w, 1.0);
+			float onset = params.reserved0.x > 0.0 ? params.reserved0.x : 10.0;
+			float gain = clamp((params.bounds.z / onset) / max(mean, 1e-6), 1.0, lift);
+			float black = min(min_pct * gain, params.bounds.y);
+			float mid = max(mean * gain, params.bounds.z);
+			float white = max(max_pct * gain, params.bounds.w);
 			state.v[S_SM_BLACK] += (black - state.v[S_SM_BLACK]) * fade;
 			state.v[S_SM_MID] += (mid - state.v[S_SM_MID]) * fade;
 			state.v[S_SM_WHITE] += (white - state.v[S_SM_WHITE]) * fade;
-			state.v[S_SM_P99] += (max_pct - state.v[S_SM_P99]) * fade;
+			state.v[S_SM_P99] += (max_pct * gain - state.v[S_SM_P99]) * fade;
+			state.v[S_RAW_GAIN] = gain;
 			state.v[S_RAW_BLACK] = min_pct;
 			state.v[S_RAW_MEAN] = mean;
 			state.v[S_RAW_WHITE] = max_pct;
@@ -161,14 +173,17 @@ void main() {
 			state.v[S_SM_MID] * params.bloom.x) * max(params.composite.w, 1e-4);
 
 		float prev_exp = max(state.v[S_PREV], 1e-4);
-		float bin_to_lum = RANGE / (prev_exp * float(CURVE_SIZE));
+		// The raw gain rides the curve's input: a bin's luminance is what the scene would have
+		// held had it been lit that much brighter.
+		float raw_gain = max(state.v[S_RAW_GAIN], 1.0);
+		float bin_to_lum = raw_gain * RANGE / (prev_exp * float(CURVE_SIZE));
 		float knee_n = params.pct.w / max(state.v[S_SM_MID] - state.v[S_SM_BLACK], 1e-4);
 		float wb = max(state.v[S_SM_WHITE] - state.v[S_SM_BLACK], 1e-4);
 		// The composite evaluates the curve directly from these two terms rather than sampling
 		// the 512-entry table: the table spans [0, 4] and a scene-referred frame lives in its
 		// first handful of bins, where entry 0 is a hard zero and the quantisation posterises
 		// every dark surface.
-		state.v[S_CURVE_SCALE] = knee_n / prev_exp;
+		state.v[S_CURVE_SCALE] = raw_gain * knee_n / prev_exp;
 		state.v[S_INV_WHITE_SQ] = 1.0 / (wb * wb);
 		s_scalar[0] = bin_to_lum * knee_n;
 		s_scalar[1] = max(state.v[S_SM_P99], 0.2) * params.contrast.z;

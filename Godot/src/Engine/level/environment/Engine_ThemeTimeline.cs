@@ -36,6 +36,10 @@ public static class Engine_ThemeTimeline
         public readonly Dictionary<float, CloudTheme> Clouds = new();
         public readonly Dictionary<float, ToneMapTheme> ToneMap = new();
         public readonly Dictionary<float, WaterTheme> Water = new();
+
+        public readonly Dictionary<uint, List<float>> PaintedTimes = new();
+
+        public readonly Dictionary<(uint Hash, float Time), LightingTheme> PaintedLighting = new();
     }
 
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, Memo>
@@ -253,6 +257,63 @@ public static class Engine_ThemeTimeline
         theme = BlendLighting(a, b, bracket.Weight);
         theme.SourceTimeOfDay = targetTime - MathF.Floor(targetTime);
         return true;
+    }
+
+    /// <summary>
+    /// The lighting of ONE PAINTED day set at a time, blended between its own keyframes
+    /// exactly as the level day set is; keyed by the day-set record hash the grid holds.
+    /// </summary>
+    public static bool TryExtractLightingBlended(
+        IReadOnlyList<byte[]> gdbs, float targetTime, uint daySetHash, out LightingTheme theme)
+    {
+        Memo memo = MemoFor(gdbs);
+        if (!memo.PaintedTimes.TryGetValue(daySetHash, out List<float>? times))
+        {
+            times = Engine_LightingTheme.DaySetTimes(gdbs, daySetHash);
+            memo.PaintedTimes[daySetHash] = times;
+        }
+
+        if (times.Count == 0)
+        {
+            theme = new LightingTheme();
+            return false;
+        }
+
+        if (times.Count < 2)
+        {
+            return CachedPainted(gdbs, daySetHash, times[0], out theme);
+        }
+
+        Bracket bracket = Resolve(times, targetTime);
+        bool okA = CachedPainted(gdbs, daySetHash, bracket.TimeA, out LightingTheme a);
+        bool okB = CachedPainted(gdbs, daySetHash, bracket.TimeB, out LightingTheme b);
+        if (!okA || !okB)
+        {
+            theme = okA ? a : b;
+            return okA || okB;
+        }
+
+        theme = BlendLighting(a, b, bracket.Weight);
+        theme.SourceTimeOfDay = targetTime - MathF.Floor(targetTime);
+        return true;
+    }
+
+    private static bool CachedPainted(
+        IReadOnlyList<byte[]> gdbs, uint daySetHash, float time, out LightingTheme theme)
+    {
+        Memo memo = MemoFor(gdbs);
+        if (memo.PaintedLighting.TryGetValue((daySetHash, time), out theme!))
+        {
+            return true;
+        }
+
+        bool ok = Engine_LightingTheme.TryExtract(gdbs, time, daySetHash, out theme);
+        if (ok)
+        {
+            memo.PaintedLighting[(daySetHash, time)] = theme;
+        }
+
+        return ok;
     }
 
     public static bool TryExtractToneMapBlended(

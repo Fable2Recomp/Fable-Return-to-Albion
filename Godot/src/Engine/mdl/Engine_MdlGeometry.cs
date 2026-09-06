@@ -7,6 +7,12 @@ public sealed class MdlGeometry
 {
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The body cluster this submesh belongs to — the model's region name its marker indexes,
+    /// empty when the model states none. A dressed character's garments hide clusters by name.
+    /// </summary>
+    public string Region { get; set; } = string.Empty;
+
     public float[] Positions { get; set; } = Array.Empty<float>();
 
     public float[] Normals { get; set; } = Array.Empty<float>();
@@ -568,6 +574,9 @@ public static class Engine_MdlGeometry
                 BoneIds = subBoneIds ?? Array.Empty<int>(),
                 BoneWeights = subBoneWeights ?? Array.Empty<float>(),
                 Name = ResolveName(info, mb.MeshIndex, si),
+                Region = sub.RegionIndex < info.HideRegions.Count
+                    ? info.HideRegions[(int)sub.RegionIndex]
+                    : sub.RegionIndex == uint.MaxValue ? string.Empty : "#" + sub.RegionIndex,
                 Material = ResolveMaterial(info, mb.MeshIndex, sub.MaterialIndex),
                 SourceVertices = subSource,
             });

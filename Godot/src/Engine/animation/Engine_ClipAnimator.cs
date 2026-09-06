@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 using Refii.Host;
@@ -42,6 +43,9 @@ public sealed class Engine_ClipAnimator
 		public float BlendOut = 0.2f;
 		public ulong LastUsec;
 		public bool Seen;
+
+		/// <summary>Position in this tick's export, front to back: the guest's list order.</summary>
+		public int Order;
 	}
 
 	private readonly Skeleton3D _skeleton;
@@ -66,6 +70,9 @@ public sealed class Engine_ClipAnimator
 	public static int FallbackProcedural;
 	public static int FallbackNoLeaves;
 
+	/// <summary>Frames a rig yielded to the guest's physics-written pose (flag 8).</summary>
+	public static int FallbackRagdoll;
+
 	private readonly int[] _modelToGuest;
 	private readonly Dictionary<ulong, byte[]> _masks = new();
 	private Quaternion[] _layerRotation = System.Array.Empty<Quaternion>();
@@ -75,12 +82,34 @@ public sealed class Engine_ClipAnimator
 	private readonly Dictionary<uint, float> _recordWeight = new();
 	private readonly List<Channel> _overlays = new();
 
+	/// <summary>Shadow_Hip's model bone, or -1; its children bar Shadow_SpineControl.</summary>
+	private int _hipBone = -1;
+
+	private readonly List<int> _hipChildren = new();
+
 	public Engine_ClipAnimator(Skeleton3D skeleton, string skeletonName, int[] modelToGuest)
 	{
 		_skeleton = skeleton;
 		_skeletonName = skeletonName;
 		_modelToGuest = modelToGuest;
 		int bones = skeleton.GetBoneCount();
+		_finalPosition = new Vector3[bones];
+		int guestCount = 0;
+		foreach (int g in modelToGuest)
+		{
+			guestCount = Math.Max(guestCount, g + 1);
+		}
+
+		_guestToModel = new int[guestCount];
+		System.Array.Fill(_guestToModel, -1);
+		for (int b = 0; b < modelToGuest.Length; ++b)
+		{
+			if (modelToGuest[b] >= 0)
+			{
+				_guestToModel[modelToGuest[b]] = b;
+			}
+		}
+
 		_rotation = new Quaternion[bones];
 		_position = new Vector3[bones];
 		_rotationWeight = new float[bones];
@@ -96,6 +125,21 @@ public sealed class Engine_ClipAnimator
 			Transform3D rest = skeleton.GetBoneRest(b);
 			_restRotation[b] = rest.Basis.GetRotationQuaternion();
 			_restPosition[b] = rest.Origin;
+			if (skeleton.GetBoneName(b) == "Shadow_Hip")
+			{
+				_hipBone = b;
+			}
+		}
+
+		if (_hipBone >= 0)
+		{
+			for (int b = 0; b < bones; ++b)
+			{
+				if (skeleton.GetBoneParent(b) == _hipBone && skeleton.GetBoneName(b) != "Shadow_SpineControl")
+				{
+					_hipChildren.Add(b);
+				}
+			}
 		}
 	}
 
@@ -109,6 +153,7 @@ public sealed class Engine_ClipAnimator
 	/// here; when true the bones were written and the pose feed must not run this frame.</summary>
 	public bool Apply(uint entity)
 	{
+		_entity = entity;
 		if (!Alive)
 		{
 			LastFallback = "skeleton freed";
@@ -122,6 +167,17 @@ public sealed class Engine_ClipAnimator
 		{
 			++FallbackProcedural;
 			LastFallback = "procedural";
+			return false;
+		}
+
+		// A RAGDOLL IS THE GUEST'S POSE. Flag 8 is the spatial component's physics-driven bit
+		// (comp3+144 & 4): Havok writes the finished pose into comp6+44 and the record list is
+		// no longer what the body does. The pose feed carries that pose; folding clips over it
+		// is what sent an electrocuted bandit's body flying apart (2026-09-05).
+		if ((flags & 8) != 0)
+		{
+			++FallbackRagdoll;
+			LastFallback = "ragdoll";
 			return false;
 		}
 
@@ -141,8 +197,10 @@ public sealed class Engine_ClipAnimator
 			c.Seen = false;
 		}
 
+		int order = -1;
 		foreach (HostBridge.GuestAnimLeaf leaf in _leaves)
 		{
+			++order;
 			Built? built = Ensure(leaf.Key);
 			if (built is null)
 			{
@@ -180,6 +238,7 @@ public sealed class Engine_ClipAnimator
 
 			channel.Leaf = leaf;
 			channel.Seen = true;
+			channel.Order = order;
 			channel.TargetWeight = leaf.Weight;
 			if (leaf.BlendIn > 0f) channel.BlendIn = leaf.BlendIn;
 			if (leaf.BlendOut > 0f) channel.BlendOut = leaf.BlendOut;
@@ -293,6 +352,7 @@ public sealed class Engine_ClipAnimator
 		}
 
 		uint topUid = 0;
+		int topOrder = -1;
 		int topPriority = int.MinValue;
 		bool haveTop = false;
 		foreach (Channel c in _channels.Values)
@@ -302,11 +362,16 @@ public sealed class Engine_ClipAnimator
 				continue;
 			}
 
+			// TIES GO TO THE NEWEST RECORD. `sub_822013A8` walks the list back to front with a
+			// strict `>` (0x82201434..7c), and records are appended at the tail, so among equal
+			// priorities the record nearest the tail — the one created last — wins. The export
+			// walks front to back, so "newest" is the highest list position.
 			if (!haveTop || c.Leaf.Priority > topPriority
-				|| (c.Leaf.Priority == topPriority && c.Leaf.Uid < topUid))
+				|| (c.Leaf.Priority == topPriority && c.Order > topOrder))
 			{
 				haveTop = true;
 				topUid = c.Leaf.Uid;
+				topOrder = c.Order;
 				topPriority = c.Leaf.Priority;
 			}
 		}
@@ -338,7 +403,10 @@ public sealed class Engine_ClipAnimator
 
 		System.Array.Clear(_rotationWeight, 0, bones);
 		System.Array.Clear(_positionWeight, 0, bones);
+		System.Array.Clear(_layerRotationWeight, 0, bones);
+		System.Array.Clear(_layerPositionWeight, 0, bones);
 		_overlays.Clear();
+		bool partnerSampled = false;
 		foreach (Channel c in _channels.Values)
 		{
 			HostBridge.GuestAnimLeaf leaf = c.Leaf;
@@ -348,37 +416,73 @@ public sealed class Engine_ClipAnimator
 				{
 					_overlays.Add(c);
 				}
-
 				continue;
 			}
-
-			Built built = c.Built;
-			float time = c.Time;
-			float weight;
 			if (leaf.Additive)
 			{
-				weight = c.Weight;
-			}
-			else if (leaf.Uid == topUid)
-			{
-				weight = topShare * (c.Weight / Mathf.Max(_recordWeight.GetValueOrDefault(topUid), 1e-5f));
-			}
-			else if (leaf.Uid == runnerUid)
-			{
-				weight = (1f - topShare) * (c.Weight / Mathf.Max(runnerWeight, 1e-5f));
-			}
-			else
-			{
-				continue;  // a third primary never reaches the pose in the guest either
-			}
-
-			if (weight <= 1e-5f)
-			{
+				// A TYPE-3 CHILD THAT IS A CLIP IS A MASKED OVERLAY, NOT A DELTA. A clip leaf's
+				// delta flag is always 0 (every loader passes 0 to `sub_82B77C00`; only a type-5
+				// difference node sets it), so `sub_8220CB18` takes the masked path: per bone a
+				// slerp toward the child by mask × weight, whole-body when no mask node sits
+				// above it. That is the overlay path here; the first-frame delta this once
+				// applied was an invention.
+				if (c.Weight > 1e-4f && haveTop && (leaf.Uid == topUid || leaf.Uid == runnerUid))
+				{
+					_overlays.Add(c);
+				}
 				continue;
 			}
-
-			Sample(built, time, weight, leaf.Additive, _rotation, _rotationWeight, _position, _positionWeight, bones);
+			Built built = c.Built;
+			float time = c.Time;
+			if (leaf.Uid == topUid)
+			{
+				float weight = c.Weight / Mathf.Max(_recordWeight.GetValueOrDefault(topUid), 1e-5f);
+				if (weight > 1e-5f)
+				{
+					Sample(built, time, weight, false, _rotation, _rotationWeight, _position, _positionWeight, bones);
+				}
+			}
+			else if (leaf.Uid == runnerUid && topShare < 1f)
+			{
+				// THE PARTNER, kept apart: the guest's type-1 node SLERPs partner against top by the
+				// top's own weight (`sub_82293278`, w > 0.5), which an nlerp of the two into one
+				// accumulator only approximates.
+				float weight = c.Weight / Mathf.Max(runnerWeight, 1e-5f);
+				if (weight > 1e-5f)
+				{
+					Sample(built, time, weight, false, _layerRotation, _layerRotationWeight, _layerPosition, _layerPositionWeight, bones);
+					partnerSampled = true;
+				}
+			}
+			// a third primary never reaches the pose in the guest either
 		}
+
+		if (partnerSampled)
+		{
+			// crossfade(partner = A, top = B, t = topShare): result = slerp(A, B, t).
+			for (int b = 0; b < bones; ++b)
+			{
+				bool hasTop = _rotationWeight[b] > 0f;
+				bool hasPartner = _layerRotationWeight[b] > 0f;
+				if (!hasTop && !hasPartner)
+				{
+					continue;
+				}
+
+				Quaternion topQ = hasTop ? _rotation[b].Normalized() : _restRotation[b];
+				Quaternion partQ = hasPartner ? _layerRotation[b].Normalized() : _restRotation[b];
+				_rotation[b] = partQ.Slerp(topQ, topShare);
+				_rotationWeight[b] = 1f;
+				if (_skeleton.GetBoneParent(b) >= 0)
+				{
+					Vector3 topP = _positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : _restPosition[b];
+					Vector3 partP = _layerPositionWeight[b] > 1e-5f ? _layerPosition[b] / _layerPositionWeight[b] : _restPosition[b];
+					_position[b] = partP.Lerp(topP, topShare);
+					_positionWeight[b] = 1f;
+				}
+			}
+		}
+
 
 		if (_overlays.Count > 1)
 		{
@@ -420,6 +524,17 @@ public sealed class Engine_ClipAnimator
 
 			byte[] mask = Mask(uid, maskNode);
 			float w = Mathf.Clamp(layerWeight, 0f, 1f);
+
+			// THE HIP'S CHILDREN STAY PUT. When an overlay's mask covers Shadow_Hip the guest
+			// (`sub_8220CB18`, 0x8220CC20..) remembers the hip's local transform, applies the
+			// blend, keeps the OLD translation on the new hip, and rewrites every hip child but
+			// Shadow_SpineControl so its world placement is unchanged — the spine follows the
+			// overlay's hip rotation, the legs do not swing with it.
+			int hip = _hipBone;
+			bool compensateHip = hip >= 0 && (mask.Length == 0 || (hip < _modelToGuest.Length &&
+				_modelToGuest[hip] >= 0 && _modelToGuest[hip] < mask.Length && mask[_modelToGuest[hip]] != 0));
+			Transform3D hipOld = compensateHip ? PoseOf(hip) : Transform3D.Identity;
+
 			for (int b = 0; b < bones; ++b)
 			{
 				float wb = w;
@@ -448,6 +563,25 @@ public sealed class Engine_ClipAnimator
 				}
 			}
 
+			if (compensateHip)
+			{
+				Transform3D hipNew = PoseOf(hip);
+				hipNew.Origin = hipOld.Origin;
+				// child_local' · hipNew == child_local · hipOld  (row vectors, the guest's
+				// convention); in Godot's column-major terms: local' = hipNew⁻¹ · hipOld · local.
+				Transform3D fix = hipNew.AffineInverse() * hipOld;
+				foreach (int child in _hipChildren)
+				{
+					Transform3D local = fix * PoseOf(child);
+					_rotation[child] = local.Basis.GetRotationQuaternion().Normalized();
+					_rotationWeight[child] = 1f;
+					_position[child] = local.Origin;
+					_positionWeight[child] = 1f;
+				}
+
+				_rotation[hip] = hipNew.Basis.GetRotationQuaternion().Normalized();
+				_position[hip] = hipNew.Origin;
+			}
 			i = j;
 		}
 
@@ -465,7 +599,11 @@ public sealed class Engine_ClipAnimator
 			Vector3 position = _positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : _restPosition[b];
 			_skeleton.SetBonePoseRotation(b, rotation);
 			_skeleton.SetBonePosePosition(b, position);
+			_finalPosition[b] = position;
 		}
+
+		ApplyMorph(bones);
+		ApplyPostOps();
 
 		// The readout that says whether a rig is in bind pose BY CONSTRUCTION: bones no live
 		// channel covered are written as rest, so a frame with most bones here is a T pose.
@@ -530,8 +668,16 @@ public sealed class Engine_ClipAnimator
 	{
 		for (int b = 0; b < bones; ++b)
 		{
+			// BONE 0 IS IDENTITY IN THE GUEST'S POSE — rotation, translation AND scale. After
+			// sampling, `sub_82208040` (0x82208140..78) overwrites bone 0 with (0,0,0,1) / zero /
+			// one unconditionally, and `sub_821F57D0` does it again before composing model
+			// space; the root's own sampled transform is parked at comp19+48 / comp6+64 and read
+			// by nothing (whole-binary search, 2026-09-05). Every other bone keeps its sampled
+			// LOCAL transform. Keeping the root's rotation here, as this once did, turned or
+			// tilted a whole rig by a track the guest never applies.
+			bool isRoot = _skeleton.GetBoneParent(b) < 0;
 			int rt = built.RotationTrack[b];
-			if (rt >= 0)
+			if (rt >= 0 && !isRoot)
 			{
 				Quaternion q = built.Animation.RotationTrackInterpolate(rt, time);
 				if (additive)
@@ -548,11 +694,10 @@ public sealed class Engine_ClipAnimator
 				}
 			}
 
-			// NO ROOT MOTION FROM THE CLIP: the guest extracts the clip's travel into the
-			// entity's placement and rebases the root; sampled here too it walked the body
+			// NO ROOT TRANSLATION EITHER — the same rule; sampled here too it walked the body
 			// away from its placement each loop and snapped it back at the wrap.
 			int pt = built.PositionTrack[b];
-			if (pt >= 0 && !additive && _skeleton.GetBoneParent(b) >= 0)
+			if (pt >= 0 && !additive && !isRoot)
 			{
 				Vector3 p = built.Animation.PositionTrackInterpolate(pt, time);
 				position[b] = positionWeight[b] > 0f ? position[b] + p * weight : p * weight;
@@ -588,6 +733,183 @@ public sealed class Engine_ClipAnimator
 		return bytes;
 	}
 
+	/// <summary>Seconds between re-reads of the morph record; it moves with the character, slowly.</summary>
+	private const double MorphRefreshSeconds = 1.0;
+
+	private double _morphReadAt = double.NegativeInfinity;
+
+	private Vector3[] _morphOffset = System.Array.Empty<Vector3>();
+
+	private Vector3[] _morphScale = System.Array.Empty<Vector3>();
+
+	private Vector3[] _finalPosition = System.Array.Empty<Vector3>();
+
+	private bool _hasMorph;
+
+	/// <summary>
+	/// THE BODY'S PROPORTIONS, after the fold: the guest's `sub_822BF9B8` adds each morphed
+	/// bone's offset (pre-divided by the parent's scale) and multiplies its scale, and its
+	/// model-space compose carries NO scale — a bone's scale is its own, never inherited —
+	/// while `sub_821E5AC0` scales each child's translation by the parent's. Godot inherits
+	/// scale down the chain, which gives the translation scaling for free and would also scale
+	/// every descendant's geometry; dividing each bone's scale by its parent's leaves every
+	/// bone at exactly its own scale, the guest's result.
+	/// </summary>
+	/// <summary>Ops applied on the last frame, for the readout.</summary>
+	public int PostOpsApplied { get; private set; }
+
+	/// <summary>
+	/// THE GUEST'S AIM AND LOOK, after the fold. `sub_822DC980` ends every node's evaluation
+	/// by rewriting the skeleton's aim chain (5 bones) and look chain (6 bones) from the
+	/// per-bone 4-vectors its IK stated on the node's records (+8 aim, +12 look), through
+	/// `sub_822D9738`: with q the bone's folded local rotation and t the stated vector, q is
+	/// negated when q·t &lt; 0, then by the record's mode — 1: q + w·t, 2: t + w·(q − t),
+	/// 3: q + w·(t − q), 4: q + w·(q⊗t − q), otherwise t — and the result normalised (vmaddfp is A×C+B).
+	/// Component-wise, so the Y-up conjugation commutes with it and the host applies the same
+	/// arithmetic to its own local pose. Only the strongest record's ops count per chain: the
+	/// guest applies each record's inside that record's evaluation, and stacking two here
+	/// would double a head turn during a crossfade.
+	/// </summary>
+	private void ApplyPostOps()
+	{
+		PostOpsApplied = 0;
+		HostBridge.GuestPostOps? ops = HostBridge.GetAnimPostOps(_entity);
+		if (ops is not { } post || post.Ops.Count == 0)
+		{
+			return;
+		}
+
+		for (int kind = 0; kind < 2; kind++)
+		{
+			HostBridge.GuestPostOp? best = null;
+			foreach (HostBridge.GuestPostOp op in post.Ops)
+			{
+				if (op.Kind == kind && op.RecordWeight > 1e-4f &&
+					(best is null || op.RecordWeight > best.Value.RecordWeight))
+				{
+					best = op;
+				}
+			}
+
+			if (best is not { } chosen || chosen.Mode == 0)
+			{
+				continue;
+			}
+
+			int[] chain = kind == 0 ? post.AimBones : post.LookBones;
+			float w = chosen.Weight;
+			for (int i = 0; i < chain.Length && i < chosen.Targets.Length; i++)
+			{
+				int guest = chain[i];
+				int b = guest >= 0 && guest < _guestToModel.Length ? _guestToModel[guest] : -1;
+				if (b < 0)
+				{
+					continue;
+				}
+
+				Quaternion t = chosen.Targets[i];
+				if (!t.IsFinite() || t.LengthSquared() < 1e-8f)
+				{
+					continue;
+				}
+
+				t = Engine_AnimSkeleton.ToYUp(t);
+				Quaternion q = _skeleton.GetBonePoseRotation(b);
+				if (q.Dot(t) < 0f)
+				{
+					q = -q;
+				}
+
+				// Mode 4's helper (`sub_82233200`) is a quaternion product: the stated vector is a
+				// DELTA applied in the bone's own frame, and the pose moves toward q⊗t by w.
+				Quaternion r = chosen.Mode switch
+				{
+					1 => q + t * w,
+					2 => t + (q - t) * w,
+					3 => q + (t - q) * w,
+					4 => q + (q * t - q) * w,
+					_ => t,
+				};
+				if (!r.IsFinite() || r.LengthSquared() < 1e-8f)
+				{
+					continue;
+				}
+
+				_skeleton.SetBonePoseRotation(b, r.Normalized());
+				PostOpsApplied++;
+			}
+		}
+	}
+
+	private void ApplyMorph(int bones)
+	{
+		double now = Time.GetTicksMsec() / 1000.0;
+		if (now - _morphReadAt >= MorphRefreshSeconds)
+		{
+			_morphReadAt = now;
+			if (_morphOffset.Length != bones)
+			{
+				_morphOffset = new Vector3[bones];
+				_morphScale = new Vector3[bones];
+			}
+
+			System.Array.Fill(_morphOffset, Vector3.Zero);
+			System.Array.Fill(_morphScale, Vector3.One);
+			_hasMorph = false;
+			foreach (HostBridge.GuestBoneMorph m in HostBridge.GetBoneMorph(_entity))
+			{
+				int model = m.Bone >= 0 && m.Bone < _guestToModel.Length ? _guestToModel[m.Bone] : -1;
+				if (model < 0 || model >= bones)
+				{
+					continue;
+				}
+
+				_morphOffset[model] = Engine_AnimSkeleton.ToYUp(m.Offset);
+				_morphScale[model] = Engine_AnimSkeleton.ToYUp(m.Scale).Abs();
+				if (m.Offset.LengthSquared() > 1e-10f || (m.Scale - Vector3.One).LengthSquared() > 1e-10f)
+				{
+					_hasMorph = true;
+				}
+			}
+		}
+
+		if (!_hasMorph && !_morphWasApplied)
+		{
+			return;
+		}
+
+		for (int b = 0; b < bones; ++b)
+		{
+			int parent = _skeleton.GetBoneParent(b);
+			Vector3 parentScale = parent >= 0 && _hasMorph ? _morphScale[parent] : Vector3.One;
+			Vector3 own = _hasMorph ? _morphScale[b] : Vector3.One;
+			Vector3 offset = _hasMorph ? _morphOffset[b] : Vector3.Zero;
+			if (parent >= 0 && offset != Vector3.Zero)
+			{
+				_skeleton.SetBonePosePosition(b, _finalPosition[b] + offset / parentScale);
+			}
+
+			_skeleton.SetBonePoseScale(b, own / parentScale);
+		}
+
+		_morphWasApplied = _hasMorph;
+	}
+
+	private bool _morphWasApplied;
+
+	private uint _entity;
+
+	/// <summary>Guest bone index → model bone, the inverse of the map the rig was built with.</summary>
+	private int[] _guestToModel = System.Array.Empty<int>();
+
+	/// <summary>A bone's current accumulated pose as a local transform (rest where unwritten).</summary>
+	private Transform3D PoseOf(int b)
+	{
+		Quaternion q = _rotationWeight[b] > 0f ? _rotation[b].Normalized() : _restRotation[b];
+		Vector3 p = _positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : _restPosition[b];
+		return new Transform3D(new Basis(q), p);
+	}
+
 	private static void Accumulate(ref Quaternion sum, ref float sumWeight, Quaternion q, float weight)
 	{
 		if (sumWeight <= 0f)
@@ -618,6 +940,10 @@ public sealed class Engine_ClipAnimator
 	/// it is ignored (its 15 Hz stepping is not a signal), further away the clip has restarted
 	/// or been re-timed and the playhead jumps to it.
 	/// </summary>
+	/// <summary>How far short of a one-shot clip's end its playhead may rest: one sample under
+	/// the last key, so the sample never lands on the wrap.</summary>
+	private const float EndMargin = 1e-3f;
+
 	private static void Advance(Channel c, float dt)
 	{
 		float length = c.Built.Length;
@@ -627,8 +953,36 @@ public sealed class Engine_ClipAnimator
 			return;
 		}
 
-		c.Time += dt;
 		HostBridge.GuestAnimLeaf leaf = c.Leaf;
+
+		// AT THE GUEST'S RATE. Clip time advances once per 15 Hz game tick by
+		// worldScale × entityScale / 15 s, then through the clip's own warp table
+		// (`sub_82200F60`: node+28 = warp(old), node+32 = warp(new)), so (current − previous) × 15
+		// IS the rate the guest is playing this clip at — 1 at normal speed, a fraction in the
+		// combat slow-motion the crescendo scale sets, 0 while paused. A playhead run on the host
+		// clock alone raced ahead through slow-motion and snapped back at the resync.
+		float rate = 1f;
+		if (leaf.Loop)
+		{
+			float delta = LoopGap(leaf.Time - leaf.PreviousTime, length);
+			if (delta >= 0f && delta * 15f < 4f) rate = delta * 15f;
+		}
+		else
+		{
+			float delta = leaf.Time - leaf.PreviousTime;
+			if (delta >= 0f && delta * 15f < 4f) rate = delta * 15f;
+		}
+
+		c.Time += dt * rate;
+
+		// A ONE-SHOT THE GUEST HAS STOPPED sits exactly where the guest left it: the rate is 0
+		// at the end (or while paused), and a playhead a few frames behind would otherwise hold
+		// short of the final pose until the resync threshold.
+		if (rate <= 0f && !leaf.Loop)
+		{
+			c.Time = leaf.Time;
+		}
+
 		if (leaf.Time != c.StatedTime)
 		{
 			c.StatedTime = leaf.Time;
@@ -650,7 +1004,7 @@ public sealed class Engine_ClipAnimator
 			return;
 		}
 
-		c.Time = Mathf.Clamp(c.Time, 0f, length);
+		c.Time = Mathf.Clamp(c.Time, 0f, length - EndMargin);
 	}
 
 	/// <summary>The signed shortest distance between two times on a loop of the given length.</summary>

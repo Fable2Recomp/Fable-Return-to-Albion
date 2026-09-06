@@ -370,6 +370,9 @@ public sealed class Engine_StaticTwins
     /// whose model is a header-only stub resolves a path and then loads no mesh, and hiding on
     /// the report would take the only visible copy away.
     /// </summary>
+    /// <summary>Whether the region's copy of a record is currently hidden (claimed or off).</summary>
+    public bool IsHidden(uint record) => _hidden.Contains(record);
+
     public void Claim(uint record)
     {
         if (record == 0u)

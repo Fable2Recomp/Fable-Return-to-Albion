@@ -164,6 +164,71 @@ public static class Engine_LevelScene
     /// Children still get their <c>Owner</c> set, because that is what makes them survive the
     /// editor's pack and it costs the game nothing.
     /// </summary>
+    /// <summary>
+    /// The level's painted day-set grid, or null when it paints nothing. The grid is the
+    /// heightfield's sibling with the .genv extension (the market: bwsmainheightfield_id_….genv
+    /// beside ….ghf), spans the heightfield from its origin, and the guest loads every .genv the
+    /// manifest lists — a region has one per heightfield that carries paint.
+    /// </summary>
+    private static Refii.Lighting.Engine_PaintedDaySets? LoadPaintedDaySets(
+        LevelEntry level, Func<string, byte[]?> source, IReadOnlyList<byte[]> gdbs)
+    {
+        if (level.HeightfieldPath.Length == 0)
+        {
+            return null;
+        }
+
+        string genvPath = Engine_LevelGdb.SiblingWithExtension(level.HeightfieldPath, ".genv");
+        byte[]? bytes = source(genvPath);
+        if (bytes is null)
+        {
+            return null;
+        }
+
+        if (source(level.HeightfieldPath) is not { } ghfBytes ||
+            !Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out _))
+        {
+            GD.Print($"[painted] {level.Name}: {genvPath} present but the heightfield did not decode; no origin");
+            return null;
+        }
+
+        if (!Refii.Lighting.Engine_PaintedDaySets.TryParse(
+                bytes, heights.OriginX, heights.OriginZ, out Refii.Lighting.Engine_PaintedDaySets.Grid grid, out string error))
+        {
+            GD.Print($"[painted] {level.Name}: {genvPath}: {error}");
+            return null;
+        }
+
+        var painted = new Refii.Lighting.Engine_PaintedDaySets();
+        painted.Add(grid);
+        if (painted.PaintedCells == 0)
+        {
+            GD.Print($"[painted] {level.Name}: {grid.Width}x{grid.Height} cells, none painted");
+            return null;
+        }
+
+        Engine_LightingTheme.ReadPaintedBlendTimes(gdbs, out painted.BlendInSeconds, out painted.BlendOutSeconds);
+        var sets = new Dictionary<uint, int>();
+        foreach (uint cell in grid.Cells)
+        {
+            if (cell != Refii.Lighting.Engine_PaintedDaySets.None)
+            {
+                sets[cell] = sets.TryGetValue(cell, out int n) ? n + 1 : 1;
+            }
+        }
+
+        var parts = new List<string>();
+        foreach ((uint hash, int count) in sets)
+        {
+            parts.Add($"0x{hash:X8}x{count}");
+        }
+
+        GD.Print($"[painted] {level.Name}: {grid.Width}x{grid.Height} cells at {grid.Cell} m from " +
+            $"({grid.OriginX:0.#}, {grid.OriginZ:0.#}), {painted.PaintedCells} painted: {string.Join(" ", parts)}; " +
+            $"blend in/out {painted.BlendInSeconds:0.#}/{painted.BlendOutSeconds:0.#} s");
+        return painted;
+    }
+
     public static Node3D? Build(
         LevelEntry level,
         Func<string, byte[]?>? source,
@@ -326,6 +391,7 @@ public static class Engine_LevelScene
             GD.Print($"[level] {level}: scenario='{level.Scenario}' gdb={bakedGdbPath}");
             Engine_LevelBakedLighting.TryLoad(
                 bakedGdbPath, p => source(p), out bakedLightmaps, out probeField);
+            Engine_LevelBakedLighting.CurrentProbes = probeField;
 
             GD.Print(
                 $"[baked] {level}: {Engine_LevelBakedLighting.Describe(bakedLightmaps, probeField)}");
@@ -492,7 +558,14 @@ public static class Engine_LevelScene
 
                         if (hasMist)
                         {
+                            // THE MIST VOLUMES ARE THE ONLY FOG. Godot's volumetric fog has a
+                            // level-wide density of its own (default 0.05) that fills every cubic
+                            // metre once the effect is enabled, lit by every torch — which is
+                            // what turned the guild hall into an orange soup. The authored mist
+                            // is a set of placed FogVolumes; the global density is not authored
+                            // and goes to zero.
                             sky.Environment.VolumetricFogEnabled = true;
+                            sky.Environment.VolumetricFogDensity = 0f;
                         }
                     }
 
@@ -500,6 +573,7 @@ public static class Engine_LevelScene
                     {
                         skyNode.LightingGdbs.AddRange(gdbs);
                         skyNode.Sun = sun;
+                        skyNode.Painted = LoadPaintedDaySets(level, source, gdbs);
                     }
 
                     // BOTH THE STATED FIELDS AND THE SOLVED CURVE. The two densities are control

@@ -458,6 +458,10 @@ void fragment() {
 		// DIFFUSE_LIGHT, and a white albedo with no emission lets them through unscaled.
 		EMISSION = vec3(0.0);
 		ALBEDO = vec3(1.0);
+	} else if (fable_light_debug == 9) {
+		// 9: every light's direct term on a WHITE albedo — the summed light itself, unscaled.
+		EMISSION = vec3(0.0);
+		ALBEDO = vec3(1.0);
 	} else if (fable_light_debug == 8) {
 		// The VIEW-SPACE NORMAL as colour — the terrain-parity diagnostic.
 		EMISSION = (NORMAL * 0.5) + 0.5;

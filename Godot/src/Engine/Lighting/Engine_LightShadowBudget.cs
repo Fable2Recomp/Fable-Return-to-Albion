@@ -20,9 +20,20 @@ public partial class Engine_LightShadowBudget : Node
 {
 	public const string NodeName = "LightShadowBudget";
 
-	/// <summary>Live shadow maps at once. Comfortably inside the default 4096 atlas.</summary>
-	/// <summary>Shadowed placed lights at once; a live lever through the debug channel.</summary>
-	public static int Budget = 4;
+	/// <summary>
+	/// Shadowed placed lights at once. ZERO: fixtures never cast, which is what the 360 did and
+	/// the only policy that reads the same from every camera angle.
+	/// </summary>
+	/// <remarks>
+	/// Measured 2026-09-05 in Bowerstone Market (b175, 190 fixtures, 48 visible): 4 shadowed
+	/// fixtures = 20 fps with a 152 M-primitive shadow pass; all 48 shadowed = 10 fps, 1.04 G
+	/// shadow primitives, 58 k shadow draw calls. And a handful is WORSE than none: a lamp
+	/// blocks correctly while it is among the nearest few and shines through the wall the
+	/// moment the camera moves it out of the budget — the inconsistency this replaces.
+	/// A non-zero value is a dev lever (`placed_light_shadows`, or `render shadowBudget` on the
+	/// debug channel) for looking at one lamp's occlusion, never a shipped setting.
+	/// </remarks>
+	public static int Budget = 0;
 
 	/// <summary>Placed lights kept VISIBLE at once — the nearest that can still reach the eye.
 	/// Measured 2026-09-04: 190 visible lights cost 13 ms of draw with every shadow off.</summary>
@@ -62,7 +73,20 @@ public partial class Engine_LightShadowBudget : Node
 			return;
 		}
 
+		// With `placed_light_shadows` off nothing competes for shadow maps, whatever Budget
+		// says: the authored CastShadows flag is not honoured either, because honouring it for
+		// some fixtures and not others is the inconsistency the zero budget exists to end.
 		bool forceAll = Engine_LevelLights.PlacedShadowsEnabled;
+		if (!forceAll)
+		{
+			foreach (Light3D light in _lights)
+			{
+				if (light.ShadowEnabled)
+				{
+					light.ShadowEnabled = false;
+				}
+			}
+		}
 		Vector3 eye = camera.GlobalPosition;
 
 		// VISIBILITY FIRST: a light whose fade has ended before the eye lights nothing on
@@ -96,9 +120,7 @@ public partial class Engine_LightShadowBudget : Node
 		_ranked.Clear();
 		foreach (Light3D light in _lights)
 		{
-			bool eligible = light.Visible && (forceAll ||
-				(light.HasMeta(Engine_LevelLights.AuthoredShadowMeta) &&
-					light.GetMeta(Engine_LevelLights.AuthoredShadowMeta).AsBool()));
+			bool eligible = forceAll && light.Visible;
 			if (!eligible || !light.IsInsideTree())
 			{
 				if (light.ShadowEnabled)
@@ -116,7 +138,7 @@ public partial class Engine_LightShadowBudget : Node
 
 		for (int i = 0; i < _ranked.Count; i++)
 		{
-			bool want = i < Budget;
+			bool want = i < Budget && forceAll;
 			if (_ranked[i].Light.ShadowEnabled != want)
 			{
 				_ranked[i].Light.ShadowEnabled = want;

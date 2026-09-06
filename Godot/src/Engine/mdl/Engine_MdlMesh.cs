@@ -17,6 +17,20 @@ public static class Engine_MdlMesh
     /// </summary>
     public const string SourceVertexTotalMeta = "mdl_source_vertex_total";
 
+    /// <summary>
+    /// One region (body cluster) name per surface, in surface order; empty where the model
+    /// states none. What a dressed character's garments hide is matched against these.
+    /// </summary>
+    public const string SurfaceRegionsMeta = "mdl_surface_regions";
+
+    /// <summary>The region names a mesh carries per surface, or an empty array.</summary>
+    public static string[] SurfaceRegions(Mesh mesh)
+    {
+        return mesh.HasMeta(SurfaceRegionsMeta)
+            ? mesh.GetMeta(SurfaceRegionsMeta).AsStringArray()
+            : System.Array.Empty<string>();
+    }
+
     public static ArrayMesh? TryCreateMesh(byte[] data, out string error) =>
         TryCreateMesh(data, string.Empty, out error);
 
@@ -90,6 +104,7 @@ public static class Engine_MdlMesh
         // nowhere else to put a per-surface fact, and because the streamer needs it long after
         // this function has returned.
         var sourceVertices = new List<int>();
+        var surfaceRegions = new List<string>();
         int sourceVertexTotal = 0;
         foreach (MdlMeshBuffer buffer in info.MeshBuffers)
         {
@@ -252,6 +267,7 @@ public static class Engine_MdlMesh
                 mesh.SurfaceSetMaterial(added, material);
             }
 
+            surfaceRegions.Add(geo.Region);
             ++added;
         }
 
@@ -263,6 +279,7 @@ public static class Engine_MdlMesh
 
         mesh.SetMeta(SourceVertexMapMeta, sourceVertices.ToArray());
         mesh.SetMeta(SourceVertexTotalMeta, sourceVertexTotal);
+        mesh.SetMeta(SurfaceRegionsMeta, surfaceRegions.ToArray());
 
         // THE SKELETON THE BONE INDICES REFER TO, carried on the mesh.
         //

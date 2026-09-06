@@ -516,6 +516,81 @@ public partial class GameDebugServer : Node
 				});
 			}
 
+			case "gdb":
+			{
+				// A GDB record by hash, named and with its fields, from every database the
+				// equipment indexes hold. What a guest-stated hash IS, without a rebuild.
+				uint hash = root.TryGetProperty("hash", out JsonElement h)
+					? System.Convert.ToUInt32(h.GetString() ?? "0", 16)
+					: 0u;
+				// `name` searches every database's record names (case-insensitive substring)
+				// and answers with the matches, hash and name, instead of one record's fields.
+				if (root.TryGetProperty("name", out JsonElement nm) && nm.ValueKind == JsonValueKind.String)
+				{
+					string wanted = nm.GetString() ?? string.Empty;
+					var matches = new List<string>();
+					if (Refii.Gdb.Engine_GdbCatalog.All is { } catalog)
+					{
+						foreach (Refii.Gdb.GdbView view in catalog.Views)
+						{
+							foreach ((uint recordHash, string recordName) in view.RecordNames)
+							{
+								if (recordName.Contains(wanted, System.StringComparison.OrdinalIgnoreCase) && matches.Count < 200)
+								{
+									matches.Add($"{recordHash:X8} {recordName}");
+								}
+							}
+						}
+					}
+
+					return Ok(new Dictionary<string, object?> { ["name"] = wanted, ["matches"] = matches });
+				}
+
+				var found = new List<object?>();
+				var databases = new List<(string, Refii.Gdb.GdbMulti?)>
+				{
+					("all", Refii.Gdb.Engine_GdbCatalog.All),
+					("clothing", Refii.Equipment.Engine_ClothingIndex.Database),
+					("items", Refii.Equipment.Engine_ItemIndex.Database),
+				};
+				foreach ((string label, Refii.Gdb.GdbMulti? multi) in databases)
+				{
+					if (multi is null || !multi.TryLookup(hash, out Refii.Gdb.GdbCursor cursor))
+					{
+						continue;
+					}
+
+					var fields = new List<string>();
+					foreach ((uint fieldHash, Refii.Gdb.GdbFieldType type, uint raw) in multi.InheritedFields(cursor))
+					{
+						string fieldName = multi.NameOf(fieldHash);
+						string value = type is Refii.Gdb.GdbFieldType.Reference or Refii.Gdb.GdbFieldType.ResourceReference
+							? $"{raw:X8} '{multi.NameOf(raw)}'"
+							: $"{raw:X8}";
+						fields.Add($"{(fieldName.Length != 0 ? fieldName : fieldHash.ToString("X8"))} [{type}] = {value}");
+					}
+
+					found.Add(new Dictionary<string, object?>
+					{
+						["database"] = label,
+						["name"] = multi.NameOf(hash),
+						["fields"] = fields,
+					});
+				}
+
+				Refii.Equipment.ItemDetail? detail = Refii.Entities.Engine_HiddenClusters.DetailFor(hash);
+				return Ok(new Dictionary<string, object?>
+				{
+					["hash"] = $"{hash:X8}",
+					["records"] = found,
+					["clustersCovered"] = detail?.ClustersCovered,
+					["femaleClustersCovered"] = detail?.FemaleClustersCovered,
+					["openClustersCovered"] = detail?.OpenClustersCovered,
+					["bodyAreasCovered"] = detail is null ? null : $"{detail.BodyAreasCovered:X8}",
+					["wornModel"] = detail?.WornModelPath,
+				});
+			}
+
 			case "threads":
 			{
 				// Every kernel-registered thread with a guest backtrace, innermost first —
@@ -1108,6 +1183,46 @@ public partial class GameDebugServer : Node
 				return Ok(new Dictionary<string, object?> { ["marked"] = text });
 			}
 
+			case "lights":
+			{
+				// THE NEAREST PLACED LIGHTS, as Godot holds them: what a fixture states and
+				// whether it is visible, so "the lamp lights nothing" is answered by its numbers
+				// (range, energy, fade) rather than by a screenshot.
+				int take = root.TryGetProperty("count", out JsonElement lc) && lc.ValueKind == JsonValueKind.Number
+					? System.Math.Clamp(lc.GetInt32(), 1, 64) : 12;
+				var snapshot = new List<Light3D>();
+				Refii.Lighting.Engine_LevelLights.SnapshotLights(snapshot);
+				Vector3 eye = GetViewport()?.GetCamera3D()?.GlobalPosition ?? Vector3.Zero;
+				var rows = new List<(float Distance, Light3D Light)>();
+				foreach (Light3D light in snapshot)
+				{
+					if (light.IsInsideTree())
+					{
+						rows.Add((eye.DistanceTo(light.GlobalPosition), light));
+					}
+				}
+
+				rows.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+				var described = new List<string>();
+				foreach ((float distance, Light3D light) in rows.GetRange(0, System.Math.Min(take, rows.Count)))
+				{
+					float range = light is OmniLight3D omni ? omni.OmniRange : light is SpotLight3D spot ? spot.SpotRange : 0f;
+					Vector3 p = light.GlobalPosition;
+					described.Add(
+						$"{light.Name} d={distance:0.0} at=({p.X:0.0},{p.Y:0.0},{p.Z:0.0}) range={range:0.0} " +
+						$"energy={light.LightEnergy:0.00} colour=({light.LightColor.R:0.00},{light.LightColor.G:0.00},{light.LightColor.B:0.00}) " +
+						$"fade={(light.DistanceFadeEnabled ? $"{light.DistanceFadeBegin:0}+{light.DistanceFadeLength:0}" : "off")} " +
+						$"visible={light.Visible} shadow={light.ShadowEnabled}");
+				}
+
+				return Ok(new Dictionary<string, object?>
+				{
+					["total"] = snapshot.Count,
+					["eye"] = $"({eye.X:0.0},{eye.Y:0.0},{eye.Z:0.0})",
+					["lights"] = described,
+				});
+			}
+
 			case "render":
 			{
 				// LIVE LEVERS for bisecting a frame: each is optional; the reply is the state.
@@ -1187,6 +1302,15 @@ public partial class GameDebugServer : Node
 					["shadowConsidered"] = Refii.Lighting.Engine_ShadowReach.Considered,
 					["shadowBudget"] = Refii.Lighting.Engine_LightShadowBudget.Budget,
 					["lightBudget"] = Refii.Lighting.Engine_LightShadowBudget.LightBudget,
+					["hero"] = GameEntities.HeroPosition is { } hero
+						? $"({hero.X:0.0}, {hero.Y:0.0}, {hero.Z:0.0})" : null,
+					["heroLocal"] = GameEntities.HeroPosition is { } heroWorld &&
+						Refii.Level.Engine_SkyEnvironmentNode.Current?.GetParent() is Node3D region
+						? region.GlobalTransform.AffineInverse() * heroWorld is { } local
+							? $"({local.X:0.0}, {local.Y:0.0}, {local.Z:0.0})" : null
+						: null,
+					["painted"] = Refii.Level.Engine_SkyEnvironmentNode.Current?.Painted?.Describe(),
+					["paintedWeight"] = Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting?.PaintedWeight,
 					["sunShadow"] = Refii.Lighting.Engine_LevelLighting.SunShadowOverride,
 					["sunSplits"] = Refii.Lighting.Engine_LevelLighting.SunSplitsOverride,
 					["reflections"] = Refii.Level.Engine_WaterReflection.Enabled,
@@ -1231,6 +1355,16 @@ public partial class GameDebugServer : Node
 					{
 						["address"] = $"{address:X8}",
 						["trace"] = GameEntities.Current?.TraceReport(),
+					});
+				}
+
+				if (root.TryGetProperty("bones", out JsonElement wantBones) &&
+					wantBones.ValueKind == JsonValueKind.True)
+				{
+					return Ok(new Dictionary<string, object?>
+					{
+						["address"] = $"{address:X8}",
+						["rig"] = GameEntities.Current?.DescribeBones(address),
 					});
 				}
 
@@ -1355,6 +1489,7 @@ public partial class GameDebugServer : Node
 						["heldNoPrimary"] = Refii.Animations.Engine_ClipAnimator.HeldNoPrimaryFrames,
 						["fallbackUnknownClip"] = Refii.Animations.Engine_ClipAnimator.FallbackUnknownClip,
 						["fallbackProcedural"] = Refii.Animations.Engine_ClipAnimator.FallbackProcedural,
+						["fallbackRagdoll"] = Refii.Animations.Engine_ClipAnimator.FallbackRagdoll,
 						["fallbackNoLeaves"] = Refii.Animations.Engine_ClipAnimator.FallbackNoLeaves,
 					},
 					["frameSetupCpuMs"] = RenderingServer.GetFrameSetupTimeCpu(),
@@ -1604,7 +1739,7 @@ public partial class GameDebugServer : Node
 						"objects", "perf", "exports", "cvars", "cvar-set", "vfs", "sockets",
 						"menu", "action", "call", "lua", "call-result", "poke", "heap",
 						"probe", "guestlog", "mark", "metrics", "input-record", "input-replay",
-						"wait", "log", "shot", "press",
+						"wait", "log", "shot", "press", "gdb",
 					},
 				};
 		}

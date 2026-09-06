@@ -377,7 +377,10 @@ public partial class Engine_PropStreamer : Node3D
         if (!_reported)
         {
             _reported = true;
-            GD.Print($"[props] bakes applied={_bakeApplied} (texture={_bakeTextured}) ambient={_bakeAmbient} misfit={_bakeMisfit} keyless={_bakeKeyless}");
+            GD.Print($"[props] bakes applied={_bakeApplied} (texture={_bakeTextured}) ambient={_bakeAmbient} misfit={_bakeMisfit} keyless={_bakeKeyless}" +
+                (Refii.Lighting.Engine_LevelBakedLighting.VertexBakeSamples > 0
+                    ? $" vertexBake mean={Refii.Lighting.Engine_LevelBakedLighting.VertexBakeSum / Refii.Lighting.Engine_LevelBakedLighting.VertexBakeSamples:0.000} max={Refii.Lighting.Engine_LevelBakedLighting.VertexBakeMax:0.000} over {Refii.Lighting.Engine_LevelBakedLighting.VertexBakeSamples} vertices"
+                    : ""));
 
             if (_keylessByModel.Count != 0)
             {
@@ -495,8 +498,8 @@ public partial class Engine_PropStreamer : Node3D
             Refii.Lighting.Engine_LevelBakedLighting.ContainerFor(gdbPath);
         ulong key = (ulong)stored.AsInt64();
 
-        ArrayMesh? baked = Refii.Lighting.Engine_LevelBakedLighting.TryBuildVertexBake(
-            container, key, mesh);
+        ArrayMesh? baked =
+            Refii.Lighting.Engine_LevelBakedLighting.TryBuildVertexBake(container, key, mesh);
 
         if (baked is not null)
         {

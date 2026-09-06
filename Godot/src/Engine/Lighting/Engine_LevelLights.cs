@@ -423,6 +423,37 @@ public static class Engine_LevelLights
 
 	private static float? _placedScale;
 
+	private static float? _placedRange;
+
+	/// <summary>
+	/// The remaster's `placed_light_range`: a multiplier on every fixture's authored reach. The
+	/// shipped torches light 5–6 m with a linear falloff, balanced for a 360 whose vertex bakes
+	/// carried the glow between them; those bakes decode to ~0.016 here, so a cave floor between
+	/// two braziers was black. 1.0 is the shipped data; the falloff shape is untouched.
+	/// </summary>
+	private static float PlacedRange
+	{
+		get
+		{
+			if (_placedRange is null)
+			{
+				try
+				{
+					_placedRange = Math.Clamp(
+						Refii.Core.Engine_RefiiConfig.Float(
+							Refii.Core.Engine_RefiiConfig.Read(out _), "placed_light_range", 1.5f),
+						0.25f, 8.0f);
+				}
+				catch (Exception)
+				{
+					_placedRange = 1.5f;
+				}
+			}
+
+			return _placedRange.Value;
+		}
+	}
+
 	private static float PlacedScale
 	{
 		get
@@ -450,13 +481,12 @@ public static class Engine_LevelLights
 	private static bool? _placedShadows;
 
 	/// <summary>
-	/// The remaster's `placed_light_shadows`: the authored fixtures mostly ship
-	/// CastShadows = 0 — on the 360 their light simply passed through walls and the bakes hid
-	/// most of it. With real dynamic light on them, a lamp shining through a building reads as
-	/// a bug, so the remaster turns shadowing on for every fixture; the authored flag returns
-	/// when this is off.
+	/// The `placed_light_shadows` dev switch, OFF by default: fixtures never cast, as on the
+	/// 360, where their light passed through walls and the bakes hid most of it. ON hands
+	/// shadow maps to the nearest <see cref="Engine_LightShadowBudget.Budget"/> fixtures for
+	/// looking at one lamp's occlusion — inconsistent by construction and priced in the budget's
+	/// remarks, so never a shipped setting.
 	/// </summary>
-	/// <summary>The `placed_light_shadows` switch, exposed for the shadow budget.</summary>
 	public static bool PlacedShadowsEnabled => PlacedShadows;
 
 	private static bool PlacedShadows
@@ -469,11 +499,11 @@ public static class Engine_LevelLights
 				{
 					_placedShadows = Refii.Core.Engine_RefiiConfig.Bool(
 						Refii.Core.Engine_RefiiConfig.Read(out _),
-						"placed_light_shadows", true);
+						"placed_light_shadows", false);
 				}
 				catch (Exception)
 				{
-					_placedShadows = true;
+					_placedShadows = false;
 				}
 			}
 
@@ -503,7 +533,7 @@ public static class Engine_LevelLights
 				// Godot's SpotAngle IS the half angle, in degrees — the same quantity the field
 				// names, which is why this converts back out of the radians the component stores.
 				SpotAngle = Mathf.RadToDeg(light.HalfAngleRadians),
-				SpotRange = light.Range,
+				SpotRange = light.Range * PlacedRange,
 				SpotAttenuation = 0.0f,
 
 				// ONE, because at exactly one Godot's cone ramp IS the guest's. Godot computes
@@ -515,7 +545,7 @@ public static class Engine_LevelLights
 			}
 			: new OmniLight3D
 			{
-				OmniRange = light.Range,
+				OmniRange = light.Range * PlacedRange,
 				OmniAttenuation = 0.0f,
 			};
 

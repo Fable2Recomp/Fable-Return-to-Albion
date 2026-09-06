@@ -35,7 +35,7 @@ public static class Engine_PostFxState
     public const int MaterialExposure = 28;
     public const int CurveScale = 29;
     public const int InvWhiteSq = 30;
-    public const int Reserved31 = 31;
+    public const int RawGain = 31;
     public const int Header = 32;
     public const int Curve = 32;
     public const int Lut = Curve + Engine_PostFxModel.CurveSize;
@@ -49,7 +49,7 @@ public static class Engine_PostFxState
         "RawBlack", "RawMean", "RawWhite", "RawExp", "FadeK", "HasHistory", "CurveValid",
         "Threshold", "ExposureFrame", "AppliedFrame", "HistMinPct", "HistMean", "HistMaxPct",
         "HistExposureUsed", "HistTotal", "HistIdxMin", "HistIdxAvg", "HistIdxMax", "HistIdxLast",
-        "HistAvgPct", "HistLast", "MaterialExposure", "CurveScale", "InvWhiteSq", "Reserved31",
+        "HistAvgPct", "HistLast", "MaterialExposure", "CurveScale", "InvWhiteSq", "RawGain",
     };
 
     public static float[] Seed()
@@ -63,6 +63,7 @@ public static class Engine_PostFxState
         s[SmWhite] = 1.0f;
         s[SmP99] = 1.0f;
         s[RawExp] = 1.0f;
+        s[RawGain] = 1.0f;
         s[FadeK] = 1.0f;
         s[ExposureFrame] = 4.0f;
         s[AppliedFrame] = 4.0f;
@@ -94,6 +95,7 @@ public static class Engine_PostFxState
         into[RawMean] = model.RawMean;
         into[RawWhite] = model.RawWhite;
         into[RawExp] = model.RawExp;
+        into[RawGain] = model.RawGain;
         into[FadeK] = model.FadeK;
         into[HasHistory] = model.HasHistory ? 1.0f : 0.0f;
         into[CurveValid] = model.CurveValid ? 1.0f : 0.0f;

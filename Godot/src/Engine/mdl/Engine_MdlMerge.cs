@@ -34,10 +34,15 @@ internal static class Engine_MdlMerge
                 continue;
             }
 
+            // A REGION IS A DRAW-LIST UNIT. The guest hides body clusters per submesh region
+            // (`sub_82274CE0` skips a submesh by its region byte), so two pieces of one material
+            // in different regions must stay separate surfaces or a coat could never hide the
+            // torso under it. Props state no region and merge exactly as before.
             string key = string.Concat(
                 MaterialKey(geo.Material),
                 geo.HasTangents ? "|t" : "|-",
-                geo.HasBones ? "|b" : "|-");
+                geo.HasBones ? "|b" : "|-",
+                "|", geo.Region);
 
             if (!groups.TryGetValue(key, out List<MdlGeometry>? bucket))
             {
@@ -78,6 +83,7 @@ internal static class Engine_MdlMerge
         var result = new MdlGeometry
         {
             Name = first.Name,
+            Region = first.Region,
             Material = first.Material,
             Positions = new float[vertices * 3],
             Normals = new float[vertices * 3],

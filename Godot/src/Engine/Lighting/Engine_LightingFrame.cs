@@ -33,6 +33,15 @@ public sealed class LightingFrame
 
 	public float[] DarkeningColour { get; } = { 1.0f, 1.0f, 1.0f };
 
+	/// <summary>The strongest painted layer's weight; 0 outside any painted cell.</summary>
+	public float PaintedWeight { get; set; }
+
+	/// <summary>
+	/// How much the sky may say about the ambient here: 1 under an open sky, 0 where the theme
+	/// states no main light (a cave) or a painted day set holds. Scales the bake's sky tether.
+	/// </summary>
+	public float SkylightWeight { get; set; } = 1.0f;
+
 	// NO FOG HERE. It is not a lighting-frame value: the theme's Fogging record drives the
 	// atmosphere, which reaches the world through global shader parameters rather than through
 	// Godot's Environment. See `Engine_SkyAtmosphere.SolveFogCurve`.
@@ -55,6 +64,107 @@ public static class Engine_LightingFrame
 	/// above it. 0.3 was the pre-measurement guess.
 	/// </summary>
 	public const float ModernAmbientLevel = 0.2f;
+
+	/// <summary>
+	/// The interior lift, applied to a normalised ambient colour IN PLACE and returning the
+	/// lifted energy. The added light is pulled toward neutral by `interior_ambient_neutral`:
+	/// the cave themes state a saturated orange, and multiplying that by the lift paints every
+	/// surface with it (the guild hall came out monochrome orange at 24x), where the 360's
+	/// stone reads warm-neutral. 0 keeps the theme's chroma, 1 lifts with pure white.
+	/// </summary>
+	private static float LiftInteriorAmbient(float[] colour, float energy)
+	{
+		float neutral = InteriorAmbientNeutral;
+		float lum = (0.2125f * colour[0]) + (0.7154f * colour[1]) + (0.0721f * colour[2]);
+		for (int i = 0; i < 3; i++)
+		{
+			colour[i] += (lum - colour[i]) * neutral;
+		}
+
+		return energy * InteriorAmbientScale;
+	}
+
+	/// <summary>
+	/// The interior cvars are read LIVE — every lighting re-evaluate re-reads the config — so a
+	/// cave can be tuned in the running game by editing refii.toml, without a rebuild. The env
+	/// form (`REFII_INTERIOR_*`) wins when set, for instrument runs.
+	/// </summary>
+	private static readonly System.Collections.Generic.Dictionary<string, (double At, float Value)> _cvarCache = new();
+
+	private static float InteriorCvar(string name, string env, float fallback, float min, float max)
+	{
+		// One config read per second at most: the post-effect asks every frame.
+		double now = Time.GetTicksMsec() / 1000.0;
+		if (_cvarCache.TryGetValue(name, out (double At, float Value) hit) && now - hit.At < 1.0)
+		{
+			return hit.Value;
+		}
+
+		float value = fallback;
+		try
+		{
+			value = Refii.Core.Engine_RefiiConfig.Float(
+				Refii.Core.Engine_RefiiConfig.Read(out _), name, fallback);
+		}
+		catch (Exception)
+		{
+		}
+
+		if (float.TryParse(Godot.OS.GetEnvironment(env),
+				System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out float forced) &&
+			forced >= 0f)
+		{
+			value = forced;
+		}
+
+		float clamped = Math.Clamp(value, min, max);
+		_cvarCache[name] = (now, clamped);
+		return clamped;
+	}
+
+	/// <summary>
+	/// Whether the level in view has no sky, as the lighting frame last published it. The
+	/// post-effect reads it to pick the interior dark lift over the outdoor one.
+	/// </summary>
+	public static bool CurrentInterior { get; set; }
+
+	/// <summary>
+	/// THE INTERIOR DARK LIFT (`interior_dark_lift`): the tone floor divisor in levels with no
+	/// sky. The guest clamps the histogram average to 0.15 raw before forming the curve's key,
+	/// so a room whose raw mean sits far under that is rendered dark by design; a lift of N lets
+	/// the floor fall to 0.15/N for such a frame. Outdoors keeps `modern_dark_lift`.
+	/// </summary>
+	public static float InteriorDarkLift =>
+		InteriorCvar("interior_dark_lift", "REFII_INTERIOR_DARK_LIFT", 3f, 1f, 16f);
+
+	/// <summary>How far the interior ambient lift is pulled toward neutral (0 = theme chroma).</summary>
+	public static float InteriorAmbientNeutral =>
+		InteriorCvar("interior_ambient_neutral", "REFII_INTERIOR_NEUTRAL", 0.6f, 0f, 1f);
+
+	/// <summary>The interior BAKE lift, published as the global `fable_interior_bake`.</summary>
+	public static float InteriorBakeScale =>
+		InteriorCvar("interior_bake_scale", "REFII_INTERIOR_BAKE", 3f, 0.1f, 16f);
+
+	/// <summary>
+	/// The interior FOG scale on the guest's blend factor. The cave records state both fog
+	/// distances as zero, which the guest's LUT bake floors to 1 and 10 m — 86% fog at 50 m
+	/// toward a near-black brown — and the 360 reference shows no such wall.
+	/// </summary>
+	public static float InteriorFogScale =>
+		InteriorCvar("interior_fog_scale", "REFII_INTERIOR_FOG", 0.2f, 0f, 1f);
+
+	/// <summary>
+	/// THE REMASTER'S INTERIOR AMBIENT (`interior_ambient_scale`; 1.0 = shipped), on the theme's
+	/// flat ambient in levels with no sky, modern model only. Measured 2026-09-06 in thagscave:
+	/// the raw scene averaged 0.006 linear with the exposure pinned at the guest's cap of 16, and
+	/// every guest term was verified equal to ours — c20.xyz is the theme AmbientColour verbatim
+	/// (`sub_821DF670` -> kind-11 light +0xD0), c20.w the adapted exposure, material colour and
+	/// ambient scale literal 1, bake decode 2.2 x 1.3 — so this lift is a remaster choice against
+	/// the 360 reference, not a recovered constant.
+	/// </summary>
+	public static float InteriorAmbientScale =>
+		InteriorCvar("interior_ambient_scale", "REFII_INTERIOR_AMBIENT", 3f, 0.1f, 64f);
 
 	/// <summary>
 	/// How far every exterior bake (probes, vertex bakes, the terrain lightmap) is pulled
@@ -163,6 +273,15 @@ public static class Engine_LightingFrame
 		float[] sunRgb = lighting.HasMainLightColour ? lighting.MainLightColour : frame.MainLightColour;
 		Split(sunRgb, result.SunColour, out float sunEnergy);
 
+		// WHETHER THERE IS A SKY AT ALL, by the guest's own test for a main light:
+		// |MainLightColour|^2 > 1e-4 (`vmsum3fp128` at 0x821D1F30). Thag's cave states
+		// (1.0, 0.58, 0.0) x 0.00 — a hue with no magnitude — and deriving an ambient from its
+		// dome, then tethering every probe 60% toward it, painted the whole cave orange (b175).
+		// A level with no main light has no skylight to model; its ambient is what it states,
+		// or its probes.
+		float mainLightSq = (sunRgb[0] * sunRgb[0]) + (sunRgb[1] * sunRgb[1]) + (sunRgb[2] * sunRgb[2]);
+		bool hasSky = mainLightSq > 1e-4f;
+
 		// THE HORIZON GATE, AND THE HANDOVER TO THE MOON.
 		//
 		// OURS, NOT THE GUEST'S. `sub_821DF670` publishes the rig direction and its negation and
@@ -208,7 +327,7 @@ public static class Engine_LightingFrame
 			&& (SunShadowsModernized || (lighting.HasMainLightShadowed
 				&& lighting.MainLightShadowed > 0.5f));
 
-		if (ModernModel)
+		if (ModernModel && hasSky)
 		{
 			// THE MODERN MODEL'S AMBIENT: derived live from the sky dome rather than read from
 			// the theme's baked-era table. The theme ambient is one authored value per day-set
@@ -225,17 +344,57 @@ public static class Engine_LightingFrame
 			Split(skyAmbient, result.AmbientColour, out float skyEnergy);
 			result.AmbientEnergy = skyEnergy * ModernAmbientLevel;
 			result.HasAmbient = result.AmbientEnergy > 0f;
+
+			// A BLACK SKY IS NO SKY. Thag's cave states a main light (so the test above passes)
+			// and sky colours of exactly zero: deriving its ambient from that dome gave it none
+			// at all, and the Environment then kept whatever the previous region had left
+			// there — the cemetery's sunset, which is what painted the cave orange (b175).
+			// Where the dome has no energy the theme's own ambient stands, as in fable mode.
+			if (!result.HasAmbient)
+			{
+				hasSky = false;
+				if (lighting.HasAmbientColour)
+				{
+					Split(lighting.AmbientColour, result.AmbientColour, out float authoredEnergy);
+					result.AmbientEnergy = LiftInteriorAmbient(result.AmbientColour, authoredEnergy);
+					result.HasAmbient = result.AmbientEnergy > 0f;
+				}
+			}
+
+			// A PAINTED DAY SET DESCRIBES WHERE THE HERO STANDS, and the sky does not: a tavern
+			// or a cave is painted precisely because its ambient is not the sky's. Its authored
+			// ambient takes over by the painted weight, so the fade the guest runs is the fade
+			// the room lights up with.
+			if (lighting.PaintedWeight > 0f && lighting.HasAmbientColour)
+			{
+				var authored = new float[3];
+				Split(lighting.AmbientColour, authored, out float authoredEnergy);
+				float w = MathF.Min(lighting.PaintedWeight, 1f);
+				for (int i = 0; i < 3; i++)
+				{
+					result.AmbientColour[i] += (authored[i] - result.AmbientColour[i]) * w;
+				}
+
+				result.AmbientEnergy += (authoredEnergy - result.AmbientEnergy) * w;
+				result.HasAmbient = result.AmbientEnergy > 0f;
+			}
 		}
 		else if (lighting.HasAmbientColour)
 		{
 			Split(lighting.AmbientColour, result.AmbientColour, out float ambientEnergy);
-			result.AmbientEnergy = ambientEnergy;
-			result.HasAmbient = ambientEnergy > 0f;
+			// No sky in the modern model: the flat ambient is the room's light and takes the
+			// interior lift; the fable model keeps the theme's value.
+			result.AmbientEnergy = ModernModel
+				? LiftInteriorAmbient(result.AmbientColour, ambientEnergy)
+				: ambientEnergy;
+			result.HasAmbient = result.AmbientEnergy > 0f;
 		}
 
 		Array.Copy(lighting.LightmapColour, result.LightmapColour, 3);
 		Array.Copy(lighting.DarkeningColour, result.DarkeningColour, 3);
 
+		result.PaintedWeight = lighting.PaintedWeight;
+		result.SkylightWeight = hasSky ? 1f - Math.Clamp(lighting.PaintedWeight, 0f, 1f) : 0f;
 		return result;
 	}
 
