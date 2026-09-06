@@ -148,8 +148,75 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 	protected override Engine_UiMessageBox Build(Engine_UiTheme? art) =>
 		Engine_UiMessageBox.FromPatternBook(art);
 
-	protected override void Join(Engine_UiScreen document) =>
+	private Engine_UiScreen? _document;
+
+	protected override void Join(Engine_UiScreen document)
+	{
+		_document = document;
 		_joins = Engine_UiMessageBox.Resolve(document);
+	}
+
+	/// <summary>
+	/// THE PAPER'S SIZE IS A SLIDE, NOT A TRANSFORM. `sub_8236FA68` fits the text into one of
+	/// the six MessageText variants and puts the `paper` element on that size's slide;
+	/// messageboxmulti.bgf's paper owns `type1`..`type6`, each scaling `paperbox` (3, 4, 5, 5,
+	/// 6, 7) and activating exactly one text. The guest never writes a scale, so reading the
+	/// transform alone kept the parchment at the authored scale 1 under a full-size text —
+	/// the box on the abilities page with its notice spilling past the paper on every side.
+	/// </summary>
+	private Vector2? PaperScaleFromSlide(int chosen)
+	{
+		if (_document?.Document is not { } file || _joins is null)
+		{
+			return null;
+		}
+
+		uint scaleX = Refii.Core.Engine_GameHash.AttributeId("scale.x");
+		uint scaleY = Refii.Core.Engine_GameHash.AttributeId("scale.y");
+		string want = $"type{chosen + 1}";
+		foreach (BgfSlide slide in file.Slides)
+		{
+			if (slide.OwnerElement != _joins.Paper ||
+				!slide.Name.Equals(want, System.StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			foreach (BgfSlideEntry entry in slide.Entries)
+			{
+				if (entry.ElementOrdinal != _joins.PaperBox)
+				{
+					continue;
+				}
+
+				float? x = null;
+				float? y = null;
+				foreach (BgfAttribute command in entry.Commands)
+				{
+					if (command.Type != BgfValueType.Float)
+					{
+						continue;
+					}
+
+					if (command.Id == scaleX)
+					{
+						x = command.AsFloat();
+					}
+					else if (command.Id == scaleY)
+					{
+						y = command.AsFloat();
+					}
+				}
+
+				if (x is { } sx && y is { } sy && sx > 0f && sy > 0f)
+				{
+					return new Vector2(sx, sy);
+				}
+			}
+		}
+
+		return null;
+	}
 
 	protected override bool IsOpen(Engine_UiModel.PauseState? pause)
 	{
@@ -170,17 +237,32 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
 		Engine_UiPresentationHost host)
 	{
-		// The guest's chosen size is the variant it wrote the text into.
+		// The guest's chosen size is the variant its slide ACTIVATES; the text may be written
+		// into more than one. The first non-empty text stands in when none is active.
 		int chosen = -1;
 		string body = string.Empty;
 		for (int i = 0; i < _joins!.Texts.Length; ++i)
 		{
-			string? text = elements[_joins.Texts[i]].Text;
-			if (!string.IsNullOrEmpty(text))
+			Engine_UiModel.UiElement element = elements[_joins.Texts[i]];
+			if (element.IsActive && !string.IsNullOrEmpty(element.Text))
 			{
 				chosen = i;
-				body = text;
+				body = element.Text;
 				break;
+			}
+		}
+
+		if (chosen < 0)
+		{
+			for (int i = 0; i < _joins.Texts.Length; ++i)
+			{
+				string? text = elements[_joins.Texts[i]].Text;
+				if (!string.IsNullOrEmpty(text))
+				{
+					chosen = i;
+					body = text;
+					break;
+				}
 			}
 		}
 
@@ -208,10 +290,16 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 			}
 		}
 
+		string paperSource = "guest-stated";
+		if (paperScale is null)
+		{
+			paperScale = PaperScaleFromSlide(chosen);
+			paperSource = paperScale is null ? "authored" : $"slide type{chosen + 1}";
+		}
+
 		View!.ShowStated(body, chosen, paperScale);
 		GD.Print($"[game-ui] message box {_modalId} up over screen {_screenId} " +
-			$"(size {chosen + 1}, paper {(paperScale is null ? "authored" : "guest-stated")}) — " +
-			View.LastReport);
+			$"(size {chosen + 1}, paper {paperSource}) — " + View.LastReport);
 	}
 
 	protected override void Route(Engine_UiSurfaceInput input)

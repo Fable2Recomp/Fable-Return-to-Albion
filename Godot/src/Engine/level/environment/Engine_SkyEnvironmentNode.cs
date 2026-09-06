@@ -217,6 +217,37 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private LightingTheme? _lightingTheme;
 
     /// <summary>
+    /// THE THEMES AT BOTH ENDS OF THE CURRENT STEP. The re-evaluate runs once per five game
+    /// minutes and swapped the blended sky and lighting themes whole, so the rig rotation, the
+    /// sun's colour and its energy all moved at once by five minutes' worth of blend — a hop
+    /// every few seconds with the shadows riding it, while the guest's clock itself is smooth
+    /// (a fifteenth of a game minute per tick). The step now extracts the themes at its start
+    /// and its end, and <see cref="TrackBodies"/> interpolates between them every frame. The
+    /// blend between day-set entries is linear in time, so the interpolation is exact except
+    /// where an entry boundary falls inside a step.
+    /// </summary>
+    private SkyTheme? _skyStepStart;
+    private SkyTheme? _skyStepEnd;
+    private LightingTheme? _lightingStepEnd;
+    private float _stepStart = float.NaN;
+
+    private static float WrapForward(float from, float to)
+    {
+        float d = to - from;
+        if (d < -0.5f)
+        {
+            d += 1f;
+        }
+
+        return d;
+    }
+
+    private float StepWeight() =>
+        float.IsNaN(_stepStart)
+            ? 0f
+            : Mathf.Clamp(WrapForward(_stepStart, _dayFraction) / ReevaluateStep, 0f, 1f);
+
+    /// <summary>
     /// Moves the sun, the moon and the light EVERY FRAME.
     ///
     /// <see cref="Reevaluate"/> only runs on a five-game-minute step because the theme extract and
@@ -231,6 +262,13 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         if (Theme is null || !float.IsFinite(_dayFraction))
         {
             return;
+        }
+
+        // Between the step's two themes, by the clock — see _skyStepEnd.
+        float w = StepWeight();
+        if (_skyStepStart is { } skyStart && _skyStepEnd is { } skyEnd && w > 0f)
+        {
+            Theme = Engine_ThemeTimeline.BlendSky(skyStart, skyEnd, w);
         }
 
         SkyFrame frame = Engine_SkyFrame.Evaluate(Theme, _dayFraction);
@@ -250,9 +288,16 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         if (_lightingTheme is { } lightingTheme && ResolveSun() is { } sun)
         {
-            LightingFrame lighting = Engine_LightingFrame.Evaluate(Theme, lightingTheme, frame);
+            LightingTheme lightingNow = _lightingStepEnd is { } lightingEnd && w > 0f
+                ? Engine_ThemeTimeline.BlendLighting(lightingTheme, lightingEnd, w)
+                : lightingTheme;
+            LightingFrame lighting = Engine_LightingFrame.Evaluate(Theme, lightingNow, frame);
             Lighting = lighting;
             Engine_LevelLighting.UpdateSun(sun, lighting);
+            if (Environment is not null)
+            {
+                Engine_LevelLighting.ConfigureEnvironment(Environment, lighting);
+            }
         }
     }
 
@@ -383,11 +428,23 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         ulong mark = Time.GetTicksUsec();
 
+        _skyStepStart = null;
+        _skyStepEnd = null;
+        _lightingStepEnd = null;
+        _stepStart = _dayFraction;
+        float stepEndTime = (_dayFraction + ReevaluateStep) % 1f;
+
         if (LightingGdbs.Count != 0 &&
             Engine_ThemeTimeline.TryExtractSkyBlended(
                 LightingGdbs, _dayFraction, out SkyTheme timeTheme))
         {
             Theme = timeTheme;
+            _skyStepStart = timeTheme;
+            if (Engine_ThemeTimeline.TryExtractSkyBlended(
+                    LightingGdbs, stepEndTime, out SkyTheme endTheme))
+            {
+                _skyStepEnd = endTheme;
+            }
         }
 
         SkyFrame frame = Engine_SkyFrame.Evaluate(Theme, _dayFraction);
@@ -492,6 +549,26 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         _lightingTheme = lightingTheme;
+
+        if (Engine_ThemeTimeline.TryExtractLightingBlended(
+                LightingGdbs, stepEndTime, out LightingTheme lightingEnd))
+        {
+            if (Painted is { Any: true } paintedEnd)
+            {
+                foreach (Refii.Lighting.Engine_PaintedDaySets.Layer layer in paintedEnd.Layers)
+                {
+                    if (layer.Weight > 0f &&
+                        Engine_ThemeTimeline.TryExtractLightingBlended(
+                            LightingGdbs, stepEndTime, layer.Hash, out LightingTheme paintedEndTheme))
+                    {
+                        lightingEnd = Engine_LightingTheme.FoldPainted(lightingEnd, paintedEndTheme, layer.Weight);
+                    }
+                }
+            }
+
+            _lightingStepEnd = lightingEnd;
+        }
+
         LightingFrame lighting = Engine_LightingFrame.Evaluate(Theme, lightingTheme, frame);
         Lighting = lighting;
 

@@ -102,6 +102,15 @@ public static class RuntimeCVarsGodot
                 + "direct sun mild against the baked lighting, so people and ground barely "
                 + "react to it — raising this makes characters and terrain visibly sun-lit "
                 + "and deepens their shadows. 1.0 follows the shipped energy exactly."),
+            new("placed_light_budget", LightingCategory, RuntimeCVarType.Int, "0",
+                "How many placed lights stay visible at once, nearest to the eye first. 0 keeps "
+                + "every fixture in the region lit all the time, which is the remaster's setting: "
+                + "a budget makes lamps switch on and off as the camera moves. Every fixture "
+                + "lit measured 13 ms of draw in Bowerstone Market with every shadow off."),
+            new("placed_light_fade", LightingCategory, RuntimeCVarType.Bool, "false",
+                "Whether a placed light fades out and stops drawing past its authored camera "
+                + "cutoff, as the 360 did. Off keeps every fixture lit at any distance; its "
+                + "range still bounds what it reaches. The fable model always fades."),
             new("placed_light_shadows", LightingCategory, RuntimeCVarType.Bool, "false",
                 "Developer lever. Off: no torch, lamp or fixture casts a shadow, as on the "
                 + "360, so every lamp reads the same from every angle. On: only the few "
@@ -133,25 +142,34 @@ public static class RuntimeCVarsGodot
                 + "movable, so they carry no painted bake). The sky tether now carries that "
                 + "population, so the default follows the shipped level; raise it only if "
                 + "movables still read dark beside baked surfaces."),
-            new("interior_ambient_scale", LightingCategory, RuntimeCVarType.Double, "3.0",
-                "Lifts the theme's flat ambient in levels with no sky — caves, crypts, "
-                + "windowless rooms — where it is the only light between the torches. The "
-                + "360 rendered those rooms far brighter than the shipped numbers alone "
-                + "give; 1.0 is the shipped value, higher is the remaster's cave look. "
-                + "Modern model only."),
-            new("interior_ambient_neutral", LightingCategory, RuntimeCVarType.Double, "0.6",
+            new("interior_ambient_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Scales the theme's flat ambient in levels with no sky. 1.0 is the shipped "
+                + "value and the one to keep: the room's brightness comes from the exposure "
+                + "gain (interior_dark_lift), which lifts the whole frame; scaling one term "
+                + "breaks the authored balance between ambient and bake. Modern model only."),
+            new("interior_ambient_neutral", LightingCategory, RuntimeCVarType.Double, "0.0",
                 "How far the interior ambient lift is pulled toward neutral. The cave themes "
                 + "state a saturated orange ambient; lifted as-is it paints every surface "
                 + "orange. 0 keeps the theme's colour, 1 lifts with white."),
-            new("interior_bake_scale", LightingCategory, RuntimeCVarType.Double, "3.0",
-                "Lifts the authored vertex bakes in levels with no sky, so the room's own "
-                + "painted colour and shading carry part of the cave look instead of the "
-                + "flat ambient alone. 1.0 is the shipped strength. Modern model only."),
-            new("interior_dark_lift", LightingCategory, RuntimeCVarType.Double, "3.0",
-                "The tone floor divisor in levels with no sky. The original clamps the "
-                + "scene average to 0.15 before exposing, which renders any room far below "
-                + "that as a dark room; this lets the floor fall to 0.15 divided by the value "
-                + "for such a frame. 1.0 is the original behaviour. Outdoors uses "
+            new("interior_bake_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Scales the authored vertex bakes in levels with no sky. 1.0 is the shipped "
+                + "strength and the one to keep: above it, baked floors and paintings blow out "
+                + "while surfaces with no bake stay black. Modern model only."),
+            new("modern_tone_curve", LightingCategory, RuntimeCVarType.String, "filmic",
+                "The tone curve in the modern model. 'filmic' is a curve with a toe and a "
+                + "shoulder, applied where there is no sky (caves, rooms) so the interior lift "
+                + "keeps its blacks; 'all' applies it outdoors too; 'fable' is the original's "
+                + "curve everywhere. The original's exposure, key and floors are kept either way."),
+            new("modern_depth_of_field", LightingCategory, RuntimeCVarType.Bool, "false",
+                "Whether the modern model applies the original's depth of field. The "
+                + "themes blur everything past their far plane, twenty metres in a cave, "
+                + "which reads as a soft picture on a modern display. The fable model "
+                + "always applies it."),
+            new("interior_dark_lift", LightingCategory, RuntimeCVarType.Double, "16.0",
+                "The cap on the exposure gain in levels with no sky: the frame is lifted by "
+                + "the tone floor (0.15) over its raw mean, up to this value. 16 is the "
+                + "original's own exposure clamp, and the gain lifts the whole frame so the "
+                + "authored balance between ambient, bake and torches is kept. Outdoors uses "
                 + "modern_dark_lift. Modern model only."),
             new("interior_fog_scale", LightingCategory, RuntimeCVarType.Double, "0.2",
                 "How much of the authored fog a level with no sky keeps. The cave records "
@@ -175,6 +193,9 @@ public static class RuntimeCVarsGodot
                 + "terrain), 6 the sun's raw shadow term (white lit, black shadowed), 7 signed "
                 + "NdotL against the sun, 8 the view-space normal as colour. A diagnostic "
                 + "for attributing a bad colour to the term carrying it."),
+            new("debug_channel", DeveloperCategory, RuntimeCVarType.Bool, "false",
+                "Open the loopback debug channel at launch and publish its handshake file, "
+                + "the same as launching with REFII_DEBUG_PORT=1. Off for players."),
             new("postfx_dump_period", DeveloperCategory, RuntimeCVarType.Int, "0",
                 "Print the tone-mapping histogram, the adapted bounds, the exposure and the "
                 + "bloom coverage every N frames. 0 is off. This reads back from the GPU and "

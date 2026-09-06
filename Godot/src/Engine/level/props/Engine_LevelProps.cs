@@ -62,6 +62,9 @@ public sealed class PropBuildStats
 
     public int GmdChildrenMissing { get; set; }
 
+    /// <summary>Layout children standing on a .save placement's origin, which the guest instantiates instead.</summary>
+    public int GmdChildrenSuperseded { get; set; }
+
     public int FoliageBlocks { get; set; }
 
     public int FoliageInstances { get; set; }
@@ -96,7 +99,7 @@ public sealed class PropBuildStats
         $"namematched={NameMatched} curated={CuratedMatched} " +
         $"companions={Companions} shells={Shells} " +
         $"gmd(sidecars={GmdSidecarsLoaded}/{GmdSidecarsLoaded + GmdSidecarsMissing} " +
-        $"children={GmdChildren} unresolved={GmdChildrenMissing}) (" +
+        $"children={GmdChildren} unresolved={GmdChildrenMissing} superseded={GmdChildrenSuperseded}) (" +
         $"duprecord={DuplicateRecord} duptransform={DuplicateTransform}) " +
         $"engine_level(blocks={EngineLevelBlocks} inst={EngineLevelInstances} " +
         $"unresolved={EngineLevelUnresolved} duptransform={EngineLevelDuplicate} " +
@@ -353,7 +356,7 @@ public static class Engine_LevelProps
                         $"[props-dump] {placement.EntityName} hash={placement.Hash:X8} " +
                         $"modelHash={placement.ModelPathHash:X8} filled={placement.ModelPathFilled} " +
                         $"authored={authoredHash} byHash={matchedByHash} " +
-                        $"parent={placement.ParentHash:X8} -> {modelPath}");
+                        $"parent={placement.ParentHash:X8} at=({placement.X:F2},{placement.Y:F2},{placement.Z:F2}) -> {modelPath}");
                 }
             }
 
@@ -910,6 +913,32 @@ public static class Engine_LevelProps
         var additionOrder = new List<string>();
         var cache = new Dictionary<string, List<GmdLayoutChild>>();
 
+        // EVERY .SAVE PLACEMENT'S ORIGIN, on a one-metre grid. A layout child is the building's
+        // authored default at a doorway or window; when the .save places a record on that same
+        // origin (the tavern's door: 2 cm apart, and often a DIFFERENT variant — V1 in the
+        // layout, V3 in the .save), the guest instantiates the record and never the child. The
+        // child is dropped here, offline, so no second door ever reaches the screen.
+        var placed = new Dictionary<(int, int, int), List<(Vector3 At, string Model)>>();
+        foreach (string key in order)
+        {
+            string model = NameOf(blocks[key].ModelPath);
+            foreach (Transform3D instance in blocks[key].Instances)
+            {
+                (int, int, int) cell = GridCell(instance.Origin);
+                if (!placed.TryGetValue(cell, out List<(Vector3, string)>? list))
+                {
+                    list = new List<(Vector3, string)>();
+                    placed[cell] = list;
+                }
+
+                list.Add((instance.Origin, model));
+            }
+        }
+
+        // WHAT SUPERSEDED WHAT, as a per-region summary — the audit that the rule is not
+        // over-culling: every child should be replaced by a placement of its own kind.
+        var superseded = new Dictionary<string, int>();
+
         foreach (string key in new List<string>(order))
         {
             PropBlockBuild parent = blocks[key];
@@ -956,9 +985,25 @@ public static class Engine_LevelProps
                     additionOrder.Add(childKey);
                 }
 
+                string dumpWant = OS.GetEnvironment("REFII_PROPS_DUMP");
+                bool dump = dumpWant.Length != 0 &&
+                    (child.AssetKey + " " + childPath).Contains(dumpWant, StringComparison.OrdinalIgnoreCase);
                 foreach (Transform3D instance in parent.Instances)
                 {
                     Transform3D world = ComposeChild(instance, child.Local);
+                    if (OnPlacement(placed, world.Origin) is string by)
+                    {
+                        stats.GmdChildrenSuperseded++;
+                        string pair = NameOf(childPath) + " -> " + by;
+                        superseded[pair] = superseded.TryGetValue(pair, out int seen) ? seen + 1 : 1;
+                        continue;
+                    }
+
+                    if (dump)
+                    {
+                        GD.Print($"[props-dump] gmd child '{child.AssetKey}' of {NameOf(parent.ModelPath)} " +
+                            $"at=({world.Origin.X:F2},{world.Origin.Y:F2},{world.Origin.Z:F2}) -> {childPath}");
+                    }
                     if (transformKeys.Add(TransformKey(world, childPath)))
                     {
                         build.AddInstance(world);
@@ -979,6 +1024,54 @@ public static class Engine_LevelProps
             blocks[key] = additions[key];
             order.Add(key);
         }
+
+        if (superseded.Count != 0)
+        {
+            var ranked = new List<KeyValuePair<string, int>>(superseded);
+            ranked.Sort((x, y) => y.Value.CompareTo(x.Value));
+            var text = new System.Text.StringBuilder("[props] gmd children superseded by a .save placement:");
+            foreach (KeyValuePair<string, int> entry in ranked)
+            {
+                text.Append(' ').Append(entry.Key).Append(" x").Append(entry.Value).Append(';');
+            }
+
+            GD.Print(text.ToString());
+        }
+    }
+
+    private const float SupersedeRadius = 0.25f;
+
+    private static (int, int, int) GridCell(Vector3 at) =>
+        (Mathf.FloorToInt(at.X), Mathf.FloorToInt(at.Y), Mathf.FloorToInt(at.Z));
+
+    /// <summary>The model of the .save placement within <see cref="SupersedeRadius"/> of <paramref name="at"/>, or null.</summary>
+    private static string? OnPlacement(Dictionary<(int, int, int), List<(Vector3 At, string Model)>> placed, Vector3 at)
+    {
+        (int cx, int cy, int cz) = GridCell(at);
+        float limit = SupersedeRadius * SupersedeRadius;
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                for (int dz = -1; dz <= 1; dz++)
+                {
+                    if (!placed.TryGetValue((cx + dx, cy + dy, cz + dz), out List<(Vector3 At, string Model)>? list))
+                    {
+                        continue;
+                    }
+
+                    foreach ((Vector3 origin, string model) in list)
+                    {
+                        if (origin.DistanceSquaredTo(at) <= limit)
+                        {
+                            return model;
+                        }
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     public static Transform3D ComposeChild(Transform3D parent, Transform3D childLocal)

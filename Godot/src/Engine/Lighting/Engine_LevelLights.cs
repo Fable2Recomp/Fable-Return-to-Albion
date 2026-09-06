@@ -480,6 +480,46 @@ public static class Engine_LevelLights
 
 	private static bool? _placedShadows;
 
+	private static bool? _placedFade;
+
+	/// <summary>`placed_light_fade`: whether fixtures fade and cull by distance in the modern model.</summary>
+	public static bool PlacedFadeEnabled
+	{
+		get
+		{
+			if (_placedFade is null)
+			{
+				try
+				{
+					_placedFade = Refii.Core.Engine_RefiiConfig.Bool(
+						Refii.Core.Engine_RefiiConfig.Read(out _), "placed_light_fade", false);
+				}
+				catch (Exception)
+				{
+					_placedFade = false;
+				}
+			}
+
+			return _placedFade.Value;
+		}
+	}
+
+	/// <summary>`placed_light_budget`: fixtures kept visible at once; 0 is every fixture.</summary>
+	public static int PlacedLightBudget()
+	{
+		try
+		{
+			return Refii.Core.Engine_RefiiConfig.Read(out _).TryGetValue("placed_light_budget", out string? v) &&
+				int.TryParse(v.Trim(), out int budget)
+				? budget
+				: 0;
+		}
+		catch (Exception)
+		{
+			return 0;
+		}
+	}
+
 	/// <summary>
 	/// The `placed_light_shadows` dev switch, OFF by default: fixtures never cast, as on the
 	/// 360, where their light passed through walls and the bakes hid most of it. ON hands
@@ -582,7 +622,10 @@ public static class Engine_LevelLights
 		// The modern model doubles the cutoff and ramps over at least half of it: the authored
 		// reach was balanced for the 360, where the BAKES carried lamplight at distance; we run
 		// the bakes at a residual weight and hand that job to the live light.
-		if (light.FadeDistance > 0.0f)
+		// ALL LIGHTS ON, ALL THE TIME, in the modern model unless `placed_light_fade` asks for
+		// the cutoff: a fixture switching off as the camera walks away reads as a fault on a
+		// machine that can afford every fixture in the region.
+		if (light.FadeDistance > 0.0f && (!Engine_LightingFrame.ModernModel || PlacedFadeEnabled))
 		{
 			float cutoff = MathF.Min(light.FadeDistance, 1000.0f);
 			float ramp = MathF.Max(light.FadeRange, 0.01f);

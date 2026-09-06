@@ -37,7 +37,7 @@ public partial class Engine_LightShadowBudget : Node
 
 	/// <summary>Placed lights kept VISIBLE at once — the nearest that can still reach the eye.
 	/// Measured 2026-09-04: 190 visible lights cost 13 ms of draw with every shadow off.</summary>
-	public static int LightBudget = 48;
+	public static int LightBudget = Engine_LevelLights.PlacedLightBudget();
 
 	/// <summary>Debug lever: false hides every placed light regardless of the budget.</summary>
 	public static bool LightsEnabled = true;
@@ -110,7 +110,7 @@ public partial class Engine_LightShadowBudget : Node
 		_reach.Sort((a, b) => a.DistanceSq.CompareTo(b.DistanceSq));
 		for (int i = 0; i < _reach.Count; i++)
 		{
-			bool show = _reach[i].DistanceSq != float.MaxValue && i < LightBudget;
+			bool show = _reach[i].DistanceSq != float.MaxValue && (LightBudget <= 0 || i < LightBudget);
 			if (_reach[i].Light.Visible != show)
 			{
 				_reach[i].Light.Visible = show;

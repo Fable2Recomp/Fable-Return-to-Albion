@@ -1197,6 +1197,9 @@ public static class Engine_LevelScene
 
             container.AddChild(fog);
             emitted++;
+            GD.Print($"[mist] volume {i}: min=({vol.BoxMin[0]:0.#},{vol.BoxMin[1]:0.#},{vol.BoxMin[2]:0.#}) " +
+                $"size=({vol.BoxSize[0]:0.#},{vol.BoxSize[1]:0.#},{vol.BoxSize[2]:0.#}) density={vol.Density:0.####} " +
+                $"colour=({vol.Colour[0]:0.00},{vol.Colour[1]:0.00},{vol.Colour[2]:0.00}) falloff={vol.Falloff:0.###} recip={vol.Reciprocal:0.###}");
         }
 
         if (emitted == 0)

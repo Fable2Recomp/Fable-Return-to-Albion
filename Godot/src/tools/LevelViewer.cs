@@ -389,6 +389,31 @@ public partial class LevelViewer : Node3D
 			GD.Print("[level-viewer] fog off: atmos_fog_on held clear every frame");
 		}
 
+		// REFII_LEVEL_MIST=off: drop the authored mist volumes and the volumetric fog they
+		// enable, so a pair of shots differs only in the mist.
+		if (OS.GetEnvironment("REFII_LEVEL_MIST").Equals("off", StringComparison.OrdinalIgnoreCase))
+		{
+			int dropped = 0;
+			foreach (Node node in Descendants(region))
+			{
+				if (node is FogVolume fogVolume)
+				{
+					fogVolume.Visible = false;
+					dropped++;
+				}
+			}
+
+			foreach (Node node in Descendants(region))
+			{
+				if (node is Refii.Level.Engine_SkyEnvironmentNode skyNode && skyNode.Environment is { } env)
+				{
+					env.VolumetricFogEnabled = false;
+				}
+			}
+
+			GD.Print($"[level-viewer] mist off: {dropped} volume(s) hidden");
+		}
+
 		string mode = OS.GetEnvironment("REFII_LEVEL_LIGHT");
 		if (mode.Length == 0 || mode.Equals("full", StringComparison.OrdinalIgnoreCase))
 		{

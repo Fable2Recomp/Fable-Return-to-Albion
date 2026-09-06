@@ -52,6 +52,11 @@ float linear_depth(float z) {
 	return -view_z / safe_w;
 }
 
+/// The ACES fitted curve: a toe that reaches black and a shoulder that rolls off.
+float fable_filmic(float x) {
+	return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
 void main() {
 	ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
 	if (coord.x >= push.size.x || coord.y >= push.size.y) {
@@ -85,7 +90,12 @@ void main() {
 	if (params.bits.x > 0.5) {
 		float l = dot(c, LUMINANCE_WEIGHTS);
 		float x = l * state.v[S_CURVE_SCALE];
-		float mapped = ((x * state.v[S_INV_WHITE_SQ]) + 1.0) * x / (x + 1.0);
+		// THE MODERN CURVE (params.reserved0.y): a filmic fit with a toe and a shoulder, on the
+		// same key-scaled input as the original's Reinhard, so exposure, key and floors are
+		// untouched and only the shape differs. 0.6 puts its middle grey where the original's is.
+		float mapped = params.reserved0.y > 0.5
+			? fable_filmic(x * 0.6)
+			: ((x * state.v[S_INV_WHITE_SQ]) + 1.0) * x / (x + 1.0);
 		float gain = l > 1e-6 ? mapped / l : 1.0;
 		// AGAINST DISPLAY LUMINANCE, NOT SCENE LUMINANCE. ColourSensitivityThreshold is 0.15 —
 		// a display-space number, like the 0.1/0.3/0.6 bounds and a middle grey of 0.36 — and

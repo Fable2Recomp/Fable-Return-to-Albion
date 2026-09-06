@@ -173,6 +173,8 @@ public partial class GameEntities : Node3D
 
         _seen.Clear();
         _drawnRecords.Clear();
+        _drawnPlaces.Clear();
+        _drawnKeys.Clear();
 
         // PER FRAME, because that is what the report claims to describe. A counter that
         // accumulates for the life of the run answers a different question than its name asks,
@@ -181,6 +183,7 @@ public partial class GameEntities : Node3D
         _withModel = 0;
         _noMesh = 0;
         _awaitingBuild = 0;
+        _awaitingStub = 0;
 
         // Reset for the same reason, and beside the two above so the whole report is on one
         // clock — a mix of run totals and per-frame counts in one line multiplies the totals
@@ -247,6 +250,20 @@ public partial class GameEntities : Node3D
                 // early.
                 if (!_meshes.ContainsKey(entity.ModelHash))
                 {
+                    // A model that has come back as a stub StubGiveUp times is a body no mounted
+                    // bank has yet: it stops counting as pending (the release gate would wait on
+                    // it forever) and is re-asked every StubRetryTicks in case a bank paged it in.
+                    if (_stubReturns.TryGetValue(entity.ModelHash, out int stubs) && stubs >= StubGiveUp)
+                    {
+                        ++_awaitingStub;
+                        if (_ticks % StubRetryTicks == 0)
+                        {
+                            Resolve(entity.ModelHash);
+                        }
+
+                        continue;
+                    }
+
                     ++_awaitingBuild;
                     Resolve(entity.ModelHash);
                     continue;
@@ -266,9 +283,32 @@ public partial class GameEntities : Node3D
             }
 
             _seen.Add(entity.Address);
-            if (entity.RecordHash != 0)
+            bool adopted = _adoptions.ContainsKey(entity.Address);
+            // UNRIGGED MODELS ONLY, for now. A rigged twin would have to follow its dominant
+            // bone's pose relative to its rest, and the first cut of that displaced the
+            // market's double doors; until that delta is verified against a door offline, a
+            // rigged entity keeps the hide-and-draw path, which is right but for the seam.
+            if (!adopted && !_nodes.ContainsKey(entity.Address) && Twins is { } adoptable &&
+                Refii.Models.Engine_MdlRig.TryFrom(mesh) is null &&
+                ModelKeyFor(entity.ModelHash) is { } adoptKey && IsUsablePlacement(entity.Position) &&
+                adoptable.TryAdopt(entity.RecordHash, adoptKey,
+                    ToGlobal(ToGodot(entity.Position, entity.Rotation).Origin))
+                    is { } adoption)
             {
-                _drawnRecords.Add(entity.RecordHash);
+                _adoptions[entity.Address] = (adoption, entity.UniqueId);
+                adopted = true;
+            }
+
+            if (!adopted)
+            {
+                if (entity.RecordHash != 0)
+                {
+                    _drawnRecords.Add(entity.RecordHash);
+                }
+                if (ModelKeyFor(entity.ModelHash) is { } modelKey)
+                {
+                    _drawnKeys.Add((entity.Address, modelKey));
+                }
             }
 
             if (!_nodes.TryGetValue(entity.Address, out MeshInstance3D? node))
@@ -281,12 +321,21 @@ public partial class GameEntities : Node3D
                 node.SetMeta("entity_address", entity.Address);
                 node.SetMeta("entity_unique_id", entity.UniqueId);
                 node.SetMeta("entity_record", entity.RecordHash);
+                node.SetMeta("entity_model", entity.ModelHash);
 
                 // HERE, on the frame the live copy is created, and not merely when it is
                 // reported — hiding on the report would take the region's copy away for an
                 // entity whose mesh never loaded, turning a duplicate into a hole. The periodic
                 // reconcile below enforces the same invariant for everything else.
-                Twins?.Claim(entity.RecordHash);
+                if (adopted)
+                {
+                    // The region's copy is the drawable; this node only carries the rig.
+                    node.Visible = false;
+                }
+                else
+                {
+                    Twins?.Claim(entity.RecordHash);
+                }
                 AddChild(node);
                 _nodes[entity.Address] = node;
 
@@ -418,9 +467,24 @@ public partial class GameEntities : Node3D
                     _poseYawWorst = Mathf.Max(_poseYawWorst, Mathf.Abs(poseYaw));
                 }
             }
+
+            if (_adoptions.TryGetValue(entity.Address, out var married))
+            {
+                Refii.Entities.Engine_StaticTwins.Drive(married.Twin, AdoptedWorld(entity.Address, node));
+            }
         }
 
         PlaceAttached();
+        // THE PLACE OF EVERY DRAWN ENTITY, read from the node AFTER attachment placement: a
+        // door is a child attached to its building, and its stated position describes the
+        // parent-relative body nobody draws; the node's world origin is where the mesh is.
+        foreach ((uint address, string modelKey) in _drawnKeys)
+        {
+            if (_nodes.TryGetValue(address, out MeshInstance3D? placed))
+            {
+                _drawnPlaces.Add((modelKey, placed.GlobalTransform.Origin));
+            }
+        }
         Refii.Core.Engine_FramePhases.Lap("ent.loop", ref lap);
         Retire();
         Refii.Core.Engine_FramePhases.Lap("ent.retire", ref lap);
@@ -456,7 +520,11 @@ public partial class GameEntities : Node3D
             ++_settledFor;
         }
 
-        _everSettled |= _settledFor >= SettleTicks;
+        // A count that holds still for SettleTicks, OR twenty seconds of ticks: Bowerstone
+        // Market never holds still (NPCs come and go every few ticks), and gating the reconcile
+        // on stillness alone left every layout door standing beside its live twin for a whole
+        // session in the first region of a run.
+        _everSettled |= _settledFor >= SettleTicks || _ticks >= SettleFallbackTicks;
 
         // THE INVARIANT, RE-APPLIED FOR THE WHOLE RUN.
         //
@@ -473,9 +541,13 @@ public partial class GameEntities : Node3D
         // The `_settledFor` clause is not redundant: the report below fires on exactly that tick,
         // and its counts come from here. Without it the first report can land on a tick the
         // reconcile skipped and read "0 hidden" over a region that is fully reconciled.
-        if (Twins is not null && _everSettled &&
-            (_ticks % ReconcileTicks == 0 || _settledFor == SettleTicks))
+        // ON THE CADENCE FROM THE FIRST TICK, not after the pass settles: reconciling early
+        // is safe (a record not yet reported keeps its copy standing, which is the no-hole
+        // direction), and waiting for stillness left two door sets up for twenty seconds.
+        if (Twins is not null && _ticks > 1 &&
+            (_ticks % ReconcileTicks == 0 || _settledFor == SettleTicks || !_reconciledOnce))
         {
+            _reconciledOnce = true;
             _liveRecords.Clear();
             foreach (HostBridge.GuestEntity entity in entities)
             {
@@ -518,10 +590,13 @@ public partial class GameEntities : Node3D
             Twins.Reconcile(
                 _liveRecords, _drawnRecords, !HostBridge.EntitiesTruncated,
                 deactivated is null ? null : _deactivatedLayers.Contains);
+            // THE RECORD-LESS TWINS — a building's doors and windows come from its layout with
+            // no record of their own, so only the model and the place can name them.
+            Twins.HideAtPlaces(_drawnPlaces);
         }
 
         bool settled = _settledFor == SettleTicks ||
-            (_settledFor > SettleTicks && _ticks % 600 == 0);
+            (_everSettled && _ticks % 600 == 0);
         if (!settled)
         {
             return;
@@ -712,7 +787,7 @@ public partial class GameEntities : Node3D
             GD.Print($"[game-entities] static twins: {twins.Records} record(s) over " +
                 $"{twins.Instances} drawable(s) — {twins.HiddenForLive} hidden because the " +
                 $"guest draws its own, {twins.HiddenByLayer} hidden because their LAYER is " +
-                $"deactivated, {shown} left standing as the only copy" +
+                $"deactivated, {twins.HiddenByPlace} hidden by model and place, {twins.Adopted} married to a live entity, {shown} left standing as the only copy" +
                 (twins.LiveWasTruncated
                     ? "  (the entity walk saturated its buffer this tick — the dedup half is " +
                       "under-counting, the layer gate is unaffected)"
@@ -1014,12 +1089,32 @@ public partial class GameEntities : Node3D
     /// </summary>
     private const int SettleTicks = 120;
 
+    /// <summary>Ticks after which the pass counts as settled whether or not the count held still.</summary>
+    private const int SettleFallbackTicks = 600;
+
     private int _lastCount = -1;
 
     private int _settledFor;
 
     /// <summary>The entity list has filled at least once. Never cleared — see the reconcile.</summary>
     private bool _everSettled;
+
+    /// <summary>Whether the twins have been reconciled at least once for this region.</summary>
+    private bool _reconciledOnce;
+
+    /// <summary>
+    /// Whether every entity the guest has reported is on screen the way it will stay: every
+    /// mesh built, the region's static copies reconciled against them. The world holds the
+    /// guest in its loading screen until this is true, so nothing fills in after control returns.
+    /// </summary>
+    public bool ReadyForRelease => _ticks > 1 && _awaitingBuild == 0 && _reconciledOnce;
+
+    /// <summary>What <see cref="ReadyForRelease"/> is still waiting on, for the hold's log line.</summary>
+    public string ReleaseWait =>
+        _ticks <= 1 ? "the first entity pass"
+        : _awaitingBuild != 0 ? $"{_awaitingBuild} entity mesh build(s) ({_awaitingStub} stub(s) not counted)"
+        : !_reconciledOnce ? "the first twin reconcile"
+        : "nothing";
 
     /// <summary>Half a second at 60fps between reconciles.</summary>
     private const int ReconcileTicks = 30;
@@ -1032,6 +1127,297 @@ public partial class GameEntities : Node3D
 
     /// <summary>Records we have a live node for THIS frame, filled as the entities are drawn.</summary>
     private readonly HashSet<uint> _drawnRecords = new();
+
+    /// <summary>The model and place of every entity we drew this pass — see Engine_StaticTwins.HideAtPlaces.</summary>
+    private readonly List<(string ModelKey, Vector3 Origin)> _drawnPlaces = new();
+    private readonly List<(uint Address, string ModelKey)> _drawnKeys = new();
+
+    /// <summary>
+    /// THE MARRIED ENTITIES: the region's own copy is the drawable, driven by the guest's
+    /// placement (and for a rigged model, by its dominant bone's pose), and the entity's own
+    /// node stays invisible so the rig still poses. See Engine_StaticTwins.Adoption.
+    /// </summary>
+    private readonly Dictionary<uint, (Refii.Entities.Engine_StaticTwins.Adoption Twin, ulong Uid)> _adoptions = new();
+
+    private readonly Dictionary<Mesh, int> _dominantBones = new();
+
+    public int AdoptedEntities => _adoptions.Count;
+
+    /// <summary>
+    /// The bone that carries most of a skinned mesh's weight — a rigid door is one bone of
+    /// its rig, and the static copy follows that bone's pose relative to its rest.
+    /// </summary>
+    private int DominantBone(Mesh mesh)
+    {
+        if (_dominantBones.TryGetValue(mesh, out int cached))
+        {
+            return cached;
+        }
+
+        int best = 0;
+        if (mesh is ArrayMesh array && array.GetSurfaceCount() > 0)
+        {
+            var weights = new Dictionary<int, float>();
+            for (int surface = 0; surface < array.GetSurfaceCount(); surface++)
+            {
+                Godot.Collections.Array arrays = array.SurfaceGetArrays(surface);
+                Variant bonesVariant = arrays[(int)Mesh.ArrayType.Bones];
+                Variant weightsVariant = arrays[(int)Mesh.ArrayType.Weights];
+                if (bonesVariant.VariantType == Variant.Type.Nil ||
+                    weightsVariant.VariantType == Variant.Type.Nil)
+                {
+                    continue;
+                }
+
+                int[] bones = bonesVariant.AsInt32Array();
+                float[] w = weightsVariant.AsFloat32Array();
+                for (int i = 0; i < bones.Length && i < w.Length; i++)
+                {
+                    weights.TryGetValue(bones[i], out float had);
+                    weights[bones[i]] = had + w[i];
+                }
+            }
+
+            float top = -1f;
+            foreach (KeyValuePair<int, float> pair in weights)
+            {
+                if (pair.Value > top)
+                {
+                    top = pair.Value;
+                    best = pair.Key;
+                }
+            }
+        }
+
+        _dominantBones[mesh] = best;
+        return best;
+    }
+
+    /// <summary>Where the married copy stands this tick, in world space.</summary>
+    private Transform3D AdoptedWorld(uint address, MeshInstance3D node)
+    {
+        Transform3D world = node.GlobalTransform;
+        if (_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig) &&
+            node.Mesh is { } mesh)
+        {
+            Skeleton3D sk = rig.Node;
+            int bone = DominantBone(mesh);
+            if (bone >= 0 && bone < sk.GetBoneCount())
+            {
+                world *= sk.GetBoneGlobalPose(bone) * sk.GetBoneGlobalRest(bone).AffineInverse();
+            }
+        }
+
+        return world;
+    }
+    /// <summary>
+    /// The live entities whose model key contains <paramref name="needle"/> and the static
+    /// twins of the same models, side by side: the join HideAtPlaces makes, laid out to read.
+    /// </summary>
+    public Dictionary<string, object?> DescribeTwins(string needle, bool apply = false)
+    {
+        string want = needle.ToLowerInvariant();
+        int applied = -1;
+        if (apply && Twins is { } twinsNow)
+        {
+            int before = twinsNow.HiddenByPlace;
+            twinsNow.HideAtPlaces(_drawnPlaces);
+            applied = twinsNow.HiddenByPlace - before;
+        }
+        var live = new List<Dictionary<string, object?>>();
+        foreach ((uint address, MeshInstance3D node) in _nodes)
+        {
+            uint modelHash = node.HasMeta("entity_model") ? (uint)node.GetMeta("entity_model").AsInt64() : 0u;
+            string? key = modelHash == 0u ? null : ModelKeyFor(modelHash);
+            if (key is null || !key.Contains(want, System.StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            Vector3 at = node.GlobalTransform.Origin;
+            live.Add(new Dictionary<string, object?>
+            {
+                ["address"] = $"{address:X8}",
+                ["model"] = key,
+                ["modelHash"] = $"{modelHash:X8}",
+                ["record"] = node.HasMeta("entity_record") ? $"{(uint)node.GetMeta("entity_record").AsInt64():X8}" : null,
+                ["at"] = $"{at.X:F2},{at.Y:F2},{at.Z:F2}",
+                ["visible"] = node.Visible,
+                ["rigged"] = _skeletons.ContainsKey(address),
+                ["adopted"] = _adoptions.ContainsKey(address),
+                ["seen"] = _seen.Contains(address),
+            });
+        }
+
+        int drawnKeys = 0;
+        foreach ((string key, Vector3 _) in _drawnPlaces)
+        {
+            if (key.Contains(want, System.StringComparison.Ordinal))
+            {
+                ++drawnKeys;
+            }
+        }
+
+        return new Dictionary<string, object?>
+        {
+            ["live"] = live,
+            ["drawnPlaces"] = drawnKeys,
+            ["drawnTotal"] = _drawnPlaces.Count,
+            ["applied"] = applied,
+            ["ticks"] = _ticks,
+            ["everSettled"] = _everSettled,
+            ["twins"] = Twins?.DescribeByModel(want, _drawnPlaces),
+        };
+    }
+
+    /// <summary>
+    /// Every drawn entity with a drawn static twin within <paramref name="radius"/>, any model:
+    /// the complete list of doubles on screen, with the flags that say which path missed.
+    /// </summary>
+    public Dictionary<string, object?> DescribeDoubles(float radius)
+    {
+        var pairs = new List<Dictionary<string, object?>>();
+        var unresolved = new List<Dictionary<string, object?>>();
+        if (Twins is not { } twins)
+        {
+            return new Dictionary<string, object?> { ["error"] = "no twins" };
+        }
+
+        var grid = new Dictionary<(int, int, int), List<int>>();
+        List<(string Model, Vector3 At, uint Record, bool Adopted, string Node)> drawn = twins.DrawnTwins();
+        for (int i = 0; i < drawn.Count; i++)
+        {
+            (int, int, int) cell = Cell(drawn[i].At);
+            if (!grid.TryGetValue(cell, out List<int>? list))
+            {
+                list = new List<int>();
+                grid[cell] = list;
+            }
+
+            list.Add(i);
+        }
+
+        float limit = radius * radius;
+        foreach ((uint address, MeshInstance3D node) in _nodes)
+        {
+            if (!node.Visible || !node.IsInsideTree())
+            {
+                continue;
+            }
+
+            uint modelHash = node.HasMeta("entity_model") ? (uint)node.GetMeta("entity_model").AsInt64() : 0u;
+            uint record = node.HasMeta("entity_record") ? (uint)node.GetMeta("entity_record").AsInt64() : 0u;
+            string? key = modelHash == 0u ? null : ModelKeyFor(modelHash);
+            Vector3 at = node.GlobalTransform.Origin;
+            if (key is null)
+            {
+                unresolved.Add(new Dictionary<string, object?>
+                {
+                    ["address"] = $"{address:X8}",
+                    ["modelHash"] = $"{modelHash:X8}",
+                    ["record"] = $"{record:X8}",
+                    ["at"] = $"{at.X:F2},{at.Y:F2},{at.Z:F2}",
+                });
+            }
+
+            (int cx, int cy, int cz) = Cell(at);
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    for (int dz = -1; dz <= 1; dz++)
+                    {
+                        if (!grid.TryGetValue((cx + dx, cy + dy, cz + dz), out List<int>? list))
+                        {
+                            continue;
+                        }
+
+                        foreach (int i in list)
+                        {
+                            float d2 = drawn[i].At.DistanceSquaredTo(at);
+                            if (d2 > limit)
+                            {
+                                continue;
+                            }
+
+                            pairs.Add(new Dictionary<string, object?>
+                            {
+                                ["address"] = $"{address:X8}",
+                                ["entityModel"] = key,
+                                ["entityRecord"] = $"{record:X8}",
+                                ["rigged"] = _skeletons.ContainsKey(address),
+                                ["adopted"] = _adoptions.ContainsKey(address),
+                                ["twinModel"] = drawn[i].Model,
+                                ["twinNode"] = drawn[i].Node,
+                                ["twinRecord"] = drawn[i].Record == 0u ? null : $"{drawn[i].Record:X8}",
+                                ["twinAdopted"] = drawn[i].Adopted,
+                                ["distance"] = $"{Mathf.Sqrt(d2):F3}",
+                                ["at"] = $"{at.X:F2},{at.Y:F2},{at.Z:F2}",
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // OWN NODES STANDING IN FOR A RECORD: the entity draws through the entity lighting path
+        // (no vertex bake) while its record copy is hidden. Every one of these is a surface that
+        // lost its authored bake; a rock among them is a rock gone black in a cave.
+        var ownNodes = new List<Dictionary<string, object?>>();
+        foreach ((uint address, MeshInstance3D node) in _nodes)
+        {
+            if (!node.Visible || _adoptions.ContainsKey(address))
+            {
+                continue;
+            }
+
+            uint record = node.HasMeta("entity_record") ? (uint)node.GetMeta("entity_record").AsInt64() : 0u;
+            if (record == 0u || !twins.HasRecord(record))
+            {
+                continue;
+            }
+
+            uint modelHash = node.HasMeta("entity_model") ? (uint)node.GetMeta("entity_model").AsInt64() : 0u;
+            Vector3 at = node.GlobalTransform.Origin;
+            ownNodes.Add(new Dictionary<string, object?>
+            {
+                ["address"] = $"{address:X8}",
+                ["record"] = $"{record:X8}",
+                ["entityModel"] = modelHash == 0u ? null : ModelKeyFor(modelHash),
+                ["twinModels"] = twins.ModelsOfRecord(record),
+                ["rigged"] = _skeletons.ContainsKey(address),
+                ["at"] = $"{at.X:F2},{at.Y:F2},{at.Z:F2}",
+            });
+        }
+
+        return new Dictionary<string, object?>
+        {
+            ["ticks"] = _ticks,
+            ["drawnEntities"] = _nodes.Count,
+            ["drawnTwins"] = drawn.Count,
+            ["pairs"] = pairs,
+            ["unresolvedModel"] = unresolved,
+            ["ownNodesWithRecordTwin"] = ownNodes,
+        };
+    }
+
+    private static (int, int, int) Cell(Vector3 at) =>
+        (Mathf.FloorToInt(at.X), Mathf.FloorToInt(at.Y), Mathf.FloorToInt(at.Z));
+
+    private readonly Dictionary<uint, string?> _modelKeys = new();
+
+    private string? ModelKeyFor(uint modelHash)
+    {
+        if (_modelKeys.TryGetValue(modelHash, out string? cached))
+        {
+            return cached;
+        }
+
+        string? path = Refii.Level.Engine_PropModelIndex.Resolve(modelHash, System.Array.Empty<string>());
+        string? key = path is null ? null : Refii.Entities.Engine_StaticTwins.ModelKey(path);
+        _modelKeys[modelHash] = key;
+        return key;
+    }
 
     /// <summary>
     /// Checks that the MESH's bone indices and the GUEST's skeleton are the same numbering.
@@ -1282,6 +1668,22 @@ public partial class GameEntities : Node3D
             }
 
             _nodes.Remove(address);
+            if (_adoptions.TryGetValue(address, out var married))
+            {
+                // Destroyed by the guest (a key taken, a door broken): the copy goes with it.
+                // Merely unreported (streamed out, walk truncated): it stays where it stood.
+                bool destroyed = false;
+                foreach (ulong dead in HostBridge.GetDeadEntities())
+                {
+                    if (dead == married.Uid)
+                    {
+                        destroyed = true;
+                        break;
+                    }
+                }
+                Twins?.Release(married.Twin, destroyed);
+                _adoptions.Remove(address);
+            }
 
             // The rig goes with the node it hung under; leaving the entry behind would keep
             // a freed skeleton reachable and pose it every frame.
@@ -1302,6 +1704,16 @@ public partial class GameEntities : Node3D
 
     /// <summary>Entities waiting on a build that is running off this thread. Not a fault.</summary>
     private int _awaitingBuild;
+
+    /// <summary>Entities whose model keeps coming back as a stub; not pending for the release.</summary>
+    private int _awaitingStub;
+
+    /// <summary>How many times each model's build has returned an empty stub.</summary>
+    private readonly Dictionary<uint, int> _stubReturns = new();
+
+    private const int StubGiveUp = 3;
+
+    private const int StubRetryTicks = 300;
 
     /// <summary>
     /// Applies the region's current lighting to one live entity.
@@ -1546,6 +1958,9 @@ public partial class GameEntities : Node3D
                 if (error is not null)
                 {
                     GD.PushWarning($"[game-entities] mesh load failed ({error}): {path}");
+                    // A failed load is an answer: recorded so the entity is not re-queued every
+                    // tick for the rest of the region, and so the release gate sees it settled.
+                    _meshes[modelHash] = null;
                     return;
                 }
 
@@ -1563,6 +1978,9 @@ public partial class GameEntities : Node3D
                 // resolved, surfaced mesh is kept.
                 if (mesh is not null && mesh.GetSurfaceCount() == 0)
                 {
+                    // Counted, so a stub that keeps coming back stops holding the level's
+                    // release and re-asks on a slow cadence instead of every tick.
+                    _stubReturns[modelHash] = _stubReturns.TryGetValue(modelHash, out int seen) ? seen + 1 : 1;
                     return;
                 }
 

@@ -69,6 +69,243 @@ public sealed class Engine_StaticTwins
 
     private readonly Dictionary<uint, List<Twin>> _byRecord = new();
 
+    /// <summary>
+    /// EVERY drawable by model name, record or not. A building's GMD children — its doors and
+    /// windows — are emitted from the parent's layout with NO record of their own, so the
+    /// record index never sees them and the guest's live door stood next to the closed one.
+    /// This index lets a drawn entity hide the static copy that shares its model and its
+    /// place, which is the only identity such a child has.
+    /// </summary>
+    private readonly Dictionary<string, List<Twin>> _byModel = new();
+
+    /// <summary>Twins hidden because a drawn entity of the same model stands where they do.</summary>
+    private readonly HashSet<(Node3D Node, int Instance)> _hiddenByPlace = new();
+
+    public int HiddenByPlace => _hiddenByPlace.Count;
+
+    /// <summary>
+    /// THE MARRIAGE. A twin a live entity has adopted is neither hidden nor drawn twice: the
+    /// region's copy — with its baked lighting, in the wall it was painted into — stays on
+    /// screen and the guest's placement drives it, so no second mesh is built for the entity
+    /// at all. Hide and Show leave adopted twins alone; the entity releases the twin when the
+    /// guest stops reporting it, hiding it if the guest destroyed the entity (a key taken, a
+    /// door broken) and leaving it where it stood otherwise.
+    /// </summary>
+    public readonly struct Adoption
+    {
+        public Adoption(Node3D node, int instance, Transform3D standing)
+        {
+            Node = node;
+            Instance = instance;
+            Standing = standing;
+        }
+
+        public Node3D Node { get; }
+        public int Instance { get; }
+        public Transform3D Standing { get; }
+    }
+
+    private readonly HashSet<(Node3D Node, int Instance)> _adopted = new();
+
+    public int Adopted => _adopted.Count;
+
+    private bool IsAdopted(Twin twin) => _adopted.Contains((twin.Node, twin.Instance));
+
+    /// <summary>The nearest free twin of this model within <paramref name="tolerance"/> of the place, adopted.</summary>
+    /// <summary>
+    /// BY RECORD FIRST. An entity that states a .save record is that placement, and its copy is
+    /// the twin indexed under that record — taken whenever the twin is the same model, even if
+    /// a neighbour's drawn place had hidden it, because identity outranks proximity. On a table
+    /// of five goblets the nearest free copy was routinely a neighbour's, and the mis-pairing
+    /// walked down the table one goblet at a time. Model and place is the fallback for an
+    /// entity with no record, or whose record copy is a different variant (then the entity
+    /// draws its own node and the record join hides the copy).
+    /// </summary>
+    public Adoption? TryAdopt(uint record, string modelKey, Vector3 origin, float tolerance = 0.75f)
+    {
+        if (record != 0u && _byRecord.TryGetValue(record, out List<Twin>? own))
+        {
+            foreach (Twin twin in own)
+            {
+                if (IsAdopted(twin) || !GodotObject.IsInstanceValid(twin.Node) ||
+                    !twin.Node.IsInsideTree() ||
+                    !_modelOf.TryGetValue((twin.Node, twin.Instance), out string? key) ||
+                    key != modelKey)
+                {
+                    continue;
+                }
+
+                _hiddenByPlace.Remove((twin.Node, twin.Instance));
+                _adopted.Add((twin.Node, twin.Instance));
+                ShowTwin(twin);
+                return new Adoption(twin.Node, twin.Instance, twin.Standing);
+            }
+
+            return null;
+        }
+
+        if (!_byModel.TryGetValue(modelKey, out List<Twin>? twins))
+        {
+            return null;
+        }
+
+        float best = tolerance * tolerance;
+        Twin? found = null;
+        foreach (Twin twin in twins)
+        {
+            if (IsAdopted(twin) || _hiddenByPlace.Contains((twin.Node, twin.Instance)) ||
+                _withRecord.Contains((twin.Node, twin.Instance)) ||
+                !GodotObject.IsInstanceValid(twin.Node) || !twin.Node.IsInsideTree())
+            {
+                continue;
+            }
+
+            Vector3 at = twin.Instance < 0
+                ? twin.Node.GlobalTransform.Origin
+                : (twin.Node.GlobalTransform * twin.Standing).Origin;
+            float d = at.DistanceSquaredTo(origin);
+            if (d <= best)
+            {
+                best = d;
+                found = twin;
+            }
+        }
+
+        if (found is not { } chosen)
+        {
+            return null;
+        }
+
+        _adopted.Add((chosen.Node, chosen.Instance));
+        ShowTwin(chosen);
+        return new Adoption(chosen.Node, chosen.Instance, chosen.Standing);
+    }
+
+    /// <summary>Puts the adopted twin where the entity says it stands, in world space.</summary>
+    public static void Drive(Adoption adoption, Transform3D world)
+    {
+        if (!GodotObject.IsInstanceValid(adoption.Node) || !adoption.Node.IsInsideTree())
+        {
+            return;
+        }
+
+        if (adoption.Node is Refii.Level.SilverKeyNode key)
+        {
+            // The key keeps its bob and spin; the guest's placement moves the base it rides.
+            Transform3D parent = key.GetParent() is Node3D above
+                ? above.GlobalTransform
+                : Transform3D.Identity;
+            key.BaseTransform = parent.AffineInverse() * world;
+            return;
+        }
+
+        if (adoption.Instance < 0)
+        {
+            adoption.Node.GlobalTransform = world;
+            return;
+        }
+
+        if (adoption.Node is MultiMeshInstance3D batched && batched.Multimesh is { } mesh &&
+            adoption.Instance < mesh.InstanceCount)
+        {
+            mesh.SetInstanceTransform(adoption.Instance, batched.GlobalTransform.AffineInverse() * world);
+        }
+    }
+
+    /// <summary>The entity is gone: hide the twin if the guest destroyed it, else leave it standing.</summary>
+    public void Release(Adoption adoption, bool hide)
+    {
+        var twin = new Twin(adoption.Node, adoption.Instance, adoption.Standing);
+        _adopted.Remove((adoption.Node, adoption.Instance));
+        if (hide)
+        {
+            _hiddenByPlace.Add((adoption.Node, adoption.Instance));
+            HideTwin(twin);
+        }
+    }
+
+    /// <summary>The model name a prop node or an entity resolves to: file name, no extension, lower case.</summary>
+    public static string ModelKey(string path)
+    {
+        string name = path.Replace('\\', '/');
+        int slash = name.LastIndexOf('/');
+        if (slash >= 0)
+        {
+            name = name[(slash + 1)..];
+        }
+
+        int dot = name.LastIndexOf('.');
+        if (dot > 0)
+        {
+            name = name[..dot];
+        }
+
+        return name.ToLowerInvariant();
+    }
+
+    private void AddByModel(Node3D node, Twin twin)
+    {
+        if (!node.HasMeta(Refii.Level.Engine_PropStreamer.ModelPathMeta))
+        {
+            return;
+        }
+
+        string key = ModelKey(node.GetMeta(Refii.Level.Engine_PropStreamer.ModelPathMeta).AsString());
+        if (key.Length == 0)
+        {
+            return;
+        }
+
+        _modelOf[(twin.Node, twin.Instance)] = key;
+        if (!_byModel.TryGetValue(key, out List<Twin>? list))
+        {
+            _byModel[key] = list = new List<Twin>();
+        }
+
+        list.Add(twin);
+    }
+
+    /// <summary>
+    /// Hides every twin of a model that stands within <paramref name="tolerance"/> of a drawn
+    /// entity of that model. Called after <see cref="Reconcile"/> with the entities we put on
+    /// screen this pass; a twin hidden here stays hidden for the session.
+    /// </summary>
+    public void HideAtPlaces(IReadOnlyList<(string ModelKey, Vector3 Origin)> drawn, float tolerance = 0.75f)
+    {
+        float limit = tolerance * tolerance;
+        foreach ((string key, Vector3 origin) in drawn)
+        {
+            if (!_byModel.TryGetValue(key, out List<Twin>? twins))
+            {
+                continue;
+            }
+
+            foreach (Twin twin in twins)
+            {
+                // RECORD-LESS ONLY. A twin with a record answers to the record join: hidden when
+                // its entity is drawn, standing when the entity is one we cannot draw. Hiding it
+                // by a neighbour's place would open a hole where the guest still has a thing.
+                if (IsAdopted(twin) || _hiddenByPlace.Contains((twin.Node, twin.Instance)) ||
+                    _withRecord.Contains((twin.Node, twin.Instance)) ||
+                    !GodotObject.IsInstanceValid(twin.Node) || !twin.Node.IsInsideTree())
+                {
+                    continue;
+                }
+
+                Vector3 at = twin.Instance < 0
+                    ? twin.Node.GlobalTransform.Origin
+                    : (twin.Node.GlobalTransform * twin.Standing).Origin;
+                if (at.DistanceSquaredTo(origin) > limit)
+                {
+                    continue;
+                }
+
+                _hiddenByPlace.Add((twin.Node, twin.Instance));
+                HideTwin(twin);
+            }
+        }
+    }
+
     /// <summary>Records currently hidden. Membership IS the state; nothing is destroyed.</summary>
     private readonly HashSet<uint> _hidden = new();
 
@@ -288,34 +525,39 @@ public sealed class Engine_StaticTwins
         {
             if (child is MultiMeshInstance3D batched)
             {
-                if (!batched.HasMeta(Refii.Level.Engine_PropStreamer.RecordsMeta) ||
-                    batched.Multimesh is not { } mesh)
+                if (batched.Multimesh is not { } mesh)
                 {
                     continue;
                 }
 
-                long[] records =
-                    batched.GetMeta(Refii.Level.Engine_PropStreamer.RecordsMeta).AsInt64Array();
-                for (int i = 0; i < records.Length && i < mesh.InstanceCount; i++)
+                long[] records = batched.HasMeta(Refii.Level.Engine_PropStreamer.RecordsMeta)
+                    ? batched.GetMeta(Refii.Level.Engine_PropStreamer.RecordsMeta).AsInt64Array()
+                    : System.Array.Empty<long>();
+                for (int i = 0; i < mesh.InstanceCount; i++)
                 {
-                    if (records[i] != 0L)
+                    var twin = new Twin(batched, i, mesh.GetInstanceTransform(i));
+                    AddByModel(batched, twin);
+                    if (i < records.Length && records[i] != 0L)
                     {
-                        Add((uint)records[i],
-                            new Twin(batched, i, mesh.GetInstanceTransform(i)));
+                        Add((uint)records[i], twin);
                     }
                 }
 
                 continue;
             }
 
-            if (child is MeshInstance3D single &&
-                single.HasMeta(Refii.Level.Engine_PropStreamer.RecordMeta))
+            if (child is MeshInstance3D single)
             {
-                long record =
-                    single.GetMeta(Refii.Level.Engine_PropStreamer.RecordMeta).AsInt64();
-                if (record != 0L)
+                var twin = new Twin(single, -1, single.Transform);
+                AddByModel(single, twin);
+                if (single.HasMeta(Refii.Level.Engine_PropStreamer.RecordMeta))
                 {
-                    Add((uint)record, new Twin(single, -1, single.Transform));
+                    long record =
+                        single.GetMeta(Refii.Level.Engine_PropStreamer.RecordMeta).AsInt64();
+                    if (record != 0L)
+                    {
+                        Add((uint)record, twin);
+                    }
                 }
             }
         }
@@ -357,8 +599,15 @@ public sealed class Engine_StaticTwins
         }
 
         list.Add(twin);
+        _withRecord.Add((twin.Node, twin.Instance));
         ++Instances;
     }
+
+    /// <summary>The twins that carry a .save record: the record join governs those, not the place.</summary>
+    private readonly HashSet<(Node3D Node, int Instance)> _withRecord = new();
+
+    /// <summary>Each indexed twin's model key, for the record path of adoption.</summary>
+    private readonly Dictionary<(Node3D Node, int Instance), string> _modelOf = new();
 
     /// <summary>
     /// Hides the region's copy of one record the moment a live node for it is DRAWN.
@@ -536,38 +785,192 @@ public sealed class Engine_StaticTwins
 
         foreach (Twin twin in twins)
         {
-            if (!GodotObject.IsInstanceValid(twin.Node))
+            if (!IsAdopted(twin))
             {
-                continue;
-            }
-
-            if (twin.Instance < 0)
-            {
-                twin.Node.Visible = false;
-                continue;
-            }
-
-            // A MULTIMESH INSTANCE CANNOT BE REMOVED, so it is collapsed instead. Godot's
-            // instance buffer is a fixed-length array and `VisibleInstanceCount` only trims a
-            // prefix, which is no use for an arbitrary slot. A basis of exactly zero sends every
-            // vertex of the instance to one point, so it covers no pixels — and the slot is
-            // still there, which is what lets `Show` put it back.
-            if (twin.Node is MultiMeshInstance3D batched && batched.Multimesh is { } mesh &&
-                twin.Instance < mesh.InstanceCount)
-            {
-                mesh.SetInstanceTransform(twin.Instance, new Transform3D(
-                    new Basis(Vector3.Zero, Vector3.Zero, Vector3.Zero), twin.Standing.Origin));
+                HideTwin(twin);
             }
         }
     }
 
-    private static void Show(List<Twin> twins)
+    /// <summary>
+    /// Every indexed twin whose model key contains <paramref name="needle"/>: where it stands
+    /// in world space, whether it is currently drawn, and which path hid it. A diagnostic for
+    /// a doorway that still shows two doors.
+    /// </summary>
+    public List<Dictionary<string, object?>> DescribeByModel(
+        string needle, IReadOnlyList<(string ModelKey, Vector3 Origin)>? drawnPlaces = null)
+    {
+        var rows = new List<Dictionary<string, object?>>();
+        string want = needle.ToLowerInvariant();
+        foreach (KeyValuePair<string, List<Twin>> entry in _byModel)
+        {
+            if (!entry.Key.Contains(want, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            foreach (Twin twin in entry.Value)
+            {
+                if (!GodotObject.IsInstanceValid(twin.Node))
+                {
+                    continue;
+                }
+
+                bool drawn = twin.Instance < 0
+                    ? twin.Node.Visible
+                    : twin.Node is MultiMeshInstance3D batched && batched.Multimesh is { } mesh &&
+                      twin.Instance < mesh.InstanceCount &&
+                      mesh.GetInstanceTransform(twin.Instance).Basis.X.LengthSquared() > 1e-12f;
+                Vector3 at = twin.Instance < 0
+                    ? twin.Node.GlobalTransform.Origin
+                    : (twin.Node.GlobalTransform * twin.Standing).Origin;
+                uint record = 0u;
+                foreach (KeyValuePair<uint, List<Twin>> byRecord in _byRecord)
+                {
+                    foreach (Twin candidate in byRecord.Value)
+                    {
+                        if (candidate.Node == twin.Node && candidate.Instance == twin.Instance)
+                        {
+                            record = byRecord.Key;
+                        }
+                    }
+                }
+
+                float nearest = float.PositiveInfinity;
+                if (drawnPlaces is not null)
+                {
+                    foreach ((string key, Vector3 origin) in drawnPlaces)
+                    {
+                        if (key == entry.Key)
+                        {
+                            nearest = Math.Min(nearest, at.DistanceTo(origin));
+                        }
+                    }
+                }
+
+                rows.Add(new Dictionary<string, object?>
+                {
+                    ["model"] = entry.Key,
+                    ["node"] = twin.Node.Name.ToString(),
+                    ["insideTree"] = twin.Node.IsInsideTree(),
+                    ["nearestDrawn"] = float.IsInfinity(nearest) ? null : $"{nearest:F3}",
+                    ["instance"] = twin.Instance,
+                    ["at"] = $"{at.X:F2},{at.Y:F2},{at.Z:F2}",
+                    ["drawn"] = drawn,
+                    ["record"] = record == 0u ? null : $"{record:X8}",
+                    ["hiddenByRecord"] = record != 0u && _hidden.Contains(record),
+                    ["hiddenByPlace"] = _hiddenByPlace.Contains((twin.Node, twin.Instance)),
+                    ["adopted"] = IsAdopted(twin),
+                });
+            }
+        }
+
+        return rows;
+    }
+
+    public bool HasRecord(uint record) => _byRecord.ContainsKey(record);
+
+    /// <summary>The model keys of the twins indexed under a record.</summary>
+    public List<string> ModelsOfRecord(uint record)
+    {
+        var keys = new List<string>();
+        if (_byRecord.TryGetValue(record, out List<Twin>? twins))
+        {
+            foreach (Twin twin in twins)
+            {
+                keys.Add(_modelOf.TryGetValue((twin.Node, twin.Instance), out string? key) ? key : "?");
+            }
+        }
+
+        return keys;
+    }
+
+    /// <summary>Every twin currently drawn: model key, world origin, record and adoption state.</summary>
+    public List<(string Model, Vector3 At, uint Record, bool Adopted, string Node)> DrawnTwins()
+    {
+        var recordOf = new Dictionary<(Node3D, int), uint>();
+        foreach (KeyValuePair<uint, List<Twin>> byRecord in _byRecord)
+        {
+            foreach (Twin twin in byRecord.Value)
+            {
+                recordOf[(twin.Node, twin.Instance)] = byRecord.Key;
+            }
+        }
+
+        var rows = new List<(string, Vector3, uint, bool, string)>();
+        foreach (KeyValuePair<string, List<Twin>> entry in _byModel)
+        {
+            foreach (Twin twin in entry.Value)
+            {
+                if (!GodotObject.IsInstanceValid(twin.Node) || !twin.Node.IsInsideTree())
+                {
+                    continue;
+                }
+
+                bool drawn = twin.Instance < 0
+                    ? twin.Node.Visible
+                    : twin.Node is MultiMeshInstance3D batched && batched.Multimesh is { } mesh &&
+                      twin.Instance < mesh.InstanceCount &&
+                      mesh.GetInstanceTransform(twin.Instance).Basis.X.LengthSquared() > 1e-12f;
+                if (!drawn)
+                {
+                    continue;
+                }
+
+                Vector3 at = twin.Instance < 0
+                    ? twin.Node.GlobalTransform.Origin
+                    : (twin.Node.GlobalTransform * twin.Standing).Origin;
+                recordOf.TryGetValue((twin.Node, twin.Instance), out uint record);
+                rows.Add((entry.Key, at, record, IsAdopted(twin), twin.Node.Name.ToString()));
+            }
+        }
+
+        return rows;
+    }
+
+    private static void HideTwin(Twin twin)
+    {
+        if (!GodotObject.IsInstanceValid(twin.Node))
+        {
+            return;
+        }
+
+        if (twin.Instance < 0)
+        {
+            twin.Node.Visible = false;
+            return;
+        }
+
+        // A MULTIMESH INSTANCE CANNOT BE REMOVED, so it is collapsed instead. Godot's
+        // instance buffer is a fixed-length array and `VisibleInstanceCount` only trims a
+        // prefix, which is no use for an arbitrary slot. A basis of exactly zero sends every
+        // vertex of the instance to one point, so it covers no pixels — and the slot is
+        // still there, which is what lets `Show` put it back.
+        if (twin.Node is MultiMeshInstance3D batched && batched.Multimesh is { } mesh &&
+            twin.Instance < mesh.InstanceCount)
+        {
+            mesh.SetInstanceTransform(twin.Instance, new Transform3D(
+                new Basis(Vector3.Zero, Vector3.Zero, Vector3.Zero), twin.Standing.Origin));
+        }
+    }
+
+    private void Show(List<Twin> twins)
     {
         foreach (Twin twin in twins)
         {
+            if (!IsAdopted(twin))
+            {
+                ShowTwin(twin);
+            }
+        }
+    }
+
+    private static void ShowTwin(Twin twin)
+    {
+        {
             if (!GodotObject.IsInstanceValid(twin.Node))
             {
-                continue;
+                return;
             }
 
             if (twin.Instance < 0)
@@ -582,7 +985,7 @@ public sealed class Engine_StaticTwins
                     streamer.EnsureStreamed(single);
                 }
 
-                continue;
+                return;
             }
 
             if (twin.Node is MultiMeshInstance3D batched && batched.Multimesh is { } mesh &&

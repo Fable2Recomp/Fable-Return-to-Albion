@@ -199,7 +199,19 @@ public partial class GameWorld : Node3D
 			SumPropProgress(_region, ref done, ref total);
 		}
 
-		bool pending = total > 0 && done < total;
+		bool propsPending = total > 0 && done < total;
+
+		// AND THE ENTITIES, AND THEN A FEW FRAMES. Props streamed is not "the world is there":
+		// entity meshes build off-thread, the static copies reconcile against them, and the
+		// first draw of every material compiles its pipeline. All of it happens under the
+		// loading screen now, so the frame that hands the player control is the frame they keep.
+		bool entitiesPending = _entities is { } feed && !feed.ReadyForRelease;
+		bool pending = propsPending || entitiesPending;
+		_readyFrames = pending ? 0 : _readyFrames + 1;
+		if (!pending && _readyFrames < ReleaseSettleFrames)
+		{
+			pending = true;
+		}
 
 		++_propHoldFrames;
 
@@ -211,7 +223,9 @@ public partial class GameWorld : Node3D
 			if (_propHoldFrames % PropHoldReportFrames == 0)
 			{
 				GD.Print($"[game-world] still holding the guest for {_standing}: " +
-					$"{done}/{total} prop(s) streamed after {_propHoldFrames} frame(s)");
+					$"{done}/{total} prop(s) streamed, entities waiting on " +
+					$"{(_entities is { } e ? e.ReleaseWait : "no feed")}, {_readyFrames} settle frame(s) " +
+					$"after {_propHoldFrames} frame(s)");
 			}
 
 			if (_propHoldFrames < PropHoldFrameLimit)
@@ -234,7 +248,8 @@ public partial class GameWorld : Node3D
 
 		if (!pending)
 		{
-			GD.Print($"[game-world] {_standing} finished streaming its props after " +
+			GD.Print($"[game-world] {_standing} finished streaming its props, built every entity " +
+				$"mesh, reconciled its copies and drew {ReleaseSettleFrames} settled frame(s) after " +
 				$"{_propHoldFrames} frame(s) — releasing the guest");
 		}
 	}
@@ -310,6 +325,12 @@ public partial class GameWorld : Node3D
 	private bool _holdingForProps;
 
 	private int _propHoldFrames;
+
+	/// <summary>Frames in a row with nothing pending; the release waits for ReleaseSettleFrames of them.</summary>
+	private int _readyFrames;
+
+	/// <summary>Frames drawn with everything in place before the guest is released.</summary>
+	private const int ReleaseSettleFrames = 10;
 
 	private int _entityWaitFrames;
 
@@ -765,6 +786,7 @@ public partial class GameWorld : Node3D
 		_region = region;
 		_holdingForProps = true;
 		_propHoldFrames = 0;
+		_readyFrames = 0;
 		AddChild(region);
 
 		SetStreamBudget(region, HeldStreamMsPerFrame);

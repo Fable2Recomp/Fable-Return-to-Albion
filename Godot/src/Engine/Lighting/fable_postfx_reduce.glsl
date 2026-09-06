@@ -200,7 +200,9 @@ void main() {
 	for (int pass = 0; pass < 2; pass++) {
 		int i = int(tid) + pass * THREADS;
 		float x = float(i) * s_scalar[0];
-		float reinhard = x * (1.0 + x * s_scalar[3]) / (1.0 + x);
+		float reinhard = params.reserved0.y > 0.5
+			? clamp((x * 0.6 * (2.51 * x * 0.6 + 0.03)) / (x * 0.6 * (2.43 * x * 0.6 + 0.59) + 0.14), 0.0, 1.0)
+			: x * (1.0 + x * s_scalar[3]) / (1.0 + x);
 		float value = reinhard;
 		float k1 = params.contrast.x;
 		if (k1 > 0.0) {

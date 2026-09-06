@@ -29,6 +29,80 @@ public static class Engine_PostFxParams
 
     public static bool Dof { get; set; } = true;
 
+    private static bool? _modernDof;
+
+    /// <summary>The depth of field as the frame may apply it: the fable model's always, the
+    /// modern model's only when `modern_depth_of_field` asks for it.</summary>
+    public static bool DofAllowed
+    {
+        get
+        {
+            if (!Dof || !Engine_LightingFrame.ModernModel)
+            {
+                return Dof;
+            }
+
+            _modernDof ??= ReadBool("modern_depth_of_field", false);
+            return _modernDof.Value;
+        }
+    }
+
+    private static string? _toneCurve;
+
+    /// <summary>
+    /// Whether the modern model's filmic curve replaces the original's Reinhard for THIS frame.
+    /// `modern_tone_curve`: "filmic" applies it where there is no sky — caves and rooms, where
+    /// the interior gain lifts the scene and the toe gives the lift its blacks back; "all" applies
+    /// it outdoors too, which crushes a dusk exterior where nothing lifts the low range; "fable"
+    /// never applies it.
+    /// </summary>
+    public static bool FilmicCurve
+    {
+        get
+        {
+            if (!Engine_LightingFrame.ModernModel)
+            {
+                return false;
+            }
+
+            _toneCurve ??= ReadString("modern_tone_curve", "filmic").ToLowerInvariant();
+            return _toneCurve switch
+            {
+                "all" => true,
+                "fable" => false,
+                _ => Engine_LightingFrame.CurrentInterior,
+            };
+        }
+    }
+
+    private static bool ReadBool(string name, bool fallback)
+    {
+        try
+        {
+            return Refii.Core.Engine_RefiiConfig.Read(out _).TryGetValue(name, out string? v)
+                ? v.Trim().Equals("true", System.StringComparison.OrdinalIgnoreCase)
+                : fallback;
+        }
+        catch (System.Exception)
+        {
+            return fallback;
+        }
+    }
+
+    private static string ReadString(string name, string fallback)
+    {
+        try
+        {
+            return Refii.Core.Engine_RefiiConfig.Read(out _).TryGetValue(name, out string? v)
+                ? v.Trim().Trim('"')
+                : fallback;
+        }
+        catch (System.Exception)
+        {
+            return fallback;
+        }
+    }
+
     public static bool Saturation { get; set; } = true;
 
     public static bool ExposureLock { get; set; }

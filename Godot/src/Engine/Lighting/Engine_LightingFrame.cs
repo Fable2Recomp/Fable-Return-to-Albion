@@ -136,15 +136,15 @@ public static class Engine_LightingFrame
 	/// the floor fall to 0.15/N for such a frame. Outdoors keeps `modern_dark_lift`.
 	/// </summary>
 	public static float InteriorDarkLift =>
-		InteriorCvar("interior_dark_lift", "REFII_INTERIOR_DARK_LIFT", 3f, 1f, 16f);
+		InteriorCvar("interior_dark_lift", "REFII_INTERIOR_DARK_LIFT", 16f, 1f, 16f);
 
 	/// <summary>How far the interior ambient lift is pulled toward neutral (0 = theme chroma).</summary>
 	public static float InteriorAmbientNeutral =>
-		InteriorCvar("interior_ambient_neutral", "REFII_INTERIOR_NEUTRAL", 0.6f, 0f, 1f);
+		InteriorCvar("interior_ambient_neutral", "REFII_INTERIOR_NEUTRAL", 0f, 0f, 1f);
 
 	/// <summary>The interior BAKE lift, published as the global `fable_interior_bake`.</summary>
 	public static float InteriorBakeScale =>
-		InteriorCvar("interior_bake_scale", "REFII_INTERIOR_BAKE", 3f, 0.1f, 16f);
+		InteriorCvar("interior_bake_scale", "REFII_INTERIOR_BAKE", 1f, 0.1f, 16f);
 
 	/// <summary>
 	/// The interior FOG scale on the guest's blend factor. The cave records state both fog
@@ -164,7 +164,7 @@ public static class Engine_LightingFrame
 	/// the 360 reference, not a recovered constant.
 	/// </summary>
 	public static float InteriorAmbientScale =>
-		InteriorCvar("interior_ambient_scale", "REFII_INTERIOR_AMBIENT", 3f, 0.1f, 64f);
+		InteriorCvar("interior_ambient_scale", "REFII_INTERIOR_AMBIENT", 1f, 0.1f, 64f);
 
 	/// <summary>
 	/// How far every exterior bake (probes, vertex bakes, the terrain lightmap) is pulled

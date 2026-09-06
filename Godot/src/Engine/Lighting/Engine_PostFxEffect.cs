@@ -599,7 +599,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
         bool bloomOn = Engine_PostFxParams.Bloom;
         bool raysOn = Engine_PostFxParams.Rays;
-        bool dofOn = Engine_PostFxParams.Dof && (_derived.DofNearBlur > 0.0f || _derived.DofFarBlur > 0.0f);
+        bool dofOn = Engine_PostFxParams.DofAllowed && (_derived.DofNearBlur > 0.0f || _derived.DofFarBlur > 0.0f);
 
         RenderSceneData? sceneData = renderData.GetRenderSceneData();
         Basis camBasis = Basis.Identity;
@@ -765,7 +765,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             d.DofFarFocal,
             1.0f / MathF.Max(d.DofFarPlane - d.DofFarFocal, 1e-4f));
         Set(p, 7, d.DofFarBlur, d.DofNearBlur, dofOn ? 1.0f : 0.0f, Engine_PostFxParams.DarkLift);
-        Set(p, 13, Engine_PostFxParams.DarkLiftOnsetNow, 0.0f, 0.0f, 0.0f);
+        Set(p, 13, Engine_PostFxParams.DarkLiftOnsetNow, Engine_PostFxParams.FilmicCurve ? 1.0f : 0.0f, 0.0f, 0.0f);
         Set(p, 8, d.Saturation, d.Brightness + 1.0f, d.SaturationMasked, d.BrightnessMasked);
 
         float gammaRatio = d.Gamma > 0.0f && MathF.Abs(d.Gamma - 1.0f) > 1e-4f ? d.Gamma : 0.0f;

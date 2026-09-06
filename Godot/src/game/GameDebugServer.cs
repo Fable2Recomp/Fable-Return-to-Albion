@@ -37,9 +37,26 @@ namespace Refii.Game;
 /// </summary>
 public partial class GameDebugServer : Node
 {
-	/// <summary>`REFII_DEBUG_PORT=1` (or a port number) turns the channel on.</summary>
+	/// <summary>
+	/// `REFII_DEBUG_PORT=1` (or a port number) turns the channel on; so does `debug_channel =
+	/// true` in the package config, which is how a launch from the launcher gets one.
+	/// </summary>
 	public static bool Wanted =>
-		(System.Environment.GetEnvironmentVariable("REFII_DEBUG_PORT") ?? string.Empty).Length != 0;
+		(System.Environment.GetEnvironmentVariable("REFII_DEBUG_PORT") ?? string.Empty).Length != 0 ||
+		ConfigWants();
+
+	private static bool ConfigWants()
+	{
+		try
+		{
+			return Refii.Core.Engine_RefiiConfig.Read(out _).TryGetValue("debug_channel", out string? v) &&
+				v.Trim().Equals("true", System.StringComparison.OrdinalIgnoreCase);
+		}
+		catch (System.Exception)
+		{
+			return false;
+		}
+	}
 
 	/// <summary>
 	/// The first port to try. A FIXED port was the original design and it was wrong — see
@@ -1218,6 +1235,8 @@ public partial class GameDebugServer : Node
 				return Ok(new Dictionary<string, object?>
 				{
 					["total"] = snapshot.Count,
+					["visible"] = snapshot.Count(l => l.Visible),
+					["fading"] = snapshot.Count(l => l.DistanceFadeEnabled),
 					["eye"] = $"({eye.X:0.0},{eye.Y:0.0},{eye.Z:0.0})",
 					["lights"] = described,
 				});
@@ -1392,6 +1411,30 @@ public partial class GameDebugServer : Node
 					["rig"] = GameEntities.Current?.DescribeRig(address),
 					["leaves"] = GameEntities.Current?.DescribeLeaves(address),
 				});
+			}
+
+			case "twins":
+			{
+				// The live entities and the static twins of one model family, with the hide
+				// state of each: `{"op":"twins","model":"door"}`.
+				string needle = root.TryGetProperty("model", out JsonElement wantModel) &&
+					wantModel.ValueKind == JsonValueKind.String
+					? wantModel.GetString() ?? string.Empty
+					: string.Empty;
+				bool apply = root.TryGetProperty("apply", out JsonElement wantApply) &&
+					wantApply.ValueKind == JsonValueKind.True;
+				return Ok(GameEntities.Current?.DescribeTwins(needle, apply) ?? new Dictionary<string, object?>());
+			}
+
+			case "doubles":
+			{
+				// Every drawn entity with a drawn static twin within `radius` metres (default
+				// 0.5), any model: `{"op":"doubles","radius":0.5}`.
+				float radius = root.TryGetProperty("radius", out JsonElement wantRadius) &&
+					wantRadius.ValueKind == JsonValueKind.Number
+					? (float)wantRadius.GetDouble()
+					: 0.5f;
+				return Ok(GameEntities.Current?.DescribeDoubles(radius) ?? new Dictionary<string, object?>());
 			}
 
 			case "metrics":

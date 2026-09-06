@@ -385,7 +385,9 @@ public static class Engine_PostFxModel
         for (int i = 0; i < CurveSize; i++)
         {
             float x = i * binToLum * kneeN;
-            float reinhard = x * (1.0f + (x * invW2)) / (1.0f + x);
+            float reinhard = Engine_PostFxParams.FilmicCurve
+                ? Filmic(x * 0.6f)
+                : x * (1.0f + (x * invW2)) / (1.0f + x);
             float value = reinhard;
             if (k1 > 0.0f)
             {
@@ -414,6 +416,10 @@ public static class Engine_PostFxModel
             lut[x] = c / MathF.Max(lum, 1e-6f);
         }
     }
+
+    /// <summary>The ACES fitted curve the modern model tones with: a toe and a shoulder.</summary>
+    public static float Filmic(float x) =>
+        Clampf((x * ((2.51f * x) + 0.03f)) / ((x * ((2.43f * x) + 0.59f)) + 0.14f), 0f, 1f);
 
     public static void UpdateExposure(State s, Derived d)
     {
