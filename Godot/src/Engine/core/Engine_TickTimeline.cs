@@ -38,12 +38,23 @@ public sealed class Engine_TickTimeline
 
 	private readonly uint[] _tick = new uint[Capacity];
 	private readonly Transform3D[] _sample = new Transform3D[Capacity];
+
+	/// <summary>
+	/// A value the guest states on the SAME tick as the transform — the camera's field of
+	/// view. It rides this timeline rather than one of its own so it cannot be drawn on a
+	/// different clock from the transform it belongs to: a zoom applied raw while the dolly
+	/// lagged 1.5 ticks behind is two motions for one movement.
+	/// </summary>
+	private readonly float[] _scalar = new float[Capacity];
 	private int _count;
 	private int _head;
 	private double _originUsec = double.NaN;
 
 	/// <summary>The newest stated transform.</summary>
 	public Transform3D Newest { get; private set; }
+
+	/// <summary>The newest stated companion value.</summary>
+	public float NewestScalar { get; private set; }
 
 	public bool Empty => _count == 0;
 
@@ -52,18 +63,18 @@ public sealed class Engine_TickTimeline
 	private int At(int back) => (_head - back + Capacity) % Capacity;
 
 	/// <summary>Starts over on a sample — a teleport, a load, the first sight of a thing.</summary>
-	public void Reset(uint tick, Transform3D sample)
+	public void Reset(uint tick, Transform3D sample, float scalar = 0f)
 	{
 		_count = 0;
 		_originUsec = double.NaN;
-		Push(tick, sample, Godot.Time.GetTicksUsec());
+		Push(tick, sample, Godot.Time.GetTicksUsec(), scalar);
 	}
 
 	/// <summary>
 	/// A stated transform that differs from the newest, on the tick the guest states now.
 	/// A tick at or before the newest sample's is read skew and becomes the next tick.
 	/// </summary>
-	public void Push(uint tick, Transform3D sample, double nowUsec)
+	public void Push(uint tick, Transform3D sample, double nowUsec, float scalar = 0f)
 	{
 		if (_count != 0 && tick <= _tick[_head])
 		{
@@ -73,8 +84,10 @@ public sealed class Engine_TickTimeline
 		_head = _count == 0 ? 0 : (_head + 1) % Capacity;
 		_tick[_head] = tick;
 		_sample[_head] = sample;
+		_scalar[_head] = scalar;
 		_count = Mathf.Min(_count + 1, Capacity);
 		Newest = sample;
+		NewestScalar = scalar;
 
 		// The clock fit: this sample cannot have been stated later than now, so the origin is
 		// at most `now - tick*period`; take it when earlier, creep toward it otherwise so a
@@ -88,30 +101,68 @@ public sealed class Engine_TickTimeline
 	/// <summary>The transform to draw now: the timeline's value 1.5 ticks ago.</summary>
 	public Transform3D Sample(double nowUsec)
 	{
-		if (_count < 2 || double.IsNaN(_originUsec))
+		if (!Locate(nowUsec, out int older, out int younger, out float alpha))
 		{
 			return Newest;
+		}
+
+		return _sample[older].InterpolateWith(_sample[younger], alpha);
+	}
+
+	/// <summary>
+	/// The companion value to draw now, at the same point on the timeline the transform is
+	/// drawn at — one clock for both.
+	/// </summary>
+	public float SampleScalar(double nowUsec)
+	{
+		if (!Locate(nowUsec, out int older, out int younger, out float alpha))
+		{
+			return NewestScalar;
+		}
+
+		return Mathf.Lerp(_scalar[older], _scalar[younger], alpha);
+	}
+
+	/// <summary>
+	/// The two samples bracketing the draw point and how far between them it falls. False when
+	/// the timeline cannot answer — too few samples, no clock fit yet, or starved past the
+	/// newest sample — and the caller holds the newest value.
+	/// </summary>
+	private bool Locate(double nowUsec, out int older, out int younger, out float alpha)
+	{
+		older = _head;
+		younger = _head;
+		alpha = 0f;
+		if (_count < 2 || double.IsNaN(_originUsec))
+		{
+			return false;
 		}
 
 		double drawTick = ((nowUsec - _originUsec) / TickUsec) - DrawLatencyTicks;
 		if (drawTick >= _tick[_head])
 		{
-			return Newest;  // starved or stopped: hold the newest
+			return false;  // starved or stopped: hold the newest
 		}
 
 		for (int back = 1; back < _count; ++back)
 		{
-			int older = At(back);
-			int younger = At(back - 1);
-			double olderTick = _tick[older];
-			double youngerTick = _tick[younger];
+			int olderAt = At(back);
+			int youngerAt = At(back - 1);
+			double olderTick = _tick[olderAt];
+			double youngerTick = _tick[youngerAt];
 			if (drawTick >= olderTick)
 			{
-				float alpha = (float)Mathf.Clamp((drawTick - olderTick) / Mathf.Max(youngerTick - olderTick, 1e-6), 0.0, 1.0);
-				return _sample[older].InterpolateWith(_sample[younger], alpha);
+				older = olderAt;
+				younger = youngerAt;
+				alpha = (float)Mathf.Clamp(
+					(drawTick - olderTick) / Mathf.Max(youngerTick - olderTick, 1e-6), 0.0, 1.0);
+				return true;
 			}
 		}
 
-		return _sample[At(_count - 1)];
+		older = At(_count - 1);
+		younger = older;
+		alpha = 0f;
+		return true;
 	}
 }

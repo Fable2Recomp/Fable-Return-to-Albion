@@ -270,10 +270,23 @@ extern "C" int refii_upscaler_run(refii_upscaler* upscaler,
                            static_cast<int>(out_width), static_cast<int>(out_height));
 
   // The RGB is at the model's scale; the caller asked for `scale`. Resize when they differ.
+  //
+  // AND RELEASE THE MODEL-SCALE BUFFER THE MOMENT THE SMALLER ONE EXISTS. A 4x model asked for
+  // 2x holds both at once — four times the requested area in floats, plus the destination —
+  // and the write loop below only ever reads `rgb_final`, so the larger one was staying
+  // resident for no reader. `ncnn::Mat` is reference counted and `rgb_final` ALIASES `rgb`
+  // when the sizes already agree, so this only releases on the branch that actually allocated
+  // a second buffer.
+  //
+  // The tiles are still accumulated at the model's scale rather than downsampled one at a
+  // time. Per-tile downsampling would drop the peak further but each tile would be filtered
+  // without its neighbours, which prints a seam at every tile edge — and the enhancement edge
+  // cap already bounds a source here to 512, so this buffer is a quarter of what it was.
   ncnn::Mat rgb_final = rgb;
   if (net_width != out_width || net_height != out_height) {
     ncnn::resize_bilinear(rgb, rgb_final, static_cast<int>(out_width),
                           static_cast<int>(out_height));
+    rgb.release();
   }
 
   for (int64_t y = 0; y < out_height; ++y) {

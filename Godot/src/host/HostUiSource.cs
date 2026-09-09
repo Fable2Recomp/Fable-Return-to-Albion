@@ -107,6 +107,9 @@ public sealed class HostUiSource : Engine_UiSource
 	public override uint MenuEvent(string name, int eventType, uint id) =>
 		HostBridge.MenuEvent(name, eventType, id);
 
+	public override uint MenuDiscard(string name, int eventType, uint id) =>
+		HostBridge.MenuDiscard(name, eventType, id);
+
 	public override uint MenuSelect() => HostBridge.MenuSelect();
 
 	public override uint MenuScroll(Engine_UiModel.MenuStick direction, bool held) =>

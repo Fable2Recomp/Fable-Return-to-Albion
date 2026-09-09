@@ -59,6 +59,20 @@ public static class Platform
 		string executablePath,
 		IReadOnlyList<string> arguments,
 		out ProcessHandle handle,
+		out string error) =>
+		LaunchProcess(workingDirectory, executablePath, arguments, null, out handle, out error);
+
+	/// <summary>
+	/// As above, with extra environment variables for the child. Used to tell a spawned copy of
+	/// this executable that it is the GAME rather than the launcher — see
+	/// <see cref="Refii.Game.GameChildProcess"/>.
+	/// </summary>
+	public static bool LaunchProcess(
+		string workingDirectory,
+		string executablePath,
+		IReadOnlyList<string> arguments,
+		IReadOnlyDictionary<string, string>? environment,
+		out ProcessHandle handle,
 		out string error)
 	{
 		handle = new ProcessHandle();
@@ -80,6 +94,14 @@ public static class Platform
 			foreach (string argument in arguments)
 			{
 				startInfo.ArgumentList.Add(argument);
+			}
+
+			if (environment is not null)
+			{
+				foreach ((string key, string value) in environment)
+				{
+					startInfo.Environment[key] = value;
+				}
 			}
 
 			Process? process = Process.Start(startInfo);

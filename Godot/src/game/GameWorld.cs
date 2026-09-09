@@ -117,24 +117,6 @@ public partial class GameWorld : Node3D
 		// — a hold and a jump against a body drawn 1.5 ticks behind on a smooth path. Same
 		// timeline, same latency, and the two no longer move against each other. Nothing in
 		// the guest or its Lua is touched.
-		var stated = new Transform3D(new Basis(basisY.Cross(basisZ), basisY, basisZ), position);
-		double now = Godot.Time.GetTicksUsec();
-		uint tick = HostBridge.SimTick;
-		if (_cameraTimeline.Empty ||
-			_cameraTimeline.Newest.Origin.DistanceTo(position) > 8f ||
-			(tick > _cameraTimeline.NewestTick && tick - _cameraTimeline.NewestTick > 8))
-		{
-			_cameraTimeline.Reset(tick, stated);
-		}
-		else if (_cameraTimeline.Newest.Origin.DistanceSquaredTo(position) > 1e-8f ||
-			!_cameraTimeline.Newest.Basis.IsEqualApprox(stated.Basis))
-		{
-			_cameraTimeline.Push(tick, stated, now);
-		}
-
-		_camera.GlobalTransform = _cameraTimeline.Sample(now);
-		SampleCameraTrace(_camera.GlobalTransform.Origin);
-
 		// The guest stores a HORIZONTAL field of view; Godot wants the vertical one.
 		//
 		// THE FOV IS ITS OWN WHOLE-FRAME POISONER and the transform guard above does not cover
@@ -142,15 +124,47 @@ public partial class GameWorld : Node3D
 		// against NaN is false, so it STORES a NaN — which makes the projection matrix
 		// non-finite and therefore every depth in the frame NaN at once, not just one object's.
 		// VerticalFovDegrees is Atan(Tan(h * 0.5)), so an infinite horizontal FOV arrives as
-		// NaN too.
+		// NaN too. Validated BEFORE the timeline so a poisoned value never enters it.
 		float fov = camera.VerticalFovDegrees;
-		if (float.IsFinite(fov) && fov >= 1f && fov <= 179f)
-		{
-			_camera.Fov = fov;
-		}
-		else
+		bool fovOk = float.IsFinite(fov) && fov >= 1f && fov <= 179f;
+		if (!fovOk)
 		{
 			++NonFiniteCameras;
+			fov = _cameraTimeline.Empty ? _camera.Fov : _cameraTimeline.NewestScalar;
+		}
+
+		// THE CAMERA STEPS ON THE SIM TICK TOO. Traced 2026-09-05 while running: it moved
+		// 8-30 cm a frame and exactly 0 on every frame the tick did not advance, applied raw
+		// — a hold and a jump against a body drawn 1.5 ticks behind on a smooth path. Same
+		// timeline, same latency, and the two no longer move against each other.
+		//
+		// THE FOV RIDES THE SAME TIMELINE. Applied raw it stepped at 15 Hz while the dolly it
+		// belongs to lerped 1.5 ticks behind — one movement drawn on two clocks, which is a
+		// zoom that stops short and then catches up. A change in the fov alone also has to
+		// push, or a zoom from a camera that is not moving never reaches the timeline at all.
+		var stated = new Transform3D(new Basis(basisY.Cross(basisZ), basisY, basisZ), position);
+		double now = Godot.Time.GetTicksUsec();
+		uint tick = HostBridge.SimTick;
+		if (_cameraTimeline.Empty ||
+			_cameraTimeline.Newest.Origin.DistanceTo(position) > 8f ||
+			(tick > _cameraTimeline.NewestTick && tick - _cameraTimeline.NewestTick > 8))
+		{
+			_cameraTimeline.Reset(tick, stated, fov);
+		}
+		else if (_cameraTimeline.Newest.Origin.DistanceSquaredTo(position) > 1e-8f ||
+			!_cameraTimeline.Newest.Basis.IsEqualApprox(stated.Basis) ||
+			!Mathf.IsEqualApprox(_cameraTimeline.NewestScalar, fov))
+		{
+			_cameraTimeline.Push(tick, stated, now, fov);
+		}
+
+		_camera.GlobalTransform = _cameraTimeline.Sample(now);
+		SampleCameraTrace(_camera.GlobalTransform.Origin);
+
+		float drawnFov = _cameraTimeline.SampleScalar(now);
+		if (float.IsFinite(drawnFov) && drawnFov >= 1f && drawnFov <= 179f)
+		{
+			_camera.Fov = drawnFov;
 		}
 
 		_camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
@@ -896,6 +910,13 @@ public partial class GameWorld : Node3D
 			_region.QueueFree();
 			_region = null;
 		}
+
+		// THE REGION'S CACHES GO WITH THE REGION. Six dictionaries keyed by asset path outlive
+		// the node that built them, and none had a caller for the clear it already defined, so
+		// every region ever visited stayed resident for the session. AFTER the region is freed,
+		// so anything the old materials held is already gone and only unreferenced entries are
+		// actually released.
+		Refii.Core.Engine_LevelCaches.ReleaseRegion();
 
 		// REMEMBERED BEFORE IT IS CLEARED. Everything below forgets what was standing, and the
 		// one thing the next build must not do is recreate it.

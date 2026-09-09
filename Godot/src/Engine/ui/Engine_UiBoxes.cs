@@ -322,7 +322,9 @@ public partial class Engine_UiMessageBox : Node3D, IUiSurfaceView
 
 		if (paperScale is { } scale && _paper.GetNodeOrNull<Node3D>("paperbox") is { } paperBox)
 		{
-			paperBox.Scale = new Vector3(scale.X, scale.Y, 1f);
+			// THROUGH THE BUILDER'S WRITER, not `Scale =`: the origin folds in the pivot against
+			// the basis, and a bare scale write drifts this slice sideways. See SetLiveScale.
+			Engine_UiSceneBuilder.SetLiveScale(paperBox, new Vector3(scale.X, scale.Y, 1f));
 		}
 
 		Visible = true;
@@ -838,10 +840,20 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 			_iconMaterial.SetShaderParameter("diffuse_tex", icon);
 		}
 
+		// THE BACK CARRIES THE SAME THREE BUTTONS AS THE FRONT, three canvas units apart, and
+		// only its buttons and its text are authored on — its parchment and group are off. So
+		// two groups both reading globally active does not draw a second card: it draws a
+		// second copy of Use/Info/Take over the first, which is the ghosted labels.
+		//
+		// The flip is a CROSSFADE, so the guest having both active at once is correct; what the
+		// owned clone lacks is the live OPACITY that would separate them, because a surface
+		// builds its clone binding and then throws it away. Until the clone carries opacity,
+		// the front wins outright: the back is the reverse of the card and belongs on screen
+		// only once the front is down.
 		_front.Visible = frontUp;
 		if (_back is not null)
 		{
-			_back.Visible = backUp;
+			_back.Visible = backUp && !frontUp;
 		}
 
 		Visible = frontUp || backUp;

@@ -1196,10 +1196,20 @@ public static class Engine_UiTemplates
 				{
 					Name = "Saving", Tag = "GUI_SCREEN_PAUSE_SAVING",
 
-					// AUTHORED, NOT SOURCED. `sub_8298DF98` spawns these three under "Saving"
-					// once (0x8298E0F8/E138/E178, EventType 2, String1 = the localised label);
-					// sourcing them as well seats the same rows twice, and only the authored
-					// ones carry the `PauseSaving:N` commands.
+					// AUTHORED, NOT SOURCED. `sub_8298DF98` spawns three of these under
+					// "Saving" once (0x8298E0F8/E138/E178, EventType 2, String1 = the localised
+					// label); sourcing them as well seats the same rows twice, and only the
+					// authored ones carry the `PauseSaving:N` commands.
+					//
+					// FIVE ROWS. The guest's "quit" means quit to its TITLE; the console owned
+					// everything past that, so there is no shipped row that leaves the app. The
+					// two desktop rows are HOST-ONLY and post the SAME guest event as their
+					// title counterparts, so the guest's confirmation box and its save
+					// sequencing run either way — see Engine_PauseMenu.QuitCommandPrefix.
+					//
+					// The four quit labels are LITERALS: the text bank has tags for "Save and
+					// Quit" and "Quit and Don't Save" but none naming a destination.
+					// GUI_SCREEN_PAUSE_SAVE_AND_CONTINUE keeps its tag, that row is unchanged.
 					Children =
 					{
 						new Engine_UiMenuEntry
@@ -1211,14 +1221,26 @@ public static class Engine_UiTemplates
 						new Engine_UiMenuEntry
 						{
 							Name = "SaveAndQuit",
-							Tag = "GUI_SCREEN_PAUSE_SAVE_AND_QUIT",
+							Tag = "Save and Quit to Title",
 							Command = $"{Engine_PauseMenu.SavingCommandPrefix}1",
 						},
 						new Engine_UiMenuEntry
 						{
+							Name = "SaveAndQuitToDesktop", HostOnly = true,
+							Tag = "Save and Quit to Desktop",
+							Command = $"{Engine_PauseMenu.QuitCommandPrefix}1",
+						},
+						new Engine_UiMenuEntry
+						{
 							Name = "QuitDontSave",
-							Tag = "GUI_SCREEN_PAUSE_QUIT_DONT_SAVE",
+							Tag = "Quit to Title and Don't Save",
 							Command = $"{Engine_PauseMenu.SavingCommandPrefix}2",
+						},
+						new Engine_UiMenuEntry
+						{
+							Name = "QuitToDesktopDontSave", HostOnly = true,
+							Tag = "Quit to Desktop and Don't Save",
+							Command = $"{Engine_PauseMenu.QuitCommandPrefix}2",
 						},
 					},
 				},
@@ -1567,6 +1589,15 @@ public static class Engine_UiTemplates
 						new Engine_UiMenuEntry { Name = "SubtitlesOn", Tag = "GUI_CONTROLS_ON" },
 						new Engine_UiMenuEntry { Name = "SubtitlesOff", Tag = "GUI_CONTROLS_OFF" },
 					},
+				},
+
+				// THE WAY OUT. A console front end had none, so there is no guest dispatch to
+				// reach and no shipped tag to localise against — host-only, literal label, for
+				// the same reasons as `Achievements`. Last because this list IS the order.
+				new Engine_UiMenuEntry
+				{
+					Name = "QuitToDesktop", Tag = "Quit to Desktop", HostOnly = true,
+					Command = Engine_FrontEndMenu.QuitToDesktopCommand,
 				},
 			},
 		};
@@ -2158,11 +2189,30 @@ public static class Engine_UiTemplates
 			// `Component` is the paperbox; `frame2` is a SECOND, hand-authored ten-piece frame
 			// whose parts collide by name with the paperbox's, which is why the units are named
 			// at the top level and never by their pieces.
+			//
+			// THE FIVE TEXT ELEMENTS ARE UNITS TOO. `QuestTitle`, `QuestDescription`, `Reward`,
+			// `RenownPoints` and `Points` are SIBLINGS of the units above under `elements`, and
+			// `elements` is not itself a unit — so nothing cloned them, they got no field, and
+			// the page drew a title, one bullet and the Done button over an otherwise blank
+			// parchment. That is the whole of the "reward screen is incomplete" report: no
+			// heading, no description, no renown line, no amount. They cannot be reached by
+			// naming `elements` instead, because that would fold `Component` and `frame2` into
+			// one nested unit and collide their ten-piece frames.
 			ChromeUnits =
 			{
 				"Component", "frame2", "leaf", "Bullet1", "Bullet2", "Buttons", "Image",
+				"QuestTitle", "QuestDescription", "Reward", "RenownPoints", "Points",
 			},
 			PanelSubtrees = { "elements" },
+
+			// EVERY STRING IS THE GUEST'S, as on the tally next door. `SetGoldRewardInEpilogue`
+			// and `AddItemRewardToEpilogueScreen` publish EpilogueTitle, EpilogueDescription,
+			// EpilogueReward, EpilogueRenown, EpilogueRenownAmt and EpilogueItem1/2 through
+			// TextName registry 6 onto these elements, and taking a native does not suppress
+			// the guest's own write. Without this the freshly cloned fields would draw the
+			// FILE'S placeholders — "A Bridge too Far", "Ripper has been thwarted…", "1000" —
+			// which is worse than blank, because it reads as real data.
+			GuestTextUnits = { "elements" },
 		});
 
 		// 10 QUERY — the villager card. Opened from three sites — the interaction chain

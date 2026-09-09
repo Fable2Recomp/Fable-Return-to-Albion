@@ -12,6 +12,7 @@ PPC_EXTERN_FUNC(__imp__sub_82284798);
 PPC_EXTERN_FUNC(__imp__sub_82284BE8);
 PPC_EXTERN_FUNC(__imp__sub_82BB5760);
 PPC_EXTERN_FUNC(__imp__sub_82425DD0);
+PPC_EXTERN_FUNC(__imp__sub_82425F40);
 
 namespace {
 
@@ -126,4 +127,34 @@ REX_EXTERN(sub_82425DD0) {
     }
 
     __imp__sub_82425DD0(ctx, base);
+}
+
+/// The OTHER text writer — same record, but it takes a TAG and resolves it first.
+///
+/// `sub_82425F40(element, tag)` walks the identical chain (`element+4` holder, `*holder`
+/// record, `record+144 = 1`, store into `record+140`, then `record+138`/`+136`), and between
+/// the copy and the store it calls `sub_8230E0E8` @0x8230E0E8 — the Babel lookup — so what
+/// lands at `+140` is already TRANSLATED. The host needs no lookup of its own for these.
+///
+/// THE EXPRESSION WHEEL WRITES EVERY ONE OF ITS EIGHT TITLES THROUGH THIS ONE.
+/// `sub_826AC5F0` resolves `item<N>/Title` and calls it at 0x826ac704; `sub_826AB1F8` runs
+/// that for all eight sectors in the single frame the ring opens. With only the sibling above
+/// hooked, no text change was ever noted for the wheel, the cached element list kept its seed,
+/// and all eight sectors painted `hud.bgf`'s authored placeholder `QUICK_FLIRTY` — the same
+/// string sixteen times in the art, which is why every sector read alike rather than each
+/// reading its own name.
+REX_EXTERN(sub_82425F40) {
+    REX_FUNC_PROLOGUE();
+
+    const uint32_t element = ctx.r3.u32;
+    if (Plausible(element)) {
+        refii::vfs::GuiElementChange change;
+        change.kind = refii::vfs::GuiElementChange::Kind::kText;
+        change.presentation = 0u;
+        change.element = element;
+        change.name_hash = NameHashOf(base, element);
+        refii::vfs::NoteGuiElementChange(change);
+    }
+
+    __imp__sub_82425F40(ctx, base);
 }

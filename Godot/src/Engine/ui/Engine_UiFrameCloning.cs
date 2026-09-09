@@ -459,8 +459,7 @@ public sealed class Engine_UiFrameCloning
 		/// The clone's authored pivot — node meta stamped by <see cref="Engine_UiSceneBuilder"/>
 		/// and carried across by <c>Duplicate()</c>; zero when absent.
 		/// </summary>
-		private static Vector3 PivotOf(Node3D node) =>
-			node.HasMeta("pivot") ? node.GetMeta("pivot").AsVector3() : Vector3.Zero;
+		private static Vector3 PivotOf(Node3D node) => Engine_UiSceneBuilder.PivotOf(node);
 
 		/// <summary>
 		/// One opacity write, in the engine's 0..100 units, applied down the whole subtree: a

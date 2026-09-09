@@ -57,10 +57,18 @@ public static class Engine_CelestialElements
     public const float StarPhaseRate = 2.5f;
 
 
-    /// <summary>Blob 0120 moonbloom: `texel.rgb * 0.2 * texel.a` — the 0.2 is the shader's own
-    /// literal. 0.025 was tuned against the old squared output and is 8x dim against the
-    /// de-squared chain.</summary>
-    public const float MoonGlareFixedScale = 0.2f;
+    /// <summary>
+    /// The moon bloom's CPU-SIDE scale: `flt_833210CC = 0x3CCCCCCD = 0.025`, read out of the
+    /// image. `Render_LitDecalDraw_INFERRED` @0x821D57E0 builds pixel-shader constant 244 as
+    /// `0.025 * MOON_GLARE_INTENSITY * fade^2` (0x821d5e3c loads the literal, 0x821d5e78/7c do
+    /// the two multiplies, 0x821d5e40 selects index 244), alpha 0.
+    ///
+    /// NOT 0.2. That value came from blob 0120 "moonbloom"'s own internal literal
+    /// (`texel.rgb * 0.2 * texel.a`), but the binding table points the moon glare at pixel
+    /// shader 0x8C — the SHARED glare shader the sun uses — so 0120 may not be the one that
+    /// runs. What is certain is the constant the CPU writes, and that is this.
+    /// </summary>
+    public const float MoonGlareCpuScale = 0.025f;
 
     public const int DefaultMoonPhase = 4;
 
@@ -355,7 +363,22 @@ public static class Engine_CelestialElements
                     material.SetShaderParameter("element_half", new Vector2(
                         element[3] * MoonGlareSizeScale,
                         element[3] * MoonGlareSizeScale));
-                    float glareScale = MoonGlareFixedScale * element[2];
+                    // THE SCALE WAS 8x TOO BIG, WHICH IS WHAT BLEW THE MOON OUT — and the
+                    // intensity term is real, so do not drop it.
+                    //
+                    // The guest builds this as `0.025 * MOON_GLARE_INTENSITY * fade^2`
+                    // (0x821D57E0, constant 244). We had `0.2 * MOON_GLARE_INTENSITY`, and the
+                    // authored night values are TENS, not ~1 — from `environmentthemes.gdb`,
+                    // MoonGlareIntensity is 20 at Bower Lake midnight and 30/40 at Bowerstone
+                    // Market against 1 in daylight. So we emitted 4.0-8.0 where the guest emits
+                    // 0.5, on a bloom that legitimately spans ~44 degrees (MoonGlareSize 1.3 x
+                    // 300 at distance 1000): a white ball filling the screen.
+                    //
+                    // `fade^2` is the moon's own occlusion query, `clamp(pixels / (MoonSize^2 *
+                    // 6000))` squared (0x82279a94..0x82279ac4, divisor flt_82000C28 = 6000).
+                    // Our shader's `vis * vis` already IS that term, so it is not applied here.
+                    material.SetShaderParameter("element_premultiply", 1.0f);
+                    float glareScale = MoonGlareCpuScale * element[2];
                     material.SetShaderParameter("element_colour", new Vector4(
                         glareScale, glareScale, glareScale, 1f));
                     material.SetShaderParameter("occlusion_half",

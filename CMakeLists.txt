@@ -902,6 +902,7 @@ foreach(_refii_origin_rpath_target
     refii
     refii-launcher
     refii_core
+    refii_hostbridge
     refii_generated
     refii_bnk_extractor
     refii_lua

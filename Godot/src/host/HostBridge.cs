@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 119;
+	public const int ExpectedAbiVersion = 120;
 
 	private const int MessageCapacity = 512;
 
@@ -2846,6 +2846,15 @@ public static class HostBridge
 		PostFrontEndAction($"MenuEvent:{name}:{eventType}:{id}");
 
 	/// <summary>
+	/// The same identity commit, with the abilities screen's `+198` byte CLEARED instead of set
+	/// — the guest's own Y. `sub_826C2D40` @0x826c2d78 branches on it: set runs `sub_8246C970`
+	/// (the PURCHASE), clear opens the discard confirm. `sub_826C2958` case 39 stores 0 there
+	/// and case 36 stores 1, so the arm is part of the press, not a constant.
+	/// </summary>
+	public static uint MenuDiscard(string name, int eventType, uint id) =>
+		PostFrontEndAction($"MenuDiscard:{name}:{eventType}:{id}");
+
+	/// <summary>
 	/// The shipped commit — `g_Menu:SelectMenuItem()` on the guest's own tick thread. It is an
 	/// event AND a toggle, and the toggle is what <see cref="MenuEvent"/> cannot do: only the
 	/// guest's Lua menu spawns a category's child rows, off the expand `SelectMenuItem` fires
@@ -4017,6 +4026,20 @@ public static class HostBridge
 		bool Known, bool On, int Mode, bool ArmedA, bool ArmedB, bool Latched,
 		float Position, float Speed, bool HitA, bool HitB, bool Dynamic, int Band)
 	{
+		/// <summary>
+		/// Whether the meter is UP. Not the ON byte alone: `sub_823D1A48`, the path a plain
+		/// expression takes, zeroes the mode at its head (0x823d1a70), calls
+		/// `TurnOnExpressionMeter` at 0x823d1c1c and then clears that very byte one instruction
+		/// later — `*(_BYTE *)a1 = 0` at 0x823d1c20 — before arming through `sub_823D2120`.
+		/// So an emote runs with On and Mode both 0 while the guest's own registry-9 toggle says
+		/// the meter is open, and every host test on On alone folded it shut.
+		///
+		/// These four are exactly what the teardown clears together, so their union cannot
+		/// outlive the meter: `sub_823D1458` writes +0, +4 and +38 to 0 and drops the latch at
+		/// +14 through its two armed bytes (0x823d1474..0x823d157c).
+		/// </summary>
+		public bool Up => Known && (On || Mode != 0 || Latched || Dynamic);
+
 		/// <summary>Whether a pip is travelling: modes 1 and 2 with a latched start.</summary>
 		public bool PipRunning => Known && Mode is 1 or 2 && Latched && (ArmedA || ArmedB);
 	}
@@ -4087,6 +4110,47 @@ public static class HostBridge
 		return new TopBoxFront(
 			true, words[0] != 0u, words[1], words[2] != 0u, words[3] != 0u, words[4] != 0u,
 			words[5] != 0u, (int)words[6], words[7], unchecked((int)words[8]));
+	}
+
+	/// <summary>
+	/// The targeted-citizen readout's own record, as `sub_82176808` rebuilds it each HUD tick.
+	///
+	/// <see cref="Present"/> is the guest's raise BYTE, not a channel heuristic: `sub_823FD8E8`
+	/// sets it and `sub_823FD9B0` clears it. <see cref="SlideSet"/> is the opinion axis + 1,
+	/// stated VERBATIM on registry 10 — 1 love, 2 fear, 3 ugly.
+	///
+	/// MARRY AND DIVORCE ARE NOT IN THE ORDER THEY LOOK: the record's +36/+40 publish under
+	/// `TargetedDivorce` and +44/+48 under `TargetedMarry` (0x823fd884 / 0x823fd8c4). Both
+	/// toggles always publish; only one of the two VALUES does.
+	/// </summary>
+	public readonly record struct TargetedQuery(
+		bool Known, bool Present, uint Entity, bool Gift, float GiftValue, bool Button,
+		int SlideSet, bool Divorce, float DivorceValue, bool Marry, float MarryValue,
+		float Opinion);
+
+	public static TargetedQuery GetTargetedQuery()
+	{
+		var words = new uint[12];
+		uint count;
+		try
+		{
+			count = RefiiHostGetTargetedQuery(words, (uint)words.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		if (count < 12u)
+		{
+			return default;
+		}
+
+		static float Bits(uint value) => BitConverter.Int32BitsToSingle(unchecked((int)value));
+		return new TargetedQuery(
+			true, words[0] != 0u, words[1], words[3] != 0u, Bits(words[4]), words[5] != 0u,
+			unchecked((int)words[6]), words[7] != 0u, Bits(words[8]), words[9] != 0u,
+			Bits(words[10]), Bits(words[11]));
 	}
 
 	public static ExpressionMeter GetExpressionMeter()
@@ -5413,6 +5477,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetTopBoxFront([Out] uint[] words, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetTargetedQuery([Out] uint[] words, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHudPulsers([Out] uint[]? hashes, [Out] float[]? phases, uint capacity);

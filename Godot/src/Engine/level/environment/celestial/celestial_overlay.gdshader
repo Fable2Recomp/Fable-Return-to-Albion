@@ -11,6 +11,22 @@ uniform vec4 element_colour = vec4(1.0, 1.0, 1.0, 1.0);
 uniform float element_facing_power = 0.0;
 uniform float element_depth_bias = 0.000001;
 uniform float element_vis = 1.0;
+
+// PREMULTIPLY BY THE TEXEL'S ALPHA — 1 for the moon's bloom, 0 for the sun's glare.
+//
+// This one shader stands in for two guest shaders whose arithmetic DIFFERS, and taking the
+// sun's as the shared answer is what blew the moon out:
+//
+//   0120 moonbloom : r1.xyz = r0.xyz * 0.2 ; oC0.xyz = r1.xyz * r0.www     <- times texel.a
+//   0117 sunglare  : r0.xyz = tfetch2D(...).xyz ; oC0.xyz = r0.xyzz * g_SunColour.xyzz
+//
+// The sun glare does not even FETCH alpha. Both share `sunglare.tex`, a 256x256 DXT5 soft
+// radial disc whose RGB and alpha carry ESSENTIALLY THE SAME gradient (mean |R-A| = 6.5, both
+// flat to r~48 then falling to 0 by r~126) — so dropping the term is not the difference between
+// a bloom and a white quad, it is falloff^1 where the guest has falloff^2: a broader, harder
+// bloom. Wrong, and worth matching, but it was NOT what blew the moon out. See the intensity
+// note in Engine_CelestialElements for that.
+uniform float element_premultiply = 0.0;
 uniform float occlusion_half = 0.0;
 uniform float occlusion_distance = 1900.0;
 
@@ -97,6 +113,8 @@ void fragment() {
 	float vis = clamp(geom * element_vis, 0.0, 1.0);
 	// No output squaring — the celestial family squares nothing. The vis^2 falloff stays: the
 	// occlusion is OUR stand-in for the guest's offscreen resolve, not part of its shader.
-	ALBEDO = max(texture(element_tex, UV).rgb * v_colour * (vis * vis), vec3(0.0));
+	vec4 texel = texture(element_tex, UV);
+	ALBEDO = max(texel.rgb * mix(1.0, texel.a, element_premultiply) * v_colour * (vis * vis),
+		vec3(0.0));
 	ALPHA = 1.0;
 }

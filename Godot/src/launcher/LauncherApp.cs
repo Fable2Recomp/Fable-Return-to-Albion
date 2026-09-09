@@ -64,6 +64,15 @@ public partial class LauncherApp : Control
 
 	private Patches _patches = null!;
 	private LaunchController _launch = null!;
+
+	/// <summary>
+	/// The launcher's window mode before Play minimised it, restored when the game exits.
+	/// Never remembers "minimised": that would leave the user with no window and no way back.
+	/// </summary>
+	private DisplayServer.WindowMode _launcherModeBeforePlay = DisplayServer.WindowMode.Windowed;
+
+	/// <summary>Whether the launcher is currently stood down for a running game.</summary>
+	private bool _standingDownForGame;
 	private UpdateChecker _updates = null!;
 	private Dictionary<string, string> _latestVersions = new();
 	private Font? _font;
@@ -139,6 +148,32 @@ public partial class LauncherApp : Control
 		if (!Engine.IsEditorHint())
 		{
 			LauncherOps.Initialize(LauncherPaths.OverrideLauncherDirectory);
+		}
+
+		// THIS PROCESS IS THE GAME, not the launcher. Spawned by the launcher's Play with the
+		// marker set — see GameChildProcess for why the game cannot simply run in-process.
+		// Nothing below this point is built: no config, no theme, no panels, no update check.
+		// The launcher's own window stays hidden; the game opens its own.
+		if (Refii.Game.GameChildProcess.IsChild)
+		{
+			// THE SCENE IS ALREADY BUILT BY THE TIME `_Ready` RUNS, so returning early is not
+			// enough — every launcher control in `main.tscn` still exists and still draws, and
+			// the child came up showing a second, half-configured launcher beside the game.
+			// Emptying this node leaves the main window blank.
+			foreach (Node child in GetChildren())
+			{
+				child.QueueFree();
+			}
+
+			// DEFERRED, because minimising during `_Ready` is too early: the window manager has
+			// not finished mapping the window and the request is dropped, which is why the
+			// child's window stayed on screen.
+			Callable.From(() => DisplayServer.WindowSetMode(
+				DisplayServer.WindowMode.Minimized,
+				(int)DisplayServer.MainWindowId)).CallDeferred();
+
+			Refii.Game.GameWindow.Open(this);
+			return;
 		}
 
 		LoadLauncherConfig();
@@ -1686,19 +1721,38 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		// Godot hosts the guest — open a game window rather than spawning refii.
+		// THE GAME IS A CHILD PROCESS. Godot still hosts the guest and owns the renderer —
+		// what changed is WHICH process does it.
 		//
-		// The old path launched the external executable, which brought its own window,
-		// its own renderer and its own frame loop. Under the current design Godot owns
-		// all three and the guest runs headless inside this process, so there is nothing
-		// to spawn: the "runtime" is the host bridge, not an executable on disk.
-		if (Refii.Game.GameWindow.Open(this) is null)
+		// The window used to open in this process, which left the launcher standing but unable
+		// to Play a second time: `RefiiHostStartup` refuses a restart because the recompiled
+		// guest takes fixed memory reservations once per process. Spawning a copy of this
+		// executable gives every Play a clean address space, and keeps a guest crash out of
+		// the launcher.
+		if (_launch.GameIsRunning)
 		{
-			Log("A game window is already open.");
+			Log("The game is already running.");
 			return;
 		}
 
-		Log("Opened the game window; the guest runs inside this process.");
+		if (!Refii.Game.GameChildProcess.Spawn(
+				out Refii.Launcher.Core.ProcessHandle handle, out string spawnError))
+		{
+			Log("Failed to start the game. " + spawnError);
+			return;
+		}
+
+		_launch.AdoptGameProcess(handle);
+		_launcherModeBeforePlay = DisplayServer.WindowGetMode((int)DisplayServer.MainWindowId);
+		if (_launcherModeBeforePlay == DisplayServer.WindowMode.Minimized)
+		{
+			_launcherModeBeforePlay = DisplayServer.WindowMode.Windowed;
+		}
+
+		DisplayServer.WindowSetMode(
+			DisplayServer.WindowMode.Minimized, (int)DisplayServer.MainWindowId);
+		_standingDownForGame = true;
+		Log($"Started the game (pid {handle.ProcessId}); the launcher will return when it closes.");
 		RefreshState();
 	}
 
@@ -2288,6 +2342,38 @@ public partial class LauncherApp : Control
 
 	public override void _Process(double delta)
 	{
+		// NOTHING TO DRIVE IN THE CHILD. `_Ready` returns before the launcher is built there,
+		// so `_launch`, `_patches` and every panel are still null — this whole method would
+		// dereference them. The game's own nodes do the work in that process.
+		if (Refii.Game.GameChildProcess.IsChild)
+		{
+			return;
+		}
+
+		// THE GAME IS A SEPARATE PROCESS NOW, so its exit is the signal to come back. Polled
+		// rather than event-driven: `Process.Exited` fires on a thread pool thread and every
+		// call below it touches the scene tree.
+		if (_standingDownForGame && !_launch.GameIsRunning)
+		{
+			_standingDownForGame = false;
+
+			// QUIT TO DESKTOP TAKES THE LAUNCHER WITH IT. Coming back is right for every other
+			// way the game can end — quit to title, a close, a crash — but a player who asked
+			// for the desktop has not reached it while this window is up. The child states which
+			// it meant through its exit status; see Refii.Game.GameExit.
+			if (_launch.GameProcess?.ExitCode == Refii.Game.GameExit.ToDesktopStatus)
+			{
+				Log("The game quit to the desktop; the launcher is closing too.");
+				GetTree().Quit();
+				return;
+			}
+
+			DisplayServer.WindowSetMode(_launcherModeBeforePlay, (int)DisplayServer.MainWindowId);
+			DisplayServer.WindowMoveToForeground((int)DisplayServer.MainWindowId);
+			Log("The game closed; the launcher is back.");
+			RefreshState();
+		}
+
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("launcherapp");
 		_backgrounds.Update((float)delta);
 		UpdateArtCredit();

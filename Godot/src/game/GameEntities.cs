@@ -240,6 +240,28 @@ public partial class GameEntities : Node3D
                     continue;
                 }
             }
+            else if (EyesOf(entity.Address) is { Length: > 0 } eyes)
+            {
+                // EYES ARE COMPONENT 7'S OWN, NOT THE MORPH LIST'S. `CreatureHeroChild` states
+                // its whole body as one ModelFile on component 6 and its eyes on
+                // GraphicAppearanceEyesComponent, and the guest hangs them on that same rig's
+                // Shadow_R_Eye/Shadow_L_Eye (`sub_82209480`) — so a single-model character with
+                // eyes is assembled like a composite: the body first, then the two eyes, which
+                // the build anchors to the eye bones. Cached by the part list like every
+                // composite. This is why the child hero had no eyes: nothing on the single-model
+                // route ever asked for them.
+                ++_withModel;
+                var parts = new uint[eyes.Length + 1];
+                parts[0] = entity.ModelHash;
+                eyes.CopyTo(parts, 1);
+                mesh = ComposeParts(parts);
+                if (mesh is null)
+                {
+                    continue;
+                }
+
+                ++_composites;
+            }
             else
             {
                 ++_withModel;
@@ -743,6 +765,18 @@ public partial class GameEntities : Node3D
                 (Refii.Entities.Engine_EntitySkeleton.ImplausiblePoses == 0
                     ? " — every accepted rig read lay within twice the rig's rest reach"
                     : " — half-converted arrays that read identically twice; held last frame's pose") +
+                // WHO IS DRIVING EACH RIG. The clip animator hands a rig back to the pose feed
+                // on four conditions, and only one of them is expected: flag 8, the guest's
+                // physics-written pose. Folding clips over a Havok pose is what sent an
+                // electrocuted body flying apart, so RAGDOLL reading zero while a corpse bursts
+                // says the gate never fired — a different fault from the gate firing and the
+                // feed then mishandling the array. Until now these were reachable only through
+                // the debug channel, which needs a live handshake.
+                $"\n    clip-driven frames: {Refii.Animations.Engine_ClipAnimator.ClipDrivenFrames}, " +
+                $"handed back — ragdoll: {Refii.Animations.Engine_ClipAnimator.FallbackRagdoll}, " +
+                $"procedural: {Refii.Animations.Engine_ClipAnimator.FallbackProcedural}, " +
+                $"unknown clip: {Refii.Animations.Engine_ClipAnimator.FallbackUnknownClip}, " +
+                $"no leaves: {Refii.Animations.Engine_ClipAnimator.FallbackNoLeaves}" +
                 $"\n    rotations refused as NOT UNIT: {NonUnitRotations}" +
                 (NonUnitRotations == 0
                     ? " — every entity handed us a real rotation"
@@ -1688,6 +1722,7 @@ public partial class GameEntities : Node3D
             // The rig goes with the node it hung under; leaving the entry behind would keep
             // a freed skeleton reachable and pose it every frame.
             _skeletons.Remove(address);
+            _eyes.Remove(address);
             _clipAnimators.Remove(address);
             _placements.Remove(address);
             _attachments.Forget(address);
@@ -1757,6 +1792,25 @@ public partial class GameEntities : Node3D
     /// populated in its draw virtual, and this guest never draws; the count comes back only so
     /// the report can say whether that assumption held.
     /// </summary>
+    /// <summary>
+    /// Component 7's eye models for a SINGLE-MODEL entity, or empty. The bridge answers the
+    /// eyes alone when there are no morph parts. Re-read on the reconcile cadence: eyes change
+    /// with an appearance rebuild, not per frame.
+    /// </summary>
+    private uint[] EyesOf(uint address)
+    {
+        if (_ticks % ReconcileTicks != 0 && _eyes.TryGetValue(address, out uint[]? known))
+        {
+            return known;
+        }
+
+        uint[] eyes = HostBridge.GetEntityMorphParts(address, out _);
+        _eyes[address] = eyes;
+        return eyes;
+    }
+
+    private readonly Dictionary<uint, uint[]> _eyes = new();
+
     private Mesh? ResolveComposite(uint address)
     {
         uint[] parts = HostBridge.GetEntityMorphParts(address, out int built);

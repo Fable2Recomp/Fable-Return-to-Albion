@@ -998,4 +998,18 @@ public static class Engine_LevelFx
     private static readonly Dictionary<string, Engine_MdlRig?> RigCache = new();
 
     private static readonly Dictionary<string, Engine_GmdSkeleton?> GmdCache = new();
+
+    /// <summary>Drops the per-model rig and skeleton lookups; keyed by path, so region-scoped.</summary>
+    public static void ClearCaches()
+    {
+        lock (RigCache)
+        {
+            RigCache.Clear();
+        }
+
+        lock (GmdCache)
+        {
+            GmdCache.Clear();
+        }
+    }
 }

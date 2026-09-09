@@ -5,11 +5,22 @@ using Godot;
 namespace Refii.Game;
 
 /// <summary>
-/// The game's own OS window, opened by the launcher. A separate <see cref="Window"/> rather
-/// than a scene change so the launcher (console output, settings, Play) stays up. The guest
-/// creates no window of its own — see the host bridge's REX_EMBED_HEADLESS.
+/// The game, occupying its process's MAIN window.
 /// </summary>
-public partial class GameWindow : Window
+/// <remarks>
+/// THIS USED TO BE A CHILD `Window`, and that is what put two windows on screen. The game runs
+/// in a process spawned by the launcher (see <see cref="GameChildProcess"/>), and that process
+/// still boots `main.tscn` — so a child window meant the game's window PLUS the launcher shell
+/// that hosted it. Blanking and minimising the shell did not help: it is still a window, in the
+/// taskbar and in alt-tab.
+///
+/// So the game configures the MAIN window instead of creating one. One process, one window,
+/// and the same arrangement whether the parent is the packaged launcher or the editor — the
+/// editor is simply the Godot app taking the child's place.
+///
+/// The guest creates no window of its own — see the host bridge's REX_EMBED_HEADLESS.
+/// </remarks>
+public partial class GameWindow : Node
 {
 	private static GameWindow? _current;
 
@@ -39,26 +50,82 @@ public partial class GameWindow : Window
 	public override void _Ready()
 	{
 		Refii.Launcher.Core.CrashReporting.Install();
-		Title = "Fable 2";
+
+		// EVERY SETTING GOES TO THE MAIN WINDOW, through DisplayServer rather than Window
+		// properties — this node no longer owns a window of its own.
+		const int Main = (int)DisplayServer.MainWindowId;
+		DisplayServer.WindowSetTitle("Fable 2", Main);
 
 		// refii.toml owns the window, as it does for the other renderers.
 		GameWindowSettings settings = GameWindowSettings.Load();
 		GD.Print($"[game] window: {settings}");
 
-		Size = settings.Size;
+		DisplayServer.WindowSetSize(settings.Size, Main);
 
 		// Centre on the configured monitor; an out-of-range index falls back to the primary.
 		int monitor = settings.Monitor < DisplayServer.GetScreenCount() ? settings.Monitor : 0;
 		Vector2I screen = DisplayServer.ScreenGetSize(monitor);
-		Position = ((screen - Size) / 2) + DisplayServer.ScreenGetPosition(monitor);
-
-		CurrentScreen = monitor;
-		Visible = true;
+		DisplayServer.WindowSetPosition(
+			((screen - settings.Size) / 2) + DisplayServer.ScreenGetPosition(monitor), Main);
 
 		if (settings.Fullscreen)
 		{
-			Mode = Window.ModeEnum.Fullscreen;
+			DisplayServer.WindowSetMode(DisplayServer.WindowMode.Fullscreen, Main);
 		}
+		else
+		{
+			// The shell came up minimised so the launcher's blank scene never flashed; the
+			// game's window has to undo that.
+			DisplayServer.WindowSetMode(DisplayServer.WindowMode.Windowed, Main);
+		}
+
+		DisplayServer.WindowMoveToForeground(Main);
+
+		// AND THE ROOT VIEWPORT DRAWS 1:1, which a child Window gave us for free and the main
+		// window does not.
+		//
+		// `project.godot` sets the base viewport to 1280x760 with `stretch/mode=canvas_items`
+		// — sized for the LAUNCHER, whose chrome needs the extra forty pixels. The game asks
+		// for 1280x720, so the moment it draws into the root instead of its own window that
+		// mismatch is stretched across the frame and everything sits low. Disabling the stretch
+		// makes the viewport match the window exactly, which is what the child window did.
+		// THE BASE SIZE HAS TO MOVE TOO, not just the scale mode.
+		//
+		// `project.godot` sets the base viewport to 1280x760 for the LAUNCHER's chrome. Turning
+		// the stretch off was not enough on its own: the root viewport kept reporting 760 while
+		// the OS window was 720, so the frame was composed 40 rows taller than the window and
+		// everything sat low with the bottom cropped. The run said so plainly — the UI logged
+		// `window=(1280, 760)` against a 720-tall window.
+		//
+		// Set through the root WINDOW rather than DisplayServer: the node's `Size` moves the
+		// viewport and the OS window together, where `DisplayServer.WindowSetSize` moves only
+		// the latter and leaves the viewport on the project's base.
+		Window root = GetTree().Root;
+		root.ContentScaleMode = Window.ContentScaleModeEnum.Disabled;
+		root.ContentScaleAspect = Window.ContentScaleAspectEnum.Ignore;
+		root.ContentScaleSize = settings.Size;
+		root.Size = settings.Size;
+
+		DisplayServer.WindowSetFlag(
+			DisplayServer.WindowFlags.Borderless, settings.Borderless, Main);
+
+		// THE FRAME CAP IS THE DRAWING RATE, NOT THE SIM. `GameSession` advances the guest on
+		// its own fixed step with a catch-up ceiling, so capping frames here changes how often
+		// the world is DRAWN and nothing about how often it is simulated.
+		Engine.MaxFps = settings.MaxFps;
+
+		// 3D SCALING LEAVES THE UI ALONE. Godot renders the 3D world at this fraction and
+		// upscales it into a full-resolution frame, so the HUD, the books and every glyph stay
+		// native — which is the whole reason to prefer this over resizing the window.
+		Viewport view = GetViewport();
+		view.Scaling3DScale = settings.RenderScalePercent / 100.0f;
+		view.Msaa3D = settings.Msaa switch
+		{
+			>= 8 => Viewport.Msaa.Msaa8X,
+			>= 4 => Viewport.Msaa.Msaa4X,
+			>= 2 => Viewport.Msaa.Msaa2X,
+			_ => Viewport.Msaa.Disabled,
+		};
 
 		// Vsync is a display-server setting, not a per-window one, so this is the whole
 		// application's.
@@ -66,11 +133,8 @@ public partial class GameWindow : Window
 			settings.Vsync ? DisplayServer.VSyncMode.Enabled : DisplayServer.VSyncMode.Disabled,
 			(int)DisplayServer.MainWindowId);
 
-		// Not transient: window managers minimise an owned window along with its owner, and
-		// the launcher is minimised immediately below.
-		Transient = false;
-
-		MinimiseLauncher();
+		// Nothing to minimise: the launcher is a DIFFERENT PROCESS, and it stood itself down
+		// when it spawned this one.
 
 		// Godot renders this window; the guest never draws into it.
 		_session = new GameSession { Name = "GameSession", StartGuest = StartGuest };
@@ -118,12 +182,13 @@ public partial class GameWindow : Window
 
 		// Closing ends the session rather than orphaning a running guest, and brings the
 		// launcher back: this is a child window, so closing it is not quitting the app.
-		CloseRequested += () =>
+		// THE MAIN WINDOW'S CLOSE IS THE PROCESS'S CLOSE. Godot's root Window raises this, and
+		// the default handling would quit anyway — it is taken here so the session is ended
+		// deliberately rather than a running guest being torn down under it.
+		GetTree().Root.CloseRequested += () =>
 		{
-			// A teardown without this line came from somewhere other than the WM.
 			GD.Print("[window] close_requested from the window manager");
-			RestoreLauncher();
-			QueueFree();
+			GetTree().Quit();
 		};
 	}
 
@@ -209,9 +274,9 @@ public partial class GameWindow : Window
 			return;
 		}
 
-		// The window's own texture, not the tree's root: this is a separate Window and its
-		// viewport is what the player is looking at.
-		Image image = GetTexture().GetImage();
+		// The ROOT viewport's texture. This used to be a separate Window with a viewport of its
+		// own; the game now occupies the main window, so the root is what the player sees.
+		Image image = GetViewport().GetTexture().GetImage();
 		string path = $"{_shotDirectory}/shot_{_shotFrames:D6}.png";
 		GD.Print(image.SavePng(path) == Error.Ok
 			? $"[game-shot] {path} (frontEnd={HostBridge.FrontEndGuiIsUp} inGame={HostBridge.IsInGame})"
@@ -428,13 +493,8 @@ public partial class GameWindow : Window
 
 	public override void _ExitTree()
 	{
-		// Fires however the window went away; the line above says whether the WM asked.
 		GD.Print($"[window] leaving the tree after {Engine.GetProcessFrames()} frames " +
-			$"(visible={Visible} inTree={IsInsideTree()})");
-
-		// Also here, not only on CloseRequested: the window can go away without the close
-		// button, and a launcher left minimised with nothing on screen looks like a crash.
-		RestoreLauncher();
+			$"(inTree={IsInsideTree()})");
 
 		if (_current == this)
 		{
@@ -478,7 +538,8 @@ public partial class GameWindow : Window
 		GD.Print($"[game] session stopped: {reason}");
 
 		// Leave the window up on failure so the reason is readable; the user closes it.
-		Title = $"Fable 2 — stopped ({reason})";
+		DisplayServer.WindowSetTitle(
+			$"Fable 2 — stopped ({reason})", (int)DisplayServer.MainWindowId);
 	}
 
 	/// <summary>
@@ -491,17 +552,10 @@ public partial class GameWindow : Window
 		// window asked for but not yet attached is invisible to a scan.
 		if (_current is not null && IsInstanceValid(_current))
 		{
-			_current.GrabFocus();
 			return null;
 		}
 
-		// A Window node is embedded in the parent viewport by default; clearing this on the
-		// root viewport is what makes child Windows real OS windows. Set here rather than in
-		// project.godot because the launcher runs in the editor as a [Tool] script and this
-		// is a root-viewport property that would change its editor behaviour too.
 		Viewport root = parent.GetTree().Root;
-		root.GuiEmbedSubwindows = false;
-
 		var window = new GameWindow { Name = "GameWindow", StartGuest = startGuest };
 		_current = window;
 

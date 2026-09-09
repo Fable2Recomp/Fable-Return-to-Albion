@@ -310,6 +310,12 @@ public sealed class Engine_StaticTwins
     private readonly HashSet<uint> _hidden = new();
 
     /// <summary>
+    /// Records whose twin would be shown again, waiting on a second pass to agree. See the
+    /// restore in <see cref="Reconcile"/> for why one pass is not evidence.
+    /// </summary>
+    private readonly HashSet<uint> _restorable = new();
+
+    /// <summary>
     /// The placement UID the guest gave each record, learned from its own live entities.
     /// </summary>
     /// <remarks>
@@ -380,6 +386,9 @@ public sealed class Engine_StaticTwins
 
     /// <summary>Records shown again after the guest gave one up. Non-zero means a layer activated.</summary>
     public int Restored { get; private set; }
+
+    /// <summary>Restores held back this pass, waiting for a second pass to agree.</summary>
+    public int RestorePending { get; private set; }
 
     /// <summary>
     /// The last reconcile ran against a TRUNCATED entity list.
@@ -671,6 +680,7 @@ public sealed class Engine_StaticTwins
         LiveWasTruncated = !liveIsComplete;
         LayerGateRan = layerIsDeactivated is not null && _layerOf.Count != 0;
         HiddenAsDestroyed = 0;
+        RestorePending = 0;
 
         // READ FRESH EVERY PASS, never cached. Deactivating a layer purges that layer's entries
         // from the guest's set, which is how broken props legitimately come back when a layer
@@ -755,13 +765,33 @@ public sealed class Engine_StaticTwins
                 standing[name] = seen + 1;
             }
 
-            if (_hidden.Remove(pair.Key))
+            if (_hidden.Contains(pair.Key))
             {
-                // THE GUEST GAVE ONE BACK. Counted loudly: a non-zero Restored is a layer
-                // having been activated or an entity having been destroyed under us, which is
-                // exactly the behaviour the one-shot version could not produce.
-                ++Restored;
-                Show(pair.Value);
+                // A RESTORE NEEDS TWO PASSES TO AGREE. Picking an item up puts the record in
+                // exactly this state for one pass: the live entity is gone, so `ours` is false,
+                // and the guest has not published the destruction yet, so `gone` is false too.
+                // Restoring on that pass brought the item back — through `ShowTwin`, whose
+                // `EnsureStreamed` decodes the prop ON THE MAIN THREAD — and the next pass hid
+                // it again. That is the hitch and the second of standing there after a pickup.
+                //
+                // The two states a restore is FOR both persist: a layer that was activated stays
+                // activated, and an entity destroyed under us stays destroyed. So a single pass
+                // of disagreement is not evidence, and waiting one more costs a restore nothing.
+                if (!_restorable.Add(pair.Key))
+                {
+                    _restorable.Remove(pair.Key);
+                    _hidden.Remove(pair.Key);
+
+                    // THE GUEST GAVE ONE BACK. Counted loudly: a non-zero Restored is a layer
+                    // having been activated or an entity having been destroyed under us, which is
+                    // exactly the behaviour the one-shot version could not produce.
+                    ++Restored;
+                    Show(pair.Value);
+                }
+                else
+                {
+                    ++RestorePending;
+                }
             }
         }
 
@@ -778,6 +808,10 @@ public sealed class Engine_StaticTwins
 
     private void Hide(uint record)
     {
+        // A record being hidden is the disagreement resolving the other way: forget any restore
+        // that was waiting on a second pass, so a later one starts its two passes over.
+        _restorable.Remove(record);
+
         if (!_hidden.Add(record) || !_byRecord.TryGetValue(record, out List<Twin>? twins))
         {
             return;  // already hidden

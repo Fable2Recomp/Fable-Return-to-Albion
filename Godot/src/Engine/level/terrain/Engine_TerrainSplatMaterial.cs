@@ -85,9 +85,10 @@ public static class Engine_TerrainSplatMaterial
 
         // The layers' normal maps, which the .ehf has always named and nothing has ever loaded.
         // A missing pair leaves the shader's flat default, which costs a sample and nothing else.
-        Texture2DArray? baseNormalArray = BuildColourArray(data.BaseNormalSlices, data.SliceSize);
+        Texture2DArray? baseNormalArray =
+            BuildColourArray(data.BaseNormalSlices, data.SliceSize, isNormalMap: true);
         Texture2DArray? detailNormalArray =
-            BuildColourArray(data.DetailNormalSlices, data.SliceSize);
+            BuildColourArray(data.DetailNormalSlices, data.SliceSize, isNormalMap: true);
         int normalCount = 0;
         foreach (EhfLodEntry lod in parsed.Lods)
         {
@@ -288,6 +289,20 @@ public static class Engine_TerrainSplatMaterial
 
     private static long _sharedBytes;
 
+    /// <summary>
+    /// Drops the decoded splat sources. They are raw RGBA byte arrays of the ENHANCED result —
+    /// 16 MB for a 2048 source — and the budget above only sheds them when a later region
+    /// overflows it, so a region left standing holds its own for the rest of the session.
+    /// </summary>
+    public static void ClearSharedCache()
+    {
+        lock (Shared)
+        {
+            Shared.Clear();
+            _sharedBytes = 0;
+        }
+    }
+
     private static (byte[] Rgba, int Width, int Height) DecodeShared(
         string normalized, ReadAsset read, FindByName? findByName, bool normalMap)
     {
@@ -415,7 +430,23 @@ public static class Engine_TerrainSplatMaterial
         return (data, width, height);
     }
 
-    private static Texture2DArray? BuildColourArray(byte[][] slices, int size)
+    /// <summary>
+    /// One layer array, block compressed.
+    /// </summary>
+    /// <remarks>
+    /// THESE WERE THE ONLY TEXTURES IN THE ENGINE THAT SKIPPED COMPRESSION. Four arrays reach
+    /// here — base colour, detail colour, base normal, detail normal — at up to 32 materials of
+    /// 1024 square with a full mip chain, which is 5.33 MB a slice as RGBA8 and roughly 680 MB a
+    /// region across the four. Compressed it is an eighth of that for the colours and a quarter
+    /// for the normals.
+    ///
+    /// ONE FORMAT FOR THE WHOLE ARRAY, decided by scanning every slice first:
+    /// `CreateFromImages` rejects a mixed set, so a per-slice choice would fail the moment one
+    /// layer carried alpha and another did not. Normals are BC5 by construction and so are
+    /// uniform already.
+    /// </remarks>
+    private static Texture2DArray? BuildColourArray(
+        byte[][] slices, int size, bool isNormalMap = false)
     {
         if (slices.Length == 0)
         {
@@ -429,6 +460,52 @@ public static class Engine_TerrainSplatMaterial
             image.GenerateMipmaps();
             built[i] = image;
         });
+
+        // The scan, before any encode: any layer with alpha takes the whole array to BC3.
+        Refii.Textures.TexSurfaceFormat target;
+        if (isNormalMap)
+        {
+            target = Refii.Textures.TexSurfaceFormat.Bc5;
+        }
+        else
+        {
+            bool anyAlpha = false;
+            foreach (Image image in built)
+            {
+                if (image is not null && image.DetectAlpha() != Image.AlphaMode.None)
+                {
+                    anyAlpha = true;
+                    break;
+                }
+            }
+
+            target = anyAlpha
+                ? Refii.Textures.TexSurfaceFormat.Bc3
+                : Refii.Textures.TexSurfaceFormat.Bc1;
+        }
+
+        // A failure leaves that slice RGBA8, which would fail the array build, so the whole
+        // array falls back to uncompressed rather than shipping a mixed set.
+        bool compressed = true;
+        System.Threading.Tasks.Parallel.For(0, built.Length, i =>
+        {
+            if (built[i] is null ||
+                !Refii.Textures.Engine_TexImage.CompressBlocks(built[i], isNormalMap, target))
+            {
+                compressed = false;
+            }
+        });
+
+        if (!compressed)
+        {
+            System.Threading.Tasks.Parallel.For(0, slices.Length, i =>
+            {
+                Image image = Image.CreateFromData(
+                    size, size, false, Image.Format.Rgba8, slices[i]);
+                image.GenerateMipmaps();
+                built[i] = image;
+            });
+        }
 
         var images = new Godot.Collections.Array<Image>();
         foreach (Image image in built)
@@ -534,13 +611,25 @@ public static class Engine_TerrainSplatMaterial
         int planes = Math.Min(data.MaterialCount, Engine_EhfSplat.MaxMaterials);
         var images = new Godot.Collections.Array<Image>();
 
+        // EIGHT BITS, NOT THIRTY-TWO. `BakeWeights` normalises every texel's layers to sum to
+        // one and writes a flat 1 where nothing was painted, so the value is always in [0,1] —
+        // a blend weight, at four bytes a texel, for what a byte carries with no visible
+        // difference. At 1024 square across 32 planes that is 134 MB against 33 MB, and the
+        // shader reads `.r` as a normalised float either way.
         for (int plane = 0; plane < planes; plane++)
         {
-            var bytes = new byte[area * 4];
-            Buffer.BlockCopy(data.Weights, (int)(plane * area * 4), bytes, 0, bytes.Length);
+            var bytes = new byte[area];
+            long baseIndex = plane * area;
+            for (long t = 0; t < area; t++)
+            {
+                float weight = data.Weights[baseIndex + t];
+                bytes[t] = weight <= 0f
+                    ? (byte)0
+                    : weight >= 1f ? (byte)255 : (byte)((weight * 255f) + 0.5f);
+            }
 
             images.Add(Image.CreateFromData(
-                data.WeightWidth, data.WeightHeight, false, Image.Format.Rf, bytes));
+                data.WeightWidth, data.WeightHeight, false, Image.Format.R8, bytes));
         }
 
         var array = new Texture2DArray();

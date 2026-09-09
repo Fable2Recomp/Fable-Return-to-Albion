@@ -189,6 +189,36 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
+	/// A node's authored pivot, in Godot space — the meta <see cref="Build"/> stamps and
+	/// <c>Duplicate()</c> carries onto a clone. Zero when absent.
+	/// </summary>
+	public static Vector3 PivotOf(Node3D node) =>
+		node.HasMeta("pivot") ? node.GetMeta("pivot").AsVector3() : Vector3.Zero;
+
+	/// <summary>
+	/// Writes a live SCALE onto a built or cloned node, keeping the position it states.
+	/// </summary>
+	/// <remarks>
+	/// THE ORIGIN DEPENDS ON THE SCALE. <see cref="BuildTransform"/> folds the pivot in as
+	/// <c>origin = position - basis * pivot</c> and the basis carries the scale, so assigning
+	/// <c>Scale</c> alone leaves the term computed for the old one and displaces the element by
+	/// <c>(basisOld - basisNew) * pivot</c>. Under a rotated element the displacement is
+	/// sideways: `messageboxmulti`'s `paperbox` is <c>pivot = (0, -26)</c> and every size slide
+	/// turns it a quarter turn, giving <c>26 * deltaScale</c> of horizontal drift.
+	///
+	/// <see cref="PositionByOrdinal"/> is the built path's answer to this. A clone has no such
+	/// table, so the position is recovered from the node — sound only while the origin still
+	/// agrees with its basis, which holds iff every scale write comes through here.
+	/// </remarks>
+	public static void SetLiveScale(Node3D node, Vector3 scale)
+	{
+		Vector3 pivot = PivotOf(node);
+		Vector3 stated = node.Position + (node.Transform.Basis * pivot);
+		node.Scale = scale;
+		node.Position = stated - (node.Transform.Basis * pivot);
+	}
+
+	/// <summary>
 	/// Each element's POSITION, in Godot space — not its node origin, which has the pivot term
 	/// folded in and cannot be separated once a scale has changed underneath it.
 	/// </summary>

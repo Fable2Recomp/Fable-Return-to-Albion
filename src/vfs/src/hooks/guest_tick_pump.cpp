@@ -182,10 +182,14 @@ PPC_EXTERN_FUNC(sub_826B6D98);  // 26 selection
 PPC_EXTERN_FUNC(sub_826B7770);  // 27 decoration
 PPC_EXTERN_FUNC(sub_826CCBA8);  // 10 query screen (37 close, 38 rename)
 PPC_EXTERN_FUNC(sub_826B2A18);  // 28 real estate (`*(0x820CEA58+24)`, read from the image)
+PPC_EXTERN_FUNC(sub_826B2210);  // 28 real estate (`*(0x820CEA58+20)`, read from the image)
 PPC_EXTERN_FUNC(sub_826B9510);  // presentation string parameter setter (String1/String2)
 PPC_EXTERN_FUNC(sub_8236F400);  // expression wheel: may open? (hero alive, mode 1/5/20/21/22)
 PPC_EXTERN_FUNC(sub_8236F110);  // expression wheel: open (GameAction 40's body)
 PPC_EXTERN_FUNC(sub_8236F340);  // expression wheel: close (GameAction 41's body)
+PPC_EXTERN_FUNC(sub_8236F788);  // spells menu: open (GameAction 42's body)
+PPC_EXTERN_FUNC(sub_8236F968);  // spells menu: close (GameAction 43's body)
+PPC_EXTERN_FUNC(sub_826B5430);  // will-assignment widget input: 26 stick, 28..31, 36 copy-down
 PPC_EXTERN_FUNC(sub_826AA5D8);  // expression wheel: end a held expression (GameAction 25)
 PPC_EXTERN_FUNC(sub_826AA230);  // expression wheel: accept (36) — enter a group / start the item
 PPC_EXTERN_FUNC(sub_826AA510);  // expression wheel: back (37) — leave the group, or close at the top
@@ -620,6 +624,53 @@ constexpr const char* kActionPauseSavingPrefix = "PauseSaving:";
 /// vector of sector i (angle 3π/4 − iπ/4, 0 = NE clockwise to 7 = N).
 constexpr const char* kActionQuickWheelPrefix = "QuickWheel:";
 
+/// "SpellsMenu:open|close" — a DEBUG VERB, not the mechanism.
+///
+/// THE PREMISE THIS SHIPPED ON IS FALSE. It said "no GameAction arrives at the consumer at all",
+/// so the host had to drive 42/43 itself. But `sub_8236F788` has exactly ONE code caller in the
+/// image — 0x82404290, inside the GameAction dispatcher `sub_824040B8` case 0x2A — and the only
+/// non-zero writers of the open flag QM+36/+37 are its own stores at 0x8236f814/0x8236f81c.
+/// The flag goes set in a live run while this lever logs nothing but refusals, so the GUEST is
+/// running 42/43 on its own and these two verbs RACE it. See the note in DispatchSpellsMenu for
+/// what that race costs. Keep them for driving the blade from the debug channel; do not treat
+/// them as the way the feature works. The shipped scheme binds 42 to XboxButton 16,
+/// the RIGHT TRIGGER: `GameControlsCombatOnRelease` is an @alias onto a scheme that overrides
+/// `GameActionGUISpellsMenu`'s input over a base of 10 (RB). That pairing is GDB data — the
+/// binding vector ships EMPTY in `sub_8244B678` — so it cannot be read out of the executable.
+constexpr const char* kActionSpellsMenuPrefix = "SpellsMenu:";
+
+/// "SpellBlade:stick|copydown" — one input into the QUICK SPELL BLADE, the five-power-level
+/// widget the right trigger opens over the world.
+///
+/// IT IS WIRED ON THE ABILITIES SCREEN AND NOWHERE ELSE. `sub_826C2958` routes that screen's
+/// input into `sub_826B5430(screen14 + 200, ...)` at 0x826c29a0, which `DispatchScreenAction`
+/// reaches. The quick blade is the SAME class at `*(*(GUI+32)+92)` (player 1) / `+96` (player
+/// 2), standing over the running game with no screen up — so `InGameScreenRoots` refuses it and
+/// nothing else here can address it. `sub_82405190`, the guest's own route, needs an object
+/// whose vtable slot 16 returns the player index; we have no such object and will not fabricate
+/// one. `sub_826B5430` needs neither a vtable nor a player index, so it is the first
+/// host-addressable link.
+///
+/// POST `stick`, AND STATE NO DIRECTION. `sub_826B5430`'s switch is NOT on the code it is
+/// handed — it is on what `sub_828818E8(this + 132, code)` RETURNS (0x826b5450, `switch (result)`
+/// at 0x826b5474). For code 26 that routine reads the live pad itself through `sub_82881AB0`,
+/// with the guest's own hysteresis (0.6 to leave rest at 0x8288194c; 0.1 along the axis already
+/// held and 0.95 to cross, 0x82881968/0x82881984) and its own auto-repeat `sub_82881B28`, and
+/// returns 28/29/30/31 or 0. So one post per frame hands the whole gesture back: the host keeps
+/// NO clock and picks NO direction, and a centred stick returns 0 and falls through the switch's
+/// default at 0x826b55ec.
+///
+/// AND IT CANNOT RACE THE GUEST — the difference from the SpellsMenu close that orphaned a
+/// GuiBlock. That byte had no arbiter; this path has one. If the guest's own chain delivers a 26
+/// in the same repeat window, `sub_82881B28` returns 0 for whichever lands second (0x82881a48),
+/// so a double step is structurally impossible.
+///
+/// THE OPEN BYTE IS NOT TIDINESS. `*(HUD+92)` is allocated once at GUI construction and nulled
+/// only in the destructor — open and close never touch it — but the row ceiling at widget+412
+/// and the cell tables at widget+180..+408 are written ONLY by `sub_826B4848`, which runs as
+/// part of opening. A plausible pointer over uninitialised tables is what the gate is for.
+constexpr const char* kActionSpellBladePrefix = "SpellBlade:";
+
 /// "RegisterPlayer" — the guest's own `sub_82371860(GUI, player)`, run only while the in-game
 /// GUI reports NO registered player (`*(u8*)(GUI+0x65) == 0`).
 ///
@@ -699,6 +750,17 @@ constexpr const char* kActionQueryAnswerPrefix = "QueryAnswer:";
 /// `sub_826CE8D0` split it into `Float1`/`Float2` at spawn. Ghosted rows are the caller's
 /// problem: `SelectMenuItem`'s early return is bypassed here.
 constexpr const char* kActionMenuEventPrefix = "MenuEvent:";
+
+/// "MenuDiscard:<name>:<type>:<id>" — the same identity commit, but with the abilities
+/// screen's `+198` byte CLEARED rather than set.
+///
+/// `sub_826C2D40` @0x826c2d78 branches on that byte: set -> `sub_8246C970`, the PURCHASE;
+/// clear -> `sub_826C3A30` then `sub_8236FA68(M, text, 3, 2, 0)`, the DISCARD confirm. The
+/// guest's own Y is `sub_826C2958` case 39, which stores 0 there (0x826c2b2c/0x826c2b30)
+/// before pushing the event; case 36 (A) stores 1. So the arm is PART OF THE PRESS and cannot
+/// be a constant — arming unconditionally turned every Y into a purchase and spent the
+/// player's gold.
+constexpr const char* kActionMenuDiscardPrefix = "MenuDiscard:";
 
 /// `Inventory:<op>:<recordHash>` — see DispatchInventoryAction.
 constexpr const char* kActionInventoryPrefix = "Inventory:";
@@ -2314,6 +2376,185 @@ bool DispatchQuickWheel(PPCContext& ctx, uint8_t* base, const std::string& verb)
   return true;
 }
 
+/// The spells menu's two levers — see kActionSpellsMenuPrefix.
+///
+/// QM is `*(GUI+28)`, the SAME object the expression wheel rides; the player is `PlayerObject`,
+/// which is the `a1[3]` that `sub_824040B8` hands these routines. Both derive the player INDEX
+/// themselves from `*(player+36)`, so the lever passes none.
+///
+/// EVERY GATE STAYS THE GUEST'S, and all of them are inside `sub_8236F788`
+/// (0x8236f79c..0x8236f7fc): the already-open flag at QM+36 (player 1) / QM+37 (player 2),
+/// `sub_826B4448`, and `sub_8236F400` (hero alive, player mode 1/5/20/21/22). It returns 1
+/// when it opened and 0 when it refused.
+///
+/// THE FIVE-WIDE AXIS IS THE POWER (CHARGE) LEVEL, NOT A RING OR A D-PAD SLOT, and
+/// `sub_826B4448` sweeps the EIGHT SPELL TYPES at power level 0 only — its cursor starts at
+/// `mgr+196` with no level term (0x826b4710) and strides 5 (0x826b473c), needing a type that
+/// is both AWARDED (`mgr+156+5*type`) and PURCHASED (`mgr+196+5*type`), and it wants TWO
+/// (`cmpwi r9, 1 / bgt`, 0x826b4730). So one will at level 0 is a correct refusal: there is
+/// nothing to assign between. That is the gate the expression wheel does not have.
+///
+/// A REFUSAL HAS SEVEN CAUSES INSIDE `sub_826B4448` ALONE (no hero handle, entity flag 0x40,
+/// component 118 absent, component 56 absent, `mgr+617` clear, `sub_8253E220`, then the
+/// count), plus the already-open flag and `sub_8236F400`'s own four. The log below must NOT
+/// name one of them: it cannot tell them apart from here.
+bool DispatchSpellsMenu(PPCContext& ctx, uint8_t* base, const std::string& verb) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  const uint32_t gui = LoadGuestU32(base, kGuiObject);
+  const uint32_t quick = plausible(gui) ? LoadGuestU32(base, gui + 28u) : 0u;
+  const uint32_t player = PlayerObject(base);
+  if (!plausible(quick) || player == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: SpellsMenu:{} with no quick menu / player — dropped",
+                verb);
+    return true;
+  }
+
+  const uint32_t which = LoadGuestU32(base, player + 36u);
+  const bool open = LoadGuestU8(base, quick + (which == 2u ? 37u : 36u)) != 0u;
+  const PPCContext saved = ctx;
+
+  // THE PUMP MAY ONLY CLOSE WHAT THE PUMP OPENED — this is a control-loss bug, not tidiness.
+  //
+  // `sub_8236F968` DISARMS ITSELF BEFORE IT DOES THE WORK: it clears QM+36/+37 at 0x8236f9b8
+  // unconditionally, and only then pops the id-5 `GuiBlock` consumer at 0x8236fa00, keyed on
+  // `*(a2 + 36)` — the player object WE pass. Miss that pop and the consumer stays on the
+  // player's stack for ever, because every other closer is gated on the flag just cleared
+  // (`sub_824040B8` case 0x2B at 0x824042e8, `sub_8236EB68` at 0x8236ec88 / 0x8236ecb4). One
+  // missed pop is unrecoverable.
+  //
+  // A stuck id-5 is exactly "opened the blade, closed it, lost all control": `sub_823D93E8`
+  // rebuilds the action map from the TOP consumer's id, and the id-5 arm (0x823D96D0)
+  // registers only 5, 9, 11, 1, 12 and 10 — movement and camera (0, 2, 6, 3, 4, 7) are simply
+  // absent.
+  //
+  // AND THE GUEST RUNS 42/43 ITSELF. `sub_8236F788` has exactly ONE code caller in the image,
+  // 0x82404290 inside the GameAction dispatcher, and the only non-zero writers of QM+36/+37
+  // are its own stores at 0x8236f814/0x8236f81c — yet the flag goes set while this lever logs
+  // nothing but refusals. So the two mechanisms race, and the host's must never close a blade
+  // the guest opened.
+  static bool pump_opened = false;
+
+  if (verb == "open") {
+    if (open) {
+      // Already up, and not by us: the guest's case 0x2A did it, so its own 0x2B owns the
+      // close and the pop that goes with it.
+      pump_opened = false;
+      return true;
+    }
+
+    ctx.r3.u32 = quick;
+    ctx.r4.u32 = player;
+    sub_8236F788(ctx, base);
+    const bool opened = (ctx.r3.u32 & 0xFFu) != 0u;
+    ctx = saved;
+    pump_opened = opened;
+    REXLOG_INFO("Refii guest-tick pump: SpellsMenu:open — {}",
+                opened ? "opened"
+                       : "refused by sub_8236F788 — one of its own gates said no; the "
+                         "commonest is sub_826B4448 wanting TWO spell types awarded AND "
+                         "purchased at power level 0, but this cannot tell which fired");
+    return true;
+  }
+
+  if (verb == "close") {
+    if (!open) {
+      pump_opened = false;
+      return true;
+    }
+
+    if (!pump_opened) {
+      REXLOG_INFO("Refii guest-tick pump: SpellsMenu:close — the GUEST opened this one, so its "
+                  "own GameAction 43 owns the close; closing it here would clear the flag at "
+                  "0x8236f9b8 and orphan the id-5 GuiBlock, which costs the player movement "
+                  "and camera for the rest of the session");
+      return true;
+    }
+
+    ctx.r3.u32 = quick;
+    ctx.r4.u32 = player;
+    sub_8236F968(ctx, base);
+    ctx = saved;
+    pump_opened = false;
+    REXLOG_INFO("Refii guest-tick pump: SpellsMenu:close — closed");
+    return true;
+  }
+
+  REXLOG_INFO("Refii guest-tick pump: SpellsMenu:{} is not a verb — dropped", verb);
+  return true;
+}
+
+/// The quick blade's lever — see kActionSpellBladePrefix.
+///
+/// `sub_826B5430(r3 = widget, r4 = code, r5 = player, r6 = screen)`. r5 is never read; r6 is
+/// read only by case 36's `sub_826B4EF8(a1, a4)`. Both are passed as the guest passes them
+/// (0x824052a0 / 0x8240526c) rather than zeroed, so the call is the guest's call.
+bool DispatchSpellBlade(PPCContext& ctx, uint8_t* base, const std::string& verb) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  uint32_t code = 0u;
+  if (verb == "stick") {
+    code = 26u;
+  } else if (verb == "copydown") {
+    code = 36u;  // `sub_826B4EF8`: copy this level's will down into every later level offering it
+  } else {
+    REXLOG_INFO("Refii guest-tick pump: SpellBlade:{} is not a verb — dropped", verb);
+    return true;
+  }
+
+  const uint32_t gui = LoadGuestU32(base, kGuiObject);
+  const uint32_t quick = plausible(gui) ? LoadGuestU32(base, gui + 28u) : 0u;
+  const uint32_t hud = plausible(gui) ? LoadGuestU32(base, gui + 32u) : 0u;
+  const uint32_t player = PlayerObject(base);
+
+  // SILENT REFUSALS THROUGHOUT: `stick` is posted every frame a trigger is held, so a log line
+  // on the ordinary "nothing to do" answer would bury the run.
+  if (!plausible(quick) || !plausible(hud) || player == 0u) {
+    return true;
+  }
+
+  // The aim/expression latch wins outright — `sub_82405190` tests it FIRST (0x824051b0) and
+  // never reaches the blade while it is set. Same order here, or a held trigger would drive the
+  // expression ring and the blade at once.
+  if (LoadGuestU8(base, quick + 35u) != 0u) {
+    return true;
+  }
+
+  const bool two = LoadGuestU32(base, player + 36u) == 2u;
+  if (LoadGuestU8(base, quick + (two ? 37u : 36u)) == 0u) {
+    return true;  // closed: widget+412 and the cell tables are uninitialised heap
+  }
+
+  const uint32_t widget = LoadGuestU32(base, hud + (two ? 96u : 92u));
+  if (!plausible(widget)) {
+    return true;
+  }
+
+  const uint32_t row_before = LoadGuestU32(base, widget + 176u);
+  const uint32_t cell_before = LoadGuestU32(base, widget + 200u + (row_before * 4u));
+
+  const PPCContext saved = ctx;
+  ctx.r3.u32 = widget;
+  ctx.r4.u32 = code;
+  ctx.r5.u32 = two ? 2u : 1u;
+  ctx.r6.u32 = LoadGuestU32(base, hud + 4u);
+  sub_826B5430(ctx, base);
+  ctx = saved;
+
+  const uint32_t row_after = LoadGuestU32(base, widget + 176u);
+  const uint32_t cell_after = LoadGuestU32(base, widget + 200u + (row_after * 4u));
+  if (row_after != row_before || cell_after != cell_before) {
+    // ONLY ON A CHANGE. Every other frame of a held stick is the guest's own repeat throttle
+    // saying no, which is the normal answer and not worth a line.
+    REXLOG_INFO("Refii guest-tick pump: SpellBlade:{} — row {} -> {}, cell {} -> {} "
+                "(maxRow {}, analog byte {})",
+                verb, row_before, row_after, cell_before, cell_after,
+                static_cast<int32_t>(LoadGuestU32(base, widget + 412u)),
+                LoadGuestU8(base, widget + 165u));
+  }
+
+  return true;
+}
+
 /// The 26/27 commit: the five parameters `sub_826C1B50` reads, then the input handler's 36.
 bool CommitThroughParameters(PPCContext& ctx, uint8_t* base, uint32_t screen_id,
                              const std::string& name, uint32_t type, uint32_t id) {
@@ -2337,6 +2578,44 @@ bool DispatchMenuEventDirect(PPCContext& ctx, uint8_t* base, const std::string& 
                              uint32_t type, uint32_t id) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
+  // THE STALE MODAL LATCH IS CLEARED BEFORE THE GATE, NOT AFTER IT.
+  //
+  // `sub_8236FA68`, the box opener, acts only when the mode reads idle and otherwise does
+  // nothing at all, silently (0x8236fa90). On the real estate screen Buy does not purchase —
+  // `sub_826B2210` case 111 only raises a confirm box, mode 3 id 30 — so the FIRST A latched
+  // the mode and every A after it was a no-op. Measured live: seventy-nine presses, three
+  // boxes, one purchase. The mode also gates the close, since `sub_8236ED98` is guarded by
+  // `sub_822A5D70` = `*(M + 40) != 1`, so a stuck mode wedges Back too.
+  //
+  // AND THE WEDGE IS SELF-SUSTAINING, which is why this cannot live below `InGameScreenRoots`:
+  // that helper's own first act is `if (*(owner + 40) != 1) return false`. A clear placed after
+  // it is unreachable by construction — the only code that could free the latch sat behind a
+  // gate demanding the latch already free. The same gate silently disables every other pump
+  // path while a mode is stuck.
+  //
+  // So resolve the owner directly and finish the guest's own clear (`sub_8236FF58` sets mode 1
+  // AND id 0) first. A MenuEvent is only ever posted while the host has no box up, so both
+  // fields are stale here by definition.
+  {
+    constexpr uint32_t kInGameGuiVtable = 0x82001610u;
+    const uint32_t gui = LoadGuestU32(base, kGuiObject);
+    if (plausible(gui) && LoadGuestU32(base, gui) == kInGameGuiVtable) {
+      const uint32_t latch = LoadGuestU32(base, gui + 28u);
+      if (plausible(latch)) {
+        const uint32_t stale_mode = LoadGuestU32(base, latch + 40u);
+        const uint32_t stale_box = LoadGuestU32(base, latch + 44u);
+        if (stale_mode != 1u || stale_box != 0u) {
+          StoreGuestU32(base, latch + 40u, 1u);
+          StoreGuestU32(base, latch + 44u, 0u);
+          REXLOG_INFO("Refii guest-tick pump: cleared stale modal latch (mode {}, box {}) at "
+                      "owner+40/+44 before '{}' — the guest's own clear (sub_8236FF58) runs on "
+                      "a screen change the host replaced",
+                      stale_mode, stale_box, name);
+        }
+      }
+    }
+  }
+
   uint32_t owner = 0;
   uint32_t screen_id = 0;
   if (!InGameScreenRoots(base, &owner, &screen_id)) {
@@ -2352,14 +2631,6 @@ bool DispatchMenuEventDirect(PPCContext& ctx, uint8_t* base, const std::string& 
   // first box — the spell selector's type 23 included — was swallowed unread. A MenuEvent is
   // only sent while the host has no box up, so the id is stale by definition here; finish the
   // guest's own clear before dispatching.
-  const uint32_t stale_box = LoadGuestU32(base, owner + 44u);
-  if (stale_box != 0u) {
-    StoreGuestU32(base, owner + 44u, 0u);
-    REXLOG_INFO("Refii guest-tick pump: cleared stale box id {} at owner+44 before '{}' — "
-                "the guest's own clear (sub_8236E630) runs on a screen change the host replaced",
-                stale_box, name);
-  }
-
   PPCContext probe = ctx;
   probe.r3.u32 = owner;
   probe.r4.u32 = screen_id;
@@ -2465,7 +2736,19 @@ bool DispatchMenuEventDirect(PPCContext& ctx, uint8_t* base, const std::string& 
     case 0x826C6110u: sub_826C6110(work, base); break;
     case 0x826C45C8u: sub_826C45C8(work, base); break;
     case 0x826B65F0u: sub_826B65F0(work, base); break;
-    default: break;  // unreachable: the switch above already refused anything else
+    case 0x826B2210u: sub_826B2210(work, base); break;
+
+    // NEVER SILENTLY. This default was commented "unreachable: the switch above already
+    // refused anything else" and was not: the admission switch and this one are two hand-kept
+    // lists of the same slots, and 0x826B2210 was added to that one alone. Screen 28 was
+    // admitted, fell through here, and did nothing — while the two REXLOG lines bracketing
+    // this switch, both OUTSIDE it, reported a dispatch and a return. Thirteen Buy presses
+    // read as thirteen successful commits that raised no box.
+    default:
+      REXLOG_INFO("Refii guest-tick pump: screen {}'s handler 0x{:08X} is admitted but has no "
+                  "call in the dispatch switch — '{}' was NOT delivered",
+                  screen_id, slot, name);
+      break;
   }
 
   REXLOG_INFO("Refii guest-tick pump: '{}' RETURNED from the screen handler", name);
@@ -3857,7 +4140,7 @@ void SampleHeroDerived(PPCContext& ctx, uint8_t* base) {
 
 /// Commits a menu row by identity — see kActionMenuEventPrefix.
 bool DispatchMenuEvent(PPCContext& ctx, uint8_t* base, const std::string& name, uint32_t type,
-                       uint32_t id) {
+                       uint32_t id, bool arm) {
   // The name goes into a Lua single-quoted literal, so anything that could close it early or
   // escape into the chunk is refused rather than sanitised — a mangled name would match a
   // different branch of somebody's strcmp, which is worse than not committing.
@@ -3897,10 +4180,11 @@ bool DispatchMenuEvent(PPCContext& ctx, uint8_t* base, const std::string& name, 
       sub_8236FFC0(handler_ctx, base);
       const uint32_t handler = handler_ctx.r3.u32;
       if (handler >= 0x10000u && handler < 0xC0000000u) {
-        StoreGuestU8(base, handler + 198u, 1u);
-        REXLOG_INFO("Refii guest-tick pump: armed abilities handler 0x{:08X}+198 = 1 before "
-                    "'{}' — an identity push with it clear is the QUERY arm, not the purchase",
-                    handler, name);
+        StoreGuestU8(base, handler + 198u, arm ? 1u : 0u);
+        REXLOG_INFO("Refii guest-tick pump: abilities handler 0x{:08X}+198 = {} before '{}' — "
+                    "set is the PURCHASE arm (sub_8246C970), clear is the DISCARD confirm; "
+                    "the guest's own A and Y store exactly this (sub_826C2958 cases 36/39)",
+                    handler, arm ? 1 : 0, name);
       }
     }
   }
@@ -4129,10 +4413,13 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       REXLOG_INFO("Refii guest-tick pump: GuiLua probe {} ({} bytes)",
                   ran ? "ran" : "had no live presentation", chunk.size());
       ran = true;
-    } else if (name.rfind(kActionMenuEventPrefix, 0) == 0) {
+    } else if (name.rfind(kActionMenuEventPrefix, 0) == 0 ||
+               name.rfind(kActionMenuDiscardPrefix, 0) == 0) {
+      const bool arm = name.rfind(kActionMenuEventPrefix, 0) == 0;
       // `MenuEvent:<name>:<type>:<id>` — the name may itself contain no colon, so the two
       // numbers are taken from the END and everything before them is the name.
-      const std::string body = name.substr(std::strlen(kActionMenuEventPrefix));
+      const std::string body = name.substr(std::strlen(
+          arm ? kActionMenuEventPrefix : kActionMenuDiscardPrefix));
       const std::size_t lastColon = body.rfind(':');
       const std::size_t firstColon =
           lastColon == std::string::npos ? std::string::npos : body.rfind(':', lastColon - 1);
@@ -4156,9 +4443,13 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       }
 
       ran = DispatchMenuEvent(ctx, base, body.substr(0, firstColon),
-                              static_cast<uint32_t>(type), static_cast<uint32_t>(id));
+                              static_cast<uint32_t>(type), static_cast<uint32_t>(id), arm);
     } else if (name.rfind(kActionQuickWheelPrefix, 0) == 0) {
       ran = DispatchQuickWheel(ctx, base, name.substr(std::strlen(kActionQuickWheelPrefix)));
+    } else if (name.rfind(kActionSpellBladePrefix, 0) == 0) {
+      ran = DispatchSpellBlade(ctx, base, name.substr(std::strlen(kActionSpellBladePrefix)));
+    } else if (name.rfind(kActionSpellsMenuPrefix, 0) == 0) {
+      ran = DispatchSpellsMenu(ctx, base, name.substr(std::strlen(kActionSpellsMenuPrefix)));
     } else if (name.rfind(kActionInventoryPrefix, 0) == 0) {
       ran = DispatchInventoryAction(ctx, base,
                                     name.substr(std::strlen(kActionInventoryPrefix)));

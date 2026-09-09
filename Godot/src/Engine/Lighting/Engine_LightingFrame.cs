@@ -93,11 +93,16 @@ public static class Engine_LightingFrame
 
 	private static float InteriorCvar(string name, string env, float fallback, float min, float max)
 	{
-		// One config read per second at most: the post-effect asks every frame.
+		// One config read per second at most: the post-effect asks every frame. Two threads
+		// come through here — the main thread via ConfigureEnvironment and the render thread
+		// via the post-effect's DarkLift — so the cache is read and written under its lock.
 		double now = Time.GetTicksMsec() / 1000.0;
-		if (_cvarCache.TryGetValue(name, out (double At, float Value) hit) && now - hit.At < 1.0)
+		lock (_cvarCache)
 		{
-			return hit.Value;
+			if (_cvarCache.TryGetValue(name, out (double At, float Value) hit) && now - hit.At < 1.0)
+			{
+				return hit.Value;
+			}
 		}
 
 		float value = fallback;
@@ -119,7 +124,11 @@ public static class Engine_LightingFrame
 		}
 
 		float clamped = Math.Clamp(value, min, max);
-		_cvarCache[name] = (now, clamped);
+		lock (_cvarCache)
+		{
+			_cvarCache[name] = (now, clamped);
+		}
+
 		return clamped;
 	}
 
@@ -294,21 +303,33 @@ public static class Engine_LightingFrame
 		// Component [1] is the elevation term — the orbit is built as
 		// (cos(E)*axisX, sin(E), cos(E)*axisY) — so [1] > 0 is "above the horizon".
 		Array.Copy(result.SunDirection, result.LightDirection, 3);
-		float sunUp = result.SunDirection[1];
-		float moonUp = frame.MoonDirection[1];
-		if (sunUp > 0f)
+
+		// THE GATE IS THE RIG, NOT THE DISC — and they are not the same body.
+		//
+		// `result.SunDirection` was overwritten with the VISIBLE DISC above (modern mode only),
+		// so reading it here silently turned the horizon test into a disc test. The disc sets;
+		// the guest's light does not. `MainLightElevation` is four authored keyframes and EVERY
+		// ONE OF THE 53 RECORDS in `environmentthemes.gdb` that states them is positive — the
+		// range across the whole game is 0 to 90 degrees, the constructor's own defaults being
+		// 50/20/70/20. The rig is up all night, at 20-70 degrees.
+		//
+		// So handing the night to the moon axis put a dusk-warm light raking the terrain at
+		// 3-14 degrees where the game states a high, even fill. That is the warm pool on the
+		// ground: only slopes facing that low light catch it, and no cascade holds a grazing
+		// light, so it reads as the sun shining through the floor. The theme states no moon
+		// COLOUR at all — only disc parameters — which is the tell that the moon was never
+		// meant to drive this light.
+		float discUp = result.SunDirection[1];
+		float rigUp = frame.MainLightDirection[1];
+		if (discUp > 0f)
 		{
-			result.SunEnergy = sunEnergy * MathF.Min(sunUp / HorizonFade, 1f);
+			result.SunEnergy = sunEnergy * MathF.Min(discUp / HorizonFade, 1f);
 		}
 		else
 		{
-			// The moon carries the night on its own orbit and its own intensity. When it is down
-			// too, nothing directional remains and the scene is ambient alone, which is what a
-			// moonless night is.
-			Array.Copy(frame.MoonDirection, result.LightDirection, 3);
-			float moonScale = sky.HasMoonParams ? sky.MoonIntensity : 1.0f;
-			result.SunEnergy = moonUp > 0f
-				? sunEnergy * moonScale * MathF.Min(moonUp / HorizonFade, 1f)
+			Array.Copy(frame.MainLightDirection, result.LightDirection, 3);
+			result.SunEnergy = rigUp > 0f
+				? sunEnergy * MathF.Min(rigUp / HorizonFade, 1f)
 				: 0f;
 		}
 

@@ -460,17 +460,26 @@ public static class Engine_EnvironmentTheme
                     RecordRef target = ResolveRecordField(owner, hash);
                     return target.Valid && ApplyWeatherThemeRecord(target, (WeatherTheme)t);
                 },
-                time => theme.SourceTimeOfDay = time);
+                time => theme.SourceTimeOfDay = time,
+                sharedGlobalsMayApply: false);
 
             theme.HasAny = applied;
             return applied;
         }
 
+        /// <param name="sharedGlobalsMayApply">
+        /// Whether the last-ditch fallback may reach records from the SHARED databases.
+        /// `AppendSharedGdbs` puts `environmentthemes.gdb` and `globals.gdb` on every level's
+        /// chain, so that fallback can hand a level a theme belonging to no level in
+        /// particular. Harmless for lighting, which needs some answer. NOT harmless for
+        /// weather: it is how an interior that states none of its own inherited snow.
+        /// </param>
         private bool RunChain(
             object theme,
             Func<object, RecordRef, bool> applyRecord,
             Func<object, RecordRef, uint, bool> applyField,
-            Action<float> setTime)
+            Action<float> setTime,
+            bool sharedGlobalsMayApply = true)
         {
             bool applied = false;
 
@@ -517,7 +526,7 @@ public static class Engine_EnvironmentTheme
                 }
             }
 
-            if (!applied)
+            if (!applied && sharedGlobalsMayApply)
             {
                 foreach (RecordRef global in LookupAll(EnvHash.EnvThemeGlobal))
                 {

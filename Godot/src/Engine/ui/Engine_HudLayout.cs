@@ -133,6 +133,48 @@ public sealed class Engine_HudLayout
         // `Group.Text` and plays the root's slides (1 from off, 2 up, 3 down, 4/5 off) itself, so
         // following its live element state is the whole job.
         ("JobMultiplier", "JobMultiplier", null, 0.5f),
+
+        // THE HEALTH READOUT IS ONE WIDGET, and cutting it per binding is what detached it.
+        // `Layer/UpperElements/PlayerHealth` holds five bound elements — the `TopBox` toggle on
+        // the root, `TopBoxY` on `HealthAndMana`, `PlayerHealth` on `Bar`, `PlayerHealthMax` on
+        // `BarMax` and `PlayerLowHealthPulser` on the orb — and a piece per binding strips the
+        // bound descendants out of each clone. The orb (`Icon/Component/Base`), the heart
+        // (`Icon/Heart`) and both bars then land in DIFFERENT clones, so a transform authored on
+        // a shared ancestor reaches only whichever clone happens to contain that ancestor:
+        // `TopBoxY` drove `Health`'s `position.y` 0 -> -136 track onto the clone holding the
+        // heart alone, and nothing else moved with it.
+        //
+        // Cut whole, the nested meters bind to their own values and scrub at their own
+        // playheads inside one clone, so the orb, heart, fill and cap compose the way the art
+        // composes them and the group drops together when the quest box grows. The per-binding
+        // pieces underneath are dropped by `AbsorbIntoGroups`, which owns exactly this case.
+        //
+        // The anchor is SNAPPED, not fixed: the authored position is the guest's statement of
+        // where this belongs (x -369, or -512 through the widescreen adapter; y 295), and the
+        // wheel and the meters already take theirs the same way.
+        // PLACED, NOT SNAPPED. Snapping from the authored position put the widget's drawn
+        // rect at canvas x -684 against a left edge of about -633 — 51 units past it, which is
+        // the sliver that kept appearing. The composition between a group's origin and where
+        // its children actually land is not something to re-derive: the `[hud-view] groups:`
+        // line reports the rect, and these offsets are set from it.
+        //
+        // OUR NUMBERS, not the file's. They belong in the layout template with the rest, and
+        // the saved arrangement overrides them anyway once one exists — these are the defaults
+        // a fresh install gets.
+        ("PlayerHealth", "PlayerHealth", Anchor.TopLeft, 0f),
+        ("CoopHealth", "CoopHealth", Anchor.TopRight, 0f),
+
+        // THE TARGETED-CITIZEN READOUT, for the same reason. `Layer/TargetedQuery` is one
+        // component holding the name, the opinion slider, the mood-face pairs and the
+        // gift/marry/divorce icons, and it carries NINE bindings — so per-binding pieces cut it
+        // into nine independently anchored fragments and the opinion bar was stretched across
+        // the whole screen instead of keeping the art's own geometry. The bar's authored reach
+        // is `pip.x` -225..+224 inside `grp` at scale 0.5 under `LoveSlider` at 1.5 — a slider
+        // about a seventh of the canvas wide, not a full-width rule.
+        //
+        // The wide dark band behind it IS authored and correct: `BoxAndBar/TopBox` spans
+        // x -641.7..+641.7 at opacity 70. That one is the guest's, not ours.
+        ("TargetedQuery", "TargetedQuery", Anchor.TopCentre, 0f),
     };
 
     private readonly List<Piece> _pieces = new();
@@ -297,11 +339,35 @@ public sealed class Engine_HudLayout
             groupAnchor[group] = SnapAnchor(sum / groupCount[group]);
         }
 
+        // Every meter-bound ordinal, gathered before anything is classified, because a fill
+        // belongs to the NEAREST meter binding above it rather than to any binding above it.
+        var meterBound = new HashSet<int>();
+        foreach (Engine_UiBindings.Binding binding in bindings.All)
+        {
+            if (binding.Kind == Engine_UiBindings.Kind.Meter)
+            {
+                meterBound.Add(binding.ElementOrdinal);
+            }
+        }
+
         foreach (Engine_UiBindings.Binding binding in bindings.All)
         {
             Drive driven = binding.Kind switch
             {
-                Engine_UiBindings.Kind.Meter => Drive.Bar,
+                // NOT EVERY METER IS A BAR. `TopBoxY`, `CornerY` and `SubtitlesX` are LAYOUT
+                // meters: they move whole components rather than filling anything, and the
+                // rule for telling them apart is OWNERSHIP, not a name list —
+                // `Engine_UiLiveValues` has carried it for a while and records what ignoring
+                // it costs ("driving whatever quad happens to sit under them is how a meter at
+                // 50% drew the heart icon at half size"). This file never got the rule, which
+                // is a second implementation of one concern.
+                //
+                // It matters most now that the health readout is cut whole: `TopBoxY` is bound
+                // to `HealthAndMana`, the PARENT of the health bar, and its tracks move
+                // `Health`'s `position.y` 0 -> -136. Driven as a bar it drags the entire group
+                // — orb, heart, fill and cap — off the top-left of the screen.
+                Engine_UiBindings.Kind.Meter =>
+                    OwnsFill(screen, binding.ElementOrdinal, meterBound) ? Drive.Bar : Drive.None,
                 Engine_UiBindings.Kind.Text => Drive.Text,
                 Engine_UiBindings.Kind.Pulser => Drive.Pulse,
 
@@ -380,8 +446,14 @@ public sealed class Engine_HudLayout
             for (int i = 0; i < screen.Nodes.Length; ++i)
             {
                 UiNode node = screen.Nodes[i];
+                // `UpperElements` COUNTS AS A ROOT CONTAINER. Every group here used to sit
+                // directly under `Layer`, so the check named it alone; the health readout sits
+                // one level further down, under `Layer/UpperElements`, which is the same kind of
+                // bare container and not a widget of its own. Restricting to `Layer` silently
+                // matched nothing for it — a group that never forms leaves the per-binding
+                // pieces standing, which looks like the layout working.
                 if (node.Type != BgfElementType.Component || node.Name != name ||
-                    node.Parent?.Name != "Layer")
+                    node.Parent?.Name is not ("Layer" or "UpperElements"))
                 {
                     continue;
                 }
@@ -445,6 +517,51 @@ public sealed class Engine_HudLayout
         Engine_UiSpellAssign.ElementName + "2",
     };
 
+    /// <summary>
+    /// Whether a meter binding owns a fill of its own — the test that separates a BAR from a
+    /// LAYOUT meter, ported from <c>Engine_UiLiveValues.FindFill</c> rather than reinvented.
+    ///
+    /// A fill is a `BarMiddle` quad whose NEAREST meter-bound ancestor is this element. The
+    /// nearness is the whole point: `TopBoxY` is bound to `HealthAndMana`, the grandparent of
+    /// the health bar, and a plain descendant search from there cheerfully claims the health
+    /// bar's own fill — two meters writing one node, last one wins.
+    /// </summary>
+    private static bool OwnsFill(Engine_UiScreen screen, int root, HashSet<int> meterBound)
+    {
+        for (int ordinal = 0; ordinal < screen.Nodes.Length; ++ordinal)
+        {
+            if (!string.Equals(screen.Nodes[ordinal].Name, Engine_UiBindings.FillName,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (NearestMeter(screen, ordinal, meterBound) == root)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>The nearest meter-bound element at or above <paramref name="ordinal"/>, or -1.</summary>
+    private static int NearestMeter(Engine_UiScreen screen, int ordinal, HashSet<int> meterBound)
+    {
+        // Bounded rather than trusted to terminate: a parent chain is data from a file, and a
+        // cycle would hang the build rather than draw something wrong.
+        UiNode? at = ordinal >= 0 && ordinal < screen.Nodes.Length ? screen.Nodes[ordinal] : null;
+        for (int steps = 0; at is not null && steps <= screen.Nodes.Length; at = at.Parent, ++steps)
+        {
+            if (meterBound.Contains(at.Ordinal))
+            {
+                return at.Ordinal;
+            }
+        }
+
+        return -1;
+    }
+
     /// <summary>Whether an element sits inside — or is — a subtree another view owns.</summary>
     private static bool Owned(Engine_UiScreen screen, int ordinal)
     {
@@ -473,6 +590,13 @@ public sealed class Engine_HudLayout
     private static readonly Dictionary<string, (Anchor Anchor, Vector2 Offset)> Arrangement =
         new()
         {
+            // THE HEALTH READOUTS, from the measured rect rather than the authored position —
+            // see the note beside them in GroupSubtrees. Player: snapping gave rect x -684
+            // against a -633 edge, so it moves right by 84. Co-op: its rect ran to +657 against
+            // a +633 edge, so it moves left by 57.
+            ["group.PlayerHealth.PlayerHealth"] = (Anchor.TopLeft, new Vector2(212f, 65f)),
+            ["group.CoopHealth.CoopHealth"] = (Anchor.TopRight, new Vector2(-162f, 71f)),
+
             // The quest banner's two lines, which the file parks together at the group origin.
 
             // The subtitle line is NOT here: the guest writes its position as an absolute
@@ -544,8 +668,23 @@ public sealed class Engine_HudLayout
 
             pieces.RemoveAll(piece =>
             {
-                bool inside = !ReferenceEquals(piece, group) && piece.ElementOrdinal >= 0 &&
-                    IsAncestor(screen, group.ElementOrdinal, piece.ElementOrdinal);
+                // THE GROUP'S OWN ELEMENT COUNTS, not just its descendants. `IsAncestor` starts
+                // at the parent, so a binding on the group ROOT was never absorbed: the health
+                // readout's root carries `SlideToggleName "TopBox"`, so
+                // `slidetoggle.TopBox.PlayerHealth` and `group.PlayerHealth.PlayerHealth` are
+                // the SAME element placed twice, at two different anchors — one snapped to the
+                // top-left, one to top-centre with a -512 offset. They coincide at one window
+                // width and drift apart at every other.
+                // IDENTITY BY ID, NOT BY REFERENCE. `Piece` is a record STRUCT, so
+                // `ReferenceEquals(piece, group)` boxes both operands and is ALWAYS FALSE —
+                // the compiler says so (CA2013) and it was ignored. While the only test below
+                // was `IsAncestor`, that latent bug could not bite: nothing is its own
+                // ancestor. Adding the same-element test made it fatal, and every group
+                // matched itself and was removed — the whole HUD vanished, 96 pieces down to
+                // 84. Ids are unique here, so they are the identity.
+                bool inside = piece.Id != group.Id && piece.ElementOrdinal >= 0 &&
+                    (piece.ElementOrdinal == group.ElementOrdinal ||
+                     IsAncestor(screen, group.ElementOrdinal, piece.ElementOrdinal));
                 if (inside)
                 {
                     absorbed.Add($"{piece.Id} into {group.Id}");

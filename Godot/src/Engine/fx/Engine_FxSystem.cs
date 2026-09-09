@@ -595,6 +595,11 @@ public sealed class Engine_FxSystem
 
             FxEffect? eff = bank.FindByHash(p.EffectHash);
             if (eff is null) continue;
+            // The field IS the guest's group index into its two rate columns, copied verbatim
+            // with no clamp: `desc+32` to `def+60` to `inst+12`. Group 0 updates at 15 Hz with
+            // dt 1/15 and advances 2 authored frames; group 1 at 30 Hz with dt 1/30 and 1 frame.
+            // Anything above 1 reads PAST the guest's own arrays, so it is folded to group 1
+            // here rather than reproduced.
             inst.Step = eff.UpdateFrequency >= 1 ? 1 : 2;
             inst.DtSec = eff.UpdateFrequency >= 1 ? 1f / 30f : 1f / 15f;
 
@@ -1258,12 +1263,23 @@ public sealed class Engine_FxSystem
         dt = MathF.Min(dt, 0.25f);
         foreach (InstanceState inst in _instances)
         {
+            // AN AUTHORED FRAME IS 1/30 s FOR EVERY EMITTER, and `UpdateFrequency` is a
+            // simulation LOD rather than a speed. The guest keeps two parallel arrays indexed by
+            // that field: update rate 15 or 30 Hz, physics dt 1/15 or 1/30, and frames advanced
+            // per update 2.0 (0x8209B480) or 1.0 (0x82099490). Its advance is a single
+            // `fmadds f11, f12, f0, f13` at 0x8322f21c writing the emitter's frame counter at
+            // +0xFC, so both columns come out at 15x2 = 30x1 = 30 authored frames a second.
+            //
+            // We advanced `Step` frames on EVERY 1/30 s tick, so a half-rate emitter ran at 60 —
+            // exactly twice too fast, and 0 is the default the quest trail carries. The period
+            // has to scale with the step, not just the step with the field.
+            float period = FrameDt * inst.Step;
             inst.Time += dt;
             inst.DtAccum += dt;
             int steps = 0;
-            while (inst.DtAccum >= FrameDt && steps < 8)
+            while (inst.DtAccum >= period && steps < 8)
             {
-                inst.DtAccum -= FrameDt;
+                inst.DtAccum -= period;
                 Tick(inst);
                 steps++;
             }

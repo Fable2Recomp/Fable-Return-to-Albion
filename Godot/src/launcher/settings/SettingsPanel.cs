@@ -284,7 +284,7 @@ public partial class SettingsPanel : VBoxContainer
 
 			default:
 			{
-				List<string> options = RuntimeSettingsModel.ParseAllowedValues(definition.AllowedValues);
+				List<string> options = RuntimeSettingsModel.OptionsFor(definition, _model.Values);
 				if (options.Count == 0)
 				{
 					var edit = new LineEdit { Text = current, Editable = !disabled };
@@ -328,7 +328,12 @@ public partial class SettingsPanel : VBoxContainer
 		_model.Save();
 		_statusLabel.Text = _model.StatusMessage;
 
-		if (definition.Name is "renderer_backend" or "renderer_plume_api")
+		// The resolution list is derived from the aspect AND the monitor — it is filtered to
+		// what that screen can show — so either one moving has to redraw the row below it.
+		// Otherwise it keeps offering the previous shape's sizes, or sizes the newly chosen
+		// monitor cannot display.
+		if (definition.Name is "renderer_backend" or "renderer_plume_api"
+			or "display_aspect" or "monitor")
 		{
 			Rebuild();
 		}

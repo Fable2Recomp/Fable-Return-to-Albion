@@ -1711,16 +1711,22 @@ public partial class GameUi : Node
 			HoldScreenStick(GameInput.MenuDirection);
 		}
 
-		// Y on the abilities screen is UNLEARN: `sub_826C2958` code 39 clears `+198` and raises
-		// `OnPressA` through Lua, whose push is deferred here and never lands, so the identity
-		// commit is that push taken directly — the arm first, then the row. `sub_826C2D40`'s
-		// else-arm then opens the guest's own unlearn query box.
+		// Y on the abilities screen is UNLEARN: `sub_826C2958` code 39 clears `+198`
+		// (0x826c2b2c) and raises `OnPressA` through Lua, whose push is deferred here and never
+		// lands, so the identity commit is that push taken directly. `sub_826C2D40` @0x826c2d78
+		// then reads `+198` — set runs `sub_8246C970`, the PURCHASE; clear opens the discard
+		// confirm.
+		//
+		// `discard: true` is what makes this a discard rather than a very expensive way to buy
+		// the ability again. It does TWO things, and this used to do neither: it skips the row's
+		// own `Ability:learn:` command, which calls the purchase directly and beat the 39 to it,
+		// and it posts `MenuDiscard` so the pump clears `+198` instead of arming it.
 		if (GameInput.MenuFlipPressed &&
 			Engine_UiTemplates.Screen(state.ScreenId) is { FlipAction.Length: > 0 } flipScreen &&
 			_screenMenu is { } unlearn)
 		{
 			Engine_UiScreenActions.Run(flipScreen.FlipAction);
-			if (unlearn.Commit())
+			if (unlearn.Commit(discard: true))
 			{
 				_screenMenuView?.Refresh();
 				ReportMenuView(_screenMenuView);
@@ -2406,6 +2412,18 @@ public partial class GameUi : Node
 			}
 		}
 
+		// REGISTRY 10 IS VERBATIM — no shift. `sub_828421F8` hands the published integer
+		// straight to the slide player, and registry 9 reaches that same call through
+		// `sub_82426CA8` with 1 or 2, so the toggle's +1 is the toggle's and not the channel's.
+		// Nothing clamps: an index the owner has no slide for simply finds nothing.
+		foreach ((uint hash, int slide) in _hud.Values.SlideSets)
+		{
+			foreach (int ordinal in bindings.Elements(Engine_UiBindings.Kind.SlideSet, hash))
+			{
+				Fold(ordinal, slide);
+			}
+		}
+
 		if (folded != _hudStatedFolded)
 		{
 			_hudStatedFolded = folded;
@@ -2664,7 +2682,21 @@ public partial class GameUi : Node
 			return;
 		}
 
-		bool cadence = ++_worldIconTick % PresentationSampleFrames == 0;
+		// THE WHEEL IS A ONE-FRAME STATEMENT, so the ordinary cadence cannot serve it.
+		// `sub_826AB1F8` writes all eight sectors' icons and titles in the single frame
+		// `sub_826A9A60` opens the ring, sets the populated flag at `wheel+30` after the
+		// populate returns, and never restates them — there is no per-frame update on that
+		// class. Sampling on the 30-frame cadence therefore catches whatever fraction of the
+		// ring existed at the last multiple of 30, which at the ~19fps one run measured is
+		// most of a second of half-dressed wheel. Same argument as the spell blade's arm in
+		// SampleIsOverdue: a widget the player is driving directly has to sample at the rate
+		// they drive it.
+		//
+		// The increment stays on the left so it runs every frame regardless — this is an
+		// EXTRA sampling window, not a replacement clock. It costs the texture-hash walk per
+		// frame for as long as the ring is held, and only then.
+		bool cadence = ++_worldIconTick % PresentationSampleFrames == 0 ||
+			GameInput.QuickWheelHeld;
 
 		// THE GATE RUNS EVERY FRAME AGAIN, because the read it was rationing is no longer a
 		// read. It went 30-frame -> per-frame -> every third frame, and each move was the right
@@ -2875,6 +2907,53 @@ public partial class GameUi : Node
 							}
 						}
 					}
+
+					// THE SPELLS MENU. The comment here used to say "no GameAction reaches the
+					// consumer that would run 42 and 43, so the guest never sees the press" —
+					// THAT IS FALSE. `sub_8236F788` has one code caller, the guest's own
+					// GameAction dispatcher, and it is what sets the open flag in a live run
+					// while the host lever logs only refusals. The guest sees the trigger.
+					//
+					// These posts are kept as a debug lever, and the pump now refuses to CLOSE a
+					// blade it did not open — closing the guest's own clears the flag at
+					// 0x8236f9b8 before the id-5 GuiBlock pop at 0x8236fa00 can run, and an
+					// orphaned GuiBlock costs movement and camera for the rest of the session.
+					if (GameInput.SpellsMenuPressed)
+					{
+						HostBridge.PostFrontEndAction("SpellsMenu:open");
+					}
+					else if (GameInput.SpellsMenuReleased)
+					{
+						HostBridge.PostFrontEndAction("SpellsMenu:close");
+					}
+					else if (GameInput.SpellsMenuHeld)
+					{
+						// ONE POST, NO DIRECTION AND NO CLOCK.
+						//
+						// `sub_826B5430`'s switch runs on what `sub_828818E8` RETURNS, not on
+						// the code it is handed (0x826b5450 / `switch (result)` 0x826b5474), and
+						// for code 26 that routine reads the live left stick out of the guest's
+						// own pad through `sub_82881AB0`, applies the guest's hysteresis — 0.6
+						// from rest, 0.1 along the axis held, 0.95 to cross — and the guest's
+						// auto-repeat `sub_82881B28`, then moves the row or the carousel and
+						// commits. A centred stick returns 0 and the switch falls through: a
+						// no-op. A host clock here would only fight `sub_82881B28`, which is
+						// also what makes this unable to race the guest's own delivery.
+						//
+						// Posted unconditionally while the trigger is held; the pump holds the
+						// authoritative gate (the blade's own open byte) and refuses silently,
+						// so there is no second copy of that state here to fall out of step.
+						HostBridge.PostFrontEndAction("SpellBlade:stick");
+
+						// A copies this power level's will down into every later level that also
+						// offers it (`sub_826B4EF8`). B is the guest's own GameAction 43 and is
+						// never ours — see DispatchSpellsMenu on the orphaned GuiBlock.
+						if (GameInput.MenuAcceptPressed)
+						{
+							HostBridge.PostFrontEndAction("SpellBlade:copydown");
+						}
+					}
+
 					for (int i = 0; i < elements.Count; ++i)
 					{
 						// A piece is dark when the guest says so, when its SLIDE says so, or when the
@@ -3219,6 +3298,30 @@ public partial class GameUi : Node
 		if (action is null)
 		{
 			// Expanded or collapsed a group — complete here.
+			return true;
+		}
+
+		// ANY OTHER CHOICE CANCELS A PENDING QUIT. The guest returns a refused box to this list,
+		// so the next row picked IS the refusal — otherwise the latch would outlive it and turn
+		// a later "quit to title" into an exit.
+		if (_quitToDesktopPending)
+		{
+			_quitToDesktopPending = false;
+			GD.Print("[game-ui] a pending quit to the desktop was cancelled — the pause list " +
+				"took another choice, so the guest's box was answered 'no'");
+		}
+
+		if (action.StartsWith(Engine_PauseMenu.QuitCommandPrefix, System.StringComparison.Ordinal))
+		{
+			// Same event as the matching title row, so the same confirmation box and the same
+			// save; the host adds only the latch above.
+			string saving = action[Engine_PauseMenu.QuitCommandPrefix.Length..];
+			_quitToDesktopPending = true;
+			_quitToDesktopWindow = QuitToDesktopWindowSeconds;
+			HostBridge.PostFrontEndAction(Engine_PauseMenu.SavingCommandPrefix + saving);
+			GD.Print($"[game-ui] pause entry '{_pauseMenu.Highlighted?.Name}' posted " +
+				$"'{Engine_PauseMenu.SavingCommandPrefix}{saving}' and armed the quit to the " +
+				"desktop; the app ends when the guest reaches the front end");
 			return true;
 		}
 
@@ -3671,6 +3774,20 @@ public partial class GameUi : Node
 	/// key events here instead would move the repeat timing into this class, which is the one
 	/// piece of the feel that was read out of shipped Lua rather than chosen.
 	/// </summary>
+	/// <summary>
+	/// How long an armed quit waits for the guest to reach the front end before disarming.
+	/// </summary>
+	private const double QuitToDesktopWindowSeconds = 120.0;
+
+	/// <summary>
+	/// A pause row asked to leave for the desktop and the guest is still saving and tearing the
+	/// world down. See the latch at the top of <see cref="ui_processBody"/>.
+	/// </summary>
+	private bool _quitToDesktopPending;
+
+	/// <summary>Seconds left on that latch.</summary>
+	private double _quitToDesktopWindow;
+
 	public override void _Process(double delta)
 	{
 		using (Refii.Core.Engine_FramePhases.Measure("ui_process"))
@@ -3681,6 +3798,30 @@ public partial class GameUi : Node
 
 	private void ui_processBody(double delta)
 	{
+		// THE QUIT LATCH. The guest is still running its confirmation, save and teardown; the
+		// front end coming up is it reporting all three done, and the only point at which
+		// ending the process cannot interrupt a save in flight.
+		if (_quitToDesktopPending)
+		{
+			_quitToDesktopWindow -= delta;
+			if (HostBridge.GetFrontEndModel() is not null)
+			{
+				_quitToDesktopPending = false;
+				GameExit.ToDesktop(GetTree());
+				return;
+			}
+
+			// A BOUND on the latch, not a claim about the guest: a player can refuse the box,
+			// leave the pause list and play on, and an armed latch would then fire on some
+			// later return to the title.
+			if (_quitToDesktopWindow <= 0.0)
+			{
+				_quitToDesktopPending = false;
+				GD.Print("[game-ui] the pending quit to the desktop expired — the guest never " +
+					"reached the front end; staying in the game");
+			}
+		}
+
 		// THE HOST'S EMBEDDED PREVIEW dies with the page that asked for it. The ask is
 		// per-frame (the abilities detail block sets the flag); a frame with no ask — the
 		// blade, another screen, gameplay — takes the movie down.
@@ -3831,6 +3972,7 @@ public partial class GameUi : Node
 				HostBridge.GetTopBoxFront(), GameInput.AHeld, GameInput.YHeld, _hud.Values,
 				_presentation?.Strings);
 			Engine_UiHudExpressionMeter.Publish(HostBridge.GetExpressionMeter(), _hud);
+			Engine_UiHudTargetedQuery.Publish(HostBridge.GetTargetedQuery(), _hud.Values);
 		}
 
 		// HAND THE OWNED BOXES TO THE SURFACE THAT DRAWS THEM. While this is non-empty the
@@ -4035,6 +4177,14 @@ public partial class GameUi : Node
 		if (action is "SubtitlesOn" or "SubtitlesOff")
 		{
 			ApplySubtitlesEmphasis(action == "SubtitlesOn");
+		}
+
+		// Host-owned: no guest branch to reach (Engine_FrontEndMenu.QuitToDesktopCommand). No
+		// confirmation — the front end holds no unsaved progress.
+		if (action == Engine_FrontEndMenu.QuitToDesktopCommand)
+		{
+			GameExit.ToDesktop(GetTree());
+			return;
 		}
 
 		// HOST-OWNED, deliberately. The guest's branch is XamShowMarketplaceUI — a stubbed
@@ -7118,6 +7268,21 @@ public partial class GameUi : Node
 	/// </summary>
 	private bool SampleIsOverdue()
 	{
+		// THE SPELL BLADE IS A LIVE WIDGET ON A LAZY CHANNEL. The guest expresses the whole
+		// blade through SLIDES and TEXTURE SWAPS — `sub_826B4770` puts `Group.Spell{n}` on
+		// slide 2 or 3, `sub_826B5710` writes the HL1/HR1 icons — and every one of those
+		// reaches the book only in the presentation sample, thirty frames apart. Only the
+		// transform is refreshed per frame. So a d-pad press moved nothing for half a second
+		// and then jumped, and fast input read as dropped entirely.
+		//
+		// The screen id does not change while the blade is up, so the arm below cannot see it.
+		// This is the same "the cadence is wrong rather than merely lazy" window: a widget the
+		// player is driving directly has to sample at the rate they drive it.
+		if (HostBridge.AbilitiesAssignmentOpen())
+		{
+			return true;
+		}
+
 		// Null is the front end, or no guest at all: the follower's other branch runs there and
 		// this has nothing to say about it. Separate from the caught-up arm below, because
 		// leaving the game is not catching up and must not be reported as it.

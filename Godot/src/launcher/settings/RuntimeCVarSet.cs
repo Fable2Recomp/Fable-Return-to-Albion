@@ -28,6 +28,16 @@ public static class RuntimeCVarsGodot
 
     public const string LightingCategory = "Lighting";
 
+    public const string VideoCategory = "Video";
+
+    /// <summary>
+    /// The picture: everything Godot can be asked for that the old GPU/UI categories used to
+    /// pretend to offer. The window's own size, mode, monitor and vsync are generated entries
+    /// re-homed here (see <c>RuntimeConfig.IsDisplayCVar</c>); these are the ones Godot owns
+    /// outright and nothing else could have provided.
+    /// </summary>
+    public const string DisplayCategory = "Display";
+
     public static readonly IReadOnlyList<RuntimeCVarDefinition> Definitions =
         new List<RuntimeCVarDefinition>
         {
@@ -92,6 +102,41 @@ public static class RuntimeCVarsGodot
                 "Show the Refii debug overlay in game \u2014 guest state, the save loader and "
                 + "the Lua console. Off is the shipping default; the overlay is a development "
                 + "fixture and draws over the game's own UI."),
+            new("display_aspect", DisplayCategory, RuntimeCVarType.String, "16:9",
+                "The shape of the window. Picking one narrows the resolution list below to the "
+                + "sizes that match it, the way a modern game's video options do.",
+                "16:9,16:10,4:3,21:9,32:9"),
+
+            new("display_resolution", DisplayCategory, RuntimeCVarType.String, "1280x720",
+                "The window size, chosen from the sizes that fit the aspect ratio above. This "
+                + "replaces typing a width and a height by hand."),
+
+            new("max_fps", DisplayCategory, RuntimeCVarType.Int, "0",
+                "Frame rate cap. 0 is uncapped, which with vsync off will run the GPU as hard "
+                + "as it can. The SIMULATION is not affected: the guest advances on its own "
+                + "fixed step and only the drawing rate changes."),
+
+            new("render_scale_percent", DisplayCategory, RuntimeCVarType.Int, "100",
+                "Renders the 3D world at this percentage of the window and scales it up, "
+                + "leaving the UI and text at full resolution. Below 100 buys frame rate on a "
+                + "GPU-bound machine; above 100 is supersampling."),
+
+            new("msaa", DisplayCategory, RuntimeCVarType.Int, "0",
+                "Multisample anti-aliasing on the 3D world: 0 off, or 2, 4, 8 samples. Costs "
+                + "memory bandwidth rather than shading, so it is usually cheaper than "
+                + "supersampling for the same edge quality."),
+
+            new("borderless", DisplayCategory, RuntimeCVarType.Bool, "false",
+                "Drops the window's title bar and border. With a window sized to the monitor "
+                + "this is the usual 'borderless fullscreen', which alt-tabs faster than "
+                + "exclusive fullscreen."),
+
+            new("video_skip", VideoCategory, RuntimeCVarType.Bool, "true",
+                "Let a mouse click or the A button skip a full-screen movie. The game's own "
+                + "rules still apply to the movies it marks unskippable."),
+            new("video_skip_after", VideoCategory, RuntimeCVarType.Double, "0.35",
+                "Seconds a movie has to be on screen before a click or A can skip it, so the "
+                + "press that started it does not also end it."),
             new("sun_shadows", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Let the sun and moon cast dynamic shadows. Fable 2 gates this on the day-set's "
                 + "MainLightShadowed, which ships as 0 for most themes \u2014 the shadowing is "

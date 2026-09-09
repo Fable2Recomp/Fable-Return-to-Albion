@@ -41,6 +41,22 @@ public partial class GameVideo : Node
 		OS.GetEnvironment("REFII_VIDEO_FOLLOW_SKIP") != "0";
 
 	/// <summary>
+	/// The player's own skip: mouse or A ends a movie the guest states fullscreen, once it has
+	/// been up for <c>video_skip_after</c> seconds. Both keys live in refii.toml
+	/// (<c>RuntimeCVarsGodot</c>). The guest still owns its own skip gate for the front-end
+	/// players; this one exists for the cutscene player, whose state the host cannot read.
+	/// </summary>
+	private static readonly bool VideoSkip;
+	private static readonly float VideoSkipAfter;
+
+	static GameVideo()
+	{
+		var values = Engine_RefiiConfig.Read(out _);
+		VideoSkip = Engine_RefiiConfig.Bool(values, "video_skip", true);
+		VideoSkipAfter = Engine_RefiiConfig.Float(values, "video_skip_after", 0.35f);
+	}
+
+	/// <summary>
 	/// Ends the movie on screen now, as if it had reached its last frame: stop the picture,
 	/// then tell the guest through the same byte its <c>Render_DrawBinkMovieFrame</c> writes on
 	/// a natural end (<c>bink+221</c>, via <see cref="HostBridge.FinishMovie"/>) — to the guest
@@ -57,6 +73,7 @@ public partial class GameVideo : Node
 		_decoder.Dispose();
 		_decoder = null;
 		_view.Visible = false;
+		_backdrop.Visible = false;
 		++MoviesSkipped;
 
 		uint retired = HostBridge.FinishMovie();
@@ -74,6 +91,10 @@ public partial class GameVideo : Node
 	private Engine_BinkDecoder? _decoder;
 	private uint _lastRequest;
 	private double _frameClock;
+
+	private bool _skipMouseArmed;
+	private bool _skipAArmed;
+	private double _skipPlayClock;
 
 	/// <summary>
 	/// Most frames decoded in one host frame while catching up, so a stall cannot spiral.
@@ -196,6 +217,28 @@ public partial class GameVideo : Node
 	/// <summary>The guest's 2D screen space, which its own UI is authored against.</summary>
 	private const float GuestScreenWidth = 1280f;
 
+	/// <summary>
+	/// A LIVE guest player states a fullscreen rect. Unlike <see cref="StatedFullscreen"/>,
+	/// no player answers false: a movie the host chose (the ability preview) has no guest
+	/// rect and belongs in its element.
+	/// </summary>
+	/// <remarks>
+	/// The in-game cutscene player (`sub_823C1658`, flags 0x4400) opens the intro through the
+	/// same `sub_82A41B48` and states `{0, 0, W, H}` through the same `sub_82A41E30` as the
+	/// front-end players; the guest also puts a `Movie` sprite up, which is only where its own
+	/// draw would have painted the frame. That sprite hosted the intro in the UI viewport, at
+	/// layer 5 under the loading screen at 8 — the intro plays WHILE the childhood level
+	/// loads — and, being "embedded", it looped and never retired the guest's player, whose
+	/// state machine advances 3->4 off the done byte (`823c18d0 lbz r11, 0xDD`). The stated
+	/// rect decides: fullscreen goes on the video layer and ends like every other movie.
+	/// </remarks>
+	private bool GuestStatesFullscreen() =>
+		HostBridge.GetMovieRect() is { } rect && rect.Size.X >= GuestScreenWidth * 0.75f;
+
+	/// <summary>Where the frame goes: the video layer, or the element hosting it.</summary>
+	private bool OnVideoLayer() =>
+		EmbedOrdinal < 0 ? StatedFullscreen() : GuestStatesFullscreen();
+
 	/// <summary>The decoded frame as a texture a UI quad can sample, or null when not playing.</summary>
 	public Texture2D? FrameTexture =>
 		_decoder is null || EmbedOrdinal < 0 ? null : _embedded.GetTexture();
@@ -231,6 +274,36 @@ public partial class GameVideo : Node
 		}
 
 		AdvanceVideo(delta);
+
+		if (VideoSkip && _decoder is not null && !HasHostMovie && OnVideoLayer())
+		{
+			_skipPlayClock += delta;
+			bool mouse = Input.IsMouseButtonPressed(MouseButton.Left);
+			bool a = GameInput.AHeld;
+
+			if (!GetWindow().HasFocus())
+			{
+				_skipMouseArmed = false;
+				_skipAArmed = false;
+			}
+			else
+			{
+				if (!mouse)
+				{
+					_skipMouseArmed = true;
+				}
+				if (!a)
+				{
+					_skipAArmed = true;
+				}
+
+				if (_skipPlayClock >= VideoSkipAfter
+					&& ((_skipMouseArmed && mouse) || (_skipAArmed && a)))
+				{
+					Skip(_skipMouseArmed && mouse ? "player: mouse" : "player: A");
+				}
+			}
+		}
 
 		// The host of an embedded movie is gone — the sprite no longer states a movie, or its
 		// presentation is down — so the decoder goes with it; a fullscreen movie ends on its own.
@@ -384,6 +457,9 @@ public partial class GameVideo : Node
 
 		Allocate(_decoder);
 		_frameClock = 0.0;
+		_skipMouseArmed = false;
+		_skipAArmed = false;
+		_skipPlayClock = 0.0;
 		++MoviesRequested;
 		GD.Print($"[game-video] playing {_decoder.Width}x{_decoder.Height}, " +
 			$"{_decoder.FrameCount} frames @ {1.0 / _decoder.FrameSeconds:F2} fps");
@@ -466,7 +542,7 @@ public partial class GameVideo : Node
 			return;
 		}
 
-		if (ended && EmbedOrdinal >= 0)
+		if (ended && EmbedOrdinal >= 0 && !GuestStatesFullscreen())
 		{
 			// AN EMBEDDED MOVIE LOOPS. The UI sprite's movie item never reads the done byte
 			// (`B+221` has no reader in the UI path) and Bink wraps at the last frame, so the
@@ -530,10 +606,12 @@ public partial class GameVideo : Node
 		_chromaU!.Update(_chromaUImage);
 		_chromaV!.Update(_chromaVImage);
 
-		// An embedded movie must not also paint the screen — the two share one material.
-		// Either statement keeps it off: the guest's rect, or the UI's hosting ordinal.
+		// An embedded movie must not also paint the screen — the two share one material. A
+		// hosting element keeps it off unless the guest's live player states a fullscreen
+		// rect: that is the cutscene player, and the video layer sits above the loading
+		// screen and the UI, which is where the guest's own fullscreen draw lands.
 		_embeddedView.Texture = _luma;
-		_view.Visible = EmbedOrdinal < 0 && StatedFullscreen();
+		_view.Visible = OnVideoLayer();
 
 		// Deterministic capture: keyed on frame count, not a wall-clock moment.
 		++_shownFrames;

@@ -253,6 +253,11 @@ public static class RuntimeConfig
             return true;
         }
 
+        if (IsRetiredNativeCategory(category))
+        {
+            return IsDisplayCVar(name);
+        }
+
         if (IsNativeRendererCVarCategory(category))
         {
             return isNativeBackend;
@@ -269,7 +274,38 @@ public static class RuntimeConfig
         name is "resolution" or "video_mode_width" or "video_mode_height";
 
     private static bool IsNativeRendererCVarCategory(string category) =>
-        category is "GPU" or "GPU/Vulkan" or "GPU/D3D12" or "UI/Vulkan" or "UI/D3D12";
+        category is "GPU/Vulkan" or "UI/Vulkan";
+
+    /// <summary>The settings panel's name for everything the player tunes about the picture.</summary>
+    public const string DisplayCategory = "Display";
+
+    /// <summary>
+    /// Categories that belonged to the native renderer and its window, and are now dead.
+    ///
+    /// Godot draws the game — there is no Xenia backend, no D3D12 or Vulkan device of ours to
+    /// configure, no presenter to letterbox, and the guest's own input and audio paths are not
+    /// the ones running. Retiring them here hides them AND stops them being written, because
+    /// `ShouldWriteCVar` is this same predicate: a setting nobody can act on should not sit in
+    /// `refii.toml` implying it does something.
+    /// </summary>
+    private static bool IsRetiredNativeCategory(string category) =>
+        category is "UI/Window" or "UI/Presenter" or "UI/D3D12"
+            or "GPU" or "GPU/Shader" or "GPU/D3D12"
+            or "Input" or "Input/Keybinds" or "Audio";
+
+    /// <summary>
+    /// The handful of keys inside those categories that the GODOT window still reads, and which
+    /// therefore move to <see cref="DisplayCategory"/> rather than being retired with the rest —
+    /// see <c>GameWindowSettings.Load</c>. Retiring these would stop them being written and the
+    /// game would silently fall back to a default window.
+    /// </summary>
+    /// <remarks>
+    /// `window_width` and `window_height` are deliberately NOT here. They are the old
+    /// type-in-a-number pair, replaced by the aspect and resolution dropdowns — retiring them
+    /// keeps one answer to "how big is the window" rather than two that can disagree.
+    /// </remarks>
+    public static bool IsDisplayCVar(string name) =>
+        name is "fullscreen" or "monitor" or "vsync";
 
     private static string GetValue(
         IReadOnlyDictionary<string, string> values,

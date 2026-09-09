@@ -84,7 +84,27 @@ public sealed class Engine_UiBindings
 
 		/// <summary>`SlideFader2Name` — the second fader channel (registry 3): 2 in, 3 out fast, 4 out slow.</summary>
 		SlideFader2,
+
+		/// <summary>
+		/// `SlideSetName` — registry 10. The value is a slide INDEX stated VERBATIM, not a
+		/// boolean and not shifted: `sub_828421F8` hands it straight to the slide player
+		/// `sub_82426BA8`, and registry 9's `sub_823FE848` reaches that SAME call through
+		/// `sub_82426CA8` with 1 or 2 — a toggle is this channel with two slides, so the shift
+		/// belongs to the toggle.
+		/// </summary>
+		SlideSet,
 	}
+
+	/// <summary>
+	/// Meters that move a whole component rather than filling a bar. `TopBoxX`/`TopBoxY` are the
+	/// quest box's measured size, `Corner*` and `Subtitles*` the same idea elsewhere — they are
+	/// real bindings the guest really publishes, they simply are not bars, and letting one scrub
+	/// a widget's tracks is how a meter at 50% drew the heart icon at half size.
+	/// `Engine_UiLiveValues` has kept this list for a while; it lives here so both readers share
+	/// one answer rather than keeping two.
+	/// </summary>
+	public static bool IsLayoutMeter(string name) =>
+		name is "TopBoxX" or "TopBoxY" or "CornerX" or "CornerY" or "SubtitlesX" or "SubtitlesY";
 
 	/// <summary>One element's binding: what it is, and the name it answers to.</summary>
 	public readonly record struct Binding(
@@ -106,6 +126,7 @@ public sealed class Engine_UiBindings
 		(Kind.SlideToggle, "SlideToggleName"),
 		(Kind.SlideFader, "SlideFaderName"),
 		(Kind.SlideFader2, "SlideFader2Name"),
+		(Kind.SlideSet, "SlideSetName"),
 	};
 
 	private readonly List<Binding> _bindings = new();

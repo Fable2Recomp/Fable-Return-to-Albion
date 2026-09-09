@@ -45,6 +45,13 @@ public sealed class LaunchController
         return PrimaryAction.Launch;
     }
 
+    /// <summary>
+    /// Takes ownership of a game process started elsewhere — the child spawned by Play. Keeps
+    /// `GameIsRunning` as the one answer to "is a game up", which the unattended driver and the
+    /// launcher's own restore both key on.
+    /// </summary>
+    public void AdoptGameProcess(ProcessHandle handle) => GameProcess = handle;
+
     public LaunchResult Launch()
     {
         if (!Installer.EnsureRuntimeConfigFile(out string configError))

@@ -78,6 +78,8 @@ public sealed class Engine_UiSpellAssignSet
 	/// half is driven here because its open flag is the guest's (`[GUI+28]+36` for player one,
 	/// `+37` for two) and the widget is the same one.
 	/// </summary>
+	private string _gateReport = string.Empty;
+
 	public void Follow(bool revealed)
 	{
 		if (Host is null || !revealed)
@@ -94,7 +96,42 @@ public sealed class Engine_UiSpellAssignSet
 		// follow, so that one stays drawn here.
 		// The wheel opens over the running game with no screen behind it, so it is gated on its
 		// own flag, never a screen id. Both are suppressed inside their books, so one copy draws.
+		// WHY THE WHEEL DID NOT OPEN. The right trigger IS the binding — the loaded control
+		// scheme `GameControlsCombatOnRelease` is an alias onto a record that overrides the
+		// spells-menu action's input to XboxButton 16, the right trigger, over a base scheme
+		// that uses the right bumper — and the pad reaches the guest (the input log shows the
+		// trigger at full travel). So a refusal is the GUEST'S, and its gates are invisible from
+		// here: `sub_826B4448` needs TWO spell TYPES both AWARDED and PURCHASED at POWER
+		// LEVEL 0, `sub_8253E220` needs one assigned and magic enabled, and the flow state and
+		// player mode must both be right.
+		//
+		// THE FIVE-WIDE AXIS IS THE POWER (CHARGE) LEVEL, not a ring and not a d-pad slot:
+		// the guest's own planes are `mgr+156+5*type+level` (awarded) and `mgr+196+5*type+level`
+		// (purchased), and the gate's cursor takes level 0 alone. So `0:1` means one will usable
+		// at the first charge level — a correct refusal, because there is nothing to choose
+		// between. Five levels each holding the SAME single will would read `1,1,1,1,1` and be
+		// refused too; it is spell TYPES at one level that the gate counts.
+		//
+		// The offers per level are already in the state we read, so the count that gate turns on
+		// can be said out loud. Printed only when it changes.
 		bool wheelUp = _spells.WheelOpen;
+		if (_spells.Known)
+		{
+			var offers = new System.Collections.Generic.List<string>();
+			for (int level = 0; level < Engine_UiModel.SpellAssignState.Slots; ++level)
+			{
+				offers.Add($"L{level}:{_spells.Choices(level).Count}");
+			}
+
+			string report = $"open={wheelUp} offers {string.Join(",", offers)}";
+			if (report != _gateReport)
+			{
+				_gateReport = report;
+				GD.Print($"[spell-assign] {report} — offers are per POWER LEVEL; the guest " +
+					"refuses below two spell types awarded AND purchased at level 0");
+			}
+		}
+
 		if (wheelUp && (_wheel is null || !GodotObject.IsInstanceValid(_wheel)))
 		{
 			_wheel = Ensure(WheelPresentation);

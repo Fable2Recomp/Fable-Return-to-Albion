@@ -76,6 +76,13 @@ public static class Engine_UiHudTopBox
 				State(values, name, false);
 			}
 
+			// AND THE PROMPT ITSELF. What channel 7 goes on to do is the whole prompt:
+			// `sub_823FD8E8` raises `TargetedQuery` on BOTH channels the host cannot read —
+			// `sub_828421F8(reg[3], hash, 2)` at 0x823fd954 (SlideFader2, 2 = in) and
+			// `sub_823FE848(reg[9], hash, 1)` at 0x823fd994 (SlideToggle on) — the hash being
+			// FNV-1 of "TargetedQuery" (0x820B0638). Its twin `sub_823FD9B0` lowers both. Both
+			// are idempotent on the owner's own byte, so stating them per frame matches.
+			// Re-derived here for the same reason TopBox is: registries 3 and 9 are not walked.
 			values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopMain"), string.Empty);
 			if (_shown != front.NameHash)
 			{
@@ -86,11 +93,42 @@ public static class Engine_UiHudTopBox
 			return;
 		}
 
+		// CHANNEL 10 IS THE WILL NAME, AND THE SPELL BLADE ALREADY DRAWS IT.
+		//
+		// `sub_826B50B8` is the only publisher on this channel: it clears it
+		// (`sub_8230D0C0`, 0x826b51c4) and pushes the resolved will tag
+		// (`sub_8230C908(..., 10, ...)`, 0x826b5220) while the blade is up, gated on the
+		// widget's own `this+416 == 1`. The guest writes that name to NO element — the banner
+		// here and the label under the blade are two host renderings of one string, and showing
+		// both says the same word twice on one screen.
+		//
+		// The blade's copy wins because it is attached to the widget the player is reading. If
+		// a record ever arrives on this channel from somewhere else, the line below names it.
+		if (front.Channel == 10)
+		{
+			foreach (string name in new[] { "ButtonOnly", "TopTitle", "TopMain" })
+			{
+				State(values, name, false);
+			}
+
+			values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopMain"), string.Empty);
+			values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopTitle"), string.Empty);
+			if (_shown != front.NameHash)
+			{
+				_shown = front.NameHash;
+				Godot.GD.Print($"[hud-topbox] front record 0x{front.NameHash:X8} on channel 10 — " +
+					"the will name; the spell blade draws it, so the banner stays down");
+			}
+
+			return;
+		}
+
 		// `TextManager_HasKey(title tag)` decides the title; the body is the FRONT RECORD's own
 		// provider, composed here the way `sub_821787D0` composes it. Registry 6 is not read
 		// for it: a record with no title and no body only sets ButtonOnly and never rewrites
 		// TopMain, so the registry string outlives its record — "Poppy the Stall Vendor" over
 		// "Find the abbot in Oakfield." was the previous box's body under the new title.
+
 		bool hasTitle = strings is not null && strings.TryGetString(front.TitleTag, out _);
 		string body = ComposeBody(Refii.Host.HostBridge.GetTopBoxBody(), strings);
 		bool buttonOnly = !hasTitle && body.Length == 0;
@@ -151,6 +189,13 @@ public static class Engine_UiHudTopBox
 				return string.Empty;
 		}
 	}
+
+	// THE TARGETED-QUERY PROMPT MOVED OUT. It used to be re-derived here from the front
+	// record's channel, which raised it on 7 and LOWERED it on everything else — and the guest
+	// never lowers it that way: `sub_821787D0` returns without touching the group on any
+	// channel but 7 (0x82178978), and the only lower is target loss inside `sub_82176808`.
+	// `Engine_UiHudTargetedQuery` states it from the record's own raise byte instead, which is
+	// authoritative, and also carries the registry-10 slide set this could not.
 
 	private static void State(Engine_HudValues values, string name, bool on) =>
 		values.StateVisible(Refii.Core.Engine_GameHash.Fnv1(name), on);

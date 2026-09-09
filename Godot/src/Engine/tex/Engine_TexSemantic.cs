@@ -91,6 +91,17 @@ public sealed class TexPolicy
 	public required int MaxEdge { get; init; }
 
 	/// <summary>
+	/// A uniform enlargement this semantic wants, before the <see cref="MaxEdge"/> clamp.
+	/// Zero keeps the size-stepped default (4x at or under 128, 2x above).
+	/// </summary>
+	/// <remarks>
+	/// The stepped default spends its budget where magnification is worst, assuming a small
+	/// source is drawn small. That holds for world art, whose texture size tracks the surface it
+	/// covers, and not for the UI, where each texture is sized to the thing it draws.
+	/// </remarks>
+	public int Factor { get; init; }
+
+	/// <summary>
 	/// Below this edge length the texture is left alone.
 	/// </summary>
 	/// <remarks>
@@ -114,26 +125,107 @@ public sealed class TexPolicy
 public static class Engine_TexSemantic
 {
 	/// <summary>
-	/// Bumped whenever a policy below changes.
+	/// Bumped whenever a policy change would make an ALREADY CACHED artefact wrong.
 	/// </summary>
 	/// <remarks>
-	/// It is an INPUT TO THE CACHE KEY. Without it, changing a policy leaves every texture
-	/// already on disk answering with the result of the old one, and the change looks like it
-	/// did nothing — which is exactly the failure §5 asks the key to prevent.
+	/// It is an INPUT TO THE CACHE KEY, and it is GLOBAL: a bump orphans every artefact of every
+	/// semantic and re-enhances the whole game. That is the price for a change that makes an
+	/// existing artefact WRONG, and it buys nothing for one that only changes WHICH scale a
+	/// texture is enhanced at — the key already carries the semantic and the scale, so a new
+	/// scale is a new key, and a size that was declined never reached
+	/// <see cref="Engine_TexCache.Key"/> at all (<c>Engine_TexLibrary.EnhanceDecoded</c> returns
+	/// on <c>scale &lt;= 1</c> first). <see cref="UiPolicy"/>'s changes are all of that second
+	/// kind; the artefacts it orphans are wasted, not stale.
 	/// </remarks>
-	public const int PolicyVersion = 2;
+	public const int PolicyVersion = 3;
+
+	/// <summary>
+	/// THE EDGE CAP IS THE MEMORY DIAL. Measured over the whole built cache: 979 artefacts at a
+	/// 2048 edge held 3,737 MB, 59% of every enhanced byte in the game, against 4,044 artefacts
+	/// at 1024 and below holding the rest. Capping here at 1024 keeps the 4x on everything at or
+	/// under 128 and the 2x from 129 to 512 — the great majority of the textures, and the ones a
+	/// player is close enough to read — and stops only the tier that was ALREADY 1024 at source
+	/// and was being doubled again.
+	///
+	/// Normals cost twice their albedo partner at the same size (BC5 is a byte a pixel against
+	/// BC1's half), which is why they were the single largest class in the cache at 3,478 MB.
+	/// They are also smooth by construction and renormalised in the shader, so they lose least
+	/// to the cap. The ORM's occlusion and height are solved from the SOURCE normal, never the
+	/// enhanced one, so nothing downstream changes.
+	/// </summary>
+	private const int EnhancedEdgeCap = 1024;
 
 	private static readonly TexPolicy ColourPolicy = new()
 	{
 		Filter = TexFilterClass.Perceptual,
-		MaxEdge = 2048,
+		MaxEdge = EnhancedEdgeCap,
 		MinEdge = 128,
+	};
+
+	/// <summary>
+	/// UI art is enhanced on a wider band than world colour, at both ends.
+	///
+	/// MinEdge, because <see cref="ColourPolicy"/>'s 128 floor is a statement about WORLD
+	/// textures — below it a Fable 2 texture is usually a function rather than a picture, a
+	/// stipple or a ramp or a lookup table, and there is no detail in one to recover. Nothing
+	/// under <c>art/gui/</c> is a function: every one of them is a raster that is drawn on
+	/// screen and looked at. Measured over the shipped set, that floor declined 69 of 147 GUI
+	/// textures — the 32px minimap and controller glyphs and the whole 64px class the
+	/// expression wheel, the spell icons and the will icons are drawn from.
+	///
+	/// MaxEdge, because <see cref="EnhancedEdgeCap"/> is a MEMORY dial sized against the world
+	/// cache, where 979 artefacts at a 2048 edge held 3,737 MB and normals were the largest
+	/// class. The UI has 147 textures and no normals at all, so the same ceiling costs a
+	/// rounding error here while declining the 15 textures that are already 1024 at source —
+	/// the front-end backdrops and the book pages, the largest things on the screen and the
+	/// ones magnified most by the canvas camera.
+	///
+	/// That magnification is why this matters more for UI than for anything else. A Gameface
+	/// screen is rendered as 720 canvas units of height mapped to the viewport's height
+	/// (<c>Engine_UiSceneBuilder.FitCanvasCamera</c>), so on a 1440p display every UI texel
+	/// covers two screen pixels before any of this runs.
+	/// </summary>
+	/// <summary>
+	/// UI enhancement targets a texel density, not a size step.
+	///
+	/// A Gameface screen maps 720 canvas units of height onto the viewport
+	/// (<c>Engine_UiSceneBuilder.FitCanvasCamera</c>), so the UI is magnified 2.02x at 1440p and
+	/// 3.03x at 2160p. Measured over 1070 shipped picture quads, the density before enhancement
+	/// is 0.37..0.90 texels per screen pixel at 1440p — roughly FLAT across source sizes, so the
+	/// size-stepped default (which spends less on larger sources) is the wrong shape. Texels per
+	/// screen pixel after enhancement:
+	///
+	///     src    1440p x2   1440p x4   2160p x2   2160p x4
+	///      32       1.80       3.60       1.20       2.40
+	///      64       1.44       2.88       0.96*      1.92
+	///     128       0.98*      1.96       0.65*      1.31
+	///     256       0.98*      1.96       0.65*      1.31
+	///     512       1.20       2.40       0.80*      1.60
+	///    1024       0.74*      1.48       0.49*      0.99
+	///
+	/// (* below native.) x4 is the smallest uniform factor that clears native at both 1440p and
+	/// 4K. MaxEdge 4096 is load-bearing with it: at 2048 the clamp halves the 1024 class — the
+	/// full-screen backdrops — back to x2, which is the class furthest from native.
+	///
+	/// x4 costs no extra inference: the model is x4 and `refii_upscaler_run` downsamples for any
+	/// smaller request. The cost is cache, ~640 MB over ~147 textures.
+	///
+	/// MinEdge 16 rather than <see cref="ColourPolicy"/>'s 128: that floor means "below this a
+	/// Fable 2 texture is a function, not a picture" and applies to the ramps and lookup tables
+	/// under <c>Globals/Engine/Textures</c>. Nothing under <c>art/gui/</c> is one.
+	/// </summary>
+	private static readonly TexPolicy UiPolicy = new()
+	{
+		Filter = TexFilterClass.Perceptual,
+		Factor = 4,
+		MaxEdge = 4096,
+		MinEdge = 16,
 	};
 
 	private static readonly TexPolicy NormalPolicy = new()
 	{
 		Filter = TexFilterClass.NormalAware,
-		MaxEdge = 2048,
+		MaxEdge = EnhancedEdgeCap,
 		MinEdge = 128,
 	};
 
@@ -155,7 +247,7 @@ public static class Engine_TexSemantic
 	{
 		TexSemantic.Albedo => ColourPolicy,
 		TexSemantic.SelfIllumination => ColourPolicy,
-		TexSemantic.Ui => ColourPolicy,
+		TexSemantic.Ui => UiPolicy,
 		TexSemantic.Normal => NormalPolicy,
 
 		// SCALAR, not perceptual, and the reason is the alpha channel. The specular map's alpha
@@ -200,7 +292,7 @@ public static class Engine_TexSemantic
 			return 1;
 		}
 
-		int scale = edge <= 128 ? 4 : 2;
+		int scale = policy.Factor > 0 ? policy.Factor : edge <= 128 ? 4 : 2;
 		while (scale > 1 && edge * scale > policy.MaxEdge)
 		{
 			scale /= 2;

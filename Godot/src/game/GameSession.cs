@@ -335,13 +335,19 @@ public partial class GameSession : Node
 			}
 		}
 
+		// SWAP IN ENHANCED TEXTURES BEFORE THE STEP GATE, NOT AFTER IT. Each queued completion
+		// captures a whole mip chain — megabytes of native Image data sitting in the anonymous
+		// heap until it is applied — and the queue is bounded only by the number of jobs. Behind
+		// the gate it drained only while the guest was stepping, which is precisely NOT the case
+		// during a loading screen or a level transition: the moment four workers are producing
+		// fastest was the moment nothing consumed them. Budgeted still, so a warm cache cannot
+		// trade a background cost for a visible hitch.
+		Engine_TexLibrary.Pump();
+
 		if (steps == 0)
 		{
 			return;
 		}
-
-		// Swap in enhanced textures on the main thread, budgeted; no-op without an upscaler.
-		Engine_TexLibrary.Pump();
 
 		// Periodic report; prints only when the counters have moved.
 		if (_steps % 600 == 0)

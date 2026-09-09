@@ -65,7 +65,15 @@ public partial class Engine_UiPreviewObject : Node3D
 	{
 		if (modelHash == ModelHash)
 		{
+			// AND RE-ASSERT VISIBILITY. This path restored the placement but never the
+			// visibility, while every failure below and both null-frame sites in the caller
+			// set it false. The guest's model hash is STICKY, so one frame that answered
+			// nothing — the screen id read a tick early, the spawned byte cleared as the entity
+			// retired, a sample gap — latched the preview off for the rest of that card AND for
+			// the next pickup of the same item, because the hash matched and this path took
+			// over. That is the empty oval that never comes back.
 			Apply(placement);
+			Visible = _mesh is not null;
 			return _mesh is not null;
 		}
 

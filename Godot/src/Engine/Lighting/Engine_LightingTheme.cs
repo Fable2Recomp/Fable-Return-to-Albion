@@ -140,7 +140,13 @@ public static class Engine_LightingTheme
         }
 
         theme.SourceTimeOfDay = dayTime;
-        theme.HasAny = ApplyThemeRecord(chain, dayTheme, theme);
+
+        // A PAINTED DAY SET STATES ONLY WHAT IT OVERRIDES. This overload is the painted-layer
+        // one — keyed by the grid's day-set hash — and its result is composited over the level's
+        // own theme. The guest gives an inherited field a presence of 0 and the fold then leaves
+        // the base alone; ours read the whole inherited chain as authored and replaced it. See
+        // Chain.Overrides.
+        theme.HasAny = ApplyThemeRecord(chain, dayTheme, theme, overridesOnly: true);
         return theme.HasAny;
     }
 
@@ -206,7 +212,22 @@ public static class Engine_LightingTheme
         return applied;
     }
 
-    private static bool ApplyThemeRecord(Chain chain, RecordRef themeRecord, LightingTheme theme)
+    /// <summary>
+    /// Whether a field counts as stated for this read: always, for a level's own theme; only
+    /// when the record overrides it, for a painted layer.
+    /// </summary>
+    private static bool Stated(
+        Chain chain, RecordRef lighting, bool overridesOnly,
+        params (uint Hash, byte Type)[] fields) =>
+        !overridesOnly || chain.Overrides(lighting, fields);
+
+    /// <param name="overridesOnly">
+    /// Take only the fields this record actually OVERRIDES, not those it inherits — the rule a
+    /// PAINTED layer is read under, because its theme is composited over the level's rather
+    /// than standing on its own. See <see cref="Chain.Overrides"/>.
+    /// </param>
+    private static bool ApplyThemeRecord(
+        Chain chain, RecordRef themeRecord, LightingTheme theme, bool overridesOnly = false)
     {
         if (!themeRecord.Valid)
         {
@@ -222,27 +243,39 @@ public static class Engine_LightingTheme
         bool any = false;
         var colour = new float[3];
 
-        if (chain.ReadColourRecordField(lighting, EnvHash.MainLightColour, colour) ||
+        if (Stated(chain, lighting, overridesOnly,
+                (EnvHash.MainLightColour, (byte)6), (EnvHash.MainLightColourRed, (byte)3),
+                (EnvHash.MainLightColourGreen, (byte)3), (EnvHash.MainLightColourBlue, (byte)3),
+                (EnvHash.MainLightColourFactor, (byte)3)) &&
+            (chain.ReadColourRecordField(lighting, EnvHash.MainLightColour, colour) ||
             chain.ReadFlatColour(lighting, EnvHash.MainLightColourRed, EnvHash.MainLightColourGreen,
-                EnvHash.MainLightColourBlue, EnvHash.MainLightColourFactor, colour))
+                EnvHash.MainLightColourBlue, EnvHash.MainLightColourFactor, colour)))
         {
             Array.Copy(colour, theme.MainLightColour, 3);
             theme.HasMainLightColour = true;
             any = true;
         }
 
-        if (chain.ReadColourRecordField(lighting, LightingHash.AmbientColour, colour) ||
+        if (Stated(chain, lighting, overridesOnly,
+                (LightingHash.AmbientColour, (byte)6), (LightingHash.AmbientColourRed, (byte)3),
+                (LightingHash.AmbientColourGreen, (byte)3), (LightingHash.AmbientColourBlue, (byte)3),
+                (LightingHash.AmbientColourFactor, (byte)3)) &&
+            (chain.ReadColourRecordField(lighting, LightingHash.AmbientColour, colour) ||
             chain.ReadFlatColour(lighting, LightingHash.AmbientColourRed, LightingHash.AmbientColourGreen,
-                LightingHash.AmbientColourBlue, LightingHash.AmbientColourFactor, colour))
+                LightingHash.AmbientColourBlue, LightingHash.AmbientColourFactor, colour)))
         {
             Array.Copy(colour, theme.AmbientColour, 3);
             theme.HasAmbientColour = true;
             any = true;
         }
 
-        if (chain.ReadColourRecordField(lighting, LightingHash.LightmapColour, colour) ||
+        if (Stated(chain, lighting, overridesOnly,
+                (LightingHash.LightmapColour, (byte)6), (LightingHash.LightmapColourRed, (byte)3),
+                (LightingHash.LightmapColourGreen, (byte)3), (LightingHash.LightmapColourBlue, (byte)3),
+                (LightingHash.LightmapColourFactor, (byte)3)) &&
+            (chain.ReadColourRecordField(lighting, LightingHash.LightmapColour, colour) ||
             chain.ReadFlatColour(lighting, LightingHash.LightmapColourRed, LightingHash.LightmapColourGreen,
-                LightingHash.LightmapColourBlue, LightingHash.LightmapColourFactor, colour))
+                LightingHash.LightmapColourBlue, LightingHash.LightmapColourFactor, colour)))
         {
             Array.Copy(colour, theme.LightmapColour, 3);
             theme.HasLightmapColour = true;
@@ -254,12 +287,17 @@ public static class Engine_LightingTheme
         // parser reads Red, Green and Blue only — 0x82A45768 / 0x82A457AC / 0x82A457F0 — then
         // scales by 1/255 alone at 0x82A45A74. Reading a Factor here reads a field the guest
         // never looks at.
-        if (chain.ReadColourRecordField(
+        if (Stated(chain, lighting, overridesOnly,
+                (LightingHash.AmbientNormalMapDarkeningColour, (byte)6),
+                (LightingHash.AmbientNormalMapDarkeningColourRed, (byte)3),
+                (LightingHash.AmbientNormalMapDarkeningColourGreen, (byte)3),
+                (LightingHash.AmbientNormalMapDarkeningColourBlue, (byte)3)) &&
+            (chain.ReadColourRecordField(
                 lighting, LightingHash.AmbientNormalMapDarkeningColour, colour, useFactor: false) ||
             chain.ReadFlatColour(lighting, LightingHash.AmbientNormalMapDarkeningColourRed,
                 LightingHash.AmbientNormalMapDarkeningColourGreen,
                 LightingHash.AmbientNormalMapDarkeningColourBlue,
-                0, colour))
+                0, colour)))
         {
             Array.Copy(colour, theme.DarkeningColour, 3);
             theme.HasDarkeningColour = true;
@@ -271,7 +309,8 @@ public static class Engine_LightingTheme
         // SkyTheme is where it belongs and reading it here found it only when a parent chain
         // happened to leak it down.
 
-        if (chain.ReadFloat(lighting, LightingHash.MainLightShadowed, out float shadowed))
+        if (Stated(chain, lighting, overridesOnly, (LightingHash.MainLightShadowed, (byte)3)) &&
+            chain.ReadFloat(lighting, LightingHash.MainLightShadowed, out float shadowed))
         {
             theme.MainLightShadowed = shadowed;
             theme.HasMainLightShadowed = true;
@@ -634,6 +673,79 @@ public sealed class Chain
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="record"/> OVERRIDES one of these fields rather than merely
+    /// inheriting it.
+    /// </summary>
+    /// <remarks>
+    /// THE GUEST'S PRESENCE RULE, and the difference between a dark corner and a black world.
+    /// `sub_82A44B88` walks the parent chain counting the property and returns true only once
+    /// it has seen it on TWO entries — i.e. the record redefines something an ancestor already
+    /// stated. A field found once is inherited, and the guest marks it ABSENT: its presence
+    /// scalar is 0, and the fold `dst = dst·(1 − presence·w) + value·w` then leaves the base
+    /// untouched no matter what the layer's weight is.
+    ///
+    /// Our reader walks the same chain but answers "found", so every field a painted day set
+    /// inherited read as an authored override and was composited over the level. Standing on
+    /// the Bower Lake bridge, painted set 0x62F2AED9 replaced the level's own main light and
+    /// the world went black.
+    ///
+    /// The sub-names are OR'd exactly as the guest OR's Red/Green/Blue/Factor
+    /// (0x82a45368/0x82a453ac/0x82a453f0): overriding any one of them states the colour.
+    /// </remarks>
+    public bool Overrides(RecordRef record, params (uint Hash, byte Type)[] fields)
+    {
+        foreach ((uint hash, byte type) in fields)
+        {
+            if (hash != 0 && CountField(record, hash, type) >= 2)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Occurrences of a field up the parent chain, counted no further than two.</summary>
+    private int CountField(RecordRef record, uint fieldHash, byte expectedType)
+    {
+        if (!record.Valid || record.Db >= _views.Count)
+        {
+            return 0;
+        }
+
+        int count = 0;
+        RecordRef current = record;
+        var seen = new HashSet<long>();
+
+        for (int depth = 0; depth < 64; depth++)
+        {
+            long key = ((long)current.Db << 48) ^ current.Index;
+            if (!seen.Add(key))
+            {
+                return count;
+            }
+
+            if (FindLocalField(current, fieldHash, expectedType, out _) && ++count >= 2)
+            {
+                return count;
+            }
+
+            if (!FindLocalField(current, GdbView.HashParent, 0xFF, out GdbField parent))
+            {
+                return count;
+            }
+
+            current = FieldToRecord(parent);
+            if (!current.Valid)
+            {
+                return count;
+            }
+        }
+
+        return count;
     }
 
     private bool FindField(RecordRef record, uint fieldHash, byte expectedType, out GdbField found)

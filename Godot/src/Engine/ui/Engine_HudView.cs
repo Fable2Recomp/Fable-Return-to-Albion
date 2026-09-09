@@ -160,6 +160,13 @@ public sealed partial class Engine_HudView : Node3D
         public Dictionary<int, string> ShownTexts { get; } = new();
 
         /// <summary>
+        /// The string the FILE authors for each text node, keyed by ordinal — kept so a label
+        /// the guest never writes can still say what it was authored to say. See the paint
+        /// loop for why this is not a general fallback.
+        /// </summary>
+        public Dictionary<int, string> AuthoredTexts { get; } = new();
+
+        /// <summary>
         /// The piece's own width in canvas units at scale 1, measured once. A bar scales from its
         /// left edge while a quad is centred on its origin, so the width is what lets the node be
         /// shifted back to keep the left edge put.
@@ -251,6 +258,14 @@ public sealed partial class Engine_HudView : Node3D
                 if (piece.LiveText)
                 {
                     built.LiveTextNodes.AddRange(built.Binding.TextNodes(document));
+                    foreach ((MeshInstance3D _, int ordinal) in built.LiveTextNodes)
+                    {
+                        if (ordinal >= 0 && ordinal < document.Nodes.Length &&
+                            document.Nodes[ordinal].Text?.Display is { Length: > 0 } authored)
+                        {
+                            built.AuthoredTexts[ordinal] = authored;
+                        }
+                    }
                 }
             }
 
@@ -445,12 +460,62 @@ public sealed partial class Engine_HudView : Node3D
 
     private readonly Dictionary<string, Engine_UiRoundedPanel> _panels = new();
 
+    /// <summary>Each group piece's placed rect, so an off-screen widget names itself.</summary>
+    private readonly Dictionary<string, string> _groupSpans = new();
+
+    private string _groupReport = string.Empty;
+
     // The TopBox slab: the Bar and the blur/edge pieces authored beside it.
     private static readonly string[] SlabNames = { "Bar", "blur", "left", "right", "top", "bottom" };
 
     private void DrawModernPanels()
     {
         var used = new HashSet<string>();
+
+        // THE TARGETED-NPC WIDGET IS FOUR SEPARATE COMPONENTS — the name, the opinion box and
+        // its slider, the mood icons and the button — each authored at its own place in
+        // `hud.bgf`, which is why it reads as scattered furniture rather than one widget. It is
+        // gathered across the loop and given ONE rounded panel, the way the quest box and the
+        // counters are, so it wears the same look as the rest of the HUD.
+        Rect2? queryBounds = null;
+        float queryBehind = 1.5f;
+        _queryPieces = 0;
+        _queryParts.Clear();
+        _queryCandidates.Clear();
+        _queryTitle = null;
+
+        Rect2? counterBounds = null;
+        float counterBehind = 1.5f;
+
+        // WHERE EVERY GROUP ACTUALLY LANDS. The health readout has been reported off-screen
+        // three times and guessed at three times — from its authored position, from its anchor
+        // and offset, and from the saved arrangement — and each guess said it should be on
+        // screen. What was never observable is the rect it OCCUPIES once the anchor, the offset,
+        // the ancestor scale and its children's own transforms have all composed. That is the
+        // number that decides it, so print it. Change-keyed, so it settles to silence.
+        foreach (Built built in _built)
+        {
+            if (!built.Piece.Id.StartsWith("group.", System.StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            float groupBehind = 1.5f;
+            Rect2? span = built.Node.Visible ? SubtreeBounds(built.Node, ref groupBehind) : null;
+            _groupSpans[built.Piece.Id] = span is { } g
+                ? $"{built.Piece.Id} @({built.Piece.Offset.X:0},{built.Piece.Offset.Y:0}) " +
+                  $"anchor({built.Piece.Anchor.X:0.0},{built.Piece.Anchor.Y:0.0}) " +
+                  $"rect {g.Position.X:0},{g.Position.Y:0} {g.Size.X:0}x{g.Size.Y:0}"
+                : $"{built.Piece.Id} NOT DRAWN";
+        }
+
+        string groups = string.Join("  |  ", _groupSpans.Values);
+        if (groups != _groupReport)
+        {
+            _groupReport = groups;
+            GD.Print($"[hud-view] groups: {groups}");
+        }
+
         foreach (Built built in _built)
         {
             if (!built.Node.Visible)
@@ -493,12 +558,173 @@ public sealed partial class Engine_HudView : Node3D
                 // the strings are separate text pieces, so these pieces go whole.
                 built.Node.Visible = false;
             }
-            else if ((built.Piece.Id.StartsWith("text.Counter", System.StringComparison.Ordinal) ||
-                built.Piece.Id == "text.Subtitles.Text") &&
-                built.Node is MeshInstance3D label)
+            else if (built.Piece.Id.StartsWith("text.Counter", System.StringComparison.Ordinal) &&
+                built.Node is MeshInstance3D counter)
             {
+                // ONE BOX FOR ALL THE COUNTERS. Each line used to fit its OWN panel, keyed by
+                // its piece id, so a job showing three of them — gold until promotion, the
+                // multiplier, the current gold — drew three rounded panels stacked a line apart
+                // and overlapping at the edges. They are one readout and they get one box, the
+                // way the quest box holds its title and both body lines.
+                if (TextBounds(counter) is { } line)
+                {
+                    counterBounds = Union(counterBounds, line);
+                    counterBehind = System.Math.Min(counterBehind, counter.GlobalPosition.Z - 0.5f);
+                }
+            }
+            else if (built.Piece.Id == "text.Subtitles.Text" && built.Node is MeshInstance3D label)
+            {
+                // NOT grouped with the counters: the subtitle sits elsewhere on the screen and
+                // is a different readout, so it keeps its own box.
                 FitPanel(built.Piece.Id, TextBounds(label), used, label.GlobalPosition.Z - 0.5f);
             }
+            else if (built.Piece.Id.Contains(".TargetedQuery", System.StringComparison.Ordinal))
+            {
+                // AND THE SHIPPED SLAB GOES, exactly as the quest box's does. The citizen
+                // readout authors its own black band — `BoxAndBar/TopBox` with the same
+                // `Bar`/`blur`/`left`/`right`/`top` children, spanning x -641.7..+641.7 at
+                // opacity 70 — which is a rule across the whole screen, not a panel. Replacing
+                // it with the rounded panel is the entire point of `Engine_UiRoundedPanel`;
+                // leaving it drew both.
+                //
+                // This also retires the reason the distance heuristic below exists: the union
+                // used to come out 1269 units wide because the band was in it. With the band
+                // hidden and the widget cut as one group, the subtree's own extent is the
+                // answer and nothing has to be guessed from proximity.
+                HideSlabs(built.Node);
+
+                // THE PROMPTS SIT UNDER THE HEART, at the bar's right end. Our layout; only x
+                // moves, since their y already places them below the bar.
+                //
+                // (The `.bgf` happens to put them at x 386. That is the old renderer's layout
+                // and is not a constraint — we take ART and STRINGS from that file and place
+                // things ourselves. This belongs in the layout template once the HUD editor
+                // covers this widget; it is here only until then.)
+                CentreUnderBar(built.Node);
+
+                // ONE TEXT STYLE. The name is a title, the button's label is body — the same cut
+                // the display box makes on a path ending "Title". The style is metadata the
+                // re-mesh reads, so the shown text is dropped to force one repaint through it;
+                // after that the piece repaints only when the guest changes the string.
+                foreach ((MeshInstance3D text, int ordinal) in built.LiveTextNodes)
+                {
+                    if (!GodotObject.IsInstanceValid(text) || text.HasMeta(StyledMeta))
+                    {
+                        continue;
+                    }
+
+                    // THE ELEMENT DECIDES, not only the piece. While this widget was cut per
+                    // binding the name had a piece of its own with "Title" in its id; cut whole
+                    // there is one id for the lot, so the name would have taken body style with
+                    // everything else. The element is called `TitleText` either way.
+                    bool isTitle =
+                        built.Piece.Id.Contains("Title", System.StringComparison.OrdinalIgnoreCase) ||
+                        text.Name.ToString().Contains("Title", System.StringComparison.OrdinalIgnoreCase);
+                    text.SetMeta(StyledMeta, true);
+                    text.SetMeta("text_size",
+                        isTitle ? Engine_UiHudTextStyle.TitleSize : Engine_UiHudTextStyle.BodySize);
+                    text.SetMeta("text_colour",
+                        isTitle ? Engine_UiHudTextStyle.TitleColour : Engine_UiHudTextStyle.BodyColour);
+                    built.ShownTexts.Remove(ordinal);
+                }
+
+                // THE WIDGET IS UP ONLY WHILE THE GUEST NAMES SOMEONE.
+                //
+                // Nothing else here is a reliable "is it up" signal: the gift, divorce and
+                // marry icons ride registry 9 and the slider rides registry 10, neither of
+                // which this host states at all yet, so those elements stay drawn whether or
+                // not a citizen is targeted — and a panel fitted to them sits on screen for
+                // ever with nothing in it.
+                //
+                // The guest states it OUTRIGHT, so ask that rather than infer. The record's
+                // `+0` byte is the readout's raise flag — `sub_823FD8E8` stores 1, `sub_823FD9B0`
+                // stores 0 — and `Engine_UiHudTargetedQuery` now states it on this very channel.
+                //
+                // The previous gate read the shown TITLE and was wrong in a way that only a run
+                // shows: `ShownTexts` is what we last PAINTED, and a re-text is skipped when the
+                // guest states an empty string, so the last citizen's name stayed in that map
+                // for ever and the panel never came down.
+                if (Values.Visible(Engine_HudValues.Handle.For("TargetedQuery")) is not true)
+                {
+                    continue;
+                }
+
+                // The gauge and the icons are KEPT: they carry the opinion, which is the whole
+                // point of the widget. Only the backing is replaced, and the panel is fitted to
+                // everything so the parts read as one thing.
+                ++_queryPieces;
+                Rect2? one = SubtreeBounds(built.Node, ref queryBehind);
+                _queryParts.Add(one is { } span
+                    ? $"{built.Piece.Id} [{span.Position.X:0}..{span.Position.X + span.Size.X:0}]"
+                    : $"{built.Piece.Id} [none]");
+
+                // THE TITLE ANCHORS THE WIDGET, and everything that belongs to it sits near the
+                // title. Unioning blind gave a rectangle 1269 units wide — the full design box —
+                // which is the black band across the top of the screen rather than a panel.
+                // Excluding oversized meshes was not enough: the span came from two NARROW
+                // pieces at opposite edges, so the outlier has to be rejected by DISTANCE, not
+                // by size. The name is the one part whose place is certain, so it is the anchor
+                // and anything beyond a widget's width of it is not part of this widget.
+                if (built.Piece.Id.Contains(".TargetedQueryTitle.", System.StringComparison.Ordinal))
+                {
+                    _queryTitle = one ?? _queryTitle;
+                }
+
+                _queryCandidates.Add(one);
+            }
+        }
+
+        if (counterBounds is { } counters)
+        {
+            FitPanel("counters", counters.Grow(8f), used, counterBehind);
+        }
+
+        // Gathered against the title once every piece has been measured, because the title is
+        // not necessarily the first of them.
+        if (_queryTitle is { } anchor)
+        {
+            float centre = anchor.Position.X + (anchor.Size.X * 0.5f);
+            foreach (Rect2? candidate in _queryCandidates)
+            {
+                if (candidate is not { } part)
+                {
+                    continue;
+                }
+
+                float partCentre = part.Position.X + (part.Size.X * 0.5f);
+                if (System.Math.Abs(partCentre - centre) <= QueryGatherReach)
+                {
+                    queryBounds = Union(queryBounds, part);
+                }
+            }
+        }
+        else
+        {
+            foreach (Rect2? candidate in _queryCandidates)
+            {
+                queryBounds = Union(queryBounds, candidate);
+            }
+        }
+
+        if (queryBounds is { } query)
+        {
+            // A little air, so the name and the gauge are not flush against the edge. The
+            // quest box gets the same from the text bounds it fits to.
+            FitPanel("targetedquery", query.Grow(8f), used, queryBehind);
+        }
+
+        // SAY WHAT THE PANEL DID. Three attempts at this widget have gone out without anyone
+        // being able to see whether the panel was fitted, to what, or at what depth — the piece
+        // ids and the bounds are the two things that decide it, and neither was observable.
+        // Printed only when the answer changes, so it costs nothing once it settles.
+        string report = queryBounds is { } r
+            ? $"{_queryPieces} piece(s), rect {r.Position.X:0}, {r.Position.Y:0} {r.Size.X:0}x{r.Size.Y:0} " +
+              $"at z {queryBehind:0.0} | {string.Join("  ", _queryParts)}"
+            : $"{_queryPieces} piece(s), NO BOUNDS — every mesh was rejected as a container or none was drawn";
+        if (_queryPieces != 0 && report != _queryReport)
+        {
+            _queryReport = report;
+            GD.Print($"[hud-targeted] {report}");
         }
 
         foreach ((string key, Engine_UiRoundedPanel panel) in _panels)
@@ -556,6 +782,115 @@ public sealed partial class Engine_HudView : Node3D
         // Just behind the text it backs; the world sits far below every HUD depth.
         panel.Fit(rect, z);
         used.Add(key);
+    }
+
+    /// <summary>Marks a label already given the HUD text style, so it is styled once.</summary>
+    private const string StyledMeta = "hud_text_styled";
+
+    private int _queryPieces;
+    private string _queryReport = string.Empty;
+
+    /// <summary>Each targeted-widget piece and its horizontal span, so the outlier can be named.</summary>
+    private readonly List<string> _queryParts = new();
+
+    private readonly List<Rect2?> _queryCandidates = new();
+
+    private Rect2? _queryTitle;
+
+    /// <summary>
+    /// How far from the name a part may sit and still belong to the targeted widget, in canvas
+    /// units. The authored parts run from the mood icons out to the button, a little over four
+    /// hundred either side; half the design box is the generous bound that still rejects an
+    /// element parked at the screen edge.
+    /// </summary>
+    private const float QueryGatherReach = Engine_HudLayout.DesignWidth * 0.5f;
+
+    /// <summary>
+    /// The screen bounds of every drawn mesh under a node, and the nearest depth among them —
+    /// <see cref="TextBounds"/> answers for one label, and this widget is a subtree of art.
+    /// </summary>
+    private static Rect2? SubtreeBounds(Node node, ref float behind)
+    {
+        Rect2? bounds = null;
+        if (node is MeshInstance3D mesh && mesh.Mesh is not null && mesh.IsVisibleInTree())
+        {
+            Aabb box = mesh.GlobalTransform * mesh.Mesh.GetAabb();
+
+            // CONTENT ONLY. A group's own root carries a quad the size of the canvas — it is the
+            // container, not a drawn thing — and unioning it fitted the panel to the whole
+            // screen, which is the full-width band across the top rather than a widget. Nothing
+            // in this family is legitimately wider than half the design box: the opinion bar,
+            // the widest part, is a little over a quarter of it.
+            bool container = box.Size.X > Engine_HudLayout.DesignWidth * 0.5f ||
+                box.Size.Y > Engine_HudLayout.DesignHeight * 0.5f;
+
+            if (box.Size.X > 0f && box.Size.Y > 0f && !container)
+            {
+                bounds = new Rect2(box.Position.X, box.Position.Y, box.Size.X, box.Size.Y);
+                behind = System.Math.Min(behind, mesh.GlobalPosition.Z - 0.5f);
+            }
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            bounds = Union(bounds, SubtreeBounds(child, ref behind));
+        }
+
+        return bounds;
+    }
+
+    /// <summary>The prompt groups the targeted readout hangs off to its right.</summary>
+    private static readonly string[] PromptNames = { "LeftButton", "RightButton" };
+
+    /// <summary>
+    /// Where the prompts sit, in canvas units from the readout's centre — under the heart at the
+    /// bar's right end. The mood icons are authored at x 285 inside `grp` (scale 0.5) inside
+    /// `LoveSlider` (scale 1.5), i.e. 285 x 0.75 = 214 canvas units out, and the heart rides
+    /// that same end. OUR number: the file hangs the prompts at 386 with everything else on 0,
+    /// and this is where they belong instead. Template material once the editor reaches here.
+    /// </summary>
+    private const float PromptX = 214f;
+
+    /// <summary>
+    /// How far BELOW their authored height the prompts sit, in canvas units. Ours, like
+    /// <see cref="PromptX"/>: the file stacks the readout tightly, and with the prompts pulled
+    /// onto the centre line the "More Info" row ended up crowding the opinion bar and the heart
+    /// it now sits under. Canvas +y is up, so this subtracts.
+    /// </summary>
+    private const float PromptDrop = 16f;
+
+    /// <summary>Latches a prompt's authored height, so the drop is applied once and not per frame.</summary>
+    private const string PromptBaseMeta = "hud_prompt_base_y";
+
+    /// <summary>
+    /// Brings the targeted readout's button prompts onto the widget's centre line, so they sit
+    /// under the opinion bar rather than beside it. Only x moves; the authored y already places
+    /// them below the bar, and the two prompts are authored at different heights so they stack
+    /// rather than collide on the rare frame both are up.
+    /// </summary>
+    private static void CentreUnderBar(Node node)
+    {
+        foreach (Node child in node.GetChildren())
+        {
+            if (child is Node3D prompt &&
+                System.Array.IndexOf(PromptNames, child.Name.ToString()) >= 0)
+            {
+                // FROM THE AUTHORED Y, NOT THE CURRENT ONE. This runs every frame, so
+                // subtracting from `Position.Y` would drop the prompt another 16 units each
+                // time and slide it off the bottom of the screen within a second. The authored
+                // height is latched once, the first time this node is seen.
+                if (!prompt.HasMeta(PromptBaseMeta))
+                {
+                    prompt.SetMeta(PromptBaseMeta, prompt.Position.Y);
+                }
+
+                float baseY = (float)prompt.GetMeta(PromptBaseMeta).AsDouble();
+                prompt.Position = new Vector3(PromptX, baseY - PromptDrop, prompt.Position.Z);
+                continue;
+            }
+
+            CentreUnderBar(child);
+        }
     }
 
     private static void HideSlabs(Node node)
@@ -620,6 +955,21 @@ public sealed partial class Engine_HudView : Node3D
             foreach (Engine_UiBindings.Binding binding in _bindings.All)
             {
                 bool pulse = binding.Kind == Engine_UiBindings.Kind.Pulser;
+
+                // A LAYOUT METER MUST NOT DRAG A GROUP WE PLACED. `TopBoxY` is the quest box's
+                // measured height, and inside `PlayerHealth` it owns `Health`'s position.y
+                // track (0 -> -136) — so the health readout slid up and down by ~90 units as
+                // the quest box grew and shrank, which the diagnostic caught as its rect y
+                // wandering 202 / 220 / 294 between samples.
+                //
+                // That coupling is the ORIGINAL's layout decision, and layout is ours: we place
+                // this widget, so nothing else may move it. `Engine_UiLiveValues` already keeps
+                // this same list for the same reason.
+                if (Engine_UiBindings.IsLayoutMeter(binding.Name))
+                {
+                    continue;
+                }
+
                 if ((binding.Kind != Engine_UiBindings.Kind.Meter && !pulse) ||
                     binding.ElementOrdinal == built.Piece.ElementOrdinal ||
                     !InSubtree(screen, binding.ElementOrdinal, built.Piece.ElementOrdinal))
@@ -937,6 +1287,24 @@ public sealed partial class Engine_HudView : Node3D
                     string live = ordinal >= 0 && ordinal < texts.Length
                         ? texts[ordinal] ?? string.Empty
                         : string.Empty;
+
+                    // A LABEL THE GUEST NEVER WRITES KEEPS THE ONE THE FILE GAVE IT. Not a
+                    // general rule — a field the guest deliberately CLEARS must go blank, and
+                    // falling back everywhere would put authoring placeholders on screen as if
+                    // they were data, which is worse than empty.
+                    //
+                    // Narrowed to the names the binary proves carry no text. `TargetedQueryButton`
+                    // is hashed in exactly two places — its initialiser and one publish, and that
+                    // publish is `sub_823FE848` at 0x823fd71c, a registry-9 BOOL for visibility.
+                    // No text writer exists for it anywhere in the image, while `hud.bgf` binds
+                    // the name to TWO text elements which author `GUI_DIALOG_MORE_INFO` and
+                    // `GUI_SCREEN_GIFT_ACCEPT`. The guest shows those; we were blanking them.
+                    if (live.Length == 0 &&
+                        built.Piece.Id.Contains(".TargetedQueryButton.", System.StringComparison.Ordinal) &&
+                        built.AuthoredTexts.TryGetValue(ordinal, out string? authoredText))
+                    {
+                        live = authoredText;
+                    }
                     if (built.ShownTexts.TryGetValue(ordinal, out string? shown) && shown == live)
                     {
                         continue;
@@ -1032,6 +1400,21 @@ public sealed partial class Engine_HudView : Node3D
             if (built.Piece.Value.Length != 0)
             {
                 wanted.Add(built.Value);
+            }
+
+            // AND THE CHANNELS NESTED INSIDE A GROUP. A group piece is built with an EMPTY
+            // value — the names it drives belong to the meters inside it — so every nested
+            // channel was invisible to this report. That covers the hold rings on the top box
+            // (`RightTopButton`, `LeftTopButton`) and the box's own extent meters, which is
+            // exactly the set you need when a hold prompt will not fill: without them, a guest
+            // that never publishes and a guest publishing zero look identical, because the
+            // meter read returns 0 rather than nothing for a name the presentation registered.
+            foreach (BoundTrack track in built.Tracks)
+            {
+                if (track.Value is { } nested && !wanted.Contains(nested))
+                {
+                    wanted.Add(nested);
+                }
             }
         }
 

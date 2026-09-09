@@ -1645,7 +1645,21 @@ public sealed class Engine_UiScreenMenu
 	/// `(EventType, id)` pair would activate something else), so the caller falls back to the A
 	/// press.
 	/// </summary>
-	public bool Commit()
+	/// <param name="discard">
+	/// The Y press on the abilities screen, which is DISCARD, not activate. Two things have to
+	/// change for it and both are easy to miss:
+	///
+	/// The row's own `Command` must NOT run. Every ability leaf carries
+	/// `Ability:learn:&lt;type&gt;` (`Engine_UiAbilitySource.cs:167`), `RunHostAction` is tried
+	/// ahead of the identity push on purpose, and that lever calls `sub_8246C970` — the
+	/// PURCHASE — directly. So Y bought the ability and the discard never entered the picture,
+	/// spending the player's gold on a keypress meant to refund it.
+	///
+	/// And the identity push must DISARM `+198`, because the guest's own Y does
+	/// (`sub_826C2958` case 39 stores 0 at 0x826c2b2c; case 36 stores 1). `sub_826C2D40`
+	/// @0x826c2d78 reads that byte to choose purchase over the discard confirm.
+	/// </param>
+	public bool Commit(bool discard = false)
 	{
 		if (Script.Highlighted is not { } row)
 		{
@@ -1688,15 +1702,22 @@ public sealed class Engine_UiScreenMenu
 			//
 			// The identity push stays as the fallback for rows that genuinely have no action of
 			// their own, which is most of them.
-			if (RunHostAction(row, label))
+			if (!discard && RunHostAction(row, label))
 			{
 				return true;
 			}
 
 			uint hostId = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
-			GD.Print($"[screen-menu] host commit BY IDENTITY: '{label}' " +
-				$"({row.Name}, type {row.EventType}, id 0x{hostId:X8})");
-			Engine_UiSource.Current.MenuEvent(row.Name, row.EventType, hostId);
+			GD.Print($"[screen-menu] host commit BY IDENTITY{(discard ? " (DISCARD)" : string.Empty)}: " +
+				$"'{label}' ({row.Name}, type {row.EventType}, id 0x{hostId:X8})");
+			if (discard)
+			{
+				Engine_UiSource.Current.MenuDiscard(row.Name, row.EventType, hostId);
+			}
+			else
+			{
+				Engine_UiSource.Current.MenuEvent(row.Name, row.EventType, hostId);
+			}
 			return true;
 		}
 
@@ -1836,7 +1857,7 @@ public sealed class Engine_UiScreenMenu
 		//
 		// It is checked before `Committable` on purpose — a row with a host action needs no
 		// guest identity, which is the whole point of having one.
-		if (RunHostAction(row, label))
+		if (!discard && RunHostAction(row, label))
 		{
 			return true;
 		}
@@ -1849,10 +1870,17 @@ public sealed class Engine_UiScreenMenu
 		}
 
 		uint id = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
-		GD.Print($"[screen-menu] commit BY IDENTITY: '{label}' " +
-			$"({row.Name}, type {row.EventType}, id 0x{id:X8}) — our cursor " +
+		GD.Print($"[screen-menu] commit BY IDENTITY{(discard ? " (DISCARD)" : string.Empty)}: " +
+			$"'{label}' ({row.Name}, type {row.EventType}, id 0x{id:X8}) — our cursor " +
 			$"{Script.CurrentHighlightIdx}/{Script.Visible.Count}, the guest's {GuestHighlight}");
-		Engine_UiSource.Current.MenuEvent(row.Name, row.EventType, id);
+		if (discard)
+		{
+			Engine_UiSource.Current.MenuDiscard(row.Name, row.EventType, id);
+		}
+		else
+		{
+			Engine_UiSource.Current.MenuEvent(row.Name, row.EventType, id);
+		}
 		return true;
 	}
 

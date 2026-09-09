@@ -15,6 +15,12 @@ public static class Engine_Weather
 
     private const float SnowBaseCount = 4096f;
 
+    /// <summary>
+    /// The value at or below which the guest draws no weather at all — `flt_820992D8`, read as
+    /// `3D 4C CC CD`. Ours was 0.001, so a theme stating a trace of snow drew a full field of it.
+    /// </summary>
+    public const float WeatherGate = 0.05f;
+
     public static MeshInstance3D? Build(WeatherTheme theme, float windAzimuth, float windStrength)
     {
         float rainDensity = Math.Clamp(
@@ -23,10 +29,18 @@ public static class Engine_Weather
         float snowSpeed = Math.Clamp(theme.HasSnow ? theme.SnowFallSpeed : 0f, 0f, 6f);
         float snowSize = Math.Clamp(theme.HasSnow ? theme.SnowSize : 0f, 0f, 4f);
 
-        bool hasSnow = snowSpeed > 0.001f && snowSize > 0.001f;
+        // THE GUEST'S OWN GATE, AND ITS ONLY ONE. Both draws test the blended theme value
+        // against flt_820992D8 — bytes `3D 4C CC CD`, exactly 0.05 — and skip the entire pass
+        // below it: snow at 0x821bdf00 (`fcmpu cr6, f29, f0` / `bgt` / `li r10, 0` / `beq`
+        // past the whole draw), rain at 0x82280450. There is NO ceiling test, no raycast, no
+        // portal, no room or interior flag anywhere on that path; the strings HasSky, IsInside
+        // and NoWeather are not in the image, and the engine's own "am I indoors" query has no
+        // caller on it. An interior is dry because its theme states nothing, not because the
+        // renderer checks. So do not add an interior test here — carry the guest's threshold.
+        bool hasSnow = snowSpeed > WeatherGate && snowSize > WeatherGate;
 
         int rainCount = Math.Clamp((int)(rainDensity * RainDensityToCount), 0, MaxRain);
-        if (rainSize <= 0.001f)
+        if (rainSize <= WeatherGate || rainDensity <= WeatherGate)
         {
             rainCount = 0;
         }

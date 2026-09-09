@@ -205,6 +205,14 @@ public abstract class Engine_UiSource
 	/// <summary>Pushes a menu button event by identity.</summary>
 	public virtual uint MenuEvent(string name, int eventType, uint id) => 0;
 
+	/// <summary>
+	/// The same identity commit, with the abilities screen's `+198` byte CLEARED instead of set
+	/// — the guest's own Y. `sub_826C2D40` @0x826c2d78 branches on it: set runs `sub_8246C970`
+	/// (the PURCHASE), clear opens the discard confirm. `sub_826C2958` case 39 stores 0 there
+	/// and case 36 stores 1, so the arm is part of the press, not a constant.
+	/// </summary>
+	public virtual uint MenuDiscard(string name, int eventType, uint id) => 0;
+
 	/// <summary>Runs the shipped <c>SelectMenuItem</c> against the guest's own highlight.</summary>
 	public virtual uint MenuSelect() => 0;
 

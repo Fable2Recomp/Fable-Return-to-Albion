@@ -145,6 +145,12 @@ public sealed class Engine_FrontEndMenu
 	/// </summary>
 	public const int DefaultSaveLimit = 6;
 
+	/// <summary>
+	/// The host row that ends the app, as its command. No guest dispatch behind it — a console
+	/// front end had nowhere to quit to, so no entry, event or text tag exists to reach for.
+	/// </summary>
+	public const string QuitToDesktopCommand = "QuitToDesktop";
+
 	/// <summary>The guest's own text tag for a New Game with no profile signed in.</summary>
 	public const string NoProfileWarning = "GUI_NO_PROFILE_SELECTED_WARNING";
 

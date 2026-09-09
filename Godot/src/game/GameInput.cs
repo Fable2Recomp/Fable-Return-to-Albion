@@ -179,6 +179,14 @@ public partial class GameInput : Node
 			GD.Print($"[input] triggers LT={leftTrigger} RT={rightTrigger}");
 		}
 
+		// THE SPELLS MENU'S HOLD — GameAction 42 on press, 43 on release, which the shipped
+		// scheme binds to XboxButton 16: the RIGHT TRIGGER. Same 30/255 threshold as above.
+		bool spells = rightTrigger > 30;
+		SpellsMenuPressed = spells && !_spellsWasDown;
+		SpellsMenuReleased = !spells && _spellsWasDown;
+		SpellsMenuHeld = spells;
+		_spellsWasDown = spells;
+
 		// Two consumers: the guest gets a filtered set, the host-owned menu below gets the real
 		// one. The guest still runs its own front-end menu — see <see cref="WithoutMenuInput"/>.
 		bool masked = MaskMenuInput;
@@ -573,9 +581,11 @@ public partial class GameInput : Node
 	private static bool _flipWasDown;
 
 	/// <summary>
-	/// The expression wheel's hold — GameAction 40 on press, 41 on release. A host binding: the
-	/// shipped control scheme binds GameAction 40 to `XboxButton` code 15, and that code →
-	/// button table is not decoded, so the wheel rides the pad's Back button and keyboard Q.
+	/// The expression wheel's hold — GameAction 40 on press, 41 on release. A HOST binding: the
+	/// shipped scheme binds GameAction 40 to `XboxButton` code 15 (the left trigger), but the
+	/// wheel rides the pad's Back button and keyboard Q here. Deliberate, not undecoded — the
+	/// code → button table IS known (10 right bumper, 15 left trigger, 16 right trigger), read
+	/// out of the GDB, where these pairings live; the executable ships the binding table empty.
 	/// </summary>
 	public static bool QuickWheelPressed { get; private set; }
 
@@ -584,6 +594,20 @@ public partial class GameInput : Node
 	public static bool QuickWheelHeld { get; private set; }
 
 	private static bool _wheelWasDown;
+
+	/// <summary>
+	/// The spells menu's hold — GameAction 42 on press, 43 on release, on the RIGHT TRIGGER
+	/// (`XboxButton` 16). Unlike the wheel above this is the SHIPPED binding, not a host one:
+	/// `GameControlsCombatOnRelease` aliases a scheme that overrides `GameActionGUISpellsMenu`
+	/// onto 16 over a base of 10.
+	/// </summary>
+	public static bool SpellsMenuPressed { get; private set; }
+
+	public static bool SpellsMenuReleased { get; private set; }
+
+	public static bool SpellsMenuHeld { get; private set; }
+
+	private static bool _spellsWasDown;
 
 	/// <summary>Whichever axis is further from centre — a pad at rest reads 0 and loses.</summary>
 	private static int Dominant(int a, int b) =>

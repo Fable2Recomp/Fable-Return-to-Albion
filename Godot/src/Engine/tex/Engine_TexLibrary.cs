@@ -387,8 +387,22 @@ public static class Engine_TexLibrary
 			}
 		}
 
+		// THE ORM AND CUBE MAPS ARE COUNTED TOO. They are separate dictionaries with the same
+		// process lifetime the main one had, and the ORM set was the one that gave the leak
+		// away: 1,914 of the game's 1,935 packed maps resident at once is not a working set,
+		// it is every region ever visited. A count that never falls across a level change means
+		// `Engine_LevelCaches.ReleaseRegion` is not running.
+		int orm;
+		int cubes;
+		lock (Gate)
+		{
+			orm = LiveOrm.Count;
+			cubes = LiveCubes.Count;
+		}
+
 		GD.Print(
-			$"[tex] library {live:N0} live, {enhanced:N0} enhanced, {queued:N0} queued, " +
+			$"[tex] library {live:N0} live, {enhanced:N0} enhanced, {orm:N0} orm, " +
+			$"{cubes:N0} cube(s), {queued:N0} queued, " +
 			$"{System.Threading.Volatile.Read(ref _compressFailures):N0} uncompressed " +
 			$"(BC unavailable), backend {Engine_TexEnhance.BackendId}");
 		Engine_TexCache.Report();
@@ -629,6 +643,40 @@ public static class Engine_TexLibrary
 			is not null;
 	}
 
+
+	/// <summary>
+	/// Halves a packed ORM before its mip chain is built.
+	/// </summary>
+	/// <remarks>
+	/// EVERY CHANNEL HERE IS A CONTROL SIGNAL, NOT AN IMAGE: occlusion from the source normal's
+	/// divergence, roughness from a `sqrt(2/(power+2))` ramp, metallic from a smoothstep mask,
+	/// height from a Poisson solve. None carries texture-scale detail, and the shader samples
+	/// them beside an albedo that keeps its full size, so the frequency they are stored at is
+	/// not the frequency the surface reads at.
+	///
+	/// Measured on the built cache: 1,856 of 1,935 packed maps take the larger block format
+	/// because the height channel varies their alpha, and ~99% of the game's set is resident at
+	/// once — so a quarter of the pixels is close to a pure live saving rather than a
+	/// whole-set one.
+	///
+	/// BEFORE the mip chain, so the chain is generated for the size actually stored. A map with
+	/// an edge of one has nothing to halve.
+	/// </remarks>
+	private static void HalvePackedOrm(Image packed)
+	{
+		int width = packed.GetWidth();
+		int height = packed.GetHeight();
+		if (width <= 1 || height <= 1)
+		{
+			return;
+		}
+
+		packed.Resize(
+			System.Math.Max(1, width / 2),
+			System.Math.Max(1, height / 2),
+			Image.Interpolation.Bilinear);
+	}
+
 	private static readonly Dictionary<string, (ImageTexture? Texture, bool HasHeight)> LiveOrm =
 		new(StringComparer.Ordinal);
 
@@ -746,6 +794,7 @@ public static class Engine_TexLibrary
 			return null;
 		}
 
+		HalvePackedOrm(packed);
 		packed.GenerateMipmaps();
 		CompressOrReport(packed, isNormalMap: false, "orm");
 		hasHeight = packedHeight;
@@ -836,6 +885,7 @@ public static class Engine_TexLibrary
 			return null;
 		}
 
+		HalvePackedOrm(packed);
 		packed.GenerateMipmaps();
 		CompressOrReport(packed, isNormalMap: false, "orm");
 

@@ -329,7 +329,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         _paintedMoved = 0f;
-        Reevaluate();
+        Reevaluate(restartStep: false);
     }
 
     private void FollowGuestClock()
@@ -419,7 +419,20 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         LevelGdbPath = levelGdbPath;
     }
 
-    public void Reevaluate()
+    /// <param name="restartStep">
+    /// Whether this begins a NEW five-minute blend window. True for the clock, which is what the
+    /// window measures. FALSE for a painted-weight change, which is a POSITIONAL event: the step
+    /// is not over, only its content changed.
+    ///
+    /// Resetting the phase on a painted trigger is what couples the two. `TickPainted`
+    /// re-evaluates once per tenth of weight, so up to ten times across one transition, and each
+    /// one threw away where we were inside the current step and snapped the drawn lighting back
+    /// to that step's start. The size of that snap is exactly `end − start`, which for five game
+    /// minutes of sun is normally invisible — it only became a flash because the painted fold
+    /// was replacing the level's main light, making start and end a lit world and a black one.
+    /// Holding the phase keeps it continuous even when they legitimately differ, as at dawn.
+    /// </param>
+    public void Reevaluate(bool restartStep = true)
     {
         if (!EnsureTheme() || Theme is null)
         {
@@ -431,7 +444,10 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         _skyStepStart = null;
         _skyStepEnd = null;
         _lightingStepEnd = null;
-        _stepStart = _dayFraction;
+        if (restartStep || float.IsNaN(_stepStart))
+        {
+            _stepStart = _dayFraction;
+        }
         float stepEndTime = (_dayFraction + ReevaluateStep) % 1f;
 
         if (LightingGdbs.Count != 0 &&

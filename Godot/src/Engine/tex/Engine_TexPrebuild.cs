@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using Godot;
 using Refii.Bnk;
@@ -397,6 +398,16 @@ public static class Engine_TexPrebuild
 
 		foreach (BnkFile file in banks.EnumerateAllFiles())
 		{
+			// UI ART BY PATH. Nothing references it the way a mesh references its albedo — a
+			// .bgf names its own pictures — so the material-slot walk below reaches none of it.
+			// Without this the UI is enhanced only lazily, by Engine_TexLibrary.TrackUi as each
+			// screen opens.
+			if (IsUiArt(file.VirtualPath))
+			{
+				Add(file.VirtualPath, TexSemantic.Ui);
+				continue;
+			}
+
 			if (!file.VirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
 			{
 				continue;
@@ -450,6 +461,19 @@ public static class Engine_TexPrebuild
 			}
 		}
 
-		return items;
+		// UI FIRST: it is on screen during the prebuild itself. OrderBy, not List.Sort — the
+		// latter is an unstable introsort and would scramble the bank order of the rest.
+		return items.OrderBy(item => item.Semantic == TexSemantic.Ui ? 0 : 1).ToList();
 	}
+
+	/// <summary>
+	/// Is this the art a Gameface screen, a book or the HUD draws from?
+	/// </summary>
+	/// <remarks>
+	/// By directory, matching how Engine_BnkTextureLoader binds TexSemantic.Ui for the whole
+	/// <c>game://</c> route — the same statement, made ahead of the load rather than during it.
+	/// </remarks>
+	private static bool IsUiArt(string virtualPath) =>
+		virtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) &&
+		virtualPath.Replace('\\', '/').StartsWith("art/gui/", StringComparison.OrdinalIgnoreCase);
 }

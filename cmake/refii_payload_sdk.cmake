@@ -14,7 +14,7 @@
 #   zig/            the bundled toolchain: zig + its lib/ (libc, libc++, MinGW CRT)
 #   include/NN/     the include directories, staged verbatim, one per number
 #   include_dirs.cmake  the list, in the order the compiler saw them
-#   lib/            rexruntime, refii_core, refii_vfs, refii_lua, refii_hooks
+#   lib/            rexruntime, refii_core, refii_vfs, refii_lua
 #   src/            payload_export.cpp
 #   payload_exports.def
 #   refii_manifest.toml, refii_config.toml
@@ -112,9 +112,12 @@ function(refii_stage_payload_sdk)
 
     # The libraries the payload links. refii_generated itself is NOT among them: it is what
     # gets built, and shipping our copy would be shipping code derived from our game image.
+    # NOT the hook archive either: the hooks are staged as SOURCES above and compiled into
+    # the payload on the player's machine, and the launcher's link takes no archive — one
+    # shipped anyway was 58 MB nothing read.
     # TracyClient is here for the GENERATOR, not the payload: rexglue links the runtime,
     # which links Tracy, and the staged tool finds neither without them beside it.
-    foreach(_library rexruntime refii_core refii_vfs refii_lua refii_hooks_archive TracyClient)
+    foreach(_library rexruntime refii_core refii_vfs refii_lua TracyClient)
         if(TARGET ${_library})
             list(APPEND _commands
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -151,7 +154,7 @@ function(refii_stage_payload_sdk)
         VERBATIM
     )
 
-    foreach(_dependency rexruntime refii_core refii_vfs refii_lua refii_hooks_archive rexglue)
+    foreach(_dependency rexruntime refii_core refii_vfs refii_lua rexglue)
         if(TARGET ${_dependency})
             add_dependencies(refii_payload_sdk ${_dependency})
         endif()

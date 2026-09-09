@@ -41,6 +41,18 @@ public static class Engine_PauseMenu
 	public const string SavingCommandPrefix = "PauseSaving:";
 
 	/// <summary>
+	/// Command prefix of a row that leaves the APP rather than the world; the suffix is the
+	/// guest saving param to run first — 1 save then leave, 2 leave without saving.
+	/// </summary>
+	/// <remarks>
+	/// Posts the same `PauseSaving:N` event the title rows do, then latches on the front end
+	/// coming up. The confirmation box, the save and the teardown stay the guest's and stay in
+	/// the guest's order, so the process cannot end while the save is still being written; a
+	/// player who answers "no" never reaches the front end, so a refusal needs no signal.
+	/// </remarks>
+	public const string QuitCommandPrefix = "PauseQuit:";
+
+	/// <summary>
 	/// Command prefix of a tab the HOST owns outright; the suffix is the host-only screen id it
 	/// stands (<see cref="Engine_UiBookSet.HostOnlyScreenId"/> and up). The tab lever cannot
 	/// express these — `sub_826B89E0`'s switch has no case for a screen the guest never had —

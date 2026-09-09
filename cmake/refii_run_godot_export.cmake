@@ -91,6 +91,11 @@ endif()
 # game_data_root = "/home/.../Godot/build/x86_64/assets" — and shipping it points every
 # tester's install at a directory that exists only on this machine. All three are created on
 # first run, so a package must not contain them.
+#
+# NOR ITS CACHE. cache/ is what the running game converts from the player's own banks —
+# textures and the pub-game SWF shapes — and in a dev tree it is converted from OUR game.
+# It is derived game data and it is not small: the one that shipped was 2.1 GB, two thirds
+# of the zip, with the SWF shapes three times over under three build hashes.
 message(STATUS "Staging natives: ${STAGING_ROOT} -> ${_app}")
 file(COPY "${STAGING_ROOT}/" DESTINATION "${_app}"
     PATTERN "librefii_generated.so" EXCLUDE
@@ -101,6 +106,7 @@ file(COPY "${STAGING_ROOT}/" DESTINATION "${_app}"
     PATTERN "refii.toml" EXCLUDE
     PATTERN "logs" EXCLUDE
     PATTERN "assets" EXCLUDE
+    PATTERN "cache" EXCLUDE
 )
 
 foreach(_dev_state "${_app}/refii.toml" "${_app}/logs" "${_app}/assets")
@@ -156,7 +162,9 @@ endforeach()
 
 # Nor may any of the player's game data. An install writes assets/game beside the binary, so
 # packaging a directory that has been RUN would otherwise ship the game itself.
-foreach(_leaked "${_app}/assets/game" "${_app}/assets/generated" "${_app}/assets/unpacked")
+foreach(_leaked
+        "${_app}/assets/game" "${_app}/assets/generated" "${_app}/assets/unpacked"
+        "${_app}/cache")
     if(EXISTS "${_leaked}")
         file(REMOVE_RECURSE "${_leaked}")
         message(STATUS "Removed game-derived data from the package: ${_leaked}")
@@ -165,6 +173,65 @@ endforeach()
 
 if(NOT EXISTS "${_app}/bin")
     message(FATAL_ERROR "Staging produced no bin/ in ${_app}; the package would not run.")
+endif()
+
+# ONE COPY OF EACH NATIVE. The payload SDK stages the runtime and the refii libraries into
+# bin/recompile/lib for the install-time link, and the host loads the same files from bin/.
+# The launcher looks in bin/ for a library that lib/ does not hold, so a byte-identical
+# second copy is only weight: the runtime alone was 444 MB twice.
+file(GLOB _sdk_libraries LIST_DIRECTORIES false "${_app}/bin/recompile/lib/*")
+foreach(_sdk_library IN LISTS _sdk_libraries)
+    get_filename_component(_library_name "${_sdk_library}" NAME)
+    set(_host_copy "${_app}/bin/${_library_name}")
+    if(NOT EXISTS "${_host_copy}")
+        continue()
+    endif()
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -E compare_files "${_sdk_library}" "${_host_copy}"
+        RESULT_VARIABLE _differs
+        OUTPUT_QUIET ERROR_QUIET)
+    if(_differs EQUAL 0)
+        file(REMOVE "${_sdk_library}")
+        message(STATUS "Dropped duplicate of bin/${_library_name} from bin/recompile/lib")
+    endif()
+endforeach()
+
+# DEBUG INFO STAYS HOME. The natives are Debug builds and most of each file is DWARF: the
+# runtime is 444 MB of which 81 MB is code. --strip-debug removes only that and keeps
+# .symtab and .dynsym, so the install-time link resolves exactly as before and a crash
+# still names its frames; only line numbers go, and those are read against THIS tree.
+#
+# Never the Godot binary: its pck is appended past the last section, and strip drops
+# trailing data. Never the staged sysroot either; it ships as the toolchain built it.
+if(TOOL_PLATFORM STREQUAL "linux")
+    find_program(_strip NAMES llvm-strip strip)
+    if(_strip)
+        file(GLOB _strippable LIST_DIRECTORIES false
+            "${_app}/bin/*.so"
+            "${_app}/bin/recompile/lib/*.so"
+            "${_app}/bin/recompile/lib/*.a"
+            "${_app}/bin/recompile/bin/*")
+        set(_stripped 0)
+        foreach(_binary IN LISTS _strippable)
+            if(IS_SYMLINK "${_binary}")
+                continue()
+            endif()
+            execute_process(
+                COMMAND "${_strip}" --strip-debug "${_binary}"
+                RESULT_VARIABLE _strip_result
+                OUTPUT_QUIET ERROR_VARIABLE _strip_error)
+            if(_strip_result EQUAL 0)
+                math(EXPR _stripped "${_stripped} + 1")
+            else()
+                message(WARNING "Could not strip ${_binary}: ${_strip_error}")
+            endif()
+        endforeach()
+        message(STATUS "Stripped debug info from ${_stripped} natives with ${_strip}")
+    else()
+        message(WARNING
+            "No strip on this host (llvm-strip or binutils strip): the package ships the "
+            "natives with their debug info, roughly four times the size.")
+    endif()
 endif()
 
 # THE MODDING EDITOR IS THIS PROJECT, so the package carries a copy of it.

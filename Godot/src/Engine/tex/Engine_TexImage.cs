@@ -44,18 +44,25 @@ public static class Engine_TexImage
 	/// is hundreds of milliseconds. Stateless, so concurrent callers do not interact.
 	/// </remarks>
 	/// <returns>False if nothing was changed, so the caller can report it.</returns>
-	public static bool CompressBlocks(Image image, bool isNormalMap)
+	/// <param name="force">
+	/// The format to encode to, overriding the choice by content. A TEXTURE ARRAY NEEDS ONE
+	/// FORMAT FOR EVERY SLICE — `Texture2DArray.CreateFromImages` rejects a mixed set — and
+	/// deciding per slice would hand it BC1 for the opaque layers and BC3 for the rest. The
+	/// caller scans its whole set once and states the answer here.
+	/// </param>
+	public static bool CompressBlocks(
+		Image image, bool isNormalMap, TexSurfaceFormat? force = null)
 	{
 		if (image.GetWidth() < 1 || image.GetHeight() < 1)
 		{
 			return false;
 		}
 
-		TexSurfaceFormat target = isNormalMap
+		TexSurfaceFormat target = force ?? (isNormalMap
 			? TexSurfaceFormat.Bc5
 			: image.DetectAlpha() == Image.AlphaMode.None
 				? TexSurfaceFormat.Bc1
-				: TexSurfaceFormat.Bc3;
+				: TexSurfaceFormat.Bc3);
 
 		// The encoder reads four bytes a texel and nothing else.
 		if (image.GetFormat() != Image.Format.Rgba8)
@@ -157,6 +164,17 @@ public static class Engine_TexImage
 			Image? punched = TryCreateBc1PunchThroughImage(surface);
 			if (punched is not null)
 			{
+				// RE-COMPRESS BEFORE IT LEAVES. This is the ONE decode path that returns RGBA8,
+				// and the base decode never compresses — only the ORM and enhanced paths call
+				// the encoder. So a punch-through source stayed four bytes a texel for the whole
+				// session, eight times what its block form costs, and a source that is also over
+				// the enhancement cap or under its floor is never enhanced either, so nothing
+				// downstream ever compressed it. Measured on the built cache: 182 such entries
+				// held 275 MB, four of them 2048x1024 at ~11 MB each.
+				//
+				// The alpha is BINARY here by construction — that is what punch-through means —
+				// so BC3's block carries it exactly.
+				CompressBlocks(punched, false);
 				hasAlpha = true;
 				return punched;
 			}

@@ -175,6 +175,31 @@ public sealed class Engine_HudValues
         }
     }
 
+    /// <summary>
+    /// Elements the guest set to a whole slide by INDEX, by name hash — `SlideSetName`,
+    /// registry 10. Unlike the fader this is not a fixed 1/2/3: the published integer goes
+    /// straight to the slide player, so it is stated verbatim.
+    ///
+    /// STICKY, like the fader beside it. The guest's lower path `sub_823FD9B0` does not touch
+    /// registry 10, so the last index legitimately survives the readout going down.
+    /// </summary>
+    private readonly Dictionary<uint, int> _slideSets = new();
+
+    /// <summary>The `SlideSetName` publish — the index as stated, never shifted.</summary>
+    public void StateSlideSet(uint elementHash, int slide) => _slideSets[elementHash] = slide;
+
+    /// <summary>Every stated slide set, as the verbatim `SlideSetName` index.</summary>
+    public IEnumerable<(uint Hash, int Slide)> SlideSets
+    {
+        get
+        {
+            foreach ((uint hash, int slide) in _slideSets)
+            {
+                yield return (hash, slide);
+            }
+        }
+    }
+
     /// <summary>Whether the guest has hidden an element, or null when it never said.</summary>
     public bool? Visible(Handle handle) =>
         _toggled.TryGetValue(handle.Hash, out bool visible) ? visible : null;

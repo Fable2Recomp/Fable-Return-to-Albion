@@ -459,6 +459,69 @@ std::string ReadGuestString(const uint8_t* base, uint32_t handle, std::size_t ca
     return out;
 }
 
+/// A guest WIDE string handle. The game has TWO string classes and they are not
+/// interchangeable:
+///
+///   * `char***` — two hops to 8-bit characters. Element names, region names, the record names
+///     at `record+8`. `ReadGuestString` above reads this one, and it is correct for it.
+///   * The refcounted LHString — the SAME two hops, but the characters are UTF-16 and the block
+///     carries its own length. Verified by decompile, not taken from a report: `sub_822D6408`
+///     allocates a 16-byte block and counts its source as `_WORD`; `sub_82B3FDC8` finishes with
+///     `a1[1] = count`, `*(_WORD *)(2*count + data) = 0` and `XMemCpy(data, src, 2 * count)`.
+///     Its formatter `sub_8230AE78` prints through the wide literal at 0x820A3D7C, whose bytes
+///     are `00 25 00 64 00 00` — `L"%d"`.
+///
+/// Block layout, from `sub_82B3FDC8`: `+0` character data, `+4` length in WIDE UNITS, `+8`
+/// capacity in bytes with a flag in bit 0, `+12` refcount (the word `sub_822B88A8` reserves on
+/// when it assigns a handle).
+///
+/// Reading this class byte-wise returns EMPTY for all ASCII content, because the high byte of
+/// every unit is the 0 the walk stops at — the guest is big-endian. That is what left the good
+/// and evil deed sprites with an icon and no amount.
+///
+/// UTF-16 BE out as UTF-8, basic plane only: a surrogate pair cannot appear in these strings,
+/// and emitting a lone surrogate is worse than stopping at it.
+std::string ReadGuestWideString(const uint8_t* base, uint32_t handle, uint32_t cap = 256) {
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xE0000000u; };
+    if (base == nullptr || !plausible(handle)) {
+        return std::string();
+    }
+    const uint32_t block = GuestWordAt(base, handle);
+    if (!plausible(block)) {
+        return std::string();  // the guest's own empty string
+    }
+    const uint32_t characters = GuestWordAt(base, block);
+    if (!plausible(characters)) {
+        return std::string();
+    }
+
+    uint32_t length = GuestWordAt(base, block + 4u);
+    if (length > cap) {
+        length = cap;
+    }
+
+    std::string out;
+    for (uint32_t c = 0; c < length; ++c) {
+        const uint16_t unit = GuestHalfAt(base, characters + (c * 2u));
+        if (unit == 0) {
+            break;
+        }
+
+        if (unit < 0x80u) {
+            out.push_back(static_cast<char>(unit));
+        } else if (unit < 0x800u) {
+            out.push_back(static_cast<char>(0xC0u | (unit >> 6)));
+            out.push_back(static_cast<char>(0x80u | (unit & 0x3Fu)));
+        } else {
+            out.push_back(static_cast<char>(0xE0u | (unit >> 12)));
+            out.push_back(static_cast<char>(0x80u | ((unit >> 6) & 0x3Fu)));
+            out.push_back(static_cast<char>(0x80u | (unit & 0x3Fu)));
+        }
+    }
+
+    return out;
+}
+
 /// FNV-1 over a name, the hash Babel keys on — multiply then xor, 32-bit.
 uint32_t RefiiFnv1(const std::string& text) {
     uint32_t hash = 0x811C9DC5u;
@@ -1743,7 +1806,10 @@ extern "C" {
 /// 119 adds RefiiHostGetBoneMorph — the entity's combined skeletal morph record (comp6+152):
 /// per-bone translation offsets and scales the guest applies after the animation fold — and
 /// RefiiHostGetEntityWornItems, the hero walk of ABI 98 for any entity, with gender and open flags.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 119; }
+/// 120 adds RefiiHostGetTargetedQuery — the targeted-citizen record at `*(*(GUI+32)+112)`, so
+/// the host can restate registry 10 (SlideSetName) and the four registry-9 toggles the guest
+/// publishes from it. Neither registry is walkable: both are write-through.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 120; }
 
 /// Answers one `GUI` predicate from the host, by name.
 ///
@@ -4714,6 +4780,27 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
                 break;
             }
 
+            // THE PARENT MUST STILL BE A PARTICLE NODE.
+            //
+            // `plausible` accepts very nearly any 32-bit value, and a level teardown RECYCLES
+            // the heap under an expired weak ref. In the guest the target's destructor zeroes
+            // `cb[0]` (`sub_8229A850` @0x8229a884), so its own walk sees 0 and stops; we read
+            // the same word and get whatever now occupies that address, then read sixteen
+            // arbitrary words as a matrix. Garbage floats give inf*0 = NaN across the concat —
+            // the "NOT FINITE" count — and plausible-but-wrong floats give a FINITE WRONG world
+            // position, which is a fire left burning in mid-air and is never counted at all.
+            //
+            // Measured over a BWSMarket -> BWSSlums -> BWSMarket round trip: zero refused
+            // transforms across ~1800 frames of the first visit, ~25 per frame on the second.
+            // Same region, same content — the fault is created by the transition.
+            //
+            // Every node this walk may compose carries its owner at +0xD0, which is the field
+            // this function already demands of the node itself. Requiring it of each parent is
+            // the node's own identity test rather than a guess about addresses.
+            if (!plausible(read32(parent + 0xD0u))) {
+                break;
+            }
+
             float parent_local[16];
             local_matrix(parent, parent_local);
             float composed[16];
@@ -7039,14 +7126,73 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     if (read8(controller + 576u) != 0u) {
         flags |= 4u;
     }
-    // FLAG 8: THE POSE IS PHYSICS'S, NOT THE LIST'S. `sub_8220D1B8` (0x8220D6E8) sets bit 2
-    // (value 4) of the spatial component's flags at comp3+144 while the entity's physics object
-    // is in state 3 or 4 — a ragdoll — and `sub_82204FF0` (0x822053AC..448) then overwrites the
-    // finished pose at comp6+44 from Havok (model space). The record list is not the source
-    // then; a host that keeps folding clips over a ragdoll blows the body apart.
-    const uint32_t spatial = component(3u);
-    if (plausible(spatial) && (read8(spatial + 144u) & 4u) != 0u) {
-        flags |= 8u;
+    // FLAG 8: THE POSE IS PHYSICS'S, NOT THE LIST'S. Havok writes the finished pose into
+    // comp6+44 and a host that keeps folding clips over it blows the body apart — an
+    // electrocuted bandit coming to pieces.
+    //
+    // THIS DID NOT USE TO READ THE RAGDOLL AT ALL. It tested bit 2 of the spatial component's
+    // word at comp3+144, and that was wrong twice over. First the width: `sub_82204FF0` loads
+    // it with `lwz r11, 0x90(r10)` at 0x8220525C, a 32-BIT WORD, so on the big-endian guest
+    // value-bit 2 lives at byte +147 and a raw byte read of +144 takes the MSB and can never
+    // see it — measured, the fallback counter sat at exactly 0 over 444,813 clip-driven
+    // frames. Second, and worse, that bit is not a physics flag: the branch at 0x82205268
+    // skips the pose update when it is CLEAR, so it means "pose this skeleton this frame", an
+    // ENABLE that is true for nearly every animated rig. Correcting only the width would have
+    // handed every character to the pose feed and stopped all authored animation.
+    //
+    // The real state, read end-to-end off `sub_8220D1B8` at 0x8220D68C..0x8220D6E8:
+    //     P = *(entity + 0x7C)                  physics navigator     (lwz r3, 0x7C(r27))
+    //     C = P->vtable[23](P)                  the character proxy   (lwz r10, 0x5C(r11))
+    //     S = first entry of C's vector whose vtable slot 2 returns 1 (`sub_8220A610`, which
+    //         walks 8-byte {object, refcount} pairs between C+8 and C+12)
+    //     ragdoll = *(uint8 *)(S + 0x24) != 0 && *(uint32 *)(S + 0x20) is 2, 3 or 4
+    // `S+0x20` is a word (`lwz r11, 0x20(r11)`), `S+0x24` a genuine byte (`lbz r10, 0x24(r11)`).
+    // The ragdoll object is built in `sub_82960B90` under the GDB property "HasRagdoll", which
+    // is where its layout is confirmed: `stw r31, 0x20(r3)` mode := 0, `stb r26, 0x24(r3)`
+    // enabled := 1, `stw r8, 0(r3)` vtable := 0x820067F8.
+    //
+    // WE CANNOT CALL A GUEST VIRTUAL, so the proxy is read from `*(P + 0x20)`. Slot 23 is at
+    // vtable+0x5C, `*(uint32 *)0x82007094 == 0x828D4110`, and that function is the accessor:
+    //     828d4110  lwz    r3, 0x20(r3)
+    //     828d4114  blr
+    // All five vtables carrying it (0x82007038, 0x820070F0, 0x820071A0, 0x82007308, 0x820073B8)
+    // are in `kEc2Layouts`, the set observed at entity+0x7C, so the placement component and the
+    // physics navigator are one object. The identity check on S below fails closed regardless.
+    //
+    // MODES 2, 3 AND 4. Read off the pose writer at 0x8220538C..0x822053F8:
+    //     82205390  lbz    r11, 0x24(r31)   ; enabled
+    //     82205398  beq    -> 8220544C      ; enabled == 0, nothing happens
+    //     8220539c  lwz    r10, 0x20(r31)   ; mode
+    //     822053a0  cmpwi  cr6, r10, 2
+    //     822053a4  beq    -> loc_822053B0  ; mode 2 and
+    //     822053a8  cmpwi  cr6, r10, 3
+    //     822053ac  bne    -> loc_822053B8  ; mode 3 land on the SAME target
+    //     822053f4  cmpwi  cr6, r10, 4      ; mode 4 is the other path
+    // 2 and 3 are the same branch target under an identical guard, so a test that takes 3 must
+    // take 2. All three overwrite the bones from the ragdoll.
+    static constexpr uint32_t kRagdollVtable = 0x820067F8u;
+    const uint32_t navigator = plausible(entity) ? read32(entity + 0x7Cu) : 0u;
+    const uint32_t proxy = plausible(navigator) ? read32(navigator + 0x20u) : 0u;
+    if (plausible(proxy)) {
+        const uint32_t begin = read32(proxy + 8u);
+        const uint32_t end = read32(proxy + 12u);
+        if (plausible(begin) && end >= begin && (end - begin) <= 8u * 64u &&
+            ((end - begin) % 8u) == 0u) {
+            for (uint32_t at = begin; at < end; at += 8u) {
+                const uint32_t ragdoll = read32(at);
+                if (!plausible(ragdoll) || read32(ragdoll) != kRagdollVtable) {
+                    continue;
+                }
+
+                const uint32_t mode = read32(ragdoll + 0x20u);
+                if (read8(ragdoll + 0x24u) != 0u &&
+                    (mode == 2u || mode == 3u || mode == 4u)) {
+                    flags |= 8u;
+                }
+
+                break;
+            }
+        }
     }
     if (out_flags != nullptr) {
         *out_flags = flags;
@@ -8706,35 +8852,30 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
         return 0u;
     }
 
-    // The Morph component, through the entity's own lookup contract: presence bitmask of 8
-    // dwords at entity+0x24, then either the byte index table at entity+0x8C or a walk of the
-    // {id, ptr} pairs. Same shape RefiiHostGetEntities uses for the graphic-appearance slots.
-    constexpr uint8_t kMorphComponentId = 17u;
-
-    const uint32_t present = read32(entity + 0x24u + ((uint32_t)(kMorphComponentId) / 32u) * 4u);
-    if (((present >> (kMorphComponentId % 32u)) & 1u) == 0u) {
-        return 0u;
-    }
-
+    // Components, through the entity's own lookup contract: presence bitmask of 8 dwords at
+    // entity+0x24, then either the byte index table at entity+0x8C or a walk of the {id, ptr}
+    // pairs. Same shape RefiiHostGetEntities uses for the graphic-appearance slots.
     const uint32_t components = read32(entity + 0x48u);
     const uint32_t components_end = read32(entity + 0x4Cu);
     const uint32_t accelerator = read32(entity + 0x8Cu);
 
-    uint32_t morph = 0u;
-    if (plausible(accelerator) && plausible(components)) {
-        morph = read32(components + 8u * read8(accelerator + kMorphComponentId) + 4u);
-    } else if (plausible(components) && components_end > components) {
-        for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
-            if (read32(at) == kMorphComponentId) {
-                morph = read32(at + 4u);
-                break;
+    const auto component = [&](uint8_t id) -> uint32_t {
+        const uint32_t present = read32(entity + 0x24u + ((uint32_t)(id) / 32u) * 4u);
+        if (((present >> (id % 32u)) & 1u) == 0u) {
+            return 0u;
+        }
+        if (plausible(accelerator) && plausible(components)) {
+            return read32(components + 8u * read8(accelerator + id) + 4u);
+        }
+        if (plausible(components) && components_end > components) {
+            for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
+                if (read32(at) == id) {
+                    return read32(at + 4u);
+                }
             }
         }
-    }
-
-    if (!plausible(morph)) {
         return 0u;
-    }
+    };
 
     // THE EYES ARE NOT MORPH PARTS. They are component 7 `CECGraphicAppearanceEyes`' own two
     // render instances: the right eye model hash at comp7+0x18 (`sub_8259D380`, `result[6]`)
@@ -8744,23 +8885,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
     // here. Both are appended after the parts so the host can hang them on
     // `Shadow_R_Eye`/`Shadow_L_Eye` the way the guest does (`sub_82209480`). Nothing is
     // appended when the component is absent or its `Enabled` byte at +0x60 is clear.
+    //
+    // READ BEFORE THE MORPH COMPONENT, NOT INSIDE IT. `CreatureHeroChild` states its whole
+    // body as ONE ModelFile on component 6 and its eyes on component 7; its morph component
+    // has an empty source list. The child therefore never had a morph read at all, and its
+    // eyes — hung by the guest on the same rig, `sub_8259CF80` stores them at comp7+0x18/+0x28
+    // for any entity with the component — were never crossed. An entity with eyes and no
+    // morph parts answers with the two eyes alone.
     constexpr uint8_t kEyesComponentId = 7u;
-    uint32_t eyes = 0u;
-    {
-        const uint32_t eyes_present = read32(entity + 0x24u + ((uint32_t)(kEyesComponentId) / 32u) * 4u);
-        if (((eyes_present >> (kEyesComponentId % 32u)) & 1u) != 0u) {
-            if (plausible(accelerator) && plausible(components)) {
-                eyes = read32(components + 8u * read8(accelerator + kEyesComponentId) + 4u);
-            } else if (plausible(components) && components_end > components) {
-                for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
-                    if (read32(at) == kEyesComponentId) {
-                        eyes = read32(at + 4u);
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    const uint32_t eyes = component(kEyesComponentId);
 
     const auto append_eyes = [&](uint32_t written) -> uint32_t {
         if (!plausible(eyes) || read8(eyes + 0x60u) == 0u) {
@@ -8776,6 +8909,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
         }
         return written;
     };
+
+    constexpr uint8_t kMorphComponentId = 17u;
+    const uint32_t morph = component(kMorphComponentId);
+    if (!plausible(morph)) {
+        return append_eyes(0u);
+    }
 
     // THE BUILT LIST IS THE DRESSED CHARACTER, AND IT IS THE ONE TO READ.
     //
@@ -8848,7 +8987,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
     const uint32_t end = read32(morph + 0x2Cu);
     if (!plausible(begin) || end <= begin || ((end - begin) % 4u) != 0u ||
         (end - begin) > 0x4000u) {
-        return 0u;
+        return append_eyes(0u);
     }
 
     uint32_t written = 0u;
@@ -11016,6 +11155,89 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTopBoxFront(uint32_t* out_words, uint
     out_words[8] = GuestWordAt(base, record + 12u);
     return 9u;
 }
+
+/// THE TARGETED-CITIZEN READOUT, as the guest's own per-frame record states it.
+///
+/// `sub_82176808` rebuilds the record at `*(*(0x83496B08 + 32) + 112)` — `*(GUI+32)` is the HUD,
+/// and the block is a POINTER field (`lwz r3, 0x70(r11)` at 0x82178988, not `addi`) — then hands
+/// **block + 8** to `sub_823FD410`, which publishes it by FNV-1 name hash. Every offset below is
+/// from the BLOCK, so subtract 8 to match that function's own `a3` arithmetic:
+///   +0  BYTE   prompt raised (`sub_823FD8E8` stores 1 at 0x823fd910; `sub_823FD9B0` stores 0)
+///   +4  DWORD  the targeted entity; cleared at 0x82176fa4 when it fails the liveness gate
+///   +8  DWORD  the entity as last published — `sub_823FD160` compares from here
+///   +20 BYTE   gift on     -> reg 9  `TargetedGift`              0x823fd6d8
+///   +24 float  gift value  -> reg 1  `TargetedGift`        x100  0x823fd698
+///   +28 BYTE   button      -> reg 9  `TargetedQueryButton`       0x823fd71c
+///   +32 DWORD  axis + 1    -> reg 10 `TargetedQuery`             0x823fd760
+///   +36 BYTE   divorce     -> reg 9  `TargetedDivorce`           0x823fd884
+///   +40 float  divorce val -> reg 1  `TargetedDivorce`     x100  0x823fd7ec
+///   +44 BYTE   marry       -> reg 9  `TargetedMarry`             0x823fd8c4
+///   +48 float  marry val   -> reg 1  `TargetedMarry`       x100  0x823fd834
+///   +52 float  opinion — read by the CALLER and passed as `sub_823FD410`'s first argument,
+///              which is why that function publishes it from `a1` and not from the record
+///              (0x823fd7a4).
+///
+/// THE MARRY AND DIVORCE FIELDS ARE THE OTHER WAY ROUND from the obvious reading, and a working
+/// note in this project had them swapped: +36/+40 publish under `dword_83497DAC`
+/// (`TargetedDivorce`) and +44/+48 under `dword_83497DB0` (`TargetedMarry`). The predicates
+/// agree — `sub_822684A8` asks the hero's family component whether this person is already in it,
+/// `sub_8226B0D8` runs the marriage-eligibility test. Note also that both TOGGLES are always
+/// published while only ONE of the two VALUES is (the if / else-if at 0x823fd7a8..0x823fd7f8).
+///
+/// The axis is component 131's first pending deed (`*(rec + 4)`, 0x82176cb8), published as
+/// `axis + 1` (0x82176f10) and stated VERBATIM: `sub_828421F8` hands it straight to the slide
+/// player `sub_82426BA8`, and registry 9's `sub_823FE848` reaches that SAME call through
+/// `sub_82426CA8` with 1 or 2 — so the toggle's shift belongs to the toggle, not the channel.
+/// Order from `sub_82428AB0` is Love, Fear, Attractiveness, Morality, Respect, giving 1 love,
+/// 2 fear, 3 ugly — `LoveSlider`'s three slides.
+///
+/// Registry 10 is index 10 by the bound check `<= 0xA` and the slot `*(v35 + 40)` at 0x823fd748
+/// / 0x823fd760, matching the table above the text reader. Registries 9 and 10 are write-through
+/// — nothing stores the index on the element — so the host RE-DERIVES both from this record, the
+/// same way it already does for 3 and 9.
+///
+/// Words: [0] prompt raised, [1] target entity, [2] published entity, [3] gift on,
+/// [4] gift value bits, [5] button on, [6] slide-set index, [7] divorce on,
+/// [8] divorce value bits, [9] marry on, [10] marry value bits, [11] opinion bits.
+/// Returns 12, or 0 when the HUD or the record is not reachable.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTargetedQuery(uint32_t* out_words, uint32_t capacity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr || out_words == nullptr || capacity < 12u) {
+        return 0u;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    for (uint32_t i = 0; i < 12u; ++i) {
+        out_words[i] = 0u;
+    }
+
+    const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
+    const uint32_t hud = plausible(gui) ? GuestWordAt(base, gui + 32u) : 0u;
+    const uint32_t block = plausible(hud) ? GuestWordAt(base, hud + 112u) : 0u;
+    if (!plausible(block)) {
+        return 0u;
+    }
+
+    out_words[0] = GuestByteAt(base, block + 0u);
+    out_words[1] = GuestWordAt(base, block + 4u);
+    out_words[2] = GuestWordAt(base, block + 8u);
+    out_words[3] = GuestByteAt(base, block + 20u);
+    out_words[4] = GuestWordAt(base, block + 24u);
+    out_words[5] = GuestByteAt(base, block + 28u);
+    out_words[6] = GuestWordAt(base, block + 32u);
+    out_words[7] = GuestByteAt(base, block + 36u);
+    out_words[8] = GuestWordAt(base, block + 40u);
+    out_words[9] = GuestByteAt(base, block + 44u);
+    out_words[10] = GuestWordAt(base, block + 48u);
+    out_words[11] = GuestWordAt(base, block + 52u);
+    return 12u;
+}
+
 
 /// Every live PULSER the in-game HUD is holding — registry 4, `PulserName` — as its PHASE.
 ///
@@ -13823,8 +14045,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_
         v[4] = readf(obj + 48u);
         v[5] = readf(obj + 68u);
 
-        put_text(ReadGuestString(base, obj + 140u));
-        put_text(ReadGuestString(base, obj + 148u));
+        // BOTH ARE WIDE. `sub_82824968`, the sprite's vtable slot, is exactly
+        // `sub_822B88A8(this + 140, title); sub_822B88A8(this + 148, amount);` — two LHString
+        // handles. The amount is the whole readout for a good or evil deed: `sub_828203B8`
+        // gives an amount-bearing type (1..21, 36..49, 54) the request's text as the AMOUNT and
+        // synthesises the title, and types 38/39 are given no title at all.
+        put_text(ReadGuestWideString(base, obj + 140u));
+        put_text(ReadGuestWideString(base, obj + 148u));
         ++written;
     }
 

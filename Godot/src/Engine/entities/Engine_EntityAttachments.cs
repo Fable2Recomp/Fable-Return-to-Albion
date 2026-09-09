@@ -60,6 +60,14 @@ public sealed class Engine_EntityAttachments
 		/// <summary>Consecutive frames a fresh solve landed far from the held offset.</summary>
 		public int Disagreements;
 
+		/// <summary>
+		/// The mount bone as the guest last stated it, and whether we have one — the re-solve
+		/// gate. See the re-solve in <c>Place</c>.
+		/// </summary>
+		public Transform3D LastGuestBone = Transform3D.Identity;
+
+		public bool HaveLastGuestBone;
+
 	}
 
 
@@ -77,6 +85,15 @@ public sealed class Engine_EntityAttachments
 	private readonly List<HostBridge.GuestAttachment> _stated = new();
 
 	private static readonly Dictionary<string, Refii.Models.Engine_GmdSkeleton?> GmdCache = new();
+
+	/// <summary>Drops the dummy-name skeleton lookups. Keyed by model path, so region-scoped.</summary>
+	public static void ClearCaches()
+	{
+		lock (GmdCache)
+		{
+			GmdCache.Clear();
+		}
+	}
 
 	/// <summary>The guest's current statement, folded into the table. Cheap; call on a cadence.</summary>
 	public void Refresh()
@@ -251,7 +268,29 @@ public sealed class Engine_EntityAttachments
 			Transform3D from = parentStated * guestBone;
 			record.LastResidual = (from * record.Offset).Origin.DistanceTo(childStated.Origin);
 			++record.Solves;
-			if (Mathf.Abs(from.Basis.Determinant()) > 1e-6f)
+
+			// RE-SOLVE ONLY WHILE THE MOUNT IS NEARLY STILL. The two halves of a solve sit on
+			// different clocks — the child's placement is stated on the guest's tick, the bone
+			// is read from the 30 Hz pose array now — so the error between them is proportional
+			// to how fast that bone is TRAVELLING. Walking gives the few centimetres the ten
+			// centimetre threshold below was chosen for. Swinging a blacksmith's hammer gives
+			// far more, and three frames of that in a row is all it takes to bake the phase
+			// error in as the mount itself. Measured after one job: sheathed weapons solved to
+			// 0.31 m and 0.41 m from their own dummy bones, against 0.13 m to 0.17 m for the
+			// ones solved at rest — a sword hanging a third of a metre off the body.
+			//
+			// A mount is rigid, so a sample taken while the bone is still is the honest one and
+			// costs nothing to wait for. The FIRST solve is left alone: this only stops a good
+			// offset being corrupted, which is the failure — the weapons are right until a job
+			// is played.
+			float travelled = record.HaveLastGuestBone
+				? guestBone.Origin.DistanceTo(record.LastGuestBone.Origin)
+				: 0f;
+            bool settled = record.HaveLastGuestBone && travelled < 0.02f;
+			record.LastGuestBone = guestBone;
+			record.HaveLastGuestBone = true;
+
+			if (settled && Mathf.Abs(from.Basis.Determinant()) > 1e-6f)
 			{
 				Transform3D candidate = from.AffineInverse() * childStated;
 				if (candidate.Origin.IsFinite() &&

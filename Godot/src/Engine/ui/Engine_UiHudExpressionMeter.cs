@@ -23,11 +23,18 @@ public static class Engine_UiHudExpressionMeter
 	public static void Publish(Refii.Host.HostBridge.ExpressionMeter meter, Engine_HudView hud)
 	{
 		Engine_HudValues values = hud.Values;
-		// The ON byte, not the mode: `TurnOnExpressionMeter` (`sub_823D12F0`) sets +0 and toggles
-		// the meter's slide with the mode still 0; an expression charges with a static or
-		// dynamic fill (`sub_823D1780`/`sub_823D18F0`) before any pip starts. Gating on the mode
-		// hid the meter for every emote.
-		bool on = meter.Known && meter.On;
+		// NOT THE ON BYTE EITHER. Gating on the mode hid the meter for every emote; gating on
+		// +0 hid it just as completely, because `sub_823D1A48` — the path a plain expression
+		// takes — calls `TurnOnExpressionMeter` at 0x823d1c1c and clears +0 at 0x823d1c20, one
+		// instruction later, having already zeroed the mode at its head. The state that says
+		// the meter is open is the union the teardown clears; see `ExpressionMeter.Up`.
+		//
+		// The expression's release timing is the FILL, not the pip: `sub_823D1A48` reads
+		// SweetSpotInitialSizePercentage, SweetSpotMinSizePercentage,
+		// SweetSpotShrinkPixelsPerSecond and SweetSpotMovementPixelsPerSecond and hands them to
+		// `sub_823D1F98`, which publishes ExpressionFillPos/Size — a sweet spot that moves and
+		// shrinks. Modes 1 and 2 are the job pip.
+		bool on = meter.Up;
 		State(values, "ExpressionMeter", on);
 
 		float fillSize = values.Meter(Engine_HudValues.Handle.For("ExpressionFillSize")) ?? 0f;

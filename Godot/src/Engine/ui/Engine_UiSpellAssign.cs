@@ -74,15 +74,42 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 	/// <summary>The two painted carousel cells: [0] HL1 (previous will), [1] HR1 (next).
 	/// The centre is the ROW's own icon — see Build.</summary>
 	private MeshInstance3D?[] _cells = new MeshInstance3D?[2];
-	private int[] _cellShown = { -2, -2 };
+
+	/// <summary>
+	/// HL1 and HR1 THEMSELVES, not their icon quads. With no neighbour `sub_826B5710` puts the
+	/// whole cell on slide 1 (0x826b57cc / 0x826b5828) — frame and ring go with the icon — so
+	/// blanking the quad alone leaves an empty ringed disc the guest does not draw.
+	/// </summary>
+	private Node3D?[] _cellNodes = new Node3D?[2];
+
+	/// <summary>The will's name under the blade — see the note in <see cref="Build"/>.</summary>
 	private MeshInstance3D? _label;
+
+	/// <summary>
+	/// The dark rounded plate behind that name — the SAME `Engine_UiRoundedPanel` the notices,
+	/// the TopBox and the top-centre will banner sit on, not a second kind of panel. It is the
+	/// remaster's replacement for the shipped black slab, and it sizes itself from the text.
+	/// </summary>
+	private Engine_UiRoundedPanel? _labelPanel;
+
 	private string _labelShown = string.Empty;
+
+	private int[] _cellShown = { -2, -2 };
 
 	/// <summary>Which slot the player is on. OURS — see the class note.</summary>
 	public int Row_ { get; private set; }
 
 	/// <summary>Where in that slot's offered list the carousel sits.</summary>
 	private int _cell;
+
+	/// <summary>
+	/// The assignment the carousel was last seeded from; -2 before the first sample, so the
+	/// first one always seeds. Only a CHANGE re-seeds — see <see cref="SetLive"/>.
+	/// </summary>
+	private int _seededFrom = -2;
+
+	/// <summary>The row <see cref="_seededFrom"/> was read from; -1 before the first sample.</summary>
+	private int _seededRow = -1;
 
 	private Engine_UiModel.SpellAssignState _state;
 
@@ -147,16 +174,95 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 			// and `HR2` are bound at `0x826B59CC`/`5A1C`/`5A6C` and read nowhere; painting `HC`
 			// would double-draw over the row's own icon.
 			Node3D inner = Find(_adjuster, "Adjuster") ?? _adjuster;
-			_cells[0] = Find(inner, "HL1") is { } left ? Find(left, "Icon") as MeshInstance3D : null;
-			_cells[1] = Find(inner, "HR1") is { } right ? Find(right, "Icon") as MeshInstance3D : null;
+			_cellNodes[0] = Find(inner, "HL1");
+			_cellNodes[1] = Find(inner, "HR1");
+			_cells[0] = _cellNodes[0] is { } left ? Find(left, "Icon") as MeshInstance3D : null;
+			_cells[1] = _cellNodes[1] is { } right ? Find(right, "Icon") as MeshInstance3D : null;
+
+			// THE RESTING POSE, RESTATED — this is what stops the icons stacking.
+			//
+			// The guest NEVER MOVES these cells: `sub_826B5710` only swaps textures
+			// (`sub_826B5D30`) and sets slide 1 or 3, and slide 3 commands opacity alone. The
+			// one call to `sub_824251E0` in the whole class (0x826b5d28) targets the OUTER
+			// Adjuster, per row. So the spread is AUTHORED, and the pattern book has to carry it.
+			//
+			// IT DOES NOT. The book is built with no live inputs, so `ComputeSlideState` falls
+			// back to `PickForPreview`, and for the inner `Adjuster` — which owns the eight
+			// slides Slide1/L1..L4/R1/R2 — that heuristic picks **L3**, a MID-SCROLL pose. In L3
+			// `HR1` sits at x 0, dead on top of the row's own current-will icon, and `HC` sits
+			// at −80 on top of `HL1`. That is the stacking, and an earlier fix here hid HC/HL2/
+			// HR2 but left the worst duplicate — HR1 parked at centre — because its comment was
+			// reading the L3 pose and calling it authored.
+			//
+			// So the carousel needs a layout of its own, and these are it — a three-cell row
+			// with the current will in the middle and its neighbours either side:
+			//     HL2 hidden · HL1 x −80 · HC hidden · HR1 x +80 · HR2 hidden, scale.x 0.85
+			//
+			// Seeded from the art's own resting pose because it is a sensible default and the
+			// spacing already suits the icons, NOT because the file has any authority over
+			// where we put things. These are OUR numbers now: they belong in the layout
+			// template alongside the rest of the HUD's pieces, so a modder can move them
+			// without touching code, and they live here only until that covers this widget.
+			foreach ((string cellName, float x, bool shown) in new[]
+				{
+					("HL2", -120f, false), ("HL1", -80f, true), ("HC", 0f, false),
+					("HR1", 80f, true), ("HR2", 120f, false),
+				})
+			{
+				if (Find(inner, cellName) is not { } cell)
+				{
+					continue;
+				}
+
+				cell.Position = new Vector3(x, cell.Position.Y, cell.Position.Z);
+				cell.Visible = shown;
+				if (!shown)
+				{
+					continue;
+				}
+
+				// NO SCALE WRITE HERE. An earlier pass set scale.X alone to the art's 0.85 and
+				// left Y at whatever the clone carried, which is not "smaller" — it is
+				// NARROWER, and the icons came out visibly squashed. The cells' own basis is
+				// already whatever the book built; the defect being fixed here is the POSITION,
+				// so position is all that is restated.
+
+				// AND THE OPACITY, not only the place. The builder folded the baked pose's
+				// alpha into every descendant, so `HL1` came out transparent under L3 and
+				// `Paint` only ever undoes that for the `Icon` quad — the frame and the ring
+				// stayed invisible. Slide 1 states the whole cell at 100.
+				RaiseCell(cell);
+			}
 		}
 
-		// The highlighted will's name. The guest queues it as `SpellAssignerInfo` for `hud.bgf`
-		// to place; the rebuilt HUD has no such element, so the label is authored here.
-		if (Book.Label(string.Empty, 18, new Color(1f, 1f, 1f)) is { } label)
+		// THE WILL'S NAME, UNDER THE BLADE. The guest writes it to no element: `sub_826B50B8`
+		// clears the channel (`sub_8230D0C0`, 0x826b51c4) and pushes the resolved tag onto HUD
+		// text channel 10 (`sub_8230C908`, 0x826b5220) of the 12-channel stack at `*(GUI+32)+88`,
+		// which the rebuilt HUD draws as the top-centre banner. This label is OURS, and that is
+		// allowed — Godot owns the UI's presentation and hooks the guest's DATA, not its
+		// placement.
+		//
+		// WHAT IS NOT ALLOWED is sourcing it differently from the icon. It used to read a cell
+		// of its own, so the name and the glyph could name different wills, and did. It now
+		// reads the guest's own naming expression — `spells[row][sel]`, the identical term
+		// `sub_826B50B8` uses at 0x826b513c and `sub_826B4770` paints at 0x826b4814 — so the
+		// two cannot disagree by construction.
+		// ONE HUD TEXT STYLE. The size and colour are not this widget's to choose: the notices,
+		// the TopBox and the top-centre will banner all wear the style captured from `hud.bgf`,
+		// and a label that picks its own 18pt white is the odd one out on screen. Falls back to
+		// the captured defaults before `Capture` has run.
+		if (Book.Label(string.Empty, Engine_UiHudTextStyle.TitleSize,
+				Engine_UiHudTextStyle.TitleColour) is { } label)
 		{
 			label.Name = "WillName";
 			label.Position = new Vector3(0f, -220f, 1f);
+
+			// The plate goes in first and sits half a unit BEHIND the text — the same depth
+			// relation `Engine_HudView.FitPanel` uses, where lower z is further back.
+			var plate = new Engine_UiRoundedPanel { Name = "WillNamePlate" };
+			clone.AddChild(plate);
+			_labelPanel = plate;
+
 			clone.AddChild(label);
 			_label = label;
 		}
@@ -183,6 +289,31 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 
 		Row_ = System.Math.Clamp(Row_, 0, MaxAssignableRow());
 		List<int> choices = state.Choices(Row_);
+
+		// THE CAROUSEL FOLLOWS THE ASSIGNMENT UNLESS SOMEONE IS DRIVING IT. `_cell` was only
+		// ever seeded by `Move`/`Choose`, and the QUICK WHEEL calls neither — `Follow` calls
+		// this and nothing else — so the wheel sat on row 0 cell 0 for its whole life while the
+		// row icons painted the real assignment. That is a banner reading "Force Push" over a
+		// selected Shock.
+		//
+		// Re-seeding on a CHANGE OF ASSIGNMENT rather than on every sample is what keeps this
+		// from fighting the abilities blade: navigating moves the cell but assigns nothing
+		// (`sub_826B5430` cases 28/29 only repaint), so the assignment is unchanged and the
+		// cell is left alone. When a commit does land, seeking to the newly assigned will is
+		// the same seek the guest's own populate does.
+		// PER ROW, NOT ONE SCALAR. Keyed on the value alone, moving between two rows that hold
+		// the SAME will read as no change, so the previous row's cell index was carried into a
+		// different offer list — and the two rarely have the same membership, so the label and
+		// the flanking icons named the wrong wills. The row is part of the key.
+		int assignedNow = state.On(Row_) ?? -1;
+		if (assignedNow != _seededFrom || Row_ != _seededRow)
+		{
+			_seededFrom = assignedNow;
+			_seededRow = Row_;
+			int found = assignedNow >= 0 ? choices.IndexOf(assignedNow) : -1;
+			_cell = found >= 0 ? found : 0;
+		}
+
 		_cell = choices.Count == 0 ? 0 : System.Math.Clamp(_cell, 0, choices.Count - 1);
 
 		for (int slot = 0; slot < _rows.Count; ++slot)
@@ -267,6 +398,13 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 		{
 			int index = _cell + (at == 0 ? -1 : 1);
 			int will = index >= 0 && index < choices.Count ? choices[index] : -1;
+
+			// The CELL, not just its quad — see _cellNodes.
+			if (_cellNodes[at] is { } cell && GodotObject.IsInstanceValid(cell))
+			{
+				cell.Visible = will >= 0;
+			}
+
 			if (will != _cellShown[at])
 			{
 				_cellShown[at] = will;
@@ -274,16 +412,18 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 			}
 		}
 
+		// `spells[row][sel]` — the guest's own naming term, the same one the centre icon takes.
 		if (_label is not null && GodotObject.IsInstanceValid(_label) && Book is not null)
 		{
-			int will = _cell < choices.Count ? choices[_cell] : -1;
-			string display = will >= 0 && will < Wills.Length
-				? Book.Resolve(Wills[will].Tag)
+			int named = _cell >= 0 && _cell < choices.Count ? choices[_cell] : -1;
+			string display = named >= 0 && named < Wills.Length
+				? Book.Resolve(Wills[named].Tag)
 				: string.Empty;
 			if (display != _labelShown)
 			{
 				_labelShown = display;
 				Book.SetMeshText(_label, display);
+				FitLabelPlate(display);
 			}
 		}
 	}
@@ -450,5 +590,58 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 		}
 
 		return null;
+	}
+
+	/// <summary>
+	/// Sizes the plate to the name it backs, in the clone's own space — the label and the plate
+	/// are siblings, so the label's local position plus its mesh bounds is the rectangle.
+	/// `Fit` adds its own padding, so nothing is grown here.
+	/// </summary>
+	private void FitLabelPlate(string display)
+	{
+		if (_labelPanel is null || !GodotObject.IsInstanceValid(_labelPanel) ||
+			_label is null || !GodotObject.IsInstanceValid(_label))
+		{
+			return;
+		}
+
+		if (display.Length == 0)
+		{
+			_labelPanel.Visible = false;
+			return;
+		}
+
+		// CENTRED ON THE BLADE, whatever the label's own alignment is. The pattern book's text
+		// mesh is not necessarily centred on its origin, so parking it at x 0 put its LEFT EDGE
+		// on the centre line and the word sat off to the right. Solving it from the mesh's own
+		// bounds works for either alignment and costs nothing: shift by the bounds' centre so
+		// the drawn glyphs straddle x 0. The bounds do not depend on Position, so this is stable
+		// rather than a drift that creeps a little further every frame.
+		Aabb box = _label.GetAabb();
+		_label.Position = new Vector3(
+			-(box.Position.X + (box.Size.X * 0.5f)), _label.Position.Y, _label.Position.Z);
+
+		var rect = new Rect2(
+			new Vector2(_label.Position.X + box.Position.X, _label.Position.Y + box.Position.Y),
+			new Vector2(box.Size.X, box.Size.Y));
+		_labelPanel.Fit(rect, _label.Position.Z - 0.5f);
+	}
+
+	/// <summary>
+	/// Raises every quad under a carousel cell to full opacity — slide 1's statement for `HL1`
+	/// and `HR1`. The icon quad is left to <see cref="Paint"/>, which hides it outright when the
+	/// cell has no neighbouring will rather than drawing the master's `will_shock`.
+	/// </summary>
+	private static void RaiseCell(Node node)
+	{
+		if (node is MeshInstance3D quad && GodotObject.IsInstanceValid(quad))
+		{
+			Engine_UiSceneBuilder.SetQuadOpacity(quad, 1f);
+		}
+
+		foreach (Node child in node.GetChildren())
+		{
+			RaiseCell(child);
+		}
 	}
 }

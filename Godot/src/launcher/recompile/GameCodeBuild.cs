@@ -355,7 +355,6 @@ public static class GameCodeBuild
 	private static bool WindowsInstallInputsMissing()
 	{
 		string recompile = RecompileDirectory;
-		string libraries = Path.Combine(recompile, "lib");
 
 		return !File.Exists(Path.Combine(BinDirectory,
 				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_hostbridge"))) ||
@@ -371,9 +370,9 @@ public static class GameCodeBuild
 				"rexruntime.dll", "rexruntimed.dll", "rexruntimerd.dll",
 				"librexruntime.dll", "librexruntimed.dll", "librexruntimerd.dll") ||
 			!File.Exists(Path.Combine(recompile, "bin", "rexglue.exe")) ||
-			FindLibrary(libraries, "rexruntime").Length == 0 ||
-			FindLibrary(libraries, "refii_core").Length == 0 ||
-			FindLibrary(libraries, "refii_vfs").Length == 0 ||
+			FindShippedLibrary("rexruntime").Length == 0 ||
+			FindShippedLibrary("refii_core").Length == 0 ||
+			FindShippedLibrary("refii_vfs").Length == 0 ||
 			!DirectoryHasFiles(Path.Combine(recompile, "hooks")) ||
 			!DirectoryHasFiles(Path.Combine(recompile, "include")) ||
 			!File.Exists(Path.Combine(recompile, "include_dirs.cmake")) ||
@@ -861,9 +860,9 @@ public static class GameCodeBuild
 				missing.Add("the code generator (" + generator + ")");
 			}
 
-			if (!Directory.Exists(Path.Combine(RecompileDirectory, "lib")))
+			if (FindShippedLibrary("rexruntime").Length == 0)
 			{
-				missing.Add("the link libraries (" + RecompileDirectory + "/lib)");
+				missing.Add("the link libraries (" + string.Join(" or ", LibraryDirectories) + ")");
 			}
 
 			if (!File.Exists(Path.Combine(RecompileDirectory, "include_dirs.cmake")))
@@ -1771,8 +1770,6 @@ public static class GameCodeBuild
 	private static async Task<Result> LinkAsync(
 		Toolchain zig, int objectCount, CancellationToken cancellation)
 	{
-		string libraryDirectory = Path.Combine(RecompileDirectory, "lib");
-
 		var arguments = new List<string> { "-shared", "-o", ModulePath };
 		arguments.InsertRange(0, TargetFlags());
 		if (!OperatingSystem.IsWindows())
@@ -1811,11 +1808,12 @@ public static class GameCodeBuild
 		// needs are among those sources, so they are defined in the payload itself now.
 		foreach (string name in new[] { "rexruntime", "refii_core", "refii_vfs" })
 		{
-			string found = FindLibrary(libraryDirectory, name);
+			string found = FindShippedLibrary(name);
 			if (found.Length == 0)
 			{
 				return new Result(false,
-					"the " + name + " library is missing from " + libraryDirectory);
+					"the " + name + " library is missing from "
+					+ string.Join(" and ", LibraryDirectories));
 			}
 
 			arguments.Add(found);
@@ -1844,7 +1842,37 @@ public static class GameCodeBuild
 	}
 
 	/// <summary>
-	/// Finds a shipped library by base name, in either build configuration.
+	/// Where a shipped library may be: the payload SDK's lib/ first, then the host's bin/.
+	/// </summary>
+	/// <remarks>
+	/// The host loads the runtime and the refii libraries from bin/, and the SDK stages the
+	/// same files into recompile/lib for the link. A package keeps one copy of each — the
+	/// lib/ one is dropped when it is byte-identical to bin/'s — so both places are the
+	/// closure. lib/ first: it is the one the SDK staging empties and refills, so when a dev
+	/// tree holds two configurations it is the one that agrees with the generator.
+	/// </remarks>
+	private static IReadOnlyList<string> LibraryDirectories =>
+		new[] { Path.Combine(RecompileDirectory, "lib"), BinDirectory };
+
+	/// <summary>
+	/// Finds a shipped library by base name in <see cref="LibraryDirectories"/>, or "".
+	/// </summary>
+	private static string FindShippedLibrary(string name)
+	{
+		foreach (string directory in LibraryDirectories)
+		{
+			string found = FindLibrary(directory, name);
+			if (found.Length != 0)
+			{
+				return found;
+			}
+		}
+
+		return string.Empty;
+	}
+
+	/// <summary>
+	/// Finds a library by base name in one directory, in either build configuration.
 	/// </summary>
 	/// <remarks>
 	/// Both the plain and the "d"-suffixed name: a Debug-configured release stages
@@ -2158,30 +2186,24 @@ public static class GameCodeBuild
 		}
 
 		// The generator links the ReXGlue runtime, and its RUNPATH is $ORIGIN — it looks
-		// beside itself, while the staged libraries are one directory over in lib/. Without
-		// this it cannot start at all, which reads as "the generator is missing" rather
-		// than "it could not find its runtime".
-		string libraryDirectory = Path.Combine(RecompileDirectory, "lib");
+		// beside itself, while the staged libraries are one directory over in lib/, or in
+		// bin/ when the package kept only that copy. Without this it cannot start at all,
+		// which reads as "the generator is missing" rather than "it could not find its
+		// runtime".
 		string variable = OperatingSystem.IsWindows()
 			? "PATH"
 			: OperatingSystem.IsMacOS() ? "DYLD_LIBRARY_PATH" : "LD_LIBRARY_PATH";
 		string existing = Environment.GetEnvironmentVariable(variable) ?? string.Empty;
-		if (additionalPathDirectories is null || additionalPathDirectories.Count == 0)
+		var searchDirectories = new List<string>(LibraryDirectories);
+		if (additionalPathDirectories is not null)
 		{
-			startInfo.Environment[variable] = existing.Length == 0
-				? libraryDirectory
-				: libraryDirectory + Path.PathSeparator + existing;
-		}
-		else
-		{
-			var searchDirectories = new List<string> { libraryDirectory };
 			searchDirectories.AddRange(additionalPathDirectories);
-			if (existing.Length != 0)
-			{
-				searchDirectories.Add(existing);
-			}
-			startInfo.Environment[variable] = string.Join(Path.PathSeparator, searchDirectories);
 		}
+		if (existing.Length != 0)
+		{
+			searchDirectories.Add(existing);
+		}
+		startInfo.Environment[variable] = string.Join(Path.PathSeparator, searchDirectories);
 
 		// The tail of the output, kept so a failure can say what actually went wrong
 		// instead of only an exit code. Bounded: a failing compile can produce megabytes.

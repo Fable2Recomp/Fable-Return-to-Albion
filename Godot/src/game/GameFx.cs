@@ -29,7 +29,27 @@ public partial class GameFx : Node3D
     /// <summary>Nodes by guest instance pointer, so a moving effect is updated, not rebuilt.</summary>
     private readonly Dictionary<uint, FableFx> _nodes = new();
 
+    /// <summary>
+    /// Each drawn effect's stated transform on the guest's tick timeline, drawn 1.5 ticks
+    /// behind like every body and the camera — an effect snapped to its newest sample ran
+    /// 100 ms ahead of the entity it trails and stepped at 15 Hz against a smooth world.
+    /// </summary>
+    private readonly Dictionary<uint, Refii.Core.Engine_TickTimeline> _timelines = new();
+
+    /// <summary>The guest's sim tick as of this frame's walk, read once.</summary>
+    private uint _tickNow;
+
     private readonly HashSet<uint> _seen = new();
+
+    /// <summary>
+    /// Keys the census has already counted this frame. Separate from <see cref="_seen"/>, which
+    /// is what <see cref="Retire"/> keeps alive: an effect must be counted ONCE however many of
+    /// its nodes we walk, but kept only if one of them actually handed us a usable transform.
+    /// </summary>
+    private readonly HashSet<uint> _counted = new();
+
+    /// <summary>The effect hash each drawn node was built for — guest handles RECYCLE.</summary>
+    private readonly Dictionary<uint, uint> _effectOf = new();
 
     /// <summary>Every effect hash the guest has played, and how many instances carried it.</summary>
     private readonly Dictionary<uint, int> _census = new();
@@ -81,6 +101,7 @@ public partial class GameFx : Node3D
         }
 
         _ticks++;
+        _tickNow = HostBridge.SimTick;
 
         List<HostBridge.ActiveFx> live = HostBridge.GetActiveFx();
         if (live.Count > _peakLive)
@@ -104,6 +125,7 @@ public partial class GameFx : Node3D
 
         FxBank? bank = FableFx.SharedBank();
         _seen.Clear();
+        _counted.Clear();
 
         foreach (HostBridge.ActiveFx fx in live)
         {
@@ -116,7 +138,11 @@ public partial class GameFx : Node3D
             // One node per effect, not per instance: an effect is many instances (one per entity
             // per type-vector plus a synthetic root each).
             uint key = fx.Handle != 0 ? fx.Handle : fx.Instance;
-            if (!_seen.Add(key))
+
+            // Already PLACED from another node of this effect; nothing left to do for it. Note
+            // this only reads the set — a key is marked seen once a transform has been accepted,
+            // not on first sight. See the refusal below.
+            if (_seen.Contains(key))
             {
                 continue;
             }
@@ -138,7 +164,10 @@ public partial class GameFx : Node3D
                 continue;
             }
 
-            _census[effect] = _census.TryGetValue(effect, out int n) ? n + 1 : 1;
+            if (_counted.Add(key))
+            {
+                _census[effect] = _census.TryGetValue(effect, out int n) ? n + 1 : 1;
+            }
 
             if (!_draw)
             {
@@ -161,10 +190,37 @@ public partial class GameFx : Node3D
                     ++NonFiniteFx;
                 }
 
+                // NOT MARKED SEEN — AND THIS IS THE FLYING FIRE.
+                //
+                // The key used to be added the moment the effect was first sighted, before this
+                // test, so a node whose transform we refuse was already in `_seen`. `Retire`
+                // keeps whatever is in `_seen`, so the node stood, kept its LAST GOOD transform
+                // for ever, and `FableFx._Process` went on emitting there — a fire burning in
+                // mid-air at a position the guest abandoned, for as long as the camera stayed
+                // within FreezeDistance.
+                //
+                // Leaving the key unmarked lets another node of the same effect place it this
+                // frame, and lets `Retire` take it down when none can.
                 continue;
             }
 
-            if (!_nodes.TryGetValue(key, out FableFx? node))
+            // THE HANDLE RECYCLES. `key` is a guest address, so it can come back naming a
+            // DIFFERENT effect; the node found here was built for the old one and `EffectName`
+            // is only ever read at construction, so it would draw the previous effect's art.
+            if (_nodes.TryGetValue(key, out FableFx? node) &&
+                (!_effectOf.TryGetValue(key, out uint was) || was != effect))
+            {
+                _timelines.Remove(key);
+                _nodes.Remove(key);
+                if (IsInstanceValid(node))
+                {
+                    node.QueueFree();
+                }
+
+                node = null;
+            }
+
+            if (node is null)
             {
                 node = new FableFx
                 {
@@ -177,7 +233,9 @@ public partial class GameFx : Node3D
                 AddChild(node);
             }
 
-            node.Transform = ToGodot(fx.Position, fx.Rows);
+            _effectOf[key] = effect;
+            _seen.Add(key);
+            node.Transform = Smoothed(key, ToGodot(fx.Position, fx.Rows));
         }
 
         if (_draw)
@@ -212,11 +270,46 @@ public partial class GameFx : Node3D
 
         foreach (uint instance in dead)
         {
+            _timelines.Remove(instance);
+            _effectOf.Remove(instance);
             if (_nodes.Remove(instance, out FableFx? node) && IsInstanceValid(node))
             {
                 node.QueueFree();
             }
         }
+    }
+
+    /// <summary>
+    /// The transform to draw an effect at: the stated one on the tick timeline, with the same
+    /// teleport rule as <see cref="GameEntities"/> — a jump over four metres or a gap of many
+    /// ticks restarts the timeline rather than blending across it.
+    /// </summary>
+    private Transform3D Smoothed(uint key, Transform3D stated)
+    {
+        double now = Godot.Time.GetTicksUsec();
+        if (!_timelines.TryGetValue(key, out Refii.Core.Engine_TickTimeline? timeline))
+        {
+            timeline = new Refii.Core.Engine_TickTimeline();
+            timeline.Reset(_tickNow, stated);
+            _timelines[key] = timeline;
+            return stated;
+        }
+
+        bool moved = timeline.Newest.Origin.DistanceSquaredTo(stated.Origin) > 1e-8f
+            || !timeline.Newest.Basis.IsEqualApprox(stated.Basis);
+        if (moved)
+        {
+            if (timeline.Newest.Origin.DistanceTo(stated.Origin) > 4f ||
+                (_tickNow > timeline.NewestTick && _tickNow - timeline.NewestTick > 8))
+            {
+                timeline.Reset(_tickNow, stated);
+                return stated;
+            }
+
+            timeline.Push(_tickNow, stated, now);
+        }
+
+        return timeline.Sample(now);
     }
 
     /// <summary>The census, printed only when the distinct-effect count moves.</summary>

@@ -100,30 +100,39 @@ public partial class GameWindowCheck : Node
 
 	private void Report(GameWindow window)
 	{
-		bool embedded = window.IsEmbedded();
+		// THE GAME IS THE MAIN WINDOW NOW, so every property below is asked of the display
+		// server rather than of the node — there is no child `Window` to interrogate.
+		const int Main = (int)DisplayServer.MainWindowId;
+		Vector2I size = DisplayServer.WindowGetSize(Main);
+		string title = GetTree().Root.Title;
 		// Assert against refii.toml, not against a constant. A check that hardcodes
 		// 1280x720 passes whether or not the file is being read at all, which is precisely
 		// the thing it exists to prove.
 		GameWindowSettings expected = GameWindowSettings.Load();
-		GD.Print($"[window] title={window.Title} size={window.Size} " +
-			$"embedded={embedded} visible={window.Visible}");
+		GD.Print($"[window] title={title} size={size} " +
+			$"mode={DisplayServer.WindowGetMode(Main)}");
 		GD.Print($"[window] refii.toml says: {expected}");
 
-		if (window.Size != expected.Size)
+		if (size != expected.Size)
 		{
-			GD.Print($"[window] FAIL — window is {window.Size}, refii.toml asks for {expected.Size}.");
+			GD.Print($"[window] FAIL — window is {size}, refii.toml asks for {expected.Size}.");
 			GetTree().Quit(1);
 			return;
 		}
-		GD.Print(embedded
-			? "[window] FAIL — drawn inside the launcher viewport, not an OS window."
-			: "[window] OK — a real OS window.");
+		// THE EMBEDDED CHECK IS GONE, and deliberately: it asserted that the game was a real OS
+		// window rather than drawn inside the launcher's viewport, which cannot be false now
+		// that the game IS the main window. What is still worth asserting is that this process
+		// came up as the GAME and not as a second launcher — the failure that produced two
+		// windows on screen.
+		if (title != "Fable 2")
+		{
+			GD.Print($"[window] FAIL — main window is titled '{title}', not the game. " +
+				"This process did not take the game role.");
+			GetTree().Quit(1);
+			return;
+		}
 
-		if (embedded)
-		{
-			GetTree().Quit(1);
-			return;
-		}
+		GD.Print("[window] OK — the game owns the main window.");
 
 		DisplayServer.WindowMode launcher =
 			DisplayServer.WindowGetMode((int)DisplayServer.MainWindowId);
@@ -143,7 +152,7 @@ public partial class GameWindowCheck : Node
 		string shot = OS.GetEnvironment("REFII_GAME_SHOT");
 		if (shot.Length != 0)
 		{
-			Image image = window.GetTexture().GetImage();
+			Image image = window.GetViewport().GetTexture().GetImage();
 			System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(shot)!);
 			GD.Print($"[window] shot -> {shot} ({image.SavePng(shot)})");
 		}

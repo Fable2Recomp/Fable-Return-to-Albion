@@ -26,7 +26,22 @@ void fragment() {
 
 	float distance_xy = length(v_world.xz - CAMERA_POSITION_WORLD.xz);
 	float distance_fade = 1.0 - clamp((distance_xy - 1000.0) * 0.001, 0.0, 1.0);
-	float alpha = density * layer_params.x * distance_fade;
+
+	// FADE AT THE QUAD'S OWN BORDER. A REMASTER DECISION, and labelled as one: blob 0114
+	// `pshader_clouds`, which this fragment stage otherwise follows verbatim, has no edge term.
+	//
+	// The layer is a finite rectangle (`Engine_Clouds` builds four corners with no edge
+	// treatment) and `distance_fade` above only ramps between 1000 m and 2000 m of HORIZONTAL
+	// distance. Where the polygon's own border falls nearer than that, the layer is still at
+	// full alpha when the geometry simply ends — measured on screen as a ONE-PIXEL step from
+	// cloud to bare sky, cutting a straight diagonal across the view. That is the seam.
+	//
+	// `UV` is the quad's parametric 0..1, not the tiled `uv` above — the tiled one repeats and
+	// would band the whole layer instead of just its rim.
+	vec2 edge_uv = min(UV, 1.0 - UV);
+	float edge_fade = smoothstep(0.0, 0.08, min(edge_uv.x, edge_uv.y));
+
+	float alpha = density * layer_params.x * distance_fade * edge_fade;
 
 	if (alpha <= cloud_globals.z) {
 		discard;
