@@ -83,6 +83,14 @@ public static class Engine_UiDetailPages
 		Provider(screenId)?.Active(Row(screenId, row)) ?? Engine_UiPageProviders.NoActive;
 
 	/// <summary>
+	/// Elements whose opacity this screen's provider states outright — see
+	/// <see cref="Engine_UiOwnedBook.HostOpacity"/>. Empty for a screen with none.
+	/// </summary>
+	public static IReadOnlyDictionary<string, float> Opacities(
+		uint screenId, Engine_UiExpandableMenu.Item? row) =>
+		Provider(screenId)?.Opacities(Row(screenId, row)) ?? Engine_UiPageProviders.NoOpacities;
+
+	/// <summary>
 	/// Elements this screen's provider PLACES itself — see
 	/// <see cref="Engine_UiOwnedBook.HostPositions"/>. Empty for a screen with none.
 	/// </summary>

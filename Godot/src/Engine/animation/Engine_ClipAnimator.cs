@@ -151,7 +151,24 @@ public sealed class Engine_ClipAnimator
 
 	/// <summary>Whether the guest states clips for this rig and every one of them is playable
 	/// here; when true the bones were written and the pose feed must not run this frame.</summary>
-	public bool Apply(uint entity)
+	/// <summary>The skeleton's parent table, read once — see Apply.</summary>
+	private int[]? _parents;
+
+	/// <summary>
+	/// Advances this rig's clips and, when <paramref name="writeBones"/>, poses the skeleton.
+	/// </summary>
+	/// <remarks>
+	/// THE ADVANCE IS NOT OPTIONAL; THE WRITE IS. Channels advance by wall-clock delta and
+	/// self-correct, so a rig whose bones are not written still holds the right time and poses
+	/// correctly on the first frame it is written again. That is the distinction the frustum gate
+	/// this file used to have got wrong: it skipped BOTH, so a villager culled from birth never
+	/// advanced and slid down the street in its bind pose.
+	///
+	/// Everything after the advance is per bone — sampling every clip into accumulation buffers,
+	/// folding them, and two engine crossings each to write the pose — and that is what a rig
+	/// nobody can see does not need.
+	/// </remarks>
+	public bool Apply(uint entity, bool writeBones = true)
 	{
 		_entity = entity;
 		if (!Alive)
@@ -190,6 +207,19 @@ public sealed class Engine_ClipAnimator
 
 		ulong now = Godot.Time.GetTicksUsec();
 		int bones = _skeleton.GetBoneCount();
+
+		// THE PARENT TABLE IS TOPOLOGY, NOT STATE. `GetBoneParent` is a crossing into the engine
+		// and it was called once per bone in four separate loops of this method, every apply, for
+		// every rig — hundreds of calls per character per frame to read a table that cannot change
+		// while the skeleton exists. Read once, held here.
+		if (_parents is null || _parents.Length != bones)
+		{
+			_parents = new int[bones];
+			for (int b = 0; b < bones; ++b)
+			{
+				_parents[b] = _skeleton.GetBoneParent(b);
+			}
+		}
 
 		// EVENTS IN: every stated leaf finds or starts its channel and sets its target.
 		foreach (Channel c in _channels.Values)
@@ -271,6 +301,14 @@ public sealed class Engine_ClipAnimator
 		foreach (ulong key in _dropped)
 		{
 			_channels.Remove(key);
+		}
+
+		// The clips are current now; the pose is the expensive half and the caller may not want
+		// it. Answering true keeps the caller on this branch — the rig IS clip-driven — so the
+		// pose feed does not write over a skeleton the clips own.
+		if (!writeBones)
+		{
+			return true;
 		}
 
 		if (totalWeight <= 1e-5f)
@@ -473,7 +511,7 @@ public sealed class Engine_ClipAnimator
 				Quaternion partQ = hasPartner ? _layerRotation[b].Normalized() : _restRotation[b];
 				_rotation[b] = partQ.Slerp(topQ, topShare);
 				_rotationWeight[b] = 1f;
-				if (_skeleton.GetBoneParent(b) >= 0)
+				if (_parents![b] >= 0)
 				{
 					Vector3 topP = _positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : _restPosition[b];
 					Vector3 partP = _layerPositionWeight[b] > 1e-5f ? _layerPosition[b] / _layerPositionWeight[b] : _restPosition[b];
@@ -554,7 +592,7 @@ public sealed class Engine_ClipAnimator
 				_rotation[b] = current.Slerp(layer, wb);
 				_rotationWeight[b] = 1f;
 
-				if (_skeleton.GetBoneParent(b) >= 0)
+				if (_parents![b] >= 0)
 				{
 					Vector3 currentPosition = _positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : _restPosition[b];
 					Vector3 layerPosition = _layerPositionWeight[b] > 1e-5f ? _layerPosition[b] / _layerPositionWeight[b] : _restPosition[b];
@@ -675,7 +713,7 @@ public sealed class Engine_ClipAnimator
 			// by nothing (whole-binary search, 2026-09-05). Every other bone keeps its sampled
 			// LOCAL transform. Keeping the root's rotation here, as this once did, turned or
 			// tilted a whole rig by a track the guest never applies.
-			bool isRoot = _skeleton.GetBoneParent(b) < 0;
+			bool isRoot = _parents![b] < 0;
 			int rt = built.RotationTrack[b];
 			if (rt >= 0 && !isRoot)
 			{
@@ -880,7 +918,7 @@ public sealed class Engine_ClipAnimator
 
 		for (int b = 0; b < bones; ++b)
 		{
-			int parent = _skeleton.GetBoneParent(b);
+			int parent = _parents![b];
 			Vector3 parentScale = parent >= 0 && _hasMorph ? _morphScale[parent] : Vector3.One;
 			Vector3 own = _hasMorph ? _morphScale[b] : Vector3.One;
 			Vector3 offset = _hasMorph ? _morphOffset[b] : Vector3.Zero;

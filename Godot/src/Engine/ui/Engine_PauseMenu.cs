@@ -74,8 +74,22 @@ public static class Engine_PauseMenu
 	/// names, same event params on the Saving children, same tab ids, and the guest's own
 	/// SetInitiallySelectedItem(2). A `user://ui/templates.json` override replaces the record.
 	/// </summary>
-	public static Engine_FrontEndMenu BuildHero() =>
-		Engine_UiTemplates.Menu("pause-root")?.Build() ?? new Engine_FrontEndMenu();
+	/// <param name="coopJoiner">
+	/// True when this player joined someone else's session — the caller reads it, the same way
+	/// <see cref="ApplyTabAvailability"/> is handed its mask rather than fetching one.
+	/// </param>
+	public static Engine_FrontEndMenu BuildHero(bool coopJoiner = false)
+	{
+		// A VISITING PLAYER GETS A DIFFERENT LIST, and it cannot be chosen by the population
+		// script: both players' pause screens name `PauseMenu`, so the joiner would otherwise
+		// take the host's tabs on top of the capture's rows.
+		//
+		// Godot owns the list either way — the guest's spawn capture is not the authority on
+		// what this menu contains. What the guest supplies is the availability mask, applied by
+		// ApplyTabAvailability below, and the commit entry points behind each command.
+		string template = coopJoiner ? "pause-root-coop" : "pause-root";
+		return Engine_UiTemplates.Menu(template)?.Build() ?? new Engine_FrontEndMenu();
+	}
 
 	/// <summary>
 	/// Applies the bridge's availability mask (bit N = tab N available) to the tab entries.

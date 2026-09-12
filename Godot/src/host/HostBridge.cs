@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 120;
+	public const int ExpectedAbiVersion = 135;
 
 	private const int MessageCapacity = 512;
 
@@ -1913,6 +1913,187 @@ public static class HostBridge
 	public static bool IsInGame => RefiiHostIsInGame() != 0;
 
 	/// <summary>
+	/// This player's role in a co-op session, as the co-op manager states it: 0 solo, 1 host,
+	/// 2 joiner. The manager is <c>*(*(0x83496AB8)+12)+140</c>; <c>+52</c> is "in a session",
+	/// <c>+53</c> host and <c>+54</c> joiner, and the guest's own joiner-side front-end teardown
+	/// is gated on exactly <c>+52 &amp;&amp; +54</c>.
+	/// </summary>
+	public static uint CoopRole => RefiiHostGetCoopRole();
+
+	/// <summary>True when this player joined someone else's session.</summary>
+	public static bool IsCoopJoiner => CoopRole == 2u;
+
+	/// <summary>The co-op screen's two share sliders, 0..1. Both 0.5 until somebody moves one.</summary>
+	public readonly record struct CoopShare(bool Known, float Gold, float Experience);
+
+	/// <summary>
+	/// The shares as the sliders state them: the globals at <c>0x833193D4</c> (gold) and
+	/// <c>0x833193D8</c> (experience). THE GLOBALS ARE THE LIVE VALUE — the co-op manager's own
+	/// copies at <c>+176</c>/<c>+172</c> sit at zero under a centred pip and read as 100/0.
+	/// </summary>
+	public static CoopShare CoopShares()
+	{
+		int known = RefiiHostGetCoopShares(out float gold, out float experience);
+		return new CoopShare(known != 0, gold, experience);
+	}
+
+	/// <summary>
+	/// The co-op screen's mannequin — the live entity the guest spawned for the pickbox preview and
+	/// its preview ticket — or null when screen 24 is not up or nothing is standing yet. There is
+	/// no model hash: the entity is drawn from its own components like any spawned creature.
+	/// </summary>
+	/// <summary>
+	/// The hero's equipped weapons as GDB record ids — the same id space the inventory records
+	/// carry — or null when the hero has no weapon set. 0 in a slot means it is empty.
+	/// </summary>
+	/// <summary>The chosen co-op hero save's directory name, or null when none is chosen.</summary>
+	public static string? CoopHeroSaveName()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		byte[] buffer = new byte[256];
+		uint written = RefiiHostGetCoopHeroSaveName(buffer, (uint)buffer.Length);
+		return written == 0 ? null : System.Text.Encoding.UTF8.GetString(buffer, 0, (int)Math.Min(written, (uint)buffer.Length - 1));
+	}
+
+	/// <summary>
+	/// The co-op hero save the player chose on the co-op screen, as the guest read it: money,
+	/// gender (2 = male), morality, purity, renown, fifteen ranks, four experience pools, four
+	/// totals. Null until a save is chosen.
+	/// </summary>
+	public static float[]? CoopHeroSave()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		var values = new float[28];
+		return RefiiHostGetCoopHeroSave(values, (uint)values.Length) != 0 ? values : null;
+	}
+
+	/// <summary>The hero's face record (component 17) and its tan, fat (0..1) and height (-1..1).</summary>
+	public static (uint Face, float Fat, float Height, float Tan)? HeroLooks()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		return RefiiHostGetHeroLooks(out uint face, out float fat, out float height, out float tan) != 0
+			? (face, fat, height, tan)
+			: null;
+	}
+
+	/// <summary>
+	/// The net ids of the item entities player 1 or 2 holds on THIS machine (ABI 135) — what the
+	/// host sends so a client attaches the replicas rather than making its own. Null when the
+	/// player has no body here; zero for an empty slot.
+	/// </summary>
+	public static (uint Melee, uint Ranged)? CoopHeldUids(uint player)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		return RefiiHostGetCoopHeldUids(player, out uint melee, out uint ranged) != 0
+			? (melee, ranged)
+			: null;
+	}
+
+	public static (uint Melee, uint Ranged)? HeroWeapons()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		return RefiiHostGetHeroWeapons(out uint melee, out uint ranged) != 0 ? (melee, ranged) : null;
+	}
+
+	/// <summary>
+	/// The two players' live entity addresses off the game's player map (key 1 and key 2), 0 for
+	/// a slot that has no entity. ABI 133 — so the entity feed can name player two's rig.
+	/// </summary>
+	/// <summary>The co-op session's raw words off the authoritative network manager (ABI 134).</summary>
+	public readonly record struct CoopSessionWords(
+		bool ManagerPresent, bool Session, bool Host, bool Client, bool Lost, bool ClientJoined,
+		uint PeerCount, uint PlayerOne, uint PlayerTwo, bool GameCopyPresent);
+
+	private static uint[]? _coopSessionWords;
+
+	public static CoopSessionWords? CoopSessionRaw()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		_coopSessionWords ??= new uint[10];
+		if (RefiiHostGetCoopSession(_coopSessionWords, (uint)_coopSessionWords.Length) == 0)
+		{
+			return null;
+		}
+
+		uint[] w = _coopSessionWords;
+		return new CoopSessionWords(
+			w[0] != 0, w[1] != 0, w[2] != 0, w[3] != 0, w[4] != 0, w[5] != 0, w[6], w[7], w[8],
+			w[9] != 0);
+	}
+
+	public static (uint One, uint Two) CoopPlayerEntities()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return (0u, 0u);
+		}
+
+		RefiiHostGetCoopPlayerEntities(out uint one, out uint two);
+		return (one, two);
+	}
+
+	public static (uint Entity, uint Ticket)? CoopMannequin()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		return RefiiHostGetCoopMannequin(out uint entity, out uint ticket) != 0 && entity != 0
+			? (entity, ticket)
+			: null;
+	}
+
+	/// <summary>
+	/// Sends one message to the co-op peer over Refii's own channel — port 0xEF11, carrying host
+	/// state the title has no concept of. The guest wire is untouched.
+	///
+	/// Delivery is unreliable BY DESIGN, so send idempotent STATE ("player two's body is X"),
+	/// restated while it matters, never a one-shot event. A lost datagram then costs one
+	/// restatement instead of a desync.
+	/// </summary>
+	public static bool CoopSend(string message) =>
+		!string.IsNullOrEmpty(message) && RefiiNetCoopSend(message) != 0;
+
+	/// <summary>
+	/// Takes the oldest message the peer sent, or null when nothing is waiting. Drain it every
+	/// frame — the inbox holds 32 and drops the oldest.
+	/// </summary>
+	public static string? CoopReceive()
+	{
+		// LARGER THAN ANY MESSAGE THE KIT SENDS (WireLimit 1100): a 256-byte buffer cut every
+		// ~800-byte inventory chunk short, the decoder refused the remainder, and no inventory
+		// ever reached either side — so no weapons were ever given to draw.
+		byte[] buffer = new byte[4096];
+		uint written = RefiiNetCoopReceive(buffer, (uint)buffer.Length);
+		return written == 0 ? null : System.Text.Encoding.UTF8.GetString(buffer, 0, (int)written);
+	}
+
+	/// <summary>
 	/// The guest's simulation tick — <c>dword_83319650</c>, incremented by the world update.
 	/// Compare successive values for INEQUALITY only; the difference is not a count of ticks.
 	/// </summary>
@@ -3194,6 +3375,34 @@ public static class HostBridge
 			{
 				RefiiHostTraceZoneEnd(_zone);
 			}
+		}
+	}
+
+	/// <summary>
+	/// Brings the profiler up. True when it is running and a profiler may connect.
+	/// </summary>
+	/// <remarks>
+	/// REQUIRED BEFORE ANY ZONE MEANS ANYTHING: the runtime is built with
+	/// `TRACY_MANUAL_LIFETIME`, so the client is inert until it is started explicitly. With
+	/// `TRACY_ON_DEMAND` also set it collects nothing until something connects, so starting it
+	/// costs a listen socket and no more.
+	/// </remarks>
+	public static bool TraceStartup() =>
+		TryGetAbiVersion() is not null && RefiiHostTraceStartup() != 0;
+
+	/// <summary>Opens a profiler zone by name, or 0 when the bridge is not up.</summary>
+	/// <remarks>
+	/// The loose pair behind <see cref="Refii.Core.Engine_FramePhases.ZoneBegin"/>. `TraceZone`
+	/// stays for a call site that wants a `using` and nothing else.
+	/// </remarks>
+	public static ulong TraceZoneBegin(string name) =>
+		TryGetAbiVersion() is not null ? RefiiHostTraceZoneBegin(name) : 0UL;
+
+	public static void TraceZoneEnd(ulong zone)
+	{
+		if (zone != 0UL)
+		{
+			RefiiHostTraceZoneEnd(zone);
 		}
 	}
 
@@ -5461,6 +5670,42 @@ public static class HostBridge
 	private static extern uint RefiiHostIsInGame();
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetCoopRole();
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetCoopShares(out float gold, out float experience);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCoopHeroSaveName(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCoopPlayerEntities(out uint one, out uint two);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCoopSession(uint[] outWords, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCoopHeroSave([Out] float[] outValues, uint valueCount);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetHeroLooks(out uint face, out float fat, out float height, out float tan);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetHeroWeapons(out uint melee, out uint ranged);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCoopHeldUids(uint player, out uint melee, out uint ranged);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCoopMannequin(out uint entity, out uint ticket);
+
+	[DllImport(Library, CharSet = CharSet.Ansi)]
+	private static extern int RefiiNetCoopSend(string text);
+
+	[DllImport(Library)]
+	private static extern uint RefiiNetCoopReceive(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetSimTick();
 
 	[DllImport(Library)]
@@ -5624,6 +5869,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostTraceMessage(string text);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostTraceStartup();
 
 	[DllImport(Library)]
 	private static extern ulong RefiiHostTraceZoneBegin(string name);

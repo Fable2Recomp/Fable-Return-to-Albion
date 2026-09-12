@@ -577,12 +577,17 @@ public static class Engine_UiInventorySource
 		int untyped = 0;
 		foreach (Refii.Host.HostBridge.InventoryRecord record in records)
 		{
-			if (record.Category != Category.Weapons || !Listable(record, asked: true))
+			// A WEAPON IS A RECORD WITH A WeaponType, whatever category the guest stamped on the
+			// inventory record. The stamp is what the guest's own screen keys on, but a weapon
+			// given by record id (a co-op hero's) arrived with a different stamp and the fold
+			// listed nothing; the GDB's own WeaponComponent is the authority here.
+			bool byType = TryWeaponType(record.RecordId, out uint weaponType);
+			if ((record.Category != Category.Weapons && !byType) || !Listable(record, asked: true))
 			{
 				continue;
 			}
 
-			if (!TryWeaponType(record.RecordId, out uint weaponType))
+			if (!byType)
 			{
 				++untyped;
 				continue;
@@ -612,12 +617,84 @@ public static class Engine_UiInventorySource
 				Unviewed: !record.Viewed));
 		}
 
+		// The weapon in hand. The guest's list is component 13 (`sub_829B1968`) with the equipped
+		// record emphasised (`sub_826D0C08`); a weapon a def hands out at spawn is held on
+		// component 28 with no inventory record, so it is listed here, emphasised.
+		if (Refii.Host.HostBridge.HeroWeapons() is { } held)
+		{
+			uint heldId = wanted == 2 ? held.Ranged : held.Melee;
+			int at = rows.FindIndex(r => r.Id == heldId);
+			if (heldId != 0u && at >= 0)
+			{
+				rows[at] = rows[at] with { Emphasised = true };
+			}
+			else if (heldId != 0u && TryWeaponType(heldId, out uint heldType) &&
+				WeaponClass((int)heldType) == wanted)
+			{
+				var heldRecord = new Refii.Host.HostBridge.InventoryRecord(
+					heldId, 1, Category.Weapons, true);
+				string tag = NameTagOf(heldRecord);
+				rows.Insert(0, new Engine_UiMenuSources.Row(
+					Name: tag.Length != 0 ? tag : $"Item:{heldId:X8}",
+					Label: LabelOf(heldRecord, tag),
+					Icon: IconOf(heldRecord),
+					EventType: 0,
+					Id: heldId,
+					Rating: RatingOf(heldRecord),
+					Committable: false,
+					Ghosted: false,
+					Command: string.Empty,
+					Group: string.Empty,
+					GroupTag: string.Empty,
+					IsHeader: false,
+					Emphasised: true,
+					Counted: false,
+					Unviewed: false));
+			}
+		}
+
+		// WHAT THE RECORDS SAY THEY ARE, when nothing matched: the category the guest stamped on
+		// each record is what this list keys on, and a weapon given by record id can arrive
+		// stamped as something else. Once per outcome.
+		string why = string.Empty;
+		if (rows.Count == 0 && records.Count != 0)
+		{
+			var byCategory = new SortedDictionary<int, int>();
+			foreach (Refii.Host.HostBridge.InventoryRecord record in records)
+			{
+				byCategory[record.Category] = byCategory.TryGetValue(record.Category, out int n) ? n + 1 : 1;
+			}
+
+			var parts = new List<string>();
+			foreach ((int category, int n) in byCategory)
+			{
+				parts.Add($"{category}x{n}");
+			}
+
+			var typed = new List<string>();
+			foreach (Refii.Host.HostBridge.InventoryRecord record in records)
+			{
+				if (TryWeaponType(record.RecordId, out uint weaponType))
+				{
+					typed.Add($"{record.RecordId:X8}:cat{record.Category}:type{weaponType}" +
+						(Listable(record, asked: true) ? string.Empty : ":unlistable"));
+				}
+			}
+
+			why = $"; categories {string.Join(" ", parts)}; records with a WeaponType: " +
+				(typed.Count == 0 ? "none" : string.Join(" ", typed));
+		}
+
 		Say($"weapons:{argument}",
 			$"{rows.Count} {(wanted == 2 ? "ranged" : "melee")} weapon(s) of " +
 			$"{records.Count} inventory record(s)" +
-			(untyped == 0 ? string.Empty : $", {untyped} weapon(s) stating no WeaponType"));
+			(untyped == 0 ? string.Empty : $", {untyped} weapon(s) stating no WeaponType") + why);
 		return rows;
 	}
+
+	/// <summary>The record's weapon class by its own WeaponType: 1 melee, 2 ranged, 0 neither or no database.</summary>
+	public static int WeaponClassOf(uint record) =>
+		Globals is not null && TryWeaponType(record, out uint weaponType) ? WeaponClass((int)weaponType) : 0;
 
 	/// <summary>`sub_82561420` — 1 melee, 2 ranged, 0 neither.</summary>
 	private static int WeaponClass(int weaponType) => weaponType switch

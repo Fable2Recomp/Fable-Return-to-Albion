@@ -15,6 +15,9 @@ public static class Engine_UiPageProviders
 	public static readonly IReadOnlyDictionary<string, string> NoValues = new Dictionary<string, string>();
 	public static readonly IReadOnlyDictionary<string, uint> NoTextures = new Dictionary<string, uint>();
 	public static readonly IReadOnlyDictionary<string, bool> NoActive = new Dictionary<string, bool>();
+
+	public static readonly IReadOnlyDictionary<string, float> NoOpacities =
+		new Dictionary<string, float>();
 	public static readonly IReadOnlyDictionary<string, Vector3> NoPositions = new Dictionary<string, Vector3>();
 	public static readonly IReadOnlyDictionary<string, int> NoSlides = new Dictionary<string, int>();
 
@@ -26,6 +29,31 @@ public static class Engine_UiPageProviders
 	public const string ItemBook = "item-book";
 	public const string Achievements = "achievements";
 	public const string RealEstate = "realestate";
+	public const string Multiplayer = "multiplayer";
+	public const string Coop = "coop";
+
+	/// <summary>
+	/// Whether player two is currently standing in their OWN hero's body rather than the
+	/// pickbox henchman — the co-op screen's X toggle, held here so the prompt and the action
+	/// agree about which way the next press goes.
+	///
+	/// Host state on purpose: the guest has no such concept. It spawns one of eight fixed
+	/// henchmen and nothing else, so "is this their own hero" is a question only we are asking.
+	/// </summary>
+	public static bool CoopOwnHero { get; set; }
+
+	/// <summary>
+	/// Has a hero actually been captured to offer? Set by the shell — <c>Engine_</c> never reaches
+	/// for the host bridge itself.
+	///
+	/// Without one there is nothing for X to switch TO, so the prompt says so rather than offering
+	/// a swap that would land player two in a bare default body.
+	/// </summary>
+	public static bool CoopHeroAvailable { get; set; }
+
+	/// <summary>The two players' display names, as the shell knows them — left page is player one.</summary>
+	public static string CoopPlayerOneName { get; set; } = string.Empty;
+	public static string CoopPlayerTwoName { get; set; } = string.Empty;
 
 	private static readonly Dictionary<string, Engine_UiPageProvider> Registry = new()
 	{
@@ -37,6 +65,8 @@ public static class Engine_UiPageProviders
 		[ItemBook] = new ItemBookProvider(),
 		[Achievements] = new AchievementsProvider(),
 		[RealEstate] = new RealEstateProvider(),
+		[Multiplayer] = new MultiplayerProvider(),
+		[Coop] = new CoopProvider(),
 	};
 
 	/// <summary>The provider a template names, or null when it names none or an unknown one.</summary>
@@ -46,6 +76,236 @@ public static class Engine_UiPageProviders
 			: null;
 
 	public static IEnumerable<string> Names => Registry.Keys;
+
+	/// <summary>
+	/// The co-op screen (24) — the two share sliders and the profile blocks on both pages.
+	///
+	/// THIS IS WHAT MAKES THE SCREEN VISIBLE, not only correct. `Engine_UiOwnedBook.Opaqued`
+	/// drops the guest's stated opacity for any element the host writes — a value, a texture or
+	/// a switch — and falls back to the authored one. The profile blocks are authored at 100 and
+	/// held at 0 by the guest's slides (181/173/108), so claiming them here is what lights them.
+	/// Their TEXT stays the guest's data; we are stating that they are on screen, not what they
+	/// say.
+	///
+	/// The slider labels are ours outright, because taking them from the guest did not hold: a
+	/// run showed `tag='Text' shows='Text'` on all six, the authored placeholder, once the guest
+	/// stopped writing them. That is the documented failure of `GuestTextUnits` and the reason
+	/// this screen no longer uses it.
+	/// </summary>
+	private sealed class CoopProvider : Engine_UiPageProvider
+	{
+		private const string LeftSliders = "Foreground.LeftPage.Sliders.";
+
+		/// <summary>
+		/// XBOX LIVE VESTIGES, OFF BY DECISION. Reputation and Gamerscore are console-profile
+		/// concepts with nothing behind them in a RexNet session, and inventing numbers for them
+		/// would be worse than leaving the space empty — so they are switched off outright rather
+		/// than left dark by accident.
+		/// </summary>
+		private static readonly string[] ProfileVestiges =
+		{
+			"Foreground.LeftPage.ProfileSelector.gamertag.reputation",
+			"Foreground.LeftPage.ProfileSelector.gamertag.gamerscore",
+			"Foreground.RightPage.ProfileSelector.gamertag.reputation",
+			"Foreground.RightPage.ProfileSelector.gamertag.gamerscore",
+
+			// The LEFT page's X prompt is `Select Gamer Profile` — the same console-profile
+			// vestige, and there is no profile to select over RexNet. Its glyph goes with it so the
+			// row does not sit there orphaned.
+			"Foreground.LeftPage.ProfileSelector.Buttons.Title2",
+			"Foreground.LeftPage.ProfileSelector.Buttons.icon_button_x2",
+		};
+
+		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page)
+		{
+			Refii.Host.HostBridge.CoopShare share = Refii.Host.HostBridge.CoopShares();
+
+			// The manager holds ONE fraction per slider; the two ends are the two players' halves.
+			// Both read 50% at the default 0.5, which is what the shipped screen shows.
+			float gold = share.Known ? share.Gold : 0.5f;
+			float experience = share.Known ? share.Experience : 0.5f;
+
+			// Lifted out of `page` first: it is an `in` parameter and a local function cannot
+			// capture one.
+			Refii.Text.Engine_BabelDatabase? strings = page.Strings;
+
+			string Tag(string key, string fallback) =>
+				strings is { } bank && bank.TryGetString(key, out string value) && value.Length != 0
+					? value
+					: fallback;
+
+			static string Percent(float fraction) =>
+				$"{Mathf.RoundToInt(Mathf.Clamp(fraction, 0f, 1f) * 100f)}%";
+
+			var values = new Dictionary<string, string>(System.StringComparer.Ordinal)
+			{
+				[LeftSliders + "slider1.grp.text"] = Tag("GUI_SCREEN_COOP_GOLD", "Share of Gold"),
+				[LeftSliders + "slider1.grp.textleft"] = Percent(1f - gold),
+				[LeftSliders + "slider1.grp.textright"] = Percent(gold),
+				[LeftSliders + "slider2.grp.text"] =
+					Tag("GUI_SCREEN_COOP_EXPERIENCE", "Share of Experience"),
+				[LeftSliders + "slider2.grp.textleft"] = Percent(1f - experience),
+				[LeftSliders + "slider2.grp.textright"] = Percent(experience),
+			};
+
+			// OUR OWN NAME, ON OUR OWN SIDE OF THE SPREAD. The left page is player one and the
+			// right is player two, so which one carries this player's name is the co-op role.
+			//
+			// Writing it is also what LIGHTS it: `HostValues` lights its fields, and the whole
+			// gamertag block is authored at 100 and slid to 0 by the guest. The name the guest had
+			// resolved there was a leftover profile, not this player.
+			// A NAME EVEN WHEN RexNet HAS NOT BEEN GIVEN ONE. Requiring a non-empty DisplayName
+			// wrote nothing at all — a live read showed both pages still at `op=0.00` and still
+			// showing the guest's leftover `JamieEngland`, while the sliders beside them took their
+			// values fine, so the provider was running and only this line was skipped. The friends
+			// list already has the convention for an unnamed peer, so use it for ourselves.
+			if (Refii.Host.NetBridge.Self() is { } me)
+			{
+				string name =
+					me.DisplayName.Length != 0 ? me.DisplayName
+					: me.FriendCode.Length != 0 ? me.FriendCode
+					: me.PeerId.Length <= 8 ? me.PeerId
+					: "…" + me.PeerId[^8..];
+
+				string side = Refii.Host.CoopSession.IsClient
+					? "Foreground.RightPage"
+					: "Foreground.LeftPage";
+
+			// BOTH NAMES, from what the shell knows: player one on the left page, player two on
+			// the right, on both instances. The guest's own text here is its stub profile name.
+			values["Foreground.LeftPage.ProfileSelector.gamertag.gamertag"] = CoopPlayerOneName;
+			values["Foreground.RightPage.ProfileSelector.gamertag.gamertag"] = CoopPlayerTwoName;
+			}
+
+			// X ON THE RIGHT PAGE IS THE HERO-FROM-SAVE PROMPT.
+			//
+			// The button is already authored — `icon_button_x` at (307,212) with `Title2` beside it
+			// at (281,214), the pairing the two positions make plain; `Title` at (314,256) belongs
+			// to `icon_button_y` at (340,254). So this is a relabel, not a new element.
+			//
+			// The ACTION is not wired yet: loading a visitor's own hero needs the capture and
+			// transport stages of docs/coop_native_hero_plan.md. The prompt is placed now so the
+			// layout is final and the stages have somewhere to land.
+			// The prompt names the DESTINATION, not the current state — the way every other
+			// toggle on these screens reads.
+			values["Foreground.RightPage.ProfileSelector.Buttons.Title2"] =
+				CoopOwnHero ? "Use Henchman" : "Load Hero";
+
+			return values;
+		}
+
+		/// <summary>
+		/// The two `ProfileSelector.Buttons` groups are AUTHORED AT ZERO (`auth=0`, read live),
+		/// so nothing that merely drops the guest's opacity can reach them or their children —
+		/// the X and Y prompts and the profile titles all inherit it. Stating the number is the
+		/// only lever that does.
+		/// </summary>
+		/// <summary>
+		/// NAME THE LEAVES, NOT THE CONTAINER. Opacity does NOT inherit down this tree and the
+		/// key match is on a path's TRAILING SEGMENTS, so `…ProfileSelector.Buttons` lights that
+		/// one node and nothing under it. Measured live: `ProfileSelector` sat at 1.00 while
+		/// every child — the gamertag, the title and the whole button-icon chain — stayed at
+		/// 0.00/0.01, which is why this block was invisible however right the text was.
+		///
+		/// The icon is a chain, not a quad: `icon_button_x` → `Material2270` → `abyx`, and all
+		/// three carry their own number. Player two's prompt is the RIGHT page's
+		/// `Title2` + `icon_button_x` pair; the left page's is `icon_button_x2` and stays dark,
+		/// because the action is player two's.
+		/// </summary>
+		public IReadOnlyDictionary<string, float> Opacities(in Engine_UiPageContext page) =>
+			new Dictionary<string, float>(System.StringComparer.Ordinal)
+			{
+				// THE NAME ONLY. Lighting the whole `gamertag` subtree brought the Xbox gamerpic,
+				// the gamerscore figure and the five-star rating up with it — none of which this
+				// remaster has any source for. The two exact keys light the container and the
+				// name text; every sibling stays at its authored 0.01, which is invisible.
+				["Foreground.LeftPage.ProfileSelector.gamertag"] = 1f,
+				["Foreground.LeftPage.ProfileSelector.gamertag.gamertag"] = 1f,
+				["Foreground.RightPage.ProfileSelector.gamertag"] = 1f,
+				["Foreground.RightPage.ProfileSelector.gamertag.gamertag"] = 1f,
+				// THE ANCESTORS TOO. Opacity accumulates down the tree (`Opacity[i] =
+				// parentOpacity * Own[i]`), and the landing probe showed the whole `Buttons`
+				// group at own=1.00 but op=0.00: `ProfileSelector` is stated at 0 by the
+				// guest's slide, so everything under it drew at nothing however right its
+				// own number was. Claiming the container makes the claims below reach the screen.
+				["Foreground.RightPage.ProfileSelector"] = 1f,
+				["Foreground.RightPage.ProfileSelector.Buttons"] = 1f,
+				["Foreground.RightPage.ProfileSelector.Buttons.*"] = 1f,
+				["Foreground.LeftPage.ProfileSelector"] = 1f,
+			};
+
+		/// <summary>
+		/// Two authored placements this screen cannot use as authored.
+		///
+		/// The X prompt (`Title2` + `icon_button_x`) is authored ~42 canvas units BELOW the
+		/// "Change Save" row — exactly where the `menu` unit draws "Accept A", later, on top. A
+		/// live read had the pair lit and drawn and the screen showed nothing there. It goes above
+		/// the Y row instead. The two `model_proxy` anchors are authored at y ≈ −468, below the
+		/// bottom of the page; the guest's preview layer has its own camera, this panel does not.
+		/// </summary>
+		public IReadOnlyDictionary<string, Vector3> Positions(in Engine_UiPageContext page) =>
+			new Dictionary<string, Vector3>(System.StringComparer.Ordinal)
+			{
+				// BETWEEN Y AND B, from the file's own numbers (coopscreen.bgf, verified against the
+				// live tree): the bottom block is `RightPage.buttons` at (188,−235) under Foreground
+				// 1.3 × RightPage 0.8 (= 1.04); its rows are `LoadGroup` (Y, local (22,3), text at
+				// canvas (290,−205)), `CancelGroup` (−243) and `AcceptGroup` (−281) — 38 canvas /
+				// 36.5 local apart. The Y row moves up one row and the host's X pair (authored
+				// under `ProfileSelector.Buttons`, origin (63.4,329.3), scale 0.832) takes its
+				// canvas spot: local = (canvas − origin) / 0.832. THE CHANNEL IS PARENT-LOCAL.
+				// Y stays authored (canvas −205; the pickbox rows end at ≈ −162). The X pair takes
+				// Cancel's row (−243 → local −688) and Cancel and Accept move down one row each.
+				["Foreground.RightPage.ProfileSelector.Buttons.Title2"] = new(272f, -688f, float.NaN),
+				["Foreground.RightPage.ProfileSelector.Buttons.icon_button_x"] = new(306f, -688f, float.NaN),
+				["Foreground.RightPage.buttons.CancelGroup"] = new(float.NaN, -36.5f, float.NaN),
+				["Foreground.RightPage.buttons.AcceptGroup"] = new(float.NaN, -36.5f, float.NaN),
+				// The mannequin's centre sits between the name line and the pickbox rows.
+				["Foreground.RightPage.model_proxy"] = new(239f, 110f, float.NaN),
+				["Foreground.LeftPage.model_proxy"] = new(-236f, 110f, float.NaN),
+
+				// The frames reach the window's edge: coopscreen.bgf has no backdrop and its frames
+				// end at +630 / −672 canvas (the console's overscan hid the shortfall). Each frame
+				// group (parent scale 1.04) moves outward by the shortfall; the parchment runs 140
+				// units under the copper, so this holds up to a 2.16:1 window.
+				["Foreground.RightFrame2.Group"] = new(
+					263f + System.MathF.Max(0f, Engine_UiSceneBuilder.VisibleHalfWidth - 629.7f) / 1.04f,
+					float.NaN, float.NaN),
+				["Foreground.LeftFrame2.LeftFrame2"] = new(
+					-171f - System.MathF.Max(0f, Engine_UiSceneBuilder.VisibleHalfWidth - 671.8f) / 1.04f,
+					float.NaN, float.NaN),
+			};
+
+		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page)
+		{
+			var active = new Dictionary<string, bool>(System.StringComparer.Ordinal);
+
+			// OFF: the profile vestiges this remaster has no source for.
+			foreach (string side in new[] { "LeftPage", "RightPage" })
+			{
+				active[$"Foreground.{side}.ProfileSelector.gamertag.reputation"] = false;
+				active[$"Foreground.{side}.ProfileSelector.gamertag.gamerscore"] = false;
+				active[$"Foreground.{side}.ProfileSelector.gamertag.star"] = false;
+
+				// The guest's stub profile lights these itself — "18471" and the Xbox gamerpic —
+				// and this remaster has no source for either.
+				active[$"Foreground.{side}.ProfileSelector.gamertag.score"] = false;
+				active[$"Foreground.{side}.ProfileSelector.gamertag.gamerpic"] = false;
+			}
+
+			active["Foreground.LeftPage.ProfileSelector.Buttons.Title2"] = false;
+			active["Foreground.LeftPage.ProfileSelector.Buttons.icon_button_x2"] = false;
+
+			// ON: player two's X prompt. Its opacity was stated and landed, and it still did not
+			// draw while the gamertag block beside it did — the draw gate is `own && (slid ||
+			// forced)`, and this pair sits on a slide the guest keeps off until a profile is
+			// wanted. A host switch is the `forced` half of that gate.
+			active["Foreground.RightPage.ProfileSelector.Buttons"] = true;
+			active["Foreground.RightPage.ProfileSelector.Buttons.Title2"] = true;
+			active["Foreground.RightPage.ProfileSelector.Buttons.icon_button_x"] = true;
+			return active;
+		}
+
+	}
 
 	private sealed class AbilitiesProvider : Engine_UiPageProvider
 	{
@@ -150,6 +410,18 @@ public static class Engine_UiPageProviders
 	/// The achievements screen — see <see cref="Engine_UiAchievementPage"/>. It states NO slides
 	/// on purpose; the page class says why.
 	/// </summary>
+	private sealed class MultiplayerProvider : Engine_UiPageProvider
+	{
+		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page) =>
+			Engine_UiMultiplayerPage.Values(page.Row);
+
+		public IReadOnlyDictionary<string, uint> Textures(in Engine_UiPageContext page) =>
+			Engine_UiMultiplayerPage.Textures(page.Row);
+
+		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
+			Engine_UiMultiplayerPage.Active(page.Row);
+	}
+
 	private sealed class AchievementsProvider : Engine_UiPageProvider
 	{
 		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page) =>

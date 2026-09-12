@@ -28,13 +28,28 @@ public sealed class Engine_TickTimeline
 	private const int Capacity = 8;
 
 	/// <summary>The guest's tick period: a fixed 1/15 s.</summary>
-	public const double TickUsec = 1e6 / 15.0;
+	public const double TickUsec = Engine_TickClock.TickUsec;
 
 	/// <summary>
 	/// How far behind the newest sample the world is drawn, in ticks. A sample lands on the
 	/// host up to a frame after its tick, so under one tick plus a frame starves and holds.
 	/// </summary>
-	public const double DrawLatencyTicks = 1.5;
+	public const double DrawLatencyTicks = Engine_TickClock.DrawLatencyTicks;
+
+	/// <summary>
+	/// The step, in metres, past which a sample is a teleport rather than a movement — the
+	/// timeline restarts on it instead of gliding across.
+	/// </summary>
+	/// <remarks>
+	/// ONE THRESHOLD, BECAUSE THINGS THAT MOVE TOGETHER MUST RESTART TOGETHER. A body used 4 m
+	/// and the camera following it used 8. A hero moved 5 m in a tick — a door, a cut, a
+	/// scripted placement — and the two rules disagreed about what had just happened: the body
+	/// restarted and was drawn at its new position at once, while the camera treated the same
+	/// jump as travel and glided across it over the next tick and a half. For that tenth of a
+	/// second the hero was somewhere the camera had not reached, which is the camera letting go
+	/// of the player. 4 m in a 15 Hz tick is already 60 m/s and nothing runs there.
+	/// </remarks>
+	public const float TeleportMetres = 4f;
 
 	private readonly uint[] _tick = new uint[Capacity];
 	private readonly Transform3D[] _sample = new Transform3D[Capacity];
@@ -48,7 +63,6 @@ public sealed class Engine_TickTimeline
 	private readonly float[] _scalar = new float[Capacity];
 	private int _count;
 	private int _head;
-	private double _originUsec = double.NaN;
 
 	/// <summary>The newest stated transform.</summary>
 	public Transform3D Newest { get; private set; }
@@ -66,7 +80,6 @@ public sealed class Engine_TickTimeline
 	public void Reset(uint tick, Transform3D sample, float scalar = 0f)
 	{
 		_count = 0;
-		_originUsec = double.NaN;
 		Push(tick, sample, Godot.Time.GetTicksUsec(), scalar);
 	}
 
@@ -76,6 +89,13 @@ public sealed class Engine_TickTimeline
 	/// </summary>
 	public void Push(uint tick, Transform3D sample, double nowUsec, float scalar = 0f)
 	{
+		// THE CLOCK IS TOLD WHAT THE GUEST SAID, NOT WHAT THIS TIMELINE NEEDED IT TO BE. The
+		// bump below is a local ordering repair — two samples read either side of one tick
+		// must not collide in the ring — and the tick it invents is one the guest never
+		// reached. Fed to the fit, that over-large tick makes `now - tick*period` too small,
+		// the minimum rule keeps it, and the origin is dragged permanently early for every
+		// entity sharing it. Only the stated value carries information about the clock.
+		uint stated = tick;
 		if (_count != 0 && tick <= _tick[_head])
 		{
 			tick = _tick[_head] + 1;
@@ -89,13 +109,11 @@ public sealed class Engine_TickTimeline
 		Newest = sample;
 		NewestScalar = scalar;
 
-		// The clock fit: this sample cannot have been stated later than now, so the origin is
-		// at most `now - tick*period`; take it when earlier, creep toward it otherwise so a
-		// guest that slows down does not leave the draw point starving.
-		double candidate = nowUsec - (tick * TickUsec);
-		_originUsec = double.IsNaN(_originUsec) || candidate < _originUsec
-			? candidate
-			: _originUsec + ((candidate - _originUsec) * 0.05);
+		// THE FIT IS SHARED. Every stated thing rides one guest counter, so it is fitted once
+		// for the world — see Engine_TickClock. A per-entity origin made each thing its own
+		// approximation of the same clock, and a body and the bones inside it drawn from two
+		// approximations do not agree.
+		Engine_TickClock.Observe(stated, nowUsec);
 	}
 
 	/// <summary>The transform to draw now: the timeline's value 1.5 ticks ago.</summary>
@@ -133,12 +151,12 @@ public sealed class Engine_TickTimeline
 		older = _head;
 		younger = _head;
 		alpha = 0f;
-		if (_count < 2 || double.IsNaN(_originUsec))
+		if (_count < 2 || !Engine_TickClock.Ready)
 		{
 			return false;
 		}
 
-		double drawTick = ((nowUsec - _originUsec) / TickUsec) - DrawLatencyTicks;
+		double drawTick = Engine_TickClock.DrawTick(nowUsec);
 		if (drawTick >= _tick[_head])
 		{
 			return false;  // starved or stopped: hold the newest

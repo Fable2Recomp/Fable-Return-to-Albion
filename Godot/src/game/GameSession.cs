@@ -46,6 +46,21 @@ public partial class GameSession : Node
 	{
 		Current = this;
 
+		// EVERY FRAME PHASE BECOMES A TRACY ZONE, installed once here. The engine already
+		// measures 28 phases for its own report; wiring the profiler to the same annotation
+		// means a zone cannot drift from the phase it names, and nothing has to be annotated
+		// twice. A no-op until the bridge is up — TraceZoneBegin answers 0 and the scope skips.
+		// STARTED, not just linked. `TRACY_MANUAL_LIFETIME` leaves the client inert until this
+		// runs, so without it every zone below is emitted into nothing.
+		if (Refii.Host.HostBridge.TraceStartup())
+		{
+			GD.Print("[game] Tracy is up — connect a profiler to see the frame");
+		}
+
+		Refii.Core.Engine_FramePhases.ZoneBegin = Refii.Host.HostBridge.TraceZoneBegin;
+		Refii.Core.Engine_FramePhases.ZoneEnd = Refii.Host.HostBridge.TraceZoneEnd;
+		Refii.Core.Engine_FramePhases.Plot = Refii.Host.HostBridge.TracePlot;
+
 		// THE DEBUG CHANNEL COMES UP FIRST, BEFORE ANYTHING SLOW.
 		//
 		// It was attached after a successful guest boot, which is precisely when it is least
@@ -179,6 +194,15 @@ public partial class GameSession : Node
 	/// Catch-up ceiling: a stall loses time instead of replaying every missed step at once.
 	/// </summary>
 	private const int MaxCatchUpSteps = 4;
+
+	/// <summary>How long the pace is averaged over before it is judged.</summary>
+	private const double PaceWindowSeconds = 5.0;
+
+	private double _paceSeconds;
+
+	private int _paceSteps;
+
+	private int _paceFrames;
 
 	/// <summary>
 	/// Halts the simulation without stopping it: the UI still draws and the bridge still reads.
@@ -324,6 +348,12 @@ public partial class GameSession : Node
 		// frames and the per-frame counter snapshots never rotate.
 		Refii.Host.HostBridge.FrameMark();
 
+		// TWO INSTRUMENTS ON THE SAME LOOP, and they answer different questions. The Tracy zone
+		// is for a profiler attached to the native side, where the guest's own zones say what a
+		// step is doing; the frame phase is ours and rides the debug channel, so `refii_perf`
+		// answers "what does a step COST" with nothing attached. The pace line above says
+		// whether we are keeping up; this says why not.
+		using (Refii.Core.Engine_FramePhases.Measure("guest-step"))
 		using (new Refii.Host.HostBridge.TraceZone("guest-steps"))
 		{
 			for (int i = 0; i < steps; ++i)
@@ -343,6 +373,32 @@ public partial class GameSession : Node
 		// fastest was the moment nothing consumed them. Budgeted still, so a warm cache cannot
 		// trade a background cost for a visible hitch.
 		Engine_TexLibrary.Pump();
+
+		// THE PACE IT ACTUALLY GOT. The accumulator ASKS for StepsPerSecond; whether it gets it
+		// is a fact about how long a step costs, and nothing above can assert it. A guest that
+		// advances slower than real time moves the hero and his animation in slow motion while
+		// the camera still runs at frame rate — which reads as the model detaching and then
+		// snapping back, not as a frame-rate problem.
+		//
+		// Printed ONLY when it is behind, so a healthy run stays silent.
+		_paceSeconds += delta;
+		_paceSteps += steps;
+		++_paceFrames;
+		if (_paceSeconds >= PaceWindowSeconds)
+		{
+			double perSecond = _paceSteps / _paceSeconds;
+			if (perSecond < StepsPerSecond * 0.9)
+			{
+				GD.Print($"[game-pace] the guest advanced {perSecond:0.0} step(s)/s against a " +
+					$"{StepsPerSecond:0} Hz target while Godot drew " +
+					$"{_paceFrames / _paceSeconds:0.0} frame(s)/s — the world is running at " +
+					$"{perSecond / StepsPerSecond:P0} of real time");
+			}
+
+			_paceSeconds = 0.0;
+			_paceSteps = 0;
+			_paceFrames = 0;
+		}
 
 		if (steps == 0)
 		{

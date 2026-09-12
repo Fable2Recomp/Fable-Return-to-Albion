@@ -109,10 +109,12 @@ public sealed class Engine_UiBookSet
 		// The mirror's visibility is restated every frame, never toggled: one presentation serves
 		// several screens (`GiftGivingScreen.bgf` is ids 15, 25 and 27), so a tree left hidden
 		// would be inherited dark by the next screen that has no book of its own.
+		// THE GUEST'S TREE IS NEVER DRAWN. Godot owns every screen; a screen with no chrome yet
+		// shows nothing rather than the guest's picture.
 		bool standing = book is not null && GodotObject.IsInstanceValid(book);
 		if (GodotObject.IsInstanceValid(drawn.Node))
 		{
-			drawn.Node.Visible = !standing;
+			drawn.Node.Visible = false;
 		}
 
 		if (!standing)
@@ -245,6 +247,13 @@ public sealed class Engine_UiBookSet
 				if (screenId is uint.MaxValue or 0)
 				{
 					continue;
+				}
+
+				// GODOT OWNS EVERY SCREEN. The guest's tree is never drawn — restated every
+				// frame because the mirror tree is rebuilt on slide changes.
+				if (GodotObject.IsInstanceValid(live.Node))
+				{
+					live.Node.Visible = false;
 				}
 
 				// Only the screen the player is on: the guest keeps the previous screen's

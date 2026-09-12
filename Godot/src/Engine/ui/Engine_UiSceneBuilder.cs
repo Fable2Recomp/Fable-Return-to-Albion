@@ -1262,13 +1262,22 @@ public sealed class Engine_UiSceneBuilder
 		{
 			camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
 			camera.Size = CanvasHeight / PixelsPerUnit;
+			VisibleHalfWidth = camera.Size * (viewport.X / viewport.Y) / 2f;
 		}
 		else
 		{
 			camera.KeepAspect = Camera3D.KeepAspectEnum.Width;
 			camera.Size = MinimumWidth / PixelsPerUnit;
+			VisibleHalfWidth = camera.Size / 2f;
 		}
 	}
+
+	/// <summary>
+	/// Half of the canvas width the fitted camera shows, in canvas units: 633 at 16:9, more on
+	/// a wider window. A page whose art is authored to a 1280 box and has no backdrop (the
+	/// co-op screen's frames stop at +630 / −672) anchors its outer pieces to this edge.
+	/// </summary>
+	public static float VisibleHalfWidth { get; private set; } = DesignWidth / 2f / PixelsPerUnit;
 
 	/// <summary>
 	/// The narrowest canvas the game authors — 960x720, the 4:3 layout 31 of the 36 shipped

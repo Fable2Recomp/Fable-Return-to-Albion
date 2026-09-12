@@ -390,9 +390,13 @@ public sealed class Engine_UiMenuTemplate
 		{
 			// A category is a submenu row: an entry with children stating no event of its own
 			// gets 301, which is what makes `SelectMenuItem` treat the press as a fold.
+			// A SOURCE MAKES IT A SUBMENU TOO, not just authored children. The rows arrive after
+			// the build — that is what a source is — so an entry with only sourced children was
+			// spawned as a command row, and a command row never folds however many rows land
+			// under it later. `Games` folded only because it happens to author one child.
 			int eventType = entry.EventType != 0
 				? entry.EventType
-				: entry.Children.Count > 0
+				: entry.Children.Count > 0 || entry.Source.Length != 0
 					? (int)Engine_UiMenuConstants.EventType.Submenu
 					: 0;
 
@@ -1272,7 +1276,89 @@ public static class Engine_UiTemplates
 						$"{Engine_PauseMenu.OwnedCommandPrefix}{Engine_UiAchievementPage.ScreenId}",
 				},
 
+				// The multiplayer book, on the same host-owned lever as Achievements.
+				new Engine_UiMenuEntry
+				{
+					Name = "Multiplayer", Tag = "Multiplayer", HostOnly = true,
+					Command =
+						$"{Engine_PauseMenu.OwnedCommandPrefix}{Engine_UiMultiplayerPage.ScreenId}",
+				},
+
 				Tab("Options", "GUI_SCREEN_PAUSE_OPTIONS", Engine_PauseMenu.TabOptions),
+			},
+		};
+
+		// PLAYER TWO'S PAUSE MENU — OURS, AUTHORED, NOT THE GUEST'S.
+		//
+		// BOTH PLAYERS' PAUSE SCREENS NAME THE SAME POPULATION SCRIPT — a live run showed
+		// `[screen-menu] 'PauseMenu' is GODOT'S ... (source 'capture:Root')` on the joiner, not
+		// `HenchmanPauseMenu` — so the variant cannot be chosen by that name. `Engine_PauseMenu`
+		// picks between this and `pause-root` on `HostBridge.IsCoopJoiner` instead.
+		//
+		// Without it the joiner got the capture's four rows AND the whole single-player tab set:
+		// nine-plus rows with a duplicate `Options`, every command running against a row it did
+		// not belong to, so picking `Abilities` reached `Save`.
+		//
+		// The guest states four rows here (`HenchmanAbilities`, `HenchmanConfig`, `Options`,
+		// `HenchmanQuit`). They are not the authority on what this menu contains — Godot owns the
+		// list, the order and the layout; what we take from the guest is the AVAILABILITY mask and
+		// the commit entry points, exactly as the solo menu does.
+		//
+		// TWO PLAYERS, TWO SETS. A visitor on THEIR OWN HERO has clothing and weapons of their own
+		// to manage; a pre-generated HENCHMAN's gear is fixed by the co-op screen's pickboxes and
+		// those rows have nothing behind them. Both are authored here and
+		// `Engine_PauseMenu.ApplyTabAvailability` ghosts whichever the mask
+		// (`RefiiHostPauseTabsAvailable`, the guest's own `sub_826B83D0`) says are unavailable —
+		// so the henchman set falls out of the data rather than a second template. IF A RUN SHOWS
+		// the mask reporting Weapons/Clothing AVAILABLE to a henchman, they need dropping outright
+		// rather than ghosting; that is the one thing here not yet confirmed against a session.
+		_menus!["pause-root-coop"] = new Engine_UiMenuTemplate
+		{
+			Name = "pause-root-coop",
+			Highlight = "Abilities",
+			Entries =
+			{
+				HostTab("Abilities", "GUI_SCREEN_PAUSE_ABILITIES", Engine_PauseMenu.TabAbilities),
+				HostTab("Weapons", "GUI_SCREEN_PAUSE_WEAPONS", Engine_PauseMenu.TabWeapons),
+				HostTab("Clothing", "GUI_SCREEN_PAUSE_CLOTHING", Engine_PauseMenu.TabClothing),
+
+				new Engine_UiMenuEntry
+				{
+					Name = "Achievements", Tag = "Achievements", HostOnly = true,
+					Command =
+						$"{Engine_PauseMenu.OwnedCommandPrefix}{Engine_UiAchievementPage.ScreenId}",
+				},
+				new Engine_UiMenuEntry
+				{
+					Name = "Multiplayer", Tag = "Multiplayer", HostOnly = true,
+					Command =
+						$"{Engine_PauseMenu.OwnedCommandPrefix}{Engine_UiMultiplayerPage.ScreenId}",
+				},
+
+				Tab("Options", "GUI_SCREEN_PAUSE_OPTIONS", Engine_PauseMenu.TabOptions),
+
+				// LEAVING, with the solo menu's own known-good commands rather than invented ones.
+				// A visitor has no save of their own in this world, so the two SAVE rows are absent
+				// and only the "don't save" pair remains.
+				new Engine_UiMenuEntry
+				{
+					Name = "HenchmanQuit", Tag = "GUI_SCREEN_PAUSE_HENCHMAN_QUIT",
+					Children =
+					{
+						new Engine_UiMenuEntry
+						{
+							Name = "QuitDontSave",
+							Tag = "Quit to Title",
+							Command = $"{Engine_PauseMenu.SavingCommandPrefix}2",
+						},
+						new Engine_UiMenuEntry
+						{
+							Name = "QuitToDesktopDontSave", HostOnly = true,
+							Tag = "Quit to Desktop",
+							Command = $"{Engine_PauseMenu.QuitCommandPrefix}2",
+						},
+					},
+				},
 			},
 		};
 
@@ -1544,6 +1630,48 @@ public static class Engine_UiTemplates
 		// The summary row is authored and host-only — it carries no achievement of its own, it
 		// is where the tally is read — and it starts highlighted so the screen opens on the
 		// count rather than on whichever achievement happens to be first.
+		// THE MULTIPLAYER BOOK'S LIST. One sourced entry at the root: the source tags every row
+		// with its group and `Expanded` raises a header per group, so Friends, Friend Requests,
+		// Invitations and Games are folds without four templates to keep in step.
+		// THE MULTIPLAYER BOOK'S LEFT LIST. Static: three actions that act where they stand,
+		// then the four subjects, each of which OPENS A RIGHT PAGE rather than folding. The rows
+		// of a subject are a list with a cursor of its own — see Engine_UiMultiplayerScreen.
+		var multiplayer = new Engine_UiMenuTemplate
+		{
+			Name = Engine_UiMultiplayerPage.MenuName,
+			Entries =
+			{
+				new Engine_UiMenuEntry
+				{
+					Name = "Hosting", Tag = "My game", HostOnly = true,
+					Source = Engine_UiNetworkSource.HostingSource,
+				},
+				new Engine_UiMenuEntry
+				{
+					Name = "AddFriend", Tag = "Add a friend (paste code)", HostOnly = true,
+					Command = $"{Engine_UiNetworkSource.CommandPrefix}paste",
+				},
+				new Engine_UiMenuEntry
+				{
+					Name = "MyCode", Tag = "My friend code", HostOnly = true,
+					Command = $"{Engine_UiNetworkSource.CommandPrefix}code",
+				},
+			},
+		};
+
+		// EACH SUBJECT IS A FOLD, the same shape as `My game`: its rows are its children, so an
+		// empty one still opens onto a row that says so. The right page shows whatever the
+		// cursor is on — the list is the subject, the page is the detail.
+		foreach ((string source, string title) in Engine_UiNetworkSource.Pages)
+		{
+			multiplayer.Entries.Add(new Engine_UiMenuEntry
+			{
+				Name = title, Tag = title, HostOnly = true, Source = source,
+			});
+		}
+
+		_menus![Engine_UiMultiplayerPage.MenuName] = multiplayer;
+
 		_menus!["achievements-root"] = new Engine_UiMenuTemplate
 		{
 			Name = "achievements-root",
@@ -1576,9 +1704,32 @@ public static class Engine_UiTemplates
 					Opens = Engine_FrontEndMenu.HeroCardScreen,
 				},
 				new Engine_UiMenuEntry { Name = "Load Game", Tag = "GUI_SCREEN_FRONT_END_LOAD_GAME" },
+				// TWO FOLDS, not one. Mods are content; friends, invitations and games are a
+				// different subject and were only ever together because there was one row to
+				// hang them on. The front-end list already nests (`Subtitles` does) and a
+				// sourced entry refreshes its children in place, so neither needs a screen, a
+				// second cursor or an input route of its own. Every child is HostOnly — the
+				// guest has no screen for any of this.
 				new Engine_UiMenuEntry
 				{
 					Name = "Downloadable Content", Tag = "GUI_DOWNLOADABLE_CONTENT",
+					HostOnly = true,
+					Children =
+					{
+						new Engine_UiMenuEntry
+						{
+							Name = "Mods", Tag = "Active Mods", HostOnly = true,
+							Source = Engine_UiNetworkSource.ModsSource,
+						},
+					},
+				},
+				// ONE ROW, NOT A FOLD. It opens the multiplayer BOOK — the same screen the pause
+				// menu's tab opens — because the subjects are lists with cursors of their own
+				// and a fold has nowhere to put them. See Engine_UiMultiplayerScreen.
+				new Engine_UiMenuEntry
+				{
+					Name = "Multiplayer", Tag = "Multiplayer", HostOnly = true,
+					Command = $"{Engine_UiNetworkSource.CommandPrefix}book",
 				},
 				new Engine_UiMenuEntry { Name = "Language", Tag = "GUI_SCREEN_FRONT_END_LANGUAGE" },
 				new Engine_UiMenuEntry
@@ -2138,6 +2289,47 @@ public static class Engine_UiTemplates
 				"LeftPage", "RightPage", "LeftFrame2", "RightFrame2",
 				"LeftBackground", "RightBackground", "Connecting", "menu", "loadgame",
 			},
+
+			// No backdrop unit: coopscreen.bgf ships none (its `BackgroundTint` is the load-game
+			// dimmer). The provider anchors the frame groups to the visible edge instead.
+
+			// WHERE THE MANNEQUIN HANGS. Player two's henchman preview is a live entity the guest
+			// spawns (`sub_82438818`, stored at `screen+276`), drawn by the host at the right page's
+			// authored model anchor. The left page's anchor is player one's and stays empty until
+			// the host's own hero is previewed there.
+			//
+			// NO `Foreground.` PREFIX. This book clones `LeftPage` and `RightPage` as separate chrome
+			// units, each a top-level node named for the unit (`clone.Name = unit`), so unlike the
+			// item books — one `Foreground` unit — there is no `Foreground` node to walk from. The
+			// authored path matched nothing for exactly that reason.
+			PreviewAnchor = "RightPage.model_proxy.model",
+
+			// THE PICKBOXES AND THE BUTTON CAPTIONS STAY THE GUEST'S. Chrome alone drew the two
+			// pages with the .bgf's AUTHORED labels, which is why `Player 1`, `Cancel` and
+			// `Accept` appeared while the runtime values did not.
+			//
+			// The SLIDERS ARE NOT IN THIS LIST ANY MORE. Taking them from the guest did not
+			// hold: a run showed all six reading `tag='Text' shows='Text'`, the authored
+			// placeholder, once the guest stopped writing them — the exact failure this field's
+			// own contract warns about ("a field the guest stopped writing went quietly
+			// stale"). `CoopProvider` owns them outright now, off `coopMgr+176`/`+172`.
+			// `loadgame` too: the save picker Y opens (`sub_8243B070`) writes each card's quest line
+			// and the description into that unit, and without it the authored placeholder
+			// ("fdggdf dfg …") stood where the guest's text was.
+			GuestTextUnits = { "LeftPage", "RightPage", "Connecting", "loadgame" },
+
+			// AND THIS IS WHAT LIGHTS THE PROFILE BLOCKS. The gamertag, its stars, the
+			// reputation and gamerscore captions and `Select Gamer Profile` are all BUILT and
+			// POPULATED — a live read showed the gamertag already resolved to a real name — and
+			// held dark by the guest's slides.
+			//
+			// WRITING A VALUE IS NOT ENOUGH HERE, which this note used to claim. A value only
+			// DROPS the guest's opacity so the slide or the authored number takes over, and
+			// both are zero for this block: `ProfileSelector.Buttons` carries `auth=0`. Nor
+			// does opacity inherit — a live read found `ProfileSelector` at 1.00 with all
+			// forty-odd elements under it at 0.01. The provider states the number outright
+			// over the whole subtree; see its `Opacities`.
+			Provider = Engine_UiPageProviders.Coop,
 		});
 
 		// The sub-screens are CUT CONTENT, so they have no templates: `expressionsscreen`,
@@ -2310,6 +2502,27 @@ public static class Engine_UiTemplates
 		// hiding, the same statement screen 17 makes.
 		AddScreen(new Engine_UiScreenTemplate
 		{
+			ScreenId = Engine_UiMultiplayerPage.ScreenId, Name = "multiplayer", OwnsList = true,
+			Provider = Engine_UiPageProviders.Multiplayer,
+			Presentation = "logbookscreen",
+			ChromeUnits = { "Foreground" },
+			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
+			PageRootUnit = "Pages", BackdropUnit = "background_yellow",
+			PanelSubtrees =
+			{
+				"Foreground.Book.Pages.MoralityPage",
+				"Foreground.Book.Pages.ExpressionsPage",
+				"Foreground.Book.Pages.CompletedQuestsPage",
+				"Foreground.Book.Pages.RenownPage",
+				"Foreground.Book.Pages.AttractivenessPage",
+				"Foreground.Book.Pages.StatsPage",
+				"Foreground.Book.Pages.DogPage",
+				"Foreground.Book.Pages.HelpPage",
+			},
+		});
+
+		AddScreen(new Engine_UiScreenTemplate
+		{
 			ScreenId = Engine_UiAchievementPage.ScreenId, Name = "achievements", OwnsList = true,
 			Provider = Engine_UiPageProviders.Achievements,
 			Presentation = "logbookscreen",
@@ -2362,6 +2575,22 @@ public static class Engine_UiTemplates
 		Tag = tag,
 		Command = $"{Engine_PauseMenu.TabCommandPrefix}{tab}",
 		Source = "spawn",
+	};
+
+	/// <summary>
+	/// A tab row the HOST authors outright — label from its tag, no guest row behind it. For
+	/// the co-op variant: player two's guest pause root is the HENCHMAN's, whose spawned rows
+	/// are other rows entirely, so a spawn-sourced "Weapons" bound to its ordinal came up
+	/// captioned "Config" and ghosted by the henchman mask.
+	/// </summary>
+	private static Engine_UiMenuEntry HostTab(string name, string tag, uint tab) => new()
+	{
+		Name = name,
+		Tag = tag,
+		Command = $"{Engine_PauseMenu.TabCommandPrefix}{tab}",
+		// HOST-ONLY, so the stated-label pass leaves it alone: the positional fallback there
+		// handed these rows the henchman list's captions by ordinal ('Config', 'Options').
+		HostOnly = true,
 	};
 
 	private static void AddScreen(Engine_UiScreenTemplate template) =>

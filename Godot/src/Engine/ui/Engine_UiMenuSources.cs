@@ -103,6 +103,16 @@ public static class Engine_UiMenuSources
 			[Engine_UiQuestSource.FamilySource] = Engine_UiQuestSource.Family,
 			[Engine_UiAbilitySource.SourceName] = Engine_UiAbilitySource.Rows,
 
+			// The shell's own screen: mods from the load order on disk, the rest from the live
+			// RexNet node. No guest screen backs any of them.
+			[Engine_UiNetworkSource.ModsSource] = Engine_UiNetworkSource.Mods,
+			[Engine_UiNetworkSource.FriendsSource] = Engine_UiNetworkSource.Friends,
+			[Engine_UiNetworkSource.RequestsSource] = Engine_UiNetworkSource.Requests,
+			[Engine_UiNetworkSource.InvitesSource] = Engine_UiNetworkSource.Invites,
+			[Engine_UiNetworkSource.GamesSource] = Engine_UiNetworkSource.Games,
+			[Engine_UiNetworkSource.AllSource] = Engine_UiNetworkSource.All,
+			[Engine_UiNetworkSource.HostingSource] = Engine_UiNetworkSource.Hosting,
+
 			// The shop's six groups — the capture's rows with the TRANSACTION stamped on.
 			[ShopSource] = ShopRows,
 		};

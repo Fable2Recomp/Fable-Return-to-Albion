@@ -379,6 +379,25 @@ public partial class Engine_FrontEndMenuView : Node3D
 	private bool _sliding;
 	private bool _animating;
 
+	/// <summary>
+	/// Whether this list draws its cursor. False for a list that is still on screen but no
+	/// longer has the input — two cursors on one screen say nothing about which one moves.
+	/// </summary>
+	public bool CursorShown
+	{
+		get => _cursorShown;
+		set
+		{
+			_cursorShown = value;
+			if (_cursor is not null && GodotObject.IsInstanceValid(_cursor))
+			{
+				_cursor.Visible = value;
+			}
+		}
+	}
+
+	private bool _cursorShown = true;
+
 	private Node3D? _cursor;
 
 	public override void _Ready()

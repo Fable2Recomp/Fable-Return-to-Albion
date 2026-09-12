@@ -9,6 +9,7 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <queue>
@@ -173,6 +174,18 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
   // content_root/xuid/title_id/type_name/*
   auto package_root = ResolvePackageRoot(xuid, content_type, title_id);
   auto file_infos = rex::filesystem::ListFiles(package_root);
+
+  // NEWEST FIRST. The title takes this list in the order it is handed and never re-sorts it
+  // (`sub_82443048` pushes each entry straight into its own vector), so the order IS the game's
+  // notion of "latest": the Load Game fan opens on it, and Refii loads index 0 when a co-op
+  // joiner accepts from the title with no hero standing. A save is a directory whose package
+  // rewrite bumps its write time, which is the right key; the sort is stable so equal times
+  // keep directory order.
+  std::stable_sort(file_infos.begin(), file_infos.end(),
+                   [](const rex::filesystem::FileInfo& a, const rex::filesystem::FileInfo& b) {
+                     return a.write_timestamp > b.write_timestamp;
+                   });
+
   for (const auto& file_info : file_infos) {
     if (file_info.type != rex::filesystem::FileInfo::Type::kDirectory) {
       // Directories only.

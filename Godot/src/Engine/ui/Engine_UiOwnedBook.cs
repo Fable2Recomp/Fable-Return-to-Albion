@@ -43,9 +43,11 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	public System.Collections.Generic.IReadOnlyDictionary<string, bool>? HostActive { get; set; }
 
 	/// <summary>
-	/// Elements the host places outright, keyed by document path, as a canvas position — e.g. a
-	/// slider pip, which `sub_82881E38` moves by writing `position.x = value * 440 - 210` on
-	/// `.grp.pip`. Written into the guest's per-ordinal transform array.
+	/// Host-stated positions, keyed by element path. PARENT-LOCAL, NOT CANVAS: a value lands in
+	/// the element's own `position.*` slot — the same slot a guest attribute write takes — under
+	/// its cloned parent's transform. Convert a canvas placement with
+	/// `local = (canvas − parentCanvasOrigin) / parentComposedScale` (the co-op `Buttons` group:
+	/// origin (63.4, 329.3), scale 0.832). A NaN component keeps the stated/authored value.
 	/// </summary>
 	public System.Collections.Generic.IReadOnlyDictionary<string, Vector3>? HostPositions { get; set; }
 
@@ -54,6 +56,17 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	/// first slide after the master; `sub_82BB5760` rejects anything below).
 	/// </summary>
 	public System.Collections.Generic.IReadOnlyDictionary<string, int>? HostSlides { get; set; }
+
+	/// <summary>
+	/// Opacities the host STATES, 0..1 — the final word, applied after every drop below.
+	///
+	/// A value, a texture or a switch only DROPS the guest's stated opacity so the slide or the
+	/// authored number takes over. That cannot reach an element authored at zero, and the co-op
+	/// screen has two: both `ProfileSelector.Buttons` groups carry `auth=0`, so their children —
+	/// the X and Y prompts and the profile titles — can never be lit by dropping anything.
+	/// </summary>
+	/// Values are 0..1; the book scales them into the stated channel's 0..100 itself.
+	public System.Collections.Generic.IReadOnlyDictionary<string, float>? HostOpacity { get; set; }
 
 	/// <summary>One live-driven text: where it lives in the doc, and the clone node it paints.</summary>
 	private sealed class Field
@@ -401,9 +414,144 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		ReportHostChannels();
 		ReportDark();
+		ProbeHostKeys();
+		ProbeExtents();
 		ProbeLegend(texts);
 		ProbePageStack();
 	}
+
+	/// <summary>
+	/// Where every host switch-ON and host position LANDED: the node's ordinal, whether it is
+	/// drawn, its own and accumulated opacity, its global position, and what darkened it. A
+	/// channel report says the key bound; this says what the frame did with it. Change-keyed.
+	/// </summary>
+	private void ProbeHostKeys()
+	{
+		if (_resolve is null || Document is null)
+		{
+			return;
+		}
+
+		var keys = new List<string>();
+		if (HostActive is not null)
+		{
+			foreach (var pair in HostActive)
+			{
+				if (pair.Value)
+				{
+					keys.Add(pair.Key);
+				}
+			}
+		}
+
+		if (HostPositions is not null)
+		{
+			foreach (var pair in HostPositions)
+			{
+				if (!keys.Contains(pair.Key))
+				{
+					keys.Add(pair.Key);
+				}
+			}
+		}
+
+		if (HostOpacity is not null)
+		{
+			foreach (var pair in HostOpacity)
+			{
+				if (!pair.Key.EndsWith(".*", System.StringComparison.Ordinal) && !keys.Contains(pair.Key))
+				{
+					keys.Add(pair.Key);
+				}
+			}
+		}
+
+		if (keys.Count == 0)
+		{
+			return;
+		}
+
+		var line = new System.Text.StringBuilder();
+		foreach (string key in keys)
+		{
+			string leaf = key.LastIndexOf('.') is var dot && dot >= 0 ? key[(dot + 1)..] : key;
+			bool any = false;
+			foreach (int ordinal in OrdinalsForPath(key))
+			{
+				any = true;
+				bool drawn = ordinal >= 0 && ordinal < _resolve.Drawn.Length && _resolve.Drawn[ordinal];
+				float own = ordinal >= 0 && ordinal < _resolve.Own.Length ? _resolve.Own[ordinal] : -1f;
+				float op = ordinal >= 0 && ordinal < _resolve.Opacity.Length ? _resolve.Opacity[ordinal] : -1f;
+				Node3D? node = _binding.NodeFor(ordinal);
+				string at = node is not null && GodotObject.IsInstanceValid(node)
+					? (node.IsInsideTree() ? node.GlobalPosition : node.Position).ToString("0")
+					: "no node";
+				string why = drawn ? string.Empty : $" dark:{_resolve.WhyDark(ordinal)}";
+				line.Append($"  {leaf}#{ordinal} {(drawn ? "DRAWN" : "hidden")} own={own:0.00} op={op:0.00} at={at}{why}");
+			}
+
+			if (!any)
+			{
+				line.Append($"  {leaf} UNBOUND");
+			}
+		}
+
+		string text = line.ToString();
+		if (text == _hostKeysReported)
+		{
+			return;
+		}
+
+		_hostKeysReported = text;
+		GD.Print($"[owned-book] '{Template?.Name}' host keys landed:{text}");
+	}
+
+	private string _hostKeysReported = string.Empty;
+
+	/// <summary>
+	/// The drawn X extent of every page-background and frame quad, once per book: the canvas
+	/// edges the page art actually reaches against the frame pieces beside it. A gap between a
+	/// page and its frame is a size question, and no other report carries sizes.
+	/// </summary>
+	private void ProbeExtents()
+	{
+		if (_extentsReported || Document is null)
+		{
+			return;
+		}
+
+		var lines = new List<string>();
+		foreach (int ordinal in Enumerable.Range(0, Document.Nodes.Length))
+		{
+			string name = Document.Nodes[ordinal].Name ?? string.Empty;
+			if (!name.Contains("frames_page", System.StringComparison.Ordinal) &&
+				!name.StartsWith("frame_new_", System.StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			if (_binding.NodeFor(ordinal) is not MeshInstance3D mesh || !mesh.IsInsideTree() ||
+				mesh.Mesh is null)
+			{
+				continue;
+			}
+
+			Aabb box = mesh.GlobalTransform * mesh.Mesh.GetAabb();
+			bool drawn = ordinal < _resolve?.Drawn.Length && _resolve.Drawn[ordinal];
+			lines.Add($"{name}#{ordinal} {(drawn ? "drawn" : "hidden")} x {box.Position.X:0}..{box.End.X:0} " +
+				$"y {box.Position.Y:0}..{box.End.Y:0}");
+		}
+
+		if (lines.Count == 0)
+		{
+			return;
+		}
+
+		_extentsReported = true;
+		GD.Print($"[owned-book] '{Template?.Name}' page/frame extents: {string.Join("  |  ", lines)}");
+	}
+
+	private bool _extentsReported;
 
 	/// <summary>How much of the book draws and what darkened the rest, by ancestor. Change-keyed.</summary>
 	private void ReportDark()
@@ -777,9 +925,17 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 					slots = widened;
 				}
 
-				slots[0] = pair.Value.X;
-				slots[1] = pair.Value.Y;
-				slots[2] = pair.Value.Z;
+				// A NaN component keeps what the guest stated — a page that moves a row up has
+				// no business restating its depth.
+				if (!float.IsNaN(pair.Value.X)) slots[0] = pair.Value.X;
+				if (!float.IsNaN(pair.Value.Y)) slots[1] = pair.Value.Y;
+				if (!float.IsNaN(pair.Value.Z)) slots[2] = pair.Value.Z;
+
+				// A host-placed element takes the slide's scale: the guest's stated scale for an
+				// element it keeps off is not a pose. Unstated falls back to the slide's.
+				slots[3] = null;
+				slots[4] = null;
+				slots[5] = null;
 				patched[ordinal] = slots;
 			}
 		}
@@ -1036,10 +1192,17 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		bool textures = HostTextures is { Count: > 0 };
 		bool switches = HostActive is { Count: > 0 };
 		bool slid = HostSlides is { Count: > 0 };
-		if ((!values && !textures && !switches && !slid) || stated is null || Document is null)
+		bool opacities = HostOpacity is { Count: > 0 };
+		if ((!values && !textures && !switches && !slid && !opacities) || Document is null)
 		{
 			return stated;
 		}
+
+		// A STATED OPACITY NEEDS NO GUEST MIRROR TO STAND ON. The drops below only make sense
+		// against a stated list, but a host that states a number outright must be able to do so
+		// on a book the guest never mirrored — that was the co-op screen, whose profile block
+		// stayed dark with every claim correct because `stated` was null and this returned.
+		stated ??= new List<float?>(new float?[Document.Nodes.Length]);
 
 		List<float?>? patched = null;
 
@@ -1122,6 +1285,37 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			ForEachSlideCommand(OpacityId, Drop);
 		}
 
+		// STATED OPACITY IS THE LAST WORD, after every drop above — a drop only hands the
+		// element back to its slide or its authored number, and this is for the elements where
+		// both of those are zero.
+		if (HostOpacity is { Count: > 0 })
+		{
+			foreach (var pair in HostOpacity)
+			{
+				// A `.*` SUFFIX CLAIMS THE SUBTREE. These books author a whole group dark — the
+				// co-op profile block is 40-odd elements at 0.01 under a parent at 1.00 — and
+				// opacity does not inherit, so naming the container lit one node and nothing
+				// inside it. Listing every leaf instead is the same claim written forty times
+				// and wrong the moment the art changes.
+				bool subtree = pair.Key.EndsWith(".*", System.StringComparison.Ordinal);
+				string key = subtree ? pair.Key[..^2] : pair.Key;
+
+				foreach (int ordinal in subtree ? OrdinalsUnderPath(key) : OrdinalsForPath(key))
+				{
+					if (ordinal >= 0 && ordinal < stated.Count)
+					{
+						// THE STATED CHANNEL IS 0..100, NOT 0..1. The resolve clamps it to 100 and
+						// divides (Engine_UiElementResolve, the `opacity` parameter's own contract),
+						// so a host claim of 1.0 written raw landed as ONE PERCENT — which is the
+						// `op=0.01` every claimed element showed for two runs, with the claim
+						// reaching every one of them exactly as intended.
+						patched ??= new List<float?>(stated);
+						patched[ordinal] = Mathf.Clamp(pair.Value, 0f, 1f) * 100f;
+					}
+				}
+			}
+		}
+
 		return patched ?? stated;
 	}
 
@@ -1201,14 +1395,15 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		int positions = Landed(HostPositions?.Keys, out int positionsLost, lostKeys);
 		int slides = Landed(HostSlides?.Keys, out int slidesLost, lostKeys);
 		int switches = Landed(HostActive?.Keys, out int switchesLost, lostKeys);
-		if (values + textures + positions + slides + switches +
-			valuesLost + texturesLost + positionsLost + slidesLost + switchesLost == 0)
+		int opacities = OpacityLandings(out int opacitiesLost, lostKeys);
+		if (values + textures + positions + slides + switches + opacities +
+			valuesLost + texturesLost + positionsLost + slidesLost + switchesLost + opacitiesLost == 0)
 		{
 			return;
 		}
 
 		string report = $"{values} value(s), {textures} texture(s), {positions} position(s), " +
-			$"{slides} slide(s), {switches} switch(es) bound";
+			$"{slides} slide(s), {switches} switch(es), {opacities} opacity element(s) bound";
 		int lost = valuesLost + texturesLost + positionsLost + slidesLost;
 		if (lost != 0)
 		{
@@ -1228,6 +1423,43 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	}
 
 	/// <summary>How many of these paths resolve, how many name nothing at all, and which.</summary>
+	/// <summary>How many ELEMENTS the host's opacity claims reach — a `.*` key counts its subtree.</summary>
+	private int OpacityLandings(out int lost, List<string>? lostKeys)
+	{
+		lost = 0;
+		if (HostOpacity is null)
+		{
+			return 0;
+		}
+
+		int found = 0;
+		foreach (string key in HostOpacity.Keys)
+		{
+			bool subtree = key.EndsWith(".*", System.StringComparison.Ordinal);
+			string bare = subtree ? key[..^2] : key;
+			int hit = 0;
+			foreach (int _ in subtree ? OrdinalsUnderPath(bare) : OrdinalsForPath(bare))
+			{
+				++hit;
+			}
+
+			if (hit != 0)
+			{
+				found += hit;
+			}
+			else
+			{
+				++lost;
+				if (lostKeys is not null && !lostKeys.Contains(key))
+				{
+					lostKeys.Add(key);
+				}
+			}
+		}
+
+		return found;
+	}
+
 	private int Landed(System.Collections.Generic.IEnumerable<string>? paths, out int lost,
 		List<string>? lostKeys = null)
 	{
@@ -1302,6 +1534,40 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	/// so they landed on whichever copy the dictionary iterated first: the invisible one, on
 	/// the abilities book, which left the visible orb strip on the guest's stale slide.
 	/// </summary>
+	/// <summary>
+	/// Every ordinal at <paramref name="key"/> OR BENEATH IT. The same trailing-segment match as
+	/// <see cref="PathNames"/>, plus anything whose path carries that run followed by a dot.
+	/// </summary>
+	private IEnumerable<int> OrdinalsUnderPath(string key)
+	{
+		// `_pathOrdinals` is built LAZILY by OrdinalForPath. Testing it for null here answered
+		// "nothing" on any book where no exact lookup had run first — which is exactly the case
+		// for a screen whose only host claims are opacities.
+		OrdinalForPath(key);
+		if (_pathOrdinals is null)
+		{
+			yield break;
+		}
+
+		foreach (var pair in _pathOrdinals)
+		{
+			if (PathNames(pair.Key, key) || PathUnder(pair.Key, key))
+			{
+				yield return pair.Value;
+			}
+		}
+	}
+
+	/// <summary>Whether <paramref name="path"/> is a DESCENDANT of <paramref name="key"/>.</summary>
+	private static bool PathUnder(string path, string key)
+	{
+		int at = path.IndexOf(key, System.StringComparison.Ordinal);
+		return at >= 0 &&
+			(at == 0 || path[at - 1] == '.') &&
+			at + key.Length < path.Length &&
+			path[at + key.Length] == '.';
+	}
+
 	private IEnumerable<int> OrdinalsForPath(string key)
 	{
 		if (OrdinalForPath(key) is null)
@@ -1704,7 +1970,10 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 				if (book._binding.NodeFor(i) is { } bound && GodotObject.IsInstanceValid(bound))
 				{
 					Vector3 p = bound.IsInsideTree() ? bound.GlobalPosition : bound.Position;
-					at = $"({p.X:0},{p.Y:0},{p.Z:0})";
+					Basis b = bound.Transform.Basis;
+					at = $"({p.X:0},{p.Y:0},{p.Z:0}) scale=({b.X.Length():0.##},{b.Y.Length():0.##})" +
+						(bound.Visible ? string.Empty : " HIDDEN") +
+						(bound is MeshInstance3D { Mesh: null } ? " NO-MESH" : string.Empty);
 				}
 
 				string says = string.Empty;

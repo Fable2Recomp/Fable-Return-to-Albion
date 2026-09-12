@@ -66,6 +66,27 @@ endif()
 # render with the default material.
 option(REFII_CHECK_SHADERS "Compile every .gdshader as part of the build" OFF)
 
+# TRACY'S CAPTURE TOOL — the other half of the profiler we already emit into.
+#
+# The runtime links Tracy's CLIENT and every frame phase opens a zone, but a client with nothing
+# connected records nothing; `tracy-capture` is what turns a running game into a .tracy file.
+#
+# SELF-CONTAINED, so it cannot collide with the client: `capture/CMakeLists.txt` includes
+# Tracy's own server and vendor cmake and defines TracyServer and TracyGetOpt itself.
+#
+# OFF by default — it is a developer instrument, it builds a C++20 server, and it has no place
+# in a shipped package.
+option(REFII_BUILD_TRACY_CAPTURE "Build tracy-capture for pulling profiles from a run" OFF)
+if(REFII_BUILD_TRACY_CAPTURE)
+    set(_refii_tracy_capture "${REFII_REXGLUE_SDK_SOURCE_DIR}/thirdparty/tracy/capture")
+    if(EXISTS "${_refii_tracy_capture}/CMakeLists.txt")
+        add_subdirectory("${_refii_tracy_capture}" "${CMAKE_BINARY_DIR}/tracy-capture" EXCLUDE_FROM_ALL)
+        message(STATUS "refii: tracy-capture will build from ${_refii_tracy_capture}")
+    else()
+        message(WARNING "refii: REFII_BUILD_TRACY_CAPTURE is on but ${_refii_tracy_capture} is missing")
+    endif()
+endif()
+
 # DEV ONLY. Lets a dev tree run the game code the CMake build just produced instead of making
 # the launcher recompile it from the installed image first — a ~5 minute wait between a source
 # change and seeing it, paid on every iteration.

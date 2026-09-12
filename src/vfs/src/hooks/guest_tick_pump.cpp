@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <mutex>
 #ifndef _WIN32
 #include <signal.h>
@@ -231,6 +232,49 @@ PPC_EXTERN_FUNC(sub_82541F30);
 PPC_EXTERN_FUNC(sub_82426470);
 PPC_EXTERN_FUNC(sub_8222CED0);
 
+// `sub_824E2F28(CECStats*, abilityId, rank, forceReplicate)` — the rank writer the purchase
+// wrappers call once they have charged experience and raised their box. It CLAMPS for us
+// (`sub_824E2D40` gives the ceiling, 0x824E2F48) and stores at 0x824E3240; `a4` forces the
+// co-op replication at 0x824E39A4. Going straight to it skips the cost and the message box.
+PPC_EXTERN_FUNC(sub_824E2F28);
+
+// `sub_824E0B40(CECStats*)` — the appearance flush. EVERY BRANCH IS PRESENCE-GUARDED, so it is
+// safe on a body that lacks any of them: component 116 gets `+16 = 1` and a repack, component 15
+// takes the two invalidation stamps at `+100`/`+104`, component 21 gets `sub_8241FEA8`.
+PPC_EXTERN_FUNC(sub_824E0B40);
+
+// `sub_825B5F30(comp17, recordId)` — the face: resolves the id, matches it against the def's
+// `CharacterCreationRecord` sections, writes `comp17+180` (0x825B60A4 / 0x825B60E0) and rebuilds
+// through `sub_825B8AD0`. Verified in the decompile.
+PPC_EXTERN_FUNC(sub_825B5F30);
+PPC_EXTERN_FUNC(sub_824ABA28);
+PPC_EXTERN_FUNC(sub_824BF4D8);
+PPC_EXTERN_FUNC(sub_824AC920);   // weapon-set: slot name for a record's WeaponType
+PPC_EXTERN_FUNC(sub_824F26A8);   // inventory: instantiate a held record as an item entity
+PPC_EXTERN_FUNC(sub_8238BE08);   // entity: activate (components' vtable+44, world registration)
+PPC_EXTERN_FUNC(sub_824FB5D8);   // held-items: attach an item to a named slot
+PPC_EXTERN_FUNC(sub_824AD108);   // weapon-set: record the drawn item
+PPC_EXTERN_FUNC(sub_824AB170);   // weapon-set: draw effect
+PPC_EXTERN_FUNC(sub_824FCB20);   // held-items: release a named slot, returning the item it held
+PPC_EXTERN_FUNC(sub_82334A60);   // network: net id -> entity (client: the replication map; host: uid)
+PPC_EXTERN_FUNC(sub_8238D828);   // entity: destroy
+PPC_EXTERN_FUNC(sub_82438818);   // co-op screen: spawn the preview entity for the current pickbox
+
+// Dressing player two. `sub_824F0370(ItemRef out[4], CECInventory*, defHash)` puts a def's item
+// into the inventory (bumping the count of one already held); `sub_824BF068(comp15, defHash)`
+// wears it, and ONLY if comp 13 already holds it (0x824BF1C4); `sub_82764DC0(item, &ref)`
+// releases the ref `sub_824F0370` handed back. `sub_824EFFC8(comp13)` / `sub_824BEB78(comp15)`
+// are creation's own `InitialItems` / `InitialModifiers` passes, the fallback when no kit names
+// an outfit. All verified in the decompile; all present in the recompile.
+PPC_EXTERN_FUNC(sub_824F0370);
+PPC_EXTERN_FUNC(sub_824F0820);
+PPC_EXTERN_FUNC(sub_824BF068);
+PPC_EXTERN_FUNC(sub_82764DC0);
+PPC_EXTERN_FUNC(sub_824EFFC8);
+PPC_EXTERN_FUNC(sub_824BEB78);
+PPC_EXTERN_FUNC(sub_82389FB8);  // Player::ChangeEntityType(Player*, LHString creatureName)
+PPC_EXTERN_FUNC(sub_82305C08);  // FadeScreenIn(double seconds)
+
 /// The abilities screen's event handler — `vtable+20` of the class `sub_826C1E80` builds.
 /// Called by static dispatch (the recompiler emits no indirect-call path), but the live
 /// object's slot is read and compared against this address first, so a screen whose slot holds
@@ -303,6 +347,17 @@ PPC_EXTERN_FUNC(sub_826B9210);
 PPC_EXTERN_FUNC(sub_826B9440);
 
 namespace refii::vfs {
+
+// Defined with the co-op helpers further down; the dispatchers above them need these.
+// (A declaration OUTSIDE this namespace named a different, undefined function — and the
+// generated library refused to load on `_Z12IsCoopJoinerPh`.)
+bool IsCoopJoiner(uint8_t* base);
+bool CoopSessionLive(uint8_t* base);
+uint32_t CoopNetworkManager(uint8_t* base);
+void CoopRepairNetworkSlot(uint8_t* base);
+void CoopApplyHero(PPCContext& ctx, uint8_t* base, int player, uint32_t entity);
+bool EquipRecord(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t id, std::string& report);
+void CoopAttachHeld(PPCContext& ctx, uint8_t* base, int player, uint32_t entity);
 
 // The queue and the counters live in src/core/guest_tick_pump_state.cpp, which links into
 // refii_vfs: the HOST posts and this side drains, so state beside the pump would be a copy the
@@ -529,6 +584,16 @@ constexpr uint32_t kSaveRecordCompatible = 24u;
 /// Returns false when the front end is down or the list cannot support the index, leaving the
 /// action queued rather than calling with a bad pointer.
 bool LoadSavedGame(PPCContext& ctx, uint8_t* base, uint32_t index) {
+  // DROPPED ONCE THE GAME IS UP. `byte_83496A5E` is the guest's own in-game flag (set by
+  // Game_InitDatabases at 0x82311648, cleared by the game mode's shutdown). A load that was
+  // still held when the game came up by another route is stale; held on, it fired the moment
+  // Quit to Title brought the front end back with its save vectors filled, and re-loaded the
+  // save from the title screen.
+  if (base[0x83496A5Eu] != 0u) {
+    REXLOG_INFO("Refii guest-tick pump: LoadSave:{} dropped — the game is already up", index);
+    return true;
+  }
+
   const uint32_t screen = MainMenuScreen(base);
   if (screen == 0) {
     return false;
@@ -679,6 +744,67 @@ constexpr const char* kActionSpellBladePrefix = "SpellBlade:";
 /// increments it from `sub_82314D30`, which also binds the player into the action consumer
 /// (`sub_825E8DE0`/`sub_823D2508`) — the bound player at consumer+12 the GameAction chain needs.
 constexpr const char* kActionRegisterPlayer = "RegisterPlayer";
+
+/// "CoopHeroBody:<male|female|child|femalechild|henchman...>" — retype player two's entity.
+///
+/// STAGE 1 of the native-hero work (docs/coop_native_hero_plan.md). The shipped game spawns
+/// player two from one of eight fixed henchman creatures (`sub_8233C508`) and has no path for a
+/// visitor's own hero at all. The body, though, is one guest call: `sub_82389FB8` is
+/// `Player::ChangeEntityType`, the same entry the shipped debug menu drives as
+/// `Player.ChangePlayerEntityType`, and it already tells the co-op manager (0x8233CB18).
+///
+/// This answers the one question nothing else can: whether a SECOND `CreatureHero` spawns
+/// cleanly. Player one is EntityUID 1 and player two would be 2 through the same GDB path, and
+/// the shipped game never spawns two.
+constexpr const char* kActionCoopHeroBodyPrefix = "CoopHeroBody:";
+
+/// "CoopHeroSkills:<hex>,<hex>,..." — player two's ability ranks, ids 0..14 in order (0 unused).
+constexpr const char* kActionCoopHeroSkillsPrefix = "CoopHeroSkills:";
+
+/// "CoopHeroBuild:<strength>,<skill>,<will>,<fat>,<height>,<tan>" — player two's BODY SHAPE.
+constexpr const char* kActionCoopHeroBuildPrefix = "CoopHeroBuild:";
+
+/// "CoopHeroStats:<money>,<gender>,<morality>,<purity>,<renown>,<15 ranks>,<4 exp>,<4 total>" —
+/// a HeroSave block, applied the way `sub_8243AEF8` applies one it just loaded.
+constexpr const char* kActionCoopHeroStatsPrefix = "CoopHeroStats:";
+
+/// "CoopHeroFace:<hex record id>" — player two's character-creation record, on component 17.
+constexpr const char* kActionCoopHeroFacePrefix = "CoopHeroFace:";
+
+/// "CoopHeroEquip:<1|2>:<meleeHex>,<rangedHex>" — draw two weapons the player already OWNS.
+/// `sub_824ABA28(comp28, recordId, 0)` is the guest's own equip-by-record (the handler behind
+/// the weapons book's own row, `sub_826BA618`): it instantiates the record held in component 13
+/// (`sub_824F26A8(comp13, id, "Weapon")`), attaches it to the held-item slots
+/// (`sub_824FB5D8(comp24, slotName, item)`), records it in the weapon set (`sub_824AD108`) and
+/// plays the draw effect. Verified in the decompile (0x824ABA28): with the third argument 0 and
+/// the entity not mid-action it takes the direct path; the replication inside gates on
+/// `sub_82214AF8(comp91)`, so on the joiner's copy of player one it stays local — which is the
+/// copy the sync leaves armed by name only. Latched per (entity, pair): restated freely.
+constexpr const char* kActionCoopHeroEquipPrefix = "CoopHeroEquip:";
+
+/// `CoopHeroHeld:<1|2>:<meleeNetId>,<rangedNetId>` — net ids of the item entities the host's
+/// player holds; a client attaches the replicas (CoopAttachHeld). Stored; the tick attaches.
+constexpr const char* kActionCoopHeroHeldPrefix = "CoopHeroHeld:";
+
+/// "CoopHeroApply:<1|2>:<generation>" — apply the slot's stored hero record to its body, ONCE per
+/// (body, generation), in the verified order: give, wear, equip, then (player two) stats, skills,
+/// build, face. The field actions only STORE from here on; this is the one apply. The generation
+/// is the shell's hash of the whole record, so a changed outfit or weapon on the joiner is a new
+/// generation and re-applies, while a restated identical record does nothing.
+constexpr const char* kActionCoopHeroApplyPrefix = "CoopHeroApply:";
+
+/// "CoopHeroWear:<1|2>:<hex>,<hex>,..." — the GDB def hashes a player's hero wears. Remembered,
+/// not applied on receipt: the body is dressed whenever the guest (re)builds it.
+constexpr const char* kActionCoopHeroWearPrefix = "CoopHeroWear:";
+
+/// "CoopHeroWeapons:<meleeName>,<rangedName>" — the def names player two's own hero equips.
+/// Answered from the guest's two weapon name tables by the hooks; the guest then creates,
+/// carries, equips and replicates them itself.
+constexpr const char* kActionCoopHeroWeaponsPrefix = "CoopHeroWeapons:";
+
+/// "CoopHeroGive:<1|2>:<hex>:<count>,..." — records to put in a player's inventory, one chunk.
+/// Remembered per player and given once per (entity, chunk set).
+constexpr const char* kActionCoopHeroGivePrefix = "CoopHeroGive:";
 
 /// "ReceiveItemsAction:<code>" — one press on the received-item card, through its handler's
 /// own screen-input method: 36 done, 39 flip, 75 close.
@@ -1811,6 +1937,31 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
   //
   // The screen calls around it (`sub_826D48F0`, `sub_826D7F90`) drive the 3D preview and the
   // presentation; both are Godot's now.
+  if (op == "unequip" && IsCoopJoiner(base)) {
+    // THE INNER CALL, on the joiner's own hero. `sub_826CC430` picks the player through the
+    // `game+140` chooser and faulted at 0x34 on a client (see CoopRepairNetworkSlot); what it
+    // does after that is `sub_824BF4D8(comp15, slot)` with slot = `sub_826CC340(type - 91)`,
+    // a seven-entry table returning 17..23 (0x826CC374: `li r3, 0x11` … `0x17`) — the
+    // clothing categories. Verified in the decompile; client-safe (no manager read).
+    const uint32_t entity = HeroEntity(base);
+    const uint32_t appearance = entity != 0u ? HeroComponent(base, entity, 15u) : 0u;
+    const uint32_t slot = static_cast<uint32_t>(hash) - 74u;
+    if (appearance == 0u || slot < 17u || slot > 23u) {
+      REXLOG_INFO("Refii guest-tick pump: Inventory:unequip — no appearance component or "
+                  "event type {} outside 91..97", hash);
+      return true;
+    }
+
+    PPCContext work = ctx;
+    work.r1.u32 = (ctx.r1.u32 - 0x200u) & ~0xFu;
+    work.r3.u32 = appearance;
+    work.r4.u32 = slot;
+    sub_824BF4D8(work, base);
+    REXLOG_INFO("Refii guest-tick pump: Inventory:unequip — joiner cleared slot {} on its hero "
+                "0x{:08X} directly (sub_824BF4D8)", slot, entity);
+    return true;
+  }
+
   if (op == "unequip") {
     PPCFunc* unequip = FindGuestFunction(0x826CC430u);
     if (unequip == nullptr) {
@@ -1935,7 +2086,23 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     return true;
   }
 
-  if (op == "equip") {
+  if (op == "equip" && IsCoopJoiner(base)) {
+    // A JOINER EQUIPS PLAYER TWO DIRECTLY. The pending-record slot at `GUI+52` (record A) is
+    // applied at pause exit by `sub_8236ED98` to the entity at EM+104 — player ONE — on every
+    // side (0x8236ee98..0x8236eeb0); only `GUI+80` (record B) reaches EM+112, and nothing the
+    // menus write goes there. So on a client the guest's own weapons book arms the host's
+    // copy instead of the player's hero. `sub_824ABA28(comp28, recordId, 0)` is what that
+    // pending record runs in the end (message class 0x820CF028 slot 3), on the right body.
+    // The step-by-step equip (EquipRecord), because the guest's own `sub_824ABA28` leaves a
+    // client's instantiated item unactivated and the attach declines it.
+    std::string report;
+    ctx = saved;
+    const bool drawn = EquipRecord(ctx, base, hero, static_cast<uint32_t>(hash), report);
+    ctx = saved;
+    REXLOG_INFO("Refii guest-tick pump: Inventory:equip — joiner {} record 0x{:08X} on its hero "
+                "0x{:08X}:{}", drawn ? "drew" : "could NOT draw", static_cast<uint32_t>(hash),
+                hero, report);
+  } else if (op == "equip") {
     const uint32_t root = LoadGuestU32(base, 0x83496B08u);
     const uint32_t slots = root != 0u ? LoadGuestU32(base, root + 52u) : 0u;
 
@@ -2224,11 +2391,1341 @@ bool DispatchShopAction(PPCContext& ctx, uint8_t* base, const std::string& body)
   return true;
 }
 
+/// The `Player` with this id, out of the `PlayerManager` at `game+156`.
+///
+/// NOT `PlayerObject`, which walks `game+88` — the ENTITY/WORLD manager, the same
+/// `**(*(game+88)+4)` that `sub_82389FB8` hands to `sub_82365258`. It answers a party holder
+/// that suits the dog walk and is not a `Player` at all: its `+36` is a pointer where a
+/// PlayerID belongs. Publishing it through `sub_82371860` put a non-Player into
+/// `*(App+20)+12`, and the input dispatch then read it as one every frame —
+/// `sub_82403350` -> `Player::GetEntity` (`sub_8229EE78`) -> `*(obj+16)` -> SIGSEGV.
+///
+/// The manager's vector is 12-byte `{PlayerID, Player*, control block}` entries between
+/// `manager+8` and `manager+12`, sorted by id — the layout `sub_82446928` walks (0x82446A70)
+/// and `sub_82314D30` inserts into. Walked here rather than calling `sub_82264230` so the
+/// pump needs no guest call on the tick thread.
+uint32_t PlayerWithId(uint8_t* base, uint32_t id) {
+  constexpr uint32_t kGameRoot = 0x83496AB8u;
+  constexpr uint32_t kPlayerManager = 156u;
+  constexpr uint32_t kEntryStride = 12u;
+  constexpr uint32_t kMaxEntries = 8u;
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  const uint32_t root = LoadGuestU32(base, kGameRoot);
+  const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
+  const uint32_t manager = plausible(game) ? LoadGuestU32(base, game + kPlayerManager) : 0u;
+  if (!plausible(manager)) {
+    return 0u;
+  }
+
+  const uint32_t begin = LoadGuestU32(base, manager + 8u);
+  const uint32_t end = LoadGuestU32(base, manager + 12u);
+  if (!plausible(begin) || end < begin || ((end - begin) % kEntryStride) != 0u ||
+      (end - begin) > kEntryStride * kMaxEntries) {
+    return 0u;
+  }
+
+  for (uint32_t entry = begin; entry != end; entry += kEntryStride) {
+    if (LoadGuestU32(base, entry) == id) {
+      const uint32_t player = LoadGuestU32(base, entry + 4u);
+      return plausible(player) ? player : 0u;
+    }
+  }
+
+  return 0u;
+}
+
+/// The local `Player` — id 1 when it exists, else id 2.
+///
+/// "The party's first player", which several dispatches want, but as an actual `Player`. On a
+/// JOINING instance only id 2 is present (a run's trace showed one publish, `id=2`, with
+/// handler1 still 0), so the fallback is the henchman's own player, not a failure.
+///
+/// This replaced `PlayerObject` at every site that hands the value to a guest routine expecting
+/// a `Player`. `PlayerObject` walks `game+88` and answers `**(*(game+88)+4)`, the ENTITY/WORLD
+/// manager — `sub_82389FB8` gives that same expression to `sub_82365258` as the entity manager.
+/// Its `+36` is a pointer where a PlayerID belongs, and `+16` is not a weak_ptr control block,
+/// so `sub_8236F400` faulted on `v6 = *v5` (0x8236F428) reading `*(a2+16)`. The two only agreed
+/// while our own `RegisterPlayer` was publishing that same wrong object into the handler slot.
+/// Only `SampleDog` still wants `PlayerObject`: the dog handle is at `+196`, and a `Player` is
+/// 0x48 bytes.
+uint32_t FirstPlayer(uint8_t* base) {
+  const uint32_t one = PlayerWithId(base, 1u);
+  return one != 0u ? one : PlayerWithId(base, 2u);
+}
+
+/// Is player two standing in their own hero's body rather than the pickbox henchman?
+///
+/// A BIT, NOT A COMMAND: nothing applies it here. `coop_player_hooks.cpp` overrides
+/// `sub_8233C508`, the guest's creature-name table for player two, and reads this to answer it —
+/// so the guest's own spawn, re-skin, level-change and save-load paths all build the right body
+/// without us racing any of them. The two Refii instances agree over Refii's own co-op channel;
+/// the guest has no concept of this, so there is nothing of the title's to keep in step.
+std::atomic<bool> g_coop_own_hero{false};
+
+/// Defined at the foot of this file, outside `refii::vfs`, so the hooks payload can reach it.
+extern "C" void RefiiCoopSetOwnHero(int on);
+
+/// A component off an entity, by id — the guest's own layout.
+///
+/// `entity+0x24` is a presence bitmask (bit `id&31` of word `id>>5`); the `(id, ptr)` pairs run
+/// from `entity+0x48` to `entity+0x4C`; `entity+0x8C`, when set, is a byte table mapping id to a
+/// pair slot. `sub_8238CDC8`, the guest's own component writer, sets that bit at 0x8238D238.
+uint32_t EntityComponent(uint8_t* base, uint32_t entity, uint32_t id) {
+  if (id >= 256u || !LooksLikeGuestPointer(entity)) {
+    return 0u;
+  }
+
+  const uint32_t present = LoadGuestU32(base, entity + 0x24u + (id / 32u) * 4u);
+  if (((present >> (id % 32u)) & 1u) == 0u) {
+    return 0u;
+  }
+
+  const uint32_t pairs = LoadGuestU32(base, entity + 0x48u);
+  const uint32_t pairs_end = LoadGuestU32(base, entity + 0x4Cu);
+  if (!LooksLikeGuestPointer(pairs) || pairs_end < pairs || (pairs_end - pairs) > 8u * 512u) {
+    return 0u;
+  }
+
+  const uint32_t accelerator = LoadGuestU32(base, entity + 0x8Cu);
+  if (LooksLikeGuestPointer(accelerator)) {
+    const uint32_t at = pairs + 8u * LoadGuestU8(base, accelerator + id);
+    if (at + 8u <= pairs_end && LoadGuestU32(base, at) == id) {
+      const uint32_t component = LoadGuestU32(base, at + 4u);
+      return LooksLikeGuestPointer(component) ? component : 0u;
+    }
+  }
+
+  for (uint32_t at = pairs; at + 8u <= pairs_end; at += 8u) {
+    if (LoadGuestU32(base, at) == id) {
+      const uint32_t component = LoadGuestU32(base, at + 4u);
+      return LooksLikeGuestPointer(component) ? component : 0u;
+    }
+  }
+
+  return 0u;
+}
+
+/// Player one's entity, or 0 — the adjacent handle object, `EM+104` with its pointer at `+108`
+/// (`sub_8222C1B8`, the twin of the accessor below). Same layout, one slot earlier.
+uint32_t CoopPlayerOneEntity(uint8_t* base) {
+  const auto step = [&](uint32_t at, uint32_t offset) -> uint32_t {
+    return LooksLikeGuestPointer(at) ? LoadGuestU32(base, at + offset) : 0u;
+  };
+
+  const uint32_t manager =
+      step(step(step(step(LoadGuestU32(base, 0x83496AB8u), 12u), 88u), 4u), 0u);
+  const uint32_t entity = step(step(manager, 108u), 0u);
+  return LooksLikeGuestPointer(entity) ? entity : 0u;
+}
+
+/// Player two's entity, or 0.
+///
+/// INLINED RATHER THAN CALLED. `sub_828E5A78` is the guest's own accessor and `sub_8246C970`
+/// proves it IS player two — its `a2` is a bool and the FALSE arm (0x8246C9B8) takes this one,
+/// the arm the shipped "HenchmanAbilities" screen drives, with player one on the adjacent slot
+/// `EM+104`. But THE RECOMPILER NEVER EMITTED IT: it is the one address in this file's set that
+/// `librefii_generated.so` does not define, and referencing it stopped that library loading at
+/// all, which takes the whole guest down with it.
+///
+/// No call is needed. The body is two loads — the handle block at `EM+112` holds its object at
+/// `EM+116`, and the entity is one more deref; the remaining branch is the stale-handle cleanup,
+/// which returns 0 anyway.
+uint32_t CoopPlayerTwoEntity(uint8_t* base) {
+  const auto step = [&](uint32_t at, uint32_t offset) -> uint32_t {
+    return LooksLikeGuestPointer(at) ? LoadGuestU32(base, at + offset) : 0u;
+  };
+
+  // `**(*(*(0x83496AB8)+12)+88)+4)`, exactly as `sub_8246C970` reads it at 0x8246C9A8.
+  const uint32_t manager =
+      step(step(step(step(LoadGuestU32(base, 0x83496AB8u), 12u), 88u), 4u), 0u);
+
+  const uint32_t held = step(manager, 116u);
+  const uint32_t entity = step(held, 0u);
+  return LooksLikeGuestPointer(entity) ? entity : 0u;
+}
+
+/// See kActionCoopHeroSkillsPrefix.
+///
+/// IDEMPOTENT AND RE-APPLIED, not fired once. Re-typing player two's entity rebuilds its
+/// components from the GDB, so ranks written before a re-skin are gone after it — and the co-op
+/// screen re-skins every frame. The host therefore restates this, and the pass writes only the
+/// ids that actually differ, so it settles to a no-op once the body has stopped changing.
+/// The stored hero record per slot — what the field actions carry, applied by CoopApplyHero.
+struct CoopHeroRecord {
+  uint32_t generation = 0u;   // the shell's hash of the whole record; 0 = nothing to apply
+  uint32_t melee = 0u;        // weapon record ids to draw (CoopHeroEquip)
+  uint32_t ranged = 0u;
+  std::string stats;          // CoopHeroStats text (28 fields), player two only
+  std::string skills;         // CoopHeroSkills text, player two only
+  std::string build;          // CoopHeroBuild text, player two only
+  uint32_t face = 0u;         // CoopHeroFace record, player two only
+};
+CoopHeroRecord g_coop_record[2];
+std::map<uint32_t, std::string> g_coop_skills_applied;  // body -> ranks last applied
+std::map<uint32_t, std::string> g_coop_build_applied;   // body -> morphs last applied
+
+bool DispatchCoopHeroSkills(const std::string& levels) {
+  g_coop_record[1].skills = levels;
+  return true;
+}
+
+void ApplySkills(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::string& levels) {
+  constexpr uint32_t kStatsComponent = 57u;
+  constexpr uint32_t kFirstAbility = 1u;
+  constexpr uint32_t kLastAbility = 14u;
+
+  const uint32_t stats = entity != 0u ? EntityComponent(base, entity, kStatsComponent) : 0u;
+  if (stats == 0u || levels.empty()) {
+    return;
+  }
+
+  if (g_coop_skills_applied[entity] == levels) {
+    return;
+  }
+  g_coop_skills_applied[entity] = levels;
+
+  uint32_t id = 0u;
+  uint32_t written = 0u;
+  for (std::size_t at = 0; at <= levels.size() && id <= kLastAbility; ++id) {
+    const std::size_t comma = levels.find(',', at);
+    const std::string field = levels.substr(at, comma == std::string::npos ? comma : comma - at);
+
+    at = comma == std::string::npos ? levels.size() + 1u : comma + 1u;
+    if (id < kFirstAbility || field.empty()) {
+      continue;
+    }
+
+    const uint32_t rank = static_cast<uint32_t>(std::strtoul(field.c_str(), nullptr, 16));
+
+    // The rank slot the writer itself uses — `4 * (id + 68)` off the component, 0x824E2F58.
+    if (LoadGuestU32(base, stats + 4u * (id + 68u)) == rank) {
+      continue;
+    }
+
+    PPCContext work = ctx;
+    work.r3.u32 = stats;
+    work.r4.u32 = id;
+    work.r5.u32 = rank;
+    work.r6.u32 = 1u;  // force the replication to the peer
+    sub_824E2F28(work, base);
+    ++written;
+  }
+
+  if (written != 0u) {
+    REXLOG_INFO("Refii guest-tick pump: CoopHeroSkills — {} rank(s) applied to player two "
+                "(entity 0x{:08X}, stats 0x{:08X})", written, entity, stats);
+  }
+}
+
+/// See kActionCoopHeroBuildPrefix.
+///
+/// The three body-morph percentages live on the SAME component as the ability ranks — CECStats,
+/// id 57 — at `+0x40` strength, `+0x44` skill, `+0x48` will. Those offsets are not taken on
+/// trust: `RefiiHostGetHeroVitals` has been reading the hero's own build from exactly them since
+/// ABI 78.
+///
+/// Written directly rather than through the guest's own setters, which take DELTAS and fire
+/// gossip events ("ModifyFat") — a character being applied is not a character being changed. The
+/// flush afterwards is the guest's, so the fan-out to the morph and clothing components is its
+/// own. Values are clamped here because a direct write skips the setters' clamp.
+bool DispatchCoopHeroBuild(const std::string& build) {
+  g_coop_record[1].build = build;
+  return true;
+}
+
+void ApplyBuild(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::string& build) {
+  constexpr uint32_t kStatsComponent = 57u;
+  // strength, skill, will (vitals reader, ABI 78), then fat `+56` (`sub_824D7868`), height
+  // `+60` (`sub_824D7A68`, the one -1..1 scalar) and tan `+52` (`sub_824D77F8`).
+  constexpr uint32_t kSlots[] = {0x40u, 0x44u, 0x48u, 0x38u, 0x3Cu, 0x34u};
+  constexpr float kLow[] = {0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f};
+
+  const uint32_t stats = entity != 0u ? EntityComponent(base, entity, kStatsComponent) : 0u;
+  if (stats == 0u || build.empty()) {
+    return;
+  }
+
+  if (g_coop_build_applied[entity] == build) {
+    return;
+  }
+  g_coop_build_applied[entity] = build;
+
+  uint32_t written = 0u;
+  std::size_t at = 0;
+  for (uint32_t slot = 0; slot < 6u && at <= build.size(); ++slot) {
+    const std::size_t comma = build.find(',', at);
+    const std::string field = build.substr(at, comma == std::string::npos ? comma : comma - at);
+
+    at = comma == std::string::npos ? build.size() + 1u : comma + 1u;
+    if (field.empty()) {
+      continue;
+    }
+
+    float value = std::strtof(field.c_str(), nullptr);
+    value = value < kLow[slot] ? kLow[slot] : value > 1.0f ? 1.0f : value;
+
+    uint32_t bits = 0u;
+    std::memcpy(&bits, &value, sizeof(bits));
+    if (LoadGuestU32(base, stats + kSlots[slot]) == bits) {
+      continue;
+    }
+
+    StoreGuestU32(base, stats + kSlots[slot], bits);
+    ++written;
+  }
+
+  if (written != 0u) {
+    PPCContext work = ctx;
+    work.r3.u32 = stats;
+    sub_824E0B40(work, base);
+
+    REXLOG_INFO("Refii guest-tick pump: CoopHeroBuild — {} morph(s) applied to player two "
+                "(entity 0x{:08X}, stats 0x{:08X})", written, entity, stats);
+  }
+}
+
+bool IsCoopJoiner(uint8_t* base);
+
+/// The outfits — GDB def hashes off each hero's worn walk — per player, and the entity + outfit
+/// last dressed for each, so a body is dressed ONCE. The co-op screen rebuilds player two every
+/// frame and `sub_824F0370` bumps a held item's count: without the latch it is a shirt a frame.
+/// Index 0 is player one, 1 is player two.
+// Index 2 is the co-op screen's PREVIEW entity, which wears player two's outfit.
+std::vector<uint32_t> g_coop_wear[3];
+uint32_t g_coop_dressed_entity[3] = {0u, 0u, 0u};
+std::string g_coop_dressed_set[3];
+
+/// Player two's weapon names, and the inventory chunks per player. See CoopRedressPlayer.
+std::string g_coop_melee_name;
+std::string g_coop_ranged_name;
+std::vector<std::pair<uint32_t, uint32_t>> g_coop_give[3];
+std::string g_coop_given_set[3];
+uint32_t g_coop_given_entity[3] = {0u, 0u, 0u};
+
+/// See kActionCoopHeroWeaponsPrefix.
+bool DispatchCoopHeroWeapons(const std::string& text) {
+  const std::size_t comma = text.find(',');
+  g_coop_melee_name = comma == std::string::npos ? text : text.substr(0, comma);
+  g_coop_ranged_name = comma == std::string::npos ? std::string() : text.substr(comma + 1u);
+  return true;
+}
+
+/// See kActionCoopHeroGivePrefix. A chunk REPLACES the player's set only when its text differs,
+/// so restatements are free; the give itself is latched on the assembled set.
+bool DispatchCoopHeroGive(const std::string& text) {
+  const std::size_t colon = text.find(':');
+  if (colon == std::string::npos) {
+    return true;
+  }
+
+  const int player = std::atoi(text.substr(0, colon).c_str());
+  if (player != 1 && player != 2) {
+    return true;
+  }
+
+  std::vector<std::pair<uint32_t, uint32_t>> records;
+  const std::string list = text.substr(colon + 1u);
+  std::size_t at = 0;
+  while (at <= list.size()) {
+    const std::size_t comma = list.find(',', at);
+    const std::string field = list.substr(at, comma == std::string::npos ? comma : comma - at);
+    at = comma == std::string::npos ? list.size() + 1u : comma + 1u;
+    const std::size_t split = field.find(':');
+    if (split == std::string::npos) {
+      continue;
+    }
+
+    const uint32_t record = static_cast<uint32_t>(std::strtoul(field.substr(0, split).c_str(), nullptr, 16));
+    const uint32_t count = static_cast<uint32_t>(std::strtoul(field.substr(split + 1u).c_str(), nullptr, 10));
+    if (record != 0u && count != 0u) {
+      records.emplace_back(record, count);
+    }
+  }
+
+  if (player == 2) {
+    g_coop_give[2] = records;  // the preview wears what player two wears
+  }
+  g_coop_give[player - 1] = std::move(records);
+  return true;
+}
+
+/// Puts a player's transported inventory into their body's inventory, once per (entity, set).
+/// `sub_824F0820(out, comp13, record, notify)` adds exactly ONE — a held record's count is
+/// bumped by one per call (0x824F08BC) — so a count is that many calls. Skipped for records the
+/// body already holds at that count or more, so a restatement after a partial give completes
+/// it rather than doubling it.
+void CoopGivePlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
+  const int slot = player - 1;
+  if (entity == 0u || g_coop_give[slot].empty()) {
+    return;
+  }
+
+  std::string set;
+  for (const auto& record : g_coop_give[slot]) {
+    set += std::to_string(record.first) + ':' + std::to_string(record.second) + ',';
+  }
+
+  if (entity == g_coop_given_entity[slot] && set == g_coop_given_set[slot]) {
+    return;
+  }
+
+  const uint32_t inventory = EntityComponent(base, entity, 13u);
+  if (inventory == 0u) {
+    return;
+  }
+
+  g_coop_given_entity[slot] = entity;
+  g_coop_given_set[slot] = set;
+
+  // What the body already holds: the MS-STL list at `inv+16` (sentinel), item at `node+8`,
+  // record at `item+4`, count at `item+12` — the layout the inventory export walks.
+  const auto held = [&](uint32_t record) -> uint32_t {
+    const uint32_t sentinel = LoadGuestU32(base, inventory + 16u);
+    uint32_t node = LooksLikeGuestPointer(sentinel) ? LoadGuestU32(base, sentinel) : 0u;
+    for (uint32_t hops = 0; hops < 4096u && LooksLikeGuestPointer(node) && node != sentinel; ++hops) {
+      const uint32_t item = LoadGuestU32(base, node + 8u);
+      if (LooksLikeGuestPointer(item) && LoadGuestU32(base, item + 4u) == record) {
+        return LoadGuestU32(base, item + 12u);
+      }
+
+      node = LoadGuestU32(base, node);
+    }
+
+    return 0u;
+  };
+
+  const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
+  const uint32_t ref = frame + 0x20u;
+  uint32_t given = 0u;
+  for (const auto& record : g_coop_give[slot]) {
+    const uint32_t have = held(record.first);
+    for (uint32_t n = have; n < record.second && n < 999u; ++n) {
+      for (uint32_t i = 0; i < 4u; ++i) StoreGuestU32(base, ref + 4u * i, 0u);
+
+      PPCContext give = ctx;
+      give.r1.u32 = frame;
+      give.r3.u32 = ref;
+      give.r4.u32 = inventory;
+      give.r5.u32 = record.first;
+      give.r6.u32 = 1u;
+      sub_824F0820(give, base);
+
+      const uint32_t item = LoadGuestU32(base, ref);
+      if (item != 0u) {
+        PPCContext release = ctx;
+        release.r1.u32 = frame;
+        release.r3.u32 = item;
+        release.r4.u32 = ref;
+        sub_82764DC0(release, base);
+        ++given;
+      }
+    }
+  }
+
+  REXLOG_INFO("Refii guest-tick pump: CoopGive — player {} 0x{:08X}: {} item(s) added across {} "
+              "record(s)", player, entity, given, g_coop_give[slot].size());
+}
+
+/// See kActionCoopHeroWearPrefix. Remembers the set; the redress applies it.
+bool DispatchCoopHeroWear(const std::string& text) {
+  const std::size_t colon = text.find(':');
+  if (colon == std::string::npos) {
+    return true;
+  }
+
+  const int player = std::atoi(text.substr(0, colon).c_str());
+  if (player != 1 && player != 2) {
+    return true;
+  }
+
+  std::vector<uint32_t> hashes;
+  const std::string list = text.substr(colon + 1u);
+  std::size_t at = 0;
+  while (at <= list.size()) {
+    const std::size_t comma = list.find(',', at);
+    const std::string field = list.substr(at, comma == std::string::npos ? comma : comma - at);
+    at = comma == std::string::npos ? list.size() + 1u : comma + 1u;
+    if (!field.empty()) {
+      hashes.push_back(static_cast<uint32_t>(std::strtoul(field.c_str(), nullptr, 16)));
+    }
+  }
+
+  if (player == 2) {
+    g_coop_wear[2] = hashes;
+  }
+  g_coop_wear[player - 1] = std::move(hashes);
+  return true;
+}
+
+/// Dresses one player's current body, once per (entity, outfit). With an outfit: give then wear
+/// each hash. Without one: the def's own `InitialItems` then `InitialModifiers`, what a new game
+/// does to player one.
+void CoopRedressPlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
+  const int slot = player - 1;
+  if (entity == 0u) {
+    return;
+  }
+
+  std::string set;
+  for (uint32_t hash : g_coop_wear[slot]) {
+    set += std::to_string(hash) + ',';
+  }
+
+  if (entity == g_coop_dressed_entity[slot] && set == g_coop_dressed_set[slot]) {
+    return;
+  }
+
+  const uint32_t inventory = EntityComponent(base, entity, 13u);
+  const uint32_t modifiers = EntityComponent(base, entity, 15u);
+  if (inventory == 0u || modifiers == 0u) {
+    return;  // not a dressable body yet — the next tick asks again
+  }
+
+  g_coop_dressed_entity[slot] = entity;
+  g_coop_dressed_set[slot] = set;
+
+  const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
+  const uint32_t ref = frame + 0x20u;
+
+  if (g_coop_wear[slot].empty()) {
+    // NO OUTFIT, NO DRESS. The def's own `InitialItems`/`InitialModifiers` were tried here and
+    // put `CreatureHero`'s creation-time defaults on a body that then also received the real
+    // outfit when it arrived — wear adds, it never replaces. A bare body until the kit lands
+    // is the honest state; the latch is left clear so the first named outfit dresses it.
+    g_coop_dressed_entity[slot] = 0u;
+    g_coop_dressed_set[slot].clear();
+    return;
+  }
+
+  uint32_t worn = 0u;
+  for (uint32_t hash : g_coop_wear[slot]) {
+    for (uint32_t i = 0; i < 4u; ++i) StoreGuestU32(base, ref + 4u * i, 0u);
+
+    PPCContext give = ctx;
+    give.r1.u32 = frame;
+    give.r3.u32 = ref;
+    give.r4.u32 = inventory;
+    give.r5.u32 = hash;
+    sub_824F0370(give, base);
+
+    const uint32_t item = LoadGuestU32(base, ref);
+    if (item == 0u) {
+      continue;
+    }
+
+    PPCContext wear = ctx;
+    wear.r1.u32 = frame;
+    wear.r3.u32 = modifiers;
+    wear.r4.u32 = hash;
+    sub_824BF068(wear, base);
+    ++worn;
+
+    PPCContext release = ctx;
+    release.r1.u32 = frame;
+    release.r3.u32 = item;
+    release.r4.u32 = ref;
+    sub_82764DC0(release, base);
+  }
+
+  REXLOG_INFO("Refii guest-tick pump: CoopRedress — player {} 0x{:08X} dressed: {} of {} outfit "
+              "item(s) given and worn", player, entity, worn, g_coop_wear[slot].size());
+}
+
+/// Both players, whenever a body exists that has not been dressed with the current outfit.
+///
+/// Neither of the guest's ways of giving a player a body dresses a hero body across the wire:
+/// a RETYPE re-wears an empty stash (0x82365938), CREATION on a client runs its
+/// `InitialItems` pass only after the gate byte is set (0x82315224), and the host's hero
+/// APPEARANCE is never replicated to a client at all — only the weapon slots are
+/// (`sub_824AD698`), which is why the joiner's player one stands armed and naked.
+///
+/// PLAYER ONE ONLY ON THE JOINER. On the host player one is the real hero, already dressed from
+/// the save; giving those items again would raise their counts. Player two dresses on both
+/// sides, only while standing in their own hero's body — a henchman brings its own clothes.
+///
+/// Called from the hooks after a body build and from the tick, keyed on the entity address, so
+/// a body created by the join sync — a path no hook covers — is dressed on the next tick.
+/// The co-op screen's preview entity and the screen handler that owns it: `gui+56` is the
+/// current screen (its id at +4 must be 24), `gui+28` the owner whose map at +72 keys handlers
+/// by screen id; the handler holds the entity at +276 (0x824388CC). The same walk the bridge's
+/// mannequin export makes.
+std::pair<uint32_t, uint32_t> CoopMannequin(uint8_t* base) {
+  const uint32_t gui = LoadGuestU32(base, 0x83496B08u);
+  if (!LooksLikeGuestPointer(gui) || LoadGuestU32(base, gui) != 0x82001610u) return {0u, 0u};
+  const uint32_t manager = LoadGuestU32(base, gui + 56u);
+  const uint32_t owner = LoadGuestU32(base, gui + 28u);
+  if (!LooksLikeGuestPointer(manager) || !LooksLikeGuestPointer(owner)) return {0u, 0u};
+  if (LoadGuestU32(base, manager + 4u) != 24u) return {0u, 0u};
+  const uint32_t end_node = LoadGuestU32(base, owner + 72u);
+  if (!LooksLikeGuestPointer(end_node)) return {0u, 0u};
+  uint32_t node = LoadGuestU32(base, end_node + 4u);
+  uint32_t handler = 0u;
+  for (uint32_t step = 0; step < 64u && LooksLikeGuestPointer(node) && node != end_node; ++step) {
+    const uint32_t key = LoadGuestU32(base, node + 12u);
+    if (key == 24u) { handler = LoadGuestU32(base, node + 16u); break; }
+    node = LoadGuestU32(base, node + (24u < key ? 0u : 8u));
+  }
+  if (!LooksLikeGuestPointer(handler)) return {0u, 0u};
+  const uint32_t entity = LoadGuestU32(base, handler + 276u);
+  return {LooksLikeGuestPointer(entity) ? entity : 0u, handler};
+}
+
+/// The co-op screen's preview follows the own-hero bit: when the bit flips while the screen
+/// is up the guest is asked to respawn the preview (`sub_82438818(handler)`, which now answers
+/// the hero mannequin through the overridden name table), and a hero preview is dressed in
+/// player two's outfit like the body itself. Not gated on a peer standing — it is a local
+/// preview entity on a screen the local player is looking at.
+void CoopDressMannequin(PPCContext& ctx, uint8_t* base) {
+  static bool bit_seen = false;
+  const bool bit = g_coop_own_hero.load(std::memory_order_relaxed);
+  const auto [entity, handler] = CoopMannequin(base);
+  if (handler == 0u) {
+    return;
+  }
+
+  if (bit != bit_seen) {
+    bit_seen = bit;
+    PPCContext work = ctx;
+    work.r1.u32 = (ctx.r1.u32 - 0x100u) & ~0xFu;
+    work.r3.u32 = handler;
+    sub_82438818(work, base);
+    REXLOG_INFO("Refii guest-tick pump: co-op preview respawned for own-hero bit {}", bit ? 1 : 0);
+    return;  // the new entity is dressed on the next tick
+  }
+
+  if (bit && entity != 0u) {
+    CoopGivePlayer(ctx, base, 3, entity);
+    CoopRedressPlayer(ctx, base, 3, entity);
+  } else {
+    g_coop_dressed_entity[2] = 0u;
+    g_coop_dressed_set[2].clear();
+  }
+}
+
+// Defined with their owners further down.
+extern std::map<uint32_t, uint32_t> g_coop_applied_generation;
+extern std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_coop_equip_latched;
+extern uint32_t g_coop_stats_entity;
+extern uint32_t g_coop_face_entity;
+extern uint32_t g_coop_face_record;
+
+/// Every per-body latch, dropped together when the peer goes: a re-joined player can land on a
+/// RECYCLED entity address, and a latch that remembered the old body would skip the new one.
+extern std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_coop_held_attached;
+
+void CoopResetLatches() {
+  g_coop_held_attached.clear();
+  g_coop_applied_generation.clear();
+  g_coop_equip_latched.clear();
+  g_coop_skills_applied.clear();
+  g_coop_build_applied.clear();
+  for (int slot = 0; slot < 3; ++slot) {
+    g_coop_dressed_entity[slot] = 0u;
+    g_coop_dressed_set[slot].clear();
+    g_coop_given_entity[slot] = 0u;
+    g_coop_given_set[slot].clear();
+  }
+  g_coop_stats_entity = 0u;
+  g_coop_face_entity = 0u;
+  g_coop_face_record = 0u;
+}
+
+/// ANIMATE THE CO-OP PREVIEW. The guest poses a preview entity only from the GUI's Gameface
+/// render path (`sub_82379170` → gameface vt+48 → `sub_822CD208` → `sub_826D6C90`), which
+/// this headless host never runs — and which CANNOT be called from the tick: it builds the
+/// model instance against the render world and the present thread then called through a
+/// freed pointer (both machines, 2 s after the first call). The simulation's own skeleton pass
+/// (`sub_8220D1B8`, 0x8220D1B8, decompiled) has the lever instead: it reads a FORCE byte at
+/// `comp3+132` (0x8220d4cc), poses the entity when it is set even though the visibility and
+/// distance gates say no (0x8220d78c), then sets the pose-enable bit `comp3+144 |= 4` and
+/// clears the byte (0x8220dc08–0x8220dc38) — so it is re-set here every tick while the co-op
+/// screen holds a preview. Whatever idle the creature's own controller carries then advances
+/// with the sim's step, and the feed's rig follows it.
+/// Every preview mannequin the guest keeps, posed from the tick. Preview manager `*(GUI+8)`
+/// (vtable 0x82006CC0): records `*(pm+56)..*(pm+60)`, 24 bytes each — `+4` entity holder
+/// (`*holder` = entity), `+16` ticket, `+20` active (`sub_822CD208`, `sub_826D8008`). The guest
+/// poses them only from the Gameface render path, so the motion force byte (comp3+132,
+/// `sub_8220D1B8`) is re-set every tick.
+void PosePreviewMannequins(uint8_t* base, uint32_t coop_entity) {
+  static uint32_t said[8] = {};
+  auto pose = [&](uint32_t entity, const char* what) {
+    if (!LooksLikeGuestPointer(entity)) return;
+    const uint32_t motion = EntityComponent(base, entity, 3u);
+    if (motion == 0u) return;
+    base[motion + 132u] = 1u;
+    for (uint32_t& seen : said) {
+      if (seen == entity) return;
+    }
+    for (uint32_t& seen : said) {
+      if (seen == 0u) { seen = entity; break; }
+    }
+    REXLOG_INFO("Refii guest-tick pump: {} preview 0x{:08X} is posed by the simulation "
+                "(force byte comp3+132 re-set each tick)", what, entity);
+  };
+
+  pose(coop_entity, "co-op henchman");
+
+  const uint32_t gui = LoadGuestU32(base, 0x83496B08u);
+  if (!LooksLikeGuestPointer(gui) || LoadGuestU32(base, gui) != 0x82001610u) return;
+  const uint32_t pm = LoadGuestU32(base, gui + 8u);
+  if (!LooksLikeGuestPointer(pm) || LoadGuestU32(base, pm) != 0x82006CC0u) return;
+  const uint32_t begin = LoadGuestU32(base, pm + 56u);
+  const uint32_t end = LoadGuestU32(base, pm + 60u);
+  if (!LooksLikeGuestPointer(begin) || end < begin || end - begin > 24u * 16u) return;
+  for (uint32_t rec = begin; rec + 24u <= end; rec += 24u) {
+    if (base[rec + 20u] == 0u) continue;
+    const uint32_t holder = LoadGuestU32(base, rec + 4u);
+    if (!LooksLikeGuestPointer(holder)) continue;
+    pose(LoadGuestU32(base, holder), "screen");
+  }
+}
+
+void CoopAnimatePreview(PPCContext& ctx, uint8_t* base) {
+  (void)ctx;
+  const auto [entity, handler] = CoopMannequin(base);
+  (void)handler;
+  PosePreviewMannequins(base, entity);
+}
+
+void CoopRedress(PPCContext& ctx, uint8_t* base) {
+  CoopRepairNetworkSlot(base);
+  CoopDressMannequin(ctx, base);
+  CoopAnimatePreview(ctx, base);
+  static bool was_live = false;
+  const bool live = CoopSessionLive(base);
+  if (was_live && !live) {
+    CoopResetLatches();
+    REXLOG_INFO("Refii guest-tick pump: co-op — the peer is gone; every per-body latch dropped");
+  }
+  was_live = live;
+  if (!live) {
+    return;  // no peer standing: player two is being torn down or never existed
+  }
+
+  // Player one's record applies only on the joiner (its copy of the host's hero); player
+  // two's only while player two stands in their own hero's body.
+  if (IsCoopJoiner(base)) {
+    CoopApplyHero(ctx, base, 1, CoopPlayerOneEntity(base));
+    CoopAttachHeld(ctx, base, 1, CoopPlayerOneEntity(base));
+  }
+
+  if (g_coop_own_hero.load(std::memory_order_relaxed)) {
+    CoopApplyHero(ctx, base, 2, CoopPlayerTwoEntity(base));
+    if (IsCoopJoiner(base)) {
+      CoopAttachHeld(ctx, base, 2, CoopPlayerTwoEntity(base));
+    }
+  } else {
+    g_coop_dressed_entity[1] = 0u;
+    g_coop_dressed_set[1].clear();
+  }
+}
+
+/// See kActionCoopHeroStatsPrefix.
+///
+/// THE GUEST'S OWN APPLY, HANDED OUR BLOCK. `sub_8243AEF8` loads a chosen save's HeroSave into
+/// `SaveMgr+1016` and then walks player two's components (`entity+72..76`, stride 8, component
+/// at `+4`) calling each one's vtable slot 40 with that block (0x8243B02C–0x8243B060). The block
+/// is what `sub_82440F78` deserialises: +0 Money, +4 Gender, +8 Morality, +12 Purity, +16 Renown,
+/// +20..+76 HeroAbility0..14, an `Experience` float vector object at +80 (begin +84, end +88),
+/// `TotalExperience` at +96 (begin +100, end +104), +112 SecondsPlayedAsHenchman, +116
+/// CanUnlockAchievements. Built here on a scratch frame, the two arrays beside it, and walked
+/// the same way — so money, morality, purity, renown, ranks and experience land on player two
+/// on BOTH machines from the kit, with no save on the host and no picker on the joiner.
+///
+/// Once per (entity, block): the walk is what a save load does, and a save is loaded once.
+uint32_t g_coop_stats_entity = 0u;
+std::string g_coop_stats_set;
+
+bool DispatchCoopHeroStats(const std::string& text) {
+  g_coop_record[1].stats = text;
+  return true;
+}
+
+void ApplyStats(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::string& text) {
+  if (text.empty()) {
+    return;
+  }
+
+  std::vector<std::string> fields;
+  std::size_t at = 0;
+  while (at <= text.size()) {
+    const std::size_t comma = text.find(',', at);
+    fields.push_back(text.substr(at, comma == std::string::npos ? comma : comma - at));
+    at = comma == std::string::npos ? text.size() + 1u : comma + 1u;
+  }
+
+  // money, gender, morality, purity, renown, 15 ranks, 4 pools, 4 totals = 28 fields.
+  if (fields.size() < 28u) {
+    REXLOG_INFO("Refii guest-tick pump: CoopHeroStats has {} field(s), wants 28 — dropped",
+                fields.size());
+    return;
+  }
+
+  // ONCE PER BODY. The block is the chosen save's snapshot; from then on the host's world owns
+  // player two's money and experience, and a restated block (its money field drifting with the
+  // joiner's own reads) must not keep resetting them.
+  if (entity == 0u || entity == g_coop_stats_entity) {
+    return;
+  }
+
+  const uint32_t pairs = LoadGuestU32(base, entity + 0x48u);
+  const uint32_t pairs_end = LoadGuestU32(base, entity + 0x4Cu);
+  if (!LooksLikeGuestPointer(pairs) || pairs_end < pairs || (pairs_end - pairs) > 8u * 512u) {
+    return;
+  }
+
+  g_coop_stats_entity = entity;
+  g_coop_stats_set = text;
+
+  const auto as_int = [&](std::size_t i) -> uint32_t {
+    return static_cast<uint32_t>(std::strtol(fields[i].c_str(), nullptr, 10));
+  };
+  const auto as_float_bits = [&](std::size_t i) -> uint32_t {
+    const float value = std::strtof(fields[i].c_str(), nullptr);
+    uint32_t bits = 0u;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+  };
+
+  const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
+  const uint32_t block = frame + 0x20u;      // 0x80 bytes
+  const uint32_t pools = frame + 0xA0u;      // 4 floats
+  const uint32_t totals = frame + 0xB0u;     // 4 floats
+  for (uint32_t i = 0; i < 0x80u; i += 4u) StoreGuestU32(base, block + i, 0u);
+
+  StoreGuestU32(base, block + 0u, as_int(0));            // Money
+  StoreGuestU32(base, block + 4u, as_int(1));            // Gender, 2 = male
+  StoreGuestU32(base, block + 8u, as_float_bits(2));     // Morality
+  StoreGuestU32(base, block + 12u, as_float_bits(3));    // Purity
+  StoreGuestU32(base, block + 16u, as_int(4));           // Renown
+  for (uint32_t i = 0; i < 15u; ++i) {
+    StoreGuestU32(base, block + 20u + 4u * i, as_int(5u + i));
+  }
+  for (uint32_t i = 0; i < 4u; ++i) {
+    StoreGuestU32(base, pools + 4u * i, as_float_bits(20u + i));
+    StoreGuestU32(base, totals + 4u * i, as_float_bits(24u + i));
+  }
+  StoreGuestU32(base, block + 84u, pools);              // Experience begin
+  StoreGuestU32(base, block + 88u, pools + 16u);        // end
+  StoreGuestU32(base, block + 92u, pools + 16u);        // capacity end
+  StoreGuestU32(base, block + 100u, totals);            // TotalExperience begin
+  StoreGuestU32(base, block + 104u, totals + 16u);
+  StoreGuestU32(base, block + 108u, totals + 16u);
+  StoreGuestU32(base, block + 112u, 0u);                // SecondsPlayedAsHenchman
+  // A BYTE, not a word: `sub_82A1CE48` fills a bool, and on this big-endian guest a word of 1
+  // would leave 0x00 at +116 and the 0x01 at +119.
+  base[block + 116u] = 1u;                              // CanUnlockAchievements
+
+  uint32_t called = 0u;
+  for (uint32_t pair = pairs; pair + 8u <= pairs_end; pair += 8u) {
+    const uint32_t component = LoadGuestU32(base, pair + 4u);
+    if (!LooksLikeGuestPointer(component)) continue;
+    const uint32_t vtable = LoadGuestU32(base, component);
+    if (!LooksLikeGuestPointer(vtable)) continue;
+    const uint32_t method = LoadGuestU32(base, vtable + 40u);
+    PPCFunc* apply = FindGuestFunction(method);
+    if (apply == nullptr) continue;
+
+    PPCContext work = ctx;
+    work.r1.u32 = frame;
+    work.r3.u32 = component;
+    work.r4.u32 = block;
+    apply(work, base);
+    ++called;
+  }
+
+  REXLOG_INFO("Refii guest-tick pump: CoopHeroStats — HeroSave block applied to player two "
+              "0x{:08X} through {} component slot-40 method(s); money {} renown {}",
+              entity, called, fields[0], fields[4]);
+}
+
+/// See kActionCoopHeroFacePrefix. Once per (entity, record).
+uint32_t g_coop_face_entity = 0u;
+uint32_t g_coop_face_record = 0u;
+
+bool DispatchCoopHeroFace(const std::string& text) {
+  g_coop_record[1].face = static_cast<uint32_t>(std::strtoul(text.c_str(), nullptr, 16));
+  return true;
+}
+
+void ApplyFace(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t record) {
+  if (record == 0u || entity == 0u ||
+      (entity == g_coop_face_entity && record == g_coop_face_record)) {
+    return;
+  }
+
+  const uint32_t morph = EntityComponent(base, entity, 17u);
+  if (morph == 0u) {
+    return;  // the body has no appearance-morph component yet; the next apply asks again
+  }
+
+  g_coop_face_entity = entity;
+  g_coop_face_record = record;
+
+  PPCContext work = ctx;
+  work.r1.u32 = (ctx.r1.u32 - 0x100u) & ~0xFu;
+  work.r3.u32 = morph;
+  work.r4.u32 = record;
+  sub_825B5F30(work, base);
+
+  REXLOG_INFO("Refii guest-tick pump: CoopHeroFace — record 0x{:08X} set on player two "
+              "0x{:08X} (component 17 0x{:08X})", record, entity, morph);
+}
+
+/// See kActionCoopHeroEquipPrefix.
+bool DispatchCoopHeroEquip(const std::string& text) {
+  const std::size_t colon = text.find(':');
+  if (colon == std::string::npos) {
+    return true;
+  }
+
+  const int player = std::atoi(text.substr(0, colon).c_str());
+  if (player != 1 && player != 2) {
+    return true;
+  }
+
+  const std::string pair = text.substr(colon + 1u);
+  const std::size_t comma = pair.find(',');
+  g_coop_record[player - 1].melee =
+      static_cast<uint32_t>(std::strtoul(pair.substr(0, comma).c_str(), nullptr, 16));
+  g_coop_record[player - 1].ranged = comma == std::string::npos
+      ? 0u
+      : static_cast<uint32_t>(std::strtoul(pair.substr(comma + 1u).c_str(), nullptr, 16));
+  return true;
+}
+
+/// The guest's own equip-by-record, STEP BY STEP, with the one thing it cannot do for us done
+/// here. `sub_824ABA28(comp28, id, 0)` (0x824ABA28, decompiled) is: slot name from the record's
+/// WeaponType (`sub_824AC920`), instantiate the held record (`sub_824F26A8` → `sub_824F2870` →
+/// `sub_8238B860`), attach (`sub_824FB5D8(comp24, name, item)`), record (`sub_824AD108`), draw
+/// effect (`sub_824AB170`). `sub_8238B860` (0x8238B860) skips ACTIVATION (`sub_8238BE08`) when the
+/// manager says client and `+239` is clear — the sync's own flag — and the attach then declines
+/// an unactivated item, which is what left swords on the ground. Here the item is activated
+/// when the guest did not, each step reports, and nothing is retried: a pair is one attempt per
+/// body, because every attempt instantiates an item.
+/// One record onto one body: the guest's own equip-by-record sequence, step by step, with the
+/// activation the guest skips on a client done here. Appends the outcome to `report`; returns
+/// true when the item was attached. NO latch — the callers decide when to try.
+bool EquipRecord(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t id, std::string& report) {
+  const uint32_t weapons = EntityComponent(base, entity, 28u);
+  const uint32_t inventory = EntityComponent(base, entity, 13u);
+  const uint32_t held = EntityComponent(base, entity, 24u);
+  char step[160];
+  if (weapons == 0u || inventory == 0u || held == 0u) {
+    std::snprintf(step, sizeof(step), " %08X: body lacks comp 28/13/24;", id);
+    report += step;
+    return false;
+  }
+
+  const uint32_t frame = (ctx.r1.u32 - 0x400u) & ~0xFu;
+  const uint32_t handle = frame + 0x20u;     // 4 words: sub_824F1C90's item handle
+  const uint32_t name = frame + 0x40u;       // LHString "Weapon", the item entity's name
+  const uint32_t text = frame + 0x80u;
+  static const char kWeapon[] = "Weapon";
+  std::memcpy(base + text, kWeapon, sizeof(kWeapon));
+
+  const auto call = [&](PPCFunc* fn, uint32_t r3, uint32_t r4 = 0u, uint32_t r5 = 0u) -> uint32_t {
+    PPCContext work = ctx;
+    work.r1.u32 = frame;
+    work.r3.u32 = r3;
+    work.r4.u32 = r4;
+    work.r5.u32 = r5;
+    fn(work, base);
+    return work.r3.u32;
+  };
+
+  // 1. Held? (a plain lookup, released again)
+  for (uint32_t i = 0; i < 4u; ++i) StoreGuestU32(base, handle + 4u * i, 0u);
+  call(sub_824F1C90, handle, inventory, id);
+  const uint32_t record = LoadGuestU32(base, handle);
+  if (record == 0u) {
+    std::snprintf(step, sizeof(step), " %08X: NOT HELD in comp 13;", id);
+    report += step;
+    return false;
+  }
+  call(sub_82764DC0, record, handle);
+
+  // 2. The slot name for the record's WeaponType.
+  const uint32_t slot = call(sub_824AC920, weapons, id);
+  const uint32_t slot_block = slot != 0u ? LoadGuestU32(base, slot) : 0u;
+  if (slot_block == 0u || LoadGuestU32(base, slot_block + 4u) == 0u) {
+    std::snprintf(step, sizeof(step), " %08X: no slot name (WeaponType unresolved);", id);
+    report += step;
+    return false;
+  }
+
+  // 3. Instantiate the held record, with the sync's activation flag raised on a client.
+  call(sub_8222CED0, name, text, 0xFFFFFFFFu);
+  const uint32_t manager = CoopNetworkManager(base);
+  const bool client = IsCoopJoiner(base);
+  const uint8_t was = manager != 0u ? LoadGuestU8(base, manager + 239u) : 0u;
+  if (client && manager != 0u) base[manager + 239u] = 1u;
+  const uint32_t item = call(sub_824F26A8, inventory, id, name);
+  if (client && manager != 0u) base[manager + 239u] = was;
+  if (item == 0u) {
+    call(sub_82214DD8, name);
+    std::snprintf(step, sizeof(step), " %08X: instantiate returned nothing;", id);
+    report += step;
+    return false;
+  }
+
+  bool activated = (LoadGuestU8(base, item + 144u) & 0x40u) != 0u;
+  if (!activated) {
+    call(sub_8238BE08, item);
+    activated = (LoadGuestU8(base, item + 144u) & 0x40u) != 0u;
+  }
+
+  // 4. Release the slot's current item and destroy it — the guest's own `sub_824FDB70` on the
+  // host. Without the release the new item attaches beside the old one.
+  {
+    const uint32_t old = call(sub_824FCB20, held, slot);
+    if (old != 0u && LooksLikeGuestPointer(old) && old != item &&
+        (LoadGuestU8(base, old + 144u) & 0x40u) != 0u) {
+      call(sub_8238D828, old);
+    }
+  }
+
+  // 5. Attach, record, draw.
+  call(sub_824FB5D8, held, slot, item);
+  call(sub_824AD108, weapons, item);
+  call(sub_824AB170, weapons, item);
+  call(sub_82214DD8, name);
+  std::snprintf(step, sizeof(step), " %08X: item 0x%08X %s, attached;", id, item,
+                activated ? "active" : "NOT ACTIVE even after sub_8238BE08");
+  report += step;
+  return true;
+}
+
+/// Player two's / player one's two weapons from the record, ONE attempt per (body, pair) —
+/// every attempt instantiates an item, so nothing here retries.
+std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_coop_equip_latched;
+
+void ApplyEquip(PPCContext& ctx, uint8_t* base, int player, uint32_t entity, uint32_t melee,
+                uint32_t ranged) {
+  if (entity == 0u || (melee == 0u && ranged == 0u)) {
+    return;
+  }
+
+  // A client never instantiates: the host's items replicate as entities and CoopAttachHeld
+  // attaches those by net id.
+  if (IsCoopJoiner(base)) {
+    return;
+  }
+
+  const auto seen = g_coop_equip_latched.find(entity);
+  if (seen != g_coop_equip_latched.end() && seen->second == std::make_pair(melee, ranged)) {
+    return;
+  }
+
+  if (EntityComponent(base, entity, 28u) == 0u) {
+    return;  // no weapon set yet; the next apply asks again
+  }
+
+  g_coop_equip_latched[entity] = std::make_pair(melee, ranged);
+
+  std::string report;
+  for (uint32_t id : {melee, ranged}) {
+    if (id != 0u) EquipRecord(ctx, base, entity, id, report);
+  }
+
+  const uint32_t weapons = EntityComponent(base, entity, 28u);
+  REXLOG_INFO("Refii guest-tick pump: CoopHeroEquip — player {} 0x{:08X}:{} weapon set 0x{:08X} "
+              "now holds melee 0x{:08X}, ranged 0x{:08X}",
+              player, entity, report, weapons, LoadGuestU32(base, weapons + 84u),
+              LoadGuestU32(base, weapons + 88u));
+}
+
+/// The host's held items per player, as net ids: [player-1][0] melee, [1] ranged.
+uint32_t g_coop_held[2][2] = {{0u, 0u}, {0u, 0u}};
+
+/// Body → the (melee, ranged) net ids it was last attached with.
+std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_coop_held_attached;
+
+/// See kActionCoopHeroHeldPrefix — stores; the tick attaches.
+bool DispatchCoopHeroHeld(const std::string& text) {
+  const std::size_t colon = text.find(':');
+  if (colon == std::string::npos) {
+    return true;
+  }
+
+  const int player = std::atoi(text.substr(0, colon).c_str());
+  if (player != 1 && player != 2) {
+    return true;
+  }
+
+  const std::string pair = text.substr(colon + 1u);
+  const std::size_t comma = pair.find(',');
+  g_coop_held[player - 1][0] =
+      static_cast<uint32_t>(std::strtoul(pair.substr(0, comma).c_str(), nullptr, 16));
+  g_coop_held[player - 1][1] = comma == std::string::npos
+      ? 0u
+      : static_cast<uint32_t>(std::strtoul(pair.substr(comma + 1u).c_str(), nullptr, 16));
+  return true;
+}
+
+/// On a client: attach the host's replicated weapon entities by net id — the guest's own
+/// client branch of `sub_82315AD0`: `sub_82334A60(manager, netId)` resolves the replica, the
+/// slot is released, the replica attached and recorded. Retried each tick until both replicas
+/// exist, then once per (body, pair).
+void CoopAttachHeld(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
+  if (entity == 0u) {
+    return;
+  }
+
+  const uint32_t melee_net = g_coop_held[player - 1][0];
+  const uint32_t ranged_net = g_coop_held[player - 1][1];
+  if (melee_net == 0u && ranged_net == 0u) {
+    return;
+  }
+
+  const auto seen = g_coop_held_attached.find(entity);
+  if (seen != g_coop_held_attached.end() && seen->second == std::make_pair(melee_net, ranged_net)) {
+    return;
+  }
+
+  const uint32_t manager = CoopNetworkManager(base);
+  const uint32_t weapons = EntityComponent(base, entity, 28u);
+  const uint32_t held = EntityComponent(base, entity, 24u);
+  if (manager == 0u || weapons == 0u || held == 0u) {
+    return;
+  }
+
+  const uint32_t frame = (ctx.r1.u32 - 0x400u) & ~0xFu;
+  const auto call = [&](PPCFunc* fn, uint32_t r3, uint32_t r4 = 0u, uint32_t r5 = 0u) -> uint32_t {
+    PPCContext work = ctx;
+    work.r1.u32 = frame;
+    work.r3.u32 = r3;
+    work.r4.u32 = r4;
+    work.r5.u32 = r5;
+    fn(work, base);
+    return work.r3.u32;
+  };
+
+  std::string report;
+  char step[160];
+  bool complete = true;
+  for (uint32_t net : {melee_net, ranged_net}) {
+    if (net == 0u) {
+      continue;
+    }
+
+    const uint32_t item = call(sub_82334A60, manager, net);
+    if (!LooksLikeGuestPointer(item) || (LoadGuestU8(base, item + 144u) & 0x40u) == 0u) {
+      complete = false;
+      continue;  // not replicated here yet
+    }
+
+    const uint32_t record = LoadGuestU32(base, item + 28u);
+    const uint32_t slot = call(sub_824AC920, weapons, record);
+    const uint32_t slot_block = slot != 0u ? LoadGuestU32(base, slot) : 0u;
+    if (slot_block == 0u || LoadGuestU32(base, slot_block + 4u) == 0u) {
+      std::snprintf(step, sizeof(step), " net %08X: record %08X has no slot name;", net, record);
+      report += step;
+      complete = false;
+      continue;
+    }
+
+    const uint32_t old = call(sub_824FCB20, held, slot);
+    if (old != 0u && old != item && LooksLikeGuestPointer(old) &&
+        (LoadGuestU8(base, old + 144u) & 0x40u) != 0u) {
+      call(sub_8238D828, old);
+    }
+
+    call(sub_824FB5D8, held, slot, item);
+    call(sub_824AD108, weapons, item);
+    call(sub_824AB170, weapons, item);
+    std::snprintf(step, sizeof(step), " net %08X: replica 0x%08X (record %08X) attached;", net,
+                  item, record);
+    report += step;
+  }
+
+  static std::map<uint32_t, std::pair<uint32_t, uint32_t>> waited;
+  if (!complete) {
+    if (waited[entity] != std::make_pair(melee_net, ranged_net)) {
+      waited[entity] = std::make_pair(melee_net, ranged_net);
+      REXLOG_INFO("Refii guest-tick pump: CoopHeroHeld — player {} 0x{:08X}: waiting for the "
+                  "host's replicas (melee net {:08X}, ranged net {:08X}){}",
+                  player, entity, melee_net, ranged_net, report);
+    }
+    return;
+  }
+
+  g_coop_held_attached[entity] = std::make_pair(melee_net, ranged_net);
+  REXLOG_INFO("Refii guest-tick pump: CoopHeroHeld — player {} 0x{:08X}:{} weapon set 0x{:08X} "
+              "now holds melee 0x{:08X}, ranged 0x{:08X}",
+              player, entity, report, weapons, LoadGuestU32(base, weapons + 84u),
+              LoadGuestU32(base, weapons + 88u));
+}
+
+/// Body → generation last applied. Cleared with the other latches when the session drops.
+std::map<uint32_t, uint32_t> g_coop_applied_generation;
+
+/// See kActionCoopHeroApplyPrefix — stores the generation; the tick applies.
+bool DispatchCoopHeroApply(const std::string& text) {
+  const std::size_t colon = text.find(':');
+  if (colon == std::string::npos) {
+    return true;
+  }
+
+  const int player = std::atoi(text.substr(0, colon).c_str());
+  if (player != 1 && player != 2) {
+    return true;
+  }
+
+  g_coop_record[player - 1].generation =
+      static_cast<uint32_t>(std::strtoul(text.substr(colon + 1u).c_str(), nullptr, 16));
+  return true;
+}
+
+/// THE ONE APPLY. Give the inventory, wear the outfit, draw the weapons, then for player two
+/// the HeroSave block, ranks, body morphs and face — in that order, because wear needs the
+/// records held, equip needs the weapons held, and the stats walk needs the body to be the one
+/// they belong to. Once per (body, generation): every step is idempotent on its own, so a new
+/// generation re-runs only what changed (a new outfit re-wears; the same weapons are not
+/// re-drawn). A body the guest rebuilds (level change, retype) is a new entity and gets the
+/// standing generation again from the tick.
+void CoopApplyHero(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
+  CoopHeroRecord& record = g_coop_record[player - 1];
+  if (entity == 0u || record.generation == 0u) {
+    return;
+  }
+
+  if (g_coop_applied_generation[entity] == record.generation) {
+    return;
+  }
+
+  CoopGivePlayer(ctx, base, player, entity);
+  CoopRedressPlayer(ctx, base, player, entity);
+  ApplyEquip(ctx, base, player, entity, record.melee, record.ranged);
+  if (player == 2) {
+    ApplyStats(ctx, base, entity, record.stats);
+    ApplySkills(ctx, base, entity, record.skills);
+    ApplyBuild(ctx, base, entity, record.build);
+    ApplyFace(ctx, base, entity, record.face);
+  }
+
+  g_coop_applied_generation[entity] = record.generation;
+  REXLOG_INFO("Refii guest-tick pump: CoopApplyHero — generation {:08X} applied to player {} "
+              "0x{:08X}", record.generation, player, entity);
+}
+
+/// See kActionCoopHeroBodyPrefix.
+bool DispatchCoopHeroBody(PPCContext& ctx, uint8_t* base, const std::string& which) {
+  // The four hero bodies, from `scripts/Startup/DebugMenu.txt` — the readable index of spawnable
+  // names, since GDB record names are FNV-1 hashes and appear nowhere as strings. The henchman
+  // names are here too so a run can put the old body back without restarting.
+  // `auto` takes the body from the co-op screen's own appearance pickbox, so pressing X on a
+  // female henchman gives a female hero. The index lives at `coopMgr+260` (`sub_8233D090`
+  // stores it at 0x8233D110) and maps the same way `sub_8233C508` reads it: 0-2 female,
+  // 3-5 male, 6 male child, 7 female child.
+  std::string choice = which;
+  const char* henchman = nullptr;
+  if (choice == "auto" || choice == "pickbox") {
+    const auto step = [&](uint32_t at, uint32_t offset) -> uint32_t {
+      return LooksLikeGuestPointer(at) ? LoadGuestU32(base, at + offset) : 0u;
+    };
+
+    const uint32_t coop = step(step(LoadGuestU32(base, 0x83496AB8u), 12u), 140u);
+    const uint32_t appearance =
+        LooksLikeGuestPointer(coop) ? LoadGuestU32(base, coop + 260u) : 0u;
+
+    if (choice == "pickbox") {
+      // `sub_8233C508`'s own table, so going BACK lands on the henchman the pickbox is
+      // actually showing rather than a fixed one.
+      static const char* const kHenchmen[] = {
+          "CreatureHeroHenchmanFemaleNeutral", "CreatureHeroHenchmanFemaleGood",
+          "CreatureHeroHenchmanFemaleEvil",    "CreatureHeroHenchmanMaleNeutral",
+          "CreatureHeroHenchmanMaleGood",      "CreatureHeroHenchmanMaleEvil",
+          "CreatureHeroChild",                 "CreatureHeroFemaleChild",
+      };
+
+      henchman = kHenchmen[appearance < 8u ? appearance : 1u];
+    } else {
+      choice = appearance == 6u   ? "child"
+               : appearance == 7u ? "femalechild"
+               : appearance >= 3u ? "male"
+                                  : "female";
+    }
+  }
+
+  const char* creature =
+      henchman != nullptr       ? henchman
+      : choice == "male"        ? "CreatureHero"
+      : choice == "female"      ? "CreatureHeroFemale"
+      : choice == "child"       ? "CreatureHeroChild"
+      : choice == "femalechild" ? "CreatureHeroFemaleChild"
+      : choice == "henchman"    ? "CreatureHeroHenchmanFemaleGood"
+                                : nullptr;
+  if (creature == nullptr) {
+    REXLOG_INFO("Refii guest-tick pump: CoopHeroBody:{} names no creature — dropped", which);
+    return true;
+  }
+
+  // THE BIT IS THE MECHANISM; the call below is only a nudge.
+  //
+  // `sub_8233D090` is not a one-shot. `sub_82436548` re-runs it EVERY FRAME the co-op screen is
+  // up (0x824365CC gates on `!screen+268 && screen+48 && screen+160`, then 0x824365DC →
+  // `sub_82437168` → 0x8243720C), and `sub_823276D0` re-applies it from the manager's stored
+  // index on level change and on save load. Retyping the entity ourselves would therefore be
+  // undone within a frame on the screen, and again the moment play starts. What survives all of
+  // that is answering `sub_8233C508` — the sole source of player two's creature name — which
+  // `coop_player_hooks.cpp` overrides and this bit drives.
+  RefiiCoopSetOwnHero(henchman == nullptr && choice != "henchman" ? 1 : 0);
+
+  const uint32_t player = PlayerWithId(base, 2u);
+  if (player == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: CoopHeroBody:{} — no player two in the manager", which);
+    return true;
+  }
+
+  // `sub_82389FB8` locks the Player's weak_ptr FIRST (0x82389FC4) and only retypes when it
+  // resolves to a live entity. Player two is created with no entity attached (`a8 = 0` at
+  // 0x82316C00) and `sub_8233D090` attaches it later (0x8233D698), so this is a no-op until the
+  // henchman has actually spawned — call it after the join completes, not during.
+  const uint32_t sp = ctx.r1.u32;
+  const uint32_t frame = (sp - 0x200u) & ~0xFu;
+  const uint32_t text = frame + 0x20u;
+  const uint32_t handle = frame + 0x1A0u;
+
+  const std::size_t length = std::strlen(creature);
+  for (std::size_t i = 0; i < length; ++i) {
+    base[text + i] = static_cast<uint8_t>(creature[i]);
+  }
+
+  base[text + length] = 0;
+  StoreGuestU32(base, handle, 0u);
+
+  // The name is an LHString, not a char* — `sub_8233C508` builds the guest's own the same way.
+  // r5 = -1 is the length `sub_822078A0` reads as strlen, and it must be set.
+  PPCContext work = ctx;
+  work.r1.u32 = frame;
+  work.r3.u32 = handle;
+  work.r4.u32 = text;
+  work.r5.u32 = 0xFFFFFFFFu;
+  sub_8222CED0(work, base);
+
+  work = ctx;
+  work.r1.u32 = frame;
+  work.r3.u32 = player;
+  work.r4.u32 = handle;
+  sub_82389FB8(work, base);
+
+  work = ctx;
+  work.r1.u32 = frame;
+  work.r3.u32 = handle;
+  sub_82214DD8(work, base);
+
+  REXLOG_INFO("Refii guest-tick pump: CoopHeroBody:{} — asked player two (0x{:08X}) to become "
+              "'{}'", which, player, creature);
+  return true;
+}
+
 /// See kActionRegisterPlayer.
 bool DispatchRegisterPlayer(PPCContext& ctx, uint8_t* base) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
   const uint32_t gui = LoadGuestU32(base, kGuiObject);
-  const uint32_t player = PlayerObject(base);
+  const uint32_t player = PlayerWithId(base, 1u);
   if (!plausible(gui) || player == 0u) {
     REXLOG_INFO("Refii guest-tick pump: RegisterPlayer with no GUI / player — dropped");
     return true;
@@ -2261,7 +3758,7 @@ bool DispatchQuickWheel(PPCContext& ctx, uint8_t* base, const std::string& verb)
   const uint32_t quick = plausible(gui) ? LoadGuestU32(base, gui + 28u) : 0u;
   const uint32_t hud = plausible(gui) ? LoadGuestU32(base, gui + 32u) : 0u;
   const uint32_t wheel = plausible(hud) ? LoadGuestU32(base, hud + 60u) : 0u;
-  const uint32_t player = PlayerObject(base);
+  const uint32_t player = FirstPlayer(base);
   if (!plausible(quick) || !plausible(wheel) || player == 0u) {
     REXLOG_INFO("Refii guest-tick pump: QuickWheel:{} with no quick menu / player — dropped", verb);
     return true;
@@ -2402,7 +3899,7 @@ bool DispatchSpellsMenu(PPCContext& ctx, uint8_t* base, const std::string& verb)
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
   const uint32_t gui = LoadGuestU32(base, kGuiObject);
   const uint32_t quick = plausible(gui) ? LoadGuestU32(base, gui + 28u) : 0u;
-  const uint32_t player = PlayerObject(base);
+  const uint32_t player = FirstPlayer(base);
   if (!plausible(quick) || player == 0u) {
     REXLOG_INFO("Refii guest-tick pump: SpellsMenu:{} with no quick menu / player — dropped",
                 verb);
@@ -2504,7 +4001,7 @@ bool DispatchSpellBlade(PPCContext& ctx, uint8_t* base, const std::string& verb)
   const uint32_t gui = LoadGuestU32(base, kGuiObject);
   const uint32_t quick = plausible(gui) ? LoadGuestU32(base, gui + 28u) : 0u;
   const uint32_t hud = plausible(gui) ? LoadGuestU32(base, gui + 32u) : 0u;
-  const uint32_t player = PlayerObject(base);
+  const uint32_t player = FirstPlayer(base);
 
   // SILENT REFUSALS THROUGHOUT: `stick` is posted every frame a trigger is held, so a log line
   // on the ordinary "nothing to do" answer would bury the run.
@@ -2775,7 +4272,12 @@ uint32_t HeroEntity(uint8_t* base) {
     return 0u;
   }
 
-  const uint32_t session = LoadGuestU32(base, game + 0x8Cu);
+  // The manager itself (`g_XrnmNetContext`); the game object's copy at +0x8C is a fallback —
+  // a title-joined client has that copy empty in game.
+  uint32_t session = LoadGuestU32(base, 0x83497490u);
+  if (!plausible(session)) {
+    session = LoadGuestU32(base, game + 0x8Cu);
+  }
   if (!plausible(session)) {
     return 0u;
   }
@@ -2796,12 +4298,22 @@ uint32_t HeroEntity(uint8_t* base) {
     return 0u;
   }
 
+  // Prefer the role's slot, fall back to whichever player record exists — see the bridge's
+  // ResolvePlayerHero for why a fixed key 2 read nothing on a joiner before it joined.
   uint32_t record = 0u;
+  uint32_t other = 0u;
   for (; entry < entries_end; entry += 12u) {
-    if (LoadGuestU32(base, entry) == player_key) {
+    const uint32_t key = LoadGuestU32(base, entry);
+    if (key == player_key) {
       record = LoadGuestU32(base, entry + 4u);
       break;
     }
+    if ((key == 1u || key == 2u) && other == 0u) {
+      other = LoadGuestU32(base, entry + 4u);
+    }
+  }
+  if (record == 0u) {
+    record = other;
   }
 
   if (!plausible(record)) {
@@ -4444,6 +5956,29 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
 
       ran = DispatchMenuEvent(ctx, base, body.substr(0, firstColon),
                               static_cast<uint32_t>(type), static_cast<uint32_t>(id), arm);
+    } else if (name.rfind(kActionCoopHeroWeaponsPrefix, 0) == 0) {
+      ran = DispatchCoopHeroWeapons(name.substr(std::strlen(kActionCoopHeroWeaponsPrefix)));
+    } else if (name.rfind(kActionCoopHeroGivePrefix, 0) == 0) {
+      ran = DispatchCoopHeroGive(name.substr(std::strlen(kActionCoopHeroGivePrefix)));
+    } else if (name.rfind(kActionCoopHeroWearPrefix, 0) == 0) {
+      ran = DispatchCoopHeroWear(name.substr(std::strlen(kActionCoopHeroWearPrefix)));
+    } else if (name.rfind(kActionCoopHeroStatsPrefix, 0) == 0) {
+      ran = DispatchCoopHeroStats(name.substr(std::strlen(kActionCoopHeroStatsPrefix)));
+    } else if (name.rfind(kActionCoopHeroFacePrefix, 0) == 0) {
+      ran = DispatchCoopHeroFace(name.substr(std::strlen(kActionCoopHeroFacePrefix)));
+    } else if (name.rfind(kActionCoopHeroHeldPrefix, 0) == 0) {
+      ran = DispatchCoopHeroHeld(name.substr(std::strlen(kActionCoopHeroHeldPrefix)));
+    } else if (name.rfind(kActionCoopHeroEquipPrefix, 0) == 0) {
+      ran = DispatchCoopHeroEquip(name.substr(std::strlen(kActionCoopHeroEquipPrefix)));
+    } else if (name.rfind(kActionCoopHeroApplyPrefix, 0) == 0) {
+      ran = DispatchCoopHeroApply(name.substr(std::strlen(kActionCoopHeroApplyPrefix)));
+    } else if (name.rfind(kActionCoopHeroBuildPrefix, 0) == 0) {
+      ran = DispatchCoopHeroBuild(name.substr(std::strlen(kActionCoopHeroBuildPrefix)));
+    } else if (name.rfind(kActionCoopHeroSkillsPrefix, 0) == 0) {
+      ran = DispatchCoopHeroSkills(name.substr(std::strlen(kActionCoopHeroSkillsPrefix)));
+    } else if (name.rfind(kActionCoopHeroBodyPrefix, 0) == 0) {
+      ran = DispatchCoopHeroBody(ctx, base,
+                                 name.substr(std::strlen(kActionCoopHeroBodyPrefix)));
     } else if (name.rfind(kActionQuickWheelPrefix, 0) == 0) {
       ran = DispatchQuickWheel(ctx, base, name.substr(std::strlen(kActionQuickWheelPrefix)));
     } else if (name.rfind(kActionSpellBladePrefix, 0) == 0) {
@@ -4651,6 +6186,128 @@ bool InGameWorldActive(uint8_t* base) {
   return LooksLikeGuestPointer(at) && LoadGuestU8(base, at + 0xA8u) != 0;
 }
 
+/// Is this player the co-op JOINER — the co-op manager's own `+52` session and `+54` joiner
+/// bytes, the same pair `RefiiHostGetCoopRole` reads and the same pair the guest's joiner-side
+/// front-end teardown is gated on (`sub_82319BE8`, 0x82319DC0-0x82319E00).
+/// The CNetworkManager itself — `g_XrnmNetContext` (0x83497490). `game+140` is only a counted
+/// COPY of this pointer, filled by `sub_82319928` at a start commit; on a title-joined client it
+/// read 0 in game (the joiner's level load builds a game object that path never fills), and
+/// every guest chooser that reads `*(game+140)+52` faulted at 0x34. The global is the truth.
+uint32_t CoopNetworkManager(uint8_t* base) {
+  const uint32_t manager = LoadGuestU32(base, 0x83497490u);
+  return LooksLikeGuestPointer(manager) ? manager : 0u;
+}
+
+bool IsCoopJoiner(uint8_t* base) {
+  const uint32_t coop = CoopNetworkManager(base);
+  return coop != 0u && LoadGuestU8(base, coop + 52u) != 0 && LoadGuestU8(base, coop + 54u) != 0;
+}
+
+/// Whether a co-op session with a PEER is standing: `+52` session, not `+238` (the
+/// lost-connection latch `sub_8232D4D8` sets first thing), and for a host `+221` ("Client
+/// joined!", cleared in that same handler) or for a client `+54`. Everything the pump does to
+/// player two's body is gated on this: the host's guest tears player two down inside
+/// HandleLostConnection, and a tick that still held the address wrote through a freed entity
+/// into code space.
+bool CoopSessionLive(uint8_t* base) {
+  const uint32_t coop = CoopNetworkManager(base);
+  if (coop == 0u || LoadGuestU8(base, coop + 52u) == 0 || LoadGuestU8(base, coop + 238u) != 0) {
+    return false;
+  }
+
+  const bool host = LoadGuestU8(base, coop + 53u) != 0;
+  return host ? LoadGuestU8(base, coop + 221u) != 0 : LoadGuestU8(base, coop + 54u) != 0;
+}
+
+/// Puts the manager's counted pointer into `game+140/+144` when the guest left it empty — the
+/// exact three words `sub_82319928` writes (0x82319928: `*(game+140) = g_XrnmNetContext;
+/// *(game+144) = dword_83497494; ++*control`). The guest's own role choosers
+/// (`(session && host) ? 1 : 2`, in `sub_829B1968`, `sub_826CC430`, `sub_821C7CE0` …) read the
+/// copy, so a client with an empty copy cannot open its own weapons list or unequip a garment.
+void CoopRepairNetworkSlot(uint8_t* base) {
+  const uint32_t root = LoadGuestU32(base, 0x83496AB8u);
+  const uint32_t game = LooksLikeGuestPointer(root) ? LoadGuestU32(base, root + 12u) : 0u;
+  if (game == 0u || !LooksLikeGuestPointer(game)) {
+    return;
+  }
+
+  const uint32_t manager = CoopNetworkManager(base);
+  if (manager == 0u || LoadGuestU32(base, game + 140u) != 0u) {
+    return;
+  }
+
+  const uint32_t control = LoadGuestU32(base, 0x83497494u);
+  StoreGuestU32(base, game + 140u, manager);
+  StoreGuestU32(base, game + 144u, control);
+  if (LooksLikeGuestPointer(control)) {
+    StoreGuestU32(base, control, LoadGuestU32(base, control) + 1u);
+  }
+
+  REXLOG_INFO("Refii guest-tick pump: co-op — game 0x{:08X} had no network manager; filled "
+              "+140 with 0x{:08X} (control 0x{:08X}) the way sub_82319928 does", game, manager,
+              control);
+}
+
+/// The fade the in-game loading screen is drawing — `screen+172`, the float
+/// `RefiiHostGetLoadingScreen` reports and the one the finish below zeroes. 1.0 is a full cover.
+float LoadingScreenFade(uint8_t* base, uint32_t screen) {
+  const uint32_t raw = LoadGuestU32(base, screen + 172u);
+  float fade = 0.0f;
+  std::memcpy(&fade, &raw, sizeof(fade));
+  return fade;
+}
+
+/// The co-op screen a joiner has already faded in for, so the fade-in happens once per showing.
+std::atomic<uint32_t> g_coop_screen_faded_in{0};
+
+/// FADE THE JOINER IN WHEN ITS OWN CO-OP SCREEN COMES UP — a DEADLOCK, not a cosmetic black.
+///
+/// A joining client loads the level behind a fade-out and the guest then opens screen 24 on it,
+/// but nothing ever lifts the fade: `FadeScreenIn` (`sub_82305C08`) is something the HOST does
+/// and BROADCASTS. Its body only reaches the send at 0x82305C98 when
+/// `*(coopMgr+52) && *(coopMgr+53)` — the networked-HOST pair, tested at 0x82305C64 — so a
+/// client never calls it for itself and only ever receives one.
+///
+/// Measured live: the joiner sat with `screenId 24` up and `[screen-fade] a1.00 t1.00` over it.
+/// The player could not see, let alone accept, the screen the HOST was waiting on — so the host
+/// sat on its own co-op screen for ever and neither side moved.
+///
+/// Calling the guest's own fade-in here runs `sub_823CE950` and skips the broadcast arm, which
+/// is exactly what a client should do. Latched on the screen id so it fires once per showing and
+/// cannot fight a fade the game starts later.
+void MaybeFadeInCoopScreen(PPCContext& ctx, uint8_t* base) {
+  constexpr uint32_t kCoopScreenId = 24u;
+
+  if (base == nullptr || !IsCoopJoiner(base)) {
+    g_coop_screen_faded_in.store(0, std::memory_order_relaxed);
+    return;
+  }
+
+  // The screen the manager says is up — `sub_8236E630` writes it at 0x8236EB20.
+  const uint32_t app = LoadGuestU32(base, 0x83496B08u);
+  const uint32_t owner = LooksLikeGuestPointer(app) ? LoadGuestU32(base, app + 56u) : 0u;
+  const uint32_t current = LooksLikeGuestPointer(owner) ? LoadGuestU32(base, owner + 4u) : 0u;
+
+  if (current != kCoopScreenId) {
+    g_coop_screen_faded_in.store(0, std::memory_order_relaxed);
+    return;
+  }
+
+  if (g_coop_screen_faded_in.load(std::memory_order_relaxed) == kCoopScreenId) {
+    return;
+  }
+
+  g_coop_screen_faded_in.store(kCoopScreenId, std::memory_order_relaxed);
+
+  PPCContext work = ctx;
+  work.f1.f64 = 0.5;  // seconds, the same shape the Lua native takes
+  sub_82305C08(work, base);
+
+  REXLOG_INFO("Refii co-op: the joiner's own screen 24 is up behind the host's fade — faded in "
+              "here, because FadeScreenIn is the HOST's to broadcast (0x82305C64) and a client "
+              "never calls it for itself");
+}
+
 /// The screen already brought down, so the finish fires once per load. Cleared when no screen
 /// is up, which re-arms it for the next level change.
 std::atomic<uint32_t> g_finished_loading_screen{0};
@@ -4691,8 +6348,29 @@ void MaybeFinishInGameLoadingScreen(PPCContext& ctx, uint8_t* base) {
   // the constructor `sub_8235CA90`, and the screen object is REUSED across loads, so latching
   // on either would stand this down permanently after the first level load.
   if (LoadGuestU8(base, screen + 176u) == 0) {
-    g_finished_loading_screen.store(0, std::memory_order_relaxed);
-    return;
+    // THE CO-OP JOINER NEVER ASKS, and its screen stays at a full cover for ever.
+    //
+    // Measured over three runs: a joining client sits at `fade=1 requested=False done=False`
+    // with the world BUILT behind it — level construction finished, entities live, the camera
+    // driven, frames presenting — and the only thing on screen is this screen's own black. One
+    // run did request it and came down normally, so it is a RACE on the guest's side, not a
+    // path that never runs.
+    //
+    // `+176` stays the edge for everyone else, because it is the only field that falls back to
+    // 0 between loads and latching on `done` or the object address would stand this down
+    // permanently after the first level change. The joiner gets a second trigger instead, and
+    // one narrow enough not to touch the ordinary path: we are the joiner, the world is up and
+    // populated (`InGameWorldActive`, checked above), and the screen is still covering
+    // outright. A world that is not yet ready fails the first test, so this cannot uncover an
+    // unfinished level.
+    if (!IsCoopJoiner(base) || LoadingScreenFade(base, screen) < 0.999f) {
+      g_finished_loading_screen.store(0, std::memory_order_relaxed);
+      return;
+    }
+
+    REXLOG_INFO("Refii in-game loading screen: the co-op joiner never requested a shutdown and "
+                "the world is up behind a full cover — finishing it here (screen=0x{:08X})",
+                screen);
   }
   if (g_finished_loading_screen.load(std::memory_order_relaxed) == screen) {
     return;
@@ -4854,6 +6532,8 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   // headless mode, so the guest never releases the game thread from it. Do it here, from the
   // in-game tick, once the world it was loading is up.
   MaybeFinishInGameLoadingScreen(ctx, base);
+  MaybeFadeInCoopScreen(ctx, base);
+  CoopRedress(ctx, base);
 
   MaybeArmInGameSimulation(ctx, base);
 
@@ -5081,3 +6761,32 @@ REFII_MENU_BOUNDARY_HOOK(sub_82430468)
 REFII_MENU_BOUNDARY_HOOK(sub_826E1F70)
 
 #undef REFII_MENU_BOUNDARY_HOOK
+
+extern "C" {
+
+void RefiiCoopSetOwnHero(int on) {
+  refii::vfs::g_coop_own_hero.store(on != 0, std::memory_order_relaxed);
+}
+
+int RefiiCoopGetOwnHero(void) {
+  return refii::vfs::g_coop_own_hero.load(std::memory_order_relaxed) ? 1 : 0;
+}
+
+/// Player two's entity, for the hooks payload — see CoopPlayerTwoEntity.
+uint32_t RefiiCoopPlayerTwoEntity(uint8_t* base) { return refii::vfs::CoopPlayerTwoEntity(base); }
+
+/// A component by id off an entity, for the hooks payload — see EntityComponent.
+uint32_t RefiiCoopEntityComponent(uint8_t* base, uint32_t entity, uint32_t id) {
+  return refii::vfs::EntityComponent(base, entity, id);
+}
+
+/// Player two's weapon names for the hooks' table overrides; empty when none is set.
+const char* RefiiCoopMeleeName(void) { return refii::vfs::g_coop_melee_name.c_str(); }
+const char* RefiiCoopRangedName(void) { return refii::vfs::g_coop_ranged_name.c_str(); }
+
+/// Dress player two's body after the guest has built or re-typed it — see CoopRedress.
+void RefiiCoopRedress(void* ctx, uint8_t* base) {
+  refii::vfs::CoopRedress(*static_cast<PPCContext*>(ctx), base);
+}
+
+}  // extern "C"

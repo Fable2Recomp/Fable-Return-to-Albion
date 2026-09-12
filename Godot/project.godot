@@ -57,10 +57,8 @@ banks/game_data_root="res://../out/build/linux-amd64-debug/bin/assets/game/data"
 
 [rendering]
 
-lights_and_shadows/directional_shadow/size=4096
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
 limits/global_shader_variables/buffer_size=262144
-lights_and_shadows/positional_shadow/atlas_size=4096
 
 [shader_globals]
 

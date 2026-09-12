@@ -146,7 +146,7 @@ public partial class GameWorld : Node3D
 		double now = Godot.Time.GetTicksUsec();
 		uint tick = HostBridge.SimTick;
 		if (_cameraTimeline.Empty ||
-			_cameraTimeline.Newest.Origin.DistanceTo(position) > 8f ||
+			_cameraTimeline.Newest.Origin.DistanceTo(position) > Refii.Core.Engine_TickTimeline.TeleportMetres ||
 			(tick > _cameraTimeline.NewestTick && tick - _cameraTimeline.NewestTick > 8))
 		{
 			_cameraTimeline.Reset(tick, stated, fov);
@@ -1358,6 +1358,9 @@ public partial class GameWorld : Node3D
 	}
 
 	private GameEntities? _entities;
+
+	/// <summary>The live entity feed, for a sibling that needs one entity's node (the co-op mannequin).</summary>
+	public GameEntities? Entities => _entities;
 
 	private GameFx? _fx;
 

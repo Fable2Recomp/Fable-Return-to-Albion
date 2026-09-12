@@ -57,6 +57,19 @@ public interface Engine_UiPageProvider
 	IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
 		Engine_UiPageProviders.NoActive;
 
+	/// <summary>
+	/// Elements whose OPACITY the provider states outright, 0..1.
+	///
+	/// The last resort, and the only one that reaches an element AUTHORED at zero. A value or a
+	/// switch makes the resolve fall back to the slide/authored opacity, which is enough for
+	/// something the guest merely slid dark — but the co-op screen's two `ProfileSelector.
+	/// Buttons` groups are authored at 0, so nothing that only DROPS the guest's value can ever
+	/// light them, and their children (the X and Y prompts, the profile titles) inherit the
+	/// zero. Stating the number is the only way to own it.
+	/// </summary>
+	IReadOnlyDictionary<string, float> Opacities(in Engine_UiPageContext page) =>
+		Engine_UiPageProviders.NoOpacities;
+
 	/// <summary>Elements the provider places itself.</summary>
 	IReadOnlyDictionary<string, Vector3> Positions(in Engine_UiPageContext page) =>
 		Engine_UiPageProviders.NoPositions;

@@ -65,6 +65,15 @@ public partial class GameEntities : Node3D
 
     private readonly Dictionary<uint, MeshInstance3D> _nodes = new();
 
+    /// <summary>
+    /// The node built for one live entity, by guest address, or null. For a consumer that draws
+    /// an entity somewhere OTHER than where the feed placed it — the co-op screen's mannequin
+    /// stands in an empty front-end world and belongs in a panel. Read its mesh; do not re-parent
+    /// the node, the feed still drives it.
+    /// </summary>
+    public MeshInstance3D? NodeFor(uint address) =>
+        _nodes.TryGetValue(address, out MeshInstance3D? node) && GodotObject.IsInstanceValid(node) ? node : null;
+
     /// <summary>Meshes by model hash. Resolving and loading is the expensive half.</summary>
     private readonly Dictionary<uint, Mesh?> _meshes = new();
 
@@ -127,6 +136,12 @@ public partial class GameEntities : Node3D
 		}
 	}
 
+	/// <summary>What the last entity walk's loop cost, in milliseconds.</summary>
+	private double LastLoopMs;
+
+	/// <summary>Feeds since the last cost report; the report is every 120th.</summary>
+	private int _costReports;
+
 	private void entities_processBody(double delta)
 	{
         Current = this;
@@ -159,6 +174,19 @@ public partial class GameEntities : Node3D
         if (feedTick == _feedTickApplied && !FeedEveryFrame)
         {
             ++FeedFramesSkipped;
+
+            // THE TIMELINE STILL HAS TO BE SAMPLED. Skipping the walk between ticks is right —
+            // the guest states nothing new — but the SMOOTHING is what turns those ticks into
+            // motion, and it lives inside the walk. The camera samples its own timeline every
+            // frame (GameWorld), so with this loop skipped the camera glided at display rate
+            // while every entity stepped at tick rate: the hero trailed the camera and snapped
+            // back when he stopped.
+            //
+            // Only the movers. A rock's timeline holds one sample and answers the same
+            // transform for ever, so re-applying it for 2900 static props would cost the walk
+            // we just skipped, to no effect.
+            ResampleMovers();
+            ResampleAnimation();
             return;
         }
 
@@ -170,6 +198,32 @@ public partial class GameEntities : Node3D
         {
             return;
         }
+
+        // WHERE THE LOOP'S TIME GOES, accumulated per section rather than lapped per entity: a
+        // lap inside a 300-entity loop records 300 values a frame and says nothing. These are
+        // summed across the walk and recorded once, so they read as "pose cost this frame".
+        long poseTicks = 0;
+        long placeTicks = 0;
+        long clipTicks = 0;
+        int posedWritten = 0;
+        long facingTicks = 0;
+        long extentTicks = 0;
+        long traceTicks = 0;
+        long yawTicks = 0;
+        Refii.Entities.Engine_EntitySkeleton.ReadMs = 0.0;
+        Refii.Entities.Engine_EntitySkeleton.WriteMs = 0.0;
+        Refii.Entities.Engine_EntitySkeleton.WritesSkipped = 0;
+        _reblending.Clear();
+        _animating.Clear();
+        int posed = 0;
+
+        // ONE CAMERA READ FOR THE WHOLE WALK. `GetCamera3D` is a viewport query; asking it per
+        // entity would be 2900 crossings to answer the same question.
+        Camera3D? eye = GetViewport()?.GetCamera3D();
+        Vector3 eyeAt = eye is not null && IsInstanceValid(eye)
+            ? eye.GlobalTransform.Origin
+            : Vector3.Zero;
+        bool haveEye = eye is not null && IsInstanceValid(eye);
 
         _seen.Clear();
         _drawnRecords.Clear();
@@ -380,10 +434,36 @@ public partial class GameEntities : Node3D
             }
             else if (node.Mesh != mesh)
             {
-                // An entity can change model — a door opening, a prop breaking.
+                // An entity can change model — a door opening, a prop breaking, a body that
+                // dresses after it was rigged.
                 node.Mesh = mesh;
                 LightEntity(node);
                 Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
+
+                // The rig is the mesh's: a composite's bone table is the union of its parts, and
+                // the skeleton and skin are built from it, so a new mesh needs a new rig or its
+                // vertices address the wrong bones (a body that dresses after it was rigged).
+                if (_skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? stale))
+                {
+                    node.Skeleton = new NodePath();
+                    node.Skin = null;
+                    if (GodotObject.IsInstanceValid(stale.Node))
+                    {
+                        stale.Node.GetParent()?.RemoveChild(stale.Node);
+                        stale.Node.QueueFree();
+                    }
+
+                    _skeletons.Remove(entity.Address);
+                    _clipAnimators.Remove(entity.Address);
+                    _attachments.Forget(entity.Address);
+                    if (!TryRig(entity.Address, node, mesh))
+                    {
+                        _unrigged.Add(entity.Address);
+                    }
+
+                    GD.Print($"[rig] entity 0x{entity.Address:X8} changed mesh — re-rigged " +
+                        $"({(_skeletons.ContainsKey(entity.Address) ? "new skeleton" : "no rig yet, retrying")})");
+                }
             }
             else if (_ticks % ReconcileTicks == 0)
             {
@@ -416,6 +496,7 @@ public partial class GameEntities : Node3D
             // KEEPS THE LAST GOOD TRANSFORM rather than zeroing: a torn read is one frame's
             // noise and the next read is usually clean, where snapping to the origin would be
             // a visible teleport.
+            long placeFrom = System.Diagnostics.Stopwatch.GetTimestamp();
             if (IsUsablePlacement(entity.Position))
             {
                 Transform3D stated = ToGodot(entity.Position, entity.Rotation);
@@ -445,6 +526,8 @@ public partial class GameEntities : Node3D
 
             // The rig, after the placement: the pose is relative to the entity, so the
             // skeleton rides whatever transform the placement just set.
+            long poseFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+            placeTicks += poseFrom - placeFrom;
             if (_skeletons.TryGetValue(entity.Address, out
                     Refii.Entities.Engine_EntitySkeleton? rig))
             {
@@ -468,20 +551,53 @@ public partial class GameEntities : Node3D
                     // it slid down the street in its bind pose. Driving the timeline is 3.4 ms
                     // of a 50 ms frame for a full street, and a character that animates only
                     // once the camera has already framed it is the defect the gate created.
-                    if (!ClipAnimatorFor(entity.Address, rig).Apply(entity.Address))
+                    ++posed;
+
+                    // POSE WHAT CAN BE SEEN; ADVANCE EVERYTHING. Beyond the radius the clips
+                    // still run — the rig keeps its place in the animation — but the per-bone
+                    // sampling and the two engine writes per bone are skipped. A rig that walks
+                    // back into range poses correctly on its first written frame, which is what
+                    // the old frustum gate could not do because it skipped the advance too.
+                    // IN THE TREE FIRST. `GlobalTransform` on a node that is not yet parented
+                    // logs an error and answers IDENTITY, which reads as the world origin and
+                    // therefore as "far away" — so a character would stop being posed for
+                    // exactly the frames it is being built. Unmeasurable means write it.
+                    bool writeBones = !haveEye || !node.IsInsideTree() ||
+                        eyeAt.DistanceSquaredTo(node.GlobalTransform.Origin) <=
+                            PoseWriteRadius * PoseWriteRadius;
+                    if (writeBones)
+                    {
+                        ++posedWritten;
+                    }
+
+                    long clipFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+                    if (!ClipAnimatorFor(entity.Address, rig).Apply(entity.Address, writeBones))
                     {
                         rig.Follow(entity.Address);
+                        _reblending.Add(entity.Address);
                     }
                     else
                     {
                         rig.ForgetLastPose();
+                        _animating.Add(entity.Address);
                     }
-                }
-                SampleFacing(entity.Address, node, entity.Rotation);
-                StateVisibleExtent(node, rig);
-                SampleTrace(entity.Address, node, StatedOf(entity.Address, node.Transform), rig);
 
+                    clipTicks += System.Diagnostics.Stopwatch.GetTimestamp() - clipFrom;
+                }
+
+                long tailFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+                SampleFacing(entity.Address, node, entity.Rotation);
+                long facingAt = System.Diagnostics.Stopwatch.GetTimestamp();
+                StateVisibleExtent(node, rig);
+                long extentAt = System.Diagnostics.Stopwatch.GetTimestamp();
+                SampleTrace(entity.Address, node, StatedOf(entity.Address, node.Transform), rig);
+                facingTicks += facingAt - tailFrom;
+                extentTicks += extentAt - facingAt;
+                traceTicks += System.Diagnostics.Stopwatch.GetTimestamp() - extentAt;
+
+                long yawFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                 float poseYaw = rig.PoseYawDegrees();
+                yawTicks += System.Diagnostics.Stopwatch.GetTimestamp() - yawFrom;
                 if (!float.IsNaN(poseYaw))
                 {
                     ++_poseYawSamples;
@@ -489,6 +605,8 @@ public partial class GameEntities : Node3D
                     _poseYawWorst = Mathf.Max(_poseYawWorst, Mathf.Abs(poseYaw));
                 }
             }
+
+            poseTicks += System.Diagnostics.Stopwatch.GetTimestamp() - poseFrom;
 
             if (_adoptions.TryGetValue(entity.Address, out var married))
             {
@@ -507,7 +625,33 @@ public partial class GameEntities : Node3D
                 _drawnPlaces.Add((modelKey, placed.GlobalTransform.Origin));
             }
         }
+        // The loop's own breakdown, in the same units as the laps around it.
+        double toMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        double poseMs = poseTicks * toMs;
+        double placeMs = placeTicks * toMs;
+        LastLoopMs = (System.Diagnostics.Stopwatch.GetTimestamp() - lap) * toMs;
+        Refii.Core.Engine_FramePhases.Record("ent.pose", poseMs, plot: true);
+        Refii.Core.Engine_FramePhases.Record("ent.place", placeMs, plot: true);
+
         Refii.Core.Engine_FramePhases.Lap("ent.loop", ref lap);
+
+        // THE BREAKDOWN, IN THE LOG. The phases are readable over the debug channel and as
+        // profiler plots, and neither is available on an ordinary run — so the one number this
+        // walk exists to explain is printed where every run already writes. Every 120th feed,
+        // which is a few seconds, so it is a trace rather than a spew.
+        if (++_costReports % 120 == 0)
+        {
+            double loopMs = poseMs + placeMs;
+            GD.Print($"[entities] {entities.Count} entity(s), {posed} posed ({posedWritten} written): " +
+                $"pose {poseMs:0.00}ms (read {Refii.Entities.Engine_EntitySkeleton.ReadMs:0.00}, " +
+                $"write {Refii.Entities.Engine_EntitySkeleton.WriteMs:0.00}, " +
+                $"{Refii.Entities.Engine_EntitySkeleton.WritesSkipped} settled), " +
+                $"place {placeMs:0.00}ms, rest {System.Math.Max(0.0, LastLoopMs - loopMs):0.00}ms " +
+                $"— of {LastLoopMs:0.00}ms in the loop | " +
+                $"clip {clipTicks * toMs:0.00} facing {facingTicks * toMs:0.00} " +
+                $"extent {extentTicks * toMs:0.00} trace {traceTicks * toMs:0.00} " +
+                $"yaw {yawTicks * toMs:0.00}");
+        }
         Retire();
         Refii.Core.Engine_FramePhases.Lap("ent.retire", ref lap);
         RetryRigs();
@@ -893,6 +1037,21 @@ public partial class GameEntities : Node3D
             {
                 ReportRig(rigMesh, rigged.Value);
             }
+        }
+
+        // PLAYER TWO'S RIG, NAMED, ONCE — outside the report cap, because a co-op body drawn
+        // wrong on the host is the one rig whose mapping numbers have to be readable.
+        (uint one, uint two) = Refii.Host.HostBridge.CoopPlayerEntities();
+        if (two != 0u && two != _playerTwoReported &&
+            _skeletons.TryGetValue(two, out var twoRig) &&
+            _nodes.TryGetValue(two, out MeshInstance3D? twoNode) && twoNode.Mesh is ArrayMesh twoMesh)
+        {
+            _playerTwoReported = two;
+            int surfaces = twoMesh.GetSurfaceCount();
+            GD.Print($"[rig] PLAYER TWO 0x{two:X8} (player one 0x{one:X8}): '{twoMesh.ResourceName}' " +
+                $"{surfaces} surface(s), skeleton bones={twoRig.BoneCount} (guest rig {twoRig.GuestBoneCount}, " +
+                $"{twoRig.Mapped} mapped by name), node scale {twoNode.Scale}, " +
+                $"aabb {twoMesh.GetAabb().Size}");
         }
     }
 
@@ -1551,6 +1710,8 @@ public partial class GameEntities : Node3D
             " — those vertices stay put while their parents move, which is the sheet of " +
             "triangles on screen");
     }
+
+    private uint _playerTwoReported;
 
     private void ReportRig(Mesh mesh, Refii.Entities.Engine_EntitySkeleton skeleton)
     {
@@ -2290,6 +2451,113 @@ public partial class GameEntities : Node3D
     /// 1.5 ticks behind — see <see cref="Refii.Core.Engine_TickTimeline"/> for why. A jump over
     /// four metres, or a gap of many ticks, is a teleport and is not blended.
     /// </summary>
+    /// <summary>
+    /// Entities whose placement is still being interpolated, and so must be re-drawn on a frame
+    /// the feed skips. An address joins when a new sample is pushed and leaves once the drawn
+    /// transform has caught up with the timeline.
+    /// </summary>
+    private readonly HashSet<uint> _movers = new();
+
+    /// <summary>Scratch for the movers that arrived this frame; cleared on every use.</summary>
+    private readonly List<uint> _arrived = new();
+
+    /// <summary>Rigs the guest's pose feed drove this tick, and so must keep blending.</summary>
+    private readonly HashSet<uint> _reblending = new();
+
+    /// <summary>Rigs the clip animator drove this tick, and so must keep advancing.</summary>
+    private readonly HashSet<uint> _animating = new();
+
+    /// <summary>
+    /// Advances animation on a frame the feed skips.
+    /// </summary>
+    /// <remarks>
+    /// BOTH BRANCHES STEP WITHOUT THIS. The pose feed's blend and the clip animator's advance
+    /// are both driven by WALL TIME, so each is built to run every frame; trapped inside the
+    /// tick gate they ran once per tick and the characters moved in 30 Hz jumps under a camera
+    /// gliding at display rate. The clip animator takes its own delta from the clock, so
+    /// calling it more often advances the same total time — it does not run animation fast.
+    /// </remarks>
+    private void ResampleAnimation()
+    {
+        foreach (uint address in _reblending)
+        {
+            if (_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig))
+            {
+                rig.Reblend();
+            }
+        }
+
+        Camera3D? eye = GetViewport()?.GetCamera3D();
+        bool haveEye = eye is not null && IsInstanceValid(eye);
+        Vector3 eyeAt = haveEye ? eye!.GlobalTransform.Origin : Vector3.Zero;
+
+        foreach (uint address in _animating)
+        {
+            if (!_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig))
+            {
+                continue;
+            }
+
+            // THE SAME GATE AS THE FEED'S. Applied here too, or a rig the walk declined to pose
+            // would be posed anyway on every frame between ticks — the expensive half kept and
+            // the saving thrown away.
+            bool writeBones = !haveEye ||
+                !_nodes.TryGetValue(address, out MeshInstance3D? node) ||
+                !IsInstanceValid(node) ||
+                !node.IsInsideTree() ||
+                eyeAt.DistanceSquaredTo(node.GlobalTransform.Origin) <=
+                    PoseWriteRadius * PoseWriteRadius;
+
+            ClipAnimatorFor(address, rig).Apply(address, writeBones);
+        }
+    }
+
+    /// <summary>Re-draws the movers at this instant, without reading the guest.</summary>
+    private void ResampleMovers()
+    {
+        if (_movers.Count == 0)
+        {
+            return;
+        }
+
+        double now = Godot.Time.GetTicksUsec();
+        _arrived.Clear();
+        foreach (uint address in _movers)
+        {
+            if (!_placements.TryGetValue(address, out Refii.Core.Engine_TickTimeline? timeline) ||
+                !_nodes.TryGetValue(address, out MeshInstance3D? node) ||
+                !IsInstanceValid(node))
+            {
+                _arrived.Add(address);
+                continue;
+            }
+
+            Transform3D drawn = timeline.Sample(now);
+            if (drawn.IsEqualApprox(node.Transform))
+            {
+                _arrived.Add(address);
+                continue;
+            }
+
+            node.Transform = drawn;
+        }
+
+        foreach (uint address in _arrived)
+        {
+            _movers.Remove(address);
+        }
+    }
+
+    /// <summary>
+    /// How far a rig may be from the camera and still have its bones written, in metres.
+    /// </summary>
+    /// <remarks>
+    /// Generous on purpose: this is a cost gate, not a visual one, and a character whose bones
+    /// stop being written at this range is one whose limbs are a few pixels. The clips keep
+    /// advancing regardless, so nothing is frozen — only undrawn.
+    /// </remarks>
+    private const float PoseWriteRadius = 45f;
+
     private Transform3D Smoothed(uint address, Transform3D stated)
     {
         double now = Godot.Time.GetTicksUsec();
@@ -2305,7 +2573,7 @@ public partial class GameEntities : Node3D
             || !timeline.Newest.Basis.IsEqualApprox(stated.Basis);
         if (moved)
         {
-            if (timeline.Newest.Origin.DistanceTo(stated.Origin) > 4f ||
+            if (timeline.Newest.Origin.DistanceTo(stated.Origin) > Refii.Core.Engine_TickTimeline.TeleportMetres ||
                 (_tickNow > timeline.NewestTick && _tickNow - timeline.NewestTick > 8))
             {
                 timeline.Reset(_tickNow, stated);
@@ -2313,6 +2581,8 @@ public partial class GameEntities : Node3D
             }
 
             timeline.Push(_tickNow, stated, now);
+
+            _movers.Add(address);
         }
 
         return timeline.Sample(now);

@@ -20,19 +20,44 @@ public static class Engine_FramePhases
 	private static readonly Dictionary<string, Phase> Phases = new();
 	private static readonly object Gate = new();
 
+	/// <summary>
+	/// Opens a profiler zone for a phase, or 0 when no profiler is installed.
+	/// </summary>
+	/// <remarks>
+	/// A HOOK RATHER THAN A CALL. This file is core and the profiler lives behind the game's
+	/// host bridge, so calling it from here would point the dependency the wrong way. The game
+	/// installs the pair once at startup and EVERY existing `Measure` site becomes a profiler
+	/// zone — one annotation per phase instead of two to keep in step, which is the only way a
+	/// codebase stays instrumented.
+	///
+	/// A ulong handle rather than an IDisposable: a phase opens on every frame of every screen,
+	/// and boxing one per scope would make the instrument a cost of its own.
+	/// </remarks>
+	public static System.Func<string, ulong>? ZoneBegin;
+
+	/// <summary>Closes what <see cref="ZoneBegin"/> opened.</summary>
+	public static System.Action<ulong>? ZoneEnd;
+
 	public readonly struct Scope : System.IDisposable
 	{
 		private readonly string _name;
 		private readonly long _start;
+		private readonly ulong _zone;
 
 		public Scope(string name)
 		{
 			_name = name;
 			_start = Stopwatch.GetTimestamp();
+			_zone = ZoneBegin is { } begin ? begin(name) : 0UL;
 		}
 
 		public void Dispose()
 		{
+			if (_zone != 0UL)
+			{
+				ZoneEnd?.Invoke(_zone);
+			}
+
 			double ms = (Stopwatch.GetTimestamp() - _start) * 1000.0 / Stopwatch.Frequency;
 			lock (Gate)
 			{
@@ -52,12 +77,23 @@ public static class Engine_FramePhases
 	public static Scope Measure(string name) => new(name);
 
 	/// <summary>Records the time since <paramref name="since"/> under a name and restarts it.</summary>
+	/// <remarks>
+	/// PLOTTED, NOT ZONED. A lap is a duration recorded after the fact, and a profiler zone has
+	/// to be opened and closed around the work as it happens — there is no retroactive zone. A
+	/// plot is the honest shape for it: the profiler draws the millisecond value per frame
+	/// beside the zones, which is what a lap actually is.
+	/// </remarks>
 	public static void Lap(string name, ref long since)
 	{
 		long now = Stopwatch.GetTimestamp();
-		Record(name, (now - since) * 1000.0 / Stopwatch.Frequency);
+		double ms = (now - since) * 1000.0 / Stopwatch.Frequency;
+		Record(name, ms);
+		Plot?.Invoke(name, ms);
 		since = now;
 	}
+
+	/// <summary>Draws a named value on the profiler's timeline; installed with the zone hooks.</summary>
+	public static System.Action<string, double>? Plot;
 
 	private static long _frameStart;
 
@@ -100,6 +136,23 @@ public static class Engine_FramePhases
 		if (_processEnd != 0)
 		{
 			Record("draw", (_drawEnd - _processEnd) * 1000.0 / Stopwatch.Frequency);
+		}
+	}
+
+	/// <summary>
+	/// Records a duration a caller measured itself, and plots it.
+	/// </summary>
+	/// <remarks>
+	/// For a cost ACCUMULATED across a loop, where neither a scope nor a lap fits: a scope would
+	/// open once per iteration and a lap would record one value per iteration, and the question
+	/// is what the whole walk spent.
+	/// </remarks>
+	public static void Record(string name, double ms, bool plot)
+	{
+		Record(name, ms);
+		if (plot)
+		{
+			Plot?.Invoke(name, ms);
 		}
 	}
 

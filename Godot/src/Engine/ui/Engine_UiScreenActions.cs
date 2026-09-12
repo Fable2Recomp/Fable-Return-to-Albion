@@ -49,6 +49,15 @@ public static class Engine_UiScreenActions
 		if (action.StartsWith(Engine_UiInventorySource.InventoryAction,
 				System.StringComparison.Ordinal))
 		{
+			// A joiner's weapon pick changes the record; the host equips it. The id is decimal.
+			const string equip = Engine_UiInventorySource.InventoryAction + "equip:";
+			if (Refii.Host.CoopSession.IsClient && action.StartsWith(equip, System.StringComparison.Ordinal) &&
+				uint.TryParse(action[equip.Length..], out uint record) &&
+				Refii.Host.CoopHeroKit.SetLocalWeapon(record, Engine_UiInventorySource.WeaponClassOf(record)))
+			{
+				return true;
+			}
+
 			Refii.Host.HostBridge.PostFrontEndAction(action);
 			return true;
 		}

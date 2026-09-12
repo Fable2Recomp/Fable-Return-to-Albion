@@ -78,6 +78,7 @@ public partial class Engine_UiPreviewObject : Node3D
 		}
 
 		ModelHash = modelHash;
+		_liveKey = 0;
 		_mesh?.QueueFree();
 		_mesh = null;
 
@@ -125,6 +126,68 @@ public partial class Engine_UiPreviewObject : Node3D
 	}
 
 	/// <summary>
+	/// <summary>
+	/// Shows a mesh the caller already holds — a LIVE ENTITY's composed body, not a model the guest
+	/// named by hash. The co-op screen's mannequin is the case: `sub_82438818` spawns a real
+	/// `CoopScreenTempHenchmanToDisplay` creature and the entity feed composes its dressed figure
+	/// from component 17, so there is no hash to resolve and no second copy to load. Presented
+	/// exactly as <see cref="Show"/> presents a model, keyed by <paramref name="key"/> (the entity
+	/// address) so a frame that shows the same body again only re-applies the placement.
+	///
+	/// The guest scales this node by `(2.1 / body) * 350` (`sub_82438438`, 0x824387E0; body is
+	/// 1.5 for a child, 2.1 adult, 2.4 with hair flag 10). What that means in this panel's units
+	/// is not established, so the placement's scale is left for the panel fit in <c>Apply</c>.
+	/// </summary>
+	/// <param name="skeleton">
+	/// The feed's Skeleton3D driving that body, or null. A skinned mesh drawn without its
+	/// skeleton renders in BIND pose whatever the guest animates, so the copy here is bound to
+	/// the same skeleton the feed poses — the pose then comes through as the feed writes it.
+	/// </param>
+	public bool ShowLive(Mesh? mesh, uint key, Placement placement, Skeleton3D? skeleton = null)
+	{
+		if (skeleton is not null && _mesh is not null && GodotObject.IsInstanceValid(skeleton) &&
+			skeleton.IsInsideTree() && _mesh.IsInsideTree())
+		{
+			NodePath path = _mesh.GetPathTo(skeleton);
+			if (_mesh.Skeleton != path)
+			{
+				_mesh.Skeleton = path;
+			}
+		}
+
+		// THE LAST BODY STANDS when the feed has no node this frame. The co-op screen's temp
+		// henchman drops out of the entity walk between samples (the walk is truncated, not the
+		// entity gone), and the feed retires its node each time; the mesh resource captured
+		// here outlives that node, so the panel keeps showing it for the same entity.
+		if (key != 0 && key == _liveKey && _mesh is not null)
+		{
+			Apply(placement);
+			Visible = true;
+			return true;
+		}
+
+		if (mesh is null || key == 0)
+		{
+			LastReport = "no live body to show";
+			Visible = false;
+			return false;
+		}
+
+		ModelHash = 0;
+		_liveKey = key;
+		_mesh?.QueueFree();
+		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh };
+		int textured = Present(_mesh, mesh, inPage: true);
+		AddChild(_mesh);
+		LastReport = $"live entity 0x{key:X8} ({textured}/{mesh.GetSurfaceCount()} surface(s) textured)";
+		Apply(placement);
+		Visible = true;
+		return true;
+	}
+
+	/// <summary>The entity a live body was last shown for; 0 when the hash path owns the mesh.</summary>
+	private uint _liveKey;
+
 	/// Gives each surface an unlit material carrying the model's own albedo.
 	///
 	/// The model arrives with `Engine_MdlMaterial`'s lit world shader, which reads as a pink
@@ -132,7 +195,12 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// the original: take the albedo and show it unlit. A surface stating no albedo gets neutral
 	/// grey, so an untextured item reads as missing art rather than a rendering fault.
 	/// </summary>
-	private static int Present(MeshInstance3D instance, Mesh mesh)
+	/// <param name="inPage">
+	/// Draw at the anchor's depth with the depth test on: the co-op mannequin sits in front of
+	/// the parchment and behind the page's cut-out mask and the save-card fan, as the original
+	/// composes it. The named-model path keeps the depth-free, top-priority draw.
+	/// </param>
+	private static int Present(MeshInstance3D instance, Mesh mesh, bool inPage = false)
 	{
 		int textured = 0;
 		for (int surface = 0; surface < mesh.GetSurfaceCount(); ++surface)
@@ -151,8 +219,8 @@ public partial class Engine_UiPreviewObject : Node3D
 				// BEHIND the parchment (`model_proxy.model` z 1900, `frames_page` z 2249) and
 				// the depth test buried the model under the page. Depth is off and the
 				// priority high, with back faces culled so the mesh still reads as a solid.
-				NoDepthTest = true,
-				RenderPriority = 100,
+				NoDepthTest = !inPage,
+				RenderPriority = inPage ? 0 : 100,
 				// NO CULLING: the anchor's basis is mirrored (see the light note above), so a
 				// back-face cull removes the faces the player sees.
 				CullMode = BaseMaterial3D.CullModeEnum.Disabled,

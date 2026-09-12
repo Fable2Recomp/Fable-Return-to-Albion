@@ -122,12 +122,23 @@ public partial class Engine_FrontEndWarning : Node3D
 	/// element was never located look identical on screen, and only one of them is a layout
 	/// problem — so this says which, instead of leaving the next run to guess.
 	/// </summary>
-	public void Show(Engine_UiTheme? theme, string bodyTag, string buttonTag, bool twoButton)
+	/// <param name="cancelTag">
+	/// Label for the second button, or null to leave the file's own. The guest never re-texts it
+	/// — every shipped two-button box means the same thing by it — but a host-authored box can
+	/// offer something else there, and the glyph beside it is already Y.
+	/// </param>
+	public void Show(
+		Engine_UiTheme? theme, string bodyTag, string buttonTag, bool twoButton,
+		string? cancelTag = null)
 	{
 		Node3D? group = GetNodeOrNull<Node3D>("Group");
 
 		string body = SetText(theme, group, BodyName, theme?.Resolve(bodyTag) ?? bodyTag);
 		string button = SetText(theme, group, ButtonName, theme?.Resolve(buttonTag) ?? buttonTag);
+		if (cancelTag is not null)
+		{
+			SetText(theme, group, CancelName, theme?.Resolve(cancelTag) ?? cancelTag);
+		}
 
 		// The second button and its glyph exist only in the two-button form. Hidden rather than
 		// removed: the same clone is reused for every warning, and the next one may want them.

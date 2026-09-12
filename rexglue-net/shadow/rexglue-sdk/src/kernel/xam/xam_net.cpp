@@ -17,7 +17,10 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
+#include <deque>
 #include <mutex>
+#include <string>
 #include <random>
 #include <ctime>
 #include <fstream>
@@ -79,6 +82,24 @@ static bool g_session_registered = false;
 // System Link, which is what decides the XNKID tag above.
 static std::atomic<uint32_t> g_system_link_port{0};
 }  // namespace
+
+// --- Refii's own co-op channel ------------------------------------------
+//
+// Refii runs two instances, and they have to agree about things the TITLE has
+// no concept of — which body player two is standing in, chiefly. That is host
+// state, so it rides its own port: no packet the title sends or parses
+// changes, and a save stays a save.
+//
+// The peer address is never guessed. Every inbound guest datagram names its
+// source, so the co-op peer's virtual IP is simply whoever last talked to us.
+//
+// Named rather than anonymous: the C entry points at the foot of this file are
+// outside `rex::` and reach them by name.
+constexpr uint16_t kRefiiCoopPort = 0xEF11;
+constexpr std::size_t kRefiiCoopInboxMax = 32;
+std::mutex g_refii_coop_mutex;
+std::deque<std::string> g_refii_coop_inbox;
+std::atomic<uint32_t> g_refii_coop_peer_vip{0};
 namespace kernel {
 namespace xam {
 using namespace rex::system;
@@ -387,6 +408,29 @@ void RexNetStartup() {
 
     rexnet->SetDatagramSink([](uint32_t src_vip, uint16_t src_port, uint16_t dst_port,
                                const uint8_t* data, uint32_t len) {
+      // Ours, not the title's. Consumed here and never offered to a guest socket.
+      if (dst_port == kRefiiCoopPort) {
+        static std::atomic<uint32_t> seen{0};
+        const uint32_t n = seen.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n == 1 || (n & (n - 1)) == 0) {
+          REXLOG_INFO("Refii co-op channel: inbound #{} from 10.77.{}.{} ({} bytes)", n,
+                      (src_vip >> 8) & 0xFF, src_vip & 0xFF, len);
+        }
+        std::lock_guard lock(g_refii_coop_mutex);
+        if (g_refii_coop_inbox.size() >= kRefiiCoopInboxMax) {
+          g_refii_coop_inbox.pop_front();
+        }
+        g_refii_coop_inbox.emplace_back(reinterpret_cast<const char*>(data), len);
+        return true;
+      }
+
+      // Whoever sends us game traffic IS the co-op peer, and that address is
+      // where our own channel answers.
+      if (g_refii_coop_peer_vip.exchange(src_vip, std::memory_order_relaxed) != src_vip) {
+        REXLOG_INFO("Refii co-op channel: peer is 10.77.{}.{} (learned from game traffic on port {})",
+                    (src_vip >> 8) & 0xFF, src_vip & 0xFF, dst_port);
+      }
+
       auto socket = XSocket::FindBoundUdp(dst_port);
       if (!socket) {
         return false;
@@ -2036,3 +2080,51 @@ REX_EXPORT_STUB(__imp__NetDll_XnpUpdateConfigParams);
 REX_EXPORT_STUB(__imp__NetDll_getpeername);
 REX_EXPORT(__imp__NetDll_getsockname, rex::kernel::xam::NetDll_getsockname_entry)
 REX_EXPORT(__imp__NetDll_getsockopt, rex::kernel::xam::NetDll_getsockopt_entry)
+
+// --- Refii co-op channel, C entry points --------------------------------
+//
+// Linked, not dlopen'd: `refii_hostbridge` links `rex::runtime` with
+// `-Wl,--no-undefined`, so a rename here is a link error rather than a silent
+// exit 127 the first time the call runs.
+extern "C" {
+
+uint16_t RefiiCoopChannelPort(void) { return rex::kRefiiCoopPort; }
+
+/// The co-op peer's virtual IP, or 0 before any guest traffic has arrived.
+uint32_t RefiiCoopChannelPeer(void) {
+  return rex::g_refii_coop_peer_vip.load(std::memory_order_relaxed);
+}
+
+/// Takes the oldest queued message, NUL-terminated, and returns its byte count.
+/// 0 means the inbox was empty; we never send an empty message.
+uint32_t RefiiCoopChannelTake(char* out, uint32_t capacity) {
+  if (out == nullptr || capacity == 0) {
+    return 0;
+  }
+
+  std::string message;
+  {
+    std::lock_guard<std::mutex> lock(rex::g_refii_coop_mutex);
+    if (rex::g_refii_coop_inbox.empty()) {
+      return 0;
+    }
+
+    message = std::move(rex::g_refii_coop_inbox.front());
+    rex::g_refii_coop_inbox.pop_front();
+  }
+
+  const uint32_t written =
+      static_cast<uint32_t>(std::min<std::size_t>(message.size(), capacity - 1));
+  if (written < message.size()) {
+    static std::atomic<uint32_t> cut{0};
+    if (cut.fetch_add(1, std::memory_order_relaxed) == 0) {
+      REXLOG_INFO("Refii co-op channel: a {}-byte message was CUT to the caller's {}-byte buffer",
+                  message.size(), capacity);
+    }
+  }
+  std::memcpy(out, message.data(), written);
+  out[written] = '\0';
+  return written;
+}
+
+}  // extern "C"

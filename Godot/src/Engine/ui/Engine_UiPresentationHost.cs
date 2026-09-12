@@ -621,6 +621,9 @@ public partial class Engine_UiPresentationHost : Node3D
 			FontResolver = size => Fonts?.For(size),
 		};
 		Built = builder.Build(screen);
+		// BUILT HIDDEN: the mirror is a data source — the owned books draw. Godot owns every
+		// screen, so nothing ever turns this on.
+		Built.Visible = false;
 		AddChild(Built);
 		Engine_UiSceneBuilder.ApplyCameraAiming(Built);
 

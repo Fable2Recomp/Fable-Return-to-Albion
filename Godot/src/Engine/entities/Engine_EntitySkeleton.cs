@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Godot;
+using Refii.Core;
 using Refii.Host;
 using Refii.Models;
 
@@ -234,7 +235,13 @@ public sealed class Engine_EntitySkeleton
 	public static int ImplausiblePoses;
 
 	private static int _refusalsLogged;
-	private static int _stuckLogged;
+	/// <summary>
+	/// Rig names already reported as stuck. A flat cap on the LINE COUNT was spent entirely by
+	/// the cooking pots and cupboards — which are genuinely static and genuinely uninteresting
+	/// — while the creature that prompted the search never got a line. One line per rig NAME
+	/// reports each distinct offender once and cannot be crowded out by a common prop.
+	/// </summary>
+	private static readonly HashSet<string> _stuckLogged = new();
 	private static int _jumpsLogged;
 	private int _localReads;
 
@@ -278,6 +285,10 @@ public sealed class Engine_EntitySkeleton
 	{
 		_lastTranslationValid = false;
 		_havePrevious = false;
+
+		// The skeleton is about to be written by something else — the clip animator — so what
+		// this rig last wrote is no longer what the bones hold.
+		_wroteSettled = false;
 	}
 
 	/// <summary>
@@ -341,10 +352,20 @@ public sealed class Engine_EntitySkeleton
 	/// </summary>
 	private (int Local, int Model, bool Split) LocalVotes(in HostBridge.BonePose pose)
 	{
+		// THE FLOOR IS A FRACTION OF THE RIG, NOT A FIXED 5 cm.
+		//
+		// A bone can only separate the two spaces when its local rest offset and its global
+		// one actually differ, and how far apart those are scales with the CREATURE. Five
+		// centimetres is a reasonable slice of a two-metre hero and is wider than a beetle,
+		// so on a small rig it discarded every bone, the vote came back empty, and the pose
+		// was held on the flag alone — a wing or a tail frozen in whatever it was last caught
+		// doing, for as long as the thing was on screen. Measured against the rig's own reach
+		// it asks the same question of a beetle that it asks of a hero.
 		int local = 0;
 		int model = 0;
 		int lastModelGuest = -1;
 		int firstLocalGuest = int.MaxValue;
+		float separation = Mathf.Max(_restReach * 0.02f, 1e-4f);
 		for (int m = 0; m < _modelToGuest.Length; ++m)
 		{
 			int g = _modelToGuest[m];
@@ -356,7 +377,7 @@ public sealed class Engine_EntitySkeleton
 			float raw = pose.Translation(g).Length();
 			float localRest = _rig.Translation(m).Length();
 			float globalRest = _skeleton.GetBoneGlobalRest(m).Origin.Length();
-			if (Mathf.Abs(globalRest - localRest) < 0.05f)
+			if (Mathf.Abs(globalRest - localRest) < separation)
 			{
 				continue;  // says nothing either way
 			}
@@ -379,6 +400,47 @@ public sealed class Engine_EntitySkeleton
 
 	/// <summary>The node to parent a skinned mesh under.</summary>
 	public Skeleton3D Node => _skeleton;
+
+	/// <summary>
+	/// Names an exploded rig once: any bone more than 4 m from the skeleton's origin after a
+	/// write. A body drawn as a scarecrow is a bone-mapping fault, and which bones fly says
+	/// which side mapped them — checked every 64th follow, reported once per skeleton.
+	/// </summary>
+	private void ProbeBonesOut(uint entity)
+	{
+		if (_bonesOutReported || (++_bonesOutTicks & 63) != 0)
+		{
+			return;
+		}
+
+		var names = new System.Collections.Generic.List<string>();
+		float worst = 0f;
+		for (int i = 0; i < _skeleton.GetBoneCount(); ++i)
+		{
+			float d = _skeleton.GetBoneGlobalPose(i).Origin.Length();
+			if (d > 4f)
+			{
+				worst = Mathf.Max(worst, d);
+				if (names.Count < 8)
+				{
+					names.Add($"{_skeleton.GetBoneName(i)}@{d:0.0}m");
+				}
+			}
+		}
+
+		if (names.Count == 0)
+		{
+			return;
+		}
+
+		_bonesOutReported = true;
+		GD.Print($"[rig] BONES OUT on entity 0x{entity:X8} ('{_skeleton.Name}', " +
+			$"{_skeleton.GetBoneCount()} bone(s)): worst {worst:0.0}m — {string.Join(" ", names)}");
+	}
+
+	private bool _bonesOutReported;
+
+	private int _bonesOutTicks;
 
 	/// <summary>How many bones the rig has, in the model's numbering.</summary>
 	public int BoneCount => _rig.BoneCount;
@@ -739,10 +801,44 @@ public sealed class Engine_EntitySkeleton
 	/// Pushes the guest's current pose into the skeleton. Cheap enough to call every frame —
 	/// it is one memory read and one transform per bone.
 	/// </summary>
+	/// <summary>Guest-pose READ time this frame, in milliseconds; reset by the caller.</summary>
+	/// <remarks>
+	/// Split from the write because they are different costs with different fixes: the read is
+	/// one P/Invoke over a bone array, the write is a binding call per bone into Godot. Which
+	/// half dominates decides whether the answer is fewer reads or fewer writes.
+	/// </remarks>
+	public static double ReadMs;
+
+	/// <summary>Bone WRITE time this frame, in milliseconds; reset by the caller.</summary>
+	public static double WriteMs;
+
+	/// <summary>
+	/// Re-draws the bones at this instant, without reading the guest again.
+	/// </summary>
+	/// <remarks>
+	/// `WriteBlended` takes its blend from WALL TIME against the newest pose, so it is built to
+	/// be called every frame: alpha walks 0 toward 1 and the bones move between ticks. Reached
+	/// only through <see cref="Follow"/>, it ran once per tick at the instant the pose landed —
+	/// when `since` is ~0 and alpha is ~0 — so the rig was drawn from the PREVIOUS pose and
+	/// never advanced toward the new one. Stale by a tick, and stepped rather than smooth.
+	///
+	/// Cheap when there is nothing to do: the settled check inside returns immediately once the
+	/// blend has finished.
+	/// </remarks>
+	public void Reblend() => WriteBlended();
+
 	public void Follow(uint entity)
 	{
+		long from = System.Diagnostics.Stopwatch.GetTimestamp();
 		FollowInner(entity);
+		long mid = System.Diagnostics.Stopwatch.GetTimestamp();
 		WriteBlended();
+		long done = System.Diagnostics.Stopwatch.GetTimestamp();
+		ProbeBonesOut(entity);
+
+		double toMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+		ReadMs += (mid - from) * toMs;
+		WriteMs += (done - mid) * toMs;
 	}
 
 	private void FollowInner(uint entity)
@@ -808,6 +904,14 @@ public sealed class Engine_EntitySkeleton
 		// BY THE DATA, NOT THE FLAG (see LocalVotes). A split array is held; a wholly local
 		// array is held until the guest's converter has run; a rig that never converts is a
 		// prop holding its reference pose, logged once so it can be identified.
+		//
+		// NO EVIDENCE IS NOT EVIDENCE OF LOCAL, and it used to be read as such. A rig whose
+		// bones cannot tell the two spaces apart returns no votes at all, and the old test
+		// then fell back to `comp+0x14 == 1` and held the pose — for ever, on a flag this file
+		// proves two screens down is write-only and left behind mid-pipeline. `sub_8257D8B8`
+		// calls the local->model converter `sub_821F57D0` with no condition on it and only
+		// then stamps 2, so an array a host reads outside the tick has been converted whatever
+		// the flag says. With nothing to weigh, the proven default is the one to take.
 		(int localVotes, int modelVotes, bool split) = LocalVotes(pose);
 		if (split)
 		{
@@ -815,18 +919,15 @@ public sealed class Engine_EntitySkeleton
 			return;
 		}
 
-		bool looksLocal = localVotes > modelVotes
-			|| (localVotes == 0 && modelVotes == 0 && pose.Space == 1);
-		if (looksLocal)
+		if (localVotes > modelVotes)
 		{
 			++LocalPosesHeld;
 			if (++_localReads == LocalStuckFrames)
 			{
 				++LocalStuckRigs;
-				if (_stuckLogged < 24)
+				if (_stuckLogged.Count < 128 && _stuckLogged.Add(_rig.Names[0]))
 				{
-					++_stuckLogged;
-					GD.Print($"[rig-stuck] entity 0x{entity:X8} '{_skeleton.Name}' rig '{_rig.Names[0]}' bones {_guestBones} has read LOCAL for {LocalStuckFrames} frames (space={pose.Space}, votes local {localVotes} model {modelVotes})");
+					GD.Print($"[rig-stuck] entity 0x{entity:X8} '{_skeleton.Name}' rig '{_rig.Names[0]}' bones {_guestBones} has read LOCAL for {LocalStuckFrames} frames (space={pose.Space}, votes local {localVotes} model {modelVotes}, reach {_restReach:0.000})");
 				}
 			}
 
@@ -1048,9 +1149,15 @@ public sealed class Engine_EntitySkeleton
 			return;  // the same pose again: the blend keeps moving on the clock
 		}
 
+		// STAMPED WITH THE GUEST'S TICK, NOT WITH WHEN WE SAW IT. The pose is written inside
+		// the world update and `dword_83319650` is incremented at its tail (`sub_821D4628`,
+		// `sub_823D9898`), so an accepted pose belongs to one tick exactly as a placement does.
+		// The arrival time is kept only to tell one accepted pose from the next.
 		(_previous, _newest) = (_newest, _previous);
-		_previousUsec = _newestUsec;
+		_previousTick = _newestTick;
+		_newestTick = HostBridge.SimTick;
 		_newestUsec = Godot.Time.GetTicksUsec();
+		Engine_TickClock.Observe(_newestTick, _newestUsec);
 		_havePrevious = _haveNewest;
 		_haveNewest = true;
 		for (int m = 0; m < _modelToGuest.Length; ++m)
@@ -1071,7 +1178,8 @@ public sealed class Engine_EntitySkeleton
 	private Transform3D[]? _newest;
 	private Transform3D[]? _previous;
 	private ulong _newestUsec;
-	private ulong _previousUsec;
+	private uint _newestTick;
+	private uint _previousTick;
 	private bool _haveNewest;
 	private bool _havePrevious;
 
@@ -1089,20 +1197,64 @@ public sealed class Engine_EntitySkeleton
 			return;
 		}
 
+		// ON THE GUEST'S CLOCK, AT THE SAME LATENCY AS THE BODY.
+		//
+		// This used to blend across the WALL GAP between the two arrivals — `since / interval`
+		// where both were host timestamps — which is precisely the mistake Engine_TickTimeline
+		// was written to undo for placements: it re-times every segment by when the host
+		// happened to see it, so a scheduling hiccup that delivers two poses close together
+		// runs the blend to completion in a few milliseconds and the rig snaps and then holds.
+		//
+		// AND IT PUT THE BONES ON A DIFFERENT CLOCK FROM THE BODY THEY HANG OFF. The entity's
+		// transform is drawn at `now - 1.5 ticks`; the pose was drawn one ARRIVAL INTERVAL
+		// behind its newest sample, roughly half that. The skeleton ran ahead of the thing
+		// carrying it, which is a foot planted on ground that is still sliding underneath it.
+		//
+		// Both go away by asking the one fitted clock where the frame is: alpha is simply how
+		// far the draw point has travelled from the tick the previous pose was stated on to
+		// the tick the newest was.
 		float alpha = 1f;
-		if (_havePrevious && _newestUsec > _previousUsec)
+		if (_havePrevious && _newestTick > _previousTick)
 		{
-			double interval = (_newestUsec - _previousUsec) * 1e-6;
-			double since = (Godot.Time.GetTicksUsec() - _newestUsec) * 1e-6;
-			// A stale newest (the rig stopped moving, or was off camera) is drawn as is.
-			alpha = interval > 0.25 ? 1f : (float)System.Math.Clamp(since / interval, 0.0, 1.0);
+			double drawTick = Engine_TickClock.DrawTick(Godot.Time.GetTicksUsec());
+			uint span = _newestTick - _previousTick;
+
+			// A rig that was idle, or out of write range, states nothing for many ticks and
+			// then moves; the span across that silence is not a segment it animated over. Draw
+			// the newest and let the next tick start a real one — what the old 0.25 s interval
+			// guard did, in the units the guess was always about.
+			alpha = double.IsNaN(drawTick) || span > StaleSpanTicks
+				? 1f
+				: (float)System.Math.Clamp((drawTick - _previousTick) / span, 0.0, 1.0);
+		}
+
+		// NOTHING TO WRITE WHEN NOTHING WOULD CHANGE. A settled rig — one whose newest pose is
+		// the one already on the skeleton, with the interpolation finished — would write the
+		// same transform into every bone it wrote last frame. This is NOT the frustum gate that
+		// was removed: that skipped rigs the camera could not see and left them in their bind
+		// pose, whereas this skips only writes whose result is already there, so a rig off
+		// camera still advances and still holds the pose the guest gave it.
+		if (alpha >= 1f && _wroteSettled && _wroteUsec == _newestUsec)
+		{
+			++WritesSkipped;
+			return;
 		}
 
 		_globals ??= new Transform3D[_rig.BoneCount];
+		_inverses ??= new Transform3D[_rig.BoneCount];
+		if (_inverted is null)
+		{
+			_inverted = new bool[_rig.BoneCount];
+		}
+		else
+		{
+			System.Array.Clear(_inverted);
+		}
 		for (int m = 0; m < _modelToGuest.Length; ++m)
 		{
 			int parent = _rig.Parents[m];
-			Transform3D parentGlobal = parent >= 0 && parent < m ? _globals[parent] : Transform3D.Identity;
+			bool hasParent = parent >= 0 && parent < m;
+			Transform3D parentGlobal = hasParent ? _globals[parent] : Transform3D.Identity;
 			int g = _modelToGuest[m];
 			Transform3D global;
 			if (g >= 0)
@@ -1122,12 +1274,49 @@ public sealed class Engine_EntitySkeleton
 				continue;
 			}
 
-			Transform3D local = parentGlobal.AffineInverse() * global;
-			_skeleton.SetBonePosePosition(m, local.Origin);
-			_skeleton.SetBonePoseRotation(m, local.Basis.GetRotationQuaternion());
-			_skeleton.SetBonePoseScale(m, local.Basis.Scale);
+			// ONE INVERSE PER PARENT, NOT PER CHILD, and none for a bone nothing asks about.
+			// Bones are ordered parent-before-child, so a parent's global is final by the time
+			// any child needs it: the first child that needs it pays, the rest read it.
+			Transform3D local = global;
+			if (hasParent)
+			{
+				if (!_inverted[parent])
+				{
+					_inverses[parent] = _globals[parent].AffineInverse();
+					_inverted[parent] = true;
+				}
+
+				local = _inverses[parent] * global;
+			}
+
+			// ONE BINDING CALL, NOT THREE. `SetBonePosePosition`/`Rotation`/`Scale` are three
+			// crossings into the engine per bone, and the rotation and scale forms additionally
+			// cost a quaternion extraction and a per-axis scale decomposition to build arguments
+			// Godot immediately recomposes. `SetBonePose` takes the transform whole.
+			_skeleton.SetBonePose(m, local);
 		}
+
+		_wroteUsec = _newestUsec;
+		_wroteSettled = alpha >= 1f;
 	}
+
+	/// <summary>Ticks of silence past which two accepted poses are not one segment.</summary>
+	private const uint StaleSpanTicks = 4u;
+
+	/// <summary>The pose timestamp the skeleton currently holds.</summary>
+	private ulong _wroteUsec;
+
+	/// <summary>Whether that write was the finished pose rather than a step toward it.</summary>
+	private bool _wroteSettled;
+
+	/// <summary>Writes skipped because the skeleton already held the result.</summary>
+	public static long WritesSkipped;
+
+	/// <summary>Each bone's global inverse, cached for its children — see WriteBlended.</summary>
+	private Transform3D[]? _inverses;
+
+	/// <summary>Which of those inverses have been computed this frame.</summary>
+	private bool[]? _inverted;
 
 	/// <summary>
 	/// Gives the skeleton its BIND POSE, from THE MODEL FILE, and measures how far the guest's
