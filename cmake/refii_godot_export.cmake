@@ -53,6 +53,46 @@ set(REFII_DOTNET_MAJOR "8" CACHE STRING
 
 option(REFII_PACKAGE "Build the release package (export + stage + zip) as part of ALL" ON)
 
+# WHERE THE MSVC RUNTIME LIVES, so the package can carry it.
+#
+# Our Windows binaries link the CRT as a DLL, and a player has no Visual Studio: nothing in
+# the package supplied VCRUNTIME140*.dll or MSVCP140*.dll, so rexglue.exe dies at process
+# start with "the code execution cannot proceed", before a single line of its output. Linux
+# never showed this because its equivalent closure IS staged -- see the ldd walk in the top
+# level CMakeLists -- and because libstdc++ is the same library in every configuration.
+#
+# A dev box hides it too, which is why it went unnoticed here: an installer had already put
+# the debug CRT in system32 on the machine this was written on, so the staged rexglue.exe ran
+# perfectly while carrying imports no clean machine can resolve.
+set(REFII_WINDOWS_CRT_DIRS "")
+if(WIN32)
+    include(${CMAKE_CURRENT_LIST_DIR}/refii_windows_crt.cmake)
+
+    set(_refii_crt_arch "x64")
+    if(REFII_GODOT_ARCH STREQUAL "arm64")
+        set(_refii_crt_arch "arm64")
+    endif()
+    refii_find_windows_crt_dirs(REFII_WINDOWS_CRT_DIRS "${_refii_crt_arch}")
+    unset(_refii_crt_arch)
+
+    if(REFII_WINDOWS_CRT_DIRS)
+        list(LENGTH REFII_WINDOWS_CRT_DIRS _refii_crt_dir_count)
+        message(STATUS
+            "Refii: ${_refii_crt_dir_count} MSVC runtime director(ies) found for packaging")
+        unset(_refii_crt_dir_count)
+    else()
+        message(WARNING
+            "No MSVC runtime redistributable was found. A Windows package will be staged "
+            "without VCRUNTIME/MSVCP beside its binaries, and will fail to start on any "
+            "machine without a matching Visual C++ runtime already installed.")
+    endif()
+
+    # file(GET_RUNTIME_DEPENDENCIES) reads PE imports with this, and a -P script has no
+    # toolchain to infer it from, so it is resolved here and passed down.
+    find_program(REFII_OBJDUMP NAMES llvm-objdump objdump)
+endif()
+
+
 # Zig, pinned and fetched for the TARGET architecture. It is the player's whole C++
 # toolchain — clang, lld and a redistributable libc — and the build driver, so this is
 # what makes an install work on a machine with nothing installed. See refii_fetch_zig.cmake.
@@ -183,6 +223,9 @@ function(refii_define_godot_export_target)
             -DTOOL_PLATFORM=${_platform}
             -DTOOL_ARCH=${REFII_GODOT_ARCH}
             -DTOOL_CACHE=${REFII_TOOL_CACHE_DIR}
+            "-DCRT_DIRS=${REFII_WINDOWS_CRT_DIRS}"
+            -DOBJDUMP=${REFII_OBJDUMP}
+            -DWINDOWS_RUNTIME_SCRIPT=${CMAKE_SOURCE_DIR}/cmake/refii_stage_windows_runtime.cmake
             -P "${CMAKE_SOURCE_DIR}/cmake/refii_run_godot_export.cmake"
         COMMENT "Packaging ${_platform}-${REFII_GODOT_ARCH} for release"
         USES_TERMINAL

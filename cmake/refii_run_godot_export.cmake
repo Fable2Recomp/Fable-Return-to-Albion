@@ -213,6 +213,22 @@ foreach(_sdk_library IN LISTS _sdk_libraries)
     endif()
 endforeach()
 
+# THE MSVC RUNTIME, staged from the redistributables rather than assumed present. Without
+# it the package's own binaries have imports no player's machine can resolve, and
+# rexglue.exe fails at process start. See refii_stage_windows_runtime.cmake.
+if(TOOL_PLATFORM STREQUAL "windows")
+    if(WINDOWS_RUNTIME_SCRIPT AND EXISTS "${WINDOWS_RUNTIME_SCRIPT}")
+        set(APP_DIR "${_app}")
+        include("${WINDOWS_RUNTIME_SCRIPT}")
+        unset(APP_DIR)
+    else()
+        message(WARNING
+            "No Windows runtime staging script at '${WINDOWS_RUNTIME_SCRIPT}'; the package "
+            "ships without the MSVC runtime and rexglue.exe will not start on a machine "
+            "that has no matching Visual C++ runtime installed.")
+    endif()
+endif()
+
 # DEBUG INFO STAYS HOME. The natives are Debug builds and most of each file is DWARF: the
 # runtime is 444 MB of which 81 MB is code. --strip-debug removes only that and keeps
 # .symtab and .dynsym, so the install-time link resolves exactly as before and a crash
