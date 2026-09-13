@@ -100,28 +100,47 @@ public static class Installer
         return true;
     }
 
-    public static bool CopyGameExecutable(string sourcePath, string destinationPath, out string error)
+    /// <summary>
+    /// Writes the title update beside the installed executable, from a .xexp or the package
+    /// it came in, after checking that it patches that executable.
+    /// </summary>
+    /// <remarks>
+    /// The check runs against the executable the ISO extraction just wrote, not the one the
+    /// dialog looked at, so a path pasted by hand or an unattended run gets the same answer.
+    /// </remarks>
+    public static bool InstallTitleUpdate(string sourcePath, string destinationPath, out string error)
     {
         if (!SafePath.IsSafeDestinationUnderBase(destinationPath, GetInstallBasePath(), out error))
         {
             return false;
         }
 
+        if (!TitleUpdate.TryLoad(sourcePath, out TitleUpdate update, out error))
+        {
+            return false;
+        }
+
+        string executablePath = Path.Combine(Path.GetDirectoryName(destinationPath) ?? string.Empty, "default.xex");
+        if (!TitleUpdate.TryReadExecutable(executablePath, out XexIdentity executable, out string xexError))
+        {
+            error = "The extracted game executable could not be identified: " + xexError;
+            return false;
+        }
+
+        if (!update.AppliesTo(executable, out error))
+        {
+            return false;
+        }
+
         try
         {
-            if (!File.Exists(sourcePath))
-            {
-                error = "The selected XEXP file does not exist.";
-                return false;
-            }
-
             string? parent = Path.GetDirectoryName(destinationPath);
             if (!string.IsNullOrEmpty(parent))
             {
                 Directory.CreateDirectory(parent!);
             }
 
-            File.Copy(sourcePath, destinationPath, true);
+            File.WriteAllBytes(destinationPath, update.Patch);
             error = string.Empty;
             return true;
         }
@@ -130,6 +149,73 @@ public static class Installer
             error = exception.Message;
             return false;
         }
+    }
+
+    /// <summary>
+    /// Whether the installed executable and title update belong together, with a line to show.
+    /// Cached briefly: the panels ask every refresh and the answer only changes on an install.
+    /// </summary>
+    public static bool CheckInstalledTitleUpdate(out string summary)
+    {
+        long now = Environment.TickCount64;
+        if (_titleUpdateValid && now - _titleUpdateStamp < StepStatusTtlMs)
+        {
+            summary = _titleUpdateSummary;
+            return _titleUpdateOk;
+        }
+
+        _titleUpdateOk = CheckInstalledTitleUpdateNow(out _titleUpdateSummary);
+        _titleUpdateValid = true;
+        _titleUpdateStamp = now;
+        summary = _titleUpdateSummary;
+        return _titleUpdateOk;
+    }
+
+    private static string _titleUpdateSummary = string.Empty;
+    private static bool _titleUpdateOk;
+    private static bool _titleUpdateValid;
+    private static long _titleUpdateStamp;
+
+    private static bool CheckInstalledTitleUpdateNow(out string summary)
+    {
+        string gameData = GetActiveGameDataDirectoryPath();
+        string executablePath = Path.Combine(gameData, "default.xex");
+        string patchPath = Path.Combine(gameData, "default.xexp");
+
+        if (!File.Exists(executablePath))
+        {
+            summary = string.Empty;
+            return true;
+        }
+
+        if (!TitleUpdate.TryReadExecutable(executablePath, out XexIdentity executable, out string xexError))
+        {
+            summary = "The installed executable could not be identified: " + xexError;
+            return false;
+        }
+
+        if (!File.Exists(patchPath))
+        {
+            summary = "Game version " + executable.VersionText + ", media ID " +
+                      executable.ShortMediaIdText + ", no title update installed.";
+            return false;
+        }
+
+        if (!TitleUpdate.TryLoad(patchPath, out TitleUpdate update, out string patchError))
+        {
+            summary = "The installed title update is unusable: " + patchError;
+            return false;
+        }
+
+        if (!update.AppliesTo(executable, out string mismatch))
+        {
+            summary = mismatch;
+            return false;
+        }
+
+        summary = "Game version " + executable.VersionText + " with title update " +
+                  update.Identity.VersionText + ", media ID " + executable.ShortMediaIdText + ".";
+        return true;
     }
 
     public static string GetGameMarkerPath() =>
@@ -212,6 +298,7 @@ public static class Installer
     {
         _stepStatusValid = false;
         _activeGameDataValid = false;
+        _titleUpdateValid = false;
     }
 
     public static ReinstallStepStatus GetReinstallStepStatus()

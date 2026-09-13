@@ -13,6 +13,7 @@ public partial class ReinstallPanel : VBoxContainer
 		new Color(0.02f, 0.1f, 0.2f, 1f), new Color(0.2f, 0.8f, 0.4f, 1f));
 
 	private Label _targetLabel = null!;
+	private Label _titleUpdateLabel = null!;
 	private Button _reinstall = null!;
 	private Button _unpackBanks = null!;
 	private Button _decompileLua = null!;
@@ -93,6 +94,11 @@ public partial class ReinstallPanel : VBoxContainer
 		_targetLabel = MakeLabel(string.Empty);
 		_targetLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		AddChild(_targetLabel);
+
+		_titleUpdateLabel = MakeLabel(string.Empty);
+		_titleUpdateLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+		_titleUpdateLabel.Visible = false;
+		AddChild(_titleUpdateLabel);
 
 		_reinstall = AddAction("Reinstall Fable 2", () => ReinstallRequested?.Invoke());
 		_unpackBanks = AddTrackedAction("Unpack Game Banks",
@@ -255,6 +261,12 @@ public partial class ReinstallPanel : VBoxContainer
 	public void Refresh(bool busy, bool gameIsRunning)
 	{
 		_targetLabel.Text = "Target: " + Installer.GetLuaWorkspacePath().Replace('\\', '/');
+
+		// The installed pair, from the two file headers: a patch for another pressing is the
+		// one install fault the game only reports when the loader rejects it.
+		bool pairOk = Installer.CheckInstalledTitleUpdate(out string pair);
+		_titleUpdateLabel.Visible = pair.Length != 0;
+		_titleUpdateLabel.Text = pairOk ? pair : "Title update: " + pair;
 
 		bool reinstallEnabled = !busy && !gameIsRunning;
 		bool moddingEnabled = reinstallEnabled && Installer.AssetsExist();

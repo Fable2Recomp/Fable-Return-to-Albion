@@ -45,6 +45,18 @@ public static class XisoExtractor
 		return extractor.Extract(isoPath, destinationDirectory, out error);
 	}
 
+	/// <summary>
+	/// Reads the first <paramref name="maxBytes"/> of one file in the image's root directory
+	/// without extracting anything. The install dialog identifies <c>default.xex</c> this way
+	/// before the long extraction starts.
+	/// </summary>
+	public static bool TryReadRootFileHead(
+		string isoPath, string fileName, int maxBytes, out byte[] data, out string error)
+	{
+		var extractor = new Extractor();
+		return extractor.ReadRootFileHead(isoPath, fileName, maxBytes, out data, out error);
+	}
+
 	private sealed class DirectoryEntry
 	{
 		public ushort LeftOffset;
@@ -133,6 +145,97 @@ public static class XisoExtractor
 					!optimized,
 					out error);
 			}
+		}
+
+		public bool ReadRootFileHead(
+			string isoPath, string fileName, int maxBytes, out byte[] data, out string error)
+		{
+			data = Array.Empty<byte>();
+			error = string.Empty;
+			_imagePath = isoPath;
+
+			try
+			{
+				_image = new FileStream(isoPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+			}
+			catch (Exception)
+			{
+				return Fail("Failed to open " + isoPath + ".", out error);
+			}
+
+			using (_image)
+			{
+				if (!DetectDiscLayout(out uint rootSector, out uint rootSize, out error))
+				{
+					return false;
+				}
+
+				if (!LoadDirectoryTable(
+						(ulong)rootSector * SectorSize + _discOffset, rootSize, out byte[] table, out error))
+				{
+					return false;
+				}
+
+				DirectoryEntry? found = null;
+				if (table.Length != 0 &&
+					!FindEntry(table, 0, fileName, new HashSet<int>(), ref found, out error))
+				{
+					return false;
+				}
+
+				if (found is null)
+				{
+					return Fail("The Xbox ISO has no " + fileName + " in its root directory.", out error);
+				}
+
+				int size = (int)Math.Min(found.FileSize, (uint)maxBytes);
+				data = new byte[size];
+				if (!ReadAt((ulong)found.StartSector * SectorSize + _discOffset, data, size))
+				{
+					return Fail("Failed to read " + fileName + " from " + _imagePath + ".", out error);
+				}
+
+				return true;
+			}
+		}
+
+		/// <summary>Walks one directory table's tree for a file by name, case-insensitively.</summary>
+		private bool FindEntry(
+			byte[] table, int entryOffset, string fileName, HashSet<int> visited,
+			ref DirectoryEntry? found, out string error)
+		{
+			var parsed = new ParsedEntry();
+			if (!ParseEntry(table, entryOffset, parsed, out bool emptyDirectory, out error))
+			{
+				return false;
+			}
+
+			if (emptyDirectory || !visited.Add(parsed.EntryOffset))
+			{
+				return true;
+			}
+
+			DirectoryEntry entry = parsed.Entry;
+			if (!entry.IsDirectory &&
+				string.Equals(entry.Filename, fileName, StringComparison.OrdinalIgnoreCase))
+			{
+				found = entry;
+				return true;
+			}
+
+			if (entry.LeftOffset != 0 &&
+				!FindEntry(table, entry.LeftOffset * 4, fileName, visited, ref found, out error))
+			{
+				return false;
+			}
+
+			if (found is null && entry.RightOffset != 0 &&
+				!FindEntry(table, entry.RightOffset * 4, fileName, visited, ref found, out error))
+			{
+				return false;
+			}
+
+			return true;
 		}
 
 		private bool Seek(ulong offset)

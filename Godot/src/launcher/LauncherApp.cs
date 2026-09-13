@@ -1480,8 +1480,8 @@ public partial class LauncherApp : Control
 		}
 		else if (!assetsExist)
 		{
-			// The whole install runs from here: extract the ISO, copy the XEXP, generate
-			// the game code and compile it.
+			// The whole install runs from here: extract the ISO, install the title update,
+			// generate the game code and compile it.
 			label = "Install " + gameTitle;
 		}
 		else if (Recompile.GameCodeBuild.NeedsBuildCached(out _))
@@ -1845,15 +1845,18 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		_installStatus = "Copying XEXP...";
+		_installStatus = "Installing title update...";
 		RefreshState();
 
-		if (!Installer.CopyGameExecutable(
-				xexpPath, Installer.GetGameMarkerPath(), out string copyError))
+		if (!Installer.InstallTitleUpdate(
+				xexpPath, Installer.GetGameMarkerPath(), out string updateError))
 		{
-			FailInstall(_installStatus, copyError);
+			FailInstall(_installStatus, updateError);
 			return;
 		}
+
+		Installer.InvalidateReinstallStepStatus();
+		Log(Installer.CheckInstalledTitleUpdate(out string pair) ? pair : "Title update check: " + pair);
 
 		// The game code, generated and compiled from the executable just installed. This is
 		// the longest part of an install by a wide margin — it is a compiler building
@@ -2043,7 +2046,7 @@ public partial class LauncherApp : Control
 	{
 		var dialog = new InstallDialog(null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle);
 
-		// ISO/XEXP, then the one build decision, then the whole pipeline runs unattended:
+		// ISO and title update, then the one build decision, then the whole pipeline runs unattended:
 		// extract, generate, compile. Asking again afterwards would strand the install
 		// half-done behind a second button nobody knows to press.
 		dialog.InstallRequested += (iso, xexp) => AskBuildSpeed(

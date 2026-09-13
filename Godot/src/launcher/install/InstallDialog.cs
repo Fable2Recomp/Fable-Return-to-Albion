@@ -77,7 +77,8 @@ public partial class InstallDialog : Control
 		column.AddChild(heading);
 
 		Label intro = MakeLabel(
-			"Select the Fable 2 ISO and the extracted game executable marker (.xexp).");
+			"Select the Fable 2 ISO and its title update: either the default.xexp itself, " +
+			"or the title update package it came in (TU_16L61VH_..., any name).");
 		intro.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		column.AddChild(intro);
 
@@ -85,9 +86,10 @@ public partial class InstallDialog : Control
 		_isoEdit = AddPathRow(column, () => BrowseForFile(
 			"Select the Fable 2 ISO", new[] { "*.iso ; Disc image" }, _isoEdit));
 
-		column.AddChild(MakeLabel("Game XEXP"));
+		column.AddChild(MakeLabel("Title update (.xexp or package)"));
 		_xexpEdit = AddPathRow(column, () => BrowseForFile(
-			"Select the game XEXP", new[] { "*.xexp ; Game marker" }, _xexpEdit));
+			"Select the title update",
+			new[] { "*.xexp ; Title update patch", "* ; Title update package" }, _xexpEdit));
 
 		_errorLabel = MakeLabel(string.Empty);
 		_errorLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
@@ -276,16 +278,48 @@ public partial class InstallDialog : Control
 		}
 		else if (!File.Exists(xexpPath))
 		{
-			_dialogError = "The selected XEXP path does not exist.";
+			_dialogError = "The selected title update path does not exist.";
 		}
-		else
+		else if (TitleUpdateFitsDisc(isoPath, xexpPath, out string mismatch))
 		{
 			InstallRequested?.Invoke(isoPath, xexpPath);
 			QueueFree();
 			return;
 		}
+		else
+		{
+			_dialogError = mismatch;
+		}
 
 		RefreshState();
+	}
+
+	/// <summary>
+	/// The one check that can save the player an hour: the patch must be for the disc in
+	/// hand. Both identities come from file headers, so this costs a few reads, not an
+	/// extraction.
+	/// </summary>
+	private static bool TitleUpdateFitsDisc(string isoPath, string updatePath, out string error)
+	{
+		if (!TitleUpdate.TryLoad(updatePath, out TitleUpdate update, out error))
+		{
+			return false;
+		}
+
+		if (!Xiso.XisoExtractor.TryReadRootFileHead(
+				isoPath, "default.xex", 64 * 1024, out byte[] head, out string isoError))
+		{
+			error = "The ISO's game executable could not be read: " + isoError;
+			return false;
+		}
+
+		if (!TitleUpdate.TryReadExecutable(head, out XexIdentity executable, out string xexError))
+		{
+			error = "The ISO's game executable could not be identified: " + xexError;
+			return false;
+		}
+
+		return update.AppliesTo(executable, out error);
 	}
 
 	private void RefreshState()
@@ -295,8 +329,7 @@ public partial class InstallDialog : Control
 		_errorLabel.Visible = _dialogError.Length != 0;
 		_errorLabel.Text = _dialogError.Length == 0
 			? string.Empty
-			: "Picker error: " + _dialogError +
-			  "\nYou can still paste the paths manually and continue.";
+			: _dialogError;
 	}
 
 	private void Apply(Control control)
