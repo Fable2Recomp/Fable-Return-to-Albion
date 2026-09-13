@@ -18,6 +18,14 @@
 # refii:: or rex:: is a C++ symbol we own, and therefore a violation. The C entries
 # (refii_bridge_*), the generated guest's sub_*, and the payload's own std:: are either
 # unmangled or not ours, and pass. Both manglings are matched, so it fires on either host.
+#
+# ONLY STRONG REFERENCES COUNT. A weak undefined (nm "w"/"v") never fails a link: it resolves
+# to null when nothing defines it, on ELF and COFF alike. The Itanium ABI produces exactly
+# one of these per `extern thread_local` a TU reads -- a weak reference to the variable's
+# initialisation routine (_ZTH...), which the wrapper calls only if it exists and which is
+# never emitted for a constant-initialised variable. The payload defines those variables
+# itself (internal_state_guest.cpp compiles into the hook set), so nothing crosses the
+# boundary; MSVC has no such routine, so this appeared only on Linux and read as two imports.
 
 cmake_minimum_required(VERSION 3.24)
 
@@ -39,7 +47,12 @@ endif()
 
 # Itanium spells the namespace as a length-prefixed component, MSVC as an @-delimited one. A
 # symbol is a run of non-whitespace, so the marker is matched inside the whole name.
-set(_pattern "[^ \t\r\n]*(_Z[^ \t\r\n]*(5refii|3rex)|@(refii|rex)@@)[^ \t\r\n]*")
+set(_symbol_pattern "[^ \t\r\n]*(_Z[^ \t\r\n]*(5refii|3rex)|@(refii|rex)@@)[^ \t\r\n]*")
+
+# The undefined pass keys on nm's type column: "U" is a strong reference, "w" and "v" are
+# weak and are left out (see the header). The defined pass takes every type.
+set(_undefined_pattern "[ \t]U[ \t]+${_symbol_pattern}")
+set(_defined_pattern "${_symbol_pattern}")
 
 # ONE REGEX PASS OVER BATCHED OUTPUT. Walking nm's lines in CMake and matching each one costs
 # minutes across ~90 objects and their hundred thousand symbols; MATCHALL over the whole blob
@@ -47,7 +60,7 @@ set(_pattern "[^ \t\r\n]*(_Z[^ \t\r\n]*(5refii|3rex)|@(refii|rex)@@)[^ \t\r\n]*"
 # violation. Batched rather than one invocation per object for the process cost, and batched
 # rather than all-at-once because Windows stops accepting a command line at 32767 characters --
 # the same wall the payload's own link hit.
-function(_refii_collect out_var mode)
+function(_refii_collect out_var mode pattern)
     set(_found "")
     set(_batch "")
     set(_size 0)
@@ -76,8 +89,12 @@ function(_refii_collect out_var mode)
                 set(${out_var} "SKIPPED" PARENT_SCOPE)
                 return()
             endif()
-            string(REGEX MATCHALL "${_pattern}" _hits "${_out}")
-            list(APPEND _found ${_hits})
+            string(REGEX MATCHALL "${pattern}" _hits "${_out}")
+            foreach(_hit IN LISTS _hits)
+                # Drop the type column the undefined pattern anchored on.
+                string(REGEX REPLACE "^[ \t]U[ \t]+" "" _hit "${_hit}")
+                list(APPEND _found "${_hit}")
+            endforeach()
             set(_batch "")
             set(_size 0)
         endif()
@@ -93,7 +110,7 @@ function(_refii_collect out_var mode)
     set(${out_var} "${_found}" PARENT_SCOPE)
 endfunction()
 
-_refii_collect(_undefined --undefined-only ${_objects})
+_refii_collect(_undefined --undefined-only "${_undefined_pattern}" ${_objects})
 if(_undefined STREQUAL "SKIPPED")
     return()
 endif()
@@ -101,7 +118,7 @@ if(NOT _undefined)
     return()
 endif()
 
-_refii_collect(_defined --defined-only ${_objects})
+_refii_collect(_defined --defined-only "${_defined_pattern}" ${_objects})
 if(_defined STREQUAL "SKIPPED")
     return()
 endif()
