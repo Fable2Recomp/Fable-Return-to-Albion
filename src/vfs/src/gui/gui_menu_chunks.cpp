@@ -76,15 +76,16 @@ extern "C" void refii_bridge_stage_menu_attribute(const char* name_data, size_t 
     Staged().push_back(std::move(attribute));
 }
 
-void RunMenuChunk(std::string chunk, uint32_t presentation) {
-    if (chunk.empty()) {
+extern "C" void refii_bridge_run_menu_chunk(const char* chunk, size_t length,
+                                            uint32_t presentation) {
+    if (chunk == nullptr || length == 0) {
         return;
     }
 
     std::lock_guard<std::mutex> lock(Mutex());
 
     MenuChunkCall call;
-    call.chunk = std::move(chunk);
+    call.chunk.assign(chunk, length);
     call.presentation = presentation;
     call.staged.swap(Staged());
     call.sequence = g_recorded.fetch_add(1, std::memory_order_relaxed) + 1u;

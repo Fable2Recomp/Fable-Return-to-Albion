@@ -55,6 +55,23 @@ set(_app "${WORK_DIR}/${APP_NAME}")
 file(REMOVE_RECURSE "${_app}")
 file(MAKE_DIRECTORY "${_app}")
 
+# IMPORT AS ITS OWN RUN FIRST. --export-release reimports anything stale on its way past,
+# and on Windows that killed the editor: an access violation partway through the .glsl
+# files, reported below as "Godot export failed (exit Access violation)" with nothing to
+# say an import had been under way. The same editor imports the project cleanly when asked
+# to do only that, then exports cleanly afterwards. A warm cache makes this a quick scan.
+# A bad import warns rather than stops: the export still reports any real failure, so this
+# leaves the build no worse off than not running it.
+execute_process(
+    COMMAND "${GODOT}" --headless --path "${PROJECT_DIR}" --import
+    RESULT_VARIABLE _import_result
+)
+if(NOT _import_result EQUAL 0)
+    message(WARNING
+        "Godot asset import returned ${_import_result}; continuing to the export, which "
+        "will reimport what is missing and report anything it cannot.")
+endif()
+
 message(STATUS "Exporting '${PRESET}' -> ${_app}/${OUT_BINARY}")
 
 execute_process(

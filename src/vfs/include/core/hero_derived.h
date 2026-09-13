@@ -167,7 +167,10 @@ struct FamilyMember {
 };
 
 constexpr uint32_t kMaxFamilyMembers = 32;
-void PublishFamily(const FamilyMember* members, uint32_t count);
+inline void PublishFamily(const FamilyMember* members, uint32_t count) {
+  refii_bridge_publish_family(members, count);
+}
+
 uint32_t FamilySnapshot(FamilyMember* out, uint32_t capacity);
 
 /// THE REAL ESTATE SCREEN'S ONE BUILDING — screen 28.
@@ -227,7 +230,10 @@ struct RealEstate {
     uint32_t bonuses_record = 0;
 };
 
-void PublishRealEstate(const RealEstate& estate);
+inline void PublishRealEstate(const RealEstate& estate) {
+  refii_bridge_publish_real_estate(&estate);
+}
+
 RealEstate RealEstateSnapshot();
 
 /// ONE JOB'S JOURNEY — the world map's job page.
@@ -266,8 +272,14 @@ struct QuestTravel {
 
 /// Which quest the host wants a journey for; the pump answers for that one only.
 void RequestQuestTravel(uint32_t record);
-uint32_t RequestedQuestTravel();
-void PublishQuestTravel(const QuestTravel& travel);
+inline uint32_t RequestedQuestTravel() {
+  return refii_bridge_requested_quest_travel();
+}
+
+inline void PublishQuestTravel(const QuestTravel& travel) {
+  refii_bridge_publish_quest_travel(&travel);
+}
+
 QuestTravel QuestTravelSnapshot();
 
 /// ONE SHOP ROW'S ASKING PRICE.
@@ -285,8 +297,19 @@ struct ShopPrice {
 };
 
 void RequestShopPrice(uint32_t ticket, bool sell);
-uint32_t RequestedShopPrice(bool* sell);
-void PublishShopPrice(const ShopPrice& price);
+inline uint32_t RequestedShopPrice(bool* sell) {
+  int32_t selling = 0;
+  const uint32_t ticket = refii_bridge_requested_shop_price(&selling);
+  if (sell != nullptr) {
+    *sell = selling != 0;
+  }
+  return ticket;
+}
+
+inline void PublishShopPrice(const ShopPrice& price) {
+  refii_bridge_publish_shop_price(&price);
+}
+
 ShopPrice ShopPriceSnapshot();
 
 /// Which region the host wants sampled; the pump answers for that one only.

@@ -56,7 +56,12 @@ function(refii_stage_payload_sdk)
     endif()
 
     set(_sdk_dir "${REFII_GODOT_BUILD_BIN_DIR}/recompile")
-    set(_include_manifest "${CMAKE_BINARY_DIR}/payload_include_dirs.txt")
+    # $<CONFIG> IS PART OF THE NAME. Some of these dirs arrive through config-conditional
+    # genexes, and file(GENERATE) refuses one path with two different bodies. Single-config
+    # Ninja on Linux evaluates only one configuration and never noticed; a multi-config
+    # generator evaluates all three and the generate step fails outright. The staging is
+    # per-config anyway -- see the rm -rf of lib/ below.
+    set(_include_manifest "${CMAKE_BINARY_DIR}/payload_include_dirs_$<CONFIG>.txt")
 
     refii_write_payload_include_manifest("${_payload_include_target}" "${_include_manifest}")
 

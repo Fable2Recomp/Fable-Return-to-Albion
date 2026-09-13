@@ -422,11 +422,16 @@ extern "C" void refii_bridge_hero_derived_snapshot(void* out) {
 
 void RequestQuestTravel(uint32_t record) { g_journey_wanted.store(record); }
 
-uint32_t RequestedQuestTravel() { return g_journey_wanted.load(); }
+extern "C" uint32_t refii_bridge_requested_quest_travel() {
+  return g_journey_wanted.load();
+}
 
-void PublishQuestTravel(const QuestTravel& travel) {
+extern "C" void refii_bridge_publish_quest_travel(const void* travel) {
+  if (travel == nullptr) {
+    return;
+  }
   std::lock_guard<std::mutex> lock(g_journey_mutex);
-  g_journey = travel;
+  g_journey = *static_cast<const QuestTravel*>(travel);
 }
 
 QuestTravel QuestTravelSnapshot() {
@@ -438,17 +443,20 @@ void RequestShopPrice(uint32_t ticket, bool sell) {
   g_shop_price_wanted.store((ticket & 0x7FFFFFFFu) | (sell ? 0x80000000u : 0u));
 }
 
-uint32_t RequestedShopPrice(bool* sell) {
+extern "C" uint32_t refii_bridge_requested_shop_price(int32_t* sell) {
   const uint32_t wanted = g_shop_price_wanted.load();
   if (sell != nullptr) {
-    *sell = (wanted & 0x80000000u) != 0u;
+    *sell = (wanted & 0x80000000u) != 0u ? 1 : 0;
   }
   return wanted & 0x7FFFFFFFu;
 }
 
-void PublishShopPrice(const ShopPrice& price) {
+extern "C" void refii_bridge_publish_shop_price(const void* price) {
+  if (price == nullptr) {
+    return;
+  }
   std::lock_guard<std::mutex> lock(g_shop_price_mutex);
-  g_shop_price = price;
+  g_shop_price = *static_cast<const ShopPrice*>(price);
 }
 
 ShopPrice ShopPriceSnapshot() {
@@ -475,9 +483,12 @@ WorldMapRegion WorldMapRegionSnapshot() {
   return g_region;
 }
 
-void PublishRealEstate(const RealEstate& estate) {
+extern "C" void refii_bridge_publish_real_estate(const void* estate) {
+  if (estate == nullptr) {
+    return;
+  }
   std::lock_guard<std::mutex> lock(g_estate_mutex);
-  g_estate = estate;
+  g_estate = *static_cast<const RealEstate*>(estate);
 }
 
 RealEstate RealEstateSnapshot() {
@@ -509,11 +520,16 @@ uint32_t QuestSnapshot(QuestEntry* out, uint32_t capacity) {
   return g_quest_count;
 }
 
-void PublishFamily(const FamilyMember* members, uint32_t count) {
+extern "C" void refii_bridge_publish_family(const void* members, uint32_t count) {
+  const FamilyMember* typed = static_cast<const FamilyMember*>(members);
   std::lock_guard<std::mutex> lock(g_family_mutex);
   g_family_count = count < kMaxFamilyMembers ? count : kMaxFamilyMembers;
+  if (typed == nullptr) {
+    g_family_count = 0;
+    return;
+  }
   for (uint32_t i = 0; i < g_family_count; ++i) {
-    g_family[i] = members[i];
+    g_family[i] = typed[i];
   }
 }
 

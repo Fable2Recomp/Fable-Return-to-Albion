@@ -175,6 +175,18 @@ void refii_bridge_publish_quests(const void* entries, uint32_t count);
 uint32_t refii_bridge_requested_world_map_region(void);
 void refii_bridge_publish_world_map_region(const void* region);
 
+// The rest of the pump's sampled pages, on the same terms as the two above: the payload
+// samples on the guest thread and publishes, the host asks for the one row it is showing.
+// Each POD goes over as const void* because its definition is in hero_derived.h, which is
+// C++; the host casts it back. "sell" is int32_t rather than bool for the reason the
+// contract gives at the top of this file.
+void refii_bridge_publish_family(const void* members, uint32_t count);
+void refii_bridge_publish_real_estate(const void* estate);
+uint32_t refii_bridge_requested_quest_travel(void);
+void refii_bridge_publish_quest_travel(const void* travel);
+uint32_t refii_bridge_requested_shop_price(int32_t* sell);
+void refii_bridge_publish_shop_price(const void* price);
+
 void refii_bridge_note_gui_native_registration(uint32_t implementation,
                                                const char* name, size_t length);
 int32_t refii_bridge_gui_native_name_for(uint32_t implementation,
@@ -191,6 +203,10 @@ void refii_bridge_note_gui_element_change(const void* change);
 void refii_bridge_stage_menu_attribute(const char* name, size_t name_length,
                                        const char* text, size_t text_length,
                                        float number, int32_t is_number);
+
+// The runner the two stagers feed. Pointer and length, not std::string: the chunk text is
+// carried verbatim and the host copies it into its own queue.
+void refii_bridge_run_menu_chunk(const char* chunk, size_t length, uint32_t presentation);
 
 void refii_bridge_ensure_alternate_signal_stack(void);
 

@@ -44,7 +44,9 @@ inline void StageMenuAttribute(std::string name, std::string text, float number,
 }
 
 /// Records a chunk and consumes the staged bag; a leftover would attach to the next chunk.
-void RunMenuChunk(std::string chunk, uint32_t presentation);
+inline void RunMenuChunk(std::string chunk, uint32_t presentation) {
+  refii_bridge_run_menu_chunk(chunk.data(), chunk.size(), presentation);
+}
 
 /// Takes every recorded call. Empties the queue.
 std::vector<MenuChunkCall> TakeMenuChunkCalls();

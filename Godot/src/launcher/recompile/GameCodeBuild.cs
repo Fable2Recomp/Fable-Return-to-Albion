@@ -1834,11 +1834,54 @@ public static class GameCodeBuild
 		}
 
 		(int code, string output) = await RunCaptureAsync(
-			zig.Zig, Prefixed("c++", arguments), cancellation).ConfigureAwait(false);
+			zig.Zig, Prefixed("c++", LinkArguments(arguments)), cancellation)
+			.ConfigureAwait(false);
 
 		return code == 0
 			? new Result(true, string.Empty)
 			: new Result(false, output);
+	}
+
+	/// <summary>
+	/// The link arguments, moved into a response file on Windows.
+	/// </summary>
+	/// <remarks>
+	/// CreateProcess TAKES AT MOST 32767 CHARACTERS for the whole command line, and this link
+	/// names every object by absolute path -- about 150 characters apiece in a real install, so
+	/// a few hundred translation units clear the limit between them. .NET then raises Win32
+	/// error 206, "The filename or extension is too long", from Process.Start before zig is
+	/// reached at all, which reads as the build crashing with nothing compiled wrong.
+	///
+	/// Linux has no comparable ceiling -- ARG_MAX is megabytes -- so the same link has always
+	/// been fine there and is handed through untouched.
+	///
+	/// EVERY ENTRY IS QUOTED: the install path routinely contains spaces. Backslashes inside
+	/// the quotes are literal to zig's parser rather than escapes, so Windows paths need
+	/// nothing further, and a double quote cannot occur in a Windows filename.
+	///
+	/// The file goes in BuildDirectory, which phase 0 clears and a successful build deletes, so
+	/// it outlives the build only when the link failed. Its contents are logged too, because
+	/// the command line no longer carries them.
+	/// </remarks>
+	private static IReadOnlyList<string> LinkArguments(IReadOnlyList<string> arguments)
+	{
+		if (!OperatingSystem.IsWindows())
+		{
+			return arguments;
+		}
+
+		var body = new StringBuilder();
+		foreach (string argument in arguments)
+		{
+			body.Append('"').Append(argument).Append('"').Append('\n');
+		}
+
+		string path = Path.Combine(BuildDirectory, "link.rsp");
+		Directory.CreateDirectory(BuildDirectory);
+		File.WriteAllText(path, body.ToString());
+		LogWrite("link response file " + path + ":");
+		LogWrite(body.ToString());
+		return new[] { "@" + path };
 	}
 
 	/// <summary>

@@ -139,12 +139,22 @@ function(refii_define_godot_export_target)
         set(_shader_check_all ALL)
     endif()
 
-    # The binary goes through `cmake -E env` rather than a target ENVIRONMENT property, which
-    # only applies to tests and would silently do nothing here.
+    # A `cmake -P` script, not a shell one: this ran tools/check_godot_shaders.sh as the
+    # command itself, which cmd.exe cannot execute, failing the step with a bare "unknown
+    # error". It takes the same Godot arguments as refii_package below and resolves the
+    # editor the same way, so the shaders are checked by the binary that will export them.
     add_custom_target(refii_shader_check ${_shader_check_all}
-        COMMAND ${CMAKE_COMMAND} -E env
-            "REFII_GODOT_EXECUTABLE=${REFII_GODOT_EXECUTABLE}"
-            "${CMAKE_SOURCE_DIR}/tools/check_godot_shaders.sh"
+        COMMAND ${CMAKE_COMMAND}
+            -DGODOT=${REFII_GODOT_EXECUTABLE}
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/Godot
+            -DGODOT_SCRIPT=${CMAKE_SOURCE_DIR}/cmake/refii_fetch_godot.cmake
+            -DGODOT_DIR=${REFII_GODOT_DIR}
+            -DHOST_PLATFORM=${_host_platform}
+            -DHOST_ARCH=${_host_arch}
+            -DTOOL_PLATFORM=${_platform}
+            -DTOOL_ARCH=${REFII_GODOT_ARCH}
+            -DTOOL_CACHE=${REFII_TOOL_CACHE_DIR}
+            -P "${CMAKE_SOURCE_DIR}/cmake/refii_check_godot_shaders.cmake"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         COMMENT "Compiling Godot shaders"
         USES_TERMINAL

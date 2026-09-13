@@ -177,8 +177,17 @@ function(refii_rexglue_shadow_link_sdk_tree)
             DIRECTORY
         )
         file(MAKE_DIRECTORY "${_refii_rexglue_sdk_shadow_parent}")
+        # A hardlink keeps the shadow current for free until git rewrites the SDK file: a
+        # checkout replaces the inode rather than editing it, leaving the shadow on the old
+        # content. Skipping every file that merely EXISTS is what froze this tree on the
+        # pre-v0.10 SDK, while Linux -- which wipes and re-copies -- tracked the bump.
+        # IS_NEWER_THAN is true on equal timestamps, so a live hardlink still costs nothing.
         if(EXISTS "${_refii_rexglue_sdk_shadow_file}")
-            continue()
+            if("${_refii_rexglue_sdk_shadow_file}" IS_NEWER_THAN
+               "${_refii_rexglue_sdk_source_file}")
+                continue()
+            endif()
+            file(REMOVE "${_refii_rexglue_sdk_shadow_file}")
         endif()
         file(CREATE_LINK
             "${_refii_rexglue_sdk_source_file}"
@@ -192,6 +201,51 @@ function(refii_rexglue_shadow_link_sdk_tree)
     unset(_refii_rexglue_sdk_source_file)
     unset(_refii_rexglue_sdk_file)
     unset(_refii_rexglue_sdk_files)
+endfunction()
+
+# The link pass can add and refresh but cannot notice a REMOVAL, and the SDK globs its own
+# sources -- so a file upstream deleted keeps being compiled against headers that moved on.
+# v0.10 retired sha256, the graphics trace_* set and the legacy_config/migration_scan
+# commands, and all of them were still here. This is the missing half of the wipe Linux does.
+#
+# Two things are spared: "out/", the SDK's own build output, which the link pass also skips;
+# and the .git submodule markers written below, which by design are in neither input tree.
+function(refii_rexglue_shadow_prune_orphans)
+    file(GLOB_RECURSE _refii_rexglue_shadow_files
+        LIST_DIRECTORIES FALSE
+        RELATIVE "${REFII_REXGLUE_SHADOW_BUILD_DIR}"
+        "${REFII_REXGLUE_SHADOW_BUILD_DIR}/*"
+    )
+
+    set(_refii_rexglue_pruned 0)
+    foreach(_refii_rexglue_shadow_file IN LISTS _refii_rexglue_shadow_files)
+        if(_refii_rexglue_shadow_file MATCHES "^out(/|$)")
+            continue()
+        endif()
+        if(_refii_rexglue_shadow_file MATCHES "(^|/)\.git$")
+            continue()
+        endif()
+        if(EXISTS "${REFII_REXGLUE_SDK_SOURCE_DIR}/${_refii_rexglue_shadow_file}")
+            continue()
+        endif()
+        if(EXISTS "${REFII_REXGLUE_SHADOW_DIR}/${_refii_rexglue_shadow_file}")
+            continue()
+        endif()
+
+        file(REMOVE "${REFII_REXGLUE_SHADOW_BUILD_DIR}/${_refii_rexglue_shadow_file}")
+        math(EXPR _refii_rexglue_pruned "${_refii_rexglue_pruned} + 1")
+    endforeach()
+
+    if(_refii_rexglue_pruned GREATER 0)
+        message(STATUS
+            "ReXGlue shadow: pruned ${_refii_rexglue_pruned} file(s) no longer present "
+            "in the SDK or the shadow overlay"
+        )
+    endif()
+
+    unset(_refii_rexglue_pruned)
+    unset(_refii_rexglue_shadow_file)
+    unset(_refii_rexglue_shadow_files)
 endfunction()
 
 function(refii_rexglue_shadow_copy_mutable_sdk_file relative_path)
@@ -259,6 +313,7 @@ function(refii_rexglue_prepare_shadow_sdk out_var)
     file(MAKE_DIRECTORY "${REFII_REXGLUE_SHADOW_BUILD_DIR}")
     if(WIN32)
         refii_rexglue_shadow_link_sdk_tree()
+        refii_rexglue_shadow_prune_orphans()
     else()
         file(REMOVE_RECURSE "${REFII_REXGLUE_SHADOW_BUILD_DIR}")
         file(MAKE_DIRECTORY "${REFII_REXGLUE_SHADOW_BUILD_DIR}")
@@ -390,6 +445,89 @@ function(refii_rexglue_add_shadow_source target_name sdk_relative_path)
     endif()
 endfunction()
 
+# rexnet-core is Rust and reaches rexruntime as a STATICLIB. WINDOWS_EXPORT_ALL_SYMBOLS,
+# which is how rexruntime exports anything, builds its .def from the target's own objects
+# and those of the OBJECT libraries it links -- never from inside a .lib. So the rexnet_*
+# entry points are linked into rexruntime.dll and sealed there, and refii_hostbridge, which
+# calls them through rexnet_ffi.h, has no import library entry to bind to. ELF has no such
+# gap: the Rust symbols are #[no_mangle] pub extern "C" with default visibility and the .so
+# exports them unasked, which is why this only broke on Windows.
+#
+# The list is READ FROM THE HEADER. rexnet_ffi.h is cbindgen output, so it is the same
+# surface the caller compiles against; a hand-kept list would omit the next entry point
+# someone adds and bring this same link error back. Only declaration lines match -- a line
+# beginning with a type, not the " *" of a doc comment.
+function(refii_rexglue_export_rexnet_ffi)
+    if(NOT WIN32 OR NOT REXGLUE_ENABLE_REXNET OR NOT TARGET rexruntime)
+        return()
+    endif()
+
+    set(_refii_rexnet_ffi_header
+        "${REFII_REXGLUE_SHADOW_BUILD_DIR}/include/rex/net/rexnet_ffi.h"
+    )
+    if(NOT EXISTS "${_refii_rexnet_ffi_header}")
+        set(_refii_rexnet_ffi_header
+            "${REFII_REXGLUE_SDK_SOURCE_DIR}/include/rex/net/rexnet_ffi.h"
+        )
+    endif()
+    if(NOT EXISTS "${_refii_rexnet_ffi_header}")
+        message(WARNING
+            "RexNet is enabled but rexnet_ffi.h was not found; refii_hostbridge will not "
+            "link against the rexnet C ABI."
+        )
+        return()
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY
+        CMAKE_CONFIGURE_DEPENDS "${_refii_rexnet_ffi_header}"
+    )
+
+    file(STRINGS "${_refii_rexnet_ffi_header}" _refii_rexnet_ffi_declarations
+        REGEX "^[A-Za-z_].*[ *]rexnet_[A-Za-z0-9_]*\\("
+    )
+
+    set(_refii_rexnet_ffi_symbols)
+    foreach(_refii_rexnet_ffi_declaration IN LISTS _refii_rexnet_ffi_declarations)
+        string(REGEX MATCHALL "[ *]rexnet_[A-Za-z0-9_]*\\("
+            _refii_rexnet_ffi_matches
+            "${_refii_rexnet_ffi_declaration}"
+        )
+        foreach(_refii_rexnet_ffi_match IN LISTS _refii_rexnet_ffi_matches)
+            string(REGEX REPLACE "^[ *]" "" _refii_rexnet_ffi_symbol "${_refii_rexnet_ffi_match}")
+            string(REGEX REPLACE "\\($" "" _refii_rexnet_ffi_symbol "${_refii_rexnet_ffi_symbol}")
+            list(APPEND _refii_rexnet_ffi_symbols "${_refii_rexnet_ffi_symbol}")
+        endforeach()
+    endforeach()
+    list(REMOVE_DUPLICATES _refii_rexnet_ffi_symbols)
+
+    if(NOT _refii_rexnet_ffi_symbols)
+        message(WARNING
+            "No rexnet_* entry points were found in ${_refii_rexnet_ffi_header}; "
+            "refii_hostbridge will not link against the rexnet C ABI."
+        )
+        return()
+    endif()
+
+    # Undecorated on x86-64, so the C name is the symbol name. /EXPORT adds to the
+    # generated .def rather than replacing it, leaving the rest of rexruntime untouched.
+    foreach(_refii_rexnet_ffi_symbol IN LISTS _refii_rexnet_ffi_symbols)
+        target_link_options(rexruntime PRIVATE "LINKER:/EXPORT:${_refii_rexnet_ffi_symbol}")
+    endforeach()
+
+    list(LENGTH _refii_rexnet_ffi_symbols _refii_rexnet_ffi_count)
+    message(STATUS
+        "RexNet: exporting ${_refii_rexnet_ffi_count} rexnet_* entry point(s) from rexruntime"
+    )
+
+    unset(_refii_rexnet_ffi_count)
+    unset(_refii_rexnet_ffi_symbol)
+    unset(_refii_rexnet_ffi_match)
+    unset(_refii_rexnet_ffi_matches)
+    unset(_refii_rexnet_ffi_declaration)
+    unset(_refii_rexnet_ffi_declarations)
+    unset(_refii_rexnet_ffi_symbols)
+    unset(_refii_rexnet_ffi_header)
+endfunction()
+
 function(refii_rexglue_apply_shadow_overrides)
     if(NOT EXISTS "${REFII_REXGLUE_SHADOW_DIR}")
         return()
@@ -410,6 +548,8 @@ function(refii_rexglue_apply_shadow_overrides)
         # passes 0x10000000 for every overlapped system request, which is what a pub game makes as
         # it starts — so sitting down at a Keystone table aborted the process. See the shadow copy.
         refii_rexglue_replace_target_source(rexruntime "src/kernel/xam/xam_info.cpp")
+
+        refii_rexglue_export_rexnet_ffi()
     endif()
 
     if(TARGET rexui)
