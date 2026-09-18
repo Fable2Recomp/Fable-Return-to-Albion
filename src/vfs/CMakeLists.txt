@@ -103,6 +103,9 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/guest_tick_pump.cpp
     ${REFII_VFS_ROOT}/src/hooks/game_init_trace.cpp
     ${REFII_VFS_ROOT}/src/hooks/frontend_video_handoff.cpp
+    ${REFII_VFS_ROOT}/src/hooks/particle_transform.cpp
+    ${REFII_VFS_ROOT}/src/hooks/spell_fx_lifetime.cpp
+    ${REFII_VFS_ROOT}/src/hooks/target_highlight.cpp
     ${REFII_VFS_ROOT}/src/hooks/native_misc.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_open.cpp
     ${REFII_VFS_ROOT}/src/hooks/loading_resource_hashes.cpp

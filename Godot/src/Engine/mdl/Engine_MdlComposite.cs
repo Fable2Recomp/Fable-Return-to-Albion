@@ -28,8 +28,15 @@ public static class Engine_MdlComposite
     /// <summary>The index into the part list each surface came from, in surface order.</summary>
     public const string SurfacePartsMeta = "mdl_surface_parts";
 
+    public static readonly StringName SurfacePartsMetaName = SurfacePartsMeta;
+    public static readonly StringName PartHashesMetaName = "mdl_part_hashes";
+
     /// <summary>The part hashes the caller assembled from, in part order; set by the caller.</summary>
     public const string PartHashesMeta = "mdl_part_hashes";
+
+    /// <summary>One surface's coarser levels, to pass through when the surface is re-added.</summary>
+    public static Godot.Collections.Dictionary? SurfaceLodsOf(Mesh mesh, int surface) =>
+        Engine_MdlMesh.SurfaceLods(mesh, surface);
 
     /// <summary>
     /// Concatenates the surfaces of every part that resolves, or null when none of them do.
@@ -71,9 +78,12 @@ public static class Engine_MdlComposite
 
         var pending =
             new List<(Godot.Collections.Array Arrays, Mesh.PrimitiveType Primitive,
-                string Name, Material Material, string? Bare, bool? Left, string Region, int Part)>();
+                string Name, Material Material, string? Bare, bool? Left, string Region, int Part,
+                Godot.Collections.Dictionary? Lods)>();
         var surfaceRegions = new List<string>();
         var surfaceParts = new List<int>();
+        var surfaceLods = new Godot.Collections.Array();
+        bool anyLods = false;
 
         var partPaths = new List<string>();
         var partSpans = new List<int>();
@@ -186,12 +196,14 @@ public static class Engine_MdlComposite
                     skinned ? null : path,
                     eyeSides.TryGetValue(partIndex, out bool left) ? left : null,
                     surface < partRegions.Length ? partRegions[surface] : string.Empty,
-                    partIndex));
+                    partIndex,
+                    Engine_MdlMesh.SurfaceLods(part, surface)));
             }
         }
 
         foreach ((Godot.Collections.Array arrays, Mesh.PrimitiveType primitive, string name,
-                  Material material, string? bare, bool? forcedLeft, string region, int fromPart) in pending)
+                  Material material, string? bare, bool? forcedLeft, string region, int fromPart,
+                  Godot.Collections.Dictionary? lods) in pending)
         {
             if (bare is not null && !Anchor(arrays, boneIndex, parents, rest, bare, forcedLeft))
             {
@@ -201,13 +213,15 @@ public static class Engine_MdlComposite
                 continue;
             }
 
-            mesh.AddSurfaceFromArrays(primitive, arrays);
+            mesh.AddSurfaceFromArrays(primitive, arrays, null, lods);
 
             int added = mesh.GetSurfaceCount() - 1;
             mesh.SurfaceSetName(added, name);
             mesh.SurfaceSetMaterial(added, material);
             surfaceRegions.Add(region);
             surfaceParts.Add(fromPart);
+            surfaceLods.Add(lods ?? new Godot.Collections.Dictionary());
+            anyLods |= lods is not null;
         }
 
         if (mesh.GetSurfaceCount() == 0)
@@ -233,6 +247,10 @@ public static class Engine_MdlComposite
 
         mesh.SetMeta(Engine_MdlMesh.SurfaceRegionsMeta, surfaceRegions.ToArray());
         mesh.SetMeta(SurfacePartsMeta, surfaceParts.ToArray());
+        if (anyLods)
+        {
+            mesh.SetMeta(Engine_MdlMesh.SurfaceLodsMeta, surfaceLods);
+        }
 
         return mesh;
     }

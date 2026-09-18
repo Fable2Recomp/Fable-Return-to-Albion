@@ -53,6 +53,11 @@ void refii_bridge_note_bink_video_requested(uint8_t* base, uint32_t data_guest);
 /// The front end's subtitles setting as the guest last stated it: 1 on, 0 off, -1 unknown.
 void refii_bridge_front_end_note_subtitles(int32_t state);
 
+/// Which pause tabs the guest's own predicate (`sub_826B83D0`) answered yes for, bit N = tab N
+/// for N in 2..8. The predicate runs in the payload, on the guest thread; the answer is read by
+/// the host bridge, so it has to cross here rather than by C++ symbol.
+void refii_bridge_note_pause_tabs(uint32_t mask);
+
 // Menu spawn capture: a row's identity goes into a Lua table the host cannot read, so it is
 // copied from `sub_826CE8D0`'s registers. `begin` runs on `DeleteAllSpawnedMenuItems`, rows
 // follow in spawn order; both on the guest tick thread, host reads under the action-queue lock.
@@ -73,6 +78,11 @@ void refii_bridge_menu_spawn_row_labelled(const char* name, const char* parent, 
 
 uint64_t refii_bridge_guest_tick_pump_observe_tick(void);
 uint64_t refii_bridge_guest_tick_pump_drained(void);
+
+/// The guest's render frame: incremented on the game thread each time the 30 Hz HF pass
+/// (`sub_821A61B0`, which writes every character's pose) returns. 0 before the first.
+uint32_t refii_bridge_guest_frame(void);
+void refii_bridge_note_guest_frame(void);
 void refii_bridge_guest_tick_pump_note_ran(void);
 void refii_bridge_guest_tick_pump_note_result(uint32_t addr, uint64_t r3,
                                               const char* note, size_t length);

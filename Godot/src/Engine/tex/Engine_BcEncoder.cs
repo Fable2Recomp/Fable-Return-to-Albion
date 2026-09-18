@@ -11,26 +11,49 @@ internal static class Engine_BcEncoder
     internal static byte[]? Encode(
         byte[] rgba, int width, int height, TexSurfaceFormat format)
     {
-        int blocksW = Math.Max(1, (width + 3) / 4);
-        int blocksH = Math.Max(1, (height + 3) / 4);
-
-        int blockBytes = format switch
-        {
-            TexSurfaceFormat.Bc1 => 8,
-            TexSurfaceFormat.Bc4 => 8,
-            TexSurfaceFormat.Bc3 => 16,
-            TexSurfaceFormat.Bc5 => 16,
-            _ => 0,
-        };
-
-        if (blockBytes == 0 || rgba.Length < width * height * 4)
+        int size = EncodedBytes(width, height, format);
+        if (size == 0)
         {
             return null;
         }
 
-        var output = new byte[blocksW * blocksH * blockBytes];
+        var output = new byte[size];
+        return EncodeInto(rgba, width, height, format, output, 0) ? output : null;
+    }
+
+    /// <summary>Block bytes for one level, or 0 for a format this encoder does not write.</summary>
+    internal static int EncodedBytes(int width, int height, TexSurfaceFormat format)
+    {
+        int blockBytes = BlockBytes(format);
+        return blockBytes * Math.Max(1, (width + 3) / 4) * Math.Max(1, (height + 3) / 4);
+    }
+
+    private static int BlockBytes(TexSurfaceFormat format) => format switch
+    {
+        TexSurfaceFormat.Bc1 => 8,
+        TexSurfaceFormat.Bc4 => 8,
+        TexSurfaceFormat.Bc3 => 16,
+        TexSurfaceFormat.Bc5 => 16,
+        _ => 0,
+    };
+
+    /// <summary>Encodes one level into <paramref name="output"/> at <paramref name="offset"/>.</summary>
+    /// <remarks>Reads a span so a mip chain is encoded level by level without copying each level out.</remarks>
+    internal static bool EncodeInto(
+        ReadOnlySpan<byte> rgba, int width, int height, TexSurfaceFormat format, byte[] output, int offset)
+    {
+        int blocksW = Math.Max(1, (width + 3) / 4);
+        int blocksH = Math.Max(1, (height + 3) / 4);
+        int blockBytes = BlockBytes(format);
+
+        if (blockBytes == 0 || rgba.Length < width * height * 4 ||
+            output.Length - offset < blocksW * blocksH * blockBytes)
+        {
+            return false;
+        }
+
         var texels = new byte[16 * 4];
-        int cursor = 0;
+        int cursor = offset;
 
         for (int by = 0; by < blocksH; ++by)
         {
@@ -63,11 +86,11 @@ internal static class Engine_BcEncoder
             }
         }
 
-        return output;
+        return true;
     }
 
     private static void GatherBlock(
-        byte[] rgba, int width, int height, int originX, int originY, byte[] texels)
+        ReadOnlySpan<byte> rgba, int width, int height, int originX, int originY, byte[] texels)
     {
         for (int y = 0; y < 4; ++y)
         {

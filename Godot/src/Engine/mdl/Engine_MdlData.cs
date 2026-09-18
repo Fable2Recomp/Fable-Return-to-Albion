@@ -163,7 +163,39 @@ public sealed class MdlMeshBuffer
     /// </remarks>
     public bool IsEngineTree { get; set; }
 
+    /// <summary>
+    /// A coarser LOD's rigid part under the header's shared-stream flag: it ships no vertex
+    /// stream, and its indices address the LOD-0 rigid part its record names, whose
+    /// <see cref="VertexOffset"/> and <see cref="VertexCount"/> this buffer carries.
+    /// </summary>
+    public bool SharesLod0Vertices { get; set; }
+
+    /// <summary>
+    /// For a <see cref="SharesLod0Vertices"/> buffer: where the LOD-0 part it addresses starts
+    /// in the model's own (LOD 0, all buffers) vertex numbering.
+    /// </summary>
+    public int SharedVertexBase { get; set; } = -1;
+
     public List<MdlSubMesh> SubMeshes { get; } = new();
+}
+
+/// <summary>
+/// One coarser LOD payload (table slots 1..2), read with its own tables: a coarser payload
+/// repeats the bone, mesh-header and hide-region tables, and skinned parts index THIS table's
+/// bones, not LOD 0's.
+/// </summary>
+public sealed class MdlLod
+{
+    /// <summary>The header's LOD table slot: 1 or 2.</summary>
+    public int Index { get; set; }
+
+    public List<MdlBone> Bones { get; } = new();
+
+    public List<MdlMesh> Meshes { get; } = new();
+
+    public List<string> HideRegions { get; } = new();
+
+    public List<MdlMeshBuffer> MeshBuffers { get; } = new();
 }
 
 public sealed class MdlInfo
@@ -237,6 +269,15 @@ public sealed class MdlInfo
     public uint LodCount { get; set; }
 
     public uint[] LodSizes { get; set; } = Array.Empty<uint>();
+
+    /// <summary>Header +72 → model+96: the model's reference size for the guest's LOD pick, model units; 0 when unset.</summary>
+    public float LodReference { get; set; }
+
+    /// <summary>
+    /// The coarser LOD payloads, in table order, each with its own tables. Everything else on
+    /// this object — <see cref="MeshBuffers"/>, <see cref="Bones"/>, counts, tags — is LOD 0.
+    /// </summary>
+    public List<MdlLod> Lods { get; } = new();
 
     public float[] FileBoundingSphere { get; set; } = Array.Empty<float>();
 

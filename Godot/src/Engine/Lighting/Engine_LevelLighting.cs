@@ -9,13 +9,24 @@ public static class Engine_LevelLighting
 	public const string SunNodeName = "Sun";
 
 	/// <summary>
-	/// The shadow map's reach. 120 m let a horizon-low sun or moon SHINE THROUGH THE LANDSCAPE:
-	/// a directional occluder outside every cascade casts nothing, so any hill more than 120 m
-	/// out stopped existing to the light and grazing moonlight flooded terrain it could never
-	/// reach. 450 m with four cascades keeps the near split where the two-split setup had it, so
-	/// close-range shadow quality is unchanged while the landscape itself starts occluding.
+	/// The sun cascades' reach. An occluder outside every cascade casts nothing, so too short a
+	/// reach lets a low sun or moon light terrain straight through the hills beyond it.
 	/// </summary>
-	public const float SunFarDepth = 300.0f;
+	/// <remarks>`sun_shadow_distance`: how far the sun's cascades reach by day, in metres.</remarks>
+	public static readonly float SunFarDepth = ReadSunFarDepth();
+
+	private static float ReadSunFarDepth()
+	{
+		try
+		{
+			return Mathf.Clamp(Refii.Core.Engine_RefiiConfig.Float(
+				Refii.Core.Engine_RefiiConfig.Read(out _), "sun_shadow_distance", 200f), 50f, 600f);
+		}
+		catch (System.Exception)
+		{
+			return 200f;
+		}
+	}
 
 	public const float CascadeSplitNear = 35.0f;
 
@@ -24,6 +35,38 @@ public static class Engine_LevelLighting
 	public const float CascadeSplitFar = 240.0f;
 
 	public const float NearSlopeBias = 2.0f;
+
+	/// <summary>`sun_shadow_splits`: cascades by day, 2 or 4.</summary>
+	public static readonly int SunSplits = ReadSunSplits();
+
+	private static int ReadSunSplits()
+	{
+		try
+		{
+			return Refii.Core.Engine_RefiiConfig.Int(
+				Refii.Core.Engine_RefiiConfig.Read(out _), "sun_shadow_splits", 2) >= 4 ? 4 : 2;
+		}
+		catch (System.Exception)
+		{
+			return 2;
+		}
+	}
+
+	/// <summary>`sun_shadow_map`: the directional shadow atlas size; the biases scale with its texel.</summary>
+	public static readonly int SunShadowMap = ReadSunShadowMap();
+
+	private static int ReadSunShadowMap()
+	{
+		try
+		{
+			return Mathf.Clamp(Refii.Core.Engine_RefiiConfig.Int(
+				Refii.Core.Engine_RefiiConfig.Read(out _), "sun_shadow_map", 4096), 512, 16384);
+		}
+		catch (System.Exception)
+		{
+			return 4096;
+		}
+	}
 
 	/// <summary>A live lever: null follows the day set, true/false forces the sun's shadow.</summary>
 	public static bool? SunShadowOverride;
@@ -46,14 +89,18 @@ public static class Engine_LevelLighting
 			DirectionalShadowMaxDistance = SunFarDepth,
 			DirectionalShadowSplit1 = CascadeSplitNear / SunFarDepth,
 			DirectionalShadowSplit2 = CascadeSplitMid / SunFarDepth,
-			DirectionalShadowSplit3 = CascadeSplitFar / SunFarDepth,
+			DirectionalShadowSplit3 = Mathf.Min(CascadeSplitFar, SunFarDepth * 0.8f) / SunFarDepth,
 
 			// Cascade boundaries otherwise print as a hard band across the landscape where
 			// the shadow resolution steps — the "seam that does not match up" tracking the
 			// camera's distance rather than any geometry. The blend dithers across it.
 			DirectionalShadowBlendSplits = true,
+
+			// The normal bias is already in texels (Godot scales it by the shadow texel), so it
+			// holds for any map or reach. The constant bias is depth in world units: it only
+			// grows, for a map under 4096; scaling it down stripes sunlit ground at a grazing sun.
 			ShadowNormalBias = NearSlopeBias,
-			ShadowBias = 0.03f,
+			ShadowBias = 0.03f * Mathf.Max(1f, 4096f / SunShadowMap),
 		};
 
 		UpdateSun(light, frame);
@@ -99,11 +146,13 @@ public static class Engine_LevelLighting
 		// CASCADES BY STRENGTH. The moon at energy 0.2 cast the same four cascades over the
 		// whole market as the noon sun: 5,000 draw calls of shadow for a light nobody can see
 		// the shadows of. Two splits over a shorter depth at night; the day keeps four.
-		int splits = SunSplitsOverride ?? (frame.SunEnergy < NightEnergy ? 2 : 4);
+		// Every cascade redraws every caster in its slice. `sun_shadow_splits` picks two
+		// (the near split to 35 m at half the map, the rest to the reach) or four.
+		int splits = SunSplitsOverride ?? (frame.SunEnergy < NightEnergy ? 2 : SunSplits);
 		light.DirectionalShadowMode = splits <= 2
 			? DirectionalLight3D.ShadowMode.Parallel2Splits
 			: DirectionalLight3D.ShadowMode.Parallel4Splits;
-		light.DirectionalShadowMaxDistance = splits <= 2 ? NightFarDepth : SunFarDepth;
+		light.DirectionalShadowMaxDistance = splits <= 2 ? Mathf.Min(NightFarDepth, SunFarDepth) : SunFarDepth;
 
 		// IN WORLD SPACE, because the node sits under the level root's Scale(-1, 1, 1). A local
 		// transform inherits that mirror, and the sun's world aim came out with its X flipped —
@@ -217,8 +266,9 @@ public static class Engine_LevelLighting
 	/// squaring fast path when that exponent is 2.0 (0x8217E51C). Do not confuse that squaring
 	/// with the colour-texture decode — they are unrelated.
 	///
-	/// It is a CONSTANT where the guest has a control loop, so a genuinely bright or genuinely
-	/// dark region will not be compensated the way the original compensates.
+	/// Nothing reads this field. Live exposure is the guest's own loop (`sub_82191C18`), run per
+	/// frame against a luminance histogram in `Engine_PostFxEffect` -> `fable_postfx_reduce.glsl`.
+	/// Kept only to record the value the Godot Environment would want beside its derivation.
 	/// </summary>
 	public const float TonemapExposure = 1.0f;
 
@@ -244,26 +294,14 @@ public static class Engine_LevelLighting
 	/// The guest's auto-exposure, as close as Godot's own control loop gets to it.
 	/// </summary>
 	/// <remarks>
-	/// A LOOP, not a constant. The curve is rebuilt every frame against a luminance histogram,
-	/// because the guest compensates for scene brightness continuously: any fixed value is
-	/// measured on one scene and wrong on every other, and no amount of tuning it fixes that.
+	/// Godot's own auto-exposure is off deliberately: the guest's loop runs instead, in
+	/// `fable_postfx_reduce.glsl`, and two control loops would fight over the same frame.
+	/// That loop follows `sub_82191C18`:
 	///
-	/// What matches: the target is the theme's stated MIDDLE_GRAY, and the rate is derived from
-	/// the guest's own blend. What does not, and is worth knowing before trusting this to the
-	/// last stop:
-	///
-	///   - the guest's key is `middleGray / (adaptedAvg - adaptedMin)`, a difference. Godot
-	///     measures an average and has nowhere to put the minimum, so the `- adaptedMin` term is
-	///     dropped. That makes our exposure lower than the guest's wherever the darkest part of
-	///     the frame is well above black.
-	///   - the guest clamps the resulting scalar to [1, 16] (`sub_82191C18`). The sensitivity
-	///     bounds below carry that 16:1 range, but in Godot's ISO units rather than the guest's.
-	///   - the guest also smooths the whole 512-entry curve per entry, not just the scalar.
-	///
-	/// With the loop running, <see cref="TonemapWhite"/> stops being a guess about absolute
-	/// luminance and becomes a white point in ADAPTED space — the same space the guest's
-	/// `adaptedMax - adaptedMin` lives in — which is why it is left at the LUT's domain bound
-	/// rather than retuned.
+	///   - curve key `middleGray / (adaptedAvg - adaptedMin)`, computed as
+	///     `knee / max(SmMid - SmBlack, 1e-4)`;
+	///   - exposure scalar clamped to [1, 16], twice, in the guest's units;
+	///   - all 512 curve entries smoothed, not just the scalar.
 	/// </remarks>
 	public static CameraAttributesPractical BuildCameraAttributes() => new()
 	{
@@ -338,8 +376,16 @@ public static class Engine_LevelLighting
 			? Engine_LightingFrame.ModernProbeSkyBlend * Math.Clamp(frame.SkylightWeight, 0f, 1f)
 			: 0f;
 		// NO SKY, MODERN MODEL: the bakes are the light. See fable_interior in the shader.
-		bool interior = Engine_LightingFrame.ModernModel && frame.SkylightWeight <= 0f;
+		// A painted day set is not a roof: painted sets author mood over OUTDOOR cells and the
+		// data has no interior flag (`Engine_PaintedDaySets`). Gating on SkylightWeight
+		// (`hasSky ? 1 - PaintedWeight : 0`) flipped the whole screen when PaintedWeight clamped
+		// to exactly 1, and the painted set's ambient is already folded in by its stated weight.
+		// The gate is the theme stating no main light; the interior dials are remaster choices.
+		bool interior = Engine_LightingFrame.ModernModel && !frame.HasSky;
 		Engine_LightingFrame.CurrentInterior = interior;
+		Engine_LevelBakedLighting.InteriorNow = interior ? 1.0f : 0.0f;
+		Engine_LevelBakedLighting.InteriorBakeNow =
+			interior ? Engine_LightingFrame.InteriorBakeScale : 1.0f;
 		RenderingServer.GlobalShaderParameterSet("fable_interior", interior ? 1.0f : 0.0f);
 		RenderingServer.GlobalShaderParameterSet("fable_interior_fog",
 			interior ? Engine_LightingFrame.InteriorFogScale : 1.0f);

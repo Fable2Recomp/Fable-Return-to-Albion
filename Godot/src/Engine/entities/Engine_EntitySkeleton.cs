@@ -214,6 +214,7 @@ public sealed class Engine_EntitySkeleton
 		_skeleton = skeleton;
 		_rig = rig;
 		_modelToGuest = modelToGuest;
+		_hipBone = -2;  // the mapping changed: re-resolve the hip on next use
 		_guestBones = guestBones;
 		Mapped = mapped;
 		GuestOnly = guestBones - mapped;
@@ -271,6 +272,7 @@ public sealed class Engine_EntitySkeleton
 	private int _myChanges;
 	private int _myApplies;
 	private Vector3[]? _lastTranslation;
+	private Quaternion[]? _lastRotation;
 	private bool _lastTranslationValid;
 
 	/// <summary>This rig's own change ratio, for the per-rig report.</summary>
@@ -299,6 +301,27 @@ public sealed class Engine_EntitySkeleton
 	/// </summary>
 	private bool Plausible(in HostBridge.BonePose pose)
 	{
+		// Reach is measured from the body, not the skeleton origin. A ragdoll's bones are the Havok
+		// bodies times the inverse of the entity matrix (`sub_828C8E80` via `sub_8227D8A8`), and
+		// `sub_825963B8` steers that entity to (ragX, ragY, its own Z) @0x82596748..0x82596788, so a
+		// lifted body's height is in every bone at once. A rigid offset cancels here; a body flung
+		// apart does not.
+		Vector3 anchor = Vector3.Zero;
+		int anchorGuest = int.MaxValue;
+		for (int m = 0; m < _modelToGuest.Length; ++m)
+		{
+			int g = _modelToGuest[m];
+			if (g >= 0 && g < anchorGuest)
+			{
+				anchorGuest = g;
+			}
+		}
+
+		if (anchorGuest != int.MaxValue && pose.Translation(anchorGuest).IsFinite())
+		{
+			anchor = pose.Translation(anchorGuest);
+		}
+
 		float limit = _restReach * 2f + 0.5f;
 		for (int m = 0; m < _modelToGuest.Length; ++m)
 		{
@@ -316,7 +339,7 @@ public sealed class Engine_EntitySkeleton
 			{
 				why = "not finite";
 			}
-			else if (t.Length() > limit)
+			else if ((t - anchor).Length() > limit)
 			{
 				why = "beyond reach";
 			}
@@ -333,7 +356,7 @@ public sealed class Engine_EntitySkeleton
 			if (_refusalsLogged < 12)
 			{
 				++_refusalsLogged;
-				GD.Print($"[rig-refuse] '{_skeleton.Name}' bone {g} '{BoneName(m)}': {why} |t|={t.Length():0.000} limit={limit:0.000} reach={_restReach:0.000} |q|²={q.LengthSquared():0.000} scale={sc}");
+				GD.Print($"[rig-refuse] '{_skeleton.Name}' bone {g} '{BoneName(m)}': {why} |t|={t.Length():0.000} from-anchor={(t - anchor).Length():0.000} limit={limit:0.000} reach={_restReach:0.000} |q|²={q.LengthSquared():0.000} scale={sc}");
 			}
 
 			return false;
@@ -505,6 +528,13 @@ public sealed class Engine_EntitySkeleton
 	public string BoneName(int modelBone) =>
 		modelBone >= 0 && modelBone < _rig.BoneCount ? _rig.Names[modelBone] : "<out of range>";
 
+	/// <summary>The hip bone's model index: -2 unresolved, -1 this rig has none.</summary>
+	/// <remarks>
+	/// Resolved once, not per frame; invalidated wherever <see cref="_modelToGuest"/> is rebuilt
+	/// (a re-rig on a mesh change).
+	/// </remarks>
+	private int _hipBone = -2;
+
 	/// <summary>
 	/// How far the POSE turns the body away from the entity's own forward, in degrees.
 	///
@@ -522,26 +552,34 @@ public sealed class Engine_EntitySkeleton
 	/// </summary>
 	public float PoseYawDegrees()
 	{
-		for (int m = 0; m < _rig.BoneCount; ++m)
+		if (_hipBone == -2)
 		{
-			// The hip is the first real bone of every Fable rig and the one the body's heading
-			// hangs off; the `*_Rig_Asset` wrapper above it is never posed.
-			if (!_rig.Names[m].Contains("Hip") || _modelToGuest[m] < 0)
+			_hipBone = -1;
+			for (int m = 0; m < _rig.BoneCount; ++m)
 			{
-				continue;
+				// The hip is the first real bone of every Fable rig and the one the body's
+				// heading hangs off; the `*_Rig_Asset` wrapper above it is never posed.
+				if (_rig.Names[m].Contains("Hip") && _modelToGuest[m] >= 0)
+				{
+					_hipBone = m;
+					break;
+				}
 			}
-
-			// MESH-space forward is M(0, 1, 0) = (0, 0, -1) — the model's own +Y, measured from
-			// the sheath dummies in the `.mdl`, mapped through the mesh's basis.
-			var forward = new Vector3(0f, 0f, -1f);
-			Vector3 posed = _skeleton.GetBoneGlobalPose(m).Basis * forward;
-			posed.Y = 0f;
-			return posed.Length() < 1e-4f
-				? float.NaN
-				: Mathf.RadToDeg(forward.SignedAngleTo(posed.Normalized(), Vector3.Up));
 		}
 
-		return float.NaN;
+		if (_hipBone < 0)
+		{
+			return float.NaN;
+		}
+
+		// MESH-space forward is M(0, 1, 0) = (0, 0, -1) — the model's own +Y, measured from
+		// the sheath dummies in the `.mdl`, mapped through the mesh's basis.
+		var forward = new Vector3(0f, 0f, -1f);
+		Vector3 posed = _skeleton.GetBoneGlobalPose(_hipBone).Basis * forward;
+		posed.Y = 0f;
+		return posed.Length() < 1e-4f
+			? float.NaN
+			: Mathf.RadToDeg(forward.SignedAngleTo(posed.Normalized(), Vector3.Up));
 	}
 
 	/// <summary>
@@ -827,12 +865,19 @@ public sealed class Engine_EntitySkeleton
 	/// </remarks>
 	public void Reblend() => WriteBlended();
 
-	public void Follow(uint entity)
+	public void Follow(uint entity) => Follow(entity, write: true);
+
+	/// <summary>Reads and stamps the guest's pose; writes the skeleton only when asked, so a
+	/// far rig keeps its timeline current while writing bones at half the guest's rate.</summary>
+	public void Follow(uint entity, bool write)
 	{
 		long from = System.Diagnostics.Stopwatch.GetTimestamp();
 		FollowInner(entity);
 		long mid = System.Diagnostics.Stopwatch.GetTimestamp();
-		WriteBlended();
+		if (write)
+		{
+			WriteBlended();
+		}
 		long done = System.Diagnostics.Stopwatch.GetTimestamp();
 		ProbeBonesOut(entity);
 
@@ -1101,6 +1146,7 @@ public sealed class Engine_EntitySkeleton
 		// accepted poses is logged with the guest's values; whether the pose changed at all
 		// feeds the per-rig rate the report prints.
 		_lastTranslation ??= new Vector3[HostBridge.MaxBones];
+		_lastRotation ??= new Quaternion[HostBridge.MaxBones];
 		bool changed = false;
 		++PoseApplies;
 		++_myApplies;
@@ -1112,8 +1158,13 @@ public sealed class Engine_EntitySkeleton
 				continue;
 			}
 
+			// Rotation counts too: a head turn or a gesture on a leaf bone moves no translation
+			// in model space, and a pose that "did not change" is never accepted or blended.
 			Vector3 now = pose.Translation(g);
-			if (_lastTranslationValid && !changed && now.DistanceSquaredTo(_lastTranslation[g]) > 1e-8f)
+			Quaternion rotation = pose.Rotation(g);
+			if (_lastTranslationValid && !changed &&
+				(now.DistanceSquaredTo(_lastTranslation[g]) > 1e-8f ||
+				 Mathf.Abs(rotation.Dot(_lastRotation[g])) < 1f - 1e-6f))
 			{
 				changed = true;
 				++PoseChanges;
@@ -1131,6 +1182,7 @@ public sealed class Engine_EntitySkeleton
 			}
 
 			_lastTranslation[g] = now;
+			_lastRotation[g] = rotation;
 		}
 
 		bool first = !_lastTranslationValid;
@@ -1149,15 +1201,37 @@ public sealed class Engine_EntitySkeleton
 			return;  // the same pose again: the blend keeps moving on the clock
 		}
 
-		// STAMPED WITH THE GUEST'S TICK, NOT WITH WHEN WE SAW IT. The pose is written inside
-		// the world update and `dword_83319650` is incremented at its tail (`sub_821D4628`,
-		// `sub_823D9898`), so an accepted pose belongs to one tick exactly as a placement does.
-		// The arrival time is kept only to tell one accepted pose from the next.
+		// Stamped with the guest's game tick (Engine_TickClock.GuestGameTick), not arrival time and
+		// not `dword_83319650`. A pose is written inside the world update, so it belongs to one game
+		// tick as a placement does; but `dword_83319650` skips: `sub_821D4628` branches past its own
+		// increment when its object is not the head element (`821d46e8 beq cr6, loc_821D4AC8`,
+		// target past the store at `821d4ac4`), which would put two distinct poses on one tick.
+		//
+		// Tested before the swap: returning after it would leave the pose buffers exchanged and
+		// `_previousTick` overwritten with a stamp that was never published.
+		uint sim = Engine_TickClock.GuestGameTick;
+		if (sim == 0u)
+		{
+			return;  // no world yet: nothing to stamp a pose against
+		}
+
 		(_previous, _newest) = (_newest, _previous);
 		_previousTick = _newestTick;
-		_newestTick = HostBridge.SimTick;
-		_newestUsec = Godot.Time.GetTicksUsec();
-		Engine_TickClock.Observe(_newestTick, _newestUsec);
+		_newestTick = StampHalfTick(sim);
+
+		// Shared arithmetic (Engine_PairPlayhead): anchored to the swap, carried past a late pose,
+		// never restarted. The stamps state the width; do not estimate it. `_newestTick -
+		// _previousTick` is the pair's span in game ticks (half a tick when the walk caught one
+		// publish, a whole tick when it caught two), and its wall time is that times the tick
+		// period. This per-rig playhead is aligned only to its own two samples; accounting for
+		// unobserved ticks belongs to the shared playhead.
+		ulong swappedAt = Godot.Time.GetTicksUsec();
+		double spanTicks = _havePrevious && _newestTick > _previousTick
+			? _newestTick - _previousTick
+			: 0.5;
+		_playhead.SwapStated(swappedAt, spanTicks * Engine_TickClock.TickUsec);
+		_newestUsec = swappedAt;
+		Engine_TickClock.Observe(sim, _newestUsec);
 		_havePrevious = _haveNewest;
 		_haveNewest = true;
 		for (int m = 0; m < _modelToGuest.Length; ++m)
@@ -1178,8 +1252,36 @@ public sealed class Engine_EntitySkeleton
 	private Transform3D[]? _newest;
 	private Transform3D[]? _previous;
 	private ulong _newestUsec;
-	private uint _newestTick;
-	private uint _previousTick;
+	private readonly Engine_PairPlayhead _playhead = new(PoseIntervalUsec);
+	private double _newestTick;
+	private double _previousTick;
+	private uint _stampSim = uint.MaxValue;
+	private int _stampPhase;
+
+	/// <summary>
+	/// Two poses per game tick. The guest evaluates the pose every HF tick (30 Hz) at alpha 0.5 on
+	/// the iteration the game tick ran (the counter is already T; the pose is halfway between T−1
+	/// and T) and at alpha 1.0 on the next (`(HFindex % 2 + 1) / 2`, see the anim timing
+	/// contract). So the first pose accepted under a new counter is stamped T − 0.5, the next T. A
+	/// stamp never sits at or before the previous one.
+	/// </summary>
+	private double StampHalfTick(uint sim)
+	{
+		if (sim != _stampSim)
+		{
+			_stampSim = sim;
+			_stampPhase = 0;
+		}
+
+		double stamp = sim - 0.5 + (0.5 * System.Math.Min(_stampPhase, 1));
+		++_stampPhase;
+		if (_haveNewest && stamp <= _newestTick)
+		{
+			stamp = _newestTick + 0.25;
+		}
+
+		return stamp;
+	}
 	private bool _haveNewest;
 	private bool _havePrevious;
 
@@ -1216,16 +1318,54 @@ public sealed class Engine_EntitySkeleton
 		float alpha = 1f;
 		if (_havePrevious && _newestTick > _previousTick)
 		{
-			double drawTick = Engine_TickClock.DrawTick(Godot.Time.GetTicksUsec());
-			uint span = _newestTick - _previousTick;
+			double span = _newestTick - _previousTick;
 
 			// A rig that was idle, or out of write range, states nothing for many ticks and
 			// then moves; the span across that silence is not a segment it animated over. Draw
-			// the newest and let the next tick start a real one — what the old 0.25 s interval
-			// guard did, in the units the guess was always about.
-			alpha = double.IsNaN(drawTick) || span > StaleSpanTicks
-				? 1f
-				: (float)System.Math.Clamp((drawTick - _previousTick) / span, 0.0, 1.0);
+			// the newest and let the next tick start a real one.
+			//
+			// The guest does not blend a pair: `sub_82A75720` assigns the same block to both
+			// `renderObj+0x200` and `+0x204` (`r4 = r29` at `0x82a759f8` and `0x82a75a04`), so
+			// `sub_8222E2B8`'s lerp is the identity and it draws the newest published block at the
+			// 30 Hz it publishes at. We draw faster, so blending consecutive blocks is ours.
+			//
+			// Alpha comes from this rig's own playhead, anchored to the instant this pair swapped
+			// and running over the interval such pairs last: 0 at the swap, 1 by the next, so the end
+			// of one pair and the start of the next draw the same pose. Not a free-running sawtooth
+			// over the HF step, and not the shared playhead (which drifts against the guest's
+			// counter); same correction as Engine_TickClock.PairAlpha. Used for a current pair only;
+			// a stale pair holds the newest.
+			if (span <= StaleSpanTicks && _playhead.Ready)
+			{
+				alpha = (float)_playhead.Alpha(Refii.Entities.Engine_DrawnFrame.NowUsec);
+				++BlendedPoses;
+				NoteAlpha(alpha, span);
+				if (alpha > 1f)
+				{
+					Engine_TickClock.NoteStarved(_newestTick);
+				}
+			}
+			else
+			{
+				// Nothing was stated across that span — an idle rig, or one out of write range.
+				// Draw the newest and let the next pose start a real segment.
+				alpha = 1f;
+				++HeldPoses;
+			}
+
+			// Where alpha lands, for diagnostics.
+			if (alpha <= 0.001f)
+			{
+				++AlphaAtZero;
+			}
+			else if (alpha >= 0.999f)
+			{
+				++AlphaAtOne;
+			}
+			else
+			{
+				++AlphaBetween;
+			}
 		}
 
 		// NOTHING TO WRITE WHEN NOTHING WOULD CHANGE. A settled rig — one whose newest pose is
@@ -1234,7 +1374,11 @@ public sealed class Engine_EntitySkeleton
 		// was removed: that skipped rigs the camera could not see and left them in their bind
 		// pose, whereas this skips only writes whose result is already there, so a rig off
 		// camera still advances and still holds the pose the guest gave it.
-		if (alpha >= 1f && _wroteSettled && _wroteUsec == _newestUsec)
+		// Settled at the playhead's ceiling, not at 1: the blend carries past 1 while the guest is
+		// late, so skipping at 1 would freeze the pose the carry exists to move. It settles once
+		// alpha stops moving: at the ceiling or on a held pair.
+		if (alpha >= (float)_playhead.TopAlpha && _wroteSettled &&
+			_wroteUsec == _newestUsec)
 		{
 			++WritesSkipped;
 			return;
@@ -1297,11 +1441,87 @@ public sealed class Engine_EntitySkeleton
 		}
 
 		_wroteUsec = _newestUsec;
-		_wroteSettled = alpha >= 1f;
+		_wroteSettled = alpha >= (float)_playhead.TopAlpha;
+	}
+
+	/// <summary>Where the pose blend's alpha lands: pinned to either end, or genuinely between.</summary>
+	/// <remarks>
+	/// Split three ways rather than averaged: an alpha alternating between the ends averages to a
+	/// healthy-looking mid-range value.
+	/// </remarks>
+	public static long AlphaAtZero;
+
+	public static long AlphaBetween;
+
+	public static long AlphaAtOne;
+
+	/// <summary>Rigs blended on the guest's sub-step alpha, and rigs holding a stale pair.</summary>
+	public static long BlendedPoses;
+
+	public static long HeldPoses;
+
+	/// <summary>
+	/// The last alphas any rig blended at, with the interval they were measured over — the
+	/// per-frame sequence, not a histogram.
+	/// </summary>
+	/// <remarks>
+	/// The sequence shows what the histogram cannot: smooth motion is a rising ramp that resets
+	/// once per pose; a vibration is alpha moving backwards between consecutive frames.
+	/// </remarks>
+	private static readonly (ulong Usec, float Alpha, double Span)[] AlphaRing = new (ulong, float, double)[256];
+
+	private static int _alphaAt;
+
+	/// <summary>Records at most one sample per millisecond (in effect the first of each frame), so
+	/// the 256-entry ring spans many frames rather than many subjects in one.</summary>
+	private static void NoteAlpha(float alpha, double span)
+	{
+		ulong now = Godot.Time.GetTicksUsec();
+		if (now - _lastNotedUsec < 1000UL)
+		{
+			return;
+		}
+
+		_lastNotedUsec = now;
+		int at = System.Threading.Interlocked.Increment(ref _alphaAt);
+		AlphaRing[(at & 255)] = (now, alpha, span);
+	}
+
+	private static ulong _lastNotedUsec;
+
+	/// <summary>The alpha sequence as written, oldest first; for the debug channel.</summary>
+	public static System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object?>> AlphaTrace()
+	{
+		var rows = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object?>>();
+		int at = _alphaAt;
+		for (int back = 255; back >= 0; --back)
+		{
+			(ulong usec, float alpha, double span) = AlphaRing[((at - back) & 255)];
+			if (usec == 0UL)
+			{
+				continue;
+			}
+
+			rows.Add(new System.Collections.Generic.Dictionary<string, object?>
+			{
+				["usec"] = usec,
+				["alpha"] = alpha,
+				["span"] = span,
+			});
+		}
+
+		return rows;
 	}
 
 	/// <summary>Ticks of silence past which two accepted poses are not one segment.</summary>
 	private const uint StaleSpanTicks = 4u;
+
+	/// <summary>
+	/// The interval a pose pair nominally lasts: one HF step, 1/30 s, because the guest
+	/// publishes a finished pose every step (`dbl_83319668` = 30.0). The seed for the smoothed
+	/// estimate, never used raw once a rig has swapped twice.
+	/// </summary>
+	private const double PoseIntervalUsec = 1e6 / 30.0;
 
 	/// <summary>The pose timestamp the skeleton currently holds.</summary>
 	private ulong _wroteUsec;

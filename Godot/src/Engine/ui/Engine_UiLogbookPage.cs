@@ -116,17 +116,20 @@ public static class Engine_UiLogbookPage
 
 		// THE METER PIPS — `sub_82881E38`: `<slider>.grp.pip` position = (v·440 − 210, 0, −1),
 		// v clamped to [0, 1]. The Alignment sliders take the morality and purity fractions
-		// (`sub_829B91F0`); the Attractiveness slider takes the clamped sum of its rows through
-		// `(total + 100)·0.005` (`sub_829BA860`).
+		// (`sub_829B91F0`).
+		//
+		// The Attractiveness slider takes the fraction ALREADY STATED by `sub_829BA860`, which
+		// clamps its sum to [-100, 100] and scales by `(total + 100)·0.005` before handing it to
+		// the meter. Rescaling here would apply that curve twice; the sum it came from is also
+		// not the sum of the eleven rows this page shows, so it cannot be rebuilt from them.
 		if (hero.Known)
 		{
 			places["Foreground.Book.Pages.MoralityPage.Contents.LogBook.Morality.slider.grp.pip"] =
 				Pip(hero.MoralityFraction);
 			places["Foreground.Book.Pages.MoralityPage.Contents.LogBook.Morality.slider2.grp.pip"] =
 				Pip(hero.PurityFraction);
-			float total = Godot.Mathf.Clamp(hero.AttractivenessTotal, -100f, 100f);
 			places["Foreground.Book.Pages.AttractivenessPage.Contents.LogBook.slider.grp.pip"] =
-				Pip((total + 100f) * 0.005f);
+				Pip(hero.AttractivenessFraction);
 		}
 
 		return places;

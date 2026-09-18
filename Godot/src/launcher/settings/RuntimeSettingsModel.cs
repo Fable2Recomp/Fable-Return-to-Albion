@@ -76,7 +76,7 @@ public sealed class RuntimeSettingsModel
 
         foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
         {
-            if (!RuntimeConfig.ShouldShowCVar(definition, Values) || !MatchesFilter(definition, filter))
+            if (!RuntimeConfig.ShouldShowCVar(definition) || !MatchesFilter(definition, filter))
             {
                 continue;
             }
@@ -89,28 +89,14 @@ public sealed class RuntimeSettingsModel
                 order.Add(displayCategory);
             }
 
-            if (IsPrimaryBackendSelector(definition))
-            {
-                bucket.Insert(0, definition);
-            }
-            else
-            {
-                bucket.Add(definition);
-            }
+            bucket.Add(definition);
         }
 
-        MoveCategoryBefore(order, "VFS", "Renderer");
         return order.Select(category => (category, byCategory[category])).ToList();
     }
 
-    private string DisplayCategory(RuntimeCVarDefinition definition)
+    private static string DisplayCategory(RuntimeCVarDefinition definition)
     {
-        bool usesPlume = GetValueOrDefault("renderer_backend", "xenia").ToLowerInvariant() == "plume";
-        if (usesPlume && definition.Category == "GPU" && IsSharedRendererResolutionCVar(definition.Name))
-        {
-            return "Renderer";
-        }
-
         // The few window keys that outlived their category — see RuntimeConfig.IsDisplayCVar.
         // They are generated entries and cannot be re-categorised at the source, so they are
         // re-homed here instead.
@@ -120,19 +106,6 @@ public sealed class RuntimeSettingsModel
         }
 
         return definition.Category;
-    }
-
-    private static void MoveCategoryBefore(List<string> order, string category, string before)
-    {
-        int from = order.IndexOf(category);
-        int to = order.IndexOf(before);
-        if (from < 0 || to < 0 || from < to)
-        {
-            return;
-        }
-
-        order.RemoveAt(from);
-        order.Insert(order.IndexOf(before), category);
     }
 
     private static bool MatchesFilter(RuntimeCVarDefinition definition, string filter)
@@ -147,12 +120,6 @@ public sealed class RuntimeSettingsModel
         return haystack.Contains(filter, StringComparison.Ordinal);
     }
 
-    private static bool IsSharedRendererResolutionCVar(string name) =>
-        name is "resolution" or "video_mode_width" or "video_mode_height";
-
-    private static bool IsPrimaryBackendSelector(RuntimeCVarDefinition definition) =>
-        definition.Name is "renderer_backend";
-
     public static string FormatDisplayName(RuntimeCVarDefinition definition)
     {
         string name = definition.Name;
@@ -164,17 +131,6 @@ public sealed class RuntimeSettingsModel
             case "UI/Presenter":
                 name = StripPrefix(name, "host");
                 name = StripPrefix(name, "present");
-                break;
-            case "GPU":
-                name = StripPrefix(name, "video_mode");
-                break;
-            case "GPU/Vulkan":
-            case "UI/Vulkan":
-                name = StripPrefix(name, "vulkan");
-                break;
-            case "GPU/D3D12":
-            case "UI/D3D12":
-                name = StripPrefix(name, "d3d12");
                 break;
         }
 
@@ -223,9 +179,10 @@ public sealed class RuntimeSettingsModel
     /// <summary>
     /// The options a setting offers RIGHT NOW. Static <c>AllowedValues</c> cannot express a list
     /// that depends on another setting, and the resolution list depends on the chosen aspect —
-    /// so that one pair is answered here and everything else falls through unchanged.
+    /// so that one pair is answered here and everything else falls through unchanged. A
+    /// non-empty answer makes the setting a dropdown whatever its type.
     /// </summary>
-    public static List<string> OptionsFor(
+    public static List<RuntimeCVarOption> OptionsFor(
         RuntimeCVarDefinition definition, IReadOnlyDictionary<string, string> values)
     {
         if (definition.Name != "display_resolution")
@@ -241,7 +198,9 @@ public sealed class RuntimeSettingsModel
             ? sizes
             : ResolutionsByAspect["16:9"];
 
-        return FitToMonitor(candidates, aspect, values);
+        return FitToMonitor(candidates, aspect, values)
+            .Select(size => new RuntimeCVarOption(size, size))
+            .ToList();
     }
 
     /// <summary>
@@ -358,9 +317,15 @@ public sealed class RuntimeSettingsModel
         return Math.Abs(have - want) / want <= 0.01;
     }
 
-    public static List<string> ParseAllowedValues(string? allowedValues)
+    /// <summary>
+    /// An allowed-values list is comma separated. An entry is a bare value, shown as itself, or
+    /// <c>value|Label</c>, which shows the label and writes the value — how an Int that names its
+    /// modes becomes a readable dropdown. The separator is a pipe because values carry colons
+    /// ("16:9").
+    /// </summary>
+    public static List<RuntimeCVarOption> ParseAllowedValues(string? allowedValues)
     {
-        var options = new List<string>();
+        var options = new List<RuntimeCVarOption>();
         if (string.IsNullOrEmpty(allowedValues))
         {
             return options;
@@ -369,26 +334,18 @@ public sealed class RuntimeSettingsModel
         foreach (string token in allowedValues!.Split(','))
         {
             string trimmed = token.Trim();
-            if (trimmed.Length != 0)
+            if (trimmed.Length == 0)
             {
-                options.Add(trimmed);
+                continue;
             }
+
+            int bar = trimmed.IndexOf('|');
+            options.Add(bar < 0
+                ? new RuntimeCVarOption(trimmed, trimmed)
+                : new RuntimeCVarOption(trimmed[..bar].Trim(), trimmed[(bar + 1)..].Trim()));
         }
 
         return options;
-    }
-
-    public bool IsDisabledVideoModeSetting(RuntimeCVarDefinition definition)
-    {
-        if (!definition.Name.StartsWith("video_mode_", StringComparison.Ordinal) ||
-            definition.Name == "video_mode_refresh_rate")
-        {
-            return false;
-        }
-
-        string resolution = GetValueOrDefault("resolution", string.Empty);
-        bool isCustom = resolution.Length == 0 || resolution == "custom";
-        return !isCustom;
     }
 
     public string GetValueOrDefault(string key, string fallback) =>

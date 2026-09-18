@@ -291,6 +291,7 @@ PPC_EXTERN_FUNC(sub_826C9AB8);   // ACTIVATE an item by handle — the guest's o
 PPC_EXTERN_FUNC(sub_8223D320);   // GetMorality — the DISPLAYED value
 PPC_EXTERN_FUNC(sub_8223D910);   // GetPurity   — the DISPLAYED value
 PPC_EXTERN_FUNC(sub_821C7D30);   // GetRenown   — the DISPLAYED value
+PPC_EXTERN_FUNC(sub_826B83D0);   // is this pause tab available — the guest's own predicate
 PPC_EXTERN_FUNC(sub_824C3570);   // appearance-modifier term, by kind
 PPC_EXTERN_FUNC(sub_824C3AF8);   // preference term, by axis
 PPC_EXTERN_FUNC(sub_824C3940);   // home bonus
@@ -5489,6 +5490,49 @@ void SampleQuests(uint8_t* base, uint32_t hero) {
   PublishQuests(entries, count);
 }
 
+/// Which pause tabs the guest would offer, by calling its own predicate for tabs 2..8.
+///
+/// `sub_826B83D0(unused, tab)` is what the guest's tab navigation runs; there is no availability
+/// mask in the image and `MenuCycler.bgf` has no per-tab element. Its first argument is dead
+/// (r3 is overwritten at 0x826B8420 before any read), so 0 is passed.
+///
+/// Must run on the guest thread: with a stale control handle, 0x826B845C takes `sub_82193E38`,
+/// which drops a refcount, may free the control block and nulls the handle.
+///
+/// Sampled on the GUI tick because the game-loop tick stops while the pause book is open.
+void SamplePauseTabs(PPCContext& ctx, uint8_t* base) {
+  constexpr uint32_t kFirstTab = 2u;
+  constexpr uint32_t kLastTab = 8u;
+
+  const PPCContext saved = ctx;
+
+  uint32_t mask = 0u;
+  for (uint32_t tab = kFirstTab; tab <= kLastTab; ++tab) {
+    ctx = saved;
+    ctx.r3.u32 = 0u;
+    ctx.r4.u32 = tab;
+    sub_826B83D0(ctx, base);
+    if (ctx.r3.u32 != 0u) {
+      mask |= 1u << tab;
+    }
+  }
+
+  ctx = saved;
+
+  // Tab 8 is unconditional in the predicate, so a sampled mask is never 0 and the host can use
+  // 0 to mean "not sampled yet" without ambiguity.
+  refii_bridge_note_pause_tabs(mask);
+}
+
+/// The attractiveness ratio as the page's writer `sub_829BA860` stated it (float bits). It is
+/// not the sum of the eleven rows: the writer adds five preference axes (`sub_824C3AF8` with
+/// 0, 1, 2, 4, 3) where the page displays three, plus the GDB "BalancingAugmentations" record's
+/// "Attractiveness" times 100 when `sub_8223D888`/`sub_8223D570` say the hero carries it, then
+/// clamps to [-100, 100] and states `(clamped + 100) * 0.0049999999` to
+/// `sub_82881E38(page + 36, ratio)` at 0x829BABD0.
+std::atomic<uint32_t> g_attractiveness_total_bits{0};
+std::atomic<bool> g_attractiveness_total_known{false};
+
 /// The eleven attractiveness contributions, CALLED rather than reproduced: each term is a vector
 /// walk over the hero's appearance modifiers, a GDB chain (`AppearanceModifierComponent` ->
 /// `DefaultMaleEffects`, overridden by `OverrideFemaleEffects` only when the female record
@@ -5563,6 +5607,13 @@ void SampleAttractiveness(PPCContext& ctx, uint8_t* base, uint32_t hero, HeroDer
   sampled.attractiveness[10] = static_cast<float>(ctx.f1.f64);  // home bonus
 
   ctx = saved;
+
+  // The total the page stated on its last write. Absent until the page has drawn once, which is
+  // why it is a separate flag rather than a zero.
+  if (g_attractiveness_total_known.load(std::memory_order_relaxed)) {
+    const uint32_t bits = g_attractiveness_total_bits.load(std::memory_order_relaxed);
+    std::memcpy(&sampled.attractiveness_fraction, &bits, sizeof(float));
+  }
 }
 
 void SampleHeroDerived(PPCContext& ctx, uint8_t* base) {
@@ -5645,6 +5696,7 @@ void SampleHeroDerived(PPCContext& ctx, uint8_t* base) {
     for (uint32_t i = 0; i < HeroDerived::kAttractivenessCount; ++i) {
       sampled.attractiveness[i] = previous.attractiveness[i];
     }
+    sampled.attractiveness_fraction = previous.attractiveness_fraction;
   }
 
   PublishHeroDerived(sampled);
@@ -6515,6 +6567,11 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   // stack cannot even be entered. Give the signal somewhere to run.
   EnsureAlternateSignalStack();
 
+  // Raise Dead's creation effect, which the guest spawns and never kills. Here because both calls
+  // re-enter the guest and this is an update context, which is where the guest makes the same two
+  // calls for its other spells. It returns immediately when nothing is pending.
+  SweepOrphanSpellFx(ctx, base);
+
   // The menu capture settles here: a population runs to completion inside the GUI update that
   // began it, so by the next tick the captured rows are whole. There is no end marker to use
   // instead — the in-game lists never call `UpdateAfterSpawning`.
@@ -6693,9 +6750,37 @@ REX_EXTERN(sub_8229ABD8) {
     refii::vfs::SampleRealEstate(ctx, base);
     refii::vfs::SampleQuestTravel(ctx, base);
     refii::vfs::SampleShopPrice(ctx, base);
+    refii::vfs::SamplePauseTabs(ctx, base);
   }
 
   __imp__sub_8229ABD8(ctx, base);
+}
+
+// The attractiveness ratio, read from the page's own store after its writer runs.
+//
+// `sub_829BA860` is the logbook attractiveness page's writer and the only caller of
+// `sub_82881E38(page + 36, ratio)` for this meter. The meter stores the clamped ratio at
+// `meter + 40` (0x82881E88), i.e. `page + 76`. The store is gated: `sub_82881E38` returns
+// without writing unless `meter + 12` is set (0x82881E50), so the same gate applies here.
+REX_EXTERN(sub_829BA860) {
+  REX_FUNC_PROLOGUE();
+
+  const uint32_t page = ctx.r3.u32;
+
+  __imp__sub_829BA860(ctx, base);
+
+  if (page == 0u) {
+    return;
+  }
+
+  const uint32_t meter = page + 36u;
+  if (refii::vfs::LoadGuestU8(base, meter + 12u) == 0u) {
+    return;
+  }
+
+  refii::vfs::g_attractiveness_total_bits.store(refii::vfs::LoadGuestU32(base, meter + 40u),
+                                                std::memory_order_relaxed);
+  refii::vfs::g_attractiveness_total_known.store(true, std::memory_order_relaxed);
 }
 
 // The spawn, captured — the IN-GAME one, against GUI manager `dword_83496B08`.

@@ -191,7 +191,8 @@ public static class Engine_EntityIndex
         for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
         {
             resource.AddSurfaceFromArrays(
-                mesh.SurfaceGetPrimitiveType(surface), mesh.SurfaceGetArrays(surface));
+                mesh.SurfaceGetPrimitiveType(surface), mesh.SurfaceGetArrays(surface), null,
+                Engine_MdlComposite.SurfaceLodsOf(mesh, surface));
 
             int added = resource.GetSurfaceCount() - 1;
             resource.SurfaceSetName(added, mesh.SurfaceGetName(surface));

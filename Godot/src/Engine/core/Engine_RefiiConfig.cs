@@ -71,16 +71,51 @@ public static class Engine_RefiiConfig
             return new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
 
+        // Parsed once per change, keyed on path and write time; readers ask per second or per
+        // relight.
+        DateTime stamp;
         try
         {
-            return RuntimeConfig.ReadValues(path);
+            stamp = System.IO.File.GetLastWriteTimeUtc(path);
+        }
+        catch (Exception)
+        {
+            stamp = DateTime.MinValue;
+        }
+
+        lock (_cacheGate)
+        {
+            if (_cached is not null && _cachedPath == path && _cachedStamp == stamp)
+            {
+                return _cached;
+            }
+        }
+
+        IReadOnlyDictionary<string, string> values;
+        try
+        {
+            values = RuntimeConfig.ReadValues(path);
         }
         catch (Exception exception)
         {
             GD.PushWarning($"[config] could not read {path}: {exception.Message}");
             return new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
+
+        lock (_cacheGate)
+        {
+            _cached = values;
+            _cachedPath = path;
+            _cachedStamp = stamp;
+        }
+
+        return values;
     }
+
+    private static readonly object _cacheGate = new();
+    private static IReadOnlyDictionary<string, string>? _cached;
+    private static string _cachedPath = string.Empty;
+    private static DateTime _cachedStamp;
 
     public static int Int(IReadOnlyDictionary<string, string> values, string key, int fallback) =>
         values.TryGetValue(key, out string? raw) &&

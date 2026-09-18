@@ -24,10 +24,12 @@ public static class Engine_LevelCaches
 	public static void ReleaseRegion()
 	{
 		Refii.Textures.Engine_TexLibrary.Clear();
+		Refii.Models.Engine_MdlMaterial.ClearSharedCache();
 		Refii.Level.Engine_PropStreamer.ClearCache();
 		Refii.Level.Engine_LevelFx.ClearCaches();
 		Refii.Level.Engine_TerrainSplatMaterial.ClearSharedCache();
 		Refii.Lighting.Engine_LevelBakedLighting.ClearContainerCache();
+		Refii.Entities.Engine_EntityHighlight.Forget();
 		Refii.Entities.Engine_EntityAttachments.ClearCaches();
 	}
 }

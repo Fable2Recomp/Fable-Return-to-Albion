@@ -23,7 +23,7 @@ public partial class BuildSpeedDialog : Control
 	private readonly SmartStyle _style;
 	private readonly string _heading;
 
-	/// <summary>True to use every core.</summary>
+	/// <summary>True to use every thread.</summary>
 	public event Action<bool>? Chosen;
 
 	public BuildSpeedDialog(Font? font, int fontSize, SmartStyle style, string heading)
@@ -71,8 +71,8 @@ public partial class BuildSpeedDialog : Control
 		headingLabel.AddThemeStyleboxOverride("normal", headingBar);
 		column.AddChild(headingLabel);
 
-		int cores = System.Environment.ProcessorCount;
-		int half = Math.Max(1, cores / 2);
+		int threads = System.Environment.ProcessorCount;
+		int half = Math.Max(1, threads / 2);
 
 		Label intro = MakeLabel(
 			"Your game's code has to be compiled on this machine — around 150,000 " +
@@ -83,12 +83,12 @@ public partial class BuildSpeedDialog : Control
 		column.AddChild(new Control { CustomMinimumSize = new Vector2(0, 6) });
 
 		Button half_button = MakeButton(
-			"Use " + half + " of " + cores + " cores  —  slower, PC stays usable");
+			"Use " + half + " of " + threads + " threads  —  slower, PC stays usable");
 		half_button.Pressed += () => Choose(false);
 		column.AddChild(half_button);
 
 		Button all_button = MakeButton(
-			"Use all " + cores + " cores  —  fastest, PC will be sluggish");
+			"Use all " + threads + " threads  —  fastest, PC will be sluggish");
 		all_button.Pressed += () => Choose(true);
 		column.AddChild(all_button);
 

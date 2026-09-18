@@ -208,7 +208,43 @@ public sealed class Engine_HudValues
     /// <param name="dt">Seconds since the last sample; the seek clock of the stated meters.</param>
     public void Sample(float dt)
     {
+        Advance(dt);
+        Read();
+    }
+
+    /// <summary>The stated meters' glide, every frame; the polled values keep what the last read gave.</summary>
+    public void Advance(float dt)
+    {
         AdvanceMeters(dt);
+        foreach ((uint hash, Seek seek) in _statedMeters)
+        {
+            if (_meters.ContainsKey(hash))
+            {
+                _meters[hash] = seek.Current;
+            }
+        }
+    }
+
+    /// <summary>Whether any stated meter is still gliding toward its target.</summary>
+    public bool Seeking
+    {
+        get
+        {
+            foreach (Seek seek in _statedMeters.Values)
+            {
+                if (seek.Current != seek.Target)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>The guest's channels, read: once per guest frame is the whole of what they change.</summary>
+    public void Read()
+    {
 
         // `_meters` is replaced, not merged, so the stated meters are re-applied at the end.
         _meters = Engine_UiSource.Current.GetHudMeters();
@@ -295,6 +331,36 @@ public sealed class Engine_HudValues
     public bool Live => _meters.Count != 0 || _texts.Count != 0;
 
     /// <summary>One line for the run, naming what is missing.</summary>
+    /// <summary>
+    /// A cheap key over exactly what <see cref="Describe"/> would print, so the string is built
+    /// only on the frames where the line would actually change.
+    /// </summary>
+    /// <remarks>
+    /// `Describe` allocates; comparing its output every frame is per-frame garbage, and GC
+    /// pauses stall the guest thread.
+    ///
+    /// The key covers the same inputs the line does — how many were found, the two published
+    /// counts, and which names are missing, in order — so a change in any of them still prints.
+    /// </remarks>
+    public long DescribeKey(IEnumerable<Handle> wanted)
+    {
+        long key = (_meters.Count * 1000003L) ^ _texts.Count;
+        int found = 0;
+        foreach (Handle handle in wanted)
+        {
+            if (_meters.ContainsKey(handle.Hash) || _texts.ContainsKey(handle.Hash))
+            {
+                ++found;
+            }
+            else
+            {
+                key = (key * 1000003L) ^ handle.Hash;
+            }
+        }
+
+        return (key * 1000003L) ^ found;
+    }
+
     public string Describe(IEnumerable<Handle> wanted)
     {
         var missing = new List<string>();

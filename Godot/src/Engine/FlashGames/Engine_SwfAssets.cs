@@ -963,6 +963,11 @@ public static class Engine_SwfAssets
                     {
                         SaveCached(face.Font, cached);
                     }
+
+                    // Drop the parsed outlines once the font is built and cached: they are a large
+                    // object graph the GC walks on every full collection. Another face of the same
+                    // pack re-parses the tags.
+                    face.Pack.Document = null;
                 }
 
                 if (face.Font is null)

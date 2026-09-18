@@ -102,47 +102,20 @@ public sealed partial class Engine_HudView : Node3D
     /// </summary>
     public Engine_UiScreen? Screen { get; set; }
 
-    /// <summary>What one animation track drives on one clone node.</summary>
-    private enum TrackTarget
-    {
-        PositionX, PositionY, ScaleX, ScaleY, RotationZ, Opacity, UvScaleV, Other,
-    }
-
     /// <summary>One playhead track bound to a node of a piece's clone.</summary>
     /// <param name="Value">A nested meter's own handle inside a group piece; null = the piece's.</param>
     /// <param name="Pulse">Whether that nested value is a pulser phase rather than a meter.</param>
     private sealed record BoundTrack(
-        BgfAnimation Animation, Node3D Node, TrackTarget Target, float Base,
+        BgfAnimation Animation, Node3D Node, Engine_UiTimeline.Target Target, float Base,
         Engine_HudValues.Handle? Value = null, bool Pulse = false);
 
-    /// <summary>The attribute ids the scrub can apply — the engine's own hash space.</summary>
-    private static readonly uint PositionXId =
-        Engine_GameHash.Sdbm("position.x") & Engine_GameHash.AttributeIdMask;
-
-    private static readonly uint PositionYId =
-        Engine_GameHash.Sdbm("position.y") & Engine_GameHash.AttributeIdMask;
-
-    private static readonly uint ScaleXId =
-        Engine_GameHash.Sdbm("scale.x") & Engine_GameHash.AttributeIdMask;
-
-    private static readonly uint ScaleYId =
-        Engine_GameHash.Sdbm("scale.y") & Engine_GameHash.AttributeIdMask;
-
-    private static readonly uint OpacityId =
-        Engine_GameHash.Sdbm("opacity") & Engine_GameHash.AttributeIdMask;
-
-    // The timing meter's sweet spot is a WEDGE: ExpressionFillPos swings `fill size` ±1.222 rad
-    // and ExpressionFillSize swings the two bar groups from ±1.222 toward 0 (hud.bgf owners
-    // 1498/1499) — rotation tracks, which the scrub dropped as 'Other' and drew the bars
-    // wherever the master left them.
-    private static readonly uint RotationZId =
-        Engine_GameHash.Sdbm("rotation.z") & Engine_GameHash.AttributeIdMask;
-
-    // The wedge's bars are the arc art itself: ExpressionFillSize scrubs each bar's height
-    // 0.16→1.28 AND its image's `scalev` 0.063→0.5 in step, so the quad reveals a taller
-    // band of the same atlas cell. Dropped, the image stayed a 16-row sliver of nothing.
-    private static readonly uint ScaleVId =
-        Engine_GameHash.Sdbm("scalev") & Engine_GameHash.AttributeIdMask;
+    /// <summary>
+    /// One element's time window on a scrubbed timeline, at its clone-binding slot. The value
+    /// fields match <see cref="BoundTrack"/>'s.
+    /// </summary>
+    private sealed record BoundWindow(
+        int Slot, Engine_UiTimeline.Window Window,
+        Engine_HudValues.Handle? Value = null, bool Pulse = false);
 
     /// <summary>One built piece, with what it needs to be driven and placed.</summary>
     private sealed class Built
@@ -153,8 +126,34 @@ public sealed partial class Engine_HudView : Node3D
         /// <summary>The authored animation tracks this piece's meter scrubs.</summary>
         public List<BoundTrack> Tracks { get; } = new();
 
+        /// <summary>The time windows the same scrub opens and closes.</summary>
+        public List<BoundWindow> Windows { get; } = new();
+
         /// <summary>The clone's text elements, for a piece that paints live element text.</summary>
         public List<(MeshInstance3D Node, int Ordinal)> LiveTextNodes { get; } = new();
+
+        /// <summary>
+        /// The expression meter's own nodes, resolved once: the two sweet-spot bars by name and
+        /// the three pip anchors by binding.
+        /// </summary>
+        /// <remarks>
+        /// Resolved once because the search is the cost: `Engine_UiTheme.FindByName` recurses
+        /// through `GetChildren()`, which allocates a `Godot.Collections.Array` per node visited.
+        ///
+        /// The tree is a clone that is built once and never re-parented, so the nodes cannot
+        /// move. `PipsResolved` rather than a null test, so anchors the file genuinely lacks are
+        /// not searched for again every tick.
+        /// </remarks>
+        public Node3D? BarLeft { get; set; }
+
+        public Node3D? BarRight { get; set; }
+
+        public Node3D?[] Pips { get; } = new Node3D?[3];
+
+        public bool PipsResolved { get; set; }
+
+        /// <summary>The band last tinted onto the bars, so an unchanged band re-tints nothing.</summary>
+        public int TintedBand { get; set; } = int.MinValue;
 
         /// <summary>What each of those last painted, keyed by ordinal.</summary>
         public Dictionary<int, string> ShownTexts { get; } = new();
@@ -196,7 +195,6 @@ public sealed partial class Engine_HudView : Node3D
     private readonly List<Built> _built = new();
 
     /// <summary>The last published-channel report, so it prints on change rather than once.</summary>
-    private string _publishedReported = string.Empty;
 
     /// <summary>
     /// Builds every piece the layout names. Safe to call again — it rebuilds from scratch.
@@ -374,78 +372,171 @@ public sealed partial class Engine_HudView : Node3D
     }
 
     /// <summary>
-    /// The timing meter's pip: which anchor element carries it and its x offset in canvas units,
-    /// or null while no pip travels. See <see cref="Engine_UiHudExpressionMeter"/>.
+    /// The timing meter's pip: which `PrimDescName` binding carries it and its angle along the
+    /// arc in DEGREES, or null while no pip travels. See <see cref="Engine_UiHudExpressionMeter"/>.
     /// </summary>
-    public (string Anchor, float Offset)? ExpressionPip { get; set; }
+    public (string Binding, float Degrees)? ExpressionPip { get; set; }
+
+    /// <summary>Which pip elements the built HUD actually contains, and which it does not.</summary>
+    public static readonly System.Collections.Generic.HashSet<string> PipAnchorsFound = new();
+
+    public static readonly System.Collections.Generic.HashSet<string> PipAnchorsMissing = new();
 
     /// <summary>The meter's colour band while it is on (0 low, 1 medium, 2 high), else -1.</summary>
     public int ExpressionBand { get; set; } = -1;
 
-    private const string PipRestMeta = "pip_rest_x";
-
-    /// <summary>The arc's radius about the meter group's origin, in canvas units — measured off the authored arc art (halves 160 wide, ends at ±65°).</summary>
-    private const float PipRadius = 165f;
+    /// <summary>Each pip element's authored position, so the swing below is absolute rather than compounding.</summary>
+    private const string PipRestMeta = "pip_rest";
 
     /// <summary>
-    /// Shows the travelling pip on its anchor: the anchor's own art, authored at opacity 0, is
-    /// lit and moved by the guest's offset; the other two anchors stay dark. Applied after the
-    /// clone binding, which writes the guest's stated opacity 0 back every frame.
+    /// The arc's radius, STATED BY THE GUEST: `flt_8209F790` = 0x43200000 = 160.0, loaded at
+    /// 0x823D1080 into lane 2 of the point `sub_823D0F10` rotates. It is not measured off the
+    /// art and not ours to choose.
+    /// </summary>
+    private const float PipRadius = 160f;
+
+    /// <summary>
+    /// The pip element the guest names for a given `PrimDescName` binding, inside this piece's
+    /// clone — or null when the file binds nothing under it.
+    /// </summary>
+    /// <remarks>
+    /// The file states which element is the hero's marker. `hud.bgf` authors three elements
+    /// under the meter's `Group` — `white_pip` #1516, `black_pip` #1519, `blackwhite_pip` #1522
+    /// — each carrying `PrimDescName` "HeroPip" / "HenchmanPip" / "BothPip", each with its own
+    /// 16-unit quad off `art\gui\persistant\expressionmeter.tex`, authored at opacity 0. The
+    /// guest resolves the same three names out of GUI registry 11 (`sub_823D0E10`:
+    /// `sub_822A9C60(container[11], hash)`), so the binding is the join; no host-side table of
+    /// node names. The builder builds all three (e.g.
+    /// `hud/Component_0/Layer/ExpressionMeter/Group/white_pip`).
+    /// </remarks>
+    private Node3D? PipNode(Built built, string binding)
+    {
+        if (Bindings is not { } bindings)
+        {
+            return null;
+        }
+
+        foreach (int ordinal in bindings.Elements(Engine_UiBindings.Kind.PrimDesc, binding))
+        {
+            if (built.Binding.NodeFor(ordinal) is { } node)
+            {
+                return node;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The three pip anchors, in resolve order. Static so the tick does not allocate.</summary>
+    private static readonly string[] PipBindings =
+    {
+        Engine_UiHudExpressionMeter.HeroPip, Engine_UiHudExpressionMeter.HenchmanPip,
+        Engine_UiHudExpressionMeter.BothPip,
+    };
+
+    /// <summary>
+    /// Shows the travelling pip on the element the guest names: the art authored at opacity 0 is
+    /// lit and swung along the arc by the guest's stated angle, and the other two stay dark.
+    /// Applied after the clone binding, which writes the guest's stated opacity 0 back.
     /// </summary>
     private void DrivePip(Built built)
     {
-        // The sweet-spot bars take the band's colour: white art, tinted as the guest tints
-        // it (`SetTintingAmountAndDiffuseColour` at amount 1).
-        if (ExpressionBand >= 0)
+        // Resolved once — see Built.BarLeft. The clone is built once and never re-parented, so
+        // a node that was found stays found; one that was not is not searched for again.
+        if (!built.PipsResolved)
         {
-            Color band = ExpressionBand switch { 0 => new Color(0f, 1f, 0f), 1 => new Color(1f, 1f, 0f), _ => new Color(1f, 0f, 0f) };
-            foreach (string bar in new[] { "barleft", "barright" })
+            built.PipsResolved = true;
+            built.BarLeft = Engine_UiTheme.FindByName(built.Node, "barleft") as Node3D;
+            built.BarRight = Engine_UiTheme.FindByName(built.Node, "barright") as Node3D;
+            for (int i = 0; i < PipBindings.Length; ++i)
             {
-                if (Engine_UiTheme.FindByName(built.Node, bar) is Node3D barNode)
+                built.Pips[i] = PipNode(built, PipBindings[i]);
+                if (built.Pips[i] is null)
                 {
-                    TintSubtree(barNode, band);
+                    PipAnchorsMissing.Add(PipBindings[i]);
+                }
+                else
+                {
+                    PipAnchorsFound.Add(PipBindings[i]);
+
+                    // A private material before any write, and once is enough: the piece is a
+                    // `Duplicate()` of the resident book and Godot shares a duplicate's
+                    // resources, so an opacity written here would otherwise reach every other
+                    // bearer of the same source quad.
+                    if (built.Pips[i] is MeshInstance3D owned)
+                    {
+                        Engine_UiSceneBuilder.OwnQuadMaterial(owned);
+                    }
                 }
             }
         }
 
-        foreach (string name in new[]
-            {
-                Engine_UiHudExpressionMeter.HeroPip, Engine_UiHudExpressionMeter.HenchmanPip,
-                Engine_UiHudExpressionMeter.BothPip,
-            })
+        // The sweet-spot bars take the band's colour: white art, tinted as the guest tints
+        // it (`SetTintingAmountAndDiffuseColour` at amount 1). Only when the band moves —
+        // `TintSubtree` recurses through `GetChildren()`.
+        if (ExpressionBand >= 0 && ExpressionBand != built.TintedBand)
         {
-            if (Engine_UiTheme.FindByName(built.Node, name) is not Node3D anchor)
+            built.TintedBand = ExpressionBand;
+            Color band = ExpressionBand switch { 0 => new Color(0f, 1f, 0f), 1 => new Color(1f, 1f, 0f), _ => new Color(1f, 0f, 0f) };
+            if (built.BarLeft is { } left)
+            {
+                TintSubtree(left, band);
+            }
+
+            if (built.BarRight is { } right)
+            {
+                TintSubtree(right, band);
+            }
+        }
+
+        for (int index = 0; index < PipBindings.Length; ++index)
+        {
+            string binding = PipBindings[index];
+            Node3D? pip = built.Pips[index];
+            if (pip is null || !GodotObject.IsInstanceValid(pip))
             {
                 continue;
             }
 
-            bool lit = ExpressionPip is { } pip && pip.Anchor == name;
-            if (!anchor.HasMeta(PipRestMeta))
+            bool lit = ExpressionPip is { } state && state.Binding == binding;
+            if (!pip.HasMeta(PipRestMeta))
             {
-                anchor.SetMeta(PipRestMeta, anchor.Position.X);
+                pip.SetMeta(PipRestMeta, pip.Position);
             }
 
-            // THE OFFSET IS AN ANGLE. `sub_823D0F10` computes (pos·0.01·130 − 65) and multiplies
-            // it by flt_82100ED4 = 0.017453 (π/180) before `sub_82B4FC60` builds the rotation:
-            // the pip swings ±65° about the anchor, which sits at the arc's centre — the arc
-            // art is a circle of radius ~165 canvas units about the group origin, its ends at
-            // ±65°. The anchor rides that circle and tilts with it.
-            float rest = (float)anchor.GetMeta(PipRestMeta);
+            // The guest swings it round an arc and translates only. `sub_823D0F10` reads the
+            // 0..100 position at `pip+4` (= `meter+16`, one base down — the tick is handed
+            // `meter+12`), turns it into DEGREES and then RADIANS:
+            //
+            //     823d104c  lfs    f10, 4(r9)          ; position 0..100
+            //     823d1050  fmuls  f9, f10, f0         ; * 0.01          (flt_8209CB94)
+            //     823d1054  fmsubs f8, f9, f13, f12    ; * 130.0 - 65.0  (flt_82101244/8209F794)
+            //     823d1058  fmuls  f1, f8, f11         ; * pi/180        (flt_82100ED4)
+            //     823d105c  bl     sub_82B4FC60        ; a Y-axis rotation matrix
+            //
+            // `sub_82B4FC60` builds the rotation, but the quad never wears it: the matrix is
+            // applied to the constant point (0, 0, 160, 1) — `flt_8209F790` loaded at 0x823D1080
+            // — and only the resulting displacement reaches the art. The loop at 0x823D1150 adds
+            // it to lanes 0 and 2 of all four corner positions (`fadds f10, f0, f11` for lane 0,
+            // `fadds f8, f12, f9` for lane 2) and writes nothing else, four corners, stride 0x40.
+            // So the pip is a RIGID quad on a circle of radius 160 about its authored position —
+            // no rotation of the art, no scale. Lane 2 is the screen vertical in the guest's GUI
+            // space: the arc's apex is 160 above the pips' authored origin.
+            var rest = (Vector3)pip.GetMeta(PipRestMeta);
             if (lit)
             {
-                float degrees = ExpressionPip!.Value.Offset;
-                float theta = Mathf.DegToRad(degrees);
-                anchor.Position = new Vector3(
-                    rest + PipRadius * Mathf.Sin(theta), PipRadius * Mathf.Cos(theta), anchor.Position.Z);
-                anchor.Rotation = new Vector3(0f, 0f, -theta);
+                float theta = Mathf.DegToRad(ExpressionPip!.Value.Degrees);
+                pip.Position = new Vector3(
+                    rest.X + (PipRadius * Mathf.Sin(theta)),
+                    rest.Y + (PipRadius * Mathf.Cos(theta)),
+                    rest.Z);
             }
             else
             {
-                anchor.Position = new Vector3(rest, 0f, anchor.Position.Z);
-                anchor.Rotation = Vector3.Zero;
+                pip.Position = rest;
             }
 
-            LightSubtree(anchor, lit ? 1f : 0f);
+            LightSubtree(pip, lit ? 1f : 0f);
         }
     }
 
@@ -468,9 +559,14 @@ public sealed partial class Engine_HudView : Node3D
     // The TopBox slab: the Bar and the blur/edge pieces authored beside it.
     private static readonly string[] SlabNames = { "Bar", "blur", "left", "right", "top", "bottom" };
 
+    /// <summary>The same names as StringNames: a node's Name compares natively, where the string form is a fresh conversion per child per walk.</summary>
+    private static readonly StringName[] SlabNameNames = { "Bar", "blur", "left", "right", "top", "bottom" };
+
     private void DrawModernPanels()
     {
-        var used = new HashSet<string>();
+        // Reused, not rebuilt: this runs every frame.
+        HashSet<string> used = _panelsUsed;
+        used.Clear();
 
         // THE TARGETED-NPC WIDGET IS FOUR SEPARATE COMPONENTS — the name, the opinion box and
         // its slider, the mood icons and the button — each authored at its own place in
@@ -493,9 +589,12 @@ public sealed partial class Engine_HudView : Node3D
         // screen. What was never observable is the rect it OCCUPIES once the anchor, the offset,
         // the ancestor scale and its children's own transforms have all composed. That is the
         // number that decides it, so print it. Change-keyed, so it settles to silence.
+        // A diagnostic, every 30th frame: the walk crosses into every node of every group to
+        // print a line that changes rarely.
+        bool spanFrame = (++_groupSpanFrame % 30) == 0;
         foreach (Built built in _built)
         {
-            if (!built.Piece.Id.StartsWith("group.", System.StringComparison.Ordinal))
+            if (!spanFrame || !built.Piece.Id.StartsWith("group.", System.StringComparison.Ordinal))
             {
                 continue;
             }
@@ -509,11 +608,14 @@ public sealed partial class Engine_HudView : Node3D
                 : $"{built.Piece.Id} NOT DRAWN";
         }
 
-        string groups = string.Join("  |  ", _groupSpans.Values);
-        if (groups != _groupReport)
+        if (spanFrame)
         {
-            _groupReport = groups;
-            GD.Print($"[hud-view] groups: {groups}");
+            string groups = string.Join("  |  ", _groupSpans.Values);
+            if (groups != _groupReport)
+            {
+                _groupReport = groups;
+                GD.Print($"[hud-view] groups: {groups}");
+            }
         }
 
         foreach (Built built in _built)
@@ -842,6 +944,22 @@ public sealed partial class Engine_HudView : Node3D
     /// <summary>The prompt groups the targeted readout hangs off to its right.</summary>
     private static readonly string[] PromptNames = { "LeftButton", "RightButton" };
 
+    private static readonly StringName[] PromptNameNames = { "LeftButton", "RightButton" };
+
+    private static bool NameIn(Node node, StringName[] names)
+    {
+        StringName name = node.Name;
+        foreach (StringName candidate in names)
+        {
+            if (name == candidate)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// Where the prompts sit, in canvas units from the readout's centre — under the heart at the
     /// bar's right end. The mood icons are authored at x 285 inside `grp` (scale 0.5) inside
@@ -870,10 +988,11 @@ public sealed partial class Engine_HudView : Node3D
     /// </summary>
     private static void CentreUnderBar(Node node)
     {
-        foreach (Node child in node.GetChildren())
+        int count = node.GetChildCount();
+        for (int i = 0; i < count; i++)
         {
-            if (child is Node3D prompt &&
-                System.Array.IndexOf(PromptNames, child.Name.ToString()) >= 0)
+            Node child = node.GetChild(i);
+            if (child is Node3D prompt && NameIn(child, PromptNameNames))
             {
                 // FROM THE AUTHORED Y, NOT THE CURRENT ONE. This runs every frame, so
                 // subtracting from `Position.Y` would drop the prompt another 16 units each
@@ -895,9 +1014,11 @@ public sealed partial class Engine_HudView : Node3D
 
     private static void HideSlabs(Node node)
     {
-        foreach (Node child in node.GetChildren())
+        int count = node.GetChildCount();
+        for (int i = 0; i < count; i++)
         {
-            if (child is Node3D spatial && System.Array.IndexOf(SlabNames, child.Name.ToString()) >= 0)
+            Node child = node.GetChild(i);
+            if (child is Node3D spatial && NameIn(child, SlabNameNames))
             {
                 spatial.Visible = false;
                 continue;
@@ -994,61 +1115,15 @@ public sealed partial class Engine_HudView : Node3D
     }
 
     /// <summary>
-    /// Binds the tracks activated by the slides an element owns, on the nodes of the piece's
+    /// Binds the tracks and time windows of an element's timeline, on the nodes of the piece's
     /// clone, scrubbed by <paramref name="value"/> (null: the piece's own value).
     /// </summary>
     private void BindOwnedTracks(
         Built built, Engine_UiScreen screen, int element, Engine_HudValues.Handle? value, bool pulse)
     {
-
-        // Only the tracks this element's own slides activate: a meter scrubs its element's
-        // timeline, while a nested fader's tracks (`ExpAmounts`, `TopBox`) belong to that fader
-        // and are driven by the guest's stated opacity through the clone binding.
-        var owned = new HashSet<int>();
-        foreach (BgfSlide slide in screen.Document.Slides)
+        foreach ((BgfAnimation animation, Engine_UiTimeline.Target target) in
+            Engine_UiTimeline.Tracks(screen, element))
         {
-            if (slide.OwnerElement != element)
-            {
-                continue;
-            }
-
-            foreach (BgfSlideEntry entry in slide.Entries)
-            {
-                foreach (int index in entry.ActivatedAnimations ?? System.Array.Empty<int>())
-                {
-                    if (index >= 0)
-                    {
-                        owned.Add(index);
-                    }
-                }
-            }
-        }
-
-        BgfAnimation[] animations = screen.Document.Animations;
-        for (int index = 0; index < animations.Length; ++index)
-        {
-            BgfAnimation animation = animations[index];
-            if (!animation.ActiveOnLoad || animation.Keys.Length == 0 ||
-                !InSubtree(screen, animation.ElementOrdinal, element) ||
-                (owned.Count > 0 && !owned.Contains(index)))
-            {
-                continue;
-            }
-
-            TrackTarget target =
-                animation.AttributeId == PositionXId ? TrackTarget.PositionX
-                : animation.AttributeId == PositionYId ? TrackTarget.PositionY
-                : animation.AttributeId == ScaleXId ? TrackTarget.ScaleX
-                : animation.AttributeId == ScaleYId ? TrackTarget.ScaleY
-                : animation.AttributeId == OpacityId ? TrackTarget.Opacity
-                : animation.AttributeId == RotationZId ? TrackTarget.RotationZ
-                : animation.AttributeId == ScaleVId ? TrackTarget.UvScaleV
-                : TrackTarget.Other;
-            if (target == TrackTarget.Other)
-            {
-                continue;
-            }
-
             // BY ORDINAL through the clone binding, which joined every node of the clone to its
             // element: a name is ambiguous inside a widget — the timing meter's sweet-spot
             // rotation track targets a `Group` UNDER `fill size`, and the by-name search found
@@ -1063,7 +1138,7 @@ public sealed partial class Engine_HudView : Node3D
             // An image element folds into its owner's quad and has no node of its own — the
             // wedge's `scalev` track targets `expressionmeter` UNDER `barleft`, and the bar
             // is the mesh. A UV track climbs to the nearest bound ancestor.
-            if (node is null && target == TrackTarget.UvScaleV)
+            if (node is null && target == Engine_UiTimeline.Target.UvScaleV)
             {
                 for (UiNode? up = screen.Nodes[animation.ElementOrdinal].Parent;
                     up is not null && node is null; up = up.Parent)
@@ -1080,56 +1155,122 @@ public sealed partial class Engine_HudView : Node3D
             UiNode doc = screen.Nodes[animation.ElementOrdinal];
             float baseline = target switch
             {
-                TrackTarget.PositionX => isRoot ? doc.PositionX : 0f,
-                TrackTarget.PositionY => isRoot ? doc.PositionY : 0f,
+                Engine_UiTimeline.Target.PositionX => isRoot ? doc.PositionX : 0f,
+                Engine_UiTimeline.Target.PositionY => isRoot ? doc.PositionY : 0f,
                 _ => 0f,
             };
 
             built.Tracks.Add(new BoundTrack(animation, node, target, baseline, value, pulse));
         }
+
+        int stated = LiveSlides is { } live && element < live.Count ? live[element] : 0;
+        BgfSlide? playing = Engine_UiTimeline.PlayingSlide(screen.Document, element, stated);
+        foreach (Engine_UiTimeline.Window window in Engine_UiTimeline.Windows(screen, element, playing))
+        {
+            int slot = built.Binding.SlotFor(window.Ordinal);
+            if (slot < 0)
+            {
+                continue;
+            }
+
+            built.Windows.Add(new BoundWindow(slot, window, value, pulse));
+
+            // At rest until a value arrives, as the tracks are: t = 0.
+            built.Binding.Gate(slot, window.IsOpen(0f));
+        }
     }
 
+    /// <summary>Opens and closes the windows that ride one value, at one tick.</summary>
+    private static void GateWindows(Built built, Engine_HudValues.Handle? value, float t)
+    {
+        foreach (BoundWindow window in built.Windows)
+        {
+            if (window.Value == value)
+            {
+                built.Binding.Gate(window.Slot, window.Window.IsOpen(t));
+            }
+        }
+    }
+
+    /// <summary>A nested value's playhead, or null while the guest has not published it.</summary>
+    private float? NestedTime(Engine_HudValues.Handle handle, bool pulse) =>
+        pulse
+            ? Values.Pulser(handle) is { } phase ? Mathf.Clamp(phase, 0f, 1f) * 1000f : null
+            : Values.Meter(handle) is { } value ? Mathf.Clamp(value, 0f, 100f) * 10f : null;
+
     /// <summary>
-    /// Scrubs a group piece's nested meters and pulsers, each track at its own value's
-    /// playhead. An unpublished value leaves its tracks as authored.
+    /// Scrubs a group piece's nested meters and pulsers, each track and window at its own
+    /// value's playhead. An unpublished value leaves them as they stand.
     /// </summary>
     private void ScrubNested(Built built, Vector2 at)
     {
         foreach (BoundTrack track in built.Tracks)
         {
-            if (track.Value is not { } handle)
-            {
-                continue;
-            }
-
-            float? t = track.Pulse
-                ? Values.Pulser(handle) is { } phase ? Mathf.Clamp(phase, 0f, 1f) * 1000f : null
-                : Values.Meter(handle) is { } value ? Mathf.Clamp(value, 0f, 100f) * 10f : null;
-            if (t is { } time)
+            if (track.Value is { } handle && NestedTime(handle, track.Pulse) is { } time)
             {
                 ApplyTrack(built, track, at, time);
+            }
+        }
+
+        foreach (BoundWindow window in built.Windows)
+        {
+            if (window.Value is { } handle && NestedTime(handle, window.Pulse) is { } time)
+            {
+                built.Binding.Gate(window.Slot, window.Window.IsOpen(time));
             }
         }
     }
 
     /// <summary>Whether an element sits at or under a piece's root element.</summary>
-    private static bool InSubtree(Engine_UiScreen screen, int element, int root)
-    {
-        for (UiNode? at = element >= 0 && element < screen.Nodes.Length
-				? screen.Nodes[element] : null;
-			at is not null; at = at.Parent)
-        {
-            if (at.Ordinal == root)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    private static bool InSubtree(Engine_UiScreen screen, int element, int root) =>
+        Engine_UiTimeline.InSubtree(screen, element, root);
 
     /// <summary>The live HUD, for the debug channel.</summary>
     public static Engine_HudView? Current { get; private set; }
+
+    /// <summary>Debug lever: false parks the HUD walk entirely. See <see cref="_Process"/>.</summary>
+    public static bool Enabled = true;
+
+    /// <summary>
+    /// Where the HUD walk's time goes, in Stopwatch ticks, read back and zeroed by the `hud` op.
+    /// </summary>
+    /// <remarks>
+    /// One counter per section of this walk; <see cref="Engine_UiCloneBinding"/> profiles the
+    /// binding's own share separately.
+    /// </remarks>
+    public static long TicksValues;
+
+    public static long TicksGates;
+
+    public static long TicksApply;
+
+    public static long TicksTexts;
+
+    public static long TicksPip;
+
+    public static long TicksPlace;
+
+    public static long TicksTransform;
+
+    public static long TicksDrive;
+
+    public static long WalkedPieces;
+
+    public static long Walks;
+
+    public static void ResetWalkProfile()
+    {
+        TicksValues = 0;
+        TicksGates = 0;
+        TicksApply = 0;
+        TicksTexts = 0;
+        TicksPip = 0;
+        TicksPlace = 0;
+        TicksTransform = 0;
+        TicksDrive = 0;
+        WalkedPieces = 0;
+        Walks = 0;
+    }
 
     /// <summary>
     /// Every built piece whose id contains <paramref name="match"/>: where it is, how big, whether
@@ -1186,12 +1327,34 @@ public sealed partial class Engine_HudView : Node3D
     {
         Current = this;
     	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("hudview");
+
+        // A bisect lever, like `render lights=` and `render entities=`: switching the walk off
+        // separates its cost from the render queue behind it, which the phase timer cannot.
+        if (!Enabled)
+        {
+            Visible = false;
+            return;
+        }
+
         if (_built.Count == 0)
         {
             return;
         }
 
-        Values.Sample((float)delta);
+        Values.Advance((float)delta);
+
+        // On the guest's frame, or while a stated meter is still gliding: the guest publishes
+        // per HF tick, and the walk below crosses into every piece's node.
+        if (_refreshed && !Refii.Core.Engine_GuestFrame.Changed && !Values.Seeking)
+        {
+            return;
+        }
+
+        _refreshed = true;
+        ++Walks;
+        long walkMark = System.Diagnostics.Stopwatch.GetTimestamp();
+        Values.Read();
+        TicksValues += System.Diagnostics.Stopwatch.GetTimestamp() - walkMark;
 
         // Nothing before the first publish: an empty registry means "the hero has not spawned",
         // not "everything is at zero".
@@ -1214,6 +1377,9 @@ public sealed partial class Engine_HudView : Node3D
 
         foreach (Built built in _built)
         {
+            ++WalkedPieces;
+            long mark = System.Diagnostics.Stopwatch.GetTimestamp();
+
             // The slide toggle first, for a group: its authored `Off`/`TurnOff…` slide is the
             // guest's statement that the box is down, and the fold cannot say so on its own.
             // A GROUP IS DOWN WHEN ITS ROOT RESOLVES DARK, not when its slide is NAMED Off: the
@@ -1228,8 +1394,11 @@ public sealed partial class Engine_HudView : Node3D
             {
                 built.Node.Visible = false;
                 ++_hiddenByState;
-                Note(built, $"element {built.Piece.ElementOrdinal} resolves dark on slide " +
-                    $"'{LiveSlideName(built.Piece.ElementOrdinal)}'");
+                if (_explain)
+                {
+                    Note(built, $"element {built.Piece.ElementOrdinal} resolves dark on slide " +
+                        $"'{LiveSlideName(built.Piece.ElementOrdinal)}'");
+                }
                 continue;
             }
 
@@ -1245,13 +1414,16 @@ public sealed partial class Engine_HudView : Node3D
 
                 // The numbers that decided it, not just the count: the terms behind `active`
                 // separate a parked HUD from a broken resolve.
-                Note(built, Resolve is { } r &&
-                        built.Piece.ElementOrdinal < r.Drawn.Length
-                    ? $"element {built.Piece.ElementOrdinal} INACTIVE " +
-                        $"(drawn={r.Drawn[built.Piece.ElementOrdinal]} " +
-                        $"opacity={r.Opacity[built.Piece.ElementOrdinal]:0.00})" +
-                        Culprit(built.Piece.ElementOrdinal, r)
-                    : $"element {built.Piece.ElementOrdinal} INACTIVE (no resolve)");
+                if (_explain)
+                {
+                    Note(built, Resolve is { } r &&
+                            built.Piece.ElementOrdinal < r.Drawn.Length
+                        ? $"element {built.Piece.ElementOrdinal} INACTIVE " +
+                            $"(drawn={r.Drawn[built.Piece.ElementOrdinal]} " +
+                            $"opacity={r.Opacity[built.Piece.ElementOrdinal]:0.00})" +
+                            Culprit(built.Piece.ElementOrdinal, r)
+                        : $"element {built.Piece.ElementOrdinal} INACTIVE (no resolve)");
+                }
                 continue;
             }
 
@@ -1264,6 +1436,10 @@ public sealed partial class Engine_HudView : Node3D
 
             built.Node.Visible = true;
 
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            TicksGates += now - mark;
+            mark = now;
+
             // The piece's own parts follow the guest per element — which page of a widget is up,
             // what has been ghosted, and which picture each slot carries.
             if (Resolve is { } resolved)
@@ -1271,12 +1447,21 @@ public sealed partial class Engine_HudView : Node3D
                 built.Binding.Apply(resolved, LiveTextures, LiveTransform);
             }
 
+            now = System.Diagnostics.Stopwatch.GetTimestamp();
+            TicksApply += now - mark;
+            mark = now;
+
             // By piece ID: the flash container for the same element is also Art 'ExpressionMeter',
             // and lighting the pip in that hollow clone put a white dot at the screen's centre.
             if (built.Piece.Id == "group.ExpressionMeter.ExpressionMeter")
             {
                 DrivePip(built);
             }
+
+            // Timed apart from the live texts below.
+            now = System.Diagnostics.Stopwatch.GetTimestamp();
+            TicksPip += now - mark;
+            mark = now;
 
             // The guest's own strings on the wheel's titles, applied only when they change: it
             // restates them every frame it holds the wheel.
@@ -1318,6 +1503,10 @@ public sealed partial class Engine_HudView : Node3D
                 }
             }
 
+            now = System.Diagnostics.Stopwatch.GetTimestamp();
+            TicksTexts += now - mark;
+            mark = now;
+
             Vector2 at = Engine_HudLayout.Place(built.Piece, extent);
 
             // The guest's own move of a piece root. A layout offset derives from the authored
@@ -1338,9 +1527,17 @@ public sealed partial class Engine_HudView : Node3D
             // The canvas factor multiplies the authored size, never replaces it. Composed from
             // the remembered basis rather than accumulated onto the live one, so the write stays
             // absolute across frames.
+            now = System.Diagnostics.Stopwatch.GetTimestamp();
+            TicksPlace += now - mark;
+            mark = now;
+
             built.Node.Transform = new Transform3D(
                 built.Authored.Scaled(new Vector3(scale, scale, 1f)),
                 built.Node.Transform.Origin);
+
+            now = System.Diagnostics.Stopwatch.GetTimestamp();
+            TicksTransform += now - mark;
+            mark = now;
 
             switch (built.Piece.Driven)
             {
@@ -1383,18 +1580,24 @@ public sealed partial class Engine_HudView : Node3D
                     break;
             }
 
+            TicksDrive += System.Diagnostics.Stopwatch.GetTimestamp() - mark;
+
             // The drive hides too: `ScrubTracks` and `DriveBar` return early on a meter the guest
             // has never published, after both gates above have passed.
             if (!built.Node.Visible)
             {
                 ++_hiddenByDrive;
-                Note(built, $"the drive found no value for '{built.Piece.Value}'");
+                if (_explain)
+                {
+                    Note(built, $"the drive found no value for '{built.Piece.Value}'");
+                }
             }
         }
 
         // Which channels the guest has published, re-reported when the set changes — keyed on the
         // change so a HUD that is merely waiting does not read as broken.
-        var wanted = new List<Engine_HudValues.Handle>();
+        List<Engine_HudValues.Handle> wanted = _wanted;
+        wanted.Clear();
         foreach (Built built in _built)
         {
             if (built.Piece.Value.Length != 0)
@@ -1418,33 +1621,54 @@ public sealed partial class Engine_HudView : Node3D
             }
         }
 
-        string published = Values.Describe(wanted);
-        if (published != _publishedReported)
+        // Key first, string only on a change: both halves of this line allocate and it rarely
+        // changes. See Engine_HudValues.DescribeKey.
+        long publishedKey = Values.DescribeKey(wanted);
+        if (publishedKey != _publishedKey)
         {
-            _publishedReported = published;
-            GD.Print($"{Layout.Describe(extent)}; {published}");
+            _publishedKey = publishedKey;
+            GD.Print($"{Layout.Describe(extent)}; {Values.Describe(wanted)}");
         }
 
         DrawModernPanels();
 
-        // Who is actually on screen, named by id on change.
-        var visible = new List<string>();
+        // Who is on screen, named by id on change; the names are gathered only when the key
+        // moves.
+        long visibleKey = 17L;
+        int visibleCount = 0;
         foreach (Built built in _built)
         {
             if (built.Node.Visible)
             {
-                visible.Add(built.Piece.Id);
+                ++visibleCount;
+                visibleKey = (visibleKey * 1000003L) ^ built.Piece.Id.GetHashCode();
             }
         }
 
-        string showing = string.Join("  ", visible);
-        if (showing != _visibleReported)
+        if (visibleKey != _visibleKey)
         {
-            _visibleReported = showing;
+            _visibleKey = visibleKey;
+            var visible = new List<string>(visibleCount);
+            foreach (Built built in _built)
+            {
+                if (built.Node.Visible)
+                {
+                    visible.Add(built.Piece.Id);
+                }
+            }
+
+            GD.Print($"[hud] visible ({visible.Count} of {_built.Count}): {string.Join("  ", visible)}");
+
+            // The reasons are gathered and printed on the next pass only, so they are not
+            // formatted every frame.
+            _explain = true;
+        }
+        else if (_explain)
+        {
+            _explain = false;
 
             // Why the rest are not: the state gate is the guest's answer, the value gate is
             // host-side, and the count alone cannot tell a parked element from a broken join.
-            GD.Print($"[hud] visible ({visible.Count} of {_built.Count}): {showing}");
             GD.Print($"[hud] hidden — {_hiddenByState} by the guest's element state, " +
                 $"{_hiddenByValue} by an unpublished channel before the drive (should be 0), " +
                 $"{_hiddenByDrive} by the drive itself; " +
@@ -1465,6 +1689,19 @@ public sealed partial class Engine_HudView : Node3D
             }
         }
     }
+
+    /// <summary>The pass after the visible set changed gathers the reasons; every other pass skips them.</summary>
+    private long _publishedKey = long.MinValue;
+    private long _visibleKey = long.MinValue;
+    private readonly HashSet<string> _panelsUsed = new();
+
+    private bool _explain;
+
+    private int _groupSpanFrame;
+
+    private bool _refreshed;
+
+    private readonly List<Engine_HudValues.Handle> _wanted = new();
 
     /// <summary>Why the hidden pieces are hidden, counted over the last pass.</summary>
     private int _hiddenByState;
@@ -1522,7 +1759,6 @@ public sealed partial class Engine_HudView : Node3D
         return " — dark with no element at zero (a parent chain we did not resolve)";
     }
 
-    private string _visibleReported = string.Empty;
 
     /// <summary>
     /// Scrubs a piece's authored tracks to its meter's playhead. An unpublished channel hides the
@@ -1542,7 +1778,7 @@ public sealed partial class Engine_HudView : Node3D
         ScrubAt(built, at, Mathf.Clamp(value, 0f, 100f) * 10f);
     }
 
-    /// <summary>Writes every bound track of a piece at one tick of its element timeline.</summary>
+    /// <summary>Writes every bound track and window of a piece at one tick of its timeline.</summary>
     private static void ScrubAt(Built built, Vector2 at, float t)
     {
         foreach (BoundTrack track in built.Tracks)
@@ -1552,99 +1788,32 @@ public sealed partial class Engine_HudView : Node3D
                 ApplyTrack(built, track, at, t);
             }
         }
+
+        GateWindows(built, null, t);
     }
 
     /// <summary>Writes one bound track at one tick.</summary>
     private static void ApplyTrack(Built built, BoundTrack track, Vector2 at, float t)
     {
-        {
-            if (!GodotObject.IsInstanceValid(track.Node))
-            {
-                return;
-            }
-
-            float evaluated = track.Animation.Evaluate(t);
-            bool isRoot = ReferenceEquals(track.Node, built.Node);
-            switch (track.Target)
-            {
-                case TrackTarget.PositionX:
-                    track.Node.Position = track.Node.Position with
-                    {
-                        X = isRoot ? at.X + (evaluated - track.Base) : evaluated,
-                    };
-                    break;
-
-                case TrackTarget.PositionY:
-                    track.Node.Position = track.Node.Position with
-                    {
-                        Y = isRoot ? at.Y + (evaluated - track.Base) : evaluated,
-                    };
-                    break;
-
-                // Through the basis column, never `.Scale`: every meter fill in `hud.bgf` is
-                // authored `scale.x = 0`, and Godot's scale getter answers (0,0,0) for all three
-                // axes on a singular basis. See Engine_UiBasisScale.
-                case TrackTarget.ScaleX:
-                    Engine_UiBasisScale.SetX(track.Node, evaluated);
-                    break;
-
-                case TrackTarget.ScaleY:
-                    Engine_UiBasisScale.SetY(track.Node, evaluated);
-                    break;
-
-                case TrackTarget.RotationZ:
-                    // Radians, sign as authored — Engine_UiSceneBuilder.BuildTransform keeps
-                    // rotation.z's sign in its Euler basis. The Rotation setter keeps the scale.
-                    track.Node.Rotation = track.Node.Rotation with { Z = evaluated };
-                    break;
-
-                case TrackTarget.Opacity:
-                    SetOpacity(track.Node, evaluated * 0.01f);
-                    break;
-
-                case TrackTarget.UvScaleV:
-                    SetUvScaleV(track.Node, evaluated);
-                    break;
-            }
-        }
-    }
-
-    /// <summary>Writes a scrubbed vertical UV extent onto a quad, keeping the builder's
-    /// half-texel inset (Engine_UiSceneBuilder.InsetAxis) so the band's edges do not bleed.</summary>
-    private static void SetUvScaleV(Node node, float extent)
-    {
-        if (node is not MeshInstance3D mesh || mesh.MaterialOverride is not ShaderMaterial material)
+        if (!GodotObject.IsInstanceValid(track.Node))
         {
             return;
         }
 
-        // The strip is ANCHORED at its far edge: the bar's authored rect is v [0.939, 0.998]
-        // for `scalev` 0.063 (the atlas's bottom rows, empty), and the guest's scrub to 0.5
-        // grows it upward into the arc art. Hold the far edge, move the near one.
-        Vector2 scale = material.GetShaderParameter("uv1_scale").AsVector2();
-        Vector2 offset = material.GetShaderParameter("uv1_offset").AsVector2();
-        float inset = material.GetShaderParameter("diffuse_tex").As<Texture2D>() is { } tex
-            ? 1f / Mathf.Max(tex.GetHeight(), 1)
-            : 0f;
-        float far = offset.Y + scale.Y;
-        float span = Mathf.Max(extent - inset, 0f);
-        material.SetShaderParameter("uv1_offset", new Vector2(offset.X, far - span));
-        material.SetShaderParameter("uv1_scale", new Vector2(scale.X, span));
-    }
+        float evaluated = track.Animation.Evaluate(t);
 
-    /// <summary>Writes a scrubbed opacity onto a node's own quads — materials are per-piece
-    /// owned copies, so this cannot fade a sibling or the pattern book.</summary>
-    private static void SetOpacity(Node node, float alpha)
-    {
-        if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material)
+        // The piece's own root is placed by the layout: its position track moves it relative to
+        // where the layout put it.
+        if (ReferenceEquals(track.Node, built.Node) &&
+            track.Target is Engine_UiTimeline.Target.PositionX or Engine_UiTimeline.Target.PositionY)
         {
-            material.SetShaderParameter("opacity", alpha);
+            track.Node.Position = track.Target == Engine_UiTimeline.Target.PositionX
+                ? track.Node.Position with { X = at.X + (evaluated - track.Base) }
+                : track.Node.Position with { Y = at.Y + (evaluated - track.Base) };
+            return;
         }
 
-        foreach (Node child in node.GetChildren())
-        {
-            SetOpacity(child, alpha);
-        }
+        Engine_UiTimeline.Write(track.Node, track.Target, evaluated);
     }
 
     /// <summary>

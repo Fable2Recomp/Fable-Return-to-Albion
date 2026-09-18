@@ -29,6 +29,31 @@ public partial class BankExtract : Node
 		}
 
 		using BnkFileSystem fs = BnkFileSystem.Mount(Engine_GameData.Resolve());
+
+		// REFII_EXTRACT_ALL=1: every entry matching goes to REFII_EXTRACT_TO (a directory)
+		// under its own virtual path — for sweeping a whole class of files (every script,
+		// say) through an offline tool. The destination rule is the same: outside the tree.
+		if (OS.GetEnvironment("REFII_EXTRACT_ALL") == "1")
+		{
+			int written = 0;
+			foreach (BnkFile entry in fs.EnumerateAllFiles())
+			{
+				if (!entry.VirtualPath.Contains(want, StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
+
+				string target = Path.Combine(dest, entry.VirtualPath.Replace('\\', '/').TrimStart('/'));
+				Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+				File.WriteAllBytes(target, entry.ReadAllBytes());
+				written++;
+			}
+
+			GD.Print($"[extract] {written} entr(ies) matching '{want}' -> {dest}");
+			GetTree().Quit(0);
+			return;
+		}
+
 		BnkFile? file = fs.EnumerateAllFiles()
 			.FirstOrDefault(f => f.VirtualPath.Contains(want, StringComparison.OrdinalIgnoreCase));
 

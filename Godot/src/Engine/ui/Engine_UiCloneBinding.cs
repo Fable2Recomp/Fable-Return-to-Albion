@@ -33,12 +33,59 @@ public sealed class Engine_UiCloneBinding
 		/// </summary>
 		public Vector3 Pivot { get; init; }
 
+		/// <summary>What the node shows: the guest's draw gate AND <see cref="Open"/>.</summary>
 		public bool Drawn { get; set; } = true;
+
+		/// <summary>The guest's draw gate at the last sample.</summary>
+		public bool Stated { get; set; } = true;
+
+		/// <summary>
+		/// The element's time window on a scrubbed timeline — see <see cref="Gate"/>. Open
+		/// unless a scrub has closed it.
+		/// </summary>
+		public bool Open { get; set; } = true;
+
 		public float Faded { get; set; } = -1f;
 		public uint Pictured { get; set; }
+
+		// A bound node's MATERIAL is deliberately not kept here — see Apply.
 	}
 
 	private readonly List<Bound> _bound = new();
+
+	/// <summary>
+	/// Where <see cref="Apply"/>'s time goes, in Stopwatch ticks, accumulated across every
+	/// binding and read back by the `hud` op.
+	/// </summary>
+	/// <remarks>
+	/// Accumulated per section across the whole walk, not lapped per node, so each reads as that
+	/// section's share of the HUD's cost until <see cref="ResetProfile"/>.
+	/// </remarks>
+	public static long TicksTransform;
+
+	public static long TicksDraw;
+
+	public static long TicksMaterial;
+
+	public static long TicksTexture;
+
+	public static long TicksMasks;
+
+	public static long AppliedNodes;
+
+	public static long AppliedCalls;
+
+	/// <summary>Zeroes the section profile; the reader calls this after taking a sample.</summary>
+	public static void ResetProfile()
+	{
+		TicksTransform = 0;
+		TicksDraw = 0;
+		TicksMaterial = 0;
+		TicksTexture = 0;
+		TicksMasks = 0;
+		AppliedNodes = 0;
+		AppliedCalls = 0;
+	}
 
 	/// <summary>How many nodes are bound — the count worth reporting after a build.</summary>
 	public int Count => _bound.Count;
@@ -298,6 +345,48 @@ public sealed class Engine_UiCloneBinding
 		return -1;
 	}
 
+	/// <summary>The binding slot for an element, for <see cref="Gate"/>; -1 when unbound.</summary>
+	public int SlotFor(int ordinal)
+	{
+		for (int slot = 0; slot < _bound.Count; ++slot)
+		{
+			if (_bound[slot].Ordinal == ordinal)
+			{
+				return slot;
+			}
+		}
+
+		return -1;
+	}
+
+	/// <summary>
+	/// Opens or closes an element's TIME WINDOW. An element authored with `timeoffset` /
+	/// `endtime` exists only while its component's playhead lies inside them — the hold ring
+	/// swaps its covers and fills at t = 500 that way — and a scrubbed timeline has no engine
+	/// to do that, so the scrub states it here. Combined with the guest's own draw gate: a
+	/// closed window hides, an open one shows only what the guest draws.
+	/// </summary>
+	public void Gate(int slot, bool open)
+	{
+		if (slot < 0 || slot >= _bound.Count || _bound[slot].Open == open)
+		{
+			return;
+		}
+
+		_bound[slot].Open = open;
+		Show(_bound[slot]);
+	}
+
+	private static void Show(Bound bound)
+	{
+		bool draw = bound.Stated && bound.Open;
+		if (draw != bound.Drawn)
+		{
+			bound.Drawn = draw;
+			bound.Node.Visible = draw;
+		}
+	}
+
 	public Node3D? NodeFor(int ordinal)
 	{
 		foreach (Bound bound in _bound)
@@ -334,6 +423,7 @@ public sealed class Engine_UiCloneBinding
 	{
 		DrawnCount = 0;
 		_dark.Clear();
+		++AppliedCalls;
 		foreach (Bound bound in _bound)
 		{
 			if (!GodotObject.IsInstanceValid(bound.Node) ||
@@ -342,10 +432,15 @@ public sealed class Engine_UiCloneBinding
 				continue;
 			}
 
+			++AppliedNodes;
+			long mark = System.Diagnostics.Stopwatch.GetTimestamp();
 			ApplyTransform(bound, resolve, transform);
+			long now = System.Diagnostics.Stopwatch.GetTimestamp();
+			TicksTransform += now - mark;
+			mark = now;
 
-			bool draw = resolve.Drawn[bound.Ordinal];
-			if (draw)
+			bool stated = resolve.Drawn[bound.Ordinal];
+			if (stated)
 			{
 				++DrawnCount;
 			}
@@ -354,15 +449,26 @@ public sealed class Engine_UiCloneBinding
 				_dark.Add(bound.Ordinal);
 			}
 
-			if (draw != bound.Drawn)
-			{
-				bound.Drawn = draw;
-				bound.Node.Visible = draw;
-			}
+			bound.Stated = stated;
+			Show(bound);
 
+			now = System.Diagnostics.Stopwatch.GetTimestamp();
+			TicksDraw += now - mark;
+			mark = now;
+
+			// Read every sample, never cached: `Engine_UiTheme.SetMeshText` and
+			// `Engine_UiTheme.Paint` replace `MaterialOverride` on every string change (carrying
+			// `clip_rect` and `opacity` across), and `Engine_UiSceneBuilder.OwnQuadMaterial`
+			// replaces it for a clone that writes privately. A cached material is an orphan:
+			// writes land on something nothing renders, and a quad's `diffuse_tex` would hit the
+			// pattern book's shared material instead of the clone's.
 			if (bound.Node is not MeshInstance3D mesh ||
 				mesh.MaterialOverride is not ShaderMaterial material)
 			{
+				// The next material this node is given must be written, whatever it was last
+				// faded to — an empty label is left with none at all.
+				bound.Faded = -1f;
+				TicksMaterial += System.Diagnostics.Stopwatch.GetTimestamp() - mark;
 				continue;
 			}
 
@@ -374,25 +480,29 @@ public sealed class Engine_UiCloneBinding
 				Engine_UiTheme.FadeInlineIcons(mesh, alpha);
 			}
 
+			now = System.Diagnostics.Stopwatch.GetTimestamp();
+			TicksMaterial += now - mark;
+			mark = now;
+
 			// A hash of zero is "unstated", not a change: the guest drops a stated hash to zero
 			// mid-write, and the file's own texture stands meanwhile.
-			if (!bound.IsQuad || textures is null || bound.Ordinal >= textures.Count)
+			if (bound.IsQuad && textures is not null && bound.Ordinal < textures.Count)
 			{
-				continue;
+				uint hash = textures[bound.Ordinal];
+				if (hash != 0 && hash != bound.Pictured &&
+					ResolveTexture?.Invoke(hash) is { } picture)
+				{
+					bound.Pictured = hash;
+					material.SetShaderParameter("diffuse_tex", picture);
+				}
 			}
 
-			uint hash = textures[bound.Ordinal];
-			if (hash == 0 || hash == bound.Pictured ||
-				ResolveTexture?.Invoke(hash) is not { } picture)
-			{
-				continue;
-			}
-
-			bound.Pictured = hash;
-			material.SetShaderParameter("diffuse_tex", picture);
+			TicksTexture += System.Diagnostics.Stopwatch.GetTimestamp() - mark;
 		}
 
+		long masks = System.Diagnostics.Stopwatch.GetTimestamp();
 		RefreshMasks(resolve, transform);
+		TicksMasks += System.Diagnostics.Stopwatch.GetTimestamp() - masks;
 	}
 
 	private Engine_UiScreen? _maskScreen;

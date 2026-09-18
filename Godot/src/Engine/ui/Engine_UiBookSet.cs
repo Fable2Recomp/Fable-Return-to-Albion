@@ -210,6 +210,9 @@ public sealed class Engine_UiBookSet
 	/// <summary>Screens whose template names no chrome — asked once, then left alone.</summary>
 	private readonly System.Collections.Generic.HashSet<uint> _bookless = new();
 
+	/// <summary>Which books stood this pass — scratch for <see cref="Drive"/>, reused per frame.</summary>
+	private readonly System.Collections.Generic.HashSet<uint> _standing = new();
+
 	/// <summary>
 	/// Stands every owned surface the guest currently has live.
 	///
@@ -227,7 +230,10 @@ public sealed class Engine_UiBookSet
 			return;
 		}
 
-		var standing = new System.Collections.Generic.HashSet<uint>();
+		// Reused, not reallocated: this runs every guest frame and the set never outlives the
+		// call, so a fresh one is per-frame garbage whose collection pauses stall the sim thread.
+		System.Collections.Generic.HashSet<uint> standing = _standing;
+		standing.Clear();
 		if (revealed)
 		{
 			Engine_UiModel.InGameScreens? screens = Engine_UiSource.Current.GetInGameScreens();

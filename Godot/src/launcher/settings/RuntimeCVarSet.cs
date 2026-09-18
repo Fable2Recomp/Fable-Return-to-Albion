@@ -116,6 +116,47 @@ public static class RuntimeCVarsGodot
                 + "as it can. The SIMULATION is not affected: the guest advances on its own "
                 + "fixed step and only the drawing rate changes."),
 
+            new("vsync_mode", DisplayCategory, RuntimeCVarType.String, "mailbox",
+                "How frames meet the display when vsync is on. 'mailbox' shows the newest "
+                + "finished frame at each refresh with no tearing and no cap at a fraction of "
+                + "the refresh rate; 'on' waits for every refresh, so a frame that misses one "
+                + "shows at half the rate; 'adaptive' waits when the frame is fast and tears "
+                + "when it is slow. Falls back to 'on' where the driver has no mailbox. "
+                + "vsync = false turns all of it off.",
+                "mailbox,on,adaptive"),
+
+            new("draw_latency_ticks", DisplayCategory, RuntimeCVarType.Double, "0",
+                "How far behind the game's simulation the picture is drawn, in 1/15 s ticks. "
+                + "The 360 drew half a tick behind. 0 follows the frame time: half a tick plus "
+                + "one frame, so a faster display draws closer to the simulation. A fixed value "
+                + "below what the frame time allows makes motion hold and step instead of "
+                + "gliding; above 1.5 adds lag for nothing."),
+
+            new("render_thread", DisplayCategory, RuntimeCVarType.Bool, "true",
+                "Run Godot's renderer on its own thread, so the frame costs the longer of the "
+                + "game update and the draw rather than their sum. Godot marks this mode "
+                + "experimental; off follows Godot's default. Takes effect at the next launch."),
+
+            new("gc_heaps", DisplayCategory, RuntimeCVarType.Int, "4",
+                "How many threads the .NET garbage collector works with. Each collection "
+                + "stops the game while it runs; with one thread that was a 25-55 ms hitch every "
+                + "few seconds in town. 0 uses the single-threaded collector. Takes effect at "
+                + "the next launch."),
+
+            new("mesh_lod_pixels", DisplayCategory, RuntimeCVarType.Double, "1",
+                "When a model switches to its coarser versions, in the shadow passes too. 1 "
+                + "follows the 360 exactly: the game's own rule, a model's reference size "
+                + "against a twentieth of the screen height per level, at any resolution. Below "
+                + "1 holds the full model longer (0.5 switches at half the distance's worth of "
+                + "size, twice as far away); above 1 switches sooner and cuts triangles on a "
+                + "slow GPU."),
+
+            new("prop_cull_min_pixels", DisplayCategory, RuntimeCVarType.Int, "4",
+                "Scenery smaller than this many pixels tall on a 1080-line display stops "
+                + "drawing and casting shadows, fading out over the last stretch. A railing "
+                + "post is culled past ~50 m, a two-metre rock past ~350 m. 0 draws every prop "
+                + "at any distance."),
+
             new("render_scale_percent", DisplayCategory, RuntimeCVarType.Int, "100",
                 "Renders the 3D world at this percentage of the window and scales it up, "
                 + "leaving the UI and text at full resolution. Below 100 buys frame rate on a "
@@ -137,6 +178,25 @@ public static class RuntimeCVarsGodot
             new("video_skip_after", VideoCategory, RuntimeCVarType.Double, "0.35",
                 "Seconds a movie has to be on screen before a click or A can skip it, so the "
                 + "press that started it does not also end it."),
+            new("sun_shadow_distance", LightingCategory, RuntimeCVarType.Double, "200",
+                "How far from the eye the sun and moon cast dynamic shadows, in metres, by day; "
+                + "night uses half. The four cascades share this depth, so a longer reach spends "
+                + "the same shadow map over more ground and draws every caster in it: 300 m "
+                + "measured four times the visible geometry again in the shadow passes. 200 "
+                + "keeps the shadows a player looks at and drops the ones under the horizon haze."),
+
+            new("sun_shadow_splits", LightingCategory, RuntimeCVarType.Int, "2",
+                "How many cascades the sun's shadow map is split into by day, 2 or 4. Every "
+                + "cascade draws every caster in its slice again: four measured four times the "
+                + "visible geometry in the shadow passes. Two keeps a sharp near cascade to 35 m "
+                + "and one beyond; four is finer past that at twice the shadow cost."),
+
+            new("sun_shadow_map", LightingCategory, RuntimeCVarType.Int, "4096",
+                "The sun's shadow map size in pixels, split four ways into cascades. 4096 is "
+                + "Godot's default; the shadow bias follows the texel, so 2048 trades edge "
+                + "sharpness for fill on a slow GPU without striping the ground, and 8192 suits "
+                + "a 4K display."),
+
             new("sun_shadows", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Let the sun and moon cast dynamic shadows. Fable 2 gates this on the day-set's "
                 + "MainLightShadowed, which ships as 0 for most themes \u2014 the shadowing is "
@@ -157,10 +217,15 @@ public static class RuntimeCVarsGodot
                 + "cutoff, as the 360 did. Off keeps every fixture lit at any distance; its "
                 + "range still bounds what it reaches. The fable model always fades."),
             new("placed_light_shadows", LightingCategory, RuntimeCVarType.Bool, "false",
-                "Developer lever. Off: no torch, lamp or fixture casts a shadow, as on the "
-                + "360, so every lamp reads the same from every angle. On: only the few "
-                + "nearest fixtures cast, which is inconsistent by construction, and all of "
-                + "them casting halved the frame rate in Bowerstone Market."),
+                "Let torches, lamps and fixtures cast shadows. On: "
+                + "the fixtures nearest the eye and on screen hold shadow maps, up to "
+                + "placed_light_shadow_budget of them, fading in and out as the camera moves. "
+                + "Off follows the shipped data, where only the few spot lights marked to cast do."),
+            new("placed_light_shadow_budget", LightingCategory, RuntimeCVarType.Int, "8",
+                "How many placed lights cast shadows at once. Each one redraws everything in "
+                + "its reach into its own shadow map every frame, so this is the lighting dial "
+                + "with the most direct cost: 4 cost about 3 fps in Bowerstone Market. 0 turns "
+                + "fixture shadows off."),
             new("modern_dark_lift", LightingCategory, RuntimeCVarType.Double, "1",
                 "Maximum lift for frames far darker than the original's average-luminance floor "
                 + "in the modern lighting model. The original pins a frame's mean at that floor, "
@@ -227,24 +292,52 @@ public static class RuntimeCVarsGodot
                 + "shadows READ; 1.0 is the shipped richness exactly. In the modern model "
                 + "interior lightmaps ignore this (they have no live sun to fall back on), "
                 + "and the probe ambient and flat ambient floor are never scaled."),
+            new("prop_probe_bake_weight", LightingCategory, RuntimeCVarType.Bool, "false",
+                "Apply baked_light_weight to STATIC PROPS the artists never baked, which fall "
+                + "back to probe ambient — a silver birch, a barrel, a door. The 360 scaled "
+                + "neither population (verified: the executable sets no ambient gain on either "
+                + "path), so dimming only the authored bakes left the unbaked props about twice "
+                + "as bright as their neighbours: the blown-out white tree trunks. Characters "
+                + "are never affected — they ride the probe field at full strength, and dimming "
+                + "that blacks them out at night. OFF BY DEFAULT: it dims the unbaked props into "
+                + "line, but they also carry the modernized AO that an authored bake is exempt "
+                + "from, so they take two penalties at once and the result read as wrong. The "
+                + "AO exemption has to move with the dial before this can be the default."),
             new("shader_warmup_enabled", DeveloperCategory, RuntimeCVarType.Bool, "true",
                 "Compile every shader pipeline behind a preparation screen before the guest "
                 + "boots. Skipping it lets pipeline compilation stall the main thread during "
                 + "guest boot, which can hang the launch after any shader change."),
             new("lighting_debug_view", DeveloperCategory, RuntimeCVarType.Int, "0",
-                "Isolate one lighting term on every lit surface: 0 off, 1 bake/ambient only, "
-                + "2 direct light only, 3 raw albedo, 4 normal-map darkening, 5 bake MODE "
-                + "(red flat, yellow probe, green vertex bake, blue texture lightmap, cyan "
-                + "terrain), 6 the sun's raw shadow term (white lit, black shadowed), 7 signed "
-                + "NdotL against the sun, 8 the view-space normal as colour. A diagnostic "
-                + "for attributing a bad colour to the term carrying it."),
+                "Isolate one lighting term on every lit surface, to attribute a bad colour to "
+                + "the term carrying it. Off draws the frame; every other mode replaces it with "
+                + "one term. Bake mode colours each surface by the bake it took: red flat "
+                + "ambient, yellow probe, green vertex bake, blue texture lightmap, cyan "
+                + "terrain. Sun shadow term is white where lit and black where shadowed; sun "
+                + "NdotL is signed, 0.5 grazing. Direct light on white sums every light's "
+                + "direct term over a white albedo and exists in the standard material only.",
+                "0|Off,1|Bake and ambient only,2|Direct light only,3|Raw albedo,"
+                + "4|Normal-map darkening,5|Bake mode,6|Sun shadow term,7|Sun NdotL (signed),"
+                + "8|View-space normal,9|Direct light on white"),
             new("debug_channel", DeveloperCategory, RuntimeCVarType.Bool, "false",
                 "Open the loopback debug channel at launch and publish its handshake file, "
                 + "the same as launching with REFII_DEBUG_PORT=1. Off for players."),
+            new("fx_additive_gain", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "How strongly the additive particle layer (fire, sparkles, spell cores — every "
+                + "ONE/ONE effect) joins the scene before the bloom extract and the tonemap. "
+                + "The original composited that layer scaled by its framebuffer brightness; "
+                + "1.0 adds it as scene radiance. Raise it if fire and the quest trail read "
+                + "too faint in daylight; the debug channel's `fxlayer` command changes it live."),
             new("postfx_dump_period", DeveloperCategory, RuntimeCVarType.Int, "0",
                 "Print the tone-mapping histogram, the adapted bounds, the exposure and the "
                 + "bloom coverage every N frames. 0 is off. This reads back from the GPU and "
                 + "stalls the device, so it is a diagnostic, not something to leave on."),
+            new("postfx_flicker_trap", DeveloperCategory, RuntimeCVarType.Double, "0",
+                "Arm the flicker trap: keep the last 48 rendered frames on the GPU and write "
+                + "them out as PNGs under user://flicker when the scene's mean luminance jumps "
+                + "by more than this ratio between consecutive frames (2.5 is a good start; 0 "
+                + "is off). The debug channel's `flicker` command writes the ring on demand. "
+                + "Costs one quarter-resolution copy per frame and a small readback every 20 "
+                + "frames; read at launch."),
         };
 }
 

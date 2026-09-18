@@ -6,22 +6,17 @@ namespace Refii.Core;
 /// Draws a transform the guest states on its 15 Hz sim tick as a smooth path on the host clock.
 /// </summary>
 /// <remarks>
-/// ON THE GUEST'S CLOCK, NOT ON ARRIVAL. The guest states placements and its camera on the sim
-/// tick (`SimTick`, 0x83319650; `dbl_83319660 = 15`), and every stated change lands on a tick
-/// change — measured 2026-09-05 on a walking villager (14.89 ticks/s, 105 of 119 frames
-/// agreeing exactly, the rest one-frame read skew) and on the camera (its zero-movement frames
-/// are precisely the frames the tick did not advance). Drawing each sample as it lands, or
-/// blending "from where the thing is to the newest sample over one tick", re-times every
-/// segment by when the host happened to see it: the drawn step swung 1.5-6.8 cm a frame on a
-/// body the guest was moving at a constant 8.2 cm a tick. That was the stutter.
+/// On the guest's clock, not on arrival. The guest states placements and its camera on its game
+/// tick (`dbl_83319660 = 15`), and every stated change lands on a tick change. The counter is
+/// `Engine_TickClock.GuestGameTick`, not `dword_83319650`: the latter is gated (`sub_821D4628`
+/// branches past its own increment at `821d46e8`) and skips game ticks. Drawing each sample as
+/// it lands re-times every segment by when the host happened to see it.
 ///
-/// So each sample is stamped with the tick it was stated on, the host clock is fitted to the
-/// tick timeline (samples only ever arrive LATE, so the earliest arrival per tick is the best
-/// estimate and the fit creeps to follow drift), and a frame draws the transform at
-/// `now - 1.5 ticks` by interpolating between the two samples that bracket it. Any frame length
-/// then lands exactly where the guest's timeline says. Everything the guest states on the tick
-/// — bodies, the camera — goes through the same timeline at the same latency, so nothing drifts
-/// against anything else.
+/// So each sample is stamped with the tick it was stated on and a frame draws between the two
+/// the guest last stated, at the fraction <see cref="Engine_PairPlayhead"/> gives — anchored to
+/// the swap, carried past a late one, never restarted. Everything the guest states on the tick
+/// — bodies, the camera — goes through the same arithmetic, so nothing drifts against anything
+/// else.
 /// </remarks>
 public sealed class Engine_TickTimeline
 {
@@ -34,7 +29,7 @@ public sealed class Engine_TickTimeline
 	/// How far behind the newest sample the world is drawn, in ticks. A sample lands on the
 	/// host up to a frame after its tick, so under one tick plus a frame starves and holds.
 	/// </summary>
-	public const double DrawLatencyTicks = Engine_TickClock.DrawLatencyTicks;
+	public static double DrawLatencyTicks => Engine_TickClock.DrawLatencyTicks;
 
 	/// <summary>
 	/// The step, in metres, past which a sample is a teleport rather than a movement — the
@@ -51,7 +46,7 @@ public sealed class Engine_TickTimeline
 	/// </remarks>
 	public const float TeleportMetres = 4f;
 
-	private readonly uint[] _tick = new uint[Capacity];
+	private readonly double[] _tick = new double[Capacity];
 	private readonly Transform3D[] _sample = new Transform3D[Capacity];
 
 	/// <summary>
@@ -61,6 +56,7 @@ public sealed class Engine_TickTimeline
 	/// lagged 1.5 ticks behind is two motions for one movement.
 	/// </summary>
 	private readonly float[] _scalar = new float[Capacity];
+	private readonly Engine_PairPlayhead _playhead = new(TickUsec, carry: true);
 	private int _count;
 	private int _head;
 
@@ -72,14 +68,15 @@ public sealed class Engine_TickTimeline
 
 	public bool Empty => _count == 0;
 
-	public uint NewestTick => _count == 0 ? 0u : _tick[_head];
+	public double NewestTick => _count == 0 ? 0.0 : _tick[_head];
 
 	private int At(int back) => (_head - back + Capacity) % Capacity;
 
 	/// <summary>Starts over on a sample — a teleport, a load, the first sight of a thing.</summary>
-	public void Reset(uint tick, Transform3D sample, float scalar = 0f)
+	public void Reset(double tick, Transform3D sample, float scalar = 0f)
 	{
 		_count = 0;
+		_playhead.Reset();
 		Push(tick, sample, Godot.Time.GetTicksUsec(), scalar);
 	}
 
@@ -87,7 +84,7 @@ public sealed class Engine_TickTimeline
 	/// A stated transform that differs from the newest, on the tick the guest states now.
 	/// A tick at or before the newest sample's is read skew and becomes the next tick.
 	/// </summary>
-	public void Push(uint tick, Transform3D sample, double nowUsec, float scalar = 0f)
+	public void Push(double tick, Transform3D sample, double nowUsec, float scalar = 0f)
 	{
 		// THE CLOCK IS TOLD WHAT THE GUEST SAID, NOT WHAT THIS TIMELINE NEEDED IT TO BE. The
 		// bump below is a local ordering repair — two samples read either side of one tick
@@ -95,11 +92,17 @@ public sealed class Engine_TickTimeline
 		// reached. Fed to the fit, that over-large tick makes `now - tick*period` too small,
 		// the minimum rule keeps it, and the origin is dragged permanently early for every
 		// entity sharing it. Only the stated value carries information about the clock.
-		uint stated = tick;
+		double stated = tick;
 		if (_count != 0 && tick <= _tick[_head])
 		{
-			tick = _tick[_head] + 1;
+			tick = _tick[_head] + 1.0;
 		}
+
+		// As Engine_TickScalar: advance by every interval this sample covers, not by one.
+		int steps = _count == 0
+			? 1
+			: (int)System.Math.Max(1.0, System.Math.Round(stated - _tick[_head]));
+		_playhead.Swap(nowUsec, steps);
 
 		_head = _count == 0 ? 0 : (_head + 1) % Capacity;
 		_tick[_head] = tick;
@@ -113,10 +116,12 @@ public sealed class Engine_TickTimeline
 		// for the world — see Engine_TickClock. A per-entity origin made each thing its own
 		// approximation of the same clock, and a body and the bones inside it drawn from two
 		// approximations do not agree.
-		Engine_TickClock.Observe(stated, nowUsec);
+		// A half-tick stamp (a camera or pose from the guest's alpha-0.5 HF iteration) belongs
+		// to the game tick whose iteration wrote it: the tick above it.
+		Engine_TickClock.Observe((uint)System.Math.Ceiling(stated), nowUsec);
 	}
 
-	/// <summary>The transform to draw now: the timeline's value 1.5 ticks ago.</summary>
+	/// <summary>The transform to draw now.</summary>
 	public Transform3D Sample(double nowUsec)
 	{
 		if (!Locate(nowUsec, out int older, out int younger, out float alpha))
@@ -142,45 +147,25 @@ public sealed class Engine_TickTimeline
 	}
 
 	/// <summary>
-	/// The two samples bracketing the draw point and how far between them it falls. False when
-	/// the timeline cannot answer — too few samples, no clock fit yet, or starved past the
-	/// newest sample — and the caller holds the newest value.
+	/// The two samples the guest last stated and how far between them this frame falls. False
+	/// when the timeline cannot answer yet — fewer than two samples, or nothing stated — and the
+	/// caller holds the newest value.
 	/// </summary>
 	private bool Locate(double nowUsec, out int older, out int younger, out float alpha)
 	{
 		older = _head;
 		younger = _head;
 		alpha = 0f;
-		if (_count < 2 || !Engine_TickClock.Ready)
+		if (_count < 2 || !_playhead.Ready)
 		{
 			return false;
 		}
 
-		double drawTick = Engine_TickClock.DrawTick(nowUsec);
-		if (drawTick >= _tick[_head])
-		{
-			return false;  // starved or stopped: hold the newest
-		}
-
-		for (int back = 1; back < _count; ++back)
-		{
-			int olderAt = At(back);
-			int youngerAt = At(back - 1);
-			double olderTick = _tick[olderAt];
-			double youngerTick = _tick[youngerAt];
-			if (drawTick >= olderTick)
-			{
-				older = olderAt;
-				younger = youngerAt;
-				alpha = (float)Mathf.Clamp(
-					(drawTick - olderTick) / Mathf.Max(youngerTick - olderTick, 1e-6), 0.0, 1.0);
-				return true;
-			}
-		}
-
-		older = At(_count - 1);
-		younger = older;
-		alpha = 0f;
+		// See Engine_PairPlayhead: the fraction is anchored to the swap, not to a host draw
+		// tick, which drifts against the guest's counter.
+		older = At(1);
+		younger = _head;
+		alpha = (float)_playhead.Alpha(nowUsec);
 		return true;
 	}
 }

@@ -19,6 +19,12 @@ public partial class GameWorld : Node3D
 	/// <summary>Camera snapshots refused as not finite. Run total; a torn read is expected at some rate.</summary>
 	public static int NonFiniteCameras;
 
+	/// <summary>Frames the camera was blended between consecutive stated cameras.</summary>
+	public static long BlendedCameras;
+
+	/// <summary>Frames it stood on the live camera — a stated snap, or no pair to blend.</summary>
+	public static long LiveOnlyCameras;
+
 	private Camera3D _camera = null!;
 	private bool _reported;
 
@@ -66,35 +72,158 @@ public partial class GameWorld : Node3D
 		ReleaseWhenPropsHaveStreamed();
 		TraceEntities();
 
-		if (HostBridge.GetCamera() is not { } camera || camera.IsDefault)
+		// The camera is drawn on the same clock as the bodies (`GameEntities.Drawn()`), with no
+		// latency. The guest has no split either: `sub_8228FEF0` (camera) and `sub_822112D8`
+		// (renderables) are handed the SAME alpha register — one `fdivs` at `0x822771e4`, two
+		// branches at `0x82278e34` and `0x82278ec0`, no arithmetic on either path between.
+		//
+		// No teleport threshold: the guest states a snap itself, the byte at `live+0x34`, which
+		// `0x8228ff40` reads to force alpha to 1.0.
+		var pair = HostBridge.GetCameraPair();
+		HostBridge.GuestCamera camera;
+		if (pair is { } both)
+		{
+			camera = both.Live;
+		}
+		else if (HostBridge.GetCamera() is { } single)
+		{
+			camera = single;
+		}
+		else
 		{
 			return;
 		}
+
+		if (camera.IsDefault)
+		{
+			return;
+		}
+
+		if (!TryStatedCamera(camera, out Transform3D stated, out float fov))
+		{
+			return;
+		}
+
+		// Blended between consecutive STATED cameras, not across the guest's own pair. The guest
+		// latches `prev <- live` late in a tick and updates `live` only partway into the next,
+		// so for part of every tick both halves are equal and any alpha gives a frozen camera.
+		// The guest renders only at alpha 0.5 and 1.0, where that is harmless; we render through
+		// the window. The drawn value is still the guest's; only the history is ours.
+		bool snap = pair is { } snapping && snapping.Live.Flag;
+		bool changed = !_haveStatedCamera ||
+			!stated.Origin.IsEqualApprox(_statedCamera.Origin) ||
+			!stated.Basis.IsEqualApprox(_statedCamera.Basis) ||
+			!Mathf.IsEqualApprox(fov, _statedCameraFov);
+		if (changed)
+		{
+			_previousCamera = _haveStatedCamera ? _statedCamera : stated;
+			_previousCameraFov = _haveStatedCamera ? _statedCameraFov : fov;
+			_statedCamera = stated;
+			_statedCameraFov = fov;
+			_haveStatedCamera = true;
+
+			// The camera has its own anchor: it is read in this node, the bodies in GameEntities,
+			// so its pair lands at a different point in the tick. The period is shared.
+			// The pair's width is the interval the guest's clock states, not a tick count (some
+			// ticks advance the clock by half the nominal period). The tick span, as for every
+			// body (see GameEntities.Drawn), is the fallback when the clock is unavailable or
+			// has re-based.
+			double statedUsec = Refii.Entities.Engine_DrawnFrame.StatedIntervalUsec(_cameraGuestSeconds);
+			_cameraGuestSeconds = Refii.Entities.Engine_DrawnFrame.GuestSeconds;
+			uint cameraTick = Refii.Core.Engine_TickClock.GuestGameTick;
+			int cameraSteps = _cameraTick != 0u && cameraTick > _cameraTick
+				? (int)System.Math.Clamp((long)cameraTick - (long)_cameraTick, 1L, 8L)
+				: 1;
+			_cameraTick = cameraTick;
+			if (statedUsec > 0.0)
+			{
+				_cameraPlayhead.SwapStated(Refii.Entities.Engine_DrawnFrame.NowUsec, statedUsec);
+			}
+			else
+			{
+				_cameraPlayhead.Swap(Refii.Entities.Engine_DrawnFrame.NowUsec, cameraSteps);
+			}
+
+			_lastCameraSteps = cameraSteps;
+			Refii.Entities.Engine_DrawnFrame.NoteRestated();
+		}
+
+		Transform3D drawn = stated;
+		float drawnFov = fov;
+		if (!snap && _haveStatedCamera && _cameraPlayhead.Ready)
+		{
+			// Same frame instant (NowUsec) and period as the bodies, measured from when the
+			// camera last restated.
+			float alpha = (float)_cameraPlayhead.Alpha(Refii.Entities.Engine_DrawnFrame.NowUsec);
+			drawn = Refii.Entities.Engine_DrawnFrame.Blend(_previousCamera, _statedCamera, alpha);
+
+			// The fov rides the same alpha as the transform; the guest blends it in the same
+			// call, `stfs f10, 0x30(r31)` at `0x82290058`.
+			drawnFov = Mathf.Lerp(_previousCameraFov, _statedCameraFov, alpha);
+			++BlendedCameras;
+		}
+		else
+		{
+			// A stated snap (`live+0x34`) restarts the history rather than gliding across it.
+			_previousCamera = stated;
+			_previousCameraFov = fov;
+			_cameraPlayhead.Reset();
+			_cameraTick = 0u;
+			_cameraGuestSeconds = double.NaN;
+			++LiveOnlyCameras;
+		}
+
+		_camera.GlobalTransform = drawn;
+		SampleCameraTrace(drawn.Origin);
+
+		if (float.IsFinite(drawnFov) && drawnFov >= 1f && drawnFov <= 179f)
+		{
+			_camera.Fov = drawnFov;
+		}
+
+		_camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
+
+		if (!_reported)
+		{
+			_reported = true;
+			GD.Print($"[game-world] driving Godot's camera from the guest: " +
+				$"pos={drawn.Origin} fov={_camera.Fov:F1}deg " +
+				$"pair={(pair is null ? "no" : "yes")}");
+		}
+	}
+
+
+	/// <summary>
+	/// One stated camera as a Godot transform and a vertical fov, or false when it cannot be
+	/// drawn from. Applied to BOTH halves of the guest's pair, so a torn or half-built previous
+	/// camera can never reach the blend.
+	/// </summary>
+	/// <remarks>
+	/// A non-finite camera makes every depth NaN: Godot sorts its render list with std::sort,
+	/// whose unguarded final pass walks off the array on NaN comparisons and faults forever.
+	/// `IsZeroApprox()` admits NaN, and an infinite forward becomes NaN in `Normalized()`, hence
+	/// the explicit finiteness tests. The blocks this reads are unsynchronised, so a torn read
+	/// is expected; the caller holds the last good camera.
+	///
+	/// The fov needs its own check: `Camera3D.set_fov` tests `fov &lt; 1 || fov > 179`, which
+	/// stores a NaN. `VerticalFovDegrees` is `Atan(Tan(h * 0.5))`, so an infinite horizontal fov
+	/// arrives as NaN.
+	/// </remarks>
+	private bool TryStatedCamera(
+		HostBridge.GuestCamera camera, out Transform3D stated, out float verticalFov)
+	{
+		stated = Transform3D.Identity;
+		verticalFov = 0f;
 
 		Vector3 position = ToGodot(camera.Position);
 		Vector3 forward = ToGodot(camera.Forward).Normalized();
 		Vector3 up = ToGodot(camera.Up);
 
-		// A NON-FINITE CAMERA POISONS EVERY DEPTH AT ONCE, which is worse than any one object
-		// doing it: Godot sorts its render list with std::sort, and libstdc++'s final pass has
-		// no bounds check because it trusts the ordering. Every comparison against NaN is
-		// false, so the sort walks off the front of the array, faults, and re-executes the
-		// fault forever — a pinned core and a frozen picture.
-		//
-		// THE OLD GUARDS COULD NOT CATCH IT. `IsZeroApprox()` is a magnitude test, and every
-		// comparison against NaN is false, so it REPORTS ZERO AS THE ONLY PROBLEM and admits
-		// NaN untouched. An infinite forward is worse still: it passes, and `Normalized()`
-		// turns it into NaN one line later.
-		//
-		// The snapshot this reads is explicitly unsynchronised — HostBridge documents five
-		// separate stores with no publish barrier — so a read landing mid-write is expected,
-		// not exceptional. Keeping the last good camera for a frame is invisible; a NaN is a
-		// hang.
 		if (!position.IsFinite() || !forward.IsFinite() || !up.IsFinite() ||
 			position.Length() > MaxCameraReach || forward.IsZeroApprox())
 		{
 			++NonFiniteCameras;
-			return;
+			return false;
 		}
 
 		// Re-orthonormalise up against forward. This matches the guest rather than fighting
@@ -109,72 +238,19 @@ public partial class GameWorld : Node3D
 		if (!basisY.IsFinite() || basisY.IsZeroApprox())
 		{
 			++NonFiniteCameras;
-			return;
+			return false;
 		}
 
-		// THE CAMERA STEPS ON THE SIM TICK TOO. Traced 2026-09-05 while running: it moved
-		// 8-30 cm a frame and exactly 0 on every frame the tick did not advance, applied raw
-		// — a hold and a jump against a body drawn 1.5 ticks behind on a smooth path. Same
-		// timeline, same latency, and the two no longer move against each other. Nothing in
-		// the guest or its Lua is touched.
-		// The guest stores a HORIZONTAL field of view; Godot wants the vertical one.
-		//
-		// THE FOV IS ITS OWN WHOLE-FRAME POISONER and the transform guard above does not cover
-		// it. Camera3D.set_fov's own check is `fov < 1 || fov > 179`, and every comparison
-		// against NaN is false, so it STORES a NaN — which makes the projection matrix
-		// non-finite and therefore every depth in the frame NaN at once, not just one object's.
-		// VerticalFovDegrees is Atan(Tan(h * 0.5)), so an infinite horizontal FOV arrives as
-		// NaN too. Validated BEFORE the timeline so a poisoned value never enters it.
 		float fov = camera.VerticalFovDegrees;
-		bool fovOk = float.IsFinite(fov) && fov >= 1f && fov <= 179f;
-		if (!fovOk)
+		if (!float.IsFinite(fov) || fov < 1f || fov > 179f)
 		{
 			++NonFiniteCameras;
-			fov = _cameraTimeline.Empty ? _camera.Fov : _cameraTimeline.NewestScalar;
+			return false;
 		}
 
-		// THE CAMERA STEPS ON THE SIM TICK TOO. Traced 2026-09-05 while running: it moved
-		// 8-30 cm a frame and exactly 0 on every frame the tick did not advance, applied raw
-		// — a hold and a jump against a body drawn 1.5 ticks behind on a smooth path. Same
-		// timeline, same latency, and the two no longer move against each other.
-		//
-		// THE FOV RIDES THE SAME TIMELINE. Applied raw it stepped at 15 Hz while the dolly it
-		// belongs to lerped 1.5 ticks behind — one movement drawn on two clocks, which is a
-		// zoom that stops short and then catches up. A change in the fov alone also has to
-		// push, or a zoom from a camera that is not moving never reaches the timeline at all.
-		var stated = new Transform3D(new Basis(basisY.Cross(basisZ), basisY, basisZ), position);
-		double now = Godot.Time.GetTicksUsec();
-		uint tick = HostBridge.SimTick;
-		if (_cameraTimeline.Empty ||
-			_cameraTimeline.Newest.Origin.DistanceTo(position) > Refii.Core.Engine_TickTimeline.TeleportMetres ||
-			(tick > _cameraTimeline.NewestTick && tick - _cameraTimeline.NewestTick > 8))
-		{
-			_cameraTimeline.Reset(tick, stated, fov);
-		}
-		else if (_cameraTimeline.Newest.Origin.DistanceSquaredTo(position) > 1e-8f ||
-			!_cameraTimeline.Newest.Basis.IsEqualApprox(stated.Basis) ||
-			!Mathf.IsEqualApprox(_cameraTimeline.NewestScalar, fov))
-		{
-			_cameraTimeline.Push(tick, stated, now, fov);
-		}
-
-		_camera.GlobalTransform = _cameraTimeline.Sample(now);
-		SampleCameraTrace(_camera.GlobalTransform.Origin);
-
-		float drawnFov = _cameraTimeline.SampleScalar(now);
-		if (float.IsFinite(drawnFov) && drawnFov >= 1f && drawnFov <= 179f)
-		{
-			_camera.Fov = drawnFov;
-		}
-
-		_camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
-
-		if (!_reported)
-		{
-			_reported = true;
-			GD.Print($"[game-world] driving Godot's camera from the guest: " +
-				$"pos={position} fov={_camera.Fov:F1}deg");
-		}
+		stated = new Transform3D(new Basis(basisY.Cross(basisZ), basisY, basisZ), position);
+		verticalFov = fov;
+		return true;
 	}
 
 	/// <summary>
@@ -219,6 +295,11 @@ public partial class GameWorld : Node3D
 		// entity meshes build off-thread, the static copies reconcile against them, and the
 		// first draw of every material compiles its pipeline. All of it happens under the
 		// loading screen now, so the frame that hands the player control is the frame they keep.
+		if (_entities is { } holding)
+		{
+			holding.LoadHold = true;
+		}
+
 		bool entitiesPending = _entities is { } feed && !feed.ReadyForRelease;
 		bool pending = propsPending || entitiesPending;
 		_readyFrames = pending ? 0 : _readyFrames + 1;
@@ -253,7 +334,11 @@ public partial class GameWorld : Node3D
 		}
 
 		_holdingForProps = false;
-		HostBridge.SetWorldBuildPending(false);
+		SetWorldBuildHeld(false);
+		if (_entities is { } released)
+		{
+			released.LoadHold = false;
+		}
 
 		if (_region is not null)
 		{
@@ -262,13 +347,85 @@ public partial class GameWorld : Node3D
 
 		if (!pending)
 		{
-			GD.Print($"[game-world] {_standing} finished streaming its props, built every entity " +
+			double heldSeconds = (System.Diagnostics.Stopwatch.GetTimestamp() - _heldSince) /
+				(double)System.Diagnostics.Stopwatch.Frequency;
+			GD.Print($"[game-world] {_standing} loaded in {heldSeconds:0.00} s — finished streaming its props, built every entity " +
 				$"mesh, reconciled its copies and drew {ReleaseSettleFrames} settled frame(s) after " +
-				$"{_propHoldFrames} frame(s) — releasing the guest");
+				$"{_propHoldFrames} frame(s) — releasing the guest; " +
+				(_entities?.DescribeHero() ?? "no entity feed"));
+			CompactLargeObjectHeap();
 		}
 	}
 
-	private readonly Refii.Core.Engine_TickTimeline _cameraTimeline = new();
+	/// <summary>
+	/// True while the world build holds the guest's level change. The loading screen reads it:
+	/// the guest can take its own screen down (resource preload, state 4) while the change is
+	/// still parked behind the hold.
+	/// </summary>
+	public static bool WorldBuildHeld { get; private set; }
+
+	/// <summary>When the current hold began, for the load's wall time on the release line.</summary>
+	private static long _heldSince;
+
+	private static void SetWorldBuildHeld(bool held)
+	{
+		if (held && !WorldBuildHeld)
+		{
+			_heldSince = System.Diagnostics.Stopwatch.GetTimestamp();
+		}
+
+		WorldBuildHeld = held;
+		HostBridge.SetWorldBuildPending(held);
+	}
+
+	/// <summary>
+	/// Compacts the large-object heap once, at the end of a region load.
+	/// </summary>
+	/// <remarks>
+	/// Bank containers, mesh arrays and texture buffers exceed the 85 KB threshold, so a region
+	/// load churns the LOH, which .NET sweeps but never compacts unless asked; the gaps stay
+	/// committed. Done here because a compacting gen2 is a long pause and the player is already
+	/// waiting: the load has finished and the guest is not yet released. Never during play.
+	/// </remarks>
+	private static void CompactLargeObjectHeap()
+	{
+		long before = System.GC.GetTotalMemory(false);
+		System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+			System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+		System.GC.Collect(2, System.GCCollectionMode.Aggressive, blocking: true, compacting: true);
+
+		System.GCMemoryInfo info = System.GC.GetGCMemoryInfo();
+		GD.Print($"[game-world] compacted the large-object heap: " +
+			$"{before / 1048576.0:0} MB -> {System.GC.GetTotalMemory(false) / 1048576.0:0} MB live, " +
+			$"{info.TotalCommittedBytes / 1048576.0:0} MB committed");
+	}
+
+	/// <summary>The last two cameras the guest stated; the playhead is shared.</summary>
+	private Transform3D _previousCamera = Transform3D.Identity;
+	private Transform3D _statedCamera = Transform3D.Identity;
+	private float _previousCameraFov;
+	private float _statedCameraFov;
+	/// <summary>The camera's own anchor; the period comes from the world's shared clock.</summary>
+	/// <remarks>
+	/// Swapped with the guest's exact stated interval for each pair, which is not an estimate
+	/// and so cannot drift; the shared period is the fallback when the clock is unavailable.
+	/// </remarks>
+	private readonly Refii.Core.Engine_PairPlayhead _cameraPlayhead =
+		new(Refii.Core.Engine_TickClock.TickUsec, carry: true);
+
+	/// <summary>The guest tick the camera's pair was last stated on; 0 before the first.</summary>
+	private uint _cameraTick;
+
+	/// <summary>The guest's stated clock when the camera's pair was last latched.</summary>
+	private double _cameraGuestSeconds = double.NaN;
+
+	private int _lastCameraSteps = 1;
+
+	/// <summary>The camera playhead's swap health, for the debug channel.</summary>
+	public (long Restarts, double LastSwapAlpha, int LastSteps) CameraSwapHealth =>
+		(_cameraPlayhead.Restarts, _cameraPlayhead.LastSwapAlpha, _lastCameraSteps);
+
+	private bool _haveStatedCamera;
 
 	private int _cameraTraceRemaining;
 	private readonly System.Collections.Generic.List<(ulong Usec, uint Tick, Vector3 Position)> _cameraTrace = new();
@@ -293,6 +450,7 @@ public partial class GameWorld : Node3D
 
 		return rows;
 	}
+
 
 	private void SampleCameraTrace(Vector3 position)
 	{
@@ -406,7 +564,7 @@ public partial class GameWorld : Node3D
 		// "IsEnginePreLoading" and waits while the answer is yes; Godot is the engine. Set
 		// before the worker starts so there is no frame where the guest could be let through
 		// between the decision to build and the build beginning.
-		HostBridge.SetWorldBuildPending(true);
+		SetWorldBuildHeld(true);
 
 		GD.Print($"[game-world] building {world}/{level} on a worker thread; " +
 			"the guest waits in its own loading screen");
@@ -777,7 +935,7 @@ public partial class GameWorld : Node3D
 			// RELEASE ON FAILURE TOO. A hold that outlives its build parks the guest at state 7
 			// forever, loading music playing, which is indistinguishable from a hung load — and
 			// far worse than the empty world the failure would otherwise leave.
-			HostBridge.SetWorldBuildPending(false);
+			SetWorldBuildHeld(false);
 			_build = null;
 			_retryDelay = RetryFrames;
 
@@ -927,12 +1085,17 @@ public partial class GameWorld : Node3D
 		_standingKey = 0u;
 		_waitingForGuest = false;
 		_holdingForProps = false;
+		if (_entities is { } tornDown)
+		{
+			tornDown.LoadHold = false;
+		}
+
 		_entityWaitFrames = 0;
 
 		// A teardown can land while a build is in flight — the guest changing its mind mid-load.
 		// The next StartBuild re-asserts it, so clearing here cannot let the guest through early
 		// but does guarantee no hold survives a region that no longer exists.
-		HostBridge.SetWorldBuildPending(false);
+		SetWorldBuildHeld(false);
 		_build = null;
 		_builtRegion = null;
 		_buildError = string.Empty;

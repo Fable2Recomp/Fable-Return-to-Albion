@@ -42,6 +42,21 @@ namespace Refii.Entities;
 /// </summary>
 public sealed class Engine_StaticTwins
 {
+    /// <summary>Node names by instance, read once: the name is a native string each time it is asked for.</summary>
+    private readonly Dictionary<ulong, string> _twinNames = new();
+
+    private string NameOf(Node node)
+    {
+        ulong id = node.GetInstanceId();
+        if (!_twinNames.TryGetValue(id, out string? name))
+        {
+            name = node.Name;
+            _twinNames[id] = name;
+        }
+
+        return name;
+    }
+
     /// <summary>One drawable the guest may take over: a whole node, or one MultiMesh slot.</summary>
     private readonly struct Twin
     {
@@ -760,7 +775,7 @@ public sealed class Engine_StaticTwins
                     continue;
                 }
 
-                string name = twin.Node.Name;
+                string name = NameOf(twin.Node);
                 standing.TryGetValue(name, out int seen);
                 standing[name] = seen + 1;
             }

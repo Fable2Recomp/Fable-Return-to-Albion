@@ -12,6 +12,27 @@
 extern "C" {
 
 uint64_t refii_bridge_rex_query_guest_tick_count(void);
+
+/// The guest's time base, owned by the host.
+///
+/// The in-game loop runs its own wall-clock accumulator on `mftb` and discards the backlog when
+/// it falls behind (0x82276FA4) rather than catching up.
+///
+/// Modes: 0 off (real clock), 1 paced (cap the advance between reads on a thread), 2 driven
+/// (time advances only when the host grants steps, so the guest's rate is Godot's and its
+/// stepping is deterministic, as lockstep multiplayer requires).
+void refii_bridge_rex_set_time_base_mode(int mode);
+int refii_bridge_rex_time_base_mode(void);
+
+/// Grants the guest `steps` high-frequency steps of time. Driven mode only.
+void refii_bridge_rex_advance_time_base(uint32_t steps);
+
+/// `capped` reads held back in paced mode, `granted` steps handed over in driven mode, and
+/// `watchdog` lapses where no grant arrived and time resumed on its own (the host is not
+/// stepping). The high 32 bits of each carry, respectively: dropped grants, the permille of
+/// clock reads that took the lock, and the pending-step backlog.
+void refii_bridge_rex_time_base_stats(uint64_t* out_capped, uint64_t* out_granted,
+                                      uint64_t* out_watchdog);
 void* refii_bridge_rex_resolve_indirect_function(uint32_t guest_address);
 void refii_bridge_rex_increment_counter(uint32_t counter_id, int64_t delta);
 

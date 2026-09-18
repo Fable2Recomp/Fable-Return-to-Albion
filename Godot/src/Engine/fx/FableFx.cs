@@ -24,6 +24,8 @@ public partial class FableFx : Node3D
 
     public const string DispShaderPath = "res://src/Engine/fx/fx_particle_disp.gdshader";
 
+    public const string AddLayerShaderPath = "res://src/Engine/fx/fx_particle_addone.gdshader";
+
     public const string TextureFolder = "art/fx/pfx_textures/";
 
     [Export]
@@ -43,9 +45,19 @@ public partial class FableFx : Node3D
     private readonly Dictionary<string, MultiMeshInstance3D> _meshNodes = new();
 
     private MeshInstance3D? _surface;
-    private ImmediateMesh? _mesh;
+    private ArrayMesh? _mesh;
+
+    /// <summary>The state the geometry was last emitted for: camera position (this node's space)
+    /// and which layers it reached.</summary>
+    private bool _emitted;
+    private Vector3 _emitPos;
+    private bool _emitAddNull = true;
+    private bool _emitDispActive;
+    private bool _emitAddActive;
     private MeshInstance3D? _dispSurface;
-    private ImmediateMesh? _dispMesh;
+    private ArrayMesh? _dispMesh;
+    private MeshInstance3D? _addSurface;
+    private ArrayMesh? _addMesh;
     private bool _built;
     private string _builtName = string.Empty;
 
@@ -78,6 +90,19 @@ public partial class FableFx : Node3D
 
     [Export]
     public float EffectScale { get; set; } = 1f;
+
+    /// <summary>
+    /// The effect instance's intensity as the guest states it (<c>handle+52</c>, 1.0 untouched).
+    /// Baked into each particle at spawn, as the guest does, so a change travels through the
+    /// effect at the particles' own lifetime.
+    /// </summary>
+    public float Intensity { get; set; } = 1f;
+
+    /// <summary>
+    /// The instance's size scale as the guest states it (element+412 via `SetScale`, 1.0
+    /// untouched): a multiplier on every keyframe's global scale, so it applies live.
+    /// </summary>
+    public float SizeScale { get; set; } = 1f;
 
     private static ulong _bankRetryAtMsec;
 
@@ -144,11 +169,37 @@ public partial class FableFx : Node3D
     public override void _Ready()
     {
         EnsureBuilt();
+
+        // Godot turns processing on in NOTIFICATION_READY, after _EnterTree and before this
+        // body; the driver's say is applied again here so it survives that.
+        Engine_FxDriver.Register(this);
     }
 
+    public override void _EnterTree() => Engine_FxDriver.Register(this);
+
+    public override void _ExitTree() => Engine_FxDriver.Unregister(this);
+
+    /// <summary>
+    /// Self-stepping, taken only while no <see cref="Engine_FxDriver"/> is in the tree (the
+    /// editor and the viewer tools); in the game the driver calls <see cref="Step"/> from one
+    /// callback for every system.
+    /// </summary>
     public override void _Process(double delta)
     {
     	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("fablefx");
+        Step(delta);
+    }
+
+    /// <summary>
+    /// One frame of this system. Reads the viewport camera and this node's world transform,
+    /// so it must run after both are placed for the frame; see <see cref="Engine_FxDriver"/>.
+    /// </summary>
+    /// <param name="sharedCamera">
+    /// The frame's camera, resolved once by <see cref="Engine_FxDriver"/> for every system;
+    /// null falls back to this node's viewport camera.
+    /// </param>
+    public void Step(double delta, Camera3D? sharedCamera = null)
+    {
         if (!Playing)
         {
             return;
@@ -165,7 +216,7 @@ public partial class FableFx : Node3D
         // gate on the result — no simulation, no aging, lights left as they are (they are never
         // view-culled). 209 systems in the market cost ~20 ms a frame simulating and rebuilding
         // billboards for effects behind the camera. A frozen system keeps its last geometry.
-        Camera3D? cullCamera = GetViewport()?.GetCamera3D();
+        Camera3D? cullCamera = sharedCamera ?? GetViewport()?.GetCamera3D();
         if (cullCamera is not null && !InView(cullCamera))
         {
             ++FrozenThisFrame;
@@ -173,6 +224,9 @@ public partial class FableFx : Node3D
         }
 
         _system.SetLoop(Loop);
+        _system.SetIntensity(Intensity);
+        _system.SetSizeScale(SizeScale);
+        Engine_FxSystem.FadeReachScale = Refii.Lighting.Engine_LightingFrame.ModernModel ? 2f : 1f;
         ApplyLit();
         // The node's world transform goes in so the system can hold world-space particles still
         // when this effect moves — see AttachToRoot. A node bolted to a wall passes the same
@@ -197,11 +251,15 @@ public partial class FableFx : Node3D
                 continue;
             }
 
+            // The same dials as the placed fixtures. The guest packs an effect's light and a
+            // placed light through one path (`sub_821F0A50`: the same range, cutoff and ramp
+            // slots, the same falloff), so `placed_light_range` and `placed_light_scale` apply
+            // to both. 1.0 on both is the shipped data.
             light.Visible = true;
             light.Position = state.Position;
-            light.OmniRange = range;
+            light.OmniRange = range * Refii.Lighting.Engine_LevelLights.PlacedRange;
             light.LightColor = state.Colour;
-            light.LightEnergy = energy * ExposureScale;
+            light.LightEnergy = energy * ExposureScale * Refii.Lighting.Engine_LevelLights.PlacedScale;
 
             // THE GUEST REACHES ZERO AT Cutoff, ramping over the Ramp metres inside it —
             // intensity × clamp((min(Cutoff, 1000) − dist) / Ramp, 0, 1) in `sub_821F0A50`
@@ -250,9 +308,41 @@ public partial class FableFx : Node3D
         Vector3 cameraRight = local.Basis.X.Normalized();
         Vector3 cameraUp = local.Basis.Y.Normalized();
 
+        // The camera axes (in this node's space) go to the shader; `fx_billboard.gdshaderinc`
+        // expands each camera-facing quad from its centre along them, so a turn does not
+        // rebuild geometry.
+        PublishCameraAxes(cameraRight, cameraUp);
+
+        // The additive layer takes the ONE/ONE batches only while it can reach the screen —
+        // the post chain composites it. Otherwise they draw into the scene.
+        ArrayMesh? addMesh = _addMesh is not null && Engine_FxAdditiveLayer.Present ? _addMesh : null;
+
+        // Geometry only when it can differ: a particle frame is 1/30 s, so the last emit stands
+        // until a simulation step, a camera move past half a metre, or the additive layer coming
+        // or going. Rotation is not a trigger: facing is the vertex shader's job, and what is
+        // still built against the camera (a ribbon's side vector `tan.Cross(eye - pos)` and the
+        // back-to-front sort) reads only the camera's position.
+        bool turned = !_emitted || cameraPos.DistanceSquaredTo(_emitPos) > 0.25f;
+        if (_system.LastSteps == 0 && !turned && (addMesh is null) == _emitAddNull)
+        {
+            if (_emitDispActive) Engine_FxDisplacement.NotifyActive();
+            if (_emitAddActive) Engine_FxAdditiveLayer.NotifyActive();
+            return;
+        }
+
+        _emitted = true;
+        _emitPos = cameraPos;
+        _emitAddNull = addMesh is null;
+        if (addMesh is null && _addMesh is not null) _addMesh.ClearSurfaces();
+        // The delegate is cached: a method group converted at the call site allocates a new Func
+        // every call.
+        _lookupMaterial ??= LookupMaterial;
         _system.EmitGeometry(
-            _mesh, LookupMaterial, cameraPos, cameraRight, cameraUp, _meshData, _dispMesh);
-        if (_dispMesh is not null && _dispMesh.GetSurfaceCount() > 0) Engine_FxDisplacement.NotifyActive();
+            _mesh, _lookupMaterial, cameraPos, cameraRight, cameraUp, _meshData, _dispMesh, addMesh);
+        _emitDispActive = _dispMesh is not null && _dispMesh.GetSurfaceCount() > 0;
+        _emitAddActive = addMesh is not null && addMesh.GetSurfaceCount() > 0;
+        if (_emitDispActive) Engine_FxDisplacement.NotifyActive();
+        if (_emitAddActive) Engine_FxAdditiveLayer.NotifyActive();
 
         foreach ((string path, Engine_FxSystem.MeshInstanceData data) in _meshData)
         {
@@ -301,6 +391,28 @@ public partial class FableFx : Node3D
     /// of the view keeps simulating.</summary>
     public const float FreezeRadius = 14f;
 
+    private static ulong _frustumFrame = ulong.MaxValue;
+    private static ulong _frustumCamera;
+    private static Plane[] _frustum = System.Array.Empty<Plane>();
+
+    /// <summary>The camera's frustum planes, read once per frame for every system: the query
+    /// marshals a fresh array each call.</summary>
+    private static Plane[] FrameFrustum(Camera3D camera)
+    {
+        ulong frame = Engine.GetProcessFrames();
+        ulong id = camera.GetInstanceId();
+        if (frame != _frustumFrame || id != _frustumCamera)
+        {
+            Godot.Collections.Array<Plane> planes = camera.GetFrustum();
+            if (_frustum.Length != planes.Count) _frustum = new Plane[planes.Count];
+            for (int i = 0; i < planes.Count; i++) _frustum[i] = planes[i];
+            _frustumFrame = frame;
+            _frustumCamera = id;
+        }
+
+        return _frustum;
+    }
+
     private bool InView(Camera3D camera)
     {
         Vector3 origin = GlobalPosition;
@@ -309,7 +421,7 @@ public partial class FableFx : Node3D
             return false;
         }
 
-        foreach (Plane plane in camera.GetFrustum())
+        foreach (Plane plane in FrameFrustum(camera))
         {
             if (plane.DistanceTo(origin) > FreezeRadius)
             {
@@ -320,23 +432,83 @@ public partial class FableFx : Node3D
         return true;
     }
 
+    /// <summary>Where the scene light was last sampled for a node without a bake probe.</summary>
+    private Vector3 _litSampledAt = new(float.NaN, float.NaN, float.NaN);
+
+    private ulong _litSampledFrame;
+
+    /// <summary>
+    /// The scene light the particles lerp from: the guest's vertex shader lights a particle
+    /// as `lerp(g_GlobalAmbient + point lights, keyframeColour, selfIllum)` (blob 0038).
+    ///
+    /// A node with a bake probe (level-spawned) composes the probe with the theme ambient. A
+    /// node without one (every effect the guest starts at runtime: spells, impacts, auras)
+    /// samples the theme ambient plus the registered lights at the node's position, re-sampled
+    /// when the effect has moved a metre or 30 frames have passed.
+    /// </summary>
     private void ApplyLit()
     {
         float r = 1f, g = 1f, b = 1f;
-        if (HasMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMeta) &&
-            GetMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMeta) is { VariantType: Variant.Type.Array } probeMeta)
+
+        // Asked every 30 frames, not every step (each query allocates a wrapper); the answer only
+        // changes when something stores a probe on this node, which the cadence still catches.
+        ulong askFrame = Engine.GetProcessFrames();
+        if (_hasProbe is null || askFrame - _probeAskedFrame >= 30)
         {
-            var sample = probeMeta.AsGodotArray<Vector4>();
-            if (sample.Count == 3)
+            _hasProbe = HasMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMeta);
+            _probeAskedFrame = askFrame;
+        }
+
+        if (_hasProbe == false)
+        {
+            Vector3 at = GlobalPosition;
+            ulong frame = Engine.GetProcessFrames();
+            if (_litSampledAt.IsFinite() &&
+                at.DistanceSquaredTo(_litSampledAt) < 1f &&
+                frame - _litSampledFrame < 30)
             {
-                var basis = new Vector4(0.2820948f, 0f, 0.4886025f, 0f);
-                float br = MathF.Max(sample[0].Dot(basis), 0f);
-                float bg = MathF.Max(sample[1].Dot(basis), 0f);
-                float bb = MathF.Max(sample[2].Dot(basis), 0f);
-                const float gamma = 1.3f;
-                br = MathF.Pow(br, gamma); bg = MathF.Pow(bg, gamma); bb = MathF.Pow(bb, gamma);
+                return;
+            }
+
+            _litSampledAt = at;
+            _litSampledFrame = frame;
+            if (Engine_FxSystem.SceneLightAt(at, _litScratch))
+            {
+                _system.SetAmbient(_litScratch[0], _litScratch[1], _litScratch[2]);
+            }
+
+            return;
+        }
+
+        // The meta is an Array behind a Variant: reading it builds wrappers every call, and
+        // the sample under it only changes when the node is re-lit, so it is re-read on a
+        // cadence and the folded band kept.
+        ulong now = Engine.GetProcessFrames();
+        if (!_probeFolded || now - _probeReadFrame >= 30)
+        {
+            _probeReadFrame = now;
+            _probeFolded = false;
+            if (GetMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMeta) is { VariantType: Variant.Type.Array } probeMeta)
+            {
+                var sample = probeMeta.AsGodotArray<Vector4>();
+                if (sample.Count == 3)
+                {
+                    var basis = new Vector4(0.2820948f, 0f, 0.4886025f, 0f);
+                    const float gamma = 1.3f;
+                    _probeBand[0] = MathF.Pow(MathF.Max(sample[0].Dot(basis), 0f), gamma);
+                    _probeBand[1] = MathF.Pow(MathF.Max(sample[1].Dot(basis), 0f), gamma);
+                    _probeBand[2] = MathF.Pow(MathF.Max(sample[2].Dot(basis), 0f), gamma);
+                    _probeFolded = true;
+                }
+            }
+        }
+
+        if (_probeFolded)
+        {
+            {
+                float br = _probeBand[0], bg = _probeBand[1], bb = _probeBand[2];
                 Refii.Lighting.LightingFrame? frame = Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting;
-                float[] lm = frame?.LightmapColour ?? new float[] { 1f, 1f, 1f };
+                float[] lm = frame?.LightmapColour ?? White;
                 float ar = 0f, ag = 0f, ab = 0f;
                 if (frame is not null && frame.HasAmbient)
                 {
@@ -352,11 +524,83 @@ public partial class FableFx : Node3D
         _system.SetAmbient(r, g, b);
     }
 
+    private Vector3 _axisRight;
+    private Vector3 _axisUp;
+    private bool _axesPublished;
+
+    private static readonly StringName CamRightParam = new("fx_cam_right");
+    private static readonly StringName CamUpParam = new("fx_cam_up");
+
+    /// <summary>
+    /// Hands the shader this node's view of the camera. Instance parameters, because one
+    /// material is shared by every effect on screen while each effect's mesh is built in its
+    /// own node's space.
+    /// </summary>
+    /// <remarks>
+    /// Checks validity, not just null: a freed Godot object leaves a disposed C# wrapper whose
+    /// every member throws.
+    /// </remarks>
+    private void PublishCameraAxes(Vector3 right, Vector3 up)
+    {
+        // Only when they moved: each write marks the instance dirty for the render server.
+        if (_axesPublished &&
+            right.Dot(_axisRight) > 0.999995f && up.Dot(_axisUp) > 0.999995f)
+        {
+            return;
+        }
+
+        _axesPublished = true;
+        _axisRight = right;
+        _axisUp = up;
+
+        if (_surface is not null && IsInstanceValid(_surface))
+        {
+            _surface.SetInstanceShaderParameter(CamRightParam, right);
+            _surface.SetInstanceShaderParameter(CamUpParam, up);
+        }
+
+        if (_addSurface is not null && IsInstanceValid(_addSurface))
+        {
+            _addSurface.SetInstanceShaderParameter(CamRightParam, right);
+            _addSurface.SetInstanceShaderParameter(CamUpParam, up);
+        }
+
+        if (_dispSurface is not null && IsInstanceValid(_dispSurface))
+        {
+            _dispSurface.SetInstanceShaderParameter(CamRightParam, right);
+            _dispSurface.SetInstanceShaderParameter(CamUpParam, up);
+        }
+    }
+
+    private readonly float[] _litScratch = new float[3];
+    private System.Func<string, Refii.Fx.VisualBatchMaterial>? _lookupMaterial;
+    private readonly float[] _probeBand = new float[3];
+    private bool? _hasProbe;
+    private ulong _probeAskedFrame;
+    private bool _probeFolded;
+    private ulong _probeReadFrame;
+    private static readonly float[] White = { 1f, 1f, 1f };
+
     public int DebugAlive => _system.AliveCount();
 
     public int DebugSpawned => _system.TotalSpawned;
 
+    /// <summary>
+    /// Surfaces on the main mesh only: an "addone" batch commits to `_addMesh` and a "disp"
+    /// batch to `_dispMesh`, so a purely additive effect has zero surfaces here. Read the three
+    /// together.
+    /// </summary>
     public int DebugSurfaces => _mesh?.GetSurfaceCount() ?? -1;
+
+    public int DebugAddSurfaces => _addMesh?.GetSurfaceCount() ?? -1;
+
+    public int DebugDispSurfaces => _dispMesh?.GetSurfaceCount() ?? -1;
+
+    /// <summary>Emitters, visuals and particles this effect actually holds — see Census.</summary>
+    public (int Emitters, int Visuals, int TrailVisuals, int Particles) DebugCensus => _system.Census();
+
+    /// <summary>Whether Build resolved the effect at all; false means the bank had no such key.</summary>
+    public bool DebugBuilt => _built;
 
     public void Restart()
     {
@@ -406,7 +650,7 @@ public partial class FableFx : Node3D
 
         if (_surface is null)
         {
-            _mesh = new ImmediateMesh();
+            _mesh = new ArrayMesh();
             _surface = new MeshInstance3D
             {
                 Name = "FxSurface",
@@ -415,11 +659,28 @@ public partial class FableFx : Node3D
                 ExtraCullMargin = 512f,
             };
             AddChild(_surface);
+            _axesPublished = false;  // a new surface has never been told where the camera is
+        }
+
+        if (_addSurface is null && _system.HasAdditive)
+        {
+            _addMesh = new ArrayMesh();
+            _addSurface = new MeshInstance3D
+            {
+                Name = "FxAdditive",
+                Mesh = _addMesh,
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+                ExtraCullMargin = 512f,
+                Layers = Engine_FxAdditiveLayer.LayerMask,
+            };
+            AddChild(_addSurface);
+            _axesPublished = false;  // a new surface has never been told where the camera is
+            Engine_FxAdditiveLayer.Ensure(this);
         }
 
         if (_dispSurface is null && _system.HasDisplacement)
         {
-            _dispMesh = new ImmediateMesh();
+            _dispMesh = new ArrayMesh();
             _dispSurface = new MeshInstance3D
             {
                 Name = "FxDisplacement",
@@ -429,6 +690,7 @@ public partial class FableFx : Node3D
                 Layers = Engine_FxDisplacement.LayerMask,
             };
             AddChild(_dispSurface);
+            _axesPublished = false;  // a new surface has never been told where the camera is
             Engine_FxDisplacement.Ensure(this);
         }
 
@@ -515,10 +777,11 @@ public partial class FableFx : Node3D
                 float.TryParse(segments[i][4..], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out softDepth);
             }
         }
-        bool additive = mode is "add" or "addone";
+        bool additive = mode is "add" or "addone" or "addlayer";
         string shaderPath = mode switch
         {
             "add" or "addone" => AddShaderPath,
+            "addlayer" => AddLayerShaderPath,
             "mixalpha" => MixAlphaShaderPath,
             "darken" => DarkenShaderPath,
             "sub" => SubShaderPath,
@@ -545,7 +808,7 @@ public partial class FableFx : Node3D
                 "fx_exposure", Engine_FxSystem.Exposure * ExposureScale);
         }
 
-        if (additive)
+        if (additive && mode != "addlayer")
         {
             material.SetShaderParameter("fx_src_alpha", mode == "add" ? 1.0f : 0.0f);
         }

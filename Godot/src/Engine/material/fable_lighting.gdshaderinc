@@ -58,6 +58,17 @@ global uniform float fable_interior = 0.0;
 /// The remaster's interior BAKE lift (`interior_bake_scale`), 1.0 where the level has a sky.
 global uniform float fable_interior_bake = 1.0;
 
+/// The placed lights' records, one texel per light: (world x, y, z, range). Published by
+/// Engine_LightTable. `light()` is given no position, so a light names its texel through the one
+/// per-light scalar that does reach it: SPECULAR_AMOUNT, which Godot fills with 2 × LightSpecular
+/// (light_storage.cpp, `specular_amount = param[SPECULAR] * 2.0`). The host sets
+/// LightSpecular = slot + 2; anything lower — Godot's default 0.5, an FX light — has no record.
+/// Our shaders use SPECULAR_AMOUNT for nothing else.
+global uniform sampler2D fable_light_table;
+
+/// The fragment's world position, assigned at the end of every including shader's vertex().
+varying vec3 fable_world;
+
 const float FABLE_BAKE_NONE = 0.0;
 const float FABLE_BAKE_PROBE = 1.0;
 const float FABLE_BAKE_COLOR_SINGLE = 2.0;
@@ -143,15 +154,28 @@ vec3 fable_probe_bake(vec3 world_normal) {
 /// produced oColor0 — it raises whatever arrived by `g_LightmapFactorAndSRGBGamma.w` and moves
 /// on — so the exponent is not a property of the bake's storage. Mode 2 used to return its colour
 /// raw, which is the one reading the microcode does not support.
+/// The remaster's authored-bake weight, in one place.
+///
+/// It rides the AUTHORED bakes only; the probe field stays at full strength — it is the
+/// ambient a dynamic thing stands in, not a painted picture of sunlight, and dimming it
+/// blacked out every character at night.
+///
+/// One function so the terrain and model shaders cannot drift apart.
+/// `Engine_LevelBakedLighting.AuthoredBakeWeight` mirrors it, because the host applies the same
+/// figure to a probe-lit prop's instance uniform; keep the two identical.
+float fable_authored_bake_weight() {
+	float w = fable_bake_weight > 1.0 ? fable_bake_weight
+		: (fable_interior > 0.5 || fable_bake_weight <= 0.0 ? 1.0 : fable_bake_weight);
+	return w * fable_interior_bake;
+}
+
 vec3 fable_bake(vec3 world_normal, vec4 vertex_colour, vec2 lightmap_uv) {
 	float mode = lightmap_colour.w;
 
 	// The remaster weight rides the AUTHORED bakes (modes 2/3/4). The probe field stays at
 	// full strength — it is the ambient a dynamic thing stands in, not a painted picture of
 	// sunlight, and dimming it blacked out every character at night.
-	float authored = fable_bake_weight > 1.0 ? fable_bake_weight
-		: (fable_interior > 0.5 || fable_bake_weight <= 0.0 ? 1.0 : fable_bake_weight);
-	authored *= fable_interior_bake;
+	float authored = fable_authored_bake_weight();
 
 	if (mode > 3.5) {
 		// The amb3 TEXTURE bake — the mesh's own TexUV2 channel, absolute over the object's
@@ -163,9 +187,11 @@ vec3 fable_bake(vec3 world_normal, vec4 vertex_colour, vec2 lightmap_uv) {
 		// it cannot see, and it has no live sun to hand its look to — the modern model's lower
 		// bake weight would simply darken it. The tether being active IS the modern signal, so
 		// interiors ride at full authored strength there; fable mode keeps the dial for both.
-		float interior = fable_sky_ambient.w > 0.0 ? 1.0 : authored;
+		// Not an interior test: `fable_sky_ambient.w` is the sky TETHER, published by
+		// `Engine_LevelLighting` and 0 in the fable model. It decides model, not roof.
+		float tethered = fable_sky_ambient.w > 0.0 ? 1.0 : authored;
 		vec2 at = lightmap_rect.xy + lightmap_uv * lightmap_rect.zw;
-		return interior * pow(max(texture(fable_prop_lightmaps, at).rgb, vec3(0.0)),
+		return tethered * pow(max(texture(fable_prop_lightmaps, at).rgb, vec3(0.0)),
 			vec3(FABLE_BAKE_GAMMA));
 	}
 
@@ -285,65 +311,44 @@ vec3 fable_ambient(vec3 bake) {
 /// and clears exactly seven slots, and `sub_82B1EE68` buckets the gathered count through the table
 /// at 0x833216F4 = {1,1,2,4,4,7,7,7,0} to pick the BLT1/2/4/7 permutation.
 ///
-/// Godot's own omni falloff is a smooth quartic window with a decay exponent, not that ramp, so a
-/// torch reads as a slightly larger and softer pool than the original. Closing it needs more than
-/// a better constant: `light()` is handed ATTENUATION with the SHADOW already multiplied in and is
-/// given no distance, so the guest's curve cannot be recovered there — it would take evaluating
-/// the lights in `fragment()` from our own uniforms, which is a real design change and would give
-/// up Godot's clustering and shadow atlas with it.
-/// The guest's distance falloff, recovered from Godot's.
+/// The guest's distance falloff — `saturate(1 - d/range)`, linear, one radius — and the shadow.
 ///
-/// FABLE'S RAMP IS LINEAR AND GODOT'S IS NOT, and the difference is not cosmetic: at half range
-/// the guest is at 0.50 and Godot is at 0.88, so every torch read as a far larger, flatter pool of
-/// light than the original casts.
+/// Fable's ramp is linear and Godot's is not: at half range the guest is at 0.50 and Godot at
+/// 0.88, so on Godot's curve every torch reads as a far larger, flatter pool than the original.
 ///
-///     r0.w  = sqrt(abs(r1.x));                                        // d
-///     r1.x  = saturate(-r0.w * g_GlobalLightParamsPS(16).x + c255.x);  // saturate(1 - d/range)
+/// Godot folds the shadow into ATTENUATION — `omni_attenuation * shadow` and
+/// `spot_attenuation * shadow` in scene_forward_lights_inc.glsl — and hands `light()` no
+/// position, so from ATTENUATION alone the distance and the shadow cannot be told apart. A placed
+/// light therefore carries a record (see `fable_light_table`): the distance is MEASURED, the
+/// guest's ramp follows from it, and dividing ATTENUATION by Godot's own window at that distance
+/// leaves the shadow — and, for a spot, the cone, which at SpotAngleAttenuation = 1 is already the
+/// guest's `(cos - K)/(1 - K)`. The window is the zero-decay form `(1 - (d/r)^4)^2`, which is why
+/// Engine_LevelLights pins OmniAttenuation and SpotAttenuation to 0.
 ///
-/// with the same form in all 260 blobs that touch that slot.
+/// A light without a record — an FX light, or anything at Godot's default specular — is
+/// unshadowed by construction, so its ATTENUATION is the window alone and inverts in closed form:
+/// d/r = (1 - sqrt(A))^(1/4), exact to 3e-14. That inversion is NOT valid once a shadow is
+/// multiplied in, which is why every light that can cast is registered.
 ///
-/// WE INVERT RATHER THAN REPLACE, because Godot has to keep owning light selection, culling,
-/// clustering and the shadow atlas — and `light()` is handed a direction and an attenuation but
-/// never the light's position, so the distance cannot be measured here. It can be RECOVERED. With
-/// the decay exponent set to zero — which is why `Engine_LevelLights` sets OmniAttenuation and
-/// SpotAttenuation to 0 — Godot's term is exactly
+/// The sun has no distance term (the guest's per-light scalar S = 0 collapses
+/// `lerp(1, cone*atten, S)` to 1), so its ATTENUATION is the shadow already and passes through.
 ///
-///     A = (1 - (d/r)^4)^2
-///
-/// which solves in closed form for the ratio, and the guest's ramp follows:
-///
-///     d/r    = (1 - sqrt(A))^(1/4)
-///     linear = 1 - d/r
-///
-/// This is an identity, not a fit. It is the one place in this file that depends on OUR renderer's
-/// internals rather than on the guest's, so it is pinned to the Godot version in this tree; if
-/// Godot ever changes `get_omni_attenuation`, this changes with it.
-///
-/// THREE THINGS MAKE IT SAFE, and each was checked rather than hoped for:
-///
-///   - EVERY OMNI LIGHT IS UNSHADOWED, so its ATTENUATION carries nothing but distance. That is
-///     not luck: `sub_825C0CC0` reads CastShadows only inside the `LightType == 1` branch, so a
-///     point light's shadow flag is a field the guest never looks at. All 83 shadowed lights in
-///     the shipped set are spots. Godot folds shadow INTO ATTENUATION, so this is what makes the
-///     inversion exact instead of merely close.
-///   - THE SUN MUST NOT BE INVERTED. A directional light has no distance term — the guest sets its
-///     per-light scalar S to 0, collapsing `lerp(1, cone*atten, S)` to 1 — so its ATTENUATION is
-///     shadow alone and is already correct. Hence the `directional` branch.
-///   - A SPOT'S CONE IS ALREADY EXACT AND SURVIVES THIS. Godot's cone term is
-///     `1 - ((1 - cos)/(1 - K))^p`, which at p = 1 is algebraically `(cos - K)/(1 - K)` — the
-///     guest's `saturate((cos - K) * M)` with `M = 1/(1 - K)`, the very value the spot fill
-///     computes at 0x82A6CFB0. So the cone needs no correction, only `SpotAngleAttenuation = 1`.
-///     Inside the beam the cone is 1 and this inversion is exact; only the narrow rim, where the
-///     cone and distance terms arrive multiplied together and cannot be separated, is approximate.
-///
-/// The guest's seven-light cap is NOT reproduced, deliberately. Because the ramp reaches exactly
-/// zero at the range, a light past its own radius contributes nothing at all, so the cap only
-/// changes the picture where more than seven radii overlap one point. Measured across the shipped
-/// set: the worst overlap anywhere is 11, and only 4 of 81 lit levels exceed 7 at any point. The
-/// other 77 are identical either way.
-float fable_attenuation(float godot_attenuation, bool directional) {
+/// The guest's seven-light cap is NOT reproduced: the ramp reaches exactly zero at the range, so
+/// the cap only changes the picture where more than seven radii overlap one point — the worst
+/// overlap in the shipped set is 11, and only 4 of 81 lit levels exceed 7 anywhere.
+float fable_attenuation(float godot_attenuation, bool directional, float specular_amount, vec3 world) {
 	if (directional) {
 		return godot_attenuation;
+	}
+
+	int slot = int(specular_amount * 0.5 + 0.5) - 2;
+	if (slot >= 0 && slot < textureSize(fable_light_table, 0).x) {
+		vec4 record = texelFetch(fable_light_table, ivec2(slot, 0), 0);
+		float ratio = clamp(distance(world, record.xyz) / max(record.w, 1e-3), 0.0, 1.0);
+		float window = 1.0 - (ratio * ratio * ratio * ratio);
+		window *= window;
+		float rest = window > 1e-3 ? clamp(godot_attenuation / window, 0.0, 1.0) : 1.0;
+		return (1.0 - ratio) * rest;
 	}
 
 	float a = clamp(godot_attenuation, 0.0, 1.0);
@@ -413,3 +418,4 @@ vec3 fable_specular(
 	float gate = clamp(FABLE_SPEC_ANGLE_GATE * dot(normal, light), 0.0, 1.0);
 	return lobe * gate * attenuation * (light_colour / PI) * specular_colour;
 }
+

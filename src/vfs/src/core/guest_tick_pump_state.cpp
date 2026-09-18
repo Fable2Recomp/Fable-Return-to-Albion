@@ -90,6 +90,12 @@ std::atomic<int32_t> g_save_count{-1};
 /// See FrontEndSubtitles().
 std::atomic<int32_t> g_subtitles{-1};
 
+/// See PauseTabsMask(). 0 means "the pump has not asked the guest yet" and is NOT the same as
+/// "no tabs": the host fails open to all-available on 0, because a pause book with every tab
+/// missing is unusable, whereas an extra tab merely pushes a screen the guest would have
+/// skipped.
+std::atomic<uint32_t> g_pause_tabs{0};
+
 /// Set to ask for a fresh sample. Starts true so the first front-end tick takes one, and is set
 /// again whenever the host knows the answer has changed — after a game is started, say.
 ///
@@ -197,6 +203,10 @@ uint32_t DebugCallResult(uint64_t* out_seq, uint32_t* out_addr, uint64_t* out_r3
 
 /// The subtitles setting as the guest last stated it. -1 until the pump's first sample.
 int32_t FrontEndSubtitles() { return g_subtitles.load(std::memory_order_relaxed); }
+
+/// Which pause tabs the guest's own predicate said it would offer, as the pump last sampled
+/// them. Bit N = tab N available for N in 2..8; 0 until the first sample.
+uint32_t PauseTabsMask() { return g_pause_tabs.load(std::memory_order_relaxed); }
 
 /// The saved-game count as last sampled, or -1 if it has not been sampled yet.
 int32_t GuestSavedGameCount() { return g_save_count.load(std::memory_order_relaxed); }
@@ -616,6 +626,10 @@ void refii_bridge_front_end_note_subtitles(int32_t state) {
   refii::vfs::g_subtitles.store(state, std::memory_order_relaxed);
 }
 
+void refii_bridge_note_pause_tabs(uint32_t mask) {
+  refii::vfs::g_pause_tabs.store(mask, std::memory_order_relaxed);
+}
+
 void refii_bridge_menu_spawn_begin_for(uint32_t screen_id) {
   std::lock_guard<std::mutex> lock(refii::vfs::g_menu_mutex);
   refii::vfs::g_menu_building.clear();
@@ -687,6 +701,18 @@ uint64_t refii_bridge_guest_tick_pump_observe_tick(void) {
 
 uint64_t refii_bridge_guest_tick_pump_drained(void) {
   return refii::vfs::g_drained.load(std::memory_order_relaxed);
+}
+
+namespace {
+std::atomic<uint32_t> g_guest_frame{0};
+}  // namespace
+
+uint32_t refii_bridge_guest_frame(void) {
+  return g_guest_frame.load(std::memory_order_acquire);
+}
+
+void refii_bridge_note_guest_frame(void) {
+  g_guest_frame.fetch_add(1, std::memory_order_release);
 }
 
 void refii_bridge_guest_tick_pump_note_ran(void) {

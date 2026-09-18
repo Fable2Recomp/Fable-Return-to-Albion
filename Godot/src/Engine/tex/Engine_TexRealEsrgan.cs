@@ -191,28 +191,37 @@ public sealed class Engine_TexRealEsrgan : ITexUpscaler, IDisposable
 			return false;
 		}
 
-		var dst = new byte[outWidth * outHeight * 4];
-
-		int status;
+		// Pooled: the upscaled RGBA8 is 16x the source at x4, and Image.CreateFromData copies it
+		// out of the span below.
+		int dstBytes = outWidth * outHeight * 4;
+		byte[] dst = System.Buffers.ArrayPool<byte>.Shared.Rent(dstBytes);
 		try
 		{
-			status = refii_upscaler_run(
-				_handle, src, width, height, scale, (int)filter, dst, dst.Length);
-		}
-		catch (Exception e)
-		{
-			GD.PushWarning($"[tex] neural upscaler failed: {e.Message}");
-			return false;
-		}
+			int status;
+			try
+			{
+				status = refii_upscaler_run(
+					_handle, src, width, height, scale, (int)filter, dst, dstBytes);
+			}
+			catch (Exception e)
+			{
+				GD.PushWarning($"[tex] neural upscaler failed: {e.Message}");
+				return false;
+			}
 
-		if (status != 0)
-		{
-			return false;
-		}
+			if (status != 0)
+			{
+				return false;
+			}
 
-		result = Image.CreateFromData(
-			outWidth, outHeight, false, Image.Format.Rgba8, dst);
-		return true;
+			result = Image.CreateFromData(
+				outWidth, outHeight, false, Image.Format.Rgba8, new ReadOnlySpan<byte>(dst, 0, dstBytes));
+			return true;
+		}
+		finally
+		{
+			System.Buffers.ArrayPool<byte>.Shared.Return(dst);
+		}
 	}
 
 	public void Dispose()

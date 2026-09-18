@@ -91,13 +91,23 @@ public static class Engine_ShaderFamily
     /// static path still wants the grass LIGHTING MODEL, which is what the family selects, but the
     /// instancing is a separate question this enum does not answer.
     ///
-    /// RETURNS TreeTrunk, NEVER TreeCanopy. The census settled that the canopy/trunk split is real
-    /// and structural — a tagged tree carries 2 or 3 materials on average, each on its own named
-    /// sub-mesh, one binding bark and the others binding leaves — but it did NOT turn up a numeric
-    /// field that separates them. The names do it plainly and §3.1 forbids classifying by name, so
-    /// a tree resolves to the trunk family: the half that IS ordinary per-pixel lighting, and
-    /// therefore the half the standard-material fallback already approximates. The canopy shader is
-    /// written and compiling, waiting on a discriminator that is allowed to be used.
+    /// RETURNS TreeTrunk, NEVER TreeCanopy, which matches the guest.
+    ///
+    /// The guest's own split is ONE BIT, and it is numeric and data-stated. `sub_82AA04A0` builds
+    /// a texture-set record's flag word from the mere PRESENCE of each of its file strings, and
+    /// bit 5 (0x20, at 0x82AA0584) means "the SEVENTH string names a texture". `sub_82218FC8`
+    /// reads that word off material[0] (`*(obj+0x14)`, never indexed) at 0x82219070 and picks the
+    /// shader descriptor from bit 5 alone: clear takes {40, 41, 29} and `sub_82B1E888` defines
+    /// `SpecNormalSecDifParams_Trunk` at 0x82B1EA34, set takes {42, 43, 29} with no Trunk define.
+    /// Those are Shaders.sbk table indices, so the bit terminates in a binding-id pair and no name
+    /// is ever matched. The same bit drives the LOD fade that the shipped `EnableTreeCanopyFading`
+    /// cvar names (`sub_8220AF90`, 0x8220B264), which corroborates the polarity independently.
+    ///
+    /// No shipped tree sets the bit (`src/tools/MeshKindCensus.cs`), so the guest draws every
+    /// shipped tree with `treematerial_trunk1`; the canopy permutation is never reached. The
+    /// canopy shader stays written for modded data that sets the bit; if it is ever wired up, the
+    /// test is `material[0]`'s seventh file string being non-empty, which our parser holds as
+    /// `ShaderParams[1]`.
     /// </remarks>
     public static ShaderFamily Resolve(MdlInfo? info) => info?.MeshKind switch
     {

@@ -863,6 +863,10 @@ public static class Engine_LevelScene
             AlbedoTexture = albedo,
             Metallic = 0f,
             Roughness = 0.9f,
+
+            // No built-in highlight: a placed light's specular scalar is its light-table slot
+            // (Engine_LightTable), not a strength.
+            SpecularMode = BaseMaterial3D.SpecularModeEnum.Disabled,
         };
     }
 

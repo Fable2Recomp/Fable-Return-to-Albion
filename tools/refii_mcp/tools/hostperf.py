@@ -22,6 +22,44 @@ def metrics(_args):
 
 
 @tool(
+    "refii_fx",
+    "The drawn LIVE particle effects nearest the eye, one line each: guest handle, the bank "
+    "effect it resolved to (and its harvested name when known), distance, placement, the "
+    "intensity the guest states for the instance, and what our simulation holds for it. "
+    "Answers 'the trail is three blobs' with the effect's numbers instead of a screenshot.",
+    {
+        "count": {"type": "integer", "description": "How many effects (default 16, max 128)."},
+    },
+)
+def fx(args):
+    request = {"op": "fx"}
+    if args.get("count") is not None:
+        request["count"] = int(args["count"])
+    return ask(request)
+
+
+@tool(
+    "refii_fxlayer",
+    "The additive particle layer, measured live: whether it is up and resolvable, whether "
+    "anything drew on it this frame, its pixel statistics (mean of the per-pixel max channel, "
+    "peak, lit-pixel count), and its gain — which `gain` changes on the spot, so a faint "
+    "trail can be dialled by eye without a rebuild. `dump` saves the layer as a PNG under "
+    "~/.cache/refii-scratch/fxlayer.",
+    {
+        "gain": {"type": "number", "description": "New gain for the layer (0..64)."},
+        "dump": {"type": "boolean", "description": "Also write the layer image to scratch."},
+    },
+)
+def fxlayer(args):
+    request = {"op": "fxlayer"}
+    if args.get("gain") is not None:
+        request["gain"] = float(args["gain"])
+    if args.get("dump"):
+        request["dump"] = True
+    return ask(request)
+
+
+@tool(
     "refii_mark",
     "Drop a marker: a [mark] line into the game's log and a message onto the Tracy "
     "timeline, so 'pressed A here' lines up with the surrounding traffic when either is "
@@ -139,3 +177,18 @@ def perfcsv(args):
         summary[name] = {"mean": round(sum(values) / len(values), 2),
                          "max": round(max(values), 2)}
     return {"ok": True, "path": path, "frames": len(take), "counters": summary}
+
+
+@tool(
+    "refii_flicker",
+    "Write the post-fx FLICKER TRAP's frame ring now: the last 48 rendered frames at quarter "
+    "resolution, as PNGs under user://flicker, so a one-frame glitch that cannot be "
+    "screenshotted by hand can be looked at frame by frame. The ring also writes itself "
+    "when the scene's mean luminance jumps between consecutive frames. Armed at launch by "
+    "the `postfx_flicker_trap` cvar (a ratio above 1; 2.5 is a good start). The write "
+    "happens on the next rendered frame, so `lastDump` names the previous dump on this call "
+    "and the new one on the next; the game log's `[postfx] flicker trap` line has the "
+    "same path.",
+)
+def flicker(_args):
+    return ask({"op": "flicker"})

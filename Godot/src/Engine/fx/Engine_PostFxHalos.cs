@@ -51,8 +51,20 @@ public partial class Engine_PostFxHalos : Node
 	/// Layer indexes the published sprite array; −1 draws the procedural disc.</summary>
 	public readonly record struct WorldHalo(Vector3 Position, Vector3 Colour, float WorldHalf, float Layer);
 
+	/// <summary>
+	/// A halo pinned to a SKY DIRECTION rather than a light: the moon's glare. The guest draws
+	/// MOONBLOOM (PS 144) into the same transient half-res target as the light halos
+	/// (`sub_82277380`), DOWNSCALE2'd into off_8331A9CC — bloom only, never the scene; its
+	/// constant 244 is <c>0.025 × MOON_GLARE_INTENSITY × fade²</c> with fade the moon's
+	/// occlusion-query fraction. The per-pixel depth test here stands in for the query and
+	/// <see cref="SetSkyVisibility"/> carries the cloud term.
+	/// </summary>
+	public readonly record struct SkyHalo(Vector3 Direction, float Distance, float WorldHalf, Vector3 Colour, Texture2D? Sprite, bool Active);
+
 	private static readonly object Gate = new();
 	private static readonly List<Halo> Entries = new();
+	private static readonly Dictionary<string, SkyHalo> Sky = new();
+	private static readonly Dictionary<string, float> SkyVisibility = new();
 	private static readonly List<WorldHalo> Published = new();
 	private static Rid _publishedArray;
 	private static Engine_PostFxHalos? _current;
@@ -74,6 +86,25 @@ public partial class Engine_PostFxHalos : Node
 		lock (Gate)
 		{
 			Entries.Add(new Halo(light, textureHash));
+		}
+	}
+
+	/// <summary>Publishes (or replaces) a sky halo under <paramref name="key"/>.</summary>
+	public static void PublishSky(string key, SkyHalo halo)
+	{
+		lock (Gate)
+		{
+			Sky[key] = halo;
+		}
+	}
+
+	/// <summary>The cloud visibility of a sky halo, 0..1; squared on the way in like the
+	/// guest's fade² (0x82279a94..0x82279ac4).</summary>
+	public static void SetSkyVisibility(string key, float visibility)
+	{
+		lock (Gate)
+		{
+			SkyVisibility[key] = Math.Clamp(visibility, 0f, 1f);
 		}
 	}
 
@@ -113,6 +144,8 @@ public partial class Engine_PostFxHalos : Node
 
 	private readonly List<Halo> _live = new();
 	private readonly List<WorldHalo> _build = new();
+	private readonly List<(SkyHalo Halo, float Visibility)> _sky = new();
+	private readonly Dictionary<ulong, float> _spriteLayers = new();
 
 	private readonly Dictionary<uint, float> _layers = new();
 	private readonly List<Image> _sprites = new();
@@ -139,6 +172,7 @@ public partial class Engine_PostFxHalos : Node
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("postfxhalos");
 		_live.Clear();
+		_sky.Clear();
 		lock (Gate)
 		{
 			for (int i = Entries.Count - 1; i >= 0; i--)
@@ -150,6 +184,14 @@ public partial class Engine_PostFxHalos : Node
 				}
 
 				_live.Add(Entries[i]);
+			}
+
+			foreach ((string key, SkyHalo halo) in Sky)
+			{
+				if (halo.Active)
+				{
+					_sky.Add((halo, SkyVisibility.TryGetValue(key, out float vis) ? vis : 1f));
+				}
 			}
 		}
 
@@ -193,12 +235,72 @@ public partial class Engine_PostFxHalos : Node
 				light.GlobalPosition, colour, half, LayerFor(halo.TextureHash)));
 		}
 
+		foreach ((SkyHalo halo, float visibility) in _sky)
+		{
+			Vector3 direction = halo.Direction;
+			if (direction.LengthSquared() <= 1e-12f || !(halo.Distance > 0f))
+			{
+				continue;
+			}
+
+			float fade = visibility * visibility;
+			Vector3 colour = halo.Colour * fade;
+			if (MathF.Max(MathF.Max(colour.X, colour.Y), colour.Z) <= 1e-4f)
+			{
+				continue;
+			}
+
+			_build.Add(new WorldHalo(
+				eye + (direction.Normalized() * halo.Distance), colour, halo.WorldHalf,
+				LayerForSprite(halo.Sprite)));
+		}
+
 		lock (Gate)
 		{
 			Published.Clear();
 			Published.AddRange(_build);
 			_publishedArray = _arrayRd;
 		}
+	}
+
+	/// <summary>The array layer for an already-loaded sprite (the celestial textures), −1 for
+	/// none or one that will not decode.</summary>
+	private float LayerForSprite(Texture2D? sprite)
+	{
+		if (sprite is null || !GodotObject.IsInstanceValid(sprite))
+		{
+			return -1f;
+		}
+
+		ulong id = sprite.GetInstanceId();
+		if (_spriteLayers.TryGetValue(id, out float known))
+		{
+			return known;
+		}
+
+		float layer = -1f;
+		Image? image = sprite.GetImage();
+		if (image is not null && !image.IsEmpty())
+		{
+			if (image.IsCompressed())
+			{
+				image.Decompress();
+			}
+
+			image.Convert(Image.Format.Rgba8);
+			image.Resize(SpriteSize, SpriteSize, Image.Interpolation.Lanczos);
+			if (image.HasMipmaps())
+			{
+				image.ClearMipmaps();
+			}
+
+			_sprites.Add(image);
+			layer = _sprites.Count - 1;
+			RebuildArray();
+		}
+
+		_spriteLayers[id] = layer;
+		return layer;
 	}
 
 	private float LayerFor(uint hash)

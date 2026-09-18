@@ -42,6 +42,13 @@ public sealed class LightingFrame
 	/// </summary>
 	public float SkylightWeight { get; set; } = 1.0f;
 
+	/// <summary>
+	/// Whether this theme states a main light at all. Separate from <see cref="SkylightWeight"/>,
+	/// which also folds in the PAINTED weight — a painted day set is a mood the level authors
+	/// over OUTDOOR cells, not a roof.
+	/// </summary>
+	public bool HasSky { get; set; } = true;
+
 	// NO FOG HERE. It is not a lighting-frame value: the theme's Fogging record drives the
 	// atmosphere, which reaches the world through global shader parameters rather than through
 	// Godot's Environment. See `Engine_SkyAtmosphere.SolveFogCurve`.
@@ -282,14 +289,20 @@ public static class Engine_LightingFrame
 		float[] sunRgb = lighting.HasMainLightColour ? lighting.MainLightColour : frame.MainLightColour;
 		Split(sunRgb, result.SunColour, out float sunEnergy);
 
-		// WHETHER THERE IS A SKY AT ALL, by the guest's own test for a main light:
-		// |MainLightColour|^2 > 1e-4 (`vmsum3fp128` at 0x821D1F30). Thag's cave states
+		// WHETHER THERE IS A SKY AT ALL. The threshold is OURS: `sub_821D1CA0` at 0x821D1F30 runs
+		// |colour|^2 > 1e-4 (`flt_82099A80` = 0x38D1B717) on the LIVE light object to decide
+		// shadow-caster admission (+0x150/+0x151/+0x152, winner stored to `dword_83496E98`); the
+		// guest never asks whether a level has a sky. Here it stands in for "the theme states no
+		// main light", and nothing more.
+		//
+		// Thag's cave states
 		// (1.0, 0.58, 0.0) x 0.00 — a hue with no magnitude — and deriving an ambient from its
 		// dome, then tethering every probe 60% toward it, painted the whole cave orange (b175).
 		// A level with no main light has no skylight to model; its ambient is what it states,
 		// or its probes.
 		float mainLightSq = (sunRgb[0] * sunRgb[0]) + (sunRgb[1] * sunRgb[1]) + (sunRgb[2] * sunRgb[2]);
 		bool hasSky = mainLightSq > 1e-4f;
+		result.HasSky = hasSky;
 
 		// THE HORIZON GATE, AND THE HANDOVER TO THE MOON.
 		//

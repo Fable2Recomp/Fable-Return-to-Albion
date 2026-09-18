@@ -93,6 +93,14 @@ public sealed class Engine_UiBindings
 		/// belongs to the toggle.
 		/// </summary>
 		SlideSet,
+
+		/// <summary>
+		/// `PrimDescName` — an element the guest places itself rather than fills or toggles.
+		/// The three timing-meter pips carry it (`HeroPip`, `HenchmanPip`, `BothPip` on
+		/// `white_pip`, `black_pip`, `blackwhite_pip`), which is how the file states WHICH
+		/// element is the hero's marker without a host-side table of node names.
+		/// </summary>
+		PrimDesc,
 	}
 
 	/// <summary>
@@ -127,6 +135,7 @@ public sealed class Engine_UiBindings
 		(Kind.SlideFader, "SlideFaderName"),
 		(Kind.SlideFader2, "SlideFader2Name"),
 		(Kind.SlideSet, "SlideSetName"),
+		(Kind.PrimDesc, "PrimDescName"),
 	};
 
 	private readonly List<Binding> _bindings = new();

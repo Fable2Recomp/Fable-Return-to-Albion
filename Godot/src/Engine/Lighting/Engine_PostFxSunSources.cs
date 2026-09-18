@@ -34,6 +34,8 @@ public partial class Engine_PostFxSunSources : Node
     private static Engine_PostFxSunSources? _current;
     private static Sources _published = new() { SunDirection = Vector3.Up };
 
+    private static readonly AtmosphereState _frameAtmosphere = new();
+
     public static void Snapshot(out Sources sources)
     {
         lock (Gate)
@@ -136,7 +138,9 @@ public partial class Engine_PostFxSunSources : Node
     private void Apply(SkyTheme sky, SkyFrame frame)
     {
         float[] element = Engine_CelestialElements.ElementParams(sky);
-        AtmosphereState state = Engine_SkyAtmosphere.Compute(Engine_SkyAtmosphere.FromFrame(frame, sky));
+        // Reused: thirteen arrays behind that class, and this runs every frame.
+        AtmosphereState state = _frameAtmosphere;
+        Engine_SkyAtmosphere.Compute(Engine_SkyAtmosphere.FromFrame(frame, sky), state);
         float[] tint = state.SunElementColour;
 
         Vector3 sun = Refii.Level.Engine_SkyFrame.ToGodot(frame.SunDirection);

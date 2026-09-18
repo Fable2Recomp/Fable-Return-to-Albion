@@ -453,15 +453,10 @@ public static class Engine_TerrainSplatMaterial
             return null;
         }
 
-        var built = new Image[slices.Length];
-        System.Threading.Tasks.Parallel.For(0, slices.Length, i =>
-        {
-            Image image = Image.CreateFromData(size, size, false, Image.Format.Rgba8, slices[i]);
-            image.GenerateMipmaps();
-            built[i] = image;
-        });
-
-        // The scan, before any encode: any layer with alpha takes the whole array to BC3.
+        // The format first, from each slice's base level: any layer with alpha takes the whole
+        // array to BC3. Godot's own DetectAlpha on the base answers exactly what it did on the
+        // mipped image — a mip is an average, so an all-opaque level stays all-opaque — and it
+        // has to be known before a slice can be looked up, because the format is in its key.
         Refii.Textures.TexSurfaceFormat target;
         if (isNormalMap)
         {
@@ -469,31 +464,53 @@ public static class Engine_TerrainSplatMaterial
         }
         else
         {
-            bool anyAlpha = false;
-            foreach (Image image in built)
+            int alphaSlices = 0;
+            System.Threading.Tasks.Parallel.For(0, slices.Length, i =>
             {
-                if (image is not null && image.DetectAlpha() != Image.AlphaMode.None)
+                using Image probe = Image.CreateFromData(size, size, false, Image.Format.Rgba8, slices[i]);
+                if (probe.DetectAlpha() != Image.AlphaMode.None)
                 {
-                    anyAlpha = true;
-                    break;
+                    System.Threading.Interlocked.Increment(ref alphaSlices);
                 }
-            }
+            });
 
-            target = anyAlpha
+            target = alphaSlices > 0
                 ? Refii.Textures.TexSurfaceFormat.Bc3
                 : Refii.Textures.TexSurfaceFormat.Bc1;
         }
 
-        // A failure leaves that slice RGBA8, which would fail the array build, so the whole
-        // array falls back to uncompressed rather than shipping a mixed set.
+        // Cached per slice, by content: a slice's compressed mip chain depends only on its bytes,
+        // its size and the target format. A hit is one inflate; a miss builds and stores.
+        string recipe = $"terrain-slice|{size}|{target}|{(isNormalMap ? "n" : "c")}";
+        Image.Format expected = Refii.Textures.Engine_TexImage.ToGodotFormat(target);
+        var built = new Image[slices.Length];
         bool compressed = true;
-        System.Threading.Tasks.Parallel.For(0, built.Length, i =>
+        System.Threading.Tasks.Parallel.For(0, slices.Length, i =>
         {
-            if (built[i] is null ||
-                !Refii.Textures.Engine_TexImage.CompressBlocks(built[i], isNormalMap, target))
+            string key = Refii.Textures.Engine_TexCache.DerivedKey(recipe, slices[i]);
+            if (Refii.Textures.Engine_TexCache.TryLoad(key, out _) is { } hit &&
+                hit.GetFormat() == expected && hit.HasMipmaps() &&
+                hit.GetWidth() == size && hit.GetHeight() == size)
+            {
+                built[i] = hit;
+                return;
+            }
+
+            Image image = Image.CreateFromData(size, size, false, Image.Format.Rgba8, slices[i]);
+            image.GenerateMipmaps();
+            built[i] = image;
+
+            // A failure leaves that slice RGBA8, which would fail the array build, so the whole
+            // array falls back to uncompressed rather than shipping a mixed set.
+            if (!Refii.Textures.Engine_TexImage.CompressBlocks(image, isNormalMap, target))
             {
                 compressed = false;
+                return;
             }
+
+            Refii.Textures.Engine_TexCache.Store(
+                key, image, target == Refii.Textures.TexSurfaceFormat.Bc3,
+                Refii.Textures.TexCacheCost.Derived);
         });
 
         if (!compressed)
@@ -551,8 +568,22 @@ public static class Engine_TerrainSplatMaterial
         bool solveHeight = Engine_TexSettings.OrmHeight;
         var anyHeight = new bool[baseSlices.Length];
         var built = new Image[baseSlices.Length];
+        // Cached per layer, by both normal slices' content: the cavity filters and the 24-pass
+        // Poisson height solve are the most expensive part of a terrain build, and deterministic.
+        // The entry's one flag carries "a height was solved", which is what `hasHeight` reports.
+        string recipe = $"terrain-cavity|{size}|{strength.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}|{(solveHeight ? "h" : "-")}";
         System.Threading.Tasks.Parallel.For(0, baseSlices.Length, i =>
         {
+            string key = Refii.Textures.Engine_TexCache.DerivedKey(recipe, baseSlices[i], detailSlices[i]);
+            if (Refii.Textures.Engine_TexCache.TryLoad(key, out bool solved) is { } hit &&
+                hit.GetFormat() == Image.Format.Rgb8 && hit.HasMipmaps() &&
+                hit.GetWidth() == size && hit.GetHeight() == size)
+            {
+                anyHeight[i] = solved;
+                built[i] = hit;
+                return;
+            }
+
             byte[] baseCavity = Engine_TexOrm.CavityFromTilingNormal(
                 baseSlices[i], size, size, strength);
             byte[] detailCavity = Engine_TexOrm.CavityFromTilingNormal(
@@ -578,6 +609,7 @@ public static class Engine_TerrainSplatMaterial
             Image image = Image.CreateFromData(size, size, false, Image.Format.Rgb8, rgb);
             image.GenerateMipmaps();
             built[i] = image;
+            Refii.Textures.Engine_TexCache.Store(key, image, anyHeight[i], Refii.Textures.TexCacheCost.Derived);
         });
 
         var images = new Godot.Collections.Array<Image>();

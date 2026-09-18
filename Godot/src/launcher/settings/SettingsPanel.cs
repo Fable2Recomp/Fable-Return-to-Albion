@@ -202,39 +202,44 @@ public partial class SettingsPanel : VBoxContainer
 
 	private void AddRow(GridContainer grid, RuntimeCVarDefinition definition)
 	{
-		bool disabled = _model.IsDisabledVideoModeSetting(definition);
-
 		Label name = MakeLabel(RuntimeSettingsModel.FormatDisplayName(definition));
 		name.CustomMinimumSize = new Vector2(NameColumnWidth, 0);
 		name.SizeFlagsHorizontal = SizeFlags.Fill;
 		name.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
 		name.TooltipText = definition.Description;
-		if (disabled)
-		{
-			name.AddThemeColorOverride("font_color", _style.TextDisabled);
-		}
-
 		grid.AddChild(name);
 
-		Control editor = BuildEditor(definition, disabled);
+		List<RuntimeCVarOption> options = RuntimeSettingsModel.OptionsFor(definition, _model.Values);
+
+		Control editor = BuildEditor(definition, options);
 		editor.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 		editor.CustomMinimumSize = new Vector2(80, 0);
 		grid.AddChild(editor);
 
-		Label defaultLabel = MakeLabel(definition.DefaultValue);
+		// The default column shows the default the way the dropdown does — "Off", not "0".
+		string defaultText = options.Find(o => o.Value == definition.DefaultValue)?.Label
+			?? definition.DefaultValue;
+		Label defaultLabel = MakeLabel(defaultText);
 		defaultLabel.CustomMinimumSize = new Vector2(DefaultColumnWidth, 0);
 		defaultLabel.SizeFlagsHorizontal = SizeFlags.Fill;
 		defaultLabel.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
-		defaultLabel.TooltipText = definition.DefaultValue;
+		defaultLabel.TooltipText = defaultText;
 		defaultLabel.AddThemeColorOverride("font_color", _style.TextDisabled);
 		grid.AddChild(defaultLabel);
 	}
 
-	private Control BuildEditor(RuntimeCVarDefinition definition, bool disabled)
+	private Control BuildEditor(RuntimeCVarDefinition definition, List<RuntimeCVarOption> options)
 	{
 		string current = _model.Values.TryGetValue(definition.Name, out string? value)
 			? value
 			: definition.DefaultValue;
+
+		// A setting with a stated list of values is a dropdown whatever its type: an Int that
+		// names its modes shows the names and writes the number.
+		if (options.Count != 0)
+		{
+			return BuildDropdown(definition, current, options);
+		}
 
 		switch (definition.Type)
 		{
@@ -243,7 +248,6 @@ public partial class SettingsPanel : VBoxContainer
 				var check = new CheckBox
 				{
 					ButtonPressed = RuntimeConfig.NormalizeBoolValue(current) == "true",
-					Disabled = disabled,
 				};
 				Apply(check);
 				check.Toggled += pressed => Commit(definition, pressed ? "true" : "false");
@@ -258,7 +262,6 @@ public partial class SettingsPanel : VBoxContainer
 					MaxValue = int.MaxValue,
 					Step = 1,
 					Value = RuntimeSettingsModel.ParseInt(current, definition.DefaultValue),
-					Editable = !disabled,
 				};
 				Apply(spin);
 				spin.ValueChanged += v =>
@@ -274,7 +277,6 @@ public partial class SettingsPanel : VBoxContainer
 					MaxValue = double.MaxValue,
 					Step = 0.1,
 					Value = RuntimeSettingsModel.ParseDouble(current, definition.DefaultValue),
-					Editable = !disabled,
 				};
 				Apply(spin);
 				spin.ValueChanged += v =>
@@ -284,42 +286,44 @@ public partial class SettingsPanel : VBoxContainer
 
 			default:
 			{
-				List<string> options = RuntimeSettingsModel.OptionsFor(definition, _model.Values);
-				if (options.Count == 0)
-				{
-					var edit = new LineEdit { Text = current, Editable = !disabled };
-					Apply(edit);
-					edit.TextSubmitted += text => Commit(definition, text);
-					edit.FocusExited += () => Commit(definition, edit.Text);
-					return edit;
-				}
-
-				string display = current.Length == 0 ? definition.DefaultValue : current;
-				if (definition.Name == "renderer_backend" && display == "native")
-				{
-					display = "xenia";
-				}
-
-				if (definition.Name == "resolution" && display.Length == 0)
-				{
-					display = "custom";
-				}
-
-				var option = new OptionButton { Disabled = disabled };
-				Apply(option);
-				for (int i = 0; i < options.Count; i++)
-				{
-					option.AddItem(options[i]);
-					if (options[i] == display)
-					{
-						option.Selected = i;
-					}
-				}
-
-				option.ItemSelected += index => Commit(definition, options[(int)index]);
-				return option;
+				var edit = new LineEdit { Text = current };
+				Apply(edit);
+				edit.TextSubmitted += text => Commit(definition, text);
+				edit.FocusExited += () => Commit(definition, edit.Text);
+				return edit;
 			}
 		}
+	}
+
+	private Control BuildDropdown(
+		RuntimeCVarDefinition definition, string current, List<RuntimeCVarOption> options)
+	{
+		string display = current.Length == 0 ? definition.DefaultValue : current;
+
+		var option = new OptionButton();
+		Apply(option);
+		int selected = -1;
+		for (int i = 0; i < options.Count; i++)
+		{
+			option.AddItem(options[i].Label);
+			if (options[i].Value == display)
+			{
+				selected = i;
+			}
+		}
+
+		// A value the list does not offer — typed into the file by hand — is shown as itself
+		// rather than silently read as the first entry.
+		if (selected < 0)
+		{
+			options.Add(new RuntimeCVarOption(display, display));
+			option.AddItem(display);
+			selected = options.Count - 1;
+		}
+
+		option.Selected = selected;
+		option.ItemSelected += index => Commit(definition, options[(int)index].Value);
+		return option;
 	}
 
 	private void Commit(RuntimeCVarDefinition definition, string value)
@@ -332,8 +336,7 @@ public partial class SettingsPanel : VBoxContainer
 		// what that screen can show — so either one moving has to redraw the row below it.
 		// Otherwise it keeps offering the previous shape's sizes, or sizes the newly chosen
 		// monitor cannot display.
-		if (definition.Name is "renderer_backend" or "renderer_plume_api"
-			or "display_aspect" or "monitor")
+		if (definition.Name is "display_aspect" or "monitor")
 		{
 			Rebuild();
 		}

@@ -41,6 +41,14 @@ public readonly record struct Engine_MdlRig(string[] Names, int[] Parents, float
 		return new Vector3(Rest[at + 7], Rest[at + 8], Rest[at + 9]);
 	}
 
+	/// <summary>A box, because a weak table cannot hold a null value and "no rig" is the answer worth keeping.</summary>
+	private sealed class Answer
+	{
+		public Engine_MdlRig? Rig;
+	}
+
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Mesh, Answer> Cache = new();
+
 	/// <summary>
 	/// The rig a mesh carries, or null when it has none or ships an incomplete one.
 	///
@@ -48,7 +56,28 @@ public readonly record struct Engine_MdlRig(string[] Names, int[] Parents, float
 	/// character up, and half a rig is worse than none: it builds a skeleton that looks
 	/// plausible in every count we print and collapses every bone onto the origin.
 	/// </summary>
+	/// <remarks>
+	/// Answered once per mesh and cached, including "no rig": callers retry unrigged drawables
+	/// on a cadence, and re-reading the metadata arrays each time churns Godot wrappers.
+	/// </remarks>
 	public static Engine_MdlRig? TryFrom(Mesh? mesh)
+	{
+		if (mesh is null)
+		{
+			return null;
+		}
+
+		if (Cache.TryGetValue(mesh, out Answer? cached))
+		{
+			return cached.Rig;
+		}
+
+		var answer = new Answer { Rig = Build(mesh) };
+		Cache.Add(mesh, answer);
+		return answer.Rig;
+	}
+
+	private static Engine_MdlRig? Build(Mesh? mesh)
 	{
 		if (mesh is not ArrayMesh array ||
 			!array.HasMeta(Engine_MdlMesh.BoneNamesMeta) ||

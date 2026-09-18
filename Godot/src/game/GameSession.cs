@@ -31,6 +31,35 @@ public partial class GameSession : Node
 	private bool _driving;
 	private long _steps;
 
+	/// <summary>High-frequency steps granted to the guest — the host's own simulation position.</summary>
+	private long _granted;
+
+	/// <summary>The guest's counter and our granted count when the loop was closed, so the two
+	/// are compared as DIFFERENCES: they start from unrelated origins and the guest's own resets
+	/// on world teardown.</summary>
+	private uint _guestTickBase;
+	private long _grantedBase;
+
+	/// <summary>
+	/// How far the host may lead the guest, in game ticks, before it stops granting.
+	/// </summary>
+	/// <remarks>
+	/// Half a tick, i.e. one HF step: the guest re-bases the moment it is owed more than one
+	/// step (`82276fa4 cmpwi cr6, r30, 1`) and a game tick is two steps. Any steady lead is time
+	/// granted and not run. With the cap the world advances at the rate the guest can actually
+	/// run, rather than at real time with a lurch to make up the difference.
+	/// </remarks>
+	private const double MaxLeadGameTicks = 0.5;
+
+	/// <summary>
+	/// A lead beyond this, in either direction, is a broken base rather than a real lead.
+	/// </summary>
+	/// <remarks>
+	/// Above any genuine stall (a second of the guest doing nothing is 15 ticks), tight enough
+	/// that a base taken against the wrong world is caught on the first frame.
+	/// </remarks>
+	private const double ReBaseGameTicks = 64.0;
+
 	public bool IsDriving => _driving;
 
 	/// <summary>
@@ -192,8 +221,25 @@ public partial class GameSession : Node
 
 	/// <summary>
 	/// Catch-up ceiling: a stall loses time instead of replaying every missed step at once.
+	/// This bounds what the accumulator may bank, not what one frame may grant.
 	/// </summary>
 	private const int MaxCatchUpSteps = 4;
+
+	/// <summary>
+	/// Steps granted in a single frame. One, because two makes the guest skip time.
+	/// </summary>
+	/// <remarks>
+	/// `sub_82276D10` compares what it owes against 1 (`82276fa4 cmpwi cr6, r30, 1`); at or
+	/// below, it advances one step and sets its clock to `base + stepsDone/30`. Above, it takes
+	/// the branch at `82276fb4` — advance one step and set the clock to now
+	/// (`stfd f0, 0x110(r31)`), abandoning the time in between.
+	///
+	/// The bank above still absorbs a long frame and drains a step per frame, which above
+	/// 30 fps covers the guest's 30 steps a second. Below 30 fps the world runs slow rather
+	/// than lurching, deliberately: a sim clock advancing exactly 1/15 s a tick is what the
+	/// original did.
+	/// </remarks>
+	private const int MaxStepsPerFrame = 1;
 
 	/// <summary>How long the pace is averaged over before it is judged.</summary>
 	private const double PaceWindowSeconds = 5.0;
@@ -332,11 +378,90 @@ public partial class GameSession : Node
 
 		double period = 1.0 / StepsPerSecond;
 		int steps = 0;
-		while (_accumulated >= period && steps < MaxCatchUpSteps)
+		while (_accumulated >= period && steps < MaxStepsPerFrame)
 		{
 			_accumulated -= period;
 			++steps;
 		}
+
+		// Godot's pacing is the guest's clock: the guest's loop takes exactly one step per
+		// granted step and yields. Starved, it advances one step and re-bases, discarding the
+		// backlog (0x82276FA4).
+		//
+		// Closed loop: grant on completion, not on wall time. If the host already leads by more
+		// than `MaxLeadGameTicks` the grant is withheld and the time is dropped rather than
+		// banked (banking guarantees a burst when the guest recovers); the whole game slows
+		// together.
+		//
+		// The counter must count executed ticks. `SimTick` (`dword_83319650`) self-gates on the
+		// front GameFlow command matching (0x821D46E8), is reset to 1 on world teardown
+		// (0x8235075C) and is restored from saves. `game+0xFC` is incremented once per game tick
+		// at 0x821C9044 with no gate.
+		uint guestTick = HostBridge.SimClock() is { } clock ? clock.Tick : 0u;
+
+		// `dword_83319650` is gated (`821d46e8` branches past its own increment) and has a
+		// second increment path (`823d9904`); `guestTick` is the ungated once-per-game-tick
+		// counter. Both are read in the same instant here, so their drift is observed exactly.
+		if (guestTick != 0u)
+		{
+			Refii.Core.Engine_TickClock.ObserveCounterPair(HostBridge.SimTick, guestTick);
+
+			// The stamp. Published before anything poses this frame, so every sample rides the
+			// same counter the pacing loop does.
+			Refii.Core.Engine_TickClock.PublishGuestGameTick(guestTick);
+
+			// The draw point's terms are the display's: `sub_82388380` sizes its draw time from
+			// the refresh rate and present interval (`XGetVideoMode`), never a measured frame
+			// time. Refreshed per frame because the window can move to another screen.
+			float hz = Godot.DisplayServer.ScreenGetRefreshRate(
+				Godot.DisplayServer.WindowGetCurrentScreen((int)Godot.DisplayServer.MainWindowId));
+			if (hz > 1.0f)
+			{
+				Refii.Core.Engine_TickClock.RefreshHz = hz;
+			}
+
+			if (_guestTickBase == 0u)
+			{
+				_guestTickBase = guestTick;
+				_grantedBase = _granted;
+			}
+
+			double hostGameTicks = (_granted - _grantedBase) * 0.5;
+			double guestGameTicks = (double)guestTick - _guestTickBase;
+			double lead = hostGameTicks - guestGameTicks;
+
+			// Re-base on an implausible lead. The counts are compared as differences from a
+			// captured base, and the guest's counter is not stable across a world coming up or
+			// going down. A hugely negative lead would silently disable the cap below; re-basing
+			// costs one frame of pacing.
+			if (lead > ReBaseGameTicks || lead < -ReBaseGameTicks)
+			{
+				_guestTickBase = guestTick;
+				_grantedBase = _granted;
+				lead = 0.0;
+			}
+
+			Refii.Core.Engine_TickClock.HostGrantLead = lead;
+			Refii.Core.Engine_TickClock.HostGrantWithheld = lead > MaxLeadGameTicks;
+			if (lead > MaxLeadGameTicks)
+			{
+				// Hold at the boundary, do not rewind: the accumulator's remainder is also the
+				// draw phase, so zeroing it would send the playhead backwards a step. Parking
+				// just short of the period drops the surplus without moving the phase.
+				_accumulated = System.Math.Min(_accumulated, period * 0.999);
+				steps = 0;
+			}
+		}
+
+		if (steps > 0)
+		{
+			HostBridge.AdvanceTimeBase((uint)steps);
+			_granted += steps;
+		}
+
+		// The same accumulator is the draw clock: `_accumulated / period` is how far this frame
+		// lies between two guest steps, so the playback rate is 1.0 by construction.
+		Refii.Core.Engine_TickClock.PublishHostTicks(_granted, _accumulated / period);
 
 		if (_accumulated > period * MaxCatchUpSteps)
 		{
@@ -424,6 +549,7 @@ public partial class GameSession : Node
 		if (!HostBridge.Step())
 		{
 			_driving = false;
+			_guestTickBase = 0u;
 			string reason = HostBridge.HostedStatus;
 			GD.Print($"[game] guest stopped after {_steps:N0} steps: {reason}");
 

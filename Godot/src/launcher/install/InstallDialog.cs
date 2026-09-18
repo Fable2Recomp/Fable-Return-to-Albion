@@ -253,6 +253,7 @@ public partial class InstallDialog : Control
 			Size = new Vector2I(820, 560),
 		};
 
+		picker.UseNativeDialog = true;
 		picker.FileSelected += path =>
 		{
 			target.Text = path;

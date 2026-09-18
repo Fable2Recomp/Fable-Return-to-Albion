@@ -40,6 +40,17 @@ public partial class Engine_PropStreamer : Node3D
 
     private readonly List<GeometryInstance3D> _remaining = new();
 
+    /// <summary>
+    /// Each remaining instance's model path, held alongside <see cref="_remaining"/> and kept at
+    /// the same indices.
+    /// </summary>
+    /// <remarks>
+    /// The path is fixed for the life of the instance; reading it from metadata on every scan
+    /// visit marshals a Variant and allocates a string per prop per frame. Materialised once
+    /// when the instance is queued. The two lists are mutated only together.
+    /// </remarks>
+    private readonly List<string> _remainingPaths = new();
+
     private readonly Stopwatch _watch = new();
 
     private int _scan;
@@ -128,6 +139,7 @@ public partial class Engine_PropStreamer : Node3D
 
         _pending.Clear();
         _remaining.Clear();
+        _remainingPaths.Clear();
         _scan = 0;
         _done = 0;
         _loaded = 0;
@@ -153,6 +165,10 @@ public partial class Engine_PropStreamer : Node3D
 
         _pending.Sort((a, b) => InstanceCount(b).CompareTo(InstanceCount(a)));
         _remaining.AddRange(_pending);
+        foreach (GeometryInstance3D queued in _pending)
+        {
+            _remainingPaths.Add(queued.GetMeta(ModelPathMeta).AsString());
+        }
 
         StartPrefetch();
 
@@ -190,6 +206,87 @@ public partial class Engine_PropStreamer : Node3D
         internal void MarkRest(int count) => System.Threading.Interlocked.Add(ref _remaining, -count);
 
         public static readonly PrefetchJob Empty = new(0);
+    }
+
+    /// <summary>`prop_cull_min_pixels`: a prop's on-screen height below which it stops drawing; 0 never culls.</summary>
+    private static readonly float CullMinPixels = ReadCullMinPixels();
+
+    /// <summary>Pixels per metre at one metre on a 1080-line display with a 75° vertical fov.</summary>
+    private const float PixelsPerMetreAtOneMetre = 1080f / (2f * 0.76733f);
+
+    /// <summary>A range past this is left unset: the sun's cascades end at 300 m and nothing beyond is worth a fade.</summary>
+    private const float CullFarthestMetres = 600f;
+
+    /// <summary>A batch whose bounds span more than this keeps drawing: the range is measured to the bounds' centre.</summary>
+    private const float CompactBatchMetres = 30f;
+
+    private static float ReadCullMinPixels()
+    {
+        try
+        {
+            return Refii.Core.Engine_RefiiConfig.Read(out _).TryGetValue("prop_cull_min_pixels", out string? v) &&
+                float.TryParse(v.Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float pixels)
+                ? MathF.Max(0f, pixels)
+                : 4f;
+        }
+        catch (Exception)
+        {
+            return 4f;
+        }
+    }
+
+    /// <summary>
+    /// Stops a prop drawing — and casting into the cascades — once its longest side projects
+    /// under <see cref="CullMinPixels"/>, fading over the last 15% of the range. Godot measures
+    /// the range to the instance's bounds, so a batch qualifies only when it is compact.
+    /// </summary>
+    public static void ApplyVisibilityRange(GeometryInstance3D instance, Mesh mesh)
+    {
+        if (CullMinPixels <= 0f)
+        {
+            return;
+        }
+
+        Vector3 size = mesh.GetAabb().Size;
+        float extent = MathF.Max(size.X, MathF.Max(size.Y, size.Z));
+        Vector3 scale = instance.Transform.Basis.Scale;
+        extent *= MathF.Max(MathF.Abs(scale.X), MathF.Max(MathF.Abs(scale.Y), MathF.Abs(scale.Z)));
+        if (!float.IsFinite(extent) || extent <= 0f)
+        {
+            return;
+        }
+
+        if (instance is MultiMeshInstance3D batch)
+        {
+            // The bounds the batch was built with (its custom AABB), not a fresh measurement:
+            // `GetAabb()` on a MultiMeshInstance3D walks every instance.
+            if (batch.Multimesh is not { } mm)
+            {
+                return;
+            }
+
+            Vector3 span = mm.CustomAabb.Size;
+            if (span == Vector3.Zero)
+            {
+                return;  // never measured: leave the batch alone rather than guess
+            }
+
+            if (MathF.Max(span.X, MathF.Max(span.Y, span.Z)) > CompactBatchMetres)
+            {
+                return;
+            }
+        }
+
+        float end = extent * PixelsPerMetreAtOneMetre / CullMinPixels;
+        if (end >= CullFarthestMetres)
+        {
+            return;
+        }
+
+        instance.VisibilityRangeEnd = end;
+        instance.VisibilityRangeEndMargin = end * 0.15f;
+        instance.VisibilityRangeFadeMode = GeometryInstance3D.VisibilityRangeFadeModeEnum.Self;
     }
 
     public static PrefetchJob PrefetchModels(IReadOnlyList<string> paths, Func<bool>? stop = null)
@@ -291,6 +388,10 @@ public partial class Engine_PropStreamer : Node3D
             return;
         }
 
+        long drainFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+        DrainVertexBakes();
+        Refii.Core.Engine_FramePhases.Record("props.drain",
+            (System.Diagnostics.Stopwatch.GetTimestamp() - drainFrom) * 1000.0 / System.Diagnostics.Stopwatch.Frequency, plot: false);
         _watch.Restart();
 
         double budget = Engine.IsEditorHint() ? double.PositiveInfinity : MillisecondsPerFrame;
@@ -305,33 +406,43 @@ public partial class Engine_PropStreamer : Node3D
 
             GeometryInstance3D instance = _remaining[_scan];
 
-            // HIDDEN PROPS ARE NOT STREAMED. In the running game the guest owns most of these
-            // and its own copy is what you see, so decoding their geometry is work for a mesh
-            // nothing will draw — it was 45% of the streaming in BWSSlums. They are not dropped
-            // though: `EnsureStreamed` loads one the moment it is shown again, which is what
-            // happens when a layer activates and the guest hands a record back.
-            bool settled = !GodotObject.IsInstanceValid(instance) || !instance.Visible;
+            // Hidden props are streamed too: a placed prop is load work, done before control is
+            // handed over, not deferred until a layer activates or a twin is shown mid-play.
+            // Only what the guest creates later (a spawn, a quest object) arrives on demand,
+            // through `EnsureStreamed`.
+            bool settled = !GodotObject.IsInstanceValid(instance);
             if (!settled)
             {
-                string path = instance.GetMeta(ModelPathMeta).AsString();
+                string path = _remainingPaths[_scan];
                 if (TryPeek(path, out ArrayMesh? ready, out bool knownFailure))
                 {
+                    long stepFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                     Step(instance, ready, knownFailure);
+                    double stepMs = (System.Diagnostics.Stopwatch.GetTimestamp() - stepFrom) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                    Refii.Core.Engine_FramePhases.Record("props.step", stepMs, plot: false);
+                    if (stepMs > 8.0 && _slowStepsLogged++ < 16)
+                    {
+                        GD.Print($"[props] one step took {stepMs:0.0} ms on the main thread " +
+                            $"(assign {_stepAssignMs:0.0}, bake {_stepBakeMs:0.0}, range {_stepRangeMs:0.0}, " +
+                            $"sway {_stepSwayMs:0.0}, light {_stepLightMs:0.0}): {path}");
+                    }
+
                     settled = true;
                 }
-                else if (poolDone && _requeueRounds < 1)
+                else if (poolDone && _requeueRounds < RequeueRounds)
                 {
                     // NOT INLINE. The fallback decoded the prop on the main thread — a single
                     // Step measured 172 ms in the market, the hitch a player feels as stutter.
                     // Everything the pool missed goes back to it once; only what it still
                     // cannot deliver is decoded here.
                     ++_requeueRounds;
-                    var again = new List<string>();
-                    foreach (GeometryInstance3D pending in _remaining)
+                    var again = new List<string>(_remaining.Count);
+                    for (int i = 0; i < _remaining.Count; ++i)
                     {
+                        GeometryInstance3D pending = _remaining[i];
                         if (GodotObject.IsInstanceValid(pending) && pending.Visible)
                         {
-                            again.Add(pending.GetMeta(ModelPathMeta).AsString());
+                            again.Add(_remainingPaths[i]);
                         }
                     }
 
@@ -341,7 +452,17 @@ public partial class Engine_PropStreamer : Node3D
                 }
                 else if (poolDone)
                 {
+                    // Last resort: load on the main thread, after RequeueRounds prefetch rounds,
+                    // and log slow loads by path.
+                    long from = System.Diagnostics.Stopwatch.GetTimestamp();
                     Step(instance, null, false);
+                    double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - from) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                    Refii.Core.Engine_FramePhases.Record("props.sync_load", ms, plot: true);
+                    if (ms > 4.0 && _syncLoadsLogged++ < 24)
+                    {
+                        GD.Print($"[props] loaded on the main thread in {ms:0.0} ms after {RequeueRounds} prefetch rounds: {path}");
+                    }
+
                     settled = true;
                 }
             }
@@ -349,6 +470,7 @@ public partial class Engine_PropStreamer : Node3D
             if (settled)
             {
                 _remaining.RemoveAt(_scan);
+                _remainingPaths.RemoveAt(_scan);
                 _done++;
                 untouched = 0;
             }
@@ -371,8 +493,16 @@ public partial class Engine_PropStreamer : Node3D
             return;
         }
 
-        SetProcess(false);
         PublishProgress();
+
+        // Keep processing until every bake has drained: the applied/ambient/misfit counts are
+        // incremented in the drain, so reporting earlier undercounts.
+        if (_bakesInFlight != 0)
+        {
+            return;
+        }
+
+        SetProcess(false);
 
         if (!_reported)
         {
@@ -408,19 +538,38 @@ public partial class Engine_PropStreamer : Node3D
     }
 
     /// <summary>
-    /// Streams one prop NOW, if it has not been already.
-    ///
-    /// For a prop that was hidden when the streaming pass reached it and has since been shown
-    /// again — the guest activating a layer it had gated off. The pass is a one-way cursor, so
-    /// it will never come back to it on its own.
+    /// Queues a prop whose geometry is not up yet — the guest revealed something we have not
+    /// streamed.
     /// </summary>
+    /// <remarks>
+    /// Queued, never decoded inline: it is called from `Engine_StaticTwins.ShowTwin`, and an
+    /// inline decode is unbounded main-thread work. Inserted at the front of the queue, so the
+    /// prop appears a frame or two later. With hidden props streamed during the load, this
+    /// should only see objects the guest created afterwards.
+    /// </remarks>
     public void EnsureStreamed(MeshInstance3D node)
     {
-        if (node.Mesh is null && node.HasMeta(ModelPathMeta))
+        if (node.Mesh is not null || !node.HasMeta(ModelPathMeta) || _remaining.Contains(node))
         {
-            Step(node, null, false);
+            return;
         }
+
+        _remaining.Insert(0, node);
+        _remainingPaths.Insert(0, node.GetMeta(ModelPathMeta).AsString());
+        _scan = 0;
+        SetProcess(true);
     }
+
+    /// <summary>Prefetch rounds before a missing model is loaded on the main thread.</summary>
+    private const int RequeueRounds = 3;
+
+    private int _syncLoadsLogged;
+    private int _slowStepsLogged;
+    private int _slowDrainsLogged;
+    private double _stepAssignMs, _stepBakeMs, _stepRangeMs, _stepSwayMs, _stepLightMs;
+
+    private static double Ms(long from) =>
+        (System.Diagnostics.Stopwatch.GetTimestamp() - from) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 
     private static bool TryPeek(string path, out ArrayMesh? mesh, out bool knownFailure)
     {
@@ -493,13 +642,89 @@ public partial class Engine_PropStreamer : Node3D
 
         string gdbPath = GetMeta(
             Refii.Lighting.Engine_LevelBakedLighting.LevelGdbMeta, string.Empty).AsString();
-
-        Refii.Lighting.LightmapContainer? container =
-            Refii.Lighting.Engine_LevelBakedLighting.ContainerFor(gdbPath);
         ulong key = (ulong)stored.AsInt64();
 
-        ArrayMesh? baked =
-            Refii.Lighting.Engine_LevelBakedLighting.TryBuildVertexBake(container, key, mesh);
+        // Built on a worker: a bake is a copy of the whole mesh with per-vertex colours. The
+        // node shows the shared mesh until the copy lands; the fallbacks and the accounting run
+        // in the completion on the main thread.
+        ulong nodeId = node.GetInstanceId();
+        ++_bakesInFlight;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            ArrayMesh? built = null;
+            Refii.Lighting.LightmapContainer? container = null;
+            try
+            {
+                // On the worker: resolving the container parses the level's .lmp on first call.
+                container = Refii.Lighting.Engine_LevelBakedLighting.ContainerFor(gdbPath);
+                built = Refii.Lighting.Engine_LevelBakedLighting.TryBuildVertexBake(container, key, mesh);
+            }
+            catch (Exception e)
+            {
+                GD.PushWarning($"[props] vertex bake failed: {e.GetType().Name}: {e.Message}");
+            }
+
+            _bakeCompletions.Enqueue((nodeId, container, key, mesh, built));
+        });
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(ulong NodeId, Refii.Lighting.LightmapContainer? Container, ulong Key, ArrayMesh Mesh, ArrayMesh? Baked)> _bakeCompletions = new();
+
+    private int _bakesInFlight;
+
+    /// <summary>Bakes built and not yet applied; reported.</summary>
+    public int BakesInFlight => _bakesInFlight;
+
+    /// <summary>
+    /// How long a frame may spend applying finished bakes. Each apply is a mesh swap plus an
+    /// instance-lighting write, so the drain is bounded by time rather than count.
+    /// </summary>
+    private const double DrainMillisecondsPerFrame = 2.0;
+
+    private void DrainVertexBakes()
+    {
+        long drainStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        double drainLimit = DrainMillisecondsPerFrame * System.Diagnostics.Stopwatch.Frequency / 1000.0;
+        while (_bakeCompletions.TryDequeue(out (ulong NodeId, Refii.Lighting.LightmapContainer? Container, ulong Key, ArrayMesh Mesh, ArrayMesh? Baked) done))
+        {
+            --_bakesInFlight;
+            if (GodotObject.InstanceFromId(done.NodeId) is not MeshInstance3D node ||
+                !GodotObject.IsInstanceValid(node))
+            {
+                continue;
+            }
+
+            long itemFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+            FinishVertexBake(node, done.Container, done.Key, done.Mesh, done.Baked);
+            double finishMs = Ms(itemFrom);
+
+            // The bake mode the shader reads rides the instance parameters, which were set
+            // when the shared mesh went up: set again now the mode is known.
+            long lightFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+            Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
+                node, RegionLighting(), staticProp: true);
+            double lightMs = Ms(lightFrom);
+
+            // The budget below can only stop the next item, so a single slow apply is logged
+            // with its mesh/light split.
+            if (finishMs + lightMs > 8.0 && _slowDrainsLogged++ < 16)
+            {
+                GD.Print($"[props] one bake applied in {finishMs + lightMs:0.0} ms " +
+                    $"(mesh {finishMs:0.0}, light {lightMs:0.0}): " +
+                    node.GetMeta(ModelPathMeta, string.Empty).AsString());
+            }
+
+            // The rest wait a frame. A prop shows its shared mesh until its own bake lands,
+            // which is what it was already doing while the bake was being built.
+            if (System.Diagnostics.Stopwatch.GetTimestamp() - drainStart >= drainLimit)
+            {
+                return;
+            }
+        }
+    }
+
+    private void FinishVertexBake(MeshInstance3D node, Refii.Lighting.LightmapContainer? container, ulong key, ArrayMesh mesh, ArrayMesh? baked)
+    {
 
         if (baked is not null)
         {
@@ -635,9 +860,17 @@ public partial class Engine_PropStreamer : Node3D
             }
             else if (instance is MeshInstance3D single)
             {
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 single.Mesh = mesh;
+                _stepAssignMs = Ms(t0);
+                long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
                 ApplyVertexBake(single, mesh);
+                _stepBakeMs = Ms(t1);
             }
+
+            long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
+            ApplyVisibilityRange(instance, mesh);
+            _stepRangeMs = Ms(t2);
 
             // A SWAYING PLANT CASTS NO SUN SHADOW. Its leaf cards are alpha-tested slivers
             // under a wind bend, sub-texel in the shadow cascades — what they cast is not a
@@ -645,19 +878,22 @@ public partial class Engine_PropStreamer : Node3D
             // bend moves. The guest never had this: its foliage cast nothing (the sun shadow
             // is the remaster's). Trees are unaffected — they do not sway (mode 2 holds still
             // until treematerial exists) and their canopy shadows are stable and worth having.
+            long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
             if (SwaysInWind(mesh))
             {
                 instance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
             }
 
+            _stepSwayMs = Ms(t3);
+
             static bool SwaysInWind(ArrayMesh candidate)
             {
                 for (int s = 0; s < candidate.GetSurfaceCount(); s++)
                 {
-                    // `wind_amplitude` is only ever SET on mode-1 plants with an authored
-                    // amplitude (Engine_MdlMaterial.ApplyWind); everything else reads back nil.
+                    // Only mode-1 plants with an authored amplitude carry the wind meta
+                    // (Engine_MdlMaterial.WindMetaName).
                     if (candidate.SurfaceGetMaterial(s) is ShaderMaterial shader &&
-                        shader.GetShaderParameter("wind_amplitude").AsSingle() > 0f)
+                        shader.HasMeta(Refii.Models.Engine_MdlMaterial.WindMetaName))
                     {
                         return true;
                     }
@@ -671,8 +907,10 @@ public partial class Engine_PropStreamer : Node3D
             // cannot see — so the lighting written while the scene was being built never
             // reached the saved file and never reached the screen. The probe sample rode along
             // as metadata instead; this is where it becomes shader state.
+            long t4 = System.Diagnostics.Stopwatch.GetTimestamp();
             Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
-                instance, RegionLighting());
+                instance, RegionLighting(), staticProp: true);
+            _stepLightMs = Ms(t4);
 
             _loaded++;
         }

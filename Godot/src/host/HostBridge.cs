@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 135;
+	public const int ExpectedAbiVersion = 148;
 
 	private const int MessageCapacity = 512;
 
@@ -272,12 +272,22 @@ public static class HostBridge
 	/// </param>
 	/// <param name="Mask">The guest mask node above this leaf (0 = whole body); see GetAnimMask.</param>
 	/// <param name="PriorityMask">The record's priority bitmask; an overlay plays only when it ANDs with the top primary's priority.</param>
+	/// <remarks>
+	/// <paramref name="Weight"/> is this leaf's share of
+	/// its record, already scaled by the blend tree above it; <paramref name="RecordPrevious"/>
+	/// and <paramref name="RecordCurrent"/> are the record's OWN weight pair, unscaled, latched
+	/// at the tick start and live respectively — the same prev/cur contract as
+	/// <paramref name="PreviousTime"/> and <paramref name="Time"/> beside them. The guest's
+	/// crossfade factor is `(1 - alpha) * RecordPrevious + alpha * RecordCurrent`
+	/// (`sub_82211660` 0x82211B08..0x82211B24, reading 0x18 and 0x14 off the winner record).
+	/// </remarks>
 	public readonly record struct GuestAnimLeaf(
 		uint Key, float Time, float PreviousTime, float Weight, bool Loop, bool Additive,
 		int Priority, int Track, uint Uid, float BlendIn, float BlendOut,
-		bool Overlay, uint Mask, uint PriorityMask);
+		bool Overlay, uint Mask, uint PriorityMask,
+		float RecordPrevious, float RecordCurrent);
 
-	private const int AnimLeafWords = 10;
+	private const int AnimLeafWords = 12;
 
 	/// <summary>
 	/// One overlay's per-bone weights, 0..255 by LIVE (guest) bone index, from the mask node
@@ -334,6 +344,8 @@ public static class HostBridge
 	/// The guest's post-fold aim and look records for the entity (`sub_822DC980` tail): per
 	/// chain bone, a target rotation the folded pose is blended toward. Null without a skeleton.
 	/// </summary>
+	private static uint[]? _postOpWords;
+
 	public static GuestPostOps? GetAnimPostOps(uint entity)
 	{
 		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
@@ -341,7 +353,8 @@ public static class HostBridge
 			return null;
 		}
 
-		var words = new uint[13 + 64 * 29];
+		uint[] words = _postOpWords ??= new uint[13 + 64 * 29];
+		System.Array.Clear(words);
 		uint count;
 		try
 		{
@@ -357,8 +370,9 @@ public static class HostBridge
 			return null;
 		}
 
-		var aim = new int[5];
-		var look = new int[6];
+		// One set of buffers, refilled per call: the result is read at once by its caller.
+		int[] aim = _postAim;
+		int[] look = _postLook;
 		for (int i = 0; i < 5; i++)
 		{
 			aim[i] = (int)words[2 + i];
@@ -369,7 +383,8 @@ public static class HostBridge
 			look[i] = (int)words[7 + i];
 		}
 
-		var ops = new List<GuestPostOp>();
+		List<GuestPostOp> ops = _postOps;
+		ops.Clear();
 		int at = 13;
 		for (uint i = 0; i < count; i++)
 		{
@@ -385,7 +400,10 @@ public static class HostBridge
 				break;
 			}
 
-			var targets = new Quaternion[bones];
+			Quaternion[] targets = ops.Count < _postTargets.Length
+				? (_postTargets[ops.Count] ??= new Quaternion[6])
+				: new Quaternion[6];
+			System.Array.Clear(targets);
 			for (int b = 0; b < bones; b++)
 			{
 				int q = at + 5 + 4 * b;
@@ -405,6 +423,11 @@ public static class HostBridge
 		return new GuestPostOps(words[0] != 0, words[1] != 0, aim, look, ops);
 	}
 
+	private static readonly int[] _postAim = new int[5];
+	private static readonly int[] _postLook = new int[6];
+	private static readonly List<GuestPostOp> _postOps = new();
+	private static readonly Quaternion[]?[] _postTargets = new Quaternion[]?[64];
+
 	/// <summary>One built part of a composite character: its model hash, its cluster sort
 	/// layer, whether it is a body part, and the cluster names it covers.</summary>
 	public readonly record struct GuestPartHides(uint Hash, int Layer, bool Body, string[] Covers);
@@ -414,6 +437,8 @@ public static class HostBridge
 	/// 17's built vector). A part hides the union of the sets of every other part with a
 	/// strictly greater layer. Empty for a single-model entity.
 	/// </summary>
+	private static byte[]? _partHidesText;
+
 	public static List<GuestPartHides> GetEntityPartHides(uint entity)
 	{
 		var result = new List<GuestPartHides>();
@@ -422,7 +447,8 @@ public static class HostBridge
 			return result;
 		}
 
-		var text = new byte[8192];
+		byte[] text = _partHidesText ??= new byte[8192];
+		System.Array.Clear(text);
 		uint count;
 		try
 		{
@@ -463,20 +489,24 @@ public static class HostBridge
 	public readonly record struct GuestBoneMorph(int Bone, Vector3 Offset, Vector3 Scale);
 
 	private const int BoneMorphWords = 7;
+	private static readonly uint[] _boneMorphWords = new uint[BoneMorphWords * 256];
+	private static readonly List<GuestBoneMorph> _boneMorphs = new();
 
 	/// <summary>
 	/// The entity's combined skeletal morph record — what makes a fat villager fat in the rig.
 	/// Empty for an entity without a mesh component or a record.
 	/// </summary>
+	/// <remarks>Fills a shared list, valid until the next call.</remarks>
 	public static List<GuestBoneMorph> GetBoneMorph(uint entity)
 	{
-		var result = new List<GuestBoneMorph>();
+		List<GuestBoneMorph> result = _boneMorphs;
+		result.Clear();
 		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
 		{
 			return result;
 		}
 
-		var words = new uint[BoneMorphWords * 256];
+		uint[] words = _boneMorphWords;
 		uint count;
 		try
 		{
@@ -615,10 +645,72 @@ public static class HostBridge
 				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 7]),
 				(f & 4) != 0,
 				_animWords[at + 8],
-				_animWords[at + 9]));
+				_animWords[at + 9],
+				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 10]),
+				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 11])));
 		}
 
 		return (int)leaves;
+	}
+
+	/// <summary>One effect's transform AS THE GUEST STATED IT, keyed by particle instance.</summary>
+	/// <remarks>
+	/// Position and orientation arrive as four lanes each because which lane holds x is a
+	/// property of the recompiler's VMX layout, not of the guest. They are named here only once
+	/// compared against the walk; do not assume an order.
+	/// </remarks>
+	public readonly record struct GuestStatedFx(
+		uint Instance, uint Sequence,
+		float P0, float P1, float P2, float P3,
+		float Q0, float Q1, float Q2, float Q3);
+
+	private const int StatedFxWords = 10;
+
+	private static uint[]? _statedFxWords;
+
+	/// <summary>The transforms the guest has stated through the particle hooks this frame.</summary>
+	public static int GetStatedFx(List<GuestStatedFx> into)
+	{
+		into.Clear();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+
+		_statedFxWords ??= new uint[StatedFxWords * 512];
+		uint rows;
+		try
+		{
+			rows = RefiiHostGetStatedFx(_statedFxWords, (uint)_statedFxWords.Length);
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return 0;
+		}
+
+		for (int i = 0; i < rows; ++i)
+		{
+			int at = i * StatedFxWords;
+			float F(int k) => System.BitConverter.Int32BitsToSingle((int)_statedFxWords[at + k]);
+			into.Add(new GuestStatedFx(
+				_statedFxWords[at], _statedFxWords[at + 1],
+				F(2), F(3), F(4), F(5), F(6), F(7), F(8), F(9)));
+		}
+
+		return (int)rows;
+	}
+
+	/// <summary>Transform statements the hook has seen; 0 means the hook is not loaded.</summary>
+	public static uint StatedFxCount()
+	{
+		try
+		{
+			return TryGetAbiVersion() is null ? 0u : RefiiHostGetStatedFxCount();
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return 0u;
+		}
 	}
 
 	public static ProbeResult Shutdown()
@@ -892,28 +984,90 @@ public static class HostBridge
 			return null;
 		}
 
-		var words = new uint[elements * ids.Length * 2];
+		// Two identity columns then the value pairs: `2 + ids * 2` words an element.
+		int stride = 2 + (ids.Length * 2);
+		var words = new uint[elements * stride];
 		uint written = RefiiHostGetUiAttributes(
 			presentation, ids, (uint)ids.Length, words, (uint)words.Length);
 
 		int rows = (int)Math.Min(written, elements);
 		var table = new LiveAttribute[rows, ids.Length];
+		var found = new uint[rows];
+		var hashes = new uint[rows];
 		for (int row = 0; row < rows; ++row)
 		{
+			int at = row * stride;
+			found[row] = words[at];
+			hashes[row] = words[at + 1];
 			for (int column = 0; column < ids.Length; ++column)
 			{
-				int slot = (row * ids.Length + column) * 2;
+				int slot = at + 2 + (column * 2);
 				table[row, column] = new LiveAttribute(words[slot], words[slot + 1] != 0);
 			}
 		}
 
+		LastAttributeElements = found;
+		LastAttributeNameHashes = hashes;
 		return table;
 	}
 
+	/// <summary>
+	/// The element addresses and name hashes behind the last <see cref="GetUiAttributes"/> table,
+	/// row for row. The table is still indexed by ORDINAL, which is a join by position across two
+	/// separate walks; these let a caller prove that join rather than assume it.
+	/// </summary>
+	public static uint[] LastAttributeElements { get; private set; } = System.Array.Empty<uint>();
+
+	public static uint[] LastAttributeNameHashes { get; private set; } = System.Array.Empty<uint>();
+
 	/// <summary>One live guest entity, in guest world space.</summary>
+	/// <summary>
+	/// One entity as the guest states it — including the PREVIOUS transform it interpolates from.
+	/// </summary>
+	/// <remarks>
+	/// `PreviousPosition`/`PreviousRotation` are the guest's own latch: the first act of every
+	/// game tick copies each renderable's transform to `obj+0xA0`/`+0xB0` (`sub_8222B2E0`), the
+	/// tick then moves it, and the guest draws `prev*(1-alpha) + live*alpha` with a slerp for the
+	/// rotation (`sub_822112D8`).
+	///
+	/// `Interpolate` is `obj+0xC9`, and it is an ENABLE: non-zero means blend, zero means take
+	/// the live transform as-is. Set to 1 at construction and cleared only by the Havok
+	/// rigid-body component's init, so it reads "interpolate unless physics owns this".
+	/// </remarks>
 	public readonly record struct GuestEntity(
 		Vector3 Position, Quaternion Rotation, uint ModelHash,
-		uint Address, ulong UniqueId, uint RecordHash);
+		uint Address, ulong UniqueId, uint RecordHash, bool Changed = true,
+		Vector3 PreviousPosition = default, Quaternion PreviousRotation = default,
+		bool Interpolate = false, uint Highlight = 0x000000FFu)
+	{
+		/// <summary>
+		/// Whether the guest is drawing a targeting outline on this entity right now.
+		///
+		/// The off state is a colour, not a flag: `sub_82429BB0` clears the highlight by writing
+		/// `{0,0,0,255}` and leaves the flag word alone, so the 0x20 bit at component+144 stays
+		/// set after the first colour. `sub_82572C18` submits the shader constant only when the
+		/// bytes differ from `dword_8331B158` = 00 00 00 FF; that comparison defines on.
+		/// </summary>
+		public bool Highlighted => Highlight != 0x000000FFu;
+
+		/// <summary>
+		/// The stated outline colour. Taken, never re-derived from the category tables. The lanes
+		/// are the guest's: `sub_82572C18` packs `(+98, +97, +96, +99) / 255` (0x82572d8c..
+		/// 0x82572e58), so red is the THIRD stated byte and blue the first.
+		/// </summary>
+		public Color HighlightColour => Color.Color8(
+			(byte)(Highlight >> 8), (byte)(Highlight >> 16), (byte)(Highlight >> 24), (byte)Highlight);
+	}
+
+	/// <summary>Each address's stated words from the last walk, for <see cref="GuestEntity.Changed"/>.</summary>
+	private static readonly Dictionary<uint, (uint X, uint Y, uint Z, uint Qx, uint Qy, uint Qz, uint Qw, uint Model, uint Record)> _lastStated = new();
+
+	private static int _walksSinceStatedPrune;
+
+	/// <summary>Entities the last walk found changed, and the walk's size; reported.</summary>
+	public static int LastWalkChanged { get; private set; }
+
+	public static int LastWalkCount { get; private set; }
 
 	/// <summary>
 	/// How many entities <see cref="GetEntities"/> reads in one call. Sized above the biggest
@@ -928,7 +1082,8 @@ public static class HostBridge
 	/// </summary>
 	public static bool EntitiesTruncated { get; private set; }
 
-	private const int EntityStride = 12;
+	/// <summary>Words per entity: 12 stated, plus the guest's previous transform and its flag.</summary>
+	private const int EntityStride = 21;
 
 	/// <summary>How many distinct unrecognised placement vtables to bring back.</summary>
 	private const uint MaxUnknownVtables = 32;
@@ -947,18 +1102,28 @@ public static class HostBridge
 	/// lists them (explicit length: a zero vtable word is a real observation).
 	/// </summary>
 	public static System.Collections.Generic.List<GuestEntity> GetEntities(
+		out uint unknown, out UnknownPlacement[] unknownVtables) =>
+		GetEntities(new System.Collections.Generic.List<GuestEntity>(), out unknown, out unknownVtables);
+
+	/// <summary>The walk into a caller-owned list, cleared first: a per-frame walk keeps its list.</summary>
+	public static System.Collections.Generic.List<GuestEntity> GetEntities(
+		System.Collections.Generic.List<GuestEntity> entities,
 		out uint unknown, out UnknownPlacement[] unknownVtables)
 	{
 		unknown = 0;
-		var pairs = new uint[MaxUnknownVtables * 2];
 		unknownVtables = System.Array.Empty<UnknownPlacement>();
-		var entities = new System.Collections.Generic.List<GuestEntity>();
+		entities.Clear();
 		if (TryGetAbiVersion() is null)
 		{
 			return entities;
 		}
 
+		// One walk at a time: the buffers are shared, and HostEntityWalk calls this off the
+		// main thread.
+		lock (_entityWalkGate)
+		{
 		_entityWords ??= new uint[MaxEntities * EntityStride];
+		uint[] pairs = _unknownPairs ??= new uint[MaxUnknownVtables * 2];
 		uint count = RefiiHostGetEntities(
 			_entityWords, MaxEntities, out unknown, pairs, MaxUnknownVtables,
 			out uint distinct);
@@ -979,9 +1144,27 @@ public static class HostBridge
 			unknownVtables[i] = new UnknownPlacement(pairs[i * 2], pairs[(i * 2) + 1]);
 		}
 
+		// CHANGED = any stated word differs from the last walk, bit for bit. The feed skips the
+		// placement of an entity whose statement did not move; the walk is where the comparison
+		// costs nothing the main thread pays.
+		int walkChanged = 0;
+		bool prune = ++_walksSinceStatedPrune >= 600;
+		HashSet<uint>? seen = prune ? new HashSet<uint>((int)count) : null;
 		for (uint i = 0; i < count; ++i)
 		{
 			int at = (int)(i * EntityStride);
+			uint address = _entityWords[at + 8];
+			var stated = (_entityWords[at], _entityWords[at + 1], _entityWords[at + 2],
+				_entityWords[at + 3], _entityWords[at + 4], _entityWords[at + 5], _entityWords[at + 6],
+				_entityWords[at + 7], _entityWords[at + 11]);
+			bool changed = !_lastStated.TryGetValue(address, out var last) || !last.Equals(stated);
+			if (changed)
+			{
+				_lastStated[address] = stated;
+				++walkChanged;
+			}
+
+			seen?.Add(address);
 			entities.Add(new GuestEntity(
 				new Vector3(
 					BitConverter.Int32BitsToSingle((int)_entityWords[at]),
@@ -993,13 +1176,49 @@ public static class HostBridge
 					BitConverter.Int32BitsToSingle((int)_entityWords[at + 5]),
 					BitConverter.Int32BitsToSingle((int)_entityWords[at + 6])),
 				_entityWords[at + 7],
-				_entityWords[at + 8],
+				address,
 				((ulong)_entityWords[at + 9] << 32) | _entityWords[at + 10],
-				_entityWords[at + 11]));
+				_entityWords[at + 11],
+				changed,
+				new Vector3(
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 12]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 13]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 14])),
+				new Quaternion(
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 15]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 16]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 17]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 18])),
+				_entityWords[at + 19] != 0u,
+				_entityWords[at + 20]));
+		}
+
+		LastWalkChanged = walkChanged;
+		LastWalkCount = (int)count;
+		if (prune && seen is not null)
+		{
+			_walksSinceStatedPrune = 0;
+			var gone = new List<uint>();
+			foreach (uint address in _lastStated.Keys)
+			{
+				if (!seen.Contains(address))
+				{
+					gone.Add(address);
+				}
+			}
+
+			foreach (uint address in gone)
+			{
+				_lastStated.Remove(address);
+			}
+		}
 		}
 
 		return entities;
 	}
+
+	private static readonly object _entityWalkGate = new();
+	private static uint[]? _unknownPairs;
 
 	/// <summary>The most bones a character rig is read at. Fable's rigs are well under this.</summary>
 	public const int MaxBones = 256;
@@ -1526,6 +1745,55 @@ public static class HostBridge
 			values[10] != 0f);
 	}
 
+	/// <summary>
+	/// Why rigs are not clip-driven: no component bit, component unresolved, controller found,
+	/// controller found but empty. See RefiiHostGetAnimWalkStats.
+	/// </summary>
+	public static (uint NoBit, uint Unresolved, uint Found, uint Empty)? AnimWalkStats()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		_animStatWords ??= new uint[4];
+		return RefiiHostGetAnimWalkStats(_animStatWords, 4u) == 4u
+			? (_animStatWords[0], _animStatWords[1], _animStatWords[2], _animStatWords[3])
+			: null;
+	}
+
+	private static uint[]? _animStatWords;
+
+	/// <summary>
+	/// The two cameras the guest blends between — the live one and the one it latched at the
+	/// start of the current game tick — or null when the chain is not up.
+	/// </summary>
+	/// <remarks>
+	/// `sub_8228FEF0` blends `game+0x10` to the live block by the same alpha register
+	/// `sub_822112D8` gets for every renderable. `Live.Flag` is the guest's snap override: when
+	/// set, the blend is skipped and the live camera stands (a cut).
+	/// </remarks>
+	public static (GuestCamera Previous, GuestCamera Live)? GetCameraPair()
+	{
+		_cameraPairValues ??= new float[22];
+		float[] values = _cameraPairValues;
+		if (RefiiHostGetCameraPair(values) == 0)
+		{
+			return null;
+		}
+
+		static GuestCamera At(float[] v, int from) => new(
+			new Vector3(v[from], v[from + 1], v[from + 2]),
+			new Vector3(v[from + 3], v[from + 4], v[from + 5]),
+			new Vector3(v[from + 6], v[from + 7], v[from + 8]),
+			v[from + 9],
+			v[from + 10] != 0f);
+
+		return (At(values, 11), At(values, 0));
+	}
+
+	private static float[]? _cameraPairValues;
+
 	/// <summary>Whether the guest still wants the movie the host is showing.</summary>
 	public enum MoviePlayback { None = 0, Wanted = 1, EndedByGuest = 2 }
 
@@ -1863,12 +2131,26 @@ public static class HostBridge
 	/// Reads the screen manager whole: the current screen and every presentation it owns.
 	/// Null when there is no screen manager, which is the case before the game starts.
 	/// </summary>
+	/// <remarks>
+	/// Cached on the words: this is asked several times a frame (`OwnedScreenId`,
+	/// `PresentationFor`, the book set) and the map changes only when a screen is constructed.
+	/// The guest is still read every call; only the rebuild is skipped, and only when all 36
+	/// words match the ones the cached answer was built from.
+	/// </remarks>
 	public static InGameScreens? GetInGameScreens()
 	{
-		uint[] words = new uint[36];
+		uint[] words = _screenWords ??= new uint[36];
 		if (RefiiHostGetInGameScreen(words) == 0 || words[1] != InGameGuiVtable)
 		{
+			_screenCache = null;
+			_screenWordsSeen = null;
 			return null;
+		}
+
+		if (_screenWordsSeen is { } seen &&
+			System.MemoryExtensions.SequenceEqual<uint>(words, seen))
+		{
+			return _screenCache;
 		}
 
 		var owned = new System.Collections.Generic.Dictionary<uint, int>();
@@ -1888,8 +2170,21 @@ public static class HostBridge
 			owned[words[35]] = (int)words[34];
 		}
 
-		return new InGameScreens((InGameScreen)words[3], owned);
+		var built = new InGameScreens((InGameScreen)words[3], owned);
+		_screenWordsSeen ??= new uint[36];
+		System.Array.Copy(words, _screenWordsSeen, words.Length);
+		_screenCache = built;
+		return built;
 	}
+
+	[System.ThreadStatic]
+	private static uint[]? _screenWords;
+
+	[System.ThreadStatic]
+	private static uint[]? _screenWordsSeen;
+
+	[System.ThreadStatic]
+	private static InGameScreens? _screenCache;
 
 	/// <summary>
 	/// The BASE GUI's vtable — the construction the game uses once it is running. Written by
@@ -2085,13 +2380,21 @@ public static class HostBridge
 	/// </summary>
 	public static string? CoopReceive()
 	{
-		// LARGER THAN ANY MESSAGE THE KIT SENDS (WireLimit 1100): a 256-byte buffer cut every
-		// ~800-byte inventory chunk short, the decoder refused the remainder, and no inventory
-		// ever reached either side — so no weapons were ever given to draw.
-		byte[] buffer = new byte[4096];
-		uint written = RefiiNetCoopReceive(buffer, (uint)buffer.Length);
-		return written == 0 ? null : System.Text.Encoding.UTF8.GetString(buffer, 0, (int)written);
+		uint written = RefiiNetCoopReceive(CoopInbox, (uint)CoopInbox.Length);
+		return written == 0
+			? null
+			: System.Text.Encoding.UTF8.GetString(CoopInbox, 0, (int)written);
 	}
+
+	/// <summary>
+	/// The co-op inbox staging buffer. Must be LARGER THAN ANY MESSAGE THE KIT SENDS
+	/// (WireLimit 1100): a truncated inventory chunk is refused by the decoder.
+	/// </summary>
+	/// <remarks>
+	/// One buffer for the process, since the UI drive drains this every frame. Safe to share:
+	/// the string is decoded before returning, and every caller is on Godot's main thread.
+	/// </remarks>
+	private static readonly byte[] CoopInbox = new byte[4096];
 
 	/// <summary>
 	/// The guest's simulation tick — <c>dword_83319650</c>, incremented by the world update.
@@ -2099,18 +2402,184 @@ public static class HostBridge
 	/// </summary>
 	public static uint SimTick => RefiiHostGetSimTick();
 
+	/// <summary>How the guest's time base is driven.</summary>
+	public enum TimeBaseMode
+	{
+		/// <summary>The real host clock. Original behaviour, and it tears under load.</summary>
+		Off = 0,
+
+		/// <summary>Cap the advance between reads on a thread, so the guest never falls behind.</summary>
+		Paced = 1,
+
+		/// <summary>Time advances only when Godot grants it. The guest's rate becomes Godot's.</summary>
+		Driven = 2,
+	}
+
+	/// <summary>
+	/// Sets how the guest's time base is driven, and reads the counters back.
+	/// </summary>
+	/// <remarks>
+	/// The guest's in-game loop runs its own wall-clock accumulator and, when it falls behind,
+	/// advances ONE step and re-bases — discarding the backlog (0x82276FA4). Godot does not gate
+	/// that loop. <see cref="TimeBaseMode.Driven"/> steps the guest at the host's rate,
+	/// deterministically.
+	///
+	/// `Watchdog` counts lapses where no grant arrived and time resumed on its own so guest
+	/// threads on timed waits did not freeze. It should stay flat while the game is stepping.
+	/// </remarks>
+	public static (TimeBaseMode Mode, ulong Capped, ulong Granted, ulong Watchdog)? TimeBase(
+		TimeBaseMode? set = null)
+	{
+		try
+		{
+			int mode = RefiiHostSetTimeBaseMode(
+				set is { } wanted ? (int)wanted : -1,
+				out ulong capped, out ulong granted, out ulong watchdog);
+			return ((TimeBaseMode)mode, capped, granted, watchdog);
+		}
+		catch (System.DllNotFoundException)
+		{
+			return null;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// Grants the guest one or more high-frequency steps of time. Driven mode only.
+	/// </summary>
+	/// <remarks>
+	/// The guest's loop takes exactly one step per grant and then yields, so this IS its tick.
+	/// Called from the session's fixed-step accumulator.
+	/// </remarks>
+	public static void AdvanceTimeBase(uint steps)
+	{
+		try
+		{
+			RefiiHostAdvanceTimeBase(steps);
+		}
+		catch (System.DllNotFoundException)
+		{
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>
+	/// The guest's OWN simulation clock in seconds, and its per-tick counter — or null when the
+	/// world is not up.
+	/// </summary>
+	/// <remarks>
+	/// `sub_82276D10` runs a wall-clock accumulator and stores its clock at `game+0x110`
+	/// (0x82276F18). It does NOT catch up: more than one step behind, it advances ONE step and
+	/// re-bases to now, discarding the lost time (0x82276FA4..0x82276FC0). So the tick rate is
+	/// 15/s while the guest keeps up, lower under load, and it resets discontinuously.
+	/// </remarks>
+	public static (double Seconds, uint Tick)? SimClock()
+	{
+		try
+		{
+			return RefiiHostGetSimClock(out double seconds, out uint tick) != 0u
+				? (seconds, tick)
+				: null;
+		}
+		catch (System.DllNotFoundException)
+		{
+			return null;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// Samples the guest's render-frame counter into <see cref="Engine_GuestFrame"/>. Once per
+	/// host frame, first thing. Without the export (an older native) the frame is synthesised
+	/// from the game tick: the tick's change, then a second frame half a tick later, which is
+	/// where the guest's second HF iteration falls.
+	/// </summary>
+	public static void SampleGuestFrame()
+	{
+		uint frame = 0u;
+		if (!_guestFrameExportMissing && TryGetAbiVersion() is not null)
+		{
+			try
+			{
+				frame = RefiiHostGetGuestFrame();
+			}
+			catch (EntryPointNotFoundException)
+			{
+				_guestFrameExportMissing = true;
+			}
+		}
+
+		if (_guestFrameExportMissing)
+		{
+			frame = SyntheticGuestFrame();
+		}
+
+		Engine_GuestFrame.Publish(frame);
+	}
+
+	private static bool _guestFrameExportMissing;
+	private static uint _syntheticTick;
+	private static double _syntheticTickUsec;
+	private static bool _syntheticHalf;
+
+	private static uint SyntheticGuestFrame()
+	{
+		uint tick = SimTick;
+		if (tick == 0u)
+		{
+			return 0u;
+		}
+
+		double now = Godot.Time.GetTicksUsec();
+		if (tick != _syntheticTick)
+		{
+			_syntheticTick = tick;
+			_syntheticTickUsec = now;
+			_syntheticHalf = false;
+		}
+		else if (!_syntheticHalf && now - _syntheticTickUsec >= Engine_TickClock.TickUsec * 0.5)
+		{
+			_syntheticHalf = true;
+		}
+
+		return (tick * 2u) + (_syntheticHalf ? 1u : 0u);
+	}
+
 	/// <summary>
 	/// Words per effect in <see cref="GetActiveFx"/>'s buffer. MUST match the native
 	/// <c>kStride</c> — both sides index one flat buffer and a disagreement is an ABI break the
 	/// compiler cannot see.
 	/// </summary>
-	public const int ActiveFxStride = 17;
+	public const int ActiveFxStride = 20;
 
 	/// <summary>
-	/// How many live effects are read in one frame. The guest's vector holds every particle
-	/// NODE, not every effect, so one spell is several entries.
+	/// How many live particle NODES are read in one frame. The guest's vector holds every node,
+	/// not every effect, so one spell is several entries.
+	///
+	/// The node count is `(dword_8349E494 - dword_8349E490)/8` and reaches ~500 in ordinary play.
+	/// New effects are appended at the END (`sub_82450DB8` writes at `result[2]` and advances
+	/// it) and the guest retires by swap-with-last, so a cap below the live count drops the
+	/// newest effects and changes which survive every tick.
+	///
+	/// The native walk refuses a span above 0x40000 bytes (32768 nodes). The walk iterates the
+	/// guest's own count, so the cap costs nothing when the guest holds fewer.
 	/// </summary>
-	private const uint MaxActiveFx = 512;
+	private const uint MaxActiveFx = 4096;
+
+	/// <summary>
+	/// Whether the last walk filled the buffer, meaning the guest may have had more nodes than
+	/// were read, since the walk stops writing at the cap. Callers must not treat an effect
+	/// missing from a saturated walk as retired.
+	/// </summary>
+	public static bool ActiveFxSaturated { get; private set; }
 
 	private static uint[]? _activeFx;
 
@@ -2143,7 +2612,31 @@ public static class HostBridge
 		bool Stale,
 		uint LiveParticles,
 		Vector3 Position,
-		Vector3[] Rows);
+		Vector3[] Rows,
+
+		/// <summary>
+		/// The type-vector's synthetic root: its transform is the effect's PLACEMENT, and it
+		/// belongs to no effect of its own.
+		/// </summary>
+		bool Root,
+
+		/// <summary>
+		/// The effect instance's intensity, <c>handle+52</c>: 1.0 untouched, driven every tick
+		/// by the breadcrumber, baked by the guest into each particle at spawn.
+		/// </summary>
+		float Intensity,
+
+		/// <summary>
+		/// The element's size scale, <c>element+412</c> (Lua SetScale, the spell action's
+		/// ParticleScale). Garbage on a node that is not a standard emitter; the consumer
+		/// checks the type through the bank first.
+		/// </summary>
+		float Scale,
+
+		/// <summary>
+		/// The element's fade-out fraction, +196/+192 while a kill-with-fade runs, else 1.
+		/// </summary>
+		float Fade);
 
 	/// <summary>
 	/// Every particle effect the guest is currently playing, in world space — the only route
@@ -2151,9 +2644,14 @@ public static class HostBridge
 	/// the native side re-reads both ends of the guest's vector together and refuses a span
 	/// that is not a whole number of elements.
 	/// </summary>
-	public static System.Collections.Generic.List<ActiveFx> GetActiveFx()
+	public static System.Collections.Generic.List<ActiveFx> GetActiveFx() =>
+		GetActiveFx(new System.Collections.Generic.List<ActiveFx>());
+
+	/// <summary>The live effects into a caller-owned list, cleared first.</summary>
+	public static System.Collections.Generic.List<ActiveFx> GetActiveFx(
+		System.Collections.Generic.List<ActiveFx> effects)
 	{
-		var effects = new System.Collections.Generic.List<ActiveFx>();
+		effects.Clear();
 		if (TryGetAbiVersion() is null)
 		{
 			return effects;
@@ -2161,6 +2659,7 @@ public static class HostBridge
 
 		_activeFx ??= new uint[MaxActiveFx * ActiveFxStride];
 		uint written = RefiiHostGetActiveFx(_activeFx, MaxActiveFx);
+		ActiveFxSaturated = written >= MaxActiveFx;
 		if (written == 0)
 		{
 			return effects;
@@ -2186,7 +2685,11 @@ public static class HostBridge
 				(flags & 2u) != 0,
 				_activeFx[at + 3],
 				new Vector3(bx, by, bz),
-				GuestRows(_activeFx, at + 7)));
+				GuestRows(_activeFx, at + 7, RowSlot((int)i)),
+				(flags & 8u) != 0,
+				Bits(_activeFx[at + 17]),
+				Bits(_activeFx[at + 18]),
+				Bits(_activeFx[at + 19])));
 		}
 
 		return effects;
@@ -2195,14 +2698,29 @@ public static class HostBridge
 	private static float Bits(uint raw) => BitConverter.Int32BitsToSingle(unchecked((int)raw));
 
 	/// <summary>
+	/// The rows array for list slot i, reused across reads: the record is consumed within the
+	/// frame it was read and the array is overwritten at the next read of that slot.
+	/// </summary>
+	private static readonly List<Vector3[]> _rowSlots = new();
+
+	private static Vector3[] RowSlot(int i)
+	{
+		while (_rowSlots.Count <= i)
+		{
+			_rowSlots.Add(new Vector3[3]);
+		}
+
+		return _rowSlots[i];
+	}
+
+	/// <summary>
 	/// Rows 0..2 of the guest's world matrix, normalised, in GUEST axes. The rows carry the
 	/// node's scale (<c>sub_8222E678</c> pre-multiplies each by its scale lane), hence the
 	/// normalise. Row 0 is the image of the guest's local X, row 1 of Y, row 2 of Z; converting
 	/// to Godot's axes is the caller's job.
 	/// </summary>
-	private static Vector3[] GuestRows(uint[] words, int at)
+	private static Vector3[] GuestRows(uint[] words, int at, Vector3[] rows)
 	{
-		var rows = new Vector3[3];
 		for (int r = 0; r < 3; r++)
 		{
 			var row = new Vector3(
@@ -2236,12 +2754,13 @@ public static class HostBridge
 				return null;
 			}
 
-			if (RefiiHostGetTimeOfDay(out float fraction, out int day, out int frozen) == 0)
+			if (RefiiHostGetTimeOfDay(out float fraction, out int day, out int frozen,
+				out int moonPhase) == 0)
 			{
 				return null;
 			}
 
-			return new GuestClock(fraction, day, frozen != 0);
+			return new GuestClock(fraction, day, frozen != 0, moonPhase);
 		}
 		catch (DllNotFoundException)
 		{
@@ -2253,7 +2772,11 @@ public static class HostBridge
 	/// The guest's own pause: non-zero means something holds a stop-time request and the clock
 	/// is not advancing.
 	/// </param>
-	public readonly record struct GuestClock(float Fraction, int DayCount, bool Frozen);
+	/// <param name="MoonPhase">
+	/// The phase the guest states (`Timing.GetMoonPhase`), 0..7 (a frame of the eight-frame
+	/// atlas), or -1 when it could not be read.
+	/// </param>
+	public readonly record struct GuestClock(float Fraction, int DayCount, bool Frozen, int MoonPhase = -1);
 
 	/// <summary>The engine-preloading gate state 7 of CmdLevelChange_Update polls.</summary>
 	public readonly record struct RenderFence(
@@ -2568,8 +3091,10 @@ public static class HostBridge
 			return calls;
 		}
 
-		byte[] text = new byte[64 * 1024];
-		byte[] kinds = new byte[4096];
+		byte[] text = _guiText ??= new byte[64 * 1024];
+		byte[] kinds = _guiKinds ??= new byte[4096];
+		System.Array.Clear(text);
+		System.Array.Clear(kinds);
 		uint count;
 		try
 		{
@@ -2714,6 +3239,13 @@ public static class HostBridge
 		return (recorded, pending, dropped);
 	}
 
+	private static byte[]? _menuText;
+	private static byte[]? _menuKinds;
+	private static byte[]? _guiText;
+	private static byte[]? _guiKinds;
+	private static uint[]? _hudTextHashes;
+	private static byte[]? _hudTextBytes;
+
 	public static System.Collections.Generic.List<Engine_UiModel.MenuChunk> TakeMenuChunks()
 	{
 		var chunks = new System.Collections.Generic.List<Engine_UiModel.MenuChunk>();
@@ -2722,8 +3254,10 @@ public static class HostBridge
 			return chunks;
 		}
 
-		byte[] text = new byte[128 * 1024];
-		byte[] kinds = new byte[8192];
+		byte[] text = _menuText ??= new byte[128 * 1024];
+		byte[] kinds = _menuKinds ??= new byte[8192];
+		System.Array.Clear(text);
+		System.Array.Clear(kinds);
 		uint count;
 		try
 		{
@@ -3078,6 +3612,27 @@ public static class HostBridge
 		}
 
 		return words;
+	}
+
+	/// <summary>
+	/// The guest's stated blur width for the targeting highlight, in texels of its
+	/// half-resolution highlight buffer. 0 when the guest is not up or the word is unreadable.
+	/// </summary>
+	/// <remarks>
+	/// `dword_83318558` is the EXECUTE result of the thickness command and is already clamped:
+	/// `sub_822BF690` truncates `flt_83319478 * flt_83496C70` with `fctiwz f13, f0`, then applies
+	/// max(x, 1) (`subf r10, r7, r11`) and min(x, 16) (`add r11, r11, r10`). It has exactly two
+	/// xrefs — that store at 0x822bf6c8 and the read at 0x82197c08 — so it is the whole of the
+	/// guest's width contract, post-clamp. An absolute global, not a struct offset.
+	///
+	/// Peeked rather than exported through the ABI: one word at one fixed address. MAIN THREAD ONLY — the
+	/// post chain runs on the render thread, so the layer samples this in `_Process` and
+	/// publishes the result.
+	/// </remarks>
+	public static int HighlightWidthTexels()
+	{
+		uint[] words = Peek(0x83318558u, 1);
+		return words.Length == 1 ? (int)Math.Clamp(words[0], 1u, 16u) : 0;
 	}
 
 	// =================== ReXGlue runtime introspection (debug channel) ===================
@@ -3681,7 +4236,7 @@ public static class HostBridge
 		float Purity, float PurityMin, float PurityMax,
 		int Renown,
 		string TitleTag,
-		float[] Attractiveness, float AttractivenessTotal,
+		float[] Attractiveness, float AttractivenessFraction,
 		bool DogKnown, int DogCombat, int DogSearching, int DogState, string DogName,
 		uint DogNameKey,
 		uint[] DogTrickIds,
@@ -4233,7 +4788,7 @@ public static class HostBridge
 	/// </summary>
 	public readonly record struct ExpressionMeter(
 		bool Known, bool On, int Mode, bool ArmedA, bool ArmedB, bool Latched,
-		float Position, float Speed, bool HitA, bool HitB, bool Dynamic, int Band)
+		float Position, float Speed, bool HitA, bool HitB, bool Live, int Band)
 	{
 		/// <summary>
 		/// Whether the meter is UP. Not the ON byte alone: `sub_823D1A48`, the path a plain
@@ -4246,11 +4801,41 @@ public static class HostBridge
 		/// These four are exactly what the teardown clears together, so their union cannot
 		/// outlive the meter: `sub_823D1458` writes +0, +4 and +38 to 0 and drops the latch at
 		/// +14 through its two armed bytes (0x823d1474..0x823d157c).
+		///
+		/// <see cref="Live"/> is `+38` = `+0x26`, the meter's ACTIVE LATCH: raised by
+		/// `sub_823D1F98` at 0x823D1FE0 on every fill start, cleared by `TurnOffExpressionMeter`
+		/// at 0x823D147C, and read by `sub_823D1A48` at 0x823D1BBC as the gate that skips its own
+		/// reset block. On its own it is the most direct answer to "is the meter up".
 		/// </summary>
-		public bool Up => Known && (On || Mode != 0 || Latched || Dynamic);
+		public bool Up => Known && (On || Mode != 0 || Latched || Live);
 
-		/// <summary>Whether a pip is travelling: modes 1 and 2 with a latched start.</summary>
-		public bool PipRunning => Known && Mode is 1 or 2 && Latched && (ArmedA || ArmedB);
+		/// <summary>
+		/// Whether a pip is travelling. The flags say so; the mode does not.
+		/// </summary>
+		/// <remarks>
+		/// Never gate this on the mode. `sub_823D1A48` — the path a plain expression takes —
+		/// ZEROES `meter+4` at 0x823D1A70 and never writes it again. The only writers of the mode
+		/// are the Lua natives: `StartExpressionMeterPip` sets 1 or 2 (`sub_82307050`,
+		/// `*(meter+4) = (arg3 == 0) + 1`) and `StartBarJobFill` sets 3, used only by
+		/// `qj001_jobwoodsman`, `qj002_jobblacksmith` and `qj003_jobbartender`. For the same
+		/// reason `IsExpressionMeterActive`, which tests `meter+4 != 0`, reads false for a C++
+		/// expression; its active latch is `+0x26` (<see cref="Live"/>) instead.
+		///
+		/// `sub_823D2120` raises `+0x0C` for the hero and `+0x0D` for a henchman, and seeds the
+		/// position and speed behind the `+0x0E` latch.
+		///
+		/// The latch is part of the gate: `sub_822ACBF8` tests both terms and DESTROYS its draw
+		/// item when the pair goes false:
+		///
+		///     822acc94  if ( *(_BYTE *)a1 || *(_BYTE *)(a1 + 1) ) v8 = 1;   ; +12 || +13
+		///     822accb4  if ( v8 && *(_BYTE *)(a1 + 2) )                     ; && +14
+		///     822ace74  sub_82A97368(...)                                   ; else destroy
+		///
+		/// (`a1` is `meter+12`, so `a1+2` is `meter+14`.) `sub_823D1D40` drops the arm bytes one
+		/// at a time and only clears the latch once neither remains, so the two disagree for the
+		/// window between one player finishing and the other.
+		/// </remarks>
+		public bool PipRunning => Known && (ArmedA || ArmedB) && Latched;
 	}
 
 	/// <summary>
@@ -4470,8 +5055,10 @@ public static class HostBridge
 			return 0;
 		}
 
-		var words = new uint[17];
-		var values = new float[20];
+		// The two buffers are write-only here: this call wants the return value. Per-thread
+		// scratch, because two threads asking at once must not share one; see `_poseTransforms`.
+		uint[] words = _heroVitalWords ??= new uint[17];
+		float[] values = _heroVitalValues ??= new float[20];
 		try
 		{
 			return RefiiHostGetHeroVitals(words, (uint)words.Length, values, (uint)values.Length);
@@ -4482,6 +5069,12 @@ public static class HostBridge
 		}
 	}
 
+	[System.ThreadStatic]
+	private static uint[]? _heroVitalWords;
+
+	[System.ThreadStatic]
+	private static float[]? _heroVitalValues;
+
 	public static HeroVitals GetHeroVitals()
 	{
 		if (TryGetAbiVersion() is null || !IsGuestUp)
@@ -4489,8 +5082,10 @@ public static class HostBridge
 			return default;
 		}
 
-		var words = new uint[17];
-		var values = new float[20];
+		// Per-thread scratch, not fresh: the HUD asks every frame, and the record built below
+		// copies out of the buffers before returning. Matches `_poseTransforms`.
+		uint[] words = _heroVitalWords ??= new uint[17];
+		float[] values = _heroVitalValues ??= new float[20];
 		uint hero;
 		try
 		{
@@ -5660,6 +6255,12 @@ public static class HostBridge
 	private static extern int RefiiHostGetCamera(float[] outValues);
 
 	[DllImport(Library)]
+	private static extern int RefiiHostGetCameraPair(float[] outValues);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetAnimWalkStats(uint[] outWords, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetUiAttributes(
 		uint presentation, uint[] ids, uint idCount, uint[]? outWords, uint outCapacity);
 
@@ -5707,6 +6308,24 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetSimTick();
+
+	[System.Runtime.InteropServices.DllImport(Library, CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+	private static extern uint RefiiHostGetSimClock(out double seconds, out uint tick);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetStatedFx(uint[] words, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetStatedFxCount();
+
+	[System.Runtime.InteropServices.DllImport(Library, CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+	private static extern int RefiiHostSetTimeBaseMode(int mode, out ulong capped, out ulong granted, out ulong watchdog);
+
+	[System.Runtime.InteropServices.DllImport(Library, CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+	private static extern void RefiiHostAdvanceTimeBase(uint steps);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetGuestFrame();
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetActiveFx(uint[]? outWords, uint maxEffects);
@@ -5915,7 +6534,7 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetTimeOfDay(
-		out float fraction, out int dayCount, out int frozen);
+		out float fraction, out int dayCount, out int frozen, out int moonPhase);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetRenderFence(
@@ -6547,8 +7166,10 @@ public static class HostBridge
 			{
 				return dictionary;
 			}
-			uint[] array = new uint[64];
-			byte[] array2 = new byte[8192];
+			uint[] array = _hudTextHashes ??= new uint[64];
+			byte[] array2 = _hudTextBytes ??= new byte[8192];
+			System.Array.Clear(array);
+			System.Array.Clear(array2);
 			uint num;
 			try
 			{

@@ -113,12 +113,18 @@ public partial class GameWindow : Node
 		// its own fixed step with a catch-up ceiling, so capping frames here changes how often
 		// the world is DRAWN and nothing about how often it is simulated.
 		Engine.MaxFps = settings.MaxFps;
+		Refii.Core.Engine_TickClock.Pin = settings.DrawLatencyTicks;
 
 		// 3D SCALING LEAVES THE UI ALONE. Godot renders the 3D world at this fraction and
 		// upscales it into a full-resolution frame, so the HUD, the books and every glyph stay
 		// native — which is the whole reason to prefer this over resizing the window.
 		Viewport view = GetViewport();
 		view.Scaling3DScale = settings.RenderScalePercent / 100.0f;
+		// SCALED WITH HEIGHT: the mesh LOD keys are the guest's switch distances at 720 lines
+		// (Engine_MdlLods), and Godot's threshold is in pixels, so 1 here follows the 360 at
+		// any resolution.
+		view.MeshLodThreshold = settings.MeshLodPixels * (settings.Size.Y / Refii.Models.Engine_MdlLods.ReferenceHeight);
+		RenderingServer.DirectionalShadowAtlasSetSize(settings.SunShadowMap, true);
 		view.Msaa3D = settings.Msaa switch
 		{
 			>= 8 => Viewport.Msaa.Msaa8X,
@@ -128,9 +134,15 @@ public partial class GameWindow : Node
 		};
 
 		// Vsync is a display-server setting, not a per-window one, so this is the whole
-		// application's.
+		// application's. Godot falls back to Enabled where the driver lacks the mode asked for.
 		DisplayServer.WindowSetVsyncMode(
-			settings.Vsync ? DisplayServer.VSyncMode.Enabled : DisplayServer.VSyncMode.Disabled,
+			!settings.Vsync ? DisplayServer.VSyncMode.Disabled
+			: settings.VsyncMode switch
+			{
+				"on" => DisplayServer.VSyncMode.Enabled,
+				"adaptive" => DisplayServer.VSyncMode.Adaptive,
+				_ => DisplayServer.VSyncMode.Mailbox,
+			},
 			(int)DisplayServer.MainWindowId);
 
 		// Nothing to minimise: the launcher is a DIFFERENT PROCESS, and it stood itself down
@@ -199,6 +211,15 @@ public partial class GameWindow : Node
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gamewindow");
+
+		// FIRST THING IN THE FRAME: the guest frame is sampled, and on a new one the entity
+		// walk runs on its worker while the UI and the world process; GameEntities takes it
+		// later in this same frame.
+		HostBridge.SampleGuestFrame();
+		if (Refii.Core.Engine_GuestFrame.Changed || GameEntities.FeedEveryFrame)
+		{
+			HostEntityWalk.Kick();
+		}
 		TraceFrontEnd();
 		StepShots();
 

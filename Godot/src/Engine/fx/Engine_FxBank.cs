@@ -560,6 +560,25 @@ public sealed class FxBank
 
     public Dictionary<uint, uint> TypeToEffect { get; } = new();
 
+    private Dictionary<uint, FxEmitter>? _byEntity;
+
+    /// <summary>The emitter a live instance's TYPE names (<c>*(type+4)</c> = the emitter's
+    /// EntityId), or null — the way to know whether a node is a standard emitter before
+    /// reading emitter-only slots off it.</summary>
+    public FxEmitter? EmitterForType(uint typeId)
+    {
+        if (_byEntity is null)
+        {
+            _byEntity = new Dictionary<uint, FxEmitter>();
+            foreach (FxEmitter emitter in Emitters)
+            {
+                _byEntity.TryAdd(emitter.EntityId, emitter);
+            }
+        }
+
+        return _byEntity.TryGetValue(typeId, out FxEmitter? found) ? found : null;
+    }
+
     /// <summary>How many type IDs more than one effect laid claim to.</summary>
     public int AmbiguousTypes { get; internal set; }
 

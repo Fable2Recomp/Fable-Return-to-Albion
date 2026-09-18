@@ -1371,6 +1371,75 @@ REX_EXTERN(sub_82378F00) {
   }
 }
 
+/// The command-stream drain, which headless spends its whole budget waiting for a GPU.
+///
+/// The startup movie's constructor `sub_82389040` asks the "3D Engine" thread for the D3D
+/// device (`sub_823889A8`: `stb` 1 to `engine+192` at `0x823889CC`, then an infinite wait at
+/// `0x823889F8`). Only `0x823882B4` releases it, reached once per engine-loop iteration with the
+/// engine critical section held from `0x82388270` to `0x8238832C`; the requester needs that
+/// lock, so it waits a whole frame. Headless, this drain runs its full budget (one presentation
+/// period per slot, four slots a frame) inside that hold.
+///
+/// The guest's own early-out ends it: at `0x822DFE68` it returns immediately when `force == 0`
+/// and `dbl_8335F7D8[slot] >= deadline` (`bge cr6, loc_822E1694` at `0x822DFE80`), so a deadline
+/// of zero with force cleared takes that exit.
+///
+/// Only when the ring is empty: a queued packet is still drained, since the present gate's
+/// fence is opcode 17 in this ring. `r4` is a slot index, not a pointer (`lwzx r31, r10, r9` at
+/// `0x822DFE44` indexes `dword_8349F9B0`). Read cursor is slot+12, published write pointer
+/// slot+60.
+REX_EXTERN(sub_822DFE08) {
+  refii::vfs::EnsureAlternateSignalStack();
+  REX_FUNC_PROLOGUE();
+
+  // Headless only: with a renderer attached the producer can publish while this spins.
+  static const bool headless = [] {
+    const char* value = std::getenv("REX_EMBED_HEADLESS");
+    return value != nullptr && value[0] == '1';
+  }();
+
+  // Not gated on `force`: callers already pass force 0 but a future deadline, so the
+  // early-out's deadline test fails. The deadline is the lever.
+  if (headless) {
+    const uint32_t slot_index = ctx.r4.u32;
+    const uint32_t slot =
+        slot_index < 4u
+            ? refii::vfs::LoadGuestU32(base, 0x8349F9B0u + (slot_index * 4u))
+            : 0u;
+    const bool usable = refii::vfs::LooksLikeGuestPointer(slot);
+    const uint32_t read_cursor = usable ? refii::vfs::LoadGuestU32(base, slot + 12u) : 0u;
+    const uint32_t shared_wptr = usable ? refii::vfs::LoadGuestU32(base, slot + 60u) : 0u;
+
+    // Log the inputs of the first few calls.
+    static std::atomic<uint64_t> entered{0};
+    const uint64_t seen = entered.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    if (seen <= 8u) {
+      REXLOG_INFO(
+          "Refii drain entry #{}: slot={} ring=0x{:08X} read=0x{:08X} wptr=0x{:08X} "
+          "force={} deadline={:.6f}",
+          static_cast<unsigned long long>(seen), slot_index, slot, read_cursor, shared_wptr,
+          ctx.r5.u32, ctx.f1.f64);
+    }
+
+    if (usable && read_cursor == shared_wptr) {
+      static std::atomic<uint64_t> skipped{0};
+      const uint64_t n = skipped.fetch_add(1u, std::memory_order_relaxed) + 1u;
+      if (n == 1u || (n % 20000u) == 0u) {
+        REXLOG_INFO(
+            "Refii drain: ring {} empty, taking the guest's own early-out rather than "
+            "spinning a presentation period with the engine lock held (#{} so far)",
+            slot_index, static_cast<unsigned long long>(n));
+      }
+
+      // Both, so the early-out at 0x822DFE80 is reached whichever way the caller set force.
+      ctx.r5.u32 = 0u;
+      ctx.f1.f64 = 0.0;
+    }
+  }
+
+  REFII_VFS_NATIVE_PASSTHROUGH(sub_822DFE08);
+}
+
 REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
   // Every guest thread yields here sooner or later; one thread_local test per call.
   refii::vfs::EnsureAlternateSignalStack();
@@ -2598,6 +2667,23 @@ REX_EXTERN(sub_82B4F400) {
   if (original_ctx.lr == kPresentGateWaitLr && frontend_or_databases_up) {
     ctx.r3.u32 = kLhWaitResultSignalled;
     return;
+  }
+
+  // Both bytes are clear during the startup movies (where the original wait is deliberate) and
+  // also between front-end teardown (`sub_82319A40` clears 0x83496AC4) and `Game_InitDatabases`
+  // (@0x82311648 sets 0x83496A5E). A present-gate wait in that window goes to a fence nothing
+  // drains headless. The decision is unchanged, since no signal is yet known to separate the
+  // two cases; this only logs the wait.
+  if (original_ctx.lr == kPresentGateWaitLr) {
+    static std::atomic<uint32_t> gap_waits{0u};
+    const uint32_t seen = gap_waits.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    if (seen == 1u || seen == 64u) {
+      REXLOG_WARN(
+          "Refii present gate: wait #{} handed to the original with the front end DOWN and "
+          "databases NOT up (0x83496AC4=0, 0x83496A5E=0). Headless nothing drains this fence; "
+          "if the game thread parks here, this is why.",
+          seen);
+    }
   }
 
   // lhRenderer suspend/resume handshake waits are emulated (bounded slices +

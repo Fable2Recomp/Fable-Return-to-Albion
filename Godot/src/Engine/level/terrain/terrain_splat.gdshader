@@ -105,6 +105,7 @@ varying vec3 v_local_normal;
 void vertex() {
 	v_local = VERTEX;
 	v_local_normal = NORMAL;
+	fable_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 /// The two vertical projections a cliff layer is sampled through, and their weights.
@@ -463,7 +464,8 @@ void fragment() {
 	// CAVITY DARKENS THE WHOLE AMBIENT HALF, the authored bake included — no double count: the
 	// terrain lightmap is one texel per heightfield cell, metres across, so it cannot carry
 	// texture-scale occlusion. The direct half is untouched, same as the props' ao.
-	float authored_weight = fable_bake_weight <= 0.0 ? 1.0 : fable_bake_weight;
+	// The same weight the props take, interior exemption and interior bake factor included.
+	float authored_weight = fable_authored_bake_weight();
 	vec3 authored = bake * lightmap_colour.rgb * darken * authored_weight;
 
 	// THE TERRAIN'S SKY TETHER — the SAME plain mix the probe field takes in `fable_bake`,
@@ -548,6 +550,8 @@ void light() {
 			? clamp(8.0 * dot(NORMAL, LIGHT), 0.0, 1.0)
 			: 1.0;
 		DIFFUSE_LIGHT += gate * fable_direct(
-			NORMAL, LIGHT, fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL), LIGHT_COLOR);
+			NORMAL, LIGHT,
+			fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world),
+			LIGHT_COLOR);
 	}
 }

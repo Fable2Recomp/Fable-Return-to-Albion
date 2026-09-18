@@ -147,7 +147,7 @@ public sealed class Engine_UiElementState
 		if (matrix.Table is null || matrix.Dirty ||
 			matrix.Table.GetLength(0) != screen.Elements.Count)
 		{
-			matrix.Table = Build(screen, ids);
+			matrix.Table = Build(screen, ids, matrix.Table);
 			matrix.Dirty = false;
 		}
 
@@ -401,10 +401,20 @@ public sealed class Engine_UiElementState
 		}
 	}
 
-	private static Engine_UiModel.LiveAttribute[,] Build(Screen screen, uint[] ids)
+	/// <summary>Fills the existing table in place when its shape still fits, so a per-tick rebuild does not allocate.</summary>
+	private static Engine_UiModel.LiveAttribute[,] Build(Screen screen, uint[] ids, Engine_UiModel.LiveAttribute[,]? existing)
 	{
 		int rows = screen.Elements.Count;
-		var table = new Engine_UiModel.LiveAttribute[rows, ids.Length];
+		Engine_UiModel.LiveAttribute[,] table;
+		if (existing is not null && existing.GetLength(0) == rows && existing.GetLength(1) == ids.Length)
+		{
+			table = existing;
+			System.Array.Clear(table);
+		}
+		else
+		{
+			table = new Engine_UiModel.LiveAttribute[rows, ids.Length];
+		}
 		for (int column = 0; column < ids.Length; ++column)
 		{
 			if (!screen.Values.TryGetValue(ids[column], out uint[]? values))

@@ -27,6 +27,15 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 	/// <summary>Stated texture hash to a loaded texture; null when the hash resolves to nothing.</summary>
 	public System.Func<uint, Texture2D?>? ResolveTexture { get; set; }
 
+	/// <summary>
+	/// The HUD's pattern book, for the slots whose art is a live widget rather than one quad:
+	/// the hold icon's ring and button are cloned from it whole.
+	/// </summary>
+	public Engine_UiTheme? Art { get; set; }
+
+	/// <summary>The guest's published HUD values — the hold icon's meter is one of them.</summary>
+	public Engine_HudValues? Values { get; set; }
+
 	/// <summary>One pooled slot, resolved from the document once.</summary>
 	private sealed class Slot
 	{
@@ -68,6 +77,19 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 
 		public Vector2 Scale { get; init; } = Vector2.One;
 
+		/// <summary>
+		/// The meter inside the slot, when it has one — `FillWorldIcon`'s `HoldMeter`, bound to
+		/// the meter of the same name — and the child of `Contents` holding it, which is cloned
+		/// whole in place of the single quad.
+		/// </summary>
+		public int MeterOrdinal { get; init; } = -1;
+
+		public Engine_HudValues.Handle Meter { get; init; }
+
+		public int WidgetOrdinal { get; init; } = -1;
+
+		public Vector2 WidgetOffset { get; init; }
+
 		// Live state.
 		public Node3D? Node { get; set; }
 		public MeshInstance3D? Icon { get; set; }
@@ -77,9 +99,20 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 		public string ShownOpinion { get; set; } = string.Empty;
 		public uint ShownTexture { get; set; }
 		public bool Lit { get; set; }
+
+		/// <summary>The cloned widget and what its meter scrubs; null when drawn as one quad.</summary>
+		public Engine_UiCloneBinding? Binding { get; set; }
+
+		public List<(Node3D Node, BgfAnimation Animation, Engine_UiTimeline.Target Target)> Tracks { get; } = new();
+
+		public List<(int Slot, Engine_UiTimeline.Window Window)> Windows { get; } = new();
+
+		/// <summary>The button's pressed look, which the `FillWorldIconButton` toggle raises.</summary>
+		public Node3D? Pressed { get; set; }
 	}
 
 	private readonly List<Slot> _slots = new();
+	private Engine_UiScreen? _screen;
 	private int _documentElements;
 	private string _reported = string.Empty;
 
@@ -97,7 +130,9 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 	public void Bind(Engine_UiScreen screen)
 	{
 		_slots.Clear();
+		_screen = screen;
 		_documentElements = screen.Nodes.Length;
+		Engine_UiBindings bindings = Engine_UiBindings.Read(screen.Document);
 
 		foreach (UiNode node in screen.Nodes)
 		{
@@ -123,6 +158,8 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 			(UiNode? quadNode, Vector2 quadOffset) = FirstQuad(node, Vector2.Zero);
 			(UiNode? titleNode, Vector2 titleOffset) = FirstText(node, Vector2.Zero);
 			(UiNode? opinionNode, Vector2 opinionOffset) = NamedText(node, Vector2.Zero, "Opinion");
+			(int meter, string meterName, UiNode? widget, Vector2 widgetOffset) =
+				MeterWidget(screen, bindings, node, contents);
 
 			_slots.Add(new Slot
 			{
@@ -143,6 +180,10 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 				OpinionOffset = opinionOffset,
 				Pivot = new Vector2(node.PivotX, node.PivotY),
 				Scale = new Vector2(node.ScaleX, node.ScaleY),
+				MeterOrdinal = meter,
+				Meter = Engine_HudValues.Handle.For(meterName),
+				WidgetOrdinal = widget?.Ordinal ?? -1,
+				WidgetOffset = widgetOffset,
 			});
 		}
 
@@ -177,6 +218,44 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 		}
 
 		return true;
+	}
+
+	/// <summary>
+	/// The meter bound inside a slot and the child of <paramref name="contents"/> that holds it,
+	/// with that child's offset from the slot — (-1, "", null) for a slot with no meter.
+	/// </summary>
+	private static (int, string, UiNode?, Vector2) MeterWidget(
+		Engine_UiScreen screen, Engine_UiBindings bindings, UiNode slot, int contents)
+	{
+		foreach (Engine_UiBindings.Binding binding in bindings.All)
+		{
+			if (binding.Kind != Engine_UiBindings.Kind.Meter ||
+				!Engine_UiTimeline.InSubtree(screen, binding.ElementOrdinal, contents))
+			{
+				continue;
+			}
+
+			UiNode? widget = screen.Nodes[binding.ElementOrdinal];
+			while (widget?.Parent is { } parent && parent.Ordinal != contents)
+			{
+				widget = parent;
+			}
+
+			if (widget is null || widget.Ordinal == contents)
+			{
+				continue;
+			}
+
+			var offset = Vector2.Zero;
+			for (UiNode? up = widget; up is not null && up.Ordinal != slot.Ordinal; up = up.Parent)
+			{
+				offset += new Vector2(up.PositionX, up.PositionY);
+			}
+
+			return (binding.ElementOrdinal, binding.Name, widget, offset);
+		}
+
+		return (-1, string.Empty, null, Vector2.Zero);
 	}
 
 	private static (UiNode?, Vector2) FirstQuad(UiNode node, Vector2 at)
@@ -413,13 +492,136 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 		}
 	}
 
+	/// <summary>
+	/// The hold widget's size and lift over its title — OUR layout, not the file's. As authored
+	/// (`Icon` at y 25, `HoldMeter` 0.55, `Title` at y 8) the ring's outer edge reaches y 4.4,
+	/// under the title's middle, and the pair reads large beside an 18-point title. The guest
+	/// states only the icon's position (`sub_82824D60` → `sub_824251E0`, position.x/y/z) under
+	/// an orthographic UI camera, so nothing in the guest sizes it.
+	/// </summary>
+	private const float WidgetScale = 0.85f;
+
+	/// <summary>Canvas units: the scaled ring's bottom (25 − 20.6 × 0.85 + 12 ≈ 19.5) clears the title's top (≈ 17).</summary>
+	private const float WidgetLift = 12f;
+
+	/// <summary>
+	/// Clones a slot's meter widget whole — the hold icon's ring of nine timed half-discs and
+	/// its button — and binds what its meter's timeline scrubs. False leaves the slot to the
+	/// single-quad path, and says why once.
+	/// </summary>
+	private bool BuildWidget(Slot slot, Node3D node)
+	{
+		if (slot.MeterOrdinal < 0 || slot.WidgetOrdinal < 0 || _screen is not { } screen)
+		{
+			return false;
+		}
+
+		UiNode widget = screen.Nodes[slot.WidgetOrdinal];
+		if (Art?.ArtForOrdinal(widget.Name, widget.Ordinal, keepAuthoredBasis: true) is not { } art)
+		{
+			GD.Print($"[world-icons] '{slot.Name}' has meter '{slot.Meter.Name}' but the HUD book " +
+				$"holds no '{widget.Name}' (element {widget.Ordinal}) to clone — drawn as one quad");
+			return false;
+		}
+
+		art.Transform = new Transform3D(
+			art.Transform.Basis.Scaled(new Vector3(WidgetScale, WidgetScale, 1f)),
+			new Vector3(slot.WidgetOffset.X, slot.WidgetOffset.Y + WidgetLift, 0f));
+		node.AddChild(art);
+
+		var binding = new Engine_UiCloneBinding { ResolveTexture = ResolveTexture };
+		binding.Bind(art, screen);
+		slot.Binding = binding;
+
+		foreach ((BgfAnimation animation, Engine_UiTimeline.Target target) in
+			Engine_UiTimeline.Tracks(screen, slot.MeterOrdinal))
+		{
+			if (binding.NodeFor(animation.ElementOrdinal) is { } bound)
+			{
+				slot.Tracks.Add((bound, animation, target));
+			}
+		}
+
+		BgfSlide? playing = Engine_UiTimeline.PlayingSlide(screen.Document, slot.MeterOrdinal);
+		foreach (Engine_UiTimeline.Window window in
+			Engine_UiTimeline.Windows(screen, slot.MeterOrdinal, playing))
+		{
+			int bound = binding.SlotFor(window.Ordinal);
+			if (bound >= 0)
+			{
+				slot.Windows.Add((bound, window));
+			}
+		}
+
+		// The button's pressed look: `Button`'s `on` slide lights `selected`, `off` darkens it.
+		// Within it the `button` slide — the one it opens on — shows the pressed glyph and hides
+		// the `eye`, which only `FillWorldIconSetEyeIsOpen` asks for.
+		slot.Pressed = Engine_UiTheme.FindByName(art, "selected") as Node3D;
+		if (slot.Pressed is not null && Engine_UiTheme.FindByName(slot.Pressed, "eye") is Node3D eye)
+		{
+			eye.Visible = false;
+		}
+
+		Scrub(slot, 0f, pressed: false);
+		GD.Print($"[world-icons] '{slot.Name}' draws its '{widget.Name}' widget whole: " +
+			$"{slot.Tracks.Count} track(s) and {slot.Windows.Count} time window(s) on meter " +
+			$"'{slot.Meter.Name}'");
+		return true;
+	}
+
+	/// <summary>
+	/// Scrubs the lit widgets by their meters, every frame. <paramref name="pressed"/> is the
+	/// hold button: `sub_823DD318` raises `FillWorldIconButton` on the press and lowers it on
+	/// the release, a toggle the host cannot read (registry 9), so it is stated from the pad.
+	/// </summary>
+	public void Drive(bool pressed)
+	{
+		foreach (Slot slot in _slots)
+		{
+			if (!slot.Lit || slot.Binding is null)
+			{
+				continue;
+			}
+
+			// `sub_821C5BB0` publishes `fraction x 100` on meter registry 1 whenever it moves;
+			// unpublished is the ring at rest.
+			float value = Values?.Meter(slot.Meter) ?? 0f;
+			Scrub(slot, Mathf.Clamp(value, 0f, 100f) * 10f, pressed);
+		}
+	}
+
+	private static void Scrub(Slot slot, float t, bool pressed)
+	{
+		foreach ((Node3D node, BgfAnimation animation, Engine_UiTimeline.Target target) in slot.Tracks)
+		{
+			if (GodotObject.IsInstanceValid(node))
+			{
+				Engine_UiTimeline.Write(node, target, animation.Evaluate(t));
+			}
+		}
+
+		foreach ((int bound, Engine_UiTimeline.Window window) in slot.Windows)
+		{
+			slot.Binding?.Gate(bound, window.IsOpen(t));
+		}
+
+		if (slot.Pressed is not null)
+		{
+			slot.Pressed.Visible = pressed;
+		}
+	}
+
 	/// <summary>One slot's scene: a textured quad and a title label at their authored offsets.</summary>
 	private Node3D Build(Slot slot)
 	{
 		var node = new Node3D { Name = slot.Name };
 		AddChild(node);
 
-		if (slot.Quad is { } quad)
+		if (BuildWidget(slot, node))
+		{
+			// The widget carries the slot's art; the single-quad path below is for icons.
+		}
+		else if (slot.Quad is { } quad)
 		{
 			var icon = new MeshInstance3D
 			{

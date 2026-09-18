@@ -32,9 +32,19 @@
 // The transmittance is per channel, and that is the whole look: betaRayleigh differs by about
 // 3.5x between red and blue, so distance eats blue first. A scalar fog factor cannot produce it.
 //
-// WHAT IS NOT HERE. The guest has a second, independent system on the same surfaces — a ground
-// mist slab, height-field integrated with a real Beer-Lambert term, the `mist1` half of every
-// shader permutation. It stacks on top of this and is not started.
+// What is not here, and where it went instead. The guest has a second, independent system on the
+// same surfaces — a ground mist slab, height-field integrated with a real Beer-Lambert term, the
+// `mist1` half of every shader permutation. It stacks on top of this and is deliberately NOT in
+// this file: the authored volumes are emitted as Godot `FogVolume`s and lit by Godot's volumetric
+// fog (`Engine_LevelScene`), which is the half of the atmosphere a real participating medium
+// models better than a per-surface term can — it takes light from the fixtures standing in it.
+// The level-wide `VolumetricFogDensity` goes to ZERO there, because Godot's default 0.05 fills
+// every cubic metre once the effect is on.
+//
+// That conversion is PARTIAL. `MistVolume` parses Falloff, Reciprocal, ScrollU/V, GenScalar1/2
+// and PackedX/Y; only the box, Density and Colour reach the `FogMaterial`. Falloff and Reciprocal
+// are printed by the `[mist]` line and read nowhere else — Godot's `FogMaterial.HeightFalloff`
+// and `EdgeFade` are the obvious homes and nothing has checked whether they mean the same thing.
 
 // The atmosphere is one thing for the whole region, and it reaches thousands of materials, so it
 // is published once per frame as global uniforms rather than set per material. Engine_SkyEnvironment
@@ -104,7 +114,12 @@ bool fable_atmosphere_terms(
 	vec3 world_dir = normalize((inv_view * vec4(view_vertex, 0.0)).xyz);
 	float sun_dot = clamp(
 		dot(normalize(atmos_sun), vec3(world_dir.x, world_dir.z, world_dir.y)), 0.0, 1.0);
-	vec3 sky = texture(atmos_inscatter, vec2(sun_dot, 0.5)).rgb;
+	// Clamped to the edge texel centres: a global sampler takes no hint and Godot's default
+	// REPEATS, so at u = 0 linear filtering would blend in the sun-facing end texel. The guest's
+	// tfetch1D addresses this LUT with clamp.
+	float half_texel = 0.5 / float(textureSize(atmos_inscatter, 0).x);
+	vec3 sky = texture(atmos_inscatter,
+		vec2(clamp(sun_dot, half_texel, 1.0 - half_texel), 0.5)).rgb;
 	vec3 close_fog = atmos_close_fog;
 
 	// CLAMPED IN DISTANCE, NOT IN THE RATIO. The guest's LUT spans a fixed 2000 units and its

@@ -26,6 +26,23 @@ public sealed class BnkFileSystem : IDisposable
 
     private const long NestedCacheBudget = 1024L << 20;
 
+    /// <summary>
+    /// What the nested-bank cache is actually doing: bytes resident, containers loaded from disk,
+    /// and containers evicted.
+    /// </summary>
+    /// <remarks>
+    /// Cached containers are multi-megabyte arrays on the large-object heap, so the budget sizes
+    /// the heap the collector walks. A miss re-reads the whole container (another LOH
+    /// allocation), so a budget below the working set trades resident bytes for garbage.
+    /// Evictions near zero mean the budget can come down; evictions climbing with loads mean the
+    /// cache is thrashing and the budget should go up.
+    /// </remarks>
+    public static long NestedResidentBytes;
+
+    public static long NestedLoads;
+
+    public static long NestedEvictions;
+
     private sealed class NestedSlot
     {
         public required string Key;
@@ -61,6 +78,7 @@ public sealed class BnkFileSystem : IDisposable
 
                     slot.Bytes = container.LongLength;
                     slot.Archive = archive;
+                    System.Threading.Interlocked.Increment(ref NestedLoads);
                     Retain(slot);
                 }
             }
@@ -85,7 +103,10 @@ public sealed class BnkFileSystem : IDisposable
                 evicted.Node = null;
                 evicted.Bytes = 0;
                 evicted.Archive = null;
+                ++NestedEvictions;
             }
+
+            NestedResidentBytes = _nestedLoadedBytes;
         }
     }
 
@@ -847,13 +868,17 @@ public sealed class BnkFile
 
     public uint Size => Entry.Size;
 
-    internal List<BnkFile> Alternates { get; } = new();
+    // Lazy: only the few files shadowed by another bank need a list; an eager empty list per
+    // file doubles the object count the GC walks.
+    private List<BnkFile>? _alternates;
+
+    internal List<BnkFile> Alternates => _alternates ??= new();
 
     /// <summary>Whether this name is served by more than one bank entry; see ReadAllBytes.</summary>
-    public bool HasAlternates => Alternates.Count != 0;
+    public bool HasAlternates => _alternates is { Count: > 0 };
 
     /// <summary>Everything this file shadows, nearest first. The master list reads it.</summary>
-    public IReadOnlyList<BnkFile> Shadowed => Alternates;
+    public IReadOnlyList<BnkFile> Shadowed => (IReadOnlyList<BnkFile>?)_alternates ?? System.Array.Empty<BnkFile>();
 
     internal byte[] ReadOwn() => _read(Entry);
 
@@ -904,7 +929,7 @@ public sealed class BnkFile
 
         bool ownIsHeader = isHeader(own);
 
-        foreach (BnkFile alternate in Alternates)
+        foreach (BnkFile alternate in Shadowed)
         {
             byte[] other;
             try
@@ -938,8 +963,8 @@ public sealed class BnkFile
     {
         bytes = Array.Empty<byte>();
 
-        var parts = new List<BnkFile>(Alternates.Count + 1) { this };
-        parts.AddRange(Alternates);
+        var parts = new List<BnkFile>(Shadowed.Count + 1) { this };
+        parts.AddRange(Shadowed);
 
         BnkFile? headerFile = null;
         byte[]? header = null;

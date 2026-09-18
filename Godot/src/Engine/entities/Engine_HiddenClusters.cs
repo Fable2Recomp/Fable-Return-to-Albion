@@ -103,6 +103,49 @@ public static class Engine_HiddenClusters
 		return false;
 	}
 
+	/// <summary>Which surfaces this pass has collapsed, by surface index. It is the only writer.</summary>
+	private sealed class SurfaceState
+	{
+		private ulong _bits;
+		private bool[] _more = Array.Empty<bool>();
+
+		public bool Get(int surface) =>
+			surface < 64 ? (_bits & (1ul << surface)) != 0ul
+				: surface - 64 < _more.Length && _more[surface - 64];
+
+		public void Set(int surface, bool hidden)
+		{
+			if (surface < 64)
+			{
+				if (hidden)
+				{
+					_bits |= 1ul << surface;
+				}
+				else
+				{
+					_bits &= ~(1ul << surface);
+				}
+
+				return;
+			}
+
+			int at = surface - 64;
+			if (at >= _more.Length)
+			{
+				Array.Resize(ref _more, at + 1);
+			}
+
+			_more[at] = hidden;
+		}
+	}
+
+	/// <summary>Per node, keyed weakly so a freed entity's record goes with it.</summary>
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MeshInstance3D, SurfaceState> _collapsedSurfaces = new();
+
+	private sealed record PartTables(int[] SurfaceParts, uint[] PartHashes);
+
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Mesh, PartTables> _partTables = new();
+
 	/// <summary>
 	/// Reads the entity's built parts and folds their hides onto the node's surfaces. Every
 	/// surface is stated each call: hidden ones collapse, the rest draw their own material
@@ -121,12 +164,28 @@ public static class Engine_HiddenClusters
 			return 0;
 		}
 
-		int[] surfaceParts = mesh.HasMeta(Engine_MdlComposite.SurfacePartsMeta)
-			? mesh.GetMeta(Engine_MdlComposite.SurfacePartsMeta).AsInt32Array()
-			: Array.Empty<int>();
-		uint[] partHashes = mesh.HasMeta(Engine_MdlComposite.PartHashesMeta)
-			? Array.ConvertAll(mesh.GetMeta(Engine_MdlComposite.PartHashesMeta).AsInt64Array(), v => unchecked((uint)v))
-			: Array.Empty<uint>();
+		// The tables are the mesh's and never change after it is built; a meta read is a
+		// crossing plus a wrapper, and this runs for every entity on the reconcile cadence.
+		if (!_partTables.TryGetValue(mesh, out PartTables? tables))
+		{
+			tables = new PartTables(
+				mesh.HasMeta(Engine_MdlComposite.SurfacePartsMetaName)
+					? mesh.GetMeta(Engine_MdlComposite.SurfacePartsMetaName).AsInt32Array()
+					: Array.Empty<int>(),
+				mesh.HasMeta(Engine_MdlComposite.PartHashesMetaName)
+					? Array.ConvertAll(mesh.GetMeta(Engine_MdlComposite.PartHashesMetaName).AsInt64Array(), v => unchecked((uint)v))
+					: Array.Empty<uint>());
+			_partTables.Add(mesh, tables);
+		}
+
+		int[] surfaceParts = tables.SurfaceParts;
+		uint[] partHashes = tables.PartHashes;
+
+		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state))
+		{
+			state = new SurfaceState();
+			_collapsedSurfaces.Add(node, state);
+		}
 
 		List<HostBridge.GuestPartHides> parts = HostBridge.GetEntityPartHides(entity);
 		Dictionary<uint, HashSet<string>>? hidden = parts.Count == 0 ? null : HiddenPerPart(parts);
@@ -146,10 +205,13 @@ public static class Engine_HiddenClusters
 				}
 			}
 
-			bool isHidden = node.GetSurfaceOverrideMaterial(s) == Collapsed;
+			// Our own record of what was last written, not `GetSurfaceOverrideMaterial` (which
+			// allocates a wrapper per call); this pass is the slot's only writer.
+			bool isHidden = state.Get(s);
 			if (hide != isHidden)
 			{
 				node.SetSurfaceOverrideMaterial(s, hide ? Collapsed : null);
+				state.Set(s, hide);
 			}
 
 			if (hide)

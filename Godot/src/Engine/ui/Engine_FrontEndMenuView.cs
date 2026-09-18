@@ -1337,6 +1337,64 @@ public partial class Engine_FrontEndMenuView : Node3D
 	}
 
 	/// <summary>
+	/// A cheap key over everything <see cref="Describe"/> prints EXCEPT the row positions, so the
+	/// line is built only on the frames it would actually differ.
+	/// </summary>
+	/// <remarks>
+	/// The caller reports on change and ignores the `@(x,y)` row positions, which move every
+	/// frame of a slide. Building the line just to compare it is per-frame garbage, and GC
+	/// pauses stall the guest's simulation thread.
+	///
+	/// The key covers the same inputs the stripped line does — the counts, the two MISSING
+	/// tests, the lift, and per visible row the mark, the row node, the entry, the label text,
+	/// whether it produced a glyph mesh, and the opacity at the precision the line prints it.
+	/// Row identity is the node's instance id rather than its name: a name is a `StringName`
+	/// whose getter allocates, and these nodes are clones that are never renamed, so the id
+	/// moves exactly when the name could.
+	/// </remarks>
+	public long DescribeKey()
+	{
+		if (Menu is null)
+		{
+			return 0L;
+		}
+
+		long key = 1L;
+		int blank = 0;
+		for (int r = 0; r < _rows.Length; ++r)
+		{
+			if (_rows[r] is not { Visible: true } row || _rowItem[r] is not { } item)
+			{
+				continue;
+			}
+
+			bool glyphs = _labels[r].Mesh is not null;
+			if (!glyphs)
+			{
+				++blank;
+			}
+
+			key = (key * 1000003L) ^ (long)row.GetInstanceId();
+			key = (key * 1000003L) ^ (item.Name?.GetHashCode() ?? 0);
+			key = (key * 1000003L) ^ (_labelText[r]?.GetHashCode() ?? 0);
+			key = (key * 1000003L) ^ (ReferenceEquals(item, Menu.Highlighted) ? 1 : 0);
+			key = (key * 1000003L) ^ (glyphs ? 2 : 0);
+			key = (key * 1000003L) ^
+				(int)System.MathF.Round(_to[r].Opacity, System.MidpointRounding.AwayFromZero);
+		}
+
+		key = (key * 1000003L) ^ Menu.HighlightIndex;
+		key = (key * 1000003L) ^ Menu.Visible.Count;
+		key = (key * 1000003L) ^ RowsDrawn;
+		key = (key * 1000003L) ^ LabelsWithoutGlyphs;
+		key = (key * 1000003L) ^ blank;
+		key = (key * 1000003L) ^ (Theme is null ? 1 : 0);
+		key = (key * 1000003L) ^ (RowTemplate is null ? 2 : 0);
+		return (key * 1000003L) ^
+			(long)System.MathF.Round(_labelLift * 10f, System.MidpointRounding.AwayFromZero);
+	}
+
+	/// <summary>
 	/// A one-line description of what this view PUT ON SCREEN, row by row, walking the row NODES
 	/// rather than the model: which entry each took, what it resolved to, whether that produced a
 	/// glyph mesh, and where the node ended up.

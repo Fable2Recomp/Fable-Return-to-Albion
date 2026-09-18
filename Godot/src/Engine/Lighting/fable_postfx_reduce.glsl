@@ -75,6 +75,11 @@ const int S_RAW_GAIN = 31;
 const int S_CURVE = 32;
 const int S_LUT = 544;
 const int S_CDF = 1056;
+// Flicker trap, after the CDF: the previous frame's mean and the last hit.
+const int S_TRAP_PREV_MEAN = 1568;
+const int S_TRAP_HIT_FRAME = 1569;
+const int S_TRAP_HIT_MEAN = 1570;
+const int S_TRAP_HIT_PREV = 1571;
 
 shared float s_cdf[512];
 shared float s_curve[512];
@@ -159,6 +164,19 @@ void main() {
 			state.v[S_HIST_IDX_LAST] = float(idx_last);
 			state.v[S_HIST_AVG_PCT] = avg_pct;
 			state.v[S_HIST_LAST] = last;
+
+			// Flicker trap: the scene's mean luminance against the previous frame's, judged
+			// by the ratio the host states in reserved1.y (0 = off). A hit records the host's
+			// frame index (reserved1.x) and both means; the host polls them and writes its ring.
+			float trap_ratio = params.reserved1.y;
+			float prev_mean = state.v[S_TRAP_PREV_MEAN];
+			if (trap_ratio > 1.0 && prev_mean > 1e-4 && total > 0.0 &&
+				(mean * trap_ratio < prev_mean || mean > prev_mean * trap_ratio)) {
+				state.v[S_TRAP_HIT_FRAME] = params.reserved1.x;
+				state.v[S_TRAP_HIT_MEAN] = mean;
+				state.v[S_TRAP_HIT_PREV] = prev_mean;
+			}
+			state.v[S_TRAP_PREV_MEAN] = mean;
 		} else {
 			for (int i = 0; i < BINS; i++) {
 				s_cdf[i] = 0.0;
@@ -250,12 +268,35 @@ void main() {
 		if (params.frame.w > 0.0) {
 			e = clamp(params.frame.w, EXPOSURE_MIN, EXPOSURE_MAX);
 		} else {
+			// `sub_82191C18`, constant for constant. Every number below is its literal, not a
+			// tuning choice:
+			//
+			//   min(p99, 16*mean)            0x82191C78 fsubs + 0x82191CB0 fsel, 16.0 = flt_82099410
+			//   * exposure-at-capture        +0x2124, the value the histogram was normalised by
+			//   max(..., 0.1)                0x82191CD4 fsel, 0.1 = flt_8209B650
+			//   0.75 * RANGE / m             0x82191CF8 fsel, 0.75 = flt_8209949C
+			//                                RANGE is the histogram's full scale, +0x10C = 4.0
+			//   clamp to [0.1, 10]           0x82191D18 fsel, 10.0 = flt_82000A54
+			//   target = clamp(prev*r, 1,16) 0x82191D3C / 0x82191D5C
+			//   blend by 0.05                0x82191D64 fmadds, 0.05 = flt_820992D8
+			//   clamp again to [1, 16]       0x82191D84 / 0x82191DA8
+			//
+			// It reads the RAW per-frame statistics, not the smoothed ones: the smoothed
+			// +0x4198/419C/41A0 feed the tone curve and the bright pass, never this.
 			float m = min(state.v[S_HIST_MAX_PCT], 16.0 * state.v[S_HIST_MEAN]) *
 				state.v[S_HIST_EXPOSURE_USED];
 			m = max(m, 0.1);
 			float r = clamp((0.75 * RANGE) / m, 0.1, 10.0);
 			float target = clamp(prev * r, EXPOSURE_MIN, EXPOSURE_MAX);
-			e = clamp(prev + EXPOSURE_BLEND * (target - prev), EXPOSURE_MIN, EXPOSURE_MAX);
+
+			// The one departure, to preserve the original's timing: the guest applies 0.05 once
+			// per RENDER FRAME with no dt term (0x82191D64) at about 30 fps. The step is referred
+			// to 30 Hz with the guest's own frame-rate compensation form
+			// (0x82276810..0x82276890, `1 - (1 - speed)^(dt * 30)`, 30.0 = flt_820992A4): exactly
+			// 0.05 at 30 fps, the same real-time response at any other rate. A long first frame
+			// drives the step toward 1.
+			float step_k = 1.0 - pow(1.0 - EXPOSURE_BLEND, max(params.frame.x, 0.0) * 30.0);
+			e = clamp(prev + step_k * (target - prev), EXPOSURE_MIN, EXPOSURE_MAX);
 		}
 
 		float applied = params.bloom.w > 0.5 ? e : 1.0;

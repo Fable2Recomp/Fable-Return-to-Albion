@@ -219,6 +219,28 @@ public static class Engine_TexCache
 		return Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
 	}
 
+	/// <summary>
+	/// The key for something COMPUTED from input bytes — a terrain slice's compressed mip chain,
+	/// its cavity. The recipe names the computation and every parameter that changes its output;
+	/// the sources are the bytes it read. Same rule as <see cref="Key"/>: hash what was read, never
+	/// where it came from.
+	/// </summary>
+	public static string DerivedKey(string recipe, ReadOnlySpan<byte> source, ReadOnlySpan<byte> second = default)
+	{
+		using IncrementalHash sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+		Span<byte> tail = stackalloc byte[8];
+		BitConverter.TryWriteBytes(tail[..4], ConverterVersion);
+		BitConverter.TryWriteBytes(tail.Slice(4, 4), second.Length);
+
+		sha.AppendData(source);
+		sha.AppendData(second);
+		sha.AppendData(tail);
+		sha.AppendData(Encoding.UTF8.GetBytes(recipe));
+
+		return Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+	}
+
 	/// <summary>Reads a cached image, or null when the key is not present or unreadable.</summary>
 	public static Image? TryLoad(string key, out bool hasAlpha) =>
 		TryLoadFaces(key, out Image[] faces, out hasAlpha) && faces.Length == 1 ? faces[0] : null;
@@ -287,49 +309,52 @@ public static class Engine_TexCache
 		}
 
 		byte[] compressed = file.GetBuffer((long)deflatedLength);
-		byte[]? all = compressed.Length == deflatedLength
-			? Inflate(compressed, (int)length * faceCount)
-			: null;
-
-		if (all is null)
+		long totalLong = (long)length * faceCount;
+		if (compressed.Length != deflatedLength || totalLong > int.MaxValue)
 		{
-			// A truncated or corrupt entry. Treated as a miss so it is simply rebuilt, which is
-			// what every other unreadable container here does.
 			Interlocked.Increment(ref _misses);
 			return false;
 		}
 
-		Interlocked.Add(ref _bytesRead, compressed.Length);
-
-		var decoded = new Image[faceCount];
-		for (int face = 0; face < faceCount; ++face)
+		// Pooled, and each face is a span of it: the inflate buffer is multi-megabyte (LOH), and
+		// Image.CreateFromData copies the span.
+		int total = (int)totalLong;
+		byte[] all = System.Buffers.ArrayPool<byte>.Shared.Rent(total);
+		try
 		{
-			var payload = new byte[length];
-			System.Array.Copy(all, (long)face * length, payload, 0, length);
-			if (payload.Length != length)
+			if (!InflateInto(compressed, all, total))
 			{
-				// A TRUNCATED ENTRY IS A CRASH IF IT IS HANDED ON. Image.CreateFromData asserts on
-				// a buffer shorter than the format demands, and this cache is written by background
-				// workers, so a kill during a store is a normal thing to survive rather than an
-				// impossible one.
+				// A truncated or corrupt entry. Treated as a miss so it is simply rebuilt, which
+				// is what every other unreadable container here does.
 				Interlocked.Increment(ref _misses);
 				return false;
 			}
 
-			try
+			Interlocked.Add(ref _bytesRead, compressed.Length);
+
+			var decoded = new Image[faceCount];
+			for (int face = 0; face < faceCount; ++face)
 			{
-				decoded[face] = Image.CreateFromData(width, height, mipmaps, format, payload);
-			}
-			catch (Exception)
-			{
-				Interlocked.Increment(ref _misses);
-				return false;
+				try
+				{
+					decoded[face] = Image.CreateFromData(width, height, mipmaps, format,
+						new ReadOnlySpan<byte>(all, face * (int)length, (int)length));
+				}
+				catch (Exception)
+				{
+					Interlocked.Increment(ref _misses);
+					return false;
+				}
 			}
 
+			faces = decoded;
+		}
+		finally
+		{
+			System.Buffers.ArrayPool<byte>.Shared.Return(all);
 		}
 
 		Interlocked.Increment(ref _hits);
-		faces = decoded;
 		return true;
 	}
 
@@ -641,7 +666,7 @@ public static class Engine_TexCache
 	}
 
 	/// <summary>
-	/// Inflates a payload to exactly the expected size, or null.
+	/// Inflates a payload into <paramref name="result"/> at exactly the expected size, or false.
 	/// </summary>
 	/// <remarks>
 	/// THE EXPECTED SIZE IS AN INPUT, not something the stream is trusted to produce. A corrupt
@@ -649,16 +674,15 @@ public static class Engine_TexCache
 	/// that is not the exact length the format demands — so a short or long result is rejected here
 	/// rather than becoming a crash two frames later.
 	/// </remarks>
-	private static byte[]? Inflate(byte[] compressed, int expected)
+	private static bool InflateInto(byte[] compressed, byte[] result, int expected)
 	{
 		if (expected <= 0)
 		{
-			return null;
+			return false;
 		}
 
 		try
 		{
-			var result = new byte[expected];
 			using var input = new System.IO.MemoryStream(compressed);
 			using var inflate = new System.IO.Compression.DeflateStream(
 				input, System.IO.Compression.CompressionMode.Decompress);
@@ -669,18 +693,18 @@ public static class Engine_TexCache
 				int read = inflate.Read(result, at, expected - at);
 				if (read <= 0)
 				{
-					return null;
+					return false;
 				}
 
 				at += read;
 			}
 
 			// Anything left over means the entry does not describe what it claims to.
-			return inflate.ReadByte() == -1 ? result : null;
+			return inflate.ReadByte() == -1;
 		}
 		catch (Exception)
 		{
-			return null;
+			return false;
 		}
 	}
 

@@ -577,6 +577,14 @@ public static class Engine_ThemeTimeline
             // SunIntensity is NOT blended here — it is registered against the Sky group, not
             // Lighting, so it rides on SkyTheme and BlendSky already interpolates it.
             MainLightShadowed = Lerp(a.MainLightShadowed, b.MainLightShadowed, w),
+
+            // The painted weight rides along. Both ends of a step are folded with the same
+            // painted layers (Reevaluate folds the start AND the end theme), and the frame
+            // evaluation reads PaintedWeight for the authored-ambient take-over and the sky
+            // tether (SkylightWeight = 1 − PaintedWeight); dropped here, every frame between
+            // two re-evaluations would run unpainted.
+            PaintedWeight = Lerp(a.PaintedWeight, b.PaintedWeight, w),
+            SourceTimeOfDay = a.SourceTimeOfDay,
         };
 
         LerpInto(a.MainLightColour, b.MainLightColour, w, o.MainLightColour);

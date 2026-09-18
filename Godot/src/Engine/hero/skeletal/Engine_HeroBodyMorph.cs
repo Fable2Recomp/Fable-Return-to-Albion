@@ -188,7 +188,8 @@ public static class Engine_HeroBodyMorph
                 }
             }
 
-            result.AddSurfaceFromArrays(source.SurfaceGetPrimitiveType(s), arrays);
+            result.AddSurfaceFromArrays(source.SurfaceGetPrimitiveType(s), arrays, null,
+                Refii.Models.Engine_MdlMesh.SurfaceLods(source, s));
             result.SurfaceSetName(s, source.SurfaceGetName(s));
             result.SurfaceSetMaterial(s, source.SurfaceGetMaterial(s));
         }

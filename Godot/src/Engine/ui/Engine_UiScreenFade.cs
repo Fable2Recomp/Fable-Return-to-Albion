@@ -22,7 +22,11 @@ public sealed partial class Engine_UiScreenFade : Node
 	private ColorRect? _rect;
 
 	/// <summary>What the last poll saw, so the report is one line per change.</summary>
-	private string _reported = string.Empty;
+	/// <summary>
+	/// The key over the last `[screen-fade]` line — see <see cref="Drive"/>. Nullable so the
+	/// first sample cannot be mistaken for an unchanged one.
+	/// </summary>
+	private long? _reported;
 
 	/// <summary>True while the fade is covering anything — for a caller that wants to know.</summary>
 	public bool IsCovering { get; private set; }
@@ -67,15 +71,37 @@ public sealed partial class Engine_UiScreenFade : Node
 
 		// Report the lock too: `CmdLevelChange_Update` proceeds on `!IsFading() || locked`, so it
 		// is what separates a wedged level change from a fade still running.
-		string now = covering
-			? $"{fade.Colour.R:0.00},{fade.Colour.G:0.00},{fade.Colour.B:0.00} " +
-				$"a{fade.Colour.A:0.00} t{fade.Progress:0.00}{(fade.Locked ? " LOCKED" : string.Empty)}"
-			: fade.Known ? "clear" : "no fade object";
+		//
+		// Key first, string only on a change: a fade ramps every frame. The key quantises at the
+		// two decimals the line prints, so a move too small to show does not fire a report.
+		long now = covering
+			? Quantised(fade.Colour.R, fade.Colour.G, fade.Colour.B, fade.Colour.A,
+				fade.Progress, fade.Locked)
+			: fade.Known ? 1L : 2L;
 
 		if (_reported != now)
 		{
 			_reported = now;
-			GD.Print($"[screen-fade] {now}");
+			GD.Print(covering
+				? $"[screen-fade] {fade.Colour.R:0.00},{fade.Colour.G:0.00}," +
+					$"{fade.Colour.B:0.00} a{fade.Colour.A:0.00} t{fade.Progress:0.00}" +
+					$"{(fade.Locked ? " LOCKED" : string.Empty)}"
+				: fade.Known ? "[screen-fade] clear" : "[screen-fade] no fade object");
 		}
+	}
+
+	/// <summary>The six printed channels at the precision the line prints them, as one key.</summary>
+	private static long Quantised(float r, float g, float b, float a, float t, bool locked)
+	{
+		static long Hundredths(float value) =>
+			(long)System.MathF.Round(value * 100f, System.MidpointRounding.AwayFromZero);
+
+		long key = 3L;
+		key = (key * 1000003L) ^ Hundredths(r);
+		key = (key * 1000003L) ^ Hundredths(g);
+		key = (key * 1000003L) ^ Hundredths(b);
+		key = (key * 1000003L) ^ Hundredths(a);
+		key = (key * 1000003L) ^ Hundredths(t);
+		return (key * 1000003L) ^ (locked ? 1L : 0L);
 	}
 }

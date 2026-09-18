@@ -169,6 +169,9 @@ void vertex() {
 
         VERTEX.xz += wind_direction * bend * wind_amplitude * height;
     }
+
+    // After the wind: the light table measures to where the vertex is drawn.
+    fable_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 void fragment() {
@@ -497,7 +500,7 @@ void light() {
             DIFFUSE_LIGHT = vec3((dot(NORMAL, LIGHT) * 0.5) + 0.5);
         }
     } else {
-        float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL);
+        float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
         if (foliage) {
             float wrap = clamp((dot(NORMAL, LIGHT) + foliage_wrap) / (1.0 + foliage_wrap), 0.0, 1.0);
             DIFFUSE_LIGHT += wrap * atten * (LIGHT_COLOR / PI);

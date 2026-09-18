@@ -8,6 +8,9 @@ namespace Refii.Models;
 
 public static class Engine_MdlMaterial
 {
+    /// <summary>Set on a material that sways in the wind (`wind_amplitude` > 0): a local flag, unlike the parameter.</summary>
+    public static readonly StringName WindMetaName = "sways_in_wind";
+
     /// <summary>
     /// The wind's direction in world XZ, as a UNIT vector. Set by the level from its theme.
     /// </summary>
@@ -73,6 +76,12 @@ public static class Engine_MdlMaterial
 
 
         shader.SetShaderParameter("wind_amplitude", authored);
+        if (authored > 0f)
+        {
+            // Read back by the prop streamer without a shader-parameter query: an unset
+            // parameter's read is a round trip to the render thread.
+            shader.SetMeta(WindMetaName, true);
+        }
         shader.SetShaderParameter("wind_speed", Mathf.Clamp(info.WindSpeed, 0.1f, 8.0f));
         shader.SetShaderParameter("wind_direction", WindDirection);
     }
@@ -211,24 +220,117 @@ public static class Engine_MdlMaterial
             $"{Volatile.Read(ref _withSpecular):N0} specular, " +
             $"{Volatile.Read(ref _withEmission):N0} self-illum, " +
             $"{Volatile.Read(ref _withEnvmap):N0} envmap, " +
-            $"{Volatile.Read(ref _withOrm):N0} orm");
+            $"{Volatile.Read(ref _withOrm):N0} orm; " +
+            $"shared {Interlocked.Read(ref SharedHits):N0} hits / " +
+            $"{Interlocked.Read(ref SharedBuilt):N0} distinct");
     }
 
-    public static Material? TryCreate(MdlMaterial? material)
+    /// <summary>Finished materials by stated identity; a region-scoped cache, never an owner.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Material>
+        _shared = new();
+
+    /// <summary>How many surfaces took a shared material, and how many had to build one.</summary>
+    public static long SharedHits;
+
+    public static long SharedBuilt;
+
+    /// <summary>Drops the shared materials. Call from <c>Engine_LevelCaches.ReleaseRegion</c>.</summary>
+    public static void ClearSharedCache()
+    {
+        _shared.Clear();
+    }
+
+    /// <summary>
+    /// The finished material for one surface — the record's textures plus the wind and vegetation
+    /// the MESH states — shared by every surface that states the same thing.
+    /// </summary>
+    /// <remarks>
+    /// One material per surface is one weak handle per surface: every ShaderMaterial is a
+    /// RefCounted registered in Godot's DisposablesTracker, and the GC processes every weak handle
+    /// on every collection whatever the generation.
+    ///
+    /// The identity is the record plus what the mesh states. The record names the samplers; the
+    /// mesh header states the movement mode, the wind amplitude and the vegetation draw path, and
+    /// all three are written onto the material AFTER it is built (<see cref="ApplyWind"/>,
+    /// <see cref="ApplyVegetation"/>). Two surfaces sharing a record but not a wind mode are not
+    /// the same material, so the key carries both.
+    ///
+    /// Not shared when a sampler was overridden — the morphed hero maps belong to one body, and a
+    /// path key would hand the next character the hero's skin.
+    /// </remarks>
+    public static Material? TryCreateShared(
+        MdlMaterial? material, Refii.Models.MdlInfo info, bool authoredNormals)
     {
         if (material is null)
         {
             return null;
         }
 
-        Texture2D? albedo = TryLoad(material.Diffuse, TexSemantic.Albedo, out bool albedoHasAlpha);
+        // Built once per surface at BUILD time, not per frame; the string is the cheap part of a
+        // call that otherwise decodes textures.
+        string key = string.Concat(
+            material.Diffuse, "|", material.Specular, "|", material.Normal, "|",
+            material.EnvironmentMap, "|", material.SelfIllumination, "|",
+            material.SpecularPowerMin.ToString("R"), "|",
+            material.SpecularPowerMax.ToString("R"), "|",
+            material.SelfIlluminationScale.ToString("R"), "|",
+            info.MovementMode.ToString(), "|",
+            info.WindAmplitude.ToString("R"), "|",
+            IsVegetationDrawPath(info) ? "v" : "-",
+            authoredNormals ? "n" : "-");
+
+        if (_shared.TryGetValue(key, out Material? hit))
+        {
+            Interlocked.Increment(ref SharedHits);
+            return hit;
+        }
+
+        Material? built = TryCreate(material, out bool overridden);
+        if (built is null)
+        {
+            return null;
+        }
+
+        ApplyWind(built, info);
+        ApplyVegetation(built, info, authoredNormals);
+        Interlocked.Increment(ref SharedBuilt);
+
+        if (overridden)
+        {
+            return built;
+        }
+
+        // A race costs one duplicate, not a wrong material: two workers can miss the same key,
+        // both build the same thing, and whichever lands first is the one everyone takes.
+        return _shared.GetOrAdd(key, built);
+    }
+
+    public static Material? TryCreate(MdlMaterial? material) => TryCreate(material, out _);
+
+    /// <param name="overridden">
+    /// A sampler resolved through <see cref="TextureOverride"/> — the hero's morphed maps, which
+    /// belong to one body. Such a material is not shareable by record key.
+    /// </param>
+    public static Material? TryCreate(MdlMaterial? material, out bool overridden)
+    {
+        overridden = false;
+        if (material is null)
+        {
+            return null;
+        }
+
+        Texture2D? albedo = TryLoad(
+            material.Diffuse, TexSemantic.Albedo, out bool albedoHasAlpha, out bool albedoOverridden);
         Texture2D? normal = TryLoad(
             material.Normal, TexSemantic.Normal, out _, out bool normalOverridden);
-        Texture2D? emissive =
-            TryLoad(material.SelfIllumination, TexSemantic.SelfIllumination, out _);
+        Texture2D? emissive = TryLoad(
+            material.SelfIllumination, TexSemantic.SelfIllumination, out _, out bool emissiveOverridden);
 
         Texture2D? specular = TryLoad(
             material.Specular, TexSemantic.Specular, out _, out bool specularOverridden);
+
+        overridden =
+            albedoOverridden || normalOverridden || emissiveOverridden || specularOverridden;
 
         // The environment cube. 526 of the 8,931 shipped material records name one and none of
         // them were rendering it, because the decoder could not read a cube .tex at all until

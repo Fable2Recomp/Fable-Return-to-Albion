@@ -10,6 +10,13 @@ namespace Refii.Level;
 [Tool]
 public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 {
+    // Shader parameter names as StringNames: a string literal converts to a fresh
+    // finalizable StringName on every call.
+    private static readonly StringName Param_cloud_density = "cloud_density";
+    private static readonly StringName Param_element_vis = "element_vis";
+    private static readonly StringName Param_sun_engine = "sun_engine";
+    private static readonly StringName Param_uv_scale_offset = "uv_scale_offset";
+
     private float _dayFraction = 0.5f;
 
     [Export(PropertyHint.Range, "0,24,0.05,suffix:h")]
@@ -100,10 +107,13 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             // ONE bake weight for every authored bake — terrain lightmap, vertex colours,
             // instance colours, interior textures — so the bridge, the rocks and the ground
             // they meet scale together instead of drifting into separate lighting worlds.
-            RenderingServer.GlobalShaderParameterSet("fable_bake_weight",
-                System.Math.Clamp(
-                    Refii.Core.Engine_RefiiConfig.Float(config, "baked_light_weight", 0.45f),
-                    0.05f, 2.0f));
+            float bakeWeight = System.Math.Clamp(
+                Refii.Core.Engine_RefiiConfig.Float(config, "baked_light_weight", 0.45f),
+                0.05f, 2.0f);
+            Refii.Lighting.Engine_LevelBakedLighting.BakeWeight = bakeWeight;
+            Refii.Lighting.Engine_LevelBakedLighting.DialProbeLitProps =
+                Refii.Core.Engine_RefiiConfig.Bool(config, "prop_probe_bake_weight", false);
+            RenderingServer.GlobalShaderParameterSet("fable_bake_weight", bakeWeight);
         }
         catch (System.Exception e)
         {
@@ -276,14 +286,14 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         Vector3 dome = Engine_SkyFrame.ToDome(frame.SunDirection);
         if (Environment?.Sky?.SkyMaterial is ShaderMaterial material)
         {
-            material.SetShaderParameter("sun_engine", dome);
+            material.SetShaderParameter(Param_sun_engine, dome);
         }
 
         RenderingServer.GlobalShaderParameterSet("atmos_sun", dome);
 
         if (GetParent()?.GetNodeOrNull<Node3D>(Engine_CelestialElements.NodeName) is { } celestial)
         {
-            Engine_CelestialElements.Update(celestial, Theme, frame);
+            Engine_CelestialElements.Update(celestial, Theme, frame, null, MoonPhaseNow);
         }
 
         if (_lightingTheme is { } lightingTheme && ResolveSun() is { } sun)
@@ -510,7 +520,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Engine_CelestialElements.NodeName);
         if (celestial is not null)
         {
-            Engine_CelestialElements.Update(celestial, Theme, frame);
+            Engine_CelestialElements.Update(celestial, Theme, frame, null, MoonPhaseNow);
         }
 
         _msCelestial = SinceMs(ref mark);
@@ -669,6 +679,15 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
     }
 
+    /// <summary>
+    /// The moon phase the guest states (0..7, a frame of the eight-frame moon atlas), or the host
+    /// default when it has not been read.
+    /// </summary>
+    private static int MoonPhaseNow =>
+        Refii.Host.HostBridge.TimeOfDay() is { MoonPhase: >= 0 and <= 7 } clock
+            ? clock.MoonPhase
+            : Refii.Level.Engine_CelestialElements.DefaultMoonPhase;
+
     private CloudTheme? _cloudTheme;
     private SkyFrame? _frame;
     private ToneMapTheme? _toneMapTheme;
@@ -764,12 +783,11 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         Vector3 right = camera?.GlobalTransform.Basis.X ?? Vector3.Right;
         Vector3 up = camera?.GlobalTransform.Basis.Y ?? Vector3.Up;
 
-        if (celestial.GetNodeOrNull<MeshInstance3D>("MoonGlare") is
-                { MaterialOverride: ShaderMaterial moonGlare })
         {
+            // The moon glare lives in the halo layer now; its cloud term rides along.
             Vector3 moonDir = Engine_SkyFrame.ToGodot(frame.MoonDirection);
             float vis = CloudVisibility(clouds, cloudTheme, moonDir, right, up);
-            moonGlare.SetShaderParameter("element_vis", vis);
+            Refii.Fx.Engine_PostFxHalos.SetSkyVisibility("MoonGlare", vis);
         }
 
         if (celestial.GetNodeOrNull<MeshInstance3D>("SunGlare") is
@@ -777,7 +795,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         {
             Vector3 sunDir = Engine_SkyFrame.ToGodot(frame.SunDirection);
             float vis = CloudVisibility(clouds, cloudTheme, sunDir, right, up);
-            sunGlare.SetShaderParameter("element_vis", vis);
+            sunGlare.SetShaderParameter(Param_element_vis, vis);
         }
     }
 
@@ -807,8 +825,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 _cloudUvY[index] +
                 (layer.VelocityY * Engine_Clouds.VelocityScale * delta));
 
-            Vector4 current = material.GetShaderParameter("uv_scale_offset").AsVector4();
-            material.SetShaderParameter("uv_scale_offset", new Vector4(
+            Vector4 current = material.GetShaderParameter(Param_uv_scale_offset).AsVector4();
+            material.SetShaderParameter(Param_uv_scale_offset, new Vector4(
                 current.X, current.Y, _cloudUvX[index], _cloudUvY[index]));
         }
     }
@@ -898,7 +916,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             return false;
         }
 
-        var texture = material.GetShaderParameter("cloud_density").As<Texture2D>();
+        var texture = material.GetShaderParameter(Param_cloud_density).As<Texture2D>();
         Image? image = texture?.GetImage();
         if (image is null)
         {
@@ -911,15 +929,19 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             image.Decompress();
         }
 
+        // One native crossing for the whole map, not a GetPixel per texel.
+        if (image.GetFormat() != Image.Format.Rgba8)
+        {
+            image.Convert(Image.Format.Rgba8);
+        }
+
         int w = image.GetWidth();
         int h = image.GetHeight();
+        byte[] rgba = image.GetData();
         var alpha = new byte[w * h];
-        for (int y = 0; y < h; y++)
+        for (int i = 0, a = 3; i < alpha.Length && a < rgba.Length; i++, a += 4)
         {
-            for (int x = 0; x < w; x++)
-            {
-                alpha[(y * w) + x] = (byte)(image.GetPixel(x, y).A * 255f);
-            }
+            alpha[i] = rgba[a];
         }
 
         map = (alpha, w, h);

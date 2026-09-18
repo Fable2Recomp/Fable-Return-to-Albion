@@ -2424,6 +2424,13 @@ public static class Engine_UiTemplates
 			RevealedBack = Engine_UiScreenActions.ScreenBack,
 			ChromeUnits = { "elements" },
 			PanelSubtrees = { "elements" },
+
+			// The card is entirely the guest's strings and this screen has no provider; without
+			// this every field falls back to the file's unresolved caption keys.
+			// `sub_826CCC88` fills once on open: `character` ('<Name> the <Job>'),
+			// `characterdescription`, the `Opinion`/`Likes`/`Dislikes` headings, `Likes1..3`,
+			// `LikesType1..3`, `Dislikes1..3` and the button caption under `buttons`.
+			GuestTextUnits = { "elements" },
 		});
 
 		// THE FRONT END. Its overlays — the storage dialog, the loading animation, the countdown

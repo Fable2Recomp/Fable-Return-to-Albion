@@ -421,7 +421,25 @@ public static class Engine_PostFxModel
     public static float Filmic(float x) =>
         Clampf((x * ((2.51f * x) + 0.03f)) / ((x * ((2.43f * x) + 0.59f)) + 0.14f), 0f, 1f);
 
-    public static void UpdateExposure(State s, Derived d)
+    /// <summary>
+    /// The guest's auto-exposure step. Must stay identical to the compute copy in
+    /// <c>fable_postfx_reduce.glsl</c>, which is the one that actually runs.
+    /// </summary>
+    /// <remarks>
+    /// Every constant is `sub_82191C18`'s own: 16.0 (`flt_82099410`), 0.1 (`flt_8209B650`),
+    /// 0.75 (`flt_8209949C`), 10.0 (`flt_82000A54`), 0.05 (`flt_820992D8`), and the [1, 16]
+    /// bound applied twice, once to the target and once to the blended result.
+    /// <see cref="Range"/> is the histogram's full scale, the guest's `+0x10C` = 4.0. It reads the
+    /// RAW per-frame statistics; the smoothed ones feed the curve and the bright pass.
+    ///
+    /// <paramref name="dt"/> is the only departure: the guest applies 0.05 once per render frame
+    /// at about 30 fps with no dt term, so the step is referred to 30 Hz with the guest's own
+    /// compensation form (`1 - (1 - speed)^(dt * 30)`, 0x82276810..0x82276890), exactly 0.05 at
+    /// 30 fps.
+    ///
+    /// This is the CPU reference, not the live path; keep it in step with the shader.
+    /// </remarks>
+    public static void UpdateExposure(State s, Derived d, float dt = 1.0f / 30.0f)
     {
         Histogram h = s.Hist;
         float m = MathF.Min(h.MaxPct, 16.0f * h.Mean) * h.ExposureUsed;
@@ -429,7 +447,8 @@ public static class Engine_PostFxModel
         float r = Clampf((0.75f * Range) / m, 0.1f, 10.0f);
         float prev = s.Exposure;
         float target = Clampf(prev * r, ExposureMin, ExposureMax);
-        float e = Clampf(prev + (ExposureBlend * (target - prev)), ExposureMin, ExposureMax);
+        float step = 1.0f - MathF.Pow(1.0f - ExposureBlend, MathF.Max(dt, 0.0f) * 30.0f);
+        float e = Clampf(prev + (step * (target - prev)), ExposureMin, ExposureMax);
         s.Prev = prev;
         s.Exposure = e;
         s.Applied = d.TonemapEnabled ? e : 1.0f;

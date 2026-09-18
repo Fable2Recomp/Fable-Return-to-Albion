@@ -284,10 +284,31 @@ public static class Engine_SkyAtmosphere
         return inputs;
     }
 
+    /// <summary>
+    /// The atmosphere for a frame, into a state the caller owns.
+    /// </summary>
+    /// <remarks>
+    /// The allocating overload is not for per-frame callers: <see cref="AtmosphereState"/> holds
+    /// thirteen `float[4]`s, and GC pauses cost the guest simulation steps.
+    ///
+    /// Every field is overwritten unconditionally, so a reused state carries nothing from the
+    /// previous frame. Callers that run once — a load, an editor refresh — can keep using the
+    /// allocating overload.
+    /// </remarks>
+    public static void Compute(AtmosphereInputs theme, AtmosphereState state)
+    {
+        ComputeInto(theme, state);
+    }
+
     public static AtmosphereState Compute(AtmosphereInputs theme)
     {
         var state = new AtmosphereState();
+        ComputeInto(theme, state);
+        return state;
+    }
 
+    private static void ComputeInto(AtmosphereInputs theme, AtmosphereState state)
+    {
         double rayleighCommon =
             Math.Pow(BetaRayleighPowBase, BetaRayleighPowExponent) * BetaRayleighCommon;
 
@@ -372,7 +393,6 @@ public static class Engine_SkyAtmosphere
         }
 
         SolveFogCurve(theme, state);
-        return state;
     }
 
     /// <summary>
@@ -479,8 +499,11 @@ public static class Engine_SkyAtmosphere
             float tCos = t * state.LutCosSunElevation;
             float hgRatio = state.LutHg[0] / hgDenominator;
 
-            float gated = (t * 0.5f) + state.LutBiasPlusHalf < 0f ? 0f : hgRatio;
-            float colourFactor = gated < 1f ? gated : 1f;
+            // A linear ramp, not a gate. `sub_821F7258` computes f7 = t*0.5 + (Bias+0.5) at
+            // 0x821F7408, clamps it with two fsels against 0.0 and 1.0 (0x821F74A0, 0x821F74F8), and
+            // stores the result into the stack slot that held hgRatio (0x821F74FC); that slot's
+            // first value is not the factor.
+            float colourFactor = Math.Clamp((t * 0.5f) + state.LutBiasPlusHalf, 0f, 1f);
 
             for (int channel = 0; channel < 3; channel++)
             {

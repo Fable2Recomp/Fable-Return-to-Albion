@@ -264,22 +264,36 @@ public partial class GameLoadingScreen : Node
 		// loading screen was last drawn over a game that has stopped.
 		if (HostBridge.TryGetAbiVersion() is null)
 		{
-			Hide("the bridge is not usable");
+			Hide("[game-loading] the bridge is not usable");
 			return;
 		}
 
 		if (HostBridge.GetLoadingScreen() is not { } loading || loading.Screen == 0)
 		{
-			Hide("the guest has no loading screen up");
+			if (GameWorld.WorldBuildHeld)
+			{
+				HoldCover("[game-loading] the guest dropped its loading screen while the world " +
+					"build still holds its level change — covering until the build releases it");
+				return;
+			}
+
+			Hide("[game-loading] the guest has no loading screen up");
 			return;
 		}
 
 		if (HostBridge.GetLoadingScreenArt() is not { } art || art.Name.Length == 0)
 		{
+			if (GameWorld.WorldBuildHeld)
+			{
+				HoldCover("[game-loading] the guest wants a loading screen but its art is " +
+					"unreadable — covering while the world build holds");
+				return;
+			}
+
 			// A screen is WANTED but its art is unreadable. Reported rather than passed over:
 			// the two states want different fixes, and a blank hold looks identical to a
 			// loading screen nobody asked for.
-			Hide("the guest wants a loading screen but its art is unreadable");
+			Hide("[game-loading] the guest wants a loading screen but its art is unreadable");
 			return;
 		}
 
@@ -905,6 +919,37 @@ public partial class GameLoadingScreen : Node
 	}
 
 
+	/// <summary>
+	/// Our cover, not the guest's screen: fully opaque, over whatever art the guest last showed
+	/// (black when it never had readable art). Shown while Godot is still building the region.
+	/// </summary>
+	private void HoldCover(string why)
+	{
+		if (_backdrop is not null)
+		{
+			_backdrop.Color = Colors.Black;
+			_backdrop.Visible = true;
+		}
+
+		if (_furniture is not null)
+		{
+			_furniture.Modulate = Colors.White;
+			_furniture.Visible = _source is not null;
+			_furniture.QueueRedraw();
+		}
+
+		IsShowing = true;
+		Report(why);
+	}
+
+	/// <summary>
+	/// Takes the screen down and says why, once.
+	/// </summary>
+	/// <remarks>
+	/// The reason arrives already prefixed and constant: `Poll` runs every frame, ahead of every
+	/// gate in <c>GameUi</c>, so formatting it here would allocate per frame only for
+	/// <see cref="Report"/> to drop the duplicate.
+	/// </remarks>
 	private void Hide(string why)
 	{
 		// FORGOTTEN WITH THE SCREEN. Holding it would carry one load's layout into the next,
@@ -924,7 +969,9 @@ public partial class GameLoadingScreen : Node
 
 		IsShowing = false;
 		_loaded = string.Empty;
-		Report($"[game-loading] {why}");
+		// The painting goes too, or the next load's cover would show this region's art.
+		_source = null;
+		Report(why);
 	}
 
 	/// <summary>

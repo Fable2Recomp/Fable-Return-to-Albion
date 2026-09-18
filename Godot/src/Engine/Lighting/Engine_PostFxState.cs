@@ -40,7 +40,12 @@ public static class Engine_PostFxState
     public const int Curve = 32;
     public const int Lut = Curve + Engine_PostFxModel.CurveSize;
     public const int Cdf = Lut + Engine_PostFxModel.CurveSize;
-    public const int Floats = Cdf + Engine_PostFxModel.CurveSize;
+    // The flicker trap's four scalars, after the CDF. Mirrored in fable_postfx_reduce.glsl.
+    public const int TrapPrevMean = Cdf + Engine_PostFxModel.CurveSize;
+    public const int TrapHitFrame = TrapPrevMean + 1;
+    public const int TrapHitMean = TrapPrevMean + 2;
+    public const int TrapHitPrev = TrapPrevMean + 3;
+    public const int Floats = TrapPrevMean + 4;
     public const int Bytes = Floats * sizeof(float);
 
     public static readonly string[] FieldNames =

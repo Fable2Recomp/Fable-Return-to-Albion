@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <thread>
 #include "vfs_hooks_private.h"
+#include "core/payload_bridge.h"
 
 #if REFII_VFS_HAS_RENDERER_RUNTIME
 #include "renderer_runtime.h"
@@ -3166,6 +3167,20 @@ REX_EXTERN(rex_lhRenderer_EndScene) {
 }
 
 // ============================================================================================
+// THE GUEST FRAME. `sub_821A61B0(loop, alpha)` is the 30 Hz HF pass of the main loop
+// (`sub_82276D10`, game thread): it runs after the game tick and writes every character's
+// pose into comp6+0x30 (`sub_8220D1B8` → `sub_82204FF0` → `sub_821F2C78`) with the camera.
+// The guest keeps no counter of it — the HF index is a local — so this is the one place the
+// host learns that a new frame of guest state is in memory. Godot reads that state once per
+// count and interpolates between counts.
+// ============================================================================================
+REX_EXTERN(sub_821A61B0) {
+  REX_FUNC_PROLOGUE();
+  __imp__sub_821A61B0(ctx, base);
+  refii_bridge_note_guest_frame();
+}
+
+// ============================================================================================
 // THE NULL RENDER FRAME. Godot renders; the guest's 3D Engine thread still walked its scene,
 // built every draw and handed it to a device that discards it — ~30% of a core after pacing,
 // two cores before. `Render_SubPassOrchestrator_INFERRED` (sub_821C3C60) is the whole draw:
@@ -3224,7 +3239,15 @@ REX_EXTERN(sub_821C3C60) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xE0000000u; };
 
   static uint32_t frames = 0, warmed = 0, boxes = 0;
+  static uint32_t refused_nodes = 0, refused_objects = 0;
   ++frames;
+
+  // Span ceilings reject torn reads, not real containers: the walk runs while the guest may be
+  // mid-write, so a begin/end pair can describe gigabytes. They are sized far above any real
+  // list, and every rejection is counted and logged, because a skipped node leaves its texture
+  // boxes unstated and the level load waits on residency.
+  constexpr uint32_t kMaxNodes = 64u * 1024u;
+  constexpr uint32_t kMaxObjects = 256u * 1024u;
 
   // THE COMPLETION DRAIN STAYS. Streamed-texture reads complete in `sub_82191F50` (each
   // pending entry's vtable +20 → `sub_82A7AF68`, `--dword_83496E78`), which the draw called
@@ -3255,8 +3278,16 @@ REX_EXTERN(sub_821C3C60) {
     const uint32_t list = view + 3412u;
     const uint32_t nodes_begin = load32(list + 4u);
     const uint32_t nodes_end = load32(list + 8u);
-    if (!plausible(nodes_begin) || nodes_end < nodes_begin || (nodes_end - nodes_begin) % 24u != 0u ||
-        nodes_end - nodes_begin > 24u * 256u) {
+    if (!plausible(nodes_begin) || nodes_end < nodes_begin ||
+        (nodes_end - nodes_begin) % 24u != 0u) {
+      continue;
+    }
+    if ((nodes_end - nodes_begin) / 24u > kMaxNodes) {
+      if (++refused_nodes <= 8u || (refused_nodes & (refused_nodes - 1u)) == 0u) {
+        REXLOG_WARN("Refii null-frame: view 0x{:08X} node list spans {} entries, over the {} "
+                    "torn-read ceiling — SKIPPED, its texture boxes go unstated (#{})",
+                    view, (nodes_end - nodes_begin) / 24u, kMaxNodes, refused_nodes);
+      }
       continue;
     }
 
@@ -3267,8 +3298,15 @@ REX_EXTERN(sub_821C3C60) {
 
       const uint32_t objects_begin = load32(node + 12u);
       const uint32_t objects_end = load32(node + 16u);
-      if (!plausible(objects_begin) || objects_end < objects_begin ||
-          objects_end - objects_begin > 4u * 4096u) {
+      if (!plausible(objects_begin) || objects_end < objects_begin) {
+        continue;
+      }
+      if ((objects_end - objects_begin) / 4u > kMaxObjects) {
+        if (++refused_objects <= 8u || (refused_objects & (refused_objects - 1u)) == 0u) {
+          REXLOG_WARN("Refii null-frame: view 0x{:08X} holder array spans {} entries, over the {} "
+                      "torn-read ceiling — SKIPPED, those textures stay unready (#{})",
+                      view, (objects_end - objects_begin) / 4u, kMaxObjects, refused_objects);
+        }
         continue;
       }
 
@@ -3288,6 +3326,7 @@ REX_EXTERN(sub_821C3C60) {
   }
 
   if (frames % 300u == 1u) {
-    REXLOG_INFO("Refii null-frame: frames={} views warmed={} boxes stated={}", frames, warmed, boxes);
+    REXLOG_INFO("Refii null-frame: frames={} views warmed={} boxes stated={} refused nodes={} "
+                "objects={}", frames, warmed, boxes, refused_nodes, refused_objects);
   }
 }

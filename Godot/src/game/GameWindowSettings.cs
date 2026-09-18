@@ -27,8 +27,20 @@ public readonly struct GameWindowSettings
 
 	public bool Vsync { get; init; }
 
+	/// <summary>`vsync_mode`: mailbox, on or adaptive; only read when <see cref="Vsync"/> is true.</summary>
+	public string VsyncMode { get; init; }
+
 	/// <summary>Frame cap; 0 is uncapped. The sim's fixed step is unaffected.</summary>
 	public int MaxFps { get; init; }
+
+	/// <summary>`draw_latency_ticks`: a pinned draw latency in game ticks; 0 follows the frame time.</summary>
+	public float DrawLatencyTicks { get; init; }
+
+	/// <summary>`mesh_lod_pixels`: the viewport's mesh LOD threshold in pixels.</summary>
+	public float MeshLodPixels { get; init; }
+
+	/// <summary>`sun_shadow_map`: the directional shadow atlas size in pixels.</summary>
+	public int SunShadowMap { get; init; }
 
 	/// <summary>3D render scale as a percentage of the window; the UI stays native.</summary>
 	public int RenderScalePercent { get; init; }
@@ -105,7 +117,11 @@ public readonly struct GameWindowSettings
 			Fullscreen = Engine_RefiiConfig.Bool(values, "fullscreen", false),
 			Monitor = Math.Max(0, Engine_RefiiConfig.Int(values, "monitor", 0)),
 			Vsync = Engine_RefiiConfig.Bool(values, "vsync", true),
+			VsyncMode = Engine_RefiiConfig.String(values, "vsync_mode", "mailbox").Trim().ToLowerInvariant(),
 			MaxFps = Math.Max(0, Engine_RefiiConfig.Int(values, "max_fps", 0)),
+			DrawLatencyTicks = Engine_RefiiConfig.Float(values, "draw_latency_ticks", 0f),
+			MeshLodPixels = Math.Clamp(Engine_RefiiConfig.Float(values, "mesh_lod_pixels", 1f), 0f, 64f),
+			SunShadowMap = Math.Clamp(Engine_RefiiConfig.Int(values, "sun_shadow_map", 4096), 512, 16384),
 
 			// Clamped to what Godot's 3D scaling accepts. A zero here would render nothing at
 			// all, and the file is user-editable.
@@ -119,5 +135,5 @@ public readonly struct GameWindowSettings
 
 	public override string ToString() =>
 		$"{Size.X}x{Size.Y} fullscreen={Fullscreen} borderless={Borderless} monitor={Monitor} " +
-		$"vsync={Vsync} maxFps={MaxFps} renderScale={RenderScalePercent}% msaa={Msaa}x ({Source})";
+		$"vsync={Vsync}/{VsyncMode} maxFps={MaxFps} renderScale={RenderScalePercent}% msaa={Msaa}x ({Source})";
 }

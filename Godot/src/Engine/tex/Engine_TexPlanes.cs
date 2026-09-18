@@ -86,7 +86,6 @@ public static class Engine_TexPlanes
         int stride = header.BlockStride;
         int planeCount = stride == 16 ? 2 : 1;
         int blocks = Math.Max(1, (width + 3) / 4) * Math.Max(1, (height + 3) / 4);
-        var output = new byte[blocks * stride];
 
         if (planes[0].CompFlag == CompRaw)
         {
@@ -97,10 +96,6 @@ public static class Engine_TexPlanes
                 error = $"raw record: need {needed} bytes at {rawOffset}, file is {d.Length}";
                 return false;
             }
-
-            var payload = new byte[needed];
-            Buffer.BlockCopy(d, rawOffset, payload, 0, needed);
-            Engine_Xbox360Tiling.SwapWords16(payload);
 
             int blocksWide = Math.Max(1, (width + 3) / 4);
             int blocksHigh = Math.Max(1, (height + 3) / 4);
@@ -118,11 +113,33 @@ public static class Engine_TexPlanes
             //
             // Untiling anyway would not fail loudly either: the loop skips blocks that fall
             // outside the buffer, so it would quietly leave most of the image zeroed.
-            surface = blocksWide >= 32
-                ? Engine_Xbox360Tiling.Untile(payload, blocksWide, blocksHigh, stride)
-                : payload;
+            if (blocksWide < 32)
+            {
+                var payload = new byte[needed];
+                Buffer.BlockCopy(d, rawOffset, payload, 0, needed);
+                Engine_Xbox360Tiling.SwapWords16(payload);
+                surface = payload;
+                return true;
+            }
+
+            // Only staging for the untile, which writes its own output: pooled.
+            byte[] staged = System.Buffers.ArrayPool<byte>.Shared.Rent(needed);
+            try
+            {
+                Span<byte> tiled = staged.AsSpan(0, needed);
+                d.AsSpan(rawOffset, needed).CopyTo(tiled);
+                Engine_Xbox360Tiling.SwapWords16(tiled);
+                surface = Engine_Xbox360Tiling.Untile(tiled, blocksWide, blocksHigh, stride);
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(staged);
+            }
+
             return true;
         }
+
+        var output = new byte[blocks * stride];
 
         bool wroteAnything = false;
 

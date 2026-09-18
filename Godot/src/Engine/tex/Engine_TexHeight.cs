@@ -102,71 +102,51 @@ public static class Engine_TexHeight
 			return null;
 		}
 
-		var gx = new float[texels];
-		var gy = new float[texels];
-		var relief = 0;
-
-		for (var i = 0; i < texels; ++i)
+		// Pooled scratch: five full-size float planes per solve, one solve per ground layer per
+		// region build. Rented arrays can be longer than asked and are NOT zeroed — every loop
+		// below is bounded by `texels`, and the only plane read before it is written (`field`)
+		// is cleared.
+		var pool = System.Buffers.ArrayPool<float>.Shared;
+		float[] gx = pool.Rent(texels);
+		float[] gy = pool.Rent(texels);
+		float[] divergence = pool.Rent(texels);
+		float[] field = pool.Rent(texels);
+		float[] next = pool.Rent(texels);
+		try
 		{
-			// X IN R, Y IN G, decoded as v*2-1, and Z RECONSTRUCTED rather than read: a normal
-			// map's blue channel is not data. The same convention Engine_TexOrm's cavity uses, so
-			// the two derivations cannot disagree about what a normal is.
-			float nx = (pixels[i * 4] / 255.0f * 2.0f) - 1.0f;
-			float ny = (pixels[(i * 4) + 1] / 255.0f * 2.0f) - 1.0f;
-			float nz = MathF.Sqrt(Math.Max(1.0f - (nx * nx) - (ny * ny), MinZ * MinZ));
+			var relief = 0;
 
-			gx[i] = -nx / nz;
-			gy[i] = -ny / nz;
-
-			if (MathF.Sqrt((gx[i] * gx[i]) + (gy[i] * gy[i])) >= 0.02f)
+			for (var i = 0; i < texels; ++i)
 			{
-				++relief;
+				// X IN R, Y IN G, decoded as v*2-1, and Z RECONSTRUCTED rather than read: a normal
+				// map's blue channel is not data. The same convention Engine_TexOrm's cavity uses, so
+				// the two derivations cannot disagree about what a normal is.
+				float nx = (pixels[i * 4] / 255.0f * 2.0f) - 1.0f;
+				float ny = (pixels[(i * 4) + 1] / 255.0f * 2.0f) - 1.0f;
+				float nz = MathF.Sqrt(Math.Max(1.0f - (nx * nx) - (ny * ny), MinZ * MinZ));
+
+				gx[i] = -nx / nz;
+				gy[i] = -ny / nz;
+
+				if (MathF.Sqrt((gx[i] * gx[i]) + (gy[i] * gy[i])) >= 0.02f)
+				{
+					++relief;
+				}
 			}
-		}
 
-		// FLAT MEANS FLAT, not "less relief than the median texture". This gate exists only to
-		// reject a normal map that carries no relief at all, so that a texture with nothing to say
-		// keeps DXT1 instead of paying DXT5 for a constant alpha.
-		//
-		// It was 25%, borrowed from the census's "346 of 400 maps are at least a quarter non-flat".
-		// That is a statistic about the population, not a threshold for usefulness, and using it as
-		// one threw away every texture whose relief is LOCAL — a plate with rivets on a fifth of
-		// its area has real height on that fifth. The probe caught it: a synthetic bump covering
-		// 19.6% of the image was declined.
-		//
-		// 2% is above the 8-bit quantisation floor and below anything an artist drew on purpose.
-		// The range check after the solve is what rejects the rest.
-		if (relief * 50 < texels)
-		{
-			return null;
-		}
-
-		// THE RIGHT-HAND SIDE is the divergence of the gradient field. Central differences, and
-		// WRAPPED rather than clamped, because these textures tile — a clamped edge solves a
-		// different problem at the border and puts a seam exactly where tiling makes it repeat.
-		var divergence = new float[texels];
-		for (var y = 0; y < height; ++y)
-		{
-			int up = ((y - 1 + height) % height) * width;
-			int down = ((y + 1) % height) * width;
-			int row = y * width;
-
-			for (var x = 0; x < width; ++x)
+			// Flat means flat: this gate only rejects a normal map with no relief at all, so a
+			// texture with nothing to say keeps DXT1 instead of paying DXT5 for a constant alpha.
+			// Relief can be local (rivets on a fifth of a plate), so the bar is low: 2% of texels,
+			// above the 8-bit quantisation floor and below anything drawn on purpose. The range
+			// check after the solve rejects the rest.
+			if (relief * 50 < texels)
 			{
-				int left = (x - 1 + width) % width;
-				int right = (x + 1) % width;
-
-				divergence[row + x] =
-					((gx[row + right] - gx[row + left]) * 0.5f) +
-					((gy[down + x] - gy[up + x]) * 0.5f);
+				return null;
 			}
-		}
 
-		var field = new float[texels];
-		var next = new float[texels];
-
-		for (var pass = 0; pass < Passes; ++pass)
-		{
+			// THE RIGHT-HAND SIDE is the divergence of the gradient field. Central differences, and
+			// WRAPPED rather than clamped, because these textures tile — a clamped edge solves a
+			// different problem at the border and puts a seam exactly where tiling makes it repeat.
 			for (var y = 0; y < height; ++y)
 			{
 				int up = ((y - 1 + height) % height) * width;
@@ -178,51 +158,80 @@ public static class Engine_TexHeight
 					int left = (x - 1 + width) % width;
 					int right = (x + 1) % width;
 
-					// Jacobi rather than in-place Gauss-Seidel: the update is order independent,
-					// so it gives the same answer however the loop is arranged, which matters for
-					// a value that lands in a content-addressed cache.
-					next[row + x] = 0.25f * (
-						field[row + left] + field[row + right] +
-						field[up + x] + field[down + x] -
-						divergence[row + x]);
+					divergence[row + x] =
+						((gx[row + right] - gx[row + left]) * 0.5f) +
+						((gy[down + x] - gy[up + x]) * 0.5f);
 				}
 			}
 
-			(field, next) = (next, field);
-		}
+			System.Array.Clear(field, 0, texels);
 
-		// ANCHORED ON THE MEAN, not stretched min-to-max. The solve has an arbitrary additive
-		// constant — Poisson fixes the gradient, not the level — and the consumer treats 0.5 as
-		// the plane that does not move. A min/max stretch put that plane wherever the relief's
-		// shape happened to land it: a texture that is mostly flat with a few deep pits ended
-		// near 1.0 across its flat majority and the whole surface displaced constantly. Mapping
-		// the mean to 128 and scaling by the larger excursion keeps the shape, keeps both tails
-		// in range, and pins the typical texel to zero offset.
-		float min = float.MaxValue;
-		float max = float.MinValue;
-		float sum = 0.0f;
-		foreach (float value in field)
+			for (var pass = 0; pass < Passes; ++pass)
+			{
+				for (var y = 0; y < height; ++y)
+				{
+					int up = ((y - 1 + height) % height) * width;
+					int down = ((y + 1) % height) * width;
+					int row = y * width;
+
+					for (var x = 0; x < width; ++x)
+					{
+						int left = (x - 1 + width) % width;
+						int right = (x + 1) % width;
+
+						// Jacobi rather than in-place Gauss-Seidel: the update is order independent,
+						// so it gives the same answer however the loop is arranged, which matters for
+						// a value that lands in a content-addressed cache.
+						next[row + x] = 0.25f * (
+							field[row + left] + field[row + right] +
+							field[up + x] + field[down + x] -
+							divergence[row + x]);
+					}
+				}
+
+				(field, next) = (next, field);
+			}
+
+			// Anchored on the mean, not stretched min-to-max. The solve has an arbitrary additive
+			// constant — Poisson fixes the gradient, not the level — and the consumer treats 0.5 as
+			// the plane that does not move; a min/max stretch would move that plane with the relief's
+			// shape. Mapping the mean to 128 and scaling by the larger excursion keeps the shape,
+			// keeps both tails in range, and pins the typical texel to zero offset.
+			float min = float.MaxValue;
+			float max = float.MinValue;
+			float sum = 0.0f;
+			for (var i = 0; i < texels; ++i)
+			{
+				float value = field[i];
+				min = Math.Min(min, value);
+				max = Math.Max(max, value);
+				sum += value;
+			}
+
+			if (max - min <= 1e-6f)
+			{
+				return null;
+			}
+
+			float mean = sum / texels;
+			float scale = 127.0f / Math.Max(max - mean, mean - min);
+
+			var result = new byte[texels];
+			for (var i = 0; i < texels; ++i)
+			{
+				result[i] = (byte)Math.Clamp(
+					MathF.Round(128.0f + ((field[i] - mean) * scale)), 0.0f, 255.0f);
+			}
+
+			return result;
+		}
+		finally
 		{
-			min = Math.Min(min, value);
-			max = Math.Max(max, value);
-			sum += value;
+			pool.Return(gx);
+			pool.Return(gy);
+			pool.Return(divergence);
+			pool.Return(field);
+			pool.Return(next);
 		}
-
-		if (max - min <= 1e-6f)
-		{
-			return null;
-		}
-
-		float mean = sum / texels;
-		float scale = 127.0f / Math.Max(max - mean, mean - min);
-
-		var result = new byte[texels];
-		for (var i = 0; i < texels; ++i)
-		{
-			result[i] = (byte)Math.Clamp(
-				MathF.Round(128.0f + ((field[i] - mean) * scale)), 0.0f, 255.0f);
-		}
-
-		return result;
 	}
 }

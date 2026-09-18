@@ -6,6 +6,23 @@ namespace Refii.Level;
 
 public static class Engine_CelestialElements
 {
+    // Shader parameter names as StringNames: a string literal converts to a fresh
+    // finalizable StringName on every call.
+    private static readonly StringName Param_element_colour = "element_colour";
+    private static readonly StringName Param_element_dir = "element_dir";
+    private static readonly StringName Param_element_distance = "element_distance";
+    private static readonly StringName Param_element_facing_power = "element_facing_power";
+    private static readonly StringName Param_element_half = "element_half";
+    private static readonly StringName Param_element_mode = "element_mode";
+    private static readonly StringName Param_element_premultiply = "element_premultiply";
+    private static readonly StringName Param_element_tex = "element_tex";
+    private static readonly StringName Param_occlusion_distance = "occlusion_distance";
+    private static readonly StringName Param_occlusion_half = "occlusion_half";
+    private static readonly StringName Param_star_brightness = "star_brightness";
+    private static readonly StringName Param_star_phase_rate = "star_phase_rate";
+    private static readonly StringName Param_star_point_size = "star_point_size";
+    private static readonly StringName Param_star_radius = "star_radius";
+
     public const string NodeName = "Celestial";
 
     public const string MixShaderPath =
@@ -74,7 +91,33 @@ public static class Engine_CelestialElements
 
     public const float CullExtent = 100000.0f;
 
-    public static float[] ElementParams(SkyTheme theme) => new[]
+    private static readonly AtmosphereState _frameAtmosphere = new();
+
+    private static float[]? _elementCache;
+    private static SkyTheme? _elementCacheFor;
+
+    /// <summary>
+    /// The theme's sixteen element parameters, cached against the theme they came from.
+    /// </summary>
+    /// <remarks>
+    /// Called two or three times a frame — the celestial update, EnsureElements, and the sun
+    /// sources. A theme is a class and changes only when the region re-evaluates, so reference
+    /// identity is the key.
+    /// </remarks>
+    public static float[] ElementParams(SkyTheme theme)
+    {
+        if (_elementCache is { } cached && ReferenceEquals(_elementCacheFor, theme))
+        {
+            return cached;
+        }
+
+        float[] built = BuildElementParams(theme);
+        _elementCache = built;
+        _elementCacheFor = theme;
+        return built;
+    }
+
+    private static float[] BuildElementParams(SkyTheme theme) => new[]
     {
         theme.MoonIntensity,
         theme.MoonSize,
@@ -220,17 +263,14 @@ public static class Engine_CelestialElements
             }
         }
 
-        if (theme.HasMoonGlareTexture &&
-            container.GetNodeOrNull<MeshInstance3D>("MoonGlare") is null)
+        // The moon glare is not a scene draw. The guest renders MOONBLOOM (PS 144) into the
+        // transient half-res target that `sub_82277380` DOWNSCALE2s into off_8331A9CC — the
+        // glow layer the bright pass sums after its threshold — so the glare blooms but never
+        // brightens the sky it sits on. It is published to the halo layer from Update; a
+        // billboard left by an older build is freed.
+        if (container.GetNodeOrNull<MeshInstance3D>("MoonGlare") is { } staleGlare)
         {
-            Texture2D? moonGlare = Load(theme.MoonGlareTextureHash, read, "moon glare");
-            if (moonGlare is not null)
-            {
-                container.AddChild(Billboard(
-                    "MoonGlare", overlayShader, moonGlare, Vector3.Up, MoonGlareDistance,
-                    element[3] * MoonGlareSizeScale, element[3] * MoonGlareSizeScale,
-                    Vector3.Zero, 1f, 0f, 0f, 1f, priority++));
-            }
+            staleGlare.QueueFree();
         }
 
         if (container.GetNodeOrNull<MeshInstance3D>("Stars") is null)
@@ -255,8 +295,11 @@ public static class Engine_CelestialElements
             read ?? Refii.Models.Engine_BnkMeshLoader.ReadBytes, moonPhase);
 
         float[] element = ElementParams(theme);
-        AtmosphereState state = Engine_SkyAtmosphere.Compute(
-            Engine_SkyAtmosphere.FromFrame(frame, theme));
+
+        // Reused: `AtmosphereState` holds thirteen arrays and this runs every frame. Every field
+        // is overwritten by the compute, so nothing carries over.
+        AtmosphereState state = _frameAtmosphere;
+        Engine_SkyAtmosphere.Compute(Engine_SkyAtmosphere.FromFrame(frame, theme), state);
         float[] sunTint = state.SunElementColour;
 
         Vector3 sun = ToGodot(frame.SunDirection);
@@ -299,12 +342,12 @@ public static class Engine_CelestialElements
             switch (elementName)
             {
                 case "SunBeams":
-                    material.SetShaderParameter("element_dir", sun);
-                    material.SetShaderParameter("element_half", new Vector2(
+                    material.SetShaderParameter(Param_element_dir, sun);
+                    material.SetShaderParameter(Param_element_half, new Vector2(
                         element[11] * SunBeamsSizeScale,
                         element[12] * SunBeamsSizeScale));
                     float beams = element[13] * SunBeamsColourScale;
-                    material.SetShaderParameter("element_colour", new Vector4(
+                    material.SetShaderParameter(Param_element_colour, new Vector4(
                         sunTint[0] * beams,
                         sunTint[1] * beams,
                         sunTint[2] * beams, 1f));
@@ -315,8 +358,8 @@ public static class Engine_CelestialElements
                     mesh.Visible = sunActive && element[13] >= IntensityGate;
                     break;
                 case "SunDisc":
-                    material.SetShaderParameter("element_dir", sun);
-                    material.SetShaderParameter("element_half", new Vector2(
+                    material.SetShaderParameter(Param_element_dir, sun);
+                    material.SetShaderParameter(Param_element_half, new Vector2(
                         element[6] * SunDiscSizeScale,
                         element[6] * SunDiscSizeScale));
                     // THE ATMOSPHERE IS A FACTOR OF THE DISC. The guest's pixel constant for
@@ -326,32 +369,32 @@ public static class Engine_CelestialElements
                     // zenith angle — the same tint the beams and glare take here. Without it
                     // the disc is the authored colour at full intensity whenever it is above
                     // the horizon: the huge flat white ball in the night sky.
-                    material.SetShaderParameter("element_colour", new Vector4(
+                    material.SetShaderParameter(Param_element_colour, new Vector4(
                         sunTint[0] * element[8] * element[7],
                         sunTint[1] * element[9] * element[7],
                         sunTint[2] * element[10] * element[7], 1f));
                     mesh.Visible = sunActive && element[7] >= IntensityGate;
                     break;
                 case "SunGlare":
-                    material.SetShaderParameter("element_dir", sun);
-                    material.SetShaderParameter("element_half", new Vector2(
+                    material.SetShaderParameter(Param_element_dir, sun);
+                    material.SetShaderParameter(Param_element_half, new Vector2(
                         element[15] * SunGlareSizeScale,
                         element[15] * SunGlareSizeScale));
-                    material.SetShaderParameter("element_colour", new Vector4(
+                    material.SetShaderParameter(Param_element_colour, new Vector4(
                         sunTint[0] * element[14],
                         sunTint[1] * element[14],
                         sunTint[2] * element[14], 1f));
-                    material.SetShaderParameter("occlusion_half",
+                    material.SetShaderParameter(Param_occlusion_half,
                         element[6] * SunDiscSizeScale);
-                    material.SetShaderParameter("occlusion_distance", SunDiscDistance);
+                    material.SetShaderParameter(Param_occlusion_distance, SunDiscDistance);
                     mesh.Visible = sunActive && element[14] >= IntensityGate;
                     break;
                 case "Moon":
-                    material.SetShaderParameter("element_dir", moon);
-                    material.SetShaderParameter("element_half", new Vector2(
+                    material.SetShaderParameter(Param_element_dir, moon);
+                    material.SetShaderParameter(Param_element_half, new Vector2(
                         element[1] * MoonSizeScale,
                         element[1] * MoonSizeScale));
-                    material.SetShaderParameter("element_colour", new Vector4(
+                    material.SetShaderParameter(Param_element_colour, new Vector4(
                         0.5f * element[0],
                         0.5f * element[0],
                         0.5f * element[0],
@@ -359,8 +402,13 @@ public static class Engine_CelestialElements
                     mesh.Visible = element[0] >= IntensityGate;
                     break;
                 case "MoonGlare":
-                    material.SetShaderParameter("element_dir", moon);
-                    material.SetShaderParameter("element_half", new Vector2(
+                    // Stale billboard from an older build; the glare is a halo now.
+                    mesh.Visible = false;
+                    break;
+
+                case "MoonGlareUnused":
+                    material.SetShaderParameter(Param_element_dir, moon);
+                    material.SetShaderParameter(Param_element_half, new Vector2(
                         element[3] * MoonGlareSizeScale,
                         element[3] * MoonGlareSizeScale));
                     // THE SCALE WAS 8x TOO BIG, WHICH IS WHAT BLEW THE MOON OUT — and the
@@ -377,22 +425,59 @@ public static class Engine_CelestialElements
                     // `fade^2` is the moon's own occlusion query, `clamp(pixels / (MoonSize^2 *
                     // 6000))` squared (0x82279a94..0x82279ac4, divisor flt_82000C28 = 6000).
                     // Our shader's `vis * vis` already IS that term, so it is not applied here.
-                    material.SetShaderParameter("element_premultiply", 1.0f);
+                    material.SetShaderParameter(Param_element_premultiply, 1.0f);
                     float glareScale = MoonGlareCpuScale * element[2];
-                    material.SetShaderParameter("element_colour", new Vector4(
+                    material.SetShaderParameter(Param_element_colour, new Vector4(
                         glareScale, glareScale, glareScale, 1f));
-                    material.SetShaderParameter("occlusion_half",
+                    material.SetShaderParameter(Param_occlusion_half,
                         element[1] * MoonSizeScale);
-                    material.SetShaderParameter("occlusion_distance",
+                    material.SetShaderParameter(Param_occlusion_distance,
                         MoonBillboardDistance);
                     mesh.Visible =
                         element[0] >= IntensityGate && element[2] >= IntensityGate;
                     break;
                 case "Stars":
-                    material.SetShaderParameter("star_brightness", element[5]);
+                    material.SetShaderParameter(Param_star_brightness, element[5]);
                     mesh.Visible = element[5] >= IntensityGate;
                     break;
             }
+        }
+
+        PublishMoonGlare(container, theme, element, moon, read ?? Refii.Models.Engine_BnkMeshLoader.ReadBytes);
+    }
+
+    private static readonly Dictionary<uint, Texture2D?> GlareTextures = new();
+
+    /// <summary>
+    /// The moon's glare as a sky halo: direction, the guest's distance and size
+    /// (MoonGlareSize × 300 at 1000), colour <c>0.025 × MoonGlareIntensity</c> (constant 244,
+    /// `Render_LitDecalDraw_INFERRED` 0x821d5e3c..0x821d5e7c; the fade² term is the halo
+    /// node's visibility), premultiplied by the sprite's alpha in the halo shader.
+    /// </summary>
+    private static void PublishMoonGlare(
+        Node3D container, SkyTheme theme, float[] element, Vector3 moon, Func<string, byte[]?> read)
+    {
+        if (!theme.HasMoonGlareTexture)
+        {
+            Refii.Fx.Engine_PostFxHalos.PublishSky("MoonGlare", default);
+            return;
+        }
+
+        if (!GlareTextures.TryGetValue(theme.MoonGlareTextureHash, out Texture2D? sprite))
+        {
+            sprite = Load(theme.MoonGlareTextureHash, read, "moon glare");
+            GlareTextures[theme.MoonGlareTextureHash] = sprite;
+        }
+
+        float glareScale = MoonGlareCpuScale * element[2];
+        bool active = sprite is not null &&
+            element[0] >= IntensityGate && element[2] >= IntensityGate && moon.LengthSquared() > 1e-12f;
+        Refii.Fx.Engine_PostFxHalos.PublishSky("MoonGlare", new Refii.Fx.Engine_PostFxHalos.SkyHalo(
+            moon, MoonGlareDistance, element[3] * MoonGlareSizeScale,
+            new Vector3(glareScale, glareScale, glareScale), sprite, active));
+        if (active)
+        {
+            Refii.Fx.Engine_PostFxHalos.Ensure(container);
         }
     }
 
@@ -441,14 +526,14 @@ public static class Engine_CelestialElements
         int mode = 0)
     {
         var material = new ShaderMaterial { Shader = shader, RenderPriority = priority };
-        material.SetShaderParameter("element_tex", texture);
-        material.SetShaderParameter("element_dir", direction);
-        material.SetShaderParameter("element_distance", distance);
-        material.SetShaderParameter("element_half", new Vector2(halfWidth, halfHeight));
-        material.SetShaderParameter("element_colour",
+        material.SetShaderParameter(Param_element_tex, texture);
+        material.SetShaderParameter(Param_element_dir, direction);
+        material.SetShaderParameter(Param_element_distance, distance);
+        material.SetShaderParameter(Param_element_half, new Vector2(halfWidth, halfHeight));
+        material.SetShaderParameter(Param_element_colour,
             new Vector4(colour.X, colour.Y, colour.Z, alpha));
-        material.SetShaderParameter("element_facing_power", facingPower);
-        material.SetShaderParameter("element_mode", mode);
+        material.SetShaderParameter(Param_element_facing_power, facingPower);
+        material.SetShaderParameter(Param_element_mode, mode);
 
         return new MeshInstance3D
         {
@@ -516,10 +601,10 @@ public static class Engine_CelestialElements
         }
 
         var material = new ShaderMaterial { Shader = shader, RenderPriority = priority };
-        material.SetShaderParameter("star_brightness", brightness);
-        material.SetShaderParameter("star_radius", StarRadius);
-        material.SetShaderParameter("star_point_size", StarPointSize);
-        material.SetShaderParameter("star_phase_rate", StarPhaseRate);
+        material.SetShaderParameter(Param_star_brightness, brightness);
+        material.SetShaderParameter(Param_star_radius, StarRadius);
+        material.SetShaderParameter(Param_star_point_size, StarPointSize);
+        material.SetShaderParameter(Param_star_phase_rate, StarPhaseRate);
 
         return new MeshInstance3D
         {

@@ -2060,7 +2060,7 @@ public partial class LauncherApp : Control
 		AddChild(dialog);
 	}
 
-	/// <summary>Asks how many cores the compile may use, then proceeds.</summary>
+	/// <summary>Asks how many threads the compile may use, then proceeds.</summary>
 	/// <summary>
 	/// UNATTENDED MODE — `REFII_AUTO_LAUNCH=1`. Drives the launcher with nobody at the keyboard:
 	/// the primary button is pressed until a game window opens, and every dialog that would wait
@@ -2123,7 +2123,7 @@ public partial class LauncherApp : Control
 
 	private void AskBuildSpeed(string heading, Action<bool> proceed)
 	{
-		// Nobody is here to choose. All cores is what an unattended run wants anyway.
+		// Nobody is here to choose. All threads is what an unattended run wants anyway.
 		if (Unattended)
 		{
 			proceed(true);

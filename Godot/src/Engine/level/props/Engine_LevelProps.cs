@@ -36,6 +36,24 @@ public sealed class PropBuildStats
 
     public int Blocks { get; set; }
 
+    /// <summary>Props standing as their own node, and props folded into a MultiMesh.</summary>
+    /// <remarks>
+    /// Sizes what further batching could save: each single node costs per-instance render-thread
+    /// work in the visible pass, the shadow pass and every reflection viewport. Blocks at or
+    /// under <see cref="Engine_LevelProps.SelectableInstanceLimit"/> stay as singles.
+    /// </remarks>
+    public int SingleInstances { get; set; }
+
+    public int BatchedInstances { get; set; }
+
+    /// <summary>Blocks left unbatched for being at or under the limit, and their instances.</summary>
+    public int SmallBlocks { get; set; }
+
+    public int SmallBlockInstances { get; set; }
+
+    /// <summary>Instances pulled out of a batch because something needs them addressable.</summary>
+    public int ForcedSingles { get; set; }
+
     public int EngineLevelBlocks { get; set; }
 
     public int EngineLevelInstances { get; set; }
@@ -115,6 +133,15 @@ public static class Engine_LevelProps
 
     public const float ModelReach = 64.0f;
 
+    /// <summary>
+    /// Blocks with this many instances or fewer stay as individual nodes rather than folding
+    /// into a MultiMesh.
+    /// </summary>
+    /// <remarks>
+    /// Do not lower this without grouping by locality: a MultiMesh's bounds cover every member,
+    /// so a batch scattered across a region is culled as one unit and drawn whenever any of it
+    /// is in view, in every pass. Folding small blocks by model alone is a net regression.
+    /// </remarks>
     public const int SelectableInstanceLimit = 8;
 
     public static readonly string[] SupplementalGdbPaths =
@@ -182,6 +209,12 @@ public static class Engine_LevelProps
         AugmentPlacementModelHashes(level, placements, supplementalViews, stats);
         AppendSupplementalPlacements(supplementalViews, saveMap, placements, stats);
         stats.Placements = placements.Count;
+
+        // A placement that carries a light keeps a node of its own: Engine_LevelLights removes its
+        // model from the casters of the light inside it, which a MultiMesh could only do for
+        // every copy at once.
+        HashSet<uint> lightHosts =
+            Refii.Lighting.Engine_LevelLights.LightBearing(view, supplementalViews, placements);
 
         var blocks = new Dictionary<string, PropBlockBuild>();
         var recordKeys = new HashSet<string>();
@@ -508,6 +541,21 @@ public static class Engine_LevelProps
             }
         }
 
+        // Diagnostics only. A composed key is (modelPathHash << 32 | placementHash); when the
+        // whole key misses, the half that still matches something in the .lmp says which half
+        // is wrong. Matching neither means the placement is not in the file.
+        var bakeKeyLowHalves = new HashSet<uint>();
+        var bakeKeyHighHalves = new HashSet<uint>();
+        foreach (ulong k in bakeKeys)
+        {
+            bakeKeyLowHalves.Add((uint)(k & 0xFFFFFFFFul));
+            bakeKeyHighHalves.Add((uint)(k >> 32));
+        }
+
+        int missPlacementOnly = 0, missModelOnly = 0, missBoth = 0, missZero = 0, keyed = 0;
+        var missModels = new Dictionary<string, int>(StringComparer.Ordinal);
+        var missKeys = new Dictionary<ulong, int>();
+
         var container = new Engine_PropStreamer { Name = NodeName };
 
         // The streamer reads the .lmp back out of the bank when it needs a bake, so the saved
@@ -524,12 +572,17 @@ public static class Engine_LevelProps
             // second lighting path of its own.
             Refii.Lighting.Engine_LevelBakedLighting.StoreProbeSample(
                 keyNode, keyNode.BaseTransform.Origin, probes);
-            Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(keyNode, lighting);
+            Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
+                keyNode, lighting, staticProp: true);
             container.AddChild(keyNode);
         }
 
+        int singleInstances = 0;
+
         void AddSingle(PropBlockBuild block, int index)
         {
+            // A local, not `stats`: a local function cannot capture an `out` parameter.
+            ++singleInstances;
             var single = new MeshInstance3D
             {
                 Name = UniqueName(container, block.Label),
@@ -552,17 +605,66 @@ public static class Engine_LevelProps
                 single.SetMeta(Engine_PropStreamer.RecordMeta, (long)hash);
             }
 
-            // An authored per-vertex bake outranks the probe field — the guest's own order is
-            // per-vertex D3DCOLOR, then object lightmap, then probes. Only the KEY is stored;
-            // the streamer resolves it once the mesh is standing and can check that it fits.
+            // The guest's order: the `.lmp`'s baked vertex-colour buffer (map manager+4), then the
+            // `.lmp`'s object lightmap texture (manager+16), then SH light probes. There is no
+            // separate mesh-owned per-vertex stage. `sub_82222F70` sets the resolve state to 1
+            // BEFORE either lookup, so a miss falls through to probes (`sub_82219978` picks
+            // packet mode 2 when the level has a probe array, else 0).
+            //
+            // The key is one u64, matched whole with `cmpld` at 0x82A57338:
+            // `(model resource id << 32) | GDB record name hash`, assembled at
+            // 0x82237250..0x8223726C, both halves FNV-1. The high half is shared by every
+            // placement of a model, so never match on a half; the halves below are diagnostics.
+            //
+            // A key that matches nothing is not automatically a defect: `0`, a zero high half
+            // (`sub_82209480`'s four sites) and the `{1, 0}` default (`sub_82456D58`
+            // 0x82456E48) all mean "no baked lighting", and falling through to probes is the
+            // designed outcome.
+            //
+            // Only the key is stored; the streamer resolves it once the mesh is standing and
+            // can check that it fits.
             ulong bakeKey = index < block.InstanceBakeKeys.Count
                 ? block.InstanceBakeKeys[index]
                 : 0;
 
             if (bakeKey != 0 && bakeKeys.Contains(bakeKey))
             {
+                ++keyed;
                 single.SetMeta(
                     Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, (long)bakeKey);
+            }
+            else
+            {
+                if (bakeKey == 0)
+                {
+                    ++missZero;
+                }
+                else
+                {
+                    bool lowSeen = bakeKeyLowHalves.Contains((uint)(bakeKey & 0xFFFFFFFFul));
+                    bool highSeen = bakeKeyHighHalves.Contains((uint)(bakeKey >> 32));
+                    if (lowSeen && !highSeen)
+                    {
+                        ++missPlacementOnly;
+                    }
+                    else if (highSeen && !lowSeen)
+                    {
+                        ++missModelOnly;
+                    }
+                    else
+                    {
+                        ++missBoth;
+
+                        // Which keys miss, not just how many: `{1,0}` and a zero high half are
+                        // legal no-bake shapes, not defects.
+                        missKeys.TryGetValue(bakeKey, out int keySeen);
+                        missKeys[bakeKey] = keySeen + 1;
+                    }
+                }
+
+                string name = NameOf(block.ModelPath);
+                missModels.TryGetValue(name, out int seen);
+                missModels[name] = seen + 1;
             }
 
             // An authored per-instance colour outranks the probe field — same precedence the
@@ -597,6 +699,8 @@ public static class Engine_LevelProps
 
             if (block.Instances.Count <= SelectableInstanceLimit)
             {
+                stats.SmallBlocks++;
+                stats.SmallBlockInstances += block.Instances.Count;
                 for (int i = 0; i < block.Instances.Count; i++)
                 {
                     AddSingle(block, i);
@@ -609,11 +713,12 @@ public static class Engine_LevelProps
             var batched = new List<int>(block.Instances.Count);
             for (int i = 0; i < block.Instances.Count; i++)
             {
-                bool forcedSingle = inspect is not null &&
-                    i < block.InstanceHashes.Count &&
-                    inspect.HasFor(block.InstanceHashes[i]);
+                bool forcedSingle = i < block.InstanceHashes.Count &&
+                    ((inspect is not null && inspect.HasFor(block.InstanceHashes[i])) ||
+                        lightHosts.Contains(block.InstanceHashes[i]));
                 if (forcedSingle)
                 {
+                    stats.ForcedSingles++;
                     AddSingle(block, i);
                 }
                 else
@@ -635,6 +740,7 @@ public static class Engine_LevelProps
                 }
             }
 
+            stats.BatchedInstances += batched.Count;
             if (batched.Count == 0)
             {
                 stats.Blocks++;
@@ -787,6 +893,68 @@ public static class Engine_LevelProps
         {
             Engine_PropStreamer.PrefetchModels(Engine_PropStreamer.PendingModelPaths(container));
         }
+
+        if (keyed + missZero + missPlacementOnly + missModelOnly + missBoth != 0)
+        {
+            var worst = new List<KeyValuePair<string, int>>(missModels);
+            worst.Sort((l, r) => r.Value.CompareTo(l.Value));
+            var named = new System.Text.StringBuilder();
+            for (int i = 0; i < worst.Count && i < 10; i++)
+            {
+                named.Append(' ').Append(worst[i].Key).Append('x').Append(worst[i].Value);
+            }
+
+            GD.Print($"[props] bake keys: keyed={keyed} miss(noKey={missZero} " +
+                $"placementHalfMatched={missPlacementOnly} modelHalfMatched={missModelOnly} " +
+                $"neither={missBoth}) of {bakeKeys.Count} key(s) in the .lmp —{named}");
+
+            // Printed as {high,low}: high = the model's FNV-1 resource id, low = the GDB record
+            // name hash. `{1,0}` (`sub_82456D58` 0x82456E48) and a zero high half
+            // (`sub_82209480`) are legal no-bake keys.
+            if (missKeys.Count != 0)
+            {
+                var worstKeys = new List<KeyValuePair<ulong, int>>(missKeys);
+                worstKeys.Sort((a, b) => b.Value.CompareTo(a.Value));
+                var keyLine = new System.Text.StringBuilder();
+                for (int i = 0; i < worstKeys.Count && i < 12; ++i)
+                {
+                    ulong k = worstKeys[i].Key;
+                    keyLine.Append($" {{{(uint)(k >> 32):X8},{(uint)k:X8}}}x{worstKeys[i].Value}");
+                }
+
+                GD.Print($"[props] unmatched keys ({missKeys.Count} distinct):{keyLine}" +
+                    (missKeys.Count > 12 ? $" (+{missKeys.Count - 12} more)" : string.Empty));
+
+                // Layout check: would the misses match with the halves swapped, or the whole key
+                // byte-swapped?
+                int swappedHalves = 0, swappedBytes = 0;
+                foreach (ulong k in missKeys.Keys)
+                {
+                    if (bakeKeys.Contains((k >> 32) | (k << 32)))
+                    {
+                        ++swappedHalves;
+                    }
+
+                    if (bakeKeys.Contains(System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(k)))
+                    {
+                        ++swappedBytes;
+                    }
+                }
+
+                GD.Print($"[props] of {missKeys.Count} unmatched: {swappedHalves} match with the " +
+                    $"HALVES SWAPPED, {swappedBytes} with the whole key BYTE-SWAPPED");
+            }
+        }
+
+        stats.SingleInstances = singleInstances;
+
+        // Every single is a draw call in the visible, shadow and each reflection pass; a batch
+        // is one apiece however many instances it holds.
+        GD.Print($"[props] instances: {stats.SingleInstances:N0} single, " +
+            $"{stats.BatchedInstances:N0} batched | " +
+            $"{stats.SmallBlocks:N0} blocks at or under {SelectableInstanceLimit} hold " +
+            $"{stats.SmallBlockInstances:N0} of the singles; {stats.ForcedSingles:N0} more are " +
+            $"forced out of a batch (light hosts, inspectables)");
 
         return container;
     }

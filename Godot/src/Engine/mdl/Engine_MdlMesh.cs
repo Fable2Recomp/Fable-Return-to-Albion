@@ -23,13 +23,71 @@ public static class Engine_MdlMesh
     /// </summary>
     public const string SurfaceRegionsMeta = "mdl_surface_regions";
 
+    /// <summary>
+    /// Cached per mesh: the names are fixed when the mesh is built, and the cluster pass asks
+    /// per entity on every reconcile. Callers only read the result.
+    /// </summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Mesh, string[]> RegionCache = new();
+
     /// <summary>The region names a mesh carries per surface, or an empty array.</summary>
     public static string[] SurfaceRegions(Mesh mesh)
     {
-        return mesh.HasMeta(SurfaceRegionsMeta)
+        if (RegionCache.TryGetValue(mesh, out string[]? cached))
+        {
+            return cached;
+        }
+
+        string[] regions = mesh.HasMeta(SurfaceRegionsMeta)
             ? mesh.GetMeta(SurfaceRegionsMeta).AsStringArray()
             : System.Array.Empty<string>();
+        RegionCache.Add(mesh, regions);
+        return regions;
     }
+
+    /// <summary>
+    /// Metadata key: per surface in order, the `lods` dictionary its surface was added with —
+    /// key = mean triangle edge length in model units, value = that level's index array over
+    /// the surface's own vertices. Empty dictionary where the surface has no levels; absent
+    /// when no surface has any. Anything that re-adds a surface from
+    /// <c>SurfaceGetArrays</c> passes <see cref="SurfaceLods"/> through, or the levels are lost.
+    /// </summary>
+    public const string SurfaceLodsMeta = "mdl_surface_lods";
+
+    /// <summary>The levels one surface was added with, or null when it has none.</summary>
+    public static Godot.Collections.Dictionary? SurfaceLods(Mesh mesh, int surface)
+    {
+        if (!mesh.HasMeta(SurfaceLodsMeta))
+        {
+            return null;
+        }
+
+        Godot.Collections.Array all = mesh.GetMeta(SurfaceLodsMeta).AsGodotArray();
+        if (surface < 0 || surface >= all.Count ||
+            all[surface].VariantType != Variant.Type.Dictionary)
+        {
+            return null;
+        }
+
+        Godot.Collections.Dictionary lods = all[surface].AsGodotDictionary();
+        return lods.Count == 0 ? null : lods;
+    }
+
+    /// <summary>Surfaces added with at least one coarser level. Run total.</summary>
+    public static int SurfacesWithLods;
+
+    /// <summary>
+    /// Surfaces of a model that ships coarser LOD payloads and got no level — every level
+    /// unmatched, refused for layout, or not coarser than the one before. Run total.
+    /// </summary>
+    public static int SurfacesWithoutLods;
+
+    /// <summary>Levels handed to Godot, over all surfaces. Run total.</summary>
+    public static int LodLevelsAttached;
+
+    /// <summary>Levels a model shipped that were dropped for a surface. Run total.</summary>
+    public static int LodLevelsDropped;
+
+    private static bool _lodsReported;
 
     public static ArrayMesh? TryCreateMesh(byte[] data, out string error) =>
         TryCreateMesh(data, string.Empty, out error);
@@ -111,7 +169,11 @@ public static class Engine_MdlMesh
             sourceVertexTotal += (int)buffer.VertexCount;
         }
 
-        foreach (MdlGeometry geo in Engine_MdlMerge.ByMaterial(geometry))
+        List<MdlGeometry> surfaces = Engine_MdlMerge.ByMaterial(geometry);
+        (int lodsAttached, int lodsDropped) = Engine_MdlLods.Attach(data, info, surfaces);
+        var surfaceLods = new Godot.Collections.Array();
+
+        foreach (MdlGeometry geo in surfaces)
         {
             if (geo.VertexCount == 0 || geo.TriangleCount == 0)
             {
@@ -235,7 +297,51 @@ public static class Engine_MdlMesh
                 arrays[(int)Mesh.ArrayType.Weights] = weights;
             }
 
-            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+            // The coarser levels, in the same reversed winding as the surface's own triangles.
+            //
+            // A level must have strictly fewer indices than the surface: Godot's
+            // `mesh_add_surface` rejects it otherwise (`ERR_CONTINUE(index_count >=
+            // index_array_len)`), and again on every re-add from the stored dictionary.
+            // `Engine_MdlLods.Attach` only compares a level with the one before it, so the first
+            // level is checked here against `indices`. A failing level is dropped and counted.
+            Godot.Collections.Dictionary? lods = null;
+            if (geo.Lods.Count != 0)
+            {
+                int baseIndices = indices.Length;
+                foreach ((float edgeLength, uint[] level) in geo.Lods)
+                {
+                    // `Attach` already counted this level as attached: move it to dropped.
+                    if (level.Length == 0 || level.Length >= baseIndices)
+                    {
+                        --lodsAttached;
+                        ++lodsDropped;
+                        continue;
+                    }
+
+                    var levelIndices = new int[level.Length];
+                    for (int i = 0; i + 2 < level.Length; i += 3)
+                    {
+                        levelIndices[i] = (int)level[i];
+                        levelIndices[i + 1] = (int)level[i + 2];
+                        levelIndices[i + 2] = (int)level[i + 1];
+                    }
+
+                    lods ??= new Godot.Collections.Dictionary();
+                    lods[edgeLength] = levelIndices;
+                }
+            }
+
+            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, null, lods);
+            surfaceLods.Add(lods ?? new Godot.Collections.Dictionary());
+            if (lods is not null)
+            {
+                ++SurfacesWithLods;
+            }
+            else if (info.Lods.Count != 0)
+            {
+                ++SurfacesWithoutLods;
+            }
+
             if (geo.Name.Length != 0)
             {
                 mesh.SurfaceSetName(added, geo.Name);
@@ -253,17 +359,15 @@ public static class Engine_MdlMesh
                 }
             }
 
+            // Wind comes from the mesh header, not the material: the file states a movement mode
+            // per mesh (1 low plant, 2 tree), and every mesh carrying it is vegetation
+            // (src/tools/WindGate.cs). So the mesh's statement is part of the shared material's
+            // identity, never a mutation of a material another surface also holds.
             Material? material =
-                Engine_MdlMaterial.TryCreate(geo.Material) ?? Engine_MdlMaterial.Fallback();
+                Engine_MdlMaterial.TryCreateShared(geo.Material, info, geo.AuthoredNormals)
+                ?? Engine_MdlMaterial.Fallback();
             if (material is not null)
             {
-                // WIND COMES FROM THE MESH HEADER, not from the material. The shipped file states a
-                // movement mode per MESH — 1 for a low plant, 2 for a tree — and every one of the
-                // 173 meshes that carry it is vegetation, checked against all 5,446 headers by
-                // src/tools/WindGate.cs. A material cannot know this; the surface it is applied to
-                // can.
-                Engine_MdlMaterial.ApplyWind(material, info);
-                Engine_MdlMaterial.ApplyVegetation(material, info, geo.AuthoredNormals);
                 mesh.SurfaceSetMaterial(added, material);
             }
 
@@ -280,6 +384,31 @@ public static class Engine_MdlMesh
         mesh.SetMeta(SourceVertexMapMeta, sourceVertices.ToArray());
         mesh.SetMeta(SourceVertexTotalMeta, sourceVertexTotal);
         mesh.SetMeta(SurfaceRegionsMeta, surfaceRegions.ToArray());
+
+        LodLevelsAttached += lodsAttached;
+        LodLevelsDropped += lodsDropped;
+        if (lodsAttached != 0)
+        {
+            mesh.SetMeta(SurfaceLodsMeta, surfaceLods);
+            if (!_lodsReported)
+            {
+                _lodsReported = true;
+                var keys = new System.Text.StringBuilder();
+                foreach (MdlGeometry geo in surfaces)
+                {
+                    foreach ((float edgeLength, uint[] level) in geo.Lods)
+                    {
+                        keys.Append(keys.Length == 0 ? " " : ", ")
+                            .Append($"{edgeLength:0.####}:{level.Length / 3}tri");
+                    }
+                }
+
+                GD.Print($"[mdl] lods: first model with surface LODs is '{virtualPath}': " +
+                    $"{lodsAttached} level(s) over {added} surface(s) from {info.Lods.Count} " +
+                    $"coarser payload(s), {lodsDropped} dropped; edge-length keys{keys}. " +
+                    "Further models are counted, not printed.");
+            }
+        }
 
         // THE SKELETON THE BONE INDICES REFER TO, carried on the mesh.
         //

@@ -10,6 +10,8 @@ public sealed class ClothPatch
     {
         public Godot.Collections.Array Arrays { get; init; } = new();
 
+        public Godot.Collections.Dictionary? Lods { get; init; }
+
         public Material? Material { get; init; }
 
         public string Name { get; init; } = string.Empty;
@@ -64,6 +66,7 @@ public sealed class ClothPatch
             surfaces.Add(new Surface
             {
                 Arrays = arrays,
+                Lods = Refii.Models.Engine_MdlMesh.SurfaceLods(source, s),
                 Material = source.SurfaceGetMaterial(s),
                 Name = source.SurfaceGetName(s),
                 VertexBase = total,
@@ -195,7 +198,7 @@ public sealed class ClothPatch
                 arrays[(int)Mesh.ArrayType.Normal] = surface.Normals;
             }
 
-            _mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+            _mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, null, surface.Lods);
 
             if (surface.Name.Length != 0)
             {

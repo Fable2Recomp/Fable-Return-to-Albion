@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 using Refii.Fx;
@@ -41,6 +42,12 @@ public partial class GameFx : Node3D
 
     private readonly HashSet<uint> _seen = new();
 
+    /// <summary>Each effect's root placement this frame, by handle.</summary>
+    private readonly Dictionary<uint, Transform3D> _roots = new();
+
+    /// <summary>Each effect's (scale, fade) this frame, from its first standard emitter node.</summary>
+    private readonly Dictionary<uint, (float Scale, float Fade)> _emitterState = new();
+
     /// <summary>
     /// Keys the census has already counted this frame. Separate from <see cref="_seen"/>, which
     /// is what <see cref="Retire"/> keeps alive: an effect must be counted ONCE however many of
@@ -72,6 +79,122 @@ public partial class GameFx : Node3D
 
     private int _lastReportedDistinct = -1;
 
+    /// <summary>Whether the buffer-full warning has been printed; it would otherwise be per-frame.</summary>
+    private bool _warnedSaturated;
+
+    /// <summary>Consecutive REFRESHED walks each drawn effect has been missing from.</summary>
+    private readonly Dictionary<uint, int> _absent = new();
+
+    /// <summary>
+    /// How many refreshed walks an effect must be absent from before its node is freed: enough to
+    /// ride out the buffer cut moving with the guest's swap-with-last retirement, short enough
+    /// (100 ms at the 30 Hz step) not to hold a dead effect on screen.
+    /// </summary>
+    private const int AbsentWalksBeforeRetire = 3;
+
+    /// <summary>The feed in the tree, for the debug channel.</summary>
+    public static GameFx? Current { get; private set; }
+
+    public override void _EnterTree() => Current = this;
+
+    public override void _ExitTree()
+    {
+        if (Current == this)
+        {
+            Current = null;
+        }
+    }
+
+    /// <summary>
+    /// The drawn effects nearest <paramref name="eye"/>, one line each: handle, effect, distance,
+    /// position, the guest's intensity, and what our simulation holds for it.
+    /// </summary>
+    public List<string> Describe(Vector3 eye, int take)
+    {
+        FxBank? bank = FableFx.SharedBank();
+        var rows = new List<(float Distance, uint Key, FableFx Node)>();
+        foreach ((uint key, FableFx node) in _nodes)
+        {
+            if (IsInstanceValid(node) && node.IsInsideTree())
+            {
+                rows.Add((eye.DistanceTo(node.GlobalPosition), key, node));
+            }
+        }
+
+        rows.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+        var described = new List<string>();
+        foreach ((float distance, uint key, FableFx node) in rows.GetRange(0, System.Math.Min(take, rows.Count)))
+        {
+            Vector3 p = node.GlobalPosition;
+            uint effect = _effectOf.TryGetValue(key, out uint e) ? e : 0u;
+
+            // The guest's stated position beside where we put the node: zero here means the
+            // bridge's transform walk produced nothing; non-zero with an origin node means this
+            // feed dropped it.
+            string stated = _statedAt.TryGetValue(key, out Vector3 g)
+                ? $" guest=({g.X:0.0},{g.Y:0.0},{g.Z:0.0})"
+                : " guest=none";
+            string name = bank?.FindByHash(effect)?.Name ?? string.Empty;
+            described.Add(
+                $"{key:X8} FX_{effect:X8}{(name.Length != 0 ? " " + name : string.Empty)} d={distance:0.0} " +
+                $"at=({p.X:0.0},{p.Y:0.0},{p.Z:0.0}) intensity={node.Intensity:0.000} scale={node.SizeScale:0.00} " +
+                $"alive={node.DebugAlive} spawned={node.DebugSpawned} surfaces={node.DebugSurfaces}/{node.DebugAddSurfaces}/{node.DebugDispSurfaces} " +
+                $"built={node.DebugBuilt} em/vis/trail/parts={node.DebugCensus.Emitters}/{node.DebugCensus.Visuals}/" +
+                $"{node.DebugCensus.TrailVisuals}/{node.DebugCensus.Particles}{stated}");
+        }
+
+        return described;
+    }
+
+    public int DrawnCount => _nodes.Count;
+
+    /// <summary>Particle nodes the last walk handed over, against the buffer cap.</summary>
+    public int NodesRead { get; private set; }
+
+    /// <summary>The stated transform per instance, refreshed from the hook each walk.</summary>
+    private readonly Dictionary<uint, (float P1, float P2, float P3)> _stated = new();
+
+    private readonly List<Refii.Host.HostBridge.GuestStatedFx> _statedRows = new();
+
+    /// <summary>
+    /// How many placements the transform hook also covered, and how many it did not. Neither
+    /// decides the placement (that is the composed matrix at <c>node + 0x20</c>); the hook sees
+    /// only the two setters, not the two per-tick writers or the authored load.
+    /// </summary>
+    public static long StatedPlacements;
+
+    public static long WalkedPlacements;
+
+    /// <summary>Pulls the stated transforms in for this walk.</summary>
+    private void RefreshStated()
+    {
+        _stated.Clear();
+        if (Refii.Host.HostBridge.GetStatedFx(_statedRows) == 0)
+        {
+            return;
+        }
+
+        foreach (Refii.Host.HostBridge.GuestStatedFx row in _statedRows)
+        {
+            _stated[row.Instance] = (row.P1, row.P2, row.P3);
+        }
+    }
+
+    /// <summary>
+    /// Where the walk placed one particle instance, for comparison against the transform the
+    /// guest stated for the same instance. Null when the walk has no node for it.
+    /// </summary>
+    public float[]? DescribePlacement(uint instance)
+    {
+        if (!_nodes.TryGetValue(instance, out FableFx? node) || !IsInstanceValid(node))
+        {
+            return null;
+        }
+
+        Vector3 at = node.GlobalPosition;
+        return new[] { at.X, at.Y, at.Z };
+    }
+
     public override void _Ready()
     {
         System.Collections.Generic.IReadOnlyDictionary<string, string> config =
@@ -90,7 +213,17 @@ public partial class GameFx : Node3D
         GD.Print(
             $"[game-fx] live effect feed up; drawing is {(_draw ? "ON" : "OFF")} " +
             $"({DrawSettingKey} in {(path.Length != 0 ? path : "refii.toml")})");
+
+        // A child, so its step follows this node's _Process in tree order — after the live
+        // nodes are placed — and leaves with it on a level change; see Engine_FxDriver.
+        AddChild(new Engine_FxDriver { Name = "FxDriver" });
     }
+
+    /// <summary>The per-frame effects list, reused.</summary>
+    private readonly List<HostBridge.ActiveFx> _liveFx = new();
+
+    /// <summary>The position the GUEST stated for each effect handle, as read this frame.</summary>
+    private readonly Dictionary<uint, Vector3> _statedAt = new();
 
     public override void _Process(double delta)
     {
@@ -101,9 +234,13 @@ public partial class GameFx : Node3D
         }
 
         _ticks++;
-        _tickNow = HostBridge.SimTick;
+        _tickNow = Refii.Core.Engine_TickClock.GuestGameTick;
 
-        List<HostBridge.ActiveFx> live = HostBridge.GetActiveFx();
+        // On the guest's frame: the effect list is the guest's statement and only moves when
+        // the guest does; between two, the last list stands.
+        bool refreshed = Refii.Core.Engine_GuestFrame.Changed || _liveFx.Count == 0;
+        List<HostBridge.ActiveFx> live = refreshed ? HostBridge.GetActiveFx(_liveFx) : _liveFx;
+        NodesRead = live.Count;
         if (live.Count > _peakLive)
         {
             _peakLive = live.Count;
@@ -126,11 +263,43 @@ public partial class GameFx : Node3D
         FxBank? bank = FableFx.SharedBank();
         _seen.Clear();
         _counted.Clear();
+        RefreshStated();
+
+        // The placement is the root's. Every type-vector of an effect hangs off a synthetic root
+        // whose transform is what the guest's positioners wrote; a child node's world transform
+        // adds its own chain motion (e.g. a spline node's random point per tick), which our
+        // simulation applies itself. Collected first: the root need not precede its children.
+        _roots.Clear();
+        _emitterState.Clear();
+        foreach (HostBridge.ActiveFx fx in live)
+        {
+            uint rootKey = fx.Handle != 0 ? fx.Handle : fx.Instance;
+            if (fx.Root)
+            {
+                if (fx.Position.IsFinite() && fx.Position.Length() < MaxFxReach && !_roots.ContainsKey(rootKey))
+                {
+                    _roots[rootKey] = ToGodot(fx.Position, fx.Rows);
+                }
+
+                continue;
+            }
+
+            // Scale and fade live on the element, and only a standard emitter's slots mean
+            // anything (a spline or light node's +412 holds something else). The bank says which
+            // type a node is.
+            if (!_emitterState.ContainsKey(rootKey) &&
+                bank?.EmitterForType(fx.NameHash) is { TypeId: 0 or 9 } &&
+                float.IsFinite(fx.Scale) && fx.Scale > 0f && fx.Scale < 100f &&
+                float.IsFinite(fx.Fade))
+            {
+                _emitterState[rootKey] = (fx.Scale, Math.Clamp(fx.Fade, 0f, 1f));
+            }
+        }
 
         foreach (HostBridge.ActiveFx fx in live)
         {
             // The guest's has-work predicate; a dead instance is retired this same tick.
-            if (!fx.Alive)
+            if (!fx.Alive || fx.Root)
             {
                 continue;
             }
@@ -235,12 +404,63 @@ public partial class GameFx : Node3D
 
             _effectOf[key] = effect;
             _seen.Add(key);
-            node.Transform = Smoothed(key, ToGodot(fx.Position, fx.Rows));
+            _statedAt[key] = fx.Position;
+
+            // The composed world transform at `node + 0x20`, position and orientation together.
+            // Row 3 of that 64-byte matrix is `node + 0x50`; every writer of an emitter's
+            // placement lands inside it:
+            //
+            //   sub_832325A8  `li r24,0x50` / `stvx128 v12,r31,r24`      the stated position
+            //   sub_83231C40 -> sub_83228D78  `std r4,0x10(r31)` then
+            //                  sub_8222E678 writing rows 0..3 at +0x20   the stated orientation
+            //   sub_8322E4D0  `li r6,0x50` / `stvx128 v11,r31,r6`        PER TICK, type-5 path
+            //   sub_83230880  `li r7,0x50` / `stvx128 v11,r31,r7`        PER TICK, type-9 spline
+            //   sub_8322B090 / sub_8322B848                              the authored .pfx load
+            //
+            // So the hook is not the placement source and must not become one. `_stated` carries
+            // only the two setters; the two per-tick writers run later in the frame from the
+            // manager update (`sub_83234C38` -> `sub_83233890` -> vtable slot +36) and win, and an
+            // effect whose owner never fires component message 10 keeps the .pfx-authored
+            // transform without either setter being called. `_stated` also has no orientation.
+            // It is a diagnostic only, reported through `refii_fx`.
+            Transform3D placed = _roots.TryGetValue(key, out Transform3D root)
+                ? root
+                : ToGodot(fx.Position, fx.Rows);
+            if (_stated.ContainsKey(key))
+            {
+                ++StatedPlacements;
+            }
+            else
+            {
+                ++WalkedPlacements;
+            }
+
+            node.Transform = Smoothed(key, placed);
+            (float scale, float fade) = _emitterState.TryGetValue(key, out var state) ? state : (1f, 1f);
+            node.Intensity = fx.Intensity * fade;
+            node.SizeScale = scale;
         }
 
-        if (_draw)
+        // One absence is not a retirement. A walk that fills its buffer stops at the cap, and the
+        // guest appends new nodes at the end of its vector and retires by swap-with-last, so
+        // which effects fall past the cut changes every tick and the missing ones may be the
+        // newest. Retirement waits AbsentWalksBeforeRetire absences.
+        //
+        // The grace is counted in refreshed walks, not display frames (the list only moves on the
+        // guest's frame). It is bounded: never retiring while saturated would leak a host node
+        // for every effect the guest drops.
+        if (_draw && refreshed)
         {
             Retire();
+        }
+
+        if (HostBridge.ActiveFxSaturated && !_warnedSaturated)
+        {
+            _warnedSaturated = true;
+            GD.PushWarning(
+                $"[game-fx] the effect walk filled its buffer ({live.Count} nodes) — the guest " +
+                "has more live particle nodes than are being read, so the newest effects are " +
+                "being cut. Raise HostBridge.MaxActiveFx.");
         }
 
         Report();
@@ -257,6 +477,14 @@ public partial class GameFx : Node3D
         {
             if (_seen.Contains(entry.Key))
             {
+                _absent.Remove(entry.Key);
+                continue;
+            }
+
+            int absences = _absent.TryGetValue(entry.Key, out int n) ? n + 1 : 1;
+            _absent[entry.Key] = absences;
+            if (absences < AbsentWalksBeforeRetire)
+            {
                 continue;
             }
 
@@ -270,6 +498,7 @@ public partial class GameFx : Node3D
 
         foreach (uint instance in dead)
         {
+            _absent.Remove(instance);
             _timelines.Remove(instance);
             _effectOf.Remove(instance);
             if (_nodes.Remove(instance, out FableFx? node) && IsInstanceValid(node))

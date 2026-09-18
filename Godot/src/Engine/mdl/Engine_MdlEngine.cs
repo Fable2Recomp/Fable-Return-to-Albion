@@ -9,6 +9,14 @@ public static class Engine_MdlEngine
     public const int BodyStart = 104;
 
     /// <summary>
+    /// Header byte: non-zero means coarser LODs ship no rigid vertex stream and share LOD 0's.
+    /// <c>sub_82B8F568</c> stores it as model+128 (<c>stb ... 0x1C(a1)</c> at 0x82B8FA84 over
+    /// model+100); <c>sub_82AB1868</c> reads the stream only when it is zero or the LOD index
+    /// (LOD+32) is zero (0x82AB25A4..0x82AB25C4).
+    /// </summary>
+    public const int SharedVertexStreamFlag = 98;
+
+    /// <summary>
     /// The 104-byte file header, without its body.
     ///
     /// This is the whole of what <c>globals_model_headers.bnk</c> ships, and it is a complete
@@ -60,6 +68,11 @@ public static class Engine_MdlEngine
             bodyBytesStated += info.LodSizes[i];
         }
 
+        // Header +72 → model+96 (`sub_82B8F1B8` 0x82b8f4c0), the float `sub_82218560` divides by.
+        r.Position = 0x48;
+        if (!r.F32(out float lodReference)) return false;
+        info.LodReference = float.IsFinite(lodReference) && lodReference > 0f ? lodReference : 0f;
+
         return true;
     }
 
@@ -87,6 +100,10 @@ public static class Engine_MdlEngine
         uint outBoneCount = 0;
         var outHideRegions = new List<string>();
 
+        // Coarser payloads are read with the same walk into their own tables; nothing of LOD 0
+        // is shared with them until the buffers are resolved below.
+        var coarser = new List<(MdlLod Lod, List<EngRecord> Records, List<EngMeshHeader> Headers)>();
+
         int off = BodyStart;
         for (uint lod = 0; lod < lodCount; lod++)
         {
@@ -94,6 +111,10 @@ public static class Engine_MdlEngine
             if (secEnd > data.Length) return false;
             if (info.LodSizes[lod] == 0) { off = (int)secEnd; continue; }
             r.Position = off;
+
+            MdlLod? lodOut = lod == 0 ? null : new MdlLod { Index = (int)lod };
+            List<EngRecord> lodRecords = lod == 0 ? allRecords : new List<EngRecord>();
+            List<EngMeshHeader> lodHeaders = lod == 0 ? allHeaders : new List<EngMeshHeader>();
 
             if (!r.Skip(32)) return false;
 
@@ -118,7 +139,13 @@ public static class Engine_MdlEngine
             {
                 for (uint i = 0; i < bc; i++)
                 {
-                    if (!r.Strz(out _) || !r.Skip(4)) return false;
+                    if (!r.Strz(out string boneName)) return false;
+                    if (!r.U32(out uint parentId)) return false;
+                    lodOut!.Bones.Add(new MdlBone
+                    {
+                        Name = boneName,
+                        ParentId = parentId == 0xFFFFFFFFu ? -1 : (int)parentId,
+                    });
                 }
             }
 
@@ -209,6 +236,7 @@ public static class Engine_MdlEngine
             {
                 if (!r.Strz(out string hrName)) return false;
                 if (lod == 0) outHideRegions.Add(hrName);
+                else lodOut!.HideRegions.Add(hrName);
             }
 
             bool capture = lod == 0;
@@ -222,7 +250,7 @@ public static class Engine_MdlEngine
                 if (sel == 2)
                 {
                     if (!r.Skip(68)) return false;
-                    if (capture) allHeaders.Add(hdr);
+                    lodHeaders.Add(hdr);
                     continue;
                 }
 
@@ -307,23 +335,24 @@ public static class Engine_MdlEngine
                     hdr.Materials.Add(mat);
                 }
 
-                if (capture) allHeaders.Add(hdr);
+                lodHeaders.Add(hdr);
             }
 
             uint vtxAccum = 0;
+            bool vertexStream = lod == 0 || data[SharedVertexStreamFlag] == 0;
             for (uint i = 0; i < rigid; i++)
             {
-                if (!ReadRigidRecord(r, lod == 0 || bc > 0, sh4, out EngRecord rec, info, (uint)allRecords.Count))
+                if (!ReadRigidRecord(r, vertexStream, sh4, out EngRecord rec, info, (uint)allRecords.Count))
                     return false;
                 vtxAccum += rec.VertexCount;
-                if (capture) allRecords.Add(rec);
+                lodRecords.Add(rec);
             }
 
             for (uint i = 0; i < skinned; i++)
             {
                 if (!ReadSkinnedRecord(r, sh4, out EngRecord rec, info, (uint)allRecords.Count))
                     return false;
-                if (capture) allRecords.Add(rec);
+                lodRecords.Add(rec);
             }
 
             // D BEFORE C, which is the guest's order and NOT the order the counts are read in.
@@ -335,7 +364,7 @@ public static class Engine_MdlEngine
             {
                 if (!ReadTreeRecord(r, sh4, out EngRecord rec)) return false;
                 vtxAccum += rec.VertexCount;
-                if (capture) allRecords.Add(rec);
+                lodRecords.Add(rec);
             }
 
             if (flag != 0)
@@ -366,6 +395,11 @@ public static class Engine_MdlEngine
 
             if (r.Position != (int)secEnd) return false;
             off = (int)secEnd;
+
+            if (lodOut is not null)
+            {
+                coarser.Add((lodOut, lodRecords, lodHeaders));
+            }
         }
 
         if (allRecords.Count == 0) return false;
@@ -382,35 +416,91 @@ public static class Engine_MdlEngine
 
         foreach (EngRecord rec in allRecords)
         {
-            var mb = new MdlMeshBuffer
-            {
-                VertexCount = rec.VertexCount,
-                VertexOffset = rec.VertexOffset,
-                FaceCount = rec.IndexCount,
-                FaceOffset = rec.IndexOffset,
-                MeshIndex = rec.MeshIdx,
-                IsEngineSkinned = rec.Skinned,
-                IsEngineRigid = !rec.Skinned && !rec.Tree,
-                IsEngineTree = rec.Tree,
-            };
+            info.MeshBuffers.Add(ToBuffer(rec));
+        }
 
-            foreach (EngSubMesh esm in rec.Submeshes)
+        // A coarser rigid part without a vertex stream addresses the LOD-0 rigid part its record
+        // names: `sub_82AB1738` assigns this part's buffer (+76) from LOD 0's rigid part
+        // [part+208] (stride 224), and +208 is the record's first u32. A part naming no such
+        // twin is dropped, never the payload.
+        var lod0Rigid = new List<(MdlMeshBuffer Buffer, int Base)>();
+        int lod0Base = 0;
+        foreach (MdlMeshBuffer lod0 in info.MeshBuffers)
+        {
+            if (lod0.IsEngineRigid)
             {
-                mb.SubMeshes.Add(new MdlSubMesh
-                {
-                    RegionIndex = esm.RegionIndex,
-                    MaterialIndex = esm.MatIdx,
-                    FaceCount = esm.FaceCount,
-                    StartIndex = esm.StartIdx,
-                    PrimitiveType = esm.PrimitiveType,
-                    BoundingBox = esm.BoundingBox,
-                });
+                lod0Rigid.Add((lod0, lod0Base));
             }
 
-            info.MeshBuffers.Add(mb);
+            lod0Base += (int)lod0.VertexCount;
+        }
+
+        foreach ((MdlLod lodOut, List<EngRecord> records, List<EngMeshHeader> headers) in coarser)
+        {
+            foreach (EngMeshHeader hdr in headers)
+            {
+                var mesh = new MdlMesh { Name = hdr.Name };
+                mesh.Materials.AddRange(hdr.Materials);
+                lodOut.Meshes.Add(mesh);
+            }
+
+            foreach (EngRecord rec in records)
+            {
+                MdlMeshBuffer mb = ToBuffer(rec);
+                if (rec.SharesVertices)
+                {
+                    if (rec.Lod0PartIndex >= lod0Rigid.Count ||
+                        lod0Rigid[(int)rec.Lod0PartIndex].Buffer.VertexCount != rec.VertexCount)
+                    {
+                        continue;
+                    }
+
+                    (MdlMeshBuffer twin, int twinBase) = lod0Rigid[(int)rec.Lod0PartIndex];
+                    mb.SharesLod0Vertices = true;
+                    mb.SharedVertexBase = twinBase;
+                    mb.VertexOffset = twin.VertexOffset;
+                }
+
+                lodOut.MeshBuffers.Add(mb);
+            }
+
+            if (lodOut.MeshBuffers.Count != 0)
+            {
+                info.Lods.Add(lodOut);
+            }
         }
 
         return true;
+    }
+
+    private static MdlMeshBuffer ToBuffer(EngRecord rec)
+    {
+        var mb = new MdlMeshBuffer
+        {
+            VertexCount = rec.VertexCount,
+            VertexOffset = rec.VertexOffset,
+            FaceCount = rec.IndexCount,
+            FaceOffset = rec.IndexOffset,
+            MeshIndex = rec.MeshIdx,
+            IsEngineSkinned = rec.Skinned,
+            IsEngineRigid = !rec.Skinned && !rec.Tree,
+            IsEngineTree = rec.Tree,
+        };
+
+        foreach (EngSubMesh esm in rec.Submeshes)
+        {
+            mb.SubMeshes.Add(new MdlSubMesh
+            {
+                RegionIndex = esm.RegionIndex,
+                MaterialIndex = esm.MatIdx,
+                FaceCount = esm.FaceCount,
+                StartIndex = esm.StartIdx,
+                PrimitiveType = esm.PrimitiveType,
+                BoundingBox = esm.BoundingBox,
+            });
+        }
+
+        return mb;
     }
 
     private sealed class EngMeshHeader
@@ -437,6 +527,16 @@ public static class Engine_MdlEngine
 
         /// <summary>A TypeD tree/foliage part: stride 36, no batches.</summary>
         public bool Tree { get; set; }
+
+        /// <summary>
+        /// A rigid part read without a vertex stream (coarser LOD under the header's
+        /// <see cref="SharedVertexStreamFlag"/>): only its indices are its own, and
+        /// <see cref="VertexOffset"/> is meaningless until resolved against LOD 0.
+        /// </summary>
+        public bool SharesVertices { get; set; }
+
+        /// <summary>The record's first u32: this part's index among LOD 0's parts of its kind (part+208 rigid, +152 skinned).</summary>
+        public uint Lod0PartIndex { get; set; }
         public uint IndexCount { get; set; }
         public uint VertexCount { get; set; }
         public uint MeshIdx { get; set; }
@@ -560,8 +660,9 @@ public static class Engine_MdlEngine
         rec.MeshName = meshName;
         if (!r.U8(out _)) return false;
 
-        if (!r.U32(out _) || !r.U32(out uint idx1) || !r.U32(out _) ||
+        if (!r.U32(out uint partIndex) || !r.U32(out uint idx1) || !r.U32(out _) ||
             !r.U32(out uint idxCount) || !r.U32(out uint vtxCount)) return false;
+        rec.Lod0PartIndex = partIndex;
         rec.MeshIdx = idx1;
         rec.IndexCount = idxCount;
         rec.VertexCount = vtxCount;
@@ -583,10 +684,15 @@ public static class Engine_MdlEngine
         }
         else
         {
-            rec.VertexOffset = r.Position;
-            if (!r.Skip((int)(vtxCount * 16 * sh4))) return false;
+            // Without a vertex stream the order is the same minus that stream: indices
+            // (`Fable_CreateIndexBufferWrapped` at 0x82B2B8CC), then the 16 * sh4 per-vertex
+            // stream (0x82B2B9C4). The vertex count is the LOD-0 part's, whose vertices the
+            // indices address.
+            rec.SharesVertices = true;
             rec.IndexOffset = r.Position;
             if (!r.Skip((int)(idxCount * 2))) return false;
+            rec.VertexOffset = r.Position;
+            if (!r.Skip((int)(vtxCount * 16 * sh4))) return false;
         }
 
         if (!r.U32(out uint ext1)) return false;

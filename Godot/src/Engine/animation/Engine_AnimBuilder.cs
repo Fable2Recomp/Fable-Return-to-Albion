@@ -132,7 +132,95 @@ public static class Engine_AnimBuilder
         return animation.GetTrackCount() > 0 ? animation : null;
     }
 
-    private static int[] MapTracks(AnimClip clip, Skeleton3D skeleton)
+    /// <summary>A clip's decoded keys per CLIP TRACK, before any skeleton is involved.</summary>
+    /// <remarks>
+    /// Exactly the keys <see cref="Build"/> inserts: the same frames, times, normalisation and
+    /// Y-up conversion. The skeleton only decides which bone a track lands on and whether that
+    /// bone takes the translation (<see cref="MapTracks"/>), so these can be shared by every rig.
+    /// A track index past the decoded pose's bone count has no keys, as in Build.
+    /// </remarks>
+    public sealed class DecodedKeys
+    {
+        public float Length;
+        public float[][] Times = Array.Empty<float[]>();
+        public Quaternion[][] Rotations = Array.Empty<Quaternion[]>();
+        public Vector3[][] Positions = Array.Empty<Vector3[]>();
+    }
+
+    public static DecodedKeys? DecodeKeys(AnimClip clip, Engine_AnimDecoder decoder)
+    {
+        if (clip.Fps <= 0.0f || clip.TocFrameCount == 0 || clip.TrackMap is null || clip.TrackMap.Count == 0)
+        {
+            return null;
+        }
+
+        int frameCount = (int)Math.Min(clip.TocFrameCount, (uint)MaxFrames);
+        int tracks = clip.TrackMap.Count;
+        var times = new List<float>[tracks];
+        var rotations = new List<Quaternion>[tracks];
+        var positions = new List<Vector3>[tracks];
+        for (int i = 0; i < tracks; i++)
+        {
+            times[i] = new List<float>(frameCount);
+            rotations[i] = new List<Quaternion>(frameCount);
+            positions[i] = new List<Vector3>(frameCount);
+        }
+
+        var pose = new DecodedPose();
+        for (int frame = 0; frame < frameCount; frame++)
+        {
+            float time = frame / clip.Fps;
+            if (!decoder.Decode(clip, time, pose) || !pose.Ok)
+            {
+                continue;
+            }
+
+            int n = Math.Min(tracks, pose.BoneCount);
+            for (int i = 0; i < n; i++)
+            {
+                var rotation = new Quaternion(
+                    pose.BoneQuats[i * 4 + 0],
+                    pose.BoneQuats[i * 4 + 1],
+                    pose.BoneQuats[i * 4 + 2],
+                    pose.BoneQuats[i * 4 + 3]);
+
+                if (rotation.LengthSquared() <= 1e-12f)
+                {
+                    rotation = Quaternion.Identity;
+                }
+                else if (!rotation.IsNormalized())
+                {
+                    rotation = rotation.Normalized();
+                }
+
+                times[i].Add(time);
+                rotations[i].Add(Engine_AnimSkeleton.ToYUp(rotation));
+                positions[i].Add(Engine_AnimSkeleton.ToYUp(new Vector3(
+                    pose.BoneTrans[i * 3 + 0],
+                    pose.BoneTrans[i * 3 + 1],
+                    pose.BoneTrans[i * 3 + 2])));
+            }
+        }
+
+        var keys = new DecodedKeys
+        {
+            Length = MathF.Max(frameCount - 1, 1) / clip.Fps,
+            Times = new float[tracks][],
+            Rotations = new Quaternion[tracks][],
+            Positions = new Vector3[tracks][],
+        };
+        for (int i = 0; i < tracks; i++)
+        {
+            keys.Times[i] = times[i].ToArray();
+            keys.Rotations[i] = rotations[i].ToArray();
+            keys.Positions[i] = positions[i].ToArray();
+        }
+
+        return keys;
+    }
+
+    /// <summary>The skeleton's bone-name candidates for <see cref="MapTracks"/>; build once per skeleton.</summary>
+    public static Dictionary<string, List<int>> BoneCandidates(Skeleton3D skeleton)
     {
         int boneCount = skeleton.GetBoneCount();
         var candidates = new Dictionary<string, List<int>>(boneCount * 2);
@@ -165,6 +253,15 @@ public static class Engine_AnimBuilder
             AddCandidate("shadow_" + bare, i);
         }
 
+        return candidates;
+    }
+
+    private static int[] MapTracks(AnimClip clip, Skeleton3D skeleton) =>
+        MapTracks(clip, skeleton, BoneCandidates(skeleton));
+
+    /// <summary>Clip track → skeleton bone, or -1; empty when nothing matched.</summary>
+    public static int[] MapTracks(AnimClip clip, Skeleton3D skeleton, Dictionary<string, List<int>> candidates)
+    {
         if (clip.TrackMap is null || clip.TrackMap.Count == 0)
         {
             return Array.Empty<int>();

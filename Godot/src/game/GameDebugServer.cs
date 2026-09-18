@@ -238,6 +238,62 @@ public partial class GameDebugServer : Node
 		}
 	}
 
+	/// <summary>Plain Godot lights spawned by `render testLights=` — see its use.</summary>
+	private readonly List<OmniLight3D> _testLights = new();
+
+	/// <summary>
+	/// Brings the plain-light population to <paramref name="want"/>.
+	/// </summary>
+	/// <remarks>
+	/// Only position and range are set; every other property stays at Godot's default, so the
+	/// comparison against a placed fixture isolates what we do to a light. The range matches the
+	/// fixtures' own scale (`placed_light_range` 1.5 over a shipped 5-6 m torch).
+	/// </remarks>
+	private void SetTestLights(int want)
+	{
+		for (int i = _testLights.Count - 1; i >= want; --i)
+		{
+			if (GodotObject.IsInstanceValid(_testLights[i]))
+			{
+				_testLights[i].QueueFree();
+			}
+
+			_testLights.RemoveAt(i);
+		}
+
+		if (want == 0 || _testLights.Count >= want)
+		{
+			return;
+		}
+
+		// Parented to the camera's parent, not the camera, so the lights stay static like the
+		// fixtures they are compared against.
+		Camera3D? camera = GetViewport()?.GetCamera3D();
+		Node3D? host = camera?.GetParent() as Node3D ?? camera;
+		if (camera is null || host is null)
+		{
+			return;
+		}
+
+		Vector3 eye = camera.GlobalPosition;
+		for (int i = _testLights.Count; i < want; ++i)
+		{
+			float angle = i * 2.399963f;          // the golden angle, so a ring does not stripe
+			float radius = 3.0f + ((i % 7) * 1.5f);
+			var light = new OmniLight3D
+			{
+				Name = $"TestLight{i}",
+				OmniRange = 9.0f,
+			};
+
+			// In the tree first: `Position` is local, and the level root mirrors X.
+			host.AddChild(light);
+			light.GlobalPosition = eye + new Vector3(
+				Mathf.Cos(angle) * radius, 1.5f + ((i % 3) * 0.75f), Mathf.Sin(angle) * radius);
+			_testLights.Add(light);
+		}
+	}
+
 	/// <summary>The pad the debug channel is holding this frame, or 0.</summary>
 	public static uint Buttons() => _pressFrames > 0 && --_pressFrames >= 0 ? _pressed : 0u;
 
@@ -354,6 +410,7 @@ public partial class GameDebugServer : Node
 	{
 		using (Refii.Core.Engine_FramePhases.Measure("gamedebugserver"))
 		{
+			SampleSimRebase();
 			ProcessBody(delta);
 		}
 	}
@@ -1242,6 +1299,102 @@ public partial class GameDebugServer : Node
 				});
 			}
 
+			case "fx":
+			{
+				// The drawn live effects nearest the eye: which effect each guest handle resolved to,
+				// where we placed it, the intensity the guest states for it, and what our simulation holds.
+				int take = root.TryGetProperty("count", out JsonElement fc) && fc.ValueKind == JsonValueKind.Number
+					? System.Math.Clamp(fc.GetInt32(), 1, 128) : 16;
+				Vector3 eye = GetViewport()?.GetCamera3D()?.GlobalPosition ?? Vector3.Zero;
+				GameFx? feed = GameFx.Current;
+				return Ok(new Dictionary<string, object?>
+				{
+					["drawn"] = feed?.DrawnCount ?? 0,
+
+					// The walk's saturation. The guest appends new nodes at the end of its vector, so a full
+					// buffer means the NEWEST effects were cut.
+					["nodesRead"] = feed?.NodesRead ?? 0,
+					["nodesSaturated"] = Refii.Host.HostBridge.ActiveFxSaturated,
+
+					// The hook against the walk: both key on the particle instance pointer, so the rows line
+					// up. `statedCount` of 0 means the hook is not in this build.
+					["statedCount"] = Refii.Host.HostBridge.StatedFxCount(),
+					["placedFromStated"] = GameFx.StatedPlacements,
+					["placedFromWalk"] = GameFx.WalkedPlacements,
+					["visualsBuilt"] = Refii.Fx.Engine_FxSystem.VisualsBuilt,
+					["visualsChainedAway"] = Refii.Fx.Engine_FxSystem.ChainedNoVisuals,
+					["visualsChainedButDrawable"] = Refii.Fx.Engine_FxSystem.ChainedButDrawable,
+					["visualsBuiltEmpty"] = Refii.Fx.Engine_FxSystem.BuiltButEmpty,
+					["emitZeroSize"] = Refii.Fx.Engine_FxSystem.SkipZeroSize,
+					["emitZeroAlpha"] = Refii.Fx.Engine_FxSystem.SkipZeroAlpha,
+					["emitBillboards"] = Refii.Fx.Engine_FxSystem.EmittedBillboards,
+					["batchMaterialHits"] = Refii.Fx.Engine_FxSystem.BatchMaterialHits,
+					["batchMaterialMisses"] = Refii.Fx.Engine_FxSystem.BatchMaterialMisses,
+					["batchMissedNames"] = string.Join(" ", Refii.Fx.Engine_FxSystem.MissedNames),
+					["stated"] = StatedFxRows(),
+					["frozenSinceLastRead"] = Refii.Fx.FableFx.FrozenThisFrame,
+					["eye"] = $"({eye.X:0.0},{eye.Y:0.0},{eye.Z:0.0})",
+					["effects"] = feed?.Describe(eye, take) ?? new List<string>(),
+				});
+			}
+
+			case "fxlayer":
+			{
+				// The additive layer: whether the viewport is up and resolvable, whether anything drew on
+				// it this frame, its pixel statistics, and `gain`, the scalar it joins the scene with
+				// (settable live). `dump` writes the layer as a PNG under the scratch directory (never the
+				// tree).
+				Refii.Fx.Engine_FxAdditiveLayer? layer = Refii.Fx.Engine_FxAdditiveLayer.Current;
+				if (root.TryGetProperty("gain", out JsonElement gainElement) && gainElement.ValueKind == JsonValueKind.Number)
+				{
+					Refii.Fx.Engine_FxAdditiveLayer.Gain = System.Math.Clamp((float)gainElement.GetDouble(), 0f, 64f);
+				}
+
+				var reply = new Dictionary<string, object?>
+				{
+					["present"] = Refii.Fx.Engine_FxAdditiveLayer.Present,
+					["usable"] = layer?.Usable ?? false,
+					["activeThisFrame"] = Refii.Fx.Engine_FxAdditiveLayer.TrySnapshot(out _),
+					["size"] = layer is null ? "none" : $"{layer.Size.X}x{layer.Size.Y}",
+					["gain"] = Refii.Fx.Engine_FxAdditiveLayer.Gain,
+					["postfxEnabled"] = Refii.Lighting.Engine_PostFxParams.Enabled,
+				};
+
+				if (layer is not null && layer.Capture() is { } image && !image.IsEmpty())
+				{
+					int w = image.GetWidth(), h = image.GetHeight();
+					double sum = 0; float peak = 0f; int lit = 0;
+					for (int y = 0; y < h; y++)
+					{
+						for (int x = 0; x < w; x++)
+						{
+							Color c = image.GetPixel(x, y);
+							float m = System.Math.Max(c.R, System.Math.Max(c.G, c.B));
+							sum += m;
+							if (m > peak) peak = m;
+							if (m > 0.004f) lit++;
+						}
+					}
+
+					reply["format"] = image.GetFormat().ToString();
+					reply["meanMax"] = sum / System.Math.Max(1, w * h);
+					reply["peak"] = peak;
+					reply["litPixels"] = lit;
+					if (root.TryGetProperty("dump", out JsonElement dumpElement) && dumpElement.ValueKind == JsonValueKind.True)
+					{
+						string dir = System.IO.Path.Combine(
+							System.Environment.GetEnvironmentVariable("HOME") ?? ".", ".cache", "refii-scratch", "fxlayer");
+						System.IO.Directory.CreateDirectory(dir);
+						string path = System.IO.Path.Combine(dir, $"layer_{Time.GetTicksMsec()}.png");
+						Image png = (Image)image.Duplicate();
+						png.Convert(Image.Format.Rgba8);
+						reply["dumped"] = png.SavePng(path) == Error.Ok ? path : "failed";
+					}
+				}
+
+				return Ok(reply);
+			}
+
 			case "render":
 			{
 				// LIVE LEVERS for bisecting a frame: each is optional; the reply is the state.
@@ -1253,6 +1406,41 @@ public partial class GameDebugServer : Node
 				if (root.TryGetProperty("lightBudget", out JsonElement lb) && lb.ValueKind == JsonValueKind.Number)
 				{
 					Refii.Lighting.Engine_LightShadowBudget.LightBudget = lb.GetInt32();
+				}
+
+				// How far the radius walk must move before the write reaches the node; 0 is the guest.
+				// `OmniRange` is the one light property that changes the AABB, and every change costs a
+				// full `PairInstances::pair` re-pair against everything in reach.
+				if (root.TryGetProperty("lightFlickerRadius", out JsonElement lfr)
+					&& lfr.ValueKind == JsonValueKind.Number)
+				{
+					Refii.Lighting.Engine_LightFlicker.RadiusEpsilon = (float)lfr.GetDouble();
+				}
+
+				// Every fixture's reach, live. Pairing tracks the volume a light covers, so the cost goes
+				// with the cube: 0.667 undoes the 1.5 remaster default. One re-pair storm, then settles.
+				if (root.TryGetProperty("lightRangeScale", out JsonElement lrs)
+					&& lrs.ValueKind == JsonValueKind.Number)
+				{
+					Refii.Lighting.Engine_LevelLights.RangeScale = (float)lrs.GetDouble();
+					Refii.Lighting.Engine_LevelLights.ApplyRangeScale();
+				}
+
+				// The radius inside which a rig poses every step (the guest's BoneLODDistance, default 10,
+				// floor 8); beyond it the rate halves to 15 Hz. A huge value puts every visible rig on 30 Hz.
+				if (root.TryGetProperty("poseFullRate", out JsonElement pfr)
+					&& pfr.ValueKind == JsonValueKind.Number)
+				{
+					GameEntities.PoseFullRateRadius = (float)pfr.GetDouble();
+				}
+
+				// Sample clips from the managed key cache, or from the `Animation` resource. Same
+				// arithmetic either way (every track is Linear, and Godot's linear Quaternion case is
+				// slerp), so a difference on screen means the cache is wrong.
+				if (root.TryGetProperty("managedClips", out JsonElement mc)
+					&& mc.ValueKind != JsonValueKind.Null)
+				{
+					Refii.Animations.Engine_ClipAnimator.ManagedClipSampling = mc.GetBoolean();
 				}
 
 				if (root.TryGetProperty("sunSplits", out JsonElement sp))
@@ -1293,34 +1481,107 @@ public partial class GameDebugServer : Node
 					}
 				}
 
-				if (root.TryGetProperty("uiViewport", out JsonElement uv) && uv.ValueKind != JsonValueKind.Null)
+				if (root.TryGetProperty("hud", out JsonElement hd) && hd.ValueKind != JsonValueKind.Null)
 				{
-					foreach (Node found in GetTree().Root.FindChildren("UiViewport", "SubViewport", true, false))
-					{
-						if (found is SubViewport ui)
-						{
-							ui.RenderTargetUpdateMode = uv.GetBoolean() ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
-						}
-					}
+					Refii.Ui.Engine_HudView.Enabled = hd.GetBoolean();
 				}
 
-				if (root.TryGetProperty("lights", out JsonElement li) && li.ValueKind != JsonValueKind.Null)
+				// The present mode, switchable live. Under any vsync mode (mailbox included) the frame
+				// rate is capped at the refresh rate, so fps measures the display, not the machine.
+				if (root.TryGetProperty("vsync", out JsonElement vs) && vs.ValueKind != JsonValueKind.Null)
 				{
-					Refii.Lighting.Engine_LightShadowBudget.LightsEnabled = li.GetBoolean();
+					DisplayServer.VSyncMode wanted = vs.ValueKind == JsonValueKind.False
+						? DisplayServer.VSyncMode.Disabled
+						: vs.ValueKind == JsonValueKind.True
+							? DisplayServer.VSyncMode.Mailbox
+							: vs.GetString() switch
+							{
+								"off" or "disabled" or "false" => DisplayServer.VSyncMode.Disabled,
+								"on" or "fifo" => DisplayServer.VSyncMode.Enabled,
+								"adaptive" => DisplayServer.VSyncMode.Adaptive,
+								_ => DisplayServer.VSyncMode.Mailbox,
+							};
+
+					DisplayServer.WindowSetVsyncMode(wanted, (int)DisplayServer.MainWindowId);
 				}
 
-				if (root.TryGetProperty("shadowReach", out JsonElement sr) && sr.ValueKind != JsonValueKind.Null)
+				if (root.TryGetProperty("maxFps", out JsonElement mf) && mf.ValueKind == JsonValueKind.Number)
 				{
-					Refii.Lighting.Engine_ShadowReach.Enabled = sr.GetBoolean();
+					Engine.MaxFps = System.Math.Max(0, mf.GetInt32());
+				}
+
+				// Clock estimators, switchable live: the per-sample estimator pins the playhead to the
+				// tick counter (15 Hz stepping); the fitted clock advances smoothly. Compare with
+				// `playheadVsNewest`.
+				if (root.TryGetProperty("hostPhase", out JsonElement hp) &&
+					hp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+				{
+					Refii.Core.Engine_TickClock.UseHostPhase = hp.GetBoolean();
+				}
+
+				if (root.TryGetProperty("clockFit", out JsonElement cf) && cf.ValueKind != JsonValueKind.Null)
+				{
+					Refii.Core.Engine_TickClock.Disciplined = cf.GetBoolean();
+				}
+
+				// The guest's own clock, switchable live. Off falls back to the estimators, kept only for
+				// comparison.
+				if (root.TryGetProperty("clockHost", out JsonElement ch) && ch.ValueKind != JsonValueKind.Null)
+				{
+					Refii.Core.Engine_TickClock.HostOwnsClock = ch.GetBoolean();
+				}
+
+				if (root.TryGetProperty("clockStated", out JsonElement cs) && cs.ValueKind != JsonValueKind.Null)
+				{
+					Refii.Core.Engine_TickClock.UseStatedClock = cs.GetBoolean();
+				}
+
+				// Guest time base: 0 real clock, 1 paced, 2 driven (the guest stepped at Godot's rate,
+				// deterministically).
+				if (root.TryGetProperty("timeBase", out JsonElement tb) && tb.ValueKind == JsonValueKind.Number)
+				{
+					_timeBase = Refii.Host.HostBridge.TimeBase(
+						(Refii.Host.HostBridge.TimeBaseMode)tb.GetInt32());
+				}
+
+				// Spawns N plain OmniLight3D, every property at Godot's default, to price a light against
+				// a placed fixture: the same cost means the price is Godot's; far less means it is
+				// something we set (LightSpecular carrying the table slot, OmniAttenuation pinned to 0, the
+				// per-tick OmniRange writes). Placed on a ring around the camera at the fixtures' scale, so
+				// they are in view and processed rather than culled.
+				if (root.TryGetProperty("testLights", out JsonElement tl) && tl.ValueKind == JsonValueKind.Number)
+				{
+					SetTestLights(System.Math.Clamp(tl.GetInt32(), 0, 512));
 				}
 
 				return Ok(new Dictionary<string, object?>
 				{
+					["testLights"] = _testLights.Count,
 					["shadowReach"] = Refii.Lighting.Engine_ShadowReach.Enabled,
 					["shadowSuppressed"] = Refii.Lighting.Engine_ShadowReach.Suppressed,
 					["shadowConsidered"] = Refii.Lighting.Engine_ShadowReach.Considered,
 					["shadowBudget"] = Refii.Lighting.Engine_LightShadowBudget.Budget,
+					["shadowCasting"] = Refii.Lighting.Engine_LightShadowBudget.Casting,
+					["shadowEligible"] = Refii.Lighting.Engine_LightShadowBudget.Eligible,
+					["shadowParaboloid"] = Refii.Lighting.Engine_LightShadowBudget.Paraboloid,
+					// The atmosphere, and the one inference that scales it: "interior" is not a stated flag
+					// (the guest has none); it is derived as `ModernModel && !HasSky`. These numbers say
+					// whether that gate trips where the player is standing.
+					["interior"] = Refii.Lighting.Engine_LightingFrame.CurrentInterior,
+					["paintedWeight"] =
+						Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting?.PaintedWeight,
+					["skylightWeight"] =
+						Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting?.SkylightWeight,
+					["interiorFogScale"] = Refii.Lighting.Engine_LightingFrame.InteriorFogScale,
+					["bakeWeight"] = Refii.Lighting.Engine_LevelBakedLighting.BakeWeight,
+					["lightTable"] = Refii.Lighting.Engine_LightTable.Live,
 					["lightBudget"] = Refii.Lighting.Engine_LightShadowBudget.LightBudget,
+					["lightFlickerRadius"] = Refii.Lighting.Engine_LightFlicker.RadiusEpsilon,
+					["lightRangeScale"] = Refii.Lighting.Engine_LevelLights.RangeScale,
+					["poseFullRate"] = GameEntities.PoseFullRateRadius,
+					["managedClips"] = Refii.Animations.Engine_ClipAnimator.ManagedClipSampling,
+					["flickerRadiusWrites"] = Refii.Lighting.Engine_LightFlicker.RadiusWrites,
+					["flickerRadiusCandidates"] = Refii.Lighting.Engine_LightFlicker.RadiusCandidates,
 					["hero"] = GameEntities.HeroPosition is { } hero
 						? $"({hero.X:0.0}, {hero.Y:0.0}, {hero.Z:0.0})" : null,
 					["heroLocal"] = GameEntities.HeroPosition is { } heroWorld &&
@@ -1329,11 +1590,16 @@ public partial class GameDebugServer : Node
 							? $"({local.X:0.0}, {local.Y:0.0}, {local.Z:0.0})" : null
 						: null,
 					["painted"] = Refii.Level.Engine_SkyEnvironmentNode.Current?.Painted?.Describe(),
-					["paintedWeight"] = Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting?.PaintedWeight,
 					["sunShadow"] = Refii.Lighting.Engine_LevelLighting.SunShadowOverride,
 					["sunSplits"] = Refii.Lighting.Engine_LevelLighting.SunSplitsOverride,
 					["reflections"] = Refii.Level.Engine_WaterReflection.Enabled,
 					["reflectionCadence"] = Refii.Level.Engine_WaterReflection.Cadence,
+					["vsync"] = DisplayServer.WindowGetVsyncMode((int)DisplayServer.MainWindowId).ToString(),
+					["maxFps"] = Engine.MaxFps,
+					["clockFit"] = Refii.Core.Engine_TickClock.Disciplined,
+					["playheadVsNewest"] = Refii.Core.Engine_TickClock.PlayheadVsNewest,
+					["refreshHz"] = DisplayServer.ScreenGetRefreshRate(
+						DisplayServer.WindowGetCurrentScreen((int)DisplayServer.MainWindowId)),
 				});
 			}
 
@@ -1442,6 +1708,7 @@ public partial class GameDebugServer : Node
 				// The HOST's own cost, which the guest counters cannot see. The viewport's own
 				// CPU/GPU render measurement is switched on at the first ask and stays on; the
 				// visible/shadow split says whether shadow passes are the multiplier.
+				SampleStatedClock();
 				Viewport? viewport = GetViewport();
 				Rid viewportRid = viewport?.GetViewportRid() ?? default;
 				double renderCpuMs = 0, renderGpuMs = 0;
@@ -1525,16 +1792,64 @@ public partial class GameDebugServer : Node
 						["countMismatch"] = Refii.Entities.Engine_EntitySkeleton.CountMismatch,
 						["neverPosed"] = Refii.Entities.Engine_EntitySkeleton.NeverPosed,
 						["mostActive"] = GameEntities.Current?.MostActiveRigs(),
+						["highlighted"] = Refii.Entities.Engine_EntityHighlight.HighlightedThisFrame,
+						["highlightPassChanges"] = Refii.Entities.Engine_EntityHighlight.PassChanges,
+
+						// Three separate failure causes: the guest states nothing (words stay 000000FF), the
+						// layer never resolved a render-device texture (`layerUsable` false, so the post chain has
+						// nothing to blur), or the width never arrived (`widthTexels` 0: the Peek of
+						// dword_83318558 came back empty).
+						["highlightLayerUsable"] = Refii.Entities.Engine_EntityHighlightLayer.Current?.Usable,
+						["highlightLayerPresent"] = Refii.Entities.Engine_EntityHighlightLayer.Present,
+						["highlightLayerSize"] =
+							Refii.Entities.Engine_EntityHighlightLayer.Current is { } hl
+								? $"{hl.Size.X}x{hl.Size.Y}"
+								: null,
+						["highlightWidthTexels"] = Refii.Entities.Engine_EntityHighlightLayer.WidthTexels,
+						["highlightWordsSeen"] = string.Join(",",
+							System.Linq.Enumerable.Select(
+								Refii.Entities.Engine_EntityHighlight.SeenWords, w => w.ToString("X8"))),
 						["attachmentsPlaced"] = Refii.Entities.Engine_EntityAttachments.Placed,
 						["attachmentsUnresolved"] = Refii.Entities.Engine_EntityAttachments.Unresolved,
 						["attachmentsResolves"] = Refii.Entities.Engine_EntityAttachments.Resolves,
 						["clipDrivenFrames"] = Refii.Animations.Engine_ClipAnimator.ClipDrivenFrames,
+						["runnerFlips"] = Refii.Animations.Engine_ClipAnimator.RunnerFlips,
+						["shareSteps"] = Refii.Animations.Engine_ClipAnimator.ShareSteps,
+						["largestShareStep"] = Refii.Animations.Engine_ClipAnimator.LargestShareStep,
+						// Why a rig is not clip-driven, by cause. `noBit`/`unresolved` climbing means this walk
+						// misses controllers the guest has; `empty` climbing means the guest has nothing to play.
+						["animNoComponentBit"] = Refii.Host.HostBridge.AnimWalkStats()?.NoBit,
+						["animComponentUnresolved"] = Refii.Host.HostBridge.AnimWalkStats()?.Unresolved,
+						["animControllerFound"] = Refii.Host.HostBridge.AnimWalkStats()?.Found,
+						["animControllerEmpty"] = Refii.Host.HostBridge.AnimWalkStats()?.Empty,
 						["heldNoPrimary"] = Refii.Animations.Engine_ClipAnimator.HeldNoPrimaryFrames,
 						["fallbackUnknownClip"] = Refii.Animations.Engine_ClipAnimator.FallbackUnknownClip,
 						["fallbackProcedural"] = Refii.Animations.Engine_ClipAnimator.FallbackProcedural,
 						["fallbackRagdoll"] = Refii.Animations.Engine_ClipAnimator.FallbackRagdoll,
+						// Where the pose blend's alpha lands. All at zero or one means rigs are stepping between
+						// poses; a healthy blend is overwhelmingly `alphaBetween`.
+						["alphaAtZero"] = Refii.Entities.Engine_EntitySkeleton.AlphaAtZero,
+						["alphaBetween"] = Refii.Entities.Engine_EntitySkeleton.AlphaBetween,
+						["alphaAtOne"] = Refii.Entities.Engine_EntitySkeleton.AlphaAtOne,
+						["blendedPoses"] = Refii.Entities.Engine_EntitySkeleton.BlendedPoses,
+						["heldPoses"] = Refii.Entities.Engine_EntitySkeleton.HeldPoses,
 						["fallbackNoLeaves"] = Refii.Animations.Engine_ClipAnimator.FallbackNoLeaves,
 					},
+					["shadowReach"] = new Dictionary<string, object?>
+					{
+						["suppressed"] = Refii.Lighting.Engine_ShadowReach.Suppressed,
+						["considered"] = Refii.Lighting.Engine_ShadowReach.Considered,
+					},
+					["skippedBoneWrites"] = Refii.Animations.Engine_ClipAnimator.SkippedBoneWrites,
+					["boneWrites"] = Refii.Animations.Engine_ClipAnimator.BoneWrites,
+					["skeletonsWritten"] = Refii.Animations.Engine_ClipAnimator.SkeletonsWritten,
+					["flickerUpdates"] = Refii.Lighting.Engine_LightFlicker.Updates,
+					// Under any vsync mode (mailbox included) the frame rate is the panel's. `vsync` is the
+					// mode actually in force: the driver falls back to plain vsync where it has no mailbox.
+					["vsync"] = DisplayServer.WindowGetVsyncMode((int)DisplayServer.MainWindowId).ToString(),
+					["maxFps"] = Engine.MaxFps,
+					["refreshHz"] = DisplayServer.ScreenGetRefreshRate(
+						DisplayServer.WindowGetCurrentScreen((int)DisplayServer.MainWindowId)),
 					["frameSetupCpuMs"] = RenderingServer.GetFrameSetupTimeCpu(),
 					["viewports"] = viewports,
 					["renderCpuMs"] = renderCpuMs,
@@ -1543,7 +1858,176 @@ public partial class GameDebugServer : Node
 					["shadow"] = new Dictionary<string, object?> { ["drawCalls"] = shadowCalls, ["primitives"] = shadowPrims, ["objects"] = shadowObjects },
 					["placedLights"] = lights.Count,
 					["shadowLights"] = shadowLights,
+					// Pipelines compiled since launch. A specialization compile means a surface drew with the
+					// ubershader for the frames it took; a draw-time compile stalled the frame.
+					["pipelines"] = new Dictionary<string, object?>
+					{
+						["canvas"] = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsCanvas),
+						["mesh"] = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsMesh),
+						["surface"] = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsSurface),
+						["draw"] = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsDraw),
+						["specialization"] = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsSpecialization),
+					},
+					["mdlLods"] = new Dictionary<string, object?>
+					{
+						["surfacesWithLods"] = Refii.Models.Engine_MdlMesh.SurfacesWithLods,
+						["surfacesWithoutLods"] = Refii.Models.Engine_MdlMesh.SurfacesWithoutLods,
+						["levelsAttached"] = Refii.Models.Engine_MdlMesh.LodLevelsAttached,
+						["levelsDropped"] = Refii.Models.Engine_MdlMesh.LodLevelsDropped,
+					},
 					["fps"] = Performance.GetMonitor(Performance.Monitor.TimeFps),
+					// The frames that froze, each with the phases in it. Per-phase peaks decay independently,
+					// so two peaking in one report can be seconds apart; this is one frame, whole.
+					["hitches"] = Hitches(),
+					// The nested-bank cache: what it holds, and whether it is thrashing.
+					// `evictions` near zero with a full `residentMB` means the budget can come
+					// down and the heap with it; evictions climbing means it is already too
+					// small and lowering it would trade heap for allocation rate.
+					["bankCache"] = new Dictionary<string, object?>
+					{
+						["residentMB"] =
+							System.Math.Round(Refii.Bnk.BnkFileSystem.NestedResidentBytes / 1048576.0, 1),
+						["loads"] = Refii.Bnk.BnkFileSystem.NestedLoads,
+						["evictions"] = Refii.Bnk.BnkFileSystem.NestedEvictions,
+					},
+					["gc"] = new Dictionary<string, object?>
+					{
+						["gen0"] = System.GC.CollectionCount(0),
+						["gen1"] = System.GC.CollectionCount(1),
+						["gen2"] = System.GC.CollectionCount(2),
+						["pauseMsTotal"] = System.GC.GetTotalPauseDuration().TotalMilliseconds,
+						["allocatedMB"] = System.GC.GetTotalAllocatedBytes() / 1048576.0,
+						["heapMB"] = System.GC.GetGCMemoryInfo().HeapSizeBytes / 1048576.0,
+						["gen0MB"] = System.GC.GetGCMemoryInfo().GenerationInfo[0].SizeAfterBytes / 1048576.0,
+						["gen1MB"] = System.GC.GetGCMemoryInfo().GenerationInfo[1].SizeAfterBytes / 1048576.0,
+						["gen2MB"] = System.GC.GetGCMemoryInfo().GenerationInfo[2].SizeAfterBytes / 1048576.0,
+						["lohMB"] = System.GC.GetGCMemoryInfo().GenerationInfo[3].SizeAfterBytes / 1048576.0,
+						["lastPauseMs"] = System.GC.GetGCMemoryInfo().PauseDurations[0].TotalMilliseconds,
+						// Committed, not just live: the gap between this and `heapMB` is large-object
+						// fragmentation.
+						["committedMB"] = System.Math.Round(
+							System.GC.GetGCMemoryInfo().TotalCommittedBytes / 1048576.0, 1),
+						["lastPromotedMB"] = System.GC.GetGCMemoryInfo().PromotedBytes / 1048576.0,
+					},
+					["tickClock"] = new Dictionary<string, object?>
+					{
+						// World playback rate. The draw point is `(now - origin)/period - latency`, so drift in
+						// either term plays the world fast or slow. 1.000 is correct; `worst` is the largest
+						// single-frame excursion since it was last reset.
+						["playbackRate"] = Refii.Core.Engine_TickClock.PlaybackRate,
+						// How far behind the newest stated tick the world is drawn: negative is healthy (near
+						// minus the draw latency), positive is starvation.
+						["playheadVsNewest"] = Refii.Core.Engine_TickClock.PlayheadVsNewest,
+						// The draw points: body and camera at `playhead`, rigs at `posePlayhead`. `statedStep` is
+						// the guest's own HF step phase: which half-tick the newest pose represents.
+						["playhead"] = Refii.Core.Engine_TickClock.Playhead,
+						["pairAlpha"] = Refii.Core.Engine_TickClock.PairAlpha,
+						// Drawn passes; should climb at the frame rate (ApplyDrawn runs every frame).
+						["drawnFrames"] = Refii.Entities.Engine_DrawnFrame.Frames,
+						["drawnAlpha"] = Refii.Entities.Engine_DrawnFrame.Alpha,
+						["drawnPeriodTicks"] = Refii.Entities.Engine_DrawnFrame.Playhead.PeriodRatio,
+						["pairAlphaAnchored"] = Refii.Core.Engine_TickClock.PairAlphaAnchored,
+						["hostPhase"] = Refii.Core.Engine_TickClock.HostPhase,
+						["useHostPhase"] = Refii.Core.Engine_TickClock.UseHostPhase,
+						["pairExtrapolated"] = Refii.Core.Engine_TickClock.PairExtrapolatedFrames,
+						["pairHeld"] = Refii.Core.Engine_TickClock.PairHeldFrames,
+						["pairFloored"] = Refii.Core.Engine_TickClock.Pair.Floored,
+						["pairWorstEarly"] = Refii.Core.Engine_TickClock.Pair.WorstEarly,
+						["swapIntervals"] = string.Join(",", Refii.Entities.Engine_DrawnFrame.SwapIntervals),
+						["pairPeriodTicks"] = Refii.Core.Engine_TickClock.PairPeriodTicks,
+
+						["guestGameTick"] = Refii.Core.Engine_TickClock.GuestGameTick,
+						["statedStep"] = _statedClock is { } sc
+							? Refii.Core.Engine_TickClock.StatedStepPhase(sc.Seconds) : -1,
+						["statedTicks"] = _statedClock is { } st
+							? Refii.Core.Engine_TickClock.StatedTicks(st.Seconds) : (double?)null,
+						["clockFit"] = Refii.Core.Engine_TickClock.Disciplined,
+						["clockHost"] = Refii.Core.Engine_TickClock.HostOwnsClock,
+						["clockHostLive"] = Refii.Core.Engine_TickClock.HostClockLive,
+						// Ties the host's granted-step count (from zero) to the guest's counter, which resets on
+						// world teardown. Not settling means the playhead is in the wrong units.
+						["clockHostOffset"] = Refii.Core.Engine_TickClock.HostTickOffset,
+						// A snap teleports the playhead: past `HostOffsetSnapTicks` the alignment adopts the raw
+						// difference outright. Right for a world reset or save load; climbing during play is
+						// jitter. (`clockRestarts` counts the guest's counter going backwards, not this.)
+						// The sample stamp against the guest's true game tick: both non-zero means the stamp
+						// counter is not a tick count and what is drawn is being re-timed by the guest's own gate.
+						["stampLostTicks"] = Refii.Core.Engine_TickClock.StampLostTicks,
+						["stampAheadTicks"] = Refii.Core.Engine_TickClock.StampAheadTicks,
+						["clockOffsetSnaps"] = Refii.Core.Engine_TickClock.HostOffsetSnaps,
+						["clockOffsetSnapWorst"] = Refii.Core.Engine_TickClock.HostOffsetSnapWorst,
+						// Lead should hover under 1 with `withheld` flicking true at the ceiling.
+						// Climbing with nothing withheld means the closed loop is not closing.
+						["hostGrantLead"] = Refii.Core.Engine_TickClock.HostGrantLead,
+						["hostGrantWithheld"] = Refii.Core.Engine_TickClock.HostGrantWithheld,
+						["clockStated"] = Refii.Core.Engine_TickClock.UseStatedClock,
+						// `pacedCapped` counts reads held back: ticks the guest would otherwise have discarded.
+						// `timeBaseWatchdog` counts lapses where no grant arrived and time resumed on its own; it
+						// should stay flat while the game is stepping.
+						["timeBase"] = _timeBase?.Mode.ToString(),
+						["timeBaseGranted"] = (_timeBase?.Granted ?? 0UL) & 0xFFFFFFFFUL,
+						// Share of guest clock reads that took the time-base lock, in parts per thousand. Every
+						// `mftb` the guest executes comes through there and its loop spins on it; near zero means
+						// the lock-free fast path is carrying it.
+						["timeBaseLockedPerMille"] = (_timeBase?.Granted ?? 0UL) >> 32,
+						// Packed pairs: the low half is the paced-mode counter, the high half the
+						// driven-mode one. `timeBaseDropped` rising means the guest cannot
+						// consume the rate it is granted — a performance problem, not a clock
+						// one. `timeBasePending` not draining means the same thing earlier.
+						["timeBaseCapped"] = (_timeBase?.Capped ?? 0UL) & 0xFFFFFFFFUL,
+						["timeBaseDropped"] = (_timeBase?.Capped ?? 0UL) >> 32,
+						["timeBaseWatchdog"] = (_timeBase?.Watchdog ?? 0UL) & 0xFFFFFFFFUL,
+						["timeBasePending"] = (_timeBase?.Watchdog ?? 0UL) >> 32,
+						["clockStatedLive"] = Refii.Core.Engine_TickClock.StatedLive,
+						// The guest's own clock, `game+0x110`, stored at 0x82276F18. `statedHz` is its measured
+						// advance: 15 while the guest keeps up, lower under load, because the loop advances one
+						// step and re-bases (0x82276FA4) rather than catching up.
+						["simStepsSeen"] = SimStepsSeen,
+						["simRebasedSteps"] = SimRebasedSteps,
+						["simSkippedSteps"] = SimSkippedSteps,
+						["simRebaseWorstSteps"] = SimRebaseWorstSteps,
+						["statedSeconds"] = _statedClock?.Seconds,
+						["statedTick"] = _statedClock?.Tick,
+						["statedHz"] = _statedHz,
+						["periodUsec"] = Refii.Core.Engine_TickClock.PeriodUsec,
+						["fittedHz"] = 1e6 / System.Math.Max(Refii.Core.Engine_TickClock.PeriodUsec, 1.0),
+						["playbackRateWorst"] = Refii.Core.Engine_TickClock.PlaybackRateWorst,
+						["drawLatencyTicks"] = Refii.Core.Engine_TickClock.DrawLatencyTicks,
+						["frameTicks"] = Refii.Core.Engine_TickClock.FrameTicks,
+						["slackTicks"] = Refii.Core.Engine_TickClock.SlackMarginTicks,
+						["sampled"] = Refii.Core.Engine_TickClock.Sampled,
+						["pin"] = Refii.Core.Engine_TickClock.Pin,
+						["starved"] = Refii.Core.Engine_TickClock.Starved,
+						["samples"] = Refii.Core.Engine_TickClock.Samples,
+						["restarts"] = Refii.Core.Engine_TickClock.Restarts,
+					},
+					["guestFrame"] = new Dictionary<string, object?>
+					{
+						["frame"] = Refii.Core.Engine_GuestFrame.Frame,
+						["unchangedHostFrames"] = Refii.Core.Engine_GuestFrame.Unchanged,
+					},
+					["entityWalk"] = new Dictionary<string, object?>
+					{
+						["unchangedSkipped"] = GameEntities.UnchangedSkipped,
+						["creationsDeferred"] = GameEntities.CreationsDeferred,
+						["lastWalkChanged"] = Refii.Host.HostBridge.LastWalkChanged,
+						["lastWalkCount"] = Refii.Host.HostBridge.LastWalkCount,
+						["taken"] = Refii.Host.HostEntityWalk.Taken,
+						// `torn`: walks during which the guest advanced a tick, so some entities are one tick
+						// ahead of the stamp. `blended`/`liveOnly`: entities drawn from a stated pair versus taken
+						// live. Live-only is correct for physics-owned bodies (the guest clears `obj+0xC9` for
+						// those); live-only for everything means the pair is not arriving.
+						["blended"] = Refii.Game.GameEntities.BlendedEntities,
+						["liveOnly"] = Refii.Game.GameEntities.LiveOnlyEntities,
+						// `cameraBlended` near zero with `cameraLive` climbing means the camera is not blending
+						// and is stepping at the guest's rate.
+						["cameraBlended"] = Refii.Game.GameWorld.BlendedCameras,
+						["cameraLive"] = Refii.Game.GameWorld.LiveOnlyCameras,
+						["cameraNonFinite"] = Refii.Game.GameWorld.NonFiniteCameras,
+						["torn"] = Refii.Host.HostEntityWalk.TornWalks,
+						["tornSpanWorst"] = Refii.Host.HostEntityWalk.WalkTickSpanWorst,
+						["waited"] = Refii.Host.HostEntityWalk.Waited,
+					},
 					["frameMs"] = Performance.GetMonitor(Performance.Monitor.TimeProcess) * 1000.0,
 					["physicsMs"] =
 						Performance.GetMonitor(Performance.Monitor.TimePhysicsProcess) * 1000.0,
@@ -1671,9 +2155,51 @@ public partial class GameDebugServer : Node
 			{
 				string match = root.TryGetProperty("match", out JsonElement hm) ? hm.GetString() ?? string.Empty : string.Empty;
 				Refii.Ui.Engine_UiModel.SpellAssignState spells = Refii.Host.HostBridge.GetSpellAssign();
+				// The HUD walk's time, in milliseconds since the last read: the sections of
+				// `Engine_UiCloneBinding.Apply` summed across every binding. Reading zeroes them.
+				double perTick = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+				var bindProfile = new Dictionary<string, object?>
+				{
+					["calls"] = Refii.Ui.Engine_UiCloneBinding.AppliedCalls,
+					["nodes"] = Refii.Ui.Engine_UiCloneBinding.AppliedNodes,
+					["transformMs"] = Refii.Ui.Engine_UiCloneBinding.TicksTransform * perTick,
+					["drawMs"] = Refii.Ui.Engine_UiCloneBinding.TicksDraw * perTick,
+					["materialMs"] = Refii.Ui.Engine_UiCloneBinding.TicksMaterial * perTick,
+					["textureMs"] = Refii.Ui.Engine_UiCloneBinding.TicksTexture * perTick,
+					["masksMs"] = Refii.Ui.Engine_UiCloneBinding.TicksMasks * perTick,
+				};
+				Refii.Ui.Engine_UiCloneBinding.ResetProfile();
+
+				// The view's own sections around the binding.
+				var walkProfile = new Dictionary<string, object?>
+				{
+					["walks"] = Refii.Ui.Engine_HudView.Walks,
+					["pieces"] = Refii.Ui.Engine_HudView.WalkedPieces,
+					["valuesMs"] = Refii.Ui.Engine_HudView.TicksValues * perTick,
+					["gatesMs"] = Refii.Ui.Engine_HudView.TicksGates * perTick,
+					["applyMs"] = Refii.Ui.Engine_HudView.TicksApply * perTick,
+					["pipMs"] = Refii.Ui.Engine_HudView.TicksPip * perTick,
+					["textsMs"] = Refii.Ui.Engine_HudView.TicksTexts * perTick,
+					["placeMs"] = Refii.Ui.Engine_HudView.TicksPlace * perTick,
+					["transformMs"] = Refii.Ui.Engine_HudView.TicksTransform * perTick,
+					["driveMs"] = Refii.Ui.Engine_HudView.TicksDrive * perTick,
+				};
+				Refii.Ui.Engine_HudView.ResetWalkProfile();
+
 				return Ok(new Dictionary<string, object?>
 				{
+					["bindProfile"] = bindProfile,
+					["walkProfile"] = walkProfile,
 					["pieces"] = Refii.Ui.Engine_HudView.Current?.Describe(match),
+
+					// Whether the pip marker exists. The pip is a `PrimDescName` inside the meter element in
+					// the `.bgf`, which our builder makes no node from.
+					["pipAnchorsFound"] = string.Join(",", Refii.Ui.Engine_HudView.PipAnchorsFound),
+					["pipAnchorsMissing"] = string.Join(",", Refii.Ui.Engine_HudView.PipAnchorsMissing),
+
+					// The guest's own meter, to split "not running one" from "not drawing it". The anchor
+					// sets above are a running record, never cleared.
+					["meter"] = Meter(),
 					["spell"] = new Dictionary<string, object?>
 					{
 						["known"] = spells.Known,
@@ -1682,6 +2208,42 @@ public partial class GameDebugServer : Node
 						["abilitiesMode"] = spells.AbilitiesMode,
 						["wheelOpen"] = spells.WheelOpen,
 					},
+				});
+			}
+
+			case "watch":
+			{
+				// One rig's drawn motion, frame by frame: `{"op":"watch","address":"4286C110"}` pins it,
+				// `{"op":"watch"}` reads the ring back. `moved` is the total distance every bone on the
+				// rig travelled between two consecutive drawn frames, beside the alpha and crossfade ratio.
+				if (root.TryGetProperty("address", out JsonElement wantWatch))
+				{
+					string text = wantWatch.GetString() ?? string.Empty;
+					if (text.StartsWith("0x", System.StringComparison.OrdinalIgnoreCase))
+					{
+						text = text[2..];
+					}
+
+					Refii.Animations.Engine_ClipAnimator.WatchAddress =
+						uint.TryParse(text, System.Globalization.NumberStyles.HexNumber,
+							System.Globalization.CultureInfo.InvariantCulture, out uint picked) ? picked : 0u;
+				}
+
+				return Ok(new Dictionary<string, object?>
+				{
+					["watching"] = $"{Refii.Animations.Engine_ClipAnimator.WatchAddress:X8}",
+					["trace"] = Refii.Animations.Engine_ClipAnimator.WatchTrace(),
+				});
+			}
+
+			case "alpha":
+			{
+				// The blend alpha as a per-frame sequence, for both paths: pose-blended rigs and
+				// clip-driven rigs.
+				return Ok(new Dictionary<string, object?>
+				{
+					["trace"] = Refii.Entities.Engine_EntitySkeleton.AlphaTrace(),
+					["clip"] = Refii.Core.Engine_TickScalar.AlphaTrace(),
 				});
 			}
 
@@ -1694,7 +2256,14 @@ public partial class GameDebugServer : Node
 					return Ok(new Dictionary<string, object?> { ["tracing"] = world is not null });
 				}
 
-				return Ok(new Dictionary<string, object?> { ["trace"] = world?.CameraTraceReport() });
+				(long restarts, double swapAlpha, int steps) = world?.CameraSwapHealth ?? (0L, 0.0, 0);
+				return Ok(new Dictionary<string, object?>
+				{
+					["trace"] = world?.CameraTraceReport(),
+					["restarts"] = restarts,
+					["lastSwapAlpha"] = swapAlpha,
+					["lastSteps"] = steps,
+				});
 			}
 
 			case "shot":
@@ -1733,6 +2302,27 @@ public partial class GameDebugServer : Node
 				}
 
 				return Ok(Shot(path));
+			}
+
+			case "flicker":
+			{
+				// Write the post-fx flicker trap's frame ring now. Armed by `postfx_flicker_trap`
+				// at launch; the write happens on the next rendered frame, so `lastDump` is the
+				// PREVIOUS dump on this call and the new one on the next.
+				bool armed = Refii.Lighting.Engine_PostFxEffect.TrapArmed;
+				if (armed)
+				{
+					Refii.Lighting.Engine_PostFxEffect.RequestTrapDump();
+				}
+
+				return Ok(new Dictionary<string, object?>
+				{
+					["armed"] = armed,
+					["lastDump"] = Refii.Lighting.Engine_PostFxEffect.TrapLastDump,
+					["note"] = armed
+						? "ring written on the next rendered frame; call again for its path"
+						: "not armed: set postfx_flicker_trap to a ratio above 1 and relaunch",
+				});
 			}
 
 			case "press":
@@ -1782,7 +2372,7 @@ public partial class GameDebugServer : Node
 						"objects", "perf", "exports", "cvars", "cvar-set", "vfs", "sockets",
 						"menu", "action", "call", "lua", "call-result", "poke", "heap",
 						"probe", "guestlog", "mark", "metrics", "input-record", "input-replay",
-						"wait", "log", "shot", "press", "gdb",
+						"wait", "log", "shot", "flicker", "press", "gdb",
 					},
 				};
 		}
@@ -1800,6 +2390,60 @@ public partial class GameDebugServer : Node
 		body["boot"] = BootId;
 		body["uptime"] = (int)Uptime.Elapsed.TotalSeconds;
 		return body;
+	}
+
+	/// <summary>
+	/// The stated effect transforms beside what the walk placed for the same instance, so the
+	/// two can be compared on one screen. `walk` is our drawn position; `p0..p3` are the raw
+	/// lanes the guest handed `sub_832325A8`. Whichever three lanes track `walk` on the effects
+	/// the walk gets RIGHT are x, y and z.
+	/// </summary>
+	private static List<Dictionary<string, object?>> StatedFxRows()
+	{
+		var rows = new List<Dictionary<string, object?>>();
+		var stated = new List<Refii.Host.HostBridge.GuestStatedFx>();
+		if (Refii.Host.HostBridge.GetStatedFx(stated) == 0)
+		{
+			return rows;
+		}
+
+		for (int i = 0; i < stated.Count && i < 24; ++i)
+		{
+			Refii.Host.HostBridge.GuestStatedFx fx = stated[i];
+			rows.Add(new Dictionary<string, object?>
+			{
+				["instance"] = $"{fx.Instance:X8}",
+				["seq"] = fx.Sequence,
+				["p"] = new[] { fx.P0, fx.P1, fx.P2, fx.P3 },
+				["q"] = new[] { fx.Q0, fx.Q1, fx.Q2, fx.Q3 },
+				["walk"] = GameFx.Current?.DescribePlacement(fx.Instance),
+			});
+		}
+
+		return rows;
+	}
+
+	/// <summary>The guest's expression meter as the host reads it, plus what the view did with it.</summary>
+	private static Dictionary<string, object?> Meter()
+	{
+		Refii.Host.HostBridge.ExpressionMeter m = Refii.Host.HostBridge.GetExpressionMeter();
+		(string Binding, float Degrees)? pip = Refii.Ui.Engine_HudView.Current?.ExpressionPip;
+		return new Dictionary<string, object?>
+		{
+			["known"] = m.Known,
+			["on"] = m.On,
+			["up"] = m.Up,
+			["mode"] = m.Mode,
+			["armedA"] = m.ArmedA,
+			["armedB"] = m.ArmedB,
+			["latched"] = m.Latched,
+			["position"] = m.Position,
+			["speed"] = m.Speed,
+			["band"] = m.Band,
+			["pipRunning"] = m.PipRunning,
+			["viewPipBinding"] = pip?.Binding,
+			["viewPipDegrees"] = pip?.Degrees,
+		};
 	}
 
 	private static bool HostBridgeUp() => Refii.Host.HostBridge.TryGetAbiVersion() is not null;
@@ -2179,4 +2823,120 @@ public partial class GameDebugServer : Node
 			["saved"] = error == Error.Ok,
 		};
 	}
+
+	/// <summary>The frames that exceeded the hitch threshold, each with its phases.</summary>
+	private static List<object?> Hitches()
+	{
+		var rows = new List<object?>();
+		lock (Refii.Core.Engine_FramePhases.Hitches)
+		{
+			foreach (Refii.Core.Engine_FramePhases.Hitch hitch in Refii.Core.Engine_FramePhases.Hitches)
+			{
+				rows.Add(new Dictionary<string, object?>
+				{
+					["totalMs"] = System.Math.Round(hitch.TotalMs, 1),
+					["phases"] = hitch.Phases,
+					// The widest stretch of that frame no phase accounts for. `process_total`
+					// spans the whole _Process pass, so this is where to look when the named
+					// phases sum to nothing like the frame's cost.
+					["gap"] = hitch.Gap,
+				});
+			}
+		}
+
+		return rows;
+	}
+
+	private (Refii.Host.HostBridge.TimeBaseMode Mode, ulong Capped, ulong Granted, ulong Watchdog)? _timeBase;
+	private (double Seconds, uint Tick)? _statedClock;
+	/// <summary>Sim-clock advances observed, and how many landed off the 1/30 s grid.</summary>
+	public static long SimStepsSeen;
+
+	public static long SimRebasedSteps;
+
+	/// <summary>World time thrown away by re-bases, in HF steps — the lurch, summed.</summary>
+	public static double SimSkippedSteps;
+
+	/// <summary>The largest single off-grid advance, in HF steps.</summary>
+	public static double SimRebaseWorstSteps;
+
+	private double _statedHz;
+	private double _statedPrevSeconds;
+	private uint _statedPrevTick;
+	private ulong _statedPrevUsec;
+
+	private double _rebasePrevSeconds;
+
+	/// <summary>
+	/// Counts every step the guest re-based across — the lurch, as it happens.
+	/// </summary>
+	/// <remarks>
+	/// Reads one word, the clock at `game+0x110`: the tick counter at `game+0xFC` is written at
+	/// a different instruction, so comparing the two from Godot's thread races.
+	///
+	/// A step advances the clock by exactly 1/30 s
+	/// (`82276f14 fmadd f2, f3, f27, f26`, stored at `82276f18`), so any advance is a whole
+	/// number of steps — unless the guest took the branch at `82276fb4` and slammed the clock
+	/// to now, which lands off the grid. Drawing at a rate above the step rate means an
+	/// occasional advance of exactly two steps, and that is legitimate, so the test is
+	/// "integer multiple", not "one step".
+	/// </remarks>
+	private void SampleSimRebase()
+	{
+		if (Refii.Host.HostBridge.SimClock() is not { } clock || clock.Seconds <= 0.0)
+		{
+			return;
+		}
+
+		double previous = _rebasePrevSeconds;
+		_rebasePrevSeconds = clock.Seconds;
+		if (previous <= 0.0 || clock.Seconds <= previous)
+		{
+			return;  // first sample, or the world restarted its clock
+		}
+
+		double steps = (clock.Seconds - previous) * Refii.Core.Engine_TickClock.HighFrequencyStepsPerSecond;
+		double off = steps - System.Math.Round(steps);
+		++SimStepsSeen;
+		if (System.Math.Abs(off) > 0.02)
+		{
+			++SimRebasedSteps;
+			SimSkippedSteps += System.Math.Abs(off);
+			if (System.Math.Abs(steps) > SimRebaseWorstSteps)
+			{
+				SimRebaseWorstSteps = System.Math.Abs(steps);
+			}
+		}
+	}
+
+	/// <summary>
+	/// The guest's own sim clock, and how fast it is actually advancing.
+	/// </summary>
+	/// <remarks>
+	/// Measured because it varies: `sub_82276D10` advances the clock by exactly 1/30 s per
+	/// high-frequency step, but when it falls more than one step behind it takes ONE step and
+	/// re-bases to now, discarding the lost time (0x82276FA4). The rate is 15 a second while the
+	/// guest keeps up and lower under load, with discontinuities.
+	/// </remarks>
+	private void SampleStatedClock()
+	{
+		_statedClock = Refii.Host.HostBridge.SimClock();
+		_timeBase = Refii.Host.HostBridge.TimeBase();
+		if (_statedClock is not { } clock)
+		{
+			return;
+		}
+
+		ulong now = Godot.Time.GetTicksUsec();
+		if (_statedPrevUsec != 0UL && now > _statedPrevUsec && clock.Tick > _statedPrevTick)
+		{
+			double seconds = (now - _statedPrevUsec) / 1e6;
+			_statedHz = (clock.Tick - _statedPrevTick) / seconds;
+		}
+
+		_statedPrevSeconds = clock.Seconds;
+		_statedPrevTick = clock.Tick;
+		_statedPrevUsec = now;
+	}
+
 }

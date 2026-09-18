@@ -338,7 +338,17 @@ void fragment() {
 		R.y = abs(R.y);
 		vec3 refl_col = has_dome ? dome_reflect(R) : sky_constant;
 
-		float F = clamp(fres_s * refl_str, 0.0, 1.0);
+		// The stated reflection weight is the floor. 0057's reflection weight is
+		//
+		//     near: saturate(fres + ReflectionBias) * ReflectionStrength     (r5.w, then r3.w)
+		//     far:  ReflectionStrength                                        (no refraction at all)
+		//
+		// blended by saturate(dist * WC24.x), and WC24.x = 1 / MaxRefractionDistance: `sub_821E4C88`
+		// stores `a1+384 = 1/v` from theme+2048, the slot after ShadowScaleBias (+2032 -> WC23 as
+		// (v, 1-v)). Schlick keeps its grazing mirror.
+		float frefl = clamp(fres + w_bias.y, 0.0, 1.0);
+		float distf = clamp(dist / max(w_bias.w, 0.001), 0.0, 1.0);
+		float F = clamp(max(fres_s, mix(frefl, 1.0, distf)) * refl_str, 0.0, 1.0);
 		if (F > 0.004) {
 			vec3 world_n = normalize((MODEL_MATRIX * vec4(Nr, 0.0)).xyz);
 			vec3 view_n = normalize((VIEW_MATRIX * vec4(world_n, 0.0)).xyz);

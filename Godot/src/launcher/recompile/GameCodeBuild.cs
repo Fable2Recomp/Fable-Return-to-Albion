@@ -74,10 +74,10 @@ public static class GameCodeBuild
 	private const string UseAllCoresKey = "BuildUseAllCores";
 
 	/// <summary>
-	/// Whether to compile with every core rather than half of them.
+	/// Whether to compile with every thread rather than half of them.
 	/// </summary>
 	/// <remarks>
-	/// DEFAULTS OFF. Compiling ~150,000 functions saturates every core for the length of
+	/// DEFAULTS OFF. Compiling ~150,000 functions saturates every thread for the length of
 	/// the build, and an install that makes the machine unusable while it runs is a worse
 	/// default than one that takes longer — the player did not ask to stop using their PC.
 	/// Turning it on roughly halves the wait and costs them the machine while it does.
@@ -93,17 +93,17 @@ public static class GameCodeBuild
 	}
 
 	/// <summary>
-	/// Compile jobs to run at once. At least one, however few cores are reported.
+	/// Compile jobs to run at once. At least one, however few threads are reported.
 	/// </summary>
 	public static int JobCount()
 	{
-		int cores = Environment.ProcessorCount;
+		int threads = Environment.ProcessorCount;
 		if (UseAllCores)
 		{
-			return Math.Max(1, cores);
+			return Math.Max(1, threads);
 		}
 
-		return Math.Max(1, cores / 2);
+		return Math.Max(1, threads / 2);
 	}
 
 	public readonly record struct Progress(string Status, float Fraction);

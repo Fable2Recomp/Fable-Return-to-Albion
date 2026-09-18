@@ -22,5 +22,14 @@
       its speed. `~/.cache/refii-scratch/run.sh` sets the variable.
     -->
     <UseSharedCompilation Condition="'$(REFII_NO_SHARED_COMPILATION)' == '1'">false</UseSharedCompilation>
+
+    <!--
+      Workstation, concurrent GC: pause LENGTH is what costs guest steps. Server GC shortens the
+      walk but makes collections rare and long (longest pause 148 ms vs 50-65 ms), so it stays
+      off; background gen-2 collection keeps the large walks off the frame thread. Re-measure
+      without a rebuild via `DOTNET_gcServer=1` (optionally `DOTNET_GCHeapCount`).
+    -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
 </Project>

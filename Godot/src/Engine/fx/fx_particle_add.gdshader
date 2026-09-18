@@ -1,6 +1,8 @@
 shader_type spatial;
 render_mode blend_add, cull_disabled, depth_draw_never, unshaded, shadows_disabled, fog_disabled;
 
+#include "res://src/Engine/fx/fx_billboard.gdshaderinc"
+
 uniform sampler2D fx_tex : filter_linear, repeat_enable;
 uniform float fx_alpha_ref = 1.0;
 #include "res://src/Engine/fx/fx_soft.gdshaderinc"

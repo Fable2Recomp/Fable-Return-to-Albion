@@ -160,6 +160,7 @@ PPC_EXTERN_FUNC(__imp__sub_8230A8C8);
 PPC_EXTERN_FUNC(__imp__sub_82A41B48);
 PPC_EXTERN_FUNC(__imp__rex_lhRenderer_EndScene);
 PPC_EXTERN_FUNC(__imp__sub_821C3C60);
+PPC_EXTERN_FUNC(__imp__sub_821A61B0);
 PPC_EXTERN_FUNC(__imp__sub_82191F50);
 PPC_EXTERN_FUNC(__imp__sub_82A67188);
 PPC_EXTERN_FUNC(__imp__sub_82C6EA48);
@@ -173,6 +174,12 @@ PPC_EXTERN_FUNC(__imp__sub_828D4110);
 PPC_EXTERN_FUNC(__imp__sub_822C9388); // Lumen: PulseEvent
 PPC_EXTERN_FUNC(__imp__sub_82382558); // subtitles state: self-gated getter incl. the first-boot non-en-uk default
 PPC_EXTERN_FUNC(__imp__sub_82B4F400);
+PPC_EXTERN_FUNC(__imp__sub_822DFE08); // the command-stream drain; headless it spins its whole budget
+PPC_EXTERN_FUNC(__imp__sub_825738F0); // CECGraphicAppearance: states the highlight RGBA
+PPC_EXTERN_FUNC(__imp__sub_82427FD0); // CECTargeted: states that an entity became a target
+PPC_EXTERN_FUNC(__imp__sub_832325A8); // CParticleSystemEntityInstance: states the world position
+PPC_EXTERN_FUNC(__imp__sub_83231C40); // CParticleSystemEntityInstance: states the orientation
+PPC_EXTERN_FUNC(__imp__sub_825F81E0); // spell FX: create from <Spell>SpellParticleFXInfo.<slot>
 PPC_EXTERN_FUNC(__imp__sub_82374728);
 PPC_EXTERN_FUNC(__imp__sub_82377980);
 PPC_EXTERN_FUNC(__imp__sub_82377E10);
@@ -229,6 +236,7 @@ PPC_EXTERN_FUNC(__imp__sub_829A2F40);
 PPC_EXTERN_FUNC(__imp__sub_829A45A0);
 PPC_EXTERN_FUNC(__imp__sub_82994218);
 PPC_EXTERN_FUNC(__imp__sub_829B8648);
+PPC_EXTERN_FUNC(__imp__sub_829BA860);
 PPC_EXTERN_FUNC(__imp__sub_82430468);
 PPC_EXTERN_FUNC(__imp__sub_826E1F70);
 PPC_EXTERN_FUNC(sub_823DCB10);

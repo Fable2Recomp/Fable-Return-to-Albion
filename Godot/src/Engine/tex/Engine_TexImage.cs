@@ -83,43 +83,51 @@ public static class Engine_TexImage
 		// sizes chains with, so the two cannot disagree about how many levels there are.
 		int levels = mipmaps ? FullChainLength(width, height) : 1;
 
+		// One pooled output, each level encoded straight from a span of the source; SetData
+		// copies the span.
 		byte[] source = image.GetData();
-		var parts = new List<byte[]>(levels);
-		int offset = 0;
-
+		int total = 0;
 		for (int level = 0; level < levels; ++level)
 		{
-			int levelWidth = Math.Max(1, width >> level);
-			int levelHeight = Math.Max(1, height >> level);
-			int levelBytes = levelWidth * levelHeight * 4;
-
-			if (offset + levelBytes > source.Length)
-			{
-				return false;
-			}
-
-			var rgba = new byte[levelBytes];
-			Buffer.BlockCopy(source, offset, rgba, 0, levelBytes);
-			offset += levelBytes;
-
-			byte[]? blocks = Engine_BcEncoder.Encode(rgba, levelWidth, levelHeight, target);
-			if (blocks is null || blocks.Length != BlockBytesFor(levelWidth, levelHeight, target))
-			{
-				return false;
-			}
-
-			parts.Add(blocks);
+			total += Engine_BcEncoder.EncodedBytes(
+				Math.Max(1, width >> level), Math.Max(1, height >> level), target);
 		}
 
-		var packed = new byte[parts.Sum(part => part.Length)];
-		int cursor = 0;
-		foreach (byte[] part in parts)
+		byte[] packed = System.Buffers.ArrayPool<byte>.Shared.Rent(Math.Max(total, 1));
+		try
 		{
-			Buffer.BlockCopy(part, 0, packed, cursor, part.Length);
-			cursor += part.Length;
+			int offset = 0;
+			int cursor = 0;
+			for (int level = 0; level < levels; ++level)
+			{
+				int levelWidth = Math.Max(1, width >> level);
+				int levelHeight = Math.Max(1, height >> level);
+				int levelBytes = levelWidth * levelHeight * 4;
+
+				if (offset + levelBytes > source.Length)
+				{
+					return false;
+				}
+
+				int blockBytes = Engine_BcEncoder.EncodedBytes(levelWidth, levelHeight, target);
+				if (blockBytes != BlockBytesFor(levelWidth, levelHeight, target) ||
+					!Engine_BcEncoder.EncodeInto(
+						new ReadOnlySpan<byte>(source, offset, levelBytes), levelWidth, levelHeight, target, packed, cursor))
+				{
+					return false;
+				}
+
+				offset += levelBytes;
+				cursor += blockBytes;
+			}
+
+			image.SetData(width, height, mipmaps, ToGodotFormat(target), new ReadOnlySpan<byte>(packed, 0, total));
+		}
+		finally
+		{
+			System.Buffers.ArrayPool<byte>.Shared.Return(packed);
 		}
 
-		image.SetData(width, height, mipmaps, ToGodotFormat(target), packed);
 		return image.GetFormat() == ToGodotFormat(target);
 	}
 
@@ -188,48 +196,61 @@ public static class Engine_TexImage
 
 		if (fullChain > 1 && !suppressMips)
 		{
-			byte[] chain = surface.Data;
-
-			if (surface.MipLevels < fullChain && !TryExtendChain(surface, format, ref chain))
+			// The extended chain (source plus synthesized tail) is pooled and handed over as a
+			// span; CreateFromData copies it.
+			byte[]? extended = null;
+			int extendedLength = 0;
+			try
 			{
-				chain = surface.Data;
-			}
-
-			if (chain.Length != surface.Data.Length || surface.MipLevels == fullChain)
-			{
-				Image mipped = Image.CreateFromData(
-					surface.Width, surface.Height, true, format, chain);
-				if (IsUsable(mipped, surface))
+				if (surface.MipLevels < fullChain)
 				{
-					return mipped;
+					TryExtendChain(surface, out extended, out extendedLength);
+				}
+
+				if (extended is not null || surface.MipLevels == fullChain)
+				{
+					ReadOnlySpan<byte> chain = extended is not null
+						? new ReadOnlySpan<byte>(extended, 0, extendedLength)
+						: surface.Data;
+					Image mipped = Image.CreateFromData(
+						surface.Width, surface.Height, true, format, chain);
+					if (IsUsable(mipped, surface))
+					{
+						return mipped;
+					}
+				}
+			}
+			finally
+			{
+				if (extended is not null)
+				{
+					System.Buffers.ArrayPool<byte>.Shared.Return(extended);
 				}
 			}
 		}
 
 		int topLevel = TopLevelBytes(surface);
-		byte[] top = surface.Data;
-		if (topLevel > 0 && top.Length > topLevel)
-		{
-			top = new byte[topLevel];
-			Buffer.BlockCopy(surface.Data, 0, top, 0, topLevel);
-		}
+		int topLength = topLevel > 0 && surface.Data.Length > topLevel ? topLevel : surface.Data.Length;
 
 		Image image = Image.CreateFromData(
-			surface.Width, surface.Height, false, format, top);
+			surface.Width, surface.Height, false, format, new ReadOnlySpan<byte>(surface.Data, 0, topLength));
 
 		if (!IsUsable(image, surface))
 		{
 			error = $"Image.CreateFromData rejected {surface.Width}x{surface.Height} " +
-					$"{surface.Format} ({top.Length} bytes)";
+					$"{surface.Format} ({topLength} bytes)";
 			return null;
 		}
 
 		return image;
 	}
 
+	/// <summary>The stored chain plus a synthesized tail, in a POOLED buffer the caller returns.</summary>
 	private static bool TryExtendChain(
-		TexSurface surface, Image.Format format, ref byte[] chain)
+		TexSurface surface, out byte[]? chain, out int chainLength)
 	{
+		chain = null;
+		chainLength = 0;
 		if (surface.Format == TexSurfaceFormat.Rgba8)
 		{
 			return false;
@@ -321,7 +342,7 @@ public static class Engine_TexImage
 			total += part.Length;
 		}
 
-		var result = new byte[total];
+		byte[] result = System.Buffers.ArrayPool<byte>.Shared.Rent(total);
 		int cursor = 0;
 		foreach (byte[] part in parts)
 		{
@@ -330,6 +351,7 @@ public static class Engine_TexImage
 		}
 
 		chain = result;
+		chainLength = total;
 		return true;
 	}
 

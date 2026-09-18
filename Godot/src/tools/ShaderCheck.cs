@@ -26,6 +26,7 @@ public partial class ShaderCheck : Node
 		"res://src/Engine/level/environment/sky.gdshader",
 		"res://src/Engine/level/environment/clouds.gdshader",
 		"res://src/Engine/fx/fx_particle.gdshader",
+		"res://src/Engine/entities/entity_highlight_silhouette.gdshader",
 	};
 
 	public override void _Ready()

@@ -461,6 +461,41 @@ void IndexSyntheticManifestEntries(SyntheticVfsEntryIndex& index,
 }
 
 uint32_t ComputeResourceNameHash(std::string_view value) {
+  // Hex-tail branch first, as the guest's name hash `sub_822CA588` does before FNV: a name at
+  // least 40 characters long whose basename (after the last '\\') is exactly 40 characters is
+  // a stringified `CFileID`, and its last 8 characters are parsed as hex and returned as the id
+  // (`LHVFS_CFileID_HexOctetToU32(&name[len - 8])` at 0x822CA608, returned at 0x822CA624 when
+  // non-zero). Loose-file overrides for such names only match if the host agrees.
+  if (value.size() >= 40u) {
+    const size_t slash = value.find_last_of('\\');
+    const size_t base = slash == std::string_view::npos ? 0u : slash + 1u;
+    if (value.size() - base == 40u) {
+      const std::string_view tail = value.substr(value.size() - 8u);
+      uint32_t id = 0u;
+      bool hex = true;
+      for (const char ch : tail) {
+        uint32_t digit;
+        if (ch >= '0' && ch <= '9') {
+          digit = static_cast<uint32_t>(ch - '0');
+        } else if (ch >= 'a' && ch <= 'f') {
+          digit = static_cast<uint32_t>(ch - 'a') + 10u;
+        } else if (ch >= 'A' && ch <= 'F') {
+          digit = static_cast<uint32_t>(ch - 'A') + 10u;
+        } else {
+          hex = false;
+          break;
+        }
+
+        id = (id << 4) | digit;
+      }
+
+      // Zero falls through to the hash, exactly as the guest's `if (v5)` does.
+      if (hex && id != 0u) {
+        return id;
+      }
+    }
+  }
+
   uint32_t hash = 0x811C9DC5;
   for (const char ch : value) {
     hash = (hash * 0x01000193) ^

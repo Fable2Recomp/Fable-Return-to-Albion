@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 namespace Refii.Game;
@@ -46,11 +47,51 @@ public static class GameChildProcess
 			arguments.Add(ProjectSettings.GlobalizePath("res://"));
 		}
 
+		// `render_thread` is a Godot start-up option, not a runtime setting: the renderer's
+		// thread model is fixed before the game's own code runs, so it rides the command line.
+		IReadOnlyDictionary<string, string> config = Refii.Core.Engine_RefiiConfig.Read(out _);
+		if (Refii.Core.Engine_RefiiConfig.Bool(config, "render_thread", true))
+		{
+			arguments.Add("--render-thread");
+			arguments.Add("separate");
+		}
+
+		// Gen0 budget (32 MB). A gen1 pause is proportional to what survives it, so a smaller
+		// budget trades frequency for shorter pauses. Read by the CLR at start-up, so it rides
+		// the environment; a value already in the environment wins.
+		var environment = new Dictionary<string, string> { [Marker] = "1" };
+		if (System.Environment.GetEnvironmentVariable("DOTNET_GCgen0size") is null)
+		{
+			environment["DOTNET_GCgen0size"] = "0x2000000";
+		}
+
+		// Server GC with `gc_heaps` heaps: the workstation collector scans the old generation's
+		// dirty cards on one thread; server GC splits that mark across heaps. Not affinitized:
+		// the guest's threads own their cores.
+		int gcHeaps = Refii.Core.Engine_RefiiConfig.Int(config, "gc_heaps", 4);
+		if (gcHeaps > 0 && System.Environment.GetEnvironmentVariable("DOTNET_gcServer") is null)
+		{
+			environment["DOTNET_gcServer"] = "1";
+			environment["DOTNET_GCHeapCount"] = gcHeaps.ToString(System.Globalization.CultureInfo.InvariantCulture);
+			environment["DOTNET_GCNoAffinitize"] = "1";
+
+			// Server GC's gen0 budget defaults to min(segment/2, 200 MB) PER HEAP and GCgen0size
+			// is only its floor; `GCGen0MaxBudget` caps it (gc.cpp init_static_data). The
+			// capital G is required: Linux env lookup is case-sensitive.
+			if (System.Environment.GetEnvironmentVariable("DOTNET_GCGen0MaxBudget") is null)
+			{
+				environment["DOTNET_GCGen0MaxBudget"] = "0x1000000";
+			}
+		}
+
+		GD.Print($"[launch] {OS.GetExecutablePath()} {string.Join(' ', arguments)} env " +
+			string.Join(' ', environment.Select(kv => kv.Key + "=" + kv.Value)));
+
 		return Refii.Launcher.Core.Platform.LaunchProcess(
 			string.Empty,
 			OS.GetExecutablePath(),
 			arguments,
-			new Dictionary<string, string> { [Marker] = "1" },
+			environment,
 			out handle,
 			out error);
 	}

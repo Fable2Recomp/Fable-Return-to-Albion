@@ -20,16 +20,230 @@ public sealed class Engine_ClipAnimator
 {
 	private sealed class Built
 	{
-		public Animation Animation = null!;
+		/// <summary>Only on the resource path (<see cref="ManagedClipSampling"/> off).</summary>
+		public Animation? Animation;
 		public int[] RotationTrack = System.Array.Empty<int>();
 		public int[] PositionTrack = System.Array.Empty<int>();
 		public float Length;
 		public bool Failed;
+
+		/// <summary>The clip's keys, lifted out of the `Animation` resource ONCE.</summary>
+		/// <remarks>
+		/// Reading a key through `RotationTrackInterpolate` costs an interop crossing and a binary
+		/// search (`Animation::_find`) per bone per rig per step; held here, a sample is a cursor
+		/// step and a lerp in managed code.
+		///
+		/// Exactly Godot's arithmetic. Every track is built `InterpolationType.Linear`, and
+		/// Godot's linear case is
+		/// `_interpolate(keys[idx], keys[next], c)`, which for a Quaternion is
+		/// `p_a.slerp(p_b, p_c)` (`scene/resources/animation.cpp:2456`). Slerp and lerp below
+		/// reproduce that; anything that is NOT Linear must keep using the resource.
+		/// </remarks>
+		public Keys[] RotationKeys = System.Array.Empty<Keys>();
+
+		public Keys[] PositionKeys = System.Array.Empty<Keys>();
+
+		public bool KeysLifted;
 	}
 
-	/// <summary>One clip playing on this rig, run on the host clock. The guest's leaf is the
-	/// EVENT and the TARGET: it starts the channel, states the weight the channel eases toward
-	/// at the record's blend rate, and its stated time only restarts the playhead when far off.
+	/// <summary>
+	/// A clip's keys, decoded once and shared by every rig. They depend only on the clip and the
+	/// decoder (<see cref="Engine_AnimBuilder.DecodeKeys"/>); the skeleton only picks which bone
+	/// each clip track lands on, and almost no two rigs share a bone list (clothing and hair).
+	/// </summary>
+	private sealed class SharedClip
+	{
+		public float Length;
+		public Keys[] Rotations = System.Array.Empty<Keys>();
+		public Keys[] Positions = System.Array.Empty<Keys>();
+		public long LastTaken;
+	}
+
+	private readonly record struct SharedKey(Engine_AnimDecoder Decoder, uint Clip);
+
+	private static readonly Dictionary<SharedKey, SharedClip?> SharedClips = new();
+
+	/// <summary>Above this many shared clips the least recently taken half is dropped.</summary>
+	private const int SharedClipCap = 2048;
+
+	/// <summary>One track's keys, plus the cursor that makes a monotonic playhead O(1).</summary>
+	private sealed class Keys
+	{
+		public float[] Times = System.Array.Empty<float>();
+		public Quaternion[] Rotations = System.Array.Empty<Quaternion>();
+		public Vector3[] Positions = System.Array.Empty<Vector3>();
+		public int Cursor;
+
+		/// <summary>The key index whose span contains <paramref name="t"/>, and the blend.</summary>
+		/// <remarks>
+		/// A playhead mostly moves forward by one span, so the cursor is stepped and only falls
+		/// back to a search when overtaken (a wrap or a re-seek).
+		/// </remarks>
+		public int Span(float t, out float c)
+		{
+			c = 0f;
+			int n = Times.Length;
+			if (n <= 1)
+			{
+				return 0;
+			}
+
+			if (t <= Times[0])
+			{
+				return 0;
+			}
+
+			if (t >= Times[n - 1])
+			{
+				return n - 1;
+			}
+
+			// The cursor is shared by every rig and every leaf sampling this clip, so a miss
+			// is common: step at most one span forward, otherwise binary-search.
+			int i = Cursor;
+			if (i < 0 || i >= n - 1 || Times[i] > t)
+			{
+				i = LastAtOrBefore(t);
+			}
+			else if (i < n - 2 && Times[i + 1] <= t)
+			{
+				++i;
+				if (i < n - 2 && Times[i + 1] <= t)
+				{
+					i = LastAtOrBefore(t);
+				}
+			}
+
+			Cursor = i;
+			float span = Times[i + 1] - Times[i];
+			c = span > 0f ? (t - Times[i]) / span : 0f;
+			return i;
+		}
+
+		/// <summary>The last key index whose time is at or before <paramref name="t"/>, below n-1.</summary>
+		private int LastAtOrBefore(float t)
+		{
+			int lo = 0, hi = Times.Length - 2;
+			while (lo < hi)
+			{
+				int mid = (lo + hi + 1) >> 1;
+				if (Times[mid] <= t)
+				{
+					lo = mid;
+				}
+				else
+				{
+					hi = mid - 1;
+				}
+			}
+
+			return lo;
+		}
+	}
+
+	/// <summary>Whether clips are sampled from the managed key cache instead of the resource.</summary>
+	/// <remarks>A lever, not a setting: it exists so the two paths can be A/B'd on one run.</remarks>
+	public static bool ManagedClipSampling = true;
+
+	/// <summary>Copies a clip's keys out of the `Animation` resource, once.</summary>
+	/// <remarks>
+	/// Only linear tracks are lifted: the managed sample reproduces Godot's linear case and
+	/// nothing else, so any other interpolation keeps using the resource.
+	/// </remarks>
+	private static void LiftKeys(Built built)
+	{
+		if (built.KeysLifted)
+		{
+			return;
+		}
+
+		built.KeysLifted = true;
+		if (built.Animation is null)
+		{
+			return;
+		}
+
+		built.RotationKeys = new Keys[built.RotationTrack.Length];
+		built.PositionKeys = new Keys[built.PositionTrack.Length];
+
+		for (int b = 0; b < built.RotationTrack.Length; ++b)
+		{
+			int rt = built.RotationTrack[b];
+			if (rt < 0 ||
+				built.Animation.TrackGetInterpolationType(rt) != Animation.InterpolationType.Linear)
+			{
+				continue;
+			}
+
+			int n = built.Animation.TrackGetKeyCount(rt);
+			var keys = new Keys { Times = new float[n], Rotations = new Quaternion[n] };
+			for (int i = 0; i < n; ++i)
+			{
+				keys.Times[i] = (float)built.Animation.TrackGetKeyTime(rt, i);
+				keys.Rotations[i] = built.Animation.TrackGetKeyValue(rt, i).AsQuaternion();
+			}
+
+			built.RotationKeys[b] = keys;
+		}
+
+		for (int b = 0; b < built.PositionTrack.Length; ++b)
+		{
+			int pt = built.PositionTrack[b];
+			if (pt < 0 ||
+				built.Animation.TrackGetInterpolationType(pt) != Animation.InterpolationType.Linear)
+			{
+				continue;
+			}
+
+			int n = built.Animation.TrackGetKeyCount(pt);
+			var keys = new Keys { Times = new float[n], Positions = new Vector3[n] };
+			for (int i = 0; i < n; ++i)
+			{
+				keys.Times[i] = (float)built.Animation.TrackGetKeyTime(pt, i);
+				keys.Positions[i] = built.Animation.TrackGetKeyValue(pt, i).AsVector3();
+			}
+
+			built.PositionKeys[b] = keys;
+		}
+	}
+
+	/// <summary>The clip's rotation for one bone, from the key cache when it has one.</summary>
+	private static Quaternion SampleRotation(Built built, int bone, int track, float time)
+	{
+		Keys? keys = ManagedClipSampling && bone < built.RotationKeys.Length
+			? built.RotationKeys[bone]
+			: null;
+		if (keys is null || keys.Times.Length == 0)
+		{
+			return built.Animation?.RotationTrackInterpolate(track, time) ?? Quaternion.Identity;
+		}
+
+		int i = keys.Span(time, out float c);
+		return i >= keys.Times.Length - 1
+			? keys.Rotations[i]
+			: keys.Rotations[i].Slerp(keys.Rotations[i + 1], c);
+	}
+
+	/// <summary>The clip's translation for one bone, from the key cache when it has one.</summary>
+	private static Vector3 SamplePosition(Built built, int bone, int track, float time)
+	{
+		Keys? keys = ManagedClipSampling && bone < built.PositionKeys.Length
+			? built.PositionKeys[bone]
+			: null;
+		if (keys is null || keys.Times.Length == 0)
+		{
+			return built.Animation?.PositionTrackInterpolate(track, time) ?? Vector3.Zero;
+		}
+
+		int i = keys.Span(time, out float c);
+		return i >= keys.Times.Length - 1
+			? keys.Positions[i]
+			: keys.Positions[i].Lerp(keys.Positions[i + 1], c);
+	}
+
+	/// <summary>One clip playing on this rig. The guest's leaf states the record's clip time
+	/// and weight once per game tick; both are kept as tick-stamped scalars and drawn at the
+	/// shared clock's draw point, which is the guest's own `lerp(prev, cur, alpha)` render rule.
 	/// A leaf that vanishes leaves its channel ramping out before it is dropped.</summary>
 	private sealed class Channel
 	{
@@ -39,6 +253,26 @@ public sealed class Engine_ClipAnimator
 		public float Time;
 		public float Weight;
 		public float TargetWeight;
+
+		/// <summary>The clip time unwrapped across loops, one sample per game tick.</summary>
+		public readonly Refii.Core.Engine_TickScalar Playhead = new();
+
+		/// <summary>
+		/// The record's OWN weight pair as the guest states it: latched at the tick start and
+		/// live. Summed across the leaves of one record, as <see cref="TargetWeight"/> is.
+		/// </summary>
+		public float RecordPrevious;
+
+		public float RecordCurrent;
+
+		/// <summary>The tick the playhead was last stated on; MaxValue before the first.</summary>
+		public uint PlayheadTick = uint.MaxValue;
+
+		/// <summary>Running unwrapped clip time behind <see cref="Playhead"/>.</summary>
+		public double Unwrapped;
+
+		/// <summary>The stated time the unwrapped time was last advanced from.</summary>
+		public float LastStated;
 		public float BlendIn = 0.2f;
 		public float BlendOut = 0.2f;
 		public ulong LastUsec;
@@ -51,8 +285,21 @@ public sealed class Engine_ClipAnimator
 	private readonly Skeleton3D _skeleton;
 	private readonly string _skeletonName;
 	private readonly Dictionary<uint, Built> _clips = new();
-	private readonly Dictionary<ulong, Channel> _channels = new();
-	private readonly List<ulong> _dropped = new();
+	private Dictionary<string, List<int>>? _boneCandidates;
+	/// <summary>
+	/// One channel per stated leaf, not per clip. The guest's type-2 weighted node samples a
+	/// single clip at several times and blends them by each child's weight — a viseme is four
+	/// samples of the clip "Phonemes" (`sub_822B0618`), and a record crossfading a clip into
+	/// itself states the same shape. The bridge lists leaves in a stable tree order, so the
+	/// occurrence index names each sample.
+	/// </summary>
+	private readonly record struct ChannelKey(uint Uid, uint Clip, int At);
+
+	private readonly Dictionary<ChannelKey, Channel> _channels = new();
+
+	/// <summary>How many times each (record, clip) has been seen so far in the leaf walk.</summary>
+	private readonly Dictionary<ulong, int> _keyOccurrences = new();
+	private readonly List<ChannelKey> _dropped = new();
 	public int Driven;
 	public string LastFallback = string.Empty;
 
@@ -67,6 +314,7 @@ public sealed class Engine_ClipAnimator
 
 	public static int ClipDrivenFrames;
 	public static int FallbackUnknownClip;
+	public static int SkippedNonFiniteLeaves;
 	public static int FallbackProcedural;
 	public static int FallbackNoLeaves;
 
@@ -80,6 +328,9 @@ public sealed class Engine_ClipAnimator
 	private float[] _layerRotationWeight = System.Array.Empty<float>();
 	private float[] _layerPositionWeight = System.Array.Empty<float>();
 	private readonly Dictionary<uint, float> _recordWeight = new();
+
+	/// <summary>Each record's position in the guest's list — the runner-up's tie-break.</summary>
+	private readonly Dictionary<uint, int> _recordOrder = new();
 	private readonly List<Channel> _overlays = new();
 
 	/// <summary>Shadow_Hip's model bone, or -1; its children bar Shadow_SpineControl.</summary>
@@ -94,6 +345,8 @@ public sealed class Engine_ClipAnimator
 		_modelToGuest = modelToGuest;
 		int bones = skeleton.GetBoneCount();
 		_finalPosition = new Vector3[bones];
+		_finalRotation = new Quaternion[bones];
+		_finalScale = new Vector3[bones];
 		int guestCount = 0;
 		foreach (int g in modelToGuest)
 		{
@@ -187,10 +440,9 @@ public sealed class Engine_ClipAnimator
 			return false;
 		}
 
-		// A RAGDOLL IS THE GUEST'S POSE. Flag 8 is the spatial component's physics-driven bit
-		// (comp3+144 & 4): Havok writes the finished pose into comp6+44 and the record list is
-		// no longer what the body does. The pose feed carries that pose; folding clips over it
-		// is what sent an electrocuted bandit's body flying apart (2026-09-05).
+		// A RAGDOLL IS THE GUEST'S POSE. Flag 8 is the ragdoll object in mode 3 or 4, the modes
+		// `sub_8257DBC0` copies the Havok bodies back over the bones for; the record list is no
+		// longer what the body does. The pose feed carries that pose; clips must not fold over it.
 		if ((flags & 8) != 0)
 		{
 			++FallbackRagdoll;
@@ -205,7 +457,11 @@ public sealed class Engine_ClipAnimator
 			return false;
 		}
 
-		ulong now = Godot.Time.GetTicksUsec();
+		// The frame's instant, not this rig's, so every rig samples at the same time.
+		ulong now = Refii.Entities.Engine_DrawnFrame.NowUsec;
+		// One counter for every stamp: the clip playhead rides the same game tick the poses and
+		// placements do. `dword_83319650` skips (`821d46e8` branches past its own increment).
+		uint tick = Refii.Core.Engine_TickClock.GuestGameTick;
 		int bones = _skeleton.GetBoneCount();
 
 		// THE PARENT TABLE IS TOPOLOGY, NOT STATE. `GetBoneParent` is a crossing into the engine
@@ -228,9 +484,19 @@ public sealed class Engine_ClipAnimator
 		}
 
 		int order = -1;
+		_keyOccurrences.Clear();
 		foreach (HostBridge.GuestAnimLeaf leaf in _leaves)
 		{
 			++order;
+
+			// The pump does not check the guest's floats: a leaf read while its record is torn
+			// down can carry NaN weight or time, and MoveToward throws on NaN. Such a leaf is
+			// not seen this frame, so its channel ramps out.
+			if (!float.IsFinite(leaf.Weight) || !float.IsFinite(leaf.Time))
+			{
+				++SkippedNonFiniteLeaves;
+				continue;
+			}
 			Built? built = Ensure(leaf.Key);
 			if (built is null)
 			{
@@ -239,7 +505,10 @@ public sealed class Engine_ClipAnimator
 				return false;
 			}
 
-			ulong key = PlayheadKey(leaf);
+			ulong baseKey = PlayheadKey(leaf);
+			int at = _keyOccurrences.TryGetValue(baseKey, out int seen) ? seen : 0;
+			_keyOccurrences[baseKey] = at + 1;
+			var key = new ChannelKey(leaf.Uid, leaf.Key, at);
 			if (!_channels.TryGetValue(key, out Channel? channel))
 			{
 				channel = new Channel
@@ -250,14 +519,17 @@ public sealed class Engine_ClipAnimator
 				_channels[key] = channel;
 			}
 
-			// TWO LEAVES OF ONE CLIP UNDER ONE RECORD share this channel — a record crossfading
-			// a clip into itself (WalkFootstep into WalkFootstep on a re-trigger) states two
-			// playheads with weights that sum to the record's. Taking the last leaf's weight
-			// alone put a 0 on the channel whenever the fading-out playhead was listed second,
-			// and the whole body eased to rest for the length of the fade.
+			// A second statement of the same occurrence cannot happen with the occurrence index
+			// in the key; if it does, two playheads of one clip under one record carry weights
+			// that sum to the record's, so sum them.
 			if (channel.Seen)
 			{
 				channel.TargetWeight += leaf.Weight;
+
+				// Assigned, not summed: both leaves belong to the same record and carry the same
+				// pair. Summing it would double the denominator and halve every share.
+				channel.RecordPrevious = leaf.RecordPrevious;
+				channel.RecordCurrent = leaf.RecordCurrent;
 				if (leaf.Weight > channel.Leaf.Weight)
 				{
 					channel.Leaf = leaf;
@@ -270,35 +542,59 @@ public sealed class Engine_ClipAnimator
 			channel.Seen = true;
 			channel.Order = order;
 			channel.TargetWeight = leaf.Weight;
+			channel.RecordPrevious = leaf.RecordPrevious;
+			channel.RecordCurrent = leaf.RecordCurrent;
 			if (leaf.BlendIn > 0f) channel.BlendIn = leaf.BlendIn;
 			if (leaf.BlendOut > 0f) channel.BlendOut = leaf.BlendOut;
+			ObservePlayhead(channel, leaf, tick);
 		}
 
-		// THE TIMELINE, ON THE HOST CLOCK: weights ease at the blend rates, vanished channels
-		// ramp out and drop, playheads advance and only a restart re-syncs them.
+		// On the guest's ticks: a seen channel's weight and playhead are the stated per-tick
+		// values drawn at the shared draw point; a vanished channel ramps out on the host clock
+		// and drops. One alpha for the whole rig, from the owning body's playhead (else the
+		// world's), read once so every clip on the rig shares the instant.
+		float alpha = OwnerPlayhead is { Ready: true }
+			? (float)OwnerPlayhead.Alpha(Refii.Entities.Engine_DrawnFrame.NowUsec)
+			: Refii.Entities.Engine_DrawnFrame.Alpha;
 		_dropped.Clear();
 		float totalWeight = 0f;
-		foreach ((ulong key, Channel c) in _channels)
+		foreach ((ChannelKey key, Channel c) in _channels)
 		{
 			float dt = Mathf.Min((now - c.LastUsec) * 1e-6f, 0.25f);
 			c.LastUsec = now;
-			float target = c.Seen ? c.TargetWeight : 0f;
-			float rate = target > c.Weight ? 1f / Mathf.Max(c.BlendIn, 0.02f) : 1f / Mathf.Max(c.BlendOut, 0.02f);
-			c.Weight = Mathf.MoveToward(c.Weight, target, rate * dt);
-			if (!c.Seen && c.Weight <= 1e-4f)
+			if (c.Seen)
 			{
-				_dropped.Add(key);
-				continue;
+				// The guest states both ends of this blend. `sub_82211660` draws the weight as
+				// `(1 - alpha) * record.weight_previous + alpha * record.weight_current`
+				// (0x82211B08..0x82211B24); the pair is read, never rebuilt on the host.
+				//
+				// The leaf's own share of its record is preserved: `TargetWeight` is the record
+				// weight already scaled by the blend tree above the leaf, so the share is
+				// `TargetWeight / RecordCurrent` and the drawn weight is that share of the
+				// blended record weight.
+				float drawn = Mathf.Lerp(c.RecordPrevious, c.RecordCurrent, alpha);
+				float share = c.RecordCurrent > 1e-5f ? c.TargetWeight / c.RecordCurrent : 1f;
+				c.Weight = share * drawn;
+			}
+			else
+			{
+				float rate = 1f / Mathf.Max(c.BlendOut, 0.02f);
+				c.Weight = Mathf.MoveToward(c.Weight, 0f, rate * dt);
+				if (c.Weight <= 1e-4f)
+				{
+					_dropped.Add(key);
+					continue;
+				}
 			}
 
-			Advance(c, dt);
+			Advance(c, now);
 			if (!c.Leaf.Additive)
 			{
 				totalWeight += c.Weight;
 			}
 		}
 
-		foreach (ulong key in _dropped)
+		foreach (ChannelKey key in _dropped)
 		{
 			_channels.Remove(key);
 		}
@@ -379,6 +675,7 @@ public sealed class Engine_ClipAnimator
 		}
 
 		_recordWeight.Clear();
+		_recordOrder.Clear();
 		foreach (Channel c in _channels.Values)
 		{
 			if (c.Leaf.Additive || c.Leaf.Overlay || c.Weight <= 1e-5f)
@@ -387,7 +684,17 @@ public sealed class Engine_ClipAnimator
 			}
 
 			_recordWeight[c.Leaf.Uid] = _recordWeight.GetValueOrDefault(c.Leaf.Uid) + c.Weight;
+			if (_recordOrder.TryGetValue(c.Leaf.Uid, out int seen))
+			{
+				_recordOrder[c.Leaf.Uid] = Mathf.Min(seen, c.Order);
+			}
+			else
+			{
+				_recordOrder[c.Leaf.Uid] = c.Order;
+			}
 		}
+
+		int Order(uint uid) => _recordOrder.GetValueOrDefault(uid, int.MaxValue);
 
 		uint topUid = 0;
 		int topOrder = -1;
@@ -414,21 +721,82 @@ public sealed class Engine_ClipAnimator
 			}
 		}
 
+		// The runner is picked deterministically: `_recordWeight` is a Dictionary with unstable
+		// enumeration order, and the runner sets `topShare`, the crossfade ratio.
+		//
+		// Ties go to the oldest record — the guest's rule, the opposite of the winner's.
+		// `sub_82237F90` scans the list head to tail with a strict `>` (0x8223803C), so among
+		// equal weights the record nearest the head survives; the winner scan runs backward.
 		uint runnerUid = 0;
 		float runnerWeight = 0f;
 		foreach ((uint uid, float w) in _recordWeight)
 		{
-			if (uid != topUid && w > runnerWeight)
+			if (uid == topUid)
+			{
+				continue;
+			}
+
+			if (w > runnerWeight || (w == runnerWeight && runnerUid != 0u && Order(uid) < Order(runnerUid)))
 			{
 				runnerUid = uid;
 				runnerWeight = w;
 			}
 		}
 
-		float topWeight = haveTop ? Mathf.Clamp(_recordWeight.GetValueOrDefault(topUid), 0f, 1f) : 0f;
-		float topShare = runnerWeight > 1e-5f ? topWeight : 1f;
+		if (runnerUid != _lastRunnerUid && _lastRunnerUid != 0u && runnerUid != 0u)
+		{
+			++RunnerFlips;
+			++RigRunnerFlips;
+		}
+
+		_lastRunnerUid = runnerUid;
+		LastTopUid = topUid;
+
+		// The factor is the winner's own stated weight, not a normalised ratio. `sub_82211660`
+		// computes `(1 - alpha) * prev + alpha * cur` off the winner record (0x82211B24) and
+		// uses it raw — there is no division by the pair's total anywhere on that path, and no
+		// clamp: the 59/60 and 1/60 branches below are the only guards the guest has.
+		//
+		// The presence test is 1e-4 on the runner's weight, not the winner's: `sub_82237F90`
+		// emits no runner-up at all when its weight fails
+		// `> 1e-4` (0x82238070..0x82238074), and `sub_82211660` then adopts the winner's pose
+		// whole without computing a factor at all (0x82211A80..0x82211AD8).
+		float topWeight = 0f;
+		if (haveTop)
+		{
+			foreach (Channel c in _channels.Values)
+			{
+				if (!c.Leaf.Additive && !c.Leaf.Overlay && c.Leaf.Uid == topUid)
+				{
+					topWeight = Mathf.Lerp(c.RecordPrevious, c.RecordCurrent, alpha);
+					break;
+				}
+			}
+		}
+
+		float topShare = runnerWeight > 1e-4f ? topWeight : 1f;
 		if (topShare >= 0.98333f) topShare = 1f;
 		if (topShare <= 0.016667f) topShare = 0f;
+
+		// How far the crossfade ratio moved in one frame; a step moves every bone by that
+		// fraction of the distance between two clips. Reported.
+		if (_haveLastShare)
+		{
+			float step = Mathf.Abs(topShare - _lastShare);
+			if (step > LargestShareStep)
+			{
+				LargestShareStep = step;
+			}
+
+			if (step > 0.1f)
+			{
+				++ShareSteps;
+				++RigShareSteps;
+			}
+		}
+
+		_lastShare = topShare;
+		_haveLastShare = true;
 		Channel? top = null;
 		foreach (Channel c in _channels.Values)
 		{
@@ -635,13 +1003,58 @@ public sealed class Engine_ClipAnimator
 
 			Quaternion rotation = _rotationWeight[b] > 0f ? _rotation[b].Normalized() : _restRotation[b];
 			Vector3 position = _positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : _restPosition[b];
-			_skeleton.SetBonePoseRotation(b, rotation);
-			_skeleton.SetBonePosePosition(b, position);
+			_finalRotation[b] = rotation;
 			_finalPosition[b] = position;
 		}
 
 		ApplyMorph(bones);
 		ApplyPostOps();
+
+		// One crossing per bone, and only for bones that moved. The pose is handed over whole
+		// (Godot decomposes it back; `ScaledLocal` is its rotation-then-scale composition). A
+		// write is a marshalled call that also dirties the skeleton for the render thread, so
+		// an unchanged bone is skipped.
+		if (_written.Length != bones)
+		{
+			_written = new Transform3D[bones];
+			_hasWritten = false;
+		}
+
+		int movedBones = 0;
+		float moved = 0f;
+		bool watched = Address != 0u && Address == WatchAddress;
+		for (int b = 0; b < bones; ++b)
+		{
+			var pose = new Transform3D(
+				new Basis(_finalRotation[b]).ScaledLocal(_finalScale[b]), _finalPosition[b]);
+			if (_hasWritten && pose.IsEqualApprox(_written[b]))
+			{
+				++SkippedBoneWrites;
+				continue;
+			}
+
+			if (watched && _hasWritten)
+			{
+				moved += _written[b].Origin.DistanceTo(pose.Origin);
+			}
+
+			_written[b] = pose;
+			++movedBones;
+			_skeleton.SetBonePose(b, pose);
+		}
+
+		if (watched && _hasWritten)
+		{
+			NoteWatch(moved, alpha, topShare, _channels.Count, movedBones);
+		}
+
+		_hasWritten = true;
+		LastMovedBones = movedBones;
+		BoneWrites += movedBones;
+		if (movedBones != 0)
+		{
+			SkeletonsWritten++;
+		}
 
 		// The readout that says whether a rig is in bind pose BY CONSTRUCTION: bones no live
 		// channel covered are written as rest, so a frame with most bones here is a T pose.
@@ -663,7 +1076,7 @@ public sealed class Engine_ClipAnimator
 					table.Append($" [{c.Leaf.Key:X8} uid {c.Leaf.Uid} pri {c.Leaf.Priority} trk {c.Leaf.Track}" +
 						$" w {c.Weight:0.00}->{c.TargetWeight:0.00} {(c.Leaf.Overlay ? "OVL" : "PRI")}" +
 						$"{(c.Leaf.Additive ? " add" : "")} mask {c.Leaf.Mask:X8} pm {c.Leaf.PriorityMask:X}" +
-						$" seen {c.Seen} tracks {c.Built.Animation.GetTrackCount()}]");
+						$" seen {c.Seen} tracks {c.Built.Animation?.GetTrackCount() ?? c.Built.RotationTrack.Length}]");
 				}
 
 				GD.Print($"[rig-rest] '{_skeleton.Name}' {restBones}/{bones} rest, top {LastTopKey:X8} share {topShare:0.00} overlays {_overlays.Count}:{table}");
@@ -693,6 +1106,106 @@ public sealed class Engine_ClipAnimator
 
 	public int LastOverlays { get; private set; }
 
+	/// <summary>
+	/// Frames the crossfade partner changed identity. A flip moves `topShare`, and therefore the
+	/// drawn pose; on a rig standing still this should not climb.
+	/// </summary>
+	public static long RunnerFlips;
+
+	private uint _lastRunnerUid;
+
+	/// <summary>
+	/// This rig's own flip count and its current crossfade partner.
+	/// </summary>
+	public long RigRunnerFlips { get; private set; }
+
+	public uint LastTopUid { get; private set; }
+
+	public uint LastRunnerUid => _lastRunnerUid;
+
+	/// <summary>The guest entity this animator drives; 0 until it is adopted.</summary>
+	public uint Address;
+
+	/// <summary>
+	/// The owning body's anchor. The guest states the body's pair and its clip weights in the
+	/// same pass on the same tick, so they share one anchor; two anchors put the limbs out of
+	/// phase with the translation. Null while the body is not blending, where the world's
+	/// alpha stands.
+	/// </summary>
+	public Refii.Core.Engine_PairPlayhead? OwnerPlayhead;
+
+	/// <summary>
+	/// The rig being watched, set from the debug channel. Pinned to a single rig so consecutive
+	/// rows are that rig on consecutive frames; the other alpha rings mix subjects and cannot
+	/// show a per-subject phase (clip time, blend weight, bone).
+	/// </summary>
+	/// <remarks>
+	/// Setting this clears the ring, so no row from the previously watched rig survives.
+	/// </remarks>
+	public static uint WatchAddress
+	{
+		get => _watchAddress;
+		set
+		{
+			_watchAddress = value;
+			System.Array.Clear(Watch, 0, Watch.Length);
+			_watchAt = 0;
+		}
+	}
+
+	private static uint _watchAddress;
+
+	private static readonly (ulong Usec, float Moved, float Alpha, float TopShare, int Channels, int Bones)[]
+		Watch = new (ulong, float, float, float, int, int)[256];
+
+	private static int _watchAt;
+
+	private static void NoteWatch(float moved, float alpha, float topShare, int channels, int bones)
+	{
+		int at = System.Threading.Interlocked.Increment(ref _watchAt);
+		Watch[at & 255] = (Godot.Time.GetTicksUsec(), moved, alpha, topShare, channels, bones);
+	}
+
+	/// <summary>One rig's drawn motion, frame by frame, oldest first; for the debug channel.</summary>
+	public static List<Dictionary<string, object?>> WatchTrace()
+	{
+		var rows = new List<Dictionary<string, object?>>();
+		int at = _watchAt;
+		for (int back = 255; back >= 0; --back)
+		{
+			(ulong usec, float moved, float alpha, float share, int channels, int bones) =
+				Watch[(at - back) & 255];
+			if (usec == 0UL)
+			{
+				continue;
+			}
+
+			rows.Add(new Dictionary<string, object?>
+			{
+				["usec"] = usec,
+				["moved"] = moved,
+				["alpha"] = alpha,
+				["topShare"] = share,
+				["channels"] = channels,
+				["bones"] = bones,
+			});
+		}
+
+		return rows;
+	}
+
+	/// <summary>Frames the crossfade ratio moved more than a tenth in a single frame.</summary>
+	public static long ShareSteps;
+
+	/// <summary>The largest single-frame move of the crossfade ratio seen on any rig.</summary>
+	public static float LargestShareStep;
+
+	public long RigShareSteps { get; private set; }
+
+	private float _lastShare;
+
+	private bool _haveLastShare;
+
 	/// <summary>Frames a rig kept its last pose because the guest listed no primary record.</summary>
 	public static int HeldNoPrimaryFrames;
 
@@ -717,10 +1230,10 @@ public sealed class Engine_ClipAnimator
 			int rt = built.RotationTrack[b];
 			if (rt >= 0 && !isRoot)
 			{
-				Quaternion q = built.Animation.RotationTrackInterpolate(rt, time);
+				Quaternion q = SampleRotation(built, b, rt, time);
 				if (additive)
 				{
-					Quaternion first = built.Animation.RotationTrackInterpolate(rt, 0f);
+					Quaternion first = SampleRotation(built, b, rt, 0f);
 					Quaternion delta = q * first.Inverse();
 					rotation[b] = rotationWeight[b] > 0f
 						? (Quaternion.Identity.Slerp(delta, weight) * rotation[b]).Normalized()
@@ -737,7 +1250,7 @@ public sealed class Engine_ClipAnimator
 			int pt = built.PositionTrack[b];
 			if (pt >= 0 && !additive && !isRoot)
 			{
-				Vector3 p = built.Animation.PositionTrackInterpolate(pt, time);
+				Vector3 p = SamplePosition(built, b, pt, time);
 				position[b] = positionWeight[b] > 0f ? position[b] + p * weight : p * weight;
 				positionWeight[b] += weight;
 			}
@@ -781,6 +1294,11 @@ public sealed class Engine_ClipAnimator
 	private Vector3[] _morphScale = System.Array.Empty<Vector3>();
 
 	private Vector3[] _finalPosition = System.Array.Empty<Vector3>();
+
+	/// <summary>The pose being assembled this frame; written to the skeleton once per bone at the end.</summary>
+	private Quaternion[] _finalRotation = System.Array.Empty<Quaternion>();
+
+	private Vector3[] _finalScale = System.Array.Empty<Vector3>();
 
 	private bool _hasMorph;
 
@@ -852,7 +1370,7 @@ public sealed class Engine_ClipAnimator
 				}
 
 				t = Engine_AnimSkeleton.ToYUp(t);
-				Quaternion q = _skeleton.GetBonePoseRotation(b);
+				Quaternion q = _finalRotation[b];
 				if (q.Dot(t) < 0f)
 				{
 					q = -q;
@@ -873,7 +1391,7 @@ public sealed class Engine_ClipAnimator
 					continue;
 				}
 
-				_skeleton.SetBonePoseRotation(b, r.Normalized());
+				_finalRotation[b] = r.Normalized();
 				PostOpsApplied++;
 			}
 		}
@@ -911,26 +1429,27 @@ public sealed class Engine_ClipAnimator
 			}
 		}
 
-		if (!_hasMorph && !_morphWasApplied)
+		if (!_hasMorph)
 		{
+			System.Array.Fill(_finalScale, Vector3.One);
+			_morphWasApplied = false;
 			return;
 		}
 
 		for (int b = 0; b < bones; ++b)
 		{
 			int parent = _parents![b];
-			Vector3 parentScale = parent >= 0 && _hasMorph ? _morphScale[parent] : Vector3.One;
-			Vector3 own = _hasMorph ? _morphScale[b] : Vector3.One;
-			Vector3 offset = _hasMorph ? _morphOffset[b] : Vector3.Zero;
+			Vector3 parentScale = parent >= 0 ? _morphScale[parent] : Vector3.One;
+			Vector3 offset = _morphOffset[b];
 			if (parent >= 0 && offset != Vector3.Zero)
 			{
-				_skeleton.SetBonePosePosition(b, _finalPosition[b] + offset / parentScale);
+				_finalPosition[b] += offset / parentScale;
 			}
 
-			_skeleton.SetBonePoseScale(b, own / parentScale);
+			_finalScale[b] = _morphScale[b] / parentScale;
 		}
 
-		_morphWasApplied = _hasMorph;
+		_morphWasApplied = true;
 	}
 
 	private bool _morphWasApplied;
@@ -970,19 +1489,113 @@ public sealed class Engine_ClipAnimator
 		sumWeight = total;
 	}
 
-	/// <summary>The clip time to sample: the guest's stated time, carried forward on the host
-	/// clock since it was stated, wrapped for a looping clip and clamped otherwise.</summary>
 	/// <summary>
-	/// The playhead runs on the host clock from the moment the channel starts. The guest's
-	/// stated time is checked only when it changes: within a third of a second of the playhead
-	/// it is ignored (its 15 Hz stepping is not a signal), further away the clip has restarted
-	/// or been re-timed and the playhead jumps to it.
+	/// Drops the written-pose cache, so the next pose writes every bone. Must be called
+	/// whenever something else writes this skeleton — the pose feed takes over whenever
+	/// <see cref="Apply"/> answers false — or the cache would claim bones the feed has since
+	/// overwritten are still ours, and the rig would keep the feed's pose in those bones.
 	/// </summary>
+	public void ForgetWrittenPose() => _hasWritten = false;
+
+	/// <summary>The last pose written per bone, so an unchanged bone is not written again.</summary>
+	private Transform3D[] _written = System.Array.Empty<Transform3D>();
+
+	private bool _hasWritten;
+
+	/// <summary>Bones actually written on the last pose; reported.</summary>
+	public int LastMovedBones { get; private set; }
+
+	/// <summary>Bone writes skipped because the pose was unchanged; reported.</summary>
+	public static long SkippedBoneWrites;
+
+	/// <summary>Bone writes actually made, and how many skeletons they touched. Against
+	/// <see cref="SkippedBoneWrites"/> these say whether the frustum gate is doing anything in
+	/// a given scene, and whether dirty skeletons are what `frameSetupCpuMs` is spending on.</summary>
+	public static long BoneWrites;
+
+	public static long SkeletonsWritten;
+
 	/// <summary>How far short of a one-shot clip's end its playhead may rest: one sample under
 	/// the last key, so the sample never lands on the wrap.</summary>
 	private const float EndMargin = 1e-3f;
 
-	private static void Advance(Channel c, float dt)
+	/// <summary>The most a clip may advance in one tick before it is read as re-timed: four ticks' worth.</summary>
+	private const float RestartSeconds = 4f / 15f;
+
+	/// <summary>How far the guest's stated previous time may sit from the value we last saw and
+	/// still be the same playback: a float's worth of rounding, not a tolerance.</summary>
+	private const float SeamSeconds = 1e-3f;
+
+	/// <summary>
+	/// Folds a tick's stated clip time into the channel's playhead timeline. The clip time
+	/// advances by `worldScale × entityScale / 15` per game tick through the clip's warp table
+	/// (`sub_82200F60`), so consecutive statements differ by a small non-negative step, unwrapped
+	/// across a loop; a step outside that is a restart or a re-time and starts the timeline over
+	/// at the new value — a hard cut, which is what the guest's fresh pair draws too. The first
+	/// sight seeds the previous tick from the leaf's own previous time.
+	/// </summary>
+	private static void ObservePlayhead(Channel c, HostBridge.GuestAnimLeaf leaf, uint tick)
+	{
+		float length = c.Built.Length;
+		if (c.PlayheadTick == uint.MaxValue)
+		{
+			c.PlayheadTick = tick;
+			c.LastStated = leaf.Time;
+			c.Unwrapped = leaf.Time;
+			float back = length > 0f
+				? (leaf.Loop ? LoopGap(leaf.Time - leaf.PreviousTime, length) : leaf.Time - leaf.PreviousTime)
+				: 0f;
+			if (back > 0f && back < RestartSeconds)
+			{
+				c.Playhead.Reset(tick - 1, leaf.Time - back);
+				c.Playhead.Push(tick, leaf.Time);
+			}
+			else
+			{
+				c.Playhead.Reset(tick, leaf.Time);
+			}
+
+			return;
+		}
+
+		if (tick == c.PlayheadTick)
+		{
+			return;
+		}
+
+		c.PlayheadTick = tick;
+
+		// The guest states its own continuity; do not infer it from a threshold.
+		// `sub_82200F60` shifts the current time into the leaf's +28 and writes the new one at
+		// +32, so the stated previous time is by construction continuous with the current one.
+		// Its twin `sub_822B4970` writes both slots the same value: a hard cut, no interpolation.
+		float stated = length > 0f
+			? (leaf.Loop ? LoopGap(leaf.Time - leaf.PreviousTime, length) : leaf.Time - leaf.PreviousTime)
+			: 0f;
+
+		// And whether the guest's own previous value is the one we last saw: if it is not, the
+		// clip was re-timed between our observations and there is nothing to carry forward.
+		float seam = length > 0f
+			? (leaf.Loop ? LoopGap(leaf.PreviousTime - c.LastStated, length) : leaf.PreviousTime - c.LastStated)
+			: 0f;
+
+		bool cut = leaf.PreviousTime == leaf.Time;
+		bool joins = Mathf.Abs(seam) <= SeamSeconds && stated >= -SeamSeconds && stated < RestartSeconds;
+		c.LastStated = leaf.Time;
+		if (length <= 0f || cut || !joins)
+		{
+			c.Unwrapped = leaf.Time;
+			c.Playhead.Reset(tick, leaf.Time);
+			return;
+		}
+
+		c.Unwrapped += seam + stated;
+		c.Playhead.Push(tick, c.Unwrapped);
+	}
+
+	/// <summary>The clip time to sample now: the playhead timeline at the draw point, wrapped
+	/// for a looping clip and clamped short of the end otherwise.</summary>
+	private static void Advance(Channel c, double nowUsec)
 	{
 		float length = c.Built.Length;
 		if (length <= 0f)
@@ -991,58 +1604,20 @@ public sealed class Engine_ClipAnimator
 			return;
 		}
 
-		HostBridge.GuestAnimLeaf leaf = c.Leaf;
-
-		// AT THE GUEST'S RATE. Clip time advances once per 15 Hz game tick by
-		// worldScale × entityScale / 15 s, then through the clip's own warp table
-		// (`sub_82200F60`: node+28 = warp(old), node+32 = warp(new)), so (current − previous) × 15
-		// IS the rate the guest is playing this clip at — 1 at normal speed, a fraction in the
-		// combat slow-motion the crescendo scale sets, 0 while paused. A playhead run on the host
-		// clock alone raced ahead through slow-motion and snapped back at the resync.
-		float rate = 1f;
-		if (leaf.Loop)
+		double t = c.Playhead.Sample(nowUsec);
+		if (c.Leaf.Loop)
 		{
-			float delta = LoopGap(leaf.Time - leaf.PreviousTime, length);
-			if (delta >= 0f && delta * 15f < 4f) rate = delta * 15f;
-		}
-		else
-		{
-			float delta = leaf.Time - leaf.PreviousTime;
-			if (delta >= 0f && delta * 15f < 4f) rate = delta * 15f;
-		}
-
-		c.Time += dt * rate;
-
-		// A ONE-SHOT THE GUEST HAS STOPPED sits exactly where the guest left it: the rate is 0
-		// at the end (or while paused), and a playhead a few frames behind would otherwise hold
-		// short of the final pose until the resync threshold.
-		if (rate <= 0f && !leaf.Loop)
-		{
-			c.Time = leaf.Time;
-		}
-
-		if (leaf.Time != c.StatedTime)
-		{
-			c.StatedTime = leaf.Time;
-			float gap = leaf.Loop ? LoopGap(leaf.Time - c.Time, length) : leaf.Time - c.Time;
-			if (Mathf.Abs(gap) > 0.33f)
+			t %= length;
+			if (t < 0.0)
 			{
-				c.Time = leaf.Time;
-			}
-		}
-
-		if (leaf.Loop)
-		{
-			c.Time %= length;
-			if (c.Time < 0f)
-			{
-				c.Time += length;
+				t += length;
 			}
 
+			c.Time = (float)t;
 			return;
 		}
 
-		c.Time = Mathf.Clamp(c.Time, 0f, length - EndMargin);
+		c.Time = Mathf.Clamp((float)t, 0f, length - EndMargin);
 	}
 
 	/// <summary>The signed shortest distance between two times on a loop of the given length.</summary>
@@ -1077,10 +1652,11 @@ public sealed class Engine_ClipAnimator
 			{
 				["key"] = $"{key:X8}",
 				["failed"] = built.Failed,
-				["tracks"] = built.Failed ? 0 : built.Animation.GetTrackCount(),
+				["tracks"] = built.Failed ? 0 : built.Animation?.GetTrackCount() ?? -1,
+				["shared"] = built.Animation is null,
 				["bonesWithRotation"] = found,
 				["bones"] = _skeleton.GetBoneCount(),
-				["firstTrackPath"] = !built.Failed && built.Animation.GetTrackCount() > 0 ? built.Animation.TrackGetPath(0).ToString() : null,
+				["firstTrackPath"] = built.Animation is { } a && a.GetTrackCount() > 0 ? a.TrackGetPath(0).ToString() : null,
 				["skeletonName"] = _skeletonName,
 				["length"] = built.Length,
 			});
@@ -1107,7 +1683,7 @@ public sealed class Engine_ClipAnimator
 				["additive"] = leaf.Additive,
 				["priority"] = leaf.Priority,
 				["uid"] = leaf.Uid,
-				["playhead"] = _channels.TryGetValue(PlayheadKey(leaf), out Channel? ch) ? ch.Time : null,
+				["playhead"] = _channels.TryGetValue(new ChannelKey(leaf.Uid, leaf.Key, 0), out Channel? ch) ? ch.Time : null,
 				["hostWeight"] = ch?.Weight,
 				["target"] = ch?.TargetWeight,
 				["overlay"] = leaf.Overlay,
@@ -1130,11 +1706,115 @@ public sealed class Engine_ClipAnimator
 	{
 		if (_clips.TryGetValue(key, out Built? built))
 		{
-			return built.Failed ? null : built;
+			// The A/B lever turned off after a shared build: that build has no resource to read.
+			if (ManagedClipSampling || built.Failed || built.Animation is not null)
+			{
+				return built.Failed ? null : built;
+			}
 		}
 
-		built = new Built();
+		built = ManagedClipSampling ? BuildShared(key) : BuildFromResource(key);
 		_clips[key] = built;
+		return built.Failed ? null : built;
+	}
+
+	/// <summary>This rig's view of a shared clip: its bones pointed at the clip's tracks.</summary>
+	/// <remarks>
+	/// The same assignment <see cref="Engine_AnimBuilder.Build"/> + <c>FindTrack</c> made: a bone
+	/// takes the FIRST clip track mapped to it, and only a bone with a parent takes translation.
+	/// </remarks>
+	private Built BuildShared(uint key)
+	{
+		var built = new Built { KeysLifted = true };
+		AnimClip? clip = Engine_AnimCatalog.Find(key);
+		SharedClip? shared = clip is null ? null : SharedFor(clip, key);
+		if (clip is null || shared is null)
+		{
+			built.Failed = true;
+			return built;
+		}
+
+		_boneCandidates ??= Engine_AnimBuilder.BoneCandidates(_skeleton);
+		int[] map = Engine_AnimBuilder.MapTracks(clip, _skeleton, _boneCandidates);
+		if (map.Length == 0)
+		{
+			built.Failed = true;
+			return built;
+		}
+
+		int bones = _skeleton.GetBoneCount();
+		built.Length = shared.Length;
+		built.RotationTrack = new int[bones];
+		built.PositionTrack = new int[bones];
+		built.RotationKeys = new Keys[bones];
+		built.PositionKeys = new Keys[bones];
+		System.Array.Fill(built.RotationTrack, -1);
+		System.Array.Fill(built.PositionTrack, -1);
+		for (int track = 0; track < map.Length; ++track)
+		{
+			int b = map[track];
+			if (b < 0 || b >= bones || built.RotationTrack[b] >= 0)
+			{
+				continue;
+			}
+
+			built.RotationTrack[b] = track;
+			built.RotationKeys[b] = shared.Rotations[track];
+			if (_skeleton.GetBoneParent(b) >= 0)
+			{
+				built.PositionTrack[b] = track;
+				built.PositionKeys[b] = shared.Positions[track];
+			}
+		}
+
+		return built;
+	}
+
+	private static SharedClip? SharedFor(AnimClip clip, uint key)
+	{
+		var id = new SharedKey(Engine_AnimCatalog.ActiveDecoder, key);
+		if (SharedClips.TryGetValue(id, out SharedClip? shared))
+		{
+			if (shared is not null)
+			{
+				shared.LastTaken = System.Environment.TickCount64;
+			}
+
+			return shared;
+		}
+
+		if (SharedClips.Count >= SharedClipCap)
+		{
+			TrimSharedClips();
+		}
+
+		Engine_AnimBuilder.DecodedKeys? decoded = Engine_AnimBuilder.DecodeKeys(clip, id.Decoder);
+		if (decoded is not null)
+		{
+			int tracks = decoded.Times.Length;
+			shared = new SharedClip
+			{
+				Length = decoded.Length,
+				Rotations = new Keys[tracks],
+				Positions = new Keys[tracks],
+				LastTaken = System.Environment.TickCount64,
+			};
+			for (int i = 0; i < tracks; ++i)
+			{
+				shared.Rotations[i] = new Keys { Times = decoded.Times[i], Rotations = decoded.Rotations[i] };
+				shared.Positions[i] = new Keys { Times = decoded.Times[i], Positions = decoded.Positions[i] };
+			}
+		}
+
+		// A decode failure is the clip's, not the rig's: it is cached too.
+		SharedClips[id] = shared;
+		return shared;
+	}
+
+	/// <summary>The per-rig resource path, kept for <see cref="ManagedClipSampling"/> = false.</summary>
+	private Built BuildFromResource(uint key)
+	{
+		var built = new Built();
 		AnimClip? clip = Engine_AnimCatalog.Find(key);
 		Animation? animation = clip is null
 			? null
@@ -1142,7 +1822,7 @@ public sealed class Engine_ClipAnimator
 		if (animation is null)
 		{
 			built.Failed = true;
-			return null;
+			return built;
 		}
 
 		int bones = _skeleton.GetBoneCount();
@@ -1157,6 +1837,33 @@ public sealed class Engine_ClipAnimator
 			built.PositionTrack[b] = animation.FindTrack(path, Animation.TrackType.Position3D);
 		}
 
+		LiftKeys(built);
 		return built;
+	}
+
+	/// <summary>Drops the least recently taken half; rigs holding a dropped clip keep it.</summary>
+	private static void TrimSharedClips()
+	{
+		var stamps = new List<long>(SharedClips.Count);
+		foreach (SharedClip? c in SharedClips.Values)
+		{
+			stamps.Add(c?.LastTaken ?? 0);
+		}
+
+		stamps.Sort();
+		long cut = stamps[stamps.Count / 2];
+		var drop = new List<SharedKey>();
+		foreach ((SharedKey k, SharedClip? c) in SharedClips)
+		{
+			if ((c?.LastTaken ?? 0) <= cut)
+			{
+				drop.Add(k);
+			}
+		}
+
+		foreach (SharedKey k in drop)
+		{
+			SharedClips.Remove(k);
+		}
 	}
 }

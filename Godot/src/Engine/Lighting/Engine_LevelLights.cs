@@ -264,6 +264,46 @@ public static class Engine_LevelLights
 	/// </summary>
 	private static readonly List<Light3D> FxRegistry = new();
 
+	/// <summary>The fixture's reach as BUILT, before any live scaling, kept so a sweep can be
+	/// relative to the authored value rather than to whatever the last sweep left.</summary>
+	public const string AuthoredRangeMeta = "refii_authored_range";
+
+	/// <summary>
+	/// A live multiplier on every placed fixture's reach, for measuring what `placed_light_range`
+	/// costs WITHOUT a level reload. 1.0 is whatever the level was built with.
+	/// </summary>
+	/// <remarks>
+	/// Godot re-pairs a light against every geometry instance its AABB touches, so pairing cost
+	/// tracks the volume each fixture covers, the cube of its range. Scaling live costs one
+	/// re-pair pass; `placed_light_range` itself is read at light CREATION and needs a reload.
+	/// </remarks>
+	public static float RangeScale = 1.0f;
+
+	/// <summary>Puts every placed fixture at its authored reach times <see cref="RangeScale"/>.</summary>
+	public static void ApplyRangeScale()
+	{
+		lock (FxRegistry)
+		{
+			foreach (Light3D node in FxRegistry)
+			{
+				if (!GodotObject.IsInstanceValid(node) || !node.HasMeta(AuthoredRangeMeta))
+				{
+					continue;
+				}
+
+				float authored = (float)node.GetMeta(AuthoredRangeMeta);
+				if (node is OmniLight3D omni)
+				{
+					omni.OmniRange = authored * RangeScale;
+				}
+				else if (node is SpotLight3D spot)
+				{
+					spot.SpotRange = authored * RangeScale;
+				}
+			}
+		}
+	}
+
 	/// <summary>Copies the live placed lights into <paramref name="into"/>, pruning dead ones.</summary>
 	public static void SnapshotLights(List<Light3D> into)
 	{
@@ -320,6 +360,24 @@ public static class Engine_LevelLights
 		}
 	}
 
+	/// <summary>The placements carrying an active light — kept as nodes of their own by the prop builder.</summary>
+	public static HashSet<uint> LightBearing(
+		GdbView levelView, List<GdbView> supplementalViews, List<GdbPlacement> placements)
+	{
+		var views = new List<GdbView>(supplementalViews.Count + 1) { levelView };
+		views.AddRange(supplementalViews);
+		var bearing = new HashSet<uint>();
+		foreach (GdbPlacement placement in placements)
+		{
+			if (TryRead(placement.Hash, views, out LightPlacement light) && light.Active)
+			{
+				bearing.Add(placement.Hash);
+			}
+		}
+
+		return bearing;
+	}
+
 	public static int Spawn(
 		Node3D container,
 		GdbView levelView,
@@ -332,9 +390,35 @@ public static class Engine_LevelLights
 
 		int spawned = 0;
 		var flicker = new Engine_LightFlicker { Name = Engine_LightFlicker.NodeName };
+		var hosts = new HashSet<uint>();
 
-		void Emit(in LightPlacement placement, Transform3D at, string? name, int index)
+		// ONE LIGHT PER (ENTITY, ATTACHMENT), not one per placement.
+		// `Engine_LevelProps.AugmentPlacementModelHashes` splits a multi-model placement into one
+		// entry PER MODEL PART, each with the same record hash and transform, so without this key
+		// one fixture is built once per part. `Engine_LevelFx` guards the same list the same way.
+		// The dummy index is in the key because a twin-headed post states two lights on two
+		// dummies — a second fixture, not a repeat.
+		var emitted = new Dictionary<(uint Entity, int Index), Vector3>();
+		int duplicate = 0;
+		int duplicateElsewhere = 0;
+
+		bool Emit(uint entity, in LightPlacement placement, Transform3D at, string? name, int index)
 		{
+			var key = (entity, index);
+			if (!emitted.TryAdd(key, at.Origin))
+			{
+				duplicate++;
+
+				// A repeat at a different origin is counted apart: it would mean the key is
+				// collapsing two real fixtures into one.
+				if (emitted[key].DistanceSquaredTo(at.Origin) > 0.01f)
+				{
+					duplicateElsewhere++;
+				}
+
+				return false;
+			}
+
 			Light3D node = Build(placement, at, name, index);
 			container.AddChild(node);
 			flicker.Add(node, placement);
@@ -342,6 +426,8 @@ public static class Engine_LevelLights
 			{
 				FxRegistry.Add(node);
 			}
+
+			return true;
 		}
 
 		foreach (GdbPlacement placement in placements)
@@ -355,13 +441,19 @@ public static class Engine_LevelLights
 
 			string? model = null;
 			modelPaths?.TryGetValue(placement.Hash, out model);
+			if (model is not null && model.Length != 0)
+			{
+				hosts.Add(placement.Hash);
+			}
 
 			// The entity's own origin, which is what AttachToEntityPosition asks for and also the
 			// only thing left when the placement resolved to no model at all.
 			if (light.Dummy.Length == 0 || model is null || model.Length == 0)
 			{
-				Emit(light, placed, placement.EntityName, 0);
-				spawned++;
+				if (Emit(placement.Hash, light, placed, placement.EntityName, 0))
+				{
+					spawned++;
+				}
 				continue;
 			}
 
@@ -380,8 +472,10 @@ public static class Engine_LevelLights
 					break;
 				}
 
-				Emit(light, placed * at, placement.EntityName, index);
-				spawned++;
+				if (Emit(placement.Hash, light, placed * at, placement.EntityName, index))
+				{
+					spawned++;
+				}
 			}
 
 			// A model that names no such dummy still carries the light — the component states it,
@@ -389,8 +483,10 @@ public static class Engine_LevelLights
 			// entirely rather than misplacing it by a metre.
 			if (index == 0)
 			{
-				Emit(light, placed, placement.EntityName, 0);
-				spawned++;
+				if (Emit(placement.Hash, light, placed, placement.EntityName, 0))
+				{
+					spawned++;
+				}
 			}
 		}
 
@@ -405,6 +501,12 @@ public static class Engine_LevelLights
 			flicker.QueueFree();
 		}
 
+		// The fixtures' own models leave every placed light's casters: see LampHostLayer.
+		if (hosts.Count != 0)
+		{
+			MarkHosts(container, hosts);
+		}
+
 		// The shadow budget rides along whenever any light spawned — it is what turns
 		// ShadowEnabled on, so without it no fixture would ever cast.
 		if (spawned != 0)
@@ -412,7 +514,29 @@ public static class Engine_LevelLights
 			container.AddChild(new Engine_LightShadowBudget { Name = Engine_LightShadowBudget.NodeName });
 		}
 
+		// `duplicateElsewhere` nonzero means the key collapsed fixtures that stood apart.
+		if (duplicate != 0)
+		{
+			GD.Print(
+				$"[lights] {spawned} placed, {duplicate} duplicate placement(s) rejected " +
+				$"({duplicateElsewhere} of them somewhere else)");
+		}
+
 		return spawned;
+	}
+
+	/// <summary>Moves the prop nodes of <paramref name="hosts"/> onto <see cref="LampHostLayer"/>.</summary>
+	private static void MarkHosts(Node container, HashSet<uint> hosts)
+	{
+		foreach (Node child in container.GetChildren())
+		{
+			if (child is GeometryInstance3D instance &&
+				instance.HasMeta(Engine_PropStreamer.RecordMeta) &&
+				hosts.Contains((uint)instance.GetMeta(Engine_PropStreamer.RecordMeta).AsInt64()))
+			{
+				instance.Layers = LampHostLayerMask;
+			}
+		}
 	}
 
 	/// <summary>How many same-named attachment points to look for before giving up.</summary>
@@ -420,6 +544,17 @@ public static class Engine_LevelLights
 
 	/// <summary>Meta key on a placed light holding the data's own CastShadows flag.</summary>
 	public const string AuthoredShadowMeta = "authored_shadow";
+
+	/// <summary>
+	/// The render layer a light-bearing prop is moved to, and the one bit every placed light's
+	/// ShadowCasterMask leaves out. A fixture must not shadow itself: its light hangs on the
+	/// model's own Prop.Layout.Light dummy, inside the housing. The prop is still drawn and lit;
+	/// only its shadow into placed lights is gone, and the sun's mask keeps it. Layers 20 and
+	/// 21 are the FX passes' and layer 2 the water's; nothing else in the tree assigns one.
+	/// </summary>
+	public const int LampHostLayer = 19;
+
+	public const uint LampHostLayerMask = 1u << (LampHostLayer - 1);
 
 	private static float? _placedScale;
 
@@ -431,7 +566,7 @@ public static class Engine_LevelLights
 	/// carried the glow between them; those bakes decode to ~0.016 here, so a cave floor between
 	/// two braziers was black. 1.0 is the shipped data; the falloff shape is untouched.
 	/// </summary>
-	private static float PlacedRange
+	public static float PlacedRange
 	{
 		get
 		{
@@ -454,7 +589,7 @@ public static class Engine_LevelLights
 		}
 	}
 
-	private static float PlacedScale
+	public static float PlacedScale
 	{
 		get
 		{
@@ -504,7 +639,7 @@ public static class Engine_LevelLights
 		}
 	}
 
-	/// <summary>`placed_light_budget`: fixtures kept visible at once; 0 is every fixture.</summary>
+	/// <summary>`placed_light_budget`: fixtures kept visible at once; 0 is every fixture — the remaster's setting.</summary>
 	public static int PlacedLightBudget()
 	{
 		try
@@ -520,12 +655,24 @@ public static class Engine_LevelLights
 		}
 	}
 
+	/// <summary>`placed_light_shadow_budget`: fixtures casting at once; 0 is none.</summary>
+	public static int PlacedShadowBudget()
+	{
+		try
+		{
+			return Math.Max(Refii.Core.Engine_RefiiConfig.Int(
+				Refii.Core.Engine_RefiiConfig.Read(out _), "placed_light_shadow_budget", 8), 0);
+		}
+		catch (Exception)
+		{
+			return 8;
+		}
+	}
+
 	/// <summary>
-	/// The `placed_light_shadows` dev switch, OFF by default: fixtures never cast, as on the
-	/// 360, where their light passed through walls and the bakes hid most of it. ON hands
-	/// shadow maps to the nearest <see cref="Engine_LightShadowBudget.Budget"/> fixtures for
-	/// looking at one lamp's occlusion — inconsistent by construction and priced in the budget's
-	/// remarks, so never a shipped setting.
+	/// `placed_light_shadows`, OFF by default: only a spot whose
+	/// component states CastShadows competes for a map, the 360's own set of 83. ON lets every
+	/// fixture compete for one of the <see cref="Engine_LightShadowBudget.Budget"/> maps.
 	/// </summary>
 	public static bool PlacedShadowsEnabled => PlacedShadows;
 
@@ -590,6 +737,7 @@ public static class Engine_LevelLights
 			};
 
 		node.Name = $"Light_{entityName ?? "?"}_{index}";
+		node.SetMeta(AuthoredRangeMeta, light.Range * PlacedRange);
 		node.LightColor = colour;
 
 		// The remaster's `placed_light_scale`: the authored fixtures throw modest pools — a
@@ -602,8 +750,14 @@ public static class Engine_LevelLights
 		// authored flag is recorded here; Engine_LightShadowBudget hands live shadow maps to
 		// the nearest few fixtures each frame instead.
 		node.ShadowEnabled = false;
+		node.ShadowOpacity = 0.0f;
 		node.SetMeta(AuthoredShadowMeta, light.CastShadows);
+		node.ShadowCasterMask = ~LampHostLayerMask;
 		node.Transform = at;
+
+		// Registered in the light table, so the shader measures the distance and takes the shadow
+		// on its own instead of inverting an attenuation the shadow is multiplied into.
+		Engine_LightTable.Register(node);
 
 		// FADEDISTANCE IS THE CAMERA'S, NOT THE LIGHT'S, and reading it as a second radius is the
 		// mistake the numbers themselves rule out: the shipped fixtures state Range 8 with

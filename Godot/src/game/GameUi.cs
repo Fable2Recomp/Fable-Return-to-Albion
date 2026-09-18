@@ -222,7 +222,8 @@ public partial class GameUi : Node
 	/// <summary>Whether the first kit send has been reported.</summary>
 	private bool _coopSendReported;
 
-	private string _coopMannequinReport = string.Empty;
+	/// <summary>The key over the last co-op mannequin line; null before the first one.</summary>
+	private long? _coopMannequinReport;
 
 	private string _coopWeaponsReported = string.Empty;
 
@@ -1458,19 +1459,30 @@ public partial class GameUi : Node
 				// presentation the guest had not built yet, which is a different failure with a
 				// different fix — one is a pool we read too early, the other is a sample we
 				// took too late, and the report is what tells them apart.
-				string why = declined.ModalUp
-					? $"a modal is up (mode {declined.ModalMode})"
+				// Key first, string only on a change. The modal mode rides in the key only on the
+				// branch that prints it, so a mode changing behind a different reason cannot
+				// re-fire the line.
+				int reason = declined.ModalUp
+					? 0
 					: !ScreenOwnsList(declined.ScreenId)
-						? "this screen is not in the owned set"
+						? 1
 						: _followedScreen != declined.ScreenId
-							? "the guest has not built its presentation yet"
-							: "no drawn presentation has a populated ExpandableMenu pool";
+							? 2
+							: 3;
 
-				string note = $"{declined.ScreenId}:{why}";
+				long note = ((long)declined.ScreenId << 40) | ((long)reason << 32) |
+					(reason == 0 ? declined.ModalMode : 0u);
 				if (_screenMenuDeclined != note)
 				{
 					_screenMenuDeclined = note;
-					GD.Print($"[game-ui] screen {declined.ScreenId} left MIRRORED — {why}");
+					GD.Print($"[game-ui] screen {declined.ScreenId} left MIRRORED — " +
+						(reason switch
+						{
+							0 => $"a modal is up (mode {declined.ModalMode})",
+							1 => "this screen is not in the owned set",
+							2 => "the guest has not built its presentation yet",
+							_ => "no drawn presentation has a populated ExpandableMenu pool",
+						}));
 				}
 
 				// No screen is ever input-dead: the guest's action chain does not fire here, so a
@@ -2333,6 +2345,8 @@ public partial class GameUi : Node
 		{
 			Name = "WorldIcons",
 			Theme = _presentation.Theme,
+			Art = _hud.Art.Shipped,
+			Values = _hud.Values,
 			Position = new Vector3(0f, 0f, 50f),
 			ResolveTexture = hash =>
 				_presentation.TextureNames is { } names &&
@@ -2414,32 +2428,30 @@ public partial class GameUi : Node
 			return;
 		}
 
+		// The projection's inputs live in fields and the projector is one cached delegate, so
+		// the per-frame feed allocates no closure (GC pauses stall the guest's sim thread).
 		Vector2 extent = Engine_HudLayout.CanvasExtent(window);
-		float unitsPerPixel = extent.Y / window.Y;
-		Vector2? Project(Vector3 guest)
-		{
-			// The WORLD's conversion, not the model handedness: the anchor is a guest world
-			// point with its up-lift on guest Z, and `(x, y, -z)` put that lift into depth.
-			Vector3 world = GameWorld.GuestToGodot(guest);
-			if (camera.IsPositionBehind(world))
-			{
-				return null;
-			}
+		_spriteCamera = camera;
+		_spriteWindow = window;
+		_spriteUnitsPerPixel = extent.Y / window.Y;
+		_spriteProject ??= ProjectWorldSprite;
 
-			Vector2 pixel = camera.UnprojectPosition(world);
-			return new Vector2(
-				(pixel.X - window.X * 0.5f) * unitsPerPixel,
-				(window.Y * 0.5f - pixel.Y) * unitsPerPixel);
-		}
-
-		var sprites = new System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>();
-		var pooled = new System.Collections.Generic.Dictionary<int, Vector2>();
+		// Reused, not reallocated — and cleared here rather than on entry, because the early
+		// returns above deliberately leave the last frame's pooled placements standing. Neither
+		// `Feed` nor `TrackProjected` keeps a reference past its call, and `_pooledCanvas` is
+		// read later in this same frame by the icon drive.
+		System.Collections.Generic.List<Engine_HudWorldSprites.Sprite> sprites =
+			_worldSpriteList ??= new System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>();
+		System.Collections.Generic.Dictionary<int, Vector2> pooled =
+			_pooledCanvas ??= new System.Collections.Generic.Dictionary<int, Vector2>();
+		sprites.Clear();
+		pooled.Clear();
 		foreach (HostBridge.WorldSprite sprite in HostBridge.GetWorldSprites())
 		{
 			if (sprite.Pooled)
 			{
 				// A prompt on a pooled HUD element: the element draws it, Godot places it.
-				if (sprite.Slot >= 0 && Project(sprite.Anchor) is { } canvas)
+				if (sprite.Slot >= 0 && ProjectWorldSprite(sprite.Anchor) is { } canvas)
 				{
 					pooled[sprite.Slot] = canvas;
 				}
@@ -2452,9 +2464,45 @@ public partial class GameUi : Node
 				sprite.Scale, sprite.Title, sprite.Opinion));
 		}
 
-		_pooledCanvas = pooled;
-		_worldSprites.Feed(sprites, Project);
+		_worldSprites.Feed(sprites, _spriteProject);
 	}
+
+	/// <summary>
+	/// A guest world anchor in canvas units, or null when it is behind the camera — the
+	/// projector <see cref="DriveWorldSprites"/> hands to the sprite feed.
+	/// </summary>
+	private Vector2? ProjectWorldSprite(Vector3 guest)
+	{
+		if (_spriteCamera is null)
+		{
+			return null;
+		}
+
+		// The WORLD's conversion, not the model handedness: the anchor is a guest world
+		// point with its up-lift on guest Z, and `(x, y, -z)` put that lift into depth.
+		Vector3 world = GameWorld.GuestToGodot(guest);
+		if (_spriteCamera.IsPositionBehind(world))
+		{
+			return null;
+		}
+
+		Vector2 pixel = _spriteCamera.UnprojectPosition(world);
+		return new Vector2(
+			(pixel.X - (_spriteWindow.X * 0.5f)) * _spriteUnitsPerPixel,
+			((_spriteWindow.Y * 0.5f) - pixel.Y) * _spriteUnitsPerPixel);
+	}
+
+	/// <summary>This frame's projection inputs — see <see cref="ProjectWorldSprite"/>.</summary>
+	private Camera3D? _spriteCamera;
+
+	private Vector2 _spriteWindow;
+
+	private float _spriteUnitsPerPixel;
+
+	private System.Func<Vector3, Vector2?>? _spriteProject;
+
+	/// <summary>The world sprites handed to the feed, reused frame to frame.</summary>
+	private System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>? _worldSpriteList;
 
 	/// <summary>The HUD's element pipeline — one resolve, shared with every owned surface.</summary>
 	private Engine_UiElementResolve? _hudResolve;
@@ -3094,6 +3142,7 @@ public partial class GameUi : Node
 
 		if (_worldIcons.Lit > 0)
 		{
+			_worldIcons.Drive(GameInput.AHeld);
 			if (_pooledCanvas is { } pooled)
 			{
 				_worldIcons.TrackProjected(pooled);
@@ -3172,7 +3221,7 @@ public partial class GameUi : Node
 		_screenLists = new();
 
 	/// <summary>The last "left mirrored" reason printed, so it says so once rather than per frame.</summary>
-	private string? _screenMenuDeclined;
+	private long? _screenMenuDeclined;
 
 	private Engine_UiScreenMenu? _screenMenu;
 	private Engine_FrontEndMenuView? _screenMenuView;
@@ -3397,17 +3446,22 @@ public partial class GameUi : Node
 		{
 			// Said once per change, with the three parts: which of them fell is the whole
 			// question when a press on this list goes nowhere.
-			string why = $"tree {_pauseTreeUp} revealed {IsRevealed} root {(pause is { RootActive: true })}";
+			//
+			// Key first, string only on a change: the three parts pack into three bits, and
+			// ordinary play takes this branch every frame.
+			int why = (_pauseTreeUp ? 1 : 0) | (IsRevealed ? 2 : 0) |
+				(pause is { RootActive: true } ? 4 : 0);
 			if (_pauseStandingSaid != why)
 			{
 				_pauseStandingSaid = why;
-				GD.Print($"[game-ui] pause list not standing — {why}");
+				GD.Print($"[game-ui] pause list not standing — tree {_pauseTreeUp} " +
+					$"revealed {IsRevealed} root {(pause is { RootActive: true })}");
 			}
 
 			return false;
 		}
 
-		_pauseStandingSaid = string.Empty;
+		_pauseStandingSaid = -1;
 
 		// THE GUEST'S OWN AVAILABILITY, followed while the list is up. Its LB/RB nav skips an
 		// unavailable tab per frame (`sub_826B83D0` — the childhood restriction on the hero),
@@ -3553,7 +3607,10 @@ public partial class GameUi : Node
 			return;
 		}
 
-		string state = $"{icons.Enabled}/{icons.IncomeIcons}/{icons.Queued}/{icons.Showing}";
+		// Key first, string only on a change: two bits and two counts, packed. Runs on every
+		// guest frame in game.
+		long state = ((long)icons.Queued << 34) | ((long)icons.Showing << 2) |
+			(icons.Enabled ? 2L : 0L) | (icons.IncomeIcons ? 1L : 0L);
 		if (state == _worldIconState)
 		{
 			return;
@@ -3568,7 +3625,7 @@ public partial class GameUi : Node
 				: string.Empty));
 	}
 
-	private string? _worldIconState;
+	private long? _worldIconState;
 
 	/// <summary>
 	/// The anchor each preview screen hangs its object on — the guest's own dotted paths.
@@ -3591,7 +3648,8 @@ public partial class GameUi : Node
 	/// element every frame, so the live-transform read has already applied it to the node we
 	/// parent to.
 	/// </summary>
-	private string _previewGate = string.Empty;
+	/// <summary>The key over the last preview-gate line; null before the first one.</summary>
+	private long? _previewGate;
 
 	/// <summary>The clothing book (`equipmentscreen.bgf`), the one item book that dresses a mannequin.</summary>
 	private const uint EquipmentScreenId = 16;
@@ -3626,16 +3684,23 @@ public partial class GameUi : Node
 			uint up = HostBridge.GetPauseState() is { ScreenId: not 0 } state
 				? state.ScreenId
 				: menu.ScreenId;
-			string gate = $"screen {up} (list {menu.ScreenId}) " +
-				$"provider '{Engine_UiTemplates.Screen(up)?.Provider}' " +
-				$"row '{menu.Script.Highlighted?.Name}'";
+			// Key first, string only on a change; runs every frame a screen list stands. The
+			// provider is looked up once and reused below. See Engine_HudValues.DescribeKey.
+			string? provider = Engine_UiTemplates.Screen(up)?.Provider;
+			string? row = menu.Script.Highlighted?.Name;
+			long gate = 17L;
+			gate = (gate * 1000003L) ^ up;
+			gate = (gate * 1000003L) ^ menu.ScreenId;
+			gate = (gate * 1000003L) ^ (provider?.GetHashCode() ?? 0);
+			gate = (gate * 1000003L) ^ (row?.GetHashCode() ?? 0);
 			if (_previewGate != gate)
 			{
 				_previewGate = gate;
-				GD.Print("[game-ui] preview gate: " + gate);
+				GD.Print($"[game-ui] preview gate: screen {up} (list {menu.ScreenId}) " +
+					$"provider '{provider}' row '{row}'");
 			}
 
-			if (Engine_UiTemplates.Screen(up)?.Provider == Engine_UiPageProviders.ItemBook)
+			if (provider == Engine_UiPageProviders.ItemBook)
 			{
 				spinning = Engine_UiItemPage.Preview(up, menu.Script.Highlighted);
 			}
@@ -3668,16 +3733,22 @@ public partial class GameUi : Node
 			// SAID ONCE PER OUTCOME. The bridge answers nothing both when the screen has not
 			// spawned its henchman yet and when its walk to the handler failed; the entity feed
 			// may also not hold the body. Each is a different fix, and all three were one silence.
-			string report = mannequin is { } m
-				? $"entity 0x{m.Entity:X8} ticket {m.Ticket}, body " +
-					(GetParent()?.GetNodeOrNull<GameWorld>("GameWorld")?.Entities?.NodeFor(m.Entity) is null
-						? "NOT in the entity feed"
-						: "in the entity feed")
-				: "bridge reports NO mannequin";
+			// Key first, string only on a change: an entity, a ticket and one bit, every frame
+			// of the co-op screen.
+			bool inFeed = mannequin is { } m &&
+				GetParent()?.GetNodeOrNull<GameWorld>("GameWorld")?.Entities?.NodeFor(m.Entity)
+					is not null;
+			long report = mannequin is { } keyed
+				? (((long)keyed.Entity << 32) ^ ((long)keyed.Ticket << 1)) | (inFeed ? 1L : 0L)
+				: -1L;
 			if (report != _coopMannequinReport)
 			{
 				_coopMannequinReport = report;
-				GD.Print($"[game-ui] co-op mannequin: {report}");
+				GD.Print(mannequin is { } said
+					? $"[game-ui] co-op mannequin: entity 0x{said.Entity:X8} " +
+						$"ticket {said.Ticket}, body " +
+						(inFeed ? "in the entity feed" : "NOT in the entity feed")
+					: "[game-ui] co-op mannequin: bridge reports NO mannequin");
 			}
 		}
 
@@ -3783,7 +3854,9 @@ public partial class GameUi : Node
 			// Named once per change: the guest states a model and we have nowhere to hang it,
 			// which is a different failure from the guest naming none — and the two are
 			// indistinguishable on screen.
-			string missing = $"{preview.ScreenId}:{preview.ModelHash:X8}";
+			// The pair keyed rather than spelled: a screen with a preview and no anchor takes
+			// this branch every frame it stands.
+			long missing = ((long)preview.ScreenId << 32) | preview.ModelHash;
 			if (_previewAnchorMissing != missing)
 			{
 				_previewAnchorMissing = missing;
@@ -4013,7 +4086,7 @@ public partial class GameUi : Node
 	}
 
 	/// <summary>The screen and model whose anchor was last reported missing, to print once.</summary>
-	private string? _previewAnchorMissing;
+	private long? _previewAnchorMissing;
 
 	/// <summary>The screen last reported as answering no preview object, to print once.</summary>
 	private uint? _previewNone;
@@ -4644,8 +4717,11 @@ public partial class GameUi : Node
 		return null;
 	}
 
-	/// <summary>Last reason the pause list was not standing, so it is said once.</summary>
-	private string _pauseStandingSaid = string.Empty;
+	/// <summary>
+	/// Last reason the pause list was not standing, so it is said once: the three gate bits
+	/// packed, or -1 while it stands.
+	/// </summary>
+	private int _pauseStandingSaid = -1;
 
 	/// <summary>The co-op screen — id 24, `CoopScreen.bgf`.</summary>
 	private const uint CoopScreenId = 24u;
@@ -4660,6 +4736,9 @@ public partial class GameUi : Node
 			ui_processBody(delta);
 		}
 	}
+
+	/// <summary>The pause state as read on the last guest frame.</summary>
+	private Engine_UiModel.PauseState? _modal;
 
 	private void ui_processBody(double delta)
 	{
@@ -4814,7 +4893,15 @@ public partial class GameUi : Node
 		// that would otherwise have inferred it. Drained even when nothing routes yet: the
 		// report is what turns the plan's static census into a measured one.
 		EnsureGuiNativeRoutes();
-		_guiNatives.Drive();
+
+		// On the guest's frame: what reads guest state below reads what the guest wrote on its
+		// last HF tick, and between two the read is identical. Input pumps, per-frame animation
+		// and the surfaces' own drive stay on every frame.
+		bool guestFrame = Refii.Core.Engine_GuestFrame.Changed;
+		if (guestFrame)
+		{
+			_guiNatives.Drive();
+		}
 
 		// THE WIDGETS RUN THEIR OWN CLOCKS, and their predicates report from them — so both have
 		// to happen every frame, in this order. A predicate published before the tick would
@@ -4825,7 +4912,10 @@ public partial class GameUi : Node
 			_screens.PlaySound(sound);
 		}
 
-		PublishPredicates();
+		if (guestFrame)
+		{
+			PublishPredicates();
+		}
 
 		// THE MENU MODEL, FED FROM THE C++'s OWN STATEMENTS. Every `g_Menu:` mutation the game
 		// makes — spawn, ghost, emphasis, refresh, delete — arrives here with its staged
@@ -4835,7 +4925,10 @@ public partial class GameUi : Node
 		//
 		// DRAINED BEFORE ANYTHING READS A MENU, because a statement made this frame should be
 		// visible to this frame's drive rather than the next one.
-		_menuModel.Apply(Engine_UiSource.Current.TakeMenuChunks());
+		if (guestFrame)
+		{
+			_menuModel.Apply(Engine_UiSource.Current.TakeMenuChunks());
+		}
 		if (_menuModel.Applied != _menuModelReported)
 		{
 			_menuModelReported = _menuModel.Applied;
@@ -4846,7 +4939,9 @@ public partial class GameUi : Node
 		// no menus" and "our hook never fired" produce the identical silence — and a whole run
 		// went by with no `[menu-model]` line at all, which is why every screen was inferring its
 		// rows from the button pool's geometry instead of reading the guest's own statements.
-		(ulong recorded, uint pending, ulong dropped) = HostBridge.MenuChunkCounters();
+		(ulong recorded, uint pending, ulong dropped) = guestFrame
+			? HostBridge.MenuChunkCounters()
+			: (_menuChunksRecorded, 0u, _menuChunksDropped);
 		if (recorded != _menuChunksRecorded || dropped != _menuChunksDropped)
 		{
 			_menuChunksRecorded = recorded;
@@ -4859,7 +4954,7 @@ public partial class GameUi : Node
 		// THE HUD'S TOPBOX AND TIMING METER, stated by name for the slide fold above: the
 		// guest publishes their strings and meters into registries the host reads, and only
 		// their visibility has to be re-derived here.
-		if (_hud is not null && GodotObject.IsInstanceValid(_hud))
+		if (guestFrame && _hud is not null && GodotObject.IsInstanceValid(_hud))
 		{
 			Engine_UiHudTopBox.Publish(
 				HostBridge.GetTopBoxFront(), GameInput.AHeld, GameInput.YHeld, _hud.Values,
@@ -4881,16 +4976,19 @@ public partial class GameUi : Node
 			GD.Print($"[ui-cut] boxes: {_boxes.Describe()}");
 		}
 
-		ReportCamera();
-		TracePresentations();
-		TraceWorldIcons();
-		DriveWorldIcons();
+		if (guestFrame)
+		{
+			ReportCamera();
+			TracePresentations();
+			TraceWorldIcons();
+			DriveWorldIcons();
+		}
 		DriveCoopHeroChannel(delta);
-		DriveOwnedScreenProvider();
-		_books.Drive(_drawn, IsRevealed);
-		_spells.Follow(IsRevealed);
+		if (guestFrame) DriveOwnedScreenProvider();
+		if (guestFrame) _books.Drive(_drawn, IsRevealed);
+		if (guestFrame) _spells.Follow(IsRevealed);
 		DrivePreviewObject();
-		DriveCoopLeftMannequin();
+		if (guestFrame) DriveCoopLeftMannequin();
 
 		// THE MOVING PARTS, every frame — see Engine_UiSceneBuilder.ApplyLiveTransform. This is
 		// deliberately NOT inside TracePresentations, which samples a few times a second: the
@@ -4898,7 +4996,7 @@ public partial class GameUi : Node
 		// would judder rather than move.
 		AnimateDrawn();
 
-		ScanWhenSettled();
+		if (guestFrame) ScanWhenSettled();
 		DriveTitle(delta);
 
 		// THE SHARED MODAL FLAG BELONGS TO WHICHEVER SURFACE STANDS A VIEW THIS FRAME — false
@@ -4918,9 +5016,13 @@ public partial class GameUi : Node
 		// THE OWNED SURFACES FIRST, and independent of the pause menu — the guest raises them
 		// over ANY screen and one that is pending owns the frame outright. Their order is the
 		// set's own; see Engine_UiSurfaceSet.
-		DriveAchievements();
+		if (guestFrame)
+		{
+			DriveAchievements();
+			_modal = HostBridge.GetPauseState();
+		}
 
-		Engine_UiModel.PauseState? modal = HostBridge.GetPauseState();
+		Engine_UiModel.PauseState? modal = _modal;
 		if (_surfaces.Drive(IsRevealed ? _presentation : null, modal, SurfaceInput(delta)))
 		{
 			return;
@@ -7098,26 +7200,36 @@ public partial class GameUi : Node
 			return;
 		}
 
-		string key = view.Name.ToString();
-		string described = view.Describe();
-
 		// Keyed with the positions STRIPPED: a slide animation moves every row a little each
 		// frame, and a report that fires on coordinates prints sixteen near-identical lines
 		// per press. The printed line keeps them — the change that matters is which entries,
 		// labels and meshes the rows hold.
-		string changeKey = System.Text.RegularExpressions.Regex.Replace(
-			described, @"@\([^)]*\)", string.Empty);
-		if (_menuViews.TryGetValue(key, out string? was) &&
-			string.Equals(was, changeKey, System.StringComparison.Ordinal))
+		//
+		// Key first, string only on a change; runs every frame a view stands. See
+		// Engine_FrontEndMenuView.DescribeKey.
+		long changeKey = view.DescribeKey();
+
+		// The report is per name; `Node.Name` allocates on every read, so the name is held per
+		// instance. A rebuilt view is a new instance and reads its name again.
+		ulong instance = view.GetInstanceId();
+		if (!_menuViewNames.TryGetValue(instance, out string? key))
+		{
+			key = view.Name.ToString();
+			_menuViewNames[instance] = key;
+		}
+
+		if (_menuViews.TryGetValue(key, out long was) && was == changeKey)
 		{
 			return;
 		}
 
 		_menuViews[key] = changeKey;
-		GD.Print(described);
+		GD.Print(view.Describe());
 	}
 
-	private readonly System.Collections.Generic.Dictionary<string, string> _menuViews = new();
+	private readonly System.Collections.Generic.Dictionary<string, long> _menuViews = new();
+
+	private readonly System.Collections.Generic.Dictionary<ulong, string> _menuViewNames = new();
 
 	/// <summary>How many live text fields one report may name. A whole book page is ~20.</summary>
 	private const int ScreenTextCap = 40;
@@ -7196,7 +7308,11 @@ public partial class GameUi : Node
 
 	private Vector2 _uiCameraFitted;
 
-	private string? _cameraReported;
+	/// <summary>
+	/// The key over the last `[ui-camera]` line — see <see cref="ReportCamera"/>. Nullable so
+	/// the first sample cannot be mistaken for an unchanged one.
+	/// </summary>
+	private int? _cameraReported;
 
 	/// <summary>
 	/// The projection ground truth, printed on change.
@@ -7215,22 +7331,39 @@ public partial class GameUi : Node
 			return;
 		}
 
-		string line = $"[ui-camera] '{camera.Name}' proj={camera.Projection} " +
-			$"keep={camera.KeepAspect} size={camera.Size:0.#} pos={camera.GlobalPosition} " +
-			$"viewport={_viewport.Size} container={_container?.Size} " +
-			$"window={GetViewport().GetVisibleRect().Size}" +
-			(_pauseView is not null && GodotObject.IsInstanceValid(_pauseView) &&
-				_pauseView.Visible
-				? $" pauseView@{_pauseView.GlobalPosition} screen=" +
-					$"{camera.UnprojectPosition(_pauseView.GlobalPosition)}"
-				: string.Empty);
-		if (line == _cameraReported)
+		// Key first, string only on a change. The key covers exactly what the line prints, at
+		// the precision it prints it (`size` to one decimal), so a change too small to show
+		// does not fire a report.
+		bool pauseUp = _pauseView is not null && GodotObject.IsInstanceValid(_pauseView) &&
+			_pauseView.Visible;
+		Vector3 pauseAt = pauseUp ? _pauseView!.GlobalPosition : Vector3.Zero;
+		var key = new System.HashCode();
+		key.Add(camera.GetInstanceId());
+		key.Add((int)camera.Projection);
+		key.Add((int)camera.KeepAspect);
+		key.Add(System.MathF.Round(camera.Size, 1, System.MidpointRounding.AwayFromZero));
+		key.Add(camera.GlobalPosition);
+		key.Add(_viewport.Size);
+		key.Add(_container?.Size);
+		key.Add(GetViewport().GetVisibleRect().Size);
+		key.Add(pauseUp);
+		key.Add(pauseAt);
+		key.Add(pauseUp ? camera.UnprojectPosition(pauseAt) : Vector2.Zero);
+
+		int reported = key.ToHashCode();
+		if (reported == _cameraReported)
 		{
 			return;
 		}
 
-		_cameraReported = line;
-		GD.Print(line);
+		_cameraReported = reported;
+		GD.Print($"[ui-camera] '{camera.Name}' proj={camera.Projection} " +
+			$"keep={camera.KeepAspect} size={camera.Size:0.#} pos={camera.GlobalPosition} " +
+			$"viewport={_viewport.Size} container={_container?.Size} " +
+			$"window={GetViewport().GetVisibleRect().Size}" +
+			(pauseUp
+				? $" pauseView@{pauseAt} screen={camera.UnprojectPosition(pauseAt)}"
+				: string.Empty));
 	}
 
 	/// <summary>

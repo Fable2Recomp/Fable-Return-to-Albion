@@ -86,7 +86,18 @@ public static class Engine_UiLiveAttributes
 		}
 
 		int rows = System.Math.Min(attributes.GetLength(0), elementCount);
-		var transform = new float?[]?[rows];
+
+		// In place, per presentation: the rows and the per-row arrays are reused frame to frame,
+		// and a row with nothing stated is null as before. Readers hold the newest and never
+		// compare it to the last.
+		if (!_transforms.TryGetValue(presentation, out (float?[]?[] Rows, float?[]?[] Pool) kept) ||
+			kept.Rows.Length != rows)
+		{
+			kept = (new float?[]?[rows], new float?[]?[rows]);
+			_transforms[presentation] = kept;
+		}
+
+		float?[]?[] transform = kept.Rows;
 		for (int i = 0; i < rows; ++i)
 		{
 			float?[]? values = null;
@@ -97,7 +108,12 @@ public static class Engine_UiLiveAttributes
 					continue;
 				}
 
-				values ??= new float?[TransformIds.Length];
+				if (values is null)
+				{
+					values = kept.Pool[i] ??= new float?[TransformIds.Length];
+					System.Array.Clear(values);
+				}
+
 				values[a] = attributes[i, a].AsFloat;
 			}
 
@@ -106,6 +122,8 @@ public static class Engine_UiLiveAttributes
 
 		return transform;
 	}
+
+	private static readonly System.Collections.Generic.Dictionary<uint, (float?[]?[] Rows, float?[]?[] Pool)> _transforms = new();
 
 	/// <summary>One element's stated rotation, or null when the guest states none of the three.</summary>
 	public static Vector3? Rotation(uint presentation, int ordinal)

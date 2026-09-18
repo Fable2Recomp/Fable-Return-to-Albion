@@ -172,6 +172,10 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base);
 /// The subtitles setting the pump last sampled from the guest: 1 on, 0 off, -1 unknown.
 int32_t FrontEndSubtitles();
 
+/// Which pause tabs the guest's own predicate said it would offer, sampled on the GUI tick.
+/// Bit N = tab N available, N in 2..8; 0 means it has not been sampled yet.
+uint32_t PauseTabsMask();
+
 // The hero's derived state lives in core/hero_derived.h.
 
 /// One captured menu row; returns the TOTAL row count. Every out parameter is optional;
@@ -209,6 +213,13 @@ inline uint64_t GuestTickPumpDrained() { return refii_bridge_guest_tick_pump_dra
 inline void EnsureAlternateSignalStack() {
   refii_bridge_ensure_alternate_signal_stack();
 }
+
+/// Lifetime for Raise Dead's creation effect, which the guest spawns and never kills (see
+/// hooks/spell_fx_lifetime.cpp). The orientation hook in particle_transform.cpp notes the
+/// PSInstance it is passed while a watched effect is being created; the guest-tick sweep fades
+/// and then destroys what is due.
+void NoteSpellFxInstance(uint32_t instance);
+void SweepOrphanSpellFx(PPCContext& ctx, uint8_t* base);
 inline void GuestTickPumpNoteRan() { refii_bridge_guest_tick_pump_note_ran(); }
 
 /// Records a debug-call/debug-lua outcome where the host's RefiiHostGetDebugCallResult reads it.

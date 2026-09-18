@@ -223,7 +223,8 @@ public static class Engine_HeroMorph
                 arrays[s][(int)Mesh.ArrayType.Normal] = normals[s];
             }
 
-            result.AddSurfaceFromArrays(neutral.SurfaceGetPrimitiveType(s), arrays[s]);
+            result.AddSurfaceFromArrays(neutral.SurfaceGetPrimitiveType(s), arrays[s], null,
+                Refii.Models.Engine_MdlMesh.SurfaceLods(neutral, s));
             result.SurfaceSetName(s, neutral.SurfaceGetName(s));
             result.SurfaceSetMaterial(s, neutral.SurfaceGetMaterial(s));
         }

@@ -42,6 +42,21 @@ public partial class Engine_LightFlicker : Node
 	/// <summary>The upper bound of the guest's random draw: <c>flt_8209B480</c> = 2.0.</summary>
 	public const float RandomRange = 2.0f;
 
+	/// <summary>
+	/// How far the radius walk must move before the write reaches the node. 0 is the guest.
+	/// </summary>
+	/// <remarks>
+	/// `OmniRange` is the one light property that changes the instance's AABB, and every change
+	/// re-pairs that light against every geometry instance it touches
+	/// (`RendererSceneCull::PairInstances::pair`); `LightEnergy` is cheap. The guest has no BVH
+	/// pairing and moves the radius every step (`Flickering_RadiusRange`, component+68), so this
+	/// damps a host-only cost.
+	///
+	/// In units of the authored radius: 0.05 is five per cent of BaseRange. Live-settable through
+	/// the debug channel's `render lightFlickerRadius=`.
+	/// </remarks>
+	public static float RadiusEpsilon;
+
 	private readonly List<Flickering> _lights = new();
 
 	private readonly Random _random = new();
@@ -68,6 +83,10 @@ public partial class Engine_LightFlicker : Node
 		public float Phase;
 
 		public bool FlickersRadius;
+
+		/// <summary>The radius scale last WRITTEN to the node, so <see cref="RadiusEpsilon"/> can
+		/// measure against what the renderer actually holds rather than against the walk.</summary>
+		public float WrittenRadiusScale;
 	}
 
 	/// <summary>
@@ -115,14 +134,43 @@ public partial class Engine_LightFlicker : Node
 
 	public int Count => _lights.Count;
 
+	/// <summary>Light writes made; against the frame count this says what the flicker costs.</summary>
+	public static long Updates;
+
+	/// <summary>Radius writes that REACHED the node, against the candidates that were offered.</summary>
+	/// <remarks>The ratio to <see cref="RadiusCandidates"/> is what <see cref="RadiusEpsilon"/>
+	/// suppresses.</remarks>
+	public static long RadiusWrites;
+
+	/// <summary>Lights offered to the radius walk, whether or not the write reached the node.</summary>
+	public static long RadiusCandidates;
+
+	private double _carried;
+
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("lightflicker");
-		float step = (float)delta * RateNormaliser;
+
+		// One walk per guest frame, not per display frame: the guest steps this once per its own
+		// frame, and every step is a render-server write per flickering light. Skipped time is
+		// carried, so the walk advances by the same total.
+		_carried += delta;
+		if (!Refii.Core.Engine_GuestFrame.Changed)
+		{
+			return;
+		}
+
+		double elapsed = _carried;
+		_carried = 0.0;
+
+		float step = (float)elapsed * RateNormaliser;
 		if (step <= 0.0f)
 		{
 			return;
 		}
+
+		Updates += _lights.Count;
+		RadiusCandidates += _lights.Count;
 
 		foreach (Flickering light in _lights)
 		{
@@ -161,7 +209,16 @@ public partial class Engine_LightFlicker : Node
 			// is a different number from the brightness one. The two ranges are authored
 			// separately (0.21 and 0.23 on the shipped torches) and share only the walk.
 			float scale = MathF.Max(1.0f + (light.Phase * light.RadiusRange), 0.01f);
-			((OmniLight3D)light.Node).OmniRange = light.BaseRange * scale;
+			if (RadiusEpsilon > 0.0f
+				&& MathF.Abs(scale - light.WrittenRadiusScale) < RadiusEpsilon)
+			{
+				continue;
+			}
+
+			light.WrittenRadiusScale = scale;
+			RadiusWrites++;
+			((OmniLight3D)light.Node).OmniRange =
+				light.BaseRange * scale * Refii.Lighting.Engine_LevelLights.RangeScale;
 		}
 	}
 }

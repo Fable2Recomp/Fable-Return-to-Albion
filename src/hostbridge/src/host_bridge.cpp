@@ -67,6 +67,7 @@ void FlushLogging();
 #include <rex/system/kernel_state.h>
 
 #include "core/host_asset_reader.h"
+#include "core/rex_payload_bridge.h"
 #include <rex/system/xmemory.h>
 #include <rex/rex_app.h>
 #include <rex/ui/windowed_app.h>
@@ -107,6 +108,7 @@ void FlushLogging();
 // payload-bridge change (adarec1994, 3f9784ae): `EnsureAlternateSignalStack` is now an inline
 // wrapper there, so this library — a separate .so — calls the entry point itself.
 extern "C" void refii_bridge_ensure_alternate_signal_stack(void);
+extern "C" uint32_t refii_bridge_guest_frame(void);
 
 namespace refii::vfs {
 // Defined in src/vfs/src/core/bink_frame_state.cpp.
@@ -132,6 +134,10 @@ int32_t GuestSavedGameCount();
 void RefreshGuestSavedGameCount();
 void FinishStuckInGameLoadingScreenFromHost(uint8_t* base);
 int32_t FrontEndSubtitles();
+
+/// Which pause tabs the guest's own predicate said it would offer, sampled on the GUI
+/// tick. Bit N = tab N available, N in 2..8; 0 means not sampled yet.
+uint32_t PauseTabsMask();
 
 // The characters behind an LHString handle — two hops, see core/guest_state.h. Declared, not
 // included: this file cannot see the vfs hook headers that header pulls in.
@@ -538,14 +544,17 @@ uint32_t RefiiFnv1(const std::string& text) {
 bool RefiiRegionHasActiveStop(const uint8_t* base, uint32_t region) {
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
+    // Both vectors are pairs, stride 8 (`sub_82518380`): the outer walk is `v8 += 2` on an
+    // `int**` (0x82518478) ending at `*(region+20)`, the inner `v11 += 2` on an `int*`
+    // (0x82518468) ending at `level+12`. Only the first word of each pair is an entry.
     const uint32_t levels = GuestWordAt(base, region + 16u);
     const uint32_t levelsEnd = GuestWordAt(base, region + 20u);
     if (!plausible(levels) || !plausible(levelsEnd) || levelsEnd < levels ||
-        ((levelsEnd - levels) % 4u) != 0u || ((levelsEnd - levels) / 4u) > 256u) {
+        ((levelsEnd - levels) % 8u) != 0u || ((levelsEnd - levels) / 8u) > 256u) {
         return false;
     }
 
-    for (uint32_t levelSlot = levels; levelSlot < levelsEnd; levelSlot += 4u) {
+    for (uint32_t levelSlot = levels; levelSlot < levelsEnd; levelSlot += 8u) {
         const uint32_t level = GuestWordAt(base, levelSlot);
         if (!plausible(level)) {
             continue;
@@ -554,11 +563,11 @@ bool RefiiRegionHasActiveStop(const uint8_t* base, uint32_t region) {
         const uint32_t stops = GuestWordAt(base, level + 8u);
         const uint32_t stopsEnd = GuestWordAt(base, level + 12u);
         if (!plausible(stops) || !plausible(stopsEnd) || stopsEnd < stops ||
-            ((stopsEnd - stops) % 4u) != 0u || ((stopsEnd - stops) / 4u) > 256u) {
+            ((stopsEnd - stops) % 8u) != 0u || ((stopsEnd - stops) / 8u) > 256u) {
             continue;
         }
 
-        for (uint32_t stopSlot = stops; stopSlot < stopsEnd; stopSlot += 4u) {
+        for (uint32_t stopSlot = stops; stopSlot < stopsEnd; stopSlot += 8u) {
             const uint32_t stop = GuestWordAt(base, stopSlot);
             if (plausible(stop) && GuestByteAt(base, stop) != 0u &&
                 !ReadGuestString(base, stop + 8u).empty()) {
@@ -1671,6 +1680,26 @@ extern "C" {
 ///    say itself.
 /// 24 adds RefiiHostGetEntities — every live entity's world transform and model.
 /// 25 names the placement vtables RefiiHostGetEntities could not resolve.
+/// 142 widens RefiiHostGetEntities to stride 20: the guest's previous transform (component key
+///     3 at +0xA0 position, +0xB0 quaternion, latched by the tick's first act `sub_8222B2E0`)
+///     and its interpolation enable at +0xC9, the pair the guest blends in `sub_822112D8`.
+/// 148 takes the targeting highlight from the guest's own setter (`sub_825738F0`, hooked in
+///     target_highlight.cpp) instead of polling the renderable; {0,0,0,255} is the actively
+///     written clear value, so a poll cannot tell it from "never targeted".
+/// 147 adds RefiiHostGetStatedFx / RefiiHostGetStatedFxCount — the effect transforms the guest
+///     states through `sub_832325A8` and `sub_83231C40`, recorded by a hook.
+/// 146 widens the entity walk to 21 words: the renderable's stated highlight RGBA (+96..99).
+///     Highlighted iff those bytes differ from {0,0,0,255}.
+/// 145 widens RefiiHostGetEntityAnimState to twelve words a leaf: the record's weight_previous
+///     and weight_current. The guest crossfades the winner against the runner-up by
+///     `(1 - alpha) * winner.weight_previous + alpha * winner.weight_current` (0x82211B08..
+///     0x82211B24 in `sub_82211660`, reading 0x14 and 0x18 off the winner record).
+/// 144 adds RefiiHostGetAnimWalkStats — why a rig is not clip-driven, split into "no component
+///     bit", "component unresolved", "controller found" and "controller found but empty".
+/// 143 adds RefiiHostGetCameraPair — the previous camera the guest latched at the game tick
+///     (`game+0x10`, stored by the inlined run at `0x82277234`) beside the live one, the pair
+///     `sub_8228FEF0` blends by the alpha `sub_822112D8` gets for bodies. The camera-manager
+///     chain is entry+4 -> player, +4 -> view, +4 -> manager; the live block is `manager+0x90`.
 /// 26 returns that unknown-vtable list as {vtable, count} pairs with an explicit length,
 ///    since a vtable word reading 0 is an observation the walk can make and 25's zero
 ///    terminator swallowed the rest of the list.
@@ -1703,6 +1732,11 @@ extern "C" {
 /// 39 adds the presentation-level SUPPRESSION byte `pres+0x368` to the state word (bit 2).
 ///    That is the byte the scene draw itself reads, and the one the game writes to park a
 ///    menu; the update gate `+0x369` and the root `active` bit are not the whole contract.
+/// 139 adds the stated MOON PHASE to RefiiHostGetTimeOfDay (`timing+0x38`, the field
+///     `Timing.GetMoonPhase`/`sub_825A1BF0` returns); -1 when it could not be read.
+/// 138 gives RefiiHostGetUiAttributes two leading columns per element — the element address
+///     and its name hash — so the caller can check the ordinal join.
+///     The row stride is now `2 + id_count * 2`.
 /// 40 gives RefiiHostGetUiAttributes a leading presentation argument, matching
 ///    RefiiHostGetUiElements — opacity is how the game hides the in-game HUD, one
 ///    `setAttribute` of 0 on Scene.Layer multiplied down the tree.
@@ -1913,7 +1947,10 @@ extern "C" {
 /// lost-connection latch +238 (set first thing in HandleLostConnection 0x8232D4D8), client
 /// joined +221 (set on "Client joined!", cleared in that handler), peer count +100, and both
 /// players' entities off the player map. The host's session model reads this and nothing else.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 135; }
+/// 137 adds RefiiHostGetGuestFrame — the guest's render frame, counted by the hook on the
+/// 30 Hz HF pass (`sub_821A61B0`) that writes every pose. Godot reads guest state once per
+/// count and interpolates between counts.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 148; }
 
 /// Answers one `GUI` predicate from the host, by name.
 ///
@@ -2265,6 +2302,10 @@ uint32_t ResolvePlayerHero(const uint8_t* base) {
     const uint32_t player_key =
         (read8(session + 0x34u) != 0u && read8(session + 0x35u) != 0u) ? 1u : 2u;
 
+    // In a session at all: +0x34 is the "in a session" byte, +0x36 the joiner bit. Solo reads
+    // as host (+0x34 and +0x35 set, +0x36 clear), so this is false for a single-player run.
+    const bool in_session = read8(session + 0x34u) != 0u && read8(session + 0x36u) != 0u;
+
     const uint32_t player_map = read32(game + 0x9Cu);
     if (!plausible(player_map)) return refuse(4, player_map);
 
@@ -2289,9 +2330,13 @@ uint32_t ResolvePlayerHero(const uint8_t* base) {
             other = read32(entry + 4u);
         }
     }
-    if (record == 0u) {
+    // The other-slot fallback applies outside a session only. `sub_82264230` is a plain
+    // lower_bound returning 0 on a miss; solo there is one hero, so the other slot is this
+    // player's. In a session it would be the other player's hero, so the lookup refuses.
+    if (record == 0u && !in_session) {
         record = other;
     }
+
     if (!plausible(record)) return refuse(6, player_key);
 
     const uint32_t control = read32(record + 16u);
@@ -2484,7 +2529,7 @@ static uint32_t ScreenObject(const uint8_t* base, uint32_t screen_id) {
 ///          5 dog combat level · 6 dog searching level · 7 learned-trick count ·
 ///          8 stat counters valid
 ///   floats 0..5 morality/min/max, purity/min/max · 6..16 the eleven attractiveness terms
-///          17 attractiveness total · 20..25 spell damage multiplier indexed by LEVEL
+///          17 attractiveness slider fraction 0..1 · 20..25 spell damage multiplier by LEVEL
 ///
 /// `stats` takes the 124 logbook counters and `trick_ids` the learned tricks' GDB RECORD IDS
 /// (not name hashes — the guest stores what its hash-to-id lookup returned).
@@ -2836,7 +2881,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetHeroDerived(uint32_t* words, uint32_t word
         real(6u + i, hero.attractiveness[i]);
     }
 
-    real(17, hero.attractiveness_total);
+    real(17, hero.attractiveness_fraction);
     // int32 levels 1..5, published as words; reading them as floats gives denormal garbage.
     word(5, static_cast<uint32_t>(hero.dog_combat));
     word(6, static_cast<uint32_t>(hero.dog_searching));
@@ -3070,7 +3115,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroInventory(uint32_t* words, uint32
 /// The record is at `node+8`, 56 bytes, and its serializer `sub_82602CB8` names every field:
 /// `+20` NameTagHash, `+36` Active, `+40` PriceMultiplier, `+48` RecordId. Selection is
 /// `Active != 0` and the multiplier off 1.0 — BELOW is a sale, ABOVE a shortage, and the world
-/// map lists both (`sub_8246ECC4` / `sub_8246ED74` are the two passes).
+/// map lists both.
+///
+/// Both passes are inside `sub_8246EC10`: it fills one temporary intrusive list twice, first
+/// with `Active && multiplier < 1.0`, then `Active && multiplier > 1.0`, and emits rows in that
+/// order. Exactly 1.0 is admitted by neither. The row fields it reads off each node — `k[7]`,
+/// `k[8]`, `k[9]`, `k[3] - today + k[2]` and the float at `k+48` — are the five this export
+/// hands across, measured from the same node base.
 ///
 /// The manager is destroyed and reallocated wholesale on level reset (`sub_8234EF58`), so the
 /// chain is re-walked every call and never cached; the walk is also bounded, because a torn
@@ -3126,35 +3177,42 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSales(uint32_t* words, uint32_t word_
 
     const uint32_t today = plausible(clock) ? GuestWordAt(base, clock + 8u) : 0u;
 
+    // Sales first, then shortages: the guest's row order.
     uint32_t found = 0;
-    uint32_t node = GuestWordAt(base, sentinel);
 
-    for (uint32_t step = 0; step < kMaxSales && plausible(node) && node != sentinel; ++step) {
-        const uint32_t record = node + 8u;
+    const auto pass = [&](bool shortage) {
+        uint32_t node = GuestWordAt(base, sentinel);
 
-        if (GuestByteAt(base, record + 36u) != 0u) {
-            const uint32_t raw = GuestWordAt(base, record + 40u);
-            float multiplier = 1.0f;
-            std::memcpy(&multiplier, &raw, sizeof(multiplier));
+        for (uint32_t step = 0; step < kMaxSales && plausible(node) && node != sentinel; ++step) {
+            const uint32_t record = node + 8u;
 
-            // Exactly off 1.0 is neither a sale nor a shortage and the guest lists neither.
-            if (multiplier != 1.0f) {
-                if (words != nullptr && (found * kWordsPerSale + 4u) < word_capacity) {
-                    uint32_t* row = words + found * kWordsPerSale;
-                    row[0] = GuestWordAt(base, record + 20u);   // NameTag key hash
-                    row[1] = GuestWordAt(base, record + 24u);   // DescriptionTag key hash
-                    row[2] = GuestWordAt(base, record + 28u);   // RegionTag key hash
-                    row[3] = GuestWordAt(base, record + 4u) - today +
-                             GuestWordAt(base, record);         // days left
-                    row[4] = raw;                               // PriceMultiplier, raw bits
+            if (GuestByteAt(base, record + 36u) != 0u) {
+                const uint32_t raw = GuestWordAt(base, record + 40u);
+                float multiplier = 1.0f;
+                std::memcpy(&multiplier, &raw, sizeof(multiplier));
+
+                // Strict on both sides: exactly 1.0 is neither, and the guest lists neither.
+                if (shortage ? multiplier > 1.0f : multiplier < 1.0f) {
+                    if (words != nullptr && (found * kWordsPerSale + 4u) < word_capacity) {
+                        uint32_t* row = words + found * kWordsPerSale;
+                        row[0] = GuestWordAt(base, record + 20u);   // NameTag key hash
+                        row[1] = GuestWordAt(base, record + 24u);   // DescriptionTag key hash
+                        row[2] = GuestWordAt(base, record + 28u);   // RegionTag key hash
+                        row[3] = GuestWordAt(base, record + 4u) - today +
+                                 GuestWordAt(base, record);         // days left
+                        row[4] = raw;                               // PriceMultiplier, raw bits
+                    }
+
+                    ++found;
                 }
-
-                ++found;
             }
-        }
 
-        node = GuestWordAt(base, node);
-    }
+            node = GuestWordAt(base, node);
+        }
+    };
+
+    pass(/*shortage=*/false);
+    pass(/*shortage=*/true);
 
     return found;
 }
@@ -4803,6 +4861,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostIsInGame(void) {
 /// Zero means the guest is absent. Callers must compare for INEQUALITY and must not assume
 /// the value only ever grows, or grows by one: whether a level load resets it is not settled,
 /// and a rate derived from a backwards step would be nonsense reported as fact.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGuestFrame(void) {
+    return refii_bridge_guest_frame();
+}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimTick(void) {
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) {
@@ -4818,6 +4880,109 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimTick(void) {
     raw = __builtin_bswap32(GuestWordAt(base, 0x83319650u));
     return __builtin_bswap32(raw);
 }
+
+/// The guest's own simulation clock, in seconds, and its game-tick counter.
+///
+/// `sub_82276D10` is the in-game loop; it derives its step from two stated rates
+/// (`dbl_83319660` = 15.0 game ticks/s, `dbl_83319668` = 30.0 HF/s, raised from the image's
+/// 15.0 at 0x82310900, so the image bytes give the wrong HF rate) and advances its clock by
+/// exactly 1/30 s per HF step:
+///
+///     0x82276f14  fmadd f2, f3, f27, f26     ; base + steps*(1/30)
+///     0x82276f18  stfd  f2, 0x110(r31)       ; game+0x110 = the sim clock, seconds
+///
+/// More than one step behind, it advances one step and re-bases, discarding the lost time:
+///
+///     82276fa4  cmpwi cr6, r30, 1
+///     82276fb0  ble   cr6, loc_82276FC8      ; owed <= 1 -> normal
+///     82276fb4  addi  r29, r28, 1            ; advance exactly one
+///     82276fb8  fmadd f0, f27, f24, f31      ; f24 = 0.0, so f0 = now
+///     82276fbc  stfd  f0, 0x110(r31)         ; sim clock := now
+///
+/// So the tick rate is not a constant: 15/s while it keeps up, lower under load, with
+/// discontinuous resets.
+///
+/// `out_tick` is `*(*(0x83496AB8) + 0x0C) + 0xFC`, measured from the second deref (the 288-byte
+/// loop object), not the 16-byte game root. Zeroed at construction (0x82310630) and incremented
+/// once per game tick at 0x821c9044 with no gate — unlike `dword_83319650`, whose increment
+/// self-gates on the front GameFlow command matching (0x821d46e8), which is reset to 1 on world
+/// teardown (0x8235075c) and saved as "WorldFrame" (0x82350A34).
+///
+/// Returns 0 when the world is not up, in which case neither output is written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimClock(double* out_seconds, uint32_t* out_tick) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const uint32_t root = GuestWordAt(base, 0x83496AB8u);
+    if (!plausible(root)) {
+        return 0;
+    }
+
+    const uint32_t game = GuestWordAt(base, root + 0xCu);
+    if (!plausible(game)) {
+        return 0;
+    }
+
+    const uint64_t bits = GuestWord64At(base, game + 0x110u);
+    double seconds = 0.0;
+    std::memcpy(&seconds, &bits, sizeof(seconds));
+
+    // Seconds since the loop based itself. Negative or non-finite is a torn read or a world
+    // that has not started.
+    if (!std::isfinite(seconds) || seconds < 0.0) {
+        return 0;
+    }
+
+    if (out_seconds != nullptr) {
+        *out_seconds = seconds;
+    }
+
+    if (out_tick != nullptr) {
+        *out_tick = GuestWordAt(base, game + 0xFCu);
+    }
+
+    return 1;
+}
+
+/// The guest's time base, owned by the host: set the mode (negative leaves it), read the
+/// counters, return the current mode.
+///
+/// Mode 0 is the real clock: the guest's loop runs its own wall-clock accumulator and, when it
+/// falls behind, advances one step and re-bases, discarding the backlog (0x82276FA4). Mode 1
+/// paces it — at most one high-frequency step between reads on a thread. Mode 2 drives it: time
+/// moves only when the host grants steps, so the guest's tick rate is Godot's and its stepping
+/// is deterministic (required for lockstep multiplayer).
+///
+/// `out_watchdog` counts lapses where no grant arrived and time resumed on its own so guest
+/// threads on timed waits did not freeze. See rex_payload_bridge.h for the high-half fields.
+REFII_HOST_ABI_EXPORT int RefiiHostSetTimeBaseMode(int mode, uint64_t* out_capped,
+                                                   uint64_t* out_granted,
+                                                   uint64_t* out_watchdog) {
+    if (mode >= 0) {
+        refii_bridge_rex_set_time_base_mode(mode);
+    }
+
+    refii_bridge_rex_time_base_stats(out_capped, out_granted, out_watchdog);
+    return refii_bridge_rex_time_base_mode();
+}
+
+/// Grants the guest `steps` high-frequency steps of time. Driven mode only; ignored otherwise.
+REFII_HOST_ABI_EXPORT void RefiiHostAdvanceTimeBase(uint32_t steps) {
+    refii_bridge_rex_advance_time_base(steps);
+}
+
+/// Live-effect transforms refused this run: a torn read, or a node whose transform the guest
+/// has never composed.
+static std::atomic<uint32_t> g_fx_refused_transforms{0u};
 
 /// EVERY PARTICLE EFFECT THE GUEST IS CURRENTLY PLAYING, so Godot can draw the ones it did not
 /// place itself.
@@ -4847,6 +5012,37 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimTick(void) {
 /// `sub_821DA198` composes those into the cached local 4x4 at `instance+0x70`, and
 /// `sub_832295F0` concatenates that up the `+0xF0` parent chain to reach world. Mirroring
 /// `+0x50` directly would put every runtime effect somewhere plausible and wrong.
+/// The transforms stated through `sub_832325A8` (position) and `sub_83231C40` (orientation), as
+/// recorded by the hook in `particle_transform.cpp`, keyed by the PSInstance pointer — the same
+/// identity `RefiiHostGetActiveFx` reports. These setters are not the only writers of an
+/// emitter's transform (see particle_transform.cpp); this is an instrument.
+///
+/// Resolved by dlsym, not linked: the hook lives in the VFS/hooks library, which this one does
+/// not link against but which shares the process, so absence means "no stated feed".
+/// Ten words a row: instance, sequence, four position lanes, four orientation lanes. All four
+/// VMX lanes are carried because which lane holds x depends on the recompiler's register layout.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetStatedFx(uint32_t* out_words, uint32_t word_capacity) {
+    if (out_words == nullptr || word_capacity < 10u) {
+        return 0u;
+    }
+
+    using StatedFn = uint32_t (*)(uint32_t*, uint32_t);
+    static StatedFn stated = reinterpret_cast<StatedFn>(
+        dlsym(RTLD_DEFAULT, "RefiiFxStatedTransforms"));
+    if (stated == nullptr) {
+        return 0u;
+    }
+
+    return stated(out_words, word_capacity);
+}
+
+/// How many transform statements the hook has seen since boot; 0 when the hook is not loaded.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetStatedFxCount(void) {
+    using CountFn = uint32_t (*)(void);
+    static CountFn count = reinterpret_cast<CountFn>(dlsym(RTLD_DEFAULT, "RefiiFxStatedCount"));
+    return count != nullptr ? count() : 0u;
+}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_effects) {
     if (out == nullptr || max_effects == 0u) {
         return 0u;
@@ -4888,40 +5084,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         return ptr >= 0x1000u && (uint64_t)ptr + 0x200ull <= 0x100000000ull;
     };
 
-    /// One node's cached LOCAL matrix, row-major, 16 floats at `node+0x70`.
-    ///
-    /// `+0xB0` is the dirty byte the guest sets when it writes `+0x10`/`+0x50` and clears when it
-    /// recomposes. We report it rather than recomposing ourselves: the recompose needs the type's
-    /// own matrix and quaternion too, and the guest refreshes the cache on its next access, so a
-    /// dirty node is at most one tick stale.
-    const auto local_matrix = [&](uint32_t node, float* m) {
-        for (int i = 0; i < 16; ++i) {
-            m[i] = readf(node + 0x70u + static_cast<uint32_t>(i) * 4u);
-        }
-    };
+    // The composed world matrix is read from `node + 0x20`; see the read site below.
 
-    /// Row-vector concatenation, child on the left — `sub_821C0010` dots each row of the
-    /// accumulator against the columns of the parent.
-    const auto concat = [](const float* a, const float* b, float* r) {
-        for (int i = 0; i < 4; ++i) {
-            for (int j = 0; j < 4; ++j) {
-                r[i * 4 + j] = a[i * 4 + 0] * b[0 * 4 + j] +
-                               a[i * 4 + 1] * b[1 * 4 + j] +
-                               a[i * 4 + 2] * b[2 * 4 + j] +
-                               a[i * 4 + 3] * b[3 * 4 + j];
-            }
-        }
-    };
 
     constexpr uint32_t kVectorBegin = 0x8349E490u;
     constexpr uint32_t kVectorEnd = 0x8349E494u;
     constexpr uint32_t kReservedRootName = 0x8349E678u;
 
-    /// 16 words per effect: instance pointer, name hash, flags, live-particle count, then the
-    /// world position (3 floats) and the world basis rows 0..2 (9 floats). Must match
-    /// `HostBridge.ActiveFxStride` — the two sides indexing the same buffer differently is an
-    /// ABI break that no compiler catches.
-    constexpr uint32_t kStride = 17u;
+    /// 20 words per node: instance pointer, name hash, flags, live-particle count, the world
+    /// position (3 floats), the world basis rows 0..2 (9 floats), the effect handle, the
+    /// effect's intensity (float), the element's scale (float, +412) and its fade-out
+    /// fraction (float). Must match `HostBridge.ActiveFxStride`; no compiler checks it.
+    constexpr uint32_t kStride = 20u;
 
     // Both ends re-read together: the vector reallocates as it grows and no lock is taken.
     const uint32_t begin = read32(kVectorBegin);
@@ -4936,6 +5110,39 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
     }
 
     const uint32_t reserved_root = read32(kReservedRootName);
+
+    // The guest's own per-effect "still working" count.
+    //
+    // The retire pass `sub_83234338` walks this registry (stride 28, `v8 = (end - begin) / 28`),
+    // asks each node its virtual has-work question (`sub_832299C8`), and on a yes decrements
+    // record+24 (`v15 = v10[6] - 1; v10[6] = v15;`). At zero the record is erased and the
+    // effect's owner is told, so `record+24 > 0` is the guest's stated liveness. The has-work
+    // body is virtual and differs per particle class, so it is not transcribed here.
+    struct EffectWork {
+        uint32_t instance;
+        uint32_t working;
+    };
+    EffectWork registry[512];
+    uint32_t registry_count = 0u;
+    {
+        const uint32_t rbegin = read32(0x8349E480u);
+        const uint32_t rend = read32(0x8349E484u);
+        if (plausible(rbegin) && rend > rbegin && ((rend - rbegin) % 28u) == 0u &&
+            (rend - rbegin) <= 28u * 512u) {
+            for (uint32_t at = rbegin; at + 28u <= rend && registry_count < 512u; at += 28u) {
+                const uint32_t instance = read32(at);
+                if (!plausible(instance)) {
+                    continue;
+                }
+
+                registry[registry_count].instance = instance;
+                registry[registry_count].working = read32(at + 24u);
+                ++registry_count;
+            }
+        }
+    }
+
+    uint32_t registry_hint = 0u;
     const uint32_t count = span / 8u;
     uint32_t written = 0u;
 
@@ -4960,66 +5167,62 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         // calls `rex_lhResourceName_ComputeHash`, and `sub_822CA588` is FNV-1 (multiply THEN
         // xor), the same hash the particle bank is keyed on.
         const uint32_t name_hash = read32(type + 4u);
-        if (name_hash == 0u || name_hash == reserved_root) {
+        if (name_hash == 0u) {
             continue;
         }
 
-        // The guest's own has-work predicate, `sub_8322EB88`, evaluated in place:
-        //   (+0xC4 != 0 && (+0x104 == 0 || +0xFC <= +0x108)) || +0x154 != 0
-        // The first clause is "still emitting" (+0xC4 counts down, -1 meaning forever), the
-        // second "particles still alive".
+        // The synthetic root is exported, flagged (flags & 8). `sub_83233300` gives every
+        // type-vector one root carrying the reserved name, and its matrix is the effect's
+        // placement: the positioners write it (`sub_832325A8` → elem+80, `sub_83231C40` →
+        // elem+16/+32) and every emitter hangs below it. A child's world matrix includes its own
+        // motion (a spline node moves along its spline each tick), so it is not the placement.
+        const bool is_root = name_hash == reserved_root;
+
+        // Still emitting: `+0xC4` counts down with -1 meaning forever, gated by the finite flag
+        // at `+0x104` and the age/limit pair. Tells "spawning" from "running its last particles
+        // out".
         const uint32_t remaining = read32(node + 0xC4u);
         const uint8_t finite = read8(node + 0x104u);
         const float age = readf(node + 0xFCu);
         const float limit = readf(node + 0x108u);
-        const uint32_t live_particles = read32(node + 0x154u);
         const bool emitting = remaining != 0u && (finite == 0u || age <= limit);
-        const bool alive = emitting || live_particles != 0u;
 
+        // Alive comes from the effect's stated working count. The node's handle is its effect.
+        const uint32_t node_handle = read32(node + 0xE8u);
+        const uint32_t live_particles = read32(node + 0x154u);
+        bool alive = emitting || live_particles != 0u;
+        if (registry_count != 0u && plausible(node_handle)) {
+            for (uint32_t probe = 0u; probe < registry_count; ++probe) {
+                const uint32_t at = (registry_hint + probe) % registry_count;
+                if (registry[at].instance == node_handle) {
+                    registry_hint = at;
+                    alive = registry[at].working != 0u;
+                    break;
+                }
+            }
+        }
+
+        // The world transform the guest states: `node + 0x20` is the composed world matrix,
+        // row-major — rows 0..2 the basis, row 3 the translation with w = 1.0. Row 3 aliases
+        // `node + 0x50`, the destination of the position setter `sub_832325A8`
+        // (`stvx128 v12, r31, r24` with r24 = 0x50, after `stb r28, 0xB0(r31)`). The
+        // orientation setter `sub_83231C40` writes the quaternion at `+0x10` and rebuilds these
+        // rows; the per-tick writers land here too.
         float world[16];
-        local_matrix(node, world);
-
-        // Up the parent chain. `+0xF0` holds a weak-ref control block whose first word is the
-        // parent, or 0 once it has expired — `sub_82173E38` is exactly that double indirection.
-        uint32_t at = node;
-        for (int hop = 0; hop < 32; ++hop) {
-            const uint32_t block = read32(at + 0xF0u);
-            if (!plausible(block)) {
-                break;
+        bool stated_finite = true;
+        for (int i = 0; i < 16; ++i) {
+            world[i] = readf(node + 0x20u + static_cast<uint32_t>(i) * 4u);
+            if (!std::isfinite(world[i])) {
+                stated_finite = false;
             }
+        }
 
-            const uint32_t parent = read32(block);
-            if (!plausible(parent) || parent == at) {
-                break;
-            }
-
-            // THE PARENT MUST STILL BE A PARTICLE NODE.
-            //
-            // `plausible` accepts very nearly any 32-bit value, and a level teardown RECYCLES
-            // the heap under an expired weak ref. In the guest the target's destructor zeroes
-            // `cb[0]` (`sub_8229A850` @0x8229a884), so its own walk sees 0 and stops; we read
-            // the same word and get whatever now occupies that address, then read sixteen
-            // arbitrary words as a matrix. Garbage floats give inf*0 = NaN across the concat —
-            // the "NOT FINITE" count — and plausible-but-wrong floats give a FINITE WRONG world
-            // position, which is a fire left burning in mid-air and is never counted at all.
-            //
-            // Measured over a BWSMarket -> BWSSlums -> BWSMarket round trip: zero refused
-            // transforms across ~1800 frames of the first visit, ~25 per frame on the second.
-            // Same region, same content — the fault is created by the transition.
-            //
-            // Every node this walk may compose carries its owner at +0xD0, which is the field
-            // this function already demands of the node itself. Requiring it of each parent is
-            // the node's own identity test rather than a guess about addresses.
-            if (!plausible(read32(parent + 0xD0u))) {
-                break;
-            }
-
-            float parent_local[16];
-            local_matrix(parent, parent_local);
-            float composed[16];
-            concat(world, parent_local, composed);
-            std::memcpy(world, composed, sizeof(world));
-            at = parent;
+        // A torn or uncomposed matrix is refused and counted. The vector is read without a
+        // lock, so a node retired mid-walk can hand back anything; a never-composed node
+        // carries an all-zero matrix, not an identity.
+        if (!stated_finite || (world[0] == 0.0f && world[5] == 0.0f && world[10] == 0.0f)) {
+            g_fx_refused_transforms.fetch_add(1u, std::memory_order_relaxed);
+            continue;
         }
 
         // Rows 0..2 carry the node's scale; the caller wants a rotation, so hand over the rows
@@ -5032,10 +5235,57 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         // builds one instance per entity in each type-vector plus a synthetic root for each, so
         // the beehive's six (spline, emitter) vectors are eighteen instances of one effect. They
         // all share this handle, and without it the host draws the whole effect once per node.
-        row[16] = read32(node + 0xE8u);
-        row[2] = (alive ? 1u : 0u) | (read8(node + 0xB0u) != 0u ? 2u : 0u) |
-                 (emitting ? 4u : 0u);
+        const uint32_t handle = node_handle;
+        row[16] = handle;
+        row[2] = (alive || is_root ? 1u : 0u) | (read8(node + 0xB0u) != 0u ? 2u : 0u) |
+                 (emitting ? 4u : 0u) | (is_root ? 8u : 0u);
         row[3] = live_particles;
+
+        // The effect's intensity, `handle+52`. `sub_832323E0(inst, f)` stores it there
+        // (0x832323f8 `stfs f31, 0x34(r28)`) and into every element's +408 (0x832324a8), and
+        // the spawn routines bake it into each new particle (`sub_82A03D58` 0x82a04090 →
+        // `sub_83228588` 0x832285f4, particle+0x48). The breadcrumber drives it every tick.
+        // 1.0 is the value an untouched instance carries.
+        float intensity = 1.0f;
+        if (plausible(handle)) {
+            const float stated = readf(handle + 52u);
+            if (std::isfinite(stated)) {
+                intensity = stated;
+            }
+        }
+
+        {
+            uint32_t bits;
+            std::memcpy(&bits, &intensity, sizeof(bits));
+            row[17] = bits;
+        }
+
+        // The element's scale, +412: `sub_83232290(inst, s)` (Lua `ParticleEmitter.SetScale`,
+        // `ParticleAttacher.SetParticleScale`, the spell-cast action's `ParticleScale`) calls
+        // every element's vtable slot 11 and `sub_83232108` reads it back from +412 — the
+        // scalar the renderer folds into g_KeyFrameGlobalScales (binding 338). Meaningful on
+        // a standard emitter only; the host decides by the node's type through the bank.
+        // The fade-out: `KillParticleWithFadeOut` / `FadeParticles` set +192 = +196 =
+        // frames (`sub_83228F00`), +196 counts down, and `sub_83228B48` multiplies the
+        // element's intensity by +196/+192 (1.0 while +196 < 0, 0 when +192 == 0).
+        {
+            const float scale = readf(node + 412u);
+            const int32_t fade_len = static_cast<int32_t>(read32(node + 192u));
+            const int32_t fade_left = static_cast<int32_t>(read32(node + 196u));
+            float fade = 1.0f;
+            if (fade_left >= 0) {
+                fade = fade_len > 0 ? static_cast<float>(fade_left) / static_cast<float>(fade_len) : 0.0f;
+                if (fade > 1.0f) {
+                    fade = 1.0f;
+                }
+            }
+
+            uint32_t bits;
+            std::memcpy(&bits, &scale, sizeof(bits));
+            row[18] = bits;
+            std::memcpy(&bits, &fade, sizeof(bits));
+            row[19] = bits;
+        }
 
         const float* translation = world + 12;
         for (int axis = 0; axis < 3; ++axis) {
@@ -5091,7 +5341,14 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
 /// Returns 0 when the guest is absent or the chain has not been built yet; the outputs are
 /// untouched in that case. Every link is checked because the pointer walk crosses objects the
 /// guest itself only builds at game-database init.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_t* out_day, int32_t* out_frozen) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_t* out_day, int32_t* out_frozen,
+                                                     int32_t* out_moon_phase) {
+    // Moon phase: `Timing.GetMoonPhase` is `sub_825A1BF0`, `return *(u32*)(a1 + 56)` on this
+    // same timing object. -1 means "not read"; values outside 0..7 are refused.
+    if (out_moon_phase != nullptr) {
+        *out_moon_phase = -1;
+    }
+
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) {
         return 0;
@@ -5135,6 +5392,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_
     // fraction reads as the sun being in the wrong place rather than as a bad pointer.
     if (load_be32(timing + 0x00u) != 0x820BF8A8u) {
         return 0;
+    }
+
+    if (out_moon_phase != nullptr) {
+        const uint32_t phase = load_be32(timing + 0x38u);
+        if (phase <= 7u) {
+            *out_moon_phase = static_cast<int32_t>(phase);
+        }
     }
 
     const uint32_t raw_time = load_be32(timing + 0x04u);
@@ -6062,20 +6326,10 @@ static void KeepAnimatedInView(uint8_t* base, uint32_t entity) {
         return;
     }
 
-    const uint32_t components = read32(entity + 0x48u);
-    const uint32_t components_end = read32(entity + 0x4Cu);
-    const uint32_t accelerator = read32(entity + 0x8Cu);
-    uint32_t component = 0u;
-    if (plausible(accelerator) && plausible(components)) {
-        component = read32(components + 8u * read8(accelerator + kVisibilityId) + 4u);
-    } else if (plausible(components) && components_end > components) {
-        for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
-            if (read32(at) == kVisibilityId) {
-                component = read32(at + 4u);
-                break;
-            }
-        }
-    }
+    // `EntityComponent` checks the presence bitmask first and re-checks the id after the
+    // accelerator hop, so a table being rebuilt on another thread cannot hand back a
+    // different component.
+    const uint32_t component = EntityComponent(base, entity, kVisibilityId);
 
     if (!plausible(component)) {
         return;
@@ -6104,7 +6358,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
                               uint32_t* out_unknown_vtable_count) {
     static uint32_t walk_serial = 0u;
     ++walk_serial;
-    constexpr uint32_t kEntityStride = 12u;
+    // Words 0..11 identity and placement, 12..18 the guest's previous transform, 19 its
+    // interpolation enable, 20 the highlight RGBA. See the row write below.
+    constexpr uint32_t kEntityStride = 21u;
     constexpr uint16_t kNoDirect = 0xFFFFu;
 
     /// The twelve EC-2 vtables, and how each states its placement.
@@ -6427,6 +6683,40 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         /// `+0xD0`. There is NO stored quaternion — the guest derives one per call.
         ///
         /// Offsets are measured from the PROXY (`controller+0x38`), not the placement component.
+        /// A character's position, out of the same phantom — `sub_82213A80`, the proxy's
+        /// slot 0x14:
+        ///
+        ///   lwz r11, 0x2C(r4) / li r10, 0xD0 / lvx128 v0, r11, r10 / stvx128 v0, r0, r3
+        ///
+        /// This is the translation lane of the same `hkTransform` whose basis the orientation
+        /// read above takes from `+0xA0`.
+        const auto read_phantom_position = [&](uint32_t proxy, uint32_t* out) -> bool {
+            if (!plausible(proxy) || read32(proxy) != 0x82005720u) {
+                return false;
+            }
+
+            const uint32_t phantom = read32(proxy + 0x2Cu);
+            if (!plausible(phantom)) {
+                return false;
+            }
+
+            uint32_t lanes[3];
+            for (int i = 0; i < 3; ++i) {
+                lanes[i] = read32(phantom + 0xD0u + (uint32_t)(i * 4));
+                float value;
+                std::memcpy(&value, &lanes[i], sizeof(value));
+                if (!std::isfinite(value)) {
+                    return false;
+                }
+            }
+
+            for (int i = 0; i < 3; ++i) {
+                out[i] = lanes[i];
+            }
+
+            return true;
+        };
+
         const auto read_phantom_quaternion = [&](uint32_t proxy, uint32_t* out) -> bool {
             if (!plausible(proxy) || read32(proxy) != 0x82005720u) {
                 return false;
@@ -6544,10 +6834,21 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
             if (read_phantom_quaternion(sub, orientation)) {
                 orientation_offset = kNoDirect;
 
-                // Position still comes from the component's own cache below. The phantom carries
-                // it too, at +0xD0, and the two agreeing is what would prove the whole chain —
-                // but the cached read already works, and swapping a working read for a new one
-                // on the same frame as a fix makes a regression unattributable.
+                // The position from the same phantom, on the guest's own gate.
+                //
+                // `sub_82213A08` reads `comp+0x70` only when `comp+0xA4` is non-zero or the
+                // chain is missing; otherwise it dispatches the proxy's slot 0x14, the phantom
+                // translation. `+0xA4`'s only writer is placement slot 35, from the network
+                // paths (a replicated ghost); locally simulated characters read 0.
+                //
+                // `sub_82211F18`, the placement's per-tick update, writes `+0x70` on its
+                // grounded branch only; once the physics component's byte at +104 is set it
+                // takes the ballistic branch (`sub_82277B40` into
+                // `hkpCharacterProxy::integrate`) and `+0x70` is no longer written.
+                if (read8(placement + 0xA4u) == 0u && read_phantom_position(sub, position)) {
+                    position_offset = kNoDirect;
+                    resolved = true;
+                }
             } else if (unit_quaternion_at(placement + 0xE0u, orientation)) {
                 // THE COMPONENT'S OWN CACHE, second and only if it has ever been written.
                 //
@@ -6632,28 +6933,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
 
         // The model hash, off whichever graphic-appearance component the entity carries.
         uint32_t model = 0u;
-        const uint32_t components = read32(entity + 0x48u);
-        const uint32_t components_end = read32(entity + 0x4Cu);
-        const uint32_t accelerator = read32(entity + 0x8Cu);
-
         for (const ModelSlot& slot : kModelSlots) {
-            const uint32_t word = read32(entity + 0x24u + ((uint32_t)(slot.id) / 32u) * 4u);
-            if (((word >> (slot.id % 32u)) & 1u) == 0u) {
-                continue;
-            }
-
-            uint32_t component = 0u;
-            if (plausible(accelerator) && plausible(components)) {
-                component = read32(components + 8u * read8(accelerator + slot.id) + 4u);
-            } else if (plausible(components) && components_end > components) {
-                for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
-                    if (read32(at) == slot.id) {
-                        component = read32(at + 4u);
-                        break;
-                    }
-                }
-            }
-
+            const uint32_t component = EntityComponent(base, entity, slot.id);
             if (plausible(component)) {
                 model = read32(component + slot.offset);
                 if (model != 0u) {
@@ -6675,6 +6956,70 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         row[9] = read32(entity + 0x14u);  // UniqueID, high
         row[10] = read32(entity + 0x18u); // UniqueID, low
         row[11] = read32(entity + 0x1Cu); // GDB record hash
+
+        // The pair the guest itself interpolates.
+        //
+        // Component key 3 is the guest's renderable, and the first act of every game tick
+        // latches its transform there (`sub_821C8FB0` -> `sub_82231A28` -> `sub_8222B2E0`):
+        // position to `obj+0xA0`, the orientation quaternion to `obj+0xB0`. The tick then moves
+        // everything, so the provider returns the new value and `obj+0xA0` holds the previous
+        // one. `sub_822112D8` draws `prev*(1-alpha) + live*alpha`, slerping the rotation.
+        //
+        // `obj+0xC9` is an enable, not a suppress:
+        //
+        //     8221138c  lbz    r29, 0xC9(r31)
+        //     82211394  cmplwi cr6, r29, 0
+        //     822113a0  beq    cr6, loc_822113F4   ; zero -> skip the blend entirely
+        //
+        // Set to 1 in the constructor (`82571f60`) and cleared only by the Havok rigid-body
+        // component's init (`82970a0c`): "interpolate unless physics owns this".
+        //
+        // Lanes are sent as `read32` returns them (already swapped); the C# side reads each word
+        // through `Int32BitsToSingle`. Same id as `kVisibilityId`, which is function-scoped.
+        constexpr uint8_t kRenderableId = 3u;
+        const uint32_t renderable = EntityComponent(base, entity, kRenderableId);
+        row[12] = 0u;
+        row[13] = 0u;
+        row[14] = 0u;
+        row[15] = 0u;
+        row[16] = 0u;
+        row[17] = 0u;
+        row[18] = 0x3F800000u;  // identity quaternion w
+        row[19] = 0u;           // no renderable -> no pair -> do not interpolate
+        row[20] = 0x000000FFu;  // no renderable -> the guest's OFF colour, {0,0,0,255}
+        if (plausible(renderable)) {
+            row[12] = read32(renderable + 0xA0u);
+            row[13] = read32(renderable + 0xA4u);
+            row[14] = read32(renderable + 0xA8u);
+            row[15] = read32(renderable + 0xB0u);
+            row[16] = read32(renderable + 0xB4u);
+            row[17] = read32(renderable + 0xB8u);
+            row[18] = read32(renderable + 0xBCu);
+            row[19] = GuestByteAt(base, renderable + 0xC9u) != 0u ? 1u : 0u;
+
+            // The targeting highlight. The colour lives on the renderable (component 3) as RGBA
+            // at +96..99, written by `sub_825738F0` and submitted as a shader constant by
+            // `sub_82572C18` only when it differs from `dword_8331B158` = {0,0,0,255}. The off
+            // state is that colour, not a flag: the clear path `sub_82429BB0` writes
+            // `byte_83319B68` = {0,0,0,255} and `+144`'s 0x20 bit stays set after the first
+            // write, so the host compares the bytes.
+            //
+            // The colour stated to the setter (hooked in `target_highlight.cpp`, past the
+            // component-159 redirect) wins; the component bytes are the fallback. Resolved by
+            // dlsym, so a missing hook falls back cleanly.
+            using HighlightFn = uint32_t (*)(uint32_t);
+            static HighlightFn stated_highlight =
+                reinterpret_cast<HighlightFn>(dlsym(RTLD_DEFAULT, "RefiiHighlightFor"));
+            const uint32_t said = stated_highlight != nullptr ? stated_highlight(renderable) : 0u;
+            if (said != 0u) {
+                row[20] = said;
+            } else
+            row[20] = (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x60u)) << 24) |
+                      (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x61u)) << 16) |
+                      (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x62u)) << 8) |
+                      static_cast<uint32_t>(GuestByteAt(base, renderable + 0x63u));
+        }
+
         ++written;
     }
 
@@ -6758,7 +7103,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityComponents(uint32_t entity, uin
 #define REFII_LOCOMOTION_WORDS 7u
 
 /// How many words RefiiHostGetEntityAnimState writes per clip leaf.
-#define REFII_ANIM_LEAF_WORDS 10u
+#define REFII_ANIM_LEAF_WORDS 12u
 
 /// THE BYTES OF ONE BONE MASK NODE — one per LIVE skeleton bone, 0..255, the weight the
 /// overlay applies to that bone (`sub_82B7E3F8` writes `int(w*255+0.5)`, the bool setter 255
@@ -7147,20 +7492,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetBoneMorph(uint32_t entity, uint32_t* 
     if (((read32(entity + 0x24u) >> kMeshId) & 1u) == 0u) {
         return 0u;
     }
-    uint32_t mesh = 0u;
-    const uint32_t begin = read32(entity + 0x48u);
-    const uint32_t end = read32(entity + 0x4Cu);
-    const uint32_t accelerator = read32(entity + 0x8Cu);
-    if (plausible(accelerator) && plausible(begin)) {
-        mesh = read32(begin + (8u * GuestByteAt(base, accelerator + kMeshId)) + 4u);
-    } else if (plausible(begin) && end > begin && (end - begin) <= 0x4000u) {
-        for (uint32_t at = begin; at + 8u <= end; at += 8u) {
-            if (read32(at) == kMeshId) {
-                mesh = read32(at + 4u);
-                break;
-            }
-        }
-    }
+    const uint32_t mesh = EntityComponent(base, entity, kMeshId);
     if (!plausible(mesh)) {
         return 0u;
     }
@@ -7268,6 +7600,59 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimMask(uint32_t node, uint8_t* out_
 /// Returns the leaf count (0 = no controller or nothing playing). `out_flags`, when given:
 /// bit0 controller active, bit1 has component 97 (dog paw/look IK, a procedural layer),
 /// bit2 replicated tree (netplay; +156 path, not walked).
+/// Why a rig had no clip leaves, split by cause — see RefiiHostGetEntityAnimState.
+std::atomic<uint64_t> RefiiAnimNoComponentBit{0};
+std::atomic<uint64_t> RefiiAnimComponentUnresolved{0};
+std::atomic<uint64_t> RefiiAnimControllerFound{0};
+std::atomic<uint64_t> RefiiAnimEmptyList{0};
+
+/// Whether the guest's physics owns this entity's bones this tick: the ragdoll object reached as
+/// `sub_8220A700` reaches it (entity+0x7C -> slot 23 -> `sub_8220A610`), enabled, in mode 3 or 4.
+///
+/// Modes 3 and 4 only — the readback's own test, at both of its sites:
+///     8220ab88  lwz r11, 0x20(r?) / cmpwi 4 / cmpwi 3      ; sub_8220A700 gates the copy
+///     8257dc24  lwz r11, 0x20(r29); cmpwi cr6, r11, 4 / 3  ; sub_8257DBC0 gates it again
+/// Mode 2 ("SetKeyframed") is the opposite direction: the branch at 0x822053A0 that takes 2
+/// and 3 together pushes the animation into the bodies (`sub_8227D920` / `sub_828C8D18`) and
+/// never writes a bone back.
+///
+/// The host cannot call a guest virtual; slot 23 is `sub_828D4110` = `lwz r3,0x20(r3); blr`,
+/// so `*(P+0x20)` is the same read. The vtable test on the ragdoll (0x820067F8, from its
+/// constructor) is stricter than the guest's slot-2 predicate and fails closed.
+static bool EntityPhysicsOwnsPose(const uint8_t* base, uint32_t entity) {
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+    static constexpr uint32_t kRagdollVtable = 0x820067F8u;
+    if (!plausible(entity)) {
+        return false;
+    }
+
+    const uint32_t navigator = GuestWordAt(base, entity + 0x7Cu);
+    const uint32_t proxy = plausible(navigator) ? GuestWordAt(base, navigator + 0x20u) : 0u;
+    if (!plausible(proxy)) {
+        return false;
+    }
+
+    const uint32_t begin = GuestWordAt(base, proxy + 8u);
+    const uint32_t end = GuestWordAt(base, proxy + 12u);
+    if (!plausible(begin) || end < begin || (end - begin) > 8u * 64u || ((end - begin) % 8u) != 0u) {
+        return false;
+    }
+
+    for (uint32_t at = begin; at < end; at += 8u) {
+        const uint32_t ragdoll = GuestWordAt(base, at);
+        if (!plausible(ragdoll) || GuestWordAt(base, ragdoll) != kRagdollVtable) {
+            continue;
+        }
+
+        const uint32_t mode = GuestWordAt(base, ragdoll + 0x20u);
+        return GuestByteAt(base, ragdoll + 0x24u) != 0u && (mode == 3u || mode == 4u);
+    }
+
+    return false;
+}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint32_t* out_words, uint32_t word_capacity,
                                                             uint32_t* out_flags) {
     if (out_flags != nullptr) {
@@ -7284,8 +7669,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     if (base == nullptr) {
         return 0u;
     }
+    // The same bound `EntityComponent` enforces (below 0xC0000000), so the walk-stats split
+    // agrees with the fetch.
     const auto plausible = [](uint32_t address) {
-        return address >= 0x10000u && address < 0xE0000000u;
+        return address >= 0x10000u && address < 0xC0000000u;
     };
     const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
@@ -7303,27 +7690,24 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
         if (((word >> (id % 32u)) & 1u) == 0u) {
             return 0u;
         }
-        const uint32_t begin = read32(entity + 0x48u);
-        const uint32_t end = read32(entity + 0x4Cu);
-        const uint32_t accelerator = read32(entity + 0x8Cu);
-        if (plausible(accelerator) && plausible(begin)) {
-            return read32(begin + (8u * read8(accelerator + id)) + 4u);
-        }
-        if (!plausible(begin) || end <= begin || (end - begin) > 0x4000u) {
-            return 0u;
-        }
-        for (uint32_t at = begin; at + 8u <= end; at += 8u) {
-            if (read32(at) == id) {
-                return read32(at + 4u);
-            }
-        }
-        return 0u;
+        return EntityComponent(base, entity, id);
     };
+
+    // Why a rig has no clips, counted by cause: no component-19 bit, component unresolved, or
+    // controller found (with `RefiiAnimEmptyList` for an empty leaf list).
+    const uint32_t present_word = read32(entity + 0x24u);
+    if (((present_word >> 19u) & 1u) == 0u) {
+        RefiiAnimNoComponentBit.fetch_add(1u, std::memory_order_relaxed);
+        return 0u;
+    }
 
     const uint32_t controller = component(19u);
     if (!plausible(controller)) {
+        RefiiAnimComponentUnresolved.fetch_add(1u, std::memory_order_relaxed);
         return 0u;
     }
+
+    RefiiAnimControllerFound.fetch_add(1u, std::memory_order_relaxed);
     // FLAG 1 IS THE GUEST'S BONE-COUNT TIER, NOT AN ACTIVE FLAG. `comp19+148` is 1 or 3:
     // `sub_821F2688` sets 3 when the rig is within its LOD radius (`comp6+220`, 10 m by
     // default) and recently visible, else 1, and `sub_8220D1B8` (0x8220D684) then SKIPS the
@@ -7336,6 +7720,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     if (plausible(component(97u))) {
         flags |= 2u;
     }
+    // Flag 4 carries no information and is kept only so the bit numbering does not move: the
+    // constructor `sub_82562CC8` writes 1 to `comp19+576` on every controller
+    // (`stb r25, 0x240(r31)`) and its only other accessors are a plain getter and setter.
+    // Do not gate anything on it.
     if (read8(controller + 576u) != 0u) {
         flags |= 4u;
     }
@@ -7353,59 +7741,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     // ENABLE that is true for nearly every animated rig. Correcting only the width would have
     // handed every character to the pose feed and stopped all authored animation.
     //
-    // The real state, read end-to-end off `sub_8220D1B8` at 0x8220D68C..0x8220D6E8:
-    //     P = *(entity + 0x7C)                  physics navigator     (lwz r3, 0x7C(r27))
-    //     C = P->vtable[23](P)                  the character proxy   (lwz r10, 0x5C(r11))
-    //     S = first entry of C's vector whose vtable slot 2 returns 1 (`sub_8220A610`, which
-    //         walks 8-byte {object, refcount} pairs between C+8 and C+12)
-    //     ragdoll = *(uint8 *)(S + 0x24) != 0 && *(uint32 *)(S + 0x20) is 2, 3 or 4
-    // `S+0x20` is a word (`lwz r11, 0x20(r11)`), `S+0x24` a genuine byte (`lbz r10, 0x24(r11)`).
-    // The ragdoll object is built in `sub_82960B90` under the GDB property "HasRagdoll", which
-    // is where its layout is confirmed: `stw r31, 0x20(r3)` mode := 0, `stb r26, 0x24(r3)`
-    // enabled := 1, `stw r8, 0(r3)` vtable := 0x820067F8.
-    //
-    // WE CANNOT CALL A GUEST VIRTUAL, so the proxy is read from `*(P + 0x20)`. Slot 23 is at
-    // vtable+0x5C, `*(uint32 *)0x82007094 == 0x828D4110`, and that function is the accessor:
-    //     828d4110  lwz    r3, 0x20(r3)
-    //     828d4114  blr
-    // All five vtables carrying it (0x82007038, 0x820070F0, 0x820071A0, 0x82007308, 0x820073B8)
-    // are in `kEc2Layouts`, the set observed at entity+0x7C, so the placement component and the
-    // physics navigator are one object. The identity check on S below fails closed regardless.
-    //
-    // MODES 2, 3 AND 4. Read off the pose writer at 0x8220538C..0x822053F8:
-    //     82205390  lbz    r11, 0x24(r31)   ; enabled
-    //     82205398  beq    -> 8220544C      ; enabled == 0, nothing happens
-    //     8220539c  lwz    r10, 0x20(r31)   ; mode
-    //     822053a0  cmpwi  cr6, r10, 2
-    //     822053a4  beq    -> loc_822053B0  ; mode 2 and
-    //     822053a8  cmpwi  cr6, r10, 3
-    //     822053ac  bne    -> loc_822053B8  ; mode 3 land on the SAME target
-    //     822053f4  cmpwi  cr6, r10, 4      ; mode 4 is the other path
-    // 2 and 3 are the same branch target under an identical guard, so a test that takes 3 must
-    // take 2. All three overwrite the bones from the ragdoll.
-    static constexpr uint32_t kRagdollVtable = 0x820067F8u;
-    const uint32_t navigator = plausible(entity) ? read32(entity + 0x7Cu) : 0u;
-    const uint32_t proxy = plausible(navigator) ? read32(navigator + 0x20u) : 0u;
-    if (plausible(proxy)) {
-        const uint32_t begin = read32(proxy + 8u);
-        const uint32_t end = read32(proxy + 12u);
-        if (plausible(begin) && end >= begin && (end - begin) <= 8u * 64u &&
-            ((end - begin) % 8u) == 0u) {
-            for (uint32_t at = begin; at < end; at += 8u) {
-                const uint32_t ragdoll = read32(at);
-                if (!plausible(ragdoll) || read32(ragdoll) != kRagdollVtable) {
-                    continue;
-                }
-
-                const uint32_t mode = read32(ragdoll + 0x20u);
-                if (read8(ragdoll + 0x24u) != 0u &&
-                    (mode == 2u || mode == 3u || mode == 4u)) {
-                    flags |= 8u;
-                }
-
-                break;
-            }
-        }
+    // The real state is the ragdoll object's mode, and only 3 and 4 hand the bones to physics
+    // — see `EntityPhysicsOwnsPose` for the chain and the readback's own test.
+    if (EntityPhysicsOwnsPose(base, entity)) {
+        flags |= 8u;
     }
     if (out_flags != nullptr) {
         *out_flags = flags;
@@ -7415,6 +7754,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     uint32_t leaves = 0u;
     uint32_t ramp_in_bits = 0u;
     uint32_t ramp_out_bits = 0u;
+    // The record's stated weight pair (+0x18 previous, +0x14 current), carried unscaled onto
+    // every leaf of that record: the guest's crossfade factor uses the record's own values,
+    // while the tree factors below scale the leaf's share.
+    uint32_t record_prev_bits = 0u;
+    uint32_t record_cur_bits = 0u;
     const auto ramp_seconds = [&](uint32_t ramp) -> uint32_t {
         if (!plausible(ramp)) {
             return 0u;
@@ -7471,6 +7815,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
                     out[7] = ramp_out_bits;
                     out[8] = frame.mask;
                     out[9] = priority_mask;
+                    out[10] = record_prev_bits;
+                    out[11] = record_cur_bits;
                     ++leaves;
                     break;
                 }
@@ -7532,16 +7878,63 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
         if (!plausible(sentinel) || size == 0u || size > 64u) {
             return;
         }
-        // Priority-128 override: only that record plays (`sub_82211824`).
-        uint32_t override_record = 0u;
+        // One primary wins: the guest's own pick.
+        //
+        // `sub_822013A8` walks this list, skips records whose state (+28) is 2, and keeps the
+        // highest priority (+8) with a strict `>` (0x82201464), returning that single record.
+        // It walks backward (`lwz r8, 4(r10)` at 0x82201434 takes _Prev), so the record nearest
+        // the tail wins a tie; `>=` on a forward walk is the same pick. `sub_82211660` folds only
+        // that record (`sub_82229960(a2, &out, v7, alpha)`), or installs its tree outright when
+        // its priority is 128.
+        //
+        // The runner-up is also exported: the guest crossfades the winner against it by the
+        // winner's weight.
+        uint32_t winner = 0u;
+        int32_t winner_priority = -1;
+        uint32_t runner_up = 0u;
+        float runner_up_weight = 0.0f;
         uint32_t node = read32(sentinel);
         for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
             const uint32_t record = read32(node + 8u);
-            if (plausible(record) && read32(record + 28u) != 2u && read32(record + 8u) == 128u) {
-                override_record = record;
-            }
             node = read32(node);
+            if (!plausible(record) || read32(record + 28u) == 2u) {
+                continue;
+            }
+
+            const int32_t priority = static_cast<int32_t>(read32(record + 8u));
+            if (priority >= winner_priority) {
+                winner_priority = priority;
+                winner = record;
+            }
         }
+
+        // The runner-up must clear 1e-4 to exist at all (0x82238070..0x82238074); below that
+        // `sub_82237F90` emits nothing and the winner is used alone.
+        if (!overlay && winner != 0u) {
+            node = read32(sentinel);
+            for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
+                const uint32_t record = read32(node + 8u);
+                node = read32(node);
+                // No state filter here, matching the guest: the runner-up scan `sub_82237F90`
+                // (0x82237FD8..0x82238048) excludes only the winner's node and never tests +0x1C.
+                // It ranks by +0x14 alone, forward with a strict `>`, so the first record wins
+                // equal weights.
+                if (!plausible(record) || record == winner) {
+                    continue;
+                }
+
+                const float other = readf(record + 20u);
+                if (other > runner_up_weight) {
+                    runner_up_weight = other;
+                    runner_up = record;
+                }
+            }
+
+            if (runner_up_weight <= 1e-4f) {
+                runner_up = 0u;
+            }
+        }
+
         node = read32(sentinel);
         for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
             const uint32_t record = read32(node + 8u);
@@ -7549,13 +7942,17 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
             if (!plausible(record) || read32(record + 28u) == 2u) {
                 continue;
             }
-            if (!overlay && override_record != 0u && record != override_record) {
+            if (!overlay && record != winner && record != runner_up) {
                 continue;
             }
-            const float weight = override_record != 0u && record == override_record ? 1.0f : readf(record + 20u);
+            const float weight = !overlay && record == winner && winner_priority == 128
+                ? 1.0f
+                : readf(record + 20u);
             if (weight <= 1e-4f) {
                 continue;
             }
+            record_prev_bits = read32(record + 24u);
+            record_cur_bits = read32(record + 20u);
             ramp_in_bits = ramp_seconds(read32(record + 40u));
             ramp_out_bits = ramp_seconds(read32(record + 48u));
             overlay_list = overlay;
@@ -7576,6 +7973,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
         ramp_out_bits = 0u;
         overlay_list = false;
         priority_mask = 0xFFFFFFFFu;
+        // The +156 tree is not a record and has no weight pair; it plays whole.
+        record_prev_bits = 0x3F800000u;
+        record_cur_bits = 0x3F800000u;
         flatten(root, 1.0f, 0u, 0u, 0u);
         walk_list(controller + 108u, true);
         return leaves;
@@ -7583,7 +7983,28 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
 
     walk_list(controller + 96u, false);
     walk_list(controller + 108u, true);
+    if (leaves == 0u) {
+        RefiiAnimEmptyList.fetch_add(1u, std::memory_order_relaxed);
+    }
+
     return leaves;
+}
+
+/// Why rigs are not clip-driven, split by cause. Four counters: the entity has no component-19
+/// bit, the bit is set but the component does not resolve, the controller was found, and the
+/// controller was found but its lists flattened to nothing.
+///
+/// Separates "the guest has nothing to play" from "this walk misses the controller".
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimWalkStats(uint32_t* out_words, uint32_t capacity) {
+    if (out_words == nullptr || capacity < 4u) {
+        return 0u;
+    }
+
+    out_words[0] = static_cast<uint32_t>(RefiiAnimNoComponentBit.load(std::memory_order_relaxed));
+    out_words[1] = static_cast<uint32_t>(RefiiAnimComponentUnresolved.load(std::memory_order_relaxed));
+    out_words[2] = static_cast<uint32_t>(RefiiAnimControllerFound.load(std::memory_order_relaxed));
+    out_words[3] = static_cast<uint32_t>(RefiiAnimEmptyList.load(std::memory_order_relaxed));
+    return 4u;
 }
 
 /// How many words RefiiHostGetAttachments writes per attachment record.
@@ -7655,21 +8076,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint
         if (((word >> (id % 32u)) & 1u) == 0u) {
             return 0u;
         }
-        const uint32_t begin = read32(entity + 0x48u);
-        const uint32_t end = read32(entity + 0x4Cu);
-        const uint32_t accelerator = read32(entity + 0x8Cu);
-        if (plausible(accelerator) && plausible(begin)) {
-            return read32(begin + (8u * read8(accelerator + id)) + 4u);
-        }
-        if (!plausible(begin) || end <= begin || (end - begin) > 0x4000u) {
-            return 0u;
-        }
-        for (uint32_t at = begin; at + 8u <= end; at += 8u) {
-            if (read32(at) == id) {
-                return read32(at + 4u);
-            }
-        }
-        return 0u;
+        return EntityComponent(base, entity, id);
     };
 
     uint32_t written = 0u;
@@ -7817,30 +8224,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLocomotion(uint32_t entity, uin
 
     // entity -> component, by the id->slot accelerator with the sorted vector as the fallback.
     const auto component = [&](uint32_t id) -> uint32_t {
-        const uint32_t word = read32(entity + 0x24u + ((id / 32u) * 4u));
-        if (((word >> (id % 32u)) & 1u) == 0u) {
-            return 0u;
-        }
-
-        const uint32_t begin = read32(entity + 0x48u);
-        const uint32_t end = read32(entity + 0x4Cu);
-        const uint32_t accelerator = read32(entity + 0x8Cu);
-
-        if (plausible(accelerator) && plausible(begin)) {
-            return read32(begin + (8u * read8(accelerator + id)) + 4u);
-        }
-
-        if (!plausible(begin) || end <= begin || (end - begin) > 0x4000u) {
-            return 0u;
-        }
-
-        for (uint32_t at = begin; at + 8u <= end; at += 8u) {
-            if (read32(at) == id) {
-                return read32(at + 4u);
-            }
-        }
-
-        return 0u;
+        return EntityComponent(base, entity, id);
     };
 
     const uint32_t manager = component(21u);
@@ -8136,88 +8520,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMenuBox(uint32_t* out_selected, uint3
     return count;
 }
 
-/// Which pause tabs the guest itself would offer — `sub_826B83D0` as pure reads. The tab push
-/// (`sub_826B89E0`) never re-checks the predicate, so an entry the guest would have skipped
-/// pushes an unintended screen.
+/// Which pause tabs the guest itself would offer, as its own predicate `sub_826B83D0` answered
+/// when the pump called it on the GUI tick. There is no availability mask in the image, and the
+/// tab push (`sub_826B89E0`) never re-checks the predicate.
 ///
-/// Returns a bitmask with bit N = tab N (2..8) available; bits 0 and 1 are unused. Fails OPEN
-/// to all-available: the predicate's own early-outs (restriction bit clear at hero+0x90 mask
-/// 0x40, a component bit clear in the flags word at hero+0x28, a null hero handle) all mean
-/// "available". The guest's component-map MISS branch reads past the end of the pair array;
-/// that is not reproduced — a miss counts as absent, i.e. available.
-///
-/// The chain, from `sub_826B83D0` / `sub_82264230`:
-///   game = *(*(0x83496AB8)+12); sess = *(game+0x8C)
-///   key  = (bytes sess+0x34 && sess+0x35) ? 1 : 2            -- co-op slot choice
-///   rec  = lower_bound for key over the stride-12 map {s32,u32,u32} at *(game+0x9C)
-///          (+8 begin, +12 end); hero = *(*(rec+16))          -- through the handle block
-///   gates: byte hero+0x90 & 0x40; flags hero+0x28 bit 1 (comp33) and bit 25 (comp57)
-///   components (keys 33/57): cache byte at *(hero+0x8C)+key indexes the stride-8
-///          {s32 key, u32 ptr} pairs at *(hero+0x48); no cache -> lower_bound over
-///          [*(hero+0x48), *(hero+0x4C))
-///   comp33 BYTES +0x34/+0x2D/+0x33; comp57 f32 +0x58, low = (value < 2.0f), NaN not low
-///   tab2 = +0x34 && !low; tab3 = +0x2D && !low; tab4/5 = +0x33; tab6 = +0x33 && !low;
-///   tab7 = !low; tab8 always
+/// Returns a bitmask with bit N = tab N (2..8); bits 0 and 1 are unused. Fails open to
+/// all-available only when the pump has not sampled yet (guest not up, or the pause book not
+/// yet opened).
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostPauseTabsAvailable(void) {
     constexpr uint32_t kAll = 0x1FCu;  // bits 2..8
 
-    auto* memory = SafeKernelMemory();
-    if (memory == nullptr) return kAll;
-    uint8_t* base = memory->virtual_membase();
-    if (base == nullptr) return kAll;
-
-    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
-    const auto read8 = [base](uint32_t at) { return base[at]; };
-    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
-
-    // The shared walk: `ResolvePlayerHero` returns 0 for every step that fails open to kAll.
-    const uint32_t hero = ResolvePlayerHero(base);
-    if (hero == 0u) return kAll;
-
-    if ((read8(hero + 0x90u) & 0x40u) == 0u) return kAll;
-
-    const uint32_t flags = read32(hero + 0x28u);
-    if ((flags & 0x00000002u) == 0u || (flags & 0x02000000u) == 0u) return kAll;
-
-    // Component by key, both the cached-index and the binary-search shape as flat reads.
-    const auto component = [&](uint32_t key) -> uint32_t {
-        const uint32_t pairs = read32(hero + 0x48u);
-        if (!plausible(pairs)) return 0u;
-
-        const uint32_t cache = read32(hero + 0x8Cu);
-        if (plausible(cache)) {
-            const uint32_t index = read8(cache + key);
-            return read32(pairs + index * 8u + 4u);
-        }
-
-        const uint32_t pairs_end = read32(hero + 0x4Cu);
-        if (pairs_end < pairs || (pairs_end - pairs) > 8u * 256u) return 0u;
-        for (uint32_t at = pairs; at < pairs_end; at += 8u) {
-            if (read32(at) == key) return read32(at + 4u);
-        }
-        return 0u;  // absent — the caller fails open
-    };
-
-    const uint32_t comp33 = component(33u);
-    const uint32_t comp57 = component(57u);
-    if (!plausible(comp33) || !plausible(comp57)) return kAll;
-
-    float stage;
-    const uint32_t stage_bits = read32(comp57 + 0x58u);
-    std::memcpy(&stage, &stage_bits, sizeof(stage));
-    const bool low = stage < 2.0f;  // fcmpu: NaN is NOT low, same as this
-
-    const bool b34 = read8(comp33 + 0x34u) != 0u;
-    const bool b2d = read8(comp33 + 0x2Du) != 0u;
-    const bool b33 = read8(comp33 + 0x33u) != 0u;
-
-    uint32_t mask = 1u << 8;                       // Options is unconditional
-    if (b34 && !low) mask |= 1u << 2;              // Map
-    if (b2d && !low) mask |= 1u << 3;              // Abilities
-    if (b33) mask |= (1u << 4) | (1u << 5);        // Items, Weapons
-    if (b33 && !low) mask |= 1u << 6;              // Clothing
-    if (!low) mask |= 1u << 7;                     // Logbook
-    return mask;
+    const uint32_t sampled = refii::vfs::PauseTabsMask();
+    return sampled != 0u ? sampled : kAll;
 }
 
 /// The subtitles setting: 1 on, 0 off, -1 not sampled yet (front end not up, or too early).
@@ -8993,7 +9307,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMeshParts(uint32_t entity, uint
     }
 
     const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
-    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -9009,21 +9322,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMeshParts(uint32_t entity, uint
         return 0u;
     }
 
-    const uint32_t components = read32(entity + 0x48u);
-    const uint32_t components_end = read32(entity + 0x4Cu);
-    const uint32_t accelerator = read32(entity + 0x8Cu);
-
-    uint32_t component = 0u;
-    if (plausible(accelerator) && plausible(components)) {
-        component = read32(components + 8u * read8(accelerator + kStaticMultipleMeshId) + 4u);
-    } else if (plausible(components) && components_end > components) {
-        for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
-            if (read32(at) == kStaticMultipleMeshId) {
-                component = read32(at + 4u);
-                break;
-            }
-        }
-    }
+    const uint32_t component = EntityComponent(base, entity, kStaticMultipleMeshId);
 
     if (!plausible(component)) {
         return 0u;
@@ -9090,26 +9389,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
     // Components, through the entity's own lookup contract: presence bitmask of 8 dwords at
     // entity+0x24, then either the byte index table at entity+0x8C or a walk of the {id, ptr}
     // pairs. Same shape RefiiHostGetEntities uses for the graphic-appearance slots.
-    const uint32_t components = read32(entity + 0x48u);
-    const uint32_t components_end = read32(entity + 0x4Cu);
-    const uint32_t accelerator = read32(entity + 0x8Cu);
-
     const auto component = [&](uint8_t id) -> uint32_t {
-        const uint32_t present = read32(entity + 0x24u + ((uint32_t)(id) / 32u) * 4u);
-        if (((present >> (id % 32u)) & 1u) == 0u) {
-            return 0u;
-        }
-        if (plausible(accelerator) && plausible(components)) {
-            return read32(components + 8u * read8(accelerator + id) + 4u);
-        }
-        if (plausible(components) && components_end > components) {
-            for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
-                if (read32(at) == id) {
-                    return read32(at + 4u);
-                }
-            }
-        }
-        return 0u;
+        return EntityComponent(base, entity, id);
     };
 
     // THE EYES ARE NOT MORPH PARTS. They are component 7 `CECGraphicAppearanceEyes`' own two
@@ -9336,7 +9617,6 @@ static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
     }
 
     const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
-    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
@@ -9351,21 +9631,7 @@ static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
         return 0u;
     }
 
-    const uint32_t components = read32(entity + 0x48u);
-    const uint32_t components_end = read32(entity + 0x4Cu);
-    const uint32_t accelerator = read32(entity + 0x8Cu);
-
-    uint32_t component = 0u;
-    if (plausible(accelerator) && plausible(components)) {
-        component = read32(components + 8u * read8(accelerator + kAnimatedMeshId) + 4u);
-    } else if (plausible(components) && components_end > components) {
-        for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
-            if (read32(at) == kAnimatedMeshId) {
-                component = read32(at + 4u);
-                break;
-            }
-        }
-    }
+    const uint32_t component = EntityComponent(base, entity, kAnimatedMeshId);
 
     if (!plausible(component)) {
         return 0u;
@@ -9381,8 +9647,63 @@ static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
     // The live pose hangs off the COMPONENT; the rest pose off the SKELETON. Same element
     // size, same bone order, different owner — and quoting one against the other's base is
     // exactly the mistake that has cost this project a shipped-wrong offset before.
-    const uint32_t pose = rest ? read32(skeleton + 0x90u) : read32(component + 0x30u);
-    const uint32_t pose_end = rest ? read32(skeleton + 0x94u) : read32(component + 0x34u);
+    // The live pose is the published block, not the component's working array.
+    //
+    // `sub_821FF010` is the guest's publish: it allocates a fresh block (`sub_821F5C18`),
+    // XMemCpy's the finished pose into it, applies the attachment override, and swaps it into
+    // the shared_ptr at `comp+0x24`. The attachment override at `comp+0x3C`/`+0x40` is written
+    // into the published copy only (`821ff0e0`..`821ff11c`), and the published block is never
+    // rewritten in place, unlike `comp+0x30`.
+    //
+    // Layout: holder = `*(comp+0x24)` (a shared_ptr's px), block = `*holder`, bone buffer =
+    // `*(block+0x10)`, and `block+8` is the skeleton identity tag every render consumer checks
+    // against `skel+0x14`. The count is the publisher's own — `(skel+0x30 - skel+0x2C) >> 3` —
+    // not `block+0xC`, which nothing in the image reads.
+    //
+    // Falls back to the working array: a component publishes only through `sub_821F56F8`, and
+    // `sub_8257D8B8` poses without ever calling it, so a block is not guaranteed to exist.
+    uint32_t pose = 0u;
+    uint32_t pose_end = 0u;
+    uint32_t holder = 0u;
+    uint32_t published = 0u;
+    bool from_block = false;
+
+    // A ragdoll's pose exists only at the end of the tick, and only in the working array.
+    //
+    // The publish runs twice per tick for an active ragdoll. `sub_8220D1B8` publishes the clip
+    // pose unconditionally (`8220dbe8 .. bl sub_821F56F8` @0x8220dbf0); Havok steps; then
+    // `sub_8220A700` copies the bodies over the array (`sub_8257DBC0` @0x8220abd8), stamps
+    // `comp+0x10 := 2` (`8257dc94 stw r11,0x10(r31)`) and publishes again (@0x8220ad48). The
+    // guest draws after the second; an asynchronous reader can see the first.
+    //
+    // So a physics-owned rig reads `comp+0x30` and only while `comp+0x10 == 2`. `sub_821F2C78`
+    // stamps 1 when it copies the next clip pose in, so 2 brackets the physics result; the one
+    // window it lags (the XMemCpy before that stamp) leaves a local-space array, which the
+    // double read or the host's space vote refuses.
+    const bool physics = !rest && EntityPhysicsOwnsPose(base, entity);
+
+    if (!rest && !physics) {
+        holder = read32(component + 0x24u);
+        if (plausible(holder)) {
+            published = read32(holder);
+            if (plausible(published) && read32(published + 8u) == read32(skeleton + 0x14u)) {
+                const uint32_t buffer = read32(published + 0x10u);
+                const uint32_t table_begin = read32(skeleton + 0x2Cu);
+                const uint32_t table_finish = read32(skeleton + 0x30u);
+                if (plausible(buffer) && table_finish > table_begin) {
+                    pose = buffer;
+                    pose_end = buffer + (((table_finish - table_begin) >> 3) * 48u);
+                    from_block = true;
+                }
+            }
+        }
+    }
+
+    if (!from_block) {
+        pose = rest ? read32(skeleton + 0x90u) : read32(component + 0x30u);
+        pose_end = rest ? read32(skeleton + 0x94u) : read32(component + 0x34u);
+    }
+
     if (!plausible(pose) || pose_end <= pose) {
         return 0u;  // sized but never filled — the character has not been posed yet
     }
@@ -9401,12 +9722,12 @@ static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
 
     // A COHERENT SNAPSHOT, because the guest rewrites this array underneath us.
     //
-    // THE ARRAY IS WRITTEN IN PLACE AND THERE IS NOTHING TO SNAPSHOT INSTEAD. `sub_821F2C78`
-    // XMemCpy's the pose in, modifiers mutate it, and `sub_821F57D0` then converts it from
-    // parent-relative to model space BONE BY BONE over the same memory. The pointer at
-    // `comp+0x30` is never swapped; there is no double buffer, no index and no generation
-    // counter anywhere in the class. We read this from Godot's thread while the simulation
-    // thread runs free, so a straddled read is possible by construction.
+    // The guest publishes each finished pose into a fresh block and swaps it into the
+    // shared_ptr at `comp+0x24` (`sub_821FF010` -> `sub_821F5C18`); its own renderer keeps the
+    // last two and interpolates between them (`sub_8222E2B8`, blocks at
+    // `renderObj+0x200`/`+0x204`). `comp+0x30` itself is rewritten in place — `sub_821F2C78`
+    // XMemCpy's the pose in, modifiers mutate it, and `sub_821F57D0` converts it to model space
+    // bone by bone over the same memory — so the fallback path below reads it twice.
     //
     // AND A TORN RIG IS NOT A SMALL ERROR. During `sub_821F57D0` the array holds two
     // different SPACES at once — bones behind its cursor are model-space, bones ahead of it
@@ -9434,11 +9755,41 @@ static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
     static thread_local uint8_t second[kMaxSnapshotBones * 48u];
     const size_t span = (size_t)bones * 48u;
 
+    const uint32_t latch_before = physics ? read32(component + 0x10u) : 2u;
     bool coherent = false;
-    for (int attempt = 0; attempt < 4 && !coherent; ++attempt) {
-        CopyGuest(base, pose, first, span);
-        CopyGuest(base, pose, second, span);
-        coherent = std::memcmp(first, second, span) == 0;
+    if (from_block) {
+        // The holder's pointer is the generation counter. The publisher never writes a block in
+        // place, so the copy can only be spoiled by a swap; an unchanged holder after the copy
+        // proves the block was current for the whole read.
+        for (int attempt = 0; attempt < 4 && !coherent; ++attempt) {
+            CopyGuest(base, pose, first, span);
+            coherent = read32(holder) == published;
+            if (!coherent) {
+                published = read32(holder);
+                if (!plausible(published) ||
+                    read32(published + 8u) != read32(skeleton + 0x14u)) {
+                    return 0u;  // the rig changed skeletons mid-read; nothing to draw
+                }
+
+                pose = read32(published + 0x10u);
+                if (!plausible(pose)) {
+                    return 0u;
+                }
+            }
+        }
+    } else {
+        // The working array at `comp+0x30` is rewritten in place, and during `sub_821F57D0` it
+        // holds two different spaces at once. No generation to lean on: read it twice and
+        // require agreement. Reached for the rest pose, physics rigs and components that never publish.
+        for (int attempt = 0; attempt < 4 && !coherent; ++attempt) {
+            CopyGuest(base, pose, first, span);
+            CopyGuest(base, pose, second, span);
+            coherent = std::memcmp(first, second, span) == 0;
+        }
+    }
+
+    if (physics && (latch_before != 2u || read32(component + 0x10u) != 2u)) {
+        coherent = false;  // mid-tick: the array holds this tick's clip pose, not the bodies
     }
 
     // REPORTED, NOT HIDDEN. A caller that knows the read was torn can hold last frame's pose
@@ -9537,21 +9888,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityBoneNames(uint32_t entity, char
         return 0u;
     }
 
-    const uint32_t components = read32(entity + 0x48u);
-    const uint32_t components_end = read32(entity + 0x4Cu);
-    const uint32_t accelerator = read32(entity + 0x8Cu);
-
-    uint32_t component = 0u;
-    if (plausible(accelerator) && plausible(components)) {
-        component = read32(components + 8u * read8(accelerator + kAnimatedMeshId) + 4u);
-    } else if (plausible(components) && components_end > components) {
-        for (uint32_t at = components; at + 8u <= components_end; at += 8u) {
-            if (read32(at) == kAnimatedMeshId) {
-                component = read32(at + 4u);
-                break;
-            }
-        }
-    }
+    const uint32_t component = EntityComponent(base, entity, kAnimatedMeshId);
 
     if (!plausible(component)) {
         return 0u;
@@ -11168,10 +11505,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudMeters(uint32_t* out_hashes, float
 /// judge `sub_823D21C0` on the guest's own A press) and answers its own predicates from this
 /// object; the host only reads it. Layout from the decompile: +0 on, +4 mode (1 pip hero A,
 /// 2 pip hero B, 3 bar-job fill), +12/+13 pip armed A/B, +14 latched, +16 position 0..100,
-/// +20 speed %/s, +36/+37 hit A/B, +38 dynamic fill, +40 colour band (0 low, 1 med, 2 high).
+/// +20 speed %/s, +36/+37 hit A/B, +38 the meter's active latch, +40 colour band (0 low,
+/// 1 med, 2 high).
+///
+/// +38 is +0x26, the active latch. `sub_823D1F98` raises it at 0x823D1FE0, `sub_823D1458`
+/// clears it at 0x823D147C, and
+/// `sub_823D1A48` reads it at 0x823D1BBC to skip its own reset block.
 ///
 /// values: [0] on, [1] mode, [2] armedA, [3] armedB, [4] latched, [5] position, [6] speed,
-/// [7] hitA, [8] hitB, [9] dynamic, [10] band. Returns the count written, 0 with no meter.
+/// [7] hitA, [8] hitB, [9] live, [10] band. Returns the count written, 0 with no meter.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetExpressionMeter(float* out_values, uint32_t capacity) {
     auto* memory = SafeKernelMemory();
     if (memory == nullptr || out_values == nullptr || capacity < 11u) {
@@ -13723,8 +14065,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiAttributes(uint32_t requested_prese
             break;
         }
 
+        // Each row leads with the element address and its name hash, so the caller can check
+        // its ordinal join against the element walk (a separate call the tree may change
+        // between).
+        const uint32_t stride = 2u + id_count * 2u;
+        const uint32_t row = found * stride;
+        if (out != nullptr && (row + 1u) < out_capacity) {
+            out[row] = element;
+            out[row + 1u] = read32(element);  // the element's name hash
+        }
+
         for (uint32_t i = 0; i < id_count; ++i) {
-            const uint32_t slot = (found * id_count + i) * 2u;
+            const uint32_t slot = row + 2u + i * 2u;
             uint32_t value = 0;
             const bool present = find(element, ids[i], &value);
             if (out != nullptr && (slot + 1u) < out_capacity) {
@@ -13764,14 +14116,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiAttributes(uint32_t requested_prese
     return found;
 }
 
-/// The camera manager, whose PUSHED block (manager+0xE0) is the live camera in game.
+/// The camera manager, whose block at manager+0x90 is the live camera the guest renders with.
 ///
-/// No guest call — a pure pointer walk from the game object, per the comment on
-/// `RefiiHostGetCamera` below: mode = *(0x83496AB8) -> game = *(mode+0x0C) -> the view
-/// container *(game+0x9C), whose 12-byte {key, view, _} entries run from *(container+8) to
-/// *(container+0x0C); take the one keyed 1 (2 in split screen, when *(game+0x8C)+0x34 and +0x36
-/// are both set), view = *(entry+4), manager = *(view+4). 0 when the chain is not up yet —
-/// which is the ordinary case out of game, and why the caller keeps the pull cache as a
+/// The guest's chain is three hops past the entry:
+///
+///   `sub_82264230(*(game+0x9C), key)`  returns *(entry+4)   -- the PLAYER
+///   `sub_821F87C8`                     returns *(player+4)  -- the view
+///   `sub_821DD3B0` (`lwz r3, 4(r4)`)   takes  *(view+4)     -- the MANAGER
+///
+/// mode = *(0x83496AB8) -> game = *(mode+0x0C) -> the container *(game+0x9C), whose 12-byte
+/// {key, value, _} entries run from *(container+8) to *(container+0x0C); take the one keyed 1
+/// (2 in split screen, when *(game+0x8C)+0x34 and +0x36 are both set). 0 when the chain is not
+/// up yet — the ordinary case out of game, and why the caller keeps the pull cache as a
 /// fallback. Every hop is a guarded read, so a half-built chain reads back 0 rather than faults.
 static uint32_t resolve_camera_manager(const uint8_t* base) {
     const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
@@ -13810,7 +14166,11 @@ static uint32_t resolve_camera_manager(const uint8_t* base) {
         if (u32(entry) != key) {
             continue;
         }
-        const uint32_t view = u32(entry + 4u);
+        const uint32_t player = u32(entry + 4u);
+        if (!plausible(player)) {
+            return 0;
+        }
+        const uint32_t view = u32(player + 4u);
         if (!plausible(view)) {
             return 0;
         }
@@ -13818,6 +14178,60 @@ static uint32_t resolve_camera_manager(const uint8_t* base) {
         return plausible(manager) ? manager : 0u;
     }
     return 0;
+}
+
+/// Where the guest keeps the two cameras it blends between, and the offset of the live one.
+///
+/// The guest blends a camera pair as it does bodies: `sub_82278DD0` calls
+/// `sub_8228FEF0(dest, game+0x10, live, alpha)` at `0x82278e2c`-`0x82278e40`, and the alpha in
+/// `f1` is the same `f28` (the `fdivs` at `0x822771e4`) that `sub_822112D8` gets for every
+/// renderable.
+///
+/// Prev is latched into `game+0x10` by five inlined stores at `0x82277234`-`0x8227725c`, only
+/// when a new game tick starts (`beq cr6, loc_82277298` at `0x82277200`) — position to
+/// `game+0x10`, the two basis vectors to `+0x20`/`+0x30`, the fov to `+0x40`, the snap byte to
+/// `+0x44`.
+///
+/// Live is what `sub_82265F90` returns: `manager+0x90` normally, `manager+0x130` in split
+/// screen (`*(game+0x11C) == 1` with both `*(game+0x8C)+0x34` and `+0x36` set). It is memoised
+/// against KeTickCount at `manager+0xD0` (at most once a millisecond), unlike the pull cache at
+/// 0x8331A230, which refreshes only when a Lua frustum native runs.
+///
+/// Both blocks are the same 0x38 layout: pos +0x00, up +0x10, forward +0x20, horizontal fov
+/// +0x30, snap byte +0x34. Returns false when the chain is not up.
+static bool resolve_camera_pair(const uint8_t* base, uint32_t* out_prev, uint32_t* out_live) {
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+
+    const uint32_t mode = u32(0x83496AB8u);
+    if (!plausible(mode)) {
+        return false;
+    }
+    const uint32_t game = u32(mode + 0x0Cu);
+    if (!plausible(game)) {
+        return false;
+    }
+
+    const uint32_t manager = resolve_camera_manager(base);
+    if (!plausible(manager)) {
+        return false;
+    }
+
+    // The split-screen block, on the guest's own test rather than ours.
+    uint32_t live = manager + 0x90u;
+    if (u32(game + 0x11Cu) == 1u) {
+        const uint32_t split = u32(game + 0x8Cu);
+        if (plausible(split) && GuestByteAt(base, split + 0x34u) != 0 &&
+            GuestByteAt(base, split + 0x36u) != 0) {
+            live = manager + 0x130u;
+        }
+    }
+
+    *out_prev = game + 0x10u;
+    *out_live = live;
+    return true;
 }
 
 /// The guest's camera, for Godot to render through.
@@ -13879,15 +14293,17 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCamera(float* out) {
     // refreshes when a Lua frustum native runs, and in game none has yet, so it reads the default
     // pose and the world renders through nothing. Coherent double-read, same unsynchronised
     // stores as the cache; used only when it resolves to a real forward vector, else fall through.
-    // OFF until the manager+0xE0 layout is confirmed: a first cut read `pos`/`fwd` back as a
-    // static ~3.79 with a ~0 fov (fwd not even unit length), so the walk resolves an object but
-    // those offsets are not the camera block. `REFII_CAMERA_PUSHED_BLOCK=1` re-enables it, and
-    // `REFII_CAMERA_DEBUG=1` dumps the walk and a float window so the real offsets can be found.
+    // On by default; the live block is the one `sub_82265F90` returns (`manager+0x90`,
+    // `manager+0x130` split screen). `REFII_CAMERA_PUSHED_BLOCK=0` falls back to the pull cache,
+    // and `REFII_CAMERA_DEBUG=1` dumps the walk and a float window.
     static const bool use_pushed_camera = [] {
         const char* value = std::getenv("REFII_CAMERA_PUSHED_BLOCK");
-        return value != nullptr && value[0] == '1';
+        return value == nullptr || value[0] != '0';
     }();
-    const uint32_t manager = use_pushed_camera ? resolve_camera_manager(base) : 0u;
+    uint32_t prev_block = 0;
+    uint32_t live_block = 0;
+    const bool pair_up = use_pushed_camera && resolve_camera_pair(base, &prev_block, &live_block);
+    const uint32_t manager = pair_up ? live_block : 0u;
     if (manager != 0u) {
         static const bool debug_camera = [] {
             const char* value = std::getenv("REFII_CAMERA_DEBUG");
@@ -13903,12 +14319,13 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCamera(float* out) {
                     return v;
                 };
                 std::string floats;
-                for (uint32_t off = 0x90u; off <= 0x130u; off += 4u) {
+                for (uint32_t off = 0u; off <= 0x38u; off += 4u) {
                     char buf[32];
                     std::snprintf(buf, sizeof(buf), "%02X:%.3f ", off, f(manager + off));
                     floats += buf;
                 }
-                REXLOG_INFO("Refii camera manager 0x{:08X} floats {}", manager, floats);
+                REXLOG_INFO("Refii camera block 0x{:08X} (prev 0x{:08X}) floats {}", manager,
+                            prev_block, floats);
             }
         }
 
@@ -13916,8 +14333,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCamera(float* out) {
         uint8_t b[0x38];
         bool coherent = false;
         for (int attempt = 0; attempt < 4 && !coherent; ++attempt) {
-            CopyGuest(base, manager + 0xE0u, a, sizeof(a));
-            CopyGuest(base, manager + 0xE0u, b, sizeof(b));
+            CopyGuest(base, manager, a, sizeof(a));
+            CopyGuest(base, manager, b, sizeof(b));
             coherent = std::memcmp(a, b, sizeof(a)) == 0;
         }
 
@@ -14002,6 +14419,97 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCamera(float* out) {
 
     out[9] = read_float(0x30u);          // horizontal FOV, radians
     out[10] = first[0x34u] != 0 ? 1.0f : 0.0f;
+    return 1;
+}
+
+/// The two cameras the guest blends between, so the host blends them by the same alpha it
+/// uses for bodies (`sub_8228FEF0` and `sub_822112D8` take the same alpha register).
+///
+/// Fills 22 floats: live pos[3], up[3], forward[3], horizontal fov, snap flag, then the same
+/// eleven for the previous camera. The snap flag is the guest's override: `lbz r11, 0x34(r30)`
+/// on the live block at `0x8228ff40` forces alpha to 1.0 (a cut). Returns 1 when both blocks
+/// read coherently, 0 otherwise, and the caller falls back to `RefiiHostGetCamera`.
+REFII_HOST_ABI_EXPORT int RefiiHostGetCameraPair(float* out) {
+    if (out == nullptr) {
+        return 0;
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    uint32_t prev_at = 0;
+    uint32_t live_at = 0;
+    if (!resolve_camera_pair(base, &prev_at, &live_at)) {
+        return 0;
+    }
+
+    // Unsynchronised stores with no sequence counter, same as the pull cache: read twice and
+    // require agreement. Both blocks in one pass, so a tick boundary between them cannot hand
+    // back a prev from one tick and a live from another.
+    uint8_t first[0x70];
+    uint8_t second[0x70];
+    bool coherent = false;
+    for (int attempt = 0; attempt < 4 && !coherent; ++attempt) {
+        CopyGuest(base, live_at, first, 0x38u);
+        CopyGuest(base, prev_at, first + 0x38u, 0x38u);
+        CopyGuest(base, live_at, second, 0x38u);
+        CopyGuest(base, prev_at, second + 0x38u, 0x38u);
+        coherent = std::memcmp(first, second, sizeof(first)) == 0;
+    }
+
+    if (!coherent) {
+        return 0;
+    }
+
+    const auto read_float = [&first](uint32_t offset) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, first + offset, sizeof(bits));
+        bits = __builtin_bswap32(bits);
+        float value = 0.0f;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+
+    for (uint32_t half = 0; half < 2u; ++half) {
+        const uint32_t at = half * 0x38u;
+        const uint32_t into = half * 11u;
+        for (uint32_t lane = 0; lane < 3u; ++lane) {
+            out[into + lane] = read_float(at + 0x00u + lane * 4u);       // position
+            out[into + 3u + lane] = read_float(at + 0x10u + lane * 4u);  // up
+            out[into + 6u + lane] = read_float(at + 0x20u + lane * 4u);  // forward
+        }
+        out[into + 9u] = read_float(at + 0x30u);                          // horizontal FOV
+        out[into + 10u] = first[at + 0x34u] != 0 ? 1.0f : 0.0f;           // snap
+    }
+
+    // A forward vector is the cheapest thing that tells a real camera from a zeroed block, and
+    // the previous one is zero for the whole first tick of a level.
+    const float live2 = out[6] * out[6] + out[7] * out[7] + out[8] * out[8];
+    const float prev2 = out[17] * out[17] + out[18] * out[18] + out[19] * out[19];
+    if (!(live2 > 1e-4f)) {
+        return 0;
+    }
+    if (!(prev2 > 1e-4f)) {
+        // Nothing latched yet: hand the live camera back as both halves so the caller blends
+        // between identical endpoints rather than through the origin.
+        for (uint32_t i = 0; i < 11u; ++i) {
+            out[11u + i] = out[i];
+        }
+    }
+
+    for (uint32_t i = 0; i < 22u; ++i) {
+        if (!(out[i] == out[i]) || out[i] < -1e18f || out[i] > 1e18f) {
+            return 0;
+        }
+    }
+
     return 1;
 }
 

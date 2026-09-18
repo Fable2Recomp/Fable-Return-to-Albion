@@ -63,6 +63,22 @@ public static class Engine_LevelBakedLighting
 	/// <summary>Metadata key holding a node's baked probe sample as three <c>Vector4</c>.</summary>
 	public const string ProbeMeta = "probe_sh";
 
+	// Cached StringNames: a string passed where Godot wants a StringName is converted on every
+	// call, and these are asked for once per instance per relight.
+	public static readonly StringName ProbeMetaName = ProbeMeta;
+	public static readonly StringName ProbeAtMetaName = "probe_at";
+	public static readonly StringName BakeModeMetaName = "bake_mode";
+	public static readonly StringName BakeKeyMetaName = "bake_key";
+	private static readonly float[] WhiteLightmap = { 1f, 1f, 1f };
+	private static readonly StringName Param_ambient_colour = "ambient_colour";
+	private static readonly StringName Param_darkening_colour = "darkening_colour";
+	private static readonly StringName Param_lightmap_colour = "lightmap_colour";
+	private static readonly StringName Param_probe_b = "probe_b";
+	private static readonly StringName Param_probe_g = "probe_g";
+	private static readonly StringName Param_probe_r = "probe_r";
+	private static readonly StringName Param_sun_colour = "sun_colour";
+	private static readonly StringName Param_sun_direction = "sun_direction";
+
 	/// <summary>Where a runtime entity last sampled the probe field (region-local Godot axes).</summary>
 	public const string ProbeAtMeta = "probe_at";
 
@@ -84,13 +100,13 @@ public static class Engine_LevelBakedLighting
 		LightProbeField? probes = CurrentProbes;
 		if (probes is not null && probes.HasData)
 		{
-			bool sampled = node.HasMeta(ProbeAtMeta) &&
-				node.GetMeta(ProbeAtMeta) is { VariantType: Variant.Type.Vector3 } at &&
+			bool sampled = node.HasMeta(ProbeAtMetaName) &&
+				node.GetMeta(ProbeAtMetaName) is { VariantType: Variant.Type.Vector3 } at &&
 				at.AsVector3().DistanceSquaredTo(regionLocal) < 4f;
 			if (!sampled)
 			{
 				StoreProbeSample(node, regionLocal, probes);
-				node.SetMeta(ProbeAtMeta, regionLocal);
+				node.SetMeta(ProbeAtMetaName, regionLocal);
 			}
 		}
 
@@ -146,7 +162,7 @@ public static class Engine_LevelBakedLighting
 			return;
 		}
 
-		node.SetMeta(ProbeMeta, new Godot.Collections.Array<Vector4>
+		node.SetMeta(ProbeMetaName, new Godot.Collections.Array<Vector4>
 		{
 			sample.R, sample.G, sample.B,
 		});
@@ -165,7 +181,7 @@ public static class Engine_LevelBakedLighting
 		float g = Mathf.Pow(((d3dColour >> 8) & 0xFF) / 255.0f, 2.2f) / ShBand0;
 		float b = Mathf.Pow((d3dColour & 0xFF) / 255.0f, 2.2f) / ShBand0;
 
-		node.SetMeta(ProbeMeta, new Godot.Collections.Array<Vector4>
+		node.SetMeta(ProbeMetaName, new Godot.Collections.Array<Vector4>
 		{
 			new Vector4(r, 0f, 0f, 0f), new Vector4(g, 0f, 0f, 0f), new Vector4(b, 0f, 0f, 0f),
 		});
@@ -231,6 +247,10 @@ public static class Engine_LevelBakedLighting
 	/// baked colours through the saved scene as node metadata, the scene carries the gdb path
 	/// and the bakes are read back out of the bank the same way the environment theme is.
 	/// </summary>
+	/// <remarks>
+	/// Callable from a worker. The first call for a level parses the whole .lmp; the load stays
+	/// inside the lock so two callers asking at once parse once.
+	/// </remarks>
 	public static LightmapContainer? ContainerFor(string gdbPath)
 	{
 		if (gdbPath.Length == 0)
@@ -238,18 +258,27 @@ public static class Engine_LevelBakedLighting
 			return null;
 		}
 
-		if (ContainerCache.TryGetValue(gdbPath, out LightmapContainer? cached))
+		lock (ContainerCache)
 		{
-			return cached;
-		}
+			if (ContainerCache.TryGetValue(gdbPath, out LightmapContainer? cached))
+			{
+				return cached;
+			}
 
-		TryLoad(gdbPath, Refii.Models.Engine_BnkMeshLoader.ReadBytes,
-			out LightmapContainer? container, out _);
-		ContainerCache[gdbPath] = container;
-		return container;
+			TryLoad(gdbPath, Refii.Models.Engine_BnkMeshLoader.ReadBytes,
+				out LightmapContainer? container, out _);
+			ContainerCache[gdbPath] = container;
+			return container;
+		}
 	}
 
-	public static void ClearContainerCache() => ContainerCache.Clear();
+	public static void ClearContainerCache()
+	{
+		lock (ContainerCache)
+		{
+			ContainerCache.Clear();
+		}
+	}
 
 	/// <summary>
 	/// Returns a copy of <paramref name="mesh"/> carrying the authored per-vertex bake, or null
@@ -335,7 +364,7 @@ public static class Engine_LevelBakedLighting
 			arrays[(int)Mesh.ArrayType.Color] = vertexColours;
 			cursor += count;
 
-			baked.AddSurfaceFromArrays(source.Primitives[s], arrays);
+			baked.AddSurfaceFromArrays(source.Primitives[s], arrays, null, source.Lods[s]);
 			int added = baked.GetSurfaceCount() - 1;
 			baked.SurfaceSetName(added, source.Names[s]);
 			baked.SurfaceSetMaterial(added, source.Materials[s]);
@@ -351,6 +380,7 @@ public static class Engine_LevelBakedLighting
 		public Mesh.PrimitiveType[] Primitives = System.Array.Empty<Mesh.PrimitiveType>();
 		public string[] Names = System.Array.Empty<string>();
 		public Material?[] Materials = System.Array.Empty<Material?>();
+		public Godot.Collections.Dictionary?[] Lods = System.Array.Empty<Godot.Collections.Dictionary?>();
 	}
 
 	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ArrayMesh, SourceSurfaces>
@@ -374,6 +404,7 @@ public static class Engine_LevelBakedLighting
 			Primitives = new Mesh.PrimitiveType[surfaces],
 			Names = new string[surfaces],
 			Materials = new Material?[surfaces],
+			Lods = new Godot.Collections.Dictionary?[surfaces],
 		};
 
 		for (int s = 0; s < surfaces; s++)
@@ -384,6 +415,7 @@ public static class Engine_LevelBakedLighting
 			read.Primitives[s] = mesh.SurfaceGetPrimitiveType(s);
 			read.Names[s] = mesh.SurfaceGetName(s);
 			read.Materials[s] = mesh.SurfaceGetMaterial(s);
+			read.Lods[s] = Refii.Models.Engine_MdlMesh.SurfaceLods(mesh, s);
 		}
 
 		lock (SurfaceCache)
@@ -501,49 +533,129 @@ public static class Engine_LevelBakedLighting
 	}
 
 	/// <summary>
+	/// The remaster's bake dial as the shader computes it (`fable_bake` in
+	/// fable_lighting.gdshaderinc): interiors and a disabled dial ride at full strength.
+	/// Mirrored here so the same factor can be applied to a static prop that has no authored
+	/// bake to scale.
+	/// </summary>
+	public static float AuthoredBakeWeight
+	{
+		get
+		{
+			float weight = BakeWeight;
+			float authored = weight > 1f ? weight : (InteriorNow > 0.5f || weight <= 0f ? 1f : weight);
+			return authored * InteriorBakeNow;
+		}
+	}
+
+	/// <summary>Mirrors of the global shader parameters, so this never round-trips the render thread.</summary>
+	public static float BakeWeight = 0.45f;
+
+	public static float InteriorNow;
+
+	public static float InteriorBakeNow = 1f;
+
+	/// <summary>
+	/// Applies the authored-bake dial to a PROBE-LIT STATIC PROP as well.
+	///
+	/// The guest applies no per-path ambient gain: the authored-bake and PRT populations differ
+	/// only by vertex stream and shader permutation (`sub_82214940` sets a stream binding and,
+	/// for amb1, a single vertex-fetch OFFSET in c20; no colour, no intensity). The remaster's
+	/// dial on authored bakes alone is therefore a new asymmetry, which an unbaked prop must
+	/// share to match its neighbours.
+	///
+	/// It must NOT reach characters: the shader deliberately exempts the probe path for them.
+	/// Opt-in, passed only by the prop paths.
+	/// </summary>
+	public static bool DialProbeLitProps;
+
+	/// <summary>
 	/// Writes one instance's lighting into its shader parameters: the baked probe sample it is
 	/// carrying, and the theme's ambient and lightmap tint for the moment.
 	///
 	/// Called when a mesh arrives and again whenever time of day moves, so the two halves stay
 	/// together. Nothing here re-samples the probe field — the bake does not move.
 	/// </summary>
-	public static void ApplyInstanceLighting(GeometryInstance3D node, LightingFrame? frame)
+	public static void ApplyInstanceLighting(GeometryInstance3D node, LightingFrame? frame) =>
+		ApplyInstanceLighting(node, frame, staticProp: false);
+
+	/// <summary>
+	/// Nodes the prop paths have claimed. The region's periodic re-light walks one level ABOVE
+	/// the region and cannot be trusted to contain only props, so whether a node is dressing is
+	/// remembered here rather than inferred from where it sits in the tree — getting that wrong
+	/// would dim every character.
+	/// </summary>
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GeometryInstance3D, object> StaticProps = new();
+
+	private static readonly object Marked = new();
+
+	public static void MarkStaticProp(GeometryInstance3D node)
 	{
+		if (!StaticProps.TryGetValue(node, out _))
+		{
+			StaticProps.Add(node, Marked);
+		}
+	}
+
+	public static void ApplyInstanceLighting(GeometryInstance3D node, LightingFrame? frame, bool staticProp)
+	{
+		if (staticProp)
+		{
+			MarkStaticProp(node);
+		}
+		else
+		{
+			staticProp = StaticProps.TryGetValue(node, out _);
+		}
+
 		// HasMeta FIRST, AND IT IS NOT BELT-AND-BRACES. `GetMeta(name, default)` reads as a safe
 		// lookup with a fallback and is not one: Godot returns the fallback only when the fallback
 		// is itself non-nil, and `default` for a Variant is nil. Every absent key otherwise takes
 		// the ERR_FAIL path, printing an error plus a full managed backtrace on the main thread —
 		// once per instance, every time time of day moves.
+		// The meta Variant and its Array are disposed here: left to their finalizers they survive
+		// a GC each, once per instance every time time of day moves.
 		bool probeValid = false;
-		if (node.HasMeta(ProbeMeta) &&
-			node.GetMeta(ProbeMeta) is { VariantType: Variant.Type.Array } probeMeta)
+		using Variant probeMeta = node.HasMeta(ProbeMetaName) ? node.GetMeta(ProbeMetaName) : default;
+		if (probeMeta.VariantType == Variant.Type.Array)
 		{
-			var sample = probeMeta.AsGodotArray<Vector4>();
-			if (sample.Count == 3)
+			using Godot.Collections.Array probe = probeMeta.AsGodotArray();
+			if (probe.Count == 3)
 			{
 				probeValid = true;
+				Vector4 r = probe[0].AsVector4(), g = probe[1].AsVector4(), b = probe[2].AsVector4();
 				// The remaster's ambient scale rides the L0 band only: scaling the directional
 				// L1 bands too would exaggerate the field's tilt, not its level.
 				float probeScale = AmbientScale;
-				node.SetInstanceShaderParameter("probe_r",
-					new Vector4(sample[0].X * probeScale, sample[0].Y, sample[0].Z, sample[0].W));
-				node.SetInstanceShaderParameter("probe_g",
-					new Vector4(sample[1].X * probeScale, sample[1].Y, sample[1].Z, sample[1].W));
-				node.SetInstanceShaderParameter("probe_b",
-					new Vector4(sample[2].X * probeScale, sample[2].Y, sample[2].Z, sample[2].W));
+				node.SetInstanceShaderParameter(Param_probe_r,
+					new Vector4(r.X * probeScale, r.Y, r.Z, r.W));
+				node.SetInstanceShaderParameter(Param_probe_g,
+					new Vector4(g.X * probeScale, g.Y, g.Z, g.W));
+				node.SetInstanceShaderParameter(Param_probe_b,
+					new Vector4(b.X * probeScale, b.Y, b.Z, b.W));
 			}
 		}
 
 		// The node's stated mode wins; a probe sample is only the fallback answer.
-		float mode = node.HasMeta(BakeModeMeta) &&
-			node.GetMeta(BakeModeMeta) is { VariantType: Variant.Type.Int } stored
+		float mode = node.HasMeta(BakeModeMetaName) &&
+			node.GetMeta(BakeModeMetaName) is { VariantType: Variant.Type.Int } stored
 				? stored.AsInt32()
 				: (probeValid ? 1f : 0f);
 
-		float[] lightmap = frame?.LightmapColour ?? new float[] { 1f, 1f, 1f };
-		node.SetInstanceShaderParameter(
-			"lightmap_colour",
-			new Vector4(lightmap[0], lightmap[1], lightmap[2], mode));
+		float[] lightmap = frame?.LightmapColour ?? WhiteLightmap;
+
+		// The theme factor multiplies the bake for every mode — `bake * lightmap_colour.rgb`
+		// in standard_material.gdshader, the guest's own
+		// `bake * g_LightmapFactorAndSRGBGamma + g_GlobalAmbient` — so scaling it here is
+		// exactly the dial the shader applies to the authored modes, with no shader change and
+		// no extra channel. Mode 1 only: every other mode already takes the dial inside
+		// `fable_bake`, and applying it twice would halve them again.
+		float dial = staticProp && DialProbeLitProps && mode > 0.5f && mode < 1.5f
+			? AuthoredBakeWeight
+			: 1f;
+
+		node.SetInstanceShaderParameter(Param_lightmap_colour,
+			new Vector4(lightmap[0] * dial, lightmap[1] * dial, lightmap[2] * dial, mode));
 
 		float ar = 0f, ag = 0f, ab = 0f;
 		if (frame is not null && frame.HasAmbient)
@@ -554,14 +666,13 @@ public static class Engine_LevelBakedLighting
 			ab = frame.AmbientColour[2] * frame.AmbientEnergy * ambientScale;
 		}
 
-		node.SetInstanceShaderParameter("ambient_colour", new Vector4(ar, ag, ab, 1f));
+		node.SetInstanceShaderParameter(Param_ambient_colour, new Vector4(ar, ag, ab, 1f));
 
 		// White when the theme states none, because this colour is the FLOOR of a lerp toward
 		// 1 rather than a tint — black here would drive every normal-mapped surface's ambient
 		// to nothing.
 		float[] darkening = frame?.DarkeningColour ?? new float[] { 1f, 1f, 1f };
-		node.SetInstanceShaderParameter(
-			"darkening_colour", new Vector4(darkening[0], darkening[1], darkening[2], 1f));
+		node.SetInstanceShaderParameter(Param_darkening_colour, new Vector4(darkening[0], darkening[1], darkening[2], 1f));
 
 		// THE MAIN LIGHT, for the surfaces that cannot take it through Godot's `light()`.
 		//
@@ -580,13 +691,11 @@ public static class Engine_LevelBakedLighting
 		// stated in the guest's axes and the level root is mirrored through X. This is the disc's
 		// vector, NOT the DirectionalLight3D's forward — that one is the negation.
 		float[] sunDir = frame?.SunDirection ?? new float[] { 0f, 1f, 0f };
-		node.SetInstanceShaderParameter(
-			"sun_direction", new Vector4(-sunDir[0], sunDir[1], sunDir[2], 0f));
+		node.SetInstanceShaderParameter(Param_sun_direction, new Vector4(-sunDir[0], sunDir[1], sunDir[2], 0f));
 
 		float[] sunRgb = frame?.SunColour ?? new float[] { 1f, 1f, 1f };
 		float sunEnergy = frame?.SunEnergy ?? 1f;
-		node.SetInstanceShaderParameter(
-			"sun_colour",
+		node.SetInstanceShaderParameter(Param_sun_colour,
 			new Vector4(sunRgb[0] * sunEnergy, sunRgb[1] * sunEnergy, sunRgb[2] * sunEnergy, 1f));
 	}
 
@@ -599,25 +708,52 @@ public static class Engine_LevelBakedLighting
 	/// at dawn, a blue midday ambient under an orange sun. And the running game instantiates
 	/// the packed scene, where nothing has been applied yet at all.
 	/// </summary>
-	public static void RefreshInstanceLighting(Node root, LightingFrame frame)
+	public static void RefreshInstanceLighting(Node root, LightingFrame frame) =>
+		RefreshInstanceLighting(root, frame, staticProp: false);
+
+	/// <summary>
+	/// Bumped whenever the region is re-lit. Anything that caches "I already lit this node"
+	/// compares against it, so a theme change still reaches every node.
+	/// </summary>
+	public static long LightingGeneration { get; private set; }
+
+	public static void RefreshInstanceLighting(Node root, LightingFrame frame, bool staticProp)
 	{
+		++LightingGeneration;
 		foreach (Node node in Descendants(root))
 		{
 			if (node is GeometryInstance3D instance)
 			{
-				ApplyInstanceLighting(instance, frame);
+				ApplyInstanceLighting(instance, frame, staticProp);
 			}
 		}
 	}
 
+	/// <summary>
+	/// Every node under <paramref name="root"/>, without allocating per node.
+	/// </summary>
+	/// <remarks>
+	/// `GetChildren()` marshals a new array per call; `GetChildCount()` + `GetChild(i)` does not.
+	/// Runs on every periodic re-light (`Engine_SkyEnvironmentNode.ReevaluateStep`). Order is
+	/// depth-first, children before grandchildren. The stack is local because this is a lazy
+	/// iterator: two concurrent enumerations would corrupt a shared one.
+	/// </remarks>
 	private static System.Collections.Generic.IEnumerable<Node> Descendants(Node root)
 	{
-		foreach (Node child in root.GetChildren())
+		var walk = new System.Collections.Generic.Stack<Node>();
+		for (int i = root.GetChildCount() - 1; i >= 0; --i)
 		{
-			yield return child;
-			foreach (Node grandchild in Descendants(child))
+			walk.Push(root.GetChild(i));
+		}
+
+		while (walk.Count != 0)
+		{
+			Node node = walk.Pop();
+			yield return node;
+
+			for (int i = node.GetChildCount() - 1; i >= 0; --i)
 			{
-				yield return grandchild;
+				walk.Push(node.GetChild(i));
 			}
 		}
 	}

@@ -197,8 +197,26 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 	}
 
 	/// <summary>Names the live set when it changes — type, texture, whether it resolved. Capped.</summary>
+	/// <summary>When the sprite report last ran, so it cannot run every frame.</summary>
+	private ulong _reportedAtMsec;
+
+	/// <summary>Shortest gap between sprite reports; this is a diagnostic, not a feed.</summary>
+	private const ulong ReportGapMsec = 1000;
+
 	private void Report(IReadOnlyList<Sprite> sprites, int shown)
 	{
+		// Time-gated before the line is built: the dedup below compares the finished string,
+		// which embeds a camera-dependent canvas position, so without the gate this allocated
+		// (and usually printed) every frame. Allocation rate drives GC pauses (see
+		// refii-launcher.csproj).
+		ulong now = Godot.Time.GetTicksMsec();
+		if (_reportedAtMsec != 0 && now - _reportedAtMsec < ReportGapMsec)
+		{
+			return;
+		}
+
+		_reportedAtMsec = now;
+
 		var counts = new SortedDictionary<uint, int>();
 		foreach (Sprite sprite in sprites)
 		{

@@ -35,15 +35,19 @@ public sealed partial class Engine_WaterReflection : Node
     /// <summary>Beyond this, a mirror is a few pixels of sky: leave its last frame.</summary>
     private const float ReachMetres = 160f;
 
+    /// <summary>Mesh LOD threshold in the mirror's own pixels: the guest's switch distances
+    /// scaled to 256 lines would be 0.36; this is roughly five times sooner.</summary>
+    private const float ReflectionLodPixels = 4f;
+
     /// <summary>How far a reflection camera sees. Not the main camera's range — see its use.</summary>
-    private const float ReflectionFar = 80f;
+    private const float ReflectionFar = 50f;
 
     private int _turn;
     private int _frame;
 
     /// <summary>Live levers: off, or one mirror every <see cref="Cadence"/> frames.</summary>
     public static bool Enabled = true;
-    public static int Cadence = 3;
+    public static int Cadence = 4;
 
     /// <summary>
     /// Mounts one mirrored viewport per water body. `water` is the container `Engine_LevelScene`
@@ -90,6 +94,10 @@ public sealed partial class Engine_WaterReflection : Node
                 GuiDisableInput = true,
                 HandleInputLocally = false,
                 Msaa3D = Viewport.Msaa.Disabled,
+
+                // A 256-pixel mirror: the coarser LOD of anything whose detail is under four
+                // of its pixels.
+                MeshLodThreshold = ReflectionLodPixels,
             };
 
             var camera = new Camera3D

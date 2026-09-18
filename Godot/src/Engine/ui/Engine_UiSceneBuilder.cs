@@ -219,6 +219,19 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
+	/// Writes a live rotation.z onto a built or cloned node, turning it about its authored pivot.
+	/// The same origin contract as <see cref="SetLiveScale"/>: the basis carries the rotation, so
+	/// assigning <c>Rotation</c> alone turns the element about its own middle instead.
+	/// </summary>
+	public static void SetLiveRotationZ(Node3D node, float radians)
+	{
+		Vector3 pivot = PivotOf(node);
+		Vector3 stated = node.Position + (node.Transform.Basis * pivot);
+		node.Rotation = node.Rotation with { Z = radians };
+		node.Position = stated - (node.Transform.Basis * pivot);
+	}
+
+	/// <summary>
 	/// Each element's POSITION, in Godot space — not its node origin, which has the pivot term
 	/// folded in and cannot be separated once a scale has changed underneath it.
 	/// </summary>

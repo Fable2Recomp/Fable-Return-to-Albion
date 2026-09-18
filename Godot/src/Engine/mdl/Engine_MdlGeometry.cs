@@ -47,6 +47,20 @@ public sealed class MdlGeometry
 
     public bool AuthoredNormals { get; set; }
 
+    /// <summary>
+    /// Built from a buffer whose indices address LOD 0's vertices, so
+    /// <see cref="SourceVertices"/> is in LOD 0's numbering; false for a coarser LOD's own
+    /// vertices, whose numbering is that payload's alone.
+    /// </summary>
+    public bool SharesLod0Vertices { get; set; }
+
+    /// <summary>
+    /// Coarser levels over this surface, finest first: the level's mean triangle edge length in
+    /// model units, and its triangle list indexing <see cref="Positions"/> in the file's
+    /// winding. Empty for a model that ships one LOD.
+    /// </summary>
+    public List<(float EdgeLength, uint[] Indices)> Lods { get; } = new();
+
     public int VertexCount => Positions.Length / 3;
 
     public int TriangleCount => Indices.Length / 3;
@@ -65,7 +79,17 @@ public static class Engine_MdlGeometry
     private const int VertexStride = 28;
     private const int UvOffset = 20;
 
-    public static bool TryBuild(byte[] data, MdlInfo info, out List<MdlGeometry> geometry)
+    public static bool TryBuild(byte[] data, MdlInfo info, out List<MdlGeometry> geometry) =>
+        TryBuild(data, info.MeshBuffers, info.Meshes, info.HideRegions, info.Bones.Count,
+            out geometry);
+
+    /// <summary>
+    /// One payload's buffers against that payload's own tables: LOD 0's through the public
+    /// overload, a coarser LOD's through <see cref="MdlLod"/>.
+    /// </summary>
+    internal static bool TryBuild(
+        byte[] data, IReadOnlyList<MdlMeshBuffer> buffers, IReadOnlyList<MdlMesh> meshes,
+        IReadOnlyList<string> hideRegions, int boneCount, out List<MdlGeometry> geometry)
     {
         geometry = new List<MdlGeometry>();
 
@@ -74,9 +98,10 @@ public static class Engine_MdlGeometry
         // which of them we managed to decode — a bake is indexed against all of them.
         int vertexBase = 0;
 
-        foreach (MdlMeshBuffer mb in info.MeshBuffers)
+        foreach (MdlMeshBuffer mb in buffers)
         {
-            int bufferBase = vertexBase;
+            // A buffer over LOD 0's vertices numbers them as LOD 0 does.
+            int bufferBase = mb.SharesLod0Vertices ? mb.SharedVertexBase : vertexBase;
             vertexBase += (int)mb.VertexCount;
 
             if (mb.VertexCount == 0 || mb.FaceCount == 0)
@@ -98,7 +123,7 @@ public static class Engine_MdlGeometry
 
             if (boneIds is not null && boneWeights is not null)
             {
-                FilterBoneWeights(boneIds, boneWeights, (int)info.Bones.Count);
+                FilterBoneWeights(boneIds, boneWeights, boneCount);
             }
 
             ConvertZUpToYUp(positions);
@@ -120,7 +145,7 @@ public static class Engine_MdlGeometry
 
             if (mb.SubMeshes.Count > 1)
             {
-                AddSubMeshSurfaces(geometry, info, mb, positions, uvs, normals,
+                AddSubMeshSurfaces(geometry, meshes, hideRegions, mb, positions, uvs, normals,
                     tangents, boneIds, boneWeights, strip, bufferBase);
                 continue;
             }
@@ -182,9 +207,10 @@ public static class Engine_MdlGeometry
                 Tangents = tangents ?? Array.Empty<float>(),
                 BoneIds = boneIds ?? Array.Empty<int>(),
                 BoneWeights = boneWeights ?? Array.Empty<float>(),
-                Name = ResolveName(info, mb.MeshIndex, -1),
-                Material = ResolveMaterial(info, mb.MeshIndex, 0),
+                Name = ResolveName(meshes, mb.MeshIndex, -1),
+                Material = ResolveMaterial(meshes, mb.MeshIndex, 0),
                 SourceVertices = Identity(bufferBase, (int)mb.VertexCount),
+                SharesLod0Vertices = mb.SharesLod0Vertices,
             };
 
             geometry.Add(geo);
@@ -426,7 +452,8 @@ public static class Engine_MdlGeometry
     }
 
     private static void AddSubMeshSurfaces(
-        List<MdlGeometry> geometry, MdlInfo info, MdlMeshBuffer mb,
+        List<MdlGeometry> geometry, IReadOnlyList<MdlMesh> meshes,
+        IReadOnlyList<string> hideRegions, MdlMeshBuffer mb,
         float[] positions, float[] uvs, float[]? normals,
         float[]? tangents, int[]? boneIds, float[]? boneWeights, ushort[] strip,
         int bufferBase)
@@ -573,24 +600,26 @@ public static class Engine_MdlGeometry
                 Tangents = subTangents ?? Array.Empty<float>(),
                 BoneIds = subBoneIds ?? Array.Empty<int>(),
                 BoneWeights = subBoneWeights ?? Array.Empty<float>(),
-                Name = ResolveName(info, mb.MeshIndex, si),
-                Region = sub.RegionIndex < info.HideRegions.Count
-                    ? info.HideRegions[(int)sub.RegionIndex]
+                Name = ResolveName(meshes, mb.MeshIndex, si),
+                Region = sub.RegionIndex < hideRegions.Count
+                    ? hideRegions[(int)sub.RegionIndex]
                     : sub.RegionIndex == uint.MaxValue ? string.Empty : "#" + sub.RegionIndex,
-                Material = ResolveMaterial(info, mb.MeshIndex, sub.MaterialIndex),
+                Material = ResolveMaterial(meshes, mb.MeshIndex, sub.MaterialIndex),
                 SourceVertices = subSource,
+                SharesLod0Vertices = mb.SharesLod0Vertices,
             });
         }
     }
 
-    private static MdlMaterial? ResolveMaterial(MdlInfo info, uint meshIndex, int materialIndex)
+    private static MdlMaterial? ResolveMaterial(
+        IReadOnlyList<MdlMesh> meshes, uint meshIndex, int materialIndex)
     {
-        if (meshIndex >= info.Meshes.Count)
+        if (meshIndex >= meshes.Count)
         {
             return null;
         }
 
-        List<MdlMaterial> materials = info.Meshes[(int)meshIndex].Materials;
+        List<MdlMaterial> materials = meshes[(int)meshIndex].Materials;
         if (materials.Count == 0)
         {
             return null;
@@ -601,10 +630,10 @@ public static class Engine_MdlGeometry
             : materials[0];
     }
 
-    private static string ResolveName(MdlInfo info, uint meshIndex, int subIndex)
+    private static string ResolveName(IReadOnlyList<MdlMesh> meshes, uint meshIndex, int subIndex)
     {
-        string baseName = meshIndex < info.Meshes.Count && info.Meshes[(int)meshIndex].Name.Length != 0
-            ? info.Meshes[(int)meshIndex].Name
+        string baseName = meshIndex < meshes.Count && meshes[(int)meshIndex].Name.Length != 0
+            ? meshes[(int)meshIndex].Name
             : "mesh_" + meshIndex;
 
         return subIndex < 0 ? baseName : baseName + "_" + subIndex;

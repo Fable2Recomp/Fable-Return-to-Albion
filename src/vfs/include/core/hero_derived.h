@@ -72,10 +72,15 @@ struct HeroDerived {
     /// The hero's title as the Babel tag the guest resolves; empty when unresolved.
     char title_tag[64] = {};
 
-    /// The eleven attractiveness contributions in page order, then the slider's total.
+    /// The eleven attractiveness contributions in page order, then the slider's own position.
+    ///
+    /// `attractiveness_fraction` is 0..1 as `sub_829BA860` states it to the meter, not the sum
+    /// of the eleven rows: the guest's sum also carries preference axes 0 and 2, which the page
+    /// never displays, and the "BalancingAugmentations" GDB bonus. It clamps to [-100, 100] and
+    /// scales by `(total + 100) * 0.0049999999` before the store, so the curve is already applied.
     static constexpr uint32_t kAttractivenessCount = 11;
     float attractiveness[kAttractivenessCount] = {};
-    float attractiveness_total = 0.0f;
+    float attractiveness_fraction = 0.0f;
 
     /// The dog, when one exists: `dog_known` gates the whole page.
     bool dog_known = false;
