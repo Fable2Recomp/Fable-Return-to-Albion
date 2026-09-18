@@ -34,6 +34,14 @@ set(REFII_VFS_RUNTIME_SOURCES
     # RTLD_GLOBAL, unresolvable in a Windows DLL, and against refii_payload/payload.h either
     # way.
     ${REFII_VFS_ROOT}/src/core/guest_tick_pump_state.cpp
+    # The effect transforms and the targeting highlight the guest's own setters state. Same
+    # rule and same direction of travel as the queue above: the PAYLOAD writes (the hooks in
+    # src/hooks/particle_transform.cpp and src/hooks/target_highlight.cpp) and the HOST BRIDGE
+    # reads. They sat beside those hooks, reached by `dlsym(RTLD_DEFAULT, ...)`, which resolves
+    # only because the payload is dlopen'd RTLD_GLOBAL on Linux -- on Windows there is no
+    # RTLD_DEFAULT to compile against and no global scope to look a name up in.
+    ${REFII_VFS_ROOT}/src/core/stated_fx_state.cpp
+    ${REFII_VFS_ROOT}/src/core/target_highlight_state.cpp
     ${REFII_VFS_ROOT}/src/core/host_asset_reader.cpp
     # The UI cut's arrival queue: the intercepted `GUI.*` calls and their arguments. Same rule
     # as the pump's queue above and for the same direction of travel — the PAYLOAD posts (the

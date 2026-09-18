@@ -220,6 +220,30 @@ inline void EnsureAlternateSignalStack() {
 /// and then destroys what is due.
 void NoteSpellFxInstance(uint32_t instance);
 void SweepOrphanSpellFx(PPCContext& ctx, uint8_t* base);
+
+// The effect transforms and the targeting highlight the guest states — defined in
+// src/core/stated_fx_state.cpp and src/core/target_highlight_state.cpp, which link into
+// librefii_vfs. The PAYLOAD writes and the HOST BRIDGE reads, so the tables cannot live beside
+// the hooks that fill them; see those files. The hooks compile into the payload, so they cross
+// through the C entries in core/payload_bridge.h rather than by C++ symbol.
+
+/// One effect's stated world position: all four lanes of the setter's vector register.
+inline void NoteFxPosition(uint32_t instance, const float* lanes) {
+  refii_bridge_note_fx_position(instance, lanes);
+}
+
+/// Its stated orientation: the quaternion's four register halves, high word first.
+inline void NoteFxOrientation(uint32_t instance, const uint32_t* lanes) {
+  refii_bridge_note_fx_orientation(instance, lanes);
+}
+
+/// The colour stated for one renderable component, packed big-endian with R in the top byte.
+inline void NoteHighlightColour(uint32_t component, uint32_t rgba) {
+  refii_bridge_note_highlight_colour(component, rgba);
+}
+
+/// An entity became or stopped being a target. Counted only.
+inline void NoteHighlightTarget() { refii_bridge_note_highlight_target(); }
 inline void GuestTickPumpNoteRan() { refii_bridge_guest_tick_pump_note_ran(); }
 
 /// Records a debug-call/debug-lua outcome where the host's RefiiHostGetDebugCallResult reads it.

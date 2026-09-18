@@ -973,7 +973,17 @@ public partial class LauncherApp : Control
 		noticeBox.ContentMarginLeft = LauncherTokens.Sp4;
 		noticeBox.ContentMarginRight = LauncherTokens.Sp4;
 		_warningPanel.AddThemeStyleboxOverride("panel", noticeBox);
-		_warningLabel.Text = LauncherTheme.WarningText;
+		// The ini states the notice; when it does not, the line the scene carries stands. This
+		// assigned LauncherTheme.WarningText unconditionally, and its default is the empty
+		// string — no launcher.ini ships one, so the pill drew empty over the artwork.
+		if (LauncherTheme.WarningText.Length != 0)
+		{
+			_warningLabel.Text = LauncherTheme.WarningText;
+		}
+
+		// An ini that states an empty notice means no notice: hide the pill rather than float
+		// an empty one.
+		_warningPanel.Visible = _warningLabel.Text.Length != 0;
 		_warningLabel.HorizontalAlignment = HorizontalAlignment.Center;
 		_warningLabel.AddThemeColorOverride("font_color", new Color(LauncherTokens.Cream, 0.82f));
 

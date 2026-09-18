@@ -139,6 +139,16 @@ int32_t FrontEndSubtitles();
 /// tick. Bit N = tab N available, N in 2..8; 0 means not sampled yet.
 uint32_t PauseTabsMask();
 
+// Defined in src/vfs/src/core/stated_fx_state.cpp and
+// src/vfs/src/core/target_highlight_state.cpp —
+// what the guest's own setters stated, recorded by the hooks in the payload. Ordinary C++
+// symbols because both ends of THIS call are our build; the payload's end crosses through the
+// C entries in core/payload_bridge.h. These were dlsym'd out of the payload until 2026-09-18,
+// which cannot compile on Windows and was never right on Linux either.
+uint32_t StatedFxCount();
+uint32_t StatedFxTransforms(uint32_t* out_words, uint32_t word_capacity);
+uint32_t StatedHighlightFor(uint32_t component);
+
 // The characters behind an LHString handle — two hops, see core/guest_state.h. Declared, not
 // included: this file cannot see the vfs hook headers that header pulls in.
 
@@ -5017,8 +5027,10 @@ static std::atomic<uint32_t> g_fx_refused_transforms{0u};
 /// identity `RefiiHostGetActiveFx` reports. These setters are not the only writers of an
 /// emitter's transform (see particle_transform.cpp); this is an instrument.
 ///
-/// Resolved by dlsym, not linked: the hook lives in the VFS/hooks library, which this one does
-/// not link against but which shares the process, so absence means "no stated feed".
+/// The hook that records these compiles into the payload, which this library must not link;
+/// the table it writes lives in refii_vfs, which both link, so the read is a direct call and a
+/// feed nothing has stated yet is simply empty.
+///
 /// Ten words a row: instance, sequence, four position lanes, four orientation lanes. All four
 /// VMX lanes are carried because which lane holds x depends on the recompiler's register layout.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetStatedFx(uint32_t* out_words, uint32_t word_capacity) {
@@ -5026,21 +5038,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetStatedFx(uint32_t* out_words, uint32_
         return 0u;
     }
 
-    using StatedFn = uint32_t (*)(uint32_t*, uint32_t);
-    static StatedFn stated = reinterpret_cast<StatedFn>(
-        dlsym(RTLD_DEFAULT, "RefiiFxStatedTransforms"));
-    if (stated == nullptr) {
-        return 0u;
-    }
-
-    return stated(out_words, word_capacity);
+    return refii::vfs::StatedFxTransforms(out_words, word_capacity);
 }
 
-/// How many transform statements the hook has seen since boot; 0 when the hook is not loaded.
+/// How many transform statements the hook has seen since boot; 0 before the first.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetStatedFxCount(void) {
-    using CountFn = uint32_t (*)(void);
-    static CountFn count = reinterpret_cast<CountFn>(dlsym(RTLD_DEFAULT, "RefiiFxStatedCount"));
-    return count != nullptr ? count() : 0u;
+    return refii::vfs::StatedFxCount();
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_effects) {
@@ -7005,19 +7008,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
             // write, so the host compares the bytes.
             //
             // The colour stated to the setter (hooked in `target_highlight.cpp`, past the
-            // component-159 redirect) wins; the component bytes are the fallback. Resolved by
-            // dlsym, so a missing hook falls back cleanly.
-            using HighlightFn = uint32_t (*)(uint32_t);
-            static HighlightFn stated_highlight =
-                reinterpret_cast<HighlightFn>(dlsym(RTLD_DEFAULT, "RefiiHighlightFor"));
-            const uint32_t said = stated_highlight != nullptr ? stated_highlight(renderable) : 0u;
-            if (said != 0u) {
-                row[20] = said;
-            } else
-            row[20] = (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x60u)) << 24) |
-                      (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x61u)) << 16) |
-                      (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x62u)) << 8) |
-                      static_cast<uint32_t>(GuestByteAt(base, renderable + 0x63u));
+            // component-159 redirect) wins; the component bytes are the fallback, and are what
+            // a component the setter has never named reads back as.
+            const uint32_t on_component =
+                (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x60u)) << 24) |
+                (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x61u)) << 16) |
+                (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x62u)) << 8) |
+                static_cast<uint32_t>(GuestByteAt(base, renderable + 0x63u));
+            const uint32_t said = refii::vfs::StatedHighlightFor(renderable);
+            row[20] = said != 0u ? said : on_component;
         }
 
         ++written;

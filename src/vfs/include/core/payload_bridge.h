@@ -58,6 +58,21 @@ void refii_bridge_front_end_note_subtitles(int32_t state);
 /// the host bridge, so it has to cross here rather than by C++ symbol.
 void refii_bridge_note_pause_tabs(uint32_t mask);
 
+// The effect transforms the guest states, recorded per PSInstance. Wrappers:
+// refii::vfs::NoteFx* in vfs_hooks_private.h.
+//
+// The payload's two setter hooks write and the host bridge reads, so the table lives in
+// refii_vfs (src/core/stated_fx_state.cpp) and crosses here. Four lanes each because which
+// lane holds x depends on the recompiler's register layout; the host decides.
+void refii_bridge_note_fx_position(uint32_t instance, const float* lanes);
+void refii_bridge_note_fx_orientation(uint32_t instance, const uint32_t* lanes);
+
+// The targeting highlight colour the guest states. Wrappers: refii::vfs::NoteHighlight* in
+// vfs_hooks_private.h. Same direction of travel, same reason — the table is in refii_vfs
+// (src/core/target_highlight_state.cpp). RGBA packed big-endian, R in the top byte.
+void refii_bridge_note_highlight_colour(uint32_t component, uint32_t rgba);
+void refii_bridge_note_highlight_target(void);
+
 // Menu spawn capture: a row's identity goes into a Lua table the host cannot read, so it is
 // copied from `sub_826CE8D0`'s registers. `begin` runs on `DeleteAllSpawnedMenuItems`, rows
 // follow in spawn order; both on the guest tick thread, host reads under the action-queue lock.

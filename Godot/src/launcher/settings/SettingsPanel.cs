@@ -14,8 +14,13 @@ public partial class SettingsPanel : VBoxContainer
 	private SmartStyle _style = SmartStyle.FromTheme(
 		new Color(0.02f, 0.1f, 0.2f, 1f), new Color(0.2f, 0.8f, 0.4f, 1f));
 
-	private const int NameColumnWidth = 145;
-	private const int DefaultColumnWidth = 75;
+	// Design-base column widths, at LauncherScale.Unit 1.0. They go through
+	// LauncherScale.Px like every other size in the launcher: the drawer's width scales
+	// with the window, so fixed columns overflow it at the small end — 300px of columns in
+	// a 324px drawer at 1024x640.
+	private const int BaseNameColumnWidth = 145;
+	private const int BaseDefaultColumnWidth = 75;
+	private const int BaseEditorColumnWidth = 80;
 
 	private Label _editingLabel = null!;
 	private Label _statusLabel = null!;
@@ -203,7 +208,7 @@ public partial class SettingsPanel : VBoxContainer
 	private void AddRow(GridContainer grid, RuntimeCVarDefinition definition)
 	{
 		Label name = MakeLabel(RuntimeSettingsModel.FormatDisplayName(definition));
-		name.CustomMinimumSize = new Vector2(NameColumnWidth, 0);
+		name.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseNameColumnWidth), 0);
 		name.SizeFlagsHorizontal = SizeFlags.Fill;
 		name.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
 		name.TooltipText = definition.Description;
@@ -213,14 +218,14 @@ public partial class SettingsPanel : VBoxContainer
 
 		Control editor = BuildEditor(definition, options);
 		editor.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-		editor.CustomMinimumSize = new Vector2(80, 0);
+		editor.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseEditorColumnWidth), 0);
 		grid.AddChild(editor);
 
 		// The default column shows the default the way the dropdown does — "Off", not "0".
 		string defaultText = options.Find(o => o.Value == definition.DefaultValue)?.Label
 			?? definition.DefaultValue;
 		Label defaultLabel = MakeLabel(defaultText);
-		defaultLabel.CustomMinimumSize = new Vector2(DefaultColumnWidth, 0);
+		defaultLabel.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseDefaultColumnWidth), 0);
 		defaultLabel.SizeFlagsHorizontal = SizeFlags.Fill;
 		defaultLabel.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
 		defaultLabel.TooltipText = defaultText;
@@ -300,7 +305,18 @@ public partial class SettingsPanel : VBoxContainer
 	{
 		string display = current.Length == 0 ? definition.DefaultValue : current;
 
-		var option = new OptionButton();
+		// FitToLongestItem OFF. It defaults ON, which makes the button's MINIMUM width its
+		// longest item: `renderer_renderdoc_capture_draw_target` alone asks for 186px, taking
+		// the panel's minimum to 446 against the 416 the drawer gives it. SettingsColumn grows
+		// in both directions, so the 30px overflow spilled 15px past each edge of the drawer and
+		// clipped the first character off every wrapped line. The editor column's width is the
+		// drawer's to decide, not the longest label's: a label too long for it ellipses here
+		// and is still whole in the popup.
+		var option = new OptionButton
+		{
+			FitToLongestItem = false,
+			TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+		};
 		Apply(option);
 		int selected = -1;
 		for (int i = 0; i < options.Count; i++)
