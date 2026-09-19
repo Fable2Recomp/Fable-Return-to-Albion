@@ -851,11 +851,19 @@ public partial class Engine_PropStreamer : Node3D
             {
                 multi.Multimesh.Mesh = mesh;
 
-                Aabb local = mesh.GetAabb();
-                float reach = MathF.Max(local.Position.Length(), local.End.Length());
-                if (float.IsFinite(reach) && reach > Engine_LevelProps.ModelReach)
+                // Replace the provisional streaming bounds with the union of transformed
+                // mesh bounds. Include rotation, scale and off-centre mesh origins.
+                if (multi.Multimesh.InstanceCount > 0)
                 {
-                    multi.Multimesh.CustomAabb = multi.Multimesh.CustomAabb.Grow(reach);
+                    Aabb local = mesh.GetAabb();
+                    Aabb bounds = multi.Multimesh.GetInstanceTransform(0) * local;
+                    for (int i = 1; i < multi.Multimesh.InstanceCount; i++)
+                    {
+                        bounds = bounds.Merge(multi.Multimesh.GetInstanceTransform(i) * local);
+                    }
+                    // Retain the existing conservative margin for shader-deformed plants.
+                    multi.Multimesh.CustomAabb = bounds.Grow(SwaysInWind(mesh)
+                        ? Engine_LevelProps.ModelReach : 1f);
                 }
             }
             else if (instance is MeshInstance3D single)
