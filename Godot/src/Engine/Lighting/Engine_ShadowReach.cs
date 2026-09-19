@@ -227,6 +227,13 @@ public partial class Engine_ShadowReach : Node
 			return;
 		}
 
+		// Distance culling may suppress an existing caster, but must not enable shadows
+		// explicitly disabled by its owner (for example, foliage batches).
+		if (instance.CastShadow == GeometryInstance3D.ShadowCastingSetting.Off)
+		{
+			return;
+		}
+
 		_withdrawn.Remove(id);
 		var entry = new Entry { Node = instance, Id = id };
 		_known[id] = entry;
