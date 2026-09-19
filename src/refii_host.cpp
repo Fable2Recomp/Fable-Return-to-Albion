@@ -486,20 +486,12 @@ LONG WINAPI RefiiWindowsUnhandledExceptionFilter(
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
-LONG WINAPI RefiiWindowsVectoredExceptionHandler(
-    EXCEPTION_POINTERS* exceptionPointers) {
-    if (exceptionPointers != nullptr &&
-        exceptionPointers->ExceptionRecord != nullptr &&
-        exceptionPointers->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
-        WriteWindowsCrashRecord("vectored_exception_handler", exceptionPointers);
-    }
-    return EXCEPTION_CONTINUE_SEARCH;
-}
-
 void InstallWindowsCrashRecorder() {
     static std::once_flag once;
     std::call_once(once, [] {
-        AddVectoredExceptionHandler(1, RefiiWindowsVectoredExceptionHandler);
+        // Guest-memory probes and MMIO can handle access violations normally. A vectored
+        // handler runs before those handlers, so walking and logging every fault here
+        // turns normal reads into synchronous crash reports. Record only unhandled faults.
         SetUnhandledExceptionFilter(RefiiWindowsUnhandledExceptionFilter);
     });
 }
