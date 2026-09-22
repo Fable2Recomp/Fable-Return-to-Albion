@@ -18,7 +18,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 0, binding = 0) uniform sampler2D layer_tex;
 layout(rgba16f, set = 0, binding = 1) uniform restrict writeonly image2D dst_image;
 
-/// Per slot, three vec4s: colour (rgb, alpha), screen rect (u0, v0, u1, v1), (nearest depth, 0, 0, 0).
+/// Per slot, three vec4s: colour (rgb, alpha), screen rect (u0, v0, u1, v1), (nearest corner depth, centre depth, small, 0).
 layout(set = 0, binding = 2, std430) restrict readonly buffer Objects {
 	vec4 data[];
 } objects;

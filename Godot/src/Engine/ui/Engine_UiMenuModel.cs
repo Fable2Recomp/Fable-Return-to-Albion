@@ -120,6 +120,17 @@ public sealed class Engine_UiMenuModel
 	/// <summary>Every menu the game has stated anything about.</summary>
 	public IReadOnlyDictionary<uint, Menu> Menus => _menus;
 
+	/// <summary>
+	/// Forgets every menu. For the guest leaving the game: its shutdown deletes the in-game GUI
+	/// and every presentation with it, and the next game's presentations land at reused
+	/// addresses, so a menu kept across the boundary joins the old game's rows to the new one's
+	/// screen until its Lua happens to repopulate it. The applied count is a run total and stays.
+	/// </summary>
+	public void Reset()
+	{
+		_menus.Clear();
+	}
+
 	/// <summary>How many statements have been applied, for the report.</summary>
 	public int Applied => _applied;
 

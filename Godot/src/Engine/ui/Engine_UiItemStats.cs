@@ -96,7 +96,14 @@ public static class Engine_UiItemStats
 	/// Everything the page shows for one item, or <see cref="None"/> when the record does not
 	/// resolve. `strings` is only needed for the labels, which are Babel tags.
 	/// </summary>
-	public static Stats For(uint record, Refii.Text.Engine_BabelDatabase? strings)
+	/// <param name="socketed">
+	/// The (PrimaryType, SecondaryType) pairs in THIS item's slots, from its live instance
+	/// record; null when the item was never seeded, where the guest seeds from the
+	/// definition's `InitialAugmentations` — which is then what is read here.
+	/// </param>
+	public static Stats For(
+		uint record, Refii.Text.Engine_BabelDatabase? strings,
+		IReadOnlyList<(uint Primary, uint Secondary)>? socketed = null)
 	{
 		GdbMulti? multi = Engine_GameGdb.Database;
 		if (multi is null || record == 0u || !multi.TryLookup(record, out GdbCursor at))
@@ -126,7 +133,7 @@ public static class Engine_UiItemStats
 		switch (category)
 		{
 			case 1:
-				Weapon(multi, at, lines, augments, ref primary, strings);
+				Weapon(multi, at, lines, augments, ref primary, strings, socketed);
 				break;
 
 			case 3:
@@ -197,7 +204,8 @@ public static class Engine_UiItemStats
 	/// </summary>
 	private static void Weapon(
 		GdbMulti multi, GdbCursor at, List<Line> lines, List<string> augments, ref Line primary,
-		Refii.Text.Engine_BabelDatabase? strings)
+		Refii.Text.Engine_BabelDatabase? strings,
+		IReadOnlyList<(uint Primary, uint Secondary)>? socketed)
 	{
 		if (Engine_AbilityRecords.TryRef(multi, at, WeaponComponent, out GdbCursor weapon))
 		{
@@ -227,17 +235,92 @@ public static class Engine_UiItemStats
 				Babel(strings, "GUI_SCREEN_INVENTORY_FIREARM_RANGE"), true, lines, ref primary);
 		}
 
-		// The slots, filled or `GUI_SCREEN_AUGMENT_EMPTY`. The names of what is IN a slot are
-		// live inventory state rather than GDB, so an unaugmented weapon reads correctly and an
-		// augmented one under-reports until that crosses.
+		// The slots (`sub_82469AE8`, loop at 0x8246A030): the COUNT is the definition's
+		// `NumberOfSlots`, the CONTENTS the item's own instance record — slot i is filled while
+		// i is inside that record's pairs and `GUI_SCREEN_AUGMENT_EMPTY` past them.
 		if (Engine_AbilityRecords.TryRef(multi, at, AugmentableComponent, out GdbCursor augmentable))
 		{
+			IReadOnlyList<(uint Primary, uint Secondary)> pairs =
+				socketed ?? Seeded(multi, augmentable);
 			int slots = Engine_AbilityRecords.IntOrEnumOn(augmentable, "NumberOfSlots");
 			for (int slot = 0; slot < slots && slot < 8; ++slot)
 			{
-				augments.Add(Babel(strings, AugmentEmptyTag));
+				augments.Add(slot < pairs.Count
+					? AugmentName(multi, pairs[slot], strings)
+					: Babel(strings, AugmentEmptyTag));
 			}
 		}
+	}
+
+	/// <summary>
+	/// What the guest seeds a never-touched item with: `InitialAugmentations` is a list record
+	/// of `Augmentation1..N`, each stating a `PrimaryType` and optionally a `SecondaryType`.
+	/// </summary>
+	private static List<(uint Primary, uint Secondary)> Seeded(GdbMulti multi, GdbCursor augmentable)
+	{
+		var pairs = new List<(uint, uint)>();
+		if (!Engine_AbilityRecords.TryRef(multi, augmentable, "InitialAugmentations", out GdbCursor list))
+		{
+			return pairs;
+		}
+
+		for (int i = 1; i <= 8; ++i)
+		{
+			if (!Engine_AbilityRecords.TryRef(
+					multi, list, "Augmentation" + i.ToString(CultureInfo.InvariantCulture),
+					out GdbCursor entry))
+			{
+				break;
+			}
+
+			uint primary = TypeOn(multi, entry, "PrimaryType");
+			if (primary != 0u)
+			{
+				pairs.Add((primary, TypeOn(multi, entry, "SecondaryType")));
+			}
+		}
+
+		return pairs;
+	}
+
+	private static uint TypeOn(GdbMulti multi, GdbCursor entry, string property) =>
+		multi.TryFindInherited(
+			entry, Refii.Core.Engine_GameHash.Fnv1(property), -1, out _, out uint type, out _) &&
+		type != GdbHash.Null
+			? type
+			: 0u;
+
+	/// <summary>
+	/// `sub_82608610`: the tag is `INV_ITEM_AUGMENTATION_` + the primary type's `NameTag` + `_`
+	/// [+ the secondary's + `_`] + `NAME`, and `sub_8230E0E8` tries it bare, then under
+	/// `TEXT_`, then prints the tag itself.
+	/// </summary>
+	private static string AugmentName(
+		GdbMulti multi, (uint Primary, uint Secondary) pair,
+		Refii.Text.Engine_BabelDatabase? strings)
+	{
+		string tag = "INV_ITEM_AUGMENTATION_" + TagPart(multi, pair.Primary) +
+			TagPart(multi, pair.Secondary) + "NAME";
+		string name = Babel(strings, tag);
+		if (name.Length == 0)
+		{
+			name = Babel(strings, "TEXT_" + tag);
+		}
+
+		return name.Length != 0 ? name : tag;
+	}
+
+	private static string TagPart(GdbMulti multi, uint type)
+	{
+		if (type == 0u || !multi.TryLookup(type, out GdbCursor record) ||
+			!multi.TryFindInherited(
+				record, Refii.Core.Engine_GameHash.Fnv1("NameTag"), -1, out _, out uint tag, out _))
+		{
+			return string.Empty;
+		}
+
+		string text = multi.NameOf(tag);
+		return text.Length != 0 ? text + "_" : string.Empty;
 	}
 
 	/// <summary>

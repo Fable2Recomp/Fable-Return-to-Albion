@@ -214,7 +214,10 @@ public partial class GameInput : Node
 			// against ±0.75 and emits the same codes the D-pad does — 28/29 for Y at
 			// 0x826E3C04/0x826E3C58, 30/31 for X at 0x826E3B50/0x826E3BAC.
 			menuMask ? 0 : leftX, menuMask ? 0 : leftY,
-			rightX, rightY);
+			// The card takes the right stick — it turns the model on the front and scrolls the
+			// description on the back — so the camera does not swing under it. The left stick
+			// stays live: the card does not pause the game.
+			cardMasked ? 0 : rightX, cardMasked ? 0 : rightY);
 
 		// The deadzone is ours here: `page.lua` reads `GUI.State.RightThumbStickY` raw (page.dis
 		// main.1 pc18..21) because the guest has already dead-zoned it before firing the contract

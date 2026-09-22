@@ -133,6 +133,43 @@ public static class Engine_LevelProps
 
     public const float ModelReach = 64.0f;
 
+    /// <summary>Edge of the cube a model's placements are batched by.</summary>
+    /// <remarks>
+    /// 32 m re-measured 2026-09-22 in the level viewer (Bowerstone Market, one camera): 48 / 64 / 96 m
+    /// cut the frame's draws from 2,442 to 2,357 / 2,176 / 1,868, and the viewport's CPU render
+    /// time ROSE with each, 2.16 -> 2.57 / 2.82 / 2.87 ms (GPU 3.2 -> 5.6 ms): a larger cell is
+    /// culled less often and drawn by more passes. The draws were not the cost.
+    /// </remarks>
+    public const float BatchCellMetres = 32.0f;
+
+    /// <summary>
+    /// Widens a batch's bounds to hold one instance that was written after the streamer
+    /// measured them. Godot culls the batch by that one box, so a twin driven out of its cell
+    /// would otherwise vanish with the cell. A batch with no mesh yet is measured whole when
+    /// the mesh arrives.
+    /// </summary>
+    /// <summary>A reflection in X, its own inverse: what a reflected batch's node carries for its copies.</summary>
+    public static readonly Transform3D BatchMirror = new(
+        new Basis(new Vector3(-1f, 0f, 0f), new Vector3(0f, 1f, 0f), new Vector3(0f, 0f, 1f)), Vector3.Zero);
+
+    public static void CoverInstance(MultiMesh batch, Transform3D instance)
+    {
+        if (batch.Mesh is not { } mesh)
+        {
+            return;
+        }
+
+        Aabb needed = instance * mesh.GetAabb();
+        Aabb held = batch.CustomAabb;
+        if (!held.Encloses(needed))
+        {
+            // Slack, so a prop in motion does not re-pair the batch on every frame.
+            Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.PropBounds);
+            batch.CustomAabb = held.Merge(needed.Grow(4f));
+            Engine_PropShadow.CoverBounds(batch);
+        }
+    }
+
     /// <summary>
     /// Blocks with this many instances or fewer stay as individual nodes rather than folding
     /// into a MultiMesh.
@@ -747,14 +784,17 @@ public static class Engine_LevelProps
                 continue;
             }
 
-            // Keep each model batch local so a light does not draw every placement in
-            // the region into its shadow map. Preserve original indices for bake/record data.
+            // ONE BATCH PER MODEL PER CELL. Godot culls and shadow-pairs a MultiMesh as one
+            // box: a region-wide batch is inside every light's range and every cascade, so each
+            // of them drew every placement of the model. The lists keep BLOCK indices — bake
+            // keys, colours and records are all looked up by them.
             var cells = new Dictionary<Vector3I, List<int>>();
             foreach (int index in batched)
             {
                 Vector3 at = block.Instances[index].Origin;
-                var cell = new Vector3I(Mathf.FloorToInt(at.X / 32f),
-                    Mathf.FloorToInt(at.Y / 32f), Mathf.FloorToInt(at.Z / 32f));
+                var cell = new Vector3I(Mathf.FloorToInt(at.X / BatchCellMetres),
+                    Mathf.FloorToInt(at.Y / BatchCellMetres),
+                    Mathf.FloorToInt(at.Z / BatchCellMetres));
                 if (!cells.TryGetValue(cell, out List<int>? indices))
                 {
                     cells[cell] = indices = new List<int>();
@@ -762,8 +802,10 @@ public static class Engine_LevelProps
                 indices.Add(index);
             }
 
-            foreach (List<int> spatialBatch in cells.Values)
+            foreach (KeyValuePair<Vector3I, List<int>> celled in cells)
             {
+                List<int> spatialBatch = celled.Value;
+
                 // UseColors BEFORE InstanceCount — Godot fixes the buffer format when the count is
                 // set, and turning colours on afterwards silently does nothing.
                 var multiMesh = new MultiMesh
@@ -782,16 +824,37 @@ public static class Engine_LevelProps
                 // Setting the bounds afterwards is too late: the dirty flag is already up. Bounds
                 // are therefore measured in their own pass first, which costs one extra walk of a
                 // list already in memory.
-                var bounds = new Aabb(block.Instances[spatialBatch[0]].Origin, Vector3.Zero);
+                // THE PLACEMENTS' MIRROR GOES ON THE NODE, NOT IN THE COPIES. Every placement in
+                // the level data carries a reflection (the region root carries the other one), and
+                // Godot decides which face to cull from the INSTANCE's transform: it sees a node's
+                // reflection and cannot see one inside a batch's buffer. Left in the copies, every
+                // batched prop culled its near side and showed its far side's inside — measured
+                // 2026-09-22, all 19,045 of the Market's copies reflected, a house without its
+                // front wall. So a reflected batch's node is `BatchMirror` and each copy is
+                // `BatchMirror * placement`: the same place, the same shape, and a handedness the
+                // renderer can read. A batch mixing both kinds keeps the copies as stated.
+                int reflected = 0;
                 for (int i = 0; i < spatialBatch.Count; i++)
                 {
-                    bounds = bounds.Expand(block.Instances[spatialBatch[i]].Origin);
+                    if (block.Instances[spatialBatch[i]].Basis.Determinant() < 0f)
+                    {
+                        ++reflected;
+                    }
+                }
+
+                bool mirrorOnNode = reflected == spatialBatch.Count;
+                Transform3D toBatch = mirrorOnNode ? BatchMirror : Transform3D.Identity;
+
+                var bounds = new Aabb(toBatch * block.Instances[spatialBatch[0]].Origin, Vector3.Zero);
+                for (int i = 0; i < spatialBatch.Count; i++)
+                {
+                    bounds = bounds.Expand(toBatch * block.Instances[spatialBatch[i]].Origin);
                 }
                 multiMesh.CustomAabb = bounds.Grow(ModelReach);
 
                 for (int i = 0; i < spatialBatch.Count; i++)
                 {
-                    multiMesh.SetInstanceTransform(i, block.Instances[spatialBatch[i]]);
+                    multiMesh.SetInstanceTransform(i, toBatch * block.Instances[spatialBatch[i]]);
                 }
 
                 // ONE PROBE SAMPLE PER INSTANCE, not one per block.
@@ -832,10 +895,16 @@ public static class Engine_LevelProps
                     multiMesh, batchedTransforms, probes, bakes, batchedBakeKeys,
                     batchedBakeColours);
 
+                // The cell rides in the name: `UniqueName` probes the container once per taken
+                // name, and a model with hundreds of cells under one label is that squared.
+                Vector3I at = celled.Key;
                 var node = new MultiMeshInstance3D
                 {
-                    Name = UniqueName(container, block.Label),
+                    Name = UniqueName(container, cells.Count == 1
+                        ? block.Label
+                        : $"{block.Label} [{at.X} {at.Y} {at.Z}]"),
                     Multimesh = multiMesh,
+                    Transform = toBatch,
                 };
 
                 if (block.Foliage)
@@ -877,7 +946,6 @@ public static class Engine_LevelProps
                 }
 
                 container.AddChild(node);
-
             }
 
             stats.Blocks++;

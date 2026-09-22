@@ -724,7 +724,35 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 		public int Icon = -1;
 		public int Front = -1;
 		public int Back = -1;
+
+		/// <summary>The slide owner `sub_82537128` flips: 3 `Flip2Back`, 4 `Flip2Front`.</summary>
+		public int Root = -1;
+
+		/// <summary>The front `Buttons` component: slide 1 usable, 2 not (`sub_82538910`).</summary>
+		public int FrontButtons = -1;
+
+		public int BackButtons = -1;
+
+		/// <summary>The three prompt labels, front side: Action, Info, Done.</summary>
+		public int[] Labels = { -1, -1, -1 };
+
+		/// <summary>
+		/// The file's `Mask` quad in canvas units — what the back's description is clipped to.
+		/// Null when the file authors none.
+		/// </summary>
+		public Rect2? BackClip;
 	}
+
+	/// <summary>The prompt groups under `Buttons/Buttons`, in <see cref="Joins.Labels"/> order.</summary>
+	public static readonly string[] Prompts = { "Action", "Info", "Done" };
+
+	/// <summary>Root slides that leave the reverse up: `Flip2Back` and its `FlipOutro`.</summary>
+	public const int FlipToBackSlide = 3;
+
+	public const int FlipOutroSlide = 5;
+
+	/// <summary>`Buttons` slide 2: the item cannot be used, `Action` stands at opacity 50.</summary>
+	public const int UnusableSlide = 2;
 
 	public static Joins? Resolve(Engine_UiScreen screen)
 	{
@@ -743,8 +771,40 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 			return null;
 		}
 
+		UiNode? frontButtons = Engine_UiStatedPanel.Child(front, "Buttons");
+		UiNode? backButtons = Engine_UiStatedPanel.Child(back, "Buttons");
+		UiNode? prompts = Engine_UiStatedPanel.Child(frontButtons, "Buttons");
+		int[] labels = { -1, -1, -1 };
+		for (int i = 0; i < Prompts.Length; ++i)
+		{
+			UiNode? prompt = Engine_UiStatedPanel.Child(prompts, Prompts[i]);
+			labels[i] = Engine_UiStatedPanel.Child(prompt, Prompts[i])?.Ordinal ?? -1;
+		}
+
+		UiNode? root = front;
+		while (root?.Parent is { } parent)
+		{
+			root = parent;
+		}
+
+		// `position ± 50·scale`, the builder's own mask rule; `Mask` sits at Layer level under
+		// identity parents, so its own numbers are already canvas.
+		Rect2? clip = null;
+		if (Engine_UiStatedPanel.FindByName(screen.Roots, "Mask") is { } mask)
+		{
+			float halfW = 0.5f * Engine_UiSceneBuilder.QuadBaseSize * Mathf.Abs(mask.ScaleX);
+			float halfH = 0.5f * Engine_UiSceneBuilder.QuadBaseSize * Mathf.Abs(mask.ScaleY);
+			clip = new Rect2(
+				mask.PositionX - halfW, mask.PositionY - halfH, 2f * halfW, 2f * halfH);
+		}
+
 		return new Joins
 		{
+			BackClip = clip,
+			Root = root?.Ordinal ?? -1,
+			FrontButtons = frontButtons?.Ordinal ?? -1,
+			BackButtons = backButtons?.Ordinal ?? -1,
+			Labels = labels,
 			Title = title.Ordinal,
 			Name = name.Ordinal,
 			BackText = backText?.Ordinal ?? -1,
@@ -805,10 +865,14 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 	}
 
 	/// <summary>Puts the guest's stated card on screen: strings, icon, and which side is up.</summary>
+	/// <param name="reverse">The root stands on `Flip2Back`: the description side is up.</param>
+	/// <param name="usable">`Buttons` slide 1. Slide 2 only dims `Action` to opacity 50 in the
+	/// original; here a prompt that does nothing is not drawn.</param>
+	/// <param name="labels">The stated prompt labels, in <see cref="Prompts"/> order.</param>
 	public void ShowStated(
 		string? title, string? name, string? backText,
 		uint iconHash, Texture2D? icon,
-		bool frontUp, bool backUp)
+		bool up, bool reverse, bool usable, string?[] labels)
 	{
 		if (_front is null || Theme is null)
 		{
@@ -822,16 +886,61 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 			LastReport = Theme.SetMeshText(titleNode, title);
 		}
 
-		if (!string.IsNullOrEmpty(name) &&
-			_front.GetNodeOrNull<MeshInstance3D>("NameAndIcon/Text") is { } nameNode)
+		// WRITTEN EVEN WHEN EMPTY. `sub_82538910` writes this element on every refresh, and
+		// for most items it writes nothing — leaving the file's own placeholder, the word
+		// "Text", standing under the ring.
+		if (_front.GetNodeOrNull<MeshInstance3D>("NameAndIcon/Text") is { } nameNode)
 		{
-			Theme.SetMeshText(nameNode, name);
+			Theme.SetMeshText(nameNode, name ?? string.Empty);
 		}
 
-		if (!string.IsNullOrEmpty(backText) && _back is not null &&
-			FindMesh(_back, "Text") is { } backNode)
+		if (_back is not null && FindMesh(_back, "Text") is { } backNode)
 		{
-			Theme.SetMeshText(backNode, backText);
+			// A new description, or the front coming back up, starts from the top.
+			if (_backText != backNode || backText != _backShown || !reverse)
+			{
+				if (_backText is not null && GodotObject.IsInstanceValid(_backText) && _scroll != 0f)
+				{
+					_backText.Position = _backTextRest;
+				}
+
+				_backText = backNode;
+				_backTextRest = backNode.Position;
+				_backShown = backText;
+				_scroll = 0f;
+			}
+
+			Theme.SetMeshText(backNode, backText ?? string.Empty);
+			backNode.Visible = true;
+
+			// CLIPPED IN THE CARD'S OWN SPACE. The builder bound this text to the file's `Mask`
+			// in the pattern book's coordinates; the shader clips in WORLD xy, and the card is
+			// drawn scaled and placed by its surface, so the rect is carried through this
+			// panel's transform or the description is discarded whole.
+			if (backNode.MaterialOverride is ShaderMaterial text && IsInsideTree())
+			{
+				Vector4 rect = new(-1e9f, -1e9f, 1e9f, 1e9f);
+				if (BackClip is { } clip)
+				{
+					Vector3 a = GlobalTransform * new Vector3(clip.Position.X, clip.Position.Y, 0f);
+					Vector3 b = GlobalTransform * new Vector3(clip.End.X, clip.End.Y, 0f);
+					rect = new Vector4(
+						Mathf.Min(a.X, b.X), Mathf.Min(a.Y, b.Y),
+						Mathf.Max(a.X, b.X), Mathf.Max(a.Y, b.Y));
+				}
+
+				text.SetShaderParameter("clip_rect", rect);
+				text.SetShaderParameter("opacity", 1f);
+
+				string said = $"{backText?.Length ?? -1}|{rect}|{backNode.GlobalPosition}";
+				if (reverse && said != _backSaid)
+				{
+					_backSaid = said;
+					GD.Print($"[game-ui] received-item card back: {backText?.Length ?? -1} char(s), " +
+						$"text at {backNode.GlobalPosition}, box {backNode.GetAabb().Size}, " +
+						$"clip {rect}, in tree visible {backNode.IsVisibleInTree()}");
+				}
+			}
 		}
 
 		if (icon is not null && iconHash != _iconHash && _iconMaterial is not null)
@@ -840,24 +949,163 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 			_iconMaterial.SetShaderParameter("diffuse_tex", icon);
 		}
 
-		// THE BACK CARRIES THE SAME THREE BUTTONS AS THE FRONT, three canvas units apart, and
-		// only its buttons and its text are authored on — its parchment and group are off. So
-		// two groups both reading globally active does not draw a second card: it draws a
-		// second copy of Use/Info/Take over the first, which is the ghosted labels.
-		//
-		// The flip is a CROSSFADE, so the guest having both active at once is correct; what the
-		// owned clone lacks is the live OPACITY that would separate them, because a surface
-		// builds its clone binding and then throws it away. Until the clone carries opacity,
-		// the front wins outright: the back is the reverse of the card and belongs on screen
-		// only once the front is down.
-		_front.Visible = frontUp;
-		if (_back is not null)
+		foreach (Node3D? side in new[] { _front, _back })
 		{
-			_back.Visible = backUp && !frontUp;
+			if (side is null)
+			{
+				continue;
+			}
+
+			for (int i = 0; i < Prompts.Length && i < labels.Length; ++i)
+			{
+				if (side.GetNodeOrNull<Node3D>($"Buttons/Buttons/{Prompts[i]}") is not { } prompt)
+				{
+					continue;
+				}
+
+				if (i == 0)
+				{
+					prompt.Visible = usable;
+				}
+
+				if (!string.IsNullOrEmpty(labels[i]) &&
+					prompt.GetNodeOrNull<MeshInstance3D>(Prompts[i]) is { } label)
+				{
+					Theme.SetMeshText(label, labels[i]!);
+				}
+			}
 		}
 
-		Visible = frontUp || backUp;
+		// ONE SIDE AT A TIME. The original turns the card: the front's paper rotates edge-on
+		// while its contents fade, then the back's comes round. The clone carries neither the
+		// rotation nor the fade, so the sides swap outright — and the back's own parchment,
+		// which the file authors off until its slide, is switched on with it.
+		_front.Visible = up && !reverse;
+		if (_back is not null)
+		{
+			_back.Visible = up && reverse;
+
+			// `Flip2Back` commands `CardBack` opacity 100; the art was built from the master
+			// slide, which authors 70.9 — the faded card.
+			if (!_backRestated)
+			{
+				_backRestated = true;
+				Engine_UiSceneBuilder.OwnSubtreeMaterials(_back);
+				Engine_UiSceneBuilder.RestateOpacity(_back, 1f);
+			}
+
+			if (_back.GetNodeOrNull<Node3D>("PaperBackground") is { } paper)
+			{
+				paper.Visible = true;
+			}
+		}
+
+		Visible = up;
 	}
+
+	/// <summary>`sub_828C30A8` feeds ~3 canvas units a 30 Hz tick at full stick; as the books.</summary>
+	private const float ScrollUnitsPerSecond = 150f;
+
+	private MeshInstance3D? _backText;
+
+	private Vector3 _backTextRest;
+
+	private string? _backShown;
+
+	private float _scroll;
+
+	private float _scrollRange = -1f;
+
+	/// <summary>
+	/// THE BACK'S SCROLL REGION — `sub_828C30A8(handler+24, 27, …)` with the bar the handler
+	/// registers in Open (`sub_828C33F0(handler+24, "CardBack.Group.Scrollbar")`). The stick
+	/// slides the description inside the `Mask` band, which already clips it; the bar stands only
+	/// while the text overflows, its arrows dim at their limits and the thumb rides the fraction.
+	/// </summary>
+	public void ScrollBack(float stick, double delta)
+	{
+		if (_back is null || !_back.Visible || _backText is not { } text ||
+			!GodotObject.IsInstanceValid(text) || !IsInsideTree() || BackClip is not { } clip)
+		{
+			return;
+		}
+
+		// How far the laid-out text runs below the band, in canvas units, measured at rest.
+		float range = 0f;
+		float unitsPerLocal = 1f;
+		if (text.Mesh is not null && text.GetParent() is Node3D parent)
+		{
+			Transform3D toCanvas = GlobalTransform.AffineInverse() * parent.GlobalTransform;
+			unitsPerLocal = Mathf.Max(0.0001f, toCanvas.Basis.Y.Length());
+			float restY = (toCanvas * _backTextRest).Y;
+			float lowest = restY + (text.GetAabb().Position.Y * unitsPerLocal);
+			range = Mathf.Max(0f, clip.Position.Y - lowest);
+		}
+
+		_scroll = Mathf.Clamp(_scroll - (stick * ScrollUnitsPerSecond * (float)delta), 0f, range);
+		text.Position = _backTextRest + (Vector3.Up * (_scroll / unitsPerLocal));
+
+		if (_back.GetNodeOrNull<Node3D>("Group") is not { } group)
+		{
+			return;
+		}
+
+		bool scrollable = range > 1f;
+		group.Visible = scrollable;
+		if (!scrollable)
+		{
+			_scrollRange = range;
+			return;
+		}
+
+		// `Group` stands at opacity 0 outside its slide; stated once per overflow, not per frame.
+		if (!Mathf.IsEqualApprox(range, _scrollRange))
+		{
+			_scrollRange = range;
+			Engine_UiSceneBuilder.RestateOpacity(group, 1f);
+			GD.Print($"[game-ui] received-item card back scrolls {range:0} canvas unit(s)");
+		}
+
+		float fraction = _scroll / range;
+		var up = group.GetNodeOrNull<Node3D>("Scrollbar/UpArrow");
+		var down = group.GetNodeOrNull<Node3D>("Scrollbar/DownArrow");
+		if (up is null || down is null)
+		{
+			return;
+		}
+
+		SetLimit(up, fraction > 0.01f, ref _upLit);
+		SetLimit(down, fraction < 0.99f, ref _downLit);
+		if (group.GetNodeOrNull<Node3D>("Scrollbar/Icon") is { } thumb)
+		{
+			Vector3 at = thumb.Position;
+			thumb.Position = new Vector3(
+				at.X, Mathf.Lerp(up.Position.Y, down.Position.Y, fraction), at.Z);
+		}
+	}
+
+	private bool? _upLit;
+
+	private bool? _downLit;
+
+	/// <summary>Slide 1 of an arrow is at-limit, 2 active (`sub_828C3488`); drawn as a dim.</summary>
+	private static void SetLimit(Node3D arrow, bool lit, ref bool? was)
+	{
+		if (was == lit)
+		{
+			return;
+		}
+
+		was = lit;
+		Engine_UiSceneBuilder.RestateOpacity(arrow, lit ? 1f : 0.35f);
+	}
+
+	/// <summary>The back's clip, canvas units; set by the surface from <see cref="Joins.BackClip"/>.</summary>
+	public Rect2? BackClip { get; set; }
+
+	private bool _backRestated;
+
+	private string _backSaid = string.Empty;
 
 	private static MeshInstance3D? FindMesh(Node node, string name)
 	{

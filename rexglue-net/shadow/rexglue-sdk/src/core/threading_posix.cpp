@@ -411,11 +411,16 @@ class PosixConditionBase {
         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
       }
 
+      // // SLEEP FOR THE REAL REMAINDER, NOT ITS WHOLE MILLISECONDS. The alertable wrapper hands
+      // // this loop one-millisecond slices, so `end_time - now` is under a millisecond on
+      // // every pass but the first; cast to milliseconds that is zero, and sleep_for(0) is a
+      // // busy poll for the rest of the slice. Every guest WaitForMultipleObjects comes
+      // // through here.
       if (timeout == std::chrono::milliseconds::max()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       } else {
-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
+        auto remaining = end_time - now;
+        auto sleep_time = std::min<std::chrono::steady_clock::duration>(remaining, std::chrono::milliseconds(1));
         std::this_thread::sleep_for(sleep_time);
       }
     }

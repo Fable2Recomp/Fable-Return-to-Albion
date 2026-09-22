@@ -73,7 +73,7 @@ public readonly record struct Engine_MdlRig(string[] Names, int[] Parents, float
 		}
 
 		var answer = new Answer { Rig = Build(mesh) };
-		Cache.Add(mesh, answer);
+		Cache.AddOrUpdate(mesh, answer);
 		return answer.Rig;
 	}
 

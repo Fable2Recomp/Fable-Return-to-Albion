@@ -1454,6 +1454,10 @@ public static class GameCodeBuild
 		if (RuntimeInformation.OSArchitecture == Architecture.X64)
 		{
 			flags.Add("-msse4.1");
+			// // The recompiler lowers every PPC fmadd to std::fma; without -mfma that is a
+			// // library call. Same flag as refii_apply_recompiled_module_compile_options in the
+			// // dev build.
+			flags.Add("-mfma");
 		}
 
 		if (!OperatingSystem.IsWindows())

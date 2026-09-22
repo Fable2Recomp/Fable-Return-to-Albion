@@ -1114,6 +1114,22 @@ public partial class Engine_PostFxEffect : CompositorEffect
             _highlightScratch[at + 6] = x1;
             _highlightScratch[at + 7] = y1;
             _highlightScratch[at + 8] = nearest;
+
+            // THE GUEST'S FIRST DRAW, reproduced by the target's class rather than per pixel.
+            // `sub_82A6BBA0` draws each object's padded rect twice: once at its AABB CENTRE's
+            // depth for pixels whose stencil holds 0x10, once at its nearest corner's depth for
+            // the rest; `sub_82AA2A68` gives 0x10 to every renderable whose bound radius is
+            // <= 3.0 (`if (v13 > 3.0) flags &= ~0x10`). So around a character the pixels of
+            // anything small — the sword in its hand, the sign it carries, the next NPC — are
+            // tested against the character's CENTRE, and a held item in front of that centre
+            // occludes the halo. This chain has no per-pixel record of who drew a pixel, so a
+            // // small target tests every pixel against its centre, a large one against its
+            // // nearest corner.
+            Vector3 centre = (t.Min + t.Max) * 0.5f;
+            float centreDepth = inside ? 0f : MathF.Max((centre - camOrigin).Dot(forward), 0f);
+            float radius = (t.Max - t.Min).Length() * 0.5f;
+            _highlightScratch[at + 9] = centreDepth;
+            _highlightScratch[at + 10] = radius <= 3f ? 1f : 0f;
             any = true;
         }
 

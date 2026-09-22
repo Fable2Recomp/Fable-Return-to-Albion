@@ -134,16 +134,27 @@ public partial class GameWindow : Node
 		};
 
 		// Vsync is a display-server setting, not a per-window one, so this is the whole
-		// application's. Godot falls back to Enabled where the driver lacks the mode asked for.
-		DisplayServer.WindowSetVsyncMode(
-			!settings.Vsync ? DisplayServer.VSyncMode.Disabled
+		// application's.
+		DisplayServer.VSyncMode wanted = !settings.Vsync ? DisplayServer.VSyncMode.Disabled
 			: settings.VsyncMode switch
 			{
 				"on" => DisplayServer.VSyncMode.Enabled,
 				"adaptive" => DisplayServer.VSyncMode.Adaptive,
 				_ => DisplayServer.VSyncMode.Mailbox,
-			},
-			(int)DisplayServer.MainWindowId);
+			};
+		DisplayServer.WindowSetVsyncMode(wanted, (int)DisplayServer.MainWindowId);
+
+		// A DRIVER WITHOUT MAILBOX IS HANDED PLAIN VSYNC BY GODOT ("The requested V-Sync mode Mailbox
+		// is not available. Falling back to V-Sync mode Enabled" — this machine's NVIDIA/X11 stack,
+		// 2026-09-22), and plain vsync holds a frame that misses one refresh until the next: at
+		// 120 Hz a 9 ms frame is shown at 16.7. Mailbox was asked for precisely to avoid that, so
+		// what stands in for it is ADAPTIVE — the same wait when the frame is on time, a tear
+		// instead of a held frame when it is late. The mode Godot settled on is only known once
+		// the swap chain has been rebuilt, a frame or more after the request.
+		if (wanted == DisplayServer.VSyncMode.Mailbox)
+		{
+			GetTree().CreateTimer(1.0).Timeout += SettleVsync;
+		}
 
 		// Nothing to minimise: the launcher is a DIFFERENT PROCESS, and it stood itself down
 		// when it spawned this one.
@@ -175,15 +186,9 @@ public partial class GameWindow : Node
 		// preview plays inside the card, and concealing would hide the screen it belongs to.
 		_video.MovieStarted += _ =>
 		{
-			// The guest states the rect right after the open (`sub_82A41E30`), so the answer is
-			// known here; an ability preview states its 301x233 frame and must not conceal.
-			// The video's own EmbedOrdinal is checked as well as the slot map: `PlayEmbedded`
-			// sets it before this signal fires, where the slot registration once lost the race
-			// and a preview concealed the whole UI viewport for the rest of the session.
-			if (_video.EmbedOrdinal < 0 && !_ui.HasEmbeddedMovie && _video.StatedFullscreen())
-			{
-				_ui.Conceal("a full-screen movie started over it");
-			}
+			_movieConcealPending = true;
+			_movieConcealWaited = 0;
+			ResolveMovieConceal();
 		};
 
 		// So the UI can draw an embedded movie into the element hosting it: the presentation
@@ -204,10 +209,84 @@ public partial class GameWindow : Node
 		};
 	}
 
+	private bool _movieConcealPending;
+	private int _movieConcealWaited;
+
+	/// <summary>Frames a conceal decision waits for a live player's rect before taking the default.</summary>
+	private const int MovieRectWaitFrames = 30;
+
+	/// <summary>
+	/// Conceals the UI under a movie the guest stated FULLSCREEN — decided once per movie, and
+	/// only once the guest has stated the rect.
+	/// </summary>
+	/// <remarks>
+	/// The guest states the rect in a second call after the open (`sub_82A41E30`), so it may
+	/// not be known on the frame the movie starts; an ability preview states its own small
+	/// frame and must not conceal. The video's EmbedOrdinal is checked as well as the slot map:
+	/// `PlayEmbedded` sets it before the signal fires, where the slot registration once lost
+	/// the race and a preview concealed the whole UI viewport for the rest of the session.
+	/// Every successful open is followed by a statement; the wait is bounded for one that is
+	/// not, and says so.
+	/// </remarks>
+	private void ResolveMovieConceal()
+	{
+		if (!_movieConcealPending || _ui is null || _video is null)
+		{
+			return;
+		}
+
+		if (!_video.IsPlaying || _video.EmbedOrdinal >= 0 || _ui.HasEmbeddedMovie)
+		{
+			_movieConcealPending = false;
+			return;
+		}
+
+		bool? fullscreen = _video.StatedFullscreenIfKnown();
+		if (fullscreen is null)
+		{
+			if (++_movieConcealWaited < MovieRectWaitFrames)
+			{
+				return;
+			}
+
+			GD.Print($"[game-video] the guest has a live movie player and stated no rect for it " +
+				$"in {MovieRectWaitFrames} frames — treating the movie as fullscreen");
+		}
+
+		_movieConcealPending = false;
+		if (fullscreen ?? true)
+		{
+			_ui.Conceal("a full-screen movie started over it");
+		}
+	}
+
 	/// <summary>
 	/// Shows the front end exactly when the guest has one: it builds its title/main-menu state
 	/// only after every startup logo has played and its bank mounter has finished.
 	/// </summary>
+	private void SettleVsync()
+	{
+		int window = (int)DisplayServer.MainWindowId;
+		DisplayServer.VSyncMode settled = DisplayServer.WindowGetVsyncMode(window);
+		if (settled == DisplayServer.VSyncMode.Mailbox)
+		{
+			return;
+		}
+
+		if (settled == DisplayServer.VSyncMode.Enabled && !_triedAdaptive)
+		{
+			_triedAdaptive = true;
+			DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Adaptive, window);
+			GetTree().CreateTimer(1.0).Timeout += SettleVsync;
+			return;
+		}
+
+		GD.Print($"[game] vsync: mailbox is not available on this driver; using {settled.ToString().ToLowerInvariant()}" +
+			(settled == DisplayServer.VSyncMode.Enabled ? " (adaptive is not available either)" : string.Empty));
+	}
+
+	private bool _triedAdaptive;
+
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gamewindow");
@@ -222,6 +301,7 @@ public partial class GameWindow : Node
 		}
 		TraceFrontEnd();
 		StepShots();
+		ResolveMovieConceal();
 
 		if (_ui is null || _video is null || _video.IsPlaying)
 		{
@@ -417,7 +497,14 @@ public partial class GameWindow : Node
 
 			// No registered player means no Gameface update at all. Posted through the guest's
 			// own routine (sub_82371860), once per sample while the count stays 0.
-			if (pacer.WorldGate && pacer.GuiRegisteredPlayers == 0 && pacer.GuiUpdateEnabled != 0)
+			//
+			// IN GAME ONLY. `game+0x105` stays set through the game holder's shutdown, and the
+			// GUI it counts players on is the one `dword_83496B08` names — which by then is the
+			// front end's, freshly constructed with no players. Registering one there is not a
+			// thing the guest ever does; `byte_83496A5E` is the guest's own statement that the
+			// in-game GUI exists.
+			if (pacer.WorldGate && HostBridge.IsInGame && pacer.GuiRegisteredPlayers == 0 &&
+				pacer.GuiUpdateEnabled != 0)
 			{
 				GD.Print("[guest-pacer] the in-game GUI reports 0 registered players — asking the " +
 					"guest to register the first one (sub_82371860)");

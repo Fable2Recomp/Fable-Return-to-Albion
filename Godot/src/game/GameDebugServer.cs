@@ -241,6 +241,12 @@ public partial class GameDebugServer : Node
 	/// <summary>Plain Godot lights spawned by `render testLights=` — see its use.</summary>
 	private readonly List<OmniLight3D> _testLights = new();
 
+	/// <summary>The positional shadow filter last set through `render`; null is the project's.</summary>
+	private int? _positionalFilter;
+
+	/// <summary>The shader debug view last set through `render`; 0 is off.</summary>
+	private int _lightDebug;
+
 	/// <summary>
 	/// Brings the plain-light population to <paramref name="want"/>.
 	/// </summary>
@@ -1408,6 +1414,121 @@ public partial class GameDebugServer : Node
 					Refii.Lighting.Engine_LightShadowBudget.LightBudget = lb.GetInt32();
 				}
 
+				// The shader's own views of one lighting term: 1 bake, 2 direct, 3 raw albedo, 4 the
+				// normal-map darken, 5 bake mode, 8 view normal, 9 summed light on white, 10 facing; 0 is off.
+				if (root.TryGetProperty("lightDebug", out JsonElement ld) && ld.ValueKind == JsonValueKind.Number)
+				{
+					_lightDebug = System.Math.Clamp(ld.GetInt32(), 0, 10);
+					RenderingServer.GlobalShaderParameterSet("fable_light_debug", _lightDebug);
+				}
+
+				// Two costs read as a difference: the GI as a whole, and six cube faces against two
+				// paraboloids for the fixtures' shadow maps.
+				if (root.TryGetProperty("gi", out JsonElement giLever) &&
+					(giLever.ValueKind == JsonValueKind.True || giLever.ValueKind == JsonValueKind.False))
+				{
+					Refii.Lighting.Engine_GiRefresh.ForcedOff = giLever.ValueKind == JsonValueKind.False;
+				}
+
+				if (root.TryGetProperty("shadowParaboloid", out JsonElement paraboloidLever) &&
+					(paraboloidLever.ValueKind == JsonValueKind.True || paraboloidLever.ValueKind == JsonValueKind.False))
+				{
+					Refii.Lighting.Engine_LightShadowBudget.Paraboloid = paraboloidLever.ValueKind == JsonValueKind.True;
+				}
+
+				if (root.TryGetProperty("entityBatches", out JsonElement entityBatchLever) &&
+					(entityBatchLever.ValueKind == JsonValueKind.True || entityBatchLever.ValueKind == JsonValueKind.False))
+				{
+					Refii.Entities.Engine_EntityBatches.Enabled = entityBatchLever.ValueKind == JsonValueKind.True;
+				}
+
+				if (root.TryGetProperty("propShadow", out JsonElement propShadowLever) &&
+					(propShadowLever.ValueKind == JsonValueKind.True || propShadowLever.ValueKind == JsonValueKind.False))
+				{
+					Refii.Level.Engine_PropShadow.Enabled = propShadowLever.ValueKind == JsonValueKind.True;
+				}
+
+				// Takes effect on the entity feed's reconcile cadence, not at once.
+				if (root.TryGetProperty("shadowProxy", out JsonElement proxyLever) &&
+					(proxyLever.ValueKind == JsonValueKind.True || proxyLever.ValueKind == JsonValueKind.False))
+				{
+					Refii.Entities.Engine_ShadowProxy.Enabled = proxyLever.ValueKind == JsonValueKind.True;
+				}
+
+				if (root.TryGetProperty("fillFloor", out JsonElement fillFloorLever) && fillFloorLever.ValueKind == JsonValueKind.Number)
+				{
+					Refii.Lighting.Engine_LightingFrame.ModernFloorShare = System.Math.Clamp(fillFloorLever.GetSingle(), 0f, 1f);
+				}
+
+				if (root.TryGetProperty("giHalf", out JsonElement giHalfLever) &&
+					(giHalfLever.ValueKind == JsonValueKind.True || giHalfLever.ValueKind == JsonValueKind.False))
+				{
+					Refii.Lighting.Engine_LevelLighting.GiHalfResolution = giHalfLever.ValueKind == JsonValueKind.True;
+				}
+
+				// Pins the exposure gain so a term can be compared across shots; null hands it back.
+				if (root.TryGetProperty("exposureLock", out JsonElement el))
+				{
+					if (el.ValueKind == JsonValueKind.Number)
+					{
+						Refii.Lighting.Engine_PostFxParams.ExposureLockValue = el.GetSingle();
+						Refii.Lighting.Engine_PostFxParams.ExposureLock = true;
+					}
+					else if (el.ValueKind == JsonValueKind.Null)
+					{
+						Refii.Lighting.Engine_PostFxParams.ExposureLock = false;
+					}
+				}
+
+				// The placed lights' shadow filter, written to every live fixture at once. A null
+				// bias hands it back to the per-type default.
+				bool retune = false;
+				if (root.TryGetProperty("placedShadowBlur", out JsonElement psb) && psb.ValueKind == JsonValueKind.Number)
+				{
+					Refii.Lighting.Engine_LevelLights.PlacedShadowBlur = psb.GetSingle();
+					retune = true;
+				}
+
+				if (root.TryGetProperty("placedShadowNormalBias", out JsonElement psn) && psn.ValueKind == JsonValueKind.Number)
+				{
+					Refii.Lighting.Engine_LevelLights.PlacedShadowNormalBias = psn.GetSingle();
+					retune = true;
+				}
+
+				if (root.TryGetProperty("placedShadowBias", out JsonElement psd))
+				{
+					if (psd.ValueKind == JsonValueKind.Number)
+					{
+						Refii.Lighting.Engine_LevelLights.PlacedShadowBias = psd.GetSingle();
+						retune = true;
+					}
+					else if (psd.ValueKind == JsonValueKind.Null)
+					{
+						Refii.Lighting.Engine_LevelLights.PlacedShadowBias = float.NaN;
+						retune = true;
+					}
+				}
+
+				if (retune)
+				{
+					Refii.Lighting.Engine_LevelLights.RetuneShadows();
+				}
+
+				// Project-wide, not per light: 0 hard .. 5 ultra. The project setting is only the
+				// boot value, so the last write is what the reply reports.
+				if (root.TryGetProperty("positionalFilter", out JsonElement pf) && pf.ValueKind == JsonValueKind.Number)
+				{
+					_positionalFilter = System.Math.Clamp(pf.GetInt32(), 0, 5);
+					RenderingServer.PositionalSoftShadowFilterSetQuality(
+						(RenderingServer.ShadowQuality)_positionalFilter.Value);
+				}
+
+				if (root.TryGetProperty("positionalAtlas", out JsonElement pa) && pa.ValueKind == JsonValueKind.Number
+					&& GetViewport() is Viewport atlasViewport)
+				{
+					atlasViewport.PositionalShadowAtlasSize = System.Math.Clamp(pa.GetInt32(), 256, 16384);
+				}
+
 				// How far the radius walk must move before the write reaches the node; 0 is the guest.
 				// `OmniRange` is the one light property that changes the AABB, and every change costs a
 				// full `PairInstances::pair` re-pair against everything in reach.
@@ -1466,6 +1587,12 @@ public partial class GameDebugServer : Node
 				if (root.TryGetProperty("fx", out JsonElement fx) && fx.ValueKind != JsonValueKind.Null)
 				{
 					Refii.Fx.Engine_FxDisplacement.Current?.SetEnabled(fx.GetBoolean());
+				}
+
+				// A/B only: false puts the principals' shadows on the guest's rate too.
+				if (root.TryGetProperty("shadowPrincipal", out JsonElement shadowPrincipal) && shadowPrincipal.ValueKind != JsonValueKind.Null)
+				{
+					Refii.Entities.Engine_ShadowSkeletons.PrincipalEveryFrame = shadowPrincipal.GetBoolean();
 				}
 
 				if (root.TryGetProperty("feedEveryFrame", out JsonElement fe) && fe.ValueKind != JsonValueKind.Null)
@@ -1564,6 +1691,31 @@ public partial class GameDebugServer : Node
 					["shadowCasting"] = Refii.Lighting.Engine_LightShadowBudget.Casting,
 					["shadowEligible"] = Refii.Lighting.Engine_LightShadowBudget.Eligible,
 					["shadowParaboloid"] = Refii.Lighting.Engine_LightShadowBudget.Paraboloid,
+					["gi"] = !Refii.Lighting.Engine_GiRefresh.ForcedOff,
+					["giHalf"] = Refii.Lighting.Engine_LevelLighting.GiHalfResolution,
+					["fillFloor"] = Refii.Lighting.Engine_LightingFrame.ModernFloorShare,
+					["giRebuilds"] = Refii.Lighting.Engine_GiRefresh.Rebuilds,
+					["shadowProxy"] = Refii.Entities.Engine_ShadowProxy.Enabled,
+					["entityBatches"] = Refii.Entities.Engine_EntityBatches.Enabled,
+					["entityBatched"] = Refii.Entities.Engine_EntityBatches.Batched,
+					["entityBatchCount"] = Refii.Entities.Engine_EntityBatches.Batches,
+					["entityBatchPromotions"] = Refii.Entities.Engine_EntityBatches.Promotions,
+					["entityBatchDemotions"] = Refii.Entities.Engine_EntityBatches.Demotions,
+					["propShadow"] = Refii.Level.Engine_PropShadow.Enabled,
+					["propShadowBatches"] = Refii.Level.Engine_PropShadow.Batches,
+					["propShadowSurfacesMerged"] = Refii.Level.Engine_PropShadow.SurfacesMerged,
+					["shadowProxies"] = Refii.Entities.Engine_ShadowProxy.Active,
+					["shadowProxySurfacesMerged"] = Refii.Entities.Engine_ShadowProxy.SurfacesMerged,
+					["lightDebug"] = _lightDebug,
+					["exposureLock"] = Refii.Lighting.Engine_PostFxParams.ExposureLock
+						? Refii.Lighting.Engine_PostFxParams.ExposureLockValue : null,
+					["placedShadowBlur"] = Refii.Lighting.Engine_LevelLights.PlacedShadowBlur,
+					["placedShadowNormalBias"] = Refii.Lighting.Engine_LevelLights.PlacedShadowNormalBias,
+					["placedShadowBias"] = float.IsNaN(Refii.Lighting.Engine_LevelLights.PlacedShadowBias)
+						? null : Refii.Lighting.Engine_LevelLights.PlacedShadowBias,
+					["positionalFilter"] = _positionalFilter ?? ProjectSettings.GetSetting(
+						"rendering/lights_and_shadows/positional_shadow/soft_shadow_filter_quality").AsInt32(),
+					["positionalAtlas"] = GetViewport()?.PositionalShadowAtlasSize,
 					// The atmosphere, and the one inference that scales it: "interior" is not a stated flag
 					// (the guest has none); it is derived as `ModernModel && !HasSky`. These numbers say
 					// whether that gate trips where the player is standing.
@@ -1610,6 +1762,16 @@ public partial class GameDebugServer : Node
 				uint address = root.TryGetProperty("addr", out JsonElement ad) && ad.ValueKind == JsonValueKind.String
 					? System.Convert.ToUInt32(ad.GetString(), 16)
 					: 0u;
+				if (root.TryGetProperty("lighting", out JsonElement wantLighting) &&
+					wantLighting.ValueKind == JsonValueKind.True)
+				{
+					// No address is the hero.
+					return Ok(new Dictionary<string, object?>
+					{
+						["lighting"] = GameEntities.Current?.DescribeLighting(address),
+					});
+				}
+
 				if (address == 0u)
 				{
 					return Ok(new Dictionary<string, object?> { ["animators"] = GameEntities.Current?.DescribeAnimators() });
@@ -1690,6 +1852,38 @@ public partial class GameDebugServer : Node
 				bool apply = root.TryGetProperty("apply", out JsonElement wantApply) &&
 					wantApply.ValueKind == JsonValueKind.True;
 				return Ok(GameEntities.Current?.DescribeTwins(needle, apply) ?? new Dictionary<string, object?>());
+			}
+
+			case "casters":
+			{
+				// What the shadow passes draw, by owning node: `{"op":"casters"}`. With
+				// `"moving":true`, what moved since the previous such call instead.
+				Node? world = GameEntities.Current?.GetTree()?.Root;
+				bool moving = root.TryGetProperty("moving", out JsonElement wantMoving) &&
+					wantMoving.ValueKind == JsonValueKind.True;
+				// `"dirtiers":N` samples N frames for casters moving on host-only frames; 0 reads the report.
+				if (root.TryGetProperty("dirtiers", out JsonElement wantDirtiers) && wantDirtiers.ValueKind == JsonValueKind.Number)
+				{
+					int frames = wantDirtiers.GetInt32();
+					if (frames > 0 && world is not null)
+					{
+						Refii.Lighting.Engine_ShadowDirtiers.Start(world, frames);
+					}
+
+					return Ok(Refii.Lighting.Engine_ShadowDirtiers.Report());
+				}
+
+				if (world is not null && root.TryGetProperty("materials", out JsonElement wantMaterials) &&
+					wantMaterials.ValueKind == JsonValueKind.True)
+				{
+					return Ok(Refii.Lighting.Engine_CasterCensus.Materials(world));
+				}
+
+				return Ok(world is null
+					? new Dictionary<string, object?>()
+					: moving
+						? Refii.Lighting.Engine_CasterCensus.Moving(world)
+						: Refii.Lighting.Engine_CasterCensus.Describe(world));
 			}
 
 			case "doubles":
@@ -1811,6 +2005,7 @@ public partial class GameDebugServer : Node
 								Refii.Entities.Engine_EntityHighlight.SeenWords, w => w.ToString("X8"))),
 						["attachmentsPlaced"] = Refii.Entities.Engine_EntityAttachments.Placed,
 						["attachmentsUnresolved"] = Refii.Entities.Engine_EntityAttachments.Unresolved,
+						["attachmentsOnStated"] = GameEntities.AttachedOnStated,
 						["attachmentsResolves"] = Refii.Entities.Engine_EntityAttachments.Resolves,
 						["clipDrivenFrames"] = Refii.Animations.Engine_ClipAnimator.ClipDrivenFrames,
 						["runnerFlips"] = Refii.Animations.Engine_ClipAnimator.RunnerFlips,
@@ -1890,6 +2085,13 @@ public partial class GameDebugServer : Node
 						["loads"] = Refii.Bnk.BnkFileSystem.NestedLoads,
 						["evictions"] = Refii.Bnk.BnkFileSystem.NestedEvictions,
 					},
+					// What we wrote into the scene, by source: every transform / bounds write is a
+					// Godot instance update, each of which dirties the paired lights' shadows and may
+					// re-pair. `perFrame` is a decaying average; `lastFrame` the frame just closed.
+					["instanceUpdates"] = Refii.Core.Engine_InstanceUpdates.Report(),
+					// The shadow proxies' own skeletons: how many stand, and how often they are
+					// mirrored on guest frames versus every frame (the principals).
+					["shadowSkeletons"] = Refii.Entities.Engine_ShadowSkeletons.Report(),
 					["gc"] = new Dictionary<string, object?>
 					{
 						["gen0"] = System.GC.CollectionCount(0),
@@ -2119,6 +2321,112 @@ public partial class GameDebugServer : Node
 				}
 			}
 
+			case "achievements":
+			{
+				// The achievement system end to end: `do` = state (default) | list | unlock |
+				// lock | reset | toast. `unlock` takes the path the guest's own write takes
+				// (store, file, toast queue, the set stated down to the guest's enumerator);
+				// `toast` shows the presentation alone and unlocks nothing.
+				string verb = root.TryGetProperty("do", out JsonElement dv)
+					? dv.GetString() ?? "state"
+					: "state";
+				uint id = root.TryGetProperty("id", out JsonElement iv) && iv.ValueKind == JsonValueKind.Number
+					? iv.GetUInt32()
+					: 0u;
+				Refii.Ui.Engine_AchievementToast? toast = Refii.Ui.Engine_AchievementToast.Current;
+				var reply = new Dictionary<string, object?>();
+				switch (verb)
+				{
+					case "state":
+					case "list":
+						break;
+
+					case "unlock":
+					case "toast":
+						if (Refii.Achievements.Engine_Achievements.Definition(id) is null)
+						{
+							return new Dictionary<string, object?>
+							{
+								["ok"] = false,
+								["error"] = $"{id} is not an achievement this title defines — `do: list` names them",
+							};
+						}
+
+						if (verb == "unlock")
+						{
+							// NOT "unlocked": the state merged in below carries that key as the COUNT,
+							// and it overwrote this answer — the first test read `unlocked: 3`.
+							reply["newlyUnlocked"] = Refii.Achievements.Engine_Achievements.DebugUnlock(id);
+							reply["note"] = (bool)reply["newlyUnlocked"]!
+								? "unlocked — the toast is queued and the store is written"
+								: "already unlocked — `do: lock` first to see it unlock again";
+						}
+						else
+						{
+							toast?.ShowNow(id, now: true);
+							reply["toasting"] = toast is not null;
+						}
+
+						break;
+
+					case "dial":
+					{
+						// One of the toast's look dials — see Engine_AchievementToast.Dials.
+						string dial = root.TryGetProperty("name", out JsonElement dn)
+							? dn.GetString() ?? string.Empty
+							: string.Empty;
+						if (!root.TryGetProperty("value", out JsonElement dval) ||
+							dval.ValueKind != JsonValueKind.Number ||
+							!Refii.Ui.Engine_AchievementToast.SetDial(dial, dval.GetSingle()))
+						{
+							return new Dictionary<string, object?>
+							{
+								["ok"] = false,
+								["error"] = $"dial needs a known name and a number — got '{dial}'",
+								["dials"] = Refii.Ui.Engine_AchievementToast.Dials,
+							};
+						}
+
+						break;
+					}
+
+					case "lock":
+						if (id == 0u)
+						{
+							return new Dictionary<string, object?>
+							{
+								["ok"] = false, ["error"] = "lock needs an id — `do: reset` re-locks everything",
+							};
+						}
+
+						reply["relocked"] = Refii.Achievements.Engine_Achievements.DebugLock(id);
+						break;
+
+					case "reset":
+						reply["relocked"] = Refii.Achievements.Engine_Achievements.DebugLock(0u);
+						break;
+
+					default:
+						return new Dictionary<string, object?>
+						{
+							["ok"] = false,
+							["error"] = $"unknown verb '{verb}' — state, list, unlock, lock, reset, toast or dial",
+						};
+				}
+
+				foreach ((string key, object? value) in
+					Refii.Achievements.Engine_Achievements.Describe(rows: verb == "list"))
+				{
+					reply[key] = value;
+				}
+
+				reply["dials"] = Refii.Ui.Engine_AchievementToast.Dials;
+				reply["toast"] = toast?.State ?? "no toast node (no game window)";
+				reply["toastsShown"] = toast?.Shown ?? 0;
+				reply["lastToast"] = toast?.LastShown;
+				return Ok(reply);
+			}
+
 			case "elements":
 			{
 				string match = root.TryGetProperty("match", out JsonElement m)
@@ -2257,11 +2565,17 @@ public partial class GameDebugServer : Node
 				}
 
 				(long restarts, double swapAlpha, int steps) = world?.CameraSwapHealth ?? (0L, 0.0, 0);
+				(long statedSwaps, double worstSwapError) = world?.CameraStatedSwapHealth ?? (0L, 0.0);
 				return Ok(new Dictionary<string, object?>
 				{
 					["trace"] = world?.CameraTraceReport(),
 					["restarts"] = restarts,
+
+					// Written by BOTH swap paths. 1.0 is on time; the distance from 1 is how far
+					// the draw point had carried past (or fallen short of) the pair it left.
 					["lastSwapAlpha"] = swapAlpha,
+					["statedSwaps"] = statedSwaps,
+					["worstSwapError"] = worstSwapError,
 					["lastSteps"] = steps,
 				});
 			}
@@ -2372,7 +2686,7 @@ public partial class GameDebugServer : Node
 						"objects", "perf", "exports", "cvars", "cvar-set", "vfs", "sockets",
 						"menu", "action", "call", "lua", "call-result", "poke", "heap",
 						"probe", "guestlog", "mark", "metrics", "input-record", "input-replay",
-						"wait", "log", "shot", "flicker", "press", "gdb",
+						"wait", "log", "shot", "flicker", "press", "gdb", "achievements",
 					},
 				};
 		}

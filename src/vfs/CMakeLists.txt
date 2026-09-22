@@ -104,6 +104,7 @@ set(REFII_VFS_HOOK_INTERNAL_SOURCES
 set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/texture_parser.cpp
     ${REFII_VFS_ROOT}/src/hooks/boot_lifecycle.cpp
+    ${REFII_VFS_ROOT}/src/hooks/crt_math.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_natives.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_menu_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_element_hooks.cpp

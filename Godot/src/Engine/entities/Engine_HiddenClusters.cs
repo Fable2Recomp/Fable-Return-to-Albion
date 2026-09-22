@@ -24,6 +24,10 @@ public static class Engine_HiddenClusters
 {
 	private static ShaderMaterial? _collapsed;
 
+	/// <summary>Whether <paramref name="material"/> is the override that takes a surface away.</summary>
+	public static bool IsCollapsed(Material? material) =>
+		material is not null && ReferenceEquals(material, _collapsed);
+
 	private static ShaderMaterial Collapsed => _collapsed ??= new ShaderMaterial
 	{
 		Shader = new Shader
@@ -113,6 +117,8 @@ public static class Engine_HiddenClusters
 			surface < 64 ? (_bits & (1ul << surface)) != 0ul
 				: surface - 64 < _more.Length && _more[surface - 64];
 
+		public ulong Bits => _bits;
+
 		public void Set(int surface, bool hidden)
 		{
 			if (surface < 64)
@@ -141,6 +147,29 @@ public static class Engine_HiddenClusters
 
 	/// <summary>Per node, keyed weakly so a freed entity's record goes with it.</summary>
 	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MeshInstance3D, SurfaceState> _collapsedSurfaces = new();
+
+	/// <summary>
+	/// The surfaces <see cref="Apply"/> last collapsed on this node, as bits, the first 128 of
+	/// them (the hero's body has 79). No engine call.
+	/// </summary>
+	public static UInt128 CollapsedMask(MeshInstance3D node)
+	{
+		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state))
+		{
+			return UInt128.Zero;
+		}
+
+		UInt128 mask = state.Bits;
+		for (int surface = 64; surface < 128; surface++)
+		{
+			if (state.Get(surface))
+			{
+				mask |= UInt128.One << surface;
+			}
+		}
+
+		return mask;
+	}
 
 	private sealed record PartTables(int[] SurfaceParts, uint[] PartHashes);
 
@@ -175,7 +204,7 @@ public static class Engine_HiddenClusters
 				mesh.HasMeta(Engine_MdlComposite.PartHashesMetaName)
 					? Array.ConvertAll(mesh.GetMeta(Engine_MdlComposite.PartHashesMetaName).AsInt64Array(), v => unchecked((uint)v))
 					: Array.Empty<uint>());
-			_partTables.Add(mesh, tables);
+			_partTables.AddOrUpdate(mesh, tables);
 		}
 
 		int[] surfaceParts = tables.SurfaceParts;

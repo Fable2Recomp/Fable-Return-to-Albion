@@ -1,8 +1,11 @@
 #include "core/guest_yield_backoff.h"
 
+#include "core/precise_sleep.h"
+
 #include <atomic>
 #include <chrono>
-#include <thread>
+#include <cstdlib>
+#include <string_view>
 
 namespace refii::vfs {
 
@@ -22,9 +25,11 @@ constexpr uint32_t kFastYields = 256u;
 // exempting any loop that does 750 us of work per yield.
 constexpr uint64_t kWorkGapUs = 750u;
 
-// Sleep growth, doubling from the floor. The floor is the smallest sleep the host
-// actually honours — a 1 ns clock_nanosleep measured 53.6 us here, so asking for less
-// just wastes a syscall.
+// Sleep growth, doubling from the floor. The floor is the smallest sleep a Linux host
+// actually honours — a 1 ns clock_nanosleep measured 53.6 us, so asking for less just
+// wastes a syscall. Windows honours nothing under ~500 us; refii::PreciseSleepFor spends a
+// shorter request yielding, so the ramp costs the same time there and only the ceiling
+// sleeps. See core/precise_sleep.h.
 //
 // THE RAMP IS WHAT PROTECTS SHORT WAITS. Reaching the ceiling costs 256 fast yields
 // (~115 us) plus 50+100+200+400 us of sleeps, so no wait shorter than ~865 us ever sees
@@ -57,9 +62,23 @@ uint64_t NowMicroseconds() {
           .count());
 }
 
+// REFII_YIELD_BACKOFF=0 leaves every guest yield a plain yield: the A/B for "is the back-off
+// what makes guest state arrive unevenly on this host". Costs the ~1.3 cores it exists to save.
+bool BackoffEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("REFII_YIELD_BACKOFF");
+    return value == nullptr || std::string_view(value) != "0";
+  }();
+  return enabled;
+}
+
 }  // namespace
 
 void MaybeBackOffBeforeGuestYield(uint32_t lr) {
+  if (!BackoffEnabled()) {
+    return;
+  }
+
   const uint64_t now_us = NowMicroseconds();
   const uint64_t gap_us = now_us - t_run.last_yield_us;
 
@@ -85,12 +104,13 @@ void MaybeBackOffBeforeGuestYield(uint32_t lr) {
     t_run.sleep_us = kMaxSleepUs;
   }
 
-  // std::this_thread rather than rex::thread::Sleep DELIBERATELY. This compiles into
-  // the payload, which the player's Zig builds; on Windows the rex runtime is MSVC-built
-  // and a C++ symbol imported from it does not resolve against a MinGW-driver link —
-  // the same reason the log bridge carries -DFMT_HEADER_ONLY.
+  // Header-only, not rex::thread::Sleep, DELIBERATELY. This compiles into the payload,
+  // which the player's Zig builds; on Windows the rex runtime is MSVC-built and a C++
+  // symbol imported from it does not resolve against a MinGW-driver link — the same reason
+  // the log bridge carries -DFMT_HEADER_ONLY. And not std::this_thread::sleep_for: on
+  // Windows that rounds every step of this ramp up to a whole timer tick.
   g_sleeps.fetch_add(1, std::memory_order_relaxed);
-  std::this_thread::sleep_for(std::chrono::microseconds(t_run.sleep_us));
+  refii::PreciseSleepFor(std::chrono::microseconds(t_run.sleep_us));
 
   t_run.last_yield_us = NowMicroseconds();
 }

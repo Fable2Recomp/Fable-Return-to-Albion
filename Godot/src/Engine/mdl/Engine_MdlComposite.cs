@@ -213,7 +213,7 @@ public static class Engine_MdlComposite
                 continue;
             }
 
-            mesh.AddSurfaceFromArrays(primitive, arrays, null, lods);
+            mesh.AddSurfaceFromArrays(primitive, arrays, null, lods, Engine_MdlTransfer.FormatOf(arrays));
 
             int added = mesh.GetSurfaceCount() - 1;
             mesh.SurfaceSetName(added, name);

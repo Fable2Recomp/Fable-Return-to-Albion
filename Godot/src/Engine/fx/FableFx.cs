@@ -256,6 +256,7 @@ public partial class FableFx : Node3D
             // slots, the same falloff), so `placed_light_range` and `placed_light_scale` apply
             // to both. 1.0 on both is the shipped data.
             light.Visible = true;
+            Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
             light.Position = state.Position;
             light.OmniRange = range * Refii.Lighting.Engine_LevelLights.PlacedRange;
             light.LightColor = state.Colour;
@@ -374,6 +375,7 @@ public partial class FableFx : Node3D
             for (int i = 0; i < count; i++)
             {
                 (Transform3D transform, Color colour) = data.Instances[i];
+                Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
                 multi.SetInstanceTransform(i, transform);
                 multi.SetInstanceColor(i, colour);
             }
@@ -656,7 +658,10 @@ public partial class FableFx : Node3D
                 Name = "FxSurface",
                 Mesh = _mesh,
                 CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-                ExtraCullMargin = 512f,
+                // // A metre of safety only: the FX system states each surface's real box every
+                // // frame (Engine_FxSystem.EndSurfaces), corners included; a wide margin puts every
+                // // FX leaf in every light's and every shadow pass's reach.
+                ExtraCullMargin = 1f,
             };
             AddChild(_surface);
             _axesPublished = false;  // a new surface has never been told where the camera is
@@ -670,7 +675,7 @@ public partial class FableFx : Node3D
                 Name = "FxAdditive",
                 Mesh = _addMesh,
                 CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-                ExtraCullMargin = 512f,
+                ExtraCullMargin = 1f,
                 Layers = Engine_FxAdditiveLayer.LayerMask,
             };
             AddChild(_addSurface);
@@ -686,7 +691,7 @@ public partial class FableFx : Node3D
                 Name = "FxDisplacement",
                 Mesh = _dispMesh,
                 CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-                ExtraCullMargin = 512f,
+                ExtraCullMargin = 1f,
                 Layers = Engine_FxDisplacement.LayerMask,
             };
             AddChild(_dispSurface);
@@ -896,7 +901,7 @@ public partial class FableFx : Node3D
             Name = "FxMesh_" + System.IO.Path.GetFileNameWithoutExtension(virtualPath),
             Multimesh = multi,
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-            ExtraCullMargin = 512f,
+            ExtraCullMargin = 1f,
         };
         if (displacement)
         {

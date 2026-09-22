@@ -173,7 +173,28 @@ public static class RuntimeConfig
             ToGeneric(Path.Combine(Installer.GetInstallBasePath(), "assets", "save", "cache")),
             ToGeneric(Refii.Core.Engine_AppRoot.CacheDirectory));
 
+        changed |= AdoptFixtureShadowDefault(values);
+
         return changed ? WriteValues(configPath, values, out error) : true;
+    }
+
+    /// <summary>
+    /// `placed_light_shadows` went from default false to default true, and this file states
+    /// every setting explicitly, so an existing install would hold the old default for ever.
+    /// ONE SHOT: `placed_light_shadows_world` arrived in the same change and the write this
+    /// triggers adds it, so its absence marks a file from before — a player who turns fixture
+    /// shadows off afterwards keeps them off.
+    /// </summary>
+    private static bool AdoptFixtureShadowDefault(IDictionary<string, string> values)
+    {
+        if (values.Count == 0 || values.ContainsKey("placed_light_shadows_world"))
+        {
+            return false;
+        }
+
+        values["placed_light_shadows_world"] = "false";
+        values["placed_light_shadows"] = "true";
+        return true;
     }
 
     private const string AssetsPrefix = "assets";

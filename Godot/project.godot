@@ -123,6 +123,14 @@ fable_interior={
 "type": "float",
 "value": 0.0
 }
+fable_unified={
+"type": "float",
+"value": 0.0
+}
+fable_fill_floor={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
 fable_interior_fog={
 "type": "float",
 "value": 1.0

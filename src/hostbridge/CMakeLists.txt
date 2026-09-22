@@ -17,12 +17,14 @@ target_link_libraries(refii_hostbridge
     PRIVATE
         refii_host
         refii_vfs
+        # Carries the achievement seam: its one instance lives in rexruntime, and linking the
+        # seam here as well gave the bridge a second, empty copy of the state.
         rex::runtime
-        # The achievement RUNTIME only — never refii_achievement_ui. The runtime is the
-        # guest-facing half (it records the guest's writes, tracks unlocks, holds the XDBF
-        # definitions and icons); the _ui half is the ImGui toast, which Godot replaces.
-        refii_achievement
 )
+
+# The seam's header only — see src/achievement/CMakeLists.txt.
+target_include_directories(refii_hostbridge PRIVATE
+    $<TARGET_PROPERTY:refii_achievement,INTERFACE_INCLUDE_DIRECTORIES>)
 
 # SDL headers: the stepped loop drains the event queue itself rather than handing a
 # thread to the guest's blocking SDL_WaitEvent. rex::runtime carries the linkage; this

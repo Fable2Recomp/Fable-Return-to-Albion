@@ -72,6 +72,16 @@ public partial class GameEntities : Node3D
     public MeshInstance3D? NodeFor(uint address) =>
         _nodes.TryGetValue(address, out MeshInstance3D? node) && GodotObject.IsInstanceValid(node) ? node : null;
 
+    /// <summary>
+    /// How far an entity is DRAWN from where the guest last stated it — the playhead's blend,
+    /// as a world offset. Anything the guest anchors on an entity at its tick (a heart over a
+    /// walking villager) adds this to ride the body that is on screen.
+    /// </summary>
+    public Vector3 DrawnLead(uint address) =>
+        NodeFor(address) is { } node
+            ? node.Transform.Origin - StatedOf(address, node.Transform).Origin
+            : Vector3.Zero;
+
     /// <summary>Meshes by model hash. Resolving and loading is the expensive half.</summary>
     private readonly Dictionary<uint, Mesh?> _meshes = new();
 
@@ -283,7 +293,15 @@ public partial class GameEntities : Node3D
         _compositePartsUnresolved = 0;
         Refii.Entities.Engine_EntitySkeleton.BeginFrame();
 
+        _batches?.Refresh();
+        if (_batches is not null && !Refii.Entities.Engine_EntityBatches.Enabled && Refii.Entities.Engine_EntityBatches.Batched != 0)
+        {
+            UnbatchAll();
+        }
+
         uint heroAddress = HostBridge.HeroEntityAddress();
+        (uint playerOne, uint playerTwo) = HostBridge.CoopPlayerEntities();
+        _principals = (heroAddress, playerOne, playerTwo);
         _createdThisFrame = 0;
         _createFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         foreach (HostBridge.GuestEntity entity in entities)
@@ -451,6 +469,11 @@ public partial class GameEntities : Node3D
                 {
                     Name = $"Entity_{entity.Address:X8}",
                     Mesh = mesh,
+                    // Layer 1 draws it and the second bit is what a fixture's shadow map takes; a
+                    // lamp host takes neither, as its static twin would not.
+                    Layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(entity.RecordHash),
+                    // It moves: it takes the GI from the probes and is never voxelised into it.
+                    GIMode = GeometryInstance3D.GIModeEnum.Dynamic,
                 };
                 _nodeMesh[entity.Address] = mesh;
                 node.SetMeta(MetaEntityAddress, entity.Address);
@@ -494,12 +517,14 @@ public partial class GameEntities : Node3D
                 }
 
                 Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
+                Refii.Entities.Engine_ShadowProxy.Sync(node);
             }
             else if (!_nodeMesh.TryGetValue(entity.Address, out Mesh? drawnMesh) || !ReferenceEquals(drawnMesh, mesh))
             {
                 // An entity can change model — a door opening, a prop breaking, a body that
                 // dresses after it was rigged. Compared against what this feed assigned, not the
                 // node's property: that read is a crossing per entity per frame.
+                Unbatch(entity.Address, node);
                 node.Mesh = mesh;
                 _nodeMesh[entity.Address] = mesh;
                 LightEntity(node);
@@ -521,6 +546,7 @@ public partial class GameEntities : Node3D
                 {
                     node.Skeleton = new NodePath();
                     node.Skin = null;
+                    Refii.Entities.Engine_ShadowProxy.Sync(node);
                     if (GodotObject.IsInstanceValid(stale.Node))
                     {
                         stale.Node.GetParent()?.RemoveChild(stale.Node);
@@ -541,12 +567,16 @@ public partial class GameEntities : Node3D
                     GD.Print($"[rig] entity 0x{entity.Address:X8} changed mesh — re-rigged " +
                         $"({(_skeletons.ContainsKey(entity.Address) ? "new skeleton" : "no rig yet, retrying")})");
                 }
+
+                // Last: the cull range, the shadow reach and the rig above are what it copies.
+                Refii.Entities.Engine_ShadowProxy.Sync(node);
             }
             else if (_ticks % ReconcileTicks == 0)
             {
                 // Clothes change without the model changing: the hero dresses, an NPC's outfit
                 // is re-committed. The garment set is re-read on the reconcile cadence.
                 Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
+                Refii.Entities.Engine_ShadowProxy.SyncHidden(node);
             }
 
             // The stated targeting highlight goes ABOVE the unchanged-entity skip: the guest
@@ -571,7 +601,17 @@ public partial class GameEntities : Node3D
                 _attachments.ParentOf(entity.Address) == 0u)
             {
                 ++_unchangedSkipped;
+                NoteStill(entity, node, mesh, adopted);
                 continue;
+            }
+
+            // The guest has stated something new, or the prop has become more than a prop: it
+            // is a node again before anything below places or poses it.
+            if (entity.Changed || created || entity.Highlighted ||
+                _skeletons.ContainsKey(entity.Address) || _movers.Contains(entity.Address) ||
+                _attachments.ParentOf(entity.Address) != 0u)
+            {
+                Unbatch(entity.Address, node);
             }
 
             ++pastPrologue;
@@ -622,6 +662,16 @@ public partial class GameEntities : Node3D
                 // lighting generation has changed. Each sample allocates Godot wrappers.
                 if (_ticks % ReconcileTicks == 0 || _relit.Add(entity.Address))
                 {
+                    // A region's lights can spawn after the entity that hosts one.
+                    uint layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(entity.RecordHash);
+                    if (node.Layers != layers)
+                    {
+                        // A batch is keyed by its layers; the prop rejoins one under the new ones.
+                        Unbatch(entity.Address, node);
+                        node.Layers = layers;
+                        Refii.Entities.Engine_ShadowProxy.Sync(node);
+                    }
+
                     Vector3 at = node.IsInsideTree() ? node.GlobalTransform.Origin : Vector3.Zero;
                     long generation = Refii.Lighting.Engine_LevelBakedLighting.LightingGeneration;
                     if (!_lastLit.TryGetValue(entity.Address, out (Vector3 At, long Gen) last) ||
@@ -698,12 +748,17 @@ public partial class GameEntities : Node3D
                     // so the guest does not distance-cull animation. It has a 2:1 divider at
                     // 0x8220D67C instead: inside BoneLODDistance a rig poses on both HF sub-steps,
                     // outside it only on the sub-step that completes a tick (30 Hz / 15 Hz).
-                    bool inView = RigInView(entity.Address, measurable, rigAt, frustum, nowMs);
-                    bool fullRate = !measurable ||
+                    // A principal off screen still throws a shadow onto it.
+                    bool inView = IsPrincipal(entity.Address) ||
+                        RigInView(entity.Address, measurable, rigAt, frustum, nowMs);
+                    // A principal's shadow keeps full fidelity; everyone else's follows on guest frames.
+                    Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(rig.Node, IsPrincipal(entity.Address));
+                    bool fullRate = !measurable || IsPrincipal(entity.Address) ||
                         eyeDistanceSq <= PoseFullRateRadius * PoseFullRateRadius;
                     bool writeBones = inView && (fullRate || FarRigPosesThisStep(entity.Address));
                     if (writeBones)
                     {
+                        _boneWriteAskedMs[entity.Address] = nowMs;
                         ++posedWritten;
                         if (!fullRate)
                         {
@@ -869,12 +924,6 @@ public partial class GameEntities : Node3D
                 if (entity.RecordHash != 0)
                 {
                     _liveRecords.Add(entity.RecordHash);
-
-                    // LEARNED WHILE IT IS STILL ALIVE, because that is the only time the guest
-                    // states both halves together. The destroyed set is keyed by placement UID
-                    // and the twins are keyed by record hash; once an entity is gone the guest
-                    // reports neither, so the join has to be remembered before it is needed.
-                    Twins?.NoteUid(entity.RecordHash, entity.UniqueId);
                 }
             }
 
@@ -1298,23 +1347,37 @@ public partial class GameEntities : Node3D
     /// posed this frame. A child whose parent is not drawn — off in an unloaded part of the
     /// world, or without a rig — keeps the guest's own placement, which is what it had before.
     /// </summary>
+    /// <summary>Attached children placed on the guest's own statement because no host bone could take them.</summary>
+    public static long AttachedOnStated;
+
     private void PlaceAttached()
     {
         foreach ((uint child, MeshInstance3D node, Transform3D stated) in _attached)
         {
+            // // A child whose dummy names no bone this host has, or whose parent has no rig yet, is
+            // // placed on the guest's own statement; the walk defers every attached child to this
+            // // pass, so nothing else places it.
+            // //
+            // // The guest's contract (CECObjectAttachment): on every parent move, `sub_825EBAA0`
+            // writes each live child's placement as inv(grip) x dummy x parentWorld
+            // (`sub_825ED2A0`, unconditional). The dummy lookup `sub_82235CA8` tries the part
+            // gmd tables (`sub_8223F668`, `sub_8223BE58`) and otherwise returns the IDENTITY
+            // (`sub_8223BDB0`), so a child whose dummy no gmd names is planted at its parent's
+            // root every update — never detached, never hidden. Following the statement puts
+            // an unresolved child exactly there.
             uint parent = _attachments.ParentOf(child);
-            if (!_nodes.TryGetValue(parent, out MeshInstance3D? parentNode) ||
-                !_skeletons.TryGetValue(parent, out Refii.Entities.Engine_EntitySkeleton? rig))
+            Transform3D placed = stated;
+            bool onBone = _nodes.TryGetValue(parent, out MeshInstance3D? parentNode) &&
+                _skeletons.TryGetValue(parent, out Refii.Entities.Engine_EntitySkeleton? rig) &&
+                _attachments.TryPlace(child, stated, StatedOf(parent, parentNode.Transform),
+                    parentNode.Transform, rig, PartPaths(parentNode), out placed);
+            if (!onBone)
             {
-                continue;
+                ++AttachedOnStated;
             }
 
-            if (_attachments.TryPlace(child, stated, StatedOf(parent, parentNode.Transform),
-                    parentNode.Transform, rig, PartPaths(parentNode), out Transform3D placed))
-            {
-                Place(child, node, placed);
-                _pairs.Remove(child);  // it is not being blended; do not blend back to it
-            }
+            Place(child, node, placed);
+            _pairs.Remove(child);  // it is not being blended; do not blend back to it
         }
     }
 
@@ -1386,6 +1449,9 @@ public partial class GameEntities : Node3D
         node.Skin = skeleton.Node.CreateSkinFromRestTransforms();
         _skeletons[address] = skeleton;
 
+        // The proxy casts on THIS skeleton and skin, or its shadow stands in the bind pose.
+        Refii.Entities.Engine_ShadowProxy.Sync(node);
+
         if (_alignReports < RigReportLimit)
         {
             ++_alignReports;
@@ -1443,6 +1509,9 @@ public partial class GameEntities : Node3D
                 // A character after all: it stays drawn at any size and casts at any range.
                 node.VisibilityRangeEnd = 0f;
                 Refii.Lighting.Engine_ShadowReach.Release(node);
+
+                // After the release, which hands the BODY its shadow back: the proxy casts.
+                Refii.Entities.Engine_ShadowProxy.Sync(node);
                 _rigged.Add(address);
             }
         }
@@ -2076,6 +2145,8 @@ public partial class GameEntities : Node3D
             }
 
             _nodes.Remove(address);
+            _batches?.Demote(address);
+            _still.Remove(address);
             if (_adoptions.TryGetValue(address, out var married))
             {
                 // Destroyed by the guest (a key taken, a door broken): the copy goes with it.
@@ -2097,6 +2168,7 @@ public partial class GameEntities : Node3D
             // a freed skeleton reachable and pose it every frame.
             _skeletons.Remove(address);
             _rigSeenMs.Remove(address);
+            _boneWriteAskedMs.Remove(address);
             _lastLit.Remove(address);
             _eyes.Remove(address);
             _bodyAndEyes.Remove(address);
@@ -2308,6 +2380,86 @@ public partial class GameEntities : Node3D
     /// <summary>Set by the world while it holds the guest for the region build.</summary>
     public bool LoadHold { get; set; }
 
+    /// <summary>The batches standing for still props; made on first use, a child of this feed.</summary>
+    private Refii.Entities.Engine_EntityBatches? _batches;
+
+    /// <summary>Consecutive walks each unrigged prop has gone unchanged.</summary>
+    private readonly Dictionary<uint, int> _still = new();
+
+    /// <summary>
+    /// One more unchanged walk for a prop; at <see cref="Refii.Entities.Engine_EntityBatches.StillWalks"/>
+    /// it is drawn from a batch and its node hidden. Only what is nothing but a prop: no rig, not
+    /// married to a static twin (that node is hidden already), not highlighted, and only under the
+    /// unified lighting model.
+    /// </summary>
+    private void NoteStill(HostBridge.GuestEntity entity, MeshInstance3D node, Mesh mesh, bool adopted)
+    {
+        // A target's silhouette is drawn from its node, and this branch is where an unchanged
+        // prop that has just been targeted is seen.
+        if (entity.Highlighted)
+        {
+            Unbatch(entity.Address, node);
+            return;
+        }
+
+        if (adopted || !Refii.Entities.Engine_EntityBatches.Enabled ||
+            !Refii.Lighting.Engine_LightingFrame.ModernModel || !_unrigged.Contains(entity.Address) ||
+            mesh is not ArrayMesh shape || (_batches?.Contains(entity.Address) ?? false))
+        {
+            return;
+        }
+
+        int still = _still.GetValueOrDefault(entity.Address) + 1;
+        _still[entity.Address] = still;
+        if (still < Refii.Entities.Engine_EntityBatches.StillWalks ||
+            !_written.TryGetValue(entity.Address, out (MeshInstance3D Node, Transform3D Drawn) placed) ||
+            !ReferenceEquals(placed.Node, node))
+        {
+            return;
+        }
+
+        if (_batches is null)
+        {
+            _batches = new Refii.Entities.Engine_EntityBatches { Name = Refii.Entities.Engine_EntityBatches.NodeName };
+            AddChild(_batches);
+        }
+
+        uint layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(entity.RecordHash);
+        if (_batches.Promote(entity.Address, shape, layers, placed.Drawn))
+        {
+            node.Visible = false;
+        }
+    }
+
+    /// <summary>Back to a node, if it was batched; the still count starts again either way.</summary>
+    private void Unbatch(uint address, MeshInstance3D node)
+    {
+        _still.Remove(address);
+        if (_batches is not null && _batches.Demote(address) && GodotObject.IsInstanceValid(node))
+        {
+            node.Visible = true;
+        }
+    }
+
+    private void UnbatchAll()
+    {
+        foreach (KeyValuePair<uint, MeshInstance3D> pair in _nodes)
+        {
+            Unbatch(pair.Key, pair.Value);
+        }
+    }
+
+    /// <summary>
+    /// The players' heroes as the guest states them: the hero the vitals resolve, and keys 1 and 2
+    /// of its player map. A PRINCIPAL is never given less for being far from the eye — full pose
+    /// rate, re-posed every drawn frame, posed when off screen — and both players are principals
+    /// alike: the co-op partner is as much the centre of attention as the local hero.
+    /// </summary>
+    private (uint Hero, uint One, uint Two) _principals;
+
+    private bool IsPrincipal(uint address) =>
+        address != 0u && (address == _principals.Hero || address == _principals.One || address == _principals.Two);
+
     /// <summary>Rigs nearer than this to the eye (metres) are re-posed every drawn frame; farther ones step on the guest's frames.</summary>
     private const float InterpolateRadius = 30f;
     private int _createdThisFrame;
@@ -2413,7 +2565,10 @@ public partial class GameEntities : Node3D
                 // CARRIED BACK, never left to the Task. An exception here does not stop the game:
                 // it is stored in the Task and discarded unobserved, so the character would simply
                 // never appear with nothing in the log to say why.
-                error = $"{e.GetType().Name}: {e.Message}";
+                // With where it was thrown: the message alone has named a fault and not its site.
+                string[] trace = (e.StackTrace ?? string.Empty).Split('\n', System.StringSplitOptions.RemoveEmptyEntries);
+                error = $"{e.GetType().Name}: {e.Message}" +
+                    (trace.Length != 0 ? $" {trace[0].Trim()}" : string.Empty);
             }
 
             _completions.Enqueue(() =>
@@ -2424,19 +2579,34 @@ public partial class GameEntities : Node3D
                 if (error is not null)
                 {
                     GD.PushWarning($"[game-entities] composite build failed ({error}): {key}");
+
+                    // A THROWN build is not an answer about the part list — the one seen was two
+                    // workers racing on a shared table — so it is asked again, a bounded number of
+                    // times; only then is the null cached like a list that does not assemble.
+                    int failures = _compositeFailures.GetValueOrDefault(key) + 1;
+                    _compositeFailures[key] = failures;
+                    if (failures < CompositeBuildRetries)
+                    {
+                        return;
+                    }
                 }
 
                 // Cached even when null, exactly as the synchronous path did: a part list whose
                 // models do not assemble will not assemble on the next frame either.
                 // The part hashes, aligned with the paths the assembly walked, so a surface's
                 // part index resolves to the guest's built record (Engine_HiddenClusters).
-                assembled.SetMeta(Refii.Models.Engine_MdlComposite.PartHashesMeta, hashes.ToArray());
+                assembled?.SetMeta(Refii.Models.Engine_MdlComposite.PartHashesMeta, hashes.ToArray());
                 _composed[key] = assembled;
                 _compositePartsDrawn += resolved;
                 _compositePartsMissing += missing;
             });
         });
     }
+
+    /// <summary>Thrown composite builds per part list, and how many are asked again before the null is cached.</summary>
+    private readonly Dictionary<string, int> _compositeFailures = new();
+
+    private const int CompositeBuildRetries = 3;
 
     /// <summary>Assembled composite meshes, keyed by their part list — a crowd shares parts.</summary>
     private readonly Dictionary<string, Mesh?> _composed = new();
@@ -2587,6 +2757,7 @@ public partial class GameEntities : Node3D
         }
 
         ++_extentStated;
+        Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.EntityExtent);
         node.CustomAabb = box;
     }
 
@@ -2794,8 +2965,11 @@ public partial class GameEntities : Node3D
             return false;
         }
 
+        Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.EntityTransform);
         node.Transform = drawn;
         _written[address] = (node, drawn);
+        // The body's shadow proxy stands beside it and follows at the guest's rate.
+        Refii.Entities.Engine_ShadowSkeletons.Placed(node);
         return true;
     }
 
@@ -2868,7 +3042,8 @@ public partial class GameEntities : Node3D
     private bool WithinInterpolateRadius(
         uint address, bool haveEye, Vector3 eyeAt, Transform3D toWorld, Plane[] frustum, ulong nowMs)
     {
-        if (!haveEye || !_written.TryGetValue(address, out (MeshInstance3D Node, Transform3D Drawn) last))
+        if (!haveEye || IsPrincipal(address) ||
+            !_written.TryGetValue(address, out (MeshInstance3D Node, Transform3D Drawn) last))
         {
             return true;
         }
@@ -2955,6 +3130,14 @@ public partial class GameEntities : Node3D
     /// <summary>Last time each rig was inside the frustum.</summary>
     private readonly Dictionary<uint, ulong> _rigSeenMs = new();
 
+    /// <summary>
+    /// Last time the feed ASKED for each rig's bones to be written — in view and on its rate
+    /// step. For the debug channel: beside the animator's `driven` and the rig's `applied` it
+    /// separates "off screen", "in view but starved by the rate gate" and "asked and not
+    /// written", which those two counters cannot, since both only move while a rig is in view.
+    /// </summary>
+    private readonly Dictionary<uint, ulong> _boneWriteAskedMs = new();
+
     /// <summary>Where each entity was when its probe sample was last taken, and under which theme.</summary>
     private readonly Dictionary<uint, (Vector3 At, long Gen)> _lastLit = new();
 
@@ -3010,6 +3193,7 @@ public partial class GameEntities : Node3D
         ResampleAnimation();
         PlaceAttached();
         ResampleAdopted();
+        Refii.Entities.Engine_ShadowSkeletons.EndWalk();
     }
 
     private void ResampleMovers()
@@ -3276,6 +3460,7 @@ public partial class GameEntities : Node3D
     public List<Dictionary<string, object?>> DescribeAnimators()
     {
         var rows = new List<Dictionary<string, object?>>();
+        ulong nowMs = Time.GetTicksMsec();
         foreach ((uint address, Refii.Animations.Engine_ClipAnimator animator) in _clipAnimators)
         {
             if (!animator.Alive)
@@ -3286,6 +3471,12 @@ public partial class GameEntities : Node3D
             rows.Add(new Dictionary<string, object?>
             {
                 ["address"] = $"{address:X8}",
+
+                // The host's OWN view decision, in ms since it last held; -1 is never.
+                ["seenMsAgo"] = _rigSeenMs.TryGetValue(address, out ulong seen) ? (long)(nowMs - seen) : -1L,
+                ["writeAskedMsAgo"] = _boneWriteAskedMs.TryGetValue(address, out ulong asked)
+                    ? (long)(nowMs - asked)
+                    : -1L,
                 ["driven"] = animator.Driven,
                 ["lastFallback"] = animator.LastFallback,
                 ["bones"] = animator.BoneCount,
@@ -3412,6 +3603,99 @@ public partial class GameEntities : Node3D
             result["surfaceRegions"] = surfaceRegions;
         }
 
+        return result;
+    }
+
+    /// <summary>
+    /// What lights one entity, as numbers: the instance terms the shader was handed (probe SH,
+    /// lightmap factor and bake mode, flat ambient) and every placed light whose range reaches
+    /// it. An address of 0 is the hero.
+    /// </summary>
+    /// <summary>
+    /// Bones whose global pose has a NEGATIVE determinant. Godot takes a skinned instance's facing
+    /// from the NODE transform alone, so triangles skinned to a mirrored bone rasterise as back
+    /// faces, and the material negates a back face's normal: that body region lights inside out.
+    /// </summary>
+    private static List<string> MirroredBones(MeshInstance3D node)
+    {
+        var found = new List<string>();
+        if (node.Skeleton.IsEmpty || node.GetNodeOrNull<Skeleton3D>(node.Skeleton) is not Skeleton3D skeleton)
+        {
+            found.Add("(no skeleton)");
+            return found;
+        }
+
+        int bones = skeleton.GetBoneCount();
+        for (int bone = 0; bone < bones; bone++)
+        {
+            float determinant = skeleton.GetBoneGlobalPose(bone).Basis.Determinant();
+            if (determinant < 0f)
+            {
+                found.Add($"{skeleton.GetBoneName(bone)} det={determinant:0.###}");
+            }
+        }
+
+        found.Insert(0, $"{found.Count} of {bones} bones mirrored");
+        return found;
+    }
+
+    public Dictionary<string, object?>? DescribeLighting(uint address)
+    {
+        if (address == 0u)
+        {
+            address = HostBridge.HeroEntityAddress();
+        }
+
+        if (!_nodes.TryGetValue(address, out MeshInstance3D? node) || !node.IsInsideTree())
+        {
+            return null;
+        }
+
+        Vector3 at = node.GlobalPosition;
+        var result = new Dictionary<string, object?>
+        {
+            ["address"] = $"{address:X8}",
+            ["at"] = $"({at.X:0.0},{at.Y:0.0},{at.Z:0.0})",
+            ["layers"] = $"0x{node.Layers:X}",
+            ["nodeDeterminant"] = node.GlobalTransform.Basis.Determinant(),
+            ["mirroredBones"] = MirroredBones(node),
+            ["castShadow"] = node.CastShadow.ToString(),
+        };
+
+        foreach (string parameter in new[]
+            { "probe_r", "probe_g", "probe_b", "lightmap_colour", "ambient_colour", "darkening_colour" })
+        {
+            Variant value = node.GetInstanceShaderParameter(parameter);
+            result[parameter] = value.VariantType == Variant.Type.Nil ? "unset" : value.ToString();
+        }
+
+        var lights = new List<Light3D>();
+        Refii.Lighting.Engine_LevelLights.SnapshotLights(lights);
+        var reaching = new List<(float Distance, string Row)>();
+        foreach (Light3D light in lights)
+        {
+            if (!light.IsInsideTree() || !light.Visible)
+            {
+                continue;
+            }
+
+            float range = light is OmniLight3D omni ? omni.OmniRange
+                : light is SpotLight3D spot ? spot.SpotRange : 0f;
+            float distance = at.DistanceTo(light.GlobalPosition);
+            if (distance > range)
+            {
+                continue;
+            }
+
+            Color c = light.LightColor;
+            reaching.Add((distance,
+                $"{light.Name} {light.GetType().Name} d={distance:0.0} range={range:0.0} " +
+                $"energy={light.LightEnergy:0.00} colour=({c.R:0.00},{c.G:0.00},{c.B:0.00}) " +
+                $"shadow={light.ShadowEnabled} casters=0x{light.ShadowCasterMask:X}"));
+        }
+
+        reaching.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+        result["reaching"] = reaching.ConvertAll(row => row.Row);
         return result;
     }
 

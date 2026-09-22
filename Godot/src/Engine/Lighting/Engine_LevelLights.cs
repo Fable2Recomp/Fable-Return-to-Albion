@@ -344,6 +344,8 @@ public static class Engine_LevelLights
 					continue;
 				}
 
+				// A flickering light's node holds its envelope; its falloff is the stated radius.
+				range = Engine_LightTable.StatedRangeOf(node, range);
 				float d = node.GlobalPosition.DistanceTo(world);
 				float atten = 1f - (d / range);
 				if (atten <= 0f)
@@ -505,6 +507,10 @@ public static class Engine_LevelLights
 		if (hosts.Count != 0)
 		{
 			MarkHosts(container, hosts);
+			lock (HostRecords)
+			{
+				HostRecords.UnionWith(hosts);
+			}
 		}
 
 		// The shadow budget rides along whenever any light spawned — it is what turns
@@ -524,6 +530,26 @@ public static class Engine_LevelLights
 
 		return spawned;
 	}
+
+	/// <summary>Placement records that carry a placed light on their own model, across regions.</summary>
+	private static readonly HashSet<uint> HostRecords = new();
+
+	/// <summary>
+	/// Whether a placement record hosts a placed light. A guest-driven entity carries the same
+	/// record as its static twin, and most town fixtures are drawn as the entity, so the feed
+	/// asks this to keep a lantern out of its own lamp's shadow map.
+	/// </summary>
+	public static bool IsLampHost(uint record)
+	{
+		lock (HostRecords)
+		{
+			return HostRecords.Contains(record);
+		}
+	}
+
+	/// <summary>What a guest-driven entity draws on: a lamp host follows <see cref="MarkHosts"/>.</summary>
+	public static uint EntityLayersOf(uint record) =>
+		IsLampHost(record) ? LampHostLayerMask : 1u | EntityCasterLayerMask;
 
 	/// <summary>Moves the prop nodes of <paramref name="hosts"/> onto <see cref="LampHostLayer"/>.</summary>
 	private static void MarkHosts(Node container, HashSet<uint> hosts)
@@ -550,7 +576,7 @@ public static class Engine_LevelLights
 	/// ShadowCasterMask leaves out. A fixture must not shadow itself: its light hangs on the
 	/// model's own Prop.Layout.Light dummy, inside the housing. The prop is still drawn and lit;
 	/// only its shadow into placed lights is gone, and the sun's mask keeps it. Layers 20 and
-	/// 21 are the FX passes' and layer 2 the water's; nothing else in the tree assigns one.
+	/// 21 are the FX passes', 18 the highlight's, 17 the entity casters' and 2 the water's.
 	/// </summary>
 	public const int LampHostLayer = 19;
 
@@ -670,11 +696,49 @@ public static class Engine_LevelLights
 	}
 
 	/// <summary>
-	/// `placed_light_shadows`, OFF by default: only a spot whose
-	/// component states CastShadows competes for a map, the 360's own set of 83. ON lets every
-	/// fixture compete for one of the <see cref="Engine_LightShadowBudget.Budget"/> maps.
+	/// `placed_light_shadows`, ON by default: every fixture competes for one of the
+	/// <see cref="Engine_LightShadowBudget.Budget"/> maps. OFF leaves only a spot whose
+	/// component states CastShadows, the 360's own set of 83.
 	/// </summary>
 	public static bool PlacedShadowsEnabled => PlacedShadows;
+
+	/// <summary>
+	/// The render layer every guest-driven entity carries beside layer 1, and the only one a
+	/// fixture WITHOUT the authored CastShadows flag draws into its map: a character's shadow
+	/// under every torch for a handful of draws, where the static world is six passes over
+	/// everything in reach. `placed_light_shadows_world` widens the mask to the world.
+	/// </summary>
+	public const int EntityCasterLayer = 17;
+
+	public const uint EntityCasterLayerMask = 1u << (EntityCasterLayer - 1);
+
+	/// <summary>What a placed light draws into its shadow map, by the data's own CastShadows flag.</summary>
+	public static uint CasterMaskOf(bool authored) =>
+		authored || PlacedShadowsWorld ? ~LampHostLayerMask : EntityCasterLayerMask;
+
+	private static bool? _placedShadowsWorld;
+
+	private static bool PlacedShadowsWorld
+	{
+		get
+		{
+			if (_placedShadowsWorld is null)
+			{
+				try
+				{
+					_placedShadowsWorld = Refii.Core.Engine_RefiiConfig.Bool(
+						Refii.Core.Engine_RefiiConfig.Read(out _),
+						"placed_light_shadows_world", false);
+				}
+				catch (Exception)
+				{
+					_placedShadowsWorld = false;
+				}
+			}
+
+			return _placedShadowsWorld.Value;
+		}
+	}
 
 	private static bool PlacedShadows
 	{
@@ -686,15 +750,46 @@ public static class Engine_LevelLights
 				{
 					_placedShadows = Refii.Core.Engine_RefiiConfig.Bool(
 						Refii.Core.Engine_RefiiConfig.Read(out _),
-						"placed_light_shadows", false);
+						"placed_light_shadows", true);
 				}
 				catch (Exception)
 				{
-					_placedShadows = false;
+					_placedShadows = true;
 				}
 			}
 
 			return _placedShadows.Value;
+		}
+	}
+
+	/// <summary>
+	/// The shadow filter of every placed light: one source for <see cref="Build"/> and the live
+	/// `render` lever. The defaults are Godot 4.7.1's own (light_3d.cpp), so untouched they
+	/// change nothing. A NaN bias is the per-type default, omni 0.1 and spot 0.03.
+	/// </summary>
+	public static float PlacedShadowBlur = 1.0f;
+
+	public static float PlacedShadowBias = float.NaN;
+
+	public static float PlacedShadowNormalBias = 1.0f;
+
+	private static void ApplyShadowTuning(Light3D node)
+	{
+		node.ShadowBlur = PlacedShadowBlur;
+		node.ShadowNormalBias = PlacedShadowNormalBias;
+		node.ShadowBias = float.IsNaN(PlacedShadowBias)
+			? (node is SpotLight3D ? 0.03f : 0.1f)
+			: PlacedShadowBias;
+	}
+
+	/// <summary>Writes the tuning to every live placed light. Main thread only.</summary>
+	public static void RetuneShadows()
+	{
+		var lights = new List<Light3D>();
+		SnapshotLights(lights);
+		foreach (Light3D light in lights)
+		{
+			ApplyShadowTuning(light);
 		}
 	}
 
@@ -752,7 +847,12 @@ public static class Engine_LevelLights
 		node.ShadowEnabled = false;
 		node.ShadowOpacity = 0.0f;
 		node.SetMeta(AuthoredShadowMeta, light.CastShadows);
-		node.ShadowCasterMask = ~LampHostLayerMask;
+		node.ShadowCasterMask = CasterMaskOf(light.CastShadows);
+		ApplyShadowTuning(node);
+
+		// A fixture never moves: the GI bakes it into a cascade when the cascade refreshes, where a
+		// dynamic light is re-injected on every GI update. See ConfigureGlobalIllumination.
+		node.LightBakeMode = Light3D.BakeMode.Static;
 		node.Transform = at;
 
 		// Registered in the light table, so the shader measures the distance and takes the shadow

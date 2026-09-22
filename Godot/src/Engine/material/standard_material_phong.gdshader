@@ -3,7 +3,7 @@ shader_type spatial;
 // `fable_specular` — and disabling the channel silently discards everything `light()` writes to
 // SPECULAR_LIGHT. 57.5% of the shipped material records (5,347 of 9,293, surveyed across all
 // 5,446 models) name a specular texture, so this was over half the asset set losing a term.
-render_mode blend_mix, depth_draw_opaque, cull_disabled, ambient_light_disabled;
+render_mode blend_mix, depth_draw_opaque, cull_disabled;
 
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
@@ -66,7 +66,11 @@ uniform float self_illum_scale = 1.0;
 varying vec3 v_specular;
 varying float v_specular_power;
 
+/// The PRT ambient, computed per vertex as the guest's AMB2 vertex shader does; a = present.
+varying vec4 v_transfer;
+
 void vertex() {
+    v_transfer = fable_transfer(CUSTOM0, CUSTOM1, CUSTOM2, mat3(MODEL_MATRIX));
     fable_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
@@ -93,8 +97,12 @@ void fragment() {
     //
     // Flipped before the bake below as well as before `light()`, because the probe SH is
     // evaluated for a direction too and a back face was sampling the wrong lobe of it.
-    NORMAL = FRONT_FACING ? NORMAL : -NORMAL;
-    BINORMAL = FRONT_FACING ? BINORMAL : -BINORMAL;
+    // Godot's indirect specular is off, as in standard_material: the direct lobe is `light()`'s.
+    SPECULAR = 0.0;
+
+    float side = fable_normal_side(NORMAL, VERTEX, VIEW);
+    NORMAL *= side;
+    BINORMAL *= side;
 
     // THE BAKE IS DARKENED WHERE A MAPPED NORMAL TURNS AWAY, and this surface was the only lit
     // one not doing it. Terrain has applied the term since it landed; a normal-mapped prop
@@ -137,6 +145,10 @@ void fragment() {
 
     vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
     vec3 bake = fable_bake(world_normal, COLOR, UV2);
+    if (v_transfer.a > 0.5 && lightmap_colour.w > 0.5 && lightmap_colour.w < 1.5) {
+        // Mode 1 on a mesh that carries its transfer: the guest's PRT, decoded as AMB2 is.
+        bake = pow(max(v_transfer.rgb, vec3(0.0)), vec3(FABLE_BAKE_GAMMA));
+    }
 
     // The guest's bent-normal darken, same as standard_material: AmbRef = the main light's
     // direction (VS c19), factor = saturate(dot(bent, mappedN))^2; nrm0 takes no darkening.

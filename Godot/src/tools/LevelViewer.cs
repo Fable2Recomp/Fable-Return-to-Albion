@@ -46,6 +46,10 @@ public partial class LevelViewer : Node3D
 	private int _debugView = -1;
 	private float _bakeWeight = -1f;
 	private int _framesRendered;
+
+	/// <summary>Viewport render times summed over the frames before the shot: one sample is noise.</summary>
+	private double _cpuSum, _gpuSum, _setupSum;
+	private int _timed;
 	private bool _requested;
 
 	/// <summary>
@@ -80,6 +84,14 @@ public partial class LevelViewer : Node3D
 		if (int.TryParse(OS.GetEnvironment("REFII_LEVEL_WARMUP"), out int warmup) && warmup > 0)
 		{
 			ShotWarmupFrames = warmup;
+		}
+
+		// REFII_LEVEL_SHADOW_PROXY=0: every prop casts its own shadow, surface by surface. The frame
+		// must match the default's and the draw calls must not.
+		if (OS.GetEnvironment("REFII_LEVEL_SHADOW_PROXY") == "0")
+		{
+			Refii.Level.Engine_PropShadow.Enabled = false;
+			Refii.Entities.Engine_ShadowProxy.Enabled = false;
 		}
 
 		string requested = OS.GetEnvironment("REFII_LEVEL");
@@ -183,8 +195,76 @@ public partial class LevelViewer : Node3D
 			return;
 		}
 
+		// REFII_LEVEL_PROBE=1: a white DYNAMIC sphere at the camera target, on the shipped material.
+		// It stands where a character would and takes light the way one does, so a shot answers
+		// "does a moving thing get any fill here" without the guest.
+		if (_framesRendered == 0)
+		{
+			RenderingServer.ViewportSetMeasureRenderTime(GetViewport().GetViewportRid(), true);
+		}
+
+		if (_framesRendered >= ShotWarmupFrames - 240)
+		{
+			Rid timed = GetViewport().GetViewportRid();
+			_cpuSum += RenderingServer.ViewportGetMeasuredRenderTimeCpu(timed);
+			_gpuSum += RenderingServer.ViewportGetMeasuredRenderTimeGpu(timed);
+			_setupSum += RenderingServer.GetFrameSetupTimeCpu();
+			++_timed;
+		}
+
+		if (_framesRendered == 0 && OS.GetEnvironment("REFII_LEVEL_PROBE") == "1")
+		{
+			var white = Image.CreateEmpty(4, 4, false, Image.Format.Rgba8);
+			white.Fill(Colors.White);
+			var material = new ShaderMaterial { Shader = GD.Load<Shader>("res://src/Engine/material/standard_material.gdshader") };
+			material.SetShaderParameter("albedo_tex", ImageTexture.CreateFromImage(white));
+			material.SetShaderParameter("has_normal", false);
+			var probe = new MeshInstance3D
+			{
+				Mesh = new SphereMesh { Radius = 0.45f, Height = 0.9f },
+				MaterialOverride = material,
+				GIMode = GeometryInstance3D.GIModeEnum.Dynamic,
+				Name = "LightProbeSphere",
+			};
+			AddChild(probe);
+			probe.GlobalPosition = _target;
+			probe.SetInstanceShaderParameter("lightmap_colour", new Vector4(0f, 0f, 0f, 0f));
+		}
+
 		if (++_framesRendered >= ShotWarmupFrames)
 		{
+			// THE LIVE ENVIRONMENT, read off the node the renderer consumes.
+			Godot.Environment? live = Refii.Level.Engine_SkyEnvironmentNode.Current?.Environment;
+			GD.Print(live is null
+				? "[level-viewer] no sky environment node is current"
+				: $"[level-viewer] environment: modern={Refii.Lighting.Engine_LightingFrame.ModernModel} " +
+				  $"sdfgi={live.SdfgiEnabled} cascades={live.SdfgiCascades} cell={live.SdfgiMinCellSize:0.##} " +
+				  $"ambient={live.AmbientLightSource} colour=({live.AmbientLightColor.R:0.###},{live.AmbientLightColor.G:0.###},{live.AmbientLightColor.B:0.###}) " +
+				  $"energy={live.AmbientLightEnergy:0.###} interior={Refii.Lighting.Engine_LightingFrame.CurrentInterior}");
+			GD.Print($"[level-viewer] viewport render over {_timed} frames: cpu {_cpuSum / Math.Max(1, _timed):0.00} ms " +
+				$"gpu {_gpuSum / Math.Max(1, _timed):0.00} ms, frame setup {_setupSum / Math.Max(1, _timed):0.00} ms, " +
+				$"fps {Engine.GetFramesPerSecond():0}");
+			GD.Print($"[level-viewer] draw calls in frame: {Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame):0}, " +
+				$"prop shadow batches {Refii.Level.Engine_PropShadow.Batches} ({Refii.Level.Engine_PropShadow.SurfacesMerged} surfaces merged), " +
+				$"prop proxies {Refii.Entities.Engine_ShadowProxy.Active}");
+			if (OS.GetEnvironment("REFII_LEVEL_MIRRORED") == "1" && _region is not null)
+			{
+				GD.Print("[level-viewer] mirrored: " + System.Text.Json.JsonSerializer.Serialize(
+					Refii.Lighting.Engine_CasterCensus.Mirrored(_region)));
+			}
+
+			if (OS.GetEnvironment("REFII_LEVEL_MATERIALS") == "1")
+			{
+				GD.Print("[level-viewer] materials: " + System.Text.Json.JsonSerializer.Serialize(
+					Refii.Lighting.Engine_CasterCensus.Materials(GetTree().Root)));
+			}
+
+			if (OS.GetEnvironment("REFII_LEVEL_CASTERS") == "1")
+			{
+				GD.Print("[level-viewer] casters: " + System.Text.Json.JsonSerializer.Serialize(
+					Refii.Lighting.Engine_CasterCensus.Describe(GetTree().Root)));
+			}
+
 			WriteShot();
 		}
 	}
@@ -309,6 +389,25 @@ public partial class LevelViewer : Node3D
 
 		_region = region;
 		AddChild(region);
+
+		// REFII_LEVEL_LOD_THRESHOLD=<pixels>: Godot's mesh LOD threshold, to force the coarser levels
+		// into view (default 1). With the facing view it shows which levels are wound backwards.
+		if (float.TryParse(OS.GetEnvironment("REFII_LEVEL_LOD_THRESHOLD"), System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out float lodThreshold) && lodThreshold > 0f)
+		{
+			GetViewport().MeshLodThreshold = lodThreshold;
+		}
+
+		// REFII_LEVEL_FLOOR_SHARE=<0..1>: the bake's unoccluded share, for judging it against 0.
+		if (float.TryParse(OS.GetEnvironment("REFII_LEVEL_FLOOR_SHARE"), System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out float floorShare))
+		{
+			Refii.Lighting.Engine_LightingFrame.ModernFloorShare = Math.Clamp(floorShare, 0f, 1f);
+		}
+
+		// REFII_LEVEL_GI_HALF=1: Godot resolves the GI at half resolution and upsamples it. For
+		// judging that one setting against the full-resolution frame from the same camera.
+		RenderingServer.GISetUseHalfResolution(OS.GetEnvironment("REFII_LEVEL_GI_HALF") == "1");
 
 		// REFII_LEVEL_TOD drives the same setter the editor's inspector does, AFTER the region
 		// is standing. That is a different path from REFII_FORCE_TOD, which changes the time

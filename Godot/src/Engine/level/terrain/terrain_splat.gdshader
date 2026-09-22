@@ -1,6 +1,6 @@
 ﻿
 shader_type spatial;
-render_mode cull_disabled, ambient_light_disabled, specular_disabled;
+render_mode cull_disabled, specular_disabled;
 
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
@@ -246,8 +246,9 @@ void fragment() {
 	// lamp's — clamped to zero, while the shadow term (no NdotL) stayed perfect, which is
 	// exactly the year of "shadows received but never seen". standard_material has carried
 	// this pair since the beginning; the splat never did.
-	NORMAL = FRONT_FACING ? NORMAL : -NORMAL;
-	BINORMAL = FRONT_FACING ? BINORMAL : -BINORMAL;
+	float side = fable_normal_side(NORMAL, VERTEX, VIEW);
+	NORMAL *= side;
+	BINORMAL *= side;
 
 	vec2 mesh_xy = vec2(v_local.x, v_local.z);
 	vec2 world_xy = (mesh_xy * mesh_xform.xy) + mesh_xform.zw;
@@ -484,6 +485,8 @@ void fragment() {
 	// occludes the terrain bake itself: the lightmap is metres-per-texel and cannot carry
 	// texture-scale occlusion.
 	EMISSION = final * fable_ambient(authored * ao);
+	// Godot's ambient and GI take the AO the guest's fill took above; 1 in the fable model.
+	AO = mix(1.0, ao, fable_unified);
 
 	// LAST, because it attenuates everything above it. Exact here: the ground is
 	// `specular_disabled`, so ALBEDO and EMISSION between them carry the whole surface, and the
@@ -509,6 +512,16 @@ void fragment() {
 		ALBEDO = vec3(0.0);
 	} else if (fable_light_debug == 4) {
 		EMISSION = darken;
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 8) {
+		EMISSION = (NORMAL * 0.5) + 0.5;
+		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 9) {
+		// Every light, and under the unified model Godot's ambient and GI, on a WHITE ground.
+		EMISSION = vec3(0.0);
+		ALBEDO = vec3(1.0);
+	} else if (fable_light_debug == 10) {
+		EMISSION = FRONT_FACING ? vec3(0.1, 1.0, 0.1) : vec3(1.0, 0.1, 0.1);
 		ALBEDO = vec3(0.0);
 	} else if (fable_light_debug == 5) {
 		// Terrain has one bake source: cyan = its lightmap texture is bound, red = missing.

@@ -37,6 +37,9 @@ public sealed class Engine_EntitySkeleton
 {
 	private readonly Skeleton3D _skeleton;
 
+	/// <summary>The shadow skeleton holds the last pose this writer wrote to the body; false after a write it did not mirror.</summary>
+	private bool _shadowSynced;
+
 	/// <summary>The model's bone table — the numbering the skeleton and the mesh both use.</summary>
 	private readonly Engine_MdlRig _rig;
 
@@ -160,8 +163,10 @@ public sealed class Engine_EntitySkeleton
 	/// against the two rest lengths it could plausibly be.
 	///
 	/// Length is invariant under the basis map, so no swizzle is needed and the comparison is
-	/// exact. The two candidates are sixty times apart for a deep bone, so there is no
-	/// threshold to tune and no case where both are close.
+	/// exact. The two candidates are sixty times apart for a deep bone of a STANDING body. A
+	/// body folded onto its own origin — a dog digging or lying down — brings them together, so
+	/// this is a counter for the rig line and gates nothing; <see cref="LocalVotes"/> decides,
+	/// on bone length.
 	/// </summary>
 	private void Classify(in HostBridge.BonePose pose)
 	{
@@ -289,8 +294,9 @@ public sealed class Engine_EntitySkeleton
 		_havePrevious = false;
 
 		// The skeleton is about to be written by something else — the clip animator — so what
-		// this rig last wrote is no longer what the bones hold.
+		// this rig last wrote is no longer what the bones hold, nor what the shadow holds.
 		_wroteSettled = false;
+		_shadowSynced = false;
 	}
 
 	/// <summary>
@@ -366,46 +372,50 @@ public sealed class Engine_EntitySkeleton
 	}
 
 	/// <summary>
-	/// Per-bone votes on whether the array is LOCAL (bones at their local rest lengths, the
-	/// array before the guest's in-place conversion) or MODEL (bones at their root distances),
-	/// and whether the votes SPLIT in guest bone order — a converted head and a local tail is
-	/// a converter preempted part-way. The flag at comp+0x14 is wrong both ways; the data is
-	/// not. Never compose a local array with this reader: its element layout differs
-	/// (translation first), which is the door's axis swap in the jump log.
+	/// Per-bone votes on whether the array is LOCAL (the array before the guest's in-place
+	/// conversion) or MODEL, and whether the votes SPLIT in guest bone order — a converted head
+	/// and a local tail is a converter preempted part-way. The flag at comp+0x14 is wrong both
+	/// ways; the data is not. Never compose a local array with this reader: its element layout
+	/// differs (translation first), which is the door's axis swap in the jump log.
 	/// </summary>
+	/// <remarks>
+	/// THE VOTE IS ON BONE LENGTH, WHICH NO POSE CHANGES. A rigid bone is its rest local length
+	/// from its PARENT in a model-space array, and that long from ZERO in a local one. The vote
+	/// used to weigh each bone's distance from the model ORIGIN against its rest global distance,
+	/// which is only true of a body standing the way it was bound: a dog with its head down
+	/// digging, or lying down, carries every bone to within a local offset's length of its own
+	/// origin, the vote tipped (the husky: local 46, model 40, on an array flagged and measured
+	/// model), and the pose was held for as long as the dog stayed down.
+	/// </remarks>
 	private (int Local, int Model, bool Split) LocalVotes(in HostBridge.BonePose pose)
 	{
-		// THE FLOOR IS A FRACTION OF THE RIG, NOT A FIXED 5 cm.
-		//
-		// A bone can only separate the two spaces when its local rest offset and its global
-		// one actually differ, and how far apart those are scales with the CREATURE. Five
-		// centimetres is a reasonable slice of a two-metre hero and is wider than a beetle,
-		// so on a small rig it discarded every bone, the vote came back empty, and the pose
-		// was held on the flag alone — a wing or a tail frozen in whatever it was last caught
-		// doing, for as long as the thing was on screen. Measured against the rig's own reach
-		// it asks the same question of a beetle that it asks of a hero.
+		// A fraction of the rig, not a fixed length: what separates the two readings scales with
+		// the creature, and five centimetres is wider than a beetle.
 		int local = 0;
 		int model = 0;
 		int lastModelGuest = -1;
 		int firstLocalGuest = int.MaxValue;
 		float separation = Mathf.Max(_restReach * 0.02f, 1e-4f);
+		_voteParents ??= VoteParents();
 		for (int m = 0; m < _modelToGuest.Length; ++m)
 		{
 			int g = _modelToGuest[m];
-			if (g < 0)
+			int parent = _voteParents[m];
+			if (g < 0 || parent < 0)
 			{
 				continue;
 			}
 
-			float raw = pose.Translation(g).Length();
-			float localRest = _rig.Translation(m).Length();
-			float globalRest = _skeleton.GetBoneGlobalRest(m).Origin.Length();
-			if (Mathf.Abs(globalRest - localRest) < separation)
+			Vector3 at = pose.Translation(g);
+			float length = _rig.Translation(m).Length();
+			float asLocal = Mathf.Abs(at.Length() - length);
+			float asModel = Mathf.Abs((at - pose.Translation(parent)).Length() - length);
+			if (Mathf.Abs(asLocal - asModel) < separation)
 			{
-				continue;  // says nothing either way
+				continue;  // says nothing either way — a child of a bone standing at the origin
 			}
 
-			if (Mathf.Abs(raw - localRest) <= Mathf.Abs(raw - globalRest))
+			if (asLocal < asModel)
 			{
 				++local;
 				firstLocalGuest = Mathf.Min(firstLocalGuest, g);
@@ -419,6 +429,21 @@ public sealed class Engine_EntitySkeleton
 
 		bool split = local >= 2 && model >= 2 && firstLocalGuest > lastModelGuest;
 		return (local, model, split);
+	}
+
+	/// <summary>Each model bone's parent as a GUEST index, −1 for a root or an unmapped parent.</summary>
+	private int[]? _voteParents;
+
+	private int[] VoteParents()
+	{
+		var parents = new int[_modelToGuest.Length];
+		for (int m = 0; m < parents.Length; ++m)
+		{
+			int parent = _skeleton.GetBoneParent(m);
+			parents[m] = parent >= 0 && parent < _modelToGuest.Length ? _modelToGuest[parent] : -1;
+		}
+
+		return parents;
 	}
 
 	/// <summary>The node to parent a skinned mesh under.</summary>
@@ -1377,8 +1402,15 @@ public sealed class Engine_EntitySkeleton
 		// Settled at the playhead's ceiling, not at 1: the blend carries past 1 while the guest is
 		// late, so skipping at 1 would freeze the pose the carry exists to move. It settles once
 		// alpha stops moving: at the ceiling or on a held pair.
-		if (alpha >= (float)_playhead.TopAlpha && _wroteSettled &&
-			_wroteUsec == _newestUsec)
+		bool settled = alpha >= (float)_playhead.TopAlpha && _wroteSettled &&
+			_wroteUsec == _newestUsec;
+
+		// THE SHADOW SKELETON TAKES THE SAME BONES, ON GUEST FRAMES (every frame for a principal).
+		// A settled rig whose shadow already holds this pose has nothing to write either way; a
+		// settled rig whose shadow missed the last write runs the loop for the shadow alone.
+		bool shadowNow = Refii.Entities.Engine_ShadowSkeletons.WriteNow(_skeleton, out Skeleton3D? shadow) &&
+			!(settled && _shadowSynced);
+		if (settled && !shadowNow)
 		{
 			++WritesSkipped;
 			return;
@@ -1437,11 +1469,28 @@ public sealed class Engine_EntitySkeleton
 			// crossings into the engine per bone, and the rotation and scale forms additionally
 			// cost a quaternion extraction and a per-axis scale decomposition to build arguments
 			// Godot immediately recomposes. `SetBonePose` takes the transform whole.
-			_skeleton.SetBonePose(m, local);
+			if (!settled)
+			{
+				_skeleton.SetBonePose(m, local);
+			}
+
+			if (shadowNow)
+			{
+				shadow!.SetBonePose(m, local);
+			}
 		}
 
-		_wroteUsec = _newestUsec;
-		_wroteSettled = alpha >= (float)_playhead.TopAlpha;
+		if (!settled)
+		{
+			_wroteUsec = _newestUsec;
+			_wroteSettled = alpha >= (float)_playhead.TopAlpha;
+			// The shadow trails this write unless it took it too.
+			_shadowSynced = shadowNow;
+		}
+		else
+		{
+			_shadowSynced = true;
+		}
 	}
 
 	/// <summary>Where the pose blend's alpha lands: pinned to either end, or genuinely between.</summary>

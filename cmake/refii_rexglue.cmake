@@ -538,8 +538,12 @@ function(refii_rexglue_apply_shadow_overrides)
             "${REFII_REXGLUE_SHADOW_DIR}/include"
         )
 
+        # The seam's OBJECTS, as rexruntime's own — its single home (src/achievement/CMakeLists.txt).
         if(TARGET refii_achievement)
-            target_link_libraries(rexruntime PRIVATE refii_achievement)
+            target_sources(rexruntime PRIVATE $<TARGET_OBJECTS:refii_achievement>)
+            target_include_directories(rexruntime PRIVATE
+                $<TARGET_PROPERTY:refii_achievement,INTERFACE_INCLUDE_DIRECTORIES>)
+            add_dependencies(rexruntime refii_achievement)
         endif()
 
         refii_rexglue_replace_target_source(rexruntime "src/kernel/xam/xam_user.cpp")

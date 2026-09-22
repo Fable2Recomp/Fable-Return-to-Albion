@@ -364,7 +364,9 @@ public static class Engine_LevelBakedLighting
 			arrays[(int)Mesh.ArrayType.Color] = vertexColours;
 			cursor += count;
 
-			baked.AddSurfaceFromArrays(source.Primitives[s], arrays, null, source.Lods[s]);
+			baked.AddSurfaceFromArrays(
+				source.Primitives[s], arrays, null, source.Lods[s],
+				Refii.Models.Engine_MdlTransfer.FormatOf(arrays));
 			int added = baked.GetSurfaceCount() - 1;
 			baked.SurfaceSetName(added, source.Names[s]);
 			baked.SurfaceSetMaterial(added, source.Materials[s]);
@@ -425,7 +427,7 @@ public static class Engine_LevelBakedLighting
 
 		static SourceSurfaces Add(ArrayMesh mesh, SourceSurfaces read)
 		{
-			SurfaceCache.Add(mesh, read);
+			SurfaceCache.AddOrUpdate(mesh, read);
 			return read;
 		}
 	}

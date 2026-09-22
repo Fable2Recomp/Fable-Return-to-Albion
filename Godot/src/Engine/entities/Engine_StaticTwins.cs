@@ -216,6 +216,7 @@ public sealed class Engine_StaticTwins
 
         if (adoption.Instance < 0)
         {
+            Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.TwinDriven);
             adoption.Node.GlobalTransform = world;
             return;
         }
@@ -223,7 +224,10 @@ public sealed class Engine_StaticTwins
         if (adoption.Node is MultiMeshInstance3D batched && batched.Multimesh is { } mesh &&
             adoption.Instance < mesh.InstanceCount)
         {
-            mesh.SetInstanceTransform(adoption.Instance, batched.GlobalTransform.AffineInverse() * world);
+            Transform3D local = batched.GlobalTransform.AffineInverse() * world;
+            Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.TwinDriven);
+            Refii.Level.Engine_PropShadow.SetInstanceTransform(mesh, adoption.Instance, local);
+            Refii.Level.Engine_LevelProps.CoverInstance(mesh, local);
         }
     }
 
@@ -330,34 +334,8 @@ public sealed class Engine_StaticTwins
     /// </summary>
     private readonly HashSet<uint> _restorable = new();
 
-    /// <summary>
-    /// The placement UID the guest gave each record, learned from its own live entities.
-    /// </summary>
-    /// <remarks>
-    /// THE JOIN THE DESTROYED SET NEEDS. The guest keys DeadEntities by placement UID, and this
-    /// class keys everything by record hash — different values written from different sources.
-    /// The `.save` does carry the UID, but not as a named attribute: the guest reads it through
-    /// a reader slot rather than by name, so parsing it out of the XML would mean guessing.
-    ///
-    /// The bridge already states both halves together for every live entity, so the mapping is
-    /// learned rather than derived. Kept once seen: it is exactly the records whose entity has
-    /// GONE that need it, and by then the guest is no longer reporting them.
-    /// </remarks>
-    private readonly Dictionary<uint, ulong> _uidOf = new();
-
     /// <summary>Records held hidden because the guest says the placement is destroyed.</summary>
     public int HiddenAsDestroyed { get; private set; }
-
-    /// <summary>Records the record-to-UID join for a live entity the guest is reporting.</summary>
-    public void NoteUid(uint record, ulong uid)
-    {
-        if (record == 0 || uid == 0)
-        {
-            return;
-        }
-
-        _uidOf[record] = uid;
-    }
 
     /// <summary>
     /// Node names of the records left standing as the only copy, most-repeated first.
@@ -730,8 +708,12 @@ public sealed class Engine_StaticTwins
             // region's copy" — destroying a breakable produces exactly that state, and the copy
             // reappearing where the smashed one stood is the ghost. The guest states destruction
             // outright and persists it to its own save, so this asks rather than infers.
-            bool gone = destroyed.Count != 0 &&
-                _uidOf.TryGetValue(pair.Key, out ulong uid) && destroyed.Contains(uid);
+            //
+            // A PLACED ENTITY'S UID IS ITS RECORD, zero-extended: the guest keys its entity map
+            // and DeadEntities by `0:record` for every `.save` placement (entity+0x14 == 0,
+            // +0x18 == +0x1C). The set persists in the save, so a placement can be dead before
+            // any live entity for it was ever reported — the join cannot wait to be learned.
+            bool gone = destroyed.Contains(pair.Key);
 
             bool shouldShow = !ours && !gated && !gone;
 
@@ -998,7 +980,8 @@ public sealed class Engine_StaticTwins
         if (twin.Node is MultiMeshInstance3D batched && batched.Multimesh is { } mesh &&
             twin.Instance < mesh.InstanceCount)
         {
-            mesh.SetInstanceTransform(twin.Instance, new Transform3D(
+            Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.TwinDriven);
+            Refii.Level.Engine_PropShadow.SetInstanceTransform(mesh, twin.Instance, new Transform3D(
                 new Basis(Vector3.Zero, Vector3.Zero, Vector3.Zero), twin.Standing.Origin));
         }
     }
@@ -1040,7 +1023,9 @@ public sealed class Engine_StaticTwins
             if (twin.Node is MultiMeshInstance3D batched && batched.Multimesh is { } mesh &&
                 twin.Instance < mesh.InstanceCount)
             {
-                mesh.SetInstanceTransform(twin.Instance, twin.Standing);
+                Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.TwinDriven);
+                Refii.Level.Engine_PropShadow.SetInstanceTransform(mesh, twin.Instance, twin.Standing);
+                Refii.Level.Engine_LevelProps.CoverInstance(mesh, twin.Standing);
             }
         }
     }

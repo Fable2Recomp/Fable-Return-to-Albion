@@ -121,7 +121,8 @@ public static class RuntimeCVarsGodot
                 + "finished frame at each refresh with no tearing and no cap at a fraction of "
                 + "the refresh rate; 'on' waits for every refresh, so a frame that misses one "
                 + "shows at half the rate; 'adaptive' waits when the frame is fast and tears "
-                + "when it is slow. Falls back to 'on' where the driver has no mailbox. "
+                + "when it is slow. Where the driver has no mailbox it falls back to 'adaptive', "
+                + "and to 'on' only if that is missing too. "
                 + "vsync = false turns all of it off.",
                 "mailbox,on,adaptive"),
 
@@ -216,11 +217,26 @@ public static class RuntimeCVarsGodot
                 "Whether a placed light fades out and stops drawing past its authored camera "
                 + "cutoff, as the 360 did. Off keeps every fixture lit at any distance; its "
                 + "range still bounds what it reaches. The fable model always fades."),
-            new("placed_light_shadows", LightingCategory, RuntimeCVarType.Bool, "false",
+            new("placed_light_shadows", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Let torches, lamps and fixtures cast shadows. On: "
                 + "the fixtures nearest the eye and on screen hold shadow maps, up to "
                 + "placed_light_shadow_budget of them, fading in and out as the camera moves. "
                 + "Off follows the shipped data, where only the few spot lights marked to cast do."),
+            new("cull_back_faces", VideoCategory, RuntimeCVarType.Bool, "true",
+                "Draw ordinary models from their front side only, as the original game does. "
+                + "Halves the pixel work on solid shapes. Off draws every surface from both "
+                + "sides. Trees and leaves are always drawn from both. Takes effect on the next "
+                + "level load."),
+            new("gi_half_resolution", LightingCategory, RuntimeCVarType.Bool, "true",
+                "Resolve the bounced light at half the screen's resolution and scale it up. The "
+                + "bounce itself is unchanged; its edges where one surface meets another are a "
+                + "little softer. Frees graphics-card time at high resolutions. Off resolves it "
+                + "at every pixel."),
+            new("placed_light_shadows_world", LightingCategory, RuntimeCVarType.Bool, "false",
+                "What a torch or lamp shadows. Off: characters and the other things the game "
+                + "moves, which is nearly free. On: the level itself as well, so walls and "
+                + "furniture block fixture light; each shadowed fixture then redraws everything "
+                + "in its reach six times a frame."),
             new("placed_light_shadow_budget", LightingCategory, RuntimeCVarType.Int, "8",
                 "How many placed lights cast shadows at once. Each one redraws everything in "
                 + "its reach into its own shadow map every frame, so this is the lighting dial "
@@ -247,11 +263,10 @@ public static class RuntimeCVarsGodot
                 + "sunset, blue at night — one source for baked, probe-lit and bare objects "
                 + "alike. 'fable' reads the authored day-set ambient exactly as the 360 did."),
             new("ambient_light_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
-                "Lifts the probe-field and theme ambient — the light every UNBAKED object "
-                + "stands in (rocks, barrels, doors, characters; the artists left them "
-                + "movable, so they carry no painted bake). The sky tether now carries that "
-                + "population, so the default follows the shipped level; raise it only if "
-                + "movables still read dark beside baked surfaces."),
+                "The one fill dial. In the modern model it scales both halves of the fill: the flat "
+                + "floor every surface keeps in shadow, and the sky light Godot's global illumination "
+                + "spreads where the sky is seen. 1.0 is the level the theme states. In the fable model "
+                + "it lifts the 360's own probe and theme ambient."),
             new("interior_ambient_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
                 "Scales the theme's flat ambient in levels with no sky. 1.0 is the shipped "
                 + "value and the one to keep: the room's brightness comes from the exposure "
@@ -262,7 +277,7 @@ public static class RuntimeCVarsGodot
                 + "state a saturated orange ambient; lifted as-is it paints every surface "
                 + "orange. 0 keeps the theme's colour, 1 lifts with white."),
             new("interior_bake_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
-                "Scales the authored vertex bakes in levels with no sky. 1.0 is the shipped "
+                "NO LONGER READ BY EITHER MODEL: it scaled the authored bake in the old modern model's interiors, and the modern model now emits no bake. Scales the authored vertex bakes in levels with no sky. 1.0 is the shipped "
                 + "strength and the one to keep: above it, baked floors and paintings blow out "
                 + "while surfaces with no bake stay black. Modern model only."),
             new("modern_tone_curve", LightingCategory, RuntimeCVarType.String, "filmic",
@@ -286,14 +301,14 @@ public static class RuntimeCVarsGodot
                 + "state a fog that walls off everything past ten metres; the 360 reference "
                 + "shows the far walls. 1.0 is the shipped fog, 0 removes it. Modern model only."),
             new("baked_light_weight", LightingCategory, RuntimeCVarType.Double, "0.45",
-                "One weight on every AUTHORED exterior bake — the terrain lightmap and prop "
+                "FABLE MODEL ONLY: the modern model lights every surface from Godot's ambient and GI and emits no authored bake. One weight on every AUTHORED exterior bake — the terrain lightmap and prop "
                 + "vertex colours — so adjacent surfaces scale together. Lower hands the look "
                 + "to the live sun, lamps and their shadows, which is what makes their "
                 + "shadows READ; 1.0 is the shipped richness exactly. In the modern model "
                 + "interior lightmaps ignore this (they have no live sun to fall back on), "
                 + "and the probe ambient and flat ambient floor are never scaled."),
             new("prop_probe_bake_weight", LightingCategory, RuntimeCVarType.Bool, "false",
-                "Apply baked_light_weight to STATIC PROPS the artists never baked, which fall "
+                "FABLE MODEL ONLY: the modern model emits no probe fill to weight. Apply baked_light_weight to STATIC PROPS the artists never baked, which fall "
                 + "back to probe ambient — a silver birch, a barrel, a door. The 360 scaled "
                 + "neither population (verified: the executable sets no ambient gain on either "
                 + "path), so dimming only the authored bakes left the unbaked props about twice "

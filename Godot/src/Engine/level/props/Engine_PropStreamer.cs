@@ -704,6 +704,7 @@ public partial class Engine_PropStreamer : Node3D
             Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
                 node, RegionLighting(), staticProp: true);
             double lightMs = Ms(lightFrom);
+            Refii.Lighting.Engine_GiRefresh.StaticGeometryArrived(node);
 
             // The budget below can only stop the next item, so a single slow apply is logged
             // with its mesh/light split.
@@ -851,17 +852,31 @@ public partial class Engine_PropStreamer : Node3D
             {
                 multi.Multimesh.Mesh = mesh;
 
-                // Replace the provisional streaming bounds with the union of transformed
-                // mesh bounds. Include rotation, scale and off-centre mesh origins.
-                if (multi.Multimesh.InstanceCount > 0)
+                // The provisional bounds give way to the union of every instance's transformed
+                // mesh box. ONE buffer read, not a transform read per instance: each is a
+                // round trip to the rendering server. A collapsed (hidden) instance measures
+                // as a point; `Engine_LevelProps.CoverInstance` widens for it when it is shown.
+                int count = multi.Multimesh.InstanceCount;
+                float[] buffer = count > 0 ? multi.Multimesh.Buffer : Array.Empty<float>();
+                int stride = count > 0 ? buffer.Length / count : 0;
+                if (stride >= 12)
                 {
                     Aabb local = mesh.GetAabb();
-                    Aabb bounds = multi.Multimesh.GetInstanceTransform(0) * local;
-                    for (int i = 1; i < multi.Multimesh.InstanceCount; i++)
+                    Aabb bounds = default;
+                    for (int i = 0; i < count; i++)
                     {
-                        bounds = bounds.Merge(multi.Multimesh.GetInstanceTransform(i) * local);
+                        int o = i * stride;
+                        var placed = new Transform3D(
+                            new Vector3(buffer[o], buffer[o + 4], buffer[o + 8]),
+                            new Vector3(buffer[o + 1], buffer[o + 5], buffer[o + 9]),
+                            new Vector3(buffer[o + 2], buffer[o + 6], buffer[o + 10]),
+                            new Vector3(buffer[o + 3], buffer[o + 7], buffer[o + 11]));
+                        Aabb box = placed * local;
+                        bounds = i == 0 ? box : bounds.Merge(box);
                     }
-                    // Retain the existing conservative margin for shader-deformed plants.
+
+                    // A wind-bent plant leaves its mesh box; it keeps the wide margin.
+                    Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.PropBounds);
                     multi.Multimesh.CustomAabb = bounds.Grow(SwaysInWind(mesh)
                         ? Engine_LevelProps.ModelReach : 1f);
                 }
@@ -872,7 +887,18 @@ public partial class Engine_PropStreamer : Node3D
                 single.Mesh = mesh;
                 _stepAssignMs = Ms(t0);
                 long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
-                ApplyVertexBake(single, mesh);
+
+                // A VERTEX BAKE IS A PRIVATE COPY OF THE MESH, and only the fable model reads it: under
+                // the unified model the shader multiplies the bake by `1 - fable_unified` = 0
+                // (`fable_ambient`). Built anyway, it gave every baked prop a mesh of its own, and
+                // Godot merges neighbouring draws into one instanced draw only when they share
+                // mesh and material (`_fill_render_list`, equal sort keys) — so no two copies of a
+                // model ever merged. The lighting model is fixed for the run.
+                if (!Refii.Lighting.Engine_LightingFrame.ModernModel)
+                {
+                    ApplyVertexBake(single, mesh);
+                }
+
                 _stepBakeMs = Ms(t1);
             }
 
@@ -889,7 +915,19 @@ public partial class Engine_PropStreamer : Node3D
             long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
             if (SwaysInWind(mesh))
             {
-                instance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+                Refii.Lighting.Engine_ShadowReach.Exclude(instance);
+            }
+            else if (instance is MultiMeshInstance3D castingBatch)
+            {
+                // After the visibility range above, which the twin copies.
+                Engine_PropShadow.Attach(castingBatch, mesh);
+            }
+            else if (instance is MeshInstance3D castingProp &&
+                castingProp.CastShadow != GeometryInstance3D.ShadowCastingSetting.Off)
+            {
+                // Built from the shared mesh: a vertex bake later swaps in a per-instance copy of
+                // the same shape, which would merge once per prop instead of once per model.
+                Refii.Entities.Engine_ShadowProxy.Sync(castingProp);
             }
 
             _stepSwayMs = Ms(t3);
@@ -919,6 +957,7 @@ public partial class Engine_PropStreamer : Node3D
             Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
                 instance, RegionLighting(), staticProp: true);
             _stepLightMs = Ms(t4);
+            Refii.Lighting.Engine_GiRefresh.StaticGeometryArrived(instance);
 
             _loaded++;
         }

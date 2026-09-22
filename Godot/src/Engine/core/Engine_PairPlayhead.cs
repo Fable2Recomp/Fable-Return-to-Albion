@@ -77,6 +77,7 @@ public sealed class Engine_PairPlayhead
 
 	private readonly double _ceiling;
 	private readonly double _floor;
+	private readonly bool _carry;
 
 	/// <param name="carry">
 	/// Whether the draw point may run outside the stated pair when the next one is late or early.
@@ -100,6 +101,7 @@ public sealed class Engine_PairPlayhead
 		_sharedPeriod = sharedPeriod;
 		_periodOwner = periodOwner;
 		_ownPeriodUsec = nominalUsec;
+		_carry = carry;
 		_ceiling = carry ? Ceiling : 1.0;
 		_floor = carry ? Floor : 0.0;
 	}
@@ -129,8 +131,17 @@ public sealed class Engine_PairPlayhead
 	/// </summary>
 	public long Restarts { get; private set; }
 
-	/// <summary>The alpha each swap happened at. At 1.0 a swap is exactly continuous.</summary>
+	/// <summary>
+	/// The alpha each swap happened at, on either swap path. At 1.0 a swap is exactly on time;
+	/// above it the pair was late and the draw point had carried past it, below it early.
+	/// </summary>
 	public double LastSwapAlpha { get; private set; }
+
+	/// <summary>Swaps taken through <see cref="SwapStated"/>. Run total.</summary>
+	public long StatedSwaps { get; private set; }
+
+	/// <summary>The furthest a stated swap has landed from alpha 1, in either direction. Run worst.</summary>
+	public double WorstSwapError { get; private set; }
 
 	/// <summary>
 	/// Draw points clamped at the floor — the swap landed the anchor further ahead than the time
@@ -153,17 +164,54 @@ public sealed class Engine_PairPlayhead
 	/// </remarks>
 	public void SwapStated(double nowUsec, double intervalUsec)
 	{
+		// The width of the pair that just ENDED: the new pair starts where that one reached
+		// alpha 1, so the anchor advances by it, and the new width applies from there on.
+		double endedUsec = _periodUsec;
+		bool anchored = _anchorUsec > 0.0 && endedUsec > 0.0;
+		if (anchored)
+		{
+			LastSwapAlpha = (nowUsec - _anchorUsec) / endedUsec;
+			double error = System.Math.Abs(LastSwapAlpha - 1.0);
+			if (error > WorstSwapError)
+			{
+				WorstSwapError = error;
+			}
+		}
+
+		++StatedSwaps;
 		if (intervalUsec > _nominalUsec * 0.25 && intervalUsec < _nominalUsec * 8.0)
 		{
 			_periodUsec = intervalUsec;
 		}
 
-		// Anchored at the arrival, not crept forward. Only a carrying playhead needs the
-		// creeping anchor; a clamped one at alpha 1 draws `newest`, which after the swap is
-		// `previous` at alpha 0, so restarting is exactly continuous and tracks a width that
-		// changes per pair.
 		_observedUsec = nowUsec;
-		_anchorUsec = nowUsec;
+
+		// CLAMPED: restarted at the arrival. At alpha 1 it draws `newest`, which after the swap
+		// is `previous` at alpha 0, so a late swap is exactly continuous.
+		if (!_carry)
+		{
+			_anchorUsec = nowUsec;
+			return;
+		}
+
+		// CARRYING: the draw point may be past the pair (late) or short of it (early) when the
+		// next one lands, so restarting at the arrival would jump it by `(alpha - 1) * |pair|`.
+		// The anchor advances by the ended pair's width instead — time is continuous across the
+		// swap — and re-centres on the arrivals at `AnchorTrust`, as in <see cref="Swap"/>.
+		double advanced = _anchorUsec + endedUsec;
+		double drift = nowUsec - advanced;
+		if (!anchored || drift < -endedUsec || drift > endedUsec * 2.0)
+		{
+			if (_anchorUsec > 0.0)
+			{
+				++Restarts;
+			}
+
+			_anchorUsec = nowUsec;
+			return;
+		}
+
+		_anchorUsec = advanced + (drift * AnchorTrust);
 	}
 
 	/// <summary>

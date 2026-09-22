@@ -73,6 +73,26 @@ public static class Engine_LightingFrame
 	public const float ModernAmbientLevel = 0.2f;
 
 	/// <summary>
+	/// What an authored bake holds on average once decoded: the terrain lightmap's texel mean,
+	/// 0.518 stored and 0.106 after the guest's double decode (offline census, chapter2posh). It
+	/// stands in for the bake in the ambient the unified model hands Godot; prop vertex bakes
+	/// run lower (median 0.028) and cover far less of a frame than the ground does.
+	/// </summary>
+	public const float MeanAuthoredBake = 0.106f;
+
+	/// <summary>
+	/// How much of the mean bake stays a flat, unoccluded floor in the modern model; the rest is
+	/// the ambient Godot's GI traces. The two sum to the guest's mean fill wherever the sky is
+	/// seen, and where it is not — under a canopy, beside a wall — the floor is what is left,
+	/// as the authored bake left light there. Measured 2026-09-22 in Bowerstone Cemetery at
+	/// night: the guest's fill is 0.106 x (1.00, 1.05, 2.64) + (0, 0, 0.063) and the modern model
+	/// held (0, 0, 0.063) under the trees. 0.2, not the first guess of 0.5: judged by eye and by
+	/// histogram in the cemetery's daytime woods, 0.5 left no pixel under 36/255 (p5 36, p50 55)
+	/// and the picture flat; 0.2 reads p5 25, p50 40; 0 reads p5 18, p50 31.
+	/// </summary>
+	public static float ModernFloorShare = 0.2f;
+
+	/// <summary>
 	/// The interior lift, applied to a normalised ambient colour IN PLACE and returning the
 	/// lifted energy. The added light is pulled toward neutral by `interior_ambient_neutral`:
 	/// the cave themes state a saturated orange, and multiplying that by the lift paints every
@@ -207,10 +227,15 @@ public static class Engine_LightingFrame
 			{
 				try
 				{
-					_modernAmbient = !Refii.Core.Engine_RefiiConfig.Read(out _)
-						.TryGetValue("lighting_model", out string? model) ||
-						!model.Trim().Trim('"').Equals(
-							"fable", StringComparison.OrdinalIgnoreCase);
+					// REFII_LIGHTING_MODEL overrides the config, so a tool can run either model
+					// without touching the player's settings.
+					string forced = Godot.OS.GetEnvironment("REFII_LIGHTING_MODEL");
+					_modernAmbient = forced.Length != 0
+						? !forced.Trim().Equals("fable", StringComparison.OrdinalIgnoreCase)
+						: !Refii.Core.Engine_RefiiConfig.Read(out _)
+							.TryGetValue("lighting_model", out string? model) ||
+							!model.Trim().Trim('"').Equals(
+								"fable", StringComparison.OrdinalIgnoreCase);
 				}
 				catch (Exception)
 				{

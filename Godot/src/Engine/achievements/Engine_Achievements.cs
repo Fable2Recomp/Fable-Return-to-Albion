@@ -162,7 +162,7 @@ public static class Engine_Achievements
 	/// <summary>Once per frame: load what is not loaded, ingest the guest's writes, persist.</summary>
 	public static void Drive()
 	{
-		_store ??= Engine_AchievementStore.Load(StorePath);
+		EnsureStore();
 
 		if (_database is null && --_xdbfRetryFrames <= 0)
 		{
@@ -175,7 +175,8 @@ public static class Engine_Achievements
 				BuildDefinitions(database);
 				PushUnlockedSet();
 				Report = $"{_definitions.Count} definition(s) from the XDBF, " +
-					$"{_store.Count} unlock(s) loaded from {StorePath}";
+					$"{_store!.Count} unlock(s) loaded from {StorePath}" +
+					(System.IO.File.Exists(StorePath) ? string.Empty : " (no file yet)");
 				GD.Print($"[achievements] {Report}");
 			}
 		}
@@ -188,7 +189,6 @@ public static class Engine_Achievements
 		}
 
 		bool changed = false;
-		long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 		foreach (Engine_UiModel.AchievementUnlock write in writes)
 		{
 			if (write.Sequence > _seenSequence)
@@ -196,16 +196,72 @@ public static class Engine_Achievements
 				_seenSequence = write.Sequence;
 			}
 
-			if (_store.Add(write.UserIndex, write.AchievementId, now))
+			++_writesSeen;
+			if (Unlock(write.UserIndex, write.AchievementId, "the guest wrote it"))
 			{
 				changed = true;
-				_newUnlocks.Add(write.AchievementId);
-				GD.Print($"[achievements] unlocked {write.AchievementId} " +
-					$"({Definition(write.AchievementId)?.Name ?? "no definition yet"})");
+			}
+			else
+			{
+				// Said once per id: the guest re-states what it holds at every boot, and a write
+				// that lands on an unlock already in the store is the healthy case, not news.
+				if (_restated.Add(write.AchievementId))
+				{
+					GD.Print($"[achievements] the guest re-stated {write.AchievementId} " +
+						$"({Definition(write.AchievementId)?.Name ?? "no definition yet"}) — already unlocked");
+				}
 			}
 		}
 
-		if (!changed)
+		if (changed)
+		{
+			Commit();
+		}
+	}
+
+	private static int _writesSeen;
+
+	private static readonly HashSet<uint> _restated = new();
+
+	private static void EnsureStore()
+	{
+		if (_store is not null)
+		{
+			return;
+		}
+
+		_store = Engine_AchievementStore.Load(StorePath);
+		if (_store.LoadProblem is { } problem)
+		{
+			GD.PushWarning($"[achievements] {StorePath} {problem} — starting empty; the file is " +
+				"kept as '.unreadable' when the store is next written");
+		}
+	}
+
+	/// <summary>
+	/// THE ONE WAY AN ACHIEVEMENT BECOMES UNLOCKED — the guest's write and the debug channel's
+	/// both land here, so what the test tooling exercises is the path the game takes: the store,
+	/// the toast's queue, and (through <see cref="Commit"/>) the file and the guest's enumerator.
+	/// False when it was unlocked already.
+	/// </summary>
+	private static bool Unlock(uint userIndex, uint achievementId, string why)
+	{
+		if (_store is null ||
+			!_store.Add(userIndex, achievementId, DateTimeOffset.UtcNow.ToUnixTimeSeconds()))
+		{
+			return false;
+		}
+
+		_newUnlocks.Add(achievementId);
+		GD.Print($"[achievements] unlocked {achievementId} " +
+			$"({Definition(achievementId)?.Name ?? "no definition yet"}) — {why}");
+		return true;
+	}
+
+	/// <summary>Writes the store and states the unlocked set down to the guest.</summary>
+	private static void Commit()
+	{
+		if (_store is null)
 		{
 			return;
 		}
@@ -213,13 +269,105 @@ public static class Engine_Achievements
 		try
 		{
 			_store.Save(StorePath);
+			_lastSaved = $"{_store.Count} unlock(s) at {DateTime.Now:HH:mm:ss}";
 		}
 		catch (Exception error)
 		{
+			_lastSaved = $"FAILED: {error.Message}";
 			GD.PushWarning($"[achievements] could not write {StorePath}: {error.Message}");
 		}
 
 		PushUnlockedSet();
+	}
+
+	private static string _lastSaved = "never this session";
+
+	/// <summary>Unlocks one achievement as the guest's write would. For the debug channel.</summary>
+	public static bool DebugUnlock(uint achievementId)
+	{
+		EnsureStore();
+		if (!Unlock(0u, achievementId, "the debug channel asked"))
+		{
+			return false;
+		}
+
+		Commit();
+		return true;
+	}
+
+	/// <summary>Re-locks one achievement, or all of them with id 0. Returns how many went.</summary>
+	public static int DebugLock(uint achievementId)
+	{
+		EnsureStore();
+		int removed = achievementId == 0u
+			? _store!.Clear()
+			: _store!.Remove(achievementId) ? 1 : 0;
+		if (removed > 0)
+		{
+			_restated.Clear();
+			GD.Print($"[achievements] re-locked {(achievementId == 0u ? "everything" : achievementId.ToString())} " +
+				$"({removed} unlock(s)) — the debug channel asked");
+			Commit();
+		}
+
+		return removed;
+	}
+
+	/// <summary>The whole system's state, for the debug channel.</summary>
+	public static Dictionary<string, object?> Describe(bool rows)
+	{
+		EnsureStore();
+		var state = new Dictionary<string, object?>
+		{
+			["definitionsLoaded"] = DefinitionsLoaded,
+			["definitions"] = _definitions.Count,
+			["unlocked"] = UnlockedCount,
+			["gamerscore"] = $"{UnlockedGamerscore}/{TotalGamerscore}",
+			["storePath"] = StorePath,
+			["storeFileExists"] = System.IO.File.Exists(StorePath),
+			["storeUnlocks"] = _store!.Count,
+			["storeLoadProblem"] = _store.LoadProblem,
+			["lastSaved"] = _lastSaved,
+
+			// The seam: how many guest writes have crossed the bridge this session. Zero while
+			// the guest's own log shows XGIUserWriteAchievements is a seam that is not crossing.
+			["guestWritesSeen"] = _writesSeen,
+			["guestWriteSequence"] = _seenSequence,
+			["toastsQueued"] = _newUnlocks.Count,
+		};
+
+		if (rows)
+		{
+			var list = new List<Dictionary<string, object?>>();
+			foreach (AchievementDefinition definition in _definitions)
+			{
+				list.Add(new Dictionary<string, object?>
+				{
+					["id"] = definition.Id,
+					["name"] = definition.Name,
+					["gamerscore"] = definition.Gamerscore,
+					["unlocked"] = IsUnlocked(definition.Id),
+					["when"] = UnlockedAt(definition.Id)?.ToString("yyyy-MM-dd HH:mm:ss"),
+					["hasIcon"] = _database?.Image(definition.ImageId) is { Length: > 0 },
+				});
+			}
+
+			state["achievements"] = list;
+
+			// An unlock the title does not define is still an unlock — and a sign of a bad id.
+			var unknown = new List<uint>();
+			foreach (Engine_AchievementStore.Unlock unlock in _store.Unlocks)
+			{
+				if (!_byId.ContainsKey(unlock.AchievementId))
+				{
+					unknown.Add(unlock.AchievementId);
+				}
+			}
+
+			state["unlockedWithoutDefinition"] = unknown;
+		}
+
+		return state;
 	}
 
 	private static void BuildDefinitions(Engine_XdbfDatabase database)

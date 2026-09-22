@@ -43,6 +43,8 @@ void refii_bridge_note_voice_pcm(uint32_t handle, const void* pcm, uint32_t byte
 // Bink movie state. Wrappers: refii::vfs::NoteBink* in vfs_hooks_private.h.
 void refii_bridge_note_bink_movie_open(uint32_t player, uint8_t* base_for_open);
 void refii_bridge_note_bink_movie_closed(uint32_t player);
+void refii_bridge_note_bink_movie_rect(uint32_t player, int32_t left, int32_t top, int32_t right,
+                                       int32_t bottom);
 void refii_bridge_note_bink_video_requested(uint8_t* base, uint32_t data_guest);
 
 // Guest tick pump. Wrappers: refii::vfs::GuestTickPump* in vfs_hooks_private.h.

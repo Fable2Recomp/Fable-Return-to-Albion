@@ -92,6 +92,14 @@ public sealed class Engine_AchievementStore
 		return true;
 	}
 
+	/// <summary>
+	/// Why the file on disk was NOT taken, or null when it was read (or there was none). An
+	/// unreadable file used to load as an empty store in silence, and the next unlock then
+	/// saved over it — every earlier unlock gone, with nothing in the log. <see cref="Save"/>
+	/// sets a file it could not read aside before it writes.
+	/// </summary>
+	public string? LoadProblem { get; private set; }
+
 	public static Engine_AchievementStore Load(string path)
 	{
 		var store = new Engine_AchievementStore();
@@ -105,8 +113,9 @@ public sealed class Engine_AchievementStore
 
 			lines = File.ReadAllLines(path);
 		}
-		catch (Exception)
+		catch (Exception error)
 		{
+			store.LoadProblem = $"could not be read ({error.Message})";
 			return store;
 		}
 
@@ -115,6 +124,7 @@ public sealed class Engine_AchievementStore
 			!lines[2].StartsWith("payload=", StringComparison.Ordinal) ||
 			!lines[3].StartsWith("tag=", StringComparison.Ordinal))
 		{
+			store.LoadProblem = $"is not a {FileHeader} file ({lines.Length} line(s))";
 			return store;
 		}
 
@@ -125,11 +135,13 @@ public sealed class Engine_AchievementStore
 			!ulong.TryParse(saltHex, System.Globalization.NumberStyles.HexNumber, null, out ulong salt) ||
 			HexDecode(lines[2][8..]) is not { } encoded)
 		{
+			store.LoadProblem = "has a malformed salt or payload";
 			return store;
 		}
 
 		if (TagHex(salt, encoded) != lines[3][4..])
 		{
+			store.LoadProblem = "fails its tag check";
 			return store;
 		}
 
@@ -150,7 +162,39 @@ public sealed class Engine_AchievementStore
 		text.Append("tag=").Append(TagHex(salt, encoded)).Append('\n');
 
 		Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
-		File.WriteAllText(path, text.ToString());
+
+		// A file this store could not read is somebody's unlocks: set it aside, never overwrite.
+		if (LoadProblem is not null && File.Exists(path))
+		{
+			File.Move(path, path + ".unreadable", overwrite: true);
+			LoadProblem = null;
+		}
+
+		// Whole or not at all: a crash mid-write must not leave half a file where the unlocks were.
+		string pending = path + ".tmp";
+		File.WriteAllText(pending, text.ToString());
+		File.Move(pending, path, overwrite: true);
+	}
+
+	/// <summary>Forgets one achievement for every user. True when anything was removed.</summary>
+	public bool Remove(uint achievementId)
+	{
+		var keys = _unlocks.Where(pair => pair.Value.AchievementId == achievementId)
+			.Select(pair => pair.Key).ToList();
+		foreach (ulong key in keys)
+		{
+			_unlocks.Remove(key);
+		}
+
+		return keys.Count > 0;
+	}
+
+	/// <summary>Forgets everything. Returns how many unlocks there were.</summary>
+	public int Clear()
+	{
+		int count = _unlocks.Count;
+		_unlocks.Clear();
+		return count;
 	}
 
 	private byte[] BuildPayload()

@@ -301,6 +301,9 @@ public readonly record struct Engine_UiSurfaceInput
 
 	public bool TabNext { get; init; }
 
+	/// <summary>The scroll stick's vertical, -1..1, up positive — the right stick in the game.</summary>
+	public float Scroll { get; init; }
+
 	/// <summary>Seconds since the last frame, for the surfaces that run their own repeat.</summary>
 	public double Delta { get; init; }
 

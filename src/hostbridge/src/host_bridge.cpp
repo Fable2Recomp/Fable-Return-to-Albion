@@ -67,6 +67,7 @@ void FlushLogging();
 #include <rex/system/kernel_state.h>
 
 #include "core/host_asset_reader.h"
+#include "core/precise_sleep.h"
 #include "core/rex_payload_bridge.h"
 #include <rex/system/xmemory.h>
 #include <rex/rex_app.h>
@@ -1693,6 +1694,11 @@ extern "C" {
 /// 142 widens RefiiHostGetEntities to stride 20: the guest's previous transform (component key
 ///     3 at +0xA0 position, +0xB0 quaternion, latched by the tick's first act `sub_8222B2E0`)
 ///     and its interpolation enable at +0xC9, the pair the guest blends in `sub_822112D8`.
+/// 150 widens RefiiHostGetWorldSprites to eight words: the ENTITY through the sprite's handle
+///     (`*(*(obj+28))`; `obj+24`, published until now, is the handle's vtable and the SAME on
+///     every sprite) and the sprite OBJECT as its identity.
+/// 149 adds RefiiHostGetItemAugments — the augment pairs socketed into one inventory record,
+///     off the item's own type-1 extra record (what `sub_82469AE8` prints on the item page).
 /// 148 takes the targeting highlight from the guest's own setter (`sub_825738F0`, hooked in
 ///     target_highlight.cpp) instead of polling the renderable; {0,0,0,255} is the actively
 ///     written clear value, so a poll cannot tell it from "never targeted".
@@ -1960,7 +1966,7 @@ extern "C" {
 /// 137 adds RefiiHostGetGuestFrame — the guest's render frame, counted by the hook on the
 /// 30 Hz HF pass (`sub_821A61B0`) that writes every pose. Godot reads guest state once per
 /// count and interpolates between counts.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 148; }
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 150; }
 
 /// Answers one `GUI` predicate from the host, by name.
 ///
@@ -3106,6 +3112,100 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroInventory(uint32_t* words, uint32
     }
 
     return found;
+}
+
+/// The AUGMENTS socketed into one inventory record — the weapon page's augment lines.
+///
+/// They are instance state, not GDB: `sub_82469AE8` (the category-1 handler of the details
+/// fill `sub_824698D8`) takes the slot COUNT from the definition's
+/// `AugmentableComponent.NumberOfSlots` and the CONTENTS from the item's type-1 extra record,
+/// found by `sub_82764B30(item, 1)`:
+///
+///     item+28 / item+32   extras vector, stride 8, elem+0 = object; vtable slot 1 = its type
+///     type 1              ctor `sub_82607BF8`: 20 bytes, vtable 0x820C7E40
+///     rec+8 / rec+12      pairs, stride 16 (0x8246A030: `srawi r8, r9, 4`)
+///     pair+0 / pair+8     PrimaryType / SecondaryType GDB record id (`sub_82608610` reads
+///                         `NameTag` off each; secondary 0 when there is none)
+///
+/// The record is matched by its vtable, never by calling the guest's slot. Two words a pair.
+/// Returns the pair count, or 0xFFFFFFFF when no inventory record of that id carries the
+/// extra — which is "never seeded", where the guest falls back to the definition's
+/// `InitialAugmentations`, NOT "no augments". A RecordID is not unique across records (a stack
+/// splits when one instance takes instance data), so the first record HOLDING the extra wins.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetItemAugments(uint32_t record_id, uint32_t* words,
+                                                        uint32_t word_capacity) {
+    constexpr uint32_t kNone = 0xFFFFFFFFu;
+    constexpr uint32_t kAugmentRecordVtable = 0x820C7E40u;
+    constexpr uint32_t kMaxRecords = 4096u;
+    constexpr uint32_t kMaxExtras = 16u;
+    constexpr uint32_t kMaxPairs = 16u;
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return kNone;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return kNone;
+    }
+
+    const uint32_t hero = ResolvePlayerHero(base);
+    const uint32_t inventory = hero != 0u ? EntityComponent(base, hero, 13u) : 0u;
+    if (inventory == 0u) {
+        return kNone;
+    }
+
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const uint32_t sentinel = GuestWordAt(base, inventory + 0x10u);
+    if (!plausible(sentinel)) {
+        return kNone;
+    }
+
+    uint32_t hops = 0;
+    for (uint32_t node = GuestWordAt(base, sentinel);
+         plausible(node) && node != sentinel && hops < kMaxRecords;
+         node = GuestWordAt(base, node), ++hops) {
+        const uint32_t item = GuestWordAt(base, node + 8u);
+        if (!plausible(item) || GuestWordAt(base, item + 0x04u) != record_id) {
+            continue;
+        }
+
+        const uint32_t begin = GuestWordAt(base, item + 28u);
+        const uint32_t end = GuestWordAt(base, item + 32u);
+        if (!plausible(begin) || end < begin) {
+            continue;
+        }
+
+        const uint32_t extras = std::min((end - begin) >> 3, kMaxExtras);
+        for (uint32_t i = 0; i < extras; ++i) {
+            const uint32_t record = GuestWordAt(base, begin + 8u * i);
+            if (!plausible(record) || GuestWordAt(base, record) != kAugmentRecordVtable) {
+                continue;
+            }
+
+            const uint32_t first = GuestWordAt(base, record + 8u);
+            const uint32_t last = GuestWordAt(base, record + 12u);
+            if (first == 0u) {
+                return 0u;
+            }
+            if (!plausible(first) || last < first) {
+                return kNone;
+            }
+
+            const uint32_t pairs = std::min((last - first) >> 4, kMaxPairs);
+            for (uint32_t pair = 0; pair < pairs; ++pair) {
+                if (words != nullptr && pair * 2u + 1u < word_capacity) {
+                    words[pair * 2u] = GuestWordAt(base, first + 16u * pair);
+                    words[pair * 2u + 1u] = GuestWordAt(base, first + 16u * pair + 8u);
+                }
+            }
+            return pairs;
+        }
+    }
+
+    return kNone;
 }
 
 /// The active SALES AND SHORTAGES — the world map's `Sales` rows. Two words each:
@@ -12914,7 +13014,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiElements(uint32_t requested_present
     // climbing through the parent link at +12 has no such ceiling; the only bound is the
     // element count itself, which also breaks a corrupted cycle.
     constexpr uint32_t kMaxElements = 16384u;
-    constexpr uint32_t kMaxChars = 512u;
+    constexpr uint32_t kMaxChars = 4096u;
 
     uint32_t found = 0;
     uint32_t chars = 0;
@@ -12930,9 +13030,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiElements(uint32_t requested_present
         if (rep != 0) {
             const uint32_t data = read32(rep);
             const uint32_t length = read32(rep + 4u);
-            if (plausible(data) && length > 0 && length < kMaxChars) {
+            if (plausible(data) && length > 0) {
+                // TRUNCATED, never dropped: an item description runs past 512 units, and a
+                // dropped string reads on the host as "the guest wrote nothing".
+                const uint32_t units = std::min(length, kMaxChars);
                 offset = chars;
-                for (uint32_t i = 0; i < length; ++i) {
+                for (uint32_t i = 0; i < units; ++i) {
                     const uint16_t unit = GuestHalfAt(base, data + i * 2u);
                     if (text != nullptr && chars < text_capacity) {
                         text[chars] = unit;
@@ -14921,13 +15024,20 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiPreviewObject(uint32_t* out_model_h
 /// and the text's is (+62,+61,+60)/255 with alpha +160. Published: rgba = R,G,B,A*255; the
 /// scale value is the composed size.
 ///
-/// Words per icon: type, texture, rgba, entity, persistent, fading. Values: anchor x y z, scale,
-/// seconds left, age. Text: title NUL opinion NUL, per icon in order.
+/// THE ANCHOR ENTITY IS BEHIND A HANDLE. `obj+24` is an embedded handle object — its first word
+/// is that class's vtable (0x82000B7C on every sprite, measured over 53 live ones) — and
+/// `obj+28` its block, whose first word is the entity (vtable 0x820A9B38, and `entity+4` points
+/// back at the block). Keying icons on `obj+24` folded every heart into one and every property
+/// sign into another.
+///
+/// Words per icon: type, texture, rgba, entity, persistent, flags, pool slot, OBJECT (the
+/// icon's identity for its lifetime). Values: anchor x y z, scale, seconds left, age. Text:
+/// title NUL opinion NUL, per icon in order.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_t word_capacity,
                                                         float* values, uint32_t value_capacity,
                                                         char* text, uint32_t text_capacity,
                                                         uint32_t max_icons) {
-    constexpr uint32_t kWords = 7u;
+    constexpr uint32_t kWords = 8u;
     constexpr uint32_t kValues = 6u;
     constexpr uint32_t kSpriteVtable = 0x820028C4u;
     // The POOLED class (types 31-35/52-54, drawn on the 16 `WorldIconN` HUD elements): its
@@ -14995,6 +15105,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_
             w[4] = 0u;
             w[5] = 2u;  // pooled
             w[6] = slot_record >= kPoolBase ? (slot_record - kPoolBase) / 64u : 0xFFFFFFFFu;
+            w[7] = obj;
             float* v = values + written * kValues;
             v[0] = readf(obj + 112u) + readf(obj + 144u);
             v[1] = readf(obj + 116u) + readf(obj + 148u);
@@ -15023,10 +15134,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_
         w[2] = (static_cast<uint32_t>(base[obj + 62u]) << 24) |
                (static_cast<uint32_t>(base[obj + 61u]) << 16) |
                (static_cast<uint32_t>(base[obj + 60u]) << 8) | alpha;
-        w[3] = read32(obj + 24u);
+        const uint32_t handle = read32(obj + 28u);
+        w[3] = plausible(handle) ? read32(handle) : 0u;
         w[4] = base[obj + 52u];
         w[5] = base[obj + 100u] != 0u ? 1u : 0u;  // bit0 fading, bit1 pooled
         w[6] = 0xFFFFFFFFu;
+        w[7] = obj;
 
         float* v = values + written * kValues;
         v[0] = readf(obj + 112u);
@@ -15649,6 +15762,12 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
         hosted.initialized = true;
         InstallLastResortFaultHandler();
 
+        // Windows: the process timer period, raised to 1 ms BEFORE any pacing thread starts.
+        // The runtime's own Sleep(1) and every guest timed wait with a millisecond timeout are
+        // quantised to it, and nothing else in the process is guaranteed to have raised it; at
+        // the 15.6 ms default the 1 ms polls below run at 64 Hz. A no-op elsewhere.
+        refii::RaiseTimerResolution();
+
         // THE FAST-ARM WATCHER. The guest's D3D device creation reads the no-GPU latch ONCE,
         // tens of milliseconds after publishing the device pointer; armed first, boot proceeds —
         // read first, the guest takes the "a GPU exists" path and parks in a ring wait forever.
@@ -15661,7 +15780,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
                    !g_no_gpu_armed.load(std::memory_order_relaxed) &&
                    std::chrono::steady_clock::now() < deadline) {
                 ArmGuestNoGpuMode();
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                refii::PreciseSleepFor(std::chrono::milliseconds(1));
             }
         });
         const char* completion_env = std::getenv("REFII_COMPLETION_THREAD");
@@ -15669,7 +15788,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
             g_completion_thread = std::thread([]() {
                 while (!g_completion_stop.load(std::memory_order_relaxed)) {
                     SignalGuestFrameCompletions();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    refii::PreciseSleepFor(std::chrono::milliseconds(1));
                 }
             });
         }
@@ -15812,7 +15931,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostShutdown(char* out, std::size_t capacity) {
                     break;
                 }
 
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                refii::PreciseSleepFor(std::chrono::milliseconds(1));
             }
         }
 

@@ -49,6 +49,54 @@ public static class Engine_ShaderFamily
     public const string StandardPath =
         "res://src/Engine/material/standard_material.gdshader";
 
+    public const string StandardCulledPath =
+        "res://src/Engine/material/standard_material_culled.gdshader";
+
+    /// <summary>The two-sided shader with the wind bend: the only one that reads TIME, for surfaces that sway.</summary>
+    public const string StandardWindPath =
+        "res://src/Engine/material/standard_material_wind.gdshader";
+
+    /// <summary>
+    /// `cull_back_faces`, ON by default: SOLID surfaces are drawn with back faces culled. Off draws
+    /// every surface from both sides, as this did until 2026-09-22. Read once: a render mode
+    /// belongs to the shader file a material was built with.
+    ///
+    /// NARROWER THAN THE GUEST, deliberately. The guest culls everything but the four leaf
+    /// materials that carry a translucency texture (`MaterialSlotCensus`: 4 of 9,293 fill the +24
+    /// slot `sub_82210DD0` tests), so on the 360 a fern seen from beneath is not there. Here an
+    /// alpha-tested card or anything on a vegetation path keeps both sides — the look this had —
+    /// and only opaque, still geometry is culled, which is where the pixels are.
+    /// </summary>
+    public static bool CullBackFaces
+    {
+        get
+        {
+            // REFII_CULL_BACK_FACES=0|1 wins over the file, for the tools' side-by-side renders.
+            string forced = System.Environment.GetEnvironmentVariable("REFII_CULL_BACK_FACES") ?? string.Empty;
+            if (_cullBackFaces is null && forced.Length != 0)
+            {
+                _cullBackFaces = forced != "0";
+            }
+
+            if (_cullBackFaces is null)
+            {
+                try
+                {
+                    _cullBackFaces = Refii.Core.Engine_RefiiConfig.Bool(
+                        Refii.Core.Engine_RefiiConfig.Read(out _), "cull_back_faces", true);
+                }
+                catch (System.Exception)
+                {
+                    _cullBackFaces = true;
+                }
+            }
+
+            return _cullBackFaces.Value;
+        }
+    }
+
+    private static bool? _cullBackFaces;
+
     public const string TreeCanopyPath =
         "res://src/Engine/material/families/tree_canopy.gdshader";
 

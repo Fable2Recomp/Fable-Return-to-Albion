@@ -435,6 +435,7 @@ public partial class GameFx : Node3D
                 ++WalkedPlacements;
             }
 
+            Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
             node.Transform = Smoothed(key, placed);
             (float scale, float fade) = _emitterState.TryGetValue(key, out var state) ? state : (1f, 1f);
             node.Intensity = fx.Intensity * fade;

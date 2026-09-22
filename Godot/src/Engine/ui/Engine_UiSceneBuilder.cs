@@ -426,6 +426,17 @@ public sealed class Engine_UiSceneBuilder
 		return changed;
 	}
 
+	/// <summary>
+	/// States one element's OWN opacity on a built or cloned tree and re-derives its subtree —
+	/// the single-node form of <see cref="ApplyLiveOpacity"/>, for an owned surface standing on
+	/// a slide other than the one its art was built from.
+	/// </summary>
+	public static void RestateOpacity(Node node, float own)
+	{
+		node.SetMeta("opacity_live", Mathf.Clamp(own, 0f, 1f));
+		ReapplyOpacityChain(node, ParentAccumulated(node));
+	}
+
 	/// <summary>The accumulated opacity ABOVE a node — live where a live value has been applied.</summary>
 	private static float ParentAccumulated(Node node) =>
 		node.GetParent() is { } parent

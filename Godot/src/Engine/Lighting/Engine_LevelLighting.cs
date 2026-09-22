@@ -163,6 +163,7 @@ public static class Engine_LevelLighting
 		// local assignment stands in (its parent applies the same mirror to the region, so the
 		// first configured frame corrects it).
 		var aimed = new Transform3D(SunBasis(frame.LightDirection), Vector3.Zero);
+		Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
 		if (light.IsInsideTree())
 		{
 			light.GlobalTransform = aimed;
@@ -341,6 +342,79 @@ public static class Engine_LevelLighting
 		return new Compositor { CompositorEffects = effects };
 	}
 
+	/// <summary>
+	/// Godot's dynamic GI, on for the modern model. Static geometry is voxelised as it streams in —
+	/// every mesh and MultiMesh at the default static GI mode (renderer_scene_cull.cpp takes any
+	/// geometry flagged USES_BAKED_LIGHT) — and guest-driven entities receive it as dynamic objects.
+	/// Placed lights enter it at <see cref="Light3D.BakeMode.Static"/>: baked into a cascade when
+	/// that cascade refreshes rather than re-injected every update, which is what 124 fixtures in a
+	/// town need, and it keeps a torch's flicker out of the bounce.
+	/// </summary>
+	private static bool? _giHalfResolution;
+
+	private static bool _giHalfApplied;
+
+	private static bool _giHalfEverApplied;
+
+	/// <summary>
+	/// `gi_half_resolution`, ON by default: the per-pixel gather of the GI runs at half the frame's
+	/// resolution and is upsampled against depth and normals. The cascades, the lights in them and
+	/// the bounce are untouched — only how finely the result is resolved on screen. Measured
+	/// 2026-09-21 on Bowerstone Market stills: 0.75 % of pixels move perceptibly by day and 0.03 % by
+	/// night, all of them on silhouettes; GI as a whole was 2.5 ms of a 9.5 ms GPU frame at 1440p.
+	/// Settable live for the comparison.
+	/// </summary>
+	public static bool GiHalfResolution
+	{
+		get
+		{
+			if (_giHalfResolution is null)
+			{
+				try
+				{
+					_giHalfResolution = Refii.Core.Engine_RefiiConfig.Bool(
+						Refii.Core.Engine_RefiiConfig.Read(out _), "gi_half_resolution", true);
+				}
+				catch (System.Exception)
+				{
+					_giHalfResolution = true;
+				}
+			}
+
+			return _giHalfResolution.Value;
+		}
+		set => _giHalfResolution = value;
+	}
+
+	private static void ConfigureGlobalIllumination(Godot.Environment environment, bool unified)
+	{
+		// A renderer-wide switch, not the environment's; written only when it changes.
+		bool half = GiHalfResolution;
+		if (!_giHalfEverApplied || half != _giHalfApplied)
+		{
+			RenderingServer.GISetUseHalfResolution(half);
+			_giHalfApplied = half;
+			_giHalfEverApplied = true;
+		}
+
+		// A rebuild in progress holds it off for a frame or two; see Engine_GiRefresh.
+		environment.SdfgiEnabled = unified && !Engine_GiRefresh.HoldingOff && !Engine_GiRefresh.ForcedOff;
+		if (!unified)
+		{
+			return;
+		}
+
+		// Cascade 0 is 0.2 m cells over 25.6 m and each of the six doubles it: a cellar resolves
+		// its walls, and the far cascade still spans the 800 m a vista is drawn to.
+		environment.SdfgiCascades = 6;
+		environment.SdfgiMinCellSize = 0.2f;
+		environment.SdfgiYScale = Godot.Environment.SdfgiyScale.Scale75Percent;
+		environment.SdfgiUseOcclusion = true;
+		environment.SdfgiReadSkyLight = true;
+		environment.SdfgiBounceFeedback = 0.5f;
+		environment.SdfgiEnergy = 1.0f;
+	}
+
 	public static void ConfigureEnvironment(Godot.Environment environment, LightingFrame frame)
 	{
 		if (environment is null)
@@ -350,12 +424,45 @@ public static class Engine_LevelLighting
 
 		environment.TonemapMode = Godot.Environment.ToneMapper.Linear;
 
-		if (frame.HasAmbient)
+		// ONE FILL FOR EVERY SURFACE, AND GODOT CARRIES IT. The lit shaders no longer switch
+		// Godot's ambient off, so exactly one side may supply the fill or it is counted twice:
+		//   modern — Godot: this ambient plus the GI below. `fable_unified` = 1 stops every
+		//            per-instance guest fill (flat ambient, probe, vertex bake, lightmap) from
+		//            emitting, so a character and the wall beside him are lit by the same data
+		//            and both take the bounce of the lights that are actually there.
+		//   fable  — the guest: the shaders emit the 360's own fills and Godot's ambient has no
+		//            energy, which is what `ambient_light_disabled` used to guarantee.
+		bool unified = Engine_LightingFrame.ModernModel;
+		RenderingServer.GlobalShaderParameterSet("fable_unified", unified ? 1.0f : 0.0f);
+		ConfigureGlobalIllumination(environment, unified);
+
+		// Sky reflections are not part of this: the materials carry their own environment map.
+		environment.ReflectedLightSource = Godot.Environment.ReflectionSource.Disabled;
+
+		if (unified)
 		{
+			// GODOT'S AMBIENT IS THE GI'S SKY LIGHT, NOT A FLOOR: inside a cascade the engine replaces
+			// it with the trace (`ambient_light = diffuse`), so it lands only where the sky is seen
+			// — which is what the guest's BAKE did. It carries the bake's share of the fill,
+			// `mean bake * LightmapColour`, in the theme's own colour; the flat floor is the
+			// per-instance `ambient_colour` the shader emits. `ambient_light_scale` scales both.
+			float[] sky =
+			{
+				Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[0],
+				Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[1],
+				Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[2],
+			};
+			float peak = MathF.Max(sky[0], MathF.Max(sky[1], sky[2]));
 			environment.AmbientLightSource = Godot.Environment.AmbientSource.Color;
-			environment.AmbientLightColor = new Color(
-				frame.AmbientColour[0], frame.AmbientColour[1], frame.AmbientColour[2]);
-			environment.AmbientLightEnergy = frame.AmbientEnergy;
+			environment.AmbientLightColor = peak > 0f
+				? new Color(sky[0] / peak, sky[1] / peak, sky[2] / peak)
+				: Colors.Black;
+			// The GI's half of the bake; the other half is the flat floor below.
+			float traced = 1f - Engine_LightingFrame.ModernFloorShare;
+			environment.AmbientLightEnergy = peak * traced * Engine_LevelBakedLighting.AmbientScale;
+			float floor = Engine_LightingFrame.ModernFloorShare * Engine_LevelBakedLighting.AmbientScale;
+			RenderingServer.GlobalShaderParameterSet("fable_fill_floor",
+				new Vector3(sky[0] * floor, sky[1] * floor, sky[2] * floor));
 		}
 		else
 		{
@@ -364,6 +471,7 @@ public static class Engine_LevelLighting
 			// region's in place — a cave entered from a sunset kept the sunset (b175).
 			environment.AmbientLightSource = Godot.Environment.AmbientSource.Disabled;
 			environment.AmbientLightEnergy = 0f;
+			RenderingServer.GlobalShaderParameterSet("fable_fill_floor", Vector3.Zero);
 		}
 
 		// THE PROBE FIELD'S SKY TETHER. Published in ambient_light_scale space because the

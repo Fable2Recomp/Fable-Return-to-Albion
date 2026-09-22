@@ -1425,7 +1425,11 @@ public partial class Engine_FrontEndMenuView : Node3D
 			Vector3 at = row.Position;
 			parts.Add($"{mark}{row.Name}:{item.Name}='{_labelText[r]}'" +
 				$"{(glyphs ? string.Empty : " NO-MESH")}" +
-				$"@({at.X:0},{at.Y:0}) op={_to[r].Opacity:0}");
+				$"@({at.X:0},{at.Y:0}) op={_to[r].Opacity:0}" +
+				// The ghost as the MODEL holds it and as the pose states it: a locked achievement
+				// row drew in the live colour with the flag (by the code) set, and these two
+				// say which half dropped it.
+				(item.IsGhosted ? $" GHOST(label op {_to[r].LabelOpacity:0})" : string.Empty));
 		}
 
 		return $"[menu-view] {Name} highlight={Menu.HighlightIndex + 1}/{Menu.Visible.Count} " +

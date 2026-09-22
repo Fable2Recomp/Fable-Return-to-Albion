@@ -935,6 +935,16 @@ constexpr const char* kActionLoadSavePrefix = "LoadSave:";
 
 bool DispatchByName(PPCContext& ctx, uint8_t* base, const std::string& name,
                     uint32_t command = kCommandNone, uint32_t param = 0u) {
+  // DROPPED ONCE THE GAME IS UP, as LoadSavedGame is: `byte_83496A5E` is the guest's in-game
+  // flag (Game_InitDatabases, 0x82311648). A front-end action still held when the game came up
+  // can never run — the front end is gone — and re-deferring it every tick held it for the whole
+  // session, to fire on Quit to Title.
+  if (base[0x83496A5Eu] != 0u) {
+    REXLOG_INFO("Refii guest-tick pump: front-end action '{}' (command {}) dropped — the game "
+                "is already up", name, command);
+    return true;
+  }
+
   const uint32_t screen = MainMenuScreen(base);
   if (screen == 0) {
     return false;

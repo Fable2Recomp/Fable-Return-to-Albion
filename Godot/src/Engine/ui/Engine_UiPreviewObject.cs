@@ -46,12 +46,18 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// The guest's stated placement for one item, as read off its preview object.
 	/// </summary>
 	/// <param name="Translation">`GUIScreenTranslationOffset`, in the guest's UI space.</param>
-	/// <param name="Rotation">`GUIScreenRotationOffset`, degrees.</param>
+	/// <param name="Rotation">`GUIScreenRotationOffset`, radians.</param>
 	/// <param name="Scale">`GUIScreenScaleMultiplier`; 0 means the artist stated none.</param>
-	/// <param name="RotationAxis">`GUIScreenRotationAxis`, 1..6 — which euler swizzle the
-	/// original applies. Carried, not yet applied.</param>
+	/// <param name="RotationAxis">`GUIScreenRotationAxis`, 1..6 — the euler swizzle and the
+	/// composition order `sub_828C3C78` applies; see <see cref="Stated"/>.</param>
+	/// <param name="Hung">
+	/// True to hang the model by its ORIGIN, as `sub_828C3C78` does — the artist's translation
+	/// offset is tuned against the origin. False centres the mesh's bounds on the anchor, for
+	/// the placements that are ours: a live body, and the clothing book's item-alone view,
+	/// whose stated offset is a mannequin's and is dropped.
+	/// </param>
 	public readonly record struct Placement(
-		Vector3 Translation, Vector3 Rotation, float Scale, int RotationAxis);
+		Vector3 Translation, Vector3 Rotation, float Scale, int RotationAxis, bool Hung = false);
 
 	/// <summary>
 	/// Shows the model the guest named, or clears the panel when it names none. True while an
@@ -117,6 +123,7 @@ public partial class Engine_UiPreviewObject : Node3D
 		}
 
 		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh };
+		_inPage = false;
 		int textured = Present(_mesh, mesh);
 		AddChild(_mesh);
 		LastReport = $"{path} ({textured}/{mesh.GetSurfaceCount()} surface(s) textured)";
@@ -177,6 +184,7 @@ public partial class Engine_UiPreviewObject : Node3D
 		_liveKey = key;
 		_mesh?.QueueFree();
 		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh };
+		_inPage = true;
 		int textured = Present(_mesh, mesh, inPage: true);
 		AddChild(_mesh);
 		LastReport = $"live entity 0x{key:X8} ({textured}/{mesh.GetSurfaceCount()} surface(s) textured)";
@@ -196,9 +204,9 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// grey, so an untextured item reads as missing art rather than a rendering fault.
 	/// </summary>
 	/// <param name="inPage">
-	/// Draw at the anchor's depth with the depth test on: the co-op mannequin sits in front of
-	/// the parchment and behind the page's cut-out mask and the save-card fan, as the original
-	/// composes it. The named-model path keeps the depth-free, top-priority draw.
+	/// Stay at the anchor's depth: the co-op mannequin sits in front of the parchment and behind
+	/// the page's cut-out mask and the save-card fan, as the original composes it. The
+	/// named-model path is lifted clear of the page instead (<see cref="Lift"/>).
 	/// </param>
 	private static int Present(MeshInstance3D instance, Mesh mesh, bool inPage = false)
 	{
@@ -214,13 +222,11 @@ public partial class Engine_UiPreviewObject : Node3D
 				// Unlit, as stated above: the UI viewport has no environment, and a lone key
 				// light inside the clone's mirrored basis read every item as a flat grey ball.
 				ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-				// OVER THE PAGE. The guest drew its preview as a real entity in its own pass,
-				// so it always sat on top of the book; here the anchor lies 350 canvas units
-				// BEHIND the parchment (`model_proxy.model` z 1900, `frames_page` z 2249) and
-				// the depth test buried the model under the page. Depth is off and the
-				// priority high, with back faces culled so the mesh still reads as a solid.
-				NoDepthTest = !inPage,
-				RenderPriority = inPage ? 0 : 100,
+				// DEPTH-TESTED, ALWAYS. The guest drew its preview as a real entity in its own
+				// pass, so it sat on top of the book and occluded itself. A depth-free draw
+				// paints triangles in index order — far faces over near ones, a see-through
+				// model as it turns. Over-the-page comes from `Centre` lifting the mesh toward
+				// the orthographic camera instead.
 				// NO CULLING: the anchor's basis is mirrored (see the light note above), so a
 				// back-face cull removes the faces the player sees.
 				CullMode = BaseMaterial3D.CullModeEnum.Disabled,
@@ -247,15 +253,64 @@ public partial class Engine_UiPreviewObject : Node3D
 			return;
 		}
 
-		// About the panel's vertical, as the guest's spinner writes the anchor's `rotation.y`
-		// (`sub_829B5678` → `sub_824254C8`), over the record's own orientation.
-		Basis turned = new Basis(Vector3.Up, Mathf.DegToRad(yawDegrees)) *
-			Basis.FromEuler(_placedRotation * (Mathf.Pi / 180f));
-		_mesh.Basis = turned.Scaled(_mesh.Scale);
+		_yaw = Mathf.DegToRad(yawDegrees);
+		Orient();
+	}
+
+	private void Orient()
+	{
+		if (_mesh is null)
+		{
+			return;
+		}
+
+		// A live body's pose is the host's: a plain turn about the vertical over its euler.
+		Basis turned = _inPage
+			? new Basis(Vector3.Up, _yaw) * Basis.FromEuler(_placed.Rotation)
+			: Stated(_yaw, _placed.Rotation, _placed.RotationAxis);
+		_mesh.Basis = turned.Scaled(Vector3.One * _drawnScale);
 		Centre();
 	}
 
-	private Vector3 _placedRotation;
+	/// <summary>
+	/// The orientation `sub_828C3C78` gives the preview entity, in Godot's axes.
+	///
+	/// The guest reads the anchor's `rotation.x/y/z` as R and swizzles it by the axis enum
+	/// (jump table 0x828C3D3C): 1/4 E = (R.x, R.y, R.z), 2/5 E = (R.z, R.x, R.y),
+	/// 3/6 E = (R.y, R.x, R.z), anything else zero. `sub_82A23A60` builds E as heading, pitch,
+	/// roll in its Z-up world — S = Rz(−E0) · Rx(E1) · Ry(E2) — and `sub_824B2350` builds the
+	/// record's `GUIScreenRotationOffset` O as Rx(−O.z) · Rz(−O.x) · Ry(−O.y). `sub_82233200`
+	/// composes them offset · spin for axes 1..3 and spin · offset for 4..6.
+	///
+	/// Its world is X right, Y away from the camera, Z up; the model loader already maps that
+	/// to Godot as (x, z, −y), so a turn about its Z is a turn about our Y, about its X our X,
+	/// and about its Y our −Z. The spinner animates only `rotation.y`, the player's turn here,
+	/// negated so that on the turntable axes (3/6, heading = −R.y) it is a plain yaw.
+	/// </summary>
+	private static Basis Stated(float yaw, Vector3 offset, int axis)
+	{
+		var r = new Vector3(0f, -yaw, 0f);
+		Vector3 e = axis switch
+		{
+			1 or 4 => r,
+			2 or 5 => new Vector3(r.Z, r.X, r.Y),
+			3 or 6 => new Vector3(r.Y, r.X, r.Z),
+			_ => Vector3.Zero,
+		};
+
+		Basis spin = new Basis(Vector3.Up, -e.X) * new Basis(Vector3.Right, e.Y) *
+			new Basis(Vector3.Back, -e.Z);
+		Basis tilt = new Basis(Vector3.Right, -offset.Z) * new Basis(Vector3.Up, -offset.X) *
+			new Basis(Vector3.Back, offset.Y);
+		return axis is >= 1 and <= 3 ? tilt * spin : spin * tilt;
+	}
+
+	private Placement _placed;
+
+	private float _yaw;
+
+	/// <summary>The uniform scale <see cref="Apply"/> settled on, anchor chain divided out.</summary>
+	private float _drawnScale = 1f;
 
 	/// <summary>The stated offset from the anchor, in canvas units (x, screen-vertical).</summary>
 	private Vector3 _placedOffset;
@@ -278,7 +333,38 @@ public partial class Engine_UiPreviewObject : Node3D
 			return;
 		}
 
-		_mesh.Position = _placedOffset - _mesh.Basis * _meshCentre;
+		_mesh.Position = _placed.Hung
+			? _placedOffset
+			: _placedOffset - _mesh.Basis * _meshCentre;
+		Lift();
+	}
+
+	/// <summary>
+	/// Clear of the page, in canvas units: the item books' anchor lies 350 behind the parchment
+	/// (`model_proxy.model` z 1900, `frames_page` z 2249).
+	/// </summary>
+	private const float PageClearance = 400f;
+
+	/// <summary>True for a body composed in the page's own depth (the co-op mannequins).</summary>
+	private bool _inPage;
+
+	/// <summary>
+	/// OVER THE PAGE BY DEPTH, NOT BY DRAW ORDER. The UI camera is orthographic, so moving the
+	/// mesh along the view axis changes what it occludes and nothing about its size. It is
+	/// lifted past the parchment by its own radius, so no turn of it dips back into the page.
+	/// </summary>
+	private void Lift()
+	{
+		if (_mesh is null || _inPage || !_mesh.IsInsideTree() ||
+			GetViewport()?.GetCamera3D() is not { } camera)
+		{
+			return;
+		}
+
+		Vector3 extent = _mesh.Mesh?.GetAabb().Size ?? Vector3.Zero;
+		float radius = (_meshCentre.Length() + (0.5f * extent.Length())) *
+			Mathf.Abs(_mesh.GlobalTransform.Basis.Scale.X);
+		_mesh.GlobalPosition += camera.GlobalTransform.Basis.Z * (PageClearance + radius);
 	}
 
 	private void Apply(Placement placement)
@@ -320,16 +406,13 @@ public partial class Engine_UiPreviewObject : Node3D
 		// (0x828c3fb4), and `sub_822A89C0` maps lane 2 to world Z, which is UP — so the
 		// offset's third component is screen-vertical and its second is depth. The Rusty
 		// Longsword's (0, 0, -54.5) hangs it 54.5 canvas units below its anchor.
-		_placedOffset = new Vector3(placement.Translation.X, placement.Translation.Z, 0f);
+		// Canvas units, and the mesh sits in the anchor's space: the chain's scale comes out of
+		// the offset exactly as it comes out of the model's.
+		_placedOffset = new Vector3(placement.Translation.X, placement.Translation.Z, 0f) / inherited;
 		_meshCentre = _mesh.Mesh?.GetAabb().GetCenter() ?? Vector3.Zero;
-		_mesh.Scale = Vector3.One * (fitted / inherited);
-		// Radians in the record — the bridge passes the floats raw. `GUIScreenRotationOffset` is
-		// (0, 0, -1.482) for the tomb seal, i.e. -85 degrees.
-		_placedRotation = new Vector3(
-			Mathf.RadToDeg(placement.Rotation.X), Mathf.RadToDeg(placement.Rotation.Y),
-			Mathf.RadToDeg(placement.Rotation.Z));
-		_mesh.RotationDegrees = _placedRotation;
-		Centre();
+		_drawnScale = fitted / inherited;
+		_placed = placement;
+		Orient();
 
 		// The guest lights the object with the presentation's own key light. The UI viewport owns
 		// its world, so a light here reaches nothing else.

@@ -81,6 +81,12 @@ public static class Engine_MdlMaterial
             // Read back by the prop streamer without a shader-parameter query: an unset
             // parameter's read is a round trip to the render thread.
             shader.SetMeta(WindMetaName, true);
+
+            // The wind lives in its own shader; the parameters set above stay with the material.
+            if (SharedWind() is { } wind)
+            {
+                shader.Shader = wind;
+            }
         }
         shader.SetShaderParameter("wind_speed", Mathf.Clamp(info.WindSpeed, 0.1f, 8.0f));
         shader.SetShaderParameter("wind_direction", WindDirection);
@@ -154,6 +160,47 @@ public static class Engine_MdlMaterial
     /// shader" would stop being true of the scene without anything reporting a fault.
     /// </summary>
     private static Shader? Shared() => Shared(ShaderFamily.Standard);
+
+    /// <summary>
+    /// /// The two-sided shader that bends in the wind, and the ONLY shader that reads TIME: Godot marks
+    /// /// a light's shadow dirty after every render while an "animated" caster (TIME in a vertex
+    /// /// function that writes VERTEX) is in its pass, so only a surface that sways may carry it.
+    /// </summary>
+    private static Shader? SharedWind()
+    {
+        lock (ShaderLock)
+        {
+            if (_shaders.TryGetValue(Engine_ShaderFamily.StandardWindPath, out Shader? cached))
+            {
+                return cached;
+            }
+
+            Shader? loaded = GD.Load<Shader>(Engine_ShaderFamily.StandardWindPath);
+            _shaders[Engine_ShaderFamily.StandardWindPath] = loaded;
+            return loaded;
+        }
+    }
+
+    /// <summary>The standard shader with back faces culled, or the two-sided one when `cull_back_faces` is off.</summary>
+    private static Shader? SharedCulled()
+    {
+        if (!Engine_ShaderFamily.CullBackFaces)
+        {
+            return Shared();
+        }
+
+        lock (ShaderLock)
+        {
+            if (_shaders.TryGetValue(Engine_ShaderFamily.StandardCulledPath, out Shader? cached))
+            {
+                return cached;
+            }
+
+            Shader? loaded = GD.Load<Shader>(Engine_ShaderFamily.StandardCulledPath);
+            _shaders[Engine_ShaderFamily.StandardCulledPath] = loaded;
+            return loaded;
+        }
+    }
 
     /// <summary>
     /// The shader for one FAMILY, loaded once each.
@@ -259,7 +306,8 @@ public static class Engine_MdlMaterial
     /// path key would hand the next character the hero's skin.
     /// </remarks>
     public static Material? TryCreateShared(
-        MdlMaterial? material, Refii.Models.MdlInfo info, bool authoredNormals)
+        MdlMaterial? material, Refii.Models.MdlInfo info, bool authoredNormals,
+        bool tangentBasis = true)
     {
         if (material is null)
         {
@@ -277,7 +325,8 @@ public static class Engine_MdlMaterial
             info.MovementMode.ToString(), "|",
             info.WindAmplitude.ToString("R"), "|",
             IsVegetationDrawPath(info) ? "v" : "-",
-            authoredNormals ? "n" : "-");
+            authoredNormals ? "n" : "-",
+            tangentBasis ? "t" : "-");
 
         if (_shared.TryGetValue(key, out Material? hit))
         {
@@ -293,7 +342,25 @@ public static class Engine_MdlMaterial
 
         ApplyWind(built, info);
         ApplyVegetation(built, info, authoredNormals);
+
+        // Vegetation keeps both sides whatever its alpha: leaves and blades are single cards. A
+        // surface ApplyWind gave an amplitude keeps the wind shader; it is the one that sways.
+        if (built is ShaderMaterial plant && (info.SwaysInWind || info.MovementMode != 0 || IsVegetationDrawPath(info)) &&
+            Shared() is { } twoSided)
+        {
+            plant.Shader = plant.HasMeta(WindMetaName) ? SharedWind() ?? twoSided : twoSided;
+        }
+
         Interlocked.Increment(ref SharedBuilt);
+
+        // A SURFACE WHOSE TANGENTS ARE ALL ZERO TAKES NO NORMAL MAP. 1,687 shipped rigid buffers
+        // bind one over a zero TEXCOORD1 (`VertexAudit`). The guest's basis is then T = B = 0 and
+        // `normalize(T*nx + B*ny + N*nz)` is N exactly, so the map does nothing there; Godot
+        // instead decodes a zero tangent to an arbitrary axis and bends the normal along it.
+        if (!tangentBasis && built is ShaderMaterial flat)
+        {
+            flat.SetShaderParameter("has_normal", false);
+        }
 
         if (overridden)
         {
@@ -355,7 +422,8 @@ public static class Engine_MdlMaterial
         // two of them at once, so these are interlocked rather than incremented.
         Interlocked.Increment(ref _built);
 
-        var result = new ShaderMaterial { Shader = shader };
+        // A solid surface shows one side; a card cut out by its alpha is seen from both.
+        var result = new ShaderMaterial { Shader = albedoHasAlpha ? shader : SharedCulled() ?? shader };
         if (albedo is not null)
         {
             result.SetShaderParameter("albedo_tex", albedo);

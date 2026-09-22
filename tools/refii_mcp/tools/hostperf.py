@@ -21,6 +21,144 @@ def metrics(_args):
     return ask({"op": "metrics"})
 
 
+def _motion_summary(rows):
+    """Frame-to-frame motion of a drawn-position trace: what a viewer sees as judder.
+
+    A backward step is one whose direction opposes the step before it — the drawn point went
+    back on itself. Speeds are metres per second between consecutive frames; their spread is the
+    unevenness of motion the guest stated as smooth.
+    """
+    steps = []
+    for before, after in zip(rows, rows[1:]):
+        dt = (after["usec"] - before["usec"]) / 1e6
+        if dt <= 0:
+            continue
+        delta = [a - b for a, b in zip(after["pos"], before["pos"])]
+        steps.append((delta, dt))
+    moving = [(d, dt) for d, dt in steps if sum(c * c for c in d) > 1e-10]
+    if len(moving) < 3:
+        return {"frames": len(rows), "moving": len(moving),
+                "note": "the camera barely moved — pan or walk while the trace runs"}
+    backward = 0
+    for (d0, _), (d1, _) in zip(moving, moving[1:]):
+        if sum(a * b for a, b in zip(d0, d1)) < 0:
+            backward += 1
+    speeds = [sum(c * c for c in d) ** 0.5 / dt for d, dt in moving]
+    mean = sum(speeds) / len(speeds)
+    spread = (sum((v - mean) ** 2 for v in speeds) / len(speeds)) ** 0.5
+    return {
+        "frames": len(rows),
+        "moving": len(moving),
+        "backwardSteps": backward,
+        "meanSpeed": round(mean, 4),
+        "speedSpreadPercent": round(100.0 * spread / mean, 1) if mean > 0 else None,
+        "slowestOverMean": round(min(speeds) / mean, 3) if mean > 0 else None,
+        "fastestOverMean": round(max(speeds) / mean, 3) if mean > 0 else None,
+    }
+
+
+@tool(
+    "refii_camera",
+    "The drawn camera's smoothness, measured. Call with `trace` = a frame count to ARM a "
+    "per-frame recording of the drawn camera position, move the camera in the game while it "
+    "runs, then call again with no arguments to read it back summarised: backward steps (the "
+    "drawn point reversing on itself — visible judder), the spread of frame-to-frame speed, "
+    "and the playhead's swap health (`lastSwapAlpha` 1.0 = the pair landed on time, "
+    "`worstSwapError` = furthest from it, `restarts` = discontinuities). `raw` returns the "
+    "rows as well. Reads only; arming a trace changes nothing on screen.",
+    {
+        "trace": {"type": "integer", "description": "Arm a recording of this many frames."},
+        "raw": {"type": "boolean", "description": "Include the per-frame rows (default false)."},
+    },
+)
+def camera(args):
+    if args.get("trace") is not None:
+        return ask({"op": "camera", "trace": max(1, min(int(args["trace"]), 20000))})
+    reply = ask({"op": "camera"})
+    if not reply.get("ok", False):
+        return reply
+    rows = reply.get("trace") or []
+    reply["motion"] = _motion_summary(rows)
+    if not args.get("raw"):
+        reply.pop("trace", None)
+    return reply
+
+
+_RENDER_LEVERS = {
+    "sunShadow": {"type": ["boolean", "null"],
+                  "description": "Force the sun's shadow on/off; null hands it back to the level."},
+    "sunSplits": {"type": ["integer", "null"],
+                  "description": "Force the sun's cascade count; null hands it back."},
+    "entities": {"type": "boolean", "description": "Show or hide every guest-driven entity."},
+    "reflections": {"type": "boolean", "description": "Water reflection viewports on/off."},
+    "reflectionCadence": {"type": "integer", "description": "Frames between reflection updates."},
+    "hud": {"type": "boolean", "description": "The HUD view on/off."},
+    "fx": {"type": "boolean", "description": "The displacement FX layer on/off."},
+    "vsync": {"type": "string", "enum": ["off", "on", "adaptive", "mailbox"],
+              "description": "Present mode. Under any vsync mode fps measures the display."},
+    "maxFps": {"type": "integer", "description": "Frame cap; 0 is uncapped."},
+    "shadowBudget": {"type": "integer", "description": "Placed lights allowed to cast shadows."},
+    "lightDebug": {"type": "integer",
+                   "description": "Shader view of ONE lighting term: 1 bake, 2 direct, 3 raw albedo, "
+                                  "4 normal-map darken, 5 bake mode, 8 view normal, 9 light on white, "
+                                  "10 facing (green front / red back); "
+                                  "0 off. SET IT BACK TO 0."},
+    "gi": {"type": "boolean", "description": "Godot's dynamic GI (SDFGI) on/off, to read its cost as a difference."},
+    "fillFloor": {"type": "number",
+                  "description": "Share of the mean authored bake kept as a flat unoccluded floor (default 0.2); the "
+                                 "rest is the ambient the GI traces. 0 is the floor off."},
+    "giHalf": {"type": "boolean",
+               "description": "Resolve the GI at half the frame's resolution (the default) or at every pixel."},
+    "shadowParaboloid": {"type": "boolean",
+                         "description": "Fixture omni shadow maps as two paraboloids instead of six cube faces."},
+    "entityBatches": {"type": "boolean",
+                      "description": "Guest props unchanged for two seconds are drawn from batches, their nodes hidden; "
+                                     "false returns every one to its node on the next walk. Read entityBatched."},
+    "propShadow": {"type": "boolean",
+                   "description": "Prop batches cast through a merged cast-only twin; false hands each batch its own "
+                                  "shadow back at once. Single-node props are not switched by it."},
+    "shadowProxy": {"type": "boolean",
+                    "description": "Characters cast through one merged cast-only mesh; false hands each body its "
+                                   "own shadow back within a reconcile pass (watch shadowProxies fall to 0)."},
+    "exposureLock": {"type": ["number", "null"],
+                     "description": "Pin the exposure gain for like-for-like shots; null hands it back."},
+    "placedShadowBlur": {"type": "number",
+                         "description": "Every placed light's ShadowBlur; Godot's default is 1."},
+    "placedShadowBias": {"type": ["number", "null"],
+                         "description": "Every placed light's ShadowBias; null is the per-type "
+                                        "default (omni 0.1, spot 0.03)."},
+    "placedShadowNormalBias": {"type": "number",
+                               "description": "Every placed light's ShadowNormalBias; default 1."},
+    "positionalFilter": {"type": "integer",
+                         "description": "Omni/spot soft shadow filter, 0 hard .. 5 ultra; "
+                                        "project default 2."},
+    "positionalAtlas": {"type": "integer",
+                        "description": "Omni/spot shadow atlas edge in texels; default 4096."},
+    "lightBudget": {"type": "integer", "description": "Placed lights kept lit; 0 is all."},
+    "lightRangeScale": {"type": "number", "description": "Every placed light's reach, scaled."},
+    "poseFullRate": {"type": "number",
+                     "description": "Radius in metres inside which rigs pose every step."},
+    "feedEveryFrame": {"type": "boolean", "description": "Walk the entity feed every frame."},
+}
+
+
+@tool(
+    "refii_render",
+    "The live render levers, for bisecting a frame's cost: with no arguments it only REPORTS "
+    "their state (plus the hero's position and the lighting weights). WITH arguments it "
+    "CHANGES THE RUNNING GAME, visibly and until set back or the game restarts — switch one "
+    "thing, read refii_metrics, switch it back. Turn vsync off first or fps measures the "
+    "display, not the machine.",
+    _RENDER_LEVERS,
+)
+def render(args):
+    request = {"op": "render"}
+    for name in _RENDER_LEVERS:
+        if name in args:
+            request[name] = args[name]
+    return ask(request)
+
+
 @tool(
     "refii_fx",
     "The drawn LIVE particle effects nearest the eye, one line each: guest handle, the bank "

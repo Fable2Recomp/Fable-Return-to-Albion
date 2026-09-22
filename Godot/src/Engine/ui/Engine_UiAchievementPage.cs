@@ -39,6 +39,9 @@ public static class Engine_UiAchievementPage
 	/// <summary>The authored summary row — the tally, and where the cursor starts.</summary>
 	public const string FolderRowName = "Achievements";
 
+	/// <summary>The inline icon an earned row's label ends with — see Engine_UiTextMarkup.</summary>
+	private const string EarnedMark = "<star-1.img>";
+
 	private const string PageRoot = "Foreground.Book.Pages.ExpressionsPage";
 	private const string Title = "ExpressionsPage.Title";
 	private const string Icon = "ExpressionsPage.Contents.Icon";
@@ -64,9 +67,13 @@ public static class Engine_UiAchievementPage
 		var rows = new List<Engine_UiMenuSources.Row>(Engine_Achievements.TotalCount);
 		foreach (AchievementDefinition definition in Engine_Achievements.Definitions)
 		{
+			// EARNED ROWS CARRY THE FONT'S OWN STAR, the inline-icon mechanism the pause rows use
+			// for their `!`. Ghosting alone is the cue for a locked row, and on this list it did
+			// not show — every row drew in the live colour — so an earned one says so itself.
+			string name = definition.Name.Length == 0 ? $"Achievement {definition.Id}" : definition.Name;
 			rows.Add(new Engine_UiMenuSources.Row(
 				Name: $"Achievement:{definition.Id}",
-				Label: definition.Name.Length == 0 ? $"Achievement {definition.Id}" : definition.Name,
+				Label: Engine_Achievements.IsUnlocked(definition.Id) ? name + " " + EarnedMark : name,
 				Icon: string.Empty,
 				EventType: EventType,
 				Id: definition.Id,
@@ -117,7 +124,8 @@ public static class Engine_UiAchievementPage
 			: "Locked";
 
 		values[Title] = definition.Name;
-		values[Description] = $"{text}\n\n{definition.Gamerscore} G  ·  {status}";
+		// Two lines, not one joined by a middle dot: the shipped bitmap font draws U+00B7 as `»`.
+		values[Description] = $"{text}\n\n{definition.Gamerscore} G\n{status}";
 		return values;
 	}
 

@@ -425,6 +425,10 @@ public partial class GameWorld : Node3D
 	public (long Restarts, double LastSwapAlpha, int LastSteps) CameraSwapHealth =>
 		(_cameraPlayhead.Restarts, _cameraPlayhead.LastSwapAlpha, _lastCameraSteps);
 
+	/// <summary>Camera swaps taken on the stated-width path, and the furthest one landed from alpha 1.</summary>
+	public (long StatedSwaps, double WorstSwapError) CameraStatedSwapHealth =>
+		(_cameraPlayhead.StatedSwaps, _cameraPlayhead.WorstSwapError);
+
 	private bool _haveStatedCamera;
 
 	private int _cameraTraceRemaining;
@@ -649,8 +653,29 @@ public partial class GameWorld : Node3D
 		//
 		// Null is ordinary: before the first load, and during the window when the old Level is
 		// released and the new one not yet constructed.
+		//
+		// OUT OF THE GAME IS THE OTHER UNLOAD EDGE. `byte_83496A5E` is set once by
+		// Game_InitDatabases (0x82311648) and cleared only by the game mode's shutdown — a level
+		// change never touches it — so its falling edge is the guest stating that it has left
+		// the game: Quit to Title, with or without a save. The guest's own shutdown frees its
+		// Level and every entity; a region left standing past that point drew a world the guest
+		// no longer had, and the front end came up over it.
+		//
+		// `_torndownKey` is NOT kept across this edge. It exists to stop a level change
+		// rebuilding the level being LEFT while the guest still names it; a quit leaves no level
+		// named, and the next game the player starts may well be the same level — Continue after
+		// Quit to Title — which the guard would otherwise refuse to build until the guest named a
+		// different one.
 		if (!HostBridge.IsInGame)
 		{
+			if (_loaded || _build is not null)
+			{
+				GD.Print($"[game-world] the guest has left the game — taking " +
+					$"{(_loaded ? _standing : _buildingLevel)} down");
+				TearDownRegion();
+				_torndownKey = 0u;
+			}
+
 			return;
 		}
 

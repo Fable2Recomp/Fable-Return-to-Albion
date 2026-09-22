@@ -341,6 +341,7 @@ public partial class Engine_EntityHighlightLayer : Node
         {
             Node n = stack.Pop();
             if (n is MeshInstance3D mesh && mesh.Mesh is not null && mesh.IsVisibleInTree() &&
+                mesh.CastShadow != GeometryInstance3D.ShadowCastingSetting.ShadowsOnly &&
                 (mesh.Layers & LayerMask) == 0)
             {
                 Aabb world = mesh.GlobalTransform * mesh.GetAabb();

@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 148;
+	public const int ExpectedAbiVersion = 150;
 
 	private const int MessageCapacity = 512;
 
@@ -1873,12 +1873,17 @@ public static class HostBridge
 	public readonly record struct WorldSprite(
 		uint Type, uint TextureHash, Color Colour, uint Entity, bool Persistent, bool Fading,
 		Vector3 Anchor, float Scale, float SecondsLeft, float Age, string Title, string Opinion,
-		bool Pooled = false, int Slot = -1);
+		bool Pooled = false, int Slot = -1, uint Object = 0);
 
-	private const int SpriteWords = 7;
-	private static readonly uint[] _spriteWords = new uint[64 * SpriteWords];
-	private static readonly float[] _spriteValues = new float[64 * 6];
-	private static readonly byte[] _spriteText = new byte[8192];
+	private const int SpriteWords = 8;
+
+	/// <summary>A town of owned houses and admirers holds well over 64 at once (53 measured
+	/// with four houses in view), and an icon past the cap is simply never drawn.</summary>
+	private const int MaxSprites = 256;
+
+	private static readonly uint[] _spriteWords = new uint[MaxSprites * SpriteWords];
+	private static readonly float[] _spriteValues = new float[MaxSprites * 6];
+	private static readonly byte[] _spriteText = new byte[32768];
 
 	public static List<WorldSprite> GetWorldSprites()
 	{
@@ -1893,7 +1898,7 @@ public static class HostBridge
 		{
 			count = RefiiHostGetWorldSprites(
 				_spriteWords, (uint)_spriteWords.Length, _spriteValues, (uint)_spriteValues.Length,
-				_spriteText, (uint)_spriteText.Length, 64u);
+				_spriteText, (uint)_spriteText.Length, (uint)MaxSprites);
 		}
 		catch (EntryPointNotFoundException)
 		{
@@ -1935,7 +1940,8 @@ public static class HostBridge
 				_spriteValues[i * 6 + 3], _spriteValues[i * 6 + 4], _spriteValues[i * 6 + 5],
 				title, opinion,
 				Pooled: (flags & 2) != 0,
-				Slot: _spriteWords[w + 6] == 0xFFFFFFFFu ? -1 : (int)_spriteWords[w + 6]));
+				Slot: _spriteWords[w + 6] == 0xFFFFFFFFu ? -1 : (int)_spriteWords[w + 6],
+				Object: _spriteWords[w + 7]));
 		}
 
 		return sprites;
@@ -2522,10 +2528,25 @@ public static class HostBridge
 			frame = SyntheticGuestFrame();
 		}
 
-		Engine_GuestFrame.Publish(frame);
+		// REBASED TO ZERO WHILE THE GUEST IS OUT OF THE GAME. The counter is advanced by one
+		// hook only — the 30 Hz HF pass `sub_821A61B0` of the in-game loop — and the front end
+		// has no HF pass, so on a front end reached from a game it holds its last value forever
+		// and `Changed` never fires again: every guest-frame-gated drive (the presentation
+		// sampler and the backdrop with it, the owned books, the menu capture, the predicates)
+		// stopped after Quit to Title. First boot only worked because the counter was still
+		// zero, which Publish treats as "no guest state to wait for". Latching the base while
+		// `byte_83496A5E` is clear gives the second front end exactly the first one's contract:
+		// zero until the first HF pass of the next game, counting from there.
+		if (!IsInGame)
+		{
+			_guestFrameBase = frame;
+		}
+
+		Engine_GuestFrame.Publish(unchecked(frame - _guestFrameBase));
 	}
 
 	private static bool _guestFrameExportMissing;
+	private static uint _guestFrameBase;
 	private static uint _syntheticTick;
 	private static double _syntheticTickUsec;
 	private static bool _syntheticHalf;
@@ -4568,8 +4589,13 @@ public static class HostBridge
 		string Divespots, string Gargoyles, string SilverKeys, string Merchants,
 		int Stars)
 	{
-		/// <summary>Whether this sample is of the region a caller asked for.</summary>
-		public bool IsFor(int wanted) => Name.Length != 0 && wanted >= 0 && Index == (uint)wanted;
+		/// <summary>
+		/// Whether this sample is of the region a caller asked for. A `default` sample — what
+		/// <see cref="GetWorldMapRegion"/> returns with no guest, and what a caller with no sample
+		/// passes — has a NULL name and is a sample of nothing.
+		/// </summary>
+		public bool IsFor(int wanted) =>
+			!string.IsNullOrEmpty(Name) && wanted >= 0 && Index == (uint)wanted;
 	}
 
 	/// <summary>
@@ -5649,6 +5675,49 @@ public static class HostBridge
 		return worn;
 	}
 
+	/// <summary>
+	/// The augment pairs socketed into one inventory record — (PrimaryType, SecondaryType) GDB
+	/// record ids, secondary 0 when there is none — off the item's own instance record, which
+	/// is what `sub_82469AE8` prints on the weapon page. Null when no record of that id carries
+	/// one: the item was never seeded, and the definition's `InitialAugmentations` stand.
+	/// </summary>
+	public static (uint Primary, uint Secondary)[]? GetItemAugments(uint recordId)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp || recordId == 0u)
+		{
+			return null;
+		}
+
+		const int max = 16;
+		uint[] words = new uint[max * 2];
+		uint found;
+		try
+		{
+			found = RefiiHostGetItemAugments(recordId, words, (uint)words.Length);
+		}
+		catch (System.DllNotFoundException)
+		{
+			return null;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		if (found == uint.MaxValue)
+		{
+			return null;
+		}
+
+		var pairs = new (uint, uint)[System.Math.Min(found, max)];
+		for (int i = 0; i < pairs.Length; ++i)
+		{
+			pairs[i] = (words[i * 2], words[(i * 2) + 1]);
+		}
+
+		return pairs;
+	}
+
 	public static List<InventoryRecord> GetHeroInventory()
 	{
 		var records = new List<InventoryRecord>();
@@ -6128,7 +6197,9 @@ public static class HostBridge
 		// can find more than the first. Stride 6 since ABI 84 — type byte, flags halfword,
 		// element ADDRESS.
 		var words = new uint[count * 6 + 64];
-		var chars = new ushort[count * 24 + 1024];
+		// Room for the long strings too: a description is up to 4096 units (the native cap),
+		// and text past the buffer's end comes back as no text at all.
+		var chars = new ushort[count * 24 + 16384];
 		uint written = RefiiHostGetUiElements(
 			presentation, words, (uint)words.Length, chars, (uint)chars.Length);
 
@@ -6750,6 +6821,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHeroInventory(uint[]? outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetItemAugments(uint recordId, uint[] outWords, uint wordCapacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetGameLoopPacer(

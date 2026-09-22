@@ -202,14 +202,21 @@ public sealed class MdlReader
         return (ix / 1023f, iy / 1023f, iz / 511f);
     }
 
+    /// <summary>
+    /// The packed tangent, 10:10:10:2. X IS THE LOW TEN BITS, as the normal's is — the order a
+    /// packed D3D type fills from. Reading x from bits 20-29 swapped x and z: measured over
+    /// 10,491 vertices of ch_heromale_morph_body and ch_heromale_posh_coat_open, mean |N.T| is
+    /// 0.0007 this way and 0.38-0.42 the other, and a tangent 25 degrees off its surface bends
+    /// every normal map by UV island. The top two bits only ever hold 1 (+1) or 3 (-1).
+    /// </summary>
     public static (float x, float y, float z, float w) DecodeTangent_DEC3N(uint packed)
     {
         uint iw = (packed >> 30) & 0x3;
-        int ix = (int)((packed >> 20) & 0x3FF);
+        int ix = (int)(packed & 0x3FF);
         if ((ix & 0x200) != 0) ix -= 0x400;
         int iy = (int)((packed >> 10) & 0x3FF);
         if ((iy & 0x200) != 0) iy -= 0x400;
-        int iz = (int)(packed & 0x3FF);
+        int iz = (int)((packed >> 20) & 0x3FF);
         if ((iz & 0x200) != 0) iz -= 0x400;
         float w = (iw == 1 || iw == 0) ? 1f : -1f;
         return (ix / 511f, iy / 511f, iz / 511f, w);

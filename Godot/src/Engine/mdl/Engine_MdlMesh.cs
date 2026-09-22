@@ -40,7 +40,7 @@ public static class Engine_MdlMesh
         string[] regions = mesh.HasMeta(SurfaceRegionsMeta)
             ? mesh.GetMeta(SurfaceRegionsMeta).AsStringArray()
             : System.Array.Empty<string>();
-        RegionCache.Add(mesh, regions);
+        RegionCache.AddOrUpdate(mesh, regions);
         return regions;
     }
 
@@ -73,7 +73,10 @@ public static class Engine_MdlMesh
     }
 
     /// <summary>Surfaces added with at least one coarser level. Run total.</summary>
-    public static int SurfacesWithLods;
+public static int SurfacesWithLods;
+
+    /// <summary>Surfaces built with the model's expanded radiance transfer in CUSTOM0..2.</summary>
+    public static int SurfacesWithTransfer;
 
     /// <summary>
     /// Surfaces of a model that ships coarser LOD payloads and got no level — every level
@@ -214,6 +217,13 @@ public static class Engine_MdlMesh
                     geo.Normals[v * 3], geo.Normals[v * 3 + 1], geo.Normals[v * 3 + 2]);
                 uvs[v] = new Vector2(geo.Uvs[v * 2], geo.Uvs[v * 2 + 1]);
 
+                // Two shipped buffers (b_left_hand, b_ribcage) hold 15 half-float specials in
+                // their UVs. A UV moves nothing, so it is zeroed rather than the surface lost.
+                if (!uvs[v].IsFinite())
+                {
+                    uvs[v] = Vector2.Zero;
+                }
+
                 if (!vertices[v].IsFinite() || vertices[v].Length() > MaxVertexReach)
                 {
                     finite = false;
@@ -231,7 +241,12 @@ public static class Engine_MdlMesh
                 continue;
             }
 
-            // Winding reversed per triangle: the guest's front faces are the other way round.
+            // THE FILE'S OWN ORDER. The models are wound clockwise-front against their normals,
+            // which is Godot's convention too, and `Engine_MdlGeometry` only ROTATES them into
+            // Y-up, which keeps a winding. Measured 2026-09-22 over every model in the banks
+            // (`WindingCensus`): 14,564 of 14,928 surfaces wound that one way, 5 the other, the
+            // rest modelled with both sides. Reversing it here, as this did, drew the whole world
+            // as back faces — which is what made back-face culling impossible.
             //
             // The tail is copied rather than left behind. A count that is not a multiple of
             // three is malformed for a triangle list, but striding past it leaves those indices
@@ -242,8 +257,8 @@ public static class Engine_MdlMesh
             for (int i = 0; i < triangles; i += 3)
             {
                 indices[i] = (int)geo.Indices[i];
-                indices[i + 1] = (int)geo.Indices[i + 2];
-                indices[i + 2] = (int)geo.Indices[i + 1];
+                indices[i + 1] = (int)geo.Indices[i + 1];
+                indices[i + 2] = (int)geo.Indices[i + 2];
             }
 
             for (int i = triangles; i < geo.Indices.Length; ++i)
@@ -279,7 +294,14 @@ public static class Engine_MdlMesh
                 arrays[(int)Mesh.ArrayType.TexUV2] = lightmapUv;
             }
 
-            if (geo.HasTangents)
+            // A tangent array that is zero throughout is no basis: see TryCreateShared.
+            bool tangentBasis = false;
+            for (int t = 0; t + 3 < geo.Tangents.Length && !tangentBasis; t += 4)
+            {
+                tangentBasis = geo.Tangents[t] != 0f || geo.Tangents[t + 1] != 0f || geo.Tangents[t + 2] != 0f;
+            }
+
+            if (geo.HasTangents && tangentBasis)
             {
                 var tangents = new float[geo.VertexCount * 4];
                 System.Array.Copy(geo.Tangents, tangents, tangents.Length);
@@ -322,8 +344,8 @@ public static class Engine_MdlMesh
                     for (int i = 0; i + 2 < level.Length; i += 3)
                     {
                         levelIndices[i] = (int)level[i];
-                        levelIndices[i + 1] = (int)level[i + 2];
-                        levelIndices[i + 2] = (int)level[i + 1];
+                        levelIndices[i + 1] = (int)level[i + 1];
+                        levelIndices[i + 2] = (int)level[i + 2];
                     }
 
                     lods ??= new Godot.Collections.Dictionary();
@@ -331,7 +353,24 @@ public static class Engine_MdlMesh
                 }
             }
 
-            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, null, lods);
+            // The model's radiance transfer, expanded per vertex: CUSTOM0..2 are the red, green
+            // and blue transfer vectors the shader dots with the entity's probe. Absent on a
+            // model that ships none, where the shader keeps its lookup along the normal.
+            // Read by the FABLE model alone: under the unified model Godot carries the fill and
+            // these 48 bytes a vertex would be uploaded for nothing.
+            if (!Refii.Lighting.Engine_LightingFrame.ModernModel &&
+                geo.SourceVertices.Length == geo.VertexCount &&
+                Engine_MdlTransfer.TryExpand(
+                    data, info, geo.SourceVertices, out float[] tr, out float[] tg, out float[] tb))
+            {
+                arrays[(int)Mesh.ArrayType.Custom0] = tr;
+                arrays[(int)Mesh.ArrayType.Custom1] = tg;
+                arrays[(int)Mesh.ArrayType.Custom2] = tb;
+                ++SurfacesWithTransfer;
+            }
+
+            mesh.AddSurfaceFromArrays(
+                Mesh.PrimitiveType.Triangles, arrays, null, lods, Engine_MdlTransfer.FormatOf(arrays));
             surfaceLods.Add(lods ?? new Godot.Collections.Dictionary());
             if (lods is not null)
             {
@@ -364,7 +403,7 @@ public static class Engine_MdlMesh
             // (src/tools/WindGate.cs). So the mesh's statement is part of the shared material's
             // identity, never a mutation of a material another surface also holds.
             Material? material =
-                Engine_MdlMaterial.TryCreateShared(geo.Material, info, geo.AuthoredNormals)
+                Engine_MdlMaterial.TryCreateShared(geo.Material, info, geo.AuthoredNormals, tangentBasis)
                 ?? Engine_MdlMaterial.Fallback();
             if (material is not null)
             {

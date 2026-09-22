@@ -216,9 +216,21 @@ public partial class Engine_LightFlicker : Node
 			}
 
 			light.WrittenRadiusScale = scale;
-			RadiusWrites++;
-			((OmniLight3D)light.Node).OmniRange =
-				light.BaseRange * scale * Refii.Lighting.Engine_LevelLights.RangeScale;
+			float reach = light.BaseRange * Refii.Lighting.Engine_LevelLights.RangeScale;
+
+			// THE NODE HOLDS THE ENVELOPE, THE TABLE HOLDS THE BREATH. The phase is clamped to
+			// [-1, 1], so `1 + RadiusRange` is the largest radius this light can state; the node
+			// sits there and is written only when that changes (the live range scale). The radius
+			// of THIS step goes to the light table, which is what the shader ramps over.
+			var omniNode = (OmniLight3D)light.Node;
+			float envelope = reach * (1.0f + MathF.Abs(light.RadiusRange));
+			if (MathF.Abs(omniNode.OmniRange - envelope) > 1e-4f)
+			{
+				omniNode.OmniRange = envelope;
+				RadiusWrites++;
+			}
+
+			Engine_LightTable.SetStatedRange(omniNode, reach * scale);
 		}
 	}
 }

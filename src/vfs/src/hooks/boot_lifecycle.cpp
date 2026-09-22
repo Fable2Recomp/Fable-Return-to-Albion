@@ -4,6 +4,7 @@
 #include <thread>
 #include "vfs_hooks_private.h"
 #include "core/payload_bridge.h"
+#include "core/precise_sleep.h"
 
 #if REFII_VFS_HAS_RENDERER_RUNTIME
 #include "renderer_runtime.h"
@@ -1683,6 +1684,40 @@ REX_EXTERN(sub_82A41758) {
   }
 }
 
+// ============================================================================================
+// THE MOVIE'S DESTINATION RECT, as the guest states it. `sub_82A41E30(B, rect, z, rotation,
+// mirrorU, mirrorV)` is a leaf: r3 is the player B (the r3 `sub_82A41B48` opens, and the base
+// every Bink offset in this tree is measured from), r4 points at four SIGNED INTS — left, top,
+// right, bottom in back-buffer pixels — which it converts and stores as floats at B+8/+0xC/
+// +0x10/+0x14 (`extsw; std; lfd; fcfid; frsp; stfs` x4, 0x82A41E30..0x82A41EB8). The draw
+// `sub_82A41F10` builds its quad from those as two corners.
+//
+// All four callers state it AFTER the open, 12-29 instructions later: the two front-end
+// constructors (`sub_82388ED0` 0x82389018, `sub_82389040` 0x82389148) and the cutscene player
+// (`sub_823C1658` 0x823C1A04) once, the UI sprite's movie component (`sub_82A83E20`
+// 0x82A83EDC) on create and again on every element update. No constructor initialises
+// B+8..B+0x3C, so until this call those bytes are whatever the heap held.
+//
+// // The host takes the ARGUMENTS here: polling the floats out of B between the open and this
+// // call reads that uninitialised heap as a rect.
+// ============================================================================================
+REX_EXTERN(sub_82A41E30) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t player = ctx.r3.u32;
+  const uint32_t rect = ctx.r4.u32;
+  __imp__sub_82A41E30(ctx, base);
+  if (player == 0 || rect == 0) {
+    return;
+  }
+
+  refii::vfs::NoteBinkMovieRect(
+      player,
+      static_cast<int32_t>(refii::vfs::LoadGuestU32(base, rect)),
+      static_cast<int32_t>(refii::vfs::LoadGuestU32(base, rect + 4)),
+      static_cast<int32_t>(refii::vfs::LoadGuestU32(base, rect + 8)),
+      static_cast<int32_t>(refii::vfs::LoadGuestU32(base, rect + 12)));
+}
+
 REX_EXTERN(sub_82A41B48) {
   REX_FUNC_PROLOGUE();
 
@@ -1701,26 +1736,12 @@ REX_EXTERN(sub_82A41B48) {
   // memset(a1 + 68, 0, 0x78); BinkGetFrameBuffersInfo(*(a1 + 64), v2)`), so the ADDRESS is
   // valid on entry even though the contents are filled during the call.
   //
-  // PUBLISHED AFTER THE CALL, NOT BEFORE, and that ordering is the whole point.
+  // PUBLISHED AFTER THE CALL: `sub_82A42D20` fills the frame-buffer block during it, and a
+  // host that saw the player earlier would read that block half-built.
   //
-  // Publishing the player is what makes `BinkMovieDestRect` start answering — it reports a
-  // rect the moment `g_bink_player` is non-zero. But the guest has not stated the rect yet
-  // at this point and will not until AFTER this function returns: the startup queue's
-  // constructor `sub_82389040` calls us at 0x8238910C and only then builds
-  // `{0, 0, BackBufferWidth, BackBufferHeight}` on its stack and hands it to
-  // `sub_82A41E30` at 0x82389148, which writes the four floats at B+8/+12/+16/+20
-  // (0x82a41e58 / e78 / e98 / eb8).
-  //
-  // Until that write those sixteen bytes are UNINITIALISED HEAP. The player is a raw
-  // 248-byte allocation and the constructor's own zeroing loop covers B+188..B+219 only —
-  // it never touches B+8. So a host that publishes on entry exposes a window as wide as
-  // the Bink file open itself, and a poll landing in it reads a destination rect the guest
-  // never stated. Godot then judged the movie non-fullscreen, stopped drawing it, and left
-  // it playing over the title. Moving the publish here narrows that window to the handful
-  // of instructions between this return and 0x82389148, with no I/O in it.
-  //
-  // Note this does NOT make the rect atomic with the open — it cannot, they are two guest
-  // calls. It removes the part of the window that is wide enough to hit.
+  // The rect is a second guest call and cannot be atomic with this one. It does not need to
+  // be: publishing the player CLEARS the stated rect, and `BinkMovieDestRect` answers "none
+  // yet" until the `sub_82A41E30` hook above states one for this player.
   __imp__sub_82A41B48(ctx, base);
   refii::vfs::NoteBinkMovieOpen(bink_object, base);
   return;
@@ -3152,7 +3173,7 @@ void PaceGuestPresent() {
   }
 
   if (next > now) {
-    std::this_thread::sleep_until(next);
+    refii::PreciseSleepUntil(next);
   }
 
   next += period;
@@ -3162,8 +3183,34 @@ void PaceGuestPresent() {
 
 REX_EXTERN(rex_lhRenderer_EndScene) {
   REX_FUNC_PROLOGUE();
+  const uint32_t caller = ctx.lr;
   __imp__rex_lhRenderer_EndScene(ctx, base);
-  PaceGuestPresent();
+
+  // NOT for the 3D Engine's own present (0x8238866C in `sub_82388380`): that thread holds the
+  // engine context lock across its whole frame (entered at 0x82388270 and again at 0x823883E4,
+  // released only at 0x8238832C), and a 33 ms sleep under it left the lock free for
+  // microseconds a frame. The kernel's auto-reset event (`PosixCondition<Event>`: a flag and a
+  // condition variable) lets the leaving thread consume its own wake-up when it re-enters at
+  // // once, so a queued game-thread waiter starves: the engine pause request before each boot
+  // // movie (`sub_823889A8` -> RtlEnterCriticalSection). That present is paced after the frame
+  // // instead — see `sub_82A1AC40` below.
+  if (caller != 0x82388670u) {
+    PaceGuestPresent();
+  }
+}
+
+// Slot 3 of the app object's vtable (`off_82002818` + 12, built in `sub_822EA228`), called by
+// the 3D Engine thread proc at 0x82388344 once per loop — after it released the engine context
+// lock at 0x8238832C and before it re-enters at 0x82388270. The only point in the loop where the
+// lock is free, so the frame's pacing sleep lives here: every waiter gets a whole present
+// period to take the lock, and the frame itself is paced exactly as before.
+REX_EXTERN(sub_82A1AC40) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t caller = ctx.lr;
+  __imp__sub_82A1AC40(ctx, base);
+  if (caller == 0x82388348u) {
+    PaceGuestPresent();
+  }
 }
 
 // ============================================================================================
@@ -3328,5 +3375,64 @@ REX_EXTERN(sub_821C3C60) {
   if (frames % 300u == 1u) {
     REXLOG_INFO("Refii null-frame: frames={} views warmed={} boxes stated={} refused nodes={} "
                 "objects={}", frames, warmed, boxes, refused_nodes, refused_objects);
+  }
+}
+
+// ============================================================================================
+// THE VIEW PRE-WARM, ANSWERED AT THE ASK. `sub_82A54500(view, now)` is the guest's "is this
+// view's geometry resident?": while the view's warmed byte at +3692 is clear it walks every
+// layer node under +3412 (`sub_82A547B0`, recursive) and loads each missing mesh LOD
+// SYNCHRONOUSLY on the 3D Engine thread — `sub_82AA3DB8` -> `sub_8221CFE8` ->
+// `sub_82AB49D0` -> `sub_82C75D30`, a `while (!GetStatus()) SleepEx(0, 1)` poll per load —
+// and sets +3692 once every node is ready or `now - start` passes the timeout at +3704.
+//
+// Godot draws the geometry, so the answer is yes, and the sweep above already states it —
+// one call too late: `sub_82181B68` runs this walk at 0x821C3AB0, before the draw at
+// 0x821C3B38 in the same `sub_821C3858` frame, so a view created since the last frame gets
+// // its whole first walk before the sweep sees it: seconds per new view, after every level
+// // release and whenever a view is created in play. The scene ring's only consumer sits on
+// // this thread, so the game thread parks in `sub_8222ABE0` for the duration and the world
+// // freezes while Godot keeps drawing. Stating the byte here removes the walk entirely.
+//
+// The writes are the guest's own completion set at 0x82A54708-0x82A54724: `+3692 = 1`,
+// `dbl_834BEC48 = 0`, and the inner render view's `+7232 = 250` when `+3676` names one.
+// ============================================================================================
+REX_EXTERN(sub_82A54500) {
+  REX_FUNC_PROLOGUE();
+  if (GuestRenderWanted()) {
+    __imp__sub_82A54500(ctx, base);
+    return;
+  }
+
+  const uint32_t view = ctx.r3.u32;
+  if (view < 0x10000u || view >= 0xE0000000u) {
+    return;
+  }
+  if (base[view + 3692u] != 0u) {
+    return;
+  }
+
+  const auto load32 = [base](uint32_t at) {
+    uint32_t raw;
+    std::memcpy(&raw, base + at, sizeof(raw));
+    return __builtin_bswap32(raw);
+  };
+  const auto store32 = [base](uint32_t at, uint32_t value) {
+    const uint32_t raw = __builtin_bswap32(value);
+    std::memcpy(base + at, &raw, sizeof(raw));
+  };
+
+  base[view + 3692u] = 1u;
+  std::memset(base + 0x834BEC48u, 0, sizeof(double));
+  const uint32_t inner = load32(view + 3676u);
+  if (inner >= 0x10000u && inner < 0xE0000000u) {
+    store32(inner + 7232u, 250u);
+  }
+
+  static uint32_t stated = 0;
+  ++stated;
+  if (stated <= 8u || (stated & (stated - 1u)) == 0u) {
+    REXLOG_INFO("Refii view pre-warm stated for view 0x{:08X} (#{}) — the guest's synchronous "
+                "LOD walk did not run", view, stated);
   }
 }

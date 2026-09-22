@@ -25,6 +25,28 @@ public partial class Engine_UiRoundedPanel : MeshInstance3D
 		Visible = false;
 	}
 
+	/// <summary>
+	/// A look other than the HUD notice's default: the fill (its alpha is the panel's own
+	/// translucency) and an optional border. For a panel that must read over ANY scene — the
+	/// achievement toast stands over the world itself, not over a dimmed menu.
+	/// </summary>
+	public void Style(Color fill, Color border, float borderWidth)
+	{
+		_material.SetShaderParameter("fill", fill);
+		_material.SetShaderParameter("border", border);
+		_material.SetShaderParameter("border_width", borderWidth);
+	}
+
+	/// <summary>The corner radius the HUD's notices wear, in HUD canvas units.</summary>
+	public const float HudCornerRadius = 12f;
+
+	/// <summary>
+	/// The corner radius in THIS panel's local units. The shader's default is the HUD's, which is
+	/// only right for a panel that lives in HUD canvas units; one mounted in another space (the
+	/// achievement toast works in display pixels) states its own so the corners match on screen.
+	/// </summary>
+	public void Corner(float radius) => _material.SetShaderParameter("radius", radius);
+
 	/// <summary>Fits the panel to a rectangle in the HUD's canvas space at depth <paramref name="z"/>.</summary>
 	public void Fit(Rect2 rect, float z, float opacity = 1f)
 	{

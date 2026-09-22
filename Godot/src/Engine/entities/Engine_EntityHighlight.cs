@@ -52,12 +52,19 @@ public static class Engine_EntityHighlight
     /// leaves a wrapper whose every member throws.</summary>
     private static readonly Dictionary<ulong, Lit> Lits = new();
 
+    /// <summary>The wrappers of <see cref="Lits"/>, by reference: membership without an engine call.</summary>
+    private static readonly HashSet<Node> LitNodes = new(ReferenceEqualityComparer.Instance);
+
     private static readonly ShaderMaterial?[] SlotMaterials = new ShaderMaterial?[Engine_EntityHighlightLayer.Slots + 1];
 
     public static void BeginWalk() => HighlightedThisFrame = 0;
 
     /// <summary>Forgets which subtrees are lit. For a level change, where the nodes go away.</summary>
-    public static void Forget() => Lits.Clear();
+    public static void Forget()
+    {
+        Lits.Clear();
+        LitNodes.Clear();
+    }
 
     /// <summary>
     /// The live highlighted entities. Entries whose node has been freed are dropped here, which
@@ -83,6 +90,7 @@ public static class Engine_EntityHighlight
         {
             foreach (ulong id in dead)
             {
+                LitNodes.Remove(Lits[id].Node);
                 Lits.Remove(id);
             }
         }
@@ -99,6 +107,13 @@ public static class Engine_EntityHighlight
             SeenWords.Add(word);
         }
 
+        // Nothing wanted and nothing applied: the common case, and no engine crossing. The
+        // instance id is one, and this runs for every entity of every walk.
+        if (!highlighted && !LitNodes.Contains(node))
+        {
+            return;
+        }
+
         ulong id = node.GetInstanceId();
         bool lit = Lits.TryGetValue(id, out Lit current);
 
@@ -112,6 +127,8 @@ public static class Engine_EntityHighlight
                 Lits.Remove(id);
             }
 
+            LitNodes.Remove(node);
+
             return;
         }
 
@@ -124,6 +141,7 @@ public static class Engine_EntityHighlight
         }
 
         Lits[id] = new Lit(body, word, slot);
+        LitNodes.Add(node);
 
         // Walked on every statement, not only the first: a mesh change re-rigs the body and the
         // new meshes have no proxy until this finds them.
@@ -161,7 +179,9 @@ public static class Engine_EntityHighlight
             Walk(child, slot);
         }
 
-        if (node is not MeshInstance3D mesh || mesh.HasMeta(MadeMeta) || mesh.Mesh is null)
+        // A cast-only mesh (Engine_ShadowProxy) is never drawn, so it has no outline of its own.
+        if (node is not MeshInstance3D mesh || mesh.HasMeta(MadeMeta) || mesh.Mesh is null ||
+            mesh.CastShadow == GeometryInstance3D.ShadowCastingSetting.ShadowsOnly)
         {
             return;
         }

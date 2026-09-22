@@ -146,6 +146,34 @@ vec3 fable_probe_bake(vec3 world_normal) {
 	return max(sh, vec3(0.0));
 }
 
+/// The guest's PRT ambient for one vertex: rgb, and a = 1 when the mesh carries transfer.
+///
+/// VERTEX STAGE. The AMB2 vertex shader computes `P0 + dot(T, P1..3)` per channel, where the
+/// P are the model's cluster mean and PCA bases dotted with the entity's probe
+/// (`sub_8225DC80`). `Engine_MdlTransfer` undoes the compression at mesh build, so CUSTOM0..2
+/// hold the vertex's own transfer vector per channel and this is `dot(t_c, L_c)`. The transfer
+/// carries the surface's self-occlusion, which a lookup along the normal cannot.
+///
+/// The guest dots the two raw, so they share one basis — the one `fable_probe_bake` states.
+/// Transfer is in MODEL space and the probe in world: the linear band is carried to world as
+/// a normal is (the loader's x, z, -y, then the instance rotation) and met there by the same
+/// guest-axis map the normal lookup uses. `sub_8225DC80` rotates the probe into model space
+/// instead, and only for the `sub_82219AB8` draw class; rotating always is ours.
+///
+/// A mesh without the channels reads zeros, which no lit vertex holds: its mean is never zero.
+vec4 fable_transfer(vec4 tr, vec4 tg, vec4 tb, mat3 model) {
+	float present = step(1e-6, dot(abs(tr) + abs(tg) + abs(tb), vec4(1.0)));
+	mat3 turn = mat3(normalize(model[0]), normalize(model[1]), normalize(model[2]));
+	vec3 lr = turn * vec3(-tr.w, tr.z, tr.y);
+	vec3 lg = turn * vec3(-tg.w, tg.z, tg.y);
+	vec3 lb = turn * vec3(-tb.w, tb.z, tb.y);
+	vec3 rgb = vec3(
+		tr.x * probe_r.x + dot(vec3(-probe_r.w, -probe_r.y, probe_r.z), vec3(-lr.x, lr.z, lr.y)),
+		tg.x * probe_g.x + dot(vec3(-probe_g.w, -probe_g.y, probe_g.z), vec3(-lg.x, lg.z, lg.y)),
+		tb.x * probe_b.x + dot(vec3(-probe_b.w, -probe_b.y, probe_b.z), vec3(-lb.x, lb.z, lb.y)));
+	return vec4(rgb, present);
+}
+
 /// The bake for this surface, whichever of the guest's modes it is carrying. `vertex_colour` is
 /// the interpolated COLOR attribute — a per-instance value on a MultiMesh, a per-vertex one on a
 /// mesh that was given an authored bake.
@@ -241,8 +269,28 @@ vec3 fable_sky_tether(vec3 ambient_half) {
 /// region and 0.17 x 3.54 is 0.60. Terrain does not, because our lightmap binding is still
 /// wrong in three ways and applying the factor to the wrong operand clips the ground to white;
 /// the reasoning is recorded at that call site.
+/// 1.0 WHEN GODOT'S GI CARRIES THE BAKE — the modern model. The guest's fill is two terms,
+/// `bake * LightmapColour + GlobalAmbient`, and they are different KINDS of light:
+///   the BAKE is occluded and varies across space — that is what Godot's GI now is, so at 1 no
+///   per-instance bake (probe/PRT, vertex colours, texture lightmap) emits, or the GI would
+///   bounce it a second time;
+///   GLOBALAMBIENT is flat, unoccluded and added last — a FLOOR. It stays in both models and it
+///   cannot be Godot's environment ambient: inside an SDFGI cascade the engine does
+///   `ambient_light = diffuse` (scene_forward_clustered.glsl), REPLACING that ambient with the
+///   trace, which is zero under a canopy or beside a wall. Gating the floor off as well left
+///   every shadow in Fairfax Gardens black.
+/// 0 is the fable model, where Godot's ambient has no energy and both terms are emitted here.
+global uniform float fable_unified = 0.0;
+
+/// THE BAKE'S UNOCCLUDED SHARE, modern model only (zero in the fable model). The guest's bake is
+/// fill that reaches UNDER a canopy — a night forest floor holds `bake * LightmapColour`, blue and
+/// readable — and the GI's sky light reaches only where the sky is seen, so handing it the whole
+/// bake left that floor black. A share of the mean bake stays here, flat, in the theme's own
+/// `LightmapColour`; the rest is the ambient the GI traces. See `ModernFloorShare`.
+global uniform vec3 fable_fill_floor = vec3(0.0);
+
 vec3 fable_ambient(vec3 bake) {
-	return bake + ambient_colour.rgb;
+	return (bake * (1.0 - fable_unified)) + ambient_colour.rgb + fable_fill_floor;
 }
 
 /// The main light. Lambert, because Fable's main light is one directional source and the
@@ -348,12 +396,36 @@ float fable_attenuation(float godot_attenuation, bool directional, float specula
 		float window = 1.0 - (ratio * ratio * ratio * ratio);
 		window *= window;
 		float rest = window > 1e-3 ? clamp(godot_attenuation / window, 0.0, 1.0) : 1.0;
-		return (1.0 - ratio) * rest;
+
+		// TWO RADII. record.w is the NODE's range: it is what Godot's window above was computed
+		// with, so it is what undoes it. The guest's ramp runs over the radius it STATES, which for
+		// a flickering torch breathes every step and lives in the table's second row — the node
+		// keeps the flicker's envelope so its bounds never move (see Engine_LightTable.Stated).
+		float stated = texelFetch(fable_light_table, ivec2(slot, 1), 0).x;
+		float ramp = clamp(1.0 - distance(world, record.xyz) / max(stated, 1e-3), 0.0, 1.0);
+		return ramp * rest;
 	}
 
 	float a = clamp(godot_attenuation, 0.0, 1.0);
 	float ratio = pow(max(1.0 - sqrt(a), 0.0), 0.25);
 	return clamp(1.0 - ratio, 0.0, 1.0);
+}
+
+/// +1 when the interpolated normal is on the side of the surface THE CAMERA SEES, -1 when it is
+/// inside out. FRAGMENT STAGE: `view_position` is VERTEX, `view` is VIEW.
+///
+/// The surface is judged by its own geometry — the face normal from the screen-space derivatives
+/// of the position, turned toward the viewer — and NOT by FRONT_FACING. These shaders draw with
+/// culling off, and the rasteriser's facing follows the winding and the parent's handedness: the
+/// world sits under a region root that negates X and rasterises entirely as BACK faces, a
+/// guest-driven entity's node has determinant +1, and a garment or a brazier cage is modelled
+/// double-sided, so whichever copy wins the depth test decides. Measured live with the facing
+/// view: everything back-facing lit correctly and everything front-facing — the hero's coat,
+/// waistcoat and trousers, the brazier — lit inside out. Geometry cannot disagree with itself.
+float fable_normal_side(vec3 normal, vec3 view_position, vec3 view) {
+	vec3 face = cross(dFdx(view_position), dFdy(view_position));
+	face = dot(face, view) < 0.0 ? -face : face;
+	return dot(normal, face) < 0.0 ? -1.0 : 1.0;
 }
 
 /// NO ALBEDO HERE — GODOT APPLIES IT, to whatever `light()` returns.

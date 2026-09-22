@@ -34,6 +34,39 @@ std::atomic<uint32_t> g_bink_frame_buffers{0};
 /// the flag, so the pointer is good for exactly one write.
 std::atomic<uint32_t> g_bink_player{0};
 
+// The rects the guest has stated, by the player each was stated for. PER PLAYER, because
+// players coexist: the UI sprite's movie component restates its rect on every element update
+// while a front-end or cutscene player, which states once, may be the live one. A player's
+// entry is dropped when that player is opened again or closed, so a rect never outlives its
+// movie — the allocator hands the next movie the same block.
+struct StatedBinkRect {
+  uint32_t player = 0;
+  int32_t left = 0;
+  int32_t top = 0;
+  int32_t right = 0;
+  int32_t bottom = 0;
+};
+
+std::mutex g_bink_rect_mutex;
+StatedBinkRect g_bink_rects[8];
+uint32_t g_bink_rect_next = 0;
+
+// Both under g_bink_rect_mutex.
+StatedBinkRect* FindStatedRect(uint32_t player) {
+  for (StatedBinkRect& rect : g_bink_rects) {
+    if (rect.player == player) {
+      return &rect;
+    }
+  }
+  return nullptr;
+}
+
+void DropStatedRect(uint32_t player) {
+  if (StatedBinkRect* rect = FindStatedRect(player)) {
+    *rect = {};
+  }
+}
+
 }  // namespace
 
 uint32_t BinkFrameBuffersGuestAddress() {
@@ -275,36 +308,31 @@ extern "C" void refii_bridge_note_bink_video_requested(uint8_t* base, uint32_t d
 ///
 /// Returns 0 when no movie is live, 1 while the guest still wants it, 2 once the guest
 /// has ended it.
-/// The destination rect the guest stated for the live movie, in its own 2D screen space —
-/// fullscreen vs embedded, stated at open, not inferred. `sub_82A41E30(bink, rect, z,
-/// rotation, ...)` stores it as four big-endian floats measured from the bink player:
-///   bink+8 x0, bink+12 y0, bink+16 x1, bink+20 y1 (bink+24 z, bink+28 rotation)
-/// and the draw `sub_82A41F10` builds its quad corners from those four. Returns 0 when no
-/// movie is live.
+/// The destination rect the guest STATED for the live movie — left, top, right, bottom in
+/// back-buffer pixels, the arguments of its own `sub_82A41E30(B, rect, ...)` as the payload
+/// hook hands them over. Fullscreen vs embedded is this rect, not an inference.
+///
+/// Returns 0 when no movie is live OR the guest has not stated a rect for the live player yet
+/// (it does so 12-29 instructions after the open). Never read out of the player: no
+/// constructor initialises B+8..B+0x14, so before the statement they are heap.
 uint32_t BinkMovieDestRect(uint8_t* base, float* out_x0, float* out_y0,
                            float* out_x1, float* out_y1) {
-  if (base == nullptr) {
-    return 0;
-  }
-
+  (void)base;
   const uint32_t player = g_bink_player.load(std::memory_order_relaxed);
   if (player == 0) {
     return 0;
   }
 
-  const auto read_float = [base, player](uint32_t offset) {
-    uint32_t word = 0;
-    std::memcpy(&word, base + player + offset, sizeof(word));
-    word = __builtin_bswap32(word);
-    float value = 0.0f;
-    std::memcpy(&value, &word, sizeof(value));
-    return value;
-  };
+  std::lock_guard<std::mutex> lock(g_bink_rect_mutex);
+  const StatedBinkRect* rect = FindStatedRect(player);
+  if (rect == nullptr) {
+    return 0;
+  }
 
-  if (out_x0 != nullptr) *out_x0 = read_float(8u);
-  if (out_y0 != nullptr) *out_y0 = read_float(12u);
-  if (out_x1 != nullptr) *out_x1 = read_float(16u);
-  if (out_y1 != nullptr) *out_y1 = read_float(20u);
+  if (out_x0 != nullptr) *out_x0 = static_cast<float>(rect->left);
+  if (out_y0 != nullptr) *out_y0 = static_cast<float>(rect->top);
+  if (out_x1 != nullptr) *out_x1 = static_cast<float>(rect->right);
+  if (out_y1 != nullptr) *out_y1 = static_cast<float>(rect->bottom);
   return 1;
 }
 
@@ -462,6 +490,41 @@ extern "C" void refii_bridge_note_bink_movie_closed(uint32_t player) {
 
   uint32_t expected = player;
   g_bink_player.compare_exchange_strong(expected, 0u, std::memory_order_relaxed);
+
+  std::lock_guard<std::mutex> lock(g_bink_rect_mutex);
+  DropStatedRect(player);
+}
+
+/// Called from the `sub_82A41E30` hook with the rect the guest just stated for `player`.
+///
+/// Stated once after the open by the front-end and cutscene players, and on every element
+/// update by the UI sprite's movie component, so the newest statement stands.
+extern "C" void refii_bridge_note_bink_movie_rect(uint32_t player, int32_t left, int32_t top,
+                                                  int32_t right, int32_t bottom) {
+  if (player == 0) {
+    return;
+  }
+
+  bool first = false;
+  {
+    std::lock_guard<std::mutex> lock(g_bink_rect_mutex);
+    StatedBinkRect* rect = FindStatedRect(player);
+    first = rect == nullptr;
+    if (rect == nullptr) {
+      // A free slot, else the oldest: eight live players is already more than the guest has.
+      rect = FindStatedRect(0u);
+      if (rect == nullptr) {
+        rect = &g_bink_rects[g_bink_rect_next++ % 8u];
+      }
+    }
+    *rect = {player, left, top, right, bottom};
+  }
+
+  static std::atomic<uint32_t> seen{0};
+  if (first && seen.fetch_add(1, std::memory_order_relaxed) < 64u) {
+    REXLOG_INFO("Refii Bink rect stated bink=0x{:08X} left={} top={} right={} bottom={}",
+                player, left, top, right, bottom);
+  }
 }
 
 /// Called from the Bink movie-open hook with the player pointer.
@@ -471,6 +534,12 @@ extern "C" void refii_bridge_note_bink_movie_closed(uint32_t player) {
 extern "C" void refii_bridge_note_bink_movie_open(uint32_t player, uint8_t* base_for_open) {
   if (player == 0) {
     return;
+  }
+
+  // A new movie in this player: whatever rect was stated for the last one is not this one's.
+  {
+    std::lock_guard<std::mutex> lock(g_bink_rect_mutex);
+    DropStatedRect(player);
   }
 
   g_bink_player.store(player, std::memory_order_relaxed);

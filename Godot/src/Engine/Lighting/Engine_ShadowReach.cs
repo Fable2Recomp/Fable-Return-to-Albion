@@ -64,6 +64,9 @@ public partial class Engine_ShadowReach : Node
 		public Aabb Bounds;
 		public float Reach;
 		public GeometryInstance3D.ShadowCastingSetting Applied = (GeometryInstance3D.ShadowCastingSetting)(-1);
+
+		/// <summary>What the instance cast with when taken — On, or ShadowsOnly for a cast-only proxy.</summary>
+		public GeometryInstance3D.ShadowCastingSetting Granted = GeometryInstance3D.ShadowCastingSetting.On;
 	}
 
 	/// <summary>
@@ -97,6 +100,24 @@ public partial class Engine_ShadowReach : Node
 
 		instance.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
 		_withdrawn.Add(instance.GetInstanceId());
+	}
+
+	/// <summary>Instances whose OWNER switched the caster off, by id: never written again.</summary>
+	private static readonly HashSet<ulong> _excluded = new();
+
+	/// <summary>
+	/// The owner's "this never casts", for an instance this policy may already hold — the
+	/// streamer learns a plant sways only when its mesh arrives. Main thread only.
+	/// </summary>
+	public static void Exclude(GeometryInstance3D instance)
+	{
+		if (!GodotObject.IsInstanceValid(instance))
+		{
+			return;
+		}
+
+		instance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+		_excluded.Add(instance.GetInstanceId());
 	}
 
 	private readonly List<GeometryInstance3D> _instances = new();
@@ -166,10 +187,13 @@ public partial class Engine_ShadowReach : Node
 			}
 
 			Entry entry = _entries[_cursor];
-			if (!GodotObject.IsInstanceValid(entry.Node) || _withdrawn.Contains(entry.Id))
+			// A body that casts through Engine_ShadowProxy is not this policy's: its proxy is.
+			if (!GodotObject.IsInstanceValid(entry.Node) || _withdrawn.Contains(entry.Id) ||
+				_excluded.Contains(entry.Id) || Refii.Entities.Engine_ShadowProxy.IsProxied(entry.Id))
 			{
 				_known.Remove(entry.Id);
 				_withdrawn.Remove(entry.Id);
+				_excluded.Remove(entry.Id);
 				_entries.RemoveAt(_cursor);
 				continue;
 			}
@@ -189,7 +213,7 @@ public partial class Engine_ShadowReach : Node
 			float distance = eye.Clamp(entry.Bounds.Position, entry.Bounds.End).DistanceTo(eye);
 			GeometryInstance3D.ShadowCastingSetting wanted =
 				!Enabled || distance <= entry.Reach
-					? GeometryInstance3D.ShadowCastingSetting.On
+					? entry.Granted
 					: GeometryInstance3D.ShadowCastingSetting.Off;
 
 			if (wanted == GeometryInstance3D.ShadowCastingSetting.Off)
@@ -227,15 +251,17 @@ public partial class Engine_ShadowReach : Node
 			return;
 		}
 
-		// Distance culling may suppress an existing caster, but must not enable shadows
-		// explicitly disabled by its owner (for example, foliage batches).
-		if (instance.CastShadow == GeometryInstance3D.ShadowCastingSetting.Off)
+		// The policy withdraws a shadow; it never grants one. An instance its owner built
+		// with the caster off (foliage, FX) is not this policy's to switch on.
+		GeometryInstance3D.ShadowCastingSetting granted = instance.CastShadow;
+		if (granted == GeometryInstance3D.ShadowCastingSetting.Off ||
+			Refii.Entities.Engine_ShadowProxy.IsProxied(id))
 		{
 			return;
 		}
 
 		_withdrawn.Remove(id);
-		var entry = new Entry { Node = instance, Id = id };
+		var entry = new Entry { Node = instance, Id = id, Granted = granted };
 		_known[id] = entry;
 		_entries.Add(entry);
 	}

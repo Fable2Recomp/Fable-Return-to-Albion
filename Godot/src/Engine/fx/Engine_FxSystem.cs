@@ -2002,6 +2002,12 @@ public sealed class Engine_FxSystem
         public int Used;
         public Aabb Bounds;
         public bool HasBounds;
+
+        /// <summary>The largest corner offset emitted this frame: how far a quad reaches from its centre.</summary>
+        public float MaxOffset;
+
+        /// <summary>The box last written to the mesh, so an unchanged one is not written again.</summary>
+        public Aabb? StatedBox;
     }
 
     private readonly Dictionary<ArrayMesh, SurfaceSlots> _slots = new();
@@ -2019,15 +2025,18 @@ public sealed class Engine_FxSystem
 
     private void BeginSurfaces(ArrayMesh mesh)
     {
+        // The bounds are tracked on both build paths: the rebuilt surface's own box covers only
+        // the particle CENTRES (the corners are added in the shader), so it is stated either way.
+        SurfaceSlots slots = SlotsOf(mesh);
+        slots.HasBounds = false;
+        slots.MaxOffset = 0f;
         if (!InPlaceLayout.Supported)
         {
             mesh.ClearSurfaces();
             return;
         }
 
-        SurfaceSlots slots = SlotsOf(mesh);
         slots.Used = 0;
-        slots.HasBounds = false;
 
         // Anyone else may have cleared the mesh (FableFx drops the additive one when the layer
         // goes away): the slot table follows the surfaces that actually exist.
@@ -2045,18 +2054,28 @@ public sealed class Engine_FxSystem
 
     private void EndSurfaces(ArrayMesh mesh)
     {
-        if (!InPlaceLayout.Supported)
+        SurfaceSlots slots = SlotsOf(mesh);
+        if (InPlaceLayout.Supported)
+        {
+            TrimSurfaces(mesh, slots, slots.Used);
+        }
+
+        // // THE WHOLE QUAD, STATED. Surfaces written in place keep the bounds they were built with,
+        // // and a rebuilt surface's box covers only the particle centres, so the mesh states this
+        // // frame's: the centres grown by the largest corner offset. A cull margin wide enough to
+        // // cover the corners instead puts every FX leaf in every light's and shadow pass's reach.
+        // //
+        // // WRITTEN ONLY WHEN IT CHANGED. Every write is an instance update to the renderer (a BVH
+        // // move and a re-pair) and most effects are frozen most frames.
+        Aabb box = slots.HasBounds ? slots.Bounds.Grow(slots.MaxOffset) : default;
+        if (slots.StatedBox is { } stated && stated == box)
         {
             return;
         }
 
-        SurfaceSlots slots = SlotsOf(mesh);
-        TrimSurfaces(mesh, slots, slots.Used);
-
-        // Surfaces written in place keep the bounds they were built with, so the mesh states
-        // this frame's. The vertices are particle centres; the shader's quad expansion is covered
-        // by the instances' ExtraCullMargin.
-        mesh.CustomAabb = slots.HasBounds ? slots.Bounds : default;
+        slots.StatedBox = box;
+        Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
+        mesh.CustomAabb = box;
     }
 
     private static void TrimSurfaces(ArrayMesh mesh, SurfaceSlots slots, int keep)
@@ -2075,6 +2094,30 @@ public sealed class Engine_FxSystem
     private void Flush(ArrayMesh mesh, Material material, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)> list)
     {
         int n = list.Count;
+        SurfaceSlots slots = SlotsOf(mesh);
+        for (int i = 0; i < n; i++)
+        {
+            (Vector3 p, _, _, Vector2 off) = list[i];
+            if (!slots.HasBounds)
+            {
+                slots.Bounds = new Aabb(p, Vector3.Zero);
+                slots.HasBounds = true;
+            }
+            else
+            {
+                slots.Bounds = slots.Bounds.Expand(p);
+            }
+
+            // The corner offset is added along the camera's unit axes in the vertex shader
+            // (fx_billboard.gdshaderinc), so a vertex lies within |off| of its centre whatever
+            // the camera does; an axis-aligned quad is pre-expanded and carries a zero offset.
+            float reach = off.Length();
+            if (reach > slots.MaxOffset)
+            {
+                slots.MaxOffset = reach;
+            }
+        }
+
         if (!InPlaceLayout.Supported)
         {
             FlushBuild(mesh, material, list, n % 3 == 0 ? (n + FlushBucket - 1) / FlushBucket * FlushBucket : n);
@@ -2086,21 +2129,7 @@ public sealed class Engine_FxSystem
             return;
         }
 
-        SurfaceSlots slots = SlotsOf(mesh);
         int slot = slots.Used++;
-        for (int i = 0; i < n; i++)
-        {
-            Vector3 p = list[i].Pos;
-            if (!slots.HasBounds)
-            {
-                slots.Bounds = new Aabb(p, Vector3.Zero);
-                slots.HasBounds = true;
-            }
-            else
-            {
-                slots.Bounds = slots.Bounds.Expand(p);
-            }
-        }
 
         if (slot < slots.Capacity.Count && slots.Capacity[slot] >= n)
         {

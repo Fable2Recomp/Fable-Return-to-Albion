@@ -138,6 +138,12 @@ inline void NoteBinkMovieOpen(uint32_t player, uint8_t* base_for_open = nullptr)
 inline void NoteBinkMovieClosed(uint32_t player) {
   refii_bridge_note_bink_movie_closed(player);
 }
+
+/// The guest stated this player's destination rect (`sub_82A41E30`), in back-buffer pixels.
+inline void NoteBinkMovieRect(uint32_t player, int32_t left, int32_t top, int32_t right,
+                              int32_t bottom) {
+  refii_bridge_note_bink_movie_rect(player, left, top, right, bottom);
+}
 uint32_t BinkFrameBuffersGuestAddress();
 
 /// The movie the guest last handed to BinkOpen. The argument is EITHER a pointer to the

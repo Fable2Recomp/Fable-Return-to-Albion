@@ -35,9 +35,44 @@ public static class Engine_LightTable
 
 	private static readonly Light3D?[] Slots = new Light3D?[Capacity];
 
-	private static readonly float[] Data = new float[Capacity * 4];
+	/// <summary>Two rows of Capacity texels: (x, y, z, Godot's range), then (the STATED range, 0, 0, 0).</summary>
+	private static readonly float[] Data = new float[Capacity * 4 * 2];
 
-	private static readonly byte[] Bytes = new byte[Capacity * 16];
+	private static readonly byte[] Bytes = new byte[Capacity * 16 * 2];
+
+	/// <summary>
+	/// The radius the guest STATES for a light this frame, where it differs from the node's. A
+	/// flickering torch's radius breathes every step, and writing that to OmniRange moves the
+	/// light's AABB: Godot re-pairs it against everything in reach, every frame, for every torch
+	/// (measured 2026-09-21, Fairfax Gardens, 154 lights: frame 17.4 -> 11.7 ms with the writes
+	/// held, same draw calls). The node keeps the flicker's ENVELOPE, which never moves, and the
+	/// shader takes its falloff from here — the picture is the same. 0 = the node's own range.
+	/// </summary>
+	private static readonly float[] Stated = new float[Capacity];
+
+	/// <summary>States <paramref name="light"/>'s radius for the shader's ramp. Main thread.</summary>
+	public static void SetStatedRange(Light3D light, float range)
+	{
+		int slot = (int)MathF.Round(light.LightSpecular - SlotBase);
+		lock (Gate)
+		{
+			if (slot >= 0 && slot < Capacity && ReferenceEquals(Slots[slot], light))
+			{
+				Stated[slot] = range;
+			}
+		}
+	}
+
+	/// <summary>The radius the shader ramps over for <paramref name="light"/>: stated, else the node's.</summary>
+	public static float StatedRangeOf(Light3D light, float nodeRange)
+	{
+		int slot = (int)MathF.Round(light.LightSpecular - SlotBase);
+		lock (Gate)
+		{
+			return slot >= 0 && slot < Capacity && ReferenceEquals(Slots[slot], light) && Stated[slot] > 0f
+				? Stated[slot] : nodeRange;
+		}
+	}
 
 	private static ImageTexture? _texture;
 
@@ -62,6 +97,7 @@ public static class Engine_LightTable
 				}
 
 				Slots[slot] = light;
+				Stated[slot] = 0f;
 				light.LightSpecular = slot + SlotBase;
 				return true;
 			}
@@ -88,6 +124,7 @@ public static class Engine_LightTable
 					if (!GodotObject.IsInstanceValid(light))
 					{
 						Slots[slot] = null;
+						Stated[slot] = 0f;
 					}
 					else if (light.IsInsideTree())
 					{
@@ -99,6 +136,14 @@ public static class Engine_LightTable
 							: light is SpotLight3D spot ? spot.SpotRange : 0f;
 						live++;
 					}
+				}
+
+				float stated = range > 0f && Stated[slot] > 0f ? Stated[slot] : range;
+				int second = (Capacity + slot) * 4;
+				if (Data[second] != stated)
+				{
+					Data[second] = stated;
+					changed = true;
 				}
 
 				int i = slot * 4;
@@ -119,7 +164,7 @@ public static class Engine_LightTable
 			}
 
 			Buffer.BlockCopy(Data, 0, Bytes, 0, Bytes.Length);
-			var image = Image.CreateFromData(Capacity, 1, false, Image.Format.Rgbaf, Bytes);
+			var image = Image.CreateFromData(Capacity, 2, false, Image.Format.Rgbaf, Bytes);
 			if (_texture is null)
 			{
 				_texture = ImageTexture.CreateFromImage(image);

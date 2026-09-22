@@ -179,7 +179,23 @@ public static class Engine_TexLibrary
 			}
 		}
 
-		Image? image = Decode(path, semantic, read, out bool decodedAlpha);
+		Image? image = Decode(path, semantic, read, out bool decodedAlpha, out byte[]? source);
+
+		// AN ENHANCEMENT ALREADY GENERATED IS THE TEXTURE, from the first frame. However it was made
+		// — the boot sweep, during play, a prebuild — it is on disk under its own key, and handing
+		// out the original first only to swap it moments later uploaded every texture twice and
+		// changed its size under whatever held it. Only a texture with nothing generated yet
+		// starts as the original and takes the in-place swap when its enhancement lands.
+		bool enhanced = false;
+		if (image is not null && source is not null && Engine_TexEnhance.Enabled &&
+			Engine_TexSemantic.For(semantic).Filter != TexFilterClass.None &&
+			EnhanceDecoded(source, image, semantic, decodedAlpha, path, compress: true, cacheOnly: true)
+				is { } generated)
+		{
+			image = generated;
+			enhanced = true;
+		}
+
 		ImageTexture? texture = image is null ? null : ImageTexture.CreateFromImage(image);
 
 		lock (Gate)
@@ -201,6 +217,7 @@ public static class Engine_TexLibrary
 				Path = path,
 				Semantic = semantic,
 				Read = read,
+				State = enhanced ? EnhancementState.Enhanced : EnhancementState.None,
 			};
 		}
 
@@ -423,13 +440,19 @@ public static class Engine_TexLibrary
 	/// asset is a picture of our pipeline rather than of the asset.
 	/// </remarks>
 	public static Image? Decode(
-		string virtualPath, TexSemantic semantic, Func<string, byte[]?> read, out bool hasAlpha)
+		string virtualPath, TexSemantic semantic, Func<string, byte[]?> read, out bool hasAlpha) =>
+		Decode(virtualPath, semantic, read, out hasAlpha, out _);
+
+	/// <summary>The same decode, handing back the bytes it was decoded from: they are what an enhancement is keyed on.</summary>
+	private static Image? Decode(
+		string virtualPath, TexSemantic semantic, Func<string, byte[]?> read, out bool hasAlpha,
+		out byte[]? source)
 	{
 		hasAlpha = false;
+		source = null;
 
 		string path = Normalise(virtualPath);
 
-		byte[]? source;
 		try
 		{
 			source = read(path);
@@ -1221,7 +1244,8 @@ public static class Engine_TexLibrary
 		TexSemantic semantic,
 		bool hasAlpha,
 		string label,
-		bool compress = true)
+		bool compress = true,
+		bool cacheOnly = false)
 	{
 		ITexUpscaler? backend = Engine_TexEnhance.Backend;
 		if (!Engine_TexEnhance.Enabled || backend is null)
@@ -1244,7 +1268,7 @@ public static class Engine_TexLibrary
 		string key = Engine_TexCache.Key(source, semantic, backendId, scale);
 
 		Image? result = Engine_TexCache.TryLoad(key, out _);
-		if (result is not null)
+		if (result is not null || cacheOnly)
 		{
 			return result;
 		}

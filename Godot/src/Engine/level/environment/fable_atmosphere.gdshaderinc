@@ -130,6 +130,23 @@ bool fable_atmosphere_terms(
 	float t = min(d, atmos_range.y) * atmos_curve.y;
 	float optical_depth = atmos_curve.x * pow(max(t, 0.0), atmos_curve.z);
 
+	// THE GUEST'S FIRST LUT KNOTS, reproduced because the look needs them. `sub_821FE040` bakes
+	// the curve at `i * 7.8125` units past FoggingStart (0x821FE21C..0x821FE234: the integer texel
+	// index times 7.8125) and the pixel shader reads it linearly filtered, so between two knots
+	// the guest's fog is a straight line. The themes' exponents run near 0.3, where the power law
+	// itself climbs half of its first knot's depth within the first 0.7 units — drawn as stated it
+	// is a ring around the eye at FoggingStart, plain at night against an unfogged floor. Past a
+	// few knots the line and the curve agree and the curve is cheaper.
+	const float knot = 7.8125;
+	vec3 raw = exp(-atmos_beta * optical_depth);
+	if (d < knot * 4.0) {
+		// Interpolated as the LUT is: in transmittance, between the knots either side.
+		float below = floor(d / knot) * knot;
+		float depth_below = atmos_curve.x * pow(min(below, atmos_range.y) * atmos_curve.y, atmos_curve.z);
+		float depth_above = atmos_curve.x * pow(min(below + knot, atmos_range.y) * atmos_curve.y, atmos_curve.z);
+		raw = mix(exp(-atmos_beta * depth_below), exp(-atmos_beta * depth_above), (d - below) / knot);
+	}
+
 	// Fx AND Fy FOLDED IN HERE, so that `transmittance` is the EFFECTIVE one and every caller —
 	// including the ones attenuating a specular tint — takes the damping automatically. The guest's
 	// line is
@@ -139,7 +156,6 @@ bool fable_atmosphere_terms(
 	//
 	// so the surface's factor is `1 - Fx*(1-T)` and the added term carries Fy. Written this way the
 	// apply below is a plain lerp and no caller has to know the algebra.
-	vec3 raw = exp(-atmos_beta * optical_depth);
 	transmittance = vec3(1.0) - (atmos_factors.x * fable_interior_fog * (vec3(1.0) - raw));
 	fog_colour = mix(close_fog, sky, clamp(d * atmos_range.z, 0.0, 1.0)) * atmos_factors.y;
 	return true;

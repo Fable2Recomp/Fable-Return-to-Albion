@@ -683,7 +683,7 @@ public static class Engine_MdlWriter
 		uint iy = (uint)Quantise(y, 511f, -512, 511) & 0x3FFu;
 		uint iz = (uint)Quantise(z, 511f, -512, 511) & 0x3FFu;
 		uint iw = w < 0f ? 3u : 1u;
-		return (iw << 30) | (ix << 20) | (iy << 10) | iz;
+		return (iw << 30) | (iz << 20) | (iy << 10) | ix;
 	}
 
 	private static int Quantise(float value, float scale, int min, int max)

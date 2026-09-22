@@ -561,6 +561,28 @@ public sealed class Engine_UiReceiveItemsSurface : Engine_UiModalSurface<Engine_
 		bool frontUp = elements[_joins.Front].IsGloballyActive;
 		bool backUp = elements[_joins.Back].IsGloballyActive;
 
+		// WHICH SIDE IS UP IS THE ROOT'S STATED SLIDE. `sub_82537128` code 39 runs
+		// `sub_82426BA8(root, pres, 3)` to turn the card over and `4` to turn it back, and
+		// `Foreground` stays globally active through both — its paper turns edge-on and its
+		// contents fade — so the two groups' active flags never say "the back is up".
+		int rootSlide = _joins.Root >= 0 ? elements[_joins.Root].Slide : 0;
+		bool reverse = rootSlide == Engine_UiReceiveItems.FlipToBackSlide ||
+			rootSlide == Engine_UiReceiveItems.FlipOutroSlide;
+
+		// `sub_82538910`: `Buttons` slide = (handler+80 == 0) + 1, written ONLY on the side that
+		// is up. The card always opens on its front and is filled there, so the front's slide is
+		// this card's answer on both sides; the back's still holds the last card's until the
+		// guest's refresh lands, which is the X that flashed on every turn-over.
+		int buttons = _joins.FrontButtons;
+		bool usable = buttons < 0 ||
+			elements[buttons].Slide != Engine_UiReceiveItems.UnusableSlide;
+
+		var labels = new string?[_joins.Labels.Length];
+		for (int i = 0; i < labels.Length; ++i)
+		{
+			labels[i] = _joins.Labels[i] >= 0 ? elements[_joins.Labels[i]].Text : null;
+		}
+
 		uint iconHash = 0;
 		uint[]? hashes = Engine_UiSource.Current.GetUiTextureHashes(Address, elements.Count);
 		if (hashes is not null && _joins.Icon < hashes.Length)
@@ -568,7 +590,8 @@ public sealed class Engine_UiReceiveItemsSurface : Engine_UiModalSurface<Engine_
 			iconHash = hashes[_joins.Icon];
 		}
 
-		if (!Changed($"{title}|{name}|{back}|{frontUp}|{backUp}|{iconHash:X8}"))
+		if (!Changed($"{title}|{name}|{back}|{frontUp}|{backUp}|{iconHash:X8}|{rootSlide}|" +
+			$"{usable}|{string.Join('\u001F', labels)}"))
 		{
 			return;
 		}
@@ -582,14 +605,19 @@ public sealed class Engine_UiReceiveItemsSurface : Engine_UiModalSurface<Engine_
 			icon = host.LoadTexture(path);
 		}
 
-		View!.ShowStated(title, name, back, iconHash, icon, frontUp, backUp);
+		View!.BackClip = _joins.BackClip;
+		View!.ShowStated(title, name, back, iconHash, icon, frontUp || backUp, reverse, usable, labels);
 		GD.Print($"[game-ui] received-item card up — '{title}' " +
 			$"(icon {(icon is null ? $"0x{iconHash:X8} unresolved" : "resolved")}, " +
-			$"{(backUp ? "back" : "front")})");
+			$"root slide {rootSlide} = {(reverse ? "back" : "front")}, " +
+			$"buttons slide {(buttons < 0 ? -1 : elements[buttons].Slide)} = " +
+			$"{(usable ? "usable" : "NOT usable")})");
 	}
 
 	protected override void Route(Engine_UiSurfaceInput input)
 	{
+		View?.ScrollBack(input.Scroll, input.Delta);
+
 		if (input.Accept)
 		{
 			Engine_UiSource.Current.PostFrontEndAction($"ReceiveItemsAction:{DoneCode}");

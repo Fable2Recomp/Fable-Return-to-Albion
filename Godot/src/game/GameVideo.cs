@@ -200,18 +200,26 @@ public partial class GameVideo : Node
 	/// rounds its width up to a multiple of 160 (`sub_82B6EBC0`), so this is a real edge rather
 	/// than an impossible one.
 	///
-	/// No rect yet answers true rather than blanking the movie — and note the rect is written a
-	/// few instructions AFTER the open, so "no rect yet" is not the only way to read one the
-	/// guest has not stated; see the ordering note in the `sub_82A41B48` hook.
+	/// No rect yet answers true rather than blanking the movie. The rect is the ARGUMENT of the
+	/// guest's `sub_82A41E30`, handed over by the payload hook, so "none" means exactly that:
+	/// no live player, or a player the guest has not stated a rect for yet.
 	/// </summary>
-	public bool StatedFullscreen()
+	public bool StatedFullscreen() => StatedFullscreenIfKnown() ?? true;
+
+	/// <summary>
+	/// <see cref="StatedFullscreen"/>, or null while the guest has a live player it has not
+	/// stated a rect for — 12 to 29 instructions after the open, on the guest's own thread. A
+	/// decision that is made ONCE per movie waits on this instead of taking the default.
+	/// </summary>
+	public bool? StatedFullscreenIfKnown()
 	{
-		if (HostBridge.GetMovieRect() is not { } rect || rect.Size.X <= 0f)
+		if (HostBridge.GetMovieRect() is { } rect)
 		{
-			return true;
+			// Two corners, either order (the UI sprite's component states its element's).
+			return System.Math.Abs(rect.Size.X) >= GuestScreenWidth * 0.75f;
 		}
 
-		return rect.Size.X >= GuestScreenWidth * 0.75f;
+		return HostBridge.MovieState() == HostBridge.MoviePlayback.None ? true : null;
 	}
 
 	/// <summary>The guest's 2D screen space, which its own UI is authored against.</summary>
@@ -233,7 +241,8 @@ public partial class GameVideo : Node
 	/// rect decides: fullscreen goes on the video layer and ends like every other movie.
 	/// </remarks>
 	private bool GuestStatesFullscreen() =>
-		HostBridge.GetMovieRect() is { } rect && rect.Size.X >= GuestScreenWidth * 0.75f;
+		HostBridge.GetMovieRect() is { } rect &&
+		System.Math.Abs(rect.Size.X) >= GuestScreenWidth * 0.75f;
 
 	/// <summary>Where the frame goes: the video layer, or the element hosting it.</summary>
 	private bool OnVideoLayer() =>

@@ -198,7 +198,9 @@ public sealed class ClothPatch
                 arrays[(int)Mesh.ArrayType.Normal] = surface.Normals;
             }
 
-            _mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, null, surface.Lods);
+            _mesh.AddSurfaceFromArrays(
+                Mesh.PrimitiveType.Triangles, arrays, null, surface.Lods,
+                Refii.Models.Engine_MdlTransfer.FormatOf(arrays));
 
             if (surface.Name.Length != 0)
             {

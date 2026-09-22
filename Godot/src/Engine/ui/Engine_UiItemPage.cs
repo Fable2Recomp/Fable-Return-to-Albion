@@ -194,7 +194,11 @@ public static class Engine_UiItemPage
 		//
 		// Without it every item read as three lines whatever it was — a sword and a pie looked
 		// the same. See Engine_UiItemStats for where each number comes from.
-		Engine_UiItemStats.Stats stats = Engine_UiItemStats.For(detail.DefinitionHash != 0 ? detail.DefinitionHash : detail.RecordHash, strings);
+		// The inventory keys its records by the DEFINITION's id (`item+4`), which is what the
+		// augment read is asked by.
+		uint definition = detail.DefinitionHash != 0 ? detail.DefinitionHash : detail.RecordHash;
+		Engine_UiItemStats.Stats stats = Engine_UiItemStats.For(
+			definition, strings, Socketed(definition));
 
 		// THE SHOP'S DAMAGE ROW. `shopscreen.bgf` authors `Damage:` / `10000` on every item
 		// page and the guest writes the value only for a weapon; a food item was showing the
@@ -273,6 +277,29 @@ public static class Engine_UiItemPage
 
 		return values;
 	}
+
+	/// <summary>
+	/// The item's live augment pairs, re-read twice a second: the page is filled every frame,
+	/// the read walks the hero's inventory, and socketing an augment happens on another screen.
+	/// </summary>
+	private static (uint Primary, uint Secondary)[]? Socketed(uint definition)
+	{
+		ulong now = Time.GetTicksMsec();
+		if (definition != _socketedFor || now - _socketedAt > 500)
+		{
+			_socketedFor = definition;
+			_socketedAt = now;
+			_socketed = Refii.Host.HostBridge.GetItemAugments(definition);
+		}
+
+		return _socketed;
+	}
+
+	private static uint _socketedFor;
+
+	private static ulong _socketedAt;
+
+	private static (uint Primary, uint Secondary)[]? _socketed;
 
 	/// <summary>
 	/// The item whose NAME TAG the row carries. The item books spawn rows with the record's

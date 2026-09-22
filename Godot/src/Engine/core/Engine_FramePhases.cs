@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Diagnostics;
+using Godot;
 
 namespace Refii.Core;
 
@@ -202,6 +203,100 @@ public static class Engine_FramePhases
 		}
 	}
 
+	/// <summary>
+	/// What the renderer and the GC did during one frame: sampled at every frame start, so the
+	/// difference between two samples is exactly the hitch frame's share.
+	/// </summary>
+	/// <remarks>
+	/// The worst-frames list above says WHICH phase a hitch sat in but not WHY. A 1.5 s wait in
+	/// `draw` is the main thread waiting for the render thread, and the render thread's work is
+	/// invisible to every `Measure`: pipeline compilations, texture and buffer uploads, and
+	/// the GC's stop-the-world pauses are the candidates, and each has a counter.
+	/// </remarks>
+	private struct FrameCounters
+	{
+		public double PipelinesCanvas, PipelinesMesh, PipelinesSurface, PipelinesDraw, PipelinesSpecialization;
+		public double VideoMemMB, TextureMemMB, BufferMemMB;
+		public double ObjectsDrawn, Primitives;
+		public int Gen0, Gen1, Gen2;
+		public double GcPauseMs;
+		public double Resources, Nodes;
+
+		public static FrameCounters Sample()
+		{
+			return new FrameCounters
+			{
+				PipelinesCanvas = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsCanvas),
+				PipelinesMesh = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsMesh),
+				PipelinesSurface = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsSurface),
+				PipelinesDraw = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsDraw),
+				PipelinesSpecialization = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsSpecialization),
+				VideoMemMB = Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / 1048576.0,
+				TextureMemMB = Performance.GetMonitor(Performance.Monitor.RenderTextureMemUsed) / 1048576.0,
+				BufferMemMB = Performance.GetMonitor(Performance.Monitor.RenderBufferMemUsed) / 1048576.0,
+				ObjectsDrawn = Performance.GetMonitor(Performance.Monitor.RenderTotalObjectsInFrame),
+				Primitives = Performance.GetMonitor(Performance.Monitor.RenderTotalPrimitivesInFrame),
+				Gen0 = System.GC.CollectionCount(0),
+				Gen1 = System.GC.CollectionCount(1),
+				Gen2 = System.GC.CollectionCount(2),
+				GcPauseMs = System.GC.GetTotalPauseDuration().TotalMilliseconds,
+				Resources = Performance.GetMonitor(Performance.Monitor.ObjectResourceCount),
+				Nodes = Performance.GetMonitor(Performance.Monitor.ObjectNodeCount),
+			};
+		}
+	}
+
+	private static FrameCounters _previousCounters;
+	private static bool _haveCounters;
+
+	/// <summary>A frame over this is logged with its counters, not only kept in the list.</summary>
+	public static double HitchLogThresholdMs = 200.0;
+
+	/// <summary>
+	/// Logs a frame over <see cref="HitchLogThresholdMs"/> with what moved during it. Called
+	/// once per frame start with the finished frame's cost; the sample it takes is kept as the
+	/// baseline for the next frame either way.
+	/// </summary>
+	private static void LogHitch(double totalMs)
+	{
+		FrameCounters now = FrameCounters.Sample();
+		if (_haveCounters && totalMs >= HitchLogThresholdMs)
+		{
+			FrameCounters was = _previousCounters;
+			string phases = string.Empty;
+			string gap = string.Empty;
+			foreach (Hitch h in Hitches)
+			{
+				if (System.Math.Abs(h.TotalMs - totalMs) < 0.001)
+				{
+					phases = h.Phases;
+					gap = h.Gap;
+					break;
+				}
+			}
+
+			GD.Print($"[hitch] {System.DateTime.Now:HH:mm:ss.fff} frame {totalMs:0} ms" +
+				$" | {phases}" +
+				$" | gap: {gap}" +
+				$" | pipelines +{now.PipelinesSurface - was.PipelinesSurface:0} surface" +
+				$" +{now.PipelinesSpecialization - was.PipelinesSpecialization:0} spec" +
+				$" +{now.PipelinesDraw - was.PipelinesDraw:0} draw" +
+				$" +{now.PipelinesMesh - was.PipelinesMesh:0} mesh" +
+				$" +{now.PipelinesCanvas - was.PipelinesCanvas:0} canvas" +
+				$" | gc gen0 +{now.Gen0 - was.Gen0} gen1 +{now.Gen1 - was.Gen1} gen2 +{now.Gen2 - was.Gen2}" +
+				$" pause +{now.GcPauseMs - was.GcPauseMs:0.0} ms" +
+				$" | vram {now.VideoMemMB:0} MB ({now.VideoMemMB - was.VideoMemMB:+0;-0} MB)" +
+				$" tex {now.TextureMemMB - was.TextureMemMB:+0;-0} MB buf {now.BufferMemMB - was.BufferMemMB:+0;-0} MB" +
+				$" | objects {now.ObjectsDrawn:0} ({now.ObjectsDrawn - was.ObjectsDrawn:+0;-0})" +
+				$" prims {now.Primitives / 1e6:0.0}M" +
+				$" | resources {now.Resources:0} ({now.Resources - was.Resources:+0;-0}) nodes {now.Nodes:0} ({now.Nodes - was.Nodes:+0;-0})" +
+				$" | updates: {Engine_InstanceUpdates.LastFrameSummary()}");
+		}
+
+		_previousCounters = now;
+		_haveCounters = true;
+	}
+
 	/// <summary>The first process callback of the frame (lowest priority node).</summary>
 	public static void MarkFrameStart()
 	{
@@ -214,7 +309,19 @@ public static class Engine_FramePhases
 			// Before the index moves on: the phases still hold the finished frame's values.
 			lock (Gate)
 			{
+				// The instance-update window closes with the frame, so the hitch line below can
+				// name what this frame wrote into the scene.
+				Engine_InstanceUpdates.EndFrame();
 				CatchHitch(totalMs);
+				LogHitch(totalMs);
+			}
+		}
+		else
+		{
+			lock (Gate)
+			{
+				Engine_InstanceUpdates.EndFrame();
+				LogHitch(0.0);
 			}
 		}
 

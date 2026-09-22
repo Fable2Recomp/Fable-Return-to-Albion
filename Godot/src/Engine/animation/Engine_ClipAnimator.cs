@@ -283,6 +283,9 @@ public sealed class Engine_ClipAnimator
 	}
 
 	private readonly Skeleton3D _skeleton;
+
+	/// <summary>The shadow skeleton missed a bone write since it was last mirrored, so the next mirror writes every bone.</summary>
+	private bool _shadowStale = true;
 	private readonly string _skeletonName;
 	private readonly Dictionary<uint, Built> _clips = new();
 	private Dictionary<string, List<int>>? _boneCandidates;
@@ -1023,24 +1026,48 @@ public sealed class Engine_ClipAnimator
 		int movedBones = 0;
 		float moved = 0f;
 		bool watched = Address != 0u && Address == WatchAddress;
+
+		// THE SHADOW SKELETON TAKES THE SAME BONES, ON GUEST FRAMES (every frame for a principal).
+		// Between guest frames the body takes writes the shadow does not, so the first mirror
+		// after any of those writes every bone, not only the ones that moved this frame.
+		bool shadowNow = Refii.Entities.Engine_ShadowSkeletons.WriteNow(_skeleton, out Skeleton3D? shadow);
+		bool shadowAll = shadowNow && _shadowStale;
 		for (int b = 0; b < bones; ++b)
 		{
 			var pose = new Transform3D(
 				new Basis(_finalRotation[b]).ScaledLocal(_finalScale[b]), _finalPosition[b]);
-			if (_hasWritten && pose.IsEqualApprox(_written[b]))
+			bool unchanged = _hasWritten && pose.IsEqualApprox(_written[b]);
+			if (unchanged && !shadowAll)
 			{
 				++SkippedBoneWrites;
 				continue;
 			}
 
-			if (watched && _hasWritten)
+			if (!unchanged)
 			{
-				moved += _written[b].Origin.DistanceTo(pose.Origin);
+				if (watched && _hasWritten)
+				{
+					moved += _written[b].Origin.DistanceTo(pose.Origin);
+				}
+
+				_written[b] = pose;
+				++movedBones;
+				_skeleton.SetBonePose(b, pose);
 			}
 
-			_written[b] = pose;
-			++movedBones;
-			_skeleton.SetBonePose(b, pose);
+			if (shadowNow)
+			{
+				shadow!.SetBonePose(b, pose);
+			}
+		}
+
+		if (shadowNow)
+		{
+			_shadowStale = false;
+		}
+		else if (movedBones != 0)
+		{
+			_shadowStale = true;
 		}
 
 		if (watched && _hasWritten)
@@ -1495,7 +1522,12 @@ public sealed class Engine_ClipAnimator
 	/// <see cref="Apply"/> answers false — or the cache would claim bones the feed has since
 	/// overwritten are still ours, and the rig would keep the feed's pose in those bones.
 	/// </summary>
-	public void ForgetWrittenPose() => _hasWritten = false;
+	public void ForgetWrittenPose()
+	{
+		// Another writer (the feed) is about to pose the body; the shadow's next mirror is a full one.
+		_hasWritten = false;
+		_shadowStale = true;
+	}
 
 	/// <summary>The last pose written per bone, so an unchanged bone is not written again.</summary>
 	private Transform3D[] _written = System.Array.Empty<Transform3D>();

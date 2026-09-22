@@ -239,13 +239,15 @@ public static class Engine_GhfTerrain
                 int i01 = ((y + 1) * w) + x;
                 int i11 = ((y + 1) * w) + x + 1;
 
+                // Clockwise seen from above, under the region's mirrored root: Godot's front face.
+                // Wound the other way the ground drew as back faces (facing view, 2026-09-22).
                 indices[k++] = i00;
-                indices[k++] = i10;
                 indices[k++] = i01;
+                indices[k++] = i10;
 
                 indices[k++] = i10;
-                indices[k++] = i11;
                 indices[k++] = i01;
+                indices[k++] = i11;
             }
         }
 

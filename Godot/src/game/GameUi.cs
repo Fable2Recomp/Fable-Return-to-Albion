@@ -176,6 +176,7 @@ public partial class GameUi : Node
 		Horizontal = GameInput.MenuHorizontal,
 		TabPrev = GameInput.MenuTabPrevPressed,
 		TabNext = GameInput.MenuTabNextPressed,
+		Scroll = GameInput.RightStickY,
 		Delta = delta,
 	};
 
@@ -218,6 +219,47 @@ public partial class GameUi : Node
 
 	/// <summary>Whether the guest was in game last frame — the multiplayer close is edge-triggered.</summary>
 	private bool _multiplayerSawInGame;
+
+	/// <summary>The in-game flag as read last frame, for the falling edge <see cref="LeaveGame"/> runs on.</summary>
+	private bool _sawInGame;
+
+	/// <summary>
+	/// Drops what the game's own presentations fed, because the guest has left the game.
+	///
+	/// Quit to Title is not a level change and not a screen change. The game holder's
+	/// shutdown (`sub_823117A8`) clears `byte_83496A5E` at 0x82311860, frees the world, then
+	/// deletes the in-game GUI (`sub_823716D0` zeroes `dword_83496B08` at 0x82371700); the
+	/// Start holder's Init constructs a NEW front-end GUI and runs the same Init as first boot.
+	/// From that point `FollowInGameUi` never runs again, so nothing else retires what the HUD
+	/// and the owned surfaces were reading — the element cache kept the HUD's last state under
+	/// an address the guest had freed, and the rebuilt HUD stood over the title screen on it.
+	///
+	/// Address-keyed state goes because the next game reuses the addresses; the views stay,
+	/// they are rebuilt from the banks and re-fed when the game names them again.
+	/// </summary>
+	private void LeaveGame()
+	{
+		GD.Print("[game-ui] the guest has left the game — dropping the HUD feed, the owned " +
+			"boxes, the menu capture and the element cache");
+
+		RetireDrawn("the guest left the game");
+
+		// The HUD's feed is its address; with it at 0 the icons and the piece gate stop, and a
+		// null gate hides every stated piece. Hidden outright as well: a piece with no ordinal
+		// is not gated and would otherwise stand. Shown again when the game names hud.bgf.
+		_hudAddress = 0;
+		_cyclerAddress = 0;
+		if (_hud is not null && GodotObject.IsInstanceValid(_hud))
+		{
+			_hud.ElementActive = null;
+			_hud.Visible = false;
+		}
+
+		_boxes.Clear();
+		_menuModel.Reset();
+		Engine_UiElementState.Current.Reset();
+		HasInGameUi = false;
+	}
 
 	/// <summary>Whether the first kit send has been reported.</summary>
 	private bool _coopSendReported;
@@ -2409,7 +2451,7 @@ public partial class GameUi : Node
 			{
 				_worldSpritesCleared = true;
 				_worldSprites.Feed(
-					new System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>(), _ => null);
+					new System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>());
 			}
 
 			return;
@@ -2461,11 +2503,68 @@ public partial class GameUi : Node
 
 			sprites.Add(new Engine_HudWorldSprites.Sprite(
 				sprite.Type, sprite.TextureHash, sprite.Colour, sprite.Entity, sprite.Anchor,
-				sprite.Scale, sprite.Title, sprite.Opinion));
+				sprite.Scale, sprite.Title, sprite.Opinion, sprite.Object));
 		}
 
-		_worldSprites.Feed(sprites, _spriteProject);
+		_worldSprites.Place ??= PlaceWorldSprite;
+		_worldSprites.Feed(sprites);
 	}
+
+	/// <summary>
+	/// One world sprite's place on the HUD canvas and its line of sight, read off the camera AS
+	/// IT STANDS WHEN ASKED — the sprite layer asks from its own late process, after GameWorld
+	/// has moved the camera. The anchor rides its entity's drawn body (`DrawnLead`).
+	/// </summary>
+	private Engine_HudWorldSprites.Placed? PlaceWorldSprite(Vector3 guest, uint entity)
+	{
+		if (_spriteCamera is not { } camera || !GodotObject.IsInstanceValid(camera) ||
+			_spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
+		{
+			return null;
+		}
+
+		Vector3 world = GameWorld.GuestToGodot(guest);
+		if (entity != 0u && GameEntities.Current is { } entities)
+		{
+			world += entities.DrawnLead(entity);
+		}
+
+		if (camera.IsPositionBehind(world))
+		{
+			return null;
+		}
+
+		// Once a frame: the view and projection the depth buffer was written with.
+		ulong frame = Engine.GetProcessFrames();
+		if (frame != _spriteViewFrame)
+		{
+			_spriteViewFrame = frame;
+			_spriteView = camera.GlobalTransform.AffineInverse();
+			_spriteProjection = camera.GetCameraProjection();
+		}
+
+		Vector3 view = _spriteView * world;
+		Vector4 clip = _spriteProjection * new Vector4(view.X, view.Y, view.Z, 1f);
+		if (clip.W <= 0.0001f)
+		{
+			return null;
+		}
+
+		// Godot's depth buffer is REVERSED: 1 at the near plane, 0 at the far one.
+		float depth = 0.5f - (0.5f * (clip.Z / clip.W));
+		Vector2 pixel = camera.UnprojectPosition(world);
+		return new Engine_HudWorldSprites.Placed(
+			new Vector2(
+				(pixel.X - (_spriteWindow.X * 0.5f)) * _spriteUnitsPerPixel,
+				((_spriteWindow.Y * 0.5f) - pixel.Y) * _spriteUnitsPerPixel),
+			new Vector3(pixel.X / _spriteWindow.X, pixel.Y / _spriteWindow.Y, depth));
+	}
+
+	private ulong _spriteViewFrame = ulong.MaxValue;
+
+	private Transform3D _spriteView;
+
+	private Projection _spriteProjection;
 
 	/// <summary>
 	/// A guest world anchor in canvas units, or null when it is behind the camera — the
@@ -3156,13 +3255,11 @@ public partial class GameUi : Node
 	/// <summary>
 	/// Stands the achievement toast up, topmost on the UI canvas.
 	///
-	/// THE MOUNT CONVERTS PIXELS TO CANVAS UNITS. The toast is a port of
-	/// `achievement_imgui.cpp` and every number in it is display PIXELS at a 1080-tall
-	/// reference — `clamp(height/1080)` and all. The canvas camera draws 720 UNITS across the
-	/// window height, so parenting the toast directly would scale its geometry twice. The
-	/// wrapper's per-frame scale is the visible-extent-per-pixel ratio, which lets the ported
-	/// code keep its own units untouched — the point of a port that must keep the original's
-	/// feel.
+	/// THE MOUNT CONVERTS PIXELS TO CANVAS UNITS. The toast lays itself out in display PIXELS
+	/// (it is handed the window as its `Canvas`) so its text is laid out at the size it is
+	/// drawn, and the canvas camera draws 720 UNITS across the window height — so the wrapper's
+	/// per-frame scale is the visible-extent-per-pixel ratio. The toast's own numbers are HUD
+	/// canvas units, carried into those pixels by its `HudScale`.
 	///
 	/// Z 9000: above every presentation slab (depth × 1000) and still inside the canvas
 	/// camera's near plane at 10000. The toast hides itself when nothing is queued.
@@ -3894,9 +3991,13 @@ public partial class GameUi : Node
 			: preview.Translation;
 
 		uint was = _previewObject.ModelHash;
-		var placement = new Engine_UiPreviewObject.Placement(
-			translation, preview.Rotation, preview.Scale, preview.RotationAxis);
 		bool live = preview.ScreenId == CoopScreenId;
+		// Hung by its origin wherever the guest's own placement stands (`sub_828C3C78` reads no
+		// bounds); centred where the placement is ours — the live body, and screen 16's
+		// item-alone view, whose stated offset was dropped above.
+		var placement = new Engine_UiPreviewObject.Placement(
+			translation, preview.Rotation, preview.Scale, preview.RotationAxis,
+			Hung: !live && preview.ScreenId != EquipmentScreenId);
 		bool changed = live ? _previewLiveShown != preview.Entity : was != preview.ModelHash;
 		bool shown;
 		if (live)
@@ -3927,14 +4028,10 @@ public partial class GameUi : Node
 				$"{(shown ? $"; {_previewObject.Measurement}" : " (panel left empty)")}");
 		}
 
-		// THE SPIN, read rather than invented. The guest's own spinner (`sub_824254C8`) writes
-		// `rotation.x/y/z` — RADIANS — onto the anchor element every frame; the mirror never
-		// carried rotation, so hanging the object off the anchor did NOT spin it "for free"
-		// and nothing else does. The entity-anchored consumer (`sub_826D6C90`) applies the
-		// three angles directly and IGNORES GUIScreenRotationAxis, so no swizzle here either.
+		// The turn is handed to the preview as the spinner's `rotation.y`; how that lands —
+		// the axis swizzle and the order against the record's offset — is the preview's
+		// (`Engine_UiPreviewObject.Stated`, from `sub_828C3C78`).
 		//
-		// The X and Y angles conjugate through the builder's Z handedness flip: mirroring the
-		// Z axis turns a rotation about X or Y through -theta, and leaves Z alone.
 		// THE PLAYER TURNS IT. The guest's spinner (`sub_828C37C8`) free-runs 0.01 rad per
 		// GUI tick and, on the stick (event 27, `sub_828C3910`), moves its target by
 		// -0.08·x³ and pauses the free spin for 3 s, easing at 4·dt. Here the free spin is
@@ -3943,8 +4040,8 @@ public partial class GameUi : Node
 		// on screen, so the page-scroll stick on the other page is untouched.
 		if (changed)
 		{
-			// A quarter turn to start: the guest's free spin left every item side-on most
-			// of the time, and side-on is how a blade reads; edge-on it is a sliver.
+			// From the record's own pose: `GUIScreenRotationOffset` is the artist's facing, and
+			// the guest's spinner starts from zero over it.
 			_previewYaw = PreviewStartYaw;
 			_previewYawTarget = PreviewStartYaw;
 		}
@@ -3968,7 +4065,7 @@ public partial class GameUi : Node
 
 	private ulong _previewYawSaid;
 
-	private const float PreviewStartYaw = 90f;
+	private const float PreviewStartYaw = 0f;
 
 	private float _previewYaw;
 
@@ -4793,6 +4890,16 @@ public partial class GameUi : Node
 		}
 
 		_multiplayerSawInGame = inGame;
+
+		// THE GUEST LEAVING THE GAME, on the falling edge of its own flag. Everything keyed on
+		// the game's presentations is dropped here — see LeaveGame — rather than left to be
+		// noticed, because the front end that follows never runs the in-game sampler.
+		if (!inGame && _sawInGame)
+		{
+			LeaveGame();
+		}
+
+		_sawInGame = inGame;
 
 		// THE HOST'S EMBEDDED PREVIEW dies with the page that asked for it. The ask is
 		// per-frame (the abilities detail block sets the flag); a frame with no ask — the
@@ -7844,6 +7951,12 @@ public partial class GameUi : Node
 			// arranges — are sampled off this presentation without mirroring it. See
 			// Engine_HudWorldIcons.
 			_hudAddress = presentation.Address;
+			if (_hud is not null && GodotObject.IsInstanceValid(_hud) && !_hud.Visible)
+			{
+				// Back after a Quit to Title; LeaveGame hid it with the game.
+				_hud.Visible = true;
+			}
+
 			return;
 		}
 

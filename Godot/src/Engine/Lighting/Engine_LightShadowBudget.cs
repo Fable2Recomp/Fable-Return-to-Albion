@@ -20,7 +20,8 @@ namespace Refii.Lighting;
 /// attenuation the shadow is already multiplied into.
 ///
 /// With <c>placed_light_shadows</c> off only fixtures whose data states CastShadows compete —
-/// the 83 shipped spots — so the authored behaviour survives under the remaster switch.
+/// the 83 shipped spots — so the authored behaviour survives under the remaster switch. What
+/// a map draws is the light's own mask: <see cref="Engine_LevelLights.CasterMaskOf"/>.
 /// </remarks>
 public partial class Engine_LightShadowBudget : Node
 {
@@ -37,10 +38,19 @@ public partial class Engine_LightShadowBudget : Node
 	public static bool LightsEnabled = true;
 
 	/// <summary>
-	/// Debug lever: dual-paraboloid omni maps (two passes) instead of cube (six). Cheaper, and
-	/// wrong on large triangles — the projection bends straight edges — so cube is the default.
+	/// Dual-paraboloid omni maps — two passes where a cube map is six — for every fixture whose
+	/// map draws ENTITIES ONLY. On by default; the lever turns it off.
 	/// </summary>
-	public static bool Paraboloid;
+	/// <remarks>
+	/// A positional shadow costs by the PASS, not the draw: each pass is its own cull, render
+	/// list and setup on the main thread, and animated casters keep every map dirty. Measured
+	/// 2026-09-21 in Fairfax Gardens with eight fixtures casting: cube 14.25 ms / 68 fps,
+	/// paraboloid 9.23 ms / 107 fps at night (13.7 -> 10.6 ms by day), the draw count unchanged.
+	/// The projection bends the straight edges of LARGE triangles, which is why a fixture whose
+	/// map takes the world (`placed_light_shadows_world`) stays a cube; characters and small
+	/// props have none, and the user judged it by eye at night and by day.
+	/// </remarks>
+	public static bool Paraboloid = true;
 
 	/// <summary>Lights holding or fading in a shadow map after the last pass.</summary>
 	public static int Casting;
@@ -56,6 +66,9 @@ public partial class Engine_LightShadowBudget : Node
 
 	/// <summary>Metres from the eye to a light's SPHERE beyond which its shadow is not worth a map.</summary>
 	private const float MaxShadowDistance = 45.0f;
+
+	/// <summary>Added to the score of a light outside the view: past every score inside it.</summary>
+	private const float OffViewRank = MaxShadowDistance + 1.0f;
 
 	/// <summary>Ranks past the budget a fixture may hold before its map is taken away.</summary>
 	private const int Slack = 2;
@@ -138,9 +151,8 @@ public partial class Engine_LightShadowBudget : Node
 			}
 		}
 
-		// Candidates: visible, allowed to cast, with a pool near the eye and inside the view.
-		// A light outside the frustum is not rendered at all, and giving it a map would only
-		// take one from a light that is.
+		// Candidates: visible, allowed to cast, with a pool near the eye. Lights inside the view
+		// rank first, so one outside it only ever takes a map no light in view wants.
 		bool remaster = Engine_LevelLights.PlacedShadowsEnabled;
 		Godot.Collections.Array<Plane> frustum = camera.GetFrustum();
 		_ranked.Clear();
@@ -161,9 +173,18 @@ public partial class Engine_LightShadowBudget : Node
 			float range = RangeOf(light);
 			Vector3 at = light.GlobalPosition;
 			float score = Mathf.Max(eye.DistanceTo(at) - range, 0.0f);
-			if (score > MaxShadowDistance || !SphereInView(frustum, at, range))
+			if (score > MaxShadowDistance)
 			{
 				continue;
+			}
+
+			// OUT OF VIEW RANKS LAST, IT IS NOT REFUSED. Godot redraws no shadow for a light
+			// whose volume misses the camera (renderer_scene_cull.cpp, "Dirty shadows have no
+			// need to be drawn"), so a map held behind the eye costs nothing, and the fixture
+			// turns into view already shadowed instead of fading in a pass later.
+			if (!SphereInView(frustum, at, range))
+			{
+				score += OffViewRank;
 			}
 
 			_ranked.Add((score, light));
@@ -264,7 +285,9 @@ public partial class Engine_LightShadowBudget : Node
 			return;
 		}
 
-		OmniLight3D.ShadowMode mode = Paraboloid ? OmniLight3D.ShadowMode.DualParaboloid : OmniLight3D.ShadowMode.Cube;
+		bool entitiesOnly = omni.ShadowCasterMask == Engine_LevelLights.EntityCasterLayerMask;
+		OmniLight3D.ShadowMode mode = Paraboloid && entitiesOnly
+			? OmniLight3D.ShadowMode.DualParaboloid : OmniLight3D.ShadowMode.Cube;
 		if (omni.OmniShadowMode != mode)
 		{
 			omni.OmniShadowMode = mode;

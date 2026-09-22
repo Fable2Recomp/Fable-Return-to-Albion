@@ -428,9 +428,14 @@ function(refii_apply_recompiled_module_compile_options target_name)
     )
 
     if(REFII_TARGET_SUPPORTS_SSE41)
+        # # -mfma: the recompiler lowers every PPC fmadd/fmsub to std::fma, and without the
+        # # instruction that is a library call (compiler-rt's software fma). FMA3 is in every
+        # # x86-64 since 2013 and the Windows install already requires x86-64-v3. Kept in step
+        # # with GameCodeBuild.CompileFlags, which builds the same sources on the player's machine.
         target_compile_options("${target_name}"
             PRIVATE
                 $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-msse4.1>
+                $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-mfma>
         )
     endif()
 endfunction()

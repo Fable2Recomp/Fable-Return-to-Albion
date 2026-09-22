@@ -21,9 +21,12 @@
 // DEPTH: ZEnable 1, ZWrite 0, and every quad drawn at ONE depth (`sub_821F2918` takes it in f1).
 // `sub_82A6BBA0` draws each object's padded rect twice — at its AABB centre's depth for pixels
 // whose stencil holds 0x10 (a renderable with bound radius <= 3.0, `sub_82AA2A68`), and at its
-// nearest AABB corner's depth for the rest. Only the second is reproduced: this chain has no
-// per-pixel record of which renderable drew a pixel, so every pixel is tested against the
-// nearest corner. The halo is therefore hidden by anything standing in front of the object.
+// nearest AABB corner's depth for the rest. This chain has no per-pixel record of which
+// renderable drew a pixel, so the choice is made per OBJECT: a small target (radius <= 3, a
+// character) tests every pixel against its centre, a large one against its nearest corner.
+// That is the guest's answer for every pixel drawn by something of the target's own class —
+// // the sword in its hand, the sign it carries, the NPC beside it — so a held item in front of
+// // its owner occludes the halo instead of taking it.
 //
 // Per object, in order. The guest blends the same blurred buffer once per object whose rect
 // covers the pixel, so overlapping rects blend twice; so does this.
@@ -35,7 +38,8 @@ layout(set = 0, binding = 1) uniform sampler2D depth_tex;
 layout(set = 0, binding = 2) uniform sampler2D glow_tex;
 layout(set = 0, binding = 3) uniform sampler2D layer_tex;
 
-/// Per slot, three vec4s: colour (rgb, alpha), screen rect (u0, v0, u1, v1), (nearest depth, 0, 0, 0).
+/// Per slot, three vec4s: colour (rgb, alpha), screen rect (u0, v0, u1, v1),
+/// (nearest corner depth, centre depth, 1 when the object is small, 0).
 layout(set = 0, binding = 4, std430) restrict readonly buffer Objects {
 	vec4 data[];
 } objects;
@@ -79,7 +83,9 @@ void main() {
 			continue;
 		}
 
-		if (objects.data[k * 3 + 2].x <= scene) {
+		vec4 depths = objects.data[k * 3 + 2];
+		float test = depths.z > 0.5 ? depths.y : depths.x;
+		if (test <= scene) {
 			rgb = glow.rgb + rgb * (1.0 - glow.a);
 			touched = true;
 		}
