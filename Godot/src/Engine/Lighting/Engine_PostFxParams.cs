@@ -17,6 +17,13 @@ public static class Engine_PostFxParams
     public static bool Bloom { get; set; } = true;
 
     /// <summary>
+    /// How far above reference white the display can show, as a linear multiple
+    /// (<see cref="Window.GetOutputMaxLinearValue"/>): 1 in SDR, peak / reference nits with HDR
+    /// output on. The composite's ceiling. Set on the main thread, read by the render thread.
+    /// </summary>
+    public static float OutputHeadroom { get; set; } = 1.0f;
+
+    /// <summary>
     /// ON, against the real source at last. The guest's rays are a radial blur of its SUN
     /// LAYER — off_8331A9A8, the depth-tested sun/moon disc draws in a half-res [0,1] UNORM
     /// target — DOWNSCALE2X'd then RADIALBLUR'd twice (decoded from sub_821CB750's frame

@@ -206,6 +206,35 @@ public static class RuntimeCVarsGodot
                 + "memory bandwidth rather than shading, so it is usually cheaper than "
                 + "supersampling for the same edge quality."),
 
+            new("render_scaler", DisplayCategory, RuntimeCVarType.String, "bilinear",
+                "How the 3D world is scaled to the window when render_scale_percent is not 100. "
+                + "'bilinear' is a plain filter. 'fsr' is AMD FidelityFX Super Resolution 1, a "
+                + "sharpening upscale of each frame on its own. 'fsr2' is FSR 2.2, which "
+                + "accumulates detail over frames and, at 100, is anti-aliasing at native "
+                + "resolution. Off by default: the game reaches its frame rate at native "
+                + "resolution.",
+                "bilinear,fsr,fsr2"),
+
+            new("fsr_sharpness", DisplayCategory, RuntimeCVarType.Double, "0.2",
+                "Sharpening for 'fsr' and 'fsr2': 0 is the sharpest, and sharpness halves with "
+                + "each whole step up to 2. 0.2 is Godot's default."),
+
+            new("hdr_output", DisplayCategory, RuntimeCVarType.Bool, "false",
+                "Output HDR to a display that supports it: highlights the SDR picture clips at "
+                + "white are shown up to the display's peak brightness, and everything below "
+                + "white is unchanged. Falls back to SDR where the display, the OS or the "
+                + "graphics driver has no HDR, and follows the window between screens."),
+
+            new("hdr_reference_nits", DisplayCategory, RuntimeCVarType.Double, "0",
+                "The brightness of white — the UI, and everything the SDR picture shows — in "
+                + "HDR, in nits. 0 follows the OS's own SDR brightness setting. Windows only; "
+                + "elsewhere the OS's value is always used."),
+
+            new("hdr_peak_nits", DisplayCategory, RuntimeCVarType.Double, "0",
+                "The brightest the display can show, in nits, which bounds the highlights. 0 "
+                + "uses what the display reports; set it when that report is wrong. Windows and "
+                + "macOS only."),
+
             new("borderless", DisplayCategory, RuntimeCVarType.Bool, "false",
                 "Drops the window's title bar and border. With a window sized to the monitor "
                 + "this is the usual 'borderless fullscreen', which alt-tabs faster than "
@@ -241,6 +270,12 @@ public static class RuntimeCVarsGodot
                 + "MainLightShadowed, which ships as 0 for most themes \u2014 the shadowing is "
                 + "baked into the lightmaps instead. On is the remastered default; off follows "
                 + "the shipped theme exactly."),
+            new("tree_shadow_reach", LightingCategory, RuntimeCVarType.String, "full",
+                "How far a tree casts its shadow. 'full' casts it as far as the sun's shadow "
+                + "cascades reach; 'stated' stops it at the tree's own shadow distance from the "
+                + "level file, as the 360 did, which leaves distant trees unshadowed. Applies "
+                + "at the next launch.",
+                "full,stated"),
             new("sun_light_scale", LightingCategory, RuntimeCVarType.Double, "1.35",
                 "Multiplier on the sun and moon's light energy. The shipped balance keeps the "
                 + "direct sun mild against the baked lighting, so people and ground barely "

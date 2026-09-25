@@ -942,7 +942,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
             d.DofFarFocal,
             1.0f / MathF.Max(d.DofFarPlane - d.DofFarFocal, 1e-4f));
         Set(p, 7, d.DofFarBlur, d.DofNearBlur, dofOn ? 1.0f : 0.0f, Engine_PostFxParams.DarkLift);
-        Set(p, 13, Engine_PostFxParams.DarkLiftOnsetNow, Engine_PostFxParams.FilmicCurve ? 1.0f : 0.0f, 0.0f, 0.0f);
+        Set(p, 13, Engine_PostFxParams.DarkLiftOnsetNow, Engine_PostFxParams.FilmicCurve ? 1.0f : 0.0f,
+            Engine_PostFxParams.OutputHeadroom, 0.0f);
         Set(p, 14, (float)_frameIndex, _trapRatio, 0.0f, 0.0f);
         Set(p, 8, d.Saturation, d.Brightness + 1.0f, d.SaturationMasked, d.BrightnessMasked);
 

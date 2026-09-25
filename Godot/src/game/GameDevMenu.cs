@@ -37,6 +37,9 @@ public partial class GameDevMenu : CanvasLayer
 	{
 		// Under F3's readout (128), so the spot check stays readable over the menu.
 		Layer = 127;
+
+		// From startup, so the Errors tab has the whole run whenever it is opened.
+		GameDevErrorLog.Install();
 		ProcessMode = ProcessModeEnum.Always;
 
 		Vector2I screen = (Vector2I)GetViewport().GetVisibleRect().Size;
@@ -91,6 +94,9 @@ public partial class GameDevMenu : CanvasLayer
 		Add(new GameDevTabThreads());
 		Add(new GameDevTabGuest());
 		Add(new GameDevTabMemory());
+		Add(new GameDevTabMonitors());
+		Add(new GameDevTabScene());
+		Add(new GameDevTabErrors());
 		Add(new GameDevTabLog());
 		Add(new GameDevTabCvars());
 	}
@@ -182,6 +188,12 @@ public abstract partial class GameDevTab : VBoxContainer
 
 	/// <summary>Re-reads the tab's sources. Only while the tab is the one showing.</summary>
 	public abstract void Refresh();
+
+	/// <summary>
+	/// The game's viewport — the root, where the world draws. A tab's own
+	/// <see cref="Node.GetViewport"/> is the menu's embedded window, which draws only the menu.
+	/// </summary>
+	protected Rid GameViewport => GetTree().Root.GetViewportRid();
 
 	/// <summary>Every frame the menu is open, whichever tab shows — for sampled history.</summary>
 	public virtual void Tick(double delta)

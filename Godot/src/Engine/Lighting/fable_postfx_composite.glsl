@@ -57,6 +57,21 @@ float fable_filmic(float x) {
 	return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
 }
 
+const float FILMIC_KNEE = 0.5;
+
+/// The filmic curve for HDR output. Its own shoulder stops at white, leaving nothing to show
+/// above it, so past the knee it becomes an exponential approach to the display's headroom
+/// that meets the curve's value and slope at the knee. Below the knee it is the curve itself.
+float fable_filmic_hdr(float x, float headroom) {
+	if (x <= FILMIC_KNEE) {
+		return fable_filmic(x);
+	}
+	float at = fable_filmic(FILMIC_KNEE);
+	float slope = (fable_filmic(FILMIC_KNEE + 1e-3) - at) / 1e-3;
+	float room = headroom - at;
+	return at + room * (1.0 - exp(-(x - FILMIC_KNEE) * slope / room));
+}
+
 void main() {
 	ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
 	if (coord.x >= push.size.x || coord.y >= push.size.y) {
@@ -74,6 +89,11 @@ void main() {
 	float applied = max(state.v[S_APPLIED_FRAME], 1e-4);
 	vec3 c = texel.rgb;
 	vec2 uv = (vec2(coord) + 0.5) / vec2(push.size);
+	// THE CEILING IS THE DISPLAY'S (params.reserved0.z): 1 in SDR, where everything below is
+	// exactly the SDR path; peak / reference white with HDR output, where what SDR clips at
+	// white is shown up to the display's peak instead.
+	float headroom = max(params.reserved0.z, 1.0);
+	bool hdr = headroom > 1.001;
 
 	if (params.bits.y > 0.5) {
 		float z = texelFetch(depth_tex, coord, 0).r;
@@ -94,7 +114,7 @@ void main() {
 		// same key-scaled input as the original's Reinhard, so exposure, key and floors are
 		// untouched and only the shape differs. 0.6 puts its middle grey where the original's is.
 		float mapped = params.reserved0.y > 0.5
-			? fable_filmic(x * 0.6)
+			? (hdr ? fable_filmic_hdr(x * 0.6, headroom) : fable_filmic(x * 0.6))
 			: ((x * state.v[S_INV_WHITE_SQ]) + 1.0) * x / (x + 1.0);
 		float gain = l > 1e-6 ? mapped / l : 1.0;
 		// AGAINST DISPLAY LUMINANCE, NOT SCENE LUMINANCE. ColourSensitivityThreshold is 0.15 —
@@ -104,11 +124,11 @@ void main() {
 		// a lit exterior meters around 0.02 before the exposure scalar is applied.
 		float s = clamp(l * applied * params.misc.x, 0.0, 1.0);
 		col = vec3(l) + s * (c - vec3(l));
-		col = clamp(gain * params.sat.y * applied * col, 0.0, 1.0);
+		col = clamp(gain * params.sat.y * applied * col, 0.0, headroom);
 		vec3 bloom = clamp(texture(bloom_tex, uv).rgb * params.composite.x, 0.0, 1.0);
-		col = col + bloom * (1.0 - col);
+		col = col + bloom * max(1.0 - col, 0.0);
 	} else {
-		col = clamp(c * applied, 0.0, 1.0);
+		col = clamp(c * applied, 0.0, headroom);
 	}
 
 	if (params.bits.z > 0.5) {
@@ -117,9 +137,9 @@ void main() {
 	}
 
 	col *= params.misc.z;
-	col = clamp(col, 0.0, 1.0);
+	col = clamp(col, 0.0, headroom);
 	if (params.misc.y > 0.0) {
-		col = pow(max(col, vec3(1e-6)), vec3(params.misc.y));
+		col = min(pow(max(col, vec3(1e-6)), vec3(params.misc.y)), vec3(headroom));
 	}
 
 	imageStore(color_image, coord, vec4(col, texel.a));

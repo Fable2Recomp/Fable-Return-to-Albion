@@ -36,7 +36,7 @@ public partial class GameDevTabFrame : GameDevTab
 
 	public override void Tick(double delta)
 	{
-		Rid viewport = GetViewport().GetViewportRid();
+		Rid viewport = GameViewport;
 		if (!_measuring)
 		{
 			RenderingServer.ViewportSetMeasureRenderTime(viewport, true);
@@ -53,7 +53,7 @@ public partial class GameDevTabFrame : GameDevTab
 
 	public override void Refresh()
 	{
-		Rid viewport = GetViewport().GetViewportRid();
+		Rid viewport = GameViewport;
 		(double frameMs, double framePeak) = Engine_FramePhases.Get("frame_total");
 		(double mainMs, double mainPeak) = Engine_FramePhases.Get("process_total");
 		(double waitMs, _) = Engine_FramePhases.Get("draw");

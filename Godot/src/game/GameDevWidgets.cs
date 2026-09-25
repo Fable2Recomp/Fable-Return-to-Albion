@@ -175,7 +175,9 @@ public partial class GameDevTable : Tree
 		{
 			_descending = column != _sortColumn || !_descending;
 			_sortColumn = (int)column;
-			Show(_rows.ToArray());
+			// Deferred: the tree refuses to create items inside its own mouse event.
+			string[][] rows = _rows.ToArray();
+			Callable.From(() => Show(rows)).CallDeferred();
 		};
 
 		ItemSelected += () =>

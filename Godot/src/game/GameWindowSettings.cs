@@ -48,6 +48,21 @@ public readonly struct GameWindowSettings
 	/// <summary>MSAA samples on the 3D world: 0, 2, 4 or 8.</summary>
 	public int Msaa { get; init; }
 
+	/// <summary>`render_scaler`: bilinear, fsr or fsr2 — how the 3D world is scaled to the window.</summary>
+	public string Scaler { get; init; }
+
+	/// <summary>`fsr_sharpness`: 0 is the sharpest, up to 2.</summary>
+	public float FsrSharpness { get; init; }
+
+	/// <summary>`hdr_output`: request HDR output; SDR where the display has none.</summary>
+	public bool Hdr { get; init; }
+
+	/// <summary>`hdr_reference_nits`: white in HDR, in nits; 0 follows the OS.</summary>
+	public float HdrReferenceNits { get; init; }
+
+	/// <summary>`hdr_peak_nits`: the display's peak in nits; 0 takes what it reports.</summary>
+	public float HdrPeakNits { get; init; }
+
 	/// <summary>Whether the window drops its title bar and border.</summary>
 	public bool Borderless { get; init; }
 
@@ -64,6 +79,8 @@ public readonly struct GameWindowSettings
 				Size = DefaultSize,
 				Vsync = true,
 				RenderScalePercent = 100,
+				Scaler = "bilinear",
+				FsrSharpness = 0.2f,
 				Source = "defaults (no refii.toml found)",
 			};
 		}
@@ -128,6 +145,11 @@ public readonly struct GameWindowSettings
 			RenderScalePercent = Math.Clamp(
 				Engine_RefiiConfig.Int(values, "render_scale_percent", 100), 25, 200),
 			Msaa = Engine_RefiiConfig.Int(values, "msaa", 0),
+			Scaler = Engine_RefiiConfig.String(values, "render_scaler", "bilinear").Trim().ToLowerInvariant(),
+			FsrSharpness = Math.Clamp(Engine_RefiiConfig.Float(values, "fsr_sharpness", 0.2f), 0f, 2f),
+			Hdr = Engine_RefiiConfig.Bool(values, "hdr_output", false),
+			HdrReferenceNits = Math.Max(0f, Engine_RefiiConfig.Float(values, "hdr_reference_nits", 0f)),
+			HdrPeakNits = Math.Max(0f, Engine_RefiiConfig.Float(values, "hdr_peak_nits", 0f)),
 			Borderless = Engine_RefiiConfig.Bool(values, "borderless", false),
 			Source = source,
 		};
@@ -135,5 +157,5 @@ public readonly struct GameWindowSettings
 
 	public override string ToString() =>
 		$"{Size.X}x{Size.Y} fullscreen={Fullscreen} borderless={Borderless} monitor={Monitor} " +
-		$"vsync={Vsync}/{VsyncMode} maxFps={MaxFps} renderScale={RenderScalePercent}% msaa={Msaa}x ({Source})";
+		$"vsync={Vsync}/{VsyncMode} maxFps={MaxFps} renderScale={RenderScalePercent}% scaler={Scaler} msaa={Msaa}x hdr={Hdr} ({Source})";
 }

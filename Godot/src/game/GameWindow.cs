@@ -133,6 +133,18 @@ public partial class GameWindow : Node
 			_ => Viewport.Msaa.Disabled,
 		};
 
+		// THE UPSCALER IS THE PLAYER'S, AND OFF BY DEFAULT: bilinear at 100% is native, and
+		// native is what the frame-rate target is met at.
+		view.Scaling3DMode = settings.Scaler switch
+		{
+			"fsr" => Viewport.Scaling3DModeEnum.Fsr,
+			"fsr2" => Viewport.Scaling3DModeEnum.Fsr2,
+			_ => Viewport.Scaling3DModeEnum.Bilinear,
+		};
+		view.FsrSharpness = settings.FsrSharpness;
+
+		ApplyHdr(root, settings);
+
 		// Vsync is a display-server setting, not a per-window one, so this is the whole
 		// application's.
 		DisplayServer.VSyncMode wanted = !settings.Vsync ? DisplayServer.VSyncMode.Disabled
@@ -267,8 +279,54 @@ public partial class GameWindow : Node
 	}
 
 	/// <summary>
-	/// Shows the front end exactly when the guest has one: it builds its title/main-menu state
-	/// only after every startup logo has played and its bank mounter has finished.
+	/// `hdr_output`: requests HDR on the main window, and keeps the post-FX ceiling on the
+	/// window's headroom, which moves when the window changes screens or the OS setting changes.
+	/// The luminances are only set when the player gave one; -1 leaves them to the OS.
+	/// </summary>
+	private static void ApplyHdr(Window root, GameWindowSettings settings)
+	{
+		const int Main = (int)DisplayServer.MainWindowId;
+		Refii.Lighting.Engine_PostFxParams.OutputHeadroom = 1.0f;
+		if (!settings.Hdr)
+		{
+			return;
+		}
+
+		if (!DisplayServer.HasFeature(DisplayServer.Feature.HdrOutput))
+		{
+			GD.Print("[game] hdr: this display server has no HDR output; drawing SDR");
+			return;
+		}
+
+		if (settings.HdrReferenceNits > 0f)
+		{
+			DisplayServer.WindowSetHdrOutputReferenceLuminance(settings.HdrReferenceNits, Main);
+		}
+
+		if (settings.HdrPeakNits > 0f)
+		{
+			DisplayServer.WindowSetHdrOutputMaxLuminance(settings.HdrPeakNits, Main);
+		}
+
+		root.HdrOutputRequested = true;
+		root.OutputMaxLinearValueChanged += _ => FollowHeadroom(root);
+		FollowHeadroom(root);
+	}
+
+	private static void FollowHeadroom(Window root)
+	{
+		const int Main = (int)DisplayServer.MainWindowId;
+		float headroom = Mathf.Max(root.GetOutputMaxLinearValue(), 1.0f);
+		Refii.Lighting.Engine_PostFxParams.OutputHeadroom = headroom;
+		GD.Print(DisplayServer.WindowIsHdrOutputEnabled(Main)
+			? $"[game] hdr: on, white {DisplayServer.WindowGetHdrOutputCurrentReferenceLuminance(Main):0} nits, " +
+				$"peak {DisplayServer.WindowGetHdrOutputCurrentMaxLuminance(Main):0} nits, headroom {headroom:0.00}x"
+			: "[game] hdr: requested, but this screen is SDR");
+	}
+
+	/// <summary>
+	/// A second after mailbox was asked for: where the driver fell back to plain vsync, asks for
+	/// adaptive instead, and logs what the swap chain settled on.
 	/// </summary>
 	private void SettleVsync()
 	{

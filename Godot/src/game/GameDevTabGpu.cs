@@ -26,7 +26,7 @@ public partial class GameDevTabGpu : GameDevTab
 
 	public override void Refresh()
 	{
-		Rid viewport = GetViewport().GetViewportRid();
+		Rid viewport = GameViewport;
 		double Info(RenderingServer.ViewportRenderInfoType type, RenderingServer.ViewportRenderInfo info) =>
 			RenderingServer.ViewportGetRenderInfo(viewport, type, info);
 		const RenderingServer.ViewportRenderInfoType Visible = RenderingServer.ViewportRenderInfoType.Visible;
