@@ -119,7 +119,7 @@ public partial class GameWindow : Node
 		// upscales it into a full-resolution frame, so the HUD, the books and every glyph stay
 		// native — which is the whole reason to prefer this over resizing the window.
 		Viewport view = GetViewport();
-		view.Scaling3DScale = settings.RenderScalePercent / 100.0f;
+		view.Scaling3DScale = settings.RenderScale;
 		// SCALED WITH HEIGHT: the mesh LOD keys are the guest's switch distances at 720 lines
 		// (Engine_MdlLods), and Godot's threshold is in pixels, so 1 here follows the 360 at
 		// any resolution.
@@ -139,9 +139,27 @@ public partial class GameWindow : Node
 		{
 			"fsr" => Viewport.Scaling3DModeEnum.Fsr,
 			"fsr2" => Viewport.Scaling3DModeEnum.Fsr2,
+			"nearest" => Viewport.Scaling3DModeEnum.Nearest,
 			_ => Viewport.Scaling3DModeEnum.Bilinear,
 		};
 		view.FsrSharpness = settings.FsrSharpness;
+		view.TextureMipmapBias = settings.MipmapBias;
+		view.ScreenSpaceAA = settings.ScreenSpaceAa switch
+		{
+			"fxaa" => Viewport.ScreenSpaceAAEnum.Fxaa,
+			"smaa" => Viewport.ScreenSpaceAAEnum.Smaa,
+			_ => Viewport.ScreenSpaceAAEnum.Disabled,
+		};
+		view.UseTaa = settings.Taa && view.Scaling3DMode != Viewport.Scaling3DModeEnum.Fsr2;
+		view.AnisotropicFilteringLevel = settings.Anisotropic switch
+		{
+			>= 16 => Viewport.AnisotropicFiltering.Anisotropy16X,
+			>= 8 => Viewport.AnisotropicFiltering.Anisotropy8X,
+			>= 4 => Viewport.AnisotropicFiltering.Anisotropy4X,
+			>= 2 => Viewport.AnisotropicFiltering.Anisotropy2X,
+			_ => Viewport.AnisotropicFiltering.Disabled,
+		};
+		view.UseDebanding = settings.Debanding;
 
 		ApplyHdr(root, settings);
 

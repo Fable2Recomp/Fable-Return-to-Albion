@@ -48,11 +48,29 @@ public readonly struct GameWindowSettings
 	/// <summary>MSAA samples on the 3D world: 0, 2, 4 or 8.</summary>
 	public int Msaa { get; init; }
 
-	/// <summary>`render_scaler`: bilinear, fsr or fsr2 — how the 3D world is scaled to the window.</summary>
+	/// <summary>`render_scaler`: bilinear, fsr, fsr2 or nearest — how the 3D world is scaled to the window.</summary>
 	public string Scaler { get; init; }
+
+	/// <summary>`fsr_quality`: an AMD quality mode, or custom for <see cref="RenderScalePercent"/>.</summary>
+	public string FsrQuality { get; init; }
 
 	/// <summary>`fsr_sharpness`: 0 is the sharpest, up to 2.</summary>
 	public float FsrSharpness { get; init; }
+
+	/// <summary>`texture_mipmap_bias`: added to Godot's own log2(scale) bias.</summary>
+	public float MipmapBias { get; init; }
+
+	/// <summary>`screen_space_aa`: off, fxaa or smaa.</summary>
+	public string ScreenSpaceAa { get; init; }
+
+	/// <summary>`taa`: temporal anti-aliasing; never with FSR 2.2, which is its own.</summary>
+	public bool Taa { get; init; }
+
+	/// <summary>`anisotropic_filtering`: 0, 2, 4, 8 or 16 samples.</summary>
+	public int Anisotropic { get; init; }
+
+	/// <summary>`debanding`: noise over smooth gradients.</summary>
+	public bool Debanding { get; init; }
 
 	/// <summary>`hdr_output`: request HDR output; SDR where the display has none.</summary>
 	public bool Hdr { get; init; }
@@ -80,7 +98,10 @@ public readonly struct GameWindowSettings
 				Vsync = true,
 				RenderScalePercent = 100,
 				Scaler = "bilinear",
+				FsrQuality = "custom",
 				FsrSharpness = 0.2f,
+				ScreenSpaceAa = "off",
+				Anisotropic = 4,
 				Source = "defaults (no refii.toml found)",
 			};
 		}
@@ -146,7 +167,13 @@ public readonly struct GameWindowSettings
 				Engine_RefiiConfig.Int(values, "render_scale_percent", 100), 25, 200),
 			Msaa = Engine_RefiiConfig.Int(values, "msaa", 0),
 			Scaler = Engine_RefiiConfig.String(values, "render_scaler", "bilinear").Trim().ToLowerInvariant(),
+			FsrQuality = Engine_RefiiConfig.String(values, "fsr_quality", "custom").Trim().ToLowerInvariant(),
 			FsrSharpness = Math.Clamp(Engine_RefiiConfig.Float(values, "fsr_sharpness", 0.2f), 0f, 2f),
+			MipmapBias = Math.Clamp(Engine_RefiiConfig.Float(values, "texture_mipmap_bias", 0f), -2f, 2f),
+			ScreenSpaceAa = Engine_RefiiConfig.String(values, "screen_space_aa", "off").Trim().ToLowerInvariant(),
+			Taa = Engine_RefiiConfig.Bool(values, "taa", false),
+			Anisotropic = Engine_RefiiConfig.Int(values, "anisotropic_filtering", 4),
+			Debanding = Engine_RefiiConfig.Bool(values, "debanding", false),
 			Hdr = Engine_RefiiConfig.Bool(values, "hdr_output", false),
 			HdrReferenceNits = Math.Max(0f, Engine_RefiiConfig.Float(values, "hdr_reference_nits", 0f)),
 			HdrPeakNits = Math.Max(0f, Engine_RefiiConfig.Float(values, "hdr_peak_nits", 0f)),
@@ -155,7 +182,26 @@ public readonly struct GameWindowSettings
 		};
 	}
 
+	/// <summary>
+	/// The 3D render scale: AMD's ratio for the chosen FSR quality mode (1.3x Ultra Quality,
+	/// 1.5x Quality, 1.7x Balanced, 2x Performance, 3x Ultra Performance), else
+	/// <see cref="RenderScalePercent"/>.
+	/// </summary>
+	public float RenderScale =>
+		Scaler is "fsr" or "fsr2" ? FsrQuality switch
+		{
+			"native" => 1.0f,
+			"ultra_quality" => 1.0f / 1.3f,
+			"quality" => 1.0f / 1.5f,
+			"balanced" => 1.0f / 1.7f,
+			"performance" => 0.5f,
+			"ultra_performance" => 1.0f / 3.0f,
+			_ => RenderScalePercent / 100.0f,
+		}
+		: RenderScalePercent / 100.0f;
+
 	public override string ToString() =>
 		$"{Size.X}x{Size.Y} fullscreen={Fullscreen} borderless={Borderless} monitor={Monitor} " +
-		$"vsync={Vsync}/{VsyncMode} maxFps={MaxFps} renderScale={RenderScalePercent}% scaler={Scaler} msaa={Msaa}x hdr={Hdr} ({Source})";
+		$"vsync={Vsync}/{VsyncMode} maxFps={MaxFps} renderScale={RenderScale * 100f:0}% scaler={Scaler}/{FsrQuality} msaa={Msaa}x " +
+		$"ssaa={ScreenSpaceAa} taa={Taa} aniso={Anisotropic}x hdr={Hdr} ({Source})";
 }

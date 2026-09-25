@@ -202,22 +202,56 @@ public static class RuntimeCVarsGodot
                 + "GPU-bound machine; above 100 is supersampling."),
 
             new("msaa", DisplayCategory, RuntimeCVarType.Int, "0",
-                "Multisample anti-aliasing on the 3D world: 0 off, or 2, 4, 8 samples. Costs "
-                + "memory bandwidth rather than shading, so it is usually cheaper than "
-                + "supersampling for the same edge quality."),
+                "Multisample anti-aliasing on the 3D world. Costs memory bandwidth rather than "
+                + "shading, so it is usually cheaper than supersampling for the same edge "
+                + "quality. It smooths geometry edges only, not shimmer inside a surface.",
+                "0|Off,2|2x,4|4x,8|8x"),
+
+            new("screen_space_aa", DisplayCategory, RuntimeCVarType.String, "off",
+                "Post-process anti-aliasing: smooths every edge, including shimmer MSAA cannot "
+                + "reach, at a small cost. FXAA is the cheapest and the softest; SMAA keeps more "
+                + "detail.",
+                "off|Off,fxaa|FXAA,smaa|SMAA"),
+
+            new("taa", DisplayCategory, RuntimeCVarType.Bool, "false",
+                "Temporal anti-aliasing: accumulates jittered frames, which removes shimmer that "
+                + "no other method does, at the price of softness and some ghosting in motion. "
+                + "Not applied with FSR 2.2, which is temporal anti-aliasing itself."),
 
             new("render_scaler", DisplayCategory, RuntimeCVarType.String, "bilinear",
-                "How the 3D world is scaled to the window when render_scale_percent is not 100. "
-                + "'bilinear' is a plain filter. 'fsr' is AMD FidelityFX Super Resolution 1, a "
-                + "sharpening upscale of each frame on its own. 'fsr2' is FSR 2.2, which "
-                + "accumulates detail over frames and, at 100, is anti-aliasing at native "
-                + "resolution. Off by default: the game reaches its frame rate at native "
-                + "resolution.",
-                "bilinear,fsr,fsr2"),
+                "How the 3D world is scaled to the window when it renders below 100%. FSR 1.0 "
+                + "sharpens each frame on its own; FSR 2.2 accumulates detail over frames and, at "
+                + "Native, is anti-aliasing at full resolution. Nearest is a crisp pixel scale. "
+                + "Off by default: the game reaches its frame rate at native resolution.",
+                "bilinear|Bilinear,fsr|FSR 1.0,fsr2|FSR 2.2,nearest|Nearest"),
+
+            new("fsr_quality", DisplayCategory, RuntimeCVarType.String, "custom",
+                "FSR's quality mode: the resolution the 3D world renders at before FSR scales "
+                + "it up, as AMD defines each mode. Custom uses render_scale_percent. Only read "
+                + "when render_scaler is FSR 1.0 or FSR 2.2; FSR 1.0 at Native does nothing.",
+                "custom|Custom (render_scale_percent),native|Native (100%),"
+                + "ultra_quality|Ultra Quality (77%),quality|Quality (67%),"
+                + "balanced|Balanced (59%),performance|Performance (50%),"
+                + "ultra_performance|Ultra Performance (33%)"),
 
             new("fsr_sharpness", DisplayCategory, RuntimeCVarType.Double, "0.2",
-                "Sharpening for 'fsr' and 'fsr2': 0 is the sharpest, and sharpness halves with "
-                + "each whole step up to 2. 0.2 is Godot's default."),
+                "Sharpening for FSR 1.0 and FSR 2.2: 0 is the sharpest, and sharpness halves "
+                + "with each whole step up to 2. 0.2 is Godot's default."),
+
+            new("texture_mipmap_bias", DisplayCategory, RuntimeCVarType.Double, "0",
+                "Texture sharpness at a distance. Below 100% render scale the bias already "
+                + "follows the scale, so an upscaled frame keeps native texture detail; this is "
+                + "added to that. Negative is sharper and grainier, positive is softer; -0.75 to "
+                + "0 is the useful range."),
+
+            new("anisotropic_filtering", DisplayCategory, RuntimeCVarType.Int, "4",
+                "Texture sharpness on surfaces seen at a slant — roads and floors running away "
+                + "from the camera. 4x is Godot's default.",
+                "0|Off,2|2x,4|4x,8|8x,16|16x"),
+
+            new("debanding", DisplayCategory, RuntimeCVarType.Bool, "false",
+                "Adds a trace of noise to hide banding in smooth gradients such as the sky, fog "
+                + "and dark interiors."),
 
             new("hdr_output", DisplayCategory, RuntimeCVarType.Bool, "false",
                 "Output HDR to a display that supports it: highlights the SDR picture clips at "
