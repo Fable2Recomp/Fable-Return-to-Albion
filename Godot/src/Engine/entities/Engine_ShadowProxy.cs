@@ -9,10 +9,10 @@ namespace Refii.Entities;
 /// One draw per shadow pass for a character, instead of one per surface.
 /// </summary>
 /// <remarks>
-/// /// A composed character is dozens of surfaces (the hero is 79), and every surface is a draw
-/// /// call in EVERY shadow pass that reaches it: six cube faces for each fixture holding a map,
-/// /// and each of the sun's cascades. A shadow pass reads no material, so the split buys nothing
-/// /// there.
+/// A composed character is dozens of surfaces (the hero is 79), and every surface is a draw
+/// call in EVERY shadow pass that reaches it: six cube faces for each fixture holding a map,
+/// and each of the sun's cascades. A shadow pass reads no material, so the split buys nothing
+/// there.
 ///
 /// So a skinned body gets a child that casts and is never drawn — the SAME vertices on the SAME
 /// skeleton and skin, every opaque surface merged into one — and the body itself stops casting.
@@ -29,9 +29,9 @@ namespace Refii.Entities;
 /// full index list where it has none), keyed by the largest of their edge lengths, so a distant
 /// caster costs the shadow passes what the body's own LODs did.
 ///
-/// /// The proxy is also the shadow's CADENCE: Engine_ShadowSkeletons poses and places it on the
-/// /// guest's frames while the body interpolates every displayed frame, so a lantern map holding a
-/// /// character re-renders at the guest's rate, not the display's.
+/// The proxy is also the shadow's CADENCE: Engine_ShadowSkeletons poses and places it on the
+/// guest's frames while the body interpolates every displayed frame, so a lantern map holding a
+/// character re-renders at the guest's rate, not the display's.
 /// </remarks>
 public static class Engine_ShadowProxy
 {
@@ -41,9 +41,9 @@ public static class Engine_ShadowProxy
 	public static bool Enabled = true;
 
 	/// <summary>
-	/// /// Every skinned body gets a proxy, whatever it saves in draws: the proxy is what lets a
-	/// /// character's shadow follow at the guest's rate (Engine_ShadowSkeletons) while the body
-	/// /// keeps interpolating.
+	/// Every skinned body gets a proxy, whatever it saves in draws: the proxy is what lets a
+	/// character's shadow follow at the guest's rate (Engine_ShadowSkeletons) while the body
+	/// keeps interpolating.
 	/// </summary>
 	private const int MinSkinnedSurfaces = 1;
 
@@ -110,21 +110,85 @@ public static class Engine_ShadowProxy
 	/// <summary>Per source mesh, per hidden-surface mask. Weak: a crowd shares meshes and they retire.</summary>
 	private static readonly ConditionalWeakTable<Mesh, Dictionary<(UInt128 Hidden, bool Always), ArrayMesh?>> Cache = new();
 
-	private static StandardMaterial3D? _caster;
+	private const string CasterShaderPath = "res://src/Engine/entities/shadow_caster.gdshader";
 
-	/// <summary>What the merged surface is drawn with: two-sided, as the bodies' own materials are.</summary>
-	private static StandardMaterial3D Caster => _caster ??= new StandardMaterial3D
+	private static readonly Lazy<ShaderMaterial> CasterMaterial = new(() => new ShaderMaterial
 	{
-		ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-		CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-	};
+		Shader = GD.Load<Shader>(CasterShaderPath),
+	});
+
+	/// <summary>
+	/// What the merged surface is drawn with: two-sided, as the bodies' own materials are, and
+	/// INVISIBLE OUTSIDE THE SHADOW PASS (`shadow_caster.gdshader` discards there), so a cast-only
+	/// mesh is never seen even if something switches its cast setting.
+	/// </summary>
+	/// <remarks>Lazy: casters are prebuilt on the prop streamer's workers, so two can race.</remarks>
+	private static ShaderMaterial Caster => CasterMaterial.Value;
+
+	/// <summary>
+	/// Rigid bodies that cast through a FOLLOWING proxy — held weapons and other attached
+	/// children — and whether their holder is a principal (placed every frame) or not (placed at
+	/// the guest's rate). Written by the attachment pass each frame; see <see cref="MarkFollower"/>.
+	/// </summary>
+	private static readonly ConditionalWeakTable<MeshInstance3D, StrongBox<bool>> Followers = new();
+
+	/// <summary>
+	/// Marks or unmarks a rigid body as an attached child whose shadow follows at the guest's
+	/// rate. True when the marking changed, and then the caller must <see cref="Sync"/> the body.
+	/// </summary>
+	/// <remarks>
+	/// An attached child is placed on its holder's bone every displayed frame, and a caster that
+	/// moves every frame re-renders every lantern shadow map it stands in. Casting through a
+	/// sibling proxy that moves on guest frames lets those maps rest between guest frames. The
+	/// hero's and partner's weapons are placed every frame, as their bodies are.
+	/// </remarks>
+	public static bool MarkFollower(MeshInstance3D body, bool follows, bool principal)
+	{
+		bool known = Followers.TryGetValue(body, out StrongBox<bool>? box);
+		if (!follows)
+		{
+			if (!known)
+			{
+				return false;
+			}
+
+			Followers.Remove(body);
+			return true;
+		}
+
+		if (known)
+		{
+			if (box!.Value != principal)
+			{
+				box.Value = principal;
+				Engine_ShadowSkeletons.SetFollowerEveryFrame(body, principal);
+			}
+
+			return false;
+		}
+
+		Followers.Add(body, new StrongBox<bool>(principal));
+		return true;
+	}
+
+	private static bool IsFollower(MeshInstance3D body, out bool principal)
+	{
+		if (Followers.TryGetValue(body, out StrongBox<bool>? box))
+		{
+			principal = box.Value;
+			return true;
+		}
+
+		principal = false;
+		return false;
+	}
 
 	/// <summary>The hidden set each body's proxy was last built for.</summary>
 	private static readonly ConditionalWeakTable<MeshInstance3D, StrongBox<(UInt128 Hidden, bool Enabled)>> BuiltFor = new();
 
 	/// <summary>
-	/// /// Each body's proxy. A character's proxy stands BESIDE its body (same parent) so its placement
-	/// /// is the shadow skeletons' to write at the guest's rate; a rigid prop's stays a child.
+	/// Each body's proxy. A character's proxy stands BESIDE its body (same parent) so its placement
+	/// is the shadow skeletons' to write at the guest's rate; a rigid prop's stays a child.
 	/// </summary>
 	private static readonly ConditionalWeakTable<MeshInstance3D, MeshInstance3D> Proxies = new();
 
@@ -160,13 +224,16 @@ public static class Engine_ShadowProxy
 		UInt128 collapsed = Engine_HiddenClusters.CollapsedMask(body);
 		BuiltFor.GetOrCreateValue(body).Value = (collapsed, Enabled);
 
-		var source = body.Mesh as ArrayMesh;
+		// The source's surfaces: the hidden set is indexed by them, whatever the body shows.
+		var source = Engine_BodyVariants.SourceMesh(body) as ArrayMesh;
 		int surfaces = source?.GetSurfaceCount() ?? 0;
 		UInt128 hidden = UInt128.Zero;
 		bool skinned = surfaces != 0 && (source!.SurfaceGetFormat(0) & Mesh.ArrayFormat.FormatBones) != 0;
-		// // Only a character casts through a cadence proxy. An attached child (a held weapon)
-		// // keeps its own shadow: see Engine_ShadowSkeletons for what the proxy is for.
-		bool follows = skinned;
+		// Characters and attached children (held weapons) cast through a cadence proxy; see
+		// Engine_ShadowSkeletons for what the proxy is for.
+		bool principalHolder = false;
+		bool follower = !skinned && IsFollower(body, out principalHolder);
+		bool follows = skinned || follower;
 		bool eligible = Enabled && source is not null && surfaces <= MaxSurfaces &&
 			surfaces >= (follows ? MinSkinnedSurfaces : MinRigidSurfaces);
 		if (eligible)
@@ -288,6 +355,10 @@ public static class Engine_ShadowProxy
 		proxy.VisibilityRangeEnd = body.VisibilityRangeEnd;
 		proxy.VisibilityRangeEndMargin = body.VisibilityRangeEndMargin;
 		proxy.VisibilityRangeFadeMode = body.VisibilityRangeFadeMode;
+
+		// Same mesh space as the body (a sibling placed with its transform, or a child at
+		// identity), so the body's stated box bounds the caster; an unset box copies as none.
+		proxy.CustomAabb = body.CustomAabb;
 		if (!body.Skeleton.IsEmpty && body.GetNodeOrNull(body.Skeleton) is Skeleton3D bones)
 		{
 			// Not the body's skeleton: the proxy's own, under the proxy, posed at the guest's rate
@@ -298,9 +369,17 @@ public static class Engine_ShadowProxy
 		}
 		else
 		{
-			Engine_ShadowSkeletons.Forget(body);
 			proxy.Skeleton = new NodePath();
 			proxy.Skin = null;
+			if (follower)
+			{
+				// No bones: the cadence entry only places the proxy and mirrors its visibility.
+				Engine_ShadowSkeletons.Follow(body, proxy, principalHolder);
+			}
+			else
+			{
+				Engine_ShadowSkeletons.Forget(body);
+			}
 		}
 
 		body.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
@@ -362,7 +441,7 @@ public static class Engine_ShadowProxy
 				return null;
 			}
 
-			Godot.Collections.Array arrays = source.SurfaceGetArrays(s);
+			Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(source, s);
 			Vector3[] vertex = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
 			int[] index = arrays[(int)Mesh.ArrayType.Index].AsInt32Array();
 			int[] bone = skinned ? arrays[(int)Mesh.ArrayType.Bones].AsInt32Array() : System.Array.Empty<int>();
@@ -375,7 +454,9 @@ public static class Engine_ShadowProxy
 
 			Godot.Collections.Dictionary? lods = Refii.Models.Engine_MdlMesh.SurfaceLods(source, s);
 
-			Material? material = body?.GetSurfaceOverrideMaterial(s) ?? source.SurfaceGetMaterial(s);
+			// An override is only ever the collapse, on a body showing its source; hidden surfaces
+			// were skipped above, so the source's own material is the one that casts.
+			Material? material = source.SurfaceGetMaterial(s);
 			if (material is ShaderMaterial shaded &&
 				shaded.GetShaderParameter(AlphaScissor) is { VariantType: Variant.Type.Bool } scissor &&
 				scissor.AsBool())
@@ -419,9 +500,9 @@ public static class Engine_ShadowProxy
 			merged++;
 		}
 
-		// // A cadence proxy is built from whatever is there: one merged surface, or the kept
-		// // surfaces alone when the body's only surface is alpha-cut. A rigid prop's draw-saving
-		// // twin needs two surfaces to become one, or the prop keeps its own shadow.
+		// A cadence proxy is built from whatever is there: one merged surface, or the kept
+		// surfaces alone when the body's only surface is alpha-cut. A rigid prop's draw-saving
+		// twin needs two surfaces to become one, or the prop keeps its own shadow.
 		if (merged < 2 && !always)
 		{
 			return null;

@@ -1,3 +1,5 @@
+using System.Globalization;
+
 using Godot;
 
 using Refii.FlashGames.Framework;
@@ -9,33 +11,26 @@ using Refii.Host;
 namespace Refii.Game;
 
 /// <summary>
-/// Plays the guest's pub games, and hands the guest back its own settlement.
+/// Plays the guest's pub games in place of its Scaleform movie.
 /// </summary>
 /// <remarks>
 /// THE GUEST OWNS THE LIFECYCLE; this only draws and plays. It decides a pub game is starting,
-/// which one, which table variation and which pad; it seeds the game's bank from the hero's real
-/// gold; and afterwards it credits the winnings, updates the statistics, applies the purity
-/// balance, gossips about it, awards the achievement and raises <c>FinishedPubGame</c>. None of
-/// that is reimplemented here — see the block comment above <c>RefiiHostGetPubGame</c> in
-/// <c>host_bridge.cpp</c> for the addresses it was read from.
+/// which one, which table and which pad; it seeds the game's bank from the hero's real gold; and
+/// afterwards it credits the winnings, updates the statistics, applies the purity balance,
+/// gossips about it, awards the achievement and raises <c>FinishedPubGame</c>. None of that is
+/// reimplemented here.
 ///
-/// STATE 2 IS THE SEAM, and the binary is what says so. The guest's tick brings a start request
-/// from state 1 to 2 having already done every snapshot we would otherwise have to reproduce, and
-/// states 2 through 8 are the Scaleform module — creating a GFx movie, running it, handing it
-/// <c>EndGame</c>, tearing it down. That is exactly the part Godot replaces. State 9 settles and
-/// resets while dereferencing NEITHER the module pointer nor the game pointer, so a host may run
-/// 1 → play → 9 and the guest settles correctly with Scaleform never created at all.
+/// THE MOVIE IS THE ONLY THING REPLACED. <see cref="HostBridge.ClaimPubGames"/> takes the GFx
+/// module out of the guest's render-thread pump (<c>src/vfs/src/hooks/pubgame_pump.cpp</c>); the
+/// pump still walks the states and owns the sound emitter. Godot's game plays while the guest sits
+/// in 3, and every fscommand it issues goes to the guest through <see cref="GuestLink"/> exactly
+/// as the movie's would have — sounds, holdings (which save), points, rank, volumes, and GameOver,
+/// which the guest answers by tearing down and settling. What the pump would have told the movie
+/// comes back as <see cref="HostBridge.PubGameEvent"/>.
 ///
-/// A GAME WE CANNOT PLAY MUST STILL BE ANSWERED. All three shipped games — Keystone, Mage Dice and
-/// Wizard's Tower — have C# gameplay, so the decline should never fire; it stays because the guest
-/// waits at state 2 for as long as it takes, and declining silently is a soft lock in front of a
-/// black screen. Declining means handing back the balance UNCHANGED, which settles a delta of zero
-/// and puts the player back in the world having lost nothing.
-///
-/// THE DISPATCH IS ON THE GUEST'S OWN NAME for the game, which is the string it holds at
-/// <c>mgr+8</c> and matches the game-data folder: <c>keystone</c>, <c>magedice</c>,
-/// <c>wizardstower</c>. Anything else — including a name we cannot read — falls through to the
-/// decline, which is the safe direction to be wrong in.
+/// A GAME WE CANNOT PLAY MUST STILL BE ANSWERED. The guest waits in 3 for as long as it takes, so
+/// declining silently is a soft lock in front of a black screen. Declining means handing it
+/// GameOver with the profile untouched, which settles a delta of zero.
 /// </remarks>
 public partial class GamePubGames : Node
 {
@@ -43,18 +38,12 @@ public partial class GamePubGames : Node
 	/// ABOVE the loading screen at 8, below video at 10.
 	/// </summary>
 	/// <remarks>
-	/// THE LOADING SCREEN NEVER COMES DOWN WHILE THE GAME IS PLAYING, so a board underneath it is
-	/// a board nobody sees. This was at 6 — under the screen — on the reasoning that the guest
-	/// raises <c>loading_keystone.tex</c> as it starts a pub game and the table should not appear
-	/// behind a fade meant to hide it. The binary refutes the second half: <c>sub_821987B8</c>
-	/// raises the screen in case 1 (<c>sub_82361200(..., 12)</c> for keystone) and clears it in
-	/// <c>case 9</c> — the SETTLE — via <c>sub_82361458</c>. Nothing touches it in between, and
-	/// states 3 and 4 are the whole session.
-	///
-	/// That is not an oversight in the guest. In the shipped title the Scaleform movie draws over
-	/// the loading screen, so the screen is the pub game's backdrop rather than a curtain in front
-	/// of it, and it is already there to cover the world while the table is up. Godot's board takes
-	/// the movie's place, so it takes the movie's layer.
+	/// The loading screen stays up for the whole session. <c>sub_821987B8</c> raises it in case 1
+	/// (<c>sub_82361200(..., 12)</c> for keystone) and clears it only in case 9 via
+	/// <c>sub_82361458</c>; the render thread draws it and then the movie over it every frame
+	/// (<c>sub_82388380</c>: <c>sub_82361AF8</c> at 0x82388644, the pump at 0x82388654). So the
+	/// screen is the backdrop the stage bleeds over, and what shows at the sides of a screen wider
+	/// than the stage's 1555:1000 core.
 	/// </remarks>
 	public const int LayerIndex = 9;
 
@@ -63,27 +52,49 @@ public partial class GamePubGames : Node
 	/// <summary>The board on screen, as a node to add and free.</summary>
 	private Node? _host;
 
-	/// <summary>The same object, as the two numbers the guest is waiting for.</summary>
+	/// <summary>The same object, as the session the guest is waiting on.</summary>
 	private IPubGameSession? _session;
+
+	private readonly GuestLink _link = new();
 
 	/// <summary>What the last poll reported, so a per-frame check does not flood the log.</summary>
 	private string _reported = string.Empty;
 
 	/// <summary>
-	/// The state last logged, so the trace prints on change rather than every frame.
+	/// The state last logged. Starts at a value the guest cannot hold, so the first poll prints:
+	/// that line is the heartbeat that says the read works.
 	/// </summary>
-	/// <remarks>
-	/// STARTS AT A VALUE THE GUEST CANNOT HOLD, so the FIRST poll always prints. Starting at 0
-	/// would mean an idle session — which is nearly all of them — logged nothing at all, and a run
-	/// with no pub-game line would be ambiguous between "the player never sat at a table" and "the
-	/// bridge never read anything". The first line is the heartbeat that says the read works.
-	/// </remarks>
 	private uint _lastStage = uint.MaxValue;
+
+	private bool _claimed;
+
+	/// <summary>
+	/// GameOver has gone to the guest for this session. The pump drains it on the guest's next
+	/// render frame, so the state reads 3 for a moment longer, and without this that moment opens
+	/// a second board. Cleared once the session leaves the live states.
+	/// </summary>
+	private bool _answered;
+
+	/// <summary>The session being played, kept for a reload (tutorial → table) in place.</summary>
+	private HostBridge.PubGameState _pub;
+
+	private PubGameSeed? _seed;
+
+	private string _variation = string.Empty;
 
 	public override void _Ready()
 	{
 		_layer = new CanvasLayer { Name = "PubGameLayer", Layer = LayerIndex };
 		AddChild(_layer);
+	}
+
+	public override void _ExitTree()
+	{
+		if (_claimed)
+		{
+			HostBridge.ClaimPubGames(false);
+			_claimed = false;
+		}
 	}
 
 	/// <summary>True while a pub game is on screen, for a caller that wants to know.</summary>
@@ -92,25 +103,22 @@ public partial class GamePubGames : Node
 	/// <summary>
 	/// One frame of the watcher. Call from the owner's <c>_Process</c>.
 	/// </summary>
-	/// <remarks>
-	/// POLLED, because the guest publishes a state rather than calling us. The whole interface is
-	/// one dword it writes under its own critical section, and reading it once a frame is both the
-	/// cheapest and the only honest way to follow a value that nothing signals.
-	/// </remarks>
 	public void Poll()
 	{
 		if (HostBridge.GetPubGame() is not { } pub)
 		{
-			// The guest is not up, or the bridge is older than this build. Either way anything on
-			// screen is orphaned — there is nobody left to hand a result to.
+			_claimed = false;
 			Abandon("the guest is gone");
 			return;
 		}
 
-		// EVERY TRANSITION, not just the one we act on. The player has to walk into a pub and sit
-		// at a table for any of this to fire, so a run that produces nothing is ambiguous between
-		// "they never sat down" and "the seam is wrong". A state that moves 0 -> 1 -> 2 and stops
-		// says which.
+		// Claimed before any session can start, and again if the bridge ever lost it: an unclaimed
+		// pump creates the real movie at state 2 and runs it invisibly on the same pad.
+		if (!_claimed)
+		{
+			_claimed = HostBridge.ClaimPubGames(true);
+		}
+
 		if (pub.Stage != _lastStage)
 		{
 			_lastStage = pub.Stage;
@@ -121,125 +129,162 @@ public partial class GamePubGames : Node
 				$", profile 0x{pub.Profile:X8}, gold {pub.Gold:N0}, debt {pub.Debt:N0}");
 		}
 
+		_link.Stage = pub.Stage;
+		HostBridge.PubGameEvent events = HostBridge.TakePubGameEvents();
+
 		if (_host is not null)
 		{
-			Running(pub);
+			Running(pub, events);
 			return;
 		}
 
-		if (pub.WantsHost)
+		if (!pub.IsLive)
+		{
+			_answered = false;
+		}
+
+		if (pub.WantsHost && !_answered)
 		{
 			Start(pub);
 		}
 	}
 
-	private void Running(HostBridge.PubGameState pub)
+	private void Running(HostBridge.PubGameState pub, HostBridge.PubGameEvent events)
 	{
-		// THE GUEST DRIVES ITS OWN STATES, and most of them mean "still playing" — see
-		// PubGameState.IsLive. It leaves 2 for 3 under its own steam on the very next tick, so a
-		// host that treats anything but 2 as abandonment walks away from every session it starts.
-		//
-		// What genuinely ends a session is 0 (gone), 6 (tearing down) or 9 (settling), and by then
-		// there is nothing left to hand back — 6 and 9 are the states OUR settlement writes.
 		if (!pub.IsLive)
 		{
 			Abandon($"the guest moved to state {pub.Stage}");
 			return;
 		}
 
-		// THE BOARD NEVER CAME UP. A host whose Load failed never finishes and never reports a
-		// balance, and the guest waits at state 2 for as long as it takes — so leaving it alone is
-		// a permanent hang in front of a black screen, which is exactly the shape of failure an
-		// untested game reaches first. Settle UNCHANGED, the same answer an unrecognised game gets.
+		PubGame? game = _session?.Game;
+		if ((events & (HostBridge.PubGameEvent.SaveEnded | HostBridge.PubGameEvent.SaveSkipped)) != 0)
+		{
+			_link.SaveEnded(game);
+		}
+
+		// The guest is ending it: a GameFlow command pushed over the session (0x82468C98 moves
+		// 3 to 7). The movie gets `pubGame.EndGame` and answers with GameOver like any ending.
+		if ((events & HostBridge.PubGameEvent.EndGame) != 0)
+		{
+			Report($"[pubgame] the guest is ending '{pub.Game}'");
+			game?.EndGame();
+		}
+
 		if (_session is { Failed: true })
 		{
-			Report(
-				$"[pubgame] '{pub.Game}' could not open its board — " +
-				"returning the player's balance unchanged");
-			HostBridge.SetPubGameResult(pub.Gold, pub.Debt);
+			Report($"[pubgame] '{pub.Game}' could not open its board — ending it with nothing spent");
+			HostBridge.PostPubGameCommand(HostBridge.PubGameCommand.GameOver);
+			_answered = true;
 			Teardown();
 			return;
 		}
 
-		if (_session is null || !_session.IsFinished)
+		if (_session is null)
 		{
 			return;
 		}
 
-		// THE BALANCE, NOT THE WINNINGS. The guest seeded the bank from the hero's real gold and
-		// settles by crediting the difference; handing it a delta would pay the player twice.
-		long gold = _session.FinalGold;
-		long debt = _session.FinalDebt;
-
-		Report(
-			$"[pubgame] finished with {gold:N0} gold and {debt:N0} debt " +
-			$"(started {pub.Gold:N0}/{pub.Debt:N0}); handing the guest its settlement");
-
-		// WRITTEN BEFORE THE BOARD GOES AWAY, so a failure to reach the guest is reported while
-		// the numbers are still recoverable rather than after they have been dropped.
-		if (!HostBridge.SetPubGameResult(gold, debt))
+		if (_session.ReloadRequested || _session.TutorialRequested)
 		{
-			GD.PushWarning("[pubgame] the guest would not take the result; the session is lost");
+			// The guest reloads the movie in place (`sub_82EF2708`: game+1160 for the tutorial,
+			// +1161 for the chosen table) without leaving the session.
+			string table = _session.TutorialRequested ? "Tutorial" : _variation;
+			Report($"[pubgame] reloading '{pub.Game}' as '{table}'");
+			Teardown();
+			Open(_pub, table);
+			return;
 		}
 
-		Teardown();
+		if (_session.IsFinished)
+		{
+			Report($"[pubgame] '{pub.Game}' is over; the guest settles it");
+			_answered = true;
+			Teardown();
+		}
 	}
 
 	private void Start(HostBridge.PubGameState pub)
 	{
-		if (_layer is null)
+		if (HostBridge.GetPubGameProfile() is not { } profile)
+		{
+			Report($"[pubgame] '{pub.Game}' has no profile to seed from — ending it with nothing spent");
+			HostBridge.PostPubGameCommand(HostBridge.PubGameCommand.GameOver);
+			_answered = true;
+			return;
+		}
+
+		Vector2 window = GetViewport().GetVisibleRect().Size;
+		_pub = pub;
+		_seed = new PubGameSeed(
+			profile.Name,
+			Clamp(pub.Gold),
+			Clamp(pub.Debt),
+			(int)profile.Rank,
+			profile.TotalPoints,
+			profile.Points,
+			profile.Items,
+			(int)(profile.SoundVolume * 10f),
+			(int)(profile.MusicVolume * 10f),
+			window.X >= window.Y * 1.5f,
+			profile.Language.Length != 0 ? profile.Language : "en");
+		_variation = Table(pub.Variation, profile.Rank);
+
+		Report(
+			$"[pubgame] the guest started '{pub.Game}' variation '{pub.Variation}' → table " +
+			$"'{_variation}' for '{profile.Name}' (rank {profile.Rank}) with {pub.Gold:N0} gold " +
+			$"and {pub.Debt:N0} debt");
+		Open(pub, _variation);
+	}
+
+	private void Open(HostBridge.PubGameState pub, string table)
+	{
+		if (_layer is null || _seed is null)
 		{
 			return;
 		}
 
-		// SEEDED FROM THE GUEST, which is the point of entering at state 2 rather than launching
-		// this ourselves — the bank it hands over is the hero's real gold, already snapshotted.
-		//
-		// EVERYTHING ELSE IS THE VARIATION'S. Buy-in, seat count and skin are stated per table in
-		// settings.xml, and a host's exports are a harness convenience that must not speak over the
-		// file — see the Unset remarks on either host. Leaving them at their old defaults played
-		// every Keystone table in the game at a 500 buy-in with three opponents.
-		//
-		// SAID, NOT SUBSTITUTED. The variation is the table — its stakes, its odds and whether it
-		// is a tournament — so if the guest names one we take it verbatim. If it names none there
-		// is nothing to follow, and the host's own default table is better than a game with no
-		// buy-in; but that is a guess, and a guess about the player's money gets logged.
+		// Everything else is the table's: buy-in, seat count and skin are stated per variation in
+		// settings.xml; the hosts' exports are harness conveniences that must not speak over it.
 		Node? host = pub.Game switch
 		{
 			"keystone" => new KeystoneHost
 			{
 				Name = "PubGame",
-				StartingGold = Clamp(pub.Gold),
+				Profile = _seed,
+				Guest = _link,
+				Language = _seed.Language,
 				AiPlayers = KeystoneHost.Unset,
 				Skin = KeystoneHost.Unset,
 				BuyIn = KeystoneHost.Unset,
-
-				// A PLAYER IS NOT A HARNESS. The status label reports the frame rate, the raw
-				// stick axes and the internal phase name.
 				ShowDiagnostics = false,
-				Variant = Table(pub, "Standard1"),
+				Variant = table,
 			},
 
 			"magedice" => new MageDiceHost
 			{
 				Name = "PubGame",
-				StartingGold = Clamp(pub.Gold),
+				Profile = _seed,
+				Guest = _link,
+				Language = _seed.Language,
 				AiPlayers = MageDiceHost.Unset,
 				Skin = MageDiceHost.Unset,
 				BuyIn = MageDiceHost.Unset,
 				ShowDiagnostics = false,
-				Variant = Table(pub, "CowAndCorset1"),
+				Variant = table,
 			},
 
 			"wizardstower" => new WizardsTowerHost
 			{
 				Name = "PubGame",
-				StartingGold = Clamp(pub.Gold),
+				Profile = _seed,
+				Guest = _link,
+				Language = _seed.Language,
 				AiPlayers = WizardsTowerHost.Unset,
 				Skin = WizardsTowerHost.Unset,
 				BuyIn = WizardsTowerHost.Unset,
 				ShowDiagnostics = false,
-				Variant = Table(pub, "Ruby1"),
+				Variant = table,
 			},
 
 			_ => null,
@@ -247,53 +292,45 @@ public partial class GamePubGames : Node
 
 		if (host is not IPubGameSession session)
 		{
-			// DECLINED, AND ANSWERED. Leaving the guest at state 2 would hang it forever, so an
-			// unrecognised game hands the balance back UNCHANGED: a delta of zero puts the player
-			// back in the world having lost nothing. All three shipped games are wired now, so
-			// this only fires if the guest names something that is not one of them.
-			Report(
-				$"[pubgame] the guest asked for '{pub.Game}', which has no gameplay yet — " +
-				"returning the player's balance unchanged");
+			Report($"[pubgame] the guest asked for '{pub.Game}', which has no gameplay — ending it with nothing spent");
 			host?.QueueFree();
-			HostBridge.SetPubGameResult(pub.Gold, pub.Debt);
+			HostBridge.PostPubGameCommand(HostBridge.PubGameCommand.GameOver);
+			_answered = true;
 			return;
 		}
 
-		Report(
-			$"[pubgame] the guest started '{pub.Game}' variation '{pub.Variation}' " +
-			$"with {pub.Gold:N0} gold and {pub.Debt:N0} debt");
-
 		_host = host;
 		_session = session;
+		_link.Game = () => _session?.Game;
 		_layer.AddChild(host);
 	}
 
 	/// <summary>
-	/// The variation the guest named, or the game's own default with a warning.
+	/// The table the guest would load: the village's variation, plus the player's rank.
 	/// </summary>
 	/// <remarks>
-	/// THE FALLBACK IS PER GAME because the tables are: Keystone's variations are Standard1 through
-	/// the tournament tables, Mage Dice's are named after the pubs they sit in. There is no shared
-	/// name that means "the cheapest table".
+	/// A village states a family, not a table (<c>KSJackpot</c>, <c>SBCowAndCorset</c>,
+	/// <c>FTDiamondDeck</c>), and no settings.xml holds a variation by that name. <c>sub_82EF20E0</c>
+	/// (retail, <c>game+0x468</c>) appends the profile's rank with <c>L"%s%d"</c> when the name does
+	/// not already end in a digit (0x82EF2170 <c>cmpwi 0x30</c>/<c>0x39</c>, rank from
+	/// <c>sub_82EE86A0</c> = <c>ld 0x110</c>), so a rank-3 player at Bowerstone sits at KSJackpot3.
 	/// </remarks>
-	private static string Table(HostBridge.PubGameState pub, string fallback)
+	private static string Table(string variation, long rank)
 	{
-		if (pub.Variation.Length != 0)
+		if (variation.Length == 0 || char.IsAsciiDigit(variation[^1]))
 		{
-			return pub.Variation;
+			return variation;
 		}
 
-		GD.PushWarning($"[pubgame] the guest named no variation; playing '{fallback}'");
-		return fallback;
+		return variation + rank.ToString(CultureInfo.InvariantCulture);
 	}
 
 	/// <summary>
-	/// Drops the board without writing anything back.
+	/// Drops the board without telling the guest anything.
 	/// </summary>
 	/// <remarks>
-	/// Deliberately silent about money. This runs when there is no longer a guest to settle with,
-	/// so a write would either go nowhere or land on a manager that has already been reset — and
-	/// the second of those would credit gold into whatever session came next.
+	/// Runs when there is no longer a session to answer — the guest left 3-8 on its own, or is
+	/// gone — so anything posted now would land on whichever session came next.
 	/// </remarks>
 	private void Abandon(string why)
 	{
@@ -308,6 +345,7 @@ public partial class GamePubGames : Node
 
 	private void Teardown()
 	{
+		_link.Reset();
 		if (_host is null)
 		{
 			return;
@@ -319,14 +357,9 @@ public partial class GamePubGames : Node
 	}
 
 	/// <summary>
-	/// The profile's gold is an <c>int64</c> and the pub game's is an <c>int</c>.
+	/// The profile's gold is an <c>int64</c> and the pub game's is an <c>int</c>. Clamped rather
+	/// than cast, so a corrupt read cannot wrap to a negative bank.
 	/// </summary>
-	/// <remarks>
-	/// Clamped rather than cast. The guest's own money component saturates at 999,999,999, so a
-	/// balance beyond an int is not reachable through play — but an unclamped cast of a corrupt
-	/// read would wrap to a negative bank and the settlement would take that difference off the
-	/// player.
-	/// </remarks>
 	private static int Clamp(long gold) =>
 		(int)System.Math.Clamp(gold, 0, int.MaxValue);
 
@@ -340,5 +373,147 @@ public partial class GamePubGames : Node
 
 		_reported = line;
 		GD.Print(line);
+	}
+
+	/// <summary>
+	/// The guest's side of <c>FSCommand</c>: what <c>sub_82EF2AC0</c> parses out of each command.
+	/// </summary>
+	/// <remarks>
+	/// The argument strings are the movie's own (<c>"gold:G; debt:D"</c>, <c>"points:N"</c>,
+	/// <c>"name?x=v"</c>) and are split the way the guest splits them — <c>strtok_s</c> on
+	/// <c>";: "</c>, or <c>"? &amp;="</c> for a sound — so a value lands in the same slot it would
+	/// have. Print, Assert, Profile, Running, TournamentBuyIn, TournamentCompleted and
+	/// AchievementEarned are no-ops in the guest (null or <c>li r3, 0</c> handlers) and stay so.
+	/// </remarks>
+	private sealed class GuestLink : IPubGameHost
+	{
+		/// <summary>The guest's state as of the last poll.</summary>
+		public uint Stage { get; set; }
+
+		/// <summary>
+		/// The game this link speaks for. Resolved on each command: <c>PubGame.Run</c> issues its
+		/// first holdings from inside the host's load, before the host is ready.
+		/// </summary>
+		public System.Func<PubGame?> Game { get; set; } = () => null;
+
+		/// <summary>A holdings update started a guest save the game has not heard the end of.</summary>
+		private bool _saving;
+
+		public void Reset() => _saving = false;
+
+		public void Command(string command, string? argument)
+		{
+			string text = argument ?? string.Empty;
+			switch (command)
+			{
+				case PubCommand.PlaySound:
+				{
+					string[] tokens = Split(text, "? &=");
+					if (tokens.Length == 0)
+					{
+						return;
+					}
+
+					HostBridge.PostPubGameCommand(
+						HostBridge.PubGameCommand.PlaySound, tokens[0],
+						Number(tokens, 2), Number(tokens, 4), Number(tokens, 6));
+					return;
+				}
+
+				case PubCommand.PauseSound:
+					HostBridge.PostPubGameCommand(
+						HostBridge.PubGameCommand.PauseSound, i0: Bool(text) ? 1 : 0);
+					return;
+
+				case PubCommand.UpdatePlayerHoldings:
+				{
+					string[] tokens = Split(text, ";: ");
+					HostBridge.PostPubGameCommand(
+						HostBridge.PubGameCommand.Holdings,
+						i0: Integer(tokens, 1), i1: Integer(tokens, 3));
+
+					// The guest answers synchronously. Its handler's slot 0 (`sub_824675E0`) calls
+					// the movie's `pubGame.StartSave` from state 3 before the fscommand returns, and
+					// `PubGame::GameOver` reads `saving` on the very next line to decide whether to
+					// fade out now or wait for EndSave. So StartSave is said here, not on a later poll.
+					if (!_saving && Stage == HostBridge.PubGameState.RunningStage && Game() is { } game)
+					{
+						_saving = true;
+						game.StartSave();
+					}
+
+					return;
+				}
+
+				case PubCommand.PointsEarned:
+				{
+					string[] tokens = Split(text, ";: ");
+					HostBridge.PostPubGameCommand(
+						HostBridge.PubGameCommand.Points,
+						i0: (long)(float)Number(tokens, 1), i1: Game()?.GameIndex ?? 0);
+					return;
+				}
+
+				case PubCommand.NewRank:
+				{
+					string[] tokens = Split(text, ";: ");
+					HostBridge.PostPubGameCommand(
+						HostBridge.PubGameCommand.Rank, i0: (int)(float)Number(tokens, 1));
+					return;
+				}
+
+				case PubCommand.UpdateSoundVolume:
+				case PubCommand.UpdateMusicVolume:
+				{
+					string[] tokens = Split(text, ";: ");
+					HostBridge.PostPubGameCommand(
+						command == PubCommand.UpdateSoundVolume
+							? HostBridge.PubGameCommand.SoundVolume
+							: HostBridge.PubGameCommand.MusicVolume,
+						n0: (float)Number(tokens, 1) / 10f);
+					return;
+				}
+
+				case PubCommand.GameOver:
+					HostBridge.PostPubGameCommand(HostBridge.PubGameCommand.GameOver);
+					return;
+
+				case PubCommand.Running:
+					return;
+			}
+		}
+
+		/// <summary>State 5, or a holdings update that started no save: <c>pubGame.EndSave</c>.</summary>
+		public void SaveEnded(PubGame? game)
+		{
+			if (!_saving)
+			{
+				return;
+			}
+
+			_saving = false;
+			game?.EndSave();
+		}
+
+		private static string[] Split(string text, string delimiters) =>
+			text.Split(delimiters.ToCharArray(), System.StringSplitOptions.RemoveEmptyEntries);
+
+		/// <summary><c>strtod</c> on one token, 0 when it is missing.</summary>
+		private static double Number(string[] tokens, int index) =>
+			index < tokens.Length && double.TryParse(
+				tokens[index], NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
+				? value
+				: 0.0;
+
+		/// <summary><c>strtol</c> base 10 on one token, as the int the guest then sign-extends.</summary>
+		private static long Integer(string[] tokens, int index) =>
+			index < tokens.Length && int.TryParse(
+				tokens[index], NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
+				? value
+				: 0;
+
+		/// <summary><c>sub_82EF5540</c>: true on a leading t, y or 1.</summary>
+		private static bool Bool(string text) =>
+			text.Length != 0 && "tTyY1".IndexOf(text[0]) >= 0;
 	}
 }

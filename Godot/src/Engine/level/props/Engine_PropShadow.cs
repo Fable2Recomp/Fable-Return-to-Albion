@@ -67,6 +67,29 @@ public static class Engine_PropShadow
 	/// <summary>For a level change, where the batches go away.</summary>
 	public static void Forget() => Pairs.Clear();
 
+	/// <summary>
+	/// Each level batch's instance transforms, as the region build wrote them and every later
+	/// write through <see cref="SetInstanceTransform"/> changed them.
+	/// </summary>
+	/// <remarks>
+	/// Reading `MultiMesh.Buffer` back is a render-thread sync: with Godot's separate render
+	/// thread the getter waits until that thread has drained its whole queue, which while a
+	/// region pages in holds the workers' texture uploads. The build already has the transforms,
+	/// so it records them here and nothing reads the buffer back.
+	/// </remarks>
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MultiMesh, Transform3D[]> Stated = new();
+
+	/// <summary>Records a batch's instance transforms as built. Any thread.</summary>
+	public static void RecordBuilt(MultiMesh batch, Transform3D[] transforms) =>
+		Stated.AddOrUpdate(batch, transforms);
+
+	/// <summary>The batch's instance transforms without a readback, or null for a batch built elsewhere.</summary>
+	public static Transform3D[]? StatedTransforms(MultiMesh batch) =>
+		Stated.TryGetValue(batch, out Transform3D[]? transforms) &&
+		transforms.Length == batch.InstanceCount
+			? transforms
+			: null;
+
 	/// <summary>Gives a batch whose mesh has just arrived its cast-only twin. Main thread.</summary>
 	public static void Attach(MultiMeshInstance3D batch, ArrayMesh mesh)
 	{
@@ -78,19 +101,31 @@ public static class Engine_PropShadow
 		}
 
 		int count = source.InstanceCount;
-		float[] buffer = count > 0 ? source.Buffer : System.Array.Empty<float>();
-		int stride = count > 0 ? buffer.Length / count : 0;
-		if (stride < 12)
+		float[] transforms;
+		if (StatedTransforms(source) is { } stated)
 		{
-			return;
+			transforms = new float[count * 12];
+			for (int i = 0; i < count; i++)
+			{
+				WriteSlot(transforms, i * 12, stated[i]);
+			}
 		}
-
-		// The transform is the first twelve floats of each slot; the colours behind it are the
-		// lit batch's and the caster reads none.
-		var transforms = new float[count * 12];
-		for (int i = 0; i < count; i++)
+		else
 		{
-			System.Array.Copy(buffer, i * stride, transforms, i * 12, 12);
+			float[] buffer = count > 0 ? source.Buffer : System.Array.Empty<float>();
+			int stride = count > 0 ? buffer.Length / count : 0;
+			if (stride < 12)
+			{
+				return;
+			}
+
+			// The transform is the first twelve floats of each slot; the colours behind it are
+			// the lit batch's and the caster reads none.
+			transforms = new float[count * 12];
+			for (int i = 0; i < count; i++)
+			{
+				System.Array.Copy(buffer, i * stride, transforms, i * 12, 12);
+			}
 		}
 
 		// The bounds before the buffer, as the batch itself is built: a transform write marks the
@@ -143,6 +178,11 @@ public static class Engine_PropShadow
 	public static void SetInstanceTransform(MultiMesh batch, int instance, Transform3D transform)
 	{
 		batch.SetInstanceTransform(instance, transform);
+		if (Stated.TryGetValue(batch, out Transform3D[]? stated) &&
+			instance >= 0 && instance < stated.Length)
+		{
+			stated[instance] = transform;
+		}
 		if (Twins.TryGetValue(batch, out MultiMesh? shadow) && instance < shadow.InstanceCount)
 		{
 			Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.ShadowTwin);
@@ -158,5 +198,25 @@ public static class Engine_PropShadow
 			Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.ShadowTwin);
 			shadow.CustomAabb = batch.CustomAabb;
 		}
+	}
+
+	/// <summary>
+	/// One Transform3D in MultiMesh buffer order: three rows of the basis, each followed by that
+	/// row's origin component — the layout `Engine_PropStreamer` reads the buffer back in.
+	/// </summary>
+	public static void WriteSlot(float[] buffer, int at, Transform3D t)
+	{
+		buffer[at] = t.Basis.Column0.X;
+		buffer[at + 1] = t.Basis.Column1.X;
+		buffer[at + 2] = t.Basis.Column2.X;
+		buffer[at + 3] = t.Origin.X;
+		buffer[at + 4] = t.Basis.Column0.Y;
+		buffer[at + 5] = t.Basis.Column1.Y;
+		buffer[at + 6] = t.Basis.Column2.Y;
+		buffer[at + 7] = t.Origin.Y;
+		buffer[at + 8] = t.Basis.Column0.Z;
+		buffer[at + 9] = t.Basis.Column1.Z;
+		buffer[at + 10] = t.Basis.Column2.Z;
+		buffer[at + 11] = t.Origin.Z;
 	}
 }

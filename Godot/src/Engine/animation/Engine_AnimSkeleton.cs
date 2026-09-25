@@ -84,7 +84,12 @@ public static class Engine_AnimSkeleton
 
     private static Skeleton3D Build(IReadOnlyList<string> names, IReadOnlyList<int> parents)
     {
-        var skeleton = new Skeleton3D { Name = SkeletonName };
+        // Manual modifier processing, for the reason Engine_EntitySkeleton.Build gives.
+        var skeleton = new Skeleton3D
+        {
+            Name = SkeletonName,
+            ModifierCallbackModeProcess = Skeleton3D.ModifierCallbackModeProcessEnum.Manual,
+        };
 
         for (int i = 0; i < names.Count; i++)
         {

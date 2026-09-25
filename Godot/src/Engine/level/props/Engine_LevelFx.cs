@@ -60,6 +60,9 @@ public static class Engine_LevelFx
 
     private static readonly Dictionary<uint, bool> SustainCache = new();
 
+    /// <summary>The mesh convention (x, z, -y) from the simulation's (x, z, y); its own inverse.</summary>
+    private static readonly Basis SimFromMesh = Basis.FromScale(new Vector3(1f, 1f, -1f));
+
     public static bool IsAmbientEffect(FxBank bank, uint effectHash)
     {
         // LOCKED FOR THE LEVEL CHANGE: the next region's FX spawn on a worker while the region
@@ -251,6 +254,15 @@ public static class Engine_LevelFx
                 }
             }
 
+            // Into the simulation's axes. The placement basis and the gmd bone are both in the
+            // mesh convention — a guest local (x, y, z) stored as (x, z, -y) (`ConvertZUpToYUp`,
+            // `Engine_LevelProps.ToGodotBasis` negating its third column) — but
+            // Engine_FxSystem holds a guest local as (x, z, y); the mesh basis unconverted
+            // mirrors the effect along its own local Y. diag(1, 1, -1) on the right is the
+            // mesh-from-sim change of basis, its own inverse. Before the offset, which is read in
+            // the simulation's axes too (`ReadOffsetVector`).
+            xform = new Transform3D(xform.Basis * SimFromMesh, xform.Origin);
+
             // THE OFFSET IS SUBTRACTED, IT GOES INNERMOST, AND IT DOES NOT NEED A BONE. All
             // three are in the binary, and each is easy to get wrong in a way that reads as a
             // bad scale rather than a sign, an ordering or a missing case.
@@ -293,6 +305,12 @@ public static class Engine_LevelFx
             {
                 xform = new Transform3D(Basis.Identity, xform.Origin);
             }
+
+            // NO SCALE. The guest positions an effect root through `sub_832325A8` and orients it
+            // through `sub_83231C40` → `sub_83228D78`, which rebuilds the matrix with a scale of
+            // `splat(flt_82099490)` = 1.0 (0x83228dac..0x83228dcc) — the placement's scale moves
+            // the dummy, never the effect.
+            xform = new Transform3D(xform.Basis.Orthonormalized(), xform.Origin);
 
             origin = xform.Origin;
 

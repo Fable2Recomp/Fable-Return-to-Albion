@@ -190,13 +190,10 @@ public static class Engine_EntityIndex
 
         for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
         {
-            Godot.Collections.Array arrays = mesh.SurfaceGetArrays(surface);
-            resource.AddSurfaceFromArrays(
-                mesh.SurfaceGetPrimitiveType(surface), arrays, null,
-                Engine_MdlComposite.SurfaceLodsOf(mesh, surface),
-                Refii.Models.Engine_MdlTransfer.FormatOf(arrays));
-
-            int added = resource.GetSurfaceCount() - 1;
+            Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(mesh, surface);
+            int added = Refii.Models.Engine_MdlSurfaceArrays.Add(
+                resource, mesh.SurfaceGetPrimitiveType(surface), arrays,
+                Engine_MdlComposite.SurfaceLodsOf(mesh, surface));
             resource.SurfaceSetName(added, mesh.SurfaceGetName(surface));
             resource.SurfaceSetMaterial(added, mesh.SurfaceGetMaterial(surface));
         }

@@ -10,6 +10,12 @@ public sealed class PropBuildStats
 {
     public int SaveEntities { get; set; }
 
+    /// <summary>Level-file blocks whose model is a TreeMesh (`.mdl` byte 77 == 2).</summary>
+    public int TreeBlocks { get; set; }
+
+    /// <summary>Batches beyond one per cell because placements in the cell state different ranges.</summary>
+    public int RangeSplitBatches { get; set; }
+
     public int Placements { get; set; }
 
     public int Skeletal { get; set; }
@@ -121,7 +127,7 @@ public sealed class PropBuildStats
         $"duprecord={DuplicateRecord} duptransform={DuplicateTransform}) " +
         $"engine_level(blocks={EngineLevelBlocks} inst={EngineLevelInstances} " +
         $"unresolved={EngineLevelUnresolved} duptransform={EngineLevelDuplicate} " +
-        $"type21={EngineLevelType21Blocks}) " +
+        $"type21={EngineLevelType21Blocks} trees={TreeBlocks} rangesplits={RangeSplitBatches}) " +
         $"foliage(models={FoliageBlocks} inst={FoliageInstances} " +
         $"unresolved={FoliageUnresolved})" +
         (EngineLevelError.Length == 0 ? string.Empty : $" [{EngineLevelError}]");
@@ -618,11 +624,24 @@ public static class Engine_LevelProps
 
         void AddSingle(PropBlockBuild block, int index)
         {
+            StatedRange? range = index < block.Ranges.Count ? block.Ranges[index] : null;
+            foreach ((PropRole role, string path) in block.Roles(range))
+            {
+                AddSingleAs(block, index, role, path, range);
+            }
+        }
+
+        void AddSingleAs(PropBlockBuild block, int index, PropRole role, string modelPath, StatedRange? range)
+        {
             // A local, not `stats`: a local function cannot capture an `out` parameter.
-            ++singleInstances;
+            if (role == PropRole.Main)
+            {
+                ++singleInstances;
+            }
+
             var single = new MeshInstance3D
             {
-                Name = UniqueName(container, block.Label),
+                Name = UniqueName(container, role == PropRole.Main ? block.Label : $"{block.Label} {role}"),
                 Transform = block.Instances[index],
             };
 
@@ -631,7 +650,8 @@ public static class Engine_LevelProps
                 single.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
             }
 
-            single.SetMeta(Engine_PropStreamer.ModelPathMeta, block.ModelPath);
+            block.Configure(single, role, range);
+            single.SetMeta(Engine_PropStreamer.ModelPathMeta, modelPath);
 
             uint hash = index < block.InstanceHashes.Count ? block.InstanceHashes[index] : 0;
 
@@ -660,17 +680,19 @@ public static class Engine_LevelProps
             //
             // Only the key is stored; the streamer resolves it once the mesh is standing and
             // can check that it fits.
-            ulong bakeKey = index < block.InstanceBakeKeys.Count
+            // A bake is keyed to the MAIN model's vertices; the LOD and shadow models take the
+            // probe field, and are not counted as placements of their own.
+            ulong bakeKey = role == PropRole.Main && index < block.InstanceBakeKeys.Count
                 ? block.InstanceBakeKeys[index]
                 : 0;
 
-            if (bakeKey != 0 && bakeKeys.Contains(bakeKey))
+            if (role == PropRole.Main && bakeKey != 0 && bakeKeys.Contains(bakeKey))
             {
                 ++keyed;
                 single.SetMeta(
                     Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, (long)bakeKey);
             }
-            else
+            else if (role == PropRole.Main)
             {
                 if (bakeKey == 0)
                 {
@@ -722,7 +744,7 @@ public static class Engine_LevelProps
                     single, block.Instances[index].Origin, probes);
             }
 
-            if (inspect is not null && hash != 0)
+            if (inspect is not null && hash != 0 && role == PropRole.Main)
             {
                 Refii.Entities.Engine_EntityInspect.Annotate(single, hash, inspect);
             }
@@ -788,13 +810,17 @@ public static class Engine_LevelProps
             // box: a region-wide batch is inside every light's range and every cascade, so each
             // of them drew every placement of the model. The lists keep BLOCK indices — bake
             // keys, colours and records are all looked up by them.
-            var cells = new Dictionary<Vector3I, List<int>>();
+            //
+            // AND ONE PER STATED RANGE: a batch switches as one node, so placements the file gives
+            // different distances cannot share one.
+            var cells = new Dictionary<(Vector3I Cell, StatedRange? Range), List<int>>();
             foreach (int index in batched)
             {
                 Vector3 at = block.Instances[index].Origin;
-                var cell = new Vector3I(Mathf.FloorToInt(at.X / BatchCellMetres),
+                var cell = (new Vector3I(Mathf.FloorToInt(at.X / BatchCellMetres),
                     Mathf.FloorToInt(at.Y / BatchCellMetres),
-                    Mathf.FloorToInt(at.Z / BatchCellMetres));
+                    Mathf.FloorToInt(at.Z / BatchCellMetres)),
+                    index < block.Ranges.Count ? block.Ranges[index] : null);
                 if (!cells.TryGetValue(cell, out List<int>? indices))
                 {
                     cells[cell] = indices = new List<int>();
@@ -802,7 +828,16 @@ public static class Engine_LevelProps
                 indices.Add(index);
             }
 
-            foreach (KeyValuePair<Vector3I, List<int>> celled in cells)
+            var distinctCells = new HashSet<Vector3I>();
+            foreach ((Vector3I cellOnly, StatedRange? _) in cells.Keys)
+            {
+                distinctCells.Add(cellOnly);
+            }
+
+            stats.RangeSplitBatches += cells.Count - distinctCells.Count;
+
+            foreach (KeyValuePair<(Vector3I Cell, StatedRange? Range), List<int>> celled in cells)
+            foreach ((PropRole role, string rolePath) in block.Roles(celled.Key.Range))
             {
                 List<int> spatialBatch = celled.Value;
 
@@ -852,10 +887,16 @@ public static class Engine_LevelProps
                 }
                 multiMesh.CustomAabb = bounds.Grow(ModelReach);
 
+                var built = new Transform3D[spatialBatch.Count];
                 for (int i = 0; i < spatialBatch.Count; i++)
                 {
-                    multiMesh.SetInstanceTransform(i, toBatch * block.Instances[spatialBatch[i]]);
+                    built[i] = toBatch * block.Instances[spatialBatch[i]];
+                    multiMesh.SetInstanceTransform(i, built[i]);
                 }
+
+                // Kept beside the batch, so nothing later has to read the buffer back through
+                // the render thread (Engine_PropShadow.Stated).
+                Refii.Level.Engine_PropShadow.RecordBuilt(multiMesh, built);
 
                 // ONE PROBE SAMPLE PER INSTANCE, not one per block.
                 //
@@ -897,12 +938,13 @@ public static class Engine_LevelProps
 
                 // The cell rides in the name: `UniqueName` probes the container once per taken
                 // name, and a model with hundreds of cells under one label is that squared.
-                Vector3I at = celled.Key;
+                Vector3I at = celled.Key.Cell;
+                string label = role == PropRole.Main ? block.Label : $"{block.Label} {role}";
                 var node = new MultiMeshInstance3D
                 {
                     Name = UniqueName(container, cells.Count == 1
-                        ? block.Label
-                        : $"{block.Label} [{at.X} {at.Y} {at.Z}]"),
+                        ? label
+                        : $"{label} [{at.X} {at.Y} {at.Z}]"),
                     Multimesh = multiMesh,
                     Transform = toBatch,
                 };
@@ -912,7 +954,9 @@ public static class Engine_LevelProps
                     node.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
                 }
 
-                node.SetMeta(Engine_PropStreamer.ModelPathMeta, block.ModelPath);
+                // The placements' spread about the batch's centre: Godot measures the range there.
+                block.Configure(node, role, celled.Key.Range, bounds.Size.Length() * 0.5f);
+                node.SetMeta(Engine_PropStreamer.ModelPathMeta, rolePath);
 
                 // THE BATCHED SUBSET AGAIN, for the same reason the probe colours use it: the
                 // inspector pulls placements out of the batch into nodes of their own, so instance
@@ -1664,8 +1708,7 @@ public static class Engine_LevelProps
                         {
                             perSurface.Append(
                                 $" [{mesh.SurfaceGetName(s)}]=" +
-                                mesh.SurfaceGetArrays(s)[(int)Mesh.ArrayType.Vertex]
-                                    .AsVector3Array().Length);
+                                Refii.Models.Engine_MdlSurfaceArrays.VertexCount(mesh, s));
                         }
 
                         sample = $" first misfit: {NameOf(block.ModelPath)} " +
@@ -1693,7 +1736,19 @@ public static class Engine_LevelProps
 
         public bool Foliage { get; set; }
 
+        /// <summary>The guest's render class for the model (`.mdl` header), deciding which rule the ranges follow.</summary>
+        public PropModelClass ModelClass { get; set; }
+
+        /// <summary>A TreeMesh's separate `_LOD1` model, resolved, or empty.</summary>
+        public string LodModelPath { get; set; } = string.Empty;
+
+        /// <summary>A TreeMesh's cast-only `_shadow` model, resolved, or empty.</summary>
+        public string ShadowModelPath { get; set; } = string.Empty;
+
         public List<Transform3D> Instances { get; } = new();
+
+        /// <summary>The distances the level file states for each instance; null where the source states none.</summary>
+        public List<StatedRange?> Ranges { get; } = new();
 
         /// <summary>
         /// The placement id behind each instance, or 0 where the source did not carry one.
@@ -1746,7 +1801,8 @@ public static class Engine_LevelProps
         /// PERMANENT — the level freezes the same way every time it is entered.
         /// </remarks>
         public void AddInstance(
-            Transform3D transform, uint hash = 0, ulong bakeKey = 0, uint bakeColour = 0)
+            Transform3D transform, uint hash = 0, ulong bakeKey = 0, uint bakeColour = 0,
+            StatedRange? range = null)
         {
             if (!transform.Origin.IsFinite() ||
                 transform.Origin.Length() > MaxInstanceReach ||
@@ -1762,6 +1818,72 @@ public static class Engine_LevelProps
             InstanceHashes.Add(hash);
             InstanceBakeKeys.Add(bakeKey);
             InstanceBakeColours.Add(bakeColour);
+            Ranges.Add(range);
+        }
+
+        /// <summary>
+        /// The models one placement draws through: the main model always, and for a TreeMesh its
+        /// `_LOD1` and `_shadow` models when the block names them and the instance states ranges.
+        /// </summary>
+        public IEnumerable<(PropRole Role, string Path)> Roles(StatedRange? range)
+        {
+            if (ModelClass != PropModelClass.Tree || range is null)
+            {
+                yield return (PropRole.Main, ModelPath);
+                yield break;
+            }
+
+            // L <= 0 with a LOD model: `d < 0.75·L` and `d < L` never hold, so the guest never
+            // draws the main model (`sub_82208310`).
+            if (LodModelPath.Length == 0 || range.Value.Lod > 0f)
+            {
+                yield return (PropRole.Main, ModelPath);
+            }
+
+            if (LodModelPath.Length != 0)
+            {
+                yield return (PropRole.Lod, LodModelPath);
+            }
+
+            if (ShadowModelPath.Length != 0)
+            {
+                yield return (PropRole.Shadow, ShadowModelPath);
+            }
+        }
+
+        /// <summary>
+        /// Gives one node its role's draw range and shadow part. Foliage casts nothing (set by the
+        /// caller). A tree's main and LOD models never cast when it has a `_shadow` model; without
+        /// one the guest casts nothing, and "full" reach leaves the main and LOD models casting.
+        /// </summary>
+        public void Configure(GeometryInstance3D node, PropRole role, StatedRange? range, float spread = 0f)
+        {
+            if (range is not { } stated)
+            {
+                return;
+            }
+
+            // One copy feeds the GI, the main one. SDFGI voxelises static geometry without
+            // consulting visibility ranges, so a static LOD or shadow twin would be voxelised
+            // on top of the main model at every distance.
+            if (role != PropRole.Main)
+            {
+                node.GIMode = GeometryInstance3D.GIModeEnum.Disabled;
+            }
+
+            if (ModelClass == PropModelClass.Tree)
+            {
+                if (role == PropRole.Shadow)
+                {
+                    node.CastShadow = GeometryInstance3D.ShadowCastingSetting.ShadowsOnly;
+                }
+                else if (ShadowModelPath.Length != 0 || Engine_PropDrawRange.TreeShadowStated)
+                {
+                    node.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+                }
+            }
+
+            Engine_PropDrawRange.Stamp(node, stated, ModelClass, role, LodModelPath.Length != 0, spread);
         }
     }
 
@@ -1813,7 +1935,20 @@ public static class Engine_LevelProps
 
             string key = $"engine|{stats.EngineLevelBlocks}|{modelPath}";
             var build = new PropBlockBuild(
-                modelPath, $"engine_level {NameOf(modelPath)}");
+                modelPath, $"engine_level {NameOf(modelPath)}")
+            {
+                ModelClass = Engine_PropDrawRange.ClassOf(modelPath),
+            };
+
+            // The guest reads the shadow and LOD models only for a TreeMesh (`sub_82A708E0`).
+            if (build.ModelClass == PropModelClass.Tree)
+            {
+                build.LodModelPath = block.LodModelPath.Length == 0 ? string.Empty
+                    : Engine_PropModelIndex.ResolveByPath(block.LodModelPath) ?? string.Empty;
+                build.ShadowModelPath = block.ShadowModelPath.Length == 0 ? string.Empty
+                    : Engine_PropModelIndex.ResolveByPath(block.ShadowModelPath) ?? string.Empty;
+                stats.TreeBlocks++;
+            }
 
             int emitted = 0;
             foreach (EngineLevelInstance instance in block.Instances)
@@ -1831,13 +1966,36 @@ public static class Engine_LevelProps
                 // instances all resolve in the .lmp with it verbatim — 28 in the vertex-bake
                 // map (the Bowerstone structures), 62 in the 48-byte ambient map. No composed
                 // model-hash key exists for this population; the file states the join directly.
-                build.AddInstance(transform, bakeKey: instance.Hash);
+                build.AddInstance(transform, bakeKey: instance.Hash,
+                    range: StatedRange.FromStatic(instance.Values));
                 emitted++;
             }
 
             if (emitted == 0)
             {
                 continue;
+            }
+
+            if (build.ModelClass == PropModelClass.Tree)
+            {
+                float minD = float.MaxValue, maxD = 0f, minS = float.MaxValue, maxS = 0f;
+                float minL = float.MaxValue, maxL = 0f;
+                foreach (StatedRange? r in build.Ranges)
+                {
+                    if (r is not { } v)
+                    {
+                        continue;
+                    }
+
+                    minD = Math.Min(minD, v.Draw); maxD = Math.Max(maxD, v.Draw);
+                    minS = Math.Min(minS, v.Shadow); maxS = Math.Max(maxS, v.Shadow);
+                    minL = Math.Min(minL, v.Lod); maxL = Math.Max(maxL, v.Lod);
+                }
+
+                GD.Print($"[props] tree {NameOf(modelPath)} x{emitted}: D {minD:0.#}-{maxD:0.#} " +
+                    $"S {minS:0.#}-{maxS:0.#} L {minL:0.#}-{maxL:0.#} | lod " +
+                    $"{(build.LodModelPath.Length != 0 ? NameOf(build.LodModelPath) : block.LodModelPath.Length != 0 ? "UNRESOLVED " + block.LodModelPath : "none")}" +
+                    $" | shadow {(build.ShadowModelPath.Length != 0 ? NameOf(build.ShadowModelPath) : block.ShadowModelPath.Length != 0 ? "UNRESOLVED " + block.ShadowModelPath : "none")}");
             }
 
             blocks[key] = build;
@@ -1873,9 +2031,12 @@ public static class Engine_LevelProps
 
             if (!merged.TryGetValue(modelPath, out PropBlockBuild? build))
             {
+                // Every type-21 block is a RepeatedMesh to the guest (`sub_82A722A8`); its LOD
+                // string has no consumer.
                 build = new PropBlockBuild(modelPath, $"foliage {NameOf(modelPath)}")
                 {
                     Foliage = true,
+                    ModelClass = PropModelClass.Repeated,
                 };
                 merged[modelPath] = build;
                 mergedOrder.Add(modelPath);
@@ -1894,7 +2055,8 @@ public static class Engine_LevelProps
                 Transform3D transform =
                     BuildFoliageTransform(instance.Values, instance.Rotation);
                 build.AddInstance(transform, bakeColour:
-                    authored is not null && i < authored.Length ? authored[i] : 0);
+                    authored is not null && i < authored.Length ? authored[i] : 0,
+                    range: StatedRange.FromFoliage(block.DrawDistance));
                 transformKeys.Add(TransformKey(transform, modelPath));
             }
         }

@@ -876,6 +876,16 @@ bool ReXApp::WaitForShutdownThreads() {
          (!module_thread_.joinable() || module_thread_finished_.load(std::memory_order_acquire));
 }
 
+bool ReXApp::GuestStragglersRunning() const noexcept {
+  auto* kernel = runtime_ ? runtime_->kernel_state() : nullptr;
+  return kernel != nullptr && kernel->HasStragglerThreads();
+}
+
+std::string ReXApp::GuestStragglerNames() const {
+  auto* kernel = runtime_ ? runtime_->kernel_state() : nullptr;
+  return kernel != nullptr ? kernel->StragglerThreadNames() : std::string();
+}
+
 void ReXApp::OnDestroy() {
   if (destroyed_.exchange(true, std::memory_order_acq_rel)) {
     return;

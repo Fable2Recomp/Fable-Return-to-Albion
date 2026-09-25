@@ -511,12 +511,12 @@ u32 XamUserAreUsersFriends_entry(u32 user_index, u32 unk1, u32 unk2, mapped_u32 
 u32 XamShowSigninUI_entry(u32 unk, u32 unk_mask) {
   // Mask values vary. Probably matching user types? Local/remote?
 
-  // To fix game modes that display a 4 profile signin UI (even if playing
-  // alone):
-  // XN_SYS_SIGNINCHANGED
+  // The dashboard's sequence: XN_SYS_UI on, XN_SYS_SIGNINCHANGED, XN_SYS_UI off. A caller may
+  // wait for BOTH edges — Fable 2's `sub_82882AD8` spins until XN_SYS_UI(1) sets its
+  // UI-showing flag (0x82882b30), then until XN_SYS_UI(0) clears it; without the "on" edge
+  // it never leaves the first spin.
+  REX_KERNEL_STATE()->BroadcastNotification(0x00000009, 1);
   REX_KERNEL_STATE()->BroadcastNotification(0x0000000A, 1);
-  // Games seem to sit and loop until we trigger this notification:
-  // XN_SYS_UI (off)
   REX_KERNEL_STATE()->BroadcastNotification(0x00000009, 0);
   return X_ERROR_SUCCESS;
 }

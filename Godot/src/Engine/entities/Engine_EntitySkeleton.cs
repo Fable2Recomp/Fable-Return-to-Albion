@@ -726,7 +726,17 @@ public sealed class Engine_EntitySkeleton
 	public static Engine_EntitySkeleton? Build(
 		Engine_MdlRig rig, string[] guestNames, HostBridge.BonePose? guestRest = null)
 	{
-		var skeleton = new Skeleton3D { Name = "Skeleton" };
+		// MANUAL MODIFIER PROCESSING: no Godot modifier ever drives these bones (poses are the
+		// guest's, ragdolls included), but every Skeleton3D gets an inactive compatibility
+		// PhysicalBoneSimulator3D child on entering the tree, and one modifier is enough for Godot
+		// to run the whole modifier pass — back up every bone, process, force the dirty bones,
+		// restore — on EVERY skeleton EVERY frame. Manual turns that pass off; a bone write still
+		// updates the skeleton and its skin exactly as before.
+		var skeleton = new Skeleton3D
+		{
+			Name = "Skeleton",
+			ModifierCallbackModeProcess = Skeleton3D.ModifierCallbackModeProcessEnum.Manual,
+		};
 
 		// SYNTHETIC NAMES, NOT THE MODEL'S. Godot puts rules on a bone name that a Fable rig
 		// has never heard of — it must be non-empty, must not contain ':' or '/', and since

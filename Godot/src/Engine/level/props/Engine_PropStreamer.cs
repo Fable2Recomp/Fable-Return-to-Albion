@@ -243,7 +243,10 @@ public partial class Engine_PropStreamer : Node3D
     /// </summary>
     public static void ApplyVisibilityRange(GeometryInstance3D instance, Mesh mesh)
     {
-        if (CullMinPixels <= 0f)
+        // What the guest states outranks this rule: a placement with a stated range was stamped
+        // at build, an entity with one when its node was made (Engine_PropDrawRange), and the
+        // screen-size cull is only for what neither describes.
+        if (Engine_PropDrawRange.Apply(instance) || CullMinPixels <= 0f)
         {
             return;
         }
@@ -332,7 +335,15 @@ public partial class Engine_PropStreamer : Node3D
 
                     try
                     {
-                        Resolve(distinct[i]);
+                        // The shadow caster is built here, not on the main thread. The step that
+                        // places a prop merges its surfaces into a cast-only mesh (the batch twin,
+                        // or a single prop's proxy) and that merge reads every surface back. The
+                        // merge is cached per mesh, so building it on this worker makes the step's
+                        // own call a lookup. A plant that sways casts nothing: skipped.
+                        if (Resolve(distinct[i]) is { } resolved && !SwaysInWind(resolved))
+                        {
+                            Refii.Entities.Engine_ShadowProxy.MergedCaster(resolved, out _);
+                        }
                     }
                     catch (Exception)
                     {
@@ -857,6 +868,23 @@ public partial class Engine_PropStreamer : Node3D
                 // round trip to the rendering server. A collapsed (hidden) instance measures
                 // as a point; `Engine_LevelProps.CoverInstance` widens for it when it is shown.
                 int count = multi.Multimesh.InstanceCount;
+                if (Engine_PropShadow.StatedTransforms(multi.Multimesh) is { } stated)
+                {
+                    // From the build's own record: no buffer read, no render-thread sync.
+                    Aabb local = mesh.GetAabb();
+                    Aabb bounds = default;
+                    for (int i = 0; i < count; i++)
+                    {
+                        Aabb box = stated[i] * local;
+                        bounds = i == 0 ? box : bounds.Merge(box);
+                    }
+
+                    Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.PropBounds);
+                    multi.Multimesh.CustomAabb = bounds.Grow(SwaysInWind(mesh)
+                        ? Engine_LevelProps.ModelReach : 1f);
+                    count = 0;
+                }
+
                 float[] buffer = count > 0 ? multi.Multimesh.Buffer : Array.Empty<float>();
                 int stride = count > 0 ? buffer.Length / count : 0;
                 if (stride >= 12)
@@ -913,7 +941,13 @@ public partial class Engine_PropStreamer : Node3D
             // is the remaster's). Trees are unaffected — they do not sway (mode 2 holds still
             // until treematerial exists) and their canopy shadows are stable and worth having.
             long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (SwaysInWind(mesh))
+            if (instance.CastShadow == GeometryInstance3D.ShadowCastingSetting.ShadowsOnly)
+            {
+                // Already cast-only — a tree's `_shadow` model. Every hand-off below turns the
+                // node's own casting Off so something else can cast for it, and Off on a
+                // shadows-only node would make it drawn and not casting.
+            }
+            else if (SwaysInWind(mesh))
             {
                 Refii.Lighting.Engine_ShadowReach.Exclude(instance);
             }
@@ -930,23 +964,8 @@ public partial class Engine_PropStreamer : Node3D
                 Refii.Entities.Engine_ShadowProxy.Sync(castingProp);
             }
 
-            _stepSwayMs = Ms(t3);
+            _stepSwayMs = Ms(t3);  // "sway": the shadow-caster hand-off above, named for its first branch
 
-            static bool SwaysInWind(ArrayMesh candidate)
-            {
-                for (int s = 0; s < candidate.GetSurfaceCount(); s++)
-                {
-                    // Only mode-1 plants with an authored amplitude carry the wind meta
-                    // (Engine_MdlMaterial.WindMetaName).
-                    if (candidate.SurfaceGetMaterial(s) is ShaderMaterial shader &&
-                        shader.HasMeta(Refii.Models.Engine_MdlMaterial.WindMetaName))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-            }
 
             // LIGHT IT NOW, not at build time. Until this line the node had no material, and
             // Godot will not carry an instance shader parameter on a node whose material it
@@ -969,6 +988,22 @@ public partial class Engine_PropStreamer : Node3D
                 GD.Print($"[props] stream error on '{path}': {exception.Message}");
             }
         }
+    }
+
+    /// <summary>Whether a plant sways: only mode-1 plants with an authored amplitude carry the wind
+    /// meta (Engine_MdlMaterial.WindMetaName). A swaying plant casts no shadow.</summary>
+    private static bool SwaysInWind(ArrayMesh candidate)
+    {
+        for (int s = 0; s < candidate.GetSurfaceCount(); s++)
+        {
+            if (candidate.SurfaceGetMaterial(s) is ShaderMaterial shader &&
+                shader.HasMeta(Refii.Models.Engine_MdlMaterial.WindMetaName))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static ArrayMesh? Resolve(string virtualPath) => Resolve(virtualPath, out _);

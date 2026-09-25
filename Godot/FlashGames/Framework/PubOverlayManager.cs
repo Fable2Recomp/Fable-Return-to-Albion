@@ -18,6 +18,15 @@ public interface IPubOverlayManager
     void ActivateQuitConfirmation();
 
     void ActivateCashOut();
+
+    void ActivateGameHelp();
+
+    void ActivateShimPauseMenu();
+
+    void ShowSaveIcon(bool show);
+
+    /// <summary><c>OverlayManager::CleanUp</c>, from <c>PubGame::CleanUpGame</c> (0x001dde).</summary>
+    void CleanUp();
 }
 
 public interface IPubTutorialOverlays

@@ -1275,6 +1275,32 @@ bool DispatchDisplayBoxAction(PPCContext& ctx, uint8_t* base, uint32_t code) {
   return true;
 }
 
+/// Hands one action code to a display MessageBox the host was told opened (vtable 0x820AE668,
+/// see hooks/display_box_hooks.cpp). Those sit in the owner's `+4` queue, which the lookup above
+/// never reads. The box is re-checked here, since the host's word is a frame old: still this
+/// class and still open. Its handler `sub_823CEDD8` takes the pad from `box+24`, -1 for any
+/// (0x823cee00).
+bool DispatchStatedMessageBoxAction(PPCContext& ctx, uint8_t* base, uint32_t box, uint32_t code) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  if (!plausible(box) || LoadGuestU32(base, box) != 0x820AE668u ||
+      refii::vfs::LoadGuestU8(base, box + 12u) == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: BoxAction:{}@{:08X} — no open MessageBox there, dropped",
+                code, box);
+    return true;
+  }
+
+  const uint32_t pad = LoadGuestU32(base, box + 24u);
+  const PPCContext saved = ctx;
+  ctx.r3.u32 = box;
+  ctx.r4.u32 = code;
+  ctx.r5.u32 = pad == 0xFFFFFFFFu ? 1u : pad;
+  sub_823CEDD8(ctx, base);
+  ctx = saved;
+  REXLOG_INFO("Refii guest-tick pump: BoxAction:{}@{:08X} — answered the stated MessageBox",
+              code, box);
+  return true;
+}
+
 /// The in-game GUI's roots, or false when no in-game screen is up.
 bool InGameScreenRoots(uint8_t* base, uint32_t* out_owner, uint32_t* out_screen_id) {
   constexpr uint32_t kInGameGuiVtable = 0x82001610u;
@@ -5418,13 +5444,19 @@ void SampleRealEstate(PPCContext& ctx, uint8_t* base) {
     }
   }
 
-  // WHOEVER IS IN IT: the tenant when there is one, otherwise the owner. `sub_823C8510` takes
-  // the entity in r4 — a lost argument in the decompile, explicit in the filler's own
-  // `mr r4, r3` after the resolve — and answers a WIDE string.
+  // WHOEVER IS IN IT, on the guest's own three branches (`sub_82998FB0`, 0x8299959c on):
+  //   hero owns it, rented out  -> the TENANT, `sub_8282D5D8`, else GUI_..._TENANT_OTHER;
+  //   hero owns it, not rented  -> the hero's TITLE (below), never a creature name;
+  //   hero does not own it      -> the owner, `sub_8282D410`, else GUI_..._OWNER_OTHER.
+  // `sub_8282D410` answers the HERO for a hero-owned building, and `sub_823C8510` cannot name
+  // the hero (it carries no component 20). `sub_823C8510` takes the entity in r4 — a lost
+  // argument in the decompile, explicit in the filler's own `mr r4, r3` — and answers a WIDE
+  // string.
   {
     const uint32_t occupant = estate.has_tenant
         ? call(FindGuestFunction(0x8282D5D8u), building, 0u)
-        : call(FindGuestFunction(0x8282D410u), building, 0u);
+        : estate.owned ? 0u
+                       : call(FindGuestFunction(0x8282D410u), building, 0u);
     if (plausible(occupant)) {
       StoreGuestU32(base, out, 0u);
       call(FindGuestFunction(0x823C8510u), out, occupant);
@@ -5435,6 +5467,16 @@ void SampleRealEstate(PPCContext& ctx, uint8_t* base) {
       ctx.r3.u32 = out;
       sub_821C67F8(ctx, base);
       ctx = saved;
+    }
+  }
+
+  // The hero's current title record — `*(comp57+92)`, the hash half of the lazy GDB ref
+  // `sub_824D8A10` resolves; the host walks `HeroTitleComponent.TextTag` from its own GDB.
+  {
+    constexpr uint32_t kTitleComponent = 57u;
+    const uint32_t titles = HeroComponent(base, hero, kTitleComponent);
+    if (plausible(titles)) {
+      estate.title_record = LoadGuestU32(base, titles + 92u);
     }
   }
 
@@ -6172,7 +6214,14 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
                 ? DispatchMenuBoxSelect(ctx, base, static_cast<uint32_t>(value))
                 : DispatchMenuBoxAnswer(ctx, base, static_cast<uint32_t>(value));
     } else if (name.rfind(kActionBoxActionPrefix, 0) == 0) {
-      const std::string number = name.substr(std::strlen(kActionBoxActionPrefix));
+      // `BoxAction:<code>` answers the box the owner holds at `+52`; `BoxAction:<code>@<hex>`
+      // answers the display MessageBox whose Open the host was told about.
+      std::string number = name.substr(std::strlen(kActionBoxActionPrefix));
+      uint32_t target = 0u;
+      if (const size_t at = number.find('@'); at != std::string::npos) {
+        target = static_cast<uint32_t>(std::strtoul(number.c_str() + at + 1, nullptr, 16));
+        number.resize(at);
+      }
       char* end = nullptr;
       const unsigned long value = std::strtoul(number.c_str(), &end, 10);
       // The codes the box handlers answer: 28/29 step the adjuster, 36 dismisses, 46 confirms,
@@ -6184,7 +6233,9 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
         continue;
       }
 
-      ran = DispatchDisplayBoxAction(ctx, base, static_cast<uint32_t>(value));
+      ran = target != 0u
+                ? DispatchStatedMessageBoxAction(ctx, base, target, static_cast<uint32_t>(value))
+                : DispatchDisplayBoxAction(ctx, base, static_cast<uint32_t>(value));
     } else if (name == "SubtitlesOn" || name == "SubtitlesOff" ||
                name == "Downloadable Content") {
       // Through the guest's own dispatcher: its id-2 branch compares the item name and does the

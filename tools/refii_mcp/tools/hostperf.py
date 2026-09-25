@@ -233,6 +233,10 @@ def _tracy_tool(name):
     {
         "seconds": {"type": "integer", "description": "Capture length (default 10, max 120)."},
         "top": {"type": "integer", "description": "Zones to report (default 20)."},
+        "address": {"type": "string", "description": (
+            "Host running the game (default 127.0.0.1). The game's Tracy client listens on "
+            "every interface, so a Windows run in the bridged VM or on another PC on the LAN "
+            "is captured from here by its IP — the debug channel is loopback-only, Tracy is not.")},
     },
 )
 def trace(args):
@@ -250,7 +254,8 @@ def trace(args):
     os.makedirs(out_dir, exist_ok=True)
     trace_path = os.path.join(out_dir, f"{time.strftime('%H%M%S')}.tracy")
     grabbed = subprocess.run(
-        [capture, "-a", "127.0.0.1", "-o", trace_path, "-s", str(seconds), "-f"],
+        [capture, "-a", str(args.get("address") or "127.0.0.1"), "-o", trace_path,
+         "-s", str(seconds), "-f"],
         capture_output=True, text=True, timeout=seconds + 60)
     if grabbed.returncode != 0 or not os.path.exists(trace_path):
         return {"ok": False, "error": f"capture failed: {grabbed.stderr[-400:] or grabbed.stdout[-400:]}"}
@@ -275,6 +280,107 @@ def trace(args):
     zones.sort(key=lambda z: z["totalMs"], reverse=True)
     return {"ok": True, "trace": trace_path, "seconds": seconds,
             "topZones": zones[:max(1, min(int(args.get("top", 20)), 100))]}
+
+
+@tool(
+    "refii_gpu",
+    "Godot's own per-pass GPU timings from the running game — shadows, opaque, sky, "
+    "transparent, SDFGI, fog, tonemap — as rolling averages, peaks and the last frame: the "
+    "split of refii_metrics' one renderGpuMs. The engine captures them only when launched "
+    "with gpu_profile = true in refii.toml; the reply says so otherwise. The same passes "
+    "appear on the Tracy timeline as GPU zones and plots.",
+)
+def gpu(_args):
+    return ask({"op": "gpuprofile"})
+
+
+@tool(
+    "refii_lods",
+    "The main view's triangles by owning node and by mesh: the LOD level Godot picks for every "
+    "visible instance (distance to the instance's box; a MultiMesh batch is ONE instance), the "
+    "triangles that costs, and beside it the guest's per-object pick (each copy from its own "
+    "transform: perObjectTriangles; from its origin: originTriangles), full detail, and "
+    "triangles from surfaces with no coarser level. Read only.",
+)
+def lods(_args):
+    return ask({"op": "lodcensus"}, timeout=30.0)
+
+
+def _qrenderdoc(install_root):
+    for candidate in (
+        os.path.join(install_root or "", "bin", "qrenderdoc"),
+        shutil.which("qrenderdoc") or "",
+    ):
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+@tool(
+    "refii_capture",
+    "Trigger a RenderDoc frame capture of the running game and return the .rdc path — the "
+    "instrument for what the GPU spends per draw and per pass. Needs renderdoc = true in "
+    "refii.toml at launch (the launcher arms the Vulkan layer; F12 also captures). With "
+    "analyze=true the capture is replayed headlessly through qrenderdoc's embedded Python "
+    "(tools/renderdoc/rdc_passes.py) and the reply carries GPU time per render target and "
+    "per marker, which takes a minute or so.",
+    {
+        "analyze": {"type": "boolean", "description": "Replay and time the passes (default false)."},
+        "wait": {"type": "integer", "description": "Seconds to wait for the file (default 15)."},
+    },
+)
+def capture(args):
+    before = ask({"op": "capture", "list": True})
+    if not before.get("ok") or not before.get("armed"):
+        return before
+
+    had = len(before.get("captures", []))
+    fired = ask({"op": "capture"})
+    if not fired.get("ok"):
+        return fired
+
+    deadline = time.time() + max(3, min(int(args.get("wait", 15)), 120))
+    newest = None
+    while time.time() < deadline:
+        time.sleep(0.5)
+        state = ask({"op": "capture", "list": True})
+        captures = state.get("captures", []) if state.get("ok") else []
+        if len(captures) > had and not state.get("capturing"):
+            newest = captures[-1].get("path")
+            if newest and os.path.exists(newest):
+                break
+    if not newest:
+        return {"ok": False, "error": "the capture was triggered but no file appeared — the "
+                                      "game must present a frame (unpause it) for it to finish"}
+
+    reply = {"ok": True, "capture": newest, "captures": len(captures)}
+    if not args.get("analyze", False):
+        return reply
+
+    qrenderdoc = _qrenderdoc(before.get("installRoot", ""))
+    if qrenderdoc is None:
+        reply["note"] = "analysis skipped: qrenderdoc not found beside the armed install or on PATH"
+        return reply
+
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))), "renderdoc", "rdc_passes.py")
+    out_path = newest + ".passes.json"
+    env = dict(os.environ, RDC_PATH=newest, RDC_OUT=out_path)
+    try:
+        subprocess.run([qrenderdoc, "--python", script], env=env, capture_output=True,
+                       text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        reply["note"] = "analysis timed out after 600 s"
+        return reply
+    if os.path.exists(out_path):
+        import json
+        with open(out_path) as handle:
+            reply["passes"] = json.load(handle)
+        reply["passesFile"] = out_path
+    else:
+        reply["note"] = "analysis produced no output — run qrenderdoc --python " + script + \
+                        " by hand with RDC_PATH set to see why"
+    return reply
 
 
 @tool(

@@ -280,12 +280,12 @@ public partial class Engine_EntityAnimator : Node3D
 			entity.EnsureMesh();
 		}
 
-		if (surface.Mesh is null)
+		if (Entities.Engine_BodyVariants.SourceMesh(surface) is not { } source)
 		{
 			return;
 		}
 
-		if (!FullySkinned(surface.Mesh))
+		if (!FullySkinned(source))
 		{
 			GD.Print($"[anim] {Name}: mesh has unskinned surfaces, leaving it unbound");
 			return;
@@ -303,7 +303,7 @@ public partial class Engine_EntityAnimator : Node3D
 			return;
 		}
 
-		if (Engine_MdlRig.TryFrom(surface.Mesh) is not Engine_MdlRig rig ||
+		if (Engine_MdlRig.TryFrom(Entities.Engine_BodyVariants.SourceMesh(surface)) is not Engine_MdlRig rig ||
 			rig.BoneCount != skeleton.GetBoneCount())
 		{
 			Bind(skeleton);
@@ -348,10 +348,7 @@ public partial class Engine_EntityAnimator : Node3D
 	{
 		for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
 		{
-			Godot.Collections.Array arrays = mesh.SurfaceGetArrays(surface);
-
-			if (arrays[(int)Mesh.ArrayType.Bones].VariantType == Variant.Type.Nil ||
-				arrays[(int)Mesh.ArrayType.Weights].VariantType == Variant.Type.Nil)
+			if (!Refii.Models.Engine_MdlSurfaceArrays.Skinned(mesh, surface))
 			{
 				return false;
 			}
@@ -371,7 +368,7 @@ public partial class Engine_EntityAnimator : Node3D
 
 	private Entities.Engine_EntityResource? Resource =>
 		GetParent() is MeshInstance3D surface
-			? surface.Mesh as Entities.Engine_EntityResource
+			? Entities.Engine_BodyVariants.SourceMesh(surface) as Entities.Engine_EntityResource
 			: null;
 
 	private uint[] ModelHashes()
@@ -428,7 +425,7 @@ public partial class Engine_EntityAnimator : Node3D
 			entity.EnsureMesh();
 		}
 
-		return Engine_MdlRig.TryFrom(surface.Mesh);
+		return Engine_MdlRig.TryFrom(Entities.Engine_BodyVariants.SourceMesh(surface));
 	}
 
 	private static MdlInfo? FirstRig(string[] models)

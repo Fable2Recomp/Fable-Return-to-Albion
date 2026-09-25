@@ -58,6 +58,13 @@ public abstract class Engine_UiSource
 	/// <summary>The Lua-opened option box, or null when none is open.</summary>
 	public virtual Engine_UiModel.MenuBoxState? GetMenuBox() => null;
 
+	/// <summary>
+	/// A yes/no DISPLAY box is open — `GUI.DisplayYesNoQuestion`, `DisplayPubGameYesNoQuestion`,
+	/// `DisplayQuestPrimaryQuestion`. It stands up `querybox.bgf` like the modal router's
+	/// QueryBox but is answered through <see cref="DisplayBoxAction"/>, not the router.
+	/// </summary>
+	public virtual bool DisplayQueryUp() => false;
+
 	/// <summary>The pause gate: underlying screen id, pending modal id and mode, current tab.</summary>
 	public virtual Engine_UiModel.PauseState? GetPauseState() => null;
 

@@ -157,7 +157,7 @@ public static class Engine_HeroBodyMorph
 
         for (int s = 0; s < source.GetSurfaceCount(); s++)
         {
-            Godot.Collections.Array arrays = source.SurfaceGetArrays(s);
+            Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(source, s);
 
             Vector3[] positions = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
             bool hasBones = arrays[(int)Mesh.ArrayType.Bones].VariantType ==
@@ -188,9 +188,8 @@ public static class Engine_HeroBodyMorph
                 }
             }
 
-            result.AddSurfaceFromArrays(source.SurfaceGetPrimitiveType(s), arrays, null,
-                Refii.Models.Engine_MdlMesh.SurfaceLods(source, s),
-                Refii.Models.Engine_MdlTransfer.FormatOf(arrays));
+            Refii.Models.Engine_MdlSurfaceArrays.Add(result, source.SurfaceGetPrimitiveType(s), arrays,
+                Refii.Models.Engine_MdlMesh.SurfaceLods(source, s));
             result.SurfaceSetName(s, source.SurfaceGetName(s));
             result.SurfaceSetMaterial(s, source.SurfaceGetMaterial(s));
         }

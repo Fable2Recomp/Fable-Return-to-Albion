@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace Refii.FlashGames.Framework;
 
@@ -71,7 +72,7 @@ public abstract class PubGame
 
     public Localizer Localizer { get; }
 
-    public CallbackManager CallbackManager { get; private set; }
+    public CallbackManager CallbackManager { get; }
 
     public IPubOverlayManager? OverlayManager { get; set; }
 
@@ -151,9 +152,10 @@ public abstract class PubGame
 
     public bool TestingMode { get; set; }
 
-    public int SoundVolume { get; set; }
+    /// <summary>0..10 in steps of 0.5 — the shim settings sliders move it by halves (0x0082ed).</summary>
+    public double SoundVolume { get; set; }
 
-    public int MusicVolume { get; set; }
+    public double MusicVolume { get; set; }
 
     public bool AutoPlay { get; set; }
 
@@ -188,10 +190,29 @@ public abstract class PubGame
     {
     }
 
+    /// <summary>Empty in AS2's base; <c>KillGameHelp</c> calls it (0x009aad).</summary>
+    public virtual void GameHelpDispelled()
+    {
+    }
+
     public virtual void Initialize()
     {
         CallbackManager.RemoveAllCallbacks();
+        RegisterOverlayManager();
         PreInitialize();
+    }
+
+    /// <summary>
+    /// Makes the overlay manager callback 0 (<c>PubGame::Initialize</c> 0x00161b). Its <c>Run</c>
+    /// sets its own <c>Blocking</c>, and an ungrouped blocking callback ends
+    /// <see cref="CallbackManager.DoCallbacks"/> — which is how every dialog freezes the game.
+    /// </summary>
+    public void RegisterOverlayManager()
+    {
+        if (OverlayManager is Callback overlays)
+        {
+            CallbackManager.AddCallbackObjectFirst(overlays);
+        }
     }
 
     public virtual void Run()
@@ -265,12 +286,34 @@ public abstract class PubGame
         Host.Command(PubCommand.Running, null);
     }
 
-    public void OnEnterFrame()
+    /// <summary>
+    /// <c>PubGame::OnEnterFrame</c> (0x001a06-0x001a6e): <c>input.Update()</c>, pad 0 (else the
+    /// keyboard pad), <c>DoCallbacks</c>. <paramref name="ticks"/> is the elapsed milliseconds;
+    /// null reads the manager's clock as AS2 does. Does nothing once <see cref="CleanUpGame"/>
+    /// has cleared <c>_root.onEnterFrame</c> (0x001dae).
+    /// </summary>
+    public void OnEnterFrame(double? ticks = null)
     {
+        if (_cleanedUp)
+        {
+            return;
+        }
+
         Input.Update();
         Pad = Input.GetPadState(0) ?? Input.GetKeyboardPadState();
-        CallbackManager.DoCallbacks();
+        CallbackManager.DoCallbacks(ticks);
     }
+
+    /// <summary><c>PubGame::UpdatePadAfterPause</c> (0x0019db): one more <c>input.Update()</c>.</summary>
+    public void UpdatePadAfterPause() => Input.Update();
+
+    /// <summary><c>PubGame::ActivateShimPause</c> (0x0029f1).</summary>
+    public void ActivateShimPause() => OverlayManager?.ActivateShimPauseMenu();
+
+    /// <summary><c>PubGame::ActivatedGameHelp</c> (0x0029b6).</summary>
+    public void ActivatedGameHelp() => OverlayManager?.ActivateGameHelp();
+
+    private bool _cleanedUp;
 
     public virtual void EndGame()
     {
@@ -337,11 +380,17 @@ public abstract class PubGame
             RetailGame && Tutorial ? PubCommand.LoadGameSettings : PubCommand.GameOver, null);
     }
 
+    /// <summary>
+    /// <c>PubGame::CleanUpGame</c> (0x001dae-0x001e02). The game stops being ticked here —
+    /// <c>_root.onEnterFrame = null</c> — so the emptied manager is never run again.
+    /// </summary>
     private void CleanUpGame()
     {
+        _cleanedUp = true;
         CallbackManager.RemoveAllCallbacks();
+        OverlayManager?.CleanUp();
         CleanUp();
-        CallbackManager = new CallbackManager(Timer);
+        OverlayManager = null;
     }
 
     public void TournamentItemWon(int itemId)
@@ -522,11 +571,16 @@ public abstract class PubGame
         Input.SetPadValue(
             index, leftTrigger, rightTrigger, thumbLX, thumbLY, thumbRX, thumbRY, buttons);
 
-    public void StartSave() => Saving = true;
+    public void StartSave()
+    {
+        Saving = true;
+        OverlayManager?.ShowSaveIcon(true);
+    }
 
     public void EndSave()
     {
         Saving = false;
+        OverlayManager?.ShowSaveIcon(false);
         if (GameIsExiting)
         {
             OverlayManager?.ActivateFadeOut();
@@ -535,8 +589,12 @@ public abstract class PubGame
 
     public void UpdateVolumeSettings()
     {
-        Host.Command(PubCommand.UpdateSoundVolume, "volume:" + SoundVolume);
-        Host.Command(PubCommand.UpdateMusicVolume, "volume:" + MusicVolume);
+        Host.Command(
+            PubCommand.UpdateSoundVolume,
+            "volume:" + SoundVolume.ToString(CultureInfo.InvariantCulture));
+        Host.Command(
+            PubCommand.UpdateMusicVolume,
+            "volume:" + MusicVolume.ToString(CultureInfo.InvariantCulture));
     }
 
     public void UpdateTournamentStandings()

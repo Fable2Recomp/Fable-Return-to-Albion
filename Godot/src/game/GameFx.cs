@@ -148,6 +148,27 @@ public partial class GameFx : Node3D
 
     public int DrawnCount => _nodes.Count;
 
+    /// <summary>Every drawn effect's lights, nearest <paramref name="eye"/> first.</summary>
+    public List<string> DescribeLights(Vector3 eye, int take)
+    {
+        var rows = new List<(float Distance, string Row)>();
+        foreach (FableFx node in _nodes.Values)
+        {
+            if (!IsInstanceValid(node) || !node.IsInsideTree())
+            {
+                continue;
+            }
+
+            foreach (string row in node.DescribeLights(eye))
+            {
+                rows.Add((eye.DistanceTo(node.GlobalPosition), row));
+            }
+        }
+
+        rows.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+        return rows.GetRange(0, System.Math.Min(take, rows.Count)).ConvertAll(r => r.Row);
+    }
+
     /// <summary>Particle nodes the last walk handed over, against the buffer cap.</summary>
     public int NodesRead { get; private set; }
 
@@ -276,7 +297,10 @@ public partial class GameFx : Node3D
             uint rootKey = fx.Handle != 0 ? fx.Handle : fx.Instance;
             if (fx.Root)
             {
-                if (fx.Position.IsFinite() && fx.Position.Length() < MaxFxReach && !_roots.ContainsKey(rootKey))
+                // A root nobody has positioned is identity at the origin: the node ctor
+                // `sub_8322A228` seeds +0x20 with `sub_8223BDB0` (identity).
+                if (fx.Position.IsFinite() && fx.Position.Length() < MaxFxReach &&
+                    fx.Position != Vector3.Zero && !_roots.ContainsKey(rootKey))
                 {
                     _roots[rootKey] = ToGodot(fx.Position, fx.Rows);
                 }
@@ -373,6 +397,17 @@ public partial class GameFx : Node3D
                 continue;
             }
 
+            // Placed from the root only. `+0x20` is a node's OWN transform (quaternion +0x10,
+            // row 3 +0x50); its world is `sub_832295F0`: +0x70 concatenated up the +240 parent
+            // chain. Only the root, which has no parent, carries its world there; a child's +0x20
+            // is local to its parent. An effect with no placed root this walk waits for one,
+            // unmarked for the same reason as a refused position above.
+            if (!_roots.TryGetValue(key, out Transform3D placed))
+            {
+                ++UnrootedFx;
+                continue;
+            }
+
             // THE HANDLE RECYCLES. `key` is a guest address, so it can come back naming a
             // DIFFERENT effect; the node found here was built for the old one and `EffectName`
             // is only ever read at construction, so it would draw the previous effect's art.
@@ -406,9 +441,9 @@ public partial class GameFx : Node3D
             _seen.Add(key);
             _statedAt[key] = fx.Position;
 
-            // The composed world transform at `node + 0x20`, position and orientation together.
-            // Row 3 of that 64-byte matrix is `node + 0x50`; every writer of an emitter's
-            // placement lands inside it:
+            // The ROOT's transform at `node + 0x20`, position and orientation together, which
+            // is its world because a root has no parent. Row 3 of that 64-byte matrix is
+            // `node + 0x50`; every writer of an emitter's placement lands inside it:
             //
             //   sub_832325A8  `li r24,0x50` / `stvx128 v12,r31,r24`      the stated position
             //   sub_83231C40 -> sub_83228D78  `std r4,0x10(r31)` then
@@ -423,9 +458,6 @@ public partial class GameFx : Node3D
             // effect whose owner never fires component message 10 keeps the .pfx-authored
             // transform without either setter being called. `_stated` also has no orientation.
             // It is a diagnostic only, reported through `refii_fx`.
-            Transform3D placed = _roots.TryGetValue(key, out Transform3D root)
-                ? root
-                : ToGodot(fx.Position, fx.Rows);
             if (_stated.ContainsKey(key))
             {
                 ++StatedPlacements;
@@ -439,6 +471,7 @@ public partial class GameFx : Node3D
             node.Transform = Smoothed(key, placed);
             (float scale, float fade) = _emitterState.TryGetValue(key, out var state) ? state : (1f, 1f);
             node.Intensity = fx.Intensity * fade;
+            node.LightFade = fade;
             node.SizeScale = scale;
         }
 
@@ -558,28 +591,38 @@ public partial class GameFx : Node3D
     }
 
     /// <summary>
-    /// Guest world space to Godot's, the same map <see cref="GameEntities"/> uses (a sibling of
-    /// the region needs the X negation; the region's contents do not). Rows are normalised guest
-    /// axes: row 0 = local X, row 1 = Y, row 2 = Z; Godot Y = guest Z, Godot Z = -guest Y.
+    /// Guest world space to Godot's, the same position map <see cref="GameEntities"/> uses (a
+    /// sibling of the region needs the X negation; the region's contents do not). Rows are
+    /// normalised guest axes: row 0 = local X, row 1 = Y, row 2 = Z.
     /// </summary>
+    /// <remarks>
+    /// The basis is the simulation's, not a mesh's. <see cref="Engine_FxSystem"/> holds a guest
+    /// local (x, y, z) as node-local (x, z, y) — a swap, determinant -1 — so the node's columns
+    /// are the guest rows in that order: world = x·row0 + z·row2 + y·row1. The entity meshes are
+    /// converted (x, z, -y) and take `-row1` as their third column, which here would mirror the
+    /// effect along its local Y. `Engine_LevelFx` converts with diag(1, 1, -1) for the same reason.
+    /// </remarks>
     private static Transform3D ToGodot(Vector3 position, Vector3[] rows)
     {
         if (rows.Length < 3 || rows[0].IsZeroApprox() || rows[2].IsZeroApprox())
         {
-            return new Transform3D(Basis.Identity, ToGodot(position));
+            return new Transform3D(GuestIdentity, ToGodot(position));
         }
 
-        var basis = new Basis(ToGodot(rows[0]), ToGodot(rows[2]), -ToGodot(rows[1]));
+        var basis = new Basis(ToGodot(rows[0]), ToGodot(rows[2]), ToGodot(rows[1]));
         float determinant = basis.Determinant();
 
         // The range test is false for NaN, so a NaN or infinite basis needs its own check.
         if (!float.IsFinite(determinant) || determinant is < 0.01f and > -0.01f)
         {
-            return new Transform3D(Basis.Identity, ToGodot(position));
+            return new Transform3D(GuestIdentity, ToGodot(position));
         }
 
         return new Transform3D(basis, ToGodot(position));
     }
+
+    /// <summary>The node basis of an unrotated guest placement: (-x, z, y) from the sim's (x, z, y).</summary>
+    private static readonly Basis GuestIdentity = new(new Vector3(-1f, 0f, 0f), Vector3.Up, Vector3.Back);
 
     /// <summary>Furthest an FX emitter may sit from the origin before its depth can overflow.</summary>
     private const float MaxFxReach = 1_000_000f;
@@ -589,6 +632,9 @@ public partial class GameFx : Node3D
 
     /// <summary>Effects with a finite position beyond <see cref="MaxFxReach"/>. Run total.</summary>
     public static int OutOfReachFx;
+
+    /// <summary>Effect sightings with no placed root to draw from. Run total.</summary>
+    public static int UnrootedFx;
 
     private static Vector3 ToGodot(Vector3 guest) => new(-guest.X, guest.Z, guest.Y);
 }

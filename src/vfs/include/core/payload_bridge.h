@@ -75,6 +75,30 @@ void refii_bridge_note_fx_orientation(uint32_t instance, const uint32_t* lanes);
 void refii_bridge_note_highlight_colour(uint32_t component, uint32_t rgba);
 void refii_bridge_note_highlight_target(void);
 
+// Each renderable's stated appearance. Wrappers: refii::vfs::NoteAppearance / ForgetAppearance
+// in vfs_hooks_private.h; the table is in refii_vfs (src/core/entity_appearance_state.cpp).
+// Words, as the guest keeps them on CECGraphicAppearance (offsets from the component):
+//   0 alpha +112, 1 camera alpha +116, 2 scale +108 (float bits),
+//   3..6 tint +80, +84, +88, +92 (float bits, memory order),
+//   7 flags: kAppearanceDrawable = +197 non-zero, kAppearanceSaturation = +196 non-zero.
+enum {
+  kAppearanceWords = 8,
+  kAppearanceFlags = 7,
+  kAppearanceDrawable = 1,
+  kAppearanceSaturation = 2,
+};
+void refii_bridge_note_appearance(uint32_t component, const uint32_t* words);
+void refii_bridge_forget_appearance(uint32_t component);
+
+// The pub-game seam. The host claims the guest's pub-game module and posts the fscommands
+// Godot's game issues; the pump replacement (src/hooks/pubgame_pump.cpp, on the guest's render
+// thread) drains them into the guest's own handlers and reports back what the movie would have
+// been told. State in src/core/pubgame_state.cpp. `numbers` is 3 doubles, `integers` 2.
+int32_t refii_bridge_pubgame_claimed(void);
+int32_t refii_bridge_pubgame_take_command(uint32_t* kind, char* text, size_t text_capacity,
+                                          double* numbers, int64_t* integers);
+void refii_bridge_pubgame_note_event(uint32_t bits);
+
 // Menu spawn capture: a row's identity goes into a Lua table the host cannot read, so it is
 // copied from `sub_826CE8D0`'s registers. `begin` runs on `DeleteAllSpawnedMenuItems`, rows
 // follow in spawn order; both on the guest tick thread, host reads under the action-queue lock.

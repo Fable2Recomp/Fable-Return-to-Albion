@@ -52,6 +52,17 @@ public static class CoopSession
 
 	public static bool IsClient => Side == Role.Client;
 
+	/// <summary>
+	/// A second player on THIS machine — the guest's own `IsLocalCoopGame` (`game+284 == 2`,
+	/// set by `Coop_SetSharedScreenMode` on a START from a pad that is not player one's). Both
+	/// players are local then, and no peer or channel exists: the role bytes still read as a
+	/// solo host.
+	/// </summary>
+	public static bool LocalCoop { get; private set; }
+
+	/// <summary>Player two's guest pad in local co-op, else −1.</summary>
+	public static int LocalPadTwo { get; private set; } = -1;
+
 	/// <summary>Raised on the frame a peer's presence begins / ends.</summary>
 	public static event Action? PeerJoined;
 
@@ -64,6 +75,7 @@ public static class CoopSession
 	{
 		if (HostBridge.CoopSessionRaw() is not { } words)
 		{
+			SetLocalCoop(false, -1);
 			Transition(Phase.Solo, Role.Solo);
 			One.Entity = 0u;
 			Two.Entity = 0u;
@@ -73,6 +85,7 @@ public static class CoopSession
 		_last = words;
 		One.Entity = words.PlayerOne;
 		Two.Entity = words.PlayerTwo;
+		SetLocalCoop(words.LocalCoop, words.LocalCoop ? (int)words.PlayerTwoPad : -1);
 
 		// ROLE: the guest's own reading of its bytes. Note a solo game carries {session, host}
 		// too (Frontend_SetStartGameTarget sets them on every start), so "host" alone is not
@@ -90,11 +103,25 @@ public static class CoopSession
 		Transition(next, side);
 	}
 
+	private static void SetLocalCoop(bool local, int pad)
+	{
+		if (local == LocalCoop && pad == LocalPadTwo)
+		{
+			return;
+		}
+
+		LocalCoop = local;
+		LocalPadTwo = pad;
+		Godot.GD.Print(local
+			? $"[coop-session] local co-op — player two on pad {pad}"
+			: "[coop-session] local co-op ended");
+	}
+
 	private static void Transition(Phase next, Role side)
 	{
 		Side = side;
 		One.IsLocal = side != Role.Client;
-		Two.IsLocal = side == Role.Client;
+		Two.IsLocal = side == Role.Client || LocalCoop;
 		if (next == State)
 		{
 			return;

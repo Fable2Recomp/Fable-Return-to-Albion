@@ -369,8 +369,7 @@ public static int SurfacesWithLods;
                 ++SurfacesWithTransfer;
             }
 
-            mesh.AddSurfaceFromArrays(
-                Mesh.PrimitiveType.Triangles, arrays, null, lods, Engine_MdlTransfer.FormatOf(arrays));
+            Engine_MdlSurfaceArrays.Add(mesh, Mesh.PrimitiveType.Triangles, arrays, lods);
             surfaceLods.Add(lods ?? new Godot.Collections.Dictionary());
             if (lods is not null)
             {

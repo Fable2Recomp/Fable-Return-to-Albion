@@ -268,6 +268,7 @@ public partial class GameEntities : Node3D
         // between walks too, so attachments keep up with bones that move every frame.
         _attached.Clear();
         Refii.Entities.Engine_EntityHighlight.BeginWalk();
+        Refii.Entities.Engine_EntityAppearance.BeginWalk();
 
         // The half-res surface the highlight silhouettes are drawn into. Idempotent; builds
         // nothing until the post chain is up, since the layer reaches the screen only through it.
@@ -507,13 +508,18 @@ public partial class GameEntities : Node3D
                 // step to sample the field at. The theme's flat ambient is what they get.
                 LightEntity(node);
 
+                bool ranged = StateDrawRange(entity.Address, node);
                 if (!TryRig(entity.Address, node, mesh))
                 {
-                    // No skeleton = dressing: it gets the region's prop policies, a screen-size
-                    // cull and a shadow reach keyed on its size.
+                    // No skeleton = dressing: it gets the region's prop policies — its stated
+                    // range, else a screen-size cull — and a shadow reach keyed on its size.
                     _unrigged.Add(entity.Address);
                     Refii.Level.Engine_PropStreamer.ApplyVisibilityRange(node, mesh);
                     Refii.Lighting.Engine_ShadowReach.Adopt(node);
+                }
+                else if (ranged)
+                {
+                    Refii.Level.Engine_PropDrawRange.Apply(node);
                 }
 
                 Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
@@ -563,6 +569,10 @@ public partial class GameEntities : Node3D
                         Refii.Level.Engine_PropStreamer.ApplyVisibilityRange(node, mesh);
                         Refii.Lighting.Engine_ShadowReach.Adopt(node);
                     }
+                    else
+                    {
+                        Refii.Level.Engine_PropDrawRange.Apply(node);
+                    }
 
                     GD.Print($"[rig] entity 0x{entity.Address:X8} changed mesh — re-rigged " +
                         $"({(_skeletons.ContainsKey(entity.Address) ? "new skeleton" : "no rig yet, retrying")})");
@@ -571,13 +581,32 @@ public partial class GameEntities : Node3D
                 // Last: the cull range, the shadow reach and the rig above are what it copies.
                 Refii.Entities.Engine_ShadowProxy.Sync(node);
             }
-            else if (_ticks % ReconcileTicks == 0)
+            else if (Due(entity.Address, ReconcileTicks))
             {
                 // Clothes change without the model changing: the hero dresses, an NPC's outfit
                 // is re-committed. The garment set is re-read on the reconcile cadence.
                 Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
                 Refii.Entities.Engine_ShadowProxy.SyncHidden(node);
             }
+
+            // THE STATED LOOK — alpha, drawable — also ABOVE the skip: an entity can fade without
+            // moving (a dying hollow man). A look other than the constructor's needs the
+            // node itself: a batch draws every instance alike, and a married twin may be one
+            // instance of a MultiMesh. The marriage ends for good; the region's copy goes, as
+            // it would for an entity destroyed, and this node draws from now on.
+            if (Refii.Entities.Engine_EntityAppearance.NeedsOwnNode(entity.Appearance))
+            {
+                if (adopted && _adoptions.TryGetValue(entity.Address, out var marriage))
+                {
+                    Twins?.Release(marriage.Twin, hide: true);
+                    _adoptions.Remove(entity.Address);
+                    adopted = false;
+                }
+
+                Unbatch(entity.Address, node);
+            }
+
+            Refii.Entities.Engine_EntityAppearance.Apply(node, entity.Appearance, IsPrincipal(entity.Address));
 
             // The stated targeting highlight goes ABOVE the unchanged-entity skip: the guest
             // ramps its colour over several ticks on a target that may not move. Cheap when
@@ -595,7 +624,8 @@ public partial class GameEntities : Node3D
             // walk compared the stated words itself.
             prologueTicks += System.Diagnostics.Stopwatch.GetTimestamp() - prologueFrom;
 
-            if (!entity.Changed && !created && _ticks % ReconcileTicks != 0 &&
+            if (!entity.Changed && !created && !Due(entity.Address, ReconcileTicks) &&
+                entity.Appearance.IsConstructed &&
                 !_skeletons.ContainsKey(entity.Address) &&
                 !_movers.Contains(entity.Address) &&
                 _attachments.ParentOf(entity.Address) == 0u)
@@ -608,6 +638,7 @@ public partial class GameEntities : Node3D
             // The guest has stated something new, or the prop has become more than a prop: it
             // is a node again before anything below places or poses it.
             if (entity.Changed || created || entity.Highlighted ||
+                !entity.Appearance.IsConstructed ||
                 _skeletons.ContainsKey(entity.Address) || _movers.Contains(entity.Address) ||
                 _attachments.ParentOf(entity.Address) != 0u)
             {
@@ -651,7 +682,8 @@ public partial class GameEntities : Node3D
 
                 if (!attachedChild)
                 {
-                    Place(entity.Address, node, Drawn(entity, stated));
+                    Place(entity.Address, node,
+                        Refii.Entities.Engine_EntityAppearance.Scaled(Drawn(entity, stated), entity.Appearance));
                 }
 
                 // LIT FROM THE LEVEL'S PROBE FIELD where it stands, as the guest lights every
@@ -660,7 +692,7 @@ public partial class GameEntities : Node3D
                 // And only when the answer can have changed: the sample depends on position and
                 // theme, so it is redone when the entity has moved half a metre or the region's
                 // lighting generation has changed. Each sample allocates Godot wrappers.
-                if (_ticks % ReconcileTicks == 0 || _relit.Add(entity.Address))
+                if (Due(entity.Address, ReconcileTicks) || _relit.Add(entity.Address))
                 {
                     // A region's lights can spawn after the entity that hosts one.
                     uint layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(entity.RecordHash);
@@ -749,8 +781,25 @@ public partial class GameEntities : Node3D
                     // 0x8220D67C instead: inside BoneLODDistance a rig poses on both HF sub-steps,
                     // outside it only on the sub-step that completes a tick (30 Hz / 15 Hz).
                     // A principal off screen still throws a shadow onto it.
+                    // Past its stated reach the rig is not drawn and casts nothing, so its pose is
+                    // held like one off screen; the clips run on and the next write is correct.
+                    // A principal found after its node was stamped loses the stamp here.
+                    if (IsPrincipal(entity.Address) && _drawRanges.Remove(entity.Address))
+                    {
+                        node.RemoveMeta(Refii.Level.Engine_PropDrawRange.Meta);
+                        node.VisibilityRangeEnd = 0f;
+                        node.VisibilityRangeEndMargin = 0f;
+                        if (Refii.Entities.Engine_ShadowProxy.ProxyOf(node) is { } caster)
+                        {
+                            caster.VisibilityRangeEnd = 0f;
+                            caster.VisibilityRangeEndMargin = 0f;
+                        }
+                    }
+
+                    float reach = DrawnReach(entity.Address) + ReachSlackMetres;
+                    bool withinReach = !measurable || float.IsPositiveInfinity(reach) || eyeDistanceSq <= reach * reach;
                     bool inView = IsPrincipal(entity.Address) ||
-                        RigInView(entity.Address, measurable, rigAt, frustum, nowMs);
+                        (withinReach && RigInView(entity.Address, measurable, rigAt, frustum, nowMs));
                     // A principal's shadow keeps full fidelity; everyone else's follows on guest frames.
                     Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(rig.Node, IsPrincipal(entity.Address));
                     bool fullRate = !measurable || IsPrincipal(entity.Address) ||
@@ -787,7 +836,7 @@ public partial class GameEntities : Node3D
                 long tailFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                 SampleFacing(entity.Address, node, entity.Rotation);
                 long facingAt = System.Diagnostics.Stopwatch.GetTimestamp();
-                StateVisibleExtent(node, rig);
+                StateVisibleExtent(entity.Address, node, rig);
                 long extentAt = System.Diagnostics.Stopwatch.GetTimestamp();
                 SampleTrace(entity.Address, node, StatedOf(entity.Address, node.Transform), rig);
                 facingTicks += facingAt - tailFrom;
@@ -842,7 +891,8 @@ public partial class GameEntities : Node3D
         // which is a few seconds, so it is a trace rather than a spew.
         if (++_costReports % 120 == 0)
         {
-            double loopMs = poseMs + placeMs;
+            // The prologue is timed too; "rest" is only what no section covers.
+            double loopMs = poseMs + placeMs + prologueTicks * toMs;
             GD.Print($"[entities] {entities.Count} entity(s), {posed} posed ({posedWritten} written, {posedHalfRate} of them at the guest's half rate): " +
                 $"pose {poseMs:0.00}ms (read {Refii.Entities.Engine_EntitySkeleton.ReadMs:0.00}, " +
                 $"write {Refii.Entities.Engine_EntitySkeleton.WriteMs:0.00}, " +
@@ -1243,7 +1293,7 @@ public partial class GameEntities : Node3D
             }
 
             if (_nodes.TryGetValue(rigged.Key, out MeshInstance3D? owner) &&
-                owner.Mesh is { } rigMesh)
+                Refii.Entities.Engine_BodyVariants.SourceMesh(owner) is { } rigMesh)
             {
                 ReportRig(rigMesh, rigged.Value);
             }
@@ -1254,7 +1304,7 @@ public partial class GameEntities : Node3D
         (uint one, uint two) = Refii.Host.HostBridge.CoopPlayerEntities();
         if (two != 0u && two != _playerTwoReported &&
             _skeletons.TryGetValue(two, out var twoRig) &&
-            _nodes.TryGetValue(two, out MeshInstance3D? twoNode) && twoNode.Mesh is ArrayMesh twoMesh)
+            _nodes.TryGetValue(two, out MeshInstance3D? twoNode) && Refii.Entities.Engine_BodyVariants.SourceMesh(twoNode) is ArrayMesh twoMesh)
         {
             _playerTwoReported = two;
             int surfaces = twoMesh.GetSurfaceCount();
@@ -1333,7 +1383,7 @@ public partial class GameEntities : Node3D
 
             node.AddChild(animator);
 
-            uint[] hashes = node.Mesh is Refii.Entities.Engine_EntityResource resource
+            uint[] hashes = Refii.Entities.Engine_BodyVariants.SourceMesh(node) is Refii.Entities.Engine_EntityResource resource
                 ? System.Linq.Enumerable.ToArray(resource.ModelHashes)
                 : System.Array.Empty<uint>();
 
@@ -1354,11 +1404,11 @@ public partial class GameEntities : Node3D
     {
         foreach ((uint child, MeshInstance3D node, Transform3D stated) in _attached)
         {
-            // // A child whose dummy names no bone this host has, or whose parent has no rig yet, is
-            // // placed on the guest's own statement; the walk defers every attached child to this
-            // // pass, so nothing else places it.
-            // //
-            // // The guest's contract (CECObjectAttachment): on every parent move, `sub_825EBAA0`
+            // A child whose dummy names no bone this host has, or whose parent has no rig yet, is
+            // placed on the guest's own statement; the walk defers every attached child to this
+            // pass, so nothing else places it.
+            //
+            // The guest's contract (CECObjectAttachment): on every parent move, `sub_825EBAA0`
             // writes each live child's placement as inv(grip) x dummy x parentWorld
             // (`sub_825ED2A0`, unconditional). The dummy lookup `sub_82235CA8` tries the part
             // gmd tables (`sub_8223F668`, `sub_8223BE58`) and otherwise returns the IDENTITY
@@ -1376,10 +1426,52 @@ public partial class GameEntities : Node3D
                 ++AttachedOnStated;
             }
 
+            // THE WEAPON'S SHADOW FOLLOWS AT THE GUEST'S RATE. Marked before the placement
+            // below, so a proxy built on this frame is placed by it; the holder's principal
+            // status decides every-frame placement, as it does for the holder's own body.
+            if (Refii.Entities.Engine_ShadowProxy.MarkFollower(node, true, IsPrincipal(parent)))
+            {
+                Refii.Entities.Engine_ShadowProxy.Sync(node);
+            }
+
+            _followers[child] = node;
             Place(child, node, placed);
             _pairs.Remove(child);  // it is not being blended; do not blend back to it
         }
+
+        // DROPPED, NOT MISSED. A follower stops following when the guest's attachment record says
+        // it has no parent — not when this frame's list lacks it, which a torn placement read can
+        // cause for one walk. The body then casts as any rigid prop does.
+        foreach ((uint child, MeshInstance3D node) in _followers)
+        {
+            if (!GodotObject.IsInstanceValid(node))
+            {
+                _unfollowed.Add(child);
+                continue;
+            }
+
+            if (_attachments.ParentOf(child) == 0u)
+            {
+                _unfollowed.Add(child);
+                if (Refii.Entities.Engine_ShadowProxy.MarkFollower(node, false, false))
+                {
+                    Refii.Entities.Engine_ShadowProxy.Sync(node);
+                }
+            }
+        }
+
+        foreach (uint child in _unfollowed)
+        {
+            _followers.Remove(child);
+        }
+
+        _unfollowed.Clear();
     }
+
+    /// <summary>Attached children whose shadow casts through a following proxy, by address.</summary>
+    private readonly Dictionary<uint, MeshInstance3D> _followers = new();
+
+    private readonly List<uint> _unfollowed = new();
 
     /// <summary>
     /// The newest placement the guest STATED for an entity, as opposed to the blended one it is
@@ -1399,7 +1491,7 @@ public partial class GameEntities : Node3D
     /// </summary>
     private static string[] PartPaths(MeshInstance3D node)
     {
-        if (node.Mesh is not { } mesh)
+        if (Refii.Entities.Engine_BodyVariants.SourceMesh(node) is not { } mesh)
         {
             return System.Array.Empty<string>();
         }
@@ -1498,7 +1590,7 @@ public partial class GameEntities : Node3D
         foreach (uint address in _unrigged)
         {
             if (!_nodes.TryGetValue(address, out MeshInstance3D? node) ||
-                !GodotObject.IsInstanceValid(node) || node.Mesh is not { } mesh)
+                !GodotObject.IsInstanceValid(node) || Refii.Entities.Engine_BodyVariants.SourceMesh(node) is not { } mesh)
             {
                 _rigged.Add(address);  // gone, not rigged — either way stop asking
                 continue;
@@ -1506,8 +1598,10 @@ public partial class GameEntities : Node3D
 
             if (TryRig(address, node, mesh))
             {
-                // A character after all: it stays drawn at any size and casts at any range.
+                // A character after all: no screen-size cull and no size-keyed shadow reach, only
+                // the range it states (none leaves it drawn and casting at any distance).
                 node.VisibilityRangeEnd = 0f;
+                Refii.Level.Engine_PropDrawRange.Apply(node);
                 Refii.Lighting.Engine_ShadowReach.Release(node);
 
                 // After the release, which hands the BODY its shadow back: the proxy casts.
@@ -1524,6 +1618,45 @@ public partial class GameEntities : Node3D
 
     /// <summary>Entities with a node but no skeleton, still being asked.</summary>
     private readonly HashSet<uint> _unrigged = new();
+
+    /// <summary>
+    /// Each entity's stated range as applied ({begin, margin, end, margin, fade}); absent when the
+    /// guest states none usable or the entity is a principal. See <see cref="StateDrawRange"/>.
+    /// </summary>
+    private readonly Dictionary<uint, float[]> _drawRanges = new();
+
+    /// <summary>
+    /// THE GUEST'S DRAW DISTANCE. The renderable states D — `MaxDrawDistance` times the class
+    /// multiplier — and the gathers fade the entity out to D and cut its shadow hard there
+    /// (`sub_82219AB8`, `sub_8221E5F0`). Stamped on the node for the same range rule the static
+    /// placements use; `entity_draw_distance_scale` widens it. A principal is never stamped: the
+    /// players are drawn at any distance. False when nothing is stated.
+    /// </summary>
+    private bool StateDrawRange(uint address, GeometryInstance3D node)
+    {
+        if (IsPrincipal(address) ||
+            !HostBridge.GetEntityDrawRange(address, out float distance, out float fade) ||
+            Refii.Level.Engine_PropDrawRange.EntityRange(distance, fade) is not { } stated)
+        {
+            return false;
+        }
+
+        _drawRanges[address] = stated;
+        Refii.Level.Engine_PropDrawRange.StampEntity(node, stated);
+        return true;
+    }
+
+    /// <summary>
+    /// Godot measures a range to the instance's box centre, the pose gate to the rig's origin; the
+    /// slack keeps a body at the edge of its range posed while it can still be drawn.
+    /// </summary>
+    private const float ReachSlackMetres = 3f;
+
+    /// <summary>How far from the eye this entity is drawn at all; infinity when it states no range.</summary>
+    private float DrawnReach(uint address) =>
+        _drawRanges.TryGetValue(address, out float[]? stated)
+            ? Refii.Level.Engine_PropDrawRange.Reach(stated)
+            : float.PositiveInfinity;
 
     /// <summary>Scratch for <see cref="RetryRigs"/> — a set cannot be edited while walked.</summary>
     private readonly HashSet<uint> _rigged = new();
@@ -1589,6 +1722,14 @@ public partial class GameEntities : Node3D
     /// <summary>Half a second at 60fps between reconciles.</summary>
     private const int ReconcileTicks = 30;
 
+    /// <summary>
+    /// A per-entity cadence: true on one walk in <paramref name="period"/>, at a phase fixed by the
+    /// address. Every entity still reconciles once a period, but not all on the SAME walk, so the
+    /// part reads, relights and full passes are spread across the period.
+    /// </summary>
+    private bool Due(uint address, int period) =>
+        (uint)(_ticks + (int)((address * 2654435761u) >> 20)) % (uint)period == 0u;
+
     /// <summary>Scratch for the reconcile, reused so a twice-a-second pass allocates nothing.</summary>
     private readonly HashSet<uint> _liveRecords = new();
 
@@ -1633,7 +1774,7 @@ public partial class GameEntities : Node3D
             var weights = new Dictionary<int, float>();
             for (int surface = 0; surface < array.GetSurfaceCount(); surface++)
             {
-                Godot.Collections.Array arrays = array.SurfaceGetArrays(surface);
+                Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(array, surface);
                 Variant bonesVariant = arrays[(int)Mesh.ArrayType.Bones];
                 Variant weightsVariant = arrays[(int)Mesh.ArrayType.Weights];
                 if (bonesVariant.VariantType == Variant.Type.Nil ||
@@ -1671,7 +1812,7 @@ public partial class GameEntities : Node3D
     {
         Transform3D world = node.GlobalTransform;
         if (_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig) &&
-            node.Mesh is { } mesh)
+            Refii.Entities.Engine_BodyVariants.SourceMesh(node) is { } mesh)
         {
             Skeleton3D sk = rig.Node;
             int bone = DominantBone(mesh);
@@ -1934,7 +2075,7 @@ public partial class GameEntities : Node3D
 
         for (int s = 0; s < array.GetSurfaceCount(); ++s)
         {
-            Godot.Collections.Array arrays = array.SurfaceGetArrays(s);
+            Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(array, s);
             if (arrays.Count <= (int)Mesh.ArrayType.Weights ||
                 arrays[(int)Mesh.ArrayType.Bones].VariantType == Variant.Type.Nil ||
                 arrays[(int)Mesh.ArrayType.Weights].VariantType == Variant.Type.Nil)
@@ -2000,7 +2141,7 @@ public partial class GameEntities : Node3D
             return;
         }
 
-        Godot.Collections.Array surface = array.SurfaceGetArrays(0);
+        Godot.Collections.Array surface = Refii.Models.Engine_MdlSurfaceArrays.Of(array, 0);
         if (surface.Count <= (int)Mesh.ArrayType.Bones ||
             surface[(int)Mesh.ArrayType.Bones].VariantType == Variant.Type.Nil)
         {
@@ -2141,6 +2282,7 @@ public partial class GameEntities : Node3D
             if (_nodes.TryGetValue(address, out MeshInstance3D? node) &&
                 GodotObject.IsInstanceValid(node))
             {
+                Refii.Entities.Engine_EntityAppearance.Forget(node);
                 node.QueueFree();
             }
 
@@ -2185,6 +2327,7 @@ public partial class GameEntities : Node3D
             // And the retry, which would otherwise keep asking the guest about an entity it
             // no longer has — an address the guest has reused answers for something else.
             _unrigged.Remove(address);
+            _drawRanges.Remove(address);
         }
     }
 
@@ -2260,7 +2403,7 @@ public partial class GameEntities : Node3D
     /// </summary>
     private uint[] EyesOf(uint address)
     {
-        if (_ticks % ReconcileTicks != 0 && _eyes.TryGetValue(address, out uint[]? known))
+        if (!Due(address, ReconcileTicks) && _eyes.TryGetValue(address, out uint[]? known))
         {
             return known;
         }
@@ -2301,7 +2444,7 @@ public partial class GameEntities : Node3D
         // The part list is re-read on the reconcile cadence, as the eyes are.
         uint[] parts;
         int built = 0;
-        if (_ticks % ReconcileTicks != 0 && _compositeParts.TryGetValue(address, out uint[]? knownParts))
+        if (!Due(address, ReconcileTicks) && _compositeParts.TryGetValue(address, out uint[]? knownParts))
         {
             parts = knownParts;
         }
@@ -2332,7 +2475,7 @@ public partial class GameEntities : Node3D
     {
         uint[] parts;
         int total = 0;
-        if (_ticks % ReconcileTicks != 0 && _meshParts.TryGetValue(address, out uint[]? knownParts))
+        if (!Due(address, ReconcileTicks) && _meshParts.TryGetValue(address, out uint[]? knownParts))
         {
             parts = knownParts;
         }
@@ -2396,7 +2539,7 @@ public partial class GameEntities : Node3D
     {
         // A target's silhouette is drawn from its node, and this branch is where an unchanged
         // prop that has just been targeted is seen.
-        if (entity.Highlighted)
+        if (entity.Highlighted || !entity.Appearance.IsConstructed)
         {
             Unbatch(entity.Address, node);
             return;
@@ -2425,7 +2568,8 @@ public partial class GameEntities : Node3D
         }
 
         uint layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(entity.RecordHash);
-        if (_batches.Promote(entity.Address, shape, layers, placed.Drawn))
+        if (_batches.Promote(entity.Address, shape, layers, placed.Drawn,
+            _drawRanges.GetValueOrDefault(entity.Address)))
         {
             node.Visible = false;
         }
@@ -2731,11 +2875,11 @@ public partial class GameEntities : Node3D
     /// is only ever larger than what Godot would have assumed — a custom box that was too small
     /// would cull MORE, so the margin matters.
     /// </summary>
-    private void StateVisibleExtent(MeshInstance3D node, Refii.Entities.Engine_EntitySkeleton rig)
+    private void StateVisibleExtent(uint address, MeshInstance3D node, Refii.Entities.Engine_EntitySkeleton rig)
     {
         // Not every frame. The box only has to bound the pose, not track it, and re-stating it
         // per character per frame is work the renderer does not need.
-        if (_ticks % ExtentRestateTicks != 0 || node.Mesh is not { } mesh)
+        if (!Due(address, ExtentRestateTicks) || Refii.Entities.Engine_BodyVariants.SourceMesh(node) is not { } mesh)
         {
             return;
         }
@@ -2759,6 +2903,14 @@ public partial class GameEntities : Node3D
         ++_extentStated;
         Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.EntityExtent);
         node.CustomAabb = box;
+
+        // The proxy too: without a stated box Godot rebuilds its bounds from the bones on every
+        // guest-rate write and re-pairs it against every light it moves across.
+        if (Refii.Entities.Engine_ShadowProxy.ProxyOf(node) is { } proxy)
+        {
+            Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.EntityExtent);
+            proxy.CustomAabb = box;
+        }
     }
 
     /// <summary>
@@ -2877,7 +3029,7 @@ public partial class GameEntities : Node3D
         // Composite characters are the ones assembled from morph parts and carry no mesh
         // resource name, which is the cheapest discriminator available here and happens to
         // separate the humans from the animals and props almost exactly.
-        bool composite = node.Mesh is not ArrayMesh named || named.ResourceName.Length == 0;
+        bool composite = Refii.Entities.Engine_BodyVariants.SourceMesh(node) is not ArrayMesh named || named.ResourceName.Length == 0;
         int[] buckets = composite ? _facingBucketsComposite : _facingBucketsNamed;
         ++buckets[bucket];
 
@@ -3589,14 +3741,14 @@ public partial class GameEntities : Node3D
                 ["ops"] = opLines,
             };
         }
-        if (_nodes.TryGetValue(address, out MeshInstance3D? owner) && owner.Mesh is ArrayMesh ownerMesh)
+        if (_nodes.TryGetValue(address, out MeshInstance3D? owner) && Refii.Entities.Engine_BodyVariants.SourceMesh(owner) is ArrayMesh ownerMesh)
         {
             string[] regions = Refii.Models.Engine_MdlMesh.SurfaceRegions(ownerMesh);
             var surfaceRegions = new List<string>();
             for (int s = 0; s < ownerMesh.GetSurfaceCount(); s++)
             {
                 string region = s < regions.Length ? regions[s] : string.Empty;
-                bool hidden = owner.GetSurfaceOverrideMaterial(s) is not null;
+                bool hidden = (Refii.Entities.Engine_HiddenClusters.CollapsedMask(owner) & (System.UInt128.One << s)) != System.UInt128.Zero;
                 surfaceRegions.Add($"{s} '{ownerMesh.SurfaceGetName(s)}' region='{region}'{(hidden ? " HIDDEN" : "")}");
             }
 
@@ -3701,7 +3853,7 @@ public partial class GameEntities : Node3D
 
     public List<Dictionary<string, object?>>? DescribeSurfaces(uint address)
     {
-        if (!_nodes.TryGetValue(address, out MeshInstance3D? node) || node.Mesh is not { } mesh)
+        if (!_nodes.TryGetValue(address, out MeshInstance3D? node) || Refii.Entities.Engine_BodyVariants.SourceMesh(node) is not { } mesh)
         {
             return null;
         }

@@ -446,10 +446,10 @@ public sealed partial class WizardsTower : PubGame, IWizardsTowerView
             return;
         }
 
+        // AS2 0x00ec29-0x00ed72: A, B and Y return only when their StatusText is not empty.
         foreach ((string text, string icon) in new[]
         {
             ("AButtonText", "Abutton"), ("BButtonText", "Bbutton"), ("YButtonText", "Ybutton"),
-            ("LTButtonText", "LTbutton"), ("RTButtonText", "RTbutton"),
         })
         {
             IPubClip? label = Clip(text);
@@ -461,15 +461,24 @@ public sealed partial class WizardsTower : PubGame, IWizardsTowerView
             }
         }
 
+        // AS2 0x00ed7c-0x00ee52: LS when ShowLSButton, then RT and LT unconditionally.
         if (ShowLSButton)
         {
-            IPubClip? label = Clip("LSButtonText");
-            IPubClip? button = Clip("LSbutton");
-            if (label is not null && button is not null)
-            {
-                Fade.In(label, 0.5);
-                Fade.In(button, 0.5);
-            }
+            FadeInIfPresent("LSbutton");
+            FadeInIfPresent("LSButtonText");
+        }
+
+        FadeInIfPresent("RTbutton");
+        FadeInIfPresent("RTButtonText");
+        FadeInIfPresent("LTbutton");
+        FadeInIfPresent("LTButtonText");
+    }
+
+    private void FadeInIfPresent(string name)
+    {
+        if (Clip(name) is { } clip)
+        {
+            Fade.In(clip, 0.5);
         }
     }
 

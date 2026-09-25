@@ -224,9 +224,19 @@ struct RealEstate {
     int32_t owner_killed = 0;
     int32_t hero_opinion = 0;
 
-    /// `sub_823C8510` on the owner, or on the TENANT when there is one — the page shows whoever
-    /// is in it. Empty when the entity is gone, which is the page's "OTHER" case.
+    /// `sub_823C8510` on the TENANT when there is one, else on the OWNER when the hero is not
+    /// the owner. Empty when the entity is gone (the page's "OTHER" case) and empty when the
+    /// hero owns it — the guest never names the hero this way; see `title_record`.
     char occupant[128] = {};
+
+    /// A HERO-OWNED PROPERTY IS NAMED AFTER THE HERO'S TITLE, not through the creature-name
+    /// path. `sub_82998FB0` branches on ownership first (0x8299959c) and, when the hero owns
+    /// the building, calls `sub_824D8A10(&text, heroComponent57)`: the lazy GDB ref at
+    /// `comp57+92` (`{hash, cache}`, resolved by `sub_821B24F8`), its `HeroTitleComponent`
+    /// reference, that entry's `TextTag`, through Babel. This is that hash; 0 when the hero
+    /// holds no title, which the guest draws as an empty name. `sub_823C8510` cannot name the
+    /// hero: it carries no component 20.
+    uint32_t title_record = 0;
 
     /// The GDB record carrying the `Bonuses` array. NOT `record`: `sub_82917F60` runs the same
     /// `sub_821DA3B0` indirection over component **184**, so the array hangs off that

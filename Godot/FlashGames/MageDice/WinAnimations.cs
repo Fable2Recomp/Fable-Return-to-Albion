@@ -9,23 +9,29 @@ namespace Refii.FlashGames.MageDice;
 
 public sealed class AnimateWin : Action
 {
-    private readonly IPubClip _clip;
+    private readonly IPubClip? _clip;
     private double _alpha;
 
-    public AnimateWin(IPubClip clip, double duration, object? group = null)
+    // A missing clip still runs for its duration in its group: AS2 AnimatingSwitch.PlayWinAnimation
+    // (0x0003c8) passes winMCs[level] unchecked, and an undefined clip holds "Payout" all the same.
+    public AnimateWin(IPubClip? clip, double duration, object? group = null)
     {
         InitActionData();
         _clip = clip;
-        clip.Visible = false;
+        if (clip is not null)
+        {
+            clip.Visible = false;
+        }
+
         Duration = duration * 1000;
         Group = group;
         _alpha = 100;
     }
 
-    public static AnimateWin Timed(IPubClip clip, double duration, object? group = null) =>
+    public static AnimateWin Timed(IPubClip? clip, double duration, object? group = null) =>
         Add(new AnimateWin(clip, duration, group));
 
-    public static AnimateWin Instant(IPubClip clip, object? group = null) =>
+    public static AnimateWin Instant(IPubClip? clip, object? group = null) =>
         Add(new AnimateWin(clip, 0, group));
 
     public override bool Run(double ticks, object? callbackData, bool groupActive)
@@ -44,6 +50,11 @@ public sealed class AnimateWin : Action
             {
                 _alpha = 0;
             }
+        }
+
+        if (_clip is null)
+        {
+            return done;
         }
 
         _clip.Alpha = (float)_alpha;

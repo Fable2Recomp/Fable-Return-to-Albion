@@ -90,6 +90,22 @@ public partial class GameSession : Node
 		Refii.Core.Engine_FramePhases.ZoneEnd = Refii.Host.HostBridge.TraceZoneEnd;
 		Refii.Core.Engine_FramePhases.Plot = Refii.Host.HostBridge.TracePlot;
 
+		// Godot's pass timestamps go onto the same timeline as GPU zones. They exist only while
+		// the engine captures them (`gpu_profile = true` in refii.toml passes `--gpu-profile`).
+		Refii.Core.Engine_GpuPasses.Sink = Refii.Host.HostBridge.TraceGpuPasses;
+
+		// RenderDoc, when the launcher armed its Vulkan layer for this run (`renderdoc = true`):
+		// takes the in-application API so the debug channel can trigger captures into user://captures.
+		if (Refii.Core.Engine_RenderDoc.Install(
+				ProjectSettings.GlobalizePath("user://captures"), out string renderDocNote))
+		{
+			GD.Print("[renderdoc] " + renderDocNote);
+		}
+		else if (renderDocNote.Length != 0)
+		{
+			GD.Print("[renderdoc] " + renderDocNote);
+		}
+
 		// THE DEBUG CHANNEL COMES UP FIRST, BEFORE ANYTHING SLOW.
 		//
 		// It was attached after a successful guest boot, which is precisely when it is least

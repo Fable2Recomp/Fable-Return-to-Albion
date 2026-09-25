@@ -107,9 +107,15 @@ public static class Engine_HiddenClusters
 		return false;
 	}
 
-	/// <summary>Which surfaces this pass has collapsed, by surface index. It is the only writer.</summary>
+	/// <summary>
+	/// Which surfaces this pass hides, by SOURCE surface index. It is the only writer. The
+	/// collapse overrides actually written on the node are <see cref="Written"/>: none while the
+	/// node shows a variant (<see cref="Engine_BodyVariants"/>), which leaves those surfaces out.
+	/// </summary>
 	private sealed class SurfaceState
 	{
+		public UInt128 Written;
+
 		private ulong _bits;
 		private bool[] _more = Array.Empty<bool>();
 
@@ -159,16 +165,7 @@ public static class Engine_HiddenClusters
 			return UInt128.Zero;
 		}
 
-		UInt128 mask = state.Bits;
-		for (int surface = 64; surface < 128; surface++)
-		{
-			if (state.Get(surface))
-			{
-				mask |= UInt128.One << surface;
-			}
-		}
-
-		return mask;
+		return MaskOf(state);
 	}
 
 	private sealed record PartTables(int[] SurfaceParts, uint[] PartHashes);
@@ -182,7 +179,7 @@ public static class Engine_HiddenClusters
 	/// </summary>
 	public static int Apply(MeshInstance3D node, uint entity)
 	{
-		if (node.Mesh is not Mesh mesh)
+		if (Engine_BodyVariants.SourceMesh(node) is not Mesh mesh)
 		{
 			return 0;
 		}
@@ -234,21 +231,75 @@ public static class Engine_HiddenClusters
 				}
 			}
 
-			// Our own record of what was last written, not `GetSurfaceOverrideMaterial` (which
-			// allocates a wrapper per call); this pass is the slot's only writer.
-			bool isHidden = state.Get(s);
-			if (hide != isHidden)
-			{
-				node.SetSurfaceOverrideMaterial(s, hide ? Collapsed : null);
-				state.Set(s, hide);
-			}
-
+			state.Set(s, hide);
 			if (hide)
 			{
 				count++;
 			}
 		}
 
+		Present(node, mesh as ArrayMesh, state);
 		return count;
+	}
+
+	/// <summary>
+	/// Draws the hidden set: the body's variant without those surfaces when one saves anything,
+	/// else the source with the collapse override on each. Overrides are cleared BEFORE a swap to
+	/// the variant — a node keeps its overrides by index across a mesh change — and written from
+	/// our own record, not `GetSurfaceOverrideMaterial` (a wrapper per call).
+	/// </summary>
+	private static void Present(MeshInstance3D node, ArrayMesh? source, SurfaceState state)
+	{
+		UInt128 hidden = MaskOf(state);
+		ArrayMesh? variant = source is null ? null : Engine_BodyVariants.For(source, hidden);
+		if (variant is not null)
+		{
+			if (!ReferenceEquals(node.Mesh, variant))
+			{
+				WriteOverrides(node, state, UInt128.Zero);
+				node.Mesh = variant;
+				Engine_BodyVariants.NoteShown(node, source!, variant);
+			}
+
+			return;
+		}
+
+		if (source is not null && !ReferenceEquals(node.Mesh, source))
+		{
+			node.Mesh = source;
+			state.Written = UInt128.Zero;
+		}
+
+		WriteOverrides(node, state, hidden);
+	}
+
+	private static void WriteOverrides(MeshInstance3D node, SurfaceState state, UInt128 wanted)
+	{
+		UInt128 changed = state.Written ^ wanted;
+		for (int s = 0; s < 128 && changed != UInt128.Zero; s++)
+		{
+			UInt128 bit = UInt128.One << s;
+			if ((changed & bit) != UInt128.Zero)
+			{
+				node.SetSurfaceOverrideMaterial(s, (wanted & bit) != UInt128.Zero ? Collapsed : null);
+				changed &= ~bit;
+			}
+		}
+
+		state.Written = wanted;
+	}
+
+	private static UInt128 MaskOf(SurfaceState state)
+	{
+		UInt128 mask = state.Bits;
+		for (int surface = 64; surface < 128; surface++)
+		{
+			if (state.Get(surface))
+			{
+				mask |= UInt128.One << surface;
+			}
+		}
+
+		return mask;
 	}
 }

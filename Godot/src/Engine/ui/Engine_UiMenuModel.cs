@@ -131,6 +131,15 @@ public sealed class Engine_UiMenuModel
 		_menus.Clear();
 	}
 
+	/// <summary>
+	/// Forgets one presentation's menu. The model is keyed by presentation ADDRESS and the guest
+	/// recycles addresses: a screen freed on close and rebuilt on the next open lands where the
+	/// last one stood, and its fresh Gameface VM holds only the rows it spawns itself, so it
+	/// never states a clear; the earlier instance's rows must not carry into the new list.
+	/// Called when the registry stops listing the address.
+	/// </summary>
+	public void Forget(uint presentation) => _menus.Remove(presentation);
+
 	/// <summary>How many statements have been applied, for the report.</summary>
 	public int Applied => _applied;
 

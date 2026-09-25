@@ -162,9 +162,9 @@ public static class Engine_MdlMaterial
     private static Shader? Shared() => Shared(ShaderFamily.Standard);
 
     /// <summary>
-    /// /// The two-sided shader that bends in the wind, and the ONLY shader that reads TIME: Godot marks
-    /// /// a light's shadow dirty after every render while an "animated" caster (TIME in a vertex
-    /// /// function that writes VERTEX) is in its pass, so only a surface that sways may carry it.
+    /// The two-sided shader that bends in the wind, and the ONLY shader that reads TIME: Godot marks
+    /// a light's shadow dirty after every render while an "animated" caster (TIME in a vertex
+    /// function that writes VERTEX) is in its pass, so only a surface that sways may carry it.
     /// </summary>
     private static Shader? SharedWind()
     {
@@ -374,6 +374,9 @@ public static class Engine_MdlMaterial
 
     public static Material? TryCreate(MdlMaterial? material) => TryCreate(material, out _);
 
+    /// <summary>Materials built whose named albedo failed to load; run total.</summary>
+    public static long MaterialsMissingAlbedo;
+
     /// <param name="overridden">
     /// A sampler resolved through <see cref="TextureOverride"/> — the hero's morphed maps, which
     /// belong to one body. Such a material is not shareable by record key.
@@ -398,6 +401,16 @@ public static class Engine_MdlMaterial
 
         overridden =
             albedoOverridden || normalOverridden || emissiveOverridden || specularOverridden;
+
+        // A named albedo that did not load makes an incomplete material, and it is not shared:
+        // shared, every surface of that record would keep the shader's default albedo (white)
+        // for the session. Unshared, the next surface that asks builds it again and gets the
+        // texture once it loads.
+        if (albedo is null && material.Diffuse.Length != 0)
+        {
+            Interlocked.Increment(ref MaterialsMissingAlbedo);
+            overridden = true;
+        }
 
         // The environment cube. 526 of the 8,931 shipped material records name one and none of
         // them were rendering it, because the decoder could not read a cube .tex at all until

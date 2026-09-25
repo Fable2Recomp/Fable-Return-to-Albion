@@ -202,7 +202,9 @@ public sealed partial class WizardsTower
             IPubClip? offer = Clip("OfferInfo");
             if (offer is not null)
             {
-                Fade.Out(offer, 0.5, "OfferGroup");
+                // AS2 0x008c55-0x008c85: the group is Action.LINEAR (0); "OfferGroup" is a
+                // fourth argument Fade.Out does not take.
+                Fade.Out(offer, 0.5, Action.StyleLinear);
             }
 
             return;

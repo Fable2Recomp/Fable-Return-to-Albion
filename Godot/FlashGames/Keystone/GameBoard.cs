@@ -52,6 +52,7 @@ public sealed class GameBoard
         ClearAllHilights();
         ClearAllFoci();
         ClearAllNumbers();
+        ResetAllArrows();
         LocalizeBoard();
     }
 
@@ -284,6 +285,16 @@ public sealed class GameBoard
         Localize(stats.GetChild("label2"), "txtSpaceOddsLabel", null);
     }
 
+    /// <summary><c>ShowSpaceStats</c> (0x001785-0x0017b7): a 250 ms fade of the space panel.</summary>
+    public void ShowSpaceStats(bool show, object? group, bool blocking)
+    {
+        IPubClip? stats = _root.GetChild("spaceStats");
+        if (stats is not null)
+        {
+            FadeClip(stats, show, 250, blocking).Group = group;
+        }
+    }
+
     public void UpdateSpaceStats(int space)
     {
         IPubClip? stats = _root.GetChild("spaceStats");
@@ -404,34 +415,6 @@ public sealed class GameBoard
 
         button.Alpha = 0;
         button.GetChild("button")?.GotoAndStop(1);
-    }
-
-    public void AdjustLayers(bool allowDebugMenu)
-    {
-        string[] order =
-        {
-            "tableText", "fade", "playerShadows", "playerChips", "stonesGone", "stones",
-            "overs", "hilights", "shadows", "diceShadows", "chips", "dice", "numbersAbove",
-            "playerNames", "betStats", "spaceStats", "tourneyStats",
-            "button5", "button4", "button3", "button2", "button1",
-            "notice", "overlays", "debug", "safeArea", "debugHUD",
-        };
-
-        int depth = _root.GetNextHighestDepth();
-        foreach (string name in order)
-        {
-            _root.GetChild(name)?.SwapDepths(depth++);
-        }
-
-        if (allowDebugMenu)
-        {
-            return;
-        }
-
-        foreach (string name in new[] { "debug", "safeArea", "debugHUD" })
-        {
-            _root.GetChild(name)?.RemoveMovieClip();
-        }
     }
 
     private void SetAlpha(string name, float alpha)
@@ -920,6 +903,11 @@ public sealed class GameBoard
             }
 
             glow.Stop();
+            if (_keystone.Bloodstone)
+            {
+                glow.SetTint(0.02f, 0.02f, 0.02f, 0, 0, 0);
+            }
+
             glow.Alpha = 0;
         }
     }
@@ -1013,8 +1001,9 @@ public sealed class GameBoard
             return;
         }
 
+        // Shown in 1 ms, hidden over 250 (0x005802-0x005872).
         var fade = new AnimateAlpha(
-            show ? 0 : 100, show ? 100 : 0, hilights, 250, 0, AnimateBase.StyleLinear)
+            show ? 0 : 100, show ? 100 : 0, hilights, show ? 1 : 250, 0, AnimateBase.StyleLinear)
         {
             Blocking = blocking,
             Group = group,
@@ -1064,41 +1053,38 @@ public sealed class GameBoard
         stack.Value = 0;
     }
 
+    /// <summary>
+    /// <c>ShowArrow</c> (0x001057-0x001102): the seeker ghost over a fallen stone,
+    /// <c>stonesGone.ghostN</c>, on frame 2 when shown and 1 when not.
+    /// </summary>
     public void ShowArrow(int id, bool show, double delay, object? group, bool blocking)
     {
-        IPubClip? arrow = _root.GetChild("arrows")?.GetChild(
-            "arrow" + (id - KeystoneSpace.Out3 + 3));
-        if (arrow is null)
+        IPubClip? ghost = GetGhost(id - KeystoneSpace.Out3 + 3);
+        if (show)
         {
-            return;
+            _keystone.PlayDelayedSound(delay, "K_moveSeeker", group);
         }
 
-        var fade = new AnimateAlpha(
-            arrow.Alpha, show ? 100 : 0, arrow, 300, delay, AnimateBase.StyleLinear)
+        int frame = show ? 2 : 1;
+        var animation = new AnimateFrame(frame, frame, ghost, 1, delay, AnimateBase.StyleLinear)
         {
             Blocking = blocking,
             Group = group,
         };
-        _keystone.CallbackManager.AddCallbackObject(fade);
+        _keystone.CallbackManager.AddCallbackObject(animation);
     }
 
+    /// <summary><c>ResetAllArrows</c> (0x000f9d-0x000fe8).</summary>
     public void ResetAllArrows()
     {
-        IPubClip? arrows = _root.GetChild("arrows");
-        if (arrows is null)
+        for (int i = 3; i <= 18; i++)
         {
-            return;
-        }
-
-        for (int i = KeystoneSpace.Out3; i <= KeystoneSpace.Out18; i++)
-        {
-            IPubClip? arrow = arrows.GetChild("arrow" + (i - KeystoneSpace.Out3 + 3));
-            if (arrow is not null)
-            {
-                arrow.Alpha = 0;
-            }
+            GetGhost(i)?.GotoAndStop(1);
         }
     }
+
+    private IPubClip? GetGhost(int number) =>
+        _root.GetChild("stonesGone")?.GetChild("ghost" + number);
 
     public void ClearAllFoci()
     {
@@ -1273,41 +1259,15 @@ public sealed class GameBoard
         payClip.Y = marker.Y + 0.1f;
         spaceClips.Add(payClip);
 
-        IPubClip? winClip = chips.AttachMovie("chipnum_win", name + "win", chips.GetNextHighestDepth());
+        // One init object carries on from the pay stack (0x003c48-0x003db8): y + 0.2 and
+        // `_xscale = 100` written twice, so every label and the poof keep the marker's _yscale.
+        IPubClip? winClip = AttachLabel(chips, marker, "chipnum_win", name + "win", spaceClips);
         IPubClip? winBigClip =
-            chips.AttachMovie("chipnum_winBig", name + "winBig", chips.GetNextHighestDepth());
-        foreach (IPubClip? clip in new[] { winClip, winBigClip })
-        {
-            if (clip is null)
-            {
-                continue;
-            }
-
-            clip.X = marker.X;
-            clip.Y = marker.Y + 0.2f;
-            clip.XScale = 100;
-            clip.YScale = 100;
-            spaceClips.Add(clip);
-        }
-
-        IPubClip? lossClip = null;
-        if (_keystone.Tutorial || _keystone.Bloodstone)
-        {
-            lossClip = chips.AttachMovie(
-                "chipnum_loss", name + "loss", chips.GetNextHighestDepth());
-            if (lossClip is not null)
-            {
-                Copy(marker, lossClip);
-                spaceClips.Add(lossClip);
-            }
-        }
-
-        IPubClip? poofClip = chips.AttachMovie("chipPoof", name + "poof", chips.GetNextHighestDepth());
-        if (poofClip is not null)
-        {
-            Copy(marker, poofClip);
-            spaceClips.Add(poofClip);
-        }
+            AttachLabel(chips, marker, "chipnum_winBig", name + "winBig", spaceClips);
+        IPubClip? lossClip = _keystone.Tutorial || _keystone.Bloodstone
+            ? AttachLabel(chips, marker, "chipnum_loss", name + "loss", spaceClips)
+            : null;
+        IPubClip? poofClip = AttachLabel(chips, marker, "chipPoof", name + "poof", spaceClips);
 
         var stack = new ChipStack(
             stackClip, shadowClip, poofClip, null, null, lossClip, _keystone.Bloodstone, _random)
@@ -1321,6 +1281,23 @@ public sealed class GameBoard
             Angle = stack.Angle,
         };
         payouts.Add(payout);
+    }
+
+    private static IPubClip? AttachLabel(
+        IPubClip chips, IPubClip marker, string export, string name, List<IPubClip> spaceClips)
+    {
+        IPubClip? clip = chips.AttachMovie(export, name, chips.GetNextHighestDepth());
+        if (clip is null)
+        {
+            return null;
+        }
+
+        clip.X = marker.X;
+        clip.Y = marker.Y + 0.2f;
+        clip.XScale = 100;
+        clip.YScale = marker.YScale;
+        spaceClips.Add(clip);
+        return clip;
     }
 
     private void BuildPlayerStack(

@@ -12,6 +12,9 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 {
     // Shader parameter names as StringNames: a string literal converts to a fresh
     // finalizable StringName on every call.
+    private static readonly NodePath Path_Clouds = "Clouds";
+    private static readonly NodePath Path_SunDisc = "SunDisc";
+    private static readonly NodePath Path_SunGlare = "SunGlare";
     private static readonly StringName Param_cloud_density = "cloud_density";
     private static readonly StringName Param_element_vis = "element_vis";
     private static readonly StringName Param_sun_engine = "sun_engine";
@@ -171,6 +174,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         FollowGuestClock();
+        Engine_LevelBakedLighting.PumpRefresh(RelightBudgetMs);
         TickPainted((float)delta);
         TrackBodies();
         AnimateSky((float)delta);
@@ -189,6 +193,9 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private float _lastEvaluated = float.NegativeInfinity;
 
     private readonly HashSet<uint> _paintedUnresolved = new();
+
+    /// <summary>Main-thread time a frame may spend on a queued re-light (Engine_LevelBakedLighting.PumpRefresh).</summary>
+    private const double RelightBudgetMs = 1.5;
 
     /// <summary>Report a re-evaluation that costs more than a frame at 144 Hz.</summary>
     private const double ReevaluateWarnMs = 6.9;
@@ -530,7 +537,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         _msCelestial = SinceMs(ref mark);
 
-        Node3D? clouds = GetParent()?.GetNodeOrNull<Node3D>("Clouds");
+        Node3D? clouds = GetParent()?.GetNodeOrNull<Node3D>(Path_Clouds);
         if (clouds is not null && LightingGdbs.Count != 0 &&
             Engine_ThemeTimeline.TryExtractCloudsBlended(
                 LightingGdbs, _dayFraction, out CloudTheme cloudTheme))
@@ -631,7 +638,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 Vector3 travel = -sun.GlobalTransform.Basis.Column2;
                 Node3D? discOwner = GetParent()?.GetNodeOrNull<Node3D>(
                     Engine_CelestialElements.NodeName);
-                Node3D? disc = discOwner?.GetNodeOrNull<Node3D>("SunDisc");
+                Node3D? disc = discOwner?.GetNodeOrNull<Node3D>(Path_SunDisc);
 
                 if (disc is not null)
                 {
@@ -678,7 +685,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         if (GetParent() is Node region)
         {
             ulong instanceMark = Time.GetTicksUsec();
-            Engine_LevelBakedLighting.RefreshInstanceLighting(
+            Engine_LevelBakedLighting.QueueRefreshInstanceLighting(
                 region.GetParent() ?? region, lighting);
             _msInstances = SinceMs(ref instanceMark);
         }
@@ -768,7 +775,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     private void AnimateSky(float delta)
     {
-        Node3D? clouds = GetParent()?.GetNodeOrNull<Node3D>("Clouds");
+        Node3D? clouds = GetParent()?.GetNodeOrNull<Node3D>(Path_Clouds);
         CloudTheme? cloudTheme = _cloudTheme;
         if (clouds is not null && cloudTheme is not null)
         {
@@ -795,7 +802,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Refii.Fx.Engine_PostFxHalos.SetSkyVisibility("MoonGlare", vis);
         }
 
-        if (celestial.GetNodeOrNull<MeshInstance3D>("SunGlare") is
+        if (celestial.GetNodeOrNull<MeshInstance3D>(Path_SunGlare) is
                 { MaterialOverride: ShaderMaterial sunGlare })
         {
             Vector3 sunDir = Engine_SkyFrame.ToGodot(frame.SunDirection);
@@ -814,7 +821,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 continue;
             }
 
-            string name = child.Name.ToString();
+            string name = Refii.Core.Engine_NodeNames.Of(child);
             if (!name.StartsWith("CloudLayer", System.StringComparison.Ordinal) ||
                 !int.TryParse(name.AsSpan("CloudLayer".Length), out int index) ||
                 index < 0 || index >= theme.Layers.Length)

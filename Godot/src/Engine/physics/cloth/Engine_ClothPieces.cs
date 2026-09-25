@@ -118,8 +118,7 @@ public static class Engine_ClothPieces
         int total = 0;
         for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
         {
-            total += mesh.SurfaceGetArrays(surface)[(int)Mesh.ArrayType.Vertex]
-                .AsVector3Array().Length;
+            total += Refii.Models.Engine_MdlSurfaceArrays.VertexCount(mesh, surface);
         }
 
         return total;
@@ -269,7 +268,7 @@ public static class Engine_ClothPieces
         var all = new List<Vector3>();
         for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
         {
-            Godot.Collections.Array arrays = mesh.SurfaceGetArrays(surface);
+            Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(mesh, surface);
             all.AddRange(arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array());
         }
 

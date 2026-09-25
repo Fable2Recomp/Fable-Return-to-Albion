@@ -56,6 +56,14 @@ public static class GameChildProcess
 			arguments.Add("separate");
 		}
 
+		// Godot's per-pass GPU timestamps (`RENDER_TIMESTAMP`) are captured only under
+		// `--gpu-profile`. The switch is not bound to script, so it rides the command line like
+		// the thread model. Read by Engine_GpuPasses.
+		if (Refii.Core.Engine_RefiiConfig.Bool(config, "gpu_profile", false))
+		{
+			arguments.Add("--gpu-profile");
+		}
+
 		// Gen0 budget (32 MB). A gen1 pause is proportional to what survives it, so a smaller
 		// budget trades frequency for shorter pauses. Read by the CLR at start-up, so it rides
 		// the environment; a value already in the environment wins.
@@ -82,6 +90,18 @@ public static class GameChildProcess
 			{
 				environment["DOTNET_GCGen0MaxBudget"] = "0x1000000";
 			}
+		}
+
+		// RenderDoc's Vulkan layer attaches at instance creation, before any game code runs, and
+		// wakes only on `ENABLE_VULKAN_RENDERDOC_CAPTURE=1`, so arming happens here: find an
+		// install, register its layer manifest for this user, set the variable for the child.
+		if (Refii.Core.Engine_RenderDoc.Arm(config, environment, out string renderDocNote))
+		{
+			GD.Print("[launch] " + renderDocNote);
+		}
+		else if (renderDocNote.Length != 0)
+		{
+			GD.Print("[launch] " + renderDocNote);
 		}
 
 		GD.Print($"[launch] {OS.GetExecutablePath()} {string.Join(' ', arguments)} env " +

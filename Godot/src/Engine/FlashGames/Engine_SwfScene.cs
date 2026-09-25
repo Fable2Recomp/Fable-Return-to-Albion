@@ -41,7 +41,7 @@ public static class Engine_SwfScene
 
     public const string BuildMeta = "swf_build";
 
-    public const int FormatVersion = 1;
+    public const int FormatVersion = 2;
 
     private const float DefaultFrameRate = 24f;
 
@@ -658,13 +658,16 @@ public static class Engine_SwfScene
         private void Text(Node2D node, SwfEditText text)
         {
             float pixels = SwfShapeGeometry.TwipsPerPixel;
+            // Wrapping is set before the text and the placement, and the size last. Outside the
+            // tree a Control caches its minimum size the first time its geometry is set and never
+            // refreshes it (`update_minimum_size` returns early until it is in the tree), so every
+            // later size clamps to it; with wrapping still off that minimum is the text on one
+            // line, wider than the authored field.
             var label = new Label
             {
                 Name = TextName,
-                Text = SwfTextRenderer.PlainText(text.InitialText, text.Html),
-                Position = new Vector2(text.Bounds.XMin + text.LeftMargin, text.Bounds.YMin) / pixels,
-                Size = new Vector2(
-                    Math.Max(text.Bounds.Width - text.LeftMargin - text.RightMargin, 0), text.Bounds.Height) / pixels,
+                AutowrapMode = text.WordWrap ? TextServer.AutowrapMode.Word : TextServer.AutowrapMode.Off,
+                ClipText = false,
                 HorizontalAlignment = text.Align switch
                 {
                     SwfTextAlign.Right => HorizontalAlignment.Right,
@@ -672,8 +675,8 @@ public static class Engine_SwfScene
                     SwfTextAlign.Justify => HorizontalAlignment.Fill,
                     _ => HorizontalAlignment.Left,
                 },
-                AutowrapMode = text.WordWrap ? TextServer.AutowrapMode.Word : TextServer.AutowrapMode.Off,
-                ClipText = false,
+                Text = SwfTextRenderer.PlainText(text.InitialText, text.Html),
+                Position = new Vector2(text.Bounds.XMin + text.LeftMargin, text.Bounds.YMin) / pixels,
             };
 
             if (text.FontHeight > 0)
@@ -702,6 +705,9 @@ public static class Engine_SwfScene
                     label.AddThemeConstantOverride("line_spacing", Mathf.RoundToInt(leading));
                 }
             }
+
+            label.Size = new Vector2(
+                Math.Max(text.Bounds.Width - text.LeftMargin - text.RightMargin, 0), text.Bounds.Height) / pixels;
 
             node.AddChild(label);
         }

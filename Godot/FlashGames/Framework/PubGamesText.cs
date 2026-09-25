@@ -42,6 +42,13 @@ public sealed class PubGameSettings
 
     public Dictionary<string, PubGameSetting> Settings { get; } =
         new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The root element's <c>gameIndex</c>: which of the profile's three point slots this game
+    /// owns (wizardstower 0, keystone 1, magedice 2). The guest reads it into <c>game+80</c>
+    /// and adds <c>PointsEarned</c> there.
+    /// </summary>
+    public int? GameIndex { get; set; }
 }
 
 public static class PubGamesText
@@ -123,6 +130,15 @@ public static class PubGamesText
         }
 
         var settings = new PubGameSettings();
+        if (int.TryParse(
+            document.Root.Attribute("gameIndex")?.Value,
+            System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out int gameIndex))
+        {
+            settings.GameIndex = gameIndex;
+        }
+
         foreach (XElement element in document.Root.Descendants())
         {
             string? name = element.Attribute("name")?.Value;

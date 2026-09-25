@@ -345,29 +345,41 @@ public static class Engine_LevelBakedLighting
 			// the bake sequentially would paint the right colours onto the wrong vertices even
 			// where the totals happened to agree.
 			var vertexColours = new Color[count];
+			var sourced = new bool[count];
+			int unsourced = 0;
 			for (int v = 0; v < count; v++)
 			{
 				int from = cursor + v < sourceVertices.Length ? sourceVertices[cursor + v] : -1;
-				vertexColours[v] = from >= 0 && from < colours.Length
-					? FromD3DColour(colours[from])
-					: new Color(1f, 1f, 1f, 1f);
 				if (from >= 0 && from < colours.Length)
 				{
-					Color c = vertexColours[v];
+					Color c = FromD3DColour(colours[from]);
+					vertexColours[v] = c;
+					sourced[v] = true;
 					float lum = 0.2125f * c.R + 0.7154f * c.G + 0.0721f * c.B;
 					VertexBakeSamples++;
 					VertexBakeSum += lum;
 					VertexBakeMax = MathF.Max(VertexBakeMax, lum);
 				}
+				else
+				{
+					++unsourced;
+				}
+			}
+
+			// A vertex with no file vertex behind it takes its nearest sourced neighbour's bake.
+			// These are the vertices a coarser model LOD appends after the LOD-0 vertices
+			// (Engine_MdlLods), and the bake has no entry for them; full-bright would draw a
+			// distant LOD brighter than the same object up close.
+			if (unsourced != 0)
+			{
+				FillFromNearest(arrays, vertexColours, sourced, count);
+				VertexBakeUnsourced += unsourced;
 			}
 
 			arrays[(int)Mesh.ArrayType.Color] = vertexColours;
 			cursor += count;
 
-			baked.AddSurfaceFromArrays(
-				source.Primitives[s], arrays, null, source.Lods[s],
-				Refii.Models.Engine_MdlTransfer.FormatOf(arrays));
-			int added = baked.GetSurfaceCount() - 1;
+			int added = Refii.Models.Engine_MdlSurfaceArrays.Add(baked, source.Primitives[s], arrays, source.Lods[s]);
 			baked.SurfaceSetName(added, source.Names[s]);
 			baked.SurfaceSetMaterial(added, source.Materials[s]);
 		}
@@ -411,9 +423,8 @@ public static class Engine_LevelBakedLighting
 
 		for (int s = 0; s < surfaces; s++)
 		{
-			Godot.Collections.Array arrays = mesh.SurfaceGetArrays(s);
-			read.Arrays[s] = arrays;
-			read.VertexCounts[s] = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array().Length;
+			read.Arrays[s] = Refii.Models.Engine_MdlSurfaceArrays.Of(mesh, s);
+			read.VertexCounts[s] = Refii.Models.Engine_MdlSurfaceArrays.VertexCount(mesh, s);
 			read.Primitives[s] = mesh.SurfaceGetPrimitiveType(s);
 			read.Names[s] = mesh.SurfaceGetName(s);
 			read.Materials[s] = mesh.SurfaceGetMaterial(s);
@@ -457,6 +468,128 @@ public static class Engine_LevelBakedLighting
 	/// <summary>Diagnostics: the applied vertex bake luminance (as stored, before the shader's
 	/// decode) over every vertex baked since the counters were last read.</summary>
 	public static long VertexBakeSamples;
+
+	/// <summary>
+	/// Baked vertices that had no file vertex behind them — coarser-LOD growth — and took a
+	/// neighbour's bake. Run total.
+	/// </summary>
+	public static long VertexBakeUnsourced;
+
+	/// <summary>
+	/// Gives every unsourced vertex the bake of the nearest sourced vertex in the same surface,
+	/// through a uniform grid over the sourced positions. A surface with no sourced vertex at all
+	/// keeps neutral grey rather than full-bright.
+	/// </summary>
+	private static void FillFromNearest(
+		Godot.Collections.Array arrays, Color[] colours, bool[] sourced, int count)
+	{
+		if (arrays[(int)Mesh.ArrayType.Vertex].Obj is not Vector3[] positions || positions.Length < count)
+		{
+			for (int v = 0; v < count; v++)
+			{
+				if (!sourced[v])
+				{
+					colours[v] = new Color(0.5f, 0.5f, 0.5f, 1f);
+				}
+			}
+
+			return;
+		}
+
+		var bounds = new Aabb();
+		bool any = false;
+		for (int v = 0; v < count; v++)
+		{
+			if (!sourced[v])
+			{
+				continue;
+			}
+
+			bounds = any ? bounds.Expand(positions[v]) : new Aabb(positions[v], Vector3.Zero);
+			any = true;
+		}
+
+		if (!any)
+		{
+			for (int v = 0; v < count; v++)
+			{
+				colours[v] = new Color(0.5f, 0.5f, 0.5f, 1f);
+			}
+
+			return;
+		}
+
+		float cell = Mathf.Max(bounds.Size.Length() / 24f, 0.01f);
+		var grid = new Dictionary<(int, int, int), List<int>>();
+		(int, int, int) Key(Vector3 p) => (
+			(int)Mathf.Floor((p.X - bounds.Position.X) / cell),
+			(int)Mathf.Floor((p.Y - bounds.Position.Y) / cell),
+			(int)Mathf.Floor((p.Z - bounds.Position.Z) / cell));
+
+		for (int v = 0; v < count; v++)
+		{
+			if (!sourced[v])
+			{
+				continue;
+			}
+
+			var key = Key(positions[v]);
+			if (!grid.TryGetValue(key, out List<int>? bucket))
+			{
+				bucket = new List<int>(4);
+				grid[key] = bucket;
+			}
+
+			bucket.Add(v);
+		}
+
+		for (int v = 0; v < count; v++)
+		{
+			if (sourced[v])
+			{
+				continue;
+			}
+
+			var (kx, ky, kz) = Key(positions[v]);
+			int best = -1;
+			float bestDistance = float.MaxValue;
+
+			// Widen ring by ring until something is found; the ring after the first hit can
+			// still hold a nearer vertex, so one more ring is searched before stopping.
+			int foundAt = -1;
+			for (int ring = 0; ring < 64 && (foundAt < 0 || ring <= foundAt + 1); ring++)
+			{
+				for (int x = kx - ring; x <= kx + ring; x++)
+				for (int y = ky - ring; y <= ky + ring; y++)
+				for (int z = kz - ring; z <= kz + ring; z++)
+				{
+					if (System.Math.Max(System.Math.Abs(x - kx),
+							System.Math.Max(System.Math.Abs(y - ky), System.Math.Abs(z - kz))) != ring ||
+						!grid.TryGetValue((x, y, z), out List<int>? bucket))
+					{
+						continue;
+					}
+
+					foreach (int candidate in bucket)
+					{
+						float distance = positions[candidate].DistanceSquaredTo(positions[v]);
+						if (distance < bestDistance)
+						{
+							bestDistance = distance;
+							best = candidate;
+						}
+					}
+				}
+
+				if (best >= 0 && foundAt < 0)
+				{
+					foundAt = ring;
+				}
+			}
+
+			colours[v] = best >= 0 ? colours[best] : new Color(0.5f, 0.5f, 0.5f, 1f);
+		}
+	}
 	public static double VertexBakeSum;
 	public static float VertexBakeMax;
 
@@ -719,6 +852,54 @@ public static class Engine_LevelBakedLighting
 	/// </summary>
 	public static long LightingGeneration { get; private set; }
 
+	/// <summary>
+	/// Queues a re-light of everything under <paramref name="root"/>, carried out a slice per
+	/// frame by <see cref="PumpRefresh"/> rather than in one pass.
+	/// </summary>
+	/// <remarks>
+	/// Eight instance parameters on every geometry node is too much for one frame; the time-of-day
+	/// step it follows is small enough that a walk spread over a few frames is not visible. A new
+	/// request restarts the walk with the newer frame. Cast-only nodes are skipped: nothing reads
+	/// their lighting.
+	/// </remarks>
+	public static void QueueRefreshInstanceLighting(Node root, LightingFrame frame)
+	{
+		++LightingGeneration;
+		_relightWalk = Descendants(root).GetEnumerator();
+		_relightFrame = frame;
+	}
+
+	private static System.Collections.Generic.IEnumerator<Node>? _relightWalk;
+	private static LightingFrame? _relightFrame;
+
+	/// <summary>Advances a queued re-light for up to <paramref name="budgetMs"/>. Main thread.</summary>
+	public static void PumpRefresh(double budgetMs)
+	{
+		if (_relightWalk is null)
+		{
+			return;
+		}
+
+		long start = System.Diagnostics.Stopwatch.GetTimestamp();
+		long budget = (long)(budgetMs * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+		while (System.Diagnostics.Stopwatch.GetTimestamp() - start < budget)
+		{
+			if (!_relightWalk.MoveNext())
+			{
+				_relightWalk = null;
+				_relightFrame = null;
+				return;
+			}
+
+			if (_relightWalk.Current is GeometryInstance3D instance &&
+				GodotObject.IsInstanceValid(instance) &&
+				instance.CastShadow != GeometryInstance3D.ShadowCastingSetting.ShadowsOnly)
+			{
+				ApplyInstanceLighting(instance, _relightFrame, staticProp: false);
+			}
+		}
+	}
+
 	public static void RefreshInstanceLighting(Node root, LightingFrame frame, bool staticProp)
 	{
 		++LightingGeneration;
@@ -750,8 +931,19 @@ public static class Engine_LevelBakedLighting
 
 		while (walk.Count != 0)
 		{
+			// A queued re-light walks across frames (PumpRefresh), so a node pushed on one frame
+			// can be freed by the next — a retired entity, a reloaded prop.
 			Node node = walk.Pop();
+			if (!GodotObject.IsInstanceValid(node))
+			{
+				continue;
+			}
+
 			yield return node;
+			if (!GodotObject.IsInstanceValid(node))
+			{
+				continue;
+			}
 
 			for (int i = node.GetChildCount() - 1; i >= 0; --i)
 			{
@@ -802,8 +994,14 @@ public static class Engine_LevelBakedLighting
 		int cellH = 1;
 		foreach (KeyValuePair<ulong, byte[]> entry in container.ObjectLightmapBlobs)
 		{
-			ImageTexture? texture = DecodeTexture(entry.Value);
-			Image? image = texture?.GetImage();
+			// Decoded to an image, never through a texture: `GetImage` on a texture is a GPU
+			// readback that stalls every frame in flight, once per lightmap.
+			Image? image = DecodeImage(entry.Value);
+			if (image is not null && image.IsCompressed())
+			{
+				image.Decompress();
+			}
+
 			if (image is null)
 			{
 				GD.PushWarning($"[bake] object lightmap {entry.Key:X16} failed to decode");
@@ -889,6 +1087,18 @@ public static class Engine_LevelBakedLighting
 		g = new Vector4(f[4], f[5], f[6], f[7]);
 		b = new Vector4(f[8], f[9], f[10], f[11]);
 		return r.LengthSquared() + g.LengthSquared() + b.LengthSquared() > 0f;
+	}
+
+	private static Image? DecodeImage(byte[] blob)
+	{
+		try
+		{
+			return Engine_TexImage.TryCreateImage(blob, out _);
+		}
+		catch (Exception)
+		{
+			return null;
+		}
 	}
 
 	public static ImageTexture? DecodeTexture(byte[] blob)

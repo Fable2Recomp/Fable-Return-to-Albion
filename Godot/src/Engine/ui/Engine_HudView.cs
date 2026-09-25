@@ -243,10 +243,10 @@ public sealed partial class Engine_HudView : Node3D
                 Node = node,
                 Width = Measure(node),
                 Value = Engine_HudValues.Handle.For(piece.Value),
-                // The ancestors' scale, which the art (the element's own basis) does not carry.
-                Authored = node.Transform.Basis.Scaled(new Vector3(
-                    piece.AncestorScale == default ? 1f : piece.AncestorScale.X,
-                    piece.AncestorScale == default ? 1f : piece.AncestorScale.Y, 1f)),
+                // The ancestors' rotation and scale, which the art (the element's own basis)
+                // does not carry.
+                Authored = (piece.Ancestor == default ? Basis.Identity : piece.Ancestor) *
+                    node.Transform.Basis,
             };
 
             if (Screen is { } document)
@@ -628,6 +628,7 @@ public sealed partial class Engine_HudView : Node3D
             if (built.Piece.Id == "group.QuestBox.TopBox")
             {
                 HideSlabs(built.Node);
+                CentreTitle(built.LiveTextNodes);
                 Rect2? bounds = null;
                 foreach ((MeshInstance3D label, int _) in built.LiveTextNodes)
                 {
@@ -862,6 +863,46 @@ public sealed partial class Engine_HudView : Node3D
         }
 
         return new Rect2(box.Position.X, box.Position.Y, box.Size.X, box.Size.Y);
+    }
+
+    /// <summary>
+    /// The quest box's title, centred over its body text. Our layout: the guest writes the title
+    /// box-relative at the left margin (`sub_823FC8F0`). Measured from where the title stands
+    /// this frame, so a rewrite of its position by the guest is re-centred, never compounded.
+    /// </summary>
+    private static void CentreTitle(List<(MeshInstance3D Node, int Ordinal)> labels)
+    {
+        MeshInstance3D? title = null;
+        Rect2? titleBounds = null;
+        Rect2? body = null;
+        foreach ((MeshInstance3D label, int _) in labels)
+        {
+            if (TextBounds(label) is not { } rect)
+            {
+                continue;
+            }
+
+            if (label.Name.ToString().Contains("Title", System.StringComparison.OrdinalIgnoreCase))
+            {
+                title = label;
+                titleBounds = rect;
+            }
+            else
+            {
+                body = Union(body, rect);
+            }
+        }
+
+        if (title is null || titleBounds is not { } own || body is not { } under)
+        {
+            return;
+        }
+
+        float shift = under.GetCenter().X - own.GetCenter().X;
+        if (Mathf.Abs(shift) > 0.01f)
+        {
+            title.GlobalPosition += new Vector3(shift, 0f, 0f);
+        }
     }
 
     private static Rect2? Union(Rect2? a, Rect2? b) =>
@@ -1857,13 +1898,25 @@ public sealed partial class Engine_HudView : Node3D
         }
 
         UiNode node = doc.Nodes[ordinal];
-        var at = new Vector2(stated[0] ?? node.PositionX, stated[1] ?? node.PositionY);
+
+        // The adapter's write is not a move. `widescreenadapter.lua` writes the wide position
+        // onto the element itself and the layout already placed the piece there
+        // (`CanvasPositionWide`), so the baseline is the wide position where the wide layout
+        // overrides this element; measuring from the 4:3 position would count it twice.
+        var baseline = new Vector2(node.PositionX, node.PositionY);
+        if (Layout.Wide is { } wide && wide.TryGetValue(node.Ordinal, out Engine_UiWidescreen.Override over))
+        {
+            baseline = new Vector2(over.X ?? baseline.X, over.Y ?? baseline.Y);
+        }
+
+        var at = new Vector2(stated[0] ?? baseline.X, stated[1] ?? baseline.Y);
         for (UiNode? up = node.Parent; up is not null; up = up.Parent)
         {
             at = new Vector2(up.PositionX + (up.ScaleX * at.X), up.PositionY + (up.ScaleY * at.Y));
+            baseline = new Vector2(up.PositionX + (up.ScaleX * baseline.X), up.PositionY + (up.ScaleY * baseline.Y));
         }
 
-        return at - Engine_UiElementResolve.CanvasPosition(node);
+        return at - baseline;
     }
 
     private void DriveText(Built built)

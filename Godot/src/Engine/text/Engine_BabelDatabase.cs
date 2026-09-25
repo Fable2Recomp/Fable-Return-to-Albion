@@ -214,7 +214,31 @@ public sealed class Engine_BabelDatabase
 	public bool TryGetString(string tag, out string value) =>
 		TryGetString(Engine_GameHash.Fnv1(tag), out value);
 
+	/// <summary>
+	/// Strings already resolved, by key. The table never changes after load, and the HUD asks
+	/// for the same handful every frame from different blocks, which would defeat the one-block
+	/// cache below and inflate a zlib block per ask. Bounded by the distinct tags the game shows.
+	/// </summary>
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<uint, string> _resolved = new();
+
 	public bool TryGetString(uint key, out string value)
+	{
+		if (_resolved.TryGetValue(key, out string? known))
+		{
+			value = known;
+			return true;
+		}
+
+		if (!TryResolve(key, out value))
+		{
+			return false;
+		}
+
+		_resolved.TryAdd(key, value);
+		return true;
+	}
+
+	private bool TryResolve(uint key, out string value)
 	{
 		value = string.Empty;
 		int i = Array.BinarySearch(_keys, key);

@@ -337,10 +337,7 @@ public sealed class AnimatingGameBoard : GameBoard
                 while (_chainIndex < Chains.Count)
                 {
                     _chainIndex++;
-                    if (_chainIndex < Chains.Count)
-                    {
-                        AnimateChain(false);
-                    }
+                    AnimateChain(false);
                 }
             }
 
@@ -361,14 +358,23 @@ public sealed class AnimatingGameBoard : GameBoard
 
     private void AnimateChain(bool showFloaty)
     {
+        // AS2 0x00173f-0x00177a calls this once more with chainIndex == chains.length; chains[i] is
+        // undefined there, so no switch or line animates and only SB_highlightGlow (0x001a50) plays.
+        if (_chainIndex >= Chains.Count)
+        {
+            PlaySound.Once(Audio, "SB_highlightGlow", null);
+            return;
+        }
+
         List<Switch> chain = Chains[_chainIndex];
 
+        // AS2 0x001860-0x00189f: the middle tier is chain.length > 3 || bonusLevel > 0.
         var tier = 0;
         if (chain.Count > 5)
         {
             tier = 2;
         }
-        else if (chain.Count > 3 || BonusUnlocked > 0)
+        else if (chain.Count > 3 || BonusLevel > 0)
         {
             tier = 1;
         }

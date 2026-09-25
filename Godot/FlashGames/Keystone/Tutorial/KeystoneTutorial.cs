@@ -285,7 +285,7 @@ public sealed partial class Keystone
             return;
         }
 
-        ChangeBet(GetPayoutBet(Current), human, Current);
+        ChangeBet(GetPayoutBet(Current), human, Current, true, TutorialAnim);
         UpdateBetStatsRecount(arch);
 
         if (bets[a] > 0 && bets[b] > 0 && bets[c] > 0)
@@ -356,7 +356,7 @@ public sealed partial class Keystone
     public void TutorialStartRoll(
         int roll1, int roll2, int roll3, bool allowInner, bool removeDice)
     {
-        SetRoll(roll1, roll2, roll3, false);
+        SetRoll(roll1, roll2, roll3);
         FindWinningSpaces(allowInner);
         GenerateAndResolvePayouts(BoardInfos[0]);
         InsertTutorialDelay(1);

@@ -9,12 +9,12 @@ namespace Refii.Entities;
 /// frames — or every frame for a principal.
 /// </summary>
 /// <remarks>
-/// /// Godot marks every light an instance is paired with shadow-dirty on ANY update of that instance
-/// /// (`renderer_scene_cull.cpp`, `_update_instance`): a bone write through its skeleton, or a move of
-/// /// its transform. The visible body takes both every displayed frame (the clip animator and the feed
-/// /// interpolate on Godot's clock, and the walk places the node each frame), so the proxy shares
-/// /// neither: it stands BESIDE the body (same parent, the feed node) with its own skeleton under it,
-/// /// and both are written here on guest frames.
+/// Godot marks every light an instance is paired with shadow-dirty on ANY update of that instance
+/// (`renderer_scene_cull.cpp`, `_update_instance`): a bone write through its skeleton, or a move of
+/// its transform. The visible body takes both every displayed frame (the clip animator and the feed
+/// interpolate on Godot's clock, and the walk places the node each frame), so the proxy shares
+/// neither: it stands BESIDE the body (same parent, the feed node) with its own skeleton under it,
+/// and both are written here on guest frames.
 ///
 /// The guest itself posed and placed at 30 Hz, so this is the original's cadence; what it costs is
 /// the shadow trailing the visible body by at most one displayed frame. The principals never trail:
@@ -27,7 +27,7 @@ namespace Refii.Entities;
 /// walk's one transform write (<see cref="Placed"/>), and a move that landed between guest frames
 /// is caught up by <see cref="EndWalk"/> on the next one.
 ///
-/// /// `REFII_SHADOW_GUEST_RATE=0` writes and places every proxy every frame, for an A/B.
+/// `REFII_SHADOW_GUEST_RATE=0` writes and places every proxy every frame, for an A/B.
 /// </remarks>
 public static class Engine_ShadowSkeletons
 {
@@ -89,7 +89,12 @@ public static class Engine_ShadowSkeletons
 
 		Forget(body);
 
-		var shadow = new Skeleton3D { Name = NodeName };
+		// Manual modifier processing, for the reason Engine_EntitySkeleton.Build gives.
+		var shadow = new Skeleton3D
+		{
+			Name = NodeName,
+			ModifierCallbackModeProcess = Skeleton3D.ModifierCallbackModeProcessEnum.Manual,
+		};
 		int bones = live.GetBoneCount();
 		for (int b = 0; b < bones; b++)
 		{
@@ -114,6 +119,35 @@ public static class Engine_ShadowSkeletons
 		ByLive[live] = entry;
 		ByBody[body] = entry;
 		return shadow;
+	}
+
+	/// <summary>
+	/// Registers a skeleton-less follower — an attached child's proxy — for guest-rate placement
+	/// and visibility mirroring. Every frame when its holder is a principal.
+	/// </summary>
+	public static void Follow(MeshInstance3D body, MeshInstance3D proxy, bool everyFrame)
+	{
+		if (ByBody.TryGetValue(body, out Entry? have) && have.Shadow is null &&
+			ReferenceEquals(have.Proxy, proxy))
+		{
+			have.EveryFrame = everyFrame;
+			return;
+		}
+
+		Forget(body);
+		ByBody[body] = new Entry
+		{
+			Shadow = null, Body = body, Proxy = proxy, EveryFrame = everyFrame, PlacePending = true,
+		};
+	}
+
+	/// <summary>A follower's holder became, or stopped being, a principal.</summary>
+	public static void SetFollowerEveryFrame(MeshInstance3D body, bool everyFrame)
+	{
+		if (ByBody.TryGetValue(body, out Entry? entry) && entry.Shadow is null)
+		{
+			entry.EveryFrame = everyFrame;
+		}
 	}
 
 	/// <summary>The rig's rate: a principal's shadow is written and placed every frame, anyone else's on guest frames.</summary>

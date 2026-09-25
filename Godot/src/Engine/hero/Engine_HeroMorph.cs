@@ -98,10 +98,8 @@ public static class Engine_HeroMorph
 
         for (int s = 0; s < surfaces; s++)
         {
-            int a = neutral.SurfaceGetArrays(s)[(int)Mesh.ArrayType.Vertex]
-                .AsVector3Array().Length;
-            int b = target.SurfaceGetArrays(s)[(int)Mesh.ArrayType.Vertex]
-                .AsVector3Array().Length;
+            int a = Refii.Models.Engine_MdlSurfaceArrays.VertexCount(neutral, s);
+            int b = Refii.Models.Engine_MdlSurfaceArrays.VertexCount(target, s);
 
             if (a == 0 || a != b)
             {
@@ -133,7 +131,7 @@ public static class Engine_HeroMorph
 
         for (int s = 0; s < surfaces; s++)
         {
-            arrays[s] = neutral.SurfaceGetArrays(s);
+            arrays[s] = Refii.Models.Engine_MdlSurfaceArrays.Of(neutral, s);
             positions[s] = arrays[s][(int)Mesh.ArrayType.Vertex].AsVector3Array();
             origin[s] = (Vector3[])positions[s].Clone();
 
@@ -163,7 +161,7 @@ public static class Engine_HeroMorph
 
             for (int s = 0; s < surfaces; s++)
             {
-                Godot.Collections.Array other = target.SurfaceGetArrays(s);
+                Godot.Collections.Array other = Refii.Models.Engine_MdlSurfaceArrays.Of(target, s);
                 Vector3[] targetPositions =
                     other[(int)Mesh.ArrayType.Vertex].AsVector3Array();
 
@@ -223,9 +221,8 @@ public static class Engine_HeroMorph
                 arrays[s][(int)Mesh.ArrayType.Normal] = normals[s];
             }
 
-            result.AddSurfaceFromArrays(neutral.SurfaceGetPrimitiveType(s), arrays[s], null,
-                Refii.Models.Engine_MdlMesh.SurfaceLods(neutral, s),
-                Refii.Models.Engine_MdlTransfer.FormatOf(arrays[s]));
+            Refii.Models.Engine_MdlSurfaceArrays.Add(result, neutral.SurfaceGetPrimitiveType(s), arrays[s],
+                Refii.Models.Engine_MdlMesh.SurfaceLods(neutral, s));
             result.SurfaceSetName(s, neutral.SurfaceGetName(s));
             result.SurfaceSetMaterial(s, neutral.SurfaceGetMaterial(s));
         }

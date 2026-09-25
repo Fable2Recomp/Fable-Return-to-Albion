@@ -146,6 +146,12 @@ uniform float foliage_wrap : hint_range(0.0, 1.0) = 0.5;
 /// THE SPECULAR TERMS, HANDED TO `light()`. Godot's `light()` cannot reach a fragment local, and
 /// the guest's specular is Phong over the material's own maps, so the colour and the exponent
 /// travel as varyings — the same arrangement `standard_material_phong` uses.
+/// rgb: the entity's stated TINT — CECGraphicAppearance+80 (SetTintColour, and the corpse tint
+/// every creature death sets through `sub_82573570`), which the guest binds to
+/// `g_StandardMaterialTintColour` (PS c49, `sub_82220CA8`). Its shader multiplies the summed
+/// diffuse, self-illumination and reflection by `.xyz` before the atmosphere; `.w` is never read.
+instance uniform vec4 entity_tint = vec4(1.0);
+
 varying vec3 v_specular;
 varying float v_specular_power;
 
@@ -438,6 +444,12 @@ void fragment() {
         vec3 env = texture(envmap_tex, reflected).rgb;
         EMISSION += spec_colour * env * env;
     }
+
+    // THE ENTITY TINT, over everything lit so far and under the fog, where the guest's
+    // `r1.xyz = r5.xyz * g_StandardMaterialTintColour.xyz` sits.
+    ALBEDO *= entity_tint.rgb;
+    EMISSION *= entity_tint.rgb;
+    v_specular *= entity_tint.rgb;
 
     // LAST, because it attenuates everything above it. The guest's fog is the final thing its
     // pixel shader does to the colour as well — the only line after it is the global brightness

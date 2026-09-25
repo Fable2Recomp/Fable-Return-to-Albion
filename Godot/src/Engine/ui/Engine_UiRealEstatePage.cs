@@ -79,6 +79,16 @@ public static class Engine_UiRealEstatePage
 	private static readonly uint CanSellField = Engine_GameHash.Fnv1("CanSellOncePurchased");
 
 	/// <summary>
+	/// The hero's name on a property the hero owns is the hero's TITLE: `sub_824D8A10` takes
+	/// the title record's `HeroTitleComponent` reference and that entry's `TextTag`, and the
+	/// filler puts it through Babel. There is no "you" tag and no player name anywhere on the
+	/// page.
+	/// </summary>
+	private static readonly uint HeroTitleComponentField = Engine_GameHash.Fnv1("HeroTitleComponent");
+
+	private static readonly uint TextTagField = Engine_GameHash.Fnv1("TextTag");
+
+	/// <summary>
 	/// The bonus list is a TWO-LEVEL reference, not an array — `sub_82917F60` reads `Bonuses`
 	/// as a type-6 entry reference (`sub_8227B820` asks for type 6, one value), resolves the
 	/// GROUP entry it names, then enumerates THAT entry's properties and keeps the type-6 ones.
@@ -118,16 +128,27 @@ public static class Engine_UiRealEstatePage
 			? Babel(strings, TypeTags[type])
 			: string.Empty;
 
-		// WHOEVER IS IN IT. The label only changes when there is a tenant; with none the page
-		// keeps its authored caption, which is why nothing is written for the owner case.
+		// WHOEVER IS IN IT — `sub_82998FB0`'s three branches, ownership tested first
+		// (0x8299959c). Rented out: the tenant's name under the RENTER caption. Owned and not
+		// rented: the hero's title, and the caption keeps its authored text. Not owned: the
+		// owner's name. The "OTHER" tags stand in for a name the guest could not resolve.
 		if (estate.HasTenant)
 		{
 			values[OwnerLabel] = Babel(strings, RenterTag);
+			values[OwnerName] = estate.Occupant.Length != 0
+				? estate.Occupant
+				: Babel(strings, TenantOtherTag);
 		}
-
-		values[OwnerName] = estate.Occupant.Length != 0
-			? estate.Occupant
-			: Babel(strings, estate.HasTenant ? TenantOtherTag : OwnerOtherTag);
+		else if (estate.Owned)
+		{
+			values[OwnerName] = HeroTitle(estate.TitleRecord, strings);
+		}
+		else
+		{
+			values[OwnerName] = estate.Occupant.Length != 0
+				? estate.Occupant
+				: Babel(strings, OwnerOtherTag);
+		}
 
 		values[BaseValue] = Money(estate.Value - estate.Economy - estate.Decoration);
 		values[Decoration] = Money(estate.Decoration);
@@ -276,6 +297,26 @@ public static class Engine_UiRealEstatePage
 		}
 
 		return body.ToString();
+	}
+
+	/// <summary>
+	/// The hero's current title, as `sub_824D8A10` reads it: the title record's
+	/// `HeroTitleComponent` reference, then that entry's `TextTag`, through Babel. Empty when the
+	/// hero holds no title (`*(comp57+92) == 0` skips the whole lookup) or the reference is
+	/// missing, which the guest draws as an empty name.
+	/// </summary>
+	private static string HeroTitle(uint record, Refii.Text.Engine_BabelDatabase? strings)
+	{
+		if (record == 0u || Engine_UiInventorySource.Globals is not { } globals ||
+			!globals.TryLookup(record, out GdbCursor cursor) ||
+			!globals.TryFindInherited(cursor, HeroTitleComponentField,
+				(int)GdbFieldType.Reference, out _, out uint component, out _) ||
+			component == 0u)
+		{
+			return string.Empty;
+		}
+
+		return Tag(component, TextTagField, strings);
 	}
 
 	/// <summary>`CanSellOncePurchased` — the record's own bool; false hides the selling fee.</summary>

@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 150;
+	public const int ExpectedAbiVersion = 156;
 
 	private const int MessageCapacity = 512;
 
@@ -427,6 +427,31 @@ public static class HostBridge
 	private static readonly int[] _postLook = new int[6];
 	private static readonly List<GuestPostOp> _postOps = new();
 	private static readonly Quaternion[]?[] _postTargets = new Quaternion[]?[64];
+
+	/// <summary>
+	/// An entity's stated draw distance D and fade factor, off its renderable (component 3): the
+	/// definition's `MaxDrawDistance` times the guest's live class multiplier, and
+	/// `DrawDistanceFadeRangeFactor`. The guest fades the instance out over the last factor of D
+	/// and cuts its shadow hard at D. False when the entity carries no renderable.
+	/// </summary>
+	public static bool GetEntityDrawRange(uint entity, out float distance, out float fadeFactor)
+	{
+		distance = 0f;
+		fadeFactor = 0f;
+		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiHostGetEntityDrawRange(entity, out distance, out fadeFactor) != 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
 
 	/// <summary>One built part of a composite character: its model hash, its cluster sort
 	/// layer, whether it is a body part, and the cluster names it covers.</summary>
@@ -1038,7 +1063,8 @@ public static class HostBridge
 		Vector3 Position, Quaternion Rotation, uint ModelHash,
 		uint Address, ulong UniqueId, uint RecordHash, bool Changed = true,
 		Vector3 PreviousPosition = default, Quaternion PreviousRotation = default,
-		bool Interpolate = false, uint Highlight = 0x000000FFu)
+		bool Interpolate = false, uint Highlight = 0x000000FFu,
+		EntityAppearance Appearance = default)
 	{
 		/// <summary>
 		/// Whether the guest is drawing a targeting outline on this entity right now.
@@ -1057,6 +1083,47 @@ public static class HostBridge
 		/// </summary>
 		public Color HighlightColour => Color.Color8(
 			(byte)(Highlight >> 8), (byte)(Highlight >> 16), (byte)(Highlight >> 24), (byte)Highlight);
+	}
+
+	/// <summary>
+	/// A renderable's look as the guest's appearance setters stated it — CECGraphicAppearance
+	/// (component 3), whose setters all end in `sub_82573318`, hooked in entity_appearance.cpp.
+	/// </summary>
+	/// <remarks>
+	/// Alpha (+112) is what gameplay fades: every creature death of DeathType 5, 6 and 7 ramps it
+	/// 1 → 0 before the body is destroyed, anim "ALPHA" tracks drive it, a banshee and a shadow
+	/// creature set it. CameraAlpha (+116) is the camera-occlusion fade alone. The guest draws
+	/// their product, and draws nothing at all when it is not above 1e-4 or when Drawable (+197)
+	/// is clear (`sub_822112D8`, 0x82211364) — except a PRINCIPAL, whom camera fade never hides.
+	///
+	/// The default is the constructor's (`sub_82571DF8`), so an entity the bridge said nothing
+	/// about is fully drawn: `default` of this struct is NOT that, hence <see cref="Constructed"/>.
+	/// </remarks>
+	public readonly record struct EntityAppearance(
+		float Alpha, float CameraAlpha, float Scale, Vector4 TintLanes, uint Flags)
+	{
+		public static readonly EntityAppearance Constructed = new(1f, 1f, 1f, Vector4.One, DrawableFlag);
+
+		public const uint DrawableFlag = 1u;
+		public const uint SaturationFlag = 2u;
+
+		/// <summary>SetAsDrawable (+197). Clear: the guest releases the proxies — no draw, no shadow.</summary>
+		public bool Drawable => (Flags & DrawableFlag) != 0u;
+
+		/// <summary>SetSaturationMask (+196).</summary>
+		public bool SaturationMask => (Flags & SaturationFlag) != 0u;
+
+		/// <summary>The opacity the guest blends by: `+116 * +112` (`sub_82572A58`).</summary>
+		public float Opacity => Alpha * CameraAlpha;
+
+		/// <summary>
+		/// Whether the guest draws it at all (`sub_822112D8`): drawable, and the product above
+		/// 1e-4 — or, for a principal, the gameplay alpha alone at or above it.
+		/// </summary>
+		public bool Drawn(bool principal) =>
+			Drawable && (Opacity > 1e-4f || (principal && Alpha >= 1e-4f));
+
+		public bool IsConstructed => this == Constructed;
 	}
 
 	/// <summary>Each address's stated words from the last walk, for <see cref="GuestEntity.Changed"/>.</summary>
@@ -1082,8 +1149,11 @@ public static class HostBridge
 	/// </summary>
 	public static bool EntitiesTruncated { get; private set; }
 
-	/// <summary>Words per entity: 12 stated, plus the guest's previous transform and its flag.</summary>
-	private const int EntityStride = 21;
+	/// <summary>
+	/// Words per entity: 12 stated, the guest's previous transform and its flag, the highlight,
+	/// and eight of appearance (alpha, camera alpha, scale, four tint lanes, flags).
+	/// </summary>
+	private const int EntityStride = 29;
 
 	/// <summary>How many distinct unrecognised placement vtables to bring back.</summary>
 	private const uint MaxUnknownVtables = 32;
@@ -1190,7 +1260,17 @@ public static class HostBridge
 					BitConverter.Int32BitsToSingle((int)_entityWords[at + 17]),
 					BitConverter.Int32BitsToSingle((int)_entityWords[at + 18])),
 				_entityWords[at + 19] != 0u,
-				_entityWords[at + 20]));
+				_entityWords[at + 20],
+				new EntityAppearance(
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 21]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 22]),
+					BitConverter.Int32BitsToSingle((int)_entityWords[at + 23]),
+					new Vector4(
+						BitConverter.Int32BitsToSingle((int)_entityWords[at + 24]),
+						BitConverter.Int32BitsToSingle((int)_entityWords[at + 25]),
+						BitConverter.Int32BitsToSingle((int)_entityWords[at + 26]),
+						BitConverter.Int32BitsToSingle((int)_entityWords[at + 27])),
+					_entityWords[at + 28])));
 		}
 
 		LastWalkChanged = walkChanged;
@@ -1493,6 +1573,24 @@ public static class HostBridge
 		return count == 0
 			? null
 			: new MenuBoxState((int)count, (int)selected, (flags & 1) != 0, (flags & 2) != 0, enabled);
+	}
+
+	/// <summary>The QueryBox class — `GUI.DisplayYesNoQuestion` and its two siblings.</summary>
+	public const uint DisplayQueryBoxVtable = 0x820AE688u;
+
+	/// <summary>
+	/// The display box that is up and its class vtable, or null when none is open. See
+	/// <c>RefiiHostGetDisplayBox</c>.
+	/// </summary>
+	public static (uint Box, uint Vtable)? GetDisplayBox()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		uint box = RefiiHostGetDisplayBox(out uint vtable);
+		return box == 0 ? null : (box, vtable);
 	}
 
 	/// <summary>All seven tab bits — what <see cref="PauseTabsAvailable"/> means by "everything".</summary>
@@ -2323,7 +2421,12 @@ public static class HostBridge
 	/// <summary>The co-op session's raw words off the authoritative network manager (ABI 134).</summary>
 	public readonly record struct CoopSessionWords(
 		bool ManagerPresent, bool Session, bool Host, bool Client, bool Lost, bool ClientJoined,
-		uint PeerCount, uint PlayerOne, uint PlayerTwo, bool GameCopyPresent);
+		uint PeerCount, uint PlayerOne, uint PlayerTwo, bool GameCopyPresent,
+		uint GameMode, uint PlayerTwoPad)
+	{
+		/// <summary>`game+284 == 2` — the guest's own `IsLocalCoopGame` (`sub_82340300`).</summary>
+		public bool LocalCoop => GameMode == 2u;
+	}
 
 	private static uint[]? _coopSessionWords;
 
@@ -2334,8 +2437,9 @@ public static class HostBridge
 			return null;
 		}
 
-		_coopSessionWords ??= new uint[10];
-		if (RefiiHostGetCoopSession(_coopSessionWords, (uint)_coopSessionWords.Length) == 0)
+		_coopSessionWords ??= new uint[12];
+		uint count = RefiiHostGetCoopSession(_coopSessionWords, (uint)_coopSessionWords.Length);
+		if (count == 0)
 		{
 			return null;
 		}
@@ -2343,7 +2447,8 @@ public static class HostBridge
 		uint[] w = _coopSessionWords;
 		return new CoopSessionWords(
 			w[0] != 0, w[1] != 0, w[2] != 0, w[3] != 0, w[4] != 0, w[5] != 0, w[6], w[7], w[8],
-			w[9] != 0);
+			w[9] != 0,
+			count >= 12 ? w[10] : 0u, count >= 12 ? w[11] : 0xFFFFFFFFu);
 	}
 
 	public static (uint One, uint Two) CoopPlayerEntities()
@@ -3990,6 +4095,20 @@ public static class HostBridge
 		}
 	}
 
+	/// <summary>
+	/// One frame of Godot's GPU pass timestamps onto the Tracy timeline, as GPU zones and
+	/// per-pass plots. The sink behind <see cref="Refii.Core.Engine_GpuPasses.Sink"/>;
+	/// <paramref name="packedNames"/> is <paramref name="count"/> entries of
+	/// <paramref name="nameStride"/> bytes; the GPU times are nanoseconds.
+	/// </summary>
+	public static void TraceGpuPasses(byte[] packedNames, uint nameStride, long[] cpuTimes, long[] gpuNs, int count)
+	{
+		if (count >= 2 && TryGetAbiVersion() is not null)
+		{
+			RefiiHostTraceGpuPasses(packedNames, nameStride, cpuTimes, gpuNs, (uint)count);
+		}
+	}
+
 	/// <summary>Which heap owns an address and its protection — the pointer-validity check.</summary>
 	public static (uint HeapBase, uint HeapSize, uint PageSize, uint Protect)? HeapLookup(uint addr)
 	{
@@ -4669,11 +4788,18 @@ public static class HostBridge
 	/// <paramref name="Record"/> is the GDB record the text hangs off — NOT the building
 	/// entity's own record. `sub_821DA3B0` takes the entity's def handle, then a property named
 	/// after the component's class, and the entry-ref that yields is this hash.
+	///
+	/// <paramref name="TitleRecord"/> is the hero's current title record (`heroComponent57+92`),
+	/// which is how the guest names the owner of a building the hero owns and is not renting
+	/// out: `HeroTitleComponent.TextTag` through Babel. <paramref name="Occupant"/> is the
+	/// creature name of the tenant, or of the owner when that is not the hero — empty in the
+	/// hero-owned case, because the hero has no creature name.
 	/// </summary>
 	public readonly record struct RealEstate(
 		bool Known, uint Record, uint TypeMask, bool Owned, bool HasTenant,
 		int Value, int Economy, int Decoration, int Income, int SalePrice, int SellingFees,
-		int NotVacant, int OwnerKilled, int HeroOpinion, uint BonusesRecord, string Occupant)
+		int NotVacant, int OwnerKilled, int HeroOpinion, uint BonusesRecord, string Occupant,
+		uint TitleRecord)
 	{
 		/// <summary>The guest's own "is a business" test — `mask &amp; 0xEFE` at 0x82999CF8.
 		/// Every type but HOME and UNIQUE.</summary>
@@ -4715,7 +4841,7 @@ public static class HostBridge
 			return default;
 		}
 
-		uint[] words = new uint[14];
+		uint[] words = new uint[15];
 		var occupant = new byte[128];
 		uint known;
 		try
@@ -4732,7 +4858,7 @@ public static class HostBridge
 			known != 0u, words[0], words[1], words[2] != 0u, words[3] != 0u,
 			(int)words[4], (int)words[5], (int)words[6], (int)words[7], (int)words[8],
 			(int)words[9], (int)words[10], (int)words[11], (int)words[12], words[13],
-			Utf8(occupant));
+			Utf8(occupant), words[14]);
 	}
 
 	/// <summary>
@@ -6573,6 +6699,10 @@ public static class HostBridge
 	private static extern void RefiiHostTracePlot(string name, double value);
 
 	[DllImport(Library)]
+	private static extern void RefiiHostTraceGpuPasses(
+		byte[] names, uint nameStride, long[] cpuUs, long[] gpuUs, uint count);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostHeapLookup(
 		uint addr, out uint heapBase, out uint heapSize, out uint pageSize, out uint protect);
 
@@ -6666,6 +6796,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetMapMarkers(uint[] outHashes, float[] outValues, uint cap);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetDisplayBox(out uint vtable);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetMenuBox(
@@ -6856,53 +6989,80 @@ public static class HostBridge
 	/// </summary>
 	/// <remarks>
 	/// The guest drives the whole lifecycle — which game, which variation, which pad and
-	/// language, seeding the bank from the hero's gold, and settling it afterwards. None of that
-	/// is reimplemented here; see the block above <c>RefiiHostGetPubGame</c> in
-	/// <c>host_bridge.cpp</c> for the addresses. State 2 is the seam: 2 through 8 are the
-	/// Scaleform module Godot replaces, so the host waits for 2, plays, and writes the result.
+	/// language, seeding the bank from the hero's gold, and settling it afterwards. Godot claims
+	/// the games (<see cref="ClaimPubGames"/>), which takes the Scaleform module out of the
+	/// guest's pump (<c>src/vfs/src/hooks/pubgame_pump.cpp</c>): the guest still walks 1 → 2 → 3,
+	/// Godot's game plays while it sits in 3, and the game's own fscommands — posted through
+	/// <see cref="PostPubGameCommand"/> — carry it to 6 and the settle at 9.
 	/// </remarks>
 	public readonly record struct PubGameState(
 		uint Stage, uint Profile, long Gold, long Debt, string Game, string Variation)
 	{
-		/// <summary>The guest has a pub game up and is waiting for whoever draws it.</summary>
-		public bool WantsHost => Stage == HostStage && Profile != 0;
+		/// <summary>The session is up and nobody is drawing it yet.</summary>
+		public bool WantsHost => Stage == RunningStage && Profile != 0;
 
-		/// <summary>
-		/// The state that starts a game — a ONE-SHOT, not the state it plays in.
-		/// </summary>
-		/// <remarks>
-		/// From the manager tick <c>sub_82467B08</c>: case 2 creates the 1 MB heap
-		/// (<c>HeapCreate(0, 0x100000)</c> → <c>mgr+32</c>) and the audio emitter (<c>mgr+64</c>),
-		/// builds the game object via <c>sub_82468378</c>, then immediately moves to 3 — or to 6
-		/// if the abandon flag at <c>mgr+136</c> is set.
-		/// </remarks>
-		public const uint HostStage = 2;
+		/// <summary>The state the session plays in; the pump enters it from 2 once per session.</summary>
+		public const uint RunningStage = 3;
 
 		/// <summary>
 		/// True while a session is live and the host should keep drawing.
 		/// </summary>
 		/// <remarks>
-		/// States 3 and 4 are where the game runs — both call <c>sub_82467AA8</c>, which advances
-		/// and displays the movie. 5 is a one-tick bounce back to 3; 7 and 8 are the fade-out the
-		/// guest runs when something in the world ends the session. The guest moves 2 → 3 on its
-		/// own, so only stage 2 must not be treated as the live state.
+		/// 3 is play; 4 and 5 are the save a holdings update triggers (the tick saves in 4, the
+		/// pump hands back EndSave in 5); 7 and 8 are the guest ending the session itself. 2 comes
+		/// before the board exists and 6 and 9 after it is gone.
 		/// </remarks>
-		public bool IsLive => Stage is 2 or 3 or 4 or 5 or 7 or 8;
+		public bool IsLive => Stage is 3 or 4 or 5 or 7 or 8;
+	}
 
-		/// <summary>
-		/// The state to hand back to end a session — teardown, NOT the settle.
-		/// </summary>
-		/// <remarks>
-		/// Writing 9 directly would leak the session: case 2 created a 1 MB heap, an audio
-		/// emitter, the game object at <c>mgr+60</c> and a GPU resource at <c>mgr+40</c>. Case 6
-		/// releases all of them and then sets 9 itself, so handing back 6 gets the settle and the
-		/// cleanup in the guest's own order.
-		/// </remarks>
-		public const uint TeardownStage = 6;
+	/// <summary>What Godot's game says, in the guest's fscommand handler's own terms.</summary>
+	/// <remarks>Each is one branch of <c>sub_82EF2AC0</c>; see <c>pubgame_pump.cpp</c>.</remarks>
+	public enum PubGameCommand : uint
+	{
+		PlaySound = 1,
+		PauseSound = 2,
+		Holdings = 3,
+		Points = 4,
+		Rank = 5,
+		SoundVolume = 6,
+		MusicVolume = 7,
+		GameOver = 8,
+	}
 
-		/// <summary>The state whose tick settles the money and resets the manager.</summary>
-		/// <remarks>Reached by the guest from <see cref="TeardownStage"/>; not written directly.</remarks>
-		public const uint SettleStage = 9;
+	/// <summary>What the pump would have told the movie.</summary>
+	[System.Flags]
+	public enum PubGameEvent : uint
+	{
+		None = 0,
+
+		/// <summary>2 → 3: the session is up.</summary>
+		Running = 1,
+
+		/// <summary>State 5: the save a holdings update started has finished — <c>pubGame.EndSave</c>.</summary>
+		SaveEnded = 2,
+
+		/// <summary>A holdings update arrived outside state 3, so no save follows it.</summary>
+		SaveSkipped = 4,
+
+		/// <summary>State 7: the guest is ending the session — <c>pubGame.EndGame</c>.</summary>
+		EndGame = 8,
+	}
+
+	/// <summary>
+	/// What <c>sub_82EF18A0</c> hands the movie before <c>pubGame.Run</c>.
+	/// </summary>
+	/// <remarks>
+	/// <see cref="Points"/> is the profile's three per-game slots; the game reads the one its
+	/// settings name as <c>gameIndex</c>, and the total is the sum of all three
+	/// (<c>sub_82EE8710</c>). <see cref="SoundVolume"/> and <see cref="MusicVolume"/> are 0..1 —
+	/// the movie is handed <c>(int)(v * 10)</c>. <see cref="Items"/> bit N means
+	/// <c>pubGame.TournamentItemWon(N)</c>.
+	/// </remarks>
+	public readonly record struct PubGameProfile(
+		string Name, long Rank, long[] Points, uint Items, uint Pad,
+		float SoundVolume, float MusicVolume, long StartingGold, long StartingDebt, string Language)
+	{
+		public int TotalPoints => (int)(Points[0] + Points[1] + Points[2]);
 	}
 
 	/// <summary>Reads the manager, or null when the guest is not up.</summary>
@@ -6938,18 +7098,50 @@ public static class HostBridge
 			values[0], values[1], gold, debt, Ascii(name), Ascii(variation));
 	}
 
-	/// <summary>
-	/// Writes the game's result into the guest's profile and hands it the settlement state.
-	/// </summary>
-	/// <remarks>
-	/// Gold is an ABSOLUTE balance, not a delta: the guest seeded the profile's bank from the
-	/// hero's real gold and settles by crediting the difference, so pass what the player
-	/// finished with.
-	/// </remarks>
-	public static bool SetPubGameResult(long gold, long debt) =>
-		SetPubGameResult(gold, debt, PubGameState.TeardownStage);
+	/// <summary>Reads what the movie would be handed at start, or null when there is no profile.</summary>
+	public static PubGameProfile? GetPubGameProfile()
+	{
+		if (!IsGuestUp)
+		{
+			return null;
+		}
 
-	public static bool SetPubGameResult(long gold, long debt, uint state)
+		var values = new uint[14];
+		var name = new byte[256];
+		var language = new byte[4];
+		try
+		{
+			if (RefiiHostGetPubGameProfile(
+				values, name, (uint)name.Length, language, (uint)language.Length) == 0)
+			{
+				return null;
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		static long Wide(uint high, uint low) => ((long)high << 32) | low;
+
+		int nameLength = System.Array.IndexOf(name, (byte)0);
+		return new PubGameProfile(
+			nameLength <= 0 ? string.Empty : System.Text.Encoding.UTF8.GetString(name, 0, nameLength),
+			Wide(values[0], values[1]),
+			[Wide(values[2], values[3]), Wide(values[4], values[5]), Wide(values[6], values[7])],
+			values[8],
+			values[9],
+			BitConverter.UInt32BitsToSingle(values[10]),
+			BitConverter.UInt32BitsToSingle(values[11]),
+			(int)values[12],
+			(int)values[13],
+			Ascii(language));
+	}
+
+	/// <summary>
+	/// Tells the guest Godot plays the pub games, so its pump never creates the Scaleform movie.
+	/// </summary>
+	public static bool ClaimPubGames(bool claimed)
 	{
 		if (!IsGuestUp)
 		{
@@ -6958,11 +7150,48 @@ public static class HostBridge
 
 		try
 		{
-			return RefiiHostSetPubGameResult(gold, debt, state) != 0;
+			return RefiiHostClaimPubGames(claimed ? 1 : 0) != 0;
 		}
 		catch (EntryPointNotFoundException)
 		{
 			return false;
+		}
+	}
+
+	/// <summary>Hands the guest one fscommand from Godot's game.</summary>
+	public static void PostPubGameCommand(
+		PubGameCommand kind, string? text = null,
+		double n0 = 0, double n1 = 0, double n2 = 0, long i0 = 0, long i1 = 0)
+	{
+		if (!IsGuestUp)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostPostPubGameCommand((uint)kind, text ?? string.Empty, n0, n1, n2, i0, i1);
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>What the pump told the movie since the last call.</summary>
+	public static PubGameEvent TakePubGameEvents()
+	{
+		if (!IsGuestUp)
+		{
+			return PubGameEvent.None;
+		}
+
+		try
+		{
+			return (PubGameEvent)RefiiHostTakePubGameEvents();
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return PubGameEvent.None;
 		}
 	}
 
@@ -6983,7 +7212,24 @@ public static class HostBridge
 		uint variationCapacity);
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	private static extern int RefiiHostSetPubGameResult(long gold, long debt, uint state);
+	private static extern int RefiiHostGetPubGameProfile(
+		[Out] uint[] values,
+		[Out] byte[] name,
+		uint nameCapacity,
+		[Out] byte[] language,
+		uint languageCapacity);
+
+	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+	private static extern int RefiiHostClaimPubGames(int claimed);
+
+	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+	private static extern int RefiiHostPostPubGameCommand(
+		uint kind,
+		[MarshalAs(UnmanagedType.LPUTF8Str)] string text,
+		double n0, double n1, double n2, long i0, long i1);
+
+	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+	private static extern uint RefiiHostTakePubGameEvents();
 
 	[DllImport(Library)]
 
@@ -7313,6 +7559,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityPartHides(uint entity, [Out] byte[] outText, uint textCapacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetEntityDrawRange(uint entity, out float distance, out float fadeFactor);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityWornItems(uint entity, [Out] uint[] outWords, uint wordCapacity);

@@ -169,6 +169,7 @@ public sealed partial class WizardsTower
         if (Overlays is not null)
         {
             Overlays.AllowQuickTips = !Tutorial;
+            Overlays.BlockingOverride = true;
         }
 
         TournamentOver = false;
@@ -399,6 +400,11 @@ public sealed partial class WizardsTower
         if (mask is not null && mask.Alpha > 0)
         {
             Action.DefaultCallbackManager?.DoCallbacks(ticks);
+            if (mask.Alpha == 0 && Overlays is not null)
+            {
+                Overlays.BlockingOverride = false;
+            }
+
             return false;
         }
 
@@ -808,7 +814,9 @@ public sealed partial class WizardsTower
 
             if (VGame.CurrentRow != VDeck.NumberOfRows)
             {
-                FadeOut(Clip("OfferInfo"), 0.5, "OfferGroup");
+                // AS2 0x005221-0x005251 passes (0.5, Action.LINEAR, "OfferGroup") to the
+                // three-parameter Fade.Out: the group is LINEAR (0), not "OfferGroup".
+                FadeOut(Clip("OfferInfo"), 0.5, Action.StyleLinear);
             }
 
             if (!VDeck.RowIsBusted(VGame.CurrentRow) && !VPlayers[0].Out)

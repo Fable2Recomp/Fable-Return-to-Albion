@@ -111,6 +111,11 @@ PPC_EXTERN_FUNC(__imp__sub_82C6E8F0);
 // native, because RegisterGUI registers into the game VM. The copies are not even
 // layout-identical: the hook-mask byte is at L+56 here and L+54 there.
 PPC_EXTERN_FUNC(__imp__sub_82228730);
+// The display MessageBox's dtor, Open and Close (vtable 0x820AE668), stated to the host — see
+// hooks/display_box_hooks.cpp.
+PPC_EXTERN_FUNC(__imp__sub_823CEAE8);
+PPC_EXTERN_FUNC(__imp__sub_823CEB58);
+PPC_EXTERN_FUNC(__imp__sub_823CEC98);
 PPC_EXTERN_FUNC(__imp__sub_8234EF58);
 PPC_EXTERN_FUNC(__imp__sub_82C68F30);
 PPC_EXTERN_FUNC(__imp__sub_8219A9A0);
@@ -180,6 +185,10 @@ PPC_EXTERN_FUNC(__imp__sub_82B4F400);
 PPC_EXTERN_FUNC(__imp__sub_822DFE08); // the command-stream drain; headless it spins its whole budget
 PPC_EXTERN_FUNC(__imp__sub_825738F0); // CECGraphicAppearance: states the highlight RGBA
 PPC_EXTERN_FUNC(__imp__sub_82427FD0); // CECTargeted: states that an entity became a target
+PPC_EXTERN_FUNC(__imp__sub_82573318); // CECGraphicAppearance: every appearance setter ends here
+PPC_EXTERN_FUNC(__imp__sub_82572238); // CECGraphicAppearance: save/load of Alpha, TintColour, ...
+PPC_EXTERN_FUNC(__imp__sub_82571DF8); // CECGraphicAppearance: constructor
+PPC_EXTERN_FUNC(__imp__sub_82571FF0); // CECGraphicAppearance: destructor
 PPC_EXTERN_FUNC(__imp__sub_832325A8); // CParticleSystemEntityInstance: states the world position
 PPC_EXTERN_FUNC(__imp__sub_83231C40); // CParticleSystemEntityInstance: states the orientation
 PPC_EXTERN_FUNC(__imp__sub_825F81E0); // spell FX: create from <Spell>SpellParticleFXInfo.<slot>

@@ -105,7 +105,8 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
     return (!title_termination_thread_.joinable() ||
             title_termination_finished_.load(std::memory_order_acquire)) &&
            (!module_thread_.joinable() ||
-            module_thread_finished_.load(std::memory_order_acquire));
+            module_thread_finished_.load(std::memory_order_acquire)) &&
+           !GuestStragglersRunning();
   }
 
   /// Names whichever shutdown threads are still outstanding, for a host that has to
@@ -123,8 +124,20 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
       }
       pending += "module";
     }
+    const std::string stragglers = GuestStragglerNames();
+    if (!stragglers.empty()) {
+      if (!pending.empty()) {
+        pending += ", ";
+      }
+      pending += "guest threads " + stragglers;
+    }
     return pending;
   }
+
+  /// Guest threads TerminateTitle could not stop. While any runs, OnDestroy must not
+  /// reset the runtime: it frees their XThreads underneath them.
+  bool GuestStragglersRunning() const noexcept;
+  std::string GuestStragglerNames() const;
 
   /// Request title termination from an external signal/control-handler thread.
   void RequestExternalShutdown() override;

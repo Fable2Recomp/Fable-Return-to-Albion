@@ -8,6 +8,13 @@ public static class Engine_CelestialElements
 {
     // Shader parameter names as StringNames: a string literal converts to a fresh
     // finalizable StringName on every call.
+    // Static paths: a string literal here is a new finalizable NodePath on every call.
+    private static readonly NodePath Path_Moon = "Moon";
+    private static readonly NodePath Path_MoonGlare = "MoonGlare";
+    private static readonly NodePath Path_Stars = "Stars";
+    private static readonly NodePath Path_SunBeams = "SunBeams";
+    private static readonly NodePath Path_SunDisc = "SunDisc";
+    private static readonly NodePath Path_SunGlare = "SunGlare";
     private static readonly StringName Param_element_colour = "element_colour";
     private static readonly StringName Param_element_dir = "element_dir";
     private static readonly StringName Param_element_distance = "element_distance";
@@ -206,7 +213,7 @@ public static class Engine_CelestialElements
         int priority = container.GetChildCount();
 
         if (theme.HasSunBeamsTexture &&
-            container.GetNodeOrNull<MeshInstance3D>("SunBeams") is null)
+            container.GetNodeOrNull<MeshInstance3D>(Path_SunBeams) is null)
         {
             Texture2D? beams = Load(theme.SunBeamsTextureHash, read, "sun beams");
             if (beams is not null)
@@ -219,7 +226,7 @@ public static class Engine_CelestialElements
         }
 
         if (theme.HasSunDiscTexture &&
-            container.GetNodeOrNull<MeshInstance3D>("SunDisc") is null)
+            container.GetNodeOrNull<MeshInstance3D>(Path_SunDisc) is null)
         {
             Texture2D? disc = Load(theme.SunDiscTextureHash, read, "sun disc");
             if (disc is not null)
@@ -234,7 +241,7 @@ public static class Engine_CelestialElements
         Shader overlayShader = GD.Load<Shader>(OverlayShaderPath) ?? additiveShader;
 
         if (theme.HasSunGlareTexture &&
-            container.GetNodeOrNull<MeshInstance3D>("SunGlare") is null)
+            container.GetNodeOrNull<MeshInstance3D>(Path_SunGlare) is null)
         {
             Texture2D? glare = Load(theme.SunGlareTextureHash, read, "sun glare");
             if (glare is not null)
@@ -251,7 +258,7 @@ public static class Engine_CelestialElements
         float u1 = (phase + 1) * MoonPhaseUStep;
 
         if (theme.HasMoonTexture &&
-            container.GetNodeOrNull<MeshInstance3D>("Moon") is null)
+            container.GetNodeOrNull<MeshInstance3D>(Path_Moon) is null)
         {
             Texture2D? moonDisc = Load(theme.MoonTextureHash, read, "moon");
             if (moonDisc is not null)
@@ -268,12 +275,12 @@ public static class Engine_CelestialElements
         // glow layer the bright pass sums after its threshold — so the glare blooms but never
         // brightens the sky it sits on. It is published to the halo layer from Update; a
         // billboard left by an older build is freed.
-        if (container.GetNodeOrNull<MeshInstance3D>("MoonGlare") is { } staleGlare)
+        if (container.GetNodeOrNull<MeshInstance3D>(Path_MoonGlare) is { } staleGlare)
         {
             staleGlare.QueueFree();
         }
 
-        if (container.GetNodeOrNull<MeshInstance3D>("Stars") is null)
+        if (container.GetNodeOrNull<MeshInstance3D>(Path_Stars) is null)
         {
             MeshInstance3D? stars = Stars(element[5], priority++);
             if (stars is not null)
@@ -328,7 +335,7 @@ public static class Engine_CelestialElements
                 continue;
             }
 
-            string elementName = child.Name.ToString();
+            string elementName = Refii.Core.Engine_NodeNames.Of(child);
             if (elementName is "SunGlare" or "MoonGlare" &&
                 material.Shader?.ResourcePath != OverlayShaderPath)
             {

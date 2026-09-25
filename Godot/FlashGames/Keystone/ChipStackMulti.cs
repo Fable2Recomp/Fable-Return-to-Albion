@@ -4,7 +4,7 @@ using Refii.FlashGames.Framework;
 
 namespace Refii.FlashGames.Keystone;
 
-public sealed class ChipStackMulti : IAnimValue
+public sealed class ChipStackMulti : IAnimValue, IAnimAlpha
 {
     private readonly IPubClip _stack1;
     private readonly IPubClip? _shadow1;

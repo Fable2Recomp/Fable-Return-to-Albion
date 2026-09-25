@@ -69,7 +69,7 @@ public static class Engine_MdlImport
 			return false;
 		}
 
-		Godot.Collections.Array arrays = mesh.SurfaceGetArrays(surface);
+		Godot.Collections.Array arrays = Engine_MdlSurfaceArrays.Of(mesh, surface);
 		var vertices = arrays[(int)Mesh.ArrayType.Vertex].As<Vector3[]>();
 		if (vertices is null || vertices.Length == 0)
 		{

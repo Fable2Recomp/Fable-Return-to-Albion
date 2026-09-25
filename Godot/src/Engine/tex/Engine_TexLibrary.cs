@@ -66,6 +66,14 @@ public static class Engine_TexLibrary
 		Enhanced = 2,
 	}
 
+	/// <summary>Decodes that returned nothing this run (each retry counts again).</summary>
+	public static long FailedDecodes;
+
+	private const long FailedRetrySeconds = 5;
+
+	/// <summary>When a failed texture may be tried again, by memory key. Guarded by Gate.</summary>
+	private static readonly Dictionary<string, long> FailedUntil = new();
+
 	private sealed class Entry
 	{
 		/// <summary>Held strongly for the material path, which owns its textures.</summary>
@@ -177,9 +185,31 @@ public static class Engine_TexLibrary
 				hasAlpha = cached.HasAlpha;
 				return cached.Texture;
 			}
+
+			// A recent failure is not retried on every ask, but it is not final either.
+			if (FailedUntil.TryGetValue(memKey, out long retryAt) &&
+				System.Diagnostics.Stopwatch.GetTimestamp() < retryAt)
+			{
+				return null;
+			}
 		}
 
 		Image? image = Decode(path, semantic, read, out bool decodedAlpha, out byte[]? source);
+
+		// A failed decode is not cached: a read can fail transiently (a bank not yet readable
+		// during a region change), and a material with no albedo samples the shader's default,
+		// white. Retried after FailedRetrySeconds instead.
+		if (image is null)
+		{
+			lock (Gate)
+			{
+				FailedDecodes++;
+				FailedUntil[memKey] = System.Diagnostics.Stopwatch.GetTimestamp() +
+					System.Diagnostics.Stopwatch.Frequency * FailedRetrySeconds;
+			}
+
+			return null;
+		}
 
 		// AN ENHANCEMENT ALREADY GENERATED IS THE TEXTURE, from the first frame. However it was made
 		// — the boot sweep, during play, a prebuild — it is on disk under its own key, and handing
@@ -210,6 +240,7 @@ public static class Engine_TexLibrary
 				return raced.Texture;
 			}
 
+			FailedUntil.Remove(memKey);
 			Live[memKey] = new Entry
 			{
 				Texture = texture,

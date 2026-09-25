@@ -400,6 +400,17 @@ public static class Engine_FramePhases
 	}
 
 
+	/// <summary>One phase's rolling average and decaying peak, or (0, 0) before it has run.</summary>
+	public static (double AverageMs, double PeakMs) Get(string name)
+	{
+		lock (Gate)
+		{
+			return Phases.TryGetValue(name, out Phase? phase)
+				? (phase.AverageMs, phase.PeakMs)
+				: (0.0, 0.0);
+		}
+	}
+
 	/// <summary>Every phase as {name: {avgMs, peakMs, lastMs}}, for the metrics reply.</summary>
 	public static Dictionary<string, object?> Report()
 	{
@@ -434,6 +445,10 @@ public sealed partial class Engine_FrameStartNode : Godot.Node
 	public override void _Process(double delta)
 	{
 		Engine_FramePhases.MarkFrameStart();
+
+		// The finished frame's GPU pass table, when the engine captures one (`--gpu-profile`).
+		Engine_GpuPasses.Sample();
+
 		double now = Godot.Time.GetTicksUsec();
 
 		// The guest's own clock first: it states its simulation time every iteration at

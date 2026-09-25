@@ -135,8 +135,11 @@ public sealed class AnimatePulse : AnimateBase
     public AnimatePulse(IPubClip clip, double time, double delay)
         : base(clip, time, delay, StyleLinear)
     {
-        _xs = clip.XScale;
-        _ys = clip.YScale;
+        // `if (clip.xs == null) clip.xs = clip._xscale` (0x0000e2): the rest scale is stored on
+        // the clip the first time it pulses, so a pulse started mid-pulse returns to the rest
+        // scale rather than to the swollen one.
+        _xs = ClipMembers.Remember(clip, "xs", clip.XScale);
+        _ys = ClipMembers.Remember(clip, "ys", clip.YScale);
     }
 
     protected override bool Update(double dt, object? callbackData, bool done)

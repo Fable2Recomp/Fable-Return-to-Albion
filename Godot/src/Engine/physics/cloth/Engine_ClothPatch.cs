@@ -53,7 +53,7 @@ public sealed class ClothPatch
 
         for (int s = 0; s < source.GetSurfaceCount(); s++)
         {
-            Godot.Collections.Array arrays = source.SurfaceGetArrays(s);
+            Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(source, s);
             Vector3[] positions = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
             Vector3[] normals = arrays[(int)Mesh.ArrayType.Normal].AsVector3Array();
             int[] indices = arrays[(int)Mesh.ArrayType.Index].AsInt32Array();

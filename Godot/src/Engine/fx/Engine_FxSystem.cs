@@ -244,6 +244,16 @@ public sealed class Engine_FxSystem
     /// </summary>
     private bool _distanceFade = true;
     private Transform3D? _previousGlobal;
+
+    /// <summary>
+    /// World gravity in the simulation's own (guest-layout, node-local) space, per unit of
+    /// <see cref="Gravity"/>. The guest adds `unk_8349E4D0 × p7` in WORLD space and carries the
+    /// sum into storage space through the inverted root matrix (`sub_8322D988`: `sub_8322EEC8`
+    /// then `sub_8227CB80`, the rows applied at 0x8322dc5c..0x8322dc74 — identity for a
+    /// world-space emitter). Our storage space is the node's, so down is the node's inverse
+    /// basis applied to world down.
+    /// </summary>
+    private readonly float[] _down = { 0f, 0f, 1f };
     private bool _detachedParticles;
 
     public int ResolvedCount { get; private set; }
@@ -261,8 +271,9 @@ public sealed class Engine_FxSystem
 
     private float _sizeScale = 1f;
 
-    /// <summary>The live size scale — the guest's element+412, folded into the keyframe
-    /// global scales (binding 338) at draw time, so it is applied at emit, not at spawn.</summary>
+    /// <summary>The live size scale — the guest's element+412: folded into the keyframe global
+    /// scales (binding 338) at draw time, and multiplied into the spawn-shape offset and the
+    /// per-update acceleration by the simulation itself.</summary>
     public void SetSizeScale(float scale) =>
         _sizeScale = float.IsFinite(scale) && scale > 0f ? scale : 1f;
     public void SetDistanceFade(bool on) => _distanceFade = on;
@@ -1090,7 +1101,9 @@ public sealed class Engine_FxSystem
 
         if (!dirFromShape) ComputeDir(rt, dirw);
 
-        for (int k = 0; k < 3; k++) pt.Pos[k] = (off[k] * rt.Scale) + ((rt.PosW[k] - rt.PrevPos[k]) * frac) + rt.PrevPos[k];
+        // The shape offset takes the element's SetScale too: `sub_82A03D58` 0x82a03ec8
+        // `vmaddfp v0, v7, v6, v8` = offset × splat(node+0x19C) + the lerped position.
+        for (int k = 0; k < 3; k++) pt.Pos[k] = (off[k] * rt.Scale * _sizeScale) + ((rt.PosW[k] - rt.PrevPos[k]) * frac) + rt.PrevPos[k];
 
         int f = (int)rt.Age;
         float dts = inst.DtSec;
@@ -1347,10 +1360,12 @@ public sealed class Engine_FxSystem
             float g6 = d.Generic[6].EvalFrame(fOld);
             float g7 = d.Generic[7].EvalFrame(fOld);
             float[] acc = _tickAcc;
-            acc[0] = v0w[0] * g6;
-            acc[1] = v0w[1] * g6;
-            acc[2] = (v0w[2] * g6) + (Gravity * g7);
-            for (int k = 0; k < 3; k++) rt.WindDisp[k] = acc[k] * rt.Scale * dts * dts;
+            acc[0] = (v0w[0] * g6) + (_down[0] * Gravity * g7);
+            acc[1] = (v0w[1] * g6) + (_down[1] * Gravity * g7);
+            acc[2] = (v0w[2] * g6) + (_down[2] * Gravity * g7);
+            // × node+412 as well (`sub_8322D988` 0x8322dc38 `lvlx v18, r31, 0x19C` into the
+            // displacement product).
+            for (int k = 0; k < 3; k++) rt.WindDisp[k] = acc[k] * rt.Scale * _sizeScale * dts * dts;
 
             rt.Age += step;
             int f = (int)rt.Age;
@@ -1540,6 +1555,16 @@ public sealed class Engine_FxSystem
             }
 
             _previousGlobal = current;
+
+            // Godot world up into node-local, then Godot (x, y, z) back to the sim's guest
+            // layout (x, z, y); `Gravity` carries the sign. The DIRECTION only: a placement's
+            // scale already scales every other term of the simulation with the node.
+            Vector3 up = current.Basis.Inverse() * Vector3.Up;
+            if (up.IsFinite() && !up.IsZeroApprox())
+            {
+                up = up.Normalized();
+                _down[0] = up.X; _down[1] = up.Z; _down[2] = up.Y;
+            }
         }
 
         if (dt <= 0f) dt = 1f / 60f;
@@ -2060,13 +2085,13 @@ public sealed class Engine_FxSystem
             TrimSurfaces(mesh, slots, slots.Used);
         }
 
-        // // THE WHOLE QUAD, STATED. Surfaces written in place keep the bounds they were built with,
-        // // and a rebuilt surface's box covers only the particle centres, so the mesh states this
-        // // frame's: the centres grown by the largest corner offset. A cull margin wide enough to
-        // // cover the corners instead puts every FX leaf in every light's and shadow pass's reach.
-        // //
-        // // WRITTEN ONLY WHEN IT CHANGED. Every write is an instance update to the renderer (a BVH
-        // // move and a re-pair) and most effects are frozen most frames.
+        // The whole quad, stated. Surfaces written in place keep the bounds they were built with,
+        // and a rebuilt surface's box covers only the particle centres, so the mesh states this
+        // frame's: the centres grown by the largest corner offset. A cull margin wide enough to
+        // cover the corners instead puts every FX leaf in every light's and shadow pass's reach.
+        //
+        // Written only when it changed: every write is an instance update to the renderer (a BVH
+        // move and a re-pair) and most effects are frozen most frames.
         Aabb box = slots.HasBounds ? slots.Bounds.Grow(slots.MaxOffset) : default;
         if (slots.StatedBox is { } stated && stated == box)
         {

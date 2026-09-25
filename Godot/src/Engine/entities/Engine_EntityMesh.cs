@@ -137,7 +137,7 @@ public static class Engine_EntityMesh
     {
         for (int surface = 0; surface < part.GetSurfaceCount(); surface++)
         {
-            Godot.Collections.Array arrays = part.SurfaceGetArrays(surface);
+            Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(part, surface);
 
             int vertexCount = 0;
             if (arrays[(int)Mesh.ArrayType.Vertex].VariantType ==
@@ -159,11 +159,8 @@ public static class Engine_EntityMesh
 
             AnchorUnskinned(arrays, vertexCount, anchorBone);
 
-            target.AddSurfaceFromArrays(part.SurfaceGetPrimitiveType(surface), arrays, null,
-                Refii.Models.Engine_MdlMesh.SurfaceLods(part, surface),
-                Refii.Models.Engine_MdlTransfer.FormatOf(arrays));
-
-            int added = target.GetSurfaceCount() - 1;
+            int added = Refii.Models.Engine_MdlSurfaceArrays.Add(target, part.SurfaceGetPrimitiveType(surface), arrays,
+                Refii.Models.Engine_MdlMesh.SurfaceLods(part, surface));
             target.SurfaceSetName(added, part.SurfaceGetName(surface));
             target.SurfaceSetMaterial(added, part.SurfaceGetMaterial(surface));
         }

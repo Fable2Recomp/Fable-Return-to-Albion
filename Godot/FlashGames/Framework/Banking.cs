@@ -15,15 +15,23 @@ public sealed class Banking
 {
     public const BankOption FirstOption = BankOption.QuickChips;
     public const BankOption LastOption = BankOption.CashOut;
-    public const double UpDownNavDelay1 = 500;
-    public const double UpDownNavDelay2 = 100;
-    public const double LeftRightNavDelay1 = 300;
 
     private readonly PubGame _game;
+    private readonly Func<int>? _chipsInPlay;
 
     public Banking(PubGame game)
+        : this(game, null)
+    {
+    }
+
+    /// <param name="chipsInPlay">
+    /// <c>OverlayManager::GetChipsInPlay</c>, which a game overrides to count chips it has staked
+    /// (Keystone: chips + bets). Null reads the player's chips, the base implementation (0x002bb8).
+    /// </param>
+    public Banking(PubGame game, Func<int>? chipsInPlay)
     {
         _game = game;
+        _chipsInPlay = chipsInPlay;
         Snapshot();
     }
 
@@ -56,7 +64,8 @@ public sealed class Banking
 
     public int StartingDebt { get; private set; }
 
-    public int TotalWinnings()
+    /// <summary><c>OverlayManager::TotalWinnings(addChipsInPlay)</c> (0x002e0c-0x002e81).</summary>
+    public int TotalWinnings(bool addChipsInPlay = false)
     {
         Player? human = Human;
         if (human is null)
@@ -64,8 +73,8 @@ public sealed class Banking
             return 0;
         }
 
-        return human.Chips - StartingChips + human.Gold - StartingGold -
-            human.Debt + StartingDebt;
+        return (addChipsInPlay ? ChipsInPlay : human.Chips) - StartingChips + human.Gold -
+            StartingGold - human.Debt + StartingDebt;
     }
 
     public int TotalBorrowed()
@@ -82,7 +91,7 @@ public sealed class Banking
 
     private Player? Human => _game.PlayerInfo.GetPlayer(0);
 
-    public int ChipsInPlay => Human?.Chips ?? 0;
+    public int ChipsInPlay => _chipsInPlay?.Invoke() ?? Human?.Chips ?? 0;
 
     public bool CasualGame => !_game.Tutorial && !_game.Tournament;
 
@@ -199,21 +208,5 @@ public sealed class Banking
             default:
                 return false;
         }
-    }
-
-    public static BankOption Step(BankOption option, int direction)
-    {
-        int next = (int)option + direction;
-        if (next < (int)FirstOption)
-        {
-            return LastOption;
-        }
-
-        if (next > (int)LastOption)
-        {
-            return FirstOption;
-        }
-
-        return (BankOption)next;
     }
 }

@@ -29,6 +29,9 @@ BUTTONS = {
             "type": "integer",
             "description": "Frames to hold (default 8). The guest edge-detects.",
         },
+        "pad": {"type": "integer", "description": "Guest pad 0..3 (default 0). START on a pad "
+                "that is not player one's is the local co-op drop-in; the pad stays connected "
+                "for the rest of the run once pressed."},
         "lx": {"type": "number", "description": "Left stick X, -1..1, held like the buttons."},
         "ly": {"type": "number", "description": "Left stick Y, -1..1 (up positive)."},
         "rx": {"type": "number", "description": "Right stick X, -1..1."},
@@ -51,10 +54,12 @@ def press(args):
         return {"ok": False, "error": f"unknown button(s): {', '.join(unknown)}",
                 "known": sorted(BUTTONS)}
     payload = {"op": "press", "buttons": mask, "frames": args.get("frames", 8)}
+    if args.get("pad") is not None:
+        payload["pad"] = int(args["pad"])
     for axis in ("lx", "ly", "rx", "ry", "lt", "rt"):
         if args.get(axis) is not None:
             payload[axis] = float(args[axis])
-    if mask == 0 and len(payload) == 3:
+    if mask == 0 and not any(axis in payload for axis in ("lx", "ly", "rx", "ry", "lt", "rt")):
         return {"ok": False, "error": "no buttons named"}
     return ask(payload)
 

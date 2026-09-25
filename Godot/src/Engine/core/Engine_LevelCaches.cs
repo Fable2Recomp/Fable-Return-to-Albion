@@ -30,6 +30,7 @@ public static class Engine_LevelCaches
 		Refii.Level.Engine_TerrainSplatMaterial.ClearSharedCache();
 		Refii.Lighting.Engine_LevelBakedLighting.ClearContainerCache();
 		Refii.Entities.Engine_EntityHighlight.Forget();
+		Refii.Entities.Engine_EntityAppearance.ForgetAll();
 		Refii.Entities.Engine_ShadowProxy.Forget();
 		Refii.Level.Engine_PropShadow.Forget();
 		Refii.Entities.Engine_EntityAttachments.ClearCaches();

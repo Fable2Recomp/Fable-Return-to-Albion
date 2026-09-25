@@ -223,7 +223,7 @@ class Reader:
         hi = struct.unpack_from("<I", self.data, self.i)[0]
         lo = struct.unpack_from("<I", self.data, self.i + 4)[0]
         self.i += 8
-        return struct.unpack("<d", struct.pack("<II", hi, lo))[0]
+        return struct.unpack("<d", struct.pack("<II", lo, hi))[0]
 
     def zstr(self) -> str:
         end = self.data.index(b"\0", self.i)
@@ -675,7 +675,7 @@ def print_pseudo(lines, fn, name, targets) -> None:
             continue
         if mnemonic == "ConstantPool":
             continue
-        if mnemonic.startswith("Define") and "body=" in text:
+        if mnemonic.startswith("DefineFunction") and "body=" in text:
             machine.emit(offset, f"; nested {text}")
             continue
         machine.step(offset, mnemonic, text, targets)
@@ -733,7 +733,7 @@ def method_names(lines, functions) -> list[str]:
             for token in text[4:].strip().split(", "):
                 if token.startswith('"'):
                     recent.append(token[1:-1])
-        elif text.startswith("Define"):
+        elif text.startswith("DefineFunction"):
             fn = None
             for start, candidate in by_offset.items():
                 if candidate.signature() in text and start > offset:
@@ -761,7 +761,7 @@ def print_block(label: str, code: bytes, want_method: str | None,
             for token in text[4:].strip().split(", "):
                 if token.startswith('"'):
                     recent.append(token[1:-1])
-        elif text.startswith("Define") and index < len(functions):
+        elif text.startswith("DefineFunction") and index < len(functions):
             fn = functions[index]
             index += 1
             named.append((fn, fn.name or (recent[-1] if recent else "?")))
@@ -794,7 +794,7 @@ def print_block(label: str, code: bytes, want_method: str | None,
         mark = ">" if offset in targets else " "
         print(f"{mark}{offset:#08x}{indent}{text}")
         for fn, name in named:
-            if fn.start == offset + 0 or (text.startswith("Define") and fn.start > offset
+            if fn.start == offset + 0 or (text.startswith("DefineFunction") and fn.start > offset
                                           and fn.signature() in text):
                 if name_by_start.get(fn.start) == name:
                     depth_ends.append(fn.end)

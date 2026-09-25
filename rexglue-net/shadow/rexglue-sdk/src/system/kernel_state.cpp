@@ -978,6 +978,32 @@ void KernelState::WaitForThreadsToExit(const std::vector<object_ref<XThread>>& t
   }
 }
 
+bool KernelState::HasStragglerThreads() const {
+  auto global_lock = rex::thread::global_critical_region::AcquireDirect();
+  for (const auto& thread : straggler_threads_) {
+    if (thread->is_running()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string KernelState::StragglerThreadNames() const {
+  auto global_lock = rex::thread::global_critical_region::AcquireDirect();
+  std::string names;
+  for (const auto& thread : straggler_threads_) {
+    if (!thread->is_running()) {
+      continue;
+    }
+    if (!names.empty()) {
+      names += ", ";
+    }
+    names += thread->name().empty() ? std::string("thread") : thread->name();
+    names += " (tid " + std::to_string(thread->thread_id()) + ")";
+  }
+  return names;
+}
+
 void KernelState::TerminateTitle() {
   REXSYS_DEBUG("KernelState::TerminateTitle");
 
@@ -1007,6 +1033,15 @@ void KernelState::TerminateTitle() {
 
   WaitForThreadsToExit(target_threads, kCooperativeExitTimeoutMs);
 
+  {
+    auto global_lock = global_critical_region_.Acquire();
+    for (auto& thread : target_threads) {
+      if (thread->is_running()) {
+        straggler_threads_.push_back(thread);
+      }
+    }
+  }
+
   // Stragglers are deliberately left running, never force-killed: TerminateThread
   // orphans whatever host lock the thread holds (CRT heap, mutexes) and deadlocks
   // teardown. Window close hard-exits and lets the OS reap them.
@@ -1026,7 +1061,18 @@ void KernelState::TerminateTitle() {
   // Drop refs before the self-terminate below (which does not return) so they
   // aren't leaked; reset the flag for relaunch.
   target_threads.clear();
-  terminating_title_.store(false, std::memory_order_release);
+  // Only when nothing is left running: a straggler that has not reached a kernel
+  // wait yet must still find the flag there when it does, or it never exits.
+  bool stragglers = false;
+  {
+    auto global_lock = global_critical_region_.Acquire();
+    for (auto& thread : straggler_threads_) {
+      stragglers = stragglers || thread->is_running();
+    }
+  }
+  if (!stragglers) {
+    terminating_title_.store(false, std::memory_order_release);
+  }
 
   // Self-terminate if called from a guest thread (e.g. XamLoaderTerminateTitle).
   if (XThread::IsInThread()) {

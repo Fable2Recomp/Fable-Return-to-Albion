@@ -50,9 +50,16 @@ public partial class Engine_EntityBatches : Node3D
 		public readonly List<Transform3D> Transforms = new();
 		public Aabb Bounds;
 		public Aabb Local;
+
+		/// <summary>The range its entities state (all alike: it is in the key), or null.</summary>
+		public float[]? Range;
 	}
 
-	private readonly Dictionary<(Mesh Mesh, uint Layers, Vector3I Cell), Batch> _batches = new();
+	/// <summary>
+	/// Keyed by the stated range end too, in whole metres: a batch draws its entities to one range,
+	/// so two entities of one mesh that state different distances never share one.
+	/// </summary>
+	private readonly Dictionary<(Mesh Mesh, uint Layers, Vector3I Cell, int RangeEnd), Batch> _batches = new();
 
 	private readonly Dictionary<uint, (Batch Batch, int Slot)> _slots = new();
 
@@ -60,8 +67,11 @@ public partial class Engine_EntityBatches : Node3D
 
 	public bool Contains(uint entity) => _slots.ContainsKey(entity);
 
-	/// <summary>Draws <paramref name="entity"/> from a batch at <paramref name="local"/>, this node's space. Main thread.</summary>
-	public bool Promote(uint entity, ArrayMesh mesh, uint layers, Transform3D local)
+	/// <summary>
+	/// Draws <paramref name="entity"/> from a batch at <paramref name="local"/>, this node's space,
+	/// to <paramref name="range"/> when the entity states one. Main thread.
+	/// </summary>
+	public bool Promote(uint entity, ArrayMesh mesh, uint layers, Transform3D local, float[]? range)
 	{
 		if (!Enabled || _slots.ContainsKey(entity))
 		{
@@ -71,10 +81,11 @@ public partial class Engine_EntityBatches : Node3D
 		float cellMetres = Refii.Level.Engine_LevelProps.BatchCellMetres;
 		var cell = new Vector3I(Mathf.FloorToInt(local.Origin.X / cellMetres),
 			Mathf.FloorToInt(local.Origin.Y / cellMetres), Mathf.FloorToInt(local.Origin.Z / cellMetres));
-		var key = (mesh, layers, cell);
+		var key = (mesh, layers, cell, range is null ? -1 : Mathf.RoundToInt(range[2]));
 		if (!_batches.TryGetValue(key, out Batch? batch))
 		{
 			batch = Create(mesh, layers);
+			batch.Range = range;
 			_batches[key] = batch;
 			++Batches;
 		}
@@ -255,9 +266,20 @@ public partial class Engine_EntityBatches : Node3D
 			batch.Caster.CustomAabb = bounds;
 		}
 
-		// The props' screen-size cull, which a batch takes only while it is compact; it reads the
-		// box just written.
-		Refii.Level.Engine_PropStreamer.ApplyVisibilityRange(batch.Node, batch.Mesh.Mesh);
+		// The range its entities state, widened by how far the batch spreads from the centre Godot
+		// measures to; else the props' screen-size cull, which a batch takes only while it is
+		// compact and which reads the box just written.
+		if (batch.Range is { } range)
+		{
+			float[] widened = (float[])range.Clone();
+			widened[2] += bounds.Size.Length() * 0.5f;
+			Refii.Level.Engine_PropDrawRange.ApplyStated(batch.Node, widened);
+		}
+		else
+		{
+			Refii.Level.Engine_PropStreamer.ApplyVisibilityRange(batch.Node, batch.Mesh.Mesh);
+		}
+
 		if (batch.Node.GetNodeOrNull<MultiMeshInstance3D>(Engine_ShadowProxy.NodeName) is { } twin)
 		{
 			twin.VisibilityRangeEnd = batch.Node.VisibilityRangeEnd;

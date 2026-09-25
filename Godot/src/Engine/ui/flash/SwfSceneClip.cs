@@ -166,6 +166,11 @@ public sealed class SwfSceneClip : IPubClip
         }
     }
 
+    /// <summary>
+    /// A MovieClip colour transform: <c>out = src * multiply + offset / 255</c> per channel, alpha
+    /// untouched (the SWF's tints pass alphaMultiplier 1). A shader on the clip, inherited by its
+    /// whole subtree, because Modulate can only multiply.
+    /// </summary>
     public void SetTint(
         float redMultiply, float greenMultiply, float blueMultiply,
         float redOffset, float greenOffset, float blueOffset)
@@ -175,11 +180,90 @@ public sealed class SwfSceneClip : IPubClip
             return;
         }
 
+        if (_node.Material is not ShaderMaterial tint || tint.Shader != TintShader)
+        {
+            if (_node.Material is not null)
+            {
+                return;
+            }
+
+            tint = new ShaderMaterial { Shader = TintShader };
+            _node.Material = tint;
+        }
+
         Color modulate = _node.Modulate;
-        modulate.R = Mathf.Clamp(redMultiply + (redOffset / 255f), 0f, 1f);
-        modulate.G = Mathf.Clamp(greenMultiply + (greenOffset / 255f), 0f, 1f);
-        modulate.B = Mathf.Clamp(blueMultiply + (blueOffset / 255f), 0f, 1f);
-        _node.Modulate = modulate;
+        _node.Modulate = new Color(1f, 1f, 1f, modulate.A);
+        tint.SetShaderParameter("tint_multiply", new Vector3(redMultiply, greenMultiply, blueMultiply));
+        tint.SetShaderParameter(
+            "tint_offset", new Vector3(redOffset, greenOffset, blueOffset) / 255f);
+        InheritMaterial(_node);
+    }
+
+    private static readonly Shader TintShader = new()
+    {
+        Code = """
+            shader_type canvas_item;
+            uniform vec3 tint_multiply = vec3(1.0);
+            uniform vec3 tint_offset = vec3(0.0);
+            void fragment() {
+                COLOR.rgb = COLOR.rgb * tint_multiply + tint_offset;
+            }
+            """,
+    };
+
+    /// <summary>Hands the clip's material to every descendant that has none of its own.</summary>
+    private static void InheritMaterial(Node node)
+    {
+        foreach (Node child in node.GetChildren())
+        {
+            if (child is CanvasItem item && item.Material is null)
+            {
+                item.UseParentMaterial = true;
+            }
+
+            InheritMaterial(child);
+        }
+    }
+
+    /// <summary>
+    /// <c>TextField.setTextFormat</c>: the colour, size and alignment a format states; unset
+    /// members leave the field as it is.
+    /// </summary>
+    public void SetTextFormat(PubTextFormat format)
+    {
+        Label? label = TextLabel();
+        if (label is null)
+        {
+            return;
+        }
+
+        if (format.Color is { } rgb)
+        {
+            label.AddThemeColorOverride(
+                "font_color",
+                new Color(((rgb >> 16) & 0xFF) / 255f, ((rgb >> 8) & 0xFF) / 255f, (rgb & 0xFF) / 255f));
+        }
+
+        if (format.Size is { } size && size > 0)
+        {
+            label.AddThemeFontSizeOverride("font_size", size);
+        }
+
+        switch (format.Align)
+        {
+            case "left":
+                label.HorizontalAlignment = HorizontalAlignment.Left;
+                break;
+            case "center":
+                label.HorizontalAlignment = HorizontalAlignment.Center;
+                break;
+            case "right":
+                label.HorizontalAlignment = HorizontalAlignment.Right;
+                break;
+            case "justify":
+                label.HorizontalAlignment = HorizontalAlignment.Fill;
+                break;
+        }
     }
 
     public string Text

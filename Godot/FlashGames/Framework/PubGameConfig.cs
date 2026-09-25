@@ -40,6 +40,12 @@ public static class PubGameConfig
             return new Dictionary<string, PubGameSetting>(StringComparer.OrdinalIgnoreCase);
         }
 
+        if (own.GameIndex is int gameIndex)
+        {
+            game.GameIndex = gameIndex;
+            applied.Add($"gameIndex={gameIndex}");
+        }
+
         Dictionary<string, PubGameSetting> defaults = own.Section(DefaultsSection);
 
         if (game.VariantName.Length != 0)

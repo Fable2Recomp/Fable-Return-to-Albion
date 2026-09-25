@@ -829,7 +829,11 @@ public sealed partial class MageDice : PubGame
         _debugUITimer = 100;
     }
 
-    public override bool EndGameWarning() => false;
+    // AS2 0x007002-0x007049: activeState == StateSpinSwitches || board.FreeSpins > 0. Before the
+    // boards exist AS2 reads undefined.FreeSpins, which is not > 0.
+    public override bool EndGameWarning() =>
+        _activeState == (MageDiceState)StateSpinSwitches ||
+        (_board is not null && _board.FreeSpins > 0);
 
     protected override void CleanUp()
     {

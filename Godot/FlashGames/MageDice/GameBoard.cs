@@ -58,6 +58,8 @@ public class GameBoard
 
     public int BonusUnlocked => _bonusUnlocked;
 
+    protected int BonusLevel => _bonusLevel;
+
     public bool Paid => _chains.Count > 0;
 
     public int BetMultiple => _betMultiple;

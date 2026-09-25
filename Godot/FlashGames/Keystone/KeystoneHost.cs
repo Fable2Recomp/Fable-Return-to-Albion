@@ -42,6 +42,12 @@ public partial class KeystoneHost : Node, IPubGameSession
     [Export]
     public int StartingGold { get; set; } = 2000;
 
+    /// <summary>The guest's player, as <c>sub_82EF18A0</c> hands it over; null in a harness.</summary>
+    public PubGameSeed? Profile { get; set; }
+
+    /// <summary>Where the game's fscommands go besides the trace: the guest, in a session.</summary>
+    public IPubGameHost? Guest { get; set; }
+
     public const int Unset = -1;
 
     [Export]
@@ -74,20 +80,6 @@ public partial class KeystoneHost : Node, IPubGameSession
     private double _fps;
     private bool _ready;
     private bool _failed;
-    private bool _rolling;
-    private Phase _phase = Phase.ArchBetting;
-
-    private enum Phase
-    {
-        ArchBetting,
-        RevealInside,
-        InsideBetting,
-        Rolling,
-        Sweep,
-        Payouts,
-        AwaitContinue,
-        Collect,
-    }
 
     public SwfStage? Stage => _stage;
 
@@ -134,7 +126,7 @@ public partial class KeystoneHost : Node, IPubGameSession
         _timer = new PubStopwatchTimer();
 
         var random = new PubRandom(ResolveSeed());
-        _commands = new PubGameCommandSink();
+        _commands = new PubGameCommandSink { Forward = Guest };
         _keystone = new Keystone(_commands, _timer, random);
 
         LoadLocalization(set, game);
@@ -150,65 +142,13 @@ public partial class KeystoneHost : Node, IPubGameSession
             }
         }
 
-        _keystone.InitBetLimits();
-        _keystone.InitBoardInfos();
-        _keystone.ResetArchStones();
-
-        IPubClip? mark1 = _root.GetChild("player0chips1");
-        IPubClip? mark2 = _root.GetChild("player0chips2");
-        if (mark1 is not null && mark2 is not null)
-        {
-            _keystone.WinNumbers = new AnimateWinNumbers(
-                (mark1.X + mark2.X) * 0.5f, mark2.Y, _keystone.ChipTravelTime);
-        }
-
-        var boardClock = System.Diagnostics.Stopwatch.StartNew();
-        _board = new GameBoard(_keystone, _root, random);
-        _board.Init();
-        GD.Print($"[pubgame] board init {boardClock.Elapsed.TotalMilliseconds:0} ms");
-        _keystone.SeatsPerTable =
-            Math.Min(1 + _keystone.NumberOfAIPlayers, _board.MaxPlayersPerBoard);
-        _board.AdjustLayers(false);
-        _board.InitCenter();
-        _board.InitNotice();
-        _board.InitSpaceStats();
-        _board.InitBetStats();
-        _board.InitTourneyStats();
-        for (int i = 1; i <= 5; i++)
-        {
-            _board.InitLegend(i);
-        }
-
-        _keystone.Board = _board;
-
         foreach (IPubClip child in RootChildren())
         {
-            bool variant = child.Name.EndsWith("SD", StringComparison.Ordinal) ||
-                child.Name.EndsWith("WD", StringComparison.Ordinal);
-            if (variant || child.Name is "jackpot")
+            if (child.Name is "jackpot")
             {
                 child.Visible = false;
             }
         }
-
-        // THE BUY-IN IS LENT, NOT GIVEN. `PubGame::Run` writes BOTH halves — `Chips += buyIn` and
-        // `Debt += buyIn` — and `PubGame::GameOver` settles by netting the chips against the debt.
-        // Taking only the chips means the debt is zero at the end, so `debt - chips` goes negative
-        // and the whole stack is paid out as gold: every session handed the player its buy-in for
-        // free, 100 gold at Standard1 and 2000 at Standard5. This host builds the table by hand
-        // rather than calling Run, which is how the second half went missing.
-        _human = new KeystonePlayer(0, false, "Hero", StartingGold, 0, 1, 0, 0)
-        {
-            Chips = _keystone.BuyIn,
-            Debt = _keystone.BuyIn,
-        };
-        _keystone.PlayerInfo.AddPlayer(0, _human);
-        _keystone.BoardInfos[0].SetPlayer(0, _human);
-        _keystone.SeatAiPlayers();
-        _keystone.InitPlayers();
-        _board.HideUnusedPlayerUI(_keystone.SeatsPerTable);
-
-        _keystone.RevealBoard();
 
         IPubClip? betStats = _root.GetChild("betStats");
         if (betStats is not null)
@@ -216,11 +156,19 @@ public partial class KeystoneHost : Node, IPubGameSession
             betStats.Alpha = 100;
         }
 
-        IPubClip? spaceStats = _root.GetChild("spaceStats");
-        if (spaceStats is not null)
-        {
-            spaceStats.Alpha = 100;
-        }
+        // The guest's order: `pubGame.Initialize` from sub_82EF0528 (0x82ef0b68), then
+        // sub_82EF18A0's AddHumanPlayer and settings, then `pubGame.Run`. Run lends the buy-in,
+        // seats the 83 NPCs, allows points and calls PostInitialize, which builds the board.
+        _overlays = new KeystoneOverlayManager(_keystone, _root);
+        _keystone.OverlayManager = _overlays;
+        _keystone.Root = _root;
+        _keystone.Initialize();
+
+        PubGameSeed seed = Profile ?? PubGameSeed.Default(StartingGold);
+        _human = (KeystonePlayer)seed.CreateHuman(_keystone);
+        seed.ApplyAfterSettings(_keystone);
+        _keystone.Run();
+        _board = _keystone.Board!;
 
         foreach (IPubClip child in RootChildren())
         {
@@ -228,34 +176,6 @@ public partial class KeystoneHost : Node, IPubGameSession
             {
                 child.Visible = false;
             }
-        }
-
-        _board.RevealStones(null);
-        _keystone.JumpToNewLocation(KeystoneSpace.Out10, false, null);
-        _keystone.UpdateBetStats();
-
-        IPubClip? ticksField = _root.GetChild("ticks");
-        if (ticksField is not null)
-        {
-            ticksField.Visible = false;
-        }
-
-        _overlays = new KeystoneOverlayManager(_keystone, _root);
-        _keystone.OverlayManager = _overlays;
-
-        // WHAT `PubGame::Run` WOULD HAVE CALLED. This host never runs it, so the session's opening
-        // — the bank snapshot and the board fade — has to be stated here or the cash-out card
-        // reports a session that never started.
-        _overlays.Init();
-
-        if (_keystone.Tutorial)
-        {
-            _keystone.TutorialPreFadeIn();
-            _keystone.EnterTutorialStage();
-        }
-        else
-        {
-            _keystone.StartArchBetting();
         }
 
         GD.Print(
@@ -458,7 +378,6 @@ public partial class KeystoneHost : Node, IPubGameSession
             return;
         }
 
-        double ticks = delta * 1000.0;
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
 
         if (_autoOpenBank)
@@ -467,98 +386,10 @@ public partial class KeystoneHost : Node, IPubGameSession
             _overlays.OpenBank();
         }
 
-        PubGameInput.Poll(_keystone.Input);
-        _keystone.Input.Update();
-        GamePad pad = _keystone.Input.GetPadState(0) ?? _keystone.Input.GetKeyboardPadState();
+        _driver.Advance(_keystone, delta, this);
+        GamePad pad = _keystone.Pad ?? _keystone.Input.GetKeyboardPadState();
 
-        _overlays.Update(ticks, pad);
-
-        if (_overlays.AbsorbingInput)
-        {
-            _keystone.CallbackManager.DoCallbacks(ticks);
-            _keystone.WinNumbers?.Update(ticks);
-            AdvanceUi(delta);
-            Fit();
-            _scene?.Sync();
-            Report(delta, pad);
-            return;
-        }
-
-        if (pad.BackPressed)
-        {
-            _keystone.EndGame();
-        }
-        else if (pad.StartPressed)
-        {
-            _overlays.ShowHelp();
-        }
-        else if (pad.BtnYPressed)
-        {
-            _overlays.OpenBank();
-        }
-        else if (pad.LeftTriggerPressed)
-        {
-            _overlays.ToggleQuickTips();
-        }
-        else if (pad.RightTriggerPressed)
-        {
-            _overlays.ShowStandings(true);
-        }
-
-        if (_keystone.Tutorial)
-        {
-            _keystone.HandleTutorialInput(pad, ticks);
-            _keystone.CallbackManager.DoCallbacks(ticks);
-            _keystone.UpdatePlayerChipDisplays(ticks);
-            _keystone.WinNumbers?.Update(ticks);
-            AdvanceUi(delta);
-            SyncChips();
-            Fit();
-            _scene?.Sync();
-            Report(delta, pad);
-            return;
-        }
-
-        if (_phase == Phase.ArchBetting)
-        {
-            if (_keystone.BetPhase(true, ticks, pad))
-            {
-                _keystone.EndBettingPhase(true);
-                _board.ShowCenter(true, 250, false);
-                _phase = Phase.RevealInside;
-            }
-
-            SyncAiStacks();
-        }
-        else if (_phase == Phase.InsideBetting)
-        {
-            if (_keystone.BetPhase(false, ticks, pad))
-            {
-                _keystone.EndBettingPhase(false);
-                Roll();
-            }
-
-            SyncAiStacks();
-        }
-        else if (_phase == Phase.AwaitContinue && pad.BtnAPressed)
-        {
-            _board.PulseLegend(2);
-            _keystone.ShowContinueGameText(false);
-            _keystone.AddAnimating(_keystone.MoveWinsToPlayers(null));
-            _phase = Phase.Collect;
-        }
-
-        _keystone.CallbackManager.DoCallbacks(ticks);
-        _keystone.UpdatePlayerChipDisplays(ticks);
-        _keystone.WinNumbers?.Update(ticks);
         AdvanceUi(delta);
-
-        if (_keystone.CallbackManager.Count == 0)
-        {
-            Settle();
-        }
-
-        SyncChips();
         Fit();
         _scene?.Sync();
         _processMs = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -570,190 +401,26 @@ public partial class KeystoneHost : Node, IPubGameSession
 
     private readonly PubGameShot _shot = new();
 
-    private void Settle()
-    {
-        switch (_phase)
-        {
-            case Phase.RevealInside:
-                _keystone.StartInsideBetting();
-                _phase = Phase.InsideBetting;
-                break;
-            case Phase.Rolling:
-                Resolve();
-                break;
-            case Phase.Sweep:
-                _keystone.AddAnimating(_keystone.ShowPayoutStacks(null));
-                _keystone.UpdateBetStats();
-                _phase = Phase.Payouts;
-                break;
-            case Phase.Payouts:
-                _keystone.ShowContinueGameText(true);
-                _keystone.ReportPointsEarned();
-                _phase = Phase.AwaitContinue;
-                break;
-            case Phase.Collect:
-                NextRound();
-                break;
-        }
-    }
-
-    private void Resolve()
-    {
-        if (_keystone.JackpotRolled)
-        {
-            _board.ShowJackpot(false, null);
-            if (!_keystone.Tutorial)
-            {
-                _keystone.AchievementEarned("KS_Jackpot");
-            }
-        }
-
-        _keystone.GenerateAndResolvePayouts(_keystone.BoardInfos[0]);
-        _board.RemoveStone(_keystone.ArchStoneToRemove, null);
-        _keystone.RemoveArchStone();
-        _board.ShowNumberAbove(_keystone.ArchStoneToRemove, false, null, false, 0);
-        _keystone.AddAnimating(_keystone.AnimateLostBetRemoval(false, null));
-        _keystone.AddAnimating(_keystone.AnimateLostBetRemoval(true, null));
-        _phase = Phase.Sweep;
-    }
-
-    private void NextRound()
-    {
-        _board.ClearAllHilights();
-        _rolling = false;
-
-        if (_keystone.IsGameOver())
-        {
-            _board.CollapseArch(null);
-            _keystone.DelayCallback(2000, _ =>
-            {
-                _keystone.ResetArchStones();
-                for (int i = KeystoneSpace.Out3; i <= KeystoneSpace.Out18; i++)
-                {
-                    _board.SetStoneOffScreen(i);
-                }
-
-                _board.RevealStones(null);
-                _board.ShowCenter(false, 250, false);
-                _keystone.StartNextGame();
-                _keystone.StartArchBetting();
-            });
-
-            _phase = Phase.ArchBetting;
-            return;
-        }
-
-        _keystone.AdvanceRoll();
-        _board.ShowCenter(false, 250, false);
-        _keystone.StartArchBetting();
-        _phase = Phase.ArchBetting;
-    }
+    private readonly PubGameDriver _driver = new();
 
     public bool IsFinished => _ready && _commands.GameOverIssued;
 
+    public bool ReloadRequested => _ready && _commands.ReloadRequested;
+
+    public bool TutorialRequested => _ready && _commands.TutorialRequested;
+
     public bool Failed => _failed;
 
-    public long FinalGold => _human?.Gold ?? 0;
-
-    public long FinalDebt => _human?.Debt ?? 0;
-
-    public bool IsRolling => _rolling;
-
-    public string PhaseName => _phase.ToString();
-
-    public void Advance(bool arch)
-    {
-        _keystone.EndBettingPhase(arch);
-        if (arch)
-        {
-            _board.ShowCenter(true, 250, false);
-            _phase = Phase.RevealInside;
-            return;
-        }
-
-        Roll();
-    }
-
-    public void Collect()
-    {
-        _keystone.AddAnimating(_keystone.MoveWinsToPlayers(null));
-        _phase = Phase.Collect;
-    }
+    PubGame? IPubGameSession.Game => _keystone;
 
     public Keystone Game => _keystone;
 
     public GameBoard Board => _board;
 
-    public void Roll()
-    {
-        _rolling = true;
-        _phase = Phase.Rolling;
-        _keystone.GenerateRoll();
-        _board.RollDice(_keystone.Roll1, _keystone.Roll2, _keystone.Roll3, false, null);
-        _keystone.DelayCallback(2600, _ => _board.PresentDice(500, null));
-        _keystone.DelayCallback(
-            3400, _ => _board.ShowNumberAbove(_keystone.ArchStoneToRemove, true, null, false, 0));
-    }
-
-    private void SyncAiStacks()
-    {
-        BoardInfo info = _keystone.BoardInfos[0];
-        for (int seat = 1; seat < _keystone.SeatsPerTable; seat++)
-        {
-            KeystonePlayer? player = info.GetPlayer(seat);
-            ChipStackMulti? total = _board.GetPlayerStack(seat);
-            if (player is null || total is null)
-            {
-                continue;
-            }
-
-            if (total.Value != player.Chips)
-            {
-                total.Value = player.Chips;
-            }
-
-            for (int space = KeystoneSpace.Out3; space <= KeystoneSpace.Out18; space++)
-            {
-                if (player.Bets[space] <= 0)
-                {
-                    continue;
-                }
-
-                ChipStack? stack = _board.GetChipStack(seat, space);
-                if (stack is not null && stack.Value != player.Bets[space])
-                {
-                    stack.Value = player.Bets[space];
-                }
-            }
-        }
-    }
-
-    private void SyncChips()
-    {
-        ChipStackMulti? stack = _board.GetPlayerStack(0);
-        if (stack is not null && stack.Value != _human.Chips)
-        {
-            stack.Value = _human.Chips;
-        }
-
-        ChipStack? space = _board.GetChipStack(0, _keystone.Current);
-        if (space is not null && space.Value != _human.Bets[_keystone.Current])
-        {
-            space.Value = _human.Bets[_keystone.Current];
-        }
-    }
-
     public const float MaxRasterScale = 3f;
 
-    private float StageWidth => Mathf.Max(_stageSize.X, 1f);
-
-    private float StageHeight => Mathf.Max(_stageSize.Y, 1f);
-
-    private float StageFit()
-    {
-        Vector2 viewport = GetViewport().GetVisibleRect().Size;
-        return Mathf.Min(viewport.X / StageWidth, viewport.Y / StageHeight);
-    }
+    private float StageFit() =>
+        PubGameStageFit.Scale(GetViewport().GetVisibleRect().Size, _stageSize);
 
     private float RasterScale()
     {
@@ -769,11 +436,7 @@ public partial class KeystoneHost : Node, IPubGameSession
     {
         Vector2 viewport = GetViewport().GetVisibleRect().Size;
         float scale = StageFit();
-
-        _view.Scale = new Vector2(scale, scale);
-        _view.Position = new Vector2(
-            (viewport.X - (StageWidth * scale)) * 0.5f,
-            (viewport.Y - (StageHeight * scale)) * 0.5f);
+        PubGameStageFit.Apply(_view, viewport, _stageSize);
 
         if (_scene is null || _scene.Vector)
         {
@@ -862,19 +525,12 @@ public partial class KeystoneHost : Node, IPubGameSession
             return;
         }
 
-        string hint = _phase switch
+        string hint = _keystone.PumpFunction?.Method.Name switch
         {
-            Phase.ArchBetting => _human.GetBetCount(true) > 0
-                ? "X moves to inside betting   RB repeats last bets"
-                : "bet the arch with A   RB repeats last bets",
-            Phase.RevealInside => "revealing inner board",
-            Phase.InsideBetting => "bet inside, X to roll   RB repeats last bets",
-            Phase.Rolling => "rolling...",
-            Phase.Sweep => "clearing losing bets",
-            Phase.Payouts => "paying out",
-            Phase.AwaitContinue => "press A to collect",
-            Phase.Collect => "collecting",
-            _ => "betting",
+            "BetOnStones" => "bet the arch, X moves inside   RB repeats last bets",
+            "BetOnInside" => "bet inside, X rolls   RB repeats last bets",
+            "WaitForContinue" => "press A to collect",
+            _ => "animating - A speeds it up",
         };
 
         _status.Text =

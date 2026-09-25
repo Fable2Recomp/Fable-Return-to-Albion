@@ -104,6 +104,36 @@ public partial class FableFx : Node3D
     /// </summary>
     public float SizeScale { get; set; } = 1f;
 
+    /// <summary>
+    /// The kill fade, frames left over frames total (1.0 until a fade-out kill). The guest's FX
+    /// light multiplies its intensity by it (`sub_8323FA50` 0x8323fb14 `bl sub_83228B48`,
+    /// 0x8323fb20 `fmuls f7, f8, f1`, f1 = +0xC4 / +0xC0), and the kill `sub_83232048` →
+    /// `sub_83228F00` writes that pair on EVERY node down the chain, lights included. The
+    /// effect's alpha (`handle+52`) does not reach a light: SetAlpha writes type 0/9 only.
+    /// </summary>
+    public float LightFade { get; set; } = 1f;
+
+    /// <summary>
+    /// This effect's lights for the debug channel: the simulation's stated energy and radius
+    /// beside what the node was given.
+    /// </summary>
+    public IEnumerable<string> DescribeLights(Vector3 eye)
+    {
+        for (int i = 0; i < _lights.Count; i++)
+        {
+            OmniLight3D light = _lights[i];
+            Engine_FxSystem.FxLightState state = _system.LightAt(i);
+            Vector3 p = light.GlobalPosition;
+            Color c = Refii.Lighting.Engine_LightColour.Linear(light);
+            yield return
+                $"{EffectName}#{i} d={eye.DistanceTo(p):0.0} at=({p.X:0.0},{p.Y:0.0},{p.Z:0.0}) " +
+                $"stated energy={state.Energy:0.00} radius={state.Range:0.0} cutoff={state.Cutoff:0} ramp={state.Ramp:0} | " +
+                $"node energy={light.LightEnergy:0.00} range={light.OmniRange:0.0} fade={LightFade:0.00} " +
+                $"exposureScale={ExposureScale:0.00} colour=({c.R:0.00},{c.G:0.00},{c.B:0.00}) " +
+                $"specular={light.LightSpecular:0.0} visible={light.Visible}";
+        }
+    }
+
     private static ulong _bankRetryAtMsec;
 
     public static FxBank? SharedBank()
@@ -259,8 +289,9 @@ public partial class FableFx : Node3D
             Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
             light.Position = state.Position;
             light.OmniRange = range * Refii.Lighting.Engine_LevelLights.PlacedRange;
-            light.LightColor = state.Colour;
-            light.LightEnergy = energy * ExposureScale * Refii.Lighting.Engine_LevelLights.PlacedScale;
+            // Encoded, because Godot decodes it (see Engine_LightColour).
+            Refii.Lighting.Engine_LightColour.Apply(light, state.Colour);
+            light.LightEnergy = energy * LightFade * ExposureScale * Refii.Lighting.Engine_LevelLights.PlacedScale;
 
             // THE GUEST REACHES ZERO AT Cutoff, ramping over the Ramp metres inside it —
             // intensity × clamp((min(Cutoff, 1000) − dist) / Ramp, 0, 1) in `sub_821F0A50`
@@ -658,9 +689,9 @@ public partial class FableFx : Node3D
                 Name = "FxSurface",
                 Mesh = _mesh,
                 CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-                // // A metre of safety only: the FX system states each surface's real box every
-                // // frame (Engine_FxSystem.EndSurfaces), corners included; a wide margin puts every
-                // // FX leaf in every light's and every shadow pass's reach.
+                // A metre of safety only: the FX system states each surface's real box every
+                // frame (Engine_FxSystem.EndSurfaces), corners included; a wide margin puts every
+                // FX leaf in every light's and every shadow pass's reach.
                 ExtraCullMargin = 1f,
             };
             AddChild(_surface);

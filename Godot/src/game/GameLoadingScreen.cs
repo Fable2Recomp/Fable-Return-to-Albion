@@ -101,14 +101,6 @@ public partial class GameLoadingScreen : Node
 	/// </summary>
 	public Refii.Text.Engine_BabelDatabase? Strings { get; set; }
 
-	/// <summary>
-	/// The level-key to Babel-tag table, so the banner can name the level rather than key it.
-	///
-	/// Loaded lazily on the first banner, because it needs the bank resolver up and the loading
-	/// screen is the first thing that wants it.
-	/// </summary>
-	private Refii.Text.Engine_LevelNames? _levelNames;
-
 	/// <summary>The tip and banner layer, drawn over the art.</summary>
 	private LoadingFurniture? _furniture;
 
@@ -886,7 +878,7 @@ public partial class GameLoadingScreen : Node
 	private string _reportedText = string.Empty;
 
 	/// <summary>
-	/// The level's display name, loading the table the first time one is asked for.
+	/// The level's display name, through <see cref="GameWhereabouts.DisplayName"/>.
 	///
 	/// `screen+268` holds the level KEY — "BWSMarket", not "Bowerstone Market". The original
 	/// resolves it through `sub_8231CE98`, which asks the world's script-override map first and
@@ -897,26 +889,8 @@ public partial class GameLoadingScreen : Node
 	/// Read through the SAME bank resolver the art goes through rather than off disk, because
 	/// `globals.gdb` is a bank entry and this project does not extract game data to read it.
 	/// </summary>
-	private string LevelDisplayName(string levelKey)
-	{
-		// A FAILED LOAD IS NOT CACHED. The first banner can ask before the bank resolver is
-		// registered, and caching that miss showed raw level keys for the whole session while
-		// every later ask would have succeeded. Success is cached; failure retries on the
-		// next banner, which is at most once per loading screen.
-		if (_levelNames is null || _levelNames.Failure.Length > 0)
-		{
-			_levelNames = Refii.Text.Engine_LevelNames.Load(
-				Refii.Gdb.Engine_BnkGdbLoader.ReadBytes);
-
-			Report(_levelNames.Failure.Length > 0
-				? $"[game-loading] level names unavailable ({_levelNames.Failure}); " +
-				  "banners will show the level key"
-				: $"[game-loading] {_levelNames.Count} level name tags from " +
-				  Refii.Text.Engine_LevelNames.GlobalsPath);
-		}
-
-		return _levelNames.DisplayName(levelKey, Strings);
-	}
+	private string LevelDisplayName(string levelKey) =>
+		GameWhereabouts.DisplayName(levelKey, Strings);
 
 
 	/// <summary>

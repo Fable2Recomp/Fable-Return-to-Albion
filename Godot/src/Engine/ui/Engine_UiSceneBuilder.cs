@@ -193,7 +193,10 @@ public sealed class Engine_UiSceneBuilder
 	/// <c>Duplicate()</c> carries onto a clone. Zero when absent.
 	/// </summary>
 	public static Vector3 PivotOf(Node3D node) =>
-		node.HasMeta("pivot") ? node.GetMeta("pivot").AsVector3() : Vector3.Zero;
+		node.HasMeta(PivotMeta) ? node.GetMeta(PivotMeta).AsVector3() : Vector3.Zero;
+
+	/// <summary>Static: read per animated element per frame, and a literal allocates a StringName.</summary>
+	private static readonly StringName PivotMeta = "pivot";
 
 	/// <summary>
 	/// Writes a live SCALE onto a built or cloned node, keeping the position it states.

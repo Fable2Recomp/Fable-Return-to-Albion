@@ -106,6 +106,9 @@ public partial class GameUi : Node
 	/// </summary>
 	private readonly Engine_UiMenuModel _menuModel = new();
 
+	/// <summary>Presentation addresses the registry walk has listed; see TracePresentations.</summary>
+	private readonly System.Collections.Generic.HashSet<uint> _menuModelSeenLive = new();
+
 	/// <summary>The movie the guest asked for, from its own `Play*MovieInternal` call.</summary>
 	private readonly Engine_UiGuiMovie _movies = new();
 
@@ -164,6 +167,18 @@ public partial class GameUi : Node
 		standing => GameInput.ModalBoxOwnsInput = standing,
 		standing => GameInput.ReceiveItemsOwnsInput = standing,
 		standing => GameInput.MenuBoxOwnsInput = standing);
+
+	/// <summary>
+	/// Whether a stated display MessageBox is still one: the class's vtable at +0 and its open
+	/// byte at +12 (`lbz r11, 0xC(r3)`, which every handler gates on). The one address the class
+	/// stated, re-checked — not a walk of the box queue.
+	/// </summary>
+	private static bool GuestMessageBoxOpen(uint box)
+	{
+		const uint MessageBoxVtable = 0x820AE668u;
+		uint[] words = HostBridge.Peek(box, 4);
+		return words.Length == 4 && words[0] == MessageBoxVtable && (words[3] >> 24) != 0u;
+	}
 
 	/// <summary>This frame's press, in the form an owned surface takes it.</summary>
 	private static Engine_UiSurfaceInput SurfaceInput(double delta) => new()
@@ -257,6 +272,7 @@ public partial class GameUi : Node
 
 		_boxes.Clear();
 		_menuModel.Reset();
+		_menuModelSeenLive.Clear();
 		Engine_UiElementState.Current.Reset();
 		HasInGameUi = false;
 	}
@@ -2341,6 +2357,7 @@ public partial class GameUi : Node
 		// route states a Babel TAG ID rather than a string, and without the book those names
 		// simply never resolve. Same database every screen already uses.
 		_hud.Values.Strings = _presentation.Strings;
+		GameWhereabouts.Strings = _presentation.Strings;
 
 		_presentation.AddChild(_hud);
 
@@ -5074,6 +5091,17 @@ public partial class GameUi : Node
 		// display box takes its text from the CALL; when it empties, the element read takes over
 		// again, which is what lets the still-unrouted producers keep working.
 		_surfaces.DisplayBox.Stated = _boxes.Boxes;
+		if (guestFrame && _boxes.GuestMessageBox is not 0u and uint stated &&
+			!GuestMessageBoxOpen(stated))
+		{
+			// Usually a close the guest's thread made after this frame's drain, stated again on
+			// the next; only a box freed with no close or destructor ever reaches here alone.
+			GD.Print($"[game-ui] display message box {stated:X8} is no longer an open " +
+				"MessageBox — dropped");
+			_boxes.GuestMessageLost(stated);
+		}
+		_surfaces.Message.StatedDisplayBox = _boxes.GuestMessageBox;
+		GameInput.DisplayMessageBoxUp = _boxes.GuestMessageBox != 0u;
 
 		// Change-keyed, so it is one line per box rather than one per frame — and it is the only
 		// place the owned box state is visible at all.
@@ -6036,6 +6064,28 @@ public partial class GameUi : Node
 
 		System.Collections.Generic.List<Engine_UiModel.Presentation> live =
 			HostBridge.GetPresentations();
+
+		// A presentation the registry has dropped takes its menu rows with it. The menu model is
+		// keyed by address and the guest reuses addresses, so a screen rebuilt where its last
+		// instance stood would otherwise inherit that instance's rows. Only an address this
+		// walk has itself seen live is forgotten: the chunks are drained on the frame and the
+		// registry a few times a second, so rows can land for a presentation the walk has not
+		// listed yet, and those must stand.
+		foreach (Engine_UiModel.Presentation p in live)
+		{
+			_menuModelSeenLive.Add(p.Address);
+		}
+
+		_menuModelSeenLive.RemoveWhere(address =>
+		{
+			if (live.Exists(p => p.Address == address))
+			{
+				return false;
+			}
+
+			_menuModel.Forget(address);
+			return true;
+		});
 
 		// Drawing comes first and happens EVERY sample, because the guest keeps mutating the
 		// element tree of a presentation that is already up — the HUD's numbers change without

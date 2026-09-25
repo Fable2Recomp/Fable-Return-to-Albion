@@ -250,6 +250,15 @@ inline void NoteHighlightColour(uint32_t component, uint32_t rgba) {
 
 /// An entity became or stopped being a target. Counted only.
 inline void NoteHighlightTarget() { refii_bridge_note_highlight_target(); }
+
+/// One renderable's appearance as the guest just stated it; `words` per core/payload_bridge.h.
+inline void NoteAppearance(uint32_t component, const uint32_t* words) {
+  refii_bridge_note_appearance(component, words);
+}
+
+/// The renderable is being constructed or destroyed: whatever was stated for its address is
+/// not its own.
+inline void ForgetAppearance(uint32_t component) { refii_bridge_forget_appearance(component); }
 inline void GuestTickPumpNoteRan() { refii_bridge_guest_tick_pump_note_ran(); }
 
 /// Records a debug-call/debug-lua outcome where the host's RefiiHostGetDebugCallResult reads it.

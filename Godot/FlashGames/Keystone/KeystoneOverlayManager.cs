@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 
 using Refii.FlashGames.Framework;
 
@@ -12,6 +13,18 @@ public sealed class KeystoneOverlayManager : OverlayManager
         : base(keystone, root) => _keystone = keystone;
 
     protected override int GetPlays() => _keystone.TotalRolls;
+
+    /// <summary><c>GetChipsInPlay</c> (0x000499): the game's own count for the human.</summary>
+    public override int GetChipsInPlay() => _keystone.GetChipsInPlay(0);
+
+    /// <summary>
+    /// <c>GetChipsInPlayButNotLockedIn</c> (0x0004b9-0x000523): Bloodstone owes its early-exit
+    /// payment; any other table hands back stakes whose points are not locked in.
+    /// </summary>
+    public override int GetChipsInPlayButNotLockedIn() =>
+        _keystone.Bloodstone
+            ? -_keystone.GetEarlyExitPayment()
+            : _keystone.GetChipsNotLockedIn();
 
     protected override void InitQuickTips(IPubClip clip)
     {
@@ -38,10 +51,8 @@ public sealed class KeystoneOverlayManager : OverlayManager
                     ["payout"] = payout.ToString(),
                     ["bet"] = bet.ToString(),
                     ["total"] = (payout + bet).ToString(),
-
-                    ["normalized10"] = bet == 0
-                        ? "0"
-                        : ((payout + bet) * 10 / bet).ToString(),
+                    ["normalized10"] =
+                        ((payout + bet) * 10.0 / bet).ToString(CultureInfo.InvariantCulture),
                 });
         }
     }

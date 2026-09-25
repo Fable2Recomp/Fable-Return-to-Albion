@@ -102,7 +102,7 @@ public sealed class Engine_HudLayout
         IReadOnlySet<string>? Strip = null,
         float Depth = 0f,
         bool LiveText = false,
-        Vector2 AncestorScale = default);
+        Basis Ancestor = default);
 
     /// <summary>The expression wheel's component, `Layer/wheelmenu` in `hud.bgf`.</summary>
     public const string ExpressionWheelName = "wheelmenu";
@@ -175,6 +175,20 @@ public sealed class Engine_HudLayout
         // The wide dark band behind it IS authored and correct: `BoxAndBar/TopBox` spans
         // x -641.7..+641.7 at opacity 70. That one is the guest's, not ours.
         ("TargetedQuery", "TargetedQuery", Anchor.TopCentre, 0f),
+
+        // The spell-charge meter, one per player, placed whole. `Layer/SpellCharging` is authored
+        // at rot.z -1.5708 x 0.8, so its five pips (`Group/Spell5..Spell1`, 80 apart on the
+        // group's x) stand as a vertical column at the left edge, and each `Icon`/`highlight`
+        // counter-rotates +1.5708 to stay upright. Per-binding pieces would place each `Spell{n}`
+        // twice (meter and slideset) and lose the column's rotation and its `Group` fade.
+        //
+        // The guest drives it only through element state: `sub_822C10A8` plays the root's
+        // `PlayerSpellCharger` slides (2 on, 3 off-fast), `sub_825E9B98` sets each pip's slide
+        // (2 assigned, 1 empty), `sub_825E9D58` marks the completed level (4 newest, 3 earlier),
+        // `sub_825E9EA0` sets each `Icon` to the spell on that level, and the fill is the meter
+        // `PlayerSpellcharge{n}`. `SpellCharging2` is the henchman's, mirrored at +390.
+        ("SpellCharging", "SpellCharging", null, 0f),
+        ("SpellCharging2", "SpellCharging2", null, 0f),
     };
 
     private readonly List<Piece> _pieces = new();
@@ -420,7 +434,7 @@ public sealed class Engine_HudLayout
                 Driven: driven,
                 ElementOrdinal: binding.ElementOrdinal,
                 Strip: strip,
-                AncestorScale: AncestorScaleOf(screen, binding.ElementOrdinal),
+                Ancestor: AncestorBasisOf(screen, binding.ElementOrdinal),
 
                 // A container sits BEHIND what it holds. Every piece is placed at z 0, and canvas
                 // +Z faces the camera, so a container steps back by how much it holds — more
@@ -477,7 +491,7 @@ public sealed class Engine_HudLayout
                     Driven: Drive.None,
                     ElementOrdinal: node.Ordinal,
                     Strip: null,
-                    AncestorScale: AncestorScaleOf(screen, node.Ordinal),
+                    Ancestor: AncestorBasisOf(screen, node.Ordinal),
                     Depth: depth,
                     Placed: true,
                     LiveText: true));
@@ -590,12 +604,12 @@ public sealed class Engine_HudLayout
     private static readonly Dictionary<string, (Anchor Anchor, Vector2 Offset)> Arrangement =
         new()
         {
-            // THE HEALTH READOUTS, from the measured rect rather than the authored position —
-            // see the note beside them in GroupSubtrees. Player: snapping gave rect x -684
-            // against a -633 edge, so it moves right by 84. Co-op: its rect ran to +657 against
-            // a +633 edge, so it moves left by 57.
-            ["group.PlayerHealth.PlayerHealth"] = (Anchor.TopLeft, new Vector2(212f, 65f)),
-            ["group.CoopHealth.CoopHealth"] = (Anchor.TopRight, new Vector2(-162f, 71f)),
+            // The health readouts, placed from their measured rect rather than the authored
+            // position (see the note beside them in GroupSubtrees). The offsets include the
+            // widescreen adapter's delta — player (-143, 0), co-op (+133, -6) — because
+            // `Engine_HudView.StatedDelta` measures guest moves from the wide position, not the 4:3 one.
+            ["group.PlayerHealth.PlayerHealth"] = (Anchor.TopLeft, new Vector2(69f, 65f)),
+            ["group.CoopHealth.CoopHealth"] = (Anchor.TopRight, new Vector2(-29f, 77f)),
 
             // The quest banner's two lines, which the file parks together at the group origin.
 
@@ -702,30 +716,53 @@ public sealed class Engine_HudLayout
     }
 
     /// <summary>
-    /// The scale the ancestors ABOVE a piece's element compose onto it (`HealthAndMana` is authored
-    /// at 0.6); the clone keeps only the element's own basis, so the layout carries the rest.
+    /// The basis the ancestors ABOVE a piece's element compose onto it — scale (`HealthAndMana`
+    /// is authored at 0.6) AND rotation (`SpellCharging` at -1.5708); the clone keeps only the
+    /// element's own basis, so the layout carries the rest.
     /// </summary>
-    public static Vector2 AncestorScaleOf(Engine_UiScreen screen, int element)
+    public static Basis AncestorBasisOf(Engine_UiScreen screen, int element)
     {
-        var scale = Vector2.One;
+        var basis = Basis.Identity;
         if (element < 0 || element >= screen.Nodes.Length)
         {
-            return scale;
+            return basis;
         }
 
         for (UiNode? up = screen.Nodes[element].Parent; up is not null; up = up.Parent)
         {
-            float sx = up.ScaleX;
-            if (_wide is not null && _wide.TryGetValue(up.Ordinal, out Engine_UiWidescreen.Override over) &&
-                over.ScaleX is { } wideX)
-            {
-                sx = wideX;
-            }
-
-            scale *= new Vector2(sx == 0f ? 1f : sx, up.ScaleY == 0f ? 1f : up.ScaleY);
+            basis = LocalBasis(up, zeroScaleIsOne: true) * basis;
         }
 
-        return scale;
+        return basis;
+    }
+
+    /// <summary>
+    /// One element's rotation and scale as `Engine_UiSceneBuilder.BuildTransform` composes them,
+    /// with the wide layout's x-scale where it states one.
+    /// </summary>
+    private static Basis LocalBasis(UiNode node, bool zeroScaleIsOne)
+    {
+        float sx = node.ScaleX;
+        if (_wide is not null && _wide.TryGetValue(node.Ordinal, out Engine_UiWidescreen.Override over) &&
+            over.ScaleX is { } wideX)
+        {
+            sx = wideX;
+        }
+
+        float sy = node.ScaleY;
+        if (zeroScaleIsOne)
+        {
+            sx = sx == 0f ? 1f : sx;
+            sy = sy == 0f ? 1f : sy;
+        }
+
+        var basis = Basis.Identity;
+        if (node.RotationX != 0f || node.RotationY != 0f || node.RotationZ != 0f)
+        {
+            basis = Basis.FromEuler(new Vector3(-node.RotationX, -node.RotationY, node.RotationZ));
+        }
+
+        return basis.Scaled(new Vector3(sx, sy, 1f));
     }
 
     /// <summary>The wide layout's overrides by parent ordinal, for the build in progress and the layout it made.</summary>
@@ -737,22 +774,17 @@ public sealed class Engine_HudLayout
     /// <summary>
     /// <see cref="Engine_UiElementResolve.CanvasPosition"/> with each ancestor's position and
     /// x-scale taken from the wide layout where it states one — absolute values, per attribute,
-    /// exactly as `widescreenadapter.lua` writes them onto the parent.
+    /// exactly as `widescreenadapter.lua` writes them onto the parent. Each ancestor's rotation
+    /// applies too (the spell-charge column is rot.z -1.5708).
     /// </summary>
     private static Vector2 CanvasPositionWide(UiNode node)
     {
         Vector2 at = Local(node);
         for (UiNode? up = node.Parent; up is not null; up = up.Parent)
         {
+            Vector3 turned = LocalBasis(up, zeroScaleIsOne: false) * new Vector3(at.X, at.Y, 0f);
             Vector2 local = Local(up);
-            float sx = up.ScaleX;
-            if (_wide is not null && _wide.TryGetValue(up.Ordinal, out Engine_UiWidescreen.Override over) &&
-                over.ScaleX is { } wideX)
-            {
-                sx = wideX;
-            }
-
-            at = new Vector2(local.X + (sx * at.X), local.Y + (up.ScaleY * at.Y));
+            at = new Vector2(local.X + turned.X, local.Y + turned.Y);
         }
 
         return at;

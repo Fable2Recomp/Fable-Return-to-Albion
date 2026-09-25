@@ -42,6 +42,9 @@ public sealed class HostUiSource : Engine_UiSource
 
 	public override Engine_UiModel.MenuBoxState? GetMenuBox() => HostBridge.GetMenuBox();
 
+	public override bool DisplayQueryUp() =>
+		HostBridge.GetDisplayBox() is { Vtable: HostBridge.DisplayQueryBoxVtable };
+
 	public override Engine_UiModel.PauseState? GetPauseState() => HostBridge.GetPauseState();
 
 	public override List<Engine_UiModel.MapMarker> GetMapMarkers() => HostBridge.GetMapMarkers();

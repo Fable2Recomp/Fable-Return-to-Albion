@@ -65,16 +65,119 @@ public partial class GameInput : Node
 		// with nobody at the keyboard and a window that may never take focus, and a
 		// controller playing another game must not steer this one meanwhile.
 		//
-		// Everything goes to pad 0; the rest report disconnected. The front end latches the
-		// pad that pressed A (dword_83496AF8, 0x826E30DC) and ignores every other one
-		// (0x826DEE64), so input split across devices is input the guest discards.
-		Publish0(devices: HasInputFocus());
-
-		for (int pad = 1; pad < MaxControllers; ++pad)
+		// One gamepad per guest pad. The guest polls all four (`InputDeviceMgr_EnumeratePads`
+		// 0x821A8CC8 loops XamInputGetCapabilities 0..3) and tags every event with its pad
+		// (`ev+40`). A START on a pad that is not player one's is the local drop-in
+		// (`sub_82402F70` 0x824031ec → `Coop_SetSharedScreenMode(game+140, 1, pad)`), and player
+		// two's handler takes only `ev.pad == Player+40` (`sub_829C1C08` 0x829c1c88).
+		bool devices = HasInputFocus();
+		AssignPads(devices);
+		for (int pad = 0; pad < MaxControllers; ++pad)
 		{
-			HostBridge.SetControllerState(pad, connected: false, 0, 0, 0, 0, 0, 0, 0);
+			PublishPad(pad, devices);
+		}
+	}
+
+	/// <summary>
+	/// The Godot joypad holding each guest pad, −1 free. A gamepad takes the lowest free pad
+	/// on its first press and keeps it until it disconnects, so whoever presses A on the title
+	/// is pad 0 — the pad the front end latches (dword_83496AF8, 0x826E30DC) and binds to
+	/// player one. Pad 0 also carries the keyboard, the debug channel and every joypad Godot
+	/// has no gamepad mapping for (a keyboard's or mouse's HID interface can enumerate as one),
+	/// so an unmapped device never claims a pad.
+	/// </summary>
+	private static readonly int[] _padDevice = { -1, -1, -1, -1 };
+
+	private static void AssignPads(bool devices)
+	{
+		Godot.Collections.Array<int> connected = Input.GetConnectedJoypads();
+		for (int pad = 0; pad < MaxControllers; ++pad)
+		{
+			if (_padDevice[pad] >= 0 && !connected.Contains(_padDevice[pad]))
+			{
+				GD.Print($"[input] joypad {_padDevice[pad]} disconnected — guest pad {pad} is free");
+				_padDevice[pad] = -1;
+			}
 		}
 
+		if (!devices)
+		{
+			return;
+		}
+
+		foreach (int joypad in connected)
+		{
+			if (!Input.IsJoyKnown(joypad) || System.Array.IndexOf(_padDevice, joypad) >= 0 ||
+				JoypadButtons(joypad) == 0)
+			{
+				continue;
+			}
+
+			int free = System.Array.IndexOf(_padDevice, -1);
+			if (free < 0)
+			{
+				return;
+			}
+
+			_padDevice[free] = joypad;
+			GD.Print($"[input] joypad {joypad} '{Input.GetJoyName(joypad)}' is guest pad {free}");
+		}
+	}
+
+	/// <summary>One pad's raw state, before the menu masks.</summary>
+	private struct PadState
+	{
+		public uint Buttons, LeftTrigger, RightTrigger;
+		public int LeftX, LeftY, RightX, RightY;
+
+		public void Merge(int joypad)
+		{
+			Buttons |= JoypadButtons(joypad);
+			LeftTrigger = System.Math.Max(LeftTrigger, Trigger(joypad, JoyAxis.TriggerLeft));
+			RightTrigger = System.Math.Max(RightTrigger, Trigger(joypad, JoyAxis.TriggerRight));
+			LeftX = Dominant(LeftX, Axis(joypad, JoyAxis.LeftX));
+			// Negated: Godot's stick Y is screen-space (down positive), the Xbox's is up-positive.
+			LeftY = Dominant(LeftY, -Axis(joypad, JoyAxis.LeftY));
+			RightX = Dominant(RightX, Axis(joypad, JoyAxis.RightX));
+			RightY = Dominant(RightY, -Axis(joypad, JoyAxis.RightY));
+		}
+	}
+
+	/// <summary>
+	/// Pads 1-3: the gamepad holding the pad and the debug channel's presses aimed at it.
+	/// Connected while either holds it — a debug press connects the pad for the rest of the
+	/// run, since a pad that vanished between presses would read to the guest as unplugged.
+	/// The menu masks apply as on pad 0: an owned menu's vocabulary must not reach the guest
+	/// from any pad.
+	/// </summary>
+	private static void PublishPad(int pad, bool devices)
+	{
+		if (pad == 0)
+		{
+			Publish0(devices);
+			return;
+		}
+
+		var state = new PadState { Buttons = GameDebugServer.Buttons(pad) };
+		if (GameDebugServer.Sticks(pad, out int debugLX, out int debugLY, out int debugRX,
+				out int debugRY, out uint debugLT, out uint debugRT))
+		{
+			state.LeftX = debugLX;
+			state.LeftY = debugLY;
+			state.RightX = debugRX;
+			state.RightY = debugRY;
+			state.LeftTrigger = debugLT;
+			state.RightTrigger = debugRT;
+		}
+
+		int joypad = _padDevice[pad];
+		if (devices && joypad >= 0)
+		{
+			state.Merge(joypad);
+		}
+
+		bool connected = joypad >= 0 || GameDebugServer.PadConnected(pad);
+		SetMasked(pad, connected, state);
 	}
 
 	/// <summary>
@@ -93,12 +196,15 @@ public partial class GameInput : Node
 	private static bool _reportedUnfocused;
 
 	/// <summary>
-	/// Pad 0: the keyboard and every connected joypad, merged, plus the scripted sources.
-	/// Buttons are OR'd; triggers and sticks take whichever device is pushing hardest, so a pad
-	/// at rest never cancels one in use. With <paramref name="devices"/> false the keyboard and
-	/// joypads are muted (the window is unfocused) and the pad is still published every frame,
-	/// so anything a device held is released exactly once and stays released — the guest
-	/// edge-detects, and a publish skipped would leave a stick mid-push forever.
+	/// Pad 0: the keyboard, the gamepad holding pad 0 and every unmapped joypad, merged, plus
+	/// the scripted sources. Buttons are OR'd; triggers and sticks take whichever device is
+	/// pushing hardest, so a pad at rest never cancels one in use. With
+	/// <paramref name="devices"/> false the keyboard and joypads are muted (the window is
+	/// unfocused) and the pad is still published every frame, so anything a device held is
+	/// released exactly once and stays released — the guest edge-detects, and a publish skipped
+	/// would leave a stick mid-push forever.
+	///
+	/// The host-owned menus read pad 0 only: every one of them acts for player one.
 	/// </summary>
 	private static void Publish0(bool devices)
 	{
@@ -112,57 +218,51 @@ public partial class GameInput : Node
 
 		// NO AUTO-DRIVER. The debug channel (the MCP) presses the pad when a run has to be
 		// driven; the title-to-world and menu-walking scripts that lived here are gone.
-		uint buttons = (devices ? KeyboardButtons() : 0u) | GameDebugServer.Buttons();
-		uint leftTrigger = 0;
-		uint rightTrigger = 0;
-		int leftX = 0, leftY = 0, rightX = 0, rightY = 0;
-
-		foreach (int pad in Input.GetConnectedJoypads())
+		var state = new PadState
 		{
-			if (!devices)
+			Buttons = (devices ? KeyboardButtons() : 0u) | GameDebugServer.Buttons(0),
+		};
+
+		if (devices)
+		{
+			foreach (int joypad in Input.GetConnectedJoypads())
 			{
-				break;
+				if (joypad == _padDevice[0] || !Input.IsJoyKnown(joypad))
+				{
+					state.Merge(joypad);
+				}
 			}
-
-			buttons |= JoypadButtons(pad);
-
-			leftTrigger = System.Math.Max(leftTrigger, Trigger(pad, JoyAxis.TriggerLeft));
-			rightTrigger = System.Math.Max(rightTrigger, Trigger(pad, JoyAxis.TriggerRight));
-
-			leftX = Dominant(leftX, Axis(pad, JoyAxis.LeftX));
-			// Negated: Godot's stick Y is screen-space (down positive), the Xbox's is up-positive.
-			leftY = Dominant(leftY, -Axis(pad, JoyAxis.LeftY));
-			rightX = Dominant(rightX, Axis(pad, JoyAxis.RightX));
-			rightY = Dominant(rightY, -Axis(pad, JoyAxis.RightY));
 		}
 
 		// The debug channel's held sticks and triggers merge like one more device.
-		if (GameDebugServer.Sticks(out int debugLX, out int debugLY, out int debugRX,
+		if (GameDebugServer.Sticks(0, out int debugLX, out int debugLY, out int debugRX,
 				out int debugRY, out uint debugLT, out uint debugRT))
 		{
-			leftX = Dominant(leftX, debugLX);
-			leftY = Dominant(leftY, debugLY);
-			rightX = Dominant(rightX, debugRX);
-			rightY = Dominant(rightY, debugRY);
-			leftTrigger = System.Math.Max(leftTrigger, debugLT);
-			rightTrigger = System.Math.Max(rightTrigger, debugRT);
+			state.LeftX = Dominant(state.LeftX, debugLX);
+			state.LeftY = Dominant(state.LeftY, debugLY);
+			state.RightX = Dominant(state.RightX, debugRX);
+			state.RightY = Dominant(state.RightY, debugRY);
+			state.LeftTrigger = System.Math.Max(state.LeftTrigger, debugLT);
+			state.RightTrigger = System.Math.Max(state.RightTrigger, debugRT);
 		}
 
 		// A replay tape overrides the devices wholesale; the state masks below still apply,
 		// because they are the game's, not the recording's.
 		if (GameDebugServer.ReplayFrame(out GameDebugServer.PadFrame replay))
 		{
-			buttons |= replay.Buttons;
-			leftTrigger = replay.Lt;
-			rightTrigger = replay.Rt;
-			leftX = replay.Lx;
-			leftY = replay.Ly;
-			rightX = replay.Rx;
-			rightY = replay.Ry;
+			state.Buttons |= replay.Buttons;
+			state.LeftTrigger = replay.Lt;
+			state.RightTrigger = replay.Rt;
+			state.LeftX = replay.Lx;
+			state.LeftY = replay.Ly;
+			state.RightX = replay.Rx;
+			state.RightY = replay.Ry;
 		}
 
+		uint buttons = state.Buttons;
+		int leftX = state.LeftX, leftY = state.LeftY, rightX = state.RightX, rightY = state.RightY;
 		GameDebugServer.RecordInputFrame(
-			buttons, leftTrigger, rightTrigger, leftX, leftY, rightX, rightY);
+			buttons, state.LeftTrigger, state.RightTrigger, leftX, leftY, rightX, rightY);
 
 		// The mask as the guest receives it, for host widgets that run their own hold timers
 		// (the TopBox's hold-to-accept) — every source folded, focus gate included.
@@ -172,52 +272,23 @@ public partial class GameInput : Node
 		LeftStick = new Vector2(leftX / 32767f, leftY / 32767f);
 
 		// Logged on the threshold crossing only (30/255, the XInput convention).
-		uint triggersHeld = (leftTrigger > 30 ? 1u : 0u) | (rightTrigger > 30 ? 2u : 0u);
+		uint triggersHeld =
+			(state.LeftTrigger > 30 ? 1u : 0u) | (state.RightTrigger > 30 ? 2u : 0u);
 		if (triggersHeld != _reportedTriggers)
 		{
 			_reportedTriggers = triggersHeld;
-			GD.Print($"[input] triggers LT={leftTrigger} RT={rightTrigger}");
+			GD.Print($"[input] triggers LT={state.LeftTrigger} RT={state.RightTrigger}");
 		}
 
 		// THE SPELLS MENU'S HOLD — GameAction 42 on press, 43 on release, which the shipped
 		// scheme binds to XboxButton 16: the RIGHT TRIGGER. Same 30/255 threshold as above.
-		bool spells = rightTrigger > 30;
+		bool spells = state.RightTrigger > 30;
 		SpellsMenuPressed = spells && !_spellsWasDown;
 		SpellsMenuReleased = !spells && _spellsWasDown;
 		SpellsMenuHeld = spells;
 		_spellsWasDown = spells;
 
-		// Two consumers: the guest gets a filtered set, the host-owned menu below gets the real
-		// one. The guest still runs its own front-end menu — see <see cref="WithoutMenuInput"/>.
-		bool masked = MaskMenuInput;
-		bool pauseMasked = !masked && MaskPauseInput;
-		bool queryMasked = !masked && !pauseMasked && MaskPauseQueryInput;
-		// The card's mask keeps the sticks and the D-pad live: its screen does not pause the
-		// game, so the stick-zeroing below must not apply to it.
-		bool cardMasked = !masked && !pauseMasked && !queryMasked && MaskReceiveItemsInput;
-		bool boxMasked = !masked && !pauseMasked && !queryMasked && !cardMasked &&
-			MaskMenuBoxInput;
-		bool listMasked = !masked && !pauseMasked && !queryMasked && !cardMasked &&
-			!boxMasked && MaskScreenMenuInput;
-		bool menuMask = masked || pauseMasked || queryMasked || boxMasked || listMasked;
-		HostBridge.SetControllerState(
-			0, connected: true,
-			masked ? WithoutMenuInput(buttons)
-			: pauseMasked ? WithoutPauseInput(buttons)
-			: queryMasked ? WithoutQueryInput(buttons)
-			: cardMasked ? WithoutCardInput(buttons)
-			: boxMasked ? WithoutQueryInput(buttons)
-			: listMasked ? WithoutQueryInput(buttons)
-			: buttons,
-			leftTrigger, rightTrigger,
-			// The stick is masked with the buttons: `sub_826E39C0` dead-zones the left stick
-			// against ±0.75 and emits the same codes the D-pad does — 28/29 for Y at
-			// 0x826E3C04/0x826E3C58, 30/31 for X at 0x826E3B50/0x826E3BAC.
-			menuMask ? 0 : leftX, menuMask ? 0 : leftY,
-			// The card takes the right stick — it turns the model on the front and scrolls the
-			// description on the back — so the camera does not swing under it. The left stick
-			// stays live: the card does not pause the game.
-			cardMasked ? 0 : rightX, cardMasked ? 0 : rightY);
+		SetMasked(0, connected: true, state);
 
 		// The deadzone is ours here: `page.lua` reads `GUI.State.RightThumbStickY` raw (page.dis
 		// main.1 pc18..21) because the guest has already dead-zoned it before firing the contract
@@ -237,6 +308,45 @@ public partial class GameInput : Node
 				((sideways - RightThumbDeadzone) / (32767f - RightThumbDeadzone));
 
 		PublishToHost(buttons, leftX, leftY);
+	}
+
+	/// <summary>
+	/// Publishes one pad with the owned menus' masks applied. Two consumers: the guest gets a
+	/// filtered set, the host-owned menu gets the real one. The guest still runs its own
+	/// front-end menu — see <see cref="WithoutMenuInput"/>.
+	/// </summary>
+	private static void SetMasked(int pad, bool connected, PadState state)
+	{
+		uint buttons = state.Buttons;
+		bool masked = MaskMenuInput;
+		bool pauseMasked = !masked && MaskPauseInput;
+		bool queryMasked = !masked && !pauseMasked && MaskPauseQueryInput;
+		// The card's mask keeps the sticks and the D-pad live: its screen does not pause the
+		// game, so the stick-zeroing below must not apply to it.
+		bool cardMasked = !masked && !pauseMasked && !queryMasked && MaskReceiveItemsInput;
+		bool boxMasked = !masked && !pauseMasked && !queryMasked && !cardMasked &&
+			MaskMenuBoxInput;
+		bool listMasked = !masked && !pauseMasked && !queryMasked && !cardMasked &&
+			!boxMasked && MaskScreenMenuInput;
+		bool menuMask = masked || pauseMasked || queryMasked || boxMasked || listMasked;
+		HostBridge.SetControllerState(
+			pad, connected,
+			masked ? WithoutMenuInput(buttons)
+			: pauseMasked ? WithoutPauseInput(buttons)
+			: queryMasked ? WithoutQueryInput(buttons)
+			: cardMasked ? WithoutCardInput(buttons)
+			: boxMasked ? WithoutQueryInput(buttons)
+			: listMasked ? WithoutQueryInput(buttons)
+			: buttons,
+			state.LeftTrigger, state.RightTrigger,
+			// The stick is masked with the buttons: `sub_826E39C0` dead-zones the left stick
+			// against ±0.75 and emits the same codes the D-pad does — 28/29 for Y at
+			// 0x826E3C04/0x826E3C58, 30/31 for X at 0x826E3B50/0x826E3BAC.
+			menuMask ? 0 : state.LeftX, menuMask ? 0 : state.LeftY,
+			// The card takes the right stick — it turns the model on the front and scrolls the
+			// description on the back — so the camera does not swing under it. The left stick
+			// stays live: the card does not pause the game.
+			cardMasked ? 0 : state.RightX, cardMasked ? 0 : state.RightY);
 	}
 
 	/// <summary>
@@ -326,11 +436,16 @@ public partial class GameInput : Node
 	/// </summary>
 	public static bool ModalBoxOwnsInput { get; set; }
 
+	/// <summary>Set while the guest has a display MessageBox open — stated by the class's own
+	/// Open and Close, not the router's modal latch, which such a box never sets.</summary>
+	public static bool DisplayMessageBoxUp { get; set; }
+
 	/// <summary>Masks the box's buttons only while the guest still says a modal dialog is
-	/// pending (the mode latch, over ANY screen — the openers never change the screen id).
-	/// Fails open.</summary>
+	/// pending (the mode latch, over ANY screen — the openers never change the screen id), or
+	/// has a display MessageBox open. Fails open.</summary>
 	private static bool MaskPauseQueryInput =>
-		ModalBoxOwnsInput && HostBridge.GetPauseState() is { ModalUp: true };
+		ModalBoxOwnsInput &&
+		(DisplayMessageBoxUp || HostBridge.GetPauseState() is { ModalUp: true });
 
 	/// <summary>
 	/// Set by <c>GameUi.DriveReceiveItems</c> while the owned received-item card is standing.

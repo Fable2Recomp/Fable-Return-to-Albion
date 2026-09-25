@@ -221,7 +221,7 @@ public partial class Engine_PostFxHalos : Node
 					(end - dist) / MathF.Max(light.DistanceFadeLength, 0.01f), 0f, 1f);
 			}
 
-			Color c = light.LightColor;
+			Color c = Refii.Lighting.Engine_LightColour.Linear(light);
 			var colour = new Vector3(c.R * energy, c.G * energy, c.B * energy);
 			if (MathF.Max(MathF.Max(colour.X, colour.Y), colour.Z) <= 1e-3f)
 			{

@@ -84,9 +84,18 @@ public sealed class Localizer
     public PubTextFormat? GetTextFormat(string id) =>
         _dictionary.TryGetValue(id, out FormattedText? entry) ? entry.Format : null;
 
+    /// <summary>
+    /// <c>Localizer::Localize</c> (0x000b0f-0x000b41): sets the text, then the string's own text
+    /// format when the file gave it attributes.
+    /// </summary>
     public void Localize(IPubClip target, string id, IReadOnlyDictionary<string, string>? variables)
     {
         target.Text = LocalizeString(id, variables);
+        PubTextFormat? format = GetTextFormat(id);
+        if (format is not null)
+        {
+            target.SetTextFormat(format);
+        }
     }
 
     public void SetAttribute(string id, string attribute, string? setting)

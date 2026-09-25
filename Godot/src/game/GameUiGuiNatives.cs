@@ -170,6 +170,25 @@ public partial class GameUi
 		_guiNatives.Register("DisplayMessageBox", call =>
 			_boxes.MessageBox(Localise(call, 0)));
 
+		// The MessageBox CLASS stating itself, not a native: its Open and Close are hooked
+		// (hooks/display_box_hooks.cpp) because most boxes of the class are built natively and
+		// never pass a `GUI.*` call. Argument 0 is the box's address, argument 1 its identity.
+		_guiNatives.Register("@MessageBox.Open", call =>
+		{
+			if (GuestAddress(call) is { } box)
+			{
+				_boxes.GuestMessageOpened(box, call.Argument(1).Text);
+			}
+		});
+
+		_guiNatives.Register("@MessageBox.Close", call =>
+		{
+			if (GuestAddress(call) is { } box)
+			{
+				_boxes.GuestMessageClosed(box, call.Argument(1).Text);
+			}
+		});
+
 		// `DisplayInfoBox` is the odd one: its id is a LITERAL 0, and no string hashes to 0, so
 		// it is unreachable from RemoveDisplayBox by construction. Six seconds, fire and forget.
 		_guiNatives.Register("DisplayInfoBox", call =>
@@ -874,6 +893,13 @@ public partial class GameUi
 		}
 	}
 
+
+	/// <summary>A stated guest address — argument 0 of the `@` events, eight hex digits.</summary>
+	private static uint? GuestAddress(Engine_UiModel.GuiNativeCall call) =>
+		uint.TryParse(call.Argument(0).Text, System.Globalization.NumberStyles.HexNumber,
+			System.Globalization.CultureInfo.InvariantCulture, out uint address) && address != 0u
+			? address
+			: null;
 
 	/// <summary>
 	/// A call's text argument, resolved and with its trailing arguments substituted.

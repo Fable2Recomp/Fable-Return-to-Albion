@@ -180,6 +180,9 @@ public partial class GameWindow : Node
 		_video = new GameVideo { Name = "GameVideo" };
 		AddChild(_video);
 
+		// Last, so it draws over the video too. Hidden until F3 or `perf_overlay = true`.
+		AddChild(new GamePerfOverlay { Name = "GamePerfOverlay" });
+
 		// Video over UI: a movie covers the front end and hands it back when it ends.
 		// Concealing is immediate; revealing waits for the guest to say it has a front end
 		// (see _Process), not for a movie to end. Never for an embedded movie — an ability

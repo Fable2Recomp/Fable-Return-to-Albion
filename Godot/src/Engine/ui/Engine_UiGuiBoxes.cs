@@ -285,14 +285,16 @@ public sealed class Engine_UiGuiBoxes
 
 	/// <summary>True when anything is up — the cheap gate a drawer can test per frame.</summary>
 	public bool Any => _boxes.Count != 0 || _counters.Count != 0 || Menu is not null ||
+		_guestMessages.Count != 0 ||
 		Headline is not null || JobMultiplier != 0;
 
 	/// <summary>Rebuilt whenever the model changes, so a view can skip untouched frames.</summary>
 	public ulong Generation { get; private set; }
 
-	/// <summary>`GUI.DisplayMessageBox(tag, …)` — one box, named `Unnamed`. Persistent:
-	/// `sub_823CEA78` writes `obj+24 = -1`, so it closes only on
-	/// `RemoveDisplayBox("Unnamed")`.</summary>
+	/// <summary>`GUI.DisplayMessageBox(tag, …)` — one box, named `Unnamed`. It stays until the
+	/// guest's own box closes — action 36 or `RemoveDisplayBox("Unnamed")` — which the class
+	/// states through <see cref="GuestMessageClosed"/>. `obj+24 = -1` is the pad the box accepts
+	/// (any), not a lifetime: `sub_823CEDD8` returns at 0x823cee00 unless it is -1 or the pad.</summary>
 	public void MessageBox(string text) => Add(MessageBoxName, text, -1f, removable: true);
 
 	/// <summary>A persistent message box under its own name, rather than `Unnamed`.</summary>
@@ -656,10 +658,58 @@ public sealed class Engine_UiGuiBoxes
 		++Generation;
 	}
 
+	/// <summary>
+	/// The display MessageBoxes the guest has open, newest last — stated by the class's own Open
+	/// and Close (`@MessageBox.Open` / `@MessageBox.Close`, hooks/display_box_hooks.cpp), not
+	/// read out of its queue. Most never pass a `GUI.*` native: modal hints, the pause menu's
+	/// notices and the sign-in box are built natively.
+	/// </summary>
+	private readonly List<(uint Box, string Identity)> _guestMessages = new();
+
+	/// <summary>The newest open guest MessageBox's address, 0 when none is open.</summary>
+	public uint GuestMessageBox => _guestMessages.Count == 0 ? 0u : _guestMessages[^1].Box;
+
+	/// <summary>The guest opened a MessageBox — it now holds GameFlow state 8, both players'
+	/// movement, until action 36 closes it.</summary>
+	public void GuestMessageOpened(uint box, string identity)
+	{
+		_guestMessages.RemoveAll(m => m.Box == box);
+		_guestMessages.Add((box, identity));
+		++Generation;
+	}
+
+	/// <summary>
+	/// The guest closed a MessageBox, or destroyed one still open. The owned copy a
+	/// `GUI.DisplayMessageBox` call stood up under the same identity goes with it.
+	/// </summary>
+	public void GuestMessageClosed(uint box, string identity)
+	{
+		_guestMessages.RemoveAll(m => m.Box == box);
+		_boxes.RemoveAll(b => b.Kind == BoxKind.Message && b.Persistent && b.Name == identity);
+		++Generation;
+	}
+
+	/// <summary>
+	/// A stated box that is no longer an open MessageBox — freed without its destructor or
+	/// Close being seen. Dropped so an owned view does not stand, masking the pad, over nothing.
+	/// </summary>
+	public void GuestMessageLost(uint box)
+	{
+		if (_guestMessages.RemoveAll(m => m.Box == box) != 0)
+		{
+			++Generation;
+		}
+	}
+
 	/// <summary>One line for the report.</summary>
 	public string Describe()
 	{
 		var parts = new List<string>();
+		foreach ((uint box, string identity) in _guestMessages)
+		{
+			parts.Add($"guest message box '{identity}'@{box:X8}");
+		}
+
 		foreach (Box box in _boxes)
 		{
 			parts.Add($"box '{box.Name}'#{box.Id:X8}" +

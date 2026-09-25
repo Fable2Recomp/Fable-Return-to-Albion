@@ -138,6 +138,30 @@ public static class RuntimeCVarsGodot
                 + "game update and the draw rather than their sum. Godot marks this mode "
                 + "experimental; off follows Godot's default. Takes effect at the next launch."),
 
+            new("gpu_profile", DisplayCategory, RuntimeCVarType.Bool, "false",
+                "Print Godot's own per-pass GPU profile once a second to the log: shadows, "
+                + "opaque, sky, transparent, SDFGI, fog and tonemap, each with its GPU and CPU "
+                + "milliseconds. The engine's `--gpu-profile`; costs a little per frame while "
+                + "on. Takes effect at the next launch."),
+
+            new("perf_overlay", DisplayCategory, RuntimeCVarType.Bool, "false",
+                "Show the live performance overlay from the start: frame rate, frame time, the "
+                + "main thread, the render thread's CPU and GPU time, draw calls, video memory, "
+                + "and Godot's per-pass GPU split when gpu_profile is on. F3 toggles it in game "
+                + "either way. Costs nothing measurable; it redraws its text four times a second."),
+
+            new("renderdoc", DisplayCategory, RuntimeCVarType.Bool, "false",
+                "Arm RenderDoc's Vulkan capture layer for the game: F12 or the debug channel's "
+                + "`capture` op writes a frame capture (.rdc) into the user data folder's "
+                + "captures/. Needs a RenderDoc install (renderdoc_path, or renderdoccmd on PATH, "
+                + "or one under ~/.local/share/refii/renderdoc). NOT FOR PLAY: the layer costs most of "
+                + "the render thread even when nothing is being captured (measured 66 -> 15 fps), so "
+                + "turn it on for a capture session only. Takes effect at the next launch."),
+
+            new("renderdoc_path", DisplayCategory, RuntimeCVarType.String, "",
+                "The unpacked RenderDoc directory (the one holding bin/ and lib/), when it is "
+                + "not on PATH or under ~/.local/share/refii/renderdoc. Empty searches those."),
+
             new("gc_heaps", DisplayCategory, RuntimeCVarType.Int, "4",
                 "How many threads the .NET garbage collector works with. Each collection "
                 + "stops the game while it runs; with one thread that was a 25-55 ms hitch every "
@@ -152,6 +176,20 @@ public static class RuntimeCVarsGodot
                 + "size, twice as far away); above 1 switches sooner and cuts triangles on a "
                 + "slow GPU."),
 
+            new("prop_draw_distance_scale", DisplayCategory, RuntimeCVarType.Double, "1",
+                "How far placed scenery draws, as a multiple of the distance the level data "
+                + "states for each placement. 1 is the 360's own distances: undergrowth about "
+                + "40 m, rocks about 100 m, trees about 1 km. 2 doubles them, at the cost of "
+                + "drawing more. Trees switch to their distant model at the same multiple."),
+            new("entity_draw_distance_scale", DisplayCategory, RuntimeCVarType.Double, "2",
+                "How far characters and the props they carry or trade draw, as a multiple of the "
+                + "distance each one's game data states. 1 is the 360's own distances: most "
+                + "townsfolk 25-64 m, and their shadows stop there too. 2 doubles them. You and "
+                + "your co-op partner are always drawn. Read at launch."),
+            new("prop_fade_fraction", DisplayCategory, RuntimeCVarType.Double, "0.15",
+                "The last share of a placement's draw distance over which it fades out rather "
+                + "than popping. The 360 faded rocks over 0.03 and cut undergrowth hard; 0.15 "
+                + "softens the edge at modern resolutions. 0 keeps the 360's own edges."),
             new("prop_cull_min_pixels", DisplayCategory, RuntimeCVarType.Int, "4",
                 "Scenery smaller than this many pixels tall on a 1080-line display stops "
                 + "drawing and casting shadows, fading out over the last stretch. A railing "

@@ -42,10 +42,18 @@ public partial class WizardsTowerHost : Node, IPubGameSession
     [Export]
     public int StartingGold { get; set; } = 2000;
 
+    /// <summary>The guest's player, as <c>sub_82EF18A0</c> hands it over; null in a harness.</summary>
+    public PubGameSeed? Profile { get; set; }
+
+    /// <summary>Where the game's fscommands go besides the trace: the guest, in a session.</summary>
+    public IPubGameHost? Guest { get; set; }
+
     [Export]
     public bool ShowDiagnostics { get; set; } = true;
 
     private readonly PubGameShot _shot = new();
+
+    private readonly PubGameDriver _driver = new();
 
     private WizardsTower _game = null!;
     private Player _human = null!;
@@ -71,11 +79,13 @@ public partial class WizardsTowerHost : Node, IPubGameSession
 
     public bool IsFinished => _ready && _commands.GameOverIssued;
 
+    public bool ReloadRequested => _ready && _commands.ReloadRequested;
+
+    public bool TutorialRequested => _ready && _commands.TutorialRequested;
+
     public bool Failed => _failed;
 
-    public long FinalGold => _human?.Gold ?? 0;
-
-    public long FinalDebt => _human?.Debt ?? 0;
+    PubGame? IPubGameSession.Game => _game;
 
     public override void _Ready()
     {
@@ -117,7 +127,7 @@ public partial class WizardsTowerHost : Node, IPubGameSession
 
         _timer = new PubStopwatchTimer();
         var random = new PubRandom(ResolveSeed());
-        _commands = new PubGameCommandSink();
+        _commands = new PubGameCommandSink { Forward = Guest };
         _game = new WizardsTower(_commands, _timer, random, _root);
 
         LoadLocalization(set, game);
@@ -125,11 +135,12 @@ public partial class WizardsTowerHost : Node, IPubGameSession
         GD.Print($"[pubgame] settings: {string.Join(", ", applied)}");
         WarnIfTableMissing(applied);
 
-        _human = _game.CreatePlayerObject(0, false, "Hero", StartingGold, 0, 1, 0, 0);
-        _game.PlayerInfo.AddPlayer(0, _human);
+        PubGameSeed seed = Profile ?? PubGameSeed.Default(StartingGold);
+        _human = seed.CreateHuman(_game);
+        seed.ApplyAfterSettings(_game);
 
-        _game.Initialize();
         _overlays = _game.CreateOverlayManager();
+        _game.Initialize();
         _game.Run();
 
         if (System.Environment.GetEnvironmentVariable("REFII_WIZARDSTOWER_AUTOPLAY") is "1")
@@ -294,40 +305,8 @@ public partial class WizardsTowerHost : Node, IPubGameSession
             return;
         }
 
-        double ticks = delta * 1000.0;
-
-        PubGameInput.Poll(_game.Input);
-        _game.Input.Update();
-        GamePad pad = _game.Input.GetPadState(0) ?? _game.Input.GetKeyboardPadState();
-        _game.SetPad(pad);
-
-        _overlays.Update(ticks, pad);
-
-        if (!_overlays.AbsorbingInput)
-        {
-            if (pad.BackPressed)
-            {
-                _game.EndGame();
-            }
-            else if (pad.StartPressed)
-            {
-                _overlays.ShowHelp();
-            }
-            else if (pad.BtnYPressed)
-            {
-                _overlays.OpenBank();
-            }
-            else if (pad.LeftTriggerPressed)
-            {
-                _overlays.ToggleQuickTips();
-            }
-            else if (pad.RightTriggerPressed)
-            {
-                _overlays.ShowStandings(true);
-            }
-        }
-
-        _game.CallbackManager.DoCallbacks(ticks);
+        _driver.Advance(_game, delta, this);
+        GamePad pad = _game.Pad ?? _game.Input.GetKeyboardPadState();
 
         _sceneUi?.Advance(delta);
         Fit();
@@ -335,18 +314,8 @@ public partial class WizardsTowerHost : Node, IPubGameSession
         _shot.Tick(this);
     }
 
-    private void Fit()
-    {
-        Vector2 viewport = GetViewport().GetVisibleRect().Size;
-        float width = Mathf.Max(_stageSize.X, 1f);
-        float height = Mathf.Max(_stageSize.Y, 1f);
-        float scale = Mathf.Min(viewport.X / width, viewport.Y / height);
-
-        _view.Scale = new Vector2(scale, scale);
-        _view.Position = new Vector2(
-            (viewport.X - (width * scale)) * 0.5f,
-            (viewport.Y - (height * scale)) * 0.5f);
-    }
+    private void Fit() =>
+        PubGameStageFit.Apply(_view, GetViewport().GetVisibleRect().Size, _stageSize);
 
     private void Report(double delta, GamePad pad)
     {

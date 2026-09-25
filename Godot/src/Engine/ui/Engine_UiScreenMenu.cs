@@ -137,6 +137,25 @@ public sealed class Engine_UiScreenMenu
 	private int _statedVisible = -1;
 
 	/// <summary>
+	/// Whether a template's root source answers anything for THIS screen — the same read
+	/// `BuildInto` makes, bound to the same screen, without building. See the dry-template
+	/// note in <see cref="Rebuild"/>.
+	/// </summary>
+	private bool SourceHasRows(Engine_UiMenuTemplate template)
+	{
+		uint boundWas = Engine_UiMenuSources.BoundScreen;
+		Engine_UiMenuSources.BoundScreen = CaptureKey;
+		try
+		{
+			return Engine_UiMenuSources.Rows(template.Source, template.Name).Count != 0;
+		}
+		finally
+		{
+			Engine_UiMenuSources.BoundScreen = boundWas;
+		}
+	}
+
+	/// <summary>
 	/// Builds the tree from the C++'s own statements. True when anything changed.
 	/// </summary>
 	/// <remarks>
@@ -653,7 +672,27 @@ public sealed class Engine_UiScreenMenu
 		// EquipmentMenu, ItemsMenu, ClothingMenu, WorldMapMenu and the rest, which are populated
 		// at runtime from the save. Those rows genuinely ARE the guest's data and still arrive
 		// through the capture below, until they are read from the data areas instead.
-		if (Engine_UiTemplates.Menu(PopulationScript) is { } authored &&
+		// A runtime template whose source is dry is not built. `BuildInto` clears the menu
+		// before it spawns and the template is re-adopted every sample this falls through
+		// (`_authoredFrom` is dropped below), so a template that yields nothing would empty the
+		// list the MODEL built, and the model does not rebuild unchanged rows. The real-estate
+		// screen is the case: its rows are spawned while the capture still states screen 0, so
+		// its `capture:Root` is dry and only the model has its rows.
+		Engine_UiMenuTemplate? authored = Engine_UiTemplates.Menu(PopulationScript);
+		if (authored is { Entries.Count: 0, Source.Length: > 0 } runtime && !SourceHasRows(runtime))
+		{
+			if (!_saidTemplateDry)
+			{
+				_saidTemplateDry = true;
+				GD.Print($"[screen-menu] '{PopulationScript}' has a template but its source " +
+					$"'{runtime.Source}' yields NO rows — the list stays the model's. This is " +
+					"the data hook, not the menu.");
+			}
+
+			authored = null;
+		}
+
+		if (authored is not null &&
 			(authored.Entries.Count != 0 || authored.Source.Length != 0))
 		{
 			bool changed = RebuildFromTemplate(authored, buttons);

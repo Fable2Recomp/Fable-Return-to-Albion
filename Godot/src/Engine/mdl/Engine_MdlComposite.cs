@@ -129,8 +129,7 @@ public static class Engine_MdlComposite
             int partVertices = 0;
             for (int surface = 0; surface < part.GetSurfaceCount(); surface++)
             {
-                partVertices += part.SurfaceGetArrays(surface)[(int)Mesh.ArrayType.Vertex]
-                    .AsVector3Array().Length;
+                partVertices += Engine_MdlSurfaceArrays.VertexCount(part, surface);
             }
 
             partPaths.Add(path);
@@ -144,7 +143,7 @@ public static class Engine_MdlComposite
             string[] partRegions = Engine_MdlMesh.SurfaceRegions(part);
             for (int surface = 0; surface < part.GetSurfaceCount(); surface++)
             {
-                Godot.Collections.Array arrays = part.SurfaceGetArrays(surface);
+                Godot.Collections.Array arrays = Engine_MdlSurfaceArrays.Of(part, surface);
 
                 bool skinned = arrays.Count > (int)Mesh.ArrayType.Bones &&
                     arrays[(int)Mesh.ArrayType.Bones].VariantType != Variant.Type.Nil;
@@ -213,9 +212,7 @@ public static class Engine_MdlComposite
                 continue;
             }
 
-            mesh.AddSurfaceFromArrays(primitive, arrays, null, lods, Engine_MdlTransfer.FormatOf(arrays));
-
-            int added = mesh.GetSurfaceCount() - 1;
+            int added = Engine_MdlSurfaceArrays.Add(mesh, primitive, arrays, lods);
             mesh.SurfaceSetName(added, name);
             mesh.SurfaceSetMaterial(added, material);
             surfaceRegions.Add(region);

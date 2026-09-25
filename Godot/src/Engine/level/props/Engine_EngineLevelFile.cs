@@ -51,6 +51,14 @@ public sealed class EngineLevelBlock
 
     public string ExtraModelPath { get; set; } = string.Empty;
 
+    /// <summary>
+    /// A type-21 block's draw distance: the guest stops drawing the whole block once the camera
+    /// is this far from its bounding sphere (`sub_822261C8`). The fifth of the seven header
+    /// floats, which `sub_82B202C0` stores to a[1] (0x82b207c8). Zero on type-2 blocks, whose
+    /// distances are per instance.
+    /// </summary>
+    public float DrawDistance { get; set; }
+
     public List<EngineLevelInstance> Instances { get; } = new();
 }
 
@@ -327,7 +335,22 @@ public static class Engine_EngineLevelFile
             return false;
         }
 
-        if (!reader.Skip((7 * 4) + 12 + 4 + 24))
+        // Seven floats (`sub_82B202C0`): two to msg+0xA0/+0xA4, a[7], a[8], the draw distance
+        // a[1], the fade fraction a[0] — which foliage uses only as an `a > 0` gate, so the cut
+        // is hard — and a[2].
+        float[] header = new float[7];
+        for (int f = 0; f < header.Length; f++)
+        {
+            if (!reader.F32(out header[f]))
+            {
+                file.Error = "truncated type-21 ext header (floats)";
+                return false;
+            }
+        }
+
+        block.DrawDistance = header[4];
+
+        if (!reader.Skip(12 + 4 + 24))
         {
             file.Error = "truncated type-21 ext header (mid)";
             return false;

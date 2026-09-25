@@ -15,6 +15,14 @@ namespace Refii.Ui;
 /// </summary>
 public sealed partial class Engine_HudWorldSprites : Node3D
 {
+	// Static names: a string literal passed as a StringName is a new finalizable object per call,
+	// and these are written for every sprite every frame.
+	private static readonly StringName Param_tint = "tint";
+	private static readonly StringName Param_sight = "sight";
+	private static readonly StringName Param_tex = "tex";
+	private static readonly StringName Param_glyphs = "glyphs";
+	private static readonly StringName Param_atlas = "atlas";
+
 	/// <summary>Resolves a lowercase resource hash to a texture, or null.</summary>
 	public Func<uint, Texture2D?>? ResolveTexture { get; set; }
 
@@ -132,7 +140,7 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 			if (sprite.TextureHash != drawn.ShownTexture && TextureFor(sprite.TextureHash) is { } texture)
 			{
 				drawn.ShownTexture = sprite.TextureHash;
-				drawn.IconMaterial.SetShaderParameter("tex", texture);
+				drawn.IconMaterial.SetShaderParameter(Param_tex, texture);
 			}
 
 			// Re-meshed on a change of STRING or RGB only. The fade is the tint's alpha, written
@@ -182,8 +190,8 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		}
 
 		var material = new ShaderMaterial { Shader = MarkerShader };
-		material.SetShaderParameter("tex", painted.GetShaderParameter("atlas"));
-		material.SetShaderParameter("glyphs", true);
+		material.SetShaderParameter(Param_tex, painted.GetShaderParameter(Param_atlas));
+		material.SetShaderParameter(Param_glyphs, true);
 		label.MaterialOverride = material;
 		return material;
 	}
@@ -223,21 +231,21 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 			drawn.Title.Position = new Vector3(0f, titleHeight * 0.5f, 1f);
 			drawn.Opinion.Position = new Vector3((size * 0.5f) + 4f, titleHeight + (size * 0.5f), 1f);
 
-			drawn.IconMaterial.SetShaderParameter("tint", new Color(0.7f, 0.7f, 0.7f, sprite.Colour.A));
-			drawn.IconMaterial.SetShaderParameter("sight", at.Sight);
+			drawn.IconMaterial.SetShaderParameter(Param_tint, new Color(0.7f, 0.7f, 0.7f, sprite.Colour.A));
+			drawn.IconMaterial.SetShaderParameter(Param_sight, at.Sight);
 			// The marker material carries the text's colour: `Paint`'s own material, which held
 			// it, was replaced.
 			Color ink = sprite.Colour;
 			if (drawn.TitleMaterial is { } title)
 			{
-				title.SetShaderParameter("tint", ink);
-				title.SetShaderParameter("sight", at.Sight);
+				title.SetShaderParameter(Param_tint, ink);
+				title.SetShaderParameter(Param_sight, at.Sight);
 			}
 
 			if (drawn.OpinionMaterial is { } opinion)
 			{
-				opinion.SetShaderParameter("tint", ink);
-				opinion.SetShaderParameter("sight", at.Sight);
+				opinion.SetShaderParameter(Param_tint, ink);
+				opinion.SetShaderParameter(Param_sight, at.Sight);
 			}
 		}
 
@@ -252,10 +260,10 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		var material = new ShaderMaterial { Shader = MarkerShader };
 		if (TextureFor(sprite.TextureHash) is { } texture)
 		{
-			material.SetShaderParameter("tex", texture);
+			material.SetShaderParameter(Param_tex, texture);
 		}
 
-		// // HUD markers cast no shadow.
+		// HUD markers cast no shadow.
 		var icon = new MeshInstance3D
 		{
 			Name = "Icon",

@@ -216,6 +216,13 @@ public static class Engine_EntityHighlight
             return;
         }
 
+        // What the body draws now: a dressed body swaps meshes when its outfit changes
+        // (Engine_BodyVariants), and a stale copy would outline a garment it no longer wears.
+        if (!ReferenceEquals(proxy.Mesh, mesh.Mesh))
+        {
+            proxy.Mesh = mesh.Mesh;
+        }
+
         proxy.MaterialOverride = SlotMaterial(slot);
         proxy.Visible = true;
     }

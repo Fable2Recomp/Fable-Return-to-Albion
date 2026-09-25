@@ -45,6 +45,21 @@ public sealed partial class Engine_FxDriver : Node
 
     internal static void Unregister(FableFx fx) => Systems.Remove(fx);
 
+    /// <summary>
+    /// Debug lever, A/B only: shows or hides every live system. A hidden node's meshes leave
+    /// Godot's spatial index, which is what the lantern shadow passes search; its light goes too.
+    /// </summary>
+    public static void SetAllVisible(bool visible)
+    {
+        foreach (FableFx fx in Systems)
+        {
+            if (GodotObject.IsInstanceValid(fx))
+            {
+                fx.Visible = visible;
+            }
+        }
+    }
+
     public override void _EnterTree()
     {
         _current = this;

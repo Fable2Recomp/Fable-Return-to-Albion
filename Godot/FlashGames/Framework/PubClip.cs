@@ -1,3 +1,6 @@
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
 namespace Refii.FlashGames.Framework;
 
 public interface IPubClip
@@ -90,4 +93,26 @@ public interface IAnimFrame
 public interface IAnimValue
 {
     double Value { get; set; }
+}
+
+/// <summary>
+/// The expando members AS2 hangs on a MovieClip (<c>clip.xs</c>, <c>clip.baseXScale</c>), kept per
+/// clip object for as long as the clip lives.
+/// </summary>
+public static class ClipMembers
+{
+    private static readonly ConditionalWeakTable<IPubClip, Dictionary<string, float>> Members = new();
+
+    /// <summary><c>if (clip[name] == null) clip[name] = value; return clip[name]</c>.</summary>
+    public static float Remember(IPubClip clip, string name, float value)
+    {
+        Dictionary<string, float> members = Members.GetOrCreateValue(clip);
+        if (!members.TryGetValue(name, out float stored))
+        {
+            stored = value;
+            members[name] = stored;
+        }
+
+        return stored;
+    }
 }

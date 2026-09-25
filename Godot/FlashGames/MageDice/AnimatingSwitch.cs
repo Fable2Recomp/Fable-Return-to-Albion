@@ -72,11 +72,7 @@ public class AnimatingSwitch : Switch
         reveal.Run(1, null, false);
     }
 
-    public void PlayWinAnimation(int level)
-    {
-        if (level >= 0 && level < _winMCs.Count)
-        {
-            AnimateWin.Timed(_winMCs[level], 1, "Payout");
-        }
-    }
+    // AS2 0x0003c8: AnimateWin.Timed(winMCs[level], 1, "Payout") with no bounds check.
+    public void PlayWinAnimation(int level) =>
+        AnimateWin.Timed(level >= 0 && level < _winMCs.Count ? _winMCs[level] : null, 1, "Payout");
 }

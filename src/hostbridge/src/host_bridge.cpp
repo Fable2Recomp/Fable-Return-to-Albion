@@ -68,7 +68,9 @@ void FlushLogging();
 
 #include "core/host_asset_reader.h"
 #include "core/precise_sleep.h"
+#include "core/payload_bridge.h"
 #include "core/rex_payload_bridge.h"
+#include <rex/system/mmio_handler.h>
 #include <rex/system/xmemory.h>
 #include <rex/rex_app.h>
 #include <rex/ui/windowed_app.h>
@@ -149,6 +151,18 @@ uint32_t PauseTabsMask();
 uint32_t StatedFxCount();
 uint32_t StatedFxTransforms(uint32_t* out_words, uint32_t word_capacity);
 uint32_t StatedHighlightFor(uint32_t component);
+// src/vfs/src/core/entity_appearance_state.cpp — `out` takes kAppearanceWords words.
+bool StatedAppearanceFor(uint32_t component, uint32_t* out);
+uint64_t StatedAppearanceStatements();
+uint64_t StatedAppearanceDropped();
+
+// Defined in src/vfs/src/core/pubgame_state.cpp — the pub-game seam. The host posts what
+// Godot's game said and the pump replacement in the payload drains it on the guest's render
+// thread; the events come back the other way.
+void ClaimPubGames(bool claimed);
+void PostPubGameCommand(uint32_t kind, const char* text, const double* numbers,
+                        const int64_t* integers);
+uint32_t TakePubGameEvents();
 
 // The characters behind an LHString handle — two hops, see core/guest_state.h. Declared, not
 // included: this file cannot see the vfs hook headers that header pulls in.
@@ -387,13 +401,17 @@ bool StoreGuestBytesGuarded(uint8_t* target, const void* value, std::size_t size
 
 /// The first few unreadable reads are worth naming: this is the read that used to take
 /// Windows down, and a stale chain that reads zero forever is a symptom worth a line.
+///
+/// The first twelve, then every power of two with the running count, so a stale chain read every
+/// frame shows its rate instead of falling silent after the twelfth.
 [[maybe_unused]] void ReportUnreadableGuestRead(uint32_t address, std::size_t size) {
     static std::atomic<uint32_t> reported{0};
-    if (reported.fetch_add(1, std::memory_order_relaxed) < 12u) {
+    const uint32_t count = reported.fetch_add(1, std::memory_order_relaxed) + 1u;
+    if (count <= 12u || (count & (count - 1u)) == 0u) {
         REXLOG_INFO(
             "Refii host: guest 0x{:08X} (+{}) is not readable — uncommitted or freed; "
-            "reading zeroes instead of faulting",
-            address, size);
+            "reading zeroes instead of faulting (#{} this run)",
+            address, size, count);
     }
 }
 
@@ -406,8 +424,13 @@ bool CopyGuest(const uint8_t* base, uint32_t address, void* out, std::size_t siz
     }
 
 #ifdef _WIN32
+    // The probe scope sits OUTSIDE the `__try` function, which may hold no C++ objects: it tells
+    // ReXGlue's vectored handler — which Windows runs before any `__except` — to leave a fault
+    // here to the guard instead of locking, querying and logging it (EnterHostProbe).
     ++g_guarded_guest_reads;
+    rex::runtime::EnterHostProbe();
     const bool ok = CopyGuestBytesGuarded(base + address, out, size);
+    rex::runtime::LeaveHostProbe();
     --g_guarded_guest_reads;
 #else
     const bool ok = CopyGuestBytesGuarded(base + address, out, size);
@@ -1694,6 +1717,17 @@ extern "C" {
 /// 142 widens RefiiHostGetEntities to stride 20: the guest's previous transform (component key
 ///     3 at +0xA0 position, +0xB0 quaternion, latched by the tick's first act `sub_8222B2E0`)
 ///     and its interpolation enable at +0xC9, the pair the guest blends in `sub_822112D8`.
+/// 155 widens the entity walk to 29 words: the renderable's stated APPEARANCE — alpha, camera
+///     alpha, scale, tint and the drawable/saturation flags — as the guest's appearance setters
+///     stated it (hooked at their common tail `sub_82573318` in entity_appearance.cpp).
+/// 154 adds RefiiHostGetDisplayBox — the showing display box and its class, so the owned query
+///     box stands up for `GUI.Display*Question` as well as the modal router's QueryBox.
+/// 153 adds the pub-game seam: RefiiHostClaimPubGames, RefiiHostPostPubGameCommand,
+///     RefiiHostTakePubGameEvents, RefiiHostGetPubGameProfile; drops RefiiHostSetPubGameResult.
+/// 152 adds RefiiHostTraceGpuPasses — Godot's per-pass GPU timestamps as Tracy GPU zones and
+///     plots, so the GPU frame is split on the same timeline as the CPU phases.
+/// 151 widens RefiiHostGetRealEstate to fifteen words: the hero's TITLE record, which is how
+///     the guest names the owner of a hero-owned building (`sub_82998FB0` -> `sub_824D8A10`).
 /// 150 widens RefiiHostGetWorldSprites to eight words: the ENTITY through the sprite's handle
 ///     (`*(*(obj+28))`; `obj+24`, published until now, is the handle's vtable and the SAME on
 ///     every sprite) and the sprite OBJECT as its identity.
@@ -1966,7 +2000,9 @@ extern "C" {
 /// 137 adds RefiiHostGetGuestFrame — the guest's render frame, counted by the hook on the
 /// 30 Hz HF pass (`sub_821A61B0`) that writes every pose. Godot reads guest state once per
 /// count and interpolates between counts.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 150; }
+/// 156 adds RefiiHostGetEntityDrawRange — an entity's stated draw distance and fade factor off
+/// its renderable (component 3 +0x28 / +0x24), the D the guest fades it out by and cuts its shadow at.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 156; }
 
 /// Answers one `GUI` predicate from the host, by name.
 ///
@@ -2622,9 +2658,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldMapRegion(uint32_t* out_index,
 /// `&lt;gold_img&gt;` prefix, the negative recolour, which of the four Variable rows stands, and the
 /// HOUSE-versus-SHOP legend are all decided from these fields.
 ///
-/// `out_words` takes fourteen: record hash, type mask, owned, hasTenant, value, economy,
-/// decoration, income, salePrice, sellingFees, notVacant, ownerKilled, heroOpinion and the
-/// BONUSES record — a different record, off component 184. Returns 1 when a building resolved.
+/// `out_words` takes fifteen: record hash, type mask, owned, hasTenant, value, economy,
+/// decoration, income, salePrice, sellingFees, notVacant, ownerKilled, heroOpinion, the
+/// BONUSES record — a different record, off component 184 — and the hero's TITLE record, which
+/// names the owner of a hero-owned building. Returns 1 when a building resolved.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetRealEstate(uint32_t* out_words, uint32_t word_capacity,
                                                      char* occupant, uint32_t occupant_capacity) {
     const refii::vfs::RealEstate estate = refii::vfs::RealEstateSnapshot();
@@ -2646,6 +2683,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetRealEstate(uint32_t* out_words, uint3
         static_cast<uint32_t>(estate.owner_killed),
         static_cast<uint32_t>(estate.hero_opinion),
         estate.bonuses_record,
+        estate.title_record,
     };
 
     if (out_words != nullptr) {
@@ -5305,8 +5343,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
             }
         }
 
-        // The world transform the guest states: `node + 0x20` is the composed world matrix,
-        // row-major — rows 0..2 the basis, row 3 the translation with w = 1.0. Row 3 aliases
+        // `node + 0x20` is the node's OWN transform, row-major — rows 0..2 the basis, row 3 the
+        // translation with w = 1.0. It is WORLD only on a root: `sub_832295F0` composes a node's
+        // world as +0x70 (`sub_821DA198`) concatenated up the +240 parent chain, and a root has
+        // no parent. The host places effects from roots alone. Row 3 aliases
         // `node + 0x50`, the destination of the position setter `sub_832325A8`
         // (`stvx128 v12, r31, r24` with r24 = 0x50, after `stb r28, 0xB0(r31)`). The
         // orientation setter `sub_83231C40` writes the quaternion at `+0x10` and rebuilds these
@@ -6371,9 +6411,10 @@ REFII_HOST_ABI_EXPORT void RefiiHostGetInitMarkers(uint32_t* out) {
 /// WHICH ENTITIES COUNT. `entity+0x90 & 0x40` is the LIVE bit — set at construction
 /// (sub_8238B320 stores 0xCC) and cleared only by the despawn sub_8238D828 — and it is the
 /// game's own universal validity guard, tested at 3714 sites against one or two for every
-/// other bit. There is NO separate visible/hidden flag anywhere on an entity; drawability is
-/// membership, so the second half of the filter is `entity+0x7C != 0`, the same thing despawn
-/// gates its deregistration on.
+/// other bit. Membership is not drawability: the renderable (component 3) carries SetAsDrawable
+/// at +197 and an alpha pair at +112/+116, stated to Godot as the appearance words below — the
+/// walk reports the entity either way. The second half of the filter is `entity+0x7C != 0`,
+/// the same thing despawn gates its deregistration on.
 ///
 /// THE TRANSFORM. entity+0x7C is the placement component ("EC-2"), whose slot 0x40 returns a
 /// position and 0x44 an orientation, both sret — caller's buffer in r3, `this` in r4, 16 bytes
@@ -6462,8 +6503,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
     static uint32_t walk_serial = 0u;
     ++walk_serial;
     // Words 0..11 identity and placement, 12..18 the guest's previous transform, 19 its
-    // interpolation enable, 20 the highlight RGBA. See the row write below.
-    constexpr uint32_t kEntityStride = 21u;
+    // interpolation enable, 20 the highlight RGBA, 21..28 the stated appearance. See the row
+    // write below.
+    constexpr uint32_t kEntityStride = 21u + kAppearanceWords;
     constexpr uint16_t kNoDirect = 0xFFFFu;
 
     /// The twelve EC-2 vtables, and how each states its placement.
@@ -7090,6 +7132,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         row[18] = 0x3F800000u;  // identity quaternion w
         row[19] = 0u;           // no renderable -> no pair -> do not interpolate
         row[20] = 0x000000FFu;  // no renderable -> the guest's OFF colour, {0,0,0,255}
+
+        // The appearance, as constructed (`sub_82571DF8`) unless a setter or a load stated
+        // otherwise: alpha, camera alpha and scale 1.0, tint 1,1,1,1, drawable, unmasked.
+        uint32_t* appearance = row + 21;
+        appearance[0] = appearance[1] = appearance[2] = 0x3F800000u;
+        appearance[3] = appearance[4] = appearance[5] = appearance[6] = 0x3F800000u;
+        appearance[kAppearanceFlags] = kAppearanceDrawable;
         if (plausible(renderable)) {
             row[12] = read32(renderable + 0xA0u);
             row[13] = read32(renderable + 0xA4u);
@@ -7117,6 +7166,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
                 static_cast<uint32_t>(GuestByteAt(base, renderable + 0x63u));
             const uint32_t said = refii::vfs::StatedHighlightFor(renderable);
             row[20] = said != 0u ? said : on_component;
+
+            // What the guest's appearance setters stated for this renderable — every death fade
+            // (DeathType 5/6/7 ramp SetAlpha), the corpse tint, hidden carry slots, SetScale.
+            refii::vfs::StatedAppearanceFor(renderable, appearance);
         }
 
         ++written;
@@ -7546,6 +7599,36 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPartHides(uint32_t entity, char
         ++parts;
     }
     return parts;
+}
+
+/// THE STATED DRAW DISTANCE. The renderable (component 3) holds, from its GDB definition,
+/// `MaxDrawDistance` times the class multiplier at +0x28 and `DrawDistanceFadeRangeFactor` at
+/// +0x24 (`sub_82572438` @0x825724cc / @0x825724e0, the first call of the loader
+/// `sub_825720A8`). The multipliers (`flt_83319464..70`) are script-settable, so the product is
+/// read here, never recomputed. The draw gathers (`sub_82219AB8` animated, `sub_8221E5F0`
+/// rigid) fade the instance out from D·(1 − factor) to D and cut its shadow hard at D
+/// (0x82219b28: shadow pass, `d > obj+0x124` returns).
+/// Returns 1 and writes both when the entity carries the component, else 0.
+REFII_HOST_ABI_EXPORT int RefiiHostGetEntityDrawRange(uint32_t entity, float* out_distance,
+                                                      float* out_fade_factor) {
+    if (out_distance == nullptr || out_fade_factor == nullptr) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    const uint32_t renderable = EntityComponent(base, entity, 3u);
+    if (renderable == 0u) {
+        return 0;
+    }
+    const auto readf = [base](uint32_t at) -> float {
+        const uint32_t raw = GuestWordAt(base, at);
+        float value;
+        std::memcpy(&value, &raw, sizeof(value));
+        return value;
+    };
+    *out_fade_factor = readf(renderable + 0x24u);
+    *out_distance = readf(renderable + 0x28u);
+    return 1;
 }
 
 /// How many words RefiiHostGetBoneMorph writes per entry: bone, offset xyz, scale xyz.
@@ -8557,6 +8640,40 @@ REFII_HOST_ABI_EXPORT int RefiiHostPauseTabSelect(uint32_t tab) {
     return 1;
 }
 
+/// The display box that is up — `GUI.Display*Question` and its siblings — or 0 when none is.
+///
+/// The same walk `DispatchDisplayBoxAction` answers through: `guiOwner = *(GUI+28)`, the box
+/// owner at `guiOwner+52` (as `IsDisplayBoxActive` 0x82305F10 passes it to `sub_822A5C50`), the
+/// showing box at `owner+52`. Open is the byte every handler gates on (`sub_823CF3B0`
+/// `lbz r11, 0xC(r3)`). The vtable names the class — 0x820AE688 is the QueryBox, whose handler
+/// posts reply 1 on 46 and 0 on 47.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDisplayBox(uint32_t* out_vtable) {
+    if (out_vtable != nullptr) *out_vtable = 0u;
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) return 0;
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) return 0;
+
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const uint32_t gui = read32(0x83496B08u);
+    if (!plausible(gui) || read32(gui) != 0x82001610u) return 0;
+
+    const uint32_t gui_owner = read32(gui + 28u);
+    if (!plausible(gui_owner)) return 0;
+
+    const uint32_t owner = read32(gui_owner + 52u);
+    if (!plausible(owner)) return 0;
+
+    const uint32_t box = read32(owner + 52u);
+    if (!plausible(box) || GuestByteAt(base, box + 12u) == 0u) return 0;
+
+    if (out_vtable != nullptr) *out_vtable = read32(box);
+    return box;
+}
+
 /// The MenuBox's state, for the owned list: is one open, how many options, which is
 /// selected, whether it can be cancelled, and which options the guest marked enabled.
 ///
@@ -9059,6 +9176,95 @@ REFII_HOST_ABI_EXPORT void RefiiHostTracePlot(const char* name, double value) {
     }
     ___tracy_emit_plot(stable, value);
 }
+
+/// GODOT'S GPU PASSES ON THE TRACY TIMELINE. The engine puts a GPU timestamp at every render pass
+/// boundary (`RENDER_TIMESTAMP`: shadows, opaque, sky, transparent, SDFGI, fog, tonemap) while
+/// frame profiling is on (`--gpu-profile`), and the host reads the finished frame's table off
+/// the RenderingDevice. Each consecutive pair of timestamps is one pass; here it becomes a GPU
+/// zone on a context of its own and a plot of its milliseconds, so the split of the GPU frame
+/// sits beside the CPU zones instead of being one number per viewport.
+///
+/// PLACEMENT IS APPROXIMATE, LENGTHS ARE EXACT. Tracy pairs a GPU context's reference timestamp
+/// with the CPU instant the context is created, and the table arrives a frame after the GPU ran
+/// it, so the zones sit about a frame later on the timeline than the work they name; the pass
+/// durations are the GPU's own. `names` is a packed table of `name_stride` bytes per entry; the
+/// GPU times are NANOSECONDS despite the `gpu_us` name. Serial emits: this runs on Godot's main
+/// thread every frame and the order of the events is the contract.
+REFII_HOST_ABI_EXPORT void RefiiHostTraceGpuPasses(const char* names, uint32_t name_stride,
+                                                    const int64_t* cpu_times, const int64_t* gpu_us,
+                                                    uint32_t count) {
+    (void)cpu_times;
+    // Connected, not just started: under TRACY_ON_DEMAND each pass would still allocate a source
+    // location per frame only to be dropped. The GPU context is created on the first connected
+    // frame.
+    if (names == nullptr || gpu_us == nullptr || name_stride == 0 || count < 2 || !TracyIsStarted ||
+        ___tracy_connected() == 0) {
+        return;
+    }
+
+    constexpr uint8_t kContext = 200;  // clear of anything the runtime numbers itself
+    constexpr uint8_t kCustomContext = 7;  // tracy::GpuContextType::Custom
+    static bool context_made = false;
+    static uint16_t query = 0;
+    if (!context_made) {
+        ___tracy_gpu_new_context_data context{};
+        context.gpuTime = gpu_us[0];
+        context.period = 1.0f;  // nanoseconds per tick: the timestamps are nanoseconds
+        context.context = kContext;
+        context.flags = 0;
+        context.type = kCustomContext;
+        ___tracy_emit_gpu_new_context_serial(context);
+
+        static const char kName[] = "Godot render passes";
+        ___tracy_gpu_context_name_data name{};
+        name.context = kContext;
+        name.name = kName;
+        name.len = static_cast<uint16_t>(sizeof(kName) - 1);
+        ___tracy_emit_gpu_context_name_serial(name);
+        context_made = true;
+    }
+
+    static std::mutex names_mutex;
+    static std::set<std::string>* interned = new std::set<std::string>();
+    for (uint32_t i = 0; i + 1 < count; ++i) {
+        const char* name = names + static_cast<size_t>(i) * name_stride;
+        const size_t len = strnlen(name, name_stride);
+        if (len == 0) {
+            continue;
+        }
+
+        const uint64_t srcloc = ___tracy_alloc_srcloc_name(0, "gpu", 3, "godot", 5, name, len, 0);
+        ___tracy_gpu_zone_begin_data begin{};
+        begin.srcloc = srcloc;
+        begin.queryId = query;
+        begin.context = kContext;
+        ___tracy_emit_gpu_zone_begin_alloc_serial(begin);
+        ___tracy_gpu_time_data start{};
+        start.gpuTime = gpu_us[i];
+        start.queryId = query;
+        start.context = kContext;
+        ___tracy_emit_gpu_time_serial(start);
+        ++query;
+
+        ___tracy_gpu_zone_end_data end{};
+        end.queryId = query;
+        end.context = kContext;
+        ___tracy_emit_gpu_zone_end_serial(end);
+        ___tracy_gpu_time_data finish{};
+        finish.gpuTime = gpu_us[i + 1];
+        finish.queryId = query;
+        finish.context = kContext;
+        ___tracy_emit_gpu_time_serial(finish);
+        ++query;
+
+        const char* stable;
+        {
+            std::lock_guard<std::mutex> guard(names_mutex);
+            stable = interned->insert("gpu " + std::string(name, len) + " ms").first->c_str();
+        }
+        ___tracy_emit_plot(stable, static_cast<double>(gpu_us[i + 1] - gpu_us[i]) / 1.0e6);
+    }
+}
 #else
 REFII_HOST_ABI_EXPORT int RefiiHostTraceStartup(void) { return 0; }
 
@@ -9066,6 +9272,8 @@ REFII_HOST_ABI_EXPORT void RefiiHostTraceMessage(const char*) {}
 REFII_HOST_ABI_EXPORT uint64_t RefiiHostTraceZoneBegin(const char*) { return 0; }
 REFII_HOST_ABI_EXPORT void RefiiHostTraceZoneEnd(uint64_t) {}
 REFII_HOST_ABI_EXPORT void RefiiHostTracePlot(const char*, double) {}
+REFII_HOST_ABI_EXPORT void RefiiHostTraceGpuPasses(const char*, uint32_t, const int64_t*,
+                                                    const int64_t*, uint32_t) {}
 #endif
 
 /// Which heap owns an address, and its protection — the validity check for a pointer chain,
@@ -13777,13 +13985,14 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetUiTextureStats(uint32_t presentation, uint
 //   sub_82EE8640  *(profile + 264) = gold  (0x108)   -- and sets the dirty byte at +868 (0x364)
 //   sub_82EE8810  *(profile + 304) = debt  (0x130)
 //
-// WHY STATE 2 IS OUR SEAM. The guest's tick (sub_821987B8) case 1 does everything we want and
-// nothing we do not: it picks the loading screen, snapshots the language, the pad, the camera and
-// the hero's gold, seeds the profile's bank from it, then moves to state 2. States 2 through 8 are
-// the Scaleform module -- create the GFx movie, run it, hand it EndGame, tear it down -- and that
-// is precisely the part Godot replaces. Case 9 dereferences NEITHER the module (mgr+56) nor the
-// game (mgr+60): it calls sub_824684F8 to settle and then resets. So a host may run 1 -> play -> 9
-// and the guest settles correctly with Scaleform never created.
+// THE MOVIE IS THE ONLY PART GODOT REPLACES. The guest's tick (sub_821987B8) case 1 picks the
+// loading screen, snapshots the language, the pad, the camera and the hero's gold, seeds the
+// profile's bank from it, then moves to state 2. The render-thread pump (sub_82467B08) would then
+// create the GFx module and run game.swf through states 2-8; once the host claims the games,
+// src/vfs/src/hooks/pubgame_pump.cpp keeps that pump's transitions and its sound emitter and
+// leaves the movie out. Godot's game plays while the guest sits in 3, and each fscommand it
+// issues is handed to the branch of the guest's handler (sub_82EF2AC0) that would have taken it
+// -- holdings, points, rank, sounds, volumes, and GameOver, which moves to 6 and then the settle.
 //
 // AND THE SETTLEMENT STAYS THE GUEST'S. sub_824684F8 credits the real gold by
 // (profile gold now - mgr+96), nets the debt against mgr+100, updates the per-game statistics,
@@ -13806,7 +14015,6 @@ constexpr uint32_t kPubGameProfileOffset = 124u;
 
 constexpr uint32_t kPubProfileGoldOffset = 0x108u;
 constexpr uint32_t kPubProfileDebtOffset = 0x130u;
-constexpr uint32_t kPubProfileDirtyOffset = 0x364u;
 
 }  // namespace
 
@@ -13895,45 +14103,128 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetPubGame(uint32_t* out,
     return 1;
 }
 
-// Writes the result back and hands the guest its own settlement state.
-//
-// THE STATE IS WRITTEN LAST, and that ordering is the contract: the guest's tick reads the state
-// and immediately settles from the profile, so a state that landed before the gold would settle
-// the previous balance. Nothing here takes the guest's critical section at mgr+68 -- the host
-// cannot -- but the tick reads the state once per frame into a local, so a torn transition costs
-// one frame rather than a wrong number.
-REFII_HOST_ABI_EXPORT int RefiiHostSetPubGameResult(int64_t gold, int64_t debt, uint32_t state) {
-    auto* memory = SafeKernelMemory();
-    if (memory == nullptr) {
+/// Godot plays the pub games: the guest's pump stops creating the Scaleform module and hands
+/// the session to the host instead. See src/vfs/src/hooks/pubgame_pump.cpp.
+REFII_HOST_ABI_EXPORT int RefiiHostClaimPubGames(int claimed) {
+    refii::vfs::ClaimPubGames(claimed != 0);
+    return 1;
+}
+
+/// One fscommand from Godot's game. Kinds and argument slots are HostBridge.PubGameCommand;
+/// the pump hands each to the branch of the guest's fscommand handler that would have taken it.
+REFII_HOST_ABI_EXPORT int RefiiHostPostPubGameCommand(uint32_t kind,
+                                                      const char* text,
+                                                      double n0,
+                                                      double n1,
+                                                      double n2,
+                                                      int64_t i0,
+                                                      int64_t i1) {
+    const double numbers[3] = {n0, n1, n2};
+    const int64_t integers[2] = {i0, i1};
+    refii::vfs::PostPubGameCommand(kind, text, numbers, integers);
+    return 1;
+}
+
+/// What the pump told the movie since the last call; bits are HostBridge.PubGameEvent.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakePubGameEvents(void) {
+    return refii::vfs::TakePubGameEvents();
+}
+
+/// What `sub_82EF18A0` hands the movie before `pubGame.Run`, read from the same places.
+///
+/// Fills 14 words: rank (int64 +0x110, high word first), the three per-game point slots
+/// (int64 +0x118 + 8*i, `sub_82EE8770`), the tournament item bits (+0x35C, `sub_82EE88F0`), the
+/// pad (mgr+116), the sound and music volumes as float bits (mgr+128/+132, 0..1), and the gold
+/// and debt the session started from (mgr+96/+100). The name is the profile's UTF-16 string at
+/// +8 (`sub_82EE8538`, handed over as a GFx StringW), written out as UTF-8; the language is the
+/// two letters at mgr+104 after `sub_82467EF8`'s "sk" and missing-file fallbacks.
+REFII_HOST_ABI_EXPORT int RefiiHostGetPubGameProfile(uint32_t* out,
+                                                     char* name,
+                                                     uint32_t name_capacity,
+                                                     char* language,
+                                                     uint32_t language_capacity) {
+    if (out == nullptr) {
         return 0;
     }
 
-    uint8_t* base = memory->virtual_membase();
+    for (int i = 0; i < 14; ++i) {
+        out[i] = 0;
+    }
+
+    if (name != nullptr && name_capacity > 0) {
+        name[0] = '\0';
+    }
+
+    if (language != nullptr && language_capacity > 0) {
+        language[0] = '\0';
+    }
+
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
     if (base == nullptr) {
         return 0;
     }
 
     const auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
-
-    const auto write32 = [base](uint32_t address, uint32_t value) {
-        const uint32_t raw = __builtin_bswap32(value);
-        StoreGuest(base, address, &raw, sizeof(raw));
-    };
-
     const uint32_t profile = read32(kPubGameManager + kPubGameProfileOffset);
-    if (profile >= 0x10000u && profile < 0xC0000000u) {
-        write32(profile + kPubProfileGoldOffset, static_cast<uint32_t>(gold >> 32));
-        write32(profile + kPubProfileGoldOffset + 4u, static_cast<uint32_t>(gold));
-        write32(profile + kPubProfileDebtOffset, static_cast<uint32_t>(debt >> 32));
-        write32(profile + kPubProfileDebtOffset + 4u, static_cast<uint32_t>(debt));
-
-        // The same dirty byte sub_82EE8640 sets. The profile is merged and saved by code that
-        // tests it, so a write that skipped it would be discarded rather than persisted.
-        const uint8_t dirty = 1;
-        StoreGuest(base, profile + kPubProfileDirtyOffset, &dirty, sizeof(dirty));
+    if (profile < 0x10000u || profile >= 0xC0000000u) {
+        return 0;
     }
 
-    write32(kPubGameManager + kPubGameStateOffset, state);
+    out[0] = read32(profile + 0x110u);
+    out[1] = read32(profile + 0x114u);
+    for (uint32_t i = 0; i < 3; ++i) {
+        out[2 + (i * 2)] = read32(profile + 0x118u + (i * 8u));
+        out[3 + (i * 2)] = read32(profile + 0x11Cu + (i * 8u));
+    }
+
+    out[8] = read32(profile + 0x35Cu);
+    out[9] = read32(kPubGameManager + 116u);
+    out[10] = read32(kPubGameManager + 128u);
+    out[11] = read32(kPubGameManager + 132u);
+    out[12] = read32(kPubGameManager + 96u);
+    out[13] = read32(kPubGameManager + 100u);
+
+    if (name != nullptr && name_capacity > 1) {
+        uint32_t written = 0;
+        for (uint32_t i = 0; i < 64; ++i) {
+            const uint32_t unit = (static_cast<uint32_t>(GuestByteAt(base, profile + 8u + i * 2u)) << 8) |
+                                  GuestByteAt(base, profile + 9u + i * 2u);
+            if (unit == 0u) {
+                break;
+            }
+
+            char encoded[3];
+            uint32_t length = 0;
+            if (unit < 0x80u) {
+                encoded[length++] = static_cast<char>(unit);
+            } else if (unit < 0x800u) {
+                encoded[length++] = static_cast<char>(0xC0u | (unit >> 6));
+                encoded[length++] = static_cast<char>(0x80u | (unit & 0x3Fu));
+            } else {
+                encoded[length++] = static_cast<char>(0xE0u | (unit >> 12));
+                encoded[length++] = static_cast<char>(0x80u | ((unit >> 6) & 0x3Fu));
+                encoded[length++] = static_cast<char>(0x80u | (unit & 0x3Fu));
+            }
+
+            if (written + length + 1 > name_capacity) {
+                break;
+            }
+
+            for (uint32_t k = 0; k < length; ++k) {
+                name[written++] = encoded[k];
+            }
+        }
+
+        name[written] = '\0';
+    }
+
+    if (language != nullptr && language_capacity > 2) {
+        language[0] = static_cast<char>(GuestByteAt(base, kPubGameManager + 104u));
+        language[1] = static_cast<char>(GuestByteAt(base, kPubGameManager + 105u));
+        language[2] = '\0';
+    }
+
     return 1;
 }
 
@@ -14820,12 +15111,44 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopHeldUids(uint32_t player, uint32_
     return found;
 }
 
+namespace {
+
+/// The pad bound to player-map key 1 or 2, or 0xFFFFFFFF — `Player+0x28`, stored by the
+/// Player ctor `sub_82389938` (`stw r5, 0x28(r31)` at 0x8238998c) from the joining pad.
+uint32_t PlayerPadForKey(const uint8_t* base, uint32_t wanted) {
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+    const uint32_t game_root = GuestWordAt(base, 0x83496AB8u);
+    if (!plausible(game_root)) return 0xFFFFFFFFu;
+    const uint32_t game = GuestWordAt(base, game_root + 12u);
+    if (!plausible(game)) return 0xFFFFFFFFu;
+    const uint32_t player_map = GuestWordAt(base, game + 0x9Cu);
+    if (!plausible(player_map)) return 0xFFFFFFFFu;
+    uint32_t entry = GuestWordAt(base, player_map + 8u);
+    const uint32_t entries_end = GuestWordAt(base, player_map + 12u);
+    if (!plausible(entry) || entries_end < entry || (entries_end - entry) > 12u * 64u) {
+        return 0xFFFFFFFFu;
+    }
+    for (; entry < entries_end; entry += 12u) {
+        if (GuestWordAt(base, entry) != wanted) continue;
+        const uint32_t record = GuestWordAt(base, entry + 4u);
+        return plausible(record) ? GuestWordAt(base, record + 0x28u) : 0xFFFFFFFFu;
+    }
+    return 0xFFFFFFFFu;
+}
+
+}  // namespace
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopSession(uint32_t* out_words, uint32_t capacity) {
     // [0] manager present, [1] session, [2] host, [3] client, [4] lost, [5] client joined,
-    // [6] peer count, [7] player one entity, [8] player two entity, [9] game+140 copy present.
+    // [6] peer count, [7] player one entity, [8] player two entity, [9] game+140 copy present,
+    // [10] game+284 — 0 front end, 1 game, 2 LOCAL co-op (the guest's own `IsLocalCoopGame`,
+    // `sub_82340300`; set by `Coop_SetSharedScreenMode` 0x8233c34c), [11] player two's pad or
+    // 0xFFFFFFFF. Words 10-11 are written only for a caller that asks for them.
     constexpr uint32_t kWords = 10u;
+    constexpr uint32_t kLocalWords = 12u;
     if (out_words == nullptr || capacity < kWords) return 0;
-    for (uint32_t i = 0; i < kWords; ++i) out_words[i] = 0u;
+    const uint32_t written = capacity >= kLocalWords ? kLocalWords : kWords;
+    for (uint32_t i = 0; i < written; ++i) out_words[i] = 0u;
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) return 0;
     uint8_t* base = memory->virtual_membase();
@@ -14847,7 +15170,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopSession(uint32_t* out_words, uint
     const uint32_t root = GuestWordAt(base, 0x83496AB8u);
     const uint32_t game = plausible(root) ? GuestWordAt(base, root + 12u) : 0u;
     out_words[9] = plausible(game) && plausible(GuestWordAt(base, game + 140u)) ? 1u : 0u;
-    return kWords;
+    if (written == kLocalWords) {
+        out_words[10] = plausible(game) ? GuestWordAt(base, game + 284u) : 0u;
+        out_words[11] = PlayerPadForKey(base, 2u);
+    }
+    return written;
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopPlayerEntities(uint32_t* out_one, uint32_t* out_two) {
@@ -15935,11 +16262,15 @@ REFII_HOST_ABI_EXPORT int RefiiHostShutdown(char* out, std::size_t capacity) {
             }
         }
 
-        if (hosted.app) {
-            hosted.app->InvokeOnDestroy();
-        }
-
+        // Only once the guest has stopped: OnDestroy ends in runtime_.reset(), which frees
+        // every XThread, and a straggler (one spinning on a D3D fence never reaches a kernel
+        // wait, so TerminateTitle cannot stop it) would read the freed object on its next
+        // kernel call. The leak path below must leave the runtime intact.
         if (stopped) {
+            if (hosted.app) {
+                hosted.app->InvokeOnDestroy();
+            }
+
             // The guest really stopped, so its memory can go back and a later session is
             // possible within this process.
             hosted.app.reset();

@@ -117,6 +117,16 @@ public partial class GameDebugServer : Node
 
 	private static int _pressFrames;
 
+	/// <summary>The guest pad a `press` is aimed at — 0 unless it names one. Player two's
+	/// drop-in is a START on a pad that is not player one's.</summary>
+	private static int _pressPad;
+
+	/// <summary>Pads a `press` has aimed at, connected from then on: a pad that vanished
+	/// between presses would read to the guest as unplugged.</summary>
+	private static int _debugPads = 1;
+
+	public static bool PadConnected(int pad) => (_debugPads & (1 << pad)) != 0;
+
 	/// <summary>Stick and trigger values a `press` asked for, XInput-scaled, held like the
 	/// buttons; merged by <see cref="GameInput"/> against the real devices.</summary>
 	private static int _stickLX, _stickLY, _stickRX, _stickRY;
@@ -126,10 +136,10 @@ public partial class GameDebugServer : Node
 	private static int _stickFrames;
 
 	/// <summary>Consumed once per input frame alongside <see cref="Buttons"/>.</summary>
-	public static bool Sticks(out int lx, out int ly, out int rx, out int ry,
+	public static bool Sticks(int pad, out int lx, out int ly, out int rx, out int ry,
 		out uint lt, out uint rt)
 	{
-		bool live = _stickFrames > 0 && --_stickFrames >= 0;
+		bool live = pad == _pressPad && _stickFrames > 0 && --_stickFrames >= 0;
 		lx = live ? _stickLX : 0;
 		ly = live ? _stickLY : 0;
 		rx = live ? _stickRX : 0;
@@ -300,8 +310,10 @@ public partial class GameDebugServer : Node
 		}
 	}
 
-	/// <summary>The pad the debug channel is holding this frame, or 0.</summary>
-	public static uint Buttons() => _pressFrames > 0 && --_pressFrames >= 0 ? _pressed : 0u;
+	/// <summary>The buttons the debug channel is holding on <paramref name="pad"/> this
+	/// frame, or 0. Read once per pad per input frame.</summary>
+	public static uint Buttons(int pad) =>
+		pad == _pressPad && _pressFrames > 0 && --_pressFrames >= 0 ? _pressed : 0u;
 
 	public override void _Ready()
 	{
@@ -1302,6 +1314,7 @@ public partial class GameDebugServer : Node
 					["fading"] = snapshot.Count(l => l.DistanceFadeEnabled),
 					["eye"] = $"({eye.X:0.0},{eye.Y:0.0},{eye.Z:0.0})",
 					["lights"] = described,
+					["fxLights"] = Refii.Game.GameFx.Current?.DescribeLights(eye, take) ?? new List<string>(),
 				});
 			}
 
@@ -1440,6 +1453,19 @@ public partial class GameDebugServer : Node
 					(entityBatchLever.ValueKind == JsonValueKind.True || entityBatchLever.ValueKind == JsonValueKind.False))
 				{
 					Refii.Entities.Engine_EntityBatches.Enabled = entityBatchLever.ValueKind == JsonValueKind.True;
+				}
+
+				if (root.TryGetProperty("fxVisible", out JsonElement fxVisibleLever) &&
+					(fxVisibleLever.ValueKind == JsonValueKind.True || fxVisibleLever.ValueKind == JsonValueKind.False))
+				{
+					Refii.Fx.Engine_FxDriver.SetAllVisible(fxVisibleLever.ValueKind == JsonValueKind.True);
+				}
+
+				// Takes effect on the reconcile cadence, which re-presents every dressed body.
+				if (root.TryGetProperty("bodyVariants", out JsonElement bodyVariantLever) &&
+					(bodyVariantLever.ValueKind == JsonValueKind.True || bodyVariantLever.ValueKind == JsonValueKind.False))
+				{
+					Refii.Entities.Engine_BodyVariants.Enabled = bodyVariantLever.ValueKind == JsonValueKind.True;
 				}
 
 				if (root.TryGetProperty("propShadow", out JsonElement propShadowLever) &&
@@ -1701,6 +1727,9 @@ public partial class GameDebugServer : Node
 					["entityBatchCount"] = Refii.Entities.Engine_EntityBatches.Batches,
 					["entityBatchPromotions"] = Refii.Entities.Engine_EntityBatches.Promotions,
 					["entityBatchDemotions"] = Refii.Entities.Engine_EntityBatches.Demotions,
+					["bodyVariants"] = Refii.Entities.Engine_BodyVariants.Enabled,
+					["bodyVariantsBuilt"] = Refii.Entities.Engine_BodyVariants.Built,
+					["bodyVariantSurfacesRemoved"] = Refii.Entities.Engine_BodyVariants.SurfacesRemoved,
 					["propShadow"] = Refii.Level.Engine_PropShadow.Enabled,
 					["propShadowBatches"] = Refii.Level.Engine_PropShadow.Batches,
 					["propShadowSurfacesMerged"] = Refii.Level.Engine_PropShadow.SurfacesMerged,
@@ -1897,6 +1926,63 @@ public partial class GameDebugServer : Node
 				return Ok(GameEntities.Current?.DescribeDoubles(radius) ?? new Dictionary<string, object?>());
 			}
 
+			case "lodcensus":
+			{
+				// The main view's triangles by owner and mesh, at the level Godot picks and at the
+				// guest's per-object pick: `{"op":"lodcensus"}`.
+				Node? world = GameEntities.Current?.GetTree()?.Root;
+				Viewport? view = GameEntities.Current?.GetViewport();
+				return Ok(world is null || view is null
+					? new Dictionary<string, object?>()
+					: Refii.Models.Engine_MdlLodCensus.Describe(world, view));
+			}
+
+			case "gpuprofile":
+			{
+				// Godot's per-pass GPU timings: the split of `renderGpuMs`. Present only while the
+				// engine captures timestamps (`gpu_profile = true` in refii.toml).
+				return Ok(Refii.Core.Engine_GpuPasses.Report());
+			}
+
+			case "capture":
+			{
+				// RenderDoc: `{"op":"capture"}` captures the next frame; `{"op":"capture",
+				// "list":true}` only lists what has been written. The capture finishes at the end
+				// of the frame after the trigger, so a caller polls `list` until `captures` grows
+				// and `capturing` is false.
+				var reply = new Dictionary<string, object?>
+				{
+					["armed"] = Refii.Core.Engine_RenderDoc.Armed,
+					["version"] = Refii.Core.Engine_RenderDoc.Version,
+					["captureDir"] = Refii.Core.Engine_RenderDoc.CaptureDirectory,
+					["installRoot"] = Refii.Core.Engine_RenderDoc.InstallRoot,
+				};
+
+				if (!Refii.Core.Engine_RenderDoc.Armed)
+				{
+					reply["note"] = "RenderDoc is not armed for this run: set renderdoc = true in " +
+						"refii.toml (and renderdoc_path if the install is not on PATH) and relaunch";
+					return Ok(reply);
+				}
+
+				bool listOnly = root.TryGetProperty("list", out JsonElement listValue) &&
+					listValue.ValueKind == JsonValueKind.True;
+				if (!listOnly)
+				{
+					reply["triggered"] = Refii.Core.Engine_RenderDoc.TriggerCapture();
+				}
+
+				reply["capturing"] = Refii.Core.Engine_RenderDoc.IsCapturing;
+				var captures = new List<Dictionary<string, object?>>();
+				foreach ((string path, ulong stamp) in Refii.Core.Engine_RenderDoc.Captures())
+				{
+					captures.Add(new Dictionary<string, object?> { ["path"] = path, ["timestamp"] = stamp });
+				}
+
+				reply["captures"] = captures;
+				return Ok(reply);
+			}
+
 			case "metrics":
 			{
 				// The HOST's own cost, which the guest counters cannot see. The viewport's own
@@ -1968,6 +2054,30 @@ public partial class GameDebugServer : Node
 
 				return Ok(new Dictionary<string, object?>
 				{
+					// The level the numbers below belong to, as the guest states it.
+					["level"] = GameWhereabouts.Current is { } where
+						? $"{where.DisplayName} ({where.LevelKey})"
+						: "none",
+
+					// Paths that render a surface white. Run totals; nonzero means the path fired.
+					["whitePaths"] = new Dictionary<string, object?>
+					{
+						["texDecodeFailures"] = Refii.Textures.Engine_TexLibrary.FailedDecodes,
+						["materialsMissingAlbedo"] = Refii.Models.Engine_MdlMaterial.MaterialsMissingAlbedo,
+						["bakeVerticesWithoutSource"] = Refii.Lighting.Engine_LevelBakedLighting.VertexBakeUnsourced,
+					},
+					// Placements whose stated distances were unusable and kept the screen-size cull.
+					["propRanges"] = new Dictionary<string, object?>
+					{
+						["unstated"] = Refii.Level.Engine_PropDrawRange.Unstated,
+						["treeShadowReach"] = Refii.Level.Engine_PropDrawRange.TreeShadowStated ? "stated" : "full",
+					},
+					// A readback is a GPU stall on the render thread; this should stay at zero.
+					["surfaceArrays"] = new Dictionary<string, object?>
+					{
+						["gpuReadbacks"] = Refii.Models.Engine_MdlSurfaceArrays.Readbacks,
+						["recordedMB"] = System.Math.Round(Refii.Models.Engine_MdlSurfaceArrays.RecordedBytes / 1048576.0, 1),
+					},
 					["phases"] = Refii.Core.Engine_FramePhases.Report(),
 					["processing"] = census,
 					["feedFramesSkipped"] = GameEntities.FeedFramesSkipped,
@@ -2645,6 +2755,18 @@ public partial class GameDebugServer : Node
 					? (uint)b.GetInt64()
 					: 0u;
 				int frames = root.TryGetProperty("frames", out JsonElement f) ? f.GetInt32() : 8;
+				int pad = root.TryGetProperty("pad", out JsonElement p) ? p.GetInt32() : 0;
+				if (pad is < 0 or > 3)
+				{
+					return new Dictionary<string, object?>
+					{
+						["ok"] = false,
+						["error"] = $"pad {pad} is not 0..3",
+					};
+				}
+
+				_pressPad = pad;
+				_debugPads |= 1 << pad;
 				_pressed = mask;
 				_pressFrames = frames < 1 ? 1 : frames;
 
@@ -2670,6 +2792,7 @@ public partial class GameDebugServer : Node
 				return Ok(new Dictionary<string, object?>
 				{
 					["buttons"] = mask,
+					["pad"] = pad,
 					["frames"] = _pressFrames,
 					["sticks"] = _stickFrames > 0,
 				});
@@ -2687,6 +2810,7 @@ public partial class GameDebugServer : Node
 						"menu", "action", "call", "lua", "call-result", "poke", "heap",
 						"probe", "guestlog", "mark", "metrics", "input-record", "input-replay",
 						"wait", "log", "shot", "flicker", "press", "gdb", "achievements",
+						"gpuprofile", "capture",
 					},
 				};
 		}
@@ -2766,6 +2890,23 @@ public partial class GameDebugServer : Node
 	private static Dictionary<string, object?> State()
 	{
 		var state = new Dictionary<string, object?> { ["guest"] = HostBridgeUp() };
+
+		// Where the player is, as the guest states it.
+		if (GameWhereabouts.Current is { } place)
+		{
+			state["level"] = new Dictionary<string, object?>
+			{
+				["name"] = place.DisplayName,
+				["key"] = place.LevelKey,
+				["world"] = place.World,
+				["entrance"] = place.Entrance,
+				["hash"] = $"{place.Key:X8}",
+			};
+		}
+		else
+		{
+			state["level"] = "none (before the first load, or between levels)";
+		}
 		if (Engine_UiSource.Current.GetInGameScreens() is { } screens)
 		{
 			state["screen"] = screens.Current.ToString();

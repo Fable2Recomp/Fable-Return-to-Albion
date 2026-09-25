@@ -33,6 +33,18 @@ public sealed class CallbackManager
         _callbacks.Add(callback);
     }
 
+    /// <summary>
+    /// Puts <paramref name="callback"/> ahead of everything already queued. The one caller is
+    /// <see cref="PubGame.RegisterOverlayManager"/>: <c>PubGame::Initialize</c> empties the list
+    /// and adds the overlay manager first (0x0015ff-0x00161b), so it runs, and blocks, before any
+    /// game callback.
+    /// </summary>
+    public void AddCallbackObjectFirst(Callback callback)
+    {
+        _callbacks.Remove(callback);
+        _callbacks.Insert(0, callback);
+    }
+
     public Callback AddCallbackFunction(
         PubCallbackMethod? callbackMethod,
         object? callbackData,
@@ -111,13 +123,22 @@ public sealed class CallbackManager
         var ranGroups = new HashSet<object>();
         bool ranUngrouped = false;
 
-        double now = _timer.Milliseconds;
-        double elapsed = ticks ?? now - _lastTick;
-        _lastTick = now;
+        double elapsed;
+        if (ticks is { } given)
+        {
+            elapsed = given;
+        }
+        else
+        {
+            double now = _timer.Milliseconds;
+            elapsed = now - _lastTick;
+            _lastTick = now;
+        }
+
         elapsed *= _speed;
 
         _lastCallbackThisFrame = _callbacks.Count;
-        for (int i = 0; i < _lastCallbackThisFrame; i++)
+        for (int i = 0; i < _lastCallbackThisFrame && i < _callbacks.Count; i++)
         {
             Callback callback = _callbacks[i];
             callbackData = callback.CallbackData;
@@ -138,7 +159,14 @@ public sealed class CallbackManager
             if (callback.CallbackMethod is not null &&
                 callback.CallbackMethod(elapsed, callbackData, blocked))
             {
-                _callbacks.RemoveAt(i);
+                // `callbacks.splice(i, 1)` (0x0007bc): a callback that emptied the list while it
+                // ran (GameReallyOver -> CleanUpGame -> RemoveAllCallbacks) leaves nothing there,
+                // and AS2's splice past the end is a no-op.
+                if (i < _callbacks.Count)
+                {
+                    _callbacks.RemoveAt(i);
+                }
+
                 removed = true;
                 i--;
                 _lastCallbackThisFrame--;

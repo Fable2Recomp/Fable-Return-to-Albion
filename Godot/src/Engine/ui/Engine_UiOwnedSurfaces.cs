@@ -143,6 +143,16 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 
 	private uint _screenId;
 
+	/// <summary>
+	/// The display MessageBox the guest stated open (vtable 0x820AE668), 0 when none — set by the
+	/// owner each frame. The same `messageboxmulti` art as the router's box, but it holds no modal
+	/// id: it answers action 36 through its own handler, so it is answered by address.
+	/// </summary>
+	public uint StatedDisplayBox { get; set; }
+
+	/// <summary>The display box this surface opened for, 0 when it is the router's.</summary>
+	private uint _display;
+
 	protected override bool Joined => _joins is not null;
 
 	protected override Engine_UiMessageBox Build(Engine_UiTheme? art) =>
@@ -220,17 +230,19 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 
 	protected override bool IsOpen(Engine_UiModel.PauseState? pause)
 	{
-		if (pause is not { MessageBoxUp: true } state ||
+		if (pause is { MessageBoxUp: true } state &&
 			Engine_UiTemplates.Modal(state.ModalId, state.ScreenId, dismissal: true)
-				is not { } template)
+				is { } template)
 		{
-			return false;
+			_dismiss = template.Confirm;
+			_modalId = state.ModalId;
+			_screenId = state.ScreenId;
+			_display = 0;
+			return true;
 		}
 
-		_dismiss = template.Confirm;
-		_modalId = state.ModalId;
-		_screenId = state.ScreenId;
-		return true;
+		_display = StatedDisplayBox;
+		return _display != 0;
 	}
 
 	protected override void Apply(
@@ -298,7 +310,9 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 		}
 
 		View!.ShowStated(body, chosen, paperScale);
-		GD.Print($"[game-ui] message box {_modalId} up over screen {_screenId} " +
+		GD.Print((_display != 0
+				? $"[game-ui] display message box {_display:X8} up "
+				: $"[game-ui] message box {_modalId} up over screen {_screenId} ") +
 			$"(size {chosen + 1}, paper {paperSource}) — " + View.LastReport);
 	}
 
@@ -306,6 +320,14 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 	{
 		if (!input.Accept)
 		{
+			return;
+		}
+
+		if (_display != 0)
+		{
+			Engine_UiSource.Current.PostFrontEndAction(
+				$"BoxAction:{(int)Engine_UiSource.BoxAction.Dismiss}@{_display:X8}");
+			GD.Print($"[game-ui] display message box {_display:X8} dismissed (code 36)");
 			return;
 		}
 
@@ -337,6 +359,13 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 
 	private uint _screenId;
 
+	/// <summary>
+	/// The box up is a DISPLAY question, not the modal router's. Same presentation, different
+	/// answer: its own handler `sub_823CF3B0` takes 46/47 and posts reply 1/0, reached through
+	/// <see cref="Engine_UiSource.DisplayBoxAction"/>.
+	/// </summary>
+	private bool _display;
+
 	protected override bool Joined => _joins is not null;
 
 	protected override Engine_UiQueryBox Build(Engine_UiTheme? art) =>
@@ -347,17 +376,19 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 
 	protected override bool IsOpen(Engine_UiModel.PauseState? pause)
 	{
-		if (pause is not { QueryBoxUp: true } state ||
-			Engine_UiTemplates.Modal(state.ModalId, uint.MaxValue, dismissal: false) is not { } codes)
+		if (pause is { QueryBoxUp: true } state &&
+			Engine_UiTemplates.Modal(state.ModalId, uint.MaxValue, dismissal: false) is { } codes)
 		{
-			_codes = null;
-			return false;
+			_codes = codes;
+			_display = false;
+			_modalId = state.ModalId;
+			_screenId = state.ScreenId;
+			return true;
 		}
 
-		_codes = codes;
-		_modalId = state.ModalId;
-		_screenId = state.ScreenId;
-		return true;
+		_codes = null;
+		_display = Engine_UiSource.Current.DisplayQueryUp();
+		return _display;
 	}
 
 	protected override void Apply(
@@ -383,12 +414,25 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 		}
 
 		View!.ShowStated(body, row.Name, elements[row.First].Text, elements[row.Second].Text);
-		GD.Print($"[game-ui] query box {_modalId} up over screen {_screenId} " +
+		GD.Print((_display ? "[game-ui] display query up " : $"[game-ui] query box {_modalId} up over screen {_screenId} ") +
 			$"({row.Name}) — {View.LastReport}");
 	}
 
 	protected override void Route(Engine_UiSurfaceInput input)
 	{
+		if (_display)
+		{
+			if (input.Accept || input.Back)
+			{
+				Engine_UiSource.Current.DisplayBoxAction(input.Accept
+					? Engine_UiSource.BoxAction.Confirm
+					: Engine_UiSource.BoxAction.Cancel);
+				GD.Print($"[game-ui] display query {(input.Accept ? "CONFIRMED" : "cancelled")}");
+			}
+
+			return;
+		}
+
 		if (_codes is not { } codes)
 		{
 			return;

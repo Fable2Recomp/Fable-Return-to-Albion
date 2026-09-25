@@ -42,6 +42,11 @@ set(REFII_VFS_RUNTIME_SOURCES
     # RTLD_DEFAULT to compile against and no global scope to look a name up in.
     ${REFII_VFS_ROOT}/src/core/stated_fx_state.cpp
     ${REFII_VFS_ROOT}/src/core/target_highlight_state.cpp
+    # Each renderable's stated appearance (alpha, tint, scale, drawable): same rule, filled by
+    # src/hooks/entity_appearance.cpp.
+    ${REFII_VFS_ROOT}/src/core/entity_appearance_state.cpp
+    # The pub-game seam: the host posts Godot's fscommands, the pump replacement drains them.
+    ${REFII_VFS_ROOT}/src/core/pubgame_state.cpp
     ${REFII_VFS_ROOT}/src/core/host_asset_reader.cpp
     # The UI cut's arrival queue: the intercepted `GUI.*` calls and their arguments. Same rule
     # as the pump's queue above and for the same direction of travel — the PAYLOAD posts (the
@@ -106,8 +111,11 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/boot_lifecycle.cpp
     ${REFII_VFS_ROOT}/src/hooks/crt_math.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_natives.cpp
+    ${REFII_VFS_ROOT}/src/hooks/display_box_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_menu_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_element_hooks.cpp
+    # The pub-game pump with the Scaleform module taken out, once Godot claims the games.
+    ${REFII_VFS_ROOT}/src/hooks/pubgame_pump.cpp
     ${REFII_VFS_ROOT}/src/hooks/babel_text_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/guest_tick_pump.cpp
     ${REFII_VFS_ROOT}/src/hooks/game_init_trace.cpp
@@ -115,6 +123,7 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/particle_transform.cpp
     ${REFII_VFS_ROOT}/src/hooks/spell_fx_lifetime.cpp
     ${REFII_VFS_ROOT}/src/hooks/target_highlight.cpp
+    ${REFII_VFS_ROOT}/src/hooks/entity_appearance.cpp
     ${REFII_VFS_ROOT}/src/hooks/native_misc.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_open.cpp
     ${REFII_VFS_ROOT}/src/hooks/loading_resource_hashes.cpp
