@@ -116,6 +116,8 @@ PPC_EXTERN_FUNC(__imp__sub_82228730);
 PPC_EXTERN_FUNC(__imp__sub_823CEAE8);
 PPC_EXTERN_FUNC(__imp__sub_823CEB58);
 PPC_EXTERN_FUNC(__imp__sub_823CEC98);
+// hooks/reticule_hooks.cpp.
+PPC_EXTERN_FUNC(__imp__sub_8287C658);
 PPC_EXTERN_FUNC(__imp__sub_8234EF58);
 PPC_EXTERN_FUNC(__imp__sub_82C68F30);
 PPC_EXTERN_FUNC(__imp__sub_8219A9A0);

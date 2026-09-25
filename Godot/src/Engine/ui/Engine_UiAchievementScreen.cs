@@ -238,7 +238,9 @@ public sealed class Engine_UiAchievementScreen
 			CursorTemplate = art.Art("MenuHighlight"),
 			CursorPose = cursorPose,
 			Anchor = _anchor,
-			Ratings = Engine_UiRowRating.Resolve(Host.DocumentFor(Presentation)),
+			// Leather for earned and the folder, slate for locked; no rating strip.
+			LockedRowsSlate = true,
+			HideRatingStrip = true,
 			Visible = false,
 		};
 

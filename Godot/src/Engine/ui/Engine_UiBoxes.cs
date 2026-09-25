@@ -48,6 +48,14 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 		public readonly int[] Buttons = new int[MaxOptions];
 		public readonly int[] Labels = new int[MaxOptions];
 		public int Cancel = -1;
+
+		/// <summary>`Group/GamerTag/gamertag` — the player card (name, reputation,
+		/// gamerscore). AUTHORED AT OPACITY 0: only the online Orb box (`sub_823DB968` →
+		/// `sub_823DB850`, the card object at controller+40) raises it. -1 when absent.</summary>
+		public int GamerTag = -1;
+
+		/// <summary>The card's authored opacity, 0..100, for when the guest states none.</summary>
+		public float GamerTagAuthoredOpacity;
 	}
 
 	public static Joins? Resolve(Engine_UiScreen screen)
@@ -63,9 +71,13 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 		var joins = new Joins { Title = title.Ordinal };
 		for (int i = 0; i < MaxOptions; ++i)
 		{
+			// The shipped file frames the label (`Choice1/Frame/Choice1`), as the art clone
+			// already knows; the bare form is kept for a file without the frame.
 			UiNode? button = Engine_UiStatedPanel.Child(choices, $"Multiplayer_Button{i + 1}");
-			UiNode? label = Engine_UiStatedPanel.Child(
-				Engine_UiStatedPanel.Child(button, "Choice1"), "Choice1");
+			UiNode? choice = Engine_UiStatedPanel.Child(button, "Choice1");
+			UiNode? label =
+				Engine_UiStatedPanel.Child(Engine_UiStatedPanel.Child(choice, "Frame"), "Choice1") ??
+				Engine_UiStatedPanel.Child(choice, "Choice1");
 			if (button is null || label is null)
 			{
 				return null;
@@ -77,6 +89,13 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 
 		joins.Cancel = Engine_UiStatedPanel.Child(
 			Engine_UiStatedPanel.Child(group, "OK/CANCEL"), "Negative")?.Ordinal ?? -1;
+		if (Engine_UiStatedPanel.Child(Engine_UiStatedPanel.Child(group, "GamerTag"), "gamertag")
+			is { } card)
+		{
+			joins.GamerTag = card.Ordinal;
+			joins.GamerTagAuthoredOpacity = card.Opacity;
+		}
+
 		return joins;
 	}
 
@@ -134,12 +153,19 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 	/// </summary>
 	public void ShowStated(
 		string? title, string?[] labels, int count, int selected,
-		uint enabledMask, bool cancelable)
+		uint enabledMask, bool cancelable, bool gamerTag = false)
 	{
 		if (_group is null || Theme is null)
 		{
 			LastReport = "no art — not standing in";
 			return;
+		}
+
+		// The player card is cloned with the group and shown only while the guest raises it —
+		// see Joins.GamerTag.
+		if (_group.GetNodeOrNull<Node3D>("GamerTag") is { } card)
+		{
+			card.Visible = gamerTag;
 		}
 
 		if (!string.IsNullOrEmpty(title) &&
@@ -167,6 +193,14 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 				 button.GetNodeOrNull<MeshInstance3D>("Choice1/Choice1")) is { } labelNode)
 			{
 				Theme.SetMeshText(labelNode, label);
+			}
+
+			// THE SELECTION RIM — `Choice1/RimSelect` and its `sliderframe` quad, authored OFF on
+			// every row and lit by the guest on the selected one. The cursor is ours (the guest's
+			// follows through MenuBoxSelect), so the rim follows the stated selection.
+			if (button.GetNodeOrNull<Node3D>("Choice1/RimSelect") is { } rim)
+			{
+				rim.Visible = i == selected;
 			}
 
 			// Host-owned highlight: the selected row at full strength, the rest dimmed, a

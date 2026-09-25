@@ -239,6 +239,7 @@ public sealed class Engine_UiBookSet
 			Engine_UiModel.InGameScreens? screens = Engine_UiSource.Current.GetInGameScreens();
 			System.Collections.Generic.IReadOnlyDictionary<uint, int>? owned = screens?.Owned;
 			uint current = screens is { } state ? (uint)state.Current : uint.MaxValue;
+			uint boxScreen = Engine_UiSource.Current.DisplayBoxScreen();
 
 			foreach ((uint address, Engine_UiDrawnPresentation live) in drawn)
 			{
@@ -266,7 +267,8 @@ public sealed class Engine_UiBookSet
 				// presentation in the registry after moving on, so standing a book for everything
 				// drawn puts two books on screen at once. Host-only surfaces are exempt — their
 				// ids sit past the guest's range and the manager never reports them as current.
-				if (screenId < HostOnlyScreenId && screenId != current)
+				// A display box stands on its screen without ever being current.
+				if (screenId < HostOnlyScreenId && screenId != current && screenId != boxScreen)
 				{
 					continue;
 				}

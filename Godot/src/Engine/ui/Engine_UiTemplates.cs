@@ -730,8 +730,9 @@ public static class Engine_UiTemplates
 	}
 
 	/// <summary>
-	/// The modal answer table — see <see cref="Engine_UiModalTemplate"/>. An unlisted box keeps
-	/// the guest's own input, deliberately: the coop boxes (39/40/41/43) answer only on the
+	/// The modal answer table — see <see cref="Engine_UiModalTemplate"/>. It decides who ANSWERS,
+	/// never whether a box is drawn: an unlisted box is drawn and keeps the guest's own input,
+	/// deliberately: the coop boxes (39/40/41/43) answer only on the
 	/// router's pad index 2 while our lever passes 0, the marketplace offer (42) carries an X
 	/// download action and a sign-in gate, and photo mode's box has no dismiss code at all.
 	/// </summary>
@@ -2343,13 +2344,48 @@ public static class Engine_UiTemplates
 		// logbook, the world map's page and the HUD banner.
 
 		// The three remaining dialogs with no owned view: all flat — no book, no page stack.
+		//
+		// THE QUEST CARD IS A DISPLAY BOX (`GUI.DisplayQuestBoxParams`, class 0x820AE6C8), never
+		// the current screen: it stands from `DisplayBoxScreen`. Its Open `sub_823CFBE0` writes
+		// every string once — QuestDescription, the DetailsGroup amounts, Remember, the
+		// conditions — so the text is the guest's; the info panel runs only for a current screen.
 		AddScreen(new Engine_UiScreenTemplate
 		{
 			ScreenId = 5, Name = "questrepeatable", Presentation = "questrepeatable",
 			OwnsRevealedInput = true,
 			RevealedAccept = Engine_UiScreenActions.BoxDismiss,
-			ChromeUnits = { "PaperBackground", "Buttons", "Stars", "DetailsGroup" },
-			PanelSubtrees = { "elements" },
+			ChromeUnits =
+			{
+				"PaperBackground", "Buttons", "Stars", "DetailsGroup", "QuestTitle",
+				"QuestDescription", "QuestDescription2", "RiskLevel", "Remember",
+				"Condition1", "Condition2",
+			},
+			GuestTextUnits = { "elements" },
+		});
+
+		// THE END CREDITS — drawn by Engine_UiCreditsRoll (the file's elements are anonymous,
+		// so nothing here names chrome). The template carries only the input: the handler
+		// `sub_826B7EF8` skips the roll on 36 or 37.
+		AddScreen(new Engine_UiScreenTemplate
+		{
+			ScreenId = 29, Name = "creditsscreen", Presentation = "creditsscreen",
+			OwnsRevealedInput = true,
+			RevealedAccept = Engine_UiScreenActions.ScreenSelect,
+			RevealedBack = Engine_UiScreenActions.ScreenBack,
+		});
+
+		// THE OLD-STYLE INFO CARD: `GUI.DisplayInfoBoxParams` with no `DisplayBoxStyle` (the
+		// native's default is 0, `sub_823033D0`) builds class 0x820EBF1C, and photo mode's
+		// uploading notice is the same class. Its Open `sub_8299E490` writes Paper.Text / Title /
+		// Accept / Info and the button alphas, then plays root slide 7 — the `Paper` variant the
+		// display-box surface vetoes. Only `Paper` is chrome here, so while the acceptance and
+		// button boxes (DefaultGroup) are up this book has nothing active to draw. Input stays
+		// the guest's: A and hold-A are the class's raw slot, and it does not freeze the game.
+		AddScreen(new Engine_UiScreenTemplate
+		{
+			ScreenId = 7, Name = "displaybox", Presentation = "displaybox",
+			ChromeUnits = { "Paper" },
+			GuestTextUnits = { "Paper" },
 		});
 
 		AddScreen(new Engine_UiScreenTemplate

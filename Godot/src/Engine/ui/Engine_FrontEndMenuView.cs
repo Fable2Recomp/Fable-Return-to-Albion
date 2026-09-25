@@ -45,6 +45,17 @@ public partial class Engine_FrontEndMenuView : Node3D
 	public Engine_UiRowRating? Ratings { get; set; }
 
 	/// <summary>
+	/// The face states LOCKED, not depth: a ghosted row wears the submenu's slate tab, every other
+	/// row — the folder included — the heading's leather. The indent and label layout still
+	/// follow depth. For the achievements list.
+	/// </summary>
+	public bool LockedRowsSlate { get; set; }
+
+	/// <summary>Hides the row art's star strip (`Tab.Stars`) outright, for a list whose rows
+	/// carry no rating at all.</summary>
+	public bool HideRatingStrip { get; set; }
+
+	/// <summary>
 	/// The `Buttons` group's live opacity, 0..1 — the focus dim. `ExpandableMenu.LoseFocus` runs
 	/// `Buttons.opacity` 100 → 10 over 500 ticks and `GetFocus` runs it back; the guest still plays
 	/// both, so the host reads the value off the element and multiplies every row by it.
@@ -1051,7 +1062,15 @@ public partial class Engine_FrontEndMenuView : Node3D
 			{
 				_rowEmphasis[row] = emphasis;
 				_rowFaced[row] = entry[i];
-				SetTabFace(row, IsHeading(entry[i]!), emphasis);
+				SetTabFace(row,
+					LockedRowsSlate ? !entry[i]!.Ghosted : IsHeading(entry[i]!), emphasis);
+			}
+
+			if (HideRatingStrip &&
+				_rows[row].GetNodeOrNull<Node3D>("Frame") is { } frame &&
+				Engine_UiTheme.FindByName(frame, "Stars") is Node3D stars)
+			{
+				stars.Visible = false;
 			}
 
 			_rows[row].Visible = true;

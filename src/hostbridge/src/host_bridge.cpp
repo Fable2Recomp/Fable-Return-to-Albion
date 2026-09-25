@@ -181,6 +181,7 @@ uint32_t MenuRows(uint32_t index, char* out_name, size_t name_capacity, char* ou
 #include "refii_host.h"
 
 #include "gui/gui_native_calls.h"
+#include "gui/gui_display_box.h"
 #include "gui/gui_menu_chunks.h"
 #include "gui/gui_element_state.h"
 
@@ -8640,13 +8641,14 @@ REFII_HOST_ABI_EXPORT int RefiiHostPauseTabSelect(uint32_t tab) {
     return 1;
 }
 
-/// The display box that is up — `GUI.Display*Question` and its siblings — or 0 when none is.
+/// The display box that is up — `GUI.Display*Question`, the numeric adjuster and their
+/// siblings — or 0 when none is.
 ///
 /// The same walk `DispatchDisplayBoxAction` answers through: `guiOwner = *(GUI+28)`, the box
-/// owner at `guiOwner+52` (as `IsDisplayBoxActive` 0x82305F10 passes it to `sub_822A5C50`), the
-/// showing box at `owner+52`. Open is the byte every handler gates on (`sub_823CF3B0`
-/// `lbz r11, 0xC(r3)`). The vtable names the class — 0x820AE688 is the QueryBox, whose handler
-/// posts reply 1 on 46 and 0 on 47.
+/// owner at `guiOwner+52` (as `IsDisplayBoxActive` 0x82305F10 passes it to `sub_822A5C50`), then
+/// the router's own choice of showing box — see gui/gui_display_box.h. Open is the byte every
+/// handler gates on (`sub_823CF3B0` `lbz r11, 0xC(r3)`). The vtable names the class —
+/// 0x820AE688 the QueryBox, 0x820AE6A8 the NumericAdjuster.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDisplayBox(uint32_t* out_vtable) {
     if (out_vtable != nullptr) *out_vtable = 0u;
 
@@ -8667,7 +8669,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDisplayBox(uint32_t* out_vtable) {
     const uint32_t owner = read32(gui_owner + 52u);
     if (!plausible(owner)) return 0;
 
-    const uint32_t box = read32(owner + 52u);
+    const uint32_t box = refii::vfs::ShowingDisplayBox(owner, read32);
     if (!plausible(box) || GuestByteAt(base, box + 12u) == 0u) return 0;
 
     if (out_vtable != nullptr) *out_vtable = read32(box);
@@ -11889,6 +11891,13 @@ static uint32_t TopBoxFrontRecord(const uint8_t* base, uint32_t& channel, bool& 
         return 0u;
     }
     manager_found = true;
+
+    // HIDDEN BY A SCRIPT: `GUI.SetTopBoxHidden` (`sub_82304C30` → `sub_8230C7A8`) writes
+    // `mgr+0`, and `mgr+1` hides it the same way — the guest ORs the two. Hidden, it fades the
+    // `TopBox` group out and KEEPS the records, so a front record alone does not mean shown.
+    if (GuestByteAt(base, manager) != 0u || GuestByteAt(base, manager + 1u) != 0u) {
+        return 0u;
+    }
 
     const uint32_t channels_begin = GuestWordAt(base, manager + 8u);
     const uint32_t channels_end = GuestWordAt(base, manager + 12u);

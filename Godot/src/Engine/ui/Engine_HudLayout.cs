@@ -189,6 +189,12 @@ public sealed class Engine_HudLayout
         // `PlayerSpellcharge{n}`. `SpellCharging2` is the henchman's, mirrored at +390.
         ("SpellCharging", "SpellCharging", null, 0f),
         ("SpellCharging2", "SpellCharging2", null, 0f),
+
+        // The LT look-at prompt, `Layer/LookAt`: icon, text and glow with NO binding, so it is cut
+        // whole. The guest drives it through element state alone — `sub_82595F98` writes the
+        // prompt onto `Text` (`sub_82425DD0`) and plays slide 2/4/5 (8 off) through
+        // `sub_82596270`.
+        ("LookAt", "LookAt", null, 0f),
     };
 
     private readonly List<Piece> _pieces = new();

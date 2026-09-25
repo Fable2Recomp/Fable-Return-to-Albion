@@ -189,6 +189,19 @@ public partial class GameUi
 			}
 		});
 
+		// The aim reticule's setter stating which object a player aims with — not a native
+		// (hooks/reticule_hooks.cpp). Arguments: player 0/1, the object's address, active. The
+		// record's own active byte decides what is drawn; the object is kept for its aim point.
+		_guiNatives.Register("@Reticule", call =>
+		{
+			if (call.Argument(0).Text is "0" or "1" &&
+				uint.TryParse(call.Argument(1).Text, System.Globalization.NumberStyles.HexNumber,
+					System.Globalization.CultureInfo.InvariantCulture, out uint aiming))
+			{
+				_reticuleObject[call.Argument(0).Text == "0" ? 0 : 1] = aiming;
+			}
+		});
+
 		// `DisplayInfoBox` is the odd one: its id is a LITERAL 0, and no string hashes to 0, so
 		// it is unreachable from RemoveDisplayBox by construction. Six seconds, fire and forget.
 		_guiNatives.Register("DisplayInfoBox", call =>

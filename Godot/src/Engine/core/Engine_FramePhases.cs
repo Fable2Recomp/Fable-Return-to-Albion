@@ -411,6 +411,15 @@ public static class Engine_FramePhases
 		}
 	}
 
+	/// <summary>One phase's most recent duration, or 0 before it has run.</summary>
+	public static double Last(string name)
+	{
+		lock (Gate)
+		{
+			return Phases.TryGetValue(name, out Phase? phase) ? phase.LastMs : 0.0;
+		}
+	}
+
 	/// <summary>Every phase as {name: {avgMs, peakMs, lastMs}}, for the metrics reply.</summary>
 	public static Dictionary<string, object?> Report()
 	{

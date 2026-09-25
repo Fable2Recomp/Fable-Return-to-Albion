@@ -363,7 +363,7 @@ def capture(args):
         return reply
 
     script = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))))), "renderdoc", "rdc_passes.py")
+        os.path.abspath(__file__)))), "renderdoc", "rdc_passes.py")
     out_path = newest + ".passes.json"
     env = dict(os.environ, RDC_PATH=newest, RDC_OUT=out_path)
     try:

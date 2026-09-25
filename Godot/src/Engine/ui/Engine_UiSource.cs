@@ -65,6 +65,31 @@ public abstract class Engine_UiSource
 	/// </summary>
 	public virtual bool DisplayQueryUp() => false;
 
+	/// <summary>
+	/// A DISPLAY numeric adjuster is open — `GUI.DisplayNumericAdjusterParams` (the temple
+	/// donation). Same `numericadjuster.bgf` as the modal router's, answered through
+	/// <see cref="DisplayBoxAction"/>.
+	/// </summary>
+	public virtual bool DisplayAdjusterUp() => false;
+
+	/// <summary>
+	/// The screen id the showing display box stands on, <see cref="uint.MaxValue"/> when none.
+	/// A box is never the manager's current screen, so a template for a box's screen (the quest
+	/// card, 5) is stood up from this instead.
+	/// </summary>
+	public virtual uint DisplayBoxScreen() => uint.MaxValue;
+
+	/// <summary>
+	/// The front end's own `dialog` box, raised by the guest (`sub_826E40E0`): which screen
+	/// object owns it, the presentation its `dialog.Group` texts are on, whether it takes input
+	/// yet, and whether it has a cancel button.
+	/// </summary>
+	public readonly record struct FrontEndDialogState(
+		uint Owner, uint Presentation, bool Accepting, bool AllowCancel);
+
+	/// <summary>The front-end dialog that is up, or null.</summary>
+	public virtual FrontEndDialogState? GetFrontEndDialog() => null;
+
 	/// <summary>The pause gate: underlying screen id, pending modal id and mode, current tab.</summary>
 	public virtual Engine_UiModel.PauseState? GetPauseState() => null;
 

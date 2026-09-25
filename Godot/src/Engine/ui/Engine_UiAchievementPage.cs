@@ -39,9 +39,6 @@ public static class Engine_UiAchievementPage
 	/// <summary>The authored summary row — the tally, and where the cursor starts.</summary>
 	public const string FolderRowName = "Achievements";
 
-	/// <summary>The inline icon an earned row's label ends with — see Engine_UiTextMarkup.</summary>
-	private const string EarnedMark = "<star-1.img>";
-
 	private const string PageRoot = "Foreground.Book.Pages.ExpressionsPage";
 	private const string Title = "ExpressionsPage.Title";
 	private const string Icon = "ExpressionsPage.Contents.Icon";
@@ -67,13 +64,12 @@ public static class Engine_UiAchievementPage
 		var rows = new List<Engine_UiMenuSources.Row>(Engine_Achievements.TotalCount);
 		foreach (AchievementDefinition definition in Engine_Achievements.Definitions)
 		{
-			// EARNED ROWS CARRY THE FONT'S OWN STAR, the inline-icon mechanism the pause rows use
-			// for their `!`. Ghosting alone is the cue for a locked row, and on this list it did
-			// not show — every row drew in the live colour — so an earned one says so itself.
+			// Locked or earned is the tab face — slate for a locked row, leather for an earned one
+			// (Engine_FrontEndMenuView.LockedRowsSlate).
 			string name = definition.Name.Length == 0 ? $"Achievement {definition.Id}" : definition.Name;
 			rows.Add(new Engine_UiMenuSources.Row(
 				Name: $"Achievement:{definition.Id}",
-				Label: Engine_Achievements.IsUnlocked(definition.Id) ? name + " " + EarnedMark : name,
+				Label: name,
 				Icon: string.Empty,
 				EventType: EventType,
 				Id: definition.Id,

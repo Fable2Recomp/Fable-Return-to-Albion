@@ -48,6 +48,7 @@
 #include <rex/kernel/xboxkrnl/threading.h>
 
 #include "core/guest_state.h"
+#include "gui/gui_display_box.h"
 #include "hooks/ppc_externs.h"
 
 // The New Game commit. NOT hooked — the guest's own function is called, so this is the plain
@@ -57,6 +58,9 @@ PPC_EXTERN_FUNC(sub_826E0D60);
 // The front end's own menu-action dispatcher, vtable slot +16 of 0x820D0934. Called directly:
 // the slot is fixed.
 PPC_EXTERN_FUNC(sub_826DFD58);
+// The front end's two dialog owners' input slots (vtable +12) — DispatchFrontEndDialog.
+PPC_EXTERN_FUNC(sub_826DEE40);
+PPC_EXTERN_FUNC(sub_826E2F18);
 
 // "How many saved games does the signed-in user have?" — the probe the front end uses:
 //
@@ -822,6 +826,10 @@ constexpr const char* kActionMenuBoxAnswerPrefix = "MenuBoxAnswer:";
 /// One action code to whichever display box is up — see DispatchDisplayBoxAction.
 constexpr const char* kActionBoxActionPrefix = "BoxAction:";
 
+/// "FrontEndDialog:<code>" — answers the front end's own `dialog` box (36 accept, 37 cancel)
+/// through the owning screen's input slot. See DispatchFrontEndDialog.
+constexpr const char* kActionFrontEndDialogPrefix = "FrontEndDialog:";
+
 /// "MenuScroll:up|down|left|right[:released]" — the DIRECTIONAL STICK, as the guest routes it.
 ///
 /// The in-game lists keep their cursor in LUA: every screen's A press commits whatever
@@ -1243,9 +1251,9 @@ bool DispatchDisplayBoxAction(PPCContext& ctx, uint8_t* base, uint32_t code) {
     return true;
   }
 
-  // The box currently SHOWING sits at `owner+52`; `sub_822A5C50` reads the same word as its
-  // first test of whether any box is up.
-  const uint32_t box = LoadGuestU32(base, owner + 52u);
+  // The box currently SHOWING, by the router's own rule — see gui/gui_display_box.h.
+  const uint32_t box = refii::vfs::ShowingDisplayBox(
+      owner, [base](uint32_t at) { return LoadGuestU32(base, at); });
   if (!plausible(box)) {
     REXLOG_INFO("Refii guest-tick pump: BoxAction:{} with no box up — dropped", code);
     return true;
@@ -1275,9 +1283,55 @@ bool DispatchDisplayBoxAction(PPCContext& ctx, uint8_t* base, uint32_t code) {
   return true;
 }
 
+/// Answers the front end's `dialog` box. Every front-end warning goes through `sub_826E40E0`
+/// (the main-menu root reaches it via slot +32 `sub_826E1C50`, the title directly), which
+/// writes `dialog.Group.OK` / `yousure` / `cancel` and sets `+57`; the dialog's DIALOG_ACTIVE
+/// event puts the root in mode 6 (`sub_826E1040`). The answer is the owner's own input slot
+/// (+12): root `sub_826DEE40` (36 accept, 37 cancel when `+206`), title `sub_826E2F18` (36),
+/// each taking only the pad in `dword_83496AF8`. Objects: `F = *(*(*(0x83496AC0)+8)+0x50)`,
+/// root `*(F+0xB8)`, title `*(F+0xB4)` (0x8230FF60..0x8230FF98).
+bool DispatchFrontEndDialog(PPCContext& ctx, uint8_t* base, uint32_t code) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  const uint32_t app = LoadGuestU32(base, 0x83496AC0u);
+  const uint32_t shell = plausible(app) ? LoadGuestU32(base, app + 8u) : 0u;
+  const uint32_t front = plausible(shell) ? LoadGuestU32(base, shell + 0x50u) : 0u;
+  if (!plausible(front)) {
+    REXLOG_INFO("Refii guest-tick pump: FrontEndDialog:{} with no front end — dropped", code);
+    return true;
+  }
+
+  for (const uint32_t offset : {0xB8u, 0xB4u}) {
+    const uint32_t owner = LoadGuestU32(base, front + offset);
+    if (!plausible(owner) || refii::vfs::LoadGuestU8(base, owner + 57u) == 0u) {
+      continue;
+    }
+
+    const uint32_t vtable = LoadGuestU32(base, owner);
+    const PPCContext saved = ctx;
+    ctx.r3.u32 = owner;
+    ctx.r4.u32 = code;
+    ctx.r5.u32 = LoadGuestU32(base, 0x83496AF8u);
+    switch (vtable) {
+      case 0x820D0934u: sub_826DEE40(ctx, base); break;  // main-menu root
+      case 0x820D09C4u: sub_826E2F18(ctx, base); break;  // title
+      default:
+        ctx = saved;
+        REXLOG_INFO("Refii guest-tick pump: FrontEndDialog:{} — owner 0x{:08X} has vtable "
+                    "0x{:08X}, not a dialog owner", code, owner, vtable);
+        return true;
+    }
+    ctx = saved;
+    REXLOG_INFO("Refii guest-tick pump: FrontEndDialog:{} answered 0x{:08X}", code, owner);
+    return true;
+  }
+
+  REXLOG_INFO("Refii guest-tick pump: FrontEndDialog:{} with no dialog up — dropped", code);
+  return true;
+}
+
 /// Hands one action code to a display MessageBox the host was told opened (vtable 0x820AE668,
-/// see hooks/display_box_hooks.cpp). Those sit in the owner's `+4` queue, which the lookup above
-/// never reads. The box is re-checked here, since the host's word is a frame old: still this
+/// see hooks/display_box_hooks.cpp), BY ADDRESS — the stated box, not whichever the router
+/// would pick. The box is re-checked here, since the host's word is a frame old: still this
 /// class and still open. Its handler `sub_823CEDD8` takes the pad from `box+24`, -1 for any
 /// (0x823cee00).
 bool DispatchStatedMessageBoxAction(PPCContext& ctx, uint8_t* base, uint32_t box, uint32_t code) {
@@ -6214,8 +6268,8 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
                 ? DispatchMenuBoxSelect(ctx, base, static_cast<uint32_t>(value))
                 : DispatchMenuBoxAnswer(ctx, base, static_cast<uint32_t>(value));
     } else if (name.rfind(kActionBoxActionPrefix, 0) == 0) {
-      // `BoxAction:<code>` answers the box the owner holds at `+52`; `BoxAction:<code>@<hex>`
-      // answers the display MessageBox whose Open the host was told about.
+      // `BoxAction:<code>` answers the box the router would pick (`ShowingDisplayBox`);
+      // `BoxAction:<code>@<hex>` answers the display MessageBox whose Open was stated.
       std::string number = name.substr(std::strlen(kActionBoxActionPrefix));
       uint32_t target = 0u;
       if (const size_t at = number.find('@'); at != std::string::npos) {
@@ -6236,6 +6290,17 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       ran = target != 0u
                 ? DispatchStatedMessageBoxAction(ctx, base, target, static_cast<uint32_t>(value))
                 : DispatchDisplayBoxAction(ctx, base, static_cast<uint32_t>(value));
+    } else if (name.rfind(kActionFrontEndDialogPrefix, 0) == 0) {
+      char* end = nullptr;
+      const char* digits = name.c_str() + std::strlen(kActionFrontEndDialogPrefix);
+      const unsigned long value = std::strtoul(digits, &end, 10);
+      if (end == digits || *end != '\0' || (value != 36u && value != 37u)) {
+        REXLOG_INFO("Refii guest-tick pump: '{}' is not a dialog answer — dropped", name);
+        GuestTickPumpNoteRan();
+        continue;
+      }
+
+      ran = DispatchFrontEndDialog(ctx, base, static_cast<uint32_t>(value));
     } else if (name == "SubtitlesOn" || name == "SubtitlesOff" ||
                name == "Downloadable Content") {
       // Through the guest's own dispatcher: its id-2 branch compares the item name and does the

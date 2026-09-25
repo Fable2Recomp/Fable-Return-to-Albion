@@ -1155,6 +1155,124 @@ public partial class GameUi : Node
 		}
 	}
 
+	/// <summary>True while the warning box shows the GUEST's dialog rather than a host refusal.</summary>
+	private bool _guestDialogShown;
+
+	private bool _menuHiddenForDialog;
+
+	private string? _guestDialogShownText;
+
+	/// <summary>
+	/// THE FRONT END'S OWN DIALOG. The guest raises it itself — Load Game with no saves or a
+	/// refused save, a co-op or network failure arriving on the menu or the title, Downloadable
+	/// Content with nobody signed in — through `sub_826E40E0`, which writes the three
+	/// `dialog.Group` texts and waits in its dialog mode for the owner's own accept. The host's
+	/// warning box shows the guest's strings, and A/B go back through `FrontEndDialog:36/37`.
+	/// The host's own refusals never raise it, so the two cannot stand together.
+	/// </summary>
+	private bool DriveGuestDialog()
+	{
+		Engine_UiSource.FrontEndDialogState? up = IsRevealed && !HostBridge.IsInGame
+			? Engine_UiSource.Current.GetFrontEndDialog()
+			: null;
+		if (up is not { } dialog)
+		{
+			if (_guestDialogShown)
+			{
+				_guestDialogShown = false;
+				_guestDialogShownText = null;
+				if (_warningView is not null)
+				{
+					_warningView.Visible = false;
+				}
+
+				if (_menuHiddenForDialog && _menuView is not null)
+				{
+					_menuView.Visible = true;
+				}
+
+				_menuHiddenForDialog = false;
+				GD.Print("[game-ui] front-end dialog closed by the guest");
+			}
+
+			return false;
+		}
+
+		if (_warningView is null && _presentation?.Theme is { } theme)
+		{
+			AdoptWarning(theme);
+		}
+
+		if (_warningView is null)
+		{
+			return false;
+		}
+
+		string body = FrontEndDialogText(dialog.Presentation, "yousure");
+		string accept = FrontEndDialogText(dialog.Presentation, "OK");
+		string cancel = FrontEndDialogText(dialog.Presentation, "cancel");
+		string signature = $"{body}\u0001{accept}\u0001{cancel}\u0001{dialog.AllowCancel}";
+		if (signature != _guestDialogShownText)
+		{
+			_guestDialogShownText = signature;
+			_warningView.Show(_presentation?.Theme, body, accept.Length > 0 ? accept : "GUI_OK",
+				twoButton: dialog.AllowCancel, cancelTag: dialog.AllowCancel && cancel.Length > 0 ? cancel : null);
+			_warningView.AcceptOpens = null;
+			GD.Print($"[game-ui] front-end dialog raised by the guest — '{body}' " +
+				$"({(dialog.AllowCancel ? "two" : "one")}-button) — {_warningView.LastReport}");
+		}
+
+		if (!_guestDialogShown && _menuView is { Visible: true })
+		{
+			_menuView.Visible = false;
+			_menuHiddenForDialog = true;
+		}
+
+		_guestDialogShown = true;
+		if (dialog.Accepting)
+		{
+			if (GameInput.MenuAcceptPressed)
+			{
+				Engine_UiSource.Current.PostFrontEndAction("FrontEndDialog:36");
+			}
+			else if (GameInput.MenuBackPressed && dialog.AllowCancel)
+			{
+				Engine_UiSource.Current.PostFrontEndAction("FrontEndDialog:37");
+			}
+		}
+
+		return true;
+	}
+
+	/// <summary>One of the dialog's three texts as the guest wrote it, `dialog.Group.{leaf}` in
+	/// the owner's presentation; empty when it cannot be read.</summary>
+	private string FrontEndDialogText(uint presentation, string leaf)
+	{
+		foreach (Engine_UiModel.Presentation p in Engine_UiSource.Current.GetPresentations())
+		{
+			if (p.Address != presentation)
+			{
+				continue;
+			}
+
+			string name = System.IO.Path.GetFileNameWithoutExtension(p.Name.Replace('\\', '/'));
+			if (_presentation?.DocumentFor(name) is not { } document ||
+				Engine_UiElementState.Current.Elements(presentation) is not { } elements)
+			{
+				return string.Empty;
+			}
+
+			UiNode? node = Engine_UiStatedPanel.Child(
+				Engine_UiStatedPanel.Child(Engine_UiStatedPanel.FindByName(document.Roots, "dialog"), "Group"),
+				leaf);
+			return node is not null && node.Ordinal < elements.Count
+				? elements[node.Ordinal].Text ?? string.Empty
+				: string.Empty;
+		}
+
+		return string.Empty;
+	}
+
 	/// <summary>
 	/// Adopts the shipped `dialog` group — the box every refusing guard puts up.
 	///
@@ -2431,6 +2549,20 @@ public partial class GameUi : Node
 		};
 		_presentation.AddChild(_worldSprites);
 
+		// THE AIM RETICULE, which the guest pushed as 2D sprites from a record, never as an
+		// element — see Engine_HudReticule. In front of the world sprites.
+		_reticule = new Engine_HudReticule
+		{
+			Name = "Reticule",
+			Position = new Vector3(0f, 0f, 54f),
+			ResolveTexture = hash =>
+				_presentation.TextureNames is { } names &&
+				names.TryResolve(hash, out string path)
+					? _presentation.LoadTexture(path)
+					: null,
+		};
+		_presentation.AddChild(_reticule);
+
 		BuildAchievementToast();
 	}
 
@@ -2442,6 +2574,223 @@ public partial class GameUi : Node
 
 	private Engine_HudWorldIcons? _worldIcons;
 	private Engine_HudWorldSprites? _worldSprites;
+
+	private Engine_HudReticule? _reticule;
+
+	/// <summary>`GUI.PlayFullCutscene`'s game-flow state (`sub_82305FE8` builds it; its type
+	/// slot is `li r3,7`).</summary>
+	private const uint FullCutsceneStateVtable = 0x820AED30u;
+
+	/// <summary>The guest's letterbox bars: rows 0..100 and H−100..H of its 720-line backbuffer
+	/// (`sub_82296368` 0x822964a4), stated here as a fraction of the height.</summary>
+	private const float LetterboxFraction = 100f / 720f;
+
+	private CanvasLayer? _letterbox;
+
+	private Engine_UiCreditsRoll? _creditsRoll;
+
+	private readonly System.Collections.Generic.List<Engine_UiCreditsRoll.Line> _creditLines = new();
+
+	/// <summary>
+	/// The end credits: every Text element of the live `creditsscreen`, at the string and
+	/// position the guest's own roll gives it this frame — see <see cref="Engine_UiCreditsRoll"/>.
+	/// </summary>
+	private void DriveCreditsRoll()
+	{
+		_creditLines.Clear();
+		uint address = 0u;
+		if (HostBridge.IsInGame)
+		{
+			foreach (Engine_UiModel.Presentation p in Engine_UiSource.Current.GetPresentations())
+			{
+				if (p.IsShowing && p.Is($"{Engine_UiCreditsRoll.Presentation}.bgf"))
+				{
+					address = p.Address;
+					break;
+				}
+			}
+		}
+
+		if (address != 0u && _presentation?.DocumentFor(Engine_UiCreditsRoll.Presentation) is { } document &&
+			Engine_UiElementState.Current.Elements(address) is { } elements &&
+			elements.Count == document.Nodes.Length)
+		{
+			float?[]?[]? transform = Engine_UiLiveAttributes.Transform(address, elements.Count);
+			foreach (UiNode node in document.Nodes)
+			{
+				if (node.Type != BgfElementType.Text || node.Text is not { } authored)
+				{
+					continue;
+				}
+
+				Engine_UiModel.UiElement element = elements[node.Ordinal];
+				if (!element.IsGloballyActive || string.IsNullOrEmpty(element.Text))
+				{
+					continue;
+				}
+
+				float?[]? stated = transform is not null && node.Ordinal < transform.Length
+					? transform[node.Ordinal]
+					: null;
+				_creditLines.Add(new Engine_UiCreditsRoll.Line(
+					element.Text,
+					new Vector2(stated?[0] ?? node.PositionX, stated?[1] ?? node.PositionY),
+					authored.Size > 0 ? authored.Size : 18,
+					new Color(authored.R, authored.G, authored.B)));
+			}
+		}
+
+		if (_creditsRoll is null)
+		{
+			if (_creditLines.Count == 0 || _presentation?.Fonts is not { } fonts)
+			{
+				return;
+			}
+
+			// Above the video (layer 10): the roll plays over `Credits.bik`.
+			var layer = new CanvasLayer { Name = "Credits", Layer = 11 };
+			_creditsRoll = new Engine_UiCreditsRoll { Name = "CreditsRoll", Fonts = fonts };
+			layer.AddChild(_creditsRoll);
+			AddChild(layer);
+		}
+
+		_creditsRoll.Show(_creditLines);
+	}
+
+	private bool _fullCutscene;
+
+	/// <summary>`sub_82296368`: list = *(*(*(*(game+12)+128)+4)+4), node = *(list+4),
+	/// state = *(node+8).</summary>
+	private static readonly uint[] FlowListChain = { 0u, 12u, 128u, 4u, 4u };
+
+	/// <summary>True while the top game-flow state is the full cutscene.</summary>
+	private static bool FullCutscenePlaying()
+	{
+		uint at = 0x83496AB8u;
+		foreach (uint offset in FlowListChain)
+		{
+			uint[] word = HostBridge.Peek(at + offset, 1);
+			if (word.Length != 1 || word[0] < 0x10000u)
+			{
+				return false;
+			}
+
+			at = word[0];
+		}
+
+		uint[] node = HostBridge.Peek(at + 4u, 1);
+		if (node.Length != 1 || node[0] == at || node[0] < 0x10000u)
+		{
+			return false;
+		}
+
+		uint[] state = HostBridge.Peek(node[0] + 8u, 1);
+		uint[] vtable = state.Length == 1 && state[0] >= 0x10000u
+			? HostBridge.Peek(state[0], 1)
+			: System.Array.Empty<uint>();
+		return vtable.Length == 1 && vtable[0] == FullCutsceneStateVtable;
+	}
+
+	/// <summary>
+	/// THE FULL CUTSCENE REPLACES THE WHOLE GUI. `sub_82296368` tests the top game-flow state's
+	/// type and, for 7, draws two opaque black bars INSTEAD of the GUI — no HUD, no markers, no
+	/// reticule. The in-game layers go down with it and come back on the falling edge.
+	/// </summary>
+	private void DriveFullCutscene()
+	{
+		bool up = HostBridge.IsInGame && FullCutscenePlaying();
+		if (up == _fullCutscene)
+		{
+			return;
+		}
+
+		_fullCutscene = up;
+		GD.Print($"[game-ui] full cutscene {(up ? "UP — letterbox, in-game UI hidden" : "down")}");
+
+		if (_letterbox is null)
+		{
+			_letterbox = new CanvasLayer { Name = "Letterbox", Layer = 4 };
+			foreach ((float top, float bottom) in new[] { (0f, LetterboxFraction), (1f - LetterboxFraction, 1f) })
+			{
+				_letterbox.AddChild(new ColorRect
+				{
+					Color = Colors.Black,
+					AnchorLeft = 0f, AnchorRight = 1f, AnchorTop = top, AnchorBottom = bottom,
+					MouseFilter = Control.MouseFilterEnum.Ignore,
+				});
+			}
+
+			AddChild(_letterbox);
+		}
+
+		_letterbox.Visible = up;
+		foreach (Node3D? layer in new Node3D?[] { _hud, _worldIcons, _worldSprites, _reticule })
+		{
+			if (layer is not null && GodotObject.IsInstanceValid(layer))
+			{
+				layer.Visible = !up && (layer != _hud || _hudAddress != 0);
+			}
+		}
+	}
+
+	/// <summary>The aiming object each player's reticule setter last stated (`@Reticule`,
+	/// hooks/reticule_hooks.cpp); 0 before any. Its `+0x90` is the aim point.</summary>
+	private readonly uint[] _reticuleObject = new uint[2];
+
+	/// <summary>
+	/// Feeds the reticule each frame: the record at `*(*(GUI+32)+72)` (+64 for player two) for
+	/// active, progress, colour, mode and the intro counter, and the stated object's `+0x90` for
+	/// the aim point. Runs after <see cref="DriveWorldSprites"/>, which captured the camera.
+	/// </summary>
+	private void DriveReticule()
+	{
+		if (_reticule is null || !GodotObject.IsInstanceValid(_reticule))
+		{
+			return;
+		}
+
+		uint[] gui = HostBridge.IsInGame ? HostBridge.Peek(0x83496B08u, 1) : System.Array.Empty<uint>();
+		uint[] root = gui.Length == 1 ? HostBridge.Peek(gui[0], 9) : System.Array.Empty<uint>();
+		uint[] hud = root.Length == 9 && root[0] == 0x82001610u
+			? HostBridge.Peek(root[8] + 72u, 1)
+			: System.Array.Empty<uint>();
+		if (hud.Length != 1 || hud[0] == 0u || _spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
+		{
+			_reticule.Feed(0, null);
+			_reticule.Feed(1, null);
+			return;
+		}
+
+		// The guest's backbuffer, `qword_834A5FE8` — the pixels its petal sizes are stated in.
+		uint[] backbuffer = HostBridge.Peek(0x834A5FE8u, 2);
+		float guestHeight = backbuffer.Length == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
+		Vector2 extent = Engine_HudLayout.CanvasExtent(_spriteWindow);
+		_reticule.CanvasHalfExtent = extent * 0.5f;
+		_reticule.UnitsPerGuestPixel = extent.Y / guestHeight;
+		_reticule.Place ??= guest => PlaceWorldSprite(guest, 0u)?.Canvas;
+
+		static float F(uint word) => System.BitConverter.Int32BitsToSingle(unchecked((int)word));
+
+		for (int player = 0; player < 2; ++player)
+		{
+			uint[] record = HostBridge.Peek(hud[0] + (64u * (uint)player), 14);
+			uint[] anchor = _reticuleObject[player] != 0u
+				? HostBridge.Peek(_reticuleObject[player] + 0x90u, 3)
+				: System.Array.Empty<uint>();
+			if (record.Length != 14 || (record[0] >> 24) == 0u || anchor.Length != 3)
+			{
+				_reticule.Feed(player, null);
+				continue;
+			}
+
+			_reticule.Feed(player, new Engine_HudReticule.Aim(
+				new Vector3(F(anchor[0]), F(anchor[1]), F(anchor[2])),
+				F(record[3]),
+				new Color(F(record[4]), F(record[5]), F(record[6]), F(record[7])),
+				record[8],
+				unchecked((int)record[13])));
+		}
+	}
 
 	private bool _worldSpritesCleared;
 
@@ -2509,8 +2858,13 @@ public partial class GameUi : Node
 		{
 			if (sprite.Pooled)
 			{
-				// A prompt on a pooled HUD element: the element draws it, Godot places it.
-				if (sprite.Slot >= 0 && ProjectWorldSprite(sprite.Anchor) is { } canvas)
+				// A prompt on a pooled HUD element: the element draws it, Godot places it. The
+				// off-screen hero and henchman markers (types 52/53, the guest's own test in
+				// `sub_82824D60`) are pinned inside the edge.
+				Vector2? placed = sprite.Type is 52u or 53u
+					? ProjectOffScreenMarker(sprite.Anchor)
+					: ProjectWorldSprite(sprite.Anchor);
+				if (sprite.Slot >= 0 && placed is { } canvas)
 				{
 					pooled[sprite.Slot] = canvas;
 				}
@@ -2606,6 +2960,49 @@ public partial class GameUi : Node
 		return new Vector2(
 			(pixel.X - (_spriteWindow.X * 0.5f)) * _spriteUnitsPerPixel,
 			((_spriteWindow.Y * 0.5f) - pixel.Y) * _spriteUnitsPerPixel);
+	}
+
+	/// <summary>
+	/// The off-screen partner markers (`HeroOffScreenWorldIcon` / `HenchmanOffScreenWorldIcon`,
+	/// types 52/53) are ALWAYS clamped into the screen — `sub_82824D60` sends both through
+	/// `sub_82824BD0`, which pins the point inside the viewport less 10% (plus 10 px) at the
+	/// left, 10% plus 40 px at the top, and 9% (plus 10 px) right / 9% bottom, in its 720-line
+	/// pixels. Behind the camera the guest pushes the point outward before clamping; its exact
+	/// vector math is not reproduced — the reflected point is extended to the edge instead.
+	/// </summary>
+	private Vector2? ProjectOffScreenMarker(Vector3 guest)
+	{
+		if (_spriteCamera is null || _spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
+		{
+			return null;
+		}
+
+		Vector3 world = GameWorld.GuestToGodot(guest);
+		Transform3D camera = _spriteCamera.GlobalTransform;
+		Vector3 local = camera.AffineInverse() * world;
+		bool behind = local.Z > -0.01f;
+		if (behind)
+		{
+			local.Z = -Mathf.Max(Mathf.Abs(local.Z), 0.01f);
+			world = camera * local;
+		}
+
+		Vector2 pixel = _spriteCamera.UnprojectPosition(world);
+		var canvas = new Vector2(
+			(pixel.X - (_spriteWindow.X * 0.5f)) * _spriteUnitsPerPixel,
+			((_spriteWindow.Y * 0.5f) - pixel.Y) * _spriteUnitsPerPixel);
+		if (behind && canvas.LengthSquared() > 0.0001f)
+		{
+			canvas = canvas.Normalized() * 100000f;
+		}
+
+		Vector2 extent = Engine_HudLayout.CanvasExtent(_spriteWindow);
+		float unit = extent.Y / 720f;
+		float left = (-extent.X * 0.5f) + (extent.X * 0.1f) + (10f * unit);
+		float right = (extent.X * 0.5f) - (extent.X * 0.09f) - (10f * unit);
+		float top = (extent.Y * 0.5f) - (extent.Y * 0.1f) - (40f * unit);
+		float bottom = (-extent.Y * 0.5f) + (extent.Y * 0.09f);
+		return new Vector2(Mathf.Clamp(canvas.X, left, right), Mathf.Clamp(canvas.Y, bottom, top));
 	}
 
 	/// <summary>This frame's projection inputs — see <see cref="ProjectWorldSprite"/>.</summary>
@@ -2945,6 +3342,9 @@ public partial class GameUi : Node
 	private void DriveWorldIcons()
 	{
 		DriveWorldSprites();
+		DriveReticule();
+		DriveFullCutscene();
+		DriveCreditsRoll();
 		if (_worldIcons is null || _hudAddress == 0 ||
 			!GodotObject.IsInstanceValid(_worldIcons))
 		{
@@ -5087,10 +5487,6 @@ public partial class GameUi : Node
 			Engine_UiHudTargetedQuery.Publish(HostBridge.GetTargetedQuery(), _hud.Values);
 		}
 
-		// HAND THE OWNED BOXES TO THE SURFACE THAT DRAWS THEM. While this is non-empty the
-		// display box takes its text from the CALL; when it empties, the element read takes over
-		// again, which is what lets the still-unrouted producers keep working.
-		_surfaces.DisplayBox.Stated = _boxes.Boxes;
 		if (guestFrame && _boxes.GuestMessageBox is not 0u and uint stated &&
 			!GuestMessageBoxOpen(stated))
 		{
@@ -5163,6 +5559,18 @@ public partial class GameUi : Node
 			return;
 		}
 
+		// A DISPLAY BOX DRAWN AS A SCREEN — the quest card (5). It is never the current screen,
+		// so the revealed-screen path below never reaches it; it answers its own template's
+		// vocabulary, and the modal mask holds the pad while it is up.
+		if (IsRevealed && Engine_UiSource.Current.DisplayBoxScreen() is var boxScreen &&
+			boxScreen != uint.MaxValue && Engine_UiScreenActions.OwnsRevealedInput(boxScreen))
+		{
+			GameInput.ModalBoxOwnsInput = true;
+			Engine_UiScreenActions.RunRevealed(
+				boxScreen, GameInput.MenuAcceptPressed, GameInput.MenuBackPressed);
+			return;
+		}
+
 		// THE PAUSE MENU, before the front-end gate below — in game there is no front-end menu
 		// at all, so the gate would starve it of input the way it starved the load fan once.
 		if (DrivePauseMenu(delta))
@@ -5197,6 +5605,12 @@ public partial class GameUi : Node
 			CardUp: _cardView is { Visible: true },
 			WarningUp: _warningView is { Visible: true },
 			Highlighted: _menu?.Highlighted?.Name ?? string.Empty);
+
+		// THE GUEST'S OWN DIALOG, ahead of everything the host owns — see DriveGuestDialog.
+		if (DriveGuestDialog())
+		{
+			return;
+		}
 
 		if (_menu is null || _menuView is null || !IsRevealed)
 		{
@@ -8001,7 +8415,8 @@ public partial class GameUi : Node
 			// arranges — are sampled off this presentation without mirroring it. See
 			// Engine_HudWorldIcons.
 			_hudAddress = presentation.Address;
-			if (_hud is not null && GodotObject.IsInstanceValid(_hud) && !_hud.Visible)
+			if (_hud is not null && GodotObject.IsInstanceValid(_hud) && !_hud.Visible &&
+				!_fullCutscene)
 			{
 				// Back after a Quit to Title; LeaveGame hid it with the game.
 				_hud.Visible = true;
@@ -8197,7 +8612,8 @@ public partial class GameUi : Node
 		// `Owns` is asked of the SURFACES rather than of a list of names, and it answers false
 		// for a surface that failed to build its art — which keeps the mirror exactly where it
 		// is still the fallback, and nowhere else.
-		bool owned = Engine_UiTemplates.AnyScreenOwns(name) || _surfaces.Owns(presentation);
+		bool owned = Engine_UiTemplates.AnyScreenOwns(name) || _surfaces.Owns(presentation) ||
+			string.Equals(name, Engine_UiCreditsRoll.Presentation, System.StringComparison.OrdinalIgnoreCase);
 		Node3D? built;
 		Engine_UiScreen? screen;
 		Engine_UiSceneBuilder? stats;
@@ -8292,7 +8708,11 @@ public partial class GameUi : Node
 				GD.Print($"[game-ui] '{name}' texture chain: {chain.Describe()}");
 			}
 
-			GD.Print($"[game-ui] drawing the guest's '{name}' " +
+			// The guest's tree is built hidden either way: an unowned presentation is not on
+			// screen at all.
+			GD.Print((owned
+					? $"[game-ui] sampling '{name}' for its owner "
+					: $"[game-ui] NO OWNER for '{name}' — sampled, NOT drawn ") +
 				$"({elements.Count} live elements, " +
 				$"{System.Array.FindAll(visible, v => v).Length} of them active{art}{swaps}{tints})");
 

@@ -183,6 +183,9 @@ public partial class GameWindow : Node
 		// Last, so it draws over the video too. Hidden until F3 or `perf_overlay = true`.
 		AddChild(new GamePerfOverlay { Name = "GamePerfOverlay" });
 
+		// F4: the dev menu — the full diagnostic view behind F3's spot check.
+		AddChild(new GameDevMenu { Name = "GameDevMenu" });
+
 		// Video over UI: a movie covers the front end and hands it back when it ends.
 		// Concealing is immediate; revealing waits for the guest to say it has a front end
 		// (see _Process), not for a movie to end. Never for an embedded movie — an ability

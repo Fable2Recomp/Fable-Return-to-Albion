@@ -45,6 +45,74 @@ public sealed class HostUiSource : Engine_UiSource
 	public override bool DisplayQueryUp() =>
 		HostBridge.GetDisplayBox() is { Vtable: HostBridge.DisplayQueryBoxVtable };
 
+	public override bool DisplayAdjusterUp() =>
+		HostBridge.GetDisplayBox() is { Vtable: HostBridge.DisplayAdjusterVtable };
+
+	/// <summary>
+	/// The guest's own mapping: the class's type (vtable slot 7, `li r3,N`) through
+	/// `sub_823D0B90` — 0 → 3, 2 → 19, 3 → 4, 4 → 5, 5 → 6, 6..8 → 7.
+	/// </summary>
+	/// <summary>
+	/// `F = *(*(*(0x83496AC0)+8)+0x50)` (0x8230FF44..0x8230FF64, gated on `byte_83496AC4`); the
+	/// main-menu root `*(F+0xB8)` (vt 0x820D0934) and the title `*(F+0xB4)` (vt 0x820D09C4).
+	/// Either sets `+57` when it raises the dialog (`sub_826E1C50`, `sub_826E3580`); `+20` is its
+	/// presentation; the root takes the answer in mode `+24 == 6` (set on DIALOG_ACTIVE,
+	/// `sub_826E1040`), the title in mode 12; `+206` is the root's cancel flag.
+	/// </summary>
+	private static readonly (uint Offset, uint Vtable, uint Accepting)[] DialogOwners =
+		{ (0xB8u, 0x820D0934u, 6u), (0xB4u, 0x820D09C4u, 12u) };
+
+	public override FrontEndDialogState? GetFrontEndDialog()
+	{
+		uint[] app = HostBridge.Peek(0x83496AC0u, 2);
+		if (app.Length != 2 || app[0] < 0x10000u || (app[1] >> 24) == 0u)
+		{
+			return null;
+		}
+
+		uint[] shell = HostBridge.Peek(app[0] + 8u, 1);
+		uint[] front = shell.Length == 1 && shell[0] >= 0x10000u
+			? HostBridge.Peek(shell[0] + 0x50u, 1)
+			: System.Array.Empty<uint>();
+		if (front.Length != 1 || front[0] < 0x10000u)
+		{
+			return null;
+		}
+
+		foreach ((uint offset, uint vtable, uint accepting) in DialogOwners)
+		{
+			uint[] owner = HostBridge.Peek(front[0] + offset, 1);
+			if (owner.Length != 1 || owner[0] < 0x10000u)
+			{
+				continue;
+			}
+
+			// +0 vtable, +20 presentation, +24 mode, +56..+59 holds the +57 flag, +204..+207
+			// the +206 cancel flag.
+			uint[] words = HostBridge.Peek(owner[0], 52);
+			if (words.Length != 52 || words[0] != vtable || ((words[14] >> 16) & 0xFFu) == 0u)
+			{
+				continue;
+			}
+
+			bool cancel = vtable == 0x820D0934u && ((words[51] >> 8) & 0xFFu) != 0u;
+			return new FrontEndDialogState(owner[0], words[5], words[6] == accepting, cancel);
+		}
+
+		return null;
+	}
+
+	public override uint DisplayBoxScreen() => HostBridge.GetDisplayBox()?.Vtable switch
+	{
+		0x820AE668u => 3u,   // MessageBox
+		0x820AE688u => 19u,  // QueryBox
+		0x820AE6A8u => 4u,   // NumericAdjuster
+		0x820AE6C8u => 5u,   // QuestBoxParams — questrepeatable
+		0x820EBFA8u => 6u,   // Intermission
+		0x820EBF3Cu or 0x820028F4u or 0x820EBF1Cu => 7u,  // Acceptance, Button, InfoParams
+		_ => uint.MaxValue,
+	};
+
 	public override Engine_UiModel.PauseState? GetPauseState() => HostBridge.GetPauseState();
 
 	public override List<Engine_UiModel.MapMarker> GetMapMarkers() => HostBridge.GetMapMarkers();

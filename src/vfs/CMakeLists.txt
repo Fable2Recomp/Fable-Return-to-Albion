@@ -112,6 +112,7 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/crt_math.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_natives.cpp
     ${REFII_VFS_ROOT}/src/hooks/display_box_hooks.cpp
+    ${REFII_VFS_ROOT}/src/hooks/reticule_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_menu_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_element_hooks.cpp
     # The pub-game pump with the Scaleform module taken out, once Godot claims the games.

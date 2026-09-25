@@ -226,6 +226,12 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 	/// <summary>This frame's press, once the view is standing.</summary>
 	protected abstract void Route(Engine_UiSurfaceInput input);
 
+	/// <summary>
+	/// False for a box drawn but answered by the guest's own input — one whose codes the host
+	/// does not state. It is not masked and nothing is routed, so the guest reads the pad.
+	/// </summary>
+	protected virtual bool TakesInput => true;
+
 	/// <summary>Anything the surface latched that has to fall with the box, e.g. a repeat clock;
 	/// the base already drops the view, the address and the signature.</summary>
 	protected virtual void Released()
@@ -260,8 +266,8 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 			Apply(elements, host);
 		}
 
-		Mask?.Invoke(Standing);
-		if (!Standing)
+		Mask?.Invoke(Standing && TakesInput);
+		if (!Standing || !TakesInput)
 		{
 			return true;
 		}

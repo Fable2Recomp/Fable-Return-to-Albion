@@ -1578,6 +1578,9 @@ public static class HostBridge
 	/// <summary>The QueryBox class — `GUI.DisplayYesNoQuestion` and its two siblings.</summary>
 	public const uint DisplayQueryBoxVtable = 0x820AE688u;
 
+	/// <summary>The NumericAdjuster class — `GUI.DisplayNumericAdjusterParams`.</summary>
+	public const uint DisplayAdjusterVtable = 0x820AE6A8u;
+
 	/// <summary>
 	/// The display box that is up and its class vtable, or null when none is open. See
 	/// <c>RefiiHostGetDisplayBox</c>.

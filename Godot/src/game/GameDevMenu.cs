@@ -1,0 +1,208 @@
+using System.Collections.Generic;
+using Godot;
+
+namespace Refii.Game;
+
+/// <summary>
+/// The dev menu, toggled with F4: the full diagnostic view beside F3's spot-check readout —
+/// frame timings and hitches, every measured phase, the GPU passes, host and guest threads,
+/// the guest's pacing and UI state, memory, the live logs and the cvars.
+/// </summary>
+/// <remarks>
+/// Read-mostly and in-process: every tab reads the same sources the debug channel serves
+/// (`Engine_FramePhases`, `Engine_GpuPasses`, `HostBridge`), so a number here and in an MCP
+/// reply are the same number. Nothing is sampled while the menu is closed, and only the tab on
+/// screen refreshes; the frame graph samples every frame while the menu is open so it has a
+/// history when its tab is picked.
+/// </remarks>
+public partial class GameDevMenu : CanvasLayer
+{
+	/// <summary>
+	/// True while a dev-menu text field has the keyboard, so typing a filter does not walk the
+	/// hero — <see cref="GameInput"/> drops its keyboard buttons while this holds.
+	/// </summary>
+	public static bool KeyboardCaptured { get; private set; }
+
+	private readonly List<GameDevTab> _tabs = new();
+	private readonly Dictionary<GameDevTab, double> _sinceRefresh = new();
+	private TabContainer? _container;
+
+	/// <summary>
+	/// A real (embedded) window: dragged by its title bar, resized from any edge or corner,
+	/// closed with its button or F4. It keeps its size and place for the session.
+	/// </summary>
+	private Window? _window;
+
+	public override void _Ready()
+	{
+		// Under F3's readout (128), so the spot check stays readable over the menu.
+		Layer = 127;
+		ProcessMode = ProcessModeEnum.Always;
+
+		Vector2I screen = (Vector2I)GetViewport().GetVisibleRect().Size;
+		_window = new Window
+		{
+			Title = "Dev menu   ·   F4 close   ·   F3 spot check",
+			Visible = false,
+			Unresizable = false,
+			Transient = false,
+			Exclusive = false,
+			WrapControls = false,
+			MinSize = new Vector2I(520, 320),
+			Size = new Vector2I(
+				System.Math.Max(900, (int)(screen.X * 0.6f)), System.Math.Max(560, (int)(screen.Y * 0.6f))),
+			Position = new Vector2I(40, 60),
+		};
+		_window.CloseRequested += Close;
+		_window.WindowInput += @event =>
+		{
+			if (IsToggle(@event))
+			{
+				Close();
+				_window.SetInputAsHandled();
+			}
+		};
+		AddChild(_window);
+
+		var backdrop = new Panel
+		{
+			AnchorLeft = 0f, AnchorTop = 0f, AnchorRight = 1f, AnchorBottom = 1f,
+		};
+		var style = new StyleBoxFlat { BgColor = new Color(0.05f, 0.06f, 0.07f, 0.94f) };
+		backdrop.AddThemeStyleboxOverride("panel", style);
+		_window.AddChild(backdrop);
+
+		var margin = new MarginContainer
+		{
+			AnchorLeft = 0f, AnchorTop = 0f, AnchorRight = 1f, AnchorBottom = 1f,
+		};
+		margin.AddThemeConstantOverride("margin_left", 10);
+		margin.AddThemeConstantOverride("margin_right", 10);
+		margin.AddThemeConstantOverride("margin_top", 6);
+		margin.AddThemeConstantOverride("margin_bottom", 8);
+		_window.AddChild(margin);
+
+		_container = new TabContainer { SizeFlagsVertical = Control.SizeFlags.ExpandFill };
+		margin.AddChild(_container);
+
+		Add(new GameDevTabFrame());
+		Add(new GameDevTabPhases());
+		Add(new GameDevTabGpu());
+		Add(new GameDevTabThreads());
+		Add(new GameDevTabGuest());
+		Add(new GameDevTabMemory());
+		Add(new GameDevTabLog());
+		Add(new GameDevTabCvars());
+	}
+
+	private void Add(GameDevTab tab)
+	{
+		tab.Name = tab.Title;
+		_tabs.Add(tab);
+		_sinceRefresh[tab] = double.MaxValue;
+		_container!.AddChild(tab);
+	}
+
+	private static bool IsToggle(InputEvent @event) =>
+		@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.F4 };
+
+	private bool Open => _window is { Visible: true };
+
+	private void Close()
+	{
+		if (_window is null)
+		{
+			return;
+		}
+
+		_window.Hide();
+		KeyboardCaptured = false;
+	}
+
+	public override void _Input(InputEvent @event)
+	{
+		if (!IsToggle(@event) || _window is null)
+		{
+			return;
+		}
+
+		if (Open)
+		{
+			Close();
+		}
+		else
+		{
+			_window.Show();
+			foreach (GameDevTab tab in _tabs)
+			{
+				_sinceRefresh[tab] = double.MaxValue;
+			}
+		}
+
+		GetViewport().SetInputAsHandled();
+	}
+
+	public override void _Process(double delta)
+	{
+		if (!Open || _container is null)
+		{
+			return;
+		}
+
+		KeyboardCaptured = _window!.HasFocus() &&
+			_window.GuiGetFocusOwner() is LineEdit or TextEdit;
+
+		foreach (GameDevTab tab in _tabs)
+		{
+			tab.Tick(delta);
+		}
+
+		if (_container.GetCurrentTabControl() is GameDevTab current)
+		{
+			double since = _sinceRefresh[current] + delta;
+			if (since >= current.RefreshSeconds)
+			{
+				since = 0.0;
+				current.Refresh();
+			}
+
+			_sinceRefresh[current] = since;
+		}
+	}
+}
+
+/// <summary>One page of the dev menu.</summary>
+public abstract partial class GameDevTab : VBoxContainer
+{
+	/// <summary>The tab's caption.</summary>
+	public abstract string Title { get; }
+
+	/// <summary>How often <see cref="Refresh"/> runs while this tab is on screen.</summary>
+	public virtual double RefreshSeconds => 0.5;
+
+	/// <summary>Re-reads the tab's sources. Only while the tab is the one showing.</summary>
+	public abstract void Refresh();
+
+	/// <summary>Every frame the menu is open, whichever tab shows — for sampled history.</summary>
+	public virtual void Tick(double delta)
+	{
+	}
+
+	/// <summary>A dimmed caption above a section.</summary>
+	protected Label Section(string text)
+	{
+		var label = new Label { Text = text, Modulate = new Color(0.7f, 0.85f, 1f) };
+		label.AddThemeFontSizeOverride("font_size", 15);
+		AddChild(label);
+		return label;
+	}
+
+	/// <summary>A monospaced multi-line readout.</summary>
+	protected static Label Readout()
+	{
+		var label = new Label();
+		label.AddThemeFontOverride("font", new SystemFont { FontNames = new[] { "monospace" } });
+		label.AddThemeFontSizeOverride("font_size", 14);
+		return label;
+	}
+}

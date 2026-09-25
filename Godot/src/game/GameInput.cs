@@ -315,6 +315,13 @@ public partial class GameInput : Node
 	/// filtered set, the host-owned menu gets the real one. The guest still runs its own
 	/// front-end menu — see <see cref="WithoutMenuInput"/>.
 	/// </summary>
+	/// <summary>Per pad: the buttons the guest was denied last frame.</summary>
+	private static readonly uint[] _maskBits = new uint[MaxControllers];
+
+	/// <summary>Per pad: buttons still held since a mask over them lifted — hidden from the
+	/// guest until released. See <see cref="SetMasked"/>.</summary>
+	private static readonly uint[] _heldAcrossUnmask = new uint[MaxControllers];
+
 	private static void SetMasked(int pad, bool connected, PadState state)
 	{
 		uint buttons = state.Buttons;
@@ -329,15 +336,27 @@ public partial class GameInput : Node
 		bool listMasked = !masked && !pauseMasked && !queryMasked && !cardMasked &&
 			!boxMasked && MaskScreenMenuInput;
 		bool menuMask = masked || pauseMasked || queryMasked || boxMasked || listMasked;
+		System.Func<uint, uint> filter =
+			masked ? WithoutMenuInput
+			: pauseMasked ? WithoutPauseInput
+			: queryMasked ? WithoutQueryInput
+			: cardMasked ? WithoutCardInput
+			: boxMasked ? WithoutQueryInput
+			: listMasked ? WithoutQueryInput
+			: static b => b;
+
+		// A MASK LIFTING NEVER HANDS THE GUEST A PRESS. The guest edge-detects against its last
+		// pad read (`sub_821894A8`), so a held button that reappears is a fresh down edge, and
+		// A's down edge emits GameAction 46/36/6 — which `sub_824047E8` hands to any box then
+		// up. A button held across its unmask stays hidden until it is physically released.
+		uint maskBits = ~filter(uint.MaxValue);
+		_heldAcrossUnmask[pad] |= _maskBits[pad] & ~maskBits & buttons;
+		_heldAcrossUnmask[pad] &= buttons;
+		_maskBits[pad] = maskBits;
+
 		HostBridge.SetControllerState(
 			pad, connected,
-			masked ? WithoutMenuInput(buttons)
-			: pauseMasked ? WithoutPauseInput(buttons)
-			: queryMasked ? WithoutQueryInput(buttons)
-			: cardMasked ? WithoutCardInput(buttons)
-			: boxMasked ? WithoutQueryInput(buttons)
-			: listMasked ? WithoutQueryInput(buttons)
-			: buttons,
+			filter(buttons) & ~_heldAcrossUnmask[pad],
 			state.LeftTrigger, state.RightTrigger,
 			// The stick is masked with the buttons: `sub_826E39C0` dead-zones the left stick
 			// against ±0.75 and emits the same codes the D-pad does — 28/29 for Y at
@@ -442,10 +461,11 @@ public partial class GameInput : Node
 
 	/// <summary>Masks the box's buttons only while the guest still says a modal dialog is
 	/// pending (the mode latch, over ANY screen — the openers never change the screen id), or
-	/// has a display MessageBox open. Fails open.</summary>
+	/// has a display box open — which never sets that latch. Fails open.</summary>
 	private static bool MaskPauseQueryInput =>
 		ModalBoxOwnsInput &&
-		(DisplayMessageBoxUp || HostBridge.GetPauseState() is { ModalUp: true });
+		(DisplayMessageBoxUp || HostBridge.GetDisplayBox() is not null ||
+			HostBridge.GetPauseState() is { ModalUp: true });
 
 	/// <summary>
 	/// Set by <c>GameUi.DriveReceiveItems</c> while the owned received-item card is standing.
@@ -764,6 +784,12 @@ public partial class GameInput : Node
 	/// </summary>
 	private static uint KeyboardButtons()
 	{
+		// Typing into the dev menu is not play.
+		if (GameDevMenu.KeyboardCaptured)
+		{
+			return 0u;
+		}
+
 		uint buttons = 0;
 		if (Input.IsKeyPressed(Key.Up)) buttons |= DpadUp;
 		if (Input.IsKeyPressed(Key.Down)) buttons |= DpadDown;
