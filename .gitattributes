@@ -72,3 +72,7 @@ CMakeLists.txt text eol=lf
 *.bik binary
 *.glb binary
 *.gltf binary
+
+# Vendored thirdparty code: preserve original line endings untouched
+**/thirdparty/** -text
+**/dxc-bin/** -text
