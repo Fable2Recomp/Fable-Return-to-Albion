@@ -1,0 +1,41 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = tab
+indent_size = 4
+
+[*.{cs,cs.uid}]
+indent_style = tab
+indent_size = 4
+end_of_line = lf
+
+[*.{cpp,h,hpp,c}]
+indent_style = space
+indent_size = 4
+end_of_line = lf
+
+[*.{cmake,txt}]
+indent_style = space
+indent_size = 4
+end_of_line = lf
+
+[*.{json,jsonl}]
+indent_style = space
+indent_size = 2
+end_of_line = lf
+
+[*.{toml,yaml,yml}]
+indent_style = space
+indent_size = 2
+end_of_line = lf
+
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+
+[*.md]
+trim_trailing_whitespace = false
+end_of_line = lf
