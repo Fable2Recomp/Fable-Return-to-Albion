@@ -57,6 +57,14 @@ public static class EditorInstall
 
 		if (EditorWorkspace.FindEditor() is { } existing)
 		{
+			string assembly = Path.Combine(
+				EditorWorkspace.SdkRoot, ".godot", "mono", "temp", "bin", "Debug", "refii-launcher.dll");
+			if (!File.Exists(assembly))
+			{
+				report("Building editor plugins...");
+				await BuildPluginsAsync(report).ConfigureAwait(false);
+			}
+
 			report("Checking the editor already downloaded...");
 			return await VerifyAsync(existing, report).ConfigureAwait(false);
 		}
@@ -129,6 +137,14 @@ public static class EditorInstall
 			{
 				return (false, sdkError);
 			}
+		}
+
+		string assemblyPath = Path.Combine(
+			EditorWorkspace.SdkRoot, ".godot", "mono", "temp", "bin", "Debug", "refii-launcher.dll");
+		if (!File.Exists(assemblyPath))
+		{
+			report("Building editor plugins...");
+			await BuildPluginsAsync(report).ConfigureAwait(false);
 		}
 
 		report("Checking the editor runs...");
@@ -526,4 +542,38 @@ public static class EditorInstall
 
 	private static bool Flag(JsonElement element, string name) =>
 		element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.True;
+
+	private static async Task BuildPluginsAsync(Action<string> report)
+	{
+		string? dotnet = EditorWorkspace.FindDotnet();
+		if (dotnet is null)
+		{
+			return;
+		}
+
+		try
+		{
+			var start = new ProcessStartInfo
+			{
+				FileName = dotnet,
+				WorkingDirectory = EditorWorkspace.SdkRoot,
+				UseShellExecute = false,
+			};
+			start.ArgumentList.Add("build");
+			if (dotnet.StartsWith(EditorWorkspace.DotnetRoot, StringComparison.Ordinal))
+			{
+				start.Environment["DOTNET_ROOT"] = EditorWorkspace.DotnetRoot;
+			}
+
+			using Process? process = Process.Start(start);
+			if (process is not null)
+			{
+				await process.WaitForExitAsync().ConfigureAwait(false);
+			}
+		}
+		catch (Exception exception)
+		{
+			report($"Building editor plugins encountered a warning: {exception.Message}");
+		}
+	}
 }

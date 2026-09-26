@@ -335,12 +335,15 @@ public static class EditorWorkspace
 		string editor = FindEditor()!;
 		try
 		{
+			EnsurePluginsBuilt();
+
 			var start = new System.Diagnostics.ProcessStartInfo
 			{
 				FileName = editor,
 				WorkingDirectory = SdkRoot,
 				UseShellExecute = false,
 			};
+			start.ArgumentList.Add("-e");
 			start.ArgumentList.Add("--path");
 			start.ArgumentList.Add(SdkRoot);
 			start.Environment["REFII_APP_ROOT"] = Engine_AppRoot.Path;
@@ -358,6 +361,50 @@ public static class EditorWorkspace
 		{
 			error = exception.Message;
 			return false;
+		}
+	}
+
+	/// <summary>
+	/// Ensures the C# solution is compiled before Godot opens.
+	///
+	/// Godot C# plugins are loaded from the compiled assembly in <c>.godot/mono/temp/bin/Debug/</c>.
+	/// If the assembly is missing when Godot opens, Godot fails to instantiate the plugins
+	/// and disables them in <c>project.godot</c>.
+	/// </summary>
+	public static void EnsurePluginsBuilt()
+	{
+		string assemblyPath = Path.Combine(SdkRoot, ".godot", "mono", "temp", "bin", "Debug", "refii-launcher.dll");
+		if (File.Exists(assemblyPath))
+		{
+			return;
+		}
+
+		string? dotnet = FindDotnet();
+		if (dotnet is null)
+		{
+			return;
+		}
+
+		try
+		{
+			var start = new System.Diagnostics.ProcessStartInfo
+			{
+				FileName = dotnet,
+				WorkingDirectory = SdkRoot,
+				UseShellExecute = false,
+			};
+			start.ArgumentList.Add("build");
+			if (dotnet.StartsWith(DotnetRoot, StringComparison.Ordinal))
+			{
+				start.Environment["DOTNET_ROOT"] = DotnetRoot;
+			}
+
+			using System.Diagnostics.Process? process = System.Diagnostics.Process.Start(start);
+			process?.WaitForExit();
+		}
+		catch (Exception)
+		{
+			// Best effort; if dotnet fails, launching Godot will report errors directly.
 		}
 	}
 }
