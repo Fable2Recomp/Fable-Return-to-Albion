@@ -31,9 +31,26 @@ public static class Engine_EquipmentScene
                 "Weapon Type", Engine_WeaponKinds.DescribeType(detail.WeaponType)));
         }
 
-        if (detail.Money >= 0)
+        if (detail.Rating > 0)
         {
-            rows.Add(new KeyValuePair<string, string>("Base Value", detail.Money.ToString()));
+            rows.Add(new KeyValuePair<string, string>(
+                "Tier / Rating", DescribeRating(detail.Rating)));
+        }
+
+        if (detail.BasePrice >= 0)
+        {
+            rows.Add(new KeyValuePair<string, string>(
+                "Base Price", $"{detail.BasePrice:N0} Gold"));
+        }
+        else if (detail.Money >= 0)
+        {
+            rows.Add(new KeyValuePair<string, string>("Base Value", $"{detail.Money:N0} Gold"));
+        }
+
+        if (detail.AugmentSlots > 0)
+        {
+            rows.Add(new KeyValuePair<string, string>(
+                "Augment Slots", detail.AugmentSlots.ToString()));
         }
 
         if (detail.WornModelPath.Length != 0 || detail.WornModelPathHash != 0)
@@ -92,9 +109,26 @@ public static class Engine_EquipmentScene
             new("Icon", detail.IconTex),
         };
 
-        if (detail.Money >= 0)
+        if (detail.Rating > 0)
         {
-            rows.Add(new KeyValuePair<string, string>("Base Value", detail.Money.ToString()));
+            rows.Add(new KeyValuePair<string, string>(
+                "Tier / Rating", DescribeRating(detail.Rating)));
+        }
+
+        if (detail.BasePrice >= 0)
+        {
+            rows.Add(new KeyValuePair<string, string>(
+                "Base Price", $"{detail.BasePrice:N0} Gold"));
+        }
+        else if (detail.Money >= 0)
+        {
+            rows.Add(new KeyValuePair<string, string>("Base Value", $"{detail.Money:N0} Gold"));
+        }
+
+        if (detail.AugmentSlots > 0)
+        {
+            rows.Add(new KeyValuePair<string, string>(
+                "Augment Slots", detail.AugmentSlots.ToString()));
         }
 
         rows.AddRange(detail.Stats);
@@ -130,9 +164,20 @@ public static class Engine_EquipmentScene
                 "Cluster Sort Layer", detail.ClusterSortLayer.ToString()));
         }
 
-        if (detail.Money >= 0)
+        if (detail.Rating > 0)
         {
-            rows.Add(new KeyValuePair<string, string>("Base Value", detail.Money.ToString()));
+            rows.Add(new KeyValuePair<string, string>(
+                "Tier / Rating", DescribeRating(detail.Rating)));
+        }
+
+        if (detail.BasePrice >= 0)
+        {
+            rows.Add(new KeyValuePair<string, string>(
+                "Base Price", $"{detail.BasePrice:N0} Gold"));
+        }
+        else if (detail.Money >= 0)
+        {
+            rows.Add(new KeyValuePair<string, string>("Base Value", $"{detail.Money:N0} Gold"));
         }
 
         rows.AddRange(detail.Stats);
@@ -207,4 +252,17 @@ public static class Engine_EquipmentScene
         string safe = text.ToString().Trim();
         return safe.Length == 0 ? "Equipment" : safe;
     }
+
+    /// <summary>
+    /// Translates an inventory Rating integer (1..5) into a human-friendly star and tier label.
+    /// </summary>
+    public static string DescribeRating(int rating) => rating switch
+    {
+        1 => "1 Star (Tier 1)",
+        2 => "2 Stars (Tier 2)",
+        3 => "3 Stars (Tier 3)",
+        4 => "4 Stars (Tier 4)",
+        5 => "5 Stars (Tier 5)",
+        _ => $"{rating} Stars (Tier {rating})",
+    };
 }

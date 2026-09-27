@@ -21,6 +21,14 @@ public sealed class ItemDetail
     /// </summary>
     public uint DefinitionHash { get; set; }
 
+    /// <summary>
+    /// The INVENTORY COMPONENT that carries the item's name tag, description tag, rating, and icon.
+    /// When an item is authored in Fable 2's GDB, the world definition points to this component via
+    /// <c>InventoryItemComponent</c>. Stored here so unified entries can be resolved by either the
+    /// definition hash or component hash.
+    /// </summary>
+    public uint InventoryComponentHash { get; set; }
+
     /// <summary>`ShopItemComponent.BasePrice` on the definition, −1 when unpriced — the number
     /// the item page writes as `"$" + itoa(BasePrice)` (`sub_829B6B50`). <see cref="Money"/> is
     /// the gold-bag amount, a different thing.</summary>
@@ -107,6 +115,15 @@ public sealed class ItemDetail
 
     public bool HasInventoryItem { get; set; }
 
+    /// <summary>Star rating (1..5) from `InventoryItemComponent.Rating`.</summary>
+    public int Rating { get; set; }
+
+    /// <summary>Total augment slots from `AugmentableComponent.NumberOfSlots`.</summary>
+    public int AugmentSlots { get; set; }
+
+    /// <summary>Names of slotted augments and empty slots.</summary>
+    public List<string> Augments { get; } = new();
+
     public List<KeyValuePair<string, string>> Stats { get; } = new();
 }
 
@@ -174,7 +191,7 @@ public static class Engine_ItemDetails
 
     public static List<ItemDetail> Build(GdbMulti multi)
     {
-        var details = new List<ItemDetail>();
+        var rawDetails = new List<ItemDetail>();
         var seen = new HashSet<uint>();
 
         foreach (GdbView view in multi.Views)
@@ -192,10 +209,75 @@ public static class Engine_ItemDetails
                     continue;
                 }
 
-                details.Add(Read(multi, new GdbCursor(view, index), recordHash));
+                rawDetails.Add(Read(multi, new GdbCursor(view, index), recordHash));
             }
         }
 
+        // CANONICAL ITEM DEDUPLICATION:
+        // In Fable 2's GDB database, every world item (weapon, garment, or prop) is authored across
+        // two mutually-referencing records:
+        //   1. The Definition Record (e.g. Weapon_Crossbow_Base, 0x48414876):
+        //      Carries world simulation and combat components (WeaponComponent, ShopItemComponent,
+        //      augment slots, model reference) and an InventoryItemComponent reference pointing to the
+        //      inventory component.
+        //   2. The Inventory Component Record (e.g. INV_ITEM_CROSSBOW_BASE, 0xDDEFA3B7):
+        //      Carries the localized text tags (NameTag "Base Crossbow", DescTag), GUI rating, and
+        //      icon graphic, while its parent/TryDefinitionOf points back to the definition.
+        //
+        // Because both records pass IsItemRecord(), iterating raw database rows yields two entries
+        // that resolve to the exact same display name and exact same 3D mesh. Here, we merge each pair
+        // into a single authoritative ItemDetail:
+        //   - Keyed by (DefinitionHash, NameTag) so legitimately distinct items never collide.
+        //   - Promotes the Definition row as primary (RecordHash == DefinitionHash) so entity spawning,
+        //     physics, and combat components are anchored to the world definition.
+        //   - Ensures InventoryComponentHash is retained on the canonical item so gameplay, scripts, and
+        //     UI books can resolve the item by either the definition hash or the inventory component hash.
+        var merged = new Dictionary<(uint CanonicalDef, uint NameTag), ItemDetail>();
+        foreach (ItemDetail detail in rawDetails)
+        {
+            uint defKey = detail.DefinitionHash != 0 ? detail.DefinitionHash : detail.RecordHash;
+            var key = (defKey, detail.NameTag);
+
+            if (!merged.TryGetValue(key, out ItemDetail? existing))
+            {
+                merged[key] = detail;
+                continue;
+            }
+
+            // Merge stats/attributes between definition and component rows:
+            if (existing.Rating != 0 && detail.Rating == 0) detail.Rating = existing.Rating;
+            if (detail.Rating != 0 && existing.Rating == 0) existing.Rating = detail.Rating;
+
+            if (existing.BasePrice >= 0 && detail.BasePrice < 0) detail.BasePrice = existing.BasePrice;
+            if (detail.BasePrice >= 0 && existing.BasePrice < 0) existing.BasePrice = detail.BasePrice;
+
+            if (existing.AugmentSlots != 0 && detail.AugmentSlots == 0)
+            {
+                detail.AugmentSlots = existing.AugmentSlots;
+                if (detail.Augments.Count == 0) detail.Augments.AddRange(existing.Augments);
+            }
+            if (detail.AugmentSlots != 0 && existing.AugmentSlots == 0)
+            {
+                existing.AugmentSlots = detail.AugmentSlots;
+                if (existing.Augments.Count == 0) existing.Augments.AddRange(detail.Augments);
+            }
+
+            // If the incoming detail is the definition row, promote it over an earlier component row:
+            if (detail.RecordHash == detail.DefinitionHash)
+            {
+                if (detail.InventoryComponentHash == 0)
+                {
+                    detail.InventoryComponentHash = existing.RecordHash;
+                }
+                merged[key] = detail;
+            }
+            else if (existing.InventoryComponentHash == 0)
+            {
+                existing.InventoryComponentHash = detail.RecordHash;
+            }
+        }
+
+        var details = new List<ItemDetail>(merged.Values);
         details.Sort(Compare);
         return details;
     }
@@ -272,9 +354,11 @@ public static class Engine_ItemDetails
         {
             inventoryComponent = cursor;
             hasInventory = true;
+            inventoryHash = recordHash;
         }
 
         detail.HasInventoryItem = hasInventory;
+        detail.InventoryComponentHash = hasInventory && IsRef(inventoryHash) ? inventoryHash : 0;
 
         if (multi.TryFindInherited(
                 owner, ShopItemComponentField, 6, out _, out uint shop, out _) &&
@@ -294,6 +378,22 @@ public static class Engine_ItemDetails
             IsIntType(categoryType))
         {
             detail.Category = unchecked((int)category);
+        }
+
+        if (hasInventory &&
+            multi.TryFindInherited(
+                inventoryComponent, RatingField, -1, out _, out uint rating,
+                out GdbFieldType ratingType) &&
+            IsIntType(ratingType))
+        {
+            detail.Rating = unchecked((int)rating);
+        }
+        else if (multi.TryFindInherited(
+                     owner, RatingField, -1, out _, out uint ownerRating,
+                     out GdbFieldType ownerRatingType) &&
+                 IsIntType(ownerRatingType))
+        {
+            detail.Rating = unchecked((int)ownerRating);
         }
 
         if (multi.TryFindInherited(
@@ -374,6 +474,16 @@ public static class Engine_ItemDetails
         Refii.Core.Engine_GameHash.Fnv1("ShopItemComponent");
 
     private static readonly uint BasePriceField = Refii.Core.Engine_GameHash.Fnv1("BasePrice");
+
+    private static readonly uint RatingField = Refii.Core.Engine_GameHash.Fnv1("Rating");
+
+    private static readonly uint NumberOfSlotsField = Refii.Core.Engine_GameHash.Fnv1("NumberOfSlots");
+
+    private static readonly uint InitialAugmentationsField = Refii.Core.Engine_GameHash.Fnv1("InitialAugmentations");
+
+    private static readonly uint PrimaryTypeField = Refii.Core.Engine_GameHash.Fnv1("PrimaryType");
+
+    private static readonly uint SecondaryTypeField = Refii.Core.Engine_GameHash.Fnv1("SecondaryType");
 
     private static Dictionary<uint, uint>? _definitionByComponent;
 
@@ -807,38 +917,113 @@ public static class Engine_ItemDetails
         if (!multi.TryFindInherited(
                 cursor, Augmentable, 6, out _, out uint augmentComponent, out _) ||
             !IsRef(augmentComponent) ||
-            !multi.TryLookup(augmentComponent, out GdbCursor augments))
+            !multi.TryLookup(augmentComponent, out GdbCursor augmentable))
         {
             return;
         }
 
-        int slot = 0;
-        foreach (uint field in AugmentSlots)
+        int slots = 0;
+        if (multi.TryFindInherited(
+                augmentable, NumberOfSlotsField, -1, out _, out uint rawSlots,
+                out GdbFieldType slotsType) &&
+            IsIntType(slotsType))
         {
-            if (!multi.TryFindInherited(
-                    augments, field, -1, out _, out uint augment, out _) || !IsRef(augment))
-            {
-                continue;
-            }
-
-            string name = multi.NameOf(augment);
-            if (name.Length == 0 && multi.TryLookup(augment, out GdbCursor record) &&
-                multi.TryFindInherited(
-                    record, NameTag, -1, out _, out uint tag, out GdbFieldType tagType) &&
-                IsTagType(tagType))
-            {
-                name = multi.NameOf(tag);
-            }
-
-            if (name.Length == 0)
-            {
-                continue;
-            }
-
-            slot++;
-            detail.Stats.Add(new KeyValuePair<string, string>(
-                $"Augment {slot}", Engine_ItemLabels.Prettify(name)));
+            slots = unchecked((int)rawSlots);
         }
+
+        var seeded = new List<(uint Primary, uint Secondary)>();
+        if (multi.TryFindInherited(
+                augmentable, InitialAugmentationsField, 6, out _, out uint initRef, out _) &&
+            IsRef(initRef) && multi.TryLookup(initRef, out GdbCursor list))
+        {
+            for (int i = 1; i <= 8; ++i)
+            {
+                uint augField = Refii.Core.Engine_GameHash.Fnv1(
+                    "Augmentation" + i.ToString(CultureInfo.InvariantCulture));
+                if (!multi.TryFindInherited(
+                        list, augField, 6, out _, out uint entryRef, out _) ||
+                    !IsRef(entryRef) || !multi.TryLookup(entryRef, out GdbCursor entry))
+                {
+                    break;
+                }
+
+                uint primary = 0;
+                if (multi.TryFindInherited(entry, PrimaryTypeField, -1, out _, out uint p, out _) &&
+                    IsRef(p))
+                {
+                    primary = p;
+                }
+
+                if (primary != 0)
+                {
+                    uint secondary = 0;
+                    if (multi.TryFindInherited(entry, SecondaryTypeField, -1, out _, out uint s, out _) &&
+                        IsRef(s))
+                    {
+                        secondary = s;
+                    }
+
+                    seeded.Add((primary, secondary));
+                }
+            }
+        }
+
+        if (slots == 0 && seeded.Count > 0)
+        {
+            slots = seeded.Count;
+        }
+
+        detail.AugmentSlots = slots;
+
+        for (int slot = 0; slot < slots && slot < 8; ++slot)
+        {
+            string augmentName = slot < seeded.Count
+                ? ResolveAugmentName(multi, seeded[slot])
+                : "Empty Slot";
+
+            detail.Augments.Add(augmentName);
+            detail.Stats.Add(new KeyValuePair<string, string>(
+                $"Augment {slot + 1}", augmentName));
+        }
+    }
+
+    private static string ResolveAugmentName(GdbMulti multi, (uint Primary, uint Secondary) pair)
+    {
+        string pTag = AugmentTagPart(multi, pair.Primary);
+        string sTag = AugmentTagPart(multi, pair.Secondary);
+        string tagName = "INV_ITEM_AUGMENTATION_" + pTag + sTag + "NAME";
+        uint tagHash = Refii.Core.Engine_GameHash.Fnv1(tagName);
+        if (Engine_BnkTextBankLoader.TryLookup(tagHash, out string localised) && localised.Length != 0)
+        {
+            return localised;
+        }
+
+        uint textTagHash = Refii.Core.Engine_GameHash.Fnv1("TEXT_" + tagName);
+        if (Engine_BnkTextBankLoader.TryLookup(textTagHash, out string textLocalised) &&
+            textLocalised.Length != 0)
+        {
+            return textLocalised;
+        }
+
+        if (pTag.Length != 0)
+        {
+            return Engine_ItemLabels.Prettify(pTag.TrimEnd('_'));
+        }
+
+        return tagName;
+    }
+
+    private static string AugmentTagPart(GdbMulti multi, uint type)
+    {
+        if (type == 0 || !multi.TryLookup(type, out GdbCursor record) ||
+            !multi.TryFindInherited(
+                record, NameTag, -1, out _, out uint tag, out _))
+        {
+            return string.Empty;
+        }
+
+        string text = multi.NameOf(tag);
+        return text.Length != 0 ? text + "_" : string.Empty;
     }
 
     private static bool TryStepToParent(GdbMulti multi, ref GdbCursor walk, HashSet<uint> visited)

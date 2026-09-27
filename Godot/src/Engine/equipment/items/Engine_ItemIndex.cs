@@ -132,6 +132,28 @@ public static class Engine_ItemIndex
         return _byFileName.TryGetValue(leaf, out entry!);
     }
 
+    /// <summary>
+    /// Resolves an item entry by either its definition record hash or its inventory component hash.
+    /// </summary>
+    public static bool TryGetByHash(uint recordHash, out ItemEntry entry)
+    {
+        Build();
+        if (_entries is not null)
+        {
+            foreach (ItemEntry candidate in _entries)
+            {
+                if (candidate.RecordHash == recordHash || candidate.Detail.InventoryComponentHash == recordHash)
+                {
+                    entry = candidate;
+                    return true;
+                }
+            }
+        }
+
+        entry = null!;
+        return false;
+    }
+
     private static void Build()
     {
         lock (IndexLock)
@@ -185,6 +207,16 @@ public static class Engine_ItemIndex
         foreach (ItemEntry entry in entries)
         {
             map[FileNameOf(entry)] = entry;
+
+            // DUAL-HASH ALIAS LOOKUP:
+            // Allow resolving this item by its inventory component filename as well,
+            // ensuring any legacy references or scenes saved under the component hash continue to load.
+            if (entry.Detail.InventoryComponentHash != 0)
+            {
+                string compFile = Engine_ItemNames.FileNameOf(
+                    entry.Name, entry.Detail.InventoryComponentHash, Extension);
+                map.TryAdd(compFile, entry);
+            }
         }
 
         int withModel = 0;

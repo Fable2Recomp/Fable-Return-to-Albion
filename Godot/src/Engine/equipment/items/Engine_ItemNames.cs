@@ -82,4 +82,70 @@ public static class Engine_ItemNames
         int slash = normalised.LastIndexOf('/');
         return slash < 0 ? normalised : normalised[(slash + 1)..];
     }
+
+    /// <summary>
+    /// Constructs a multi-line informative tooltip for an item, displaying its localized display name,
+    /// category/family, weapon type, star rating/tier, base price, augment slots / socketed augments,
+    /// 3D model path, GDB record hash, and lore description.
+    /// </summary>
+    public static string FormatTooltip(
+        ItemDetail detail,
+        string? categoryOrFamily = null,
+        string? extraPath = null)
+    {
+        var sb = new StringBuilder();
+        string name = DisplayNameOf(detail);
+        sb.AppendLine(name);
+
+        if (!string.IsNullOrWhiteSpace(categoryOrFamily))
+        {
+            sb.Append("Category: ").AppendLine(categoryOrFamily);
+        }
+
+        if (detail.WeaponType != 0)
+        {
+            sb.Append("Type: ").AppendLine(Engine_WeaponKinds.DescribeType(detail.WeaponType));
+        }
+
+        if (detail.Rating > 0)
+        {
+            sb.Append("Tier / Rating: ").AppendLine(Engine_EquipmentScene.DescribeRating(detail.Rating));
+        }
+
+        if (detail.BasePrice >= 0)
+        {
+            sb.Append("Price: ").AppendFormat("{0:N0} Gold", detail.BasePrice).AppendLine();
+        }
+        else if (detail.Money >= 0)
+        {
+            sb.Append("Value: ").AppendFormat("{0:N0} Gold", detail.Money).AppendLine();
+        }
+
+        if (detail.AugmentSlots > 0 || detail.Augments.Count > 0)
+        {
+            if (detail.Augments.Count > 0)
+            {
+                sb.Append("Augments: ").AppendLine(string.Join(", ", detail.Augments));
+            }
+            else
+            {
+                sb.Append("Augment Slots: ").Append(detail.AugmentSlots).AppendLine(" (Empty)");
+            }
+        }
+
+        string mesh = !string.IsNullOrWhiteSpace(extraPath)
+            ? extraPath
+            : detail.ModelPath.Length > 0 ? detail.ModelPath : "No 3D mesh";
+        sb.Append("Model: ").AppendLine(mesh);
+        sb.AppendFormat("Record: 0x{0:X8}", detail.RecordHash).AppendLine();
+
+        string desc = DescriptionOf(detail);
+        if (!string.IsNullOrWhiteSpace(desc))
+        {
+            sb.AppendLine();
+            sb.Append(desc);
+        }
+
+        return sb.ToString().TrimEnd();
+    }
 }

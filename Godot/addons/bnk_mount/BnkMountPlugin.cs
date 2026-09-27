@@ -317,6 +317,7 @@ public partial class BnkMountPlugin : EditorPlugin
             }
 
             _filesystem = mounted;
+            _ = Refii.Equipment.Engine_WeaponIndex.Families;
             _videos = Refii.Video.Engine_VideoLibrary.Load(gameDirectory);
             _byFileName = null;
             _mounting = false;
@@ -996,7 +997,6 @@ public partial class BnkMountPlugin : EditorPlugin
                 EditorModExporter.ActiveModName = chosen;
                 EditorModExporter.EnsureActiveModWorkspace();
                 GD.Print($"[mod_export] Active mod set to '{chosen}'");
-                ReloadModOverlays();
             }
         };
 
@@ -2001,7 +2001,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, labels[i]);
-            item.SetTooltipText(0, Refii.Equipment.Engine_WeaponIndex.FileNameOf(entry));
+            item.SetTooltipText(0, Refii.Equipment.Engine_ItemNames.FormatTooltip(entry.Detail, entry.Family, entry.ModelPath));
             item.SetMetadata(
                 0, FilePrefix + Refii.Equipment.Engine_WeaponIndex.VirtualPathOf(entry));
             ApplyEquipmentIcon(item, entry.Detail.IconTex, fallback);
@@ -2063,7 +2063,8 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, labels[i]);
-            item.SetTooltipText(0, Refii.Equipment.Engine_ClothingIndex.FileNameOf(entry));
+            string clothModel = entry.MaleModelPath.Length != 0 ? entry.MaleModelPath : entry.FemaleModelPath;
+            item.SetTooltipText(0, Refii.Equipment.Engine_ItemNames.FormatTooltip(entry.Detail, Refii.Equipment.Engine_ClothingSlots.LabelOf(entry.Slot), clothModel));
             item.SetMetadata(
                 0, FilePrefix + Refii.Equipment.Engine_ClothingIndex.VirtualPathOf(entry));
             ApplyEquipmentIcon(item, entry.Detail.IconTex, fallback);
@@ -2125,11 +2126,11 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, labels[i]);
-            string mesh = entry.HasModel ? entry.ModelPath : "no mesh";
+            string mesh = entry.HasModel ? entry.ModelPath : "No 3D mesh";
             item.SetTooltipText(
                 0,
-                Refii.Equipment.Engine_ItemIndex.FileNameOf(entry) +
-                    System.Environment.NewLine + mesh);
+                Refii.Equipment.Engine_ItemNames.FormatTooltip(
+                    entry.Detail, Refii.Equipment.Engine_ItemCategories.LabelOf(entry.Category), mesh));
             item.SetMetadata(
                 0, FilePrefix + Refii.Equipment.Engine_ItemIndex.VirtualPathOf(entry));
             ApplyEquipmentIcon(item, entry.Detail.IconTex, fallback);

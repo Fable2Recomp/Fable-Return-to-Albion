@@ -217,7 +217,7 @@ public static class Engine_ClothingIndex
     {
         foreach (ClothingEntry candidate in Entries)
         {
-            if (candidate.RecordHash == recordHash)
+            if (candidate.RecordHash == recordHash || candidate.Detail.InventoryComponentHash == recordHash)
             {
                 entry = candidate;
                 return true;
@@ -287,6 +287,15 @@ public static class Engine_ClothingIndex
         foreach (ClothingEntry entry in entries)
         {
             map[FileNameOf(entry)] = entry;
+
+            // DUAL-HASH ALIAS LOOKUP:
+            // Allow resolving this garment by its inventory component filename as well.
+            if (entry.Detail.InventoryComponentHash != 0)
+            {
+                string compFile = Engine_ItemNames.FileNameOf(
+                    entry.Name, entry.Detail.InventoryComponentHash, Extension);
+                map.TryAdd(compFile, entry);
+            }
         }
 
         _multi = multi;
