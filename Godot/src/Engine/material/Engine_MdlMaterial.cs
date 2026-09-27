@@ -478,13 +478,14 @@ public static class Engine_MdlMaterial
             Interlocked.Increment(ref _withEnvmap);
         }
 
-        // The packed ORM, when the player has asked for it. The specular map feeds roughness and
-        // metallic; the NORMAL map feeds AO and height — so either is enough, and a material
-        // naming only a normal (a third of the asset set) still gets its occlusion and parallax.
-        if (specular is not null || normal is not null)
+        // The packed ORM, when the player has asked for it, or an authored PBR ORM map exists.
+        // The specular map feeds roughness and metallic; the NORMAL map feeds AO and height;
+        // diffuse/normal can also pair with an authored <stem>_orm.png loose file.
+        if (specular is not null || normal is not null || !string.IsNullOrWhiteSpace(material.Diffuse))
         {
             ImageTexture? orm;
             bool ormHeight;
+            bool isPbr = false;
             if (specularOverridden || normalOverridden)
             {
                 // A morphed source (the hero) — the path-keyed cache would pack the UNMORPHED
@@ -497,18 +498,21 @@ public static class Engine_MdlMaterial
             else
             {
                 orm = Engine_TexLibrary.GetOrm(
+                    material.Diffuse,
                     material.Specular,
                     material.Normal,
                     material.SpecularPowerMin,
                     material.SpecularPowerMax,
                     Engine_BnkMeshLoader.ReadBytes,
-                    out ormHeight);
+                    out ormHeight,
+                    out isPbr);
             }
 
             if (orm is not null)
             {
                 result.SetShaderParameter("orm_tex", orm);
                 result.SetShaderParameter("has_orm", true);
+                result.SetShaderParameter("is_pbr", isPbr);
 
                 // Whether a height was actually SOLVED into the alpha. The heightless sentinel
                 // is opaque white — half a texel of permanent positive relief if the shader ever
@@ -516,6 +520,14 @@ public static class Engine_MdlMaterial
                 result.SetShaderParameter("has_height", ormHeight);
                 Interlocked.Increment(ref _withOrm);
             }
+            else
+            {
+                result.SetShaderParameter("is_pbr", false);
+            }
+        }
+        else
+        {
+            result.SetShaderParameter("is_pbr", false);
         }
 
         // The exponent range the material states, not a constant. It is per material rather than

@@ -155,7 +155,10 @@ public static class ModMeshOverlays
 		try
 		{
 			var document = new GltfDocument();
-			var state = new GltfState();
+			var state = new GltfState
+			{
+				HandleBinaryImageMode = GltfState.HandleBinaryImageModeEnum.DiscardTextures,
+			};
 			Error appended = document.AppendFromBuffer(gltf, string.Empty, state);
 			if (appended != Error.Ok)
 			{
@@ -163,15 +166,30 @@ public static class ModMeshOverlays
 				return false;
 			}
 
-			Node scene = document.GenerateScene(state);
-			if (scene is null)
+			// First check GltfState meshes directly:
+			var gltfMeshes = state.GetMeshes();
+			if (gltfMeshes is not null)
 			{
-				error = "the glTF holds no scene.";
-				return false;
+				foreach (GltfMesh gltfMesh in gltfMeshes)
+				{
+					if (gltfMesh.Mesh is { } imp)
+					{
+						ArrayMesh array = imp.GetMesh();
+						if (array is not null && array.GetSurfaceCount() > 0)
+						{
+							mesh = array;
+							return true;
+						}
+					}
+				}
 			}
 
-			mesh = Engine_MdlImport.FindFirstMesh(scene);
-			scene.QueueFree();
+			Node scene = document.GenerateScene(state);
+			if (scene is not null)
+			{
+				mesh = Engine_MdlImport.FindFirstMesh(scene);
+				scene.QueueFree();
+			}
 
 			if (mesh is null)
 			{

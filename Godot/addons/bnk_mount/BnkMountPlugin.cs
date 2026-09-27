@@ -5,6 +5,7 @@ using System.IO;
 using System.Threading.Tasks;
 using Godot;
 using Refii.Bnk;
+using Refii.EditorTools;
 
 namespace Refii.Assets;
 
@@ -100,10 +101,10 @@ public partial class BnkMountPlugin : EditorPlugin
 
         StartMount();
         EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged += OnFilesystemChanged;
-        GetTree().NodeAdded += OnNodeAdded;
         AddStreamingLabel();
         _entityInspector = new EntityInspectorPlugin();
         AddInspectorPlugin(_entityInspector);
+        SetupContextMenu();
     }
 
     public override void _ExitTree()
@@ -115,11 +116,30 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged -= OnFilesystemChanged;
-        GetTree().NodeAdded -= OnNodeAdded;
         RemoveStreamingLabel();
         RemoveGameRoot();
         RemoveLoaders();
         Refii.FlashGames.Engine_SwfAssets.RemoveLoaders();
+        RemoveContextMenu();
+
+        if (_bridge is not null && GodotObject.IsInstanceValid(_bridge))
+        {
+            try
+            {
+                _bridge.Call("uninstall");
+            }
+            catch
+            {
+            }
+            _bridge = null;
+        }
+
+        if (_tree is not null && GodotObject.IsInstanceValid(_tree) && _collapsedHooked)
+        {
+            _tree.ItemCollapsed -= OnItemCollapsed;
+            _collapsedHooked = false;
+        }
+
         _filesystem?.Dispose();
         _filesystem = null;
     }
@@ -257,8 +277,17 @@ public partial class BnkMountPlugin : EditorPlugin
                 // THE EDITOR BROWSES WHAT THE GAME WILL LOAD, mods included — same mount, same
                 // order. An editor that showed only the shipped assets would report a modded
                 // file as missing and export a mod against the wrong base.
+                string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
+                var order = Refii.Mods.ModLoadOrder.Read(modsRoot);
+                string activeMod = EditorTools.EditorModExporter.ActiveModName;
+                if (!string.IsNullOrEmpty(activeMod) && !order.Enabled.Contains(activeMod))
+                {
+                    order.Enabled.Insert(0, activeMod);
+                    order.Write(modsRoot, out _);
+                }
+
                 var overlays = Refii.Mods.ModIndex.ResolveOverlays(
-                    Refii.Assets.Engine_GameAssets.ModsRoot, out Refii.Mods.ModLoadOrder order);
+                    modsRoot, order, Refii.Mods.ModWorkspace.DiscoverModInstalls(modsRoot));
                 mounted = BnkFileSystem.Mount(
                     gameDirectory,
                     overlays: Refii.Mods.ModIndex.ToMountOverlays(overlays));
@@ -269,7 +298,18 @@ public partial class BnkMountPlugin : EditorPlugin
 
                 Refii.Mods.ModRowOverlays.Apply(mounted, overlays);
                 Refii.Mods.ModImageOverlays.Apply(mounted, overlays);
-                Refii.Mods.ModMeshOverlays.Apply(mounted, overlays);
+                var conversions = Refii.Mods.ModMeshOverlays.Apply(mounted, overlays);
+                foreach (var c in conversions)
+                {
+                    if (c.Ok)
+                    {
+                        GD.Print($"[bnk_mount] model {Refii.Mods.ModMeshOverlays.Describe(c)}");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[bnk_mount] model {Refii.Mods.ModMeshOverlays.Describe(c)}");
+                    }
+                }
             }
             catch (Exception exception)
             {
@@ -858,7 +898,432 @@ public partial class BnkMountPlugin : EditorPlugin
             "install",
             tree,
             Callable.From<TreeItem, bool>(IsOurs),
-            Callable.From<TreeItem>(ActivateBnkItem));
+            Callable.From<TreeItem>(ActivateBnkItem),
+            Callable.From<TreeItem, Vector2>(OnItemRmb));
+    }
+
+    /// <summary>Context menu displayed when right-clicking assets under the Game:// root in the FileSystem dock.</summary>
+    private PopupMenu? _contextMenu;
+
+    /// <summary>Dialog for changing the active mod workspace folder name.</summary>
+    private ConfirmationDialog? _modNameDialog;
+
+    /// <summary>Text input field inside the mod name configuration dialog.</summary>
+    private LineEdit? _modNameEdit;
+
+    /// <summary>Virtual path of the currently selected asset in the Game:// tree.</summary>
+    private string _contextVirtualPath = string.Empty;
+
+    /// <summary>Resolved 3D model paths (.mdl) associated with the right-clicked item.</summary>
+    private readonly List<string> _contextModelPaths = new();
+
+    /// <summary>Resolved texture paths (.tex) associated with the right-clicked item.</summary>
+    private readonly List<string> _contextTexturePaths = new();
+
+    /// <summary>Resolved GUI/inventory icon texture paths associated with the right-clicked item.</summary>
+    private readonly List<string> _contextIconPaths = new();
+
+    /// <summary>Reference to the currently right-clicked TreeItem.</summary>
+    private TreeItem? _contextItem;
+
+    private const int MenuExportGlb = 100;
+    private const int MenuExportPng = 101;
+    private const int MenuExportPbr = 102;
+    private const int MenuExportIcon = 103;
+    private const int MenuOpenModFolder = 104;
+    private const int MenuChangeActiveMod = 105;
+    private const int MenuReloadOverlays = 106;
+
+    /// <summary>
+    /// Creates and registers the asset browser right-click context menu under the editor's base control.
+    /// </summary>
+    private void SetupContextMenu()
+    {
+        if (_contextMenu is not null && IsInstanceValid(_contextMenu))
+        {
+            return;
+        }
+
+        _contextMenu = new PopupMenu();
+        _contextMenu.IdPressed += OnContextMenuIdPressed;
+        EditorInterface.Singleton.GetBaseControl().AddChild(_contextMenu);
+    }
+
+    /// <summary>
+    /// Unhooks signals and frees the context menu and dialogs when the plugin exits the tree.
+    /// </summary>
+    private void RemoveContextMenu()
+    {
+        if (_contextMenu is not null && IsInstanceValid(_contextMenu))
+        {
+            _contextMenu.IdPressed -= OnContextMenuIdPressed;
+            _contextMenu.QueueFree();
+            _contextMenu = null;
+        }
+
+        if (_modNameDialog is not null && IsInstanceValid(_modNameDialog))
+        {
+            _modNameDialog.QueueFree();
+            _modNameDialog = null;
+        }
+    }
+
+    /// <summary>
+    /// Initializes and attaches the modal dialog used to switch or create active mod workspaces.
+    /// </summary>
+    private void SetupModNameDialog()
+    {
+        if (_modNameDialog is not null && IsInstanceValid(_modNameDialog))
+        {
+            return;
+        }
+
+        _modNameDialog = new ConfirmationDialog();
+        _modNameDialog.Title = "Set Active Mod";
+
+        var vbox = new VBoxContainer();
+        var label = new Label { Text = "Mod Folder Name (under assets/mods/):" };
+        _modNameEdit = new LineEdit { Text = EditorModExporter.ActiveModName };
+        vbox.AddChild(label);
+        vbox.AddChild(_modNameEdit);
+        _modNameDialog.AddChild(vbox);
+
+        _modNameDialog.Confirmed += () =>
+        {
+            if (_modNameEdit is not null && !string.IsNullOrWhiteSpace(_modNameEdit.Text))
+            {
+                string chosen = _modNameEdit.Text.Trim();
+                EditorModExporter.ActiveModName = chosen;
+                EditorModExporter.EnsureActiveModWorkspace();
+                GD.Print($"[mod_export] Active mod set to '{chosen}'");
+                ReloadModOverlays();
+            }
+        };
+
+        EditorInterface.Singleton.GetBaseControl().AddChild(_modNameDialog);
+    }
+
+    /// <summary>
+    /// Callback triggered by the GDScript signal bridge when a user right-clicks an item in the Game:// tree.
+    /// </summary>
+    /// <param name="item">The TreeItem that received the right-click.</param>
+    /// <param name="screenPos">The global screen coordinates of the cursor.</param>
+    private void OnItemRmb(TreeItem item, Vector2 screenPos)
+    {
+        if (item is null || !GodotObject.IsInstanceValid(item))
+        {
+            return;
+        }
+
+        SetupContextMenu();
+        if (_contextMenu is null)
+        {
+            return;
+        }
+
+        _contextItem = item;
+        _contextVirtualPath = string.Empty;
+        _contextModelPaths.Clear();
+        _contextTexturePaths.Clear();
+        _contextIconPaths.Clear();
+
+        string meta = item.GetMetadata(0).AsString();
+        if (meta.StartsWith(FilePrefix, StringComparison.Ordinal))
+        {
+            _contextVirtualPath = meta[FilePrefix.Length..];
+        }
+        else if (meta.StartsWith("bnk:", StringComparison.Ordinal))
+        {
+            _contextVirtualPath = meta[4..];
+        }
+
+        if (_contextVirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
+        {
+            _contextModelPaths.Add(_contextVirtualPath);
+        }
+        else if (_contextVirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+        {
+            _contextTexturePaths.Add(_contextVirtualPath);
+        }
+        else if (_contextVirtualPath.EndsWith(".weapon", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Refii.Equipment.Engine_WeaponIndex.TryGet(_contextVirtualPath, out var wEntry))
+            {
+                if (!string.IsNullOrEmpty(wEntry.ModelPath))
+                {
+                    _contextModelPaths.Add(wEntry.ModelPath);
+                }
+                if (!string.IsNullOrEmpty(wEntry.Detail.IconTex))
+                {
+                    _contextIconPaths.Add(wEntry.Detail.IconTex);
+                }
+            }
+        }
+        else if (_contextVirtualPath.EndsWith(".clothing", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Refii.Equipment.Engine_ClothingIndex.TryGet(_contextVirtualPath, out var cEntry))
+            {
+                if (!string.IsNullOrEmpty(cEntry.MaleModelPath))
+                {
+                    _contextModelPaths.Add(cEntry.MaleModelPath);
+                }
+                if (!string.IsNullOrEmpty(cEntry.FemaleModelPath) && cEntry.FemaleModelPath != cEntry.MaleModelPath)
+                {
+                    _contextModelPaths.Add(cEntry.FemaleModelPath);
+                }
+                if (!string.IsNullOrEmpty(cEntry.Detail.IconTex))
+                {
+                    _contextIconPaths.Add(cEntry.Detail.IconTex);
+                }
+            }
+        }
+        else if (_contextVirtualPath.EndsWith(".item", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Refii.Equipment.Engine_ItemIndex.TryGet(_contextVirtualPath, out var iEntry))
+            {
+                if (!string.IsNullOrEmpty(iEntry.ModelPath))
+                {
+                    _contextModelPaths.Add(iEntry.ModelPath);
+                }
+                if (!string.IsNullOrEmpty(iEntry.Detail.IconTex))
+                {
+                    _contextIconPaths.Add(iEntry.Detail.IconTex);
+                }
+            }
+        }
+        else if (_contextVirtualPath.EndsWith(".entity", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Refii.Entities.Engine_EntityIndex.TryGet(_contextVirtualPath, out var eEntry))
+            {
+                foreach (uint modelHash in eEntry.ModelHashes)
+                {
+                    string? path = Refii.Level.Engine_PropModelIndex.Resolve(modelHash, Array.Empty<string>());
+                    if (!string.IsNullOrEmpty(path) && !_contextModelPaths.Contains(path))
+                    {
+                        _contextModelPaths.Add(path);
+                    }
+                }
+            }
+        }
+
+        // For all resolved 3D models, extract the actual 3D textures (Diffuse, Normal, Specular, etc.)
+        foreach (string modelPath in _contextModelPaths)
+        {
+            foreach (string texPath in EditorModExporter.GetModelTexturePaths(modelPath, _filesystem))
+            {
+                if (!_contextTexturePaths.Contains(texPath))
+                {
+                    _contextTexturePaths.Add(texPath);
+                }
+            }
+        }
+
+        _contextMenu.Clear();
+        string activeMod = EditorModExporter.ActiveModName;
+
+        if (_contextModelPaths.Count == 1)
+        {
+            string fileName = Path.GetFileName(_contextModelPaths[0]);
+            _contextMenu.AddItem($"Export Model ({fileName}.glb) to [{activeMod}]", MenuExportGlb);
+        }
+        else if (_contextModelPaths.Count > 1)
+        {
+            _contextMenu.AddItem($"Export {_contextModelPaths.Count} Models (.glb) to [{activeMod}]", MenuExportGlb);
+        }
+
+        if (_contextTexturePaths.Count == 1)
+        {
+            string fileName = Path.GetFileName(_contextTexturePaths[0]);
+            _contextMenu.AddItem($"Export Model Texture ({fileName}) to [{activeMod}]", MenuExportPng);
+            _contextMenu.AddItem($"Export PBR Texture Set ({fileName}) to [{activeMod}]", MenuExportPbr);
+        }
+        else if (_contextTexturePaths.Count > 1)
+        {
+            _contextMenu.AddItem($"Export {_contextTexturePaths.Count} Model Textures (.png) to [{activeMod}]", MenuExportPng);
+            _contextMenu.AddItem($"Export {_contextTexturePaths.Count} PBR Texture Sets (with _orm.png) to [{activeMod}]", MenuExportPbr);
+        }
+
+        if (_contextIconPaths.Count == 1)
+        {
+            string fileName = Path.GetFileName(_contextIconPaths[0]);
+            _contextMenu.AddItem($"Export Inventory Icon ({fileName}) to [{activeMod}]", MenuExportIcon);
+        }
+        else if (_contextIconPaths.Count > 1)
+        {
+            _contextMenu.AddItem($"Export {_contextIconPaths.Count} Inventory Icons (.png) to [{activeMod}]", MenuExportIcon);
+        }
+
+        if (!string.IsNullOrEmpty(_contextVirtualPath) || _contextModelPaths.Count > 0 || _contextTexturePaths.Count > 0 || _contextIconPaths.Count > 0)
+        {
+            _contextMenu.AddItem("Open in Mod Folder", MenuOpenModFolder);
+            _contextMenu.AddSeparator();
+        }
+
+        _contextMenu.AddItem($"Active Mod: {activeMod} (Change...)", MenuChangeActiveMod);
+        _contextMenu.AddItem("Reload Mod Overlays", MenuReloadOverlays);
+
+        Vector2I mousePos = _contextMenu.IsEmbedded()
+            ? (Vector2I)(_tree?.GetGlobalMousePosition() ?? screenPos)
+            : DisplayServer.MouseGetPosition();
+        _contextMenu.Position = mousePos;
+        _contextMenu.ResetSize();
+        _contextMenu.Popup();
+    }
+
+    /// <summary>
+    /// Dispatches actions selected from the Game:// right-click context menu.
+    /// </summary>
+    /// <param name="id">Identifier of the pressed menu option.</param>
+    private void OnContextMenuIdPressed(long id)
+    {
+        switch (id)
+        {
+            case MenuExportGlb:
+            {
+                string lastPath = string.Empty;
+                int successCount = 0;
+                foreach (string modelPath in _contextModelPaths)
+                {
+                    if (EditorModExporter.ExportModel(modelPath, out string exportedPath, out string error))
+                    {
+                        lastPath = exportedPath;
+                        successCount++;
+                        GD.Print($"[mod_export] Exported model to: {exportedPath}");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[mod_export] Failed to export model '{modelPath}': {error}");
+                    }
+                }
+
+                if (successCount > 0 && !string.IsNullOrEmpty(lastPath))
+                {
+                    EditorModExporter.RevealInExplorer(lastPath);
+                }
+                break;
+            }
+            case MenuExportPng:
+            {
+                string lastPath = string.Empty;
+                int successCount = 0;
+                foreach (string texPath in _contextTexturePaths)
+                {
+                    if (EditorModExporter.ExportTexture(texPath, _filesystem, false, out string exportedPath, out string error))
+                    {
+                        lastPath = exportedPath;
+                        successCount++;
+                        GD.Print($"[mod_export] Exported model texture to: {exportedPath}");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[mod_export] Failed to export texture '{texPath}': {error}");
+                    }
+                }
+
+                if (successCount > 0 && !string.IsNullOrEmpty(lastPath))
+                {
+                    EditorModExporter.RevealInExplorer(lastPath);
+                }
+                break;
+            }
+            case MenuExportPbr:
+            {
+                string lastPath = string.Empty;
+                int successCount = 0;
+                foreach (string texPath in _contextTexturePaths)
+                {
+                    if (EditorModExporter.ExportTexture(texPath, _filesystem, true, out string exportedPath, out string error))
+                    {
+                        lastPath = exportedPath;
+                        successCount++;
+                        GD.Print($"[mod_export] Exported PBR texture set to: {exportedPath}");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[mod_export] Failed to export PBR texture '{texPath}': {error}");
+                    }
+                }
+
+                if (successCount > 0 && !string.IsNullOrEmpty(lastPath))
+                {
+                    EditorModExporter.RevealInExplorer(lastPath);
+                }
+                break;
+            }
+            case MenuExportIcon:
+            {
+                string lastPath = string.Empty;
+                int successCount = 0;
+                foreach (string iconPath in _contextIconPaths)
+                {
+                    if (EditorModExporter.ExportTexture(iconPath, _filesystem, false, out string exportedPath, out string error))
+                    {
+                        lastPath = exportedPath;
+                        successCount++;
+                        GD.Print($"[mod_export] Exported inventory icon to: {exportedPath}");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[mod_export] Failed to export icon '{iconPath}': {error}");
+                    }
+                }
+
+                if (successCount > 0 && !string.IsNullOrEmpty(lastPath))
+                {
+                    EditorModExporter.RevealInExplorer(lastPath);
+                }
+                break;
+            }
+            case MenuOpenModFolder:
+            {
+                string target = !string.IsNullOrEmpty(_contextVirtualPath)
+                    ? _contextVirtualPath
+                    : _contextModelPaths.Count > 0
+                        ? _contextModelPaths[0]
+                        : _contextTexturePaths.Count > 0
+                            ? _contextTexturePaths[0]
+                            : _contextIconPaths.Count > 0
+                                ? _contextIconPaths[0]
+                                : string.Empty;
+
+                if (string.IsNullOrEmpty(target))
+                {
+                    EditorModExporter.RevealInExplorer(EditorModExporter.EnsureActiveModWorkspace());
+                    return;
+                }
+
+                string dir = EditorModExporter.EnsureModAssetDirectory(target);
+                EditorModExporter.RevealInExplorer(dir);
+                break;
+            }
+            case MenuChangeActiveMod:
+            {
+                SetupModNameDialog();
+                if (_modNameEdit is not null)
+                {
+                    _modNameEdit.Text = EditorModExporter.ActiveModName;
+                }
+                _modNameDialog?.PopupCentered(new Vector2I(350, 100));
+                break;
+            }
+            case MenuReloadOverlays:
+            {
+                ReloadModOverlays();
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Flushes runtime texture and material caches, and triggers an asynchronous remount of all mod overlays.
+    /// </summary>
+    private void ReloadModOverlays()
+    {
+        GD.Print("[bnk_mount] Reloading mod overlays...");
+        Refii.Textures.Engine_TexLibrary.Clear();
+        Refii.Models.Engine_MdlMaterial.ClearSharedCache();
+        Refii.Level.Engine_PropStreamer.ClearCache();
+        StartMount();
     }
 
     private bool IsOurs(TreeItem item)
